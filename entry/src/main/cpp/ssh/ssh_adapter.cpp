@@ -2248,7 +2248,7 @@ int SshAdapter::fillKeyboardInteractiveResponses(
     for (int index = 0; index < numPrompts; ++index) {
         SshAuthPrompt prompt;
         if (prompts[index].text != nullptr && prompts[index].length > 0) {
-            prompt.text.assign(prompts[index].text,
+            prompt.text.assign(reinterpret_cast<const char*>(prompts[index].text),
                                std::min<size_t>(prompts[index].length,
                                                 SshAuthPromptBroker::kMaxPromptBytes));
         }

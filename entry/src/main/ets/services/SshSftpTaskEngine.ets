@@ -21,7 +21,8 @@ import {
 import {
   SshSftpTaskDirection,
   SshSftpTaskRecord,
-  SshSftpTaskStage
+  SshSftpTaskStage,
+  SftpEndpoint
 } from './SshSftpTaskPolicy';
 import { SshSftpTaskStore } from './SshSftpTaskStore';
 import { SshLocalFileEntry, SshLocalFileProvider } from './SshLocalFileProvider';
@@ -59,7 +60,14 @@ interface SshSftpBatchBinding {
   direction: SshSftpTaskDirection;
   localRoot: string;
   remoteRoot: string;
+  sourceEndpoint: SftpEndpoint;
+  targetEndpoint: SftpEndpoint;
   conflictPolicy: SshSftpConflictPolicy;
+}
+
+interface SshSftpResolvedSessions {
+  source: SshSftpEngineSession | null;
+  target: SshSftpEngineSession | null;
 }
 
 interface SshSftpEngineConflictPlan {
@@ -132,12 +140,25 @@ export class SshSftpTaskEngine {
     }
     const records: SshSftpTaskRecord[] = this.store.listBatch(owner, id);
     if (records.length === 0) { return false; }
+    const first: SshSftpTaskRecord = records[0];
+    const sourceEndpoint: SftpEndpoint = first.sourceEndpoint === undefined
+      ? (first.direction === 'upload'
+        ? { kind: 'local' } as SftpEndpoint
+        : { kind: 'ssh', hostId: owner } as SftpEndpoint)
+      : first.sourceEndpoint;
+    const targetEndpoint: SftpEndpoint = first.targetEndpoint === undefined
+      ? (first.direction === 'upload'
+        ? { kind: 'ssh', hostId: owner } as SftpEndpoint
+        : { kind: 'local' } as SftpEndpoint)
+      : first.targetEndpoint;
     this.bindings.set(id, {
       batchId: id,
       hostId: owner,
-      direction: records[0].direction,
+      direction: first.direction,
       localRoot: local,
       remoteRoot: remote,
+      sourceEndpoint,
+      targetEndpoint,
       conflictPolicy
     });
     return true;
@@ -167,7 +188,7 @@ export class SshSftpTaskEngine {
     });
     const batchIds: string[] = [];
     this.bindings.forEach((binding: SshSftpBatchBinding): void => {
-      if (binding.hostId === hostId) { batchIds.push(binding.batchId); }
+      if (this.bindingUsesHost(binding, hostId)) { batchIds.push(binding.batchId); }
     });
     for (let index = 0; index < batchIds.length; index++) {
       const binding: SshSftpBatchBinding | undefined = this.bindings.get(batchIds[index]);
@@ -188,7 +209,7 @@ export class SshSftpTaskEngine {
     if (current === undefined || current.sessionId !== sessionId) { return; }
     this.sessions.delete(owner);
     this.bindings.forEach((binding: SshSftpBatchBinding): void => {
-      if (binding.hostId !== owner) { return; }
+      if (!this.bindingUsesHost(binding, owner)) { return; }
       const activeTaskId: string | undefined = this.activeTasks.get(binding.batchId);
       if (activeTaskId === undefined) { return; }
       const task: SshSftpTaskRecord | null = this.store.get(activeTaskId);
@@ -204,12 +225,12 @@ export class SshSftpTaskEngine {
     if (id.length === 0 || this.running.has(id)) { return; }
     const binding: SshSftpBatchBinding | undefined = this.bindings.get(id);
     if (binding === undefined) { return; }
-    const session: SshSftpEngineSession | undefined = this.sessions.get(binding.hostId);
-    if (session === undefined) {
+    const resolved: SshSftpResolvedSessions | null = this.resolveBindingSessions(binding);
+    if (resolved === null) {
       this.publish('batchBlocked', id, null, 'waiting-for-connection');
       return;
     }
-    void this.pumpBatch(binding, session);
+    void this.pumpBatch(binding, resolved);
   }
 
   resolveBatchConflict(batchId: string, policy: SshSftpConflictPolicy,
@@ -281,14 +302,13 @@ export class SshSftpTaskEngine {
   }
 
   private async pumpBatch(binding: SshSftpBatchBinding,
-    initialSession: SshSftpEngineSession): Promise<void> {
+    initialSessions: SshSftpResolvedSessions): Promise<void> {
     if (this.running.has(binding.batchId)) { return; }
     this.running.add(binding.batchId);
     try {
       while (true) {
-        const session: SshSftpEngineSession | undefined = this.sessions.get(binding.hostId);
-        if (session === undefined || session.sessionId !== initialSession.sessionId ||
-          session.generation !== initialSession.generation) {
+        const sessions: SshSftpResolvedSessions | null = this.resolveBindingSessions(binding);
+        if (sessions === null || !this.resolvedSessionsMatch(sessions, initialSessions)) {
           return;
         }
         const tasks: SshSftpTaskRecord[] = this.store.listBatch(binding.hostId, binding.batchId)
@@ -308,14 +328,23 @@ export class SshSftpTaskEngine {
         this.activeTasks.set(binding.batchId, task.taskId);
         const sessionTask: SshSftpTaskRecord = this.updateTask(task, task.stage,
           task.verifiedOffset, task.partialSize, task.partialMtime, task.remotePath,
-          task.fileName, session.generation);
+          task.fileName, this.sessionGenerationForUpdate(sessions), task.targetPath,
+          task.sourcePath);
         let completed: boolean = false;
-        if (sessionTask.isDirectory) {
+        if (this.isRemoteToRemote(sessionTask)) {
+          if (sessions.source === null || sessions.target === null) { return; }
+          completed = await this.executeRemoteCopy(binding, sessions.source, sessions.target, sessionTask);
+        } else if (sessionTask.isDirectory) {
+          const session: SshSftpEngineSession | null = sessions.source !== null
+            ? sessions.source : sessions.target;
+          if (session === null) { return; }
           completed = await this.executeDirectory(binding, session, sessionTask);
         } else if (sessionTask.direction === 'upload') {
-          completed = await this.executeUpload(binding, session, sessionTask);
+          if (sessions.target === null) { return; }
+          completed = await this.executeUpload(binding, sessions.target, sessionTask);
         } else {
-          completed = await this.executeDownload(binding, session, sessionTask);
+          if (sessions.source === null) { return; }
+          completed = await this.executeDownload(binding, sessions.source, sessionTask);
         }
         this.activeTasks.delete(binding.batchId);
         if (!completed) { return; }
@@ -323,6 +352,197 @@ export class SshSftpTaskEngine {
     } finally {
       this.activeTasks.delete(binding.batchId);
       this.running.delete(binding.batchId);
+    }
+  }
+
+  private bindingUsesHost(binding: SshSftpBatchBinding, hostId: string): boolean {
+    const owner: string = hostId.trim();
+    return binding.hostId === owner ||
+      (binding.sourceEndpoint.kind === 'ssh' && binding.sourceEndpoint.hostId === owner) ||
+      (binding.targetEndpoint.kind === 'ssh' && binding.targetEndpoint.hostId === owner);
+  }
+
+  private sessionForEndpoint(endpoint: SftpEndpoint): SshSftpEngineSession | null {
+    if (endpoint.kind !== 'ssh') { return null; }
+    const hostId: string = (endpoint.hostId || '').trim();
+    if (hostId.length === 0) { return null; }
+    return this.sessions.get(hostId) || null;
+  }
+
+  private resolveBindingSessions(binding: SshSftpBatchBinding): SshSftpResolvedSessions | null {
+    const source: SshSftpEngineSession | null = this.sessionForEndpoint(binding.sourceEndpoint);
+    const target: SshSftpEngineSession | null = this.sessionForEndpoint(binding.targetEndpoint);
+    if (binding.sourceEndpoint.kind === 'ssh' && source === null) { return null; }
+    if (binding.targetEndpoint.kind === 'ssh' && target === null) { return null; }
+    return { source, target };
+  }
+
+  private resolvedSessionsMatch(left: SshSftpResolvedSessions,
+    right: SshSftpResolvedSessions): boolean {
+    const matches = (leftSession: SshSftpEngineSession | null,
+      rightSession: SshSftpEngineSession | null): boolean => {
+      if (leftSession === null || rightSession === null) { return leftSession === rightSession; }
+      return leftSession.hostId === rightSession.hostId &&
+        leftSession.sessionId === rightSession.sessionId &&
+        leftSession.generation === rightSession.generation;
+    };
+    return matches(left.source, right.source) && matches(left.target, right.target);
+  }
+
+  private sessionGenerationForUpdate(sessions: SshSftpResolvedSessions): number {
+    return Math.max(sessions.source === null ? 0 : sessions.source.generation,
+      sessions.target === null ? 0 : sessions.target.generation);
+  }
+
+  private isRemoteToRemote(task: SshSftpTaskRecord): boolean {
+    return task.sourceEndpoint !== undefined && task.targetEndpoint !== undefined &&
+      task.sourceEndpoint.kind === 'ssh' && task.targetEndpoint.kind === 'ssh';
+  }
+
+  private remoteSessionsActive(source: SshSftpEngineSession, target: SshSftpEngineSession): boolean {
+    return this.sessionActive(source.hostId, source) && this.sessionActive(target.hostId, target);
+  }
+
+  /** Copy directly between two SSH SFTP channels without staging credentials or bytes locally. */
+  private async executeRemoteCopy(binding: SshSftpBatchBinding,
+    sourceSession: SshSftpEngineSession, targetSession: SshSftpEngineSession,
+    task: SshSftpTaskRecord): Promise<boolean> {
+    if (this.taskIsStopped(task.taskId)) { return false; }
+    if (!this.remoteSessionsActive(sourceSession, targetSession)) {
+      return this.waitForConnection(binding, task);
+    }
+    const sourcePath: string = (task.sourcePath || task.remotePath).trim();
+    let targetPath: string = (task.targetPath || task.remotePath).trim();
+    if (sourcePath.length === 0 || targetPath.length === 0) {
+      return this.failTask(binding, task, 'remote-copy-path-invalid');
+    }
+    if (task.isDirectory) {
+      if (!await this.ensureRemoteDirectory(targetSession.sessionId, targetPath,
+        targetSession.hostId, targetSession)) {
+        return this.failTask(binding, task, 'remote-copy-directory-prepare-failed');
+      }
+      if (!this.remoteSessionsActive(sourceSession, targetSession) || this.taskIsStopped(task.taskId)) {
+        return this.waitForConnection(binding, task);
+      }
+      const completed = this.store.command(task.taskId, { kind: 'complete' });
+      if (completed.accepted) {
+        this.publish('taskChanged', binding.batchId, this.store.get(task.taskId), 'completed');
+        return true;
+      }
+      return this.failTask(binding, task, 'remote-copy-directory-complete-rejected');
+    }
+
+    const sourceIdentity: SshSftpFileIdentity | null =
+      await this.readRemoteIdentity(sourceSession.sessionId, sourcePath);
+    if (sourceIdentity === null || sourceIdentity.size > MAX_TRANSFER_BYTES ||
+      (task.sourceSize >= 0 && !sshSftpIdentityMatches(
+        { size: task.sourceSize, mtime: task.sourceMtime }, sourceIdentity))) {
+      return this.failTask(binding, task, 'remote-copy-source-identity-changed');
+    }
+    let effectiveTask: SshSftpTaskRecord = task;
+    if (task.verifiedOffset <= 0) {
+      const conflict: SshSftpEngineConflictPlan = await this.prepareRemoteConflict(
+        binding, targetSession, task, targetPath);
+      if (conflict.action === 'waiting' || conflict.action === 'failed') { return false; }
+      if (conflict.action === 'skip') { return this.completeFileTask(binding, task, 'conflict-skipped'); }
+      if (conflict.fileName !== task.fileName || conflict.targetPath !== targetPath) {
+        targetPath = conflict.targetPath;
+        effectiveTask = this.updateTask(task, 'queued', task.verifiedOffset,
+          task.partialSize, task.partialMtime, targetPath, conflict.fileName,
+          task.sessionGeneration, targetPath, sourcePath);
+      }
+    }
+
+    const offset: number = effectiveTask.verifiedOffset >= 0 ? effectiveTask.verifiedOffset : 0;
+    if (!sshSftpOffsetIsValid(offset, sourceIdentity.size) ||
+      !this.remoteSessionsActive(sourceSession, targetSession)) {
+      return this.remoteSessionsActive(sourceSession, targetSession)
+        ? this.failTask(binding, effectiveTask, 'remote-copy-offset-invalid')
+        : this.waitForConnection(binding, effectiveTask);
+    }
+    const partialPath: string = targetPath + sshSftpPartialSuffix(effectiveTask.taskId);
+    let partialIdentity: SshSftpFileIdentity | null = null;
+    if (offset > 0) {
+      partialIdentity = await this.readRemoteIdentity(targetSession.sessionId, partialPath);
+      if (partialIdentity === null || partialIdentity.size !== offset || partialIdentity.mtime < 0 ||
+        effectiveTask.partialSize !== offset || effectiveTask.partialMtime < 0 ||
+        effectiveTask.partialMtime !== partialIdentity.mtime) {
+        return this.failTask(binding, effectiveTask, 'remote-copy-partial-identity-mismatch');
+      }
+    }
+    effectiveTask = this.updateTask(effectiveTask, 'transferring', offset,
+      partialIdentity === null ? -1 : partialIdentity.size,
+      partialIdentity === null ? -1 : partialIdentity.mtime,
+      targetPath, effectiveTask.fileName, targetSession.generation, targetPath, sourcePath);
+    try {
+      let copied: number = offset;
+      if (sourceIdentity.size === 0) {
+        const empty = await this.loader.writeRemoteFileChunkAsync(
+          targetSession.sessionId, partialPath, new ArrayBuffer(0), 0, true);
+        if (empty.errorCode < 0 || empty.bytesWritten !== 0) {
+          return this.failTask(binding, effectiveTask, 'remote-copy-empty-partial-failed');
+        }
+        const identity: SshSftpFileIdentity | null =
+          await this.readRemoteIdentity(targetSession.sessionId, partialPath);
+        if (identity === null || identity.size !== 0 || identity.mtime < 0) {
+          return this.failTask(binding, effectiveTask, 'remote-copy-empty-partial-unverified');
+        }
+        effectiveTask = this.updateTask(effectiveTask, 'transferring', 0,
+          identity.size, identity.mtime, targetPath, effectiveTask.fileName,
+          targetSession.generation, targetPath, sourcePath);
+      }
+      while (copied < sourceIdentity.size) {
+        if (!this.remoteSessionsActive(sourceSession, targetSession)) {
+          return this.waitForConnection(binding, effectiveTask);
+        }
+        if (this.taskIsStopped(effectiveTask.taskId)) { return false; }
+        const chunkSize: number = Math.min(UPLOAD_CHUNK_BYTES, sourceIdentity.size - copied);
+        const read = await this.loader.readRemoteFileChunkAsync(
+          sourceSession.sessionId, sourcePath, copied, chunkSize);
+        if (read.errorCode < 0 || read.data.byteLength <= 0 ||
+          read.data.byteLength > sourceIdentity.size - copied) {
+          return this.failTask(binding, effectiveTask, 'remote-copy-source-read-failed');
+        }
+        const written = await this.loader.writeRemoteFileChunkAsync(
+          targetSession.sessionId, partialPath, read.data, copied, copied === 0);
+        if (written.errorCode < 0 || written.bytesWritten !== read.data.byteLength) {
+          return this.failTask(binding, effectiveTask, 'remote-copy-target-write-unconfirmed');
+        }
+        copied += read.data.byteLength;
+        const identity: SshSftpFileIdentity | null =
+          await this.readRemoteIdentity(targetSession.sessionId, partialPath);
+        if (identity === null || identity.size !== copied || identity.mtime < 0) {
+          return this.failTask(binding, effectiveTask, 'remote-copy-partial-unverified');
+        }
+        effectiveTask = this.updateTask(effectiveTask, 'transferring', copied,
+          identity.size, identity.mtime, targetPath, effectiveTask.fileName,
+          targetSession.generation, targetPath, sourcePath);
+      }
+      if (this.taskIsStopped(effectiveTask.taskId)) { return false; }
+      const finalSource: SshSftpFileIdentity | null =
+        await this.readRemoteIdentity(sourceSession.sessionId, sourcePath);
+      const finalPartial: SshSftpFileIdentity | null =
+        await this.readRemoteIdentity(targetSession.sessionId, partialPath);
+      if (finalSource === null || !sshSftpIdentityMatches(sourceIdentity, finalSource) ||
+        finalPartial === null || !sshSftpCommitSizeMatches(finalPartial.size, sourceIdentity.size)) {
+        return this.failTask(binding, effectiveTask, 'remote-copy-final-identity-mismatch');
+      }
+      if (!this.remoteSessionsActive(sourceSession, targetSession)) {
+        return this.waitForConnection(binding, effectiveTask);
+      }
+      const renamed = await this.loader.renameRemotePathAsync(
+        targetSession.sessionId, partialPath, targetPath, true);
+      if (renamed.errorCode < 0 || renamed.atomic === false) {
+        return this.failTask(binding, effectiveTask, 'remote-copy-atomic-commit-failed');
+      }
+      const finalTarget: SshSftpFileIdentity | null =
+        await this.readRemoteIdentity(targetSession.sessionId, targetPath);
+      if (finalTarget === null || !sshSftpCommitSizeMatches(finalTarget.size, sourceIdentity.size)) {
+        return this.failTask(binding, effectiveTask, 'remote-copy-target-unverified');
+      }
+      return this.completeFileTask(binding, effectiveTask, 'completed');
+    } catch (_err) {
+      return this.failTask(binding, effectiveTask, 'remote-copy-exception');
     }
   }
 
@@ -576,40 +796,42 @@ export class SshSftpTaskEngine {
   }
 
   private async prepareRemoteConflict(binding: SshSftpBatchBinding,
-    session: SshSftpEngineSession, task: SshSftpTaskRecord): Promise<SshSftpEngineConflictPlan> {
-    const parent: string = this.parentRemotePath(task.remotePath);
+    session: SshSftpEngineSession, task: SshSftpTaskRecord,
+    requestedPath: string = task.remotePath): Promise<SshSftpEngineConflictPlan> {
+    const remotePath: string = requestedPath.trim();
+    const parent: string = this.parentRemotePath(remotePath);
     const listed: SftpListAsyncResult = await this.loader.listRemoteDirAsync(session.sessionId, parent);
     if (listed.errorCode < 0) {
-      return { action: 'failed', targetPath: task.remotePath, fileName: task.fileName };
+      return { action: 'failed', targetPath: remotePath, fileName: task.fileName };
     }
     let existing: SftpFileEntry | null = null;
     for (let index = 0; index < listed.entries.length; index++) {
-      if (listed.entries[index].path === task.remotePath) { existing = listed.entries[index]; break; }
+      if (listed.entries[index].path === remotePath) { existing = listed.entries[index]; break; }
     }
     if (existing === null) {
-      return { action: 'ready', targetPath: task.remotePath, fileName: task.fileName };
+      return { action: 'ready', targetPath: remotePath, fileName: task.fileName };
     }
     if (existing.isDirectory || existing.isSymbolicLink || existing.isSpecialFile) {
-      return { action: 'failed', targetPath: task.remotePath, fileName: task.fileName };
+      return { action: 'failed', targetPath: remotePath, fileName: task.fileName };
     }
     const resolution = resolveSshSftpConflict(true, false, this.conflictPolicyFor(binding, task));
     if (resolution.requiresDecision) {
       this.markConflict(binding, task, 'remote-conflict');
-      return { action: 'waiting', targetPath: task.remotePath, fileName: task.fileName };
+      return { action: 'waiting', targetPath: remotePath, fileName: task.fileName };
     }
     if (resolution.action === 'skip') {
-      return { action: 'skip', targetPath: task.remotePath, fileName: task.fileName };
+      return { action: 'skip', targetPath: remotePath, fileName: task.fileName };
     }
     if (resolution.action === 'keepBoth') {
       const names: string[] = listed.entries.map((entry: SftpFileEntry): string => entry.name);
       const name: string = nextSshSftpKeepBothName(task.fileName, names);
       const target: string = this.joinRemotePath(parent, name);
       if (name.length === 0) {
-        return { action: 'failed', targetPath: task.remotePath, fileName: task.fileName };
+        return { action: 'failed', targetPath: remotePath, fileName: task.fileName };
       }
       return { action: 'ready', targetPath: target, fileName: name };
     }
-    return { action: 'ready', targetPath: task.remotePath, fileName: task.fileName };
+    return { action: 'ready', targetPath: remotePath, fileName: task.fileName };
   }
 
   private async prepareLocalConflict(parentUri: string, task: SshSftpTaskRecord,
@@ -662,7 +884,8 @@ export class SshSftpTaskEngine {
   private retargetTask(task: SshSftpTaskRecord, remotePath: string,
     fileName: string): SshSftpTaskRecord {
     return this.updateTask(task, 'queued', task.verifiedOffset, task.partialSize,
-      task.partialMtime, remotePath, fileName);
+      task.partialMtime, remotePath, fileName, task.sessionGeneration,
+      remotePath, task.sourcePath);
   }
 
   private completeFileTask(binding: SshSftpBatchBinding, task: SshSftpTaskRecord,
@@ -694,7 +917,9 @@ export class SshSftpTaskEngine {
   private updateTask(task: SshSftpTaskRecord, stage: SshSftpTaskStage, offset: number,
     partialSize: number, partialMtime: number, remotePath: string = task.remotePath,
     fileName: string = task.fileName,
-    sessionGeneration: number = task.sessionGeneration): SshSftpTaskRecord {
+    sessionGeneration: number = task.sessionGeneration,
+    targetPath: string = task.targetPath || remotePath,
+    sourcePath: string = task.sourcePath || task.relativePath): SshSftpTaskRecord {
     this.sequence = Math.max(this.sequence + 1, Date.now(), task.sequence + 1);
     const now: number = Date.now();
     const current: SshSftpTaskRecord | null = this.store.get(task.taskId);
@@ -719,7 +944,19 @@ export class SshSftpTaskEngine {
       sessionGeneration,
       sequence: this.sequence,
       stage: preservedStage === null ? stage : preservedStage,
-      updatedAt: now
+      updatedAt: now,
+      sourceEndpoint: task.sourceEndpoint,
+      targetEndpoint: task.targetEndpoint,
+      sourcePath,
+      targetPath,
+      partialIdentity: partialSize >= 0 && partialMtime >= 0
+        ? {
+          size: partialSize,
+          mtime: partialMtime,
+          checksum: task.partialIdentity === undefined ? undefined : task.partialIdentity.checksum
+        }
+        : undefined,
+      checksumPolicy: task.checksumPolicy
     };
     this.store.upsert(next);
     const stored: SshSftpTaskRecord | null = this.store.get(task.taskId);

@@ -5,11 +5,15 @@ import {
   planSshSftpBatch
 } from '../main/ets/services/SshSftpBatchPolicy';
 import {
+  SftpEndpoint,
+  SftpTransferSpec,
   SshSftpTaskRecord,
   canTransitionSshSftpTask,
+  isValidSftpTransferSpec,
   isMonotonicSshSftpTaskProgress,
   isNewerSshSftpTaskUpdate,
   normalizeSshSftpTaskRecord,
+  sftpEndpointPathIsSame,
   sshSftpTaskCommandTarget,
   sshSftpResumeDisposition,
   upsertSshSftpTask
@@ -195,6 +199,81 @@ export default function sshSftpTaskPolicyTest(): void {
       expect(downloadResult.records[0].direction).assertEqual('download');
       expect(downloadResult.records[0].remotePath).assertEqual('./remote-source/folder');
       expect(downloadResult.records[1].remotePath).assertEqual('./remote-source/folder/a.txt');
+    });
+
+    it('persists explicit SSH endpoints and paths for remote batches', 0, (): void => {
+      const plan: SshSftpBatchPlan = planSshSftpBatch([{
+        relativePath: 'folder/empty.txt', name: 'empty.txt', isDirectory: false,
+        isSymbolicLink: false, isSpecialFile: false, size: 0, mtime: 20,
+        mode: 0, uid: -1, gid: -1
+      }]);
+      const store: SshSftpTaskStore = new SshSftpTaskStore();
+      const result = store.enqueueRemoteBatch(
+        'source-host', 'target-host', './source', './target', 'upload', plan, 'remote-1');
+      expect(result.accepted).assertTrue();
+      expect(result.records.length).assertEqual(1);
+      const record: SshSftpTaskRecord = result.records[0];
+      expect(record.hostId).assertEqual('target-host');
+      expect(record.sourceEndpoint?.kind).assertEqual('ssh');
+      expect(record.sourceEndpoint?.hostId).assertEqual('source-host');
+      expect(record.targetEndpoint?.hostId).assertEqual('target-host');
+      expect(record.sourcePath).assertEqual('./source/folder/empty.txt');
+      expect(record.targetPath).assertEqual('./target/folder/empty.txt');
+      expect(record.sessionGeneration).assertEqual(0);
+
+      const transferring: SshSftpTaskRecord = {
+        ...record,
+        stage: 'transferring',
+        verifiedOffset: 0,
+        partialSize: -1,
+        partialMtime: -1,
+        sequence: record.sequence + 1,
+        updatedAt: record.updatedAt + 1
+      };
+      expect(store.upsert(transferring)).assertTrue();
+      expect(store.command(record.taskId, { kind: 'detach' }).accepted).assertTrue();
+      const detached: SshSftpTaskRecord | null = store.get(record.taskId);
+      expect(detached?.stage).assertEqual('waitingForConnection');
+      expect(detached?.sourceEndpoint?.hostId).assertEqual('source-host');
+      expect(detached?.targetEndpoint?.hostId).assertEqual('target-host');
+      expect(detached?.sourcePath).assertEqual('./source/folder/empty.txt');
+      expect(detached?.targetPath).assertEqual('./target/folder/empty.txt');
+    });
+
+    it('rejects only identical endpoint paths and allows same-host path copies', 0, (): void => {
+      const sameHost: SftpEndpoint = { kind: 'ssh', hostId: 'same-host' };
+      const samePath: SftpTransferSpec = {
+        schemaVersion: 2,
+        taskId: 'same-path',
+        source: sameHost,
+        target: sameHost,
+        sourcePath: './data.txt',
+        targetPath: './data.txt',
+        direction: 'upload',
+        checksumPolicy: 'size_mtime'
+      };
+      expect(sftpEndpointPathIsSame(sameHost, './data.txt', sameHost, './data.txt')).assertTrue();
+      expect(isValidSftpTransferSpec(samePath)).assertFalse();
+
+      const differentPath: SftpTransferSpec = {
+        ...samePath,
+        taskId: 'different-path',
+        targetPath: './copy/data.txt'
+      };
+      expect(sftpEndpointPathIsSame(sameHost, differentPath.sourcePath,
+        sameHost, differentPath.targetPath)).assertFalse();
+      expect(isValidSftpTransferSpec(differentPath)).assertTrue();
+
+      const plan: SshSftpBatchPlan = planSshSftpBatch([{
+        relativePath: 'data.txt', name: 'data.txt', isDirectory: false,
+        isSymbolicLink: false, isSpecialFile: false, size: 1, mtime: 20,
+        mode: 0, uid: -1, gid: -1
+      }]);
+      const store: SshSftpTaskStore = new SshSftpTaskStore();
+      expect(store.enqueueRemoteBatch('same-host', 'same-host', './source', './target',
+        'upload', plan, 'same-host-copy').accepted).assertTrue();
+      expect(store.enqueueRemoteBatch('same-host', 'same-host', './same', './same',
+        'upload', plan, 'same-host-reject').accepted).assertFalse();
     });
   });
 }

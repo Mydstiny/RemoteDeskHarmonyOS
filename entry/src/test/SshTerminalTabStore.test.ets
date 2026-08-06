@@ -34,5 +34,22 @@ export default function sshTerminalTabStoreTest(): void {
       expect(sessionIds[1]).assertEqual(202);
       expect(store.views().length).assertEqual(0);
     });
+
+    it('should_clear_old_session_identity_when_a_tab_reconnects', 0, (): void => {
+      const store: SshTerminalTabStore = new SshTerminalTabStore();
+      store.open('host-a', 'A', 'root@a:22');
+      store.update('host-a', 'connected', 101, '', 9);
+
+      store.beginConnection('host-a');
+      expect(store.sessionId('host-a')).assertEqual(-1);
+      expect(store.sessionGeneration('host-a')).assertEqual(0);
+      expect(store.views()[0].state).assertEqual('connecting');
+
+      store.update('host-a', 'connected', 202, '', 10);
+      store.invalidateSession('host-a', 'error', 'closed');
+      expect(store.sessionId('host-a')).assertEqual(-1);
+      expect(store.sessionGeneration('host-a')).assertEqual(0);
+      expect(store.views()[0].state).assertEqual('error');
+    });
   });
 }

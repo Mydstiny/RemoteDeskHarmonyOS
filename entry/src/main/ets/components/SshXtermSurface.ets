@@ -805,15 +805,15 @@ export struct SshXtermSurface {
   private onActiveChange(): void {
     if (this.disposed) { return; }
     if (!this.active) {
-      // Do not drain the parent-owned output buffer into the previous host's
-      // document while the page is between bindings.
-      this.pendingCoreKeyReload = true;
+      // Keep the document and xterm scrollback alive while this tab is hidden.
+      // Only an actual core/revision change sets pendingCoreKeyReload; a normal
+      // tab switch must not turn into a document reload.
       this.clearDocumentReloadRetry();
       this.documentReloadRetryCount = 0;
       this.restoreQueuedWrites();
       return;
     }
-    if (this.pendingCoreKeyReload) {
+    if (this.pendingCoreKeyReload || this.documentReloadPending) {
       this.pendingCoreKeyReload = false;
       // A reload interrupted while inactive left its old document fenced. Let
       // the active turn create a fresh bridge instead of returning early on
@@ -828,6 +828,7 @@ export struct SshXtermSurface {
     this.runPageScript(this.pageConfigScript());
     this.flushOutputBuffer();
     this.pumpOutput();
+    this.scheduleFit();
   }
 
   private onSurfaceRefreshRequestChange(): void {
@@ -869,11 +870,12 @@ export struct SshXtermSurface {
   }
 
   private onFocusRequest(): void {
+    if (!this.active) { return; }
     this.runPageScript('window.__sshXtermFocus();');
   }
 
   private onCopyRequest(): void {
-    if (!this.pageReady || this.disposed) { return; }
+    if (!this.active || !this.pageReady || this.disposed) { return; }
     try {
       this.controller.runJavaScript('window.__sshXtermGetSelection();').then((result: string): void => {
         if (this.disposed) { return; }
@@ -891,15 +893,17 @@ export struct SshXtermSurface {
   }
 
   private onScrollToBottomRequest(): void {
+    if (!this.active) { return; }
     this.runPageScript('window.__sshXtermScrollToBottom();');
   }
 
   private onForceScrollToBottomRequest(): void {
+    if (!this.active) { return; }
     this.runPageScript('window.__sshXtermScrollToBottom();');
   }
 
   private onExternalScrollRequest(): void {
-    if (this.externalScrollLines === 0) { return; }
+    if (!this.active || this.externalScrollLines === 0) { return; }
     this.runPageScript('window.__sshXtermScrollLines(' + this.externalScrollLines.toString() + ');');
   }
 

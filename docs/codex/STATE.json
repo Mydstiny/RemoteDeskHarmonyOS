@@ -4,7 +4,7 @@
   "branch": "codex/ssh-terminal-complete-upgrade",
   "base": "d2769ad4b",
   "head": "70534e2",
-  "phase": "ssh-canvas-ack-reload-watchdog-code-only-pass",
+  "phase": "ssh-canvas-bottom-safe-area-virtual-bar-keyboard-code-only-pass",
   "status": "active",
   "next": "Perform SSH canvas device acceptance and benchmark when the code-only boundary is lifted; do not expand this increment to SFTP, forwarding or FRP.",
   "blockers": [
@@ -104,8 +104,9 @@
     "rustdeskPhysicalTouchpad": "focused-no-default-features-3-pass-0-fail-2026-08-06",
     "terminalParity": "alacritty-67-pass-fallback-57-pass-unicode-ansi-tui-resize-large-output-damage-2026-08-04",
     "default@OhosTestCompileArkTS": "pass-after-xterm-ack-reload-watchdog-2026-08-06",
-    "assembleHap": "pass-build-successful-final-checkout-2026-08-06",
-    "gitDiffCheck": "pass-after-xterm-ack-reload-watchdog-2026-08-06",
+    "assembleHap": "pass-build-successful-canvas-bottom-bar-keyboard-follow-up-2026-08-06",
+    "gitDiffCheck": "pass-after-canvas-bottom-bar-keyboard-follow-up-2026-08-06",
+    "mobileSftpSheetHandoff": "pass-arkts-assemble-diff-check-code-only-2026-08-06",
     "inlineJavaScript": "pass-2026-08-06",
     "xtermBatchProtocol": "pass-ordered-ack-and-error-recovery-2026-08-06",
     "xtermIndependentReview": "pass-no-P0-P1-P2-P3-2026-08-06",
@@ -113,7 +114,7 @@
     "sbom": "pass-totp-validator-96-packages-282-files-282-relationships-2026-08-04",
     "ohosTest": "blocked-task-00306054",
     "lightCompliance": "blocked-baseline-sbom-NOASSERTION-totp-reviewed-brand-assets",
-    "hdc": "captured-5KLBB25928203528-ssh-connected-shell-started-native-gpu-sigabrt-41207000-2026-08-06",
+    "hdc": "online-5KLBB25928203528-no-new-install-or-screenshot-code-only-boundary-2026-08-06",
     "homepagePresenceToggle": "pass-installed-signed-hap-classic-home-no-presence-text-2026-08-04"
   },
   "updated": "2026-08-06 Asia/Shanghai"

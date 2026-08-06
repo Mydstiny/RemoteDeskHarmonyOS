@@ -16,6 +16,7 @@ export interface SshTerminalTabView {
   address: string;
   state: SshTerminalTabState;
   sessionId: number;
+  generation: number;
   active: boolean;
 }
 
@@ -70,6 +71,7 @@ export class SshTerminalTabStore {
       address,
       state: 'connecting',
       sessionId: -1,
+      generation: 0,
       active: false,
       error: ''
     });
@@ -84,21 +86,49 @@ export class SshTerminalTabStore {
   }
 
   update(hostId: string, state: SshTerminalTabState, sessionId: number = -1,
-    error: string = ''): void {
-    const record: SshTerminalTabRecord | undefined = this.records.get(hostId);
+    error: string = '', generation: number = -1): void {
+    const record: SshTerminalTabRecord | undefined = this.records.get(hostId.trim());
     if (record === undefined) { return; }
     record.state = state;
     if (sessionId >= 0) { record.sessionId = sessionId; }
+    if (generation >= 0) { record.generation = generation; }
+    record.error = error;
+    this.notify();
+  }
+
+  /** Start a new connection attempt without reusing the old surface identity. */
+  beginConnection(hostId: string): void {
+    const record: SshTerminalTabRecord | undefined = this.records.get(hostId.trim());
+    if (record === undefined) { return; }
+    record.state = 'connecting';
+    record.sessionId = -1;
+    record.generation = 0;
+    record.error = '';
+    this.notify();
+  }
+
+  /** Clear a dead native session while retaining the tab and its xterm page. */
+  invalidateSession(hostId: string, state: SshTerminalTabState = 'error',
+    error: string = ''): void {
+    const record: SshTerminalTabRecord | undefined = this.records.get(hostId.trim());
+    if (record === undefined) { return; }
+    record.state = state;
+    record.sessionId = -1;
+    record.generation = 0;
     record.error = error;
     this.notify();
   }
 
   sessionId(hostId: string): number {
-    return this.records.get(hostId)?.sessionId ?? -1;
+    return this.records.get(hostId.trim())?.sessionId ?? -1;
+  }
+
+  sessionGeneration(hostId: string): number {
+    return this.records.get(hostId.trim())?.generation ?? 0;
   }
 
   has(hostId: string): boolean {
-    return this.records.has(hostId);
+    return this.records.has(hostId.trim());
   }
 
   views(): SshTerminalTabView[] {
@@ -111,6 +141,7 @@ export class SshTerminalTabStore {
         address: record.address,
         state: record.state,
         sessionId: record.sessionId,
+        generation: record.generation,
         active: record.hostId === this.activeHostId
       });
     });

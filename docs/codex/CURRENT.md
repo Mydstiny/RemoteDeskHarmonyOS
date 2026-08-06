@@ -9,12 +9,14 @@
 ## Progress
 - WP-T0/T1/T2 are implemented: diagnostics, bounded native input, one SSH session-owner reactor, PTY resize, SFTP and keepalive share generation/teardown rules; physical-keyboard/IME policy covers Unicode/CJK/emoji, CapsLock, AltGr, focus and duplicate-change suppression.
 - SFTP integrity, durable task metadata, capability-aware provider selection, API 23 authorized local-provider operations and the Pad/PC full-screen workspace are implemented; background payload execution and endpoint acceptance remain pending.
+- Mobile SFTP now keeps the current SSH host on the left and exposes exactly two right-endpoint choices: local files or an SSH host. The SSH choice switches the workspace immediately, keeps the current host selectable, and renders host selection inside the existing mobile SFTP surface instead of stacking a second native Sheet. A shared 320 ms exit guard delays the host-list add-host Sheet during cross-route back navigation.
 - SSH forwarding validates local/remote/dynamic profiles, binding policy, bounded connections, generations and start/listen/fail/stop transitions. `SshAdapter` owns the manager and reactor reset; NAPI/ArkTS exposes the guarded lifecycle API, while real libssh2 socket/channel forwarding remains open.
 - Dynamic SOCKS5 rejects unsupported methods/commands/address types, flushes failure replies, and protects handshake buffers. Listener errors clean runtime state; stale stop completion is generation-rejected. FRP Visitor/STCP/SUDP/XTCP fail closed until their control plane exists.
 - WP-T4 uses `alacritty_terminal` `0.26.0` behind terminalCore with a fallback core and bounded xterm path. Appearance/geometry remain independent; output is capped at 256 KiB per turn and ordered remainders are retained. SBOM/NOTICE include Alacritty.
 - SSH background/PiP ownership is isolated and serialized; PiP auto-start requires prepared callback/resume gates. ProxyJump has a native `ssh_jump` route and bounded bastion relay, pending host-key binding and endpoint acceptance.
 - Same-page switching rejects stale async callbacks, cancels pending handshakes, retains detach-race output per host, and serializes tab handoff without dropping either SSH socket.
 - The terminal surface has an explicit detach/rebind gate, deterministic host/binding/revision keys, owner leases, isolated xterm bridges, host-scoped FIFOs and strict frame ACK; xterm writes are serialized by callback, failed/timeout batches are fully replayed into a fresh document, lifecycle retries use new bridges, inactive surfaces cancel reload timers, and the visible layer stays masked until xterm-ready.
+- The current SSH canvas follow-up keeps the terminal shell at the full post-header height, reserves the virtual-key bar height in xterm, anchors the bar to the complete shell, adds a 6px xterm bottom safety inset, and refreshes keyboard plus keyboard/mouse presence at the SSH connection boundary using the RDP-aligned device snapshot.
 - RDP settings use protocol-local capability gates and session generations; clipboard/file paths and cliprdr fail closed across setting changes/reconnects. Clipboard send/upload waits for the current cliprdr channel; enabling it after a handshake without cliprdr prompts reconnect. Diagnostics is isolated from RustDesk; the PC physical-touchpad path is source/tool gated.
 - RDP post-connect startup is fail-closed: input worker, frame pump, redraw registration and event-loop creation must succeed before `CONNECTED`; cliprdr carrier attach/detach/cleanup is lifetime-guarded and failed startup leaves GDI retirement to the teardown fence.
 - GPU rebind, owner leases, refresh fences, surface-ID polling and retained snapshots are implemented, but API 23 `OH_Drawing_SurfaceFlush` reproduced `41207000`/process `SIGABRT`; visible SSH stays on mature xterm.js until a safe backend is available.
@@ -42,6 +44,8 @@
 - RustDesk physical-touchpad focused Rust tests: `3 passed, 0 failed` on 2026-08-06.
 - `default@OhosTestCompileArkTS`: passed on the current checkout on 2026-08-06; warnings only after strict xterm ACK/reload recovery and active lifecycle gates; the physical-touchpad ArkTS policy tests are included and pass.
 - `assembleHap`: `BUILD SUCCESSFUL` on the final physical-touchpad checkout on 2026-08-06; existing warnings only.
+- Current canvas follow-up: `default@OhosTestCompileArkTS` passed and `assembleHap` returned `BUILD SUCCESSFUL` after the shell/bar/keyboard changes on 2026-08-06; `git diff --check` passed.
+- Mobile SFTP endpoint/sheet handoff follow-up: `default@OhosTestCompileArkTS` passed; `assembleHap` returned `BUILD SUCCESSFUL` on the retry after one transient BundleTool `resources` CRC lookup failure; `git diff --check` passed on 2026-08-06.
 - Direct real-FreeRDP OHOS objects (`freerdp_adapter.cpp` and
   `rdp_file_clipboard_bridge.cpp`) compile successfully; the fresh HAP also
   passes the production assemble gate above.
@@ -66,6 +70,8 @@
 - The PC physical-touchpad increment received independent PASS review with no P0-P3 findings; Windows/macOS modifier mapping, cumulative Pinch accounting, gesture reset, and virtual-path isolation were checked.
 - SFTP scope is closed for this pass; real-device/endpoint evidence is not a Level A completion claim.
 - Device evidence covers injected input and lifecycle; external keyboard/IME, GPU re-enable, bastion/forwarding/FRP evidence remain open.
+- HDC target `5KLBB25928203528` is online, but the current HAP was not installed and no new device screenshot is claimed under the code-only acceptance boundary.
+- The mobile SFTP endpoint and cross-route Sheet guard have code-level coverage only; no new device screenshot or real endpoint transfer evidence is claimed.
 
 ## Next
 1. Perform SSH canvas device acceptance and benchmark when the current code-only boundary is lifted; keep the xterm path as the visible renderer until safe GPU evidence exists.

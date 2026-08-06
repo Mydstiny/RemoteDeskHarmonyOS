@@ -360,6 +360,102 @@ export class SshSftpTaskStore {
     return { accepted: true, reason: 'accepted', batchId, records: stored };
   }
 
+  /** Create a durable SSH-to-SSH batch owned by the target host. */
+  enqueueRemoteBatch(sourceHostId: string, targetHostId: string,
+    sourceRoot: string, targetRoot: string, direction: SshSftpTaskDirection,
+    plan: SshSftpBatchPlan, requestedBatchId: string = ''): SshSftpBatchTaskEnqueueResult {
+    const sourceOwner: string = sourceHostId.trim();
+    const targetOwner: string = targetHostId.trim();
+    const sourceBase: string | null = normalizeSshSftpRemotePath(sourceRoot);
+    const targetBase: string | null = normalizeSshSftpRemotePath(targetRoot);
+    if (sourceOwner.length === 0 || targetOwner.length === 0 ||
+      sourceBase === null || targetBase === null) {
+      return { accepted: false, reason: 'invalid-remote-endpoint-or-root', batchId: '', records: [] };
+    }
+    if (!plan.accepted || plan.items.length === 0) {
+      return { accepted: false, reason: 'invalid-batch-plan', batchId: '', records: [] };
+    }
+    if (plan.items.length > sshSftpTaskMaxCount() ||
+      this.records.length + plan.items.length > sshSftpTaskMaxCount()) {
+      return { accepted: false, reason: 'task-limit', batchId: '', records: [] };
+    }
+    const batchId: string = requestedBatchId.trim().length > 0
+      ? requestedBatchId.trim() : this.nextBatchId();
+    if (batchId.length > MAX_BATCH_ID_LENGTH || !/^[A-Za-z0-9_-]+$/.test(batchId)) {
+      return { accepted: false, reason: 'invalid-batch-id', batchId: '', records: [] };
+    }
+    const sourceEndpoint: SftpEndpoint = { kind: 'ssh', hostId: sourceOwner };
+    const targetEndpoint: SftpEndpoint = { kind: 'ssh', hostId: targetOwner };
+    const records: SshSftpTaskRecord[] = [];
+    for (let index = 0; index < plan.items.length; index++) {
+      const item: SshSftpTreeItem = plan.items[index];
+      if (item.name.trim().length === 0 || item.isSymbolicLink || item.isSpecialFile ||
+        (!item.isDirectory && (!Number.isFinite(item.size) || item.size < 0))) {
+        return { accepted: false, reason: 'invalid-batch-item', batchId: '', records: [] };
+      }
+      const sourcePath: string | null = joinSshSftpRelativeRemotePath(sourceBase, item.relativePath);
+      const targetPath: string | null = joinSshSftpRelativeRemotePath(targetBase, item.relativePath);
+      if (sourcePath === null || targetPath === null) {
+        return { accepted: false, reason: 'invalid-remote-batch-path', batchId: '', records: [] };
+      }
+      const taskId: string = batchId + '-' + (index + 1).toString();
+      if (this.get(taskId) !== null) {
+        return { accepted: false, reason: 'duplicate-batch-task', batchId: '', records: [] };
+      }
+      const spec: SftpTransferSpec = {
+        schemaVersion: 2,
+        taskId,
+        source: sourceEndpoint,
+        target: targetEndpoint,
+        sourcePath,
+        targetPath,
+        direction,
+        checksumPolicy: 'size_mtime'
+      };
+      if (!isValidSftpTransferSpec(spec)) {
+        return { accepted: false, reason: 'same-remote-endpoint-path', batchId: '', records: [] };
+      }
+      const sequence: number = this.nextTaskSequence();
+      records.push({
+        taskId,
+        schemaVersion: 2,
+        batchId,
+        relativePath: item.relativePath,
+        // The target host owns task listing and recovery. Source/target remain
+        // explicit so a late callback cannot silently reverse the copy.
+        hostId: targetOwner,
+        direction,
+        isDirectory: item.isDirectory,
+        remotePath: targetPath,
+        fileName: item.name.trim(),
+        totalBytes: item.isDirectory ? 0 : item.size,
+        verifiedOffset: 0,
+        sourceSize: item.isDirectory ? 0 : item.size,
+        sourceMtime: Number.isFinite(item.mtime) && item.mtime >= 0 ? item.mtime : -1,
+        partialSize: -1,
+        partialMtime: -1,
+        sessionGeneration: 0,
+        sequence,
+        stage: 'queued',
+        updatedAt: sequence,
+        sourceEndpoint,
+        targetEndpoint,
+        sourcePath,
+        targetPath,
+        partialIdentity: undefined,
+        checksumPolicy: 'size_mtime'
+      });
+    }
+    for (let index = 0; index < records.length; index++) {
+      if (!this.upsert(records[index])) {
+        return { accepted: false, reason: 'batch-task-write-failed', batchId, records: [] };
+      }
+    }
+    const stored: SshSftpTaskRecord[] = records.map((record: SshSftpTaskRecord): SshSftpTaskRecord =>
+      this.get(record.taskId) as SshSftpTaskRecord);
+    return { accepted: true, reason: 'accepted', batchId, records: stored };
+  }
+
   async flushNow(): Promise<boolean> {
     if (this.flushTimer !== -1) {
       clearTimeout(this.flushTimer);

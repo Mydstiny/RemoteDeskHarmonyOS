@@ -176,7 +176,10 @@ import {
 } from '../services/RustDeskHostConfigPolicy';
 import { rustDeskRelayKeyModeForFfi } from '../services/RustDeskRelayKeyPolicy';
 import { rustDeskConnectionStrategyForHost } from '../services/RustDeskConnectionStrategyPolicy';
-import { sheetOpenDelayMsAfterDismiss } from '../services/SheetTransitionPolicy';
+import {
+  sheetOpenDelayMsAfterDismiss,
+  sshSftpSheetOpenDelayMs
+} from '../services/SheetTransitionPolicy';
 import { nextRemoteHostSheetGeneration } from '../services/RemoteHostSheetLifecyclePolicy';
 import { shouldPreserveManagedRustDeskRoute } from '../services/RustDeskProSyncPolicy';
 import {
@@ -1204,7 +1207,9 @@ struct HostListPage {
       clearTimeout(this.pendingSheetOpenTimer);
       this.pendingSheetOpenTimer = -1;
     }
-    const delayMs: number = sheetOpenDelayMsAfterDismiss(Date.now(), this.lastSheetDismissAtMs);
+    const nowMs: number = Date.now();
+    const localDelayMs: number = sheetOpenDelayMsAfterDismiss(nowMs, this.lastSheetDismissAtMs);
+    const delayMs: number = Math.max(localDelayMs, sshSftpSheetOpenDelayMs(nowMs));
     if (delayMs <= 0) {
       openAction();
       return;
@@ -1213,6 +1218,18 @@ struct HostListPage {
       this.pendingSheetOpenTimer = -1;
       if (this.addSheetClosing || this.remoteHostSheetClosing || this.showRemoteHostSheet ||
         (this.connectionAttemptHostId !== '' && !allowDuringConnectionAttempt)) {
+        return;
+      }
+      const retryNowMs: number = Date.now();
+      const retryLocalDelayMs: number = sheetOpenDelayMsAfterDismiss(
+        retryNowMs, this.lastSheetDismissAtMs);
+      const retryDelayMs: number = Math.max(
+        retryLocalDelayMs, sshSftpSheetOpenDelayMs(retryNowMs));
+      if (retryDelayMs > 0) {
+        this.pendingSheetOpenTimer = setTimeout((): void => {
+          this.pendingSheetOpenTimer = -1;
+          this.openSheetSafely(openAction, allowDuringConnectionAttempt);
+        }, retryDelayMs);
         return;
       }
       openAction();

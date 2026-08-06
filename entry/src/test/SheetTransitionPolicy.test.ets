@@ -2,7 +2,9 @@ import { describe, it, expect } from '@ohos/hypium';
 import {
   SHEET_DISMISS_GUARD_MS,
   sheetOpenDelayMsAfterDismiss,
-  shouldDelaySheetOpen
+  shouldDelaySheetOpen,
+  noteSshSftpSheetDismissed,
+  sshSftpSheetOpenDelayMs
 } from '../main/ets/services/SheetTransitionPolicy';
 
 export default function sheetTransitionPolicyTest() {
@@ -19,6 +21,12 @@ export default function sheetTransitionPolicyTest() {
 
     it('opens_immediately_without_previous_dismiss', 0, (): void => {
       expect(sheetOpenDelayMsAfterDismiss(1000, 0)).assertEqual(0);
+    });
+
+    it('shares_sftp_exit_guard_with_the_host_list_route', 0, (): void => {
+      noteSshSftpSheetDismissed(2000);
+      expect(sshSftpSheetOpenDelayMs(2080)).assertEqual(SHEET_DISMISS_GUARD_MS - 80);
+      expect(sshSftpSheetOpenDelayMs(2320)).assertEqual(0);
     });
   });
 }

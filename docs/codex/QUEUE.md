@@ -15,6 +15,9 @@ Updated: 2026-08-06 Asia/Shanghai
   connection validation pending until the SSH build blocker is cleared.
 - SFTP checkpoint is closed for the implemented integrity, durable metadata,
   local-provider and Pad/PC workspace scope; do not expand it in this pass.
+- Mobile SFTP endpoint selection is now part of that closed UI scope: the right
+  side has local-file and SSH-host buttons, host selection stays inside the
+  mounted SFTP surface, and the add-host Sheet waits for SFTP native exit.
 - Alacritty `0.26.0` remains the VT core behind terminalCore, with lifecycle,
   PiP/session, bounded input and xterm fallback behavior implemented. The
   API 23 device reproduction showed that the custom Native Drawing surface can
