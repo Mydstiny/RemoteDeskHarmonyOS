@@ -394,6 +394,8 @@ struct SshTerminal {
   /** Separates old-surface teardown from the next surface mount by one frame. */
   private terminalSurfaceMountTimer: number = -1;
   private terminalSurfaceMountToken: number = 0;
+  /** Wakes a newly committed renderer after ArkUI has created its surface. */
+  private terminalSurfaceCommitWakeTimer: number = -1;
   /** Retries a mount that observes the live session during a state transition. */
   private terminalSurfaceMountRetryCount: number = 0;
   /** Prevents repeated connected-state probes from starving one mount turn. */
@@ -644,6 +646,10 @@ struct SshTerminal {
       clearTimeout(this.terminalSurfaceMountTimer);
       this.terminalSurfaceMountTimer = -1;
     }
+    if (this.terminalSurfaceCommitWakeTimer !== -1) {
+      clearTimeout(this.terminalSurfaceCommitWakeTimer);
+      this.terminalSurfaceCommitWakeTimer = -1;
+    }
     if (this.terminalRendererReadyTimer !== -1) {
       clearTimeout(this.terminalRendererReadyTimer);
       this.terminalRendererReadyTimer = -1;
@@ -673,18 +679,51 @@ struct SshTerminal {
       normalizedBindingKey, nextRenderRevision, this.shouldUseNativeTerminal());
     if (nextViewKey.length === 0) { return false; }
 
-    // Keep all renderer-driving state in one commit. ArkUI can observe several
-    // assignments in one turn; the commit sequence makes the renderer list
-    // identity independent from host/session strings that may be reused.
+    const nextCommitSequence: number = this.terminalSurfaceCommitSequence + 1;
+    // Populate every prop consumed by the renderer before publishing the
+    // ForEach key. ArkUI may schedule a render between state assignments; the
+    // key is deliberately last so a new child can never be born with an empty
+    // committed host and then miss the remaining prop transition.
     this.terminalSurfaceBindingKey = normalizedBindingKey;
     this.terminalSurfaceRenderRevision = nextRenderRevision;
-    this.terminalSurfaceCommitSequence = this.terminalSurfaceCommitSequence + 1;
-    this.terminalSurfaceViewKey = nextViewKey;
     this.terminalSurfaceCommittedHostId = normalizedHostId;
+    this.terminalSurfaceCommitSequence = nextCommitSequence;
     this.termOutputSequence = this.termOutputSequence + 1;
     this.terminalSurfaceRefreshRequest = this.terminalSurfaceRefreshRequest + 1;
     this.terminalSurfaceMounted = true;
+    this.terminalSurfaceViewKey = nextViewKey;
+    this.scheduleTerminalSurfaceCommitWake(normalizedHostId, normalizedBindingKey,
+      nextRenderRevision, nextCommitSequence);
     return true;
+  }
+
+  /**
+   * The first XComponent frame can be created after the page commit. Advance
+   * both wake counters once more on the next UI turn so a reused renderer drains
+   * the target host FIFO and repaints even when initial @Watch delivery was
+   * coalesced with the keyed child creation.
+   */
+  private scheduleTerminalSurfaceCommitWake(hostId: string, bindingKey: string,
+    renderRevision: number, commitSequence: number): void {
+    if (this.terminalSurfaceCommitWakeTimer !== -1) {
+      clearTimeout(this.terminalSurfaceCommitWakeTimer);
+      this.terminalSurfaceCommitWakeTimer = -1;
+    }
+    const pageGeneration: number = this.pageGeneration;
+    const bindingGeneration: number = this.sshBindingGeneration;
+    this.terminalSurfaceCommitWakeTimer = setTimeout((): void => {
+      this.terminalSurfaceCommitWakeTimer = -1;
+      if (!this.isSshBindingGenerationActive(pageGeneration, bindingGeneration) ||
+        this.hostId.trim() !== hostId.trim() ||
+        this.terminalSurfaceBindingKey.trim() !== bindingKey.trim() ||
+        this.terminalSurfaceRenderRevision !== renderRevision ||
+        this.terminalSurfaceCommitSequence !== commitSequence ||
+        !this.terminalSurfaceMounted || !this.connected) {
+        return;
+      }
+      this.termOutputSequence = this.termOutputSequence + 1;
+      this.terminalSurfaceRefreshRequest = this.terminalSurfaceRefreshRequest + 1;
+    }, 32);
   }
 
   /**

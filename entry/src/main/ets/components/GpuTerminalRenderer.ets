@@ -274,6 +274,13 @@ export struct GpuTerminalRenderer {
   private onSurfaceRefreshRequestChange(): void {
     if (!this.hasUsableBinding()) { return; }
     this.fullRefreshPending = true;
+    // The page increments this fence together with the target host's input
+    // sequence. Drain the host-local FIFO here as well because ArkUI can
+    // coalesce the ordinary input-sequence watch during keyed surface creation.
+    if (this.attachedCoreKey === this.coreKey &&
+      this.attachedOwnerId === this.rendererOwnerId()) {
+      this.consumeInputQueue();
+    }
     this.refreshVisibleSurface();
   }
 
