@@ -45,9 +45,7 @@ Updated: 2026-08-06 Asia/Shanghai
   host's retained output FIFO and repaints until the new surface acknowledges
   its first frame.
   Both code-only Hvigor gates passed on 2026-08-06; device validation is deferred.
-- Keep the current review state at `REVIEW_REQUIRED` until the host-switch
-  surface-gate, renderer-owner lease, and revision-aware document corrections are independently reviewed; do not claim full
-  background SFTP execution, Level A, or Level B connectivity.
+- The current surface fallback, SOCKS5 flush, listener/FRP route and ArkTS/native ABI increment has an independent PASS receipt; do not claim full background SFTP execution, Level A, or Level B connectivity. The status command remains `REVIEW_REQUIRED` only because preserved user RDP diagnostic hunks keep mixed `protocol_adapter.h` and `HostListPage.ets` dirty.
 - The first ProxyJump implementation and matching key preflight relay are
   committed, but keep them pending until bastion host-key policy and a real
   OpenSSH endpoint are verified.
@@ -62,7 +60,7 @@ Updated: 2026-08-06 Asia/Shanghai
 - The current code-only closeout passed `default@OhosTestCompileArkTS`, signed
   `assembleHap`, `git diff --check`, and the Makefile native rebuild; the host
   suite is `273 passed, 16 pre-existing VNC TLS fixture startup failures, 289 total`.
-  Keep review at `REVIEW_REQUIRED` until the current independent read-only review is recorded.
+  Keep review at `REVIEW_REQUIRED` while preserved user RDP hunks in mixed `protocol_adapter.h` and `HostListPage.ets` remain dirty; the current surface/forwarding/FRP review receipt is recorded.
 
 ## Next
 
@@ -71,8 +69,9 @@ Updated: 2026-08-06 Asia/Shanghai
   initial-UI deterministic host/binding/revision keyed remount, surface-owner lease, fallback, render-revision,
   revision-aware document reload, GPU binding-lease invalidation, EGL refresh, surface-ID polling, measured-size rebind, mount-wake fix, and
   reused-renderer rebind/reload.
-- Record the independent review of guarded forwarding NAPI/ArkTS error mapping,
-  surface-flush fallback and explicit FRP route behavior.
+- Do not dispatch a duplicate reviewer; the guarded forwarding NAPI/ArkTS error
+  mapping, surface-flush fallback and explicit FRP route behavior are covered by
+  the recorded independent PASS receipt.
 - Implement local/remote/dynamic libssh2 socket/channel transport behind that
   bridge, with endpoint-facing error propagation.
 - WP-T5/WP-T6 terminal correctness and damage-frame renderer implementation.

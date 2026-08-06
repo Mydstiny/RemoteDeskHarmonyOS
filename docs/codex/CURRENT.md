@@ -4,7 +4,7 @@
 - Task: `ssh-terminal-complete-upgrade`
 - Base: `main@d2769ad4b`
 - Branch: `codex/ssh-terminal-complete-upgrade`
-- Code checkpoint: `35d517035` (`feat(ssh): run remote and dynamic forwarding in reactor`); keyed surface recovery, forwarding lifecycle, adapter reactor binding, and the generation-guarded NAPI/ArkTS bridge are committed.
+- Code checkpoint: `a09e267` (`fix(ssh): publish renderer and FRP types`), following `d374a610f` (`fix(ssh): harden surface and forwarding failures`); keyed surface recovery, forwarding lifecycle, adapter reactor binding, and the generation-guarded NAPI/ArkTS bridge are committed.
 - Phase: Alacritty default; lifecycle, VT/Unicode/resize/TUI/large-output parity, per-host output isolation, code-only host-switch/surface refresh recovery, guarded surface fallback, and native forwarding contract.
 - Scope: migrate VT behind terminalCore, keep appearance settings in-core, verify IME/input/Canvas behavior. Homepage work is not current focus.
 
@@ -105,13 +105,12 @@
   `totp-reviewed-brand-assets` with `licenseDeclared=NOASSERTION`.
 
 ## Review
-- Existing independent review passed the bounded-output and IME/socket increments; the current keyed-surface, mount-wake, renderer-owner lease, GPU flush fallback, listener failure cleanup and FRP route increment remains `REVIEW_REQUIRED` until the current read-only review is recorded.
+- Existing independent review passed the bounded-output and IME/socket increments. The current surface fallback, SOCKS5 flush, listener/FRP route and ArkTS/native ABI increment also passed with no P0/P1/P2 findings; receipt `ssh-terminal-surface-forwarding-frp-pass-2026-08-06` is recorded. The status command remains `REVIEW_REQUIRED` only because preserved user RDP diagnostic hunks keep mixed `protocol_adapter.h` and `HostListPage.ets` dirty.
 - SFTP scope is closed for this pass; real-device/endpoint evidence is not a Level A completion claim.
 - Device evidence covers injected input and lifecycle; external keyboard/IME, GPU re-enable, bastion/forwarding/FRP evidence remain open.
 
 ## Next
-1. Record the current independent review of the surface fallback and guarded forwarding/FRP increment.
-2. Add real local/remote/dynamic libssh2 socket/channel transport, then finish
+1. Add real local/remote/dynamic libssh2 socket/channel transport, then finish
    ProxyJump host-key binding and FRP Visitor/STCP/SUDP/XTCP control-plane contracts.
 
 ## Blockers

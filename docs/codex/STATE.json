@@ -3,10 +3,10 @@
   "task": "ssh-terminal-complete-upgrade",
   "branch": "codex/ssh-terminal-complete-upgrade",
   "base": "d2769ad4b",
-  "head": "35d517035",
+  "head": "a09e267",
   "phase": "alacritty-core-vt-parity-guarded-forwarding-frp-contract-code-only",
   "status": "active",
-  "next": "Record the current independent review, then implement local/remote/dynamic socket/channel transport, ProxyJump host-key binding and FRP control-plane connectivity contracts.",
+  "next": "Implement local/remote/dynamic socket/channel transport, ProxyJump host-key binding and FRP control-plane connectivity contracts.",
   "blockers": [
     "HDC target 5KLBB25928203528 passed cold SSH, ordered input, 300 KiB output, Home background retention, PiP/re-entry and 90-second idle commands; true external-keyboard and third-party-IME coverage remains open.",
     "ohosTest@OhosTestCompileArkTS is not registered (00306054).",
@@ -94,7 +94,8 @@
       "rustdesk_ffi/src/terminal_core/mod.rs",
       "rustdesk_ffi/src/terminal_core/tests.rs"
     ],
-    "reason": "The committed Alacritty/SSH lifecycle scope has a PASS receipt; the current increment adds latched GPU surface-flush fallback, explicit FRP Visitor/STCP/SUDP/XTCP fail-closed routing, SOCKS5 failure replies, listener failure cleanup and generation-guarded stop completion. The route-level surface and forwarding changes require the current independent read-only review."
+    "receiptId": "ssh-terminal-surface-forwarding-frp-pass-2026-08-06",
+    "reason": "The committed Alacritty/SSH lifecycle scope and the current surface/forwarding/FRP increment have independent PASS receipts. The status remains REVIEW_REQUIRED only because preserved user RDP diagnostic hunks keep mixed protocol_adapter.h and HostListPage.ets dirty; no duplicate review is required."
   },
   "lastVerification": {
     "host_native_tests": "273-pass-16-preexisting-vnc-fixture-startup-failures-289-total-2026-08-06",
