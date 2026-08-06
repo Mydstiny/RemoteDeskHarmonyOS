@@ -41,8 +41,9 @@ Updated: 2026-08-06 Asia/Shanghai
   stale. An adopted session's transient native `CONNECTING` state no longer
   hides the newly bound page, and mount retries re-probe native state immediately.
   The page now publishes the keyed renderer after all binding props are written,
-  then issues a generation-guarded next-turn wake that drains the target host's
-  retained output FIFO and repaints the newly created surface.
+  then issues a generation-guarded bounded wake sequence that drains the target
+  host's retained output FIFO and repaints until the new surface acknowledges
+  its first frame.
   Both code-only Hvigor gates passed on 2026-08-06; device validation is deferred.
 - The visible renderer now commits host, binding, revision, output wake and
   repaint fence through one page-owned sequence. GPU host/surface/revision

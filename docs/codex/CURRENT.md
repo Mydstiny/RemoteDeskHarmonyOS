@@ -4,7 +4,7 @@
 - Task: `ssh-terminal-complete-upgrade`
 - Base: `main@d2769ad4b`
 - Branch: `codex/ssh-terminal-complete-upgrade`
-- Code checkpoint: current branch HEAD (`fix(ssh): wake newly mounted terminal surface`); the keyed surface commit, guarded next-turn FIFO drain, and retained-frame refresh recovery are committed.
+- Code checkpoint: `6e20e63af` (`fix(ssh): retry visible host surface refresh`); the keyed surface commit, guarded next-turn FIFO drain, retained-frame refresh recovery, and bounded post-commit wake are committed.
 - Phase: Alacritty default; lifecycle, VT/Unicode/resize/TUI/large-output parity, per-host output isolation and code-only host-switch/surface refresh recovery.
 - Scope: migrate VT behind terminalCore, keep appearance settings in-core, verify IME/input/Canvas behavior. Homepage work is not current focus.
 
@@ -48,8 +48,8 @@
   detach/rebind/poll path when a repaint is not acknowledged; native dirty-frame
   failures immediately fall back to a retained full snapshot. The page publishes
   the keyed renderer only after its host/binding/revision props are complete,
-  then schedules a guarded next-turn wake that drains the target host FIFO and
-  requests a repaint after the first surface frame is created.
+  then schedules a guarded bounded wake sequence that drains the target host
+  FIFO and requests a repaint until the first surface frame is acknowledged.
 
 ## SSH Connectivity Boundary
 
@@ -63,7 +63,7 @@
 
 ## Verification
 
-- `git diff --check`: passed after the guarded post-commit refresh wake correction
+- `git diff --check`: passed after the bounded post-commit surface wake correction
   on 2026-08-06.
 - Host native tests: `260 passed, 16 failed, 276 total`; all failures are the
   existing VNC TLS fixture startup failures; the keepalive/SSH diagnostics
@@ -71,13 +71,14 @@
 - Rust `cargo test --manifest-path rustdesk_ffi/Cargo.toml --lib
   --no-default-features`: `156 passed, 1 failed, 157 total`; the remaining
   failure is the existing rendezvous fixture's public-address assertion.
-- `default@OhosTestCompileArkTS`: passed for the host-switch surface refresh,
+- `default@OhosTestCompileArkTS`: passed for the host-switch surface refresh and
+  bounded post-commit wake,
   transient-`CONNECTING` mount wake, deterministic keyed remount,
   revision-aware renderer owner/document correction, explicit surface-commit
   sequence, synchronous GPU lease detach, and retained dirty/full-frame refresh
   recovery on 2026-08-06; warnings only.
 - `assembleHap`: the same code-only correction passed with `BUILD SUCCESSFUL`
-  and signing on 2026-08-06 after the post-commit refresh wake correction.
+  and signing on 2026-08-06 after the bounded refresh wake correction.
 - Terminal-core Rust tests: Alacritty path `63 passed, 0 failed`; fallback
   path `57 passed, 0 failed`.
 - OHOS Rust checks: `aarch64-unknown-linux-ohos` and
@@ -91,7 +92,7 @@
 
 ## Review
 
-- Existing independent review passed the bounded-output and IME/socket increments; checkpoint `ffa0f9e` plus the current keyed-surface, mount-wake, deterministic keyed remount, renderer-owner lease, revision-aware document, GPU refresh owner-lease, and dirty/full-frame recovery correction remains `REVIEW_REQUIRED` until review.
+- Existing independent review passed the bounded-output and IME/socket increments; checkpoint `ffa0f9e` plus the current keyed-surface, mount-wake, deterministic keyed remount, renderer-owner lease, revision-aware document, GPU refresh owner-lease, dirty/full-frame recovery, and bounded wake correction remains `REVIEW_REQUIRED` until review.
 - SFTP scope is closed for this pass; real-device/endpoint evidence is not a Level A completion claim.
 - Device evidence covers injected input and lifecycle; external keyboard/IME, GPU re-enable, bastion/forwarding/FRP evidence remain open.
 
