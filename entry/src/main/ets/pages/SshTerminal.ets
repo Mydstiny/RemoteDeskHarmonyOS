@@ -47,7 +47,14 @@ import {
   SessionConfig,
   SftpFileEntry,
   SftpListAsyncResult,
+  SshJumpHop,
+  SshJumpHopHandoff,
   SshPrivateKeyInfo,
+  SshRoute,
+  SshRouteType,
+  SshAuthPrompt,
+  SshAuthPromptRequest,
+  SshAuthPromptResponse,
   SshTerminalInputEnqueueResult,
   TerminalCoreMode
 } from '../types/rdpnapi';
@@ -329,6 +336,10 @@ struct SshTerminal {
   @State terminalExternalScrollRequest: number = 0;
   /** SSH 协议级 keepalive 延迟 */
   @State latencyMs: number = -1;
+  /** One-shot keyboard-interactive/MFA prompt currently owned by this page. */
+  @State sshAuthPrompt: SshAuthPromptRequest | null = null;
+  @State sshAuthPromptValues: string[] = [];
+  @State showSshAuthPromptSheet: boolean = false;
   /** SFTP 文件传输面板 */
   @State showSftpPanel: boolean = false;
   @State showSftpSheet: boolean = false;
@@ -473,6 +484,15 @@ struct SshTerminal {
   private latencyProbeRunning: boolean = false;
   /** Identifies the currently outstanding latency request across reconnects. */
   private latencyProbeToken: number = 0;
+  private sshAuthPromptPollTimer: number = -1;
+  private sshAuthPromptRequestId: number = 0;
+  private sshAuthPromptSubmitting: boolean = false;
+  // Native snapshot() can briefly outlive respond()/cancel() while the owner
+  // reactor wakes. Keep the handled identity so that window does not reopen
+  // the same prompt before the next MFA round is published.
+  private sshAuthPromptHandledSessionId: number = 0;
+  private sshAuthPromptHandledGeneration: number = 0;
+  private sshAuthPromptHandledRequestId: number = 0;
   private terminalClosing: boolean = false;
   private terminalPanStartOffsetY: number = 0;
   private terminalPanLastLines: number = 0;
@@ -640,6 +660,226 @@ struct SshTerminal {
       this.hostId.trim() === hostId.trim();
   }
 
+  private sshAuthPromptSessionId(): number {
+    // connectSshAsync publishes its reserved native session id before KEX and
+    // authentication complete. Prefer that id so PAM/MFA prompts are visible
+    // while the promise is still pending; fall back to the attached tab after
+    // the pending connect is consumed or detached.
+    const pendingOrCurrent: number = this.loader.getSessionId();
+    return pendingOrCurrent > 0 ? pendingOrCurrent : this.sessionId;
+  }
+
+  private sshAuthPromptGeneration(sessionId: number): number {
+    if (sessionId === this.sessionId && this.sshSessionGeneration > 0) {
+      return this.sshSessionGeneration;
+    }
+    if (sessionId <= 0) { return 0; }
+    return this.loader.getSshTerminalDiagnostics(sessionId).sessionGeneration;
+  }
+
+  private clearSshAuthPromptState(): void {
+    this.showSshAuthPromptSheet = false;
+    this.sshAuthPrompt = null;
+    this.sshAuthPromptValues = [];
+    this.sshAuthPromptRequestId = 0;
+    this.sshAuthPromptSubmitting = false;
+  }
+
+  private cancelSshAuthPrompt(): void {
+    const prompt: SshAuthPromptRequest | null = this.sshAuthPrompt;
+    if (prompt !== null && prompt.requestId > 0) {
+      this.sshAuthPromptHandledSessionId = prompt.sessionId;
+      this.sshAuthPromptHandledGeneration = prompt.generation;
+      this.sshAuthPromptHandledRequestId = prompt.requestId;
+      // The request identity comes from the broker snapshot, not from the
+      // currently visible tab. This also handles a prompt from a detached
+      // SFTP peer while the main tab remains active.
+      this.loader.cancelSshAuthPrompt(prompt.sessionId, prompt.generation, prompt.requestId);
+    }
+    this.clearSshAuthPromptState();
+  }
+
+  private pollSshAuthPrompt(): void {
+    if (this.terminalClosing) { return; }
+    const sessionId: number = this.sshAuthPromptSessionId();
+    const generation: number = this.sshAuthPromptGeneration(sessionId);
+    if (sessionId <= 0 || generation <= 0) { return; }
+    const prompt: SshAuthPromptRequest | null = this.loader.getSshAuthPrompt(sessionId, generation);
+    if (prompt === null) {
+      if (this.showSshAuthPromptSheet && !this.sshAuthPromptSubmitting) {
+        this.clearSshAuthPromptState();
+      }
+      return;
+    }
+    if (prompt.sessionId !== sessionId || prompt.generation !== generation ||
+      prompt.prompts.length === 0) { return; }
+    if (prompt.expiresAtMs > 0 && prompt.expiresAtMs <= Date.now()) {
+      this.sshAuthPromptHandledSessionId = prompt.sessionId;
+      this.sshAuthPromptHandledGeneration = prompt.generation;
+      this.sshAuthPromptHandledRequestId = prompt.requestId;
+      this.loader.cancelSshAuthPrompt(prompt.sessionId, prompt.generation, prompt.requestId);
+      this.clearSshAuthPromptState();
+      return;
+    }
+    if (prompt.sessionId === this.sshAuthPromptHandledSessionId &&
+      prompt.generation === this.sshAuthPromptHandledGeneration &&
+      prompt.requestId === this.sshAuthPromptHandledRequestId) {
+      return;
+    }
+    if (this.showSshAuthPromptSheet && this.sshAuthPromptRequestId === prompt.requestId) {
+      return;
+    }
+    const values: string[] = [];
+    for (let index: number = 0; index < prompt.prompts.length; index++) {
+      values.push('');
+    }
+    this.sshAuthPrompt = prompt;
+    this.sshAuthPromptValues = values;
+    this.sshAuthPromptRequestId = prompt.requestId;
+    this.sshAuthPromptSubmitting = false;
+    this.showSshAuthPromptSheet = true;
+  }
+
+  private startSshAuthPromptPolling(): void {
+    if (this.sshAuthPromptPollTimer !== -1) { return; }
+    this.pollSshAuthPrompt();
+    this.sshAuthPromptPollTimer = setInterval((): void => {
+      this.pollSshAuthPrompt();
+    }, 160);
+  }
+
+  private stopSshAuthPromptPolling(cancelPending: boolean): void {
+    if (this.sshAuthPromptPollTimer !== -1) {
+      clearInterval(this.sshAuthPromptPollTimer);
+      this.sshAuthPromptPollTimer = -1;
+    }
+    if (cancelPending) {
+      this.cancelSshAuthPrompt();
+    } else {
+      this.clearSshAuthPromptState();
+    }
+  }
+
+  private updateSshAuthPromptValue(index: number, value: string): void {
+    if (index < 0 || index >= this.sshAuthPromptValues.length) { return; }
+    const values: string[] = this.sshAuthPromptValues.slice();
+    values[index] = value;
+    this.sshAuthPromptValues = values;
+  }
+
+  private submitSshAuthPrompt(): void {
+    const prompt: SshAuthPromptRequest | null = this.sshAuthPrompt;
+    if (prompt === null || this.sshAuthPromptSubmitting ||
+      this.sshAuthPromptValues.length !== prompt.prompts.length) { return; }
+    const responseValues: string[] = this.sshAuthPromptValues.slice();
+    this.sshAuthPromptSubmitting = true;
+    this.sshAuthPromptHandledSessionId = prompt.sessionId;
+    this.sshAuthPromptHandledGeneration = prompt.generation;
+    this.sshAuthPromptHandledRequestId = prompt.requestId;
+    const accepted: boolean = this.loader.respondSshAuthPrompt({
+      schemaVersion: prompt.schemaVersion,
+      requestId: prompt.requestId,
+      sessionId: prompt.sessionId,
+      generation: prompt.generation,
+      responses: responseValues,
+      cancelled: false
+    } as SshAuthPromptResponse);
+    if (!accepted) {
+      this.sshAuthPromptSubmitting = false;
+      promptAction.showToast({ message: '认证请求已失效，请重新连接', duration: 1800 });
+      this.clearSshAuthPromptState();
+      return;
+    }
+    // Do not retain password/OTP material while the native broker advances to
+    // a possible next keyboard-interactive round.
+    this.clearSshAuthPromptState();
+  }
+
+  @Builder
+  SshAuthPromptSheet() {
+    Column() {
+      if (this.sshAuthPrompt !== null) {
+        Row() {
+          Column() {
+            Text('SSH 需要额外认证')
+              .fontSize(18).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+            Text(this.sshAuthPrompt!.targetHost)
+              .fontSize(12).fontColor(this.pal().text2).margin({ top: 4 })
+              .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+          Text('第 ' + this.sshAuthPrompt!.round.toString() + ' 轮')
+            .fontSize(11).fontColor(this.pal().text3)
+        }.width('100%').alignItems(VerticalAlign.Center)
+
+        if (this.sshAuthPrompt!.hop.trim().length > 0) {
+          Text('跳板: ' + this.sshAuthPrompt!.hop)
+            .fontSize(11).fontColor(this.pal().text2).margin({ top: 8 })
+            .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+        }
+        if (this.sshAuthPrompt!.name.trim().length > 0) {
+          Text(this.sshAuthPrompt!.name)
+            .fontSize(12).fontColor(this.pal().text).margin({ top: 10 })
+            .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+        }
+        if (this.sshAuthPrompt!.instruction.trim().length > 0) {
+          Text(this.sshAuthPrompt!.instruction)
+            .fontSize(12).fontColor(this.pal().text2).margin({ top: 6 })
+            .maxLines(6).textOverflow({ overflow: TextOverflow.Ellipsis })
+        }
+
+        Scroll() {
+          Column({ space: 10 }) {
+            ForEach(this.sshAuthPrompt!.prompts, (item: SshAuthPrompt, index: number): void => {
+              Column() {
+                Text(item.text.length > 0 ? item.text : '请输入认证响应')
+                  .fontSize(12).fontColor(this.pal().text)
+                  .width('100%').maxLines(3)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis })
+                TextInput({
+                  placeholder: item.echo ? '输入响应' : '输入密码或验证码',
+                  text: this.sshAuthPromptValues[index]
+                })
+                  .type(item.echo ? InputType.Normal : InputType.Password)
+                  .enableAutoFill(false)
+                  .height(42).width('100%')
+                  .backgroundColor(this.pal().surface)
+                  .fontColor(this.pal().text).placeholderColor(this.pal().text3)
+                  .borderRadius(8).padding({ left: 12, right: 12 })
+                  .onChange((value: string): void => {
+                    this.updateSshAuthPromptValue(index, value);
+                  })
+                  .onSubmit((): void => { this.submitSshAuthPrompt(); })
+              }.width('100%').alignItems(HorizontalAlign.Start)
+            }, (item: SshAuthPrompt, index: number): string => index.toString())
+          }.width('100%')
+        }
+          .width('100%')
+          .constraintSize({ maxHeight: this.isDesktopDevice ? 560 : 480 })
+          .margin({ top: 16 })
+          .scrollBar(BarState.Auto)
+
+        Row() {
+          Button('取消')
+            .height(40).layoutWeight(1)
+            .backgroundColor(this.pal().surface).fontColor(this.pal().text2)
+            .borderRadius(8)
+            .enabled(!this.sshAuthPromptSubmitting)
+            .onClick((): void => { this.cancelSshAuthPrompt(); })
+          Button(this.sshAuthPromptSubmitting ? '提交中...' : '提交')
+            .height(40).layoutWeight(1).margin({ left: 10 })
+            .backgroundColor(this.accentColor).fontColor('#FFFFFF')
+            .borderRadius(8)
+            .enabled(!this.sshAuthPromptSubmitting)
+            .onClick((): void => { this.submitSshAuthPrompt(); })
+        }.width('100%').margin({ top: 16 })
+      }
+    }
+      .width('100%')
+      .constraintSize({ maxWidth: this.isDesktopDevice ? 560 : 620 })
+      .padding({ left: 20, right: 20, top: 20, bottom: 20 })
+      .backgroundColor(this.pal().sheetBg)
+  }
+
   /**
    * Keep the visible SSH surface on the mature xterm.js path for now. On API
    * 23, OH_Drawing_SurfaceFlush can abort the whole process after a stale
@@ -697,13 +937,14 @@ struct SshTerminal {
     return makeSshXtermTabCoreKey(hostId);
   }
 
+  private xtermSurfaceIdentityForHost(hostId: string, revision: number): string {
+    const coreKey: string = this.xtermSurfaceCoreKey(hostId);
+    if (coreKey.length === 0) { return ''; }
+    return coreKey + ':render:' + sshXtermTabRenderRevision(revision).toString();
+  }
+
   private xtermSurfaceGenerationForHost(hostId: string): number {
     const normalizedHostId: string = hostId.trim();
-    for (let index: number = 0; index < this.sshTabViews.length; index++) {
-      if (this.sshTabViews[index].hostId === normalizedHostId) {
-        return sshXtermTabRenderRevision(this.sshTabViews[index].generation);
-      }
-    }
     return sshXtermTabRenderRevision(this.sshTabStore.sessionGeneration(normalizedHostId));
   }
 
@@ -1282,7 +1523,7 @@ struct SshTerminal {
       .scrollBar(BarState.Off)
     }
     .width('100%').height(this.breakpoint === 'sm' ? '62%' : 420)
-    .padding({ left: 16, right: 16, top: 12, bottom: 14 })
+    .padding({ left: 16, right: 16, top: 20, bottom: 14 })
     .backgroundColor('#171D25')
     .borderRadius(this.breakpoint === 'sm'
       ? { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
@@ -2201,6 +2442,50 @@ struct SshTerminal {
     return host === undefined ? '' : host.username + '@' + host.host + ':' + host.port.toString();
   }
 
+  private sshRouteTypeForHost(host: RemoteHost): SshRouteType {
+    const configuredType: string = host.proxyHost.trim().length > 0 ? host.sshProxyType : 'direct';
+    // legacy_gateway remains an invalid native route. Keeping the value in
+    // this explicit object makes the policy reject it instead of mapping it
+    // to a direct socket.
+    return configuredType as SshRouteType;
+  }
+
+  private sshRouteForHost(host: RemoteHost): SshRoute {
+    const routeType: SshRouteType = this.sshRouteTypeForHost(host);
+    const hops: SshJumpHop[] = [];
+    if (routeType === 'ssh_jump') {
+      hops.push({
+        host: host.proxyHost,
+        port: host.proxyPort,
+        username: host.proxyUsername,
+        authMethod: host.sshProxyAuthMethod,
+        expectedHostKeyRawBase64: host.sshJumpHostKeyRawBase64,
+        expectedHostKeyFingerprintSha256: host.sshJumpHostKeyFingerprintSha256,
+        connectTimeoutMs: 10000
+      });
+    }
+    return {
+      schemaVersion: 1,
+      type: routeType,
+      endpointHost: host.host,
+      endpointPort: host.port,
+      hops: hops,
+      connectTimeoutMs: 10000
+    };
+  }
+
+  private sshJumpHopHandoffsForHost(host: RemoteHost, privateKeyPem: string,
+    privateKeyPassphrase: string): SshJumpHopHandoff[] {
+    if (this.sshRouteTypeForHost(host) !== 'ssh_jump') { return []; }
+    const publicKey: boolean = host.sshProxyAuthMethod === 'publickey';
+    return [{
+      password: publicKey ? '' : host.sshProxyPassword,
+      privateKeyPem: publicKey ? privateKeyPem : '',
+      privateKeyPassphrase: publicKey ? privateKeyPassphrase : '',
+      keyboardInteractiveResponses: []
+    }];
+  }
+
   private sftpSessionForHost(hostId: string): SshSftpEngineSession | null {
     const owner: string = hostId.trim();
     if (owner.length === 0) { return null; }
@@ -2289,17 +2574,16 @@ struct SshTerminal {
       customHostname: host.customHostname,
       gatewayHost: '',
       gatewayPort: 0,
+      sshRoute: this.sshRouteForHost(host),
+      sshJumpHopHandoffs: this.sshJumpHopHandoffsForHost(host, proxyKeyData, proxyKeyPassphrase),
       sshProxyType: host.proxyHost.length > 0 ? host.sshProxyType : 'direct',
       sshProxyHost: host.proxyHost,
       sshProxyPort: host.proxyPort,
       sshProxyUsername: host.proxyUsername,
-      sshProxyPassword: host.sshProxyType === 'ssh_jump' && host.sshProxyAuthMethod !== 'publickey'
-        ? host.sshProxyPassword : '',
+      sshProxyPassword: '',
       sshProxyAuthMethod: host.sshProxyType === 'ssh_jump' ? host.sshProxyAuthMethod : undefined,
-      sshProxyPrivateKeyPem: host.sshProxyType === 'ssh_jump' &&
-        host.sshProxyAuthMethod === 'publickey' ? proxyKeyData : '',
-      sshProxyPrivateKeyPassphrase: host.sshProxyType === 'ssh_jump' &&
-        host.sshProxyAuthMethod === 'publickey' ? proxyKeyPassphrase : '',
+      sshProxyPrivateKeyPem: '',
+      sshProxyPrivateKeyPassphrase: '',
       domain: '',
       codec: '',
       multiMonitor: false,
@@ -3527,6 +3811,7 @@ struct SshTerminal {
   }
 
   async aboutToAppear(): Promise<void> {
+    this.stopSshAuthPromptPolling(true);
     const pageGeneration: number = ++this.pageGeneration;
     const bindingGeneration: number = ++this.sshBindingGeneration;
     this.terminalClosing = false;
@@ -3552,7 +3837,6 @@ struct SshTerminal {
     try {
       const taskContext: common.Context = this.getUIContext().getHostContext() as common.Context;
       await this.sshPipService.stop();
-      await this.sshBackgroundTaskService.stop(taskContext as common.UIAbilityContext);
       this.sftpTaskStore.init(taskContext);
       this.sftpLocalProvider.init(taskContext as common.UIAbilityContext);
       await this.sftpTaskEngine.init(taskContext as common.UIAbilityContext);
@@ -3590,6 +3874,10 @@ struct SshTerminal {
     this.latencyMs = -1;
     this.sessionId = -1;
     this.sshSessionGeneration = 0;
+    this.sshAuthPromptHandledSessionId = 0;
+    this.sshAuthPromptHandledGeneration = 0;
+    this.sshAuthPromptHandledRequestId = 0;
+    this.startSshAuthPromptPolling();
     this.ctrlActive = false;
     this.altActive = false;
     this.shiftActive = false;
@@ -3772,6 +4060,7 @@ struct SshTerminal {
   }
 
   aboutToDisappear(): void {
+    this.stopSshAuthPromptPolling(true);
     ++this.pageGeneration;
     ++this.sshBindingGeneration;
     this.terminalClosing = true;
@@ -3779,24 +4068,21 @@ struct SshTerminal {
     // Hide the virtual-key layer before the old route is detached so it cannot
     // flash above the next SSH page during router replacement.
     this.resetTerminalSurfaceBinding();
-    const preserveSshInBackground: boolean =
+    const backgroundInfos: SshTerminalBackgroundInfo[] = this.backgroundSshInfos();
+    let preserveSshInBackground: boolean =
       (AppStorage.get<boolean>('remoteDesktopBgFlag') ?? false) &&
-      !this.explicitSessionClose && this.connected && this.sessionId > 0 &&
-      this.hostId.length > 0;
+      !this.explicitSessionClose && backgroundInfos.length > 0;
     let backgroundContext: common.UIAbilityContext | null = null;
     try {
       backgroundContext = this.getUIContext().getHostContext() as common.UIAbilityContext;
     } catch (err) {
       hilog.warn(0x0016, 'SshTerminal', 'background context unavailable: ' + JSON.stringify(err));
     }
+    if (backgroundContext === null) {
+      preserveSshInBackground = false;
+    }
     if (preserveSshInBackground) {
       if (backgroundContext !== null) {
-        const backgroundInfo: SshTerminalBackgroundInfo = {
-          hostId: this.hostId,
-          sessionId: this.sessionId,
-          hostLabel: this.hostLabel,
-          hostAddress: this.userAtHost.length > 0 ? this.userAtHost : this.sshHost
-        };
         if (this.sshPipService.isPreparedOrPreparing()) {
           this.sshPipService.update(this.makeSshPipInfo('后台保留'));
           void this.sshPipService.start().then((started: boolean): void => {
@@ -3805,11 +4091,32 @@ struct SshTerminal {
         } else {
           hilog.info(0x0017, 'SshTerminal', 'SSH PiP skipped: prepare was not requested');
         }
-        void this.sshBackgroundTaskService.start(backgroundContext, backgroundInfo).then(
-          (started: boolean): void => {
-            hilog.info(0x0016, 'SshTerminal', 'background preserve task started=' +
-              started.toString() + ' session=' + this.sessionId.toString());
+        for (let index = 0; index < backgroundInfos.length; index++) {
+          const backgroundInfo: SshTerminalBackgroundInfo = backgroundInfos[index];
+          // A tab switch detaches its SFTP owner even though the native SSH
+          // session remains live. Reattach every retained tab before the page
+          // disappears so queued SFTP work can run without a view listener.
+          this.sftpTaskEngine.attachSession({
+            hostId: backgroundInfo.hostId,
+            sessionId: backgroundInfo.sessionId,
+            generation: this.sshTabStore.sessionGeneration(backgroundInfo.hostId)
           });
+          void this.sshBackgroundTaskService.start(backgroundContext, backgroundInfo).then(
+            (started: boolean): void => {
+              hilog.info(0x0016, 'SshTerminal', 'background preserve task started=' +
+                started.toString() + ' session=' + backgroundInfo.sessionId.toString());
+              if (started || !this.terminalClosing ||
+                this.sshTabStore.sessionId(backgroundInfo.hostId) !== backgroundInfo.sessionId) {
+                return;
+              }
+              // A rejected continuous task cannot be presented as a durable
+              // background connection. Stop the detached session and leave
+              // any active SFTP record paused at its last durable checkpoint.
+              this.sftpTaskEngine.detachSession(backgroundInfo.hostId, backgroundInfo.sessionId);
+              this.sshTabStore.invalidateSession(backgroundInfo.hostId, 'error', 'backgroundLimited');
+              this.loader.disconnectSshSession(backgroundInfo.sessionId);
+            });
+        }
       } else {
         hilog.warn(0x0016, 'SshTerminal', 'SSH session detached without background task context');
       }
@@ -3821,7 +4128,7 @@ struct SshTerminal {
     }
     this.invalidateSftpRefreshRequest();
     this.sftpDetached = true;
-    if (this.sftpTransferSession !== null && this.sftpBusy) {
+    if (!preserveSshInBackground && this.sftpTransferSession !== null && this.sftpBusy) {
       this.sftpWaitingForConnection = true;
       this.sftpCancelRequested = true;
       this.sftpTaskStore.command(this.sftpTransferSession.id, { kind: 'detach' });
@@ -3887,7 +4194,9 @@ struct SshTerminal {
       }
     } else if (requestSessionId > 0) {
       this.sshTabStore.update(this.hostId, 'connected', requestSessionId);
-      this.sftpTaskEngine.detachSession(this.hostId, requestSessionId);
+      if (!preserveSshInBackground) {
+        this.sftpTaskEngine.detachSession(this.hostId, requestSessionId);
+      }
       if (!this.loader.detachSshSession(requestSessionId, this.hostId)) {
         // If the native session is already leaving, explicit cleanup is safer
         // than leaving an unowned socket behind.
@@ -3916,6 +4225,38 @@ struct SshTerminal {
         this.setPreferredOrientation(window.Orientation.UNSPECIFIED, 'SSH-UNSPECIFIED');
       }, 250);
     }
+  }
+
+  private backgroundSshInfos(): SshTerminalBackgroundInfo[] {
+    const result: SshTerminalBackgroundInfo[] = [];
+    const seenSessions: Set<number> = new Set<number>();
+    const views: SshTerminalTabView[] = this.sshTabStore.views();
+    for (let index = 0; index < views.length; index++) {
+      const view: SshTerminalTabView = views[index];
+      if (view.sessionId <= 0 || (view.state !== 'connected' && view.state !== 'reconnecting')) {
+        continue;
+      }
+      result.push({
+        hostId: view.hostId,
+        sessionId: view.sessionId,
+        hostLabel: view.label,
+        hostAddress: view.address
+      });
+      seenSessions.add(view.sessionId);
+    }
+    // The tab registry is normally updated before this callback. Keep a
+    // current-page fallback for a detach race so the active session is not
+    // omitted from the background handoff.
+    if (this.sessionId > 0 && this.hostId.trim().length > 0 &&
+      !seenSessions.has(this.sessionId)) {
+      result.push({
+        hostId: this.hostId,
+        sessionId: this.sessionId,
+        hostLabel: this.hostLabel,
+        hostAddress: this.userAtHost.length > 0 ? this.userAtHost : this.sshHost
+      });
+    }
+    return result;
   }
 
   /** 读取设备当前窗口朝向（宽 > 高 为横屏），用于进入终端时跟随设备朝向。 */
@@ -4437,17 +4778,17 @@ struct SshTerminal {
         // credential and never falls back to the target credential.
         gatewayHost: '',
         gatewayPort: 0,
+        sshRoute: this.sshRouteForHost(host),
+        sshJumpHopHandoffs: this.sshJumpHopHandoffsForHost(
+          host, proxyKeyData, resolvedProxyPassphrase),
         sshProxyType: host.proxyHost.length > 0 ? host.sshProxyType : 'direct',
         sshProxyHost: host.proxyHost,
         sshProxyPort: host.proxyPort,
         sshProxyUsername: host.proxyUsername,
-        sshProxyPassword: host.sshProxyType === 'ssh_jump' && host.sshProxyAuthMethod !== 'publickey'
-          ? host.sshProxyPassword : '',
+        sshProxyPassword: '',
         sshProxyAuthMethod: host.sshProxyType === 'ssh_jump' ? host.sshProxyAuthMethod : undefined,
-        sshProxyPrivateKeyPem: host.sshProxyType === 'ssh_jump' &&
-          host.sshProxyAuthMethod === 'publickey' ? proxyKeyData : '',
-        sshProxyPrivateKeyPassphrase: host.sshProxyType === 'ssh_jump' &&
-          host.sshProxyAuthMethod === 'publickey' ? resolvedProxyPassphrase : '',
+        sshProxyPrivateKeyPem: '',
+        sshProxyPrivateKeyPassphrase: '',
         domain: '',
         codec: '',
         multiMonitor: false,
@@ -4822,9 +5163,10 @@ struct SshTerminal {
   private onXtermDataForHost(hostId: string, sessionGeneration: number, data: string,
     surfaceIdentity: string): void {
     const normalizedHostId: string = hostId.trim();
+    const reportedRevision: number = sshXtermTabRenderRevision(sessionGeneration);
     if (data.length === 0 || this.terminalClosing || normalizedHostId !== this.hostId.trim() ||
-      this.xtermSurfaceCoreKey(normalizedHostId) !== surfaceIdentity.trim() ||
-      sshXtermTabRenderRevision(sessionGeneration) !==
+      this.xtermSurfaceIdentityForHost(normalizedHostId, reportedRevision) !== surfaceIdentity.trim() ||
+      reportedRevision !==
         this.xtermSurfaceGenerationForHost(normalizedHostId)) { return; }
     this.sendTerminalBytes(data, this.isTerminalControlSequence(data));
   }
@@ -4832,12 +5174,21 @@ struct SshTerminal {
   private onXtermReadyForHost(hostId: string, sessionGeneration: number,
     surfaceIdentity: string): void {
     const normalizedHostId: string = hostId.trim();
-    if (this.terminalClosing || normalizedHostId.length === 0 ||
-      this.xtermSurfaceCoreKey(normalizedHostId) !== surfaceIdentity.trim() ||
-      sshXtermTabRenderRevision(sessionGeneration) !==
-        this.xtermSurfaceGenerationForHost(normalizedHostId)) { return; }
-    this.xtermReadyGenerations.set(normalizedHostId,
-      sshXtermTabRenderRevision(sessionGeneration));
+    const reportedRevision: number = sshXtermTabRenderRevision(sessionGeneration);
+    const expectedRevision: number = this.xtermSurfaceGenerationForHost(normalizedHostId);
+    if (this.terminalClosing || normalizedHostId.length === 0) { return; }
+    if (this.xtermSurfaceIdentityForHost(normalizedHostId, reportedRevision) !==
+      surfaceIdentity.trim()) {
+      hilog.warn(0x0000, 'SshTerminal', '[xterm] ready identity rejected host=' + normalizedHostId +
+        ' reported=' + reportedRevision.toString() + ' surface=' + surfaceIdentity);
+      return;
+    }
+    if (reportedRevision !== expectedRevision) {
+      hilog.warn(0x0000, 'SshTerminal', '[xterm] ready generation rejected host=' + normalizedHostId +
+        ' reported=' + reportedRevision.toString() + ' expected=' + expectedRevision.toString());
+      return;
+    }
+    this.xtermReadyGenerations.set(normalizedHostId, reportedRevision);
     if (normalizedHostId === this.hostId.trim()) {
       this.xtermReady = true;
       this.focusKeyboard(false);
@@ -4848,9 +5199,10 @@ struct SshTerminal {
   private onXtermResizeForHost(hostId: string, sessionGeneration: number, cols: number,
     rows: number, surfaceIdentity: string): void {
     const normalizedHostId: string = hostId.trim();
+    const reportedRevision: number = sshXtermTabRenderRevision(sessionGeneration);
     if (this.terminalClosing || normalizedHostId !== this.hostId.trim() ||
-      this.xtermSurfaceCoreKey(normalizedHostId) !== surfaceIdentity.trim() ||
-      sshXtermTabRenderRevision(sessionGeneration) !==
+      this.xtermSurfaceIdentityForHost(normalizedHostId, reportedRevision) !== surfaceIdentity.trim() ||
+      reportedRevision !==
         this.xtermSurfaceGenerationForHost(normalizedHostId)) { return; }
     const nextCols: number = Math.max(20, Math.min(300, Math.floor(cols)));
     const nextRows: number = Math.max(3, Math.min(80, Math.floor(rows)));
@@ -7797,7 +8149,11 @@ struct SshTerminal {
         }.width('100%').layoutWeight(1).justifyContent(FlexAlign.Center).backgroundColor('#0D0D0D')
       } else {
         Stack({ alignContent: Alignment.TopStart }) {
-          if (!this.xtermReady) {
+          // Once the xterm WebView is mounted it must remain visible even if a
+          // late ArkWeb ready callback is still being retried. Otherwise a
+          // missed proxy callback turns a real terminal into a permanent full
+          // screen "Preparing terminal..." mask.
+          if (!this.xtermReady && !this.terminalSurfaceMounted) {
             Column() {
               if (this.connecting || (this.connected &&
                 (!this.terminalSurfaceMounted || !this.xtermReady))) {
@@ -7822,7 +8178,8 @@ struct SshTerminal {
             ForEach(this.sshTabViews, (tab: SshTerminalTabView): void => {
               SshXtermSurface({
                 coreKey: this.xtermSurfaceCoreKey(tab.hostId),
-                renderRevision: sshXtermTabRenderRevision(tab.generation),
+                renderRevision: sshXtermTabRenderRevision(
+                  this.sshTabStore.sessionGeneration(tab.hostId)),
                 surfaceRefreshRequest: this.terminalSurfaceRefreshRequest,
                 active: tab.active,
                 cols: this.termCols,
@@ -7842,15 +8199,18 @@ struct SshTerminal {
                 externalScrollLines: this.terminalExternalScrollLines,
                 externalScrollRequest: this.terminalExternalScrollRequest,
                 onData: (data: string, surfaceIdentity: string): void => {
-                  this.onXtermDataForHost(tab.hostId, sshXtermTabRenderRevision(tab.generation),
+                  this.onXtermDataForHost(tab.hostId,
+                    this.sshTabStore.sessionGeneration(tab.hostId),
                     data, surfaceIdentity);
                 },
                 onResize: (cols: number, rows: number, surfaceIdentity: string): void => {
-                  this.onXtermResizeForHost(tab.hostId, sshXtermTabRenderRevision(tab.generation),
+                  this.onXtermResizeForHost(tab.hostId,
+                    this.sshTabStore.sessionGeneration(tab.hostId),
                     cols, rows, surfaceIdentity);
                 },
                 onReady: (surfaceIdentity: string): void => {
-                  this.onXtermReadyForHost(tab.hostId, sshXtermTabRenderRevision(tab.generation),
+                  this.onXtermReadyForHost(tab.hostId,
+                    this.sshTabStore.sessionGeneration(tab.hostId),
                     surfaceIdentity);
                 }
               })
@@ -8082,6 +8442,33 @@ struct SshTerminal {
         if (this.passphraseResolve) {
           this.passphraseResolve('');
           this.passphraseResolve = null;
+        }
+      }
+    })
+    .bindSheet($$this.showSshAuthPromptSheet, this.SshAuthPromptSheet(), {
+      height: SheetSize.FIT_CONTENT,
+      preferType: this.isDesktopDevice ? SheetType.CENTER : SheetType.BOTTOM,
+      width: this.isDesktopDevice ? '560vp' : '100%',
+      dragBar: !this.isDesktopDevice,
+      backgroundColor: this.pal().sheetBg,
+      blurStyle: BlurStyle.NONE,
+      showClose: false,
+      maskColor: 'rgba(0,0,0,0.46)',
+      // System back/swipe must cancel the native broker request; dismissing
+      // only the ArkUI surface would leave libssh2 waiting for credentials.
+      onWillDismiss: (action: DismissSheetAction): void => {
+        if (this.sshAuthPromptSubmitting) {
+          this.clearSshAuthPromptState();
+        } else {
+          this.cancelSshAuthPrompt();
+        }
+        action.dismiss();
+      },
+      onDisappear: (): void => {
+        if (this.sshAuthPrompt !== null) {
+          this.cancelSshAuthPrompt();
+        } else {
+          this.clearSshAuthPromptState();
         }
       }
     })
