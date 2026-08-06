@@ -76,8 +76,7 @@ Updated: 2026-08-06 Asia/Shanghai
 - Do not dispatch a duplicate reviewer; the guarded forwarding NAPI/ArkTS error
   mapping, surface-flush fallback and explicit FRP route behavior are covered by
   the recorded independent PASS receipt.
-- Implement local/remote/dynamic libssh2 socket/channel transport behind that
-  bridge, with endpoint-facing error propagation.
+- Implement local/remote/dynamic libssh2 socket/channel transport behind that bridge, with endpoint-facing error propagation.
 - WP-T5/WP-T6 terminal correctness and damage-frame renderer implementation.
 - Real SFTP, bastion, forwarding and FRP endpoint interoperability tests when
   the corresponding services and HDC/device are available.
