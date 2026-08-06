@@ -3,8 +3,8 @@
   "task": "ssh-terminal-complete-upgrade",
   "branch": "codex/ssh-terminal-complete-upgrade",
   "base": "d2769ad4b",
-  "head": "a09e267",
-  "phase": "alacritty-core-vt-parity-guarded-forwarding-frp-contract-code-only",
+  "head": "24d701f",
+  "phase": "alacritty-core-xterm-safe-fallback-guarded-forwarding-frp-contract-code-only",
   "status": "active",
   "next": "Implement local/remote/dynamic socket/channel transport, ProxyJump host-key binding and FRP control-plane connectivity contracts.",
   "blockers": [
@@ -14,6 +14,7 @@
     "No bastion/forwarding endpoint is available; ProxyJump and port forwarding remain gated plan items.",
     "No real OpenSSH bastion/ProxyJump, port-forwarding or FRP endpoint is available for interoperability acceptance.",
     "Current host-switch/initial-UI changes have no new real-device evidence by explicit user instruction; code-level gates are the active acceptance boundary.",
+    "Native Drawing GPU rendering is disabled for visible SSH surfaces after the API 23 41207000 Device lost/SIGABRT reproduction; re-enable requires a safe backend.",
     "Light compliance is blocked by baseline SBOM package totp-reviewed-brand-assets with licenseDeclared=NOASSERTION.",
     "Host CMake is unavailable because cmake is not installed; the existing Makefile target rebuilt and production BuildNativeWithNinja passed."
   ],
@@ -101,14 +102,14 @@
     "host_native_tests": "273-pass-16-preexisting-vnc-fixture-startup-failures-289-total-2026-08-06",
     "rust_terminal_core_tests": "focused-alacritty-63-pass-fallback-57-pass-2026-08-04; full-no-default-features-156-pass-1-preexisting-rendezvous-fixture-public-address-failure-157-total",
     "terminalParity": "alacritty-67-pass-fallback-57-pass-unicode-ansi-tui-resize-large-output-damage-2026-08-04",
-    "default@OhosTestCompileArkTS": "pass-current-ssh-forwarding-frp-surface-flush-2026-08-06",
-    "assembleHap": "pass-build-successful-signed-current-ssh-forwarding-frp-surface-flush-2026-08-06",
-    "gitDiffCheck": "pass-current-ssh-forwarding-frp-surface-flush-2026-08-06",
+    "default@OhosTestCompileArkTS": "pass-after-api23-gpu-crash-guard-2026-08-06",
+    "assembleHap": "pass-build-successful-signed-after-api23-gpu-crash-guard-2026-08-06",
+    "gitDiffCheck": "pass-after-api23-gpu-crash-guard-2026-08-06",
     "nativeForwardingManager": "included-in-host-suite-pass; standalone-makefile-target-rebuilt; host-cmake-unavailable; production-ninja-pass-2026-08-06",
     "sbom": "pass-totp-validator-96-packages-282-files-282-relationships-2026-08-04",
     "ohosTest": "blocked-task-00306054",
     "lightCompliance": "blocked-baseline-sbom-NOASSERTION-totp-reviewed-brand-assets",
-    "hdc": "pass-4a7642d-5KLBB25928203528-ordered-input-cold-large-output-second-entry-home-pip-reentry-90s-idle-fresh-command-2026-08-05",
+    "hdc": "captured-5KLBB25928203528-ssh-connected-shell-started-native-gpu-sigabrt-41207000-2026-08-06",
     "homepagePresenceToggle": "pass-installed-signed-hap-classic-home-no-presence-text-2026-08-04"
   },
   "updated": "2026-08-06 Asia/Shanghai"
