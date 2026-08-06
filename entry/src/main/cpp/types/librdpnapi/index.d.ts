@@ -194,7 +194,8 @@ export const VERSION: SessionVersionInfo;
     viewportHeightPx: number, visibleHeightPx: number, bottomAlign: boolean): number;
   export function sshTerminalRendererDestroy(handle: number): void;
   export function sshTerminalRendererBindSurface(handle: number, surfaceId: string,
-    widthPx: number, heightPx: number): boolean;
+    widthPx: number, heightPx: number): number;
+  export function sshTerminalRendererHasSurfaceFlushFailure(handle: number): boolean;
   export function sshTerminalRendererWriteBytes(handle: number, data: ArrayBuffer): void;
   export function sshTerminalRendererRefresh(handle: number): boolean;
   export function sshTerminalRendererResize(handle: number, cols: number, rows: number,
@@ -512,7 +513,8 @@ export interface SessionConfig {
   privateKeyPem: string;
   privateKeyPassphrase: string;
   keyboardInteractiveResponses?: string[];
-  sshProxyType?: 'direct' | 'http_connect' | 'socks5' | 'frp_tcp' | 'ssh_jump' | 'legacy_gateway';
+  sshProxyType?: 'direct' | 'http_connect' | 'socks5' | 'frp_tcp' | 'frp_visitor' |
+    'frp_stcp' | 'frp_sudp' | 'frp_xtcp' | 'ssh_jump' | 'legacy_gateway';
   sshProxyHost?: string;
   sshProxyPort?: number;
   sshProxyUsername?: string;
