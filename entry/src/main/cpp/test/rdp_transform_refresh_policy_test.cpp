@@ -26,3 +26,16 @@ RDP_TEST_CASE(rdp_transform_refresh_does_not_block_pending_source_deadline) {
     RDP_ASSERT(decision.action == RdpTransformRefreshAction::Wait);
     RDP_ASSERT_EQ(decision.waitUntilUs, static_cast<int64_t>(5000));
 }
+
+RDP_TEST_CASE(rdp_transform_refresh_releases_latest_source_after_queue_bound) {
+    const RdpTransformRefreshDecision decision = DecideRdpTransformRefresh(
+        true, false, 51000, 60000, 0, 1000);
+    RDP_ASSERT(decision.action == RdpTransformRefreshAction::PresentSourceFrame);
+}
+
+RDP_TEST_CASE(rdp_transform_refresh_keeps_fresh_source_on_pacing_deadline) {
+    const RdpTransformRefreshDecision decision = DecideRdpTransformRefresh(
+        true, false, 11000, 16000, 0, 10000);
+    RDP_ASSERT(decision.action == RdpTransformRefreshAction::Wait);
+    RDP_ASSERT_EQ(decision.waitUntilUs, static_cast<int64_t>(16000));
+}

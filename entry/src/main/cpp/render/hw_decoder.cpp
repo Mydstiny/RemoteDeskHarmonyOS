@@ -10,6 +10,7 @@
 #include "software_decoder.h"
 #include "software_decode_latency_policy.h"
 #include "decoder_pipeline_lifecycle_policy.h"
+#include "decoder_callback_lifecycle_policy.h"
 #include "gl_renderer.h"
 #include "opaque_handle_registry.h"
 #include "native_image_context_policy.h"
@@ -60,6 +61,37 @@ struct DecoderContext;
 
 using DecoderHandleLease = OpaqueHandleRegistry<DecoderContext>::Lease;
 
+// An input index reported by the asynchronous codec callback remains owned by
+// the application until it is pushed back to OH_AVCodec. Even when the frame
+// is malformed or does not fit, return an empty/discarded buffer so one bad
+// packet cannot permanently reduce the codec's input-buffer pool.
+OH_AVErrCode ReturnEmptyInputBuffer(OH_AVCodec* decoder, uint32_t index,
+                                    OH_AVBuffer* buffer, int64_t pts) {
+    if (decoder == nullptr) {
+        return AV_ERR_INVALID_VAL;
+    }
+    if (buffer != nullptr) {
+        OH_AVCodecBufferAttr attr {};
+        attr.pts = pts;
+        attr.size = 0;
+        attr.offset = 0;
+        attr.flags = AVCODEC_BUFFER_FLAGS_DISCARD;
+        const OH_AVErrCode attrRet = OH_AVBuffer_SetBufferAttr(buffer, &attr);
+        if (attrRet != AV_ERR_OK) {
+            OH_LOG_WARN(LOG_APP,
+                        "[Decoder] empty input attr failed: %{public}d index=%{public}u",
+                        attrRet, index);
+        }
+    }
+    const OH_AVErrCode ret = OH_VideoDecoder_PushInputBuffer(decoder, index);
+    if (ret != AV_ERR_OK) {
+        OH_LOG_WARN(LOG_APP,
+                    "[Decoder] empty input recycle failed: %{public}d index=%{public}u",
+                    ret, index);
+    }
+    return ret;
+}
+
 struct DecoderCallbackTarget {
     // This is the complete callback-body bundle.  The admission lease is
     // deliberately moved into the bundle instead of being left as a helper
@@ -80,7 +112,8 @@ struct DecoderCallbackTarget {
 
 DecoderCallbackTarget AcquireDecoderCallbackTarget(
     Render::CallbackAdmissionContext::Lease callbackLease,
-    OH_AVCodec* expectedCodec);
+    OH_AVCodec* expectedCodec,
+    Render::DecoderCallbackKind callbackKind);
 
 void RetireDecoderCallbackContext(
     std::shared_ptr<Render::CallbackAdmissionContext> context,
@@ -238,7 +271,8 @@ void HardwareDecoder::OnError(OH_AVCodec* codec, int32_t errorCode, void* userDa
     if (!callbackLease) {
         return;
     }
-    auto target = AcquireDecoderCallbackTarget(std::move(callbackLease), codec);
+    auto target = AcquireDecoderCallbackTarget(
+        std::move(callbackLease), codec, Render::DecoderCallbackKind::Error);
     if (!target) {
         return;
     }
@@ -259,7 +293,8 @@ void HardwareDecoder::OnStreamChanged(OH_AVCodec* codec, OH_AVFormat* /*format*/
     context->invokeBeforeAcquireHookForTesting();
 #endif
     auto callbackLease = context->tryAcquire();
-    auto target = AcquireDecoderCallbackTarget(std::move(callbackLease), codec);
+    auto target = AcquireDecoderCallbackTarget(
+        std::move(callbackLease), codec, Render::DecoderCallbackKind::StreamChanged);
     if (!target) {
         return;
     }
@@ -282,7 +317,8 @@ void HardwareDecoder::OnNeedInputBuffer(OH_AVCodec* codec, uint32_t index,
     if (!callbackLease) {
         return;
     }
-    auto target = AcquireDecoderCallbackTarget(std::move(callbackLease), codec);
+    auto target = AcquireDecoderCallbackTarget(
+        std::move(callbackLease), codec, Render::DecoderCallbackKind::InputBuffer);
     if (target) {
 #if defined(RDP_NATIVE_CALLBACK_TESTING)
         context->invokeAfterAcquireHookForTesting();
@@ -304,7 +340,8 @@ void HardwareDecoder::OnNewOutputBuffer(OH_AVCodec* codec, uint32_t index,
     if (!callbackLease) {
         return;
     }
-    auto target = AcquireDecoderCallbackTarget(std::move(callbackLease), codec);
+    auto target = AcquireDecoderCallbackTarget(
+        std::move(callbackLease), codec, Render::DecoderCallbackKind::OutputBuffer);
     if (!target) {
         return;
     }
@@ -337,7 +374,8 @@ void HardwareDecoder::OnFrameAvailable(void* context) {
     if (!callbackLease) {
         return;
     }
-    auto target = AcquireDecoderCallbackTarget(std::move(callbackLease), nullptr);
+    auto target = AcquireDecoderCallbackTarget(
+        std::move(callbackLease), nullptr, Render::DecoderCallbackKind::FrameAvailable);
     if (target) {
 #if defined(RDP_NATIVE_CALLBACK_TESTING)
         callbackContext->invokeAfterAcquireHookForTesting();
@@ -398,6 +436,16 @@ int HardwareDecoder::PlatformResourceStopCountForTesting() const {
 int HardwareDecoder::PlatformResourceUnsetCountForTesting() const {
     return callbackResourceUnsetCount_
         ? callbackResourceUnsetCount_->load(std::memory_order_acquire) : 0;
+}
+
+size_t HardwareDecoder::PendingInputBufferCountForTesting() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return pendingInputBuffers_.size();
+}
+
+uint64_t HardwareDecoder::FrameAvailableCountForTesting() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return frameAvailableCount_;
 }
 
 void HardwareDecoder::SetInitFailureStageForTesting(int stage) {
@@ -462,6 +510,13 @@ int HardwareDecoder::Init(int width, int height, CodecType codec, int64_t render
     width_ = width;
     height_ = height;
     codecType_ = codec;
+    {
+        std::lock_guard<std::mutex> lk(mutex_);
+        frameAvailableCount_ = 0;
+        frameConsumeCount_ = 0;
+        redrawRequested_ = false;
+        surfaceUpdatePending_ = false;
+    }
     auto releaseTexture = [this]() {
         if (textureId_ != 0) {
             glDeleteTextures(1, &textureId_);
@@ -788,6 +843,7 @@ void HardwareDecoder::drainInputBuffers() {
 
         if (!input.buffer) {
             OH_LOG_WARN(LOG_APP, "[Decoder] input buffer null index=%{public}u", input.index);
+            ReturnEmptyInputBuffer(decoder, input.index, nullptr, frame.timestamp);
             delete[] frame.data;
             continue;
         }
@@ -797,6 +853,7 @@ void HardwareDecoder::drainInputBuffers() {
         if (!bufAddr || bufCap <= 0) {
             OH_LOG_WARN(LOG_APP, "[Decoder] invalid input buffer index=%{public}u cap=%{public}d",
                         input.index, bufCap);
+            ReturnEmptyInputBuffer(decoder, input.index, input.buffer, frame.timestamp);
             delete[] frame.data;
             continue;
         }
@@ -811,7 +868,6 @@ void HardwareDecoder::drainInputBuffers() {
             {
                 std::lock_guard<std::mutex> lk(mutex_);
                 droppedQueued = clearInputQueueLocked();
-                pendingInputBuffers_.clear();
                 backpressure_.enterHardWaitForKeyframe();
             }
             uint64_t truncated = 0;
@@ -827,17 +883,27 @@ void HardwareDecoder::drainInputBuffers() {
                         static_cast<unsigned long long>(truncated),
                         droppedQueued,
                         static_cast<unsigned long long>(recoveryCount));
+            ReturnEmptyInputBuffer(decoder, input.index, input.buffer, frame.timestamp);
             delete[] frame.data;
             continue;
         }
         std::memcpy(bufAddr, frame.data, copyLen);
 
-        OH_AVCodecBufferAttr attr;
+        OH_AVCodecBufferAttr attr {};
         attr.pts = frame.timestamp;
         attr.size = static_cast<int32_t>(copyLen);
         attr.offset = 0;
-        attr.flags = 0;
-        OH_AVBuffer_SetBufferAttr(input.buffer, &attr);
+        attr.flags = frame.isKeyFrame ? AVCODEC_BUFFER_FLAGS_SYNC_FRAME :
+            AVCODEC_BUFFER_FLAGS_NONE;
+        const OH_AVErrCode attrRet = OH_AVBuffer_SetBufferAttr(input.buffer, &attr);
+        if (attrRet != AV_ERR_OK) {
+            OH_LOG_WARN(LOG_APP,
+                        "[Decoder] input attr failed: %{public}d index=%{public}u",
+                        attrRet, input.index);
+            ReturnEmptyInputBuffer(decoder, input.index, input.buffer, frame.timestamp);
+            delete[] frame.data;
+            continue;
+        }
 
         OH_AVErrCode ret = OH_VideoDecoder_PushInputBuffer(decoder, input.index);
         if (ret != AV_ERR_OK) {
@@ -872,7 +938,7 @@ void HardwareDecoder::noteFrameAvailable() {
     frameAvailableCv_.notify_one();
 }
 
-bool HardwareDecoder::waitForRenderRequest(bool& hasNewFrame) {
+bool HardwareDecoder::waitForRenderRequest(bool& hasNewFrame, bool& hasPendingSurfaceUpdate) {
     std::unique_lock<std::mutex> lk(mutex_);
     bool ok = frameAvailableCv_.wait_for(lk, std::chrono::milliseconds(50), [this]() {
         return renderThreadStop_.load() || !initialized_ ||
@@ -883,6 +949,7 @@ bool HardwareDecoder::waitForRenderRequest(bool& hasNewFrame) {
         return false;
     }
     hasNewFrame = frameAvailableCount_ > frameConsumeCount_;
+    hasPendingSurfaceUpdate = surfaceUpdatePending_;
     if (hasNewFrame) {
         ++frameConsumeCount_;
         // A decoded frame is presented through the same callback and consumes
@@ -898,13 +965,15 @@ void HardwareDecoder::handleOutputBuffer(uint32_t /*index*/) {
     if (!nativeImage_) { return; }
 
     bool hasNewFrame = false;
-    if (!waitForRenderRequest(hasNewFrame)) {
+    bool hasPendingSurfaceUpdate = false;
+    if (!waitForRenderRequest(hasNewFrame, hasPendingSurfaceUpdate)) {
         return;
     }
 
     // A transform wake may arrive before the first decoded frame. There is no
     // retained image to present yet, so wait for the first NativeImage update.
-    if (!hasNewFrame && outputFrameCount_.load(std::memory_order_acquire) == 0) {
+    if (!hasNewFrame && !hasPendingSurfaceUpdate &&
+        outputFrameCount_.load(std::memory_order_acquire) == 0) {
         return;
     }
 
@@ -928,17 +997,58 @@ void HardwareDecoder::handleOutputBuffer(uint32_t /*index*/) {
         } else {
             OH_LOG_WARN(LOG_APP, "[Decoder] AttachContext failed: %{public}d texture=%{public}u",
                         attachRet, textureId_);
+            // Do not call UpdateSurfaceImage without a valid GL attachment.
+            // Retain the request; a later frame or explicit redraw will retry
+            // the attachment on this render thread.
+            std::lock_guard<std::mutex> lk(mutex_);
+            surfaceUpdatePending_ = hasNewFrame || hasPendingSurfaceUpdate;
+            return;
         }
     }
 
-    if (hasNewFrame) {
+    if (hasNewFrame || hasPendingSurfaceUpdate) {
         // 更新 NativeImage — 解码帧已写入 surface, 刷新 GL 纹理
-        int32_t ret = OH_NativeImage_UpdateSurfaceImage(nativeImage_);
-        if (ret != 0) {
-            std::lock_guard<std::mutex> telemetryLock(telemetryMutex_);
-            SaturatingAdd(updateSurfaceFailureCount_, 1);
-            OH_LOG_WARN(LOG_APP, "[Decoder] UpdateSurfaceImage 失败: %{public}d", ret);
-            return;
+        int32_t ret = 0;
+        int retryCount = 0;
+        for (;;) {
+            ret = OH_NativeImage_UpdateSurfaceImage(nativeImage_);
+            if (ret == 0) {
+                break;
+            }
+
+            uint64_t failureCount = 0;
+            {
+                std::lock_guard<std::mutex> telemetryLock(telemetryMutex_);
+                failureCount = SaturatingAdd(updateSurfaceFailureCount_, 1);
+            }
+            if (!Render::ShouldRetryNativeImageUpdate(ret, retryCount)) {
+                OH_LOG_WARN(LOG_APP,
+                            "[Decoder] UpdateSurfaceImage failed: %{public}d retries=%{public}d total=%{public}llu",
+                            ret,
+                            retryCount,
+                            static_cast<unsigned long long>(failureCount));
+                std::lock_guard<std::mutex> lk(mutex_);
+                surfaceUpdatePending_ = true;
+                return;
+            }
+
+            ++retryCount;
+            if (failureCount <= 3 || failureCount % 60 == 0) {
+                OH_LOG_WARN(LOG_APP,
+                            "[Decoder] UpdateSurfaceImage no buffer; retry=%{public}d/%{public}d total=%{public}llu",
+                            retryCount,
+                            Render::kNativeImageUpdateRetryBudget,
+                            static_cast<unsigned long long>(failureCount));
+            }
+            // The callback can race the producer's buffer handoff. Keep these
+            // bounded retries on the dedicated render thread and yield briefly
+            // instead of spinning or blocking codec/input callbacks.
+            std::this_thread::sleep_for(std::chrono::milliseconds(
+                Render::NativeImageUpdateRetryDelayMs(retryCount)));
+        }
+        {
+            std::lock_guard<std::mutex> lk(mutex_);
+            surfaceUpdatePending_ = false;
         }
     }
 
@@ -1061,6 +1171,9 @@ void HardwareDecoder::Flush() {
         clearInputQueueLocked();
         pendingInputBuffers_.clear();
         backpressure_.reset();
+        redrawRequested_ = false;
+        surfaceUpdatePending_ = false;
+        frameConsumeCount_ = frameAvailableCount_;
     }
     ResetTelemetryCounters();
 }
@@ -1354,7 +1467,8 @@ constexpr size_t kMaxSoftwareDecodeQueue = 30;
 
 DecoderCallbackTarget AcquireDecoderCallbackTarget(
     Render::CallbackAdmissionContext::Lease callbackLease,
-    OH_AVCodec* expectedCodec) {
+    OH_AVCodec* expectedCodec,
+    Render::DecoderCallbackKind callbackKind) {
     DecoderCallbackTarget target;
     const auto snapshot = callbackLease.snapshot();
     auto ownerLease = Render::SharedSessionSinkOwnerLease().acquire(snapshot.owner);
@@ -1368,10 +1482,22 @@ DecoderCallbackTarget AcquireDecoderCallbackTarget(
     std::shared_ptr<HardwareDecoder> decoder;
     {
         std::lock_guard<std::mutex> pipelineLock(decoderLease->pipelineMutex);
-        if (decoderLease->pipelineTransitioning.load(std::memory_order_acquire) ||
-            !decoderLease->videoPipelineAttached.load(std::memory_order_acquire) ||
-            decoderLease->decoderGeneration != snapshot.generation ||
+        if (decoderLease->decoderGeneration != snapshot.generation ||
             decoderLease->boundOwner != snapshot.owner || !decoderLease->decoder) {
+            return target;
+        }
+        // The callback admission lease and registry operation lease already
+        // establish that this is the live decoder source for the exact owner
+        // and generation. Do not also require an attached renderer here:
+        // during bind/rebind/recovery, input buffers must be retained and
+        // output buffers must be returned to OH_AVCodec while the render
+        // thread is being replaced. Frame notifications are retained by the
+        // decoder until its new render thread starts.
+        if (!Render::ShouldAdmitDecoderCallback(
+                callbackKind,
+                static_cast<bool>(callbackLease),
+                Render::SessionOwnerMatches(decoderLease->owner, snapshot.owner),
+                static_cast<bool>(decoderLease))) {
             return target;
         }
         decoder = decoderLease->decoder;
@@ -1779,9 +1905,9 @@ bool RecreateDecoderForFrame(const std::shared_ptr<DecoderContext>& ctx, const V
         return false;
     }
     // Publish the strong decoder reference before Init registers platform
-    // callbacks.  The admission helper still rejects callbacks until the
-    // pipeline is attached, but an admitted callback can never observe a
-    // missing target during the create/recovery transition.
+    // callbacks. The callback admission helper accepts the current decoder
+    // during this transition, so early input/output notifications are retained
+    // instead of leaving OH_AVCodec buffers in user ownership.
     ctx->decoder = decoder;
     if (ctx->rendererHandle > 0) {
         if (owner.valid()) {
@@ -2188,6 +2314,19 @@ std::shared_ptr<HardwareDecoder> RegisterCallbackTestDecoder(
     ctx->decoder = decoder;
     ctx->videoPipelineAttached.store(true, std::memory_order_release);
     return decoder;
+}
+
+bool SetCallbackTestPipelineState(int64_t handle,
+                                  const DecoderSessionIdentity& owner,
+                                  bool attached, bool transitioning) {
+    auto lease = g_decoderRegistry.acquire(handle, owner);
+    if (!lease) {
+        return false;
+    }
+    std::lock_guard<std::mutex> pipelineLock(lease->pipelineMutex);
+    lease->videoPipelineAttached.store(attached, std::memory_order_release);
+    lease->pipelineTransitioning.store(transitioning, std::memory_order_release);
+    return true;
 }
 
 void DestroyCallbackTestDecoder(

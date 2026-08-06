@@ -81,3 +81,35 @@ RDP_TEST_CASE(rdp_gl_upload_gate_retains_pbo_only_after_safe_fifteen_percent_gai
     RDP_ASSERT(!RdpGlUploadGate::ShouldRetainPbo(
         20000, 16000, false, true, false));
 }
+
+RDP_TEST_CASE(rdp_gl_upload_gate_pbo_trial_is_one_shot_and_isolated) {
+    RdpGlUploadGate gate;
+    RecordWindow(gate, 4000, 4000, 2000);
+    RDP_ASSERT(gate.beginPboExperiment());
+    RDP_ASSERT(!gate.beginPboExperiment());
+
+    RdpPresentMetrics pbo = PresentWithCosts(1000, 2000, 1000);
+    pbo.pboUpload = true;
+    for (size_t i = 0; i < RdpGlUploadGate::kDecisionSamples; ++i) {
+        gate.recordPresent(pbo);
+    }
+    RDP_ASSERT(gate.snapshot().pboExperimentActive);
+
+    gate.finishPboExperiment(true, 4000);
+    const RdpGlUploadGateSnapshot retained = gate.snapshot();
+    RDP_ASSERT(retained.pboRetained);
+    RDP_ASSERT(retained.decision == RdpGlUploadDecision::PboRetained);
+    RDP_ASSERT(!gate.beginPboExperiment());
+}
+
+RDP_TEST_CASE(rdp_gl_upload_gate_pbo_trial_failure_closes_gate) {
+    RdpGlUploadGate gate;
+    RecordWindow(gate, 4000, 4000, 2000);
+    RDP_ASSERT(gate.beginPboExperiment());
+    gate.finishPboExperiment(false, 0);
+    const RdpGlUploadGateSnapshot direct = gate.snapshot();
+    RDP_ASSERT(!direct.pboExperimentActive);
+    RDP_ASSERT(!direct.pboRetained);
+    RDP_ASSERT(direct.decision == RdpGlUploadDecision::KeepDirectUpload);
+    RDP_ASSERT(!gate.beginPboExperiment());
+}

@@ -16,6 +16,9 @@ import {
   SshSftpTaskCommandResult,
   SshSftpTaskEvent,
   SshSftpTaskListener,
+  SftpEndpoint,
+  SftpTransferSpec,
+  isValidSftpTransferSpec,
   normalizeSshSftpTaskRecord,
   canTransitionSshSftpTask,
   sshSftpResumeDisposition,
@@ -195,6 +198,7 @@ export class SshSftpTaskStore {
     const now: number = Date.now();
     const next: SshSftpTaskRecord = {
       taskId: current.taskId,
+      schemaVersion: current.schemaVersion,
       batchId: current.batchId,
       relativePath: current.relativePath,
       hostId: current.hostId,
@@ -211,12 +215,66 @@ export class SshSftpTaskStore {
       sessionGeneration: current.sessionGeneration,
       sequence: Math.max(current.sequence + 1, now),
       stage: target,
-      updatedAt: now
+      updatedAt: now,
+      sourceEndpoint: current.sourceEndpoint,
+      targetEndpoint: current.targetEndpoint,
+      sourcePath: current.sourcePath,
+      targetPath: current.targetPath,
+      partialIdentity: current.partialIdentity,
+      checksumPolicy: current.checksumPolicy
     };
     if (!this.upsert(next)) {
       return { accepted: false, reason: 'stale-update', record: current };
     }
     return { accepted: true, reason: 'accepted', record: this.get(next.taskId) };
+  }
+
+  /** Enqueue an explicit local/SSH or SSH/SSH task without page-owned state. */
+  enqueueTransferSpec(spec: SftpTransferSpec, hostId: string, fileName: string,
+    totalBytes: number, sourceSize: number = totalBytes, sourceMtime: number = -1,
+    isDirectory: boolean = false): SshSftpTaskRecord | null {
+    const owner: string = hostId.trim();
+    const name: string = fileName.trim();
+    if (!isValidSftpTransferSpec(spec) || owner.length === 0 || name.length === 0 ||
+      name.length > 255 || !Number.isFinite(totalBytes) || totalBytes < -1 ||
+      !Number.isFinite(sourceSize) || sourceSize < -1) {
+      return null;
+    }
+    const remoteEndpoint: SftpEndpoint = spec.source.kind === 'ssh'
+      ? spec.source : spec.target;
+    if (remoteEndpoint.kind !== 'ssh' || (remoteEndpoint.hostId || '').trim().length === 0) {
+      return null;
+    }
+    if (this.get(spec.taskId) !== null) { return null; }
+    const remotePath: string = spec.source.kind === 'ssh' ? spec.sourcePath : spec.targetPath;
+    const record: SshSftpTaskRecord = {
+      schemaVersion: 2,
+      taskId: spec.taskId.trim(),
+      batchId: '',
+      relativePath: spec.source.kind === 'local' ? spec.sourcePath : spec.targetPath,
+      hostId: owner,
+      direction: spec.direction,
+      isDirectory,
+      remotePath,
+      fileName: name,
+      totalBytes: isDirectory ? 0 : totalBytes,
+      verifiedOffset: 0,
+      sourceSize: isDirectory ? 0 : sourceSize,
+      sourceMtime: isDirectory ? 0 : sourceMtime,
+      partialSize: -1,
+      partialMtime: -1,
+      sessionGeneration: 0,
+      sequence: this.nextTaskSequence(),
+      stage: 'queued',
+      updatedAt: Date.now(),
+      sourceEndpoint: spec.source,
+      targetEndpoint: spec.target,
+      sourcePath: spec.sourcePath,
+      targetPath: spec.targetPath,
+      partialIdentity: spec.partialIdentity,
+      checksumPolicy: spec.checksumPolicy
+    };
+    return this.upsert(record) ? this.get(record.taskId) : null;
   }
 
   /** Create one durable task per item, including empty directories, in a validated batch plan. */
@@ -262,6 +320,7 @@ export class SshSftpTaskStore {
       const sequence: number = this.nextTaskSequence();
       records.push({
         taskId,
+        schemaVersion: 2,
         batchId,
         relativePath: item.relativePath,
         hostId: owner,
@@ -278,7 +337,17 @@ export class SshSftpTaskStore {
         sessionGeneration: 0,
         sequence,
         stage: 'queued',
-        updatedAt: sequence
+        updatedAt: sequence,
+        sourceEndpoint: direction === 'upload'
+          ? { kind: 'local' } as SftpEndpoint
+          : { kind: 'ssh', hostId: owner } as SftpEndpoint,
+        targetEndpoint: direction === 'upload'
+          ? { kind: 'ssh', hostId: owner } as SftpEndpoint
+          : { kind: 'local' } as SftpEndpoint,
+        sourcePath: direction === 'upload' ? item.relativePath : remotePath,
+        targetPath: direction === 'upload' ? remotePath : item.relativePath,
+        partialIdentity: undefined,
+        checksumPolicy: 'size_mtime'
       });
     }
     for (let index = 0; index < records.length; index++) {

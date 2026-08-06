@@ -4,6 +4,32 @@
  */
 export type SshSftpTaskDirection = 'upload' | 'download';
 
+export type SftpEndpointKind = 'local' | 'ssh';
+
+export interface SftpEndpoint {
+  kind: SftpEndpointKind;
+  hostId?: string;
+}
+
+export interface SftpPartialIdentity {
+  size: number;
+  mtime: number;
+  checksum?: string;
+}
+
+/** Explicit endpoint/path contract used by durable transfers. */
+export interface SftpTransferSpec {
+  schemaVersion: number;
+  taskId: string;
+  source: SftpEndpoint;
+  target: SftpEndpoint;
+  sourcePath: string;
+  targetPath: string;
+  direction: SshSftpTaskDirection;
+  checksumPolicy: 'size_mtime' | 'sha256';
+  partialIdentity?: SftpPartialIdentity;
+}
+
 export type SshSftpTaskStage =
   | 'queued'
   | 'inspecting'
@@ -55,6 +81,7 @@ export interface SshSftpTaskCommandResult {
 }
 
 export interface SshSftpTaskRecord {
+  schemaVersion?: number;
   taskId: string;
   batchId: string;
   relativePath: string;
@@ -73,6 +100,12 @@ export interface SshSftpTaskRecord {
   sequence: number;
   stage: SshSftpTaskStage;
   updatedAt: number;
+  sourceEndpoint?: SftpEndpoint;
+  targetEndpoint?: SftpEndpoint;
+  sourcePath?: string;
+  targetPath?: string;
+  partialIdentity?: SftpPartialIdentity;
+  checksumPolicy?: 'size_mtime' | 'sha256';
 }
 
 export interface SshSftpResumeContext {
@@ -88,6 +121,7 @@ const MAX_BATCH_ID_LENGTH: number = 64;
 const MAX_HOST_ID_LENGTH: number = 160;
 const MAX_REMOTE_PATH_LENGTH: number = 2048;
 const MAX_FILE_NAME_LENGTH: number = 255;
+const SFTP_TASK_SCHEMA_VERSION: number = 2;
 
 const STAGES: SshSftpTaskStage[] = [
   'queued', 'inspecting', 'awaitingConflictDecision', 'transferring', 'paused',
@@ -118,6 +152,39 @@ function directionValue(value: Object): SshSftpTaskDirection {
   return value === 'download' ? 'download' : 'upload';
 }
 
+function endpointValue(value: Object, fallbackKind: SftpEndpointKind,
+  fallbackHostId: string): SftpEndpoint | null {
+  if (value === null || typeof value !== 'object') {
+    return { kind: fallbackKind, hostId: fallbackKind === 'ssh' ? fallbackHostId : undefined };
+  }
+  const raw: Record<string, Object> = value as Record<string, Object>;
+  const kind: SftpEndpointKind = raw['kind'] === 'ssh' ? 'ssh' : 'local';
+  const hostId: string = boundedText(raw['hostId'], MAX_HOST_ID_LENGTH);
+  if (kind === 'ssh' && hostId.length === 0) { return null; }
+  return { kind, hostId: kind === 'ssh' ? hostId : undefined };
+}
+
+export function sftpEndpointKey(endpoint: SftpEndpoint): string {
+  return endpoint.kind === 'ssh' ? 'ssh:' + (endpoint.hostId || '').trim() : 'local';
+}
+
+export function sftpEndpointPathIsSame(left: SftpEndpoint, leftPath: string,
+  right: SftpEndpoint, rightPath: string): boolean {
+  return sftpEndpointKey(left) === sftpEndpointKey(right) && leftPath.trim() === rightPath.trim();
+}
+
+export function isValidSftpTransferSpec(spec: SftpTransferSpec): boolean {
+  const sameEndpointPath: boolean = sftpEndpointPathIsSame(
+    spec.source, spec.sourcePath, spec.target, spec.targetPath);
+  if (spec.schemaVersion <= 0 || spec.taskId.trim().length === 0 ||
+    spec.sourcePath.trim().length === 0 || spec.targetPath.trim().length === 0 || sameEndpointPath) {
+    return false;
+  }
+  if (spec.source.kind === 'ssh' && (spec.source.hostId || '').trim().length === 0) { return false; }
+  if (spec.target.kind === 'ssh' && (spec.target.hostId || '').trim().length === 0) { return false; }
+  return true;
+}
+
 /** Normalize untrusted persisted JSON and reject records without a stable key. */
 export function normalizeSshSftpTaskRecord(value: Object): SshSftpTaskRecord | null {
   if (value === null || typeof value !== 'object') { return null; }
@@ -131,6 +198,40 @@ export function normalizeSshSftpTaskRecord(value: Object): SshSftpTaskRecord | n
   if (taskId.length === 0 || hostId.length === 0 || remotePath.length === 0 || fileName.length === 0) {
     return null;
   }
+  const direction: SshSftpTaskDirection = directionValue(raw['direction']);
+  const sourceEndpoint: SftpEndpoint | null = endpointValue(
+    raw['sourceEndpoint'], direction === 'upload' ? 'local' : 'ssh', hostId);
+  const targetEndpoint: SftpEndpoint | null = endpointValue(
+    raw['targetEndpoint'], direction === 'upload' ? 'ssh' : 'local', hostId);
+  if (sourceEndpoint === null || targetEndpoint === null) { return null; }
+  const sourcePath: string = boundedText(raw['sourcePath'], MAX_REMOTE_PATH_LENGTH) ||
+    (direction === 'upload' ? relativePath || fileName : remotePath);
+  const targetPath: string = boundedText(raw['targetPath'], MAX_REMOTE_PATH_LENGTH) ||
+    (direction === 'upload' ? remotePath : relativePath || fileName);
+  let partialIdentity: SftpPartialIdentity | undefined = undefined;
+  const partialValue: Object = raw['partialIdentity'];
+  if (partialValue !== null && typeof partialValue === 'object') {
+    const partialObject: Record<string, Object> = partialValue as Record<string, Object>;
+    partialIdentity = {
+      size: finiteNonNegative(partialObject['size']),
+      mtime: finiteNonNegative(partialObject['mtime']),
+      checksum: boundedText(partialObject['checksum'], 128)
+    };
+  }
+  const checksumPolicy: 'size_mtime' | 'sha256' = raw['checksumPolicy'] === 'sha256'
+    ? 'sha256' : 'size_mtime';
+  const spec: SftpTransferSpec = {
+    schemaVersion: SFTP_TASK_SCHEMA_VERSION,
+    taskId,
+    source: sourceEndpoint,
+    target: targetEndpoint,
+    sourcePath,
+    targetPath,
+    direction,
+    checksumPolicy,
+    partialIdentity
+  };
+  if (!isValidSftpTransferSpec(spec)) { return null; }
   const totalBytes: number = finiteNonNegative(raw['totalBytes']);
   const verifiedOffset: number = finiteNonNegative(raw['verifiedOffset'], 0);
   // Keep an unknown total unknown. Treating it as zero can turn a truncated
@@ -139,10 +240,11 @@ export function normalizeSshSftpTaskRecord(value: Object): SshSftpTaskRecord | n
   const safeOffset: number = safeTotal < 0 ? -1 : Math.min(verifiedOffset, safeTotal);
   return {
     taskId,
+    schemaVersion: SFTP_TASK_SCHEMA_VERSION,
     batchId,
     relativePath,
     hostId,
-    direction: directionValue(raw['direction']),
+    direction,
     isDirectory: raw['isDirectory'] === true,
     remotePath,
     fileName,
@@ -155,8 +257,31 @@ export function normalizeSshSftpTaskRecord(value: Object): SshSftpTaskRecord | n
     sessionGeneration: finiteNonNegative(raw['sessionGeneration'], 0),
     sequence: finiteNonNegative(raw['sequence'], 0),
     stage: stageValue(raw['stage']),
-    updatedAt: finiteNonNegative(raw['updatedAt'], 0)
+    updatedAt: finiteNonNegative(raw['updatedAt'], 0),
+    sourceEndpoint,
+    targetEndpoint,
+    sourcePath,
+    targetPath,
+    partialIdentity,
+    checksumPolicy
   };
+}
+
+export function makeSftpTransferSpec(taskId: string, source: SftpEndpoint,
+  target: SftpEndpoint, sourcePath: string, targetPath: string,
+  direction: SshSftpTaskDirection, checksumPolicy: 'size_mtime' | 'sha256' = 'size_mtime'):
+  SftpTransferSpec | null {
+  const spec: SftpTransferSpec = {
+    schemaVersion: SFTP_TASK_SCHEMA_VERSION,
+    taskId: taskId.trim(),
+    source,
+    target,
+    sourcePath: sourcePath.trim(),
+    targetPath: targetPath.trim(),
+    direction,
+    checksumPolicy
+  };
+  return isValidSftpTransferSpec(spec) ? spec : null;
 }
 
 export function canTransitionSshSftpTask(from: SshSftpTaskStage,

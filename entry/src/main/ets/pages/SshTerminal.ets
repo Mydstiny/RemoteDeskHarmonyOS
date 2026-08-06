@@ -62,7 +62,6 @@ import {
 } from '../services/SshTerminalPipService';
 import {
   terminalLogicalViewportHeight,
-  terminalRowsBottomOffset,
   terminalTouchDragScrollLines,
   terminalVisualBottomOffset,
 } from '../services/SshTerminalScrollPolicy';
@@ -238,8 +237,9 @@ struct SshTerminal {
    * UTF-8/VT 损坏。必须是普通字段：ArrayBuffer 不能进 @State/@Prop（观察代理
    * 会让 byteLength 访问抛 “don't have internal slot” 闪退）。
    */
-  /** xterm 页面未完成加载时的有序输出 FIFO。 */
-  private xtermOutputBuffer: XtermOutputBuffer = new XtermOutputBuffer();
+  /** xterm 页面未完成加载时的有序输出 FIFO，按主机隔离。 */
+  private xtermOutputBuffers: Map<string, XtermOutputBuffer> =
+    new Map<string, XtermOutputBuffer>();
   /** 即使连续两个 chunk 文本相同，也用序号触发终端核心消费。 */
   @State termOutputSequence: number = 0;
   /** 由成熟终端前端/VT 状态驱动的输入模式；保留给虚拟功能栏策略。 */
@@ -624,6 +624,31 @@ struct SshTerminal {
       committedHostId === this.visibleSshHostId.trim();
   }
 
+  private terminalSurfaceVisible(): boolean {
+    return this.terminalSurfaceBindingReady() && this.xtermReady;
+  }
+
+  /**
+   * A stale WebView must never drain the next host's pending transcript. Keep
+   * the fallback queue owned by the host binding, not by the page singleton.
+   */
+  private xtermOutputBufferForHost(hostId: string): XtermOutputBuffer {
+    const key: string = hostId.trim();
+    let buffer: XtermOutputBuffer | undefined = this.xtermOutputBuffers.get(key);
+    if (buffer === undefined) {
+      buffer = new XtermOutputBuffer();
+      this.xtermOutputBuffers.set(key, buffer);
+    }
+    return buffer;
+  }
+
+  private clearXtermOutputBuffers(): void {
+    this.xtermOutputBuffers.forEach((buffer: XtermOutputBuffer): void => {
+      buffer.clear();
+    });
+    this.xtermOutputBuffers.clear();
+  }
+
   private nativeTerminalInputBuffer(hostId: string): TerminalInputBuffer {
     const normalizedHostId: string = hostId.trim();
     let buffer: TerminalInputBuffer | undefined = this.nativeTerminalInputBuffers.get(normalizedHostId);
@@ -975,10 +1000,12 @@ struct SshTerminal {
     // Remove the old renderer slot while the target session is adopted. The
     // retained native core is rebound by the new keyed surface below.
     this.resetTerminalSurfaceBinding();
-    this.xtermOutputBuffer.clear();
+    const targetXtermOutputBuffer: XtermOutputBuffer =
+      this.xtermOutputBufferForHost(targetHostId);
+    targetXtermOutputBuffer.clear();
     const targetTranscript: string = this.sshTranscriptStore.snapshot(targetHostId);
     if (targetTranscript.length > 0) {
-      this.xtermOutputBuffer.enqueue(targetTranscript);
+      targetXtermOutputBuffer.enqueue(targetTranscript);
     }
     if (!this.nativeTerminalFormFactor()) {
       this.replayNativeOutputToXterm(targetHostId);
@@ -1452,7 +1479,7 @@ struct SshTerminal {
       this.termOutput = transcriptOutput;
     } else {
       const decodedOutput: string = this.decodeTerminalChunk(merged);
-      this.xtermOutputBuffer.enqueue(decodedOutput);
+      this.xtermOutputBufferForHost(outputHostId).enqueue(decodedOutput);
       this.termOutput = decodedOutput;
     }
     this.termOutputSequence++;
@@ -1486,6 +1513,10 @@ struct SshTerminal {
   /** 根据 termAreaW/H + 字号反推 cols/rows, 同步到 PTY */
   private recalcGrid(): void {
     if (this.cellHvp <= 0 || this.cellWvp <= 0) { return; }
+    // Once the visible xterm document is ready, its measured DOM cell size is
+    // the authority for cols/rows. Recomputing from an ArkUI approximation at
+    // the same time creates a resize ping-pong when font/line spacing changes.
+    if (this.xtermReady) { return; }
     let changed: boolean = false;
     const usableH: number = this.terminalRowsViewportHeight();
     if (usableH > 0) {
@@ -1550,8 +1581,8 @@ struct SshTerminal {
 
   private virtualKeyBarVisible(): boolean {
     // Keep the bar out of the route replacement and xterm boot windows. The
-    // viewport still reserves its height, so xterm does not resize twice when
-    // the bar becomes interactive.
+    // viewport reserves its height independently, so the bar never changes
+    // the terminal geometry when it becomes interactive.
     return this.xtermReady && this.virtualKeyBarRequested();
   }
 
@@ -1560,7 +1591,10 @@ struct SshTerminal {
   }
 
   private rowsBottomOffset(): number {
-    return terminalRowsBottomOffset(this.isDesktopDevice, this.kbHeight, this.navHeight);
+    // PTY rows and the visible WebView must use the same bottom boundary. The
+    // old rows-only policy ignored the software keyboard while the WebView
+    // excluded it, producing a second fit/resize with too many rows.
+    return this.barBottomOffset();
   }
 
   private topChromeOffset(): number {
@@ -1588,23 +1622,17 @@ struct SshTerminal {
     return 56 + this.headerTopOffset();
   }
 
-  private barTop(): number {
-    return Math.max(0, this.shellViewportHeight() - this.barBottomOffset() - this.virtualKeyBarHeight());
-  }
-
   private shellViewportHeight(): number {
     if (this.shellAreaH > 0) { return this.shellAreaH; }
     return Math.max(this.cellHvp * 3, this.calcRowsFallback() * this.cellHvp);
   }
 
   private terminalPaneHeight(): number {
-    return Math.max(this.cellHvp * 3,
-      this.shellViewportHeight() - this.barBottomOffset() - this.virtualKeyBarHeight());
+    return this.terminalRowsViewportHeight();
   }
 
   private terminalRowsViewportHeight(): number {
-    const shellHeight: number = this.shellAreaH > 0 ? this.shellAreaH : this.termAreaH;
-    if (shellHeight <= 0) { return this.calcRowsFallback() * this.cellHvp; }
+    const shellHeight: number = this.shellViewportHeight();
     return terminalLogicalViewportHeight(
       this.isDesktopDevice,
       shellHeight,
@@ -2873,7 +2901,7 @@ struct SshTerminal {
     this.orientationApplied = false;
     // ArkUI 可能复用页面实例；每次进入都必须从全新的会话输出开始。
     this.termOutput = '';
-    this.xtermOutputBuffer.clear();
+    this.clearXtermOutputBuffers();
     this.clearTerminalOutputQueue();
     this.clearTerminalInputQueue();
     this.terminalDecodeRemainder = new Uint8Array(0);
@@ -2979,7 +3007,7 @@ struct SshTerminal {
         this.visibleSshHostId = id.trim();
         const transcript: string = this.sshTranscriptStore.snapshot(this.hostId);
         if (transcript.length > 0) {
-          this.xtermOutputBuffer.enqueue(transcript);
+          this.xtermOutputBufferForHost(this.hostId).enqueue(transcript);
         }
         if (!this.nativeTerminalFormFactor()) {
           this.replayNativeOutputToXterm(this.hostId);
@@ -3184,7 +3212,7 @@ struct SshTerminal {
     this.connected = false;
     this.visibleSshHostId = '';
     this.termOutput = '';
-    this.xtermOutputBuffer.clear();
+    this.clearXtermOutputBuffers();
     this.clearTerminalOutputQueue();
     this.clearTerminalInputQueue();
     this.terminalDecodeRemainder = new Uint8Array(0);
@@ -4030,9 +4058,11 @@ struct SshTerminal {
     // the native renderer already drained the byte buffer before it failed.
     if (buffer !== undefined) { buffer.clear(); }
     this.terminalFallbackDecodeRemainders.set(normalizedHostId, new Uint8Array(0));
-    this.xtermOutputBuffer.clear();
+    const xtermOutputBuffer: XtermOutputBuffer =
+      this.xtermOutputBufferForHost(normalizedHostId);
+    xtermOutputBuffer.clear();
     const transcript: string = this.sshTranscriptStore.snapshot(normalizedHostId);
-    if (transcript.length > 0) { this.xtermOutputBuffer.enqueue(transcript); }
+    if (transcript.length > 0) { xtermOutputBuffer.enqueue(transcript); }
     this.termOutputSequence++;
   }
 
@@ -4053,8 +4083,7 @@ struct SshTerminal {
   private onNativeRendererUnavailable(hostId: string, surfaceIdentity: string): void {
     if (this.terminalClosing || this.hostId.trim() !== hostId.trim() ||
       this.terminalSurfaceBindingKey.trim() !== surfaceIdentity.trim() ||
-      !this.terminalSurfaceMounted ||
-      !this.nativeTerminalFormFactor()) { return; }
+      !this.terminalSurfaceMounted) { return; }
     if (this.terminalRendererReadyTimer !== -1) {
       clearTimeout(this.terminalRendererReadyTimer);
       this.terminalRendererReadyTimer = -1;
@@ -6741,10 +6770,10 @@ struct SshTerminal {
         colors: [['rgba(255,255,255,0.09)', 0], ['rgba(255,255,255,0.00)', 1]]
       })
 
-      // Keep a committed renderer slot alive across a host switch. Its active
-      // prop is the lifecycle gate; the loading layer masks the old frame
-      // until the target binding has been committed.
-      if ((!this.connected || !this.terminalSurfaceBindingReady()) &&
+      // Keep one keyed surface slot per committed SSH binding. During the
+      // handoff the old document is masked; the new document is mounted only
+      // after the host/binding commit has become observable.
+      if ((!this.connected || !this.terminalSurfaceBindingReady() || !this.xtermReady) &&
         this.terminalSurfaceViewKey.length === 0) {
         Column() {
           if (this.connecting || (this.connected && !this.terminalSurfaceMounted)) {
@@ -6760,108 +6789,70 @@ struct SshTerminal {
         }.width('100%').layoutWeight(1).justifyContent(FlexAlign.Center).backgroundColor('#0D0D0D')
       } else {
         Stack({ alignContent: Alignment.TopStart }) {
-            if (!this.connected || !this.terminalSurfaceBindingReady()) {
-              Column() {
-                if (this.connecting || (this.connected && !this.terminalSurfaceMounted)) {
-                  LoadingProgress().width(32).height(32).color(this.accentColor)
-                  Text('Connecting...').fontSize(13).fontColor('#888').margin({ top: 10 })
-                } else {
-                  Text(this.connectionError).fontSize(14).fontColor('#FF6B6B')
-                  Button('重试').margin({ top: 16 }).backgroundColor(this.accentColor)
-                    .fontColor('#FFFFFF').borderRadius(8)
-                    .onClick((): void => { this.retryConnection(); })
-                  Button('返回').margin({ top: 16 }).backgroundColor(this.accentColor)
-                    .fontColor('#FFFFFF').borderRadius(8)
-                    .onClick((): void => { this.closeSessionAndBack(); })
-                }
+          if (!this.terminalSurfaceVisible()) {
+            Column() {
+              if (this.connecting || (this.connected &&
+                (!this.terminalSurfaceMounted || !this.xtermReady))) {
+                LoadingProgress().width(32).height(32).color(this.accentColor)
+                Text(this.connected ? 'Preparing terminal...' : 'Connecting...')
+                  .fontSize(13).fontColor('#888').margin({ top: 10 })
+              } else {
+                Text(this.connectionError).fontSize(14).fontColor('#FF6B6B')
+                Button('重试').margin({ top: 16 }).backgroundColor(this.accentColor)
+                  .fontColor('#FFFFFF').borderRadius(8)
+                  .onClick((): void => { this.retryConnection(); })
+                Button('返回').margin({ top: 16 }).backgroundColor(this.accentColor)
+                  .fontColor('#FFFFFF').borderRadius(8)
+                  .onClick((): void => { this.closeSessionAndBack(); })
               }
-              .width('100%').height('100%').justifyContent(FlexAlign.Center)
-              .backgroundColor('#0D0D0D').zIndex(30)
             }
-            // Keep the native VT core/session alive in the registry; the
-            // renderer itself receives an explicit inactive -> active rebind.
-            Stack({ alignContent: Alignment.TopStart }) {
+            .width('100%').height('100%').justifyContent(FlexAlign.Center)
+            .backgroundColor('#0D0D0D').zIndex(30)
+          }
+
+          Stack({ alignContent: Alignment.TopStart }) {
             ForEach([this.terminalSurfaceViewKey + ':commit-' +
               this.terminalSurfaceCommitSequence.toString()], (surfaceRenderKey: string): void => {
-              // The keyed wrapper owns the visual lifecycle. The renderer
-              // component below may otherwise be reused after a host switch
-              // even when the page has already committed a new binding.
               Stack({ alignContent: Alignment.TopStart }) {
-                if (this.shouldUseNativeTerminal()) {
-                  GpuTerminalRenderer({
-                    coreKey: this.terminalSurfaceCommittedHostId,
-                    surfaceIdentity: this.terminalSurfaceBindingKey,
-                    active: this.connected && this.terminalSurfaceBindingReady(),
-                    renderRevision: this.terminalSurfaceRenderRevision,
-                    surfaceRefreshRequest: this.terminalSurfaceRefreshRequest,
-                    cols: this.termCols,
-                    rows: this.termRows,
-                    cellWvp: this.cellWvp,
-                    cellHvp: this.cellHvp,
-                    fontSize: this.fontSize,
-                    viewportHeight: this.terminalPaneHeight(),
-                    visibleViewportHeight: this.terminalRowsViewportHeight(),
-                    bottomAlignSparseContent: !this.isDesktopDevice,
-                    inputBuffer: this.nativeTerminalInputBuffer(this.terminalSurfaceCommittedHostId),
-                    inputSequence: this.termOutputSequence,
-                    copyRequest: $copyRequest,
-                    copiedText: $copiedText,
-                    scrollToBottomRequest: this.scrollToBottomRequest,
-                    forceScrollToBottomRequest: this.forceScrollToBottomRequest,
-                    externalScrollLines: this.terminalExternalScrollLines,
-                    externalScrollRequest: this.terminalExternalScrollRequest,
-                    onTerminalModeChange: (mode: TerminalCoreMode): void => {
-                      this.onTerminalModeChange(mode);
-                    },
-                    onRendererReady: (hostId: string, surfaceIdentity: string): void => {
-                      this.onNativeRendererReady(hostId, surfaceIdentity);
-                    },
-                    onRendererUnavailable: (hostId: string, surfaceIdentity: string): void => {
-                      this.onNativeRendererUnavailable(hostId, surfaceIdentity);
-                    }
-                  })
-                  .width('100%')
-                  .height(this.terminalPaneHeight())
-                } else {
-                  SshXtermSurface({
-                    coreKey: this.terminalSurfaceBindingKey,
-                    active: this.connected && this.terminalSurfaceBindingReady(),
-                    renderRevision: this.terminalSurfaceRenderRevision,
-                    surfaceRefreshRequest: this.terminalSurfaceRefreshRequest,
-                    cols: this.termCols,
-                    rows: this.termRows,
-                    viewportWidth: this.termAreaW,
-                    fontSize: this.fontSize,
-                    lineSpacing: normalizeSshTerminalLineSpacing(this.lineSpacing),
-                    bottomAlignSparseContent: !this.isDesktopDevice,
-                    viewportHeight: this.terminalPaneHeight(),
-                    outputBuffer: this.xtermOutputBuffer,
-                    outputSequence: this.termOutputSequence,
-                    focusRequest: this.terminalFocusRequest,
-                    copyRequest: this.copyRequest,
-                    copiedText: this.copiedText,
-                    scrollToBottomRequest: this.scrollToBottomRequest,
-                    forceScrollToBottomRequest: this.forceScrollToBottomRequest,
-                    externalScrollLines: this.terminalExternalScrollLines,
-                    externalScrollRequest: this.terminalExternalScrollRequest,
-                    onData: (data: string, surfaceIdentity: string): void => {
-                      this.onXtermData(data, surfaceIdentity);
-                    },
-                    onResize: (cols: number, rows: number, surfaceIdentity: string): void => {
-                      this.onXtermResize(cols, rows, surfaceIdentity);
-                    },
-                    onReady: (surfaceIdentity: string): void => {
-                      this.onXtermReady(surfaceIdentity);
-                    }
-                  })
-                  .width('100%')
-                  .height(this.terminalPaneHeight())
-                }
+                SshXtermSurface({
+                  coreKey: this.terminalSurfaceBindingKey,
+                  renderRevision: this.terminalSurfaceRenderRevision,
+                  surfaceRefreshRequest: this.terminalSurfaceRefreshRequest,
+                  active: this.connected && this.terminalSurfaceBindingReady(),
+                  cols: this.termCols,
+                  rows: this.termRows,
+                  viewportWidth: this.termAreaW,
+                  fontSize: this.fontSize,
+                  lineSpacing: normalizeSshTerminalLineSpacing(this.lineSpacing),
+                  bottomAlignSparseContent: !this.isDesktopDevice,
+                  viewportHeight: this.terminalPaneHeight(),
+                  outputBuffer: this.xtermOutputBufferForHost(this.terminalSurfaceCommittedHostId),
+                  outputSequence: this.termOutputSequence,
+                  focusRequest: this.terminalFocusRequest,
+                  copyRequest: this.copyRequest,
+                  copiedText: this.copiedText,
+                  scrollToBottomRequest: this.scrollToBottomRequest,
+                  forceScrollToBottomRequest: this.forceScrollToBottomRequest,
+                  externalScrollLines: this.terminalExternalScrollLines,
+                  externalScrollRequest: this.terminalExternalScrollRequest,
+                  onData: (data: string, surfaceIdentity: string): void => {
+                    this.onXtermData(data, surfaceIdentity);
+                  },
+                  onResize: (cols: number, rows: number, surfaceIdentity: string): void => {
+                    this.onXtermResize(cols, rows, surfaceIdentity);
+                  },
+                  onReady: (surfaceIdentity: string): void => {
+                    this.onXtermReady(surfaceIdentity);
+                  }
+                })
+                .width('100%')
+                .height(this.terminalPaneHeight())
               }
               .id('ssh-terminal-surface-' + surfaceRenderKey)
               .width('100%')
               .height(this.terminalPaneHeight())
             }, (surfaceRenderKey: string): string => surfaceRenderKey)
+
             // 隐藏 TextInput — 1×1 可点击, 软键盘锚点
             TextInput({ text: this.kbInput, controller: this.kbCtrl })
               .id('sshKbInput')
@@ -6969,7 +6960,7 @@ struct SshTerminal {
               })
           }
           .width('100%')
-          .height(this.shellViewportHeight())
+          .height('100%')
           .position({ x: 0, y: 0 })
           .onClick(() => {
             // 点击终端显式进入终端焦点；移动端同时请求软键盘。
@@ -7018,7 +7009,8 @@ struct SshTerminal {
             }
             .width('100%')
             .height(VirtualKeyBar.TOTAL_H)
-            .position({ x: 0, y: this.barTop() })
+            .align(Alignment.BottomStart)
+            .margin({ bottom: this.barBottomOffset() })
             .zIndex(20)
             .hitTestBehavior(HitTestMode.Default)
           }

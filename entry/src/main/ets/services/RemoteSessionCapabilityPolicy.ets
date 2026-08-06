@@ -2,6 +2,7 @@ export interface SessionCapabilityState {
   protocol: 'rdp' | 'rustdesk' | 'ssh' | 'vnc' | string;
   connected: boolean;
   rdpDriveMounted: boolean;
+  rdpClipboardEnabled: boolean;
   rdpClipboardReady: boolean;
   sftpConnected: boolean;
   rustDeskVerifiedPeer: boolean;
@@ -83,12 +84,22 @@ export function resolveSessionCapabilities(state: SessionCapabilityState): Remot
 
   if (state.protocol === 'rdp') {
     const drive = state.rdpDriveMounted ? available() : unavailable('RDP 共享盘尚未挂载');
-    const inbound = state.rdpClipboardReady ? available() : unavailable('RDP 剪贴板通道尚未就绪');
+    const clipboardDisabled = unavailable('RDP 文本剪贴板未在 RDP 设置中开启');
+    const inbound = !state.rdpClipboardEnabled
+      ? clipboardDisabled
+      : state.rdpClipboardReady ? available() : unavailable('RDP 剪贴板通道尚未就绪');
     return {
       connect,
-      clipboardSend: available(),
+      // Sending is not a local-only operation: FreeRDP must have negotiated
+      // cliprdr for the current session. Keep the capability truthful when a
+      // user enables the preference after connecting with the channel off.
+      clipboardSend: !state.rdpClipboardEnabled
+        ? clipboardDisabled
+        : state.rdpClipboardReady ? available() : unavailable('RDP 剪贴板通道尚未就绪'),
       clipboardReceive: inbound,
-      fileUpload: state.rdpClipboardReady ? available() : unavailable('RDP 文件剪贴板通道尚未就绪'),
+      fileUpload: !state.rdpClipboardEnabled
+        ? clipboardDisabled
+        : state.rdpClipboardReady ? available() : unavailable('RDP 文件剪贴板通道尚未就绪'),
       fileDownload: drive,
       multiDisplay: unavailable('当前 RDP 渲染仅支持单显示器')
     };

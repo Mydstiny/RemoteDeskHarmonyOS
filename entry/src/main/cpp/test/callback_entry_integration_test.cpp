@@ -329,6 +329,32 @@ RDP_TEST_CASE(oh_avcodec_production_entries_reject_old_generation) {
     DeactivateOwner(second);
 }
 
+RDP_TEST_CASE(oh_avcodec_callbacks_are_retained_during_pipeline_transition) {
+    const Render::DecoderSessionIdentity owner {81041, 1, 8104101};
+    ActivateOwner(owner);
+
+    int64_t handle = 0;
+    auto decoder = DecoderNapi::RegisterCallbackTestDecoder(owner, handle);
+    RDP_ASSERT(decoder != nullptr);
+    RDP_ASSERT(handle > 0);
+    RDP_ASSERT(DecoderNapi::SetCallbackTestPipelineState(handle, owner, false, true));
+
+    auto contextOwner = decoder->CallbackContextForTesting();
+    void* userData = contextOwner.get();
+    // The platform may issue the first input-buffer and frame-available
+    // callbacks before ConfigurePipeline publishes the new renderer. They
+    // must still reach the current decoder; otherwise input buffers remain in
+    // user ownership and the codec stalls permanently after recovery.
+    HardwareDecoder::InvokeNeedInputCallbackForTesting(nullptr, 7, nullptr, userData);
+    HardwareDecoder::InvokeFrameAvailableCallbackForTesting(userData);
+    RDP_ASSERT_EQ(decoder->PendingInputBufferCountForTesting(), static_cast<size_t>(1));
+    RDP_ASSERT_EQ(decoder->FrameAvailableCountForTesting(), static_cast<uint64_t>(1));
+
+    RDP_ASSERT(DecoderNapi::SetCallbackTestPipelineState(handle, owner, true, false));
+    DecoderNapi::DestroyCallbackTestDecoder(handle, owner);
+    DeactivateOwner(owner);
+}
+
 static void run_oh_avcodec_callback_body_lease_survives_destroy();
 
 using AvCodecCallbackEntry = std::function<void(void*)>;

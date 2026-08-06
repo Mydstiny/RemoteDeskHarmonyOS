@@ -16,6 +16,7 @@ export const VERSION: SessionVersionInfo;
   export function sendKey(sessionId: number, scancode: number, pressed: boolean): void;
   export function sendMouse(sessionId: number, x: number, y: number, button: number, pressed: boolean): void;
   export function sendMouseWheel(sessionId: number, x: number, y: number, delta: number): void;
+  export function sendRustDeskTouchpadWheel(sessionId: number, x: number, y: number): boolean;
   export function sendText(sessionId: number, text: string): void;
   export function enqueueSshTerminalInput(sessionId: number, text: string,
     expectedGeneration?: number, control?: boolean, ordered?: boolean,
@@ -43,8 +44,15 @@ export const VERSION: SessionVersionInfo;
   export function setSessionClipboardFiles(sessionId: number, paths: string[]): boolean;
   export function getSessionClipboardText(sessionId: number): string;
   export function isSessionClipboardReady(sessionId: number): boolean;
+  export function setSessionClipboardEnabled(sessionId: number, enabled: boolean): boolean;
 
   export function getConnectionState(sessionId: number): number;
+  export function getSshAuthPrompt(sessionId: number, sessionGeneration: number): SshAuthPromptRequest | null;
+  export function respondSshAuthPrompt(response: SshAuthPromptResponse): boolean;
+  export function cancelSshAuthPrompt(sessionId: number, sessionGeneration: number,
+    requestId: number): boolean;
+  export function getSshSessionSnapshot(sessionId: number,
+    sessionGeneration: number): SshSessionSnapshot;
   export function configureSshForwarding(sessionId: number, sessionGeneration: number,
     config: SshForwardingConfig): number;
   export function removeSshForwarding(sessionId: number, sessionGeneration: number,
@@ -290,6 +298,14 @@ export interface RdpRenderStats {
   renderedPaintCount: number;
   firstPaintMs: number;
   lastPaintMs: number;
+  lastRemoteUpdateAgeMs: number;
+  eventLoopAgeMs: number;
+  eventLoopBlockMaxUs: number;
+  lastInputPostAgeMs: number;
+  eventLoopTicks: number;
+  networkCheckCount: number;
+  networkCheckFailures: number;
+  inputPostFailures: number;
   lastRenderResult: number;
   skippedPaintCount: number;
   slowRenderCount: number;
@@ -519,6 +535,11 @@ export interface SessionConfig {
   sshProxyPort?: number;
   sshProxyUsername?: string;
   sshProxyPassword?: string;
+  sshProxyAuthMethod?: 'password' | 'publickey' | 'kbd-interactive';
+  sshProxyPrivateKeyPem?: string;
+  sshProxyPrivateKeyPassphrase?: string;
+  sshProxyKeyboardInteractiveResponses?: string[];
+  sshRoute?: SshRoute;
   expectedHostKeyRawBase64?: string;
   expectedHostKeyFingerprintSha256?: string;
   sshJumpHostKeyRawBase64?: string;
@@ -548,6 +569,29 @@ export interface SessionConfig {
   rdRelayPort?: number;
   // Server Pro control-plane token; transient only, never persist in RemoteHost/cloud.
   rdAccessToken?: string;
+}
+
+export type SshRouteType = 'direct' | 'http_connect' | 'socks5' | 'frp_tcp' |
+  'ssh_jump' | 'frp_visitor' | 'frp_stcp' | 'frp_sudp' | 'frp_xtcp';
+
+export interface SshJumpHop {
+  host: string;
+  port: number;
+  username: string;
+  authMethod: 'password' | 'publickey' | 'kbd-interactive';
+  expectedHostKeyRawBase64?: string;
+  expectedHostKeyFingerprintSha256?: string;
+  connectTimeoutMs: number;
+}
+
+export interface SshRoute {
+  schemaVersion: number;
+  type: SshRouteType;
+  endpointHost: string;
+  endpointPort: number;
+  hops: SshJumpHop[];
+  controlId?: string;
+  connectTimeoutMs: number;
 }
 
 export interface SftpFileEntry {
@@ -586,6 +630,7 @@ export interface SftpMutationAsyncResult {
 }
 
 export interface SshForwardingConfig {
+  schemaVersion?: number;
   id: string;
   mode: number; // 0=local, 1=remote, 2=dynamic
   bindHost?: string;
@@ -595,9 +640,71 @@ export interface SshForwardingConfig {
   maxConnections?: number;
   enabled?: boolean;
   allowPublicBind?: boolean;
+  minBindPort?: number;
+  maxBindPort?: number;
+  maxBytes?: number;
+  expiresAtMs?: number;
+}
+
+export interface SshAuthPrompt {
+  text: string;
+  echo: boolean;
+}
+
+export interface SshAuthPromptRequest {
+  schemaVersion: number;
+  requestId: number;
+  sessionId: number;
+  generation: number;
+  targetHost: string;
+  hop: string;
+  round: number;
+  name: string;
+  instruction: string;
+  prompts: SshAuthPrompt[];
+  expiresAtMs: number;
+}
+
+export interface SshAuthPromptResponse {
+  schemaVersion?: number;
+  requestId: number;
+  sessionId: number;
+  generation: number;
+  responses: string[];
+  cancelled?: boolean;
+}
+
+export interface SshSessionSnapshot {
+  schemaVersion: number;
+  errorCode: number;
+  sessionId: number;
+  generation: number;
+  channelId: string;
+  state: number;
+  stateName: string;
+  eventSequence: number;
+  host: string;
+  port: number;
+  backgroundLimited: boolean;
+  lastEventType: string;
+}
+
+export interface SshEventEnvelope {
+  schemaVersion: number;
+  sessionId: number;
+  generation: number;
+  channelId: string;
+  taskId: string;
+  requestId: string;
+  sequence: number;
+  timestampMs: number;
+  priority: number;
+  type: string;
+  payloadJson?: string;
 }
 
 export interface SshForwardingSnapshot {
+  schemaVersion: number;
   id: string;
   mode: number;
   bindHost: string;
@@ -610,6 +717,42 @@ export interface SshForwardingSnapshot {
   state: number; // 0=stopped, 1=starting, 2=listening, 3=stopping, 4=failed
   sessionGeneration: number;
   activeConnections: number;
+  lastError: number;
+  minBindPort: number;
+  maxBindPort: number;
+  ownerSessionId: number;
+  ownerChannelId: string;
+  ownerGeneration: number;
+  transferredBytes: number;
+  expiresAtMs: number;
+}
+
+export interface SshForwardingProfile {
+  schemaVersion: number;
+  id: string;
+  mode: number;
+  bindHost: string;
+  bindPort: number;
+  targetHost: string;
+  targetPort: number;
+  maxConnections: number;
+  enabled: boolean;
+  allowPublicBind: boolean;
+  minBindPort?: number;
+  maxBindPort?: number;
+  maxBytes?: number;
+  expiresAtMs?: number;
+}
+
+export interface SshForwardingRuntime {
+  schemaVersion: number;
+  id: string;
+  state: number;
+  sessionId: number;
+  channelId: string;
+  generation: number;
+  activeConnections: number;
+  transferredBytes: number;
   lastError: number;
 }
 
@@ -764,6 +907,12 @@ export interface SshProxyConfig {
   port?: number;
   username?: string;
   password?: string;
+  privateKeyPem?: string;
+  privateKeyPassphrase?: string;
+  authMethod?: 'password' | 'publickey' | 'kbd-interactive';
+  keyboardInteractiveResponses?: string[];
+  expectedHostKeyRawBase64?: string;
+  expectedHostKeyFingerprintSha256?: string;
 }
 
 export interface SshHostKeyInfo {

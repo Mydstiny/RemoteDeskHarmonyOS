@@ -122,6 +122,7 @@ import { RemoteCursorOverlay, RemoteCursorOverlayState } from '../components/Rem
 import { RemoteSessionTopBar, RemoteSessionTopBarActions } from '../components/RemoteSessionTopBar';
 import { RustDeskDiagnosticsHud } from '../components/RustDeskDiagnosticsHud';
 import { VncDiagnosticsHud } from '../components/VncDiagnosticsHud';
+import { EMPTY_RDP_RENDER_STATS, RdpDiagnosticsHud } from '../components/RdpDiagnosticsHud';
 import { VncSessionToolbar, VncSessionToolbarActions } from '../components/VncSessionToolbar';
 import {
   shouldEnableRustDeskPro,
@@ -349,7 +350,6 @@ import {
 } from '../services/BackgroundVideoPrewarmPolicy';
 import {
   rdpSessionErrorSheetPrefersLandscapeCenter,
-  rdpNoFrameWatchdogError,
   rdpSessionErrorFromNativeMessage,
   RdpSessionErrorDialogModel,
   shouldCleanupRdpSessionBeforeErrorDismiss,
@@ -416,6 +416,17 @@ import {
   shouldStartVncTouchpadFling,
   VNC_TOUCHPAD_FLING_INTERVAL_MS
 } from '../services/RemoteWheelPolicy';
+import {
+  accumulatePhysicalTouchpadPinch,
+  accumulateRustDeskPhysicalTouchpadWheel,
+  physicalTouchpadZoomKeyCode,
+  physicalTouchpadZoomModifierKeyCode,
+  PhysicalTouchpadPinchState,
+  PhysicalTouchpadWheelState,
+  resetPhysicalTouchpadPinchState,
+  resetPhysicalTouchpadWheelState,
+  shouldUseRustDeskPhysicalTouchpad
+} from '../services/RemotePhysicalTouchpadPolicy';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { fileIo, fileUri, picker } from '@kit.CoreFileKit';
 import { preferences, unifiedDataChannel, uniformDataStruct, uniformTypeDescriptor } from '@kit.ArkData';
@@ -719,6 +730,10 @@ struct RemoteDesktop {
   @StorageLink('virtualMouseStyle') virtualMouseStyle: string = 'circle';
   @StorageLink('rdpControlMode') @Watch('onRemoteControlModeChange')
   rdpControlMode: number = 0; // 0=touchpad, 1=direct touch, 2=keyboard/mouse
+  @StorageLink('rdpClipboardEnabled') @Watch('onRdpClipboardSettingChange')
+  rdpClipboardEnabled: boolean = true;
+  @StorageLink('rdpShowDiagnostics') @Watch('onRdpDiagnosticsSettingChange')
+  rdpShowDiagnostics: boolean = false;
   @State vncControlMode: number = 0; // VNC-only: 0=touchpad, 1=direct touch, 2=keyboard/mouse
   @State @Watch('onRustDeskDiagnosticsSettingChange') vncShowDiagnostics: boolean = false;
   private vncDisplayScaleMode: VncDisplayScaleMode = 'fit';
@@ -755,6 +770,7 @@ struct RemoteDesktop {
   @State vncCertificateShowDetails: boolean = false;
   @State vncCertificateWarning: string = '';
   @State rustDeskDiagnostics: RustDeskDiagnosticsSnapshot = EMPTY_RUSTDESK_DIAGNOSTICS;
+  @State rdpRenderStats: RdpRenderStats = EMPTY_RDP_RENDER_STATS;
   @State rustDeskDisplayCapabilities: RustDeskDisplayCapabilities = EMPTY_RUSTDESK_DISPLAY_CAPABILITIES;
   @State rustDeskDisplayPendingResolution: RustDeskDisplayResolution = EMPTY_RUSTDESK_DISPLAY_RESOLUTION;
   @State showRustDeskDisplayResolutionMenu: boolean = false;
@@ -867,6 +883,7 @@ struct RemoteDesktop {
   private pendingDisappearDecisionTimer: number = -1;
   private disappearDecisionGeneration: number = 0;
   private rustDeskDiagnosticsTimer: number = -1;
+  private rdpDiagnosticsTimer: number = -1;
   private rustDeskDiagnosticsDockInitialized: boolean = false;
   private vncDiagnosticsDockInitialized: boolean = false;
   private vncToolbarCollapseTimer: number = -1;
@@ -1133,6 +1150,11 @@ struct RemoteDesktop {
   private physicalWheelRemainder: number = 0;
   private lastPhysicalWheelAtMs: number = 0;
   private physicalWheelSendCount: number = 0;
+  private physicalTouchpadWheelState: PhysicalTouchpadWheelState =
+    resetPhysicalTouchpadWheelState();
+  private physicalTouchpadPinchState: PhysicalTouchpadPinchState =
+    resetPhysicalTouchpadPinchState();
+  private physicalTouchpadPinchSendCount: number = 0;
   private inputDeviceListenerRegistered: boolean = false;
   private inputDevicePromptVisible: boolean = false;
   private externalInputPromptedThisSession: boolean = false;
@@ -1140,7 +1162,13 @@ struct RemoteDesktop {
   private fileTransferHideTimer: number = -1;
   private rdpClipboardBatchSequence: number = 0;
   private rdpRenderWatchdogTimer: number = -1;
+  private rdpWatchdogUnhealthySamples: number = 0;
+  private rdpWatchdogLastRendered: number = 0;
+  private rdpWatchdogLastPaint: number = 0;
+  private rdpWatchdogLastRejected: number = 0;
+  private rdpWatchdogLastRecoveryMs: number = 0;
   private rdpNativeStateMonitorTimer: number = -1;
+  private rdpTransferStatusTimer: number = -1;
   private remoteCursorPollTimer: number = -1;
   private rustDeskGeometrySyncTimer: number = -1;
   private vncGeometrySyncTimer: number = -1;
@@ -3260,6 +3288,9 @@ struct RemoteDesktop {
 
   private shouldShowActiveDiagnostics(): boolean {
     const protocol: string = this.currentProtocolName();
+    if (protocol === 'rdp') {
+      return this.rdpShowDiagnostics && this.connected && this.sessionId > 0;
+    }
     const showDiagnostics: boolean = protocol === 'vnc' ? this.vncShowDiagnostics :
       this.rustdeskShowDiagnostics;
     return shouldShowSessionDiagnostics(showDiagnostics, this.connected, protocol, this.sessionId);
@@ -3306,8 +3337,15 @@ struct RemoteDesktop {
       return this.isVncSession() && this.pendingVncHost !== null && this.pendingVncHost.clipboardEnabled;
     }
     return clipboardSyncEnabledForProtocol(protocol,
-      AppStorage.get<boolean>('rdpClipboardEnabled') ?? true,
+      this.rdpClipboardEnabled,
       AppStorage.get<boolean>('rustdeskClipboardEnabled') ?? this.rustdeskClipboardEnabled);
+  }
+
+  private rdpFileTransferEnabledForSession(sessionId: number = this.sessionId,
+    attemptId: number = this.connectAttemptId): boolean {
+    return this.rdpClipboardEnabled && this.connected && this.sessionId > 0 &&
+      this.sessionId === sessionId && this.connectAttemptId === attemptId &&
+      this.pendingHost !== null && this.pendingHost.protocol === 'rdp';
   }
 
   private handleVncTrustRequired(host: VncHostView, detail: string): void {
@@ -3342,6 +3380,7 @@ struct RemoteDesktop {
       protocol: this.currentProtocolName(),
       connected: this.connected,
       rdpDriveMounted: this.rdpDriveMounted,
+      rdpClipboardEnabled: this.rdpClipboardEnabled,
       rdpClipboardReady: clipboardReady,
       sftpConnected: false,
       rustDeskVerifiedPeer: this.connected && this.currentProtocolName() === 'rustdesk',
@@ -3521,12 +3560,18 @@ struct RemoteDesktop {
   private onRemoteConnectionStateChange(): void {
     if (this.connected) {
       this.syncRemoteSystemPointer('connection-state');
-      this.startRustDeskDiagnosticsPolling();
+      if (this.isRdpRemoteSession()) {
+        this.startRdpDiagnosticsPolling();
+      } else {
+        this.startRustDeskDiagnosticsPolling();
+      }
       void this.refreshPhysicalKeyboardPresence('connection-state');
     } else {
       this.vncExternalInputAutoSwitchSessionId = -1;
+      this.resetRustDeskPhysicalTouchpadState();
       this.restoreRemoteSystemPointer('connection-state');
       this.stopRustDeskDiagnosticsPolling(true);
+      this.stopRdpDiagnosticsPolling(true);
     }
     void this.setRemoteNavigationHidden(this.connected, 'connection-state');
     this.publishRemoteCursorOverlay();
@@ -3534,6 +3579,7 @@ struct RemoteDesktop {
 
   private onRemoteControlModeChange(): void {
     this.releaseCanvasPinchInput('control-mode-change');
+    this.resetRustDeskPhysicalTouchpadState();
     this.syncRemoteSystemPointer('control-mode');
     void this.setRemoteNavigationHidden(this.connected, 'control-mode-change');
     this.requestRemoteCursorViewRefresh(true);
@@ -3710,6 +3756,7 @@ struct RemoteDesktop {
     // Drop the coalesced move before any release helper can flush it in the
     // old coordinate space. Release controls themselves remain reliable and
     // are queued before the native display-switch barrier.
+    this.resetRustDeskPhysicalTouchpadState();
     releaseRustDeskInputForDisplaySwitch({
       discardPendingMouseMove: (): void => this.discardPendingMouseMove(),
       releaseCanvasPinchInput: (): void => this.releaseCanvasPinchInput(reason),
@@ -6064,11 +6111,100 @@ struct RemoteDesktop {
     }
   }
 
+  private onRdpDiagnosticsSettingChange(): void {
+    if (this.shouldShowActiveDiagnostics()) {
+      this.startRdpDiagnosticsPolling();
+    } else {
+      this.stopRdpDiagnosticsPolling(true);
+    }
+  }
+
+  private onRdpClipboardSettingChange(): void {
+    if (!this.isRdpRemoteSession() || !this.connected || this.sessionId <= 0) {
+      return;
+    }
+    if (!this.rdpClipboardEnabled) {
+      const nativeChanged: boolean = this.loader.setSessionClipboardEnabled(this.sessionId, false);
+      if (this.clipboardBridge !== null) {
+        this.clipboardBridge.stopMonitoring();
+        this.clipboardBridge = null;
+      }
+      hilog.info(RD_DOMAIN, RD_TAG, 'RDP clipboard bridge stopped by setting change native=' +
+        (nativeChanged ? 'updated' : 'unavailable'));
+      return;
+    }
+    // cliprdr is negotiated during the FreeRDP handshake. Enabling the
+    // preference after a session was established with the channel disabled
+    // cannot add that channel safely; do not start a local bridge that would
+    // silently drop every update. The preference remains persisted for the
+    // next connection.
+    if (!this.loader.isSessionClipboardReady(this.sessionId)) {
+      this.loader.setSessionClipboardEnabled(this.sessionId, true);
+      hilog.info(RD_DOMAIN, RD_TAG,
+        'RDP clipboard remains unavailable until reconnect: cliprdr was not negotiated');
+      promptAction.showToast({
+        message: '本次连接未启用 RDP 剪贴板通道，重新连接后生效',
+        duration: 2200
+      });
+      return;
+    }
+    if (!this.loader.setSessionClipboardEnabled(this.sessionId, true)) {
+      hilog.warn(RD_DOMAIN, RD_TAG, 'RDP clipboard native setting update was rejected');
+      return;
+    }
+    this.startClipboardBridgeBestEffort(this.sessionId, this.connectAttemptId, true);
+  }
+
+  private refreshRdpDiagnostics(sessionId: number, attemptId: number): void {
+    if (!this.shouldShowActiveDiagnostics() || this.sessionId !== sessionId ||
+      this.connectAttemptId !== attemptId) {
+      return;
+    }
+    const snapshot: RdpRenderStats = this.loader.getRdpRenderStats(sessionId);
+    if (this.sessionId !== sessionId || this.connectAttemptId !== attemptId) {
+      return;
+    }
+    this.rdpRenderStats = snapshot;
+  }
+
+  private startRdpDiagnosticsPolling(): void {
+    if (this.rdpDiagnosticsTimer >= 0 || !this.shouldShowActiveDiagnostics() ||
+      !this.isRdpRemoteSession()) {
+      return;
+    }
+    const observedSessionId: number = this.sessionId;
+    const observedAttemptId: number = this.connectAttemptId;
+    this.refreshRdpDiagnostics(observedSessionId, observedAttemptId);
+    this.rdpDiagnosticsTimer = setInterval((): void => {
+      if (!this.shouldShowActiveDiagnostics() || this.sessionId !== observedSessionId ||
+        this.connectAttemptId !== observedAttemptId || !this.isRdpRemoteSession()) {
+        this.stopRdpDiagnosticsPolling(false);
+        return;
+      }
+      this.refreshRdpDiagnostics(observedSessionId, observedAttemptId);
+    }, 1000);
+  }
+
+  private stopRdpDiagnosticsPolling(reset: boolean): void {
+    if (this.rdpDiagnosticsTimer >= 0) {
+      clearInterval(this.rdpDiagnosticsTimer);
+      this.rdpDiagnosticsTimer = -1;
+    }
+    if (reset) {
+      this.rdpRenderStats = EMPTY_RDP_RENDER_STATS;
+    }
+  }
+
   /**
    * 页面从后台恢复后 aboutToDisappear 已清空了诊断状态；恢复渲染器后
    * 必须重新建立本次 session 的轮询，否则基础面板和 Pro 本机采样都会停在空值。
    */
   private resumeRustDeskDiagnosticsAfterForeground(): void {
+    if (this.isRdpRemoteSession()) {
+      this.startRdpDiagnosticsPolling();
+      this.startRdpTransferStatusPolling(this.sessionId, this.connectAttemptId);
+      return;
+    }
     if (!this.shouldShowActiveDiagnostics()) {
       return;
     }
@@ -6139,6 +6275,8 @@ struct RemoteDesktop {
     this.releaseCanvasPinchInput('page-disappear');
     this.restoreRemoteSystemPointer('page-disappear');
     this.stopRustDeskDiagnosticsPolling(true);
+    this.stopRdpDiagnosticsPolling(true);
+    this.clearRdpTransferStatusPolling(false);
     try {
       if (this.inputDeviceListenerRegistered) {
         inputDevice.off('change', this.inputDeviceListener);
@@ -7486,6 +7624,7 @@ struct RemoteDesktop {
         RemoteKeyboardLayout.MACOS : RemoteKeyboardLayout.WINDOWS;
       this.physicalKeyboardLayoutConfirmed = true;
       this.physicalKeyboardLayoutPromptVisible = false;
+      this.physicalTouchpadPinchState = resetPhysicalTouchpadPinchState();
       hilog.info(RD_DOMAIN, RD_TAG, 'physical-keyboard-layout selected=' +
         this.physicalKeyboardLayout);
       this.scheduleRemoteInputFocus('keyboard-layout-selected');
@@ -7986,6 +8125,11 @@ struct RemoteDesktop {
       clearTimeout(this.rdpRenderWatchdogTimer);
       this.rdpRenderWatchdogTimer = -1;
     }
+    this.rdpWatchdogUnhealthySamples = 0;
+    this.rdpWatchdogLastRendered = 0;
+    this.rdpWatchdogLastPaint = 0;
+    this.rdpWatchdogLastRejected = 0;
+    this.rdpWatchdogLastRecoveryMs = 0;
   }
 
   private clearRdpNativeStateMonitor(): void {
@@ -7993,6 +8137,54 @@ struct RemoteDesktop {
       clearTimeout(this.rdpNativeStateMonitorTimer);
       this.rdpNativeStateMonitorTimer = -1;
     }
+  }
+
+  private clearRdpTransferStatusPolling(reset: boolean): void {
+    if (this.rdpTransferStatusTimer >= 0) {
+      clearTimeout(this.rdpTransferStatusTimer);
+      this.rdpTransferStatusTimer = -1;
+    }
+    if (reset) {
+      this.rdpDriveMounted = false;
+    }
+  }
+
+  /**
+   * The rdpdr device is registered after CONNECTED on a worker thread. Keep
+   * the UI capability gate synchronized with that worker for a bounded window
+   * without letting a stale reconnect callback update the new session.
+   */
+  private startRdpTransferStatusPolling(sessionId: number, attemptId: number): void {
+    this.clearRdpTransferStatusPolling(false);
+    if (!this.rdpDriveEnabled || sessionId <= 0 || !this.connected ||
+      !this.pendingHost || this.pendingHost.protocol !== 'rdp') {
+      this.rdpDriveMounted = false;
+      return;
+    }
+    const deadlineMs: number = Date.now() + 15000;
+    const poll = (): void => {
+      if (this.sessionId !== sessionId || this.connectAttemptId !== attemptId ||
+        !this.connected || !this.pendingHost || this.pendingHost.protocol !== 'rdp') {
+        this.rdpTransferStatusTimer = -1;
+        return;
+      }
+      const status: SessionTransferStatus = this.loader.getSessionTransferStatus(sessionId);
+      if (this.sessionId !== sessionId || this.connectAttemptId !== attemptId) {
+        this.rdpTransferStatusTimer = -1;
+        return;
+      }
+      this.rdpDriveMounted = status.rdpDriveMounted;
+      const finished: boolean = status.rdpDriveMounted ||
+        status.diagnosticCode === 'drive_unavailable' || Date.now() >= deadlineMs;
+      if (finished) {
+        this.rdpTransferStatusTimer = -1;
+        hilog.info(RD_DOMAIN, RD_TAG, 'RDP drive status settled mounted=' +
+          (status.rdpDriveMounted ? 'true' : 'false') + ' diagnostic=' + status.diagnosticCode);
+        return;
+      }
+      this.rdpTransferStatusTimer = setTimeout(poll, 300);
+    };
+    poll();
   }
 
   private startRdpNativeStateMonitor(sessionId: number, attemptId: number): void {
@@ -8054,16 +8246,24 @@ struct RemoteDesktop {
 
   private startRdpRenderWatchdog(sessionId: number, attemptId: number): void {
     this.clearRdpRenderWatchdog();
-    this.rdpRenderWatchdogTimer = setTimeout((): void => {
-      this.rdpRenderWatchdogTimer = -1;
+    const poll = (): void => {
       if (attemptId !== this.connectAttemptId || this.sessionId !== sessionId ||
         !this.connected || !this.pendingHost || this.pendingHost.protocol !== 'rdp') {
+        this.rdpRenderWatchdogTimer = -1;
         return;
       }
       const stats: RdpRenderStats = this.loader.getRdpRenderStats(sessionId);
       hilog.info(RD_DOMAIN, RD_TAG, 'RDP render watchdog stats paints=' +
         stats.paintCount.toString() + ' rendered=' + stats.renderedPaintCount.toString() +
         ' first=' + stats.firstPaintMs.toString() + ' last=' + stats.lastPaintMs.toString() +
+        ' remoteAgeMs=' + stats.lastRemoteUpdateAgeMs.toString() +
+        ' eventAgeMs=' + stats.eventLoopAgeMs.toString() +
+        ' eventBlockMaxUs=' + stats.eventLoopBlockMaxUs.toString() +
+        ' eventTicks=' + stats.eventLoopTicks.toString() +
+        ' networkChecks=' + stats.networkCheckCount.toString() + '/' +
+          stats.networkCheckFailures.toString() +
+        ' lastInputAgeMs=' + stats.lastInputPostAgeMs.toString() +
+        ' inputPostFailures=' + stats.inputPostFailures.toString() +
         ' ret=' + stats.lastRenderResult.toString() +
         ' skipped=' + stats.skippedPaintCount.toString() +
         ' pump=' + stats.pumpRendered.toString() + '/' + stats.pumpSubmitted.toString() +
@@ -8094,16 +8294,53 @@ struct RemoteDesktop {
         ' inputMouseDrops=' + stats.inputDroppedMouseMoves.toString() +
         ' inputPriorityOverflow=' + stats.inputNonDisposableOverflow.toString() +
         ' gfx=' + stats.graphicsMode);
-      if (stats.renderedPaintCount <= 0 || stats.lastRenderResult < 0) {
-        const model: RdpSessionErrorDialogModel = rdpNoFrameWatchdogError();
-        this.connectionError = model.title;
-        this.connectionErrorDetail = model.message + '错误代码: ' + model.code;
-        this.showRdpSessionErrorModel(model, 'rdp-render-watchdog');
-        if (shouldCleanupRdpSessionBeforeErrorDismiss()) {
-          this.disconnectAndCleanup('rdp-render-watchdog');
-        }
+      const renderedProgress = stats.renderedPaintCount > this.rdpWatchdogLastRendered;
+      const paintProgress = stats.paintCount > this.rdpWatchdogLastPaint;
+      const hasPresentedFrame = stats.renderedPaintCount > 0;
+      const lastPresentationHealthy = stats.lastRenderResult >= 0;
+      const presentationBlocked = stats.lastRenderResult < 0 &&
+        (stats.presentationRejected > this.rdpWatchdogLastRejected ||
+          stats.pumpRejected > 0 || stats.paintCount > 0);
+      // A quiet remote desktop is healthy once at least one frame was shown.
+      // Only count consecutive samples where the native pipeline reports a
+      // rejection or where paints arrive without any presentation.
+      const unhealthy = presentationBlocked ||
+        (!hasPresentedFrame && paintProgress) ||
+        (!hasPresentedFrame && stats.paintCount > 0 && !lastPresentationHealthy);
+      if (renderedProgress || (hasPresentedFrame && lastPresentationHealthy && !presentationBlocked)) {
+        this.rdpWatchdogUnhealthySamples = 0;
+      } else if (unhealthy) {
+        this.rdpWatchdogUnhealthySamples += 1;
+      } else {
+        this.rdpWatchdogUnhealthySamples = Math.max(0, this.rdpWatchdogUnhealthySamples - 1);
       }
-    }, 12000);
+      this.rdpWatchdogLastRendered = stats.renderedPaintCount;
+      this.rdpWatchdogLastPaint = stats.paintCount;
+      this.rdpWatchdogLastRejected = stats.presentationRejected;
+
+      const nowMs: number = Date.now();
+      if (this.rdpWatchdogUnhealthySamples >= 3 &&
+        nowMs - this.rdpWatchdogLastRecoveryMs >= 4000) {
+        this.rdpWatchdogLastRecoveryMs = nowMs;
+        hilog.warn(RD_DOMAIN, RD_TAG, 'RDP local presentation stalled; requesting retained-frame recovery ' +
+          'samples=' + this.rdpWatchdogUnhealthySamples.toString() +
+          ' paints=' + stats.paintCount.toString() +
+          ' presented=' + stats.renderedPaintCount.toString() +
+          ' result=' + stats.lastRenderResult.toString());
+        if (hasPresentedFrame) {
+          this.loader.presentRdpCachedFrame(sessionId);
+        }
+        this.loader.requestFrameRefresh();
+      }
+      if (this.rdpWatchdogUnhealthySamples >= 8) {
+        // Keep the session alive. A detached surface, a resize transaction,
+        // or a temporarily unavailable ArkUI surface is not a server error.
+        hilog.error(RD_DOMAIN, RD_TAG, 'RDP presentation remains unhealthy; keeping connection alive for ' +
+          'native recovery result=' + stats.lastRenderResult.toString());
+      }
+      this.rdpRenderWatchdogTimer = setTimeout(poll, 1500);
+    };
+    this.rdpRenderWatchdogTimer = setTimeout(poll, 1500);
   }
 
   @State showPassphraseSheet: boolean = false;
@@ -9195,6 +9432,8 @@ struct RemoteDesktop {
       let keyData: string = '';
       let keyPassphrase: string = '';
       let useKey: boolean = false;
+      let proxyKeyData: string = '';
+      let proxyKeyPassphrase: string = '';
       if (!isVnc) {
         // 密钥解析: sshKeyId 优先 (引用 KeyVault), 回退 sshKeyData (旧副本)
         keyData = host.sshKeyData;
@@ -9210,6 +9449,13 @@ struct RemoteDesktop {
           const keyInfo = this.loader.inspectSshPrivateKey(keyData, keyPassphrase);
           if (keyInfo['encrypted'] && keyPassphrase === '') {
             keyPassphrase = await this.promptSshPassphrase();
+          }
+        }
+        if (host.protocol === 'ssh' && host.sshProxyKeyId !== '') {
+          const proxyRef = KeyVaultService.getInstance().getSshKey(host.sshProxyKeyId);
+          if (proxyRef) {
+            proxyKeyData = proxyRef.privateKey;
+            proxyKeyPassphrase = host.sshProxyKeyPassphrase || '';
           }
         }
       }
@@ -9395,6 +9641,23 @@ struct RemoteDesktop {
         authMethod: isVnc ? 'password' : (useKey ? 'publickey' : 'password'),
         privateKeyPem: useKey ? keyData : '',
         privateKeyPassphrase: keyPassphrase,
+        sshProxyType: host.protocol === 'ssh' && host.proxyHost.trim() !== '' ? host.sshProxyType : 'direct',
+        sshProxyHost: host.protocol === 'ssh' ? host.proxyHost : '',
+        sshProxyPort: host.protocol === 'ssh' ? host.proxyPort : 0,
+        sshProxyUsername: host.protocol === 'ssh' ? host.proxyUsername : '',
+        sshProxyPassword: host.protocol === 'ssh' && host.sshProxyType === 'ssh_jump' &&
+          host.sshProxyAuthMethod !== 'publickey' ? host.sshProxyPassword : '',
+        sshProxyAuthMethod: host.protocol === 'ssh' && host.sshProxyType === 'ssh_jump' ?
+          host.sshProxyAuthMethod : undefined,
+        sshProxyPrivateKeyPem: host.protocol === 'ssh' && host.sshProxyType === 'ssh_jump' &&
+          host.sshProxyAuthMethod === 'publickey' ? proxyKeyData : '',
+        sshProxyPrivateKeyPassphrase: host.protocol === 'ssh' && host.sshProxyType === 'ssh_jump' &&
+          host.sshProxyAuthMethod === 'publickey' ? proxyKeyPassphrase : '',
+        expectedHostKeyRawBase64: host.protocol === 'ssh' ? host.sshHostKeyRawBase64 : '',
+        expectedHostKeyFingerprintSha256: host.protocol === 'ssh' ? host.sshHostKeyFingerprintSha256 : '',
+        sshJumpHostKeyRawBase64: host.protocol === 'ssh' ? host.sshJumpHostKeyRawBase64 : '',
+        sshJumpHostKeyFingerprintSha256: host.protocol === 'ssh' ?
+          host.sshJumpHostKeyFingerprintSha256 : '',
         // RustDesk fields are deliberately neutral for VNC.  VNC settings do
         // not read or inherit RustDesk/RDP preferences.
         rdImageQuality: host.protocol === 'rustdesk' ? (AppStorage.get<number>('rustdeskImageQuality') ?? 1) : 1,
@@ -9408,7 +9671,7 @@ struct RemoteDesktop {
           (host.protocol === 'rustdesk' ? (AppStorage.get<boolean>('rustdeskAudioEnabled') ?? true) : false),
         rdClipboardEnabled: host.protocol === 'rustdesk' ?
           (AppStorage.get<boolean>('rustdeskClipboardEnabled') ?? true) :
-          (host.protocol === 'rdp' ? (AppStorage.get<boolean>('rdpClipboardEnabled') ?? true) : false),
+          (host.protocol === 'rdp' ? this.rdpClipboardEnabled : false),
         rdDriveName: host.protocol === 'rdp' ? rdpDriveName : '',
         rdDrivePath: rdpDrivePath,
         expectedRdpCertificateFingerprintSha256: host.rdpCertificateFingerprintSha256,
@@ -9553,10 +9816,9 @@ struct RemoteDesktop {
         }
         if (host.protocol === 'rustdesk') {
           this.connectionProgressMessage = 'RustDesk: 正在等待视频首帧';
-          const recoveryArmed: boolean = this.loader.requestDecoderRecovery();
           const refresh = this.loader.requestFrameRefresh();
-          hilog.info(RD_DOMAIN, RD_TAG, 'initial RustDesk video recovery armed=' +
-            (recoveryArmed ? 'true' : 'false') + ' refresh=' + refresh.ok.toString());
+          hilog.info(RD_DOMAIN, RD_TAG, 'initial RustDesk video refresh=' + refresh.ok.toString() +
+            ' recovery=deferred-until-first-frame-timeout');
         }
       }
       const rustDeskApprovalWait: boolean = host.protocol === 'rustdesk' &&
@@ -9610,9 +9872,12 @@ struct RemoteDesktop {
       this.handleVisible = true;
       const diagnosticsEnabled: boolean =
         (host.protocol === 'rustdesk' && this.rustdeskShowDiagnostics) ||
-        (host.protocol === 'vnc' && this.vncShowDiagnostics);
+        (host.protocol === 'vnc' && this.vncShowDiagnostics) ||
+        (host.protocol === 'rdp' && this.rdpShowDiagnostics);
       if (diagnosticsEnabled) {
-        if (host.protocol === 'vnc') {
+        if (host.protocol === 'rdp') {
+          this.startRdpDiagnosticsPolling();
+        } else if (host.protocol === 'vnc') {
           this.initVncDiagnosticsDock();
           this.vncDiagnosticsDockExpanded = this.vncDiagnosticsExpandedByDefault;
           this.vncDiagnosticsDockY = this.avoidVncDiagnosticsDockCollision(
@@ -9620,7 +9885,9 @@ struct RemoteDesktop {
         } else {
           this.initRustDeskDiagnosticsDock();
         }
-        this.startRustDeskDiagnosticsPolling();
+        if (host.protocol !== 'rdp') {
+          this.startRustDeskDiagnosticsPolling();
+        }
       }
       if (host.protocol === 'vnc') {
         if (this.kbWin !== null) {
@@ -9633,6 +9900,7 @@ struct RemoteDesktop {
       if (host.protocol === 'rdp') {
         this.startRdpRenderWatchdog(sid, attemptId);
         this.startRdpNativeStateMonitor(sid, attemptId);
+        this.startRdpTransferStatusPolling(sid, attemptId);
         setTimeout((): void => {
           if (this.sessionId === sid && this.connected && this.connectAttemptId === attemptId) {
             this.inputForwardReady = true;
@@ -9934,6 +10202,7 @@ struct RemoteDesktop {
     this.physicalWheelRemainder = 0;
     this.lastPhysicalWheelAtMs = 0;
     this.physicalWheelSendCount = 0;
+    this.resetRustDeskPhysicalTouchpadState();
     this.vncToolbarCollapsed = false;
     this.modifierPanelPrepareOnly = false;
     this.releaseCanvasPinchInput('disconnect-' + reason);
@@ -9950,6 +10219,7 @@ struct RemoteDesktop {
       return;
     }
     this.stopRustDeskDiagnosticsPolling(true);
+    this.stopRdpDiagnosticsPolling(true);
     this.cleanupStarted = true;
     this.renderPreservedInPip = false;
     this.pipSurfaceTransferInProgress = false;
@@ -9979,6 +10249,7 @@ struct RemoteDesktop {
     this.preAuthenticatedSessionPending = false;
     this.clearRdpRenderWatchdog();
     this.clearRdpNativeStateMonitor();
+    this.clearRdpTransferStatusPolling(true);
     this.clearRemoteCursorPolling(true, reason);
     hilog.info(RD_DOMAIN, RD_TAG, '[RDP-SHUTDOWN] phase=arkts-entry reason=' + reason +
       ' sessionId=' + this.sessionId.toString());
@@ -10924,16 +11195,23 @@ struct RemoteDesktop {
   }
 
   private startClipboardBridgeBestEffort(sessionId: number, attemptId: number, enabled: boolean): void {
-    if (!enabled) {
+    if (!enabled || !this.clipboardBridgeEnabledForSession()) {
       return;
     }
-    const capability = this.currentSessionCapabilities().clipboardSend;
-    if (!capability.enabled) {
-      hilog.info(RD_DOMAIN, RD_TAG, 'clipboard bridge not started: ' + capability.reason);
-      return;
-    }
-    setTimeout((): void => {
-      if (this.sessionId !== sessionId || this.connectAttemptId !== attemptId || !this.connected) {
+    const deadlineMs: number = Date.now() + 10000;
+    const tryStart = (): void => {
+      if (this.sessionId !== sessionId || this.connectAttemptId !== attemptId || !this.connected ||
+        !this.clipboardBridgeEnabledForSession()) {
+        return;
+      }
+      const capability = this.currentSessionCapabilities().clipboardSend;
+      if (!capability.enabled) {
+        if (Date.now() < deadlineMs) {
+          setTimeout(tryStart, 500);
+        } else {
+          hilog.info(RD_DOMAIN, RD_TAG,
+            'clipboard bridge not started after bounded cliprdr wait: ' + capability.reason);
+        }
         return;
       }
       try {
@@ -10944,7 +11222,8 @@ struct RemoteDesktop {
         this.clipboardBridge = bridge;
         bridge.startMonitoring((text: string): void => {
           try {
-            if (this.sessionId !== sessionId || this.connectAttemptId !== attemptId || !this.connected) {
+            if (this.sessionId !== sessionId || this.connectAttemptId !== attemptId || !this.connected ||
+              !this.clipboardBridgeEnabledForSession()) {
               return;
             }
             const encoder = new util.TextEncoder();
@@ -10959,7 +11238,8 @@ struct RemoteDesktop {
         this.clipboardBridge = null;
         hilog.warn(RD_DOMAIN, RD_TAG, 'clipboard bridge start skipped: ' + JSON.stringify(err));
       }
-    }, 1500);
+    };
+    setTimeout(tryStart, 1500);
   }
 
   private goBack(): void {
@@ -11363,7 +11643,11 @@ struct RemoteDesktop {
   }
 
   private async stageFileForRdpClipboard(uri: string, fileName: string, fileSize: number,
-    batchDir: string = ''): Promise<string> {
+    batchDir: string = '', observedSessionId: number = this.sessionId,
+    observedAttemptId: number = this.connectAttemptId): Promise<string> {
+    if (!this.rdpFileTransferEnabledForSession(observedSessionId, observedAttemptId)) {
+      return '';
+    }
     const dir: string = batchDir.length > 0 ? batchDir : this.createRdpClipboardBatchDir();
     if (dir.length === 0) {
       this.setFileTransferStatus('[RDP-FILE] RDP 文件传输准备失败', -1, false);
@@ -11415,6 +11699,12 @@ struct RemoteDesktop {
             'RDP 文件传输进行中 ' + progressPercent.toString() + '%');
         }
         await this.yieldUi(0);
+        if (!this.rdpFileTransferEnabledForSession(observedSessionId, observedAttemptId)) {
+          return '';
+        }
+      }
+      if (!this.rdpFileTransferEnabledForSession(observedSessionId, observedAttemptId)) {
+        return '';
       }
       const readyStatus: string = 'RDP 文件已暂存，正在发布到远端剪贴板';
       await this.finishLiveFileTransfer(liveTaskId, 'rdp', '文件', fileSize, fileSize, false, readyStatus);
@@ -11518,6 +11808,8 @@ struct RemoteDesktop {
       promptAction.showToast({ message: 'RustDesk 文件粘贴已禁用', duration: 1600 });
       return;
     }
+    const observedSessionId: number = this.sessionId;
+    const observedAttemptId: number = this.connectAttemptId;
     let metaFile: fileIo.File | null = null;
     try {
       const docPicker = new picker.DocumentViewPicker();
@@ -11535,9 +11827,11 @@ struct RemoteDesktop {
       metaFile = null;
 
       if (this.pendingHost.protocol === 'rdp') {
-        const stagedPath: string = await this.stageFileForRdpClipboard(uri, fileName, fileSize);
+        const stagedPath: string = await this.stageFileForRdpClipboard(uri, fileName, fileSize, '',
+          observedSessionId, observedAttemptId);
         if (stagedPath.length === 0 ||
-          !this.loader.setSessionClipboardFiles(this.sessionId, [stagedPath])) {
+          !this.rdpFileTransferEnabledForSession(observedSessionId, observedAttemptId) ||
+          !this.loader.setSessionClipboardFiles(observedSessionId, [stagedPath])) {
           this.setFileTransferStatus('[RDP-FILE] 远端文件剪贴板发布失败', -1, false);
           return;
         }
@@ -11588,11 +11882,21 @@ struct RemoteDesktop {
 
   private async handleRdpSystemFilePaste(): Promise<void> {
     if (this.fileTransferBusy || !this.connected || this.sessionId <= 0 ||
-      !this.pendingHost || this.pendingHost.protocol !== 'rdp') {
+      !this.pendingHost || this.pendingHost.protocol !== 'rdp' || !this.rdpClipboardEnabled) {
+      return;
+    }
+    const observedSessionId: number = this.sessionId;
+    const observedAttemptId: number = this.connectAttemptId;
+    const capability = this.currentSessionCapabilities().fileUpload;
+    if (!capability.enabled) {
+      promptAction.showToast({ message: capability.reason, duration: 2200 });
       return;
     }
     if (!await this.ensurePasteboardReadPermission()) {
       promptAction.showToast({ message: '需要剪贴板权限才能粘贴本机文件', duration: 2600 });
+      return;
+    }
+    if (!this.rdpFileTransferEnabledForSession(observedSessionId, observedAttemptId)) {
       return;
     }
     try {
@@ -11610,6 +11914,9 @@ struct RemoteDesktop {
       }
       const stagedPaths: string[] = [];
       for (const record of records) {
+        if (!this.rdpFileTransferEnabledForSession(observedSessionId, observedAttemptId)) {
+          return;
+        }
         const fileUriEntry: uniformDataStruct.FileUri =
           record.getEntry(uniformTypeDescriptor.UniformDataType.FILE_URI) as uniformDataStruct.FileUri;
         const uri: string = fileUriEntry && fileUriEntry.oriUri ? fileUriEntry.oriUri : '';
@@ -11623,7 +11930,7 @@ struct RemoteDesktop {
           fileIo.closeSync(metaFile);
           metaFile = null;
           const stagedPath: string = await this.stageFileForRdpClipboard(
-            uri, this.fileBaseName(uri), fileSize, batchDir);
+            uri, this.fileBaseName(uri), fileSize, batchDir, observedSessionId, observedAttemptId);
           if (stagedPath.length > 0) {
             stagedPaths.push(stagedPath);
           }
@@ -11636,7 +11943,8 @@ struct RemoteDesktop {
         }
       }
       if (stagedPaths.length === 0 ||
-        !this.loader.setSessionClipboardFiles(this.sessionId, stagedPaths)) {
+        !this.rdpFileTransferEnabledForSession(observedSessionId, observedAttemptId) ||
+        !this.loader.setSessionClipboardFiles(observedSessionId, stagedPaths)) {
         this.setFileTransferStatus('[RDP-FILE] 远端文件剪贴板发布失败', -1, false);
         return;
       }
@@ -11648,8 +11956,12 @@ struct RemoteDesktop {
     }
   }
 
-  private async publishDeferredRdpDrop(data: unifiedDataChannel.UnifiedData): Promise<void> {
+  private async publishDeferredRdpDrop(data: unifiedDataChannel.UnifiedData,
+    observedSessionId: number, observedAttemptId: number): Promise<void> {
     try {
+      if (!this.rdpFileTransferEnabledForSession(observedSessionId, observedAttemptId)) {
+        return;
+      }
       const records: Array<unifiedDataChannel.UnifiedRecord> = data.getRecords();
       if (records.length === 0 || records.length > 15) {
         this.setFileTransferStatus(records.length > 15 ?
@@ -11660,6 +11972,9 @@ struct RemoteDesktop {
       const stablePrefix: string = stableDir + '/';
       const paths: string[] = [];
       for (const record of records) {
+        if (!this.rdpFileTransferEnabledForSession(observedSessionId, observedAttemptId)) {
+          return;
+        }
         const entry: uniformDataStruct.FileUri =
           record.getEntry(uniformTypeDescriptor.UniformDataType.FILE_URI) as uniformDataStruct.FileUri;
         const uri: string = entry && entry.oriUri ? entry.oriUri : '';
@@ -11676,7 +11991,9 @@ struct RemoteDesktop {
           paths.push(path);
         }
       }
-      if (paths.length === 0 || !this.loader.setSessionClipboardFiles(this.sessionId, paths)) {
+      if (paths.length === 0 ||
+        !this.rdpFileTransferEnabledForSession(observedSessionId, observedAttemptId) ||
+        !this.loader.setSessionClipboardFiles(observedSessionId, paths)) {
         this.setFileTransferStatus('[RDP-FILE] 文件中转站内容发布失败', -1, false);
         return;
       }
@@ -11689,7 +12006,9 @@ struct RemoteDesktop {
   }
 
   private startDeferredRdpFileDrop(event: DragEvent): void {
-    if (!this.pendingHost || this.pendingHost.protocol !== 'rdp') {
+    const observedSessionId: number = this.sessionId;
+    const observedAttemptId: number = this.connectAttemptId;
+    if (!this.rdpFileTransferEnabledForSession(observedSessionId, observedAttemptId)) {
       this.setFileTransferStatus('移动端文件中转站当前仅支持 RDP', -1, false);
       event.setResult(DragResult.DRAG_FAILED);
       return;
@@ -11707,7 +12026,9 @@ struct RemoteDesktop {
             progress.progress.toString() + '%', progress.progress / 100, true);
         }
         if (progress.progress === 100 && data !== null) {
-          this.publishDeferredRdpDrop(data);
+          if (this.rdpFileTransferEnabledForSession(observedSessionId, observedAttemptId)) {
+            this.publishDeferredRdpDrop(data, observedSessionId, observedAttemptId);
+          }
         } else if (progress.progress < 0) {
           this.setFileTransferStatus('[RDP-FILE] 文件中转站数据获取失败', -1, false);
         }
@@ -11742,6 +12063,12 @@ struct RemoteDesktop {
       promptAction.showToast({ message: 'RustDesk 文件粘贴已禁用', duration: 1600 });
       return;
     }
+    const observedSessionId: number = this.sessionId;
+    const observedAttemptId: number = this.connectAttemptId;
+    if (this.pendingHost.protocol === 'rdp' &&
+      !this.rdpFileTransferEnabledForSession(observedSessionId, observedAttemptId)) {
+      return;
+    }
     if (!this.isDesktopDevice || this.breakpoint !== 'xl') {
       this.startDeferredRdpFileDrop(event);
       return;
@@ -11769,6 +12096,10 @@ struct RemoteDesktop {
       }
       const rdpStagedPaths: string[] = [];
       for (const record of records) {
+        if (this.pendingHost.protocol === 'rdp' &&
+          !this.rdpFileTransferEnabledForSession(observedSessionId, observedAttemptId)) {
+          return;
+        }
         // UDMF: 文件数据存储在 FILE_URI 条目中
         const fileUriEntry: uniformDataStruct.FileUri =
           record.getEntry(uniformTypeDescriptor.UniformDataType.FILE_URI) as uniformDataStruct.FileUri;
@@ -11809,7 +12140,7 @@ struct RemoteDesktop {
         let transferState: TransferState = 'failed';
         if (this.pendingHost.protocol === 'rdp') {
           const stagedPath: string = await this.stageFileForRdpClipboard(
-            uri, fileName, fileSize, rdpBatchDir);
+            uri, fileName, fileSize, rdpBatchDir, observedSessionId, observedAttemptId);
           if (stagedPath.length > 0) {
             rdpStagedPaths.push(stagedPath);
             transferState = 'completed';
@@ -11827,7 +12158,8 @@ struct RemoteDesktop {
         }
       }
       if (this.pendingHost.protocol === 'rdp' && rdpStagedPaths.length > 0) {
-        if (!this.loader.setSessionClipboardFiles(this.sessionId, rdpStagedPaths)) {
+        if (!this.rdpFileTransferEnabledForSession(observedSessionId, observedAttemptId) ||
+          !this.loader.setSessionClipboardFiles(observedSessionId, rdpStagedPaths)) {
           this.setFileTransferStatus('[RDP-FILE] 远端文件剪贴板发布失败', -1, false);
           return;
         }
@@ -13305,6 +13637,7 @@ struct RemoteDesktop {
         !this.physicalAltDown && !this.physicalShiftDown && !this.physicalWinDown &&
         this.physicalKeyboardLayout === RemoteKeyboardLayout.WINDOWS &&
         this.pendingHost !== null && this.pendingHost.protocol === 'rdp' &&
+        this.rdpClipboardEnabled &&
         this.systemPasteboardHasFileUri()) {
         this.rdpFilePasteKeyIntercepted = true;
         this.loader.sendKey(this.sessionId, this.mapPhysicalKeyCode(KEYCODE_CTRL_LEFT), false);
@@ -13481,6 +13814,108 @@ struct RemoteDesktop {
     return -1;
   }
 
+  private resetRustDeskPhysicalTouchpadState(): void {
+    this.physicalTouchpadWheelState = resetPhysicalTouchpadWheelState();
+    this.physicalTouchpadPinchState = resetPhysicalTouchpadPinchState();
+    this.physicalTouchpadPinchSendCount = 0;
+  }
+
+  private isRustDeskPhysicalTouchpadAxis(event: AxisEvent): boolean {
+    return shouldUseRustDeskPhysicalTouchpad(
+      this.currentProtocolName(), this.isDesktopDevice, this.currentControlMode(),
+      event.sourceTool === SourceTool.TOUCHPAD);
+  }
+
+  private sendRustDeskPhysicalTouchpadZoom(steps: number): void {
+    if (steps === 0 || !this.canForwardInput('physical-touchpad-pinch')) {
+      return;
+    }
+    if (this.shouldRequirePhysicalKeyboardLayout() && !this.physicalKeyboardLayoutConfirmed) {
+      this.physicalTouchpadPinchState = resetPhysicalTouchpadPinchState();
+      this.promptPhysicalKeyboardLayout();
+      return;
+    }
+
+    const layout: RemoteKeyboardLayout = physicalKeyboardLayoutForProtocol(
+      this.currentProtocolName(), this.physicalKeyboardLayout);
+    const modifierKeyCode: number = physicalTouchpadZoomModifierKeyCode(layout);
+    const zoomKeyCode: number = physicalTouchpadZoomKeyCode(steps);
+    // The physical Ctrl key is mapped to remote Ctrl on Windows and Command
+    // on macOS, so reuse it when already held instead of duplicating a down/up.
+    const modifierAlreadyHeld: boolean = this.physicalCtrlDown;
+    const count: number = Math.min(Math.abs(steps), 3);
+    try {
+      if (!modifierAlreadyHeld) {
+        this.loader.sendKey(this.sessionId, modifierKeyCode, true);
+      }
+      for (let index = 0; index < count; index++) {
+        this.loader.sendKey(this.sessionId, zoomKeyCode, true);
+        this.loader.sendKey(this.sessionId, zoomKeyCode, false);
+      }
+    } catch (err) {
+      hilog.error(RD_DOMAIN, RD_TAG,
+        'physical-touchpad-pinch forward failed: ' + JSON.stringify(err));
+    } finally {
+      if (!modifierAlreadyHeld) {
+        try {
+          this.loader.sendKey(this.sessionId, modifierKeyCode, false);
+        } catch (err) {
+          hilog.warn(RD_DOMAIN, RD_TAG,
+            'physical-touchpad-pinch modifier release failed: ' + JSON.stringify(err));
+        }
+      }
+    }
+    this.physicalTouchpadPinchSendCount += count;
+    hilog.info(RD_DOMAIN, RD_TAG, 'physical-touchpad-pinch layout=' + layout +
+      ' steps=' + steps.toString() + ' modifier=' + modifierKeyCode.toString() +
+      ' key=' + zoomKeyCode.toString() + ' count=' +
+      this.physicalTouchpadPinchSendCount.toString());
+  }
+
+  private handleRustDeskPhysicalTouchpadAxis(event: AxisEvent): void {
+    if (!this.canForwardInput('physical-touchpad-axis')) {
+      return;
+    }
+
+    const rawHorizontal: number = event.getHorizontalAxisValue();
+    const rawVertical: number = event.getVerticalAxisValue();
+    const speed: number = Number.isFinite(this.rustdeskTouchpadSpeed) &&
+      this.rustdeskTouchpadSpeed > 0 ? this.rustdeskTouchpadSpeed : 1;
+    const wheel = accumulateRustDeskPhysicalTouchpadWheel(
+      rawHorizontal, rawVertical, this.physicalTouchpadWheelState, speed,
+      this.rustdeskReverseWheel);
+    this.physicalTouchpadWheelState = wheel.state;
+    if (wheel.x !== 0 || wheel.y !== 0) {
+      const accepted: boolean = this.loader.sendRustDeskTouchpadWheel(
+        this.sessionId, wheel.x, wheel.y);
+      if (accepted) {
+        const sendIndex: number = ++this.physicalWheelSendCount;
+        if (sendIndex <= 12 || sendIndex % 50 === 0) {
+          hilog.info(RD_DOMAIN, RD_TAG, 'physical-touchpad-wheel count=' +
+            sendIndex.toString() + ' raw=' + rawHorizontal.toString() + ',' +
+            rawVertical.toString() + ' delta=' + wheel.x.toString() + ',' +
+            wheel.y.toString() + ' reverse=' +
+            (this.rustdeskReverseWheel ? '1' : '0'));
+        }
+      }
+    }
+
+    if (!event.hasAxis(AxisType.PINCH_AXIS)) {
+      return;
+    }
+    if (this.shouldRequirePhysicalKeyboardLayout() && !this.physicalKeyboardLayoutConfirmed) {
+      this.physicalTouchpadPinchState = resetPhysicalTouchpadPinchState();
+      this.promptPhysicalKeyboardLayout();
+      return;
+    }
+    const pinch = accumulatePhysicalTouchpadPinch(
+      event.getPinchAxisScaleValue(), this.physicalTouchpadPinchState);
+    this.physicalTouchpadPinchState = pinch.state;
+    if (pinch.steps !== 0) {
+      this.sendRustDeskPhysicalTouchpadZoom(pinch.steps);
+    }
+  }
+
   private handleXComponentAxis = (event?: AxisEvent): void => {
     if (event && (event.sourceTool === SourceTool.MOUSE ||
       event.sourceTool === SourceTool.TOUCHPAD)) {
@@ -13488,6 +13923,10 @@ struct RemoteDesktop {
     }
     if (!event || !this.canForwardInput('mouseWheel')) { return; }
     try {
+      if (this.isRustDeskPhysicalTouchpadAxis(event)) {
+        this.handleRustDeskPhysicalTouchpadAxis(event);
+        return;
+      }
       const localX: number = event.x;
       const localY: number = event.y;
       const mapped: MappedPoint = this.mapInputPoint(localX, localY);
@@ -13922,7 +14361,9 @@ struct RemoteDesktop {
       }
 
       if (this.shouldShowActiveDiagnostics()) {
-        if (this.isVncSession()) {
+        if (this.isRdpRemoteSession()) {
+          RdpDiagnosticsHud({ stats: this.rdpRenderStats })
+        } else if (this.isVncSession()) {
           VncDiagnosticsHud({
             diagnostics: this.rustDeskDiagnostics,
             geometryEpoch: this.vncGeometryEpoch,

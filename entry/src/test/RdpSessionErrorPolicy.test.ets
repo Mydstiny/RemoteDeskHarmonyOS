@@ -33,11 +33,22 @@ export default function rdpSessionErrorPolicyTest() {
       expect(model.source).assertEqual(RdpSessionErrorSource.SERVER_ERROR_INFO);
     });
 
-    it('local_no_frame_watchdog_should_remain_fallback_0x11', 0, (): void => {
+    it('server_errorinfo_0x01_is_rpc_disconnect_not_graphics_failure', 0, (): void => {
+      const model = rdpSessionErrorFromNativeMessage(
+        'RDP server ErrorInfo: ERRINFO_RPC_INITIATED_DISCONNECT [E-RDP-ERRINFO-0x00000001] The server initiated a remote disconnect.',
+        '0x10'
+      );
+      expect(model.title).assertEqual('服务器请求断开会话');
+      expect(model.message).assertEqual('服务器请求结束当前会话（RPC initiated disconnect）；这不是图形管线故障。');
+      expect(model.code).assertEqual('0x01');
+      expect(model.source).assertEqual(RdpSessionErrorSource.SERVER_ERROR_INFO);
+    });
+
+    it('local_no_frame_watchdog_should_be_recoverable_and_not_a_disconnect', 0, (): void => {
       const model = rdpNoFrameWatchdogError();
-      expect(model.title).assertEqual('你的会话已断开');
-      expect(model.message).assertEqual('远程会话中的图形显示组件启动失败。');
-      expect(model.code).assertEqual('0x11');
+      expect(model.title).assertEqual('画面正在恢复');
+      expect(model.message).assertEqual('连接仍保持，检测到本地送显暂时受阻，系统正在重试。');
+      expect(model.code).assertEqual('RDP-LOCAL-RENDER-STALL');
       expect(model.source).assertEqual(RdpSessionErrorSource.LOCAL_RENDER_WATCHDOG);
     });
 

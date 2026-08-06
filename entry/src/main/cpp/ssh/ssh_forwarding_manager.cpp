@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 
 namespace {
 
@@ -51,6 +52,9 @@ bool SshForwardingManager::isValidPort(int port) {
 }
 
 SshForwardingResult SshForwardingManager::validateAndNormalize(SshForwardingConfig& config) {
+    if (config.schemaVersion == 0) {
+        config.schemaVersion = 1;
+    }
     config.id = trimAndBound(config.id, 96);
     config.bindHost = trimAndBound(config.bindHost, 255, kDefaultBindHost);
     config.targetHost = trimAndBound(config.targetHost, 255);
@@ -68,6 +72,12 @@ SshForwardingResult SshForwardingManager::validateAndNormalize(SshForwardingConf
         return SshForwardingResult::PublicBindNotAllowed;
     }
     if (!isValidPort(config.bindPort)) {
+        return SshForwardingResult::InvalidBindPort;
+    }
+    if (config.minBindPort == 0) { config.minBindPort = 1; }
+    if (config.maxBindPort == 0) { config.maxBindPort = 65535; }
+    if (config.minBindPort > config.maxBindPort ||
+        config.bindPort < config.minBindPort || config.bindPort > config.maxBindPort) {
         return SshForwardingResult::InvalidBindPort;
     }
     if (config.maxConnections == 0 || config.maxConnections > kMaxConnections) {
@@ -112,6 +122,7 @@ SshForwardingResult SshForwardingManager::upsert(const SshForwardingConfig& conf
     entry.sessionGeneration = 0;
     entry.activeConnections = 0;
     entry.lastError = 0;
+    entry.transferredBytes = 0;
     return SshForwardingResult::Ok;
 }
 
@@ -141,6 +152,15 @@ SshForwardingResult SshForwardingManager::start(const std::string& id,
     }
     if (!entry->second.config.enabled) {
         return SshForwardingResult::Disabled;
+    }
+    if (entry->second.config.expiresAtMs != 0) {
+        const uint64_t now = static_cast<uint64_t>(std::chrono::duration_cast<
+            std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+        if (now >= entry->second.config.expiresAtMs) {
+            entry->second.state = SshForwardingState::Failed;
+            entry->second.lastError = static_cast<int>(SshForwardingResult::InvalidState);
+            return SshForwardingResult::InvalidState;
+        }
     }
     if ((entry->second.state != SshForwardingState::Stopped &&
          entry->second.state != SshForwardingState::Failed) ||
@@ -273,12 +293,20 @@ void SshForwardingManager::resetRuntimeAfterTransportClose() {
         entry.sessionGeneration = 0;
         entry.activeConnections = 0;
         entry.lastError = 0;
+        entry.transferredBytes = 0;
     }
 }
 
 SshForwardingSnapshot SshForwardingManager::toSnapshot(const Entry& entry) {
-    return {entry.config, entry.state, entry.sessionGeneration,
-            entry.activeConnections, entry.lastError};
+    SshForwardingSnapshot snapshot;
+    snapshot.config = entry.config;
+    snapshot.state = entry.state;
+    snapshot.sessionGeneration = entry.sessionGeneration;
+    snapshot.activeConnections = entry.activeConnections;
+    snapshot.lastError = entry.lastError;
+    snapshot.transferredBytes = entry.transferredBytes;
+    snapshot.expiresAtMs = entry.config.expiresAtMs;
+    return snapshot;
 }
 
 bool SshForwardingManager::generationMatches(const Entry& entry,

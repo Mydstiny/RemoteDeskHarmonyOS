@@ -36,6 +36,8 @@ public:
      * failure, the renderer must stay detached and let ArkTS switch to xterm.
      */
     static constexpr int kSurfaceFlushFailure = -5;
+    /** API 23 Drawing backend is disabled until its BufferQueue path is safe. */
+    static constexpr int kBackendDisabled = -6;
 
     SshTerminalRenderer() = default;
     ~SshTerminalRenderer();

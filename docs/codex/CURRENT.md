@@ -1,62 +1,24 @@
 # Shared Current State
-
 ## Active Task
 - Task: `ssh-terminal-complete-upgrade`
 - Base: `main@d2769ad4b`
 - Branch: `codex/ssh-terminal-complete-upgrade`
 - Code checkpoint: `24d701f` (`fix(ssh): avoid api23 gpu surface abort`), following `a09e267` (`fix(ssh): publish renderer and FRP types`); keyed surface recovery, forwarding lifecycle, adapter reactor binding, and the generation-guarded NAPI/ArkTS bridge are committed.
-- Phase: Alacritty core and xterm-safe visible fallback; lifecycle, VT/Unicode/resize/TUI/large-output parity, per-host output isolation, code-only host-switch/surface refresh recovery, guarded surface fallback, and native forwarding contract.
+- Phase: Alacritty core and xterm-safe visible fallback; lifecycle, VT/Unicode/resize/TUI/large-output parity, per-host output isolation, ready-gated canvas presentation, code-only host-switch/surface refresh recovery, guarded surface fallback, and native forwarding contract.
 - Scope: migrate VT behind terminalCore, keep appearance settings in-core, verify IME/input/Canvas behavior. Homepage work is not current focus.
-
 ## Progress
-
-- WP-T0/T1/T2 are implemented: diagnostics, bounded native input, one SSH
-  session-owner reactor, PTY resize, SFTP and keepalive share generation and
-  teardown rules. Physical-keyboard/IME policy covers Unicode/CJK/emoji,
-  CapsLock, AltGr, focus and duplicate-change suppression.
-- SFTP integrity, durable task metadata, capability-aware provider selection,
-  API 23 authorized local-provider operations and the Pad/PC full-screen workspace
-  are implemented; background payload execution and endpoint acceptance remain pending.
-- The SSH native forwarding lifecycle contract validates local/remote/dynamic
-  profiles, loopback/public binding policy, bounded connections, generations and
-  start/listen/fail/stop transitions. `SshAdapter` now owns the manager and
-  dispatches runtime transitions through the session-owner reactor, including
-  transport teardown reset. NAPI/ArkTS now exposes configure/remove/start/
-  listen/fail/stop/acquire/release/snapshot with explicit SSH, lifecycle and
-  generation gates; real libssh2 socket/channel forwarding is still open.
-- Dynamic SOCKS5 rejects unsupported methods, commands and address types with
-  standard failure replies, flushes the reply before closing, and protects
-  handshake buffers from allocation failure. Local/remote listener errors now
-  enter `Failed` and clean runtime state; stale stop completion is rejected by
-  session generation. FRP Visitor/STCP/SUDP/XTCP are explicit routes that fail
-  closed until their control plane exists; they are never downgraded to TCP.
-- WP-T4 uses `alacritty_terminal` `0.26.0` by default behind terminalCore,
-  with the old core as a no-default fallback and bounded xterm fallback.
-  Appearance settings remain in-core; ARGB foreground, ANSI colors and Canvas
-  cell geometry are kept independent. Output is capped at 256 KiB per turn and
-  oversized chunks retain ordered remainder. SBOM/NOTICE include Alacritty.
-- SSH background/PiP ownership is isolated from other protocols, teardown is
-  serialized, and PiP auto-start requires prepared callback/resume gates.
-  ProxyJump has a native `ssh_jump` route and bounded bastion relay, pending
-  host-key binding and real endpoint acceptance.
-- Same-page switching rejects stale async connect/attach/data/PiP callbacks,
-  cancels pending handshakes and retains detach-race output per host. The
-  top-tab switch stays inside one persistent SSH page, serializes the binding
-  handoff, detaches only the old session callback and adopts the retained target
-  session, so a second host can refresh without dropping either SSH socket.
-- The terminal surface has an explicit detach/rebind gate. A deterministic
-  host/binding/revision key removes stale XComponent/WebView instances; native
-  owner leases and renderer view IDs reject stale owners, while xterm documents
-  use isolated bridges and transcript fallback.
-- GPU rebind, owner leases, refresh fences, surface-ID polling and retained
-  snapshots are implemented, but the 2026-08-06 API 23 reproduction proved
-  that `OH_Drawing_SurfaceFlush` can escalate `41207000` into a process-wide
-  `SIGABRT` before ArkTS can handle it. The visible SSH page now stays on the
-  mature xterm.js surface; the native VT/GPU implementation remains retained
-  for a later safe backend.
-
+- WP-T0/T1/T2 are implemented: diagnostics, bounded native input, one SSH session-owner reactor, PTY resize, SFTP and keepalive share generation/teardown rules; physical-keyboard/IME policy covers Unicode/CJK/emoji, CapsLock, AltGr, focus and duplicate-change suppression.
+- SFTP integrity, durable task metadata, capability-aware provider selection, API 23 authorized local-provider operations and the Pad/PC full-screen workspace are implemented; background payload execution and endpoint acceptance remain pending.
+- SSH forwarding validates local/remote/dynamic profiles, binding policy, bounded connections, generations and start/listen/fail/stop transitions. `SshAdapter` owns the manager and reactor reset; NAPI/ArkTS exposes the guarded lifecycle API, while real libssh2 socket/channel forwarding remains open.
+- Dynamic SOCKS5 rejects unsupported methods/commands/address types, flushes failure replies, and protects handshake buffers. Listener errors clean runtime state; stale stop completion is generation-rejected. FRP Visitor/STCP/SUDP/XTCP fail closed until their control plane exists.
+- WP-T4 uses `alacritty_terminal` `0.26.0` behind terminalCore with a fallback core and bounded xterm path. Appearance/geometry remain independent; output is capped at 256 KiB per turn and ordered remainders are retained. SBOM/NOTICE include Alacritty.
+- SSH background/PiP ownership is isolated and serialized; PiP auto-start requires prepared callback/resume gates. ProxyJump has a native `ssh_jump` route and bounded bastion relay, pending host-key binding and endpoint acceptance.
+- Same-page switching rejects stale async callbacks, cancels pending handshakes, retains detach-race output per host, and serializes tab handoff without dropping either SSH socket.
+- The terminal surface has an explicit detach/rebind gate, deterministic host/binding/revision keys, owner leases, isolated xterm bridges, host-scoped FIFOs and frame ACK; unconfirmed batches return to the owning FIFO and the visible layer stays masked until xterm-ready.
+- RDP settings use protocol-local capability gates and session generations; clipboard/file paths and cliprdr fail closed across setting changes/reconnects. Clipboard send/upload waits for the current cliprdr channel; enabling it after a handshake without cliprdr prompts reconnect. Diagnostics is isolated from RustDesk; the PC physical-touchpad path is source/tool gated.
+- RDP post-connect startup is fail-closed: input worker, frame pump, redraw registration and event-loop creation must succeed before `CONNECTED`; cliprdr carrier attach/detach/cleanup is lifetime-guarded and failed startup leaves GDI retirement to the teardown fence.
+- GPU rebind, owner leases, refresh fences, surface-ID polling and retained snapshots are implemented, but API 23 `OH_Drawing_SurfaceFlush` reproduced `41207000`/process `SIGABRT`; visible SSH stays on mature xterm.js until a safe backend is available.
 ## SSH Connectivity Boundary
-
 - Native SSH currently supports `direct`, `http_connect`, `socks5`, raw
   `frp_tcp` and the new `ssh_jump` route slice. `frp_visitor`, `frp_stcp`,
   `frp_sudp` and `frp_xtcp` are recognized and fail closed with the explicit
@@ -69,20 +31,19 @@
   adapter reactor entry, listener failure cleanup and NAPI/ArkTS state bridge;
   real libssh2 socket/channel integration is open. ProxyJump host-key binding
   and FRP Visitor/STCP/SUDP/XTCP control-plane integration remain open.
-
 ## Verification
-
 - `git diff --check`: passed for the current SSH/forwarding/FRP increment on 2026-08-06.
-- Host native tests: `273 passed, 16 failed, 289 total`; all failures are the
-  existing VNC TLS fixture startup failures; SSH route, forwarding manager and
-  terminal diagnostics tests pass. `cmake` is absent; the existing Makefile
-  target rebuilt successfully before execution.
+- Host native tests: `280 passed, 16 failed, 296 total`; failures are existing
+  VNC TLS fixture startups. RDP/SSH/forwarding/diagnostics tests pass; the OHOS
+  callback binary needs a target device, while production Ninja compilation passed.
 - Rust `cargo test --manifest-path rustdesk_ffi/Cargo.toml --lib --no-default-features`:
   `156 passed, 1 failed, 157 total`; the remaining failure is the existing rendezvous fixture's public-address assertion.
-- `default@OhosTestCompileArkTS`: passed on the current checkout on 2026-08-06;
-  warnings only.
-- `assembleHap`: passed on the current checkout with `BUILD SUCCESSFUL`, native
-  Ninja compilation, packaging and signing on 2026-08-06.
+- `default@OhosTestCompileArkTS`: passed on the current checkout on 2026-08-06; warnings only after the per-host xterm FIFO, ready-mask and ACK recovery change; the physical-touchpad ArkTS policy tests are included and pass.
+- `assembleHap`: blocked by existing `ssh_adapter.cpp:2246` prompt-text type
+  error in the mixed worktree; no non-canvas native file was changed.
+- Direct real-FreeRDP OHOS objects (`freerdp_adapter.cpp` and
+  `rdp_file_clipboard_bridge.cpp`) compile successfully; a fresh HAP remains
+  blocked only by the preserved SSH error above.
 - HDC reproduction: SSH TCP/KEX/public-key auth/PTY/shell all completed; the
   crash was `DrawSnapshot -> OH_Drawing_SurfaceFlush -> Device lost -> SIGABRT`
   on PID 18229 at 2026-08-06 17:36:30. The old `log.rtf` shows the same stack.
@@ -99,20 +60,18 @@
 - `ohosTest@OhosTestCompileArkTS`: blocked; task is not registered (`00306054`).
 - Light compliance: blocked by baseline SBOM package
   `totp-reviewed-brand-assets` with `licenseDeclared=NOASSERTION`.
-
 ## Review
-- Existing independent review passed the bounded-output and IME/socket increments. The current surface fallback, SOCKS5 flush, listener/FRP route and ArkTS/native ABI increment also passed with no P0/P1/P2 findings; receipt `ssh-terminal-surface-forwarding-frp-pass-2026-08-06` is recorded. The status command remains `REVIEW_REQUIRED` only because preserved user RDP diagnostic hunks keep mixed `protocol_adapter.h` and `HostListPage.ets` dirty.
+- Existing independent review passed the bounded-output and IME/socket increments. The current surface fallback, SOCKS5 flush, listener/FRP route and ArkTS/native ABI increment also passed with no P0/P1/P2 findings; receipt `ssh-terminal-surface-forwarding-frp-pass-2026-08-06` is recorded. The ACK recovery and persistent bridge/config retry increment is under independent review; the physical-touchpad increment also needs independent review. The status command remains `REVIEW_REQUIRED` because the branch preserves mixed SSH/RDP user changes; no destructive cleanup was performed.
 - SFTP scope is closed for this pass; real-device/endpoint evidence is not a Level A completion claim.
 - Device evidence covers injected input and lifecycle; external keyboard/IME, GPU re-enable, bastion/forwarding/FRP evidence remain open.
 
 ## Next
-1. Add real local/remote/dynamic libssh2 socket/channel transport, then finish
-   ProxyJump host-key binding and FRP Visitor/STCP/SUDP/XTCP control-plane contracts.
+1. Finish independent review of the xterm FIFO/ACK recovery and ready-gated same-page canvas lifecycle; perform device acceptance when the code-only boundary is lifted.
 
 ## Blockers
 
 - Full external-keyboard/third-party-IME and SFTP lifecycle acceptance remains pending; cold/large-output/background/PiP/re-entry and 90-second idle checks passed.
 - Native GPU re-enable is blocked until a backend that cannot abort on a stale
-  API 23 BufferQueue is available. No real OpenSSH bastion, forwarding or FRP
-  endpoint is available; ProxyJump host-key binding and
-  `ohosTest@OhosTestCompileArkTS` (`00306054`) remain pending.
+  API 23 BufferQueue is available; no real OpenSSH bastion, forwarding or FRP
+  endpoint is available, and `ohosTest@OhosTestCompileArkTS` (`00306054`) remains
+  pending; `assembleHap` is blocked by the existing `ssh_adapter.cpp:2246` error.

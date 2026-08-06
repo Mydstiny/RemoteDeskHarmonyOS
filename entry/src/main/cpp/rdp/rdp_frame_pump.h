@@ -12,6 +12,7 @@
 #include "render/video_perf_counters.h"
 
 #include <atomic>
+#include <array>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -70,6 +71,12 @@ private:
     void loop();
     /** Emits a completed one-second window from either source or retained redraws. */
     void emitPresentationMetricsWindow();
+    void maybeBeginPboExperiment(const RdpFrameSubmission& frame,
+                                 const RdpGlUploadGateSnapshot& uploadGate);
+    void recordPboExperiment(const RdpPresentMetrics& present,
+                             const RdpFrameSubmission& frame);
+    void abortPboExperiment(const RdpFrameSubmission& frame, const char* reason,
+                            int64_t experimentP95Us = 0);
 
     mutable std::mutex mutex_;
     std::condition_variable cv_;
@@ -91,6 +98,11 @@ private:
     std::atomic<uint64_t> rejected_ {0};
     std::atomic<int64_t> lastWorkerCostUs_ {0};
     std::atomic<bool> fullResyncRequired_ {true};
+    bool pboExperimentEnabled_ = false;
+    bool pboExperimentComplete_ = false;
+    int64_t pboBaselineWorkerP95Us_ = 0;
+    size_t pboTrialSampleCount_ = 0;
+    std::array<int64_t, RdpGlUploadGate::kDecisionSamples> pboTrialWorkerSamples_ {};
 };
 
 #endif // RDP_FRAME_PUMP_H

@@ -130,6 +130,37 @@ namespace {
         return result;
     }
 
+    struct SshJumpKeyboardContext {
+        SshAdapter* adapter = nullptr;
+        const std::string* password = nullptr;
+        const std::vector<std::string>* explicitResponses = nullptr;
+        size_t* presetIndex = nullptr;
+        std::string targetHost;
+        bool allowPasswordFallback = false;
+    };
+
+    void sshJumpKeyboardInteractiveCallback(
+        const char* name, int nameLen, const char* instruction, int instructionLen,
+        int numPrompts, const LIBSSH2_USERAUTH_KBDINT_PROMPT* prompts,
+        LIBSSH2_USERAUTH_KBDINT_RESPONSE* responses, void** abstract) {
+        if (numPrompts <= 0 || responses == nullptr || abstract == nullptr ||
+            *abstract == nullptr) {
+            return;
+        }
+        auto* context = static_cast<SshJumpKeyboardContext*>(*abstract);
+        if (context->adapter == nullptr || context->presetIndex == nullptr) {
+            return;
+        }
+        const int result = context->adapter->fillKeyboardInteractiveResponses(
+            name, nameLen, instruction, instructionLen, numPrompts, prompts, responses,
+            context->explicitResponses, context->password,
+            context->allowPasswordFallback, context->targetHost, "jump",
+            *context->presetIndex);
+        if (result != 0) {
+            context->adapter->recordAuthPromptFailure(result);
+        }
+    }
+
     SshPtyFailureClass classifyPtyFailure(int libssh2Error) {
         switch (libssh2Error) {
             case LIBSSH2_ERROR_SOCKET_SEND:
@@ -195,9 +226,64 @@ void SshAdapter::setSessionGeneration(uint64_t generation) {
     diagnostics_.setSessionGeneration(generation);
 }
 
+void SshAdapter::setSshLifecycleState(SshSessionLifecycleState state) {
+    const SshSessionLifecycleState previous =
+        sshLifecycleState_.exchange(state, std::memory_order_acq_rel);
+    if (previous != state) {
+        sshEventSequence_.fetch_add(1, std::memory_order_acq_rel);
+    }
+}
+
+SshSessionSnapshot SshAdapter::sessionSnapshot() const {
+    std::lock_guard<std::recursive_mutex> lifecycleLock(lifecycleMutex_);
+    SshSessionSnapshot snapshot;
+    snapshot.sessionId = diagnostics_.snapshot().sessionId;
+    snapshot.generation = diagnostics_.sessionGeneration();
+    snapshot.state = sshLifecycleState_.load(std::memory_order_acquire);
+    snapshot.eventSequence = sshEventSequence_.load(std::memory_order_acquire);
+    snapshot.host = savedCfg_.host;
+    snapshot.port = savedCfg_.port > 0 ? savedCfg_.port : 22;
+    snapshot.backgroundLimited = false;
+    return snapshot;
+}
+
+bool SshAdapter::getAuthPrompt(SshAuthPromptRequest& out) const {
+    return authPromptBroker_.snapshot(out);
+}
+
+bool SshAdapter::respondAuthPrompt(const SshAuthPromptResponse& response) {
+    if (response.cancelled) {
+        return cancelAuthPrompt(response.requestId, response.generation);
+    }
+    if (response.sessionId == 0 || response.generation == 0) {
+        return false;
+    }
+    return authPromptBroker_.respond(response);
+}
+
+bool SshAdapter::cancelAuthPrompt(uint64_t requestId, uint64_t expectedGeneration) {
+    const uint64_t sessionId = diagnostics_.snapshot().sessionId;
+    if (sessionId == 0 || expectedGeneration == 0 ||
+        expectedGeneration != diagnostics_.sessionGeneration()) {
+        return false;
+    }
+    return authPromptBroker_.cancel(requestId, sessionId, expectedGeneration);
+}
+
+void SshAdapter::recordAuthPromptFailure(int error) noexcept {
+    if (error != 0) {
+        authPromptFailure_.store(error, std::memory_order_release);
+    }
+}
+
 SshForwardingResult SshAdapter::configureForwarding(const SshForwardingConfig& config) {
     std::lock_guard<std::recursive_mutex> lifecycleLock(lifecycleMutex_);
-    return forwardingManager_.upsert(config);
+    SshForwardingConfig owned = config;
+    const SshSessionSnapshot owner = sessionSnapshot();
+    owned.ownerSessionId = owner.sessionId;
+    owned.ownerChannelId = owner.channelId;
+    owned.ownerGeneration = owner.generation;
+    return forwardingManager_.upsert(owned);
 }
 
 SshForwardingResult SshAdapter::removeForwarding(const std::string& id) {
@@ -1174,6 +1260,26 @@ void SshAdapter::failTerminalOutput(const std::string& reason) {
 // ============================================================
 
 void SshAdapter::setState(ConnectionState s, const std::string& message) {
+    switch (s) {
+        case ConnectionState::CONNECTING:
+            setSshLifecycleState(SshSessionLifecycleState::Connecting);
+            break;
+        case ConnectionState::AUTHENTICATING:
+            setSshLifecycleState(SshSessionLifecycleState::Authenticating);
+            break;
+        case ConnectionState::CONNECTED:
+            setSshLifecycleState(SshSessionLifecycleState::Ready);
+            break;
+        case ConnectionState::RECONNECTING:
+            setSshLifecycleState(SshSessionLifecycleState::Reconnecting);
+            break;
+        case ConnectionState::ERROR:
+            setSshLifecycleState(SshSessionLifecycleState::Failed);
+            break;
+        case ConnectionState::DISCONNECTED:
+            setSshLifecycleState(SshSessionLifecycleState::Closed);
+            break;
+    }
     ConnectionStateCallback callback;
     {
         std::lock_guard<std::mutex> lock(stateCallbackMutex_);
@@ -1680,25 +1786,79 @@ int SshAdapter::connectThroughSshJump(const ConnectionConfig& cfg) {
         return fail(jumpHostKeyResult);
     }
 
-    const std::string jumpUsername = cfg.sshProxyUsername.empty()
-        ? cfg.username : cfg.sshProxyUsername;
-    const std::string jumpPassword = cfg.sshProxyPassword.empty()
-        ? cfg.password : cfg.sshProxyPassword;
-    if (jumpUsername.empty()) { return fail(ERR_SSH_PROXY_INVALID); }
-    if (cfg.authMethod == "publickey" && !cfg.privateKeyPem.empty()) {
-        const char* passphrase = cfg.privateKeyPassphrase.empty()
-            ? nullptr : cfg.privateKeyPassphrase.c_str();
+    const std::string jumpUsername = cfg.sshProxyUsername;
+    const std::string jumpAuthMethod = cfg.sshProxyAuthMethod.empty()
+        ? "password" : cfg.sshProxyAuthMethod;
+    if (jumpUsername.empty() ||
+        (jumpAuthMethod != "password" && jumpAuthMethod != "publickey" &&
+         jumpAuthMethod != "kbd-interactive" && jumpAuthMethod != "keyboard-interactive")) {
+        return fail(ERR_SSH_PROXY_INVALID);
+    }
+
+    char* jumpMethods = nullptr;
+    while ((jumpMethods = libssh2_userauth_list(
+                jumpSession_, jumpUsername.c_str(), jumpUsername.size())) == nullptr &&
+           libssh2_session_last_errno(jumpSession_) == LIBSSH2_ERROR_EAGAIN) {
+        if (waitSocketOnFd(jumpSockFd_, 2, 30) != 0) {
+            return fail(ERR_SSH_AUTH_TIMEOUT);
+        }
+    }
+    const std::string advertisedJumpMethods = jumpMethods == nullptr
+        ? std::string() : std::string(jumpMethods);
+    auto jumpMethodAdvertised = [&advertisedJumpMethods](const char* wanted) {
+        return advertisedJumpMethods.empty() ||
+            sshAuthMethodAdvertised(advertisedJumpMethods, wanted);
+    };
+
+    if ((jumpAuthMethod == "publickey" && !jumpMethodAdvertised("publickey")) ||
+        (jumpAuthMethod == "password" && !jumpMethodAdvertised("password")) ||
+        ((jumpAuthMethod == "kbd-interactive" || jumpAuthMethod == "keyboard-interactive") &&
+         !jumpMethodAdvertised("keyboard-interactive"))) {
+        OH_LOG_ERROR(LOG_APP,
+                     "[SSH] ProxyJump 跳板机未声明请求的认证方式 method=%{public}s advertised=%{public}s",
+                     jumpAuthMethod.c_str(), advertisedJumpMethods.c_str());
+        return fail(ERR_SSH_AUTH_METHODS);
+    }
+
+    if (jumpAuthMethod == "publickey") {
+        if (cfg.sshProxyPrivateKeyPem.empty()) { return fail(ERR_SSH_PROXY_AUTH); }
+        const char* passphrase = cfg.sshProxyPrivateKeyPassphrase.empty()
+            ? nullptr : cfg.sshProxyPrivateKeyPassphrase.c_str();
         while ((rc = libssh2_userauth_publickey_frommemory(
                     jumpSession_, jumpUsername.c_str(), jumpUsername.size(),
-                    nullptr, 0, cfg.privateKeyPem.c_str(), cfg.privateKeyPem.size(),
-                    passphrase)) == LIBSSH2_ERROR_EAGAIN) {
+                    nullptr, 0, cfg.sshProxyPrivateKeyPem.c_str(),
+                    cfg.sshProxyPrivateKeyPem.size(), passphrase)) == LIBSSH2_ERROR_EAGAIN) {
             if (waitSocketOnFd(jumpSockFd_, 2, 30) != 0) {
                 return fail(ERR_SSH_AUTH_TIMEOUT);
             }
         }
+    } else if (jumpAuthMethod == "kbd-interactive" ||
+               jumpAuthMethod == "keyboard-interactive") {
+        authPromptHop_ = "jump";
+        authPromptPresetIndex_ = 0;
+        authPromptFailure_.store(0, std::memory_order_release);
+        SshJumpKeyboardContext context {
+            this, &cfg.sshProxyPassword, &cfg.sshProxyKeyboardInteractiveResponses,
+            &authPromptPresetIndex_, cfg.sshProxyHost, true
+        };
+        void** abstract = libssh2_session_abstract(jumpSession_);
+        if (abstract != nullptr) { *abstract = &context; }
+        while ((rc = libssh2_userauth_keyboard_interactive(
+                    jumpSession_, jumpUsername.c_str(),
+                    &sshJumpKeyboardInteractiveCallback)) == LIBSSH2_ERROR_EAGAIN) {
+            if (waitSocketOnFd(jumpSockFd_, 2, 30) != 0) {
+                return fail(ERR_SSH_AUTH_TIMEOUT);
+            }
+        }
+        const int promptFailure = authPromptFailure_.load(std::memory_order_acquire);
+        authPromptHop_ = "target";
+        if (promptFailure != 0) {
+            return fail(promptFailure);
+        }
     } else {
+        if (cfg.sshProxyPassword.empty()) { return fail(ERR_SSH_PROXY_AUTH); }
         while ((rc = libssh2_userauth_password(
-                    jumpSession_, jumpUsername.c_str(), jumpPassword.c_str())) ==
+                    jumpSession_, jumpUsername.c_str(), cfg.sshProxyPassword.c_str())) ==
                LIBSSH2_ERROR_EAGAIN) {
             if (waitSocketOnFd(jumpSockFd_, 2, 30) != 0) {
                 return fail(ERR_SSH_AUTH_TIMEOUT);
@@ -1935,9 +2095,9 @@ int SshAdapter::sshHandshake() {
     // Non-blocking applications must call libssh2_keepalive_send() themselves.
     // The reader reactor does that even while the page callback is detached,
     // so an idle background session does not rely on the UI latency probe.
-    libssh2_keepalive_config(session_, 1, SshTerminalKeepalivePolicy::kIntervalSeconds);
+    libssh2_keepalive_config(session_, 1, SshReconnectPolicy::kKeepaliveSeconds);
     keepaliveNextDue_ = std::chrono::steady_clock::now() +
-        std::chrono::seconds(SshTerminalKeepalivePolicy::kIntervalSeconds);
+        std::chrono::seconds(SshReconnectPolicy::kKeepaliveSeconds);
     keepaliveConsecutiveFailures_ = 0;
 
     applySshAlgorithmPreferences(session_);
@@ -2049,46 +2209,128 @@ void SshAdapter::keyboardInteractiveCallback(
     const char* name, int nameLen, const char* instruction, int instructionLen,
     int numPrompts, const LIBSSH2_USERAUTH_KBDINT_PROMPT* prompts,
     LIBSSH2_USERAUTH_KBDINT_RESPONSE* responses, void** abstract) {
-    (void)name;
-    (void)nameLen;
-    (void)instruction;
-    (void)instructionLen;
     if (numPrompts <= 0 || responses == nullptr || abstract == nullptr ||
         *abstract == nullptr) {
         return;
     }
 
     auto* adapter = static_cast<SshAdapter*>(*abstract);
-    for (int index = 0; index < numPrompts; ++index) {
-        std::string response;
-        if (index >= 0 &&
-            static_cast<size_t>(index) < adapter->savedCfg_.sshKeyboardInteractiveResponses.size()) {
-            response = adapter->savedCfg_.sshKeyboardInteractiveResponses[static_cast<size_t>(index)];
-        } else if (prompts != nullptr &&
-                   sshKeyboardInteractivePromptCanUsePassword(prompts[index].echo)) {
-            // Password is a useful compatibility fallback for servers that
-            // expose a password prompt through keyboard-interactive.
-            response = adapter->savedCfg_.password;
-        }
-        if (response.empty()) {
-            responses[index].text = nullptr;
-            responses[index].length = 0;
-            continue;
-        }
-        char* allocated = static_cast<char*>(std::malloc(response.size()));
-        if (allocated == nullptr) {
-            responses[index].text = nullptr;
-            responses[index].length = 0;
-            continue;
-        }
-        std::memcpy(allocated, response.data(), response.size());
-        responses[index].text = allocated;
-        responses[index].length = static_cast<unsigned int>(
-            std::min<size_t>(response.size(), UINT_MAX));
+    const int result = adapter->keyboardInteractiveResponseRound(
+        name, nameLen, instruction, instructionLen, numPrompts, prompts, responses);
+    if (result != 0) {
+        adapter->recordAuthPromptFailure(result);
     }
 }
 
-int SshAdapter::authenticateKeyboardInteractive() {
+int SshAdapter::fillKeyboardInteractiveResponses(
+    const char* name, int nameLen, const char* instruction, int instructionLen,
+    int numPrompts, const LIBSSH2_USERAUTH_KBDINT_PROMPT* prompts,
+    LIBSSH2_USERAUTH_KBDINT_RESPONSE* responses,
+    const std::vector<std::string>* explicitResponses,
+    const std::string* password, bool allowPasswordFallback,
+    const std::string& targetHost, const std::string& hop,
+    size_t& presetIndex) {
+    if (numPrompts <= 0) {
+        return 0;
+    }
+    if (responses == nullptr || prompts == nullptr ||
+        static_cast<uint32_t>(numPrompts) > SshAuthPromptBroker::kMaxPrompts) {
+        return ERR_SSH_AUTH_FAILED;
+    }
+
+    for (int index = 0; index < numPrompts; ++index) {
+        responses[index].text = nullptr;
+        responses[index].length = 0;
+    }
+
+    std::vector<SshAuthPrompt> promptList;
+    promptList.reserve(static_cast<size_t>(numPrompts));
+    for (int index = 0; index < numPrompts; ++index) {
+        SshAuthPrompt prompt;
+        if (prompts[index].text != nullptr && prompts[index].length > 0) {
+            prompt.text.assign(prompts[index].text,
+                               std::min<size_t>(prompts[index].length,
+                                                SshAuthPromptBroker::kMaxPromptBytes));
+        }
+        prompt.echo = prompts[index].echo != 0;
+        promptList.push_back(std::move(prompt));
+    }
+
+    std::vector<std::string> values;
+    const size_t promptCount = static_cast<size_t>(numPrompts);
+    if (explicitResponses != nullptr &&
+        presetIndex <= explicitResponses->size() &&
+        explicitResponses->size() - presetIndex >= promptCount) {
+        values.insert(values.end(), explicitResponses->begin() + presetIndex,
+                      explicitResponses->begin() + presetIndex + promptCount);
+        presetIndex += promptCount;
+    } else {
+        bool canUsePassword = allowPasswordFallback && password != nullptr &&
+            !password->empty();
+        if (canUsePassword) {
+            for (const SshAuthPrompt& prompt : promptList) {
+                if (!sshKeyboardInteractivePromptCanUsePassword(prompt.echo)) {
+                    canUsePassword = false;
+                    break;
+                }
+            }
+        }
+        if (canUsePassword) {
+            values.assign(promptCount, *password);
+        } else {
+            setSshLifecycleState(SshSessionLifecycleState::NeedsAuthentication);
+            const SshAuthPromptWaitResult waitResult = authPromptBroker_.waitForResponse(
+                diagnostics_.snapshot().sessionId, diagnostics_.sessionGeneration(),
+                targetHost, hop, name, nameLen, instruction, instructionLen,
+                promptList, values);
+            setSshLifecycleState(SshSessionLifecycleState::Authenticating);
+            switch (waitResult) {
+                case SshAuthPromptWaitResult::Responded:
+                    break;
+                case SshAuthPromptWaitResult::Cancelled:
+                    return ERR_SSH_AUTH_CANCELLED;
+                case SshAuthPromptWaitResult::TimedOut:
+                    return ERR_SSH_AUTH_TIMEOUT;
+                case SshAuthPromptWaitResult::Closed:
+                    return ERR_SSH_SESSION_CLOSED;
+            }
+            if (values.size() != promptCount) {
+                return ERR_SSH_AUTH_FAILED;
+            }
+        }
+    }
+
+    for (size_t index = 0; index < values.size(); ++index) {
+        if (values[index].size() > SshAuthPromptBroker::kMaxPromptBytes) {
+            return ERR_SSH_AUTH_FAILED;
+        }
+        if (values[index].empty()) {
+            continue;
+        }
+        char* allocated = static_cast<char*>(std::malloc(values[index].size()));
+        if (allocated == nullptr) {
+            return ERR_SSH_AUTH_FAILED;
+        }
+        std::memcpy(allocated, values[index].data(), values[index].size());
+        responses[index].text = allocated;
+        responses[index].length = static_cast<unsigned int>(
+            std::min<size_t>(values[index].size(), UINT_MAX));
+    }
+    return 0;
+}
+
+int SshAdapter::keyboardInteractiveResponseRound(
+    const char* name, int nameLen, const char* instruction, int instructionLen,
+    int numPrompts, const LIBSSH2_USERAUTH_KBDINT_PROMPT* prompts,
+    LIBSSH2_USERAUTH_KBDINT_RESPONSE* responses) {
+    return fillKeyboardInteractiveResponses(
+        name, nameLen, instruction, instructionLen, numPrompts, prompts, responses,
+        &savedCfg_.sshKeyboardInteractiveResponses, &savedCfg_.password,
+        authPromptAllowPasswordFallback_, savedCfg_.host, authPromptHop_,
+        authPromptPresetIndex_);
+}
+
+int SshAdapter::authenticateKeyboardInteractive(bool allowPasswordFallback) {
     if (!assertSessionOwner("keyboard_interactive_auth")) {
         return ERR_SSH_AUTH_FAILED;
     }
@@ -2115,6 +2357,10 @@ int SshAdapter::authenticateKeyboardInteractive() {
         *abstract = this;
     }
 
+    authPromptAllowPasswordFallback_ = allowPasswordFallback;
+    authPromptHop_ = "target";
+    authPromptPresetIndex_ = 0;
+    authPromptFailure_.store(0, std::memory_order_release);
     int rc;
     while ((rc = libssh2_userauth_keyboard_interactive(
                 session_, savedCfg_.username.c_str(),
@@ -2124,6 +2370,10 @@ int SshAdapter::authenticateKeyboardInteractive() {
             OH_LOG_ERROR(LOG_APP, "[SSH] keyboard-interactive 认证超时");
             return ERR_SSH_AUTH_TIMEOUT;
         }
+    }
+    const int promptFailure = authPromptFailure_.load(std::memory_order_acquire);
+    if (promptFailure != 0) {
+        return promptFailure;
     }
     if (rc != 0) {
         char* detail = nullptr;
@@ -2308,6 +2558,14 @@ int SshAdapter::connectInternal(const ConnectionConfig& cfg, bool preserveOwner)
         return ERR_SSH_SESSION_INIT;
     }
     std::lock_guard<std::recursive_mutex> lifecycleLock(lifecycleMutex_);
+    if (!preserveOwner) {
+        setSshLifecycleState(SshSessionLifecycleState::Created);
+    }
+    authPromptBroker_.resetForNewConnection();
+    authPromptFailure_.store(0, std::memory_order_release);
+    authPromptHop_ = "target";
+    authPromptAllowPasswordFallback_ = false;
+    authPromptPresetIndex_ = 0;
     if (connectCancelRequested_.load(std::memory_order_acquire)) {
         OH_LOG_INFO(LOG_APP, "[SSH] 连接在开始前已取消");
         if (preserveOwner) {
@@ -2356,6 +2614,7 @@ int SshAdapter::connectInternal(const ConnectionConfig& cfg, bool preserveOwner)
         }
 
         // Step 4: 用户认证 (公钥优先, 失败时回退密码)
+        setState(ConnectionState::AUTHENTICATING, "SSH authenticating");
         OH_LOG_INFO(LOG_APP, "[SSH] 认证方式=%{public}s", cfg.authMethod.c_str());
         auto authenticatePasswordWithFallback = [this]() {
             const int passwordResult = authenticatePassword();
@@ -2365,11 +2624,11 @@ int SshAdapter::connectInternal(const ConnectionConfig& cfg, bool preserveOwner)
             }
             OH_LOG_WARN(LOG_APP,
                         "[SSH] password method failed; trying advertised keyboard-interactive fallback");
-            const int interactiveResult = authenticateKeyboardInteractive();
+            const int interactiveResult = authenticateKeyboardInteractive(true);
             return interactiveResult == 0 ? 0 : passwordResult;
         };
         if (cfg.authMethod == "kbd-interactive" || cfg.authMethod == "keyboard-interactive") {
-            ret = authenticateKeyboardInteractive();
+            ret = authenticateKeyboardInteractive(true);
         } else if (cfg.authMethod == "publickey" && !cfg.privateKeyPem.empty()) {
             ret = authenticatePublicKey(cfg.username, cfg.privateKeyPem, cfg.privateKeyPassphrase);
             if (ret < 0 && !cfg.password.empty()) {
@@ -2460,6 +2719,8 @@ int SshAdapter::connectInternal(const ConnectionConfig& cfg, bool preserveOwner)
 }
 
 void SshAdapter::disconnect() {
+    setSshLifecycleState(SshSessionLifecycleState::Closing);
+    authPromptBroker_.cancelAll();
     // Close the input admission gate before the asynchronous teardown task is
     // published. The registry may remain visible until that task starts.
     rejectTerminalInput();
@@ -2517,10 +2778,16 @@ void SshAdapter::disconnect() {
         secureClearString(savedCfg_.privateKeyPem);
         secureClearString(savedCfg_.privateKeyPassphrase);
         secureClearString(savedCfg_.sshProxyPassword);
+        secureClearString(savedCfg_.sshProxyPrivateKeyPem);
+        secureClearString(savedCfg_.sshProxyPrivateKeyPassphrase);
         for (std::string& response : savedCfg_.sshKeyboardInteractiveResponses) {
             secureClearString(response);
         }
         savedCfg_.sshKeyboardInteractiveResponses.clear();
+        for (std::string& response : savedCfg_.sshProxyKeyboardInteractiveResponses) {
+            secureClearString(response);
+        }
+        savedCfg_.sshProxyKeyboardInteractiveResponses.clear();
     }
     keepaliveNextDue_ = std::chrono::steady_clock::time_point::max();
     keepaliveConsecutiveFailures_ = 0;
@@ -2537,6 +2804,7 @@ void SshAdapter::resetTransportForRecovery() {
     // next handshake must use the same explicit host-key policy and consumer.
     stopTerminalInput();
     stopSshJumpRelay();
+    authPromptBroker_.cancelAll();
 
     std::lock_guard<std::recursive_mutex> lifecycleLock(lifecycleMutex_);
     std::lock_guard<std::mutex> sftpLock(sftpOperationMutex_);
@@ -2574,38 +2842,62 @@ bool SshAdapter::reconnectAfterTransportFailure() {
         return false;
     }
 
-    constexpr uint32_t kMaxAttempts = SshTerminalKeepalivePolicy::kMaxConsecutiveFailures;
-    for (uint32_t attempt = 0; attempt < kMaxAttempts; ++attempt) {
+    const auto recoveryStartedAt = std::chrono::steady_clock::now();
+    uint32_t attemptsStarted = 0;
+    setSshLifecycleState(SshSessionLifecycleState::NetworkLost);
+    while (true) {
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - recoveryStartedAt).count();
+        const int elapsedMilliseconds = static_cast<int>(std::min<int64_t>(
+            std::max<int64_t>(0, elapsed), INT_MAX));
+        if (!SshReconnectPolicy::canAttempt(attemptsStarted, elapsedMilliseconds)) {
+            break;
+        }
         if (!readerRunning_.load(std::memory_order_acquire) ||
             connectCancelRequested_.load(std::memory_order_acquire)) {
             return false;
         }
 
+        setSshLifecycleState(SshSessionLifecycleState::ReconnectScheduled);
+        const uint64_t entropy = static_cast<uint64_t>(
+            std::chrono::steady_clock::now().time_since_epoch().count());
+        const uint32_t randomPermille = static_cast<uint32_t>(
+            (entropy ^ (static_cast<uint64_t>(attemptsStarted + 1) * 0x9E3779B97F4A7C15ULL)) % 1001ULL);
+        const int delayMilliseconds = SshReconnectPolicy::jitteredDelayMilliseconds(
+            attemptsStarted, randomPermille);
+        {
+            std::unique_lock<std::mutex> waitLock(reactorCommandMutex_);
+            reactorCommandCondition_.wait_for(
+                waitLock, std::chrono::milliseconds(delayMilliseconds), [this]() {
+                    return !readerRunning_.load(std::memory_order_acquire) ||
+                        connectCancelRequested_.load(std::memory_order_acquire);
+                });
+        }
+        if (!readerRunning_.load(std::memory_order_acquire) ||
+            connectCancelRequested_.load(std::memory_order_acquire)) {
+            return false;
+        }
+
+        ++attemptsStarted;
+        setSshLifecycleState(SshSessionLifecycleState::Reconnecting);
         setState(ConnectionState::RECONNECTING,
                  "SSH transport lost, reconnecting [" +
-                 std::to_string(attempt + 1) + "/" + std::to_string(kMaxAttempts) + "]");
+                 std::to_string(attemptsStarted) + "/" +
+                 std::to_string(SshReconnectPolicy::kMaxAttempts) + "]");
         resetTransportForRecovery();
         const int ret = connectInternal(savedCfg_, true);
         if (ret == 0) {
             transportRecoveryRequested_.store(false, std::memory_order_release);
+            setState(ConnectionState::CONNECTED,
+                     "连接已恢复，新 shell 已启动");
             OH_LOG_INFO(LOG_APP, "[SSH] transport recovery succeeded attempt=%{public}u",
-                        attempt + 1);
+                        attemptsStarted);
             return true;
         }
 
         OH_LOG_WARN(LOG_APP,
                     "[SSH] transport recovery failed attempt=%{public}u rc=%{public}d",
-                    attempt + 1, ret);
-        if (attempt + 1 < kMaxAttempts) {
-            std::unique_lock<std::mutex> waitLock(reactorCommandMutex_);
-            reactorCommandCondition_.wait_for(
-                waitLock,
-                std::chrono::milliseconds(SshTerminalKeepalivePolicy::kRetryDelayMilliseconds),
-                [this]() {
-                    return !readerRunning_.load(std::memory_order_acquire) ||
-                        connectCancelRequested_.load(std::memory_order_acquire);
-                });
-        }
+                    attemptsStarted, ret);
     }
 
     stopTerminalInput();
@@ -2622,6 +2914,8 @@ ConnectionState SshAdapter::getState() {
 
 void SshAdapter::requestConnectCancel() {
     connectCancelRequested_.store(true, std::memory_order_release);
+    authPromptBroker_.cancelAll();
+    reactorCommandCondition_.notify_all();
 }
 
 // ============================================================
@@ -4202,7 +4496,7 @@ void SshAdapter::serviceKeepaliveOnReactor() {
     const auto retryAt = std::chrono::steady_clock::now() +
         std::chrono::milliseconds(SshTerminalKeepalivePolicy::kRetryDelayMilliseconds);
     if (rc == 0) {
-        const int interval = SshTerminalKeepalivePolicy::intervalSeconds(secondsToNext);
+        const int interval = secondsToNext > 0 ? secondsToNext : SshReconnectPolicy::kKeepaliveSeconds;
         keepaliveNextDue_ = std::chrono::steady_clock::now() +
             std::chrono::seconds(interval);
         keepaliveConsecutiveFailures_ = 0;
@@ -4216,7 +4510,7 @@ void SshAdapter::serviceKeepaliveOnReactor() {
     }
 
     ++keepaliveConsecutiveFailures_;
-    if (SshTerminalKeepalivePolicy::retryableFailure(keepaliveConsecutiveFailures_)) {
+    if (!SshReconnectPolicy::keepaliveFailureTriggersRecovery(keepaliveConsecutiveFailures_)) {
         keepaliveNextDue_ = retryAt;
         OH_LOG_WARN(LOG_APP, "[SSH] keepalive 暂时失败 rc=%{public}d retry=%{public}u",
                     rc, keepaliveConsecutiveFailures_);

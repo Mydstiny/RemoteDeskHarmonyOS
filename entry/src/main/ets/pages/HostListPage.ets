@@ -538,8 +538,11 @@ struct HostListPage {
   @State sshPreflightJumpHostKeyInfo: SshHostKeyInfo | null = null;
   @State sshPreflightError: string = '';
   @State sshPreflightPassphraseInput: string = '';
+  @State sshPreflightProxyPassphraseInput: string = '';
   @State sshPreflightPassphraseShowPw: boolean = false;
   @State sshPreflightPassphraseSaveToHost: boolean = false;
+  @State sshPreflightProxyPassphraseSaveToHost: boolean = false;
+  @State sshPreflightPassphraseScope: string = 'target'; // target | proxy
   @State showRdpCertificatePreflight: boolean = false;
   @State rdpCertificateState: number = RdpCertificatePreflightState.PROBING;
   private rdpCertificateOpenedAt: number = 0;
@@ -649,6 +652,7 @@ struct HostListPage {
   @StorageLink('rdpAudioEnabled') rdpAudioEnabled: boolean = true;
   @StorageLink('rdpClipboardEnabled') rdpClipboardEnabled: boolean = true;
   @StorageLink('rdpDriveEnabled') rdpDriveEnabled: boolean = true;
+  @StorageLink('rdpShowDiagnostics') rdpShowDiagnostics: boolean = false;
   @StorageLink('rdpDriveName') rdpDriveName: string = 'RemoteDesktop';
   @StorageLink('rdpControlMode') rdpControlMode: number = 0; // 0=触控板, 1=直接触控, 2=键鼠
   @StorageLink('rdpAuthIdentityMode') rdpAuthIdentityMode: number = 1; // 0=MicrosoftAccount\\邮箱, 1=域+邮箱, 2=裸邮箱, 3=.\\AzureAD\\邮箱, 4=AzureAD域
@@ -666,6 +670,10 @@ struct HostListPage {
   @State sheetProxyPort: number = 22;
   @State sheetProxyUser: string = '';
   @State sheetProxyType: string = 'http_connect';
+  @State sheetProxyAuthMethod: string = 'password';
+  @State sheetProxyKeyId: string = '';
+  @State sheetProxyPassword: string = '';
+  @State sheetProxyKeyPassphrase: string = '';
   @StorageLink('currentBreakpoint') @Watch('onBreakpointChange') breakpoint: string = 'sm';
   @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
   @StorageProp('topRectHeight') topRectHeight: number = 0;
@@ -1047,6 +1055,7 @@ struct HostListPage {
       const savedRdpColorDepth: number = prefs.getSync('rdpColorDepth', 32) as number;
       const savedRdpAudioEnabled: boolean = prefs.getSync('rdpAudioEnabled', true) as boolean;
       const savedRdpClipboardEnabled: boolean = prefs.getSync('rdpClipboardEnabled', true) as boolean;
+      const savedRdpShowDiagnostics: boolean = prefs.getSync('rdpShowDiagnostics', false) as boolean;
       const rdpDriveDefaultVersion: number = prefs.getSync('rdpDriveDefaultVersion', 0) as number;
       let savedRdpDriveEnabled: boolean = prefs.getSync('rdpDriveEnabled', true) as boolean;
       if (rdpDriveDefaultVersion < 3) {
@@ -1110,6 +1119,7 @@ struct HostListPage {
       this.rdpColorDepth = savedRdpColorDepth === 16 || savedRdpColorDepth === 24 ? savedRdpColorDepth : 32;
       this.rdpAudioEnabled = savedRdpAudioEnabled;
       this.rdpClipboardEnabled = savedRdpClipboardEnabled;
+      this.rdpShowDiagnostics = savedRdpShowDiagnostics;
       this.rdpDriveEnabled = savedRdpDriveEnabled;
       this.rdpDriveName = this.normalizeRdpDriveName(savedRdpDriveName);
       this.rdpControlMode = this.clampRdpControlMode(savedRdpControlMode);
@@ -1142,6 +1152,7 @@ struct HostListPage {
       AppStorage.setOrCreate('rdpColorDepth', this.rdpColorDepth);
       AppStorage.setOrCreate('rdpAudioEnabled', this.rdpAudioEnabled);
       AppStorage.setOrCreate('rdpClipboardEnabled', this.rdpClipboardEnabled);
+      AppStorage.setOrCreate('rdpShowDiagnostics', this.rdpShowDiagnostics);
       AppStorage.setOrCreate('rdpDriveEnabled', this.rdpDriveEnabled);
       AppStorage.setOrCreate('rdpDriveName', this.rdpDriveName);
       AppStorage.setOrCreate('rdpControlMode', this.rdpControlMode);
@@ -4058,6 +4069,10 @@ struct HostListPage {
     this.sshPreflightJumpHostKeyInfo = null;
     this.sshPreflightError = '';
     this.sshPreflightPassphraseInput = '';
+    this.sshPreflightProxyPassphraseInput = '';
+    this.sshPreflightPassphraseScope = 'target';
+    this.sshPreflightPassphraseSaveToHost = false;
+    this.sshPreflightProxyPassphraseSaveToHost = false;
     this.sshPreflightPendingRouteParams = null;
     this.openSheetSafely((): void => {
       this.openRemoteHostSheet(REMOTE_HOST_SHEET_SSH_PREFLIGHT, (): void => {
@@ -4127,23 +4142,41 @@ struct HostListPage {
 
   /**
    * 主机指纹/密钥预检必须使用与最终 SSH 会话相同的传输路径。
-   * 代理密码不在 RemoteHost 中持久化，因此此处只传递已保存的非敏感
-   * 端点和用户名；若代理要求密码，native 会返回明确的代理认证错误。
+   * 指纹探测本身不带 expected key, 否则 native 会在变化时只返回失败，
+   * UI 无法展示新指纹供用户比较；认证预检和最终连接再带上绑定值。
    */
-  private sshPreflightProxy(host: RemoteHost): SshProxyConfig {
-    const keyMaterial = host.sshProxyType === 'ssh_jump' && host.sshUseKey
-      ? this.resolveSshKeyMaterial(host).privateKey : '';
+  private sshPreflightProxy(host: RemoteHost, includeExpectedJumpKey: boolean = false): SshProxyConfig {
+    const isJump: boolean = host.sshProxyType === 'ssh_jump';
+    const proxyKeyMaterial: SshKeyMaterial = this.resolveSshProxyKeyMaterial(host);
+    const proxyAuthMethod = host.sshProxyAuthMethod;
+    const proxyPassphrase: string = this.sshPreflightProxyPassphraseInput || host.sshProxyKeyPassphrase;
     return {
       type: host.proxyHost.length > 0 ? host.sshProxyType : 'direct',
       host: host.proxyHost,
       port: host.proxyPort,
       username: host.proxyUsername,
-      // ProxyJump uses the target host credential for the bastion in this
-      // route slice; keep it transient and never persist it as proxy data.
-      password: host.sshProxyType === 'ssh_jump' ? host.password : '',
-      privateKeyPem: keyMaterial,
-      privateKeyPassphrase: host.sshProxyType === 'ssh_jump' ? host.sshKeyPassphrase : ''
+      password: isJump && proxyAuthMethod !== 'publickey' ? host.sshProxyPassword : '',
+      privateKeyPem: isJump && proxyAuthMethod === 'publickey' ? proxyKeyMaterial.privateKey : '',
+      privateKeyPassphrase: isJump && proxyAuthMethod === 'publickey'
+        ? proxyPassphrase : '',
+      authMethod: isJump ? proxyAuthMethod : undefined,
+      expectedHostKeyRawBase64: includeExpectedJumpKey && isJump ? host.sshJumpHostKeyRawBase64 : '',
+      expectedHostKeyFingerprintSha256: includeExpectedJumpKey && isJump
+        ? host.sshJumpHostKeyFingerprintSha256 : ''
     };
+  }
+
+  private resolveSshProxyKeyMaterial(host: RemoteHost): SshKeyMaterial {
+    let keyData: string = '';
+    let encryptedHint: boolean = false;
+    if (host.sshProxyKeyId !== '') {
+      const ref = KeyVaultService.getInstance().getSshKey(host.sshProxyKeyId);
+      if (ref) {
+        keyData = ref.privateKey;
+        encryptedHint = ref.privateKeyEncrypted;
+      }
+    }
+    return { privateKey: keyData, encryptedHint: encryptedHint };
   }
 
   private sshPreflightUsesJump(host: RemoteHost): boolean {
@@ -4284,6 +4317,33 @@ struct HostListPage {
   /** T-210: 检查私钥密码 */
   private doSshPreflightCheckPassphrase(host: RemoteHost, generation: number): void {
     if (!this.isCurrentSshPreflight(host, generation)) { return; }
+    if (this.sshPreflightUsesJump(host) && host.sshProxyAuthMethod === 'publickey') {
+      const proxyMaterial: SshKeyMaterial = this.resolveSshProxyKeyMaterial(host);
+      if (proxyMaterial.privateKey.length === 0) {
+        this.sshPreflightState = SshPreflightState.ERROR;
+        this.sshPreflightError = '跳板机私钥不存在或已从密钥保险库移除';
+        return;
+      }
+      const proxyKeyInfo: SshPrivateKeyInfo = this.loader.inspectSshPrivateKey(
+        proxyMaterial.privateKey, host.sshProxyKeyPassphrase);
+      if (proxyKeyInfo.ok && !proxyKeyInfo.encrypted) {
+        this.sshPreflightProxyPassphraseInput = '';
+      } else if (host.sshProxyKeyPassphrase === '' &&
+        (proxyMaterial.encryptedHint || proxyKeyInfo.encrypted)) {
+        this.showSshPreflightPassphrase('', false, 'proxy');
+        return;
+      } else if (host.sshProxyKeyPassphrase !== '' && !proxyKeyInfo.ok) {
+        this.showSshPreflightPassphrase('已保存的跳板机私钥密码不可用，请重新输入', true, 'proxy');
+        return;
+      } else if (!proxyKeyInfo.ok) {
+        this.sshPreflightState = SshPreflightState.ERROR;
+        this.sshPreflightError = '跳板机私钥不可用: ' +
+          (proxyKeyInfo.error || '无法解析私钥');
+        return;
+      } else {
+        this.sshPreflightProxyPassphraseInput = host.sshProxyKeyPassphrase;
+      }
+    }
     if (!host.sshUseKey) { this.doSshPreflightReady(host, generation); return; }
     const material = this.resolveSshKeyMaterial(host);
     const keyData = material.privateKey;
@@ -4303,10 +4363,17 @@ struct HostListPage {
     }
   }
 
-  private showSshPreflightPassphrase(error: string, saveDefault: boolean = false): void {
+  private showSshPreflightPassphrase(error: string, saveDefault: boolean = false,
+    scope: string = 'target'): void {
     this.sshPreflightState = SshPreflightState.PASSPHRASE_REQUIRED;
-    this.sshPreflightPassphraseInput = '';
-    this.sshPreflightPassphraseSaveToHost = saveDefault;
+    this.sshPreflightPassphraseScope = scope;
+    if (scope === 'proxy') {
+      this.sshPreflightProxyPassphraseInput = '';
+      this.sshPreflightProxyPassphraseSaveToHost = saveDefault;
+    } else {
+      this.sshPreflightPassphraseInput = '';
+      this.sshPreflightPassphraseSaveToHost = saveDefault;
+    }
     this.sshPreflightError = error;
   }
 
@@ -4320,7 +4387,7 @@ struct HostListPage {
       const keyData = this.resolveSshKeyMaterial(host).privateKey;
       const result = this.loader.testSshKeyAuth(
         host.host, host.port, host.username, keyData, passphrase,
-        this.sshPreflightProxy(host)
+        this.sshPreflightProxy(host, true)
       );
       if (!this.isCurrentSshPreflight(host, generation)) { return; }
       if (result.ok) {
@@ -4344,12 +4411,48 @@ struct HostListPage {
 
   private hasSavedSshPreflightPassphrase(): boolean {
     const host = this.getSshPreflightHost();
-    return host !== undefined && host.sshKeyPassphrase !== '';
+    if (host === undefined) { return false; }
+    return this.sshPreflightPassphraseScope === 'proxy'
+      ? host.sshProxyKeyPassphrase !== '' : host.sshKeyPassphrase !== '';
+  }
+
+  private async doSshPreflightVerifyProxyPassphrase(host: RemoteHost,
+    generation: number): Promise<void> {
+    if (!this.isCurrentSshPreflight(host, generation)) { return; }
+    try {
+      await new Promise<void>((r) => setTimeout(r, 60));
+      if (!this.isCurrentSshPreflight(host, generation)) { return; }
+      const keyData: string = this.resolveSshProxyKeyMaterial(host).privateKey;
+      const keyInfo: SshPrivateKeyInfo = this.loader.inspectSshPrivateKey(
+        keyData, this.sshPreflightProxyPassphraseInput);
+      if (!keyInfo.ok || !keyInfo.encrypted) {
+        this.showSshPreflightPassphrase(
+          keyInfo.ok ? '此跳板机私钥实际未设置密码，请在密钥管理中重新设置密码' :
+            '跳板机私钥密码错误或密钥不可用',
+          keyInfo.ok ? false : true, 'proxy');
+        return;
+      }
+      if (this.sshPreflightProxyPassphraseSaveToHost) {
+        host.sshProxyKeyPassphrase = this.sshPreflightProxyPassphraseInput;
+        this.srv.updateHost(host);
+      }
+      this.sshPreflightPassphraseScope = 'target';
+      this.sshPreflightPassphraseInput = '';
+      this.sshPreflightError = '';
+      this.doSshPreflightCheckPassphrase(host, generation);
+    } catch (_e) {
+      if (!this.isCurrentSshPreflight(host, generation)) { return; }
+      this.showSshPreflightPassphrase('跳板机私钥验证异常', false, 'proxy');
+    }
   }
 
   /** T-210: 验证私钥密码 */
   private async doSshPreflightVerifyPassphrase(host: RemoteHost, generation: number): Promise<void> {
     if (!this.isCurrentSshPreflight(host, generation)) { return; }
+    if (this.sshPreflightPassphraseScope === 'proxy') {
+      await this.doSshPreflightVerifyProxyPassphrase(host, generation);
+      return;
+    }
     this.sshPreflightState = SshPreflightState.VERIFYING_PASSPHRASE;
     try {
       await new Promise<void>((r) => setTimeout(r, 60));
@@ -4362,7 +4465,7 @@ struct HostListPage {
       }
       const result = this.loader.testSshKeyAuth(
         host.host, host.port, host.username, keyData, this.sshPreflightPassphraseInput,
-        this.sshPreflightProxy(host)
+        this.sshPreflightProxy(host, true)
       );
       if (!this.isCurrentSshPreflight(host, generation)) { return; }
       if (result.ok) {
@@ -4385,6 +4488,7 @@ struct HostListPage {
     if (!this.isCurrentSshPreflight(host, generation)) { return; }
     const svc = SshPreflightService.getInstance();
     const passphrase = this.sshPreflightPassphraseInput || host.sshKeyPassphrase;
+    const proxyPassphrase = this.sshPreflightProxyPassphraseInput || host.sshProxyKeyPassphrase;
     const rawBase64 = this.sshPreflightHostKeyInfo?.rawBase64 || host.sshHostKeyRawBase64;
     const fp = this.sshPreflightHostKeyInfo?.fingerprintSha256 || host.sshHostKeyFingerprintSha256;
     const jumpRawBase64 = this.sshPreflightJumpHostKeyInfo?.rawBase64 || host.sshJumpHostKeyRawBase64;
@@ -4396,7 +4500,8 @@ struct HostListPage {
       expectedHostKeyFingerprintSha256: fp,
       expectedJumpHostKeyRawBase64: jumpRawBase64,
       expectedJumpHostKeyFingerprintSha256: jumpFp,
-      privateKeyPassphrase: passphrase
+      privateKeyPassphrase: passphrase,
+      proxyPrivateKeyPassphrase: proxyPassphrase
     });
     const params: Record<string, Object> = {};
     params['hostId'] = host.id;
@@ -5412,6 +5517,10 @@ struct HostListPage {
     this.sheetProxyType = sshEditorTransportForStoredHost(
       latestHost.proxyHost, latestHost.sshProxyType);
     this.sheetUseProxy = (latestHost.proxyHost !== '');
+    this.sheetProxyAuthMethod = latestHost.sshProxyAuthMethod;
+    this.sheetProxyKeyId = latestHost.sshProxyKeyId;
+    this.sheetProxyPassword = latestHost.sshProxyPassword;
+    this.sheetProxyKeyPassphrase = latestHost.sshProxyKeyPassphrase;
     this.openSheetSafely((): void => { this.showAddSheet = true; });
   }
 
@@ -6071,6 +6180,11 @@ struct HostListPage {
   private saveRdpClipboardEnabled(on: boolean): void {
     this.rdpClipboardEnabled = on;
     this.persistPref('rdpClipboardEnabled', this.rdpClipboardEnabled);
+  }
+
+  private saveRdpShowDiagnostics(on: boolean): void {
+    this.rdpShowDiagnostics = on;
+    this.persistPref('rdpShowDiagnostics', this.rdpShowDiagnostics);
   }
 
   private saveRdpDriveEnabled(on: boolean): void {
@@ -8615,6 +8729,10 @@ struct HostListPage {
                 '连接时启用文本剪贴板通道', this.rdpClipboardEnabled,
                 (on: boolean): void => { this.saveRdpClipboardEnabled(on); }, true)
               this.cardDivider()
+              this.rustdeskSwitchRow($r('app.media.icon_info'), '性能监视与诊断日志',
+                '连接后显示送显、队列和 GFX 指标，并写入 hilog', this.rdpShowDiagnostics,
+                (on: boolean): void => { this.saveRdpShowDiagnostics(on); }, true)
+              this.cardDivider()
               this.rustdeskSwitchRow($r('app.media.icon_folder'), '文件共享盘',
                 RDP_DRIVE_REDIRECTION_ENABLED ? '连接时挂载 \\\\tsclient\\' + this.rdpDriveName : '暂时停用，避免影响 Pad/手机连接',
                 this.rdpDriveEnabled,
@@ -9544,25 +9662,45 @@ struct HostListPage {
 
   @Builder sshPreflightPassphraseContent() {
     Column() {
-      Text('主机指纹已确认。此私钥受密码保护, 请输入私钥密码后继续连接。')
+      Text(this.sshPreflightPassphraseScope === 'proxy' ?
+        '跳板机指纹已确认。跳板机私钥受密码保护, 请输入 passphrase 后继续。' :
+        '主机指纹已确认。此私钥受密码保护, 请输入私钥密码后继续连接。')
         .fontSize(13).fontColor(this.pal().text2).margin({ bottom: 16 }).fontFamily(this.font())
       Row() {
-        TextInput({ placeholder: '输入私钥密码', text: this.sshPreflightPassphraseInput })
+        TextInput({ placeholder: this.sshPreflightPassphraseScope === 'proxy' ?
+          '输入跳板机私钥密码' : '输入私钥密码',
+          text: this.sshPreflightPassphraseScope === 'proxy' ?
+            this.sshPreflightProxyPassphraseInput : this.sshPreflightPassphraseInput })
           .type(this.sshPreflightPassphraseShowPw ? InputType.Normal : InputType.Password)
           .height(44).backgroundColor(this.pal().surface).borderRadius(8)
           .fontColor(this.pal().text).placeholderColor(this.pal().text3)
           .layoutWeight(1).padding({ left: 12, right: 12 })
-          .onChange((v: string) => { this.sshPreflightPassphraseInput = v; })
+          .onChange((v: string) => {
+            if (this.sshPreflightPassphraseScope === 'proxy') {
+              this.sshPreflightProxyPassphraseInput = v;
+            }
+            else { this.sshPreflightPassphraseInput = v; }
+          })
         SymbolGlyph(this.sshPreflightPassphraseShowPw ? $r('sys.symbol.eye_slash') : $r('sys.symbol.eye'))
           .fontSize(18).fontColor([this.pal().text3]).margin({ left: 8 })
           .onClick(() => { this.sshPreflightPassphraseShowPw = !this.sshPreflightPassphraseShowPw; })
       }.width('100%').margin({ bottom: 12 })
       Row() {
         Checkbox()
-          .select(this.sshPreflightPassphraseSaveToHost)
+          .select(this.sshPreflightPassphraseScope === 'proxy' ?
+            this.sshPreflightProxyPassphraseSaveToHost :
+            this.sshPreflightPassphraseSaveToHost)
           .selectedColor(this.accentColor)
-          .onChange((v: boolean) => { this.sshPreflightPassphraseSaveToHost = v; })
-        Text(this.hasSavedSshPreflightPassphrase() ? '验证成功后更新保存的私钥密码' : '保存到此主机 (加密存储)')
+          .onChange((v: boolean) => {
+            if (this.sshPreflightPassphraseScope === 'proxy') {
+              this.sshPreflightProxyPassphraseSaveToHost = v;
+            }
+            else { this.sshPreflightPassphraseSaveToHost = v; }
+          })
+        Text(this.hasSavedSshPreflightPassphrase() ?
+          (this.sshPreflightPassphraseScope === 'proxy' ?
+            '验证成功后更新保存的跳板机私钥密码' : '验证成功后更新保存的私钥密码') :
+          '保存到此主机 (加密存储)')
           .fontSize(13).fontColor(this.pal().text2).fontFamily(this.font()).margin({ left: 6 })
       }
       if (this.sshPreflightError !== '') {
@@ -12235,8 +12373,69 @@ struct HostListPage {
             this.fieldRow('代理用户', 'root', this.sheetProxyUser, (v: string): void => { this.sheetProxyUser = v; })
           }.width('60%').margin({ left: 12 })
         }.width('100%')
+        if (this.sheetProxyType === 'ssh_jump') {
+          this.sshProxyAuthSection()
+        }
       }
     }.width('100%')
+  }
+
+  @Builder sshProxyAuthSection() {
+    Column() {
+      Text('跳板机认证（独立于目标主机）').fontSize(12).fontWeight(FontWeight.Medium)
+        .fontColor(this.pal().text).fontFamily(this.font()).width('100%')
+        .margin({ top: 4, bottom: 8 })
+      Row() {
+        Button('密码').layoutWeight(1).height(34).borderRadius(8)
+          .backgroundColor(this.sheetProxyAuthMethod === 'password' ? this.accentColor : this.pal().surface)
+          .fontColor(this.sheetProxyAuthMethod === 'password' ? Color.White : this.pal().text2)
+          .onClick((): void => { this.sheetProxyAuthMethod = 'password'; })
+        Button('私钥').layoutWeight(1).height(34).borderRadius(8).margin({ left: 8 })
+          .backgroundColor(this.sheetProxyAuthMethod === 'publickey' ? this.accentColor : this.pal().surface)
+          .fontColor(this.sheetProxyAuthMethod === 'publickey' ? Color.White : this.pal().text2)
+          .onClick((): void => { this.sheetProxyAuthMethod = 'publickey'; })
+      }.width('100%').margin({ bottom: 8 })
+      if (this.sheetProxyAuthMethod === 'password') {
+        Column() {
+          Text('跳板机密码').fontSize(11).fontColor(this.pal().text2).fontFamily(this.font())
+            .margin({ bottom: 4 })
+          TextInput({ placeholder: '跳板机 SSH 密码', text: this.sheetProxyPassword })
+            .type(InputType.Password).height(38).backgroundColor(this.pal().surface).borderRadius(8)
+            .fontColor(this.pal().text).placeholderColor(this.pal().text3).fontFamily(this.font())
+            .fontSize(13).padding({ left: 10, right: 10 })
+            .onChange((v: string): void => { this.sheetProxyPassword = v; })
+        }.width('100%').margin({ bottom: 8 })
+      } else {
+        if (this.keyVault.getAllSshKeys().length === 0) {
+          Text('密钥库为空，请先添加跳板机私钥').fontSize(11).fontColor(this.pal().text3)
+            .width('100%').padding({ top: 6, bottom: 6 })
+        } else {
+          ForEach(this.keyVault.getAllSshKeys(), (key: SshKey) => {
+            Row() {
+              Column() {
+                Text(key.label).fontSize(12).fontColor(this.pal().text).maxLines(1)
+                Text(key.fingerprint).fontSize(9).fontColor(this.pal().text3).maxLines(1)
+              }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+              if (this.sheetProxyKeyId === key.id) {
+                SymbolGlyph($r('sys.symbol.checkmark')).fontSize(15).fontColor([this.accentColor])
+              }
+            }.width('100%').padding({ left: 10, right: 10, top: 7, bottom: 7 })
+              .borderRadius(8).backgroundColor(this.sheetProxyKeyId === key.id ?
+                this.pal().surface : Color.Transparent)
+              .onClick((): void => { this.sheetProxyKeyId = key.id; })
+          }, (key: SshKey): string => 'classic-proxy:' + key.id)
+        }
+        Column() {
+          Text('跳板机私钥密码（如有）').fontSize(11).fontColor(this.pal().text2).fontFamily(this.font())
+            .margin({ bottom: 4 })
+          TextInput({ placeholder: '加密私钥的 passphrase', text: this.sheetProxyKeyPassphrase })
+            .type(InputType.Password).height(38).backgroundColor(this.pal().surface).borderRadius(8)
+            .fontColor(this.pal().text).placeholderColor(this.pal().text3).fontFamily(this.font())
+            .fontSize(13).padding({ left: 10, right: 10 })
+            .onChange((v: string): void => { this.sheetProxyKeyPassphrase = v; })
+        }.width('100%').margin({ top: 6 })
+      }
+    }.width('100%').padding({ top: 4, bottom: 4 })
   }
 
   private switchSshKeyMode(mode: number): void {
@@ -12889,6 +13088,8 @@ struct HostListPage {
     this.sheetKeyMode = 0; this.sheetUseProxy = false;
     this.sheetProxyHost = ''; this.sheetProxyPort = 22; this.sheetProxyUser = '';
     this.sheetProxyType = 'http_connect';
+    this.sheetProxyAuthMethod = 'password'; this.sheetProxyKeyId = '';
+    this.sheetProxyPassword = ''; this.sheetProxyKeyPassphrase = '';
     this.vncHostTransport = 'direct_tcp'; this.vncHostRepeaterMode = 'mode12';
     this.vncHostGatewayId = ''; this.vncHostPasswordConfigured = false;
     this.vncHostRememberPassword = false;
@@ -13085,6 +13286,10 @@ struct HostListPage {
       h.sshKeyPassphrase = this.sheetKeyPassphrase;
       h.sshProxyType = 'direct';
       h.proxyHost = ''; h.proxyPort = 0; h.proxyUsername = '';
+      h.sshProxyAuthMethod = 'password';
+      h.sshProxyKeyId = '';
+      h.sshProxyPassword = '';
+      h.sshProxyKeyPassphrase = '';
       if (this.sheetUseProxy) {
         if (this.sheetProxyHost.trim() === '' || this.sheetProxyPort <= 0 || this.sheetProxyPort > 65535) {
           this.sheetErr = '代理地址或端口无效';
@@ -13102,6 +13307,27 @@ struct HostListPage {
         // Keep the selected transport identity intact. FRP TCP is a raw SSH
         // endpoint and must never be persisted as an HTTP CONNECT proxy.
         h.sshProxyType = normalizeSshEndpointTransport(this.sheetProxyType);
+        if (h.sshProxyType === 'ssh_jump') {
+          if (this.sheetProxyAuthMethod !== 'password' && this.sheetProxyAuthMethod !== 'publickey') {
+            this.sheetErr = '跳板机认证方式无效';
+            return;
+          }
+          h.sshProxyAuthMethod = this.sheetProxyAuthMethod;
+          if (h.sshProxyAuthMethod === 'publickey') {
+            if (this.sheetProxyKeyId === '') {
+              this.sheetErr = '请选择跳板机私钥';
+              return;
+            }
+            h.sshProxyKeyId = this.sheetProxyKeyId;
+            h.sshProxyKeyPassphrase = this.sheetProxyKeyPassphrase;
+          } else {
+            if (this.sheetProxyPassword === '') {
+              this.sheetErr = '请输入跳板机密码';
+              return;
+            }
+            h.sshProxyPassword = this.sheetProxyPassword;
+          }
+        }
       }
     }
     const e: string[] = h.getValidationErrors();

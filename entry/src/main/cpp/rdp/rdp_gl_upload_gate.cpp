@@ -25,6 +25,13 @@ void RdpGlUploadGate::recordPresent(const RdpPresentMetrics& present) {
     }
 
     std::lock_guard<std::mutex> lock(mutex_);
+    // Once the renderer has entered the one-shot experiment, the frame pump
+    // owns trial sampling. Do not contaminate the direct baseline with PBO or
+    // fallback samples, and never reopen the gate after a retained decision.
+    if (snapshot_.pboExperimentActive || snapshot_.pboRetained ||
+        snapshot_.decision == RdpGlUploadDecision::PboRetained) {
+        return;
+    }
     const int64_t uploadUs = std::max<int64_t>(0, present.uploadUs);
     const int64_t drawUs = std::max<int64_t>(0, present.drawUs);
     const int64_t swapUs = std::max<int64_t>(0, present.swapUs);
@@ -49,6 +56,29 @@ void RdpGlUploadGate::recordPresent(const RdpPresentMetrics& present) {
         RdpGlUploadDecision::PboExperimentEligible :
         RdpGlUploadDecision::KeepDirectUpload;
     snapshot_.evaluatedSamples += kDecisionSamples;
+    sampleCount_ = 0;
+    snapshot_.pendingSamples = 0;
+}
+
+bool RdpGlUploadGate::beginPboExperiment() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (snapshot_.decision != RdpGlUploadDecision::PboExperimentEligible ||
+        snapshot_.pboExperimentActive || snapshot_.pboRetained) {
+        return false;
+    }
+    snapshot_.pboExperimentActive = true;
+    return true;
+}
+
+void RdpGlUploadGate::finishPboExperiment(bool retained, int64_t experimentWorkerP95Us) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    snapshot_.pboExperimentActive = false;
+    snapshot_.pboRetained = retained;
+    if (experimentWorkerP95Us > 0) {
+        snapshot_.workerP95Us = experimentWorkerP95Us;
+    }
+    snapshot_.decision = retained ? RdpGlUploadDecision::PboRetained :
+        RdpGlUploadDecision::KeepDirectUpload;
     sampleCount_ = 0;
     snapshot_.pendingSamples = 0;
 }
@@ -83,6 +113,8 @@ const char* RdpGlUploadGate::DecisionName(RdpGlUploadDecision decision) {
             return "direct";
         case RdpGlUploadDecision::PboExperimentEligible:
             return "pbo-eligible";
+        case RdpGlUploadDecision::PboRetained:
+            return "pbo-retained";
         case RdpGlUploadDecision::InsufficientSamples:
         default:
             return "insufficient";

@@ -17,8 +17,10 @@ pub(crate) struct ControlInboxSnapshot {
     pub coalesced_video_pressure: u64,
     pub coalesced_touch_scales: u64,
     pub coalesced_touch_pan_updates: u64,
+    pub coalesced_mouse_wheel_2d: u64,
     pub touch_active: bool,
     pub touch_update_pending: bool,
+    pub mouse_wheel_2d_pending: bool,
     pub touch_barrier_wait: bool,
     pub batch_limit_hits: u64,
 }
@@ -48,6 +50,12 @@ impl PendingTouchUpdate {
     }
 }
 
+struct PendingMouseWheel2D {
+    sequence: u64,
+    x: i32,
+    y: i32,
+}
+
 struct ControlInboxState {
     next_sequence: u64,
     reliable: VecDeque<SequencedControl>,
@@ -56,6 +64,7 @@ struct ControlInboxState {
     refresh_pending: bool,
     video_pressure: Option<u32>,
     touch_update: Option<PendingTouchUpdate>,
+    mouse_wheel_2d: Option<PendingMouseWheel2D>,
     touch_active: bool,
     touch_scale_end_pending: bool,
     touch_pan_end_enqueued: bool,
@@ -69,6 +78,7 @@ struct ControlInboxState {
     coalesced_video_pressure: u64,
     coalesced_touch_scales: u64,
     coalesced_touch_pan_updates: u64,
+    coalesced_mouse_wheel_2d: u64,
     batch_limit_hits: u64,
 }
 
@@ -82,6 +92,7 @@ impl Default for ControlInboxState {
             refresh_pending: false,
             video_pressure: None,
             touch_update: None,
+            mouse_wheel_2d: None,
             touch_active: false,
             touch_scale_end_pending: false,
             touch_pan_end_enqueued: false,
@@ -95,6 +106,7 @@ impl Default for ControlInboxState {
             coalesced_video_pressure: 0,
             coalesced_touch_scales: 0,
             coalesced_touch_pan_updates: 0,
+            coalesced_mouse_wheel_2d: 0,
             batch_limit_hits: 0,
         }
     }
@@ -112,6 +124,7 @@ impl Default for ControlInbox {
 enum OrderedPending {
     Reliable,
     TouchUpdate,
+    MouseWheel2D,
     DisplaySwitch,
 }
 
@@ -131,6 +144,13 @@ impl ControlInbox {
         let sequence = Self::next_sequence(&mut state);
 
         match message {
+            ControlMsg::MouseWheel2D { x, y } => {
+                if x == 0 && y == 0 {
+                    return false;
+                }
+                Self::merge_mouse_wheel_2d(&mut state, sequence, x, y);
+                true
+            }
             ControlMsg::MouseMove { .. } => {
                 if state.mouse_move.replace(message).is_some() {
                     state.coalesced_mouse_moves += 1;
@@ -188,7 +208,7 @@ impl ControlInbox {
                 if !state.touch_active || state.touch_scale_end_pending {
                     return false;
                 }
-                Self::flush_touch_update_before_reliable(&mut state);
+                Self::flush_coalesced_pointer_updates_before_reliable(&mut state);
                 // The accumulated update was flushed above, so this reliable
                 // end marker is necessarily sent after the latest deltas.
                 state.touch_scale_end_pending = true;
@@ -210,7 +230,7 @@ impl ControlInbox {
                 {
                     return false;
                 }
-                Self::flush_touch_update_before_reliable(&mut state);
+                Self::flush_coalesced_pointer_updates_before_reliable(&mut state);
                 state.touch_active = false;
                 state.touch_scale_end_pending = true;
                 state.touch_pan_end_enqueued = true;
@@ -221,7 +241,7 @@ impl ControlInbox {
                 true
             }
             reliable => {
-                Self::flush_touch_update_before_reliable(&mut state);
+                Self::flush_coalesced_pointer_updates_before_reliable(&mut state);
                 Self::enqueue_reliable(&mut state, sequence, reliable);
                 true
             }
@@ -255,6 +275,9 @@ impl ControlInbox {
                 }
                 OrderedPending::TouchUpdate => {
                     Self::take_touch_update(&mut state, &mut batch, limit);
+                }
+                OrderedPending::MouseWheel2D => {
+                    Self::take_mouse_wheel_2d(&mut state, &mut batch);
                 }
                 OrderedPending::DisplaySwitch => {
                     let Some(queued) = state.display_switch.take() else {
@@ -308,8 +331,10 @@ impl ControlInbox {
             coalesced_video_pressure: state.coalesced_video_pressure,
             coalesced_touch_scales: state.coalesced_touch_scales,
             coalesced_touch_pan_updates: state.coalesced_touch_pan_updates,
+            coalesced_mouse_wheel_2d: state.coalesced_mouse_wheel_2d,
             touch_active: state.touch_active,
             touch_update_pending: state.touch_update.is_some(),
+            mouse_wheel_2d_pending: state.mouse_wheel_2d.is_some(),
             touch_barrier_wait: state.pending_touch_scale_end_markers > 0
                 || state.pending_touch_pan_ends > 0,
             batch_limit_hits: state.batch_limit_hits,
@@ -329,10 +354,25 @@ impl ControlInbox {
         state.max_reliable_depth = state.max_reliable_depth.max(state.reliable.len());
     }
 
-    fn flush_touch_update_before_reliable(state: &mut ControlInboxState) {
-        let Some(mut pending) = state.touch_update.take() else {
-            return;
-        };
+    fn flush_coalesced_pointer_updates_before_reliable(state: &mut ControlInboxState) {
+        let touch = state.touch_update.take();
+        let wheel = state.mouse_wheel_2d.take();
+        match (touch, wheel) {
+            (Some(touch), Some(wheel)) if touch.sequence <= wheel.sequence => {
+                Self::enqueue_touch_update(state, touch);
+                Self::enqueue_mouse_wheel_2d(state, wheel);
+            }
+            (Some(touch), Some(wheel)) => {
+                Self::enqueue_mouse_wheel_2d(state, wheel);
+                Self::enqueue_touch_update(state, touch);
+            }
+            (Some(touch), None) => Self::enqueue_touch_update(state, touch),
+            (None, Some(wheel)) => Self::enqueue_mouse_wheel_2d(state, wheel),
+            (None, None) => {}
+        }
+    }
+
+    fn enqueue_touch_update(state: &mut ControlInboxState, mut pending: PendingTouchUpdate) {
         let sequence = pending.sequence;
         if let Some(scale) = pending.scale.take() {
             Self::enqueue_reliable(state, sequence, ControlMsg::TouchScale { scale });
@@ -340,6 +380,17 @@ impl ControlInbox {
         if let Some((x, y)) = pending.pan.take() {
             Self::enqueue_reliable(state, sequence, ControlMsg::TouchPanUpdate { x, y });
         }
+    }
+
+    fn enqueue_mouse_wheel_2d(state: &mut ControlInboxState, pending: PendingMouseWheel2D) {
+        Self::enqueue_reliable(
+            state,
+            pending.sequence,
+            ControlMsg::MouseWheel2D {
+                x: pending.x,
+                y: pending.y,
+            },
+        );
     }
 
     fn discard_stale_pointer_updates(state: &mut ControlInboxState) {
@@ -350,12 +401,16 @@ impl ControlInbox {
             state.discarded_pointer_updates += usize::from(pending.scale.is_some()) as u64;
             state.discarded_pointer_updates += usize::from(pending.pan.is_some()) as u64;
         }
+        if state.mouse_wheel_2d.take().is_some() {
+            state.discarded_pointer_updates += 1;
+        }
         let previous_depth = state.reliable.len();
         state.reliable.retain(|queued| {
             !matches!(
                 &queued.message,
                 ControlMsg::TouchScale { scale } if *scale > 0
             ) && !matches!(&queued.message, ControlMsg::TouchPanUpdate { .. })
+                && !matches!(&queued.message, ControlMsg::MouseWheel2D { .. })
         });
         state.discarded_pointer_updates +=
             previous_depth.saturating_sub(state.reliable.len()) as u64;
@@ -397,6 +452,17 @@ impl ControlInbox {
         pending.sequence = sequence;
     }
 
+    fn merge_mouse_wheel_2d(state: &mut ControlInboxState, sequence: u64, x: i32, y: i32) {
+        let Some(pending) = state.mouse_wheel_2d.as_mut() else {
+            state.mouse_wheel_2d = Some(PendingMouseWheel2D { sequence, x, y });
+            return;
+        };
+        pending.x = pending.x.saturating_add(x);
+        pending.y = pending.y.saturating_add(y);
+        pending.sequence = sequence;
+        state.coalesced_mouse_wheel_2d += 1;
+    }
+
     fn next_ordered_pending(state: &ControlInboxState) -> Option<OrderedPending> {
         let mut selected: Option<(u64, OrderedPending)> = None;
         if let Some(reliable) = state.reliable.front() {
@@ -408,6 +474,14 @@ impl ControlInbox {
                 .map_or(true, |(sequence, _)| touch.sequence < *sequence)
             {
                 selected = Some((touch.sequence, OrderedPending::TouchUpdate));
+            }
+        }
+        if let Some(wheel) = state.mouse_wheel_2d.as_ref() {
+            if selected
+                .as_ref()
+                .map_or(true, |(sequence, _)| wheel.sequence < *sequence)
+            {
+                selected = Some((wheel.sequence, OrderedPending::MouseWheel2D));
             }
         }
         if let Some(display_switch) = state.display_switch.as_ref() {
@@ -438,6 +512,16 @@ impl ControlInbox {
         }
     }
 
+    fn take_mouse_wheel_2d(state: &mut ControlInboxState, batch: &mut Vec<ControlMsg>) {
+        let Some(pending) = state.mouse_wheel_2d.take() else {
+            return;
+        };
+        batch.push(ControlMsg::MouseWheel2D {
+            x: pending.x,
+            y: pending.y,
+        });
+    }
+
     fn on_reliable_sent(state: &mut ControlInboxState, message: &ControlMsg) {
         match message {
             ControlMsg::TouchScale { scale: 0 } => {
@@ -454,6 +538,7 @@ impl ControlInbox {
     fn has_pending(state: &ControlInboxState) -> bool {
         !state.reliable.is_empty()
             || state.mouse_move.is_some()
+            || state.mouse_wheel_2d.is_some()
             || state.display_switch.is_some()
             || state.refresh_pending
             || state.video_pressure.is_some()
@@ -477,6 +562,39 @@ fn mouse_moves_coalesce_to_the_latest_coordinate() {
         [ControlMsg::MouseMove { x: 8, y: 9 }]
     ));
     assert_eq!(inbox.snapshot().coalesced_mouse_moves, 1);
+}
+
+#[test]
+fn physical_touchpad_wheels_coalesce_both_axes_without_losing_sign() {
+    let inbox = ControlInbox::default();
+    assert!(inbox.enqueue(ControlMsg::MouseWheel2D { x: 2, y: -3 }));
+    assert!(inbox.enqueue(ControlMsg::MouseWheel2D { x: -5, y: 7 }));
+
+    assert!(matches!(
+        inbox.take_batch(CONTROL_BATCH_LIMIT).as_slice(),
+        [ControlMsg::MouseWheel2D { x: -3, y: 4 }]
+    ));
+    let snapshot = inbox.snapshot();
+    assert_eq!(snapshot.coalesced_mouse_wheel_2d, 1);
+    assert!(!snapshot.mouse_wheel_2d_pending);
+}
+
+#[test]
+fn physical_touchpad_wheel_flushes_before_reliable_keyboard_input() {
+    let inbox = ControlInbox::default();
+    inbox.enqueue(ControlMsg::MouseWheel2D { x: 4, y: 5 });
+    inbox.enqueue(ControlMsg::KeyEvent {
+        scancode: 2072,
+        pressed: true,
+    });
+
+    assert!(matches!(
+        inbox.take_batch(CONTROL_BATCH_LIMIT).as_slice(),
+        [
+            ControlMsg::MouseWheel2D { x: 4, y: 5 },
+            ControlMsg::KeyEvent { pressed: true, .. }
+        ]
+    ));
 }
 
 #[test]

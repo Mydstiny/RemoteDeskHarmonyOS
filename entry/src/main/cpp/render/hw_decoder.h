@@ -203,6 +203,8 @@ public:
     int PlatformResourceDestroyCountForTesting() const;
     int PlatformResourceStopCountForTesting() const;
     int PlatformResourceUnsetCountForTesting() const;
+    size_t PendingInputBufferCountForTesting() const;
+    uint64_t FrameAvailableCountForTesting() const;
     // Inject a failure after the selected Init stage so the real Init failure
     // path can be exercised with the same deferred retire owner as Destroy.
     void SetInitFailureStageForTesting(int stage);
@@ -262,6 +264,7 @@ private:
     std::condition_variable frameAvailableCv_;
     uint64_t frameAvailableCount_ = 0;
     uint64_t frameConsumeCount_ = 0;
+    bool surfaceUpdatePending_ = false;
     // A transform wake is a latest-value hint, not one render obligation per
     // pinch event. Keep at most one retained redraw pending behind the render
     // owner so a fast UI gesture cannot build a decoder-side backlog.
@@ -309,7 +312,7 @@ private:
     size_t dropOldestInputFramesLocked(size_t count);
     void handleInputBuffer(uint32_t index, OH_AVBuffer* buffer);
     void drainInputBuffers();
-    bool waitForRenderRequest(bool& hasNewFrame);
+    bool waitForRenderRequest(bool& hasNewFrame, bool& hasPendingSurfaceUpdate);
     void handleOutputBuffer(uint32_t index);
     void noteFrameAvailable();
     bool stopRenderThread();
@@ -349,6 +352,9 @@ namespace DecoderNapi {
 #if defined(RDP_NATIVE_CALLBACK_TESTING)
     std::shared_ptr<HardwareDecoder> RegisterCallbackTestDecoder(
         const DecoderSessionIdentity& owner, int64_t& handle);
+    bool SetCallbackTestPipelineState(int64_t handle,
+                                      const DecoderSessionIdentity& owner,
+                                      bool attached, bool transitioning);
     void DestroyCallbackTestDecoder(int64_t handle, const DecoderSessionIdentity& owner);
 #endif
 }

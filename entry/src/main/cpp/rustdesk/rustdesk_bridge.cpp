@@ -72,6 +72,7 @@ extern "C" {
     void  rustdesk_send_key(void* handle, unsigned int scancode, bool pressed);
     void  rustdesk_send_mouse(void* handle, int x, int y, unsigned int button, bool pressed);
     void  rustdesk_send_mouse_wheel(void* handle, int x, int y, int delta);
+    bool  rustdesk_send_mouse_wheel_2d(void* handle, int x, int y);
     void  rustdesk_send_text(void* handle, const char* text);
     bool  rustdesk_change_display_resolution(void* handle, int display, int width, int height);
     bool  rustdesk_send_touch_scale(void* handle, int scale);
@@ -2918,6 +2919,16 @@ void RustDeskBridge::sendMouseWheel(int x, int y, int delta) {
         memcpy(buf + 5, &ev, sizeof(ev));
         send(impl_->ipcFd, buf, sizeof(buf), 0);
     }
+}
+
+bool RustDeskBridge::sendTouchpadWheel(int x, int y) {
+#ifdef RUSTDESK_USE_REAL_CORE
+    auto handleLease = impl_->displayControl.acquireHandle();
+    if (mode_ == RustDeskMode::FFI && handleLease) {
+        return rustdesk_send_mouse_wheel_2d(handleLease.get(), x, y);
+    }
+#endif
+    return false;
 }
 
 void RustDeskBridge::sendText(const std::string& text) {

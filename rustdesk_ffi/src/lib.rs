@@ -43,6 +43,7 @@ use cursor_state::CursorStreamUpdate;
 use std::sync::mpsc::{Sender, SyncSender, TrySendError};
 
 static LAST_ERROR: Mutex<String> = Mutex::new(String::new());
+static RUSTDESK_MOUSE_ENQUEUE_COUNT: AtomicU64 = AtomicU64::new(0);
 // 每个连接尝试都有独立 epoch。取消一个 session 只标记它自己的 epoch，
 // 不会让另一个 RustDesk 连接的 2FA/批准等待线程退出。
 static CONNECT_EPOCH: AtomicU64 = AtomicU64::new(0);
@@ -821,6 +822,12 @@ pub(crate) enum ControlMsg {
         x: i32,
         y: i32,
         delta: i32,
+    },
+    /// Two-dimensional wheel delta from a physical touchpad. Unlike the
+    /// legacy wheel message, x/y are both protocol wheel deltas.
+    MouseWheel2D {
+        x: i32,
+        y: i32,
     },
     Text {
         text: String,
@@ -2350,7 +2357,20 @@ pub extern "C" fn rustdesk_send_mouse(
             pressed,
         }
     };
-    ctx.controls.enqueue(msg);
+    let queued = ctx.controls.enqueue(msg);
+    let index = RUSTDESK_MOUSE_ENQUEUE_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+    if button != u32::MAX || index <= 20 || index % 120 == 0 {
+        eprintln!(
+            "[RustDesk-FFI] input enqueue kind={} number={} x={} y={} button={} pressed={} queued={}",
+            if button == u32::MAX { "mouse_move" } else { "mouse" },
+            index,
+            x,
+            y,
+            button,
+            pressed,
+            queued,
+        );
+    }
 }
 
 /// 发送鼠标滚轮事件
@@ -2361,6 +2381,16 @@ pub extern "C" fn rustdesk_send_mouse_wheel(handle: *mut c_void, x: i32, y: i32,
     }
     let ctx = unsafe { &*(handle as *const RustDeskClient) };
     ctx.controls.enqueue(ControlMsg::MouseWheel { x, y, delta });
+}
+
+/// Send a two-dimensional physical-touchpad wheel event.
+#[no_mangle]
+pub extern "C" fn rustdesk_send_mouse_wheel_2d(handle: *mut c_void, x: i32, y: i32) -> bool {
+    if handle.is_null() || (x == 0 && y == 0) {
+        return false;
+    }
+    let ctx = unsafe { &*(handle as *const RustDeskClient) };
+    ctx.controls.enqueue(ControlMsg::MouseWheel2D { x, y })
 }
 
 /// 发送文本
@@ -2786,6 +2816,22 @@ mod tests {
             ControlMsg::TouchPanUpdate { x: -10, y: 12 },
             ControlMsg::TouchPanEnd { x: 90, y: 212 },
         ]));
+    }
+
+    #[test]
+    fn physical_touchpad_wheel_ffi_enqueues_two_axes() {
+        let mut client = test_client_with_display_state(RustDeskDisplayState::default());
+        let handle = &mut client as *mut RustDeskClient as *mut c_void;
+
+        assert!(!rustdesk_send_mouse_wheel_2d(handle, 0, 0));
+        assert!(rustdesk_send_mouse_wheel_2d(handle, 6, -4));
+        assert!(rustdesk_send_mouse_wheel_2d(handle, -2, 1));
+
+        let controls = client.controls.take_batch(8);
+        assert!(matches!(
+            controls.as_slice(),
+            [ControlMsg::MouseWheel2D { x: 4, y: -3 }]
+        ));
     }
 
     /// 测试空配置返回 null

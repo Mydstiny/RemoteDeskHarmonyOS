@@ -7,6 +7,7 @@
  */
 #include "ssh_key_tool.h"
 #include "ssh_algorithm_prefs.h"
+#include "ssh_auth_policy.h"
 #include "ssh_route_policy.h"
 
 #include <openssl/evp.h>
@@ -18,6 +19,7 @@
 #include <openssl/ec.h>
 #include <libssh2.h>
 #include <cstring>
+#include <climits>
 #include <vector>
 #include <algorithm>
 #include <thread>
@@ -78,6 +80,79 @@ static std::string base64Encode(const unsigned char* data, size_t len) {
         result.pop_back();
     }
     return result;
+}
+
+static bool verifyHostKeyBinding(LIBSSH2_SESSION* session,
+                                 const std::string& expectedRawBase64,
+                                 const std::string& expectedFingerprintSha256) {
+    if (session == nullptr || (expectedRawBase64.empty() &&
+                               expectedFingerprintSha256.empty())) {
+        return true;
+    }
+    size_t keyLen = 0;
+    int keyType = LIBSSH2_HOSTKEY_TYPE_UNKNOWN;
+    const char* rawKey = libssh2_session_hostkey(session, &keyLen, &keyType);
+    (void)keyType;
+    if (rawKey == nullptr || keyLen == 0) { return false; }
+    if (!expectedRawBase64.empty() &&
+        base64Encode(reinterpret_cast<const unsigned char*>(rawKey), keyLen) !=
+            expectedRawBase64) {
+        return false;
+    }
+    if (!expectedFingerprintSha256.empty()) {
+        const char* fingerprint = libssh2_hostkey_hash(session, LIBSSH2_HOSTKEY_HASH_SHA256);
+        if (fingerprint == nullptr) { return false; }
+        std::string encoded = base64Encode(
+            reinterpret_cast<const unsigned char*>(fingerprint), 32);
+        while (!encoded.empty() && encoded.back() == '=') { encoded.pop_back(); }
+        if ("SHA256:" + encoded != expectedFingerprintSha256) { return false; }
+    }
+    return true;
+}
+
+struct SshProxyKeyboardContext {
+    const std::string* password = nullptr;
+    const std::vector<std::string>* explicitResponses = nullptr;
+};
+
+static void sshProxyKeyboardInteractiveCallback(
+    const char* name, int nameLen, const char* instruction, int instructionLen,
+    int numPrompts, const LIBSSH2_USERAUTH_KBDINT_PROMPT* prompts,
+    LIBSSH2_USERAUTH_KBDINT_RESPONSE* responses, void** abstract) {
+    (void)name;
+    (void)nameLen;
+    (void)instruction;
+    (void)instructionLen;
+    if (numPrompts <= 0 || responses == nullptr || abstract == nullptr ||
+        *abstract == nullptr) {
+        return;
+    }
+    auto* context = static_cast<SshProxyKeyboardContext*>(*abstract);
+    for (int index = 0; index < numPrompts; ++index) {
+        std::string response;
+        if (context->explicitResponses != nullptr && index >= 0 &&
+            static_cast<size_t>(index) < context->explicitResponses->size()) {
+            response = (*context->explicitResponses)[static_cast<size_t>(index)];
+        } else if (prompts != nullptr && context->password != nullptr &&
+                   sshKeyboardInteractivePromptCanUsePassword(prompts[index].echo)) {
+            response = *context->password;
+        }
+        if (response.empty()) {
+            responses[index].text = nullptr;
+            responses[index].length = 0;
+            continue;
+        }
+        char* allocated = static_cast<char*>(std::malloc(response.size()));
+        if (allocated == nullptr) {
+            responses[index].text = nullptr;
+            responses[index].length = 0;
+            continue;
+        }
+        std::memcpy(allocated, response.data(), response.size());
+        responses[index].text = allocated;
+        responses[index].length = static_cast<unsigned int>(
+            std::min<size_t>(response.size(), UINT_MAX));
+    }
 }
 
 /** Base64 解码 (标准 PEM body, 忽略换行空白) */
@@ -1070,9 +1145,11 @@ static void runSshJumpOperationRelay(const std::shared_ptr<SshJumpOperationState
 
 static int connectThroughSshJumpOperation(
     const std::string& host, int port, const SshProxyOptions& proxy) {
+    const std::string authMethod = proxy.authMethod.empty() ? "password" : proxy.authMethod;
     if (proxy.host.empty() || proxy.port <= 0 || proxy.port > 65535 ||
         proxy.username.empty() ||
-        (proxy.password.empty() && proxy.privateKeyPem.empty())) {
+        (authMethod != "password" && authMethod != "publickey" &&
+         authMethod != "kbd-interactive" && authMethod != "keyboard-interactive")) {
         return -2;
     }
     const int bastionSock = tcpConnectWithTimeout(proxy.host, proxy.port, 10);
@@ -1097,12 +1174,46 @@ static int connectThroughSshJumpOperation(
         closeSshJumpOperationState(state);
         return -2;
     }
-    if (!proxy.privateKeyPem.empty()) {
+
+    if (!verifyHostKeyBinding(state->session, proxy.expectedHostKeyRawBase64,
+                              proxy.expectedHostKeyFingerprintSha256)) {
+        closeSshJumpOperationState(state);
+        return -2;
+    }
+
+    char* methods = libssh2_userauth_list(
+        state->session, proxy.username.c_str(), proxy.username.size());
+    const std::string advertised = methods == nullptr ? std::string() : std::string(methods);
+    const char* advertisedMethod = authMethod == "publickey" ? "publickey" :
+        (authMethod == "password" ? "password" : "keyboard-interactive");
+    if (!advertised.empty() && !sshAuthMethodAdvertised(advertised, advertisedMethod)) {
+        closeSshJumpOperationState(state);
+        return -2;
+    }
+
+    if (authMethod == "publickey") {
+        if (proxy.privateKeyPem.empty()) {
+            closeSshJumpOperationState(state);
+            return -2;
+        }
         rc = libssh2_userauth_publickey_frommemory(
             state->session, proxy.username.c_str(), proxy.username.size(),
             nullptr, 0, proxy.privateKeyPem.c_str(), proxy.privateKeyPem.size(),
             proxy.privateKeyPassphrase.empty() ? nullptr : proxy.privateKeyPassphrase.c_str());
+    } else if (authMethod == "kbd-interactive" || authMethod == "keyboard-interactive") {
+        SshProxyKeyboardContext context {
+            &proxy.password, &proxy.keyboardInteractiveResponses
+        };
+        void** abstract = libssh2_session_abstract(state->session);
+        if (abstract != nullptr) { *abstract = &context; }
+        rc = libssh2_userauth_keyboard_interactive(
+            state->session, proxy.username.c_str(),
+            &sshProxyKeyboardInteractiveCallback);
     } else {
+        if (proxy.password.empty()) {
+            closeSshJumpOperationState(state);
+            return -2;
+        }
         rc = libssh2_userauth_password(state->session, proxy.username.c_str(), proxy.password.c_str());
     }
     if (rc != 0) {

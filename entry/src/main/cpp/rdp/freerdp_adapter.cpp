@@ -32,6 +32,8 @@
 #include <freerdp/client/rdpgfx.h>
 #include <freerdp/codec/color.h>
 #include <freerdp/gdi/gfx.h>
+#include <freerdp/message.h>
+#include <winpr/collections.h>
 #endif
 #include <hilog/log.h>
 #include <openssl/err.h>
@@ -57,6 +59,7 @@
 #include <iomanip>
 #include <sstream>
 #include <thread>
+#include <utility>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -694,6 +697,13 @@ static int64_t steadyNowUs() {
         clock::now().time_since_epoch()).count();
 }
 
+static void updateAtomicMax(std::atomic<int64_t>& target, int64_t value) {
+    int64_t current = target.load(std::memory_order_relaxed);
+    while (current < value && !target.compare_exchange_weak(
+        current, value, std::memory_order_relaxed, std::memory_order_relaxed)) {
+    }
+}
+
 // ---- RDP 错误码 → 官方可读描述 ----
 static const char* freerdpErrorName(DWORD err) {
     return safeFreeRdpString(freerdp_get_last_error_name(err), "UNKNOWN_FREERDP_ERROR");
@@ -822,6 +832,21 @@ struct FreeRdpAdapter::Impl {
     VideoFrameCallback      videoCallback;
     AudioDataCallback       audioCallback;
     ConnectionStateCallback stateCallback;
+    // FreeRDP ErrorInfo PDUs are advisory while the transport is alive.  A
+    // server can emit informational codes (including 0x01 RPC initiated
+    // disconnect) before the event loop has actually ended; publishing ERROR
+    // from that callback creates a false dialog over an otherwise live RDP
+    // session.  Keep the latest code until transport termination decides it
+    // is actionable.
+    std::mutex              errorInfoMutex;
+    UINT32                  pendingErrorInfoCode = 0;
+    std::string             pendingErrorInfoMessage;
+    std::mutex              clipboardMutex;
+    // cliprdr is owned by FreeRDP and may be replaced by a reconnect while
+    // UI clipboard operations are still in flight.  Protect the carrier
+    // pointer and channel attach/detach transition separately from the text
+    // payload lock; bridge methods retain their own internal lock.
+    mutable std::mutex      cliprdrMutex;
     std::string             clipboardText;
     CliprdrClientContext*   cliprdr = nullptr;
     std::unique_ptr<RdpFileClipboardBridge> fileClipboard;
@@ -831,6 +856,9 @@ struct FreeRdpAdapter::Impl {
     std::mutex              stateMutex;
     std::mutex              instanceMutex;
     std::mutex              shutdownMutex;
+    // Serialize RDP drive status with reset/commit so a deferred mount worker
+    // cannot publish stale state after a reconnect starts.
+    std::mutex              transferStatusMutex;
     // Connection workers may outlive the bounded disconnect call. Protect
     // the mutable configuration copy so a reconnect cannot race a stale
     // worker while it snapshots or scrubs credentials.
@@ -861,6 +889,29 @@ struct FreeRdpAdapter::Impl {
     std::atomic<uint64_t>   sessionGeneration {0};
     Render::DecoderSessionIdentity owner;
     RdpVideoTelemetryCallback videoTelemetryCallback;
+
+    void clearPendingErrorInfo() {
+        std::lock_guard<std::mutex> lock(errorInfoMutex);
+        pendingErrorInfoCode = 0;
+        pendingErrorInfoMessage.clear();
+    }
+
+    void rememberPendingErrorInfo(UINT32 code, std::string message) {
+        if (code == 0) {
+            return;
+        }
+        std::lock_guard<std::mutex> lock(errorInfoMutex);
+        pendingErrorInfoCode = code;
+        pendingErrorInfoMessage = std::move(message);
+    }
+
+    std::string takePendingErrorInfo() {
+        std::lock_guard<std::mutex> lock(errorInfoMutex);
+        std::string message = std::move(pendingErrorInfoMessage);
+        pendingErrorInfoCode = 0;
+        pendingErrorInfoMessage.clear();
+        return message;
+    }
 #if defined(RDP_NATIVE_CALLBACK_TESTING) && defined(USE_REAL_FREERDP)
     mutable std::mutex callbackTestMutex;
     std::function<void()> endPaintBarrier;
@@ -903,12 +954,65 @@ struct FreeRdpAdapter::Impl {
     std::atomic<int>        paintCount {0};
     std::atomic<int64_t>    firstPaintUs {0};
     std::atomic<int64_t>    lastPaintUs {0};
+    // These timestamps/counters are deliberately independent of renderer
+    // metrics. They tell the watchdog whether FreeRDP itself is still making
+    // progress when the remote desktop is quiet or the presentation surface
+    // is unavailable.
+    std::atomic<int64_t>    lastInputPostedUs {0};
+    std::atomic<int64_t>    lastEventLoopTickUs {0};
+    std::atomic<int64_t>    eventLoopBlockMaxUs {0};
+    std::atomic<uint64_t>   eventLoopTicks {0};
+    std::atomic<uint64_t>   networkCheckCount {0};
+    std::atomic<uint64_t>   networkCheckFailures {0};
+    std::atomic<uint64_t>   inputPostFailures {0};
     int64_t                 lastRenderDiagUs = 0;
     std::atomic<uint64_t>   lastRenderBytes {0};
     int                     lastFrameWidth = 0;
     int                     lastFrameHeight = 0;
     bool                    forceNextFullFrame = false;
     std::string             graphicsMode = "gdi";
+
+    void resetRdpTransferStatus() {
+        std::lock_guard<std::mutex> lock(transferStatusMutex);
+        transferStatus.reset();
+        driveDeviceId = 0;
+    }
+
+    bool publishRdpDriveMounted(uint64_t generation, uint32_t deviceId) {
+        std::lock_guard<std::mutex> lock(transferStatusMutex);
+        if (sessionGeneration.load(std::memory_order_acquire) != generation ||
+            stopRequested.load(std::memory_order_acquire)) {
+            return false;
+        }
+        driveDeviceId = deviceId;
+        transferStatus.markRdpDriveMounted();
+        return true;
+    }
+
+    bool publishRdpDriveUnavailable(uint64_t generation, const std::string& diagnosticCode) {
+        std::lock_guard<std::mutex> lock(transferStatusMutex);
+        if (sessionGeneration.load(std::memory_order_acquire) != generation ||
+            stopRequested.load(std::memory_order_acquire)) {
+            return false;
+        }
+        transferStatus.markRdpDriveUnavailable(diagnosticCode);
+        return true;
+    }
+
+    bool rdpClipboardEnabled() const {
+        std::lock_guard<std::mutex> lock(configMutex);
+        return config.rdClipboardEnabled;
+    }
+
+    void clearClipboardState() {
+        {
+            std::lock_guard<std::mutex> lock(clipboardMutex);
+            clipboardText.clear();
+        }
+        if (fileClipboard) {
+            fileClipboard->clearLocalFiles();
+        }
+    }
 
     Render::DecoderSessionIdentity ownerSnapshot() const {
         std::lock_guard<std::mutex> lock(ownerMutex);
@@ -968,33 +1072,64 @@ struct FreeRdpAdapter::Impl {
             return;
         }
         std::lock_guard<std::mutex> lock(instanceMutex);
-        // Do not hold inputQueueMutex while FreeRDP can block on transport I/O.
+        // The worker only posts to FreeRDP's official input message queue. It
+        // never calls a transport-writing callback itself, so the event loop
+        // remains the sole FreeRDP execution context for input and graphics.
         // stopInputQueueWorker invalidates this generation before joining, so
-        // this second check prevents a stale worker from dispatching after it
-        // has waited for instanceMutex.
+        // this second check prevents a stale worker from posting after it has
+        // waited for instanceMutex.
         if (!isInputQueueWorkerCurrent(workerGeneration) || !owner || !owner->instance_ ||
             !owner->instance_->input) {
             return;
         }
+        wMessageQueue* queue = freerdp_get_message_queue(
+            owner->instance_, FREERDP_INPUT_MESSAGE_QUEUE);
+        rdpContext* context = owner->instance_->context;
+        if (!queue || !context) {
+            inputPostFailures.fetch_add(1, std::memory_order_relaxed);
+            OH_LOG_WARN(LOG_APP, "[RDP] input queue unavailable while posting event");
+            return;
+        }
+        const auto post = [this, queue, context](UINT32 messageId, uintptr_t wParam,
+                                                 uintptr_t lParam) {
+            const bool posted = MessageQueue_Post(
+                queue, context, messageId, reinterpret_cast<void*>(wParam),
+                reinterpret_cast<void*>(lParam)) == TRUE;
+            if (posted) {
+                lastInputPostedUs.store(steadyNowUs(), std::memory_order_release);
+            } else {
+                inputPostFailures.fetch_add(1, std::memory_order_relaxed);
+            }
+            return posted;
+        };
         switch (event.type) {
             case RdpInputEventType::Key:
-                freerdp_input_send_keyboard_event(owner->instance_->input, event.flags, event.code);
+                (void)post(FREERDP_INPUT_KEYBOARD_EVENT,
+                           static_cast<uintptr_t>(event.flags),
+                           static_cast<uintptr_t>(event.code & 0xFFU));
                 break;
             case RdpInputEventType::Pause:
-                freerdp_input_send_keyboard_pause_event(owner->instance_->input);
+                (void)post(FREERDP_INPUT_KEYBOARD_PAUSE_EVENT, 0, 0);
                 break;
             case RdpInputEventType::TextBatch:
                 DispatchTextBatch(event.text, KBD_FLAGS_RELEASE,
-                    [owner](uint16_t flags, uint16_t code) {
-                        freerdp_input_send_unicode_keyboard_event(owner->instance_->input, flags, code);
+                    [post](uint16_t flags, uint16_t code) {
+                        (void)post(FREERDP_INPUT_UNICODE_KEYBOARD_EVENT,
+                                   static_cast<uintptr_t>(flags),
+                                   static_cast<uintptr_t>(code));
                     });
                 break;
             case RdpInputEventType::Mouse:
             case RdpInputEventType::MouseWheel:
-                freerdp_input_send_mouse_event(owner->instance_->input, event.flags,
-                                               static_cast<UINT16>(event.x),
-                                               static_cast<UINT16>(event.y));
+            {
+                const UINT32 packedPosition =
+                    (static_cast<UINT32>(static_cast<UINT16>(event.x)) << 16) |
+                    static_cast<UINT32>(static_cast<UINT16>(event.y));
+                (void)post(FREERDP_INPUT_MOUSE_EVENT,
+                           static_cast<uintptr_t>(event.flags),
+                           static_cast<uintptr_t>(packedPosition));
                 break;
+            }
         }
     }
 
@@ -1017,10 +1152,10 @@ struct FreeRdpAdapter::Impl {
         }
     }
 
-    void startInputQueueWorker(FreeRdpAdapter* owner) {
+    bool startInputQueueWorker(FreeRdpAdapter* owner) {
         std::lock_guard<std::mutex> lock(inputQueueMutex);
         if (inputQueueRunning.load(std::memory_order_acquire)) {
-            return;
+            return true;
         }
         std::shared_ptr<FreeRdpAdapter> retained;
         try {
@@ -1028,12 +1163,12 @@ struct FreeRdpAdapter::Impl {
         } catch (const std::bad_weak_ptr&) {
             OH_LOG_ERROR(LOG_APP,
                 "[RDP] input worker requires shared adapter lifetime");
-            return;
+            return false;
         }
         if (!retained) {
             OH_LOG_ERROR(LOG_APP,
                 "[RDP] input worker missing adapter lifetime");
-            return;
+            return false;
         }
         inputQueueStop.store(false, std::memory_order_release);
         inputQueue.clear();
@@ -1052,13 +1187,20 @@ struct FreeRdpAdapter::Impl {
             });
         } catch (const std::exception& e) {
             inputQueueRunning.store(false, std::memory_order_release);
+            inputQueueStop.store(true, std::memory_order_release);
+            inputQueue.clear();
             done->store(true, std::memory_order_release);
             OH_LOG_WARN(LOG_APP, "[RDP] input queue worker start failed: %{public}s", e.what());
+            return false;
         } catch (...) {
             inputQueueRunning.store(false, std::memory_order_release);
+            inputQueueStop.store(true, std::memory_order_release);
+            inputQueue.clear();
             done->store(true, std::memory_order_release);
             OH_LOG_WARN(LOG_APP, "[RDP] input queue worker start failed: unknown");
+            return false;
         }
+        return true;
     }
 
     void stopInputQueueWorker(RdpShutdownDeadline deadline) {
@@ -1128,13 +1270,20 @@ struct FreeRdpAdapter::Impl {
         inputQueueCv.notify_one();
     }
 
-    void startSessionWorkers(FreeRdpAdapter* owner) {
+    bool startSessionWorkers(FreeRdpAdapter* owner) {
         std::lock_guard<std::mutex> lifecycleLock(workerLifecycleMutex);
-        startInputQueueWorker(owner);
-        if (!framePump->start()) {
+        if (!startInputQueueWorker(owner)) {
             presentationEnabled.store(false, std::memory_order_release);
-            OH_LOG_ERROR(LOG_APP, "[RDP] frame pump unavailable; presentation remains disabled");
-            return;
+            OH_LOG_ERROR(LOG_APP,
+                "[RDP] input worker unavailable; presentation remains disabled [E-RDP-INPUT-WORKER]");
+            return false;
+        }
+        if (!framePump->start()) {
+            stopInputQueueWorker(RdpShutdownDeadline::max());
+            presentationEnabled.store(false, std::memory_order_release);
+            OH_LOG_ERROR(LOG_APP,
+                "[RDP] frame pump unavailable; presentation remains disabled [E-RDP-FRAME-PUMP]");
+            return false;
         }
         // Canvas transforms only wake the pump. It redraws the already
         // uploaded texture and never asks the GDI accumulator for a snapshot.
@@ -1149,6 +1298,20 @@ struct FreeRdpAdapter::Impl {
         redrawCallbackToken = RendererNapi::RegisterActiveRedrawCallback([notifier]() {
             notifier->notify();
         });
+        if (redrawCallbackToken == 0) {
+            redrawNotifier.reset();
+            auto pump = std::move(framePump);
+            if (pump && !pump->stopWithin(std::chrono::milliseconds(500))) {
+                RdpFramePump::deferStopAndJoin(std::move(pump));
+            }
+            framePump = std::make_shared<RdpFramePump>();
+            stopInputQueueWorker(RdpShutdownDeadline::max());
+            presentationEnabled.store(false, std::memory_order_release);
+            OH_LOG_ERROR(LOG_APP,
+                "[RDP] redraw callback unavailable; presentation remains disabled [E-RDP-REDRAW-CALLBACK]");
+            return false;
+        }
+        return true;
     }
 
     void stopSessionWorkers(RdpShutdownDeadline deadline) {
@@ -1955,9 +2118,15 @@ static bool rdpGfxPipelineConsumerAvailable() {
 }
 
 static bool rdpGfxResetPathSafe() {
-    // The path is implemented, but production advertisement stays closed until
-    // the final dynamic-resize and reconnect device matrix passes.
+    // The vendored FreeRDP GDI pipeline installs the official ResetGraphics
+    // callback.  It routes RESET_GRAPHICS through the same guarded desktop
+    // resize transaction used by classic GDI, so resize/reconnect failures
+    // can mark the next connection for a bounded GDI fallback.
+#if defined(CHANNEL_RDPGFX_CLIENT)
+    return true;
+#else
     return false;
+#endif
 }
 
 static bool rdpGfxH264PathSafe() {
@@ -2283,7 +2452,11 @@ void FreeRdpAdapter::cbErrorInfo(void* context, const ErrorInfoEventArgs* e) {
         OH_LOG_WARN(LOG_APP, "[RDP] ErrorInfo owner missing: raw=0x%{public}08X", code);
         return;
     }
-    adapter->impl_->setState(ConnectionState::ERROR, rdpErrorInfoMessage(code));
+    const std::string message = rdpErrorInfoMessage(code);
+    adapter->impl_->rememberPendingErrorInfo(code, message);
+    OH_LOG_WARN(LOG_APP,
+                "[RDP] ErrorInfo retained as advisory until transport termination: raw=0x%{public}08X state=%{public}d",
+                code, static_cast<int>(adapter->getState()));
 }
 
 void FreeRdpAdapter::cbChannelConnected(void* context, const ChannelConnectedEventArgs* e) {
@@ -2310,9 +2483,33 @@ void FreeRdpAdapter::cbChannelConnected(void* context, const ChannelConnectedEve
                                            callbackLease.generation)) {
             return;
         }
-        if (owner && owner->impl_ && owner->impl_->fileClipboard &&
-            owner->impl_->fileClipboard->attach(cliprdr) &&
-            registerRdpChannelCallbackContext(cliprdr, callbackLease)) {
+        std::lock_guard<std::mutex> channelLock(owner->impl_->cliprdrMutex);
+        if (!owner->impl_->rdpClipboardEnabled()) {
+            const auto previous = owner->impl_->cliprdr;
+            owner->impl_->cliprdr = nullptr;
+            if (previous) {
+                unregisterRdpChannelCallbackContext(previous);
+            }
+            if (owner->impl_->fileClipboard) {
+                owner->impl_->fileClipboard->detach();
+            }
+            OH_LOG_WARN(LOG_APP,
+                        "[RDP] cliprdr channel arrived while clipboard setting is disabled; callbacks not installed");
+            return;
+        }
+        const auto previous = owner->impl_->cliprdr;
+        if (previous && previous != cliprdr) {
+            unregisterRdpChannelCallbackContext(previous);
+            owner->impl_->cliprdr = nullptr;
+            if (owner->impl_->fileClipboard) {
+                owner->impl_->fileClipboard->detach();
+            }
+        }
+        const bool attached = owner->impl_->fileClipboard &&
+            owner->impl_->fileClipboard->attach(cliprdr);
+        const bool registered = attached &&
+            registerRdpChannelCallbackContext(cliprdr, callbackLease);
+        if (registered) {
             owner->impl_->cliprdr = cliprdr;
             cliprdr->ServerCapabilities = cbCliprdrServerCapabilities;
             cliprdr->MonitorReady = cbCliprdrMonitorReady;
@@ -2320,6 +2517,9 @@ void FreeRdpAdapter::cbChannelConnected(void* context, const ChannelConnectedEve
             cliprdr->ServerFormatDataRequest = cbCliprdrServerFormatDataRequest;
             cliprdr->ServerFormatDataResponse = cbCliprdrServerFormatDataResponse;
         } else {
+            if (attached && owner->impl_->fileClipboard) {
+                owner->impl_->fileClipboard->detach();
+            }
             OH_LOG_WARN(LOG_APP,
                         "[RDP] file clipboard bridge unavailable; clipboard disabled for this session");
         }
@@ -2401,6 +2601,9 @@ UINT FreeRdpAdapter::cbCliprdrMonitorReady(CliprdrClientContext* context,
     if (!owner || !owner->impl_ || !owner->impl_->fileClipboard) {
         return ERROR_INVALID_PARAMETER;
     }
+    if (!owner->impl_->rdpClipboardEnabled()) {
+        return ERROR_INVALID_PARAMETER;
+    }
     const UINT capabilityResult = owner->impl_->fileClipboard->sendClientCapabilities();
     if (capabilityResult != CHANNEL_RC_OK) {
         return capabilityResult;
@@ -2418,6 +2621,9 @@ UINT FreeRdpAdapter::cbCliprdrServerCapabilities(
     if (!owner || !owner->impl_ || !owner->impl_->fileClipboard) {
         return ERROR_INVALID_PARAMETER;
     }
+    if (!owner->impl_->rdpClipboardEnabled()) {
+        return ERROR_INVALID_PARAMETER;
+    }
     return owner->impl_->fileClipboard->updateServerCapabilities(capabilities);
 }
 
@@ -2431,6 +2637,9 @@ UINT FreeRdpAdapter::cbCliprdrServerFormatList(CliprdrClientContext* context,
     if (!owner || !owner->impl_ || !owner->impl_->fileClipboard || !list ||
         !isRdpCallbackLeaseCurrent(callbackLease) ||
         !context->ClientFormatListResponse) {
+        return ERROR_INVALID_PARAMETER;
+    }
+    if (!owner->impl_->rdpClipboardEnabled()) {
         return ERROR_INVALID_PARAMETER;
     }
     const UINT notifyResult = owner->impl_->fileClipboard->notifyServerFormatList();
@@ -2466,6 +2675,9 @@ UINT FreeRdpAdapter::cbCliprdrServerFormatDataRequest(CliprdrClientContext* cont
         !context->ClientFormatDataResponse || !request) {
         return ERROR_INVALID_PARAMETER;
     }
+    if (!owner->impl_->rdpClipboardEnabled()) {
+        return ERROR_INVALID_PARAMETER;
+    }
     if (owner->impl_->fileClipboard &&
         owner->impl_->fileClipboard->isFileFormat(request->requestedFormatId)) {
         return owner->impl_->fileClipboard->respondToFileFormatRequest(request);
@@ -2473,7 +2685,12 @@ UINT FreeRdpAdapter::cbCliprdrServerFormatDataRequest(CliprdrClientContext* cont
     if (request->requestedFormatId != CF_UNICODETEXT) {
         return ERROR_INVALID_PARAMETER;
     }
-    std::vector<uint16_t> wide = utf8ToUtf16(owner->impl_->clipboardText);
+    std::string clipboardText;
+    {
+        std::lock_guard<std::mutex> lock(owner->impl_->clipboardMutex);
+        clipboardText = owner->impl_->clipboardText;
+    }
+    std::vector<uint16_t> wide = utf8ToUtf16(clipboardText);
     wide.push_back(0);
     CLIPRDR_FORMAT_DATA_RESPONSE response {};
     response.common.msgType = CB_FORMAT_DATA_RESPONSE;
@@ -2492,6 +2709,9 @@ UINT FreeRdpAdapter::cbCliprdrServerFormatDataResponse(CliprdrClientContext* con
     auto* owner = callbackLease.adapter;
     if (!owner || !owner->impl_ || !isRdpCallbackLeaseCurrent(callbackLease) ||
         !response || !response->requestedFormatData) return ERROR_INVALID_PARAMETER;
+    if (!owner->impl_->rdpClipboardEnabled()) {
+        return ERROR_INVALID_PARAMETER;
+    }
     const auto* data = reinterpret_cast<const uint16_t*>(response->requestedFormatData);
     const size_t count = response->common.dataLen / sizeof(uint16_t);
     std::string text;
@@ -2505,7 +2725,10 @@ UINT FreeRdpAdapter::cbCliprdrServerFormatDataResponse(CliprdrClientContext* con
             text.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
             text.push_back(static_cast<char>(0x80 | (cp & 0x3F))); }
     }
-    owner->impl_->clipboardText = std::move(text);
+    {
+        std::lock_guard<std::mutex> lock(owner->impl_->clipboardMutex);
+        owner->impl_->clipboardText = std::move(text);
+    }
     return CHANNEL_RC_OK;
 }
 
@@ -2528,11 +2751,15 @@ void FreeRdpAdapter::cbChannelDisconnected(void* context, const ChannelDisconnec
                 e->name, e->pInterface);
     if (std::strcmp(e->name, CLIPRDR_SVC_CHANNEL_NAME) == 0) {
         if (owner && owner->impl_) {
+            std::lock_guard<std::mutex> channelLock(owner->impl_->cliprdrMutex);
+            const auto channel = owner->impl_->cliprdr;
+            owner->impl_->cliprdr = nullptr;
+            if (channel) {
+                unregisterRdpChannelCallbackContext(channel);
+            }
             if (owner->impl_->fileClipboard) {
                 owner->impl_->fileClipboard->detach();
             }
-            unregisterRdpChannelCallbackContext(owner->impl_->cliprdr);
-            owner->impl_->cliprdr = nullptr;
         }
     }
 #if defined(CHANNEL_RDPGFX_CLIENT)
@@ -2816,20 +3043,44 @@ BOOL FreeRdpAdapter::cbPostConnect(freerdp* instance) {
     self->impl_->paintCount.store(0, std::memory_order_release);
     self->impl_->firstPaintUs.store(0, std::memory_order_release);
     self->impl_->lastPaintUs.store(0, std::memory_order_release);
+    self->impl_->lastInputPostedUs.store(0, std::memory_order_release);
+    self->impl_->lastEventLoopTickUs.store(0, std::memory_order_release);
+    self->impl_->eventLoopBlockMaxUs.store(0, std::memory_order_release);
+    self->impl_->eventLoopTicks.store(0, std::memory_order_release);
+    self->impl_->networkCheckCount.store(0, std::memory_order_release);
+    self->impl_->networkCheckFailures.store(0, std::memory_order_release);
+    self->impl_->inputPostFailures.store(0, std::memory_order_release);
     self->impl_->lastRenderDiagUs = 0;
     self->impl_->lastRenderBytes.store(0, std::memory_order_release);
     self->impl_->lastFrameWidth = 0;
     self->impl_->lastFrameHeight = 0;
     self->impl_->forceNextFullFrame = true;
     self->impl_->damageAccumulator->clear();
-    const Render::DecoderSessionIdentity owner = callbackLease.owner;
-    if (owner.valid()) {
-        RendererNapi::ReenableActivePresentation(owner);
+    if (!self->impl_->startSessionWorkers(self)) {
+        self->impl_->presentationEnabled.store(false, std::memory_order_release);
+        const Render::DecoderSessionIdentity failedOwner = callbackLease.owner;
+        if (failedOwner.valid()) {
+            RendererNapi::InvalidateActivePresentation(failedOwner);
+        } else {
+            RendererNapi::InvalidateActivePresentation();
+        }
+        // Do not free GDI from this callback.  If a worker stop exceeded its
+        // bounded budget, the deferred worker still owns the instance lease;
+        // the normal freerdp_connect failure path will run cleanupInstance()
+        // after that fence and retire GDI in the ordered platform cleanup.
+        OH_LOG_ERROR(LOG_APP,
+            "[RDP] post-connect worker startup failed; refusing CONNECTED session [E-RDP-WORKER-START]");
+        return FALSE;
+    }
+    const Render::DecoderSessionIdentity presentationOwner = callbackLease.owner;
+    if (presentationOwner.valid()) {
+        RendererNapi::ReenableActivePresentation(presentationOwner);
+        (void)RendererNapi::SetActivePboUpload(presentationOwner, false);
     } else {
         RendererNapi::ReenableActivePresentation();
+        (void)RendererNapi::SetActivePboUpload(false);
     }
     self->impl_->presentationEnabled.store(true, std::memory_order_release);
-    self->impl_->startSessionWorkers(self);
     OH_LOG_INFO(LOG_APP, "[RDP] GDI initialized: BGRA32 primary buffer ready");
     return TRUE;
 }
@@ -3206,16 +3457,16 @@ BOOL FreeRdpAdapter::cbDesktopResize(rdpContext* context) {
 }
 
 // ---- 事件循环线程 ----
-void FreeRdpAdapter::startEventLoop() {
+bool FreeRdpAdapter::startEventLoop() {
     std::shared_ptr<FreeRdpAdapter> retained;
     try {
         retained = shared_from_this();
     } catch (const std::bad_weak_ptr&) {
         OH_LOG_ERROR(LOG_APP, "[RDP] event worker requires shared adapter lifetime");
-        return;
+        return false;
     }
     if (!retained) {
-        return;
+        return false;
     }
     eventLoopRunning_.store(true, std::memory_order_release);
     auto done = std::make_shared<std::atomic<bool>>(false);
@@ -3231,11 +3482,14 @@ void FreeRdpAdapter::startEventLoop() {
         done->store(true, std::memory_order_release);
         OH_LOG_ERROR(LOG_APP,
             "[RDP] event loop worker start failed: %{public}s", e.what());
+        return false;
     } catch (...) {
         eventLoopRunning_.store(false, std::memory_order_release);
         done->store(true, std::memory_order_release);
         OH_LOG_ERROR(LOG_APP, "[RDP] event loop worker start failed");
+        return false;
     }
+    return true;
 }
 
 void FreeRdpAdapter::stopEventLoop(RdpShutdownDeadline deadline) {
@@ -3269,37 +3523,171 @@ void FreeRdpAdapter::stopEventLoop(RdpShutdownDeadline deadline) {
 
 void FreeRdpAdapter::processEventLoop() {
     HANDLE handles[64];
+    bool transportEnded = false;
+    constexpr DWORD kInvalidHandleIndex = static_cast<DWORD>(-1);
+    constexpr DWORD kHandleCapacity = 64;
+
+    // FreeRDP exposes its input message queue as the supported cross-thread
+    // handoff.  The vendored client queue's private proxy is not initialized
+    // by the regular freerdp_new() path, so consume the already-serialized
+    // messages here and call the public input entry points on this one event
+    // loop thread.  This preserves the official queue/event ordering without
+    // making the UI worker call into transport code.
+    auto processInputQueue = [this]() {
+        std::lock_guard<std::mutex> lock(impl_->instanceMutex);
+        if (!instance_ || !instance_->context || !instance_->input) {
+            return;
+        }
+        wMessageQueue* queue = freerdp_get_message_queue(
+            instance_, FREERDP_INPUT_MESSAGE_QUEUE);
+        if (!queue) {
+            return;
+        }
+        wMessage message{};
+        while (MessageQueue_Peek(queue, &message, TRUE)) {
+            switch (message.id) {
+                case FREERDP_INPUT_KEYBOARD_EVENT:
+                    (void)freerdp_input_send_keyboard_event(
+                        instance_->input,
+                        static_cast<UINT16>(reinterpret_cast<uintptr_t>(message.wParam)),
+                        static_cast<UINT8>(reinterpret_cast<uintptr_t>(message.lParam)));
+                    break;
+                case FREERDP_INPUT_UNICODE_KEYBOARD_EVENT:
+                    (void)freerdp_input_send_unicode_keyboard_event(
+                        instance_->input,
+                        static_cast<UINT16>(reinterpret_cast<uintptr_t>(message.wParam)),
+                        static_cast<UINT16>(reinterpret_cast<uintptr_t>(message.lParam)));
+                    break;
+                case FREERDP_INPUT_MOUSE_EVENT:
+                case FREERDP_INPUT_EXTENDED_MOUSE_EVENT:
+                {
+                    const UINT32 packed = static_cast<UINT32>(
+                        reinterpret_cast<uintptr_t>(message.lParam));
+                    const UINT16 x = static_cast<UINT16>((packed >> 16) & 0xFFFFU);
+                    const UINT16 y = static_cast<UINT16>(packed & 0xFFFFU);
+                    const UINT16 flags = static_cast<UINT16>(
+                        reinterpret_cast<uintptr_t>(message.wParam));
+                    if (message.id == FREERDP_INPUT_EXTENDED_MOUSE_EVENT) {
+                        (void)freerdp_input_send_extended_mouse_event(
+                            instance_->input, flags, x, y);
+                    } else {
+                        (void)freerdp_input_send_mouse_event(
+                            instance_->input, flags, x, y);
+                    }
+                    break;
+                }
+                case FREERDP_INPUT_KEYBOARD_PAUSE_EVENT:
+                    (void)freerdp_input_send_keyboard_pause_event(instance_->input);
+                    break;
+                case FREERDP_INPUT_SYNCHRONIZE_EVENT:
+                    (void)freerdp_input_send_synchronize_event(
+                        instance_->input,
+                        static_cast<UINT32>(reinterpret_cast<uintptr_t>(message.wParam)));
+                    break;
+                case FREERDP_INPUT_FOCUS_IN_EVENT:
+                    (void)freerdp_input_send_focus_in_event(
+                        instance_->input,
+                        static_cast<UINT16>(reinterpret_cast<uintptr_t>(message.wParam)));
+                    break;
+                default:
+                    OH_LOG_WARN(LOG_APP,
+                        "[RDP] ignoring unknown input queue message id=0x%{public}08x",
+                        message.id);
+                    break;
+            }
+            message = {};
+        }
+    };
+
+    const auto markEventLoopTick = [this]() {
+        impl_->lastEventLoopTickUs.store(steadyNowUs(), std::memory_order_release);
+        impl_->eventLoopTicks.fetch_add(1, std::memory_order_relaxed);
+    };
+
     while (eventLoopRunning_.load(std::memory_order_acquire)) {
-        bool noHandles = false;
+        DWORD networkCount = 0;
+        DWORD handleCount = 0;
+        DWORD inputHandleIndex = kInvalidHandleIndex;
+        HANDLE inputEvent = nullptr;
         {
-            // The FreeRDP event-handle array and context are owned by the
-            // instance. Keep the instance lease across both the wait and the
-            // check so a bounded disconnect cannot free the context while a
-            // deferred event worker still holds a raw pointer to it.
-            std::unique_lock<std::mutex> lock(impl_->instanceMutex);
+            // The disconnect path stops and joins this event worker before it
+            // can free the FreeRDP instance.  Only hold the instance lease
+            // while building the handle list; never hold it during the wait.
+            std::lock_guard<std::mutex> lock(impl_->instanceMutex);
             if (!instance_ || !instance_->context) {
                 break;
             }
-            const DWORD count = freerdp_get_event_handles(instance_->context, handles, 64);
-            if (count == 0) {
-                noHandles = true;
-            } else {
-                const DWORD ret = WaitForMultipleObjects(count, handles, FALSE, 100);
-                if (!eventLoopRunning_.load(std::memory_order_acquire)) {
-                    break;
-                }
-                if (ret >= WAIT_OBJECT_0 && ret < WAIT_OBJECT_0 + count) {
-                    if (!freerdp_check_event_handles(instance_->context)) {
-                        OH_LOG_WARN(LOG_APP,
-                            "[RDP] freerdp_check_event_handles returned false, stopping event loop");
-                        eventLoopRunning_.store(false, std::memory_order_release);
-                        break;
-                    }
-                }
+            networkCount = freerdp_get_event_handles(
+                instance_->context, handles, kHandleCapacity - 1);
+            handleCount = networkCount;
+            inputEvent = freerdp_get_message_queue_event_handle(
+                instance_, FREERDP_INPUT_MESSAGE_QUEUE);
+            if (inputEvent && handleCount < kHandleCapacity) {
+                inputHandleIndex = handleCount;
+                handles[handleCount++] = inputEvent;
             }
         }
-        if (noHandles) {
+
+        if (handleCount == 0) {
             usleep(10000); // 10ms
+            markEventLoopTick();
+            continue;
+        }
+
+        const DWORD ret = WaitForMultipleObjects(handleCount, handles, FALSE, 50);
+        if (!eventLoopRunning_.load(std::memory_order_acquire)) {
+            break;
+        }
+        if (ret == WAIT_FAILED) {
+            OH_LOG_WARN(LOG_APP, "[RDP] WaitForMultipleObjects failed; retrying event loop");
+            usleep(1000);
+            markEventLoopTick();
+            continue;
+        }
+
+        const bool inputReady = inputEvent &&
+            (ret == WAIT_OBJECT_0 + inputHandleIndex ||
+             WaitForSingleObject(inputEvent, 0) == WAIT_OBJECT_0);
+        if (inputReady) {
+            // Input is intentionally drained before network/GDI callbacks so
+            // a click cannot sit behind a burst of paint work already queued
+            // by the server.
+            processInputQueue();
+        }
+
+        const bool networkReady = ret >= WAIT_OBJECT_0 &&
+            ret < WAIT_OBJECT_0 + networkCount;
+        if (networkReady) {
+            const int64_t checkBeginUs = steadyNowUs();
+            bool checkOk = false;
+            {
+                std::lock_guard<std::mutex> lock(impl_->instanceMutex);
+                checkOk = instance_ && instance_->context &&
+                    freerdp_check_event_handles(instance_->context);
+            }
+            const int64_t checkElapsedUs = steadyNowUs() - checkBeginUs;
+            impl_->networkCheckCount.fetch_add(1, std::memory_order_relaxed);
+            updateAtomicMax(impl_->eventLoopBlockMaxUs, checkElapsedUs);
+            if (!checkOk) {
+                impl_->networkCheckFailures.fetch_add(1, std::memory_order_relaxed);
+                OH_LOG_WARN(LOG_APP,
+                    "[RDP] freerdp_check_event_handles returned false, stopping event loop");
+                eventLoopRunning_.store(false, std::memory_order_release);
+                transportEnded = true;
+                break;
+            }
+        }
+        markEventLoopTick();
+    }
+    if (transportEnded && !impl_->stopRequested.load(std::memory_order_acquire) &&
+        getState() == ConnectionState::CONNECTED) {
+        const std::string pendingError = impl_->takePendingErrorInfo();
+        if (!pendingError.empty()) {
+            // ErrorInfo is promoted only after the actual FreeRDP event loop
+            // has ended.  This prevents a benign 0x01 advisory from opening a
+            // false graphics failure dialog over a live connection.
+            impl_->setState(ConnectionState::ERROR, pendingError);
+            queuePostDisconnectTeardown();
         }
     }
 }
@@ -3371,8 +3759,14 @@ void FreeRdpAdapter::joinDriveThread(RdpShutdownDeadline deadline) {
     impl_->traceShutdown("drive-join", "complete");
 }
 
-void FreeRdpAdapter::startDriveMountAfterConnected(const std::string& driveName, const std::string& drivePath) {
+void FreeRdpAdapter::startDriveMountAfterConnected(const std::string& driveName,
+                                                   const std::string& drivePath,
+                                                   uint64_t generation) {
     if (drivePath.empty()) {
+        return;
+    }
+    if (impl_->sessionGeneration.load(std::memory_order_acquire) != generation ||
+        impl_->stopRequested.load(std::memory_order_acquire)) {
         return;
     }
     joinDriveThread(std::chrono::steady_clock::now() + std::chrono::milliseconds(500));
@@ -3389,8 +3783,8 @@ void FreeRdpAdapter::startDriveMountAfterConnected(const std::string& driveName,
     auto done = std::make_shared<std::atomic<bool>>(false);
     std::atomic_store_explicit(&impl_->driveThreadDone, done, std::memory_order_release);
     try {
-        impl_->driveThread = std::thread([retained, done, driveName, drivePath]() {
-            retained->mountDriveAfterConnected(driveName, drivePath);
+        impl_->driveThread = std::thread([retained, done, driveName, drivePath, generation]() {
+            retained->mountDriveAfterConnected(driveName, drivePath, generation);
             done->store(true, std::memory_order_release);
             retained->impl_->workerDoneCv.notify_all();
         });
@@ -3411,16 +3805,21 @@ void FreeRdpAdapter::startDriveMountAfterConnected(const std::string& driveName,
                 driveName.c_str(), drivePathId.c_str());
 }
 
-void FreeRdpAdapter::mountDriveAfterConnected(const std::string& driveName, const std::string& drivePath) {
+void FreeRdpAdapter::mountDriveAfterConnected(const std::string& driveName,
+                                              const std::string& drivePath,
+                                              uint64_t generation) {
     // Give the event loop and rdpdr plugin a short window to finish post-connect setup.
     for (int i = 0; i < 10; i++) {
-        if (impl_->stopRequested) {
+        if (impl_->stopRequested.load(std::memory_order_acquire) ||
+            impl_->sessionGeneration.load(std::memory_order_acquire) != generation) {
             OH_LOG_INFO(LOG_APP, "[RDP] redirected drive async mount canceled before start");
             return;
         }
         usleep(100000);
     }
-    if (impl_->stopRequested || getState() != ConnectionState::CONNECTED) {
+    if (impl_->stopRequested.load(std::memory_order_acquire) ||
+        impl_->sessionGeneration.load(std::memory_order_acquire) != generation ||
+        getState() != ConnectionState::CONNECTED) {
         OH_LOG_INFO(LOG_APP, "[RDP] redirected drive async mount skipped: session no longer connected");
         return;
     }
@@ -3433,7 +3832,9 @@ void FreeRdpAdapter::mountDriveAfterConnected(const std::string& driveName, cons
         // after the shutdown budget expires and leave this call dereferencing
         // freed FreeRDP storage.
         std::lock_guard<std::mutex> lock(impl_->instanceMutex);
-        if (impl_->stopRequested || !instance_ || !instance_->context) {
+        if (impl_->stopRequested.load(std::memory_order_acquire) ||
+            impl_->sessionGeneration.load(std::memory_order_acquire) != generation ||
+            !instance_ || !instance_->context) {
             OH_LOG_INFO(LOG_APP, "[RDP] redirected drive async mount skipped: instance unavailable");
             return;
         }
@@ -3442,15 +3843,20 @@ void FreeRdpAdapter::mountDriveAfterConnected(const std::string& driveName, cons
     }
 
     if (driveRc == CHANNEL_RC_OK) {
-        impl_->driveDeviceId = driveId;
-        impl_->transferStatus.markRdpDriveMounted();
+        if (!impl_->publishRdpDriveMounted(generation, driveId)) {
+            OH_LOG_INFO(LOG_APP,
+                        "[RDP] redirected drive mount completed for stale session; result discarded");
+            return;
+        }
         const std::string drivePathId = SafeLog::HashForLog(drivePath);
         OH_LOG_INFO(LOG_APP,
                     "[RDP] redirected drive mounted asynchronously: \\\\tsclient\\%{public}s drivePathId=%{public}s id=%{public}u",
                     driveName.c_str(), drivePathId.c_str(), driveId);
         impl_->setState(ConnectionState::CONNECTED, "RDP session established; drive redirection mounted");
     } else {
-        impl_->transferStatus.markRdpDriveUnavailable("drive_unavailable");
+        if (!impl_->publishRdpDriveUnavailable(generation, "drive_unavailable")) {
+            return;
+        }
         const std::string drivePathId = SafeLog::HashForLog(drivePath);
         OH_LOG_WARN(LOG_APP,
                     "[RDP] redirected drive async mount unavailable rc=%{public}u name=%{public}s drivePathId=%{public}s",
@@ -3569,6 +3975,8 @@ void FreeRdpAdapter::cleanupInstance(RdpShutdownDeadline deadline) {
         std::lock_guard<std::mutex> lock(impl_->configMutex);
         secureClearString(impl_->config.rdpRestrictedAdminHash);
     }
+    impl_->resetRdpTransferStatus();
+    impl_->clearClipboardState();
     impl_->presentationEnabled.store(false, std::memory_order_release);
     const Render::DecoderSessionIdentity owner = impl_->ownerSnapshot();
     if (owner.valid()) {
@@ -3598,8 +4006,13 @@ void FreeRdpAdapter::cleanupInstance(RdpShutdownDeadline deadline) {
     auto admission = takeRdpCallbackContext(doomedInstance->context);
     const auto retainedAdapter = impl_->lifetime.lock();
     rdpContext* doomedContext = doomedInstance->context;
-    CliprdrClientContext* doomedCliprdr =
-        retainedAdapter ? retainedAdapter->impl_->cliprdr : nullptr;
+    CliprdrClientContext* doomedCliprdr = nullptr;
+    std::unique_lock<std::mutex> cliprdrLock;
+    if (retainedAdapter) {
+        cliprdrLock = std::unique_lock<std::mutex>(retainedAdapter->impl_->cliprdrMutex);
+        doomedCliprdr = retainedAdapter->impl_->cliprdr;
+        retainedAdapter->impl_->cliprdr = nullptr;
+    }
     // The raw ABI has no epoch. Unsubscribe every PubSub family and clear
     // every callback slot while the instance/context are still retained;
     // only then may admission drain and the final retire owner release the
@@ -3614,6 +4027,9 @@ void FreeRdpAdapter::cleanupInstance(RdpShutdownDeadline deadline) {
     if (!revokeRdpCallbackSources(doomedInstance, doomedContext, doomedCliprdr)) {
         OH_LOG_ERROR(LOG_APP,
                      "[RDP] callback source revoke failed; retaining raw-address quarantine");
+    }
+    if (cliprdrLock.owns_lock()) {
+        cliprdrLock.unlock();
     }
     const auto disconnectDone = impl_->disconnectWorkerDone;
     const auto eventDone = std::atomic_load_explicit(
@@ -3638,8 +4054,8 @@ void FreeRdpAdapter::cleanupInstance(RdpShutdownDeadline deadline) {
             // Clipboard callbacks use the same parent admission.  Detaching
             // here prevents channel_->custom teardown from racing a callback
             // that has already been admitted.
+            std::lock_guard<std::mutex> channelLock(retainedAdapter->impl_->cliprdrMutex);
             retainedAdapter->impl_->fileClipboard->detach();
-            retainedAdapter->impl_->cliprdr = nullptr;
         }
         secureClearFreeRdpPasswordHash(doomedInstance->settings);
         if (releaseGdi && doomedContext && doomedContext->gdi) {
@@ -4020,11 +4436,14 @@ int FreeRdpAdapter::connect(const ConnectionConfig& cfg) {
         const uint64_t generation =
             g_nextRdpSessionGeneration.fetch_add(1, std::memory_order_relaxed);
         impl_->sessionGeneration.store(generation, std::memory_order_release);
+        impl_->resetRdpTransferStatus();
+        impl_->clearClipboardState();
         // The cursor store and the frame/input workers share the same
         // connection generation. A late FreeRDP pointer callback must not be
         // presented as if it belonged to a newer ArkUI surface attachment.
         impl_->cursorStore.setGeneration(generation);
         impl_->shutdownStartedUs.store(0, std::memory_order_release);
+        impl_->clearPendingErrorInfo();
     }
     {
         std::lock_guard<std::mutex> lock(impl_->configMutex);
@@ -4487,19 +4906,34 @@ void FreeRdpAdapter::connectThreadFunc(uint64_t expectedGeneration) {
         impl_->connecting = false;
         return;
     }
-    startEventLoop();
+    if (!startEventLoop()) {
+        impl_->stopRequested.store(true, std::memory_order_release);
+        impl_->setState(ConnectionState::ERROR,
+                        "RDP event loop worker start failed [E-RDP-EVENT-WORKER]");
+        const auto ticket = impl_->getOrCreateShutdownTicket();
+        disconnectActiveInstance(ticket->deadline);
+        cleanupInstance(ticket->deadline);
+        impl_->connecting = false;
+        OH_LOG_ERROR(LOG_APP,
+            "[RDP] event loop unavailable; refusing CONNECTED session [E-RDP-EVENT-WORKER]");
+        return;
+    }
 
     if (getState() == ConnectionState::ERROR) {
         impl_->connecting = false;
         OH_LOG_WARN(LOG_APP, "[RDP] connection reached ERROR before CONNECTED publish");
         return;
     }
+    // ErrorInfo received during negotiation is folded into the connect result
+    // above.  A successful session starts with a clean advisory slot so an
+    // old code cannot be promoted after a later, unrelated transport stop.
+    impl_->clearPendingErrorInfo();
     impl_->setState(ConnectionState::CONNECTED, "RDP session established (FreeRDP)");
     impl_->connecting = false;
     OH_LOG_INFO(LOG_APP, "[RDP] ✓ FreeRDP session: %{public}s:%{public}d (user=%{public}s)",
                 logHost.c_str(), port, logUser.c_str());
     if (driveEnabled) {
-        startDriveMountAfterConnected(driveName, cfg.rdDrivePath);
+        startDriveMountAfterConnected(driveName, cfg.rdDrivePath, expectedGeneration);
     }
 }
 
@@ -4513,6 +4947,8 @@ void FreeRdpAdapter::disconnect() {
     const auto ticket = impl_->getOrCreateShutdownTicket();
     const RdpShutdownDeadline deadline = ticket->deadline;
     impl_->stopRequested.store(true, std::memory_order_release);
+    impl_->resetRdpTransferStatus();
+    impl_->clearClipboardState();
     const uint64_t disconnectGeneration =
         impl_->sessionGeneration.load(std::memory_order_acquire);
     {
@@ -4622,8 +5058,24 @@ RdpRenderStats FreeRdpAdapter::getRdpRenderStats() {
     stats.renderedPaintCount = static_cast<int>(impl_->framePump->rendered());
     const int64_t firstPaintUs = impl_->firstPaintUs.load(std::memory_order_acquire);
     const int64_t lastPaintUs = impl_->lastPaintUs.load(std::memory_order_acquire);
+    const int64_t nowUs = steadyNowUs();
+    const auto ageMs = [nowUs](int64_t timestampUs) -> int64_t {
+        return timestampUs > 0 && nowUs >= timestampUs ?
+            (nowUs - timestampUs) / 1000 : -1;
+    };
     stats.firstPaintMs = firstPaintUs > 0 ? firstPaintUs / 1000 : 0;
     stats.lastPaintMs = lastPaintUs > 0 ? lastPaintUs / 1000 : 0;
+    stats.lastRemoteUpdateAgeMs = ageMs(lastPaintUs);
+    stats.eventLoopAgeMs = ageMs(
+        impl_->lastEventLoopTickUs.load(std::memory_order_acquire));
+    stats.eventLoopBlockMaxUs = impl_->eventLoopBlockMaxUs.load(
+        std::memory_order_acquire);
+    stats.lastInputPostAgeMs = ageMs(
+        impl_->lastInputPostedUs.load(std::memory_order_acquire));
+    stats.eventLoopTicks = impl_->eventLoopTicks.load(std::memory_order_acquire);
+    stats.networkCheckCount = impl_->networkCheckCount.load(std::memory_order_acquire);
+    stats.networkCheckFailures = impl_->networkCheckFailures.load(std::memory_order_acquire);
+    stats.inputPostFailures = impl_->inputPostFailures.load(std::memory_order_acquire);
     stats.skippedPaintCount = static_cast<int>(impl_->framePump->replaced());
     stats.slowRenderCount = static_cast<int>(impl_->framePump->adaptationCount());
     stats.minRenderIntervalUs = impl_->framePump->targetIntervalUs();
@@ -4889,16 +5341,24 @@ void FreeRdpAdapter::setConnectionStateCallback(ConnectionStateCallback cb) {
 }
 
 void FreeRdpAdapter::setClipboardText(const std::string& t) {
-    impl_->clipboardText = t;
+    if (!impl_->rdpClipboardEnabled()) {
+        OH_LOG_INFO(LOG_APP, "[RDP] clipboard send ignored because the setting is disabled");
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(impl_->clipboardMutex);
+        impl_->clipboardText = t;
+    }
     if (impl_->fileClipboard) {
         impl_->fileClipboard->clearLocalFiles();
-        if (impl_->cliprdr) {
+        if (impl_->rdpClipboardEnabled() && impl_->fileClipboard->attached()) {
             impl_->fileClipboard->sendCurrentFormatList(true);
         }
     }
 }
 bool FreeRdpAdapter::setClipboardFiles(const std::vector<std::string>& paths) {
-    if (!impl_->fileClipboard || !impl_->cliprdr) {
+    if (!impl_->rdpClipboardEnabled() || !impl_->fileClipboard ||
+        !impl_->fileClipboard->attached()) {
         return false;
     }
     return impl_->fileClipboard->publishLocalFiles(paths) ==
@@ -4908,10 +5368,42 @@ void FreeRdpAdapter::sendClipboardData(const uint8_t* data, uint32_t len) {
     if (data == nullptr || len == 0) return;
     setClipboardText(std::string(reinterpret_cast<const char*>(data), len));
 }
-std::string FreeRdpAdapter::getClipboardText() { return impl_->clipboardText; }
-bool FreeRdpAdapter::isClipboardReceiveReady() { return impl_->cliprdr != nullptr; }
+std::string FreeRdpAdapter::getClipboardText() {
+    if (!impl_->rdpClipboardEnabled()) {
+        return {};
+    }
+    std::lock_guard<std::mutex> lock(impl_->clipboardMutex);
+    return impl_->clipboardText;
+}
+bool FreeRdpAdapter::isClipboardReceiveReady() {
+    return impl_->rdpClipboardEnabled() && impl_->fileClipboard &&
+        impl_->fileClipboard->attached();
+}
+bool FreeRdpAdapter::setSessionClipboardEnabled(bool enabled) {
+    const ConnectionState state = getState();
+    if (state != ConnectionState::CONNECTING && state != ConnectionState::CONNECTED) {
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(impl_->configMutex);
+        impl_->config.rdClipboardEnabled = enabled;
+    }
+    if (!enabled) {
+        // Keep the negotiated cliprdr carrier attached so a later enable can
+        // resume without renegotiating the session. Every callback checks the
+        // setting before reading or writing channel data, and clearing the
+        // bridge removes already-offered local file/text state.
+        impl_->clearClipboardState();
+    }
+    OH_LOG_INFO(LOG_APP, "[RDP] session clipboard setting=%{public}s",
+                enabled ? "enabled" : "disabled");
+    return true;
+}
 bool FreeRdpAdapter::supportsFileTransfer() { return true; }
-SessionTransferStatus FreeRdpAdapter::getSessionTransferStatus() { return impl_->transferStatus.snapshot(); }
+SessionTransferStatus FreeRdpAdapter::getSessionTransferStatus() {
+    std::lock_guard<std::mutex> lock(impl_->transferStatusMutex);
+    return impl_->transferStatus.snapshot();
+}
 
 void registerFreeRdpAdapter() {
     auto adapter = std::shared_ptr<FreeRdpAdapter>(new FreeRdpAdapter());
@@ -5243,6 +5735,10 @@ void FreeRdpAdapter::setConnectionStateCallback(ConnectionStateCallback cb) { im
 
 void FreeRdpAdapter::setClipboardText(const std::string& t) { impl_->clipboardText = t; }
 bool FreeRdpAdapter::setClipboardFiles(const std::vector<std::string>&) { return false; }
+bool FreeRdpAdapter::setSessionClipboardEnabled(bool enabled) {
+    (void)enabled;
+    return false;
+}
 void FreeRdpAdapter::sendClipboardData(const uint8_t* data, uint32_t len) {
     if (data == nullptr || len == 0) return;
     setClipboardText(std::string(reinterpret_cast<const char*>(data), len));

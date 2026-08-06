@@ -7,6 +7,11 @@
 #include <string>
 
 namespace {
+// Keep the NAPI boundary safe even if a stale ArkTS cache still mounts the
+// legacy GPU component. NapiCreate must never reach SshTerminalRenderer::Init
+// while the API 23 Drawing backend is disabled.
+constexpr bool kNativeDrawingSurfaceEnabled = false;
+
 SshTerminalRenderer* GetRenderer(napi_env env, napi_value value) {
     int64_t handle = 0;
     if (value == nullptr || napi_get_value_int64(env, value, &handle) != napi_ok || handle == 0) {
@@ -37,6 +42,11 @@ void SetHandleResult(napi_env env, int64_t handle, napi_value* result) {
 }
 
 napi_value NapiCreate(napi_env env, napi_callback_info info) {
+    if (!kNativeDrawingSurfaceEnabled) {
+        napi_value result;
+        SetHandleResult(env, SshTerminalRenderer::kBackendDisabled, &result);
+        return result;
+    }
     constexpr size_t kArgCount = 13;
     size_t argc = kArgCount;
     napi_value args[kArgCount] = {};

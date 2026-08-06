@@ -869,6 +869,136 @@ impl RustDeskConnector {
         (tx_key, rx_key)
     }
 
+    fn pump_control_messages(
+        crypto: &mut CryptoChannel,
+        controls: &ControlInbox,
+        remote_upload_dir: Option<&str>,
+        pending_file_uploads: &mut Vec<PendingFileUpload>,
+        requested_pressure_level: &mut u32,
+        physical_modifiers: &mut PhysicalModifierState,
+        remote_keyboard_transport: RemoteKeyboardTransport,
+        stream_started: Instant,
+        sent_control_total: &mut u64,
+        sent_mouse_moves: &mut u64,
+        sent_mouse_buttons: &mut u64,
+        control_send_errors: &mut u64,
+    ) -> io::Result<()> {
+        if controls.shutdown_requested() {
+            return Err(io::Error::new(
+                ErrorKind::Interrupted,
+                "control shutdown requested",
+            ));
+        }
+
+        for control in Self::next_control_batch(controls) {
+            if controls.shutdown_requested() {
+                return Err(io::Error::new(
+                    ErrorKind::Interrupted,
+                    "control shutdown requested",
+                ));
+            }
+
+            match control {
+                crate::ControlMsg::Shutdown => {
+                    return Err(io::Error::new(
+                        ErrorKind::Interrupted,
+                        "control shutdown requested",
+                    ));
+                }
+                crate::ControlMsg::VideoPressure { level } => {
+                    *requested_pressure_level = level.min(3);
+                }
+                crate::ControlMsg::SendFile { remote_path, data } => {
+                    let upload_path = Self::normalize_remote_upload_path(
+                        &remote_path,
+                        remote_upload_dir,
+                    );
+                    let upload_path_id = crate::safe_diagnostics::sensitive_id(&upload_path);
+                    let original_path_id = crate::safe_diagnostics::sensitive_id(&remote_path);
+                    crate::set_last_error(format!(
+                        "streaming: send file path_id={} size={}",
+                        upload_path_id,
+                        data.len()
+                    ));
+                    eprintln!(
+                        "[RustDesk-FFI] streaming: send file path_id={} original_path_id={} size={}",
+                        upload_path_id,
+                        original_path_id,
+                        data.len()
+                    );
+                    match Self::request_file_upload(crypto, &upload_path, data) {
+                        Ok(upload) => pending_file_uploads.push(upload),
+                        Err(e) => {
+                            crate::set_last_error(format!(
+                                "streaming: file send error path_id={} err={}",
+                                upload_path_id, e
+                            ));
+                            eprintln!("[RustDesk-FFI] streaming: file send error: {}", e);
+                        }
+                    }
+                }
+                crate::ControlMsg::Clipboard { content } => {
+                    let mut cb = Clipboard::new();
+                    cb.set_format(ClipboardFormat::Text);
+                    cb.set_content(content);
+                    let mut msg = Message::new();
+                    msg.union = Some(Message_oneof_union::clipboard(cb));
+                    if let Err(e) = Self::send_message_encrypted(crypto, &msg) {
+                        eprintln!("[RustDesk-FFI] clipboard send error: {}", e);
+                    }
+                }
+                msg => {
+                    let kind = Self::control_msg_kind(&msg);
+                    let pointer = match &msg {
+                        crate::ControlMsg::MouseEvent { x, y, .. }
+                        | crate::ControlMsg::MouseMove { x, y }
+                        | crate::ControlMsg::MouseWheel { x, y, .. }
+                        | crate::ControlMsg::MouseWheel2D { x, y } => Some((*x, *y)),
+                        _ => None,
+                    };
+                    *sent_control_total += 1;
+                    let control_number = *sent_control_total;
+                    if kind == "mouse_move" {
+                        *sent_mouse_moves += 1;
+                    } else if kind == "mouse" {
+                        *sent_mouse_buttons += 1;
+                    }
+                    let pointer_sample = match kind {
+                        "mouse_move" => *sent_mouse_moves <= 20 || *sent_mouse_moves % 120 == 0,
+                        "mouse" => *sent_mouse_buttons <= 20 || *sent_mouse_buttons % 120 == 0,
+                        _ => false,
+                    };
+                    let send_started = Instant::now();
+                    let send_result = Self::send_control_message(
+                        crypto,
+                        msg,
+                        physical_modifiers,
+                        remote_keyboard_transport,
+                    );
+                    let send_elapsed = send_started.elapsed();
+                    if pointer_sample || send_elapsed >= Duration::from_millis(20) {
+                        let (x, y) = pointer.unwrap_or((0, 0));
+                        eprintln!(
+                            "[RustDesk-FFI] control send kind={} number={} x={} y={} dequeue_elapsed_ms={} send_elapsed_ms={} result={}",
+                            kind,
+                            control_number,
+                            x,
+                            y,
+                            Instant::now().duration_since(stream_started).as_millis(),
+                            send_elapsed.as_millis(),
+                            if send_result.is_ok() { "ok" } else { "error" },
+                        );
+                    }
+                    if let Err(e) = send_result {
+                        *control_send_errors += 1;
+                        eprintln!("[RustDesk-FFI] streaming: control msg error: {}", e);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// 运行 streaming 循环 (阻塞)
     ///
     /// 持续接收加密消息，分发到回调。
@@ -1007,90 +1137,26 @@ impl RustDeskConnector {
                 last_control_diagnostic_at = diagnostic_now;
             }
 
-            if controls.shutdown_requested() {
-                eprintln!("[RustDesk-FFI] streaming: shutdown requested, exiting loop");
-                self.state = ConnState::Disconnected;
-                break 'streaming;
-            }
-
-            for control in Self::next_control_batch(controls.as_ref()) {
-                if controls.shutdown_requested() {
+            if let Err(err) = Self::pump_control_messages(
+                crypto,
+                controls.as_ref(),
+                remote_upload_dir.as_deref(),
+                &mut pending_file_uploads,
+                &mut requested_pressure_level,
+                &mut physical_modifiers,
+                remote_keyboard_transport,
+                stream_started,
+                &mut sent_control_total,
+                &mut sent_mouse_moves,
+                &mut sent_mouse_buttons,
+                &mut control_send_errors,
+            ) {
+                if err.kind() == ErrorKind::Interrupted {
                     eprintln!("[RustDesk-FFI] streaming: shutdown requested, exiting loop");
                     self.state = ConnState::Disconnected;
                     break 'streaming;
                 }
-
-                match control {
-                    crate::ControlMsg::Shutdown => {
-                        eprintln!("[RustDesk-FFI] streaming: shutdown requested, exiting loop");
-                        self.state = ConnState::Disconnected;
-                        break 'streaming;
-                    }
-                    crate::ControlMsg::VideoPressure { level } => {
-                        requested_pressure_level = level.min(3);
-                    }
-                    crate::ControlMsg::SendFile { remote_path, data } => {
-                        let upload_path = Self::normalize_remote_upload_path(
-                            &remote_path,
-                            remote_upload_dir.as_deref(),
-                        );
-                        let upload_path_id =
-                            crate::safe_diagnostics::sensitive_id(&upload_path);
-                        let original_path_id =
-                            crate::safe_diagnostics::sensitive_id(&remote_path);
-                        crate::set_last_error(format!(
-                            "streaming: send file path_id={} size={}",
-                            upload_path_id,
-                            data.len()
-                        ));
-                        // 文件传输: 先发 receive，等远端 digest 后再发数据块。
-                        eprintln!(
-                            "[RustDesk-FFI] streaming: send file path_id={} original_path_id={} size={}",
-                            upload_path_id,
-                            original_path_id,
-                            data.len()
-                        );
-                        match Self::request_file_upload(crypto, &upload_path, data) {
-                            Ok(upload) => pending_file_uploads.push(upload),
-                            Err(e) => {
-                                crate::set_last_error(format!(
-                                    "streaming: file send error path_id={} err={}",
-                                    upload_path_id, e
-                                ));
-                                eprintln!("[RustDesk-FFI] streaming: file send error: {}", e);
-                            }
-                        }
-                    }
-                    crate::ControlMsg::Clipboard { content } => {
-                        // 剪贴板同步: 将内容发送到远程剪贴板
-                        let mut cb = Clipboard::new();
-                        cb.set_format(ClipboardFormat::Text);
-                        cb.set_content(content);
-                        let mut msg = Message::new();
-                        msg.union = Some(Message_oneof_union::clipboard(cb));
-                        if let Err(e) = Self::send_message_encrypted(crypto, &msg) {
-                            eprintln!("[RustDesk-FFI] clipboard send error: {}", e);
-                        }
-                    }
-                    msg => {
-                        let kind = Self::control_msg_kind(&msg);
-                        sent_control_total += 1;
-                        if kind == "mouse_move" {
-                            sent_mouse_moves += 1;
-                        } else if kind == "mouse" {
-                            sent_mouse_buttons += 1;
-                        }
-                        if let Err(e) = Self::send_control_message(
-                            crypto,
-                            msg,
-                            &mut physical_modifiers,
-                            remote_keyboard_transport,
-                        ) {
-                            control_send_errors += 1;
-                            eprintln!("[RustDesk-FFI] streaming: control msg error: {}", e);
-                        }
-                    }
-                }
+                return Err(err);
             }
 
             Self::flush_stale_file_uploads(
@@ -1099,11 +1165,31 @@ impl RustDeskConnector {
                 &mut awaiting_file_done,
             )?;
 
-            let plaintext = match crypto.recv() {
+            let plaintext = match crypto.recv_with_pump(|crypto| {
+                Self::pump_control_messages(
+                    crypto,
+                    controls.as_ref(),
+                    remote_upload_dir.as_deref(),
+                    &mut pending_file_uploads,
+                    &mut requested_pressure_level,
+                    &mut physical_modifiers,
+                    remote_keyboard_transport,
+                    stream_started,
+                    &mut sent_control_total,
+                    &mut sent_mouse_moves,
+                    &mut sent_mouse_buttons,
+                    &mut control_send_errors,
+                )
+            }) {
                 Ok(plaintext) => {
                     empty_reads = 0; // 重置空读计数
                     last_successful_receive_at = Instant::now();
                     plaintext
+                }
+                Err(err) if err.kind() == ErrorKind::Interrupted => {
+                    eprintln!("[RustDesk-FFI] streaming: shutdown requested, exiting loop");
+                    self.state = ConnState::Disconnected;
+                    break 'streaming;
                 }
                 Err(err)
                     if err.kind() == ErrorKind::WouldBlock || err.kind() == ErrorKind::TimedOut =>
@@ -1758,6 +1844,10 @@ impl RustDeskConnector {
                 crate::set_last_error(format!("send mouse wheel delta={}", delta));
                 Self::send_mouse_event_encrypted(crypto, 0, delta, 3)
             }
+            crate::ControlMsg::MouseWheel2D { x, y } => {
+                crate::set_last_error(format!("send mouse wheel 2d x={} y={}", x, y));
+                Self::send_mouse_event_encrypted(crypto, x, y, 3)
+            }
             crate::ControlMsg::Text { text } => Self::send_text_event_encrypted(crypto, &text),
             crate::ControlMsg::ChangeDisplayResolution { display, width, height } => {
                 let message = Self::build_display_resolution_message(display, width, height);
@@ -1803,6 +1893,7 @@ impl RustDeskConnector {
             crate::ControlMsg::MouseEvent { .. } => "mouse",
             crate::ControlMsg::MouseMove { .. } => "mouse_move",
             crate::ControlMsg::MouseWheel { .. } => "mouse_wheel",
+            crate::ControlMsg::MouseWheel2D { .. } => "mouse_wheel_2d",
             crate::ControlMsg::Text { .. } => "text",
             crate::ControlMsg::SendFile { .. } => "send_file",
             crate::ControlMsg::Clipboard { .. } => "clipboard",

@@ -30,6 +30,9 @@
 #include "ssh_pty_recovery_policy.h"
 #include "ssh_forwarding_manager.h"
 #include "ssh_route_policy.h"
+#include "ssh_auth_prompt_broker.h"
+#include "ssh_reconnect_policy.h"
+#include "ssh_session_types.h"
 
 #define SSH_ADAPTER_VERSION "2.0.0"
 #define SSH_BUFFER_SIZE 65536
@@ -63,6 +66,7 @@ enum SshError {
     ERR_SSH_AUTH_TIMEOUT        = -32,
     ERR_SSH_AUTH_METHODS        = -33,
     ERR_SSH_AUTH_PARTIAL        = -34,
+    ERR_SSH_AUTH_CANCELLED      = -35,
 
     // 通道层 (-4x)
     ERR_SSH_CHANNEL_OPEN        = -41,
@@ -205,7 +209,29 @@ public:
                               const std::string& passphrase = "");
 
     /** 使用 keyboard-interactive 认证，支持预置 MFA/OTP 响应。 */
-    int authenticateKeyboardInteractive();
+    int authenticateKeyboardInteractive(bool allowPasswordFallback = false);
+
+    /** Read the current one-shot keyboard-interactive prompt, if any. */
+    bool getAuthPrompt(SshAuthPromptRequest& out) const;
+    bool respondAuthPrompt(const SshAuthPromptResponse& response);
+    bool cancelAuthPrompt(uint64_t requestId, uint64_t expectedGeneration);
+
+    /** Internal libssh2 callback bridge shared by target and jump auth. */
+    int fillKeyboardInteractiveResponses(
+        const char* name, int nameLen, const char* instruction, int instructionLen,
+        int numPrompts, const LIBSSH2_USERAUTH_KBDINT_PROMPT* prompts,
+        LIBSSH2_USERAUTH_KBDINT_RESPONSE* responses,
+        const std::vector<std::string>* explicitResponses,
+        const std::string* password, bool allowPasswordFallback,
+        const std::string& targetHost, const std::string& hop,
+        size_t& presetIndex);
+    void recordAuthPromptFailure(int error) noexcept;
+
+    /** Explicit SSH session identity used by background/UI facades. */
+    SshSessionSnapshot sessionSnapshot() const;
+    SshSessionLifecycleState sessionLifecycleState() const noexcept {
+        return sshLifecycleState_.load(std::memory_order_acquire);
+    }
 
     /** 在独立 SSH channel 上执行命令，不影响交互式 Shell。 */
     int executeCommand(const std::string& command, SshCommandResult& result,
@@ -282,6 +308,11 @@ private:
     void resetTransportForRecovery();
     bool reconnectAfterTransportFailure();
     bool assertSessionOwner(const char* operation) const noexcept;
+    void setSshLifecycleState(SshSessionLifecycleState state);
+    int keyboardInteractiveResponseRound(
+        const char* name, int nameLen, const char* instruction, int instructionLen,
+        int numPrompts, const LIBSSH2_USERAUTH_KBDINT_PROMPT* prompts,
+        LIBSSH2_USERAUTH_KBDINT_RESPONSE* responses);
 
     int sockFd_;
     // Incremented whenever the socket/channel ownership changes. Reader
@@ -295,6 +326,14 @@ private:
     // Non-secret method list returned by libssh2_userauth_list. It controls
     // password -> keyboard-interactive fallback for PAM-style servers.
     std::string advertisedAuthMethods_;
+    std::atomic<SshSessionLifecycleState> sshLifecycleState_ {
+        SshSessionLifecycleState::Created};
+    std::atomic<uint64_t> sshEventSequence_ {0};
+    std::atomic<int> authPromptFailure_ {0};
+    SshAuthPromptBroker authPromptBroker_;
+    std::string authPromptHop_ = "target";
+    bool authPromptAllowPasswordFallback_ = false;
+    size_t authPromptPresetIndex_ = 0;
 
     // ---- libssh2 会话和通道 ----
     LIBSSH2_SESSION* session_;
@@ -410,7 +449,7 @@ private:
     std::mutex         callbackDeliveryMutex_;
     std::mutex         stateCallbackMutex_;     // 保护 stateCallback_
     mutable std::mutex sessionMutex_;           // 串行化 libssh2 session/channel 操作
-    std::recursive_mutex lifecycleMutex_;       // 串行化 connect/disconnect 生命周期
+    mutable std::recursive_mutex lifecycleMutex_; // 串行化 connect/disconnect 生命周期
     std::atomic<bool> connectCancelRequested_{false};
     SshTerminalDiagnostics diagnostics_;
     std::atomic<bool> transportRecoveryRequested_{false};

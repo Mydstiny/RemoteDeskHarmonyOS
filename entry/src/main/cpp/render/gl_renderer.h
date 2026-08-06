@@ -67,6 +67,15 @@ public:
     RdpPresentMetrics PresentRawBGRARect(const uint8_t* bgraData, int width, int height,
                                          int stride, int dirtyX, int dirtyY,
                                          int dirtyWidth, int dirtyHeight, uint64_t generation);
+    // Present a compact dirty rectangle whose pixel buffer contains only the
+    // rectangle rows, while width/height still describe the full desktop.
+    RdpPresentMetrics PresentRawBGRARectCompact(const uint8_t* bgraData, size_t size,
+                                                int width, int height, int stride,
+                                                int dirtyX, int dirtyY, int dirtyWidth,
+                                                int dirtyHeight, uint64_t generation);
+    /** Enable the GLES3 pixel-unpack upload path after the RDP latency gate
+     * has collected a direct-upload baseline. */
+    void SetPboUploadEnabled(bool enabled);
 
     /**
      * 调整渲染区域大小
@@ -141,6 +150,11 @@ private:
     GLuint rawShaderProgram_;   // BGRA→RGB 着色器程序
     GLuint rawTexture_;         // BGRA 像素纹理 (GL_TEXTURE_2D)
     GLuint rawSamplerLocation_; // uniform sampler2D 位置
+    GLuint uploadPbo_[2];        // double-buffered pixel-unpack staging
+    size_t uploadPboCapacity_[2];
+    int uploadPboIndex_;
+    bool pboUploadEnabled_;
+    bool pboUploadFailedLogged_;
     int rawTextureWidth_;
     int rawTextureHeight_;
 
@@ -197,6 +211,9 @@ private:
     GLuint CreateRawShaderProgram();
     void   CreateQuadGeometry();
     void   SetupRawTexture(int width, int height);
+    bool   UploadRawPixelsWithPbo(const uint8_t* uploadData, int uploadW, int uploadH,
+                                  int sourceStride, int uploadX, int uploadY);
+    void   DestroyUploadPbosLocked();
     void   ApplyPendingCanvasTransformLocked();
     void   RequestRedraw();
     void   CalculateViewport(int sourceWidth, int sourceHeight,
@@ -205,7 +222,8 @@ private:
     RdpPresentMetrics RenderRawBGRAInternal(const uint8_t* bgraData, int width, int height,
                                             int stride, bool useDirtyRect, int dirtyX,
                                             int dirtyY, int dirtyWidth, int dirtyHeight,
-                                            uint64_t generation);
+                                            uint64_t generation, size_t dataSize = 0,
+                                            bool compactDirtyBuffer = false);
     RdpPresentMetrics RenderRetainedFrameLocked(uint64_t expectedGeneration);
 };
 
@@ -249,6 +267,13 @@ namespace RendererNapi {
                                                int height, int stride, int dirtyX, int dirtyY,
                                                int dirtyWidth, int dirtyHeight,
                                                uint64_t generation);
+    RdpPresentMetrics PresentRawBgraRectCompactActive(
+        const uint8_t* data, size_t size, int width, int height, int stride,
+        int dirtyX, int dirtyY, int dirtyWidth, int dirtyHeight, uint64_t generation);
+    RdpPresentMetrics PresentRawBgraRectCompactActive(
+        const Render::DecoderSessionIdentity& owner, const uint8_t* data, size_t size,
+        int width, int height, int stride, int dirtyX, int dirtyY, int dirtyWidth,
+        int dirtyHeight, uint64_t generation);
     RdpPresentMetrics PresentRetainedActive(uint64_t generation);
     RdpPresentMetrics PresentRetainedActive(const Render::DecoderSessionIdentity& owner,
                                             uint64_t generation);
@@ -278,6 +303,8 @@ namespace RendererNapi {
     RdpPresentationMetricsSnapshot GetActivePresentationStats();
     RdpPresentationMetricsSnapshot GetActivePresentationStats(
         const Render::DecoderSessionIdentity& owner);
+    bool SetActivePboUpload(bool enabled);
+    bool SetActivePboUpload(const Render::DecoderSessionIdentity& owner, bool enabled);
     void InvalidateActivePresentation();
     void InvalidateActivePresentation(const Render::DecoderSessionIdentity& owner);
     bool ReenableActivePresentation();

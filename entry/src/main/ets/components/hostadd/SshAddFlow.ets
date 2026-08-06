@@ -25,6 +25,10 @@ export struct SshAddFlow {
   @State routeHost: string = '';
   @State routePortText: string = '22';
   @State routeUsername: string = '';
+  @State routeUseKey: boolean = false;
+  @State routePassword: string = '';
+  @State routeKeyId: string = '';
+  @State routePassphrase: string = '';
   @State addingKey: boolean = false;
   @State newlyAddedKeys: SshKey[] = [];
   @State errorText: string = '';
@@ -69,6 +73,11 @@ export struct SshAddFlow {
     if (isNaN(port) || port <= 0 || port > 65535) { this.errorText = '端口必须在 1-65535 之间'; return null; }
     if (!this.useKey && this.password === '') { this.errorText = '请输入 SSH 密码'; return null; }
     if (this.useKey && this.keyId === '') { this.errorText = '请选择或导入 SSH 私钥'; return null; }
+    if (this.routeType === 'ssh_jump') {
+      if (this.routeUsername.trim() === '') { this.errorText = '请输入跳板机用户名'; return null; }
+      if (this.routeUseKey && this.routeKeyId === '') { this.errorText = '请选择跳板机私钥'; return null; }
+      if (!this.routeUseKey && this.routePassword === '') { this.errorText = '请输入跳板机密码'; return null; }
+    }
     const host = new RemoteHost();
     host.id = RemoteHost.generateId(); host.protocol = 'ssh'; host.label = this.label.trim();
     host.host = this.address.trim(); host.port = port; host.username = this.username.trim();
@@ -79,6 +88,11 @@ export struct SshAddFlow {
     host.proxyHost = this.routeType !== 'direct' ? this.routeHost.trim() : '';
     host.proxyPort = this.routeType !== 'direct' ? parseInt(this.routePortText) : 0;
     host.proxyUsername = this.routeType === 'ssh_jump' ? this.routeUsername.trim() : '';
+    host.sshProxyAuthMethod = this.routeUseKey ? 'publickey' : 'password';
+    host.sshProxyPassword = this.routeType === 'ssh_jump' && !this.routeUseKey ? this.routePassword : '';
+    host.sshProxyKeyId = this.routeType === 'ssh_jump' && this.routeUseKey ? this.routeKeyId : '';
+    host.sshProxyKeyPassphrase = this.routeType === 'ssh_jump' && this.routeUseKey
+      ? this.routePassphrase : '';
     return host;
   }
 
@@ -163,7 +177,7 @@ export struct SshAddFlow {
             this.routeType === 'ssh_jump' ? '22' : '例如：60022',
             (v: string): void => { this.routePortText = v; })
           if (this.routeType === 'ssh_jump') {
-            this.field('跳板机用户名', this.routeUsername, '留空则使用目标用户名',
+            this.field('跳板机用户名', this.routeUsername, '跳板机 SSH 登录用户名（必填）',
               (v: string): void => { this.routeUsername = v; })
           }
         }
@@ -175,7 +189,11 @@ export struct SshAddFlow {
               isNaN(port) || port <= 0 || port > 65535) { this.errorText = '请完整填写基础信息和有效端口'; return; }
             if (this.routeType !== 'direct' && (this.routeHost.trim() === '' ||
               isNaN(routePort) || routePort <= 0 || routePort > 65535)) {
-              this.errorText = '请填写有效的 FRP 映射地址和端口'; return;
+              this.errorText = this.routeType === 'ssh_jump' ? '请填写有效的跳板机地址和端口' :
+                '请填写有效的 FRP 映射地址和端口'; return;
+            }
+            if (this.routeType === 'ssh_jump' && this.routeUsername.trim() === '') {
+              this.errorText = '请填写跳板机用户名'; return;
             }
             this.errorText = ''; this.step = 2;
           })
@@ -215,6 +233,51 @@ export struct SshAddFlow {
             .onClick((): void => { this.addingKey = true; }).margin({ bottom: 12 })
           this.field('私钥密码（如有）', this.passphrase, '加密私钥的 passphrase',
             (v: string): void => { this.passphrase = v; }, true)
+        }
+        if (this.routeType === 'ssh_jump') {
+          Text('跳板机认证（独立于目标主机）').fontSize(14).fontWeight(FontWeight.Medium)
+            .fontColor(this.pal().text).width('100%').margin({ top: 8, bottom: 10 })
+          Row() {
+            Button('跳板机密码').layoutWeight(1).height(38).borderRadius(10)
+              .backgroundColor(!this.routeUseKey ? this.accentColor : this.pal().surface)
+              .fontColor(!this.routeUseKey ? Color.White : this.pal().text2)
+              .onClick((): void => { this.routeUseKey = false; })
+            Button('跳板机私钥').layoutWeight(1).height(38).borderRadius(10).margin({ left: 8 })
+              .backgroundColor(this.routeUseKey ? this.accentColor : this.pal().surface)
+              .fontColor(this.routeUseKey ? Color.White : this.pal().text2)
+              .onClick((): void => {
+                this.routeUseKey = true;
+                const keys = this.availableKeys();
+                if (this.routeKeyId === '' && keys.length > 0) { this.routeKeyId = keys[0].id; }
+              })
+          }.width('100%').margin({ bottom: 12 })
+          if (!this.routeUseKey) {
+            this.field('跳板机密码', this.routePassword, '跳板机 SSH 密码',
+              (v: string): void => { this.routePassword = v; }, true)
+          } else {
+            if (this.availableKeys().length === 0) {
+              Text('密钥保险库为空，请先添加跳板机私钥。').fontSize(12).fontColor(this.pal().text3)
+                .width('100%').textAlign(TextAlign.Center).padding(14)
+            } else {
+              ForEach(this.availableKeys(), (key: SshKey) => {
+                Row() {
+                  Column() {
+                    Text(key.label !== '' ? key.label : SshKey.typeLabel(key.keyType))
+                      .fontSize(14).fontColor(this.pal().text)
+                    Text(key.fingerprint !== '' ? key.fingerprint : SshKey.typeLabel(key.keyType))
+                      .fontSize(10).fontColor(this.pal().text3).maxLines(1)
+                  }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+                  if (this.routeKeyId === key.id) {
+                    SymbolGlyph($r('sys.symbol.checkmark')).fontColor([this.accentColor])
+                  }
+                }.width('100%').padding(11).borderRadius(10).backgroundColor(this.pal().surface)
+                  .margin({ bottom: 6 }).onClick((): void => { this.routeKeyId = key.id; })
+              }, (key: SshKey): string => 'proxy:' + key.id + ':' + key.createdAt.toString())
+            }
+            this.field('跳板机私钥密码（如有）', this.routePassphrase,
+              '加密跳板机私钥的 passphrase',
+              (v: string): void => { this.routePassphrase = v; }, true)
+          }
         }
         Row() {
           Button('保存').layoutWeight(1).height(44).borderRadius(12).backgroundColor(this.pal().surface)

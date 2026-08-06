@@ -5723,6 +5723,12 @@ export class CloudStore implements CryptoCloudStore {
     host.sshKeyPassphrase = this.decryptIfReady(
       crypto, 'localextensions/remotehosts', host.id,
       'sshkeypassphrase', get('sshkeypassphrase', host.sshKeyPassphrase));
+    host.sshProxyPassword = this.decryptIfReady(
+      crypto, 'localextensions/remotehosts', host.id,
+      'sshproxypassword', get('sshproxypassword', host.sshProxyPassword));
+    host.sshProxyKeyPassphrase = this.decryptIfReady(
+      crypto, 'localextensions/remotehosts', host.id,
+      'sshproxykeypassphrase', get('sshproxykeypassphrase', host.sshProxyKeyPassphrase));
     host.sshHostKeyAlgorithm =
       get('sshhostkeyalgorithm', host.sshHostKeyAlgorithm);
     host.sshHostKeyFingerprintSha256 =
@@ -5777,6 +5783,12 @@ export class CloudStore implements CryptoCloudStore {
   private applyCloudHostExtension(host: RemoteHost, values: Record<string, string>): RemoteHost {
     const get = (key: string, fallback: string): string => values[key] !== undefined ? values[key] : fallback;
     host.sshKeyId = get('sshkeyid', host.sshKeyId);
+    const sshProxyAuthMethod: string = get('sshproxyauthmethod', host.sshProxyAuthMethod);
+    if (sshProxyAuthMethod === 'password' || sshProxyAuthMethod === 'publickey' ||
+      sshProxyAuthMethod === 'kbd-interactive') {
+      host.sshProxyAuthMethod = sshProxyAuthMethod;
+    }
+    host.sshProxyKeyId = get('sshproxykeyid', host.sshProxyKeyId);
     const sshProxyType: string = get('sshproxytype', host.sshProxyType);
     if (sshProxyType === 'http_connect' || sshProxyType === 'socks5' ||
       sshProxyType === 'frp_tcp' || sshProxyType === 'frp_visitor' ||
@@ -5820,6 +5832,12 @@ export class CloudStore implements CryptoCloudStore {
     values['sshkeypassphrase'] = this.encryptIfReady(
       crypto, 'localextensions/remotehosts', host.id,
       'sshkeypassphrase', host.sshKeyPassphrase);
+    values['sshproxypassword'] = this.encryptIfReady(
+      crypto, 'localextensions/remotehosts', host.id,
+      'sshproxypassword', host.sshProxyPassword);
+    values['sshproxykeypassphrase'] = this.encryptIfReady(
+      crypto, 'localextensions/remotehosts', host.id,
+      'sshproxykeypassphrase', host.sshProxyKeyPassphrase);
     values['sshhostkeyalgorithm'] =
       host.sshHostKeyAlgorithm;
     values['sshhostkeyfingerprintsha256'] =
@@ -5865,6 +5883,8 @@ export class CloudStore implements CryptoCloudStore {
     host.normalizeRdpAuthentication();
     values['sshkeyid'] = host.sshKeyId;
     values['sshproxytype'] = host.sshProxyType;
+    values['sshproxyauthmethod'] = host.sshProxyAuthMethod;
+    values['sshproxykeyid'] = host.sshProxyKeyId;
     values['rustdeskrelayid'] = host.rustdeskRelayId;
     values['rustdeskaccountid'] = host.rustdeskAccountId;
     values['rustdeskpasswordmode'] = host.rustdeskPasswordMode.toString();
@@ -5976,8 +5996,12 @@ export class CloudStore implements CryptoCloudStore {
           }
         }
         const deviceLocal: Record<string, string> = {};
-        if (migratedValues['sshkeypassphrase'] !== undefined) {
-          deviceLocal['sshkeypassphrase'] = migratedValues['sshkeypassphrase'];
+        const localSecretKeys: string[] = [
+          'sshkeypassphrase', 'sshproxypassword', 'sshproxykeypassphrase'
+        ];
+        for (let keyIndex = 0; keyIndex < localSecretKeys.length; keyIndex++) {
+          const key = localSecretKeys[keyIndex];
+          if (migratedValues[key] !== undefined) { deviceLocal[key] = migratedValues[key]; }
         }
         if (Object.keys(deviceLocal).length > 0) {
           if (!this.saveLocalExtension('remotehosts', id, deviceLocal)) {
@@ -6079,9 +6103,12 @@ export class CloudStore implements CryptoCloudStore {
           mergeRemoteHostDeviceTrust(
             physical, historical, local);
         const nextLocal: Record<string, string> = {};
-        if (local['sshkeypassphrase'] !== undefined) {
-          nextLocal['sshkeypassphrase'] =
-            local['sshkeypassphrase'];
+        const localSecretKeys: string[] = [
+          'sshkeypassphrase', 'sshproxypassword', 'sshproxykeypassphrase'
+        ];
+        for (let keyIndex = 0; keyIndex < localSecretKeys.length; keyIndex++) {
+          const key = localSecretKeys[keyIndex];
+          if (local[key] !== undefined) { nextLocal[key] = local[key]; }
         }
         if (remoteHostDeviceTrustIsMeaningful(trust)) {
           const trustKeys: string[] = Object.keys(trust);
@@ -7035,7 +7062,8 @@ export class CloudStore implements CryptoCloudStore {
             continue;
           }
           const sensitive: boolean =
-            (table === 'remotehosts' && key === 'sshkeypassphrase') ||
+            (table === 'remotehosts' && (key === 'sshkeypassphrase' ||
+              key === 'sshproxypassword' || key === 'sshproxykeypassphrase')) ||
             (table === RDP_RESTRICTED_ADMIN_SECRET_TABLE &&
               (key === 'hash' || key === 'binding'));
           if (!sensitive || value === '') {
@@ -7595,10 +7623,11 @@ export class CloudStore implements CryptoCloudStore {
           const value: string = source[key];
           // This retired shadow must never survive an encryption transition.
           if (key === 'password') { changed = true; continue; }
-          if (key === 'sshkeypassphrase' && crypto.isEncrypted(value)) {
+          if ((key === 'sshkeypassphrase' || key === 'sshproxypassword' ||
+            key === 'sshproxykeypassphrase') && crypto.isEncrypted(value)) {
             next[key] = crypto.decryptScopedOrLegacy(
               this.currentOwnerScopeId(), 'localextensions/remotehosts',
-              recordId, 'sshkeypassphrase', value,
+              recordId, key, value,
               this.readVncResetEpoch());
             changed = true;
           } else {

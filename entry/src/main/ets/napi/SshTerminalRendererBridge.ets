@@ -61,10 +61,10 @@ export class SshTerminalRendererBridge {
   private native: SshTerminalRendererNativeModule = rdpnapi as SshTerminalRendererNativeModule;
 
   isAvailable(): boolean {
-    return this.native.sshTerminalRendererCreate !== undefined &&
-      this.native.sshTerminalRendererDestroy !== undefined &&
-      this.native.sshTerminalRendererWriteBytes !== undefined &&
-      this.native.sshTerminalRendererBindSurface !== undefined;
+    // The API 23 native Drawing surface can turn a recoverable BufferQueue
+    // error into a process-wide abort. Keep it disabled until the backend has
+    // a non-aborting surface contract.
+    return false;
   }
 
   create(config: SshTerminalRendererConfig): number {

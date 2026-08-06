@@ -48,6 +48,7 @@ enum class SshForwardingResult : int {
 };
 
 struct SshForwardingConfig {
+    uint32_t schemaVersion = 1;
     std::string id;
     SshForwardingMode mode = SshForwardingMode::Local;
     std::string bindHost = "127.0.0.1";
@@ -57,13 +58,36 @@ struct SshForwardingConfig {
     uint32_t maxConnections = 16;
     bool enabled = true;
     bool allowPublicBind = false;
+    uint16_t minBindPort = 1;
+    uint16_t maxBindPort = 65535;
+    uint64_t maxBytes = 0;
+    uint64_t expiresAtMs = 0;
+    uint64_t ownerSessionId = 0;
+    std::string ownerChannelId = "shell";
+    uint64_t ownerGeneration = 0;
 };
+
+using SshForwardingProfile = SshForwardingConfig;
 
 struct SshForwardingSnapshot {
     SshForwardingConfig config;
     SshForwardingState state = SshForwardingState::Stopped;
     uint64_t sessionGeneration = 0;
     uint32_t activeConnections = 0;
+    int lastError = 0;
+    uint64_t transferredBytes = 0;
+    uint64_t expiresAtMs = 0;
+};
+
+struct SshForwardingRuntime {
+    uint32_t schemaVersion = 1;
+    std::string id;
+    SshForwardingState state = SshForwardingState::Stopped;
+    uint64_t sessionId = 0;
+    std::string channelId = "shell";
+    uint64_t generation = 0;
+    uint32_t activeConnections = 0;
+    uint64_t transferredBytes = 0;
     int lastError = 0;
 };
 
@@ -105,6 +129,7 @@ private:
         uint64_t sessionGeneration = 0;
         uint32_t activeConnections = 0;
         int lastError = 0;
+        uint64_t transferredBytes = 0;
     };
 
     static bool isValidMode(SshForwardingMode mode);

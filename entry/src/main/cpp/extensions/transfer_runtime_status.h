@@ -24,6 +24,11 @@ public:
         return status_;
     }
 
+    void reset() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        status_ = SessionTransferStatus();
+    }
+
     void markRdpDriveMounted() {
         std::lock_guard<std::mutex> lock(mutex_);
         status_.rdpDriveMounted = true;

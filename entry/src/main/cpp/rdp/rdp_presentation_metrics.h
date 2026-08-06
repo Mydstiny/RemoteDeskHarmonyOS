@@ -34,6 +34,10 @@ struct RdpPresentMetrics {
     // No framebuffer upload occurred; the renderer sampled its retained raw
     // texture after a local canvas-transform update.
     bool retainedFrame = false;
+    // True only when this present copied pixels through the GLES pixel-unpack
+    // buffer experiment. A direct-upload fallback must remain distinguishable
+    // so the experiment cannot accidentally measure its own fallback path.
+    bool pboUpload = false;
     int64_t queueWaitUs = 0;
     int64_t uploadUs = 0;
     int64_t drawUs = 0;

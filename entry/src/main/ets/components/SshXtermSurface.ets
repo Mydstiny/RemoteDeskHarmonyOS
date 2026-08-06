@@ -20,6 +20,10 @@ export class XtermOutputBuffer {
     if (value.length > 0) { this.pending.push(value); }
   }
 
+  prepend(values: Array<string>): void {
+    if (values.length > 0) { this.pending = values.concat(this.pending); }
+  }
+
   drain(): Array<string> {
     const values: Array<string> = this.pending;
     this.pending = [];
@@ -37,6 +41,9 @@ export class XtermOutputBuffer {
 
 class SshXtermBridgeProxy {
   onReadyCallback: (cols: number, rows: number) => void = (_cols: number, _rows: number): void => {};
+  onFrameCallback: (batchSequence: number) => void = (_batchSequence: number): void => {};
+  onFrameErrorCallback: (batchSequence: number, consumedCount: number) => void =
+    (_batchSequence: number, _consumedCount: number): void => {};
   onInputCallback: (data: string) => void = (_data: string): void => {};
   onResizeCallback: (cols: number, rows: number) => void = (_cols: number, _rows: number): void => {};
   onSelectionCallback: (text: string) => void = (_text: string): void => {};
@@ -44,6 +51,14 @@ class SshXtermBridgeProxy {
 
   onReady(cols: number, rows: number): void {
     this.onReadyCallback(cols, rows);
+  }
+
+  onFrame(batchSequence: number): void {
+    this.onFrameCallback(batchSequence);
+  }
+
+  onFrameError(batchSequence: number, consumedCount: number): void {
+    this.onFrameErrorCallback(batchSequence, consumedCount);
   }
 
   onInput(data: string): void {
@@ -111,17 +126,46 @@ export struct SshXtermSurface {
   private documentReloadPending: boolean = false;
   private outputPumpRunning: boolean = false;
   private outputPumpRetryTimer: number = -1;
+  private outputBatchAckTimer: number = -1;
   private fitTimer: number = -1;
+  private readyReportTimer: number = -1;
+  private pageConfigRetryTimer: number = -1;
+  private pageConfigRetryCount: number = 0;
+  private documentReloadRetryTimer: number = -1;
+  private documentReloadRetryCount: number = 0;
+  private outputBatchSequence: number = 0;
+  private awaitingOutputBatch: number = 0;
   private pendingWrites: Array<string> = [];
+  private inFlightWrites: Array<string> = [];
+  private inFlightOutputBuffer: XtermOutputBuffer | null = null;
+  private pendingOutputBuffer: XtermOutputBuffer | null = null;
   private disposed: boolean = false;
   private lifecycleToken: number = 0;
 
   aboutToAppear(): void {
+    this.restoreQueuedWrites();
     const lifecycleToken: number = ++this.lifecycleToken;
     this.disposed = false;
+    if (this.readyReportTimer !== -1) {
+      clearTimeout(this.readyReportTimer);
+      this.readyReportTimer = -1;
+    }
+    this.clearPageConfigRetry();
+    this.pageConfigRetryCount = 0;
+    this.clearDocumentReloadRetry();
+    this.documentReloadRetryCount = 0;
+    // ArkUI can reuse this component instance for the next SSH tab before the
+    // delayed disappear cleanup runs. Remove the previous proxy first; leaving
+    // it registered makes every new document miss onReady and show only its
+    // initial cursor/input anchor.
     if (this.bridgeCleanupTimer !== -1) {
       clearTimeout(this.bridgeCleanupTimer);
       this.bridgeCleanupTimer = -1;
+    }
+    if (this.bridgeRegistered) {
+      try { this.controller.deleteJavaScriptRegister('sshTerminalBridge'); } catch (_err) {
+        // The previous document may already have been destroyed.
+      }
     }
     // A reused WebView may have navigated to a new document while the old
     // proxy registration was still present. Rebind it for this page.
@@ -135,6 +179,7 @@ export struct SshXtermSurface {
     this.pendingCoreKeyReload = false;
     this.reloadRequestedDocumentKey = '';
     this.documentReloadPending = false;
+    this.awaitingOutputBatch = 0;
     // Give every document its own proxy. A late callback from the previous
     // document must not satisfy the readiness gate of the new host.
     this.bridge = new SshXtermBridgeProxy();
@@ -145,6 +190,7 @@ export struct SshXtermSurface {
   }
 
   aboutToDisappear(): void {
+    this.restoreQueuedWrites();
     const lifecycleToken: number = ++this.lifecycleToken;
     this.disposed = true;
     this.clearBridgeRetry();
@@ -157,6 +203,7 @@ export struct SshXtermSurface {
     this.documentReloadPending = false;
     this.pendingWrites = [];
     this.outputPumpRunning = false;
+    this.awaitingOutputBatch = 0;
     if (this.outputPumpRetryTimer !== -1) {
       clearTimeout(this.outputPumpRetryTimer);
       this.outputPumpRetryTimer = -1;
@@ -165,6 +212,14 @@ export struct SshXtermSurface {
       clearTimeout(this.fitTimer);
       this.fitTimer = -1;
     }
+    if (this.readyReportTimer !== -1) {
+      clearTimeout(this.readyReportTimer);
+      this.readyReportTimer = -1;
+    }
+    this.clearPageConfigRetry();
+    this.pageConfigRetryCount = 0;
+    this.clearDocumentReloadRetry();
+    this.documentReloadRetryCount = 0;
     // Route replacement can overlap the old and new Web components. Delay
     // deletion so an old page cannot remove a bridge just registered by the
     // replacement component/controller, and skip cleanup if this component is
@@ -187,6 +242,14 @@ export struct SshXtermSurface {
     this.bridge.onReadyCallback = (cols: number, rows: number): void => {
       if (lifecycleToken !== this.lifecycleToken) { return; }
       this.handlePageReady(cols, rows);
+    };
+    this.bridge.onFrameCallback = (batchSequence: number): void => {
+      if (lifecycleToken !== this.lifecycleToken || this.disposed) { return; }
+      this.handleOutputFrame(batchSequence);
+    };
+    this.bridge.onFrameErrorCallback = (batchSequence: number, consumedCount: number): void => {
+      if (lifecycleToken !== this.lifecycleToken || this.disposed) { return; }
+      this.handleOutputFrameError(batchSequence, consumedCount);
     };
     this.bridge.onInputCallback = (data: string): void => {
       if (lifecycleToken === this.lifecycleToken && this.onData && data.length > 0 && !this.disposed) {
@@ -215,17 +278,14 @@ export struct SshXtermSurface {
     }
     // ArkWeb can bind the WebviewController after onPageBegin during route
     // replacement. Keep retrying for a bounded window tied to this page.
-    if (this.bridgeRetryCount >= 180) {
-      hilog.warn(XTERM_DOMAIN, XTERM_TAG, 'register bridge retry limit reached');
-      return;
-    }
+    const retryDelay: number = this.bridgeRetryCount < 180 ? 32 : 250;
     this.bridgeRetryCount++;
     this.bridgeRetryTimer = setTimeout((): void => {
       this.bridgeRetryTimer = -1;
       if (lifecycleToken === this.lifecycleToken) {
         this.registerBridge(lifecycleToken);
       }
-    }, 32);
+    }, retryDelay);
   }
 
   private registerBridge(lifecycleToken: number = this.lifecycleToken): void {
@@ -234,7 +294,7 @@ export struct SshXtermSurface {
       this.controller.registerJavaScriptProxy(
         this.bridge,
         'sshTerminalBridge',
-        ['onReady', 'onInput', 'onResize', 'onSelection', 'onFocus']
+        ['onReady', 'onFrame', 'onFrameError', 'onInput', 'onResize', 'onSelection', 'onFocus']
       );
       this.bridgeRegistered = true;
       this.bridgeRetryCount = 0;
@@ -266,10 +326,12 @@ export struct SshXtermSurface {
     return 'window.__sshXtermConfigure(' + config + ');';
   }
 
-  private runPageScript(script: string, onFailure?: () => void): void {
+  private runPageScript(script: string, onSuccess?: () => void, onFailure?: () => void): void {
     if (this.disposed || !this.pageFinished) { return; }
     try {
-      this.controller.runJavaScript(script).then((): void => {}).catch((_err: Error): void => {
+      this.controller.runJavaScript(script).then((): void => {
+        if (onSuccess) { onSuccess(); }
+      }).catch((_err: Error): void => {
         if (onFailure) { onFailure(); }
       });
     } catch (_err) {
@@ -277,21 +339,171 @@ export struct SshXtermSurface {
     }
   }
 
+  private clearPageConfigRetry(): void {
+    if (this.pageConfigRetryTimer !== -1) {
+      clearTimeout(this.pageConfigRetryTimer);
+      this.pageConfigRetryTimer = -1;
+    }
+  }
+
+  private clearDocumentReloadRetry(): void {
+    if (this.documentReloadRetryTimer !== -1) {
+      clearTimeout(this.documentReloadRetryTimer);
+      this.documentReloadRetryTimer = -1;
+    }
+  }
+
+  private scheduleDocumentReloadRetry(lifecycleToken: number,
+    requestedDocumentKey: string): void {
+    if (this.documentReloadRetryTimer !== -1 || this.disposed ||
+      lifecycleToken !== this.lifecycleToken || !this.documentReloadPending ||
+      this.reloadRequestedDocumentKey !== requestedDocumentKey) {
+      return;
+    }
+    const retryDelay: number = this.documentReloadRetryCount < 180 ? 64 : 250;
+    this.documentReloadRetryCount++;
+    this.documentReloadRetryTimer = setTimeout((): void => {
+      this.documentReloadRetryTimer = -1;
+      if (lifecycleToken !== this.lifecycleToken || this.disposed ||
+        !this.documentReloadPending || this.reloadRequestedDocumentKey !== requestedDocumentKey) {
+        return;
+      }
+      try {
+        this.controller.loadUrl($rawfile('ssh-terminal/index.html'));
+        this.documentReloadRetryCount = 0;
+      } catch (err) {
+        hilog.warn(XTERM_DOMAIN, XTERM_TAG,
+          'retry xterm document reload failed: ' + JSON.stringify(err));
+        this.scheduleDocumentReloadRetry(lifecycleToken, requestedDocumentKey);
+      }
+    }, retryDelay);
+  }
+
+  private schedulePageConfigRetry(lifecycleToken: number): void {
+    if (this.pageConfigRetryTimer !== -1 || this.disposed ||
+      lifecycleToken !== this.lifecycleToken || !this.pageFinished) {
+      return;
+    }
+    const retryDelay: number = this.pageConfigRetryCount < 180 ? 32 : 250;
+    this.pageConfigRetryCount++;
+    this.pageConfigRetryTimer = setTimeout((): void => {
+      this.pageConfigRetryTimer = -1;
+      if (lifecycleToken === this.lifecycleToken) {
+        this.applyPageConfigAfterLoad(lifecycleToken);
+      }
+    }, retryDelay);
+  }
+
+  private applyPageConfigAfterLoad(lifecycleToken: number = this.lifecycleToken): void {
+    if (this.disposed || lifecycleToken !== this.lifecycleToken || !this.pageFinished) {
+      return;
+    }
+    this.runPageScript(this.pageConfigScript(), (): void => {
+      if (lifecycleToken !== this.lifecycleToken || this.disposed) { return; }
+      this.clearPageConfigRetry();
+      this.pageConfigRetryCount = 0;
+      this.flushOutputBuffer();
+      this.maybeReportReady();
+    }, (): void => {
+      this.schedulePageConfigRetry(lifecycleToken);
+    });
+  }
+
   private handlePageReady(cols: number, rows: number): void {
     if (this.disposed) { return; }
     this.pageReady = true;
     this.documentReloadPending = false;
     this.reloadRequestedDocumentKey = '';
+    this.clearDocumentReloadRetry();
+    this.documentReloadRetryCount = 0;
     if (!this.active) { return; }
-    this.reportReadyOnce();
-    this.runPageScript(this.pageConfigScript());
-    this.flushOutputBuffer();
-    // onPageEnd can queue output before xterm has called onReady. Starting
-    // the pump again here releases that first prompt and preserves ordering.
-    this.pumpOutput();
+    if (this.pageFinished) {
+      this.applyPageConfigAfterLoad();
+    } else {
+      // onPageEnd will apply the config and start the output pump after the
+      // document is fully loaded. Keep the first frame masked until then.
+      this.flushOutputBuffer();
+    }
     if (this.onResize && cols > 0 && rows > 0) {
       this.onResize(cols, rows, this.coreKey);
     }
+  }
+
+  /**
+   * Report visibility only after the first document has drained its retained
+   * transcript. The extra UI turn lets xterm complete its asynchronous write
+   * callback before the ArkUI loading mask is removed.
+   */
+  private maybeReportReady(): void {
+    if (this.readyReported || this.disposed || !this.active || !this.pageReady ||
+      !this.pageFinished) {
+      return;
+    }
+    if (this.outputPumpRunning) { return; }
+    if (this.pendingWrites.length > 0 || this.outputBuffer.size() > 0) {
+      this.flushOutputBuffer();
+      return;
+    }
+    if (this.readyReportTimer !== -1) { return; }
+    const lifecycleToken: number = this.lifecycleToken;
+    this.readyReportTimer = setTimeout((): void => {
+      this.readyReportTimer = -1;
+      if (lifecycleToken !== this.lifecycleToken || this.disposed || !this.active) {
+        return;
+      }
+      if (this.outputPumpRunning || this.pendingWrites.length > 0 || this.outputBuffer.size() > 0) {
+        this.flushOutputBuffer();
+        return;
+      }
+      this.reportReadyOnce();
+    }, 32);
+  }
+
+  private handleOutputFrame(batchSequence: number): void {
+    const normalizedSequence: number = Math.floor(Number(batchSequence));
+    if (!this.outputPumpRunning || normalizedSequence <= 0 ||
+      normalizedSequence !== this.awaitingOutputBatch) {
+      return;
+    }
+    this.clearOutputBatchAckTimer();
+    this.inFlightWrites = [];
+    this.inFlightOutputBuffer = null;
+    this.awaitingOutputBatch = 0;
+    this.outputPumpRunning = false;
+    this.flushOutputBuffer();
+    this.maybeReportReady();
+  }
+
+  /** Recover only the unconsumed suffix after a page-side xterm write error. */
+  private handleOutputFrameError(batchSequence: number, consumedCount: number): void {
+    const normalizedSequence: number = Math.floor(Number(batchSequence));
+    if (!this.outputPumpRunning || normalizedSequence <= 0 ||
+      normalizedSequence !== this.awaitingOutputBatch) {
+      return;
+    }
+    const consumed: number = Math.max(0, Math.min(this.inFlightWrites.length,
+      Math.floor(Number(consumedCount))));
+    const remaining: Array<string> = this.inFlightWrites.slice(consumed);
+    const inFlightTarget: XtermOutputBuffer = this.inFlightOutputBuffer ??
+      this.pendingOutputBuffer ?? this.outputBuffer;
+    const pendingTarget: XtermOutputBuffer = this.pendingOutputBuffer ??
+      this.inFlightOutputBuffer ?? this.outputBuffer;
+    if (inFlightTarget === pendingTarget) {
+      inFlightTarget.prepend(remaining.concat(this.pendingWrites));
+    } else {
+      if (remaining.length > 0) { inFlightTarget.prepend(remaining); }
+      if (this.pendingWrites.length > 0) { pendingTarget.prepend(this.pendingWrites); }
+    }
+    this.clearOutputBatchAckTimer();
+    this.inFlightWrites = [];
+    this.inFlightOutputBuffer = null;
+    this.pendingWrites = [];
+    this.pendingOutputBuffer = null;
+    this.awaitingOutputBatch = 0;
+    this.outputPumpRunning = false;
+    hilog.warn(XTERM_DOMAIN, XTERM_TAG,
+      'xterm output write failed, reloading document after consumed=' + consumed.toString());
+    this.reloadDocumentForCoreKey();
   }
 
   private reportReadyOnce(): void {
@@ -301,6 +513,7 @@ export struct SshXtermSurface {
   }
 
   private handlePageEnd(): void {
+    if (this.disposed) { return; }
     this.pageFinished = true;
     this.registerBridge();
     if (!this.active) { return; }
@@ -311,8 +524,7 @@ export struct SshXtermSurface {
     // Page end only means that the document loaded. The xterm callback is the
     // readiness gate; otherwise output can be sent into a page whose terminal
     // renderer failed to boot and the native side would show only a caret.
-    this.runPageScript(this.pageConfigScript());
-    this.flushOutputBuffer();
+    this.applyPageConfigAfterLoad();
   }
 
   /**
@@ -340,8 +552,18 @@ export struct SshXtermSurface {
       clearTimeout(this.fitTimer);
       this.fitTimer = -1;
     }
+    if (this.readyReportTimer !== -1) {
+      clearTimeout(this.readyReportTimer);
+      this.readyReportTimer = -1;
+    }
+    this.clearPageConfigRetry();
+    this.pageConfigRetryCount = 0;
+    this.clearDocumentReloadRetry();
+    this.documentReloadRetryCount = 0;
+    this.restoreQueuedWrites();
     this.pendingWrites = [];
     this.outputPumpRunning = false;
+    this.awaitingOutputBatch = 0;
     this.bridgeRegistered = false;
     this.pageFinished = false;
     this.pageReady = false;
@@ -358,35 +580,85 @@ export struct SshXtermSurface {
     this.installBridgeCallbacks(lifecycleToken);
     try {
       this.controller.loadUrl($rawfile('ssh-terminal/index.html'));
+      this.documentReloadRetryCount = 0;
     } catch (err) {
       hilog.warn(XTERM_DOMAIN, XTERM_TAG,
         'reload xterm document failed: ' + JSON.stringify(err));
-      this.documentReloadPending = false;
-      this.reloadRequestedDocumentKey = '';
-      this.pageFinished = true;
-      this.registerBridge(lifecycleToken);
+      // Keep the old document fenced off. Replaying the timeout batch into it
+      // can duplicate output that was rendered before the ACK was lost.
+      this.scheduleDocumentReloadRetry(lifecycleToken, requestedDocumentKey);
     }
+  }
+
+  private clearOutputBatchAckTimer(): void {
+    if (this.outputBatchAckTimer !== -1) {
+      clearTimeout(this.outputBatchAckTimer);
+      this.outputBatchAckTimer = -1;
+    }
+  }
+
+  /** Return local queues before a document/lifecycle handoff can invalidate them. */
+  private restoreQueuedWrites(): void {
+    this.clearOutputBatchAckTimer();
+    const inFlightTarget: XtermOutputBuffer = this.inFlightOutputBuffer ??
+      this.pendingOutputBuffer ?? this.outputBuffer;
+    const pendingTarget: XtermOutputBuffer = this.pendingOutputBuffer ??
+      this.inFlightOutputBuffer ?? this.outputBuffer;
+    if (this.inFlightWrites.length > 0 && this.pendingWrites.length > 0 &&
+      inFlightTarget === pendingTarget) {
+      inFlightTarget.prepend(this.inFlightWrites.concat(this.pendingWrites));
+    } else {
+      if (this.inFlightWrites.length > 0) { inFlightTarget.prepend(this.inFlightWrites); }
+      if (this.pendingWrites.length > 0) { pendingTarget.prepend(this.pendingWrites); }
+    }
+    this.inFlightWrites = [];
+    this.inFlightOutputBuffer = null;
+    this.pendingWrites = [];
+    this.pendingOutputBuffer = null;
+    this.outputPumpRunning = false;
+    this.awaitingOutputBatch = 0;
+  }
+
+  private scheduleOutputBatchAckTimeout(lifecycleToken: number, batchSequence: number): void {
+    this.clearOutputBatchAckTimer();
+    this.outputBatchAckTimer = setTimeout((): void => {
+      this.outputBatchAckTimer = -1;
+      if (lifecycleToken !== this.lifecycleToken || this.disposed ||
+        this.awaitingOutputBatch !== batchSequence) {
+        return;
+      }
+      hilog.warn(XTERM_DOMAIN, XTERM_TAG,
+        'xterm output frame ack timeout, reloading document');
+      this.restoreQueuedWrites();
+      this.reloadDocumentForCoreKey();
+    }, 640);
   }
 
   private enqueueOutput(): void {
-    if (!this.active) { return; }
+    if (!this.active || this.disposed) { return; }
     const values: Array<string> = this.outputBuffer.drain();
     if (values.length === 0) { return; }
+    if (this.pendingOutputBuffer === null) { this.pendingOutputBuffer = this.outputBuffer; }
     for (let index = 0; index < values.length; index++) {
       this.pendingWrites.push(values[index]);
     }
-    this.pumpOutput();
   }
 
   private flushOutputBuffer(): void {
-    if (!this.active) { return; }
+    if (!this.active || this.disposed) { return; }
     this.enqueueOutput();
+    this.pumpOutput();
   }
 
   private pumpOutput(): void {
     if (!this.active || this.outputPumpRunning || !this.pageReady || !this.pageFinished || this.disposed) { return; }
-    if (this.pendingWrites.length === 0) { return; }
+    if (this.pendingWrites.length === 0) {
+      this.maybeReportReady();
+      return;
+    }
     const lifecycleToken: number = this.lifecycleToken;
+    const batchSequence: number = ++this.outputBatchSequence;
+    this.awaitingOutputBatch = batchSequence;
     this.outputPumpRunning = true;
     const batch: Array<string> = [];
     let batchLength: number = 0;
@@ -398,14 +670,24 @@ export struct SshXtermSurface {
       batch.push(this.pendingWrites.shift() as string);
       batchLength += next.length;
     }
-    const script: string = 'window.__sshXtermWriteBatch(' + JSON.stringify(batch) + ');';
+    this.inFlightWrites = batch;
+    this.inFlightOutputBuffer = this.pendingOutputBuffer ?? this.outputBuffer;
+    const script: string = 'window.__sshXtermWriteBatch(' + JSON.stringify(batch) + ', ' +
+      batchSequence.toString() + ');';
     try {
+      this.scheduleOutputBatchAckTimeout(lifecycleToken, batchSequence);
       this.controller.runJavaScript(script).then((): void => {
-        if (lifecycleToken !== this.lifecycleToken) { return; }
-        this.outputPumpRunning = false;
-        this.pumpOutput();
+        // The JS evaluation only queues terminal.write. Keep the pump locked
+        // until the page reports this batch's completed render frame.
+        if (lifecycleToken !== this.lifecycleToken ||
+          this.awaitingOutputBatch !== batchSequence) { return; }
       }).catch((_err: Error): void => {
         if (lifecycleToken !== this.lifecycleToken) { return; }
+        if (this.awaitingOutputBatch !== batchSequence) { return; }
+        this.clearOutputBatchAckTimer();
+        this.inFlightWrites = [];
+        this.inFlightOutputBuffer = null;
+        this.awaitingOutputBatch = 0;
         // Keep the whole batch for a page re-entry instead of silently losing
         // an ordered portion of the terminal transcript.
         for (let index: number = batch.length - 1; index >= 0; index--) {
@@ -416,6 +698,11 @@ export struct SshXtermSurface {
       });
     } catch (_err) {
       if (lifecycleToken !== this.lifecycleToken) { return; }
+      if (this.awaitingOutputBatch !== batchSequence) { return; }
+      this.clearOutputBatchAckTimer();
+      this.inFlightWrites = [];
+      this.inFlightOutputBuffer = null;
+      this.awaitingOutputBatch = 0;
       for (let index: number = batch.length - 1; index >= 0; index--) {
         this.pendingWrites.unshift(batch[index]);
       }
@@ -454,12 +741,12 @@ export struct SshXtermSurface {
   }
 
   private onActiveChange(): void {
+    if (this.disposed) { return; }
     if (!this.active) {
       // Do not drain the parent-owned output buffer into the previous host's
       // document while the page is between bindings.
       this.pendingCoreKeyReload = true;
-      this.pendingWrites = [];
-      this.outputPumpRunning = false;
+      this.restoreQueuedWrites();
       return;
     }
     if (this.pendingCoreKeyReload) {
@@ -506,7 +793,7 @@ export struct SshXtermSurface {
   }
 
   private onOutputSequenceChange(): void {
-    if (!this.active || this.documentReloadPending) { return; }
+    if (!this.active || this.documentReloadPending || this.disposed) { return; }
     this.flushOutputBuffer();
   }
 

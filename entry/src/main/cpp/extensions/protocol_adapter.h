@@ -97,6 +97,12 @@ struct ConnectionConfig {
     int         sshProxyPort;
     std::string sshProxyUsername;      // optional proxy username
     std::string sshProxyPassword;      // transient proxy password
+    // ProxyJump authentication is a separate SSH identity. Never fall back
+    // to the target username, password, key, or keyboard-interactive answers.
+    std::string sshProxyAuthMethod;     // password | publickey | kbd-interactive
+    std::string sshProxyPrivateKeyPem;  // transient bastion key material
+    std::string sshProxyPrivateKeyPassphrase;
+    std::vector<std::string> sshProxyKeyboardInteractiveResponses;
     std::string expectedHostKeyRawBase64;       // 🆕 SSH 预期主机密钥 raw blob base64 (二次校验)
     std::string expectedHostKeyFingerprintSha256; // 🆕 SSH 预期主机指纹 SHA256
     // ProxyJump 的跳板机与目标机是两个独立的 SSH endpoint，必须分别绑定 key。
@@ -230,6 +236,16 @@ struct RdpRenderStats {
     int renderedPaintCount = 0;
     int64_t firstPaintMs = 0;
     int64_t lastPaintMs = 0;
+    // Ages are sampled from the native monotonic clock at query time. A
+    // negative value means that this session has not produced the event yet.
+    int64_t lastRemoteUpdateAgeMs = -1;
+    int64_t eventLoopAgeMs = -1;
+    int64_t eventLoopBlockMaxUs = 0;
+    int64_t lastInputPostAgeMs = -1;
+    uint64_t eventLoopTicks = 0;
+    uint64_t networkCheckCount = 0;
+    uint64_t networkCheckFailures = 0;
+    uint64_t inputPostFailures = 0;
     int lastRenderResult = 0;
     int skippedPaintCount = 0;
     int slowRenderCount = 0;
@@ -430,6 +446,12 @@ public:
     /** 获取剪贴板文本（从远程同步到本地） */
     virtual std::string getClipboardText() { return ""; }
     virtual bool isClipboardReceiveReady() { return false; }
+
+    /**
+     * 在已建立会话中切换剪贴板处理。实现不得尝试动态创建协议通道；
+     * 返回 false 表示当前协议/会话不支持该运行时切换。
+     */
+    virtual bool setSessionClipboardEnabled(bool /*enabled*/) { return false; }
 
     /** 是否支持 NAT 穿透 */
     virtual bool supportsNatTraversal() { return false; }

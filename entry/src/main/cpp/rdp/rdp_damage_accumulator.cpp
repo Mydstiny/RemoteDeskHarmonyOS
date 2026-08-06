@@ -1,8 +1,6 @@
 #include "rdp_damage_accumulator.h"
-#include "rdp_visual_commit_policy.h"
 
 #include <algorithm>
-#include <chrono>
 #include <cstring>
 #include <new>
 
@@ -134,67 +132,79 @@ RdpDamageUpdateResult RdpDamageAccumulator::update(
     const RdpDamageRect clipped = ClipRect(
         width, height, dirtyX, dirtyY, dirtyWidth, dirtyHeight);
     std::lock_guard<std::mutex> lock(mutex_);
-    const int64_t nowUs = std::chrono::duration_cast<std::chrono::microseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count();
-    const bool geometryChanged = width_ != width || height_ != height ||
-        stride_ != width * 4 || staging_.size() !=
-            static_cast<size_t>(width) * static_cast<size_t>(height) * 4U;
+    const size_t frameBytes = static_cast<size_t>(width) *
+        static_cast<size_t>(height) * 4U;
+    const bool dimensionsChanged = width_ != width || height_ != height ||
+        stride_ != width * 4;
     const bool generationChanged = rendererGeneration_ != rendererGeneration;
+
+    // A retained-only redraw already contains a complete, current desktop
+    // frame. Promote that buffer back to producer staging before applying the
+    // next GDI dirty rectangle. This keeps recovery from turning the first
+    // post-refresh cursor/window update into another 1920x1080 copy/upload.
+    if (!forceFullResync && !dimensionsChanged && !generationChanged && clipped.valid &&
+        stagingNeedsFullResync_ && !stagingHasCurrentFrame_ &&
+        retainedFrame_.size() == frameBytes && retainedFrameVersion_ != 0) {
+        staging_.swap(retainedFrame_);
+        stagingHasCurrentFrame_ = true;
+        stagingNeedsFullResync_ = false;
+        stagingVersion_ = retainedFrameVersion_;
+        retainedFrameVersion_ = 0;
+        fullFrameSpareSynchronized_ = !fullFrameSpare_.empty();
+    }
+
+    const bool geometryChanged = dimensionsChanged || staging_.size() != frameBytes;
     const bool fullResync = forceFullResync || geometryChanged || generationChanged ||
-        !clipped.valid;
+        !clipped.valid || stagingNeedsFullResync_ || !stagingHasCurrentFrame_;
 
     const int tightStride = width * 4;
     try {
         if (fullResync) {
-            std::vector<uint8_t> replacement(
-                static_cast<size_t>(tightStride) * static_cast<size_t>(height));
+            // Reuse the producer buffer whenever the geometry is stable.  The
+            // old implementation allocated a replacement while EndPaint held
+            // the callback lease, which amplified allocator and mutex stalls.
+            staging_.resize(frameBytes);
             for (int row = 0; row < height; ++row) {
-                std::memcpy(replacement.data() +
+                std::memcpy(staging_.data() +
                                 static_cast<size_t>(row) * static_cast<size_t>(tightStride),
                             data + static_cast<size_t>(row) * static_cast<size_t>(sourceStride),
                             static_cast<size_t>(tightStride));
             }
-            staging_.swap(replacement);
+            // Allocate the producer spare and the retained/recovery slot once,
+            // but do not mirror the source frame into either one.  The old
+            // path copied the entire 1920x1080 surface twice while EndPaint
+            // held the FreeRDP callback lease.  These buffers only need valid
+            // capacity; ownership handoff and recycle below fill them without
+            // another full-frame memcpy.
+            if (fullFrameSpare_.size() != frameBytes) {
+                fullFrameSpare_.resize(frameBytes);
+            }
+            if (retainedFrame_.size() != frameBytes) {
+                retainedFrame_.resize(frameBytes);
+                retainedFrameVersion_ = 0;
+            }
+            fullFrameSpareSynchronized_ = !fullFrameSpare_.empty();
+            bootstrapSpareAvailable_ = false;
             width_ = width;
             height_ = height;
             stride_ = tightStride;
             rendererGeneration_ = rendererGeneration;
+            ++stagingVersion_;
+            stagingNeedsFullResync_ = false;
+            stagingHasCurrentFrame_ = true;
             pendingDamage_ = {0, 0, width, height, true};
             pendingFullFrame_ = true;
-            visualCommitActive_ = true;
-            // A full resync establishes the first visible canvas, but it is
-            // not evidence that a page repaint is continuing. Only a later
-            // broad refresh (or a real burst already in progress) may open
-            // the narrow-strip continuation path. This keeps a normal
-            // post-connect toolbar/cursor update on the dirty path.
+            // A full resync establishes the visible canvas immediately. Do
+            // not hold it behind a quiet-period fence: the frame pump already
+            // owns the latest frame and can replace stale work safely.
+            visualCommitActive_ = false;
             visualCommitBurstDetected_ = false;
-            visualCommitContinuation_ = visualCommitContinuation_ ||
-                RdpVisualCommitPolicy::InBurstContinuation(nowUs, visualCommitLastCommitUs_);
-            visualCommitStartedUs_ = nowUs;
-            visualCommitLastUpdateUs_ = nowUs;
+            visualCommitContinuation_ = false;
+            visualCommitStartedUs_ = 0;
+            visualCommitLastUpdateUs_ = 0;
             result.copiedBytes = static_cast<uint64_t>(tightStride) *
                 static_cast<uint64_t>(height);
         } else {
-            const bool continuation = RdpVisualCommitPolicy::InBurstContinuation(
-                nowUs, visualCommitLastCommitUs_);
-            const bool broadRefresh = LooksLikeBroadRefresh(clipped, width_, height_);
-            const bool narrowContinuation = LooksLikeRefreshContinuation(
-                clipped, width_, height_) &&
-                ((visualCommitActive_ && visualCommitBurstDetected_) || continuation);
-            const bool refreshSignal = broadRefresh || narrowContinuation;
-            if (!visualCommitActive_ && refreshSignal) {
-                pendingFullFrame_ = true;
-                visualCommitActive_ = true;
-                visualCommitBurstDetected_ = true;
-                visualCommitContinuation_ = continuation;
-                visualCommitStartedUs_ = nowUs;
-                visualCommitLastUpdateUs_ = nowUs;
-            } else if (visualCommitActive_ && refreshSignal) {
-                // The first full resync may already have opened the fence;
-                // remember that the following broad updates are a real burst
-                // so the committed frame gets a continuation tail as well.
-                visualCommitBurstDetected_ = true;
-            }
             const size_t rowBytes = static_cast<size_t>(clipped.width) * 4U;
             for (int row = 0; row < clipped.height; ++row) {
                 const size_t sourceOffset =
@@ -205,21 +215,14 @@ RdpDamageUpdateResult RdpDamageAccumulator::update(
                     static_cast<size_t>(clipped.x) * 4U;
                 std::memcpy(staging_.data() + destinationOffset, data + sourceOffset, rowBytes);
             }
+            ++stagingVersion_;
+            stagingHasCurrentFrame_ = true;
             pendingDamage_ = UnionRect(pendingDamage_, clipped);
-            if (pendingFullFrame_ && visualCommitActive_ && refreshSignal) {
-                visualCommitLastUpdateUs_ = nowUs;
-            }
             result.copiedBytes = static_cast<uint64_t>(rowBytes) *
                 static_cast<uint64_t>(clipped.height);
             if (CoversFullThreshold(pendingDamage_, width_, height_)) {
                 pendingDamage_ = {0, 0, width_, height_, true};
                 pendingFullFrame_ = true;
-                if (!visualCommitActive_) {
-                    visualCommitActive_ = true;
-                    visualCommitBurstDetected_ = true;
-                    visualCommitStartedUs_ = nowUs;
-                }
-                visualCommitLastUpdateUs_ = nowUs;
             }
         }
     } catch (const std::bad_alloc&) {
@@ -237,12 +240,15 @@ RdpDamageUpdateResult RdpDamageAccumulator::update(
 
 bool RdpDamageAccumulator::requestFullSnapshot(uint64_t rendererGeneration) {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (rendererGeneration == 0 || staging_.empty() || width_ <= 0 || height_ <= 0) {
+    if (rendererGeneration == 0 ||
+        ((!stagingHasCurrentFrame_ || staging_.empty()) && retainedFrame_.empty()) ||
+        width_ <= 0 || height_ <= 0) {
         return false;
     }
     rendererGeneration_ = rendererGeneration;
     pendingDamage_ = {0, 0, width_, height_, true};
     pendingFullFrame_ = true;
+    preferRetainedRefresh_ = true;
     visualCommitActive_ = false;
     visualCommitBurstDetected_ = false;
     visualCommitContinuation_ = false;
@@ -255,32 +261,13 @@ bool RdpDamageAccumulator::requestFullSnapshot(uint64_t rendererGeneration) {
 RdpDamageSnapshot RdpDamageAccumulator::takeSnapshot() {
     RdpDamageSnapshot snapshot;
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!pendingDamage_.valid || staging_.empty()) {
+    if (!pendingDamage_.valid ||
+        ((!stagingHasCurrentFrame_ || staging_.empty()) &&
+         (!pendingFullFrame_ || retainedFrame_.empty()))) {
         return snapshot;
     }
 
     const bool fullFrame = pendingFullFrame_;
-    bool committedVisualBurst = false;
-    int64_t visualCommitAtUs = 0;
-    if (fullFrame && visualCommitActive_) {
-        const int64_t nowUs = std::chrono::duration_cast<std::chrono::microseconds>(
-            std::chrono::steady_clock::now().time_since_epoch()).count();
-        const RdpVisualCommitDecision decision = RdpVisualCommitPolicy::Evaluate(
-            nowUs, visualCommitStartedUs_, visualCommitLastUpdateUs_,
-            visualCommitContinuation_ ?
-                RdpVisualCommitPolicy::kBurstContinuationQuietPeriodUs :
-                RdpVisualCommitPolicy::kQuietPeriodUs,
-            visualCommitContinuation_ ?
-                RdpVisualCommitPolicy::kBurstContinuationMaximumWindowUs :
-                RdpVisualCommitPolicy::kMaximumWindowUs);
-        if (decision.defer) {
-            snapshot.deferred = true;
-            snapshot.retryAtUs = decision.retryAtUs;
-            return snapshot;
-        }
-        committedVisualBurst = visualCommitBurstDetected_;
-        visualCommitAtUs = nowUs;
-    }
     const RdpDamageRect damage = fullFrame ?
         RdpDamageRect{0, 0, width_, height_, true} : pendingDamage_;
     const int snapshotStride = damage.width * 4;
@@ -290,19 +277,54 @@ RdpDamageSnapshot RdpDamageAccumulator::takeSnapshot() {
         return snapshot;
     }
 
+    uint64_t sourceVersion = stagingVersion_;
     try {
-        snapshot.pixels.resize(snapshotBytes);
+        if (fullFrame) {
+            // Move the immutable full frame out of the producer path.  A
+            // reusable spare keeps a writable buffer available for the next
+            // GDI callback; the retained slot gives the renderer a third
+            // ownership state so a fast producer never falls back to a full
+            // mirror copy.
+            if (stagingHasCurrentFrame_ && !staging_.empty()) {
+                if (fullFrameSpare_.empty() && retainedFrame_.empty()) {
+                    snapshot.deferred = true;
+                    return snapshot;
+                }
+                snapshot.pixels.swap(staging_);
+                sourceVersion = stagingVersion_;
+                if (!fullFrameSpare_.empty()) {
+                    staging_.swap(fullFrameSpare_);
+                } else {
+                    staging_.swap(retainedFrame_);
+                }
+                stagingHasCurrentFrame_ = false;
+            } else if (!retainedFrame_.empty()) {
+                snapshot.pixels.swap(retainedFrame_);
+                sourceVersion = retainedFrameVersion_;
+                retainedFrameVersion_ = 0;
+                stagingHasCurrentFrame_ = false;
+                snapshot.fromRetainedFrame = true;
+            }
+            fullFrameSpareSynchronized_ = !fullFrameSpare_.empty();
+            stagingNeedsFullResync_ = false;
+        } else {
+            // Dirty rectangles remain a bounded copy, but use a reusable
+            // scratch buffer instead of allocating a vector for every cursor
+            // update.
+            dirtySnapshotScratch_.resize(snapshotBytes);
+            snapshot.pixels.swap(dirtySnapshotScratch_);
+            for (int row = 0; row < damage.height; ++row) {
+                const size_t sourceOffset =
+                    static_cast<size_t>(damage.y + row) * static_cast<size_t>(stride_) +
+                    static_cast<size_t>(damage.x) * 4U;
+                std::memcpy(snapshot.pixels.data() +
+                                static_cast<size_t>(row) * static_cast<size_t>(snapshotStride),
+                            staging_.data() + sourceOffset,
+                            static_cast<size_t>(snapshotStride));
+            }
+        }
     } catch (...) {
         return RdpDamageSnapshot();
-    }
-    for (int row = 0; row < damage.height; ++row) {
-        const size_t sourceOffset =
-            static_cast<size_t>(damage.y + row) * static_cast<size_t>(stride_) +
-            static_cast<size_t>(damage.x) * 4U;
-        std::memcpy(snapshot.pixels.data() +
-                        static_cast<size_t>(row) * static_cast<size_t>(snapshotStride),
-                    staging_.data() + sourceOffset,
-                    static_cast<size_t>(snapshotStride));
     }
 
     snapshot.valid = true;
@@ -312,29 +334,95 @@ RdpDamageSnapshot RdpDamageAccumulator::takeSnapshot() {
     snapshot.stride = snapshotStride;
     snapshot.damage = damage;
     snapshot.rendererGeneration = rendererGeneration_;
-    snapshot.snapshotCopiedBytes = snapshotBytes;
+    // Full snapshots transfer ownership of an already staged buffer; only a
+    // dirty snapshot performs a CPU copy at this point.
+    snapshot.snapshotCopiedBytes = fullFrame ? 0 : snapshotBytes;
+    snapshot.sourceVersion = sourceVersion;
+    snapshot.retainOnRecycle = fullFrame && preferRetainedRefresh_;
     pendingDamage_ = RdpDamageRect();
     pendingFullFrame_ = false;
-    if (fullFrame && visualCommitActive_) {
-        visualCommitActive_ = false;
-        visualCommitBurstDetected_ = false;
-        visualCommitContinuation_ = false;
-        visualCommitStartedUs_ = 0;
-        visualCommitLastUpdateUs_ = 0;
-        visualCommitLastCommitUs_ = committedVisualBurst ? visualCommitAtUs : 0;
-    }
+    preferRetainedRefresh_ = false;
+    visualCommitActive_ = false;
+    visualCommitBurstDetected_ = false;
+    visualCommitContinuation_ = false;
+    visualCommitStartedUs_ = 0;
+    visualCommitLastUpdateUs_ = 0;
     return snapshot;
+}
+
+void RdpDamageAccumulator::recycleSnapshot(RdpDamageSnapshot&& snapshot) {
+    if (!snapshot.valid || snapshot.pixels.empty()) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!snapshot.fullFrame) {
+        dirtySnapshotScratch_.swap(snapshot.pixels);
+        return;
+    }
+
+    const size_t frameBytes = static_cast<size_t>(width_) *
+        static_cast<size_t>(height_) * 4U;
+    if (snapshot.rendererGeneration != rendererGeneration_ ||
+        snapshot.pixels.size() != frameBytes) {
+        return;
+    }
+
+    // Keep three ownership states in rotation without copying: the producer
+    // staging buffer, the renderer-owned snapshot and the spare/recovery
+    // buffers.  If no producer update arrived while the renderer consumed
+    // the frame, put that exact buffer back into staging so the next dirty
+    // callback can update only its changed rows.  If a newer update did
+    // arrive, leave its staging buffer untouched and use the consumed frame
+    // as retained/spare storage instead.
+    const bool producerAdvanced = stagingHasCurrentFrame_ &&
+        stagingVersion_ != snapshot.sourceVersion;
+    if (!producerAdvanced && snapshot.retainOnRecycle) {
+        retainedFrame_.swap(snapshot.pixels);
+        retainedFrameVersion_ = snapshot.sourceVersion;
+        if (!snapshot.pixels.empty()) {
+            fullFrameSpare_.swap(snapshot.pixels);
+        }
+        stagingHasCurrentFrame_ = false;
+        stagingNeedsFullResync_ = true;
+    } else if (!producerAdvanced && !snapshot.fromRetainedFrame && !staging_.empty()) {
+        staging_.swap(snapshot.pixels);
+        stagingHasCurrentFrame_ = true;
+        if (!snapshot.pixels.empty()) {
+            fullFrameSpare_.swap(snapshot.pixels);
+        }
+    } else {
+        retainedFrame_.swap(snapshot.pixels);
+        retainedFrameVersion_ = snapshot.sourceVersion;
+        if (!snapshot.pixels.empty()) {
+            fullFrameSpare_.swap(snapshot.pixels);
+        }
+        if (!producerAdvanced && snapshot.fromRetainedFrame) {
+            stagingHasCurrentFrame_ = false;
+            stagingNeedsFullResync_ = true;
+        }
+    }
+    fullFrameSpareSynchronized_ = !fullFrameSpare_.empty();
 }
 
 void RdpDamageAccumulator::clear() {
     std::lock_guard<std::mutex> lock(mutex_);
     staging_.clear();
+    fullFrameSpare_.clear();
+    retainedFrame_.clear();
+    dirtySnapshotScratch_.clear();
     width_ = 0;
     height_ = 0;
     stride_ = 0;
     rendererGeneration_ = 0;
     pendingDamage_ = RdpDamageRect();
     pendingFullFrame_ = false;
+    fullFrameSpareSynchronized_ = false;
+    bootstrapSpareAvailable_ = true;
+    stagingNeedsFullResync_ = false;
+    stagingHasCurrentFrame_ = false;
+    stagingVersion_ = 0;
+    retainedFrameVersion_ = 0;
+    preferRetainedRefresh_ = false;
     visualCommitActive_ = false;
     visualCommitBurstDetected_ = false;
     visualCommitContinuation_ = false;

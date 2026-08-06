@@ -36,6 +36,7 @@ import rustDeskCardBadgePolicyTest from './RustDeskCardBadgePolicy.test';
 import rustDeskDiagnosticsPolicyTest from './RustDeskDiagnosticsPolicy.test';
 import remotePhysicalKeyboardPolicyTest from './RemotePhysicalKeyboardPolicy.test';
 import touchpadPointerCurvePolicyTest from './TouchpadPointerCurvePolicy.test';
+import remotePhysicalTouchpadPolicyTest from '../../../test/RemotePhysicalTouchpadPolicy.test';
 import remoteSurfaceTransformPolicyTest from './RemoteSurfaceTransformPolicy.test';
 import remoteCursorStylePolicyTest from './RemoteCursorStylePolicy.test';
 import remoteHostSheetLifecyclePolicyTest from './RemoteHostSheetLifecyclePolicy.test';
@@ -280,6 +281,7 @@ export default function testsuite() {
   rustDeskDiagnosticsPolicyTest();
   remotePhysicalKeyboardPolicyTest();
   touchpadPointerCurvePolicyTest();
+  remotePhysicalTouchpadPolicyTest();
   remoteSurfaceTransformPolicyTest();
   remoteCursorStylePolicyTest();
   remoteHostSheetLifecyclePolicyTest();

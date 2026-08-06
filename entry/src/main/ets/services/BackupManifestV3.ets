@@ -119,6 +119,7 @@ const REMOTE_HOST_EXTENSION_SAFE: string[] = [
   'rustdeskpasswordmode', 'rustdeskauthmode',
   'rustdeskdirectenabled', 'rustdeskdirecthost',
   'rustdeskdirectport', 'sshproxytype', 'rdpcredentialid',
+  'sshproxyauthmethod', 'sshproxykeyid',
   'rdpauthmode', 'sourcetype', 'rustdesktargetdevice',
   'rustdeskadaptiveorientation'
 ];

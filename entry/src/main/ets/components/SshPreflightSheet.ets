@@ -58,7 +58,7 @@ export class SshPreflightController {
   private async probe(): Promise<void> {
     try {
       await new Promise<void>((r) => setTimeout(r, 80));
-      const info = this.loader.probeSshHostKey(this.host.host, this.host.port, this.proxyConfig());
+      const info = this.loader.probeSshHostKey(this.host.host, this.host.port, this.proxyConfig(false));
       if (!info.ok) {
         this.state = SshPreflightState.ERROR;
         this.error = info.errorMessage || '无法读取 SSH 主机指纹';
@@ -121,10 +121,10 @@ export class SshPreflightController {
       this.host.proxyPort > 0 && this.host.proxyPort <= 65535;
   }
 
-  private proxyConfig(): SshProxyConfig {
-    let keyData: string = this.host.sshKeyData;
-    if (this.host.sshKeyId !== '') {
-      const ref = KeyVaultService.getInstance().getSshKey(this.host.sshKeyId);
+  private proxyConfig(includeExpectedJumpKey: boolean = true): SshProxyConfig {
+    let keyData: string = '';
+    if (this.host.sshProxyKeyId !== '') {
+      const ref = KeyVaultService.getInstance().getSshKey(this.host.sshProxyKeyId);
       if (ref) { keyData = ref.privateKey; }
     }
     return {
@@ -132,9 +132,14 @@ export class SshPreflightController {
       host: this.host.proxyHost,
       port: this.host.proxyPort,
       username: this.host.proxyUsername,
-      password: this.host.sshProxyType === 'ssh_jump' ? this.host.password : '',
+      password: this.host.sshProxyType === 'ssh_jump' ? this.host.sshProxyPassword : '',
       privateKeyPem: this.host.sshProxyType === 'ssh_jump' ? keyData : '',
-      privateKeyPassphrase: this.host.sshProxyType === 'ssh_jump' ? this.host.sshKeyPassphrase : ''
+      privateKeyPassphrase: this.host.sshProxyType === 'ssh_jump' ? this.host.sshProxyKeyPassphrase : '',
+      authMethod: this.host.sshProxyType === 'ssh_jump' ? this.host.sshProxyAuthMethod : undefined,
+      expectedHostKeyRawBase64: includeExpectedJumpKey && this.host.sshProxyType === 'ssh_jump'
+        ? this.host.sshJumpHostKeyRawBase64 : '',
+      expectedHostKeyFingerprintSha256: includeExpectedJumpKey && this.host.sshProxyType === 'ssh_jump'
+        ? this.host.sshJumpHostKeyFingerprintSha256 : ''
     };
   }
 
@@ -212,7 +217,8 @@ export class SshPreflightController {
       expectedJumpHostKeyRawBase64: this.jumpHostKeyInfo?.rawBase64 || this.host.sshJumpHostKeyRawBase64,
       expectedJumpHostKeyFingerprintSha256: this.jumpHostKeyInfo?.fingerprintSha256 ||
         this.host.sshJumpHostKeyFingerprintSha256,
-      privateKeyPassphrase: this.passphraseInput || this.host.sshKeyPassphrase
+      privateKeyPassphrase: this.passphraseInput || this.host.sshKeyPassphrase,
+      proxyPrivateKeyPassphrase: this.host.sshProxyKeyPassphrase
     });
     if (this.onReadyCallback) { this.onReadyCallback(); }
   }

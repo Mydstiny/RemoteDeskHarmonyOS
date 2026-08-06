@@ -95,6 +95,7 @@ public:
     void        sendClipboardData(const uint8_t* data, uint32_t len) override;
     std::string getClipboardText() override;
     bool        isClipboardReceiveReady() override;
+    bool        setSessionClipboardEnabled(bool enabled) override;
     bool        supportsFileTransfer() override;
     SessionTransferStatus getSessionTransferStatus() override;
 
@@ -195,7 +196,7 @@ private:
     freerdp*  instance_ = nullptr;
     std::atomic<bool> eventLoopRunning_ {false};
 
-    void startEventLoop();
+    bool startEventLoop();
     void stopEventLoop(std::chrono::steady_clock::time_point deadline);
     void processEventLoop();
     void joinConnectThread(std::chrono::steady_clock::time_point deadline);
@@ -204,8 +205,12 @@ private:
     void cleanupInstance(std::chrono::steady_clock::time_point deadline =
                          std::chrono::steady_clock::time_point::max());
     void connectThreadFunc(uint64_t expectedGeneration);    // 连接线程 (异步, 不阻塞 NAPI)
-    void startDriveMountAfterConnected(const std::string& driveName, const std::string& drivePath);
-    void mountDriveAfterConnected(const std::string& driveName, const std::string& drivePath);
+    void startDriveMountAfterConnected(const std::string& driveName,
+                                       const std::string& drivePath,
+                                       uint64_t generation);
+    void mountDriveAfterConnected(const std::string& driveName,
+                                  const std::string& drivePath,
+                                  uint64_t generation);
     DWORD evaluateCertificate(const char* host, UINT16 port, const char* commonName,
                               const char* subject, const char* issuer,
                               const std::string& fingerprint, DWORD flags);

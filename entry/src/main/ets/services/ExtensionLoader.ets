@@ -29,6 +29,9 @@ import {
   SshCommandResult,
   SshTerminalDiagnosticsSnapshot,
   SshTerminalInputEnqueueResult,
+  SshAuthPromptRequest,
+  SshAuthPromptResponse,
+  SshSessionSnapshot,
   SshForwardingConfig,
   SshForwardingSnapshotsResult,
   SftpListAsyncResult,
@@ -382,6 +385,14 @@ export class ExtensionLoader {
         renderedPaintCount: 0,
         firstPaintMs: 0,
         lastPaintMs: 0,
+        lastRemoteUpdateAgeMs: -1,
+        eventLoopAgeMs: -1,
+        eventLoopBlockMaxUs: 0,
+        lastInputPostAgeMs: -1,
+        eventLoopTicks: 0,
+        networkCheckCount: 0,
+        networkCheckFailures: 0,
+        inputPostFailures: 0,
         lastRenderResult: -1,
         skippedPaintCount: 0,
         slowRenderCount: 0,
@@ -817,6 +828,16 @@ export class ExtensionLoader {
     }
   }
 
+  sendRustDeskTouchpadWheel(sessionId: number, x: number, y: number): boolean {
+    try {
+      return rdpnapi.sendRustDeskTouchpadWheel(sessionId, x, y) as boolean;
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG,
+        '[ExtensionLoader] sendRustDeskTouchpadWheel unavailable: ' + JSON.stringify(err));
+      return false;
+    }
+  }
+
   initAudioPlayer(sr?: number, ch?: number): number {
     try {
       this.audioPlayerHandle = rdpnapi.initAudioPlayer(sr ?? 48000, ch ?? 2) as number;
@@ -1089,6 +1110,16 @@ export class ExtensionLoader {
     }
   }
 
+  setSessionClipboardEnabled(sessionId: number, enabled: boolean): boolean {
+    try {
+      return rdpnapi.setSessionClipboardEnabled(sessionId, enabled) as boolean;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG,
+        '[ExtensionLoader] setSessionClipboardEnabled: ' + JSON.stringify(err));
+      return false;
+    }
+  }
+
   readData(sessionId: number): string {
     try {
       const result: string = rdpnapi.readData(sessionId) as string;
@@ -1223,6 +1254,57 @@ export class ExtensionLoader {
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] getConnectionState: ' + JSON.stringify(err));
       return 0;
+    }
+  }
+
+  getSshAuthPrompt(sessionId: number, sessionGeneration: number): SshAuthPromptRequest | null {
+    try {
+      return rdpnapi.getSshAuthPrompt(sessionId, sessionGeneration) as SshAuthPromptRequest | null;
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, '[ExtensionLoader] getSshAuthPrompt: ' + JSON.stringify(err));
+      return null;
+    }
+  }
+
+  respondSshAuthPrompt(response: SshAuthPromptResponse): boolean {
+    try {
+      return rdpnapi.respondSshAuthPrompt(response) as boolean;
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, '[ExtensionLoader] respondSshAuthPrompt: ' + JSON.stringify(err));
+      return false;
+    }
+  }
+
+  cancelSshAuthPrompt(sessionId: number, sessionGeneration: number, requestId: number): boolean {
+    try {
+      return rdpnapi.cancelSshAuthPrompt(
+        sessionId, sessionGeneration, requestId) as boolean;
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, '[ExtensionLoader] cancelSshAuthPrompt: ' + JSON.stringify(err));
+      return false;
+    }
+  }
+
+  getSshSessionSnapshot(sessionId: number, sessionGeneration: number): SshSessionSnapshot {
+    try {
+      return rdpnapi.getSshSessionSnapshot(
+        sessionId, sessionGeneration) as SshSessionSnapshot;
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, '[ExtensionLoader] getSshSessionSnapshot: ' + JSON.stringify(err));
+      return {
+        schemaVersion: 1,
+        errorCode: -72,
+        sessionId,
+        generation: 0,
+        channelId: 'shell',
+        state: 0,
+        stateName: 'Created',
+        eventSequence: 0,
+        host: '',
+        port: 22,
+        backgroundLimited: false,
+        lastEventType: ''
+      };
     }
   }
 

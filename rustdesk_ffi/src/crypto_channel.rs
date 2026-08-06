@@ -75,15 +75,29 @@ impl CryptoChannel {
     /// RustDesk upstream 先递增 encrypted sequence 再使用，所以正常用 rx_nonce + 1 解密。
     /// streaming 阶段有短 read timeout，必须保留半包，否则超时会造成 BytesCodec 边界错位。
     pub fn recv(&mut self) -> io::Result<Vec<u8>> {
+        self.recv_with_pump(|_| Ok(()))
+    }
+
+    /// 接收并解密一帧，同时在大型帧的分片读取之间让调用方发送控制消息。
+    ///
+    /// RustDesk 的视频帧和鼠标/键盘控制共用一条全双工 TCP 连接。只依赖
+    /// `read_timeout` 不能限制“持续有数据到达”的大帧读取时间，因此控制消息
+    /// 必须在每次 `read` 后被优先处理。回调拿到同一个通道，可以安全地写入
+    /// 对端；读取缓冲仍由本对象独占，半包在超时后会保留给下一次调用。
+    pub fn recv_with_pump<P>(&mut self, mut pump: P) -> io::Result<Vec<u8>>
+    where
+        P: FnMut(&mut Self) -> io::Result<()>,
+    {
         if !self.encrypted {
-            return self.read_plain_frame();
+            return self.read_plain_frame_with_pump(&mut pump);
         }
         let mut dropped_bad_frames = 0usize;
         let mut first_failure = None;
 
         loop {
-            let ciphertext = match self.read_ciphertext_frame() {
+            let ciphertext = match self.read_ciphertext_frame_with_pump(&mut pump) {
                 Ok(ciphertext) => ciphertext,
+                Err(err) if err.kind() == io::ErrorKind::Interrupted => return Err(err),
                 Err(err) if dropped_bad_frames > 0 => {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
@@ -130,7 +144,10 @@ impl CryptoChannel {
         }
     }
 
-    fn read_plain_frame(&mut self) -> io::Result<Vec<u8>> {
+    fn read_plain_frame_with_pump<P>(&mut self, pump: &mut P) -> io::Result<Vec<u8>>
+    where
+        P: FnMut(&mut Self) -> io::Result<()>,
+    {
         loop {
             if let Some(frame) = try_take_frame(&mut self.rx_buffer)? {
                 return Ok(frame);
@@ -144,14 +161,20 @@ impl CryptoChannel {
                         "connection closed while reading plain frame",
                     ));
                 }
-                Ok(n) => self.rx_buffer.extend_from_slice(&chunk[..n]),
+                Ok(n) => {
+                    self.rx_buffer.extend_from_slice(&chunk[..n]);
+                    pump(self)?;
+                }
                 Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
                 Err(err) => return Err(err),
             }
         }
     }
 
-    fn read_ciphertext_frame(&mut self) -> io::Result<Vec<u8>> {
+    fn read_ciphertext_frame_with_pump<P>(&mut self, pump: &mut P) -> io::Result<Vec<u8>>
+    where
+        P: FnMut(&mut Self) -> io::Result<()>,
+    {
         loop {
             if let Some(frame) = try_take_frame(&mut self.rx_buffer)? {
                 return Ok(frame);
@@ -165,7 +188,10 @@ impl CryptoChannel {
                         "connection closed while reading frame",
                     ));
                 }
-                Ok(n) => self.rx_buffer.extend_from_slice(&chunk[..n]),
+                Ok(n) => {
+                    self.rx_buffer.extend_from_slice(&chunk[..n]);
+                    pump(self)?;
+                }
                 Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
                 Err(err) => return Err(err),
             }
@@ -377,6 +403,51 @@ mod tests {
         let mut channel = CryptoChannel::new_plain(stream);
         assert_eq!(channel.recv().unwrap(), b"hash-challenge");
         channel.send(b"login-request").unwrap();
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn recv_with_pump_sends_control_before_large_frame_finishes() {
+        let key = [11u8; 32];
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let nonce = crypto::secretbox_nonce(1);
+            let payload = vec![0x5Au8; 128 * 1024];
+            let ciphertext = crypto::secretbox_encrypt(&payload, &nonce, &key).unwrap();
+            let frame = encode_frame(&ciphertext);
+            let split_at = frame.len() / 2;
+            stream.write_all(&frame[..split_at]).unwrap();
+            stream.flush().unwrap();
+
+            let control_ciphertext = wire::read_frame(&mut stream).unwrap();
+            let control_nonce = crypto::secretbox_nonce(1);
+            let control = crypto::secretbox_decrypt(&control_ciphertext, &control_nonce, &key)
+                .expect("control frame should be encrypted with nonce one");
+            assert_eq!(control, b"mouse-control");
+
+            stream.write_all(&frame[split_at..]).unwrap();
+            stream.flush().unwrap();
+        });
+
+        let stream = TcpStream::connect(addr).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_millis(500)))
+            .unwrap();
+        let mut channel = CryptoChannel::new(stream, &key, &key);
+        let mut pump_calls = 0usize;
+        let payload = channel
+            .recv_with_pump(|channel| {
+                pump_calls += 1;
+                if pump_calls == 1 {
+                    channel.send(b"mouse-control")?;
+                }
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(payload.len(), 128 * 1024);
+        assert!(pump_calls >= 1);
         handle.join().unwrap();
     }
 

@@ -23,6 +23,11 @@
 #define LOG_TAG "SSH_TERM_RENDER"
 
 namespace {
+// API 23 can abort the process from OH_Drawing_SurfaceFlush after a stale
+// XComponent BufferQueue error. Keep this backend opt-in until that path is
+// replaced by a surface implementation with a non-aborting failure contract.
+constexpr bool kNativeDrawingSurfaceEnabled = false;
+
 constexpr uint32_t kDefaultBackground = 0xFF0D0D0D;
 constexpr float kMinimumCellWidth = 2.0F;
 constexpr float kMinimumCellHeight = 2.0F;
@@ -51,6 +56,9 @@ int SshTerminalRenderer::Init(const std::string& surfaceId, int widthPx, int hei
                               float cellHpx, float fontSizePx, uint32_t foreground,
                               uint32_t background, float viewportHeightPx,
                               float visibleHeightPx, bool bottomAlign) {
+    if (!kNativeDrawingSurfaceEnabled) {
+        return kBackendDisabled;
+    }
     std::lock_guard<std::mutex> lock(mutex_);
     if (terminal_ != nullptr) {
         return -1;

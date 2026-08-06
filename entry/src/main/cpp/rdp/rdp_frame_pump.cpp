@@ -149,6 +149,11 @@ bool RdpFramePump::start() {
     metrics_.reset(SteadyNowUs());
     scheduler_.reset();
     glUploadGate_.reset();
+    pboExperimentEnabled_ = false;
+    pboExperimentComplete_ = false;
+    pboBaselineWorkerP95Us_ = 0;
+    pboTrialSampleCount_ = 0;
+    pboTrialWorkerSamples_.fill(0);
     submitted_.store(0, std::memory_order_relaxed);
     rendered_.store(0, std::memory_order_relaxed);
     replaced_.store(0, std::memory_order_relaxed);
@@ -289,9 +294,10 @@ bool RdpFramePump::submitLatest(RdpFrameSubmission&& submission) {
         submitted_.fetch_add(1, std::memory_order_relaxed);
         metrics_.recordSubmission(enqueuedAtUs, 0, 0, callbackUs, replaced);
     }
-    if (!replaced) {
-        cv_.notify_one();
-    }
+    // Wake even when this submission replaced an already pending frame. The
+    // worker may be sleeping until the old pacing deadline; without a wake it
+    // cannot apply the latest-frame queue-age bound promptly.
+    cv_.notify_one();
     return true;
 }
 
@@ -362,7 +368,8 @@ void RdpFramePump::loop() {
                 const int64_t nowUs = SteadyNowUs();
                 const RdpTransformRefreshDecision decision = DecideRdpTransformRefresh(
                     hasFrame_, transformRefreshRequested_, nowUs,
-                    nextPresentAtUs, nextTransformPresentAtUs);
+                    nextPresentAtUs, nextTransformPresentAtUs,
+                    hasFrame_ ? frame_.enqueuedAtUs : 0);
                 if (decision.action == RdpTransformRefreshAction::PresentSourceFrame) {
                     frame = std::move(frame_);
                     frame_ = RdpFrameSubmission();
@@ -443,9 +450,12 @@ void RdpFramePump::loop() {
         RdpDamageSnapshot snapshot = frame.damageSource->takeSnapshot();
         const int64_t snapshotCopyUs = SteadyNowUs() - snapshotBeginUs;
         if (snapshot.deferred) {
-            metrics_.recordDeferred(SteadyNowUs());
-            if (snapshot.retryAtUs > nextPresentAtUs) {
-                nextPresentAtUs = snapshot.retryAtUs;
+            const int64_t retryNowUs = SteadyNowUs();
+            const int64_t retryAtUs = snapshot.retryAtUs > retryNowUs ?
+                snapshot.retryAtUs : retryNowUs + 1000;
+            metrics_.recordDeferred(retryNowUs);
+            if (retryAtUs > nextPresentAtUs) {
+                nextPresentAtUs = retryAtUs;
             }
             std::lock_guard<std::mutex> lock(mutex_);
             if (running_ && !hasFrame_ && frame.pumpGeneration == pumpGeneration_) {
@@ -456,7 +466,20 @@ void RdpFramePump::loop() {
         }
         if (snapshot.valid) {
             metrics_.recordCopy(SteadyNowUs(), snapshot.snapshotCopiedBytes, snapshotCopyUs);
-        } else if (!frame.damageSource->hasPending()) {
+        } else {
+            // Allocation/buffer-pressure failures must not spin the render
+            // worker while the producer still owns the pending frame.  Keep
+            // the latest submission and retry after a short bounded backoff;
+            // the next GDI callback or snapshot recycle will wake progress.
+            if (!frame.damageSource->hasPending()) {
+                continue;
+            }
+            nextPresentAtUs = std::max(nextPresentAtUs, SteadyNowUs() + 1000);
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (running_ && !hasFrame_ && frame.pumpGeneration == pumpGeneration_) {
+                frame_ = std::move(frame);
+                hasFrame_ = true;
+            }
             continue;
         }
 
@@ -468,11 +491,11 @@ void RdpFramePump::loop() {
                 present.result = RdpPresentResult::InvalidFrame;
             } else {
                 present = !snapshot.fullFrame ?
-                (frame.owner.valid() ? RendererNapi::PresentRawBgraRectActive(
+                (frame.owner.valid() ? RendererNapi::PresentRawBgraRectCompactActive(
                     frame.owner, snapshot.pixels.data(), snapshot.pixels.size(), snapshot.width,
                     snapshot.height, snapshot.stride, snapshot.damage.x, snapshot.damage.y,
                     snapshot.damage.width, snapshot.damage.height, snapshot.rendererGeneration) :
-                 RendererNapi::PresentRawBgraRectActive(
+                 RendererNapi::PresentRawBgraRectCompactActive(
                     snapshot.pixels.data(), snapshot.pixels.size(), snapshot.width, snapshot.height,
                     snapshot.stride, snapshot.damage.x, snapshot.damage.y, snapshot.damage.width,
                     snapshot.damage.height, snapshot.rendererGeneration)) :
@@ -515,8 +538,24 @@ void RdpFramePump::loop() {
         }
         scheduler_.recordPresent(present);
         glUploadGate_.recordPresent(present);
+        recordPboExperiment(present, frame);
+        maybeBeginPboExperiment(frame, glUploadGate_.snapshot());
         metrics_.recordPresent(SteadyNowUs(), present);
-        nextPresentAtUs = scheduler_.nextDeadlineUs(SteadyNowUs());
+        // Return the immutable snapshot storage after the renderer has
+        // finished reading it.  Full-frame snapshots are recycled by the
+        // accumulator only when no newer producer version arrived; dirty
+        // snapshots return their bounded scratch buffer unconditionally.
+        frame.damageSource->recycleSnapshot(std::move(snapshot));
+        // A frame that arrived while the renderer was busy is already the
+        // newest source state. Do not add another pacing interval before it;
+        // pacing only applies when the source queue is empty.
+        bool sourcePending = false;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            sourcePending = running_ && hasFrame_;
+        }
+        nextPresentAtUs = sourcePending ? SteadyNowUs() :
+            scheduler_.nextDeadlineUs(SteadyNowUs());
         nextTransformPresentAtUs = NextRdpTransformRefreshDeadlineUs(SteadyNowUs());
         emitPresentationMetricsWindow();
     }
@@ -526,6 +565,111 @@ void RdpFramePump::loop() {
         OH_LOG_ERROR(LOG_APP, "[RDP-PUMP] worker exception: unknown");
     }
     OH_LOG_INFO(LOG_APP, "[RDP-PUMP] render worker stopped");
+}
+
+void RdpFramePump::maybeBeginPboExperiment(
+    const RdpFrameSubmission& frame, const RdpGlUploadGateSnapshot& uploadGate) {
+    if (pboExperimentEnabled_ || pboExperimentComplete_ ||
+        uploadGate.decision != RdpGlUploadDecision::PboExperimentEligible) {
+        return;
+    }
+    if (uploadGate.workerP95Us <= 0 || !glUploadGate_.beginPboExperiment()) {
+        return;
+    }
+
+    const bool enabled = frame.owner.valid() ?
+        RendererNapi::SetActivePboUpload(frame.owner, true) :
+        RendererNapi::SetActivePboUpload(true);
+    if (!enabled) {
+        glUploadGate_.finishPboExperiment(false, 0);
+        pboExperimentComplete_ = true;
+        OH_LOG_WARN(LOG_APP,
+                    "[RDP-PUMP] PBO experiment unavailable; keeping direct upload");
+        return;
+    }
+
+    pboExperimentEnabled_ = true;
+    pboExperimentComplete_ = false;
+    pboBaselineWorkerP95Us_ = uploadGate.workerP95Us;
+    pboTrialSampleCount_ = 0;
+    pboTrialWorkerSamples_.fill(0);
+    OH_LOG_INFO(LOG_APP,
+                "[RDP-PUMP] enabling GLES3 PBO upload after baseline"
+                " uploadSwapP95=%{public}lldus workerP95=%{public}lldus",
+                static_cast<long long>(uploadGate.uploadSwapP95Us),
+                static_cast<long long>(uploadGate.workerP95Us));
+}
+
+void RdpFramePump::abortPboExperiment(const RdpFrameSubmission& frame,
+                                      const char* reason, int64_t experimentP95Us) {
+    if (frame.owner.valid()) {
+        (void)RendererNapi::SetActivePboUpload(frame.owner, false);
+    } else {
+        (void)RendererNapi::SetActivePboUpload(false);
+    }
+    pboExperimentEnabled_ = false;
+    pboExperimentComplete_ = true;
+    pboTrialSampleCount_ = 0;
+    glUploadGate_.finishPboExperiment(false, experimentP95Us);
+    OH_LOG_WARN(LOG_APP,
+                "[RDP-PUMP] PBO experiment rejected; direct upload restored"
+                " reason=%{public}s baselineP95=%{public}lldus trialP95=%{public}lldus",
+                reason ? reason : "unknown",
+                static_cast<long long>(pboBaselineWorkerP95Us_),
+                static_cast<long long>(experimentP95Us));
+}
+
+void RdpFramePump::recordPboExperiment(const RdpPresentMetrics& present,
+                                       const RdpFrameSubmission& frame) {
+    if (!pboExperimentEnabled_) {
+        return;
+    }
+    if (pboExperimentComplete_) {
+        // A retained PBO can still be invalidated by a later EGL/context
+        // transition. If the renderer silently fell back to direct upload,
+        // close the retained decision instead of reporting stale state.
+        const RdpGlUploadGateSnapshot uploadGate = glUploadGate_.snapshot();
+        if (uploadGate.pboRetained && present.presented() && !present.pboUpload) {
+            abortPboExperiment(frame, "pbo-retained-path-lost");
+        }
+        return;
+    }
+    // A map/unmap failure disables the renderer's PBO flag and falls back to
+    // direct upload in the same present. Never count that fallback as a PBO
+    // sample, otherwise a broken experiment could appear successful.
+    if (!present.presented() || !present.pboUpload) {
+        abortPboExperiment(frame, "pbo-path-not-used");
+        return;
+    }
+    if (pboTrialSampleCount_ >= RdpGlUploadGate::kDecisionSamples) {
+        return;
+    }
+    pboTrialWorkerSamples_[pboTrialSampleCount_++] =
+        std::max<int64_t>(0, present.workerUs());
+    if (pboTrialSampleCount_ < RdpGlUploadGate::kDecisionSamples) {
+        return;
+    }
+
+    std::array<int64_t, RdpGlUploadGate::kDecisionSamples> sorted =
+        pboTrialWorkerSamples_;
+    std::sort(sorted.begin(), sorted.end());
+    constexpr size_t kP95Index =
+        (RdpGlUploadGate::kDecisionSamples * 95 + 99) / 100 - 1;
+    const int64_t experimentP95Us = sorted[kP95Index];
+    const bool retain = RdpGlUploadGate::ShouldRetainPbo(
+        pboBaselineWorkerP95Us_, experimentP95Us, false, true, true);
+    if (retain) {
+        pboExperimentComplete_ = true;
+        pboTrialSampleCount_ = 0;
+        glUploadGate_.finishPboExperiment(true, experimentP95Us);
+        OH_LOG_INFO(LOG_APP,
+                    "[RDP-PUMP] PBO retained after trial"
+                    " baselineP95=%{public}lldus trialP95=%{public}lldus",
+                    static_cast<long long>(pboBaselineWorkerP95Us_),
+                    static_cast<long long>(experimentP95Us));
+        return;
+    }
+    abortPboExperiment(frame, "insufficient-improvement", experimentP95Us);
 }
 
 void RdpFramePump::emitPresentationMetricsWindow() {

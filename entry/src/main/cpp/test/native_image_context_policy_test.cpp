@@ -14,4 +14,13 @@ RDP_TEST_CASE(native_image_policy_retries_failed_attach_once) {
     RDP_ASSERT(Render::ShouldRetryNativeImageAttach(60001000, false));
     RDP_ASSERT(!Render::ShouldRetryNativeImageAttach(60001000, true));
     RDP_ASSERT(!Render::ShouldRetryNativeImageAttach(0, false));
+    RDP_ASSERT(Render::ShouldRetryNativeImageUpdate(Render::kNativeErrorNoBuffer, 0));
+    RDP_ASSERT(Render::ShouldRetryNativeImageUpdate(Render::kNativeErrorNoBuffer, 1));
+    RDP_ASSERT(Render::ShouldRetryNativeImageUpdate(Render::kNativeErrorNoBuffer, 2));
+    RDP_ASSERT(!Render::ShouldRetryNativeImageUpdate(Render::kNativeErrorNoBuffer, 3));
+    RDP_ASSERT(!Render::ShouldRetryNativeImageUpdate(41207000, 0));
+    RDP_ASSERT(!Render::ShouldRetryNativeImageUpdate(0, 0));
+    RDP_ASSERT(Render::NativeImageUpdateRetryDelayMs(1) == 2);
+    RDP_ASSERT(Render::NativeImageUpdateRetryDelayMs(2) == 4);
+    RDP_ASSERT(Render::NativeImageUpdateRetryDelayMs(3) == 8);
 }

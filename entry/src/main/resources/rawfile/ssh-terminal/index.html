@@ -65,6 +65,8 @@
         pendingWrites: [],
         readyNotified: false,
         readyRetryCount: 0,
+        fitTimer: 0,
+        fitGeneration: 0,
         config: {
           cols: 80,
           rows: 24,
@@ -96,23 +98,56 @@
       function notifyReady() {
         if (state.readyNotified || !state.terminal) return;
         if (bridgeCall('onReady', [Number(state.terminal.cols), Number(state.terminal.rows)])) {
+          state.readyRetryCount = 0;
           state.readyNotified = true;
           return;
         }
         state.readyRetryCount += 1;
-        if (state.readyRetryCount < 150) {
-          window.setTimeout(notifyReady, 32);
-        }
+        // ArkTS can register the proxy after the document has booted during a
+        // keyed host switch. Keep retrying at a low rate after the fast boot
+        // window instead of permanently leaving the parent behind its mask.
+        var retryDelay = state.readyRetryCount < 150 ? 32 : 250;
+        window.setTimeout(notifyReady, retryDelay);
       }
 
       function fitTerminal() {
         if (!state.fitAddon || !state.terminal) return false;
+        var root = document.getElementById('terminal');
+        if (!root) return false;
+        var rect = root.getBoundingClientRect ? root.getBoundingClientRect() : null;
+        if (!rect || Number(rect.width) < 2 || Number(rect.height) < 2) return false;
         try {
           state.fitAddon.fit();
           return true;
         } catch (_) {
           return false;
         }
+      }
+
+      function scheduleFit(attempt) {
+        var currentAttempt = Number(attempt) || 0;
+        var generation = ++state.fitGeneration;
+        if (state.fitTimer) {
+          window.clearTimeout(state.fitTimer);
+          state.fitTimer = 0;
+        }
+        function retryFit(retryAttempt) {
+          if (generation !== state.fitGeneration) return;
+          if (fitTerminal()) {
+            state.fitTimer = 0;
+            refreshTerminal();
+            alignSparseContent();
+            return;
+          }
+          if (retryAttempt >= 12) {
+            state.fitTimer = 0;
+            return;
+          }
+          state.fitTimer = window.setTimeout(function () {
+            retryFit(retryAttempt + 1);
+          }, 16);
+        }
+        retryFit(currentAttempt);
       }
 
       function refreshTerminal() {
@@ -155,6 +190,7 @@
              terminal.rows !== Number(state.config.rows))) {
           try { terminal.resize(Number(state.config.cols), Number(state.config.rows)); } catch (_) {}
         }
+        scheduleFit(0);
         refreshTerminal();
         alignSparseContent();
       }
@@ -184,7 +220,10 @@
             }
           }
         } catch (_) {}
-        screen.style.top = Math.round(offset) + 'px';
+        var nextTop = Math.round(offset) + 'px';
+        if (screen.style.top !== nextTop) {
+          screen.style.top = nextTop;
+        }
       }
 
       function flushPendingWrites() {
@@ -315,17 +354,73 @@
         try { state.terminal.write(text); } catch (_) {}
       };
 
-      window.__sshXtermWriteBatch = function (values) {
-        if (!Array.isArray(values)) return;
+      window.__sshXtermWriteBatch = function (values, batchSequence) {
+        var sequence = Number(batchSequence) || 0;
+        if (!Array.isArray(values)) {
+          bridgeCall('onFrameError', [sequence, 0]);
+          return;
+        }
+        var texts = [];
         values.forEach(function (value) {
           var text = value === undefined || value === null ? '' : String(value);
-          if (text.length === 0) return;
-          if (!state.terminal) {
-            state.pendingWrites.push(text);
+          if (text.length > 0) texts.push(text);
+        });
+        if (!state.terminal) {
+          // The parent still owns this batch. Queueing it in an untracked
+          // document and ACKing here would lose it if the document reloads
+          // before xterm boots.
+          bridgeCall('onFrameError', [sequence, 0]);
+          return;
+        }
+        if (texts.length === 0) {
+          bridgeCall('onFrame', [sequence]);
+          return;
+        }
+        var completed = false;
+        function completeBatch() {
+          if (completed) return;
+          completed = true;
+          refreshTerminal();
+          alignSparseContent();
+          bridgeCall('onFrame', [sequence]);
+        }
+        var nextIndex = 0;
+        function failBatch() {
+          if (completed) return;
+          completed = true;
+          // Only the prefix whose callbacks completed is owned by xterm. The
+          // ArkTS side requeues the unconsumed suffix before reloading this
+          // document, preserving the global SSH FIFO without reordering it.
+          refreshTerminal();
+          alignSparseContent();
+          bridgeCall('onFrameError', [sequence, nextIndex]);
+        }
+        function writeNext() {
+          if (completed) return;
+          if (nextIndex >= texts.length) {
+            completeBatch();
             return;
           }
-          try { state.terminal.write(text); } catch (_) {}
-        });
+          var callbackCalled = false;
+          var text = texts[nextIndex];
+          try {
+            state.terminal.write(text, function () {
+              if (callbackCalled || completed) return;
+              callbackCalled = true;
+              nextIndex += 1;
+              writeNext();
+            });
+          } catch (_) {
+            if (callbackCalled || completed) return;
+            callbackCalled = true;
+            failBatch();
+          }
+        }
+        // xterm's write callback is the only success boundary. A missing
+        // callback deliberately lets the ArkTS watchdog recover the complete
+        // unconfirmed batch instead of acknowledging output that may still be
+        // queued in the Web document.
+        writeNext();
       };
 
       window.__sshXtermReset = function () {
@@ -343,9 +438,7 @@
       };
 
       window.__sshXtermFit = function () {
-        fitTerminal();
-        refreshTerminal();
-        alignSparseContent();
+        scheduleFit(0);
       };
 
       window.__sshXtermScrollToBottom = function () {
@@ -358,6 +451,7 @@
       window.__sshXtermScrollLines = function (lines) {
         if (state.terminal) {
           try { state.terminal.scrollLines(Number(lines) || 0); } catch (_) {}
+          alignSparseContent();
         }
       };
 
@@ -376,8 +470,7 @@
       };
 
       window.addEventListener('resize', function () {
-        fitTerminal();
-        alignSparseContent();
+        scheduleFit(0);
       });
       boot();
     })();

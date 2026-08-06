@@ -16,12 +16,14 @@ export default function remoteImmersivePolicyTest(): void {
       expect(shouldHideRemoteNavigation('rdp', false)).assertFalse();
     });
 
-    it('hides_status_bar_only_for_mobile_rustdesk_keyboard_mouse_mode', 0, (): void => {
+    it('hides_status_bar_for_mobile_rdp_and_rustdesk_keyboard_mouse_mode', 0, (): void => {
       expect(shouldHideRemoteStatusBar('rustdesk', true, false, 'sm', 2)).assertTrue();
       expect(shouldHideRemoteStatusBar('rustdesk', true, false, 'lg', 2)).assertTrue();
       expect(shouldHideRemoteStatusBar('rustdesk', true, false, 'sm', 0)).assertFalse();
       expect(shouldHideRemoteStatusBar('rustdesk', true, true, 'xl', 2)).assertFalse();
-      expect(shouldHideRemoteStatusBar('rdp', true, false, 'sm', 2)).assertFalse();
+      expect(shouldHideRemoteStatusBar('rdp', true, false, 'sm', 0)).assertTrue();
+      expect(shouldHideRemoteStatusBar('rdp', true, false, 'lg', 2)).assertTrue();
+      expect(shouldHideRemoteStatusBar('rdp', true, true, 'xl', 0)).assertFalse();
       expect(shouldHideRemoteStatusBar('rustdesk', false, false, 'sm', 2)).assertFalse();
     });
 

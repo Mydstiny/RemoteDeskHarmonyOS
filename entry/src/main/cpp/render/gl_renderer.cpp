@@ -359,6 +359,8 @@ GLRenderer::GLRenderer()
       eglSurface_(EGL_NO_SURFACE), eglConfig_(nullptr),
       shaderProgram_(0), samplerLocation_(0),
       rawShaderProgram_(0), rawTexture_(0), rawSamplerLocation_(0),
+      uploadPbo_{0, 0}, uploadPboCapacity_{0, 0}, uploadPboIndex_(0),
+      pboUploadEnabled_(false), pboUploadFailedLogged_(false),
       rawTextureWidth_(0), rawTextureHeight_(0),
       vbo_(0), vao_(0),
       width_(0), height_(0), sourceWidth_(0), sourceHeight_(0),
@@ -616,6 +618,14 @@ bool GLRenderer::InitGL() {
         OH_LOG_WARN(LOG_APP, "[GL] OpenGL 初始化后有未处理错误: %{public}x", err);
     }
 
+    // PBO objects are tied to this EGL context. A surface/context rebind must
+    // always start with direct uploads until the new session has a baseline.
+    pboUploadEnabled_ = false;
+    pboUploadFailedLogged_ = false;
+    uploadPboIndex_ = 0;
+    uploadPboCapacity_[0] = 0;
+    uploadPboCapacity_[1] = 0;
+
     OH_LOG_INFO(LOG_APP, "[GL] OpenGL ES 初始化完成, shader=%{public}u", shaderProgram_);
     return true;
 }
@@ -743,6 +753,90 @@ void GLRenderer::SetupRawTexture(int width, int height) {
     }
 }
 
+void GLRenderer::SetPboUploadEnabled(bool enabled) {
+    std::lock_guard<std::mutex> lock(lifecycleMutex_);
+    if (!initialized_ || destroying_) {
+        return;
+    }
+    pboUploadEnabled_ = enabled;
+    if (!enabled) {
+        pboUploadFailedLogged_ = false;
+    }
+}
+
+bool GLRenderer::UploadRawPixelsWithPbo(const uint8_t* uploadData, int uploadW,
+                                        int uploadH, int sourceStride,
+                                        int uploadX, int uploadY) {
+    if (!pboUploadEnabled_ || !uploadData || uploadW <= 0 || uploadH <= 0 ||
+        sourceStride < uploadW * 4) {
+        return false;
+    }
+
+    const size_t rowBytes = static_cast<size_t>(uploadW) * 4U;
+    const size_t requiredBytes = rowBytes * static_cast<size_t>(uploadH);
+    const int index = uploadPboIndex_;
+    if (uploadPbo_[index] == 0) {
+        glGenBuffers(1, &uploadPbo_[index]);
+    }
+    if (uploadPbo_[index] == 0) {
+        return false;
+    }
+
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, uploadPbo_[index]);
+    // Orphan the previous store before mapping. This avoids a CPU wait for
+    // the GPU when the previous swap is still sampling the same PBO.
+    glBufferData(GL_PIXEL_UNPACK_BUFFER, static_cast<GLsizeiptr>(requiredBytes),
+                 nullptr, GL_STREAM_DRAW);
+    void* mapped = glMapBufferRange(GL_PIXEL_UNPACK_BUFFER, 0,
+                                    static_cast<GLsizeiptr>(requiredBytes),
+                                    GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
+    if (!mapped) {
+        glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+        if (!pboUploadFailedLogged_) {
+            OH_LOG_WARN(LOG_APP, "[GL] PBO map failed; falling back to direct upload");
+            pboUploadFailedLogged_ = true;
+        }
+        pboUploadEnabled_ = false;
+        return false;
+    }
+    auto* destination = static_cast<uint8_t*>(mapped);
+    for (int row = 0; row < uploadH; ++row) {
+        std::memcpy(destination + static_cast<size_t>(row) * rowBytes,
+                    uploadData + static_cast<size_t>(row) *
+                        static_cast<size_t>(sourceStride), rowBytes);
+    }
+    if (glUnmapBuffer(GL_PIXEL_UNPACK_BUFFER) != GL_TRUE) {
+        glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+        if (!pboUploadFailedLogged_) {
+            OH_LOG_WARN(LOG_APP, "[GL] PBO unmap failed; falling back to direct upload");
+            pboUploadFailedLogged_ = true;
+        }
+        pboUploadEnabled_ = false;
+        return false;
+    }
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, uploadX, uploadY, uploadW, uploadH,
+                    GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+    uploadPboCapacity_[index] = requiredBytes;
+    uploadPboIndex_ = (uploadPboIndex_ + 1) % 2;
+    return true;
+}
+
+void GLRenderer::DestroyUploadPbosLocked() {
+    if (uploadPbo_[0] != 0) {
+        glDeleteBuffers(1, &uploadPbo_[0]);
+        uploadPbo_[0] = 0;
+    }
+    if (uploadPbo_[1] != 0) {
+        glDeleteBuffers(1, &uploadPbo_[1]);
+        uploadPbo_[1] = 0;
+    }
+    uploadPboCapacity_[0] = 0;
+    uploadPboCapacity_[1] = 0;
+    uploadPboIndex_ = 0;
+}
+
 void GLRenderer::RenderRawBGRA(const uint8_t* bgraData, int width, int height, int stride) {
     (void)PresentRawBGRA(bgraData, width, height, stride, 0);
 }
@@ -766,6 +860,14 @@ RdpPresentMetrics GLRenderer::PresentRawBGRARect(
                                  dirtyX, dirtyY, dirtyWidth, dirtyHeight, generation);
 }
 
+RdpPresentMetrics GLRenderer::PresentRawBGRARectCompact(
+    const uint8_t* bgraData, size_t size, int width, int height, int stride,
+    int dirtyX, int dirtyY, int dirtyWidth, int dirtyHeight, uint64_t generation) {
+    return RenderRawBGRAInternal(bgraData, width, height, stride, true,
+                                 dirtyX, dirtyY, dirtyWidth, dirtyHeight, generation,
+                                 size, true);
+}
+
 bool GLRenderer::IsPresentationReady() {
     std::lock_guard<std::mutex> lock(lifecycleMutex_);
     return !destroying_ && initialized_ && rawShaderProgram_ != 0 &&
@@ -775,7 +877,8 @@ bool GLRenderer::IsPresentationReady() {
 
 RdpPresentMetrics GLRenderer::RenderRawBGRAInternal(
     const uint8_t* bgraData, int width, int height, int stride, bool useDirtyRect,
-    int dirtyX, int dirtyY, int dirtyWidth, int dirtyHeight, uint64_t generation) {
+    int dirtyX, int dirtyY, int dirtyWidth, int dirtyHeight, uint64_t generation,
+    size_t dataSize, bool compactDirtyBuffer) {
     RdpPresentMetrics metrics;
     metrics.generation = generation;
     std::lock_guard<std::mutex> lock(lifecycleMutex_);
@@ -806,13 +909,41 @@ RdpPresentMetrics GLRenderer::RenderRawBGRAInternal(
 
     const auto uploadBeginAt = clock::now();
     int rowStride = stride > 0 ? stride : width * 4;
-    if (rowStride < width * 4 || rowStride % 4 != 0) {
+    const bool compactDirty = compactDirtyBuffer && useDirtyRect;
+    const bool dirtyInBounds = useDirtyRect &&
+        dirtyX >= 0 && dirtyY >= 0 && dirtyWidth > 0 && dirtyHeight > 0 &&
+        dirtyX < width && dirtyY < height &&
+        dirtyWidth <= width - dirtyX && dirtyHeight <= height - dirtyY;
+    if (compactDirty && !dirtyInBounds) {
         ReleaseCurrent();
         metrics.result = RdpPresentResult::InvalidFrame;
         return metrics;
     }
+    const int minimumRowBytes = compactDirty ? dirtyWidth * 4 : width * 4;
+    if (rowStride < minimumRowBytes || rowStride % 4 != 0) {
+        ReleaseCurrent();
+        metrics.result = RdpPresentResult::InvalidFrame;
+        return metrics;
+    }
+    if (compactDirty) {
+        const size_t requiredBytes = static_cast<size_t>(dirtyHeight - 1) *
+            static_cast<size_t>(rowStride) + static_cast<size_t>(dirtyWidth) * 4U;
+        if (dataSize == 0 || requiredBytes > dataSize) {
+            ReleaseCurrent();
+            metrics.result = RdpPresentResult::InvalidFrame;
+            return metrics;
+        }
+    }
     const bool textureWouldChange =
         rawTexture_ == 0 || width != rawTextureWidth_ || height != rawTextureHeight_;
+
+    // A compact rectangle cannot initialize a new desktop texture. The
+    // producer will retry after the next full-frame resync.
+    if (compactDirty && textureWouldChange) {
+        ReleaseCurrent();
+        metrics.result = RdpPresentResult::InvalidFrame;
+        return metrics;
+    }
 
     // Both raw callers provide the complete framebuffer and use the dirty
     // rectangle only to reduce the steady-state upload. A new or resized
@@ -824,12 +955,8 @@ RdpPresentMetrics GLRenderer::RenderRawBGRAInternal(
         SetupRawTexture(width, height);
     }
 
-    const bool dirtyInBounds = useDirtyRect &&
-        dirtyX >= 0 && dirtyY >= 0 && dirtyWidth > 0 && dirtyHeight > 0 &&
-        dirtyX < width && dirtyY < height &&
-        dirtyWidth <= width - dirtyX && dirtyHeight <= height - dirtyY;
-    const bool partialUpload = !textureWouldChange && dirtyInBounds &&
-        (dirtyX != 0 || dirtyY != 0 || dirtyWidth != width || dirtyHeight != height);
+    const bool partialUpload = compactDirty || (!textureWouldChange && dirtyInBounds &&
+        (dirtyX != 0 || dirtyY != 0 || dirtyWidth != width || dirtyHeight != height));
     const int uploadX = partialUpload ? dirtyX : 0;
     // QUAD_VERTICES deliberately maps v=0 to the visual top, so the texture
     // row index uses the same top-left contract as FreeRDP/GDI dirty rects.
@@ -841,20 +968,27 @@ RdpPresentMetrics GLRenderer::RenderRawBGRAInternal(
     // rectangle is uploaded, GL must start at that rectangle's first pixel;
     // using the framebuffer base makes every later update overwrite the
     // wrong texture region and leaves the visible image looking frozen.
-    const uint8_t* uploadData = partialUpload ?
+    const uint8_t* uploadData = compactDirty ? bgraData : (partialUpload ?
         bgraData + static_cast<size_t>(dirtyY) * static_cast<size_t>(rowStride) +
-        static_cast<size_t>(dirtyX) * 4 : bgraData;
+        static_cast<size_t>(dirtyX) * 4 : bgraData);
 
-    // 上传 BGRA 像素数据到 GL 纹理；局部上传时保留原始 row length，避免行尾错位。
+    // Use the adaptive PBO path once the RDP gate has proved that direct
+    // upload+swap dominates the worker. The helper packs padded rows into a
+    // compact buffer and leaves the texture update asynchronous.
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, rawTexture_);
-    if (partialUpload || rowStride != width * 4) {
-        glPixelStorei(GL_UNPACK_ROW_LENGTH, rowStride / 4);
-    }
-    glTexSubImage2D(GL_TEXTURE_2D, 0, uploadX, uploadY, uploadW, uploadH,
-                    GL_RGBA, GL_UNSIGNED_BYTE, uploadData);
-    if (partialUpload || rowStride != width * 4) {
-        glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+    const bool uploadedWithPbo = UploadRawPixelsWithPbo(
+        uploadData, uploadW, uploadH, rowStride, uploadX, uploadY);
+    metrics.pboUpload = uploadedWithPbo;
+    if (!uploadedWithPbo) {
+        if (partialUpload || rowStride != width * 4) {
+            glPixelStorei(GL_UNPACK_ROW_LENGTH, rowStride / 4);
+        }
+        glTexSubImage2D(GL_TEXTURE_2D, 0, uploadX, uploadY, uploadW, uploadH,
+                        GL_RGBA, GL_UNSIGNED_BYTE, uploadData);
+        if (partialUpload || rowStride != width * 4) {
+            glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+        }
     }
     const auto uploadAt = clock::now();
 
@@ -1229,6 +1363,17 @@ void GLRenderer::Destroy() {
         rawTextureWidth_ = 0;
         rawTextureHeight_ = 0;
     }
+    if (hasCurrent) {
+        DestroyUploadPbosLocked();
+    } else {
+        // The EGL context is already gone; the names cannot be deleted safely.
+        uploadPbo_[0] = 0;
+        uploadPbo_[1] = 0;
+        uploadPboCapacity_[0] = 0;
+        uploadPboCapacity_[1] = 0;
+        uploadPboIndex_ = 0;
+    }
+    pboUploadEnabled_ = false;
     if (hasCurrent && vbo_) {
         glDeleteBuffers(1, &vbo_);
         vbo_ = 0;
@@ -1970,6 +2115,42 @@ RdpPresentationMetricsSnapshot RendererNapi::GetActivePresentationStats(
     return renderer ? renderer->GetPresentationStats() : RdpPresentationMetricsSnapshot();
 }
 
+bool RendererNapi::SetActivePboUpload(bool enabled) {
+    std::shared_ptr<GLRenderer> renderer;
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        const int64_t handle = g_activeRendererHandle.load(std::memory_order_acquire);
+        renderer = AcquireRendererLocked(handle, true);
+    }
+    if (!renderer) {
+        return false;
+    }
+    renderer->SetPboUploadEnabled(enabled);
+    return true;
+}
+
+bool RendererNapi::SetActivePboUpload(const Render::DecoderSessionIdentity& owner,
+                                      bool enabled) {
+    auto sinkLease = Render::SharedSessionSinkOwnerLease().acquire(owner);
+    if (!sinkLease) {
+        return false;
+    }
+    std::shared_ptr<GLRenderer> renderer;
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        const int64_t handle = g_activeRendererHandle.load(std::memory_order_acquire);
+        if (!IsActiveRendererOwnerAndHandleLocked(handle, owner)) {
+            return false;
+        }
+        renderer = AcquireRendererLocked(handle, true);
+    }
+    if (!renderer) {
+        return false;
+    }
+    renderer->SetPboUploadEnabled(enabled);
+    return true;
+}
+
 void RendererNapi::InvalidateActivePresentation() {
     std::lock_guard<std::mutex> lock(g_activeRendererMutex);
     if (g_activeRendererHandle.load(std::memory_order_acquire) > 0) {
@@ -2337,6 +2518,53 @@ RdpPresentMetrics RendererNapi::PresentRawBgraRectActive(
                                         dirtyX, dirtyY, dirtyWidth, dirtyHeight, generation);
 }
 
+RdpPresentMetrics RendererNapi::PresentRawBgraRectCompactActive(
+    const uint8_t* data, size_t size, int width, int height, int stride,
+    int dirtyX, int dirtyY, int dirtyWidth, int dirtyHeight, uint64_t generation) {
+    RdpPresentMetrics metrics;
+    metrics.generation = generation;
+    if (!data || size == 0 || width <= 0 || height <= 0 || stride <= 0 ||
+        dirtyX < 0 || dirtyY < 0 || dirtyWidth <= 0 || dirtyHeight <= 0 ||
+        dirtyX >= width || dirtyY >= height || dirtyWidth > width - dirtyX ||
+        dirtyHeight > height - dirtyY || stride < dirtyWidth * 4 || stride % 4 != 0) {
+        metrics.result = RdpPresentResult::InvalidFrame;
+        return metrics;
+    }
+    const size_t requiredBytes = static_cast<size_t>(dirtyHeight - 1) *
+        static_cast<size_t>(stride) + static_cast<size_t>(dirtyWidth) * 4U;
+    if (requiredBytes > size) {
+        metrics.result = RdpPresentResult::InvalidFrame;
+        return metrics;
+    }
+    std::shared_ptr<GLRenderer> renderer;
+    uint64_t contextGeneration = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        if (generation == 0 || generation != g_rendererGeneration.load(std::memory_order_acquire)) {
+            metrics.result = RdpPresentResult::GenerationMismatch;
+            return metrics;
+        }
+        const int64_t handle = g_activeRendererHandle.load(std::memory_order_acquire);
+        renderer = AcquireRendererLocked(handle, true, &contextGeneration);
+    }
+    if (contextGeneration != generation) {
+        metrics.result = RdpPresentResult::GenerationMismatch;
+        return metrics;
+    }
+    if (g_surfaceDetached.load(std::memory_order_acquire) ||
+        !g_surfaceReady.load(std::memory_order_acquire)) {
+        metrics.result = RdpPresentResult::SurfaceDetached;
+        return metrics;
+    }
+    if (!renderer) {
+        metrics.result = RdpPresentResult::NoActiveRenderer;
+        return metrics;
+    }
+    return renderer->PresentRawBGRARectCompact(data, size, width, height, stride,
+                                                dirtyX, dirtyY, dirtyWidth, dirtyHeight,
+                                                generation);
+}
+
 RdpPresentMetrics RendererNapi::PresentRawBgraRectActive(
     const Render::DecoderSessionIdentity& owner, const uint8_t* data, size_t size,
     int width, int height, int stride, int dirtyX, int dirtyY, int dirtyWidth,
@@ -2383,6 +2611,63 @@ RdpPresentMetrics RendererNapi::PresentRawBgraRectActive(
     }
     return renderer->PresentRawBGRARect(data, width, height, stride,
                                         dirtyX, dirtyY, dirtyWidth, dirtyHeight, generation);
+}
+
+RdpPresentMetrics RendererNapi::PresentRawBgraRectCompactActive(
+    const Render::DecoderSessionIdentity& owner, const uint8_t* data, size_t size,
+    int width, int height, int stride, int dirtyX, int dirtyY, int dirtyWidth,
+    int dirtyHeight, uint64_t generation) {
+    RdpPresentMetrics metrics;
+    metrics.generation = generation;
+    if (!data || size == 0 || width <= 0 || height <= 0 || stride <= 0 ||
+        dirtyX < 0 || dirtyY < 0 || dirtyWidth <= 0 || dirtyHeight <= 0 ||
+        dirtyX >= width || dirtyY >= height || dirtyWidth > width - dirtyX ||
+        dirtyHeight > height - dirtyY || stride < dirtyWidth * 4 || stride % 4 != 0) {
+        metrics.result = RdpPresentResult::InvalidFrame;
+        return metrics;
+    }
+    const size_t requiredBytes = static_cast<size_t>(dirtyHeight - 1) *
+        static_cast<size_t>(stride) + static_cast<size_t>(dirtyWidth) * 4U;
+    if (requiredBytes > size) {
+        metrics.result = RdpPresentResult::InvalidFrame;
+        return metrics;
+    }
+    auto sinkLease = Render::SharedSessionSinkOwnerLease().acquire(owner);
+    if (!sinkLease) {
+        metrics.result = RdpPresentResult::NoActiveRenderer;
+        return metrics;
+    }
+    std::shared_ptr<GLRenderer> renderer;
+    uint64_t contextGeneration = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        if (generation == 0 || generation != g_rendererGeneration.load(std::memory_order_acquire)) {
+            metrics.result = RdpPresentResult::GenerationMismatch;
+            return metrics;
+        }
+        const int64_t handle = g_activeRendererHandle.load(std::memory_order_acquire);
+        if (!IsActiveRendererOwnerAndHandleLocked(handle, owner)) {
+            metrics.result = RdpPresentResult::NoActiveRenderer;
+            return metrics;
+        }
+        renderer = AcquireRendererLocked(handle, true, &contextGeneration);
+    }
+    if (contextGeneration != generation) {
+        metrics.result = RdpPresentResult::GenerationMismatch;
+        return metrics;
+    }
+    if (g_surfaceDetached.load(std::memory_order_acquire) ||
+        !g_surfaceReady.load(std::memory_order_acquire)) {
+        metrics.result = RdpPresentResult::SurfaceDetached;
+        return metrics;
+    }
+    if (!renderer) {
+        metrics.result = RdpPresentResult::NoActiveRenderer;
+        return metrics;
+    }
+    return renderer->PresentRawBGRARectCompact(data, size, width, height, stride,
+                                                dirtyX, dirtyY, dirtyWidth, dirtyHeight,
+                                                generation);
 }
 
 RdpPresentMetrics RendererNapi::PresentRetainedActive(uint64_t generation) {
