@@ -45,6 +45,8 @@ enum class SshForwardingResult : int {
     MissingGeneration = -78,
     UnsupportedMode = -79,
     TransportFailure = -80,
+    ByteLimit = -81,
+    Expired = -82,
 };
 
 struct SshForwardingConfig {
@@ -114,6 +116,15 @@ public:
     SshForwardingResult acquireConnection(const std::string& id, uint64_t sessionGeneration);
     SshForwardingResult releaseConnection(const std::string& id, uint64_t sessionGeneration);
 
+    // Traffic accounting is owned by the session reactor, while the manager
+    // remains the single authority for a profile-wide byte budget.
+    SshForwardingResult recordBytes(const std::string& id,
+                                    uint64_t sessionGeneration,
+                                    uint64_t bytes);
+    uint64_t remainingBytes(const std::string& id, uint64_t sessionGeneration) const;
+    SshForwardingResult checkRuntimeLimits(const std::string& id,
+                                           uint64_t sessionGeneration);
+
     // Called only after the SSH transport owner has closed all forwarding
     // sockets/channels. Profiles remain configured for the next session.
     void resetRuntimeAfterTransportClose();
@@ -139,6 +150,9 @@ private:
     static bool isValidPort(int port);
     static SshForwardingSnapshot toSnapshot(const Entry& entry);
     static bool generationMatches(const Entry& entry, uint64_t sessionGeneration);
+    static uint64_t nowMs();
+    static SshForwardingResult checkRuntimeLimitsLocked(Entry& entry,
+                                                        uint64_t sessionGeneration);
 
     mutable std::mutex mutex_;
     std::map<std::string, Entry> entries_;

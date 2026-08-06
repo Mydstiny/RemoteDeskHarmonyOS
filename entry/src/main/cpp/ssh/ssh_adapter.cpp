@@ -277,18 +277,51 @@ void SshAdapter::recordAuthPromptFailure(int error) noexcept {
 }
 
 SshForwardingResult SshAdapter::configureForwarding(const SshForwardingConfig& config) {
-    std::lock_guard<std::recursive_mutex> lifecycleLock(lifecycleMutex_);
-    SshForwardingConfig owned = config;
-    const SshSessionSnapshot owner = sessionSnapshot();
-    owned.ownerSessionId = owner.sessionId;
-    owned.ownerChannelId = owner.channelId;
-    owned.ownerGeneration = owner.generation;
-    return forwardingManager_.upsert(owned);
+    auto operation = [this, config]() {
+        std::lock_guard<std::recursive_mutex> lifecycleLock(lifecycleMutex_);
+        SshForwardingConfig owned = config;
+        const SshSessionSnapshot owner = sessionSnapshot();
+        owned.ownerSessionId = owner.sessionId;
+        owned.ownerChannelId = owner.channelId;
+        owned.ownerGeneration = owner.generation;
+
+        // A failed profile is replaceable only after the owner reactor has
+        // released every old socket/channel. Clear a stale runtime before the
+        // manager resets the profile, otherwise remove-then-reconfigure can
+        // leave an unowned listener behind.
+        SshForwardingSnapshot existing;
+        if (forwardingManager_.snapshot(owned.id, existing) &&
+            existing.activeConnections == 0 &&
+            (existing.state == SshForwardingState::Stopped ||
+             existing.state == SshForwardingState::Failed)) {
+            std::unique_lock<std::mutex> sessionLock(sessionMutex_);
+            closeLocalForwardRuntimeLocked(owned.id);
+        }
+        return forwardingManager_.upsert(owned);
+    };
+    if (isReactorThread()) {
+        return operation();
+    }
+    return runOnReactor(operation);
 }
 
 SshForwardingResult SshAdapter::removeForwarding(const std::string& id) {
-    std::lock_guard<std::recursive_mutex> lifecycleLock(lifecycleMutex_);
-    return forwardingManager_.remove(id);
+    auto operation = [this, id]() {
+        std::lock_guard<std::recursive_mutex> lifecycleLock(lifecycleMutex_);
+        SshForwardingSnapshot existing;
+        if (forwardingManager_.snapshot(id, existing) &&
+            existing.activeConnections == 0 &&
+            (existing.state == SshForwardingState::Stopped ||
+             existing.state == SshForwardingState::Failed)) {
+            std::unique_lock<std::mutex> sessionLock(sessionMutex_);
+            closeLocalForwardRuntimeLocked(id);
+        }
+        return forwardingManager_.remove(id);
+    };
+    if (isReactorThread()) {
+        return operation();
+    }
+    return runOnReactor(operation);
 }
 
 SshForwardingResult SshAdapter::startForwarding(const std::string& id,
@@ -306,6 +339,12 @@ SshForwardingResult SshAdapter::startForwarding(const std::string& id,
         SshForwardingSnapshot snapshot;
         if (!forwardingManager_.snapshot(id, snapshot)) {
             return SshForwardingResult::NotFound;
+        }
+        if (snapshot.activeConnections == 0 &&
+            (snapshot.state == SshForwardingState::Stopped ||
+             snapshot.state == SshForwardingState::Failed)) {
+            std::unique_lock<std::mutex> sessionLock(sessionMutex_);
+            closeLocalForwardRuntimeLocked(id);
         }
         const SshForwardingResult started = forwardingManager_.start(id, currentGeneration);
         if (started != SshForwardingResult::Ok) {
@@ -405,8 +444,13 @@ SshForwardingResult SshAdapter::failForwarding(const std::string& id,
 SshForwardingResult SshAdapter::requestForwardingStop(
     const std::string& id, uint64_t expectedGeneration) {
     auto operation = [this, id, expectedGeneration]() {
+        const uint64_t currentGeneration = diagnostics_.sessionGeneration();
+        if (expectedGeneration == 0 || currentGeneration == 0 ||
+            expectedGeneration != currentGeneration) {
+            return SshForwardingResult::StaleSession;
+        }
         const SshForwardingResult result =
-            forwardingManager_.requestStop(id, expectedGeneration);
+            forwardingManager_.requestStop(id, currentGeneration);
         if (result == SshForwardingResult::Ok) {
             std::unique_lock<std::mutex> sessionLock(sessionMutex_);
             closeLocalForwardRuntimeLocked(id);
@@ -440,7 +484,12 @@ SshForwardingResult SshAdapter::completeForwardingStop(const std::string& id,
 SshForwardingResult SshAdapter::acquireForwardingConnection(
     const std::string& id, uint64_t expectedGeneration) {
     auto operation = [this, id, expectedGeneration]() {
-        return forwardingManager_.acquireConnection(id, expectedGeneration);
+        const uint64_t currentGeneration = diagnostics_.sessionGeneration();
+        if (expectedGeneration == 0 || currentGeneration == 0 ||
+            expectedGeneration != currentGeneration) {
+            return SshForwardingResult::StaleSession;
+        }
+        return forwardingManager_.acquireConnection(id, currentGeneration);
     };
     if (isReactorThread()) {
         return operation();
@@ -451,7 +500,12 @@ SshForwardingResult SshAdapter::acquireForwardingConnection(
 SshForwardingResult SshAdapter::releaseForwardingConnection(
     const std::string& id, uint64_t expectedGeneration) {
     auto operation = [this, id, expectedGeneration]() {
-        return forwardingManager_.releaseConnection(id, expectedGeneration);
+        const uint64_t currentGeneration = diagnostics_.sessionGeneration();
+        if (expectedGeneration == 0 || currentGeneration == 0 ||
+            expectedGeneration != currentGeneration) {
+            return SshForwardingResult::StaleSession;
+        }
+        return forwardingManager_.releaseConnection(id, currentGeneration);
     };
     if (isReactorThread()) {
         return operation();
@@ -1020,11 +1074,18 @@ bool SshAdapter::pumpLocalForwardConnectionLocked(LocalForwardConnection& connec
         }
     }
 
-    if (connection.channelEof && connection.toLocal.empty()) {
-        if (!connection.localWriteShutdown) {
-            (void)shutdown(connection.localFd, SHUT_WR);
-            connection.localWriteShutdown = true;
-        }
+    if (connection.channelEof && connection.toLocal.empty() &&
+        !connection.localWriteShutdown) {
+        // SSH channel EOF is the peer's half-close. Preserve the local read
+        // side so the client can still send its final request/response bytes.
+        (void)shutdown(connection.localFd, SHUT_WR);
+        connection.localWriteShutdown = true;
+    }
+    if (connection.localEof && connection.channelEof &&
+        connection.toChannel.empty() && connection.toLocal.empty()) {
+        // Destroy the socket only after both directions have observed EOF and
+        // both relay buffers have drained. Closing here before localEof loses
+        // valid TCP half-close traffic from the client.
         return false;
     }
     return true;
@@ -1097,12 +1158,38 @@ void SshAdapter::serviceForwardingOnReactor() {
         int error;
     };
     std::vector<ForwardListenerFailure> failedListeners;
+    std::vector<std::string> staleRuntimeIds;
     for (auto& [id, listener] : localForwardListeners_) {
         (void)id;
         SshForwardingSnapshot snapshot;
-        if (!forwardingManager_.snapshot(listener.profileId, snapshot) ||
-            snapshot.state != SshForwardingState::Listening ||
-            snapshot.sessionGeneration != listener.sessionGeneration) {
+        if (!forwardingManager_.snapshot(listener.profileId, snapshot)) {
+            staleRuntimeIds.push_back(listener.profileId);
+            continue;
+        }
+        if (snapshot.sessionGeneration != listener.sessionGeneration ||
+            snapshot.config.mode != listener.mode) {
+            if (snapshot.state != SshForwardingState::Stopped &&
+                snapshot.sessionGeneration != 0) {
+                failedListeners.push_back({listener.profileId,
+                                           snapshot.sessionGeneration,
+                                           static_cast<int>(SshForwardingResult::StaleSession)});
+            } else {
+                staleRuntimeIds.push_back(listener.profileId);
+            }
+            continue;
+        }
+        if (snapshot.state != SshForwardingState::Listening) {
+            // Failed/stopping/starting profiles no longer own a listener. The
+            // manager state is completed by the caller where applicable; the
+            // reactor must still release every native runtime handle now.
+            staleRuntimeIds.push_back(listener.profileId);
+            continue;
+        }
+        const SshForwardingResult limits = forwardingManager_.checkRuntimeLimits(
+            listener.profileId, listener.sessionGeneration);
+        if (limits != SshForwardingResult::Ok) {
+            failedListeners.push_back({listener.profileId, listener.sessionGeneration,
+                                       static_cast<int>(limits)});
             continue;
         }
 
@@ -1206,6 +1293,9 @@ void SshAdapter::serviceForwardingOnReactor() {
         }
     }
 
+    for (const std::string& id : staleRuntimeIds) {
+        closeLocalForwardRuntimeLocked(id);
+    }
     for (const auto& failure : failedListeners) {
         (void)forwardingManager_.fail(failure.id, failure.generation, failure.error);
         closeLocalForwardRuntimeLocked(failure.id);

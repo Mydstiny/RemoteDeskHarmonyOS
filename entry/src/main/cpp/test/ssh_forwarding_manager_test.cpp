@@ -167,6 +167,28 @@ RDP_TEST_CASE(ssh_forwarding_manager_resets_runtime_but_keeps_profiles) {
     RDP_ASSERT(manager.start(config.id, 31) == SshForwardingResult::Ok);
 }
 
+RDP_TEST_CASE(ssh_forwarding_manager_rejects_late_release_after_transport_reset) {
+    SshForwardingManager manager;
+    SshForwardingConfig config = localConfig("late-release");
+    RDP_ASSERT(manager.upsert(config) == SshForwardingResult::Ok);
+    RDP_ASSERT(manager.start(config.id, 60) == SshForwardingResult::Ok);
+    RDP_ASSERT(manager.markListening(config.id, 60) == SshForwardingResult::Ok);
+    RDP_ASSERT(manager.acquireConnection(config.id, 60) == SshForwardingResult::Ok);
+
+    manager.resetRuntimeAfterTransportClose();
+
+    // A callback from the old reactor must not decrement the new runtime's
+    // counter or become valid after the transport generation is reset.
+    RDP_ASSERT(manager.releaseConnection(config.id, 60) ==
+               SshForwardingResult::StaleSession);
+    RDP_ASSERT(manager.start(config.id, 61) == SshForwardingResult::Ok);
+    RDP_ASSERT(manager.markListening(config.id, 61) == SshForwardingResult::Ok);
+    RDP_ASSERT(manager.acquireConnection(config.id, 61) == SshForwardingResult::Ok);
+    RDP_ASSERT(manager.releaseConnection(config.id, 61) == SshForwardingResult::Ok);
+    RDP_ASSERT(manager.requestStop(config.id, 61) == SshForwardingResult::Ok);
+    RDP_ASSERT(manager.completeStop(config.id) == SshForwardingResult::Ok);
+}
+
 RDP_TEST_CASE(ssh_forwarding_manager_enforces_byte_budget_and_expiry) {
     SshForwardingManager manager;
     SshForwardingConfig config = localConfig("budgeted");
