@@ -5,7 +5,7 @@
 - Base: `main@d2769ad4b`
 - Branch: `codex/ssh-terminal-complete-upgrade`
 - Code checkpoint: `a09e267` (`fix(ssh): publish renderer and FRP types`), following `d374a610f` (`fix(ssh): harden surface and forwarding failures`); keyed surface recovery, forwarding lifecycle, adapter reactor binding, and the generation-guarded NAPI/ArkTS bridge are committed.
-- Phase: Alacritty default; lifecycle, VT/Unicode/resize/TUI/large-output parity, per-host output isolation, code-only host-switch/surface refresh recovery, guarded surface fallback, and native forwarding contract.
+- Phase: Alacritty core and xterm-safe visible fallback; lifecycle, VT/Unicode/resize/TUI/large-output parity, per-host output isolation, code-only host-switch/surface refresh recovery, guarded surface fallback, and native forwarding contract.
 - Scope: migrate VT behind terminalCore, keep appearance settings in-core, verify IME/input/Canvas behavior. Homepage work is not current focus.
 
 ## Progress
@@ -48,19 +48,12 @@
   host/binding/revision key removes stale XComponent/WebView instances; native
   owner leases and renderer view IDs reject stale owners, while xterm documents
   use isolated bridges and transcript fallback.
-- GPU rebind restores EGL context, refreshes retained snapshots, acknowledges
-  surface-flush failures, polls surface IDs when API 23 skips callbacks, uses
-  measured size for the first bind, and invalidates retries on host/revision
-  changes. Adopted sessions with transient `CONNECTING` stay visible and wake
-  mount retry synchronously. A monotonic surface-commit sequence now drives the
-  ArkUI renderer-list identity, and host/surface/revision prop changes detach
-  the old GPU lease synchronously before the new bind is scheduled. The
-  renderer now serializes the explicit full-refresh fence and re-enters the
-  detach/rebind/poll path when a repaint is not acknowledged; native dirty-frame
-  failures immediately fall back to a retained full snapshot. The page publishes
-  the keyed renderer only after its host/binding/revision props are complete,
-  then schedules a guarded bounded wake sequence that drains the target host
-  FIFO and requests a repaint until the first surface frame is acknowledged.
+- GPU rebind, owner leases, refresh fences, surface-ID polling and retained
+  snapshots are implemented, but the 2026-08-06 API 23 reproduction proved
+  that `OH_Drawing_SurfaceFlush` can escalate `41207000` into a process-wide
+  `SIGABRT` before ArkTS can handle it. The visible SSH page now stays on the
+  mature xterm.js surface; the native VT/GPU implementation remains retained
+  for a later safe backend.
 
 ## SSH Connectivity Boundary
 
@@ -90,6 +83,9 @@
   warnings only.
 - `assembleHap`: passed on the current checkout with `BUILD SUCCESSFUL`, native
   Ninja compilation, packaging and signing on 2026-08-06.
+- HDC reproduction: SSH TCP/KEX/public-key auth/PTY/shell all completed; the
+  crash was `DrawSnapshot -> OH_Drawing_SurfaceFlush -> Device lost -> SIGABRT`
+  on PID 18229 at 2026-08-06 17:36:30. The old `log.rtf` shows the same stack.
 - Terminal-core Rust tests: Alacritty path `63 passed, 0 failed`; fallback
   path `57 passed, 0 failed`.
 - OHOS Rust checks: `aarch64-unknown-linux-ohos` and
@@ -116,4 +112,7 @@
 ## Blockers
 
 - Full external-keyboard/third-party-IME and SFTP lifecycle acceptance remains pending; cold/large-output/background/PiP/re-entry and 90-second idle checks passed.
-- Device validation is deferred; no real OpenSSH bastion, forwarding or FRP endpoint is available; HDC is offline; ProxyJump host-key binding and `ohosTest@OhosTestCompileArkTS` (`00306054`) remain pending.
+- Native GPU re-enable is blocked until a backend that cannot abort on a stale
+  API 23 BufferQueue is available. No real OpenSSH bastion, forwarding or FRP
+  endpoint is available; ProxyJump host-key binding and
+  `ohosTest@OhosTestCompileArkTS` (`00306054`) remain pending.

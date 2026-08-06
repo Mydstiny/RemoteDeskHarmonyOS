@@ -597,9 +597,15 @@ struct SshTerminal {
       this.hostId.trim() === hostId.trim();
   }
 
-  /** All SSH form factors use the native VT renderer; xterm is failure-only fallback. */
+  /**
+   * Keep the visible SSH surface on the mature xterm.js path for now. On API
+   * 23, OH_Drawing_SurfaceFlush can abort the whole process after a stale
+   * XComponent BufferQueue is reported as 41207000; ArkTS cannot catch that
+   * native GPU abort. The native VT core remains available for later work,
+   * but it must not own a user-visible surface until that backend is safe.
+   */
   private nativeTerminalFormFactor(): boolean {
-    return true;
+    return false;
   }
 
   private shouldUseNativeTerminal(): boolean {
@@ -2998,6 +3004,7 @@ struct SshTerminal {
           if (tokenData) {
             this.preflightHostId = tokenData.hostId.trim() || this.hostId;
             this.preflightPassphrase = tokenData.privateKeyPassphrase;
+            this.preflightProxyPassphrase = tokenData.proxyPrivateKeyPassphrase || '';
             this.preflightExpectedHostKeyRaw = tokenData.expectedHostKeyRawBase64;
             this.preflightExpectedHostKeyFp = tokenData.expectedHostKeyFingerprintSha256;
             this.preflightExpectedJumpHostKeyRaw = tokenData.expectedJumpHostKeyRawBase64;
@@ -3553,6 +3560,7 @@ struct SshTerminal {
   // T-210: preflight token 数据 (从 HostList 传递)
   private preflightHostId: string = '';
   private preflightPassphrase: string = '';
+  private preflightProxyPassphrase: string = '';
   private preflightExpectedHostKeyRaw: string = '';
   private preflightExpectedHostKeyFp: string = '';
   private preflightExpectedJumpHostKeyRaw: string = '';
@@ -3561,6 +3569,7 @@ struct SshTerminal {
   private clearPreflightBinding(): void {
     this.preflightHostId = '';
     this.preflightPassphrase = '';
+    this.preflightProxyPassphrase = '';
     this.preflightExpectedHostKeyRaw = '';
     this.preflightExpectedHostKeyFp = '';
     this.preflightExpectedJumpHostKeyRaw = '';
@@ -3644,9 +3653,37 @@ struct SshTerminal {
           keyEncryptedHint = ref.privateKeyEncrypted;
         }
       }
+      let proxyKeyData: string = '';
+      let proxyKeyEncryptedHint: boolean = false;
+      if (host.sshProxyKeyId !== '') {
+        const proxyKey = KeyVaultService.getInstance().getSshKey(host.sshProxyKeyId);
+        if (proxyKey) {
+          proxyKeyData = proxyKey.privateKey;
+          proxyKeyEncryptedHint = proxyKey.privateKeyEncrypted;
+        }
+      }
       const useKey: boolean = host.sshUseKey && keyData.length > 0;
       // T-210: 优先使用 preflight token 中的 passphrase; 否则用 host 保存的; 最后才弹窗
       const preflightMatchesHost: boolean = this.preflightHostId === host.id;
+      let resolvedProxyPassphrase: string = (preflightMatchesHost ? this.preflightProxyPassphrase : '') ||
+        host.sshProxyKeyPassphrase || '';
+      if (host.sshProxyType === 'ssh_jump' && host.sshProxyAuthMethod === 'publickey') {
+        if (proxyKeyData.length === 0) {
+          throw new Error('跳板机私钥不存在或已从密钥保险库移除 [E-SSH-PROXY-KEY-MISSING]');
+        }
+        let proxyKeyInfo: SshPrivateKeyInfo = this.loader.inspectSshPrivateKey(
+          proxyKeyData, resolvedProxyPassphrase);
+        if (proxyKeyInfo.ok && !proxyKeyInfo.encrypted) {
+          resolvedProxyPassphrase = '';
+        } else if (resolvedProxyPassphrase === '' || proxyKeyEncryptedHint || !proxyKeyInfo.ok) {
+          resolvedProxyPassphrase = await this.promptPassphrase();
+          if (!this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId)) { return; }
+          proxyKeyInfo = this.loader.inspectSshPrivateKey(proxyKeyData, resolvedProxyPassphrase);
+          if (!proxyKeyInfo.ok) {
+            throw new Error('跳板机私钥密码错误或密钥不可用 [E-SSH-PROXY-PASSPHRASE]');
+          }
+        }
+      }
       let keyPassphrase: string = (preflightMatchesHost ? this.preflightPassphrase : '') ||
         host.sshKeyPassphrase || '';
       if (useKey) {
@@ -3670,15 +3707,21 @@ struct SshTerminal {
         width: this.termCols,
         height: this.termRows,
         customHostname: host.customHostname,
-        // SSH route is explicit. ProxyJump reuses the host credential/key for
-        // the bastion and is never silently downgraded to direct TCP.
+        // SSH route is explicit. ProxyJump carries a separate bastion
+        // credential and never falls back to the target credential.
         gatewayHost: '',
         gatewayPort: 0,
         sshProxyType: host.proxyHost.length > 0 ? host.sshProxyType : 'direct',
         sshProxyHost: host.proxyHost,
         sshProxyPort: host.proxyPort,
         sshProxyUsername: host.proxyUsername,
-        sshProxyPassword: host.sshProxyType === 'ssh_jump' ? host.password : '',
+        sshProxyPassword: host.sshProxyType === 'ssh_jump' && host.sshProxyAuthMethod !== 'publickey'
+          ? host.sshProxyPassword : '',
+        sshProxyAuthMethod: host.sshProxyType === 'ssh_jump' ? host.sshProxyAuthMethod : undefined,
+        sshProxyPrivateKeyPem: host.sshProxyType === 'ssh_jump' &&
+          host.sshProxyAuthMethod === 'publickey' ? proxyKeyData : '',
+        sshProxyPrivateKeyPassphrase: host.sshProxyType === 'ssh_jump' &&
+          host.sshProxyAuthMethod === 'publickey' ? resolvedProxyPassphrase : '',
         domain: '',
         codec: '',
         multiMonitor: false,
