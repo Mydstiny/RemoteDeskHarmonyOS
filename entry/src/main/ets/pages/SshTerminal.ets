@@ -5007,9 +5007,16 @@ struct SshTerminal {
     this.sftpPanelOpenedAt = Date.now();
     this.showSshTabPicker = false;
     this.sftpPeerHostPicker = false;
+    // A closed surface starts with an empty right pane. Do not reset a sheet
+    // that is already visible, because a repeated toolbar tap must not erase
+    // the user's current endpoint while a transfer is running.
+    const surfaceAlreadyVisible: boolean = this.showSftpPanel || this.showSftpSheet;
+    if (!surfaceAlreadyVisible) {
+      this.resetSftpRightEndpointSelection();
+    }
     this.showSftpPanel = true;
-    // Phone and Pad both use a sheet. PC keeps the wide workspace inline.
-    this.showSftpSheet = !this.isDesktopDevice;
+    // Phone and Pad use the root bindSheet; only PC keeps the workspace inline.
+    this.showSftpSheet = this.sftpUsesRootBindSheet();
     if (this.sftpEntries.length === 0) {
       // 先让半模态完成挂载和高度测量, 避免打开瞬间刷新目录触发重建后被系统反向 dismiss。
       this.scheduleSftpRefresh(this.sftpPath, 260);
@@ -5065,6 +5072,15 @@ struct SshTerminal {
     // the phone workflow on its original bottom sheet and reserve the
     // two-pane workspace for actual Pad/desktop surfaces.
     return this.isDesktopDevice || this.isPadDevice;
+  }
+
+  private sftpUsesRootBindSheet(): boolean {
+    return !this.isDesktopDevice;
+  }
+
+  private sftpHeaderTopPadding(): number {
+    if (this.isPadDevice) { return 24; }
+    return this.sftpWideLayout() ? 16 : 18;
   }
 
   private handleSftpPeerHostPickerDismiss(action: DismissSheetAction): void {
@@ -7354,7 +7370,12 @@ struct SshTerminal {
         .borderRadius(18).backgroundColor(this.sshPal().surface)
         .onClick((): void => { this.closeSftpPanel(); })
       }.width('100%').alignItems(VerticalAlign.Center)
-    }.width('100%').margin({ bottom: 14 })
+    }
+    // Keep the close affordance away from the sheet edge and the Pad window
+    // safe-area inset. The title and close control move as one header row.
+    .width('100%')
+    .padding({ top: this.sftpHeaderTopPadding() })
+    .margin({ bottom: 14 })
   }
 
   @Builder
@@ -8037,7 +8058,7 @@ struct SshTerminal {
       .constraintSize({ minHeight: 0 })
       .backgroundColor('#0D0D0D')
       .id('ssh-terminal-pane')
-      if (this.showSftpPanel && this.sftpWideLayout() && this.isDesktopDevice) {
+      if (this.showSftpPanel && this.sftpWideLayout() && !this.sftpUsesRootBindSheet()) {
         Column() {
           this.SftpTransferSheet()
         }
