@@ -11,6 +11,7 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 
 const XTERM_DOMAIN: number = 0x0000;
 const XTERM_TAG: string = 'SshXtermSurface';
+const XTERM_DOCUMENT_RELOAD_TIMEOUT_MS: number = 3000;
 
 /** Decoded SSH output waiting for the visible xterm page to consume it. */
 export class XtermOutputBuffer {
@@ -133,6 +134,7 @@ export struct SshXtermSurface {
   private pageConfigRetryCount: number = 0;
   private documentReloadRetryTimer: number = -1;
   private documentReloadRetryCount: number = 0;
+  private documentReloadWatchdogTimer: number = -1;
   private outputBatchSequence: number = 0;
   private awaitingOutputBatch: number = 0;
   private pendingWrites: Array<string> = [];
@@ -351,12 +353,81 @@ export struct SshXtermSurface {
       clearTimeout(this.documentReloadRetryTimer);
       this.documentReloadRetryTimer = -1;
     }
+    if (this.documentReloadWatchdogTimer !== -1) {
+      clearTimeout(this.documentReloadWatchdogTimer);
+      this.documentReloadWatchdogTimer = -1;
+    }
+  }
+
+  private scheduleDocumentReloadWatchdog(lifecycleToken: number,
+    requestedDocumentKey: string): void {
+    if (this.documentReloadWatchdogTimer !== -1) {
+      clearTimeout(this.documentReloadWatchdogTimer);
+    }
+    this.documentReloadWatchdogTimer = setTimeout((): void => {
+      this.documentReloadWatchdogTimer = -1;
+      if (lifecycleToken !== this.lifecycleToken || this.disposed ||
+        !this.active || !this.documentReloadPending ||
+        this.reloadRequestedDocumentKey !== requestedDocumentKey) {
+        return;
+      }
+      hilog.warn(XTERM_DOMAIN, XTERM_TAG,
+        'xterm document reload produced no ready callback, retrying');
+      this.scheduleDocumentReloadRetry(lifecycleToken, requestedDocumentKey);
+    }, XTERM_DOCUMENT_RELOAD_TIMEOUT_MS);
+  }
+
+  /** Start a fresh bridge for every reload attempt so an old document cannot
+   * satisfy the new document's ready gate after a watchdog retry. */
+  private restartDocumentReloadAttempt(requestedDocumentKey: string): void {
+    if (this.disposed || !this.documentReloadPending ||
+      !this.active || this.reloadRequestedDocumentKey !== requestedDocumentKey) {
+      return;
+    }
+    const lifecycleToken: number = ++this.lifecycleToken;
+    this.clearBridgeRetry();
+    if (this.readyReportTimer !== -1) {
+      clearTimeout(this.readyReportTimer);
+      this.readyReportTimer = -1;
+    }
+    this.clearPageConfigRetry();
+    this.pageConfigRetryCount = 0;
+    this.clearDocumentReloadRetry();
+    this.bridgeRegistered = false;
+    this.pageFinished = false;
+    this.pageReady = false;
+    this.readyReported = false;
+    try { this.controller.deleteJavaScriptRegister('sshTerminalBridge'); } catch (_err) {
+      // The previous document may already have been detached.
+    }
+    this.bridge = new SshXtermBridgeProxy();
+    this.installBridgeCallbacks(lifecycleToken);
+    this.attemptDocumentReload(lifecycleToken, requestedDocumentKey);
+  }
+
+  private attemptDocumentReload(lifecycleToken: number, requestedDocumentKey: string): void {
+    if (lifecycleToken !== this.lifecycleToken || this.disposed || !this.active ||
+      !this.documentReloadPending || this.reloadRequestedDocumentKey !== requestedDocumentKey) {
+      return;
+    }
+    try {
+      this.controller.loadUrl($rawfile('ssh-terminal/index.html'));
+      this.documentReloadRetryCount = 0;
+      this.scheduleDocumentReloadWatchdog(lifecycleToken, requestedDocumentKey);
+    } catch (err) {
+      hilog.warn(XTERM_DOMAIN, XTERM_TAG,
+        'reload xterm document failed: ' + JSON.stringify(err));
+      // Keep the old document fenced off. Replaying the timeout batch into it
+      // can duplicate output that was rendered before the ACK was lost.
+      this.scheduleDocumentReloadRetry(lifecycleToken, requestedDocumentKey);
+    }
   }
 
   private scheduleDocumentReloadRetry(lifecycleToken: number,
     requestedDocumentKey: string): void {
     if (this.documentReloadRetryTimer !== -1 || this.disposed ||
-      lifecycleToken !== this.lifecycleToken || !this.documentReloadPending ||
+      lifecycleToken !== this.lifecycleToken || !this.active ||
+      !this.documentReloadPending ||
       this.reloadRequestedDocumentKey !== requestedDocumentKey) {
       return;
     }
@@ -365,17 +436,11 @@ export struct SshXtermSurface {
     this.documentReloadRetryTimer = setTimeout((): void => {
       this.documentReloadRetryTimer = -1;
       if (lifecycleToken !== this.lifecycleToken || this.disposed ||
-        !this.documentReloadPending || this.reloadRequestedDocumentKey !== requestedDocumentKey) {
+        !this.active || !this.documentReloadPending ||
+        this.reloadRequestedDocumentKey !== requestedDocumentKey) {
         return;
       }
-      try {
-        this.controller.loadUrl($rawfile('ssh-terminal/index.html'));
-        this.documentReloadRetryCount = 0;
-      } catch (err) {
-        hilog.warn(XTERM_DOMAIN, XTERM_TAG,
-          'retry xterm document reload failed: ' + JSON.stringify(err));
-        this.scheduleDocumentReloadRetry(lifecycleToken, requestedDocumentKey);
-      }
+      this.restartDocumentReloadAttempt(requestedDocumentKey);
     }, retryDelay);
   }
 
@@ -474,24 +539,29 @@ export struct SshXtermSurface {
     this.maybeReportReady();
   }
 
-  /** Recover only the unconsumed suffix after a page-side xterm write error. */
+  /** Rebuild the document after a page-side xterm write error. */
   private handleOutputFrameError(batchSequence: number, consumedCount: number): void {
     const normalizedSequence: number = Math.floor(Number(batchSequence));
     if (!this.outputPumpRunning || normalizedSequence <= 0 ||
       normalizedSequence !== this.awaitingOutputBatch) {
       return;
     }
-    const consumed: number = Math.max(0, Math.min(this.inFlightWrites.length,
-      Math.floor(Number(consumedCount))));
-    const remaining: Array<string> = this.inFlightWrites.slice(consumed);
+    const requestedConsumed: number = Number(consumedCount);
+    const consumed: number = Number.isFinite(requestedConsumed)
+      ? Math.max(0, Math.min(this.inFlightWrites.length, Math.floor(requestedConsumed))) : 0;
+    // The error path rebuilds the document. Its new xterm buffer is empty, so
+    // it must receive the complete in-flight batch, including the prefix that
+    // already rendered in the failed document. Replaying only the suffix would
+    // make the prefix disappear after reload.
+    const replayBatch: Array<string> = this.inFlightWrites.slice();
     const inFlightTarget: XtermOutputBuffer = this.inFlightOutputBuffer ??
       this.pendingOutputBuffer ?? this.outputBuffer;
     const pendingTarget: XtermOutputBuffer = this.pendingOutputBuffer ??
       this.inFlightOutputBuffer ?? this.outputBuffer;
     if (inFlightTarget === pendingTarget) {
-      inFlightTarget.prepend(remaining.concat(this.pendingWrites));
+      inFlightTarget.prepend(replayBatch.concat(this.pendingWrites));
     } else {
-      if (remaining.length > 0) { inFlightTarget.prepend(remaining); }
+      if (replayBatch.length > 0) { inFlightTarget.prepend(replayBatch); }
       if (this.pendingWrites.length > 0) { pendingTarget.prepend(this.pendingWrites); }
     }
     this.clearOutputBatchAckTimer();
@@ -502,7 +572,8 @@ export struct SshXtermSurface {
     this.awaitingOutputBatch = 0;
     this.outputPumpRunning = false;
     hilog.warn(XTERM_DOMAIN, XTERM_TAG,
-      'xterm output write failed, reloading document after consumed=' + consumed.toString());
+      'xterm output write failed, replaying batch=' + replayBatch.length.toString() +
+      ' after consumed=' + consumed.toString());
     this.reloadDocumentForCoreKey();
   }
 
@@ -578,16 +649,7 @@ export struct SshXtermSurface {
     // dispatching one of its callbacks after loadUrl() has started.
     this.bridge = new SshXtermBridgeProxy();
     this.installBridgeCallbacks(lifecycleToken);
-    try {
-      this.controller.loadUrl($rawfile('ssh-terminal/index.html'));
-      this.documentReloadRetryCount = 0;
-    } catch (err) {
-      hilog.warn(XTERM_DOMAIN, XTERM_TAG,
-        'reload xterm document failed: ' + JSON.stringify(err));
-      // Keep the old document fenced off. Replaying the timeout batch into it
-      // can duplicate output that was rendered before the ACK was lost.
-      this.scheduleDocumentReloadRetry(lifecycleToken, requestedDocumentKey);
-    }
+    this.attemptDocumentReload(lifecycleToken, requestedDocumentKey);
   }
 
   private clearOutputBatchAckTimer(): void {
@@ -746,11 +808,20 @@ export struct SshXtermSurface {
       // Do not drain the parent-owned output buffer into the previous host's
       // document while the page is between bindings.
       this.pendingCoreKeyReload = true;
+      this.clearDocumentReloadRetry();
+      this.documentReloadRetryCount = 0;
       this.restoreQueuedWrites();
       return;
     }
     if (this.pendingCoreKeyReload) {
       this.pendingCoreKeyReload = false;
+      // A reload interrupted while inactive left its old document fenced. Let
+      // the active turn create a fresh bridge instead of returning early on
+      // the old document key.
+      if (this.documentReloadPending) {
+        this.documentReloadPending = false;
+        this.reloadRequestedDocumentKey = '';
+      }
       this.reloadDocumentForCoreKey();
       return;
     }
