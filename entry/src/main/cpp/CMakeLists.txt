@@ -84,6 +84,7 @@ set(AUDIO_SOURCES
 # -- SSH 适配器 --
 set(SSH_SOURCES
     ssh/ssh_adapter.cpp
+    ssh/ssh_forwarding_manager.cpp
     ssh/ssh_key_tool.cpp
 )
 
@@ -175,6 +176,7 @@ if(RDP_BUILD_TESTS)
         test/ssh_auth_policy_test.cpp
         test/ssh_pty_recovery_policy_test.cpp
         test/ssh_route_policy_test.cpp
+        test/ssh_forwarding_manager_test.cpp
         test/video_activity_state_test.cpp
         test/rdp_audio_policy_test.cpp
         test/audio_queue_policy_test.cpp
@@ -216,6 +218,7 @@ if(RDP_BUILD_TESTS)
         test/vnc_certificate_probe_test.cpp
         common/safe_log.cpp
         input/remote_cursor_snapshot.cpp
+        ssh/ssh_forwarding_manager.cpp
         rdp/rdp_audio_policy.cpp
         rdp/rdp_auth_identity_policy.cpp
         rdp/rdp_auth_mode_policy.cpp

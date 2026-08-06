@@ -4,8 +4,8 @@
 - Task: `ssh-terminal-complete-upgrade`
 - Base: `main@d2769ad4b`
 - Branch: `codex/ssh-terminal-complete-upgrade`
-- Code checkpoint: `6e20e63af` (`fix(ssh): retry visible host surface refresh`); the keyed surface commit, guarded next-turn FIFO drain, retained-frame refresh recovery, and bounded post-commit wake are committed.
-- Phase: Alacritty default; lifecycle, VT/Unicode/resize/TUI/large-output parity, per-host output isolation and code-only host-switch/surface refresh recovery.
+- Code checkpoint: `6e20e63af` (`fix(ssh): retry visible host surface refresh`); the keyed surface commit, guarded next-turn FIFO drain, retained-frame refresh recovery, and bounded post-commit wake are committed. The native forwarding lifecycle contract is the current uncommitted checkpoint.
+- Phase: Alacritty default; lifecycle, VT/Unicode/resize/TUI/large-output parity, per-host output isolation, code-only host-switch/surface refresh recovery, and native forwarding contract.
 - Scope: migrate VT behind terminalCore, keep appearance settings in-core, verify IME/input/Canvas behavior. Homepage work is not current focus.
 
 ## Progress
@@ -19,6 +19,9 @@
   workspace are implemented. Remote actions stay left and local authorization
   and file actions stay right; background payload execution and endpoint
   acceptance remain pending.
+- The SSH native forwarding lifecycle contract validates local/remote/dynamic
+  profiles, loopback/public binding policy, bounded connections, generations and
+  start/listen/fail/stop transitions; it is not yet wired to libssh2 or NAPI.
 - WP-T4 uses `alacritty_terminal` `0.26.0` by default behind terminalCore,
   with the old core as a no-default fallback and bounded xterm fallback.
   Appearance settings remain in-core; ARGB foreground, ANSI colors and Canvas
@@ -59,7 +62,8 @@
   into a direct SSH connection.
 - SSH ProxyJump/bastion has a native route and matching key preflight relay,
   but real bastion interoperability and host-key binding remain pending.
-  Local/remote/dynamic forwarding and FRP Visitor/STCP/SUDP/XTCP remain open.
+  Local/remote/dynamic forwarding has a native lifecycle contract only; socket
+  integration is open. FRP Visitor/STCP/SUDP/XTCP remain open.
 
 ## Verification
 
@@ -86,6 +90,9 @@
 - Terminal parity: Alacritty `67 passed`, fallback `57 passed`; shared
   Unicode/ANSI, TUI/alternate-screen, resize/large-output and damage fixtures
   match on visible cells and required metadata.
+- Native forwarding manager standalone test: `4 passed, 0 failed`; the host
+  CMake target was unavailable because `cmake` is not installed, while
+  production `BuildNativeWithNinja` compiled the new source.
 - `ohosTest@OhosTestCompileArkTS`: blocked; task is not registered (`00306054`).
 - Light compliance: blocked by baseline SBOM package
   `totp-reviewed-brand-assets` with `licenseDeclared=NOASSERTION`.
@@ -99,14 +106,12 @@
 ## Next
 
 1. Independently review the same-page SSH binding commit, initial-UI surface-owner, fallback, deterministic keyed remount, renderer-owner lease, revision-aware document, GPU binding lease, and EGL refresh scope.
-2. Verify ProxyJump against a real OpenSSH bastion and bind its host key.
-3. Add SSH-scoped local/remote/dynamic forwarding and FRP visitor modes.
+2. Wire the native forwarding manager into the SSH session-owner reactor, then
+   expose the guarded NAPI/ArkTS lifecycle entry.
+3. Finish ProxyJump host-key binding and add the local/remote/dynamic forwarding
+   transport implementation before FRP Visitor/STCP/SUDP/XTCP.
 
 ## Blockers
 
-- Full external-keyboard/third-party-IME and SFTP lifecycle/provider acceptance
-  remains pending; cold/large-output/background/PiP/re-entry and 90-second idle
-  checks passed.
-- Real-device validation for the current initial-UI/host-switch/native-renderer
-  pass is intentionally deferred by the user; only code-level gates were requested.
-- No real OpenSSH bastion, forwarding service or FRP endpoint is available; HDC is offline; ProxyJump host-key binding and `ohosTest@OhosTestCompileArkTS` (`00306054`) remain pending.
+- Full external-keyboard/third-party-IME and SFTP lifecycle acceptance remains pending; cold/large-output/background/PiP/re-entry and 90-second idle checks passed.
+- Device validation is deferred; no real OpenSSH bastion, forwarding or FRP endpoint is available; HDC is offline; ProxyJump host-key binding and `ohosTest@OhosTestCompileArkTS` (`00306054`) remain pending.

@@ -56,6 +56,9 @@ Updated: 2026-08-06 Asia/Shanghai
 - The first ProxyJump implementation and matching key preflight relay are
   committed, but keep them pending until bastion host-key policy and a real
   OpenSSH endpoint are verified.
+- The native forwarding lifecycle contract is now committed for local, remote
+  and dynamic modes; it still needs SSH session-owner socket/channel wiring,
+  NAPI/ArkTS entry points and endpoint interoperability.
 
 ## Next
 
@@ -64,6 +67,8 @@ Updated: 2026-08-06 Asia/Shanghai
   initial-UI deterministic host/binding/revision keyed remount, surface-owner lease, fallback, render-revision,
   revision-aware document reload, GPU binding-lease invalidation, EGL refresh, surface-ID polling, measured-size rebind, mount-wake fix, and
   reused-renderer rebind/reload.
+- Wire `SshForwardingManager` into the SSH session-owner reactor and add the
+  guarded NAPI/ArkTS lifecycle bridge.
 - WP-T5/WP-T6 terminal correctness and damage-frame renderer implementation.
 - Real SFTP, bastion, forwarding and FRP endpoint interoperability tests when
   the corresponding services and HDC/device are available.
