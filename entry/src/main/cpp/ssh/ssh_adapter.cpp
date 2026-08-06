@@ -1051,6 +1051,12 @@ int SshAdapter::authenticatePassword() {
                 userList ? userList : "(none)");
     advertisedAuthMethods_ = userList == nullptr ? std::string() : std::string(userList);
 
+    if (!sshPasswordAuthShouldAttempt(advertisedAuthMethods_)) {
+        OH_LOG_INFO(LOG_APP,
+                    "[SSH] 服务器未声明 password，跳过 password 方法并交给后续 fallback");
+        return ERR_SSH_AUTH_METHODS;
+    }
+
     // 密码认证 (非阻塞)
     int rc;
     while ((rc = libssh2_userauth_password(session_,
@@ -1089,7 +1095,6 @@ void SshAdapter::keyboardInteractiveCallback(
     (void)nameLen;
     (void)instruction;
     (void)instructionLen;
-    (void)prompts;
     if (numPrompts <= 0 || responses == nullptr || abstract == nullptr ||
         *abstract == nullptr) {
         return;
@@ -1101,7 +1106,8 @@ void SshAdapter::keyboardInteractiveCallback(
         if (index >= 0 &&
             static_cast<size_t>(index) < adapter->savedCfg_.sshKeyboardInteractiveResponses.size()) {
             response = adapter->savedCfg_.sshKeyboardInteractiveResponses[static_cast<size_t>(index)];
-        } else {
+        } else if (prompts != nullptr &&
+                   sshKeyboardInteractivePromptCanUsePassword(prompts[index].echo)) {
             // Password is a useful compatibility fallback for servers that
             // expose a password prompt through keyboard-interactive.
             response = adapter->savedCfg_.password;
@@ -1140,7 +1146,8 @@ int SshAdapter::authenticateKeyboardInteractive() {
             return ERR_SSH_AUTH_TIMEOUT;
         }
     }
-    if (userList == nullptr || std::strstr(userList, "keyboard-interactive") == nullptr) {
+    advertisedAuthMethods_ = userList == nullptr ? std::string() : std::string(userList);
+    if (!sshAuthMethodAdvertised(advertisedAuthMethods_, "keyboard-interactive")) {
         OH_LOG_ERROR(LOG_APP, "[SSH] 服务器不支持 keyboard-interactive 认证");
         return ERR_SSH_AUTH_METHODS;
     }

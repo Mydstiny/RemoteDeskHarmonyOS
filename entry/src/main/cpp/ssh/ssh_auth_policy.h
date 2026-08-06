@@ -44,4 +44,21 @@ inline bool sshPasswordFallbackAllowsKeyboardInteractive(
         sshAuthMethodAdvertised(methods, "keyboard-interactive");
 }
 
+/**
+ * An advertised method list is authoritative when it is non-empty.  Calling
+ * a method the server did not advertise can consume a PAM challenge or make
+ * some older servers close the authentication exchange before the fallback
+ * method gets a chance to run.
+ */
+inline bool sshPasswordAuthShouldAttempt(const std::string& methods) {
+    return methods.empty() || sshAuthMethodAdvertised(methods, "password");
+}
+
+inline bool sshKeyboardInteractivePromptCanUsePassword(bool echo) {
+    // Password/PAM prompts are non-echoing.  Never put the account password
+    // into a visible username/OTP challenge unless the caller supplied an
+    // explicit response in the ordered response list.
+    return !echo;
+}
+
 #endif

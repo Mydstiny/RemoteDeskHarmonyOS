@@ -17,3 +17,15 @@ RDP_TEST_CASE(ssh_password_fallback_requires_advertised_keyboard_interactive) {
     RDP_ASSERT(!sshPasswordFallbackAllowsKeyboardInteractive(
         "publickey,keyboard-interactive", 0));
 }
+
+RDP_TEST_CASE(ssh_password_auth_respects_advertised_methods) {
+    RDP_ASSERT(sshPasswordAuthShouldAttempt(""));
+    RDP_ASSERT(sshPasswordAuthShouldAttempt("publickey,password"));
+    RDP_ASSERT(!sshPasswordAuthShouldAttempt("publickey,keyboard-interactive"));
+    RDP_ASSERT(!sshPasswordAuthShouldAttempt("publickey"));
+}
+
+RDP_TEST_CASE(ssh_keyboard_interactive_password_fallback_requires_hidden_prompt) {
+    RDP_ASSERT(sshKeyboardInteractivePromptCanUsePassword(false));
+    RDP_ASSERT(!sshKeyboardInteractivePromptCanUsePassword(true));
+}

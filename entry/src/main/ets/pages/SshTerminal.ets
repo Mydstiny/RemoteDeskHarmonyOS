@@ -171,6 +171,14 @@ const SSH_INPUT_PENDING_CONTROL_MAX_BYTES: number = 32 * 1024;
 const SSH_OUTPUT_QUEUE_MAX_CHUNKS: number = 512;
 const SSH_OUTPUT_QUEUE_MAX_BYTES: number = 8 * 1024 * 1024;
 const SSH_NATIVE_RENDERER_READY_TIMEOUT_MS: number = 1500;
+/**
+ * A surface can be created after several ArkUI turns during an in-page tab
+ * switch. Keep the page-owned refresh fence alive for a bounded window so a
+ * refresh watch delivered before XComponent attach cannot strand the target
+ * host with a connected socket and a stale frame.
+ */
+const SSH_TERMINAL_SURFACE_WAKE_INTERVAL_MS: number = 64;
+const SSH_TERMINAL_SURFACE_WAKE_RETRIES: number = 12;
 
 interface PendingTerminalInput {
   /** Monotonic ArkUI admission order used to keep a later paste behind older input. */
@@ -704,7 +712,7 @@ struct SshTerminal {
    * coalesced with the keyed child creation.
    */
   private scheduleTerminalSurfaceCommitWake(hostId: string, bindingKey: string,
-    renderRevision: number, commitSequence: number): void {
+    renderRevision: number, commitSequence: number, attempt: number = 0): void {
     if (this.terminalSurfaceCommitWakeTimer !== -1) {
       clearTimeout(this.terminalSurfaceCommitWakeTimer);
       this.terminalSurfaceCommitWakeTimer = -1;
@@ -723,7 +731,17 @@ struct SshTerminal {
       }
       this.termOutputSequence = this.termOutputSequence + 1;
       this.terminalSurfaceRefreshRequest = this.terminalSurfaceRefreshRequest + 1;
-    }, 32);
+      const nextAttempt: number = attempt + 1;
+      // The renderer may report ready before or after this fence. Keep
+      // nudging the same committed binding only while the native path is still
+      // expected; a fallback renderer has its own keyed lifecycle and does not
+      // need this native retry loop.
+      if (this.shouldUseNativeTerminal() && !this.xtermReady &&
+        nextAttempt < SSH_TERMINAL_SURFACE_WAKE_RETRIES) {
+        this.scheduleTerminalSurfaceCommitWake(hostId, bindingKey, renderRevision,
+          commitSequence, nextAttempt);
+      }
+    }, attempt === 0 ? 32 : SSH_TERMINAL_SURFACE_WAKE_INTERVAL_MS);
   }
 
   /**
@@ -4007,6 +4025,10 @@ struct SshTerminal {
     this.terminalSurfaceViewKey = makeSshTerminalSurfaceRenderKey(hostId,
       surfaceIdentity, this.terminalSurfaceRenderRevision, false);
     this.replayNativeOutputToXterm(hostId);
+    // The fallback document is a new visible renderer. Advance the same
+    // page-owned repaint fence used by the native path so its initial output
+    // cannot depend on a coincidentally delivered output sequence watch.
+    this.terminalSurfaceRefreshRequest = this.terminalSurfaceRefreshRequest + 1;
     this.requestTerminalScrollToBottomSettled();
   }
 
