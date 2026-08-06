@@ -88,6 +88,10 @@ public:
     SshForwardingResult acquireConnection(const std::string& id, uint64_t sessionGeneration);
     SshForwardingResult releaseConnection(const std::string& id, uint64_t sessionGeneration);
 
+    // Called only after the SSH transport owner has closed all forwarding
+    // sockets/channels. Profiles remain configured for the next session.
+    void resetRuntimeAfterTransportClose();
+
     std::vector<SshForwardingSnapshot> snapshots() const;
     bool snapshot(const std::string& id, SshForwardingSnapshot& out) const;
     size_t size() const;

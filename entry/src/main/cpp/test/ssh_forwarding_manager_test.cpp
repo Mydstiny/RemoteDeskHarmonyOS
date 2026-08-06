@@ -95,3 +95,23 @@ RDP_TEST_CASE(ssh_forwarding_manager_rejects_mutation_while_active) {
     RDP_ASSERT(manager.completeStop(config.id) == SshForwardingResult::Ok);
     RDP_ASSERT(manager.remove(config.id) == SshForwardingResult::Ok);
 }
+
+RDP_TEST_CASE(ssh_forwarding_manager_resets_runtime_but_keeps_profiles) {
+    SshForwardingManager manager;
+    SshForwardingConfig config = localConfig("persistent");
+    RDP_ASSERT(manager.upsert(config) == SshForwardingResult::Ok);
+    RDP_ASSERT(manager.start(config.id, 30) == SshForwardingResult::Ok);
+    RDP_ASSERT(manager.markListening(config.id, 30) == SshForwardingResult::Ok);
+    RDP_ASSERT(manager.acquireConnection(config.id, 30) == SshForwardingResult::Ok);
+
+    manager.resetRuntimeAfterTransportClose();
+
+    SshForwardingSnapshot snapshot;
+    RDP_ASSERT(manager.snapshot(config.id, snapshot));
+    RDP_ASSERT(snapshot.state == SshForwardingState::Stopped);
+    RDP_ASSERT_EQ(snapshot.sessionGeneration, 0U);
+    RDP_ASSERT_EQ(snapshot.activeConnections, 0U);
+    RDP_ASSERT(snapshot.config.id == "persistent");
+    RDP_ASSERT(manager.start(config.id, 0) == SshForwardingResult::MissingGeneration);
+    RDP_ASSERT(manager.start(config.id, 31) == SshForwardingResult::Ok);
+}

@@ -193,6 +193,116 @@ void SshAdapter::setSessionGeneration(uint64_t generation) {
     diagnostics_.setSessionGeneration(generation);
 }
 
+SshForwardingResult SshAdapter::configureForwarding(const SshForwardingConfig& config) {
+    std::lock_guard<std::recursive_mutex> lifecycleLock(lifecycleMutex_);
+    return forwardingManager_.upsert(config);
+}
+
+SshForwardingResult SshAdapter::removeForwarding(const std::string& id) {
+    std::lock_guard<std::recursive_mutex> lifecycleLock(lifecycleMutex_);
+    return forwardingManager_.remove(id);
+}
+
+SshForwardingResult SshAdapter::startForwarding(const std::string& id,
+                                                uint64_t expectedGeneration) {
+    auto operation = [this, id, expectedGeneration]() {
+        const uint64_t currentGeneration = diagnostics_.sessionGeneration();
+        if (expectedGeneration == 0 || currentGeneration == 0 ||
+            expectedGeneration != currentGeneration) {
+            return SshForwardingResult::StaleSession;
+        }
+        if (!readerRunning_.load(std::memory_order_acquire) ||
+            state_.load(std::memory_order_acquire) != ConnectionState::CONNECTED) {
+            return SshForwardingResult::InvalidState;
+        }
+        return forwardingManager_.start(id, currentGeneration);
+    };
+    if (isReactorThread()) {
+        return operation();
+    }
+    return runOnReactor(operation);
+}
+
+SshForwardingResult SshAdapter::markForwardingListening(
+    const std::string& id, uint64_t expectedGeneration) {
+    auto operation = [this, id, expectedGeneration]() {
+        const uint64_t currentGeneration = diagnostics_.sessionGeneration();
+        if (expectedGeneration == 0 || currentGeneration == 0 ||
+            expectedGeneration != currentGeneration) {
+            return SshForwardingResult::StaleSession;
+        }
+        return forwardingManager_.markListening(id, currentGeneration);
+    };
+    if (isReactorThread()) {
+        return operation();
+    }
+    return runOnReactor(operation);
+}
+
+SshForwardingResult SshAdapter::failForwarding(const std::string& id,
+                                               uint64_t expectedGeneration,
+                                               int error) {
+    auto operation = [this, id, expectedGeneration, error]() {
+        const uint64_t currentGeneration = diagnostics_.sessionGeneration();
+        if (expectedGeneration == 0 || currentGeneration == 0 ||
+            expectedGeneration != currentGeneration) {
+            return SshForwardingResult::StaleSession;
+        }
+        return forwardingManager_.fail(id, currentGeneration, error);
+    };
+    if (isReactorThread()) {
+        return operation();
+    }
+    return runOnReactor(operation);
+}
+
+SshForwardingResult SshAdapter::requestForwardingStop(
+    const std::string& id, uint64_t expectedGeneration) {
+    auto operation = [this, id, expectedGeneration]() {
+        return forwardingManager_.requestStop(id, expectedGeneration);
+    };
+    if (isReactorThread()) {
+        return operation();
+    }
+    return runOnReactor(operation);
+}
+
+SshForwardingResult SshAdapter::completeForwardingStop(const std::string& id) {
+    auto operation = [this, id]() {
+        return forwardingManager_.completeStop(id);
+    };
+    if (isReactorThread()) {
+        return operation();
+    }
+    return runOnReactor(operation);
+}
+
+SshForwardingResult SshAdapter::acquireForwardingConnection(
+    const std::string& id, uint64_t expectedGeneration) {
+    auto operation = [this, id, expectedGeneration]() {
+        return forwardingManager_.acquireConnection(id, expectedGeneration);
+    };
+    if (isReactorThread()) {
+        return operation();
+    }
+    return runOnReactor(operation);
+}
+
+SshForwardingResult SshAdapter::releaseForwardingConnection(
+    const std::string& id, uint64_t expectedGeneration) {
+    auto operation = [this, id, expectedGeneration]() {
+        return forwardingManager_.releaseConnection(id, expectedGeneration);
+    };
+    if (isReactorThread()) {
+        return operation();
+    }
+    return runOnReactor(operation);
+}
+
+std::vector<SshForwardingSnapshot> SshAdapter::forwardingSnapshots() const {
+    return forwardingManager_.snapshots();
+}
+
 SshTerminalDiagnosticsSnapshot SshAdapter::terminalDiagnostics() const {
     return diagnostics_.snapshot();
 }
@@ -1566,6 +1676,7 @@ void SshAdapter::disconnect() {
     keepaliveNextDue_ = std::chrono::steady_clock::time_point::max();
     keepaliveConsecutiveFailures_ = 0;
     transportRecoveryRequested_.store(false, std::memory_order_release);
+    forwardingManager_.resetRuntimeAfterTransportClose();
     // Do not invoke user code while sessionMutex_ is held. A state callback
     // can synchronously update the page and call back into disconnect/send.
     setState(ConnectionState::DISCONNECTED, "SSH disconnected");
@@ -1604,6 +1715,7 @@ void SshAdapter::resetTransportForRecovery() {
     authenticated_ = false;
     keepaliveNextDue_ = std::chrono::steady_clock::time_point::max();
     keepaliveConsecutiveFailures_ = 0;
+    forwardingManager_.resetRuntimeAfterTransportClose();
 }
 
 bool SshAdapter::reconnectAfterTransportFailure() {

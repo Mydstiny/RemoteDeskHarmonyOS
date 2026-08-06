@@ -262,6 +262,17 @@ SshForwardingResult SshForwardingManager::releaseConnection(
     return SshForwardingResult::Ok;
 }
 
+void SshForwardingManager::resetRuntimeAfterTransportClose() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto& [id, entry] : entries_) {
+        (void)id;
+        entry.state = SshForwardingState::Stopped;
+        entry.sessionGeneration = 0;
+        entry.activeConnections = 0;
+        entry.lastError = 0;
+    }
+}
+
 SshForwardingSnapshot SshForwardingManager::toSnapshot(const Entry& entry) {
     return {entry.config, entry.state, entry.sessionGeneration,
             entry.activeConnections, entry.lastError};

@@ -26,6 +26,7 @@
 #include "ssh_terminal_input_queue_policy.h"
 #include "ssh_terminal_keepalive_policy.h"
 #include "ssh_pty_recovery_policy.h"
+#include "ssh_forwarding_manager.h"
 
 #define SSH_ADAPTER_VERSION "2.0.0"
 #define SSH_BUFFER_SIZE 65536
@@ -134,6 +135,25 @@ public:
     void setConnectionStateCallback(ConnectionStateCallback callback) override;
     void setSessionIdentity(uint64_t sessionId) override;
     void setSessionGeneration(uint64_t generation);
+
+    // Forwarding profiles are owned by this SSH adapter. Runtime transitions
+    // are serialized through the same session-owner reactor as libssh2.
+    SshForwardingResult configureForwarding(const SshForwardingConfig& config);
+    SshForwardingResult removeForwarding(const std::string& id);
+    SshForwardingResult startForwarding(const std::string& id,
+                                        uint64_t expectedGeneration);
+    SshForwardingResult markForwardingListening(const std::string& id,
+                                                uint64_t expectedGeneration);
+    SshForwardingResult failForwarding(const std::string& id,
+                                       uint64_t expectedGeneration, int error);
+    SshForwardingResult requestForwardingStop(const std::string& id,
+                                              uint64_t expectedGeneration);
+    SshForwardingResult completeForwardingStop(const std::string& id);
+    SshForwardingResult acquireForwardingConnection(const std::string& id,
+                                                    uint64_t expectedGeneration);
+    SshForwardingResult releaseForwardingConnection(const std::string& id,
+                                                    uint64_t expectedGeneration);
+    std::vector<SshForwardingSnapshot> forwardingSnapshots() const;
 
     bool supportsNatTraversal() override { return false; }
     bool supportsFileTransfer() override { return true; }
@@ -258,6 +278,7 @@ private:
     // lifetime fence while individual network slices release sessionMutex_.
     std::mutex sftpOperationMutex_;
     ConnectionConfig savedCfg_;
+    SshForwardingManager forwardingManager_;
     int lastPtyLibssh2Error_ = 0;
     SshPtyFailureClass lastPtyFailureClass_ = SshPtyFailureClass::NONE;
 
@@ -409,6 +430,8 @@ private:
                 return;
             } else if constexpr (std::is_same_v<Result, int>) {
                 return ERR_SSH_REACTOR_QUEUE_FULL;
+            } else if constexpr (std::is_same_v<Result, SshForwardingResult>) {
+                return SshForwardingResult::Busy;
             } else {
                 return Result{};
             }
