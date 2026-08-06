@@ -4,7 +4,7 @@
 - Task: `ssh-terminal-complete-upgrade`
 - Base: `main@d2769ad4b`
 - Branch: `codex/ssh-terminal-complete-upgrade`
-- Code checkpoint: `a09e267` (`fix(ssh): publish renderer and FRP types`), following `d374a610f` (`fix(ssh): harden surface and forwarding failures`); keyed surface recovery, forwarding lifecycle, adapter reactor binding, and the generation-guarded NAPI/ArkTS bridge are committed.
+- Code checkpoint: `24d701f` (`fix(ssh): avoid api23 gpu surface abort`), following `a09e267` (`fix(ssh): publish renderer and FRP types`); keyed surface recovery, forwarding lifecycle, adapter reactor binding, and the generation-guarded NAPI/ArkTS bridge are committed.
 - Phase: Alacritty core and xterm-safe visible fallback; lifecycle, VT/Unicode/resize/TUI/large-output parity, per-host output isolation, code-only host-switch/surface refresh recovery, guarded surface fallback, and native forwarding contract.
 - Scope: migrate VT behind terminalCore, keep appearance settings in-core, verify IME/input/Canvas behavior. Homepage work is not current focus.
 
