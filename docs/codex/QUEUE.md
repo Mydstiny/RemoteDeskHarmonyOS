@@ -22,7 +22,9 @@ Updated: 2026-08-06 Asia/Shanghai
   the xterm reload guard includes the revision token. GPU host/revision prop
   changes now invalidate stale surface observations and attach retries through
   a binding lease before a retained host core is rebound; refresh fences reject
-  an old attached owner before reporting the new renderer ready.
+  an old attached owner before reporting the new renderer ready. The explicit
+  repaint fence now has one recovery transaction, and a failed native dirty
+  frame triggers a retained full-snapshot redraw before the surface is retried.
 - Same-page SSH host switching now rejects stale async connect/attach/data/PiP
   continuations using an independent binding generation, cancels pending
   handshakes before switching, and retains detach-race output per host. The
@@ -82,4 +84,5 @@ Updated: 2026-08-06 Asia/Shanghai
 - `ohosTest@OhosTestCompileArkTS` is unregistered (`00306054`).
 - Light compliance is blocked by baseline SBOM package
   `totp-reviewed-brand-assets` with `licenseDeclared=NOASSERTION`.
-- Host native suite has 16 pre-existing VNC TLS fixture startup failures.
+- Host native suite has 260 passing tests and 16 pre-existing VNC TLS fixture
+  startup failures (276 total).

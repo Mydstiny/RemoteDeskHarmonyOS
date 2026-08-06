@@ -3,8 +3,8 @@
   "task": "ssh-terminal-complete-upgrade",
   "branch": "codex/ssh-terminal-complete-upgrade",
   "base": "d2769ad4b",
-  "head": "e987a95",
-  "phase": "alacritty-core-vt-parity-code-only-same-page-surface-commit-gpu-lease-guarded",
+  "head": "8ddb333",
+  "phase": "alacritty-core-vt-parity-code-only-same-page-surface-commit-gpu-full-refresh-recovery",
   "status": "active",
   "next": "Independently review the same-page SSH binding commit, deterministic host/binding/revision keyed remount, surface-owner guard, bounded native-ready fallback, render-revision owner lease, synchronous GPU detach and EGL refresh; device validation is deferred per user instruction, then implement Level B connectivity contracts.",
   "blockers": [
@@ -56,6 +56,8 @@
       "entry/src/test/TransferSessionPolicy.test.ets",
       "entry/src/main/cpp/terminal/terminal_core_napi.cpp",
       "entry/src/main/cpp/terminal/terminal_core_napi.h",
+      "entry/src/main/cpp/terminal/ssh_terminal_renderer.cpp",
+      "entry/src/main/cpp/terminal/ssh_terminal_renderer.h",
       "entry/src/main/ets/components/NativeTerminalRenderer.ets",
       "entry/src/main/ets/components/SshXtermSurface.ets",
       "entry/src/main/ets/components/GpuTerminalRenderer.ets",
@@ -80,15 +82,15 @@
       "rustdesk_ffi/src/terminal_core/mod.rs",
       "rustdesk_ffi/src/terminal_core/tests.rs"
     ],
-    "reason": "The committed Alacritty/SSH lifecycle scope has a PASS receipt; checkpoints 6573a1d, a2016df, 2e6163d, 8554376, d53725d and ffa0f9e add same-page SSH binding-generation, xterm/native surface refresh recovery, surface ownership, bounded fallback, forced remount, EGL refresh, explicit surface-flush acknowledgement, surface-ID polling, measured-size rebind and final renderer teardown. The working-tree route-level host switch, surface gate, transient-CONNECTING mount-wake fix, committed view-key/keyed wrapper, and explicit reused-renderer revision/owner-lease rebind require independent review."
+    "reason": "The committed Alacritty/SSH lifecycle scope has a PASS receipt; checkpoints 6573a1d, a2016df, 2e6163d, 8554376, d53725d and ffa0f9e add same-page SSH binding-generation, xterm/native surface refresh recovery, surface ownership, bounded fallback, forced remount, EGL refresh, explicit surface-flush acknowledgement, surface-ID polling, measured-size rebind and final renderer teardown. Checkpoint 8ddb333 adds the page-owned full-refresh transaction and native dirty-to-full fallback. The route-level host switch, surface gate, transient-CONNECTING mount-wake fix, committed view-key/keyed wrapper, reused-renderer revision/owner-lease rebind, and dirty/full-frame recovery require independent review."
   },
   "lastVerification": {
-    "host_native_tests": "254-pass-16-preexisting-vnc-fixture-startup-failures-270-total-2026-08-04",
+    "host_native_tests": "260-pass-16-preexisting-vnc-fixture-startup-failures-276-total-2026-08-06",
     "rust_terminal_core_tests": "focused-alacritty-63-pass-fallback-57-pass-2026-08-04; full-no-default-features-156-pass-1-preexisting-rendezvous-fixture-public-address-failure-157-total",
     "terminalParity": "alacritty-67-pass-fallback-57-pass-unicode-ansi-tui-resize-large-output-damage-2026-08-04",
-    "default@OhosTestCompileArkTS": "pass-host-switch-surface-refresh-mount-wake-deterministic-keyed-remount-renderer-owner-lease-explicit-surface-commit-sync-gpu-detach-2026-08-06",
-    "assembleHap": "pass-build-successful-signed-host-switch-surface-refresh-mount-wake-deterministic-keyed-remount-renderer-owner-lease-explicit-surface-commit-sync-gpu-detach-2026-08-06",
-    "gitDiffCheck": "pass-deterministic-keyed-remount-refresh-owner-lease-2026-08-06",
+    "default@OhosTestCompileArkTS": "pass-host-switch-surface-refresh-mount-wake-deterministic-keyed-remount-renderer-owner-lease-explicit-surface-commit-sync-gpu-detach-dirty-full-refresh-recovery-2026-08-06",
+    "assembleHap": "pass-build-successful-signed-host-switch-surface-refresh-mount-wake-deterministic-keyed-remount-renderer-owner-lease-explicit-surface-commit-sync-gpu-detach-dirty-full-refresh-recovery-2026-08-06",
+    "gitDiffCheck": "pass-deterministic-keyed-remount-refresh-owner-lease-dirty-full-refresh-recovery-2026-08-06",
     "sbom": "pass-totp-validator-96-packages-282-files-282-relationships-2026-08-04",
     "ohosTest": "blocked-task-00306054",
     "lightCompliance": "blocked-baseline-sbom-NOASSERTION-totp-reviewed-brand-assets",

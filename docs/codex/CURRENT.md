@@ -4,7 +4,7 @@
 - Task: `ssh-terminal-complete-upgrade`
 - Base: `main@d2769ad4b`
 - Branch: `codex/ssh-terminal-complete-upgrade`
-- Code checkpoint: `e987a95` (`fix(ssh): finalize same-page terminal surface rebinding`); same-page binding commit, synchronous GPU lease detach, and renderer navigation-state cleanup are committed.
+- Code checkpoint: `8ddb333` (`fix(ssh): recover retained terminal frame refresh`); same-page binding commit, synchronous GPU lease detach, and retained-frame refresh recovery are committed.
 - Phase: Alacritty default; lifecycle, VT/Unicode/resize/TUI/large-output parity, per-host output isolation and code-only host-switch/surface refresh recovery.
 - Scope: migrate VT behind terminalCore, keep appearance settings in-core, verify IME/input/Canvas behavior. Homepage work is not current focus.
 
@@ -43,7 +43,10 @@
   changes. Adopted sessions with transient `CONNECTING` stay visible and wake
   mount retry synchronously. A monotonic surface-commit sequence now drives the
   ArkUI renderer-list identity, and host/surface/revision prop changes detach
-  the old GPU lease synchronously before the new bind is scheduled.
+  the old GPU lease synchronously before the new bind is scheduled. The
+  renderer now serializes the explicit full-refresh fence and re-enters the
+  detach/rebind/poll path when a repaint is not acknowledged; native dirty-frame
+  failures immediately fall back to a retained full snapshot.
 
 ## SSH Connectivity Boundary
 
@@ -58,7 +61,7 @@
 ## Verification
 
 - `git diff --check`: passed after the deterministic keyed-remount correction on 2026-08-06.
-- Host native tests: `254 passed, 16 failed, 270 total`; all failures are the
+- Host native tests: `260 passed, 16 failed, 276 total`; all failures are the
   existing VNC TLS fixture startup failures; the keepalive/SSH diagnostics
   tests pass.
 - Rust `cargo test --manifest-path rustdesk_ffi/Cargo.toml --lib
@@ -67,7 +70,8 @@
 - `default@OhosTestCompileArkTS`: passed for the host-switch surface refresh,
   transient-`CONNECTING` mount wake, deterministic keyed remount,
   revision-aware renderer owner/document correction, explicit surface-commit
-  sequence, and synchronous GPU lease detach on 2026-08-06; warnings only.
+  sequence, synchronous GPU lease detach, and retained dirty/full-frame refresh
+  recovery on 2026-08-06; warnings only.
 - `assembleHap`: the same code-only correction passed with `BUILD SUCCESSFUL`
   and signing on 2026-08-06.
 - Terminal-core Rust tests: Alacritty path `63 passed, 0 failed`; fallback
@@ -83,7 +87,7 @@
 
 ## Review
 
-- Existing independent review passed the bounded-output and IME/socket increments; checkpoint `ffa0f9e` plus the current keyed-surface, mount-wake, deterministic keyed remount, renderer-owner lease, revision-aware document, and GPU refresh owner-lease correction remains `REVIEW_REQUIRED` until review.
+- Existing independent review passed the bounded-output and IME/socket increments; checkpoint `ffa0f9e` plus the current keyed-surface, mount-wake, deterministic keyed remount, renderer-owner lease, revision-aware document, GPU refresh owner-lease, and dirty/full-frame recovery correction remains `REVIEW_REQUIRED` until review.
 - SFTP scope is closed for this pass; real-device/endpoint evidence is not a Level A completion claim.
 - Device evidence covers injected input and lifecycle; external keyboard/IME, GPU re-enable, bastion/forwarding/FRP evidence remain open.
 
