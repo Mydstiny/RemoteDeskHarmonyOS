@@ -129,6 +129,24 @@ RDP_TEST_CASE(ssh_forwarding_manager_rejects_mutation_while_active) {
     RDP_ASSERT(manager.remove(config.id) == SshForwardingResult::Ok);
 }
 
+RDP_TEST_CASE(ssh_forwarding_manager_rejects_replace_with_failed_connections) {
+    SshForwardingManager manager;
+    SshForwardingConfig config = localConfig("failed-active");
+    RDP_ASSERT(manager.upsert(config) == SshForwardingResult::Ok);
+    RDP_ASSERT(manager.start(config.id, 25) == SshForwardingResult::Ok);
+    RDP_ASSERT(manager.markListening(config.id, 25) == SshForwardingResult::Ok);
+    RDP_ASSERT(manager.acquireConnection(config.id, 25) == SshForwardingResult::Ok);
+    RDP_ASSERT(manager.fail(config.id, 25, -9001) == SshForwardingResult::Ok);
+
+    SshForwardingConfig replacement = config;
+    replacement.targetPort = 2222;
+    RDP_ASSERT(manager.upsert(replacement) == SshForwardingResult::Busy);
+
+    RDP_ASSERT(manager.releaseConnection(config.id, 25) == SshForwardingResult::Ok);
+    RDP_ASSERT(manager.completeStop(config.id) == SshForwardingResult::Ok);
+    RDP_ASSERT(manager.upsert(replacement) == SshForwardingResult::Ok);
+}
+
 RDP_TEST_CASE(ssh_forwarding_manager_resets_runtime_but_keeps_profiles) {
     SshForwardingManager manager;
     SshForwardingConfig config = localConfig("persistent");
@@ -147,4 +165,30 @@ RDP_TEST_CASE(ssh_forwarding_manager_resets_runtime_but_keeps_profiles) {
     RDP_ASSERT(snapshot.config.id == "persistent");
     RDP_ASSERT(manager.start(config.id, 0) == SshForwardingResult::MissingGeneration);
     RDP_ASSERT(manager.start(config.id, 31) == SshForwardingResult::Ok);
+}
+
+RDP_TEST_CASE(ssh_forwarding_manager_enforces_byte_budget_and_expiry) {
+    SshForwardingManager manager;
+    SshForwardingConfig config = localConfig("budgeted");
+    config.maxBytes = 8;
+    config.expiresAtMs = 0;
+    RDP_ASSERT(manager.upsert(config) == SshForwardingResult::Ok);
+    RDP_ASSERT(manager.start(config.id, 50) == SshForwardingResult::Ok);
+    RDP_ASSERT(manager.markListening(config.id, 50) == SshForwardingResult::Ok);
+    RDP_ASSERT_EQ(manager.remainingBytes(config.id, 50), 8U);
+    RDP_ASSERT(manager.recordBytes(config.id, 50, 5) == SshForwardingResult::Ok);
+    RDP_ASSERT_EQ(manager.remainingBytes(config.id, 50), 3U);
+    RDP_ASSERT(manager.recordBytes(config.id, 50, 3) == SshForwardingResult::Ok);
+    RDP_ASSERT_EQ(manager.remainingBytes(config.id, 50), 0U);
+    RDP_ASSERT(manager.checkRuntimeLimits(config.id, 50) == SshForwardingResult::ByteLimit);
+    SshForwardingSnapshot snapshot;
+    RDP_ASSERT(manager.snapshot(config.id, snapshot));
+    RDP_ASSERT(snapshot.state == SshForwardingState::Failed);
+    RDP_ASSERT_EQ(snapshot.transferredBytes, 8U);
+    RDP_ASSERT_EQ(snapshot.config.maxBytes, 8U);
+
+    SshForwardingConfig expired = localConfig("expired");
+    expired.expiresAtMs = 1;
+    RDP_ASSERT(manager.upsert(expired) == SshForwardingResult::Ok);
+    RDP_ASSERT(manager.start(expired.id, 51) == SshForwardingResult::Expired);
 }

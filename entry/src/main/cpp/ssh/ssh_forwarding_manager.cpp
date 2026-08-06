@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <limits>
 
 namespace {
 
@@ -16,6 +17,11 @@ std::string trim(const std::string& value) {
         --end;
     }
     return value.substr(begin, end - begin);
+}
+
+uint64_t currentTimeMs() {
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count());
 }
 
 } // namespace
@@ -49,6 +55,10 @@ std::string SshForwardingManager::trimAndBound(const std::string& value,
 
 bool SshForwardingManager::isValidPort(int port) {
     return port >= 1 && port <= 65535;
+}
+
+uint64_t SshForwardingManager::nowMs() {
+    return currentTimeMs();
 }
 
 SshForwardingResult SshForwardingManager::validateAndNormalize(SshForwardingConfig& config) {
@@ -110,6 +120,12 @@ SshForwardingResult SshForwardingManager::upsert(const SshForwardingConfig& conf
     if (existing == entries_.end() && entries_.size() >= kMaxProfiles) {
         return SshForwardingResult::ProfileLimit;
     }
+    if (existing != entries_.end() && existing->second.activeConnections != 0) {
+        // A failed runtime can still have connections waiting for the owner
+        // reactor to close them. Replacing the profile here would clear the
+        // count and let stale callbacks release against a new configuration.
+        return SshForwardingResult::Busy;
+    }
     if (existing != entries_.end() &&
         existing->second.state != SshForwardingState::Stopped &&
         existing->second.state != SshForwardingState::Failed) {
@@ -153,14 +169,11 @@ SshForwardingResult SshForwardingManager::start(const std::string& id,
     if (!entry->second.config.enabled) {
         return SshForwardingResult::Disabled;
     }
-    if (entry->second.config.expiresAtMs != 0) {
-        const uint64_t now = static_cast<uint64_t>(std::chrono::duration_cast<
-            std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
-        if (now >= entry->second.config.expiresAtMs) {
-            entry->second.state = SshForwardingState::Failed;
-            entry->second.lastError = static_cast<int>(SshForwardingResult::InvalidState);
-            return SshForwardingResult::InvalidState;
-        }
+    if (entry->second.config.expiresAtMs != 0 &&
+        nowMs() >= entry->second.config.expiresAtMs) {
+        entry->second.state = SshForwardingState::Failed;
+        entry->second.lastError = static_cast<int>(SshForwardingResult::Expired);
+        return SshForwardingResult::Expired;
     }
     if ((entry->second.state != SshForwardingState::Stopped &&
          entry->second.state != SshForwardingState::Failed) ||
@@ -170,6 +183,7 @@ SshForwardingResult SshForwardingManager::start(const std::string& id,
     entry->second.state = SshForwardingState::Starting;
     entry->second.sessionGeneration = sessionGeneration;
     entry->second.lastError = 0;
+    entry->second.transferredBytes = 0;
     return SshForwardingResult::Ok;
 }
 
@@ -258,6 +272,10 @@ SshForwardingResult SshForwardingManager::acquireConnection(
     if (!generationMatches(entry->second, sessionGeneration)) {
         return SshForwardingResult::StaleSession;
     }
+    const SshForwardingResult limits = checkRuntimeLimitsLocked(entry->second, sessionGeneration);
+    if (limits != SshForwardingResult::Ok) {
+        return limits;
+    }
     if (entry->second.state != SshForwardingState::Listening) {
         return SshForwardingResult::InvalidState;
     }
@@ -282,6 +300,94 @@ SshForwardingResult SshForwardingManager::releaseConnection(
         return SshForwardingResult::InvalidState;
     }
     --entry->second.activeConnections;
+    return SshForwardingResult::Ok;
+}
+
+SshForwardingResult SshForwardingManager::recordBytes(const std::string& id,
+                                                      uint64_t sessionGeneration,
+                                                      uint64_t bytes) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto entry = entries_.find(id);
+    if (entry == entries_.end()) {
+        return SshForwardingResult::NotFound;
+    }
+    if (!generationMatches(entry->second, sessionGeneration)) {
+        return SshForwardingResult::StaleSession;
+    }
+    const SshForwardingResult limits = checkRuntimeLimitsLocked(entry->second, sessionGeneration);
+    if (limits != SshForwardingResult::Ok) {
+        return limits;
+    }
+    if (entry->second.state != SshForwardingState::Listening) {
+        return SshForwardingResult::InvalidState;
+    }
+    if (entry->second.config.maxBytes != 0 &&
+        bytes > entry->second.config.maxBytes - entry->second.transferredBytes) {
+        entry->second.state = SshForwardingState::Failed;
+        entry->second.lastError = static_cast<int>(SshForwardingResult::ByteLimit);
+        return SshForwardingResult::ByteLimit;
+    }
+    if (bytes > std::numeric_limits<uint64_t>::max() - entry->second.transferredBytes) {
+        entry->second.state = SshForwardingState::Failed;
+        entry->second.lastError = static_cast<int>(SshForwardingResult::ByteLimit);
+        return SshForwardingResult::ByteLimit;
+    }
+    entry->second.transferredBytes += bytes;
+    return SshForwardingResult::Ok;
+}
+
+uint64_t SshForwardingManager::remainingBytes(const std::string& id,
+                                              uint64_t sessionGeneration) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto entry = entries_.find(id);
+    if (entry == entries_.end() || !generationMatches(entry->second, sessionGeneration) ||
+        entry->second.state != SshForwardingState::Listening) {
+        return 0;
+    }
+    if (entry->second.config.expiresAtMs != 0 &&
+        nowMs() >= entry->second.config.expiresAtMs) {
+        return 0;
+    }
+    if (entry->second.config.maxBytes == 0) {
+        return std::numeric_limits<uint64_t>::max();
+    }
+    if (entry->second.transferredBytes >= entry->second.config.maxBytes) {
+        return 0;
+    }
+    return entry->second.config.maxBytes - entry->second.transferredBytes;
+}
+
+SshForwardingResult SshForwardingManager::checkRuntimeLimits(
+    const std::string& id, uint64_t sessionGeneration) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto entry = entries_.find(id);
+    if (entry == entries_.end()) {
+        return SshForwardingResult::NotFound;
+    }
+    if (!generationMatches(entry->second, sessionGeneration)) {
+        return SshForwardingResult::StaleSession;
+    }
+    return checkRuntimeLimitsLocked(entry->second, sessionGeneration);
+}
+
+SshForwardingResult SshForwardingManager::checkRuntimeLimitsLocked(
+    Entry& entry, uint64_t sessionGeneration) {
+    if (!generationMatches(entry, sessionGeneration)) {
+        return SshForwardingResult::StaleSession;
+    }
+    if (entry.state != SshForwardingState::Listening) {
+        return SshForwardingResult::InvalidState;
+    }
+    if (entry.config.expiresAtMs != 0 && nowMs() >= entry.config.expiresAtMs) {
+        entry.state = SshForwardingState::Failed;
+        entry.lastError = static_cast<int>(SshForwardingResult::Expired);
+        return SshForwardingResult::Expired;
+    }
+    if (entry.config.maxBytes != 0 && entry.transferredBytes >= entry.config.maxBytes) {
+        entry.state = SshForwardingState::Failed;
+        entry.lastError = static_cast<int>(SshForwardingResult::ByteLimit);
+        return SshForwardingResult::ByteLimit;
+    }
     return SshForwardingResult::Ok;
 }
 
