@@ -1,4 +1,3 @@
-import { buffer, util } from '@kit.ArkTS';
 import {
   RustDeskControlPlaneCapabilityProof
 } from './RustDeskControlPlaneCapabilityModels';
@@ -30,10 +29,8 @@ export class RustDeskProPeer {
   note: string = '';
 
   /**
-   * RustDesk personal address books return the remembered password as a
-   * base64-encoded `hash` field. Shared address books may return `password`.
-   * Keep the decoded value in memory only; RemoteHost/CloudStore encrypt it
-   * when it is persisted locally.
+   * Only an explicit `password` field is a usable credential. The address-book
+   * `hash` field is a digest/identity value and must never be decoded as text.
    */
   password: string = '';
 
@@ -47,14 +44,6 @@ export class RustDeskProPeer {
     peer.note = typeof json['note'] === 'string' ? json['note'] as string : '';
     if (typeof json['password'] === 'string') {
       peer.password = json['password'] as string;
-    }
-    if (peer.password.length === 0 && typeof json['hash'] === 'string') {
-      try {
-        const bytes: Uint8Array = new util.Base64Helper().decodeSync(json['hash'] as string);
-        peer.password = buffer.from(bytes).toString('utf-8');
-      } catch (_err) {
-        // A malformed/unsupported hash must not make the whole address book fail.
-      }
     }
     const rawTags: Object | undefined = json['tags'];
     if (Array.isArray(rawTags)) {

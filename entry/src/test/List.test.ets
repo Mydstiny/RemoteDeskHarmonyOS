@@ -52,6 +52,7 @@ import rustDeskProAddressBookTest from './RustDeskProAddressBook.test';
 import rustDeskProAddressBookApiServiceTest from './RustDeskProAddressBookApiService.test';
 import rustDeskProAddressBookSyncServiceTest from './RustDeskProAddressBookSyncService.test';
 import rustDeskProAddressBookUiPolicyTest from './RustDeskProAddressBookUiPolicy.test';
+import rustDeskProSyncPolicyTest from './RustDeskProSyncPolicy.test';
 import cloudSensitiveTransferPolicyTest from './CloudSensitiveTransferPolicy.test';
 import legacyRelayMigrationPolicyTest from './LegacyRelayMigrationPolicy.test';
 import dataLifecycleMatrixTest from './DataLifecycleMatrix.test';
@@ -197,6 +198,7 @@ export default function testsuite() {
   rustDeskProAddressBookApiServiceTest();
   rustDeskProAddressBookSyncServiceTest();
   rustDeskProAddressBookUiPolicyTest();
+  rustDeskProSyncPolicyTest();
   cloudSensitiveTransferPolicyTest();
   legacyRelayMigrationPolicyTest();
   dataLifecycleMatrixTest();

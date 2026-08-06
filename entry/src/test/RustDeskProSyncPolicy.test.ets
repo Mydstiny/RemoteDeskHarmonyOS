@@ -9,11 +9,12 @@ import {
   rustDeskProHostPortableJSON
 } from '../main/ets/services/RustDeskProSyncPolicy';
 
-function peer(id: string, alias: string, platform: string = ''): RustDeskProPeer {
+function peer(id: string, alias: string, platform: string = '', password: string = ''): RustDeskProPeer {
   const value = new RustDeskProPeer();
   value.id = id;
   value.alias = alias;
   value.platform = platform;
+  value.password = password;
   return value;
 }
 
@@ -30,6 +31,31 @@ function manualHost(id: string): RemoteHost {
 
 export default function rustDeskProSyncPolicyTest() {
   describe('RustDeskProSyncPolicy', () => {
+    it('does_not_decode_address_book_hash_as_password', 0, () => {
+      const fromHash = RustDeskProPeer.fromJSON({
+        id: '123',
+        hash: 'c2VydmVyLWhhc2g='
+      } as Record<string, Object>);
+      expect(fromHash.password).assertEqual('');
+
+      const explicit = RustDeskProPeer.fromJSON({
+        id: '123',
+        password: 'server-password'
+      } as Record<string, Object>);
+      expect(explicit.password).assertEqual('server-password');
+    });
+
+    it('does_not_replace_a_manual_password_on_resync', 0, () => {
+      const first = reconcileRustDeskProHosts([], 'relay-1', 'acct-1',
+        [peer('123', 'Office', '', 'server-password')], 100);
+      first.hosts[0].password = 'manual-password';
+      first.hosts[0].rustdeskAuthMode = 'password';
+      const second = reconcileRustDeskProHosts(first.hosts, 'relay-1', 'acct-1',
+        [peer('123', 'Office', '', 'rotated-server-password')], 200);
+      expect(second.hosts[0].password).assertEqual('manual-password');
+      expect(second.hosts[0].rustdeskAuthMode).assertEqual('password');
+    });
+
     it('creates_stable_managed_hosts', 0, () => {
       const result = reconcileRustDeskProHosts([], 'relay-1', 'acct-1', [peer('123', 'Office', 'Windows')], 100);
       expect(result.addedIds.length).assertEqual(1);

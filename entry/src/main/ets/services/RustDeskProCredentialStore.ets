@@ -69,7 +69,7 @@ export class RustDeskProCredentialStore {
    * metadata remains durable and is marked as requiring authentication.
    */
   clearForScopeTransition(): boolean {
-    if (!this.loaded) { this.load(); }
+    if (!this.ensureLoaded()) { return false; }
     const accountIds: string[] = [];
     for (let i = 0; i < this.accounts.length; i++) {
       const id: string = this.accounts[i].id.trim();
@@ -204,54 +204,65 @@ export class RustDeskProCredentialStore {
     }
   }
 
-  private load(): void {
-    this.loaded = true;
-    if (!this.context) { return; }
+  private load(): boolean {
+    if (this.loaded) { return true; }
+    if (!this.context) { return false; }
     try {
       const prefs = preferences.getPreferencesSync(this.context, { name: this.activeStoreName() });
       const raw: string = prefs.getSync(ACCOUNTS_KEY, '') as string;
-      if (raw.length === 0) { return; }
-      const parsed: Object = JSON.parse(raw) as Object;
-      if (!Array.isArray(parsed)) { return; }
-      const rows: Object[] = parsed as Object[];
+      const nextAccounts: RustDeskProAccountState[] = [];
       let legacySecretFound: boolean = false;
-      for (let i = 0; i < rows.length; i++) {
-        if (rows[i] && typeof rows[i] === 'object') {
-          const row = rows[i] as Record<string, Object>;
-          const accountId: string =
-            typeof row['id'] === 'string'
-              ? row['id'] as string : '';
-          const storedLoginStatus: string =
-            typeof row['loginStatus'] === 'string'
-              ? row['loginStatus'] as string : '';
-          const legacyToken: string =
-            typeof row['accessToken'] === 'string'
-              ? row['accessToken'] as string : '';
-          let accessToken: string = '';
-          if (legacyToken !== '') {
-            legacySecretFound = true;
-            if (storedLoginStatus !==
-              'requires_login' &&
-              this.writeToken(accountId, legacyToken)) {
-              accessToken = legacyToken;
+      if (raw.length > 0) {
+        const parsed: Object = JSON.parse(raw) as Object;
+        if (!Array.isArray(parsed)) { return false; }
+        const rows: Object[] = parsed as Object[];
+        for (let i = 0; i < rows.length; i++) {
+          if (rows[i] && typeof rows[i] === 'object') {
+            const row = rows[i] as Record<string, Object>;
+            const accountId: string =
+              typeof row['id'] === 'string'
+                ? row['id'] as string : '';
+            const storedLoginStatus: string =
+              typeof row['loginStatus'] === 'string'
+                ? row['loginStatus'] as string : '';
+            const legacyToken: string =
+              typeof row['accessToken'] === 'string'
+                ? row['accessToken'] as string : '';
+            let accessToken: string = '';
+            if (legacyToken !== '') {
+              legacySecretFound = true;
+              if (storedLoginStatus !==
+                'requires_login' &&
+                this.writeToken(accountId, legacyToken)) {
+                accessToken = legacyToken;
+              }
+            } else if (storedLoginStatus !==
+              'requires_login') {
+              accessToken = this.readToken(accountId);
             }
-          } else if (storedLoginStatus !==
-            'requires_login') {
-            accessToken = this.readToken(accountId);
+            nextAccounts.push(
+              this.fromRecord(row, accessToken));
           }
-          this.accounts.push(
-            this.fromRecord(row, accessToken));
         }
       }
+      this.accounts = nextAccounts;
       if (legacySecretFound) {
         // Scrub plaintext tokens even if Asset Store was unavailable. The
         // affected Pro account becomes expired and must be authenticated
         // again rather than leaving a reusable token in Preferences.
         this.persist();
       }
+      this.loaded = true;
+      return true;
     } catch (_err) {
-      this.accounts = [];
+      // Keep the previous in-memory snapshot and retry on the next access.
+      // In particular, do not turn a read failure into an empty save.
+      return false;
     }
+  }
+
+  private ensureLoaded(): boolean {
+    return this.loaded || this.load();
   }
 
   private fromRecord(
@@ -354,15 +365,18 @@ export class RustDeskProCredentialStore {
   }
 
   getAll(): RustDeskProAccountState[] {
+    if (!this.ensureLoaded()) { return []; }
     return this.accounts.map((account: RustDeskProAccountState): RustDeskProAccountState => this.clone(account));
   }
 
   get(id: string): RustDeskProAccountState | undefined {
+    if (!this.ensureLoaded()) { return undefined; }
     const found = this.accounts.find((account: RustDeskProAccountState): boolean => account.id === id);
     return found ? this.clone(found) : undefined;
   }
 
   save(account: RustDeskProAccountState): boolean {
+    if (!this.ensureLoaded()) { return false; }
     const next: RustDeskProAccountState =
       this.clone(account);
     const index = this.accounts.findIndex(
@@ -401,6 +415,7 @@ export class RustDeskProCredentialStore {
   }
 
   clear(id: string): boolean {
+    if (!this.ensureLoaded()) { return false; }
     const previous: RustDeskProAccountState | undefined =
       this.accounts.find(
         (account: RustDeskProAccountState): boolean =>
@@ -423,6 +438,7 @@ export class RustDeskProCredentialStore {
   }
 
   invalidateControlPlaneProofsForRelay(relayId: string): boolean {
+    if (!this.ensureLoaded()) { return false; }
     const normalized: string = relayId.trim();
     if (normalized === '') { return true; }
     const previous: RustDeskProAccountState[] = this.getAll();

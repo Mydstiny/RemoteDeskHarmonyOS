@@ -264,6 +264,7 @@ import {
   advanceCanvasTwoFingerMove,
   beginCanvasTwoFingerCandidate,
   CANVAS_TWO_FINGER_HOLD_MS,
+  CanvasTwoFingerMoveResult,
   CanvasTwoFingerState,
   claimCanvasTwoFingerPan,
   claimCanvasTwoFingerPinch,
@@ -994,6 +995,7 @@ struct RemoteDesktop {
   private canvasPinchActive: boolean = false;
   private canvasPanActive: boolean = false;
   private canvasTwoFingerState: CanvasTwoFingerState = idleCanvasTwoFingerState();
+  private canvasTwoFingerLastMove: CanvasTwoFingerMoveResult | null = null;
   private canvasTwoFingerSequence: number = 0;
   private canvasTwoFingerHoldTimer: number = -1;
   private canvasPanInputSource: 'none' | 'touch' | 'gesture' = 'none';
@@ -4138,6 +4140,7 @@ struct RemoteDesktop {
   private resetCanvasTwoFingerGesture(): void {
     this.clearCanvasTwoFingerHoldTimer();
     this.canvasTwoFingerState = idleCanvasTwoFingerState();
+    this.canvasTwoFingerLastMove = null;
   }
 
   private canUseCanvasTwoFingerGesture(): boolean {
@@ -4222,6 +4225,7 @@ struct RemoteDesktop {
    * local canvas pan halfway through one sequence.
    */
   private observeCanvasTwoFingerTouch(event: TouchEvent): void {
+    this.canvasTwoFingerLastMove = null;
     if (event.sourceTool !== SourceTool.Finger) {
       return;
     }
@@ -4250,6 +4254,7 @@ struct RemoteDesktop {
       const result = advanceCanvasTwoFingerMove(heldState, point.x, point.y, nowMs,
         this.shouldUseRustDeskRemoteAppTouchScale());
       this.canvasTwoFingerState = result.state;
+      this.canvasTwoFingerLastMove = result;
       if (!this.canvasTwoFingerState.holdTimerPending) {
         this.clearCanvasTwoFingerHoldTimer();
       }
@@ -10790,6 +10795,13 @@ struct RemoteDesktop {
         if (this.pendingHost !== null) {
           await this.prepareRemoteSessionPipForForeground(this.pendingHost, this.sessionId);
         }
+        this.initHandlePosition();
+        this.handleVisible = true;
+        if (this.pendingHost !== null) {
+          await this.srv.updateLastConnected(this.pendingHost.id);
+        }
+        this.startClipboardBridgeBestEffort(this.sessionId, this.connectAttemptId,
+          this.clipboardBridgeEnabledForSession());
         AppStorage.setOrCreate<boolean>('remoteDesktopBgFlag', false);
         hilog.info(RD_DOMAIN, RD_TAG, 'doBackgroundRestoreRender: preauthenticated session attached');
         return;
@@ -12803,6 +12815,10 @@ struct RemoteDesktop {
         this.touchLastLocalY = point.y;
         this.touchLeftDown = true;
         this.lastTouchMs = Date.now();
+        // A direct-touch DOWN must be anchored at the current local point;
+        // otherwise a quiet remote cursor leaves the click at its old position.
+        this.queueMouseMove(mapped.x, mapped.y, false);
+        this.flushMouseMove();
         this.sendMouseNow(mapped.x, mapped.y, 0, true);
         this.startDirectTouchRightClickTimer();
       } else if (event.type === TouchType.Move) {
@@ -12817,6 +12833,15 @@ struct RemoteDesktop {
                 this.startCanvasPanFromPoint(avg);
               }
               this.updateCanvasPanFromPoint(avg.x, avg.y);
+              return;
+            }
+            const twoFingerMove: CanvasTwoFingerMoveResult | null = this.canvasTwoFingerLastMove;
+            if (twoFingerMove !== null &&
+              shouldSendCanvasTwoFingerScroll(this.canvasTwoFingerState) &&
+              Math.abs(twoFingerMove.deltaY) >= 0.5) {
+              this.touchMoved = true;
+              this.touchDragPending = false;
+              this.sendTouchPadWheel(twoFingerMove.deltaY);
               return;
             }
             const dx: number = avg.x - this.touchStartLocalX;
