@@ -27,6 +27,7 @@ export interface PhysicalTouchpadWheelResult {
 
 export interface PhysicalTouchpadPinchState {
   accumulation: number;
+  lastScale: number;
 }
 
 export interface PhysicalTouchpadPinchResult {
@@ -59,20 +60,24 @@ export function accumulateRustDeskPhysicalTouchpadWheel(rawX: number, rawY: numb
 }
 
 export function resetPhysicalTouchpadPinchState(): PhysicalTouchpadPinchState {
-  return { accumulation: 0 };
+  return { accumulation: 0, lastScale: 1 };
 }
 
 export function accumulatePhysicalTouchpadPinch(rawScale: number,
   previous: PhysicalTouchpadPinchState): PhysicalTouchpadPinchResult {
   const previousAccumulation: number = Number.isFinite(previous.accumulation) ?
     previous.accumulation : 0;
+  const previousScale: number = Number.isFinite(previous.lastScale) && previous.lastScale > 0 ?
+    previous.lastScale : 1;
   if (!Number.isFinite(rawScale) || rawScale <= 0) {
-    return { steps: 0, state: { accumulation: previousAccumulation } };
+    return { steps: 0, state: { accumulation: previousAccumulation, lastScale: previousScale } };
   }
 
-  // API 23 reports a scale ratio around 1. Accumulate the ratio delta so both
-  // per-frame and cumulative device reporting styles reach the same threshold.
-  const boundedDelta: number = Math.max(-0.5, Math.min(0.5, rawScale - 1));
+  // HarmonyOS reports the scale relative to the gesture's initial 1.0 value.
+  // Convert only the change since the previous event; adding rawScale - 1 on
+  // every update would count the same cumulative motion more than once.
+  const boundedDelta: number = Math.max(-0.5,
+    Math.min(0.5, rawScale - previousScale));
   const maxAccumulation = PHYSICAL_TOUCHPAD_PINCH_STEP_THRESHOLD *
     PHYSICAL_TOUCHPAD_PINCH_MAX_STEPS;
   const total: number = Math.max(-maxAccumulation,
@@ -85,7 +90,8 @@ export function accumulatePhysicalTouchpadPinch(rawScale: number,
   return {
     steps,
     state: {
-      accumulation: total - steps * PHYSICAL_TOUCHPAD_PINCH_STEP_THRESHOLD
+      accumulation: total - steps * PHYSICAL_TOUCHPAD_PINCH_STEP_THRESHOLD,
+      lastScale: rawScale
     }
   };
 }

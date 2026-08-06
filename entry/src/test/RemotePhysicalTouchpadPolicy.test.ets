@@ -41,7 +41,7 @@ export default function remotePhysicalTouchpadPolicyTest(): void {
       let pinch = resetPhysicalTouchpadPinchState();
       let result = accumulatePhysicalTouchpadPinch(1.05, pinch);
       expect(result.steps).assertEqual(0);
-      result = accumulatePhysicalTouchpadPinch(1.05, result.state);
+      result = accumulatePhysicalTouchpadPinch(1.10, result.state);
       expect(result.steps).assertEqual(1);
       expect(physicalTouchpadZoomKeyCode(result.steps))
         .assertEqual(RUSTDESK_TOUCHPAD_ZOOM_EQUALS_KEYCODE);
@@ -58,9 +58,17 @@ export default function remotePhysicalTouchpadPolicyTest(): void {
     });
 
     it('ignores_invalid_pinch_scales_without_poisoning_state', 0, (): void => {
-      const result = accumulatePhysicalTouchpadPinch(NaN, { accumulation: 0.03 });
+      const result = accumulatePhysicalTouchpadPinch(NaN, { accumulation: 0.03, lastScale: 1 });
       expect(result.steps).assertEqual(0);
       expect(result.state.accumulation).assertEqual(0.03);
+    });
+
+    it('does_not_count_the_same_cumulative_scale_twice', 0, (): void => {
+      let pinch = resetPhysicalTouchpadPinchState();
+      let result = accumulatePhysicalTouchpadPinch(1.10, pinch);
+      expect(result.steps).assertEqual(1);
+      result = accumulatePhysicalTouchpadPinch(1.10, result.state);
+      expect(result.steps).assertEqual(0);
     });
   });
 }

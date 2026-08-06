@@ -13873,8 +13873,19 @@ struct RemoteDesktop {
   }
 
   private handleRustDeskPhysicalTouchpadAxis(event: AxisEvent): void {
+    const endsGesture: boolean = event.action === AxisAction.END ||
+      event.action === AxisAction.CANCEL;
     if (!this.canForwardInput('physical-touchpad-axis')) {
+      if (endsGesture) {
+        this.physicalTouchpadWheelState = resetPhysicalTouchpadWheelState();
+        this.physicalTouchpadPinchState = resetPhysicalTouchpadPinchState();
+      }
       return;
+    }
+
+    if (event.action === AxisAction.BEGIN) {
+      this.physicalTouchpadWheelState = resetPhysicalTouchpadWheelState();
+      this.physicalTouchpadPinchState = resetPhysicalTouchpadPinchState();
     }
 
     const rawHorizontal: number = event.getHorizontalAxisValue();
@@ -13901,9 +13912,16 @@ struct RemoteDesktop {
     }
 
     if (!event.hasAxis(AxisType.PINCH_AXIS)) {
+      if (endsGesture) {
+        this.physicalTouchpadWheelState = resetPhysicalTouchpadWheelState();
+        this.physicalTouchpadPinchState = resetPhysicalTouchpadPinchState();
+      }
       return;
     }
     if (this.shouldRequirePhysicalKeyboardLayout() && !this.physicalKeyboardLayoutConfirmed) {
+      if (endsGesture) {
+        this.physicalTouchpadWheelState = resetPhysicalTouchpadWheelState();
+      }
       this.physicalTouchpadPinchState = resetPhysicalTouchpadPinchState();
       this.promptPhysicalKeyboardLayout();
       return;
@@ -13913,6 +13931,11 @@ struct RemoteDesktop {
     this.physicalTouchpadPinchState = pinch.state;
     if (pinch.steps !== 0) {
       this.sendRustDeskPhysicalTouchpadZoom(pinch.steps);
+    }
+
+    if (endsGesture) {
+      this.physicalTouchpadWheelState = resetPhysicalTouchpadWheelState();
+      this.physicalTouchpadPinchState = resetPhysicalTouchpadPinchState();
     }
   }
 
