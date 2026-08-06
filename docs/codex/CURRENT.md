@@ -4,7 +4,7 @@
 - Task: `ssh-terminal-complete-upgrade`
 - Base: `main@d2769ad4b`
 - Branch: `codex/ssh-terminal-complete-upgrade`
-- Code checkpoint: `d72c84d` (`fix(ssh): refresh retained host surface on route switch`); the current same-page binding-commit and synchronous GPU lease-detach correction is the next checkpoint.
+- Code checkpoint: `e987a95` (`fix(ssh): finalize same-page terminal surface rebinding`); same-page binding commit, synchronous GPU lease detach, and renderer navigation-state cleanup are committed.
 - Phase: Alacritty default; lifecycle, VT/Unicode/resize/TUI/large-output parity, per-host output isolation and code-only host-switch/surface refresh recovery.
 - Scope: migrate VT behind terminalCore, keep appearance settings in-core, verify IME/input/Canvas behavior. Homepage work is not current focus.
 

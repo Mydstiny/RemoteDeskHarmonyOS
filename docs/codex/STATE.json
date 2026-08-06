@@ -3,7 +3,7 @@
   "task": "ssh-terminal-complete-upgrade",
   "branch": "codex/ssh-terminal-complete-upgrade",
   "base": "d2769ad4b",
-  "head": "d72c84d",
+  "head": "e987a95",
   "phase": "alacritty-core-vt-parity-code-only-same-page-surface-commit-gpu-lease-guarded",
   "status": "active",
   "next": "Independently review the same-page SSH binding commit, deterministic host/binding/revision keyed remount, surface-owner guard, bounded native-ready fallback, render-revision owner lease, synchronous GPU detach and EGL refresh; device validation is deferred per user instruction, then implement Level B connectivity contracts.",
