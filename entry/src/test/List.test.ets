@@ -139,6 +139,8 @@ import remoteModifierStateControllerTest from './RemoteModifierStateController.t
 import terminalInputBufferTest from './TerminalInputBuffer.test';
 import terminalRendererPolicyTest from './TerminalRendererPolicy.test';
 import sshTransportPolicyTest from './SshTransportPolicy.test';
+import sshTerminalSurfaceBindingPolicyTest from './SshTerminalSurfaceBindingPolicy.test';
+import sshForwardingPolicyTest from './SshForwardingPolicy.test';
 
 export default function testsuite() {
   localUnitTest();
@@ -282,4 +284,6 @@ export default function testsuite() {
   terminalInputBufferTest();
   terminalRendererPolicyTest();
   sshTransportPolicyTest();
+  sshTerminalSurfaceBindingPolicyTest();
+  sshForwardingPolicyTest();
 }

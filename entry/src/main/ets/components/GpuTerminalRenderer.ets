@@ -13,6 +13,7 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { SshTerminalRendererBridge, SshTerminalRendererConfig } from '../napi/SshTerminalRendererBridge';
 import { TerminalCoreMode } from '../napi/TerminalCoreBridge';
 import { SshTerminalRendererRegistry } from '../services/SshTerminalRendererRegistry';
+import { makeSshTerminalSurfaceOwnerId } from '../services/SshTerminalSurfaceBindingPolicy';
 import { TerminalInputBuffer } from './SshTerminalSurface';
 
 /** 与 NativeTerminalRenderer 一致的单帧输入预算。 */
@@ -52,6 +53,15 @@ export struct GpuTerminalRenderer {
   @Prop @Watch('onCoreKeyChange') coreKey: string = '';
   /** Visible surface identity; changes whenever the page binds a new terminal view. */
   @Prop @Watch('onSurfaceIdentityChange') surfaceIdentity: string = '';
+  /** Explicit page-owned revision; handles an ArkUI child reused with the same key. */
+  @Prop @Watch('onRenderRevisionChange') renderRevision: number = 0;
+  /** Parent-owned repaint fence; a host can need repaint without new SSH bytes. */
+  @Prop @Watch('onSurfaceRefreshRequestChange') surfaceRefreshRequest: number = 0;
+  /** The XComponent stays mounted; only an active binding may own a renderer. */
+  // The component is created only after the page commits a visible binding.
+  // A true default also covers ArkUI's initial prop-injection turn: the
+  // surface callback/poll must not be lost before @Watch can observe active.
+  @Prop @Watch('onActiveChange') active: boolean = true;
   @Prop bottomAlignSparseContent: boolean = false;
   /** Parent-owned per-host queue; it must follow a reused component instance. */
   @Prop @Watch('onInputBufferChange') inputBuffer: TerminalInputBuffer = new TerminalInputBuffer();
@@ -97,10 +107,21 @@ export struct GpuTerminalRenderer {
   private unavailableReported: boolean = false;
   private lifecycleToken: number = 0;
 
+  /** Identifies the visible host/revision pair that may own this surface. */
+  private surfaceBindingLease(): string {
+    return this.coreKey.trim() + '|' + this.surfaceIdentity.trim() + '|r' +
+      Math.floor(Number.isFinite(this.renderRevision) ? this.renderRevision : 0).toString();
+  }
+
+  private hasUsableBinding(): boolean {
+    return this.active && this.coreKey.trim().length > 0 && this.surfaceIdentity.trim().length > 0;
+  }
+
   /** The registry uses this identity to reject stale component callbacks. */
   private rendererOwnerId(): string {
     const identity: string = this.surfaceIdentity.trim();
-    return identity.length > 0 ? identity : this.coreKey.trim();
+    const owner: string = makeSshTerminalSurfaceOwnerId(identity, this.renderRevision);
+    return owner.length > 0 ? owner : this.coreKey.trim();
   }
 
   private attachedRendererOwnerId(): string {
@@ -114,6 +135,7 @@ export struct GpuTerminalRenderer {
     this.surfaceAttachRetryCount = 0;
     this.xcController.onSurfaceReady = (surfaceId: string): void => {
       if (this.disposed || lifecycleToken !== this.lifecycleToken) { return; }
+      if (!this.active) { return; }
       this.currentSurfaceId = surfaceId;
       this.lastKnownSurfaceId = surfaceId;
       if (this.surfaceAttachRetryTimer !== -1) {
@@ -121,13 +143,16 @@ export struct GpuTerminalRenderer {
         this.surfaceAttachRetryTimer = -1;
       }
       this.surfaceAttachRetryCount = 0;
-      this.scheduleSurfaceRebind();
+      if (this.hasUsableBinding()) { this.scheduleSurfaceRebind(); }
     };
     this.xcController.onSurfaceGone = (surfaceId: string): void => {
       // Ignore a destroy callback for a different, newer surface. A callback
       // for the current/last surface must detach and enter the rebind retry.
       if (lifecycleToken !== this.lifecycleToken || surfaceId.length === 0 ||
         (this.currentSurfaceId.length > 0 && this.currentSurfaceId !== surfaceId)) { return; }
+      // An inactive binding has already detached its registry entry. Ignore a
+      // late destroy callback here so it cannot detach the next host's handle.
+      if (!this.active) { return; }
       this.lastKnownSurfaceId = surfaceId;
       this.currentSurfaceId = '';
       this.surfaceReady = false;
@@ -138,11 +163,16 @@ export struct GpuTerminalRenderer {
       // ArkUI may destroy the old surface before it emits a replacement
       // callback. Keep the identity and let the bounded rebind retry recover
       // the retained VT core instead of leaving a connected tab blank.
-      this.scheduleSurfaceRebind();
-      this.startSurfaceIdPolling();
+      if (this.active) {
+        this.scheduleSurfaceRebind();
+        this.startSurfaceIdPolling();
+      }
     };
     // 同一标签切回时 registry 里可能已有句柄；等 surface ready 后 rebind。
-    this.handle = this.registry.handleFor(this.coreKey);
+    // Do not cache a retained handle before the current surface is known. The
+    // registry remains the source of truth and attachSurface() will rebind the
+    // retained per-host core with the current owner lease.
+    this.handle = 0;
     // Keep the callback fast path, but do not make rendering depend on it.
     // API 23 can create the surface without dispatching onSurfaceCreated.
     this.startSurfaceIdPolling();
@@ -184,17 +214,127 @@ export struct GpuTerminalRenderer {
   }
 
   private onCoreKeyChange(): void {
-    this.scheduleSurfaceRebind();
-    this.startSurfaceIdPolling();
+    this.invalidateSurfaceObservation();
+    if (this.active) {
+      this.scheduleSurfaceRebind();
+      this.startSurfaceIdPolling();
+    } else {
+      this.deactivateRenderer();
+    }
   }
 
   private onSurfaceIdentityChange(): void {
-    this.scheduleSurfaceRebind();
+    this.invalidateSurfaceObservation();
+    if (this.active) {
+      this.scheduleSurfaceRebind();
+      this.startSurfaceIdPolling();
+    } else {
+      this.deactivateRenderer();
+    }
+  }
+
+  private onRenderRevisionChange(): void {
+    this.invalidateSurfaceObservation();
+    if (!this.active) {
+      this.deactivateRenderer();
+      this.stopSurfaceIdPolling();
+      return;
+    }
+    // The parent increments this even when host/session identity is reused.
+    // Reconcile the native surface explicitly so a reused XComponent cannot
+    // keep drawing the previous retained core without a new callback.
+    this.unavailableReported = false;
     this.startSurfaceIdPolling();
+    this.scheduleSurfaceRebind();
+  }
+
+  private onActiveChange(): void {
+    if (!this.active) {
+      this.deactivateRenderer();
+      this.stopSurfaceIdPolling();
+      return;
+    }
+    this.invalidateSurfaceObservation();
+    this.unavailableReported = false;
+    this.startSurfaceIdPolling();
+    this.scheduleSurfaceRebind();
   }
 
   private onInputBufferChange(): void {
-    this.consumeInputQueue();
+    if (this.active) { this.consumeInputQueue(); }
+  }
+
+  /** Repaint or rebind the retained core after the page commits a new host view. */
+  private onSurfaceRefreshRequestChange(): void {
+    if (!this.hasUsableBinding()) { return; }
+    // ArkUI may deliver the repaint fence before the core/surface prop watches.
+    // Never acknowledge a refresh from the previous host as ready for the new
+    // owner; let the normal lease-checked rebind transaction adopt it first.
+    if (this.attachedCoreKey !== this.coreKey ||
+      this.attachedOwnerId !== this.rendererOwnerId()) {
+      this.scheduleSurfaceRebind();
+      this.startSurfaceIdPolling();
+      return;
+    }
+    if (this.handle <= 0 || !this.surfaceReady) {
+      this.startSurfaceIdPolling();
+      this.scheduleSurfaceRebind();
+      return;
+    }
+    let refreshed: boolean = false;
+    try {
+      refreshed = this.bridge.refresh(this.handle);
+    } catch (err) {
+      hilog.warn(0x0000, 'GpuTerminal',
+        'surface refresh exception: %{public}s', JSON.stringify(err));
+    }
+    if (refreshed) {
+      this.notifyMode();
+      if (this.onRendererReady) {
+        this.onRendererReady(this.coreKey, this.surfaceIdentity);
+      }
+      return;
+    }
+    this.surfaceReady = false;
+    const attachedKey: string = this.attachedCoreKey.length > 0
+      ? this.attachedCoreKey : this.coreKey;
+    this.registry.detach(attachedKey, this.bridge, this.attachedRendererOwnerId());
+    this.scheduleSurfaceAttachRetry();
+    this.startSurfaceIdPolling();
+  }
+
+  /** Detach only the visible surface; the per-host VT core stays in the registry. */
+  private deactivateRenderer(): void {
+    const key: string = this.attachedCoreKey.length > 0 ? this.attachedCoreKey : this.coreKey;
+    if (key.trim().length > 0 && this.handle > 0) {
+      this.registry.detach(key, this.bridge, this.attachedRendererOwnerId());
+    }
+    this.handle = 0;
+    this.attachedCoreKey = '';
+    this.attachedOwnerId = '';
+    this.surfaceReady = false;
+    this.lastModeSignature = '';
+    this.unavailableReported = false;
+    this.invalidateSurfaceObservation();
+  }
+
+  /** Drop all platform surface observations before a new visible binding. */
+  private invalidateSurfaceObservation(): void {
+    this.surfaceRebindToken++;
+    if (this.surfaceRebindTimer !== -1) {
+      clearTimeout(this.surfaceRebindTimer);
+      this.surfaceRebindTimer = -1;
+    }
+    if (this.surfaceAttachRetryTimer !== -1) {
+      clearTimeout(this.surfaceAttachRetryTimer);
+      this.surfaceAttachRetryTimer = -1;
+    }
+    this.stopSurfaceIdPolling();
+    this.currentSurfaceId = '';
+    this.lastKnownSurfaceId = '';
+    this.surfaceReady = false;
+    this.boundSurfaceWidthPx = 0;
+    this.boundSurfaceHeightPx = 0;
   }
 
   private stopSurfaceIdPolling(): void {
@@ -222,6 +362,20 @@ export struct GpuTerminalRenderer {
       surfaceId = '';
     }
     if (surfaceId.length > 0) {
+      // ArkUI can expose the surface before it applies the first @Prop set.
+      // Keep polling while inactive so that the later active transition does
+      // not depend on a second onSurfaceCreated callback.
+      if (!this.active) {
+        if (attempt >= GPU_SURFACE_POLL_MAX_ATTEMPTS) {
+          hilog.warn(0x0000, 'GpuTerminal', 'inactive surface poll timed out');
+          return;
+        }
+        this.surfacePollTimer = setTimeout((): void => {
+          this.surfacePollTimer = -1;
+          this.pollSurfaceId(token, attempt + 1);
+        }, GPU_SURFACE_POLL_INTERVAL_MS);
+        return;
+      }
       const changed: boolean = this.currentSurfaceId !== surfaceId;
       this.currentSurfaceId = surfaceId;
       this.lastKnownSurfaceId = surfaceId;
@@ -249,6 +403,10 @@ export struct GpuTerminalRenderer {
    */
   private scheduleSurfaceRebind(): void {
     if (this.disposed) { return; }
+    if (!this.hasUsableBinding()) {
+      this.deactivateRenderer();
+      return;
+    }
     if (this.surfaceRebindTimer !== -1) {
       clearTimeout(this.surfaceRebindTimer);
       this.surfaceRebindTimer = -1;
@@ -257,9 +415,11 @@ export struct GpuTerminalRenderer {
     this.lastModeSignature = '';
     this.unavailableReported = false;
     const token: number = ++this.surfaceRebindToken;
+    const bindingLease: string = this.surfaceBindingLease();
     this.surfaceRebindTimer = setTimeout((): void => {
       this.surfaceRebindTimer = -1;
-      if (this.disposed || token !== this.surfaceRebindToken) { return; }
+      if (this.disposed || !this.hasUsableBinding() || token !== this.surfaceRebindToken ||
+        bindingLease !== this.surfaceBindingLease()) { return; }
       const previousKey: string = this.attachedCoreKey;
       if (previousKey.length > 0) {
         this.registry.detach(previousKey, this.bridge, this.attachedRendererOwnerId());
@@ -296,7 +456,7 @@ export struct GpuTerminalRenderer {
   }
 
   private attachSurface(surfaceId: string): void {
-    if (this.disposed || surfaceId.length === 0) { return; }
+    if (this.disposed || !this.hasUsableBinding() || surfaceId.length === 0) { return; }
     if (!this.bridge.isAvailable()) {
       this.reportUnavailable();
       return;
@@ -350,7 +510,14 @@ export struct GpuTerminalRenderer {
     // The VT core may already contain the host's prompt while the surface was
     // detached. Repaint the retained snapshot even when no new SSH bytes
     // arrive after this component is mounted.
-    if (!this.bridge.refresh(this.handle)) {
+    let refreshed: boolean = false;
+    try {
+      refreshed = this.bridge.refresh(this.handle);
+    } catch (err) {
+      hilog.warn(0x0000, 'GpuTerminal',
+        'initial surface refresh exception: %{public}s', JSON.stringify(err));
+    }
+    if (!refreshed) {
       this.surfaceReady = false;
       this.registry.detach(this.coreKey, this.bridge, this.attachedRendererOwnerId());
       this.scheduleSurfaceAttachRetry();
@@ -373,9 +540,11 @@ export struct GpuTerminalRenderer {
       return;
     }
     this.surfaceAttachRetryCount++;
+    const bindingLease: string = this.surfaceBindingLease();
     this.surfaceAttachRetryTimer = setTimeout((): void => {
       this.surfaceAttachRetryTimer = -1;
-      if (!this.disposed && (this.currentSurfaceId.length > 0 || this.lastKnownSurfaceId.length > 0)) {
+      if (!this.disposed && bindingLease === this.surfaceBindingLease() &&
+        (this.currentSurfaceId.length > 0 || this.lastKnownSurfaceId.length > 0)) {
         this.scheduleSurfaceRebind();
       }
     }, 32);
@@ -426,7 +595,7 @@ export struct GpuTerminalRenderer {
   }
 
   private consumeInputQueue(): void {
-    if (this.handle <= 0 || !this.surfaceReady) { return; }
+    if (!this.active || this.handle <= 0 || !this.surfaceReady) { return; }
     const buffers: ArrayBuffer[] = this.inputBuffer.drain(GPU_INPUT_FRAME_BUDGET_BYTES);
     if (buffers.length === 0) { return; }
     // One native write owns one VT parse and one dirty-frame render. Merge the
@@ -490,13 +659,24 @@ export struct GpuTerminalRenderer {
 
   build() {
     XComponent({
-      id: `gpu-terminal-${this.surfaceIdentity.length > 0 ? this.surfaceIdentity : this.coreKey}`,
+      // The retained VT core is stable per host, but every visible binding
+      // needs a distinct native surface identity so ArkUI cannot reuse the
+      // previous host's drawing buffer during a keyed remount.
+      id: 'gpu-terminal-' +
+        (this.surfaceIdentity.length > 0 ? this.surfaceIdentity : this.coreKey) +
+        '-render-' + this.renderRevision.toString(),
       type: XComponentType.SURFACE,
       controller: this.xcController })
       .width('100%')
       .height('100%')
       .backgroundColor('#0D0D0D')
-      .onLoad((): void => { this.startSurfaceIdPolling(); })
+      .onLoad((): void => {
+        if (!this.hasUsableBinding()) { return; }
+        this.startSurfaceIdPolling();
+        // onLoad is also the recovery signal when API 23 recreates a surface
+        // without dispatching onSurfaceCreated.
+        this.scheduleSurfaceRebind();
+      })
       .onAreaChange((_o: Area, n: Area): void => {
         const nextWidthPx: number = vp2px(n.width as number);
         const nextHeightPx: number = vp2px(n.height as number);
@@ -508,7 +688,7 @@ export struct GpuTerminalRenderer {
         // a cols*cell fallback size. Recreate the native drawing surface once
         // the real pixel dimensions are known so the new host is not clipped
         // into the old surface's buffer geometry.
-        if (sizeChanged && this.surfaceReady && this.currentSurfaceId.length > 0 &&
+        if (this.active && sizeChanged && this.surfaceReady && this.currentSurfaceId.length > 0 &&
           this.boundSurfaceWidthPx > 0 && this.boundSurfaceHeightPx > 0 &&
           (Math.abs(this.boundSurfaceWidthPx - nextWidthPx) >= 1 ||
            Math.abs(this.boundSurfaceHeightPx - nextHeightPx) >= 1)) {

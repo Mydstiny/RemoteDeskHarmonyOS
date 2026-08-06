@@ -7,6 +7,7 @@
 #include "ssh/ssh_terminal_diagnostics.h"
 #include "ssh/ssh_terminal_input_queue_policy.h"
 #include "ssh/ssh_terminal_keepalive_policy.h"
+#include "ssh/ssh_terminal_resume_policy.h"
 
 #include <chrono>
 #include <thread>
@@ -19,6 +20,17 @@ RDP_TEST_CASE(ssh_terminal_keepalive_uses_interval_and_retries_transient_failure
     RDP_ASSERT(Policy::retryableFailure(1));
     RDP_ASSERT(Policy::retryableFailure(2));
     RDP_ASSERT(!Policy::retryableFailure(Policy::kMaxConsecutiveFailures));
+}
+
+RDP_TEST_CASE(ssh_terminal_resume_policy_keeps_reconnecting_page_bound) {
+    using Policy = SshTerminalResumePolicy;
+    RDP_ASSERT(!Policy::acceptsPageBinding(ConnectionState::CONNECTED, false));
+    RDP_ASSERT(Policy::acceptsPageBinding(ConnectionState::CONNECTING, true));
+    RDP_ASSERT(Policy::acceptsPageBinding(ConnectionState::CONNECTED, true));
+    RDP_ASSERT(Policy::acceptsPageBinding(ConnectionState::RECONNECTING, true));
+    RDP_ASSERT(!Policy::acceptsPageBinding(ConnectionState::ERROR, true));
+    RDP_ASSERT(Policy::shouldResumeInput(ConnectionState::CONNECTED));
+    RDP_ASSERT(!Policy::shouldResumeInput(ConnectionState::RECONNECTING));
 }
 
 RDP_TEST_CASE(ssh_terminal_input_queue_policy_reserves_control_capacity) {

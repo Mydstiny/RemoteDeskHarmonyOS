@@ -66,6 +66,12 @@ class SshXtermBridgeProxy {
 @Component
 export struct SshXtermSurface {
   @Prop @Watch('onCoreKeyChange') coreKey: string = '';
+  /** Explicit page-owned revision; survives a reused Web component instance. */
+  @Prop @Watch('onRenderRevisionChange') renderRevision: number = 0;
+  /** Parent-owned repaint fence for a quiet retained host session. */
+  @Prop @Watch('onSurfaceRefreshRequestChange') surfaceRefreshRequest: number = 0;
+  /** The WebView remains mounted while SSH rebinding; inactive pages keep output queued. */
+  @Prop @Watch('onActiveChange') active: boolean = true;
   @Prop @Watch('onViewportChange') viewportWidth: number = 0;
   @Prop @Watch('onViewportChange') viewportHeight: number = 0;
   @Prop cols: number = 80;
@@ -98,6 +104,9 @@ export struct SshXtermSurface {
   private pageReady: boolean = false;
   private readyReported: boolean = false;
   private pendingCoreReset: boolean = false;
+  private pendingCoreKeyReload: boolean = false;
+  /** Prevent two prop watchers from loading the same document revision twice. */
+  private reloadRequestedDocumentKey: string = '';
   /** A host switch must finish a new document boot before consuming output. */
   private documentReloadPending: boolean = false;
   private outputPumpRunning: boolean = false;
@@ -123,6 +132,8 @@ export struct SshXtermSurface {
     this.pageReady = false;
     this.readyReported = false;
     this.pendingCoreReset = false;
+    this.pendingCoreKeyReload = false;
+    this.reloadRequestedDocumentKey = '';
     this.documentReloadPending = false;
     // Give every document its own proxy. A late callback from the previous
     // document must not satisfy the readiness gate of the new host.
@@ -141,6 +152,8 @@ export struct SshXtermSurface {
     this.pageFinished = false;
     this.pageReady = false;
     this.pendingCoreReset = false;
+    this.pendingCoreKeyReload = false;
+    this.reloadRequestedDocumentKey = '';
     this.documentReloadPending = false;
     this.pendingWrites = [];
     this.outputPumpRunning = false;
@@ -268,6 +281,8 @@ export struct SshXtermSurface {
     if (this.disposed) { return; }
     this.pageReady = true;
     this.documentReloadPending = false;
+    this.reloadRequestedDocumentKey = '';
+    if (!this.active) { return; }
     this.reportReadyOnce();
     this.runPageScript(this.pageConfigScript());
     this.flushOutputBuffer();
@@ -288,6 +303,7 @@ export struct SshXtermSurface {
   private handlePageEnd(): void {
     this.pageFinished = true;
     this.registerBridge();
+    if (!this.active) { return; }
     if (this.pendingCoreReset) {
       this.pendingCoreReset = false;
       this.runPageScript('window.__sshXtermReset();');
@@ -309,6 +325,11 @@ export struct SshXtermSurface {
    */
   private reloadDocumentForCoreKey(): void {
     if (this.disposed) { return; }
+    const requestedDocumentKey: string = this.coreKey + ':render:' +
+      this.renderRevision.toString();
+    if (this.documentReloadPending && this.reloadRequestedDocumentKey === requestedDocumentKey) {
+      return;
+    }
     const lifecycleToken: number = ++this.lifecycleToken;
     this.clearBridgeRetry();
     if (this.outputPumpRetryTimer !== -1) {
@@ -327,6 +348,7 @@ export struct SshXtermSurface {
     this.readyReported = false;
     this.pendingCoreReset = false;
     this.documentReloadPending = true;
+    this.reloadRequestedDocumentKey = requestedDocumentKey;
     try { this.controller.deleteJavaScriptRegister('sshTerminalBridge'); } catch (_err) {
       // The old document may already have been detached.
     }
@@ -340,12 +362,14 @@ export struct SshXtermSurface {
       hilog.warn(XTERM_DOMAIN, XTERM_TAG,
         'reload xterm document failed: ' + JSON.stringify(err));
       this.documentReloadPending = false;
+      this.reloadRequestedDocumentKey = '';
       this.pageFinished = true;
       this.registerBridge(lifecycleToken);
     }
   }
 
   private enqueueOutput(): void {
+    if (!this.active) { return; }
     const values: Array<string> = this.outputBuffer.drain();
     if (values.length === 0) { return; }
     for (let index = 0; index < values.length; index++) {
@@ -355,11 +379,12 @@ export struct SshXtermSurface {
   }
 
   private flushOutputBuffer(): void {
+    if (!this.active) { return; }
     this.enqueueOutput();
   }
 
   private pumpOutput(): void {
-    if (this.outputPumpRunning || !this.pageReady || !this.pageFinished || this.disposed) { return; }
+    if (!this.active || this.outputPumpRunning || !this.pageReady || !this.pageFinished || this.disposed) { return; }
     if (this.pendingWrites.length === 0) { return; }
     const lifecycleToken: number = this.lifecycleToken;
     this.outputPumpRunning = true;
@@ -409,7 +434,51 @@ export struct SshXtermSurface {
 
   private onCoreKeyChange(): void {
     if (this.disposed) { return; }
+    if (!this.active) {
+      this.pendingCoreKeyReload = true;
+      return;
+    }
     this.reloadDocumentForCoreKey();
+  }
+
+  private onRenderRevisionChange(): void {
+    if (this.disposed) { return; }
+    if (!this.active) {
+      this.pendingCoreKeyReload = true;
+      return;
+    }
+    // A host/session key can be reused after a surface recovery. Reload the
+    // document explicitly so the visible xterm state cannot remain stale even
+    // if ArkUI reuses the Web component instead of rebuilding its subtree.
+    this.reloadDocumentForCoreKey();
+  }
+
+  private onActiveChange(): void {
+    if (!this.active) {
+      // Do not drain the parent-owned output buffer into the previous host's
+      // document while the page is between bindings.
+      this.pendingCoreKeyReload = true;
+      this.pendingWrites = [];
+      this.outputPumpRunning = false;
+      return;
+    }
+    if (this.pendingCoreKeyReload) {
+      this.pendingCoreKeyReload = false;
+      this.reloadDocumentForCoreKey();
+      return;
+    }
+    this.runPageScript(this.pageConfigScript());
+    this.flushOutputBuffer();
+    this.pumpOutput();
+  }
+
+  private onSurfaceRefreshRequestChange(): void {
+    if (!this.active || this.disposed) { return; }
+    if (this.documentReloadPending) { return; }
+    this.runPageScript(this.pageConfigScript());
+    this.flushOutputBuffer();
+    this.pumpOutput();
+    this.scheduleFit();
   }
 
   private onViewportChange(): void {
@@ -437,7 +506,7 @@ export struct SshXtermSurface {
   }
 
   private onOutputSequenceChange(): void {
-    if (this.documentReloadPending) { return; }
+    if (!this.active || this.documentReloadPending) { return; }
     this.flushOutputBuffer();
   }
 
@@ -481,10 +550,10 @@ export struct SshXtermSurface {
       src: $rawfile('ssh-terminal/index.html'),
       controller: this.controller
     })
-      // Give ArkUI a distinct native view identity for every SSH binding. The
-      // explicit reload below handles a reused component; this id handles the
-      // coalesced true -> false -> true update during a fast tab switch.
-      .id('ssh-xterm-' + this.coreKey)
+      // The binding key is also the native WebView identity. This keeps a
+      // retained SSH session separate from the previous host's DOM/document
+      // when ArkUI performs the keyed surface remount.
+      .id('ssh-xterm-' + this.coreKey + '-render-' + this.renderRevision.toString())
       .javaScriptAccess(true)
       // The page and its vendored xterm assets are bundled rawfiles. ArkWeb
       // needs local file access enabled to resolve the relative vendor URLs.

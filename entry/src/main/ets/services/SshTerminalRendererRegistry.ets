@@ -7,6 +7,7 @@
  * 关闭单个标签时才真正销毁 native 渲染器（及其内部 VT 核心）。
  */
 import { SshTerminalRendererBridge, SshTerminalRendererConfig } from '../napi/SshTerminalRendererBridge';
+import { shouldRebindSshTerminalSurface } from './SshTerminalSurfaceBindingPolicy';
 
 interface SshTerminalRendererEntry {
   handle: number;
@@ -43,11 +44,13 @@ export class SshTerminalRendererRegistry {
     const existing: SshTerminalRendererEntry | undefined =
       normalizedKey.length === 0 ? undefined : this.entries.get(normalizedKey);
     if (existing !== undefined && existing.handle > 0) {
-      if (existing.surfaceId !== config.surfaceId) {
+      if (shouldRebindSshTerminalSurface(existing.surfaceId, config.surfaceId,
+        existing.ownerId, normalizedOwnerId)) {
         if (!bridge.bindSurface(existing.handle, config.surfaceId, config.widthPx, config.heightPx)) {
-          // Rebinding can race XComponent surface destruction. Keep the VT
-          // core and mark it detached so the next surface callback can retry;
-          // destroying here would lose the hidden tab's scrollback.
+          // Rebinding can race XComponent surface destruction or be required
+          // for a reused platform surface ID. Keep the VT core and mark it
+          // detached so the next surface callback can retry; destroying here
+          // would lose the hidden tab's scrollback.
           existing.surfaceId = '';
           // The new component owns the recovery attempt. Prevent an old
           // component from detaching this handle while the new surface is

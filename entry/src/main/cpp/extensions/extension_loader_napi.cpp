@@ -13,6 +13,7 @@
 #include "rdp/freerdp_adapter.h"
 #include "rdp/rdp_auth_mode_policy.h"
 #include "ssh/ssh_adapter.h"
+#include "ssh/ssh_terminal_resume_policy.h"
 #include "ssh/ssh_key_tool.h"
 #include "audio/input_handler.h"
 #include "audio/audio_player.h"
@@ -7057,8 +7058,15 @@ napi_value NapiResumeSshSession(napi_env env, napi_callback_info info) {
                         registration->second->accepting.load(std::memory_order_acquire);
                 }
                 if (hasRegistration) {
-                    sshAdapter->resumeTerminalInput();
-                    resumed = sshAdapter->getState() == ConnectionState::CONNECTED;
+                    const ConnectionState state = sshAdapter->getState();
+                    if (SshTerminalResumePolicy::shouldResumeInput(state)) {
+                        sshAdapter->resumeTerminalInput();
+                    }
+                    // A page callback can be rebound while the transport is
+                    // still reconnecting. Keep that live session attached;
+                    // the page's state probe will expose CONNECTED later.
+                    resumed = SshTerminalResumePolicy::acceptsPageBinding(
+                        state, hasRegistration);
                 }
             }
         }

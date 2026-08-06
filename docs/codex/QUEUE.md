@@ -11,22 +11,35 @@ Updated: 2026-08-06 Asia/Shanghai
   consumption and IME/socket diagnostics are committed. The keyed surface
   mount deduplicates repeated probes, the native registry rejects stale
   surface owners, a bounded ready fallback restores transcript-backed xterm,
-  an independent ArkUI render revision forces stale surface recreation, and
+  an independent ArkUI render revision plus a deterministic
+  host/binding/revision page view key forces stale surface recreation, and
   native rendering restores EGL context, explicitly repaints retained snapshots
   after a host rebind, acknowledges surface-flush failure before retrying, and
-  polls the surface ID when API 23 skips the lifecycle callback; the fresh signed
-  HAP passed both code-only gates.
+  polls the surface ID when API 23 skips the lifecycle callback; the current
+  keyed surface correction also passed both code-only gates. Reused GPU/Xterm
+  children receive the same revision and explicitly rebind or reload; the
+  revision also advances the native owner lease and renderer view IDs, while
+  the xterm reload guard includes the revision token. GPU host/revision prop
+  changes now invalidate stale surface observations and attach retries through
+  a binding lease before a retained host core is rebound; refresh fences reject
+  an old attached owner before reporting the new renderer ready.
 - Same-page SSH host switching now rejects stale async connect/attach/data/PiP
   continuations using an independent binding generation, cancels pending
   handshakes before switching, and retains detach-race output per host. The
-  visible xterm WebView has an explicit detach/rebind gate; the page publishes
-  an observable host/binding identity, and Pad/PC native VT rebinds a retained
+  top-tab switch serializes route replacement, detaches the old page and adopts
+  the retained target session. The visible xterm WebView has an explicit
+  detach/rebind gate; during a host switch the old XComponent/WebView is removed
+  and the target surface is mounted only after the new binding is committed;
+  the page publishes an observable host/binding identity, and Pad/PC native VT rebinds a retained
   XComponent surface when ArkUI does not emit a new surface callback. A last
   known surface retry, owner-checked detach, per-document xterm bridge and an
-  independent render revision now close the destroy/recreate race that could
-  leave the second host connected but visually stale.
+  independent render revision and deterministic keyed remount now close the
+  destroy/recreate race that could leave the second host connected but visually
+  stale. An adopted session's transient native `CONNECTING` state no longer
+  hides the newly bound page, and mount retries re-probe native state immediately.
   Both code-only Hvigor gates passed on 2026-08-06; device validation is deferred.
-- Keep the review state at the matching PASS receipt; do not claim full
+- Keep the current review state at `REVIEW_REQUIRED` until the host-switch
+  surface-gate, renderer-owner lease, and revision-aware document corrections are independently reviewed; do not claim full
   background SFTP execution, Level A, or Level B connectivity.
 - The first ProxyJump implementation and matching key preflight relay are
   committed, but keep them pending until bastion host-key policy and a real
@@ -35,9 +48,10 @@ Updated: 2026-08-06 Asia/Shanghai
 ## Next
 
 - WP-T4 user acceptance and benchmark using shared terminal fixtures.
-- Independently review the committed same-page SSH binding-generation,
-  initial-UI view-remount, surface-owner, fallback, render-revision, EGL
-  refresh, surface-ID polling and measured-size rebind fix.
+- Independently review the current same-page SSH binding-generation,
+  initial-UI deterministic host/binding/revision keyed remount, surface-owner lease, fallback, render-revision,
+  revision-aware document reload, GPU binding-lease invalidation, EGL refresh, surface-ID polling, measured-size rebind, mount-wake fix, and
+  reused-renderer rebind/reload.
 - WP-T5/WP-T6 terminal correctness and damage-frame renderer implementation.
 - Real SFTP, bastion, forwarding and FRP endpoint interoperability tests when
   the corresponding services and HDC/device are available.

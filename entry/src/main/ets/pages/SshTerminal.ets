@@ -93,6 +93,10 @@ import {
 } from '../services/SshTerminalTabStore';
 import { TerminalCoreRegistry } from '../services/TerminalCoreRegistry';
 import { SshTerminalRendererRegistry } from '../services/SshTerminalRendererRegistry';
+import {
+  makeSshTerminalSurfaceBindingKey,
+  makeSshTerminalSurfaceRenderKey
+} from '../services/SshTerminalSurfaceBindingPolicy';
 import { VirtualKeyBar } from '../components/VirtualKeyBar';
 import { normalizeSshTerminalLineSpacing } from '../services/SshSettingsPolicy';
 import {
@@ -280,12 +284,12 @@ struct SshTerminal {
   @State terminalSurfaceGeneration: number = 0;
   /** Observable identity for the currently mounted xterm document. */
   @State terminalSurfaceBindingKey: string = '';
-  /**
-   * Explicit ArkUI subtree revision. A new binding can have the same host and
-   * session after a surface recovery, so the binding identity alone is not a
-   * sufficient child key for a full component lifecycle restart.
-   */
+  /** Forces renderer prop reconciliation even when a host/session is reused. */
   @State terminalSurfaceRenderRevision: number = 0;
+  /** Stable page-owned slot; the host binding changes in place. */
+  @State terminalSurfaceViewKey: string = '';
+  /** Explicit repaint fence for a committed visible host binding. */
+  @State terminalSurfaceRefreshRequest: number = 0;
   /** Pad/PC native renderer failure is scoped to this visible binding only. */
   @State nativeRendererUnavailable: boolean = false;
   /** 选区模式 — 长按菜单"选择"开启, 传给 TerminalEmulator 改变 touch 行为 */
@@ -633,6 +637,12 @@ struct SshTerminal {
     this.terminalSurfacePendingBindingKey = '';
     this.terminalSurfaceMountRetryCount = 0;
     this.terminalSurfaceBindingKey = '';
+    // Remove the visible child before the next binding is committed. Native
+    // renderer handles remain in the per-host registry, so this only releases
+    // the transient XComponent/WebView surface and makes the next document
+    // lifecycle deterministic.
+    this.terminalSurfaceRenderRevision = this.terminalSurfaceRenderRevision + 1;
+    this.terminalSurfaceViewKey = '';
     this.terminalSurfaceMounted = false;
     this.xtermReady = false;
   }
@@ -648,8 +658,9 @@ struct SshTerminal {
       this.terminalClosing) {
       return;
     }
-    const bindingKey: string = bindingHostId + ':' + this.terminalSurfaceGeneration.toString() + ':' +
-      bindingGeneration.toString() + ':' + bindingSessionId.toString();
+    const bindingKey: string = makeSshTerminalSurfaceBindingKey(bindingHostId,
+      this.terminalSurfaceGeneration, bindingGeneration, bindingSessionId);
+    if (bindingKey.length === 0) { return; }
     if (this.terminalSurfaceMounted && this.terminalSurfaceBindingKey === bindingKey) {
       return;
     }
@@ -686,6 +697,21 @@ struct SshTerminal {
       // Keep the binding pending while the current session is still connecting
       // instead of leaving the page permanently behind the loading view.
       if (!this.connected) {
+        // An adopted session can report CONNECTING for one native turn after
+        // resumeSshSession() even though attachSshSession() has already
+        // installed the page callback and marked this binding live. Refresh
+        // the native state here so the mount does not wait for the 5-second
+        // latency probe to wake it up.
+        const mountTokenBeforeStateSync: number = this.terminalSurfaceMountToken;
+        this.syncNativeConnectionState();
+        // A CONNECTED probe schedules its own mount turn. Do not let the
+        // current timer commit the same binding a second time with a newer
+        // revision, which can race the renderer's final prop transaction.
+        if (mountTokenBeforeStateSync !== this.terminalSurfaceMountToken) {
+          return;
+        }
+      }
+      if (!this.connected) {
         if (!this.connecting || this.terminalSurfaceMountRetryCount >= 120) {
           return;
         }
@@ -700,10 +726,23 @@ struct SshTerminal {
       }
       this.terminalSurfaceMountRetryCount = 0;
       this.terminalSurfaceBindingKey = bindingKey;
-      // Keep the revision independent from the host/session identity. This
-      // forces ArkUI to replace a stale XComponent/WebView even when the
-      // native session is intentionally retained across a view rebind.
-      this.terminalSurfaceRenderRevision = this.terminalSurfaceRenderRevision + 1;
+      // Keep this independent from the host/session key. A renderer can be
+      // rebound to the same retained core after a surface recovery, and ArkUI
+      // must still reconcile the renderer props in that case.
+      const nextRenderRevision: number = this.terminalSurfaceRenderRevision + 1;
+      const nextViewKey: string = makeSshTerminalSurfaceRenderKey(bindingHostId, bindingKey,
+        nextRenderRevision, this.shouldUseNativeTerminal());
+      if (nextViewKey.length === 0) { return; }
+      this.terminalSurfaceRenderRevision = nextRenderRevision;
+      this.terminalSurfaceViewKey = nextViewKey;
+      // Wake both renderer paths after the visible binding is committed. The
+      // target host may have received bytes while its surface was detached;
+      // the sequence change makes a reused child drain its host-local buffer
+      // even when ArkUI coalesces the loading-to-surface transition.
+      this.termOutputSequence = this.termOutputSequence + 1;
+      // Output may be quiet while a retained native core is rebound. Keep the
+      // visual repaint contract independent from SSH byte arrival.
+      this.terminalSurfaceRefreshRequest = this.terminalSurfaceRefreshRequest + 1;
       this.terminalSurfaceMounted = true;
       if (this.terminalRendererReadyTimer !== -1) {
         clearTimeout(this.terminalRendererReadyTimer);
@@ -740,21 +779,27 @@ struct SshTerminal {
       this.showSshTabPicker = false;
       return;
     }
+    // A route replacement gives ArkUI a real page lifecycle boundary. The old
+    // page detaches its SSH consumer, while the new page adopts the target
+    // session and rebuilds the terminal surface from its host-local state.
+    // This avoids relying on a same-page XComponent/WebView subtree diff to
+    // refresh a visible terminal after a host switch.
+    if (!this.sshTabStore.beginNavigation(targetHostId)) { return; }
     this.showSshTabPicker = false;
-    this.tabSwitchInFlight = true;
-    void this.switchSshTab(host).catch((err: Error): void => {
-      if (this.terminalClosing || this.hostId !== targetHostId) { return; }
-      const message: string = err?.message || 'SSH 主机切换失败';
-      this.resetTerminalSurfaceBinding();
-      this.connected = false;
-      this.connecting = false;
-      this.connectionError = message;
-      this.sshTabStore.update(targetHostId, 'error', -1, message);
-      this.refreshSshTabViews();
-      hilog.error(0x0001, 'SshTerminal', '[tab] switch failed: ' + message);
-    }).finally((): void => {
-      this.tabSwitchInFlight = false;
-    });
+    this.sshTabStore.open(targetHostId, host.label,
+      host.username + '@' + host.host + ':' + host.port.toString());
+    this.sshTabStore.activate(targetHostId);
+    this.refreshSshTabViews();
+    this.tabNavigationPending = true;
+    void router.replaceUrl({ url: 'pages/SshTerminal', params: { hostId: targetHostId } })
+      .catch((err: Error): void => {
+        this.sshTabStore.cancelNavigation(targetHostId);
+        this.tabNavigationPending = false;
+        this.sshTabStore.activate(this.hostId);
+        this.refreshSshTabViews();
+        hilog.error(0x0001, 'SshTerminal', '[tab] route switch failed: ' +
+          (err?.message || 'SSH 主机切换失败'));
+      });
   }
 
   /**
@@ -798,14 +843,15 @@ struct SshTerminal {
 
     if (previousSessionId > 0 && previousHostId.length > 0) {
       this.sftpTaskEngine.detachSession(previousHostId, previousSessionId);
-      if (!this.loader.detachSshSession(previousSessionId, previousHostId)) {
+      const detached: boolean = this.loader.detachSshSession(previousSessionId, previousHostId);
+      if (!detached) {
         hilog.warn(0x0001, 'SshTerminal',
-          '[tab] detach failed host=' + previousHostId + ' session=' + previousSessionId.toString());
-        if (this.sshBindingGeneration === bindingGeneration) {
-          this.sshBindingGeneration = previousBindingGeneration;
-        }
-        return;
+          '[tab] native detach fence unavailable; continuing logical handoff host=' +
+          previousHostId + ' session=' + previousSessionId.toString());
       }
+      // The binding generation above already invalidates callbacks owned by
+      // the previous page. Keep the old native session alive when detach is
+      // unavailable; its late bytes are routed to that host's retained queue.
       this.sshTabStore.update(previousHostId, 'connected', previousSessionId);
     } else {
       // A connect still in DNS/KEX has no page session yet. Cancel its
@@ -846,6 +892,8 @@ struct SshTerminal {
     this.terminalOutputQueueOverflowed = false;
     this.termOutput = '';
     this.nativeRendererUnavailable = false;
+    // Remove the old renderer slot while the target session is adopted. The
+    // retained native core is rebound by the new keyed surface below.
     this.resetTerminalSurfaceBinding();
     this.xtermOutputBuffer.clear();
     const targetTranscript: string = this.sshTranscriptStore.snapshot(targetHostId);
@@ -3356,6 +3404,18 @@ struct SshTerminal {
       return false;
     }
     if (state === SSH_STATE_CONNECTING) {
+      // resumeSshSession() may publish CONNECTING briefly while the already
+      // attached session finishes its native resume gate. Do not tear down a
+      // live page binding or hide its surface for that transient state. A
+      // session that has not been attached yet still follows the normal
+      // connecting branch below.
+      if (this.connected && this.sessionId > 0) {
+        this.connecting = false;
+        this.sshTabStore.update(this.hostId, 'connected', this.sessionId);
+        this.scheduleTerminalSurfaceMount(this.pageGeneration, this.sshBindingGeneration,
+          this.hostId, this.sessionId);
+        return false;
+      }
       this.connected = false;
       this.connecting = true;
       this.sshTabStore.update(this.hostId, 'connecting', this.sessionId);
@@ -3891,6 +3951,8 @@ struct SshTerminal {
       '[terminal] native renderer unavailable, fallback host=' + hostId);
     this.nativeRendererUnavailable = true;
     this.xtermReady = false;
+    this.terminalSurfaceViewKey = makeSshTerminalSurfaceRenderKey(hostId,
+      surfaceIdentity, this.terminalSurfaceRenderRevision, false);
     this.replayNativeOutputToXterm(hostId);
     this.requestTerminalScrollToBottomSettled();
   }
@@ -6561,8 +6623,11 @@ struct SshTerminal {
         colors: [['rgba(255,255,255,0.09)', 0], ['rgba(255,255,255,0.00)', 1]]
       })
 
-      // 加载/错误态
-      if (!this.connected || !this.terminalSurfaceMounted) {
+      // Keep a committed renderer slot alive across a host switch. Its active
+      // prop is the lifecycle gate; the loading layer masks the old frame
+      // until the target binding has been committed.
+      if ((!this.connected || !this.terminalSurfaceMounted) &&
+        this.terminalSurfaceViewKey.length === 0) {
         Column() {
           if (this.connecting || (this.connected && !this.terminalSurfaceMounted)) {
             LoadingProgress().width(32).height(32).color(this.accentColor)
@@ -6577,80 +6642,107 @@ struct SshTerminal {
         }.width('100%').layoutWeight(1).justifyContent(FlexAlign.Center).backgroundColor('#0D0D0D')
       } else {
         Stack({ alignContent: Alignment.TopStart }) {
-            // ArkUI 的 id 只用于查询，不是子树复用键。让 binding key
-            // 直接控制终端组件实例，切换主机时不复用旧画布。
-            Stack({ alignContent: Alignment.TopStart }) {
-            ForEach([
-              this.visibleSshHostId + ':' + this.terminalSurfaceBindingKey + ':' +
-                this.terminalSurfaceRenderRevision.toString() + ':' +
-                (this.shouldUseNativeTerminal() ? 'native' : 'xterm')
-            ], (_surfaceRenderKey: string): void => {
-            if (this.shouldUseNativeTerminal()) {
-              GpuTerminalRenderer({
-                coreKey: this.visibleSshHostId,
-                surfaceIdentity: this.terminalSurfaceBindingKey,
-                cols: this.termCols,
-                rows: this.termRows,
-                cellWvp: this.cellWvp,
-                cellHvp: this.cellHvp,
-                fontSize: this.fontSize,
-                viewportHeight: this.terminalPaneHeight(),
-                visibleViewportHeight: this.terminalRowsViewportHeight(),
-                bottomAlignSparseContent: !this.isDesktopDevice,
-                inputBuffer: this.nativeTerminalInputBuffer(this.visibleSshHostId),
-                inputSequence: this.termOutputSequence,
-                copyRequest: $copyRequest,
-                copiedText: $copiedText,
-                scrollToBottomRequest: this.scrollToBottomRequest,
-                forceScrollToBottomRequest: this.forceScrollToBottomRequest,
-                externalScrollLines: this.terminalExternalScrollLines,
-                externalScrollRequest: this.terminalExternalScrollRequest,
-                onTerminalModeChange: (mode: TerminalCoreMode): void => {
-                  this.onTerminalModeChange(mode);
-                },
-                onRendererReady: (hostId: string, surfaceIdentity: string): void => {
-                  this.onNativeRendererReady(hostId, surfaceIdentity);
-                },
-                onRendererUnavailable: (hostId: string, surfaceIdentity: string): void => {
-                  this.onNativeRendererUnavailable(hostId, surfaceIdentity);
+            if (!this.connected || !this.terminalSurfaceMounted) {
+              Column() {
+                if (this.connecting || (this.connected && !this.terminalSurfaceMounted)) {
+                  LoadingProgress().width(32).height(32).color(this.accentColor)
+                  Text('Connecting...').fontSize(13).fontColor('#888').margin({ top: 10 })
+                } else {
+                  Text(this.connectionError).fontSize(14).fontColor('#FF6B6B')
+                  Button('重试').margin({ top: 16 }).backgroundColor(this.accentColor)
+                    .fontColor('#FFFFFF').borderRadius(8)
+                    .onClick((): void => { this.retryConnection(); })
+                  Button('返回').margin({ top: 16 }).backgroundColor(this.accentColor)
+                    .fontColor('#FFFFFF').borderRadius(8)
+                    .onClick((): void => { this.closeSessionAndBack(); })
                 }
-              })
-              .width('100%')
-              .height(this.terminalPaneHeight())
-            } else {
-              SshXtermSurface({
-                coreKey: this.terminalSurfaceBindingKey,
-                cols: this.termCols,
-                rows: this.termRows,
-                viewportWidth: this.termAreaW,
-                fontSize: this.fontSize,
-                lineSpacing: normalizeSshTerminalLineSpacing(this.lineSpacing),
-                bottomAlignSparseContent: !this.isDesktopDevice,
-                viewportHeight: this.terminalPaneHeight(),
-                outputBuffer: this.xtermOutputBuffer,
-                outputSequence: this.termOutputSequence,
-                focusRequest: this.terminalFocusRequest,
-                copyRequest: this.copyRequest,
-                copiedText: this.copiedText,
-                scrollToBottomRequest: this.scrollToBottomRequest,
-                forceScrollToBottomRequest: this.forceScrollToBottomRequest,
-                externalScrollLines: this.terminalExternalScrollLines,
-                externalScrollRequest: this.terminalExternalScrollRequest,
-                onData: (data: string, surfaceIdentity: string): void => {
-                  this.onXtermData(data, surfaceIdentity);
-                },
-                onResize: (cols: number, rows: number, surfaceIdentity: string): void => {
-                  this.onXtermResize(cols, rows, surfaceIdentity);
-                },
-                onReady: (surfaceIdentity: string): void => {
-                  this.onXtermReady(surfaceIdentity);
-                }
-              })
-              .width('100%')
-              .height(this.terminalPaneHeight())
+              }
+              .width('100%').height('100%').justifyContent(FlexAlign.Center)
+              .backgroundColor('#0D0D0D').zIndex(30)
             }
+            // Keep the native VT core/session alive in the registry; the
+            // renderer itself receives an explicit inactive -> active rebind.
+            Stack({ alignContent: Alignment.TopStart }) {
+            ForEach([this.terminalSurfaceViewKey], (surfaceRenderKey: string): void => {
+              // The keyed wrapper owns the visual lifecycle. The renderer
+              // component below may otherwise be reused after a host switch
+              // even when the page has already committed a new binding.
+              Stack({ alignContent: Alignment.TopStart }) {
+                if (this.shouldUseNativeTerminal()) {
+                  GpuTerminalRenderer({
+                    coreKey: this.visibleSshHostId,
+                    surfaceIdentity: this.terminalSurfaceBindingKey,
+                    active: this.connected && this.terminalSurfaceMounted,
+                    renderRevision: this.terminalSurfaceRenderRevision,
+                    surfaceRefreshRequest: this.terminalSurfaceRefreshRequest,
+                    cols: this.termCols,
+                    rows: this.termRows,
+                    cellWvp: this.cellWvp,
+                    cellHvp: this.cellHvp,
+                    fontSize: this.fontSize,
+                    viewportHeight: this.terminalPaneHeight(),
+                    visibleViewportHeight: this.terminalRowsViewportHeight(),
+                    bottomAlignSparseContent: !this.isDesktopDevice,
+                    inputBuffer: this.nativeTerminalInputBuffer(this.visibleSshHostId),
+                    inputSequence: this.termOutputSequence,
+                    copyRequest: $copyRequest,
+                    copiedText: $copiedText,
+                    scrollToBottomRequest: this.scrollToBottomRequest,
+                    forceScrollToBottomRequest: this.forceScrollToBottomRequest,
+                    externalScrollLines: this.terminalExternalScrollLines,
+                    externalScrollRequest: this.terminalExternalScrollRequest,
+                    onTerminalModeChange: (mode: TerminalCoreMode): void => {
+                      this.onTerminalModeChange(mode);
+                    },
+                    onRendererReady: (hostId: string, surfaceIdentity: string): void => {
+                      this.onNativeRendererReady(hostId, surfaceIdentity);
+                    },
+                    onRendererUnavailable: (hostId: string, surfaceIdentity: string): void => {
+                      this.onNativeRendererUnavailable(hostId, surfaceIdentity);
+                    }
+                  })
+                  .width('100%')
+                  .height(this.terminalPaneHeight())
+                } else {
+                  SshXtermSurface({
+                    coreKey: this.terminalSurfaceBindingKey,
+                    active: this.connected && this.terminalSurfaceMounted,
+                    renderRevision: this.terminalSurfaceRenderRevision,
+                    surfaceRefreshRequest: this.terminalSurfaceRefreshRequest,
+                    cols: this.termCols,
+                    rows: this.termRows,
+                    viewportWidth: this.termAreaW,
+                    fontSize: this.fontSize,
+                    lineSpacing: normalizeSshTerminalLineSpacing(this.lineSpacing),
+                    bottomAlignSparseContent: !this.isDesktopDevice,
+                    viewportHeight: this.terminalPaneHeight(),
+                    outputBuffer: this.xtermOutputBuffer,
+                    outputSequence: this.termOutputSequence,
+                    focusRequest: this.terminalFocusRequest,
+                    copyRequest: this.copyRequest,
+                    copiedText: this.copiedText,
+                    scrollToBottomRequest: this.scrollToBottomRequest,
+                    forceScrollToBottomRequest: this.forceScrollToBottomRequest,
+                    externalScrollLines: this.terminalExternalScrollLines,
+                    externalScrollRequest: this.terminalExternalScrollRequest,
+                    onData: (data: string, surfaceIdentity: string): void => {
+                      this.onXtermData(data, surfaceIdentity);
+                    },
+                    onResize: (cols: number, rows: number, surfaceIdentity: string): void => {
+                      this.onXtermResize(cols, rows, surfaceIdentity);
+                    },
+                    onReady: (surfaceIdentity: string): void => {
+                      this.onXtermReady(surfaceIdentity);
+                    }
+                  })
+                  .width('100%')
+                  .height(this.terminalPaneHeight())
+                }
+              }
+              .id('ssh-terminal-surface-' + surfaceRenderKey)
+              .width('100%')
+              .height(this.terminalPaneHeight())
             }, (surfaceRenderKey: string): string => surfaceRenderKey)
-
             // 隐藏 TextInput — 1×1 可点击, 软键盘锚点
             TextInput({ text: this.kbInput, controller: this.kbCtrl })
               .id('sshKbInput')
@@ -6842,9 +6934,7 @@ struct SshTerminal {
       }
     }
       .width('100%').height('100%').backgroundColor('#0D0D0D')
-      .id('ssh-terminal-pane-' + this.visibleSshHostId + ':' +
-        this.terminalSurfaceGeneration.toString() + ':' + this.terminalSurfaceBindingKey + ':' +
-        this.terminalSurfaceRenderRevision.toString())
+      .id('ssh-terminal-pane')
       if (this.showSftpPanel && this.sftpWideLayout()) {
         Column() {
           this.SftpTransferSheet()
