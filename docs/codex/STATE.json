@@ -3,7 +3,7 @@
   "task": "ssh-terminal-complete-upgrade",
   "branch": "codex/ssh-terminal-complete-upgrade",
   "base": "d2769ad4b",
-  "head": "22fd302",
+  "head": "70534e2",
   "phase": "ssh-canvas-ack-reload-watchdog-code-only-pass",
   "status": "active",
   "next": "Perform SSH canvas device acceptance and benchmark when the code-only boundary is lifted; do not expand this increment to SFTP, forwarding or FRP.",
@@ -102,6 +102,7 @@
   "lastVerification": {
     "host_native_tests": "273-pass-16-preexisting-vnc-fixture-startup-failures-289-total-2026-08-06",
     "rust_terminal_core_tests": "focused-alacritty-63-pass-fallback-57-pass-2026-08-04; full-no-default-features-156-pass-1-preexisting-rendezvous-fixture-public-address-failure-157-total",
+    "rustdeskPhysicalTouchpad": "focused-no-default-features-3-pass-0-fail-2026-08-06",
     "terminalParity": "alacritty-67-pass-fallback-57-pass-unicode-ansi-tui-resize-large-output-damage-2026-08-04",
     "default@OhosTestCompileArkTS": "pass-after-xterm-ack-reload-watchdog-2026-08-06",
     "assembleHap": "blocked-existing-ssh_adapter.cpp:2251-unsigned-char-prompt-text-assign-2026-08-06",

@@ -3,7 +3,7 @@
 - Task: `ssh-terminal-complete-upgrade`
 - Base: `main@d2769ad4b`
 - Branch: `codex/ssh-terminal-complete-upgrade`
-- Code checkpoint: `22fd302` (`fix(ssh): close xterm frame recovery lifecycle`), following `24d701f` (`fix(ssh): avoid api23 gpu surface abort`); keyed surface recovery, forwarding lifecycle, adapter reactor binding, and the generation-guarded NAPI/ArkTS bridge are committed.
+- Code checkpoint: `70534e2` (`fix(rustdesk): stabilize pc physical touchpad gestures`), following `22fd302` (`fix(ssh): close xterm frame recovery lifecycle`); keyed surface recovery, forwarding lifecycle, adapter reactor binding, and the generation-guarded NAPI/ArkTS bridge are committed.
 - Phase: Alacritty core and xterm-safe visible fallback; lifecycle, VT/Unicode/resize/TUI/large-output parity, per-host output isolation, strict ACK-gated canvas presentation, code-only host-switch/surface refresh recovery, guarded surface fallback, and native forwarding contract.
 - Scope: migrate VT behind terminalCore, keep appearance settings in-core, verify IME/input/Canvas behavior. Homepage work is not current focus.
 ## Progress
@@ -32,19 +32,19 @@
   real libssh2 socket/channel integration is open. ProxyJump host-key binding
   and FRP Visitor/STCP/SUDP/XTCP control-plane integration remain open.
 ## Verification
-- `git diff --check`: passed for the xterm ACK/reload recovery checkpoint on 2026-08-06.
+- `git diff --check`: passed for the xterm ACK/reload recovery and PC physical-touchpad checkpoint on 2026-08-06.
 - Inline xterm JavaScript parse and stubbed ordered-batch/error protocol checks: passed on 2026-08-06.
 - Host native tests: `280 passed, 16 failed, 296 total`; failures are existing
   VNC TLS fixture startups. RDP/SSH/forwarding/diagnostics tests pass; the OHOS
   callback binary needs a target device, while production Ninja compilation passed.
 - Rust `cargo test --manifest-path rustdesk_ffi/Cargo.toml --lib --no-default-features`:
   `156 passed, 1 failed, 157 total`; the remaining failure is the existing rendezvous fixture's public-address assertion.
+- RustDesk physical-touchpad focused Rust tests: `3 passed, 0 failed` on 2026-08-06.
 - `default@OhosTestCompileArkTS`: passed on the current checkout on 2026-08-06; warnings only after strict xterm ACK/reload recovery and active lifecycle gates; the physical-touchpad ArkTS policy tests are included and pass.
-- `assembleHap`: blocked by existing `ssh_adapter.cpp:2251` prompt-text type
-  error in the mixed worktree; no non-canvas native file was changed.
+- `assembleHap`: `BUILD SUCCESSFUL` on the final physical-touchpad checkout on 2026-08-06; existing warnings only.
 - Direct real-FreeRDP OHOS objects (`freerdp_adapter.cpp` and
-  `rdp_file_clipboard_bridge.cpp`) compile successfully; a fresh HAP remains
-  blocked only by the preserved SSH error above.
+  `rdp_file_clipboard_bridge.cpp`) compile successfully; the fresh HAP also
+  passes the production assemble gate above.
 - HDC reproduction: SSH TCP/KEX/public-key auth/PTY/shell all completed; the
   crash was `DrawSnapshot -> OH_Drawing_SurfaceFlush -> Device lost -> SIGABRT`
   on PID 18229 at 2026-08-06 17:36:30. The old `log.rtf` shows the same stack.
@@ -63,6 +63,7 @@
   `totp-reviewed-brand-assets` with `licenseDeclared=NOASSERTION`.
 ## Review
 - Existing independent review passed the bounded-output and IME/socket increments. The current surface fallback, SOCKS5 flush, listener/FRP route and ArkTS/native ABI increment also passed with no P0/P1/P2 findings; receipt `ssh-terminal-surface-forwarding-frp-pass-2026-08-06` is recorded. The strict xterm ACK/reload/watchdog increment passed Dalton review with no P0/P1/P2/P3 findings; receipt `ssh-terminal-xterm-ack-reload-pass-2026-08-06` is recorded. The status command remains `REVIEW_REQUIRED` because unrelated mixed-worktree changes remain; no destructive cleanup was performed.
+- The PC physical-touchpad increment received independent PASS review with no P0-P3 findings; Windows/macOS modifier mapping, cumulative Pinch accounting, gesture reset, and virtual-path isolation were checked.
 - SFTP scope is closed for this pass; real-device/endpoint evidence is not a Level A completion claim.
 - Device evidence covers injected input and lifecycle; external keyboard/IME, GPU re-enable, bastion/forwarding/FRP evidence remain open.
 
@@ -75,4 +76,4 @@
 - Native GPU re-enable is blocked until a backend that cannot abort on a stale
   API 23 BufferQueue is available; no real OpenSSH bastion, forwarding or FRP
   endpoint is available, and `ohosTest@OhosTestCompileArkTS` (`00306054`) remains
-  pending; `assembleHap` is blocked by the existing `ssh_adapter.cpp:2251` error.
+  pending.

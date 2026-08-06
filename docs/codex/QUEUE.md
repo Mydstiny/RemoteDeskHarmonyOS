@@ -44,7 +44,7 @@ Updated: 2026-08-06 Asia/Shanghai
   The fallback FIFO is host-scoped, returns unconfirmed batches across lifecycle handoffs, and the visible layer stays masked until xterm-ready; xterm writes are strictly callback-ordered, failed/timeout batches replay in full into a fresh document, reload watchdog/retry attempts use new lifecycle bridges, and inactive surfaces cancel those timers.
   `default@OhosTestCompileArkTS` passed; targeted physical-touchpad Rust tests are
   `3 passed, 0 failed`; inline xterm parse and ordered-batch protocol checks pass;
-  `assembleHap` is blocked by the existing `ssh_adapter.cpp:2251` mixed-worktree error. Device installation/acceptance
+  `assembleHap` is `BUILD SUCCESSFUL` on the final checkout. Device installation/acceptance
   remains deferred by the current code-only rule.
 - The current surface fallback, SOCKS5 flush, listener/FRP route and ArkTS/native ABI increment has an independent PASS receipt; the strict xterm ACK/reload/watchdog increment also has an independent PASS receipt `ssh-terminal-xterm-ack-reload-pass-2026-08-06`. Do not claim full background SFTP execution, Level A, or Level B connectivity. The status command remains `REVIEW_REQUIRED` only because preserved unrelated mixed-worktree changes remain dirty.
 - The first ProxyJump implementation and matching key preflight relay are
@@ -61,9 +61,8 @@ Updated: 2026-08-06 Asia/Shanghai
 - The current RDP increment passes `default@OhosTestCompileArkTS`,
   `git diff --check`, direct real-FreeRDP object builds, and the host suite
   (`280 passed, 16 pre-existing VNC TLS fixture startup failures, 296 total`).
-  `assembleHap` is blocked at the preserved SSH `std::string::assign` type
-  error in `ssh_adapter.cpp:2251`; the OHOS callback binary requires a target
-  device and is not executable on macOS.
+  `assembleHap` is `BUILD SUCCESSFUL`; the OHOS callback binary requires a
+  target device and is not executable on macOS.
   Keep review at `REVIEW_REQUIRED` while preserved user RDP hunks in mixed `protocol_adapter.h` and `HostListPage.ets` remain dirty; the current surface/forwarding/FRP review receipt is recorded.
 ## Next
 - WP-T4 canvas user acceptance and benchmark using shared terminal fixtures; the
