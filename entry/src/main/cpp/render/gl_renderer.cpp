@@ -5,6 +5,7 @@
  */
 
 #include "gl_renderer.h"
+#include "presentation_geometry_policy.h"
 #include "gl_surface_lifecycle_policy.h"
 #include <napi/native_api.h>
 #include <hilog/log.h>
@@ -915,6 +916,14 @@ RdpPresentMetrics GLRenderer::RenderRawBGRAInternal(
         metrics.result = RdpPresentResult::MakeCurrentFailed;
         return metrics;
     }
+    // The callback is the ownership boundary for the raw path. Clear only
+    // staged OES geometry; raw texture dimensions remain upload metadata and a
+    // pre-first-frame fallback, never a replacement for logical geometry.
+    if (presentationPath_ != PresentationPath::RAW_BGRA) {
+        presentationPath_ = PresentationPath::RAW_BGRA;
+        oesSourceWidth_ = 0;
+        oesSourceHeight_ = 0;
+    }
     ApplyPendingCanvasTransformLocked();
 
     const auto uploadBeginAt = clock::now();
@@ -1003,15 +1012,14 @@ RdpPresentMetrics GLRenderer::RenderRawBGRAInternal(
 
     // Renderer snapshots use top-left coordinates so ArkTS hit testing and
     // cursor projection share the same canvas contract as the gesture layer.
-    // Keep the raw BGRA path on its established texture-size Fit contract.
-    // Software decoding may downscale the uploaded texture, but changing this
-    // viewport to the logical stream size changes the long-standing VP8/VP9
-    // presentation geometry and can make a peer appear zoomed/cropped.
+    // Preserve the established RAW BGRA texture-size viewport. Software
+    // decoding may downscale the uploaded texture; using the logical encoded
+    // size here would enlarge/crop VP8/VP9/AV1 when the aspect ratios differ.
     presentationPath_ = PresentationPath::RAW_BGRA;
     const int logicalSourceWidth = sourceWidth_ > 0 ? sourceWidth_ : width;
     const int logicalSourceHeight = sourceHeight_ > 0 ? sourceHeight_ : height;
     int vpX = 0, vpY = 0, vpW = width_, vpH = height_;
-    CalculateViewport(width, height, vpX, vpY, vpW, vpH);
+    CalculateActiveViewport(vpX, vpY, vpW, vpH);
 
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
@@ -1102,6 +1110,10 @@ void GLRenderer::RenderFrame(GLuint textureId) {
     if (!MakeCurrent()) {
         return;
     }
+    // SetRendererSourceSize() stages the current OES output dimensions
+    // immediately before this callback. Do not clear them on a raw->OES
+    // transition: that would make the first hardware frame fall back to a
+    // stale logical size.
     presentationPath_ = PresentationPath::OES;
     ApplyPendingCanvasTransformLocked();
 
@@ -1113,7 +1125,10 @@ void GLRenderer::RenderFrame(GLuint textureId) {
     int viewportY = 0;
     int viewportW = width_;
     int viewportH = height_;
-    CalculateViewport(oesWidth, oesHeight, viewportX, viewportY, viewportW, viewportH);
+    // OES dimensions are a fallback for the interval before the protocol
+    // supplies logical geometry. Once available, logical dimensions win so a
+    // decoder crop/reconfigure cannot resize the remote canvas unexpectedly.
+    CalculateActiveViewport(viewportX, viewportY, viewportW, viewportH);
     glViewport(viewportX, height_ - viewportY - viewportH, viewportW, viewportH);
 
     // 缓存视口信息供 ArkTS 查询坐标映射
@@ -1169,9 +1184,8 @@ void GLRenderer::Resize(int width, int height) {
     ApplyPendingCanvasTransformLocked();
     width_ = width;
     height_ = height;
-    // Resize must follow the texture currently being sampled. The logical
-    // source dimensions remain in the snapshot for input mapping, but must
-    // not replace the raw/OES texture dimensions after a frame was presented.
+    // Resize recalculates the logical remote viewport. Decoder dimensions are
+    // only fallbacks while the first logical frame is still unavailable.
     CalculateActiveViewport(lastVpX_, lastVpY_, lastVpW_, lastVpH_);
     PublishViewportSnapshot(lastVpX_, lastVpY_, lastVpW_, lastVpH_);
     OH_LOG_INFO(LOG_APP, "[GL] 渲染区域大小改为 %{public}dx%{public}d", width, height);
@@ -1188,10 +1202,15 @@ void GLRenderer::SetSourceSize(int width, int height) {
     }
     sourceWidth_ = width;
     sourceHeight_ = height;
-    // This setter updates logical/input geometry. Keep the published viewport
-    // tied to the texture currently being sampled; a software decoder may
-    // intentionally upload a bounded-size BGRA texture for the same logical
-    // RustDesk frame.
+    // The logical size arrives before the next decoded frame. An OES decoder
+    // may still have the previous output dimensions staged, so do not let
+    // that old output determine the pre-frame snapshot.
+    if (presentationPath_ == PresentationPath::OES) {
+        oesSourceWidth_ = 0;
+        oesSourceHeight_ = 0;
+    }
+    // This setter updates both logical/input geometry and the display aspect
+    // ratio. RAW/OES decoder dimensions remain path-local fallbacks only.
     CalculateActiveViewport(lastVpX_, lastVpY_, lastVpW_, lastVpH_);
     PublishViewportSnapshot(lastVpX_, lastVpY_, lastVpW_, lastVpH_);
     OH_LOG_INFO(LOG_APP, "[GL] 视频源尺寸更新为 %{public}dx%{public}d", width, height);
@@ -1276,7 +1295,9 @@ RdpPresentMetrics GLRenderer::RenderRetainedFrameLocked(uint64_t expectedGenerat
     const auto drawBeginAt = clock::now();
     int vpX = 0, vpY = 0, vpW = width_, vpH = height_;
     presentationPath_ = PresentationPath::RAW_BGRA;
-    CalculateViewport(rawTextureWidth_, rawTextureHeight_, vpX, vpY, vpW, vpH);
+    oesSourceWidth_ = 0;
+    oesSourceHeight_ = 0;
+    CalculateActiveViewport(vpX, vpY, vpW, vpH);
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
     glViewport(vpX, height_ - vpY - vpH, vpW, vpH);
@@ -1327,22 +1348,16 @@ void GLRenderer::CalculateViewport(int sourceWidth, int sourceHeight,
 }
 
 void GLRenderer::CalculateActiveViewport(int& vpX, int& vpY, int& vpW, int& vpH) const {
-    int viewportSourceWidth = sourceWidth_;
-    int viewportSourceHeight = sourceHeight_;
-    // The source dimensions published in the snapshot are logical remote
-    // coordinates. GL, however, must calculate the viewport from the texture
-    // that the active path actually samples. This keeps a bounded software
-    // output and a hardware OES output from changing each other's geometry.
-    if (presentationPath_ == PresentationPath::RAW_BGRA &&
-        rawTextureWidth_ > 0 && rawTextureHeight_ > 0) {
-        viewportSourceWidth = rawTextureWidth_;
-        viewportSourceHeight = rawTextureHeight_;
-    } else if (presentationPath_ == PresentationPath::OES &&
-               oesSourceWidth_ > 0 && oesSourceHeight_ > 0) {
-        viewportSourceWidth = oesSourceWidth_;
-        viewportSourceHeight = oesSourceHeight_;
+    Render::PresentationPathKind path = Render::PresentationPathKind::Unknown;
+    if (presentationPath_ == PresentationPath::RAW_BGRA) {
+        path = Render::PresentationPathKind::RawBgra;
+    } else if (presentationPath_ == PresentationPath::OES) {
+        path = Render::PresentationPathKind::Oes;
     }
-    CalculateViewport(viewportSourceWidth, viewportSourceHeight, vpX, vpY, vpW, vpH);
+    const auto source = Render::SelectPresentationGeometry(
+        path, sourceWidth_, sourceHeight_, rawTextureWidth_, rawTextureHeight_,
+        oesSourceWidth_, oesSourceHeight_);
+    CalculateViewport(source.width, source.height, vpX, vpY, vpW, vpH);
 }
 
 void GLRenderer::GetViewportSnapshot(int& vpX, int& vpY, int& vpW, int& vpH,

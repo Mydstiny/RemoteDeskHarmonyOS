@@ -56,14 +56,12 @@
   Gateway requests reject unsupported Restricted Admin before FreeRDP;
   `gatewayTransportSelected` is requested policy only, with negotiated transport
   unknown without trace/instrumentation.
-- RustDesk renderer geometry is now isolated by presentation path: raw
-  BGRA/VP8/VP9 uses the uploaded texture dimensions for both the GL Fit
-  viewport and its renderer snapshot, while H.264/H.265 OES uses separately
-  staged decoder output dimensions. A follow-up fixed the VP9 regression where
-  the snapshot had been recalculated from the larger logical source size;
-  logical source updates still remain input geometry and cannot overwrite OES
-  state. `default@OhosTestCompileArkTS`, `assembleHap`, and `git diff --check`
-  passed on 2026-08-07. The signed HAP is at
+- RustDesk renderer geometry keeps RAW BGRA on the actual uploaded texture
+  size, preserving the established VP8/VP9/AV1 software-decoder downscale
+  behavior; H.264/H.265 OES uses logical remote geometry with OES output as a
+  first-frame fallback. The pure native geometry policy assertions and strict
+  clang syntax check passed; `default@OhosTestCompileArkTS` and
+  `assembleHap` both passed on 2026-08-07. The signed HAP remains at
   `entry/build/default/outputs/default/entry-default-signed.hap`; no
   three-codec frame evidence was captured because HDC target
   `5KLBB25928203528` is offline.

@@ -167,9 +167,9 @@ private:
     int  width_;
     int  height_;
     // sourceWidth_/sourceHeight_ are the logical stream dimensions used for
-    // input mapping. OES and raw texture dimensions are kept separately: the
-    // GL viewport must match the texture currently being sampled, while a
-    // delayed hardware callback must never rewrite raw BGRA geometry.
+    // input mapping. The active viewport keeps RAW BGRA texture geometry and
+    // OES logical geometry separate; delayed hardware callbacks must never
+    // rewrite the software path.
     int  sourceWidth_;
     int  sourceHeight_;
     int  oesSourceWidth_;

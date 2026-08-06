@@ -74,11 +74,12 @@ Updated: 2026-08-07 Asia/Shanghai
   Gateway stages stay separate; `CONTINUE_ONCE` leaves persisted records unchanged;
   Restricted Admin + RD Gateway fails closed with `E-RDP-GATEWAY-AUTH`;
   `gatewayTransportSelected` is requested-only, negotiated transport is unknown without wire/instrumentation, and OHOS/device evidence plus mixed-worktree review remain open.
-- RustDesk RAW/OES geometry follow-up is code-complete: RAW BGRA/VP8/VP9
-  snapshots use uploaded texture Fit dimensions; OES isolates hardware output.
-  Required Hvigor gates and `git diff --check` passed on 2026-08-07; HDC target
-  `5KLBB25928203528` remains offline, so device codec evidence is open; this does
-  not block the current SSH xterm smoke target at `127.0.0.1:5555`.
+- RustDesk RAW/OES geometry follow-up keeps RAW BGRA viewport sizing on the
+  actual uploaded texture so VP8/VP9/AV1 software downscaling is unchanged;
+  H.264/H.265 OES uses logical remote dimensions with OES output as a
+  first-frame fallback. Native policy assertions and both required Hvigor
+  gates passed on 2026-08-07. HDC target
+  `5KLBB25928203528` remains offline, so device codec evidence is open.
 ## Next
 - RDP Gateway plan: `docs/codex/plans/2026-08-06-rdp-gateway-aware-certificate-preflight-plan.md` covers real dual-cert, transport-observation and rotation acceptance.
 - WP-T4 canvas user acceptance and benchmark using shared terminal fixtures; the code-only ACK/reload/rebind review and commit are complete.

@@ -199,6 +199,7 @@ if(RDP_BUILD_TESTS)
         test/rdp_gl_upload_gate_test.cpp
         test/rdp_graphics_lifecycle_test.cpp
         test/rdp_certificate_policy_test.cpp
+        test/rdp_gateway_policy_test.cpp
         test/rdp_negotiation_parser_test.cpp
         test/rdp_auth_identity_policy_test.cpp
         test/rdp_auth_mode_policy_test.cpp
@@ -208,6 +209,7 @@ if(RDP_BUILD_TESTS)
         test/rdp_file_clipboard_offer_test.cpp
         test/gl_surface_lifecycle_policy_test.cpp
         test/native_image_context_policy_test.cpp
+        test/presentation_geometry_policy_test.cpp
         test/decoder_recovery_policy_test.cpp
         test/software_decoder_callback_gate_test.cpp
         test/decoder_callback_gate_test.cpp
