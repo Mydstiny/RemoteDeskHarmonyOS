@@ -7647,6 +7647,7 @@ struct SshTerminal {
     .bindSheet($$this.sftpPeerHostPicker, this.SftpPeerHostPickerSheet(), {
       height: this.sftpWideLayout() ? SheetSize.LARGE : this.sftpSheetMaxHeight(),
       preferType: this.sftpWideLayout() ? SheetType.CENTER : SheetType.BOTTOM,
+      width: this.sftpWideLayout() ? '88%' : '100%',
       dragBar: !this.sftpWideLayout(),
       backgroundColor: '#171D25',
       blurStyle: BlurStyle.NONE,
@@ -8062,6 +8063,9 @@ struct SshTerminal {
     .bindSheet($$this.showSftpSheet, this.SftpTransferSheet(), {
       height: this.sftpSheetHeight(),
       preferType: this.sftpWideLayout() ? SheetType.CENTER : SheetType.BOTTOM,
+      // Center sheets otherwise use a platform default width, which makes
+      // the Pad two-pane workspace collapse into a narrow dialog.
+      width: this.sftpWideLayout() ? '96%' : '100%',
       dragBar: !this.sftpWideLayout(),
       backgroundColor: this.pal().sheetBg,
       blurStyle: BlurStyle.NONE,
