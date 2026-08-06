@@ -10,6 +10,11 @@ export enum RemoteKeyboardLayout {
   MACOS = 'macos'
 }
 
+/** PC sessions default to the physical keyboard/mouse path (mode 2). */
+export function remoteControlModeDefaultForDevice(isDesktopDevice: boolean): number {
+  return isDesktopDevice ? 2 : 0;
+}
+
 export const HARMONY_KEYCODE_CTRL_LEFT: number = 2072;
 export const HARMONY_KEYCODE_CTRL_RIGHT: number = 2073;
 export const HARMONY_KEYCODE_META_LEFT: number = 2076;

@@ -9,6 +9,7 @@ export interface RemoteTopBarContext {
   isDesktopDevice: boolean;
   breakpoint: string;
   rustdeskControlMode: number;
+  physicalKeyboardMouseConnected: boolean;
 }
 
 export interface RemoteTopBarLayout {
@@ -54,8 +55,9 @@ export function remoteTopBarDeviceClass(isDesktopDevice: boolean, breakpoint: st
 export function shouldShowRustDeskTopBar(
   protocol: string,
   isDesktopDevice: boolean,
-  _breakpoint: string,
-  _rustdeskControlMode: number
+  breakpoint: string,
+  rustdeskControlMode: number,
+  physicalKeyboardMouseConnected: boolean
 ): boolean {
   if (protocol !== 'rustdesk') {
     return false;
@@ -63,10 +65,14 @@ export function shouldShowRustDeskTopBar(
   if (isDesktopDevice) {
     return true;
   }
-  // The mobile rail is also the discoverable entry for remote platform/layout
-  // selection when no physical keyboard is present. Input actions remain
-  // guarded by the session capability and control mode.
-  return true;
+  const deviceClass: RemoteTopBarDeviceClass = remoteTopBarDeviceClass(isDesktopDevice, breakpoint);
+  if (deviceClass === 'pad') {
+    return true;
+  }
+  // On a phone the rail is only useful when the session is in keyboard/mouse
+  // mode and a real external input device is present. Touch and virtual
+  // touchpad sessions must leave the remote canvas unobstructed.
+  return rustdeskControlMode === 2 && physicalKeyboardMouseConnected;
 }
 
 /** Mobile keyboard/mouse sessions keep controls off the system-bar edges. */

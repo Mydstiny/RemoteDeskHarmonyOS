@@ -7,6 +7,7 @@ import {
   isMacCapsLockLongPress,
   mapPhysicalKeyForRemoteLayout,
   physicalKeyboardLayoutForProtocol,
+  remoteControlModeDefaultForDevice,
   RemoteKeyboardLayout,
   remoteKeyboardLayoutDescription,
   shouldChoosePhysicalKeyboardLayout,
@@ -57,6 +58,11 @@ export default function remotePhysicalKeyboardPolicyTest(): void {
         .assertEqual(RemoteKeyboardLayout.WINDOWS);
       expect(physicalKeyboardLayoutForProtocol('rustdesk', RemoteKeyboardLayout.MACOS))
         .assertEqual(RemoteKeyboardLayout.MACOS);
+    });
+
+    it('defaults_all_pc_remote_control_modes_to_physical_keyboard_mouse', 0, (): void => {
+      expect(remoteControlModeDefaultForDevice(true)).assertEqual(2);
+      expect(remoteControlModeDefaultForDevice(false)).assertEqual(0);
     });
 
     it('never_consumes_phone_or_pad_system_back_gestures', 0, (): void => {

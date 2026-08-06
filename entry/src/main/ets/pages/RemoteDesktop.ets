@@ -405,6 +405,7 @@ import {
   shouldChoosePhysicalKeyboardLayout,
   physicalKeyboardLayoutForProtocol,
   shouldAutoSwitchVncKeyboardMouseMode,
+  remoteControlModeDefaultForDevice,
   shouldConsumeRemoteBack
 } from '../services/RemotePhysicalKeyboardPolicy';
 import {
@@ -1107,7 +1108,7 @@ struct RemoteDesktop {
   private physicalKeyboardLayoutConfirmed: boolean = false;
   private physicalKeyboardLayoutPromptVisible: boolean = false;
   private physicalKeyboardConnected: boolean = false;
-  private externalKeyboardMouseConnected: boolean = false;
+  @State private externalKeyboardMouseConnected: boolean = false;
   private vncExternalInputAutoSwitchSessionId: number = -1;
   private inputDeviceRefreshEpoch: number = 0;
   private lastMacInputSourceShortcutMs: number = 0;
@@ -1161,24 +1162,30 @@ struct RemoteDesktop {
   }
 
   private applyDesktopKeyboardMouseMode(): void {
-    if (!this.isDesktopDevice || this.breakpoint !== 'xl') { return; }
+    const defaultMode: number = remoteControlModeDefaultForDevice(this.isDesktopDevice);
+    if (defaultMode !== 2) { return; }
     const host: RemoteHost | null = this.pendingHost;
     if (!host) { return; }
     if (host.protocol === 'rdp') {
+      this.rdpControlMode = defaultMode;
+      AppStorage.setOrCreate('rdpControlMode', defaultMode);
       hilog.info(RD_DOMAIN, RD_TAG,
-        'PC large-screen detected, RDP control mode respects user setting=' + this.rdpControlMode.toString());
+        'PC device detected, RDP control mode defaults to physical keyboard/mouse');
       return;
     }
     if (host.protocol === 'rustdesk') {
+      this.rustdeskControlMode = defaultMode;
+      AppStorage.setOrCreate('rustdeskControlMode', defaultMode);
       hilog.info(RD_DOMAIN, RD_TAG,
-        'PC large-screen detected, RustDesk control mode respects user setting=' +
-          this.rustdeskControlMode.toString());
+        'PC device detected, RustDesk control mode defaults to physical keyboard/mouse');
       return;
     }
     if (host.protocol === 'vnc') {
+      if (this.pendingVncHost !== null && !this.pendingVncHost.viewOnly) {
+        this.vncControlMode = defaultMode;
+      }
       hilog.info(RD_DOMAIN, RD_TAG,
-        'PC large-screen detected, VNC control mode respects VNC setting=' +
-          this.vncControlMode.toString());
+        'PC device detected, VNC control mode defaults to physical keyboard/mouse');
     }
   }
 
@@ -1205,7 +1212,9 @@ struct RemoteDesktop {
 
   private isKeyboardMouseDevice(device: inputDevice.InputDeviceData): boolean {
     const sources: Array<inputDevice.SourceType> = device.sources ?? [];
-    return sources.indexOf('keyboard') >= 0 || sources.indexOf('mouse') >= 0 || sources.indexOf('touchpad') >= 0;
+    // A touchpad is a pointing surface, not the physical keyboard/mouse
+    // capability used to decide whether the phone rail may occupy the edge.
+    return sources.indexOf('keyboard') >= 0 || sources.indexOf('mouse') >= 0;
   }
 
   private async handleInputDeviceAdded(deviceId: number): Promise<void> {
@@ -1349,7 +1358,8 @@ struct RemoteDesktop {
   private shouldShowRustDeskSessionTopBar(): boolean {
     const host: RemoteHost | null = this.pendingHost;
     if (!host) { return false; }
-    return shouldShowRustDeskTopBar(host.protocol, this.isDesktopDevice, this.breakpoint, this.rustdeskControlMode);
+    return shouldShowRustDeskTopBar(host.protocol, this.isDesktopDevice, this.breakpoint,
+      this.rustdeskControlMode, this.externalKeyboardMouseConnected);
   }
 
   private shouldUseRustDeskSessionEdgeRail(): boolean {
@@ -1774,8 +1784,7 @@ struct RemoteDesktop {
           if (sources.indexOf('keyboard') >= 0) {
             keyboardConnected = true;
           }
-          if (sources.indexOf('keyboard') >= 0 || sources.indexOf('mouse') >= 0 ||
-            sources.indexOf('touchpad') >= 0) {
+          if (sources.indexOf('keyboard') >= 0 || sources.indexOf('mouse') >= 0) {
             keyboardMouseConnected = true;
           }
         } catch (deviceErr) {

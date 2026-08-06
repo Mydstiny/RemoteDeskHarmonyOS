@@ -18,27 +18,29 @@ export default function remoteSessionTopBarPolicyTest(): void {
   describe('RemoteSessionTopBarPolicy', (): void => {
   describe('RemoteSessionTopBarPolicy_visibility', (): void => {
     it('pc_rustdesk_should_show_on_small_window', 0, (): void => {
-      expect(shouldShowRustDeskTopBar('rustdesk', true, 'md', 0)).assertTrue();
+      expect(shouldShowRustDeskTopBar('rustdesk', true, 'md', 0, false)).assertTrue();
     });
 
     it('pc_rustdesk_should_show_on_full_window', 0, (): void => {
-      expect(shouldShowRustDeskTopBar('rustdesk', true, 'xl', 0)).assertTrue();
+      expect(shouldShowRustDeskTopBar('rustdesk', true, 'xl', 0, false)).assertTrue();
     });
 
-    it('phone_rustdesk_should_keep_layout_choice_discoverable_in_all_modes', 0, (): void => {
-      expect(shouldShowRustDeskTopBar('rustdesk', false, 'sm', 2)).assertTrue();
-      expect(shouldShowRustDeskTopBar('rustdesk', false, 'sm', 0)).assertTrue();
-      expect(shouldShowRustDeskTopBar('rustdesk', false, 'sm', 1)).assertTrue();
+    it('phone_rustdesk_should_only_show_for_physical_keyboard_mouse', 0, (): void => {
+      expect(shouldShowRustDeskTopBar('rustdesk', false, 'sm', 2, true)).assertTrue();
+      expect(shouldShowRustDeskTopBar('rustdesk', false, 'sm', 2, false)).assertFalse();
+      expect(shouldShowRustDeskTopBar('rustdesk', false, 'sm', 0, true)).assertFalse();
+      expect(shouldShowRustDeskTopBar('rustdesk', false, 'sm', 1, true)).assertFalse();
     });
 
     it('pad_rustdesk_should_keep_layout_choice_discoverable_in_all_modes', 0, (): void => {
-      expect(shouldShowRustDeskTopBar('rustdesk', false, 'lg', 2)).assertTrue();
-      expect(shouldShowRustDeskTopBar('rustdesk', false, 'lg', 0)).assertTrue();
+      expect(shouldShowRustDeskTopBar('rustdesk', false, 'lg', 2, false)).assertTrue();
+      expect(shouldShowRustDeskTopBar('rustdesk', false, 'lg', 0, false)).assertTrue();
+      expect(shouldShowRustDeskTopBar('rustdesk', false, 'lg', 1, false)).assertTrue();
     });
 
     it('rdp_should_not_show_rustdesk_topbar', 0, (): void => {
-      expect(shouldShowRustDeskTopBar('rdp', true, 'xl', 2)).assertFalse();
-      expect(shouldShowRustDeskTopBar('rdp', false, 'sm', 2)).assertFalse();
+      expect(shouldShowRustDeskTopBar('rdp', true, 'xl', 2, true)).assertFalse();
+      expect(shouldShowRustDeskTopBar('rdp', false, 'sm', 2, true)).assertFalse();
     });
   });
 

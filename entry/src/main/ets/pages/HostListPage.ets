@@ -14,6 +14,7 @@ import { inputDevice } from '@kit.InputKit';
 import { HostSyncService } from '../services/HostSyncService';
 import { AuthService } from '../services/AuthService';
 import { KeyVaultService } from '../services/KeyVaultService';
+import { remoteControlModeDefaultForDevice } from '../services/RemotePhysicalKeyboardPolicy';
 import {
   AccountSessionCoordinator,
   AccountTransitionResult
@@ -5922,16 +5923,20 @@ struct HostListPage {
   }
 
   private applyDesktopRdpInputMode(): void {
-    if (this.isDesktopDevice && this.breakpoint === 'xl') {
+    if (remoteControlModeDefaultForDevice(this.isDesktopDevice) === 2) {
+      this.rdpControlMode = 2;
+      AppStorage.setOrCreate('rdpControlMode', 2);
       hilog.info(0x0001, 'HostList',
-        'desktop RDP input mode respects user setting=' + this.rdpControlMode.toString());
+        'PC device detected, RDP input mode defaults to physical keyboard/mouse');
     }
   }
 
   private applyDesktopRustDeskInputMode(): void {
-    if (this.isDesktopDevice && this.breakpoint === 'xl') {
+    if (remoteControlModeDefaultForDevice(this.isDesktopDevice) === 2) {
+      this.rustdeskControlMode = 2;
+      AppStorage.setOrCreate('rustdeskControlMode', 2);
       hilog.info(0x0001, 'HostList',
-        'desktop RustDesk input mode respects user setting=' + this.rustdeskControlMode.toString());
+        'PC device detected, RustDesk input mode defaults to physical keyboard/mouse');
     }
   }
 
@@ -5957,7 +5962,7 @@ struct HostListPage {
 
   private isKeyboardMouseDevice(device: inputDevice.InputDeviceData): boolean {
     const sources: Array<inputDevice.SourceType> = device.sources ?? [];
-    return sources.indexOf('keyboard') >= 0 || sources.indexOf('mouse') >= 0 || sources.indexOf('touchpad') >= 0;
+    return sources.indexOf('keyboard') >= 0 || sources.indexOf('mouse') >= 0;
   }
 
   private async handleInputDeviceAdded(deviceId: number): Promise<void> {
