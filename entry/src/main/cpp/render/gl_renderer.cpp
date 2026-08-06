@@ -364,6 +364,8 @@ GLRenderer::GLRenderer()
       rawTextureWidth_(0), rawTextureHeight_(0),
       vbo_(0), vao_(0),
       width_(0), height_(0), sourceWidth_(0), sourceHeight_(0),
+      oesSourceWidth_(0), oesSourceHeight_(0),
+      presentationPath_(PresentationPath::UNKNOWN),
       lastVpX_(0), lastVpY_(0), lastVpW_(0), lastVpH_(0),
       canvasScale_(1.0), canvasPanX_(0.0), canvasPanY_(0.0),
       canvasTransformVersion_(0), pendingCanvasScale_(1.0),
@@ -373,7 +375,8 @@ GLRenderer::GLRenderer()
       snapshotVpW_(0), snapshotVpH_(0), snapshotSourceWidth_(0),
       snapshotSourceHeight_(0), snapshotSurfaceWidth_(0), snapshotSurfaceHeight_(0),
       snapshotTransformVersion_(0),
-      rawFrameCount_(0), rendererHandle_(0), initialized_(false), destroying_(false) {}
+      rawFrameCount_(0), oesFrameCount_(0), rendererHandle_(0),
+      initialized_(false), destroying_(false) {}
 
 GLRenderer::~GLRenderer() {
     Destroy();
@@ -460,8 +463,15 @@ int GLRenderer::Init(const std::string& xcomponentId, int width, int height) {
 
     width_ = width;
     height_ = height;
-    sourceWidth_ = width;
-    sourceHeight_ = height;
+    // Do not publish the local surface as remote source geometry. ArkTS uses
+    // this snapshot for RustDesk display synchronization; before the first
+    // frame the source is intentionally unknown and the page uses its own
+    // protocol geometry fallback.
+    sourceWidth_ = 0;
+    sourceHeight_ = 0;
+    oesSourceWidth_ = 0;
+    oesSourceHeight_ = 0;
+    presentationPath_ = PresentationPath::UNKNOWN;
     PublishViewportSnapshot(0, 0, width, height);
 
     if (!InitEGL(xcomponentId)) {
@@ -954,7 +964,6 @@ RdpPresentMetrics GLRenderer::RenderRawBGRAInternal(
         rawTextureHeight_ = height;
         SetupRawTexture(width, height);
     }
-
     const bool partialUpload = compactDirty || (!textureWouldChange && dirtyInBounds &&
         (dirtyX != 0 || dirtyY != 0 || dirtyWidth != width || dirtyHeight != height));
     const int uploadX = partialUpload ? dirtyX : 0;
@@ -994,6 +1003,13 @@ RdpPresentMetrics GLRenderer::RenderRawBGRAInternal(
 
     // Renderer snapshots use top-left coordinates so ArkTS hit testing and
     // cursor projection share the same canvas contract as the gesture layer.
+    // Keep the raw BGRA path on its established texture-size Fit contract.
+    // Software decoding may downscale the uploaded texture, but changing this
+    // viewport to the logical stream size changes the long-standing VP8/VP9
+    // presentation geometry and can make a peer appear zoomed/cropped.
+    presentationPath_ = PresentationPath::RAW_BGRA;
+    const int logicalSourceWidth = sourceWidth_ > 0 ? sourceWidth_ : width;
+    const int logicalSourceHeight = sourceHeight_ > 0 ? sourceHeight_ : height;
     int vpX = 0, vpY = 0, vpW = width_, vpH = height_;
     CalculateViewport(width, height, vpX, vpY, vpW, vpH);
 
@@ -1025,6 +1041,12 @@ RdpPresentMetrics GLRenderer::RenderRawBGRAInternal(
     }
     ReleaseCurrent();
     rawFrameCount_++;
+    if (rawFrameCount_ <= 3 || rawFrameCount_ % 120 == 0) {
+        OH_LOG_INFO(LOG_APP,
+                    "[GL] raw present path=raw logical=%{public}dx%{public}d texture=%{public}dx%{public}d surface=%{public}dx%{public}d viewport=%{public}d,%{public}d %{public}dx%{public}d scale=%{public}f",
+                    logicalSourceWidth, logicalSourceHeight, width, height,
+                    width_, height_, vpX, vpY, vpW, vpH, canvasScale_);
+    }
     metrics.uploadUs = std::chrono::duration_cast<std::chrono::microseconds>(
         uploadAt - uploadBeginAt).count();
     metrics.drawUs = std::chrono::duration_cast<std::chrono::microseconds>(
@@ -1070,12 +1092,17 @@ void GLRenderer::RenderFrame(GLuint textureId) {
         OH_LOG_WARN(LOG_APP, "[GL] 渲染器未初始化, 跳过渲染");
         return;
     }
+    const int oesWidth = oesSourceWidth_ > 0 ? oesSourceWidth_ : sourceWidth_;
+    const int oesHeight = oesSourceHeight_ > 0 ? oesSourceHeight_ : sourceHeight_;
+    const int logicalSourceWidth = sourceWidth_ > 0 ? sourceWidth_ : oesWidth;
+    const int logicalSourceHeight = sourceHeight_ > 0 ? sourceHeight_ : oesHeight;
 
     // 绑定上下文
     // 清屏
     if (!MakeCurrent()) {
         return;
     }
+    presentationPath_ = PresentationPath::OES;
     ApplyPendingCanvasTransformLocked();
 
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
@@ -1086,7 +1113,7 @@ void GLRenderer::RenderFrame(GLuint textureId) {
     int viewportY = 0;
     int viewportW = width_;
     int viewportH = height_;
-    CalculateViewport(sourceWidth_, sourceHeight_, viewportX, viewportY, viewportW, viewportH);
+    CalculateViewport(oesWidth, oesHeight, viewportX, viewportY, viewportW, viewportH);
     glViewport(viewportX, height_ - viewportY - viewportH, viewportW, viewportH);
 
     // 缓存视口信息供 ArkTS 查询坐标映射
@@ -1127,6 +1154,14 @@ void GLRenderer::RenderFrame(GLuint textureId) {
     const auto nowUs = std::chrono::duration_cast<std::chrono::microseconds>(
         swapAt.time_since_epoch()).count();
     presentationMetrics_.recordPresent(nowUs, metrics);
+    oesFrameCount_++;
+    if (oesFrameCount_ <= 3 || oesFrameCount_ % 120 == 0) {
+        OH_LOG_INFO(LOG_APP,
+                    "[GL] OES present path=oes logical=%{public}dx%{public}d texture=%{public}dx%{public}d surface=%{public}dx%{public}d viewport=%{public}d,%{public}d %{public}dx%{public}d scale=%{public}f",
+                    logicalSourceWidth, logicalSourceHeight, oesWidth, oesHeight,
+                    width_, height_, viewportX, viewportY, viewportW, viewportH,
+                    canvasScale_);
+    }
 }
 
 void GLRenderer::Resize(int width, int height) {
@@ -1134,7 +1169,10 @@ void GLRenderer::Resize(int width, int height) {
     ApplyPendingCanvasTransformLocked();
     width_ = width;
     height_ = height;
-    CalculateViewport(sourceWidth_, sourceHeight_, lastVpX_, lastVpY_, lastVpW_, lastVpH_);
+    // Resize must follow the texture currently being sampled. The logical
+    // source dimensions remain in the snapshot for input mapping, but must
+    // not replace the raw/OES texture dimensions after a frame was presented.
+    CalculateActiveViewport(lastVpX_, lastVpY_, lastVpW_, lastVpH_);
     PublishViewportSnapshot(lastVpX_, lastVpY_, lastVpW_, lastVpH_);
     OH_LOG_INFO(LOG_APP, "[GL] 渲染区域大小改为 %{public}dx%{public}d", width, height);
 }
@@ -1150,9 +1188,29 @@ void GLRenderer::SetSourceSize(int width, int height) {
     }
     sourceWidth_ = width;
     sourceHeight_ = height;
-    CalculateViewport(sourceWidth_, sourceHeight_, lastVpX_, lastVpY_, lastVpW_, lastVpH_);
+    // This setter updates logical/input geometry. Keep the published viewport
+    // tied to the texture currently being sampled; a software decoder may
+    // intentionally upload a bounded-size BGRA texture for the same logical
+    // RustDesk frame.
+    CalculateActiveViewport(lastVpX_, lastVpY_, lastVpW_, lastVpH_);
     PublishViewportSnapshot(lastVpX_, lastVpY_, lastVpW_, lastVpH_);
     OH_LOG_INFO(LOG_APP, "[GL] 视频源尺寸更新为 %{public}dx%{public}d", width, height);
+}
+
+void GLRenderer::SetOesSourceSize(int width, int height) {
+    std::lock_guard<std::mutex> lock(lifecycleMutex_);
+    if (width <= 0 || height <= 0) {
+        return;
+    }
+    if (oesSourceWidth_ == width && oesSourceHeight_ == height) {
+        return;
+    }
+    oesSourceWidth_ = width;
+    oesSourceHeight_ = height;
+    // Do not publish or switch the active path here. Hardware callbacks can
+    // arrive after a decoder rebind; only RenderFrame may make OES the visible
+    // presentation path after it has acquired the current EGL surface.
+    OH_LOG_DEBUG(LOG_APP, "[GL] OES texture size staged %{public}dx%{public}d", width, height);
 }
 
 uint64_t GLRenderer::SetCanvasTransform(double scale, double panX, double panY) {
@@ -1217,6 +1275,7 @@ RdpPresentMetrics GLRenderer::RenderRetainedFrameLocked(uint64_t expectedGenerat
     ApplyPendingCanvasTransformLocked();
     const auto drawBeginAt = clock::now();
     int vpX = 0, vpY = 0, vpW = width_, vpH = height_;
+    presentationPath_ = PresentationPath::RAW_BGRA;
     CalculateViewport(rawTextureWidth_, rawTextureHeight_, vpX, vpY, vpW, vpH);
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
@@ -1267,6 +1326,25 @@ void GLRenderer::CalculateViewport(int sourceWidth, int sourceHeight,
     vpY = static_cast<int>(std::lround(static_cast<double>(height_ - vpH) / 2.0 + canvasPanY_));
 }
 
+void GLRenderer::CalculateActiveViewport(int& vpX, int& vpY, int& vpW, int& vpH) const {
+    int viewportSourceWidth = sourceWidth_;
+    int viewportSourceHeight = sourceHeight_;
+    // The source dimensions published in the snapshot are logical remote
+    // coordinates. GL, however, must calculate the viewport from the texture
+    // that the active path actually samples. This keeps a bounded software
+    // output and a hardware OES output from changing each other's geometry.
+    if (presentationPath_ == PresentationPath::RAW_BGRA &&
+        rawTextureWidth_ > 0 && rawTextureHeight_ > 0) {
+        viewportSourceWidth = rawTextureWidth_;
+        viewportSourceHeight = rawTextureHeight_;
+    } else if (presentationPath_ == PresentationPath::OES &&
+               oesSourceWidth_ > 0 && oesSourceHeight_ > 0) {
+        viewportSourceWidth = oesSourceWidth_;
+        viewportSourceHeight = oesSourceHeight_;
+    }
+    CalculateViewport(viewportSourceWidth, viewportSourceHeight, vpX, vpY, vpW, vpH);
+}
+
 void GLRenderer::GetViewportSnapshot(int& vpX, int& vpY, int& vpW, int& vpH,
                                      int& sourceWidth, int& sourceHeight,
                                      int& surfaceWidth, int& surfaceHeight,
@@ -1307,7 +1385,9 @@ void GLRenderer::PublishViewportSnapshot(int vpX, int vpY, int vpW, int vpH) {
 }
 
 RdpPresentationMetricsSnapshot GLRenderer::GetPresentationStats() {
-    std::lock_guard<std::mutex> lock(lifecycleMutex_);
+    // presentationMetrics_ has its own mutex.  Do not take the EGL lifecycle
+    // lock here: RenderFrame/PresentRawBGRA hold it across eglSwapBuffers(),
+    // and diagnostics is polled from the UI timer thread.
     const auto nowUs = std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
     return presentationMetrics_.snapshot(nowUs);
@@ -2865,7 +2945,7 @@ void RendererNapi::SetRendererSourceSize(int64_t handle, int width, int height) 
         renderer = AcquireRendererLocked(handle, true);
     }
     if (renderer) {
-        renderer->SetSourceSize(width, height);
+        renderer->SetOesSourceSize(width, height);
     }
 }
 
@@ -2884,7 +2964,7 @@ void RendererNapi::SetRendererSourceSize(
         renderer = AcquireRendererLocked(handle, true);
     }
     if (renderer) {
-        renderer->SetSourceSize(width, height);
+        renderer->SetOesSourceSize(width, height);
     }
 }
 

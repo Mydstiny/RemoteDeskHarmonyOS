@@ -16,6 +16,7 @@
 #include "native_image_context_policy.h"
 #include <napi/native_api.h>
 #include <hilog/log.h>
+#include <algorithm>
 #include <cstring>
 #include <atomic>
 #include <chrono>
@@ -252,6 +253,22 @@ DecoderRetireOwner& decoderRetireOwner() {
         owner = new DecoderRetireOwner();
     }
     return *owner;
+}
+
+// A detach/rebind caller owns the decoder object and cannot hand it to the
+// retire owner while it is about to reuse the same codec.  Wait only after the
+// bounded stop attempt fails; the normal streaming path never waits on codec
+// IPC here.
+bool StopHardwarePipeline(const std::shared_ptr<HardwareDecoder>& decoder,
+                          bool waitForCompletion) {
+    if (!decoder || decoder->StopRenderThreadForDetach()) {
+        return true;
+    }
+    if (!waitForCompletion) {
+        return false;
+    }
+    decoder->WaitForRenderThreadForDeferredDestroy();
+    return decoder->StopRenderThreadForDetach();
 }
 }
 
@@ -516,6 +533,8 @@ int HardwareDecoder::Init(int width, int height, CodecType codec, int64_t render
         frameConsumeCount_ = 0;
         redrawRequested_ = false;
         surfaceUpdatePending_ = false;
+        surfaceRetryAt_ = std::chrono::steady_clock::time_point::min();
+        consecutiveSurfaceUpdateFailures_ = 0;
     }
     auto releaseTexture = [this]() {
         if (textureId_ != 0) {
@@ -807,7 +826,9 @@ int HardwareDecoder::Decode(const uint8_t* data, size_t size, uint64_t timestamp
 
     OH_LOG_DEBUG(LOG_APP, "[Decoder] 编码帧入队: %{public}zu bytes ts=%{public}lu queue=%{public}zu",
                  size, (unsigned long)timestamp, queued);
-    drainInputBuffers();
+    // Never enter OH_VideoDecoder_PushInputBuffer from the transport/callback
+    // path. The Harmony codec service can block that IPC for seconds.
+    inputCv_.notify_one();
     return 0;
 }
 
@@ -816,11 +837,40 @@ void HardwareDecoder::handleInputBuffer(uint32_t index, OH_AVBuffer* buffer) {
         std::lock_guard<std::mutex> lk(mutex_);
         pendingInputBuffers_.push_back({index, buffer});
     }
-    drainInputBuffers();
+    inputCv_.notify_one();
 }
 
 void HardwareDecoder::drainInputBuffers() {
+    // This function is owned by inputLoop(). In particular, no codec IPC is
+    // allowed to run on the Harmony codec callback thread or the GL thread.
+    auto enterRecovery = [this](const char* operation, uint32_t index, int32_t error) {
+        const uint64_t failures = inputPushFailureCount_.fetch_add(
+            1, std::memory_order_acq_rel) + 1;
+        size_t droppedQueued = 0;
+        {
+            std::lock_guard<std::mutex> lk(mutex_);
+            droppedQueued = clearInputQueueLocked();
+            backpressure_.enterHardWaitForKeyframe();
+        }
+        OH_LOG_WARN(LOG_APP,
+                    "[Decoder] input submission failed op=%{public}s error=%{public}d index=%{public}u failures=%{public}llu dropped=%{public}zu; waiting for keyframe",
+                    operation,
+                    error,
+                    index,
+                    static_cast<unsigned long long>(failures),
+                    droppedQueued);
+        if (codecType_ == CodecType::H264 || codecType_ == CodecType::H265) {
+            // The failed index has unknown platform ownership. Do not submit it
+            // a second time. Recreate the codec at the next keyframe instead.
+            errorCallbackGate_.Invoke(
+                DecoderError::INPUT_FAILED,
+                std::string("OH_VideoDecoder_PushInputBuffer failed: ") + operation);
+        }
+    };
     while (true) {
+        if (inputThreadStop_.load(std::memory_order_acquire)) {
+            return;
+        }
         PendingInputBuffer input {};
         EncodedFrame frame {};
         OH_AVCodec* decoder = nullptr;
@@ -843,7 +893,11 @@ void HardwareDecoder::drainInputBuffers() {
 
         if (!input.buffer) {
             OH_LOG_WARN(LOG_APP, "[Decoder] input buffer null index=%{public}u", input.index);
-            ReturnEmptyInputBuffer(decoder, input.index, nullptr, frame.timestamp);
+            const OH_AVErrCode recycleRet = ReturnEmptyInputBuffer(
+                decoder, input.index, nullptr, frame.timestamp);
+            if (recycleRet != AV_ERR_OK) {
+                enterRecovery("null-buffer-recycle", input.index, recycleRet);
+            }
             delete[] frame.data;
             continue;
         }
@@ -853,7 +907,11 @@ void HardwareDecoder::drainInputBuffers() {
         if (!bufAddr || bufCap <= 0) {
             OH_LOG_WARN(LOG_APP, "[Decoder] invalid input buffer index=%{public}u cap=%{public}d",
                         input.index, bufCap);
-            ReturnEmptyInputBuffer(decoder, input.index, input.buffer, frame.timestamp);
+            const OH_AVErrCode recycleRet = ReturnEmptyInputBuffer(
+                decoder, input.index, input.buffer, frame.timestamp);
+            if (recycleRet != AV_ERR_OK) {
+                enterRecovery("invalid-buffer-recycle", input.index, recycleRet);
+            }
             delete[] frame.data;
             continue;
         }
@@ -883,7 +941,11 @@ void HardwareDecoder::drainInputBuffers() {
                         static_cast<unsigned long long>(truncated),
                         droppedQueued,
                         static_cast<unsigned long long>(recoveryCount));
-            ReturnEmptyInputBuffer(decoder, input.index, input.buffer, frame.timestamp);
+            const OH_AVErrCode recycleRet = ReturnEmptyInputBuffer(
+                decoder, input.index, input.buffer, frame.timestamp);
+            if (recycleRet != AV_ERR_OK) {
+                enterRecovery("truncated-input-recycle", input.index, recycleRet);
+            }
             delete[] frame.data;
             continue;
         }
@@ -893,23 +955,45 @@ void HardwareDecoder::drainInputBuffers() {
         attr.pts = frame.timestamp;
         attr.size = static_cast<int32_t>(copyLen);
         attr.offset = 0;
-        attr.flags = frame.isKeyFrame ? AVCODEC_BUFFER_FLAGS_SYNC_FRAME :
-            AVCODEC_BUFFER_FLAGS_NONE;
+        // Keep the 1.0.7 compatibility behavior. The remote frame's keyframe
+        // bit is used by our recovery policy, but marking the AVBuffer as a
+        // sync frame makes this Harmony codec reject otherwise valid streams.
+        attr.flags = AVCODEC_BUFFER_FLAGS_NONE;
         const OH_AVErrCode attrRet = OH_AVBuffer_SetBufferAttr(input.buffer, &attr);
         if (attrRet != AV_ERR_OK) {
             OH_LOG_WARN(LOG_APP,
                         "[Decoder] input attr failed: %{public}d index=%{public}u",
                         attrRet, input.index);
-            ReturnEmptyInputBuffer(decoder, input.index, input.buffer, frame.timestamp);
+            const OH_AVErrCode recycleRet = ReturnEmptyInputBuffer(
+                decoder, input.index, input.buffer, frame.timestamp);
+            enterRecovery("set-attr", input.index,
+                          recycleRet == AV_ERR_OK ? attrRet : recycleRet);
             delete[] frame.data;
             continue;
         }
 
+        const auto pushStartedAt = std::chrono::steady_clock::now();
         OH_AVErrCode ret = OH_VideoDecoder_PushInputBuffer(decoder, input.index);
+        const auto pushCostMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - pushStartedAt).count();
+        if (pushCostMs >= 100) {
+            OH_LOG_WARN(LOG_APP,
+                        "[Decoder] PushInputBuffer worker blocked cost=%{public}lldms index=%{public}u ret=%{public}d",
+                        static_cast<long long>(pushCostMs), input.index, ret);
+        }
         if (ret != AV_ERR_OK) {
             OH_LOG_WARN(LOG_APP, "[Decoder] PushInputBuffer failed: %{public}d index=%{public}u",
                         ret, input.index);
+            // The platform documentation only guarantees buffer reuse after a
+            // successful submission and a later callback. On an unknown error
+            // the index may already have crossed that boundary, so retrying it
+            // can double-submit the same slot and permanently poison the
+            // decoder. Drop this frame and recover from a fresh keyframe.
+            enterRecovery("push-input", input.index, ret);
+            delete[] frame.data;
+            return;
         } else {
+            inputPushFailureCount_.store(0, std::memory_order_release);
             uint64_t count = 0;
             {
                 std::lock_guard<std::mutex> telemetryLock(telemetryMutex_);
@@ -930,6 +1014,28 @@ void HardwareDecoder::drainInputBuffers() {
     }
 }
 
+void HardwareDecoder::inputLoop() {
+    OH_LOG_INFO(LOG_APP, "[Decoder] input thread started");
+    while (!inputThreadStop_.load(std::memory_order_acquire)) {
+        std::unique_lock<std::mutex> lk(mutex_);
+        inputCv_.wait_for(lk, std::chrono::milliseconds(50), [this]() {
+            return inputThreadStop_.load(std::memory_order_acquire) ||
+                (!pendingInputBuffers_.empty() && !inputQueue_.empty());
+        });
+        if (inputThreadStop_.load(std::memory_order_acquire)) {
+            break;
+        }
+        lk.unlock();
+        drainInputBuffers();
+    }
+    {
+        std::lock_guard<std::mutex> lk(inputThreadMutex_);
+        inputThreadDone_ = true;
+    }
+    inputThreadDoneCv_.notify_all();
+    OH_LOG_INFO(LOG_APP, "[Decoder] input thread stopped");
+}
+
 void HardwareDecoder::noteFrameAvailable() {
     {
         std::lock_guard<std::mutex> lk(mutex_);
@@ -938,22 +1044,41 @@ void HardwareDecoder::noteFrameAvailable() {
     frameAvailableCv_.notify_one();
 }
 
-bool HardwareDecoder::waitForRenderRequest(bool& hasNewFrame, bool& hasPendingSurfaceUpdate) {
+bool HardwareDecoder::waitForRenderRequest(bool& hasNewFrame,
+                                           bool& hasPendingSurfaceUpdate,
+                                           uint64_t& frameSequence) {
     std::unique_lock<std::mutex> lk(mutex_);
-    bool ok = frameAvailableCv_.wait_for(lk, std::chrono::milliseconds(50), [this]() {
-        return renderThreadStop_.load() || !initialized_ ||
-            frameAvailableCount_ > frameConsumeCount_ ||
-            redrawRequested_;
-    });
-    if (!ok || renderThreadStop_.load() || !initialized_) {
-        return false;
+    for (;;) {
+        if (renderThreadStop_.load() || !initialized_) {
+            return false;
+        }
+        const auto now = std::chrono::steady_clock::now();
+        const bool hasFrame = Render::HasUnconsumedNativeImageFrame(
+            frameAvailableCount_, frameConsumeCount_);
+        const bool retryDue = surfaceUpdatePending_ &&
+            (surfaceRetryAt_ == std::chrono::steady_clock::time_point::min() ||
+             now >= surfaceRetryAt_);
+        if (hasFrame || redrawRequested_ || retryDue) {
+            break;
+        }
+        if (surfaceUpdatePending_ &&
+            surfaceRetryAt_ != std::chrono::steady_clock::time_point::min()) {
+            frameAvailableCv_.wait_until(lk, surfaceRetryAt_);
+        } else {
+            // Keep a bounded wake-up for a retained surface update even when
+            // the codec has not produced another output callback.
+            frameAvailableCv_.wait_for(lk, std::chrono::milliseconds(50));
+        }
     }
-    hasNewFrame = frameAvailableCount_ > frameConsumeCount_;
+    hasNewFrame = Render::HasUnconsumedNativeImageFrame(
+        frameAvailableCount_, frameConsumeCount_);
     hasPendingSurfaceUpdate = surfaceUpdatePending_;
+    frameSequence = Render::LatestNativeImageFrameSequence(frameAvailableCount_);
     if (hasNewFrame) {
-        ++frameConsumeCount_;
         // A decoded frame is presented through the same callback and consumes
         // the newest transform, so an older retained redraw hint is redundant.
+        // The notification sequence is committed only after UpdateSurfaceImage
+        // succeeds; a failed acquire must remain retryable.
         redrawRequested_ = false;
     } else if (redrawRequested_) {
         redrawRequested_ = false;
@@ -966,7 +1091,8 @@ void HardwareDecoder::handleOutputBuffer(uint32_t /*index*/) {
 
     bool hasNewFrame = false;
     bool hasPendingSurfaceUpdate = false;
-    if (!waitForRenderRequest(hasNewFrame, hasPendingSurfaceUpdate)) {
+    uint64_t frameSequence = 0;
+    if (!waitForRenderRequest(hasNewFrame, hasPendingSurfaceUpdate, frameSequence)) {
         return;
     }
 
@@ -1001,7 +1127,9 @@ void HardwareDecoder::handleOutputBuffer(uint32_t /*index*/) {
             // Retain the request; a later frame or explicit redraw will retry
             // the attachment on this render thread.
             std::lock_guard<std::mutex> lk(mutex_);
-            surfaceUpdatePending_ = hasNewFrame || hasPendingSurfaceUpdate;
+            surfaceUpdatePending_ = true;
+            surfaceRetryAt_ = std::chrono::steady_clock::now() +
+                std::chrono::milliseconds(Render::NativeImageUpdateRetryDelayMs(1));
             return;
         }
     }
@@ -1010,9 +1138,11 @@ void HardwareDecoder::handleOutputBuffer(uint32_t /*index*/) {
         // 更新 NativeImage — 解码帧已写入 surface, 刷新 GL 纹理
         int32_t ret = 0;
         int retryCount = 0;
+        bool updated = false;
         for (;;) {
             ret = OH_NativeImage_UpdateSurfaceImage(nativeImage_);
             if (ret == 0) {
+                updated = true;
                 break;
             }
 
@@ -1022,13 +1152,29 @@ void HardwareDecoder::handleOutputBuffer(uint32_t /*index*/) {
                 failureCount = SaturatingAdd(updateSurfaceFailureCount_, 1);
             }
             if (!Render::ShouldRetryNativeImageUpdate(ret, retryCount)) {
+                bool requestRecovery = false;
                 OH_LOG_WARN(LOG_APP,
                             "[Decoder] UpdateSurfaceImage failed: %{public}d retries=%{public}d total=%{public}llu",
                             ret,
                             retryCount,
                             static_cast<unsigned long long>(failureCount));
-                std::lock_guard<std::mutex> lk(mutex_);
-                surfaceUpdatePending_ = true;
+                {
+                    std::lock_guard<std::mutex> lk(mutex_);
+                    surfaceUpdatePending_ = true;
+                    surfaceRetryAt_ = std::chrono::steady_clock::now() +
+                        std::chrono::milliseconds(20);
+                    ++consecutiveSurfaceUpdateFailures_;
+                    requestRecovery = Render::ShouldRequestNativeImageRecovery(
+                        consecutiveSurfaceUpdateFailures_);
+                }
+                if (requestRecovery) {
+                    OH_LOG_WARN(LOG_APP,
+                                "[Decoder] repeated UpdateSurfaceImage failure, requesting keyframe recovery failures=%{public}d",
+                                consecutiveSurfaceUpdateFailures_);
+                    errorCallbackGate_.Invoke(
+                        DecoderError::OUTPUT_FAILED,
+                        "repeated OH_NativeImage_UpdateSurfaceImage failure");
+                }
                 return;
             }
 
@@ -1046,9 +1192,18 @@ void HardwareDecoder::handleOutputBuffer(uint32_t /*index*/) {
             std::this_thread::sleep_for(std::chrono::milliseconds(
                 Render::NativeImageUpdateRetryDelayMs(retryCount)));
         }
-        {
+        if (updated) {
             std::lock_guard<std::mutex> lk(mutex_);
-            surfaceUpdatePending_ = false;
+            // Consume all notifications observed before this update as one
+            // latest-frame hint. A callback racing after the snapshot remains
+            // visible as an unconsumed sequence and wakes the next iteration.
+            frameConsumeCount_ = std::max(frameConsumeCount_, frameSequence);
+            surfaceUpdatePending_ =
+                frameAvailableCount_ > frameConsumeCount_;
+            surfaceRetryAt_ = surfaceUpdatePending_ ?
+                std::chrono::steady_clock::now() :
+                std::chrono::steady_clock::time_point::min();
+            consecutiveSurfaceUpdateFailures_ = 0;
         }
     }
 
@@ -1075,15 +1230,78 @@ void HardwareDecoder::handleOutputBuffer(uint32_t /*index*/) {
 }
 
 void HardwareDecoder::StartRenderThread() {
-    if (renderThread_.joinable()) {
+    if (renderThread_.joinable() || inputThread_.joinable()) {
         return;
     }
+    startInputThread();
     renderThreadStop_.store(false);
     {
         std::lock_guard<std::mutex> lock(renderThreadMutex_);
         renderThreadDone_ = false;
     }
     renderThread_ = std::thread(&HardwareDecoder::renderLoop, this);
+}
+
+void HardwareDecoder::startInputThread() {
+    if (inputThread_.joinable()) {
+        if (inputThread_.get_id() == std::this_thread::get_id()) {
+            return;
+        }
+        {
+            std::lock_guard<std::mutex> lock(inputThreadMutex_);
+            if (!inputThreadDone_) {
+                return;
+            }
+        }
+        // A completed thread must be joined before its std::thread slot can be
+        // reused.  The done fence makes this join non-blocking in the normal
+        // rebind path.
+        inputThread_.join();
+    }
+    inputThreadStop_.store(false, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lock(inputThreadMutex_);
+        inputThreadDone_ = false;
+    }
+    inputThread_ = std::thread(&HardwareDecoder::inputLoop, this);
+}
+
+bool HardwareDecoder::stopInputThread() {
+    inputThreadStop_.store(true, std::memory_order_release);
+    inputCv_.notify_all();
+    if (!inputThread_.joinable()) {
+        std::lock_guard<std::mutex> lock(inputThreadMutex_);
+        inputThreadDone_ = true;
+        return true;
+    }
+    if (inputThread_.get_id() == std::this_thread::get_id()) {
+        return false;
+    }
+    std::unique_lock<std::mutex> lock(inputThreadMutex_);
+    if (!inputThreadDone_ && !inputThreadDoneCv_.wait_for(
+            lock, std::chrono::milliseconds(500), [this]() {
+                return inputThreadDone_;
+            })) {
+        return false;
+    }
+    lock.unlock();
+    inputThread_.join();
+    return true;
+}
+
+void HardwareDecoder::waitForInputThreadForDeferredDestroy() {
+    if (!inputThread_.joinable() ||
+        inputThread_.get_id() == std::this_thread::get_id()) {
+        return;
+    }
+    std::unique_lock<std::mutex> lock(inputThreadMutex_);
+    inputThreadDoneCv_.wait(lock, [this]() {
+        return inputThreadDone_;
+    });
+    lock.unlock();
+    if (inputThread_.joinable()) {
+        inputThread_.join();
+    }
 }
 
 bool HardwareDecoder::stopRenderThread() {
@@ -1127,13 +1345,22 @@ void HardwareDecoder::renderLoop() {
     OH_LOG_INFO(LOG_APP, "[Decoder] render thread stopped");
 }
 
-void HardwareDecoder::StopRenderThreadForDetach() {
-    (void)stopRenderThread();
+bool HardwareDecoder::StopRenderThreadForDetach() {
+    const bool renderStopped = stopRenderThread();
+    const bool inputStopped = stopInputThread();
+    if (!renderStopped || !inputStopped) {
+        OH_LOG_WARN(LOG_APP,
+                    "[Decoder] detach stop deferred render=%{public}s input=%{public}s",
+                    renderStopped ? "stopped" : "running",
+                    inputStopped ? "stopped" : "running");
+        return false;
+    }
     SetFrameCallback(nullptr);
     SetMakeCurrentCallback(nullptr);
     SetReleaseCurrentCallback(nullptr);
     errorCallbackGate_.ClearAndWait();
     nativeImageContextAttached_ = false;
+    return true;
 }
 
 void HardwareDecoder::WaitForRenderThreadForDeferredDestroy() {
@@ -1146,6 +1373,7 @@ void HardwareDecoder::WaitForRenderThreadForDeferredDestroy() {
         renderThread_.get_id() != std::this_thread::get_id()) {
         renderThread_.join();
     }
+    waitForInputThreadForDeferredDestroy();
 }
 
 GLuint HardwareDecoder::GetTextureId() const {
@@ -1164,6 +1392,11 @@ void HardwareDecoder::RequestRedraw() {
 }
 
 void HardwareDecoder::Flush() {
+    const bool restartInput = inputThread_.joinable() &&
+        !inputThreadStop_.load(std::memory_order_acquire);
+    if (restartInput && !stopInputThread()) {
+        waitForInputThreadForDeferredDestroy();
+    }
     if (initialized_ && decoder_) {
         OH_LOG_INFO(LOG_APP, "[Decoder] Flush");
         OH_VideoDecoder_Flush(decoder_);
@@ -1174,8 +1407,13 @@ void HardwareDecoder::Flush() {
         redrawRequested_ = false;
         surfaceUpdatePending_ = false;
         frameConsumeCount_ = frameAvailableCount_;
+        surfaceRetryAt_ = std::chrono::steady_clock::time_point::min();
+        consecutiveSurfaceUpdateFailures_ = 0;
     }
     ResetTelemetryCounters();
+    if (restartInput && initialized_ && !renderThreadStop_.load(std::memory_order_acquire)) {
+        startInputThread();
+    }
 }
 
 size_t HardwareDecoder::QueuedFrameCount() const {
@@ -1254,6 +1492,7 @@ void HardwareDecoder::ResetTelemetryCounters() {
     inputTruncatedCount_.store(0, std::memory_order_release);
     renderOutputFailureCount_.store(0, std::memory_order_release);
     updateSurfaceFailureCount_.store(0, std::memory_order_release);
+    inputPushFailureCount_.store(0, std::memory_order_release);
     outputFrameCount_.store(0, std::memory_order_release);
 }
 
@@ -1263,7 +1502,9 @@ void HardwareDecoder::Destroy() {
     // is stopped; the stable context remains valid until the source has
     // quiesced and rejects any late callback.
     BeginCallbackTeardown();
-    if (!stopRenderThread()) {
+    const bool renderStopped = stopRenderThread();
+    const bool inputStopped = stopInputThread();
+    if (!renderStopped || !inputStopped) {
         if (!renderDestroyDeferred_.exchange(true, std::memory_order_acq_rel)) {
             try {
                 auto retained = shared_from_this();
@@ -1339,7 +1580,7 @@ bool HardwareDecoder::FinishDeferredDestroy() {
     WaitForRenderThreadForDeferredDestroy();
     Destroy();
     return !renderDestroyDeferred_.load(std::memory_order_acquire) &&
-        !renderThread_.joinable();
+        !renderThread_.joinable() && !inputThread_.joinable();
 }
 
 void HardwareDecoder::SetFrameCallback(DecoderFrameCallback callback) {
@@ -1785,7 +2026,7 @@ bool ConfigurePipeline(const std::shared_ptr<DecoderContext>& ctx,
         if (!rendererBound) {
             return false;
         }
-        if (ctx->observedFrameSize) {
+        if (ctx->width > 0 && ctx->height > 0) {
             if (ownerLeaseAlreadyHeld) {
                 RendererNapi::SetActiveSourceSize(ctx->width, ctx->height);
             } else {
@@ -1828,13 +2069,23 @@ bool ConfigurePipeline(const std::shared_ptr<DecoderContext>& ctx,
     if (!rendererBound) {
         return false;
     }
-    if (ctx->observedFrameSize) {
+    if (ctx->width > 0 && ctx->height > 0) {
         if (ownerLeaseAlreadyHeld) {
             RendererNapi::SetActiveSourceSize(ctx->width, ctx->height);
         } else {
             RendererNapi::SetActiveSourceSize(owner, ctx->width, ctx->height);
         }
     }
+    const std::weak_ptr<DecoderContext> weakContext = ctx;
+    ctx->decoder->SetErrorCallback([weakContext](DecoderError error,
+                                                   const std::string& message) {
+        if (const auto context = weakContext.lock()) {
+            context->recoveryRequested.store(true, std::memory_order_release);
+            OH_LOG_WARN(LOG_APP,
+                        "[Decoder] hardware recovery armed error=%{public}d reason=%{public}s",
+                        static_cast<int>(error), message.c_str());
+        }
+    });
     ctx->decoder->SetMakeCurrentCallback([rendererHandle, owner]() {
         RendererNapi::MakeCurrent(rendererHandle, owner);
     });
@@ -1890,6 +2141,11 @@ bool RecreateDecoderForFrame(const std::shared_ptr<DecoderContext>& ctx, const V
     ctx->dropCounterGeneration = ctx->decoderGeneration;
     ResetDecoderTelemetry(ctx.get());
     if (ctx->decoder) {
+        if (!StopHardwarePipeline(ctx->decoder, true)) {
+            OH_LOG_ERROR(LOG_APP,
+                         "[Decoder] recovery cannot stop previous hardware pipeline");
+            return false;
+        }
         ctx->decoder->Destroy();
         ctx->decoder.reset();
     }
@@ -2253,9 +2509,14 @@ void DestroyDecoderContext(const std::shared_ptr<DecoderContext>& ctx,
         decoder->SetFrameCallback(nullptr);
         decoder->SetMakeCurrentCallback(nullptr);
         decoder->SetReleaseCurrentCallback(nullptr);
-        decoder->StopRenderThreadForDetach();
-        if (deferredOwner) {
-            decoder->WaitForRenderThreadForDeferredDestroy();
+        if (!StopHardwarePipeline(decoder, deferredOwner)) {
+            ctx->deferredDestroyPhase.store(2, std::memory_order_release);
+            auto retained = ctx;
+            decoderRetireOwner().enqueue(retained, [retained, owner]() {
+                DestroyDecoderContext(retained, owner, true);
+                return true;
+            });
+            return;
         }
     }
     ResetDecoderTelemetry(ctx.get());
@@ -2999,7 +3260,11 @@ bool DecoderNapi::BindVideoPipeline(
             oldSoftwareDecoder->SetFrameCallback(nullptr);
         }
         if (!oldSoftware && oldDecoder) {
-            oldDecoder->StopRenderThreadForDetach();
+            if (!StopHardwarePipeline(oldDecoder, true)) {
+                OH_LOG_ERROR(LOG_APP,
+                             "[Decoder] bindVideoPipeline could not stop old hardware pipeline");
+                return false;
+            }
         }
     } else {
         StopSoftwareWorker(ctx.get());
@@ -3026,7 +3291,7 @@ bool DecoderNapi::BindVideoPipeline(
             ctx->decoder->SetFrameCallback(nullptr);
             ctx->decoder->SetMakeCurrentCallback(nullptr);
             ctx->decoder->SetReleaseCurrentCallback(nullptr);
-            ctx->decoder->StopRenderThreadForDetach();
+            StopHardwarePipeline(ctx->decoder, true);
         }
     };
 
@@ -3170,7 +3435,11 @@ bool DecoderNapi::DetachVideoPipeline(
         decoder->SetFrameCallback(nullptr);
         decoder->SetMakeCurrentCallback(nullptr);
         decoder->SetReleaseCurrentCallback(nullptr);
-        decoder->StopRenderThreadForDetach();
+        if (!StopHardwarePipeline(decoder, true)) {
+            OH_LOG_ERROR(LOG_APP,
+                         "[Decoder] detachVideoPipeline could not stop hardware pipeline");
+            return false;
+        }
     }
     ResetDecoderTelemetry(ctx.get());
     if (rendererHandle > 0) {

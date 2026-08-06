@@ -6,6 +6,7 @@ constexpr int kNativeErrorNoBuffer = 40601000;
 // A failed acquire can be a short producer/consumer handoff race. Bound the
 // retry work so a missing surface buffer cannot monopolize the render thread.
 constexpr int kNativeImageUpdateRetryBudget = 3;
+constexpr int kNativeImageSurfaceRecoveryThreshold = 6;
 
 inline bool ShouldDetachNativeImageOnRenderThreadStop(bool attached, bool hasNativeImage) {
     return attached && hasNativeImage;
@@ -18,6 +19,18 @@ inline bool ShouldRetryNativeImageAttach(int attachResult, bool alreadyRetried) 
 inline bool ShouldRetryNativeImageUpdate(int updateResult, int retryCount) {
     return updateResult == kNativeErrorNoBuffer &&
         retryCount < kNativeImageUpdateRetryBudget;
+}
+
+inline bool HasUnconsumedNativeImageFrame(uint64_t available, uint64_t consumed) {
+    return available > consumed;
+}
+
+inline uint64_t LatestNativeImageFrameSequence(uint64_t available) {
+    return available;
+}
+
+inline bool ShouldRequestNativeImageRecovery(int consecutiveFailures) {
+    return consecutiveFailures >= kNativeImageSurfaceRecoveryThreshold;
 }
 
 inline int NativeImageUpdateRetryDelayMs(int retryCount) {

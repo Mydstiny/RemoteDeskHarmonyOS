@@ -24,3 +24,13 @@ RDP_TEST_CASE(native_image_policy_retries_failed_attach_once) {
     RDP_ASSERT(Render::NativeImageUpdateRetryDelayMs(2) == 4);
     RDP_ASSERT(Render::NativeImageUpdateRetryDelayMs(3) == 8);
 }
+
+RDP_TEST_CASE(native_image_policy_consumes_latest_notification_sequence) {
+    RDP_ASSERT(!Render::HasUnconsumedNativeImageFrame(4, 4));
+    RDP_ASSERT(Render::HasUnconsumedNativeImageFrame(5, 4));
+    RDP_ASSERT(Render::LatestNativeImageFrameSequence(17) == 17);
+    RDP_ASSERT(!Render::ShouldRequestNativeImageRecovery(
+        Render::kNativeImageSurfaceRecoveryThreshold - 1));
+    RDP_ASSERT(Render::ShouldRequestNativeImageRecovery(
+        Render::kNativeImageSurfaceRecoveryThreshold));
+}

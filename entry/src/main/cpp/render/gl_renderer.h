@@ -82,6 +82,7 @@ public:
      */
     void Resize(int width, int height);
     void SetSourceSize(int width, int height);
+    void SetOesSourceSize(int width, int height);
     /** Apply a local canvas transform. Pan uses a top-left surface origin.
      *  Returns the published transform version, or zero for invalid input. */
     uint64_t SetCanvasTransform(double scale, double panX, double panY);
@@ -165,8 +166,19 @@ private:
     // 渲染状态
     int  width_;
     int  height_;
+    // sourceWidth_/sourceHeight_ are the logical stream dimensions used for
+    // input mapping. OES and raw texture dimensions are kept separately: the
+    // GL viewport must match the texture currently being sampled, while a
+    // delayed hardware callback must never rewrite raw BGRA geometry.
     int  sourceWidth_;
     int  sourceHeight_;
+    int  oesSourceWidth_;
+    int  oesSourceHeight_;
+    enum class PresentationPath : uint8_t {
+        UNKNOWN = 0,
+        OES = 1,
+        RAW_BGRA = 2,
+    } presentationPath_;
     int  lastVpX_;
     int  lastVpY_;
     int  lastVpW_;
@@ -194,6 +206,7 @@ private:
     std::atomic<int> snapshotSurfaceHeight_;
     std::atomic<uint64_t> snapshotTransformVersion_;
     int  rawFrameCount_;
+    int  oesFrameCount_;
     int64_t rendererHandle_;
     bool initialized_;
     bool destroying_;
@@ -218,6 +231,7 @@ private:
     void   RequestRedraw();
     void   CalculateViewport(int sourceWidth, int sourceHeight,
                              int& vpX, int& vpY, int& vpW, int& vpH) const;
+    void   CalculateActiveViewport(int& vpX, int& vpY, int& vpW, int& vpH) const;
     void   PublishViewportSnapshot(int vpX, int vpY, int vpW, int vpH);
     RdpPresentMetrics RenderRawBGRAInternal(const uint8_t* bgraData, int width, int height,
                                             int stride, bool useDirtyRect, int dirtyX,

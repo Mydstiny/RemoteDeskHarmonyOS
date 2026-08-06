@@ -19,6 +19,7 @@
 #include <GLES3/gl3.h>
 #include <napi/native_api.h>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -175,7 +176,7 @@ public:
     void SetMakeCurrentCallback(DecoderMakeCurrentCallback callback);
     void SetReleaseCurrentCallback(DecoderReleaseCurrentCallback callback);
     void StartRenderThread();
-    void StopRenderThreadForDetach();
+    bool StopRenderThreadForDetach();
     /** Deferred owners wait on the render done fence outside the caller. */
     void WaitForRenderThreadForDeferredDestroy();
 
@@ -259,12 +260,22 @@ private:
     std::atomic<uint64_t> inputTruncatedCount_ {0};
     std::atomic<uint64_t> renderOutputFailureCount_ {0};
     std::atomic<uint64_t> updateSurfaceFailureCount_ {0};
+    std::atomic<uint64_t> inputPushFailureCount_ {0};
     std::atomic<uint64_t> outputFrameCount_ {0};
     mutable std::mutex telemetryMutex_;
     std::condition_variable frameAvailableCv_;
     uint64_t frameAvailableCount_ = 0;
     uint64_t frameConsumeCount_ = 0;
     bool surfaceUpdatePending_ = false;
+    std::chrono::steady_clock::time_point surfaceRetryAt_ =
+        std::chrono::steady_clock::time_point::min();
+    int consecutiveSurfaceUpdateFailures_ = 0;
+    std::condition_variable inputCv_;
+    std::thread inputThread_;
+    std::atomic<bool> inputThreadStop_ {true};
+    mutable std::mutex inputThreadMutex_;
+    std::condition_variable inputThreadDoneCv_;
+    bool inputThreadDone_ = true;
     // A transform wake is a latest-value hint, not one render obligation per
     // pinch event. Keep at most one retained redraw pending behind the render
     // owner so a fast UI gesture cannot build a decoder-side backlog.
@@ -312,7 +323,12 @@ private:
     size_t dropOldestInputFramesLocked(size_t count);
     void handleInputBuffer(uint32_t index, OH_AVBuffer* buffer);
     void drainInputBuffers();
-    bool waitForRenderRequest(bool& hasNewFrame, bool& hasPendingSurfaceUpdate);
+    void inputLoop();
+    void startInputThread();
+    bool stopInputThread();
+    void waitForInputThreadForDeferredDestroy();
+    bool waitForRenderRequest(bool& hasNewFrame, bool& hasPendingSurfaceUpdate,
+                              uint64_t& frameSequence);
     void handleOutputBuffer(uint32_t index);
     void noteFrameAvailable();
     bool stopRenderThread();
