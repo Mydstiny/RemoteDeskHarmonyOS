@@ -8,8 +8,13 @@ export default function terminalInputBufferTest(): void {
   queue.enqueue(first);
   queue.enqueue(new ArrayBuffer(0));
   queue.enqueue(second);
+  const otherQueue: TerminalInputBuffer = new TerminalInputBuffer();
+  const other: ArrayBuffer = new ArrayBuffer(4);
+  otherQueue.enqueue(other);
   expect(queue.size()).assertEqual(2);
   expect(queue.byteLength()).assertEqual(5);
+  expect(otherQueue.size()).assertEqual(1);
+  expect(otherQueue.byteLength()).assertEqual(4);
 
   const drained: ArrayBuffer[] = queue.drain();
   expect(drained.length).assertEqual(2);
@@ -17,6 +22,8 @@ export default function terminalInputBufferTest(): void {
   expect(drained[1]).assertEqual(second);
   expect(queue.size()).assertEqual(0);
   expect(queue.byteLength()).assertEqual(0);
+  expect(otherQueue.drain()[0]).assertEqual(other);
+  expect(otherQueue.byteLength()).assertEqual(0);
 
   queue.enqueue(first);
   queue.clear();

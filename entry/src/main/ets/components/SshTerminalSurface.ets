@@ -49,37 +49,67 @@ const TERMINAL_INPUT_FRAME_BUDGET_BYTES: number = 256 * 1024;
  * 观察代理，watch 回调中访问 byteLength 时走 Reflect.get(target, key, proxy)，
  * ArrayBuffer 内置 byteLength getter 要求 this 是真实 ArrayBuffer（internal
  * slot），代理对象没有 → 抛 “don't have internal slot” 导致整页闪退。
- * 该载体是普通对象，父组件写入、子组件读取都绕开观察代理；inputSequence 序号
- * 仍由 @Prop @Watch 驱动消费。
+ * 该载体本身也会作为 GpuTerminalRenderer 的 @Prop 传递，ArkUI 仍可能代理它。
+ * 因此队列的 ArrayBuffer 必须完全放在模块级非观察状态中，载体对象只保留一个
+ * 字符串 ID；inputSequence 序号仍由 @Prop @Watch 驱动消费。
  */
+class TerminalInputBufferState {
+  buffers: ArrayBuffer[] = [];
+  bytes: number = 0;
+}
+
+const terminalInputBufferStates: Map<string, TerminalInputBufferState> =
+  new Map<string, TerminalInputBufferState>();
+let terminalInputBufferSequence: number = 0;
+
 export class TerminalInputBuffer {
-  private pendingBuffers: ArrayBuffer[] = [];
-  private pendingBytes: number = 0;
+  /** ArkUI may proxy this object; keep the only object-owned value primitive. */
+  private readonly stateId: string;
+
+  constructor() {
+    terminalInputBufferSequence += 1;
+    this.stateId = 'ssh-terminal-input-' + terminalInputBufferSequence.toString();
+    terminalInputBufferStates.set(this.stateId, new TerminalInputBufferState());
+  }
+
+  private state(): TerminalInputBufferState {
+    let state: TerminalInputBufferState | undefined =
+      terminalInputBufferStates.get(this.stateId);
+    if (state === undefined) {
+      // A proxied/reused component can outlive an explicit clear. Recreate the
+      // state lazily while retaining the same stable primitive identity.
+      state = new TerminalInputBufferState();
+      terminalInputBufferStates.set(this.stateId, state);
+    }
+    return state;
+  }
 
   enqueue(buffer: ArrayBuffer): void {
     if (buffer.byteLength === 0) { return; }
-    this.pendingBuffers.push(buffer);
-    this.pendingBytes += buffer.byteLength;
+    const state: TerminalInputBufferState = this.state();
+    state.buffers.push(buffer);
+    state.bytes += buffer.byteLength;
   }
 
   drain(maxBytes: number = -1): ArrayBuffer[] {
-    if (this.pendingBuffers.length === 0) { return []; }
+    const state: TerminalInputBufferState = this.state();
+    if (state.buffers.length === 0) { return []; }
     if (!Number.isFinite(maxBytes) || maxBytes <= 0) {
-      const buffers: ArrayBuffer[] = this.pendingBuffers;
-      this.pendingBuffers = [];
-      this.pendingBytes = 0;
+      const buffers: ArrayBuffer[] = state.buffers;
+      state.buffers = [];
+      state.bytes = 0;
       return buffers;
     }
 
     const limit: number = Math.max(1, Math.floor(maxBytes));
     let selectedBytes: number = 0;
     const selected: ArrayBuffer[] = [];
-    while (this.pendingBuffers.length > 0 && selectedBytes < limit) {
-      const next: ArrayBuffer = this.pendingBuffers[0];
+    while (state.buffers.length > 0 && selectedBytes < limit) {
+      const next: ArrayBuffer = state.buffers[0];
       const remaining: number = limit - selectedBytes;
       if (next.byteLength <= remaining) {
         selected.push(next);
-        this.pendingBuffers.shift();
+        state.buffers.shift();
         selectedBytes += next.byteLength;
         continue;
       }
@@ -87,26 +117,27 @@ export class TerminalInputBuffer {
       // that boundary; the terminal parser accepts partial UTF-8/VT input
       // and the remainder stays at the head of the ordered queue.
       const prefix: ArrayBuffer = next.slice(0, remaining);
-      this.pendingBuffers[0] = next.slice(remaining);
+      state.buffers[0] = next.slice(remaining);
       selected.push(prefix);
       selectedBytes += prefix.byteLength;
       break;
     }
-    this.pendingBytes = Math.max(0, this.pendingBytes - selectedBytes);
+    state.bytes = Math.max(0, state.bytes - selectedBytes);
     return selected;
   }
 
   clear(): void {
-    this.pendingBuffers = [];
-    this.pendingBytes = 0;
+    const state: TerminalInputBufferState = this.state();
+    state.buffers = [];
+    state.bytes = 0;
   }
 
   size(): number {
-    return this.pendingBuffers.length;
+    return this.state().buffers.length;
   }
 
   byteLength(): number {
-    return this.pendingBytes;
+    return this.state().bytes;
   }
 }
 
