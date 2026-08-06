@@ -54,30 +54,35 @@ Updated: 2026-08-07 Asia/Shanghai
   The fallback FIFO is host-scoped, returns unconfirmed batches across lifecycle handoffs, and the visible layer stays masked until xterm-ready; xterm writes are strictly callback-ordered, failed/timeout batches replay in full into a fresh document, reload watchdog/retry attempts use new lifecycle bridges, and inactive surfaces cancel those timers.
   `default@OhosTestCompileArkTS` passed; targeted physical-touchpad Rust tests are
   `3 passed, 0 failed`; inline xterm parse and ordered-batch protocol checks pass;
-  `assembleHap` is `BUILD SUCCESSFUL` on the final checkout. Device installation/acceptance
-  remains deferred by the current code-only rule.
+  `assembleHap` is `BUILD SUCCESSFUL`. The signed HAP is installed on
+  `127.0.0.1:5555`; a single-host xterm smoke run reached page/report ready and
+  produced no crash. Multi-host and virtual-keyboard/function-bar acceptance remain next.
 - The current surface fallback, SOCKS5 flush, listener/FRP route and ArkTS/native ABI increment has an independent PASS receipt; the strict xterm ACK/reload/watchdog increment also has an independent PASS receipt `ssh-terminal-xterm-ack-reload-pass-2026-08-06`. Background SSH now owns a session collection and the page-independent SFTP engine can reattach retained tabs, but real background transfer/restart evidence is still open; do not claim Level A or Level B connectivity. The status command remains `REVIEW_REQUIRED` only because preserved mixed-worktree changes remain dirty.
 - The first ProxyJump implementation and matching key preflight relay are
   committed, but keep them pending until bastion host-key policy and a real
   OpenSSH endpoint are verified.
 - The native forwarding lifecycle contract is committed for local, remote and
   dynamic modes; `SshAdapter` binds runtime transitions to the session-owner
-  reactor with transport-reset cleanup, and the guarded NAPI/ArkTS bridge now
-  exposes configure/remove/start/listen/fail/stop/acquire/release/snapshot with
-  explicit generation and SSH-type gates. SOCKS5 failure replies are flushed
-  before close, listener failures clean runtime state, and FRP Visitor/STCP/
-  SUDP/XTCP remain explicit fail-closed routes. Real SSH socket/channel wiring
-  and endpoint interoperability remain open.
-- RDP-only checkpoint passed `default@OhosTestCompileArkTS`, `git diff --check`,
-  direct FreeRDP builds and the host suite (`289 passed, 16 pre-existing VNC
-  TLS fixture startup failures, 305 total`); the 2026-08-07 full rerun returned
-  exit 0 and `assembleHap` is `BUILD SUCCESSFUL`. Gateway stages stay separate;
-  Restricted Admin + RD Gateway fails closed with `E-RDP-GATEWAY-AUTH`.
-  OHOS callback/device evidence and mixed-worktree review remain open.
+  reactor with transport-reset cleanup, stale-runtime cleanup, byte/expiry
+  limits and TCP half-close draining. The guarded NAPI/ArkTS bridge exposes
+  configure/remove/start/listen/fail/stop/acquire/release/snapshot with explicit
+  generation and SSH-type gates. SOCKS5 failure replies are flushed before
+  close, listener failures clean runtime state, and FRP Visitor/STCP/SUDP/XTCP
+  remain explicit fail-closed routes. Real SSH socket/channel wiring and
+  endpoint interoperability remain open.
+- RDP-only checkpoint passed `default@OhosTestCompileArkTS`, `git diff --check`, direct FreeRDP builds and host suite (`294 passed, 16 pre-existing VNC TLS fixture startup failures, 310 total`); the 2026-08-07 rerun and `assembleHap` passed.
+  Gateway stages stay separate; `CONTINUE_ONCE` leaves persisted records unchanged;
+  Restricted Admin + RD Gateway fails closed with `E-RDP-GATEWAY-AUTH`;
+  `gatewayTransportSelected` is requested-only, negotiated transport is unknown without wire/instrumentation, and OHOS/device evidence plus mixed-worktree review remain open.
+- RustDesk RAW/OES geometry follow-up is code-complete: RAW BGRA/VP8/VP9
+  snapshots use uploaded texture Fit dimensions; OES isolates hardware output.
+  Required Hvigor gates and `git diff --check` passed on 2026-08-07; HDC target
+  `5KLBB25928203528` remains offline, so device codec evidence is open; this does
+  not block the current SSH xterm smoke target at `127.0.0.1:5555`.
 ## Next
-- WP-T4 canvas user acceptance and benchmark using shared terminal fixtures; the
-  code-only ACK/reload/rebind review and commit are complete.
-- Keep device acceptance pending until the user lifts the current no-device/code-only boundary; retain mature xterm.js as the visible SSH renderer while the API 23 GPU backend is unsafe.
+- RDP Gateway plan: `docs/codex/plans/2026-08-06-rdp-gateway-aware-certificate-preflight-plan.md` covers real dual-cert, transport-observation and rotation acceptance.
+- WP-T4 canvas user acceptance and benchmark using shared terminal fixtures; the code-only ACK/reload/rebind review and commit are complete.
+- Complete second-host switching and virtual-keyboard/function-bar acceptance on the installed xterm.js path; retain xterm.js as the visible SSH renderer while the API 23 GPU backend is unsafe.
 - Implement local/remote/dynamic libssh2 socket/channel transport behind that bridge, with endpoint-facing error propagation.
 - WP-T5/WP-T6 terminal correctness and damage-frame renderer implementation.
 - Real SFTP, bastion, forwarding and FRP endpoint interoperability tests when
@@ -88,9 +93,6 @@ Updated: 2026-08-07 Asia/Shanghai
   SFTP lifecycle acceptance beyond the current code-level handoff path.
 - WP-T7 terminal accessibility/lifecycle recovery and Level A acceptance.
 ## Evidence Gaps
-- HDC target `5KLBB25928203528` passed cold SSH, ordered input, large output,
-  Home retention, PiP/re-entry and 90-second idle command checks; external
-  keyboard/IME remains an evidence gap. A later reproduction captured the native
-  GPU abort; the visible path is now xterm.js.
-- Current host-switch/initial-UI changes have no new real-device evidence by explicit user instruction; code-level validation is the active boundary.
+- HDC target `5KLBB25928203528` passed cold SSH, ordered input, large output, Home retention, PiP/re-entry and 90-second idle command checks; external keyboard/IME remains an evidence gap. A later reproduction captured the native GPU abort; the visible path is now xterm.js.
+- The current device run verifies initial SSH xterm page readiness, welcome output and input without a crash; host-switch, virtual-keyboard/function-bar and external-IME evidence remain open.
 - `ohosTest@OhosTestCompileArkTS` is unregistered (`00306054`); Light compliance is blocked by baseline SBOM package `totp-reviewed-brand-assets` with `licenseDeclared=NOASSERTION`.
