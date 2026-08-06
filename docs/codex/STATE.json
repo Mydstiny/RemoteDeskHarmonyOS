@@ -3,10 +3,10 @@
   "task": "ssh-terminal-complete-upgrade",
   "branch": "codex/ssh-terminal-complete-upgrade",
   "base": "d2769ad4b",
-  "head": "24d701f",
-  "phase": "alacritty-core-xterm-safe-fallback-guarded-forwarding-frp-contract-code-only",
+  "head": "22fd302",
+  "phase": "ssh-canvas-ack-reload-watchdog-code-only-pass",
   "status": "active",
-  "next": "Implement local/remote/dynamic socket/channel transport, ProxyJump host-key binding and FRP control-plane connectivity contracts.",
+  "next": "Perform SSH canvas device acceptance and benchmark when the code-only boundary is lifted; do not expand this increment to SFTP, forwarding or FRP.",
   "blockers": [
     "HDC target 5KLBB25928203528 passed cold SSH, ordered input, 300 KiB output, Home background retention, PiP/re-entry and 90-second idle commands; true external-keyboard and third-party-IME coverage remains open.",
     "ohosTest@OhosTestCompileArkTS is not registered (00306054).",
@@ -15,6 +15,7 @@
     "No real OpenSSH bastion/ProxyJump, port-forwarding or FRP endpoint is available for interoperability acceptance.",
     "Current host-switch/initial-UI changes have no new real-device evidence by explicit user instruction; code-level gates are the active acceptance boundary.",
     "Native Drawing GPU rendering is disabled for visible SSH surfaces after the API 23 41207000 Device lost/SIGABRT reproduction; re-enable requires a safe backend.",
+    "assembleHap is blocked by the preserved ssh_adapter.cpp:2251 unsigned-char prompt-text std::string::assign error.",
     "Light compliance is blocked by baseline SBOM package totp-reviewed-brand-assets with licenseDeclared=NOASSERTION.",
     "Host CMake is unavailable because cmake is not installed; the existing Makefile target rebuilt and production BuildNativeWithNinja passed."
   ],
@@ -95,16 +96,19 @@
       "rustdesk_ffi/src/terminal_core/mod.rs",
       "rustdesk_ffi/src/terminal_core/tests.rs"
     ],
-    "receiptId": "ssh-terminal-surface-forwarding-frp-pass-2026-08-06",
-    "reason": "The committed Alacritty/SSH lifecycle scope and the current surface/forwarding/FRP increment have independent PASS receipts. The status remains REVIEW_REQUIRED only because preserved user RDP diagnostic hunks keep mixed protocol_adapter.h and HostListPage.ets dirty; no duplicate review is required."
+    "receiptId": "ssh-terminal-xterm-ack-reload-pass-2026-08-06",
+    "reason": "The strict xterm callback-ordered ACK, full-batch recovery, reload watchdog and inactive lifecycle increment has an independent PASS receipt. The status remains REVIEW_REQUIRED only because unrelated mixed-worktree changes remain dirty; no duplicate review is required for the canvas increment."
   },
   "lastVerification": {
     "host_native_tests": "273-pass-16-preexisting-vnc-fixture-startup-failures-289-total-2026-08-06",
     "rust_terminal_core_tests": "focused-alacritty-63-pass-fallback-57-pass-2026-08-04; full-no-default-features-156-pass-1-preexisting-rendezvous-fixture-public-address-failure-157-total",
     "terminalParity": "alacritty-67-pass-fallback-57-pass-unicode-ansi-tui-resize-large-output-damage-2026-08-04",
-    "default@OhosTestCompileArkTS": "pass-after-api23-gpu-crash-guard-2026-08-06",
-    "assembleHap": "pass-build-successful-signed-after-api23-gpu-crash-guard-2026-08-06",
-    "gitDiffCheck": "pass-after-api23-gpu-crash-guard-2026-08-06",
+    "default@OhosTestCompileArkTS": "pass-after-xterm-ack-reload-watchdog-2026-08-06",
+    "assembleHap": "blocked-existing-ssh_adapter.cpp:2251-unsigned-char-prompt-text-assign-2026-08-06",
+    "gitDiffCheck": "pass-after-xterm-ack-reload-watchdog-2026-08-06",
+    "inlineJavaScript": "pass-2026-08-06",
+    "xtermBatchProtocol": "pass-ordered-ack-and-error-recovery-2026-08-06",
+    "xtermIndependentReview": "pass-no-P0-P1-P2-P3-2026-08-06",
     "nativeForwardingManager": "included-in-host-suite-pass; standalone-makefile-target-rebuilt; host-cmake-unavailable; production-ninja-pass-2026-08-06",
     "sbom": "pass-totp-validator-96-packages-282-files-282-relationships-2026-08-04",
     "ohosTest": "blocked-task-00306054",
