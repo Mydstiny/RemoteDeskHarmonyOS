@@ -18,48 +18,51 @@ export default function remoteSessionTopBarPolicyTest(): void {
   describe('RemoteSessionTopBarPolicy', (): void => {
   describe('RemoteSessionTopBarPolicy_visibility', (): void => {
     it('pc_rustdesk_should_show_on_small_window', 0, (): void => {
-      expect(shouldShowRustDeskTopBar('rustdesk', true, 'md', 0, false)).assertTrue();
+      expect(shouldShowRustDeskTopBar('rustdesk', true, 'md', 0, false, false)).assertTrue();
     });
 
     it('pc_rustdesk_should_show_on_full_window', 0, (): void => {
-      expect(shouldShowRustDeskTopBar('rustdesk', true, 'xl', 0, false)).assertTrue();
+      expect(shouldShowRustDeskTopBar('rustdesk', true, 'xl', 0, false, false)).assertTrue();
     });
 
     it('phone_rustdesk_should_only_show_for_physical_keyboard_mouse', 0, (): void => {
-      expect(shouldShowRustDeskTopBar('rustdesk', false, 'sm', 2, true)).assertTrue();
-      expect(shouldShowRustDeskTopBar('rustdesk', false, 'sm', 2, false)).assertFalse();
-      expect(shouldShowRustDeskTopBar('rustdesk', false, 'sm', 0, true)).assertFalse();
-      expect(shouldShowRustDeskTopBar('rustdesk', false, 'sm', 1, true)).assertFalse();
+      expect(shouldShowRustDeskTopBar('rustdesk', false, 'sm', 2, true, false)).assertTrue();
+      expect(shouldShowRustDeskTopBar('rustdesk', false, 'sm', 2, false, false)).assertFalse();
+      expect(shouldShowRustDeskTopBar('rustdesk', false, 'sm', 0, true, false)).assertFalse();
+      expect(shouldShowRustDeskTopBar('rustdesk', false, 'sm', 1, true, false)).assertFalse();
+      expect(shouldShowRustDeskTopBar('rustdesk', false, 'md', 0, true, false)).assertFalse();
+      expect(shouldShowRustDeskTopBar('rustdesk', false, 'md', 2, true, false)).assertTrue();
     });
 
     it('pad_rustdesk_should_keep_layout_choice_discoverable_in_all_modes', 0, (): void => {
-      expect(shouldShowRustDeskTopBar('rustdesk', false, 'lg', 2, false)).assertTrue();
-      expect(shouldShowRustDeskTopBar('rustdesk', false, 'lg', 0, false)).assertTrue();
-      expect(shouldShowRustDeskTopBar('rustdesk', false, 'lg', 1, false)).assertTrue();
+      expect(shouldShowRustDeskTopBar('rustdesk', false, 'lg', 2, false, true)).assertTrue();
+      expect(shouldShowRustDeskTopBar('rustdesk', false, 'lg', 0, false, true)).assertTrue();
+      expect(shouldShowRustDeskTopBar('rustdesk', false, 'lg', 1, false, true)).assertTrue();
     });
 
     it('rdp_should_not_show_rustdesk_topbar', 0, (): void => {
-      expect(shouldShowRustDeskTopBar('rdp', true, 'xl', 2, true)).assertFalse();
-      expect(shouldShowRustDeskTopBar('rdp', false, 'sm', 2, true)).assertFalse();
+      expect(shouldShowRustDeskTopBar('rdp', true, 'xl', 2, true, false)).assertFalse();
+      expect(shouldShowRustDeskTopBar('rdp', false, 'sm', 2, true, false)).assertFalse();
     });
   });
 
   describe('RemoteSessionTopBarPolicy_layout', (): void => {
     it('device_class_should_prefer_desktop_device_over_breakpoint', 0, (): void => {
-      expect(remoteTopBarDeviceClass(true, 'sm')).assertEqual('pc');
-      expect(remoteTopBarDeviceClass(false, 'lg')).assertEqual('pad');
-      expect(remoteTopBarDeviceClass(false, 'sm')).assertEqual('phone');
+      expect(remoteTopBarDeviceClass(true, 'sm', false)).assertEqual('pc');
+      expect(remoteTopBarDeviceClass(false, 'lg', true)).assertEqual('pad');
+      expect(remoteTopBarDeviceClass(false, 'md', false)).assertEqual('phone');
+      expect(remoteTopBarDeviceClass(false, 'sm', false)).assertEqual('phone');
     });
 
     it('pc_small_window_layout_should_be_compact_but_not_mobile', 0, (): void => {
-      const layout = remoteTopBarLayout(true, 'md');
+      const layout = remoteTopBarLayout(true, 'md', false);
       expect(layout.deviceClass).assertEqual('pc');
       expect(layout.iconSize).assertEqual(44);
       expect(layout.maxVisibleButtons).assertEqual(7);
     });
 
     it('phone_layout_should_limit_visible_buttons', 0, (): void => {
-      const layout = remoteTopBarLayout(false, 'sm');
+      const layout = remoteTopBarLayout(false, 'sm', false);
       expect(layout.deviceClass).assertEqual('phone');
       expect(layout.iconSize).assertEqual(40);
       expect(layout.maxVisibleButtons).assertEqual(5);
@@ -68,15 +71,15 @@ export default function remoteSessionTopBarPolicyTest(): void {
 
   describe('RemoteSessionTopBarPolicy_edgeRail', (): void => {
     it('phone_and_pad_keyboard_mouse_sessions_should_use_edge_rail', 0, (): void => {
-      expect(shouldUseRustDeskEdgeRail('rustdesk', false, 'sm', 2)).assertTrue();
-      expect(shouldUseRustDeskEdgeRail('rustdesk', false, 'lg', 2)).assertTrue();
+      expect(shouldUseRustDeskEdgeRail('rustdesk', false, 'sm', 2, false)).assertTrue();
+      expect(shouldUseRustDeskEdgeRail('rustdesk', false, 'lg', 2, true)).assertTrue();
     });
 
     it('touch_modes_and_desktop_sessions_should_keep_top_bar', 0, (): void => {
-      expect(shouldUseRustDeskEdgeRail('rustdesk', false, 'sm', 0)).assertFalse();
-      expect(shouldUseRustDeskEdgeRail('rustdesk', false, 'sm', 1)).assertFalse();
-      expect(shouldUseRustDeskEdgeRail('rustdesk', true, 'xl', 2)).assertFalse();
-      expect(shouldUseRustDeskEdgeRail('rdp', false, 'sm', 2)).assertFalse();
+      expect(shouldUseRustDeskEdgeRail('rustdesk', false, 'sm', 0, false)).assertFalse();
+      expect(shouldUseRustDeskEdgeRail('rustdesk', false, 'sm', 1, false)).assertFalse();
+      expect(shouldUseRustDeskEdgeRail('rustdesk', true, 'xl', 2, false)).assertFalse();
+      expect(shouldUseRustDeskEdgeRail('rdp', false, 'sm', 2, false)).assertFalse();
     });
   });
 

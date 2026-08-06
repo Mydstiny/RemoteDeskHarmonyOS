@@ -7,6 +7,7 @@ export type RemoteTopBarMenuId = 'control' | 'display' | 'keyboardMouse' | 'chat
 export interface RemoteTopBarContext {
   protocol: string;
   isDesktopDevice: boolean;
+  isPadDevice: boolean;
   breakpoint: string;
   rustdeskControlMode: number;
   physicalKeyboardMouseConnected: boolean;
@@ -42,11 +43,12 @@ const RUSTDESK_DISABLED_REASONS: Record<string, string> = {
   'restartRemote': '重启远程电脑需要远端系统命令协议接入后启用'
 };
 
-export function remoteTopBarDeviceClass(isDesktopDevice: boolean, breakpoint: string): RemoteTopBarDeviceClass {
+export function remoteTopBarDeviceClass(isDesktopDevice: boolean, _breakpoint: string,
+  isPadDevice: boolean): RemoteTopBarDeviceClass {
   if (isDesktopDevice) {
     return 'pc';
   }
-  if (breakpoint === 'md' || breakpoint === 'lg' || breakpoint === 'xl') {
+  if (isPadDevice) {
     return 'pad';
   }
   return 'phone';
@@ -57,7 +59,8 @@ export function shouldShowRustDeskTopBar(
   isDesktopDevice: boolean,
   breakpoint: string,
   rustdeskControlMode: number,
-  physicalKeyboardMouseConnected: boolean
+  physicalKeyboardMouseConnected: boolean,
+  isPadDevice: boolean
 ): boolean {
   if (protocol !== 'rustdesk') {
     return false;
@@ -65,7 +68,7 @@ export function shouldShowRustDeskTopBar(
   if (isDesktopDevice) {
     return true;
   }
-  const deviceClass: RemoteTopBarDeviceClass = remoteTopBarDeviceClass(isDesktopDevice, breakpoint);
+  const deviceClass: RemoteTopBarDeviceClass = remoteTopBarDeviceClass(isDesktopDevice, breakpoint, isPadDevice);
   if (deviceClass === 'pad') {
     return true;
   }
@@ -77,16 +80,17 @@ export function shouldShowRustDeskTopBar(
 
 /** Mobile keyboard/mouse sessions keep controls off the system-bar edges. */
 export function shouldUseRustDeskEdgeRail(protocol: string, isDesktopDevice: boolean,
-  breakpoint: string, rustdeskControlMode: number): boolean {
+  breakpoint: string, rustdeskControlMode: number, isPadDevice: boolean): boolean {
   if (protocol !== 'rustdesk' || isDesktopDevice || rustdeskControlMode !== 2) {
     return false;
   }
-  const deviceClass: RemoteTopBarDeviceClass = remoteTopBarDeviceClass(isDesktopDevice, breakpoint);
+  const deviceClass: RemoteTopBarDeviceClass = remoteTopBarDeviceClass(isDesktopDevice, breakpoint, isPadDevice);
   return deviceClass === 'phone' || deviceClass === 'pad';
 }
 
-export function remoteTopBarLayout(isDesktopDevice: boolean, breakpoint: string): RemoteTopBarLayout {
-  const deviceClass: RemoteTopBarDeviceClass = remoteTopBarDeviceClass(isDesktopDevice, breakpoint);
+export function remoteTopBarLayout(isDesktopDevice: boolean, breakpoint: string,
+  isPadDevice: boolean): RemoteTopBarLayout {
+  const deviceClass: RemoteTopBarDeviceClass = remoteTopBarDeviceClass(isDesktopDevice, breakpoint, isPadDevice);
   if (deviceClass === 'pc') {
     return { deviceClass, iconSize: 44, itemGap: 8, topOffset: 8, maxVisibleButtons: 7, menuWidth: 360 };
   }

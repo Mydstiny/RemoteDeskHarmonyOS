@@ -689,6 +689,7 @@ struct RemoteDesktop {
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
   @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
+  @StorageProp('isPadDevice') isPadDevice: boolean = false;
   @StorageLink('rustdeskControlMode') @Watch('onRemoteControlModeChange')
   rustdeskControlMode: number = 0; // 0=touchpad, 1=direct touch, 2=keyboard/mouse
   @StorageLink('rustdeskImageQuality') rustdeskImageQuality: number = 1;
@@ -1359,14 +1360,14 @@ struct RemoteDesktop {
     const host: RemoteHost | null = this.pendingHost;
     if (!host) { return false; }
     return shouldShowRustDeskTopBar(host.protocol, this.isDesktopDevice, this.breakpoint,
-      this.rustdeskControlMode, this.externalKeyboardMouseConnected);
+      this.rustdeskControlMode, this.externalKeyboardMouseConnected, this.isPadDevice);
   }
 
   private shouldUseRustDeskSessionEdgeRail(): boolean {
     const host: RemoteHost | null = this.pendingHost;
     if (!host) { return false; }
     return shouldUseRustDeskEdgeRail(host.protocol, this.isDesktopDevice, this.breakpoint,
-      this.rustdeskControlMode);
+      this.rustdeskControlMode, this.isPadDevice);
   }
 
   private shouldShowVncSessionToolbar(): boolean {
@@ -1386,7 +1387,7 @@ struct RemoteDesktop {
   }
 
   private vncToolbarDeviceClass(): VncToolbarDeviceClass {
-    return remoteTopBarLayout(this.isDesktopDevice, this.breakpoint).deviceClass;
+    return remoteTopBarLayout(this.isDesktopDevice, this.breakpoint, this.isPadDevice).deviceClass;
   }
 
   private vncToolbarOrientation(): VncToolbarOrientation {
@@ -13873,7 +13874,7 @@ struct RemoteDesktop {
 
       if (this.shouldShowVncSessionToolbar()) {
         VncSessionToolbar({
-          deviceClass: remoteTopBarLayout(this.isDesktopDevice, this.breakpoint).deviceClass,
+          deviceClass: remoteTopBarLayout(this.isDesktopDevice, this.breakpoint, this.isPadDevice).deviceClass,
           viewOnly: this.isVncViewOnlySession(),
           keyboardOpen: this.keyboardOpen,
           controlModeLabel: this.vncControlModeLabel(),
@@ -13892,7 +13893,7 @@ struct RemoteDesktop {
 
       if (this.connected && this.shouldShowRustDeskSessionTopBar()) {
         RemoteSessionTopBar({
-          layout: remoteTopBarLayout(this.isDesktopDevice, this.breakpoint),
+          layout: remoteTopBarLayout(this.isDesktopDevice, this.breakpoint, this.isPadDevice),
           edgeRail: this.shouldUseRustDeskSessionEdgeRail(),
           privacyMode: this.rustdeskPrivacyMode,
           audioEnabled: this.rustdeskAudioEnabled,
