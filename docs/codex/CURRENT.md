@@ -3,13 +3,13 @@
 - Task: `ssh-terminal-complete-upgrade`
 - Base: `main@d2769ad4b`
 - Branch: `codex/ssh-terminal-complete-upgrade`
-- Code checkpoint: `70534e2` (`fix(rustdesk): stabilize pc physical touchpad gestures`), following `22fd302` (`fix(ssh): close xterm frame recovery lifecycle`); keyed surface recovery, forwarding lifecycle, adapter reactor binding, and the generation-guarded NAPI/ArkTS bridge are committed.
+- Code checkpoint: `f6ef9559a` (`fix(ssh): size SFTP bind sheets`), following `9eb54c7f2` (`feat(ssh): refine SFTP endpoint workspace`); keyed surface recovery, forwarding lifecycle, adapter reactor binding, and the generation-guarded NAPI/ArkTS bridge are committed.
 - Phase: Alacritty core and xterm-safe visible fallback; lifecycle, VT/Unicode/resize/TUI/large-output parity, per-host output isolation, strict ACK-gated canvas presentation, code-only host-switch/surface refresh recovery, guarded surface fallback, and native forwarding contract.
 - Scope: migrate VT behind terminalCore, keep appearance settings in-core, verify IME/input/Canvas behavior. Homepage work is not current focus.
 ## Progress
 - WP-T0/T1/T2 are implemented: diagnostics, bounded native input, one SSH session-owner reactor, PTY resize, SFTP and keepalive share generation/teardown rules; physical-keyboard/IME policy covers Unicode/CJK/emoji, CapsLock, AltGr, focus and duplicate-change suppression.
 - SFTP integrity, durable task metadata, capability-aware provider selection, API 23 authorized local-provider operations and the Pad/PC full-screen workspace are implemented; background payload execution and endpoint acceptance remain pending.
-- Mobile SFTP now keeps the current SSH host on the left and exposes exactly two right-endpoint choices: local files or an SSH host. The SSH choice switches the workspace immediately, keeps the current host selectable, and renders host selection inside the existing mobile SFTP surface instead of stacking a second native Sheet. A shared 320 ms exit guard delays the host-list add-host Sheet during cross-route back navigation.
+- Mobile SFTP now keeps the current SSH host on the left and exposes exactly two right-endpoint choices: local files or an SSH host. The SSH choice switches the workspace immediately, keeps the current host selectable, and renders host selection inside the existing mobile SFTP surface instead of stacking a second native Sheet. Phone stays on the bottom bindSheet; Pad uses the wide centered bindSheet with explicit 96% SFTP width and 88% host-picker width. A shared 320 ms exit guard delays the host-list add-host Sheet during cross-route back navigation.
 - SSH forwarding validates local/remote/dynamic profiles, binding policy, bounded connections, generations and start/listen/fail/stop transitions. `SshAdapter` owns the manager and reactor reset; NAPI/ArkTS exposes the guarded lifecycle API, while real libssh2 socket/channel forwarding remains open.
 - Dynamic SOCKS5 rejects unsupported methods/commands/address types, flushes failure replies, and protects handshake buffers. Listener errors clean runtime state; stale stop completion is generation-rejected. FRP Visitor/STCP/SUDP/XTCP fail closed until their control plane exists.
 - WP-T4 uses `alacritty_terminal` `0.26.0` behind terminalCore with a fallback core and bounded xterm path. Appearance/geometry remain independent; output is capped at 256 KiB per turn and ordered remainders are retained. SBOM/NOTICE include Alacritty.
@@ -45,7 +45,7 @@
 - `default@OhosTestCompileArkTS`: passed on the current checkout on 2026-08-06; warnings only after strict xterm ACK/reload recovery and active lifecycle gates; the physical-touchpad ArkTS policy tests are included and pass.
 - `assembleHap`: `BUILD SUCCESSFUL` on the final physical-touchpad checkout on 2026-08-06; existing warnings only.
 - Current canvas follow-up: `default@OhosTestCompileArkTS` passed and `assembleHap` returned `BUILD SUCCESSFUL` after the shell/bar/keyboard changes on 2026-08-06; `git diff --check` passed.
-- Mobile SFTP endpoint/sheet handoff follow-up: `default@OhosTestCompileArkTS` passed; `assembleHap` returned `BUILD SUCCESSFUL` on the retry after one transient BundleTool `resources` CRC lookup failure; `git diff --check` passed on 2026-08-06.
+- Mobile SFTP endpoint/sheet handoff follow-up: `default@OhosTestCompileArkTS` passed; Pad wide bindSheet and SSH host-picker widths are compiled; `assembleHap` returned `BUILD SUCCESSFUL`; `git diff --check` passed on 2026-08-06. Phone remains bottom-sheet and the initial right endpoint remains chooser-only; no device screenshot or real endpoint transfer evidence is claimed.
 - Direct real-FreeRDP OHOS objects (`freerdp_adapter.cpp` and
   `rdp_file_clipboard_bridge.cpp`) compile successfully; the fresh HAP also
   passes the production assemble gate above.
