@@ -7,7 +7,8 @@ import {
   sshSftpSheetOpenDelayMs,
   sftpPeerPickerExitPending,
   shouldMountSftpPeerPicker,
-  shouldAllowSftpRootSheetDismiss
+  shouldAllowSftpRootSheetDismiss,
+  shouldDriveSftpNativeDismissAction
 } from '../main/ets/services/SheetTransitionPolicy';
 
 export default function sheetTransitionPolicyTest() {
@@ -82,6 +83,12 @@ export default function sheetTransitionPolicyTest() {
         programmaticClose: true,
         transferBusy: false
       })).assertFalse();
+    });
+
+    it('uses_only_one_native_dismiss_driver', 0, (): void => {
+      expect(shouldDriveSftpNativeDismissAction(true, false)).assertTrue();
+      expect(shouldDriveSftpNativeDismissAction(true, true)).assertFalse();
+      expect(shouldDriveSftpNativeDismissAction(false, false)).assertFalse();
     });
   });
 }

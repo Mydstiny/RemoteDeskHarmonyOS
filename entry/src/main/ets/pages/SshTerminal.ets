@@ -160,7 +160,8 @@ import {
   noteSshSftpSheetDismissed,
   sftpPeerPickerExitPending,
   shouldMountSftpPeerPicker,
-  shouldAllowSftpRootSheetDismiss
+  shouldAllowSftpRootSheetDismiss,
+  shouldDriveSftpNativeDismissAction
 } from '../services/SheetTransitionPolicy';
 // Passphrase uses bindSheet (SshTerminal is @Entry, no bindSheet limit)
 
@@ -5764,6 +5765,12 @@ struct SshTerminal {
       action.dismiss();
       return;
     }
+    // A host selection or the parent close already changed the binding to
+    // false. That binding owns this native exit; do not dismiss it again from
+    // the callback that the same exit generates.
+    if (!shouldDriveSftpNativeDismissAction(true, this.sftpPeerHostPickerClosing)) {
+      return;
+    }
     this.sftpPeerHostPickerReopenRequested = false;
     // Interactive dismissal owns the native exit. Keep the bound content
     // mounted until onDisappear; changing the binding here would start a
@@ -5776,6 +5783,12 @@ struct SshTerminal {
     const mountMatches: boolean = mountToken === this.sftpRootSheetMountToken;
     if (!mountMatches) {
       action.dismiss();
+      return;
+    }
+    // closeSftpPanel()/dismissSftpRootSheet() already set the binding to
+    // false. Let that single binding transition finish before onDisappear
+    // commits the state cleanup.
+    if (!shouldDriveSftpNativeDismissAction(mountMatches, this.sftpRootSheetClosing)) {
       return;
     }
     if (sftpPeerPickerExitPending(this.sftpPeerHostPicker, this.sftpPeerHostPickerClosing)) {

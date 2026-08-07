@@ -79,3 +79,9 @@ export function shouldAllowSftpRootSheetDismiss(state: SftpRootSheetDismissState
   }
   return state.rootSurfaceReady && !state.transferBusy;
 }
+
+/** A binding-driven close must not also call the native dismiss action. */
+export function shouldDriveSftpNativeDismissAction(mountMatches: boolean,
+  bindingCloseRequested: boolean): boolean {
+  return mountMatches && !bindingCloseRequested;
+}
