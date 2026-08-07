@@ -10,8 +10,7 @@ Updated: 2026-08-07 Asia/Shanghai
   boundaries explicit in UI and capability reasons. RustDesk PC 实体触控板限定
   为 `SourceTool.TOUCHPAD` 的二维滚轮/Pinch，Windows/macOS 分别使用 Ctrl/Command，虚拟路径不变。
 - RDP startup is fail-closed: input worker, frame pump, redraw callback and event
-  loop failures cannot publish false `CONNECTED`; cliprdr lifetime is serialized
-  through reconnect/cleanup. Keep device long-connection validation pending.
+  loop failures cannot publish false `CONNECTED`; cliprdr lifetime is serialized through reconnect/cleanup. Keep device long-connection validation pending.
 - SFTP checkpoint is closed for integrity, durable metadata, local-provider and Pad/PC
   workspace; Pad uses a centered root bindSheet selected by `isPadDevice`,
   `cc68965` keeps the root-sheet geometry explicit, `caefd47` keeps the right pane chooser-only with a sheet-safe close offset, and Phone (including landscape) keeps the bottom-sheet interaction.
