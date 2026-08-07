@@ -159,7 +159,8 @@ import {
 import {
   noteSshSftpSheetDismissed,
   sftpPeerPickerExitPending,
-  shouldMountSftpPeerPicker
+  shouldMountSftpPeerPicker,
+  shouldAllowSftpRootSheetDismiss
 } from '../services/SheetTransitionPolicy';
 // Passphrase uses bindSheet (SshTerminal is @Entry, no bindSheet limit)
 
@@ -486,7 +487,6 @@ struct SshTerminal {
   private sftpRefreshTimeoutTimer: number = -1;
   private sftpRefreshRequestToken: number = 0;
   private sftpRefreshOwnerToken: number = 0;
-  private sftpPanelOpenedAt: number = 0;
   /** Root and nested SFTP sheets must not mount or dismiss in the same frame. */
   private sftpRootSheetOpenTimer: number = -1;
   private sftpSheetTransitionToken: number = 0;
@@ -4024,6 +4024,26 @@ struct SshTerminal {
     this.termRows = this.calcRowsFallback();
     this.termCols = this.calcColsFallback();
 
+    // Publish the initial host tab before the orientation and ancillary page
+    // setup awaits complete. This lets ArkWeb start the xterm document while
+    // SSH authentication is still in flight instead of beginning after the
+    // session has already reached CONNECTED.
+    const routeParams: Object = router.getParams();
+    const routeValues: Record<string, Object> = routeParams
+      ? routeParams as Record<string, Object> : {};
+    const initialHostId: string = ((routeValues['hostId'] as string) || '').trim();
+    const initialHost: RemoteHost | undefined = initialHostId.length > 0
+      ? this.srv.getHost(initialHostId) : undefined;
+    if (initialHost !== undefined) {
+      this.hostId = initialHostId;
+      this.visibleSshHostId = initialHostId;
+      this.hostLabel = initialHost.label;
+      this.userAtHost = initialHost.username + '@' + initialHost.host + ':' + initialHost.port;
+      this.sshTabStore.open(initialHostId, this.hostLabel, this.userAtHost);
+      this.sshTabStore.activate(initialHostId);
+      this.refreshSshTabViews();
+    }
+
     // 进入 SSH 终端跟随设备当前朝向（不锁定窗口方向）；用户仍可手动切换横竖屏。
     const defaultOrientation: SshTerminalOrientation = defaultSshTerminalOrientation(this.isDesktopDevice);
     if (defaultOrientation === 'system') {
@@ -4046,9 +4066,8 @@ struct SshTerminal {
     this.registerAvoidAreaListener();
     this.registerInputDeviceWatcher();
 
-    const params: Object = router.getParams();
-    if (params) {
-      const p: Record<string, Object> = params as Record<string, Object>;
+    if (routeParams) {
+      const p: Record<string, Object> = routeValues;
       const id: string = p['hostId'] as string;
       if (id) {
         this.hostId = id;
@@ -4098,6 +4117,9 @@ struct SshTerminal {
         if (host) {
           this.hostLabel = host.label;
           this.userAtHost = host.username + '@' + host.host + ':' + host.port;
+          // The tab was published before the orientation await so the xterm
+          // document can already be warming up. These assignments keep the
+          // route-owned metadata authoritative after the await.
           this.sshTabStore.open(this.hostId, this.hostLabel, this.userAtHost);
           this.sshTabStore.activate(this.hostId);
           this.refreshSshTabViews();
@@ -5450,7 +5472,6 @@ struct SshTerminal {
       this.sftpRootSheetReopenRequested = true;
       return;
     }
-    this.sftpPanelOpenedAt = Date.now();
     this.showSshTabPicker = false;
     this.requestSftpPeerHostPickerClose();
     // A closed surface starts with an empty right pane. Do not reset a sheet
@@ -5752,12 +5773,9 @@ struct SshTerminal {
   }
 
   private handleSftpSheetDismiss(action: DismissSheetAction, mountToken: number): void {
-    if (mountToken !== this.sftpRootSheetMountToken) {
+    const mountMatches: boolean = mountToken === this.sftpRootSheetMountToken;
+    if (!mountMatches) {
       action.dismiss();
-      return;
-    }
-    const elapsed: number = Date.now() - this.sftpPanelOpenedAt;
-    if (elapsed < 500 || this.sftpBusy) {
       return;
     }
     if (sftpPeerPickerExitPending(this.sftpPeerHostPicker, this.sftpPeerHostPickerClosing)) {
@@ -5766,6 +5784,14 @@ struct SshTerminal {
       this.sftpCloseRootAfterPeerPicker = true;
       this.sftpRootSheetClosing = true;
       this.requestSftpPeerHostPickerClose();
+      return;
+    }
+    if (!shouldAllowSftpRootSheetDismiss({
+      mountMatches: mountMatches,
+      rootSurfaceReady: this.sftpRootSheetSurfaceReady,
+      programmaticClose: this.sftpRootSheetClosing,
+      transferBusy: this.sftpBusy
+    })) {
       return;
     }
     // The interactive callback must use one dismissal driver. Keep the root

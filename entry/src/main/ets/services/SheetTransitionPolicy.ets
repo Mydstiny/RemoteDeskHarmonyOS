@@ -57,3 +57,25 @@ export function shouldMountSftpPeerPicker(state: SftpPeerPickerMountState): bool
     !state.rootClosing && !state.closeRootAfterPicker &&
     !state.pickerVisible && !state.pickerClosing;
 }
+
+export interface SftpRootSheetDismissState {
+  mountMatches: boolean;
+  rootSurfaceReady: boolean;
+  programmaticClose: boolean;
+  transferBusy: boolean;
+}
+
+/**
+ * A native root Sheet may be dismissed only after its current surface is live,
+ * unless the page already initiated that exact close. Transfer activity only
+ * blocks interactive dismissal; it must not block an explicit close request.
+ */
+export function shouldAllowSftpRootSheetDismiss(state: SftpRootSheetDismissState): boolean {
+  if (!state.mountMatches) {
+    return false;
+  }
+  if (state.programmaticClose) {
+    return true;
+  }
+  return state.rootSurfaceReady && !state.transferBusy;
+}

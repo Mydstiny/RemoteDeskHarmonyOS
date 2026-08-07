@@ -6,7 +6,8 @@ import {
   noteSshSftpSheetDismissed,
   sshSftpSheetOpenDelayMs,
   sftpPeerPickerExitPending,
-  shouldMountSftpPeerPicker
+  shouldMountSftpPeerPicker,
+  shouldAllowSftpRootSheetDismiss
 } from '../main/ets/services/SheetTransitionPolicy';
 
 export default function sheetTransitionPolicyTest() {
@@ -54,6 +55,33 @@ export default function sheetTransitionPolicyTest() {
       expect(shouldMountSftpPeerPicker({ ...base, parentSurfaceReady: false })).assertFalse();
       expect(shouldMountSftpPeerPicker({ ...base, openRequested: false })).assertFalse();
       expect(shouldMountSftpPeerPicker({ ...base, pickerClosing: true })).assertFalse();
+    });
+
+    it('defers_interactive_root_dismissal_until_surface_is_ready', 0, (): void => {
+      const base = {
+        mountMatches: true,
+        rootSurfaceReady: true,
+        programmaticClose: false,
+        transferBusy: false
+      };
+      expect(shouldAllowSftpRootSheetDismiss({ ...base, rootSurfaceReady: false })).assertFalse();
+      expect(shouldAllowSftpRootSheetDismiss({ ...base, transferBusy: true })).assertFalse();
+      expect(shouldAllowSftpRootSheetDismiss(base)).assertTrue();
+    });
+
+    it('allows_an_explicit_root_close_during_open_or_transfer', 0, (): void => {
+      expect(shouldAllowSftpRootSheetDismiss({
+        mountMatches: true,
+        rootSurfaceReady: false,
+        programmaticClose: true,
+        transferBusy: true
+      })).assertTrue();
+      expect(shouldAllowSftpRootSheetDismiss({
+        mountMatches: false,
+        rootSurfaceReady: true,
+        programmaticClose: true,
+        transferBusy: false
+      })).assertFalse();
     });
   });
 }
