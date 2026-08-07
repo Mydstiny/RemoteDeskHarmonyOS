@@ -21,7 +21,8 @@ Updated: 2026-08-07 Asia/Shanghai
   chooser-only, and add-host waits for native exit. Root opening is deferred
   until mount; picker disappearance precedes parent close; mount tokens fence
   stale callbacks and reopen requests wait for native exit; closing the parent
-  also cancels a queued child-picker reopen. Pad uses a wide root bindSheet,
+  also cancels a queued child-picker reopen and keeps the parent mounted while
+  the child picker is exiting. Pad uses a wide root bindSheet,
   respects the sheet inset, and has no duplicate empty-state plus.
 - SSH keyboard-interactive/MFA prompts use a page-owned broker bindSheet with
   echo-aware multi-prompts, hop/round metadata, cancel/expiry and stale-request
