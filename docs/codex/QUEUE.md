@@ -16,10 +16,9 @@ Updated: 2026-08-07 Asia/Shanghai
   `cc68965` keeps the root-sheet geometry explicit, `caefd47` keeps the right pane chooser-only with a sheet-safe close offset, and Phone (including landscape) keeps the bottom-sheet interaction.
 - Mobile SFTP endpoint selection is closed: right side has local/SSH-host buttons;
   picker is nested in the mounted surface, initial pane is chooser-only, and
-  add-host waits for native exit. Root opening commits in the same UI turn; its
-  internal readiness gate cannot rebuild the Sheet during entrance, while child
-  opening waits for the parent to be live. Queued requests are cancellable, mount
-  tokens fence stale callbacks, and picker exit/reopen is serialized; each
+  add-host waits for native exit. Root opening commits in the same UI turn; the
+  phone root now has a bounded explicit height/full-height scroll viewport; an idle visible-state check clears a stale old-dismiss latch. Its internal readiness gate cannot rebuild the Sheet during entrance, while child opening waits for the parent to be live. Queued requests are cancellable, mount
+  tokens fence stale callbacks and picker exit/reopen is serialized; each
   mounted Sheet has one native dismiss driver; stale callbacks finish only their
   old instance; cleanup waits for onDisappear and explicit root close is not
   blocked by transient guards. Pad uses a wide root bindSheet, respects the
