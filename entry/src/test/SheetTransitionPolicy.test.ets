@@ -5,7 +5,8 @@ import {
   shouldDelaySheetOpen,
   noteSshSftpSheetDismissed,
   sshSftpSheetOpenDelayMs,
-  sftpPeerPickerExitPending
+  sftpPeerPickerExitPending,
+  shouldMountSftpPeerPicker
 } from '../main/ets/services/SheetTransitionPolicy';
 
 export default function sheetTransitionPolicyTest() {
@@ -34,6 +35,23 @@ export default function sheetTransitionPolicyTest() {
       expect(sftpPeerPickerExitPending(true, false)).assertTrue();
       expect(sftpPeerPickerExitPending(false, true)).assertTrue();
       expect(sftpPeerPickerExitPending(false, false)).assertFalse();
+    });
+
+    it('mounts_nested_picker_only_after_parent_surface_is_live', 0, (): void => {
+      const base = {
+        openRequested: true,
+        parentVisible: true,
+        rootSheetVisible: true,
+        rootSheetRequired: true,
+        rootClosing: false,
+        closeRootAfterPicker: false,
+        pickerVisible: false,
+        pickerClosing: false
+      };
+      expect(shouldMountSftpPeerPicker(base)).assertTrue();
+      expect(shouldMountSftpPeerPicker({ ...base, rootSheetVisible: false })).assertFalse();
+      expect(shouldMountSftpPeerPicker({ ...base, openRequested: false })).assertFalse();
+      expect(shouldMountSftpPeerPicker({ ...base, pickerClosing: true })).assertFalse();
     });
   });
 }

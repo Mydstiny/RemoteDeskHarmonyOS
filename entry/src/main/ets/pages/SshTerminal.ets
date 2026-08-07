@@ -158,7 +158,8 @@ import {
 } from '../services/SshSftpBatchPolicy';
 import {
   noteSshSftpSheetDismissed,
-  sftpPeerPickerExitPending
+  sftpPeerPickerExitPending,
+  shouldMountSftpPeerPicker
 } from '../services/SheetTransitionPolicy';
 // Passphrase uses bindSheet (SshTerminal is @Entry, no bindSheet limit)
 
@@ -498,6 +499,8 @@ struct SshTerminal {
   /** The nested picker also has an exit animation; do not remount it early. */
   private sftpPeerHostPickerOpenTimer: number = -1;
   private sftpPeerHostPickerTransitionToken: number = 0;
+  /** A queued child picker must be cancellable before native bindSheet mount. */
+  private sftpPeerHostPickerOpenQueued: boolean = false;
   private sftpPeerHostPickerReopenRequested: boolean = false;
   private sftpPeerHostPickerClosing: boolean = false;
   private latencyProbeRunning: boolean = false;
@@ -1369,6 +1372,7 @@ struct SshTerminal {
     this.sftpRootSheetReopenRequested = false;
     this.sftpRootSheetClosing = false;
     this.sftpCloseRootAfterPeerPicker = false;
+    this.sftpPeerHostPickerOpenQueued = false;
     this.sftpPeerHostPickerReopenRequested = false;
     this.sftpPeerHostPickerClosing = false;
     this.showSftpPanel = false;
@@ -3949,6 +3953,7 @@ struct SshTerminal {
     this.sftpRootSheetReopenRequested = false;
     this.sftpRootSheetClosing = false;
     this.sftpCloseRootAfterPeerPicker = false;
+    this.sftpPeerHostPickerOpenQueued = false;
     this.sftpPeerHostPickerReopenRequested = false;
     this.sftpPeerHostPickerClosing = false;
     this.showSftpPanel = false;
@@ -4133,6 +4138,7 @@ struct SshTerminal {
     ++this.sftpPeerHostPickerTransitionToken;
     this.sftpRootSheetReopenRequested = false;
     this.sftpCloseRootAfterPeerPicker = false;
+    this.sftpPeerHostPickerOpenQueued = false;
     this.sftpPeerHostPickerReopenRequested = false;
     this.sftpPeerHostPickerClosing = false;
     this.noteSftpSheetDismissalIfVisible();
@@ -5514,6 +5520,7 @@ struct SshTerminal {
     }
     ++this.sftpPeerHostPickerMountToken;
     ++this.sftpPeerHostPickerTransitionToken;
+    this.sftpPeerHostPickerOpenQueued = false;
     this.sftpPeerHostPickerReopenRequested = false;
     this.sftpPeerHostPickerClosing = false;
     this.sftpPeerHostPicker = false;
@@ -5530,6 +5537,7 @@ struct SshTerminal {
     this.sftpCloseRootAfterPeerPicker = false;
     ++this.sftpPeerHostPickerMountToken;
     ++this.sftpPeerHostPickerTransitionToken;
+    this.sftpPeerHostPickerOpenQueued = false;
     this.sftpPeerHostPickerReopenRequested = false;
     this.sftpPeerHostPickerClosing = false;
     this.sftpPeerHostPicker = false;
@@ -5575,19 +5583,31 @@ struct SshTerminal {
   }
 
   private scheduleSftpPeerHostPickerReopen(): void {
+    this.scheduleSftpPeerHostPickerOpen();
+  }
+
+  private scheduleSftpPeerHostPickerOpen(): void {
     if (this.sftpPeerHostPickerOpenTimer !== -1) {
       clearTimeout(this.sftpPeerHostPickerOpenTimer);
     }
+    this.sftpPeerHostPickerOpenQueued = true;
     const token: number = ++this.sftpPeerHostPickerTransitionToken;
     this.sftpPeerHostPickerOpenTimer = setTimeout((): void => {
       this.sftpPeerHostPickerOpenTimer = -1;
       if (token !== this.sftpPeerHostPickerTransitionToken || this.terminalClosing ||
-        !this.sftpPeerHostPickerReopenRequested || !this.showSftpPanel ||
-        this.sftpRootSheetClosing || this.sftpCloseRootAfterPeerPicker ||
-        this.sftpPeerHostPickerClosing || this.sftpPeerHostPicker ||
-        (this.sftpUsesRootBindSheet() && !this.showSftpSheet)) {
+        !shouldMountSftpPeerPicker({
+          openRequested: this.sftpPeerHostPickerOpenQueued,
+          parentVisible: this.showSftpPanel,
+          rootSheetVisible: this.showSftpSheet,
+          rootSheetRequired: this.sftpUsesRootBindSheet(),
+          rootClosing: this.sftpRootSheetClosing,
+          closeRootAfterPicker: this.sftpCloseRootAfterPeerPicker,
+          pickerVisible: this.sftpPeerHostPicker,
+          pickerClosing: this.sftpPeerHostPickerClosing
+        })) {
         return;
       }
+      this.sftpPeerHostPickerOpenQueued = false;
       this.sftpPeerHostPickerReopenRequested = false;
       ++this.sftpPeerHostPickerMountToken;
       this.sftpPeerHostPicker = true;
@@ -5602,6 +5622,12 @@ struct SshTerminal {
 
   private requestSftpPeerHostPickerClose(): void {
     this.sftpPeerHostPickerReopenRequested = false;
+    this.sftpPeerHostPickerOpenQueued = false;
+    if (this.sftpPeerHostPickerOpenTimer !== -1) {
+      clearTimeout(this.sftpPeerHostPickerOpenTimer);
+      this.sftpPeerHostPickerOpenTimer = -1;
+    }
+    ++this.sftpPeerHostPickerTransitionToken;
     if (!this.sftpPeerHostPicker) { return; }
     this.sftpPeerHostPickerClosing = true;
     this.sftpPeerHostPicker = false;
@@ -5619,7 +5645,7 @@ struct SshTerminal {
   private openSftpPeerPicker(): void {
     if (this.sftpBusy || this.terminalClosing || !this.showSftpPanel ||
       this.sftpRootSheetClosing || this.sftpCloseRootAfterPeerPicker ||
-      this.sftpPeerHostPicker) { return; }
+      this.sftpPeerHostPicker || this.sftpPeerHostPickerOpenQueued) { return; }
     if (this.sftpPeerHostPickerClosing) {
       this.sftpPeerHostPickerReopenRequested = true;
       return;
@@ -5629,9 +5655,7 @@ struct SshTerminal {
     // The picker is a child bindSheet of the SFTP surface, so it can animate
     // above the phone or Pad SFTP sheet without replacing that surface.
     this.sftpPeerHostPickerReopenRequested = false;
-    ++this.sftpPeerHostPickerTransitionToken;
-    ++this.sftpPeerHostPickerMountToken;
-    this.sftpPeerHostPicker = true;
+    this.scheduleSftpPeerHostPickerOpen();
   }
 
   private sftpRootSheetHeight(): SheetSize | number {

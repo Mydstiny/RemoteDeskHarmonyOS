@@ -37,3 +37,22 @@ export function sshSftpSheetOpenDelayMs(nowMs: number): number {
 export function sftpPeerPickerExitPending(visible: boolean, closing: boolean): boolean {
   return visible || closing;
 }
+
+export interface SftpPeerPickerMountState {
+  openRequested: boolean;
+  parentVisible: boolean;
+  rootSheetVisible: boolean;
+  rootSheetRequired: boolean;
+  rootClosing: boolean;
+  closeRootAfterPicker: boolean;
+  pickerVisible: boolean;
+  pickerClosing: boolean;
+}
+
+/** A nested picker may mount only after its parent Sheet is a live surface. */
+export function shouldMountSftpPeerPicker(state: SftpPeerPickerMountState): boolean {
+  return state.openRequested && state.parentVisible &&
+    (!state.rootSheetRequired || state.rootSheetVisible) &&
+    !state.rootClosing && !state.closeRootAfterPicker &&
+    !state.pickerVisible && !state.pickerClosing;
+}
