@@ -349,8 +349,8 @@ struct SshTerminal {
   /** SFTP 文件传输面板 */
   @State showSftpPanel: boolean = false;
   @State showSftpSheet: boolean = false;
-  /** State visibility is published before the native root Sheet has appeared. */
-  @State sftpRootSheetSurfaceReady: boolean = false;
+  /** Internal gate only; changing it must not rebuild a Sheet during entrance. */
+  private sftpRootSheetSurfaceReady: boolean = false;
   @State sftpPath: string = '.';
   @State sftpEntries: SftpFileEntry[] = [];
   @State sftpSelectedPath: string = '';
@@ -5494,11 +5494,15 @@ struct SshTerminal {
     }
     this.showSftpPanel = true;
     // Phone and Pad use the root bindSheet; only PC keeps the workspace inline.
-    // Give the parent content one UI turn to mount before opening the native
-    // sheet host. This prevents the nested host-picker bindSheet from being
-    // attached to a stale SFTP content instance.
+    // The root bindSheet is already attached to the page, so opening it must
+    // be a same-turn state transition. Delaying this transition lets an
+    // unrelated page/window refresh invalidate the open token before
+    // showSftpSheet becomes true, leaving the toolbar tap with no sheet.
     if (this.sftpUsesRootBindSheet() && !this.showSftpSheet) {
-      this.scheduleSftpRootSheetOpen();
+      ++this.sftpRootSheetMountToken;
+      this.sftpRootSheetSurfaceReady = false;
+      this.sftpRootSheetNativeDismissInFlight = false;
+      this.showSftpSheet = true;
     }
     if (this.sftpEntries.length === 0) {
       // 先让半模态完成挂载和高度测量, 避免打开瞬间刷新目录触发重建后被系统反向 dismiss。
@@ -5515,22 +5519,6 @@ struct SshTerminal {
       clearTimeout(this.sftpPeerHostPickerOpenTimer);
       this.sftpPeerHostPickerOpenTimer = -1;
     }
-  }
-
-  private scheduleSftpRootSheetOpen(): void {
-    this.clearSftpSheetTransitionTimers();
-    const token: number = ++this.sftpSheetTransitionToken;
-    this.sftpRootSheetOpenTimer = setTimeout((): void => {
-      this.sftpRootSheetOpenTimer = -1;
-      if (token !== this.sftpSheetTransitionToken || this.terminalClosing ||
-        !this.showSftpPanel || this.sftpRootSheetClosing || !this.sftpUsesRootBindSheet()) {
-        return;
-      }
-      ++this.sftpRootSheetMountToken;
-      this.sftpRootSheetSurfaceReady = false;
-      this.sftpRootSheetNativeDismissInFlight = false;
-      this.showSftpSheet = true;
-    }, 32);
   }
 
   private scheduleSftpRootSheetReopen(): void {
