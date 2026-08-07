@@ -347,6 +347,8 @@ struct SshTerminal {
   /** SFTP 文件传输面板 */
   @State showSftpPanel: boolean = false;
   @State showSftpSheet: boolean = false;
+  /** State visibility is published before the native root Sheet has appeared. */
+  @State sftpRootSheetSurfaceReady: boolean = false;
   @State sftpPath: string = '.';
   @State sftpEntries: SftpFileEntry[] = [];
   @State sftpSelectedPath: string = '';
@@ -1377,6 +1379,7 @@ struct SshTerminal {
     this.sftpPeerHostPickerClosing = false;
     this.showSftpPanel = false;
     this.showSftpSheet = false;
+    this.sftpRootSheetSurfaceReady = false;
     this.sftpPath = '.';
     this.sftpEntries = [];
     this.sftpSelectedPath = '';
@@ -3958,6 +3961,7 @@ struct SshTerminal {
     this.sftpPeerHostPickerClosing = false;
     this.showSftpPanel = false;
     this.showSftpSheet = false;
+    this.sftpRootSheetSurfaceReady = false;
     this.sftpPath = '.';
     this.sftpEntries = [];
     this.sftpSelectedPath = '';
@@ -4145,6 +4149,7 @@ struct SshTerminal {
     this.sftpPeerHostPicker = false;
     this.showSftpPanel = false;
     this.showSftpSheet = false;
+    this.sftpRootSheetSurfaceReady = false;
     // Hide the virtual-key layer before the old route is detached so it cannot
     // flash above the next SSH page during router replacement.
     this.resetTerminalSurfaceBinding();
@@ -5490,6 +5495,7 @@ struct SshTerminal {
         return;
       }
       ++this.sftpRootSheetMountToken;
+      this.sftpRootSheetSurfaceReady = false;
       this.showSftpSheet = true;
     }, 32);
   }
@@ -5526,6 +5532,7 @@ struct SshTerminal {
     this.sftpPeerHostPicker = false;
     this.showSftpPanel = false;
     this.showSftpSheet = false;
+    this.sftpRootSheetSurfaceReady = false;
   }
 
   private handleSftpRootSheetDisappear(mountToken: number): void {
@@ -5543,6 +5550,7 @@ struct SshTerminal {
     this.sftpPeerHostPicker = false;
     this.showSftpPanel = false;
     this.showSftpSheet = false;
+    this.sftpRootSheetSurfaceReady = false;
     if (this.sftpRootSheetReopenRequested && !this.terminalClosing) {
       this.scheduleSftpRootSheetReopen();
     } else {
@@ -5598,6 +5606,7 @@ struct SshTerminal {
         !shouldMountSftpPeerPicker({
           openRequested: this.sftpPeerHostPickerOpenQueued,
           parentVisible: this.showSftpPanel,
+          parentSurfaceReady: this.sftpRootSheetSurfaceReady,
           rootSheetVisible: this.showSftpSheet,
           rootSheetRequired: this.sftpUsesRootBindSheet(),
           rootClosing: this.sftpRootSheetClosing,
@@ -5612,6 +5621,22 @@ struct SshTerminal {
       ++this.sftpPeerHostPickerMountToken;
       this.sftpPeerHostPicker = true;
     }, 32);
+  }
+
+  private handleSftpRootSheetAppear(mountToken: number): void {
+    if (mountToken <= 0 || mountToken !== this.sftpRootSheetMountToken ||
+      this.terminalClosing || !this.showSftpPanel || !this.showSftpSheet ||
+      this.sftpRootSheetClosing) {
+      return;
+    }
+    this.sftpRootSheetSurfaceReady = true;
+    // A tap can land during the parent entrance transition. Re-run the
+    // queued child request after the native root content has appeared instead
+    // of letting the one-shot timer strand it behind a false state check.
+    if (this.sftpPeerHostPickerOpenQueued && !this.sftpPeerHostPickerClosing &&
+      !this.sftpPeerHostPicker) {
+      this.scheduleSftpPeerHostPickerOpen();
+    }
   }
 
   private noteSftpSheetDismissalIfVisible(): void {
@@ -5752,6 +5777,10 @@ struct SshTerminal {
 
   private sftpRootSheetDisappearHandler(mountToken: number): () => void {
     return (): void => { this.handleSftpRootSheetDisappear(mountToken); };
+  }
+
+  private sftpRootSheetAppearHandler(mountToken: number): () => void {
+    return (): void => { this.handleSftpRootSheetAppear(mountToken); };
   }
 
   private enterSftpEntry(entry: SftpFileEntry): void {
@@ -8280,7 +8309,7 @@ struct SshTerminal {
   }
 
   @Builder
-  SftpTransferSheet(peerPickerMountToken: number) {
+  SftpTransferSheet(peerPickerMountToken: number, rootSheetMountToken: number = 0) {
     Stack() {
       if (this.sftpWideLayout()) {
         Column() {
@@ -8339,6 +8368,7 @@ struct SshTerminal {
       },
       onDisappear: (): void => { this.handleSftpPeerHostPickerDisappear(peerPickerMountToken); }
     })
+    .onAppear(this.sftpRootSheetAppearHandler(rootSheetMountToken))
   }
 
   build() {
@@ -8776,7 +8806,8 @@ struct SshTerminal {
         }
       }
     })
-    .bindSheet($$this.showSftpSheet, this.SftpTransferSheet(this.sftpPeerHostPickerMountToken), {
+    .bindSheet($$this.showSftpSheet,
+      this.SftpTransferSheet(this.sftpPeerHostPickerMountToken, this.sftpRootSheetMountToken), {
       // The Pad root surface is the complete SFTP workspace, not an inline
       // terminal overlay. Keep its sheet geometry explicit and wide.
       height: this.sftpRootSheetHeight(),

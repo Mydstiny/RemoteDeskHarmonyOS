@@ -41,6 +41,7 @@ export function sftpPeerPickerExitPending(visible: boolean, closing: boolean): b
 export interface SftpPeerPickerMountState {
   openRequested: boolean;
   parentVisible: boolean;
+  parentSurfaceReady: boolean;
   rootSheetVisible: boolean;
   rootSheetRequired: boolean;
   rootClosing: boolean;
@@ -52,7 +53,7 @@ export interface SftpPeerPickerMountState {
 /** A nested picker may mount only after its parent Sheet is a live surface. */
 export function shouldMountSftpPeerPicker(state: SftpPeerPickerMountState): boolean {
   return state.openRequested && state.parentVisible &&
-    (!state.rootSheetRequired || state.rootSheetVisible) &&
+    (!state.rootSheetRequired || (state.rootSheetVisible && state.parentSurfaceReady)) &&
     !state.rootClosing && !state.closeRootAfterPicker &&
     !state.pickerVisible && !state.pickerClosing;
 }

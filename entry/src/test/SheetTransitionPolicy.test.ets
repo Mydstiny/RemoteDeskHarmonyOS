@@ -41,6 +41,7 @@ export default function sheetTransitionPolicyTest() {
       const base = {
         openRequested: true,
         parentVisible: true,
+        parentSurfaceReady: true,
         rootSheetVisible: true,
         rootSheetRequired: true,
         rootClosing: false,
@@ -50,6 +51,7 @@ export default function sheetTransitionPolicyTest() {
       };
       expect(shouldMountSftpPeerPicker(base)).assertTrue();
       expect(shouldMountSftpPeerPicker({ ...base, rootSheetVisible: false })).assertFalse();
+      expect(shouldMountSftpPeerPicker({ ...base, parentSurfaceReady: false })).assertFalse();
       expect(shouldMountSftpPeerPicker({ ...base, openRequested: false })).assertFalse();
       expect(shouldMountSftpPeerPicker({ ...base, pickerClosing: true })).assertFalse();
     });
