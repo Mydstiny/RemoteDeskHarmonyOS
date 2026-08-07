@@ -5477,6 +5477,20 @@ struct SshTerminal {
 
   private openSftpPanel(): void {
     if (this.terminalClosing) { return; }
+    // If the previous native Sheet already disappeared but its callback was
+    // delivered after the route rendered again, do not let the old close
+    // latch strand the next explicit open request.  The visible flags are the
+    // authoritative signal here: when neither root nor child is mounted,
+    // recover the in-memory transition state before creating a new mount.
+    if (!this.showSftpSheet && !this.showSftpPanel && !this.sftpPeerHostPicker) {
+      this.sftpRootSheetClosing = false;
+      this.sftpRootSheetNativeDismissInFlight = false;
+      this.sftpCloseRootAfterPeerPicker = false;
+      this.sftpPeerHostPickerClosing = false;
+      this.sftpPeerHostPickerNativeDismissInFlight = false;
+      this.sftpPeerHostPickerOpenQueued = false;
+      this.sftpPeerHostPickerReopenRequested = false;
+    }
     if (this.sftpRootSheetClosing || this.sftpCloseRootAfterPeerPicker) {
       // ArkUI keeps the old native sheet alive during its exit animation. Do
       // not mutate that instance; replay the user's open after onDisappear.
@@ -5713,7 +5727,12 @@ struct SshTerminal {
     // The Pad root surface is the complete two-pane workspace. Keep its
     // geometry independent from the desktop breakpoint so it cannot collapse
     // into a phone-sized sheet during a window-class update.
-    return this.isPadDevice ? SheetSize.LARGE : SheetSize.FIT_CONTENT;
+    // Phone content is a Scroll with dynamic directory rows. FIT_CONTENT can
+    // resolve to zero during the first bindSheet measure and makes the native
+    // surface look as if the toolbar tap did nothing. A bounded numeric height
+    // keeps the original bottom-sheet interaction while giving the first
+    // mount a deterministic viewport.
+    return this.isPadDevice ? SheetSize.LARGE : this.sftpSheetMaxHeight();
   }
 
   private sftpRootSheetType(): SheetType {
@@ -8403,14 +8422,14 @@ struct SshTerminal {
           .backgroundColor(this.sshPal().bg)
         }
         .width('100%')
-        .height('auto')
+        .height('100%')
         .constraintSize({ maxHeight: this.sftpSheetMaxHeight() })
         .scrollBar(BarState.Off)
         .edgeEffect(EdgeEffect.Spring)
       }
     }
     .width('100%')
-    .height(this.sftpWideLayout() ? '100%' : 'auto')
+    .height(this.sftpWideLayout() ? '100%' : this.sftpSheetMaxHeight())
     .constraintSize({ minHeight: 0 })
     .backgroundColor(this.sshPal().bg)
     .bindSheet($$this.sftpPeerHostPicker, this.SftpPeerHostPickerSheet(), {
