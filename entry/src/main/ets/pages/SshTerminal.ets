@@ -481,6 +481,23 @@ struct SshTerminal {
   private sftpRefreshRequestToken: number = 0;
   private sftpRefreshOwnerToken: number = 0;
   private sftpPanelOpenedAt: number = 0;
+  /** Root and nested SFTP sheets must not mount or dismiss in the same frame. */
+  private sftpRootSheetOpenTimer: number = -1;
+  private sftpRootSheetCloseTimer: number = -1;
+  private sftpSheetTransitionToken: number = 0;
+  /** Native callbacks are tied to the root sheet instance that mounted them. */
+  private sftpRootSheetMountToken: number = 0;
+  /** Reopen requests are held until the previous native sheet has disappeared. */
+  private sftpRootSheetReopenRequested: boolean = false;
+  private sftpRootSheetClosing: boolean = false;
+  private sftpCloseRootAfterPeerPicker: boolean = false;
+  /** Prevent a late nested-picker callback from closing a newer picker. */
+  private sftpPeerHostPickerMountToken: number = 0;
+  /** The nested picker also has an exit animation; do not remount it early. */
+  private sftpPeerHostPickerOpenTimer: number = -1;
+  private sftpPeerHostPickerTransitionToken: number = 0;
+  private sftpPeerHostPickerReopenRequested: boolean = false;
+  private sftpPeerHostPickerClosing: boolean = false;
   private latencyProbeRunning: boolean = false;
   /** Identifies the currently outstanding latency request across reconnects. */
   private latencyProbeToken: number = 0;
@@ -1342,6 +1359,16 @@ struct SshTerminal {
     this.kbInput = '';
     this.terminalFocusMode = true;
     this.softKeyboardRequested = false;
+    this.clearSftpSheetTransitionTimers();
+    ++this.sftpSheetTransitionToken;
+    ++this.sftpRootSheetMountToken;
+    ++this.sftpPeerHostPickerMountToken;
+    ++this.sftpPeerHostPickerTransitionToken;
+    this.sftpRootSheetReopenRequested = false;
+    this.sftpRootSheetClosing = false;
+    this.sftpCloseRootAfterPeerPicker = false;
+    this.sftpPeerHostPickerReopenRequested = false;
+    this.sftpPeerHostPickerClosing = false;
     this.showSftpPanel = false;
     this.showSftpSheet = false;
     this.sftpPath = '.';
@@ -1922,11 +1949,11 @@ struct SshTerminal {
   }
 
   private virtualKeyBarRequested(): boolean {
-    if (this.isDesktopDevice) { return false; }
     // 手机保持原有输入和底部栏逻辑；设置项只作用于 Pad/PC。
     if (this.breakpoint === 'sm') { return !this.physicalKeyboardConnected; }
     if (this.sshInputMode === 1) { return true; }
     if (this.sshInputMode === 2) { return false; }
+    if (this.isDesktopDevice) { return false; }
     return !this.physicalKeyboardConnected;
   }
 
@@ -1973,8 +2000,19 @@ struct SshTerminal {
     return 56 + this.headerTopOffset();
   }
 
+  private terminalChromeHeight(): number {
+    // The terminal surface is laid out below both chrome variants. Inline
+    // tabs live inside the header; phone tabs have their own 40vp strip.
+    const standaloneTabStripHeight: number =
+      this.sshTabViews.length > 0 && !this.sshTabsInline()
+        ? 40 + this.topChromeOffset() : 0;
+    return standaloneTabStripHeight + this.headerHeight();
+  }
+
   private shellViewportHeight(): number {
-    if (this.shellAreaH > 0) { return this.shellAreaH; }
+    if (this.shellAreaH > 0) {
+      return Math.max(this.cellHvp * 3, this.shellAreaH - this.terminalChromeHeight());
+    }
     return Math.max(this.cellHvp * 3, this.calcRowsFallback() * this.cellHvp);
   }
 
@@ -2624,8 +2662,8 @@ struct SshTerminal {
       if (pendingHostId === owner) {
         return pendingId > 0 ? this.sftpSessionForHost(owner) : null;
       }
-      // The native facade admits one in-flight SSH KEX at a time. Queue the
-      // next detached host behind it instead of returning an empty endpoint.
+      // A second peer request for another host still shares this page-owned
+      // operation, so wait for the existing peer task before replacing it.
       return await this.ensureSftpHostSession(owner, requestPageGeneration);
     }
     const pending: Promise<number> = (async (): Promise<number> => {
@@ -2634,7 +2672,9 @@ struct SshTerminal {
         if (!(await this.loader.waitForPendingTeardown())) { return -1; }
         const config: SessionConfig = await this.buildSftpPeerSessionConfig(host);
         if (!this.isPageGenerationActive(requestPageGeneration)) { return -1; }
-        const connectedSessionId: number = await this.loader.connectSshAsync(config);
+        // This session belongs to the right SFTP endpoint. Do not replace the
+        // foreground terminal target while its authentication is in flight.
+        const connectedSessionId: number = await this.loader.connectSshAsync(config, false);
         if (!this.isPageGenerationActive(requestPageGeneration)) {
           if (connectedSessionId > 0) { this.loader.disconnectSshSession(connectedSessionId); }
           return -1;
@@ -2678,7 +2718,7 @@ struct SshTerminal {
     this.sftpRightEndpoint = 'ssh';
     this.sftpRightEndpointChosen = true;
     this.sftpPeerHostId = host.id.trim();
-    this.sftpPeerHostPicker = false;
+    this.requestSftpPeerHostPickerClose();
     this.sftpPeerPath = '.';
     this.sftpPeerPathInput = '.';
     this.sftpPeerEntries = [];
@@ -2698,7 +2738,7 @@ struct SshTerminal {
   private useSftpLocalEndpoint(): void {
     this.sftpRightEndpoint = 'local';
     this.sftpRightEndpointChosen = true;
-    this.sftpPeerHostPicker = false;
+    this.requestSftpPeerHostPickerClose();
     this.sftpPeerRequestToken++;
     this.sftpPeerBusy = false;
     this.sftpPeerEntries = [];
@@ -2714,7 +2754,7 @@ struct SshTerminal {
     if (this.sftpBusy) { return; }
     this.sftpRightEndpoint = 'local';
     this.sftpRightEndpointChosen = false;
-    this.sftpPeerHostPicker = false;
+    this.requestSftpPeerHostPickerClose();
     this.sftpPeerRequestToken++;
     this.sftpPeerBusy = false;
     this.sftpPeerHostId = '';
@@ -3836,12 +3876,22 @@ struct SshTerminal {
     this.sftpEngineUnsubscribe = null;
     try {
       const taskContext: common.Context = this.getUIContext().getHostContext() as common.Context;
-      await this.sshPipService.stop();
+      // PiP cleanup and local-folder permission restoration are ancillary to
+      // the SSH surface. Starting them here lets the xterm document begin
+      // loading while those services finish their own lifecycle work.
+      void this.sshPipService.stop().catch((err: Error): void => {
+        hilog.warn(0x0017, 'SshTerminal', 'SSH PiP stop deferred: ' + JSON.stringify(err));
+      });
       this.sftpTaskStore.init(taskContext);
       this.sftpLocalProvider.init(taskContext as common.UIAbilityContext);
-      await this.sftpTaskEngine.init(taskContext as common.UIAbilityContext);
       this.sftpEngineUnsubscribe = this.sftpTaskEngine.subscribe(
         (event: SshSftpTaskEngineEvent): void => { this.onSftpEngineEvent(event); });
+      // The engine defers session attachment until its provider restore has
+      // completed, so SFTP retains its lifecycle guarantees without blocking
+      // SSH connection and terminal first paint.
+      void this.sftpTaskEngine.init(taskContext as common.UIAbilityContext).catch((err: Error): void => {
+        hilog.warn(0x0017, 'SshTerminal', 'SFTP engine init deferred: ' + JSON.stringify(err));
+      });
       void this.restoreSshLocalProvider(pageGeneration);
     } catch (_err) {
       // A task store failure must not block terminal startup; the in-memory
@@ -3889,6 +3939,16 @@ struct SshTerminal {
     this.terminalFocusRequest = 0;
     this.resetTerminalSurfaceBinding();
     this.terminalSurfaceGeneration = this.terminalSurfaceGeneration + 1;
+    this.clearSftpSheetTransitionTimers();
+    ++this.sftpSheetTransitionToken;
+    ++this.sftpRootSheetMountToken;
+    ++this.sftpPeerHostPickerMountToken;
+    ++this.sftpPeerHostPickerTransitionToken;
+    this.sftpRootSheetReopenRequested = false;
+    this.sftpRootSheetClosing = false;
+    this.sftpCloseRootAfterPeerPicker = false;
+    this.sftpPeerHostPickerReopenRequested = false;
+    this.sftpPeerHostPickerClosing = false;
     this.showSftpPanel = false;
     this.showSftpSheet = false;
     this.sftpPath = '.';
@@ -4064,7 +4124,19 @@ struct SshTerminal {
     ++this.pageGeneration;
     ++this.sshBindingGeneration;
     this.terminalClosing = true;
+    this.clearSftpSheetTransitionTimers();
+    ++this.sftpSheetTransitionToken;
+    ++this.sftpRootSheetMountToken;
+    ++this.sftpPeerHostPickerMountToken;
+    ++this.sftpPeerHostPickerTransitionToken;
+    this.sftpRootSheetReopenRequested = false;
+    this.sftpCloseRootAfterPeerPicker = false;
+    this.sftpPeerHostPickerReopenRequested = false;
+    this.sftpPeerHostPickerClosing = false;
     this.noteSftpSheetDismissalIfVisible();
+    this.sftpPeerHostPicker = false;
+    this.showSftpPanel = false;
+    this.showSftpSheet = false;
     // Hide the virtual-key layer before the old route is detached so it cannot
     // flash above the next SSH page during router replacement.
     this.resetTerminalSurfaceBinding();
@@ -5010,10 +5082,12 @@ struct SshTerminal {
   private closeSessionAndBack(): void {
     if (this.terminalClosing) { return; }
     this.explicitSessionClose = true;
-    this.noteSftpSheetDismissalIfVisible();
-    this.showSftpPanel = false;
-    this.showSftpSheet = false;
-    this.sftpPeerHostPicker = false;
+    const sftpVisible: boolean = this.showSftpPanel || this.showSftpSheet ||
+      this.sftpPeerHostPicker;
+    if (sftpVisible) {
+      this.closeSftpPanel();
+      return;
+    }
     router.back();
   }
 
@@ -5356,9 +5430,16 @@ struct SshTerminal {
   }
 
   private openSftpPanel(): void {
+    if (this.terminalClosing) { return; }
+    if (this.sftpRootSheetClosing || this.sftpCloseRootAfterPeerPicker) {
+      // ArkUI keeps the old native sheet alive during its exit animation. Do
+      // not mutate that instance; replay the user's open after onDisappear.
+      this.sftpRootSheetReopenRequested = true;
+      return;
+    }
     this.sftpPanelOpenedAt = Date.now();
     this.showSshTabPicker = false;
-    this.sftpPeerHostPicker = false;
+    this.requestSftpPeerHostPickerClose();
     // A closed surface starts with an empty right pane. Do not reset a sheet
     // that is already visible, because a repeated toolbar tap must not erase
     // the user's current endpoint while a transfer is running.
@@ -5368,11 +5449,167 @@ struct SshTerminal {
     }
     this.showSftpPanel = true;
     // Phone and Pad use the root bindSheet; only PC keeps the workspace inline.
-    this.showSftpSheet = this.sftpUsesRootBindSheet();
+    // Give the parent content one UI turn to mount before opening the native
+    // sheet host. This prevents the nested host-picker bindSheet from being
+    // attached to a stale SFTP content instance.
+    if (this.sftpUsesRootBindSheet() && !this.showSftpSheet) {
+      this.scheduleSftpRootSheetOpen();
+    }
     if (this.sftpEntries.length === 0) {
       // 先让半模态完成挂载和高度测量, 避免打开瞬间刷新目录触发重建后被系统反向 dismiss。
       this.scheduleSftpRefresh(this.sftpPath, 260);
     }
+  }
+
+  private clearSftpSheetTransitionTimers(): void {
+    if (this.sftpRootSheetOpenTimer !== -1) {
+      clearTimeout(this.sftpRootSheetOpenTimer);
+      this.sftpRootSheetOpenTimer = -1;
+    }
+    if (this.sftpRootSheetCloseTimer !== -1) {
+      clearTimeout(this.sftpRootSheetCloseTimer);
+      this.sftpRootSheetCloseTimer = -1;
+    }
+    if (this.sftpPeerHostPickerOpenTimer !== -1) {
+      clearTimeout(this.sftpPeerHostPickerOpenTimer);
+      this.sftpPeerHostPickerOpenTimer = -1;
+    }
+  }
+
+  private scheduleSftpRootSheetOpen(): void {
+    this.clearSftpSheetTransitionTimers();
+    const token: number = ++this.sftpSheetTransitionToken;
+    this.sftpRootSheetOpenTimer = setTimeout((): void => {
+      this.sftpRootSheetOpenTimer = -1;
+      if (token !== this.sftpSheetTransitionToken || this.terminalClosing ||
+        !this.showSftpPanel || this.sftpRootSheetClosing || !this.sftpUsesRootBindSheet()) {
+        return;
+      }
+      ++this.sftpRootSheetMountToken;
+      this.showSftpSheet = true;
+    }, 32);
+  }
+
+  private scheduleSftpRootSheetReopen(): void {
+    this.clearSftpSheetTransitionTimers();
+    const token: number = ++this.sftpSheetTransitionToken;
+    this.sftpRootSheetOpenTimer = setTimeout((): void => {
+      this.sftpRootSheetOpenTimer = -1;
+      if (token !== this.sftpSheetTransitionToken || this.terminalClosing ||
+        this.sftpRootSheetClosing || !this.sftpRootSheetReopenRequested) {
+        return;
+      }
+      this.sftpRootSheetReopenRequested = false;
+      this.openSftpPanel();
+    }, 32);
+  }
+
+  private dismissSftpRootSheet(): void {
+    this.clearSftpSheetTransitionTimers();
+    ++this.sftpSheetTransitionToken;
+    this.sftpCloseRootAfterPeerPicker = false;
+    if (this.showSftpSheet) {
+      this.sftpRootSheetClosing = true;
+      this.noteSftpSheetDismissalIfVisible();
+    } else if (!this.sftpRootSheetClosing) {
+      this.sftpRootSheetClosing = false;
+    }
+    ++this.sftpPeerHostPickerMountToken;
+    ++this.sftpPeerHostPickerTransitionToken;
+    this.sftpPeerHostPickerReopenRequested = false;
+    this.sftpPeerHostPickerClosing = false;
+    this.sftpPeerHostPicker = false;
+    this.showSftpPanel = false;
+    this.showSftpSheet = false;
+  }
+
+  private scheduleSftpRootCloseAfterPeerPicker(): void {
+    if (this.sftpRootSheetCloseTimer !== -1) {
+      clearTimeout(this.sftpRootSheetCloseTimer);
+    }
+    const token: number = ++this.sftpSheetTransitionToken;
+    this.sftpRootSheetCloseTimer = setTimeout((): void => {
+      this.sftpRootSheetCloseTimer = -1;
+      if (token !== this.sftpSheetTransitionToken || this.sftpPeerHostPicker ||
+        !this.sftpCloseRootAfterPeerPicker) {
+        return;
+      }
+      this.dismissSftpRootSheet();
+    }, 360);
+  }
+
+  private handleSftpRootSheetDisappear(mountToken: number): void {
+    if (mountToken !== this.sftpRootSheetMountToken) { return; }
+    this.noteSftpSheetDismissalIfVisible();
+    this.clearSftpSheetTransitionTimers();
+    ++this.sftpSheetTransitionToken;
+    this.sftpRootSheetClosing = false;
+    this.sftpCloseRootAfterPeerPicker = false;
+    ++this.sftpPeerHostPickerMountToken;
+    ++this.sftpPeerHostPickerTransitionToken;
+    this.sftpPeerHostPickerReopenRequested = false;
+    this.sftpPeerHostPickerClosing = false;
+    this.sftpPeerHostPicker = false;
+    this.showSftpPanel = false;
+    this.showSftpSheet = false;
+    if (this.sftpRootSheetReopenRequested && !this.terminalClosing) {
+      this.scheduleSftpRootSheetReopen();
+    } else {
+      this.sftpRootSheetReopenRequested = false;
+    }
+  }
+
+  private handleSftpPeerHostPickerDisappear(mountToken: number): void {
+    if (mountToken !== this.sftpPeerHostPickerMountToken) { return; }
+    this.sftpPeerHostPicker = false;
+    this.sftpPeerHostPickerClosing = false;
+    if (this.sftpCloseRootAfterPeerPicker) {
+      if (this.terminalClosing) { return; }
+      if (this.sftpRootSheetCloseTimer !== -1) {
+        clearTimeout(this.sftpRootSheetCloseTimer);
+        this.sftpRootSheetCloseTimer = -1;
+      }
+      const token: number = this.sftpSheetTransitionToken;
+      this.sftpRootSheetCloseTimer = setTimeout((): void => {
+        this.sftpRootSheetCloseTimer = -1;
+        if (token !== this.sftpSheetTransitionToken || this.sftpPeerHostPicker ||
+          !this.sftpCloseRootAfterPeerPicker) {
+          return;
+        }
+        this.dismissSftpRootSheet();
+      }, 0);
+      return;
+    }
+    if (this.terminalClosing) {
+      this.sftpPeerHostPickerReopenRequested = false;
+      return;
+    }
+    if (this.sftpPeerHostPickerReopenRequested && this.showSftpPanel &&
+      !this.sftpRootSheetClosing && (!this.sftpUsesRootBindSheet() || this.showSftpSheet)) {
+      this.scheduleSftpPeerHostPickerReopen();
+    } else {
+      this.sftpPeerHostPickerReopenRequested = false;
+    }
+  }
+
+  private scheduleSftpPeerHostPickerReopen(): void {
+    if (this.sftpPeerHostPickerOpenTimer !== -1) {
+      clearTimeout(this.sftpPeerHostPickerOpenTimer);
+    }
+    const token: number = ++this.sftpPeerHostPickerTransitionToken;
+    this.sftpPeerHostPickerOpenTimer = setTimeout((): void => {
+      this.sftpPeerHostPickerOpenTimer = -1;
+      if (token !== this.sftpPeerHostPickerTransitionToken || this.terminalClosing ||
+        !this.sftpPeerHostPickerReopenRequested || !this.showSftpPanel ||
+        this.sftpRootSheetClosing || this.sftpCloseRootAfterPeerPicker ||
+        this.sftpPeerHostPickerClosing || this.sftpPeerHostPicker ||
+        (this.sftpUsesRootBindSheet() && !this.showSftpSheet)) {
+        return;
+      }
+      this.sftpPeerHostPickerReopenRequested = false;
+      ++this.sftpPeerHostPickerMountToken;
+      this.sftpPeerHostPicker = true;
+    }, 32);
   }
 
   private noteSftpSheetDismissalIfVisible(): void {
@@ -5381,18 +5618,38 @@ struct SshTerminal {
     }
   }
 
-  private closeSftpPanel(): void {
-    this.noteSftpSheetDismissalIfVisible();
+  private requestSftpPeerHostPickerClose(): void {
+    this.sftpPeerHostPickerReopenRequested = false;
+    if (!this.sftpPeerHostPicker) { return; }
+    this.sftpPeerHostPickerClosing = true;
     this.sftpPeerHostPicker = false;
-    this.showSftpPanel = false;
-    this.showSftpSheet = false;
+  }
+
+  private closeSftpPanel(): void {
+    if (this.sftpPeerHostPicker) {
+      this.sftpCloseRootAfterPeerPicker = true;
+      this.requestSftpPeerHostPickerClose();
+      this.scheduleSftpRootCloseAfterPeerPicker();
+      return;
+    }
+    this.dismissSftpRootSheet();
   }
 
   private openSftpPeerPicker(): void {
-    if (this.sftpBusy) { return; }
+    if (this.sftpBusy || this.terminalClosing || !this.showSftpPanel ||
+      this.sftpRootSheetClosing || this.sftpCloseRootAfterPeerPicker ||
+      this.sftpPeerHostPicker) { return; }
+    if (this.sftpPeerHostPickerClosing) {
+      this.sftpPeerHostPickerReopenRequested = true;
+      return;
+    }
+    if (this.sftpUsesRootBindSheet() && !this.showSftpSheet) { return; }
     // Keep the current right endpoint visible until the user commits a host.
     // The picker is a child bindSheet of the SFTP surface, so it can animate
     // above the phone or Pad SFTP sheet without replacing that surface.
+    this.sftpPeerHostPickerReopenRequested = false;
+    ++this.sftpPeerHostPickerTransitionToken;
+    ++this.sftpPeerHostPickerMountToken;
     this.sftpPeerHostPicker = true;
   }
 
@@ -5451,21 +5708,46 @@ struct SshTerminal {
     return this.isPadDevice ? 12 : 6;
   }
 
-  private handleSftpPeerHostPickerDismiss(action: DismissSheetAction): void {
+  private handleSftpPeerHostPickerDismiss(action: DismissSheetAction, mountToken: number): void {
+    if (mountToken !== this.sftpPeerHostPickerMountToken) {
+      action.dismiss();
+      return;
+    }
+    this.sftpPeerHostPickerReopenRequested = false;
+    this.sftpPeerHostPickerClosing = true;
     this.sftpPeerHostPicker = false;
     action.dismiss();
   }
 
-  private handleSftpSheetDismiss(action: DismissSheetAction): void {
+  private handleSftpSheetDismiss(action: DismissSheetAction, mountToken: number): void {
+    if (mountToken !== this.sftpRootSheetMountToken) {
+      action.dismiss();
+      return;
+    }
     const elapsed: number = Date.now() - this.sftpPanelOpenedAt;
     if (elapsed < 500 || this.sftpBusy) {
       return;
     }
-    this.noteSftpSheetDismissalIfVisible();
-    this.sftpPeerHostPicker = false;
-    this.showSftpPanel = false;
-    this.showSftpSheet = false;
+    if (this.sftpPeerHostPicker) {
+      // Let the nested picker finish its own native dismissal first. The
+      // picker onDisappear callback will then close the parent sheet.
+      this.sftpCloseRootAfterPeerPicker = true;
+      this.requestSftpPeerHostPickerClose();
+      this.scheduleSftpRootCloseAfterPeerPicker();
+      return;
+    }
+    this.dismissSftpRootSheet();
     action.dismiss();
+  }
+
+  private sftpRootSheetDismissHandler(mountToken: number): (action: DismissSheetAction) => void {
+    return (action: DismissSheetAction): void => {
+      this.handleSftpSheetDismiss(action, mountToken);
+    };
+  }
+
+  private sftpRootSheetDisappearHandler(mountToken: number): () => void {
+    return (): void => { this.handleSftpRootSheetDisappear(mountToken); };
   }
 
   private enterSftpEntry(entry: SftpFileEntry): void {
@@ -7329,7 +7611,7 @@ struct SshTerminal {
           .fontColor(['rgba(242,244,247,0.78)'])
           .width(34).height(34)
           .margin({ top: this.sftpHeaderCloseTopMargin() })
-          .onClick((): void => { this.sftpPeerHostPicker = false; })
+          .onClick((): void => { this.requestSftpPeerHostPickerClose(); })
       }.width('100%').alignItems(VerticalAlign.Center)
       Scroll() {
         Column({ space: 8 }) {
@@ -7994,7 +8276,7 @@ struct SshTerminal {
   }
 
   @Builder
-  SftpTransferSheet() {
+  SftpTransferSheet(peerPickerMountToken: number) {
     Stack() {
       if (this.sftpWideLayout()) {
         Column() {
@@ -8049,9 +8331,9 @@ struct SshTerminal {
       showClose: false,
       maskColor: 'rgba(0,0,0,0.42)',
       onWillDismiss: (action: DismissSheetAction): void => {
-        this.handleSftpPeerHostPickerDismiss(action);
+        this.handleSftpPeerHostPickerDismiss(action, peerPickerMountToken);
       },
-      onDisappear: (): void => { this.sftpPeerHostPicker = false; }
+      onDisappear: (): void => { this.handleSftpPeerHostPickerDisappear(peerPickerMountToken); }
     })
   }
 
@@ -8438,7 +8720,7 @@ struct SshTerminal {
       .id('ssh-terminal-pane')
       if (this.showSftpPanel && this.sftpWideLayout() && !this.sftpUsesRootBindSheet()) {
         Column() {
-          this.SftpTransferSheet()
+          this.SftpTransferSheet(this.sftpPeerHostPickerMountToken)
         }
         .width('100%')
         .height('100%')
@@ -8490,7 +8772,7 @@ struct SshTerminal {
         }
       }
     })
-    .bindSheet($$this.showSftpSheet, this.SftpTransferSheet(), {
+    .bindSheet($$this.showSftpSheet, this.SftpTransferSheet(this.sftpPeerHostPickerMountToken), {
       // The Pad root surface is the complete SFTP workspace, not an inline
       // terminal overlay. Keep its sheet geometry explicit and wide.
       height: this.sftpRootSheetHeight(),
@@ -8500,13 +8782,8 @@ struct SshTerminal {
       backgroundColor: this.pal().sheetBg,
       blurStyle: BlurStyle.NONE,
       showClose: false,
-      onWillDismiss: (action: DismissSheetAction): void => { this.handleSftpSheetDismiss(action); },
-      onDisappear: (): void => {
-        this.noteSftpSheetDismissalIfVisible();
-        this.sftpPeerHostPicker = false;
-        this.showSftpPanel = false;
-        this.showSftpSheet = false;
-      }
+      onWillDismiss: this.sftpRootSheetDismissHandler(this.sftpRootSheetMountToken),
+      onDisappear: this.sftpRootSheetDisappearHandler(this.sftpRootSheetMountToken)
     })
     .bindSheet($$this.showSshTabPicker, this.sshTabPickerSheet(), {
       height: this.breakpoint === 'sm' ? SheetSize.LARGE : SheetSize.FIT_CONTENT,
