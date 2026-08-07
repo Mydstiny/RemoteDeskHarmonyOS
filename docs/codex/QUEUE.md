@@ -12,21 +12,19 @@ Updated: 2026-08-07 Asia/Shanghai
 - RDP startup is fail-closed: input worker, frame pump, redraw callback and event
   loop failures cannot publish false `CONNECTED`; cliprdr lifetime is serialized
   through reconnect/cleanup. Keep device long-connection validation pending.
-- SFTP checkpoint is closed for integrity, durable metadata, local-provider and
-  Pad/PC workspace; Pad uses a centered root bindSheet selected by `isPadDevice`,
+- SFTP checkpoint is closed for integrity, durable metadata, local-provider and Pad/PC
+  workspace; Pad uses a centered root bindSheet selected by `isPadDevice`,
   `cc68965` keeps the root-sheet geometry explicit, `caefd47` keeps the right pane chooser-only with a sheet-safe close offset, and Phone (including landscape) keeps the bottom-sheet interaction.
-- Mobile SFTP endpoint selection is closed: the right side has local/SSH-host
-  buttons; the picker is nested in the mounted surface, the initial pane is
-  chooser-only, and add-host waits for native exit. Root opening now commits in
-  the same UI turn and the internal surface-readiness gate cannot rebuild the
-  Sheet during its entrance; child opening remains deferred until the parent is
-  live. Queued requests are cancellable, mount tokens fence stale callbacks,
-  picker exit/reopen ordering is serialized; each mounted Sheet has one native
-  dismiss driver, stale callbacks finish only their old native instance; cleanup
-  remains at onDisappear, and explicit root close is not blocked by transient
-  open/transfer guards.
-  Pad uses a wide root bindSheet, respects the sheet inset, and has no duplicate
-  empty-state plus.
+- Mobile SFTP endpoint selection is closed: right side has local/SSH-host buttons;
+  picker is nested in the mounted surface, initial pane is chooser-only, and
+  add-host waits for native exit. Root opening commits in the same UI turn; its
+  internal readiness gate cannot rebuild the Sheet during entrance, while child
+  opening waits for the parent to be live. Queued requests are cancellable, mount
+  tokens fence stale callbacks, and picker exit/reopen is serialized; each
+  mounted Sheet has one native dismiss driver; stale callbacks finish only their
+  old instance; cleanup waits for onDisappear and explicit root close is not
+  blocked by transient guards. Pad uses a wide root bindSheet, respects the
+  inset, and has no duplicate empty-state plus.
 - SSH keyboard-interactive/MFA prompts use a page-owned broker bindSheet with
   echo-aware multi-prompts, hop/round metadata, cancel/expiry and stale-request
   fencing; checkpoint `f72b5fb` is code-only pending the existing reviewer.
@@ -64,9 +62,8 @@ Updated: 2026-08-07 Asia/Shanghai
   SSH entries reached page/report ready without a crash. Multi-host and
   virtual-keyboard/function-bar acceptance remain next.
 - The current surface fallback, SOCKS5 flush, listener/FRP route and ArkTS/native ABI increment has an independent PASS receipt; the strict xterm ACK/reload/watchdog increment also has an independent PASS receipt `ssh-terminal-xterm-ack-reload-pass-2026-08-06`. Background SSH now owns a session collection and the page-independent SFTP engine can reattach retained tabs, but real background transfer/restart evidence is still open; do not claim Level A or Level B connectivity. The status command remains `REVIEW_REQUIRED` only because preserved mixed-worktree changes remain dirty.
-- The first ProxyJump implementation and matching key preflight relay are
-  committed, but keep them pending until bastion host-key policy and a real
-  OpenSSH endpoint are verified.
+- The first ProxyJump implementation and matching key preflight relay are committed;
+  keep them pending until bastion host-key policy and a real OpenSSH endpoint are verified.
 - The native forwarding lifecycle contract is committed for local, remote and
   dynamic modes; `SshAdapter` binds runtime transitions to the session-owner
   reactor with transport-reset cleanup, stale-runtime cleanup, byte/expiry
