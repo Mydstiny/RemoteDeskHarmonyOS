@@ -7917,14 +7917,23 @@ napi_value NapiResumeSshSession(napi_env env, napi_callback_info info) {
                 }
                 if (hasRegistration) {
                     const ConnectionState state = sshAdapter->getState();
-                    if (SshTerminalResumePolicy::shouldResumeInput(state)) {
-                        sshAdapter->resumeTerminalInput();
-                    }
                     // A page callback can be rebound while the transport is
                     // still reconnecting. Keep that live session attached;
                     // the page's state probe will expose CONNECTED later.
-                    resumed = SshTerminalResumePolicy::acceptsPageBinding(
-                        state, hasRegistration);
+                    if (SshTerminalResumePolicy::acceptsPageBinding(state, hasRegistration) &&
+                        ActivateSessionContext(adapter, session->identity())) {
+                        // Re-publish the process-wide owner before allowing
+                        // input to flow. A detached session can otherwise
+                        // still point input at the host selected previously.
+                        if (SshTerminalResumePolicy::shouldResumeInput(state)) {
+                            sshAdapter->resumeTerminalInput();
+                        }
+                        resumed = true;
+                    } else {
+                        OH_LOG_WARN(LOG_APP,
+                            "[ExtLoader] SSH resume active-owner activation failed id=%{public}d",
+                            sessionId);
+                    }
                 }
             }
         }
