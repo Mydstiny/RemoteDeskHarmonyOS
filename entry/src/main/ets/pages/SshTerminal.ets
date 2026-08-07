@@ -5744,8 +5744,10 @@ struct SshTerminal {
       return;
     }
     this.sftpPeerHostPickerReopenRequested = false;
+    // Interactive dismissal owns the native exit. Keep the bound content
+    // mounted until onDisappear; changing the binding here would start a
+    // second programmatic exit and race the parent Sheet.
     this.sftpPeerHostPickerClosing = true;
-    this.sftpPeerHostPicker = false;
     action.dismiss();
   }
 
@@ -5762,10 +5764,18 @@ struct SshTerminal {
       // Let the nested picker finish its own native dismissal first. The
       // picker onDisappear callback will then close the parent sheet.
       this.sftpCloseRootAfterPeerPicker = true;
+      this.sftpRootSheetClosing = true;
       this.requestSftpPeerHostPickerClose();
       return;
     }
-    this.dismissSftpRootSheet();
+    // The interactive callback must use one dismissal driver. Keep the root
+    // Sheet and its content mounted until its native onDisappear callback;
+    // that callback performs the state cleanup and any queued reopen.
+    this.requestSftpPeerHostPickerClose();
+    this.clearSftpSheetTransitionTimers();
+    ++this.sftpSheetTransitionToken;
+    this.sftpRootSheetClosing = true;
+    this.noteSftpSheetDismissalIfVisible();
     action.dismiss();
   }
 
