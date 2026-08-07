@@ -490,6 +490,8 @@ struct SshTerminal {
   private sftpRefreshOwnerToken: number = 0;
   /** Root and nested SFTP sheets must not mount or dismiss in the same frame. */
   private sftpRootSheetOpenTimer: number = -1;
+  /** The first directory read must wait until the root native Sheet is stable. */
+  private sftpRootSheetRefreshTimer: number = -1;
   private sftpSheetTransitionToken: number = 0;
   /** Native callbacks are tied to the root sheet instance that mounted them. */
   private sftpRootSheetMountToken: number = 0;
@@ -5519,8 +5521,14 @@ struct SshTerminal {
       this.showSftpSheet = true;
     }
     if (this.sftpEntries.length === 0) {
-      // 先让半模态完成挂载和高度测量, 避免打开瞬间刷新目录触发重建后被系统反向 dismiss。
-      this.scheduleSftpRefresh(this.sftpPath, 260);
+      if (this.sftpUsesRootBindSheet()) {
+        // The native root Sheet schedules its first read from onAppear. A
+        // request started from the toolbar turn can finish during the entrance
+        // transaction and cause ArkUI to rebuild/dismiss the Sheet.
+      } else {
+        // Inline PC layout has no native Sheet entrance transaction.
+        this.scheduleSftpRefresh(this.sftpPath, 260);
+      }
     }
   }
 
@@ -5533,6 +5541,31 @@ struct SshTerminal {
       clearTimeout(this.sftpPeerHostPickerOpenTimer);
       this.sftpPeerHostPickerOpenTimer = -1;
     }
+    if (this.sftpRootSheetRefreshTimer !== -1) {
+      clearTimeout(this.sftpRootSheetRefreshTimer);
+      this.sftpRootSheetRefreshTimer = -1;
+    }
+  }
+
+  private scheduleSftpRootSheetInitialRefresh(mountToken: number): void {
+    if (this.sftpRootSheetRefreshTimer !== -1) {
+      clearTimeout(this.sftpRootSheetRefreshTimer);
+      this.sftpRootSheetRefreshTimer = -1;
+    }
+    const requestPageGeneration: number = this.pageGeneration;
+    const requestSessionId: number = this.sessionId;
+    const requestSessionGeneration: number = this.sshSessionGeneration;
+    this.sftpRootSheetRefreshTimer = setTimeout((): void => {
+      this.sftpRootSheetRefreshTimer = -1;
+      if (mountToken !== this.sftpRootSheetMountToken || this.terminalClosing ||
+        !this.showSftpPanel || !this.showSftpSheet || this.sftpRootSheetClosing ||
+        !this.sftpRootSheetSurfaceReady || this.sftpEntries.length > 0 ||
+        !this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+          requestSessionGeneration)) {
+        return;
+      }
+      this.refreshSftp(this.sftpPath);
+    }, 700);
   }
 
   private scheduleSftpRootSheetReopen(): void {
@@ -5670,6 +5703,11 @@ struct SshTerminal {
       return;
     }
     this.sftpRootSheetSurfaceReady = true;
+    if (this.sftpEntries.length === 0) {
+      // Let the native entrance animation and initial layout settle before a
+      // directory response can rebuild the bindSheet content.
+      this.scheduleSftpRootSheetInitialRefresh(mountToken);
+    }
     // A tap can land during the parent entrance transition. Re-run the
     // queued child request after the native root content has appeared instead
     // of letting the one-shot timer strand it behind a false state check.
@@ -8840,6 +8878,28 @@ struct SshTerminal {
         .clip(true)
         .zIndex(100)
       }
+      // Keep the SFTP root Sheet on its own stable host. ArkUI permits multiple
+      // bindSheet modifiers on one component, but on API 23 a newly opened
+      // Sheet can be reclaimed when another false-bound modifier on that same
+      // terminal node is reconciled during the entrance transaction.
+      Column()
+        .width('100%')
+        .height('100%')
+        .hitTestBehavior(HitTestMode.None)
+        .bindSheet($$this.showSftpSheet,
+          this.SftpTransferSheet(this.sftpPeerHostPickerMountToken, this.sftpRootSheetMountToken), {
+          // The Pad root surface is the complete SFTP workspace, not an inline
+          // terminal overlay. Keep its sheet geometry explicit and wide.
+          height: this.sftpRootSheetHeight(),
+          preferType: this.sftpRootSheetType(),
+          width: this.sftpRootSheetWidth(),
+          dragBar: !this.isPadDevice,
+          backgroundColor: this.pal().sheetBg,
+          blurStyle: BlurStyle.NONE,
+          showClose: false,
+          onWillDismiss: this.sftpRootSheetDismissHandler(this.sftpRootSheetMountToken),
+          onDisappear: this.sftpRootSheetDisappearHandler(this.sftpRootSheetMountToken)
+        })
     }
     .width('100%').height('100%')
     .bindSheet($$this.showPassphraseSheet, this.passphraseSheet(), {
@@ -8883,20 +8943,6 @@ struct SshTerminal {
           this.clearSshAuthPromptState();
         }
       }
-    })
-    .bindSheet($$this.showSftpSheet,
-      this.SftpTransferSheet(this.sftpPeerHostPickerMountToken, this.sftpRootSheetMountToken), {
-      // The Pad root surface is the complete SFTP workspace, not an inline
-      // terminal overlay. Keep its sheet geometry explicit and wide.
-      height: this.sftpRootSheetHeight(),
-      preferType: this.sftpRootSheetType(),
-      width: this.sftpRootSheetWidth(),
-      dragBar: !this.isPadDevice,
-      backgroundColor: this.pal().sheetBg,
-      blurStyle: BlurStyle.NONE,
-      showClose: false,
-      onWillDismiss: this.sftpRootSheetDismissHandler(this.sftpRootSheetMountToken),
-      onDisappear: this.sftpRootSheetDisappearHandler(this.sftpRootSheetMountToken)
     })
     .bindSheet($$this.showSshTabPicker, this.sshTabPickerSheet(), {
       height: this.breakpoint === 'sm' ? SheetSize.LARGE : SheetSize.FIT_CONTENT,
