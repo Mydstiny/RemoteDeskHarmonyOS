@@ -156,7 +156,10 @@ import {
   planSshSftpBatch,
   resolveSshSftpConflict
 } from '../services/SshSftpBatchPolicy';
-import { noteSshSftpSheetDismissed } from '../services/SheetTransitionPolicy';
+import {
+  noteSshSftpSheetDismissed,
+  sftpPeerPickerExitPending
+} from '../services/SheetTransitionPolicy';
 // Passphrase uses bindSheet (SshTerminal is @Entry, no bindSheet limit)
 
 const SFTP_MAX_TRANSFER_BYTES: number = 512 * 1024 * 1024;
@@ -483,7 +486,6 @@ struct SshTerminal {
   private sftpPanelOpenedAt: number = 0;
   /** Root and nested SFTP sheets must not mount or dismiss in the same frame. */
   private sftpRootSheetOpenTimer: number = -1;
-  private sftpRootSheetCloseTimer: number = -1;
   private sftpSheetTransitionToken: number = 0;
   /** Native callbacks are tied to the root sheet instance that mounted them. */
   private sftpRootSheetMountToken: number = 0;
@@ -5466,10 +5468,6 @@ struct SshTerminal {
       clearTimeout(this.sftpRootSheetOpenTimer);
       this.sftpRootSheetOpenTimer = -1;
     }
-    if (this.sftpRootSheetCloseTimer !== -1) {
-      clearTimeout(this.sftpRootSheetCloseTimer);
-      this.sftpRootSheetCloseTimer = -1;
-    }
     if (this.sftpPeerHostPickerOpenTimer !== -1) {
       clearTimeout(this.sftpPeerHostPickerOpenTimer);
       this.sftpPeerHostPickerOpenTimer = -1;
@@ -5523,21 +5521,6 @@ struct SshTerminal {
     this.showSftpSheet = false;
   }
 
-  private scheduleSftpRootCloseAfterPeerPicker(): void {
-    if (this.sftpRootSheetCloseTimer !== -1) {
-      clearTimeout(this.sftpRootSheetCloseTimer);
-    }
-    const token: number = ++this.sftpSheetTransitionToken;
-    this.sftpRootSheetCloseTimer = setTimeout((): void => {
-      this.sftpRootSheetCloseTimer = -1;
-      if (token !== this.sftpSheetTransitionToken || this.sftpPeerHostPicker ||
-        !this.sftpCloseRootAfterPeerPicker) {
-        return;
-      }
-      this.dismissSftpRootSheet();
-    }, 360);
-  }
-
   private handleSftpRootSheetDisappear(mountToken: number): void {
     if (mountToken !== this.sftpRootSheetMountToken) { return; }
     this.noteSftpSheetDismissalIfVisible();
@@ -5565,14 +5548,13 @@ struct SshTerminal {
     this.sftpPeerHostPickerClosing = false;
     if (this.sftpCloseRootAfterPeerPicker) {
       if (this.terminalClosing) { return; }
-      if (this.sftpRootSheetCloseTimer !== -1) {
-        clearTimeout(this.sftpRootSheetCloseTimer);
-        this.sftpRootSheetCloseTimer = -1;
-      }
-      const token: number = this.sftpSheetTransitionToken;
-      this.sftpRootSheetCloseTimer = setTimeout((): void => {
-        this.sftpRootSheetCloseTimer = -1;
-        if (token !== this.sftpSheetTransitionToken || this.sftpPeerHostPicker ||
+      // The child native Sheet is now gone. Give ArkUI one turn to commit that
+      // transition before toggling the parent Sheet; no timeout may close the
+      // parent while the child is still animating out.
+      const token: number = ++this.sftpSheetTransitionToken;
+      setTimeout((): void => {
+        if (token !== this.sftpSheetTransitionToken || this.terminalClosing ||
+          sftpPeerPickerExitPending(this.sftpPeerHostPicker, this.sftpPeerHostPickerClosing) ||
           !this.sftpCloseRootAfterPeerPicker) {
           return;
         }
@@ -5626,10 +5608,9 @@ struct SshTerminal {
   }
 
   private closeSftpPanel(): void {
-    if (this.sftpPeerHostPicker) {
+    if (sftpPeerPickerExitPending(this.sftpPeerHostPicker, this.sftpPeerHostPickerClosing)) {
       this.sftpCloseRootAfterPeerPicker = true;
       this.requestSftpPeerHostPickerClose();
-      this.scheduleSftpRootCloseAfterPeerPicker();
       return;
     }
     this.dismissSftpRootSheet();
@@ -5728,12 +5709,11 @@ struct SshTerminal {
     if (elapsed < 500 || this.sftpBusy) {
       return;
     }
-    if (this.sftpPeerHostPicker) {
+    if (sftpPeerPickerExitPending(this.sftpPeerHostPicker, this.sftpPeerHostPickerClosing)) {
       // Let the nested picker finish its own native dismissal first. The
       // picker onDisappear callback will then close the parent sheet.
       this.sftpCloseRootAfterPeerPicker = true;
       this.requestSftpPeerHostPickerClose();
-      this.scheduleSftpRootCloseAfterPeerPicker();
       return;
     }
     this.dismissSftpRootSheet();

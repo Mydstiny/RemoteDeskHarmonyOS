@@ -32,3 +32,8 @@ export function noteSshSftpSheetDismissed(nowMs: number): void {
 export function sshSftpSheetOpenDelayMs(nowMs: number): number {
   return sheetOpenDelayMsAfterDismiss(nowMs, lastSshSftpSheetDismissAtMs);
 }
+
+/** A parent Sheet must stay mounted while its nested picker is visible or exiting. */
+export function sftpPeerPickerExitPending(visible: boolean, closing: boolean): boolean {
+  return visible || closing;
+}

@@ -4,7 +4,8 @@ import {
   sheetOpenDelayMsAfterDismiss,
   shouldDelaySheetOpen,
   noteSshSftpSheetDismissed,
-  sshSftpSheetOpenDelayMs
+  sshSftpSheetOpenDelayMs,
+  sftpPeerPickerExitPending
 } from '../main/ets/services/SheetTransitionPolicy';
 
 export default function sheetTransitionPolicyTest() {
@@ -27,6 +28,12 @@ export default function sheetTransitionPolicyTest() {
       noteSshSftpSheetDismissed(2000);
       expect(sshSftpSheetOpenDelayMs(2080)).assertEqual(SHEET_DISMISS_GUARD_MS - 80);
       expect(sshSftpSheetOpenDelayMs(2320)).assertEqual(0);
+    });
+
+    it('keeps_parent_mounted_until_nested_picker_disappears', 0, (): void => {
+      expect(sftpPeerPickerExitPending(true, false)).assertTrue();
+      expect(sftpPeerPickerExitPending(false, true)).assertTrue();
+      expect(sftpPeerPickerExitPending(false, false)).assertFalse();
     });
   });
 }
