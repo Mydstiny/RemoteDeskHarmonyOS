@@ -14,13 +14,17 @@ Updated: 2026-08-07 Asia/Shanghai
   through reconnect/cleanup. Keep device long-connection validation pending.
 - SFTP checkpoint is closed for integrity, durable metadata, local-provider and
   Pad/PC workspace; Pad uses a centered root bindSheet selected by `isPadDevice`,
-  `cc68965` keeps the root-sheet geometry explicit, `caefd47` keeps the right pane chooser-only with a sheet-safe close offset,
-  and Phone (including landscape) keeps the bottom-sheet interaction.
+  `cc68965` keeps the root-sheet geometry explicit, `caefd47` keeps the right pane chooser-only with a sheet-safe close offset, and Phone (including landscape) keeps the bottom-sheet interaction.
 - Mobile SFTP endpoint selection is closed: the right side has local/SSH-host
   buttons; the picker is nested in the mounted surface, the initial pane is
-  chooser-only, and add-host waits for native exit. Root and child opening are
-  deferred until the parent is live; queued requests are cancellable, mount
-  tokens fence stale callbacks, picker exit/reopen ordering is serialized; interactive Sheet dismissal uses one native driver with state cleanup at onDisappear.
+  chooser-only, and add-host waits for native exit. Root opening now commits in
+  the same UI turn and the internal surface-readiness gate cannot rebuild the
+  Sheet during its entrance; child opening remains deferred until the parent is
+  live. Queued requests are cancellable, mount tokens fence stale callbacks,
+  picker exit/reopen ordering is serialized; each mounted Sheet has one native
+  dismiss driver, stale callbacks finish only their old native instance; cleanup
+  remains at onDisappear, and explicit root close is not blocked by transient
+  open/transfer guards.
   Pad uses a wide root bindSheet, respects the sheet inset, and has no duplicate
   empty-state plus.
 - SSH keyboard-interactive/MFA prompts use a page-owned broker bindSheet with
@@ -56,8 +60,9 @@ Updated: 2026-08-07 Asia/Shanghai
   `default@OhosTestCompileArkTS` passed; targeted physical-touchpad Rust tests are
   `3 passed, 0 failed`; inline xterm parse and ordered-batch protocol checks pass;
   `assembleHap` is `BUILD SUCCESSFUL`. The signed HAP is installed on
-  `127.0.0.1:5555`; a single-host xterm smoke run reached page/report ready and
-  produced no crash. Multi-host and virtual-keyboard/function-bar acceptance remain next.
+  `127.0.0.1:5555`; the hidden xterm prewarm reached ready and repeated visible
+  SSH entries reached page/report ready without a crash. Multi-host and
+  virtual-keyboard/function-bar acceptance remain next.
 - The current surface fallback, SOCKS5 flush, listener/FRP route and ArkTS/native ABI increment has an independent PASS receipt; the strict xterm ACK/reload/watchdog increment also has an independent PASS receipt `ssh-terminal-xterm-ack-reload-pass-2026-08-06`. Background SSH now owns a session collection and the page-independent SFTP engine can reattach retained tabs, but real background transfer/restart evidence is still open; do not claim Level A or Level B connectivity. The status command remains `REVIEW_REQUIRED` only because preserved mixed-worktree changes remain dirty.
 - The first ProxyJump implementation and matching key preflight relay are
   committed, but keep them pending until bastion host-key policy and a real
@@ -91,10 +96,9 @@ Updated: 2026-08-07 Asia/Shanghai
   services and HDC/device are available; finish ProxyJump host-key binding and
   local/remote/dynamic plus FRP Visitor/STCP/SUDP/XTCP endpoint contracts.
 ## Later
-- Complete background transfer restart/authentication recovery, UDMF drag/drop and
-  SFTP lifecycle acceptance beyond the current code-level handoff path.
+- Complete background transfer restart/authentication recovery, UDMF drag/drop and SFTP lifecycle acceptance beyond the current code-level handoff path.
 - WP-T7 terminal accessibility/lifecycle recovery and Level A acceptance.
 ## Evidence Gaps
 - HDC target `5KLBB25928203528` passed cold SSH, ordered input, large output, Home retention, PiP/re-entry and 90-second idle command checks; external keyboard/IME remains an evidence gap. A later reproduction captured the native GPU abort; the visible path is now xterm.js.
-- The current device run verifies initial SSH xterm page readiness, welcome output and input without a crash; host-switch, virtual-keyboard/function-bar and external-IME evidence remain open.
+- The current device run verifies prewarm readiness plus first/repeat SSH xterm page readiness, welcome output and input without a crash; host-switch, virtual-keyboard/function-bar and external-IME evidence remain open.
 - `ohosTest@OhosTestCompileArkTS` is unregistered (`00306054`); Light compliance is blocked by baseline SBOM package `totp-reviewed-brand-assets` with `licenseDeclared=NOASSERTION`.
