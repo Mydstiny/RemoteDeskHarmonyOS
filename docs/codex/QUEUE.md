@@ -20,9 +20,7 @@ Updated: 2026-08-07 Asia/Shanghai
   buttons; the picker is nested in the mounted surface, the initial pane is
   chooser-only, and add-host waits for native exit. Root and child opening are
   deferred until the parent is live; queued requests are cancellable, mount
-  tokens fence stale callbacks, picker exit/reopen ordering is serialized, and
-  interactive Sheet dismissal uses one native driver with state cleanup at
-  onDisappear.
+  tokens fence stale callbacks, picker exit/reopen ordering is serialized; interactive Sheet dismissal uses one native driver with state cleanup at onDisappear.
   Pad uses a wide root bindSheet, respects the sheet inset, and has no duplicate
   empty-state plus.
 - SSH keyboard-interactive/MFA prompts use a page-owned broker bindSheet with
