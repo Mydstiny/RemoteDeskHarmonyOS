@@ -16,12 +16,13 @@ Updated: 2026-08-07 Asia/Shanghai
   Pad/PC workspace; Pad uses a centered root bindSheet selected by `isPadDevice`,
   `cc68965` keeps the root-sheet geometry explicit, `caefd47` keeps the right pane chooser-only with a sheet-safe close offset,
   and Phone (including landscape) keeps the bottom-sheet interaction.
-- Mobile SFTP endpoint selection is now part of that closed UI scope: the right
-  side has local-file and SSH-host buttons, host selection stays inside the
-  mounted SFTP surface, the initial right pane remains chooser-only on every
-  open, and the add-host Sheet waits for SFTP native exit. The Pad surface is a
-  wide root bindSheet; the close affordance respects the sheet inset, and the
-  mobile empty-state hint no longer duplicates the floating add symbol.
+- Mobile SFTP endpoint selection is closed: the right side has local/SSH-host
+  buttons, the picker is nested in the mounted surface, the initial pane is
+  chooser-only, and add-host waits for native exit. Root opening is deferred
+  until mount; picker disappearance precedes parent close; mount tokens fence
+  stale callbacks and reopen requests wait for native exit; closing the parent
+  also cancels a queued child-picker reopen. Pad uses a wide root bindSheet,
+  respects the sheet inset, and has no duplicate empty-state plus.
 - SSH keyboard-interactive/MFA prompts use a page-owned broker bindSheet with
   echo-aware multi-prompts, hop/round metadata, cancel/expiry and stale-request
   fencing; checkpoint `f72b5fb` is code-only pending the existing reviewer.
