@@ -15,15 +15,15 @@ Updated: 2026-08-07 Asia/Shanghai
   workspace; Pad uses a centered root bindSheet selected by `isPadDevice`,
   `cc68965` keeps the root-sheet geometry explicit, `caefd47` keeps the right pane chooser-only with a sheet-safe close offset, and Phone (including landscape) keeps the bottom-sheet interaction.
 - Mobile SFTP endpoint selection is closed: right side has local/SSH-host buttons;
-  picker is nested in the mounted surface, initial pane is chooser-only, and
+  picker is a separate sibling bindSheet, initial pane is chooser-only, and
   add-host waits for native exit. Root opening commits in the same UI turn; the
-  phone root now has a bounded explicit height/full-height scroll viewport; an idle visible-state check clears a stale old-dismiss latch. Its internal readiness gate cannot rebuild the Sheet during entrance, while child opening waits for the parent to be live. Queued requests are cancellable, mount
+  phone root now has a bounded explicit height/full-height scroll viewport; an idle visible-state check clears a stale old-dismiss latch. Picker opening waits for root onAppear. Queued requests are cancellable, mount
   tokens fence stale callbacks and picker exit/reopen is serialized; each
   mounted Sheet has one native dismiss driver; stale callbacks finish only their
   old instance; cleanup waits for onDisappear and explicit root close is not
   blocked by transient guards. Pad uses a wide root bindSheet, respects the
   inset, has no duplicate empty-state plus, and hosts the root Sheet separately
-  from the outer auth/tab Sheets; first read waits for root onAppear. API 23 Pad smoke verified open/close/reopen and nested picker without collapse.
+  from the outer auth/tab Sheets; first read waits for root onAppear. Root close now keeps content through native exit with a bounded fallback; host cancel preserves the previous endpoint and `更换 host` reopens selection. Current-host selection reuses the foreground session. API 23 Pad smoke previously verified open/close/reopen and picker presentation; the current HDC target is offline, while the latest two Hvigor gates and `git diff --check` pass.
 - SSH keyboard-interactive/MFA prompts use a page-owned broker bindSheet with
   echo-aware multi-prompts, hop/round metadata, cancel/expiry and stale-request
   fencing; checkpoint `f72b5fb` is code-only pending the existing reviewer.
