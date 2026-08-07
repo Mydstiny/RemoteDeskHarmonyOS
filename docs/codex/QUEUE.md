@@ -22,7 +22,8 @@ Updated: 2026-08-07 Asia/Shanghai
   mounted Sheet has one native dismiss driver; stale callbacks finish only their
   old instance; cleanup waits for onDisappear and explicit root close is not
   blocked by transient guards. Pad uses a wide root bindSheet, respects the
-  inset, and has no duplicate empty-state plus.
+  inset, has no duplicate empty-state plus, and hosts the root Sheet separately
+  from the outer auth/tab Sheets; first read waits for root onAppear. API 23 Pad smoke verified open/close/reopen and nested picker without collapse.
 - SSH keyboard-interactive/MFA prompts use a page-owned broker bindSheet with
   echo-aware multi-prompts, hop/round metadata, cancel/expiry and stale-request
   fencing; checkpoint `f72b5fb` is code-only pending the existing reviewer.
