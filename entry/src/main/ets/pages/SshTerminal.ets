@@ -493,12 +493,16 @@ struct SshTerminal {
   private sftpSheetTransitionToken: number = 0;
   /** Native callbacks are tied to the root sheet instance that mounted them. */
   private sftpRootSheetMountToken: number = 0;
+  /** bindSheet still needs one action.dismiss() even when binding drives close. */
+  private sftpRootSheetNativeDismissInFlight: boolean = false;
   /** Reopen requests are held until the previous native sheet has disappeared. */
   private sftpRootSheetReopenRequested: boolean = false;
   private sftpRootSheetClosing: boolean = false;
   private sftpCloseRootAfterPeerPicker: boolean = false;
   /** Prevent a late nested-picker callback from closing a newer picker. */
   private sftpPeerHostPickerMountToken: number = 0;
+  /** Serialize the native dismiss driver for the nested picker as well. */
+  private sftpPeerHostPickerNativeDismissInFlight: boolean = false;
   /** The nested picker also has an exit animation; do not remount it early. */
   private sftpPeerHostPickerOpenTimer: number = -1;
   private sftpPeerHostPickerTransitionToken: number = 0;
@@ -1374,10 +1378,12 @@ struct SshTerminal {
     ++this.sftpPeerHostPickerTransitionToken;
     this.sftpRootSheetReopenRequested = false;
     this.sftpRootSheetClosing = false;
+    this.sftpRootSheetNativeDismissInFlight = false;
     this.sftpCloseRootAfterPeerPicker = false;
     this.sftpPeerHostPickerOpenQueued = false;
     this.sftpPeerHostPickerReopenRequested = false;
     this.sftpPeerHostPickerClosing = false;
+    this.sftpPeerHostPickerNativeDismissInFlight = false;
     this.showSftpPanel = false;
     this.showSftpSheet = false;
     this.sftpRootSheetSurfaceReady = false;
@@ -3956,10 +3962,12 @@ struct SshTerminal {
     ++this.sftpPeerHostPickerTransitionToken;
     this.sftpRootSheetReopenRequested = false;
     this.sftpRootSheetClosing = false;
+    this.sftpRootSheetNativeDismissInFlight = false;
     this.sftpCloseRootAfterPeerPicker = false;
     this.sftpPeerHostPickerOpenQueued = false;
     this.sftpPeerHostPickerReopenRequested = false;
     this.sftpPeerHostPickerClosing = false;
+    this.sftpPeerHostPickerNativeDismissInFlight = false;
     this.showSftpPanel = false;
     this.showSftpSheet = false;
     this.sftpRootSheetSurfaceReady = false;
@@ -4168,6 +4176,8 @@ struct SshTerminal {
     this.sftpPeerHostPickerOpenQueued = false;
     this.sftpPeerHostPickerReopenRequested = false;
     this.sftpPeerHostPickerClosing = false;
+    this.sftpRootSheetNativeDismissInFlight = false;
+    this.sftpPeerHostPickerNativeDismissInFlight = false;
     this.noteSftpSheetDismissalIfVisible();
     this.sftpPeerHostPicker = false;
     this.showSftpPanel = false;
@@ -5518,6 +5528,7 @@ struct SshTerminal {
       }
       ++this.sftpRootSheetMountToken;
       this.sftpRootSheetSurfaceReady = false;
+      this.sftpRootSheetNativeDismissInFlight = false;
       this.showSftpSheet = true;
     }, 32);
   }
@@ -5551,6 +5562,7 @@ struct SshTerminal {
     this.sftpPeerHostPickerOpenQueued = false;
     this.sftpPeerHostPickerReopenRequested = false;
     this.sftpPeerHostPickerClosing = false;
+    this.sftpPeerHostPickerNativeDismissInFlight = false;
     this.sftpPeerHostPicker = false;
     this.showSftpPanel = false;
     this.showSftpSheet = false;
@@ -5563,12 +5575,14 @@ struct SshTerminal {
     this.clearSftpSheetTransitionTimers();
     ++this.sftpSheetTransitionToken;
     this.sftpRootSheetClosing = false;
+    this.sftpRootSheetNativeDismissInFlight = false;
     this.sftpCloseRootAfterPeerPicker = false;
     ++this.sftpPeerHostPickerMountToken;
     ++this.sftpPeerHostPickerTransitionToken;
     this.sftpPeerHostPickerOpenQueued = false;
     this.sftpPeerHostPickerReopenRequested = false;
     this.sftpPeerHostPickerClosing = false;
+    this.sftpPeerHostPickerNativeDismissInFlight = false;
     this.sftpPeerHostPicker = false;
     this.showSftpPanel = false;
     this.showSftpSheet = false;
@@ -5584,6 +5598,7 @@ struct SshTerminal {
     if (mountToken !== this.sftpPeerHostPickerMountToken) { return; }
     this.sftpPeerHostPicker = false;
     this.sftpPeerHostPickerClosing = false;
+    this.sftpPeerHostPickerNativeDismissInFlight = false;
     if (this.sftpCloseRootAfterPeerPicker) {
       if (this.terminalClosing) { return; }
       // The child native Sheet is now gone. Give ArkUI one turn to commit that
@@ -5641,6 +5656,7 @@ struct SshTerminal {
       this.sftpPeerHostPickerOpenQueued = false;
       this.sftpPeerHostPickerReopenRequested = false;
       ++this.sftpPeerHostPickerMountToken;
+      this.sftpPeerHostPickerNativeDismissInFlight = false;
       this.sftpPeerHostPicker = true;
     }, 32);
   }
@@ -5762,33 +5778,38 @@ struct SshTerminal {
 
   private handleSftpPeerHostPickerDismiss(action: DismissSheetAction, mountToken: number): void {
     if (mountToken !== this.sftpPeerHostPickerMountToken) {
+      // The action belongs to the older native Sheet. Finish that native
+      // transition, but do not mutate state for the current picker mount.
       action.dismiss();
       return;
     }
     // A host selection or the parent close already changed the binding to
-    // false. That binding owns this native exit; do not dismiss it again from
-    // the callback that the same exit generates.
-    if (!shouldDriveSftpNativeDismissAction(true, this.sftpPeerHostPickerClosing)) {
+    // false. The first callback still has to drive the native exit; the
+    // in-flight flag prevents a duplicate callback from driving it again.
+    if (!shouldDriveSftpNativeDismissAction(true, this.sftpPeerHostPickerNativeDismissInFlight)) {
       return;
     }
     this.sftpPeerHostPickerReopenRequested = false;
-    // Interactive dismissal owns the native exit. Keep the bound content
-    // mounted until onDisappear; changing the binding here would start a
-    // second programmatic exit and race the parent Sheet.
+    // Keep the bound content mounted until onDisappear; changing the binding
+    // here would start a second programmatic exit and race the parent Sheet.
     this.sftpPeerHostPickerClosing = true;
+    this.sftpPeerHostPickerNativeDismissInFlight = true;
     action.dismiss();
   }
 
   private handleSftpSheetDismiss(action: DismissSheetAction, mountToken: number): void {
     const mountMatches: boolean = mountToken === this.sftpRootSheetMountToken;
     if (!mountMatches) {
+      // Finish the old native Sheet's intercepted gesture without mutating
+      // state for the current root mount.
       action.dismiss();
       return;
     }
-    // closeSftpPanel()/dismissSftpRootSheet() already set the binding to
-    // false. Let that single binding transition finish before onDisappear
-    // commits the state cleanup.
-    if (!shouldDriveSftpNativeDismissAction(mountMatches, this.sftpRootSheetClosing)) {
+    // closeSftpPanel()/dismissSftpRootSheet() may already have set the
+    // binding to false. The first callback still drives the native exit, and
+    // onDisappear commits the state cleanup.
+    if (!shouldDriveSftpNativeDismissAction(
+      mountMatches, this.sftpRootSheetNativeDismissInFlight)) {
       return;
     }
     if (sftpPeerPickerExitPending(this.sftpPeerHostPicker, this.sftpPeerHostPickerClosing)) {
@@ -5814,6 +5835,7 @@ struct SshTerminal {
     this.clearSftpSheetTransitionTimers();
     ++this.sftpSheetTransitionToken;
     this.sftpRootSheetClosing = true;
+    this.sftpRootSheetNativeDismissInFlight = true;
     this.noteSftpSheetDismissalIfVisible();
     action.dismiss();
   }

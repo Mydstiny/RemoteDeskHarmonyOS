@@ -80,8 +80,12 @@ export function shouldAllowSftpRootSheetDismiss(state: SftpRootSheetDismissState
   return state.rootSurfaceReady && !state.transferBusy;
 }
 
-/** A binding-driven close must not also call the native dismiss action. */
+/**
+ * A mounted Sheet gets exactly one native dismiss action. Binding changes and
+ * interactive gestures can both lead to onWillDismiss; the caller tracks the
+ * in-flight action and passes that state here.
+ */
 export function shouldDriveSftpNativeDismissAction(mountMatches: boolean,
-  bindingCloseRequested: boolean): boolean {
-  return mountMatches && !bindingCloseRequested;
+  nativeDismissInFlight: boolean): boolean {
+  return mountMatches && !nativeDismissInFlight;
 }
