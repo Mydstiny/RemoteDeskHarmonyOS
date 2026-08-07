@@ -17,12 +17,12 @@ Updated: 2026-08-07 Asia/Shanghai
   `cc68965` keeps the root-sheet geometry explicit, `caefd47` keeps the right pane chooser-only with a sheet-safe close offset,
   and Phone (including landscape) keeps the bottom-sheet interaction.
 - Mobile SFTP endpoint selection is closed: the right side has local/SSH-host
-  buttons, the picker is nested in the mounted surface, the initial pane is
-  chooser-only, and add-host waits for native exit. Root opening is deferred
-  until mount; picker disappearance precedes parent close; mount tokens fence
-  stale callbacks and reopen requests wait for native exit; closing the parent
-  also cancels a queued child-picker reopen and keeps the parent mounted while the child picker is exiting. Pad uses a wide root bindSheet,
-  respects the sheet inset, and has no duplicate empty-state plus.
+  buttons; the picker is nested in the mounted surface, the initial pane is
+  chooser-only, and add-host waits for native exit. Root and child opening are
+  deferred until the parent is live; queued requests are cancellable, mount
+  tokens fence stale callbacks, and picker exit/reopen ordering is serialized.
+  Pad uses a wide root bindSheet, respects the sheet inset, and has no duplicate
+  empty-state plus.
 - SSH keyboard-interactive/MFA prompts use a page-owned broker bindSheet with
   echo-aware multi-prompts, hop/round metadata, cancel/expiry and stale-request
   fencing; checkpoint `f72b5fb` is code-only pending the existing reviewer.
