@@ -157,10 +157,10 @@ import {
   resolveSshSftpConflict
 } from '../services/SshSftpBatchPolicy';
 import {
+  SHEET_DISMISS_GUARD_MS,
   noteSshSftpSheetDismissed,
   sftpPeerPickerExitPending,
   shouldMountSftpPeerPicker,
-  shouldAllowSftpRootSheetDismiss,
   shouldDriveSftpNativeDismissAction
 } from '../services/SheetTransitionPolicy';
 // Passphrase uses bindSheet (SshTerminal is @Entry, no bindSheet limit)
@@ -250,6 +250,9 @@ struct SshTerminal {
   @State visibleSshHostId: string = '';
   @State sshTabViews: SshTerminalTabView[] = [];
   @State showSshTabPicker: boolean = false;
+  /** A tab switch waits for the picker Sheet's native exit transition. */
+  private sshTabPickerClosing: boolean = false;
+  private sshTabPickerPendingHostId: string = '';
   /** 当前 SSH 输出 chunk；终端核心拥有 scrollback，不在页面累计完整历史。 */
   @State termOutput: string = '';
   /**
@@ -380,6 +383,7 @@ struct SshTerminal {
   @State sftpPeerHostPicker: boolean = false;
   @State sftpPeerPath: string = '.';
   @State sftpPeerPathInput: string = '.';
+  @State sftpPeerNameInput: string = '';
   @State sftpPeerEntries: SftpFileEntry[] = [];
   @State sftpPeerSelectedPath: string = '';
   @State sftpPeerSelectedName: string = '';
@@ -429,6 +433,8 @@ struct SshTerminal {
   private sftpPeerConnectPromise: Promise<number> | null = null;
   private sftpPeerConnectHostId: string = '';
   private sftpPeerRequestToken: number = 0;
+  /** Commit a host only after the nested picker has left the native surface. */
+  private sftpPendingPeerHostId: string = '';
   private explicitSessionClose: boolean = false;
   private sshBackgroundTaskService: SshTerminalBackgroundTaskService =
     SshTerminalBackgroundTaskService.getInstance();
@@ -492,6 +498,8 @@ struct SshTerminal {
   private sftpRootSheetOpenTimer: number = -1;
   /** The first directory read must wait until the root native Sheet is stable. */
   private sftpRootSheetRefreshTimer: number = -1;
+  /** Bounds a missing root onDisappear callback without reopening too early. */
+  private sftpRootSheetExitRecoveryTimer: number = -1;
   private sftpSheetTransitionToken: number = 0;
   /** Native callbacks are tied to the root sheet instance that mounted them. */
   private sftpRootSheetMountToken: number = 0;
@@ -507,6 +515,8 @@ struct SshTerminal {
   private sftpPeerHostPickerNativeDismissInFlight: boolean = false;
   /** The nested picker also has an exit animation; do not remount it early. */
   private sftpPeerHostPickerOpenTimer: number = -1;
+  /** Bounds a missing nested-picker onDisappear callback. */
+  private sftpPeerHostPickerExitRecoveryTimer: number = -1;
   private sftpPeerHostPickerTransitionToken: number = 0;
   /** A queued child picker must be cancellable before native bindSheet mount. */
   private sftpPeerHostPickerOpenQueued: boolean = false;
@@ -943,6 +953,32 @@ struct SshTerminal {
   }
 
   /**
+   * The toolbar and loading mask must describe the same active binding. A
+   * host switch can publish the new tab before the page-owned session fields
+   * have settled, so the tab registry is the authoritative fallback while
+   * the session id still fences stale inactive-host state.
+   */
+  private sshConnectionIsConnected(): boolean {
+    if (this.connected) { return true; }
+    const currentHostId: string = this.hostId.trim();
+    if (currentHostId.length === 0) { return false; }
+    // During an in-page tab handoff the page-owned sessionId is deliberately
+    // cleared before the target session is adopted. The tab registry already
+    // owns the target session identity, so requiring equality here briefly
+    // turns a live target into a false "连接中" toolbar state.
+    const active: SshTerminalTabView | undefined = this.sshTabViews.find(
+      (tab: SshTerminalTabView): boolean => tab.active && tab.hostId.trim() === currentHostId);
+    return active !== undefined && active.state === 'connected' && active.sessionId > 0;
+  }
+
+  /** The xterm/WebView ready bit is scoped to the currently visible host. */
+  private sshVisibleSurfaceReady(): boolean {
+    const currentHostId: string = this.visibleSshHostId.trim();
+    return currentHostId.length > 0 && this.xtermReady &&
+      this.terminalSurfaceCommittedHostId.trim() === currentHostId;
+  }
+
+  /**
    * A stale WebView must never drain the next host's pending transcript. Keep
    * the fallback queue owned by the host binding, not by the page singleton.
    */
@@ -1139,13 +1175,26 @@ struct SshTerminal {
     if (!this.shouldUseNativeTerminal()) {
       const surfaceKey: string = this.xtermSurfaceCoreKey(bindingHostId);
       if (surfaceKey.length === 0) { return; }
+      const normalizedHostId: string = bindingHostId.trim();
+      const nextRevision: number = sshXtermTabRenderRevision(
+        this.sshTabStore.sessionGeneration(normalizedHostId));
+      const bindingChanged: boolean = this.terminalSurfaceCommittedHostId.trim() !== normalizedHostId ||
+        this.terminalSurfaceBindingKey.trim() !== surfaceKey ||
+        this.terminalSurfaceRenderRevision !== nextRevision;
       this.terminalSurfaceMounted = true;
-      this.terminalSurfaceCommittedHostId = bindingHostId.trim();
+      this.terminalSurfaceCommittedHostId = normalizedHostId;
       this.terminalSurfaceBindingKey = surfaceKey;
-      this.terminalSurfaceRenderRevision = sshXtermTabRenderRevision(
-        this.sshTabStore.sessionGeneration(bindingHostId));
+      this.terminalSurfaceRenderRevision = nextRevision;
       this.terminalSurfaceViewKey = surfaceKey;
-      this.xtermReady = this.xtermSurfaceReadyForHost(bindingHostId);
+      this.xtermReady = this.xtermSurfaceReadyForHost(normalizedHostId);
+      if (bindingChanged) {
+        // The target WebView can already be mounted but hidden when the page
+        // commits a retained session. Nudge its idempotent post-load path so
+        // the target drains its host FIFO even if ArkUI coalesces the active
+        // prop and the binding commit into one render turn.
+        this.termOutputSequence = this.termOutputSequence + 1;
+        this.terminalSurfaceRefreshRequest = this.terminalSurfaceRefreshRequest + 1;
+      }
       return;
     }
     const bindingKey: string = makeSshTerminalSurfaceBindingKey(bindingHostId,
@@ -1240,18 +1289,45 @@ struct SshTerminal {
     return '已连接';
   }
 
+  /**
+   * The active tab is also represented by the page-owned connection state.
+   * During an attach/switch, the registry notification and the page state can
+   * arrive on adjacent ArkUI turns; prefer the live page state for that one
+   * tab so the toolbar cannot keep showing a stale "连接中" label after the
+   * terminal is already usable. Inactive tabs continue to use their registry
+   * snapshot.
+   */
+  private sshTabDisplayState(tab: SshTerminalTabView): string {
+    if (tab.active && tab.hostId.trim() === this.hostId.trim()) {
+      // attachSshSession() publishes the page-owned session only after the
+      // callback and resume fence are installed. The tab store notification
+      // can arrive one ArkUI turn later, so a live page binding outranks the
+      // stale cached label for the active tab.
+      if (this.connected && this.sessionId > 0) {
+        return this.tabStateLabel('connected');
+      }
+      if (tab.state === 'connected' && tab.sessionId > 0) {
+        return this.tabStateLabel('connected');
+      }
+      if (tab.state === 'reconnecting' && tab.sessionId > 0) {
+        return this.tabStateLabel('reconnecting');
+      }
+      if (this.connected) { return this.tabStateLabel('connected'); }
+      if (this.connecting) { return this.tabStateLabel('connecting'); }
+    }
+    return this.tabStateLabel(tab.state);
+  }
+
   private sshTabHosts(): RemoteHost[] {
     return this.srv.getAllHosts().filter((host: RemoteHost): boolean => host.protocol === 'ssh');
   }
 
-  private navigateToSshTab(host: RemoteHost): void {
+  private beginSshTabSwitch(host: RemoteHost): void {
     const targetHostId: string = host.id.trim();
     if (targetHostId.length === 0 || this.terminalClosing || this.tabSwitchInFlight) { return; }
     if (targetHostId === this.hostId) {
-      this.showSshTabPicker = false;
       return;
     }
-    this.showSshTabPicker = false;
     // Keep one page alive for the whole SSH workspace. The switch operation
     // detaches only the old session callback, adopts the target session and
     // rebinds the visible renderer; it must never route-replace the page.
@@ -1267,6 +1343,41 @@ struct SshTerminal {
         hilog.error(0x0001, 'SshTerminal', '[tab] in-page switch failed: ' + message);
       })
       .finally((): void => { this.tabSwitchInFlight = false; });
+  }
+
+  private navigateToSshTab(host: RemoteHost): void {
+    const targetHostId: string = host.id.trim();
+    if (targetHostId.length === 0 || this.terminalClosing || this.tabSwitchInFlight) { return; }
+    if (targetHostId === this.hostId) {
+      this.sshTabPickerPendingHostId = '';
+      this.sshTabPickerClosing = false;
+      this.showSshTabPicker = false;
+      return;
+    }
+    // Do not change the terminal binding underneath a native Sheet that is
+    // still animating out. ArkUI may coalesce the Sheet dismissal and the
+    // keyed WebView update, leaving the newly selected host with no visible
+    // first frame. The onDisappear callback below starts the handoff only
+    // after the picker has released its native surface.
+    if (this.showSshTabPicker) {
+      this.sshTabPickerPendingHostId = targetHostId;
+      this.sshTabPickerClosing = true;
+      this.showSshTabPicker = false;
+      return;
+    }
+    this.beginSshTabSwitch(host);
+  }
+
+  private onSshTabPickerDisappear(): void {
+    if (!this.sshTabPickerClosing) { return; }
+    const pendingHostId: string = this.sshTabPickerPendingHostId.trim();
+    this.sshTabPickerPendingHostId = '';
+    this.sshTabPickerClosing = false;
+    if (pendingHostId.length === 0 || this.terminalClosing) { return; }
+    const host: RemoteHost | undefined = this.srv.getHost(pendingHostId);
+    if (host !== undefined) {
+      this.beginSshTabSwitch(host);
+    }
   }
 
   /**
@@ -1337,12 +1448,6 @@ struct SshTerminal {
     this.userAtHost = host.username + '@' + host.host + ':' + host.port.toString();
     this.sshHost = host.host;
     this.sshPort = host.port;
-    // The target tab keeps its own xterm document and scrollback. Switching
-    // only changes the active surface; session generation still controls a
-    // rebuild when the target is actually reconnected.
-    this.sshTabStore.open(targetHostId, this.hostLabel, this.userAtHost);
-    this.sshTabStore.activate(targetHostId);
-    this.refreshSshTabViews();
 
     // Reset only view-local state. The native session/core for the target tab
     // is adopted below, so the connection itself is never recreated on a tab
@@ -1361,7 +1466,11 @@ struct SshTerminal {
     this.terminalOutputQueueOverflowed = false;
     this.termOutput = '';
     this.nativeRendererUnavailable = false;
-    this.xtermReady = this.xtermSurfaceReadyForHost(targetHostId);
+    // Do not let the previous host's ready bit survive the binding handoff.
+    // The target tab is published only after the page-owned fields below have
+    // reached their new-host values, so ArkUI cannot build a target WebView
+    // against the old connected/ready state for one intermediate frame.
+    this.xtermReady = false;
     this.bracketedPasteEnabled = false;
     this.terminalMouseTracking = 0;
     this.terminalSgrMouse = false;
@@ -1382,6 +1491,7 @@ struct SshTerminal {
     this.sftpRootSheetClosing = false;
     this.sftpRootSheetNativeDismissInFlight = false;
     this.sftpCloseRootAfterPeerPicker = false;
+    this.sftpPendingPeerHostId = '';
     this.sftpPeerHostPickerOpenQueued = false;
     this.sftpPeerHostPickerReopenRequested = false;
     this.sftpPeerHostPickerClosing = false;
@@ -1399,6 +1509,7 @@ struct SshTerminal {
     this.sftpRightEndpointChosen = false;
     this.sftpPeerHostId = '';
     this.sftpPeerHostPicker = false;
+    this.sftpPeerNameInput = '';
     this.sftpPeerPath = '.';
     this.sftpPeerPathInput = '.';
     this.sftpPeerEntries = [];
@@ -1420,6 +1531,14 @@ struct SshTerminal {
     this.sftpWaitingForConnection = false;
     this.sftpDetached = false;
     this.refreshRecoveredSftpTasks();
+
+    // The target tab keeps its own xterm document and scrollback. Publish the
+    // active tab only after the page binding above is coherent; session
+    // generation still controls a rebuild when the target is reconnected.
+    this.sshTabStore.open(targetHostId, this.hostLabel, this.userAtHost);
+    this.sshTabStore.activate(targetHostId);
+    this.xtermReady = this.xtermSurfaceReadyForHost(targetHostId);
+    this.refreshSshTabViews();
 
     const adoptedSessionId: number = this.loader.adoptDetachedSshSession(targetHostId);
     if (adoptedSessionId > 0) {
@@ -1452,7 +1571,8 @@ struct SshTerminal {
   private openSshTabPicker(): void {
     // SFTP host selection is rendered inside the existing SFTP surface. Do
     // not stack another native sheet while that surface is visible.
-    if (this.showSftpPanel || this.showSftpSheet || this.sftpPeerHostPicker) { return; }
+    if (this.showSftpPanel || this.showSftpSheet || this.sftpPeerHostPicker ||
+      this.sshTabPickerClosing) { return; }
     this.showSshTabPicker = true;
   }
 
@@ -1463,7 +1583,7 @@ struct SshTerminal {
         Text(tab.label.length > 0 ? tab.label : tab.address)
           .fontSize(12).fontColor(tab.active ? '#F4F7FA' : 'rgba(242,244,247,0.76)')
           .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-        Text(this.tabStateLabel(tab.state))
+        Text(this.sshTabDisplayState(tab))
           .fontSize(9).fontColor(tab.state === 'error' ? '#FF7777' : 'rgba(242,244,247,0.48)')
           .maxLines(1)
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
@@ -2018,18 +2138,13 @@ struct SshTerminal {
     return 56 + this.headerTopOffset();
   }
 
-  private terminalChromeHeight(): number {
-    // The terminal surface is laid out below both chrome variants. Inline
-    // tabs live inside the header; phone tabs have their own 40vp strip.
-    const standaloneTabStripHeight: number =
-      this.sshTabViews.length > 0 && !this.sshTabsInline()
-        ? 40 + this.topChromeOffset() : 0;
-    return standaloneTabStripHeight + this.headerHeight();
-  }
-
   private shellViewportHeight(): number {
+    // shellAreaH is measured on the layout-weighted terminal shell itself.
+    // That node is already placed below the standalone tab strip/header, so
+    // subtracting terminal chrome here would double-count the top bars and
+    // leave the xterm surface shorter than its real ArkUI viewport.
     if (this.shellAreaH > 0) {
-      return Math.max(this.cellHvp * 3, this.shellAreaH - this.terminalChromeHeight());
+      return Math.max(this.cellHvp * 3, this.shellAreaH);
     }
     return Math.max(this.cellHvp * 3, this.calcRowsFallback() * this.cellHvp);
   }
@@ -2662,7 +2777,6 @@ struct SshTerminal {
     if (!this.isPageGenerationActive(requestPageGeneration) || owner.length === 0) { return null; }
     const existing: SshSftpEngineSession | null = this.sftpSessionForHost(owner);
     if (existing !== null) { return existing; }
-    if (owner === this.hostId.trim()) { return null; }
     const host: RemoteHost | undefined = this.srv.getHost(owner);
     if (host === undefined || host.protocol !== 'ssh') { return null; }
     if (host.locked) {
@@ -2730,15 +2844,21 @@ struct SshTerminal {
     return this.sftpSessionForHost(owner);
   }
 
-  private selectSftpPeerHost(host: RemoteHost): void {
-    if (host.protocol !== 'ssh' || host.id.trim().length === 0) { return; }
-    this.sftpPeerRequestToken++;
+  private commitSftpPeerHostSelection(hostId: string): void {
+    const owner: string = hostId.trim();
+    const host: RemoteHost | undefined = this.srv.getHost(owner);
+    if (owner.length === 0 || host === undefined || host.protocol !== 'ssh' ||
+      this.terminalClosing || !this.showSftpPanel) {
+      this.sftpPeerStatus = 'SSH 主机不可用，请重新选择';
+      this.sftpPeerBusy = false;
+      return;
+    }
     this.sftpRightEndpoint = 'ssh';
     this.sftpRightEndpointChosen = true;
-    this.sftpPeerHostId = host.id.trim();
-    this.requestSftpPeerHostPickerClose();
+    this.sftpPeerHostId = owner;
     this.sftpPeerPath = '.';
     this.sftpPeerPathInput = '.';
+    this.sftpPeerNameInput = '';
     this.sftpPeerEntries = [];
     this.sftpPeerSelectedPath = '';
     this.sftpPeerSelectedName = '';
@@ -2747,13 +2867,32 @@ struct SshTerminal {
     this.sftpPeerSelectedMtime = -1;
     this.sftpPeerSessionId = -1;
     this.sftpPeerSessionGeneration = 0;
-    this.sftpPeerBusy = false;
-    this.sftpPeerStatus = '正在准备 SSH 会话...';
+    this.sftpPeerBusy = true;
+    this.sftpPeerStatus = '正在准备 ' + host.label + ' 的 SFTP 会话...';
     this.refreshRecoveredSftpTasks();
     void this.refreshSftpPeer();
   }
 
+  private selectSftpPeerHost(host: RemoteHost): void {
+    if (host.protocol !== 'ssh' || host.id.trim().length === 0 || this.terminalClosing) { return; }
+    const owner: string = host.id.trim();
+    this.sftpPeerRequestToken++;
+    this.sftpPendingPeerHostId = owner;
+    this.sftpPeerBusy = false;
+    this.sftpPeerStatus = '正在切换到 ' + host.label + '...';
+    const pickerWasMounted: boolean = this.sftpPeerHostPicker || this.sftpPeerHostPickerClosing;
+    this.requestSftpPeerHostPickerClose();
+    // The row is normally inside the picker. Deferring the endpoint branch
+    // until onDisappear prevents the parent Sheet from rebuilding its child
+    // bindSheet while the native picker is still animating out.
+    if (!pickerWasMounted) {
+      this.sftpPendingPeerHostId = '';
+      this.commitSftpPeerHostSelection(owner);
+    }
+  }
+
   private useSftpLocalEndpoint(): void {
+    this.sftpPendingPeerHostId = '';
     this.sftpRightEndpoint = 'local';
     this.sftpRightEndpointChosen = true;
     this.requestSftpPeerHostPickerClose();
@@ -2770,6 +2909,7 @@ struct SshTerminal {
 
   private resetSftpRightEndpointSelection(): void {
     if (this.sftpBusy) { return; }
+    this.sftpPendingPeerHostId = '';
     this.sftpRightEndpoint = 'local';
     this.sftpRightEndpointChosen = false;
     this.requestSftpPeerHostPickerClose();
@@ -2788,6 +2928,25 @@ struct SshTerminal {
     this.refreshRecoveredSftpTasks();
   }
 
+  /** Open the picker without discarding the currently selected peer. */
+  private changeSftpPeerHost(): void {
+    if (this.sftpBusy || this.terminalClosing) { return; }
+    // Invalidate a directory read that belongs to the old peer before the
+    // picker is shown. The old endpoint remains visible until a new host is
+    // committed, so cancelling the picker is non-destructive.
+    ++this.sftpPeerRequestToken;
+    this.sftpPeerBusy = false;
+    this.sftpPeerStatus = '请选择新的 SSH 主机';
+    this.openSftpPeerPicker();
+  }
+
+  /** The picker close affordance cancels an uncommitted host choice. */
+  private cancelSftpPeerHostPicker(): void {
+    this.sftpPendingPeerHostId = '';
+    ++this.sftpPeerRequestToken;
+    this.requestSftpPeerHostPickerClose();
+  }
+
   private isSftpPeerRequestActive(pageGeneration: number, token: number,
     hostId: string, session: SshSftpEngineSession): boolean {
     return this.isPageGenerationActive(pageGeneration) && token === this.sftpPeerRequestToken &&
@@ -2797,22 +2956,28 @@ struct SshTerminal {
 
   private async refreshSftpPeer(path: string = this.sftpPeerPath): Promise<void> {
     if (this.sftpRightEndpoint !== 'ssh' || this.sftpPeerHostId.trim().length === 0 ||
-      this.terminalClosing || this.sftpBusy) { return; }
+      this.terminalClosing) { return; }
     const requestPageGeneration: number = this.pageGeneration;
     const hostId: string = this.sftpPeerHostId.trim();
+    const requestToken: number = ++this.sftpPeerRequestToken;
+    this.sftpPeerBusy = true;
+    this.sftpPeerStatus = '正在准备 SSH 会话...';
     const session: SshSftpEngineSession | null = await this.ensureSftpHostSession(
       hostId, requestPageGeneration);
     if (session === null) {
-      if (this.isPageGenerationActive(requestPageGeneration)) {
+      if (this.isPageGenerationActive(requestPageGeneration) &&
+        requestToken === this.sftpPeerRequestToken && this.sftpPeerHostId === hostId) {
         this.sftpPeerStatus = 'SSH 主机不可用或需要认证';
+        this.sftpPeerBusy = false;
       }
       return;
     }
-    if (!this.isPageGenerationActive(requestPageGeneration) ||
+    if (!this.isPageGenerationActive(requestPageGeneration) || requestToken !== this.sftpPeerRequestToken ||
       this.sftpRightEndpoint !== 'ssh' || this.sftpPeerHostId !== hostId) {
       return;
     }
-    const requestToken: number = ++this.sftpPeerRequestToken;
+    this.sftpPeerSessionId = session.sessionId;
+    this.sftpPeerSessionGeneration = session.generation;
     const target: string = this.normalizeRemoteDir(path);
     this.sftpPeerBusy = true;
     this.sftpPeerStatus = '正在读取远端目录...';
@@ -2827,6 +2992,7 @@ struct SshTerminal {
       this.sftpPeerEntries = this.sortSftpEntries(result.entries.slice());
       this.sftpPeerPath = target;
       this.sftpPeerPathInput = target;
+      this.sftpPeerNameInput = '';
       this.sftpPeerSelectedPath = '';
       this.sftpPeerSelectedName = '';
       this.sftpPeerSelectedIsDir = false;
@@ -2847,11 +3013,172 @@ struct SshTerminal {
   private selectSftpPeerEntry(entry: SftpFileEntry): void {
     this.sftpPeerSelectedPath = entry.path;
     this.sftpPeerSelectedName = entry.name;
+    this.sftpPeerNameInput = entry.name;
     this.sftpPeerSelectedIsDir = entry.isDirectory;
     this.sftpPeerSelectedSize = entry.size;
     this.sftpPeerSelectedMtime = entry.mtime;
     this.sftpPeerStatus = entry.isDirectory ? '已选择目录 ' + entry.name :
       '已选择 ' + entry.name + ' (' + this.formatFileSize(entry.size) + ')';
+  }
+
+  private sftpPeerOperationSession(): SshSftpEngineSession | null {
+    if (this.sftpRightEndpoint !== 'ssh' || this.sftpPeerHostId.trim().length === 0) {
+      return null;
+    }
+    const session: SshSftpEngineSession | null = this.sftpSessionForHost(this.sftpPeerHostId);
+    if (session !== null) {
+      this.sftpPeerSessionId = session.sessionId;
+      this.sftpPeerSessionGeneration = session.generation;
+    }
+    return session;
+  }
+
+  private async renameSftpPeerSelected(): Promise<void> {
+    if (this.sftpBusy || this.sftpPeerBusy || this.sftpPeerSelectedPath.length === 0) { return; }
+    const trimmed: string = this.sftpPeerNameInput.trim();
+    if (!this.isValidRemoteName(trimmed)) {
+      this.sftpPeerStatus = '[SFTP-RENAME] 新名称无效';
+      return;
+    }
+    const session: SshSftpEngineSession | null = this.sftpPeerOperationSession();
+    if (session === null) {
+      this.sftpPeerStatus = 'SSH 主机尚未完成认证';
+      return;
+    }
+    const pageGeneration: number = this.pageGeneration;
+    const requestToken: number = ++this.sftpPeerRequestToken;
+    const hostId: string = this.sftpPeerHostId.trim();
+    const oldPath: string = this.sftpPeerSelectedPath;
+    const newPath: string = this.joinRemotePath(this.parentRemotePath(oldPath), trimmed);
+    if (this.comparableRemotePath(oldPath) === this.comparableRemotePath(newPath)) {
+      this.sftpPeerStatus = '新名称与原名称相同';
+      return;
+    }
+    this.sftpPeerBusy = true;
+    this.sftpPeerStatus = '正在重命名...';
+    let errorCode: number = -1;
+    try {
+      const result = await this.loader.renameRemotePathAsync(session.sessionId, oldPath, newPath);
+      if (!this.isSftpPeerRequestActive(pageGeneration, requestToken, hostId, session)) { return; }
+      errorCode = result.errorCode;
+    } catch (_err) {
+      errorCode = -1;
+    } finally {
+      if (this.isSftpPeerRequestActive(pageGeneration, requestToken, hostId, session)) {
+        this.sftpPeerBusy = false;
+      }
+    }
+    if (!this.isSftpPeerRequestActive(pageGeneration, requestToken, hostId, session)) { return; }
+    if (errorCode < 0) {
+      this.sftpPeerStatus = '[SFTP-RENAME] 重命名失败 ret=' + errorCode.toString();
+      return;
+    }
+    this.sftpPeerStatus = '已重命名为 ' + trimmed;
+    void this.refreshSftpPeer(this.sftpPeerPath);
+  }
+
+  private async makeSftpPeerDir(): Promise<void> {
+    if (this.sftpBusy || this.sftpPeerBusy) { return; }
+    const candidate: string = this.sftpPeerNameInput.trim();
+    if (candidate.length > 0 && !this.isValidRemoteName(candidate)) {
+      this.sftpPeerStatus = '[SFTP-MKDIR] 目录名无效';
+      return;
+    }
+    const session: SshSftpEngineSession | null = this.sftpPeerOperationSession();
+    if (session === null) {
+      this.sftpPeerStatus = 'SSH 主机尚未完成认证';
+      return;
+    }
+    const dirName: string = candidate.length > 0 ? candidate : 'NewFolder-' + Date.now().toString();
+    const targetPath: string = this.joinRemotePath(this.sftpPeerPath, dirName);
+    const pageGeneration: number = this.pageGeneration;
+    const requestToken: number = ++this.sftpPeerRequestToken;
+    const hostId: string = this.sftpPeerHostId.trim();
+    this.sftpPeerBusy = true;
+    this.sftpPeerStatus = '正在创建目录...';
+    let errorCode: number = -1;
+    try {
+      const result = await this.loader.makeRemoteDirAsync(session.sessionId, targetPath);
+      if (!this.isSftpPeerRequestActive(pageGeneration, requestToken, hostId, session)) { return; }
+      errorCode = result.errorCode;
+    } catch (_err) {
+      errorCode = -1;
+    } finally {
+      if (this.isSftpPeerRequestActive(pageGeneration, requestToken, hostId, session)) {
+        this.sftpPeerBusy = false;
+      }
+    }
+    if (!this.isSftpPeerRequestActive(pageGeneration, requestToken, hostId, session)) { return; }
+    if (errorCode < 0) {
+      this.sftpPeerStatus = '[SFTP-MKDIR] 创建失败 ret=' + errorCode.toString();
+      return;
+    }
+    this.sftpPeerNameInput = '';
+    this.sftpPeerStatus = '已创建目录 ' + dirName;
+    void this.refreshSftpPeer(this.sftpPeerPath);
+  }
+
+  private deleteSftpPeerSelected(): void {
+    if (this.sftpBusy || this.sftpPeerBusy || this.sftpPeerSelectedPath.length === 0) { return; }
+    const pageGeneration: number = this.pageGeneration;
+    const requestToken: number = this.sftpPeerRequestToken;
+    const session: SshSftpEngineSession | null = this.sftpPeerOperationSession();
+    if (session === null) {
+      this.sftpPeerStatus = 'SSH 主机尚未完成认证';
+      return;
+    }
+    const path: string = this.sftpPeerSelectedPath;
+    const name: string = this.sftpPeerSelectedName;
+    const isDirectory: boolean = this.sftpPeerSelectedIsDir;
+    promptAction.showDialog({
+      title: isDirectory ? '删除远端目录' : '删除远端文件',
+      message: '确定删除 ' + name + ' 吗？' + (isDirectory ? ' 目录必须为空。' : ''),
+      buttons: [
+        { text: '取消', color: this.pal().text2 },
+        { text: '删除', color: this.pal().danger }
+      ]
+    }).then((res): void => {
+      if (res.index !== 1 || !this.isSftpPeerRequestActive(
+        pageGeneration, requestToken, this.sftpPeerHostId.trim(), session)) { return; }
+      void this.deleteSftpPeerPath(path, isDirectory, pageGeneration, session);
+    }).catch((_err: BusinessError): void => {
+      // Closing the confirmation dialog is a normal cancellation.
+    });
+  }
+
+  private async deleteSftpPeerPath(path: string, isDirectory: boolean,
+    pageGeneration: number, session: SshSftpEngineSession): Promise<void> {
+    const requestToken: number = ++this.sftpPeerRequestToken;
+    const hostId: string = this.sftpPeerHostId.trim();
+    if (!this.isSftpPeerRequestActive(pageGeneration, requestToken - 1, hostId, session)) {
+      // The dialog owns the previous request token. Accept its transition once
+      // and use the new token for the actual delete operation.
+      if (!this.isPageGenerationActive(pageGeneration) || this.sftpRightEndpoint !== 'ssh' ||
+        this.sftpPeerHostId.trim() !== hostId) { return; }
+    }
+    this.sftpPeerBusy = true;
+    this.sftpPeerStatus = '正在删除...';
+    let errorCode: number = -1;
+    try {
+      const result = isDirectory
+        ? await this.loader.removeRemoteDirAsync(session.sessionId, path)
+        : await this.loader.removeRemoteFileAsync(session.sessionId, path);
+      if (!this.isSftpPeerRequestActive(pageGeneration, requestToken, hostId, session)) { return; }
+      errorCode = result.errorCode;
+    } catch (_err) {
+      errorCode = -1;
+    } finally {
+      if (this.isSftpPeerRequestActive(pageGeneration, requestToken, hostId, session)) {
+        this.sftpPeerBusy = false;
+      }
+    }
+    if (!this.isSftpPeerRequestActive(pageGeneration, requestToken, hostId, session)) { return; }
+    if (errorCode < 0) {
+      this.sftpPeerStatus = '[SFTP-DELETE] 删除失败 ret=' + errorCode.toString();
+      return;
+    }
+    this.sftpPeerStatus = '已删除 ' + this.sftpPeerSelectedName;
+    void this.refreshSftpPeer(this.parentRemotePath(path));
   }
 
   private async scanSftpRemoteTree(rootPath: string, rootName: string,
@@ -3288,6 +3615,17 @@ struct SshTerminal {
       sourceName.length === 0 || targetRoot.trim().length === 0) {
       this.sftpStatus = '请选择源文件或目录';
       return;
+    }
+    const targetPath: string = this.joinRemotePath(targetRoot, sourceName);
+    if (sourceHostId === targetHostId) {
+      const sameDirectory: boolean = sourceIsDir &&
+        this.comparableRemotePath(sourcePath) === this.comparableRemotePath(targetRoot);
+      const sameFinalPath: boolean = this.comparableRemotePath(sourcePath) ===
+        this.comparableRemotePath(targetPath);
+      if (sameDirectory || sameFinalPath) {
+        this.sftpStatus = '源和目标是同一 SSH 路径，已阻止传输';
+        return;
+      }
     }
     const requestPageGeneration: number = this.pageGeneration;
     this.sftpBusy = true;
@@ -3876,6 +4214,8 @@ struct SshTerminal {
     this.nativeRendererUnavailable = false;
     this.clearPreflightBinding();
     this.showSshTabPicker = false;
+    this.sshTabPickerClosing = false;
+    this.sshTabPickerPendingHostId = '';
     if (this.sshTabStoreUnsubscribe !== null) {
       this.sshTabStoreUnsubscribe();
       this.sshTabStoreUnsubscribe = null;
@@ -3966,6 +4306,7 @@ struct SshTerminal {
     this.sftpRootSheetClosing = false;
     this.sftpRootSheetNativeDismissInFlight = false;
     this.sftpCloseRootAfterPeerPicker = false;
+    this.sftpPendingPeerHostId = '';
     this.sftpPeerHostPickerOpenQueued = false;
     this.sftpPeerHostPickerReopenRequested = false;
     this.sftpPeerHostPickerClosing = false;
@@ -3987,6 +4328,7 @@ struct SshTerminal {
     this.sftpRightEndpointChosen = false;
     this.sftpPeerHostId = '';
     this.sftpPeerHostPicker = false;
+    this.sftpPeerNameInput = '';
     this.sftpPeerPath = '.';
     this.sftpPeerPathInput = '.';
     this.sftpPeerEntries = [];
@@ -4175,6 +4517,7 @@ struct SshTerminal {
     ++this.sftpPeerHostPickerTransitionToken;
     this.sftpRootSheetReopenRequested = false;
     this.sftpCloseRootAfterPeerPicker = false;
+    this.sftpPendingPeerHostId = '';
     this.sftpPeerHostPickerOpenQueued = false;
     this.sftpPeerHostPickerReopenRequested = false;
     this.sftpPeerHostPickerClosing = false;
@@ -4623,13 +4966,13 @@ struct SshTerminal {
   }
 
   private connectionDotColor(): string {
-    if (this.connected) { return '#34C759'; }
+    if (this.sshConnectionIsConnected()) { return '#34C759'; }
     if (this.connecting) { return this.accentColor; }
     return this.pal().danger;
   }
 
   private connectionLabel(): string {
-    if (this.connected) {
+    if (this.sshConnectionIsConnected()) {
       return this.latencyMs >= 0 ? `已连接 ${this.latencyMs}ms` : '已连接 --ms';
     }
     if (this.connecting) { return '连接中'; }
@@ -5310,6 +5653,25 @@ struct SshTerminal {
         ' reported=' + reportedRevision.toString() + ' expected=' + expectedRevision.toString());
       return;
     }
+    // A session tab can rebuild its WebView after its transcript was already
+    // consumed by the previous document. Compare the actual document
+    // revision, not just host presence: the first session attach commonly
+    // changes revision 0 to the native generation, and that new document
+    // must receive the host transcript or it will show only a blank cursor.
+    const previousReadyRevision: number | undefined =
+      this.xtermReadyGenerations.get(normalizedHostId);
+    if (previousReadyRevision !== undefined && previousReadyRevision !== reportedRevision) {
+      const outputBuffer: XtermOutputBuffer = this.xtermOutputBufferForHost(normalizedHostId);
+      if (outputBuffer.size() === 0) {
+        const transcript: string = this.sshTranscriptStore.snapshot(normalizedHostId);
+        if (transcript.length > 0) {
+          outputBuffer.enqueue(transcript);
+          this.termOutputSequence = this.termOutputSequence + 1;
+          hilog.info(0x0000, 'SshTerminal', '[xterm] transcript replay host=' + normalizedHostId +
+            ' chars=' + transcript.length.toString());
+        }
+      }
+    }
     this.xtermReadyGenerations.set(normalizedHostId, reportedRevision);
     if (normalizedHostId === this.hostId.trim()) {
       this.xtermReady = true;
@@ -5378,6 +5740,14 @@ struct SshTerminal {
     let p: string = trimmed.replace(/\/+/g, '/');
     if (p.length > 1 && p.endsWith('/')) { p = p.substring(0, p.length - 1); }
     return p;
+  }
+
+  private comparableRemotePath(path: string): string {
+    let value: string = this.normalizeRemoteDir(path);
+    while (value.length > 2 && value.startsWith('./')) {
+      value = value.substring(2);
+    }
+    return value;
   }
 
   private remoteBaseName(path: string): string {
@@ -5479,12 +5849,11 @@ struct SshTerminal {
 
   private openSftpPanel(): void {
     if (this.terminalClosing) { return; }
-    // If the previous native Sheet already disappeared but its callback was
-    // delivered after the route rendered again, do not let the old close
-    // latch strand the next explicit open request.  The visible flags are the
-    // authoritative signal here: when neither root nor child is mounted,
-    // recover the in-memory transition state before creating a new mount.
-    if (!this.showSftpSheet && !this.showSftpPanel && !this.sftpPeerHostPicker) {
+    // Once the native exit is no longer in flight, stale latches from an old
+    // Sheet instance are safe to clear before mounting a new surface.
+    if (!this.showSftpSheet && !this.showSftpPanel &&
+      !this.sftpRootSheetClosing && !sftpPeerPickerExitPending(
+        this.sftpPeerHostPicker, this.sftpPeerHostPickerClosing)) {
       this.sftpRootSheetClosing = false;
       this.sftpRootSheetNativeDismissInFlight = false;
       this.sftpCloseRootAfterPeerPicker = false;
@@ -5493,10 +5862,15 @@ struct SshTerminal {
       this.sftpPeerHostPickerOpenQueued = false;
       this.sftpPeerHostPickerReopenRequested = false;
     }
-    if (this.sftpRootSheetClosing || this.sftpCloseRootAfterPeerPicker) {
+    if (this.sftpRootSheetClosing || this.sftpCloseRootAfterPeerPicker ||
+      sftpPeerPickerExitPending(this.sftpPeerHostPicker, this.sftpPeerHostPickerClosing)) {
       // ArkUI keeps the old native sheet alive during its exit animation. Do
       // not mutate that instance; replay the user's open after onDisappear.
       this.sftpRootSheetReopenRequested = true;
+      if (sftpPeerPickerExitPending(this.sftpPeerHostPicker, this.sftpPeerHostPickerClosing)) {
+        this.scheduleSftpPeerHostPickerExitRecovery();
+      }
+      this.scheduleSftpRootSheetExitRecovery();
       return;
     }
     this.showSshTabPicker = false;
@@ -5545,6 +5919,102 @@ struct SshTerminal {
       clearTimeout(this.sftpRootSheetRefreshTimer);
       this.sftpRootSheetRefreshTimer = -1;
     }
+    if (this.sftpRootSheetExitRecoveryTimer !== -1) {
+      clearTimeout(this.sftpRootSheetExitRecoveryTimer);
+      this.sftpRootSheetExitRecoveryTimer = -1;
+    }
+    if (this.sftpPeerHostPickerExitRecoveryTimer !== -1) {
+      clearTimeout(this.sftpPeerHostPickerExitRecoveryTimer);
+      this.sftpPeerHostPickerExitRecoveryTimer = -1;
+    }
+  }
+
+  private scheduleSftpRootSheetExitRecovery(): void {
+    if (this.sftpRootSheetExitRecoveryTimer !== -1) {
+      clearTimeout(this.sftpRootSheetExitRecoveryTimer);
+    }
+    const mountToken: number = this.sftpRootSheetMountToken;
+    const transitionToken: number = this.sftpSheetTransitionToken;
+    this.sftpRootSheetExitRecoveryTimer = setTimeout((): void => {
+      this.sftpRootSheetExitRecoveryTimer = -1;
+      if (this.terminalClosing || mountToken !== this.sftpRootSheetMountToken ||
+        transitionToken !== this.sftpSheetTransitionToken || !this.sftpRootSheetClosing ||
+        this.showSftpSheet ||
+        sftpPeerPickerExitPending(this.sftpPeerHostPicker, this.sftpPeerHostPickerClosing)) {
+        return;
+      }
+      // API 23 can omit onDisappear when the bound value changes during a
+      // nested Sheet transition. Finish the logical close here so the next
+      // toolbar tap is never trapped behind a stale closing latch.
+      this.finishSftpRootSheetDismissal();
+    }, SHEET_DISMISS_GUARD_MS * 2);
+  }
+
+  /** Complete a root close exactly once, from either onDisappear or recovery. */
+  private finishSftpRootSheetDismissal(): void {
+    const reopenRequested: boolean = this.sftpRootSheetReopenRequested;
+    this.sftpRootSheetReopenRequested = false;
+    this.clearSftpSheetTransitionTimers();
+    ++this.sftpSheetTransitionToken;
+    this.sftpRootSheetClosing = false;
+    this.sftpRootSheetNativeDismissInFlight = false;
+    this.sftpRootSheetSurfaceReady = false;
+    this.sftpCloseRootAfterPeerPicker = false;
+    this.sftpPendingPeerHostId = '';
+    ++this.sftpPeerHostPickerMountToken;
+    ++this.sftpPeerHostPickerTransitionToken;
+    this.sftpPeerHostPickerOpenQueued = false;
+    this.sftpPeerHostPickerReopenRequested = false;
+    this.sftpPeerHostPickerClosing = false;
+    this.sftpPeerHostPickerNativeDismissInFlight = false;
+    this.sftpPeerHostPicker = false;
+    this.showSftpSheet = false;
+    this.showSftpPanel = false;
+    if (reopenRequested && !this.terminalClosing) {
+      this.scheduleSftpRootSheetReopen();
+    }
+  }
+
+  private scheduleSftpPeerHostPickerExitRecovery(): void {
+    if (this.sftpPeerHostPickerExitRecoveryTimer !== -1) {
+      clearTimeout(this.sftpPeerHostPickerExitRecoveryTimer);
+    }
+    const mountToken: number = this.sftpPeerHostPickerMountToken;
+    const transitionToken: number = this.sftpPeerHostPickerTransitionToken;
+    this.sftpPeerHostPickerExitRecoveryTimer = setTimeout((): void => {
+      this.sftpPeerHostPickerExitRecoveryTimer = -1;
+      if (this.terminalClosing || mountToken !== this.sftpPeerHostPickerMountToken ||
+        transitionToken !== this.sftpPeerHostPickerTransitionToken ||
+        !this.sftpPeerHostPickerClosing || this.sftpPeerHostPicker) {
+        return;
+      }
+      this.sftpPeerHostPickerClosing = false;
+      this.sftpPeerHostPickerNativeDismissInFlight = false;
+      const pendingHostId: string = this.sftpPendingPeerHostId;
+      this.sftpPendingPeerHostId = '';
+      if (this.sftpCloseRootAfterPeerPicker) {
+        this.sftpPeerHostPickerReopenRequested = false;
+        this.dismissSftpRootSheet();
+        return;
+      }
+      if (pendingHostId.length > 0 && this.showSftpPanel) {
+        this.sftpPeerHostPickerReopenRequested = false;
+        this.commitSftpPeerHostSelection(pendingHostId);
+        return;
+      }
+      if (this.sftpRootSheetReopenRequested && !this.showSftpPanel) {
+        this.sftpRootSheetReopenRequested = false;
+        this.scheduleSftpRootSheetReopen();
+        return;
+      }
+      if (this.sftpPeerHostPickerReopenRequested && this.showSftpPanel &&
+        !this.sftpRootSheetClosing &&
+        (!this.sftpUsesRootBindSheet() || this.showSftpSheet)) {
+        this.scheduleSftpPeerHostPickerReopen();
+      } else {
+        this.sftpPeerHostPickerReopenRequested = false;
+      }
+    }, SHEET_DISMISS_GUARD_MS * 2);
   }
 
   private scheduleSftpRootSheetInitialRefresh(mountToken: number): void {
@@ -5583,58 +6053,58 @@ struct SshTerminal {
   }
 
   private dismissSftpRootSheet(): void {
+    if (!this.sftpUsesRootBindSheet()) {
+      this.requestSftpPeerHostPickerClose();
+      this.finishSftpRootSheetDismissal();
+      return;
+    }
+    if (!this.showSftpSheet && !this.sftpRootSheetClosing) {
+      this.finishSftpRootSheetDismissal();
+      return;
+    }
     this.clearSftpSheetTransitionTimers();
     ++this.sftpSheetTransitionToken;
     this.sftpCloseRootAfterPeerPicker = false;
-    if (this.showSftpSheet) {
-      this.sftpRootSheetClosing = true;
-      this.noteSftpSheetDismissalIfVisible();
-    } else if (!this.sftpRootSheetClosing) {
-      this.sftpRootSheetClosing = false;
-    }
-    ++this.sftpPeerHostPickerMountToken;
-    ++this.sftpPeerHostPickerTransitionToken;
-    this.sftpPeerHostPickerOpenQueued = false;
-    this.sftpPeerHostPickerReopenRequested = false;
-    this.sftpPeerHostPickerClosing = false;
-    this.sftpPeerHostPickerNativeDismissInFlight = false;
-    this.sftpPeerHostPicker = false;
-    this.showSftpPanel = false;
+    this.sftpPendingPeerHostId = '';
+    this.sftpRootSheetClosing = true;
+    this.sftpRootSheetNativeDismissInFlight = false;
+    this.noteSftpSheetDismissalIfVisible();
+    // Keep the root content on one native surface. The binding change starts
+    // the exit; onDisappear is only the cleanup/next-open fence.
+    this.requestSftpPeerHostPickerClose();
     this.showSftpSheet = false;
-    this.sftpRootSheetSurfaceReady = false;
+    this.scheduleSftpRootSheetExitRecovery();
   }
 
   private handleSftpRootSheetDisappear(mountToken: number): void {
-    if (mountToken !== this.sftpRootSheetMountToken) { return; }
-    this.noteSftpSheetDismissalIfVisible();
-    this.clearSftpSheetTransitionTimers();
-    ++this.sftpSheetTransitionToken;
-    this.sftpRootSheetClosing = false;
-    this.sftpRootSheetNativeDismissInFlight = false;
-    this.sftpCloseRootAfterPeerPicker = false;
-    ++this.sftpPeerHostPickerMountToken;
-    ++this.sftpPeerHostPickerTransitionToken;
-    this.sftpPeerHostPickerOpenQueued = false;
-    this.sftpPeerHostPickerReopenRequested = false;
-    this.sftpPeerHostPickerClosing = false;
-    this.sftpPeerHostPickerNativeDismissInFlight = false;
-    this.sftpPeerHostPicker = false;
-    this.showSftpPanel = false;
-    this.showSftpSheet = false;
-    this.sftpRootSheetSurfaceReady = false;
-    if (this.sftpRootSheetReopenRequested && !this.terminalClosing) {
-      this.scheduleSftpRootSheetReopen();
-    } else {
-      this.sftpRootSheetReopenRequested = false;
+    if (mountToken !== this.sftpRootSheetMountToken) {
+      if (!this.showSftpSheet && this.sftpRootSheetClosing) {
+        this.scheduleSftpRootSheetExitRecovery();
+      }
+      return;
     }
+    this.noteSftpSheetDismissalIfVisible();
+    this.finishSftpRootSheetDismissal();
   }
 
   private handleSftpPeerHostPickerDisappear(mountToken: number): void {
-    if (mountToken !== this.sftpPeerHostPickerMountToken) { return; }
+    if (mountToken !== this.sftpPeerHostPickerMountToken) {
+      if (!this.sftpPeerHostPicker && this.sftpPeerHostPickerClosing) {
+        this.scheduleSftpPeerHostPickerExitRecovery();
+      }
+      return;
+    }
+    if (this.sftpPeerHostPickerExitRecoveryTimer !== -1) {
+      clearTimeout(this.sftpPeerHostPickerExitRecoveryTimer);
+      this.sftpPeerHostPickerExitRecoveryTimer = -1;
+    }
     this.sftpPeerHostPicker = false;
     this.sftpPeerHostPickerClosing = false;
     this.sftpPeerHostPickerNativeDismissInFlight = false;
+    const pendingHostId: string = this.sftpPendingPeerHostId;
+    this.sftpPendingPeerHostId = '';
     if (this.sftpCloseRootAfterPeerPicker) {
+      this.sftpPeerHostPickerReopenRequested = false;
       if (this.terminalClosing) { return; }
       // The child native Sheet is now gone. Give ArkUI one turn to commit that
       // transition before toggling the parent Sheet; no timeout may close the
@@ -5654,6 +6124,11 @@ struct SshTerminal {
       this.sftpPeerHostPickerReopenRequested = false;
       return;
     }
+    if (pendingHostId.length > 0 && this.showSftpPanel && !this.sftpRootSheetClosing) {
+      this.sftpPeerHostPickerReopenRequested = false;
+      this.commitSftpPeerHostSelection(pendingHostId);
+      return;
+    }
     if (this.sftpPeerHostPickerReopenRequested && this.showSftpPanel &&
       !this.sftpRootSheetClosing && (!this.sftpUsesRootBindSheet() || this.showSftpSheet)) {
       this.scheduleSftpPeerHostPickerReopen();
@@ -5664,6 +6139,29 @@ struct SshTerminal {
 
   private scheduleSftpPeerHostPickerReopen(): void {
     this.scheduleSftpPeerHostPickerOpen();
+  }
+
+  /** Mount the nested picker only after the parent surface is ready. */
+  private mountSftpPeerHostPicker(): void {
+    if (this.terminalClosing || this.sftpPeerHostPicker || this.sftpPeerHostPickerClosing ||
+      !shouldMountSftpPeerPicker({
+        openRequested: true,
+        parentVisible: this.showSftpPanel,
+        parentSurfaceReady: this.sftpRootSheetSurfaceReady,
+        rootSheetVisible: this.showSftpSheet,
+        rootSheetRequired: this.sftpUsesRootBindSheet(),
+        rootClosing: this.sftpRootSheetClosing,
+        closeRootAfterPicker: this.sftpCloseRootAfterPeerPicker,
+        pickerVisible: this.sftpPeerHostPicker,
+        pickerClosing: this.sftpPeerHostPickerClosing
+      })) {
+      return;
+    }
+    this.sftpPeerHostPickerOpenQueued = false;
+    this.sftpPeerHostPickerReopenRequested = false;
+    ++this.sftpPeerHostPickerMountToken;
+    this.sftpPeerHostPickerNativeDismissInFlight = false;
+    this.sftpPeerHostPicker = true;
   }
 
   private scheduleSftpPeerHostPickerOpen(): void {
@@ -5688,11 +6186,7 @@ struct SshTerminal {
         })) {
         return;
       }
-      this.sftpPeerHostPickerOpenQueued = false;
-      this.sftpPeerHostPickerReopenRequested = false;
-      ++this.sftpPeerHostPickerMountToken;
-      this.sftpPeerHostPickerNativeDismissInFlight = false;
-      this.sftpPeerHostPicker = true;
+      this.mountSftpPeerHostPicker();
     }, 32);
   }
 
@@ -5731,9 +6225,17 @@ struct SshTerminal {
       this.sftpPeerHostPickerOpenTimer = -1;
     }
     ++this.sftpPeerHostPickerTransitionToken;
-    if (!this.sftpPeerHostPicker) { return; }
+    if (!this.sftpPeerHostPicker && !this.sftpPeerHostPickerClosing) {
+      this.sftpPeerHostPickerNativeDismissInFlight = false;
+      return;
+    }
+    // The picker is hosted by its own stable bindSheet node. Keep the closing
+    // latch until native onDisappear (or the bounded recovery) so a selection
+    // cannot rebuild the picker during its exit animation.
     this.sftpPeerHostPickerClosing = true;
+    this.sftpPeerHostPickerNativeDismissInFlight = false;
     this.sftpPeerHostPicker = false;
+    this.scheduleSftpPeerHostPickerExitRecovery();
   }
 
   private closeSftpPanel(): void {
@@ -5746,19 +6248,34 @@ struct SshTerminal {
   }
 
   private openSftpPeerPicker(): void {
-    if (this.sftpBusy || this.terminalClosing || !this.showSftpPanel ||
+    if (this.terminalClosing || !this.showSftpPanel ||
       this.sftpRootSheetClosing || this.sftpCloseRootAfterPeerPicker ||
-      this.sftpPeerHostPicker || this.sftpPeerHostPickerOpenQueued) { return; }
+      this.sftpPeerHostPicker) { return; }
     if (this.sftpPeerHostPickerClosing) {
       this.sftpPeerHostPickerReopenRequested = true;
+      this.scheduleSftpPeerHostPickerExitRecovery();
+      return;
+    }
+    if (this.sftpPeerHostPickerOpenQueued) {
+      if (this.sftpPeerHostPickerOpenTimer === -1) {
+        this.scheduleSftpPeerHostPickerOpen();
+      }
       return;
     }
     if (this.sftpUsesRootBindSheet() && !this.showSftpSheet) { return; }
     // Keep the current right endpoint visible until the user commits a host.
-    // The picker is a child bindSheet of the SFTP surface, so it can animate
+    // The picker is a sibling bindSheet of the SFTP surface, so it can animate
     // above the phone or Pad SFTP sheet without replacing that surface.
+    this.sftpPendingPeerHostId = '';
     this.sftpPeerHostPickerReopenRequested = false;
-    this.scheduleSftpPeerHostPickerOpen();
+    // Once the root Sheet has appeared, mount in the same turn as the tap so
+    // the button cannot be lost behind a delayed parent/child reconciliation.
+    // Taps during the entrance animation still wait for onAppear.
+    if (!this.sftpUsesRootBindSheet() || this.sftpRootSheetSurfaceReady) {
+      this.mountSftpPeerHostPicker();
+    } else {
+      this.scheduleSftpPeerHostPickerOpen();
+    }
   }
 
   private sftpRootSheetHeight(): SheetSize | number {
@@ -5783,16 +6300,18 @@ struct SshTerminal {
 
   private sftpSheetMaxHeight(): number {
     if (this.sftpWideLayout()) { return 1400; }
-    return this.breakpoint === 'sm' ? 640 : 820;
+    return this.breakpoint === 'sm' ? 760 : 900;
   }
 
   private sftpListHeight(): number {
-    if (this.sftpWideLayout()) { return 360; }
-    return this.breakpoint === 'sm' ? 190 : 220;
+    if (this.isPadDevice) { return 620; }
+    if (this.isDesktopDevice) { return 520; }
+    return this.breakpoint === 'sm' ? 480 : 520;
   }
 
   private sftpLocalListHeight(): number {
-    return this.sftpWideLayout() ? 160 : this.sftpListHeight();
+    if (this.isPadDevice) { return 480; }
+    return this.sftpWideLayout() ? 360 : this.sftpListHeight();
   }
 
   private sftpWideLayout(): boolean {
@@ -5832,6 +6351,10 @@ struct SshTerminal {
     // false. The first callback still has to drive the native exit; the
     // in-flight flag prevents a duplicate callback from driving it again.
     if (!shouldDriveSftpNativeDismissAction(true, this.sftpPeerHostPickerNativeDismissInFlight)) {
+      // ArkUI may deliver a second onWillDismiss after the binding has already
+      // changed. It is still the native action's responsibility to finish the
+      // old transition; only the state mutation is one-shot.
+      action.dismiss();
       return;
     }
     this.sftpPeerHostPickerReopenRequested = false;
@@ -5839,6 +6362,7 @@ struct SshTerminal {
     // here would start a second programmatic exit and race the parent Sheet.
     this.sftpPeerHostPickerClosing = true;
     this.sftpPeerHostPickerNativeDismissInFlight = true;
+    this.scheduleSftpPeerHostPickerExitRecovery();
     action.dismiss();
   }
 
@@ -5850,38 +6374,21 @@ struct SshTerminal {
       action.dismiss();
       return;
     }
-    // closeSftpPanel()/dismissSftpRootSheet() may already have set the
-    // binding to false. The first callback still drives the native exit, and
-    // onDisappear commits the state cleanup.
-    if (!shouldDriveSftpNativeDismissAction(
-      mountMatches, this.sftpRootSheetNativeDismissInFlight)) {
-      return;
-    }
-    if (sftpPeerPickerExitPending(this.sftpPeerHostPicker, this.sftpPeerHostPickerClosing)) {
-      // Let the nested picker finish its own native dismissal first. The
-      // picker onDisappear callback will then close the parent sheet.
-      this.sftpCloseRootAfterPeerPicker = true;
+    // Both explicit close and interactive back/drag use the same single native
+    // dismissal driver. The root binding owns the actual exit; onDisappear
+    // only finalizes state and any queued reopen.
+    if (!this.sftpRootSheetClosing) {
+      this.clearSftpSheetTransitionTimers();
+      ++this.sftpSheetTransitionToken;
       this.sftpRootSheetClosing = true;
+      this.sftpRootSheetNativeDismissInFlight = true;
+      this.sftpCloseRootAfterPeerPicker = false;
+      this.sftpPendingPeerHostId = '';
+      this.noteSftpSheetDismissalIfVisible();
       this.requestSftpPeerHostPickerClose();
-      return;
+      this.showSftpSheet = false;
+      this.scheduleSftpRootSheetExitRecovery();
     }
-    if (!shouldAllowSftpRootSheetDismiss({
-      mountMatches: mountMatches,
-      rootSurfaceReady: this.sftpRootSheetSurfaceReady,
-      programmaticClose: this.sftpRootSheetClosing,
-      transferBusy: this.sftpBusy
-    })) {
-      return;
-    }
-    // The interactive callback must use one dismissal driver. Keep the root
-    // Sheet and its content mounted until its native onDisappear callback;
-    // that callback performs the state cleanup and any queued reopen.
-    this.requestSftpPeerHostPickerClose();
-    this.clearSftpSheetTransitionTimers();
-    ++this.sftpSheetTransitionToken;
-    this.sftpRootSheetClosing = true;
-    this.sftpRootSheetNativeDismissInFlight = true;
-    this.noteSftpSheetDismissalIfVisible();
     action.dismiss();
   }
 
@@ -7727,14 +8234,14 @@ struct SshTerminal {
           .height(40).fontSize(12)
           .backgroundColor(this.sshPal().card)
           .fontColor(this.sshPal().text)
-          .enabled(!this.sftpBusy)
+          .enabled(!this.terminalClosing && !this.sftpRootSheetClosing)
           .onClick((): void => { this.useSftpLocalEndpoint(); })
         Button('选择 SSH 主机')
           .width(this.sftpWideLayout() ? 150 : 132)
           .height(40).fontSize(12)
           .backgroundColor(this.accentColor)
           .fontColor('#FFFFFF')
-          .enabled(!this.sftpBusy)
+          .enabled(!this.terminalClosing && !this.sftpRootSheetClosing)
           .onClick((): void => { this.openSftpPeerPicker(); })
       }
       .width('100%')
@@ -7756,11 +8263,14 @@ struct SshTerminal {
       Row() {
         Text('选择目标 SSH 主机').fontSize(17).fontWeight(FontWeight.Medium)
           .fontColor('#F4F7FA').layoutWeight(1)
-        SymbolGlyph($r('sys.symbol.xmark')).fontSize(18)
-          .fontColor(['rgba(242,244,247,0.78)'])
-          .width(34).height(34)
-          .margin({ top: this.sftpHeaderCloseTopMargin() })
-          .onClick((): void => { this.requestSftpPeerHostPickerClose(); })
+          Button() {
+            SymbolGlyph($r('sys.symbol.xmark')).fontSize(18)
+              .fontColor(['rgba(242,244,247,0.78)'])
+          }
+            .width(34).height(34).padding(0)
+            .margin({ top: this.sftpHeaderCloseTopMargin() })
+            .accessibilityText('关闭主机选择')
+            .onClick((): void => { this.cancelSftpPeerHostPicker(); })
       }.width('100%').alignItems(VerticalAlign.Center)
       Scroll() {
         Column({ space: 8 }) {
@@ -7795,26 +8305,40 @@ struct SshTerminal {
 
   @Builder
   SftpPeerNavigation() {
-    Row() {
-      Button('上级').height(32).fontSize(11)
+    Row({ space: 6 }) {
+      Button('上级').height(32).fontSize(11).layoutWeight(1)
         .enabled(!this.sftpBusy && !this.sftpPeerBusy)
         .onClick((): void => { void this.refreshSftpPeer(this.parentRemotePath(this.sftpPeerPath)); })
-      Button('刷新').height(32).fontSize(11).margin({ left: 6 })
+      Button('刷新').height(32).fontSize(11).layoutWeight(1)
         .enabled(!this.sftpBusy && !this.sftpPeerBusy)
         .onClick((): void => { void this.refreshSftpPeer(this.sftpPeerPath); })
-      Button('根目录').height(32).fontSize(11).margin({ left: 6 })
+      Button('根目录').height(32).fontSize(11).layoutWeight(1)
         .enabled(!this.sftpBusy && !this.sftpPeerBusy)
         .onClick((): void => { void this.refreshSftpPeer('/'); })
+      Button('新建目录').height(32).fontSize(11).layoutWeight(1)
+        .enabled(!this.sftpBusy && !this.sftpPeerBusy)
+        .onClick((): void => { void this.makeSftpPeerDir(); })
     }.width('100%').margin({ bottom: 8 })
-    Row() {
+    Row({ space: 6 }) {
       TextInput({ text: this.sftpPeerPathInput })
         .fontSize(11).fontColor(this.sshPal().text).fontFamily('monospace')
-        .backgroundColor(this.sshPal().surface).height(36).borderRadius(8).layoutWeight(1)
+        .backgroundColor(this.sshPal().surface).height(36).borderRadius(8)
+        .layoutWeight(1).constraintSize({ minWidth: 0 })
         .onChange((value: string): void => { this.sftpPeerPathInput = value; })
         .onSubmit((): void => { void this.refreshSftpPeer(this.sftpPeerPathInput); })
-      Button('跳转').height(36).fontSize(11).margin({ left: 6 })
+      Button('跳转').width(52).height(36).fontSize(11)
         .enabled(!this.sftpBusy && !this.sftpPeerBusy)
         .onClick((): void => { void this.refreshSftpPeer(this.sftpPeerPathInput); })
+      TextInput({ text: this.sftpPeerNameInput, placeholder: '新名称' })
+        .fontSize(11).fontColor(this.sshPal().text).placeholderColor(this.sshPal().text3)
+        .backgroundColor(this.sshPal().surface).height(36).borderRadius(8)
+        .layoutWeight(1).constraintSize({ minWidth: 0 })
+        .onChange((value: string): void => { this.sftpPeerNameInput = value; })
+        .onSubmit((): void => { void this.renameSftpPeerSelected(); })
+      Button('重命名').width(64).height(36).fontSize(11)
+        .enabled(!this.sftpBusy && !this.sftpPeerBusy &&
+          this.sftpPeerSelectedPath.length > 0 && this.sftpPeerNameInput.trim().length > 0)
+        .onClick((): void => { void this.renameSftpPeerSelected(); })
     }.width('100%').margin({ bottom: 8 })
   }
 
@@ -7825,15 +8349,21 @@ struct SshTerminal {
         Column() {
           Text(this.sftpPeerHostLabel()).fontSize(14).fontWeight(FontWeight.Medium)
             .fontColor(this.sshPal().text)
+          Text(this.sftpPeerHostAddress()).fontSize(10).fontColor(this.sshPal().text3)
+            .margin({ top: 3 }).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
           Text(this.sftpPeerPath).fontSize(10).fontColor(this.sshPal().text3).margin({ top: 3 })
             .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
         Text(this.sftpPeerEntries.length.toString() + ' 项')
           .fontSize(10).fontColor(this.sshPal().text3)
-        Button('切换').height(28).fontSize(10).width(52)
-          .enabled(!this.sftpBusy && !this.sftpPeerBusy)
-          .onClick((): void => { this.resetSftpRightEndpointSelection(); })
+        Button('更换 host').height(30).fontSize(10).width(78)
+          .enabled(!this.sftpBusy)
+          .onClick((): void => { this.changeSftpPeerHost(); })
       }.width('100%').margin({ bottom: 6 })
+      Text(this.sftpPeerStatus)
+        .fontSize(10).fontColor(this.sshPal().text3).width('100%')
+        .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        .margin({ bottom: 4 })
       if (this.sftpPeerBusy) {
         Column() {
           LoadingProgress().width(24).height(24).color(this.accentColor)
@@ -7864,14 +8394,16 @@ struct SshTerminal {
                   SymbolGlyph($r('sys.symbol.checkmark')).fontSize(16).fontColor([this.accentColor])
                 }
               }
-              .width('100%').height(46).padding({ left: 8, right: 8 })
+              .width('100%').height(44).padding({ left: 8, right: 8 })
               .borderRadius(7)
               .backgroundColor(this.sftpPeerSelectedPath === entry.path
                 ? this.sshPal().card : Color.Transparent)
               .onClick((): void => { this.selectSftpPeerEntry(entry); })
             }
           }, (entry: SftpFileEntry): string => entry.path)
-        }.layoutWeight(1).width('100%').constraintSize({ minHeight: 0 })
+        }.height(this.sftpListHeight()).layoutWeight(0).width('100%')
+          .constraintSize({ minHeight: 0 }).scrollBar(BarState.Auto)
+          .edgeEffect(EdgeEffect.None)
       }
       Row() {
         Button('进入目录').height(32).fontSize(11).layoutWeight(1)
@@ -7881,6 +8413,10 @@ struct SshTerminal {
           .enabled(!this.sftpBusy && !this.sftpPeerBusy && this.sftpPeerHostId.length > 0)
           .onClick((): void => { void this.refreshSftpPeer(this.sftpPeerPath); })
       }.width('100%').margin({ top: 8 })
+      Button('删除选中项').height(32).fontSize(11).width('100%')
+        .margin({ top: 6 }).backgroundColor(this.sshPal().danger).fontColor('#FFFFFF')
+        .enabled(!this.sftpBusy && !this.sftpPeerBusy && this.sftpPeerSelectedPath.length > 0)
+        .onClick((): void => { this.deleteSftpPeerSelected(); })
     }.width('100%').height('100%').constraintSize({ minHeight: 0 })
       .padding({ top: 6, bottom: 6, left: 10, right: 10 })
       .backgroundColor(this.sshPal().surface)
@@ -7930,8 +8466,8 @@ struct SshTerminal {
             .fontSize(12).fontColor(this.sshPal().text2)
           Text('选择本机文件后可上传到当前远端目录')
             .fontSize(10).fontColor(this.sshPal().text3).margin({ top: 4 })
-        }.height(this.sftpWideLayout() ? 0 : this.sftpListHeight())
-          .layoutWeight(this.sftpWideLayout() ? 1 : 0)
+        }.height(this.sftpLocalListHeight())
+          .layoutWeight(0)
           .constraintSize({ minHeight: 0 })
           .justifyContent(FlexAlign.Center)
       } else {
@@ -7963,10 +8499,12 @@ struct SshTerminal {
             }
           }, (entry: SshLocalFileEntry) => entry.uri)
         }
-        .height(this.sftpWideLayout() ? 0 : this.sftpLocalListHeight())
-        .layoutWeight(this.sftpWideLayout() ? 1 : 0)
+        .height(this.sftpLocalListHeight())
+        .layoutWeight(0)
         .constraintSize({ minHeight: 0 })
         .width('100%')
+        .scrollBar(BarState.Auto)
+        .edgeEffect(EdgeEffect.None)
       }
 
       Row() {
@@ -8089,7 +8627,10 @@ struct SshTerminal {
                 .width('86%').height(4).color(this.accentColor).backgroundColor(this.sshPal().divider)
                 .margin({ top: 4 })
             }
-          }.height(transferProgressPanelHeight(this.sftpTransferSession)).justifyContent(FlexAlign.Center)
+          }.height(this.sftpWideLayout() ? 0 :
+            transferProgressPanelHeight(this.sftpTransferSession))
+            .layoutWeight(this.sftpWideLayout() ? 1 : 0)
+            .justifyContent(FlexAlign.Center)
         } else if (this.sftpEntries.length === 0) {
           Column() {
             Text('远端目录为空').fontSize(13).fontColor(this.sshPal().text2)
@@ -8119,7 +8660,7 @@ struct SshTerminal {
                       .fontSize(17).fontColor([this.accentColor])
                   }
                 }
-                .width('100%').height(48).padding({ left: 10, right: 10 })
+                .width('100%').height(42).padding({ left: 10, right: 10 })
                 .borderRadius(8)
                 .backgroundColor(this.sftpSelectedPath === entry.path
                   ? this.sshPal().card : Color.Transparent)
@@ -8131,16 +8672,19 @@ struct SshTerminal {
           .layoutWeight(this.sftpWideLayout() ? 1 : 0)
           .constraintSize({ minHeight: 0 })
           .width('100%')
+          .scrollBar(BarState.Auto)
+          .edgeEffect(EdgeEffect.None)
         }
       }
       .width('100%')
-      .height(this.sftpWideLayout() ? 0 : 'auto')
+      .height(this.sftpWideLayout() ? 0 : this.sftpListHeight())
       .layoutWeight(this.sftpWideLayout() ? 1 : 0)
       .constraintSize({ minHeight: 0 })
       .padding({ top: 6, bottom: 6 })
     }
     .width('100%')
-    .height(this.sftpWideLayout() ? '100%' : 'auto')
+    .height(this.sftpWideLayout() ? 0 : 'auto')
+    .layoutWeight(this.sftpWideLayout() ? 1 : 0)
     .constraintSize({ minHeight: 0 })
     .padding({ top: 10, bottom: 10, left: 10, right: 10 })
     .backgroundColor(this.sshPal().surface)
@@ -8162,13 +8706,14 @@ struct SshTerminal {
               .margin({ top: 3 }).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
           }
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-        Row() {
+        Button() {
           SymbolGlyph($r('sys.symbol.xmark')).fontSize(18)
             .fontColor([this.sshPal().text2])
         }
-        .width(36).height(36).justifyContent(FlexAlign.Center)
-        .borderRadius(18).backgroundColor(this.sshPal().surface)
+        .width(36).height(36)
+        .borderRadius(18).padding(0).backgroundColor(this.sshPal().surface)
         .margin({ top: this.sftpHeaderCloseTopMargin() })
+        .accessibilityText('关闭 SFTP')
         .onClick((): void => { this.closeSftpPanel(); })
       }.width('100%').alignItems(VerticalAlign.Center)
     }
@@ -8196,25 +8741,23 @@ struct SshTerminal {
         .onClick((): void => { this.makeSftpDir(); })
     }.width('100%').margin({ bottom: 10 })
 
-    Row() {
-      TextInput({ text: this.sftpPathInput })
+    Row({ space: 6 }) {
+      TextInput({ text: this.sftpPathInput, placeholder: '路径' })
         .fontSize(12).fontColor(this.sshPal().text).fontFamily('monospace')
-        .backgroundColor(this.sshPal().surface)
-        .height(38).borderRadius(8).layoutWeight(1)
+        .backgroundColor(this.sshPal().surface).height(38).borderRadius(8)
+        .layoutWeight(1).constraintSize({ minWidth: 0 })
         .onChange((value: string): void => { this.sftpPathInput = value; })
         .onSubmit((): void => { this.gotoSftpPath(); })
-      Button('跳转').height(38).fontSize(12).margin({ left: 8 })
+      Button('跳转').width(52).height(38).fontSize(12)
         .enabled(!this.sftpBusy)
         .onClick((): void => { this.gotoSftpPath(); })
-    }.width('100%').margin({ bottom: 10 })
-
-    Row() {
-      TextInput({ text: this.sftpNameInput, placeholder: '输入目录名或重命名后的名称' })
+      TextInput({ text: this.sftpNameInput, placeholder: '新名称' })
         .fontSize(12).fontColor(this.sshPal().text).placeholderColor(this.sshPal().text3)
-        .backgroundColor(this.sshPal().surface)
-        .height(38).borderRadius(8).layoutWeight(1)
+        .backgroundColor(this.sshPal().surface).height(38).borderRadius(8)
+        .layoutWeight(1).constraintSize({ minWidth: 0 })
         .onChange((value: string): void => { this.sftpNameInput = value; })
-      Button('重命名').height(38).fontSize(12).margin({ left: 8 })
+        .onSubmit((): void => { this.renameSftpSelected(); })
+      Button('重命名').width(64).height(38).fontSize(12)
         .enabled(!this.sftpBusy && this.sftpSelectedPath.length > 0 && this.sftpNameInput.trim().length > 0)
         .onClick((): void => { this.renameSftpSelected(); })
     }.width('100%').margin({ bottom: 10 })
@@ -8224,14 +8767,15 @@ struct SshTerminal {
   SftpWideRemoteActions() {
     if (this.sftpRightEndpointChosen && this.sftpRightEndpoint === 'ssh') {
       Row() {
-        Button('传输到目标 SSH')
-          .height(38).fontSize(12).layoutWeight(1)
-          .enabled(!this.sftpBusy && this.sftpSelectedPath.length > 0)
-          .onClick((): void => { void this.enqueueSftpRemoteBatch(true); })
         Button('传输到当前 host')
-          .height(38).fontSize(12).layoutWeight(1).margin({ left: 8 })
-          .enabled(!this.sftpBusy && this.sftpPeerSelectedPath.length > 0)
+          .height(38).fontSize(12).layoutWeight(1)
+          .enabled(!this.sftpBusy && !this.sftpPeerBusy && this.sftpPeerSelectedPath.length > 0)
+          .backgroundColor(this.accentColor).fontColor('#FFFFFF')
           .onClick((): void => { void this.enqueueSftpRemoteBatch(false); })
+        Button('传输到目标 SSH')
+          .height(38).fontSize(12).layoutWeight(1).margin({ left: 8 })
+          .enabled(!this.sftpBusy && !this.sftpPeerBusy && this.sftpSelectedPath.length > 0)
+          .onClick((): void => { void this.enqueueSftpRemoteBatch(true); })
       }.width('100%').margin({ top: 8 })
     } else if (this.sftpRightEndpointChosen) {
       Row() {
@@ -8271,7 +8815,7 @@ struct SshTerminal {
           this.SftpTransferNavigation()
           Column() {
             this.SftpRemoteWorkspace()
-          }.layoutWeight(1).constraintSize({ minHeight: 0 })
+          }.height(0).layoutWeight(1).constraintSize({ minHeight: 0 })
           this.SftpWideRemoteActions()
         }.layoutWeight(1).height('100%').constraintSize({ minWidth: 0, minHeight: 0 })
           .margin({ right: 6 })
@@ -8282,11 +8826,11 @@ struct SshTerminal {
             Column() {
               this.SftpPeerNavigation()
               this.SftpPeerWorkspace()
-            }.layoutWeight(1).constraintSize({ minHeight: 0 })
+            }.height(0).layoutWeight(1).constraintSize({ minHeight: 0 })
           } else {
             Column() {
               this.SftpLocalWorkspace()
-            }.layoutWeight(1).constraintSize({ minHeight: 0 })
+            }.height(0).layoutWeight(1).constraintSize({ minHeight: 0 })
           }
         }.layoutWeight(1).height('100%').constraintSize({ minWidth: 0, minHeight: 0 })
           .margin({ left: 6 })
@@ -8375,15 +8919,16 @@ struct SshTerminal {
 
     if (this.sftpRightEndpointChosen && this.sftpRightEndpoint === 'ssh') {
       Row() {
-        Button('传输到目标 SSH')
-          .height(40).layoutWeight(1).enabled(!this.sftpBusy && this.sftpSelectedPath.length > 0)
-          .fontSize(12)
-          .onClick((): void => { void this.enqueueSftpRemoteBatch(true); })
         Button('传输到当前 host')
           .height(40).layoutWeight(1)
-          .enabled(!this.sftpBusy && this.sftpPeerSelectedPath.length > 0)
-          .fontSize(12).margin({ left: 10 })
+          .enabled(!this.sftpBusy && !this.sftpPeerBusy && this.sftpPeerSelectedPath.length > 0)
+          .fontSize(12).backgroundColor(this.accentColor).fontColor('#FFFFFF')
           .onClick((): void => { void this.enqueueSftpRemoteBatch(false); })
+        Button('传输到目标 SSH')
+          .height(40).layoutWeight(1)
+          .enabled(!this.sftpBusy && !this.sftpPeerBusy && this.sftpSelectedPath.length > 0)
+          .fontSize(12).margin({ left: 10 })
+          .onClick((): void => { void this.enqueueSftpRemoteBatch(true); })
       }.width('100%').margin({ top: 14 })
     } else if (this.sftpRightEndpointChosen) {
       Row() {
@@ -8425,7 +8970,7 @@ struct SshTerminal {
   }
 
   @Builder
-  SftpTransferSheet(peerPickerMountToken: number, rootSheetMountToken: number = 0) {
+  SftpTransferSheet(rootSheetMountToken: number = 0) {
     Stack() {
       if (this.sftpWideLayout()) {
         Column() {
@@ -8470,20 +9015,6 @@ struct SshTerminal {
     .height(this.sftpWideLayout() ? '100%' : this.sftpSheetMaxHeight())
     .constraintSize({ minHeight: 0 })
     .backgroundColor(this.sshPal().bg)
-    .bindSheet($$this.sftpPeerHostPicker, this.SftpPeerHostPickerSheet(), {
-      height: this.sftpWideLayout() ? SheetSize.LARGE : this.sftpSheetMaxHeight(),
-      preferType: this.sftpWideLayout() ? SheetType.CENTER : SheetType.BOTTOM,
-      width: this.sftpWideLayout() ? '88%' : '100%',
-      dragBar: !this.sftpWideLayout(),
-      backgroundColor: '#171D25',
-      blurStyle: BlurStyle.NONE,
-      showClose: false,
-      maskColor: 'rgba(0,0,0,0.42)',
-      onWillDismiss: (action: DismissSheetAction): void => {
-        this.handleSftpPeerHostPickerDismiss(action, peerPickerMountToken);
-      },
-      onDisappear: (): void => { this.handleSftpPeerHostPickerDisappear(peerPickerMountToken); }
-    })
     .onAppear(this.sftpRootSheetAppearHandler(rootSheetMountToken))
   }
 
@@ -8531,7 +9062,7 @@ struct SshTerminal {
             .fontSize(11).fontColor('rgba(242,244,247,0.54)')
             .margin({ right: 12 })
         }
-        if (this.connected) {
+        if (this.sshConnectionIsConnected()) {
           if (!this.isDesktopDevice) {
             Row() {
               Text('↻').fontSize(19).fontColor('rgba(242,244,247,0.86)')
@@ -8586,7 +9117,8 @@ struct SshTerminal {
       // after the host/binding commit has become observable.
       if (this.sshTabViews.length === 0) {
         Column() {
-          if (this.connecting || (this.connected && !this.terminalSurfaceMounted)) {
+          if (this.connecting || (this.sshConnectionIsConnected() &&
+            !this.sshVisibleSurfaceReady())) {
             LoadingProgress().width(32).height(32).color(this.accentColor)
             Text('Connecting...').fontSize(13).fontColor('#888').margin({ top: 10 })
           } else {
@@ -8603,12 +9135,11 @@ struct SshTerminal {
           // late ArkWeb ready callback is still being retried. Otherwise a
           // missed proxy callback turns a real terminal into a permanent full
           // screen "Preparing terminal..." mask.
-          if (!this.xtermReady && !this.terminalSurfaceMounted) {
+          if (!this.sshVisibleSurfaceReady()) {
             Column() {
-              if (this.connecting || (this.connected &&
-                (!this.terminalSurfaceMounted || !this.xtermReady))) {
+              if (this.connecting || this.sshConnectionIsConnected()) {
                 LoadingProgress().width(32).height(32).color(this.accentColor)
-                Text(this.connected ? 'Preparing terminal...' : 'Connecting...')
+                Text(this.sshConnectionIsConnected() ? 'Preparing terminal...' : 'Connecting...')
                   .fontSize(13).fontColor('#888').margin({ top: 10 })
               } else {
                 Text(this.connectionError).fontSize(14).fontColor('#FF6B6B')
@@ -8870,7 +9401,7 @@ struct SshTerminal {
       .id('ssh-terminal-pane')
       if (this.showSftpPanel && this.sftpWideLayout() && !this.sftpUsesRootBindSheet()) {
         Column() {
-          this.SftpTransferSheet(this.sftpPeerHostPickerMountToken)
+          this.SftpTransferSheet(this.sftpRootSheetMountToken)
         }
         .width('100%')
         .height('100%')
@@ -8878,16 +9409,18 @@ struct SshTerminal {
         .clip(true)
         .zIndex(100)
       }
-      // Keep the SFTP root Sheet on its own stable host. ArkUI permits multiple
-      // bindSheet modifiers on one component, but on API 23 a newly opened
-      // Sheet can be reclaimed when another false-bound modifier on that same
-      // terminal node is reconciled during the entrance transaction.
+      // Keep the SFTP root Sheet on its own stable host. The picker below uses
+      // a separate sibling host, so a false-bound picker cannot invalidate the
+      // root Sheet during its entrance or exit transaction.
       Column()
         .width('100%')
         .height('100%')
+        // The empty host must pass through while the Sheet is hidden, but
+        // Keep the page-level host out of the touch chain. The presented
+        // native Sheet owns its own hit testing and explicit controls.
         .hitTestBehavior(HitTestMode.None)
         .bindSheet($$this.showSftpSheet,
-          this.SftpTransferSheet(this.sftpPeerHostPickerMountToken, this.sftpRootSheetMountToken), {
+          this.SftpTransferSheet(this.sftpRootSheetMountToken), {
           // The Pad root surface is the complete SFTP workspace, not an inline
           // terminal overlay. Keep its sheet geometry explicit and wide.
           height: this.sftpRootSheetHeight(),
@@ -8898,7 +9431,36 @@ struct SshTerminal {
           blurStyle: BlurStyle.NONE,
           showClose: false,
           onWillDismiss: this.sftpRootSheetDismissHandler(this.sftpRootSheetMountToken),
+          onWillSpringBackWhenDismiss: (_action: SpringBackAction): void => {
+            // Closing is explicit and must not spring back while the root
+            // binding is already being driven to false.
+          },
           onDisappear: this.sftpRootSheetDisappearHandler(this.sftpRootSheetMountToken)
+        })
+
+      // The host picker is a real bindSheet, but it has its own stable host
+      // beside the root SFTP Sheet. Keeping the two hosts as siblings avoids
+      // nested native-sheet reconciliation while allowing the root workspace
+      // to remain visible behind the picker.
+      Column()
+        .width('100%')
+        .height('100%')
+        .hitTestBehavior(HitTestMode.None)
+        .bindSheet($$this.sftpPeerHostPicker, this.SftpPeerHostPickerSheet(), {
+          height: this.sftpWideLayout() ? SheetSize.LARGE : this.sftpSheetMaxHeight(),
+          preferType: this.sftpWideLayout() ? SheetType.CENTER : SheetType.BOTTOM,
+          width: this.sftpWideLayout() ? '88%' : '100%',
+          dragBar: !this.sftpWideLayout(),
+          backgroundColor: '#171D25',
+          blurStyle: BlurStyle.NONE,
+          showClose: false,
+          maskColor: 'rgba(0,0,0,0.42)',
+          onWillDismiss: (action: DismissSheetAction): void => {
+            this.handleSftpPeerHostPickerDismiss(action, this.sftpPeerHostPickerMountToken);
+          },
+          onDisappear: (): void => {
+            this.handleSftpPeerHostPickerDisappear(this.sftpPeerHostPickerMountToken);
+          }
         })
     }
     .width('100%').height('100%')
@@ -8950,7 +9512,8 @@ struct SshTerminal {
       dragBar: this.breakpoint === 'sm',
       backgroundColor: '#171D25',
       blurStyle: BlurStyle.NONE,
-      showClose: false
+      showClose: false,
+      onDisappear: (): void => { this.onSshTabPickerDisappear(); }
     })
   }
 }
