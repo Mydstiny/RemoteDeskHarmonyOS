@@ -1,4 +1,4 @@
-import { promptAction } from '@kit.ArkUI';
+import { Binding, promptAction, UIUtils } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
 import { DataCrypto } from '../services/DataCrypto';
 import { VncSettingsService } from '../services/VncSettingsService';
@@ -320,10 +320,12 @@ export struct VncSettingsSheet {
     }.width('100%').margin({ bottom: 10 })
   }
 
-  @Builder private choice(title: string, selected: boolean, onClick: () => void, marginLeft: number = 0) {
+  @Builder private choice(title: string, selected: Binding<boolean>, onClick: () => void,
+    marginLeft: number = 0) {
     Button(title).layoutWeight(1).height(36).fontSize(12).borderRadius(9)
-      .backgroundColor(selected ? this.accentColor : this.pal().surface)
-      .fontColor(selected ? Color.White : this.pal().text2).margin({ left: marginLeft }).onClick(onClick)
+      .backgroundColor(selected.value ? this.accentColor : this.pal().surface)
+      .fontColor(selected.value ? Color.White : this.pal().text2)
+      .margin({ left: marginLeft }).onClick(onClick)
   }
 
   @Builder private toggle(title: string, detail: string, value: boolean, onChange: (value: boolean) => void) {
@@ -341,10 +343,12 @@ export struct VncSettingsSheet {
     Column() {
       Text('默认传输').fontSize(12).fontColor(this.pal().text3).margin({ bottom: 7 })
       Row() {
-        this.choice('TCP 直连', this.defaultTransport === 'direct_tcp', (): void => {
+        this.choice('TCP 直连', UIUtils.makeBinding<boolean>(
+          (): boolean => this.defaultTransport === 'direct_tcp'), (): void => {
           this.defaultTransport = 'direct_tcp'; this.markDirty();
         })
-        this.choice('Repeater mode12', this.defaultTransport === 'ultravnc_repeater', (): void => {
+        this.choice('Repeater mode12', UIUtils.makeBinding<boolean>(
+          (): boolean => this.defaultTransport === 'ultravnc_repeater'), (): void => {
           this.defaultTransport = 'ultravnc_repeater'; this.markDirty();
         }, 8)
       }.width('100%').margin({ bottom: 12 })
@@ -412,18 +416,22 @@ export struct VncSettingsSheet {
     Column() {
       Text('本地缩放').fontSize(12).fontColor(this.pal().text3).margin({ bottom: 7 })
       Row() {
-        this.choice('适应窗口', this.displayScaleMode === 'fit', (): void => {
+        this.choice('适应窗口', UIUtils.makeBinding<boolean>(
+          (): boolean => this.displayScaleMode === 'fit'), (): void => {
           this.displayScaleMode = 'fit'; this.scalingMode = 'fit'; this.markDirty();
         })
-        this.choice('100%', this.displayScaleMode === '100', (): void => {
+        this.choice('100%', UIUtils.makeBinding<boolean>(
+          (): boolean => this.displayScaleMode === '100'), (): void => {
           this.displayScaleMode = '100'; this.scalingMode = 'one_to_one'; this.markDirty();
         }, 6)
       }.width('100%').margin({ bottom: 6 })
       Row() {
-        this.choice('整数倍率', this.displayScaleMode === 'integer', (): void => {
+        this.choice('整数倍率', UIUtils.makeBinding<boolean>(
+          (): boolean => this.displayScaleMode === 'integer'), (): void => {
           this.displayScaleMode = 'integer'; this.scalingMode = 'integer'; this.markDirty();
         })
-        this.choice('自定义', this.displayScaleMode === 'custom', (): void => {
+        this.choice('自定义', UIUtils.makeBinding<boolean>(
+          (): boolean => this.displayScaleMode === 'custom'), (): void => {
           this.displayScaleMode = 'custom'; this.scalingMode = 'fit'; this.markDirty();
         }, 6)
       }.width('100%').margin({ bottom: 8 })
@@ -454,13 +462,16 @@ export struct VncSettingsSheet {
 
       Text('画质预设').fontSize(12).fontColor(this.pal().text3).margin({ bottom: 7 })
       Row() {
-        this.choice('极速', this.imageQualityPreset === 'speed', (): void => {
+        this.choice('极速', UIUtils.makeBinding<boolean>(
+          (): boolean => this.imageQualityPreset === 'speed'), (): void => {
           this.imageQualityPreset = 'speed'; this.markDirty();
         })
-        this.choice('均衡', this.imageQualityPreset === 'balanced', (): void => {
+        this.choice('均衡', UIUtils.makeBinding<boolean>(
+          (): boolean => this.imageQualityPreset === 'balanced'), (): void => {
           this.imageQualityPreset = 'balanced'; this.markDirty();
         }, 6)
-        this.choice('质量', this.imageQualityPreset === 'quality', (): void => {
+        this.choice('质量', UIUtils.makeBinding<boolean>(
+          (): boolean => this.imageQualityPreset === 'quality'), (): void => {
           this.imageQualityPreset = 'quality'; this.markDirty();
         }, 6)
       }.width('100%').margin({ bottom: 10 })
@@ -469,13 +480,16 @@ export struct VncSettingsSheet {
 
       Text('编码偏好').fontSize(12).fontColor(this.pal().text3).margin({ bottom: 7 })
       Row() {
-        this.choice('自动', this.preferredEncoding === 'auto', (): void => {
+        this.choice('自动', UIUtils.makeBinding<boolean>(
+          (): boolean => this.preferredEncoding === 'auto'), (): void => {
           this.preferredEncoding = 'auto'; this.markDirty();
         })
-        this.choice('ZRLE', this.preferredEncoding === 'zrle', (): void => {
+        this.choice('ZRLE', UIUtils.makeBinding<boolean>(
+          (): boolean => this.preferredEncoding === 'zrle'), (): void => {
           this.preferredEncoding = 'zrle'; this.markDirty();
         }, 6)
-        this.choice('RAW', this.preferredEncoding === 'raw', (): void => {
+        this.choice('RAW', UIUtils.makeBinding<boolean>(
+          (): boolean => this.preferredEncoding === 'raw'), (): void => {
           this.preferredEncoding = 'raw'; this.markDirty();
         }, 6)
       }.width('100%').margin({ bottom: 10 })
@@ -484,32 +498,40 @@ export struct VncSettingsSheet {
 
       Text('色深').fontSize(12).fontColor(this.pal().text3).margin({ bottom: 7 })
       Row() {
-        this.choice('自动', this.colorDepth === 'auto', (): void => {
+        this.choice('自动', UIUtils.makeBinding<boolean>(
+          (): boolean => this.colorDepth === 'auto'), (): void => {
           this.colorDepth = 'auto'; this.markDirty();
         })
-        this.choice('32 位', this.colorDepth === '32', (): void => {
+        this.choice('32 位', UIUtils.makeBinding<boolean>(
+          (): boolean => this.colorDepth === '32'), (): void => {
           this.colorDepth = '32'; this.markDirty();
         }, 6)
-        this.choice('16 位', this.colorDepth === '16', (): void => {
+        this.choice('16 位', UIUtils.makeBinding<boolean>(
+          (): boolean => this.colorDepth === '16'), (): void => {
           this.colorDepth = '16'; this.markDirty();
         }, 6)
-        this.choice('8 位', this.colorDepth === '8', (): void => {
+        this.choice('8 位', UIUtils.makeBinding<boolean>(
+          (): boolean => this.colorDepth === '8'), (): void => {
           this.colorDepth = '8'; this.markDirty();
         }, 6)
       }.width('100%').margin({ bottom: 10 })
 
       Text('帧率上限').fontSize(12).fontColor(this.pal().text3).margin({ bottom: 7 })
       Row() {
-        this.choice('15', this.frameRateLimit === 15, (): void => {
+        this.choice('15', UIUtils.makeBinding<boolean>(
+          (): boolean => this.frameRateLimit === 15), (): void => {
           this.frameRateLimit = 15; this.markDirty();
         })
-        this.choice('30', this.frameRateLimit === 30, (): void => {
+        this.choice('30', UIUtils.makeBinding<boolean>(
+          (): boolean => this.frameRateLimit === 30), (): void => {
           this.frameRateLimit = 30; this.markDirty();
         }, 6)
-        this.choice('60', this.frameRateLimit === 60, (): void => {
+        this.choice('60', UIUtils.makeBinding<boolean>(
+          (): boolean => this.frameRateLimit === 60), (): void => {
           this.frameRateLimit = 60; this.markDirty();
         }, 6)
-        this.choice('不限', this.frameRateLimit === 0, (): void => {
+        this.choice('不限', UIUtils.makeBinding<boolean>(
+          (): boolean => this.frameRateLimit === 0), (): void => {
           this.frameRateLimit = 0; this.markDirty();
         }, 6)
       }.width('100%').margin({ bottom: 10 })
@@ -522,29 +544,36 @@ export struct VncSettingsSheet {
         (value: boolean): void => { this.viewOnly = value; this.markDirty(); })
       Text('默认控制模式').fontSize(12).fontColor(this.pal().text3).margin({ top: 10, bottom: 7 })
       Row() {
-        this.choice('触控板', this.controlMode === 0, (): void => {
+        this.choice('触控板', UIUtils.makeBinding<boolean>(
+          (): boolean => this.controlMode === 0), (): void => {
           this.controlMode = 0; this.markDirty();
         })
-        this.choice('直接触控', this.controlMode === 1, (): void => {
+        this.choice('直接触控', UIUtils.makeBinding<boolean>(
+          (): boolean => this.controlMode === 1), (): void => {
           this.controlMode = 1; this.markDirty();
         }, 6)
-        this.choice('键盘鼠标', this.controlMode === 2, (): void => {
+        this.choice('键盘鼠标', UIUtils.makeBinding<boolean>(
+          (): boolean => this.controlMode === 2), (): void => {
           this.controlMode = 2; this.markDirty();
         }, 6)
       }.width('100%').margin({ bottom: 12 })
 
       Text('本地光标').fontSize(12).fontColor(this.pal().text3).margin({ bottom: 7 })
       Row() {
-        this.choice('自动', this.localCursorMode === 'auto', (): void => {
+        this.choice('自动', UIUtils.makeBinding<boolean>(
+          (): boolean => this.localCursorMode === 'auto'), (): void => {
           this.localCursorMode = 'auto'; this.markDirty();
         })
-        this.choice('箭头', this.localCursorMode === 'arrow', (): void => {
+        this.choice('箭头', UIUtils.makeBinding<boolean>(
+          (): boolean => this.localCursorMode === 'arrow'), (): void => {
           this.localCursorMode = 'arrow'; this.markDirty();
         }, 6)
-        this.choice('圆点', this.localCursorMode === 'circle', (): void => {
+        this.choice('圆点', UIUtils.makeBinding<boolean>(
+          (): boolean => this.localCursorMode === 'circle'), (): void => {
           this.localCursorMode = 'circle'; this.markDirty();
         }, 6)
-        this.choice('隐藏', this.localCursorMode === 'hidden', (): void => {
+        this.choice('隐藏', UIUtils.makeBinding<boolean>(
+          (): boolean => this.localCursorMode === 'hidden'), (): void => {
           this.localCursorMode = 'hidden'; this.markDirty();
         }, 6)
       }.width('100%').margin({ bottom: 10 })
@@ -576,22 +605,27 @@ export struct VncSettingsSheet {
         (value: boolean): void => { this.diagnosticsExpanded = value; this.markDirty(); })
       Text('采样频率').fontSize(12).fontColor(this.pal().text3).margin({ top: 10, bottom: 7 })
       Row() {
-        this.choice('250 ms', this.diagnosticsRefreshMs === 250, (): void => {
+        this.choice('250 ms', UIUtils.makeBinding<boolean>(
+          (): boolean => this.diagnosticsRefreshMs === 250), (): void => {
           this.diagnosticsRefreshMs = 250; this.markDirty();
         })
-        this.choice('500 ms', this.diagnosticsRefreshMs === 500, (): void => {
+        this.choice('500 ms', UIUtils.makeBinding<boolean>(
+          (): boolean => this.diagnosticsRefreshMs === 500), (): void => {
           this.diagnosticsRefreshMs = 500; this.markDirty();
         }, 6)
-        this.choice('1000 ms', this.diagnosticsRefreshMs === 1000, (): void => {
+        this.choice('1000 ms', UIUtils.makeBinding<boolean>(
+          (): boolean => this.diagnosticsRefreshMs === 1000), (): void => {
           this.diagnosticsRefreshMs = 1000; this.markDirty();
         }, 6)
       }.width('100%').margin({ bottom: 12 })
       Text('指标范围').fontSize(12).fontColor(this.pal().text3).margin({ bottom: 7 })
       Row() {
-        this.choice('核心指标', this.diagnosticsMetricMask === 31, (): void => {
+        this.choice('核心指标', UIUtils.makeBinding<boolean>(
+          (): boolean => this.diagnosticsMetricMask === 31), (): void => {
           this.diagnosticsMetricMask = 31; this.markDirty();
         })
-        this.choice('完整指标', this.diagnosticsMetricMask !== 31, (): void => {
+        this.choice('完整指标', UIUtils.makeBinding<boolean>(
+          (): boolean => this.diagnosticsMetricMask !== 31), (): void => {
           this.diagnosticsMetricMask = 63; this.markDirty();
         }, 6)
       }.width('100%').margin({ bottom: 10 })
@@ -613,13 +647,16 @@ export struct VncSettingsSheet {
     Column() {
       Text('连接安全策略').fontSize(12).fontColor(this.pal().text3).margin({ bottom: 7 })
       Row() {
-        this.choice('仅安全', this.securityPolicy === 'secure_only', (): void => {
+        this.choice('仅安全', UIUtils.makeBinding<boolean>(
+          (): boolean => this.securityPolicy === 'secure_only'), (): void => {
           this.securityPolicy = 'secure_only'; this.markDirty();
         })
-        this.choice('可信网络', this.securityPolicy === 'trusted_network', (): void => {
+        this.choice('可信网络', UIUtils.makeBinding<boolean>(
+          (): boolean => this.securityPolicy === 'trusted_network'), (): void => {
           this.securityPolicy = 'trusted_network'; this.markDirty();
         }, 7)
-        this.choice('允许明文', this.securityPolicy === 'allow_plaintext', (): void => {
+        this.choice('允许明文', UIUtils.makeBinding<boolean>(
+          (): boolean => this.securityPolicy === 'allow_plaintext'), (): void => {
           this.securityPolicy = 'allow_plaintext'; this.markDirty();
         }, 7)
       }.width('100%').margin({ bottom: 12 })
