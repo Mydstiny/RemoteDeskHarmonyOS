@@ -28,7 +28,8 @@ import {
   SshSftpTaskRecord,
   SshSftpTaskStage,
   SftpEndpoint,
-  sshSftpCommitRecoveryDecision
+  sshSftpCommitRecoveryDecision,
+  sshSftpSessionSnapshotCanAttach
 } from './SshSftpTaskPolicy';
 import { SshSftpTaskStore } from './SshSftpTaskStore';
 import { SshLocalFileEntry, SshLocalFileProvider } from './SshLocalFileProvider';
@@ -224,14 +225,19 @@ export class SshSftpTaskEngine {
     let recoveryEpoch: number = 0;
     try {
       nativeState = this.loader.getConnectionState(session.sessionId);
-      recoveryEpoch = this.loader.getSshSessionSnapshot(
-        session.sessionId, session.generation).eventSequence;
+      const snapshot = this.loader.getSshSessionSnapshot(session.sessionId, session.generation);
+      if (!sshSftpSessionSnapshotCanAttach(
+        session.sessionId, session.generation, nativeState, snapshot)) {
+        this.logDiagnostic('stale session attach rejected host=' + hostId +
+          ' session=' + session.sessionId.toString() +
+          ' generation=' + session.generation.toString() +
+          ' snapshotError=' + snapshot.errorCode.toString(), true);
+        return;
+      }
+      recoveryEpoch = snapshot.eventSequence;
     } catch (_err) {
-      nativeState = -1;
-      recoveryEpoch = 0;
+      return;
     }
-    // Only a fully recovered transport may clear prior loss evidence.
-    if (nativeState !== SSH_STATE_CONNECTED) { return; }
     this.logDiagnostic('attach host=' + hostId + ' session=' + session.sessionId.toString() +
       ' generation=' + session.generation.toString() +
       ' recoveryEpoch=' + recoveryEpoch.toString() +
@@ -599,7 +605,8 @@ export class SshSftpTaskEngine {
     const recoveryDecision: SshSftpCommitRecoveryDecision = sshSftpCommitRecoveryDecision(
       task.commitState, expectedSize,
       targetResult.identity === null ? null : targetResult.identity.size,
-      partialResult.identity === null ? null : partialResult.identity.size);
+      partialResult.identity === null ? null : partialResult.identity.size,
+      targetResult.errorCode, partialResult.errorCode);
     if (recoveryDecision === 'complete') {
       return this.completeFileTask(binding, task, 'completed-after-reconnect');
     }

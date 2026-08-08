@@ -69,6 +69,15 @@ export type SshSftpTaskEventKind = 'restored' | 'changed' | 'removed';
 
 export type SshSftpCommitRecoveryDecision = 'complete' | 'retryRename' | 'failed';
 
+export interface SshSftpAttachSnapshot {
+  errorCode: number;
+  sessionId: number;
+  generation: number;
+  state: number;
+  stateName: string;
+  eventSequence: number;
+}
+
 export interface SshSftpTaskEvent {
   kind: SshSftpTaskEventKind;
   record: SshSftpTaskRecord;
@@ -180,12 +189,23 @@ export function sftpEndpointPathIsSame(left: SftpEndpoint, leftPath: string,
 /** Decide an uncertain atomic commit without trusting a same-sized old target. */
 export function sshSftpCommitRecoveryDecision(commitState: 'renaming' | 'renamed',
   expectedSize: number, targetSize: number | null,
-  partialSize: number | null): SshSftpCommitRecoveryDecision {
+  partialSize: number | null, targetErrorCode: number = 0,
+  partialErrorCode: number = 0): SshSftpCommitRecoveryDecision {
+  if (targetErrorCode < 0 || partialErrorCode < 0) { return 'failed'; }
   const targetMatches: boolean = targetSize !== null && targetSize === expectedSize;
   if (commitState === 'renamed') { return targetMatches ? 'complete' : 'failed'; }
   const partialMatches: boolean = partialSize !== null && partialSize === expectedSize;
   if (partialMatches) { return 'retryRename'; }
   return partialSize === null && targetMatches ? 'complete' : 'failed';
+}
+
+/** Fence a page callback against the exact native session generation and Ready lifecycle. */
+export function sshSftpSessionSnapshotCanAttach(sessionId: number, generation: number,
+  nativeConnectionState: number, snapshot: SshSftpAttachSnapshot): boolean {
+  return nativeConnectionState === 2 && snapshot.errorCode === 0 &&
+    snapshot.sessionId === sessionId && snapshot.generation === generation &&
+    snapshot.state === 3 && snapshot.stateName === 'Ready' &&
+    Number.isFinite(snapshot.eventSequence) && snapshot.eventSequence >= 0;
 }
 
 export function isValidSftpTransferSpec(spec: SftpTransferSpec): boolean {

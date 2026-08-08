@@ -16,6 +16,7 @@ import {
   recoverInterruptedSshSftpTaskRecord,
   sftpEndpointPathIsSame,
   sshSftpCommitRecoveryDecision,
+  sshSftpSessionSnapshotCanAttach,
   sshSftpTaskCommandTarget,
   sshSftpResumeDisposition,
   upsertSshSftpTask
@@ -297,6 +298,25 @@ export default function sshSftpTaskPolicyTest(): void {
         .assertEqual('complete');
       expect(sshSftpCommitRecoveryDecision('renamed', 100, null, null))
         .assertEqual('failed');
+      expect(sshSftpCommitRecoveryDecision('renaming', 100, 100, null, 0, -20))
+        .assertEqual('failed');
+      expect(sshSftpCommitRecoveryDecision('renamed', 100, 100, null, -20, 0))
+        .assertEqual('failed');
+    });
+
+    it('rejects stale or non-ready native session snapshots before attach', 0, (): void => {
+      const ready = {
+        errorCode: 0, sessionId: 7, generation: 3, state: 3,
+        stateName: 'Ready', eventSequence: 12
+      };
+      expect(sshSftpSessionSnapshotCanAttach(7, 3, 2, ready)).assertTrue();
+      expect(sshSftpSessionSnapshotCanAttach(7, 2, 2, { ...ready, errorCode: -6 }))
+        .assertFalse();
+      expect(sshSftpSessionSnapshotCanAttach(7, 2, 2, ready)).assertFalse();
+      expect(sshSftpSessionSnapshotCanAttach(8, 3, 2, ready)).assertFalse();
+      expect(sshSftpSessionSnapshotCanAttach(7, 3, 2,
+        { ...ready, state: 6, stateName: 'Reconnecting' })).assertFalse();
+      expect(sshSftpSessionSnapshotCanAttach(7, 3, 1, ready)).assertFalse();
     });
 
     it('rejects only identical endpoint paths and allows same-host path copies', 0, (): void => {
