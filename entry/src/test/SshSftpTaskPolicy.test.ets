@@ -243,6 +243,7 @@ export default function sshSftpTaskPolicyTest(): void {
       expect(record.sourcePath).assertEqual('./source/folder/empty.txt');
       expect(record.targetPath).assertEqual('./target/folder/empty.txt');
       expect(record.sessionGeneration).assertEqual(0);
+      expect(record.schemaVersion).assertEqual(4);
 
       const transferring: SshSftpTaskRecord = {
         ...record,
@@ -262,15 +263,25 @@ export default function sshSftpTaskPolicyTest(): void {
       expect(detached?.sourcePath).assertEqual('./source/folder/empty.txt');
       expect(detached?.targetPath).assertEqual('./target/folder/empty.txt');
 
-      const renamed: SshSftpTaskRecord = {
+      const renaming: SshSftpTaskRecord = {
         ...detached as SshSftpTaskRecord,
         stage: 'committing',
-        commitState: 'renamed',
+        commitState: 'renaming',
         sequence: (detached as SshSftpTaskRecord).sequence + 1,
         updatedAt: (detached as SshSftpTaskRecord).updatedAt + 1
       };
-      expect(store.upsert(renamed)).assertTrue();
+      expect(store.upsert(renaming)).assertTrue();
       expect(store.command(record.taskId, { kind: 'detach' }).accepted).assertTrue();
+      expect(store.get(record.taskId)?.commitState).assertEqual('renaming');
+
+      const renamed: SshSftpTaskRecord = {
+        ...store.get(record.taskId) as SshSftpTaskRecord,
+        stage: 'committing',
+        commitState: 'renamed',
+        sequence: (store.get(record.taskId) as SshSftpTaskRecord).sequence + 1,
+        updatedAt: (store.get(record.taskId) as SshSftpTaskRecord).updatedAt + 1
+      };
+      expect(store.upsert(renamed)).assertTrue();
       expect(store.get(record.taskId)?.commitState).assertEqual('renamed');
     });
 

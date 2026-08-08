@@ -4,7 +4,10 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { ExtensionLoader } from './ExtensionLoader';
 import {
   SftpFileEntry,
-  SftpListAsyncResult
+  SftpListAsyncResult,
+  SftpMutationAsyncResult,
+  SftpReadAsyncResult,
+  SftpWriteAsyncResult
 } from '../types/rdpnapi';
 import {
   SshSftpConflictPolicy,
@@ -83,6 +86,12 @@ interface SshSftpEngineIdentity {
   mtime: number;
 }
 
+interface SshSftpEngineIdentityResult {
+  identity: SshSftpFileIdentity | null;
+  errorCode: number;
+  transportLost: boolean;
+}
+
 /**
  * Page-independent SFTP batch owner. It keeps only live session handles and
  * provider bindings in memory; task metadata remains in SshSftpTaskStore.
@@ -95,6 +104,9 @@ export class SshSftpTaskEngine {
   private readonly provider: SshLocalFileProvider = new SshLocalFileProvider();
   private readonly bindings: Map<string, SshSftpBatchBinding> = new Map<string, SshSftpBatchBinding>();
   private readonly sessions: Map<string, SshSftpEngineSession> = new Map<string, SshSftpEngineSession>();
+  /** Keeps transport-loss evidence authoritative even if reconnect wins the callback race. */
+  private readonly transportLostSessions: Map<string, SshSftpEngineSession> =
+    new Map<string, SshSftpEngineSession>();
   private readonly conflictPolicies: Map<string, SshSftpConflictPolicy> =
     new Map<string, SshSftpConflictPolicy>();
   private readonly running: Set<string> = new Set<string>();
@@ -222,6 +234,11 @@ export class SshSftpTaskEngine {
       sessionId: session.sessionId,
       generation: session.generation
     });
+    const lost: SshSftpEngineSession | undefined = this.transportLostSessions.get(hostId);
+    if (lost !== undefined && (lost.sessionId !== session.sessionId ||
+      lost.generation !== session.generation)) {
+      this.transportLostSessions.delete(hostId);
+    }
     const batchIds: string[] = [];
     this.bindings.forEach((binding: SshSftpBatchBinding): void => {
       if (this.bindingUsesHost(binding, hostId)) { batchIds.push(binding.batchId); }
@@ -490,13 +507,122 @@ export class SshSftpTaskEngine {
     return this.sessionActive(source.hostId, source) && this.sessionActive(target.hostId, target);
   }
 
+  private markTransportLost(session: SshSftpEngineSession, reason: string): void {
+    this.transportLostSessions.set(session.hostId, {
+      hostId: session.hostId,
+      sessionId: session.sessionId,
+      generation: session.generation
+    });
+    const current: SshSftpEngineSession | undefined = this.sessions.get(session.hostId);
+    if (current !== undefined && current.sessionId === session.sessionId &&
+      current.generation === session.generation) {
+      this.sessions.delete(session.hostId);
+    }
+    this.logDiagnostic('transport lost host=' + session.hostId +
+      ' session=' + session.sessionId.toString() +
+      ' generation=' + session.generation.toString() + ' reason=' + reason, true);
+  }
+
+  private failOperationOrWait(binding: SshSftpBatchBinding, task: SshSftpTaskRecord,
+    session: SshSftpEngineSession, reason: string, transportLost: boolean = false): boolean {
+    if (transportLost) { this.markTransportLost(session, reason); }
+    if (!this.sessionActive(session.hostId, session)) {
+      return this.waitForConnection(binding, task);
+    }
+    return this.failTask(binding, task, reason);
+  }
+
   private failRemoteOperationOrWait(binding: SshSftpBatchBinding, task: SshSftpTaskRecord,
-    source: SshSftpEngineSession, target: SshSftpEngineSession, reason: string): boolean {
+    source: SshSftpEngineSession, target: SshSftpEngineSession, reason: string,
+    transportLostSession: SshSftpEngineSession | null = null): boolean {
+    if (transportLostSession !== null) {
+      this.markTransportLost(transportLostSession, reason);
+    }
     if (!this.remoteSessionsActive(source, target)) {
       hilog.warn(0x0017, 'SshTerminal', '[sftp-remote] operation interrupted; waiting reason=' + reason);
       return this.waitForConnection(binding, task);
     }
     return this.failTask(binding, task, reason);
+  }
+
+  private async recoverRemoteCommit(binding: SshSftpBatchBinding, task: SshSftpTaskRecord,
+    targetSession: SshSftpEngineSession, partialPath: string, targetPath: string,
+    expectedSize: number, diagnosticPrefix: string): Promise<boolean | null> {
+    if (task.commitState === undefined) { return null; }
+    const targetResult: SshSftpEngineIdentityResult = await this.readRemoteIdentityResult(
+      targetSession.sessionId, targetPath, targetSession.generation);
+    if (this.taskIsStopped(task.taskId)) { return false; }
+    if (targetResult.transportLost) {
+      return this.failOperationOrWait(binding, task, targetSession,
+        diagnosticPrefix + '-commit-target-stat-lost', true);
+    }
+    if (targetResult.identity !== null &&
+      sshSftpCommitSizeMatches(targetResult.identity.size, expectedSize)) {
+      return this.completeFileTask(binding, task, 'completed-after-reconnect');
+    }
+    if (task.commitState === 'renamed') {
+      return this.failOperationOrWait(binding, task, targetSession,
+        diagnosticPrefix + '-committed-target-missing');
+    }
+    const partialResult: SshSftpEngineIdentityResult = await this.readRemoteIdentityResult(
+      targetSession.sessionId, partialPath, targetSession.generation);
+    if (this.taskIsStopped(task.taskId)) { return false; }
+    if (partialResult.transportLost) {
+      return this.failOperationOrWait(binding, task, targetSession,
+        diagnosticPrefix + '-commit-partial-stat-lost', true);
+    }
+    if (partialResult.identity === null ||
+      !sshSftpCommitSizeMatches(partialResult.identity.size, expectedSize)) {
+      return this.failOperationOrWait(binding, task, targetSession,
+        diagnosticPrefix + '-uncertain-commit-missing');
+    }
+    return await this.commitRemotePartial(binding, task, targetSession, partialPath,
+      targetPath, expectedSize, partialResult.identity, diagnosticPrefix + '-recovered');
+  }
+
+  private async commitRemotePartial(binding: SshSftpBatchBinding, task: SshSftpTaskRecord,
+    targetSession: SshSftpEngineSession, partialPath: string, targetPath: string,
+    expectedSize: number, partialIdentity: SshSftpFileIdentity,
+    diagnosticPrefix: string): Promise<boolean> {
+    if (this.taskIsStopped(task.taskId)) { return false; }
+    let committing: SshSftpTaskRecord = this.updateTask(task, 'committing', expectedSize,
+      partialIdentity.size, partialIdentity.mtime, targetPath, task.fileName,
+      targetSession.generation, targetPath, task.sourcePath, 'renaming');
+    if (committing.stage === 'paused' || committing.stage === 'cancelled') { return false; }
+    // The pre-rename marker must be durable before crossing the atomic point of no return.
+    if (!await this.store.flushNow()) {
+      return this.failOperationOrWait(binding, committing, targetSession,
+        diagnosticPrefix + '-commit-marker-persist-failed');
+    }
+    if (this.taskIsStopped(task.taskId)) { return false; }
+    const renamed: SftpMutationAsyncResult = await this.loader.renameRemotePathAsync(
+      targetSession.sessionId, partialPath, targetPath, true, targetSession.generation);
+    if (this.taskIsStopped(task.taskId)) { return false; }
+    if (renamed.transportLost === true) {
+      return this.failOperationOrWait(binding, committing, targetSession,
+        diagnosticPrefix + '-atomic-commit-unconfirmed', true);
+    }
+    if (renamed.errorCode < 0 || renamed.atomic === false) {
+      return this.failOperationOrWait(binding, committing, targetSession,
+        diagnosticPrefix + '-atomic-commit-failed');
+    }
+    committing = this.updateTask(committing, 'committing', expectedSize, -1, -1,
+      targetPath, committing.fileName, targetSession.generation, targetPath,
+      committing.sourcePath, 'renamed');
+    if (committing.stage === 'paused' || committing.stage === 'cancelled') { return false; }
+    const targetResult: SshSftpEngineIdentityResult = await this.readRemoteIdentityResult(
+      targetSession.sessionId, targetPath, targetSession.generation);
+    if (this.taskIsStopped(task.taskId)) { return false; }
+    if (targetResult.transportLost) {
+      return this.failOperationOrWait(binding, committing, targetSession,
+        diagnosticPrefix + '-target-stat-lost', true);
+    }
+    if (targetResult.identity === null ||
+      !sshSftpCommitSizeMatches(targetResult.identity.size, expectedSize)) {
+      return this.failOperationOrWait(binding, committing, targetSession,
+        diagnosticPrefix + '-target-unverified');
+    }
+    return this.completeFileTask(binding, committing, 'completed');
   }
 
   /** Copy directly between two SSH SFTP channels without staging credentials or bytes locally. */
@@ -543,8 +669,20 @@ export class SshSftpTaskEngine {
       return this.failTask(binding, task, 'remote-copy-directory-complete-rejected');
     }
 
-    const sourceIdentity: SshSftpFileIdentity | null =
-      await this.readRemoteIdentity(sourceSession.sessionId, sourcePath, sourceSession.generation);
+    let partialPath: string = targetPath + sshSftpPartialSuffix(task.taskId);
+    const expectedCommitSize: number = task.sourceSize >= 0 ? task.sourceSize : task.totalBytes;
+    const recoveredCommit: boolean | null = await this.recoverRemoteCommit(
+      binding, task, targetSession, partialPath, targetPath, expectedCommitSize,
+      'remote-copy');
+    if (recoveredCommit !== null) { return recoveredCommit; }
+
+    const sourceIdentityResult: SshSftpEngineIdentityResult = await this.readRemoteIdentityResult(
+      sourceSession.sessionId, sourcePath, sourceSession.generation);
+    if (sourceIdentityResult.transportLost) {
+      return this.failRemoteOperationOrWait(binding, task, sourceSession, targetSession,
+        'remote-copy-source-stat-lost', sourceSession);
+    }
+    const sourceIdentity: SshSftpFileIdentity | null = sourceIdentityResult.identity;
     if (sourceIdentity === null || sourceIdentity.size > MAX_TRANSFER_BYTES ||
       (task.sourceSize >= 0 && !sshSftpIdentityMatches(
         { size: task.sourceSize, mtime: task.sourceMtime }, sourceIdentity))) {
@@ -552,20 +690,6 @@ export class SshSftpTaskEngine {
         ' remote-copy-source-identity-changed');
       return this.failRemoteOperationOrWait(binding, task, sourceSession, targetSession,
         'remote-copy-source-identity-changed');
-    }
-    if (task.commitState === 'renamed') {
-      const committedTarget: SshSftpFileIdentity | null = await this.readRemoteIdentity(
-        targetSession.sessionId, targetPath, targetSession.generation);
-      if (committedTarget !== null &&
-        sshSftpCommitSizeMatches(committedTarget.size, sourceIdentity.size)) {
-        hilog.info(0x0017, 'SshTerminal', diagnosticPrefix +
-          ' recovered committed target');
-        return this.completeFileTask(binding, task, 'completed-after-reconnect');
-      }
-      if (!this.remoteSessionsActive(sourceSession, targetSession)) {
-        return this.waitForConnection(binding, task);
-      }
-      return this.failTask(binding, task, 'remote-copy-committed-target-missing');
     }
     let effectiveTask: SshSftpTaskRecord = task;
     if (task.verifiedOffset <= 0) {
@@ -575,6 +699,7 @@ export class SshSftpTaskEngine {
       if (conflict.action === 'skip') { return this.completeFileTask(binding, task, 'conflict-skipped'); }
       if (conflict.fileName !== task.fileName || conflict.targetPath !== targetPath) {
         targetPath = conflict.targetPath;
+        partialPath = targetPath + sshSftpPartialSuffix(task.taskId);
         effectiveTask = this.updateTask(task, 'queued', task.verifiedOffset,
           task.partialSize, task.partialMtime, targetPath, conflict.fileName,
           task.sessionGeneration, targetPath, sourcePath);
@@ -591,11 +716,15 @@ export class SshSftpTaskEngine {
         ? this.failTask(binding, effectiveTask, 'remote-copy-offset-invalid')
         : this.waitForConnection(binding, effectiveTask);
     }
-    const partialPath: string = targetPath + sshSftpPartialSuffix(effectiveTask.taskId);
     let partialIdentity: SshSftpFileIdentity | null = null;
     if (offset > 0) {
-      partialIdentity = await this.readRemoteIdentity(
+      const partialResult: SshSftpEngineIdentityResult = await this.readRemoteIdentityResult(
         targetSession.sessionId, partialPath, targetSession.generation);
+      if (partialResult.transportLost) {
+        return this.failRemoteOperationOrWait(binding, effectiveTask, sourceSession, targetSession,
+          'remote-copy-resume-partial-stat-lost', targetSession);
+      }
+      partialIdentity = partialResult.identity;
       if (partialIdentity === null || partialIdentity.size !== offset || partialIdentity.mtime < 0 ||
         effectiveTask.partialSize !== offset || effectiveTask.partialMtime < 0 ||
         effectiveTask.partialMtime !== partialIdentity.mtime) {
@@ -612,18 +741,22 @@ export class SshSftpTaskEngine {
     try {
       let copied: number = offset;
       if (sourceIdentity.size === 0) {
-        const empty = await this.loader.writeRemoteFileChunkAsync(
+        const empty: SftpWriteAsyncResult = await this.loader.writeRemoteFileChunkAsync(
           targetSession.sessionId, partialPath, new ArrayBuffer(0), 0, true,
           targetSession.generation);
         if (empty.errorCode < 0 || empty.bytesWritten !== 0) {
           hilog.warn(0x0017, 'SshTerminal', diagnosticPrefix +
             ' remote-copy-empty-partial-failed ret=' + empty.errorCode.toString());
           return this.failRemoteOperationOrWait(binding, effectiveTask, sourceSession, targetSession,
-            'remote-copy-empty-partial-failed');
+            'remote-copy-empty-partial-failed', empty.transportLost === true ? targetSession : null);
         }
-        const identity: SshSftpFileIdentity | null =
-          await this.readRemoteIdentity(
-            targetSession.sessionId, partialPath, targetSession.generation);
+        const identityResult: SshSftpEngineIdentityResult = await this.readRemoteIdentityResult(
+          targetSession.sessionId, partialPath, targetSession.generation);
+        if (identityResult.transportLost) {
+          return this.failRemoteOperationOrWait(binding, effectiveTask, sourceSession, targetSession,
+            'remote-copy-empty-partial-stat-lost', targetSession);
+        }
+        const identity: SshSftpFileIdentity | null = identityResult.identity;
         if (identity === null || identity.size !== 0 || identity.mtime < 0) {
           hilog.warn(0x0017, 'SshTerminal', diagnosticPrefix +
             ' remote-copy-empty-partial-unverified');
@@ -642,7 +775,7 @@ export class SshSftpTaskEngine {
         }
         if (this.taskIsStopped(effectiveTask.taskId)) { return false; }
         const chunkSize: number = Math.min(UPLOAD_CHUNK_BYTES, sourceIdentity.size - copied);
-        const read = await this.loader.readRemoteFileChunkAsync(
+        const read: SftpReadAsyncResult = await this.loader.readRemoteFileChunkAsync(
           sourceSession.sessionId, sourcePath, copied, chunkSize, sourceSession.generation);
         if (read.errorCode < 0 || read.data.byteLength <= 0 ||
           read.data.byteLength > sourceIdentity.size - copied) {
@@ -650,9 +783,9 @@ export class SshSftpTaskEngine {
             ' remote-copy-source-read-failed ret=' + read.errorCode.toString() +
             ' offset=' + copied.toString());
           return this.failRemoteOperationOrWait(binding, effectiveTask, sourceSession, targetSession,
-            'remote-copy-source-read-failed');
+            'remote-copy-source-read-failed', read.transportLost === true ? sourceSession : null);
         }
-        const written = await this.loader.writeRemoteFileChunkAsync(
+        const written: SftpWriteAsyncResult = await this.loader.writeRemoteFileChunkAsync(
           targetSession.sessionId, partialPath, read.data, copied, copied === 0,
           targetSession.generation);
         if (written.errorCode < 0 || written.bytesWritten !== read.data.byteLength) {
@@ -660,12 +793,16 @@ export class SshSftpTaskEngine {
             ' remote-copy-target-write-unconfirmed ret=' + written.errorCode.toString() +
             ' written=' + written.bytesWritten.toString());
           return this.failRemoteOperationOrWait(binding, effectiveTask, sourceSession, targetSession,
-            'remote-copy-target-write-unconfirmed');
+            'remote-copy-target-write-unconfirmed', written.transportLost === true ? targetSession : null);
         }
         copied += read.data.byteLength;
-        const identity: SshSftpFileIdentity | null =
-          await this.readRemoteIdentity(
-            targetSession.sessionId, partialPath, targetSession.generation);
+        const identityResult: SshSftpEngineIdentityResult = await this.readRemoteIdentityResult(
+          targetSession.sessionId, partialPath, targetSession.generation);
+        if (identityResult.transportLost) {
+          return this.failRemoteOperationOrWait(binding, effectiveTask, sourceSession, targetSession,
+            'remote-copy-partial-stat-lost', targetSession);
+        }
+        const identity: SshSftpFileIdentity | null = identityResult.identity;
         if (identity === null || identity.size !== copied || identity.mtime < 0) {
           hilog.warn(0x0017, 'SshTerminal', diagnosticPrefix +
             ' remote-copy-partial-unverified offset=' + copied.toString());
@@ -680,10 +817,16 @@ export class SshSftpTaskEngine {
       effectiveTask = this.updateTask(effectiveTask, 'verifying', sourceIdentity.size,
         effectiveTask.partialSize, effectiveTask.partialMtime, targetPath,
         effectiveTask.fileName, targetSession.generation, targetPath, sourcePath);
-      const finalSource: SshSftpFileIdentity | null =
-        await this.readRemoteIdentity(sourceSession.sessionId, sourcePath, sourceSession.generation);
-      const finalPartial: SshSftpFileIdentity | null =
-        await this.readRemoteIdentity(targetSession.sessionId, partialPath, targetSession.generation);
+      const finalSourceResult: SshSftpEngineIdentityResult = await this.readRemoteIdentityResult(
+        sourceSession.sessionId, sourcePath, sourceSession.generation);
+      const finalPartialResult: SshSftpEngineIdentityResult = await this.readRemoteIdentityResult(
+        targetSession.sessionId, partialPath, targetSession.generation);
+      if (finalSourceResult.transportLost || finalPartialResult.transportLost) {
+        return this.failRemoteOperationOrWait(binding, effectiveTask, sourceSession, targetSession,
+          'remote-copy-final-stat-lost', finalSourceResult.transportLost ? sourceSession : targetSession);
+      }
+      const finalSource: SshSftpFileIdentity | null = finalSourceResult.identity;
+      const finalPartial: SshSftpFileIdentity | null = finalPartialResult.identity;
       if (finalSource === null || !sshSftpIdentityMatches(sourceIdentity, finalSource) ||
         finalPartial === null || !sshSftpCommitSizeMatches(finalPartial.size, sourceIdentity.size)) {
         hilog.warn(0x0017, 'SshTerminal', diagnosticPrefix +
@@ -696,34 +839,9 @@ export class SshSftpTaskEngine {
           ' sessions lost before commit');
         return this.waitForConnection(binding, effectiveTask);
       }
-      effectiveTask = this.updateTask(effectiveTask, 'committing', sourceIdentity.size,
-        finalPartial.size, finalPartial.mtime, targetPath, effectiveTask.fileName,
-        targetSession.generation, targetPath, sourcePath);
-      const renamed = await this.loader.renameRemotePathAsync(
-        targetSession.sessionId, partialPath, targetPath, true, targetSession.generation);
-      if (renamed.errorCode < 0 || renamed.atomic === false) {
-        hilog.warn(0x0017, 'SshTerminal', diagnosticPrefix +
-          ' remote-copy-atomic-commit-failed ret=' + renamed.errorCode.toString() +
-          ' atomic=' + String(renamed.atomic));
-        return this.failRemoteOperationOrWait(binding, effectiveTask, sourceSession, targetSession,
-          'remote-copy-atomic-commit-failed');
-      }
-      // Persist the point-of-no-return before the final stat. If the network
-      // drops now, recovery verifies targetPath instead of requiring the
-      // partial that the successful atomic rename already consumed.
-      effectiveTask = this.updateTask(effectiveTask, 'committing', sourceIdentity.size,
-        -1, -1, targetPath, effectiveTask.fileName, targetSession.generation,
-        targetPath, sourcePath, 'renamed');
-      const finalTarget: SshSftpFileIdentity | null =
-        await this.readRemoteIdentity(targetSession.sessionId, targetPath, targetSession.generation);
-      if (finalTarget === null || !sshSftpCommitSizeMatches(finalTarget.size, sourceIdentity.size)) {
-        hilog.warn(0x0017, 'SshTerminal', diagnosticPrefix +
-          ' remote-copy-target-unverified');
-        return this.failRemoteOperationOrWait(binding, effectiveTask, sourceSession, targetSession,
-          'remote-copy-target-unverified');
-      }
-      hilog.info(0x0017, 'SshTerminal', diagnosticPrefix + ' remote-copy completed');
-      return this.completeFileTask(binding, effectiveTask, 'completed');
+      return await this.commitRemotePartial(binding, effectiveTask, targetSession,
+        partialPath, targetPath, sourceIdentity.size, finalPartial,
+        'remote-copy');
     } catch (_err) {
       hilog.error(0x0017, 'SshTerminal', diagnosticPrefix +
         ' remote-copy-exception ' + String(_err));
@@ -741,7 +859,7 @@ export class SshSftpTaskEngine {
       const source: string | null = await this.ensureLocalBatchPath(binding.localRoot, relative, true);
       if (source === null || !await this.ensureRemoteDirectory(session.sessionId, task.remotePath,
         binding.hostId, session)) {
-        return this.failTask(binding, task, 'directory-prepare-failed');
+        return this.failOperationOrWait(binding, task, session, 'directory-prepare-failed');
       }
     } else if (await this.ensureLocalBatchPath(binding.localRoot, relative, true) === null) {
       return this.failTask(binding, task, 'local-directory-prepare-failed');
@@ -759,6 +877,11 @@ export class SshSftpTaskEngine {
   private async executeUpload(binding: SshSftpBatchBinding,
     session: SshSftpEngineSession, task: SshSftpTaskRecord): Promise<boolean> {
     if (this.taskIsStopped(task.taskId)) { return false; }
+    let partialPath: string = task.remotePath + sshSftpPartialSuffix(task.taskId);
+    const expectedCommitSize: number = task.sourceSize >= 0 ? task.sourceSize : task.totalBytes;
+    const recoveredCommit: boolean | null = await this.recoverRemoteCommit(
+      binding, task, session, partialPath, task.remotePath, expectedCommitSize, 'upload');
+    if (recoveredCommit !== null) { return recoveredCommit; }
     const relative: string = this.batchTaskSourceRelativePath(task);
     const sourceUri: string | null = await this.provider.resolveRelative(binding.localRoot, relative);
     if (sourceUri === null) { return this.failTask(binding, task, 'local-source-missing'); }
@@ -776,6 +899,7 @@ export class SshSftpTaskEngine {
       if (conflict.action === 'skip') { return this.completeFileTask(binding, task, 'conflict-skipped'); }
       if (conflict.fileName !== task.fileName || conflict.targetPath !== task.remotePath) {
         effectiveTask = this.retargetTask(task, conflict.targetPath, conflict.fileName);
+        partialPath = effectiveTask.remotePath + sshSftpPartialSuffix(effectiveTask.taskId);
       }
     }
     const offset: number = effectiveTask.verifiedOffset >= 0 ? effectiveTask.verifiedOffset : 0;
@@ -785,11 +909,15 @@ export class SshSftpTaskEngine {
         ? this.failTask(binding, effectiveTask, 'upload-offset-invalid')
         : this.waitForConnection(binding, effectiveTask);
     }
-    const partialPath: string = effectiveTask.remotePath + sshSftpPartialSuffix(effectiveTask.taskId);
     let partialIdentity: SshSftpFileIdentity | null = null;
     if (offset > 0) {
-      partialIdentity = await this.readRemoteIdentity(
+      const partialResult: SshSftpEngineIdentityResult = await this.readRemoteIdentityResult(
         session.sessionId, partialPath, session.generation);
+      if (partialResult.transportLost) {
+        return this.failOperationOrWait(binding, effectiveTask, session,
+          'upload-resume-partial-stat-lost', true);
+      }
+      partialIdentity = partialResult.identity;
       if (partialIdentity === null || partialIdentity.size !== offset || partialIdentity.mtime < 0 ||
         effectiveTask.partialSize !== offset || effectiveTask.partialMtime < 0 ||
         effectiveTask.partialMtime !== partialIdentity.mtime) {
@@ -807,15 +935,20 @@ export class SshSftpTaskEngine {
       }
       let uploaded: number = offset;
       if (sourceIdentity.size === 0) {
-        const empty = await this.loader.writeRemoteFileChunkAsync(
+        const empty: SftpWriteAsyncResult = await this.loader.writeRemoteFileChunkAsync(
           session.sessionId, partialPath, new ArrayBuffer(0), 0, true, session.generation);
         if (empty.errorCode < 0 || empty.bytesWritten !== 0) {
-          return this.failTask(binding, effectiveTask,
+          return this.failOperationOrWait(binding, effectiveTask, session,
             empty.errorCode === DURABILITY_UNSUPPORTED ? 'upload-durability-unsupported' :
-              'upload-empty-partial-failed');
+              'upload-empty-partial-failed', empty.transportLost === true);
         }
-        const identity: SshSftpFileIdentity | null =
-          await this.readRemoteIdentity(session.sessionId, partialPath, session.generation);
+        const identityResult: SshSftpEngineIdentityResult = await this.readRemoteIdentityResult(
+          session.sessionId, partialPath, session.generation);
+        if (identityResult.transportLost) {
+          return this.failOperationOrWait(binding, effectiveTask, session,
+            'upload-empty-partial-stat-lost', true);
+        }
+        const identity: SshSftpFileIdentity | null = identityResult.identity;
         if (identity === null || identity.size !== 0 || identity.mtime < 0) {
           return this.failTask(binding, effectiveTask, 'upload-empty-partial-unverified');
         }
@@ -832,16 +965,21 @@ export class SshSftpTaskEngine {
         const readLength: number = await fileIo.read(source.fd, chunk);
         if (readLength <= 0) { return this.failTask(binding, effectiveTask, 'upload-local-read-failed'); }
         const payload: ArrayBuffer = readLength === chunkSize ? chunk : chunk.slice(0, readLength);
-        const written = await this.loader.writeRemoteFileChunkAsync(
+        const written: SftpWriteAsyncResult = await this.loader.writeRemoteFileChunkAsync(
           session.sessionId, partialPath, payload, uploaded, uploaded === 0, session.generation);
         if (written.errorCode < 0 || written.bytesWritten !== payload.byteLength) {
-          return this.failTask(binding, effectiveTask,
+          return this.failOperationOrWait(binding, effectiveTask, session,
             written.errorCode === DURABILITY_UNSUPPORTED ? 'upload-durability-unsupported' :
-              'upload-write-unconfirmed');
+              'upload-write-unconfirmed', written.transportLost === true);
         }
         uploaded += payload.byteLength;
-        const identity: SshSftpFileIdentity | null =
-          await this.readRemoteIdentity(session.sessionId, partialPath, session.generation);
+        const identityResult: SshSftpEngineIdentityResult = await this.readRemoteIdentityResult(
+          session.sessionId, partialPath, session.generation);
+        if (identityResult.transportLost) {
+          return this.failOperationOrWait(binding, effectiveTask, session,
+            'upload-partial-stat-lost', true);
+        }
+        const identity: SshSftpFileIdentity | null = identityResult.identity;
         if (identity === null || identity.size !== uploaded || identity.mtime < 0) {
           return this.failTask(binding, effectiveTask, 'upload-partial-unverified');
         }
@@ -854,23 +992,19 @@ export class SshSftpTaskEngine {
       if (finalSource === null || !sshSftpIdentityMatches(sourceIdentity, finalSource)) {
         return this.failTask(binding, effectiveTask, 'upload-source-changed');
       }
-      const partialFinal: SshSftpFileIdentity | null =
-        await this.readRemoteIdentity(session.sessionId, partialPath, session.generation);
+      const partialFinalResult: SshSftpEngineIdentityResult = await this.readRemoteIdentityResult(
+        session.sessionId, partialPath, session.generation);
+      if (partialFinalResult.transportLost) {
+        return this.failOperationOrWait(binding, effectiveTask, session,
+          'upload-final-partial-stat-lost', true);
+      }
+      const partialFinal: SshSftpFileIdentity | null = partialFinalResult.identity;
       if (partialFinal === null || !sshSftpCommitSizeMatches(partialFinal.size, sourceIdentity.size)) {
         return this.failTask(binding, effectiveTask, 'upload-partial-size-mismatch');
       }
       if (this.taskIsStopped(effectiveTask.taskId)) { return false; }
-      const renamed = await this.loader.renameRemotePathAsync(
-        session.sessionId, partialPath, effectiveTask.remotePath, true, session.generation);
-      if (renamed.errorCode < 0 || renamed.atomic === false) {
-        return this.failTask(binding, effectiveTask, 'upload-atomic-commit-failed');
-      }
-      const finalRemote: SshSftpFileIdentity | null =
-        await this.readRemoteIdentity(session.sessionId, effectiveTask.remotePath, session.generation);
-      if (finalRemote === null || !sshSftpCommitSizeMatches(finalRemote.size, sourceIdentity.size)) {
-        return this.failTask(binding, effectiveTask, 'upload-final-unverified');
-      }
-      return this.completeFileTask(binding, effectiveTask, 'completed');
+      return await this.commitRemotePartial(binding, effectiveTask, session, partialPath,
+        effectiveTask.remotePath, sourceIdentity.size, partialFinal, 'upload');
     } catch (_err) {
       return this.failTask(binding, effectiveTask, 'upload-exception');
     } finally {
@@ -883,8 +1017,13 @@ export class SshSftpTaskEngine {
   private async executeDownload(binding: SshSftpBatchBinding,
     session: SshSftpEngineSession, task: SshSftpTaskRecord): Promise<boolean> {
     if (this.taskIsStopped(task.taskId)) { return false; }
-    const remoteIdentity: SshSftpFileIdentity | null =
-      await this.readRemoteIdentity(session.sessionId, task.remotePath, session.generation);
+    const remoteIdentityResult: SshSftpEngineIdentityResult = await this.readRemoteIdentityResult(
+      session.sessionId, task.remotePath, session.generation);
+    if (remoteIdentityResult.transportLost) {
+      return this.failOperationOrWait(binding, task, session,
+        'download-remote-stat-lost', true);
+    }
+    const remoteIdentity: SshSftpFileIdentity | null = remoteIdentityResult.identity;
     if (remoteIdentity === null || remoteIdentity.size > MAX_TRANSFER_BYTES ||
       (task.sourceSize >= 0 && !sshSftpIdentityMatches(
         { size: task.sourceSize, mtime: task.sourceMtime }, remoteIdentity))) {
@@ -939,11 +1078,12 @@ export class SshSftpTaskEngine {
         }
         if (this.taskIsStopped(task.taskId)) { return false; }
         const chunkSize: number = Math.min(DOWNLOAD_CHUNK_BYTES, remoteIdentity.size - downloaded);
-        const result = await this.loader.readRemoteFileChunkAsync(
+        const result: SftpReadAsyncResult = await this.loader.readRemoteFileChunkAsync(
           session.sessionId, task.remotePath, downloaded, chunkSize, session.generation);
         if (result.errorCode < 0 || result.data.byteLength <= 0 ||
           result.data.byteLength > remoteIdentity.size - downloaded) {
-          return this.failTask(binding, task, 'download-read-failed');
+          return this.failOperationOrWait(binding, task, session,
+            'download-read-failed', result.transportLost === true);
         }
         const written: number = await fileIo.write(target.fd, result.data);
         if (written !== result.data.byteLength) {
@@ -961,8 +1101,13 @@ export class SshSftpTaskEngine {
       await fileIo.fsync(target.fd);
       await fileIo.close(target);
       target = null;
-      const finalRemote: SshSftpFileIdentity | null =
-        await this.readRemoteIdentity(session.sessionId, task.remotePath, session.generation);
+      const finalRemoteResult: SshSftpEngineIdentityResult = await this.readRemoteIdentityResult(
+        session.sessionId, task.remotePath, session.generation);
+      if (finalRemoteResult.transportLost) {
+        return this.failOperationOrWait(binding, task, session,
+          'download-final-stat-lost', true);
+      }
+      const finalRemote: SshSftpFileIdentity | null = finalRemoteResult.identity;
       const finalPartial: SshSftpFileIdentity | null = await this.readLocalIdentity(partialPath);
       if (finalRemote === null || !sshSftpIdentityMatches(remoteIdentity, finalRemote) ||
         finalPartial === null || !sshSftpCommitSizeMatches(finalPartial.size, remoteIdentity.size)) {
@@ -990,6 +1135,12 @@ export class SshSftpTaskEngine {
     const listed: SftpListAsyncResult = await this.loader.listRemoteDirAsync(
       session.sessionId, parent, session.generation);
     if (listed.errorCode < 0) {
+      if (listed.transportLost === true) {
+        this.markTransportLost(session, 'remote-conflict-list');
+        this.waitForConnection(binding, task);
+        return { action: 'waiting', targetPath: remotePath, fileName: task.fileName };
+      }
+      this.failTask(binding, task, 'remote-conflict-list-failed');
       return { action: 'failed', targetPath: remotePath, fileName: task.fileName };
     }
     let existing: SftpFileEntry | null = null;
@@ -1079,6 +1230,10 @@ export class SshSftpTaskEngine {
   private completeFileTask(binding: SshSftpBatchBinding, task: SshSftpTaskRecord,
     reason: string): boolean {
     const completed: SshSftpTaskRecord = this.updateTask(task, 'completed', task.totalBytes, -1, -1);
+    if (completed.stage !== 'completed') {
+      this.publish('taskChanged', binding.batchId, completed, completed.stage);
+      return false;
+    }
     this.publish('taskChanged', binding.batchId, completed, reason);
     return true;
   }
@@ -1108,13 +1263,13 @@ export class SshSftpTaskEngine {
     sessionGeneration: number = task.sessionGeneration,
     targetPath: string = task.targetPath || remotePath,
     sourcePath: string = task.sourcePath || task.relativePath,
-    commitState: 'renamed' | undefined = task.commitState): SshSftpTaskRecord {
+    commitState: 'renaming' | 'renamed' | undefined = task.commitState): SshSftpTaskRecord {
+    const current: SshSftpTaskRecord | null = this.store.get(task.taskId);
+    if (current !== null && (current.stage === 'paused' || current.stage === 'cancelled')) {
+      return current;
+    }
     this.sequence = Math.max(this.sequence + 1, Date.now(), task.sequence + 1);
     const now: number = Date.now();
-    const current: SshSftpTaskRecord | null = this.store.get(task.taskId);
-    const preservedStage: SshSftpTaskStage | null = current !== null &&
-      (current.stage === 'paused' || current.stage === 'cancelled') && stage === 'transferring'
-      ? current.stage : null;
     const next: SshSftpTaskRecord = {
       taskId: task.taskId,
       batchId: task.batchId,
@@ -1132,7 +1287,7 @@ export class SshSftpTaskEngine {
       partialMtime,
       sessionGeneration,
       sequence: this.sequence,
-      stage: preservedStage === null ? stage : preservedStage,
+      stage,
       updatedAt: now,
       sourceEndpoint: task.sourceEndpoint,
       targetEndpoint: task.targetEndpoint,
@@ -1176,6 +1331,11 @@ export class SshSftpTaskEngine {
   }
 
   private sessionActive(hostId: string, session: SshSftpEngineSession): boolean {
+    const lost: SshSftpEngineSession | undefined = this.transportLostSessions.get(hostId);
+    if (lost !== undefined && lost.sessionId === session.sessionId &&
+      lost.generation === session.generation) {
+      return false;
+    }
     const current: SshSftpEngineSession | undefined = this.sessions.get(hostId);
     if (current === undefined || current.sessionId !== session.sessionId ||
       current.generation !== session.generation) {
@@ -1204,16 +1364,27 @@ export class SshSftpTaskEngine {
     const name: string = this.remoteBaseName(normalized);
     const listed: SftpListAsyncResult = await this.loader.listRemoteDirAsync(
       sessionId, parent, session.generation);
-    if (listed.errorCode < 0) { return false; }
+    if (listed.errorCode < 0) {
+      if (listed.transportLost === true) { this.markTransportLost(session, 'directory-list'); }
+      return false;
+    }
     for (let index = 0; index < listed.entries.length; index++) {
       const entry: SftpFileEntry = listed.entries[index];
       if (entry.isDirectory && (entry.path === normalized || entry.name === name)) { return true; }
     }
-    const created = await this.loader.makeRemoteDirAsync(sessionId, normalized, session.generation);
+    const created: SftpMutationAsyncResult = await this.loader.makeRemoteDirAsync(
+      sessionId, normalized, session.generation);
     if (created.errorCode === 0) { return true; }
+    if (created.transportLost === true) {
+      this.markTransportLost(session, 'directory-create');
+      return false;
+    }
     const confirmed: SftpListAsyncResult = await this.loader.listRemoteDirAsync(
       sessionId, parent, session.generation);
-    if (confirmed.errorCode < 0) { return false; }
+    if (confirmed.errorCode < 0) {
+      if (confirmed.transportLost === true) { this.markTransportLost(session, 'directory-confirm'); }
+      return false;
+    }
     for (let index = 0; index < confirmed.entries.length; index++) {
       const entry: SftpFileEntry = confirmed.entries[index];
       if (entry.isDirectory && (entry.path === normalized || entry.name === name)) { return true; }
@@ -1221,21 +1392,31 @@ export class SshSftpTaskEngine {
     return false;
   }
 
-  private async readRemoteIdentity(sessionId: number, path: string,
-    expectedGeneration: number = 0): Promise<SshSftpFileIdentity | null> {
+  private async readRemoteIdentityResult(sessionId: number, path: string,
+    expectedGeneration: number = 0): Promise<SshSftpEngineIdentityResult> {
     const result: SftpListAsyncResult = await this.loader.listRemoteDirAsync(
       sessionId, this.parentRemotePath(path), expectedGeneration);
-    if (result.errorCode < 0) { return null; }
+    if (result.errorCode < 0) {
+      return {
+        identity: null,
+        errorCode: result.errorCode,
+        transportLost: result.transportLost === true
+      };
+    }
     for (let index = 0; index < result.entries.length; index++) {
       const entry: SftpFileEntry = result.entries[index];
       if (!entry.isDirectory && entry.path === path) {
         return {
-          size: Number.isFinite(entry.size) && entry.size >= 0 ? entry.size : -1,
-          mtime: Number.isFinite(entry.mtime) && entry.mtime >= 0 ? entry.mtime : -1
+          identity: {
+            size: Number.isFinite(entry.size) && entry.size >= 0 ? entry.size : -1,
+            mtime: Number.isFinite(entry.mtime) && entry.mtime >= 0 ? entry.mtime : -1
+          },
+          errorCode: result.errorCode,
+          transportLost: false
         };
       }
     }
-    return null;
+    return { identity: null, errorCode: result.errorCode, transportLost: false };
   }
 
   private async readLocalIdentity(path: string): Promise<SshSftpFileIdentity | null> {

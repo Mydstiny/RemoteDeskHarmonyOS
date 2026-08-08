@@ -106,8 +106,8 @@ export interface SshSftpTaskRecord {
   targetPath?: string;
   partialIdentity?: SftpPartialIdentity;
   checksumPolicy?: 'size_mtime' | 'sha256';
-  /** Atomic rename completed; reconnect recovery must verify target, not partial. */
-  commitState?: 'renamed';
+  /** Atomic rename intent is durable before I/O; recovery checks target before source/partial. */
+  commitState?: 'renaming' | 'renamed';
 }
 
 export interface SshSftpResumeContext {
@@ -123,7 +123,7 @@ const MAX_BATCH_ID_LENGTH: number = 64;
 const MAX_HOST_ID_LENGTH: number = 160;
 const MAX_REMOTE_PATH_LENGTH: number = 2048;
 const MAX_FILE_NAME_LENGTH: number = 255;
-const SFTP_TASK_SCHEMA_VERSION: number = 3;
+const SFTP_TASK_SCHEMA_VERSION: number = 4;
 
 const STAGES: SshSftpTaskStage[] = [
   'queued', 'inspecting', 'awaitingConflictDecision', 'transferring', 'paused',
@@ -266,7 +266,8 @@ export function normalizeSshSftpTaskRecord(value: Object): SshSftpTaskRecord | n
     targetPath,
     partialIdentity,
     checksumPolicy,
-    commitState: raw['commitState'] === 'renamed' ? 'renamed' : undefined
+    commitState: raw['commitState'] === 'renamed' ? 'renamed' :
+      (raw['commitState'] === 'renaming' ? 'renaming' : undefined)
   };
 }
 

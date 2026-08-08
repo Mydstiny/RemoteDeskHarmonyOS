@@ -148,8 +148,11 @@ fn resolution_aware_fps_ceiling(
     }
 }
 
-fn uses_bounded_vp9_pressure_targets(active_codec: i32, configured_fps: u32) -> bool {
-    active_codec == VP9_CODEC_PREFERENCE && configured_fps <= VP9_HIGH_RESOLUTION_FPS
+fn uses_bounded_vp9_pressure_targets(active_codec: i32, width: i32, height: i32) -> bool {
+    if active_codec != VP9_CODEC_PREFERENCE || width <= 0 || height <= 0 {
+        return false;
+    }
+    (width as u64).saturating_mul(height as u64) >= VP9_HIGH_RESOLUTION_PIXEL_THRESHOLD
 }
 
 fn pressure_target_fps(
@@ -157,8 +160,9 @@ fn pressure_target_fps(
     active_codec: i32,
     configured_fps: u32,
     pressure_level: u32,
+    bounded_vp9_pressure: bool,
 ) -> u32 {
-    let targets = if uses_bounded_vp9_pressure_targets(active_codec, configured_fps) {
+    let targets = if bounded_vp9_pressure && active_codec == VP9_CODEC_PREFERENCE {
         VP9_BACKPRESSURE_FPS
     } else {
         BACKPRESSURE_FPS
@@ -172,10 +176,17 @@ fn advance_applied_pressure_level(
     applied_level: u32,
     requested_level: u32,
     recovery_windows: u32,
+    bounded_vp9_pressure: bool,
 ) -> (u32, u32) {
     let applied = applied_level.min(3);
     let requested = requested_level.min(3);
     if requested >= applied {
+        return (requested, 0);
+    }
+    // High-resolution VP9 pressure already has one native/session hysteresis
+    // owner. Apply its recovery signal immediately instead of adding another
+    // per-level 12-second Rust hold on top.
+    if bounded_vp9_pressure {
         return (requested, 0);
     }
     if !is_vp9_stream(preferred_codec, active_codec) {
@@ -199,12 +210,14 @@ fn changed_pressure_target_fps(
     configured_fps: u32,
     current_stream_fps: u32,
     pressure_level: u32,
+    bounded_vp9_pressure: bool,
 ) -> Option<u32> {
     let target = pressure_target_fps(
         preferred_codec,
         active_codec,
         configured_fps,
         pressure_level,
+        bounded_vp9_pressure,
     );
     (target != current_stream_fps).then_some(target)
 }
@@ -1169,6 +1182,7 @@ impl RustDeskConnector {
         let mut applied_pressure_level: u32 = 0;
         let mut vp9_pressure_recovery_windows: u32 = 0;
         let mut active_video_codec: i32 = 0;
+        let mut bounded_vp9_pressure = false;
         let mut stream_fps_ceiling = fps;
         let mut stream_options_fps = fps;
         const DEGRADE_AFTER_OVERLOAD_WINDOWS: u32 = 5; // need 5s of overload before degrade
@@ -1370,6 +1384,11 @@ impl RustDeskConnector {
                         .lock()
                         .map(|state| (state.width, state.height))
                         .unwrap_or((0, 0));
+                    bounded_vp9_pressure = uses_bounded_vp9_pressure_targets(
+                        active_video_codec,
+                        source_width,
+                        source_height,
+                    );
                     let next_stream_fps_ceiling = resolution_aware_fps_ceiling(
                         active_video_codec,
                         source_width,
@@ -1383,6 +1402,7 @@ impl RustDeskConnector {
                             active_video_codec,
                             stream_fps_ceiling,
                             applied_pressure_level,
+                            bounded_vp9_pressure,
                         );
                         eprintln!(
                             "[RustDesk-FFI] resolution fps ceiling codec={} size={}x{} configured={} ceiling={} target={}",
@@ -1680,6 +1700,7 @@ impl RustDeskConnector {
                         applied_pressure_level,
                         requested_pressure_level,
                         vp9_pressure_recovery_windows,
+                        bounded_vp9_pressure,
                     );
                 vp9_pressure_recovery_windows = next_recovery_windows;
                 if next_applied_pressure_level != applied_pressure_level {
@@ -1692,6 +1713,7 @@ impl RustDeskConnector {
                         active_video_codec,
                         stream_fps_ceiling,
                         applied_pressure_level,
+                        bounded_vp9_pressure,
                     );
                     eprintln!(
                         "[RustDesk-FFI] LOCAL PRESSURE level={} fps={} quality={} total_video={} options_changed={}",
@@ -1707,6 +1729,7 @@ impl RustDeskConnector {
                         stream_fps_ceiling,
                         stream_options_fps,
                         applied_pressure_level,
+                        bounded_vp9_pressure,
                     ) {
                         Session::send_runtime_options(
                             crypto,
@@ -1729,10 +1752,7 @@ impl RustDeskConnector {
                 // Native/session telemetry is the sole hysteresis owner for the
                 // bounded high-resolution VP9 path. Preserve this legacy fallback
                 // exactly for all other codec/resolution combinations.
-                let use_legacy_backpressure = !uses_bounded_vp9_pressure_targets(
-                    active_video_codec,
-                    stream_fps_ceiling,
-                );
+                let use_legacy_backpressure = !bounded_vp9_pressure;
                 let is_overload = use_legacy_backpressure
                     && requested_pressure_level > 0
                     && window_video < OVERLOAD_VIDEO_THRESHOLD
@@ -1750,6 +1770,7 @@ impl RustDeskConnector {
                             active_video_codec,
                             stream_fps_ceiling,
                             current_backpressure_level,
+                            bounded_vp9_pressure,
                         );
                         let quality = image_quality;
                         eprintln!(
@@ -1762,6 +1783,7 @@ impl RustDeskConnector {
                             stream_fps_ceiling,
                             stream_options_fps,
                             current_backpressure_level,
+                            bounded_vp9_pressure,
                         ) {
                             Session::send_runtime_options(
                                 crypto,
@@ -1792,6 +1814,7 @@ impl RustDeskConnector {
                             active_video_codec,
                             stream_fps_ceiling,
                             current_backpressure_level,
+                            bounded_vp9_pressure,
                         );
                         let quality = image_quality;
                         eprintln!(
@@ -1804,6 +1827,7 @@ impl RustDeskConnector {
                             stream_fps_ceiling,
                             stream_options_fps,
                             current_backpressure_level,
+                            bounded_vp9_pressure,
                         ) {
                             Session::send_runtime_options(
                                 crypto,
@@ -3575,6 +3599,7 @@ mod tests {
         should_refresh_for_video_starvation, ControlKey, KeyEvent_oneof_union,
         Message_oneof_union, PhysicalModifierState, RemoteKeyboardTransport,
         RendezvousCredentials, RustDeskConnector, VP9_PRESSURE_RECOVERY_HOLD_WINDOWS,
+        uses_bounded_vp9_pressure_targets,
     };
     use crate::protocol::message_proto::{
         DisplayInfo, Hash, LoginResponse, Message, Misc_oneof_union, PeerInfo,
@@ -4075,10 +4100,10 @@ mod tests {
 
     #[test]
     fn bounded_vp9_pressure_uses_gradual_targets() {
-        assert_eq!(pressure_target_fps(2, 2, 30, 0), 30);
-        assert_eq!(pressure_target_fps(2, 2, 30, 1), 26);
-        assert_eq!(pressure_target_fps(4, 2, 30, 2), 22);
-        assert_eq!(pressure_target_fps(4, 2, 30, 3), 18);
+        assert_eq!(pressure_target_fps(2, 2, 30, 0, true), 30);
+        assert_eq!(pressure_target_fps(2, 2, 30, 1, true), 26);
+        assert_eq!(pressure_target_fps(4, 2, 30, 2, true), 22);
+        assert_eq!(pressure_target_fps(4, 2, 30, 3, true), 18);
     }
 
     #[test]
@@ -4088,43 +4113,46 @@ mod tests {
         assert_eq!(resolution_aware_fps_ceiling(2, 2560, 1440, 60), 60);
         assert_eq!(resolution_aware_fps_ceiling(4, 2940, 1912, 60), 60);
         assert_eq!(resolution_aware_fps_ceiling(2, 0, 1912, 60), 60);
+        assert!(uses_bounded_vp9_pressure_targets(2, 2940, 1912));
+        assert!(!uses_bounded_vp9_pressure_targets(2, 2560, 1440));
+        assert!(!uses_bounded_vp9_pressure_targets(4, 2940, 1912));
     }
 
     #[test]
     fn non_vp9_pressure_never_raises_the_configured_target() {
-        assert_eq!(pressure_target_fps(4, 4, 30, 0), 30);
-        assert_eq!(pressure_target_fps(4, 4, 60, 2), 30);
-        assert_eq!(pressure_target_fps(4, 4, 60, 3), 15);
-        assert_eq!(pressure_target_fps(2, 2, 60, 1), 45);
+        assert_eq!(pressure_target_fps(4, 4, 30, 0, false), 30);
+        assert_eq!(pressure_target_fps(4, 4, 60, 2, false), 30);
+        assert_eq!(pressure_target_fps(4, 4, 60, 3, false), 15);
+        assert_eq!(pressure_target_fps(2, 2, 30, 1, false), 30);
     }
 
     #[test]
     fn unchanged_pressure_fps_does_not_reapply_stream_options() {
-        assert_eq!(changed_pressure_target_fps(2, 2, 30, 30, 3), Some(18));
-        assert_eq!(changed_pressure_target_fps(2, 2, 30, 18, 3), None);
-        assert_eq!(changed_pressure_target_fps(4, 4, 30, 30, 1), None);
-        assert_eq!(changed_pressure_target_fps(4, 4, 60, 60, 2), Some(30));
-        assert_eq!(changed_pressure_target_fps(4, 4, 60, 15, 0), Some(60));
+        assert_eq!(changed_pressure_target_fps(2, 2, 30, 30, 3, true), Some(18));
+        assert_eq!(changed_pressure_target_fps(2, 2, 30, 18, 3, true), None);
+        assert_eq!(changed_pressure_target_fps(4, 4, 30, 30, 1, false), None);
+        assert_eq!(changed_pressure_target_fps(4, 4, 60, 60, 2, false), Some(30));
+        assert_eq!(changed_pressure_target_fps(4, 4, 60, 15, 0, false), Some(60));
     }
 
     #[test]
-    fn vp9_pressure_degrades_immediately_and_recovers_one_step_after_hold() {
-        assert_eq!(advance_applied_pressure_level(4, 2, 0, 2, 0), (2, 0));
-        assert_eq!(advance_applied_pressure_level(4, 2, 2, 3, 7), (3, 0));
+    fn pressure_recovery_has_only_one_hysteresis_owner() {
+        assert_eq!(advance_applied_pressure_level(4, 2, 0, 2, 0, true), (2, 0));
+        assert_eq!(advance_applied_pressure_level(4, 2, 3, 0, 7, true), (0, 0));
 
         let mut level = 2;
         let mut windows = 0;
         for _ in 1..VP9_PRESSURE_RECOVERY_HOLD_WINDOWS {
-            (level, windows) = advance_applied_pressure_level(4, 2, level, 0, windows);
+            (level, windows) = advance_applied_pressure_level(4, 2, level, 0, windows, false);
             assert_eq!(level, 2);
         }
-        (level, windows) = advance_applied_pressure_level(4, 2, level, 0, windows);
+        (level, windows) = advance_applied_pressure_level(4, 2, level, 0, windows, false);
         assert_eq!((level, windows), (1, 0));
     }
 
     #[test]
     fn pressure_recovery_and_refresh_policy_preserve_hardware_behavior() {
-        assert_eq!(advance_applied_pressure_level(4, 4, 2, 0, 8), (0, 0));
+        assert_eq!(advance_applied_pressure_level(4, 4, 2, 0, 8, false), (0, 0));
         assert!(pressure_change_requires_refresh(4, 4));
         assert!(!pressure_change_requires_refresh(2, 0));
         assert!(!pressure_change_requires_refresh(4, 2));

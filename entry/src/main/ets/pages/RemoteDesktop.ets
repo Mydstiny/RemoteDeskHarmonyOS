@@ -3695,9 +3695,9 @@ struct RemoteDesktop {
       focusY
     };
     const cursorConfig: pointer.CursorConfig = { followSystem: false };
-    const clearRejectedCandidate = (): void => {
+    const clearRejectedCandidate = (): boolean => {
       if (this.remoteCursorNativePointerPendingMap !== pointerMap) {
-        return;
+        return false;
       }
       this.remoteCursorNativePointerPendingMap = null;
       this.remoteCursorNativePointerPendingOwnsMap = false;
@@ -3705,6 +3705,7 @@ struct RemoteDesktop {
       if (ownsPointerMap) {
         this.releasePixelMap(pointerMap);
       }
+      return true;
     };
     try {
       pointer.setCustomCursor(this.remoteCursorWindowId, customCursor, cursorConfig)
@@ -3741,11 +3742,15 @@ struct RemoteDesktop {
             ' scale=' + scale.toFixed(2) + ' followSystem=0 reason=' + reason);
         })
         .catch((err: Object): void => {
-          clearRejectedCandidate();
-          try {
-            this.getUIContext().getCursorController().setCursor(pointer.PointerStyle.DEFAULT);
-          } catch (_fallbackErr) {
-            // Keep the primary pointer error as the diagnostic signal.
+          const rejectedCurrentOwner: boolean = clearRejectedCandidate() &&
+            applyToken === this.remoteCursorNativePointerToken &&
+            this.remoteCursorNativePointerMap === null;
+          if (rejectedCurrentOwner) {
+            try {
+              this.getUIContext().getCursorController().setCursor(pointer.PointerStyle.DEFAULT);
+            } catch (_fallbackErr) {
+              // Keep the primary pointer error as the diagnostic signal.
+            }
           }
           hilog.warn(RD_DOMAIN, RD_TAG,
             'remote-native-pointer custom failed generation=' + generation.toString() +
@@ -3753,11 +3758,15 @@ struct RemoteDesktop {
             ' err=' + JSON.stringify(err));
         });
     } catch (err) {
-      clearRejectedCandidate();
-      try {
-        this.getUIContext().getCursorController().setCursor(pointer.PointerStyle.DEFAULT);
-      } catch (_fallbackErr) {
-        // Keep the primary pointer error as the diagnostic signal.
+      const rejectedCurrentOwner: boolean = clearRejectedCandidate() &&
+        applyToken === this.remoteCursorNativePointerToken &&
+        this.remoteCursorNativePointerMap === null;
+      if (rejectedCurrentOwner) {
+        try {
+          this.getUIContext().getCursorController().setCursor(pointer.PointerStyle.DEFAULT);
+        } catch (_fallbackErr) {
+          // Keep the primary pointer error as the diagnostic signal.
+        }
       }
       hilog.warn(RD_DOMAIN, RD_TAG,
         'remote-native-pointer custom failed generation=' + generation.toString() +

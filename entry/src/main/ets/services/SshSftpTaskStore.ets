@@ -265,7 +265,7 @@ export class SshSftpTaskStore {
     if (this.get(spec.taskId) !== null) { return null; }
     const remotePath: string = spec.source.kind === 'ssh' ? spec.sourcePath : spec.targetPath;
     const record: SshSftpTaskRecord = {
-      schemaVersion: 3,
+      schemaVersion: 4,
       taskId: spec.taskId.trim(),
       batchId: '',
       relativePath: spec.source.kind === 'local' ? spec.sourcePath : spec.targetPath,
@@ -337,7 +337,7 @@ export class SshSftpTaskStore {
       const sequence: number = this.nextTaskSequence();
       records.push({
         taskId,
-        schemaVersion: 3,
+        schemaVersion: 4,
         batchId,
         relativePath: item.relativePath,
         hostId: owner,
@@ -420,7 +420,7 @@ export class SshSftpTaskStore {
         return { accepted: false, reason: 'duplicate-batch-task', batchId: '', records: [] };
       }
       const spec: SftpTransferSpec = {
-        schemaVersion: 3,
+        schemaVersion: 4,
         taskId,
         source: sourceEndpoint,
         target: targetEndpoint,
@@ -435,7 +435,7 @@ export class SshSftpTaskStore {
       const sequence: number = this.nextTaskSequence();
       records.push({
         taskId,
-        schemaVersion: 3,
+        schemaVersion: 4,
         batchId,
         relativePath: item.relativePath,
         // The target host owns task listing and recovery. Source/target remain
