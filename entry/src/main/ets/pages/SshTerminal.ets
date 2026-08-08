@@ -2896,17 +2896,19 @@ struct SshTerminal {
     return ownerToken;
   }
 
-  private detachSftpSessionOwner(hostId: string, sessionId: number,
-    capturedOwner: SshSftpTrackedSession | null = null): void {
-    const owner: string = hostId.trim();
-    const ownerToken: SshSftpTrackedSession | undefined = capturedOwner === null
-      ? this.sftpSessionOwners.get(owner) : capturedOwner;
-    if (ownerToken === undefined || ownerToken.hostId !== owner ||
-      ownerToken.sessionId !== sessionId) { return; }
+  private detachCapturedSftpSessionOwner(ownerToken: SshSftpTrackedSession | null): void {
+    if (ownerToken === null) { return; }
     this.sftpTaskEngine.detachSession(ownerToken);
-    if (this.sftpSessionOwners.get(owner) === ownerToken) {
-      this.sftpSessionOwners.delete(owner);
+    if (this.sftpSessionOwners.get(ownerToken.hostId) === ownerToken) {
+      this.sftpSessionOwners.delete(ownerToken.hostId);
     }
+  }
+
+  private detachSftpSessionOwner(hostId: string, sessionId: number): void {
+    const owner: string = hostId.trim();
+    const ownerToken: SshSftpTrackedSession | undefined = this.sftpSessionOwners.get(owner);
+    if (ownerToken === undefined || ownerToken.sessionId !== sessionId) { return; }
+    this.detachCapturedSftpSessionOwner(ownerToken);
   }
 
   private sftpSessionForHost(hostId: string): SshSftpEngineSession | null {
@@ -5099,8 +5101,7 @@ struct SshTerminal {
               // A rejected continuous task cannot be presented as a durable
               // background connection. Stop the detached session and leave
               // any active SFTP record paused at its last durable checkpoint.
-              this.detachSftpSessionOwner(
-                backgroundInfo.hostId, backgroundInfo.sessionId, backgroundOwner);
+              this.detachCapturedSftpSessionOwner(backgroundOwner);
               this.sshTabStore.invalidateSession(backgroundInfo.hostId, 'error', 'backgroundLimited');
               this.loader.disconnectSshSession(backgroundInfo.sessionId);
             });
