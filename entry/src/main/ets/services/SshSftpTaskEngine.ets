@@ -579,12 +579,22 @@ export class SshSftpTaskEngine {
       return this.failOperationOrWait(binding, task, targetSession,
         diagnosticPrefix + '-commit-partial-stat-lost', true);
     }
+    // identity=null only proves absence after a successful parent listing.
+    // Permission/server failures must not be interpreted as a completed rename.
+    if (partialResult.errorCode < 0) {
+      return this.failOperationOrWait(binding, task, targetSession,
+        diagnosticPrefix + '-commit-partial-stat-failed');
+    }
     const targetResult: SshSftpEngineIdentityResult = await this.readRemoteIdentityResult(
       targetSession.sessionId, targetPath, targetSession.generation);
     if (this.taskIsStopped(task.taskId)) { return false; }
     if (targetResult.transportLost) {
       return this.failOperationOrWait(binding, task, targetSession,
         diagnosticPrefix + '-commit-target-stat-lost', true);
+    }
+    if (targetResult.errorCode < 0) {
+      return this.failOperationOrWait(binding, task, targetSession,
+        diagnosticPrefix + '-commit-target-stat-failed');
     }
     const recoveryDecision: SshSftpCommitRecoveryDecision = sshSftpCommitRecoveryDecision(
       task.commitState, expectedSize,
