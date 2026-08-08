@@ -75,7 +75,10 @@ pub(crate) enum CursorIdResult {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CursorStreamUpdate {
     Shape(CursorShape),
-    Position { x: i32, y: i32 },
+    Position {
+        x: i32,
+        y: i32,
+    },
     Visibility(bool),
     /** The requested shape is not present. Keep the previous shape visible. */
     CacheMiss {
@@ -227,7 +230,11 @@ impl CursorState {
     }
 
     fn remove_from_order(&mut self, id: u64) {
-        if let Some(index) = self.shape_order.iter().position(|candidate| *candidate == id) {
+        if let Some(index) = self
+            .shape_order
+            .iter()
+            .position(|candidate| *candidate == id)
+        {
             self.shape_order.remove(index);
         }
     }
@@ -247,7 +254,11 @@ impl CursorState {
     }
 
     fn remove_eviction_history(&mut self, id: u64) {
-        if let Some(index) = self.evicted_ids.iter().position(|candidate| *candidate == id) {
+        if let Some(index) = self
+            .evicted_ids
+            .iter()
+            .position(|candidate| *candidate == id)
+        {
             self.evicted_ids.remove(index);
         }
     }
@@ -301,8 +312,14 @@ mod tests {
     use super::*;
     use crate::protocol::message_proto::CursorData;
 
-    fn cursor_data(id: u64, hot_x: i32, hot_y: i32, width: i32, height: i32,
-                   rgba: Vec<u8>) -> CursorData {
+    fn cursor_data(
+        id: u64,
+        hot_x: i32,
+        hot_y: i32,
+        width: i32,
+        height: i32,
+        rgba: Vec<u8>,
+    ) -> CursorData {
         let mut data = CursorData::new();
         data.set_id(id);
         data.set_hotx(hot_x);

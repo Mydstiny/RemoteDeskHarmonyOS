@@ -125,10 +125,7 @@ impl Terminal {
         let was_at_bottom = self.is_at_bottom();
         let old_rows = self.rows;
         let absolute_cursor = self.screen_top.saturating_add(self.cursor_y);
-        let bottom_distance = self
-            .rows
-            .saturating_sub(1)
-            .saturating_sub(self.cursor_y);
+        let bottom_distance = self.rows.saturating_sub(1).saturating_sub(self.cursor_y);
         self.cols = cols.max(1);
         self.rows = rows.max(1);
 
@@ -187,10 +184,7 @@ impl Terminal {
             // Keep the cursor's absolute buffer row and its distance from the
             // viewport bottom. When rows grow this pulls existing scrollback
             // back into view instead of appending blank rows below the cursor.
-            let desired_cursor_y = self
-                .rows
-                .saturating_sub(1)
-                .saturating_sub(bottom_distance);
+            let desired_cursor_y = self.rows.saturating_sub(1).saturating_sub(bottom_distance);
             self.screen_top = absolute_cursor.saturating_sub(desired_cursor_y);
             self.cursor_y = absolute_cursor.saturating_sub(self.screen_top);
         }
@@ -726,9 +720,11 @@ impl Terminal {
         if self.cursor_y < self.scroll_top || self.cursor_y > self.scroll_bottom {
             return;
         }
-        let n = n
-            .max(1)
-            .min(self.scroll_bottom.saturating_sub(self.cursor_y).saturating_add(1));
+        let n = n.max(1).min(
+            self.scroll_bottom
+                .saturating_sub(self.cursor_y)
+                .saturating_add(1),
+        );
         if n == 0 {
             return;
         }
@@ -759,9 +755,11 @@ impl Terminal {
         if self.cursor_y < self.scroll_top || self.cursor_y > self.scroll_bottom {
             return;
         }
-        let n = n
-            .max(1)
-            .min(self.scroll_bottom.saturating_sub(self.cursor_y).saturating_add(1));
+        let n = n.max(1).min(
+            self.scroll_bottom
+                .saturating_sub(self.cursor_y)
+                .saturating_add(1),
+        );
         if n == 0 {
             return;
         }
@@ -818,7 +816,10 @@ impl Terminal {
     }
 
     pub(crate) fn set_tab_stop(&mut self) {
-        if let Some(stop) = self.tab_stops.get_mut(self.cursor_x.min(self.cols.saturating_sub(1))) {
+        if let Some(stop) = self
+            .tab_stops
+            .get_mut(self.cursor_x.min(self.cols.saturating_sub(1)))
+        {
             *stop = true;
         }
     }
@@ -826,7 +827,10 @@ impl Terminal {
     pub(crate) fn clear_tab_stop(&mut self, mode: u16) {
         if mode == 3 {
             self.tab_stops.fill(false);
-        } else if let Some(stop) = self.tab_stops.get_mut(self.cursor_x.min(self.cols.saturating_sub(1))) {
+        } else if let Some(stop) = self
+            .tab_stops
+            .get_mut(self.cursor_x.min(self.cols.saturating_sub(1)))
+        {
             *stop = false;
         }
     }
@@ -931,7 +935,10 @@ impl Terminal {
 
     /// 滚动区域内向上滚一行 (line_feed 触发)
     fn scroll_region(&mut self) {
-        if !self.alt_active && self.scroll_top == 0 && self.scroll_bottom == self.rows.saturating_sub(1) {
+        if !self.alt_active
+            && self.scroll_top == 0
+            && self.scroll_bottom == self.rows.saturating_sub(1)
+        {
             let was_at_bottom = self.is_at_bottom();
             self.screen_top = self.screen_top.saturating_add(1);
             if was_at_bottom {

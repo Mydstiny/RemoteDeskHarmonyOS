@@ -706,6 +706,21 @@ enum FrameCallbackKind {
 // short burst after a delayed TCP read, so leave enough room for that burst
 // without turning ordinary network jitter into a remote encoder restart.
 const VIDEO_CALLBACK_QUEUE_CAPACITY: usize = 16;
+// Full-resolution macOS VP9 can release close to one second of dependent
+// frames in one TCP burst. The native software decoder already owns a 30-frame
+// reference-safe recovery boundary, so let VP9 reach that owner instead of
+// dropping at the smaller cross-codec callback boundary and needlessly asking
+// the host to rebuild its encoder. Hardware codecs retain the 16-frame limit.
+const VP9_VIDEO_CALLBACK_QUEUE_CAPACITY: usize = 30;
+const FFI_VP9_CODEC: c_int = 3;
+
+fn video_callback_queue_capacity(codec: c_int) -> usize {
+    if codec == FFI_VP9_CODEC {
+        VP9_VIDEO_CALLBACK_QUEUE_CAPACITY
+    } else {
+        VIDEO_CALLBACK_QUEUE_CAPACITY
+    }
+}
 
 struct QueuedVideoFrame {
     data: Vec<u8>,
@@ -750,7 +765,7 @@ impl VideoCallbackQueue {
     fn new() -> Self {
         Self {
             state: Mutex::new(VideoCallbackQueueState {
-                frames: VecDeque::with_capacity(VIDEO_CALLBACK_QUEUE_CAPACITY),
+                frames: VecDeque::with_capacity(VP9_VIDEO_CALLBACK_QUEUE_CAPACITY),
                 closed: false,
                 awaiting_key_frame: false,
             }),
@@ -779,7 +794,7 @@ impl VideoCallbackQueue {
             evicted = state.frames.len();
             state.frames.clear();
             state.awaiting_key_frame = false;
-        } else if state.frames.len() >= VIDEO_CALLBACK_QUEUE_CAPACITY {
+        } else if state.frames.len() >= video_callback_queue_capacity(frame.codec) {
             if frame.is_key_frame {
                 // A fresh keyframe is a complete decoder restart point. Drop
                 // all older deltas so recovery does not replay stale frames
@@ -2991,6 +3006,44 @@ mod tests {
         assert_eq!(state.frames.len(), 1);
         assert!(state.frames.front().expect("recovery keyframe").is_key_frame);
         assert!(!state.awaiting_key_frame);
+    }
+
+    #[test]
+    fn video_callback_queue_allows_vp9_burst_to_reach_native_recovery_boundary() {
+        let queue = VideoCallbackQueue::new();
+        for timestamp in 0..VP9_VIDEO_CALLBACK_QUEUE_CAPACITY as u64 {
+            let outcome = queue.enqueue(QueuedVideoFrame {
+                data: vec![timestamp as u8],
+                width: 2940,
+                height: 1912,
+                codec: FFI_VP9_CODEC,
+                timestamp,
+                is_key_frame: false,
+                display: 0,
+            });
+            assert!(matches!(outcome, VideoQueueOutcome::Queued { .. }));
+        }
+
+        let state = queue.state.lock().expect("video queue state");
+        assert_eq!(state.frames.len(), VP9_VIDEO_CALLBACK_QUEUE_CAPACITY);
+        assert!(!state.awaiting_key_frame);
+        drop(state);
+
+        let overflow = queue.enqueue(QueuedVideoFrame {
+            data: vec![0xff],
+            width: 2940,
+            height: 1912,
+            codec: FFI_VP9_CODEC,
+            timestamp: VP9_VIDEO_CALLBACK_QUEUE_CAPACITY as u64,
+            is_key_frame: false,
+            display: 0,
+        });
+        assert!(matches!(
+            overflow,
+            VideoQueueOutcome::Dropped {
+                request_refresh: true,
+            }
+        ));
     }
 
     #[test]

@@ -6,8 +6,8 @@
 
 use super::rendezvous_proto::{
     ConnType, KeyExchange, NatType, PunchHoleRequest, PunchHoleResponse, RegisterPeer,
-    RegisterPeerResponse,
-    RegisterPk, RendezvousMessage, RendezvousMessage_oneof_union, RequestRelay,
+    RegisterPeerResponse, RegisterPk, RendezvousMessage, RendezvousMessage_oneof_union,
+    RequestRelay,
 };
 use super::wire;
 use crate::crypto;
@@ -172,8 +172,16 @@ impl RendezvousClient {
         let req_debug = format!(
             "{},conn=DEFAULT_CONN,force_relay=true,token={},key={},version={}",
             strategy.diagnostic(),
-            if token.is_empty() { "absent" } else { "present" },
-            if licence_key.is_empty() { "absent" } else { "present" },
+            if token.is_empty() {
+                "absent"
+            } else {
+                "present"
+            },
+            if licence_key.is_empty() {
+                "absent"
+            } else {
+                "present"
+            },
             HARMONY_RENDEZVOUS_VERSION
         );
 
@@ -734,8 +742,8 @@ mod tests {
             RendezvousConnectionStrategy::ForceRelay,
         );
         let punch_bytes = punch.write_to_bytes().expect("serialize punch request");
-        let parsed_punch: RendezvousMessage = protobuf::parse_from_bytes(&punch_bytes)
-            .expect("parse punch request");
+        let parsed_punch: RendezvousMessage =
+            protobuf::parse_from_bytes(&punch_bytes).expect("parse punch request");
         match parsed_punch.union {
             Some(RendezvousMessage_oneof_union::punch_hole_request(req)) => {
                 assert_eq!(req.get_licence_key(), key);
@@ -750,8 +758,8 @@ mod tests {
 
         let relay = request_relay_message("peer-123", "uuid-123", key);
         let relay_bytes = relay.write_to_bytes().expect("serialize relay request");
-        let parsed_relay: RendezvousMessage = protobuf::parse_from_bytes(&relay_bytes)
-            .expect("parse relay request");
+        let parsed_relay: RendezvousMessage =
+            protobuf::parse_from_bytes(&relay_bytes).expect("parse relay request");
         match parsed_relay.union {
             Some(RendezvousMessage_oneof_union::request_relay(req)) => {
                 assert_eq!(req.get_licence_key(), key);
@@ -783,8 +791,11 @@ mod tests {
         });
 
         let mut rd = RendezvousClient::new();
-        rd.connect("127.0.0.1", port, "", false).expect("connect rendezvous");
-        let info = rd.request_force_relay("peer-123", "key", "").expect("force relay");
+        rd.connect("127.0.0.1", port, "", false)
+            .expect("connect rendezvous");
+        let info = rd
+            .request_force_relay("peer-123", "key", "")
+            .expect("force relay");
         assert!(info.relay_server.is_empty(), "no relay server expected");
         assert_eq!(info.peer_addr, Some(addr), "direct peer address expected");
         server_thread.join().expect("server thread");
@@ -866,7 +877,10 @@ mod tests {
                 .accept()
                 .expect("relay connection was not accepted");
             let payload = wire::read_frame(&mut stream).expect("relay request frame missing");
-            assert!(!payload.is_empty(), "relay request frame should not be empty");
+            assert!(
+                !payload.is_empty(),
+                "relay request frame should not be empty"
+            );
         });
 
         let client = RendezvousClient::new();
@@ -890,7 +904,10 @@ mod tests {
                 .accept()
                 .expect("relay connection was not accepted");
             let payload = wire::read_frame(&mut stream).expect("relay request frame missing");
-            assert!(!payload.is_empty(), "relay request frame should not be empty");
+            assert!(
+                !payload.is_empty(),
+                "relay request frame should not be empty"
+            );
         });
 
         let client = RendezvousClient::new();

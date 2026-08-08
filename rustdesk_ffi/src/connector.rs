@@ -51,6 +51,11 @@ const SLOW_VIDEO_CALLBACK_WARN: Duration = Duration::from_millis(50);
 const SLOW_VIDEO_ACK_WARN: Duration = Duration::from_millis(50);
 const VP9_CODEC_PREFERENCE: i32 = 2;
 const BACKPRESSURE_FPS: [u32; 4] = [60, 45, 30, 15];
+// Full-resolution software VP9 needs useful headroom for the short bursts
+// observed from the macOS encoder. Avoid the old 30 -> 15 cliff: each native
+// pressure level makes one bounded step. Other codec/resolution paths retain
+// their existing targets.
+const VP9_BACKPRESSURE_FPS: [u32; 4] = [30, 26, 22, 18];
 const VP9_PRESSURE_RECOVERY_HOLD_WINDOWS: u32 = 12;
 const VP9_HIGH_RESOLUTION_PIXEL_THRESHOLD: u64 = 4_000_000;
 const VP9_HIGH_RESOLUTION_FPS: u32 = 30;
@@ -143,13 +148,22 @@ fn resolution_aware_fps_ceiling(
     }
 }
 
+fn uses_bounded_vp9_pressure_targets(active_codec: i32, configured_fps: u32) -> bool {
+    active_codec == VP9_CODEC_PREFERENCE && configured_fps <= VP9_HIGH_RESOLUTION_FPS
+}
+
 fn pressure_target_fps(
     _preferred_codec: i32,
-    _active_codec: i32,
+    active_codec: i32,
     configured_fps: u32,
     pressure_level: u32,
 ) -> u32 {
-    configured_fps.min(BACKPRESSURE_FPS[pressure_level.min(3) as usize])
+    let targets = if uses_bounded_vp9_pressure_targets(active_codec, configured_fps) {
+        VP9_BACKPRESSURE_FPS
+    } else {
+        BACKPRESSURE_FPS
+    };
+    configured_fps.min(targets[pressure_level.min(3) as usize])
 }
 
 fn advance_applied_pressure_level(
@@ -1712,7 +1726,15 @@ impl RustDeskConnector {
                 // T-131: Backpressure hysteresis — video-only overload detection
                 // Audio frames are NOT a decoder overload signal; they're independent.
                 // Overload = sustained very low video throughput (< 3 fps) for 5+ seconds.
-                let is_overload = requested_pressure_level > 0
+                // Native/session telemetry is the sole hysteresis owner for the
+                // bounded high-resolution VP9 path. Preserve this legacy fallback
+                // exactly for all other codec/resolution combinations.
+                let use_legacy_backpressure = !uses_bounded_vp9_pressure_targets(
+                    active_video_codec,
+                    stream_fps_ceiling,
+                );
+                let is_overload = use_legacy_backpressure
+                    && requested_pressure_level > 0
                     && window_video < OVERLOAD_VIDEO_THRESHOLD
                     && video_count > 20; // only after initial burst (avoid false trigger on connect)
                 if is_overload {
@@ -1757,7 +1779,7 @@ impl RustDeskConnector {
                             stream_options_sent_count += 1;
                         }
                     }
-                } else {
+                } else if use_legacy_backpressure {
                     consecutive_clean_windows += 1;
                     consecutive_overload_windows = 0;
                     if consecutive_clean_windows >= RECOVER_AFTER_CLEAN_WINDOWS
@@ -4052,11 +4074,11 @@ mod tests {
     }
 
     #[test]
-    fn vp9_pressure_adapts_the_configured_60fps_target() {
-        assert_eq!(pressure_target_fps(2, 0, 60, 0), 60);
-        assert_eq!(pressure_target_fps(2, 0, 60, 1), 45);
-        assert_eq!(pressure_target_fps(4, 2, 60, 2), 30);
-        assert_eq!(pressure_target_fps(4, 2, 60, 3), 15);
+    fn bounded_vp9_pressure_uses_gradual_targets() {
+        assert_eq!(pressure_target_fps(2, 2, 30, 0), 30);
+        assert_eq!(pressure_target_fps(2, 2, 30, 1), 26);
+        assert_eq!(pressure_target_fps(4, 2, 30, 2), 22);
+        assert_eq!(pressure_target_fps(4, 2, 30, 3), 18);
     }
 
     #[test]
@@ -4073,12 +4095,13 @@ mod tests {
         assert_eq!(pressure_target_fps(4, 4, 30, 0), 30);
         assert_eq!(pressure_target_fps(4, 4, 60, 2), 30);
         assert_eq!(pressure_target_fps(4, 4, 60, 3), 15);
+        assert_eq!(pressure_target_fps(2, 2, 60, 1), 45);
     }
 
     #[test]
     fn unchanged_pressure_fps_does_not_reapply_stream_options() {
-        assert_eq!(changed_pressure_target_fps(2, 2, 60, 60, 3), Some(15));
-        assert_eq!(changed_pressure_target_fps(2, 2, 60, 15, 3), None);
+        assert_eq!(changed_pressure_target_fps(2, 2, 30, 30, 3), Some(18));
+        assert_eq!(changed_pressure_target_fps(2, 2, 30, 18, 3), None);
         assert_eq!(changed_pressure_target_fps(4, 4, 30, 30, 1), None);
         assert_eq!(changed_pressure_target_fps(4, 4, 60, 60, 2), Some(30));
         assert_eq!(changed_pressure_target_fps(4, 4, 60, 15, 0), Some(60));
