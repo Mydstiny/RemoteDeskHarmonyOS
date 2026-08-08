@@ -141,7 +141,8 @@ import {
 import {
   SshSftpTaskEngine,
   SshSftpTaskEngineEvent,
-  SshSftpEngineSession
+  SshSftpEngineSession,
+  SshSftpTrackedSession
 } from '../services/SshSftpTaskEngine';
 import {
   SshLocalFileProvider,
@@ -425,6 +426,8 @@ struct SshTerminal {
   private sftpAtomicCommitErrorCode: number = 0;
   private sftpTaskStore: SshSftpTaskStore = SshSftpTaskStore.getInstance();
   private sftpTaskEngine: SshSftpTaskEngine = SshSftpTaskEngine.getInstance();
+  private sftpSessionOwners: Map<string, SshSftpTrackedSession> =
+    new Map<string, SshSftpTrackedSession>();
   private sftpLocalProvider: SshLocalFileProvider = new SshLocalFileProvider();
   private sftpBatchLocalRoots: Map<string, string> = new Map<string, string>();
   private sftpBatchRemoteRoots: Map<string, string> = new Map<string, string>();
@@ -1567,7 +1570,7 @@ struct SshTerminal {
     this.clearPreflightBinding();
 
     if (previousSessionId > 0 && previousHostId.length > 0) {
-      this.sftpTaskEngine.detachSession(previousHostId, previousSessionId);
+      this.detachSftpSessionOwner(previousHostId, previousSessionId);
       const detached: boolean = this.loader.detachSshSession(previousSessionId, previousHostId);
       if (!detached) {
         hilog.warn(0x0001, 'SshTerminal',
@@ -2887,6 +2890,25 @@ struct SshTerminal {
     }];
   }
 
+  private attachSftpSessionOwner(session: SshSftpEngineSession): SshSftpTrackedSession | null {
+    const ownerToken: SshSftpTrackedSession | null = this.sftpTaskEngine.attachSession(session);
+    if (ownerToken !== null) { this.sftpSessionOwners.set(ownerToken.hostId, ownerToken); }
+    return ownerToken;
+  }
+
+  private detachSftpSessionOwner(hostId: string, sessionId: number,
+    capturedOwner: SshSftpTrackedSession | null = null): void {
+    const owner: string = hostId.trim();
+    const ownerToken: SshSftpTrackedSession | undefined = capturedOwner === null
+      ? this.sftpSessionOwners.get(owner) : capturedOwner;
+    if (ownerToken === undefined || ownerToken.hostId !== owner ||
+      ownerToken.sessionId !== sessionId) { return; }
+    this.sftpTaskEngine.detachSession(ownerToken);
+    if (this.sftpSessionOwners.get(owner) === ownerToken) {
+      this.sftpSessionOwners.delete(owner);
+    }
+  }
+
   private sftpSessionForHost(hostId: string): SshSftpEngineSession | null {
     const owner: string = hostId.trim();
     if (owner.length === 0) { return null; }
@@ -2912,7 +2934,7 @@ struct SshTerminal {
       this.sshSessionGeneration = generation;
     }
     const session: SshSftpEngineSession = { hostId: owner, sessionId, generation };
-    this.sftpTaskEngine.attachSession(session);
+    this.attachSftpSessionOwner(session);
     if (owner !== this.hostId.trim()) {
       // This helper is also called by stale requests from a previous peer.
       // Never publish that session into the currently visible right pane;
@@ -3154,7 +3176,7 @@ struct SshTerminal {
           this.sftpPeerSessionId = connectedSessionId;
           this.sftpPeerSessionGeneration = generation;
         }
-        this.sftpTaskEngine.attachSession({ hostId: owner, sessionId: connectedSessionId, generation });
+        this.attachSftpSessionOwner({ hostId: owner, sessionId: connectedSessionId, generation });
         this.logSftpRemoteDiagnostic('ensure connected host=' + owner + ' session=' +
           connectedSessionId.toString() + '/' + generation.toString());
         return connectedSessionId;
@@ -5061,7 +5083,7 @@ struct SshTerminal {
           // A tab switch detaches its SFTP owner even though the native SSH
           // session remains live. Reattach every retained tab before the page
           // disappears so queued SFTP work can run without a view listener.
-          this.sftpTaskEngine.attachSession({
+          const backgroundOwner: SshSftpTrackedSession | null = this.attachSftpSessionOwner({
             hostId: backgroundInfo.hostId,
             sessionId: backgroundInfo.sessionId,
             generation: this.sshTabStore.sessionGeneration(backgroundInfo.hostId)
@@ -5077,7 +5099,8 @@ struct SshTerminal {
               // A rejected continuous task cannot be presented as a durable
               // background connection. Stop the detached session and leave
               // any active SFTP record paused at its last durable checkpoint.
-              this.sftpTaskEngine.detachSession(backgroundInfo.hostId, backgroundInfo.sessionId);
+              this.detachSftpSessionOwner(
+                backgroundInfo.hostId, backgroundInfo.sessionId, backgroundOwner);
               this.sshTabStore.invalidateSession(backgroundInfo.hostId, 'error', 'backgroundLimited');
               this.loader.disconnectSshSession(backgroundInfo.sessionId);
             });
@@ -5160,7 +5183,7 @@ struct SshTerminal {
     } else if (requestSessionId > 0) {
       this.sshTabStore.update(this.hostId, 'connected', requestSessionId);
       if (!preserveSshInBackground) {
-        this.sftpTaskEngine.detachSession(this.hostId, requestSessionId);
+        this.detachSftpSessionOwner(this.hostId, requestSessionId);
       }
       if (!this.loader.detachSshSession(requestSessionId, this.hostId)) {
         // If the native session is already leaving, explicit cleanup is safer
@@ -5504,7 +5527,7 @@ struct SshTerminal {
         this.sessionId).sessionGeneration;
       if (generation > 0) {
         this.sshSessionGeneration = generation;
-        this.sftpTaskEngine.attachSession({
+        this.attachSftpSessionOwner({
           hostId: this.hostId,
           sessionId: this.sessionId,
           generation
@@ -5517,7 +5540,7 @@ struct SshTerminal {
       // the latency timer can observe the eventual CONNECTED state. Do not
       // turn a transient reconnect into the page's terminal error screen.
       if (!this.connected) { this.connecting = true; }
-      this.sftpTaskEngine.detachSession(this.hostId, this.sessionId);
+      this.detachSftpSessionOwner(this.hostId, this.sessionId);
       this.sshTabStore.update(this.hostId, 'reconnecting', this.sessionId);
       return false;
     }
@@ -5868,7 +5891,7 @@ struct SshTerminal {
       return false;
     }
 
-    this.sftpTaskEngine.attachSession({
+    this.attachSftpSessionOwner({
       hostId: bindingHostId,
       sessionId: connectedSessionId,
       generation: sessionGeneration
@@ -5978,7 +6001,7 @@ struct SshTerminal {
       this.persistSftpTaskMetadata('waitingForConnection');
     }
     if (this.sessionId > 0) {
-      this.sftpTaskEngine.detachSession(this.hostId, this.sessionId);
+      this.detachSftpSessionOwner(this.hostId, this.sessionId);
       this.loader.disconnectSshSession(this.sessionId);
       await this.loader.waitForPendingTeardown();
     }

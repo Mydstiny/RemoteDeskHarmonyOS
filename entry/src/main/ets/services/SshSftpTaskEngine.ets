@@ -40,6 +40,7 @@ import {
 } from './SshSftpSessionOwnerPolicy';
 
 export { SshSftpEngineSession } from './SshSftpSessionOwnerPolicy';
+export { SshSftpTrackedSession } from './SshSftpSessionOwnerPolicy';
 
 const MAX_TRANSFER_BYTES: number = 512 * 1024 * 1024;
 const UPLOAD_CHUNK_BYTES: number = 64 * 1024;
@@ -212,9 +213,9 @@ export class SshSftpTaskEngine {
     }
   }
 
-  attachSession(session: SshSftpEngineSession): void {
+  attachSession(session: SshSftpEngineSession): SshSftpTrackedSession | null {
     const hostId: string = session.hostId.trim();
-    if (hostId.length === 0 || session.sessionId <= 0 || session.generation <= 0) { return; }
+    if (hostId.length === 0 || session.sessionId <= 0 || session.generation <= 0) { return null; }
     let nativeState: number = -1;
     let recoveryEpoch: number = 0;
     try {
@@ -226,11 +227,11 @@ export class SshSftpTaskEngine {
           ' session=' + session.sessionId.toString() +
           ' generation=' + session.generation.toString() +
           ' snapshotError=' + snapshot.errorCode.toString(), true);
-        return;
+        return null;
       }
       recoveryEpoch = snapshot.eventSequence;
     } catch (_err) {
-      return;
+      return null;
     }
     this.logDiagnostic('attach host=' + hostId + ' session=' + session.sessionId.toString() +
       ' generation=' + session.generation.toString() +
@@ -242,9 +243,10 @@ export class SshSftpTaskEngine {
         sessionId: session.sessionId,
         generation: session.generation
       });
-      return;
+      return null;
     }
-    this.sessionOwners.attach(hostId, session.sessionId, session.generation, recoveryEpoch);
+    const ownerToken: SshSftpTrackedSession = this.sessionOwners.attach(
+      hostId, session.sessionId, session.generation, recoveryEpoch);
     const batchIds: string[] = [];
     this.bindings.forEach((binding: SshSftpBatchBinding): void => {
       if (this.bindingUsesHost(binding, hostId)) { batchIds.push(binding.batchId); }
@@ -263,15 +265,17 @@ export class SshSftpTaskEngine {
       }
       this.startBatch(batchIds[index]);
     }
+    return ownerToken;
   }
 
-  detachSession(hostId: string, sessionId: number): void {
-    const owner: string = hostId.trim();
+  detachSession(ownerToken: SshSftpTrackedSession): void {
+    const owner: string = ownerToken.hostId.trim();
     const pending: SshSftpEngineSession | undefined = this.pendingSessions.get(owner);
-    if (pending !== undefined && pending.sessionId === sessionId) {
+    if (pending !== undefined && pending.sessionId === ownerToken.sessionId &&
+      pending.generation === ownerToken.generation) {
       this.pendingSessions.delete(owner);
     }
-    if (!this.sessionOwners.detach(owner, sessionId)) { return; }
+    if (!this.sessionOwners.detach(ownerToken)) { return; }
     this.bindings.forEach((binding: SshSftpBatchBinding): void => {
       if (!this.bindingUsesHost(binding, owner)) { return; }
       const activeTaskId: string | undefined = this.activeTasks.get(binding.batchId);

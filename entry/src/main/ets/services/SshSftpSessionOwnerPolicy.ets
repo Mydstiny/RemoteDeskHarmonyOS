@@ -47,10 +47,9 @@ export class SshSftpSessionOwnerPolicy {
     return this.active.get(hostId.trim()) || null;
   }
 
-  detach(hostId: string, sessionId: number): boolean {
-    const owner: string = hostId.trim();
-    const current: SshSftpTrackedSession | undefined = this.active.get(owner);
-    if (current === undefined || current.sessionId !== sessionId) { return false; }
+  detach(session: SshSftpTrackedSession): boolean {
+    const owner: string = session.hostId.trim();
+    if (this.active.get(owner) !== session) { return false; }
     this.active.delete(owner);
     return true;
   }

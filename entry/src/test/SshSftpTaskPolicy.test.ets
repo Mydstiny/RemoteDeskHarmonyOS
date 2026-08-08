@@ -332,6 +332,7 @@ export default function sshSftpTaskPolicyTest(): void {
       const oldOwner: SshSftpTrackedSession = owners.attach('host-1', 7, 3, 10);
       const recoveredOwner: SshSftpTrackedSession = owners.attach('host-1', 7, 3, 12);
       expect(recoveredOwner === oldOwner).assertFalse();
+      expect(owners.detach(oldOwner)).assertFalse();
       expect(owners.markTransportLost(oldOwner)).assertFalse();
       expect(owners.current('host-1') === recoveredOwner).assertTrue();
       expect(owners.isCurrent('host-1', recoveredOwner)).assertTrue();
@@ -346,6 +347,8 @@ export default function sshSftpTaskPolicyTest(): void {
       expect(owners.isCurrent('host-1', recoveredOwner)).assertTrue();
       expect(owners.markTransportLost(lostOwner)).assertFalse();
       expect(owners.current('host-1') === recoveredOwner).assertTrue();
+      expect(owners.detach(recoveredOwner)).assertTrue();
+      expect(owners.current('host-1')).assertNull();
     });
 
     it('rejects only identical endpoint paths and allows same-host path copies', 0, (): void => {
