@@ -15,6 +15,7 @@ import {
   normalizeSshSftpTaskRecord,
   recoverInterruptedSshSftpTaskRecord,
   sftpEndpointPathIsSame,
+  sshSftpCommitRecoveryDecision,
   sshSftpTaskCommandTarget,
   sshSftpResumeDisposition,
   upsertSshSftpTask
@@ -283,6 +284,19 @@ export default function sshSftpTaskPolicyTest(): void {
       };
       expect(store.upsert(renamed)).assertTrue();
       expect(store.get(record.taskId)?.commitState).assertEqual('renamed');
+    });
+
+    it('does not mistake a same-sized old target for a completed rename', 0, (): void => {
+      expect(sshSftpCommitRecoveryDecision('renaming', 100, 100, 100))
+        .assertEqual('retryRename');
+      expect(sshSftpCommitRecoveryDecision('renaming', 100, 100, null))
+        .assertEqual('complete');
+      expect(sshSftpCommitRecoveryDecision('renaming', 100, 100, 40))
+        .assertEqual('failed');
+      expect(sshSftpCommitRecoveryDecision('renamed', 100, 100, null))
+        .assertEqual('complete');
+      expect(sshSftpCommitRecoveryDecision('renamed', 100, null, null))
+        .assertEqual('failed');
     });
 
     it('rejects only identical endpoint paths and allows same-host path copies', 0, (): void => {

@@ -87,6 +87,11 @@ enum SshError {
     ERR_SSH_SESSION_STALE       = -57,
 };
 
+struct SftpOperationResult {
+    int errorCode = ERR_SSH_REACTOR_QUEUE_FULL;
+    bool transportLost = false;
+};
+
 struct SshCommandResult {
     int exitCode = -1;
     bool signaled = false;
@@ -280,6 +285,8 @@ public:
     int renameRemotePath(const std::string& oldPath, const std::string& newPath) override;
     /** OpenSSH POSIX rename used only for an integrity-checked commit. */
     int renameRemotePathAtomic(const std::string& oldPath, const std::string& newPath);
+    /** Run and classify one complete SFTP operation in a single owner command. */
+    SftpOperationResult executeSftpOperation(const std::function<int()>& operation);
     /** Classify a failed SFTP operation on the owner reactor before N-API resolves it. */
     bool classifySftpTransportFailure(int operationError);
 

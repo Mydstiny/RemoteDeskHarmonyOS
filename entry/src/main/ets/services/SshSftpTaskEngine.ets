@@ -23,10 +23,12 @@ import {
   sshSftpPartialSuffix
 } from './SshSftpIntegrityPolicy';
 import {
+  SshSftpCommitRecoveryDecision,
   SshSftpTaskDirection,
   SshSftpTaskRecord,
   SshSftpTaskStage,
-  SftpEndpoint
+  SftpEndpoint,
+  sshSftpCommitRecoveryDecision
 } from './SshSftpTaskPolicy';
 import { SshSftpTaskStore } from './SshSftpTaskStore';
 import { SshLocalFileEntry, SshLocalFileProvider } from './SshLocalFileProvider';
@@ -42,6 +44,10 @@ export interface SshSftpEngineSession {
   hostId: string;
   sessionId: number;
   generation: number;
+}
+
+interface SshSftpTrackedSession extends SshSftpEngineSession {
+  recoveryEpoch: number;
 }
 
 export type SshSftpTaskEngineEventKind =
@@ -71,8 +77,8 @@ interface SshSftpBatchBinding {
 }
 
 interface SshSftpResolvedSessions {
-  source: SshSftpEngineSession | null;
-  target: SshSftpEngineSession | null;
+  source: SshSftpTrackedSession | null;
+  target: SshSftpTrackedSession | null;
 }
 
 interface SshSftpEngineConflictPlan {
@@ -103,10 +109,11 @@ export class SshSftpTaskEngine {
   private readonly store: SshSftpTaskStore = SshSftpTaskStore.getInstance();
   private readonly provider: SshLocalFileProvider = new SshLocalFileProvider();
   private readonly bindings: Map<string, SshSftpBatchBinding> = new Map<string, SshSftpBatchBinding>();
-  private readonly sessions: Map<string, SshSftpEngineSession> = new Map<string, SshSftpEngineSession>();
+  private readonly sessions: Map<string, SshSftpTrackedSession> =
+    new Map<string, SshSftpTrackedSession>();
   /** Keeps transport-loss evidence authoritative even if reconnect wins the callback race. */
-  private readonly transportLostSessions: Map<string, SshSftpEngineSession> =
-    new Map<string, SshSftpEngineSession>();
+  private readonly transportLostSessions: Map<string, SshSftpTrackedSession> =
+    new Map<string, SshSftpTrackedSession>();
   private readonly conflictPolicies: Map<string, SshSftpConflictPolicy> =
     new Map<string, SshSftpConflictPolicy>();
   private readonly running: Set<string> = new Set<string>();
@@ -213,8 +220,21 @@ export class SshSftpTaskEngine {
   attachSession(session: SshSftpEngineSession): void {
     const hostId: string = session.hostId.trim();
     if (hostId.length === 0 || session.sessionId <= 0 || session.generation <= 0) { return; }
+    let nativeState: number = -1;
+    let recoveryEpoch: number = 0;
+    try {
+      nativeState = this.loader.getConnectionState(session.sessionId);
+      recoveryEpoch = this.loader.getSshSessionSnapshot(
+        session.sessionId, session.generation).eventSequence;
+    } catch (_err) {
+      nativeState = -1;
+      recoveryEpoch = 0;
+    }
+    // Only a fully recovered transport may clear prior loss evidence.
+    if (nativeState !== SSH_STATE_CONNECTED) { return; }
     this.logDiagnostic('attach host=' + hostId + ' session=' + session.sessionId.toString() +
       ' generation=' + session.generation.toString() +
+      ' recoveryEpoch=' + recoveryEpoch.toString() +
       ' initialized=' + this.initialized.toString());
     if (!this.initialized) {
       this.pendingSessions.set(hostId, {
@@ -224,21 +244,22 @@ export class SshSftpTaskEngine {
       });
       return;
     }
-    const attached: SshSftpEngineSession | undefined = this.sessions.get(hostId);
+    const attached: SshSftpTrackedSession | undefined = this.sessions.get(hostId);
     if (attached !== undefined && attached.sessionId === session.sessionId &&
-      attached.generation === session.generation) {
+      attached.generation === session.generation &&
+      attached.recoveryEpoch >= recoveryEpoch &&
+      !this.transportLostSessions.has(hostId)) {
       return;
     }
-    this.sessions.set(hostId, {
+    const next: SshSftpTrackedSession = {
       hostId,
       sessionId: session.sessionId,
-      generation: session.generation
-    });
-    const lost: SshSftpEngineSession | undefined = this.transportLostSessions.get(hostId);
-    if (lost !== undefined && (lost.sessionId !== session.sessionId ||
-      lost.generation !== session.generation)) {
-      this.transportLostSessions.delete(hostId);
-    }
+      generation: session.generation,
+      recoveryEpoch: Math.max(recoveryEpoch,
+        attached === undefined ? 0 : attached.recoveryEpoch)
+    };
+    this.sessions.set(hostId, next);
+    this.transportLostSessions.delete(hostId);
     const batchIds: string[] = [];
     this.bindings.forEach((binding: SshSftpBatchBinding): void => {
       if (this.bindingUsesHost(binding, hostId)) { batchIds.push(binding.batchId); }
@@ -453,7 +474,7 @@ export class SshSftpTaskEngine {
       (binding.targetEndpoint.kind === 'ssh' && binding.targetEndpoint.hostId === owner);
   }
 
-  private sessionForEndpoint(endpoint: SftpEndpoint): SshSftpEngineSession | null {
+  private sessionForEndpoint(endpoint: SftpEndpoint): SshSftpTrackedSession | null {
     if (endpoint.kind !== 'ssh') { return null; }
     const hostId: string = (endpoint.hostId || '').trim();
     if (hostId.length === 0) { return null; }
@@ -474,8 +495,8 @@ export class SshSftpTaskEngine {
   }
 
   private resolveBindingSessions(binding: SshSftpBatchBinding): SshSftpResolvedSessions | null {
-    const source: SshSftpEngineSession | null = this.sessionForEndpoint(binding.sourceEndpoint);
-    const target: SshSftpEngineSession | null = this.sessionForEndpoint(binding.targetEndpoint);
+    const source: SshSftpTrackedSession | null = this.sessionForEndpoint(binding.sourceEndpoint);
+    const target: SshSftpTrackedSession | null = this.sessionForEndpoint(binding.targetEndpoint);
     if (binding.sourceEndpoint.kind === 'ssh' && source === null) { return null; }
     if (binding.targetEndpoint.kind === 'ssh' && target === null) { return null; }
     return { source, target };
@@ -483,12 +504,10 @@ export class SshSftpTaskEngine {
 
   private resolvedSessionsMatch(left: SshSftpResolvedSessions,
     right: SshSftpResolvedSessions): boolean {
-    const matches = (leftSession: SshSftpEngineSession | null,
-      rightSession: SshSftpEngineSession | null): boolean => {
+    const matches = (leftSession: SshSftpTrackedSession | null,
+      rightSession: SshSftpTrackedSession | null): boolean => {
       if (leftSession === null || rightSession === null) { return leftSession === rightSession; }
-      return leftSession.hostId === rightSession.hostId &&
-        leftSession.sessionId === rightSession.sessionId &&
-        leftSession.generation === rightSession.generation;
+      return leftSession === rightSession;
     };
     return matches(left.source, right.source) && matches(left.target, right.target);
   }
@@ -508,16 +527,20 @@ export class SshSftpTaskEngine {
   }
 
   private markTransportLost(session: SshSftpEngineSession, reason: string): void {
-    this.transportLostSessions.set(session.hostId, {
-      hostId: session.hostId,
-      sessionId: session.sessionId,
-      generation: session.generation
-    });
-    const current: SshSftpEngineSession | undefined = this.sessions.get(session.hostId);
-    if (current !== undefined && current.sessionId === session.sessionId &&
-      current.generation === session.generation) {
-      this.sessions.delete(session.hostId);
+    const tracked: SshSftpTrackedSession = session as SshSftpTrackedSession;
+    const current: SshSftpTrackedSession | undefined = this.sessions.get(session.hostId);
+    const priorLost: SshSftpTrackedSession | undefined =
+      this.transportLostSessions.get(session.hostId);
+    // A CONNECTED reattach publishes a new object/recovery epoch. A callback
+    // captured by the old transport must not invalidate that recovered owner.
+    if ((current !== undefined && current !== tracked) ||
+      (current === undefined && priorLost !== undefined && priorLost !== tracked)) {
+      this.logDiagnostic('stale transport loss ignored host=' + session.hostId +
+        ' session=' + session.sessionId.toString() + ' reason=' + reason, true);
+      return;
     }
+    this.transportLostSessions.set(session.hostId, tracked);
+    if (current === tracked) { this.sessions.delete(session.hostId); }
     this.logDiagnostic('transport lost host=' + session.hostId +
       ' session=' + session.sessionId.toString() +
       ' generation=' + session.generation.toString() + ' reason=' + reason, true);
@@ -549,21 +572,6 @@ export class SshSftpTaskEngine {
     targetSession: SshSftpEngineSession, partialPath: string, targetPath: string,
     expectedSize: number, diagnosticPrefix: string): Promise<boolean | null> {
     if (task.commitState === undefined) { return null; }
-    const targetResult: SshSftpEngineIdentityResult = await this.readRemoteIdentityResult(
-      targetSession.sessionId, targetPath, targetSession.generation);
-    if (this.taskIsStopped(task.taskId)) { return false; }
-    if (targetResult.transportLost) {
-      return this.failOperationOrWait(binding, task, targetSession,
-        diagnosticPrefix + '-commit-target-stat-lost', true);
-    }
-    if (targetResult.identity !== null &&
-      sshSftpCommitSizeMatches(targetResult.identity.size, expectedSize)) {
-      return this.completeFileTask(binding, task, 'completed-after-reconnect');
-    }
-    if (task.commitState === 'renamed') {
-      return this.failOperationOrWait(binding, task, targetSession,
-        diagnosticPrefix + '-committed-target-missing');
-    }
     const partialResult: SshSftpEngineIdentityResult = await this.readRemoteIdentityResult(
       targetSession.sessionId, partialPath, targetSession.generation);
     if (this.taskIsStopped(task.taskId)) { return false; }
@@ -571,10 +579,24 @@ export class SshSftpTaskEngine {
       return this.failOperationOrWait(binding, task, targetSession,
         diagnosticPrefix + '-commit-partial-stat-lost', true);
     }
-    if (partialResult.identity === null ||
-      !sshSftpCommitSizeMatches(partialResult.identity.size, expectedSize)) {
+    const targetResult: SshSftpEngineIdentityResult = await this.readRemoteIdentityResult(
+      targetSession.sessionId, targetPath, targetSession.generation);
+    if (this.taskIsStopped(task.taskId)) { return false; }
+    if (targetResult.transportLost) {
       return this.failOperationOrWait(binding, task, targetSession,
-        diagnosticPrefix + '-uncertain-commit-missing');
+        diagnosticPrefix + '-commit-target-stat-lost', true);
+    }
+    const recoveryDecision: SshSftpCommitRecoveryDecision = sshSftpCommitRecoveryDecision(
+      task.commitState, expectedSize,
+      targetResult.identity === null ? null : targetResult.identity.size,
+      partialResult.identity === null ? null : partialResult.identity.size);
+    if (recoveryDecision === 'complete') {
+      return this.completeFileTask(binding, task, 'completed-after-reconnect');
+    }
+    if (recoveryDecision === 'failed' || partialResult.identity === null) {
+      return this.failOperationOrWait(binding, task, targetSession,
+        diagnosticPrefix + (task.commitState === 'renamed'
+          ? '-committed-target-missing' : '-uncertain-commit-missing'));
     }
     return await this.commitRemotePartial(binding, task, targetSession, partialPath,
       targetPath, expectedSize, partialResult.identity, diagnosticPrefix + '-recovered');
@@ -1331,14 +1353,11 @@ export class SshSftpTaskEngine {
   }
 
   private sessionActive(hostId: string, session: SshSftpEngineSession): boolean {
-    const lost: SshSftpEngineSession | undefined = this.transportLostSessions.get(hostId);
-    if (lost !== undefined && lost.sessionId === session.sessionId &&
-      lost.generation === session.generation) {
-      return false;
-    }
-    const current: SshSftpEngineSession | undefined = this.sessions.get(hostId);
-    if (current === undefined || current.sessionId !== session.sessionId ||
-      current.generation !== session.generation) {
+    const tracked: SshSftpTrackedSession = session as SshSftpTrackedSession;
+    const lost: SshSftpTrackedSession | undefined = this.transportLostSessions.get(hostId);
+    if (lost === tracked) { return false; }
+    const current: SshSftpTrackedSession | undefined = this.sessions.get(hostId);
+    if (current !== tracked) {
       return false;
     }
     let nativeState: number = -1;

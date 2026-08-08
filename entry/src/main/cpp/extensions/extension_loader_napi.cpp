@@ -6416,46 +6416,39 @@ static void ExecuteSftpAsync(napi_env /*env*/, void* rawData) {
             data->errorCode = ERR_SSH_SESSION_CLOSED;
             return;
         }
-        switch (data->operation) {
-            case SftpAsyncOperation::ListDirectory:
-                data->errorCode = sshAdapter->listRemoteDir(data->remotePath, data->entries);
-                break;
-            case SftpAsyncOperation::ReadChunk:
-                data->errorCode = sshAdapter->readRemoteFileChunk(
-                    data->remotePath, data->offset, data->maxLen, data->output);
-                break;
-            case SftpAsyncOperation::WriteChunk:
-                data->bytesWritten = sshAdapter->writeRemoteFileChunk(
-                    data->remotePath,
-                    data->input.empty() ? nullptr : data->input.data(),
-                    static_cast<uint32_t>(data->input.size()),
-                    data->offset,
-                    data->truncate);
-                data->errorCode = data->bytesWritten < 0 ? data->bytesWritten : 0;
-                break;
-            case SftpAsyncOperation::RemoveFile:
-                data->errorCode = sshAdapter->removeRemoteFile(data->remotePath);
-                break;
-            case SftpAsyncOperation::RemoveDirectory:
-                data->errorCode = sshAdapter->removeRemoteDir(data->remotePath);
-                break;
-            case SftpAsyncOperation::MakeDirectory:
-                data->errorCode = sshAdapter->makeRemoteDir(data->remotePath);
-                break;
-            case SftpAsyncOperation::RenamePath:
-                data->errorCode = data->atomicRename
-                    ? sshAdapter->renameRemotePathAtomic(data->remotePath, data->newRemotePath)
-                    : sshAdapter->renameRemotePath(data->remotePath, data->newRemotePath);
-                break;
-        }
-        if (data->errorCode < 0) {
-            // This second owner command classifies libssh2's exact last error
-            // and publishes RECONNECTING before the ArkTS Promise resolves.
-            // The transfer engine therefore cannot race a still-CONNECTED
-            // snapshot after a socket failure.
-            data->transportLost =
-                sshAdapter->classifySftpTransportFailure(data->errorCode);
-        }
+        const SftpOperationResult result = sshAdapter->executeSftpOperation(
+            [data, sshAdapter]() -> int {
+            switch (data->operation) {
+                case SftpAsyncOperation::ListDirectory:
+                    return sshAdapter->listRemoteDir(data->remotePath, data->entries);
+                case SftpAsyncOperation::ReadChunk:
+                    return sshAdapter->readRemoteFileChunk(
+                        data->remotePath, data->offset, data->maxLen, data->output);
+                case SftpAsyncOperation::WriteChunk:
+                    data->bytesWritten = sshAdapter->writeRemoteFileChunk(
+                        data->remotePath,
+                        data->input.empty() ? nullptr : data->input.data(),
+                        static_cast<uint32_t>(data->input.size()),
+                        data->offset,
+                        data->truncate);
+                    return data->bytesWritten < 0 ? data->bytesWritten : 0;
+                case SftpAsyncOperation::RemoveFile:
+                    return sshAdapter->removeRemoteFile(data->remotePath);
+                case SftpAsyncOperation::RemoveDirectory:
+                    return sshAdapter->removeRemoteDir(data->remotePath);
+                case SftpAsyncOperation::MakeDirectory:
+                    return sshAdapter->makeRemoteDir(data->remotePath);
+                case SftpAsyncOperation::RenamePath:
+                    return data->atomicRename
+                        ? sshAdapter->renameRemotePathAtomic(
+                            data->remotePath, data->newRemotePath)
+                        : sshAdapter->renameRemotePath(
+                            data->remotePath, data->newRemotePath);
+            }
+            return static_cast<int>(ERR_SSH_SESSION_CLOSED);
+        });
+        data->errorCode = result.errorCode;
+        data->transportLost = result.transportLost;
     } catch (const std::exception& ex) {
         data->workerFailed = true;
         data->errorMessage = std::string("SFTP async work failed: ") + ex.what();

@@ -3993,6 +3993,25 @@ int SshAdapter::renameRemotePathAtomic(const std::string& oldPath,
         ? ERR_SSH_SFTP_DURABILITY_UNSUPPORTED : ERR_SSH_WRITE_FAILED;
 }
 
+SftpOperationResult SshAdapter::executeSftpOperation(
+        const std::function<int()>& operation) {
+    if (!operation) {
+        return {ERR_SSH_SESSION_CLOSED, false};
+    }
+    const auto executeAndClassifyOnOwner = [this, &operation]() {
+        const int errorCode = operation();
+        // Capture libssh2's state in the same reactor turn as the operation.
+        // A recovery command must not run between failure and classification.
+        return SftpOperationResult {
+            errorCode,
+            classifySftpTransportFailure(errorCode)
+        };
+    };
+    return isReactorThread()
+        ? executeAndClassifyOnOwner()
+        : runOnReactor(executeAndClassifyOnOwner);
+}
+
 bool SshAdapter::classifySftpTransportFailure(int operationError) {
     if (operationError >= 0 || operationError == ERR_SSH_SFTP_DURABILITY_UNSUPPORTED ||
         operationError == ERR_SSH_SESSION_STALE ||

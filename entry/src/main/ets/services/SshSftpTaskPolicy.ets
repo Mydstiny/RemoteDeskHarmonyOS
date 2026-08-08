@@ -67,6 +67,8 @@ export interface SshSftpTaskCommand {
 
 export type SshSftpTaskEventKind = 'restored' | 'changed' | 'removed';
 
+export type SshSftpCommitRecoveryDecision = 'complete' | 'retryRename' | 'failed';
+
 export interface SshSftpTaskEvent {
   kind: SshSftpTaskEventKind;
   record: SshSftpTaskRecord;
@@ -173,6 +175,17 @@ export function sftpEndpointKey(endpoint: SftpEndpoint): string {
 export function sftpEndpointPathIsSame(left: SftpEndpoint, leftPath: string,
   right: SftpEndpoint, rightPath: string): boolean {
   return sftpEndpointKey(left) === sftpEndpointKey(right) && leftPath.trim() === rightPath.trim();
+}
+
+/** Decide an uncertain atomic commit without trusting a same-sized old target. */
+export function sshSftpCommitRecoveryDecision(commitState: 'renaming' | 'renamed',
+  expectedSize: number, targetSize: number | null,
+  partialSize: number | null): SshSftpCommitRecoveryDecision {
+  const targetMatches: boolean = targetSize !== null && targetSize === expectedSize;
+  if (commitState === 'renamed') { return targetMatches ? 'complete' : 'failed'; }
+  const partialMatches: boolean = partialSize !== null && partialSize === expectedSize;
+  if (partialMatches) { return 'retryRename'; }
+  return partialSize === null && targetMatches ? 'complete' : 'failed';
 }
 
 export function isValidSftpTransferSpec(spec: SftpTransferSpec): boolean {
