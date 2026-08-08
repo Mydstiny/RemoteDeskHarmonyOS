@@ -23,6 +23,10 @@ import {
   upsertSshSftpTask
 } from '../main/ets/services/SshSftpTaskPolicy';
 import { SshSftpTaskStore } from '../main/ets/services/SshSftpTaskStore';
+import {
+  SshSftpSessionOwnerPolicy,
+  SshSftpTrackedSession
+} from '../main/ets/services/SshSftpSessionOwnerPolicy';
 
 function task(id: string, sequence: number): SshSftpTaskRecord {
   return {
@@ -321,6 +325,27 @@ export default function sshSftpTaskPolicyTest(): void {
       expect(sshSftpSessionSnapshotCanAttach(8, 3, 2, ready)).assertFalse();
       expect(sshSftpSessionSnapshotCanAttach(7, 3, 2, reconnecting)).assertFalse();
       expect(sshSftpSessionSnapshotCanAttach(7, 3, 1, ready)).assertFalse();
+    });
+
+    it('keeps a recovered owner when an old transport callback arrives late', 0, (): void => {
+      const owners: SshSftpSessionOwnerPolicy = new SshSftpSessionOwnerPolicy();
+      const oldOwner: SshSftpTrackedSession = owners.attach('host-1', 7, 3, 10);
+      const recoveredOwner: SshSftpTrackedSession = owners.attach('host-1', 7, 3, 12);
+      expect(recoveredOwner === oldOwner).assertFalse();
+      expect(owners.markTransportLost(oldOwner)).assertFalse();
+      expect(owners.current('host-1') === recoveredOwner).assertTrue();
+      expect(owners.isCurrent('host-1', recoveredOwner)).assertTrue();
+    });
+
+    it('clears a loss marker only by attaching a new recovered owner', 0, (): void => {
+      const owners: SshSftpSessionOwnerPolicy = new SshSftpSessionOwnerPolicy();
+      const lostOwner: SshSftpTrackedSession = owners.attach('host-1', 7, 3, 10);
+      expect(owners.markTransportLost(lostOwner)).assertTrue();
+      expect(owners.current('host-1')).assertNull();
+      const recoveredOwner: SshSftpTrackedSession = owners.attach('host-1', 7, 3, 12);
+      expect(owners.isCurrent('host-1', recoveredOwner)).assertTrue();
+      expect(owners.markTransportLost(lostOwner)).assertFalse();
+      expect(owners.current('host-1') === recoveredOwner).assertTrue();
     });
 
     it('rejects only identical endpoint paths and allows same-host path copies', 0, (): void => {

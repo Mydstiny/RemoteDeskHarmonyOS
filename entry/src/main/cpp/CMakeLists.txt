@@ -183,6 +183,7 @@ if(RDP_BUILD_TESTS)
         test/ssh_pending_connect_registry_test.cpp
         test/ssh_route_policy_test.cpp
         test/ssh_forwarding_manager_test.cpp
+        test/ssh_sftp_operation_policy_test.cpp
         test/video_activity_state_test.cpp
         test/rdp_audio_policy_test.cpp
         test/audio_queue_policy_test.cpp

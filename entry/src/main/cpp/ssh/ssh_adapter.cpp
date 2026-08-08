@@ -9,6 +9,7 @@
 #include "ssh_auth_policy.h"
 #include "ssh_network_lifecycle_policy.h"
 #include "ssh_route_policy.h"
+#include "ssh_sftp_operation_policy.h"
 #include "extension_registry.h"
 #include "common/safe_log.h"
 #include "ssh_algorithm_prefs.h"
@@ -3999,12 +4000,15 @@ SftpOperationResult SshAdapter::executeSftpOperation(
         return {ERR_SSH_SESSION_CLOSED, false};
     }
     const auto executeAndClassifyOnOwner = [this, &operation]() {
-        const int errorCode = operation();
         // Capture libssh2's state in the same reactor turn as the operation.
         // A recovery command must not run between failure and classification.
+        const SshSftpOperationObservation observation =
+            ObserveSshSftpOperationOnOwner(operation, [this](int errorCode) {
+                return classifySftpTransportFailure(errorCode);
+            });
         return SftpOperationResult {
-            errorCode,
-            classifySftpTransportFailure(errorCode)
+            observation.errorCode,
+            observation.transportLost
         };
     };
     return isReactorThread()

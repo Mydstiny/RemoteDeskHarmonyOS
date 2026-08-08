@@ -33,6 +33,13 @@ import {
 } from './SshSftpTaskPolicy';
 import { SshSftpTaskStore } from './SshSftpTaskStore';
 import { SshLocalFileEntry, SshLocalFileProvider } from './SshLocalFileProvider';
+import {
+  SshSftpEngineSession,
+  SshSftpSessionOwnerPolicy,
+  SshSftpTrackedSession
+} from './SshSftpSessionOwnerPolicy';
+
+export { SshSftpEngineSession } from './SshSftpSessionOwnerPolicy';
 
 const MAX_TRANSFER_BYTES: number = 512 * 1024 * 1024;
 const UPLOAD_CHUNK_BYTES: number = 64 * 1024;
@@ -40,16 +47,6 @@ const DOWNLOAD_CHUNK_BYTES: number = 64 * 1024;
 const DURABILITY_UNSUPPORTED: number = -56;
 const CONFLICT_ERROR: number = -409;
 const SSH_STATE_CONNECTED: number = 2;
-
-export interface SshSftpEngineSession {
-  hostId: string;
-  sessionId: number;
-  generation: number;
-}
-
-interface SshSftpTrackedSession extends SshSftpEngineSession {
-  recoveryEpoch: number;
-}
 
 export type SshSftpTaskEngineEventKind =
   | 'taskChanged'
@@ -110,11 +107,8 @@ export class SshSftpTaskEngine {
   private readonly store: SshSftpTaskStore = SshSftpTaskStore.getInstance();
   private readonly provider: SshLocalFileProvider = new SshLocalFileProvider();
   private readonly bindings: Map<string, SshSftpBatchBinding> = new Map<string, SshSftpBatchBinding>();
-  private readonly sessions: Map<string, SshSftpTrackedSession> =
-    new Map<string, SshSftpTrackedSession>();
-  /** Keeps transport-loss evidence authoritative even if reconnect wins the callback race. */
-  private readonly transportLostSessions: Map<string, SshSftpTrackedSession> =
-    new Map<string, SshSftpTrackedSession>();
+  private readonly sessionOwners: SshSftpSessionOwnerPolicy =
+    new SshSftpSessionOwnerPolicy();
   private readonly conflictPolicies: Map<string, SshSftpConflictPolicy> =
     new Map<string, SshSftpConflictPolicy>();
   private readonly running: Set<string> = new Set<string>();
@@ -250,22 +244,7 @@ export class SshSftpTaskEngine {
       });
       return;
     }
-    const attached: SshSftpTrackedSession | undefined = this.sessions.get(hostId);
-    if (attached !== undefined && attached.sessionId === session.sessionId &&
-      attached.generation === session.generation &&
-      attached.recoveryEpoch >= recoveryEpoch &&
-      !this.transportLostSessions.has(hostId)) {
-      return;
-    }
-    const next: SshSftpTrackedSession = {
-      hostId,
-      sessionId: session.sessionId,
-      generation: session.generation,
-      recoveryEpoch: Math.max(recoveryEpoch,
-        attached === undefined ? 0 : attached.recoveryEpoch)
-    };
-    this.sessions.set(hostId, next);
-    this.transportLostSessions.delete(hostId);
+    this.sessionOwners.attach(hostId, session.sessionId, session.generation, recoveryEpoch);
     const batchIds: string[] = [];
     this.bindings.forEach((binding: SshSftpBatchBinding): void => {
       if (this.bindingUsesHost(binding, hostId)) { batchIds.push(binding.batchId); }
@@ -292,9 +271,7 @@ export class SshSftpTaskEngine {
     if (pending !== undefined && pending.sessionId === sessionId) {
       this.pendingSessions.delete(owner);
     }
-    const current: SshSftpEngineSession | undefined = this.sessions.get(owner);
-    if (current === undefined || current.sessionId !== sessionId) { return; }
-    this.sessions.delete(owner);
+    if (!this.sessionOwners.detach(owner, sessionId)) { return; }
     this.bindings.forEach((binding: SshSftpBatchBinding): void => {
       if (!this.bindingUsesHost(binding, owner)) { return; }
       const activeTaskId: string | undefined = this.activeTasks.get(binding.batchId);
@@ -484,7 +461,7 @@ export class SshSftpTaskEngine {
     if (endpoint.kind !== 'ssh') { return null; }
     const hostId: string = (endpoint.hostId || '').trim();
     if (hostId.length === 0) { return null; }
-    return this.sessions.get(hostId) || null;
+    return this.sessionOwners.current(hostId);
   }
 
   private endpointDiagnostic(endpoint: SftpEndpoint): string {
@@ -534,19 +511,13 @@ export class SshSftpTaskEngine {
 
   private markTransportLost(session: SshSftpEngineSession, reason: string): void {
     const tracked: SshSftpTrackedSession = session as SshSftpTrackedSession;
-    const current: SshSftpTrackedSession | undefined = this.sessions.get(session.hostId);
-    const priorLost: SshSftpTrackedSession | undefined =
-      this.transportLostSessions.get(session.hostId);
     // A CONNECTED reattach publishes a new object/recovery epoch. A callback
     // captured by the old transport must not invalidate that recovered owner.
-    if ((current !== undefined && current !== tracked) ||
-      (current === undefined && priorLost !== undefined && priorLost !== tracked)) {
+    if (!this.sessionOwners.markTransportLost(tracked)) {
       this.logDiagnostic('stale transport loss ignored host=' + session.hostId +
         ' session=' + session.sessionId.toString() + ' reason=' + reason, true);
       return;
     }
-    this.transportLostSessions.set(session.hostId, tracked);
-    if (current === tracked) { this.sessions.delete(session.hostId); }
     this.logDiagnostic('transport lost host=' + session.hostId +
       ' session=' + session.sessionId.toString() +
       ' generation=' + session.generation.toString() + ' reason=' + reason, true);
@@ -1371,12 +1342,7 @@ export class SshSftpTaskEngine {
 
   private sessionActive(hostId: string, session: SshSftpEngineSession): boolean {
     const tracked: SshSftpTrackedSession = session as SshSftpTrackedSession;
-    const lost: SshSftpTrackedSession | undefined = this.transportLostSessions.get(hostId);
-    if (lost === tracked) { return false; }
-    const current: SshSftpTrackedSession | undefined = this.sessions.get(hostId);
-    if (current !== tracked) {
-      return false;
-    }
+    if (!this.sessionOwners.isCurrent(hostId, tracked)) { return false; }
     let nativeState: number = -1;
     try {
       nativeState = this.loader.getConnectionState(session.sessionId);
@@ -1384,7 +1350,7 @@ export class SshSftpTaskEngine {
       nativeState = -1;
     }
     if (nativeState !== SSH_STATE_CONNECTED) {
-      this.sessions.delete(hostId);
+      this.sessionOwners.discardIfCurrent(hostId, tracked);
       return false;
     }
     return true;
