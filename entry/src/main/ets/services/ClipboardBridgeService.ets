@@ -13,6 +13,10 @@ const TAG = 'ClipboardBridge';
 
 export class ClipboardBridgeService {
   private pollingTimer: number = -1;
+  private systemPasteboard: pasteboard.SystemPasteboard | null = null;
+  private systemUpdateCallback?: () => void;
+  private systemReadInFlight: boolean = false;
+  private systemReadPending: boolean = false;
   private lastHash: number = 0;
   private remoteSetAt: number = 0;
   private remoteSetHash: number = 0;
@@ -25,7 +29,7 @@ export class ClipboardBridgeService {
   getSystemText(): Promise<string> {
     return new Promise<string>((resolve) => {
       try {
-        const sysPb = pasteboard.getSystemPasteboard();
+        const sysPb: pasteboard.SystemPasteboard = this.systemPasteboard ?? pasteboard.getSystemPasteboard();
         sysPb.getData((err: BusinessError, pd: pasteboard.PasteData) => {
           if (err) {
             hilog.warn(0x0001, TAG, `getData failed: ${err.code} ${err.message}`);
@@ -33,8 +37,10 @@ export class ClipboardBridgeService {
             return;
           }
           try {
-            const text: string = pd.getPrimaryText();
-            resolve(text);
+            // Some system versions return an undefined primary value for an
+            // empty pasteboard despite the SDK's non-null string signature.
+            const text: string | undefined = pd?.getPrimaryText();
+            resolve(typeof text === 'string' ? text : '');
           } catch (e) {
             resolve('');
           }
@@ -71,22 +77,31 @@ export class ClipboardBridgeService {
       this.onLocalTextChanged = callback;
       this.readRemoteText = readRemoteText;
       this.lastHash = 0;
+      this.systemReadInFlight = false;
+      this.systemReadPending = false;
+
+      const sysPb: pasteboard.SystemPasteboard = pasteboard.getSystemPasteboard();
+      this.systemPasteboard = sysPb;
+      this.systemUpdateCallback = (): void => {
+        this.readLocalClipboard(false);
+      };
+      sysPb.on('update', this.systemUpdateCallback);
 
       // 先读一次建立基线
-      this.getSystemText().then((text: string) => {
-        this.lastHash = this.hashText(text);
-      }).catch((err: Error) => {
-        hilog.warn(0x0001, TAG, `initial clipboard read failed: ${err.message}`);
-      });
+      this.readLocalClipboard(true);
 
-      // 500ms 轮询
+      // RustDesk/RDP/VNC expose remote clipboard snapshots through the native
+      // session facade, so retain a lightweight remote-only poll. Local system
+      // clipboard reads are event-driven: getData can occupy the ArkUI thread
+      // for more than 100ms on an empty pasteboard and must not run every 500ms.
       this.pollingTimer = setInterval(() => {
-        this.pollOnce();
+        this.pollRemoteOnce();
       }, 500);
-      hilog.info(0x0001, TAG, 'monitoring started (500ms poll)');
+      hilog.info(0x0001, TAG, 'monitoring started (system update event + 500ms remote poll)');
     } catch (err) {
       this.enabled = false;
       this.onLocalTextChanged = undefined;
+      this.detachSystemUpdateListener();
       hilog.warn(0x0001, TAG, `monitoring start failed: ${JSON.stringify(err)}`);
     }
   }
@@ -103,13 +118,16 @@ export class ClipboardBridgeService {
       clearInterval(this.pollingTimer);
       this.pollingTimer = -1;
     }
+    this.detachSystemUpdateListener();
+    this.systemReadInFlight = false;
+    this.systemReadPending = false;
     this.remoteSetAt = 0;
     this.remoteSetHash = 0;
     hilog.info(0x0001, TAG, 'monitoring stopped');
   }
 
-  /** 单次轮询 */
-  private pollOnce(): void {
+  /** 轮询 native 会话内的远程剪贴板，不读系统剪贴板。 */
+  private pollRemoteOnce(): void {
     if (!this.enabled || !this.onLocalTextChanged) {
       return;
     }
@@ -121,11 +139,27 @@ export class ClipboardBridgeService {
         this.setSystemText(remoteText);
       }
     }
+  }
+
+  /** 合并系统 update 事件，任何时刻最多一个 getData 在途。 */
+  private readLocalClipboard(baselineOnly: boolean): void {
+    if (!this.enabled || !this.onLocalTextChanged) {
+      return;
+    }
+    if (this.systemReadInFlight) {
+      this.systemReadPending = true;
+      return;
+    }
+    this.systemReadInFlight = true;
     this.getSystemText().then((text: string) => {
       if (!this.enabled) {
         return;
       }
       const hash: number = this.hashText(text);
+      if (baselineOnly) {
+        this.lastHash = hash;
+        return;
+      }
 
       // 防回环: 远端写入后 1200ms 内忽略匹配的本地变化
       if (this.remoteSetAt > 0) {
@@ -151,7 +185,25 @@ export class ClipboardBridgeService {
       }
     }).catch((err: Error) => {
       hilog.warn(0x0001, TAG, `clipboard poll failed: ${err.message}`);
+    }).finally(() => {
+      this.systemReadInFlight = false;
+      if (this.enabled && this.systemReadPending) {
+        this.systemReadPending = false;
+        this.readLocalClipboard(false);
+      }
     });
+  }
+
+  private detachSystemUpdateListener(): void {
+    if (this.systemPasteboard !== null && this.systemUpdateCallback !== undefined) {
+      try {
+        this.systemPasteboard.off('update', this.systemUpdateCallback);
+      } catch (err) {
+        hilog.warn(0x0001, TAG, `system update listener removal failed: ${JSON.stringify(err)}`);
+      }
+    }
+    this.systemPasteboard = null;
+    this.systemUpdateCallback = undefined;
   }
 
   /** 纯文本内容哈希 (djb2 — 轻量去重，不要求密码学强度) */

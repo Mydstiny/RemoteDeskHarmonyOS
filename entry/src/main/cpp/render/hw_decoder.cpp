@@ -27,6 +27,7 @@
 #include <vector>
 #include <native_image/native_image.h>
 #include <multimedia/player_framework/native_avcodec_base.h>
+#include <multimedia/player_framework/native_avcapability.h>
 #include <multimedia/player_framework/native_avcodec_videodecoder.h>
 #include <multimedia/player_framework/native_avformat.h>
 #include <multimedia/player_framework/native_avbuffer.h>
@@ -345,7 +346,7 @@ void HardwareDecoder::OnNeedInputBuffer(OH_AVCodec* codec, uint32_t index,
 }
 
 void HardwareDecoder::OnNewOutputBuffer(OH_AVCodec* codec, uint32_t index,
-                                         OH_AVBuffer* /*buffer*/, void* userData) {
+                                         OH_AVBuffer* buffer, void* userData) {
     auto* context = static_cast<Render::CallbackAdmissionContext*>(userData);
     if (!context) {
         return;
@@ -368,7 +369,17 @@ void HardwareDecoder::OnNewOutputBuffer(OH_AVCodec* codec, uint32_t index,
     if (codec == nullptr) {
         return;
     }
-    OH_AVErrCode ret = OH_VideoDecoder_RenderOutputBuffer(codec, index);
+    OH_AVCodecBufferAttr attr {};
+    if (buffer != nullptr && OH_AVBuffer_GetBufferAttr(buffer, &attr) == AV_ERR_OK) {
+        target.decoder->recordOutputLatency(attr.pts);
+    }
+    // Remote desktop frames are interactive state, not a media timeline. Use
+    // the current monotonic time so buffers completed before the same VSYNC
+    // may collapse to the newest frame instead of extending visible latency.
+    const int64_t renderTimestampNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    OH_AVErrCode ret = OH_VideoDecoder_RenderOutputBufferAtTime(
+        codec, index, renderTimestampNs);
     if (ret != AV_ERR_OK) {
         std::lock_guard<std::mutex> telemetryLock(target.decoder->telemetryMutex_);
         SaturatingAdd(target.decoder->renderOutputFailureCount_, 1);
@@ -673,6 +684,21 @@ int HardwareDecoder::Init(int width, int height, CodecType codec, int64_t render
     OH_AVFormat* format = OH_AVFormat_Create();
     OH_AVFormat_SetIntValue(format, OH_MD_KEY_WIDTH, width);
     OH_AVFormat_SetIntValue(format, OH_MD_KEY_HEIGHT, height);
+    lowLatencyEnabled_ = false;
+    if (codec == CodecType::H264 || codec == CodecType::H265) {
+        OH_AVCapability* capability = OH_AVCodec_GetCapability(GetMimeType(codec), false);
+        const bool supported = capability != nullptr &&
+            OH_AVCapability_IsFeatureSupported(capability, VIDEO_LOW_LATENCY);
+        if (supported) {
+            lowLatencyEnabled_ = OH_AVFormat_SetIntValue(
+                format, OH_MD_KEY_VIDEO_ENABLE_LOW_LATENCY, 1);
+        }
+        OH_LOG_INFO(LOG_APP,
+                    "[Decoder] low-latency capability=%{public}s configured=%{public}s codec=%{public}s",
+                    supported ? "yes" : "no",
+                    lowLatencyEnabled_ ? "yes" : "no",
+                    GetMimeType(codec));
+    }
     // Surface 模式不需要 OH_MD_KEY_PIXEL_FORMAT
 
     ret = OH_VideoDecoder_Configure(decoder_, format);
@@ -877,6 +903,63 @@ void HardwareDecoder::handleInputBuffer(uint32_t index, OH_AVBuffer* buffer) {
     inputCv_.notify_one();
 }
 
+void HardwareDecoder::recordInputSubmission(
+    int64_t timestamp, std::chrono::steady_clock::time_point submittedAt) {
+    std::lock_guard<std::mutex> telemetryLock(telemetryMutex_);
+    constexpr size_t kMaxSubmittedFrameTimings = 256;
+    while (submittedFrameTimings_.size() >= kMaxSubmittedFrameTimings) {
+        submittedFrameTimings_.pop_front();
+    }
+    submittedFrameTimings_.push_back({timestamp, submittedAt});
+}
+
+void HardwareDecoder::discardInputSubmission(
+    int64_t timestamp, std::chrono::steady_clock::time_point submittedAt) {
+    std::lock_guard<std::mutex> telemetryLock(telemetryMutex_);
+    const auto it = std::find_if(submittedFrameTimings_.begin(), submittedFrameTimings_.end(),
+        [timestamp, submittedAt](const SubmittedFrameTiming& timing) {
+            return timing.timestamp == timestamp && timing.submittedAt == submittedAt;
+        });
+    if (it != submittedFrameTimings_.end()) {
+        submittedFrameTimings_.erase(it);
+    }
+}
+
+void HardwareDecoder::recordOutputLatency(int64_t timestamp) {
+    int64_t latencyMs = -1;
+    int64_t maxLatencyMs = 0;
+    uint64_t sampleCount = 0;
+    bool lowLatencyEnabled = false;
+    {
+        std::lock_guard<std::mutex> telemetryLock(telemetryMutex_);
+        const auto it = std::find_if(submittedFrameTimings_.begin(), submittedFrameTimings_.end(),
+            [timestamp](const SubmittedFrameTiming& timing) {
+                return timing.timestamp == timestamp;
+            });
+        if (it == submittedFrameTimings_.end()) {
+            return;
+        }
+        latencyMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - it->submittedAt).count();
+        submittedFrameTimings_.erase(it);
+        codecLatencyMs_ = latencyMs;
+        codecLatencyMaxMs_ = std::max(codecLatencyMaxMs_, latencyMs);
+        maxLatencyMs = codecLatencyMaxMs_;
+        sampleCount = ++codecLatencySampleCount_;
+        lowLatencyEnabled = lowLatencyEnabled_;
+    }
+    if (sampleCount <= 5 || sampleCount % 120 == 0 ||
+        (latencyMs >= 250 && sampleCount % 30 == 0)) {
+        OH_LOG_INFO(LOG_APP,
+                    "[Decoder] codec latency sample=%{public}llu current=%{public}lldms max=%{public}lldms lowLatency=%{public}s pts=%{public}lld",
+                    static_cast<unsigned long long>(sampleCount),
+                    static_cast<long long>(latencyMs),
+                    static_cast<long long>(maxLatencyMs),
+                    lowLatencyEnabled ? "yes" : "no",
+                    static_cast<long long>(timestamp));
+    }
+}
+
 void HardwareDecoder::drainInputBuffers() {
     // This function is owned by inputLoop(). In particular, no codec IPC is
     // allowed to run on the Harmony codec callback thread or the GL thread.
@@ -1010,6 +1093,7 @@ void HardwareDecoder::drainInputBuffers() {
         }
 
         const auto pushStartedAt = std::chrono::steady_clock::now();
+        recordInputSubmission(frame.timestamp, pushStartedAt);
         OH_AVErrCode ret = OH_VideoDecoder_PushInputBuffer(decoder, input.index);
         const auto pushCostMs = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - pushStartedAt).count();
@@ -1019,6 +1103,7 @@ void HardwareDecoder::drainInputBuffers() {
                         static_cast<long long>(pushCostMs), input.index, ret);
         }
         if (ret != AV_ERR_OK) {
+            discardInputSubmission(frame.timestamp, pushStartedAt);
             OH_LOG_WARN(LOG_APP, "[Decoder] PushInputBuffer failed: %{public}d index=%{public}u",
                         ret, input.index);
             // The platform documentation only guarantees buffer reuse after a
@@ -1092,9 +1177,15 @@ bool HardwareDecoder::waitForRenderRequest(bool& hasNewFrame,
         const auto now = std::chrono::steady_clock::now();
         const bool hasFrame = Render::HasUnconsumedNativeImageFrame(
             frameAvailableCount_, frameConsumeCount_);
+        const bool retryScheduled =
+            surfaceRetryAt_ != std::chrono::steady_clock::time_point::min();
         const bool retryDue = surfaceUpdatePending_ &&
-            (surfaceRetryAt_ == std::chrono::steady_clock::time_point::min() ||
-             now >= surfaceRetryAt_);
+            (!retryScheduled || now >= surfaceRetryAt_);
+        if (Render::ShouldDeferNativeImageRetry(
+                surfaceUpdatePending_, retryScheduled, retryDue)) {
+            frameAvailableCv_.wait_until(lk, surfaceRetryAt_);
+            continue;
+        }
         if (hasFrame || redrawRequested_ || retryDue) {
             break;
         }
@@ -1147,13 +1238,11 @@ void HardwareDecoder::handleOutputBuffer(uint32_t /*index*/) {
 
     if (!nativeImageContextAttached_) {
         int32_t attachRet = OH_NativeImage_AttachContext(nativeImage_, textureId_);
+        int32_t detachRet = 0;
+        bool retriedAfterDetach = false;
         if (Render::ShouldRetryNativeImageAttach(attachRet, false)) {
-            int32_t detachRet = OH_NativeImage_DetachContext(nativeImage_);
-            OH_LOG_WARN(LOG_APP,
-                        "[Decoder] AttachContext failed: %{public}d texture=%{public}u, detach stale context ret=%{public}d",
-                        attachRet,
-                        textureId_,
-                        detachRet);
+            retriedAfterDetach = true;
+            detachRet = OH_NativeImage_DetachContext(nativeImage_);
             attachRet = OH_NativeImage_AttachContext(nativeImage_, textureId_);
         }
         if (attachRet == 0) {
@@ -1161,15 +1250,42 @@ void HardwareDecoder::handleOutputBuffer(uint32_t /*index*/) {
             OH_LOG_INFO(LOG_APP, "[Decoder] NativeImage attached to current GL context texture=%{public}u",
                         textureId_);
         } else {
-            OH_LOG_WARN(LOG_APP, "[Decoder] AttachContext failed: %{public}d texture=%{public}u",
-                        attachRet, textureId_);
             // Do not call UpdateSurfaceImage without a valid GL attachment.
-            // Retain the request; a later frame or explicit redraw will retry
-            // the attachment on this render thread.
-            std::lock_guard<std::mutex> lk(mutex_);
-            surfaceUpdatePending_ = true;
-            surfaceRetryAt_ = std::chrono::steady_clock::now() +
-                std::chrono::milliseconds(Render::NativeImageUpdateRetryDelayMs(1));
+            // Retain the newest request but honor a bounded retry deadline even
+            // though its producer notification remains unconsumed. Repeated
+            // failures arm the existing keyframe-driven decoder recreation.
+            bool requestRecovery = false;
+            int consecutiveFailures = 0;
+            {
+                std::lock_guard<std::mutex> lk(mutex_);
+                consecutiveFailures = ++consecutiveSurfaceUpdateFailures_;
+                requestRecovery = Render::ShouldRequestNativeImageRecovery(
+                    consecutiveFailures) &&
+                    !surfaceRecoveryBlocked_.exchange(true,
+                                                       std::memory_order_acq_rel);
+                surfaceUpdatePending_ = !requestRecovery;
+                surfaceRetryAt_ = requestRecovery ?
+                    std::chrono::steady_clock::time_point::min() :
+                    std::chrono::steady_clock::now() +
+                        std::chrono::milliseconds(Render::NativeImageUpdateRetryDelayMs(
+                            consecutiveFailures));
+            }
+            if (consecutiveFailures <= 3 || requestRecovery ||
+                consecutiveFailures % 60 == 0) {
+                OH_LOG_WARN(LOG_APP,
+                            "[Decoder] AttachContext failed ret=%{public}d texture=%{public}u retryDetach=%{public}s detachRet=%{public}d consecutive=%{public}d recovery=%{public}s",
+                            attachRet,
+                            textureId_,
+                            retriedAfterDetach ? "yes" : "no",
+                            detachRet,
+                            consecutiveFailures,
+                            requestRecovery ? "yes" : "no");
+            }
+            if (requestRecovery) {
+                errorCallbackGate_.Invoke(
+                    DecoderError::OUTPUT_FAILED,
+                    "repeated OH_NativeImage_AttachContext failure");
+            }
             return;
         }
     }
@@ -1570,8 +1686,11 @@ HardwareTelemetrySnapshot HardwareDecoder::GetTelemetrySnapshot() const {
     snapshot.renderOutputFailures = renderOutputFailureCount_.load(std::memory_order_relaxed);
     snapshot.updateSurfaceFailures = updateSurfaceFailureCount_.load(std::memory_order_relaxed);
     snapshot.outputFrames = outputFrameCount_.load(std::memory_order_relaxed);
+    snapshot.codecLatencyMs = codecLatencyMs_;
+    snapshot.codecLatencyMaxMs = codecLatencyMaxMs_;
     snapshot.codec = codecType_;
     snapshot.initialized = initialized_;
+    snapshot.lowLatencyEnabled = lowLatencyEnabled_;
     return snapshot;
 }
 
@@ -1588,6 +1707,10 @@ void HardwareDecoder::ResetTelemetryCounters() {
     coalescedSurfaceNotificationCount_.store(0, std::memory_order_release);
     inputPushFailureCount_.store(0, std::memory_order_release);
     outputFrameCount_.store(0, std::memory_order_release);
+    submittedFrameTimings_.clear();
+    codecLatencySampleCount_ = 0;
+    codecLatencyMs_ = 0;
+    codecLatencyMaxMs_ = 0;
 }
 
 void HardwareDecoder::Destroy() {
@@ -3255,6 +3378,9 @@ DecoderTelemetrySnapshot DecoderNapi::GetActiveTelemetry(
         snapshot.inputDroppedFrames = hardware.inputDroppedFrames;
         snapshot.droppedFrames = hardware.inputDroppedFrames;
         snapshot.waitKeyframeDrops = hardware.waitKeyframeDrops;
+        snapshot.codecLatencyMs = hardware.codecLatencyMs;
+        snapshot.codecLatencyMaxMs = hardware.codecLatencyMaxMs;
+        snapshot.lowLatencyEnabled = hardware.lowLatencyEnabled;
         snapshot.codec = static_cast<int>(hardware.codec);
         snapshot.ready = hardware.initialized;
     }
@@ -3448,9 +3574,9 @@ bool DecoderNapi::BindVideoPipeline(
             }
             StopSoftwareWorker(ctx.get());
         } else if (ctx->decoder) {
-            ctx->decoder->SetFrameCallback(nullptr);
-            ctx->decoder->SetMakeCurrentCallback(nullptr);
-            ctx->decoder->SetReleaseCurrentCallback(nullptr);
+            // StopHardwarePipeline owns callback shutdown. In particular the
+            // release-current callback must remain live until the render
+            // thread has detached NativeImage from its EGL context.
             StopHardwarePipeline(ctx->decoder, true);
         }
     };
@@ -3592,9 +3718,10 @@ bool DecoderNapi::DetachVideoPipeline(
             softwareDecoder->SetFrameCallback(nullptr);
         }
     } else if (decoder) {
-        decoder->SetFrameCallback(nullptr);
-        decoder->SetMakeCurrentCallback(nullptr);
-        decoder->SetReleaseCurrentCallback(nullptr);
+        // Keep the GL callbacks installed until StopRenderThreadForDetach has
+        // detached NativeImage and released the renderer context. Clearing
+        // them first strands the context on the old page/PIP surface and the
+        // next hardware bind presents black.
         if (!StopHardwarePipeline(decoder, true)) {
             OH_LOG_ERROR(LOG_APP,
                          "[Decoder] detachVideoPipeline could not stop hardware pipeline");

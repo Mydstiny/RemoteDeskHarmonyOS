@@ -112,6 +112,20 @@ export function shouldCreatePreauthenticatedRustDeskPipeline(
 }
 
 /**
+ * A RustDesk decoder owns callbacks into the renderer's GL context. Stop that
+ * pipeline before the page renderer is moved to the independent PIP surface;
+ * destroying the renderer first leaves hardware NativeImage callbacks bound
+ * to a stale EGL owner. Software decoding follows the same ordered handoff so
+ * both codec paths retain one lifecycle contract.
+ */
+export function shouldDetachRustDeskDecoderBeforePipTransfer(
+  protocol: string,
+  decoderReady: boolean
+): boolean {
+  return protocol === 'rustdesk' && decoderReady;
+}
+
+/**
  * PIP content dimensions describe the remote video, not the local XComponent
  * surface. The latter can be a rotated physical display size on phones.
  */

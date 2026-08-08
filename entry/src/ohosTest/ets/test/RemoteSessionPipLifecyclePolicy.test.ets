@@ -11,6 +11,7 @@ import {
   hasVncPresentedFrame,
   shouldPrepareRemoteSessionPip,
   shouldCreatePreauthenticatedRustDeskPipeline,
+  shouldDetachRustDeskDecoderBeforePipTransfer,
   resolveRemoteSessionPipLifecycle,
   resolveRemoteSessionPipContentSize
 } from '../../../main/ets/services/RemoteSessionPipLifecyclePolicy';
@@ -80,6 +81,12 @@ export default function remoteSessionPipLifecyclePolicyTest(): void {
       expect(shouldCreatePreauthenticatedRustDeskPipeline(true, 'rustdesk', false, true)).assertFalse();
       expect(shouldCreatePreauthenticatedRustDeskPipeline(false, 'rustdesk', false, false)).assertFalse();
       expect(shouldCreatePreauthenticatedRustDeskPipeline(true, 'rdp', false, false)).assertFalse();
+    });
+
+    it('detaches_the_rustdesk_decoder_before_moving_the_pip_renderer', 0, (): void => {
+      expect(shouldDetachRustDeskDecoderBeforePipTransfer('rustdesk', true)).assertTrue();
+      expect(shouldDetachRustDeskDecoderBeforePipTransfer('rustdesk', false)).assertFalse();
+      expect(shouldDetachRustDeskDecoderBeforePipTransfer('rdp', true)).assertFalse();
     });
 
     it('uses_remote_video_dimensions_for_content_ratio', 0, (): void => {

@@ -159,6 +159,7 @@ import {
   hasVncPresentedFrame,
   shouldPrepareRemoteSessionPip,
   shouldCreatePreauthenticatedRustDeskPipeline,
+  shouldDetachRustDeskDecoderBeforePipTransfer,
   resolveRemoteSessionPipContentSize,
   resolveRemoteSessionPipLifecycle
 } from '../services/RemoteSessionPipLifecyclePolicy';
@@ -487,7 +488,10 @@ const RDP_FILE_MAX_BYTES = 2 * 1024 * 1024 * 1024;
 const RDP_TRANSFER_DIR_NAME = 'rdp_transfer';
 const RDP_TRANSFER_DRIVE_NAME = 'RemoteDesktop';
 const RDP_DRIVE_REDIRECTION_ENABLED = true;
-const RUSTDESK_TRANSFER_DIR = 'C:\\Users\\Public\\Documents\\RemoteDesktop';
+// A FileTransfer login requires its initial directory to exist already. The
+// RustDesk upload path does not create the former `RemoteDesktop` child first,
+// so a clean Windows peer rejected every transfer before any block was sent.
+const RUSTDESK_TRANSFER_DIR = 'C:\\Users\\Public\\Documents';
 const FILE_TRANSFER_DIAG_RDP_DIR = 'E-RDP-FILE-DIR';
 const FILE_TRANSFER_DIAG_FILE_NAME = 'E-FILE-NAME';
 const FILE_TRANSFER_DIAG_LIVE_CONTEXT = 'E-FILE-LIVE-CONTEXT';
@@ -3894,6 +3898,15 @@ struct RemoteDesktop {
     // suppress the required native call.
     this.setRemoteSystemPointerVisible(true, reason, true);
     this.setRemoteSurfacePointerStyle(false, true);
+  }
+
+  private reclaimRemoteSystemPointerAfterForeground(reason: string): void {
+    // Leaving the page/PIP window publishes a synthetic hover=false and the
+    // system restores its default pointer. The new foreground XComponent can
+    // already contain the physical pointer without emitting another enter
+    // event, so explicitly restore remote ownership after its first frame.
+    this.remoteSurfaceHovered = true;
+    this.syncRemoteSystemPointer(reason, true, true);
   }
 
   private onRemoteConnectionStateChange(): void {
@@ -11139,6 +11152,15 @@ struct RemoteDesktop {
       // After destroyRenderer() the native viewport is intentionally no longer
       // readable, and falling back to the rotated page surface would crop PIP.
       const pipSize: RemoteSessionPipContentSize = this.currentPipContentSize();
+      if (shouldDetachRustDeskDecoderBeforePipTransfer(protocol, this.decoderHandle > 0)) {
+        const detached: boolean = this.loader.detachVideoPipelineForBackground();
+        hilog.info(RD_DOMAIN, RD_TAG,
+          'attachRendererToPipSurface: decoder detached before renderer transfer=' +
+          detached.toString());
+        if (!detached) {
+          return false;
+        }
+      }
       // The page renderer is bound to the page XComponent.  Move the native
       // renderer to the free-node surface before the PIP controller reports
       // success; otherwise the PIP window only retains the last page frame.
@@ -11762,6 +11784,7 @@ struct RemoteDesktop {
         this.resumeRustDeskDiagnosticsAfterForeground();
         this.startRemoteCursorPolling(this.sessionId);
         this.inputForwardReady = true;
+        this.reclaimRemoteSystemPointerAfterForeground('background-preauthenticated');
         this.scheduleRemoteInputFocus('background-preauthenticated');
         this.setRemoteKeepScreenOn(true);
         this.setRemoteNavigationHidden(true, 'preauthenticated-session-handoff');
@@ -11865,6 +11888,7 @@ struct RemoteDesktop {
         this.resumeRustDeskDiagnosticsAfterForeground();
         this.inputForwardReady = true;
         this.startRemoteCursorPolling(this.sessionId);
+        this.reclaimRemoteSystemPointerAfterForeground('background-restore');
         this.scheduleRemoteInputFocus('background-restore');
         this.setRemoteKeepScreenOn(true);
         if (shouldReapplyRemoteNavigation(this.currentProtocolName(), this.connected, true)) {
@@ -12457,6 +12481,9 @@ struct RemoteDesktop {
       const remotePath: string = RUSTDESK_TRANSFER_DIR + '\\' + fileName;
       const ret: number = this.loader.sendFile(this.sessionId, remotePath, buf);
       if (ret < 0) {
+        const ffiError: string = this.loader.getRustDeskLastError();
+        hilog.error(RD_DOMAIN, RD_TAG, 'RustDesk file transfer enqueue failed detail=' +
+          (ffiError.length > 0 ? ffiError : 'unavailable'));
         this.setFileTransferStatus('[RustDesk-FILE] 文件传输失败 [' + FILE_TRANSFER_DIAG_RUSTDESK_SEND + ']', -1, false);
         await this.finishLiveFileTransfer(liveTaskId, 'rustdesk', fileName, readLen, fileSize, true,
           '[RustDesk-FILE] 文件传输失败 [' + FILE_TRANSFER_DIAG_RUSTDESK_SEND + ']');
@@ -12477,6 +12504,11 @@ struct RemoteDesktop {
           return 'completed';
         }
         if (status.rustdeskTransferState === 4) {
+          const ffiError: string = this.loader.getRustDeskLastError();
+          const transferDetail: string = status.diagnosticCode.length > 0 ?
+            status.diagnosticCode : ffiError;
+          hilog.error(RD_DOMAIN, RD_TAG, 'RustDesk file transfer failed transferId=' +
+            ret.toString() + ' detail=' + (transferDetail.length > 0 ? transferDetail : 'unavailable'));
           this.setFileTransferStatus('[RustDesk-FILE] 远端未确认文件传输', -1, false);
           await this.finishLiveFileTransfer(liveTaskId, 'rustdesk', fileName,
             status.transferredBytes, fileSize, true, '[RustDesk-FILE] 远端未确认文件传输');
@@ -12485,7 +12517,10 @@ struct RemoteDesktop {
       }
       this.setFileTransferStatus('RustDesk 文件传输仍在等待远端确认', 0.95, false);
       return 'waitingRemote';
-    } catch (_err) {
+    } catch (err) {
+      const ffiError: string = this.loader.getRustDeskLastError();
+      hilog.error(RD_DOMAIN, RD_TAG, 'RustDesk file transfer exception=' + JSON.stringify(err) +
+        ' detail=' + (ffiError.length > 0 ? ffiError : 'unavailable'));
       this.setFileTransferStatus('[RustDesk-FILE] 文件传输失败 [' + FILE_TRANSFER_DIAG_RUSTDESK_SEND + ']', -1, false);
       await this.finishLiveFileTransfer(liveTaskId, 'rustdesk', fileName, readLen, fileSize, true,
         '[RustDesk-FILE] 文件传输失败 [' + FILE_TRANSFER_DIAG_RUSTDESK_SEND + ']');
@@ -12499,15 +12534,25 @@ struct RemoteDesktop {
   }
 
   private async pickAndSendFile(): Promise<void> {
+    hilog.info(RD_DOMAIN, RD_TAG, 'file transfer requested busy=' + this.fileTransferBusy.toString() +
+      ' session=' + this.sessionId.toString() + ' connected=' + this.connected.toString() +
+      ' host=' + (this.pendingHost !== null ? 'present' : 'absent') +
+      ' protocol=' + this.currentProtocolName());
     if (this.fileTransferBusy || this.sessionId <= 0 || !this.connected || !this.pendingHost) {
+      hilog.warn(RD_DOMAIN, RD_TAG, 'file transfer blocked before picker busy=' +
+        this.fileTransferBusy.toString() + ' session=' + this.sessionId.toString() +
+        ' connected=' + this.connected.toString() +
+        ' host=' + (this.pendingHost !== null ? 'present' : 'absent'));
       return;
     }
     const capability = this.currentSessionCapabilities().fileUpload;
     if (!capability.enabled) {
+      hilog.warn(RD_DOMAIN, RD_TAG, 'file transfer blocked capability=' + capability.reason);
       promptAction.showToast({ message: capability.reason, duration: 2200 });
       return;
     }
     if (this.pendingHost.protocol === 'rustdesk' && !this.rustdeskFilePasteEnabled) {
+      hilog.warn(RD_DOMAIN, RD_TAG, 'file transfer blocked rustdesk file paste disabled');
       promptAction.showToast({ message: 'RustDesk 文件粘贴已禁用', duration: 1600 });
       return;
     }
@@ -12518,6 +12563,7 @@ struct RemoteDesktop {
       const docPicker = new picker.DocumentViewPicker();
       const uris: string[] = await docPicker.select();
       if (!uris || uris.length === 0) {
+        hilog.info(RD_DOMAIN, RD_TAG, 'file transfer picker cancelled');
         return;
       }
       const uri: string = uris[0];

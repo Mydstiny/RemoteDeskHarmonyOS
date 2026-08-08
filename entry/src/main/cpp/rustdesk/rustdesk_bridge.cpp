@@ -83,6 +83,7 @@ extern "C" {
     struct RustDeskFfiTransferStatus { uint32_t state; uint64_t transferId; uint64_t transferredBytes;
         uint64_t totalBytes; uint32_t diagnosticCode; };
     bool  rustdesk_get_transfer_status(void* handle, RustDeskFfiTransferStatus* out_status);
+    size_t rustdesk_get_transfer_error(void* handle, char* buffer, size_t buffer_len);
     void  rustdesk_send_clipboard(void* handle, const unsigned char* data, unsigned int len);
     size_t rustdesk_get_clipboard(void* handle, unsigned char* buffer, size_t buffer_len);
     bool  rustdesk_request_frame_refresh(void* handle);
@@ -3161,7 +3162,23 @@ SessionTransferStatus RustDeskBridge::getSessionTransferStatus() {
         RustDeskFfiTransferStatus ffi {};
         if (rustdesk_get_transfer_status(handleLease.get(), &ffi)) {
             if (ffi.state == 3) impl_->transferStatus.markRustDeskConfirmed(ffi.transferId, ffi.totalBytes);
-            else if (ffi.state == 4) impl_->transferStatus.markRustDeskFailed(ffi.transferId, "remote_transfer_failed");
+            else if (ffi.state == 4) {
+                char errorBuffer[512] = {0};
+                rustdesk_get_transfer_error(handleLease.get(), errorBuffer, sizeof(errorBuffer));
+                const std::string diagnostic = errorBuffer[0] != '\0'
+                    ? std::string(errorBuffer)
+                    : "remote_transfer_failed";
+                const SessionTransferStatus current = impl_->transferStatus.snapshot();
+                if (current.rustdeskTransfer != TransferRuntimeState::FAILED ||
+                    current.transferId != ffi.transferId ||
+                    current.diagnosticCode != diagnostic) {
+                    OH_LOG_ERROR(LOG_APP,
+                        "[RustDesk-FFI] file transfer failed id=%{public}llu detail=%{public}s",
+                        static_cast<unsigned long long>(ffi.transferId),
+                        diagnostic.c_str());
+                }
+                impl_->transferStatus.markRustDeskFailed(ffi.transferId, diagnostic);
+            }
             else if (ffi.state == 2) impl_->transferStatus.markRustDeskProgress(ffi.transferId, ffi.transferredBytes, ffi.totalBytes);
         }
     }

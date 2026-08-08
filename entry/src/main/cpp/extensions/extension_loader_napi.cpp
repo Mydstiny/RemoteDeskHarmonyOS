@@ -4378,7 +4378,7 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
                 ReportVideoPressureForSession(
                     session, static_cast<int>(pressureDecision.level));
                 OH_LOG_INFO(LOG_APP,
-                    "[ExtLoader] video pressure window session=%{public}llu generation=%{public}llu callback#%{public}llu frames=%{public}llu decoderGeneration=%{public}llu displayGeneration=%{public}llu queueMax=%{public}zu dropsDelta=%{public}llu dropsTotal=%{public}llu decodeOk=%{public}llu decodeErrors=%{public}llu pressure=%{public}s timedOut=%{public}s bytes=%{public}llu reset=%{public}s",
+                    "[ExtLoader] video pressure window session=%{public}llu generation=%{public}llu callback#%{public}llu frames=%{public}llu decoderGeneration=%{public}llu displayGeneration=%{public}llu queueMax=%{public}zu dropsDelta=%{public}llu dropsTotal=%{public}llu decodeOk=%{public}llu decodeErrors=%{public}llu codecLatency=%{public}lldms codecLatencyMax=%{public}lldms lowLatency=%{public}s pressure=%{public}s timedOut=%{public}s bytes=%{public}llu reset=%{public}s",
                     static_cast<unsigned long long>(session->sessionId),
                     static_cast<unsigned long long>(session->generation.load(
                         std::memory_order_acquire)),
@@ -4391,6 +4391,9 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
                     static_cast<unsigned long long>(pressureWindow.decodeDropsTotal),
                     static_cast<unsigned long long>(pressureWindow.decodeOk),
                     static_cast<unsigned long long>(pressureWindow.decodeErrors),
+                    static_cast<long long>(decoderTelemetry.codecLatencyMs),
+                    static_cast<long long>(decoderTelemetry.codecLatencyMaxMs),
+                    decoderTelemetry.lowLatencyEnabled ? "yes" : "no",
                     Render::videoPressureName(pressureDecision.level),
                     pressureDecision.timedOut ? "yes" : "no",
                     static_cast<unsigned long long>(pressureWindow.bytesTotal),

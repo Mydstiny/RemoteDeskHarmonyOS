@@ -55,6 +55,9 @@ struct DecoderTelemetrySnapshot {
     uint64_t droppedFrames = 0;
     uint64_t waitKeyframeDrops = 0;
     uint64_t dropCounterGeneration = 0;
+    int64_t codecLatencyMs = 0;
+    int64_t codecLatencyMaxMs = 0;
+    bool lowLatencyEnabled = false;
 };
 
 struct HardwareTelemetrySnapshot {
@@ -65,8 +68,11 @@ struct HardwareTelemetrySnapshot {
     uint64_t renderOutputFailures = 0;
     uint64_t updateSurfaceFailures = 0;
     uint64_t outputFrames = 0;
+    int64_t codecLatencyMs = 0;
+    int64_t codecLatencyMaxMs = 0;
     CodecType codec = CodecType::H264;
     bool initialized = false;
+    bool lowLatencyEnabled = false;
 };
 
 /**
@@ -101,6 +107,11 @@ struct EncodedFrame {
 struct PendingInputBuffer {
     uint32_t     index;
     OH_AVBuffer* buffer;
+};
+
+struct SubmittedFrameTiming {
+    int64_t timestamp;
+    std::chrono::steady_clock::time_point submittedAt;
 };
 
 /**
@@ -272,6 +283,11 @@ private:
     std::atomic<uint64_t> inputPushFailureCount_ {0};
     std::atomic<uint64_t> outputFrameCount_ {0};
     mutable std::mutex telemetryMutex_;
+    std::deque<SubmittedFrameTiming> submittedFrameTimings_;
+    uint64_t codecLatencySampleCount_ = 0;
+    int64_t codecLatencyMs_ = 0;
+    int64_t codecLatencyMaxMs_ = 0;
+    bool lowLatencyEnabled_ = false;
     std::condition_variable frameAvailableCv_;
     uint64_t frameAvailableCount_ = 0;
     uint64_t frameConsumeCount_ = 0;
@@ -335,6 +351,11 @@ private:
     size_t clearInputQueueLocked();
     size_t dropOldestNonKeyFramesLocked(size_t count);
     void handleInputBuffer(uint32_t index, OH_AVBuffer* buffer);
+    void recordInputSubmission(int64_t timestamp,
+                               std::chrono::steady_clock::time_point submittedAt);
+    void discardInputSubmission(int64_t timestamp,
+                                std::chrono::steady_clock::time_point submittedAt);
+    void recordOutputLatency(int64_t timestamp);
     void drainInputBuffers();
     void inputLoop();
     void startInputThread();

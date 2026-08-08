@@ -32,6 +32,7 @@ use crate::protocol::message_proto::{
     VideoFrame, VideoFrame_oneof_union,
 };
 use crate::protocol::rendezvous::RendezvousClient;
+use crate::protocol::rendezvous_proto::ConnType as RendezvousConnType;
 use crate::protocol::session::{AuthEventCallback, Session, VIDEO_ACK_REQUIRED};
 use crate::protocol::wire;
 use protobuf::{Message as ProtoMessage, ProtobufEnum};
@@ -312,6 +313,10 @@ struct AwaitingFileDone {
     file_name: String,
 }
 
+fn file_upload_sender_complete(pending_uploads: usize) -> bool {
+    pending_uploads == 0
+}
+
 /// Keep the wire keyboard mode tied to the negotiated peer capabilities instead
 /// of inferring it again for every key.  Map mode is required for physical
 /// keyboard input to reach Windows/macOS IMEs as real keys.
@@ -412,7 +417,12 @@ impl RustDeskConnector {
         rd.connect(rendezvous_host, rendezvous_port, server_key, rendezvous_secure)?;
 
         self.set_connect_state(ConnState::RequestingRelay);
-        let punch = rd.request_force_relay(peer_id, credentials.access_key, api_token)?;
+        let punch = rd.request_force_relay(
+            peer_id,
+            credentials.access_key,
+            api_token,
+            RendezvousConnType::DEFAULT_CONN,
+        )?;
 
         // === Phase 2: Peer TCP + 加密通道 ===
         eprintln!(
@@ -434,6 +444,7 @@ impl RustDeskConnector {
                 &punch.relay_server,
                 relay_fallback_port,
                 credentials.access_key,
+                RendezvousConnType::DEFAULT_CONN,
             )?
         } else if !punch.relay_server.trim().is_empty() {
             self.set_connect_state(ConnState::RequestingRelay);
@@ -455,6 +466,7 @@ impl RustDeskConnector {
                 &punch.relay_server,
                 relay_fallback_port,
                 credentials.access_key,
+                RendezvousConnType::DEFAULT_CONN,
             )?
         } else if let Some(peer_addr) = punch.peer_addr {
             // OSS hbbs answered a direct peer address and no relay endpoint.
@@ -579,6 +591,50 @@ impl RustDeskConnector {
         Ok(())
     }
 
+    /// Open the dedicated RustDesk file-transfer session against a peer's
+    /// direct-IP listener. Direct sessions do not have a rendezvous server:
+    /// the listener starts with the plain Hash/LoginRequest exchange and the
+    /// LoginRequest.file_transfer field selects file-transfer mode.
+    pub fn connect_file_transfer_direct(
+        &mut self,
+        peer_host: &str,
+        peer_port: u16,
+        password: &str,
+        remote_dir: &str,
+    ) -> io::Result<()> {
+        crate::set_last_error(format!(
+            "file-transfer direct connecting port={}",
+            peer_port
+        ));
+        self.set_connect_state(ConnState::ConnectingToPeer);
+        let peer_stream = net::connect_tcp_host(
+            peer_host,
+            peer_port,
+            "direct file transfer",
+            Duration::from_secs(10),
+        )?;
+        peer_stream.set_read_timeout(Some(Duration::from_secs(30)))?;
+        peer_stream.set_write_timeout(Some(Duration::from_secs(10)))?;
+
+        self.crypto_channel = Some(CryptoChannel::new_plain(peer_stream));
+        crate::set_last_error("file-transfer direct peer login".to_string());
+        self.set_connect_state(ConnState::LoggingIn);
+        let crypto = self.crypto_channel.as_mut().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotConnected,
+                "direct file-transfer channel is unavailable",
+            )
+        })?;
+        // RustDesk's direct listener expects its address as LoginRequest.username,
+        // matching the main direct desktop connection.
+        self.session
+            .login_file_transfer_encrypted(crypto, peer_host, password, remote_dir, false)?;
+        crate::set_last_error("file-transfer direct peer login complete".to_string());
+        self.set_connect_state(ConnState::Connected);
+        eprintln!("[RustDesk-FFI] direct file-transfer session established");
+        Ok(())
+    }
+
     pub fn connect_file_transfer(
         &mut self,
         rendezvous_host: &str,
@@ -591,13 +647,14 @@ impl RustDeskConnector {
         remote_dir: &str,
         request_approval: bool,
         shared_access_key: bool,
+        rendezvous_conn_type: RendezvousConnType,
     ) -> io::Result<()> {
         let credentials = RendezvousCredentials::new(server_key, shared_access_key);
         let rendezvous_secure = !shared_access_key && !server_key.trim().is_empty() &&
             !api_token.trim().is_empty();
         crate::set_last_error(format!(
-            "file-transfer rendezvous connecting port={} strategy=force_relay",
-            rendezvous_port
+            "file-transfer rendezvous connecting port={} strategy=force_relay conn_type={:?}",
+            rendezvous_port, rendezvous_conn_type
         ));
         self.set_connect_state(ConnState::RendezvousConnecting);
         let mut rd = RendezvousClient::new();
@@ -605,7 +662,12 @@ impl RustDeskConnector {
 
         crate::set_last_error("file-transfer requesting force relay".to_string());
         self.set_connect_state(ConnState::RequestingRelay);
-        let punch = rd.request_force_relay(peer_id, credentials.access_key, api_token)?;
+        let punch = rd.request_force_relay(
+            peer_id,
+            credentials.access_key,
+            api_token,
+            rendezvous_conn_type,
+        )?;
         crate::set_last_error(format!(
             "file-transfer force-relay response relay_endpoint={} relay_ticket={} signed_pk_len={}",
             if punch.relay_server.is_empty() { "absent" } else { "present" },
@@ -628,6 +690,7 @@ impl RustDeskConnector {
                 &punch.relay_server,
                 relay_fallback_port,
                 credentials.access_key,
+                rendezvous_conn_type,
             )?
         } else if !punch.relay_server.trim().is_empty() {
             self.set_connect_state(ConnState::RequestingRelay);
@@ -648,6 +711,7 @@ impl RustDeskConnector {
                 &punch.relay_server,
                 relay_fallback_port,
                 credentials.access_key,
+                rendezvous_conn_type,
             )?
         } else if let Some(peer_addr) = punch.peer_addr {
             self.set_connect_state(ConnState::ConnectingToPeer);
@@ -714,7 +778,13 @@ impl RustDeskConnector {
         let mut last_wait_report = 0u64;
         let path_id = crate::safe_diagnostics::sensitive_id(remote_path);
 
-        while (!pending.is_empty() || !awaiting_done.is_empty()) && started.elapsed() < timeout {
+        // RustDesk's upload protocol is sender-complete once the final
+        // FileResponse::Done frame has been written. The receiver consumes
+        // that frame and reports completion to its own connection manager; it
+        // does not echo another Done frame back to the sender. Waiting for
+        // `awaiting_done` to become empty therefore turns every otherwise
+        // successful upload into a 30-second timeout.
+        while !file_upload_sender_complete(pending.len()) && started.elapsed() < timeout {
             match crypto.recv() {
                 Ok(plaintext) => {
                     let msg: Message = protobuf::parse_from_bytes(&plaintext)
@@ -757,22 +827,12 @@ impl RustDeskConnector {
                     let elapsed = started.elapsed().as_secs();
                     if elapsed > last_wait_report {
                         last_wait_report = elapsed;
-                        if awaiting_done.is_empty() {
-                            crate::set_last_error(format!(
-                                "file-transfer waiting peer confirm path_id={} elapsed={}s pending={}",
-                                path_id,
-                                elapsed,
-                                pending.len()
-                            ));
-                        } else {
-                            crate::set_last_error(format!(
-                                "file-transfer waiting remote done path_id={} elapsed={}s pending={} awaiting_done={}",
-                                path_id,
-                                elapsed,
-                                pending.len(),
-                                awaiting_done.len()
-                            ));
-                        }
+                        crate::set_last_error(format!(
+                            "file-transfer waiting peer confirm path_id={} elapsed={}s pending={}",
+                            path_id,
+                            elapsed,
+                            pending.len()
+                        ));
                     }
                     continue;
                 }
@@ -781,16 +841,19 @@ impl RustDeskConnector {
         }
         crypto.set_read_timeout(None).ok();
 
-        if pending.is_empty() && awaiting_done.is_empty() {
-            crate::set_last_error(format!("file transfer done path_id={}", path_id));
+        if file_upload_sender_complete(pending.len()) {
+            crate::set_last_error(format!(
+                "file transfer sent path_id={} final_done_frames={}",
+                path_id,
+                awaiting_done.len()
+            ));
             Ok(())
         } else {
             Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 format!(
-                    "file-transfer peer did not finish upload pending={} awaiting_done={}",
-                    pending.len(),
-                    awaiting_done.len()
+                    "file-transfer peer did not confirm upload pending={}",
+                    pending.len()
                 ),
             ))
         }
@@ -4119,6 +4182,12 @@ mod tests {
     }
 
     #[test]
+    fn file_upload_completion_does_not_require_a_remote_done_echo() {
+        assert!(!super::file_upload_sender_complete(1));
+        assert!(super::file_upload_sender_complete(0));
+    }
+
+    #[test]
     fn non_vp9_pressure_never_raises_the_configured_target() {
         assert_eq!(pressure_target_fps(4, 4, 30, 0, false), 30);
         assert_eq!(pressure_target_fps(4, 4, 60, 2, false), 30);
@@ -4565,6 +4634,54 @@ mod tests {
         RustDeskConnector::new()
             .connect_direct("127.0.0.1", port, "peer-123", "", 0, 1, false, false, 30)
             .expect("official direct login should accept a plain Hash challenge");
+        accept_thread.join().expect("accept thread panicked");
+    }
+
+    #[test]
+    fn direct_file_transfer_uses_plain_login_with_file_transfer_mode() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener bind failed");
+        let port = listener
+            .local_addr()
+            .expect("listener address missing")
+            .port();
+        let accept_thread = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("direct file connection missing");
+            let mut hash = Hash::new();
+            hash.set_salt("salt".to_string());
+            hash.set_challenge("challenge".to_string());
+            let mut challenge = Message::new();
+            challenge.union = Some(Message_oneof_union::hash(hash));
+            wire::write_frame(&mut stream, &challenge.write_to_bytes().unwrap()).unwrap();
+
+            let login_payload = wire::read_frame(&mut stream).unwrap();
+            let login: Message = protobuf::parse_from_bytes(&login_payload).unwrap();
+            match login.union {
+                Some(Message_oneof_union::login_request(request)) => {
+                    assert_eq!(request.get_username(), "127.0.0.1");
+                    assert!(request.has_file_transfer());
+                    assert_eq!(
+                        request.get_file_transfer().get_dir(),
+                        r"C:\Users\Public\Documents"
+                    );
+                    assert!(!request.get_file_transfer().get_show_hidden());
+                }
+                other => panic!("expected file-transfer LoginRequest, got: {:?}", other),
+            }
+
+            let response = LoginResponse::new();
+            let mut response_message = Message::new();
+            response_message.union = Some(Message_oneof_union::login_response(response));
+            wire::write_frame(&mut stream, &response_message.write_to_bytes().unwrap()).unwrap();
+        });
+
+        RustDeskConnector::new()
+            .connect_file_transfer_direct(
+                "127.0.0.1",
+                port,
+                "",
+                r"C:\Users\Public\Documents",
+            )
+            .expect("direct file transfer should use the peer login protocol");
         accept_thread.join().expect("accept thread panicked");
     }
 }

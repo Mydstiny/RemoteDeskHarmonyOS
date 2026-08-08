@@ -34,6 +34,15 @@ inline bool HasUnconsumedNativeImageFrame(uint64_t available, uint64_t consumed)
     return available > consumed;
 }
 
+// A failed GL attachment leaves the newest producer notification unconsumed.
+// That notification must not bypass the retry deadline, otherwise the render
+// loop spins continuously until the surface is rebound.
+inline bool ShouldDeferNativeImageRetry(bool surfaceUpdatePending,
+                                        bool retryScheduled,
+                                        bool retryDue) {
+    return surfaceUpdatePending && retryScheduled && !retryDue;
+}
+
 inline uint64_t LatestNativeImageFrameSequence(uint64_t available) {
     return available;
 }

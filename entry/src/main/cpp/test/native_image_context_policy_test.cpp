@@ -35,6 +35,10 @@ RDP_TEST_CASE(native_image_policy_consumes_latest_notification_sequence) {
     RDP_ASSERT(!Render::HasUnconsumedNativeImageFrame(4, 4));
     RDP_ASSERT(Render::HasUnconsumedNativeImageFrame(5, 4));
     RDP_ASSERT(Render::LatestNativeImageFrameSequence(17) == 17);
+    RDP_ASSERT(Render::ShouldDeferNativeImageRetry(true, true, false));
+    RDP_ASSERT(!Render::ShouldDeferNativeImageRetry(true, true, true));
+    RDP_ASSERT(!Render::ShouldDeferNativeImageRetry(true, false, false));
+    RDP_ASSERT(!Render::ShouldDeferNativeImageRetry(false, true, false));
     RDP_ASSERT(!Render::ShouldRequestNativeImageRecovery(
         Render::kNativeImageSurfaceRecoveryThreshold - 1));
     RDP_ASSERT(Render::ShouldRequestNativeImageRecovery(

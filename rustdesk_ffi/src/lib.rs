@@ -1027,10 +1027,12 @@ struct RustDeskClient {
     api_token: String,
     password: String,
     request_approval: bool,
+    direct_connection: bool,
     controls: Arc<ControlInbox>,
     shutdown_stream: Option<TcpStream>,
     stream_handle: Option<std::thread::JoinHandle<io::Result<()>>>,
     transfer_status: Arc<Mutex<RustDeskTransferStatus>>,
+    transfer_error: Arc<Mutex<String>>,
     remote_clipboard: Arc<Mutex<Vec<u8>>>,
     stream_stats: Arc<Mutex<RustDeskStreamStats>>,
     display_state: Arc<Mutex<RustDeskDisplayState>>,
@@ -1703,6 +1705,8 @@ fn rustdesk_connect_impl(
                 connection_path: if config.direct_connection { 1 } else { 0 },
                 ..RustDeskStreamStats::default()
             }));
+            let transfer_status = Arc::new(Mutex::new(RustDeskTransferStatus::default()));
+            let transfer_error = Arc::new(Mutex::new(String::new()));
             let stream_stats_for_thread = Arc::clone(&stream_stats);
             let stream_display_state = Arc::clone(&display_state);
             let frame_display_state = Arc::clone(&display_state);
@@ -1818,10 +1822,12 @@ fn rustdesk_connect_impl(
                 api_token,
                 password,
                 request_approval,
+                direct_connection: config.direct_connection,
                 controls,
                 shutdown_stream,
                 stream_handle: Some(stream_handle),
-                transfer_status: Arc::new(Mutex::new(RustDeskTransferStatus::default())),
+                transfer_status,
+                transfer_error,
                 remote_clipboard,
                 stream_stats,
                 display_state,
@@ -2095,7 +2101,14 @@ pub extern "C" fn rustdesk_probe_presence(
                 rendezvous_secure,
                 Duration::from_secs(3),
             )
-            .and_then(|_| rendezvous.request_force_relay(&peer_id, &server_key, &api_token))
+            .and_then(|_| {
+                rendezvous.request_force_relay(
+                    &peer_id,
+                    &server_key,
+                    &api_token,
+                    protocol::rendezvous_proto::ConnType::DEFAULT_CONN,
+                )
+            })
             .map(|_| ())
     };
 
@@ -2551,6 +2564,17 @@ pub extern "C" fn rustdesk_send_text(handle: *mut c_void, text: *const c_char) {
 /// remote_path: 目标路径 (如 `C:\Users\Public\Documents\RemoteDesktop\readme.txt`)
 /// data: 文件字节
 /// len: 数据长度
+fn should_retry_file_transfer_compat_route(
+    conn_type: protocol::rendezvous_proto::ConnType,
+    state: &connector::ConnState,
+) -> bool {
+    conn_type == protocol::rendezvous_proto::ConnType::FILE_TRANSFER
+        && matches!(
+            state,
+            connector::ConnState::RequestingRelay | connector::ConnState::ConnectingToPeer
+        )
+}
+
 #[no_mangle]
 pub extern "C" fn rustdesk_send_file(
     handle: *mut c_void,
@@ -2571,6 +2595,9 @@ pub extern "C" fn rustdesk_send_file(
         *status = RustDeskTransferStatus { state: 2, transfer_id, transferred_bytes: 0,
             total_bytes: len as u64, diagnostic_code: 0 };
     }
+    if let Ok(mut error) = ctx.transfer_error.lock() {
+        error.clear();
+    }
     let host = ctx.host.clone();
     let port = ctx.port;
     let relay_fallback_port = ctx.relay_fallback_port;
@@ -2580,23 +2607,98 @@ pub extern "C" fn rustdesk_send_file(
     let peer_id = ctx.peer_id.clone();
     let password = ctx.password.clone();
     let request_approval = ctx.request_approval;
+    let direct_connection = ctx.direct_connection;
     let remote_path_owned = path.clone();
     let remote_dir = split_remote_file_path(&path).0.to_string();
     let transfer_status = Arc::clone(&ctx.transfer_status);
+    let transfer_error = Arc::clone(&ctx.transfer_error);
 
     std::thread::spawn(move || {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let mut connector = connector::RustDeskConnector::new();
-            connector
-                .connect_file_transfer(&host, port, relay_fallback_port, &server_key, &api_token, &peer_id, &password, &remote_dir,
-                    request_approval, shared_access_key)
-                .and_then(|_| {
-                    connector.upload_file_once(
-                        &remote_path_owned,
-                        file_data,
-                        Duration::from_secs(30),
+            let mut connector = if direct_connection {
+                let mut candidate = connector::RustDeskConnector::new();
+                candidate.connect_file_transfer_direct(
+                    &host,
+                    port,
+                    &password,
+                    &remote_dir,
+                )?;
+                candidate
+            } else {
+                // Modern peers advertise FILE_TRANSFER at rendezvous. HarmonyOS
+                // 1.0.7 used DEFAULT_CONN for the route and then identified the
+                // dedicated file session in LoginRequest.file_transfer. Keep the
+                // official modern route first, but retry a fresh connection with
+                // the proven 1.0.7 route when an older/custom hbbs does not answer.
+                let route_types = [
+                    protocol::rendezvous_proto::ConnType::FILE_TRANSFER,
+                    protocol::rendezvous_proto::ConnType::DEFAULT_CONN,
+                ];
+                let mut connected = None;
+                let mut route_errors = Vec::new();
+                let mut last_route_kind = std::io::ErrorKind::NotConnected;
+                for conn_type in route_types {
+                    let mut candidate = connector::RustDeskConnector::new();
+                    match candidate.connect_file_transfer(
+                        &host,
+                        port,
+                        relay_fallback_port,
+                        &server_key,
+                        &api_token,
+                        &peer_id,
+                        &password,
+                        &remote_dir,
+                        request_approval,
+                        shared_access_key,
+                        conn_type,
+                    ) {
+                        Ok(()) => {
+                            eprintln!(
+                                "[RustDesk-FFI] file-transfer route connected conn_type={:?}",
+                                conn_type
+                            );
+                            connected = Some(candidate);
+                            break;
+                        }
+                        Err(err) => {
+                            last_route_kind = err.kind();
+                            let fallback = should_retry_file_transfer_compat_route(
+                                conn_type,
+                                candidate.state(),
+                            );
+                            eprintln!(
+                                "[RustDesk-FFI] file-transfer route failed conn_type={:?} stage={:?} kind={:?} err={} fallback={}",
+                                conn_type,
+                                candidate.state(),
+                                err.kind(),
+                                err,
+                                fallback
+                            );
+                            route_errors.push(format!("{:?}:{:?}:{}", conn_type, err.kind(), err));
+                            // Compatibility mode is only a rendezvous/relay
+                            // fallback. Never retry an authentication, peer-key,
+                            // permission, or upload failure as DEFAULT_CONN.
+                            if !fallback {
+                                break;
+                            }
+                        }
+                    }
+                }
+                connected.ok_or_else(|| {
+                    std::io::Error::new(
+                        last_route_kind,
+                        format!(
+                            "file-transfer route failed for modern and 1.0.7 compatibility modes [{}]",
+                            route_errors.join(" | ")
+                        ),
                     )
-                })
+                })?
+            };
+            connector.upload_file_once(
+                &remote_path_owned,
+                file_data,
+                Duration::from_secs(30),
+            )
         }))
         .unwrap_or_else(|_| {
             Err(std::io::Error::new(
@@ -2607,12 +2709,26 @@ pub extern "C" fn rustdesk_send_file(
 
         match result {
             Ok(()) => {
+                if let Ok(mut error) = transfer_error.lock() {
+                    error.clear();
+                }
                 if let Ok(mut status) = transfer_status.lock() {
                     *status = RustDeskTransferStatus { state: 3, transfer_id,
                         transferred_bytes: len as u64, total_bytes: len as u64, diagnostic_code: 0 };
                 }
             }
-            Err(_) => {
+            Err(err) => {
+                let message = format!(
+                    "file-transfer failed transfer_id={} kind={:?} err={}",
+                    transfer_id,
+                    err.kind(),
+                    err
+                );
+                set_last_error(message.clone());
+                eprintln!("[RustDesk-FFI] {}", message);
+                if let Ok(mut error) = transfer_error.lock() {
+                    *error = message;
+                }
                 if let Ok(mut status) = transfer_status.lock() {
                     *status = RustDeskTransferStatus { state: 4, transfer_id,
                         transferred_bytes: 0, total_bytes: len as u64, diagnostic_code: 1 };
@@ -2631,6 +2747,35 @@ pub extern "C" fn rustdesk_get_transfer_status(handle: *mut c_void,
     let status = match ctx.transfer_status.lock() { Ok(value) => *value, Err(_) => return false };
     unsafe { *out_status = status; }
     true
+}
+
+/// Copy the failure owned by the current file-transfer worker. Unlike the
+/// process-wide last-error string, this value cannot be overwritten by normal
+/// mouse, keyboard, refresh, or video-control traffic on the desktop session.
+#[no_mangle]
+pub extern "C" fn rustdesk_get_transfer_error(
+    handle: *mut c_void,
+    buffer: *mut c_char,
+    buffer_len: usize,
+) -> usize {
+    if handle.is_null() {
+        return 0;
+    }
+    let ctx = unsafe { &*(handle as *const RustDeskClient) };
+    let message = ctx
+        .transfer_error
+        .lock()
+        .map(|error| error.clone())
+        .unwrap_or_else(|_| "file-transfer error lock poisoned".to_string());
+    let bytes = message.as_bytes();
+    if !buffer.is_null() && buffer_len > 0 {
+        let copy_len = bytes.len().min(buffer_len - 1);
+        unsafe {
+            ptr::copy_nonoverlapping(bytes.as_ptr(), buffer as *mut u8, copy_len);
+            *buffer.add(copy_len) = 0;
+        }
+    }
+    bytes.len()
 }
 
 /// 发送剪贴板内容到远程
@@ -2685,10 +2830,12 @@ mod tests {
             api_token: String::new(),
             password: String::new(),
             request_approval: false,
+            direct_connection: false,
             controls: Arc::new(ControlInbox::default()),
             shutdown_stream: None,
             stream_handle: None,
             transfer_status: Arc::new(Mutex::new(RustDeskTransferStatus::default())),
+            transfer_error: Arc::new(Mutex::new(String::new())),
             remote_clipboard: Arc::new(Mutex::new(Vec::new())),
             stream_stats: Arc::new(Mutex::new(RustDeskStreamStats::default())),
             display_state: Arc::new(Mutex::new(display_state)),
@@ -2703,6 +2850,32 @@ mod tests {
             relay_fallback_port_from_config(u16::MAX as c_int + 1),
             DEFAULT_RELAY_PORT
         );
+    }
+
+    #[test]
+    fn legacy_file_route_is_only_a_rendezvous_transport_fallback() {
+        use crate::protocol::rendezvous_proto::ConnType;
+
+        assert!(should_retry_file_transfer_compat_route(
+            ConnType::FILE_TRANSFER,
+            &connector::ConnState::RequestingRelay,
+        ));
+        assert!(should_retry_file_transfer_compat_route(
+            ConnType::FILE_TRANSFER,
+            &connector::ConnState::ConnectingToPeer,
+        ));
+        assert!(!should_retry_file_transfer_compat_route(
+            ConnType::FILE_TRANSFER,
+            &connector::ConnState::KeyExchanging,
+        ));
+        assert!(!should_retry_file_transfer_compat_route(
+            ConnType::FILE_TRANSFER,
+            &connector::ConnState::LoggingIn,
+        ));
+        assert!(!should_retry_file_transfer_compat_route(
+            ConnType::DEFAULT_CONN,
+            &connector::ConnState::RequestingRelay,
+        ));
     }
 
     #[test]
