@@ -144,6 +144,9 @@ import terminalRendererPolicyTest from './TerminalRendererPolicy.test';
 import sshTransportPolicyTest from './SshTransportPolicy.test';
 import sshTerminalSurfaceBindingPolicyTest from './SshTerminalSurfaceBindingPolicy.test';
 import sshForwardingPolicyTest from './SshForwardingPolicy.test';
+import sshProxyProfilePolicyTest from './SshProxyProfilePolicy.test';
+import sshProxyProfileStoreTest from './SshProxyProfileStore.test';
+import sshForwardingProfileStoreTest from './SshForwardingProfileStore.test';
 
 export default function testsuite() {
   localUnitTest();
@@ -292,4 +295,7 @@ export default function testsuite() {
   sshTransportPolicyTest();
   sshTerminalSurfaceBindingPolicyTest();
   sshForwardingPolicyTest();
+  sshProxyProfilePolicyTest();
+  sshProxyProfileStoreTest();
+  sshForwardingProfileStoreTest();
 }
