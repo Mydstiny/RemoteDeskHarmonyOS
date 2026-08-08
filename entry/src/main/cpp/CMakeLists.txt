@@ -532,9 +532,11 @@ endif()
 # RustDesk FFI 静态库
 if(OHOS_ARCH STREQUAL "x86_64")
     set(RUSTDESK_FFI_TARGET x86_64-unknown-linux-ohos)
+    set(RUSTDESK_FFI_CLANG_TARGET x86_64-linux-ohos)
     set(RUSTDESK_FFI_LIB ${CMAKE_CURRENT_SOURCE_DIR}/../../../../rustdesk_ffi/target/x86_64-unknown-linux-ohos/release/librustdesk_ffi.a)
 elseif(OHOS_ARCH STREQUAL "arm64-v8a" OR OHOS_ARCH STREQUAL "aarch64")
     set(RUSTDESK_FFI_TARGET aarch64-unknown-linux-ohos)
+    set(RUSTDESK_FFI_CLANG_TARGET aarch64-linux-ohos)
     set(RUSTDESK_FFI_LIB ${CMAKE_CURRENT_SOURCE_DIR}/../../../../rustdesk_ffi/target/aarch64-unknown-linux-ohos/release/librustdesk_ffi.a)
 else()
     message(FATAL_ERROR
@@ -549,7 +551,41 @@ set(RUSTDESK_PROTO_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../../rustdesk_vendor/l
 set(RUSTDESK_OPUS_LIB_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../../libs/opus-ohos/${OHOS_ARCH})
 set(RUSTDESK_OPUS_LIBRARY ${RUSTDESK_OPUS_LIB_DIR}/libopus.a)
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/ResolveRustCargo.cmake)
-resolve_rustdesk_cargo(RUSTDESK_CARGO_EXECUTABLE)
+resolve_rustdesk_rust_toolchain(
+    RUSTDESK_CARGO_EXECUTABLE
+    RUSTDESK_RUSTC_EXECUTABLE)
+string(TOUPPER "${RUSTDESK_FFI_TARGET}" RUSTDESK_FFI_TARGET_ENV_UPPER)
+string(REPLACE "-" "_"
+    RUSTDESK_FFI_TARGET_ENV_UPPER "${RUSTDESK_FFI_TARGET_ENV_UPPER}")
+
+# Cargo target configuration otherwise resolves `clang++` through PATH. That
+# fails when DevEco is launched from Finder because its IDE build environment
+# does not inherit the shell toolchain PATH. Mirror scripts/macos_env.sh here
+# with CMake's already selected OHOS compiler and sysroot.
+if(CMAKE_SYSROOT AND EXISTS "${CMAKE_SYSROOT}")
+    set(RUSTDESK_OHOS_SYSROOT "${CMAKE_SYSROOT}")
+else()
+    get_filename_component(RUSTDESK_OHOS_LLVM_BIN
+        "${CMAKE_CXX_COMPILER}" DIRECTORY)
+    get_filename_component(RUSTDESK_OHOS_LLVM_DIR
+        "${RUSTDESK_OHOS_LLVM_BIN}" DIRECTORY)
+    get_filename_component(RUSTDESK_OHOS_NATIVE_ROOT
+        "${RUSTDESK_OHOS_LLVM_DIR}" DIRECTORY)
+    set(RUSTDESK_OHOS_SYSROOT "${RUSTDESK_OHOS_NATIVE_ROOT}/sysroot")
+endif()
+if(NOT EXISTS "${CMAKE_CXX_COMPILER}" OR
+   NOT EXISTS "${RUSTDESK_OHOS_SYSROOT}")
+    message(FATAL_ERROR
+        "RustDesk: incomplete OHOS C++ toolchain: "
+        "compiler=${CMAKE_CXX_COMPILER}, sysroot=${RUSTDESK_OHOS_SYSROOT}")
+endif()
+
+# Cargo splits RUSTFLAGS on spaces, which corrupts a Windows DevEco sysroot
+# such as "C:/Program Files/...". CARGO_ENCODED_RUSTFLAGS uses ASCII unit
+# separators and therefore preserves each linker argument as one rustc token.
+string(ASCII 31 RUSTDESK_CARGO_RUSTFLAG_SEPARATOR)
+set(RUSTDESK_CARGO_ENCODED_RUSTFLAGS
+    "-Clink-arg=--target=${RUSTDESK_FFI_CLANG_TARGET}${RUSTDESK_CARGO_RUSTFLAG_SEPARATOR}-Clink-arg=--sysroot=${RUSTDESK_OHOS_SYSROOT}")
 
 if(NOT EXISTS ${RUSTDESK_PROTO_DIR}/message.proto OR NOT EXISTS ${RUSTDESK_PROTO_DIR}/rendezvous.proto)
     message(FATAL_ERROR
@@ -573,7 +609,11 @@ add_custom_command(
     COMMAND ${CMAKE_COMMAND} -E env
         "OPUS_LIB_DIR=${RUSTDESK_OPUS_LIB_DIR}"
         "CC_${RUSTDESK_FFI_TARGET}=${CMAKE_C_COMPILER}"
+        "CXX_${RUSTDESK_FFI_TARGET}=${CMAKE_CXX_COMPILER}"
         "AR_${RUSTDESK_FFI_TARGET}=${CMAKE_AR}"
+        "RUSTC=${RUSTDESK_RUSTC_EXECUTABLE}"
+        "CARGO_TARGET_${RUSTDESK_FFI_TARGET_ENV_UPPER}_LINKER=${CMAKE_CXX_COMPILER}"
+        "CARGO_ENCODED_RUSTFLAGS=${RUSTDESK_CARGO_ENCODED_RUSTFLAGS}"
         ${RUSTDESK_CARGO_EXECUTABLE} build --release --target ${RUSTDESK_FFI_TARGET}
     WORKING_DIRECTORY ${RUSTDESK_FFI_DIR}
     DEPENDS

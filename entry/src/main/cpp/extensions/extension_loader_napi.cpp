@@ -4348,7 +4348,16 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
                     decoderTelemetry.dropCounterGeneration);
                 if (session->videoPressure.windowDue(now)) {
                     pressureWindow = session->videoPerf.snapshotAndReset();
-                    pressureDecision = session->videoPressure.observeAt(pressureWindow, now);
+                    // Full-resolution VP9 arrives in short TCP bursts on macOS.
+                    // Requiring five consecutive overloaded windows misses a
+                    // queue spike that reaches 17 frames and clears in the next
+                    // second. Escalate that software-only path immediately;
+                    // recovery remains debounced by the controller and Rust's
+                    // VP9 recovery hold. Hardware codecs keep the default gate.
+                    const bool immediateVp9SoftwarePressure =
+                        decoderTelemetry.software && frame.codec == CodecType::VP9;
+                    pressureDecision = session->videoPressure.observeAt(
+                        pressureWindow, now, immediateVp9SoftwarePressure);
                     session->lastPressureSnapshot = pressureWindow;
                     session->lastPressureDecision = pressureDecision;
                     pressureWindowReady = pressureDecision.windowComplete;
@@ -5435,7 +5444,16 @@ napi_value NapiDisconnectAll(napi_env env, napi_callback_info info) {
             continue;
         }
         const auto owner = item.second->identity();
-        if (item.second->protocolName == "rustdesk") {
+        if (item.second->protocolName == "ssh") {
+            // disconnectAll owns every Active session it successfully moved
+            // to Disconnecting. Remove the matching generation from the SSH
+            // manager before testing whether the shared platform observer is
+            // still needed; erasing only g_sessionRegistry leaked manager
+            // entries and eventually exhausted its bounded session table.
+            (void)g_sshNativeFacade.closeSession(SshSessionHandle {
+                item.second->sessionId, "shell", owner.generation});
+            ClearNativeNetworkObserver(item.first, owner.generation);
+        } else if (item.second->protocolName == "rustdesk") {
             // The native network observer retains the SessionContext.  Clear
             // it before removing the registry entry even when this batch is
             // racing a per-session disconnect; the generation check keeps a
@@ -6349,6 +6367,7 @@ struct SftpAsyncData {
     uint32_t maxLen = 0;
     bool truncate = false;
     bool atomicRename = false;
+    bool transportLost = false;
     int errorCode = ERR_SSH_SESSION_CLOSED;
     int bytesWritten = 0;
     bool workerFailed = false;
@@ -6420,6 +6439,14 @@ static void ExecuteSftpAsync(napi_env /*env*/, void* rawData) {
                     : sshAdapter->renameRemotePath(data->remotePath, data->newRemotePath);
                 break;
         }
+        if (data->errorCode < 0) {
+            // This second owner command classifies libssh2's exact last error
+            // and publishes RECONNECTING before the ArkTS Promise resolves.
+            // The transfer engine therefore cannot race a still-CONNECTED
+            // snapshot after a socket failure.
+            data->transportLost =
+                sshAdapter->classifySftpTransportFailure(data->errorCode);
+        }
     } catch (const std::exception& ex) {
         data->workerFailed = true;
         data->errorMessage = std::string("SFTP async work failed: ") + ex.what();
@@ -6461,6 +6488,9 @@ static napi_value CreateSftpAsyncResult(napi_env env, const SftpAsyncData& data)
     napi_value errorCode;
     napi_create_int32(env, data.errorCode, &errorCode);
     napi_set_named_property(env, result, "errorCode", errorCode);
+    napi_value transportLost;
+    napi_get_boolean(env, data.transportLost, &transportLost);
+    napi_set_named_property(env, result, "transportLost", transportLost);
 
     if (data.operation == SftpAsyncOperation::ListDirectory) {
         napi_value entries;

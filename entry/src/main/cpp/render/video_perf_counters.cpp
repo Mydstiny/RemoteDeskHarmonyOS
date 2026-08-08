@@ -156,7 +156,8 @@ VideoPressureLevel VideoPressureController::observe(const VideoPerfSnapshot& sna
 }
 
 VideoPressureDecision VideoPressureController::observeAt(
-    const VideoPerfSnapshot& snapshot, std::chrono::steady_clock::time_point now) {
+    const VideoPerfSnapshot& snapshot, std::chrono::steady_clock::time_point now,
+    bool escalateImmediately) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!clockInitialized_) {
         clockInitialized_ = true;
@@ -194,10 +195,16 @@ VideoPressureDecision VideoPressureController::observeAt(
     const VideoPressureLevel observed = classifyVideoPressure(snapshot);
     if (observed != VideoPressureLevel::Normal) {
         cleanWindows_ = 0;
-        if (overloadWindows_ < overloadWindowsToEscalate_) {
+        if (escalateImmediately) {
+            overloadWindows_ = 0;
+            if (static_cast<int>(observed) > static_cast<int>(level_)) {
+                level_ = observed;
+                levelEnteredAt_ = now;
+            }
+        } else if (overloadWindows_ < overloadWindowsToEscalate_) {
             ++overloadWindows_;
         }
-        if (overloadWindows_ >= overloadWindowsToEscalate_) {
+        if (!escalateImmediately && overloadWindows_ >= overloadWindowsToEscalate_) {
             overloadWindows_ = 0;
             // Escalation may jump to the level supported by the window, but
             // never drops an already higher level while the window is bad.

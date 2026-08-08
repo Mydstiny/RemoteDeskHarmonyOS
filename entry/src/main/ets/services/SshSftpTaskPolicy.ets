@@ -106,6 +106,8 @@ export interface SshSftpTaskRecord {
   targetPath?: string;
   partialIdentity?: SftpPartialIdentity;
   checksumPolicy?: 'size_mtime' | 'sha256';
+  /** Atomic rename completed; reconnect recovery must verify target, not partial. */
+  commitState?: 'renamed';
 }
 
 export interface SshSftpResumeContext {
@@ -121,7 +123,7 @@ const MAX_BATCH_ID_LENGTH: number = 64;
 const MAX_HOST_ID_LENGTH: number = 160;
 const MAX_REMOTE_PATH_LENGTH: number = 2048;
 const MAX_FILE_NAME_LENGTH: number = 255;
-const SFTP_TASK_SCHEMA_VERSION: number = 2;
+const SFTP_TASK_SCHEMA_VERSION: number = 3;
 
 const STAGES: SshSftpTaskStage[] = [
   'queued', 'inspecting', 'awaitingConflictDecision', 'transferring', 'paused',
@@ -263,7 +265,8 @@ export function normalizeSshSftpTaskRecord(value: Object): SshSftpTaskRecord | n
     sourcePath,
     targetPath,
     partialIdentity,
-    checksumPolicy
+    checksumPolicy,
+    commitState: raw['commitState'] === 'renamed' ? 'renamed' : undefined
   };
 }
 
@@ -306,7 +309,8 @@ export function recoverInterruptedSshSftpTaskRecord(record: SshSftpTaskRecord,
     sourcePath: record.sourcePath,
     targetPath: record.targetPath,
     partialIdentity: record.partialIdentity,
-    checksumPolicy: record.checksumPolicy
+    checksumPolicy: record.checksumPolicy,
+    commitState: record.commitState
   };
 }
 
@@ -338,7 +342,9 @@ export function canTransitionSshSftpTask(from: SshSftpTaskStage,
   }
   if (from === 'needsAuthorization') { return to === 'queued' || to === 'cancelled'; }
   if (from === 'needsAuthentication') { return to === 'queued' || to === 'cancelled'; }
-  if (from === 'committing') { return to === 'completed' || to === 'failed'; }
+  if (from === 'committing') {
+    return to === 'completed' || to === 'failed' || to === 'waitingForConnection';
+  }
   if (from === 'verifying') { return to === 'committing' || to === 'failed' || to === 'cancelled'; }
   if (from === 'paused') {
     return to === 'queued' || to === 'transferring' || to === 'waitingForConnection' || to === 'cancelled';
@@ -391,7 +397,8 @@ export function sshSftpTaskCommandTarget(stage: SshSftpTaskStage,
   }
   if (command.kind === 'detach') {
     return stage === 'queued' || stage === 'inspecting' || stage === 'transferring' ||
-      stage === 'paused' || stage === 'awaitingConflictDecision' ? 'waitingForConnection' : null;
+      stage === 'verifying' || stage === 'committing' || stage === 'paused' ||
+      stage === 'awaitingConflictDecision' ? 'waitingForConnection' : null;
   }
   return null;
 }

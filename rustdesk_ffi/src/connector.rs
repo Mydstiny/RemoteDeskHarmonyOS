@@ -52,6 +52,8 @@ const SLOW_VIDEO_ACK_WARN: Duration = Duration::from_millis(50);
 const VP9_CODEC_PREFERENCE: i32 = 2;
 const BACKPRESSURE_FPS: [u32; 4] = [60, 45, 30, 15];
 const VP9_PRESSURE_RECOVERY_HOLD_WINDOWS: u32 = 12;
+const VP9_HIGH_RESOLUTION_PIXEL_THRESHOLD: u64 = 4_000_000;
+const VP9_HIGH_RESOLUTION_FPS: u32 = 30;
 
 #[derive(Default, Debug)]
 struct PhysicalModifierState {
@@ -122,6 +124,23 @@ impl PhysicalModifierState {
 
 fn is_vp9_stream(preferred_codec: i32, active_codec: i32) -> bool {
     preferred_codec == VP9_CODEC_PREFERENCE || active_codec == VP9_CODEC_PREFERENCE
+}
+
+fn resolution_aware_fps_ceiling(
+    active_codec: i32,
+    width: i32,
+    height: i32,
+    configured_fps: u32,
+) -> u32 {
+    if active_codec != VP9_CODEC_PREFERENCE || width <= 0 || height <= 0 {
+        return configured_fps;
+    }
+    let pixels = (width as u64).saturating_mul(height as u64);
+    if pixels >= VP9_HIGH_RESOLUTION_PIXEL_THRESHOLD {
+        configured_fps.min(VP9_HIGH_RESOLUTION_FPS)
+    } else {
+        configured_fps
+    }
 }
 
 fn pressure_target_fps(
@@ -1136,6 +1155,7 @@ impl RustDeskConnector {
         let mut applied_pressure_level: u32 = 0;
         let mut vp9_pressure_recovery_windows: u32 = 0;
         let mut active_video_codec: i32 = 0;
+        let mut stream_fps_ceiling = fps;
         let mut stream_options_fps = fps;
         const DEGRADE_AFTER_OVERLOAD_WINDOWS: u32 = 5; // need 5s of overload before degrade
         const RECOVER_AFTER_CLEAN_WINDOWS: u32 = 30; // 30s of clean before recover
@@ -1332,6 +1352,52 @@ impl RustDeskConnector {
                     let actual_codec = Self::video_frame_codec_preference(vf);
                     let ffi_codec = Self::video_frame_ffi_codec(vf);
                     active_video_codec = actual_codec;
+                    let (source_width, source_height) = display_state
+                        .lock()
+                        .map(|state| (state.width, state.height))
+                        .unwrap_or((0, 0));
+                    let next_stream_fps_ceiling = resolution_aware_fps_ceiling(
+                        active_video_codec,
+                        source_width,
+                        source_height,
+                        fps,
+                    );
+                    if next_stream_fps_ceiling != stream_fps_ceiling {
+                        stream_fps_ceiling = next_stream_fps_ceiling;
+                        let target_fps = pressure_target_fps(
+                            preferred_codec,
+                            active_video_codec,
+                            stream_fps_ceiling,
+                            applied_pressure_level,
+                        );
+                        eprintln!(
+                            "[RustDesk-FFI] resolution fps ceiling codec={} size={}x{} configured={} ceiling={} target={}",
+                            Self::video_frame_codec_name(vf),
+                            source_width,
+                            source_height,
+                            fps,
+                            stream_fps_ceiling,
+                            target_fps,
+                        );
+                        if target_fps != stream_options_fps {
+                            Session::send_runtime_options(
+                                crypto,
+                                preferred_codec,
+                                image_quality,
+                                privacy_mode,
+                                audio_enabled,
+                                Some(target_fps),
+                            )?;
+                            if pressure_change_requires_refresh(
+                                preferred_codec,
+                                active_video_codec,
+                            ) {
+                                Session::send_refresh_video(crypto)?;
+                            }
+                            stream_options_fps = target_fps;
+                            stream_options_sent_count += 1;
+                        }
+                    }
                     if let Ok(mut stats) = stream_stats.lock() {
                         stats.video_messages = video_count;
                         stats.video_frames = encoded_subframe_total;
@@ -1610,7 +1676,7 @@ impl RustDeskConnector {
                     let target_fps = pressure_target_fps(
                         preferred_codec,
                         active_video_codec,
-                        fps,
+                        stream_fps_ceiling,
                         applied_pressure_level,
                     );
                     eprintln!(
@@ -1624,7 +1690,7 @@ impl RustDeskConnector {
                     if let Some(target_fps) = changed_pressure_target_fps(
                         preferred_codec,
                         active_video_codec,
-                        fps,
+                        stream_fps_ceiling,
                         stream_options_fps,
                         applied_pressure_level,
                     ) {
@@ -1660,7 +1726,7 @@ impl RustDeskConnector {
                         let target_fps = pressure_target_fps(
                             preferred_codec,
                             active_video_codec,
-                            fps,
+                            stream_fps_ceiling,
                             current_backpressure_level,
                         );
                         let quality = image_quality;
@@ -1671,7 +1737,7 @@ impl RustDeskConnector {
                         if let Some(target_fps) = changed_pressure_target_fps(
                             preferred_codec,
                             active_video_codec,
-                            fps,
+                            stream_fps_ceiling,
                             stream_options_fps,
                             current_backpressure_level,
                         ) {
@@ -1702,7 +1768,7 @@ impl RustDeskConnector {
                         let target_fps = pressure_target_fps(
                             preferred_codec,
                             active_video_codec,
-                            fps,
+                            stream_fps_ceiling,
                             current_backpressure_level,
                         );
                         let quality = image_quality;
@@ -1713,7 +1779,7 @@ impl RustDeskConnector {
                         if let Some(target_fps) = changed_pressure_target_fps(
                             preferred_codec,
                             active_video_codec,
-                            fps,
+                            stream_fps_ceiling,
                             stream_options_fps,
                             current_backpressure_level,
                         ) {
@@ -3483,7 +3549,7 @@ impl RustDeskConnector {
 mod tests {
     use super::{
         advance_applied_pressure_level, changed_pressure_target_fps,
-        pressure_change_requires_refresh, pressure_target_fps,
+        pressure_change_requires_refresh, pressure_target_fps, resolution_aware_fps_ceiling,
         should_refresh_for_video_starvation, ControlKey, KeyEvent_oneof_union,
         Message_oneof_union, PhysicalModifierState, RemoteKeyboardTransport,
         RendezvousCredentials, RustDeskConnector, VP9_PRESSURE_RECOVERY_HOLD_WINDOWS,
@@ -3991,6 +4057,15 @@ mod tests {
         assert_eq!(pressure_target_fps(2, 0, 60, 1), 45);
         assert_eq!(pressure_target_fps(4, 2, 60, 2), 30);
         assert_eq!(pressure_target_fps(4, 2, 60, 3), 15);
+    }
+
+    #[test]
+    fn high_resolution_vp9_uses_a_stable_thirty_fps_ceiling() {
+        assert_eq!(resolution_aware_fps_ceiling(2, 2940, 1912, 60), 30);
+        assert_eq!(resolution_aware_fps_ceiling(2, 3840, 2160, 25), 25);
+        assert_eq!(resolution_aware_fps_ceiling(2, 2560, 1440, 60), 60);
+        assert_eq!(resolution_aware_fps_ceiling(4, 2940, 1912, 60), 60);
+        assert_eq!(resolution_aware_fps_ceiling(2, 0, 1912, 60), 60);
     }
 
     #[test]

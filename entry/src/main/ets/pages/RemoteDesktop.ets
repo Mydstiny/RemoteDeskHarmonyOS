@@ -1006,6 +1006,7 @@ struct RemoteDesktop {
   private remoteCursorNativePointerSourceMap: image.PixelMap | null = null;
   private remoteCursorNativePointerPendingMap: image.PixelMap | null = null;
   private remoteCursorNativePointerPendingOwnsMap: boolean = false;
+  private remoteCursorNativePointerPendingToken: number = 0;
   private remoteCursorNativePointerPendingSourceMaps: Array<image.PixelMap> = [];
   private touchpadCurveState: TouchpadPointerCurveState = resetTouchpadPointerCurveState();
   private touchpadAnchorValid: boolean = false;
@@ -3566,6 +3567,7 @@ struct RemoteDesktop {
     this.remoteCursorNativePointerSourceMap = null;
     this.remoteCursorNativePointerPendingMap = null;
     this.remoteCursorNativePointerPendingOwnsMap = false;
+    this.remoteCursorNativePointerPendingToken = 0;
     let resetByWindow: boolean = false;
     if (this.remoteCursorWindowId > 0) {
       try {
@@ -3640,9 +3642,29 @@ struct RemoteDesktop {
     const ownsMap: boolean = this.remoteCursorNativePointerPendingOwnsMap;
     this.remoteCursorNativePointerPendingMap = null;
     this.remoteCursorNativePointerPendingOwnsMap = false;
+    this.remoteCursorNativePointerPendingToken = 0;
     if (pendingMap !== null && ownsMap) {
       this.retireRemoteNativePointerMap(pendingMap);
     }
+  }
+
+  private restoreRemoteNativePointerOwnerAfterStaleCompletion(applyToken: number,
+    reason: string): void {
+    // setCustomCursor() mutates the window before its Promise resolves. A
+    // superseded request can therefore finish after a newer cursor or a
+    // default reset and silently put the old bitmap back. Re-assert the
+    // current owner state so the last completed native operation matches the
+    // page state rather than the scheduling order of old Promises.
+    // A newer setCustomCursor request will overwrite this completion itself.
+    // Re-applying while that request is pending makes the two Promise handlers
+    // continuously supersede one another and can create an unbounded request
+    // chain. Only the last outstanding native completion may repair ownership.
+    if (this.remoteCursorNativePointerPendingToken > applyToken) { return; }
+    if (this.isRemoteCursorNativePointerEligible()) {
+      this.applyRemoteNativePointer('stale-completion-' + reason, true);
+      return;
+    }
+    this.resetRemoteNativePointer('stale-completion-' + reason);
   }
 
   private applyRemoteNativePointerMap(pointerMap: image.PixelMap,
@@ -3666,6 +3688,7 @@ struct RemoteDesktop {
       Math.max(0, Math.round(this.remoteCursorHotY * scale)));
     this.remoteCursorNativePointerPendingMap = pointerMap;
     this.remoteCursorNativePointerPendingOwnsMap = ownsPointerMap;
+    this.remoteCursorNativePointerPendingToken = applyToken;
     const customCursor: pointer.CustomCursor = {
       pixelMap: pointerMap,
       focusX,
@@ -3678,6 +3701,7 @@ struct RemoteDesktop {
       }
       this.remoteCursorNativePointerPendingMap = null;
       this.remoteCursorNativePointerPendingOwnsMap = false;
+      this.remoteCursorNativePointerPendingToken = 0;
       if (ownsPointerMap) {
         this.releasePixelMap(pointerMap);
       }
@@ -3691,6 +3715,7 @@ struct RemoteDesktop {
             this.remoteCursorPixelMapShapeRevision === revision &&
             this.isRemoteCursorNativePointerEligible();
           if (!valid) {
+            this.restoreRemoteNativePointerOwnerAfterStaleCompletion(applyToken, reason);
             return;
           }
           const previousPointerMap: image.PixelMap | null = this.remoteCursorNativePointerMap;
@@ -3700,6 +3725,7 @@ struct RemoteDesktop {
           this.remoteCursorNativePointerSourceMap = sourceMap;
           this.remoteCursorNativePointerPendingMap = null;
           this.remoteCursorNativePointerPendingOwnsMap = false;
+          this.remoteCursorNativePointerPendingToken = 0;
           this.remoteCursorNativePointerGeneration = generation;
           this.remoteCursorNativePointerRevision = revision;
           if (previousPointerMap !== null && previousPointerMap !== previousPointerSourceMap) {
@@ -3761,6 +3787,7 @@ struct RemoteDesktop {
     if (this.remoteCursorWindowId <= 0) {
       this.remoteCursorNativePointerPendingMap = pixelMap;
       this.remoteCursorNativePointerPendingOwnsMap = false;
+      this.remoteCursorNativePointerPendingToken = this.remoteCursorNativePointerToken;
       this.ensureRemoteCursorWindowId(reason);
       return;
     }

@@ -280,6 +280,37 @@ RDP_TEST_CASE(video_pressure_default_recovers_within_ten_seconds) {
     RDP_ASSERT(controller.level() == VideoPressureLevel::Normal);
 }
 
+RDP_TEST_CASE(video_pressure_can_escalate_a_software_burst_without_changing_default_hardware_gate) {
+    using Clock = std::chrono::steady_clock;
+    const Clock::time_point start = Clock::time_point {};
+    Render::VideoPerfSnapshot burst {};
+    burst.decodeSamples = 30;
+    burst.decodeQueueMax = 17;
+
+    VideoPressureController hardwareController;
+    const Render::VideoPressureDecision hardwareDecision =
+        hardwareController.observeAt(burst, start);
+    RDP_ASSERT(hardwareDecision.level == VideoPressureLevel::Normal);
+    RDP_ASSERT(!hardwareDecision.changed);
+
+    VideoPressureController softwareController;
+    const Render::VideoPressureDecision softwareDecision =
+        softwareController.observeAt(burst, start, true);
+    RDP_ASSERT(softwareDecision.level == VideoPressureLevel::Severe);
+    RDP_ASSERT(softwareDecision.changed);
+
+    Render::VideoPerfSnapshot healthy {};
+    healthy.decodeSamples = 1;
+    for (int second = 1; second <= 2; ++second) {
+        const Render::VideoPressureDecision recovering = softwareController.observeAt(
+            healthy, start + std::chrono::seconds(second), true);
+        RDP_ASSERT(recovering.level == VideoPressureLevel::Severe);
+    }
+    RDP_ASSERT(softwareController.observeAt(
+        healthy, start + std::chrono::seconds(3), true).level ==
+        VideoPressureLevel::Moderate);
+}
+
 RDP_TEST_CASE(video_perf_counters_are_session_scoped) {
     VideoPerfCounters firstSession;
     VideoPerfCounters secondSession;

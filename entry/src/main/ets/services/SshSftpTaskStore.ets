@@ -237,7 +237,8 @@ export class SshSftpTaskStore {
       sourcePath: current.sourcePath,
       targetPath: current.targetPath,
       partialIdentity: current.partialIdentity,
-      checksumPolicy: current.checksumPolicy
+      checksumPolicy: current.checksumPolicy,
+      commitState: current.commitState
     };
     if (!this.upsert(next)) {
       return { accepted: false, reason: 'stale-update', record: current };
@@ -264,7 +265,7 @@ export class SshSftpTaskStore {
     if (this.get(spec.taskId) !== null) { return null; }
     const remotePath: string = spec.source.kind === 'ssh' ? spec.sourcePath : spec.targetPath;
     const record: SshSftpTaskRecord = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       taskId: spec.taskId.trim(),
       batchId: '',
       relativePath: spec.source.kind === 'local' ? spec.sourcePath : spec.targetPath,
@@ -336,7 +337,7 @@ export class SshSftpTaskStore {
       const sequence: number = this.nextTaskSequence();
       records.push({
         taskId,
-        schemaVersion: 2,
+        schemaVersion: 3,
         batchId,
         relativePath: item.relativePath,
         hostId: owner,
@@ -419,7 +420,7 @@ export class SshSftpTaskStore {
         return { accepted: false, reason: 'duplicate-batch-task', batchId: '', records: [] };
       }
       const spec: SftpTransferSpec = {
-        schemaVersion: 2,
+        schemaVersion: 3,
         taskId,
         source: sourceEndpoint,
         target: targetEndpoint,
@@ -434,7 +435,7 @@ export class SshSftpTaskStore {
       const sequence: number = this.nextTaskSequence();
       records.push({
         taskId,
-        schemaVersion: 2,
+        schemaVersion: 3,
         batchId,
         relativePath: item.relativePath,
         // The target host owns task listing and recovery. Source/target remain

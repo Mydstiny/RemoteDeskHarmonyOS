@@ -3993,6 +3993,40 @@ int SshAdapter::renameRemotePathAtomic(const std::string& oldPath,
         ? ERR_SSH_SFTP_DURABILITY_UNSUPPORTED : ERR_SSH_WRITE_FAILED;
 }
 
+bool SshAdapter::classifySftpTransportFailure(int operationError) {
+    if (operationError >= 0 || operationError == ERR_SSH_SFTP_DURABILITY_UNSUPPORTED ||
+        operationError == ERR_SSH_SESSION_STALE ||
+        operationError == ERR_SSH_REACTOR_QUEUE_FULL) {
+        return false;
+    }
+    const auto classifyOnOwner = [this]() {
+        const ConnectionState currentState = state_.load(std::memory_order_acquire);
+        bool transportLost = transportRecoveryRequested_.load(std::memory_order_acquire) ||
+            currentState == ConnectionState::RECONNECTING;
+        int libssh2Error = 0;
+        {
+            std::lock_guard<std::mutex> sessionLock(sessionMutex_);
+            if (session_ != nullptr) {
+                libssh2Error = libssh2_session_last_errno(session_);
+            }
+        }
+        transportLost = transportLost ||
+            classifyPtyFailure(libssh2Error) == SshPtyFailureClass::TRANSIENT_TRANSPORT ||
+            currentState != ConnectionState::CONNECTED;
+        if (transportLost && readerRunning_.load(std::memory_order_acquire) &&
+            !connectCancelRequested_.load(std::memory_order_acquire)) {
+            terminalInputAccepting_.store(false, std::memory_order_release);
+            setSshLifecycleState(SshSessionLifecycleState::NetworkLost);
+            setState(ConnectionState::RECONNECTING,
+                "SSH SFTP transport lost, reconnecting");
+            transportRecoveryRequested_.store(true, std::memory_order_release);
+            reactorCommandCondition_.notify_all();
+        }
+        return transportLost;
+    };
+    return isReactorThread() ? classifyOnOwner() : runOnReactor(classifyOnOwner);
+}
+
 // ============================================================
 // 回调
 // ============================================================

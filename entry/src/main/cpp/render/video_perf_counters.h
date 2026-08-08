@@ -470,7 +470,8 @@ public:
     VideoPressureLevel observe(const VideoPerfSnapshot& snapshot);
     VideoPressureDecision observeAt(
         const VideoPerfSnapshot& snapshot,
-        std::chrono::steady_clock::time_point now);
+        std::chrono::steady_clock::time_point now,
+        bool escalateImmediately = false);
     VideoPressureDecision tick(std::chrono::steady_clock::time_point now);
     bool windowDue(std::chrono::steady_clock::time_point now) const;
     VideoPressureLevel level() const;

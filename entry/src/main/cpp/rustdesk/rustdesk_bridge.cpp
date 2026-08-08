@@ -295,6 +295,26 @@ private:
     std::condition_variable* condition_ = nullptr;
 };
 
+class RustDeskCleanupGateScope final {
+public:
+    explicit RustDeskCleanupGateScope(
+        const std::shared_ptr<std::promise<void>>& gate) noexcept : gate_(gate) {}
+    ~RustDeskCleanupGateScope() noexcept {
+        if (!gate_) { return; }
+        try {
+            gate_->set_value();
+        } catch (...) {
+            // The cleanup worker must never turn a callback unwind into a
+            // second exception. A duplicate signal only means it is awake.
+        }
+    }
+    RustDeskCleanupGateScope(const RustDeskCleanupGateScope&) = delete;
+    RustDeskCleanupGateScope& operator=(const RustDeskCleanupGateScope&) = delete;
+
+private:
+    const std::shared_ptr<std::promise<void>>& gate_;
+};
+
 template<typename ImplType>
 static bool IsRustDeskCallbackOwnerActive(
     const ImplType* impl, const RustDeskFfiCallbackContext* context) {
@@ -1445,7 +1465,7 @@ void RustDeskBridge::onFfiProgress(int stage, const char* message, void* userDat
     impl->setState(ConnectionState::CONNECTING, progressMessage);
 }
 
-void RustDeskBridge::onFfiDisconnect(int state, const char* message, void* userData) {
+void RustDeskBridge::onFfiDisconnect(int state, const char* message, void* userData) noexcept try {
     RustDeskFfiCallbackScope callbackScope;
     const auto context = rdAcquireFfiCallbackContext(userData);
     auto* impl = context ? static_cast<RustDeskBridge::Impl*>(context->impl) : nullptr;
@@ -1459,6 +1479,8 @@ void RustDeskBridge::onFfiDisconnect(int state, const char* message, void* userD
     uint64_t currentGeneration = 0;
     void* endedHandle = nullptr;
     std::shared_ptr<std::promise<void>> cleanupGate;
+    RustDeskCleanupGateScope cleanupGateScope(cleanupGate);
+    bool queueEndedHandleAfterUnlock = false;
     if (!context || !impl) {
         stale = true;
     } else {
@@ -1494,15 +1516,22 @@ void RustDeskBridge::onFfiDisconnect(int state, const char* message, void* userD
                     OH_LOG_INFO(LOG_APP,
                         "[RustDesk-FFI] scheduling stale handle cleanup=%{public}p reason=stream-ended",
                         endedHandle);
-                    cleanupGate = std::make_shared<std::promise<void>>();
-                    std::future<void> cleanupReady = cleanupGate->get_future();
-                    const auto cleanupDone =
-                        std::make_shared<std::atomic<bool>>(false);
-                    const std::shared_ptr<void> implKeepAlive = context->implKeepAlive;
                     std::thread cleanupThread;
-                    bool cleanupPublished = false;
-                    bool cleanupDeferred = false;
+                    bool cleanupWorkerOwnsHandle = false;
                     try {
+                        cleanupGate = std::make_shared<std::promise<void>>();
+                        std::future<void> cleanupReady = cleanupGate->get_future();
+                        const auto cleanupDone =
+                            std::make_shared<std::atomic<bool>>(false);
+                        const std::shared_ptr<void> implKeepAlive = context->implKeepAlive;
+                        // Allocate both parallel owner slots before creating a
+                        // worker. Once the thread exists, publishing its
+                        // noexcept move and shared completion fence cannot
+                        // leave only one vector updated.
+                        impl->ffiCleanupThreads.reserve(
+                            impl->ffiCleanupThreads.size() + 1);
+                        impl->ffiCleanupDone.reserve(
+                            impl->ffiCleanupDone.size() + 1);
                         cleanupThread = std::thread(
                             [endedHandle, cleanupDone, impl, implKeepAlive,
                              cleanupReady = std::move(cleanupReady)]() mutable {
@@ -1514,60 +1543,35 @@ void RustDeskBridge::onFfiDisconnect(int state, const char* message, void* userD
                                 rdDisconnectFfiHandle(impl, endedHandle);
                                 cleanupDone->store(true, std::memory_order_release);
                             });
+                        cleanupWorkerOwnsHandle = true;
                         impl->ffiCleanupThreads.emplace_back(std::move(cleanupThread));
                         impl->ffiCleanupDone.push_back(cleanupDone);
-                        cleanupPublished = true;
                     } catch (...) {
                         OH_LOG_ERROR(LOG_APP,
                             "[RustDesk-FFI] cleanup worker start failed; handle retained=%{public}p",
                             endedHandle);
-                        // Only a newly-created local worker may be handed to
-                        // the deferred owner. Never detach the last vector
-                        // entry here: if emplace_back() failed, that entry is
-                        // an older cleanup worker belonging to another stream.
-                        // A moved worker remains in ffiCleanupThreads and is
-                        // joined by disconnect() even if publishing its fence
-                        // failed.
+                        // A successfully created worker is the sole owner of
+                        // endedHandle even if publication unexpectedly fails.
+                        // It captures Impl keep-alive and is fenced until this
+                        // callback returns, so detaching the still-local
+                        // worker is safer than publishing the handle twice.
                         if (cleanupThread.joinable()) {
-                            impl->ffiDeferredJoinCount.fetch_add(
-                                1, std::memory_order_acq_rel);
-                            try {
-                                RustDeskContinuityDeferred::enqueue(
-                                    std::move(cleanupThread),
-                                    implKeepAlive, cleanupDone,
-                                    [impl]() noexcept {
-                                        impl->ffiDeferredJoinCount.fetch_sub(
-                                            1, std::memory_order_acq_rel);
-                                    });
-                                cleanupDeferred = true;
-                            } catch (...) {
-                                impl->ffiDeferredJoinCount.fetch_sub(
-                                    1, std::memory_order_acq_rel);
-                                OH_LOG_ERROR(LOG_APP,
-                                    "[RustDesk-FFI] deferred cleanup enqueue failed; retaining local worker");
-                                try {
-                                    impl->ffiCleanupThreads.emplace_back(
-                                        std::move(cleanupThread));
-                                    cleanupPublished = true;
-                                } catch (...) {
-                                    // The worker has no reference to Impl and
-                                    // is already fenced behind callback return;
-                                    // the last-resort detach cannot touch the
-                                    // old worker vector entry.
-                                    if (cleanupThread.joinable()) {
-                                        cleanupThread.detach();
-                                    }
-                                }
-                            }
+                            cleanupThread.detach();
                         }
-                        if (!cleanupPublished && !cleanupDeferred &&
-                            !cleanupThread.joinable()) {
-                            rdQueueDeferredFfiHandle(impl, endedHandle);
+                        if (!cleanupWorkerOwnsHandle) {
+                            // rdQueueDeferredFfiHandle locks impl->mutex. This
+                            // callback still holds that mutex here, so defer
+                            // the queue operation until after the admission
+                            // scope has released it.
+                            queueEndedHandleAfterUnlock = true;
                         }
                     }
                 }
             }
         }
+    }
+    if (queueEndedHandleAfterUnlock) {
+        rdQueueDeferredFfiHandle(impl, endedHandle);
     }
     if (stale) {
         OH_LOG_INFO(LOG_APP,
@@ -1628,9 +1632,13 @@ void RustDeskBridge::onFfiDisconnect(int state, const char* message, void* userD
                 event, std::move(admission));
         }
     }
-    if (cleanupGate) {
-        cleanupGate->set_value();
-    }
+} catch (const std::exception& ex) {
+    OH_LOG_ERROR(LOG_APP,
+        "[RustDesk-FFI] disconnect callback exception contained: %{public}s",
+        ex.what());
+} catch (...) {
+    OH_LOG_ERROR(LOG_APP,
+        "[RustDesk-FFI] disconnect callback exception contained: unknown");
 }
 #endif
 

@@ -280,6 +280,8 @@ public:
     int renameRemotePath(const std::string& oldPath, const std::string& newPath) override;
     /** OpenSSH POSIX rename used only for an integrity-checked commit. */
     int renameRemotePathAtomic(const std::string& oldPath, const std::string& newPath);
+    /** Classify a failed SFTP operation on the owner reactor before N-API resolves it. */
+    bool classifySftpTransportFailure(int operationError);
 
 private:
     struct LocalForwardListener {

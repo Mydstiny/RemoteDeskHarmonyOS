@@ -747,22 +747,26 @@ export interface SftpFileEntry {
 
 export interface SftpListAsyncResult {
   errorCode: number;
+  transportLost?: boolean;
   entries: SftpFileEntry[];
 }
 
 export interface SftpReadAsyncResult {
   errorCode: number;
+  transportLost?: boolean;
   data: ArrayBuffer;
 }
 
 export interface SftpWriteAsyncResult {
   errorCode: number;
+  transportLost?: boolean;
   bytesWritten: number;
   durability?: 'durable' | 'unsupported' | 'failed';
 }
 
 export interface SftpMutationAsyncResult {
   errorCode: number;
+  transportLost?: boolean;
   atomic?: boolean;
 }
 

@@ -104,6 +104,7 @@ export default function sshSftpTaskPolicyTest(): void {
       expect(canTransitionSshSftpTask('transferring', 'verifying')).assertTrue();
       expect(canTransitionSshSftpTask('verifying', 'committing')).assertTrue();
       expect(canTransitionSshSftpTask('committing', 'completed')).assertTrue();
+      expect(canTransitionSshSftpTask('committing', 'waitingForConnection')).assertTrue();
       expect(canTransitionSshSftpTask('queued', 'completed')).assertTrue();
       expect(canTransitionSshSftpTask('transferring', 'completed')).assertFalse();
       expect(canTransitionSshSftpTask('completed', 'queued')).assertFalse();
@@ -260,6 +261,17 @@ export default function sshSftpTaskPolicyTest(): void {
       expect(detached?.targetEndpoint?.hostId).assertEqual('target-host');
       expect(detached?.sourcePath).assertEqual('./source/folder/empty.txt');
       expect(detached?.targetPath).assertEqual('./target/folder/empty.txt');
+
+      const renamed: SshSftpTaskRecord = {
+        ...detached as SshSftpTaskRecord,
+        stage: 'committing',
+        commitState: 'renamed',
+        sequence: (detached as SshSftpTaskRecord).sequence + 1,
+        updatedAt: (detached as SshSftpTaskRecord).updatedAt + 1
+      };
+      expect(store.upsert(renamed)).assertTrue();
+      expect(store.command(record.taskId, { kind: 'detach' }).accepted).assertTrue();
+      expect(store.get(record.taskId)?.commitState).assertEqual('renamed');
     });
 
     it('rejects only identical endpoint paths and allows same-host path copies', 0, (): void => {
