@@ -768,11 +768,16 @@ int HardwareDecoder::Decode(const uint8_t* data, size_t size, uint64_t timestamp
     bool droppedIncomingForCapacity = false;
     bool recoveredWithKeyframe = false;
     bool softDroppedOldFrames = false;
+    bool requestKeyframe = false;
     Render::VideoFrameAdmission admission = Render::VideoFrameAdmission::Accept;
     {
         std::lock_guard<std::mutex> lk(mutex_);
         const bool wasWaitingForKeyframe = backpressure_.isWaitingForKeyframe();
+        const bool requestAlreadyPending = backpressure_.shouldRequestKeyframe();
         admission = backpressure_.admitFrame(inputQueue_.size(), isKeyFrame);
+        requestKeyframe = !requestAlreadyPending &&
+            admission == Render::VideoFrameAdmission::AcceptAfterSoftDrop &&
+            backpressure_.shouldRequestKeyframe();
         if (admission == Render::VideoFrameAdmission::DropWaitingKeyframe) {
             droppedIncomingForKeyframe = true;
             std::lock_guard<std::mutex> telemetryLock(telemetryMutex_);
@@ -858,12 +863,10 @@ int HardwareDecoder::Decode(const uint8_t* data, size_t size, uint64_t timestamp
                     static_cast<unsigned long long>(recoveryTotal));
     }
 
-    OH_LOG_DEBUG(LOG_APP, "[Decoder] 编码帧入队: %{public}zu bytes ts=%{public}lu queue=%{public}zu",
-                 size, (unsigned long)timestamp, queued);
     // Never enter OH_VideoDecoder_PushInputBuffer from the transport/callback
     // path. The Harmony codec service can block that IPC for seconds.
     inputCv_.notify_one();
-    return 0;
+    return requestKeyframe ? kDecodeKeyframeRequired : 0;
 }
 
 void HardwareDecoder::handleInputBuffer(uint32_t index, OH_AVBuffer* buffer) {
@@ -2180,8 +2183,12 @@ bool ConfigurePipeline(const std::shared_ptr<DecoderContext>& ctx,
     if (ctx->width > 0 && ctx->height > 0) {
         if (ownerLeaseAlreadyHeld) {
             RendererNapi::SetActiveSourceSize(ctx->width, ctx->height);
+            RendererNapi::SetRendererSourceSize(
+                rendererHandle, ctx->width, ctx->height);
         } else {
             RendererNapi::SetActiveSourceSize(owner, ctx->width, ctx->height);
+            RendererNapi::SetRendererSourceSize(
+                rendererHandle, owner, ctx->width, ctx->height);
         }
     }
     const std::weak_ptr<DecoderContext> weakContext = ctx;
@@ -2210,10 +2217,7 @@ bool ConfigurePipeline(const std::shared_ptr<DecoderContext>& ctx,
     ctx->decoder->SetReleaseCurrentCallback([rendererHandle, owner]() {
         RendererNapi::ReleaseCurrent(rendererHandle, owner);
     });
-    ctx->decoder->SetFrameCallback([rendererHandle, owner](GLuint textureId, int width, int height) {
-        OH_LOG_DEBUG(LOG_APP, "[Decoder] output texture=%{public}u size=%{public}dx%{public}d",
-                     textureId, width, height);
-        RendererNapi::SetRendererSourceSize(rendererHandle, owner, width, height);
+    ctx->decoder->SetFrameCallback([rendererHandle, owner](GLuint textureId, int, int) {
         RendererNapi::RenderNative(rendererHandle, owner, textureId);
     });
     const std::weak_ptr<HardwareDecoder> weakDecoder = ctx->decoder;
@@ -2472,7 +2476,10 @@ int DecodeNativeLocked(const std::shared_ptr<DecoderContext>& ctx, const VideoFr
         OH_LOG_WARN(LOG_APP, "[Decoder] native decode skipped: decoder not ready");
         return -1;
     }
-    return ctx->decoder->Decode(frame.data, frame.size, frame.timestamp, frame.isKeyFrame);
+    const int decodeResult = ctx->decoder->Decode(
+        frame.data, frame.size, frame.timestamp, frame.isKeyFrame);
+    return decodeResult == HardwareDecoder::kDecodeKeyframeRequired ?
+        DecoderNapi::kDecodeHardwareKeyframeRequired : decodeResult;
 }
 
 // Public/native callbacks must not hold g_activeDecoderOwnerMutex while

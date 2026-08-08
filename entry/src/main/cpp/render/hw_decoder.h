@@ -112,6 +112,12 @@ struct PendingInputBuffer {
  */
 class HardwareDecoder : public std::enable_shared_from_this<HardwareDecoder> {
 public:
+    // Internal result consumed by DecodeNativeLocked and translated to the
+    // public DecoderNapi admission result. It must never escape directly
+    // because DecoderNapi reserves other positive values for owner/display
+    // admission decisions.
+    static constexpr int kDecodeKeyframeRequired = 1;
+
     HardwareDecoder();
     ~HardwareDecoder();
 
@@ -354,6 +360,7 @@ namespace DecoderNapi {
     // decoder, so callers must not classify it as a decode error.
     constexpr int kDecodeSoftwareFrameDropped = 3;
     constexpr int kDecodeSoftwareKeyframeRequired = 4;
+    constexpr int kDecodeHardwareKeyframeRequired = 5;
     napi_value Init(napi_env env, napi_value exports);
     int DecodeNative(int64_t handle, const VideoFrame& frame);
     int DecodeActiveNative(const DecoderSessionIdentity& owner, const VideoFrame& frame);

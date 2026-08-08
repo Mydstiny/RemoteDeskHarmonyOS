@@ -4286,9 +4286,10 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
             ret == DecoderNapi::kDecodeInactiveSession) {
             return;
         }
-        const bool softwareRecoveryDrop =
+        const bool latencyRecoveryDrop =
             ret == DecoderNapi::kDecodeSoftwareFrameDropped ||
-            ret == DecoderNapi::kDecodeSoftwareKeyframeRequired;
+            ret == DecoderNapi::kDecodeSoftwareKeyframeRequired ||
+            ret == DecoderNapi::kDecodeHardwareKeyframeRequired;
         if (ret == DecoderNapi::kDecodeSoftwareKeyframeRequired) {
             const bool requested = RequestFrameRefreshForSession(
                 session, "software_decode_queue_overflow");
@@ -4297,10 +4298,18 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
                 static_cast<unsigned long long>(session->sessionId),
                 requested ? "yes" : "no");
         }
+        if (ret == DecoderNapi::kDecodeHardwareKeyframeRequired) {
+            const bool requested = RequestFrameRefreshForSession(
+                session, "hardware_decode_queue_overflow");
+            OH_LOG_WARN(LOG_APP,
+                "[ExtLoader] hardware decoder keyframe recovery session=%{public}llu requested=%{public}s",
+                static_cast<unsigned long long>(session->sessionId),
+                requested ? "yes" : "no");
+        }
         session->diagnostics.addDecodeSample(decodeElapsedUs);
         if (ret == 0) {
             session->diagnostics.decodeOk.fetch_add(1, std::memory_order_relaxed);
-        } else if (!softwareRecoveryDrop) {
+        } else if (!latencyRecoveryDrop) {
             session->diagnostics.decodeErrors.fetch_add(1, std::memory_order_relaxed);
         }
         switch (ret) {
@@ -4388,7 +4397,7 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
                     resetTelemetry ? "yes" : "no");
             }
         }
-        if (frameCount <= 3 || (ret != 0 && !softwareRecoveryDrop)) {
+        if (frameCount <= 3 || (ret != 0 && !latencyRecoveryDrop)) {
             OH_LOG_INFO(LOG_APP,
                 "[ExtLoader] video callback session=%{public}llu generation=%{public}llu callback#%{public}llu frame#%{public}llu codec=%{public}d frame=%{public}dx%{public}d size=%{public}zu key=%{public}s decodeRet=%{public}d queue=%{public}zu dropsTotal=%{public}llu hist[ok=%{public}llu nrdy=%{public}llu bad=%{public}llu mism=%{public}llu other=%{public}llu]",
                 static_cast<unsigned long long>(session->sessionId),

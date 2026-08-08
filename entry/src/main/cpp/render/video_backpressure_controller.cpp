@@ -33,6 +33,14 @@ VideoFrameAdmission VideoBackpressureController::admitFrame(size_t queuedFrames,
         return VideoFrameAdmission::DropWaitingKeyframe;
     }
 
+    // A requested refresh is complete once any later keyframe reaches the
+    // admission boundary. Keep the request pending until then so several
+    // dependent frames in the same transport burst cannot each trigger a
+    // duplicate refresh request.
+    if (isKeyFrame) {
+        keyframeRequestPending_ = false;
+    }
+
     if (queuedFrames >= maxQueuedFrames_) {
         ++droppedFrames_;
         if (!isKeyFrame && !keyframeRequestPending_) {
