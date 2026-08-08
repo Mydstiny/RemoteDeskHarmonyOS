@@ -15,7 +15,6 @@ export const SETTINGS_SHEET_VNC_TIMEOUT: number = 13;
 export const SETTINGS_SHEET_VNC_DISPLAY: number = 14;
 export const SETTINGS_SHEET_VNC_SECURITY: number = 15;
 export const SETTINGS_SHEET_VNC_TRUST: number = 16;
-export const SETTINGS_SHEET_VNC_CLOUD_SYNC: number = 17;
 export const SETTINGS_SHEET_VNC_HOSTS: number = 18;
 export const SETTINGS_SHEET_VNC_GATEWAY: number = 19;
 export const SETTINGS_SHEET_VNC_INPUT: number = 20;

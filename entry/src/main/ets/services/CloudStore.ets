@@ -178,6 +178,7 @@ import {
   CLOUD_LIFECYCLE_BLOCKED_REASON,
   cloudAccountBindingIsValid,
   cloudDistributedRegistrationAllowed,
+  cloudRegistrationRetryAllowed,
   cloudTransferAllowed,
   remoteCryptoLifecycleMutationAllowed,
   unboundCloudAccountBinding
@@ -417,6 +418,8 @@ export class CloudStore implements CryptoCloudStore {
   private initialized: boolean = false;
   private initPromise: Promise<void> | null = null;
   private cloudAvailable: boolean = false;
+  private cloudRegistrationRetryPromise: Promise<boolean> | null = null;
+  private lastCloudRegistrationRetryAtMs: number = 0;
   private cloudServiceGuidanceNeeded: boolean = false;
   private onChangeCallbacks: Array<() => void> = [];
   private onCryptoResetCallbacks: Array<() => void> = [];
@@ -695,6 +698,11 @@ export class CloudStore implements CryptoCloudStore {
   }
 
   private async closeCurrentStore(): Promise<boolean> {
+    const pendingRegistration: Promise<boolean> | null =
+      this.cloudRegistrationRetryPromise;
+    if (pendingRegistration !== null) {
+      try { await pendingRegistration; } catch (_registrationError) {}
+    }
     const closing: relationalStore.RdbStore | null = this.store;
     const closingLease: AccountSessionLease | null = this.currentAccountLease();
     this.mutationGateOpen = false;
@@ -736,6 +744,8 @@ export class CloudStore implements CryptoCloudStore {
     this.cryptoLifecycleState = null;
     this.cloudDownloadActive = false;
     this.indeterminateCloudSyncOperation = null;
+    this.cloudRegistrationRetryPromise = null;
+    this.lastCloudRegistrationRetryAtMs = 0;
     this.clearManualDownloadSnapshot();
     return true;
   }
@@ -889,10 +899,13 @@ export class CloudStore implements CryptoCloudStore {
         // the production startup-recovery gate.
         this.initialized = true;
       }
-      if (!(await this
-        .recoverPendingVncSelectionReenableTransaction())) {
-        throw new Error(
-          'pending VNC selection transaction recovery failed');
+      if (!this
+        .retirePendingVncSelectionReenableTransaction()) {
+        // The retired VNC scope transaction is cloud-only state. Keep the
+        // account RDB usable and leave VNC upload fail-closed; it must never
+        // invalidate a successful Account Kit login or disable other tables.
+        hilog.error(0x0001, 'CloudSync',
+          '遗留 VNC 选择事务隔离失败：账号继续可用，VNC 上传保持暂停');
       }
       if (startupRecoveryVerification) {
         return;
@@ -1528,11 +1541,11 @@ export class CloudStore implements CryptoCloudStore {
         const vncBlocked: boolean =
           tables.indexOf(VNC_CLOUD_TABLE) >= 0;
         if (vncBlocked && tables.length === 1) {
-          return 'VNC 云表存在待完成的首次云端核对，上传已暂停；请先在 VNC 云同步设置中完成该表的首次核对（云端表结构异常时，修复 AGC vncrecord 表后重新保存范围即可恢复）';
+          return 'VNC 云表正在后台完成首次云端核对，核对结束前仅暂停 VNC 上传；无需修改 VNC 设置，请稍后重试';
         }
-        return '同步范围存在待完成的云端优先核对（' +
+        return '云表正在后台完成云端优先核对（' +
           tables.join(',') +
-          '），请先在对应设置中完成首次同步后再上传';
+          '）；核对结束前仅暂停相关表上传，无需修改协议设置，请稍后重试';
       }
     }
     return '';
@@ -2871,7 +2884,8 @@ export class CloudStore implements CryptoCloudStore {
       restoreSelectionReenableBarrier: (
         table: string,
         previousPhase:
-          CloudSelectionReenablePhase | null
+          CloudSelectionReenablePhase | null,
+        verify: boolean = true
       ): boolean => {
         if (table !== VNC_CLOUD_TABLE) {
           return false;
@@ -2879,13 +2893,13 @@ export class CloudStore implements CryptoCloudStore {
         if (verification !== null) {
           return verification
             .restoreSelectionReenableBarrier(
-              table,
-              previousPhase);
+              table, previousPhase,
+              verify);
         }
         return this
           .restoreSelectionReenableBarrier(
-            table,
-            previousPhase);
+            table, previousPhase,
+            verify);
       },
       deleteLocalMetadata:
         (key: string): boolean =>
@@ -2938,8 +2952,12 @@ export class CloudStore implements CryptoCloudStore {
     };
   }
 
-  private async recoverPendingVncSelectionReenableTransaction():
-    Promise<boolean> {
+  private retirePendingVncSelectionReenableTransaction():
+    boolean {
+    const checkpointBefore:
+      CloudMetadataReadResult =
+      this.readLocalMetadataState(
+        VNC_SELECTION_REENABLE_TRANSACTION_KEY);
     const runner:
       CloudStoreStartupRecoveryRunner | null =
       this.vncSelectionStartupRecoveryRunner();
@@ -2947,7 +2965,19 @@ export class CloudStore implements CryptoCloudStore {
       this.markVncSelectionRecoveryRequired();
       return false;
     }
-    return await runner.recoverPending();
+    const retired: boolean =
+      runner.retireLegacySelectionCheckpoint();
+    if (retired) {
+      if (checkpointBefore.state === 'present') {
+        // Force the normal protected startup bootstrap so the pending VNC
+        // barrier is released only after the entire physical table has been
+        // pulled successfully.
+        this.cloudBootstrapCompleted = false;
+      }
+      hilog.warn(0x0001, 'CloudSync',
+        '已退役旧 VNC 分栏事务；整表 cloud-first 完成前仅暂停 VNC 上传');
+    }
+    return retired;
   }
 
   /**
@@ -4985,6 +5015,82 @@ export class CloudStore implements CryptoCloudStore {
   isCloudAvailable(): boolean {
     return this.initialized && this.store !== null && this.cloudAvailable &&
       cloudTransferAllowed(this.cloudAccountBinding);
+  }
+
+  /**
+   * Recover a transient platform registration failure without reopening the
+   * account database. This only re-registers the same fenced physical store;
+   * callers still run the normal coordinator-owned cloud-first bootstrap
+   * before any upload is released.
+   */
+  async retryCloudRegistration(): Promise<boolean> {
+    if (this.isCloudAvailable()) { return true; }
+    if (this.cloudRegistrationRetryPromise !== null) {
+      return await this.cloudRegistrationRetryPromise;
+    }
+    const retryStore: relationalStore.RdbStore | null = this.store;
+    const retryLease: AccountSessionLease | null = this.currentAccountLease();
+    const nowMs: number = Date.now();
+    if (!cloudRegistrationRetryAllowed(
+      this.initialized,
+      retryStore !== null,
+      retryLease !== null,
+      this.cloudAccountBinding,
+      this.cloudAvailable,
+      false,
+      nowMs,
+      this.lastCloudRegistrationRetryAtMs)) {
+      return false;
+    }
+    if (retryStore === null || retryLease === null) { return false; }
+    this.lastCloudRegistrationRetryAtMs = nowMs;
+    const operation: Promise<boolean> = (async (): Promise<boolean> => {
+      try {
+        await retryStore.setDistributedTables(
+          TABLES,
+          relationalStore.DistributedType.DISTRIBUTED_CLOUD,
+          { autoSync: cloudDistributedTableAutoSync() }
+        );
+        if (this.store !== retryStore ||
+          !this.isLeaseCurrent(retryLease) ||
+          !cloudTransferAllowed(this.cloudAccountBinding)) {
+          hilog.warn(0x0001, 'CloudSync',
+            'setDistributedTables 重试完成但账号作用域已变化，忽略迟到结果');
+          return false;
+        }
+        this.cloudAvailable = true;
+        this.cloudServiceGuidanceNeeded = false;
+        this.lastError = '';
+        if (this.cloudChangeObserver === null) {
+          this.subscribeCloudChanges();
+        }
+        this.notifyDataSnapshotChanged();
+        hilog.info(0x0001, 'CloudSync',
+          'setDistributedTables 重试成功 — 当前账号端云连接已恢复');
+        return true;
+      } catch (error) {
+        const be: BusinessError = error as BusinessError;
+        const code: number = be && typeof be.code === 'number' ? be.code : 0;
+        const message: string = be && typeof be.message === 'string'
+          ? be.message : safeError(error);
+        this.cloudAvailable = false;
+        this.cloudServiceGuidanceNeeded =
+          cloudServiceGuidanceRequiredForMessage(message);
+        this.lastError = 'setDistributedTables retry: code=' +
+          code.toString() + ' msg=' + message;
+        hilog.warn(0x0001, 'CloudSync', this.lastError);
+        this.notifyDataSnapshotChanged();
+        return false;
+      }
+    })();
+    this.cloudRegistrationRetryPromise = operation;
+    try {
+      return await operation;
+    } finally {
+      if (this.cloudRegistrationRetryPromise === operation) {
+        this.cloudRegistrationRetryPromise = null;
+      }
+    }
   }
 
   /** Show the Huawei Cloud Space guidance after registration or explicit sync reports an unavailable service. */

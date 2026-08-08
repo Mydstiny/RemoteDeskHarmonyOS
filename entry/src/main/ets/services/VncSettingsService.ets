@@ -1,12 +1,6 @@
 import { common } from '@kit.AbilityKit';
 import { AccountSessionCoordinator } from './AccountSessionCoordinator';
-import { AccountSessionLease } from './AccountScopePolicy';
 import { CloudStore } from './CloudStore';
-import {
-  CloudSyncCoordinator,
-  CloudSyncOperationResult,
-  ExclusiveSelectionCloudFirst
-} from './CloudSyncCoordinator';
 import { DataCrypto } from './DataCrypto';
 import { VncRecord } from '../model/VncRecord';
 import {
@@ -30,10 +24,6 @@ import { VncCloudSyncScope } from './VncCloudSyncSelectionPolicy';
 import { VNC_CLOUD_TABLE } from './VncRecordPolicy';
 import { VncGatewayService, VncGatewayView } from './VncGatewayService';
 import { isSelectableVncDefaultGateway, VncSelectableGateway } from './VncHostDefaultsPolicy';
-import {
-  CloudSelectionReenablePhase,
-  cloudSelectionTransitionNeedsCloudFirst
-} from './CloudSelectionReenablePolicy';
 
 export interface VncSettingsSaveResult {
   ok: boolean;
@@ -151,31 +141,14 @@ export class VncSettingsService {
       result.message = 'VNC 超时时间不能小于 1000ms';
       return result;
     }
-    const executed: boolean =
-      await CloudSyncCoordinator.getInstance()
-        .runExclusiveVncSelectionMutation(
-          async (
-            lease: AccountSessionLease,
-            cloudFirst:
-              ExclusiveSelectionCloudFirst
-          ): Promise<void> => {
-            await this.saveWithinExclusive(
-              normalized, result, lease,
-              cloudFirst);
-          });
-    if (!executed && result.message === '') {
-      result.message =
-        'VNC 设置事务暂不可用，请等待当前云同步完成后重试';
-    }
+    this.saveRecord(normalized, result);
     return result;
   }
 
-  private async saveWithinExclusive(
+  private saveRecord(
     normalized: VncSettingsValues,
-    result: VncSettingsSaveResult,
-    lease: AccountSessionLease,
-    cloudFirst: ExclusiveSelectionCloudFirst
-  ): Promise<void> {
+    result: VncSettingsSaveResult
+  ): void {
     const current: VncRecord | null = this.settingsRecord();
     const record: VncRecord = new VncRecord();
     const now: number = Date.now();
@@ -191,96 +164,12 @@ export class VncSettingsService {
     record.syncVersion = current === null ? 1 : current.syncVersion + 1;
     finalizeVncRecord(record);
 
-    // The logical scope is a write boundary, not a UI-only preference. Apply
-    // it before writing the settings row so disabling settings sync cannot
-    // briefly upload the very row that turns the scope off. The cloud row is
-    // never retracted by this transition; the owner remains local-only until
-    // the scope is explicitly enabled again.
-    const previousScopes: VncCloudSyncScope[] = this.sync.selectedScopes();
-    const nextScopes: string[] = this.scopesFor(normalized);
-    const selectionChanged: boolean = !this.sameScopes(previousScopes, nextScopes);
-    const previousBarrier:
-      CloudSelectionReenablePhase | null =
-      this.cloud.selectionReenableBarrierPhase(
-        VNC_CLOUD_TABLE);
-    const needsCloudFirstBarrier: boolean =
-      cloudSelectionTransitionNeedsCloudFirst(
-        previousScopes, nextScopes,
-        this.cloud.syncableTables().indexOf(
-          VNC_CLOUD_TABLE) >= 0);
-    if (needsCloudFirstBarrier &&
-      !this.cloud
-        .beginVncSelectionReenableTransaction(
-          previousScopes, previousBarrier,
-          record.id, lease)) {
-      result.message =
-        'VNC 同步范围事务建立失败，设置未修改';
-      return;
-    }
-    if (selectionChanged &&
-      !this.updateSyncSelection(
-        normalized)) {
-      const restored: boolean =
-        needsCloudFirstBarrier
-          ? await this.cloud
-            .rollbackVncSelectionReenableTransaction(
-              lease)
-          : this.restoreSyncSelection(
-            previousScopes, previousBarrier);
-      result.message = 'VNC 同步选择保存失败，请检查本地数据状态后重试';
-      if (!restored) {
-        result.message +=
-          '；事务恢复未完成，上传仍保持暂停';
-      }
-      return;
-    }
     if (!this.cloud.upsertVncRecord(record)) {
       const mutationMessage: string =
         this.cloud.getLastMutationResult().message;
-      const restored: boolean =
-        needsCloudFirstBarrier
-          ? await this.cloud
-            .rollbackVncSelectionReenableTransaction(
-              lease)
-          : !selectionChanged ||
-            this.restoreSyncSelection(
-              previousScopes, previousBarrier);
       result.message = mutationMessage ||
         'VNC 设置保存失败';
-      if (!restored) {
-        result.message +=
-          '；同步选择回滚未完成，上传仍保持暂停';
-      }
       return;
-    }
-    if (needsCloudFirstBarrier) {
-      const pulled: CloudSyncOperationResult =
-        await cloudFirst(VNC_CLOUD_TABLE);
-      const completed: CloudSyncOperationResult =
-        await this.cloud
-          .completeExclusiveVncSelectionCloudFirst(
-            pulled, lease, true);
-      if (!completed.ok) {
-        if (!completed.rollbackFailed && !pulled.ok) {
-          // Platform/table failure (e.g. AGC vncrecord missing primary key):
-          // keep the already-persisted local scope selection, uploads stay
-          // paused by the pending_pull barrier. Encryption and sync scope
-          // remain the user's explicit choice, never app presumptions.
-          this.values = normalized;
-          result.ok = true;
-          result.message =
-            'VNC 同步范围已保存在本机；云端首次核对因平台错误未完成，上传保持暂停，请修复云端 vncrecord 表后重试';
-          this.emitChange();
-          return;
-        }
-        result.message =
-          'VNC 同步范围的 cloud-first 核对未完成，设置未发布成功';
-        if (completed.rollbackFailed) {
-          result.message +=
-            '；本地回滚未完整，上传仍保持暂停';
-        }
-        return;
-      }
     }
     this.values = normalized;
     result.ok = true;
@@ -294,10 +183,9 @@ export class VncSettingsService {
   cloudSyncStatus(): string {
     if (!this.cloud.isCloudAvailable()) { return '华为云空间不可用，VNC 数据仍保存在本机'; }
     if (this.cloud.syncableTables().indexOf(VNC_CLOUD_TABLE) < 0) {
-      return '普通云同步未勾选 vncrecord；VNC 数据仍保存在本机';
+      return '普通云同步未勾选 vncrecordv2；VNC 数据仍保存在本机';
     }
-    const scopes: VncCloudSyncScope[] = this.sync.selectedScopes();
-    return scopes.length === 0 ? 'VNC 云同步已关闭' : '已选择 ' + scopes.length.toString() + ' 类 VNC 数据同步';
+    return 'vncrecordv2 已启用：设置、主机、网关、加密机密与 trust 统一同步';
   }
 
   async manualUpload(): Promise<boolean> { return (await this.sync.requestManualUpload()).ok; }
@@ -328,60 +216,6 @@ export class VncSettingsService {
       if (records[i].recordType === 'settings' && records[i].deletedAt <= 0) { return records[i]; }
     }
     return null;
-  }
-
-  private updateSyncSelection(
-    values: VncSettingsValues
-  ): boolean {
-    const scopes: string[] = this.scopesFor(values);
-    // Stage first. The selector is not durable until the RDB projection has
-    // completed, so a failed reconcile cannot leave a restart-time scope that
-    // was never actually applied.
-    this.sync.stageSelectedScopes(scopes);
-    if (!this.cloud.reconcileVncSyncSelection() ||
-      !this.sync.persistSelectedScopes()) {
-      return false;
-    }
-    return true;
-  }
-
-  private restoreSyncSelection(
-    scopes: VncCloudSyncScope[],
-    previousBarrier:
-      CloudSelectionReenablePhase | null,
-    restoreBarrier: boolean = true
-  ): boolean {
-    this.sync.stageSelectedScopes(scopes);
-    const projectionRestored: boolean =
-      this.cloud.reconcileVncSyncSelection();
-    const selectionRestored: boolean =
-      this.sync.persistSelectedScopes();
-    if (!projectionRestored ||
-      !selectionRestored ||
-      !restoreBarrier) {
-      return false;
-    }
-    return this.cloud
-      .restoreSelectionReenableBarrier(
-        VNC_CLOUD_TABLE, previousBarrier);
-  }
-
-  private scopesFor(values: VncSettingsValues): string[] {
-    const scopes: string[] = [];
-    if (values.syncPreferences) { scopes.push('settings'); }
-    if (values.syncHosts) { scopes.push('hosts'); }
-    if (values.syncGateways) { scopes.push('gateways'); }
-    if (values.syncSecrets) { scopes.push('secrets'); }
-    if (values.syncTrust) { scopes.push('trust'); }
-    return scopes;
-  }
-
-  private sameScopes(left: VncCloudSyncScope[], right: string[]): boolean {
-    if (left.length !== right.length) { return false; }
-    for (let i = 0; i < left.length; i++) {
-      if (left[i] !== right[i]) { return false; }
-    }
-    return true;
   }
 
   private normalize(values: VncSettingsValues): VncSettingsValues {
@@ -427,11 +261,14 @@ export class VncSettingsService {
       securityPolicy: values.securityPolicy || defaults.securityPolicy,
       defaultGatewayId: values.defaultGatewayId || '',
       repeaterMode: values.repeaterMode || defaults.repeaterMode,
-      syncPreferences: values.syncPreferences,
-      syncHosts: values.syncHosts,
-      syncGateways: values.syncGateways,
-      syncSecrets: values.syncSecrets,
-      syncTrust: values.syncTrust
+      // Preserve the payload fields for older builds, but publish the unified
+      // physical-table contract so a legacy client never interprets a partial
+      // 1.1.0 record as disabled data.
+      syncPreferences: true,
+      syncHosts: true,
+      syncGateways: true,
+      syncSecrets: true,
+      syncTrust: true
     };
   }
 

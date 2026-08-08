@@ -25,7 +25,6 @@ import {
   VncColorDepth,
   VncLocalCursorMode
 } from '../services/VncModelPolicy';
-import { VncCloudSyncScope, vncCloudSyncScopes } from '../services/VncCloudSyncSelectionPolicy';
 import { Palette, buildDark, buildLight, AppTheme } from '../common/Theme';
 import { VncAddFlow } from '../components/hostadd/VncAddFlow';
 import { VncCertificateTrustManagerSheet } from '../components/VncCertificateTrustManagerSheet';
@@ -113,7 +112,6 @@ export struct VncSettingsPage {
   @State editingGatewayId: string = '';
   @State errorMessage: string = '';
   @State pendingDefaultGatewayCleanupId: string = '';
-  @State cloudStatus: string = '本机数据加载中';
   @State cryptoReady: boolean = false;
   @State revision: number = 0;
 
@@ -213,7 +211,6 @@ export struct VncSettingsPage {
     this.syncGateways = values.syncGateways;
     this.syncSecrets = values.syncSecrets;
     this.syncTrust = values.syncTrust;
-    this.cloudStatus = this.settings.cloudSyncStatus();
     this.cryptoReady = DataCrypto.getInstance().isReady();
     this.loadHosts();
     this.loadGateways();
@@ -355,7 +352,6 @@ export struct VncSettingsPage {
         this.settingsValues());
     this.errorMessage = result.ok ? '' : result.message;
     if (result.ok) {
-      this.cloudStatus = this.settings.cloudSyncStatus();
       promptAction.showToast({ message: 'VNC 设置已保存', duration: 1600 });
     }
   }
@@ -625,40 +621,6 @@ export struct VncSettingsPage {
     this.gatewayTls = false; this.gatewayEnabled = true;
   }
 
-  private scopeChecked(scope: VncCloudSyncScope): boolean {
-    const selected: VncCloudSyncScope[] = this.settings.selectedScopes();
-    return selected.indexOf(scope) >= 0;
-  }
-
-  private scopeTitle(scope: VncCloudSyncScope): string {
-    if (scope === 'settings') { return 'VNC 设置'; }
-    if (scope === 'hosts') { return 'VNC 主机'; }
-    if (scope === 'gateways') { return 'VNC 网关与 Repeater'; }
-    if (scope === 'secrets') { return 'VNC 密码与令牌'; }
-    return 'VNC trust 指纹';
-  }
-
-  private scopeDescription(scope: VncCloudSyncScope): string {
-    if (scope === 'settings') { return '连接、显示和安全默认值'; }
-    if (scope === 'hosts') { return '不包含明文密码'; }
-    if (scope === 'gateways') { return '端点和配对能力，不包含令牌'; }
-    if (scope === 'secrets') { return '默认关闭；按“记住密码”策略保存，明文需再次确认'; }
-    return '同步证书候选和元数据；不上传本机 confirmation marker，新设备不自动信任';
-  }
-
-  private toggleScope(scope: VncCloudSyncScope): void {
-    const selected: VncCloudSyncScope[] = this.settings.selectedScopes();
-    const next: VncCloudSyncScope[] = selected.indexOf(scope) >= 0
-      ? selected.filter((item: VncCloudSyncScope): boolean => item !== scope)
-      : selected.concat([scope]);
-    if (scope === 'secrets') { this.syncSecrets = next.indexOf('secrets') >= 0; }
-    if (scope === 'trust') { this.syncTrust = next.indexOf('trust') >= 0; }
-    if (scope === 'settings') { this.syncPreferences = next.indexOf('settings') >= 0; }
-    if (scope === 'hosts') { this.syncHosts = next.indexOf('hosts') >= 0; }
-    if (scope === 'gateways') { this.syncGateways = next.indexOf('gateways') >= 0; }
-    this.saveSettings();
-  }
-
   @Builder private header() {
     Row() {
       SymbolGlyph($r('sys.symbol.chevron_left')).fontSize(22).fontColor([this.pal().text])
@@ -798,35 +760,6 @@ export struct VncSettingsPage {
           .onClick((): void => { this.securityPolicy = 'allow_plaintext'; })
       }.width('100%')
       Button('保存 VNC 设置').width('100%').height(42).margin({ top: 14 }).borderRadius(10)
-        .backgroundColor(this.accentColor).fontColor(Color.White).onClick((): void => { this.saveSettings(); })
-    }.width('100%').padding(16).borderRadius(18).backgroundColor(this.pal().card)
-      .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
-  }
-
-  @Builder private syncCard() {
-    Column() {
-      this.cardTitle('VNC 云同步', '唯一云表：vncrecordv2；本地覆盖表：vnclocalrecords')
-      Text(this.cloudStatus).fontSize(12).fontColor(this.pal().text3).fontFamily(this.font()).margin({ bottom: 10 })
-      ForEach(vncCloudSyncScopes(), (scope: VncCloudSyncScope) => {
-        Row() {
-          Checkbox().select(this.scopeChecked(scope)).selectedColor(this.accentColor)
-            .onChange((): void => { this.toggleScope(scope); })
-          Column() {
-            Text(this.scopeTitle(scope)).fontSize(14).fontColor(this.pal().text).fontFamily(this.font())
-            Text(this.scopeDescription(scope)).fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 3 })
-          }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 8 })
-        }.width('100%').padding({ top: 8, bottom: 8 })
-      }, (scope: VncCloudSyncScope): string => scope)
-      this.settingToggle('设置同步', '同步开关状态也只属于 VNC', this.syncPreferences,
-        (value: boolean): void => { this.syncPreferences = value; })
-      Row() {
-        Text('加密状态').fontSize(13).fontColor(this.pal().text2).layoutWeight(1)
-        Text(DataCrypto.getInstance().isReady() ? '已解锁：记住的凭据使用 AES-GCM 保存' :
-          (DataCrypto.getInstance().isSetupComplete() ? '已锁定：可临时连接，保存密文需解锁' :
-            '未启用：记住的凭据保存前需明确确认风险'))
-          .fontSize(11).fontColor(DataCrypto.getInstance().isReady() ? this.pal().success : this.pal().text3)
-      }.width('100%').margin({ top: 8 })
-      Button('保存同步选择').width('100%').height(40).margin({ top: 12 }).borderRadius(10)
         .backgroundColor(this.accentColor).fontColor(Color.White).onClick((): void => { this.saveSettings(); })
     }.width('100%').padding(16).borderRadius(18).backgroundColor(this.pal().card)
       .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
@@ -988,7 +921,7 @@ export struct VncSettingsPage {
                 .onClick((): void => { void this.retryDefaultGatewayCleanup(); })
             }
           }
-          Text('主机、Gateway 与 trust 由 VNC owner 独立管理；默认设置和云同步范围请从主设置页的 VNC 分组进入。')
+          Text('主机、Gateway 与 trust 由 VNC owner 独立管理；默认设置请从主设置页的 VNC 分组进入。')
             .fontSize(12).fontColor(this.pal().text3).lineHeight(19).width('100%')
             .padding(12).borderRadius(12).backgroundColor(this.pal().surface)
           this.hostCardSection()

@@ -1715,9 +1715,9 @@ export class CloudSyncCoordinator {
   }
 
   private selectedTables(): string[] {
-    // `vncrecord` is visible in the ordinary selector so users can opt the
-    // physical table out globally. It must never be returned here because
-    // this path has no VNC record-type/secret projection context.
+    // `vncrecordv2` is visible in the ordinary selector and is transferred by
+    // the VNC path so encrypted rows can include cryptoparams when required.
+    // There is no longer a second logical-scope selector.
     return snapshotCloudSyncTables(this.selection.selectedBusinessTables())
       .filter((table: string): boolean => table !== VNC_CLOUD_TABLE);
   }
@@ -1727,7 +1727,7 @@ export class CloudSyncCoordinator {
   }
 
   private vncSyncTables(): string[] {
-    if (!this.vncPhysicalTableSelected() || !this.vncSelection.hasSelection()) { return []; }
+    if (!this.vncPhysicalTableSelected()) { return []; }
     const result: string[] = [];
     if (this.vncSelection.needsCrypto(DataCrypto.getInstance().isSetupComplete())) {
       result.push('cryptoparams');
@@ -1737,9 +1737,9 @@ export class CloudSyncCoordinator {
   }
 
   /**
-   * The regular VNC selection controls visible data. With no selected scope,
-   * no VNC cloud transfer is scheduled. A locked device keeps encrypted
-   * secret rows opaque; it never replaces them with an empty local projection.
+   * The ordinary physical-table selection controls VNC transfer. A locked
+   * device keeps encrypted secret rows opaque; it never replaces them with an
+   * empty local projection.
    */
   private vncUploadTables(): string[] {
     return this.vncSyncTables();

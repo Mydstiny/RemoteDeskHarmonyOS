@@ -1,13 +1,16 @@
 import {
   VNC_SELECTION_REENABLE_TRANSACTION_KEY,
   CloudStoreVncRollbackPort,
+  VncSelectionBarrierPhaseRead,
   VncSelectionCheckpointIdentity,
   VncSelectionReenableCheckpoint,
+  readVncSelectionBarrierPhase,
   recoverPendingVncSelectionReenable,
   rollbackVncSelectionCheckpoint
 } from './CloudStoreVncLifecycleWiring';
 import {
-  CloudMetadataReadResult
+  CloudMetadataReadResult,
+  cloudMetadataAbsentProven
 } from './CloudMetadataSafetyPolicy';
 import {
   CloudSelectionReenablePhase
@@ -15,6 +18,9 @@ import {
 import {
   VNC_CLOUD_TABLE
 } from './VncRecordPolicy';
+import {
+  CLOUD_BOOTSTRAP_COMPLETED_KEY
+} from './CloudStoreRestoreResolutionWiring';
 
 /**
  * Bottom-level startup persistence boundary. It deliberately exposes no
@@ -85,6 +91,85 @@ export class CloudStoreStartupRecoveryRunner {
       (): void => {
         this.io.onRecovered();
       });
+  }
+
+  /**
+   * Retire a checkpoint created by the removed per-record-type VNC selector.
+   * No data snapshot is restored: the existing rows are preserved and a
+   * physical-table `pending_pull` barrier requires one authoritative cloud
+   * read before VNC upload can resume.
+   *
+   * Lifecycle settlement deliberately runs after the RDB commit. HarmonyOS
+   * RDB does not expose transaction-local metadata to a synchronous read-back,
+   * so the old ordering could falsely fail recovery and block account login.
+   */
+  retireLegacySelectionCheckpoint(): boolean {
+    const checkpointBefore:
+      CloudMetadataReadResult =
+      this.io.readMetadataState(
+        VNC_SELECTION_REENABLE_TRANSACTION_KEY);
+    if (checkpointBefore.state === 'error') {
+      this.io.markRecoveryRequired();
+      return false;
+    }
+    if (checkpointBefore.state === 'absent') {
+      // A previous process may have committed checkpoint retirement but died
+      // before settling the VNC-only durable recovery marker.
+      return this.io.settleRecoveryLifecycle();
+    }
+
+    let begun: boolean = false;
+    try {
+      if (!this.io.beginTransaction()) {
+        throw new Error(
+          'legacy VNC checkpoint retirement begin failed');
+      }
+      begun = true;
+      if (!this.io.restoreSelectionReenableBarrier(
+        VNC_CLOUD_TABLE, 'pending_pull', false) ||
+        !this.io.deleteLocalMetadata(
+          VNC_SELECTION_REENABLE_TRANSACTION_KEY) ||
+        !this.io.deleteLocalMetadata(
+          CLOUD_BOOTSTRAP_COMPLETED_KEY) ||
+        !this.io.commit()) {
+        throw new Error(
+          'legacy VNC checkpoint retirement failed');
+      }
+      begun = false;
+
+      const checkpointAfter:
+        CloudMetadataReadResult =
+        this.io.readMetadataState(
+          VNC_SELECTION_REENABLE_TRANSACTION_KEY);
+      const barrierAfter:
+        VncSelectionBarrierPhaseRead =
+        readVncSelectionBarrierPhase(
+          (key: string): CloudMetadataReadResult =>
+            this.io.readMetadataState(key));
+      const bootstrapAfter:
+        CloudMetadataReadResult =
+        this.io.readMetadataState(
+          CLOUD_BOOTSTRAP_COMPLETED_KEY);
+      if (!cloudMetadataAbsentProven(
+        checkpointAfter) ||
+        !cloudMetadataAbsentProven(
+          bootstrapAfter) ||
+        !barrierAfter.readable ||
+        barrierAfter.phase !== 'pending_pull' ||
+        !this.io.settleRecoveryLifecycle()) {
+        throw new Error(
+          'legacy VNC checkpoint retirement verification failed');
+      }
+      this.io.publishSnapshot();
+      this.io.onRecovered();
+      return true;
+    } catch (_error) {
+      if (begun) {
+        try { this.io.rollback(); } catch (_ignored) {}
+      }
+      this.io.markRecoveryRequired();
+      return false;
+    }
   }
 
   async rollbackCheckpoint(

@@ -14,7 +14,11 @@ import { VncRecordType } from '../model/VncRecord';
 
 const PREFS_NAME: string = 'RemoteDesktopVncPrefs';
 
-/** VNC-only selection storage. It never reads the ordinary cloud selector. */
+/**
+ * Compatibility storage for the retired VNC logical selector. Runtime
+ * selection is always the complete VNC record set; the ordinary physical-table
+ * selector is the only cloud-transfer switch.
+ */
 export class VncCloudSyncSelectionStore {
   private static instance: VncCloudSyncSelectionStore;
   private selected: VncCloudSyncScope[] = VNC_CLOUD_SYNC_SELECTION_DEFAULT.slice();
@@ -33,11 +37,16 @@ export class VncCloudSyncSelectionStore {
     try {
       const prefs = preferences.getPreferencesSync(context, { name: PREFS_NAME });
       const stored: string = prefs.getSync(this.preferenceKey(), '') as string;
-      if (stored === '') { return; }
-      const parsed: string[] = JSON.parse(stored) as string[];
-      if (Array.isArray(parsed)) {
-        this.selected = normalizeVncCloudSyncSelection(parsed);
+      if (stored !== '') {
+        const parsed: string[] = JSON.parse(stored) as string[];
+        if (Array.isArray(parsed)) {
+          this.selected = normalizeVncCloudSyncSelection(parsed);
+        }
       }
+      // Best-effort canonicalization retires empty/partial legacy values. A
+      // Preferences failure cannot disable VNC records in memory or login.
+      prefs.putSync(this.preferenceKey(), JSON.stringify(this.selected));
+      prefs.flushSync();
     } catch (_e) {
       this.selected = VNC_CLOUD_SYNC_SELECTION_DEFAULT.slice();
     }
@@ -81,9 +90,8 @@ export class VncCloudSyncSelectionStore {
     const next: VncCloudSyncScope[] = normalizeVncCloudSyncSelection(scopes);
     this.selected = next;
     if (this.persistSelectedScopes(context)) { return true; }
-    // Keep both durable and in-memory selection on the previous value when
-    // persistence fails; a failed scope change must not split the UI from
-    // the VNC record projection.
+    // Runtime still retains the complete physical-table projection. Preserve
+    // the prior value only for API compatibility if durable Preferences fail.
     this.selected = previous;
     this.persistSelectedScopes(context);
     return false;

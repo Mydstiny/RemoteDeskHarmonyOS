@@ -27,7 +27,6 @@ import {
   VncTrustEndpoint,
   vncStoreIdentityFingerprint
 } from '../services/VncTrustService';
-import { VncCloudSyncSelectionStore } from '../services/VncCloudSyncSelectionStore';
 import { VncHostService, VncHostView } from '../services/VncHostService';
 import { VncGatewayService } from '../services/VncGatewayService';
 import { VncGatewayView } from '../services/VncGatewayService';
@@ -240,7 +239,6 @@ import {
   SETTINGS_SHEET_TERMINAL_FG_COLOR,
   SETTINGS_SHEET_TERMINAL_FONT_SIZE,
   SETTINGS_SHEET_TERMINAL_LINE_SPACING,
-  SETTINGS_SHEET_VNC_CLOUD_SYNC,
   SETTINGS_SHEET_VNC_CLIPBOARD,
   SETTINGS_SHEET_VNC_CONNECTION,
   SETTINGS_SHEET_VNC_DISPLAY,
@@ -518,6 +516,7 @@ struct HostListPage {
   @State showPopupSheet: boolean = false;
   @State popupSheetMode: number = 0; // 0=crypto, 1=about(用 aboutSheetMode 子路由), 2=SSH host key, 4=RDP certificate
   @State cloudSyncStep: string = CLOUD_SYNC_SHEET_ACTIONS;
+  @State cloudConnectionAvailable: boolean = false;
   /** User's explicit portable-backup sensitivity choice at export time. */
   @State backupFullMode: boolean = false;
   @State cloudSyncError: string = '';
@@ -970,6 +969,8 @@ struct HostListPage {
 
   async aboutToAppear(): Promise<void> {
     this.pageActive = true;
+    this.cloudConnectionAvailable =
+      CloudStore.getInstance().isCloudAvailable();
     // Keep VNC storage isolated while preparing its display projection before
     // the first host-list snapshot is built.
     this.prepareVncAddFlow();
@@ -1201,10 +1202,14 @@ struct HostListPage {
     this.syncAmbientLightMonitor();
     this.ensureGripMonitorOnPageShow();
     this.handleVncRelayRouteRequest();
+    this.refreshCloudRegistration();
   }
 
   onPageShow(): void {
     this.pageActive = true;
+    this.cloudConnectionAvailable =
+      CloudStore.getInstance().isCloudAvailable();
+    this.refreshCloudRegistration();
     CloudSyncCoordinator.getInstance().flushDeferredAutomaticPushes();
     this.migrateVirtualMouseStyleCloudSetting();
     this.updateWindowMetrics();
@@ -1902,11 +1907,36 @@ struct HostListPage {
   }
 
   /**
+   * setDistributedTables can fail transiently while the already-downloaded
+   * account cache remains readable. Re-register the same fenced store and then
+   * let the existing coordinator perform its normal cloud-first bootstrap.
+   */
+  private refreshCloudRegistration(): void {
+    const cloud: CloudStore = CloudStore.getInstance();
+    this.cloudConnectionAvailable = cloud.isCloudAvailable();
+    if (this.cloudConnectionAvailable) { return; }
+    void cloud.retryCloudRegistration().then((restored: boolean): void => {
+      this.cloudConnectionAvailable = cloud.isCloudAvailable();
+      if (!restored) { return; }
+      void CloudSyncCoordinator.getInstance().requestStartupPull().then(
+        (_result): void => {
+          this.cloudConnectionAvailable = cloud.isCloudAvailable();
+        },
+        (_error: Error): void => {
+          this.cloudConnectionAvailable = cloud.isCloudAvailable();
+        });
+    }, (_error: Error): void => {
+      this.cloudConnectionAvailable = cloud.isCloudAvailable();
+    });
+  }
+
+  /**
    * Open every cloud sheet state atomically with the leaf Sheet transition.
    * The transition may be delayed while a previous Sheet is dismissing, so
    * callers must not assign cloudSyncStep after this method returns.
    */
   private openCloudSyncSheet(initialStep: string = ''): void {
+    this.refreshCloudRegistration();
     this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
       this.cloudSyncSelectedTables = CloudSyncSelectionStore.getInstance().selectedBusinessTables();
       this.cloudSyncError = '';
@@ -1919,6 +1949,7 @@ struct HostListPage {
   }
 
   private openCloudSyncDetailsSheet(): void {
+    this.refreshCloudRegistration();
     this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
       this.cloudSyncError = '';
       this.cloudSyncStep = CLOUD_SYNC_SHEET_DETAILS;
@@ -1979,17 +2010,6 @@ struct HostListPage {
       if (!result.ok) {
         hilog.warn(0x0001, 'CloudSync',
           '[HostListPage] table re-enable pull failed table=' + table);
-        const vncNoScope: boolean = table === 'vncrecordv2' &&
-          !VncCloudSyncSelectionStore.getInstance().hasSelection();
-        if (vncNoScope) {
-          // Initializing the VNC physical table must jump straight to the
-          // logical scope selector; without scopes there is nothing to sync.
-          this.cloudSyncError =
-            '请选择要同步的 VNC 内容（设置/主机/网关/机密/信任）';
-          this.openSettingsLeafSheet(
-            SETTINGS_SHEET_VNC_CLOUD_SYNC);
-          return;
-        }
         this.cloudSyncError =
           '云表重新启用失败：上传仍被暂停，请检查云空间后重试';
         promptAction.showToast({
@@ -9150,7 +9170,7 @@ struct HostListPage {
                 Row() { SymbolGlyph($r('sys.symbol.cloud_fill')).fontSize(21).fontColor([this.accentColor]) }
                   .width(40).height(40).borderRadius(20).backgroundColor(this.pal().card).justifyContent(FlexAlign.Center)
                 Column() { Text('管理云同步').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font());
-                  Text(cloudSyncDetailSpec(CloudStore.getInstance().isCloudAvailable()).statusText).fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+                  Text(cloudSyncDetailSpec(this.cloudConnectionAvailable).statusText).fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
                 }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
                 SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(16).fontColor([this.pal().text3])
               }.width('100%').height(68).padding({ left: 14, right: 16 }).onClick((): void => { this.openCloudSyncSheet(); })
@@ -9159,7 +9179,7 @@ struct HostListPage {
                 Row() { SymbolGlyph($r('sys.symbol.info_circle')).fontSize(20).fontColor([this.accentColor]) }
                   .width(40).height(40).borderRadius(20).backgroundColor(this.pal().card).justifyContent(FlexAlign.Center)
                 Column() { Text('云同步详情').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font());
-                  Text(cloudSyncDetailSpec(CloudStore.getInstance().isCloudAvailable()).statusText).fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+                  Text(cloudSyncDetailSpec(this.cloudConnectionAvailable).statusText).fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
                 }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
                 SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(16).fontColor([this.pal().text3])
               }.width('100%').height(68).padding({ left: 14, right: 16 }).onClick((): void => { this.openCloudSyncDetailsSheet(); })
@@ -9580,7 +9600,7 @@ struct HostListPage {
 
         ListItem() {
           this.settingsAccordionHeader(SETTINGS_SECTION_VNC, protocolIcon('vnc'),
-            'VNC', '连接、画面、输入、性能监视和云同步')
+            'VNC', '连接、画面、输入、性能监视和证书信任')
         }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
 
         // --- VNC protocol settings: leaf bindSheets, not a cloud-data card ---
@@ -9616,10 +9636,6 @@ struct HostListPage {
               this.protocolActionRow(protocolIcon('vnc'), '剪贴板',
                 '单独控制 VNC 文本剪贴板',
                 (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_CLIPBOARD); })
-              this.cardDivider()
-              this.protocolActionRow(protocolIcon('vnc'), 'VNC 云同步范围',
-                '唯一物理表 vncrecord，五类逻辑 scope',
-                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_CLOUD_SYNC); })
               this.cardDivider()
               this.protocolActionRow(protocolIcon('vnc'), 'Trust / 证书管理',
                 '独立于 RDP 证书和 SSH 主机指纹',
@@ -10650,7 +10666,7 @@ struct HostListPage {
               Column() {
                 Text(table === 'usersettings' ? '个性化与协议设置' : table === 'remotehosts' ? '远程主机' : table === 'rdpcredentials' ? 'Windows 登录凭据' : table === 'rustdeskrelays' ? 'RustDesk 中继配置' : table === 'sshkeys' ? 'SSH 密钥' : table === 'totpentries' ? '双重验证动态口令' : 'VNC 记录（vncrecord）')
                   .fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
-                Text(table === 'usersettings' ? '主题、外观和协议偏好' : table === 'vncrecordv2' ? '物理表开关；VNC 逻辑范围在设置中选择，trust 只同步候选元数据' : '包含敏感数据，启用时自动同步加密参数')
+                Text(table === 'usersettings' ? '主题、外观和协议偏好' : table === 'vncrecordv2' ? 'VNC 设置、主机、Gateway、加密机密和 trust 候选元数据' : '包含敏感数据，启用时自动同步加密参数')
                   .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 3 })
               }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
             }.width('100%').padding(14).borderRadius(14).backgroundColor(this.pal().surface).margin({ bottom: 8 })
@@ -10676,12 +10692,12 @@ struct HostListPage {
           }.width('100%').alignItems(VerticalAlign.Top)
           Column() {
             Text('应用端状态').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text2).fontFamily(this.font())
-            Text(cloudSyncDetailSpec(CloudStore.getInstance().isCloudAvailable()).statusText)
+            Text(cloudSyncDetailSpec(this.cloudConnectionAvailable).statusText)
               .fontSize(13).fontColor(this.accentColor).fontFamily(this.font()).margin({ top: 7 })
           }.width('100%').padding(14).borderRadius(14).backgroundColor(this.pal().surface).margin({ top: 20 }).alignItems(HorizontalAlign.Start)
           Text('请依次确认').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text2).fontFamily(this.font()).margin({ top: 20 })
             .width('100%')
-          ForEach(cloudSyncDetailSpec(CloudStore.getInstance().isCloudAvailable()).prerequisites,
+          ForEach(cloudSyncDetailSpec(this.cloudConnectionAvailable).prerequisites,
             (item: string, index: number): void => {
               Row() {
                 Text((index + 1).toString()).fontSize(11).fontWeight(FontWeight.Bold).fontColor(this.accentColor)

@@ -1,31 +1,35 @@
 import { VncRecordType } from '../model/VncRecord';
 
 /**
- * VNC has one physical cloud table but five independently selectable logical
- * record scopes. This policy is intentionally separate from the RDP,
- * RustDesk and SSH table selector.
+ * Legacy releases exposed five logical selectors for the single VNC cloud
+ * table. Huawei Cloud Space registers and transfers the physical table as one
+ * unit, so 1.1.0 treats every valid VNC record type as selected whenever the
+ * ordinary table selector enables `vncrecordv2`.
+ *
+ * Keep the scope type and preference key as a compatibility boundary for old
+ * settings/checkpoints. They no longer form a second cloud-transfer gate.
  */
 export type VncCloudSyncScope = 'settings' | 'hosts' | 'gateways' | 'secrets' | 'trust';
 
 export const VNC_CLOUD_SYNC_SELECTION_KEY: string = 'vncCloudSyncRecordScopes';
-// VNC follows the same fail-closed rollout boundary as ordinary cloud tables.
-export const VNC_CLOUD_SYNC_SELECTION_DEFAULT: VncCloudSyncScope[] = [];
-
 const VNC_CLOUD_SYNC_SCOPES: VncCloudSyncScope[] = [
   'settings', 'hosts', 'gateways', 'secrets', 'trust'
 ];
+
+export const VNC_CLOUD_SYNC_SELECTION_DEFAULT: VncCloudSyncScope[] =
+  VNC_CLOUD_SYNC_SCOPES.slice();
 
 export function vncCloudSyncScopes(): VncCloudSyncScope[] {
   return VNC_CLOUD_SYNC_SCOPES.slice();
 }
 
-export function normalizeVncCloudSyncSelection(selected: string[]): VncCloudSyncScope[] {
-  const normalized: VncCloudSyncScope[] = [];
-  for (let i = 0; i < VNC_CLOUD_SYNC_SCOPES.length; i++) {
-    const scope: VncCloudSyncScope = VNC_CLOUD_SYNC_SCOPES[i];
-    if (selected.indexOf(scope) >= 0) { normalized.push(scope); }
-  }
-  return normalized;
+export function normalizeVncCloudSyncSelection(
+  _legacySelected: string[]
+): VncCloudSyncScope[] {
+  // Empty, partial and malformed legacy selections all migrate to the one
+  // physical-table contract. The ordinary CloudSyncSelectionStore remains the
+  // sole enable/disable decision.
+  return VNC_CLOUD_SYNC_SCOPES.slice();
 }
 
 export function hasVncCloudSyncBusinessSelection(selected: string[]): boolean {
@@ -44,7 +48,11 @@ export function isVncRecordTypeSelected(recordType: VncRecordType, selected: str
   return normalizeVncCloudSyncSelection(selected).indexOf(vncRecordTypeToSyncScope(recordType)) >= 0;
 }
 
-/** Secret visibility is an explicit VNC scope decision, not a crypto lock. */
+/**
+ * Encrypted secret rows follow the physical table. Explicit plaintext secrets
+ * are still forced into `vnclocalrecords` by CloudStore and never reach here as
+ * syncable cloud rows.
+ */
 export function vncSecretSyncAllowed(selected: string[], _cryptoReady: boolean = false): boolean {
   return normalizeVncCloudSyncSelection(selected).indexOf('secrets') >= 0;
 }

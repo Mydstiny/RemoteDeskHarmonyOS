@@ -4,7 +4,6 @@ import { DataCrypto } from '../services/DataCrypto';
 import { VncSettingsService } from '../services/VncSettingsService';
 import { VncGatewayService, VncGatewayView } from '../services/VncGatewayService';
 import { isSelectableVncDefaultGateway, VncSelectableGateway } from '../services/VncHostDefaultsPolicy';
-import { VncCloudSyncScope, vncCloudSyncScopes } from '../services/VncCloudSyncSelectionPolicy';
 import {
   VncSettingsValues,
   VncTransport,
@@ -18,7 +17,6 @@ import {
   defaultVncSettings
 } from '../services/VncModelPolicy';
 import {
-  SETTINGS_SHEET_VNC_CLOUD_SYNC,
   SETTINGS_SHEET_VNC_CLIPBOARD,
   SETTINGS_SHEET_VNC_CONNECTION,
   SETTINGS_SHEET_VNC_DISPLAY,
@@ -286,40 +284,6 @@ export struct VncSettingsSheet {
     }
   }
 
-  private scopeChecked(scope: VncCloudSyncScope): boolean {
-    if (scope === 'settings') { return this.syncPreferences; }
-    if (scope === 'hosts') { return this.syncHosts; }
-    if (scope === 'gateways') { return this.syncGateways; }
-    if (scope === 'secrets') { return this.syncSecrets; }
-    return this.syncTrust;
-  }
-
-  private setScope(scope: VncCloudSyncScope, selected: boolean): void {
-    if (scope === 'settings') { this.syncPreferences = selected; }
-    if (scope === 'hosts') { this.syncHosts = selected; }
-    if (scope === 'gateways') { this.syncGateways = selected; }
-    if (scope === 'secrets') { this.syncSecrets = selected; }
-    if (scope === 'trust') { this.syncTrust = selected; }
-    this.errorText = '';
-    this.markDirty();
-  }
-
-  private scopeTitle(scope: VncCloudSyncScope): string {
-    if (scope === 'settings') { return 'VNC 默认设置'; }
-    if (scope === 'hosts') { return 'VNC 主机'; }
-    if (scope === 'gateways') { return 'VNC Gateway'; }
-    if (scope === 'secrets') { return '密码与令牌'; }
-    return 'trust 指纹';
-  }
-
-  private scopeDetail(scope: VncCloudSyncScope): string {
-    if (scope === 'settings') { return '连接、显示和安全默认值'; }
-    if (scope === 'hosts') { return '主机地址和非敏感连接配置'; }
-    if (scope === 'gateways') { return 'Repeater/Gateway 地址和能力'; }
-    if (scope === 'secrets') { return '默认关闭；按“记住密码”策略保存，明文需再次确认'; }
-    return '云恢复后仍需在本设备重新确认';
-  }
-
   private title(): string {
     if (this.mode === SETTINGS_SHEET_VNC_CONNECTION) { return '连接默认值'; }
     if (this.mode === SETTINGS_SHEET_VNC_TIMEOUT) { return '超时与连接行为'; }
@@ -329,7 +293,6 @@ export struct VncSettingsSheet {
     if (this.mode === SETTINGS_SHEET_VNC_CLIPBOARD) { return 'VNC 剪贴板'; }
     if (this.mode === SETTINGS_SHEET_VNC_SECURITY) { return '安全策略与 TLS'; }
     if (this.mode === SETTINGS_SHEET_VNC_TRUST) { return 'Trust / 证书管理'; }
-    if (this.mode === SETTINGS_SHEET_VNC_CLOUD_SYNC) { return 'VNC 云同步范围'; }
     if (this.mode === SETTINGS_SHEET_VNC_HOSTS) { return 'VNC 主机管理'; }
     return 'VNC Gateway 管理';
   }
@@ -343,7 +306,6 @@ export struct VncSettingsSheet {
     if (this.mode === SETTINGS_SHEET_VNC_CLIPBOARD) { return '只控制 VNC 文本剪贴板通道'; }
     if (this.mode === SETTINGS_SHEET_VNC_SECURITY) { return '安全策略不替代服务器能力协商'; }
     if (this.mode === SETTINGS_SHEET_VNC_TRUST) { return 'VNC trust 独立于 RDP 证书和 SSH 主机指纹'; }
-    if (this.mode === SETTINGS_SHEET_VNC_CLOUD_SYNC) { return '物理表仍只有 vncrecordv2，逻辑范围独立选择'; }
     if (this.mode === SETTINGS_SHEET_VNC_HOSTS) { return '主机记录不会进入 remotehosts'; }
     return 'VNC Gateway 与 RustDesk 中继分属不同 owner';
   }
@@ -683,31 +645,6 @@ export struct VncSettingsSheet {
     }.width('100%')
   }
 
-  @Builder private cloudContent() {
-    Column() {
-      Text('物理云表固定为 vncrecordv2；以下是该表内的逻辑 scope。关闭某个 scope 不会删除共享云行。')
-        .fontSize(12).fontColor(this.pal().text3).lineHeight(19).width('100%').margin({ bottom: 10 })
-      ForEach(vncCloudSyncScopes(), (scope: VncCloudSyncScope) => {
-        Row() {
-          Checkbox().select(this.scopeChecked(scope)).selectedColor(this.accentColor)
-            .onChange((selected: boolean): void => { this.setScope(scope, selected); })
-          Column() {
-            Text(this.scopeTitle(scope)).fontSize(14).fontColor(this.pal().text)
-            Text(this.scopeDetail(scope)).fontSize(11).fontColor(this.pal().text3).margin({ top: 3 })
-          }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 9 })
-        }.width('100%').padding(10).borderRadius(10).backgroundColor(this.pal().surface).margin({ bottom: 7 })
-      }, (scope: VncCloudSyncScope): string => scope)
-      Text(DataCrypto.getInstance().isReady()
-        ? '加密已解锁，可按选择保存 VNC 密文'
-        : (DataCrypto.getInstance().isSetupComplete()
-          ? '应用加密已锁定：现有密文保持 opaque；新凭据可关闭记住密码后临时使用'
-          : '应用加密未启用：VNC 元数据可同步；明文凭据只有在明确确认风险后才会保存/同步'))
-        .fontSize(11)
-        .fontColor(DataCrypto.getInstance().isReady() ? this.pal().success : this.pal().text3)
-        .margin({ top: 4, bottom: 12 })
-    }.width('100%')
-  }
-
   @Builder private directoryContent(hosts: boolean) {
     Column() {
       Text(hosts ? '主机编辑、删除和连接仍由 VNC host owner 管理。' :
@@ -728,8 +665,7 @@ export struct VncSettingsSheet {
       this.mode === SETTINGS_SHEET_VNC_INPUT ||
       this.mode === SETTINGS_SHEET_VNC_PERFORMANCE ||
       this.mode === SETTINGS_SHEET_VNC_CLIPBOARD ||
-      this.mode === SETTINGS_SHEET_VNC_SECURITY ||
-      this.mode === SETTINGS_SHEET_VNC_CLOUD_SYNC;
+      this.mode === SETTINGS_SHEET_VNC_SECURITY;
   }
 
   @Builder private sheetBody() {
@@ -750,8 +686,6 @@ export struct VncSettingsSheet {
         this.securityContent()
       } else if (this.mode === SETTINGS_SHEET_VNC_TRUST) {
         this.trustContent()
-      } else if (this.mode === SETTINGS_SHEET_VNC_CLOUD_SYNC) {
-        this.cloudContent()
       } else if (this.mode === SETTINGS_SHEET_VNC_HOSTS) {
         this.directoryContent(true)
       } else {
@@ -765,7 +699,7 @@ export struct VncSettingsSheet {
   }
 
   @Builder private saveFooter() {
-    Button(this.saving ? '保存中…' : (this.mode === SETTINGS_SHEET_VNC_CLOUD_SYNC ? '保存同步范围' : '保存'))
+    Button(this.saving ? '保存中…' : '保存')
       .width('100%').height(44).borderRadius(11)
       .backgroundColor(this.dirty && !this.saving ? this.accentColor : this.pal().surface)
       .fontColor(this.dirty && !this.saving ? Color.White : this.pal().text3)
