@@ -83,6 +83,8 @@ enum SshError {
     ERR_SSH_OUTPUT_LIMIT        = -54,
     ERR_SSH_REACTOR_QUEUE_FULL  = -55,
     ERR_SSH_SFTP_DURABILITY_UNSUPPORTED = -56,
+    // SFTP request was queued for a previous session generation.
+    ERR_SSH_SESSION_STALE       = -57,
 };
 
 struct SshCommandResult {
@@ -141,8 +143,15 @@ public:
     void setVideoCallback(VideoFrameCallback callback) override;
     void setAudioCallback(AudioDataCallback callback) override;
     void setConnectionStateCallback(ConnectionStateCallback callback) override;
+    using SshLifecycleStateCallback =
+        std::function<void(SshSessionLifecycleState, const std::string&)>;
+    /** Receives lifecycle states with no lossy ConnectionState mapping. */
+    void setSshLifecycleStateCallback(SshLifecycleStateCallback callback);
     void setSessionIdentity(uint64_t sessionId) override;
     void setSessionGeneration(uint64_t generation);
+
+    /** Platform network availability event, fenced by its monotonic generation. */
+    void onNetworkChanged(bool available, uint64_t networkGeneration);
 
     // Forwarding profiles are owned by this SSH adapter. Runtime transitions
     // are serialized through the same session-owner reactor as libssh2.
@@ -308,7 +317,8 @@ private:
     void resetTransportForRecovery();
     bool reconnectAfterTransportFailure();
     bool assertSessionOwner(const char* operation) const noexcept;
-    void setSshLifecycleState(SshSessionLifecycleState state);
+    void setSshLifecycleState(SshSessionLifecycleState state,
+                              const std::string& eventType = "");
     int keyboardInteractiveResponseRound(
         const char* name, int nameLen, const char* instruction, int instructionLen,
         int numPrompts, const LIBSSH2_USERAUTH_KBDINT_PROMPT* prompts,
@@ -339,13 +349,18 @@ private:
     LIBSSH2_SESSION* session_;
     LIBSSH2_CHANNEL* channel_;
     LIBSSH2_SFTP* sftp_;
-    // ProxyJump owns a second libssh2 session. Its direct-tcpip channel is
-    // pumped by a dedicated relay thread; the target session only sees the
-    // local socketpair endpoint in sockFd_.
-    LIBSSH2_SESSION* jumpSession_ = nullptr;
-    LIBSSH2_CHANNEL* jumpChannel_ = nullptr;
-    int jumpSockFd_ = -1;
-    int jumpRelayFd_ = -1;
+    // Each ProxyJump hop owns an independent libssh2 session and an optional
+    // direct-tcpip channel to the next hop/target. The relay thread is the
+    // sole owner of these channels after setup; the target session sees only
+    // the final socketpair endpoint in sockFd_.
+    struct JumpHopRuntime {
+        LIBSSH2_SESSION* session = nullptr;
+        LIBSSH2_CHANNEL* channel = nullptr;
+        int transportFd = -1;
+        int channelPeerFd = -1;
+    };
+    std::mutex jumpRuntimeMutex_;
+    std::vector<JumpHopRuntime> jumpHopRuntimes_;
     std::thread jumpRelayThread_;
     std::atomic<bool> jumpRelayRunning_{false};
     std::atomic<bool> jumpRelayStopRequested_{false};
@@ -448,11 +463,18 @@ private:
     // while a tab is hidden cannot overtake the retained FIFO.
     std::mutex         callbackDeliveryMutex_;
     std::mutex         stateCallbackMutex_;     // 保护 stateCallback_
+    std::mutex         sshLifecycleCallbackMutex_;
+    SshLifecycleStateCallback sshLifecycleStateCallback_;
     mutable std::mutex sessionMutex_;           // 串行化 libssh2 session/channel 操作
     mutable std::recursive_mutex lifecycleMutex_; // 串行化 connect/disconnect 生命周期
     std::atomic<bool> connectCancelRequested_{false};
     SshTerminalDiagnostics diagnostics_;
     std::atomic<bool> transportRecoveryRequested_{false};
+    // Transport/KEX/auth are internal steps of Reconnecting. MFA remains
+    // visible as NeedsAuthentication because it waits for the page broker.
+    std::atomic<bool> recoveryAttemptInProgress_{false};
+    std::atomic<uint64_t> lastNetworkGeneration_{0};
+    std::atomic<bool> networkAvailable_{true};
 
     static constexpr size_t kDetachedTerminalMaxChunks = 512;
     static constexpr size_t kDetachedTerminalMaxBytes = 8 * 1024 * 1024;

@@ -173,7 +173,7 @@ function textChange(oldValue: string, newValue: string): SshImeTextChange {
 }
 
 /**
- * Inspect TextInput changes without duplicating system-IME onDid callbacks.
+ * Inspect TextArea changes without duplicating system-IME onDid callbacks.
  * HarmonyOS only guarantees onWill/onDid for system IMEs; for other IMEs a
  * committed value may arrive through onChange with no preview metadata. The
  * stable-shadow diff is the exactly-once fallback for that path.
@@ -207,15 +207,30 @@ export function inspectSshImeChange(
     return { updateShadow: true, sendRemote: false, resetLocal: false,
       remoteInsert: '', remoteDelete: '' };
   }
-  if (state.pendingInsert !== null || state.pendingDelete !== null) {
-    return { updateShadow: true, sendRemote: false, resetLocal: false,
-      remoteInsert: '', remoteDelete: '' };
-  }
-
   const changed = textChange(state.shadowValue, normalizedValue);
+  const pendingInsert: boolean = state.pendingInsert !== null;
+  const pendingDelete: boolean = state.pendingDelete !== null;
+  const wasPreviewActive: boolean = state.previewActive;
+  // API 23 and third-party IMEs can deliver onChange before onDidInsert or
+  // omit onDidInsert entirely. Once the value is no longer a preview, use the
+  // same stable diff as the no-callback fallback and consume the pending
+  // marker. A later onDid callback then becomes a harmless no-op instead of
+  // either dropping the character or sending it twice.
+  if (pendingInsert || pendingDelete) {
+    state.pendingInsert = null;
+    state.pendingDelete = null;
+  }
+  let remoteInsert: string = changed.inserted;
+  let remoteDelete: string = changed.deleted;
+  if (pendingInsert && wasPreviewActive) {
+    // The old shadow contains the IME pre-edit string, which is local state,
+    // not terminal input. Only the committed candidate crosses SSH.
+    remoteInsert = normalizedValue;
+    remoteDelete = '';
+  }
   state.shadowValue = normalizedValue;
   state.previewActive = false;
-  if (changed.inserted.length === 0 && changed.deleted.length === 0) {
+  if (remoteInsert.length === 0 && remoteDelete.length === 0) {
     return { updateShadow: true, sendRemote: false, resetLocal: value.length > 0,
       remoteInsert: '', remoteDelete: '' };
   }
@@ -223,8 +238,8 @@ export function inspectSshImeChange(
     updateShadow: true,
     sendRemote: true,
     resetLocal: value.length > 0,
-    remoteInsert: stripSshImeLineBreaks(changed.inserted),
-    remoteDelete: stripSshImeLineBreaks(changed.deleted)
+    remoteInsert: stripSshImeLineBreaks(remoteInsert),
+    remoteDelete: stripSshImeLineBreaks(remoteDelete)
   };
 }
 
@@ -369,6 +384,97 @@ function keyCodeToBasePrintable(keyCode: number): string {
   }
 }
 
+/**
+ * API 23 devices can expose the Android-compatible key code table for an
+ * external keyboard while HDC/key injection and newer ArkUI paths expose the
+ * HarmonyOS table. Keep the encoder independent of that platform detail.
+ */
+export function normalizeSshKeyCode(keyCode: number): number {
+  if (keyCode >= 29 && keyCode <= 54) {
+    return KeyCode.KEYCODE_A + keyCode - 29;
+  }
+  if (keyCode >= 7 && keyCode <= 16) {
+    return KeyCode.KEYCODE_0 + keyCode - 7;
+  }
+  switch (keyCode) {
+    case 19: return KeyCode.KEYCODE_DPAD_UP;
+    case 20: return KeyCode.KEYCODE_DPAD_DOWN;
+    case 21: return KeyCode.KEYCODE_DPAD_LEFT;
+    case 22: return KeyCode.KEYCODE_DPAD_RIGHT;
+    case 23: return KeyCode.KEYCODE_DPAD_CENTER;
+    case 55: return KeyCode.KEYCODE_COMMA;
+    case 56: return KeyCode.KEYCODE_PERIOD;
+    case 57: return KeyCode.KEYCODE_ALT_LEFT;
+    case 58: return KeyCode.KEYCODE_ALT_RIGHT;
+    case 59: return KeyCode.KEYCODE_SHIFT_LEFT;
+    case 60: return KeyCode.KEYCODE_SHIFT_RIGHT;
+    case 61: return KeyCode.KEYCODE_TAB;
+    case 62: return KeyCode.KEYCODE_SPACE;
+    case 64: return KeyCode.KEYCODE_EXPLORER;
+    case 65: return KeyCode.KEYCODE_ENVELOPE;
+    case 66: return KeyCode.KEYCODE_ENTER;
+    case 67: return KeyCode.KEYCODE_DEL;
+    case 68: return KeyCode.KEYCODE_GRAVE;
+    case 69: return KeyCode.KEYCODE_MINUS;
+    case 70: return KeyCode.KEYCODE_EQUALS;
+    case 71: return KeyCode.KEYCODE_LEFT_BRACKET;
+    case 72: return KeyCode.KEYCODE_RIGHT_BRACKET;
+    case 73: return KeyCode.KEYCODE_BACKSLASH;
+    case 74: return KeyCode.KEYCODE_SEMICOLON;
+    case 75: return KeyCode.KEYCODE_APOSTROPHE;
+    case 76: return KeyCode.KEYCODE_SLASH;
+    case 77: return KeyCode.KEYCODE_AT;
+    case 81: return KeyCode.KEYCODE_PLUS;
+    case 82: return KeyCode.KEYCODE_MENU;
+    case 92: return KeyCode.KEYCODE_PAGE_UP;
+    case 93: return KeyCode.KEYCODE_PAGE_DOWN;
+    case 111: return KeyCode.KEYCODE_ESCAPE;
+    case 112: return KeyCode.KEYCODE_FORWARD_DEL;
+    case 113: return KeyCode.KEYCODE_CTRL_LEFT;
+    case 114: return KeyCode.KEYCODE_CTRL_RIGHT;
+    case 115: return KeyCode.KEYCODE_CAPS_LOCK;
+    case 116: return KeyCode.KEYCODE_SCROLL_LOCK;
+    case 117: return KeyCode.KEYCODE_META_LEFT;
+    case 118: return KeyCode.KEYCODE_META_RIGHT;
+    case 122: return KeyCode.KEYCODE_MOVE_HOME;
+    case 123: return KeyCode.KEYCODE_MOVE_END;
+    case 124: return KeyCode.KEYCODE_INSERT;
+    case 131: return KeyCode.KEYCODE_F1;
+    case 132: return KeyCode.KEYCODE_F2;
+    case 133: return KeyCode.KEYCODE_F3;
+    case 134: return KeyCode.KEYCODE_F4;
+    case 135: return KeyCode.KEYCODE_F5;
+    case 136: return KeyCode.KEYCODE_F6;
+    case 137: return KeyCode.KEYCODE_F7;
+    case 138: return KeyCode.KEYCODE_F8;
+    case 139: return KeyCode.KEYCODE_F9;
+    case 140: return KeyCode.KEYCODE_F10;
+    case 141: return KeyCode.KEYCODE_F11;
+    case 142: return KeyCode.KEYCODE_F12;
+    case 144: return KeyCode.KEYCODE_NUMPAD_0;
+    case 145: return KeyCode.KEYCODE_NUMPAD_1;
+    case 146: return KeyCode.KEYCODE_NUMPAD_2;
+    case 147: return KeyCode.KEYCODE_NUMPAD_3;
+    case 148: return KeyCode.KEYCODE_NUMPAD_4;
+    case 149: return KeyCode.KEYCODE_NUMPAD_5;
+    case 150: return KeyCode.KEYCODE_NUMPAD_6;
+    case 151: return KeyCode.KEYCODE_NUMPAD_7;
+    case 152: return KeyCode.KEYCODE_NUMPAD_8;
+    case 153: return KeyCode.KEYCODE_NUMPAD_9;
+    case 154: return KeyCode.KEYCODE_NUMPAD_DIVIDE;
+    case 155: return KeyCode.KEYCODE_NUMPAD_MULTIPLY;
+    case 156: return KeyCode.KEYCODE_NUMPAD_SUBTRACT;
+    case 157: return KeyCode.KEYCODE_NUMPAD_ADD;
+    case 158: return KeyCode.KEYCODE_NUMPAD_DOT;
+    case 159: return KeyCode.KEYCODE_NUMPAD_COMMA;
+    case 160: return KeyCode.KEYCODE_NUMPAD_ENTER;
+    case 161: return KeyCode.KEYCODE_NUMPAD_EQUALS;
+    case 162: return KeyCode.KEYCODE_NUMPAD_LEFT_PAREN;
+    case 163: return KeyCode.KEYCODE_NUMPAD_RIGHT_PAREN;
+    default: return keyCode;
+  }
+}
+
 function specialResult(sequence: string, refocusAfterTab: boolean = false): SshEncodedKey {
   return { sequence, consume: sequence.length > 0, refocusAfterTab };
 }
@@ -454,21 +560,22 @@ export function encodeSpecialKey(
 }
 
 export function encodePhysicalKey(input: SshPhysicalKeyInput): SshEncodedKey {
+  const keyCode: number = normalizeSshKeyCode(input.keyCode);
   const modifiers: TerminalModifierState = { ctrl: input.ctrl, alt: input.alt, shift: input.shift };
-  if (input.keyCode === KeyCode.KEYCODE_DEL) {
+  if (keyCode === KeyCode.KEYCODE_DEL) {
     return specialResult(DEL);
   }
-  if (input.keyCode === KeyCode.KEYCODE_SPACE) {
+  if (keyCode === KeyCode.KEYCODE_SPACE) {
     return specialResult(encodeTextInput(' ', modifiers));
   }
   const special: string = encodeSpecialKey(
-    input.keyCode,
+    keyCode,
     modifiers,
     input.applicationCursorKeys === true,
     input.applicationKeypad === true
   );
   if (special.length > 0) {
-    return specialResult(special, input.keyCode === KeyCode.KEYCODE_TAB);
+    return specialResult(special, keyCode === KeyCode.KEYCODE_TAB);
   }
   const unicode: number | undefined = input.unicode;
   if (isPrintableUnicode(unicode) && unicode !== undefined) {
@@ -481,7 +588,7 @@ export function encodePhysicalKey(input: SshPhysicalKeyInput): SshEncodedKey {
     }
     return specialResult(encodeTextInput(text, modifiers));
   }
-  const fallback: string = keyCodeToBasePrintable(input.keyCode);
+  const fallback: string = keyCodeToBasePrintable(keyCode);
   if (fallback.length > 0 && input.allowKeyCodeFallback === true) {
     let text: string = fallback;
     const isAsciiLetter: boolean = text.length === 1 &&

@@ -176,6 +176,8 @@ public:
     void SetMakeCurrentCallback(DecoderMakeCurrentCallback callback);
     void SetReleaseCurrentCallback(DecoderReleaseCurrentCallback callback);
     void StartRenderThread();
+    /** Clear presentation failure state when a new Surface bind is published. */
+    void ResetSurfaceRecoveryForBind();
     bool StopRenderThreadForDetach();
     /** Deferred owners wait on the render done fence outside the caller. */
     void WaitForRenderThreadForDeferredDestroy();
@@ -260,6 +262,7 @@ private:
     std::atomic<uint64_t> inputTruncatedCount_ {0};
     std::atomic<uint64_t> renderOutputFailureCount_ {0};
     std::atomic<uint64_t> updateSurfaceFailureCount_ {0};
+    std::atomic<uint64_t> coalescedSurfaceNotificationCount_ {0};
     std::atomic<uint64_t> inputPushFailureCount_ {0};
     std::atomic<uint64_t> outputFrameCount_ {0};
     mutable std::mutex telemetryMutex_;
@@ -270,6 +273,10 @@ private:
     std::chrono::steady_clock::time_point surfaceRetryAt_ =
         std::chrono::steady_clock::time_point::min();
     int consecutiveSurfaceUpdateFailures_ = 0;
+    // Once the NativeImage surface is known to be invalid, stop retrying on
+    // every output notification. DecoderContext owns the bounded recreation
+    // decision; this flag only prevents a render-thread recovery storm.
+    std::atomic<bool> surfaceRecoveryBlocked_ {false};
     std::condition_variable inputCv_;
     std::thread inputThread_;
     std::atomic<bool> inputThreadStop_ {true};
@@ -320,7 +327,7 @@ private:
     static void OnFrameAvailable(void* context);
 
     size_t clearInputQueueLocked();
-    size_t dropOldestInputFramesLocked(size_t count);
+    size_t dropOldestNonKeyFramesLocked(size_t count);
     void handleInputBuffer(uint32_t index, OH_AVBuffer* buffer);
     void drainInputBuffers();
     void inputLoop();
@@ -342,6 +349,11 @@ private:
 namespace DecoderNapi {
     constexpr int kDecodeInactiveDisplay = 1;
     constexpr int kDecodeInactiveSession = 2;
+    // Software decode admission results. These are intentionally positive:
+    // the frame was dropped by latency recovery rather than rejected by the
+    // decoder, so callers must not classify it as a decode error.
+    constexpr int kDecodeSoftwareFrameDropped = 3;
+    constexpr int kDecodeSoftwareKeyframeRequired = 4;
     napi_value Init(napi_env env, napi_value exports);
     int DecodeNative(int64_t handle, const VideoFrame& frame);
     int DecodeActiveNative(const DecoderSessionIdentity& owner, const VideoFrame& frame);

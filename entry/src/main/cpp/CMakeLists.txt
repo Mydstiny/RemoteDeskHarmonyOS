@@ -178,7 +178,9 @@ if(RDP_BUILD_TESTS)
         test/ssh_auth_prompt_broker_test.cpp
         test/ssh_pty_recovery_policy_test.cpp
         test/ssh_reconnect_policy_test.cpp
+        test/ssh_network_lifecycle_policy_test.cpp
         test/ssh_session_manager_test.cpp
+        test/ssh_pending_connect_registry_test.cpp
         test/ssh_route_policy_test.cpp
         test/ssh_forwarding_manager_test.cpp
         test/video_activity_state_test.cpp
@@ -215,6 +217,7 @@ if(RDP_BUILD_TESTS)
         test/decoder_callback_gate_test.cpp
         test/decoder_callback_lifecycle_policy_test.cpp
         test/callback_admission_context_test.cpp
+        test/rustdesk_ffi_lifetime_policy_test.cpp
         test/rustdesk_connection_continuity_owner_test.cpp
         test/rustdesk_connection_continuity_executor_test.cpp
         test/decoder_pipeline_lifecycle_policy_test.cpp
@@ -545,7 +548,8 @@ set(RUSTDESK_FFI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../../rustdesk_ffi)
 set(RUSTDESK_PROTO_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../../rustdesk_vendor/libs/hbb_common/protos)
 set(RUSTDESK_OPUS_LIB_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../../libs/opus-ohos/${OHOS_ARCH})
 set(RUSTDESK_OPUS_LIBRARY ${RUSTDESK_OPUS_LIB_DIR}/libopus.a)
-find_program(RUSTDESK_CARGO_EXECUTABLE cargo REQUIRED)
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/ResolveRustCargo.cmake)
+resolve_rustdesk_cargo(RUSTDESK_CARGO_EXECUTABLE)
 
 if(NOT EXISTS ${RUSTDESK_PROTO_DIR}/message.proto OR NOT EXISTS ${RUSTDESK_PROTO_DIR}/rendezvous.proto)
     message(FATAL_ERROR

@@ -100,7 +100,8 @@ SshSessionManagerResult SshSessionManager::resolveLocked(
 
 SshSessionManagerResult SshSessionManager::registerSession(
     const SshSessionHandle& handle, const std::string& host, int port,
-    const std::shared_ptr<SshAdapter>& adapter) {
+    const std::shared_ptr<SshAdapter>& adapter,
+    SshNetworkAvailabilityCallback networkCallback) {
     if (!handle.valid() || host.empty() || port <= 0 || port > 65535) {
         return SshSessionManagerResult::InvalidIdentity;
     }
@@ -118,6 +119,7 @@ SshSessionManagerResult SshSessionManager::registerSession(
     entry.context.host = host;
     entry.context.port = port;
     entry.context.adapter = adapter;
+    entry.context.networkCallback = std::move(networkCallback);
     entries_.emplace(handle.sessionId, std::move(entry));
     return SshSessionManagerResult::Ok;
 }
@@ -202,6 +204,30 @@ SshSessionManagerResult SshSessionManager::setBackgroundLimited(
     event.payloadJson = reason.size() > 1024 ? reason.substr(0, 1024) : reason;
     it->second.events.push_back(std::move(event));
     return SshSessionManagerResult::Ok;
+}
+
+size_t SshSessionManager::notifyNetworkAvailability(bool available,
+    uint64_t networkGeneration) {
+    if (networkGeneration == 0) {
+        return 0;
+    }
+    std::vector<SshNetworkAvailabilityCallback> callbacks;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        callbacks.reserve(entries_.size());
+        for (const auto& item : entries_) {
+            if (item.second.context.state == SshSessionLifecycleState::Closed) {
+                continue;
+            }
+            if (item.second.context.networkCallback) {
+                callbacks.push_back(item.second.context.networkCallback);
+            }
+        }
+    }
+    for (const SshNetworkAvailabilityCallback& callback : callbacks) {
+        callback(available, networkGeneration);
+    }
+    return callbacks.size();
 }
 
 bool SshSessionManager::accepts(const SshSessionHandle& handle) const {

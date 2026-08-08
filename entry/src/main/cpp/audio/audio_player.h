@@ -2,9 +2,9 @@
  * audio_player.h — 低延迟音频播放器
  *
  * 基于 OHAudio (OH_AudioRenderer) 的 PCM 音频播放器。
- * 使用 FAST 延迟模式，适合远程桌面实时音频场景。
+ * 使用普通延迟模式配合远程桌面 PCM 抖动缓冲，避免高频空拉取与视频解码争用。
  *
- * 参数: 48kHz, 双声道, 16-bit PCM, 低延迟模式
+ * 参数: 48kHz, 双声道, 16-bit PCM, 普通延迟模式
  */
 
 #include <napi/native_api.h>

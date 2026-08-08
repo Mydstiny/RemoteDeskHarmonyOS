@@ -21,6 +21,15 @@ inline bool ShouldRetryNativeImageUpdate(int updateResult, int retryCount) {
         retryCount < kNativeImageUpdateRetryBudget;
 }
 
+// Drop-buffer mode keeps only the newest producer buffer but still emits the
+// listener callback for every produced frame. After a bounded handoff wait,
+// NO_BUFFER therefore means that this notification was coalesced by the
+// surface rather than that the decoder or NativeImage is broken.
+inline bool IsCoalescedNativeImageNotification(int updateResult, int retryCount) {
+    return updateResult == kNativeErrorNoBuffer &&
+        retryCount >= kNativeImageUpdateRetryBudget;
+}
+
 inline bool HasUnconsumedNativeImageFrame(uint64_t available, uint64_t consumed) {
     return available > consumed;
 }

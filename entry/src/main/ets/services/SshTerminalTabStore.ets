@@ -78,6 +78,31 @@ export class SshTerminalTabStore {
     this.notify();
   }
 
+  /** Publish a newly selected tab as active in one registry transaction. */
+  openAndActivate(hostId: string, label: string, address: string): void {
+    const normalizedHostId: string = hostId.trim();
+    if (normalizedHostId.length === 0) { return; }
+    const existing: SshTerminalTabRecord | undefined = this.records.get(normalizedHostId);
+    if (existing !== undefined) {
+      existing.label = label;
+      existing.address = address;
+    } else {
+      this.records.set(normalizedHostId, {
+        tabId: normalizedHostId,
+        hostId: normalizedHostId,
+        label,
+        address,
+        state: 'connecting',
+        sessionId: -1,
+        generation: 0,
+        active: false,
+        error: ''
+      });
+    }
+    this.activeHostId = normalizedHostId;
+    this.notify();
+  }
+
   activate(hostId: string): void {
     const normalizedHostId: string = hostId.trim();
     if (normalizedHostId.length === 0 || !this.records.has(normalizedHostId)) { return; }

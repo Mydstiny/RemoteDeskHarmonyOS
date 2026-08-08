@@ -13,6 +13,7 @@ import {
   isMonotonicSshSftpTaskProgress,
   isNewerSshSftpTaskUpdate,
   normalizeSshSftpTaskRecord,
+  recoverInterruptedSshSftpTaskRecord,
   sftpEndpointPathIsSame,
   sshSftpTaskCommandTarget,
   sshSftpResumeDisposition,
@@ -74,6 +75,27 @@ export default function sshSftpTaskPolicyTest(): void {
       expect(sshSftpResumeDisposition(unknownPartial, {
         hasAuthorization: true, hasAuthentication: true, hasMatchingSession: true, hasMatchingPartial: true
       })).assertEqual('NotResumable');
+    });
+
+    it('turns persisted in-flight work into an explicit reconnect wait', 0, (): void => {
+      const interruptedStages = ['inspecting', 'transferring', 'verifying', 'committing'];
+      for (let index: number = 0; index < interruptedStages.length; index++) {
+        const interrupted: SshSftpTaskRecord = {
+          ...task('restore-' + index.toString(), 10),
+          stage: interruptedStages[index] as SshSftpTaskRecord['stage'],
+          sessionGeneration: 9
+        };
+        const recovered: SshSftpTaskRecord =
+          recoverInterruptedSshSftpTaskRecord(interrupted, 20 + index);
+        expect(recovered.stage).assertEqual('waitingForConnection');
+        expect(recovered.sessionGeneration).assertEqual(0);
+        expect(recovered.verifiedOffset).assertEqual(interrupted.verifiedOffset);
+        expect(recovered.partialSize).assertEqual(interrupted.partialSize);
+        expect(recovered.sequence).assertEqual(20 + index);
+      }
+      const paused: SshSftpTaskRecord = task('paused', 30);
+      paused.stage = 'paused';
+      expect(recoverInterruptedSshSftpTaskRecord(paused, 40)).assertEqual(paused);
     });
 
     it('keeps task transitions explicit and replaces by id', 0, (): void => {

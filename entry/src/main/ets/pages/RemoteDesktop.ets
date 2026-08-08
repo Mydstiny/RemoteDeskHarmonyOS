@@ -126,6 +126,12 @@ import { RemoteCursorOverlay, RemoteCursorOverlayState } from '../components/Rem
 import { RemoteSessionTopBar, RemoteSessionTopBarActions } from '../components/RemoteSessionTopBar';
 import { RustDeskDiagnosticsHud } from '../components/RustDeskDiagnosticsHud';
 import { VncDiagnosticsHud } from '../components/VncDiagnosticsHud';
+import {
+  RemotePointerFocusRecoveryState,
+  shouldStageRustDeskMacPhysicalMouseClick,
+  shouldStartRustDeskMacPhysicalMouseDrag,
+  shouldRecoverRemotePointerFocus
+} from '../services/RemotePointerFocusPolicy';
 import { EMPTY_RDP_RENDER_STATS, RdpDiagnosticsHud } from '../components/RdpDiagnosticsHud';
 import { VncSessionToolbar, VncSessionToolbarActions } from '../components/VncSessionToolbar';
 import {
@@ -195,6 +201,7 @@ import {
   remoteCursorSnapshotChanged,
   RemoteCursorStyle,
   resolveRemoteCursorRenderMode,
+  resolveRemoteNativePointerScale,
   resolveRemoteCursorVisualScale,
   shouldRenderArrowCursor,
   shouldRenderRemoteCursorArrow,
@@ -910,6 +917,9 @@ struct RemoteDesktop {
   private backgroundRenderRetryTimer: number = -1;
   private nativeDisconnectPending: boolean = false;
   private nativeDisconnectRetryTimer: number = -1;
+  // Explicit page teardown detaches RustDesk's decoder before the asynchronous
+  // PIP/native disconnect barrier. Background preservation does not set this.
+  private decoderPipelineDetachedForTeardown: boolean = false;
   private pipContentSizeRefreshTimers: number[] = [];
   private pipLastContentWidth: number = 0;
   private pipLastContentHeight: number = 0;
@@ -985,6 +995,18 @@ struct RemoteDesktop {
   private remoteSystemPointerVisible: boolean | null = null;
   private remoteSurfaceUsesSystemPointer: boolean | null = null;
   private remoteSurfaceHovered: boolean | null = null;
+  // Physical mouse mode owns the system pointer. Keep the remote protocol
+  // bitmap alive until the window has adopted it, because pointer APIs retain
+  // the PixelMap beyond the synchronous call on API 23.
+  private remoteCursorWindowId: number = -1;
+  private remoteCursorNativePointerToken: number = 0;
+  private remoteCursorNativePointerGeneration: number = -1;
+  private remoteCursorNativePointerRevision: number = -1;
+  private remoteCursorNativePointerMap: image.PixelMap | null = null;
+  private remoteCursorNativePointerSourceMap: image.PixelMap | null = null;
+  private remoteCursorNativePointerPendingMap: image.PixelMap | null = null;
+  private remoteCursorNativePointerPendingOwnsMap: boolean = false;
+  private remoteCursorNativePointerPendingSourceMaps: Array<image.PixelMap> = [];
   private touchpadCurveState: TouchpadPointerCurveState = resetTouchpadPointerCurveState();
   private touchpadAnchorValid: boolean = false;
   private lastTouchpadCurveLogMs: number = 0;
@@ -1125,6 +1147,12 @@ struct RemoteDesktop {
   private inputLogCount: number = 0;
   private lastInputLogMs: number = 0;
   private remoteInputFocusTimer: number = -1;
+  private remoteInputFocusAcknowledgementTimer: number = -1;
+  private remoteKeyboardFocusLossTimer: number = -1;
+  private remoteInputFocusTarget: string = '';
+  private remoteInputFocusRequestPending: boolean = false;
+  private remotePointerFocusRecoveryArmed: boolean = false;
+  private remotePointerFocusRecoveryNeeded: boolean = false;
   @State private hardwareKeyboardProxyActive: boolean = false;
   private physicalKeyboardLayout: RemoteKeyboardLayout = RemoteKeyboardLayout.WINDOWS;
   private physicalKeyboardLayoutConfirmed: boolean = false;
@@ -1151,6 +1179,14 @@ struct RemoteDesktop {
   private localMouseMoveGeneration: number = 0;
   private mouseMoveTimer: number = -1;
   private physicalMouseDownButton: number = -1;
+  private physicalMouseClickPending: boolean = false;
+  private physicalMouseRemoteDownSent: boolean = false;
+  private physicalMousePressStartedAtMs: number = 0;
+  private physicalMousePressGeneration: number = -1;
+  private physicalMousePressX: number = 0;
+  private physicalMousePressY: number = 0;
+  private physicalMousePressLocalX: number = 0;
+  private physicalMousePressLocalY: number = 0;
   private physicalWheelRemainder: number = 0;
   private lastPhysicalWheelAtMs: number = 0;
   private physicalWheelSendCount: number = 0;
@@ -3507,18 +3543,281 @@ struct RemoteDesktop {
     cursor.renderMode = resolveRemoteCursorRenderMode(showCircle, showArrow);
   }
 
-  private setRemoteSurfacePointerStyle(useSystemPointer: boolean, force: boolean = false): void {
-    if (!force && this.remoteSurfaceUsesSystemPointer === useSystemPointer) {
+  private isRemoteCursorNativePointerEligible(): boolean {
+    return this.connected && this.isKeyboardMouseControlMode() &&
+      this.remoteSurfaceUsesSystemPointer === true &&
+      this.remoteSurfaceHovered !== false && this.remoteCursorNativeVisible &&
+      !this.remoteCursorFallbackShape && this.remoteCursorPixelMap !== null &&
+      this.remoteCursorPixelMapShapeRevision > 0 &&
+      this.remoteCursorShapeWidth > 0 && this.remoteCursorShapeHeight > 0 &&
+      this.remoteCursorShapeWidth <= 256 && this.remoteCursorShapeHeight <= 256 &&
+      this.remoteCursorHotX >= 0 && this.remoteCursorHotY >= 0 &&
+      this.remoteCursorHotX < this.remoteCursorShapeWidth &&
+      this.remoteCursorHotY < this.remoteCursorShapeHeight;
+  }
+
+  private resetRemoteNativePointer(reason: string): void {
+    this.remoteCursorNativePointerToken += 1;
+    const previousPointerMap: image.PixelMap | null = this.remoteCursorNativePointerMap;
+    const previousPointerSourceMap: image.PixelMap | null = this.remoteCursorNativePointerSourceMap;
+    const pendingPointerMap: image.PixelMap | null = this.remoteCursorNativePointerPendingMap;
+    const pendingPointerOwnsMap: boolean = this.remoteCursorNativePointerPendingOwnsMap;
+    this.remoteCursorNativePointerMap = null;
+    this.remoteCursorNativePointerSourceMap = null;
+    this.remoteCursorNativePointerPendingMap = null;
+    this.remoteCursorNativePointerPendingOwnsMap = false;
+    let resetByWindow: boolean = false;
+    if (this.remoteCursorWindowId > 0) {
+      try {
+        pointer.setPointerStyleSync(this.remoteCursorWindowId, pointer.PointerStyle.DEFAULT);
+        resetByWindow = true;
+      } catch (err) {
+        hilog.warn(RD_DOMAIN, RD_TAG,
+          'remote-native-pointer default reset failed reason=' + reason +
+          ' err=' + JSON.stringify(err));
+        this.remoteCursorWindowId = -1;
+      }
+    }
+    try {
+      this.getUIContext().getCursorController().restoreDefault();
+    } catch (err) {
+      hilog.warn(RD_DOMAIN, RD_TAG,
+        'remote pointer restore failed reason=' + reason + ' err=' + JSON.stringify(err));
+    }
+    this.remoteCursorNativePointerGeneration = -1;
+    this.remoteCursorNativePointerRevision = -1;
+    if (previousPointerMap !== null && previousPointerMap !== previousPointerSourceMap) {
+      this.retireRemoteNativePointerMap(previousPointerMap);
+    }
+    if (pendingPointerMap !== null && pendingPointerOwnsMap &&
+      pendingPointerMap !== previousPointerMap) {
+      this.retireRemoteNativePointerMap(pendingPointerMap);
+    }
+    if (resetByWindow || reason.length > 0) {
+      hilog.info(RD_DOMAIN, RD_TAG, 'remote-native-pointer default reason=' + reason);
+    }
+  }
+
+  private ensureRemoteCursorWindowId(reason: string): void {
+    if (this.remoteCursorWindowId > 0) {
+      this.applyRemoteNativePointer(reason, false);
       return;
     }
+    // WindowProperties does not expose windowId in the API 23 ArkTS typings.
+    // UIContext is already bound to the page's current application window and
+    // exposes the supported ID lookup directly.
+    const windowId: number | undefined = this.getUIContext().getWindowId();
+    if (windowId === undefined || !Number.isSafeInteger(windowId) || windowId <= 0) {
+      hilog.warn(RD_DOMAIN, RD_TAG,
+        'remote-native-pointer window lookup invalid reason=' + reason +
+        ' windowId=' + (windowId === undefined ? 'undefined' : windowId.toString()));
+      return;
+    }
+    this.remoteCursorWindowId = windowId;
+    hilog.info(RD_DOMAIN, RD_TAG,
+      'remote-native-pointer window ready id=' + windowId.toString() +
+      ' reason=' + reason);
+    this.applyRemoteNativePointer(reason, true);
+  }
+
+  private retireRemoteNativePointerMap(pixelMap: image.PixelMap): void {
+    if (pixelMap === this.remoteCursorPixelMap ||
+      pixelMap === this.remoteCursorOverlayState.arrowPixelMap) {
+      return;
+    }
+    this.retireRemoteCursorPixelMap(pixelMap, this.remoteCursorViewRevision, true);
+  }
+
+  private removeRemoteNativePointerPendingSource(pixelMap: image.PixelMap): void {
+    const index: number = this.remoteCursorNativePointerPendingSourceMaps.indexOf(pixelMap);
+    if (index >= 0) {
+      this.remoteCursorNativePointerPendingSourceMaps.splice(index, 1);
+    }
+  }
+
+  private discardRemoteNativePointerPendingMap(): void {
+    const pendingMap: image.PixelMap | null = this.remoteCursorNativePointerPendingMap;
+    const ownsMap: boolean = this.remoteCursorNativePointerPendingOwnsMap;
+    this.remoteCursorNativePointerPendingMap = null;
+    this.remoteCursorNativePointerPendingOwnsMap = false;
+    if (pendingMap !== null && ownsMap) {
+      this.retireRemoteNativePointerMap(pendingMap);
+    }
+  }
+
+  private applyRemoteNativePointerMap(pointerMap: image.PixelMap,
+    sourceMap: image.PixelMap, scale: number, ownsPointerMap: boolean,
+    applyToken: number, reason: string): void {
+    const generation: number = this.remoteCursorGeneration;
+    const revision: number = this.remoteCursorPixelMapShapeRevision;
+    if (applyToken !== this.remoteCursorNativePointerToken ||
+      this.remoteCursorPixelMap !== sourceMap ||
+      !this.isRemoteCursorNativePointerEligible()) {
+      if (ownsPointerMap) {
+        this.releasePixelMap(pointerMap);
+      }
+      return;
+    }
+    const pointerWidth: number = Math.max(1, Math.round(this.remoteCursorShapeWidth * scale));
+    const pointerHeight: number = Math.max(1, Math.round(this.remoteCursorShapeHeight * scale));
+    const focusX: number = Math.min(pointerWidth - 1,
+      Math.max(0, Math.round(this.remoteCursorHotX * scale)));
+    const focusY: number = Math.min(pointerHeight - 1,
+      Math.max(0, Math.round(this.remoteCursorHotY * scale)));
+    this.remoteCursorNativePointerPendingMap = pointerMap;
+    this.remoteCursorNativePointerPendingOwnsMap = ownsPointerMap;
+    const customCursor: pointer.CustomCursor = {
+      pixelMap: pointerMap,
+      focusX,
+      focusY
+    };
+    const cursorConfig: pointer.CursorConfig = { followSystem: false };
+    const clearRejectedCandidate = (): void => {
+      if (this.remoteCursorNativePointerPendingMap !== pointerMap) {
+        return;
+      }
+      this.remoteCursorNativePointerPendingMap = null;
+      this.remoteCursorNativePointerPendingOwnsMap = false;
+      if (ownsPointerMap) {
+        this.releasePixelMap(pointerMap);
+      }
+    };
+    try {
+      pointer.setCustomCursor(this.remoteCursorWindowId, customCursor, cursorConfig)
+        .then((): void => {
+          const valid: boolean = applyToken === this.remoteCursorNativePointerToken &&
+            this.remoteCursorPixelMap === sourceMap &&
+            this.remoteCursorGeneration === generation &&
+            this.remoteCursorPixelMapShapeRevision === revision &&
+            this.isRemoteCursorNativePointerEligible();
+          if (!valid) {
+            return;
+          }
+          const previousPointerMap: image.PixelMap | null = this.remoteCursorNativePointerMap;
+          const previousPointerSourceMap: image.PixelMap | null =
+            this.remoteCursorNativePointerSourceMap;
+          this.remoteCursorNativePointerMap = pointerMap;
+          this.remoteCursorNativePointerSourceMap = sourceMap;
+          this.remoteCursorNativePointerPendingMap = null;
+          this.remoteCursorNativePointerPendingOwnsMap = false;
+          this.remoteCursorNativePointerGeneration = generation;
+          this.remoteCursorNativePointerRevision = revision;
+          if (previousPointerMap !== null && previousPointerMap !== previousPointerSourceMap) {
+            this.retireRemoteNativePointerMap(previousPointerMap);
+          }
+          hilog.info(RD_DOMAIN, RD_TAG,
+            'remote-native-pointer custom generation=' + generation.toString() +
+            ' revision=' + revision.toString() + ' source=' +
+            this.remoteCursorShapeWidth.toString() + 'x' +
+            this.remoteCursorShapeHeight.toString() + ' native=' +
+            pointerWidth.toString() + 'x' + pointerHeight.toString() +
+            ' hot=' + focusX.toString() + ',' + focusY.toString() +
+            ' scale=' + scale.toFixed(2) + ' followSystem=0 reason=' + reason);
+        })
+        .catch((err: Object): void => {
+          clearRejectedCandidate();
+          try {
+            this.getUIContext().getCursorController().setCursor(pointer.PointerStyle.DEFAULT);
+          } catch (_fallbackErr) {
+            // Keep the primary pointer error as the diagnostic signal.
+          }
+          hilog.warn(RD_DOMAIN, RD_TAG,
+            'remote-native-pointer custom failed generation=' + generation.toString() +
+            ' revision=' + revision.toString() + ' reason=' + reason +
+            ' err=' + JSON.stringify(err));
+        });
+    } catch (err) {
+      clearRejectedCandidate();
+      try {
+        this.getUIContext().getCursorController().setCursor(pointer.PointerStyle.DEFAULT);
+      } catch (_fallbackErr) {
+        // Keep the primary pointer error as the diagnostic signal.
+      }
+      hilog.warn(RD_DOMAIN, RD_TAG,
+        'remote-native-pointer custom failed generation=' + generation.toString() +
+        ' revision=' + revision.toString() + ' reason=' + reason +
+        ' err=' + JSON.stringify(err));
+    }
+  }
+
+  private applyRemoteNativePointer(reason: string, force: boolean = false): void {
+    if (!this.isRemoteCursorNativePointerEligible()) {
+      if (force || this.remoteCursorNativePointerMap !== null ||
+        this.remoteCursorNativePointerPendingMap !== null) {
+        this.resetRemoteNativePointer(reason);
+      }
+      return;
+    }
+    const pixelMap: image.PixelMap = this.remoteCursorPixelMap as image.PixelMap;
+    const generation: number = this.remoteCursorGeneration;
+    const revision: number = this.remoteCursorPixelMapShapeRevision;
+    const scale: number = resolveRemoteNativePointerScale(
+      this.remoteCursorShapeWidth, this.remoteCursorShapeHeight);
+    if (!force && this.remoteCursorNativePointerGeneration === generation &&
+      this.remoteCursorNativePointerRevision === revision &&
+      this.remoteCursorNativePointerSourceMap === pixelMap) {
+      return;
+    }
+    if (this.remoteCursorWindowId <= 0) {
+      this.remoteCursorNativePointerPendingMap = pixelMap;
+      this.remoteCursorNativePointerPendingOwnsMap = false;
+      this.ensureRemoteCursorWindowId(reason);
+      return;
+    }
+    this.discardRemoteNativePointerPendingMap();
+    const applyToken: number = ++this.remoteCursorNativePointerToken;
+    if (scale <= 1) {
+      this.applyRemoteNativePointerMap(pixelMap, pixelMap, scale, false, applyToken, reason);
+      return;
+    }
+    this.remoteCursorNativePointerPendingSourceMaps.push(pixelMap);
+    pixelMap.createScaledPixelMap(scale, scale, image.AntiAliasingLevel.LOW)
+      .then((scaledPixelMap: image.PixelMap): void => {
+        this.removeRemoteNativePointerPendingSource(pixelMap);
+        if (applyToken !== this.remoteCursorNativePointerToken ||
+          this.remoteCursorPixelMap !== pixelMap ||
+          this.remoteCursorGeneration !== generation ||
+          this.remoteCursorPixelMapShapeRevision !== revision ||
+          !this.isRemoteCursorNativePointerEligible()) {
+          this.releasePixelMap(scaledPixelMap);
+          return;
+        }
+        this.applyRemoteNativePointerMap(scaledPixelMap, pixelMap, scale, true,
+          applyToken, reason);
+      })
+      .catch((err: Object): void => {
+        this.removeRemoteNativePointerPendingSource(pixelMap);
+        hilog.warn(RD_DOMAIN, RD_TAG,
+          'remote-native-pointer scale failed generation=' + generation.toString() +
+          ' revision=' + revision.toString() + ' source=' +
+          this.remoteCursorShapeWidth.toString() + 'x' +
+          this.remoteCursorShapeHeight.toString() + ' reason=' + reason +
+          ' err=' + JSON.stringify(err));
+      });
+  }
+
+  private setRemoteSurfacePointerStyle(useSystemPointer: boolean, force: boolean = false): void {
+    if (!force && this.remoteSurfaceUsesSystemPointer === useSystemPointer) {
+      if (useSystemPointer) {
+        this.applyRemoteNativePointer('pointer-owner-cached', false);
+      }
+      return;
+    }
+    this.remoteSurfaceUsesSystemPointer = useSystemPointer;
     try {
       const cursorController = this.getUIContext().getCursorController();
       if (useSystemPointer) {
+        // Start from the official default style while the protocol bitmap is
+        // being adopted. applyRemoteNativePointer replaces it with the exact
+        // remote shape, including an I-beam cursor for text fields.
         cursorController.setCursor(pointer.PointerStyle.DEFAULT);
       } else {
+        this.resetRemoteNativePointer('surface-owner-release');
         cursorController.restoreDefault();
       }
-      this.remoteSurfaceUsesSystemPointer = useSystemPointer;
+      if (useSystemPointer) {
+        this.applyRemoteNativePointer('surface-owner-acquire', force);
+      }
     } catch (err) {
       hilog.warn(RD_DOMAIN, RD_TAG, 'remote pointer style update failed: ' + JSON.stringify(err));
     }
@@ -5608,8 +5907,14 @@ struct RemoteDesktop {
   /** Release remote keys and, for lifecycle teardown, any held mouse buttons. */
   private releaseAllHeldKeys(releaseMouseButtons: boolean = true): void {
     this.releasePendingMacCapsLock();
+    if (releaseMouseButtons) {
+      this.cancelPhysicalMouseClickTransaction('release-all-held-input');
+    }
     if (this.sessionId <= 0) {
       this.physicalRemoteKeyCodesDown = [];
+      if (releaseMouseButtons) {
+        this.physicalMouseDownButton = -1;
+      }
       this.resetPhysicalModifiers();
       return;
     }
@@ -6278,6 +6583,16 @@ struct RemoteDesktop {
     this.clearVncToolbarAutoCollapse();
     this.releaseCanvasPinchInput('page-disappear');
     this.restoreRemoteSystemPointer('page-disappear');
+    // A page can disappear before the route decision or PIP stop promise
+    // settles. Close the input/focus admission immediately so a late ArkUI
+    // event cannot write into a session whose visual owner is leaving.
+    this.inputForwardReady = false;
+    this.clearRemoteInputFocusSchedule();
+    this.clearRemoteInputFocusAcknowledgement();
+    this.clearRemoteKeyboardFocusLoss();
+    this.remotePointerFocusRecoveryArmed = false;
+    this.remotePointerFocusRecoveryNeeded = false;
+    this.releaseAllHeldKeys();
     this.stopRustDeskDiagnosticsPolling(true);
     this.stopRdpDiagnosticsPolling(true);
     this.clearRdpTransferStatusPolling(false);
@@ -6334,6 +6649,12 @@ struct RemoteDesktop {
 
     // 显式 back / 左右滑退出 / 断开按钮 → 完全断连
     this.cancelPendingDisappearDecision();
+    if (this.surfaceReady && !this.renderPreservedInPip && !this.pipSurfaceTransferInProgress) {
+      this.markXComponentSurfaceDetached('page-disappear-explicit');
+      this.surfaceReady = false;
+      hilog.info(RD_DOMAIN, RD_TAG,
+        'aboutToDisappear: foreground surface detached before explicit teardown');
+    }
     this.unbindVncAccountScopeListener();
     hilog.info(RD_DOMAIN, RD_TAG, 'aboutToDisappear: full disconnect reason=explicit-exit');
     this.disconnectAndCleanup('explicit-exit');
@@ -6369,6 +6690,7 @@ struct RemoteDesktop {
       }
       return;
     }
+    this.decoderPipelineDetachedForTeardown = false;
     this.connectStarted = true;
     hilog.info(RD_DOMAIN, RD_TAG, 'XComponent surface ready, starting connect: proto=' +
       this.pendingHost.protocol + ' host=' + maskHost(this.pendingHost.host));
@@ -7652,6 +7974,130 @@ struct RemoteDesktop {
     }
   }
 
+  private clearRemoteInputFocusAcknowledgement(): void {
+    if (this.remoteInputFocusAcknowledgementTimer >= 0) {
+      clearTimeout(this.remoteInputFocusAcknowledgementTimer);
+      this.remoteInputFocusAcknowledgementTimer = -1;
+    }
+  }
+
+  private clearRemoteKeyboardFocusLoss(): void {
+    if (this.remoteKeyboardFocusLossTimer >= 0) {
+      clearTimeout(this.remoteKeyboardFocusLossTimer);
+      this.remoteKeyboardFocusLossTimer = -1;
+    }
+  }
+
+  private markRemoteInputFocus(target: string): void {
+    this.clearRemoteKeyboardFocusLoss();
+    this.clearRemoteInputFocusAcknowledgement();
+    this.remoteInputFocusRequestPending = false;
+    this.remotePointerFocusRecoveryNeeded = false;
+    if (target !== 'keyboard-proxy') {
+      this.remoteInputFocusTarget = '';
+      this.hardwareKeyboardProxyActive = false;
+      return;
+    }
+    // The callback is the primary evidence that the hidden TextArea owns
+    // ArkUI focus. API 23 can accept requestFocus() without emitting this
+    // callback, so the bounded acknowledgement fallback below also releases
+    // the pending state instead of blocking every later pointer transaction.
+    this.remoteInputFocusTarget = target;
+    this.hardwareKeyboardProxyActive = this.connected && this.inputForwardReady &&
+      !this.keyboardOpen && this.shouldUseHardwareKeyboardProxy();
+  }
+
+  private invalidateRemoteInputFocusState(reason: string): void {
+    if (this.remoteInputFocusTarget.length > 0 || this.hardwareKeyboardProxyActive ||
+      this.remoteInputFocusRequestPending) {
+      hilog.info(RD_DOMAIN, RD_TAG, 'remote-input-focus invalidated reason=' + reason +
+        ' target=' + this.remoteInputFocusTarget +
+        ' pending=' + (this.remoteInputFocusRequestPending ? '1' : '0'));
+    }
+    this.clearRemoteInputFocusAcknowledgement();
+    this.remoteInputFocusRequestPending = false;
+    this.hardwareKeyboardProxyActive = false;
+    this.remoteInputFocusTarget = '';
+    this.clearRemoteKeyboardFocusLoss();
+  }
+
+  private armRemotePointerFocusRecovery(reason: string): boolean {
+    const proxyLeaseActive: boolean = this.hardwareKeyboardProxyActive ||
+      this.remoteInputFocusTarget === 'keyboard-proxy' ||
+      this.remoteInputFocusRequestPending || this.shouldUseHardwareKeyboardProxy();
+    if (!proxyLeaseActive) {
+      return false;
+    }
+    // A pointer transaction may move ArkUI focus to the canvas root. Keep the
+    // current proxy state until onEditChange(false)/onBlur proves that it
+    // actually happened. Clearing it here made every click look like a focus
+    // loss and forced a TextArea refocus even when ArkUI kept the lease.
+    const focusRequestScheduled: boolean = this.remoteInputFocusTimer >= 0;
+    this.clearRemoteInputFocusSchedule();
+    if (focusRequestScheduled && this.remoteInputFocusTarget.length === 0) {
+      // A second click can arrive before a deferred recovery timer fires. Keep
+      // the recovery obligation alive after cancelling that timer.
+      this.remotePointerFocusRecoveryNeeded = true;
+    }
+    this.remotePointerFocusRecoveryArmed = true;
+    hilog.info(RD_DOMAIN, RD_TAG, 'remote-input-focus pointer-transaction reason=' + reason +
+      ' target=' + this.remoteInputFocusTarget +
+      ' active=' + (this.hardwareKeyboardProxyActive ? '1' : '0') +
+      ' pending=' + (this.remoteInputFocusRequestPending ? '1' : '0'));
+    return true;
+  }
+
+  private recoverRemotePointerFocus(reason: string): void {
+    const needsRecovery: boolean = this.remotePointerFocusRecoveryNeeded;
+    const requestScheduled: boolean = this.remoteInputFocusTimer >= 0;
+    const requestPending: boolean = this.remoteInputFocusRequestPending;
+    const proxyExpected: boolean = this.shouldUseHardwareKeyboardProxy();
+    const recoveryState: RemotePointerFocusRecoveryState = {
+      proxyExpected,
+      recoveryNeeded: needsRecovery,
+      requestScheduled,
+      requestPending
+    };
+    this.remotePointerFocusRecoveryArmed = false;
+    if (!shouldRecoverRemotePointerFocus(recoveryState)) {
+      this.remotePointerFocusRecoveryNeeded = false;
+      hilog.info(RD_DOMAIN, RD_TAG,
+        'remote-input-focus pointer-recovery skipped reason=' + reason +
+        ' loss=' + (needsRecovery ? '1' : '0') +
+        ' proxyExpected=' + (proxyExpected ? '1' : '0'));
+      return;
+    }
+    // A scheduled or pending request already owns the recovery transaction.
+    // Keep it single-flight when API 23 delivers both mouse and touch paths.
+    if (requestScheduled || requestPending) {
+      this.remotePointerFocusRecoveryNeeded = false;
+      hilog.info(RD_DOMAIN, RD_TAG,
+        'remote-input-focus pointer-recovery coalesced reason=' + reason +
+        ' scheduled=' + (requestScheduled ? '1' : '0') +
+        ' pending=' + (requestPending ? '1' : '0'));
+      return;
+    }
+    this.remotePointerFocusRecoveryNeeded = false;
+    hilog.info(RD_DOMAIN, RD_TAG, 'remote-input-focus pointer-recovery request reason=' + reason +
+      ' forced=1');
+    this.scheduleRemoteInputFocus(reason, true, true);
+  }
+
+  /**
+   * Pointer events can be delivered through both onMouse and onTouch on API 23.
+   * Re-requesting an already held focus is not harmless: ArkUI emits a blur and
+   * re-enters TextArea editing, which can race the remote window-focus click.
+   */
+  private hasStableRemoteInputFocus(useHardwareProxy: boolean): boolean {
+    if (useHardwareProxy) {
+      return !this.remoteInputFocusRequestPending && this.hardwareKeyboardProxyActive &&
+        this.remoteInputFocusTarget === 'keyboard-proxy';
+    }
+    // With no external keyboard there is no local keyboard focus lease to
+    // maintain while the remote canvas is being clicked or touched.
+    return true;
+  }
+
   /**
    * 将系统键盘焦点交给连接后的远程输入层。
    *
@@ -7659,15 +8105,16 @@ struct RemoteDesktop {
    * 画布是 SURFACE 时，ArkUI 会把按键交给系统输入法编辑器。因此桌面端
    * 使用一个不主动拉起软键盘的隐藏 TextArea 作为硬件输入代理，并在
    * onKeyPreIme 阶段直接转发实体键；只有用户明确打开虚拟键盘时，普通
-   * 字符才进入 IME 组词链路。移动端仍优先使用 remoteInputSurface/XComponent。
+   * 字符才进入 IME 组词链路。无实体键盘时不建立额外的本地焦点租约。
    */
-  private scheduleRemoteInputFocus(reason: string): void {
+  private scheduleRemoteInputFocus(reason: string, force: boolean = false,
+    allowInterruptedProxy: boolean = false): void {
     if (this.connected && this.shouldRequirePhysicalKeyboardLayout() &&
       !this.physicalKeyboardLayoutConfirmed && !this.physicalKeyboardLayoutPromptVisible) {
       this.promptPhysicalKeyboardLayout();
       return;
     }
-    if (!this.connected || this.sessionId <= 0 || this.keyboardOpen ||
+    if (!this.connected || this.sessionId <= 0 || !this.inputForwardReady || this.keyboardOpen ||
       this.physicalKeyboardLayoutPromptVisible ||
       (this.shouldRequirePhysicalKeyboardLayout() && !this.physicalKeyboardLayoutConfirmed)) {
       return;
@@ -7675,58 +8122,74 @@ struct RemoteDesktop {
     this.clearRemoteInputFocusSchedule();
     this.remoteInputFocusTimer = setTimeout((): void => {
       this.remoteInputFocusTimer = -1;
-      if (!this.connected || this.sessionId <= 0 || this.keyboardOpen ||
+      if (!this.connected || this.sessionId <= 0 || !this.inputForwardReady || this.keyboardOpen ||
         this.physicalKeyboardLayoutPromptVisible ||
         (this.shouldRequirePhysicalKeyboardLayout() && !this.physicalKeyboardLayoutConfirmed)) {
         return;
       }
       const useHardwareProxy: boolean = this.shouldUseHardwareKeyboardProxy();
+      if (!useHardwareProxy && !allowInterruptedProxy) {
+        this.invalidateRemoteInputFocusState('hardware-proxy-not-required');
+        hilog.info(RD_DOMAIN, RD_TAG, 'remote-input-focus skip reason=' + reason +
+          ' proxyExpected=0');
+        return;
+      }
+      if (!force && useHardwareProxy && this.hasStableRemoteInputFocus(useHardwareProxy)) {
+        hilog.info(RD_DOMAIN, RD_TAG, 'remote-input-focus skip reason=' + reason +
+          ' target=' + this.remoteInputFocusTarget);
+        return;
+      }
       let proxyFocused: boolean = false;
-      let overlayFocused: boolean = false;
-      let xComponentFocused: boolean = false;
       try {
-        if (useHardwareProxy) {
-          this.hardwareKeyboardProxyActive = true;
-          // 自动桌面硬件键盘模式不需要编辑会话；若用户刚关闭虚拟键盘，
-          // 这里同时结束残留 IME 编辑状态，避免控制端输入法再次弹出。
-          if (this.keyboardImeActive) {
-            this.resetRemoteImeSession('desktop-proxy-direct');
-          }
-          try {
-            this.keyboardController.stopEditing();
-          } catch (_err) {
-            // TextArea 尚未挂载或已经退出编辑态时，停止编辑可能无效。
-          }
-          proxyFocused = focusControl.requestFocus('RemoteDesktopKeyboard');
-          if (!proxyFocused) {
-            overlayFocused = focusControl.requestFocus('remoteInputSurface');
-            if (!overlayFocused) {
-              xComponentFocused = focusControl.requestFocus(this.xcId);
-            }
-          }
-        } else {
+        this.invalidateRemoteInputFocusState('request-' + reason);
+        this.remoteInputFocusRequestPending = true;
+        // 自动桌面硬件键盘模式不需要编辑会话；不要在这里调用
+        // stopEditing()，因为 API 23 会先把焦点移到 Stack 根节点，再把
+        // TextArea 拉回来，形成一次可见的本地焦点抖动。enableKeyboardOnFocus
+        // 已经关闭了硬件代理的软键盘入口。
+        if (this.keyboardImeActive) {
+          this.resetRemoteImeSession('desktop-proxy-direct');
+        }
+        proxyFocused = focusControl.requestFocus('RemoteDesktopKeyboard');
+        if (!proxyFocused) {
+          this.clearRemoteInputFocusAcknowledgement();
+          this.remoteInputFocusRequestPending = false;
+          this.remoteInputFocusTarget = '';
           this.hardwareKeyboardProxyActive = false;
-          if (this.keyboardImeActive) {
-            this.resetRemoteImeSession('desktop-proxy-unavailable');
-          }
-          overlayFocused = focusControl.requestFocus('remoteInputSurface');
-          if (!overlayFocused) {
-            xComponentFocused = focusControl.requestFocus(this.xcId);
-          }
+          this.releaseAllHeldKeys(false);
+        } else {
+          this.clearRemoteInputFocusAcknowledgement();
+          this.remoteInputFocusAcknowledgementTimer = setTimeout((): void => {
+            this.remoteInputFocusAcknowledgementTimer = -1;
+            if (!this.connected || this.sessionId <= 0 ||
+              !this.remoteInputFocusRequestPending) {
+              return;
+            }
+            this.remoteInputFocusRequestPending = false;
+            this.remoteInputFocusTarget = 'keyboard-proxy';
+            this.hardwareKeyboardProxyActive = this.shouldUseHardwareKeyboardProxy();
+            hilog.warn(RD_DOMAIN, RD_TAG,
+              'remote-input-focus acknowledgement timeout accepted target=keyboard-proxy');
+          }, 180);
         }
         hilog.info(RD_DOMAIN, RD_TAG, 'remote-input-focus reason=' + reason +
           ' proxy=' + (proxyFocused ? '1' : '0') +
-          ' proxyExpected=' + (useHardwareProxy ? '1' : '0') +
-          ' overlay=' + (overlayFocused ? '1' : '0') +
-          ' xcomponent=' + (xComponentFocused ? '1' : '0') +
+          ' proxyExpected=' + (useHardwareProxy || allowInterruptedProxy ? '1' : '0') +
+          ' interruptedProxy=' + (allowInterruptedProxy ? '1' : '0') +
+          ' overlay=0 xcomponent=0' +
           ' desktop=' + (this.isDesktopDevice ? '1' : '0') +
           ' breakpoint=' + this.breakpoint +
           ' keyboardMouseMode=' + (this.isKeyboardMouseControlMode() ? '1' : '0') +
           ' physicalKeyboard=' + (this.physicalKeyboardConnected ? '1' : '0') +
           ' protocol=' + this.currentProtocolName());
       } catch (err) {
+        this.clearRemoteInputFocusAcknowledgement();
+        this.remoteInputFocusRequestPending = false;
+        this.hardwareKeyboardProxyActive = false;
+        this.remoteInputFocusTarget = '';
+        this.releaseAllHeldKeys(false);
         hilog.warn(RD_DOMAIN, RD_TAG, 'remote-input-focus failed reason=' + reason +
-          ' proxyExpected=' + (useHardwareProxy ? '1' : '0') +
+          ' proxyExpected=1' +
           ' error=' + JSON.stringify(err));
       }
     }, 60);
@@ -7763,6 +8226,12 @@ struct RemoteDesktop {
   private flushMouseMove(): void {
     this.clearMouseMoveTimer();
     if (!this.pendingMouseMoveValid) {
+      return;
+    }
+    if (this.physicalMouseClickPending && !this.physicalMouseRemoteDownSent) {
+      // A staged macOS click must remain MOVE -> DOWN -> UP with no extra MOVE
+      // inside the button pulse. Tiny physical sensor motion is classified by
+      // the local drag threshold before it reaches this queue.
       return;
     }
     if (this.pendingMouseMoveGeneration !== this.connectAttemptId) {
@@ -7808,7 +8277,10 @@ struct RemoteDesktop {
     if (x !== this.remoteCursorX || y !== this.remoteCursorY) {
       this.rememberRemoteCursor(x, y);
     }
-    this.flushMouseMove();
+    // RustDesk anchors DOWN to this coordinate at the protocol boundary. Do
+    // not force another MOVE before UP: on macOS, MOVE between DOWN and UP is
+    // interpreted as a drag transaction and can prevent window/input focus
+    // from changing even when the coordinate itself did not move.
     if (!this.canForwardInput('mouseButton')) {
       return;
     }
@@ -7823,6 +8295,88 @@ struct RemoteDesktop {
       }
     }
     this.loader.sendMouse(this.sessionId, src['x'], src['y'], sendButton, pressed);
+  }
+
+  private clearPhysicalMouseClickTransaction(): void {
+    this.physicalMouseClickPending = false;
+    this.physicalMouseRemoteDownSent = false;
+    this.physicalMousePressStartedAtMs = 0;
+    this.physicalMousePressGeneration = -1;
+    this.physicalMousePressX = 0;
+    this.physicalMousePressY = 0;
+    this.physicalMousePressLocalX = 0;
+    this.physicalMousePressLocalY = 0;
+  }
+
+  private cancelPhysicalMouseClickTransaction(reason: string): void {
+    const wasPending: boolean = this.physicalMouseClickPending;
+    const remoteDownSent: boolean = this.physicalMouseRemoteDownSent;
+    this.clearPhysicalMouseClickTransaction();
+    if (wasPending) {
+      hilog.info(RD_DOMAIN, RD_TAG,
+        'physical-mouse transaction canceled reason=' + reason +
+          ' remoteDown=' + (remoteDownSent ? '1' : '0'));
+    }
+  }
+
+  private stagePhysicalMouseClick(
+    localX: number,
+    localY: number,
+    x: number,
+    y: number,
+    button: number
+  ): void {
+    // RustDesk's button builder anchors DOWN to its supplied coordinate. Do
+    // not send the remote DOWN yet: an ordinary physical click is completed
+    // as one adjacent DOWN+UP pulse on local release, matching the already
+    // reliable virtual-touchpad path. Only a real drag crosses the threshold
+    // and promotes this transaction to a held remote button.
+    this.discardPendingMouseMove();
+    this.rememberRemoteCursor(x, y);
+    this.physicalMouseDownButton = button;
+    this.physicalMouseClickPending = true;
+    this.physicalMouseRemoteDownSent = false;
+    this.physicalMousePressStartedAtMs = Date.now();
+    this.physicalMousePressGeneration = this.connectAttemptId;
+    this.physicalMousePressX = x;
+    this.physicalMousePressY = y;
+    this.physicalMousePressLocalX = localX;
+    this.physicalMousePressLocalY = localY;
+    hilog.info(RD_DOMAIN, RD_TAG,
+      'physical-mouse transaction staged-click remote=' +
+        x.toString() + ',' + y.toString());
+  }
+
+  private promotePhysicalMouseClickToDrag(
+    localX: number,
+    localY: number,
+    x: number,
+    y: number,
+    reason: string
+  ): boolean {
+    if (!this.physicalMouseClickPending || this.physicalMouseRemoteDownSent ||
+      !shouldStartRustDeskMacPhysicalMouseDrag(
+        this.physicalMousePressLocalX, this.physicalMousePressLocalY, localX, localY)) {
+      return false;
+    }
+    if (this.physicalMousePressGeneration !== this.connectAttemptId ||
+      this.physicalMouseDownButton < 0 ||
+      !this.canForwardInput('physicalMouseDragStart')) {
+      this.clearPhysicalMouseClickTransaction();
+      this.physicalMouseDownButton = -1;
+      hilog.info(RD_DOMAIN, RD_TAG,
+        'physical-mouse transaction dropped-stale-drag reason=' + reason);
+      return false;
+    }
+    this.sendMouseNow(this.physicalMousePressX, this.physicalMousePressY,
+      this.physicalMouseDownButton, true);
+    this.physicalMouseRemoteDownSent = true;
+    this.queueMouseMove(x, y, true);
+    this.flushMouseMove();
+    hilog.info(RD_DOMAIN, RD_TAG,
+      'physical-mouse transaction promoted-drag reason=' + reason +
+        ' remote=' + x.toString() + ',' + y.toString());
+    return true;
   }
 
   /**
@@ -8429,6 +8983,12 @@ struct RemoteDesktop {
       (this.overflowRemoteCursorPixelMap !== null ? 1 : 0);
   }
 
+  private isRemoteCursorPixelMapNativeOwned(pixelMap: image.PixelMap): boolean {
+    return pixelMap === this.remoteCursorNativePointerMap ||
+      pixelMap === this.remoteCursorNativePointerPendingMap ||
+      this.remoteCursorNativePointerPendingSourceMaps.indexOf(pixelMap) >= 0;
+  }
+
   private releaseRetiredRemoteCursorPixelMaps(): void {
     if (this.retiredRemoteCursorPixelMaps.length === 0 &&
       this.deferredRemoteCursorPixelMap === null && this.overflowRemoteCursorPixelMap === null) {
@@ -8452,7 +9012,8 @@ struct RemoteDesktop {
       const retired: RetiredRemoteCursorPixelMap = this.retiredRemoteCursorPixelMaps[index];
       const safeToRelease: boolean = nowMs >= retired.notBeforeMs &&
         this.remoteCursorOverlayState.viewRevision >= retired.requiredViewRevision &&
-        retired.pixelMap !== this.remoteCursorPixelMap && retired.pixelMap !== overlayPixelMap;
+        retired.pixelMap !== this.remoteCursorPixelMap && retired.pixelMap !== overlayPixelMap &&
+        !this.isRemoteCursorPixelMapNativeOwned(retired.pixelMap);
       if (safeToRelease) {
         this.releasePixelMap(retired.pixelMap);
         releasedCount += 1;
@@ -8465,7 +9026,8 @@ struct RemoteDesktop {
       nowMs >= this.deferredRemoteCursorPixelMap.notBeforeMs &&
       this.remoteCursorOverlayState.viewRevision >= this.deferredRemoteCursorPixelMap.requiredViewRevision &&
       this.deferredRemoteCursorPixelMap.pixelMap !== this.remoteCursorPixelMap &&
-      this.deferredRemoteCursorPixelMap.pixelMap !== overlayPixelMap) {
+      this.deferredRemoteCursorPixelMap.pixelMap !== overlayPixelMap &&
+      !this.isRemoteCursorPixelMapNativeOwned(this.deferredRemoteCursorPixelMap.pixelMap)) {
       this.releasePixelMap(this.deferredRemoteCursorPixelMap.pixelMap);
       this.deferredRemoteCursorPixelMap = null;
       releasedCount += 1;
@@ -8474,7 +9036,8 @@ struct RemoteDesktop {
       nowMs >= this.overflowRemoteCursorPixelMap.notBeforeMs &&
       this.remoteCursorOverlayState.viewRevision >= this.overflowRemoteCursorPixelMap.requiredViewRevision &&
       this.overflowRemoteCursorPixelMap.pixelMap !== this.remoteCursorPixelMap &&
-      this.overflowRemoteCursorPixelMap.pixelMap !== overlayPixelMap) {
+      this.overflowRemoteCursorPixelMap.pixelMap !== overlayPixelMap &&
+      !this.isRemoteCursorPixelMapNativeOwned(this.overflowRemoteCursorPixelMap.pixelMap)) {
       this.releasePixelMap(this.overflowRemoteCursorPixelMap.pixelMap);
       this.overflowRemoteCursorPixelMap = null;
       releasedCount += 1;
@@ -8611,6 +9174,7 @@ struct RemoteDesktop {
       return;
     }
 
+    this.resetRemoteNativePointer('generation-adopt');
     this.remoteCursorShapeLoadToken += 1;
     this.clearRemoteCursorShapeLoadWatchdog();
     this.remoteCursorShapeLoading = false;
@@ -8674,6 +9238,7 @@ struct RemoteDesktop {
       hilog.info(RD_DOMAIN, RD_TAG, 'remote-cursor polling stopped preserve=1 reason=' + reason);
       return;
     }
+    this.resetRemoteNativePointer('poll-stop-' + reason);
     this.remoteCursorNativeVisible = false;
     this.remoteCursorGeneration = -1;
     this.remoteCursorShapeRevision = -1;
@@ -8880,6 +9445,7 @@ struct RemoteDesktop {
       this.remoteCursorHotY = snapshot.hotY;
       this.remoteCursorFallbackShape = snapshot.fallbackShape;
       this.remoteCursorShapeRetryAtMs = Date.now();
+      this.applyRemoteNativePointer('shape-ready', true);
       this.requestRemoteCursorViewRefresh(true);
       if (previous !== null) {
         this.retireRemoteCursorPixelMap(previous, this.remoteCursorOverlayState.viewRevision);
@@ -8954,6 +9520,7 @@ struct RemoteDesktop {
       // Preserve the controller-side arrow until a real disconnect; RDP keeps
       // honoring protocol visibility.
       this.remoteCursorNativeVisible = snapshot.visible || this.isRustDeskSession();
+      this.applyRemoteNativePointer('visibility-change', true);
       this.requestRemoteCursorViewRefresh(true);
     }
     if (shapeChanged || positionChanged || visibilityChanged ||
@@ -10035,6 +10602,9 @@ struct RemoteDesktop {
       this.nativeHandles.markProtocolDisconnected();
       this.activeSessionRegistry.clear('connect-failed');
       this.clearRemoteInputFocusSchedule();
+      this.clearRemoteInputFocusAcknowledgement();
+      this.remotePointerFocusRecoveryArmed = false;
+      this.remotePointerFocusRecoveryNeeded = false;
       this.hardwareKeyboardProxyActive = false;
       this.inputForwardReady = false;
       this.connectStarted = false;
@@ -10279,6 +10849,8 @@ struct RemoteDesktop {
     this.clearBackgroundRenderRetry();
     this.restoreOperationId += 1;
     this.clearPipContentSizeRefresh();
+    const pipOwnedAtTeardown: boolean = this.renderPreservedInPip ||
+      this.pipRendererHandle > 0 || this.pipSurfaceTransferInProgress;
     if (this.cleanupStarted && !this.renderPreservedInPip && !this.bgRestorePending) {
       return;
     }
@@ -10288,10 +10860,24 @@ struct RemoteDesktop {
     this.renderPreservedInPip = false;
     this.pipSurfaceTransferInProgress = false;
     const cleanupStartedAtMs: number = Date.now();
+    if (!pipOwnedAtTeardown && this.surfaceReady) {
+      this.markXComponentSurfaceDetached('disconnectAndCleanup-preflight');
+      this.surfaceReady = false;
+    }
+    if (!pipOwnedAtTeardown && this.isRustDeskSession() && this.decoderHandle > 0 &&
+      !this.decoderPipelineDetachedForTeardown) {
+      const detached: boolean = this.loader.detachVideoPipelineForBackground();
+      this.decoderPipelineDetachedForTeardown = detached;
+      hilog.info(RD_DOMAIN, RD_TAG,
+        'disconnectAndCleanup: early RustDesk decoder detach=' + detached.toString());
+    }
     if (shouldRestoreRemoteNavigation(reason, false)) {
       this.setRemoteNavigationHidden(false, reason);
     }
     this.clearRemoteInputFocusSchedule();
+    this.clearRemoteInputFocusAcknowledgement();
+    this.remotePointerFocusRecoveryArmed = false;
+    this.remotePointerFocusRecoveryNeeded = false;
     this.hardwareKeyboardProxyActive = false;
     this.resetRemoteImeSession('disconnect-' + reason);
     this.resetTouchpadPointerCurve();
@@ -10384,8 +10970,9 @@ struct RemoteDesktop {
           this.disableRdpBackgroundVideoPrewarm('disconnect-cleanup');
         }
         this.discardPendingMouseMove();
-        if (this.decoderHandle > 0) {
+        if (this.decoderHandle > 0 && !this.decoderPipelineDetachedForTeardown) {
           const detached: boolean = this.loader.detachVideoPipelineForBackground();
+          this.decoderPipelineDetachedForTeardown = detached;
           hilog.info(RD_DOMAIN, RD_TAG, 'disconnectAndCleanup: decoder pipeline detached=' +
             (detached ? 'true' : 'false'));
         }
@@ -10546,8 +11133,17 @@ struct RemoteDesktop {
           this.releasePipRenderer('attach-decoder-bind');
           return false;
         }
-        this.loader.requestDecoderRecovery();
-        this.loader.requestFrameRefresh();
+        // Moving a live RustDesk decoder between surfaces is not itself a
+        // decoder fault.  Rebind() already reinstalls the owner callback and
+        // replays the pending keyframe; forcing recovery here used to rebuild
+        // VP9 once on PIP entry and again on foreground restore, producing a
+        // visible stall and an unnecessary software queue backlog.  Keep the
+        // refresh request, and let waitForRustDeskFirstPresentedFrame() arm
+        // recovery only if the new surface actually fails to present.
+        const refresh = this.loader.requestFrameRefresh();
+        hilog.info(RD_DOMAIN, RD_TAG,
+          'attachRendererToPipSurface: decoder rebound; recovery deferred refresh=' +
+          refresh.ok.toString());
       } else if (isVnc) {
         // VNC is a raw framebuffer stream. It has no decoder to bind; the
         // first request after owner/surface transfer is what makes the new PIP
@@ -10654,6 +11250,9 @@ struct RemoteDesktop {
     this.cleanupStarted = true;
     this.resetRemoteImeSession('background');
     this.clearRemoteInputFocusSchedule();
+    this.clearRemoteInputFocusAcknowledgement();
+    this.remotePointerFocusRecoveryArmed = false;
+    this.remotePointerFocusRecoveryNeeded = false;
     this.hardwareKeyboardProxyActive = false;
     hilog.info(RD_DOMAIN, RD_TAG, 'detachForBackground: preserving protocol + audio');
     this.clearRestoreFrameRefreshPump();
@@ -11177,10 +11776,14 @@ struct RemoteDesktop {
           if (!bindOk) {
             throw new Error('前台恢复视频管线绑定失败 [E-DECODER-RESTORE-BIND]');
           }
-          const recoveryArmed: boolean = this.loader.requestDecoderRecovery();
           const refresh = this.loader.requestFrameRefresh();
-          hilog.info(RD_DOMAIN, RD_TAG, 'doBackgroundRestoreRender: decoder recovery armed=' +
-            (recoveryArmed ? 'true' : 'false') + ' refresh=' + refresh.ok.toString());
+          // A successful surface rebind is not evidence that the surviving
+          // decoder is corrupt.  Do not force a second VP9 recreation here;
+          // the first-frame wait below is the recovery barrier and will arm
+          // recovery only when the rebound pipeline really fails to present.
+          hilog.info(RD_DOMAIN, RD_TAG,
+            'doBackgroundRestoreRender: decoder rebound; recovery deferred refresh=' +
+            refresh.ok.toString());
         }
         if (restoringRustDesk) {
           const firstFrameReady: boolean = await this.waitForRustDeskFirstPresentedFrame(
@@ -12941,6 +13544,13 @@ struct RemoteDesktop {
 
       if (event.type === TouchType.Down) {
         if (this.touchFingerCount <= 0) {
+          const proxyWasActive: boolean =
+            this.armRemotePointerFocusRecovery('touchpad-down');
+          if (shouldResetRemoteImeOnPointerDown(this.keyboardOpen || proxyWasActive)) {
+            this.resetRemoteImeSession('touchpad-down');
+          }
+        }
+        if (this.touchFingerCount <= 0) {
           this.cancelVncTouchWheelFling();
           this.touchWheelLastStepDy = 0;
         }
@@ -12949,10 +13559,6 @@ struct RemoteDesktop {
         if (!this.touchpadPointerDown) {
           this.touchpadPointerDown = true;
           this.applyRemoteCursorMotionState(beginLocalCursorGesture(this.remoteCursorMotion, Date.now()));
-        }
-        if (this.touchFingerCount <= 0 &&
-          shouldResetRemoteImeOnPointerDown(this.keyboardOpen || this.hardwareKeyboardProxyActive)) {
-          this.resetRemoteImeSession('touchpad-down');
         }
         const oldMaxFingers: number = this.touchMaxFingers;
         const currentTouches: number = this.trackedCanvasTouchCount(event);
@@ -13130,6 +13736,7 @@ struct RemoteDesktop {
             this.showRemoteCursorIndicator(-1, true);
           }
           this.resetTouchGesture();
+          this.recoverRemotePointerFocus('touch-release-verify');
           this.startVncTouchWheelFling(flingStepDy);
         } else {
           // 从双指变单指 (一根手指抬起, 另一根还在屏幕上)
@@ -13178,9 +13785,11 @@ struct RemoteDesktop {
         return;
       }
       if (event.type === TouchType.Down) {
-        if (this.touchFingerCount <= 0 &&
-          shouldResetRemoteImeOnPointerDown(this.keyboardOpen || this.hardwareKeyboardProxyActive)) {
-          this.resetRemoteImeSession('touch-down');
+        if (this.touchFingerCount <= 0) {
+          const proxyWasActive: boolean = this.armRemotePointerFocusRecovery('touch-down');
+          if (shouldResetRemoteImeOnPointerDown(this.keyboardOpen || proxyWasActive)) {
+            this.resetRemoteImeSession('touch-down');
+          }
         }
         const oldMaxFingers: number = this.touchMaxFingers;
         if (this.touchFingerCount <= 0) {
@@ -13314,6 +13923,7 @@ struct RemoteDesktop {
         }
         this.touchLeftDown = false;
         this.resetTouchGesture();
+        this.recoverRemotePointerFocus('touch-release-verify');
       }
     } catch (err) {
       hilog.error(RD_DOMAIN, RD_TAG, 'touch forward failed: ' + JSON.stringify(err));
@@ -13324,10 +13934,11 @@ struct RemoteDesktop {
     // RustDesk geometry is synchronized by its low-frequency stream timer;
     // input events must not perform renderer/NAPI reads.
     this.syncActiveTouchPoints(event);
-    if (event.type === TouchType.Down && this.hardwareKeyboardProxyActive) {
-      // 触摸获焦同样可能抢走隐藏 TextArea；不重置 IME 会话，稍后恢复代理焦点。
-      this.scheduleRemoteInputFocus('touch-down');
-    }
+    // API 23 may synthesize a Touch Down for a real mouse click.  Do not
+    // request the hidden keyboard proxy during pointer-down: that request can
+    // blur and refocus the proxy while the remote window is processing its
+    // focus-changing mouse press.  Pointer release performs one deferred
+    // verification, including the silent-native-focus-loss case.
     const host: RemoteHost | null = this.pendingHost;
     const controlMode: number = this.currentControlMode();
     if (this.consumeCanvasPinchTouch(event)) {
@@ -13544,13 +14155,53 @@ struct RemoteDesktop {
     if (!this.connected || this.sessionId <= 0) {
       return;
     }
-    if (this.physicalMouseDownButton >= 0) {
-      hilog.info(RD_DOMAIN, RD_TAG, 'remote-keyboard-focus-lost preserve-drag source=' + source +
-        ' button=' + this.physicalMouseDownButton.toString());
+    if (this.remoteInputFocusRequestPending) {
+      // stopEditing() during a proxy handoff emits onBlur before the new
+      // request has delivered onFocus. Do not treat that expected transition
+      // as a real loss or start a second request recursively.
+      this.hardwareKeyboardProxyActive = false;
+      this.remoteInputFocusTarget = '';
+      hilog.info(RD_DOMAIN, RD_TAG,
+        'remote-keyboard-focus-lost pending-request source=' + source);
+      return;
+    }
+    if (this.remoteInputFocusTarget.length > 0 && this.remoteInputFocusTarget !== source) {
+      hilog.info(RD_DOMAIN, RD_TAG, 'remote-keyboard-focus-lost stale source=' + source +
+        ' current=' + this.remoteInputFocusTarget);
+      return;
+    }
+    if (this.remoteInputFocusTarget.length === 0 && !this.hardwareKeyboardProxyActive &&
+      (this.remotePointerFocusRecoveryNeeded || this.remoteInputFocusTimer >= 0)) {
+      hilog.info(RD_DOMAIN, RD_TAG,
+        'remote-keyboard-focus-lost duplicate source=' + source);
+      return;
+    }
+    this.hardwareKeyboardProxyActive = false;
+    this.remoteInputFocusTarget = '';
+    this.clearRemoteKeyboardFocusLoss();
+    this.remotePointerFocusRecoveryNeeded = true;
+    if (this.remotePointerFocusRecoveryArmed || this.physicalMouseDownButton >= 0 ||
+      this.touchFingerCount > 0) {
+      hilog.info(RD_DOMAIN, RD_TAG,
+        'remote-keyboard-focus-lost defer-pointer source=' + source +
+        ' mouseButton=' + this.physicalMouseDownButton.toString() +
+        ' touchCount=' + this.touchFingerCount.toString());
       return;
     }
     hilog.info(RD_DOMAIN, RD_TAG, 'remote-keyboard-focus-lost source=' + source);
-    this.releaseAllHeldKeys(false);
+    this.remotePointerFocusRecoveryNeeded = false;
+    if (this.shouldUseHardwareKeyboardProxy()) {
+      this.scheduleRemoteInputFocus('focus-lost-' + source);
+    }
+    this.remoteKeyboardFocusLossTimer = setTimeout((): void => {
+      this.remoteKeyboardFocusLossTimer = -1;
+      if (!this.connected || this.sessionId <= 0 || this.remoteInputFocusTarget.length > 0 ||
+        this.physicalMouseDownButton >= 0) {
+        return;
+      }
+      this.releaseAllHeldKeys(false);
+      hilog.info(RD_DOMAIN, RD_TAG, 'remote-keyboard-focus-lost released source=' + source);
+    }, 120);
   }
 
   /**
@@ -14090,26 +14741,111 @@ struct RemoteDesktop {
             ' rawButton=' + rawButton.toString() +
             ' mappedButton=' + mappedButton.toString() +
             ' sendButton=' + sendButton.toString() +
+            ' sourceTool=' + event.sourceTool.toString() +
             ' remote=' + mapped.x.toString() + ',' + mapped.y.toString());
       }
       if (event.action === MouseAction.Press) {
-        if (shouldResetRemoteImeOnPointerDown(this.keyboardOpen || this.hardwareKeyboardProxyActive)) {
+        const proxyWasActive: boolean = this.armRemotePointerFocusRecovery('mouse-press');
+        if (shouldResetRemoteImeOnPointerDown(this.keyboardOpen || proxyWasActive)) {
           this.resetRemoteImeSession('mouse-press');
         }
         if (sendButton >= 0) {
-          this.physicalMouseDownButton = sendButton;
-          this.sendMouseNow(mapped.x, mapped.y, sendButton, true);
+          const stageMacClick: boolean = shouldStageRustDeskMacPhysicalMouseClick(
+            this.currentProtocolName(), this.physicalKeyboardLayout,
+            event.sourceTool === SourceTool.MOUSE, sendButton);
+          if (stageMacClick) {
+            if (this.physicalMouseDownButton >= 0 || this.physicalMouseClickPending) {
+              hilog.warn(RD_DOMAIN, RD_TAG,
+                'physical-mouse ordering ignored-duplicate-press button=' +
+                  sendButton.toString());
+              return;
+            }
+            this.stagePhysicalMouseClick(localX, localY, mapped.x, mapped.y, sendButton);
+          } else {
+            // Non-macOS targets keep the immediate path. Drop only an older
+            // coalesced hover so it cannot be replayed between DOWN and UP.
+            this.discardPendingMouseMove();
+            this.physicalMouseDownButton = sendButton;
+            this.sendMouseNow(mapped.x, mapped.y, sendButton, true);
+          }
         }
       } else if (event.action === MouseAction.Release) {
+        if (this.physicalMouseClickPending &&
+          sendButton === this.physicalMouseDownButton) {
+          this.promotePhysicalMouseClickToDrag(localX, localY, mapped.x, mapped.y, 'release');
+          if (!this.physicalMouseClickPending) {
+            this.recoverRemotePointerFocus('mouse-release-stale');
+            return;
+          }
+          const elapsedMs: number = Math.max(0, Date.now() - this.physicalMousePressStartedAtMs);
+          if (this.physicalMouseRemoteDownSent) {
+            // Preserve the final release coordinate for a real drag, then end
+            // the held remote button.
+            this.queueMouseMove(mapped.x, mapped.y, true);
+            this.flushMouseMove();
+            this.sendMouseNow(mapped.x, mapped.y, sendButton, false);
+            hilog.info(RD_DOMAIN, RD_TAG,
+              'physical-mouse transaction sent-drag-release elapsedMs=' +
+                elapsedMs.toString() + ' remote=' +
+                mapped.x.toString() + ',' + mapped.y.toString());
+          } else {
+            // A click is emitted as one contiguous pulse at the press target.
+            // This reproduces the virtual-touchpad sequence that consistently
+            // switches the macOS first responder in device logs.
+            this.discardPendingMouseMove();
+            this.sendMouseNow(this.physicalMousePressX, this.physicalMousePressY,
+              sendButton, true);
+            this.sendMouseNow(this.physicalMousePressX, this.physicalMousePressY,
+              sendButton, false);
+            hilog.info(RD_DOMAIN, RD_TAG,
+              'physical-mouse transaction sent-click-pulse elapsedMs=' +
+                elapsedMs.toString() + ' remote=' +
+                this.physicalMousePressX.toString() + ',' +
+                this.physicalMousePressY.toString());
+          }
+          this.physicalMouseDownButton = -1;
+          this.clearPhysicalMouseClickTransaction();
+          this.recoverRemotePointerFocus('mouse-release-verify');
+          return;
+        }
+        if (this.physicalMouseClickPending) {
+          // A mismatched release must not leave a staged click alive for the
+          // next physical transaction.
+          this.cancelPhysicalMouseClickTransaction('mismatched-release');
+          this.physicalMouseDownButton = -1;
+          hilog.info(RD_DOMAIN, RD_TAG,
+            'physical-mouse transaction discarded-mismatched-release button=' +
+              sendButton.toString());
+        }
+        if (this.pendingMouseMoveValid) {
+          // This pending coordinate was observed after DOWN, so it represents
+          // an actual drag. Preserve its ordering before the reliable UP.
+          this.flushMouseMove();
+          hilog.info(RD_DOMAIN, RD_TAG,
+            'physical-mouse ordering flushed-pre-release-drag remote=' +
+              mapped.x.toString() + ',' + mapped.y.toString());
+        }
         if (sendButton >= 0) {
           this.sendMouseNow(mapped.x, mapped.y, sendButton, false);
         }
         this.physicalMouseDownButton = -1;
-        if (this.hardwareKeyboardProxyActive) {
-          this.scheduleRemoteInputFocus('mouse-release');
-        }
+        this.clearPhysicalMouseClickTransaction();
+        // ArkUI can keep the proxy flags set even when a pointer transaction
+        // silently moved the native focus owner. Verify once after the remote
+        // click has been delivered; do not steal focus on button-down.
+        this.recoverRemotePointerFocus('mouse-release-verify');
       } else if (event.action === MouseAction.Move || event.action === MouseAction.Hover) {
-        this.queueMouseMove(mapped.x, mapped.y);
+        if (this.physicalMouseClickPending && !this.physicalMouseRemoteDownSent) {
+          const promoted: boolean = this.promotePhysicalMouseClickToDrag(
+            localX, localY, mapped.x, mapped.y, 'move');
+          if (!promoted && this.physicalMouseClickPending) {
+            // Keep the displayed/system pointer responsive while suppressing
+            // sub-threshold protocol jitter inside a staged remote click.
+            this.rememberRemoteCursor(mapped.x, mapped.y);
+          }
+        } else {
+          this.queueMouseMove(mapped.x, mapped.y);
+        }
       }
       // MouseAction only covers button and pointer motion. ArkUI dispatches
       // mouse wheels and touchpad two-finger scrolling via onAxisEvent.
@@ -14215,8 +14951,16 @@ struct RemoteDesktop {
       })
       .width('100%').height('100%')
       .backgroundColor('#000000')
-      .focusable(true)
-      .focusOnTouch(true)
+      // The surface only renders and forwards pointer events. The hidden
+      // TextArea is the sole local keyboard focus owner for desktop input.
+      .focusable(false)
+      .focusOnTouch(false)
+      .onFocus((): void => {
+        hilog.warn(RD_DOMAIN, RD_TAG, 'remote-input-focus unexpected=xcomponent');
+      })
+      .onBlur((): void => {
+        hilog.info(RD_DOMAIN, RD_TAG, 'remote-input-blur target=xcomponent');
+      })
       .onHover(this.handleRemoteSurfaceHover)
       .onLoad(this.onXComponentLoad)
       .onDestroy(this.onXComponentDestroy)
@@ -14349,11 +15093,13 @@ struct RemoteDesktop {
         .id('remoteInputSurface')
         .backgroundColor('rgba(0,0,0,0.01)')
         .hitTestBehavior(HitTestMode.Block)
-        .focusable(true)
-        .focusOnTouch(true)
-        .defaultFocus(true)
+        // This layer owns pointer hit testing only. Remote focus is decided
+        // by the mouse event delivered to the host, not by local ArkUI focus.
+        .focusable(false)
+        .focusOnTouch(false)
+        .defaultFocus(false)
         .onFocus((): void => {
-          hilog.info(RD_DOMAIN, RD_TAG, 'remote-input-focus target=overlay');
+          hilog.warn(RD_DOMAIN, RD_TAG, 'remote-input-focus unexpected=overlay');
         })
         .onBlur((): void => {
           hilog.info(RD_DOMAIN, RD_TAG, 'remote-input-blur target=overlay');
@@ -14787,7 +15533,7 @@ struct RemoteDesktop {
         .hitTestBehavior(HitTestMode.Transparent)
         .focusable(true)
         .defaultFocus(false)
-        .focusOnTouch(true)
+        .focusOnTouch(false)
         .enableKeyboardOnFocus(this.keyboardOpen)
         .enablePreviewText(REMOTE_IME_PREVIEW_ENABLED)
         .selectionMenuHidden(true)
@@ -14799,6 +15545,7 @@ struct RemoteDesktop {
         // 输入法未消费的字符事件仍通过现有后置回调兜底；功能键已在 onKeyPreIme 拦截。
         .onKeyEvent(this.handleXComponentKey)
         .onFocus((): void => {
+          this.markRemoteInputFocus('keyboard-proxy');
           hilog.info(RD_DOMAIN, RD_TAG, 'remote-input-focus target=keyboard-proxy');
         })
         .onBlur((): void => {
@@ -14823,6 +15570,14 @@ struct RemoteDesktop {
           hilog.info(RD_DOMAIN, RD_TAG, 'kbd-editing=' + (isEditing ? 'true' : 'false') +
             ' open=' + (this.keyboardOpen ? 'true' : 'false') +
             ' proxy=' + (this.hardwareKeyboardProxyActive ? 'true' : 'false'));
+          if (!isEditing && !this.keyboardOpen && !this.remoteInputFocusRequestPending &&
+            (this.remoteInputFocusTarget === 'keyboard-proxy' ||
+              this.hardwareKeyboardProxyActive)) {
+            // On API 23 a pointer click can move focus to Stack without
+            // delivering TextArea.onBlur. The edit-state transition is the
+            // earliest reliable app-side proof that the proxy lost focus.
+            this.handleRemoteKeyboardFocusLost('edit-change');
+          }
           if (isEditing) {
             this.keyboardImeEditingObserved = true;
             return;

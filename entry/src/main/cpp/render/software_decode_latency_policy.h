@@ -15,6 +15,49 @@ inline bool shouldPresentSoftwareDecodedFrame(size_t newerQueuedFrames) {
     return newerQueuedFrames <= 1;
 }
 
+enum class SoftwareDecodeQueueAction {
+    Queue,
+    QueueAfterReset,
+    DropWaitingKeyframe,
+    DropAndRequestKeyframe,
+};
+
+// Dropping any dependent VPx frame breaks the decoder reference chain. Keep
+// the recovery state beside the queue and request exactly one keyframe until
+// that keyframe arrives; repeated refresh requests can make the remote host
+// recreate its encoder continuously and worsen latency.
+class SoftwareDecodeQueueRecoveryPolicy {
+public:
+    SoftwareDecodeQueueAction classify(bool queueAtCapacity, bool isKeyframe) {
+        if (waitingForKeyframe_) {
+            if (!isKeyframe) {
+                return SoftwareDecodeQueueAction::DropWaitingKeyframe;
+            }
+            waitingForKeyframe_ = false;
+            return SoftwareDecodeQueueAction::QueueAfterReset;
+        }
+        if (!queueAtCapacity) {
+            return SoftwareDecodeQueueAction::Queue;
+        }
+        if (isKeyframe) {
+            return SoftwareDecodeQueueAction::QueueAfterReset;
+        }
+        waitingForKeyframe_ = true;
+        return SoftwareDecodeQueueAction::DropAndRequestKeyframe;
+    }
+
+    bool waitingForKeyframe() const {
+        return waitingForKeyframe_;
+    }
+
+    void reset() {
+        waitingForKeyframe_ = false;
+    }
+
+private:
+    bool waitingForKeyframe_ = false;
+};
+
 } // namespace Render
 
 #endif // SOFTWARE_DECODE_LATENCY_POLICY_H

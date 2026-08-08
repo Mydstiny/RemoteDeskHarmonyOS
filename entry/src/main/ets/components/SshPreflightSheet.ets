@@ -58,7 +58,8 @@ export class SshPreflightController {
   private async probe(): Promise<void> {
     try {
       await new Promise<void>((r) => setTimeout(r, 80));
-      const info = this.loader.probeSshHostKey(this.host.host, this.host.port, this.proxyConfig(false));
+      const info = await this.loader.probeSshHostKeyAsync(
+        this.host.host, this.host.port, this.proxyConfig(false));
       if (!info.ok) {
         this.state = SshPreflightState.ERROR;
         this.error = info.errorMessage || '无法读取 SSH 主机指纹';
@@ -66,7 +67,7 @@ export class SshPreflightController {
       }
       let jumpInfo: SshHostKeyInfo | null = null;
       if (this.usesJump()) {
-        jumpInfo = this.loader.probeSshHostKey(this.host.proxyHost, this.host.proxyPort);
+        jumpInfo = await this.loader.probeSshHostKeyAsync(this.host.proxyHost, this.host.proxyPort);
         if (!jumpInfo.ok) {
           this.state = SshPreflightState.ERROR;
           this.error = '无法读取跳板机 SSH 主机指纹: ' +
@@ -187,7 +188,7 @@ export class SshPreflightController {
         const ref = KeyVaultService.getInstance().getSshKey(this.host.sshKeyId);
         if (ref) { keyData = ref.privateKey; }
       }
-      const result = this.loader.testSshKeyAuth(
+      const result = await this.loader.testSshKeyAuthAsync(
         this.host.host, this.host.port, this.host.username,
         keyData, this.passphraseInput, this.proxyConfig()
       );

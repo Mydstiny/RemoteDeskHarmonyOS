@@ -40,6 +40,7 @@ constexpr int kErrRenderFailed = -109;
 constexpr int kSoftwareDecodeMaxOutputEdge = 1600;
 constexpr int kSoftwareDecodeMinThreads = 4;
 constexpr int kSoftwareDecodeMaxThreads = 8;
+constexpr int64_t kSoftwareDecodeSlowFrameLogUs = 40000;
 
 int softwareDecodeThreadCount() {
     const unsigned int detected = std::thread::hardware_concurrency();
@@ -306,7 +307,12 @@ int SoftwareDecoder::renderFrame() {
     const auto convertUs = std::chrono::duration_cast<std::chrono::microseconds>(convertEndAt - convertBeginAt).count();
     const auto renderUs = std::chrono::duration_cast<std::chrono::microseconds>(renderEndAt - convertEndAt).count();
     const auto totalUs = std::chrono::duration_cast<std::chrono::microseconds>(renderEndAt - beginAt).count();
-    if (renderedFrames_ <= 5 || renderedFrames_ % 120 == 0 || totalUs > 20000) {
+    // A 1600px VP9 conversion normally takes roughly 20-30ms on the target
+    // device. Logging every normal frame competes with the single software
+    // presentation worker and amplifies burst latency, so retain startup,
+    // periodic and genuinely slow-frame diagnostics only.
+    if (renderedFrames_ <= 5 || renderedFrames_ % 120 == 0 ||
+        totalUs > kSoftwareDecodeSlowFrameLogUs) {
         OH_LOG_INFO(LOG_APP,
                     "[SoftDecoder] frame=%{public}llu codec=%{public}s src=%{public}dx%{public}d out=%{public}dx%{public}d convert=%{public}lldus render=%{public}lldus total=%{public}lldus",
                     static_cast<unsigned long long>(renderedFrames_), CodecName(codecType_),
@@ -349,5 +355,4 @@ void SoftwareDecoder::Destroy() {
 void SoftwareDecoder::SetFrameCallback(SoftwareDecoderFrameCallback callback) {
     frameCallbackGate_.Set(std::move(callback));
 }
-
 

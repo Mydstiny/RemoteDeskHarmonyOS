@@ -4,8 +4,13 @@ declare module 'librdpnapi.so' {
   export function listProtocols(): ProtocolInfo[];
 
   export function connect(config: SessionConfig): number;
-  export function connectSshAsync(config: SessionConfig): Promise<number>;
+  /** The native Promise carries the reserved session identity before it settles. */
+  export function connectSshAsync(config: SessionConfig, foreground?: boolean): Promise<number> & {
+    sessionId: number;
+    generation: number;
+  };
   export function getPendingSshConnectId(): number;
+  export function getPendingSshConnectIds(): number[];
   export function disconnect(sessionId: number, rendererHandle?: number,
     decoderHandle?: number, audioHandle?: number): number;
   export function beginDisconnect(sessionId: number, rendererHandle: number,
@@ -25,22 +30,26 @@ declare module 'librdpnapi.so' {
   export function sendFile(sessionId: number, remotePath: string, data: ArrayBuffer): number;
   export function writeRemoteFileChunk(sessionId: number, remotePath: string, data: ArrayBuffer, offset: number, truncate: boolean): number;
   export function writeRemoteFileChunkAsync(sessionId: number, remotePath: string, data: ArrayBuffer,
-    offset: number, truncate: boolean): Promise<SftpWriteAsyncResult>;
+    offset: number, truncate: boolean, expectedGeneration?: number): Promise<SftpWriteAsyncResult>;
   export function listRemoteDir(sessionId: number, remotePath: string): SftpFileEntry[];
-  export function listRemoteDirAsync(sessionId: number, remotePath: string): Promise<SftpListAsyncResult>;
+  export function listRemoteDirAsync(sessionId: number, remotePath: string,
+    expectedGeneration?: number): Promise<SftpListAsyncResult>;
   export function readRemoteFile(sessionId: number, remotePath: string): ArrayBuffer;
   export function readRemoteFileChunk(sessionId: number, remotePath: string, offset: number, maxLen: number): ArrayBuffer;
   export function readRemoteFileChunkAsync(sessionId: number, remotePath: string, offset: number,
-    maxLen: number): Promise<SftpReadAsyncResult>;
+    maxLen: number, expectedGeneration?: number): Promise<SftpReadAsyncResult>;
   export function removeRemoteFile(sessionId: number, remotePath: string): number;
-  export function removeRemoteFileAsync(sessionId: number, remotePath: string): Promise<SftpMutationAsyncResult>;
+  export function removeRemoteFileAsync(sessionId: number, remotePath: string,
+    expectedGeneration?: number): Promise<SftpMutationAsyncResult>;
   export function removeRemoteDir(sessionId: number, remotePath: string): number;
-  export function removeRemoteDirAsync(sessionId: number, remotePath: string): Promise<SftpMutationAsyncResult>;
+  export function removeRemoteDirAsync(sessionId: number, remotePath: string,
+    expectedGeneration?: number): Promise<SftpMutationAsyncResult>;
   export function makeRemoteDir(sessionId: number, remotePath: string): number;
-  export function makeRemoteDirAsync(sessionId: number, remotePath: string): Promise<SftpMutationAsyncResult>;
+  export function makeRemoteDirAsync(sessionId: number, remotePath: string,
+    expectedGeneration?: number): Promise<SftpMutationAsyncResult>;
   export function renameRemotePath(sessionId: number, oldPath: string, newPath: string): number;
   export function renameRemotePathAsync(sessionId: number, oldPath: string,
-    newPath: string, atomic?: boolean): Promise<SftpMutationAsyncResult>;
+    newPath: string, atomic?: boolean, expectedGeneration?: number): Promise<SftpMutationAsyncResult>;
   export function sendClipboard(sessionId: number, data: ArrayBuffer): void;
   export function setSessionClipboardFiles(sessionId: number, paths: string[]): boolean;
   export function getSessionClipboardText(sessionId: number): string;
@@ -54,6 +63,8 @@ declare module 'librdpnapi.so' {
     requestId: number): boolean;
   export function getSshSessionSnapshot(sessionId: number,
     sessionGeneration: number): SshSessionSnapshot;
+  export function getSshSessionEvents(sessionId: number, channelId: string,
+    sessionGeneration: number, afterSequence?: number): SshSessionEventsResult;
   export function configureSshForwarding(sessionId: number, sessionGeneration: number,
     config: SshForwardingConfig): number;
   export function removeSshForwarding(sessionId: number, sessionGeneration: number,
@@ -142,7 +153,11 @@ declare module 'librdpnapi.so' {
   export function installSshPublicKey(host: string, port: number, username: string, password: string, privateKeyPem: string, passphrase: string, publicKey: string): SshPublicKeyInstallResult;
   export function testSshKeyAuth(host: string, port: number, username: string, privateKeyPem: string,
     passphrase: string, proxy?: SshProxyConfig): SshAuthTestResult;
+  export function testSshKeyAuthAsync(host: string, port: number, username: string, privateKeyPem: string,
+    passphrase: string, proxy?: SshProxyConfig): Promise<SshAuthTestResult>;
   export function probeSshHostKey(host: string, port: number, proxy?: SshProxyConfig): SshHostKeyInfo;
+  export function probeSshHostKeyAsync(host: string, port: number,
+    proxy?: SshProxyConfig): Promise<SshHostKeyInfo>;
 
   export function initRenderer(xcId: string, width: number, height: number): number;
   export function destroyRenderer(handle: number): void;
@@ -630,6 +645,7 @@ export interface SessionConfig {
   sshProxyPrivateKeyPassphrase?: string;
   sshProxyKeyboardInteractiveResponses?: string[];
   sshRoute?: SshRoute;
+  sshJumpHopHandoffs?: SshJumpHopHandoff[];
   expectedHostKeyRawBase64?: string;
   expectedHostKeyFingerprintSha256?: string;
   sshJumpHostKeyRawBase64?: string;
@@ -694,6 +710,14 @@ export interface SshJumpHop {
   expectedHostKeyRawBase64?: string;
   expectedHostKeyFingerprintSha256?: string;
   connectTimeoutMs: number;
+}
+
+/** Secrets are supplied only in the one-shot SSH session handoff. */
+export interface SshJumpHopHandoff {
+  password?: string;
+  privateKeyPem?: string;
+  privateKeyPassphrase?: string;
+  keyboardInteractiveResponses?: string[];
 }
 
 /** Route metadata is durable; credentials remain in the one-shot handoff. */
@@ -816,6 +840,16 @@ export interface SshEventEnvelope {
   payloadJson?: string;
 }
 
+export interface SshSessionEventsResult {
+  schemaVersion: number;
+  errorCode: number;
+  sessionId: number;
+  channelId: string;
+  generation: number;
+  afterSequence: number;
+  events: SshEventEnvelope[];
+}
+
 export interface SshForwardingSnapshot {
   schemaVersion: number;
   id: string;
@@ -833,6 +867,7 @@ export interface SshForwardingSnapshot {
   lastError: number;
   minBindPort: number;
   maxBindPort: number;
+  maxBytes: number;
   ownerSessionId: number;
   ownerChannelId: string;
   ownerGeneration: number;

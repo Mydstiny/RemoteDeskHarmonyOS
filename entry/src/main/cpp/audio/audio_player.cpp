@@ -180,12 +180,18 @@ int AudioPlayer::Init(int sampleRate, int channels) {
         return -1;
     }
 
-    // 配置音频参数: 48kHz, 立体声, S16LE PCM, 低延迟
+    // 配置音频参数: 48kHz, 立体声, S16LE PCM。播放器自身已有
+    // 120-300ms 抖动预缓冲，FAST 的约 5ms 拉取周期不会降低端到端延迟，
+    // 反而会与软件视频解码争用 CPU，并放大空拉取/平台日志风暴。
     OH_AudioStreamBuilder_SetSamplingRate(builder, safeRate);
     OH_AudioStreamBuilder_SetChannelCount(builder, safeChannels);
     OH_AudioStreamBuilder_SetSampleFormat(builder, AUDIOSTREAM_SAMPLE_S16LE);
     OH_AudioStreamBuilder_SetEncodingType(builder, AUDIOSTREAM_ENCODING_TYPE_RAW);
-    OH_AudioStreamBuilder_SetLatencyMode(builder, AUDIOSTREAM_LATENCY_MODE_FAST);
+    const OH_AudioStream_Result latencyResult =
+        OH_AudioStreamBuilder_SetLatencyMode(builder, AUDIOSTREAM_LATENCY_MODE_NORMAL);
+    OH_LOG_INFO(LOG_APP,
+        "[Audio] renderer latency=normal jitterBuffered=true result=%{public}d",
+        latencyResult);
     OH_AudioStreamBuilder_SetRendererInfo(builder, AUDIOSTREAM_USAGE_MUSIC);
     OH_AudioStreamBuilder_SetRendererWriteDataCallback(
         builder, AudioPlayer::OnWriteData, callbackContext_.get());

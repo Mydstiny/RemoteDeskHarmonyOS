@@ -7,7 +7,10 @@ import {
   sshSftpSheetOpenDelayMs,
   sftpPeerPickerExitPending,
   shouldMountSftpPeerPicker,
+  shouldCommitSftpPeerSelection,
   shouldAllowSftpRootSheetDismiss,
+  shouldUseSftpExpandedWorkspace,
+  sftpExpandedWorkspaceMinHeight,
   shouldDriveSftpNativeDismissAction
 } from '../main/ets/services/SheetTransitionPolicy';
 
@@ -58,6 +61,24 @@ export default function sheetTransitionPolicyTest() {
       expect(shouldMountSftpPeerPicker({ ...base, pickerClosing: true })).assertFalse();
     });
 
+    it('commits_peer_selection_only_after_child_sheet_disappears', 0, (): void => {
+      const base = {
+        pendingHostId: 'host-oracle',
+        pendingSelectionEpoch: 7,
+        activeSelectionEpoch: 7,
+        parentVisible: true,
+        rootClosing: false,
+        pickerVisible: false,
+        pickerClosing: false
+      };
+      expect(shouldCommitSftpPeerSelection(base)).assertTrue();
+      expect(shouldCommitSftpPeerSelection({ ...base, pickerVisible: true })).assertFalse();
+      expect(shouldCommitSftpPeerSelection({ ...base, pickerClosing: true })).assertFalse();
+      expect(shouldCommitSftpPeerSelection({ ...base, rootClosing: true })).assertFalse();
+      expect(shouldCommitSftpPeerSelection({ ...base, activeSelectionEpoch: 8 })).assertFalse();
+      expect(shouldCommitSftpPeerSelection({ ...base, pendingHostId: '' })).assertFalse();
+    });
+
     it('defers_interactive_root_dismissal_until_surface_is_ready', 0, (): void => {
       const base = {
         mountMatches: true,
@@ -83,6 +104,19 @@ export default function sheetTransitionPolicyTest() {
         programmaticClose: true,
         transferBusy: false
       })).assertFalse();
+    });
+
+    it('uses_a_compact_pad_pc_workspace_when_either_axis_is_narrow', 0, (): void => {
+      expect(shouldUseSftpExpandedWorkspace(true, false, 1280, 760)).assertTrue();
+      expect(shouldUseSftpExpandedWorkspace(false, true, 800, 760)).assertFalse();
+      expect(shouldUseSftpExpandedWorkspace(true, false, 1280, 500)).assertFalse();
+      expect(shouldUseSftpExpandedWorkspace(false, false, 1280, 760)).assertFalse();
+    });
+
+    it('reserves_footer_space_when_a_wide_workspace_has_task_controls', 0, (): void => {
+      expect(sftpExpandedWorkspaceMinHeight(false, false)).assertEqual(300);
+      expect(sftpExpandedWorkspaceMinHeight(true, false)).assertEqual(150);
+      expect(sftpExpandedWorkspaceMinHeight(false, true)).assertEqual(150);
     });
 
     it('uses_only_one_native_dismiss_driver', 0, (): void => {

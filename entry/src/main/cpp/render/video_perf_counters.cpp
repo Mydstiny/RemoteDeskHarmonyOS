@@ -172,7 +172,11 @@ VideoPressureDecision VideoPressureController::observeAt(
     if (snapshot.decodeSamples == 0) {
         if (now - lastTelemetryAt_ >= telemetryTimeout_) {
             timedOut_ = true;
-            if (level_ != VideoPressureLevel::Severe) {
+            // A static remote desktop legitimately produces no encoded video
+            // and therefore no decoder samples.  Only ingress without a
+            // matching decode sample proves that the local decoder pipeline
+            // has stalled; silence alone must not create backpressure.
+            if (snapshot.ingressFrames > 0 && level_ != VideoPressureLevel::Severe) {
                 level_ = VideoPressureLevel::Severe;
                 levelEnteredAt_ = now;
             }
@@ -244,10 +248,9 @@ VideoPressureDecision VideoPressureController::tick(std::chrono::steady_clock::t
     const VideoPressureLevel previous = level_;
     if (now - lastTelemetryAt_ >= telemetryTimeout_) {
         timedOut_ = true;
-        if (level_ != VideoPressureLevel::Severe) {
-            level_ = VideoPressureLevel::Severe;
-            levelEnteredAt_ = now;
-        }
+        // tick() has no ingress sample.  Treat the gap as unavailable
+        // telemetry, not as decoder overload; observeAt() handles the real
+        // ingress-without-decode stall case.
     }
     return VideoPressureDecision {
         level_, level_ != previous, false, telemetrySeen_ && !timedOut_, timedOut_};

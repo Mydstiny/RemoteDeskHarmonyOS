@@ -21,6 +21,23 @@ export default function sshTerminalTabStoreTest(): void {
       expect(store.views()[1].address).assertEqual('root@b:2222');
     });
 
+    it('should_publish_new_active_tab_without_an_inactive_intermediate_state', 0, (): void => {
+      const store: SshTerminalTabStore = new SshTerminalTabStore();
+      let notifications: number = 0;
+      store.subscribe((): void => { notifications++; });
+
+      store.open('host-a', 'A', 'root@a:22');
+      notifications = 0;
+      store.openAndActivate('host-b', 'B', 'root@b:22');
+
+      const views = store.views();
+      expect(notifications).assertEqual(1);
+      expect(views.length).assertEqual(2);
+      expect(views[0].active).assertFalse();
+      expect(views[1].active).assertTrue();
+      expect(views[1].state).assertEqual('connecting');
+    });
+
     it('should_return_all_bound_sessions_when_closing', 0, (): void => {
       const store: SshTerminalTabStore = new SshTerminalTabStore();
       store.open('host-a', 'A', 'root@a:22');

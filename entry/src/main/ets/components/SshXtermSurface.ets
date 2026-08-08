@@ -90,6 +90,8 @@ export struct SshXtermSurface {
   @Prop @Watch('onActiveChange') active: boolean = true;
   @Prop @Watch('onViewportChange') viewportWidth: number = 0;
   @Prop @Watch('onViewportChange') viewportHeight: number = 0;
+  /** Parent-side fence used to recover a ready callback lost during tab handoff. */
+  @Prop @Watch('onReadyProbeRequestChange') readyProbeRequest: number = 0;
   @Prop cols: number = 80;
   @Prop rows: number = 24;
   @Prop @Watch('onFontChange') fontSize: number = 18;
@@ -116,6 +118,10 @@ export struct SshXtermSurface {
   private bridgeRetryTimer: number = -1;
   private bridgeRetryCount: number = 0;
   private bridgeCleanupTimer: number = -1;
+  /** True after the current Web document has started loading. */
+  private pageStarted: boolean = false;
+  /** A proxy registered during a load becomes visible only after another load. */
+  private bridgeActivationReloadPending: boolean = false;
   private pageFinished: boolean = false;
   private pageReady: boolean = false;
   private readyReported: boolean = false;
@@ -143,6 +149,18 @@ export struct SshXtermSurface {
   private pendingOutputBuffer: XtermOutputBuffer | null = null;
   private disposed: boolean = false;
   private lifecycleToken: number = 0;
+
+  private logLifecycle(message: string): void {
+    hilog.info(XTERM_DOMAIN, XTERM_TAG, message);
+  }
+
+  private surfaceIdentity(): string {
+    const key: string = this.coreKey.trim();
+    if (key.length === 0) { return ''; }
+    const revision: number = Number.isFinite(this.renderRevision)
+      ? Math.max(0, Math.floor(this.renderRevision)) : 0;
+    return key + ':render:' + revision.toString();
+  }
 
   aboutToAppear(): void {
     this.restoreQueuedWrites();
@@ -174,6 +192,8 @@ export struct SshXtermSurface {
     this.bridgeRegistered = false;
     this.clearBridgeRetry();
     this.bridgeRetryCount = 0;
+    this.pageStarted = false;
+    this.bridgeActivationReloadPending = false;
     this.pageFinished = false;
     this.pageReady = false;
     this.readyReported = false;
@@ -197,6 +217,8 @@ export struct SshXtermSurface {
     this.disposed = true;
     this.clearBridgeRetry();
     this.bridgeRetryCount = 0;
+    this.pageStarted = false;
+    this.bridgeActivationReloadPending = false;
     this.pageFinished = false;
     this.pageReady = false;
     this.pendingCoreReset = false;
@@ -255,12 +277,12 @@ export struct SshXtermSurface {
     };
     this.bridge.onInputCallback = (data: string): void => {
       if (lifecycleToken === this.lifecycleToken && this.onData && data.length > 0 && !this.disposed) {
-        this.onData(data, this.coreKey);
+        this.onData(data, this.surfaceIdentity());
       }
     };
     this.bridge.onResizeCallback = (cols: number, rows: number): void => {
       if (lifecycleToken === this.lifecycleToken && this.onResize && !this.disposed) {
-        this.onResize(cols, rows, this.coreKey);
+        this.onResize(cols, rows, this.surfaceIdentity());
       }
     };
     this.bridge.onSelectionCallback = (_text: string): void => {};
@@ -301,6 +323,19 @@ export struct SshXtermSurface {
       this.bridgeRegistered = true;
       this.bridgeRetryCount = 0;
       this.clearBridgeRetry();
+      this.logLifecycle('bridge registered key=' + this.coreKey);
+      if (this.pageStarted) {
+        // ArkWeb exposes a newly registered proxy only after the next page
+        // load. The initial Web component load may already be in progress.
+        this.bridgeActivationReloadPending = true;
+      } else if (this.documentReloadPending && this.active) {
+        // Reload attempts must register before loadUrl; otherwise the new
+        // document repeats the same invisible-proxy failure.
+        const requestedDocumentKey: string = this.reloadRequestedDocumentKey;
+        if (requestedDocumentKey.length > 0) {
+          this.attemptDocumentReload(lifecycleToken, requestedDocumentKey);
+        }
+      }
     } catch (err) {
       this.scheduleBridgeRetry(lifecycleToken);
       hilog.debug(XTERM_DOMAIN, XTERM_TAG,
@@ -325,11 +360,26 @@ export struct SshXtermSurface {
       background: '#0D0D0D',
       bottomAlignSparseContent: this.bottomAlignSparseContent
     });
-    return 'window.__sshXtermConfigure(' + config + ');';
+    // ArkWeb can dispatch onPageEnd while the rawfile's inline bootstrap is
+    // still installing its window functions. Keep configuration idempotent
+    // and retry inside the page so this race cannot strand xterm at its
+    // default cursor with no ready callback.
+    return '(function(config){' +
+      'var attempts=0;' +
+      'function apply(){' +
+      'if(typeof window.__sshXtermConfigure==="function"){' +
+      'window.__sshXtermConfigure(config);return;}' +
+      'if(attempts++<120){window.setTimeout(apply,16);}' +
+      '}' +
+      'apply();' +
+      '})(' + config + ');';
   }
 
   private runPageScript(script: string, onSuccess?: () => void, onFailure?: () => void): void {
-    if (this.disposed || !this.pageFinished) { return; }
+    // ArkWeb can deliver the xterm ready callback before onPageEnd. The page
+    // has already booted its JS surface at that point, so pageReady is enough
+    // evidence for configuration and output calls.
+    if (this.disposed || (!this.pageFinished && !this.pageReady)) { return; }
     try {
       this.controller.runJavaScript(script).then((): void => {
         if (onSuccess) { onSuccess(); }
@@ -394,6 +444,8 @@ export struct SshXtermSurface {
     this.pageConfigRetryCount = 0;
     this.clearDocumentReloadRetry();
     this.bridgeRegistered = false;
+    this.pageStarted = false;
+    this.bridgeActivationReloadPending = false;
     this.pageFinished = false;
     this.pageReady = false;
     this.readyReported = false;
@@ -402,12 +454,16 @@ export struct SshXtermSurface {
     }
     this.bridge = new SshXtermBridgeProxy();
     this.installBridgeCallbacks(lifecycleToken);
-    this.attemptDocumentReload(lifecycleToken, requestedDocumentKey);
+    this.registerBridge(lifecycleToken);
   }
 
   private attemptDocumentReload(lifecycleToken: number, requestedDocumentKey: string): void {
     if (lifecycleToken !== this.lifecycleToken || this.disposed || !this.active ||
       !this.documentReloadPending || this.reloadRequestedDocumentKey !== requestedDocumentKey) {
+      return;
+    }
+    if (!this.bridgeRegistered) {
+      this.registerBridge(lifecycleToken);
       return;
     }
     try {
@@ -460,7 +516,8 @@ export struct SshXtermSurface {
   }
 
   private applyPageConfigAfterLoad(lifecycleToken: number = this.lifecycleToken): void {
-    if (this.disposed || lifecycleToken !== this.lifecycleToken || !this.pageFinished) {
+    if (this.disposed || lifecycleToken !== this.lifecycleToken ||
+      (!this.pageFinished && !this.pageReady)) {
       return;
     }
     this.runPageScript(this.pageConfigScript(), (): void => {
@@ -474,23 +531,57 @@ export struct SshXtermSurface {
     });
   }
 
+  /**
+   * The page can boot before ArkWeb finishes installing the JavaScript proxy.
+   * Ask the already-loaded document to publish readiness again after the
+   * bridge is registered instead of waiting for the one-shot boot callback.
+   */
+  private nudgePageReady(lifecycleToken: number = this.lifecycleToken): void {
+    if (this.disposed || lifecycleToken !== this.lifecycleToken || !this.pageFinished ||
+      this.pageReady) {
+      return;
+    }
+    try {
+      this.controller.runJavaScript(
+        'if (window.__sshXtermNotifyReady) { window.__sshXtermNotifyReady(); }'
+      ).then((): void => {
+        if (lifecycleToken !== this.lifecycleToken || this.disposed || this.pageReady) { return; }
+        // A page-side boot retry can still be pending. Keep the probe bounded
+        // by the existing page-config retry window and lifecycle token.
+        this.schedulePageReadyProbe(lifecycleToken);
+      }).catch((_err: Error): void => {
+        this.schedulePageReadyProbe(lifecycleToken);
+      });
+    } catch (_err) {
+      this.schedulePageReadyProbe(lifecycleToken);
+    }
+  }
+
+  private schedulePageReadyProbe(lifecycleToken: number): void {
+    if (this.disposed || lifecycleToken !== this.lifecycleToken || this.pageReady ||
+      !this.pageFinished || this.pageConfigRetryTimer !== -1) {
+      return;
+    }
+    this.pageConfigRetryTimer = setTimeout((): void => {
+      this.pageConfigRetryTimer = -1;
+      this.nudgePageReady(lifecycleToken);
+    }, 64);
+  }
+
   private handlePageReady(cols: number, rows: number): void {
     if (this.disposed) { return; }
     this.pageReady = true;
+    this.logLifecycle('page ready cols=' + cols.toString() + ' rows=' + rows.toString() +
+      ' finished=' + (this.pageFinished ? '1' : '0') + ' key=' + this.coreKey);
     this.documentReloadPending = false;
     this.reloadRequestedDocumentKey = '';
     this.clearDocumentReloadRetry();
     this.documentReloadRetryCount = 0;
     if (!this.active) { return; }
-    if (this.pageFinished) {
-      this.applyPageConfigAfterLoad();
-    } else {
-      // onPageEnd will apply the config and start the output pump after the
-      // document is fully loaded. Keep the first frame masked until then.
-      this.flushOutputBuffer();
-    }
+    this.applyPageConfigAfterLoad();
+    this.flushOutputBuffer();
     if (this.onResize && cols > 0 && rows > 0) {
-      this.onResize(cols, rows, this.coreKey);
+      this.onResize(cols, rows, this.surfaceIdentity());
     }
   }
 
@@ -500,8 +591,7 @@ export struct SshXtermSurface {
    * callback before the ArkUI loading mask is removed.
    */
   private maybeReportReady(): void {
-    if (this.readyReported || this.disposed || !this.active || !this.pageReady ||
-      !this.pageFinished) {
+    if (this.readyReported || this.disposed || !this.active || !this.pageReady) {
       return;
     }
     if (this.outputPumpRunning) { return; }
@@ -580,13 +670,25 @@ export struct SshXtermSurface {
   private reportReadyOnce(): void {
     if (this.readyReported) { return; }
     this.readyReported = true;
-    if (this.onReady) { this.onReady(this.coreKey); }
+    this.logLifecycle('report ready key=' + this.coreKey);
+    if (this.onReady) { this.onReady(this.surfaceIdentity()); }
   }
 
   private handlePageEnd(): void {
     if (this.disposed) { return; }
     this.pageFinished = true;
+    this.logLifecycle('page end ready=' + (this.pageReady ? '1' : '0') + ' key=' + this.coreKey);
     this.registerBridge();
+    // A late registration normally needs one reload to expose the proxy to
+    // the document. If the document already delivered pageReady, the proxy
+    // is active and reloading would only add cold-start latency.
+    if (this.bridgeActivationReloadPending && !this.pageReady) {
+      this.bridgeActivationReloadPending = false;
+      this.reloadDocumentForCoreKey();
+      return;
+    }
+    this.bridgeActivationReloadPending = false;
+    this.nudgePageReady();
     if (!this.active) { return; }
     if (this.pendingCoreReset) {
       this.pendingCoreReset = false;
@@ -636,6 +738,8 @@ export struct SshXtermSurface {
     this.outputPumpRunning = false;
     this.awaitingOutputBatch = 0;
     this.bridgeRegistered = false;
+    this.pageStarted = false;
+    this.bridgeActivationReloadPending = false;
     this.pageFinished = false;
     this.pageReady = false;
     this.readyReported = false;
@@ -649,7 +753,7 @@ export struct SshXtermSurface {
     // dispatching one of its callbacks after loadUrl() has started.
     this.bridge = new SshXtermBridgeProxy();
     this.installBridgeCallbacks(lifecycleToken);
-    this.attemptDocumentReload(lifecycleToken, requestedDocumentKey);
+    this.registerBridge(lifecycleToken);
   }
 
   private clearOutputBatchAckTimer(): void {
@@ -713,7 +817,7 @@ export struct SshXtermSurface {
   }
 
   private pumpOutput(): void {
-    if (!this.active || this.outputPumpRunning || !this.pageReady || !this.pageFinished || this.disposed) { return; }
+    if (!this.active || this.outputPumpRunning || !this.pageReady || this.disposed) { return; }
     if (this.pendingWrites.length === 0) {
       this.maybeReportReady();
       return;
@@ -787,6 +891,14 @@ export struct SshXtermSurface {
       this.pendingCoreKeyReload = true;
       return;
     }
+    // The initial Web document may still be waiting for ArkWeb to dispatch
+    // onPageBegin. A connection/session revision change during that window
+    // only changes the binding identity; reloading here creates a second
+    // bridge registration before the first document has even started.
+    if (!this.pageStarted && !this.pageFinished && !this.pageReady &&
+      !this.documentReloadPending) {
+      return;
+    }
     this.reloadDocumentForCoreKey();
   }
 
@@ -794,6 +906,14 @@ export struct SshXtermSurface {
     if (this.disposed) { return; }
     if (!this.active) {
       this.pendingCoreKeyReload = true;
+      return;
+    }
+    // The initial xterm document is intentionally warmed before SSH attaches.
+    // A session-generation update during that cold boot changes callback
+    // identity but does not change the host-owned transcript or the DOM. Wait
+    // for the first ready boundary instead of throwing away the page and
+    // paying the full WebView load cost a second time.
+    if (!this.pageReady && !this.documentReloadPending) {
       return;
     }
     // A host/session key can be reused after a surface recovery. Reload the
@@ -813,6 +933,13 @@ export struct SshXtermSurface {
       this.restoreQueuedWrites();
       return;
     }
+    // A surface that was booted while hidden can finish its document load
+    // before the active tab switch. Nudge the page-side ready callback at the
+    // activation boundary so a missed bridge callback cannot leave the host
+    // with only the WebView's input caret.
+    if (!this.pageReady && this.pageFinished) {
+      this.nudgePageReady();
+    }
     if (this.pendingCoreKeyReload || this.documentReloadPending) {
       this.pendingCoreKeyReload = false;
       // A reload interrupted while inactive left its old document fenced. Let
@@ -825,7 +952,11 @@ export struct SshXtermSurface {
       this.reloadDocumentForCoreKey();
       return;
     }
-    this.runPageScript(this.pageConfigScript());
+    // A hidden tab may have finished loading while active=false. In that
+    // state handlePageReady intentionally defers the parent ready callback;
+    // activation must therefore use the full post-load path so the target
+    // tab cannot remain behind the page's Preparing-terminal mask.
+    this.applyPageConfigAfterLoad();
     this.flushOutputBuffer();
     this.pumpOutput();
     this.scheduleFit();
@@ -834,10 +965,27 @@ export struct SshXtermSurface {
   private onSurfaceRefreshRequestChange(): void {
     if (!this.active || this.disposed) { return; }
     if (this.documentReloadPending) { return; }
-    this.runPageScript(this.pageConfigScript());
+    // Keep refreshes idempotent and preserve the same ready-report retry path
+    // used by activation after a hidden document boot.
+    this.applyPageConfigAfterLoad();
     this.flushOutputBuffer();
     this.pumpOutput();
     this.scheduleFit();
+  }
+
+  private onReadyProbeRequestChange(): void {
+    if (!this.active || this.disposed || this.documentReloadPending) { return; }
+    if (!this.pageReady) {
+      if (this.pageFinished) { this.nudgePageReady(); }
+      return;
+    }
+    // A retained tab can finish rendering while ArkUI coalesces the parent
+    // callback. Re-arm the one-shot report so the parent can accept the exact
+    // host/revision identity and remove its loading mask.
+    this.readyReported = false;
+    this.applyPageConfigAfterLoad();
+    this.flushOutputBuffer();
+    this.maybeReportReady();
   }
 
   private onViewportChange(): void {
@@ -921,7 +1069,11 @@ export struct SshXtermSurface {
       // needs local file access enabled to resolve the relative vendor URLs.
       .fileAccess(true)
       .domStorageAccess(false)
-      .onPageBegin((): void => { this.registerBridge(); })
+      .onPageBegin((): void => {
+        this.pageStarted = true;
+        this.logLifecycle('page begin key=' + this.coreKey);
+        this.registerBridge();
+      })
       .onPageEnd((): void => { this.handlePageEnd(); })
       .onAreaChange((_oldArea: Area, _newArea: Area): void => {
         this.scheduleFit();
@@ -929,5 +1081,128 @@ export struct SshXtermSurface {
       .width('100%')
       .height('100%')
       .backgroundColor('#0D0D0D');
+  }
+}
+
+/**
+ * Keep ArkWeb and the bundled xterm frontend warm while the host list is open.
+ * This surface deliberately has no SSH bridge beyond the page-ready callback;
+ * it exists only to pay the WebView/vendor-script cold-start cost before the
+ * user opens a real terminal.
+ */
+class SshXtermPrewarmBridge {
+  private startedAtMs: number = Date.now();
+
+  onReady(cols: number, rows: number): void {
+    hilog.info(XTERM_DOMAIN, XTERM_TAG,
+      'prewarm ready cols=' + cols.toString() + ' rows=' + rows.toString() +
+        ' elapsedMs=' + Math.max(0, Date.now() - this.startedAtMs).toString());
+  }
+}
+
+@Component
+export struct SshXtermPrewarmSurface {
+  @Prop prewarmEnabled: boolean = false;
+
+  private controller: webview.WebviewController = new webview.WebviewController();
+  private bridge: SshXtermPrewarmBridge = new SshXtermPrewarmBridge();
+  private bridgeRegistered: boolean = false;
+  private appearedAtMs: number = 0;
+  private bridgeRegisteredAtPageBegin: boolean = false;
+  private activationReloaded: boolean = false;
+
+  private elapsedMs(): number {
+    if (this.appearedAtMs <= 0) { return 0; }
+    return Math.max(0, Date.now() - this.appearedAtMs);
+  }
+
+  aboutToAppear(): void {
+    this.appearedAtMs = Date.now();
+    this.bridgeRegisteredAtPageBegin = false;
+    this.activationReloaded = false;
+    hilog.info(XTERM_DOMAIN, XTERM_TAG,
+      'prewarm appear enabled=' + (this.prewarmEnabled ? '1' : '0'));
+    this.registerBridge();
+  }
+
+  aboutToDisappear(): void {
+    hilog.info(XTERM_DOMAIN, XTERM_TAG,
+      'prewarm disappear elapsedMs=' + this.elapsedMs().toString() +
+        ' bridge=' + (this.bridgeRegistered ? '1' : '0'));
+    if (this.bridgeRegistered) {
+      try { this.controller.deleteJavaScriptRegister('sshTerminalBridge'); } catch (_err) {
+        // The Web page may already have been detached.
+      }
+      this.bridgeRegistered = false;
+    }
+  }
+
+  private registerBridge(): void {
+    if (this.bridgeRegistered) { return; }
+    try {
+      this.controller.registerJavaScriptProxy(
+        this.bridge,
+        'sshTerminalBridge',
+        ['onReady']
+      );
+      this.bridgeRegistered = true;
+      hilog.info(XTERM_DOMAIN, XTERM_TAG,
+        'prewarm bridge registered elapsedMs=' + this.elapsedMs().toString());
+    } catch (_err) {
+      hilog.debug(XTERM_DOMAIN, XTERM_TAG,
+        'prewarm bridge register deferred elapsedMs=' + this.elapsedMs().toString());
+      // onPageBegin retries after ArkWeb has attached the controller.
+    }
+  }
+
+  build() {
+    Stack() {
+      if (this.prewarmEnabled) {
+        Web({
+          src: $rawfile('ssh-terminal/index.html'),
+          controller: this.controller
+        })
+          .id('ssh-xterm-prewarm')
+          .javaScriptAccess(true)
+          .fileAccess(true)
+          .domStorageAccess(false)
+        .onPageBegin((): void => {
+            this.bridgeRegisteredAtPageBegin = this.bridgeRegistered;
+            hilog.info(XTERM_DOMAIN, XTERM_TAG,
+              'prewarm page begin elapsedMs=' + this.elapsedMs().toString() +
+                ' bridge=' + (this.bridgeRegisteredAtPageBegin ? '1' : '0'));
+            this.registerBridge();
+          })
+          .onPageEnd((): void => {
+            hilog.info(XTERM_DOMAIN, XTERM_TAG,
+              'prewarm page end elapsedMs=' + this.elapsedMs().toString() +
+                ' bridge=' + (this.bridgeRegistered ? '1' : '0'));
+            this.registerBridge();
+            if (!this.bridgeRegisteredAtPageBegin && this.bridgeRegistered &&
+              !this.activationReloaded) {
+              // A proxy registered during a document load is visible to the
+              // next document on API 23. Reload exactly once so the warm page
+              // can deliver its ready callback instead of remaining a silent
+              // hidden WebView.
+              this.activationReloaded = true;
+              hilog.info(XTERM_DOMAIN, XTERM_TAG,
+                'prewarm activation reload elapsedMs=' + this.elapsedMs().toString());
+              try {
+                this.controller.loadUrl($rawfile('ssh-terminal/index.html'));
+              } catch (_err) {
+                hilog.warn(XTERM_DOMAIN, XTERM_TAG,
+                  'prewarm activation reload failed elapsedMs=' + this.elapsedMs().toString());
+              }
+            }
+          })
+          .width(1)
+          .height(1)
+          .opacity(0)
+          .hitTestBehavior(HitTestMode.None);
+      }
+    }
+      .width(1)
+      .height(1)
+      .hitTestBehavior(HitTestMode.None);
   }
 }

@@ -29,6 +29,12 @@ const AUTH_EVENT_ACCEPTED: i32 = 0;
 const AUTH_EVENT_REQUIRED: i32 = 1;
 const AUTH_EVENT_WRONG_CODE: i32 = 2;
 
+/// Native clients let the peer release encoder work as soon as a video frame
+/// is written to the socket. `video_received` is only valid when this login
+/// flag is true; sending it while the flag is false releases the same encoder
+/// credit twice and produces burst/gap video cadence on the peer.
+pub const VIDEO_ACK_REQUIRED: bool = false;
+
 /// 会话状态
 #[derive(Debug, Clone, PartialEq)]
 pub enum SessionState {
@@ -248,6 +254,7 @@ impl Session {
         login.set_session_id(0);
         login.set_version("2.0.0".to_string());
         login.set_my_platform("OHOS".to_string());
+        login.set_video_ack_required(VIDEO_ACK_REQUIRED);
         if let Some(dir) = file_transfer_dir {
             let mut ft = FileTransfer::new();
             ft.set_dir(dir.to_string());
@@ -479,7 +486,7 @@ impl Session {
         let payload = msg
             .write_to_bytes()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-        channel.send(&payload)?;
+        channel.send_low_priority(&payload)?;
         Ok(())
     }
 
@@ -808,6 +815,7 @@ impl Session {
         login.set_session_id(0); // 服务端会分配
         login.set_version("2.0.0".to_string());
         login.set_my_platform("OHOS".to_string());
+        login.set_video_ack_required(VIDEO_ACK_REQUIRED);
 
         // OptionMessage: 图像质量等
         let mut opt = OptionMessage::new();
@@ -977,6 +985,14 @@ impl Drop for PendingTwoFactorGuard {
 mod tests {
     use super::*;
     use protobuf::Message as ProtoMessage;
+
+    #[test]
+    fn native_login_contract_does_not_request_per_frame_video_ack() {
+        let mut login = LoginRequest::new();
+        login.set_video_ack_required(VIDEO_ACK_REQUIRED);
+
+        assert!(!login.get_video_ack_required());
+    }
 
     #[test]
     fn refresh_video_message_keeps_refresh_video_oneof_variant() {

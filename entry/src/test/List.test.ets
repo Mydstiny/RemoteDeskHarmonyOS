@@ -19,6 +19,7 @@ import gripMonitorLifecyclePolicyTest from './GripMonitorLifecyclePolicy.test';
 import settingsSheetRoutePolicyTest from './SettingsSheetRoutePolicy.test';
 import remoteForegroundRestorePolicyTest from './RemoteForegroundRestorePolicy.test';
 import remotePointerModePolicyTest from './RemotePointerModePolicy.test';
+import remotePointerFocusPolicyTest from './RemotePointerFocusPolicy.test';
 import remoteInputGuardPolicyTest from './RemoteInputGuardPolicy.test';
 import settingsAccordionPolicyTest from './SettingsAccordionPolicy.test';
 import remoteSessionMediaStatePolicyTest from './RemoteSessionMediaStatePolicy.test';
@@ -166,6 +167,7 @@ export default function testsuite() {
   settingsSheetRoutePolicyTest();
   remoteForegroundRestorePolicyTest();
   remotePointerModePolicyTest();
+  remotePointerFocusPolicyTest();
   remoteInputGuardPolicyTest();
   settingsAccordionPolicyTest();
   remoteSessionMediaStatePolicyTest();

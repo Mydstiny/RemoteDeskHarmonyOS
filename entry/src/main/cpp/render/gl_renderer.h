@@ -158,6 +158,11 @@ private:
     bool pboUploadFailedLogged_;
     int rawTextureWidth_;
     int rawTextureHeight_;
+    // The current RAW callback dimensions are presentation state, not GL
+    // allocation metadata. They are cleared with the renderer/session path
+    // so a previous software frame cannot size a later session.
+    int rawPresentationWidth_;
+    int rawPresentationHeight_;
 
     // 共享 GL 几何体
     GLuint vbo_;             // 全屏四边形顶点缓冲

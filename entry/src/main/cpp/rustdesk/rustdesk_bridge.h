@@ -142,6 +142,10 @@ enum class RustDeskMode {
  */
 class RustDeskBridge : public ProtocolAdapter {
 public:
+    // The real-core lifetime helpers need the incomplete type while keeping
+    // its storage private to the bridge.
+    struct Impl;
+
     // Kept as a source-compatible boundary for the session registry. The
     // relay rollback does not implement transport continuity, but callers
     // must still be able to bind and validate the current session identity.
@@ -231,7 +235,6 @@ public:
     bool supportsFileTransfer() override;
 
 private:
-    struct Impl;
     std::shared_ptr<Impl> impl_;
     RustDeskMode mode_;
 

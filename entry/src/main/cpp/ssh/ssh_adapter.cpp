@@ -7,6 +7,7 @@
  */
 #include "ssh_adapter.h"
 #include "ssh_auth_policy.h"
+#include "ssh_network_lifecycle_policy.h"
 #include "ssh_route_policy.h"
 #include "extension_registry.h"
 #include "common/safe_log.h"
@@ -136,6 +137,7 @@ namespace {
         const std::vector<std::string>* explicitResponses = nullptr;
         size_t* presetIndex = nullptr;
         std::string targetHost;
+        std::string hopLabel;
         bool allowPasswordFallback = false;
     };
 
@@ -154,7 +156,7 @@ namespace {
         const int result = context->adapter->fillKeyboardInteractiveResponses(
             name, nameLen, instruction, instructionLen, numPrompts, prompts, responses,
             context->explicitResponses, context->password,
-            context->allowPasswordFallback, context->targetHost, "jump",
+            context->allowPasswordFallback, context->targetHost, context->hopLabel,
             *context->presetIndex);
         if (result != 0) {
             context->adapter->recordAuthPromptFailure(result);
@@ -226,11 +228,66 @@ void SshAdapter::setSessionGeneration(uint64_t generation) {
     diagnostics_.setSessionGeneration(generation);
 }
 
-void SshAdapter::setSshLifecycleState(SshSessionLifecycleState state) {
+void SshAdapter::onNetworkChanged(bool available, uint64_t networkGeneration) {
+    uint64_t lastGeneration = lastNetworkGeneration_.load(std::memory_order_acquire);
+    while (SshNetworkLifecyclePolicy::acceptsGeneration(lastGeneration, networkGeneration) &&
+           !lastNetworkGeneration_.compare_exchange_weak(
+               lastGeneration, networkGeneration, std::memory_order_acq_rel,
+               std::memory_order_acquire)) {
+    }
+    if (networkGeneration == 0 || networkGeneration <= lastGeneration) {
+        return;
+    }
+    networkAvailable_.store(available, std::memory_order_release);
+    const bool reactorRunning = readerRunning_.load(std::memory_order_acquire);
+    const bool connected = state_.load(std::memory_order_acquire) ==
+        ConnectionState::CONNECTED;
+    if (SshNetworkLifecyclePolicy::shouldRequestRecovery(
+            available, reactorRunning, connected)) {
+        setSshLifecycleState(SshSessionLifecycleState::NetworkLost);
+        setState(ConnectionState::RECONNECTING,
+                 "SSH network unavailable, waiting for recovery");
+        transportRecoveryRequested_.store(true, std::memory_order_release);
+    }
+    if (SshNetworkLifecyclePolicy::shouldWakeRecovery(available, reactorRunning)) {
+        reactorCommandCondition_.notify_all();
+    }
+}
+
+void SshAdapter::setSshLifecycleState(SshSessionLifecycleState state,
+                                      const std::string& eventType) {
+    const SshSessionLifecycleState current =
+        sshLifecycleState_.load(std::memory_order_acquire);
+    // A recovery attempt rebuilds transport/KEX/auth in place. Keep those
+    // implementation phases under Reconnecting unless the prompt broker has
+    // explicitly exposed NeedsAuthentication to the page.
+    if (recoveryAttemptInProgress_.load(std::memory_order_acquire) &&
+        ((state == SshSessionLifecycleState::Connecting) ||
+         (state == SshSessionLifecycleState::Authenticating &&
+          current != SshSessionLifecycleState::NeedsAuthentication))) {
+        return;
+    }
     const SshSessionLifecycleState previous =
         sshLifecycleState_.exchange(state, std::memory_order_acq_rel);
-    if (previous != state) {
-        sshEventSequence_.fetch_add(1, std::memory_order_acq_rel);
+    if (previous == state) {
+        return;
+    }
+    sshEventSequence_.fetch_add(1, std::memory_order_acq_rel);
+    SshLifecycleStateCallback callback;
+    {
+        std::lock_guard<std::mutex> lock(sshLifecycleCallbackMutex_);
+        callback = sshLifecycleStateCallback_;
+    }
+    if (callback) {
+        const std::string type = eventType.empty()
+            ? std::string(sshSessionLifecycleStateName(state)) : eventType;
+        try {
+            callback(state, type);
+        } catch (...) {
+            // Lifecycle observers are diagnostics/state sinks. They must not
+            // take down the session-owner reactor if a consumer misbehaves.
+            OH_LOG_ERROR(LOG_APP, "[SSH] lifecycle callback threw");
+        }
     }
 }
 
@@ -718,9 +775,20 @@ int SshAdapter::pumpDynamicSocksHandshakeLocked(LocalForwardConnection& connecti
     }
     std::array<uint8_t, 4096> buffer {};
     if (!connection.localEof && connection.socksInput.size() < 8192) {
-        const ssize_t received = recv(connection.localFd, buffer.data(), buffer.size(),
-                                      MSG_DONTWAIT);
+        const uint64_t remaining = forwardingManager_.remainingBytes(
+            connection.profileId, connection.sessionGeneration);
+        const size_t readLength = static_cast<size_t>(std::min<uint64_t>(
+            remaining == 0 ? static_cast<uint64_t>(buffer.size()) : remaining,
+            static_cast<uint64_t>(buffer.size())));
+        const ssize_t received = remaining == 0 ? 0 : recv(
+            connection.localFd, buffer.data(), readLength, MSG_DONTWAIT);
         if (received > 0) {
+            if (forwardingManager_.recordBytes(connection.profileId,
+                                                connection.sessionGeneration,
+                                                static_cast<uint64_t>(received)) !=
+                SshForwardingResult::Ok) {
+                return -1;
+            }
             try {
                 connection.socksInput.insert(connection.socksInput.end(), buffer.begin(),
                                              buffer.begin() + received);
@@ -898,8 +966,17 @@ bool SshAdapter::pumpLocalForwardConnectionLocked(LocalForwardConnection& connec
             connection.localFd, POLLOUT | POLLERR | POLLHUP, 0
         };
         const int pollResult = poll(&pollDescriptor, 1, 0);
-        if (pollResult < 0 && errno != EINTR) { return false; }
-        if (pollResult == 0) { return true; }
+        if (pollResult < 0) {
+            return errno == EINTR;
+        }
+        if (pollResult == 0 || (pollDescriptor.revents & POLLOUT) == 0) {
+            if ((pollDescriptor.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0) {
+                return false;
+            }
+            // Do not relay the remote channel while the target socket is
+            // still in EINPROGRESS. The next reactor turn will re-check it.
+            return true;
+        }
         int socketError = 0;
         socklen_t errorLength = sizeof(socketError);
         if (getsockopt(connection.localFd, SOL_SOCKET, SO_ERROR,
@@ -996,8 +1073,23 @@ bool SshAdapter::pumpLocalForwardConnectionLocked(LocalForwardConnection& connec
 
     std::array<uint8_t, SSH_BUFFER_SIZE> buffer {};
     if (!connection.localEof && connection.toChannel.size() < kForwardBufferLimit) {
-        const ssize_t received = recv(connection.localFd, buffer.data(), buffer.size(), MSG_DONTWAIT);
+        const uint64_t remaining = forwardingManager_.remainingBytes(
+            connection.profileId, connection.sessionGeneration);
+        if (remaining == 0 && config.maxBytes != 0) {
+            connection.localEof = true;
+        }
+        const size_t readLength = static_cast<size_t>(std::min<uint64_t>(
+            remaining == 0 ? static_cast<uint64_t>(buffer.size()) : remaining,
+            static_cast<uint64_t>(buffer.size())));
+        const ssize_t received = connection.localEof || readLength == 0 ? 0 :
+            recv(connection.localFd, buffer.data(), readLength, MSG_DONTWAIT);
         if (received > 0) {
+            if (forwardingManager_.recordBytes(connection.profileId,
+                                                connection.sessionGeneration,
+                                                static_cast<uint64_t>(received)) !=
+                SshForwardingResult::Ok) {
+                return false;
+            }
             try {
                 connection.toChannel.insert(connection.toChannel.end(),
                                             buffer.begin(), buffer.begin() + received);
@@ -1035,9 +1127,21 @@ bool SshAdapter::pumpLocalForwardConnectionLocked(LocalForwardConnection& connec
 
     if (connection.channel != nullptr && connection.toLocal.size() < kForwardBufferLimit) {
         for (size_t attempt = 0; attempt < 4; ++attempt) {
+            const uint64_t remaining = forwardingManager_.remainingBytes(
+                connection.profileId, connection.sessionGeneration);
+            if (remaining == 0 && config.maxBytes != 0) { break; }
+            const size_t readLength = static_cast<size_t>(std::min<uint64_t>(
+                remaining == 0 ? static_cast<uint64_t>(buffer.size()) : remaining,
+                static_cast<uint64_t>(buffer.size())));
             const ssize_t received = libssh2_channel_read(
-                connection.channel, reinterpret_cast<char*>(buffer.data()), buffer.size());
+                connection.channel, reinterpret_cast<char*>(buffer.data()), readLength);
             if (received > 0) {
+                if (forwardingManager_.recordBytes(connection.profileId,
+                                                    connection.sessionGeneration,
+                                                    static_cast<uint64_t>(received)) !=
+                    SshForwardingResult::Ok) {
+                    return false;
+                }
                 try {
                     connection.toLocal.insert(connection.toLocal.end(),
                                               buffer.begin(), buffer.begin() + received);
@@ -1300,6 +1404,7 @@ void SshAdapter::serviceForwardingOnReactor() {
         (void)forwardingManager_.fail(failure.id, failure.generation, failure.error);
         closeLocalForwardRuntimeLocked(failure.id);
     }
+    failedListeners.clear();
 
     for (auto connection = localForwardConnections_.begin();
          connection != localForwardConnections_.end();) {
@@ -1308,12 +1413,24 @@ void SshAdapter::serviceForwardingOnReactor() {
             snapshot.config.mode == connection->mode &&
             snapshot.state == SshForwardingState::Listening &&
             snapshot.sessionGeneration == connection->sessionGeneration;
-        if (!valid || !pumpLocalForwardConnectionLocked(*connection, snapshot.config)) {
+        const bool pumped = valid && pumpLocalForwardConnectionLocked(*connection, snapshot.config);
+        SshForwardingSnapshot afterPump;
+        if (!pumped && forwardingManager_.snapshot(connection->profileId, afterPump) &&
+            afterPump.state == SshForwardingState::Failed &&
+            afterPump.sessionGeneration == connection->sessionGeneration) {
+            failedListeners.push_back({connection->profileId, connection->sessionGeneration,
+                                       afterPump.lastError});
+        }
+        if (!pumped) {
             closeLocalForwardConnectionLocked(*connection);
             connection = localForwardConnections_.erase(connection);
         } else {
             ++connection;
         }
+    }
+    for (const auto& failure : failedListeners) {
+        (void)forwardingManager_.fail(failure.id, failure.generation, failure.error);
+        closeLocalForwardRuntimeLocked(failure.id);
     }
 }
 
@@ -1825,243 +1942,414 @@ int SshAdapter::connectThroughProxy(const ConnectionConfig& cfg) {
 }
 
 int SshAdapter::connectThroughSshJump(const ConnectionConfig& cfg) {
-    if (cfg.sshProxyHost.empty() || cfg.sshProxyPort <= 0 || cfg.sshProxyPort > 65535 ||
-        cfg.host.empty() || cfg.port <= 0 || cfg.port > 65535) {
+    if (cfg.host.empty() || cfg.port <= 0 || cfg.port > 65535) {
         return ERR_SSH_PROXY_INVALID;
     }
 
-    const int ret = tcpConnect(cfg.sshProxyHost, cfg.sshProxyPort);
-    if (ret != 0) { return ret; }
-    jumpSockFd_ = sockFd_;
-    sockFd_ = -1;
+    // Keep the old single-hop fields as an input compatibility layer. The
+    // normalized chain below is the only shape used by the transport code.
+    std::vector<SshJumpHop> legacyHops;
+    const std::vector<SshJumpHop>* hops = &cfg.sshRoute.hops;
+    if (hops->empty()) {
+        SshJumpHop hop;
+        hop.host = cfg.sshProxyHost;
+        hop.port = cfg.sshProxyPort;
+        hop.username = cfg.sshProxyUsername;
+        hop.authMethod = cfg.sshProxyAuthMethod.empty() ? "password" : cfg.sshProxyAuthMethod;
+        hop.expectedHostKeyRawBase64 = cfg.sshJumpHostKeyRawBase64;
+        hop.expectedHostKeyFingerprintSha256 = cfg.sshJumpHostKeyFingerprintSha256;
+        legacyHops.push_back(std::move(hop));
+        hops = &legacyHops;
+    }
+    if (hops->empty() || hops->size() > kSshMaxJumpHops ||
+        !sshRouteHopsValid(SshRoute {
+            1, SshRouteKind::SshJump, cfg.host, cfg.port, *hops, "", 10000})) {
+        return ERR_SSH_PROXY_INVALID;
+    }
+    if (cfg.sshJumpHopHandoffs.size() > hops->size()) {
+        return ERR_SSH_PROXY_INVALID;
+    }
+
+    const std::string emptySecret;
+    const std::vector<std::string> emptyResponses;
+    auto hopPassword = [&](size_t index) -> const std::string& {
+        if (index < cfg.sshJumpHopHandoffs.size() &&
+            !cfg.sshJumpHopHandoffs[index].password.empty()) {
+            return cfg.sshJumpHopHandoffs[index].password;
+        }
+        return index == 0 ? cfg.sshProxyPassword : emptySecret;
+    };
+    auto hopPrivateKey = [&](size_t index) -> const std::string& {
+        if (index < cfg.sshJumpHopHandoffs.size() &&
+            !cfg.sshJumpHopHandoffs[index].privateKeyPem.empty()) {
+            return cfg.sshJumpHopHandoffs[index].privateKeyPem;
+        }
+        return index == 0 ? cfg.sshProxyPrivateKeyPem : emptySecret;
+    };
+    auto hopPassphrase = [&](size_t index) -> const std::string& {
+        if (index < cfg.sshJumpHopHandoffs.size() &&
+            !cfg.sshJumpHopHandoffs[index].privateKeyPassphrase.empty()) {
+            return cfg.sshJumpHopHandoffs[index].privateKeyPassphrase;
+        }
+        return index == 0 ? cfg.sshProxyPrivateKeyPassphrase : emptySecret;
+    };
+    auto hopResponses = [&](size_t index) -> const std::vector<std::string>& {
+        if (index < cfg.sshJumpHopHandoffs.size()) {
+            return cfg.sshJumpHopHandoffs[index].keyboardInteractiveResponses;
+        }
+        return index == 0 ? cfg.sshProxyKeyboardInteractiveResponses : emptyResponses;
+    };
 
     auto fail = [this](int code) {
-        if (jumpChannel_ != nullptr) {
-            libssh2_channel_free(jumpChannel_);
-            jumpChannel_ = nullptr;
-        }
-        if (jumpSession_ != nullptr) {
-            libssh2_session_disconnect(jumpSession_, "ProxyJump setup failed");
-            libssh2_session_free(jumpSession_);
-            jumpSession_ = nullptr;
-        }
-        if (jumpSockFd_ >= 0) {
-            shutdown(jumpSockFd_, SHUT_RDWR);
-            close(jumpSockFd_);
-            jumpSockFd_ = -1;
+        stopSshJumpRelay();
+        if (sockFd_ >= 0) {
+            shutdown(sockFd_, SHUT_RDWR);
+            close(sockFd_);
+            sockFd_ = -1;
         }
         return code;
     };
 
-    jumpSession_ = libssh2_session_init();
-    if (jumpSession_ == nullptr) { return fail(ERR_SSH_SESSION_INIT); }
-    libssh2_session_set_blocking(jumpSession_, 0);
+    int ret = tcpConnect((*hops)[0].host, (*hops)[0].port);
+    if (ret != 0) { return ret; }
+    const int firstTransportFd = sockFd_;
+    sockFd_ = -1;
+    {
+        std::lock_guard<std::mutex> runtimeLock(jumpRuntimeMutex_);
+        jumpHopRuntimes_.clear();
+        jumpHopRuntimes_.resize(hops->size());
+        jumpHopRuntimes_[0].transportFd = firstTransportFd;
+    }
 
-    int rc = 0;
-    while ((rc = libssh2_session_handshake(jumpSession_, jumpSockFd_)) ==
-           LIBSSH2_ERROR_EAGAIN) {
-        if (waitSocketOnFd(jumpSockFd_, 2, 30) != 0) {
-            return fail(ERR_SSH_KEX_TIMEOUT);
+    auto startRelay = [this]() {
+        if (jumpRelayRunning_.load(std::memory_order_acquire)) { return; }
+        if (jumpRelayThread_.joinable() &&
+            jumpRelayThread_.get_id() != std::this_thread::get_id()) {
+            // A relay can terminate on an I/O error before the enclosing
+            // ProxyJump setup notices it. Reap that finished thread before
+            // assigning a new std::thread object.
+            jumpRelayThread_.join();
         }
-    }
-    if (rc != 0) {
-        OH_LOG_ERROR(LOG_APP, "[SSH] ProxyJump 跳板机握手失败 rc=%{public}d", rc);
-        return fail(ERR_SSH_KEX_FAILED);
-    }
-
-    const int jumpHostKeyResult = verifyHostKey(
-        jumpSession_, cfg.sshJumpHostKeyRawBase64,
-        cfg.sshJumpHostKeyFingerprintSha256, true, "ProxyJump 跳板机");
-    if (jumpHostKeyResult != 0) {
-        return fail(jumpHostKeyResult);
-    }
-
-    const std::string jumpUsername = cfg.sshProxyUsername;
-    const std::string jumpAuthMethod = cfg.sshProxyAuthMethod.empty()
-        ? "password" : cfg.sshProxyAuthMethod;
-    if (jumpUsername.empty() ||
-        (jumpAuthMethod != "password" && jumpAuthMethod != "publickey" &&
-         jumpAuthMethod != "kbd-interactive" && jumpAuthMethod != "keyboard-interactive")) {
-        return fail(ERR_SSH_PROXY_INVALID);
-    }
-
-    char* jumpMethods = nullptr;
-    while ((jumpMethods = libssh2_userauth_list(
-                jumpSession_, jumpUsername.c_str(), jumpUsername.size())) == nullptr &&
-           libssh2_session_last_errno(jumpSession_) == LIBSSH2_ERROR_EAGAIN) {
-        if (waitSocketOnFd(jumpSockFd_, 2, 30) != 0) {
-            return fail(ERR_SSH_AUTH_TIMEOUT);
-        }
-    }
-    const std::string advertisedJumpMethods = jumpMethods == nullptr
-        ? std::string() : std::string(jumpMethods);
-    auto jumpMethodAdvertised = [&advertisedJumpMethods](const char* wanted) {
-        return advertisedJumpMethods.empty() ||
-            sshAuthMethodAdvertised(advertisedJumpMethods, wanted);
+        jumpRelayStopRequested_.store(false, std::memory_order_release);
+        jumpRelayRunning_.store(true, std::memory_order_release);
+        jumpRelayThread_ = std::thread(&SshAdapter::sshJumpRelayLoop, this);
     };
 
-    if ((jumpAuthMethod == "publickey" && !jumpMethodAdvertised("publickey")) ||
-        (jumpAuthMethod == "password" && !jumpMethodAdvertised("password")) ||
-        ((jumpAuthMethod == "kbd-interactive" || jumpAuthMethod == "keyboard-interactive") &&
-         !jumpMethodAdvertised("keyboard-interactive"))) {
-        OH_LOG_ERROR(LOG_APP,
-                     "[SSH] ProxyJump 跳板机未声明请求的认证方式 method=%{public}s advertised=%{public}s",
-                     jumpAuthMethod.c_str(), advertisedJumpMethods.c_str());
-        return fail(ERR_SSH_AUTH_METHODS);
-    }
+    auto configureSocketPair = [](int socketPair[2]) -> bool {
+        for (int fd : {socketPair[0], socketPair[1]}) {
+            const int flags = fcntl(fd, F_GETFL, 0);
+            const int descriptorFlags = fcntl(fd, F_GETFD, 0);
+            if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+                return false;
+            }
+            if (descriptorFlags >= 0) {
+                (void)fcntl(fd, F_SETFD, descriptorFlags | FD_CLOEXEC);
+            }
+        }
+        return true;
+    };
 
-    if (jumpAuthMethod == "publickey") {
-        if (cfg.sshProxyPrivateKeyPem.empty()) { return fail(ERR_SSH_PROXY_AUTH); }
-        const char* passphrase = cfg.sshProxyPrivateKeyPassphrase.empty()
-            ? nullptr : cfg.sshProxyPrivateKeyPassphrase.c_str();
-        while ((rc = libssh2_userauth_publickey_frommemory(
-                    jumpSession_, jumpUsername.c_str(), jumpUsername.size(),
-                    nullptr, 0, cfg.sshProxyPrivateKeyPem.c_str(),
-                    cfg.sshProxyPrivateKeyPem.size(), passphrase)) == LIBSSH2_ERROR_EAGAIN) {
-            if (waitSocketOnFd(jumpSockFd_, 2, 30) != 0) {
-                return fail(ERR_SSH_AUTH_TIMEOUT);
-            }
+    for (size_t index = 0; index < hops->size(); ++index) {
+        const SshJumpHop& hop = (*hops)[index];
+        JumpHopRuntime* runtime = nullptr;
+        {
+            std::lock_guard<std::mutex> runtimeLock(jumpRuntimeMutex_);
+            runtime = &jumpHopRuntimes_[index];
+            runtime->session = libssh2_session_init();
         }
-    } else if (jumpAuthMethod == "kbd-interactive" ||
-               jumpAuthMethod == "keyboard-interactive") {
-        authPromptHop_ = "jump";
-        authPromptPresetIndex_ = 0;
-        authPromptFailure_.store(0, std::memory_order_release);
-        SshJumpKeyboardContext context {
-            this, &cfg.sshProxyPassword, &cfg.sshProxyKeyboardInteractiveResponses,
-            &authPromptPresetIndex_, cfg.sshProxyHost, true
-        };
-        void** abstract = libssh2_session_abstract(jumpSession_);
-        if (abstract != nullptr) { *abstract = &context; }
-        while ((rc = libssh2_userauth_keyboard_interactive(
-                    jumpSession_, jumpUsername.c_str(),
-                    &sshJumpKeyboardInteractiveCallback)) == LIBSSH2_ERROR_EAGAIN) {
-            if (waitSocketOnFd(jumpSockFd_, 2, 30) != 0) {
-                return fail(ERR_SSH_AUTH_TIMEOUT);
-            }
+        if (runtime == nullptr || runtime->session == nullptr) {
+            return fail(ERR_SSH_SESSION_INIT);
         }
-        const int promptFailure = authPromptFailure_.load(std::memory_order_acquire);
-        authPromptHop_ = "target";
-        if (promptFailure != 0) {
-            return fail(promptFailure);
-        }
-    } else {
-        if (cfg.sshProxyPassword.empty()) { return fail(ERR_SSH_PROXY_AUTH); }
-        while ((rc = libssh2_userauth_password(
-                    jumpSession_, jumpUsername.c_str(), cfg.sshProxyPassword.c_str())) ==
+        libssh2_session_set_blocking(runtime->session, 0);
+
+        int rc = 0;
+        while ((rc = libssh2_session_handshake(runtime->session, runtime->transportFd)) ==
                LIBSSH2_ERROR_EAGAIN) {
-            if (waitSocketOnFd(jumpSockFd_, 2, 30) != 0) {
+            if (waitSocketOnFd(runtime->transportFd, 2,
+                               std::max(1, static_cast<int>(hop.connectTimeoutMs / 1000))) != 0) {
+                return fail(ERR_SSH_KEX_TIMEOUT);
+            }
+        }
+        if (rc != 0) {
+            OH_LOG_ERROR(LOG_APP, "[SSH] ProxyJump hop=%{public}zu handshake failed rc=%{public}d",
+                         index, rc);
+            return fail(ERR_SSH_KEX_FAILED);
+        }
+
+        const std::string hopLabel = "hop-" + std::to_string(index + 1);
+        const int hostKeyResult = verifyHostKey(
+            runtime->session, hop.expectedHostKeyRawBase64,
+            hop.expectedHostKeyFingerprintSha256, true, hopLabel.c_str());
+        if (hostKeyResult != 0) { return fail(hostKeyResult); }
+
+        const std::string authMethod = hop.authMethod.empty() ? "password" : hop.authMethod;
+        if (hop.username.empty() ||
+            (authMethod != "password" && authMethod != "publickey" &&
+             authMethod != "kbd-interactive" && authMethod != "keyboard-interactive")) {
+            return fail(ERR_SSH_PROXY_INVALID);
+        }
+
+        char* methods = nullptr;
+        while ((methods = libssh2_userauth_list(
+                    runtime->session, hop.username.c_str(), hop.username.size())) == nullptr &&
+               libssh2_session_last_errno(runtime->session) == LIBSSH2_ERROR_EAGAIN) {
+            if (waitSocketOnFd(runtime->transportFd, 2, 30) != 0) {
                 return fail(ERR_SSH_AUTH_TIMEOUT);
             }
         }
-    }
-    if (rc != 0 || !libssh2_userauth_authenticated(jumpSession_)) {
-        OH_LOG_ERROR(LOG_APP, "[SSH] ProxyJump 跳板机认证失败 rc=%{public}d", rc);
-        return fail(ERR_SSH_PROXY_AUTH);
-    }
-
-    std::string targetHost = cfg.host;
-    if (targetHost.size() >= 2 && targetHost.front() == '[' && targetHost.back() == ']') {
-        targetHost = targetHost.substr(1, targetHost.size() - 2);
-    }
-    while ((jumpChannel_ = libssh2_channel_direct_tcpip_ex(
-                jumpSession_, targetHost.c_str(), cfg.port, "127.0.0.1", 22)) == nullptr) {
-        if (libssh2_session_last_errno(jumpSession_) != LIBSSH2_ERROR_EAGAIN) {
-            return fail(ERR_SSH_PROXY_FAILED);
+        const std::string advertisedMethods = methods == nullptr ? std::string() : std::string(methods);
+        const auto methodAdvertised = [&advertisedMethods](const char* wanted) {
+            return advertisedMethods.empty() || sshAuthMethodAdvertised(advertisedMethods, wanted);
+        };
+        if ((authMethod == "publickey" && !methodAdvertised("publickey")) ||
+            (authMethod == "password" && !methodAdvertised("password")) ||
+            ((authMethod == "kbd-interactive" || authMethod == "keyboard-interactive") &&
+             !methodAdvertised("keyboard-interactive"))) {
+            return fail(ERR_SSH_AUTH_METHODS);
         }
-        if (waitSocketOnFd(jumpSockFd_, 2, 30) != 0) {
-            return fail(ERR_SSH_CONNECT_TIMEOUT);
-        }
-    }
 
-    int socketPair[2] = {-1, -1};
-    if (socketpair(AF_UNIX, SOCK_STREAM, 0, socketPair) != 0) {
-        return fail(ERR_SSH_SOCKET_CREATE);
-    }
-    for (int fd : socketPair) {
-        const int flags = fcntl(fd, F_GETFL, 0);
-        if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
-            close(socketPair[0]);
-            close(socketPair[1]);
+        const std::string& password = hopPassword(index);
+        const std::string& privateKey = hopPrivateKey(index);
+        const std::string& passphrase = hopPassphrase(index);
+        const std::vector<std::string>& responses = hopResponses(index);
+        auto authenticateInteractive = [&](bool allowPasswordFallback) -> int {
+            void** abstract = libssh2_session_abstract(runtime->session);
+            if (abstract == nullptr) { return ERR_SSH_AUTH_FAILED; }
+            authPromptHop_ = hopLabel;
+            authPromptPresetIndex_ = 0;
+            authPromptFailure_.store(0, std::memory_order_release);
+            SshJumpKeyboardContext context {
+                this, &password, &responses, &authPromptPresetIndex_, hop.host,
+                hopLabel, allowPasswordFallback
+            };
+            *abstract = &context;
+            int authResult = 0;
+            while ((authResult = libssh2_userauth_keyboard_interactive(
+                        runtime->session, hop.username.c_str(),
+                        &sshJumpKeyboardInteractiveCallback)) == LIBSSH2_ERROR_EAGAIN) {
+                if (waitSocketOnFd(runtime->transportFd, 2, 30) != 0) {
+                    authPromptHop_ = "target";
+                    return ERR_SSH_AUTH_TIMEOUT;
+                }
+            }
+            const int promptFailure = authPromptFailure_.load(std::memory_order_acquire);
+            authPromptHop_ = "target";
+            if (promptFailure != 0) { return promptFailure; }
+            return authResult;
+        };
+
+        if (authMethod == "publickey") {
+            if (privateKey.empty()) { return fail(ERR_SSH_PROXY_AUTH); }
+            const char* keyPassphrase = passphrase.empty() ? nullptr : passphrase.c_str();
+            while ((rc = libssh2_userauth_publickey_frommemory(
+                        runtime->session, hop.username.c_str(), hop.username.size(),
+                        nullptr, 0, privateKey.c_str(), privateKey.size(), keyPassphrase)) ==
+                   LIBSSH2_ERROR_EAGAIN) {
+                if (waitSocketOnFd(runtime->transportFd, 2, 30) != 0) {
+                    return fail(ERR_SSH_AUTH_TIMEOUT);
+                }
+            }
+        } else if (authMethod == "kbd-interactive" || authMethod == "keyboard-interactive") {
+            rc = authenticateInteractive(true);
+        } else {
+            if (password.empty()) { return fail(ERR_SSH_PROXY_AUTH); }
+            while ((rc = libssh2_userauth_password(
+                        runtime->session, hop.username.c_str(), password.c_str())) ==
+                   LIBSSH2_ERROR_EAGAIN) {
+                if (waitSocketOnFd(runtime->transportFd, 2, 30) != 0) {
+                    return fail(ERR_SSH_AUTH_TIMEOUT);
+                }
+            }
+            if (rc != 0 && sshPasswordFallbackAllowsKeyboardInteractive(
+                    advertisedMethods, rc)) {
+                rc = authenticateInteractive(true);
+            }
+        }
+        if (rc != 0 || !libssh2_userauth_authenticated(runtime->session)) {
+            OH_LOG_ERROR(LOG_APP, "[SSH] ProxyJump hop=%{public}zu authentication failed rc=%{public}d",
+                         index, rc);
+            return fail(ERR_SSH_PROXY_AUTH);
+        }
+
+        const std::string nextHost = index + 1 < hops->size()
+            ? (*hops)[index + 1].host : cfg.host;
+        const int nextPort = index + 1 < hops->size()
+            ? (*hops)[index + 1].port : cfg.port;
+        std::string normalizedNextHost = nextHost;
+        if (normalizedNextHost.size() >= 2 && normalizedNextHost.front() == '[' &&
+            normalizedNextHost.back() == ']') {
+            normalizedNextHost = normalizedNextHost.substr(1, normalizedNextHost.size() - 2);
+        }
+        LIBSSH2_CHANNEL* channel = nullptr;
+        while ((channel = libssh2_channel_direct_tcpip_ex(
+                    runtime->session, normalizedNextHost.c_str(), nextPort,
+                    "127.0.0.1", 22)) == nullptr) {
+            if (libssh2_session_last_errno(runtime->session) != LIBSSH2_ERROR_EAGAIN) {
+                return fail(ERR_SSH_PROXY_FAILED);
+            }
+            if (waitSocketOnFd(runtime->transportFd, 2, 30) != 0) {
+                return fail(ERR_SSH_CONNECT_TIMEOUT);
+            }
+        }
+
+        int socketPair[2] = {-1, -1};
+        if (socketpair(AF_UNIX, SOCK_STREAM, 0, socketPair) != 0 ||
+            !configureSocketPair(socketPair)) {
+            if (socketPair[0] >= 0) { close(socketPair[0]); }
+            if (socketPair[1] >= 0) { close(socketPair[1]); }
+            libssh2_channel_free(channel);
             return fail(ERR_SSH_SOCKET_CREATE);
         }
+        {
+            std::lock_guard<std::mutex> runtimeLock(jumpRuntimeMutex_);
+            runtime->channel = channel;
+            runtime->channelPeerFd = socketPair[1];
+            if (index + 1 < hops->size()) {
+                jumpHopRuntimes_[index + 1].transportFd = socketPair[0];
+            } else {
+                sockFd_ = socketPair[0];
+            }
+        }
+        startRelay();
+        OH_LOG_INFO(LOG_APP,
+                    "[SSH] ProxyJump hop=%{public}zu ready next=%{public}s:%{public}d",
+                    index + 1, SafeLog::MaskHost(normalizedNextHost).c_str(), nextPort);
     }
-    sockFd_ = socketPair[0];
-    jumpRelayFd_ = socketPair[1];
-    jumpRelayStopRequested_.store(false, std::memory_order_release);
-    jumpRelayRunning_.store(true, std::memory_order_release);
-    jumpRelayThread_ = std::thread(&SshAdapter::sshJumpRelayLoop, this);
-    OH_LOG_INFO(LOG_APP, "[SSH] ProxyJump 路由已建立 target=%{public}s:%{public}d",
-                SafeLog::MaskHost(targetHost).c_str(), cfg.port);
+
+    OH_LOG_INFO(LOG_APP, "[SSH] ProxyJump chain established hops=%{public}zu target=%{public}s:%{public}d",
+                hops->size(), SafeLog::MaskHost(cfg.host).c_str(), cfg.port);
     return 0;
 }
 
 void SshAdapter::sshJumpRelayLoop() {
     constexpr size_t kRelayBufferLimit = 512 * 1024;
-    std::vector<uint8_t> toChannel;
-    std::vector<uint8_t> toLocal;
-    bool localEof = false;
-    bool channelEof = false;
+    struct RelayState {
+        std::vector<uint8_t> toChannel;
+        std::vector<uint8_t> toPeer;
+        bool peerEof = false;
+        bool channelEof = false;
+        bool channelEofSent = false;
+        bool peerWriteShutdown = false;
+    };
+    std::array<RelayState, kSshMaxJumpHops> states;
     std::array<uint8_t, SSH_BUFFER_SIZE> buffer {};
 
     while (!jumpRelayStopRequested_.load(std::memory_order_acquire)) {
         bool progress = false;
-        if (!localEof && toChannel.size() < kRelayBufferLimit) {
-            const ssize_t received = recv(jumpRelayFd_, buffer.data(), buffer.size(), MSG_DONTWAIT);
-            if (received > 0) {
-                toChannel.insert(toChannel.end(), buffer.begin(), buffer.begin() + received);
-                progress = true;
-            } else if (received == 0) {
-                localEof = true;
-                libssh2_channel_send_eof(jumpChannel_);
-            } else if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
-                break;
-            }
-        }
-        if (!toChannel.empty()) {
-            const ssize_t written = libssh2_channel_write(
-                jumpChannel_, reinterpret_cast<const char*>(toChannel.data()), toChannel.size());
-            if (written > 0) {
-                toChannel.erase(toChannel.begin(), toChannel.begin() + written);
-                progress = true;
-            } else if (written < 0 && written != LIBSSH2_ERROR_EAGAIN) {
-                break;
-            }
-        }
-        if (!channelEof && toLocal.size() < kRelayBufferLimit) {
-            const ssize_t received = libssh2_channel_read(
-                jumpChannel_, reinterpret_cast<char*>(buffer.data()), buffer.size());
-            if (received > 0) {
-                toLocal.insert(toLocal.end(), buffer.begin(), buffer.begin() + received);
-                progress = true;
-            } else if (received == 0 && libssh2_channel_eof(jumpChannel_)) {
-                channelEof = true;
-                shutdown(jumpRelayFd_, SHUT_WR);
-            } else if (received < 0 && received != LIBSSH2_ERROR_EAGAIN) {
-                break;
-            }
-        }
-        if (!toLocal.empty()) {
-            const ssize_t written = send(jumpRelayFd_, toLocal.data(), toLocal.size(), MSG_DONTWAIT);
-            if (written > 0) {
-                toLocal.erase(toLocal.begin(), toLocal.begin() + written);
-                progress = true;
-            } else if (written < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
-                break;
-            }
-        }
-        if (localEof && channelEof && toChannel.empty() && toLocal.empty()) { break; }
-        if (progress) { continue; }
-
+        bool relayFailure = false;
         fd_set readSet;
         fd_set writeSet;
         FD_ZERO(&readSet);
         FD_ZERO(&writeSet);
-        FD_SET(jumpRelayFd_, &readSet);
-        if (!toLocal.empty()) { FD_SET(jumpRelayFd_, &writeSet); }
-        FD_SET(jumpSockFd_, &readSet);
-        FD_SET(jumpSockFd_, &writeSet);
-        const int maxFd = std::max(jumpRelayFd_, jumpSockFd_);
+        int maxFd = -1;
+        {
+            std::lock_guard<std::mutex> runtimeLock(jumpRuntimeMutex_);
+            for (size_t index = 0; index < jumpHopRuntimes_.size() &&
+                 index < states.size(); ++index) {
+                JumpHopRuntime& runtime = jumpHopRuntimes_[index];
+                RelayState& state = states[index];
+                if (runtime.channel == nullptr || runtime.channelPeerFd < 0) { continue; }
+                if (!state.peerEof && state.toChannel.size() < kRelayBufferLimit) {
+                    const size_t readLength = std::min(
+                        buffer.size(), kRelayBufferLimit - state.toChannel.size());
+                    const ssize_t received = recv(runtime.channelPeerFd, buffer.data(),
+                                                  readLength, MSG_DONTWAIT);
+                    if (received > 0) {
+                        try {
+                            state.toChannel.insert(state.toChannel.end(), buffer.begin(),
+                                                   buffer.begin() + received);
+                        } catch (...) {
+                            relayFailure = true;
+                        }
+                        progress = true;
+                    } else if (received == 0) {
+                        state.peerEof = true;
+                    } else if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+                        relayFailure = true;
+                    }
+                }
+                if (!state.toChannel.empty()) {
+                    const ssize_t written = libssh2_channel_write(
+                        runtime.channel, reinterpret_cast<const char*>(state.toChannel.data()),
+                        state.toChannel.size());
+                    if (written > 0) {
+                        state.toChannel.erase(state.toChannel.begin(),
+                                              state.toChannel.begin() + written);
+                        progress = true;
+                    } else if (written < 0 && written != LIBSSH2_ERROR_EAGAIN) {
+                        relayFailure = true;
+                    }
+                }
+                if (state.peerEof && state.toChannel.empty() && !state.channelEofSent) {
+                    const int eofResult = libssh2_channel_send_eof(runtime.channel);
+                    if (eofResult == 0) {
+                        state.channelEofSent = true;
+                    } else if (eofResult != LIBSSH2_ERROR_EAGAIN) {
+                        relayFailure = true;
+                    }
+                }
+                if (!state.channelEof && state.toPeer.size() < kRelayBufferLimit) {
+                    for (size_t attempt = 0; attempt < 4; ++attempt) {
+                        if (state.toPeer.size() >= kRelayBufferLimit) { break; }
+                        const size_t readLength = std::min(
+                            buffer.size(), kRelayBufferLimit - state.toPeer.size());
+                        const ssize_t received = libssh2_channel_read(
+                            runtime.channel, reinterpret_cast<char*>(buffer.data()), readLength);
+                        if (received > 0) {
+                            try {
+                                state.toPeer.insert(state.toPeer.end(), buffer.begin(),
+                                                    buffer.begin() + received);
+                            } catch (...) {
+                                relayFailure = true;
+                            }
+                            progress = true;
+                            continue;
+                        }
+                        if (received == 0) {
+                            if (libssh2_channel_eof(runtime.channel) != 0) {
+                                state.channelEof = true;
+                            }
+                            break;
+                        }
+                        if (received != LIBSSH2_ERROR_EAGAIN) { relayFailure = true; }
+                        break;
+                    }
+                }
+                if (!state.toPeer.empty()) {
+                    int sendFlags = MSG_DONTWAIT;
+#ifdef MSG_NOSIGNAL
+                    sendFlags |= MSG_NOSIGNAL;
+#endif
+                    const ssize_t written = send(runtime.channelPeerFd, state.toPeer.data(),
+                                                  state.toPeer.size(), sendFlags);
+                    if (written > 0) {
+                        state.toPeer.erase(state.toPeer.begin(), state.toPeer.begin() + written);
+                        progress = true;
+                    } else if (written < 0 && errno != EAGAIN && errno != EWOULDBLOCK &&
+                               errno != EINTR) {
+                        relayFailure = true;
+                    }
+                }
+                if (state.channelEof && state.toPeer.empty() && !state.peerWriteShutdown) {
+                    (void)shutdown(runtime.channelPeerFd, SHUT_WR);
+                    state.peerWriteShutdown = true;
+                }
+                FD_SET(runtime.channelPeerFd, &readSet);
+                if (!state.toPeer.empty()) { FD_SET(runtime.channelPeerFd, &writeSet); }
+                maxFd = std::max(maxFd, runtime.channelPeerFd);
+                if (runtime.transportFd >= 0) {
+                    FD_SET(runtime.transportFd, &readSet);
+                    FD_SET(runtime.transportFd, &writeSet);
+                    maxFd = std::max(maxFd, runtime.transportFd);
+                }
+                if (state.peerEof && state.channelEof && state.toChannel.empty() &&
+                    state.toPeer.empty()) {
+                    relayFailure = true;
+                }
+            }
+        }
+        if (relayFailure) { break; }
+        if (progress) { continue; }
         struct timeval tv = {0, 100000};
         const int selected = select(maxFd + 1, &readSet, &writeSet, nullptr, &tv);
         if (selected < 0 && errno != EINTR) { break; }
@@ -2071,28 +2359,37 @@ void SshAdapter::sshJumpRelayLoop() {
 
 void SshAdapter::stopSshJumpRelay() {
     jumpRelayStopRequested_.store(true, std::memory_order_release);
-    if (jumpRelayFd_ >= 0) { shutdown(jumpRelayFd_, SHUT_RDWR); }
-    if (jumpSockFd_ >= 0) { shutdown(jumpSockFd_, SHUT_RDWR); }
+    {
+        std::lock_guard<std::mutex> runtimeLock(jumpRuntimeMutex_);
+        for (JumpHopRuntime& runtime : jumpHopRuntimes_) {
+            if (runtime.channelPeerFd >= 0) { shutdown(runtime.channelPeerFd, SHUT_RDWR); }
+            if (runtime.transportFd >= 0) { shutdown(runtime.transportFd, SHUT_RDWR); }
+        }
+    }
     if (jumpRelayThread_.joinable() && jumpRelayThread_.get_id() != std::this_thread::get_id()) {
         jumpRelayThread_.join();
     }
     jumpRelayRunning_.store(false, std::memory_order_release);
-    if (jumpChannel_ != nullptr) {
-        libssh2_channel_free(jumpChannel_);
-        jumpChannel_ = nullptr;
+    std::lock_guard<std::mutex> runtimeLock(jumpRuntimeMutex_);
+    for (JumpHopRuntime& runtime : jumpHopRuntimes_) {
+        if (runtime.channel != nullptr) {
+            libssh2_channel_free(runtime.channel);
+            runtime.channel = nullptr;
+        }
+        if (runtime.session != nullptr) {
+            libssh2_session_free(runtime.session);
+            runtime.session = nullptr;
+        }
+        if (runtime.channelPeerFd >= 0) {
+            close(runtime.channelPeerFd);
+            runtime.channelPeerFd = -1;
+        }
+        if (runtime.transportFd >= 0) {
+            close(runtime.transportFd);
+            runtime.transportFd = -1;
+        }
     }
-    if (jumpSession_ != nullptr) {
-        libssh2_session_free(jumpSession_);
-        jumpSession_ = nullptr;
-    }
-    if (jumpRelayFd_ >= 0) {
-        close(jumpRelayFd_);
-        jumpRelayFd_ = -1;
-    }
-    if (jumpSockFd_ >= 0) {
-        close(jumpSockFd_);
-        jumpSockFd_ = -1;
-    }
+    jumpHopRuntimes_.clear();
 }
 
 // exchangeBanner() 已移除 — libssh2_session_handshake 内部处理 banner 交换
@@ -2650,6 +2947,7 @@ int SshAdapter::connectInternal(const ConnectionConfig& cfg, bool preserveOwner)
     std::lock_guard<std::recursive_mutex> lifecycleLock(lifecycleMutex_);
     if (!preserveOwner) {
         setSshLifecycleState(SshSessionLifecycleState::Created);
+        networkAvailable_.store(true, std::memory_order_release);
     }
     authPromptBroker_.resetForNewConnection();
     authPromptFailure_.store(0, std::memory_order_release);
@@ -2878,10 +3176,22 @@ void SshAdapter::disconnect() {
             secureClearString(response);
         }
         savedCfg_.sshProxyKeyboardInteractiveResponses.clear();
+        for (SshJumpHopHandoff& handoff : savedCfg_.sshJumpHopHandoffs) {
+            secureClearString(handoff.password);
+            secureClearString(handoff.privateKeyPem);
+            secureClearString(handoff.privateKeyPassphrase);
+            for (std::string& response : handoff.keyboardInteractiveResponses) {
+                secureClearString(response);
+            }
+            handoff.keyboardInteractiveResponses.clear();
+        }
+        savedCfg_.sshJumpHopHandoffs.clear();
     }
     keepaliveNextDue_ = std::chrono::steady_clock::time_point::max();
     keepaliveConsecutiveFailures_ = 0;
     transportRecoveryRequested_.store(false, std::memory_order_release);
+    recoveryAttemptInProgress_.store(false, std::memory_order_release);
+    networkAvailable_.store(true, std::memory_order_release);
     forwardingManager_.resetRuntimeAfterTransportClose();
     // Do not invoke user code while sessionMutex_ is held. A state callback
     // can synchronously update the page and call back into disconnect/send.
@@ -2936,6 +3246,22 @@ bool SshAdapter::reconnectAfterTransportFailure() {
     uint32_t attemptsStarted = 0;
     setSshLifecycleState(SshSessionLifecycleState::NetworkLost);
     while (true) {
+        // A platform netLost event must pause the bounded retry budget. The
+        // session remains recoverable, but offline time must not consume all
+        // eight attempts before netAvailable is delivered.
+        if (!networkAvailable_.load(std::memory_order_acquire)) {
+            std::unique_lock<std::mutex> waitLock(reactorCommandMutex_);
+            reactorCommandCondition_.wait_for(waitLock, std::chrono::milliseconds(250), [this]() {
+                return networkAvailable_.load(std::memory_order_acquire) ||
+                    !readerRunning_.load(std::memory_order_acquire) ||
+                    connectCancelRequested_.load(std::memory_order_acquire);
+            });
+            if (!readerRunning_.load(std::memory_order_acquire) ||
+                connectCancelRequested_.load(std::memory_order_acquire)) {
+                return false;
+            }
+            continue;
+        }
         const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - recoveryStartedAt).count();
         const int elapsedMilliseconds = static_cast<int>(std::min<int64_t>(
@@ -2960,12 +3286,16 @@ bool SshAdapter::reconnectAfterTransportFailure() {
             reactorCommandCondition_.wait_for(
                 waitLock, std::chrono::milliseconds(delayMilliseconds), [this]() {
                     return !readerRunning_.load(std::memory_order_acquire) ||
-                        connectCancelRequested_.load(std::memory_order_acquire);
+                        connectCancelRequested_.load(std::memory_order_acquire) ||
+                        !networkAvailable_.load(std::memory_order_acquire);
                 });
         }
         if (!readerRunning_.load(std::memory_order_acquire) ||
             connectCancelRequested_.load(std::memory_order_acquire)) {
             return false;
+        }
+        if (!networkAvailable_.load(std::memory_order_acquire)) {
+            continue;
         }
 
         ++attemptsStarted;
@@ -2975,7 +3305,9 @@ bool SshAdapter::reconnectAfterTransportFailure() {
                  std::to_string(attemptsStarted) + "/" +
                  std::to_string(SshReconnectPolicy::kMaxAttempts) + "]");
         resetTransportForRecovery();
+        recoveryAttemptInProgress_.store(true, std::memory_order_release);
         const int ret = connectInternal(savedCfg_, true);
+        recoveryAttemptInProgress_.store(false, std::memory_order_release);
         if (ret == 0) {
             transportRecoveryRequested_.store(false, std::memory_order_release);
             setState(ConnectionState::CONNECTED,
@@ -2993,6 +3325,7 @@ bool SshAdapter::reconnectAfterTransportFailure() {
     stopTerminalInput();
     readerRunning_.store(false, std::memory_order_release);
     transportRecoveryRequested_.store(false, std::memory_order_release);
+    networkAvailable_.store(true, std::memory_order_release);
     setState(ConnectionState::ERROR, "SSH transport recovery failed");
     reactorCommandCondition_.notify_all();
     return false;
@@ -3677,6 +4010,11 @@ void SshAdapter::setConnectionStateCallback(ConnectionStateCallback callback) {
     stateCallback_ = std::move(callback);
 }
 
+void SshAdapter::setSshLifecycleStateCallback(SshLifecycleStateCallback callback) {
+    std::lock_guard<std::mutex> lock(sshLifecycleCallbackMutex_);
+    sshLifecycleStateCallback_ = std::move(callback);
+}
+
 // ============================================================
 // SSH 终端数据读写 (加密通道)
 // ============================================================
@@ -3944,6 +4282,7 @@ bool SshAdapter::assertSessionOwner(const char* operation) const noexcept {
 void SshAdapter::drainInputQueueOnReactor() {
     if (!terminalInputRunning_.load(std::memory_order_acquire)) { return; }
     TerminalInputItem item;
+    size_t queueDepthAfterDequeue = 0;
     {
         std::lock_guard<std::mutex> lock(inputQueueMutex_);
         if (inputQueue_.empty()) { return; }
@@ -3991,7 +4330,14 @@ void SshAdapter::drainInputQueueOnReactor() {
                 ? inputQueueDataBytes_ - item.bytes.size() : 0;
         }
         diagnostics_.recordInputQueue(inputQueue_.size(), inputQueueBytes_);
+        queueDepthAfterDequeue = inputQueue_.size();
     }
+    OH_LOG_INFO(LOG_APP,
+        "[SSH] terminal input dequeue seq=%{public}llu bytes=%{public}zu control=%{public}d "
+        "ordered=%{public}d orderedEnd=%{public}d generation=%{public}llu queueDepth=%{public}zu",
+        static_cast<unsigned long long>(item.sequence), item.bytes.size(),
+        item.control ? 1 : 0, item.ordered ? 1 : 0, item.orderedEnd ? 1 : 0,
+        static_cast<unsigned long long>(item.generation), queueDepthAfterDequeue);
     if (item.ordered) {
         orderedInputActive_.store(!item.orderedEnd, std::memory_order_release);
     }
@@ -4000,9 +4346,20 @@ void SshAdapter::drainInputQueueOnReactor() {
         item.generation != diagnostics_.sessionGeneration() ||
         state_.load(std::memory_order_acquire) != ConnectionState::CONNECTED) {
         diagnostics_.recordLoss();
+        OH_LOG_WARN(LOG_APP,
+            "[SSH] terminal input rejected after dequeue seq=%{public}llu itemGeneration=%{public}llu "
+            "sessionGeneration=%{public}llu accepting=%{public}d running=%{public}d state=%{public}d",
+            static_cast<unsigned long long>(item.sequence),
+            static_cast<unsigned long long>(item.generation),
+            static_cast<unsigned long long>(diagnostics_.sessionGeneration()),
+            terminalInputAccepting_.load(std::memory_order_acquire) ? 1 : 0,
+            terminalInputRunning_.load(std::memory_order_acquire) ? 1 : 0,
+            static_cast<int>(state_.load(std::memory_order_acquire)));
         return;
     }
     const int result = writeTerminalData(item.bytes.data(), item.bytes.size(), item.sequence, true);
+    OH_LOG_INFO(LOG_APP, "[SSH] terminal input write seq=%{public}llu bytes=%{public}zu result=%{public}d",
+        static_cast<unsigned long long>(item.sequence), item.bytes.size(), result);
     if (result < 0) {
         diagnostics_.recordLoss();
     }

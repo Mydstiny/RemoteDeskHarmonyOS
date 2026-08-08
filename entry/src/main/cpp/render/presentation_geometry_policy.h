@@ -5,9 +5,10 @@
 namespace Render {
 
 // Logical dimensions describe the remote desktop coordinate space. RAW BGRA
-// dimensions are the actual uploaded texture and must remain authoritative for
-// the legacy software-decoder presentation contract. OES dimensions are the
-// hardware output and are only a fallback before the logical size is known.
+// presentation dimensions describe the frame most recently handed to GL;
+// allocated texture dimensions are only a fallback for a retained frame. OES
+// dimensions are the hardware output and are only a fallback before the
+// logical size is known.
 enum class PresentationPathKind : uint8_t {
     Unknown = 0,
     Oes = 1,
@@ -24,18 +25,23 @@ inline bool IsValidPresentationSize(int width, int height) {
 }
 
 // Keep the two presentation contracts separate. Hardware OES output uses the
-// protocol geometry once available; RAW software output keeps its established
-// texture geometry because the software decoder may intentionally downscale
-// the uploaded BGRA frame.
+// protocol geometry once available; RAW software output uses the dimensions of
+// the current callback frame, which may intentionally be downscaled from the
+// logical stream size.
 inline PresentationGeometrySize SelectPresentationGeometry(
     PresentationPathKind path,
     int logicalWidth,
     int logicalHeight,
+    int rawPresentationWidth,
+    int rawPresentationHeight,
     int rawTextureWidth,
     int rawTextureHeight,
     int oesOutputWidth,
     int oesOutputHeight) {
     if (path == PresentationPathKind::RawBgra) {
+        if (IsValidPresentationSize(rawPresentationWidth, rawPresentationHeight)) {
+            return {rawPresentationWidth, rawPresentationHeight};
+        }
         if (IsValidPresentationSize(rawTextureWidth, rawTextureHeight)) {
             return {rawTextureWidth, rawTextureHeight};
         }
@@ -53,6 +59,9 @@ inline PresentationGeometrySize SelectPresentationGeometry(
         return {logicalWidth, logicalHeight};
     }
 
+    if (IsValidPresentationSize(rawPresentationWidth, rawPresentationHeight)) {
+        return {rawPresentationWidth, rawPresentationHeight};
+    }
     if (IsValidPresentationSize(rawTextureWidth, rawTextureHeight)) {
         return {rawTextureWidth, rawTextureHeight};
     }

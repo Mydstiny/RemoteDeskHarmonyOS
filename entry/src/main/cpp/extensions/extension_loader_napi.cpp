@@ -16,6 +16,7 @@
 #include "ssh/ssh_terminal_resume_policy.h"
 #include "ssh/ssh_key_tool.h"
 #include "ssh/ssh_session_manager.h"
+#include "ssh/ssh_pending_connect_registry.h"
 #include "audio/input_handler.h"
 #include "audio/audio_player.h"
 #include "common/safe_log.h"
@@ -126,6 +127,16 @@ struct SshSecretGuard {
             secureClearString(response);
         }
         config.sshProxyKeyboardInteractiveResponses.clear();
+        for (SshJumpHopHandoff& handoff : config.sshJumpHopHandoffs) {
+            secureClearString(handoff.password);
+            secureClearString(handoff.privateKeyPem);
+            secureClearString(handoff.privateKeyPassphrase);
+            for (std::string& response : handoff.keyboardInteractiveResponses) {
+                secureClearString(response);
+            }
+            handoff.keyboardInteractiveResponses.clear();
+        }
+        config.sshJumpHopHandoffs.clear();
     }
 };
 
@@ -536,16 +547,64 @@ static bool ReportVideoPressureForSession(
     return true;
 }
 
+static bool RequestFrameRefreshForSession(
+    const std::shared_ptr<SessionContext>& session, const char* reason) {
+    if (!IsSessionCallbackActive(session)) {
+        return false;
+    }
+    std::shared_ptr<ProtocolAdapter> adapter;
+    {
+        std::lock_guard<std::mutex> lock(session->adapterMutex);
+        adapter = session->adapter;
+    }
+    if (!adapter || !IsSessionCallbackActive(session)) {
+        return false;
+    }
+    adapter->requestFrameRefresh();
+    OH_LOG_WARN(LOG_APP,
+        "[ExtLoader] requested frame refresh session=%{public}llu generation=%{public}llu reason=%{public}s",
+        static_cast<unsigned long long>(session->sessionId),
+        static_cast<unsigned long long>(session->generation.load(
+            std::memory_order_acquire)),
+        reason ? reason : "unspecified");
+    return true;
+}
+
 static SessionRegistry<SessionContext> g_sessionRegistry;
 static DisconnectRequestRegistry g_disconnectRequests;
 static SessionTeardown::Executor g_teardownExecutor;
 static uint64_t g_disconnectAllRequestId = 0;
-static int g_nextSessionId = 1;
+static std::atomic<int> g_nextSessionId {1};
 static std::atomic<uint64_t> g_nextSessionGeneration {1};
 static std::atomic<uint64_t> g_nextSessionOwnerToken {1};
-static std::atomic<int> g_pendingSshConnectId {-1};
+// SSH connects are independently owned async sessions.  Keep the registry
+// for compatibility with the old single-id query, but never use it as an
+// admission gate or as the identity of the current page.
+static SshPendingConnectRegistry g_pendingSshConnects;
 static SshSessionManager g_sshSessionManager;
 static SshNativeFacade g_sshNativeFacade(g_sshSessionManager);
+
+static void AddPendingSshConnect(int sessionId, uint64_t generation) {
+    (void)g_pendingSshConnects.add(SshPendingConnectIdentity {sessionId, generation});
+}
+
+static void RemovePendingSshConnect(int sessionId, uint64_t generation) {
+    (void)g_pendingSshConnects.remove(SshPendingConnectIdentity {sessionId, generation});
+}
+
+static int GetPendingSshConnectIdSnapshot() {
+    return g_pendingSshConnects.firstSessionId();
+}
+
+static std::vector<int> GetPendingSshConnectIdsSnapshot() {
+    const std::vector<SshPendingConnectIdentity> identities = g_pendingSshConnects.snapshot();
+    std::vector<int> result;
+    result.reserve(identities.size());
+    for (const SshPendingConnectIdentity& identity : identities) {
+        result.push_back(identity.sessionId);
+    }
+    return result;
+}
 static std::atomic<uint64_t> g_nextVncCertificateProbeRequestId {1};
 static std::mutex g_vncCertificateProbeMutex;
 struct VncCertificateProbeEnvironmentState {
@@ -569,24 +628,6 @@ static std::atomic<uint64_t> g_napiWheelSendCount {0};
 static std::atomic<uint64_t> g_napiFileSendCount {0};
 static std::atomic<uint64_t> g_napiKeySendCount {0};
 static std::atomic<uint64_t> g_napiMouseSendCount {0};
-
-static SshSessionLifecycleState MapSshConnectionState(ConnectionState state) {
-    switch (state) {
-        case ConnectionState::CONNECTING:
-            return SshSessionLifecycleState::Connecting;
-        case ConnectionState::AUTHENTICATING:
-            return SshSessionLifecycleState::Authenticating;
-        case ConnectionState::CONNECTED:
-            return SshSessionLifecycleState::Ready;
-        case ConnectionState::RECONNECTING:
-            return SshSessionLifecycleState::Reconnecting;
-        case ConnectionState::ERROR:
-            return SshSessionLifecycleState::Failed;
-        case ConnectionState::DISCONNECTED:
-            return SshSessionLifecycleState::Closing;
-    }
-    return SshSessionLifecycleState::Failed;
-}
 
 static bool DispatchRustDeskNetworkSession(
     const std::shared_ptr<SessionContext>& session, int32_t sessionId,
@@ -665,13 +706,20 @@ static void DispatchNativeNetworkAvailability(bool available) {
         sessionGeneration = g_nativeNetworkObserverSessionGeneration;
         session = g_nativeNetworkObserverSession;
     }
-    if (sessionId == 0 || sessionGeneration == 0) {
-        return;
-    }
     const uint64_t networkGeneration =
         g_nativeNetworkGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
-    (void)DispatchRustDeskNetworkSession(
-        session, sessionId, sessionGeneration, available, networkGeneration);
+    if (sessionId != 0 && sessionGeneration != 0) {
+        (void)DispatchRustDeskNetworkSession(
+            session, sessionId, sessionGeneration, available, networkGeneration);
+    }
+    const size_t sshCount = g_sshNativeFacade.notifyNetworkAvailability(
+        available, networkGeneration);
+    if (sshCount > 0) {
+        OH_LOG_INFO(LOG_APP,
+            "[ExtLoader] SSH network availability=%{public}s sessions=%{public}zu generation=%{public}llu",
+            available ? "available" : "lost", sshCount,
+            static_cast<unsigned long long>(networkGeneration));
+    }
 }
 
 static void OnNativeNetworkAvailable(NetConn_NetHandle* /*netHandle*/) {
@@ -695,24 +743,11 @@ static NetConn_NetConnCallback kNativeNetworkCallbacks {
     nullptr,
 };
 
-static void UpdateNativeNetworkObserver(
-    const std::shared_ptr<SessionContext>& session) {
-    if (!session) {
-        return;
-    }
-    const int32_t sessionId = static_cast<int32_t>(session->sessionId);
-    const uint64_t sessionGeneration =
-        session->generation.load(std::memory_order_acquire);
-    if (sessionId <= 0 || sessionGeneration == 0) {
-        return;
-    }
+static bool EnsureNativeNetworkObserver() {
     {
         std::lock_guard<std::mutex> lock(g_nativeNetworkObserverMutex);
         if (g_nativeNetworkObserverId != 0) {
-            g_nativeNetworkObserverSessionId = sessionId;
-            g_nativeNetworkObserverSessionGeneration = sessionGeneration;
-            g_nativeNetworkObserverSession = session;
-            return;
+            return true;
         }
     }
     // Do not call the system registration API while holding our state lock:
@@ -725,22 +760,40 @@ static void UpdateNativeNetworkObserver(
         OH_LOG_WARN(LOG_APP,
             "[ExtLoader] native network observer registration failed result=%{public}d",
             result);
-        return;
+        return false;
     }
     bool keepRegistration = false;
     {
         std::lock_guard<std::mutex> lock(g_nativeNetworkObserverMutex);
         if (g_nativeNetworkObserverId == 0) {
             g_nativeNetworkObserverId = callbackId;
-            g_nativeNetworkObserverSessionId = sessionId;
-            g_nativeNetworkObserverSessionGeneration = sessionGeneration;
-            g_nativeNetworkObserverSession = session;
             keepRegistration = true;
         }
     }
     if (!keepRegistration) {
         OH_NetConn_UnregisterNetConnCallback(callbackId);
     }
+    return true;
+}
+
+static void UpdateNativeNetworkObserver(
+    const std::shared_ptr<SessionContext>& session) {
+    if (!session) {
+        return;
+    }
+    if (!EnsureNativeNetworkObserver() || session->protocolName != "rustdesk") {
+        return;
+    }
+    const int32_t sessionId = static_cast<int32_t>(session->sessionId);
+    const uint64_t sessionGeneration =
+        session->generation.load(std::memory_order_acquire);
+    if (sessionId <= 0 || sessionGeneration == 0) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(g_nativeNetworkObserverMutex);
+    g_nativeNetworkObserverSessionId = sessionId;
+    g_nativeNetworkObserverSessionGeneration = sessionGeneration;
+    g_nativeNetworkObserverSession = session;
 }
 
 static void ClearNativeNetworkObserver(
@@ -748,15 +801,21 @@ static void ClearNativeNetworkObserver(
     uint32_t callbackId = 0;
     {
         std::lock_guard<std::mutex> lock(g_nativeNetworkObserverMutex);
-        if (g_nativeNetworkObserverSessionId != sessionId ||
-            g_nativeNetworkObserverSessionGeneration != sessionGeneration) {
-            return;
+        if (g_nativeNetworkObserverSessionId == sessionId &&
+            g_nativeNetworkObserverSessionGeneration == sessionGeneration) {
+            g_nativeNetworkObserverSessionId = 0;
+            g_nativeNetworkObserverSessionGeneration = 0;
+            g_nativeNetworkObserverSession.reset();
         }
-        g_nativeNetworkObserverSessionId = 0;
-        g_nativeNetworkObserverSessionGeneration = 0;
-        g_nativeNetworkObserverSession.reset();
-        callbackId = g_nativeNetworkObserverId;
-        g_nativeNetworkObserverId = 0;
+        // SSH sessions are managed separately from the single RustDesk
+        // observer target. Keep the platform registration while either side
+        // still has a live consumer, and release it only after the last one.
+        if (g_nativeNetworkObserverId != 0 &&
+            g_nativeNetworkObserverSessionId == 0 &&
+            g_sshNativeFacade.snapshots().empty()) {
+            callbackId = g_nativeNetworkObserverId;
+            g_nativeNetworkObserverId = 0;
+        }
     }
     if (callbackId != 0) {
         OH_NetConn_UnregisterNetConnCallback(callbackId);
@@ -948,6 +1007,256 @@ static void ParseBoundedSshResponseArray(napi_env env, napi_value object,
     }
 }
 
+static bool ReadOptionalNapiString(napi_env env, napi_value object, const char* key,
+                                   std::string& output, size_t maxLength) {
+    napi_value value;
+    if (napi_get_named_property(env, object, key, &value) != napi_ok) { return true; }
+    napi_valuetype type = napi_undefined;
+    if (napi_typeof(env, value, &type) != napi_ok || type == napi_undefined ||
+        type == napi_null) { return true; }
+    if (type != napi_string) { return false; }
+    output = GetNapiString(env, value);
+    return output.size() <= maxLength;
+}
+
+static bool ReadOptionalNapiInt(napi_env env, napi_value object, const char* key,
+                                int& output, bool* present = nullptr) {
+    napi_value value;
+    if (napi_get_named_property(env, object, key, &value) != napi_ok) { return true; }
+    if (present != nullptr) { *present = true; }
+    napi_valuetype type = napi_undefined;
+    if (napi_typeof(env, value, &type) != napi_ok || type != napi_number) { return false; }
+    return napi_get_value_int32(env, value, &output) == napi_ok;
+}
+
+static bool ParseSshJumpHopHandoffs(napi_env env, napi_value object,
+                                    ConnectionConfig& config) {
+    napi_value value;
+    if (napi_get_named_property(env, object, "sshJumpHopHandoffs", &value) != napi_ok) {
+        return true;
+    }
+    bool isArray = false;
+    if (napi_is_array(env, value, &isArray) != napi_ok || !isArray) { return false; }
+    uint32_t count = 0;
+    if (napi_get_array_length(env, value, &count) != napi_ok ||
+        count > kSshMaxJumpHops) { return false; }
+    config.sshJumpHopHandoffs.clear();
+    config.sshJumpHopHandoffs.reserve(count);
+    for (uint32_t index = 0; index < count; ++index) {
+        napi_value item;
+        if (napi_get_element(env, value, index, &item) != napi_ok) { return false; }
+        napi_valuetype type = napi_undefined;
+        if (napi_typeof(env, item, &type) != napi_ok || type != napi_object) { return false; }
+        SshJumpHopHandoff handoff;
+        if (!ReadOptionalNapiString(env, item, "password", handoff.password, 4096) ||
+            !ReadOptionalNapiString(env, item, "privateKeyPem", handoff.privateKeyPem, 64 * 1024) ||
+            !ReadOptionalNapiString(env, item, "privateKeyPassphrase",
+                                    handoff.privateKeyPassphrase, 4096)) {
+            return false;
+        }
+        ParseBoundedSshResponseArray(env, item, "keyboardInteractiveResponses",
+                                     handoff.keyboardInteractiveResponses);
+        config.sshJumpHopHandoffs.push_back(std::move(handoff));
+    }
+    return true;
+}
+
+static bool ParseSshRoute(napi_env env, napi_value object, ConnectionConfig& config) {
+    napi_value routeValue;
+    if (napi_get_named_property(env, object, "sshRoute", &routeValue) != napi_ok) {
+        return true;
+    }
+    napi_valuetype routeType = napi_undefined;
+    if (napi_typeof(env, routeValue, &routeType) != napi_ok || routeType != napi_object) {
+        return false;
+    }
+
+    SshRoute route;
+    int schemaVersion = 1;
+    // Keep an omitted endpoint port distinguishable until FinalizeSshRoute()
+    // can apply the normalized SSH config port (including non-22 ports).
+    int endpointPort = 0;
+    int connectTimeoutMs = 10000;
+    std::string type;
+    if (!ReadOptionalNapiInt(env, routeValue, "schemaVersion", schemaVersion) ||
+        !ReadOptionalNapiString(env, routeValue, "type", type, 32) ||
+        !ReadOptionalNapiString(env, routeValue, "endpointHost", route.endpointHost, 255) ||
+        !ReadOptionalNapiInt(env, routeValue, "endpointPort", endpointPort) ||
+        !ReadOptionalNapiString(env, routeValue, "controlId", route.controlId, 256) ||
+        !ReadOptionalNapiInt(env, routeValue, "connectTimeoutMs", connectTimeoutMs) ||
+        type.empty() || !sshRouteTypeIsKnown(type)) {
+        return false;
+    }
+    route.schemaVersion = static_cast<uint32_t>(std::max(0, schemaVersion));
+    route.kind = sshRouteKindFromType(type);
+    route.endpointPort = endpointPort > 0 ? endpointPort : config.port;
+    route.connectTimeoutMs = static_cast<uint32_t>(std::max(0, connectTimeoutMs));
+
+    napi_value hopsValue;
+    if (napi_get_named_property(env, routeValue, "hops", &hopsValue) == napi_ok) {
+        bool isArray = false;
+        uint32_t count = 0;
+        if (napi_is_array(env, hopsValue, &isArray) != napi_ok || !isArray ||
+            napi_get_array_length(env, hopsValue, &count) != napi_ok ||
+            count > kSshMaxJumpHops) {
+            return false;
+        }
+        route.hops.reserve(count);
+        for (uint32_t index = 0; index < count; ++index) {
+            napi_value item;
+            if (napi_get_element(env, hopsValue, index, &item) != napi_ok) { return false; }
+            napi_valuetype itemType = napi_undefined;
+            if (napi_typeof(env, item, &itemType) != napi_ok || itemType != napi_object) {
+                return false;
+            }
+            SshJumpHop hop;
+            int port = 22;
+            int hopTimeoutMs = 10000;
+            if (!ReadOptionalNapiString(env, item, "host", hop.host, 255) ||
+                !ReadOptionalNapiInt(env, item, "port", port) ||
+                !ReadOptionalNapiString(env, item, "username", hop.username, 256) ||
+                !ReadOptionalNapiString(env, item, "authMethod", hop.authMethod, 32) ||
+                !ReadOptionalNapiString(env, item, "expectedHostKeyRawBase64",
+                                        hop.expectedHostKeyRawBase64, 64 * 1024) ||
+                !ReadOptionalNapiString(env, item, "expectedHostKeyFingerprintSha256",
+                                        hop.expectedHostKeyFingerprintSha256, 512) ||
+                !ReadOptionalNapiInt(env, item, "connectTimeoutMs", hopTimeoutMs)) {
+                return false;
+            }
+            hop.port = port;
+            hop.connectTimeoutMs = static_cast<uint32_t>(std::max(0, hopTimeoutMs));
+            route.hops.push_back(std::move(hop));
+        }
+    }
+    if (!sshRouteHopsValid(route)) { return false; }
+    config.sshRoute = std::move(route);
+    config.sshRouteExplicit = true;
+    return ParseSshJumpHopHandoffs(env, object, config);
+}
+
+static const char* SshRouteTypeName(SshRouteKind kind) {
+    switch (kind) {
+        case SshRouteKind::HttpConnect: return "http_connect";
+        case SshRouteKind::Socks5: return "socks5";
+        case SshRouteKind::FrpTcp: return "frp_tcp";
+        case SshRouteKind::SshJump: return "ssh_jump";
+        case SshRouteKind::FrpVisitor: return "frp_visitor";
+        case SshRouteKind::FrpStcp: return "frp_stcp";
+        case SshRouteKind::FrpSudp: return "frp_sudp";
+        case SshRouteKind::FrpXtcp: return "frp_xtcp";
+        case SshRouteKind::Direct: return "direct";
+    }
+    return "direct";
+}
+
+static bool FinalizeSshRoute(ConnectionConfig& config) {
+    const std::string configuredType = config.sshProxyType.empty()
+        ? "direct" : config.sshProxyType;
+    if (!sshRouteTypeIsKnown(configuredType)) { return false; }
+
+    if (!config.sshRouteExplicit) {
+        config.sshRoute.schemaVersion = 1;
+        config.sshRoute.kind = sshRouteKindFromType(configuredType);
+        config.sshRoute.endpointHost = config.host;
+        config.sshRoute.endpointPort = config.port;
+        config.sshRoute.connectTimeoutMs = 10000;
+        if (config.sshRoute.kind == SshRouteKind::SshJump) {
+            SshJumpHop hop;
+            hop.host = config.sshProxyHost;
+            hop.port = config.sshProxyPort;
+            hop.username = config.sshProxyUsername;
+            hop.authMethod = config.sshProxyAuthMethod.empty()
+                ? "password" : config.sshProxyAuthMethod;
+            hop.expectedHostKeyRawBase64 = config.sshJumpHostKeyRawBase64;
+            hop.expectedHostKeyFingerprintSha256 = config.sshJumpHostKeyFingerprintSha256;
+            config.sshRoute.hops.push_back(std::move(hop));
+            SshJumpHopHandoff handoff;
+            handoff.password = config.sshProxyPassword;
+            handoff.privateKeyPem = config.sshProxyPrivateKeyPem;
+            handoff.privateKeyPassphrase = config.sshProxyPrivateKeyPassphrase;
+            handoff.keyboardInteractiveResponses = config.sshProxyKeyboardInteractiveResponses;
+            config.sshJumpHopHandoffs.push_back(std::move(handoff));
+        }
+    } else {
+        if (config.sshRoute.endpointHost.empty()) {
+            config.sshRoute.endpointHost = config.host;
+        } else if (config.sshRoute.endpointHost != config.host) {
+            return false;
+        }
+        if (config.sshRoute.endpointPort <= 0) {
+            config.sshRoute.endpointPort = config.port;
+        } else if (config.sshRoute.endpointPort != config.port) {
+            return false;
+        }
+        config.sshProxyType = SshRouteTypeName(config.sshRoute.kind);
+        if (config.sshRoute.kind == SshRouteKind::SshJump &&
+            config.sshJumpHopHandoffs.empty() && config.sshRoute.hops.size() == 1) {
+            SshJumpHopHandoff handoff;
+            handoff.password = config.sshProxyPassword;
+            handoff.privateKeyPem = config.sshProxyPrivateKeyPem;
+            handoff.privateKeyPassphrase = config.sshProxyPrivateKeyPassphrase;
+            handoff.keyboardInteractiveResponses = config.sshProxyKeyboardInteractiveResponses;
+            config.sshJumpHopHandoffs.push_back(std::move(handoff));
+        }
+    }
+
+    if (!sshRouteHopsValid(config.sshRoute) ||
+        config.sshJumpHopHandoffs.size() > config.sshRoute.hops.size()) {
+        return false;
+    }
+    if (config.sshRoute.kind != SshRouteKind::SshJump &&
+        !config.sshJumpHopHandoffs.empty()) {
+        return false;
+    }
+    return true;
+}
+
+static SshProxyOptions ReadSshProxyOptions(napi_env env, napi_value value) {
+    SshProxyOptions proxy;
+    if (value == nullptr) { return proxy; }
+
+    napi_valuetype proxyType = napi_undefined;
+    if (napi_typeof(env, value, &proxyType) != napi_ok || proxyType != napi_object) {
+        return proxy;
+    }
+
+    napi_value property;
+    auto readString = [&](const char* name, std::string& target) {
+        if (napi_get_named_property(env, value, name, &property) == napi_ok) {
+            target = GetNapiString(env, property);
+        }
+    };
+    auto readPort = [&]() {
+        if (napi_get_named_property(env, value, "port", &property) == napi_ok) {
+            (void)napi_get_value_int32(env, property, &proxy.port);
+        }
+    };
+
+    readString("type", proxy.type);
+    readString("host", proxy.host);
+    readPort();
+    readString("username", proxy.username);
+    readString("password", proxy.password);
+    readString("privateKeyPem", proxy.privateKeyPem);
+    readString("privateKeyPassphrase", proxy.privateKeyPassphrase);
+    readString("authMethod", proxy.authMethod);
+    readString("expectedHostKeyRawBase64", proxy.expectedHostKeyRawBase64);
+    readString("expectedHostKeyFingerprintSha256", proxy.expectedHostKeyFingerprintSha256);
+    ParseBoundedSshResponseArray(env, value, "keyboardInteractiveResponses",
+                                 proxy.keyboardInteractiveResponses);
+    return proxy;
+}
+
+static void ClearSshProxyOptions(SshProxyOptions& proxy) {
+    secureClearString(proxy.password);
+    secureClearString(proxy.privateKeyPem);
+    secureClearString(proxy.privateKeyPassphrase);
+    for (std::string& response : proxy.keyboardInteractiveResponses) {
+        secureClearString(response);
+    }
+    proxy.keyboardInteractiveResponses.clear();
+}
+
 /**
  * 根据协议名称查找适配器
  */
@@ -1118,6 +1427,9 @@ static bool ReadNapiNamedBool(
     return true;
 }
 
+static bool ReadNapiNamedInt64(napi_env env, napi_value object, const char* name,
+                               int64_t& out, bool required);
+
 static bool ReadSshForwardingConfig(
     napi_env env, napi_value value, SshForwardingConfig& config) {
     napi_valuetype type = napi_undefined;
@@ -1134,6 +1446,8 @@ static bool ReadSshForwardingConfig(
     int32_t schemaVersion = static_cast<int32_t>(config.schemaVersion);
     int32_t minBindPort = static_cast<int32_t>(config.minBindPort);
     int32_t maxBindPort = static_cast<int32_t>(config.maxBindPort);
+    int64_t maxBytes = static_cast<int64_t>(config.maxBytes);
+    int64_t expiresAtMs = static_cast<int64_t>(config.expiresAtMs);
     if (!ReadNapiNamedString(env, value, "id", config.id, true) ||
         !ReadNapiNamedString(env, value, "bindHost", config.bindHost, false) ||
         !ReadNapiNamedString(env, value, "targetHost", config.targetHost, false) ||
@@ -1144,8 +1458,12 @@ static bool ReadSshForwardingConfig(
         !ReadNapiNamedInt32(env, value, "schemaVersion", schemaVersion, false) ||
         !ReadNapiNamedInt32(env, value, "minBindPort", minBindPort, false) ||
         !ReadNapiNamedInt32(env, value, "maxBindPort", maxBindPort, false) ||
+        !ReadNapiNamedInt64(env, value, "maxBytes", maxBytes, false) ||
+        !ReadNapiNamedInt64(env, value, "expiresAtMs", expiresAtMs, false) ||
         !ReadNapiNamedBool(env, value, "enabled", config.enabled, false) ||
-        !ReadNapiNamedBool(env, value, "allowPublicBind", config.allowPublicBind, false)) {
+        !ReadNapiNamedBool(env, value, "allowPublicBind", config.allowPublicBind, false) ||
+        minBindPort < 0 || minBindPort > 65535 || maxBindPort < 0 || maxBindPort > 65535 ||
+        maxBytes < 0 || expiresAtMs < 0) {
         return false;
     }
     config.mode = static_cast<SshForwardingMode>(mode);
@@ -1155,6 +1473,8 @@ static bool ReadSshForwardingConfig(
     config.schemaVersion = schemaVersion <= 0 ? 1 : static_cast<uint32_t>(schemaVersion);
     config.minBindPort = minBindPort <= 0 ? 1 : static_cast<uint16_t>(minBindPort);
     config.maxBindPort = maxBindPort <= 0 ? 65535 : static_cast<uint16_t>(maxBindPort);
+    config.maxBytes = static_cast<uint64_t>(maxBytes);
+    config.expiresAtMs = static_cast<uint64_t>(expiresAtMs);
     return true;
 }
 
@@ -1172,6 +1492,7 @@ static napi_value CreateSshForwardingSnapshotValue(
     SetObjectInt32(env, result, "targetPort", snapshot.config.targetPort);
     SetObjectInt64(env, result, "maxConnections",
                    static_cast<int64_t>(snapshot.config.maxConnections));
+    SetObjectInt64(env, result, "maxBytes", static_cast<int64_t>(snapshot.config.maxBytes));
     SetObjectBool(env, result, "enabled", snapshot.config.enabled);
     SetObjectBool(env, result, "allowPublicBind", snapshot.config.allowPublicBind);
     SetObjectInt32(env, result, "minBindPort", snapshot.config.minBindPort);
@@ -1262,6 +1583,47 @@ static napi_value CreateSshSessionSnapshotValue(
     SetObjectInt32(env, result, "port", snapshot.port);
     SetObjectBool(env, result, "backgroundLimited", snapshot.backgroundLimited);
     SetObjectString(env, result, "lastEventType", snapshot.lastEventType);
+    return result;
+}
+
+static napi_value CreateSshEventEnvelopeValue(
+    napi_env env, const SshEventEnvelope& event) {
+    napi_value result;
+    napi_create_object(env, &result);
+    SetObjectInt32(env, result, "schemaVersion", static_cast<int32_t>(event.schemaVersion));
+    SetObjectInt64(env, result, "sessionId", static_cast<int64_t>(event.sessionId));
+    SetObjectInt64(env, result, "generation", static_cast<int64_t>(event.generation));
+    SetObjectString(env, result, "channelId", event.channelId);
+    SetObjectString(env, result, "taskId", event.taskId);
+    SetObjectString(env, result, "requestId", event.requestId);
+    SetObjectInt64(env, result, "sequence", static_cast<int64_t>(event.sequence));
+    SetObjectInt64(env, result, "timestampMs", static_cast<int64_t>(event.timestampMs));
+    SetObjectInt32(env, result, "priority", static_cast<int32_t>(event.priority));
+    SetObjectString(env, result, "type", event.type);
+    SetObjectString(env, result, "payloadJson", event.payloadJson);
+    return result;
+}
+
+static napi_value CreateSshSessionEventsValue(
+    napi_env env, int32_t sessionId, const std::string& channelId,
+    uint64_t generation, uint64_t afterSequence,
+    SshSessionManagerResult errorCode,
+    const std::vector<SshEventEnvelope>& events) {
+    napi_value result;
+    napi_create_object(env, &result);
+    SetObjectInt32(env, result, "schemaVersion", 1);
+    SetObjectInt32(env, result, "errorCode", static_cast<int32_t>(errorCode));
+    SetObjectInt32(env, result, "sessionId", sessionId);
+    SetObjectString(env, result, "channelId", channelId);
+    SetObjectInt64(env, result, "generation", static_cast<int64_t>(generation));
+    SetObjectInt64(env, result, "afterSequence", static_cast<int64_t>(afterSequence));
+    napi_value array;
+    napi_create_array_with_length(env, events.size(), &array);
+    for (size_t index = 0; index < events.size(); ++index) {
+        napi_value item = CreateSshEventEnvelopeValue(env, events[index]);
+        napi_set_element(env, array, static_cast<uint32_t>(index), item);
+    }
+    napi_set_named_property(env, result, "events", array);
     return result;
 }
 
@@ -3194,9 +3556,10 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
             }
         }
     };
-    auto getInt = [&](const char* key, int& out) {
+    auto getInt = [&](const char* key, int& out, bool* present = nullptr) {
         napi_value val;
         if (napi_get_named_property(env, args[0], key, &val) == napi_ok) {
+            if (present != nullptr) { *present = true; }
             napi_get_value_int32(env, val, &out);
         }
     };
@@ -3210,7 +3573,8 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     std::string protocolName;
     getString("protocol", protocolName);
     getString("host", cfg.host);
-    getInt("port", cfg.port);
+    bool hasPort = false;
+    getInt("port", cfg.port, &hasPort);
     getString("username", cfg.username);
     getString("password", cfg.password);
     getString("domain", cfg.domain);
@@ -3294,8 +3658,8 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     getString("sshProxyUsername", cfg.sshProxyUsername);
     getString("sshProxyPassword", cfg.sshProxyPassword);
     getString("sshProxyAuthMethod", cfg.sshProxyAuthMethod);
-    getString("sshProxyPrivateKeyPem", cfg.sshProxyPrivateKeyPem);
-    getString("sshProxyPrivateKeyPassphrase", cfg.sshProxyPrivateKeyPassphrase);
+        getString("sshProxyPrivateKeyPem", cfg.sshProxyPrivateKeyPem);
+        getString("sshProxyPrivateKeyPassphrase", cfg.sshProxyPrivateKeyPassphrase);
         // The old SSH UI wrote proxy data into the generic RDP gateway fields.
         // Preserve the values only to reject them explicitly; never silently
         // fall back to a direct connection.
@@ -3338,7 +3702,6 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
                                      cfg.sshProxyKeyboardInteractiveResponses);
     }
     if (cfg.authMethod.empty()) cfg.authMethod = "password";
-
     // RustDesk 扩展配置
     getInt("rdImageQuality", cfg.rdImageQuality);
     getBool("rdDirectIp", cfg.rdDirectIp);
@@ -3403,7 +3766,9 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
         cfg.rdDirectIp = false;
     }
     if (cfg.rdDirectPort <= 0) cfg.rdDirectPort = 21118;
-    if (cfg.port == 0) {
+    if (protocolName == "ssh" && !hasPort) {
+        cfg.port = 22;
+    } else if (cfg.port == 0) {
         // RustDesk 的通用端口字段在直连模式代表 peer TCP 端口；
         // 非直连模式才代表 ID/rendezvous 端口，不能落回 RDP 3389。
         if (protocolName == "rustdesk") {
@@ -3447,6 +3812,21 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
         cfg.vncFrameRateLimit != 60) cfg.vncFrameRateLimit = 30;
     if (cfg.vncSecurityPolicy != "secure_only" && cfg.vncSecurityPolicy != "trusted_network" &&
         cfg.vncSecurityPolicy != "allow_plaintext") cfg.vncSecurityPolicy = "secure_only";
+
+    if (protocolName == "ssh") {
+        if (!ParseSshRoute(env, args[0], cfg)) {
+            OH_LOG_ERROR(LOG_APP, "[ExtLoader] invalid SSH route handoff");
+            napi_value errVal;
+            napi_create_int32(env, ERR_SSH_PROXY_INVALID, &errVal);
+            return errVal;
+        }
+        if (!FinalizeSshRoute(cfg)) {
+            OH_LOG_ERROR(LOG_APP, "[ExtLoader] SSH route validation failed");
+            napi_value errVal;
+            napi_create_int32(env, ERR_SSH_PROXY_INVALID, &errVal);
+            return errVal;
+        }
+    }
 
     const std::string logHost = SafeLog::MaskHost(cfg.host);
     const std::string logGatewayHost = cfg.gatewayHost.empty() ? "无" : SafeLog::MaskHost(cfg.gatewayHost);
@@ -3547,8 +3927,14 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
             static_cast<uint64_t>(sessionId), "shell",
             session->generation.load(std::memory_order_acquire)};
         const auto sshAdapter = std::dynamic_pointer_cast<SshAdapter>(adapter);
-        if (g_sshNativeFacade.registerSession(handle, cfg.host, cfg.port, sshAdapter) !=
-            SshSessionManagerResult::Ok) {
+        const std::weak_ptr<SshAdapter> weakSshAdapter = sshAdapter;
+        if (g_sshNativeFacade.registerSession(handle, cfg.host, cfg.port, sshAdapter,
+            [weakSshAdapter](bool available, uint64_t networkGeneration) {
+                const std::shared_ptr<SshAdapter> adapter = weakSshAdapter.lock();
+                if (adapter) {
+                    adapter->onNetworkChanged(available, networkGeneration);
+                }
+            }) != SshSessionManagerResult::Ok) {
             g_sessionRegistry.eraseIf(sessionId, session);
             napi_value errVal;
             napi_create_int32(env, ERR_SSH_SESSION_INIT, &errVal);
@@ -3643,13 +4029,6 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
         const std::shared_ptr<SessionContext> session = weakSession.lock();
         if (!session || session->lifecycle.load(std::memory_order_acquire) !=
             SessionContext::Lifecycle::Active) { return; }
-        if (session->protocolName == "ssh") {
-            const SshSessionHandle handle {
-                session->sessionId, "shell",
-                session->generation.load(std::memory_order_acquire)};
-            (void)g_sshNativeFacade.transition(handle, MapSshConnectionState(state),
-                "connectionState", "{}");
-        }
         std::lock_guard<std::mutex> lock(session->messageMutex);
         session->lastStateMessage = message;
         const std::string logMessage = session->protocolName == "vnc" ?
@@ -3657,6 +4036,25 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
         OH_LOG_INFO(LOG_APP, "[ExtLoader] 状态变更: protocol=%{public}s state=%{public}d msg=%{public}s",
                     session->protocolName.c_str(), static_cast<int>(state), logMessage.c_str());
     });
+    if (protocolName == "ssh") {
+        const std::shared_ptr<SshAdapter> sshAdapter =
+            std::dynamic_pointer_cast<SshAdapter>(adapter);
+        if (sshAdapter) {
+            sshAdapter->setSshLifecycleStateCallback(
+                [weakSession](SshSessionLifecycleState state,
+                              const std::string& eventType) {
+                    const std::shared_ptr<SessionContext> session = weakSession.lock();
+                    if (!session || session->lifecycle.load(std::memory_order_acquire) !=
+                        SessionContext::Lifecycle::Active) {
+                        return;
+                    }
+                    const SshSessionHandle handle {
+                        session->sessionId, "shell",
+                        session->generation.load(std::memory_order_acquire)};
+                    (void)g_sshNativeFacade.transition(handle, state, eventType, "{}");
+                });
+        }
+    }
 
     if (auto* rustdesk = dynamic_cast<RustDeskBridge*>(adapter.get())) {
         rustdesk->setDisplayStateCallback([weakSession](int display) {
@@ -3888,10 +4286,21 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
             ret == DecoderNapi::kDecodeInactiveSession) {
             return;
         }
+        const bool softwareRecoveryDrop =
+            ret == DecoderNapi::kDecodeSoftwareFrameDropped ||
+            ret == DecoderNapi::kDecodeSoftwareKeyframeRequired;
+        if (ret == DecoderNapi::kDecodeSoftwareKeyframeRequired) {
+            const bool requested = RequestFrameRefreshForSession(
+                session, "software_decode_queue_overflow");
+            OH_LOG_WARN(LOG_APP,
+                "[ExtLoader] software decoder keyframe recovery session=%{public}llu requested=%{public}s",
+                static_cast<unsigned long long>(session->sessionId),
+                requested ? "yes" : "no");
+        }
         session->diagnostics.addDecodeSample(decodeElapsedUs);
         if (ret == 0) {
             session->diagnostics.decodeOk.fetch_add(1, std::memory_order_relaxed);
-        } else {
+        } else if (!softwareRecoveryDrop) {
             session->diagnostics.decodeErrors.fetch_add(1, std::memory_order_relaxed);
         }
         switch (ret) {
@@ -3970,7 +4379,7 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
                     resetTelemetry ? "yes" : "no");
             }
         }
-        if (frameCount <= 3 || ret != 0) {
+        if (frameCount <= 3 || (ret != 0 && !softwareRecoveryDrop)) {
             OH_LOG_INFO(LOG_APP,
                 "[ExtLoader] video callback session=%{public}llu generation=%{public}llu callback#%{public}llu frame#%{public}llu codec=%{public}d frame=%{public}dx%{public}d size=%{public}zu key=%{public}s decodeRet=%{public}d queue=%{public}zu dropsTotal=%{public}llu hist[ok=%{public}llu nrdy=%{public}llu bad=%{public}llu mism=%{public}llu other=%{public}llu]",
                 static_cast<unsigned long long>(session->sessionId),
@@ -4053,6 +4462,8 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
             (void)g_sshNativeFacade.closeSession(SshSessionHandle {
                 session->sessionId, "shell",
                 session->generation.load(std::memory_order_acquire)});
+            ClearNativeNetworkObserver(
+                sessionId, session->generation.load(std::memory_order_acquire));
         }
         (void)DeactivateSessionContextIfActive(adapter, session->identity());
         napi_value errVal;
@@ -4060,9 +4471,9 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
         return errVal;
     }
 
-    if (protocolName == "rustdesk") {
-        // The OHOS observer is scoped to this exact SessionContext generation;
-        // a later numeric session reuse cannot receive the old callback.
+    if (protocolName == "rustdesk" || protocolName == "ssh") {
+        // RustDesk keeps one exact observer target; SSH dispatches through the
+        // session manager and only needs the registration alive.
         UpdateNativeNetworkObserver(session);
     }
 
@@ -4091,6 +4502,16 @@ static void ClearSshConnectionSecrets(ConnectionConfig& config) {
         secureClearString(response);
     }
     config.sshProxyKeyboardInteractiveResponses.clear();
+    for (SshJumpHopHandoff& handoff : config.sshJumpHopHandoffs) {
+        secureClearString(handoff.password);
+        secureClearString(handoff.privateKeyPem);
+        secureClearString(handoff.privateKeyPassphrase);
+        for (std::string& response : handoff.keyboardInteractiveResponses) {
+            secureClearString(response);
+        }
+        handoff.keyboardInteractiveResponses.clear();
+    }
+    config.sshJumpHopHandoffs.clear();
 }
 
 static bool ParseSshConnectionConfig(napi_env env, napi_value value,
@@ -4140,7 +4561,6 @@ static bool ParseSshConnectionConfig(napi_env env, napi_value value,
     getString("sshProxyAuthMethod", config.sshProxyAuthMethod);
     getString("sshProxyPrivateKeyPem", config.sshProxyPrivateKeyPem);
     getString("sshProxyPrivateKeyPassphrase", config.sshProxyPrivateKeyPassphrase);
-
     // Keep the legacy generic gateway fail-closed behavior identical to the
     // synchronous connect path; never silently turn it into a direct socket.
     std::string gatewayHost;
@@ -4190,16 +4610,24 @@ static bool ParseSshConnectionConfig(napi_env env, napi_value value,
     if (config.sshProxyType.empty()) {
         config.sshProxyType = config.sshProxyHost.empty() ? "direct" : "http_connect";
     }
-    return true;
+    // Parse after the SSH port default is known. An explicit route without an
+    // endpointPort must inherit config.port instead of the route struct's
+    // historical 22 default.
+    if (!ParseSshRoute(env, value, config)) { return false; }
+    return FinalizeSshRoute(config);
 }
 
 struct SshConnectAsyncData {
     int sessionId = -1;
+    uint64_t generation = 0;
     std::shared_ptr<SshAdapter> adapter;
     std::shared_ptr<SessionContext> session;
     ConnectionConfig config;
     int resultCode = ERR_SSH_SESSION_INIT;
     bool workerFailed = false;
+    // Detached SFTP peer sessions must remain addressable through the session
+    // registry without taking ownership of the process-wide input/decoder.
+    bool foreground = true;
     std::string errorMessage;
     napi_deferred deferred = nullptr;
     napi_async_work work = nullptr;
@@ -4219,8 +4647,10 @@ static void CleanupSshConnectFailure(SshConnectAsyncData& data) {
         (void)g_sshNativeFacade.closeSession(SshSessionHandle {
             data.session->sessionId, "shell",
             data.session->generation.load(std::memory_order_acquire)});
+        ClearNativeNetworkObserver(
+            data.sessionId, data.session->generation.load(std::memory_order_acquire));
     }
-    if (data.session) {
+    if (data.session && data.foreground) {
         DeactivateSessionContextIfActive(data.adapter, data.session->identity());
     }
     if (data.adapter) {
@@ -4253,14 +4683,22 @@ static bool RegisterSshConnectSession(SshConnectAsyncData& data) {
     data.sessionId = g_nextSessionId++;
     data.session->sessionId = static_cast<uint64_t>(data.sessionId);
     data.session->generation = g_nextSessionGeneration.fetch_add(1, std::memory_order_acq_rel);
+    data.generation = data.session->generation.load(std::memory_order_acquire);
     data.session->ownerToken = g_nextSessionOwnerToken.fetch_add(1, std::memory_order_acq_rel);
     data.adapter->setSessionIdentity(static_cast<uint64_t>(data.sessionId));
     data.adapter->setSessionGeneration(data.session->generation.load(std::memory_order_acquire));
     g_sessionRegistry.insertOrAssign(data.sessionId, data.session);
+    const std::weak_ptr<SshAdapter> weakAdapter = data.adapter;
     if (g_sshNativeFacade.registerSession(SshSessionHandle {
             data.session->sessionId, "shell",
             data.session->generation.load(std::memory_order_acquire)},
-            data.config.host, data.config.port, data.adapter) != SshSessionManagerResult::Ok) {
+            data.config.host, data.config.port, data.adapter,
+            [weakAdapter](bool available, uint64_t networkGeneration) {
+                const std::shared_ptr<SshAdapter> adapter = weakAdapter.lock();
+                if (adapter) {
+                    adapter->onNetworkChanged(available, networkGeneration);
+                }
+            }) != SshSessionManagerResult::Ok) {
         g_sessionRegistry.eraseIf(data.sessionId, data.session);
         data.adapter.reset();
         data.session.reset();
@@ -4272,16 +4710,25 @@ static bool RegisterSshConnectSession(SshConnectAsyncData& data) {
         [weakSession](ConnectionState state, const std::string& message) {
             const std::shared_ptr<SessionContext> session = weakSession.lock();
             if (!session) { return; }
-            const SshSessionHandle handle {
-                session->sessionId, "shell",
-                session->generation.load(std::memory_order_acquire)};
-            (void)g_sshNativeFacade.transition(handle, MapSshConnectionState(state),
-                "connectionState", "{}");
             std::lock_guard<std::mutex> lock(session->messageMutex);
             session->lastStateMessage = message;
             OH_LOG_INFO(LOG_APP,
                 "[ExtLoader] SSH async 状态变更 state=%{public}d msg=%{public}s",
                 static_cast<int>(state), message.c_str());
+        });
+    const std::weak_ptr<SessionContext> lifecycleSession = data.session;
+    data.adapter->setSshLifecycleStateCallback(
+        [lifecycleSession](SshSessionLifecycleState state,
+                           const std::string& eventType) {
+            const std::shared_ptr<SessionContext> session = lifecycleSession.lock();
+            if (!session || session->lifecycle.load(std::memory_order_acquire) !=
+                SessionContext::Lifecycle::Active) {
+                return;
+            }
+            const SshSessionHandle handle {
+                session->sessionId, "shell",
+                session->generation.load(std::memory_order_acquire)};
+            (void)g_sshNativeFacade.transition(handle, state, eventType, "{}");
         });
     return true;
 }
@@ -4305,9 +4752,15 @@ static void ExecuteSshConnectAsync(napi_env /*env*/, void* rawData) {
 static void CompleteSshConnectAsync(napi_env env, napi_status status, void* rawData) {
     auto* data = static_cast<SshConnectAsyncData*>(rawData);
     if (data == nullptr) { return; }
-    int expectedSessionId = data->sessionId;
-    g_pendingSshConnectId.compare_exchange_strong(
-        expectedSessionId, -1, std::memory_order_acq_rel);
+    const auto completionStartedAt = std::chrono::steady_clock::now();
+    const auto elapsedMs = [&completionStartedAt]() -> long long {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - completionStartedAt).count();
+    };
+    OH_LOG_INFO(LOG_APP,
+        "[ExtLoader] SSH async completion begin id=%{public}d elapsedMs=%{public}lld",
+        data->sessionId, elapsedMs());
+    RemovePendingSshConnect(data->sessionId, data->generation);
     const bool lifecycleActive = data->session &&
         data->session->lifecycle.load(std::memory_order_acquire) ==
         SessionContext::Lifecycle::Active;
@@ -4326,7 +4779,8 @@ static void CompleteSshConnectAsync(napi_env env, napi_status status, void* rawD
         // completed DNS, proxy negotiation, KEX, host-key verification and
         // authentication successfully. A failed or cancelled pending SSH
         // connection must not disturb an already active protocol session.
-        if (!ActivateSessionContext(data->adapter, data->session->identity())) {
+        if (data->foreground &&
+            !ActivateSessionContext(data->adapter, data->session->identity())) {
             // A successful SSH handshake is not enough to expose a session:
             // the shared sink owner must be committed first.  Reuse the same
             // failure path so no connected adapter is left registered without
@@ -4339,9 +4793,20 @@ static void CompleteSshConnectAsync(napi_env env, napi_status status, void* rawD
             delete data;
             return;
         }
+        OH_LOG_INFO(LOG_APP,
+            "[ExtLoader] SSH async completion owner=%{public}s id=%{public}d elapsedMs=%{public}lld",
+            data->foreground ? "foreground" : "detached",
+            data->sessionId, elapsedMs());
+        UpdateNativeNetworkObserver(data->session);
+        OH_LOG_INFO(LOG_APP,
+            "[ExtLoader] SSH async completion observer done id=%{public}d elapsedMs=%{public}lld",
+            data->sessionId, elapsedMs());
         napi_value result;
         napi_create_int32(env, data->sessionId, &result);
         napi_resolve_deferred(env, data->deferred, result);
+        OH_LOG_INFO(LOG_APP,
+            "[ExtLoader] SSH async completion resolved id=%{public}d elapsedMs=%{public}lld",
+            data->sessionId, elapsedMs());
     }
     napi_delete_async_work(env, data->work);
     delete data;
@@ -4350,24 +4815,32 @@ static void CompleteSshConnectAsync(napi_env env, napi_status status, void* rawD
 /** NAPI: getPendingSshConnectId(): number */
 napi_value NapiGetPendingSshConnectId(napi_env env, napi_callback_info /*info*/) {
     napi_value result;
-    napi_create_int32(env, g_pendingSshConnectId.load(std::memory_order_acquire), &result);
+    napi_create_int32(env, GetPendingSshConnectIdSnapshot(), &result);
     return result;
 }
 
-/** NAPI: connectSshAsync(config: SessionConfig): Promise<number> */
+/** NAPI: getPendingSshConnectIds(): number[] */
+napi_value NapiGetPendingSshConnectIds(napi_env env, napi_callback_info /*info*/) {
+    napi_value result;
+    napi_create_array(env, &result);
+    const std::vector<int> pendingIds = GetPendingSshConnectIdsSnapshot();
+    for (size_t index = 0; index < pendingIds.size(); ++index) {
+        napi_value item;
+        napi_create_int32(env, pendingIds[index], &item);
+        napi_set_element(env, result, index, item);
+    }
+    return result;
+}
+
+/** NAPI: connectSshAsync(config: SessionConfig, foreground?: boolean): Promise<number> */
 napi_value NapiConnectSshAsync(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value args[1] = {nullptr};
+    size_t argc = 2;
+    napi_value args[2] = {nullptr, nullptr};
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
     if (argc < 1) {
         napi_throw_type_error(env, nullptr, "SSH config is required");
         return nullptr;
     }
-    if (g_pendingSshConnectId.load(std::memory_order_acquire) > 0) {
-        napi_throw_error(env, nullptr, "SSH connection already in progress");
-        return nullptr;
-    }
-
     ConnectionConfig config;
     SshSecretGuard secretGuard {config};
     if (!ParseSshConnectionConfig(env, args[0], config)) {
@@ -4381,6 +4854,16 @@ napi_value NapiConnectSshAsync(napi_env env, napi_callback_info info) {
         return nullptr;
     }
     data->config = std::move(config);
+    if (argc > 1 && args[1] != nullptr) {
+        napi_valuetype foregroundType = napi_undefined;
+        if (napi_typeof(env, args[1], &foregroundType) != napi_ok ||
+            foregroundType != napi_boolean ||
+            napi_get_value_bool(env, args[1], &data->foreground) != napi_ok) {
+            delete data;
+            napi_throw_type_error(env, nullptr, "foreground must be a boolean");
+            return nullptr;
+        }
+    }
     if (!RegisterSshConnectSession(*data)) {
         delete data;
         napi_throw_error(env, nullptr, "SSH async session allocation failed");
@@ -4411,12 +4894,16 @@ napi_value NapiConnectSshAsync(napi_env env, napi_callback_info info) {
         napi_throw_error(env, nullptr, "SSH async connect work creation failed");
         return nullptr;
     }
-    g_pendingSshConnectId.store(data->sessionId, std::memory_order_release);
+    AddPendingSshConnect(data->sessionId, data->generation);
+    // The Promise itself carries the reserved identity.  This avoids a race
+    // where two callers read one process-global "pending" id after both
+    // requests have been admitted.
+    SetObjectInt32(env, promise, "sessionId", data->sessionId);
+    SetObjectInt64(env, promise, "generation", static_cast<int64_t>(
+        data->session->generation.load(std::memory_order_acquire)));
     status = napi_queue_async_work(env, data->work);
     if (status != napi_ok) {
-        int expectedSessionId = data->sessionId;
-        g_pendingSshConnectId.compare_exchange_strong(
-            expectedSessionId, -1, std::memory_order_acq_rel);
+        RemovePendingSshConnect(data->sessionId, data->generation);
         napi_delete_async_work(env, data->work);
         CleanupSshConnectFailure(*data);
         delete data;
@@ -4680,6 +5167,8 @@ static uint64_t BeginSessionTeardown(
             (void)g_sshNativeFacade.closeSession(SshSessionHandle {
                 session->sessionId, "shell",
                 session->generation.load(std::memory_order_acquire)});
+            ClearNativeNetworkObserver(
+                sessionId, session->generation.load(std::memory_order_acquire));
         }
         return 0;
     }
@@ -4700,6 +5189,8 @@ static uint64_t BeginSessionTeardown(
         (void)g_sshNativeFacade.closeSession(SshSessionHandle {
             session->sessionId, "shell",
             session->generation.load(std::memory_order_acquire)});
+        ClearNativeNetworkObserver(
+            sessionId, session->generation.load(std::memory_order_acquire));
     }
     return requestId;
 }
@@ -5845,6 +6336,9 @@ enum class SftpAsyncOperation {
 struct SftpAsyncData {
     SftpAsyncOperation operation = SftpAsyncOperation::ListDirectory;
     int32_t sessionId = 0;
+    uint64_t expectedGeneration = 0;
+    uint64_t sessionGeneration = 0;
+    std::shared_ptr<SessionContext> session;
     std::shared_ptr<ProtocolAdapter> adapter;
     std::string remotePath;
     std::string newRemotePath;
@@ -5866,6 +6360,25 @@ struct SftpAsyncData {
 static void ExecuteSftpAsync(napi_env /*env*/, void* rawData) {
     auto* data = static_cast<SftpAsyncData*>(rawData);
     if (data == nullptr || !data->adapter) {
+        return;
+    }
+
+    // Keep the request bound to the exact native session identity captured by
+    // ArkTS. A detached/reconnected session can retain the same page task
+    // while its transport and generation have already changed; that request
+    // must fail closed before it enters libssh2.
+    if (!data->session || data->session->lifecycle.load(std::memory_order_acquire) !=
+            SessionContext::Lifecycle::Active ||
+        (data->expectedGeneration > 0 &&
+            data->session->generation.load(std::memory_order_acquire) !=
+                data->expectedGeneration)) {
+        data->errorCode = ERR_SSH_SESSION_STALE;
+        OH_LOG_WARN(LOG_APP,
+            "[ExtLoader] SFTP stale request rejected id=%{public}d expected=%{public}llu current=%{public}llu",
+            data->sessionId,
+            static_cast<unsigned long long>(data->expectedGeneration),
+            data->session ? static_cast<unsigned long long>(
+                data->session->generation.load(std::memory_order_acquire)) : 0ULL);
         return;
     }
 
@@ -6042,22 +6555,62 @@ static napi_value QueueSftpAsync(napi_env env, SftpAsyncData* data, const char* 
     return promise;
 }
 
-static std::shared_ptr<ProtocolAdapter> FindSshSessionAdapter(int32_t sessionId) {
+static std::shared_ptr<SessionContext> FindSshSessionContext(int32_t sessionId) {
     std::shared_ptr<SessionContext> session;
     const auto it = g_sessionRegistry.find(sessionId);
     if (it != g_sessionRegistry.end()) {
         session = it->second;
     }
-    if (!session) {
-        return nullptr;
+    return session;
+}
+
+static bool ParseOptionalSftpGeneration(napi_env env, napi_value value,
+                                        uint64_t& generation) {
+    generation = 0;
+    if (value == nullptr) {
+        return true;
     }
-    std::lock_guard<std::mutex> lock(session->adapterMutex);
-    return session->adapter;
+    napi_valuetype type = napi_undefined;
+    if (napi_typeof(env, value, &type) != napi_ok ||
+        type == napi_undefined || type == napi_null) {
+        return true;
+    }
+    int64_t parsed = 0;
+    if (type != napi_number || napi_get_value_int64(env, value, &parsed) != napi_ok ||
+        parsed < 0) {
+        return false;
+    }
+    generation = static_cast<uint64_t>(parsed);
+    return true;
+}
+
+static bool BindSftpSession(SftpAsyncData& data, uint64_t expectedGeneration) {
+    data.expectedGeneration = expectedGeneration;
+    data.session = FindSshSessionContext(data.sessionId);
+    if (!data.session || data.session->lifecycle.load(std::memory_order_acquire) !=
+            SessionContext::Lifecycle::Active) {
+        data.errorCode = ERR_SSH_SESSION_CLOSED;
+        return false;
+    }
+    data.sessionGeneration = data.session->generation.load(std::memory_order_acquire);
+    if (expectedGeneration > 0 && data.sessionGeneration != expectedGeneration) {
+        data.errorCode = ERR_SSH_SESSION_STALE;
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(data.session->adapterMutex);
+        data.adapter = data.session->adapter;
+    }
+    if (!data.adapter) {
+        data.errorCode = ERR_SSH_SESSION_CLOSED;
+        return false;
+    }
+    return true;
 }
 
 napi_value NapiListRemoteDirAsync(napi_env env, napi_callback_info info) {
-    size_t argc = 2;
-    napi_value args[2];
+    size_t argc = 3;
+    napi_value args[3] = {nullptr, nullptr, nullptr};
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
     auto* data = new (std::nothrow) SftpAsyncData();
     if (data == nullptr) {
@@ -6066,14 +6619,20 @@ napi_value NapiListRemoteDirAsync(napi_env env, napi_callback_info info) {
     }
     if (argc > 0) { napi_get_value_int32(env, args[0], &data->sessionId); }
     if (argc > 1) { data->remotePath = GetNapiString(env, args[1]); }
+    uint64_t expectedGeneration = 0;
+    if (argc > 2 && !ParseOptionalSftpGeneration(env, args[2], expectedGeneration)) {
+        delete data;
+        napi_throw_type_error(env, nullptr, "invalid SFTP session generation");
+        return nullptr;
+    }
     data->operation = SftpAsyncOperation::ListDirectory;
-    data->adapter = FindSshSessionAdapter(data->sessionId);
+    (void)BindSftpSession(*data, expectedGeneration);
     return QueueSftpAsync(env, data, "SshListRemoteDirAsync");
 }
 
 napi_value NapiReadRemoteFileChunkAsync(napi_env env, napi_callback_info info) {
-    size_t argc = 4;
-    napi_value args[4];
+    size_t argc = 5;
+    napi_value args[5] = {nullptr, nullptr, nullptr, nullptr, nullptr};
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
     auto* data = new (std::nothrow) SftpAsyncData();
     if (data == nullptr) {
@@ -6091,16 +6650,22 @@ napi_value NapiReadRemoteFileChunkAsync(napi_env env, napi_callback_info info) {
         napi_throw_range_error(env, nullptr, "invalid SFTP read range");
         return nullptr;
     }
+    uint64_t expectedGeneration = 0;
+    if (argc > 4 && !ParseOptionalSftpGeneration(env, args[4], expectedGeneration)) {
+        delete data;
+        napi_throw_type_error(env, nullptr, "invalid SFTP session generation");
+        return nullptr;
+    }
     data->operation = SftpAsyncOperation::ReadChunk;
     data->offset = static_cast<uint64_t>(offset);
     data->maxLen = static_cast<uint32_t>(maxLen);
-    data->adapter = FindSshSessionAdapter(data->sessionId);
+    (void)BindSftpSession(*data, expectedGeneration);
     return QueueSftpAsync(env, data, "SshReadRemoteFileChunkAsync");
 }
 
 napi_value NapiWriteRemoteFileChunkAsync(napi_env env, napi_callback_info info) {
-    size_t argc = 5;
-    napi_value args[5];
+    size_t argc = 6;
+    napi_value args[6] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
     auto* data = new (std::nothrow) SftpAsyncData();
     if (data == nullptr) {
@@ -6131,15 +6696,22 @@ napi_value NapiWriteRemoteFileChunkAsync(napi_env env, napi_callback_info info) 
         return nullptr;
     }
     if (argc > 4) { napi_get_value_bool(env, args[4], &data->truncate); }
+    uint64_t expectedGeneration = 0;
+    if (argc > 5 && !ParseOptionalSftpGeneration(env, args[5], expectedGeneration)) {
+        delete data;
+        napi_throw_type_error(env, nullptr, "invalid SFTP session generation");
+        return nullptr;
+    }
     data->operation = SftpAsyncOperation::WriteChunk;
     data->offset = static_cast<uint64_t>(offset);
-    data->adapter = FindSshSessionAdapter(data->sessionId);
+    (void)BindSftpSession(*data, expectedGeneration);
     return QueueSftpAsync(env, data, "SshWriteRemoteFileChunkAsync");
 }
 
 static SftpAsyncData* CreateSftpPathAsyncData(
-    napi_env env, napi_callback_info info, SftpAsyncOperation operation, size_t argc) {
-    napi_value args[2] = {nullptr, nullptr};
+    napi_env env, napi_callback_info info, SftpAsyncOperation operation, size_t maxArgc) {
+    size_t argc = maxArgc;
+    napi_value args[3] = {nullptr, nullptr, nullptr};
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
     auto* data = new (std::nothrow) SftpAsyncData();
     if (data == nullptr) {
@@ -6148,14 +6720,20 @@ static SftpAsyncData* CreateSftpPathAsyncData(
     }
     if (argc > 0) { napi_get_value_int32(env, args[0], &data->sessionId); }
     if (argc > 1) { data->remotePath = GetNapiString(env, args[1]); }
+    uint64_t expectedGeneration = 0;
+    if (argc > 2 && !ParseOptionalSftpGeneration(env, args[2], expectedGeneration)) {
+        delete data;
+        napi_throw_type_error(env, nullptr, "invalid SFTP session generation");
+        return nullptr;
+    }
     data->operation = operation;
-    data->adapter = FindSshSessionAdapter(data->sessionId);
+    (void)BindSftpSession(*data, expectedGeneration);
     return data;
 }
 
 napi_value NapiRemoveRemoteFileAsync(napi_env env, napi_callback_info info) {
     SftpAsyncData* data = CreateSftpPathAsyncData(
-        env, info, SftpAsyncOperation::RemoveFile, 2);
+        env, info, SftpAsyncOperation::RemoveFile, 3);
     if (data == nullptr) {
         return nullptr;
     }
@@ -6164,7 +6742,7 @@ napi_value NapiRemoveRemoteFileAsync(napi_env env, napi_callback_info info) {
 
 napi_value NapiRemoveRemoteDirAsync(napi_env env, napi_callback_info info) {
     SftpAsyncData* data = CreateSftpPathAsyncData(
-        env, info, SftpAsyncOperation::RemoveDirectory, 2);
+        env, info, SftpAsyncOperation::RemoveDirectory, 3);
     if (data == nullptr) {
         return nullptr;
     }
@@ -6173,7 +6751,7 @@ napi_value NapiRemoveRemoteDirAsync(napi_env env, napi_callback_info info) {
 
 napi_value NapiMakeRemoteDirAsync(napi_env env, napi_callback_info info) {
     SftpAsyncData* data = CreateSftpPathAsyncData(
-        env, info, SftpAsyncOperation::MakeDirectory, 2);
+        env, info, SftpAsyncOperation::MakeDirectory, 3);
     if (data == nullptr) {
         return nullptr;
     }
@@ -6181,8 +6759,8 @@ napi_value NapiMakeRemoteDirAsync(napi_env env, napi_callback_info info) {
 }
 
 napi_value NapiRenameRemotePathAsync(napi_env env, napi_callback_info info) {
-    size_t argc = 4;
-    napi_value args[4] = {nullptr, nullptr, nullptr, nullptr};
+    size_t argc = 5;
+    napi_value args[5] = {nullptr, nullptr, nullptr, nullptr, nullptr};
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
     auto* data = new (std::nothrow) SftpAsyncData();
     if (data == nullptr) {
@@ -6193,13 +6771,19 @@ napi_value NapiRenameRemotePathAsync(napi_env env, napi_callback_info info) {
     if (argc > 1) { data->remotePath = GetNapiString(env, args[1]); }
     if (argc > 2) { data->newRemotePath = GetNapiString(env, args[2]); }
     if (argc > 3) { napi_get_value_bool(env, args[3], &data->atomicRename); }
+    uint64_t expectedGeneration = 0;
+    if (argc > 4 && !ParseOptionalSftpGeneration(env, args[4], expectedGeneration)) {
+        delete data;
+        napi_throw_type_error(env, nullptr, "invalid SFTP session generation");
+        return nullptr;
+    }
     if (data->remotePath.empty() || data->newRemotePath.empty()) {
         delete data;
         napi_throw_type_error(env, nullptr, "SFTP rename paths must not be empty");
         return nullptr;
     }
     data->operation = SftpAsyncOperation::RenamePath;
-    data->adapter = FindSshSessionAdapter(data->sessionId);
+    (void)BindSftpSession(*data, expectedGeneration);
     return QueueSftpAsync(env, data, "SshRenameRemotePathAsync");
 }
 
@@ -6586,6 +7170,49 @@ napi_value NapiGetSshSessionSnapshot(napi_env env, napi_callback_info info) {
         }
     }
     return CreateSshSessionSnapshotValue(env, snapshot, errorCode);
+}
+
+napi_value NapiGetSshSessionEvents(napi_env env, napi_callback_info info) {
+    size_t argc = 4;
+    napi_value args[4] = {nullptr, nullptr, nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    int32_t sessionId = 0;
+    int64_t generationValue = 0;
+    int64_t afterSequenceValue = 0;
+    std::string channelId;
+    bool parsed = argc >= 3 &&
+        napi_get_value_int32(env, args[0], &sessionId) == napi_ok &&
+        napi_get_value_int64(env, args[2], &generationValue) == napi_ok;
+    if (parsed && argc >= 4 && args[3] != nullptr) {
+        napi_valuetype afterSequenceType = napi_undefined;
+        if (napi_typeof(env, args[3], &afterSequenceType) != napi_ok) {
+            parsed = false;
+        } else if (afterSequenceType != napi_undefined && afterSequenceType != napi_null) {
+            parsed = napi_get_value_int64(env, args[3], &afterSequenceValue) == napi_ok;
+        }
+    }
+    if (argc >= 2 && args[1] != nullptr) {
+        channelId = GetNapiString(env, args[1]);
+    }
+
+    SshSessionManagerResult resultCode = SshSessionManagerResult::InvalidIdentity;
+    const uint64_t generation = generationValue > 0
+        ? static_cast<uint64_t>(generationValue) : 0;
+    const uint64_t afterSequence = afterSequenceValue >= 0
+        ? static_cast<uint64_t>(afterSequenceValue) : 0;
+    std::vector<SshEventEnvelope> events;
+    if (parsed && sessionId > 0 && generation > 0 && afterSequenceValue >= 0 &&
+        !channelId.empty()) {
+        const SshSessionHandle handle {
+            static_cast<uint64_t>(sessionId), channelId, generation};
+        SshSessionSnapshot snapshot;
+        if (g_sshNativeFacade.snapshot(handle, snapshot, &resultCode)) {
+            events = g_sshNativeFacade.events(handle, afterSequence);
+        }
+    }
+    return CreateSshSessionEventsValue(
+        env, sessionId, channelId, generation, afterSequence, resultCode, events);
 }
 
 /**
@@ -8454,6 +9081,32 @@ napi_value NapiInstallSshPublicKey(napi_env env, napi_callback_info info) {
     return result;
 }
 
+static napi_value CreateSshAuthTestResultValue(
+    napi_env env, const SshAuthTestResult& resultValue) {
+    napi_value result;
+    napi_create_object(env, &result);
+    SetObjectBool(env, result, "ok", resultValue.ok);
+    SetObjectInt32(env, result, "code", resultValue.code);
+    SetObjectString(env, result, "message", resultValue.message);
+    return result;
+}
+
+static napi_value CreateSshHostKeyInfoValue(
+    napi_env env, const SshHostKeyInfo& resultValue) {
+    napi_value result;
+    napi_create_object(env, &result);
+    SetObjectBool(env, result, "ok", resultValue.ok);
+    SetObjectString(env, result, "host", resultValue.host);
+    SetObjectInt32(env, result, "port", resultValue.port);
+    SetObjectString(env, result, "algorithm", resultValue.algorithm);
+    SetObjectString(env, result, "fingerprintSha256", resultValue.fingerprintSha256);
+    SetObjectString(env, result, "rawBase64", resultValue.rawBase64);
+    SetObjectString(env, result, "serverBanner", resultValue.serverBanner);
+    SetObjectInt32(env, result, "errorCode", resultValue.errorCode);
+    SetObjectString(env, result, "errorMessage", resultValue.errorMessage);
+    return result;
+}
+
 /**
  * NAPI: testSshKeyAuth(host, port, username, privateKeyPem, passphrase): object
  * 同步阻塞
@@ -8475,72 +9128,13 @@ napi_value NapiTestSshKeyAuth(napi_env env, napi_callback_info info) {
     if (argc > 3) privateKeyPem = GetNapiString(env, args[3]);
     if (argc > 4) napi_get_value_string_utf8(env, args[4], passphraseBuf, sizeof(passphraseBuf), nullptr);
 
-    SshProxyOptions proxy;
-    if (argc > 5) {
-        napi_value proxyValue;
-        napi_valuetype proxyType = napi_undefined;
-        if (napi_get_named_property(env, args[5], "type", &proxyValue) == napi_ok) {
-            proxy.type = GetNapiString(env, proxyValue);
-        }
-        if (napi_get_named_property(env, args[5], "host", &proxyValue) == napi_ok) {
-            proxy.host = GetNapiString(env, proxyValue);
-        }
-        if (napi_get_named_property(env, args[5], "port", &proxyValue) == napi_ok) {
-            napi_get_value_int32(env, proxyValue, &proxy.port);
-        }
-        if (napi_get_named_property(env, args[5], "username", &proxyValue) == napi_ok) {
-            proxy.username = GetNapiString(env, proxyValue);
-        }
-        if (napi_get_named_property(env, args[5], "password", &proxyValue) == napi_ok) {
-            proxy.password = GetNapiString(env, proxyValue);
-        }
-        if (napi_get_named_property(env, args[5], "privateKeyPem", &proxyValue) == napi_ok) {
-            proxy.privateKeyPem = GetNapiString(env, proxyValue);
-        }
-        if (napi_get_named_property(env, args[5], "privateKeyPassphrase", &proxyValue) == napi_ok) {
-            proxy.privateKeyPassphrase = GetNapiString(env, proxyValue);
-        }
-        if (napi_get_named_property(env, args[5], "authMethod", &proxyValue) == napi_ok) {
-            proxy.authMethod = GetNapiString(env, proxyValue);
-        }
-        if (napi_get_named_property(env, args[5], "expectedHostKeyRawBase64", &proxyValue) == napi_ok) {
-            proxy.expectedHostKeyRawBase64 = GetNapiString(env, proxyValue);
-        }
-        if (napi_get_named_property(env, args[5], "expectedHostKeyFingerprintSha256", &proxyValue) == napi_ok) {
-            proxy.expectedHostKeyFingerprintSha256 = GetNapiString(env, proxyValue);
-        }
-        ParseBoundedSshResponseArray(env, args[5], "keyboardInteractiveResponses",
-                                     proxy.keyboardInteractiveResponses);
-        (void)napi_typeof(env, args[5], &proxyType);
-        if (proxyType != napi_object) {
-            proxy = SshProxyOptions();
-        }
-    }
+    SshProxyOptions proxy = ReadSshProxyOptions(env, argc > 5 ? args[5] : nullptr);
 
     SshAuthTestResult res = testSshKeyAuth(
         std::string(hostBuf), port, std::string(userBuf),
         privateKeyPem, std::string(passphraseBuf), proxy);
-    secureClearString(proxy.password);
-    secureClearString(proxy.privateKeyPem);
-    secureClearString(proxy.privateKeyPassphrase);
-    for (std::string& response : proxy.keyboardInteractiveResponses) {
-        secureClearString(response);
-    }
-    proxy.keyboardInteractiveResponses.clear();
-
-    napi_value result;
-    napi_create_object(env, &result);
-
-    napi_value valOk, valCode, valMsg;
-    napi_get_boolean(env, res.ok, &valOk);
-    napi_create_int32(env, res.code, &valCode);
-    napi_create_string_utf8(env, res.message.c_str(), NAPI_AUTO_LENGTH, &valMsg);
-
-    napi_set_named_property(env, result, "ok", valOk);
-    napi_set_named_property(env, result, "code", valCode);
-    napi_set_named_property(env, result, "message", valMsg);
-
-    return result;
+    ClearSshProxyOptions(proxy);
+    return CreateSshAuthTestResultValue(env, res);
 }
 
 /**
@@ -8558,82 +9152,207 @@ napi_value NapiProbeSshHostKey(napi_env env, napi_callback_info info) {
     if (argc > 0) napi_get_value_string_utf8(env, args[0], hostBuf, sizeof(hostBuf), nullptr);
     if (argc > 1) napi_get_value_int32(env, args[1], &port);
 
-    SshProxyOptions proxy;
-    if (argc > 2) {
-        napi_value proxyValue;
-        napi_valuetype proxyType = napi_undefined;
-        if (napi_get_named_property(env, args[2], "type", &proxyValue) == napi_ok) {
-            proxy.type = GetNapiString(env, proxyValue);
-        }
-        if (napi_get_named_property(env, args[2], "host", &proxyValue) == napi_ok) {
-            proxy.host = GetNapiString(env, proxyValue);
-        }
-        if (napi_get_named_property(env, args[2], "port", &proxyValue) == napi_ok) {
-            napi_get_value_int32(env, proxyValue, &proxy.port);
-        }
-        if (napi_get_named_property(env, args[2], "username", &proxyValue) == napi_ok) {
-            proxy.username = GetNapiString(env, proxyValue);
-        }
-        if (napi_get_named_property(env, args[2], "password", &proxyValue) == napi_ok) {
-            proxy.password = GetNapiString(env, proxyValue);
-        }
-        if (napi_get_named_property(env, args[2], "privateKeyPem", &proxyValue) == napi_ok) {
-            proxy.privateKeyPem = GetNapiString(env, proxyValue);
-        }
-        if (napi_get_named_property(env, args[2], "privateKeyPassphrase", &proxyValue) == napi_ok) {
-            proxy.privateKeyPassphrase = GetNapiString(env, proxyValue);
-        }
-        if (napi_get_named_property(env, args[2], "authMethod", &proxyValue) == napi_ok) {
-            proxy.authMethod = GetNapiString(env, proxyValue);
-        }
-        if (napi_get_named_property(env, args[2], "expectedHostKeyRawBase64", &proxyValue) == napi_ok) {
-            proxy.expectedHostKeyRawBase64 = GetNapiString(env, proxyValue);
-        }
-        if (napi_get_named_property(env, args[2], "expectedHostKeyFingerprintSha256", &proxyValue) == napi_ok) {
-            proxy.expectedHostKeyFingerprintSha256 = GetNapiString(env, proxyValue);
-        }
-        ParseBoundedSshResponseArray(env, args[2], "keyboardInteractiveResponses",
-                                     proxy.keyboardInteractiveResponses);
-        (void)napi_typeof(env, args[2], &proxyType);
-        if (proxyType != napi_object) {
-            proxy = SshProxyOptions();
-        }
-    }
+    SshProxyOptions proxy = ReadSshProxyOptions(env, argc > 2 ? args[2] : nullptr);
 
     SshHostKeyInfo res = probeSshHostKey(std::string(hostBuf), port, proxy);
-    secureClearString(proxy.password);
-    secureClearString(proxy.privateKeyPem);
-    secureClearString(proxy.privateKeyPassphrase);
-    for (std::string& response : proxy.keyboardInteractiveResponses) {
-        secureClearString(response);
+    ClearSshProxyOptions(proxy);
+    return CreateSshHostKeyInfoValue(env, res);
+}
+
+struct SshKeyAuthAsyncData {
+    std::string host;
+    int32_t port = 22;
+    std::string username;
+    std::string privateKeyPem;
+    std::string passphrase;
+    SshProxyOptions proxy;
+    SshAuthTestResult result {};
+    bool workerFailed = false;
+    std::string errorMessage;
+    napi_deferred deferred = nullptr;
+    napi_async_work work = nullptr;
+
+    ~SshKeyAuthAsyncData() {
+        secureClearString(privateKeyPem);
+        secureClearString(passphrase);
+        ClearSshProxyOptions(proxy);
     }
-    proxy.keyboardInteractiveResponses.clear();
+};
 
-    napi_value result;
-    napi_create_object(env, &result);
+static void ExecuteSshKeyAuthAsync(napi_env /*env*/, void* rawData) {
+    auto* data = static_cast<SshKeyAuthAsyncData*>(rawData);
+    if (data == nullptr) { return; }
+    try {
+        data->result = testSshKeyAuth(
+            data->host, data->port, data->username,
+            data->privateKeyPem, data->passphrase, data->proxy);
+    } catch (const std::exception& ex) {
+        data->workerFailed = true;
+        data->errorMessage = std::string("SSH key authentication async work failed: ") + ex.what();
+    } catch (...) {
+        data->workerFailed = true;
+        data->errorMessage = "SSH key authentication async work failed: unknown native exception";
+    }
+}
 
-    napi_value valOk, valHost, valPort, valAlg, valFp, valRaw, valBanner, valErrCode, valErrMsg;
-    napi_get_boolean(env, res.ok, &valOk);
-    napi_create_string_utf8(env, res.host.c_str(), NAPI_AUTO_LENGTH, &valHost);
-    napi_create_int32(env, res.port, &valPort);
-    napi_create_string_utf8(env, res.algorithm.c_str(), NAPI_AUTO_LENGTH, &valAlg);
-    napi_create_string_utf8(env, res.fingerprintSha256.c_str(), NAPI_AUTO_LENGTH, &valFp);
-    napi_create_string_utf8(env, res.rawBase64.c_str(), NAPI_AUTO_LENGTH, &valRaw);
-    napi_create_string_utf8(env, res.serverBanner.c_str(), NAPI_AUTO_LENGTH, &valBanner);
-    napi_create_int32(env, res.errorCode, &valErrCode);
-    napi_create_string_utf8(env, res.errorMessage.c_str(), NAPI_AUTO_LENGTH, &valErrMsg);
+static void CompleteSshKeyAuthAsync(napi_env env, napi_status status, void* rawData) {
+    auto* data = static_cast<SshKeyAuthAsyncData*>(rawData);
+    if (data == nullptr) { return; }
+    if (status != napi_ok || data->workerFailed) {
+        napi_value error;
+        const std::string message = data->errorMessage.empty()
+            ? "SSH key authentication async work failed" : data->errorMessage;
+        napi_create_string_utf8(env, message.c_str(), NAPI_AUTO_LENGTH, &error);
+        napi_reject_deferred(env, data->deferred, error);
+        OH_LOG_ERROR(LOG_APP, "[SSH-KEY-ASYNC] complete failed status=%{public}d", status);
+    } else {
+        napi_value result = CreateSshAuthTestResultValue(env, data->result);
+        napi_resolve_deferred(env, data->deferred, result);
+    }
+    napi_delete_async_work(env, data->work);
+    delete data;
+}
 
-    napi_set_named_property(env, result, "ok", valOk);
-    napi_set_named_property(env, result, "host", valHost);
-    napi_set_named_property(env, result, "port", valPort);
-    napi_set_named_property(env, result, "algorithm", valAlg);
-    napi_set_named_property(env, result, "fingerprintSha256", valFp);
-    napi_set_named_property(env, result, "rawBase64", valRaw);
-    napi_set_named_property(env, result, "serverBanner", valBanner);
-    napi_set_named_property(env, result, "errorCode", valErrCode);
-    napi_set_named_property(env, result, "errorMessage", valErrMsg);
+/** NAPI: testSshKeyAuthAsync(host, port, username, privateKeyPem, passphrase, proxy): Promise<object> */
+napi_value NapiTestSshKeyAuthAsync(napi_env env, napi_callback_info info) {
+    size_t argc = 6;
+    napi_value args[6] = {nullptr};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
 
-    return result;
+    auto* data = new (std::nothrow) SshKeyAuthAsyncData();
+    if (data == nullptr) {
+        napi_throw_error(env, nullptr, "SSH key authentication async allocation failed");
+        return nullptr;
+    }
+    if (argc > 0) { data->host = GetNapiString(env, args[0]); }
+    if (argc > 1) { (void)napi_get_value_int32(env, args[1], &data->port); }
+    if (argc > 2) { data->username = GetNapiString(env, args[2]); }
+    if (argc > 3) { data->privateKeyPem = GetNapiString(env, args[3]); }
+    if (argc > 4) { data->passphrase = GetNapiString(env, args[4]); }
+    data->proxy = ReadSshProxyOptions(env, argc > 5 ? args[5] : nullptr);
+
+    napi_value promise;
+    napi_status status = napi_create_promise(env, &data->deferred, &promise);
+    if (status != napi_ok) {
+        delete data;
+        napi_throw_error(env, nullptr, "SSH key authentication async promise creation failed");
+        return nullptr;
+    }
+    napi_value resource;
+    status = napi_create_string_utf8(env, "SshKeyAuthAsync", NAPI_AUTO_LENGTH, &resource);
+    if (status != napi_ok) {
+        delete data;
+        napi_throw_error(env, nullptr, "SSH key authentication async resource creation failed");
+        return nullptr;
+    }
+    status = napi_create_async_work(env, resource, resource,
+        ExecuteSshKeyAuthAsync, CompleteSshKeyAuthAsync, data, &data->work);
+    if (status != napi_ok) {
+        delete data;
+        napi_throw_error(env, nullptr, "SSH key authentication async work creation failed");
+        return nullptr;
+    }
+    status = napi_queue_async_work(env, data->work);
+    if (status != napi_ok) {
+        napi_delete_async_work(env, data->work);
+        delete data;
+        napi_throw_error(env, nullptr, "SSH key authentication async work queue failed");
+        return nullptr;
+    }
+    return promise;
+}
+
+struct SshHostKeyProbeAsyncData {
+    std::string host;
+    int32_t port = 22;
+    SshProxyOptions proxy;
+    SshHostKeyInfo result {};
+    bool workerFailed = false;
+    std::string errorMessage;
+    napi_deferred deferred = nullptr;
+    napi_async_work work = nullptr;
+
+    ~SshHostKeyProbeAsyncData() {
+        ClearSshProxyOptions(proxy);
+    }
+};
+
+static void ExecuteSshHostKeyProbeAsync(napi_env /*env*/, void* rawData) {
+    auto* data = static_cast<SshHostKeyProbeAsyncData*>(rawData);
+    if (data == nullptr) { return; }
+    try {
+        data->result = probeSshHostKey(data->host, data->port, data->proxy);
+    } catch (const std::exception& ex) {
+        data->workerFailed = true;
+        data->errorMessage = std::string("SSH host key probe async work failed: ") + ex.what();
+    } catch (...) {
+        data->workerFailed = true;
+        data->errorMessage = "SSH host key probe async work failed: unknown native exception";
+    }
+}
+
+static void CompleteSshHostKeyProbeAsync(napi_env env, napi_status status, void* rawData) {
+    auto* data = static_cast<SshHostKeyProbeAsyncData*>(rawData);
+    if (data == nullptr) { return; }
+    if (status != napi_ok || data->workerFailed) {
+        napi_value error;
+        const std::string message = data->errorMessage.empty()
+            ? "SSH host key probe async work failed" : data->errorMessage;
+        napi_create_string_utf8(env, message.c_str(), NAPI_AUTO_LENGTH, &error);
+        napi_reject_deferred(env, data->deferred, error);
+        OH_LOG_ERROR(LOG_APP, "[SSH-HOSTKEY-ASYNC] complete failed status=%{public}d", status);
+    } else {
+        napi_value result = CreateSshHostKeyInfoValue(env, data->result);
+        napi_resolve_deferred(env, data->deferred, result);
+    }
+    napi_delete_async_work(env, data->work);
+    delete data;
+}
+
+/** NAPI: probeSshHostKeyAsync(host, port, proxy): Promise<object> */
+napi_value NapiProbeSshHostKeyAsync(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value args[3] = {nullptr};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    auto* data = new (std::nothrow) SshHostKeyProbeAsyncData();
+    if (data == nullptr) {
+        napi_throw_error(env, nullptr, "SSH host key probe async allocation failed");
+        return nullptr;
+    }
+    if (argc > 0) { data->host = GetNapiString(env, args[0]); }
+    if (argc > 1) { (void)napi_get_value_int32(env, args[1], &data->port); }
+    data->proxy = ReadSshProxyOptions(env, argc > 2 ? args[2] : nullptr);
+
+    napi_value promise;
+    napi_status status = napi_create_promise(env, &data->deferred, &promise);
+    if (status != napi_ok) {
+        delete data;
+        napi_throw_error(env, nullptr, "SSH host key probe async promise creation failed");
+        return nullptr;
+    }
+    napi_value resource;
+    status = napi_create_string_utf8(env, "SshHostKeyProbeAsync", NAPI_AUTO_LENGTH, &resource);
+    if (status != napi_ok) {
+        delete data;
+        napi_throw_error(env, nullptr, "SSH host key probe async resource creation failed");
+        return nullptr;
+    }
+    status = napi_create_async_work(env, resource, resource,
+        ExecuteSshHostKeyProbeAsync, CompleteSshHostKeyProbeAsync, data, &data->work);
+    if (status != napi_ok) {
+        delete data;
+        napi_throw_error(env, nullptr, "SSH host key probe async work creation failed");
+        return nullptr;
+    }
+    status = napi_queue_async_work(env, data->work);
+    if (status != napi_ok) {
+        napi_delete_async_work(env, data->work);
+        delete data;
+        napi_throw_error(env, nullptr, "SSH host key probe async work queue failed");
+        return nullptr;
+    }
+    return promise;
 }
 
 /**
@@ -8775,6 +9494,9 @@ napi_value ExtensionLoaderNapi::Init(napi_env env, napi_value exports) {
     napi_create_function(env, "getPendingSshConnectId", NAPI_AUTO_LENGTH,
                          NapiGetPendingSshConnectId, nullptr, &fn);
     napi_set_named_property(env, exports, "getPendingSshConnectId", fn);
+    napi_create_function(env, "getPendingSshConnectIds", NAPI_AUTO_LENGTH,
+                         NapiGetPendingSshConnectIds, nullptr, &fn);
+    napi_set_named_property(env, exports, "getPendingSshConnectIds", fn);
 
     napi_create_function(env, "probeRdpCertificate", NAPI_AUTO_LENGTH,
                          NapiProbeRdpCertificate, nullptr, &fn);
@@ -8985,6 +9707,9 @@ napi_value ExtensionLoaderNapi::Init(napi_env env, napi_value exports) {
     napi_create_function(env, "getSshSessionSnapshot", NAPI_AUTO_LENGTH,
                          NapiGetSshSessionSnapshot, nullptr, &fn);
     napi_set_named_property(env, exports, "getSshSessionSnapshot", fn);
+    napi_create_function(env, "getSshSessionEvents", NAPI_AUTO_LENGTH,
+                         NapiGetSshSessionEvents, nullptr, &fn);
+    napi_set_named_property(env, exports, "getSshSessionEvents", fn);
 
     napi_create_function(env, "configureSshForwarding", NAPI_AUTO_LENGTH,
                          NapiConfigureSshForwarding, nullptr, &fn);
@@ -9138,10 +9863,18 @@ napi_value ExtensionLoaderNapi::Init(napi_env env, napi_value exports) {
                          NapiTestSshKeyAuth, nullptr, &fn);
     napi_set_named_property(env, exports, "testSshKeyAuth", fn);
 
+    napi_create_function(env, "testSshKeyAuthAsync", NAPI_AUTO_LENGTH,
+                         NapiTestSshKeyAuthAsync, nullptr, &fn);
+    napi_set_named_property(env, exports, "testSshKeyAuthAsync", fn);
+
     napi_create_function(env, "probeSshHostKey", NAPI_AUTO_LENGTH,
                          NapiProbeSshHostKey, nullptr, &fn);
     napi_set_named_property(env, exports, "probeSshHostKey", fn);
 
-    OH_LOG_INFO(LOG_APP, "[ExtLoader] NAPI 方法已注册: ... probeSshHostKey");
+    napi_create_function(env, "probeSshHostKeyAsync", NAPI_AUTO_LENGTH,
+                         NapiProbeSshHostKeyAsync, nullptr, &fn);
+    napi_set_named_property(env, exports, "probeSshHostKeyAsync", fn);
+
+    OH_LOG_INFO(LOG_APP, "[ExtLoader] NAPI 方法已注册: ... probeSshHostKeyAsync");
     return exports;
 }

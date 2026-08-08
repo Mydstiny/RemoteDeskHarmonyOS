@@ -19,6 +19,7 @@
 #include "input/remote_cursor_snapshot.h"
 #include "transfer_runtime_status.h"
 #include "rdp/rdp_gateway_policy.h"
+#include "ssh/ssh_route_policy.h"
 
 // ============================================================
 // 枚举与常量
@@ -109,6 +110,11 @@ struct ConnectionConfig {
     std::string sshProxyPrivateKeyPem;  // transient bastion key material
     std::string sshProxyPrivateKeyPassphrase;
     std::vector<std::string> sshProxyKeyboardInteractiveResponses;
+    // The explicit route is durable metadata; hop secrets below are transient
+    // handoff material and are cleared at every adapter/session teardown.
+    SshRoute sshRoute;
+    std::vector<SshJumpHopHandoff> sshJumpHopHandoffs;
+    bool sshRouteExplicit = false;
     std::string expectedHostKeyRawBase64;       // 🆕 SSH 预期主机密钥 raw blob base64 (二次校验)
     std::string expectedHostKeyFingerprintSha256; // 🆕 SSH 预期主机指纹 SHA256
     // ProxyJump 的跳板机与目标机是两个独立的 SSH endpoint，必须分别绑定 key。

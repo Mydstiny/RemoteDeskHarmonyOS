@@ -4,7 +4,10 @@ import {
   REMOTE_CURSOR_FALLBACK_EDGE_VP,
   REMOTE_CURSOR_MAX_EDGE_VP,
   REMOTE_CURSOR_MIN_EDGE_VP,
+  REMOTE_NATIVE_POINTER_MAX_EDGE_PX,
+  REMOTE_NATIVE_POINTER_SCALE,
   remoteCursorSnapshotChanged,
+  resolveRemoteNativePointerScale,
   resolveRemoteCursorVisualScale,
   shouldRenderArrowCursor,
   shouldRenderCircleCursor,
@@ -80,6 +83,14 @@ export default function remoteCursorStylePolicyTest() {
         REMOTE_CURSOR_MAX_EDGE_VP / 16);
       expect(resolveRemoteCursorVisualScale(384, 16, 1, false)).assertEqual(
         REMOTE_CURSOR_MAX_EDGE_VP / 384);
+    });
+    it('enlarges small native pointers without shrinking large cursors', 0, (): void => {
+      expect(resolveRemoteNativePointerScale(23, 22)).assertEqual(REMOTE_NATIVE_POINTER_SCALE);
+      expect(resolveRemoteNativePointerScale(28, 40)).assertEqual(REMOTE_NATIVE_POINTER_SCALE);
+      expect(resolveRemoteNativePointerScale(80, 40)).assertEqual(1);
+      expect(resolveRemoteNativePointerScale(48, 48)).assertEqual(
+        REMOTE_NATIVE_POINTER_MAX_EDGE_PX / 48);
+      expect(resolveRemoteNativePointerScale(0, 32)).assertEqual(1);
     });
   });
 }

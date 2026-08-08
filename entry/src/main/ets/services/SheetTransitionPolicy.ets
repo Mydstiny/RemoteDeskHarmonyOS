@@ -58,6 +58,23 @@ export function shouldMountSftpPeerPicker(state: SftpPeerPickerMountState): bool
     !state.pickerVisible && !state.pickerClosing;
 }
 
+export interface SftpPeerSelectionCommitState {
+  pendingHostId: string;
+  pendingSelectionEpoch: number;
+  activeSelectionEpoch: number;
+  parentVisible: boolean;
+  rootClosing: boolean;
+  pickerVisible: boolean;
+  pickerClosing: boolean;
+}
+
+/** A peer selection becomes visible only after the independent child Sheet exits. */
+export function shouldCommitSftpPeerSelection(state: SftpPeerSelectionCommitState): boolean {
+  return state.pendingHostId.trim().length > 0 && state.pendingSelectionEpoch > 0 &&
+    state.pendingSelectionEpoch === state.activeSelectionEpoch && state.parentVisible &&
+    !state.rootClosing && !state.pickerVisible && !state.pickerClosing;
+}
+
 export interface SftpRootSheetDismissState {
   mountMatches: boolean;
   rootSurfaceReady: boolean;
@@ -78,6 +95,18 @@ export function shouldAllowSftpRootSheetDismiss(state: SftpRootSheetDismissState
     return true;
   }
   return state.rootSurfaceReady && !state.transferBusy;
+}
+
+/** Phone keeps its legacy sheet; Pad/PC expand only when both axes can hold two panes. */
+export function shouldUseSftpExpandedWorkspace(isPad: boolean, isDesktop: boolean,
+  width: number, height: number): boolean {
+  return (isPad || isDesktop) && width >= 980 && height >= 580;
+}
+
+/** Active/recovered task controls take priority over list height on short wide windows. */
+export function sftpExpandedWorkspaceMinHeight(transferBusy: boolean,
+  hasRecoveredTasks: boolean): number {
+  return transferBusy || hasRecoveredTasks ? 150 : 300;
 }
 
 /**

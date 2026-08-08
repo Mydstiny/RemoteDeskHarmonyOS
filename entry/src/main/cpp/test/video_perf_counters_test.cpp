@@ -332,6 +332,48 @@ RDP_TEST_CASE(video_pressure_uses_time_windows_and_disconnect_tick) {
                VideoPressureLevel::Normal);
 }
 
+RDP_TEST_CASE(video_pressure_idle_timeout_does_not_create_decoder_pressure) {
+    using Clock = std::chrono::steady_clock;
+    const Clock::time_point start = Clock::time_point {};
+    VideoPressureController controller(1, 1, std::chrono::seconds(1), std::chrono::seconds(2));
+
+    Render::VideoPerfSnapshot healthy {};
+    healthy.ingressFrames = 1;
+    healthy.decodeSamples = 1;
+    RDP_ASSERT(controller.observeAt(healthy, start).level == VideoPressureLevel::Normal);
+
+    const Render::VideoPressureDecision idle = controller.tick(start + std::chrono::seconds(3));
+    RDP_ASSERT(idle.timedOut);
+    RDP_ASSERT(!idle.changed);
+    RDP_ASSERT(idle.level == VideoPressureLevel::Normal);
+
+    Render::VideoPerfSnapshot empty {};
+    const Render::VideoPressureDecision stillIdle =
+        controller.observeAt(empty, start + std::chrono::seconds(4));
+    RDP_ASSERT(stillIdle.timedOut);
+    RDP_ASSERT(!stillIdle.changed);
+    RDP_ASSERT(stillIdle.level == VideoPressureLevel::Normal);
+}
+
+RDP_TEST_CASE(video_pressure_ingress_without_decode_still_escalates_after_timeout) {
+    using Clock = std::chrono::steady_clock;
+    const Clock::time_point start = Clock::time_point {};
+    VideoPressureController controller(1, 1, std::chrono::seconds(1), std::chrono::seconds(2));
+
+    Render::VideoPerfSnapshot healthy {};
+    healthy.ingressFrames = 1;
+    healthy.decodeSamples = 1;
+    RDP_ASSERT(controller.observeAt(healthy, start).level == VideoPressureLevel::Normal);
+
+    Render::VideoPerfSnapshot stalled {};
+    stalled.ingressFrames = 1;
+    const Render::VideoPressureDecision decision =
+        controller.observeAt(stalled, start + std::chrono::seconds(3));
+    RDP_ASSERT(decision.timedOut);
+    RDP_ASSERT(decision.changed);
+    RDP_ASSERT(decision.level == VideoPressureLevel::Severe);
+}
+
 RDP_TEST_CASE(video_session_owner_gate_rejects_teardown_reconnect_and_cross_session_callbacks) {
     Render::VideoSessionOwnerGate gate;
     const Render::DecoderSessionIdentity first {11, 101, 1001};

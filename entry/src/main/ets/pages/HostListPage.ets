@@ -112,6 +112,7 @@ import {
 } from '../services/RdpCertificatePreflightPolicy';
 import { ExtensionLoader } from '../services/ExtensionLoader';
 import { SshKeyImportService, SshKeyImportResult } from '../services/SshKeyImportService';
+import { SshXtermPrewarmSurface } from '../components/SshXtermSurface';
 import { SshSettingsService } from '../services/SshSettingsService';
 import {
   normalizeSshEndpointTransport,
@@ -435,7 +436,7 @@ struct HostListPage {
   private hostLoadRefreshTimer: number = -1;
   private hostLoadRefreshPresence: boolean = false;
   private keyVaultDataUnsubscribe: (() => void) | null = null;
-  private pageActive: boolean = false;
+  @State pageActive: boolean = false;
   @State searchText: string = '';
   @State workspaceGroupId: string = '';
   @State isLoading: boolean = true;
@@ -462,6 +463,7 @@ struct HostListPage {
   @State hostSelectionMode: boolean = false;
   @State hostSelectedIds: Set<string> = new Set();
   @State hostPresenceProbeBusyIds: Set<string> = new Set();
+  @State hostGroupProbeBusyType: string = '';
   // The service snapshot is persisted asynchronously and can be replaced by
   // a cloud callback while the probe result is being rendered. Keep a small
   // page-local result so the card reflects the completed probe immediately.
@@ -4785,7 +4787,8 @@ struct HostListPage {
     try {
       await new Promise<void>((r) => setTimeout(r, 80));
       if (!this.isCurrentSshPreflight(host, generation)) { return; }
-      const info = this.loader.probeSshHostKey(host.host, host.port, this.sshPreflightProxy(host));
+      const info = await this.loader.probeSshHostKeyAsync(
+        host.host, host.port, this.sshPreflightProxy(host));
       if (!this.isCurrentSshPreflight(host, generation)) { return; }
       if (!info.ok) {
         this.sshPreflightState = SshPreflightState.ERROR;
@@ -4794,7 +4797,7 @@ struct HostListPage {
       }
       let jumpInfo: SshHostKeyInfo | null = null;
       if (this.sshPreflightUsesJump(host)) {
-        jumpInfo = this.loader.probeSshHostKey(host.proxyHost, host.proxyPort);
+        jumpInfo = await this.loader.probeSshHostKeyAsync(host.proxyHost, host.proxyPort);
         if (!this.isCurrentSshPreflight(host, generation)) { return; }
         if (!jumpInfo.ok) {
           this.sshPreflightState = SshPreflightState.ERROR;
@@ -4938,7 +4941,7 @@ struct HostListPage {
       await new Promise<void>((r) => setTimeout(r, 60));
       if (!this.isCurrentSshPreflight(host, generation)) { return; }
       const keyData = this.resolveSshKeyMaterial(host).privateKey;
-      const result = this.loader.testSshKeyAuth(
+      const result = await this.loader.testSshKeyAuthAsync(
         host.host, host.port, host.username, keyData, passphrase,
         this.sshPreflightProxy(host, true)
       );
@@ -5016,7 +5019,7 @@ struct HostListPage {
         this.showSshPreflightPassphrase('此私钥实际未设置密码，请在密钥管理中重新设置密码');
         return;
       }
-      const result = this.loader.testSshKeyAuth(
+      const result = await this.loader.testSshKeyAuthAsync(
         host.host, host.port, host.username, keyData, this.sshPreflightPassphraseInput,
         this.sshPreflightProxy(host, true)
       );
@@ -5138,14 +5141,16 @@ struct HostListPage {
     ]);
   }
 
-  private async probeHostConnectivity(host: RemoteHost): Promise<void> {
+  private async probeHostConnectivity(host: RemoteHost, showToast: boolean = true): Promise<void> {
     if (this.hostPresenceProbeBusyIds.has(host.id)) { return; }
     if (host.protocol === 'rustdesk') {
       if (host.rustdeskDirectEnabled) {
-        promptAction.showToast({ message: '直连主机无需在线探测', duration: 1800 });
+        if (showToast) {
+          promptAction.showToast({ message: '直连主机无需在线探测', duration: 1800 });
+        }
         return;
       }
-      await this.probeRustDeskPresence(host, true, true);
+      await this.probeRustDeskPresence(host, showToast, true);
       return;
     }
 
@@ -5170,7 +5175,7 @@ struct HostListPage {
         const info: VncCertificateInfo = await probe;
         ok = info.ok;
       } else if (host.protocol === 'ssh') {
-        const info: SshHostKeyInfo = this.loader.probeSshHostKey(
+        const info: SshHostKeyInfo = await this.loader.probeSshHostKeyAsync(
           host.host, host.port, this.sshPreflightProxy(host));
         ok = info.ok;
       }
@@ -5185,14 +5190,18 @@ struct HostListPage {
       // Keep all three non-RustDesk protocols on the same immediate card path.
       this.setHostPresenceOverride(host.id, ok ? 'online' : 'unknown', ok ? latencyMs : -1);
       this.refreshHostListView(true);
-      promptAction.showToast({
-        message: ok ? host.protocol.toUpperCase() + ' 可达 · ' + latencyMs.toString() + ' ms' :
-          host.protocol.toUpperCase() + ' 未检测到主机',
-        duration: 1800
-      });
+      if (showToast) {
+        promptAction.showToast({
+          message: ok ? host.protocol.toUpperCase() + ' 可达 · ' + latencyMs.toString() + ' ms' :
+            host.protocol.toUpperCase() + ' 未检测到主机',
+          duration: 1800
+        });
+      }
     } catch (_err) {
       this.setHostPresenceOverride(host.id, 'unknown');
-      promptAction.showToast({ message: host.protocol.toUpperCase() + ' 检测失败', duration: 1800 });
+      if (showToast) {
+        promptAction.showToast({ message: host.protocol.toUpperCase() + ' 检测失败', duration: 1800 });
+      }
     } finally {
       this.setHostPresenceProbeBusy(host.id, false);
     }
@@ -5313,6 +5322,51 @@ struct HostListPage {
       }
     } finally {
       this.hostPresenceRefreshRunning = false;
+    }
+  }
+
+  private async probeHostGroup(card: HostGroupCardModel): Promise<void> {
+    if (this.hostGroupProbeBusyType !== '' || card.hosts.length === 0) { return; }
+    const targets: RemoteHost[] = card.hosts.filter((host: RemoteHost): boolean =>
+      !(host.protocol === 'rustdesk' && host.rustdeskDirectEnabled));
+    const skipped: number = card.hosts.length - targets.length;
+    if (targets.length === 0) {
+      promptAction.showToast({ message: card.title + ' 直连主机无需在线探测', duration: 1800 });
+      return;
+    }
+
+    this.hostGroupProbeBusyType = card.type;
+    let online: number = 0;
+    let offline: number = 0;
+    let unknown: number = 0;
+    try {
+      for (let i = 0; i < targets.length; i++) {
+        if (!this.pageActive) { break; }
+        const host: RemoteHost = targets[i];
+        await this.probeHostConnectivity(host, false);
+        const state: HostPresenceState = this.hostGroupPresenceForHost(host);
+        if (state === 'online' || state === 'recently_online') {
+          online++;
+        } else if (state === 'offline') {
+          offline++;
+        } else {
+          unknown++;
+        }
+      }
+      if (this.pageActive) {
+        const parts: string[] = [];
+        if (online > 0) { parts.push(online.toString() + ' 在线'); }
+        if (offline > 0) { parts.push(offline.toString() + ' 离线'); }
+        if (unknown > 0) { parts.push(unknown.toString() + ' 未检测到'); }
+        if (skipped > 0) { parts.push(skipped.toString() + ' 直连无需探测'); }
+        promptAction.showToast({
+          message: card.title + ' 检测完成' + (parts.length > 0 ? ' · ' + parts.join(' · ') : ''),
+          duration: 2200
+        });
+      }
+    } finally {
+      this.hostGroupProbeBusyType = '';
+      this.hostViewRevision += 1;
     }
   }
 
@@ -7201,6 +7255,15 @@ struct HostListPage {
         }
       }.width('100%').height('100%')
 
+      // Start ArkWeb/xterm while the host list is visible so opening an SSH
+      // host does not pay the first WebView/vendor-script cold-start cost.
+      if (this.sshCount > 0) {
+        SshXtermPrewarmSurface({ prewarmEnabled: true })
+          .width(1).height(1)
+          .position({ x: 0, y: 0 })
+          .hitTestBehavior(HitTestMode.None);
+      }
+
       // FAB — 智感握姿悬浮加号按钮
       // 官方推荐: 对齐驱动 (justifyContent) 而非 translate, .animation() 保证弹簧动画可靠触发
       Row() {
@@ -7268,7 +7331,7 @@ struct HostListPage {
       .position({ x: 0, y: '100%' })
       .markAnchor({ x: 0, y: '100%' })
       .translate({ y: (!this.isDesktopDevice && this.curTab === 3 ? 120 : (this.breakpoint === 'sm' ? -120 : -100)) })
-      .opacity((!this.isDesktopDevice && this.curTab === 3) ? 0 : 1)
+      .opacity(!this.pageActive || (!this.isDesktopDevice && this.curTab === 3) ? 0 : 1)
       .animation({ curve: curves.interpolatingSpring(0, 1, 200, 17) })
     }.width('100%').height('100%').backgroundColor(this.pal().bg)
     .bindSheet($$this.showSettingsPanel, this.settingsContent(), {
@@ -7608,8 +7671,8 @@ struct HostListPage {
     }
     const override: HostPresenceOverride | undefined = this.hostPresenceOverrides.get(host.id);
     const latencyMs: number = override !== undefined ? override.latencyMs : host.lastLatency;
-    if (state === 'online' && latencyMs > 0) {
-      return label + ' · ' + latencyMs.toString() + ' ms';
+    if (state === 'online') {
+      return latencyMs > 0 ? label + ' · ' + latencyMs.toString() + ' ms' : label;
     }
     return label + ' · ' + this.hostGroupLastSeenText(host);
   }
@@ -7890,17 +7953,23 @@ struct HostListPage {
             .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 4 })
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
         Button() {
-          SymbolGlyph($r('sys.symbol.bolt_fill')).fontSize(15).fontColor([this.accentColor])
+          if (this.hostGroupProbeBusyType === card.type) {
+            LoadingProgress().width(15).height(15).color(this.accentColor)
+          } else {
+            SymbolGlyph($r('sys.symbol.bolt_fill')).fontSize(15).fontColor([this.accentColor])
+          }
         }
         .width(28).height(28).borderRadius(14).padding(0).backgroundColor(this.pal().surface)
-        .accessibilityText('刷新主机状态').onClick((): void => { void this.load(true); })
+        .accessibilityText('检测全部' + card.title + '主机')
+        .enabled(this.hostGroupProbeBusyType === '' && card.hosts.length > 0)
+        .onClick((): void => { void this.probeHostGroup(card); })
       }.width('100%')
       if (card.hosts.length === 0) {
         Column() {
           SymbolGlyph(protocolIcon(card.type)).fontSize(32).fontColor([this.pal().text3])
           Text('暂无 ' + hostGroupTitle(card.type) + ' 主机').fontSize(13).fontColor(this.pal().text2)
             .fontFamily(this.font()).margin({ top: 10 })
-          Text('点击底部 + 添加主机').fontSize(11).fontColor(this.pal().text3)
+          Text('点击底部按钮添加主机').fontSize(11).fontColor(this.pal().text3)
             .fontFamily(this.font()).margin({ top: 4 })
         }.width('100%').height(this.breakpoint === 'sm' ? 92 : 100)
           .justifyContent(FlexAlign.Center).alignItems(HorizontalAlign.Center)
@@ -14291,7 +14360,7 @@ struct HostListPage {
     }
     this.sshHostKeyBusyId = host.id;
     try {
-      const info: SshHostKeyInfo = this.loader.probeSshHostKey(
+      const info: SshHostKeyInfo = await this.loader.probeSshHostKeyAsync(
         host.host, host.port, this.sshPreflightProxy(host));
       if (!info.ok) {
         promptAction.showToast({
@@ -14302,7 +14371,7 @@ struct HostListPage {
       }
       let jumpInfo: SshHostKeyInfo | null = null;
       if (this.sshPreflightUsesJump(host)) {
-        jumpInfo = this.loader.probeSshHostKey(host.proxyHost, host.proxyPort);
+        jumpInfo = await this.loader.probeSshHostKeyAsync(host.proxyHost, host.proxyPort);
         if (!jumpInfo.ok) {
           promptAction.showToast({
             message: '跳板机指纹获取失败: ' + (jumpInfo.errorMessage || '无法读取 SSH 主机指纹'),

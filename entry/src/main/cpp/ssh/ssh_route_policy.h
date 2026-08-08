@@ -8,6 +8,7 @@
 #ifndef SSH_ROUTE_POLICY_H
 #define SSH_ROUTE_POLICY_H
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -45,6 +46,14 @@ struct SshRoute {
     std::vector<SshJumpHop> hops;
     std::string controlId;
     uint32_t connectTimeoutMs = 10000;
+};
+
+/** Per-hop secret material. This object only lives in a session handoff. */
+struct SshJumpHopHandoff {
+    std::string password;
+    std::string privateKeyPem;
+    std::string privateKeyPassphrase;
+    std::vector<std::string> keyboardInteractiveResponses;
 };
 
 inline bool sshRouteTypeIsKnown(const std::string& type) {
@@ -92,11 +101,16 @@ inline SshRouteKind sshRouteKindFromType(const std::string& type) {
 }
 
 inline bool sshRouteHopsValid(const SshRoute& route) {
+    if (route.schemaVersion == 0 || route.schemaVersion > 1) return false;
     if (route.hops.size() > kSshMaxJumpHops) return false;
     if (route.kind != SshRouteKind::SshJump && !route.hops.empty()) return false;
+    if (route.kind == SshRouteKind::SshJump && route.hops.empty()) return false;
     for (const SshJumpHop& hop : route.hops) {
         if (hop.host.empty() || hop.port <= 0 || hop.port > 65535 ||
-            hop.username.empty() || hop.connectTimeoutMs == 0) {
+            hop.username.empty() || hop.connectTimeoutMs == 0 ||
+            (hop.authMethod != "password" && hop.authMethod != "publickey" &&
+             hop.authMethod != "kbd-interactive" &&
+             hop.authMethod != "keyboard-interactive")) {
             return false;
         }
     }

@@ -60,7 +60,10 @@ struct ControlInboxState {
     next_sequence: u64,
     reliable: VecDeque<SequencedControl>,
     display_switch: Option<SequencedControl>,
-    mouse_move: Option<ControlMsg>,
+    // Mouse movement is still latest-value-wins, but it retains the sequence
+    // at which that latest coordinate was observed. A click must not overtake
+    // the movement that positions the remote macOS cursor over its target.
+    mouse_move: Option<SequencedControl>,
     refresh_pending: bool,
     video_pressure: Option<u32>,
     touch_update: Option<PendingTouchUpdate>,
@@ -123,6 +126,7 @@ impl Default for ControlInbox {
 
 enum OrderedPending {
     Reliable,
+    MouseMove,
     TouchUpdate,
     MouseWheel2D,
     DisplaySwitch,
@@ -152,7 +156,11 @@ impl ControlInbox {
                 true
             }
             ControlMsg::MouseMove { .. } => {
-                if state.mouse_move.replace(message).is_some() {
+                if state
+                    .mouse_move
+                    .replace(SequencedControl { sequence, message })
+                    .is_some()
+                {
                     state.coalesced_mouse_moves += 1;
                 }
                 true
@@ -258,9 +266,10 @@ impl ControlInbox {
         };
         let mut batch = Vec::with_capacity(limit);
 
-        // Reliable controls and the unified touch slot share one ordering
-        // domain. Mouse movement, refresh, and pressure retain their existing
-        // lower-priority coalescing behavior after that ordered domain.
+        // Reliable controls, the unified touch slots, and the coalesced mouse
+        // coordinate share one ordering domain. The mouse coordinate remains
+        // latest-value-wins, but its sequence prevents a click from overtaking
+        // the movement that positions the remote pointer over the target.
         while batch.len() < limit {
             let Some(next) = Self::next_ordered_pending(&state) else {
                 break;
@@ -271,6 +280,12 @@ impl ControlInbox {
                         break;
                     };
                     Self::on_reliable_sent(&mut state, &queued.message);
+                    batch.push(queued.message);
+                }
+                OrderedPending::MouseMove => {
+                    let Some(queued) = state.mouse_move.take() else {
+                        break;
+                    };
                     batch.push(queued.message);
                 }
                 OrderedPending::TouchUpdate => {
@@ -288,11 +303,6 @@ impl ControlInbox {
             }
         }
 
-        if batch.len() < limit {
-            if let Some(message) = state.mouse_move.take() {
-                batch.push(message);
-            }
-        }
         if batch.len() < limit && state.refresh_pending {
             state.refresh_pending = false;
             batch.push(ControlMsg::RefreshVideo);
@@ -468,6 +478,14 @@ impl ControlInbox {
         if let Some(reliable) = state.reliable.front() {
             selected = Some((reliable.sequence, OrderedPending::Reliable));
         }
+        if let Some(mouse_move) = state.mouse_move.as_ref() {
+            if selected
+                .as_ref()
+                .map_or(true, |(sequence, _)| mouse_move.sequence < *sequence)
+            {
+                selected = Some((mouse_move.sequence, OrderedPending::MouseMove));
+            }
+        }
         if let Some(touch) = state.touch_update.as_ref() {
             if selected
                 .as_ref()
@@ -565,6 +583,84 @@ fn mouse_moves_coalesce_to_the_latest_coordinate() {
 }
 
 #[test]
+fn mouse_move_precedes_following_button_event() {
+    let inbox = ControlInbox::default();
+    inbox.enqueue(ControlMsg::MouseMove { x: 120, y: 340 });
+    inbox.enqueue(ControlMsg::MouseEvent {
+        x: 120,
+        y: 340,
+        button: 0,
+        pressed: true,
+    });
+
+    assert!(matches!(
+        inbox.take_batch(CONTROL_BATCH_LIMIT).as_slice(),
+        [
+            ControlMsg::MouseMove { x: 120, y: 340 },
+            ControlMsg::MouseEvent {
+                x: 120,
+                y: 340,
+                button: 0,
+                pressed: true,
+            }
+        ]
+    ));
+}
+
+#[test]
+fn button_event_precedes_following_mouse_move() {
+    let inbox = ControlInbox::default();
+    inbox.enqueue(ControlMsg::MouseEvent {
+        x: 120,
+        y: 340,
+        button: 0,
+        pressed: true,
+    });
+    inbox.enqueue(ControlMsg::MouseMove { x: 900, y: 700 });
+
+    assert!(matches!(
+        inbox.take_batch(CONTROL_BATCH_LIMIT).as_slice(),
+        [
+            ControlMsg::MouseEvent {
+                x: 120,
+                y: 340,
+                button: 0,
+                pressed: true,
+            },
+            ControlMsg::MouseMove { x: 900, y: 700 },
+        ]
+    ));
+}
+
+#[test]
+fn physical_click_keeps_latest_drag_move_between_down_and_up() {
+    let inbox = ControlInbox::default();
+    inbox.enqueue(ControlMsg::MouseEvent {
+        x: 120,
+        y: 340,
+        button: 0,
+        pressed: true,
+    });
+    inbox.enqueue(ControlMsg::MouseMove { x: 121, y: 341 });
+    inbox.enqueue(ControlMsg::MouseMove { x: 124, y: 345 });
+    inbox.enqueue(ControlMsg::MouseEvent {
+        x: 124,
+        y: 345,
+        button: 0,
+        pressed: false,
+    });
+
+    assert!(matches!(
+        inbox.take_batch(CONTROL_BATCH_LIMIT).as_slice(),
+        [
+            ControlMsg::MouseEvent { pressed: true, .. },
+            ControlMsg::MouseMove { x: 124, y: 345 },
+            ControlMsg::MouseEvent { pressed: false, .. },
+        ]
+    ));
+}
+
+#[test]
 fn physical_touchpad_wheels_coalesce_both_axes_without_losing_sign() {
     let inbox = ControlInbox::default();
     assert!(inbox.enqueue(ControlMsg::MouseWheel2D { x: 2, y: -3 }));
@@ -636,7 +732,7 @@ fn display_switch_drops_old_pointer_updates_and_keeps_release_order() {
 }
 
 #[test]
-fn reliable_ime_messages_remain_fifo_when_mouse_is_coalesced() {
+fn reliable_ime_messages_and_mouse_keep_enqueue_order_when_coalesced() {
     let inbox = ControlInbox::default();
     inbox.enqueue(ControlMsg::Text {
         text: "中文😀".into(),
@@ -650,9 +746,9 @@ fn reliable_ime_messages_remain_fifo_when_mouse_is_coalesced() {
 
     let batch = inbox.take_batch(CONTROL_BATCH_LIMIT);
     assert!(matches!(batch[0], ControlMsg::Text { .. }));
-    assert!(matches!(batch[1], ControlMsg::KeyEvent { .. }));
-    assert!(matches!(batch[2], ControlMsg::Text { .. }));
-    assert!(matches!(batch[3], ControlMsg::MouseMove { .. }));
+    assert!(matches!(batch[1], ControlMsg::MouseMove { .. }));
+    assert!(matches!(batch[2], ControlMsg::KeyEvent { .. }));
+    assert!(matches!(batch[3], ControlMsg::Text { .. }));
 }
 
 #[test]

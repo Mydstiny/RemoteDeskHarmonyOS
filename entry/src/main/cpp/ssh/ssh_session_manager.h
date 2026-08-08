@@ -4,13 +4,17 @@
 #include "ssh_session_types.h"
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <map>
 #include <mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
 class SshAdapter;
+
+using SshNetworkAvailabilityCallback = std::function<void(bool, uint64_t)>;
 
 /** The identity every SSH native operation must carry. */
 struct SshSessionHandle {
@@ -49,6 +53,7 @@ struct SshSessionContext final {
     bool backgroundLimited = false;
     std::string lastEventType;
     std::weak_ptr<SshAdapter> adapter;
+    SshNetworkAvailabilityCallback networkCallback;
 };
 
 class SshSessionManager final {
@@ -61,7 +66,8 @@ public:
 
     SshSessionManagerResult registerSession(const SshSessionHandle& handle,
         const std::string& host, int port,
-        const std::shared_ptr<SshAdapter>& adapter = nullptr);
+        const std::shared_ptr<SshAdapter>& adapter = nullptr,
+        SshNetworkAvailabilityCallback networkCallback = nullptr);
     SshSessionManagerResult closeSession(const SshSessionHandle& handle,
         bool remove = true);
     SshSessionManagerResult transition(const SshSessionHandle& handle,
@@ -69,6 +75,9 @@ public:
         const std::string& payloadJson = "", uint8_t priority = 0);
     SshSessionManagerResult setBackgroundLimited(const SshSessionHandle& handle,
         bool limited, const std::string& reason = "");
+
+    /** Fan out one platform network generation after releasing the manager lock. */
+    size_t notifyNetworkAvailability(bool available, uint64_t networkGeneration);
 
     bool accepts(const SshSessionHandle& handle) const;
     bool snapshot(const SshSessionHandle& handle, SshSessionSnapshot& out,
@@ -107,8 +116,10 @@ public:
 
     SshSessionManagerResult registerSession(const SshSessionHandle& handle,
         const std::string& host, int port,
-        const std::shared_ptr<SshAdapter>& adapter = nullptr) {
-        return manager_.registerSession(handle, host, port, adapter);
+        const std::shared_ptr<SshAdapter>& adapter = nullptr,
+        SshNetworkAvailabilityCallback networkCallback = nullptr) {
+        return manager_.registerSession(handle, host, port, adapter,
+                                        std::move(networkCallback));
     }
     SshSessionManagerResult closeSession(const SshSessionHandle& handle) {
         return manager_.closeSession(handle);
@@ -121,6 +132,9 @@ public:
     SshSessionManagerResult setBackgroundLimited(const SshSessionHandle& handle,
         bool limited, const std::string& reason = "") {
         return manager_.setBackgroundLimited(handle, limited, reason);
+    }
+    size_t notifyNetworkAvailability(bool available, uint64_t networkGeneration) {
+        return manager_.notifyNetworkAvailability(available, networkGeneration);
     }
     bool accepts(const SshSessionHandle& handle) const {
         return manager_.accepts(handle);

@@ -18,6 +18,12 @@ export interface SshForwardingProfile {
   enabled: boolean;
   /** Public bind is an explicit user choice, never an implicit default. */
   allowPublicBind: boolean;
+  minBindPort?: number;
+  maxBindPort?: number;
+  /** 0 means no byte budget; otherwise this is the per-runtime budget. */
+  maxBytes?: number;
+  /** 0 means no expiry; otherwise this is an absolute epoch-millisecond deadline. */
+  expiresAtMs?: number;
 }
 
 export interface SshForwardingValidationResult {
@@ -38,6 +44,9 @@ export const SSH_FORWARDING_MAX_PROFILES: number = 32;
 export const SSH_FORWARDING_MAX_CONNECTIONS: number = 64;
 export const SSH_FORWARDING_DEFAULT_BIND_HOST: string = '127.0.0.1';
 export const SSH_FORWARDING_DEFAULT_MAX_CONNECTIONS: number = 16;
+export const SSH_FORWARDING_DEFAULT_MIN_BIND_PORT: number = 1;
+export const SSH_FORWARDING_DEFAULT_MAX_BIND_PORT: number = 65535;
+const SSH_FORWARDING_MAX_SAFE_INTEGER: number = 9007199254740991;
 
 function isForwardingMode(value: string): value is SshForwardingMode {
   return value === 'local' || value === 'remote' || value === 'dynamic';
@@ -45,6 +54,11 @@ function isForwardingMode(value: string): value is SshForwardingMode {
 
 function isValidPort(value: number): boolean {
   return Number.isFinite(value) && Number.isInteger(value) && value >= 1 && value <= 65535;
+}
+
+function isValidBoundedUint(value: number): boolean {
+  return Number.isFinite(value) && Number.isInteger(value) && value >= 0 &&
+    value <= SSH_FORWARDING_MAX_SAFE_INTEGER;
 }
 
 function isLoopbackHost(value: string): boolean {
@@ -59,6 +73,12 @@ function boundedHost(value: string, fallback: string = ''): string {
 
 function normalizedProfile(profile: SshForwardingProfile): SshForwardingProfile {
   const mode: SshForwardingMode = isForwardingMode(profile.mode) ? profile.mode : 'local';
+  const minBindPort: number = profile.minBindPort === undefined
+    ? SSH_FORWARDING_DEFAULT_MIN_BIND_PORT : profile.minBindPort;
+  const maxBindPort: number = profile.maxBindPort === undefined
+    ? SSH_FORWARDING_DEFAULT_MAX_BIND_PORT : profile.maxBindPort;
+  const maxBytes: number = profile.maxBytes === undefined ? 0 : profile.maxBytes;
+  const expiresAtMs: number = profile.expiresAtMs === undefined ? 0 : profile.expiresAtMs;
   return {
     id: profile.id.trim().substring(0, 96),
     mode,
@@ -68,7 +88,11 @@ function normalizedProfile(profile: SshForwardingProfile): SshForwardingProfile 
     targetPort: profile.targetPort,
     maxConnections: profile.maxConnections,
     enabled: profile.enabled === true,
-    allowPublicBind: profile.allowPublicBind === true
+    allowPublicBind: profile.allowPublicBind === true,
+    minBindPort,
+    maxBindPort,
+    maxBytes,
+    expiresAtMs
   };
 }
 
@@ -82,12 +106,22 @@ export function defaultSshForwardingProfile(mode: SshForwardingMode): SshForward
     targetPort: 0,
     maxConnections: SSH_FORWARDING_DEFAULT_MAX_CONNECTIONS,
     enabled: true,
-    allowPublicBind: false
+    allowPublicBind: false,
+    minBindPort: SSH_FORWARDING_DEFAULT_MIN_BIND_PORT,
+    maxBindPort: SSH_FORWARDING_DEFAULT_MAX_BIND_PORT,
+    maxBytes: 0,
+    expiresAtMs: 0
   };
 }
 
 export function validateSshForwardingProfile(profile: SshForwardingProfile): SshForwardingValidationResult {
   const normalized: SshForwardingProfile = normalizedProfile(profile);
+  const minBindPort: number = normalized.minBindPort === undefined
+    ? SSH_FORWARDING_DEFAULT_MIN_BIND_PORT : normalized.minBindPort;
+  const maxBindPort: number = normalized.maxBindPort === undefined
+    ? SSH_FORWARDING_DEFAULT_MAX_BIND_PORT : normalized.maxBindPort;
+  const maxBytes: number = normalized.maxBytes === undefined ? 0 : normalized.maxBytes;
+  const expiresAtMs: number = normalized.expiresAtMs === undefined ? 0 : normalized.expiresAtMs;
   if (normalized.id.length === 0) {
     return { valid: false, code: 'E-SSH-FORWARD-ID', message: '转发规则缺少稳定 ID', profile: normalized };
   }
@@ -105,8 +139,35 @@ export function validateSshForwardingProfile(profile: SshForwardingProfile): Ssh
       profile: normalized
     };
   }
+  if (!isValidPort(minBindPort) || !isValidPort(maxBindPort) || minBindPort > maxBindPort) {
+    return {
+      valid: false,
+      code: 'E-SSH-FORWARD-PORT-RANGE',
+      message: '监听端口范围必须为 1-65535 且起始端口不大于结束端口',
+      profile: normalized
+    };
+  }
+  if (!isValidBoundedUint(maxBytes)) {
+    return {
+      valid: false,
+      code: 'E-SSH-FORWARD-BYTE-LIMIT',
+      message: '流量限制必须为非负整数',
+      profile: normalized
+    };
+  }
+  if (!isValidBoundedUint(expiresAtMs)) {
+    return {
+      valid: false,
+      code: 'E-SSH-FORWARD-EXPIRY',
+      message: '生命周期截止时间必须为非负整数',
+      profile: normalized
+    };
+  }
   if (!isValidPort(normalized.bindPort)) {
     return { valid: false, code: 'E-SSH-FORWARD-BIND-PORT', message: '监听端口必须为 1-65535', profile: normalized };
+  }
+  if (normalized.bindPort < minBindPort || normalized.bindPort > maxBindPort) {
+    return { valid: false, code: 'E-SSH-FORWARD-BIND-PORT', message: '监听端口不在允许范围内', profile: normalized };
   }
   if (!Number.isFinite(normalized.maxConnections) ||
     !Number.isInteger(normalized.maxConnections) || normalized.maxConnections < 1 ||

@@ -732,12 +732,16 @@ size_t HardwareDecoder::clearInputQueueLocked() {
     return dropped;
 }
 
-size_t HardwareDecoder::dropOldestInputFramesLocked(size_t count) {
+size_t HardwareDecoder::dropOldestNonKeyFramesLocked(size_t count) {
     size_t dropped = 0;
-    while (dropped < count && !inputQueue_.empty()) {
-        delete[] inputQueue_.front().data;
-        inputQueue_.pop_front();
-        ++dropped;
+    for (auto it = inputQueue_.begin(); it != inputQueue_.end() && dropped < count;) {
+        if (!it->isKeyFrame) {
+            delete[] it->data;
+            it = inputQueue_.erase(it);
+            ++dropped;
+        } else {
+            ++it;
+        }
     }
     return dropped;
 }
@@ -761,6 +765,7 @@ int HardwareDecoder::Decode(const uint8_t* data, size_t size, uint64_t timestamp
     uint64_t waitDroppedTotal = waitKeyframeDropCount_.load();
     uint64_t recoveryTotal = keyframeRecoveryCount_.load();
     bool droppedIncomingForKeyframe = false;
+    bool droppedIncomingForCapacity = false;
     bool recoveredWithKeyframe = false;
     bool softDroppedOldFrames = false;
     Render::VideoFrameAdmission admission = Render::VideoFrameAdmission::Accept;
@@ -774,22 +779,41 @@ int HardwareDecoder::Decode(const uint8_t* data, size_t size, uint64_t timestamp
             waitDroppedTotal = SaturatingAdd(waitKeyframeDropCount_, 1);
         } else {
             if (inputQueue_.size() >= kMaxQueuedFrames) {
-                const size_t removeCount = inputQueue_.size() - kMaxQueuedFrames + 1;
-                droppedQueued = dropOldestInputFramesLocked(removeCount);
+                if (isKeyFrame) {
+                    // A new keyframe is a complete decoder restart point. Do
+                    // not leave stale deltas ahead of it, and never evict the
+                    // keyframe itself when recovering from queue pressure.
+                    droppedQueued = clearInputQueueLocked();
+                } else {
+                    const size_t removeCount = inputQueue_.size() - kMaxQueuedFrames + 1;
+                    droppedQueued = dropOldestNonKeyFramesLocked(removeCount);
+                    if (inputQueue_.size() >= kMaxQueuedFrames) {
+                        // All retained frames are keyframes. Keep the restart
+                        // points and discard this dependent frame instead of
+                        // allowing the queue to grow or corrupt decode state.
+                        droppedIncomingForCapacity = true;
+                    }
+                }
                 if (droppedQueued > 0) {
                     softDroppedOldFrames = true;
                     std::lock_guard<std::mutex> telemetryLock(telemetryMutex_);
                     droppedTotal = SaturatingAdd(inputDropCount_, droppedQueued);
                 }
             }
+            if (droppedIncomingForCapacity) {
+                std::lock_guard<std::mutex> telemetryLock(telemetryMutex_);
+                droppedTotal = SaturatingAdd(inputDropCount_, 1);
+            }
             if (admission == Render::VideoFrameAdmission::AcceptRecoveryKeyframe && wasWaitingForKeyframe) {
                 recoveredWithKeyframe = true;
                 std::lock_guard<std::mutex> telemetryLock(telemetryMutex_);
                 recoveryTotal = SaturatingAdd(keyframeRecoveryCount_, 1);
             }
-            inputQueue_.push_back({copy, size, static_cast<int64_t>(timestamp), isKeyFrame});
-            copy = nullptr;
-            queued = inputQueue_.size();
+            if (!droppedIncomingForCapacity) {
+                inputQueue_.push_back({copy, size, static_cast<int64_t>(timestamp), isKeyFrame});
+                copy = nullptr;
+                queued = inputQueue_.size();
+            }
         }
     }
 
@@ -811,6 +835,16 @@ int HardwareDecoder::Decode(const uint8_t* data, size_t size, uint64_t timestamp
             OH_LOG_WARN(LOG_APP,
                         "[Decoder] wait-keyframe drop non-key input total=%{public}llu size=%{public}zu pts=%{public}llu",
                         static_cast<unsigned long long>(waitDroppedTotal),
+                        size,
+                        static_cast<unsigned long long>(timestamp));
+        }
+        return 0;
+    }
+    if (droppedIncomingForCapacity) {
+        if (droppedTotal <= 16 || droppedTotal % 60 == 0) {
+            OH_LOG_WARN(LOG_APP,
+                        "[Decoder] queue kept keyframes; drop dependent input total=%{public}llu size=%{public}zu pts=%{public}llu",
+                        static_cast<unsigned long long>(droppedTotal),
                         size,
                         static_cast<unsigned long long>(timestamp));
         }
@@ -1088,6 +1122,9 @@ bool HardwareDecoder::waitForRenderRequest(bool& hasNewFrame,
 
 void HardwareDecoder::handleOutputBuffer(uint32_t /*index*/) {
     if (!nativeImage_) { return; }
+    if (surfaceRecoveryBlocked_.load(std::memory_order_acquire)) {
+        return;
+    }
 
     bool hasNewFrame = false;
     bool hasPendingSurfaceUpdate = false;
@@ -1152,6 +1189,30 @@ void HardwareDecoder::handleOutputBuffer(uint32_t /*index*/) {
                 failureCount = SaturatingAdd(updateSurfaceFailureCount_, 1);
             }
             if (!Render::ShouldRetryNativeImageUpdate(ret, retryCount)) {
+                if (Render::IsCoalescedNativeImageNotification(ret, retryCount)) {
+                    // SetDropBufferMode keeps the latest buffer but deliberately
+                    // preserves all listener callbacks. Once the short producer
+                    // handoff window has elapsed, consume this callback sequence
+                    // without treating the missing (already dropped) buffer as a
+                    // decoder failure. A newer callback remains pending.
+                    {
+                        std::lock_guard<std::mutex> lk(mutex_);
+                        frameConsumeCount_ = std::max(frameConsumeCount_, frameSequence);
+                        surfaceUpdatePending_ = frameAvailableCount_ > frameConsumeCount_;
+                        surfaceRetryAt_ = surfaceUpdatePending_ ?
+                            std::chrono::steady_clock::now() :
+                            std::chrono::steady_clock::time_point::min();
+                    }
+                    const uint64_t coalesced = coalescedSurfaceNotificationCount_.fetch_add(
+                        1, std::memory_order_acq_rel) + 1;
+                    if (coalesced <= 3 || coalesced % 300 == 0) {
+                        OH_LOG_INFO(LOG_APP,
+                                    "[Decoder] drop-mode coalesced stale NativeImage notification total=%{public}llu sequence=%{public}llu",
+                                    static_cast<unsigned long long>(coalesced),
+                                    static_cast<unsigned long long>(frameSequence));
+                    }
+                    return;
+                }
                 bool requestRecovery = false;
                 OH_LOG_WARN(LOG_APP,
                             "[Decoder] UpdateSurfaceImage failed: %{public}d retries=%{public}d total=%{public}llu",
@@ -1165,7 +1226,16 @@ void HardwareDecoder::handleOutputBuffer(uint32_t /*index*/) {
                         std::chrono::milliseconds(20);
                     ++consecutiveSurfaceUpdateFailures_;
                     requestRecovery = Render::ShouldRequestNativeImageRecovery(
-                        consecutiveSurfaceUpdateFailures_);
+                        consecutiveSurfaceUpdateFailures_) &&
+                        !surfaceRecoveryBlocked_.exchange(true,
+                                                           std::memory_order_acq_rel);
+                    if (requestRecovery) {
+                        // A new keyframe must drive decoder recreation. Do not
+                        // keep waking this thread at 50-60 Hz while the old
+                        // NativeImage has no producer buffer.
+                        surfaceUpdatePending_ = false;
+                        surfaceRetryAt_ = std::chrono::steady_clock::time_point::min();
+                    }
                 }
                 if (requestRecovery) {
                     OH_LOG_WARN(LOG_APP,
@@ -1234,12 +1304,24 @@ void HardwareDecoder::StartRenderThread() {
         return;
     }
     startInputThread();
+    ResetSurfaceRecoveryForBind();
     renderThreadStop_.store(false);
     {
         std::lock_guard<std::mutex> lock(renderThreadMutex_);
         renderThreadDone_ = false;
     }
     renderThread_ = std::thread(&HardwareDecoder::renderLoop, this);
+}
+
+void HardwareDecoder::ResetSurfaceRecoveryForBind() {
+    surfaceRecoveryBlocked_.store(false, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        surfaceUpdatePending_ = false;
+        surfaceRetryAt_ = std::chrono::steady_clock::time_point::min();
+        consecutiveSurfaceUpdateFailures_ = 0;
+    }
+    frameAvailableCv_.notify_all();
 }
 
 void HardwareDecoder::startInputThread() {
@@ -1327,6 +1409,14 @@ bool HardwareDecoder::stopRenderThread() {
 void HardwareDecoder::renderLoop() {
     OH_LOG_INFO(LOG_APP, "[Decoder] render thread started");
     while (!renderThreadStop_.load()) {
+        if (surfaceRecoveryBlocked_.load(std::memory_order_acquire)) {
+            std::unique_lock<std::mutex> lock(mutex_);
+            frameAvailableCv_.wait(lock, [this]() {
+                return renderThreadStop_.load(std::memory_order_acquire) ||
+                    !surfaceRecoveryBlocked_.load(std::memory_order_acquire);
+            });
+            continue;
+        }
         handleOutputBuffer(0);
     }
     if (Render::ShouldDetachNativeImageOnRenderThreadStop(nativeImageContextAttached_, nativeImage_ != nullptr)) {
@@ -1492,6 +1582,7 @@ void HardwareDecoder::ResetTelemetryCounters() {
     inputTruncatedCount_.store(0, std::memory_order_release);
     renderOutputFailureCount_.store(0, std::memory_order_release);
     updateSurfaceFailureCount_.store(0, std::memory_order_release);
+    coalescedSurfaceNotificationCount_.store(0, std::memory_order_release);
     inputPushFailureCount_.store(0, std::memory_order_release);
     outputFrameCount_.store(0, std::memory_order_release);
 }
@@ -1682,12 +1773,14 @@ struct DecoderContext {
     bool softStop = false;
     bool softRedrawRequested = false;
     std::atomic<int64_t> softRendererHandle {0};
-    bool softWaitingKeyframe = false;
+    Render::SoftwareDecodeQueueRecoveryPolicy softRecovery;
     std::atomic<uint64_t> softQueued {0};
     std::atomic<uint64_t> softDecoded {0};
     std::atomic<uint64_t> softDropped {0};
     std::atomic<uint64_t> softSkippedPresent {0};
     std::atomic<bool> recoveryRequested {false};
+    std::atomic<uint32_t> recoveryAttempts {0};
+    std::atomic<bool> recoveryTerminal {false};
     // 0 = no deferred destroy, 1 = waiting for a prior pipeline transition,
     // 2 = transition owned but a decoder/software worker is still draining.
     std::atomic<int> deferredDestroyPhase {0};
@@ -1789,7 +1882,7 @@ bool StopSoftwareWorker(DecoderContext* ctx, bool waitForCompletion = false) {
         ctx->softStop = true;
         ctx->softQueue.clear();
         ctx->softRedrawRequested = false;
-        ctx->softWaitingKeyframe = false;
+        ctx->softRecovery.reset();
         shouldJoin = ctx->softThread.joinable();
     }
     ctx->softCv.notify_all();
@@ -1821,7 +1914,7 @@ void ResetSoftwareTelemetry(DecoderContext* ctx) {
     }
     std::lock_guard<std::mutex> lk(ctx->softMutex);
     ctx->softQueue.clear();
-    ctx->softWaitingKeyframe = false;
+    ctx->softRecovery.reset();
     ctx->softQueued.store(0, std::memory_order_release);
     ctx->softDecoded.store(0, std::memory_order_release);
     ctx->softDropped.store(0, std::memory_order_release);
@@ -1906,14 +1999,19 @@ void StartSoftwareWorkerIfNeeded(DecoderContext* ctx) {
             item.frame.data = item.data.data();
             item.frame.size = item.data.size();
             const bool presentOutput = Render::shouldPresentSoftwareDecodedFrame(queueLeft);
+            uint64_t skippedPresent = ctx->softSkippedPresent.load(std::memory_order_acquire);
             if (!presentOutput) {
-                ctx->softSkippedPresent.fetch_add(1);
+                skippedPresent = ctx->softSkippedPresent.fetch_add(1, std::memory_order_acq_rel) + 1;
             }
             const int ret = ctx->softwareDecoder->Decode(item.frame.data, item.frame.size,
                                                          item.frame.timestamp, item.frame.isKeyFrame,
                                                          presentOutput);
             const uint64_t decoded = ctx->softDecoded.fetch_add(1) + 1;
-            if (decoded <= 5 || decoded % 120 == 0 || ret != 0 || queueLeft > 8 || !presentOutput) {
+            const bool skippedLogDue = !presentOutput &&
+                (skippedPresent <= 8 || skippedPresent % 120 == 0);
+            const bool backlogLogDue = queueLeft > 8 && decoded % 30 == 0;
+            if (decoded <= 5 || decoded % 120 == 0 || ret != 0 ||
+                backlogLogDue || skippedLogDue) {
                 OH_LOG_INFO(LOG_APP,
                             "[Decoder] software worker frame=%{public}llu ret=%{public}d codec=%{public}d size=%{public}zu queue=%{public}zu dropped=%{public}llu present=%{public}s skippedPresent=%{public}llu key=%{public}s",
                             static_cast<unsigned long long>(decoded),
@@ -1923,7 +2021,7 @@ void StartSoftwareWorkerIfNeeded(DecoderContext* ctx) {
                             queueLeft,
                             static_cast<unsigned long long>(ctx->softDropped.load()),
                             presentOutput ? "yes" : "no",
-                            static_cast<unsigned long long>(ctx->softSkippedPresent.load()),
+                            static_cast<unsigned long long>(skippedPresent),
                             item.frame.isKeyFrame ? "yes" : "no");
             }
         }
@@ -1953,30 +2051,40 @@ int QueueSoftwareFrame(DecoderContext* ctx, const VideoFrame& frame) {
         if (!Render::ShouldAcceptSoftwareDecoderFrame(ctx->videoPipelineAttached, ctx->softStop)) {
             return -1;
         }
-        if (ctx->softWaitingKeyframe && !frame.isKeyFrame) {
+        const bool wasWaitingForKeyframe = ctx->softRecovery.waitingForKeyframe();
+        const Render::SoftwareDecodeQueueAction action = ctx->softRecovery.classify(
+            ctx->softQueue.size() >= kMaxSoftwareDecodeQueue, frame.isKeyFrame);
+        if (action == Render::SoftwareDecodeQueueAction::DropWaitingKeyframe) {
             dropped = ctx->softDropped.fetch_add(1) + 1;
             if (dropped <= 8 || dropped % 60 == 0) {
                 OH_LOG_WARN(LOG_APP,
                             "[Decoder] software queue waiting keyframe drop total=%{public}llu size=%{public}zu",
                             static_cast<unsigned long long>(dropped), frame.size);
             }
-            return 0;
+            return DecoderNapi::kDecodeSoftwareFrameDropped;
         }
-        if (ctx->softQueue.size() >= kMaxSoftwareDecodeQueue) {
+        if (action == Render::SoftwareDecodeQueueAction::DropAndRequestKeyframe) {
             const size_t removed = ctx->softQueue.size();
             ctx->softQueue.clear();
-            ctx->softWaitingKeyframe = !frame.isKeyFrame;
-            dropped = ctx->softDropped.fetch_add(removed + (frame.isKeyFrame ? 0 : 1)) + removed + (frame.isKeyFrame ? 0 : 1);
+            dropped = ctx->softDropped.fetch_add(removed + 1) + removed + 1;
             OH_LOG_WARN(LOG_APP,
-                        "[Decoder] software queue overflow removed=%{public}zu totalDropped=%{public}llu incomingKey=%{public}s",
+                        "[Decoder] software queue overflow removed=%{public}zu totalDropped=%{public}llu incomingKey=no requestKeyframe=yes",
                         removed,
-                        static_cast<unsigned long long>(dropped),
-                        frame.isKeyFrame ? "yes" : "no");
-            if (!frame.isKeyFrame) {
-                return 0;
-            }
+                        static_cast<unsigned long long>(dropped));
+            return DecoderNapi::kDecodeSoftwareKeyframeRequired;
         }
-        ctx->softWaitingKeyframe = false;
+        if (action == Render::SoftwareDecodeQueueAction::QueueAfterReset) {
+            const size_t removed = ctx->softQueue.size();
+            ctx->softQueue.clear();
+            if (removed > 0) {
+                dropped = ctx->softDropped.fetch_add(removed) + removed;
+            }
+            OH_LOG_INFO(LOG_APP,
+                        "[Decoder] software queue accepted recovery keyframe removed=%{public}zu totalDropped=%{public}llu waited=%{public}s",
+                        removed,
+                        static_cast<unsigned long long>(ctx->softDropped.load()),
+                        wasWaitingForKeyframe ? "yes" : "no");
+        }
         ctx->softQueue.push_back(std::move(item));
         queueSize = ctx->softQueue.size();
     }
@@ -2080,10 +2188,20 @@ bool ConfigurePipeline(const std::shared_ptr<DecoderContext>& ctx,
     ctx->decoder->SetErrorCallback([weakContext](DecoderError error,
                                                    const std::string& message) {
         if (const auto context = weakContext.lock()) {
-            context->recoveryRequested.store(true, std::memory_order_release);
-            OH_LOG_WARN(LOG_APP,
-                        "[Decoder] hardware recovery armed error=%{public}d reason=%{public}s",
-                        static_cast<int>(error), message.c_str());
+            const bool terminal = context->recoveryTerminal.load(
+                std::memory_order_acquire);
+            const bool alreadyRequested = context->recoveryRequested.exchange(
+                true, std::memory_order_acq_rel);
+            if (Render::ShouldArmDecoderRecovery(alreadyRequested, terminal)) {
+                OH_LOG_WARN(LOG_APP,
+                            "[Decoder] hardware recovery armed error=%{public}d reason=%{public}s",
+                            static_cast<int>(error), message.c_str());
+            } else if (terminal) {
+                context->recoveryRequested.store(false, std::memory_order_release);
+                OH_LOG_ERROR(LOG_APP,
+                             "[Decoder] hardware recovery blocked after per-bind budget error=%{public}d reason=%{public}s",
+                             static_cast<int>(error), message.c_str());
+            }
         }
     });
     ctx->decoder->SetMakeCurrentCallback([rendererHandle, owner]() {
@@ -2117,6 +2235,7 @@ bool ConfigurePipeline(const std::shared_ptr<DecoderContext>& ctx,
     } else {
         RendererNapi::ReleaseCurrent(rendererHandle, owner);
     }
+    ctx->decoder->ResetSurfaceRecoveryForBind();
     ctx->decoder->StartRenderThread();
     return true;
 }
@@ -2268,9 +2387,29 @@ int DecodeNativeLocked(const std::shared_ptr<DecoderContext>& ctx, const VideoFr
     }
     if (Render::ShouldDecodeFrameTriggerRecovery(
         ctx->recoveryRequested.load(std::memory_order_acquire), frame.isKeyFrame)) {
+        const uint32_t attemptsBefore = ctx->recoveryAttempts.load(
+            std::memory_order_acquire);
+        const bool terminal = ctx->recoveryTerminal.load(std::memory_order_acquire);
+        if (!Render::CanStartDecoderRecovery(attemptsBefore, terminal)) {
+            ctx->recoveryRequested.store(false, std::memory_order_release);
+            ctx->recoveryTerminal.store(true, std::memory_order_release);
+            ctx->videoPipelineAttached.store(false, std::memory_order_release);
+            OH_LOG_ERROR(LOG_APP,
+                         "[Decoder] recovery terminal: per-bind budget exhausted attempts=%{public}u",
+                         attemptsBefore);
+            return -4;
+        }
+        const uint32_t attempt = ctx->recoveryAttempts.fetch_add(
+            1, std::memory_order_acq_rel) + 1;
         OH_LOG_INFO(LOG_APP,
-                    "[Decoder] recovery recreating decoder from keyframe codec=%{public}d size=%{public}dx%{public}d bytes=%{public}zu",
+                    "[Decoder] recovery recreating decoder attempt=%{public}u/%{public}u from keyframe codec=%{public}d size=%{public}dx%{public}d bytes=%{public}zu",
+                    attempt,
+                    Render::kMaxDecoderRecoveryAttemptsPerBinding,
                     static_cast<int>(frame.codec), frame.width, frame.height, frame.size);
+        // Consume this recovery request before the old codec is stopped. A
+        // callback from the newly created codec may arm the next request while
+        // the recreation is in progress.
+        ctx->recoveryRequested.store(false, std::memory_order_release);
         ctx->videoPipelineAttached.store(false, std::memory_order_release);
         ctx->pipelineTransitioning.store(true, std::memory_order_release);
         pipelineLock.unlock();
@@ -2279,10 +2418,22 @@ int DecodeNativeLocked(const std::shared_ptr<DecoderContext>& ctx, const VideoFr
         ctx->pipelineTransitioning.store(false, std::memory_order_release);
         ctx->pipelineTransitionCv.notify_all();
         if (!recreated) {
+            ctx->recoveryRequested.store(false, std::memory_order_release);
+            ctx->recoveryTerminal.store(true, std::memory_order_release);
+            ctx->videoPipelineAttached.store(false, std::memory_order_release);
+            OH_LOG_ERROR(LOG_APP,
+                         "[Decoder] recovery terminal: decoder recreation failed attempt=%{public}u",
+                         attempt);
             return -3;
         }
         ctx->videoPipelineAttached.store(true, std::memory_order_release);
-        ctx->recoveryRequested.store(false, std::memory_order_release);
+        if (Render::ShouldEnterTerminalDecoderRecovery(true, attempt)) {
+            ctx->recoveryTerminal.store(true, std::memory_order_release);
+            ctx->recoveryRequested.store(false, std::memory_order_release);
+            OH_LOG_WARN(LOG_APP,
+                        "[Decoder] recovery budget exhausted after successful attempt=%{public}u; waiting for new bind",
+                        attempt);
+        }
     }
 
     const CodecType currentCodec = CurrentCodec(ctx.get());
@@ -3240,6 +3391,8 @@ bool DecoderNapi::BindVideoPipeline(
         ctx->displayGeneration = g_activeDisplayGeneration.load(std::memory_order_acquire);
         ctx->display = g_activeDisplay.load(std::memory_order_acquire);
         ctx->recoveryRequested.store(false, std::memory_order_release);
+        ctx->recoveryAttempts.store(0, std::memory_order_release);
+        ctx->recoveryTerminal.store(false, std::memory_order_release);
         ctx->rendererHandle = rendererHandle;
     }
 
@@ -3499,9 +3652,20 @@ bool DecoderNapi::RequestDecoderRecovery(
                     static_cast<long long>(decoderLease->rendererHandle));
         return false;
     }
-    decoderLease->recoveryRequested.store(true);
+    if (decoderLease->recoveryTerminal.load(std::memory_order_acquire) ||
+        decoderLease->recoveryAttempts.load(std::memory_order_acquire) >=
+            Render::kMaxDecoderRecoveryAttemptsPerBinding) {
+        decoderLease->recoveryTerminal.store(true, std::memory_order_release);
+        OH_LOG_WARN(LOG_APP,
+                    "[Decoder] requestDecoderRecovery blocked: per-bind budget exhausted decoder=%{public}lld",
+                    static_cast<long long>(decoderHandle));
+        return false;
+    }
+    const bool alreadyRequested = decoderLease->recoveryRequested.exchange(
+        true, std::memory_order_acq_rel);
     OH_LOG_INFO(LOG_APP,
-                "[Decoder] requestDecoderRecovery armed decoder=%{public}lld renderer=%{public}lld",
+                "[Decoder] requestDecoderRecovery %{public}s decoder=%{public}lld renderer=%{public}lld",
+                alreadyRequested ? "coalesced" : "armed",
                 static_cast<long long>(decoderHandle),
                 static_cast<long long>(decoderLease->rendererHandle));
     return true;
@@ -3533,7 +3697,13 @@ bool DecoderNapi::RequestActiveDecoderRecovery(const DecoderSessionIdentity& own
             true, handle, decoderLease->rendererHandle)) {
         return false;
     }
-    decoderLease->recoveryRequested.store(true, std::memory_order_release);
+    if (decoderLease->recoveryTerminal.load(std::memory_order_acquire) ||
+        decoderLease->recoveryAttempts.load(std::memory_order_acquire) >=
+            Render::kMaxDecoderRecoveryAttemptsPerBinding) {
+        decoderLease->recoveryTerminal.store(true, std::memory_order_release);
+        return false;
+    }
+    decoderLease->recoveryRequested.exchange(true, std::memory_order_acq_rel);
     return true;
 }
 

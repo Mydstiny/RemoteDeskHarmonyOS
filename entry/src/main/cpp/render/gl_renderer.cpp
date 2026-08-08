@@ -363,6 +363,7 @@ GLRenderer::GLRenderer()
       uploadPbo_{0, 0}, uploadPboCapacity_{0, 0}, uploadPboIndex_(0),
       pboUploadEnabled_(false), pboUploadFailedLogged_(false),
       rawTextureWidth_(0), rawTextureHeight_(0),
+      rawPresentationWidth_(0), rawPresentationHeight_(0),
       vbo_(0), vao_(0),
       width_(0), height_(0), sourceWidth_(0), sourceHeight_(0),
       oesSourceWidth_(0), oesSourceHeight_(0),
@@ -470,6 +471,8 @@ int GLRenderer::Init(const std::string& xcomponentId, int width, int height) {
     // protocol geometry fallback.
     sourceWidth_ = 0;
     sourceHeight_ = 0;
+    rawPresentationWidth_ = 0;
+    rawPresentationHeight_ = 0;
     oesSourceWidth_ = 0;
     oesSourceHeight_ = 0;
     presentationPath_ = PresentationPath::UNKNOWN;
@@ -973,6 +976,12 @@ RdpPresentMetrics GLRenderer::RenderRawBGRAInternal(
         rawTextureHeight_ = height;
         SetupRawTexture(width, height);
     }
+    // The callback frame is the only authoritative geometry for the software
+    // presentation. Keep it separate from rawTextureWidth_/Height_, which may
+    // still describe an allocated texture during a reconfigure or retained
+    // redraw.
+    rawPresentationWidth_ = width;
+    rawPresentationHeight_ = height;
     const bool partialUpload = compactDirty || (!textureWouldChange && dirtyInBounds &&
         (dirtyX != 0 || dirtyY != 0 || dirtyWidth != width || dirtyHeight != height));
     const int uploadX = partialUpload ? dirtyX : 0;
@@ -1355,7 +1364,8 @@ void GLRenderer::CalculateActiveViewport(int& vpX, int& vpY, int& vpW, int& vpH)
         path = Render::PresentationPathKind::Oes;
     }
     const auto source = Render::SelectPresentationGeometry(
-        path, sourceWidth_, sourceHeight_, rawTextureWidth_, rawTextureHeight_,
+        path, sourceWidth_, sourceHeight_, rawPresentationWidth_,
+        rawPresentationHeight_, rawTextureWidth_, rawTextureHeight_,
         oesSourceWidth_, oesSourceHeight_);
     CalculateViewport(source.width, source.height, vpX, vpY, vpW, vpH);
 }
@@ -1458,6 +1468,8 @@ void GLRenderer::Destroy() {
         rawTextureWidth_ = 0;
         rawTextureHeight_ = 0;
     }
+    rawPresentationWidth_ = 0;
+    rawPresentationHeight_ = 0;
     if (hasCurrent) {
         DestroyUploadPbosLocked();
     } else {
@@ -1511,6 +1523,8 @@ void GLRenderer::Destroy() {
             eglDisplay_ = EGL_NO_DISPLAY;
         }
     }
+    rawPresentationWidth_ = 0;
+    rawPresentationHeight_ = 0;
     {
         std::lock_guard<std::mutex> surfaceLock(g_surfaceStateMutex);
         const bool ownsSurfaceWindow = g_surfaceIdWindowOwned && g_nativeWindow != 0 &&

@@ -20,6 +20,7 @@ import {
   SftpTransferSpec,
   isValidSftpTransferSpec,
   normalizeSshSftpTaskRecord,
+  recoverInterruptedSshSftpTaskRecord,
   canTransitionSshSftpTask,
   sshSftpResumeDisposition,
   sshSftpTaskCommandTarget,
@@ -55,6 +56,7 @@ export class SshSftpTaskStore {
   private listeners: SshSftpTaskListener[] = [];
   private batchSequence: number = 0;
   private taskSequence: number = 0;
+  private initialized: boolean = false;
 
   static getInstance(): SshSftpTaskStore {
     if (SshSftpTaskStore.instance === null) {
@@ -64,6 +66,13 @@ export class SshSftpTaskStore {
   }
 
   init(context: common.Context): void {
+    // This store is process-scoped. Re-entering the SSH page must not reload a
+    // possibly older preferences snapshot over an active background transfer.
+    if (this.initialized) {
+      this.context = context;
+      return;
+    }
+    this.initialized = true;
     if (this.flushTimer !== -1) {
       clearTimeout(this.flushTimer);
       this.flushTimer = -1;
@@ -73,6 +82,7 @@ export class SshSftpTaskStore {
     this.taskSequence = 0;
     this.dirty = false;
     this.mutationVersion++;
+    let recoveredInterruptedTask: boolean = false;
     try {
       const prefs = preferences.getPreferencesSync(context, { name: PREFS_NAME });
       const stored: Object = prefs.getSync(TASKS_KEY, '');
@@ -82,15 +92,21 @@ export class SshSftpTaskStore {
           for (let index = 0; index < parsed.length; index++) {
             const normalized: SshSftpTaskRecord | null =
               normalizeSshSftpTaskRecord(parsed[index] as Object);
-            if (normalized !== null) { this.records = upsertSshSftpTask(this.records, normalized); }
+            if (normalized !== null) {
+              const recovered: SshSftpTaskRecord =
+                recoverInterruptedSshSftpTaskRecord(normalized);
+              recoveredInterruptedTask = recovered !== normalized || recoveredInterruptedTask;
+              this.records = upsertSshSftpTask(this.records, recovered);
+            }
           }
         }
       }
     } catch (_err) {
       this.records = [];
     }
-    this.dirty = false;
+    this.dirty = recoveredInterruptedTask;
     this.publishRestoredRecords();
+    if (this.dirty) { this.scheduleFlush(); }
   }
 
   /** Subscribe to durable task changes without exposing the preferences layer. */

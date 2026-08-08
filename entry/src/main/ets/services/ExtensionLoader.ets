@@ -35,6 +35,7 @@ import {
   SshAuthPromptRequest,
   SshAuthPromptResponse,
   SshSessionSnapshot,
+  SshSessionEventsResult,
   SshForwardingConfig,
   SshForwardingSnapshotsResult,
   SftpListAsyncResult,
@@ -62,10 +63,23 @@ interface DetachedSshSession {
   detachedAt: number;
 }
 
+interface SshNativeConnectPromise extends Promise<number> {
+  sessionId: number;
+  generation: number;
+}
+
+export interface SshPendingConnectIdentity {
+  sessionId: number;
+  generation: number;
+  foreground: boolean;
+}
+
 export class ExtensionLoader {
   private static instance: ExtensionLoader;
   private currentSessionId: number = -1;
   private sshConnectGeneration: number = 0;
+  private pendingSshConnects: Map<number, SshPendingConnectIdentity> =
+    new Map<number, SshPendingConnectIdentity>();
   private rendererHandle: number = -1;
   private decoderHandle: number = -1;
   private audioPlayerHandle: number = -1;
@@ -91,30 +105,60 @@ export class ExtensionLoader {
     }
   }
 
-  async connectSshAsync(config: SessionConfig): Promise<number> {
-    const generation: number = ++this.sshConnectGeneration;
+  connectSshAsync(config: SessionConfig, foreground: boolean = true): Promise<number> {
     try {
-      const pendingPromise: Promise<number> = rdpnapi.connectSshAsync(config) as Promise<number>;
-      // The native Promise resolves only after DNS/KEX/authentication. Make
-      // the reserved session visible immediately so page teardown can cancel
-      // a connection that is still in flight.
-      const pendingId: number = rdpnapi.getPendingSshConnectId() as number;
-      if (generation === this.sshConnectGeneration && pendingId > 0) {
-        this.currentSessionId = pendingId;
+      const nativePromise: SshNativeConnectPromise =
+        rdpnapi.connectSshAsync(config, foreground) as SshNativeConnectPromise;
+      const identity: SshPendingConnectIdentity = {
+        sessionId: nativePromise.sessionId,
+        generation: nativePromise.generation,
+        foreground
+      };
+      if (identity.sessionId <= 0 || identity.generation <= 0) {
+        hilog.error(DOMAIN, TAG, '[ExtensionLoader] connectSshAsync: native identity missing');
+        return Promise.resolve(-1);
       }
-      const result: number = await pendingPromise;
-      if (generation !== this.sshConnectGeneration) {
-        return -1;
+      this.pendingSshConnects.set(identity.sessionId, identity);
+      // Only the foreground owner updates the legacy facade target. Detached
+      // SFTP sessions remain addressable through their explicit session id.
+      if (foreground) {
+        this.currentSessionId = identity.sessionId;
       }
-      this.currentSessionId = result;
-      return result;
+      const settled: SshNativeConnectPromise = nativePromise.then(
+        (result: number): number => {
+          this.pendingSshConnects.delete(identity.sessionId);
+          if (foreground && this.currentSessionId === identity.sessionId) {
+            this.currentSessionId = result > 0 ? result : -1;
+          }
+          return result;
+        },
+        (err: Object): number => {
+          this.pendingSshConnects.delete(identity.sessionId);
+          if (foreground && this.currentSessionId === identity.sessionId) {
+            this.currentSessionId = -1;
+          }
+          hilog.error(DOMAIN, TAG, '[ExtensionLoader] connectSshAsync: ' + JSON.stringify(err));
+          return -1;
+        }) as SshNativeConnectPromise;
+      settled.sessionId = identity.sessionId;
+      settled.generation = identity.generation;
+      return settled;
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] connectSshAsync: ' + JSON.stringify(err));
-      if (generation === this.sshConnectGeneration) {
-        this.currentSessionId = -1;
-      }
-      return -1;
+      return Promise.resolve(-1);
     }
+  }
+
+  getSshPendingConnects(): SshPendingConnectIdentity[] {
+    const result: SshPendingConnectIdentity[] = [];
+    this.pendingSshConnects.forEach((identity: SshPendingConnectIdentity): void => {
+      result.push({
+        sessionId: identity.sessionId,
+        generation: identity.generation,
+        foreground: identity.foreground
+      });
+    });
+    return result;
   }
 
   /** Detach only the SSH view consumer; the native session remains live. */
@@ -174,7 +218,7 @@ export class ExtensionLoader {
   /** Explicitly close one SSH session, including a detached session. */
   disconnectSshSession(sessionId: number): number {
     if (sessionId <= 0) { return 0; }
-    this.sshConnectGeneration++;
+    this.pendingSshConnects.delete(sessionId);
     this.detachedSshSessions = this.detachedSshSessions.filter(
       (candidate: DetachedSshSession): boolean => candidate.sessionId !== sessionId);
     let requestId: number = 0;
@@ -187,7 +231,7 @@ export class ExtensionLoader {
   }
 
   disconnect(): number {
-    this.sshConnectGeneration++;
+    if (this.currentSessionId > 0) { this.pendingSshConnects.delete(this.currentSessionId); }
     let requestId: number = 0;
     try {
       if (this.currentSessionId > 0 || this.rendererHandle > 0 ||
@@ -209,7 +253,7 @@ export class ExtensionLoader {
   }
 
   disconnectAll(): number {
-    this.sshConnectGeneration++;
+    this.pendingSshConnects.clear();
     let requestId: number = 0;
     try {
       requestId = rdpnapi.disconnectAll(
@@ -1014,9 +1058,10 @@ export class ExtensionLoader {
   }
 
   async writeRemoteFileChunkAsync(sessionId: number, remotePath: string, data: ArrayBuffer,
-    offset: number, truncate: boolean): Promise<SftpWriteAsyncResult> {
+    offset: number, truncate: boolean, expectedGeneration: number = 0): Promise<SftpWriteAsyncResult> {
     try {
-      return await (rdpnapi.writeRemoteFileChunkAsync(sessionId, remotePath, data, offset, truncate) as Promise<SftpWriteAsyncResult>);
+      return await (rdpnapi.writeRemoteFileChunkAsync(
+        sessionId, remotePath, data, offset, truncate, expectedGeneration) as Promise<SftpWriteAsyncResult>);
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] writeRemoteFileChunkAsync: ' + JSON.stringify(err));
       return { errorCode: -1, bytesWritten: -1 };
@@ -1032,9 +1077,11 @@ export class ExtensionLoader {
     }
   }
 
-  async listRemoteDirAsync(sessionId: number, remotePath: string): Promise<SftpListAsyncResult> {
+  async listRemoteDirAsync(sessionId: number, remotePath: string,
+    expectedGeneration: number = 0): Promise<SftpListAsyncResult> {
     try {
-      return await (rdpnapi.listRemoteDirAsync(sessionId, remotePath) as Promise<SftpListAsyncResult>);
+      return await (rdpnapi.listRemoteDirAsync(
+        sessionId, remotePath, expectedGeneration) as Promise<SftpListAsyncResult>);
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] listRemoteDirAsync: ' + JSON.stringify(err));
       return { errorCode: -1, entries: [] };
@@ -1060,9 +1107,10 @@ export class ExtensionLoader {
   }
 
   async readRemoteFileChunkAsync(sessionId: number, remotePath: string, offset: number,
-    maxLen: number): Promise<SftpReadAsyncResult> {
+    maxLen: number, expectedGeneration: number = 0): Promise<SftpReadAsyncResult> {
     try {
-      return await (rdpnapi.readRemoteFileChunkAsync(sessionId, remotePath, offset, maxLen) as Promise<SftpReadAsyncResult>);
+      return await (rdpnapi.readRemoteFileChunkAsync(
+        sessionId, remotePath, offset, maxLen, expectedGeneration) as Promise<SftpReadAsyncResult>);
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] readRemoteFileChunkAsync: ' + JSON.stringify(err));
       return { errorCode: -1, data: new ArrayBuffer(0) };
@@ -1078,9 +1126,11 @@ export class ExtensionLoader {
     }
   }
 
-  async removeRemoteFileAsync(sessionId: number, remotePath: string): Promise<SftpMutationAsyncResult> {
+  async removeRemoteFileAsync(sessionId: number, remotePath: string,
+    expectedGeneration: number = 0): Promise<SftpMutationAsyncResult> {
     try {
-      return await (rdpnapi.removeRemoteFileAsync(sessionId, remotePath) as Promise<SftpMutationAsyncResult>);
+      return await (rdpnapi.removeRemoteFileAsync(
+        sessionId, remotePath, expectedGeneration) as Promise<SftpMutationAsyncResult>);
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] removeRemoteFileAsync: ' + JSON.stringify(err));
       return { errorCode: -1 };
@@ -1096,9 +1146,11 @@ export class ExtensionLoader {
     }
   }
 
-  async removeRemoteDirAsync(sessionId: number, remotePath: string): Promise<SftpMutationAsyncResult> {
+  async removeRemoteDirAsync(sessionId: number, remotePath: string,
+    expectedGeneration: number = 0): Promise<SftpMutationAsyncResult> {
     try {
-      return await (rdpnapi.removeRemoteDirAsync(sessionId, remotePath) as Promise<SftpMutationAsyncResult>);
+      return await (rdpnapi.removeRemoteDirAsync(
+        sessionId, remotePath, expectedGeneration) as Promise<SftpMutationAsyncResult>);
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] removeRemoteDirAsync: ' + JSON.stringify(err));
       return { errorCode: -1 };
@@ -1114,9 +1166,11 @@ export class ExtensionLoader {
     }
   }
 
-  async makeRemoteDirAsync(sessionId: number, remotePath: string): Promise<SftpMutationAsyncResult> {
+  async makeRemoteDirAsync(sessionId: number, remotePath: string,
+    expectedGeneration: number = 0): Promise<SftpMutationAsyncResult> {
     try {
-      return await (rdpnapi.makeRemoteDirAsync(sessionId, remotePath) as Promise<SftpMutationAsyncResult>);
+      return await (rdpnapi.makeRemoteDirAsync(
+        sessionId, remotePath, expectedGeneration) as Promise<SftpMutationAsyncResult>);
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] makeRemoteDirAsync: ' + JSON.stringify(err));
       return { errorCode: -1 };
@@ -1133,10 +1187,11 @@ export class ExtensionLoader {
   }
 
   async renameRemotePathAsync(sessionId: number, oldPath: string,
-    newPath: string, atomic: boolean = false): Promise<SftpMutationAsyncResult> {
+    newPath: string, atomic: boolean = false,
+    expectedGeneration: number = 0): Promise<SftpMutationAsyncResult> {
     try {
       return await (rdpnapi.renameRemotePathAsync(
-        sessionId, oldPath, newPath, atomic) as Promise<SftpMutationAsyncResult>);
+        sessionId, oldPath, newPath, atomic, expectedGeneration) as Promise<SftpMutationAsyncResult>);
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] renameRemotePathAsync: ' + JSON.stringify(err));
       return { errorCode: -1 };
@@ -1354,6 +1409,28 @@ export class ExtensionLoader {
         port: 22,
         backgroundLimited: false,
         lastEventType: ''
+      };
+    }
+  }
+
+  getSshSessionEvents(sessionId: number, channelId: string, sessionGeneration: number,
+    afterSequence: number = 0): SshSessionEventsResult {
+    const normalizedChannelId: string = channelId.trim();
+    const normalizedAfterSequence: number = Number.isFinite(afterSequence) && afterSequence >= 0
+      ? Math.floor(afterSequence) : 0;
+    try {
+      return rdpnapi.getSshSessionEvents(
+        sessionId, normalizedChannelId, sessionGeneration, normalizedAfterSequence) as SshSessionEventsResult;
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, '[ExtensionLoader] getSshSessionEvents: ' + JSON.stringify(err));
+      return {
+        schemaVersion: 1,
+        errorCode: -81,
+        sessionId,
+        channelId: normalizedChannelId,
+        generation: 0,
+        afterSequence: normalizedAfterSequence,
+        events: []
       };
     }
   }
@@ -1642,6 +1719,20 @@ export class ExtensionLoader {
     }
   }
 
+  /** 测试 SSH 密钥认证；native 网络工作在线程池执行，不阻塞 ArkTS/UI 线程。 */
+  async testSshKeyAuthAsync(host: string, port: number, username: string,
+                            privateKeyPem: string, passphrase: string,
+                            proxy?: SshProxyConfig): Promise<SshAuthTestResult> {
+    try {
+      return await rdpnapi.testSshKeyAuthAsync(
+        host, port, username, privateKeyPem, passphrase, proxy) as SshAuthTestResult;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] testSshKeyAuthAsync: ' + JSON.stringify(err));
+      return { ok: false, code: -99,
+               message: '[CC-SSHKEY-08] testSshKeyAuthAsync NAPI error: ' + JSON.stringify(err) };
+    }
+  }
+
   /**
    * 探测 SSH 主机公钥 (仅 TCP + KEX, 不做用户认证)
    * 同步阻塞 1-5s, 调用方应显示 loading 状态
@@ -1656,6 +1747,22 @@ export class ExtensionLoader {
         fingerprintSha256: '', rawBase64: '', serverBanner: '',
         errorCode: -99,
         errorMessage: '[CC-SSH-09] probeSshHostKey NAPI error: ' + JSON.stringify(err)
+      };
+    }
+  }
+
+  /** 探测 SSH 主机公钥；native DNS/TCP/KEX 在线程池执行。 */
+  async probeSshHostKeyAsync(host: string, port: number,
+                             proxy?: SshProxyConfig): Promise<SshHostKeyInfo> {
+    try {
+      return await rdpnapi.probeSshHostKeyAsync(host, port, proxy) as SshHostKeyInfo;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] probeSshHostKeyAsync: ' + JSON.stringify(err));
+      return {
+        ok: false, host: host, port: port, algorithm: '',
+        fingerprintSha256: '', rawBase64: '', serverBanner: '',
+        errorCode: -99,
+        errorMessage: '[CC-SSH-09] probeSshHostKeyAsync NAPI error: ' + JSON.stringify(err)
       };
     }
   }

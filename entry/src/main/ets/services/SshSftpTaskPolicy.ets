@@ -267,6 +267,49 @@ export function normalizeSshSftpTaskRecord(value: Object): SshSftpTaskRecord | n
   };
 }
 
+/**
+ * A process restart destroys the executor and all native session bindings.
+ * Persisted in-flight stages therefore cannot remain authoritative: presenting
+ * them as active would leave the UI stuck at "transferring" with no pump that
+ * owns the task. Preserve the durable checkpoint and endpoint identity, but
+ * require an explicit session rebind before the task can be queued again.
+ */
+export function recoverInterruptedSshSftpTaskRecord(record: SshSftpTaskRecord,
+  recoveredAt: number = Date.now()): SshSftpTaskRecord {
+  const interrupted: boolean = record.stage === 'inspecting' || record.stage === 'transferring' ||
+    record.stage === 'verifying' || record.stage === 'committing';
+  if (!interrupted) { return record; }
+  const timestamp: number = Number.isFinite(recoveredAt) && recoveredAt >= 0
+    ? recoveredAt : Date.now();
+  return {
+    schemaVersion: record.schemaVersion,
+    taskId: record.taskId,
+    batchId: record.batchId,
+    relativePath: record.relativePath,
+    hostId: record.hostId,
+    direction: record.direction,
+    isDirectory: record.isDirectory,
+    remotePath: record.remotePath,
+    fileName: record.fileName,
+    totalBytes: record.totalBytes,
+    verifiedOffset: record.verifiedOffset,
+    sourceSize: record.sourceSize,
+    sourceMtime: record.sourceMtime,
+    partialSize: record.partialSize,
+    partialMtime: record.partialMtime,
+    stage: 'waitingForConnection',
+    sessionGeneration: 0,
+    sequence: Math.max(record.sequence + 1, timestamp),
+    updatedAt: timestamp,
+    sourceEndpoint: record.sourceEndpoint,
+    targetEndpoint: record.targetEndpoint,
+    sourcePath: record.sourcePath,
+    targetPath: record.targetPath,
+    partialIdentity: record.partialIdentity,
+    checksumPolicy: record.checksumPolicy
+  };
+}
+
 export function makeSftpTransferSpec(taskId: string, source: SftpEndpoint,
   target: SftpEndpoint, sourcePath: string, targetPath: string,
   direction: SshSftpTaskDirection, checksumPolicy: 'size_mtime' | 'sha256' = 'size_mtime'):

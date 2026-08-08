@@ -7,6 +7,7 @@ import { KeyCode } from '@kit.InputKit';
 import {
   TerminalModifierState,
   encodePhysicalKey,
+  normalizeSshKeyCode,
   encodeSoftDelete,
   encodeSpecialKey,
   encodeTextInput,
@@ -128,6 +129,21 @@ export default function sshTerminalInputPolicyTest(): void {
       expect(caps.sequence).assertEqual('A');
     });
 
+    it('should_normalize_android_compatible_external_keycodes', 0, (): void => {
+      expect(normalizeSshKeyCode(29)).assertEqual(KeyCode.KEYCODE_A);
+      expect(normalizeSshKeyCode(66)).assertEqual(KeyCode.KEYCODE_ENTER);
+      expect(normalizeSshKeyCode(67)).assertEqual(KeyCode.KEYCODE_DEL);
+      expect(normalizeSshKeyCode(19)).assertEqual(KeyCode.KEYCODE_DPAD_UP);
+      expect(encodePhysicalKey({
+        keyCode: 29, unicode: undefined, ctrl: false, alt: false, shift: false,
+        allowKeyCodeFallback: true
+      }).sequence).assertEqual('a');
+      expect(encodePhysicalKey({
+        keyCode: 66, unicode: undefined, ctrl: false, alt: false, shift: false,
+        allowKeyCodeFallback: true
+      }).sequence).assertEqual('\r');
+    });
+
     it('should_keep_altgr_composed_unicode_as_text', 0, (): void => {
       expect(encodePhysicalKey({
         keyCode: KeyCode.KEYCODE_2, unicode: 0x40, ctrl: true, alt: true, shift: false,
@@ -220,6 +236,27 @@ export default function sshTerminalInputPolicyTest(): void {
       const committed = inspectSshImeChange(state, '你', 0);
       expect(committed.sendRemote).assertTrue();
       expect(committed.remoteInsert).assertEqual('你');
+    });
+
+    it('should_fallback_when_on_change_precedes_missing_did_insert', 0, (): void => {
+      const state = createSshImeCallbackState();
+      expect(recordSshImeWillInsert(state, 'a')).assertTrue();
+      const committed = inspectSshImeChange(state, 'a', 0);
+      expect(committed.sendRemote).assertTrue();
+      expect(committed.remoteInsert).assertEqual('a');
+      // A late onDidInsert must not duplicate the fallback commit.
+      expect(consumeSshImeDidInsert(state, 'a')).assertEqual('');
+    });
+
+    it('should_replace_local_preview_with_committed_candidate', 0, (): void => {
+      const state = createSshImeCallbackState();
+      expect(recordSshImeWillInsert(state, 'ni')).assertTrue();
+      const preview = inspectSshImeChange(state, 'ni', 2);
+      expect(preview.sendRemote).assertFalse();
+      const committed = inspectSshImeChange(state, '你', 0);
+      expect(committed.sendRemote).assertTrue();
+      expect(committed.remoteInsert).assertEqual('你');
+      expect(committed.remoteDelete).assertEqual('');
     });
   });
 }

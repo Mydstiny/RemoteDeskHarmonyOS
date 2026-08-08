@@ -17,7 +17,7 @@ use std::net::{Shutdown, TcpStream};
 use std::os::raw::c_int;
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, Condvar, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -40,7 +40,7 @@ use protocol::rendezvous::RendezvousClient;
 use protocol::session::AuthEventCallback;
 use control_inbox::ControlInbox;
 use cursor_state::CursorStreamUpdate;
-use std::sync::mpsc::{Sender, SyncSender, TrySendError};
+use std::sync::mpsc::Sender;
 
 static LAST_ERROR: Mutex<String> = Mutex::new(String::new());
 static RUSTDESK_MOUSE_ENQUEUE_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -701,7 +701,11 @@ enum FrameCallbackKind {
     V2(FrameCallbackV2),
 }
 
-const VIDEO_CALLBACK_QUEUE_CAPACITY: usize = 4;
+// This queue only decouples the socket/ACK loop from the native callback; the
+// native decoder owns the actual presentation queue.  RustDesk can release a
+// short burst after a delayed TCP read, so leave enough room for that burst
+// without turning ordinary network jitter into a remote encoder restart.
+const VIDEO_CALLBACK_QUEUE_CAPACITY: usize = 16;
 
 struct QueuedVideoFrame {
     data: Vec<u8>,
@@ -713,12 +717,122 @@ struct QueuedVideoFrame {
     display: c_int,
 }
 
+struct VideoCallbackQueueState {
+    frames: VecDeque<QueuedVideoFrame>,
+    closed: bool,
+    // Once a dependent frame is dropped, later deltas are no longer a safe
+    // continuation of the decoder reference chain. Request one refresh and
+    // suppress all further refreshes until the resulting keyframe arrives.
+    awaiting_key_frame: bool,
+}
+
+enum VideoQueueOutcome {
+    Queued {
+        evicted: usize,
+        request_refresh: bool,
+    },
+    Dropped {
+        request_refresh: bool,
+    },
+    Disconnected,
+}
+
 /// Keep the network/ACK loop independent from native decode and render work.
 /// The queue is intentionally small: a slow decoder must not turn into a
-/// growing latency buffer. Dropping a frame requests a fresh keyframe through
-/// the existing coalesced control path.
+/// growing latency buffer. A new keyframe replaces stale queued work when the
+/// queue is full; dependent frames are never allowed to evict it.
+struct VideoCallbackQueue {
+    state: Mutex<VideoCallbackQueueState>,
+    wake: Condvar,
+}
+
+impl VideoCallbackQueue {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(VideoCallbackQueueState {
+                frames: VecDeque::with_capacity(VIDEO_CALLBACK_QUEUE_CAPACITY),
+                closed: false,
+                awaiting_key_frame: false,
+            }),
+            wake: Condvar::new(),
+        }
+    }
+
+    fn enqueue(&self, frame: QueuedVideoFrame) -> VideoQueueOutcome {
+        let Ok(mut state) = self.state.lock() else {
+            return VideoQueueOutcome::Disconnected;
+        };
+        if state.closed {
+            return VideoQueueOutcome::Disconnected;
+        }
+
+        let mut evicted = 0;
+        if state.awaiting_key_frame {
+            if !frame.is_key_frame {
+                // The first overflow already requested a refresh. Repeating
+                // RefreshVideo for every arriving delta makes the macOS host
+                // tear down and recreate its VP9 encoder every few seconds.
+                return VideoQueueOutcome::Dropped {
+                    request_refresh: false,
+                };
+            }
+            evicted = state.frames.len();
+            state.frames.clear();
+            state.awaiting_key_frame = false;
+        } else if state.frames.len() >= VIDEO_CALLBACK_QUEUE_CAPACITY {
+            if frame.is_key_frame {
+                // A fresh keyframe is a complete decoder restart point. Drop
+                // all older deltas so recovery does not replay stale frames
+                // ahead of the keyframe.
+                evicted = state.frames.len();
+                state.frames.clear();
+            } else {
+                // Preserve the already queued, ordered prefix. Dropping the
+                // new dependent frame breaks the future reference chain, so
+                // request exactly one keyframe and wait for it. In particular,
+                // do not enqueue more dependent frames or issue one refresh
+                // per frame while the keyframe is in flight.
+                state.awaiting_key_frame = true;
+                return VideoQueueOutcome::Dropped {
+                    request_refresh: true,
+                };
+            }
+        }
+
+        state.frames.push_back(frame);
+        drop(state);
+        self.wake.notify_one();
+        VideoQueueOutcome::Queued {
+            evicted,
+            request_refresh: false,
+        }
+    }
+
+    fn pop(&self) -> Option<QueuedVideoFrame> {
+        let mut state = self.state.lock().ok()?;
+        loop {
+            if let Some(frame) = state.frames.pop_front() {
+                drop(state);
+                self.wake.notify_all();
+                return Some(frame);
+            }
+            if state.closed {
+                return None;
+            }
+            state = self.wake.wait(state).ok()?;
+        }
+    }
+
+    fn close(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.closed = true;
+        }
+        self.wake.notify_all();
+    }
+}
+
 struct VideoCallbackWorker {
-    sender: Option<SyncSender<QueuedVideoFrame>>,
+    queue: Arc<VideoCallbackQueue>,
     handle: Option<std::thread::JoinHandle<()>>,
     controls: Arc<ControlInbox>,
     queued: u64,
@@ -731,23 +845,24 @@ impl VideoCallbackWorker {
         user_data: usize,
         controls: Arc<ControlInbox>,
     ) -> Self {
+        let queue = Arc::new(VideoCallbackQueue::new());
         let Some(on_frame) = on_frame else {
             return Self {
-                sender: None,
+                queue,
                 handle: None,
                 controls,
                 queued: 0,
                 dropped: 0,
             };
         };
-        let (sender, receiver) = std::sync::mpsc::sync_channel(VIDEO_CALLBACK_QUEUE_CAPACITY);
+        let worker_queue = Arc::clone(&queue);
         let handle = std::thread::spawn(move || {
-            while let Ok(frame) = receiver.recv() {
+            while let Some(frame) = worker_queue.pop() {
                 dispatch_queued_video_frame(&frame, on_frame, user_data as *mut c_void);
             }
         });
         Self {
-            sender: Some(sender),
+            queue,
             handle: Some(handle),
             controls,
             queued: 0,
@@ -756,33 +871,39 @@ impl VideoCallbackWorker {
     }
 
     fn enqueue(&mut self, frame: QueuedVideoFrame) {
-        let Some(sender) = self.sender.as_ref() else {
-            return;
-        };
-        match sender.try_send(frame) {
-            Ok(()) => {
+        match self.queue.enqueue(frame) {
+            VideoQueueOutcome::Queued {
+                evicted,
+                request_refresh,
+            } => {
                 self.queued += 1;
+                self.dropped += evicted as u64;
+                if request_refresh {
+                    let _ = self.controls.enqueue(ControlMsg::RefreshVideo);
+                }
             }
-            Err(TrySendError::Full(frame)) => {
+            VideoQueueOutcome::Dropped { request_refresh } => {
                 self.dropped += 1;
-                let _ = self.controls.enqueue(ControlMsg::RefreshVideo);
+                if request_refresh {
+                    let _ = self.controls.enqueue(ControlMsg::RefreshVideo);
+                }
                 if self.dropped <= 5 || self.dropped % 60 == 0 {
                     eprintln!(
-                        "[RustDesk-FFI] video callback queue full dropped={} queued={} keyframe={} -> refresh",
+                        "[RustDesk-FFI] video callback queue full dropped={} queued={} -> refresh={}",
                         self.dropped,
                         self.queued,
-                        frame.is_key_frame,
+                        request_refresh,
                     );
                 }
             }
-            Err(TrySendError::Disconnected(_frame)) => {
+            VideoQueueOutcome::Disconnected => {
                 self.dropped += 1;
             }
         }
     }
 
     fn stop(&mut self) {
-        self.sender.take();
+        self.queue.close();
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }
@@ -2761,6 +2882,115 @@ mod tests {
         video_worker.stop();
 
         assert_eq!(received, vec![(1, 2560, 1440, RUSTDESK_VIDEO_FRAME_ABI_VERSION)]);
+    }
+
+    #[test]
+    fn video_callback_queue_keeps_new_keyframe_as_the_recovery_boundary() {
+        let queue = VideoCallbackQueue::new();
+        for timestamp in 0..VIDEO_CALLBACK_QUEUE_CAPACITY as u64 {
+            let outcome = queue.enqueue(QueuedVideoFrame {
+                data: vec![timestamp as u8],
+                width: 1280,
+                height: 720,
+                codec: 0,
+                timestamp,
+                is_key_frame: false,
+                display: 0,
+            });
+            assert!(matches!(outcome, VideoQueueOutcome::Queued { .. }));
+        }
+
+        let outcome = queue.enqueue(QueuedVideoFrame {
+            data: vec![0xff],
+            width: 1280,
+            height: 720,
+            codec: 0,
+            timestamp: VIDEO_CALLBACK_QUEUE_CAPACITY as u64,
+            is_key_frame: true,
+            display: 0,
+        });
+        assert!(matches!(
+            outcome,
+            VideoQueueOutcome::Queued {
+                evicted: VIDEO_CALLBACK_QUEUE_CAPACITY,
+                request_refresh: false,
+            }
+        ));
+
+        let state = queue.state.lock().expect("video queue state");
+        assert_eq!(state.frames.len(), 1);
+        assert!(state.frames.front().expect("keyframe").is_key_frame);
+    }
+
+    #[test]
+    fn video_callback_queue_requests_only_one_refresh_until_keyframe_arrives() {
+        let queue = VideoCallbackQueue::new();
+        for timestamp in 0..VIDEO_CALLBACK_QUEUE_CAPACITY as u64 {
+            let outcome = queue.enqueue(QueuedVideoFrame {
+                data: vec![timestamp as u8],
+                width: 1280,
+                height: 720,
+                codec: 0,
+                timestamp,
+                is_key_frame: true,
+                display: 0,
+            });
+            assert!(matches!(outcome, VideoQueueOutcome::Queued { .. }));
+        }
+
+        let outcome = queue.enqueue(QueuedVideoFrame {
+            data: vec![0xee],
+            width: 1280,
+            height: 720,
+            codec: 0,
+            timestamp: VIDEO_CALLBACK_QUEUE_CAPACITY as u64,
+            is_key_frame: false,
+            display: 0,
+        });
+        assert!(matches!(
+            outcome,
+            VideoQueueOutcome::Dropped {
+                request_refresh: true,
+            }
+        ));
+
+        let repeated_delta = queue.enqueue(QueuedVideoFrame {
+            data: vec![0xef],
+            width: 1280,
+            height: 720,
+            codec: 0,
+            timestamp: VIDEO_CALLBACK_QUEUE_CAPACITY as u64 + 1,
+            is_key_frame: false,
+            display: 0,
+        });
+        assert!(matches!(
+            repeated_delta,
+            VideoQueueOutcome::Dropped {
+                request_refresh: false,
+            }
+        ));
+
+        let recovery_keyframe = queue.enqueue(QueuedVideoFrame {
+            data: vec![0xff],
+            width: 1280,
+            height: 720,
+            codec: 0,
+            timestamp: VIDEO_CALLBACK_QUEUE_CAPACITY as u64 + 2,
+            is_key_frame: true,
+            display: 0,
+        });
+        assert!(matches!(
+            recovery_keyframe,
+            VideoQueueOutcome::Queued {
+                evicted: VIDEO_CALLBACK_QUEUE_CAPACITY,
+                request_refresh: false,
+            }
+        ));
+
+        let state = queue.state.lock().expect("video queue state");
+        assert_eq!(state.frames.len(), 1);
+        assert!(state.frames.front().expect("recovery keyframe").is_key_frame);
+        assert!(!state.awaiting_key_frame);
     }
 
     #[test]

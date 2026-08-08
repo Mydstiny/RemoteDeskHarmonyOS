@@ -22,6 +22,9 @@ export default function sshForwardingPolicyTest(): void {
       expect(defaultSshForwardingProfile('local').bindHost).assertEqual('127.0.0.1');
       expect(defaultSshForwardingProfile('remote').bindHost).assertEqual('127.0.0.1');
       expect(defaultSshForwardingProfile('dynamic').allowPublicBind).assertFalse();
+      expect(defaultSshForwardingProfile('local').minBindPort).assertEqual(1);
+      expect(defaultSshForwardingProfile('local').maxBindPort).assertEqual(65535);
+      expect(defaultSshForwardingProfile('local').maxBytes).assertEqual(0);
     });
 
     it('validates local and dynamic mode contracts', 0, (): void => {
@@ -51,6 +54,15 @@ export default function sshForwardingPolicyTest(): void {
       invalidLimit.maxConnections = SSH_FORWARDING_MAX_CONNECTIONS + 1;
       expect(validateSshForwardingProfile(invalidLimit).code)
         .assertEqual('E-SSH-FORWARD-CONNECTION-LIMIT');
+      const invalidRange: SshForwardingProfile = localProfile();
+      invalidRange.minBindPort = 9000;
+      invalidRange.maxBindPort = 8000;
+      expect(validateSshForwardingProfile(invalidRange).code)
+        .assertEqual('E-SSH-FORWARD-PORT-RANGE');
+      const invalidBytes: SshForwardingProfile = localProfile();
+      invalidBytes.maxBytes = -1;
+      expect(validateSshForwardingProfile(invalidBytes).code)
+        .assertEqual('E-SSH-FORWARD-BYTE-LIMIT');
       const duplicate: SshForwardingProfile = localProfile();
       expect(validateSshForwardingProfiles([localProfile(), duplicate]).code)
         .assertEqual('E-SSH-FORWARD-DUPLICATE-ID');

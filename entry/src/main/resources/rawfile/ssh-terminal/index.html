@@ -26,18 +26,20 @@
     }
     #terminal {
       box-sizing: border-box;
-      /* Keep xterm descenders clear of the ArkWeb viewport edge. */
-      padding: 5px 6px 6px;
     }
     .xterm {
       width: 100%;
       height: 100%;
-      padding: 0;
+      box-sizing: border-box;
+      /* FitAddon measures this element, so keep the cell-safe inset here. */
+      padding: 5px 6px 10px;
     }
     .xterm-viewport {
       background: transparent !important;
       scrollbar-width: thin;
       scrollbar-color: rgba(255, 255, 255, 0.28) transparent;
+      /* ArkWeb paints this absolute viewport against the full shell box. */
+      bottom: 10px;
     }
     .xterm-screen {
       outline: none;
@@ -267,6 +269,8 @@
             cursorBlink: true,
             cursorStyle: 'bar',
             convertEol: false,
+            // Keep xterm's mature helper input enabled as a fallback when the
+            // ArkUI IME anchor cannot acquire focus during a page handoff.
             disableStdin: false,
             allowTransparency: false,
             rightClickSelectsWord: true,
@@ -343,6 +347,19 @@
 
       window.__sshXtermConfigure = function (config) {
         applyConfig(config || {});
+      };
+
+      // ArkWeb may install the native proxy after this document's first boot.
+      // Keep a cheap idempotent entry point so the host can request a second
+      // ready notification from onPageEnd.
+      window.__sshXtermNotifyReady = function () {
+        if (!state.terminal) {
+          boot();
+        }
+        // ArkWeb can expose a stale proxy method before the native callback
+        // is actually wired. Let the host-side nudge retry that first probe.
+        state.readyNotified = false;
+        notifyReady();
       };
 
       window.__sshXtermWrite = function (value) {
