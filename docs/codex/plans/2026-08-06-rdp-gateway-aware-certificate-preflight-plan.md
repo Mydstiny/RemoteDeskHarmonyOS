@@ -1,6 +1,11 @@
 # RDP Gateway-aware 证书预检修复计划
 
-状态：提案，计划落盘；本文件创建时不修改代码、不改变当前分支行为。
+状态：方案和代码检查点已落地于当前工作树；Restricted Admin + RD Gateway
+明确 fail closed；真实 Microsoft RD Gateway 端点验收待完成。RDP 改动与活动
+SSH/渲染改动混在同一工作树中，尚未独立提交。
+
+计划创建时不修改代码；后续实施在现有活动分支继续，所有真实端点和设备验收
+仍按本文完成定义执行。
 
 日期：2026-08-06
 
@@ -186,10 +191,18 @@ RdpPreflightResult
   gatewayCertificate       # optional, with stage=gateway
   targetCertificate        # optional, with stage=target
   targetNegotiation
-  gatewayTransportSelected
+  gatewayTransportRequested
+  gatewayTransportNegotiated # nullable; unknown until observable
   requiresGatewayAuth
   requiresUserDecision
 ```
+
+当前兼容结果模型中的 `gatewayTransportSelected` 仍然保留，但在锁定的
+FreeRDP 3.26.1 适配层中它由请求配置直接填充，只能解释为
+`gatewayTransportRequested`，不能解释为最终实际选择。后续若保留该字段，UI、
+日志和持久化都必须使用“请求策略”语义；更推荐新增独立的 nullable
+`gatewayTransportNegotiated`，只有抓包、FreeRDP instrumentation 或可观测
+mock 明确证明最终分支后才填写，否则必须为 `unknown`。
 
 每个证书记录至少包含 endpoint、SNI/name、CN、subject、issuer、SHA-256
 fingerprint、rootTrusted、hostMismatch、notBefore/notAfter（若可获得）和
@@ -398,7 +411,9 @@ RDP TLS handshake failure。
 - CA/root/hostname：两个阶段分别覆盖受信任、未受信、名称不匹配、过期和
   无证书；
 - tunnel methods：`http`、`rpc`、WebSocket、`no-websockets` 的成功、服务端
-  不支持、错误状态码、截断响应和超时；
+  不支持、错误状态码、截断响应和超时；`auto` 可能尝试 WebSocket、HTTP、RPC，
+  HTTP 还可能发生 WebSocket upgrade 或回退，测试不得把请求策略猜成最终分支；
+  没有可观测证据时结果必须是 `requested=<mode>, negotiated=unknown`；
 - auth boundary：Gateway 证书成功但认证缺失时返回 `GATEWAY-AUTH`，不返回
   `ok=true`；
 - fallback negative tests：TLS、cert、negotiation、tunnel、unknown/vendor/
@@ -527,3 +542,321 @@ hvigorw --mode module -p module=entry -p product=default assembleHap --analyze=n
 本计划只解决“先把 endpoint 和证书阶段做对”的修复路线；在上述真实 endpoint
 和 FreeRDP 版本核对完成前，不允许把任何 Gateway TLS handshake workaround
 写成最终修复。
+
+## 13. 当前执行记录（2026-08-06）
+
+本轮已完成的代码检查点：
+
+- CloudStore/RDB schema、云表本地字段白名单、备份和设备信任清理已覆盖目标
+  与 Gateway 双证书及 route identity 字段；
+- 预检入口按 endpoint mode 选择 direct 或 Gateway-aware 路径，Microsoft RD
+  Gateway 继续要求 Gateway/目标双证书；vendor HTTPS、Azure Bastion 和未知
+  Gateway 保持 fail closed；
+- 证书 trust、正式连接参数、one-time handoff 和 resolver fallback 均要求
+  route identity 与当前完整路由一致；旧的空 route identity 不再放行正式连接；
+- Restricted Admin 的 NTLM hash 只允许进入目标 RDP 的认证配置；预检请求携带
+  `targetRestrictedAdmin`，route resolver 对 `Restricted Admin + Microsoft RD
+  Gateway` 返回 `E-RDP-GATEWAY-AUTH`，不会把 hash 当作 Gateway 密码；
+- 新增 stale route 的 ArkTS policy 测试，并将 Gateway route policy 纳入 native
+  测试目标。
+
+当前验证：
+
+- `git diff --check`：通过；
+- `default@OhosTestCompileArkTS`：通过；
+- `assembleHap`：`BUILD SUCCESSFUL`；
+- 重建后的 `rdp_native_tests`：Gateway 6 个策略用例通过；最新全量为
+  `294 passed, 16 failed, 310 total`，16 个失败为既有 VNC TLS fixture 启动失败；
+- `ohosTest@OhosTestCompileArkTS`：当前工程任务未注册，错误 `00306054`；
+- 未获得真实 Microsoft RD Gateway、证书轮换或 HarmonyOS 设备端到端证据，不能
+  宣称堡垒机互操作验收完成。
+
+## 14. 继续执行记录（2026-08-07）
+
+- RDP-only 的 ArkTS compile checkpoint 仍有效；此前对保留 SSH 混合改动的完整
+  工作树复跑曾在 `entry/src/main/ets/pages/SshTerminal.ets:780` 报
+  `10905209 Only UI component syntax can be written here`，该诊断不属于 RDP
+  变更且本轮没有修改 SSH 文件。
+- 2026-08-07 对当前工作树重新执行的 `default@OhosTestCompileArkTS` 返回 0，
+  仅有已有警告；同轮 `assembleHap` 为 `BUILD SUCCESSFUL`。两项门禁当前通过，
+  但这不等同于真实 RD Gateway 互操作已验收。
+- 同一轮重建后的 `rdp_native_tests` 最新结果为 `294 passed, 16 failed,
+  310 total`；16 个失败仍全部是既有 VNC TLS fixture 启动失败，RDP Gateway
+  policy、RDP negotiation 和 RDP certificate 相关用例通过。
+- RDP Gateway UI 已将 Gateway 证书卡片的入口显示绑定到真实
+  `gatewayHost:gatewayPort`；本轮不再扩大代码范围或提交混合文件。
+
+## 15. Restricted Admin 与 RD Gateway 边界（2026-08-06）
+
+当前明确决策：
+
+- `direct_rdp`/`transparent_tcp_rdp + Restricted Admin` 继续使用本机加密存储的
+  NTLM hash，现有目标 RDP 认证路径不受本次 Gateway 规则影响；
+- `microsoft_rd_gateway + Restricted Admin` 当前不宣称支持，并在预检和正式
+  route resolver 两侧返回 `E-RDP-GATEWAY-AUTH`。原因是 FreeRDP 的
+  `FreeRDP_PasswordHash` 是目标 RDP/CredSSP 的 target secret，而 Gateway
+  认证使用 `FreeRDP_GatewayPassword`；NTLM hash 不能安全地填入 Gateway
+  password。当前模型也没有独立的 Gateway 明文密码来源；
+- 不通过把 hash 传进 Gateway、不把 hash 当普通密码重试、也不通过关闭证书校验
+  或 fallback 绕过该拒绝。
+
+若产品必须支持该组合，后续应另立凭据扩展：
+
+1. 增加独立且本机加密的 Gateway username/domain/password 绑定，禁止进入
+   RemoteHost、云同步和日志；目标 NTLM hash 仍单独保存并只在目标阶段使用；
+2. 将 Gateway credential binding、target auth mode 和 request generation 纳入
+   预检/正式连接契约，认证上下文变化时不得复用旧结果；
+3. 分别向 `FreeRDP_Gateway*` 和目标 `FreeRDP_*` 设置真实凭据，补充 Gateway
+   认证成功、认证失败、hash 清理和取消路径测试；
+4. 在真实 Gateway + Restricted Admin 端点上完成双阶段证书、认证和证书轮换
+   验收后，才移除该 fail-closed 限制。
+
+## 16. 继续执行记录（2026-08-07：一次性信任与 transport 证据边界）
+
+### 16.1 `CONTINUE_ONCE` 的安全语义
+
+当前代码检查点已收紧一次性继续路径：
+
+- `HostListPage.ets` 对原主机记录创建深拷贝后继续路由；不会把本次探测得到的
+  目标/Gateway 指纹、trust mode、trustedAt、route identity 或证书 metadata
+  写回主机持久化记录；
+- 本次连接仍可通过 `oneTimeResult` 携带临时的目标和 Gateway 双证书 pin，且
+  正式连接前再次校验 live route identity；一次性决定只对当前连接有效；
+- 纯逻辑测试已将语义明确为
+  `continue_once_should_leave_persisted_certificate_record_unchanged`，并继续
+  要求 `shouldPersistRdpCertificateTrust(CONTINUE_ONCE) == false`；
+- Gateway 场景如果缺少任一阶段证书、route identity 不一致或结果过期，不能以
+  `CONTINUE_ONCE` 绕过，必须停留在失败/重新探测状态。
+
+后续实现和复核必须补充对象级断言：一次性继续前后的目标与 Gateway trust
+record 完全相同；正式连接收到的两个 one-time fingerprint 只存在于本次请求，
+取消、超时、失败和连接结束后不可写入持久化、备份、云同步或日志。
+
+### 16.2 Gateway transport 的当前证据边界
+
+已核对项目 vendored FreeRDP 3.26.1：
+
+- `freerdp/libfreerdp/core/transport.c:608-672` 表明 `auto` 可能按实现路径
+  尝试 WebSocket、HTTP 或 RPC；
+- `freerdp/libfreerdp/core/gateway/rdg.c:1508-1550` 表明 HTTP 路径还可能经历
+  WebSocket upgrade 或回退；
+- 当前公开适配 API 没有可靠的“最终 transport 分支”结果，因此现有
+  `gatewayTransportSelected` 不能作为协商事实。
+
+计划中的验收记录必须拆成：
+
+1. `requested`：用户/配置传给 FreeRDP 的 transport policy；
+2. `negotiated`：只有通过 wire trace、FreeRDP instrumentation 或明确的
+   recording/mock 观察到的最终分支；
+3. `unknown`：没有上述证据时的诚实值，不能用 `auto`、`http` 或代码分支推断
+   代替。
+
+因此当前只能宣称 Gateway-aware route policy 和双阶段证书回调的代码/测试
+检查点通过；不能宣称 HTTP、RPC、WebSocket 或 `no-websockets` 的真实互操作，
+也不能宣称 `auto` 的最终选择已被客户端可靠观测。
+
+### 16.3 当前交付状态
+
+- 本节没有新增代码修改；记录的是当前工作树既有代码检查点和后续执行边界。
+- 较早的代码 checkpoint 曾记录 host native suite 为 `294 passed, 16 failed,
+  310 total`；该记录中的 16 个失败是既有 VNC TLS fixture 启动失败，不能覆盖
+  当前后续验证结果。
+- 当前 HEAD 为 `7892f0332`，RDP 相关文件仍与活动 SSH/渲染改动混合未提交，不能
+  把该 HEAD 视为 RDP 独立提交。
+- 之前一次完整工作树验证中 `default@OhosTestCompileArkTS` 和 `assembleHap` 均通过；
+  本次继续执行后 `default@OhosTestCompileArkTS` 仍通过，但最新
+  `assembleHap` 被混合 SSH 改动的 native 编译错误阻断，不能用上一轮成功结果
+  替代当前门禁；`git diff --check` 仍通过。
+- 真实 Microsoft RD Gateway、证书轮换、HTTP/RPC/WebSocket/no-websockets、
+  Restricted Admin Gateway 凭据和 HarmonyOS 设备端到端验收仍是 blocker；
+  `E-RDP-GATEWAY-AUTH` 的 fail-closed 边界保持不变。
+
+## 17. 最终执行记录（2026-08-07：当前代码检查点和收尾边界）
+
+### 17.1 已落地的修复面
+
+- 当前项目锁定的 vendored FreeRDP 版本为 `3.26.1-dev0`。Microsoft RD Gateway
+  route 不再调用旧的三参数直连 probe，而是把目标、Gateway、SNI、transport
+  policy、凭据和双 pin 作为完整请求送入 Gateway-aware FreeRDP preflight；直连
+  和透明 TCP 仍走 direct probe。
+- Gateway 与目标证书分别由 `VERIFY_CERT_FLAG_GATEWAY` 映射到独立记录和独立
+  pin。正式连接再次按同一阶段规则校验；Gateway、vendor HTTPS、Azure Bastion
+  和未知 route 不允许通过关闭证书校验或旧 resolver fallback 放行。
+- `CONTINUE_ONCE` 只把当前结果的双证书 pin 作为一次性路由参数传递，不写回主机
+  的目标/Gateway trust record、备份、云同步或日志；`TRUST` 才分别更新对应的
+  trust record。
+- 新增 Gateway/目标双 pin 组合测试：双 pin 匹配、仅 Gateway 匹配、仅目标匹配、
+  两者都不匹配、Gateway 证书轮换、目标证书轮换。新增 transport observation
+  contract 测试要求 Gateway TLS、目标 TLS、目标来自隧道，且 Gateway 入口不能
+  收到 RDP X.224。
+- 预检 FreeRDP session 现在显式复用正式连接的 TLS/NLA-only 安全组合：关闭
+  Standard RDP Security、RDSTLS、Ext/AAD 和 Restricted Admin fallback，固定
+  `RequestedProtocols=SSL|HYBRID`；预检不会因为 FreeRDP 默认值而接受正式连接
+  会拒绝的安全降级。
+- 证书 callback 收到无法解析的 PEM 时不再发布 `present=true` 的空指纹记录；对应
+  Gateway 或目标阶段标记 metadata invalid 并 fail closed，刷新路径也不能持久化
+  空 pin。
+
+### 17.2 transport 事实边界
+
+- `gatewayTransportRequested` 是配置/调用方请求的 policy；保留的
+  `gatewayTransportSelected` 只是兼容别名，同样表示 requested policy。
+- `gatewayTransportNegotiated` 只有在 wire trace、FreeRDP instrumentation 或
+  可观测 recording/mock 明确记录最终分支时才允许填写 `http`、`rpc` 或
+  `websocket`；当前生产适配层没有可靠的最终分支回调，因此无真实观测时固定为
+  `unknown`。不能因为请求了 `auto`、代码设置了某个 flag，或 FreeRDP 具备某个
+  分支，就把它写成实际协商结果。
+- 本轮不向 vendored FreeRDP 增加 instrumentation。若产品或诊断要求展示真实
+  transport，下一轮应单独增加最小、脱敏、可关闭的 observer，并用互操作端点和
+  wire evidence 验证；observer 不得改变证书校验或 fallback 行为。
+
+### 17.3 取消、超时和资源释放事实
+
+- ArkTS Sheet 关闭、重试、切换主机和路由变化会递增 preflight generation；迟到
+  的 Promise 结果在 native 调用前后都会被丢弃，不得更新 UI、trust record 或
+  路由。
+- 当前 NAPI 暴露的是不可取消的 async worker，没有对 FreeRDP worker 的物理
+  cancel API。Gateway preflight 设置 `FreeRDP_TcpConnectTimeout=15000`，所以
+  UI 取消后的 native 连接可能继续到返回或超时，但最长连接阶段受该上限约束。
+- FreeRDP preflight 返回后会移除实例到 callback-state 的映射、清空证书回调指针；
+  若防御性地返回 connected，则先 disconnect，再释放 context 和 instance。预检
+  不把 live session 或 socket 交给正式连接复用。
+- 真实设备仍需验证取消、超时、重复重试、网络切换和进程退出期间没有遗留 fd、
+  TLS、Gateway tunnel、敏感凭据或一次性 pin。若该验证发现 15 秒收敛不可接受，
+  另立 cooperative cancellation 变更，不通过 UI generation 把“忽略结果”冒充
+  “已中断网络操作”。
+
+### 17.4 最新自动化验证和未完成项
+
+- Host `rdp_native_tests` 编译：通过；生产 HAP native 编译的最新完整门禁被
+  非 RDP 的 SSH `extension_loader_napi.cpp` 错误阻断。
+- Host native suite：`301 passed, 16 failed, 317 total`；16 个失败均为既有
+  VNC TLS fixture 启动失败，RDP Gateway/证书/negotiation 相关用例（含新增
+  malformed-stage-record 断言）通过。
+- `default@OhosTestCompileArkTS`：通过。
+- `assembleHap`：当前工作树最新复跑返回 `BUILD SUCCESSFUL`。此前一次尝试曾因
+  混合 SSH 改动的 native 编译错误失败，随后基于当前文件状态重试通过；另一次
+  首次打包遇到 BundleTool 的瞬时资源条目大小错误，立即重试通过，未改动产品资源。
+- `git diff --check`：通过。
+- `ohosTest@OhosTestCompileArkTS`：当前工程未注册，错误 `00306054`；不能写成
+  测试通过。
+- 仍未完成：真实 Microsoft RD Gateway 的 Gateway/目标双证书、证书轮换、
+  HTTP/RPC/WebSocket/no-websockets 互操作、不同 Gateway 凭据绑定、取消/超时
+  设备证据，以及 Azure Bastion/厂商 HTTPS 的专用协议支持。
+
+### 17.5 推荐交付顺序
+
+1. 先用真实 Microsoft RD Gateway + Windows RDP 端点验收 `requested`、两阶段
+   SNI、Gateway/target 双 pin 和错误阶段；保存脱敏日志和 wire evidence。
+2. 分别验收 Gateway 证书轮换、目标证书轮换、自签名/内部 CA、Gateway 可达但
+   目标不可达、认证缺失和网络切换；每个失败都保持 fail closed。
+3. 验收 `http`、`rpc`、`websocket`、`no-websockets` 和 `auto`。`auto` 必须用
+   抓包或 instrumentation 记录最终分支，否则结果继续显示 `negotiated=unknown`。
+4. 在 HarmonyOS 真机验证 Sheet 取消、重试、主机/Gateway 切换、后台/进程退出和
+   一次性信任清理；确认没有跨阶段 pin 或敏感凭据落盘。
+5. 通过独立复核后，先将 Gateway route 以 feature flag 灰度；在 RDP 相关改动
+   从混合工作树中独立 checkpoint、完成强制 Hvigor gates 和合规审查后，再合并
+   到 `main`。在此之前对外表述应为“直连修复可用，Gateway 代码检查点通过，
+   真实堡垒机互操作待验收”。
+
+### 17.6 2026-08-07 继续执行记录
+
+- 本次修复前工作树为活动分支 `codex/ssh-terminal-complete-upgrade`，HEAD
+  `7892f0332`，相对 `main@d2769ad4b` 为 ahead 114、behind 0；RDP 文件与
+  既有 SSH/渲染修改仍混合未提交，未进行 reset、stash、切换分支或覆盖其他改动。
+- 在 `freerdp_adapter.cpp` 中补齐 Gateway preflight 的显式 TLS/NLA-only 设置，
+  并让 malformed PEM 在证书记录发布前失败；新增的 Gateway policy 回归断言已
+  随 host native binary 编译并通过。
+- 本次 host native 全量结果为 `301 passed, 16 failed, 317 total`。失败仍全部是
+  `vnc_certificate_probe_test.cpp` 的既有 TLS fixture 启动失败，不属于本次 RDP
+  改动；RDP Gateway policy、证书 pin、证书阶段、negotiation 相关用例通过。
+- 本次重新执行的门禁结果为：`default@OhosTestCompileArkTS` 通过，
+  `assembleHap` 在失败尝试后的立即重试返回 `BUILD SUCCESSFUL`，
+  `git diff --check` 通过。构建输出仍有既有 ArkTS/deprecation/resource warning，
+  未将 warning 写成错误或忽略。整包编译门禁当前通过，但这不等同于真实
+  Microsoft RD Gateway 互操作已验收。
+- `ohosTest@OhosTestCompileArkTS` 仍未注册（`00306054`）；没有真实 Microsoft
+  RD Gateway、证书轮换、transport wire/recording、Restricted Admin Gateway
+  凭据或 HarmonyOS 真机端到端证据。因此当前交付等级仍是“直连代码/测试修复和
+  Gateway-aware 代码检查点完成，真实堡垒机互操作待验收”，不是“堡垒机问题已
+  在生产环境解决”。
+
+### 17.7 2026-08-08 提交前证书复核
+
+- 提交前复核发现并修复两处会造成证书预检误判的问题：FreeRDP X.509 回调给出的
+  叶子证书和中间证书链现在会一起交给 `X509_STORE_CTX`；直连 TLS probe 也使用
+  `SSL_get_peer_cert_chain`，不再只验证叶子证书。
+- 目标或 Gateway server name 为 IPv4/IPv6 字面量时改用
+  `X509_check_ip_asc`；DNS 名继续使用 `X509_check_host`，避免合法 IP SAN 被误报
+  为 hostname mismatch。
+- `RdpCertificateRecord.flags` 只保留应用层证书风险位，不再与 FreeRDP callback
+  flags 直接 OR；这避免 `VERIFY_CERT_FLAG_LEGACY=0x02` 与应用层
+  `hostMismatch=0x02` 发生命名空间冲突。
+- 新增原生回归覆盖 IP SAN/DNS SAN 分流，以及“缺少 intermediate 验证失败、完整
+  intermediate PEM chain 验证成功”。重建后 host native suite 为
+  `314 passed, 16 failed, 330 total`；新增用例和全部 RDP 用例通过，16 个失败仍是
+  既有 VNC TLS fixture 启动失败。
+- 提交前重新执行 `default@OhosTestCompileArkTS` 返回 0；`assembleHap` 首次在
+  BundleTool 打包阶段遇到既有的 SVG zip entry 瞬时大小错误，生产 native 编译已
+  成功，随后原样重跑返回 `BUILD SUCCESSFUL`。`git diff --check` 和 staged scope
+  检查仍须在 checkpoint commit 前完成。
+- 真实 Microsoft RD Gateway、证书轮换、transport wire evidence 和 HarmonyOS
+  设备端到端证据仍未完成，因此提交只能标记为代码/测试 checkpoint。
+
+### 17.8 2026-08-08 最终提交门禁
+
+- 最终复核发现 Gateway route 新字段若直接加入固定云表列集合，会要求线上云表
+  同步升级 schema。现已改为复用既有 `displayconfig` 扩展载荷持久化
+  `rdpendpointmode`、`rdpgatewaytransport` 和 `rdpgatewayservername`，固定云表
+  schema 不变；同时保留旧直读兼容并新增云扩展 round-trip 测试。
+- `RemoteHostDeviceTrustPolicy` 已补齐目标与 Gateway 证书的 `notBefore/notAfter`
+  字段，避免设备信任复制、备份或恢复时遗漏证书有效期元数据；本地备份安全扩展
+  allowlist 和对应测试同步补齐。
+- 最新 host native suite 为 `316 passed, 16 failed, 332 total`。全部 RDP
+  Gateway、证书链、IP SAN、pin 和 negotiation 用例通过；16 个失败仍全部来自
+  `vnc_certificate_probe_test.cpp` 的既有 TLS fixture `fixture.start()` 失败。
+- 最新完整工作树门禁：`default@OhosTestCompileArkTS` 返回 0，`assembleHap`
+  返回 `BUILD SUCCESSFUL`，`git diff --check` 与 `git diff --cached --check` 均
+  通过。输出中的 ArkTS、deprecated API 和第三方依赖 warning 未被当作错误隐藏。
+- 对“仅暂存 RDP 补丁”的隔离快照也完成原生编译与测试：`302 passed, 16 failed,
+  318 total`，RDP 用例通过。该快照的 ArkTS 编译会被当前 HEAD 上已经存在但尚未
+  成套提交的 SSH 类型依赖阻断；完整当前工作树的两项强制 Hvigor 门禁均已通过，
+  本次不会为绕过该基线问题夹带 SSH 改动。
+- 暂存范围仅包含 RDP Gateway/证书预检、持久化兼容、相关测试和本计划。共享文件
+  中的 SSH、RustDesk、渲染、光标、焦点和输入改动保持未暂存，不进入本次提交。
+- 交付结论保持为“RDP 代码复核和自动化门禁完成，真实 Microsoft RD Gateway
+  互操作待外部环境验收”；不能将本次代码 checkpoint 表述为生产堡垒机问题已经
+  完全解决。
+
+### 17.9 2026-08-08 独立复核后的安全收敛
+
+- 独立复核发现首次遇到自签名、名称不匹配或已轮换的 Gateway 证书时，原先的
+  Gateway-aware preflight 会为了取得目标证书而临时接受 Gateway 证书，随后可能
+  在用户确认前进入带凭据的 HTTP/RPC 认证。现改为两阶段：先建立不发送
+  HTTP/RPC/WebSocket/RDP X.224 且不携带凭据的纯 TLS 连接，只取得 Gateway
+  证书；只有系统 CA+SAN 校验通过，或当前路由已有匹配 Gateway pin，才允许进入
+  FreeRDP Gateway 隧道。
+- 用户首次确认私有 CA/自签名 Gateway 时，`CONTINUE_ONCE` 只在当前 Sheet 生命周期
+  保存临时 Gateway pin，`TRUST` 只先保存 Gateway trust record；随后重新预检并
+  取得目标证书。第二条 FreeRDP Gateway TLS 连接还会被临时绑定到第一次无凭据
+  检查到的指纹，若两次连接间证书变化，会在发送 Gateway 凭据前 fail closed。
+- 正式连接不再只依赖 `VERIFY_CERT_FLAG_MISMATCH`。启用
+  `ExternalCertificateManagement` 后，PEM 回调路径会直接从叶子证书重新执行
+  DNS/IP SAN 校验；PEM 缺失或无法解析时按 Gateway/target 阶段拒绝。
+- `gatewayProtocolEvidenceIsComplete` 现在要求 negotiated transport 明确为
+  `http`、`rpc` 或 `websocket`；`unknown` 不再被误认为完整 wire evidence。
+- 已信任且 route identity 未变化的主机现在把 route-bound 结果传给 Sheet 策略，
+  不再每次打开证书 Sheet 并产生额外 160ms 可见等待。该变化只影响连接前预检，
+  没有修改帧回调、解码、Surface、渲染、光标、输入或连接后事件循环。
+- Gateway-only 与最终双证书 `TRUST` 都检查 `updateHost()` 的持久化结果；保存失败
+  时保留 Sheet、显示 `E-RDP-CERT-PERSIST` 并停止第二阶段或正式连接，不能把未落盘
+  的 pin 当作已信任状态继续使用。
+- 最新 host native suite 为 `317 passed, 16 failed, 333 total`；新增 Gateway
+  credential gate、transport unknown 反例、PEM SAN 重算测试及全部 RDP 用例通过，
+  16 个失败仍为既有 VNC TLS fixture `fixture.start()` 失败。
+- 最新 `default@OhosTestCompileArkTS` 返回 0。`assembleHap` 首次完整 native 编译
+  后在 `SignHap` 遇到一次工具侧 `00308018`，保持文件不变立即重跑返回
+  `BUILD SUCCESSFUL`；native 编译、ArkTS 编译、打包和签名最终门禁均通过。
+- 当前产品配置只表达一组 RDP/Gateway 共用凭据，尚未实现“Gateway 账号与目标
+  Windows 账号不同”的独立凭据契约。该部署类型仍需单独设计安全存储、UI、NAPI
+  与 FreeRDP 字段映射；本提交不把它写成已支持，也不将其失败误报为证书成功。

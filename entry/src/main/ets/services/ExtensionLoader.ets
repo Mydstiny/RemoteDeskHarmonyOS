@@ -14,6 +14,9 @@ import {
   SshHostKeyInfo,
   SshProxyConfig,
   RdpCertificateInfo,
+  RdpCertificateRecord,
+  RdpPreflightRequest,
+  RdpPreflightResult,
   RustDeskPresenceResult,
   VncCertificateProbePromise,
   VncGatewayDeepHealthPromise,
@@ -275,10 +278,13 @@ export class ExtensionLoader {
         ok: false,
         host,
         port,
+        serverName,
         commonName: '',
         subject: '',
         issuer: '',
         fingerprintSha256: '',
+        notBeforeMs: 0,
+        notAfterMs: 0,
         flags: 0,
         rootTrusted: false,
         hostMismatch: false,
@@ -297,16 +303,60 @@ export class ExtensionLoader {
         ok: false,
         host,
         port,
+        serverName,
         commonName: '',
         subject: '',
         issuer: '',
         fingerprintSha256: '',
+        notBeforeMs: 0,
+        notAfterMs: 0,
         flags: 0,
         rootTrusted: false,
         hostMismatch: false,
         errorCode: -1,
         errorMessage: 'RDP 证书探测异常 [E-RDP-CERT-ASYNC]'
       };
+    }
+  }
+
+  async probeRdpCertificateRouteAsync(
+    request: RdpPreflightRequest): Promise<RdpPreflightResult> {
+    try {
+      return await rdpnapi.probeRdpCertificateRouteAsync(request) as RdpPreflightResult;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG,
+        '[ExtensionLoader] probeRdpCertificateRouteAsync: ' + JSON.stringify(err));
+      const route = request.route;
+      const emptyCertificate: RdpCertificateRecord = {
+        present: false, rootTrusted: false, hostMismatch: false, flags: 0,
+        host: route.targetHost, port: route.targetPort ?? 3389,
+        stage: 'target', serverName: route.targetServerName ?? route.targetHost,
+        commonName: '', subject: '', issuer: '', fingerprintSha256: '',
+        notBeforeMs: 0, notAfterMs: 0
+      };
+      return {
+        ok: false,
+        endpointMode: route.endpointMode ?? (route.gatewayHost ? 'microsoft_rd_gateway' : 'direct_rdp'),
+        routeIdentity: '',
+        generation: request.generation ?? 0,
+        requestId: request.requestId ?? '',
+        stage: 'endpoint',
+        errorCode: 'E-RDP-PREFLIGHT-NAPI',
+        errorMessage: 'RDP 路由证书预检异常',
+        gatewayTransportRequested: route.gatewayTransport ?? 'auto',
+        gatewayTransportNegotiated: 'unknown',
+        gatewayTransportSelected: route.gatewayTransport ?? 'auto',
+        requiresGatewayAuth: false,
+        requiresUserDecision: false,
+        gatewayCertificate: {
+          present: false, rootTrusted: false, hostMismatch: false, flags: 0,
+          host: route.gatewayHost ?? '', port: route.gatewayPort ?? 443,
+          stage: 'gateway', serverName: route.gatewayServerName ?? route.gatewayHost ?? '',
+          commonName: '', subject: '', issuer: '', fingerprintSha256: '',
+          notBeforeMs: 0, notAfterMs: 0
+        },
+        targetCertificate: emptyCertificate
+      } as RdpPreflightResult;
     }
   }
 

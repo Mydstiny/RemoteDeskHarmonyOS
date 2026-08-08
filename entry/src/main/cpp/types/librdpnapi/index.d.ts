@@ -81,6 +81,8 @@ export const VERSION: SessionVersionInfo;
   export function probeRdpCertificate(host: string, port: number, serverName: string): RdpCertificateInfo;
   export function probeRdpCertificateAsync(host: string, port: number,
     serverName: string): Promise<RdpCertificateInfo>;
+  export function probeRdpCertificateRouteAsync(
+    request: RdpPreflightRequest): Promise<RdpPreflightResult>;
   export function probeRustDeskPresenceAsync(host: string, port: number, serverKey: string,
     peerId: string, token: string, direct: boolean, keyMode: number): Promise<RustDeskPresenceResult>;
   export function probeVncCertificateAsync(host: string, port: number,
@@ -252,15 +254,87 @@ export interface RdpCertificateInfo {
   ok: boolean;
   host: string;
   port: number;
+  serverName: string;
   commonName: string;
   subject: string;
   issuer: string;
   fingerprintSha256: string;
+  notBeforeMs: number;
+  notAfterMs: number;
   flags: number;
   rootTrusted: boolean;
   hostMismatch: boolean;
   errorCode: number;
   errorMessage: string;
+}
+
+export type RdpEndpointMode = 'direct_rdp' | 'transparent_tcp_rdp' |
+  'microsoft_rd_gateway' | 'vendor_https_bastion' | 'azure_bastion' | 'unknown_gateway';
+export type RdpGatewayTransport = 'auto' | 'http' | 'rpc' | 'websocket' | 'no-websockets';
+
+export interface RdpPreflightRoute {
+  endpointMode?: RdpEndpointMode;
+  targetHost: string;
+  targetPort?: number;
+  targetServerName?: string;
+  gatewayHost?: string;
+  gatewayPort?: number;
+  gatewayServerName?: string;
+  gatewayTransport?: RdpGatewayTransport;
+}
+
+export interface RdpPreflightRequest {
+  route: RdpPreflightRoute;
+  username?: string;
+  password?: string;
+  domain?: string;
+  targetRestrictedAdmin?: boolean;
+  expectedTargetFingerprintSha256?: string;
+  expectedGatewayFingerprintSha256?: string;
+  targetAllowUntrustedRoot?: boolean;
+  targetAllowHostMismatch?: boolean;
+  gatewayAllowUntrustedRoot?: boolean;
+  gatewayAllowHostMismatch?: boolean;
+  generation?: number;
+  requestId?: string;
+}
+
+export interface RdpCertificateRecord {
+  present: boolean;
+  rootTrusted: boolean;
+  hostMismatch: boolean;
+  flags: number;
+  host: string;
+  port: number;
+  stage: 'gateway' | 'target' | string;
+  serverName: string;
+  commonName: string;
+  subject: string;
+  issuer: string;
+  fingerprintSha256: string;
+  notBeforeMs: number;
+  notAfterMs: number;
+}
+
+export interface RdpPreflightResult {
+  ok: boolean;
+  endpointMode: RdpEndpointMode | string;
+  routeIdentity: string;
+  generation: number;
+  requestId: string;
+  stage: 'endpoint' | 'gateway' | 'tunnel' | 'negotiation' | 'target' | string;
+  errorCode: string;
+  errorMessage: string;
+  /** Requested Gateway policy; does not prove the wire transport. */
+  gatewayTransportRequested: string;
+  /** Final transport branch, or 'unknown' when no observation exists. */
+  gatewayTransportNegotiated: string;
+  /** @deprecated Compatibility alias for gatewayTransportRequested. */
+  gatewayTransportSelected: string;
+  requiresGatewayAuth: boolean;
+  requiresUserDecision: boolean;
+  gatewayCertificate: RdpCertificateRecord;
+  targetCertificate: RdpCertificateRecord;
 }
 
 export interface RustDeskPresenceResult {
@@ -515,6 +589,9 @@ export interface SessionConfig {
   customHostname: string;
   gatewayHost: string;
   gatewayPort: number;
+  rdpEndpointMode?: RdpEndpointMode;
+  rdpGatewayTransport?: RdpGatewayTransport;
+  rdpGatewayServerName?: string;
   domain: string;
   codec: string;
   multiMonitor: boolean;
@@ -545,8 +622,11 @@ export interface SessionConfig {
   sshJumpHostKeyRawBase64?: string;
   sshJumpHostKeyFingerprintSha256?: string;
   expectedRdpCertificateFingerprintSha256?: string;
+  expectedRdpGatewayCertificateFingerprintSha256?: string;
   rdpAllowUntrustedRoot?: boolean;
   rdpAllowHostMismatch?: boolean;
+  rdpGatewayAllowUntrustedRoot?: boolean;
+  rdpGatewayAllowHostMismatch?: boolean;
   // RustDesk 扩展字段
   rdImageQuality?: number;   // 0=fast, 1=balanced, 2=quality
   rdDirectIp?: boolean;      // 直连IP模式

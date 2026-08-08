@@ -35,9 +35,17 @@ const REMOTE_HOST_EXTENSION_PAYLOAD_COLUMNS: string[] = [
   'password', 'sshkeypassphrase', 'sshkeyid', 'sshhostkeyalgorithm',
   'sshhostkeyfingerprintsha256', 'sshhostkeyrawbase64', 'sshhostkeytrustedat',
   'sshhostkeytrustmode', 'rdpcertificatefingerprintsha256', 'rdpcertificatesubject',
-  'rdpcertificateissuer', 'rdpcertificatecommonname', 'rdpcertificatetrustedat',
+  'rdpcertificateissuer', 'rdpcertificatecommonname', 'rdpcertificatenotbeforems',
+  'rdpcertificatenotafterms', 'rdpcertificatetrustedat',
   'rdpcertificatetrustmode', 'rdpcertificateallowuntrustedroot',
-  'rdpcertificateallowhostmismatch', 'rustdeskrelayid', 'rustdeskaccountid',
+  'rdpcertificateallowhostmismatch', 'rdpcertificaterouteidentity',
+  'rdpgatewaycertificatefingerprintsha256', 'rdpgatewaycertificatesubject',
+  'rdpgatewaycertificateissuer', 'rdpgatewaycertificatecommonname',
+  'rdpgatewaycertificatenotbeforems', 'rdpgatewaycertificatenotafterms',
+  'rdpgatewaycertificatetrustedat', 'rdpgatewaycertificatetrustmode',
+  'rdpgatewaycertificateallowuntrustedroot',
+  'rdpgatewaycertificateallowhostmismatch',
+  'rdpgatewaycertificaterouteidentity', 'rustdeskrelayid', 'rustdeskaccountid',
   'rustdeskpasswordmode', 'rustdeskauthmode', 'rustdeskdirectenabled',
   'rustdeskdirecthost', 'rustdeskdirectport', 'rdpcredentialid', 'rdpauthmode',
   'rdprestrictedadminsecretsource', 'sourcetype', 'rustdeskproaccountid',
@@ -63,7 +71,7 @@ export function localBackupColumnsForTable(table: string): string[] {
   if (table === 'cryptoparams') { return ['id', 'key', 'value']; }
   if (table === 'usersettings') { return ['id', 'userid', 'key', 'value', 'payload', 'schemaversion', 'updatedat']; }
   if (table === 'remotehosts') {
-    return ['id', 'userid', 'label', 'protocol', 'host', 'port', 'username', 'password', 'passward', 'customhostname', 'sshusekey', 'sshkeypath', 'sshkeydata', 'sshkeypassphrase', 'sshkeyid', 'sshhostkeyalgorithm', 'sshhostkeyfingerprintsha256', 'sshhostkeyrawbase64', 'sshhostkeytrustedat', 'sshhostkeytrustmode', 'rdpcertificatefingerprintsha256', 'rdpcertificatesubject', 'rdpcertificateissuer', 'rdpcertificatecommonname', 'rdpcertificatetrustedat', 'rdpcertificatetrustmode', 'rdpcertificateallowuntrustedroot', 'rdpcertificateallowhostmismatch', 'proxyhost', 'proxyport', 'proxyusername', 'gatewayhost', 'gatewayport', 'displayconfig', 'locked', 'locktype', 'isfavorite', 'groupid', 'sortorder', 'icon', 'lastconnected', 'lasthealth', 'lastlatency', 'syncversion', 'rustdeskrelayid', 'rustdeskaccountid', 'rustdeskpasswordmode', 'rustdeskauthmode', 'rustdeskdirectenabled', 'rustdeskdirecthost', 'rustdeskdirectport', 'rdpcredentialid', 'sourcetype', 'rustdeskproaccountid', 'rustdeskpropeerid', 'rustdeskproplatform', 'rustdeskpromanaged', 'rustdeskprolastseenat', 'rustdeskprosyncerror', 'createdat', 'updatedat'];
+    return ['id', 'userid', 'label', 'protocol', 'host', 'port', 'username', 'password', 'passward', 'customhostname', 'sshusekey', 'sshkeypath', 'sshkeydata', 'sshkeypassphrase', 'sshkeyid', 'sshhostkeyalgorithm', 'sshhostkeyfingerprintsha256', 'sshhostkeyrawbase64', 'sshhostkeytrustedat', 'sshhostkeytrustmode', 'rdpcertificatefingerprintsha256', 'rdpcertificatesubject', 'rdpcertificateissuer', 'rdpcertificatecommonname', 'rdpcertificatenotbeforems', 'rdpcertificatenotafterms', 'rdpcertificatetrustedat', 'rdpcertificatetrustmode', 'rdpcertificateallowuntrustedroot', 'rdpcertificateallowhostmismatch', 'rdpcertificaterouteidentity', 'rdpgatewaycertificatefingerprintsha256', 'rdpgatewaycertificatesubject', 'rdpgatewaycertificateissuer', 'rdpgatewaycertificatecommonname', 'rdpgatewaycertificatenotbeforems', 'rdpgatewaycertificatenotafterms', 'rdpgatewaycertificatetrustedat', 'rdpgatewaycertificatetrustmode', 'rdpgatewaycertificateallowuntrustedroot', 'rdpgatewaycertificateallowhostmismatch', 'rdpgatewaycertificaterouteidentity', 'proxyhost', 'proxyport', 'proxyusername', 'gatewayhost', 'gatewayport', 'displayconfig', 'locked', 'locktype', 'isfavorite', 'groupid', 'sortorder', 'icon', 'lastconnected', 'lasthealth', 'lastlatency', 'syncversion', 'rustdeskrelayid', 'rustdeskaccountid', 'rustdeskpasswordmode', 'rustdeskauthmode', 'rustdeskdirectenabled', 'rustdeskdirecthost', 'rustdeskdirectport', 'rdpcredentialid', 'sourcetype', 'rustdeskproaccountid', 'rustdeskpropeerid', 'rustdeskproplatform', 'rustdeskpromanaged', 'rustdeskprolastseenat', 'rustdeskprosyncerror', 'createdat', 'updatedat'];
   }
   if (table === 'rdpcredentials') {
     return ['id', 'userid', 'label', 'username', 'password',
@@ -97,7 +105,7 @@ export function localBackupLocalTableColumns(table: string): string[] {
 
 function localBackupIntegerColumns(table: string): string[] {
   if (table === 'usersettings') { return ['schemaversion', 'updatedat']; }
-  if (table === 'remotehosts') { return ['port', 'sshusekey', 'sshhostkeytrustedat', 'sshhostkeytrustmode', 'rdpcertificatetrustedat', 'rdpcertificatetrustmode', 'rdpcertificateallowuntrustedroot', 'rdpcertificateallowhostmismatch', 'proxyport', 'gatewayport', 'locked', 'locktype', 'isfavorite', 'sortorder', 'lastconnected', 'lasthealth', 'lastlatency', 'syncversion', 'rustdeskpasswordmode', 'rustdeskdirectenabled', 'rustdeskdirectport', 'rustdeskpromanaged', 'rustdeskprolastseenat', 'createdat', 'updatedat']; }
+  if (table === 'remotehosts') { return ['port', 'sshusekey', 'sshhostkeytrustedat', 'sshhostkeytrustmode', 'rdpcertificatetrustedat', 'rdpcertificatetrustmode', 'rdpcertificateallowuntrustedroot', 'rdpcertificateallowhostmismatch', 'rdpgatewaycertificatetrustedat', 'rdpgatewaycertificatetrustmode', 'rdpgatewaycertificateallowuntrustedroot', 'rdpgatewaycertificateallowhostmismatch', 'proxyport', 'gatewayport', 'locked', 'locktype', 'isfavorite', 'sortorder', 'lastconnected', 'lasthealth', 'lastlatency', 'syncversion', 'rustdeskpasswordmode', 'rustdeskdirectenabled', 'rustdeskdirectport', 'rustdeskpromanaged', 'rustdeskprolastseenat', 'createdat', 'updatedat']; }
   if (table === 'rdpcredentials') { return ['createdat', 'updatedat']; }
   if (table === 'rustdeskrelays') { return ['idserverport', 'relayport', 'healthlatency', 'healthcheckedat', 'syncversion', 'createdat', 'updatedat']; }
   if (table === 'sshkeys') { return ['keytype', 'locked', 'locktype', 'syncversion', 'createdat', 'updatedat', 'formatversion', 'privatekeyencrypted']; }

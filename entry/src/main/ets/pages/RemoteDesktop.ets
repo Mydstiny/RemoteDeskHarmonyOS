@@ -18,6 +18,9 @@ import {
   normalizeRdpCredentialParts,
   normalizeRdpAuthMode,
   normalizeRdpRestrictedAdminSecretSource,
+  normalizeRdpEndpointMode,
+  normalizeRdpGatewayTransport,
+  rdpRouteIdentity,
   RdpAuthMode,
   RdpRestrictedAdminSecretSource
 } from '../model/RemoteHost';
@@ -76,6 +79,7 @@ import {
   VncLocalCursorMode,
   VncTrustCertificateMetadata
 } from '../services/VncModelPolicy';
+import { rdpCertificateRouteIsCurrent } from '../services/RdpCertificatePreflightPolicy';
 import { vncGatewayAvailability } from '../services/VncGatewayProtocolPolicy';
 import { shouldTreatVncConnectionStateAsTerminal } from '../services/VncConnectionStatePolicy';
 import { diagnoseVncConnectionError } from '../services/VncConnectionErrorPolicy';
@@ -7926,6 +7930,12 @@ struct RemoteDesktop {
     if (fingerprint.length === 0) {
       return host;
     }
+    const routeIdentity: string = (params['rdpCertificateOneTimeRouteIdentity'] as string) || '';
+    if (routeIdentity.length === 0 || routeIdentity !== rdpRouteIdentity(host)) {
+      hilog.error(RD_DOMAIN, RD_TAG,
+        'RDP one-time certificate route identity mismatch; refusing override host=' + maskHost(host.host));
+      return host;
+    }
     const resolved: RemoteHost = RemoteHost.fromJSON(host.toJSON());
     resolved.rdpCertificateFingerprintSha256 = fingerprint;
     resolved.rdpCertificateTrustMode = 0;
@@ -7934,6 +7944,19 @@ struct RemoteDesktop {
       (params['rdpCertificateOneTimeAllowUntrustedRoot'] as boolean) === true;
     resolved.rdpCertificateAllowHostMismatch =
       (params['rdpCertificateOneTimeAllowHostMismatch'] as boolean) === true;
+    resolved.rdpCertificateRouteIdentity = routeIdentity;
+    const gatewayFingerprint: string =
+      (params['rdpGatewayCertificateOneTimeFingerprintSha256'] as string) || '';
+    if (gatewayFingerprint.length > 0) {
+      resolved.rdpGatewayCertificateFingerprintSha256 = gatewayFingerprint;
+      resolved.rdpGatewayCertificateTrustMode = 0;
+      resolved.rdpGatewayCertificateTrustedAt = 0;
+      resolved.rdpGatewayCertificateAllowUntrustedRoot =
+        (params['rdpGatewayCertificateOneTimeAllowUntrustedRoot'] as boolean) === true;
+      resolved.rdpGatewayCertificateAllowHostMismatch =
+        (params['rdpGatewayCertificateOneTimeAllowHostMismatch'] as boolean) === true;
+      resolved.rdpGatewayCertificateRouteIdentity = routeIdentity;
+    }
     hilog.info(RD_DOMAIN, RD_TAG, 'RDP one-time certificate override applied: host=' + maskHost(host.host));
     return resolved;
   }
@@ -9344,6 +9367,38 @@ struct RemoteDesktop {
       const credentials: RdpCredentialParts = isVnc && vncHost !== null
         ? { username: vncHost.username, domain: '' }
         : this.rdpCredentialParts(host);
+      let expectedRdpTargetFingerprint: string = '';
+      let expectedRdpGatewayFingerprint: string = '';
+      let rdpTargetAllowUntrustedRoot: boolean = false;
+      let rdpTargetAllowHostMismatch: boolean = false;
+      let rdpGatewayAllowUntrustedRoot: boolean = false;
+      let rdpGatewayAllowHostMismatch: boolean = false;
+      if (host.protocol === 'rdp') {
+        const routeMode: string = normalizeRdpEndpointMode(host.rdpEndpointMode, host.gatewayHost);
+        const routeIdentity: string = rdpRouteIdentity(host);
+        const targetIdentityMatches: boolean = rdpCertificateRouteIsCurrent(
+          host.rdpCertificateRouteIdentity, routeIdentity);
+        const gatewayIdentityMatches: boolean = rdpCertificateRouteIsCurrent(
+          host.rdpGatewayCertificateRouteIdentity, routeIdentity);
+        expectedRdpTargetFingerprint = targetIdentityMatches ?
+          host.rdpCertificateFingerprintSha256.trim() : '';
+        rdpTargetAllowUntrustedRoot = targetIdentityMatches && host.rdpCertificateAllowUntrustedRoot;
+        rdpTargetAllowHostMismatch = targetIdentityMatches && host.rdpCertificateAllowHostMismatch;
+        if (routeMode === 'microsoft_rd_gateway') {
+          expectedRdpGatewayFingerprint = gatewayIdentityMatches ?
+            host.rdpGatewayCertificateFingerprintSha256.trim() : '';
+          rdpGatewayAllowUntrustedRoot = gatewayIdentityMatches &&
+            host.rdpGatewayCertificateAllowUntrustedRoot;
+          rdpGatewayAllowHostMismatch = gatewayIdentityMatches &&
+            host.rdpGatewayCertificateAllowHostMismatch;
+        }
+        if (expectedRdpTargetFingerprint.length === 0 ||
+          (routeMode === 'microsoft_rd_gateway' && expectedRdpGatewayFingerprint.length === 0)) {
+          throw new Error(routeMode === 'microsoft_rd_gateway'
+            ? 'RDP Gateway 与目标证书信任未绑定当前路由，请重新进行证书检查 [E-RDP-CERT-ROUTE-STALE]'
+            : 'RDP 证书尚未完成当前主机确认，请重新进行证书检查 [E-RDP-CERT-REQUIRED]');
+        }
+      }
       const w: number = desktop.width;
       const h: number = desktop.height;
       const pageSurface: RemoteSessionPipContentSize = this.currentPageSurfaceSize(w, h);
@@ -9629,6 +9684,12 @@ struct RemoteDesktop {
         customHostname: host.customHostname,
         gatewayHost: host.gatewayHost,
         gatewayPort: host.gatewayPort,
+        rdpEndpointMode: host.protocol === 'rdp' ? normalizeRdpEndpointMode(
+          host.rdpEndpointMode, host.gatewayHost) : 'direct_rdp',
+        rdpGatewayTransport: host.protocol === 'rdp' ? normalizeRdpGatewayTransport(
+          host.rdpGatewayTransport) : 'auto',
+        rdpGatewayServerName: host.protocol === 'rdp' ?
+          (host.rdpGatewayServerName || host.gatewayHost) : '',
         domain: credentials.domain,
         codec: '',
         multiMonitor: desktop.multiMonitor,
@@ -9674,9 +9735,12 @@ struct RemoteDesktop {
           (host.protocol === 'rdp' ? this.rdpClipboardEnabled : false),
         rdDriveName: host.protocol === 'rdp' ? rdpDriveName : '',
         rdDrivePath: rdpDrivePath,
-        expectedRdpCertificateFingerprintSha256: host.rdpCertificateFingerprintSha256,
-        rdpAllowUntrustedRoot: host.rdpCertificateAllowUntrustedRoot,
-        rdpAllowHostMismatch: host.rdpCertificateAllowHostMismatch,
+        expectedRdpCertificateFingerprintSha256: expectedRdpTargetFingerprint,
+        expectedRdpGatewayCertificateFingerprintSha256: expectedRdpGatewayFingerprint,
+        rdpAllowUntrustedRoot: rdpTargetAllowUntrustedRoot,
+        rdpAllowHostMismatch: rdpTargetAllowHostMismatch,
+        rdpGatewayAllowUntrustedRoot: rdpGatewayAllowUntrustedRoot,
+        rdpGatewayAllowHostMismatch: rdpGatewayAllowHostMismatch,
         rdPasswordMode: host.rustdeskPasswordMode,
         rdAuthMode: rustDeskRequestApproval ? 1 : 0,
         rdRelayId: host.rustdeskRelayId,

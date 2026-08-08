@@ -27,6 +27,9 @@ export interface PresetItem { label: string; width: number; height: number }
 export type RdpAuthMode = 'password' | 'blank_password' | 'restricted_admin';
 /** Restricted Admin always requires the user's real NTLM password hash. */
 export type RdpRestrictedAdminSecretSource = 'ntlm_hash';
+export type RdpEndpointMode = 'direct_rdp' | 'transparent_tcp_rdp' |
+  'microsoft_rd_gateway' | 'vendor_https_bastion' | 'azure_bastion' | 'unknown_gateway';
+export type RdpGatewayTransport = 'auto' | 'http' | 'rpc' | 'websocket' | 'no-websockets';
 export type SshProxyType = 'direct' | 'http_connect' | 'socks5' | 'frp_tcp' |
   'frp_visitor' | 'frp_stcp' | 'frp_sudp' | 'frp_xtcp' | 'ssh_jump' | 'legacy_gateway';
 export type SshProxyAuthMethod = 'password' | 'publickey' | 'kbd-interactive';
@@ -119,6 +122,40 @@ export function normalizeRdpNtlmHash(value: string): string {
   return /^[0-9A-F]{32}$/.test(normalized) ? normalized : '';
 }
 
+export function normalizeRdpEndpointMode(value: string | undefined, gatewayHost: string = ''): RdpEndpointMode {
+  if (value === 'transparent_tcp_rdp' || value === 'microsoft_rd_gateway' ||
+    value === 'vendor_https_bastion' || value === 'azure_bastion' || value === 'unknown_gateway') {
+    return value;
+  }
+  return gatewayHost.trim() !== '' ? 'microsoft_rd_gateway' : 'direct_rdp';
+}
+
+export function normalizeRdpGatewayTransport(value: string | undefined): RdpGatewayTransport {
+  if (value === 'http' || value === 'rpc' || value === 'websocket' || value === 'no-websockets') {
+    return value;
+  }
+  return 'auto';
+}
+
+export function rdpRouteIdentityForValues(
+  endpointMode: string | undefined,
+  targetHost: string,
+  targetPort: number,
+  targetServerName: string,
+  gatewayHost: string,
+  gatewayPort: number,
+  gatewayServerName: string,
+  gatewayTransport: string | undefined
+): string {
+  const mode: RdpEndpointMode = normalizeRdpEndpointMode(endpointMode, gatewayHost);
+  const targetName: string = targetServerName.trim() !== '' ? targetServerName : targetHost;
+  const gatewayName: string = gatewayServerName.trim() !== '' ? gatewayServerName : gatewayHost;
+  const transport: RdpGatewayTransport = normalizeRdpGatewayTransport(gatewayTransport);
+  return mode + '|target=' + targetHost + ':' + targetPort.toString() + ':' + targetName +
+    '|gateway=' + gatewayHost + ':' + gatewayPort.toString() + ':' + gatewayName +
+    '|transport=' + transport;
+}
+
 export interface DisplayConfigJSON {
   width: number
   height: number
@@ -148,6 +185,9 @@ export interface RemoteHostJSON {
   createdAt: number
   gatewayHost: string
   gatewayPort: number
+  rdpEndpointMode?: string
+  rdpGatewayTransport?: string
+  rdpGatewayServerName?: string
   displayConfig: DisplayConfigJSON
   lastHealth: number
   lastLatency: number
@@ -170,10 +210,24 @@ export interface RemoteHostJSON {
   rdpCertificateSubject: string
   rdpCertificateIssuer: string
   rdpCertificateCommonName: string
+  rdpCertificateNotBeforeMs: number
+  rdpCertificateNotAfterMs: number
   rdpCertificateTrustedAt: number
   rdpCertificateTrustMode: number
   rdpCertificateAllowUntrustedRoot: boolean
   rdpCertificateAllowHostMismatch: boolean
+  rdpCertificateRouteIdentity?: string
+  rdpGatewayCertificateFingerprintSha256?: string
+  rdpGatewayCertificateSubject?: string
+  rdpGatewayCertificateIssuer?: string
+  rdpGatewayCertificateCommonName?: string
+  rdpGatewayCertificateNotBeforeMs?: number
+  rdpGatewayCertificateNotAfterMs?: number
+  rdpGatewayCertificateTrustedAt?: number
+  rdpGatewayCertificateTrustMode?: number
+  rdpGatewayCertificateAllowUntrustedRoot?: boolean
+  rdpGatewayCertificateAllowHostMismatch?: boolean
+  rdpGatewayCertificateRouteIdentity?: string
   proxyHost: string
   proxyPort: number
   proxyUsername: string
@@ -294,10 +348,25 @@ export class RemoteHost {
   rdpCertificateSubject: string = '';
   rdpCertificateIssuer: string = '';
   rdpCertificateCommonName: string = '';
+  rdpCertificateNotBeforeMs: number = 0;
+  rdpCertificateNotAfterMs: number = 0;
   rdpCertificateTrustedAt: number = 0;
   rdpCertificateTrustMode: number = 0; // 0=unknown, 1=legacy implicit, 2=explicit trusted
   rdpCertificateAllowUntrustedRoot: boolean = false;
   rdpCertificateAllowHostMismatch: boolean = false;
+  rdpCertificateRouteIdentity: string = '';
+  // RD Gateway certificate trust is independent from the tunneled target.
+  rdpGatewayCertificateFingerprintSha256: string = '';
+  rdpGatewayCertificateSubject: string = '';
+  rdpGatewayCertificateIssuer: string = '';
+  rdpGatewayCertificateCommonName: string = '';
+  rdpGatewayCertificateNotBeforeMs: number = 0;
+  rdpGatewayCertificateNotAfterMs: number = 0;
+  rdpGatewayCertificateTrustedAt: number = 0;
+  rdpGatewayCertificateTrustMode: number = 0;
+  rdpGatewayCertificateAllowUntrustedRoot: boolean = false;
+  rdpGatewayCertificateAllowHostMismatch: boolean = false;
+  rdpGatewayCertificateRouteIdentity: string = '';
   proxyHost: string = '';       // SSH 代理/跳板机地址
   proxyPort: number = 22;       // SSH 代理端口
   proxyUsername: string = '';   // SSH 代理用户名
@@ -340,6 +409,9 @@ export class RemoteHost {
   // 🆕 新增字段
   gatewayHost: string = '';    // RDP 网关服务器地址
   gatewayPort: number = 443;   // RDP 网关端口
+  rdpEndpointMode: string = ''; // direct_rdp | transparent_tcp_rdp | microsoft_rd_gateway | unsupported
+  rdpGatewayTransport: string = 'auto';
+  rdpGatewayServerName: string = '';
   displayConfig: DisplayConfig = new DisplayConfig(); // 显示器配置
   lastHealth: ConnectionHealth = ConnectionHealth.UNKNOWN; // 上次连接健康状态
   lastLatency: number = 0;     // 上次连接延迟 (ms)
@@ -458,6 +530,9 @@ export class RemoteHost {
       createdAt: this.createdAt,
       gatewayHost: this.gatewayHost,
       gatewayPort: this.gatewayPort,
+      rdpEndpointMode: this.rdpEndpointMode,
+      rdpGatewayTransport: this.rdpGatewayTransport,
+      rdpGatewayServerName: this.rdpGatewayServerName,
       displayConfig: this.displayConfig.toJSON(),
       lastHealth: this.lastHealth,
       lastLatency: this.lastLatency,
@@ -480,10 +555,24 @@ export class RemoteHost {
       rdpCertificateSubject: this.rdpCertificateSubject,
       rdpCertificateIssuer: this.rdpCertificateIssuer,
       rdpCertificateCommonName: this.rdpCertificateCommonName,
+      rdpCertificateNotBeforeMs: this.rdpCertificateNotBeforeMs,
+      rdpCertificateNotAfterMs: this.rdpCertificateNotAfterMs,
       rdpCertificateTrustedAt: this.rdpCertificateTrustedAt,
       rdpCertificateTrustMode: this.rdpCertificateTrustMode,
       rdpCertificateAllowUntrustedRoot: this.rdpCertificateAllowUntrustedRoot,
       rdpCertificateAllowHostMismatch: this.rdpCertificateAllowHostMismatch,
+      rdpCertificateRouteIdentity: this.rdpCertificateRouteIdentity,
+      rdpGatewayCertificateFingerprintSha256: this.rdpGatewayCertificateFingerprintSha256,
+      rdpGatewayCertificateSubject: this.rdpGatewayCertificateSubject,
+      rdpGatewayCertificateIssuer: this.rdpGatewayCertificateIssuer,
+      rdpGatewayCertificateCommonName: this.rdpGatewayCertificateCommonName,
+      rdpGatewayCertificateNotBeforeMs: this.rdpGatewayCertificateNotBeforeMs,
+      rdpGatewayCertificateNotAfterMs: this.rdpGatewayCertificateNotAfterMs,
+      rdpGatewayCertificateTrustedAt: this.rdpGatewayCertificateTrustedAt,
+      rdpGatewayCertificateTrustMode: this.rdpGatewayCertificateTrustMode,
+      rdpGatewayCertificateAllowUntrustedRoot: this.rdpGatewayCertificateAllowUntrustedRoot,
+      rdpGatewayCertificateAllowHostMismatch: this.rdpGatewayCertificateAllowHostMismatch,
+      rdpGatewayCertificateRouteIdentity: this.rdpGatewayCertificateRouteIdentity,
       proxyHost: this.proxyHost,
       proxyPort: this.proxyPort,
       proxyUsername: this.proxyUsername,
@@ -540,6 +629,13 @@ export class RemoteHost {
     if (json.createdAt) { host.createdAt = json.createdAt; }
     if (json.gatewayHost) { host.gatewayHost = json.gatewayHost; }
     if (json.gatewayPort) { host.gatewayPort = json.gatewayPort; }
+    if (json.rdpEndpointMode !== undefined) { host.rdpEndpointMode = json.rdpEndpointMode || ''; }
+    if (json.rdpGatewayTransport !== undefined) {
+      host.rdpGatewayTransport = json.rdpGatewayTransport || 'auto';
+    }
+    if (json.rdpGatewayServerName !== undefined) {
+      host.rdpGatewayServerName = json.rdpGatewayServerName || '';
+    }
     if (json.displayConfig) {
       host.displayConfig = DisplayConfig.fromJSON(json.displayConfig);
     }
@@ -572,6 +668,12 @@ export class RemoteHost {
     if (json.rdpCertificateSubject) { host.rdpCertificateSubject = json.rdpCertificateSubject; }
     if (json.rdpCertificateIssuer) { host.rdpCertificateIssuer = json.rdpCertificateIssuer; }
     if (json.rdpCertificateCommonName) { host.rdpCertificateCommonName = json.rdpCertificateCommonName; }
+    if (json.rdpCertificateNotBeforeMs !== undefined) {
+      host.rdpCertificateNotBeforeMs = json.rdpCertificateNotBeforeMs || 0;
+    }
+    if (json.rdpCertificateNotAfterMs !== undefined) {
+      host.rdpCertificateNotAfterMs = json.rdpCertificateNotAfterMs || 0;
+    }
     if (json.rdpCertificateTrustedAt !== undefined) { host.rdpCertificateTrustedAt = json.rdpCertificateTrustedAt; }
     if (json.rdpCertificateTrustMode !== undefined) { host.rdpCertificateTrustMode = json.rdpCertificateTrustMode; }
     if (json.rdpCertificateAllowUntrustedRoot !== undefined) {
@@ -579,6 +681,44 @@ export class RemoteHost {
     }
     if (json.rdpCertificateAllowHostMismatch !== undefined) {
       host.rdpCertificateAllowHostMismatch = json.rdpCertificateAllowHostMismatch;
+    }
+    if (json.rdpCertificateRouteIdentity !== undefined) {
+      host.rdpCertificateRouteIdentity = json.rdpCertificateRouteIdentity || '';
+    }
+    if (json.rdpGatewayCertificateFingerprintSha256 !== undefined) {
+      host.rdpGatewayCertificateFingerprintSha256 = json.rdpGatewayCertificateFingerprintSha256 || '';
+    }
+    if (json.rdpGatewayCertificateSubject !== undefined) {
+      host.rdpGatewayCertificateSubject = json.rdpGatewayCertificateSubject || '';
+    }
+    if (json.rdpGatewayCertificateIssuer !== undefined) {
+      host.rdpGatewayCertificateIssuer = json.rdpGatewayCertificateIssuer || '';
+    }
+    if (json.rdpGatewayCertificateCommonName !== undefined) {
+      host.rdpGatewayCertificateCommonName = json.rdpGatewayCertificateCommonName || '';
+    }
+    if (json.rdpGatewayCertificateNotBeforeMs !== undefined) {
+      host.rdpGatewayCertificateNotBeforeMs = json.rdpGatewayCertificateNotBeforeMs || 0;
+    }
+    if (json.rdpGatewayCertificateNotAfterMs !== undefined) {
+      host.rdpGatewayCertificateNotAfterMs = json.rdpGatewayCertificateNotAfterMs || 0;
+    }
+    if (json.rdpGatewayCertificateTrustedAt !== undefined) {
+      host.rdpGatewayCertificateTrustedAt = json.rdpGatewayCertificateTrustedAt || 0;
+    }
+    if (json.rdpGatewayCertificateTrustMode !== undefined) {
+      host.rdpGatewayCertificateTrustMode = json.rdpGatewayCertificateTrustMode || 0;
+    }
+    if (json.rdpGatewayCertificateAllowUntrustedRoot !== undefined) {
+      host.rdpGatewayCertificateAllowUntrustedRoot =
+        json.rdpGatewayCertificateAllowUntrustedRoot === true;
+    }
+    if (json.rdpGatewayCertificateAllowHostMismatch !== undefined) {
+      host.rdpGatewayCertificateAllowHostMismatch =
+        json.rdpGatewayCertificateAllowHostMismatch === true;
+    }
+    if (json.rdpGatewayCertificateRouteIdentity !== undefined) {
+      host.rdpGatewayCertificateRouteIdentity = json.rdpGatewayCertificateRouteIdentity || '';
     }
     if (json.proxyHost) { host.proxyHost = json.proxyHost; }
     if (json.proxyPort) { host.proxyPort = json.proxyPort; }
@@ -652,4 +792,17 @@ export class RemoteHost {
       .map((b: number) => b.toString(16).padStart(2, '0')).join('');
     return 'host_' + Date.now().toString(36) + '_' + randomStr;
   }
+}
+
+export function rdpRouteIdentity(host: RemoteHost): string {
+  return rdpRouteIdentityForValues(
+    host.rdpEndpointMode,
+    host.host,
+    host.port,
+    host.customHostname,
+    host.gatewayHost,
+    host.gatewayPort > 0 ? host.gatewayPort : 443,
+    host.rdpGatewayServerName,
+    host.rdpGatewayTransport
+  );
 }

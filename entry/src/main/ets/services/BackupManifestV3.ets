@@ -109,9 +109,18 @@ const REMOTE_HOST_EXTENSION_TRUST: string[] = [
   'sshjumphostkeyrawbase64', 'sshjumphostkeytrustedat', 'sshjumphostkeytrustmode',
   'rdpcertificatefingerprintsha256', 'rdpcertificatesubject',
   'rdpcertificateissuer', 'rdpcertificatecommonname',
+  'rdpcertificatenotbeforems', 'rdpcertificatenotafterms',
   'rdpcertificatetrustedat', 'rdpcertificatetrustmode',
   'rdpcertificateallowuntrustedroot',
-  'rdpcertificateallowhostmismatch'
+  'rdpcertificateallowhostmismatch', 'rdpcertificaterouteidentity',
+  'rdpgatewaycertificatefingerprintsha256',
+  'rdpgatewaycertificatesubject', 'rdpgatewaycertificateissuer',
+  'rdpgatewaycertificatecommonname', 'rdpgatewaycertificatenotbeforems',
+  'rdpgatewaycertificatenotafterms', 'rdpgatewaycertificatetrustedat',
+  'rdpgatewaycertificatetrustmode',
+  'rdpgatewaycertificateallowuntrustedroot',
+  'rdpgatewaycertificateallowhostmismatch',
+  'rdpgatewaycertificaterouteidentity'
 ];
 
 const REMOTE_HOST_EXTENSION_SAFE: string[] = [
@@ -121,7 +130,8 @@ const REMOTE_HOST_EXTENSION_SAFE: string[] = [
   'rustdeskdirectport', 'sshproxytype', 'rdpcredentialid',
   'sshproxyauthmethod', 'sshproxykeyid',
   'rdpauthmode', 'sourcetype', 'rustdesktargetdevice',
-  'rustdeskadaptiveorientation'
+  'rustdeskadaptiveorientation', 'rdpendpointmode',
+  'rdpgatewaytransport', 'rdpgatewayservername'
 ];
 
 const DISPLAY_CONFIG_SAFE: string[] = [

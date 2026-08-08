@@ -69,6 +69,7 @@ public:
     void            requestFrameRefresh() override;
     RdpCertificateInfo probeRdpCertificate(const std::string& host, int port,
                                            const std::string& serverName) override;
+    RdpPreflightResult probeRdpCertificateRoute(const RdpPreflightRequest& request) override;
     RdpRenderStats  getRdpRenderStats() override;
     bool            setBackgroundVideoPrewarm(bool enabled, uint32_t intervalMs);
     bool            presentCachedBackgroundFrame();
@@ -213,7 +214,8 @@ private:
                                   uint64_t generation);
     DWORD evaluateCertificate(const char* host, UINT16 port, const char* commonName,
                               const char* subject, const char* issuer,
-                              const std::string& fingerprint, DWORD flags);
+                              const std::string& fingerprint, DWORD flags,
+                              const BYTE* pemData = nullptr, size_t pemLength = 0);
     void queuePostDisconnectTeardown();
 
     // FreeRDP PreConnect 阶段加载 rdpsnd/rdpdr/cliprdr 等客户端通道

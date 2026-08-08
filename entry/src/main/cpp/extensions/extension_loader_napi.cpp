@@ -1271,16 +1271,182 @@ static napi_value CreateRdpCertificateInfoValue(napi_env env, const RdpCertifica
     SetObjectBool(env, result, "ok", cert.ok);
     SetObjectString(env, result, "host", cert.host);
     SetObjectInt32(env, result, "port", cert.port);
+    SetObjectString(env, result, "serverName", cert.serverName);
     SetObjectString(env, result, "commonName", cert.commonName);
     SetObjectString(env, result, "subject", cert.subject);
     SetObjectString(env, result, "issuer", cert.issuer);
     SetObjectString(env, result, "fingerprintSha256", cert.fingerprintSha256);
+    SetObjectInt64(env, result, "notBeforeMs", cert.notBeforeMs);
+    SetObjectInt64(env, result, "notAfterMs", cert.notAfterMs);
     SetObjectInt32(env, result, "flags", cert.flags);
     SetObjectBool(env, result, "rootTrusted", cert.rootTrusted);
     SetObjectBool(env, result, "hostMismatch", cert.hostMismatch);
     SetObjectInt32(env, result, "errorCode", cert.errorCode);
     SetObjectString(env, result, "errorMessage", cert.errorMessage);
     return result;
+}
+
+static napi_value CreateRdpCertificateRecordValue(
+    napi_env env, const RdpCertificateRecord& cert) {
+    napi_value result;
+    napi_create_object(env, &result);
+    SetObjectBool(env, result, "present", cert.present);
+    SetObjectBool(env, result, "rootTrusted", cert.rootTrusted);
+    SetObjectBool(env, result, "hostMismatch", cert.hostMismatch);
+    SetObjectInt32(env, result, "flags", cert.flags);
+    SetObjectString(env, result, "host", cert.host);
+    SetObjectInt32(env, result, "port", cert.port);
+    SetObjectString(env, result, "stage", cert.stage);
+    SetObjectString(env, result, "serverName", cert.serverName);
+    SetObjectString(env, result, "commonName", cert.commonName);
+    SetObjectString(env, result, "subject", cert.subject);
+    SetObjectString(env, result, "issuer", cert.issuer);
+    SetObjectString(env, result, "fingerprintSha256", cert.fingerprintSha256);
+    SetObjectInt64(env, result, "notBeforeMs", cert.notBeforeMs);
+    SetObjectInt64(env, result, "notAfterMs", cert.notAfterMs);
+    return result;
+}
+
+static napi_value CreateRdpPreflightResultValue(
+    napi_env env, const RdpPreflightResult& preflight) {
+    napi_value result;
+    napi_create_object(env, &result);
+    SetObjectBool(env, result, "ok", preflight.ok);
+    SetObjectString(env, result, "endpointMode",
+                    RdpGatewayPolicy::endpointModeName(preflight.endpointMode));
+    SetObjectString(env, result, "routeIdentity", preflight.routeIdentity);
+    SetObjectInt64(env, result, "generation", static_cast<int64_t>(preflight.generation));
+    SetObjectString(env, result, "requestId", preflight.requestId);
+    SetObjectString(env, result, "stage", preflight.stage);
+    SetObjectString(env, result, "errorCode", preflight.errorCode);
+    SetObjectString(env, result, "errorMessage", preflight.errorMessage);
+    SetObjectString(env, result, "gatewayTransportRequested",
+                    preflight.gatewayTransportRequested);
+    SetObjectString(env, result, "gatewayTransportNegotiated",
+                    preflight.gatewayTransportNegotiated);
+    SetObjectString(env, result, "gatewayTransportSelected", preflight.gatewayTransportSelected);
+    SetObjectBool(env, result, "requiresGatewayAuth", preflight.requiresGatewayAuth);
+    SetObjectBool(env, result, "requiresUserDecision", preflight.requiresUserDecision);
+    napi_value gatewayCertificate = CreateRdpCertificateRecordValue(
+        env, preflight.gatewayCertificate);
+    napi_value targetCertificate = CreateRdpCertificateRecordValue(
+        env, preflight.targetCertificate);
+    napi_set_named_property(env, result, "gatewayCertificate", gatewayCertificate);
+    napi_set_named_property(env, result, "targetCertificate", targetCertificate);
+    return result;
+}
+
+static bool ReadNapiNamedInt64(
+    napi_env env, napi_value object, const char* name,
+    int64_t& out, bool required) {
+    napi_value value;
+    if (napi_get_named_property(env, object, name, &value) != napi_ok) {
+        return !required;
+    }
+    napi_valuetype type = napi_undefined;
+    if (napi_typeof(env, value, &type) != napi_ok) {
+        return false;
+    }
+    if (type == napi_undefined || type == napi_null) {
+        return !required;
+    }
+    return type == napi_number && napi_get_value_int64(env, value, &out) == napi_ok;
+}
+
+static bool ReadRdpPreflightRequest(
+    napi_env env, napi_value value, RdpPreflightRequest& request,
+    std::string& errorMessage) {
+    napi_valuetype type = napi_undefined;
+    bool isArray = false;
+    if (napi_typeof(env, value, &type) != napi_ok || type != napi_object ||
+        napi_is_array(env, value, &isArray) != napi_ok || isArray) {
+        errorMessage = "RDP preflight request must be an object";
+        return false;
+    }
+
+    napi_value routeValue = value;
+    napi_value nestedRoute;
+    if (napi_get_named_property(env, value, "route", &nestedRoute) == napi_ok &&
+        napi_typeof(env, nestedRoute, &type) == napi_ok && type == napi_object &&
+        napi_is_array(env, nestedRoute, &isArray) == napi_ok && !isArray) {
+        routeValue = nestedRoute;
+    }
+
+    int32_t targetPort = 3389;
+    int32_t gatewayPort = 443;
+    std::string endpointMode;
+    std::string gatewayTransport;
+    if (!ReadNapiNamedString(env, routeValue, "targetHost",
+                             request.route.targetHost, true) ||
+        !ReadNapiNamedInt32(env, routeValue, "targetPort", targetPort, false) ||
+        !ReadNapiNamedString(env, routeValue, "targetServerName",
+                             request.route.targetServerName, false) ||
+        !ReadNapiNamedString(env, routeValue, "endpointMode", endpointMode, false) ||
+        !ReadNapiNamedString(env, routeValue, "gatewayHost",
+                             request.route.gatewayHost, false) ||
+        !ReadNapiNamedInt32(env, routeValue, "gatewayPort", gatewayPort, false) ||
+        !ReadNapiNamedString(env, routeValue, "gatewayServerName",
+                             request.route.gatewayServerName, false) ||
+        !ReadNapiNamedString(env, routeValue, "gatewayTransport", gatewayTransport, false)) {
+        errorMessage = "RDP preflight route contains an invalid field";
+        return false;
+    }
+
+    // Preserve the legacy handoff rule only at this explicit boundary. Once
+    // parsed, the adapter sees a concrete route and cannot guess from a port.
+    if (endpointMode.empty()) {
+        endpointMode = request.route.gatewayHost.empty() ? "direct_rdp" :
+            "microsoft_rd_gateway";
+    }
+    if (!RdpGatewayPolicy::parseEndpointMode(endpointMode, request.route.endpointMode)) {
+        errorMessage = "RDP preflight endpointMode is unknown";
+        return false;
+    }
+    if (gatewayTransport.empty()) {
+        gatewayTransport = "auto";
+    }
+    if (!RdpGatewayPolicy::parseGatewayTransport(
+            gatewayTransport, request.route.gatewayTransport)) {
+        errorMessage = "RDP preflight gatewayTransport is unknown";
+        return false;
+    }
+    request.route.targetPort = targetPort;
+    request.route.gatewayPort = gatewayPort;
+    if (request.route.targetServerName.empty()) {
+        request.route.targetServerName = request.route.targetHost;
+    }
+    if (request.route.gatewayServerName.empty()) {
+        request.route.gatewayServerName = request.route.gatewayHost;
+    }
+
+    if (!ReadNapiNamedString(env, value, "username", request.username, false) ||
+        !ReadNapiNamedString(env, value, "password", request.password, false) ||
+        !ReadNapiNamedString(env, value, "domain", request.domain, false) ||
+        !ReadNapiNamedBool(env, value, "targetRestrictedAdmin",
+                           request.targetRestrictedAdmin, false) ||
+        !ReadNapiNamedString(env, value, "expectedTargetFingerprintSha256",
+                             request.expectedTargetFingerprintSha256, false) ||
+        !ReadNapiNamedString(env, value, "expectedGatewayFingerprintSha256",
+                             request.expectedGatewayFingerprintSha256, false) ||
+        !ReadNapiNamedBool(env, value, "targetAllowUntrustedRoot",
+                           request.targetAllowUntrustedRoot, false) ||
+        !ReadNapiNamedBool(env, value, "targetAllowHostMismatch",
+                           request.targetAllowHostMismatch, false) ||
+        !ReadNapiNamedBool(env, value, "gatewayAllowUntrustedRoot",
+                           request.gatewayAllowUntrustedRoot, false) ||
+        !ReadNapiNamedBool(env, value, "gatewayAllowHostMismatch",
+                           request.gatewayAllowHostMismatch, false) ||
+        !ReadNapiNamedString(env, value, "requestId", request.requestId, false)) {
+        errorMessage = "RDP preflight trust fields are invalid";
+        return false;
+    }
+    int64_t generation = 0;
+    if (!ReadNapiNamedInt64(env, value, "generation", generation, false) || generation < 0) {
+        errorMessage = "RDP preflight generation is invalid";
+        return false;
+    }
+    request.generation = static_cast<uint64_t>(generation);
+    return true;
 }
 
 static napi_value CreateVncCertificateInfoValue(napi_env env, const VncCertificateInfo& cert) {
@@ -1671,6 +1837,131 @@ napi_value NapiProbeRdpCertificateAsync(napi_env env, napi_callback_info info) {
         return nullptr;
     }
 
+    return promise;
+}
+
+struct RdpPreflightRouteProbeAsyncData {
+    RdpPreflightRequest request;
+    std::shared_ptr<ProtocolAdapter> adapter;
+    RdpPreflightResult result;
+    std::string errorMessage;
+    napi_deferred deferred = nullptr;
+    napi_async_work work = nullptr;
+    bool workerFailed = false;
+};
+
+static void ExecuteRdpPreflightRouteProbeAsync(napi_env /*env*/, void* rawData) {
+    auto* data = static_cast<RdpPreflightRouteProbeAsyncData*>(rawData);
+    if (!data) {
+        return;
+    }
+    try {
+        if (!data->adapter) {
+            data->result.endpointMode = data->request.route.endpointMode;
+            data->result.routeIdentity = RdpGatewayPolicy::routeIdentity(data->request.route);
+            data->result.generation = data->request.generation;
+            data->result.requestId = data->request.requestId;
+            data->result.stage = "endpoint";
+            data->result.errorCode = "E-RDP-ADAPTER";
+            data->result.errorMessage = "RDP adapter is not available";
+            RdpGatewayPolicy::initializeGatewayTransportResult(
+                data->result, data->request.route.gatewayTransport);
+            return;
+        }
+        data->result = data->adapter->probeRdpCertificateRoute(data->request);
+    } catch (const std::exception& ex) {
+        data->workerFailed = true;
+        data->errorMessage = std::string("RDP route preflight failed: ") + ex.what();
+    } catch (...) {
+        data->workerFailed = true;
+        data->errorMessage = "RDP route preflight failed: unknown native exception";
+    }
+}
+
+static void CompleteRdpPreflightRouteProbeAsync(
+    napi_env env, napi_status status, void* rawData) {
+    auto* data = static_cast<RdpPreflightRouteProbeAsyncData*>(rawData);
+    if (!data) {
+        return;
+    }
+    if (status != napi_ok || data->workerFailed) {
+        napi_value error;
+        const std::string message = data->errorMessage.empty()
+            ? "RDP route preflight async work failed" : data->errorMessage;
+        napi_create_string_utf8(env, message.c_str(), NAPI_AUTO_LENGTH, &error);
+        napi_reject_deferred(env, data->deferred, error);
+        OH_LOG_ERROR(LOG_APP,
+                     "[RDP-PREFLIGHT-ASYNC] complete failed status=%{public}d", status);
+    } else {
+        napi_value result = CreateRdpPreflightResultValue(env, data->result);
+        napi_resolve_deferred(env, data->deferred, result);
+        OH_LOG_INFO(LOG_APP,
+                    "[RDP-PREFLIGHT-ASYNC] complete stage=%{public}s ok=%{public}s",
+                    data->result.stage.c_str(), data->result.ok ? "true" : "false");
+    }
+    napi_delete_async_work(env, data->work);
+    delete data;
+}
+
+/**
+ * NAPI: probeRdpCertificateRouteAsync(request): Promise<RdpPreflightResult>
+ *
+ * The request carries the complete route. Gateway callers must not use the
+ * legacy three-argument direct-RDP probe.
+ */
+napi_value NapiProbeRdpCertificateRouteAsync(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc < 1) {
+        napi_throw_type_error(env, "E-RDP-PREFLIGHT-REQUEST",
+                              "RDP route preflight request is required");
+        return nullptr;
+    }
+
+    auto* data = new (std::nothrow) RdpPreflightRouteProbeAsyncData();
+    if (!data) {
+        napi_throw_error(env, nullptr, "RDP route preflight async allocation failed");
+        return nullptr;
+    }
+    std::string parseError;
+    if (!ReadRdpPreflightRequest(env, args[0], data->request, parseError)) {
+        delete data;
+        napi_throw_type_error(env, "E-RDP-PREFLIGHT-REQUEST", parseError.c_str());
+        return nullptr;
+    }
+    data->adapter = FindAdapter("rdp");
+
+    napi_value promise;
+    napi_status status = napi_create_promise(env, &data->deferred, &promise);
+    if (status != napi_ok) {
+        delete data;
+        napi_throw_error(env, nullptr, "RDP route preflight promise creation failed");
+        return nullptr;
+    }
+    napi_value resourceName;
+    status = napi_create_string_utf8(env, "RdpPreflightRouteProbeAsync",
+                                     NAPI_AUTO_LENGTH, &resourceName);
+    if (status != napi_ok) {
+        delete data;
+        napi_throw_error(env, nullptr, "RDP route preflight resource creation failed");
+        return nullptr;
+    }
+    status = napi_create_async_work(env, resourceName, resourceName,
+        ExecuteRdpPreflightRouteProbeAsync, CompleteRdpPreflightRouteProbeAsync,
+        data, &data->work);
+    if (status != napi_ok) {
+        delete data;
+        napi_throw_error(env, nullptr, "RDP route preflight work creation failed");
+        return nullptr;
+    }
+    status = napi_queue_async_work(env, data->work);
+    if (status != napi_ok) {
+        napi_delete_async_work(env, data->work);
+        delete data;
+        napi_throw_error(env, nullptr, "RDP route preflight work queue failed");
+        return nullptr;
+    }
     return promise;
 }
 
@@ -2941,6 +3232,9 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     getString("customHostname", cfg.customHostname);
     getString("gatewayHost", cfg.gatewayHost);
     getInt("gatewayPort", cfg.gatewayPort);
+    getString("rdpEndpointMode", cfg.rdpEndpointMode);
+    getString("rdpGatewayTransport", cfg.rdpGatewayTransport);
+    getString("rdpGatewayServerName", cfg.rdpGatewayServerName);
     getInt("monitorCount", cfg.monitorCount);
     napi_value multiMonVal;
     if (napi_get_named_property(env, args[0], "multiMonitor", &multiMonVal) == napi_ok) {
@@ -3057,8 +3351,12 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     getString("rdDriveName", cfg.rdDriveName);
     getString("rdDrivePath", cfg.rdDrivePath);
     getString("expectedRdpCertificateFingerprintSha256", cfg.expectedRdpCertificateFingerprintSha256);
+    getString("expectedRdpGatewayCertificateFingerprintSha256",
+              cfg.expectedRdpGatewayCertificateFingerprintSha256);
     getBool("rdpAllowUntrustedRoot", cfg.rdpAllowUntrustedRoot);
     getBool("rdpAllowHostMismatch", cfg.rdpAllowHostMismatch);
+    getBool("rdpGatewayAllowUntrustedRoot", cfg.rdpGatewayAllowUntrustedRoot);
+    getBool("rdpGatewayAllowHostMismatch", cfg.rdpGatewayAllowHostMismatch);
     getInt("rdPasswordMode", cfg.rdPasswordMode);
     getInt("rdAuthMode", cfg.rdAuthMode);
     getInt("rdPasswordLength", cfg.rdPasswordLength);
@@ -8485,6 +8783,10 @@ napi_value ExtensionLoaderNapi::Init(napi_env env, napi_value exports) {
     napi_create_function(env, "probeRdpCertificateAsync", NAPI_AUTO_LENGTH,
                          NapiProbeRdpCertificateAsync, nullptr, &fn);
     napi_set_named_property(env, exports, "probeRdpCertificateAsync", fn);
+
+    napi_create_function(env, "probeRdpCertificateRouteAsync", NAPI_AUTO_LENGTH,
+                         NapiProbeRdpCertificateRouteAsync, nullptr, &fn);
+    napi_set_named_property(env, exports, "probeRdpCertificateRouteAsync", fn);
 
     napi_create_function(env, "probeRustDeskPresenceAsync", NAPI_AUTO_LENGTH,
                          NapiProbeRustDeskPresenceAsync, nullptr, &fn);

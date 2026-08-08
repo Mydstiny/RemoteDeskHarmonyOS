@@ -68,6 +68,9 @@ describe('CloudTableAdapter', (): void => {
       rustdeskadaptiveorientation: '1',
       rdpauthmode: 'restricted_admin',
       rdprestrictedadminsecretsource: 'ntlm_hash',
+      rdpendpointmode: 'microsoft_rd_gateway',
+      rdpgatewaytransport: 'no-websockets',
+      rdpgatewayservername: 'gateway.example.test',
       sshhostkeyfingerprintsha256: 'must-stay-local',
       rdpcertificateallowhostmismatch: '1',
       rdprestrictedadminhash: '0123456789ABCDEF0123456789ABCDEF',
@@ -88,6 +91,9 @@ describe('CloudTableAdapter', (): void => {
     expect(decoded.extension['rustdesktotpautosubmit']).assertUndefined();
     expect(decoded.extension['rdpauthmode']).assertEqual('restricted_admin');
     expect(decoded.extension['rdprestrictedadminsecretsource']).assertEqual('ntlm_hash');
+    expect(decoded.extension['rdpendpointmode']).assertEqual('microsoft_rd_gateway');
+    expect(decoded.extension['rdpgatewaytransport']).assertEqual('no-websockets');
+    expect(decoded.extension['rdpgatewayservername']).assertEqual('gateway.example.test');
     expect(decoded.extension['rdprestrictedadminhash']).assertUndefined();
     expect(decoded.extension['password']).assertUndefined();
     expect(decoded.extension['sshkeypassphrase']).assertUndefined();
@@ -98,15 +104,26 @@ describe('CloudTableAdapter', (): void => {
     expect(decoded.displayConfigJson.indexOf('"width":1920') >= 0).assertTrue();
   });
 
+  it('keeps RDP Gateway route fields out of the fixed cloud table schema', (): void => {
+    const columns: string[] = cloudTableColumns('remotehosts');
+    expect(columns.indexOf('rdpendpointmode')).assertEqual(-1);
+    expect(columns.indexOf('rdpgatewaytransport')).assertEqual(-1);
+    expect(columns.indexOf('rdpgatewayservername')).assertEqual(-1);
+  });
+
   it('extracts_legacy_device_trust_only_for_local_migration', (): void => {
     const legacy: string =
       '{"width":1280,"_remoteDeskExtensionV1":{' +
       '"sshhostkeyfingerprintsha256":"SHA256:old",' +
       '"sshhostkeytrustedat":"100",' +
+      '"rdpcertificatenotbeforems":"1000",' +
+      '"rdpgatewaycertificatenotafterms":"2000",' +
       '"rustdeskdirecthost":"192.0.2.4"}}';
     const extracted = extractLegacyRemoteHostDeviceTrust(legacy);
     expect(extracted['sshhostkeyfingerprintsha256'])
       .assertEqual('SHA256:old');
+    expect(extracted['rdpcertificatenotbeforems']).assertEqual('1000');
+    expect(extracted['rdpgatewaycertificatenotafterms']).assertEqual('2000');
     expect(extracted['rustdeskdirecthost'])
       .assertUndefined();
     const merged = mergeRemoteHostDeviceTrust(

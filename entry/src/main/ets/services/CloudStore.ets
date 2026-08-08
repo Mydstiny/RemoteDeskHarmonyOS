@@ -4492,10 +4492,24 @@ export class CloudStore implements CryptoCloudStore {
         rdpcertificatesubject TEXT,
         rdpcertificateissuer TEXT,
         rdpcertificatecommonname TEXT,
+        rdpcertificatenotbeforems INTEGER,
+        rdpcertificatenotafterms INTEGER,
         rdpcertificatetrustedat INTEGER,
         rdpcertificatetrustmode INTEGER,
         rdpcertificateallowuntrustedroot INTEGER,
         rdpcertificateallowhostmismatch INTEGER,
+        rdpcertificaterouteidentity TEXT,
+        rdpgatewaycertificatefingerprintsha256 TEXT,
+        rdpgatewaycertificatesubject TEXT,
+        rdpgatewaycertificateissuer TEXT,
+        rdpgatewaycertificatecommonname TEXT,
+        rdpgatewaycertificatenotbeforems INTEGER,
+        rdpgatewaycertificatenotafterms INTEGER,
+        rdpgatewaycertificatetrustedat INTEGER,
+        rdpgatewaycertificatetrustmode INTEGER,
+        rdpgatewaycertificateallowuntrustedroot INTEGER,
+        rdpgatewaycertificateallowhostmismatch INTEGER,
+        rdpgatewaycertificaterouteidentity TEXT,
         proxyhost TEXT,
         proxyport INTEGER,
         proxyusername TEXT,
@@ -4544,10 +4558,24 @@ export class CloudStore implements CryptoCloudStore {
       'rdpcertificatesubject TEXT',
       'rdpcertificateissuer TEXT',
       'rdpcertificatecommonname TEXT',
+      'rdpcertificatenotbeforems INTEGER',
+      'rdpcertificatenotafterms INTEGER',
       'rdpcertificatetrustedat INTEGER',
       'rdpcertificatetrustmode INTEGER',
       'rdpcertificateallowuntrustedroot INTEGER',
-      'rdpcertificateallowhostmismatch INTEGER'
+      'rdpcertificateallowhostmismatch INTEGER',
+      'rdpcertificaterouteidentity TEXT',
+      'rdpgatewaycertificatefingerprintsha256 TEXT',
+      'rdpgatewaycertificatesubject TEXT',
+      'rdpgatewaycertificateissuer TEXT',
+      'rdpgatewaycertificatecommonname TEXT',
+      'rdpgatewaycertificatenotbeforems INTEGER',
+      'rdpgatewaycertificatenotafterms INTEGER',
+      'rdpgatewaycertificatetrustedat INTEGER',
+      'rdpgatewaycertificatetrustmode INTEGER',
+      'rdpgatewaycertificateallowuntrustedroot INTEGER',
+      'rdpgatewaycertificateallowhostmismatch INTEGER',
+      'rdpgatewaycertificaterouteidentity TEXT'
     ];
     for (const colDef of hostKeyCols) {
       await this.ensureColumn('remotehosts', colDef);
@@ -5699,9 +5727,17 @@ export class CloudStore implements CryptoCloudStore {
       'sshkeypassphrase', 'sshkeyid', 'sshhostkeyalgorithm',
       'sshhostkeyfingerprintsha256', 'sshhostkeyrawbase64', 'sshhostkeytrustedat',
       'sshhostkeytrustmode', 'rdpcertificatefingerprintsha256', 'rdpcertificatesubject',
-      'rdpcertificateissuer', 'rdpcertificatecommonname', 'rdpcertificatetrustedat',
+      'rdpcertificateissuer', 'rdpcertificatecommonname', 'rdpcertificatenotbeforems',
+      'rdpcertificatenotafterms', 'rdpcertificatetrustedat',
       'rdpcertificatetrustmode', 'rdpcertificateallowuntrustedroot',
-      'rdpcertificateallowhostmismatch', 'rustdeskrelayid', 'rustdeskaccountid',
+      'rdpcertificateallowhostmismatch', 'rdpcertificaterouteidentity',
+      'rdpgatewaycertificatefingerprintsha256', 'rdpgatewaycertificatesubject',
+      'rdpgatewaycertificateissuer', 'rdpgatewaycertificatecommonname',
+      'rdpgatewaycertificatenotbeforems', 'rdpgatewaycertificatenotafterms',
+      'rdpgatewaycertificatetrustedat', 'rdpgatewaycertificatetrustmode',
+      'rdpgatewaycertificateallowuntrustedroot',
+      'rdpgatewaycertificateallowhostmismatch',
+      'rdpgatewaycertificaterouteidentity', 'rustdeskrelayid', 'rustdeskaccountid',
       'rustdeskpasswordmode', 'rustdeskauthmode', 'rustdeskdirectenabled',
       'rustdeskdirecthost', 'rustdeskdirectport', 'rdpcredentialid', 'rdpauthmode',
       'rdprestrictedadminsecretsource', 'sourcetype',
@@ -5764,6 +5800,10 @@ export class CloudStore implements CryptoCloudStore {
     host.rdpCertificateCommonName =
       get('rdpcertificatecommonname',
         host.rdpCertificateCommonName);
+    host.rdpCertificateNotBeforeMs = Number(
+      get('rdpcertificatenotbeforems', host.rdpCertificateNotBeforeMs.toString()));
+    host.rdpCertificateNotAfterMs = Number(
+      get('rdpcertificatenotafterms', host.rdpCertificateNotAfterMs.toString()));
     host.rdpCertificateTrustedAt = Number(
       get('rdpcertificatetrustedat',
         host.rdpCertificateTrustedAt.toString()));
@@ -5776,6 +5816,36 @@ export class CloudStore implements CryptoCloudStore {
     host.rdpCertificateAllowHostMismatch =
       get('rdpcertificateallowhostmismatch',
         host.rdpCertificateAllowHostMismatch ? '1' : '0') === '1';
+    host.rdpCertificateRouteIdentity =
+      get('rdpcertificaterouteidentity', host.rdpCertificateRouteIdentity);
+    host.rdpGatewayCertificateFingerprintSha256 =
+      get('rdpgatewaycertificatefingerprintsha256',
+        host.rdpGatewayCertificateFingerprintSha256);
+    host.rdpGatewayCertificateSubject =
+      get('rdpgatewaycertificatesubject', host.rdpGatewayCertificateSubject);
+    host.rdpGatewayCertificateIssuer =
+      get('rdpgatewaycertificateissuer', host.rdpGatewayCertificateIssuer);
+    host.rdpGatewayCertificateCommonName =
+      get('rdpgatewaycertificatecommonname', host.rdpGatewayCertificateCommonName);
+    host.rdpGatewayCertificateNotBeforeMs = Number(
+      get('rdpgatewaycertificatenotbeforems', host.rdpGatewayCertificateNotBeforeMs.toString()));
+    host.rdpGatewayCertificateNotAfterMs = Number(
+      get('rdpgatewaycertificatenotafterms', host.rdpGatewayCertificateNotAfterMs.toString()));
+    host.rdpGatewayCertificateTrustedAt = Number(
+      get('rdpgatewaycertificatetrustedat',
+        host.rdpGatewayCertificateTrustedAt.toString()));
+    host.rdpGatewayCertificateTrustMode = Number(
+      get('rdpgatewaycertificatetrustmode',
+        host.rdpGatewayCertificateTrustMode.toString()));
+    host.rdpGatewayCertificateAllowUntrustedRoot =
+      get('rdpgatewaycertificateallowuntrustedroot',
+        host.rdpGatewayCertificateAllowUntrustedRoot ? '1' : '0') === '1';
+    host.rdpGatewayCertificateAllowHostMismatch =
+      get('rdpgatewaycertificateallowhostmismatch',
+        host.rdpGatewayCertificateAllowHostMismatch ? '1' : '0') === '1';
+    host.rdpGatewayCertificateRouteIdentity =
+      get('rdpgatewaycertificaterouteidentity',
+        host.rdpGatewayCertificateRouteIdentity);
     return host;
   }
 
@@ -5808,6 +5878,9 @@ export class CloudStore implements CryptoCloudStore {
     host.rdpAuthMode = normalizeRdpAuthMode(get('rdpauthmode', host.rdpAuthMode));
     host.rdpRestrictedAdminSecretSource = normalizeRdpRestrictedAdminSecretSource(
       get('rdprestrictedadminsecretsource', host.rdpRestrictedAdminSecretSource));
+    host.rdpEndpointMode = get('rdpendpointmode', host.rdpEndpointMode);
+    host.rdpGatewayTransport = get('rdpgatewaytransport', host.rdpGatewayTransport) || 'auto';
+    host.rdpGatewayServerName = get('rdpgatewayservername', host.rdpGatewayServerName);
     host.rustdeskPasswordMode = Number(get('rustdeskpasswordmode', host.rustdeskPasswordMode.toString()));
     host.rustdeskAuthMode = get('rustdeskauthmode', host.rustdeskAuthMode) === 'request_approval' ? 'request_approval' : 'password';
     host.rustdeskDirectEnabled = get('rustdeskdirectenabled', host.rustdeskDirectEnabled ? '1' : '0') === '1';
@@ -5866,6 +5939,10 @@ export class CloudStore implements CryptoCloudStore {
       host.rdpCertificateIssuer;
     values['rdpcertificatecommonname'] =
       host.rdpCertificateCommonName;
+    values['rdpcertificatenotbeforems'] =
+      host.rdpCertificateNotBeforeMs.toString();
+    values['rdpcertificatenotafterms'] =
+      host.rdpCertificateNotAfterMs.toString();
     values['rdpcertificatetrustedat'] =
       host.rdpCertificateTrustedAt.toString();
     values['rdpcertificatetrustmode'] =
@@ -5874,6 +5951,30 @@ export class CloudStore implements CryptoCloudStore {
       host.rdpCertificateAllowUntrustedRoot ? '1' : '0';
     values['rdpcertificateallowhostmismatch'] =
       host.rdpCertificateAllowHostMismatch ? '1' : '0';
+    values['rdpcertificaterouteidentity'] =
+      host.rdpCertificateRouteIdentity;
+    values['rdpgatewaycertificatefingerprintsha256'] =
+      host.rdpGatewayCertificateFingerprintSha256;
+    values['rdpgatewaycertificatesubject'] =
+      host.rdpGatewayCertificateSubject;
+    values['rdpgatewaycertificateissuer'] =
+      host.rdpGatewayCertificateIssuer;
+    values['rdpgatewaycertificatecommonname'] =
+      host.rdpGatewayCertificateCommonName;
+    values['rdpgatewaycertificatenotbeforems'] =
+      host.rdpGatewayCertificateNotBeforeMs.toString();
+    values['rdpgatewaycertificatenotafterms'] =
+      host.rdpGatewayCertificateNotAfterMs.toString();
+    values['rdpgatewaycertificatetrustedat'] =
+      host.rdpGatewayCertificateTrustedAt.toString();
+    values['rdpgatewaycertificatetrustmode'] =
+      host.rdpGatewayCertificateTrustMode.toString();
+    values['rdpgatewaycertificateallowuntrustedroot'] =
+      host.rdpGatewayCertificateAllowUntrustedRoot ? '1' : '0';
+    values['rdpgatewaycertificateallowhostmismatch'] =
+      host.rdpGatewayCertificateAllowHostMismatch ? '1' : '0';
+    values['rdpgatewaycertificaterouteidentity'] =
+      host.rdpGatewayCertificateRouteIdentity;
     return values;
   }
 
@@ -5899,6 +6000,9 @@ export class CloudStore implements CryptoCloudStore {
     values['rdpcredentialid'] = host.rdpCredentialId;
     values['rdpauthmode'] = host.rdpAuthMode;
     values['rdprestrictedadminsecretsource'] = host.rdpRestrictedAdminSecretSource;
+    values['rdpendpointmode'] = host.rdpEndpointMode;
+    values['rdpgatewaytransport'] = host.rdpGatewayTransport;
+    values['rdpgatewayservername'] = host.rdpGatewayServerName;
     values['sourcetype'] = host.sourceType;
     values['rustdeskproaccountid'] = host.rustdeskProAccountId;
     values['rustdeskpropeerid'] = host.rustdeskProPeerId;
@@ -6193,10 +6297,24 @@ export class CloudStore implements CryptoCloudStore {
       rdpcertificatesubject: '',
       rdpcertificateissuer: '',
       rdpcertificatecommonname: '',
+      rdpcertificatenotbeforems: 0,
+      rdpcertificatenotafterms: 0,
       rdpcertificatetrustedat: 0,
       rdpcertificatetrustmode: 0,
       rdpcertificateallowuntrustedroot: 0,
-      rdpcertificateallowhostmismatch: 0
+      rdpcertificateallowhostmismatch: 0,
+      rdpcertificaterouteidentity: '',
+      rdpgatewaycertificatefingerprintsha256: '',
+      rdpgatewaycertificatesubject: '',
+      rdpgatewaycertificateissuer: '',
+      rdpgatewaycertificatecommonname: '',
+      rdpgatewaycertificatenotbeforems: 0,
+      rdpgatewaycertificatenotafterms: 0,
+      rdpgatewaycertificatetrustedat: 0,
+      rdpgatewaycertificatetrustmode: 0,
+      rdpgatewaycertificateallowuntrustedroot: 0,
+      rdpgatewaycertificateallowhostmismatch: 0,
+      rdpgatewaycertificaterouteidentity: ''
     };
   }
 
@@ -8968,6 +9086,10 @@ export class CloudStore implements CryptoCloudStore {
     h.rdpCertificateSubject = getStr('rdpcertificatesubject');
     h.rdpCertificateIssuer = getStr('rdpcertificateissuer');
     h.rdpCertificateCommonName = getStr('rdpcertificatecommonname');
+    const rdpCertNotBeforeIdx: number = rs.getColumnIndex('rdpcertificatenotbeforems');
+    h.rdpCertificateNotBeforeMs = rdpCertNotBeforeIdx >= 0 ? rs.getLong(rdpCertNotBeforeIdx) : 0;
+    const rdpCertNotAfterIdx: number = rs.getColumnIndex('rdpcertificatenotafterms');
+    h.rdpCertificateNotAfterMs = rdpCertNotAfterIdx >= 0 ? rs.getLong(rdpCertNotAfterIdx) : 0;
     const rdpCertTrustedAtIdx: number = rs.getColumnIndex('rdpcertificatetrustedat');
     h.rdpCertificateTrustedAt = rdpCertTrustedAtIdx >= 0 ? rs.getLong(rdpCertTrustedAtIdx) : 0;
     const rdpCertTrustModeIdx: number = rs.getColumnIndex('rdpcertificatetrustmode');
@@ -8976,11 +9098,34 @@ export class CloudStore implements CryptoCloudStore {
     h.rdpCertificateAllowUntrustedRoot = allowRootIdx >= 0 && rs.getLong(allowRootIdx) === 1;
     const allowMismatchIdx: number = rs.getColumnIndex('rdpcertificateallowhostmismatch');
     h.rdpCertificateAllowHostMismatch = allowMismatchIdx >= 0 && rs.getLong(allowMismatchIdx) === 1;
+    const rdpGatewayCertNotBeforeIdx: number = rs.getColumnIndex('rdpgatewaycertificatenotbeforems');
+    h.rdpGatewayCertificateNotBeforeMs = rdpGatewayCertNotBeforeIdx >= 0 ?
+      rs.getLong(rdpGatewayCertNotBeforeIdx) : 0;
+    const rdpGatewayCertNotAfterIdx: number = rs.getColumnIndex('rdpgatewaycertificatenotafterms');
+    h.rdpGatewayCertificateNotAfterMs = rdpGatewayCertNotAfterIdx >= 0 ?
+      rs.getLong(rdpGatewayCertNotAfterIdx) : 0;
+    const rdpGatewayCertTrustModeIdx: number = rs.getColumnIndex('rdpgatewaycertificatetrustmode');
+    h.rdpGatewayCertificateTrustMode = rdpGatewayCertTrustModeIdx >= 0 ?
+      rs.getLong(rdpGatewayCertTrustModeIdx) : 0;
+    const rdpGatewayAllowRootIdx: number = rs.getColumnIndex('rdpgatewaycertificateallowuntrustedroot');
+    h.rdpGatewayCertificateAllowUntrustedRoot = rdpGatewayAllowRootIdx >= 0 &&
+      rs.getLong(rdpGatewayAllowRootIdx) === 1;
+    const rdpGatewayAllowMismatchIdx: number = rs.getColumnIndex('rdpgatewaycertificateallowhostmismatch');
+    h.rdpGatewayCertificateAllowHostMismatch = rdpGatewayAllowMismatchIdx >= 0 &&
+      rs.getLong(rdpGatewayAllowMismatchIdx) === 1;
+    h.rdpGatewayCertificateFingerprintSha256 = getStr('rdpgatewaycertificatefingerprintsha256');
+    h.rdpGatewayCertificateSubject = getStr('rdpgatewaycertificatesubject');
+    h.rdpGatewayCertificateIssuer = getStr('rdpgatewaycertificateissuer');
+    h.rdpGatewayCertificateCommonName = getStr('rdpgatewaycertificatecommonname');
+    h.rdpGatewayCertificateRouteIdentity = getStr('rdpgatewaycertificaterouteidentity');
     h.proxyHost = rs.getString(rs.getColumnIndex('proxyhost'));
     h.proxyPort = rs.getLong(rs.getColumnIndex('proxyport'));
     h.proxyUsername = rs.getString(rs.getColumnIndex('proxyusername'));
     h.gatewayHost = rs.getString(rs.getColumnIndex('gatewayhost'));
     h.gatewayPort = rs.getLong(rs.getColumnIndex('gatewayport'));
+    h.rdpEndpointMode = getStr('rdpendpointmode');
+    h.rdpGatewayTransport = getStr('rdpgatewaytransport') || 'auto';
+    h.rdpGatewayServerName = getStr('rdpgatewayservername');
     const dcJson: string = rs.getString(rs.getColumnIndex('displayconfig'));
     const displayPayload: RemoteHostDisplayPayload = decodeRemoteHostDisplayPayload(dcJson);
     if (displayPayload.displayConfigJson) {
@@ -9418,6 +9563,26 @@ export class CloudStore implements CryptoCloudStore {
     h.proxyUsername = rs.getString(rs.getColumnIndex('proxyusername'));
     h.gatewayHost = rs.getString(rs.getColumnIndex('gatewayhost'));
     h.gatewayPort = rs.getLong(rs.getColumnIndex('gatewayport'));
+    const rawRdpCertNotBeforeIdx: number = rs.getColumnIndex('rdpcertificatenotbeforems');
+    h.rdpCertificateNotBeforeMs = rawRdpCertNotBeforeIdx >= 0 ?
+      rs.getLong(rawRdpCertNotBeforeIdx) : 0;
+    const rawRdpCertNotAfterIdx: number = rs.getColumnIndex('rdpcertificatenotafterms');
+    h.rdpCertificateNotAfterMs = rawRdpCertNotAfterIdx >= 0 ?
+      rs.getLong(rawRdpCertNotAfterIdx) : 0;
+    const rawGatewayCertNotBeforeIdx: number = rs.getColumnIndex('rdpgatewaycertificatenotbeforems');
+    h.rdpGatewayCertificateNotBeforeMs = rawGatewayCertNotBeforeIdx >= 0 ?
+      rs.getLong(rawGatewayCertNotBeforeIdx) : 0;
+    const rawGatewayCertNotAfterIdx: number = rs.getColumnIndex('rdpgatewaycertificatenotafterms');
+    h.rdpGatewayCertificateNotAfterMs = rawGatewayCertNotAfterIdx >= 0 ?
+      rs.getLong(rawGatewayCertNotAfterIdx) : 0;
+    const endpointModeIndex: number = rs.getColumnIndex('rdpendpointmode');
+    const gatewayTransportIndex: number = rs.getColumnIndex('rdpgatewaytransport');
+    const gatewayServerNameIndex: number = rs.getColumnIndex('rdpgatewayservername');
+    h.rdpEndpointMode = endpointModeIndex >= 0 ? rs.getString(endpointModeIndex) : '';
+    h.rdpGatewayTransport = gatewayTransportIndex >= 0 ?
+      (rs.getString(gatewayTransportIndex) || 'auto') : 'auto';
+    h.rdpGatewayServerName = gatewayServerNameIndex >= 0 ?
+      rs.getString(gatewayServerNameIndex) : '';
     const dcJson = rs.getString(rs.getColumnIndex('displayconfig'));
     const displayPayload: RemoteHostDisplayPayload = decodeRemoteHostDisplayPayload(dcJson);
     if (displayPayload.displayConfigJson) {

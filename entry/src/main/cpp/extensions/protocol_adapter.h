@@ -18,6 +18,7 @@
 #include <vector>
 #include "input/remote_cursor_snapshot.h"
 #include "transfer_runtime_status.h"
+#include "rdp/rdp_gateway_policy.h"
 
 // ============================================================
 // 枚举与常量
@@ -81,6 +82,11 @@ struct ConnectionConfig {
     std::string customHostname;  // 🆕 自定义主机名 (RDP /client-hostname:)
     std::string gatewayHost;     // 🆕 RDP 网关地址
     int         gatewayPort;     // 🆕 RDP 网关端口 (默认 443)
+    // RDP route is explicit. An empty endpoint mode is a legacy handoff and
+    // is resolved to Microsoft RD Gateway only when gatewayHost is present.
+    std::string rdpEndpointMode;
+    std::string rdpGatewayTransport;
+    std::string rdpGatewayServerName;
     bool        multiMonitor;    // 🆕 多显示器模式
     int         monitorCount;    // 🆕 显示器数量
     int         colorDepth;      // 🆕 色深 (BPP)
@@ -119,8 +125,11 @@ struct ConnectionConfig {
     std::string rdDriveName;        // RDP: Windows 侧共享盘名称
     std::string rdDrivePath;        // RDP: 本地重定向盘路径
     std::string expectedRdpCertificateFingerprintSha256; // RDP: 用户已确认的服务器证书 SHA256
+    std::string expectedRdpGatewayCertificateFingerprintSha256; // RDP Gateway: 独立证书 SHA256
     bool        rdpAllowUntrustedRoot; // RDP: 当前连接允许无法回溯根证书
     bool        rdpAllowHostMismatch;  // RDP: 当前连接允许证书名称不匹配
+    bool        rdpGatewayAllowUntrustedRoot;
+    bool        rdpGatewayAllowHostMismatch;
     int         rdPasswordMode;    // RustDesk: 0=一次性, 1=永久
     int         rdAuthMode;        // RustDesk: 0=设备密码, 1=请求被控端点击批准
     int         rdPasswordLength;  // RustDesk: 临时密码长度
@@ -158,13 +167,19 @@ struct ConnectionConfig {
 
     ConnectionConfig()
         : port(3389), width(1920), height(1080), codec(CodecType::H264),
-          gatewayPort(443), multiMonitor(false), monitorCount(1),
+          gatewayPort(443),
+          // Empty is the legacy/unset value. The RDP route resolver owns the
+          // migration: no gateway means direct RDP, while a legacy gateway
+          // field becomes an explicit Microsoft RD Gateway route.
+          rdpEndpointMode(), rdpGatewayTransport("auto"),
+          multiMonitor(false), monitorCount(1),
           colorDepth(32), rdpAuthIdentityMode(0), rdpAuthMode(RdpAuthenticationMode::Password),
           rdpRestrictedAdminSecretSource(RdpRestrictedAdminSecretSource::NtlmHash), authMethod("password"),
           sshProxyPort(0),
           rdImageQuality(1), rdDirectIp(false), rdConnectionStrategy(), rdDirectPort(21118),
           rdLanDiscovery(true), rdPrivacyMode(false), rdAudioEnabled(true), rdClipboardEnabled(true),
           rdDriveName("RemoteDesktop"), rdpAllowUntrustedRoot(false), rdpAllowHostMismatch(false),
+          rdpGatewayAllowUntrustedRoot(false), rdpGatewayAllowHostMismatch(false),
           rdPasswordMode(0), rdAuthMode(0), rdPasswordLength(6), rdServerKeyMode(0),
           rdRelayPort(21117),
           vncTransport("direct_tcp"), vncGatewayPort(5901), vncGatewayPath("/vnc"),
@@ -219,10 +234,13 @@ struct RdpCertificateInfo {
     bool ok = false;
     std::string host;
     int port = 3389;
+    std::string serverName;
     std::string commonName;
     std::string subject;
     std::string issuer;
     std::string fingerprintSha256;
+    int64_t notBeforeMs = 0;
+    int64_t notAfterMs = 0;
     int flags = 0;
     bool rootTrusted = false;
     bool hostMismatch = false;
@@ -470,6 +488,21 @@ public:
         info.errorCode = -1;
         info.errorMessage = "RDP certificate probing is not supported by this protocol";
         return info;
+    }
+
+    /**
+     * Gateway-aware RDP certificate preflight. The legacy three-argument
+     * method above is intentionally retained for direct-RDP compatibility;
+     * callers with a gateway must use this route contract.
+     */
+    virtual RdpPreflightResult probeRdpCertificateRoute(const RdpPreflightRequest& request) {
+        RdpPreflightResult result;
+        result.endpointMode = request.route.endpointMode;
+        result.routeIdentity = RdpGatewayPolicy::routeIdentity(request.route);
+        result.stage = "endpoint";
+        result.errorCode = "E-RDP-ENDPOINT";
+        result.errorMessage = "RDP route certificate preflight is not supported by this protocol";
+        return result;
     }
 
     /** RDP 渲染统计。非 RDP 协议返回全 0。 */

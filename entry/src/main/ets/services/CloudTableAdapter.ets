@@ -46,9 +46,17 @@ const LOCAL_ONLY_COLUMNS: Record<string, string[]> = {
     'sshproxypassword', 'sshproxykeypassphrase',
     'sshhostkeyfingerprintsha256', 'sshhostkeyrawbase64', 'sshhostkeytrustedat',
     'sshhostkeytrustmode', 'rdpcertificatefingerprintsha256', 'rdpcertificatesubject',
-    'rdpcertificateissuer', 'rdpcertificatecommonname', 'rdpcertificatetrustedat',
+    'rdpcertificateissuer', 'rdpcertificatecommonname', 'rdpcertificatenotbeforems',
+    'rdpcertificatenotafterms', 'rdpcertificatetrustedat',
     'rdpcertificatetrustmode', 'rdpcertificateallowuntrustedroot',
-    'rdpcertificateallowhostmismatch', 'rustdeskrelayid', 'rustdeskaccountid',
+    'rdpcertificateallowhostmismatch', 'rdpcertificaterouteidentity',
+    'rdpgatewaycertificatefingerprintsha256', 'rdpgatewaycertificatesubject',
+    'rdpgatewaycertificateissuer', 'rdpgatewaycertificatecommonname',
+    'rdpgatewaycertificatenotbeforems', 'rdpgatewaycertificatenotafterms',
+    'rdpgatewaycertificatetrustedat', 'rdpgatewaycertificatetrustmode',
+    'rdpgatewaycertificateallowuntrustedroot',
+    'rdpgatewaycertificateallowhostmismatch', 'rdpgatewaycertificaterouteidentity',
+    'rustdeskrelayid', 'rustdeskaccountid',
     'rustdeskpasswordmode', 'rustdeskauthmode', 'rustdeskdirectenabled',
     'rustdeskdirecthost', 'rustdeskdirectport', 'rdpcredentialid', 'sourcetype',
     'rustdesktargetdevice', 'rustdeskadaptiveorientation'
@@ -66,6 +74,7 @@ const REMOTE_HOST_CLOUD_EXTENSION_COLUMNS: string[] = [
   'rustdeskdirectenabled', 'rustdeskdirecthost', 'rustdeskdirectport', 'sshproxytype',
   'sshproxyauthmethod', 'sshproxykeyid',
   'rdpcredentialid', 'rdpauthmode', 'rdprestrictedadminsecretsource', 'sourcetype',
+  'rdpendpointmode', 'rdpgatewaytransport', 'rdpgatewayservername',
   'rustdesktargetdevice', 'rustdeskadaptiveorientation'
 ];
 

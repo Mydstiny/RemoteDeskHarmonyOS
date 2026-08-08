@@ -213,11 +213,15 @@ export default function localBackupPolicyTest(): void {
       });
       const document = createLocalBackupDocument(tables, 100, '1.0.7', [{
         id: 'remotehosts:h1', tablename: 'remotehosts', recordid: 'h1',
-        payload: '{"rustdeskdirectport":"21117","rustdesktargetdevice":"phone","rustdeskadaptiveorientation":"1"}', updatedat: '100'
+        payload: '{"rustdeskdirectport":"21117","rustdesktargetdevice":"phone",' +
+          '"rustdeskadaptiveorientation":"1","rdpendpointmode":"microsoft_rd_gateway",' +
+          '"rdpgatewaytransport":"no-websockets",' +
+          '"rdpgatewayservername":"gateway.example.test"}', updatedat: '100'
       }], {}, 'owner-test');
       const parsed = validateLocalBackupDocument(JSON.stringify(document));
       expect(parsed !== null).assertTrue();
       expect(parsed?.extensions?.length).assertEqual(1);
+      expect(parsed?.extensions?.[0]['payload'].indexOf('rdpendpointmode') >= 0).assertTrue();
     });
 
     it('rejects_duplicate_primary_keys', 0, (): void => {
@@ -283,7 +287,10 @@ export default function localBackupPolicyTest(): void {
           '"sshhostkeyfingerprintsha256":"nested-fingerprint",' +
           '"password":"nested-password",' +
           '"futureSecret":"unknown",' +
-          '"rustdeskdirectport":"21117"}}'
+          '"rustdeskdirectport":"21117",' +
+          '"rdpendpointmode":"microsoft_rd_gateway",' +
+          '"rdpgatewaytransport":"no-websockets",' +
+          '"rdpgatewayservername":"gateway.example.test"}}'
       });
       tables['sshkeys'].push({
         id: 'key-1', userid: 'owner-test',
@@ -328,6 +335,8 @@ export default function localBackupPolicyTest(): void {
         .indexOf('futureSecret') < 0).assertTrue();
       expect(document.tables['remotehosts'][0]['displayconfig']
         .indexOf('rustdeskdirectport') >= 0).assertTrue();
+      expect(document.tables['remotehosts'][0]['displayconfig']
+        .indexOf('rdpendpointmode') >= 0).assertTrue();
       expect(document.extensions?.[0]['payload'])
         .assertEqual('{"sshhostkeyfingerprintsha256":"trust",' +
           '"rustdeskdirectport":"21117"}');

@@ -11,10 +11,24 @@ const DEVICE_LOCAL_TRUST_KEYS: string[] = [
   'rdpcertificatesubject',
   'rdpcertificateissuer',
   'rdpcertificatecommonname',
+  'rdpcertificatenotbeforems',
+  'rdpcertificatenotafterms',
   'rdpcertificatetrustedat',
   'rdpcertificatetrustmode',
   'rdpcertificateallowuntrustedroot',
-  'rdpcertificateallowhostmismatch'
+  'rdpcertificateallowhostmismatch',
+  'rdpcertificaterouteidentity',
+  'rdpgatewaycertificatefingerprintsha256',
+  'rdpgatewaycertificatesubject',
+  'rdpgatewaycertificateissuer',
+  'rdpgatewaycertificatecommonname',
+  'rdpgatewaycertificatenotbeforems',
+  'rdpgatewaycertificatenotafterms',
+  'rdpgatewaycertificatetrustedat',
+  'rdpgatewaycertificatetrustmode',
+  'rdpgatewaycertificateallowuntrustedroot',
+  'rdpgatewaycertificateallowhostmismatch',
+  'rdpgatewaycertificaterouteidentity'
 ];
 
 /** Project only trust decisions that are owned by the current physical device. */

@@ -7,6 +7,10 @@ import {
   RdpCertificatePreflightState,
   rdpCertificateRouteDelayMsAfterSheetClose,
   rdpCertificateWarningMessage,
+  rdpCertificateErrorTitle,
+  rdpGatewayTransportSummary,
+  rdpCertificateValidityState,
+  rdpCertificateRouteIsCurrent,
   shouldRouteRdpCertificateAfterSheetDisappear,
   shouldShowRdpCertificateProbeSheetBeforeProbe,
   shouldPersistRdpCertificateTrust,
@@ -16,6 +20,10 @@ import {
 
 export default function rdpCertificatePreflightPolicyTest() {
   describe('RdpCertificatePreflightPolicy', (): void => {
+    const nowMs: number = Date.now();
+    const validBeforeMs: number = nowMs - 60 * 1000;
+    const validAfterMs: number = nowMs + 60 * 1000;
+
     it('untrusted_first_time_should_require_confirmation', 0, (): void => {
       const state = classifyRdpCertificateProbe({
         ok: true,
@@ -23,6 +31,8 @@ export default function rdpCertificatePreflightPolicyTest() {
         commonName: '47.116.203.64',
         subject: 'CN=47.116.203.64',
         issuer: 'CN=SelfSigned',
+        notBeforeMs: validBeforeMs,
+        notAfterMs: validAfterMs,
         flags: 0x00000001,
         rootTrusted: false,
         hostMismatch: false,
@@ -39,11 +49,16 @@ export default function rdpCertificatePreflightPolicyTest() {
         commonName: 'server',
         subject: 'CN=server',
         issuer: 'CN=Root',
+        notBeforeMs: validBeforeMs,
+        notAfterMs: validAfterMs,
         flags: 0,
         rootTrusted: true,
         hostMismatch: false,
         errorMessage: ''
-      }, { trustMode: RDP_CERTIFICATE_EXPLICIT_TRUST_MODE, savedFingerprintSha256: 'SHA256:same' });
+      }, {
+        trustMode: RDP_CERTIFICATE_EXPLICIT_TRUST_MODE,
+        savedFingerprintSha256: 'SHA256:same', routeBound: true
+      });
       expect(state).assertEqual(RdpCertificatePreflightState.TRUSTED_MATCH);
       expect(shouldRequireRdpCertificateConfirmation(state)).assertFalse();
     });
@@ -55,6 +70,8 @@ export default function rdpCertificatePreflightPolicyTest() {
         commonName: 'server',
         subject: 'CN=server',
         issuer: 'CN=Root',
+        notBeforeMs: validBeforeMs,
+        notAfterMs: validAfterMs,
         flags: 0x00000002,
         rootTrusted: true,
         hostMismatch: true,
@@ -62,6 +79,7 @@ export default function rdpCertificatePreflightPolicyTest() {
       }, {
         trustMode: RDP_CERTIFICATE_EXPLICIT_TRUST_MODE,
         savedFingerprintSha256: 'SHA256:same',
+        routeBound: true,
         savedAllowHostMismatch: false
       });
       expect(state).assertEqual(RdpCertificatePreflightState.TRUST_FIRST_TIME);
@@ -75,6 +93,8 @@ export default function rdpCertificatePreflightPolicyTest() {
         commonName: 'server',
         subject: 'CN=server',
         issuer: 'CN=Root',
+        notBeforeMs: validBeforeMs,
+        notAfterMs: validAfterMs,
         flags: 0,
         rootTrusted: true,
         hostMismatch: false,
@@ -91,11 +111,16 @@ export default function rdpCertificatePreflightPolicyTest() {
         commonName: 'server',
         subject: 'CN=server',
         issuer: 'CN=Root',
+        notBeforeMs: validBeforeMs,
+        notAfterMs: validAfterMs,
         flags: 0,
         rootTrusted: true,
         hostMismatch: false,
         errorMessage: ''
-      }, { trustMode: RDP_CERTIFICATE_EXPLICIT_TRUST_MODE, savedFingerprintSha256: 'SHA256:old' });
+      }, {
+        trustMode: RDP_CERTIFICATE_EXPLICIT_TRUST_MODE,
+        savedFingerprintSha256: 'SHA256:old', routeBound: true
+      });
       expect(state).assertEqual(RdpCertificatePreflightState.CERTIFICATE_CHANGED);
       expect(shouldRequireRdpCertificateConfirmation(state)).assertTrue();
     });
@@ -107,12 +132,88 @@ export default function rdpCertificatePreflightPolicyTest() {
         commonName: '',
         subject: '',
         issuer: '',
+        notBeforeMs: 0,
+        notAfterMs: 0,
         flags: 0,
         rootTrusted: false,
         hostMismatch: false,
         errorMessage: 'connect failed'
       }, { trustMode: 0, savedFingerprintSha256: '' });
       expect(state).assertEqual(RdpCertificatePreflightState.ERROR);
+    });
+
+    it('stale_route_pin_should_require_confirmation_again', 0, (): void => {
+      const state = classifyRdpCertificateProbe({
+        ok: true,
+        fingerprintSha256: 'SHA256:same',
+        commonName: 'server',
+        subject: 'CN=server',
+        issuer: 'CN=Root',
+        notBeforeMs: validBeforeMs,
+        notAfterMs: validAfterMs,
+        flags: 0,
+        rootTrusted: true,
+        hostMismatch: false,
+        errorMessage: ''
+      }, {
+        trustMode: RDP_CERTIFICATE_EXPLICIT_TRUST_MODE,
+        savedFingerprintSha256: 'SHA256:same',
+        routeBound: false
+      });
+      expect(state).assertEqual(RdpCertificatePreflightState.TRUST_FIRST_TIME);
+      expect(rdpCertificateRouteIsCurrent('route-old', 'route-new')).assertFalse();
+      expect(rdpCertificateRouteIsCurrent('route-new', 'route-new')).assertTrue();
+    });
+
+    it('certificate_validity_state_rejects_expired_and_unknown_values', 0, (): void => {
+      expect(rdpCertificateValidityState(validBeforeMs, validAfterMs, nowMs)).assertEqual('valid');
+      expect(rdpCertificateValidityState(nowMs + 1, validAfterMs, nowMs)).assertEqual('invalid');
+      expect(rdpCertificateValidityState(validBeforeMs, nowMs - 1, nowMs)).assertEqual('expired');
+      expect(rdpCertificateValidityState(0, 0, nowMs)).assertEqual('unknown');
+    });
+
+    it('expired_certificate_should_not_become_trusted_by_pin', 0, (): void => {
+      const state = classifyRdpCertificateProbe({
+        ok: true,
+        fingerprintSha256: 'SHA256:same',
+        commonName: 'server',
+        subject: 'CN=server',
+        issuer: 'CN=Root',
+        notBeforeMs: nowMs - 120 * 1000,
+        notAfterMs: nowMs - 60 * 1000,
+        flags: 0,
+        rootTrusted: false,
+        hostMismatch: false,
+        errorMessage: ''
+      }, {
+        trustMode: RDP_CERTIFICATE_EXPLICIT_TRUST_MODE,
+        savedFingerprintSha256: 'SHA256:same',
+        routeBound: true,
+        savedAllowUntrustedRoot: true
+      });
+      expect(state).assertEqual(RdpCertificatePreflightState.ERROR);
+    });
+
+    it('stage_error_title_should_identify_gateway_and_target_failures', 0, (): void => {
+      expect(rdpCertificateErrorTitle('gateway', 'E-RDP-GATEWAY-TLS'))
+        .assertEqual('堡垒机 TLS 检查失败');
+      expect(rdpCertificateErrorTitle('tunnel', 'E-RDP-GATEWAY-TUNNEL'))
+        .assertEqual('堡垒机隧道协商失败');
+      expect(rdpCertificateErrorTitle('target', 'E-RDP-TARGET-CERT'))
+        .assertEqual('目标 RDP 证书检查失败');
+      expect(rdpCertificateErrorTitle('negotiation', 'E-RDP-NEGOTIATION'))
+        .assertEqual('目标 RDP 协商失败');
+      expect(rdpCertificateErrorTitle('gateway', 'E-RDP-CERT-PERSIST'))
+        .assertEqual('RDP 证书信任保存失败');
+    });
+
+    it('gateway_transport_summary_should_not_infer_negotiated_mode', 0, (): void => {
+      expect(rdpGatewayTransportSummary('auto', 'unknown'))
+        .assertEqual('Gateway 传输策略: 请求 auto · 实际 未观测');
+      expect(rdpGatewayTransportSummary('no-websockets', 'http'))
+        .assertEqual('Gateway 传输策略: 请求 no-websockets · 实际 http');
+      expect(rdpGatewayTransportSummary('rpc', 'invalid'))
+        .assertEqual('Gateway 传输策略: 请求 rpc · 实际 未观测');
     });
 
     it('warning_copy_should_match_requested_root_certificate_text', 0, (): void => {
@@ -125,7 +226,7 @@ export default function rdpCertificatePreflightPolicyTest() {
       expect(msg.indexOf('证书名称与当前主机不匹配。') >= 0).assertTrue();
     });
 
-    it('continue_once_should_not_persist_certificate_trust', 0, (): void => {
+    it('continue_once_should_leave_persisted_certificate_record_unchanged', 0, (): void => {
       expect(shouldPersistRdpCertificateTrust(RdpCertificatePreflightDecision.CONTINUE_ONCE)).assertFalse();
     });
 
@@ -147,17 +248,25 @@ export default function rdpCertificatePreflightPolicyTest() {
 
     it('probe_sheet_should_not_flash_for_explicitly_trusted_hosts', 0, (): void => {
       expect(shouldShowRdpCertificateProbeSheetBeforeProbe(RDP_CERTIFICATE_EXPLICIT_TRUST_MODE,
-        'SHA256:same')).assertFalse();
+        'SHA256:same', true)).assertFalse();
       expect(shouldShowRdpCertificateProbeSheetBeforeProbe(RDP_CERTIFICATE_EXPLICIT_TRUST_MODE, '')).assertTrue();
+      expect(shouldShowRdpCertificateProbeSheetBeforeProbe(RDP_CERTIFICATE_EXPLICIT_TRUST_MODE,
+        'SHA256:same', false)).assertTrue();
     });
 
     it('allows_a_trusted_host_to_try_the_real_rdp_resolver_after_dns_probe_failure', 0, (): void => {
       expect(shouldFallbackToNativeRdpConnectionAfterResolverFailure(
-        -11, RDP_CERTIFICATE_EXPLICIT_TRUST_MODE, 'SHA256:same')).assertTrue();
+        -11, RDP_CERTIFICATE_EXPLICIT_TRUST_MODE, 'SHA256:same',
+        'route-current', 'route-current')).assertTrue();
       expect(shouldFallbackToNativeRdpConnectionAfterResolverFailure(
-        -11, RDP_CERTIFICATE_UNKNOWN_TRUST_MODE, '')).assertFalse();
+        -11, RDP_CERTIFICATE_UNKNOWN_TRUST_MODE, '',
+        'route-current', 'route-current')).assertFalse();
       expect(shouldFallbackToNativeRdpConnectionAfterResolverFailure(
-        -12, RDP_CERTIFICATE_EXPLICIT_TRUST_MODE, 'SHA256:same')).assertFalse();
+        -12, RDP_CERTIFICATE_EXPLICIT_TRUST_MODE, 'SHA256:same',
+        'route-current', 'route-current')).assertFalse();
+      expect(shouldFallbackToNativeRdpConnectionAfterResolverFailure(
+        -11, RDP_CERTIFICATE_EXPLICIT_TRUST_MODE, 'SHA256:same',
+        'route-old', 'route-current')).assertFalse();
     });
   });
 }

@@ -17,6 +17,7 @@
 #include "rdp_auth_identity_policy.h"
 #include "rdp_auth_mode_policy.h"
 #include "rdp_background_frame_cache.h"
+#include "rdp_certificate_validation.h"
 #include "rdp_certificate_policy.h"
 #include "rdp_frame_pump.h"
 #include "rdp_file_clipboard_bridge.h"
@@ -53,10 +54,12 @@
 #include <cerrno>
 #include <chrono>
 #include <condition_variable>
+#include <ctime>
 #include <cstring>
 #include <deque>
 #include <functional>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 #include <thread>
 #include <utility>
@@ -74,6 +77,165 @@ namespace {
 constexpr int kDefaultRdpPort = 3389;
 constexpr int kRdpCertFlagUntrustedRoot = 0x01;
 constexpr int kRdpCertFlagHostMismatch = 0x02;
+
+bool resolveRdpEndpointRoute(const ConnectionConfig& cfg,
+                             RdpEndpointRoute& route,
+                             std::string& errorCode,
+                             std::string& errorMessage) {
+    RdpEndpointMode mode = RdpEndpointMode::DirectRdp;
+    if (!RdpGatewayPolicy::parseEndpointMode(cfg.rdpEndpointMode, mode)) {
+        errorCode = "E-RDP-ENDPOINT";
+        errorMessage = "RDP endpoint mode is unknown";
+        return false;
+    }
+    // Empty mode is reserved for legacy handoffs.  A legacy gateway field is
+    // migrated to the standard Microsoft route; it is never treated as a
+    // transparent TCP endpoint or as an arbitrary HTTPS proxy.
+    if (cfg.rdpEndpointMode.empty() && !cfg.gatewayHost.empty()) {
+        mode = RdpEndpointMode::MicrosoftRdGateway;
+    }
+    RdpGatewayTransport transport = RdpGatewayTransport::Auto;
+    if (!RdpGatewayPolicy::parseGatewayTransport(cfg.rdpGatewayTransport, transport)) {
+        errorCode = "E-RDP-ENDPOINT";
+        errorMessage = "RDP Gateway transport is unknown";
+        return false;
+    }
+
+    route.endpointMode = mode;
+    route.targetHost = cfg.host;
+    route.targetPort = cfg.port > 0 ? cfg.port : kDefaultRdpPort;
+    route.targetServerName = cfg.customHostname.empty() ? cfg.host : cfg.customHostname;
+    route.gatewayHost = cfg.gatewayHost;
+    route.gatewayPort = cfg.gatewayPort > 0 ? cfg.gatewayPort : 443;
+    route.gatewayServerName = cfg.rdpGatewayServerName.empty()
+        ? cfg.gatewayHost : cfg.rdpGatewayServerName;
+    route.gatewayTransport = transport;
+
+    if (route.targetHost.empty()) {
+        errorCode = "E-RDP-ENDPOINT";
+        errorMessage = "RDP target host is empty";
+        return false;
+    }
+    if (route.targetPort <= 0 || route.targetPort > 65535 ||
+        route.gatewayPort <= 0 || route.gatewayPort > 65535) {
+        errorCode = "E-RDP-ENDPOINT";
+        errorMessage = "RDP endpoint port is invalid";
+        return false;
+    }
+    if (mode == RdpEndpointMode::MicrosoftRdGateway) {
+        if (route.gatewayHost.empty()) {
+            errorCode = "E-RDP-ENDPOINT";
+            errorMessage = "Microsoft RD Gateway requires gatewayHost";
+            return false;
+        }
+        // FreeRDP uses GatewayHostname for both the transport peer and the
+        // TLS hostname/SNI. Do not accept a second name that the locked
+        // runtime cannot apply independently.
+        if (cfg.rdpGatewayServerName.size() > 0 &&
+            cfg.rdpGatewayServerName != route.gatewayHost) {
+            errorCode = "E-RDP-GATEWAY-SNI";
+            errorMessage = "Gateway server name must match gatewayHost";
+            return false;
+        }
+        if (!RdpGatewayPolicy::restrictedAdminGatewayRouteIsSupported(
+                mode, cfg.rdpAuthMode == RdpAuthenticationMode::RestrictedAdmin)) {
+            errorCode = "E-RDP-GATEWAY-AUTH";
+            errorMessage = "Restricted Admin requires a separate RD Gateway password credential";
+            return false;
+        }
+    } else if (RdpGatewayPolicy::isGatewayRoute(mode)) {
+        errorCode = "E-RDP-BASTION-UNSUPPORTED";
+        errorMessage = std::string("RDP endpoint mode is not supported: ") +
+            RdpGatewayPolicy::endpointModeName(mode);
+        return false;
+    } else if (!route.gatewayHost.empty()) {
+        errorCode = "E-RDP-ENDPOINT";
+        errorMessage = "gatewayHost cannot be used with a direct RDP route";
+        return false;
+    }
+    return true;
+}
+
+void normalizeRdpRouteFields(ConnectionConfig& cfg, const RdpEndpointRoute& route) {
+    cfg.rdpEndpointMode = RdpGatewayPolicy::endpointModeName(route.endpointMode);
+    cfg.rdpGatewayTransport = RdpGatewayPolicy::gatewayTransportName(route.gatewayTransport);
+    cfg.gatewayPort = route.gatewayPort;
+    cfg.rdpGatewayServerName = route.gatewayServerName;
+}
+
+RdpPreflightResult makeRdpPreflightError(const RdpPreflightRequest& request,
+                                         const std::string& stage,
+                                         const std::string& errorCode,
+                                         const std::string& errorMessage) {
+    RdpPreflightResult result;
+    result.endpointMode = request.route.endpointMode;
+    result.routeIdentity = RdpGatewayPolicy::routeIdentity(request.route);
+    result.generation = request.generation;
+    result.requestId = request.requestId;
+    result.stage = stage;
+    result.errorCode = errorCode;
+    result.errorMessage = errorMessage;
+    RdpGatewayPolicy::initializeGatewayTransportResult(
+        result, request.route.gatewayTransport);
+    return result;
+}
+
+const char* directRdpPreflightStage(int errorCode) {
+    switch (errorCode) {
+        case -10:
+        case -11:
+            return "endpoint";
+        case -12:
+        case -13:
+            return "target_tcp";
+        case -14:
+        case -18:
+        case -19:
+        case -20:
+        case -21:
+            return "negotiation";
+        case -15:
+        case -16:
+        case -22:
+        case -23:
+        case -24:
+            return "target";
+        case -17:
+        case -25:
+            return "target_cert";
+        default:
+            return "target";
+    }
+}
+
+const char* directRdpPreflightErrorCode(int errorCode) {
+    switch (errorCode) {
+        case -10:
+            return "E-RDP-ENDPOINT";
+        case -11:
+            return "E-RDP-TARGET-DNS";
+        case -12:
+        case -13:
+            return "E-RDP-TARGET-TCP";
+        case -14:
+        case -18:
+        case -19:
+        case -20:
+        case -21:
+            return "E-RDP-NEGOTIATION";
+        case -15:
+        case -16:
+        case -22:
+        case -23:
+        case -24:
+            return "E-RDP-TARGET-TLS";
+        case -17:
+        case -25:
+            return "E-RDP-TARGET-CERT";
+        default:
+            return "E-RDP-TARGET-TLS";
+    }
+}
 
 using RdpShutdownDeadline = std::chrono::steady_clock::time_point;
 
@@ -167,6 +329,41 @@ std::string x509CommonName(X509* cert) {
     const int len = X509_NAME_get_text_by_NID(X509_get_subject_name(cert), NID_commonName,
                                                buffer, sizeof(buffer));
     return len > 0 ? std::string(buffer, static_cast<size_t>(len)) : "";
+}
+
+bool asn1TimeToMillis(const ASN1_TIME* value, int64_t& output) {
+    if (value == nullptr) {
+        return false;
+    }
+    struct tm calendarTime {};
+    if (ASN1_TIME_to_tm(value, &calendarTime) != 1) {
+        return false;
+    }
+    const time_t seconds = timegm(&calendarTime);
+    if (seconds < 0 || static_cast<int64_t>(seconds) >
+        (std::numeric_limits<int64_t>::max() / 1000)) {
+        return false;
+    }
+    output = static_cast<int64_t>(seconds) * 1000;
+    return true;
+}
+
+bool x509ValidityToMillis(X509* cert, int64_t& notBeforeMs, int64_t& notAfterMs) {
+    return cert != nullptr &&
+        asn1TimeToMillis(X509_get0_notBefore(cert), notBeforeMs) &&
+        asn1TimeToMillis(X509_get0_notAfter(cert), notAfterMs) &&
+        notAfterMs > notBeforeMs;
+}
+
+[[maybe_unused]] bool x509ValidityIsCurrent(X509* cert) {
+    int64_t notBeforeMs = 0;
+    int64_t notAfterMs = 0;
+    if (!x509ValidityToMillis(cert, notBeforeMs, notAfterMs)) {
+        return false;
+    }
+    const int64_t nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    return nowMs >= notBeforeMs && nowMs <= notAfterMs;
 }
 
 int64_t probeNowUs() {
@@ -330,6 +527,150 @@ bool recvExactWithDeadline(int fd, uint8_t* data, size_t size, int timeoutMs,
         }
     }
     return true;
+}
+
+RdpCertificateInfo probeGatewayCertificateOverTls(const std::string& host, int port,
+                                                   const std::string& serverName) {
+    const int effectivePort = port > 0 ? port : 443;
+    const std::string verifyName = serverName.empty() ? host : serverName;
+    if (host.empty()) {
+        return makeProbeError(host, effectivePort, -30, "RD Gateway host is empty");
+    }
+
+    addrinfo hints {};
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    addrinfo* results = nullptr;
+    const std::string portText = std::to_string(effectivePort);
+    const int gai = getaddrinfo(host.c_str(), portText.c_str(), &hints, &results);
+    if (gai != 0 || results == nullptr) {
+        return makeProbeError(host, effectivePort, -31, "Unable to resolve RD Gateway host");
+    }
+
+    int fd = -1;
+    for (addrinfo* ai = results; ai != nullptr; ai = ai->ai_next) {
+        fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+        if (fd < 0) {
+            continue;
+        }
+        timeval timeout {};
+        timeout.tv_sec = 8;
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+        if (connectWithTimeout(fd, ai->ai_addr,
+                               static_cast<socklen_t>(ai->ai_addrlen), 5000) == 0) {
+            break;
+        }
+        close(fd);
+        fd = -1;
+    }
+    freeaddrinfo(results);
+    if (fd < 0) {
+        return makeProbeError(host, effectivePort, -32, "Unable to connect to RD Gateway");
+    }
+
+    SSL_CTX* sslCtx = SSL_CTX_new(TLS_client_method());
+    if (sslCtx == nullptr) {
+        close(fd);
+        return makeProbeError(host, effectivePort, -33,
+                              "Unable to create RD Gateway TLS context");
+    }
+    SSL_CTX_set_verify(sslCtx, SSL_VERIFY_NONE, nullptr);
+    SSL* ssl = SSL_new(sslCtx);
+    if (ssl == nullptr) {
+        SSL_CTX_free(sslCtx);
+        close(fd);
+        return makeProbeError(host, effectivePort, -34,
+                              "Unable to create RD Gateway TLS session");
+    }
+    if (SSL_set_fd(ssl, fd) != 1 ||
+        (!verifyName.empty() && SSL_set_tlsext_host_name(ssl, verifyName.c_str()) != 1)) {
+        SSL_free(ssl);
+        SSL_CTX_free(sslCtx);
+        close(fd);
+        return makeProbeError(host, effectivePort, -35,
+                              "Unable to configure RD Gateway TLS session");
+    }
+    ERR_clear_error();
+    errno = 0;
+    const int tlsResult = SSL_connect(ssl);
+    if (tlsResult != 1) {
+        const int sslError = SSL_get_error(ssl, tlsResult);
+        const int socketError = sslError == SSL_ERROR_SYSCALL ? errno : 0;
+        const std::string opensslDetails = openSslErrorStack();
+        std::ostringstream message;
+        message << "RD Gateway TLS handshake failed (sslError="
+                << sslErrorName(sslError) << ":" << sslError;
+        if (!opensslDetails.empty()) {
+            message << ", openssl=" << opensslDetails;
+        }
+        if (socketError != 0) {
+            message << ", errno=" << socketError << ":" << std::strerror(socketError);
+        }
+        message << ")";
+        SSL_free(ssl);
+        SSL_CTX_free(sslCtx);
+        close(fd);
+        return makeProbeError(host, effectivePort, -36, message.str());
+    }
+
+    X509* certificate = SSL_get_peer_certificate(ssl);
+    if (certificate == nullptr) {
+        SSL_free(ssl);
+        SSL_CTX_free(sslCtx);
+        close(fd);
+        return makeProbeError(host, effectivePort, -37,
+                              "RD Gateway did not provide a certificate");
+    }
+
+    RdpCertificateInfo info;
+    info.ok = true;
+    info.host = host;
+    info.port = effectivePort;
+    info.serverName = verifyName;
+    info.commonName = x509CommonName(certificate);
+    info.subject = x509NameToString(X509_get_subject_name(certificate));
+    info.issuer = x509NameToString(X509_get_issuer_name(certificate));
+    info.fingerprintSha256 = sha256FingerprintFromCert(certificate);
+    if (info.fingerprintSha256.empty() ||
+        !x509ValidityToMillis(certificate, info.notBeforeMs, info.notAfterMs)) {
+        X509_free(certificate);
+        SSL_shutdown(ssl);
+        SSL_free(ssl);
+        SSL_CTX_free(sslCtx);
+        close(fd);
+        return makeProbeError(host, effectivePort, -38,
+                              "RD Gateway certificate metadata is unavailable");
+    }
+    info.hostMismatch = !RdpCertificateValidation::hostnameMatches(
+        certificate, verifyName);
+
+    X509_STORE* store = X509_STORE_new();
+    X509_STORE_CTX* storeCtx = X509_STORE_CTX_new();
+    STACK_OF(X509)* peerChain = SSL_get_peer_cert_chain(ssl);
+    if (store != nullptr && storeCtx != nullptr &&
+        X509_STORE_set_default_paths(store) == 1 &&
+        X509_STORE_CTX_init(storeCtx, store, certificate, peerChain) == 1) {
+        info.rootTrusted = X509_verify_cert(storeCtx) == 1;
+    }
+    if (!info.rootTrusted) {
+        info.flags |= kRdpCertFlagUntrustedRoot;
+    }
+    if (info.hostMismatch) {
+        info.flags |= kRdpCertFlagHostMismatch;
+    }
+    if (storeCtx != nullptr) {
+        X509_STORE_CTX_free(storeCtx);
+    }
+    if (store != nullptr) {
+        X509_STORE_free(store);
+    }
+    X509_free(certificate);
+    SSL_shutdown(ssl);
+    SSL_free(ssl);
+    SSL_CTX_free(sslCtx);
+    close(fd);
+    return info;
 }
 
 RdpCertificateInfo probeRdpCertificateOverTls(const std::string& host, int port,
@@ -569,19 +910,28 @@ RdpCertificateInfo probeRdpCertificateOverTls(const std::string& host, int port,
     info.ok = true;
     info.host = host;
     info.port = effectivePort;
+    info.serverName = verifyName;
     info.commonName = x509CommonName(cert);
     info.subject = x509NameToString(X509_get_subject_name(cert));
     info.issuer = x509NameToString(X509_get_issuer_name(cert));
     info.fingerprintSha256 = sha256FingerprintFromCert(cert);
+    if (!x509ValidityToMillis(cert, info.notBeforeMs, info.notAfterMs)) {
+        X509_free(cert);
+        SSL_shutdown(ssl);
+        SSL_free(ssl);
+        SSL_CTX_free(sslCtx);
+        close(fd);
+        return makeProbeError(host, effectivePort, -25,
+                              "RDP certificate validity metadata is unavailable");
+    }
 
-    const int hostCheck = verifyName.empty() ? 1 :
-        X509_check_host(cert, verifyName.c_str(), verifyName.size(), 0, nullptr);
-    info.hostMismatch = hostCheck != 1;
+    info.hostMismatch = !RdpCertificateValidation::hostnameMatches(cert, verifyName);
 
     X509_STORE* store = X509_STORE_new();
     X509_STORE_CTX* storeCtx = X509_STORE_CTX_new();
+    STACK_OF(X509)* peerChain = SSL_get_peer_cert_chain(ssl);
     if (store && storeCtx && X509_STORE_set_default_paths(store) == 1 &&
-        X509_STORE_CTX_init(storeCtx, store, cert, nullptr) == 1) {
+        X509_STORE_CTX_init(storeCtx, store, cert, peerChain) == 1) {
         info.rootTrusted = X509_verify_cert(storeCtx) == 1;
     }
     if (!info.rootTrusted) {
@@ -2213,37 +2563,538 @@ static std::string fingerprintFromPem(const BYTE* data, size_t length) {
     return fingerprint;
 }
 
+static bool rootTrustedFromPem(const BYTE* data, size_t length) {
+    return RdpCertificateValidation::rootTrustedFromPem(data, length);
+}
+
+struct RdpPreflightCallbackState {
+    explicit RdpPreflightCallbackState(RdpPreflightRequest value)
+        : request(std::move(value)) {}
+
+    RdpPreflightRequest request;
+    RdpPreflightResult result;
+    bool unsupportedFlags = false;
+    bool gatewayCertificateMetadataInvalid = false;
+    bool targetCertificateMetadataInvalid = false;
+    bool gatewayCertificateRejected = false;
+};
+
+static RdpCertificateRecord rdpCertificateRecordFromInfo(
+    const RdpCertificateInfo& info, const std::string& stage) {
+    RdpCertificateRecord record;
+    record.present = info.ok && !info.fingerprintSha256.empty();
+    record.rootTrusted = info.rootTrusted;
+    record.hostMismatch = info.hostMismatch;
+    record.flags = info.flags;
+    record.host = info.host;
+    record.port = info.port;
+    record.stage = stage;
+    record.serverName = info.serverName;
+    record.commonName = info.commonName;
+    record.subject = info.subject;
+    record.issuer = info.issuer;
+    record.fingerprintSha256 = info.fingerprintSha256;
+    record.notBeforeMs = info.notBeforeMs;
+    record.notAfterMs = info.notAfterMs;
+    return record;
+}
+
+static std::mutex g_rdpPreflightMutex;
+static std::unordered_map<freerdp*, std::shared_ptr<RdpPreflightCallbackState>>
+    g_rdpPreflightStates;
+
+static std::shared_ptr<RdpPreflightCallbackState> findRdpPreflightState(freerdp* instance) {
+    if (!instance) {
+        return nullptr;
+    }
+    std::lock_guard<std::mutex> lock(g_rdpPreflightMutex);
+    const auto it = g_rdpPreflightStates.find(instance);
+    return it == g_rdpPreflightStates.end() ? nullptr : it->second;
+}
+
+static bool preflightUsesGateway(const RdpPreflightCallbackState& /*state*/, DWORD flags) {
+    return (flags & VERIFY_CERT_FLAG_GATEWAY) != 0;
+}
+
+static bool preflightFlagsAreSupported(DWORD flags) {
+    constexpr DWORD kKnownFlags = VERIFY_CERT_FLAG_LEGACY |
+        VERIFY_CERT_FLAG_GATEWAY | VERIFY_CERT_FLAG_CHANGED |
+        VERIFY_CERT_FLAG_MISMATCH | VERIFY_CERT_FLAG_MATCH_LEGACY_SHA1 |
+        VERIFY_CERT_FLAG_FP_IS_PEM;
+    return (flags & ~kKnownFlags) == 0 &&
+        (flags & VERIFY_CERT_FLAG_REDIRECT) == 0;
+}
+
+static int captureRdpPreflightCertificate(freerdp* instance, const BYTE* data,
+                                          size_t length, const char* hostname,
+                                          UINT16 port, DWORD flags) {
+    (void)port;
+    const auto state = findRdpPreflightState(instance);
+    if (!state) {
+        return 0;
+    }
+    if (!preflightFlagsAreSupported(flags)) {
+        state->unsupportedFlags = true;
+        return 0;
+    }
+    const bool gateway = preflightUsesGateway(*state, flags);
+    const RdpEndpointRoute& route = state->request.route;
+    if (gateway && route.endpointMode != RdpEndpointMode::MicrosoftRdGateway) {
+        state->unsupportedFlags = true;
+        return 0;
+    }
+    if (data == nullptr || length == 0) {
+        state->unsupportedFlags = true;
+        return 0;
+    }
+    RdpCertificateRecord record;
+    record.present = true;
+    record.stage = gateway ? "gateway" : "target";
+    record.host = gateway ? route.gatewayHost : route.targetHost;
+    record.port = gateway ? route.gatewayPort : route.targetPort;
+    record.serverName = gateway ? route.gatewayServerName : route.targetServerName;
+    if (record.serverName.empty()) {
+        record.serverName = hostname ? hostname : record.host;
+    }
+    record.fingerprintSha256 = fingerprintFromPem(data, length);
+    if (record.fingerprintSha256.empty()) {
+        // A callback with malformed PEM is not a certificate observation. Do
+        // not publish a present record that a refresh path could persist as an
+        // empty pin; the preflight must fail closed at the relevant stage.
+        if (gateway) {
+            state->gatewayCertificateMetadataInvalid = true;
+        } else {
+            state->targetCertificateMetadataInvalid = true;
+        }
+        return 0;
+    }
+    record.commonName = [&]() {
+        BIO* bio = BIO_new_mem_buf(data, static_cast<int>(length));
+        if (!bio) {
+            return std::string();
+        }
+        X509* cert = PEM_read_bio_X509(bio, nullptr, nullptr, nullptr);
+        BIO_free(bio);
+        if (!cert) {
+            return std::string();
+        }
+        const std::string commonName = x509CommonName(cert);
+        record.subject = x509NameToString(X509_get_subject_name(cert));
+        record.issuer = x509NameToString(X509_get_issuer_name(cert));
+        if (!x509ValidityToMillis(cert, record.notBeforeMs, record.notAfterMs)) {
+            if (gateway) {
+                state->gatewayCertificateMetadataInvalid = true;
+            } else {
+                state->targetCertificateMetadataInvalid = true;
+            }
+        }
+        record.hostMismatch = !RdpCertificateValidation::hostnameMatches(
+            cert, record.serverName);
+        record.rootTrusted = rootTrustedFromPem(data, length);
+        if (!record.rootTrusted) {
+            record.flags |= kRdpCertFlagUntrustedRoot;
+        }
+        if (record.hostMismatch) {
+            record.flags |= kRdpCertFlagHostMismatch;
+        }
+        X509_free(cert);
+        return commonName;
+    }();
+    // record.flags is the app-level certificate-risk namespace. FreeRDP's
+    // VERIFY_CERT_FLAG_LEGACY is also 0x02, so raw callback flags must not be
+    // merged with kRdpCertFlagHostMismatch.
+    if (gateway) {
+        const bool gatewayAllowed = RdpGatewayPolicy::trustAllowsStage(
+            record, state->request.expectedGatewayFingerprintSha256,
+            state->request.gatewayAllowUntrustedRoot,
+            state->request.gatewayAllowHostMismatch);
+        state->result.gatewayCertificate = std::move(record);
+        if (!gatewayAllowed) {
+            // The raw TLS inspection and the authenticated Gateway connection
+            // are separate sockets. Pin the second socket to the inspected
+            // certificate so a TOCTOU certificate change is rejected before
+            // FreeRDP can send Gateway credentials.
+            state->gatewayCertificateRejected = true;
+        }
+    } else {
+        state->result.targetCertificate = std::move(record);
+    }
+
+    if (gateway) {
+        // The preflight is an inspection operation.  It must accept the
+        // gateway certificate temporarily so FreeRDP can reach the tunneled
+        // target; the final connection still re-checks the staged pin.
+        return state->gatewayCertificateMetadataInvalid ||
+            state->gatewayCertificateRejected ? 0 : 1;
+    }
+
+    // Stop after the target TLS certificate. Returning 0 also prevents
+    // FreeRDP from entering CredSSP, channel setup, or the desktop session.
+    // The enclosing preflight treats the captured certificate as a successful
+    // inspection result even though the intentionally aborted connect fails.
+    (void)freerdp_abort_connect_context(instance ? instance->context : nullptr);
+    return 0;
+}
+
+static int probeVerifyRdpPreflightX509(freerdp* instance, const BYTE* data,
+                                      size_t length, const char* hostname,
+                                      UINT16 port, DWORD flags) {
+    return captureRdpPreflightCertificate(instance, data, length, hostname, port, flags);
+}
+
+static DWORD probeVerifyRdpPreflightEx(freerdp* instance, const char* host, UINT16 port,
+                                       const char* commonName, const char* subject,
+                                       const char* issuer, const char* fingerprint,
+                                       DWORD flags) {
+    (void)commonName;
+    (void)subject;
+    (void)issuer;
+    if ((flags & VERIFY_CERT_FLAG_FP_IS_PEM) != 0 && fingerprint) {
+        return static_cast<DWORD>(captureRdpPreflightCertificate(
+            instance, reinterpret_cast<const BYTE*>(fingerprint), strlen(fingerprint),
+            host, port, flags));
+    }
+    return 0;
+}
+
+static DWORD probeVerifyChangedRdpPreflightEx(
+    freerdp* instance, const char* host, UINT16 port, const char* commonName,
+    const char* subject, const char* issuer, const char* newFingerprint,
+    const char* /*oldSubject*/, const char* /*oldIssuer*/,
+    const char* /*oldFingerprint*/, DWORD flags) {
+    (void)commonName;
+    (void)subject;
+    (void)issuer;
+    const DWORD effectiveFlags = flags | VERIFY_CERT_FLAG_CHANGED;
+    if ((effectiveFlags & VERIFY_CERT_FLAG_FP_IS_PEM) == 0 || !newFingerprint) {
+        return 0;
+    }
+    return static_cast<DWORD>(captureRdpPreflightCertificate(
+        instance, reinterpret_cast<const BYTE*>(newFingerprint),
+        strlen(newFingerprint), host, port, effectiveFlags));
+}
+
+static RdpPreflightResult probeRdpCertificateRouteWithFreeRdp(
+    const RdpPreflightRequest& request) {
+    RdpPreflightResult result = makeRdpPreflightError(
+        request, "gateway", "E-RDP-GATEWAY-TLS", "Microsoft RD Gateway preflight failed");
+    RdpGatewayPolicy::initializeGatewayTransportResult(
+        result, request.route.gatewayTransport);
+
+    // Inspect the HTTPS Gateway certificate on a credential-free TLS socket.
+    // No HTTP/RPC/WebSocket request and no RDP X.224 bytes are sent here.
+    const RdpCertificateInfo inspectedGateway = probeGatewayCertificateOverTls(
+        request.route.gatewayHost, request.route.gatewayPort,
+        request.route.gatewayServerName);
+    result.gatewayCertificate = rdpCertificateRecordFromInfo(
+        inspectedGateway, "gateway");
+    if (!result.gatewayCertificate.present) {
+        result.stage = "gateway";
+        result.errorCode = "E-RDP-GATEWAY-TLS";
+        result.errorMessage = inspectedGateway.errorMessage.empty()
+            ? "RD Gateway TLS certificate was not received"
+            : inspectedGateway.errorMessage;
+        return result;
+    }
+    if (!RdpGatewayPolicy::gatewayCertificateAllowsCredentialUse(
+        request, result.gatewayCertificate)) {
+        // Return a gateway-only decision point. The caller must confirm or pin
+        // this certificate and rerun preflight before credentials are used.
+        result.ok = true;
+        result.stage = "gateway";
+        result.errorCode.clear();
+        result.errorMessage.clear();
+        result.requiresUserDecision = true;
+        return result;
+    }
+
+    RdpPreflightRequest authenticatedRequest = request;
+    authenticatedRequest.expectedGatewayFingerprintSha256 =
+        result.gatewayCertificate.fingerprintSha256;
+    authenticatedRequest.gatewayAllowUntrustedRoot =
+        !result.gatewayCertificate.rootTrusted;
+    authenticatedRequest.gatewayAllowHostMismatch =
+        result.gatewayCertificate.hostMismatch;
+
+    freerdp* instance = freerdp_new();
+    if (!instance) {
+        result.errorCode = "E-RDP-GATEWAY-TLS";
+        result.errorMessage = "Unable to create FreeRDP preflight instance";
+        return result;
+    }
+    if (!freerdp_context_new(instance)) {
+        freerdp_free(instance);
+        result.errorCode = "E-RDP-GATEWAY-TLS";
+        result.errorMessage = "Unable to create FreeRDP preflight context";
+        return result;
+    }
+
+    auto state = std::make_shared<RdpPreflightCallbackState>(authenticatedRequest);
+    {
+        std::lock_guard<std::mutex> lock(g_rdpPreflightMutex);
+        g_rdpPreflightStates.emplace(instance, state);
+    }
+
+    auto* settings = instance->settings;
+    const RdpGatewayTransportFlags transportFlags =
+        RdpGatewayPolicy::transportFlags(request.route.gatewayTransport);
+    freerdp_settings_set_string(settings, FreeRDP_ServerHostname,
+                                request.route.targetHost.c_str());
+    freerdp_settings_set_uint32(settings, FreeRDP_ServerPort,
+                                static_cast<UINT32>(request.route.targetPort));
+    freerdp_settings_set_string(settings, FreeRDP_GatewayHostname,
+                                request.route.gatewayHost.c_str());
+    freerdp_settings_set_uint32(settings, FreeRDP_GatewayPort,
+                                static_cast<UINT32>(request.route.gatewayPort));
+    freerdp_settings_set_bool(settings, FreeRDP_GatewayEnabled, TRUE);
+    freerdp_settings_set_bool(settings, FreeRDP_GatewayRpcTransport,
+                              transportFlags.rpc ? TRUE : FALSE);
+    freerdp_settings_set_bool(settings, FreeRDP_GatewayHttpTransport,
+                              transportFlags.http ? TRUE : FALSE);
+    freerdp_settings_set_bool(settings, FreeRDP_GatewayHttpUseWebsockets,
+                              transportFlags.websockets ? TRUE : FALSE);
+    freerdp_settings_set_bool(settings, FreeRDP_GatewayUseSameCredentials, TRUE);
+    freerdp_settings_set_string(settings, FreeRDP_Username, request.username.c_str());
+    freerdp_settings_set_string(settings, FreeRDP_Password, request.password.c_str());
+    freerdp_settings_set_string(settings, FreeRDP_Domain, request.domain.c_str());
+    freerdp_settings_set_string(settings, FreeRDP_GatewayUsername, request.username.c_str());
+    freerdp_settings_set_string(settings, FreeRDP_GatewayPassword, request.password.c_str());
+    freerdp_settings_set_string(settings, FreeRDP_GatewayDomain, request.domain.c_str());
+    freerdp_settings_set_bool(settings, FreeRDP_ExternalCertificateManagement, TRUE);
+    freerdp_settings_set_bool(settings, FreeRDP_CertificateCallbackPreferPEM, TRUE);
+    freerdp_settings_set_bool(settings, FreeRDP_IgnoreCertificate, FALSE);
+    // Keep the inspection route identical to the production connection's
+    // TLS/NLA-only policy. FreeRDP defaults RdpSecurity to enabled, which
+    // would otherwise let preflight accept a Standard RDP Security fallback
+    // that the real connection intentionally rejects.
+    freerdp_settings_set_bool(settings, FreeRDP_NegotiateSecurityLayer, TRUE);
+    freerdp_settings_set_bool(settings, FreeRDP_UseRdpSecurityLayer, FALSE);
+    freerdp_settings_set_bool(settings, FreeRDP_RdpSecurity, FALSE);
+    freerdp_settings_set_bool(settings, FreeRDP_TlsSecurity, TRUE);
+    freerdp_settings_set_bool(settings, FreeRDP_NlaSecurity, TRUE);
+    freerdp_settings_set_bool(settings, FreeRDP_ExtSecurity, FALSE);
+    freerdp_settings_set_bool(settings, FreeRDP_AadSecurity, FALSE);
+    freerdp_settings_set_bool(settings, FreeRDP_RdstlsSecurity, FALSE);
+    freerdp_settings_set_uint32(settings, FreeRDP_RequestedProtocols, 0x00000003);
+    freerdp_settings_set_bool(settings, FreeRDP_Authentication, TRUE);
+    freerdp_settings_set_bool(settings, FreeRDP_AutoLogonEnabled, TRUE);
+    freerdp_settings_set_bool(settings, FreeRDP_RestrictedAdminModeRequired, FALSE);
+    freerdp_settings_set_bool(settings, FreeRDP_RestrictedAdminModeSupported, FALSE);
+    freerdp_settings_set_bool(settings, FreeRDP_RemoteCredentialGuard, FALSE);
+    freerdp_settings_set_bool(settings, FreeRDP_AuthenticationOnly, TRUE);
+    freerdp_settings_set_uint32(settings, FreeRDP_TcpConnectTimeout, 15000);
+    freerdp_settings_set_string(settings, FreeRDP_AuthenticationPackageList, "ntlm");
+    if (!request.route.targetServerName.empty()) {
+        freerdp_settings_set_string(settings, FreeRDP_UserSpecifiedServerName,
+                                    request.route.targetServerName.c_str());
+        freerdp_settings_set_string(settings, FreeRDP_CertificateName,
+                                    request.route.targetServerName.c_str());
+    }
+
+    instance->VerifyX509Certificate = probeVerifyRdpPreflightX509;
+    instance->VerifyCertificateEx = probeVerifyRdpPreflightEx;
+    instance->VerifyChangedCertificateEx = probeVerifyChangedRdpPreflightEx;
+    BOOL connected = freerdp_connect(instance);
+
+    {
+        std::lock_guard<std::mutex> lock(g_rdpPreflightMutex);
+        g_rdpPreflightStates.erase(instance);
+    }
+    instance->VerifyX509Certificate = nullptr;
+    instance->VerifyCertificateEx = nullptr;
+    instance->VerifyChangedCertificateEx = nullptr;
+    if (connected) {
+        // A preflight must never return a live FreeRDP session.  This branch
+        // is defensive: target callback normally aborts before post-connect.
+        freerdp_disconnect(instance);
+    }
+    const DWORD lastError = instance->context ? freerdp_get_last_error(instance->context) : 0;
+    const bool gatewaySeen = state->result.gatewayCertificate.present;
+    const bool targetSeen = state->result.targetCertificate.present;
+    if (targetSeen && gatewaySeen && !state->unsupportedFlags &&
+        !state->gatewayCertificateMetadataInvalid &&
+        !state->targetCertificateMetadataInvalid) {
+        result.ok = true;
+        result.stage = "target";
+        result.errorCode.clear();
+        result.errorMessage.clear();
+        result.gatewayCertificate = state->result.gatewayCertificate;
+        result.targetCertificate = state->result.targetCertificate;
+        result.requiresGatewayAuth = false;
+        result.requiresUserDecision =
+            !RdpGatewayPolicy::gatewayTrustAllowsRoute(
+                request, result.gatewayCertificate, result.targetCertificate);
+    } else if (state->gatewayCertificateMetadataInvalid) {
+        result.stage = "gateway";
+        result.errorCode = "E-RDP-GATEWAY-CERT";
+        result.errorMessage = "RD Gateway certificate validity metadata is unavailable";
+    } else if (state->targetCertificateMetadataInvalid) {
+        result.stage = "target";
+        result.errorCode = "E-RDP-TARGET-CERT";
+        result.errorMessage = "Target RDP certificate validity metadata is unavailable";
+    } else if (state->gatewayCertificateRejected) {
+        result.stage = "gateway";
+        result.errorCode = "E-RDP-GATEWAY-CERT";
+        result.errorMessage =
+            "RD Gateway certificate changed after credential-free TLS inspection";
+    } else if (state->unsupportedFlags) {
+        result.stage = gatewaySeen ? "gateway" : "target";
+        result.errorCode = "E-RDP-CERT";
+        result.errorMessage = "FreeRDP returned an unsupported certificate callback flag";
+    } else if (gatewaySeen) {
+        result.stage = "tunnel";
+        result.errorCode = request.username.empty() ? "E-RDP-GATEWAY-AUTH" :
+            "E-RDP-GATEWAY-TUNNEL";
+        result.errorMessage = request.username.empty()
+            ? "RD Gateway authentication is required before the target certificate can be read"
+            : "RD Gateway did not provide the tunneled target RDP certificate";
+        result.requiresGatewayAuth = request.username.empty();
+    } else {
+        result.stage = "gateway";
+        result.errorCode = "E-RDP-GATEWAY-TLS";
+        result.errorMessage = lastError == 0 ?
+            "RD Gateway TLS certificate was not received" :
+            std::string("RD Gateway connection failed: ") +
+                freerdpErrorName(lastError);
+    }
+    result.gatewayCertificate = state->result.gatewayCertificate;
+    result.targetCertificate = state->result.targetCertificate;
+    freerdp_context_free(instance);
+    freerdp_free(instance);
+    return result;
+}
+
 DWORD FreeRdpAdapter::evaluateCertificate(const char* host, UINT16 port,
                                           const char* commonName, const char* subject,
                                           const char* issuer, const std::string& fingerprint,
-                                          DWORD flags) {
+                                          DWORD flags, const BYTE* pemData,
+                                          size_t pemLength) {
     const std::string logHost = SafeLog::MaskHost(host ? host : "");
     const std::string logCommonName = SafeLog::MaskHost(commonName ? commonName : "");
-    const bool hostMismatch = (flags & VERIFY_CERT_FLAG_MISMATCH) != 0;
+    const bool gatewayCertificate = (flags & VERIFY_CERT_FLAG_GATEWAY) != 0;
+    bool hostMismatch = (flags & VERIFY_CERT_FLAG_MISMATCH) != 0;
 
     std::string expectedFingerprint;
+    std::string verificationName;
     bool allowHostMismatch = false;
+    bool allowUntrustedRoot = false;
+    std::string endpointMode;
     {
         std::lock_guard<std::mutex> lock(impl_->configMutex);
-        expectedFingerprint = impl_->config.expectedRdpCertificateFingerprintSha256;
-        allowHostMismatch = impl_->config.rdpAllowHostMismatch;
+        expectedFingerprint = gatewayCertificate
+            ? impl_->config.expectedRdpGatewayCertificateFingerprintSha256
+            : impl_->config.expectedRdpCertificateFingerprintSha256;
+        allowHostMismatch = gatewayCertificate
+            ? impl_->config.rdpGatewayAllowHostMismatch
+            : impl_->config.rdpAllowHostMismatch;
+        allowUntrustedRoot = gatewayCertificate
+            ? impl_->config.rdpGatewayAllowUntrustedRoot
+            : impl_->config.rdpAllowUntrustedRoot;
+        verificationName = gatewayCertificate
+            ? (impl_->config.rdpGatewayServerName.empty()
+                ? impl_->config.gatewayHost : impl_->config.rdpGatewayServerName)
+            : (impl_->config.customHostname.empty()
+                ? impl_->config.host : impl_->config.customHostname);
+        endpointMode = impl_->config.rdpEndpointMode;
     }
+    constexpr DWORD kKnownFlags = VERIFY_CERT_FLAG_LEGACY |
+        VERIFY_CERT_FLAG_GATEWAY | VERIFY_CERT_FLAG_CHANGED |
+        VERIFY_CERT_FLAG_MISMATCH | VERIFY_CERT_FLAG_MATCH_LEGACY_SHA1 |
+        VERIFY_CERT_FLAG_FP_IS_PEM;
+    const bool unsupportedFlags = (flags & ~kKnownFlags) != 0 ||
+        (flags & VERIFY_CERT_FLAG_REDIRECT) != 0;
+    RdpEndpointMode configuredMode = RdpEndpointMode::DirectRdp;
+    const bool routeModeKnown = RdpGatewayPolicy::parseEndpointMode(endpointMode, configuredMode);
+    if (gatewayCertificate && (!routeModeKnown ||
+        configuredMode != RdpEndpointMode::MicrosoftRdGateway)) {
+        OH_LOG_ERROR(LOG_APP,
+            "[RDP] gateway certificate callback received for non-gateway route mode=%{public}s",
+            endpointMode.c_str());
+        impl_->setState(ConnectionState::ERROR,
+                        "RDP Gateway certificate was received on an invalid route [E-RDP-GATEWAY-CERT]");
+        return 0;
+    }
+    if (unsupportedFlags) {
+        OH_LOG_ERROR(LOG_APP,
+            "[RDP] certificate callback rejected unsupported flags=0x%{public}08X",
+            flags);
+        impl_->setState(ConnectionState::ERROR,
+                        gatewayCertificate
+                            ? "RDP Gateway certificate callback flags are unsupported [E-RDP-GATEWAY-CERT]"
+                            : "RDP certificate callback flags are unsupported [E-RDP-TARGET-CERT]");
+        return 0;
+    }
+    const bool rootKnown = pemData != nullptr && pemLength > 0;
+    if (!rootKnown) {
+        impl_->setState(ConnectionState::ERROR,
+                        gatewayCertificate
+                            ? "RDP Gateway certificate PEM is unavailable [E-RDP-GATEWAY-CERT]"
+                            : "RDP target certificate PEM is unavailable [E-RDP-TARGET-CERT]");
+        return 0;
+    }
+    bool pemParsed = false;
+    const bool pemHostMatches = RdpCertificateValidation::hostnameMatchesPem(
+        pemData, pemLength,
+        verificationName.empty() ? (host ? host : "") : verificationName,
+        pemParsed);
+    if (!pemParsed) {
+        impl_->setState(ConnectionState::ERROR,
+                        gatewayCertificate
+                            ? "RDP Gateway certificate PEM is invalid [E-RDP-GATEWAY-CERT]"
+                            : "RDP target certificate PEM is invalid [E-RDP-TARGET-CERT]");
+        return 0;
+    }
+    // ExternalCertificateManagement may invoke the PEM callback before
+    // FreeRDP's own hostname-mismatch flag is produced. Recompute SAN/CN
+    // matching from the certificate instead of trusting that flag alone.
+    hostMismatch = !pemHostMatches;
     const bool fingerprintOk = RdpCertificatePolicy::FingerprintMatches(
         expectedFingerprint, fingerprint);
     const bool hostOk = !hostMismatch || allowHostMismatch;
-    if (fingerprintOk && hostOk) {
+    const bool rootTrusted = rootTrustedFromPem(pemData, pemLength);
+    const bool rootOk = rootTrusted || allowUntrustedRoot;
+    bool validityOk = true;
+    if (pemData != nullptr && pemLength > 0) {
+        BIO* bio = BIO_new_mem_buf(pemData, static_cast<int>(pemLength));
+        X509* cert = bio ? PEM_read_bio_X509(bio, nullptr, nullptr, nullptr) : nullptr;
+        if (bio) {
+            BIO_free(bio);
+        }
+        validityOk = cert != nullptr && x509ValidityIsCurrent(cert);
+        if (cert) {
+            X509_free(cert);
+        }
+    }
+    if (!validityOk) {
+        OH_LOG_ERROR(LOG_APP,
+            "[RDP] %s certificate validity is not current or cannot be parsed flags=0x%{public}08X",
+            gatewayCertificate ? "gateway" : "target", flags);
+        impl_->setState(ConnectionState::ERROR,
+                        gatewayCertificate
+                            ? "RDP Gateway certificate is expired or not yet valid [E-RDP-GATEWAY-CERT]"
+                            : "RDP target certificate is expired or not yet valid [E-RDP-TARGET-CERT]");
+        return 0;
+    }
+    if (fingerprintOk && hostOk && rootOk) {
         OH_LOG_WARN(LOG_APP,
-            "[RDP] certificate accepted for this session host=%{public}s:%{public}u common_name=%{public}s flags=0x%{public}08X fingerprintMatch=%{public}s hostOk=%{public}s",
+            "[RDP] %s certificate accepted host=%{public}s:%{public}u common_name=%{public}s flags=0x%{public}08X fingerprintMatch=%{public}s hostOk=%{public}s rootOk=%{public}s",
+            gatewayCertificate ? "gateway" : "target",
             logHost.c_str(), port, logCommonName.c_str(), flags,
-            fingerprintOk ? "true" : "false", hostOk ? "true" : "false");
+            fingerprintOk ? "true" : "false", hostOk ? "true" : "false",
+            rootOk ? "true" : "false");
         return 2;
     }
 
     OH_LOG_ERROR(LOG_APP,
-        "[RDP] certificate rejected host=%{public}s:%{public}u common_name=%{public}s flags=0x%{public}08X hostMismatch=%{public}s fingerprintMatch=%{public}s hostOk=%{public}s",
+        "[RDP] %s certificate rejected host=%{public}s:%{public}u common_name=%{public}s flags=0x%{public}08X hostMismatch=%{public}s fingerprintMatch=%{public}s hostOk=%{public}s rootOk=%{public}s",
+        gatewayCertificate ? "gateway" : "target",
         logHost.c_str(), port, logCommonName.c_str(), flags,
-        hostMismatch ? "true" : "false", fingerprintOk ? "true" : "false", hostOk ? "true" : "false");
-    impl_->setState(ConnectionState::ERROR, "RDP certificate was not trusted or changed [E-RDP-CERT]");
+        hostMismatch ? "true" : "false", fingerprintOk ? "true" : "false",
+        hostOk ? "true" : "false", rootOk ? "true" : "false");
+    impl_->setState(ConnectionState::ERROR,
+                    gatewayCertificate
+                        ? "RDP Gateway certificate was not trusted or changed [E-RDP-GATEWAY-CERT]"
+                        : "RDP target certificate was not trusted or changed [E-RDP-TARGET-CERT]");
     (void)subject;
     (void)issuer;
     return 0;
@@ -2355,8 +3206,18 @@ DWORD FreeRdpAdapter::cbVerifyCertificateEx(freerdp* instance, const char* host,
         return 0;
     }
     FreeRdpAdapter* self = callbackLease.adapter;
-    return self ? self->evaluateCertificate(host, port, common_name, subject, issuer,
-                                            fingerprint ? fingerprint : "", flags) : 0;
+    if (!self) {
+        return 0;
+    }
+    const bool fingerprintIsPem = (flags & VERIFY_CERT_FLAG_FP_IS_PEM) != 0;
+    const BYTE* pemData = fingerprintIsPem ?
+        reinterpret_cast<const BYTE*>(fingerprint) : nullptr;
+    const size_t pemLength = fingerprintIsPem && fingerprint ? strlen(fingerprint) : 0;
+    const std::string actualFingerprint = fingerprintIsPem
+        ? fingerprintFromPem(pemData, pemLength)
+        : (fingerprint ? fingerprint : "");
+    return self->evaluateCertificate(host, port, common_name, subject, issuer,
+                                     actualFingerprint, flags, pemData, pemLength);
 }
 
 DWORD FreeRdpAdapter::cbVerifyChangedCertificateEx(freerdp* instance, const char* host, UINT16 port,
@@ -2369,9 +3230,19 @@ DWORD FreeRdpAdapter::cbVerifyChangedCertificateEx(freerdp* instance, const char
         return 0;
     }
     FreeRdpAdapter* self = callbackLease.adapter;
-    return self ? self->evaluateCertificate(host, port, common_name, subject, issuer,
-                                            new_fingerprint ? new_fingerprint : "",
-                                            flags | VERIFY_CERT_FLAG_CHANGED) : 0;
+    if (!self) {
+        return 0;
+    }
+    const DWORD effectiveFlags = flags | VERIFY_CERT_FLAG_CHANGED;
+    const bool fingerprintIsPem = (effectiveFlags & VERIFY_CERT_FLAG_FP_IS_PEM) != 0;
+    const BYTE* pemData = fingerprintIsPem ?
+        reinterpret_cast<const BYTE*>(new_fingerprint) : nullptr;
+    const size_t pemLength = fingerprintIsPem && new_fingerprint ? strlen(new_fingerprint) : 0;
+    const std::string actualFingerprint = fingerprintIsPem
+        ? fingerprintFromPem(pemData, pemLength)
+        : (new_fingerprint ? new_fingerprint : "");
+    return self->evaluateCertificate(host, port, common_name, subject, issuer,
+                                     actualFingerprint, effectiveFlags, pemData, pemLength);
 }
 
 int FreeRdpAdapter::cbVerifyX509Certificate(freerdp* instance, const BYTE* data, size_t length,
@@ -2380,10 +3251,13 @@ int FreeRdpAdapter::cbVerifyX509Certificate(freerdp* instance, const BYTE* data,
     if (!acquireCurrentRdpCallbackOwnerLease(callbackLease)) {
         return 0;
     }
-    const std::string fingerprint = fingerprintFromPem(data, length);
     FreeRdpAdapter* self = callbackLease.adapter;
-    return self ? static_cast<int>(self->evaluateCertificate(hostname, port, nullptr, nullptr,
-                                                             nullptr, fingerprint, flags)) : 0;
+    if (!self) {
+        return 0;
+    }
+    const std::string fingerprint = fingerprintFromPem(data, length);
+    return static_cast<int>(self->evaluateCertificate(hostname, port, nullptr, nullptr,
+                                                       nullptr, fingerprint, flags, data, length));
 }
 
 static const char* logonErrorTypeName(UINT32 type) {
@@ -4538,6 +5412,28 @@ void FreeRdpAdapter::connectThreadFunc(uint64_t expectedGeneration) {
         secureClearString(impl_->config.rdpRestrictedAdminHash);
     }
 
+    RdpEndpointRoute route;
+    std::string routeErrorCode;
+    std::string routeErrorMessage;
+    if (!resolveRdpEndpointRoute(cfg, route, routeErrorCode, routeErrorMessage)) {
+        secureClearString(cfg.rdpRestrictedAdminHash);
+        impl_->setState(ConnectionState::ERROR,
+                        routeErrorMessage + " [" + routeErrorCode + "]");
+        impl_->connecting = false;
+        return;
+    }
+    normalizeRdpRouteFields(cfg, route);
+    // Certificate callbacks read the active route from the shared config.
+    // Publish only the normalized route fields; credentials remain owned by
+    // the worker copy and are cleared independently below.
+    {
+        std::lock_guard<std::mutex> lock(impl_->configMutex);
+        impl_->config.rdpEndpointMode = cfg.rdpEndpointMode;
+        impl_->config.rdpGatewayTransport = cfg.rdpGatewayTransport;
+        impl_->config.gatewayPort = cfg.gatewayPort;
+        impl_->config.rdpGatewayServerName = cfg.rdpGatewayServerName;
+    }
+
     freerdp* newInstance = freerdp_new();
     if (!newInstance) {
         secureClearString(cfg.rdpRestrictedAdminHash);
@@ -4592,7 +5488,7 @@ void FreeRdpAdapter::connectThreadFunc(uint64_t expectedGeneration) {
         return;
     }
 
-    int port = cfg.port > 0 ? cfg.port : RDP_TCP_PORT;
+    const int port = route.targetPort;
 
     // ---- 配置 FreeRDP settings (完整映射 ConnectionConfig) ----
     auto* s = instance_->settings;
@@ -4604,7 +5500,7 @@ void FreeRdpAdapter::connectThreadFunc(uint64_t expectedGeneration) {
     std::string effectiveDomain = authIdentity.domain;
     OH_LOG_INFO(LOG_APP, "[RDP] auth identity normalized mode=%{public}s",
                 authIdentity.modeName.c_str());
-    freerdp_settings_set_string(s, FreeRDP_ServerHostname, cfg.host.c_str());
+    freerdp_settings_set_string(s, FreeRDP_ServerHostname, route.targetHost.c_str());
     freerdp_settings_set_uint32(s, FreeRDP_ServerPort, static_cast<UINT32>(port));
     const bool restrictedAdmin = cfg.rdpAuthMode == RdpAuthenticationMode::RestrictedAdmin;
     const bool blankPassword = cfg.rdpAuthMode == RdpAuthenticationMode::BlankPassword;
@@ -4696,6 +5592,12 @@ void FreeRdpAdapter::connectThreadFunc(uint64_t expectedGeneration) {
     freerdp_settings_set_uint32(s, FreeRDP_RequestedProtocols, 0x00000003); // SSL|HYBRID, /sec:nla,tls
     freerdp_settings_set_bool(s, FreeRDP_Authentication, TRUE);
     freerdp_settings_set_bool(s, FreeRDP_AutoLogonEnabled, TRUE);
+    // Certificate decisions are made by the stage-aware callbacks below.
+    // Keeping this enabled is what makes Gateway TLS and tunneled target TLS
+    // use the same explicit trust contract as preflight.
+    freerdp_settings_set_bool(s, FreeRDP_ExternalCertificateManagement, TRUE);
+    freerdp_settings_set_bool(s, FreeRDP_CertificateCallbackPreferPEM, TRUE);
+    freerdp_settings_set_bool(s, FreeRDP_IgnoreCertificate, FALSE);
     freerdp_settings_set_uint32(s, FreeRDP_TcpConnectTimeout, 30000);
     // HarmonyOS 侧没有可用的 Kerberos/U2U 凭据缓存，NLA/CredSSP 只允许 NTLM，避免 Negotiate 第二轮返回 SEC_E_NO_CREDENTIALS。
     freerdp_settings_set_string(s, FreeRDP_AuthenticationPackageList, "ntlm");
@@ -4746,31 +5648,43 @@ void FreeRdpAdapter::connectThreadFunc(uint64_t expectedGeneration) {
         OH_LOG_INFO(LOG_APP, "[RDP] rdpsnd enabled: channel loading delegated to FreeRDP PreConnect");
     }
 
-    // 目标服务器名: 连接仍走 host/port, NLA/CredSSP 使用该名称生成 TERMSRV/<name>。
-    if (!cfg.customHostname.empty()) {
-        freerdp_settings_set_string(s, FreeRDP_UserSpecifiedServerName, cfg.customHostname.c_str());
-        freerdp_settings_set_string(s, FreeRDP_CertificateName, cfg.customHostname.c_str());
-        const std::string logTargetName = SafeLog::MaskHost(cfg.customHostname);
+    // 目标服务器名: 连接仍走目标 host/port, NLA/CredSSP 使用该名称生成
+    // TERMSRV/<name>；Gateway TLS/SNI 仍由 FreeRDP 使用 GatewayHostname。
+    if (!route.targetServerName.empty()) {
+        freerdp_settings_set_string(s, FreeRDP_UserSpecifiedServerName,
+                                    route.targetServerName.c_str());
+        freerdp_settings_set_string(s, FreeRDP_CertificateName,
+                                    route.targetServerName.c_str());
+        const std::string logTargetName = SafeLog::MaskHost(route.targetServerName);
         OH_LOG_INFO(LOG_APP, "[RDP] target server name override: %{public}s", logTargetName.c_str());
     }
-    const std::string acceptedFingerprint =
-        RdpCertificatePolicy::ToFreeRdpAcceptedFingerprint(
-            cfg.expectedRdpCertificateFingerprintSha256);
-    if (!acceptedFingerprint.empty()) {
-        freerdp_settings_set_string(s, FreeRDP_CertificateAcceptedFingerprints,
-                                    acceptedFingerprint.c_str());
-        OH_LOG_INFO(LOG_APP, "[RDP] certificate fingerprint pin configured for this session");
-    }
 
-    // RD Gateway
-    if (!cfg.gatewayHost.empty()) {
-        freerdp_settings_set_string(s, FreeRDP_GatewayHostname, cfg.gatewayHost.c_str());
+    // RD Gateway transport. A Gateway route is never allowed to fall through
+    // to the target socket, and a direct route is explicitly kept disabled.
+    const bool gatewayRoute = route.endpointMode == RdpEndpointMode::MicrosoftRdGateway;
+    const RdpGatewayTransportFlags gatewayTransportFlags =
+        RdpGatewayPolicy::transportFlags(route.gatewayTransport);
+    freerdp_settings_set_bool(s, FreeRDP_GatewayEnabled, gatewayRoute ? TRUE : FALSE);
+    if (gatewayRoute) {
+        freerdp_settings_set_string(s, FreeRDP_GatewayHostname, route.gatewayHost.c_str());
         freerdp_settings_set_uint32(s, FreeRDP_GatewayPort,
-                                    static_cast<UINT32>(cfg.gatewayPort > 0 ? cfg.gatewayPort : 443));
-        freerdp_settings_set_bool(s, FreeRDP_GatewayEnabled, TRUE);
-        const std::string logGatewayHost = SafeLog::MaskHost(cfg.gatewayHost);
-        OH_LOG_INFO(LOG_APP, "[RDP] RD Gateway: %{public}s:%{public}d",
-                    logGatewayHost.c_str(), cfg.gatewayPort > 0 ? cfg.gatewayPort : 443);
+                                    static_cast<UINT32>(route.gatewayPort));
+        freerdp_settings_set_bool(s, FreeRDP_GatewayRpcTransport,
+                                  gatewayTransportFlags.rpc ? TRUE : FALSE);
+        freerdp_settings_set_bool(s, FreeRDP_GatewayHttpTransport,
+                                  gatewayTransportFlags.http ? TRUE : FALSE);
+        freerdp_settings_set_bool(s, FreeRDP_GatewayHttpUseWebsockets,
+                                  gatewayTransportFlags.websockets ? TRUE : FALSE);
+        freerdp_settings_set_bool(s, FreeRDP_GatewayUseSameCredentials, TRUE);
+        freerdp_settings_set_string(s, FreeRDP_GatewayUsername, effectiveUsername.c_str());
+        freerdp_settings_set_string(s, FreeRDP_GatewayPassword,
+                                    (restrictedAdmin || blankPassword) ? "" : cfg.password.c_str());
+        freerdp_settings_set_string(s, FreeRDP_GatewayDomain, effectiveDomain.c_str());
+        const std::string logGatewayHost = SafeLog::MaskHost(route.gatewayHost);
+        OH_LOG_INFO(LOG_APP,
+                    "[RDP] RD Gateway: %{public}s:%{public}d transport=%{public}s",
+                    logGatewayHost.c_str(), route.gatewayPort,
+                    RdpGatewayPolicy::gatewayTransportName(route.gatewayTransport));
     }
 
     // 多显示器当前会导致部分 Windows 会话只建连不出首帧, 先固定单屏稳定路径。
@@ -4821,7 +5735,7 @@ void FreeRdpAdapter::connectThreadFunc(uint64_t expectedGeneration) {
                 freerdp_settings_get_uint32(s, FreeRDP_RequestedProtocols),
                 authPackageList ? authPackageList : "无");
 
-    // 证书验证回调: 只接受 ArkTS 预检确认并传入的指纹。
+    // 证书验证回调: 只接受 ArkTS 预检确认并传入的阶段对应指纹。
     instance_->VerifyCertificate = cbVerifyCertificate;
     instance_->VerifyCertificateEx = cbVerifyCertificateEx;
     instance_->VerifyChangedCertificateEx = cbVerifyChangedCertificateEx;
@@ -5046,6 +5960,69 @@ void FreeRdpAdapter::requestFrameRefresh() {
 RdpCertificateInfo FreeRdpAdapter::probeRdpCertificate(const std::string& host, int port,
                                                        const std::string& serverName) {
     return probeRdpCertificateOverTls(host, port, serverName);
+}
+
+RdpPreflightResult FreeRdpAdapter::probeRdpCertificateRoute(
+    const RdpPreflightRequest& request) {
+    ConnectionConfig cfg;
+    cfg.host = request.route.targetHost;
+    cfg.port = request.route.targetPort;
+    cfg.customHostname = request.route.targetServerName;
+    cfg.gatewayHost = request.route.gatewayHost;
+    cfg.gatewayPort = request.route.gatewayPort;
+    cfg.rdpAuthMode = request.targetRestrictedAdmin
+        ? RdpAuthenticationMode::RestrictedAdmin
+        : RdpAuthenticationMode::Password;
+    cfg.rdpEndpointMode = RdpGatewayPolicy::endpointModeName(request.route.endpointMode);
+    cfg.rdpGatewayTransport = RdpGatewayPolicy::gatewayTransportName(request.route.gatewayTransport);
+    cfg.rdpGatewayServerName = request.route.gatewayServerName;
+    RdpEndpointRoute route;
+    std::string routeErrorCode;
+    std::string routeErrorMessage;
+    if (!resolveRdpEndpointRoute(cfg, route, routeErrorCode, routeErrorMessage)) {
+        return makeRdpPreflightError(
+            request, "endpoint", routeErrorCode, routeErrorMessage);
+    }
+    RdpPreflightRequest normalized = request;
+    normalized.route = route;
+    if (route.endpointMode == RdpEndpointMode::MicrosoftRdGateway) {
+        return probeRdpCertificateRouteWithFreeRdp(normalized);
+    }
+
+    const RdpCertificateInfo info = probeRdpCertificateOverTls(
+        route.targetHost, route.targetPort, route.targetServerName);
+    RdpPreflightResult result;
+    result.ok = info.ok;
+    result.endpointMode = route.endpointMode;
+    result.routeIdentity = RdpGatewayPolicy::routeIdentity(route);
+    result.generation = normalized.generation;
+    result.requestId = normalized.requestId;
+    result.stage = info.ok ? "target" : directRdpPreflightStage(info.errorCode);
+    result.errorCode = info.ok ? "" : directRdpPreflightErrorCode(info.errorCode);
+    result.errorMessage = info.errorMessage;
+    RdpGatewayPolicy::initializeGatewayTransportResult(
+        result, normalized.route.gatewayTransport);
+    result.requiresUserDecision = info.ok;
+    result.targetCertificate.present = info.ok;
+    result.targetCertificate.stage = "target";
+    result.targetCertificate.host = info.host;
+    result.targetCertificate.port = info.port;
+    result.targetCertificate.serverName = route.targetServerName;
+    result.targetCertificate.commonName = info.commonName;
+    result.targetCertificate.subject = info.subject;
+    result.targetCertificate.issuer = info.issuer;
+    result.targetCertificate.fingerprintSha256 = info.fingerprintSha256;
+    result.targetCertificate.notBeforeMs = info.notBeforeMs;
+    result.targetCertificate.notAfterMs = info.notAfterMs;
+    result.targetCertificate.flags = info.flags;
+    result.targetCertificate.rootTrusted = info.rootTrusted;
+    result.targetCertificate.hostMismatch = info.hostMismatch;
+    if (info.ok && RdpGatewayPolicy::trustAllowsStage(
+            result.targetCertificate, normalized.expectedTargetFingerprintSha256,
+            normalized.targetAllowUntrustedRoot, normalized.targetAllowHostMismatch)) {
+        result.requiresUserDecision = false;
+    }
+    return result;
 }
 
 RdpRenderStats FreeRdpAdapter::getRdpRenderStats() {
@@ -5634,12 +6611,28 @@ int FreeRdpAdapter::connect(const ConnectionConfig& cfg) {
         std::lock_guard<std::mutex> lock(impl_->configMutex);
         impl_->config = cfg;
     }
+
+    RdpEndpointRoute route;
+    std::string routeErrorCode;
+    std::string routeErrorMessage;
+    if (!resolveRdpEndpointRoute(cfg, route, routeErrorCode, routeErrorMessage)) {
+        impl_->setState(ConnectionState::ERROR,
+                        routeErrorMessage + " [" + routeErrorCode + "]");
+        return -70;
+    }
+    if (route.endpointMode == RdpEndpointMode::MicrosoftRdGateway) {
+        // The skeleton has no HTTP/RPC/WebSocket tunnel implementation. It
+        // must never send an RDP X.224 packet to the Gateway TLS port.
+        impl_->setState(ConnectionState::ERROR,
+                        "Microsoft RD Gateway requires the FreeRDP runtime [E-RDP-GATEWAY-AWARE-UNAVAILABLE]");
+        return -71;
+    }
     impl_->setState(ConnectionState::CONNECTING, "Connecting...");
 
-    int port = cfg.port > 0 ? cfg.port : RDP_TCP_PORT;
+    const int port = route.targetPort;
     int ret;
 
-    ret = rdpTcpConnect(cfg.host, port, impl_->sockFd);
+    ret = rdpTcpConnect(route.targetHost, port, impl_->sockFd);
     if (ret < 0) { impl_->setState(ConnectionState::ERROR, "TCP connection failed"); return ret; }
     ret = rdpSendX224ConnectionRequest(impl_->sockFd);
     if (ret < 0) { impl_->setState(ConnectionState::ERROR, "X.224 failed"); disconnect(); return -22; }
@@ -5683,6 +6676,71 @@ void FreeRdpAdapter::requestFrameRefresh() {
 RdpCertificateInfo FreeRdpAdapter::probeRdpCertificate(const std::string& host, int port,
                                                        const std::string& serverName) {
     return probeRdpCertificateOverTls(host, port, serverName);
+}
+
+RdpPreflightResult FreeRdpAdapter::probeRdpCertificateRoute(
+    const RdpPreflightRequest& request) {
+    ConnectionConfig cfg;
+    cfg.host = request.route.targetHost;
+    cfg.port = request.route.targetPort;
+    cfg.customHostname = request.route.targetServerName;
+    cfg.gatewayHost = request.route.gatewayHost;
+    cfg.gatewayPort = request.route.gatewayPort;
+    cfg.rdpAuthMode = request.targetRestrictedAdmin
+        ? RdpAuthenticationMode::RestrictedAdmin
+        : RdpAuthenticationMode::Password;
+    cfg.rdpEndpointMode = RdpGatewayPolicy::endpointModeName(request.route.endpointMode);
+    cfg.rdpGatewayTransport = RdpGatewayPolicy::gatewayTransportName(request.route.gatewayTransport);
+    cfg.rdpGatewayServerName = request.route.gatewayServerName;
+    RdpEndpointRoute normalizedRoute;
+    std::string routeErrorCode;
+    std::string routeErrorMessage;
+    if (!resolveRdpEndpointRoute(cfg, normalizedRoute, routeErrorCode, routeErrorMessage)) {
+        return makeRdpPreflightError(
+            request, "endpoint", routeErrorCode, routeErrorMessage);
+    }
+    RdpPreflightRequest normalized = request;
+    normalized.route = normalizedRoute;
+    if (normalizedRoute.endpointMode == RdpEndpointMode::MicrosoftRdGateway) {
+        return makeRdpPreflightError(
+            normalized, "gateway", "E-RDP-GATEWAY-AWARE-UNAVAILABLE",
+            "Microsoft RD Gateway certificate preflight requires the FreeRDP runtime");
+    }
+    const RdpCertificateInfo info = probeRdpCertificateOverTls(
+        normalizedRoute.targetHost, normalizedRoute.targetPort,
+        normalizedRoute.targetServerName);
+    RdpPreflightResult result;
+    result.ok = info.ok;
+    result.endpointMode = normalizedRoute.endpointMode;
+    result.routeIdentity = RdpGatewayPolicy::routeIdentity(normalizedRoute);
+    result.generation = normalized.generation;
+    result.requestId = normalized.requestId;
+    result.stage = info.ok ? "target" : directRdpPreflightStage(info.errorCode);
+    result.errorCode = info.ok ? "" : directRdpPreflightErrorCode(info.errorCode);
+    result.errorMessage = info.errorMessage;
+    RdpGatewayPolicy::initializeGatewayTransportResult(
+        result, normalized.route.gatewayTransport);
+    result.requiresUserDecision = info.ok;
+    result.targetCertificate.present = info.ok;
+    result.targetCertificate.stage = "target";
+    result.targetCertificate.host = info.host;
+    result.targetCertificate.port = info.port;
+    result.targetCertificate.serverName = normalizedRoute.targetServerName;
+    result.targetCertificate.commonName = info.commonName;
+    result.targetCertificate.subject = info.subject;
+    result.targetCertificate.issuer = info.issuer;
+    result.targetCertificate.fingerprintSha256 = info.fingerprintSha256;
+    result.targetCertificate.notBeforeMs = info.notBeforeMs;
+    result.targetCertificate.notAfterMs = info.notAfterMs;
+    result.targetCertificate.flags = info.flags;
+    result.targetCertificate.rootTrusted = info.rootTrusted;
+    result.targetCertificate.hostMismatch = info.hostMismatch;
+    if (info.ok && RdpGatewayPolicy::trustAllowsStage(
+            result.targetCertificate, request.expectedTargetFingerprintSha256,
+            request.targetAllowUntrustedRoot, request.targetAllowHostMismatch)) {
+        result.requiresUserDecision = false;
+    }
+    return result;
 }
 
 RdpRenderStats FreeRdpAdapter::getRdpRenderStats() {
