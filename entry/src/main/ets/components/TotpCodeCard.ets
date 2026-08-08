@@ -300,6 +300,12 @@ export struct TotpCodeCard {
   }
 
   private shouldShowInitials(visual: TotpBrandVisual): boolean {
+    // A primary avatar owns the slot while it is loading.  Rendering initials
+    // underneath it makes transparent/reloaded logos show two avatars during
+    // a theme transition.
+    if (this.shouldRenderDirectBrandResource(visual) || this.shouldRenderCustomAvatar()) {
+      return false;
+    }
     const decodedAssetVisible: boolean = this.shouldRenderBrandAsset(visual) &&
       totpBrandAssetVisibility(this.avatarState.snapshot(), this.brandPixelMap !== null) === 'asset';
     return !this.customAvatarReady && !this.brandReady && !decodedAssetVisible;
