@@ -1,3 +1,5 @@
+import { SshSessionSnapshot } from '../types/rdpnapi';
+
 /**
  * SSH-only durable transfer metadata. The persisted shape intentionally
  * excludes credentials, picker grants, local URI values and file contents.
@@ -68,15 +70,6 @@ export interface SshSftpTaskCommand {
 export type SshSftpTaskEventKind = 'restored' | 'changed' | 'removed';
 
 export type SshSftpCommitRecoveryDecision = 'complete' | 'retryRename' | 'failed';
-
-export interface SshSftpAttachSnapshot {
-  errorCode: number;
-  sessionId: number;
-  generation: number;
-  state: number;
-  stateName: string;
-  eventSequence: number;
-}
 
 export interface SshSftpTaskEvent {
   kind: SshSftpTaskEventKind;
@@ -201,7 +194,7 @@ export function sshSftpCommitRecoveryDecision(commitState: 'renaming' | 'renamed
 
 /** Fence a page callback against the exact native session generation and Ready lifecycle. */
 export function sshSftpSessionSnapshotCanAttach(sessionId: number, generation: number,
-  nativeConnectionState: number, snapshot: SshSftpAttachSnapshot): boolean {
+  nativeConnectionState: number, snapshot: SshSessionSnapshot): boolean {
   return nativeConnectionState === 2 && snapshot.errorCode === 0 &&
     snapshot.sessionId === sessionId && snapshot.generation === generation &&
     snapshot.state === 3 && snapshot.stateName === 'Ready' &&
