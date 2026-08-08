@@ -97,8 +97,13 @@ export struct SshXtermSurface {
   @Prop @Watch('onFontChange') fontSize: number = 18;
   @Prop @Watch('onLineSpacingChange') lineSpacing: number = 1.12;
   @Prop @Watch('onAppearanceChange') bottomAlignSparseContent: boolean = false;
+  @Prop @Watch('onAppearanceChange') bottomAlignSafeRows: number = 0;
+  @Prop @Watch('onAppearanceChange') bottomInsetPx: number = 10;
   @StorageProp('sshTerminalForegroundColor') @Watch('onAppearanceChange') terminalFgColor: string = '#33FF33';
   @Prop @Watch('onOutputSequenceChange') outputSequence: number = 0;
+  /** Replace the current document with one host transcript after a revision handoff. */
+  @Prop transcriptResetIdentity: string = '';
+  @Prop @Watch('onTranscriptResetRequestChange') transcriptResetRequest: number = 0;
   @Prop @Watch('onFocusRequest') focusRequest: number = 0;
   @Prop @Watch('onCopyRequest') copyRequest: number = 0;
   @Prop @Watch('onScrollToBottomRequest') scrollToBottomRequest: number = 0;
@@ -111,6 +116,7 @@ export struct SshXtermSurface {
   onData?: (data: string, surfaceKey: string) => void;
   onResize?: (cols: number, rows: number, surfaceKey: string) => void;
   onReady?: (surfaceKey: string) => void;
+  onTerminalFocus?: (focused: boolean, surfaceKey: string) => void;
 
   private controller: webview.WebviewController = new webview.WebviewController();
   private bridge: SshXtermBridgeProxy = new SshXtermBridgeProxy();
@@ -286,7 +292,11 @@ export struct SshXtermSurface {
       }
     };
     this.bridge.onSelectionCallback = (_text: string): void => {};
-    this.bridge.onFocusCallback = (_focused: boolean): void => {};
+    this.bridge.onFocusCallback = (focused: boolean): void => {
+      if (lifecycleToken === this.lifecycleToken && this.onTerminalFocus && !this.disposed) {
+        this.onTerminalFocus(focused, this.surfaceIdentity());
+      }
+    };
   }
 
   private clearBridgeRetry(): void {
@@ -358,7 +368,9 @@ export struct SshXtermSurface {
       fontFamily: 'monospace',
       foreground: this.terminalFgColor,
       background: '#0D0D0D',
-      bottomAlignSparseContent: this.bottomAlignSparseContent
+      bottomAlignSparseContent: this.bottomAlignSparseContent,
+      bottomAlignSafeRows: Math.max(0, Math.min(6, Math.floor(this.bottomAlignSafeRows))),
+      bottomInsetPx: Math.max(0, Math.min(20, Math.floor(this.bottomInsetPx)))
     });
     // ArkWeb can dispatch onPageEnd while the rawfile's inline bootstrap is
     // still installing its window functions. Keep configuration idempotent
@@ -1001,10 +1013,14 @@ export struct SshXtermSurface {
   }
 
   private onFontChange(): void {
+    this.logLifecycle('appearance font=' + this.fontSize.toString() +
+      ' lineSpacing=' + this.lineSpacing.toString() + ' key=' + this.coreKey);
     this.runPageScript(this.pageConfigScript());
   }
 
   private onLineSpacingChange(): void {
+    this.logLifecycle('appearance font=' + this.fontSize.toString() +
+      ' lineSpacing=' + this.lineSpacing.toString() + ' key=' + this.coreKey);
     this.runPageScript(this.pageConfigScript());
   }
 
@@ -1015,6 +1031,26 @@ export struct SshXtermSurface {
   private onOutputSequenceChange(): void {
     if (!this.active || this.documentReloadPending || this.disposed) { return; }
     this.flushOutputBuffer();
+  }
+
+  private onTranscriptResetRequestChange(): void {
+    if (!this.active || !this.pageReady || this.documentReloadPending || this.disposed ||
+      this.transcriptResetIdentity.trim() !== this.surfaceIdentity()) {
+      return;
+    }
+    const lifecycleToken: number = this.lifecycleToken;
+    this.logLifecycle('reset document transcript key=' + this.coreKey);
+    this.runPageScript('window.__sshXtermReset();', (): void => {
+      if (lifecycleToken !== this.lifecycleToken || this.disposed || !this.active ||
+        this.transcriptResetIdentity.trim() !== this.surfaceIdentity()) {
+        return;
+      }
+      // The parent replaced the host queue with its bounded transcript before
+      // advancing this request. Drain it only after xterm.reset() completes so
+      // a retained DOM cannot show both its old rows and the restored rows.
+      this.flushOutputBuffer();
+      this.scheduleFit();
+    });
   }
 
   private onFocusRequest(): void {
@@ -1069,6 +1105,13 @@ export struct SshXtermSurface {
       // needs local file access enabled to resolve the relative vendor URLs.
       .fileAccess(true)
       .domStorageAccess(false)
+      // API 23 exposes the controller before navigation begins. Registering
+      // here lets the first rawfile document see the proxy and avoids the old
+      // mandatory activation reload after onPageBegin.
+      .onControllerAttached((): void => {
+        this.logLifecycle('controller attached key=' + this.coreKey);
+        this.registerBridge();
+      })
       .onPageBegin((): void => {
         this.pageStarted = true;
         this.logLifecycle('page begin key=' + this.coreKey);
@@ -1166,7 +1209,12 @@ export struct SshXtermPrewarmSurface {
           .javaScriptAccess(true)
           .fileAccess(true)
           .domStorageAccess(false)
-        .onPageBegin((): void => {
+          .onControllerAttached((): void => {
+            hilog.info(XTERM_DOMAIN, XTERM_TAG,
+              'prewarm controller attached elapsedMs=' + this.elapsedMs().toString());
+            this.registerBridge();
+          })
+          .onPageBegin((): void => {
             this.bridgeRegisteredAtPageBegin = this.bridgeRegistered;
             hilog.info(XTERM_DOMAIN, XTERM_TAG,
               'prewarm page begin elapsedMs=' + this.elapsedMs().toString() +

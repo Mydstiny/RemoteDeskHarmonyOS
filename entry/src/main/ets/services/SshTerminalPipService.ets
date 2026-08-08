@@ -162,8 +162,22 @@ export class SshTerminalPipService {
     const nextInfo: SshTerminalPipInfo = this.normalizedInfo(info);
     this.stoppedHandler = onStopped;
     if (this.prepared && this.controller !== null) {
-      this.customUiController?.update(nextInfo);
-      return true;
+      // A controller with no lifecycle transition is still the foreground
+      // registration and can be reused for another SSH tab. STARTED and
+      // restore/stop states belong to the previous background cycle; reusing
+      // that controller makes the next auto-start fail as a repeated or
+      // abnormal PiP operation.
+      if (!this.active && this.lastState === null) {
+        this.customUiController?.update(nextInfo);
+        return true;
+      }
+      hilog.info(DOMAIN, TAG, 'SSH PiP retiring previous cycle state=' +
+        (this.lastState === null ? 'none' : this.lastState.toString()) +
+        ' active=' + this.active.toString());
+      if (!(await this.stopInternal())) {
+        return false;
+      }
+      this.stoppedHandler = onStopped;
     }
     if (this.controller !== null) {
       if (!(await this.stopInternal())) {
@@ -326,6 +340,32 @@ export class SshTerminalPipService {
     }
     if (this.controller !== owner || this.isTerminalState(this.lastState)) {
       return true;
+    }
+    if (this.lastState === PiPWindow.PiPState.ABOUT_TO_STOP ||
+      this.lastState === PiPWindow.PiPState.ABOUT_TO_RESTORE) {
+      // WMS already owns this transition. Calling stopPiP() again produces
+      // 1300012/1300015 on the second foreground/background cycle. Wait for
+      // STOPPED, then reconcile a missed callback with API 23 isPiPActive().
+      if (await this.waitForTerminal(owner)) {
+        if (this.controller === owner) {
+          this.cleanupController(owner, 'transitionComplete', false);
+        }
+        return true;
+      }
+      try {
+        if (!await owner.isPiPActive()) {
+          if (this.controller === owner) {
+            this.cleanupController(owner, 'transitionReconciled', false);
+          }
+          return true;
+        }
+      } catch (err) {
+        const be: BusinessError = err as BusinessError;
+        hilog.warn(DOMAIN, TAG, 'SSH PiP transition probe failed code=' +
+          this.errorCode(be) + ' message=' + this.errorMessage(be));
+      }
+      hilog.warn(DOMAIN, TAG, 'SSH PiP previous transition did not finish');
+      return false;
     }
     try {
       await owner.stopPiP();

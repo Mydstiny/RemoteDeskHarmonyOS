@@ -9,6 +9,7 @@
     :root {
       color-scheme: dark;
       background: #0d0d0d;
+      --ssh-terminal-bottom-inset: 10px;
     }
     html, body, #terminal {
       width: 100%;
@@ -32,14 +33,14 @@
       height: 100%;
       box-sizing: border-box;
       /* FitAddon measures this element, so keep the cell-safe inset here. */
-      padding: 5px 6px 10px;
+      padding: 5px 6px var(--ssh-terminal-bottom-inset);
     }
     .xterm-viewport {
       background: transparent !important;
       scrollbar-width: thin;
       scrollbar-color: rgba(255, 255, 255, 0.28) transparent;
       /* ArkWeb paints this absolute viewport against the full shell box. */
-      bottom: 10px;
+      bottom: var(--ssh-terminal-bottom-inset);
     }
     .xterm-screen {
       outline: none;
@@ -78,7 +79,9 @@
           fontFamily: 'monospace',
           foreground: '#33ff33',
           background: '#0d0d0d',
-          bottomAlignSparseContent: false
+          bottomAlignSparseContent: false,
+          bottomAlignSafeRows: 0,
+          bottomInsetPx: 10
         }
       };
 
@@ -160,6 +163,24 @@
         } catch (_) {}
       }
 
+      function applyBottomSafeInset() {
+        var root = document.getElementById('terminal');
+        if (!root) return;
+        var safeRows = Math.max(0, Math.min(6,
+          Math.floor(Number(state.config.bottomAlignSafeRows) || 0)));
+        var fontSize = Math.max(12, Math.min(32,
+          Number(state.config.fontSize) || 18));
+        var lineHeight = Math.max(1, Math.min(1.6,
+          Number(state.config.lineHeight) || 1.12));
+        var safePixels = Math.ceil(safeRows * fontSize * lineHeight);
+        // Shrink the fitted terminal grid itself instead of only translating
+        // sparse startup rows. The shell prompt then remains above the system
+        // navigation area after long command output creates scrollback.
+        root.style.height = safePixels > 0
+          ? 'calc(100% - ' + safePixels + 'px)'
+          : '100%';
+      }
+
       function applyConfig(config) {
         if (config) {
           Object.keys(config).forEach(function (key) {
@@ -176,6 +197,13 @@
         var lineHeight = Number(state.config.lineHeight);
         if (!isFinite(lineHeight)) lineHeight = 1.12;
         lineHeight = Math.max(1, Math.min(1.6, lineHeight));
+        var bottomInsetPx = Number(state.config.bottomInsetPx);
+        if (!isFinite(bottomInsetPx)) bottomInsetPx = 10;
+        bottomInsetPx = Math.max(0, Math.min(20, Math.floor(bottomInsetPx)));
+        try {
+          document.documentElement.style.setProperty(
+            '--ssh-terminal-bottom-inset', bottomInsetPx + 'px');
+        } catch (_) {}
         try {
           terminal.options.fontSize = fontSize;
           terminal.options.lineHeight = lineHeight;
@@ -187,6 +215,7 @@
             selectionBackground: 'rgba(90, 140, 255, 0.42)'
           };
         } catch (_) {}
+        applyBottomSafeInset();
         var fitted = fitTerminal();
         if (!fitted && state.config.cols && state.config.rows &&
             (terminal.cols !== Number(state.config.cols) ||
@@ -219,7 +248,8 @@
             var cellHeight = screenHeight / Math.max(1, Number(state.terminal.rows));
             if (isFinite(cellHeight) && cellHeight > 0) {
               var contentRows = Math.max(1, Math.min(Number(state.terminal.rows), cursorY + 1));
-              offset = Math.max(0, Math.floor((Number(state.terminal.rows) - contentRows) * cellHeight));
+              offset = Math.max(0, Math.floor(
+                (Number(state.terminal.rows) - contentRows) * cellHeight));
             }
           }
         } catch (_) {}
@@ -268,6 +298,8 @@
             lineHeight: Number(state.config.lineHeight) || 1.12,
             cursorBlink: true,
             cursorStyle: 'bar',
+            cursorInactiveStyle: 'bar',
+            cursorWidth: 2,
             convertEol: false,
             // Keep xterm's mature helper input enabled as a fallback when the
             // ArkUI IME anchor cannot acquire focus during a page handoff.
@@ -285,7 +317,63 @@
             }
           });
           state.terminal = terminal;
-          terminal.open(document.getElementById('terminal'));
+          var terminalElement = document.getElementById('terminal');
+          terminal.open(terminalElement);
+          var touchPointerId = -1;
+          var touchLastY = 0;
+          var touchScrollRemainder = 0;
+          var touchMoved = false;
+          terminalElement.addEventListener('pointerdown', function (event) {
+            if (event && event.pointerType === 'touch') {
+              touchPointerId = Number(event.pointerId);
+              touchLastY = Number(event.clientY) || 0;
+              touchScrollRemainder = 0;
+              touchMoved = false;
+              try { terminalElement.setPointerCapture(event.pointerId); } catch (_) {}
+              // Prevent xterm's helper textarea from taking focus before we
+              // know whether this touch is a tap or a scroll gesture.
+              if (event.cancelable) event.preventDefault();
+              return;
+            }
+            // Mouse/pen enters input focus immediately. Touch waits until
+            // pointerup so dragging scrollback does not reopen the soft IME.
+            bridgeCall('onFocus', [true]);
+          }, true);
+          terminalElement.addEventListener('pointermove', function (event) {
+            if (!event || event.pointerType !== 'touch' ||
+                Number(event.pointerId) !== touchPointerId || !state.terminal) return;
+            var nextY = Number(event.clientY) || touchLastY;
+            var delta = touchLastY - nextY;
+            if (Math.abs(delta) >= 2) touchMoved = true;
+            var fontSize = Math.max(12, Math.min(32,
+              Number(state.config.fontSize) || 18));
+            var lineHeight = Math.max(1, Math.min(1.6,
+              Number(state.config.lineHeight) || 1.12));
+            var cellHeight = Math.max(8, fontSize * lineHeight);
+            var accumulated = touchScrollRemainder + delta;
+            var lines = accumulated < 0 ? Math.ceil(accumulated / cellHeight) :
+              Math.floor(accumulated / cellHeight);
+            if (lines !== 0) {
+              try { state.terminal.scrollLines(lines); } catch (_) {}
+              touchScrollRemainder = accumulated - lines * cellHeight;
+            } else {
+              touchScrollRemainder = accumulated;
+            }
+            touchLastY = nextY;
+            if (touchMoved && event.cancelable) event.preventDefault();
+          }, true);
+          function finishTouchPointer(event) {
+            if (!event || Number(event.pointerId) !== touchPointerId) return;
+            if (!touchMoved && event.type === 'pointerup') {
+              bridgeCall('onFocus', [true]);
+            }
+            try { terminalElement.releasePointerCapture(event.pointerId); } catch (_) {}
+            touchPointerId = -1;
+            touchScrollRemainder = 0;
+            touchMoved = false;
+          }
+          terminalElement.addEventListener('pointerup', finishTouchPointer, true);
+          terminalElement.addEventListener('pointercancel', finishTouchPointer, true);
 
           if (window.FitAddon && typeof window.FitAddon.FitAddon === 'function') {
             state.fitAddon = new window.FitAddon.FitAddon();

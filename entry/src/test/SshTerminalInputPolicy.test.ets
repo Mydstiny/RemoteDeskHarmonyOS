@@ -170,6 +170,24 @@ export default function sshTerminalInputPolicyTest(): void {
       expect(preview.resetLocal).assertFalse();
       expect(consumeSshImeDidInsert(state, '你')).assertEqual('你');
       expect(consumeSshImeDidInsert(state, '你')).assertEqual('');
+      const duplicateChange = inspectSshImeChange(state, '你', 0);
+      expect(duplicateChange.sendRemote).assertFalse();
+      expect(duplicateChange.resetLocal).assertTrue();
+    });
+
+    it('should_drop_cumulative_change_after_did_insert_and_clear_editor', 0, (): void => {
+      const state = createSshImeCallbackState();
+      expect(recordSshImeWillInsert(state, 'p')).assertTrue();
+      expect(consumeSshImeDidInsert(state, 'p')).assertEqual('p');
+      // API 23 may expose the stale previous editor value together with this
+      // commit. "p" was already sent by onDidInsert, so "np" is local state.
+      const cumulative = inspectSshImeChange(state, 'np', 0);
+      expect(cumulative.sendRemote).assertFalse();
+      expect(cumulative.remoteInsert).assertEqual('');
+      expect(cumulative.resetLocal).assertTrue();
+      resetSshImeShadow(state, 'np');
+      const emptyReset = inspectSshImeChange(state, '', 0);
+      expect(emptyReset.sendRemote).assertFalse();
     });
 
     it('should_strip_line_breaks_from_ime_commit', 0, (): void => {

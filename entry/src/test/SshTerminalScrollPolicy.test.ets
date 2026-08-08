@@ -8,6 +8,7 @@ import {
   shouldHonorAutoScrollToBottom,
   terminalDragScrollLines,
   terminalGridTop,
+  terminalKeyboardBottomInsetPx,
   terminalSparseContentGridTop,
   terminalLogicalViewportHeight,
   terminalRowsBottomOffset,
@@ -72,6 +73,18 @@ export default function sshTerminalScrollPolicyTest(): void {
 
     it('should_keep_visual_offset_tracking_soft_keyboard', 0, (): void => {
       expect(terminalVisualBottomOffset(false, 300, 28)).assertEqual(300);
+    });
+
+    it('should_use_full_width_docked_keyboard_as_bottom_inset', 0, (): void => {
+      expect(terminalKeyboardBottomInsetPx(true, 980, 2560, 620, 2560, 1600)).assertEqual(620);
+    });
+
+    it('should_ignore_floating_keyboard_bottom_rect', 0, (): void => {
+      expect(terminalKeyboardBottomInsetPx(true, 820, 620, 780, 2560, 1600)).assertEqual(0);
+    });
+
+    it('should_ignore_implausibly_tall_keyboard_bottom_rect', 0, (): void => {
+      expect(terminalKeyboardBottomInsetPx(true, 180, 2560, 1420, 2560, 1600)).assertEqual(0);
     });
 
     it('should_top_align_visible_terminal_after_scrollback_exists', 0, (): void => {

@@ -252,7 +252,8 @@ import {
   SETTINGS_SHEET_WALLPAPER,
   SETTINGS_PANEL_DISMISS_TO_LEAF_OPEN_MS,
   settingsLeafSheetUsesSystemCloseButton,
-  settingsLeafOpenDelayMs
+  settingsLeafOpenDelayMs,
+  vncSettingsLeafSheetHeight
 } from '../services/SettingsSheetRoutePolicy';
 import { protocolIcon } from '../services/ProtocolIconPolicy';
 import {
@@ -7163,7 +7164,12 @@ struct HostListPage {
         }
       })
 
-      Column().width('100%').height('100%').hitTestBehavior(HitTestMode.None)
+      // The native Sheet needs a normal hit-test owner while visible. Keeping
+      // this host transparent made the same tap fall through to the settings
+      // list and reload the editor, so choice highlights immediately reverted.
+      // When the Sheet is closed the empty host must not block the page.
+      Column().width('100%').height('100%')
+        .hitTestBehavior(this.showSettingsLeafSheet ? HitTestMode.Default : HitTestMode.None)
       .bindSheet($$this.showSettingsLeafSheet, this.settingsLeafSheet(), {
         height: this.settingsLeafSheetHeight(),
         preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
@@ -8758,8 +8764,9 @@ struct HostListPage {
       this.settingsLeafSheetMode <= SETTINGS_SHEET_VNC_CLIPBOARD;
   }
 
-  private settingsLeafSheetHeight(): SheetSize {
-    return this.isVncSettingsLeafSheet() ? SheetSize.LARGE : SheetSize.FIT_CONTENT;
+  private settingsLeafSheetHeight(): SheetSize | number {
+    const vncHeight: number = vncSettingsLeafSheetHeight(this.settingsLeafSheetMode);
+    return vncHeight > 0 ? vncHeight : SheetSize.FIT_CONTENT;
   }
 
   private settingsLeafKeyboardAvoidMode(): SheetKeyboardAvoidMode {
@@ -8817,7 +8824,8 @@ struct HostListPage {
     }
   }
 
-  @Builder settingsAccordionHeader(section: string, icon: Resource, title: string, subtitle: string) {
+  @Builder settingsAccordionHeader(section: string, icon: Resource, title: string, subtitle: string,
+    terminalStyle: boolean = false) {
     Row() {
       Stack({ alignContent: Alignment.Center }) {
         Column()
@@ -8830,21 +8838,36 @@ struct HostListPage {
             y: this.settingsSectionExpanded(section) ? 1 : 0.92 })
           .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
 
-        SymbolGlyph(icon)
-          .fontSize(21)
-          .fontColor([this.pal().text])
-          .opacity(this.settingsSectionExpanded(section) ? 0 : 1)
-          .scale({ x: this.settingsSectionExpanded(section) ? 0.92 : 1,
-            y: this.settingsSectionExpanded(section) ? 0.92 : 1 })
-          .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
+        if (terminalStyle) {
+          Image($r('app.media.icon_terminal'))
+            .width(21).height(21).fillColor(this.pal().text)
+            .opacity(this.settingsSectionExpanded(section) ? 0 : 1)
+            .scale({ x: this.settingsSectionExpanded(section) ? 0.92 : 1,
+              y: this.settingsSectionExpanded(section) ? 0.92 : 1 })
+            .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
+          Image($r('app.media.icon_terminal'))
+            .width(21).height(21).fillColor(this.accentColor)
+            .opacity(this.settingsSectionExpanded(section) ? 1 : 0)
+            .scale({ x: this.settingsSectionExpanded(section) ? 1 : 0.92,
+              y: this.settingsSectionExpanded(section) ? 1 : 0.92 })
+            .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
+        } else {
+          SymbolGlyph(icon)
+            .fontSize(21)
+            .fontColor([this.pal().text])
+            .opacity(this.settingsSectionExpanded(section) ? 0 : 1)
+            .scale({ x: this.settingsSectionExpanded(section) ? 0.92 : 1,
+              y: this.settingsSectionExpanded(section) ? 0.92 : 1 })
+            .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
 
-        SymbolGlyph(icon)
-          .fontSize(21)
-          .fontColor([this.accentColor])
-          .opacity(this.settingsSectionExpanded(section) ? 1 : 0)
-          .scale({ x: this.settingsSectionExpanded(section) ? 1 : 0.92,
-            y: this.settingsSectionExpanded(section) ? 1 : 0.92 })
-          .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
+          SymbolGlyph(icon)
+            .fontSize(21)
+            .fontColor([this.accentColor])
+            .opacity(this.settingsSectionExpanded(section) ? 1 : 0)
+            .scale({ x: this.settingsSectionExpanded(section) ? 1 : 0.92,
+              y: this.settingsSectionExpanded(section) ? 1 : 0.92 })
+            .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
+        }
       }
       .width(34).height(34).borderRadius(10)
       .margin({ right: 12 })
@@ -9497,7 +9520,7 @@ struct HostListPage {
 
         ListItem() {
           this.settingsAccordionHeader(SETTINGS_SECTION_SSH, protocolIcon('ssh'),
-            'SSH 终端', '终端显示、SSH 主机与密钥')
+            'SSH 终端', '终端显示、SSH 主机与密钥', true)
         }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
 
         // --- SSH 终端卡片 ---

@@ -195,11 +195,17 @@ export function inspectSshImeChange(
     return { updateShadow: true, sendRemote: false, resetLocal: false,
       remoteInsert: '', remoteDelete: '' };
   }
-  if (state.lastCommittedValue.length > 0 && normalizedValue === state.lastCommittedValue) {
+  if (state.lastCommittedValue.length > 0) {
+    // onDidInsert already crossed the SSH boundary. API 23 can then report
+    // the TextArea's stale/cumulative native value (for example "np" after
+    // committing only "p"), not just the single committed character. The
+    // first non-empty change after that commit is therefore synchronization,
+    // never another terminal insert. Reset it locally so it cannot become the
+    // prefix of the next IME callback.
     state.shadowValue = normalizedValue;
     state.lastCommittedValue = '';
     state.ignoreNextEmptyChange = true;
-    return { updateShadow: true, sendRemote: false, resetLocal: false,
+    return { updateShadow: true, sendRemote: false, resetLocal: value.length > 0,
       remoteInsert: '', remoteDelete: '' };
   }
   if (previewUnits > 0) {

@@ -4,6 +4,10 @@ Status: 设计完成，未实施。本文件只描述后续实现方案，不授
 
 Date: 2026-08-04
 
+修订记录：2026-08-08 基于代码现状重新审视，仅更新本计划文档（不改业务代码）。
+更新内容包括：修正实现基线行号引用、新增跨模块影响矩阵、强化 `displayconfig`
+云扩展隔离边界、补充本地备份/Pro 同步/统计语义，并扩展测试和验收矩阵。
+
 ## 1. 决策摘要
 
 RustDesk 直连主机在添加时增加“固定 IP / 动态 IP”选项，并明确两种记录的
@@ -28,7 +32,10 @@ RustDesk 直连主机在添加时增加“固定 IP / 动态 IP”选项，并�
 ### 2.1 主机模型和添加流程
 
 当前 [RemoteHost.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/model/RemoteHost.ets:251)
-已经包含 RustDesk 直连字段：
+已经包含 RustDesk 直连字段；`isValid()` 和 `getValidationErrors()` 对
+`rustdeskDirectEnabled=true` 强制要求 `rustdeskDirectHost` 非空，动态模式必须新增
+分支。`RemoteHost` 同时服务 RDP/SSH/VNC 记录，修改验证逻辑时这些协议的既有
+行为必须保持不变。
 
 - `rustdeskDirectEnabled`：是否绕过 ID 服务器使用直连。
 - `rustdeskDirectHost` / `rustdeskDirectPort`：直连 endpoint，默认端口应为
@@ -42,18 +49,48 @@ RustDesk 直连主机在添加时增加“固定 IP / 动态 IP”选项，并�
 模式需要复用这套搜索来填充设备 ID/名称，但保存并连接时仍必须重新执行一次
 发现，不能信任添加阶段的旧地址。
 
+已核实：[HostListPage.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/pages/HostListPage.ets:11890)
+调用 `RustDeskAddFlow` 时传入 `defaultDirectPort: this.rustdeskDirectPort`，该值来自
+`AppStorage('rustdeskDirectPort')`，默认 `21118`（[HostListPage.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/pages/HostListPage.ets:657)）。
+因此添加页默认端口与发现服务端口一致；实施时固定模式不得改变这个“全局偏好
+驱动默认端口”的现有行为，动态模式则固定使用发现结果端口。
+
+[RustDeskHostAddHandoff.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/services/RustDeskHostAddHandoff.ets)
+已有 owner/generation/5 分钟 TTL 的跨 Sheet 内存草稿机制，地址模式字段必须加入
+`RustDeskHostAddDraft` 和 `cloneRustDeskHostAddDraft`，否则用户切页后动态模式
+选择会丢失。
+
 ### 2.2 云同步边界
 
-当前 [CloudStore.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/services/CloudStore.ets:937)
-把 `remotehosts` 注册为 `DISTRIBUTED_CLOUD` 表；[HostSyncService.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/services/HostSyncService.ets:376)
-的 `addHost`、`updateHost` 和连接观测写入都会落到该表并请求同步。
+当前 [CloudStore.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/services/CloudStore.ets:294)
+的 `TABLES` 通过 `cloudSyncTableNames()` 生成并注册进
+`setDistributedTables`（[CloudStore.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/services/CloudStore.ets:939)），
+其中包含 `remotehosts`；[HostSyncService.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/services/HostSyncService.ets:376)
+的 `addHost`（376）、`updateHost`（401）、`removeHost`（445）、`removeHosts`（464）
+和连接观测写入都会落到该表并请求同步。
 
-项目已有两个可复用的本地表模式：
+本轮重新审视发现两个比“写入路径”更隐蔽的云泄露口：
+
+1. [CloudStore.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/services/CloudStore.ets:8986)
+   `hostToBucket()` 会把 `rustdeskdirectenabled` / `rustdeskdirecthost` /
+   `rustdeskdirectport` 直接写成 `remotehosts` 云表列。
+2. [CloudStore.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/services/CloudStore.ets:5985)
+   `hostCloudExtensionValues()` 把上述直连字段再次投影进 `displayconfig`
+   云端扩展字段；[CloudStore.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/services/CloudStore.ets:5859)
+   `applyCloudHostExtension()` 会在其他设备上还原它们。
+
+因此动态模式的标记、peer ID、最近发现 IP 等任何配置都不能进入 `remotehosts`
+列，也不能进入 `displayconfig` 云扩展；只在 CloudStore 层拦截 insert/update 还不够，
+`hostCloudExtensionValues()` 必须显式排除地址模式相关字段（详见第 5 节）。
+
+项目已有多个可复用的本地表模式：
 
 - `localextensions`：不注册到 `setDistributedTables`，但更适合作为已有云行的
   扩展字段，不适合承载完整动态主机卡片。
 - `vnclocalrecords`：带 owner、加密 envelope、版本和本地-only 标志，适合作为
   新本地记录设计的结构参考。
+- `migrationreceipts` / `migrationquarantine`：可作为固定→动态迁移阶段恢复和
+  云行残留隔离的持久化依据。
 
 ### 2.3 发现和连接路径
 
@@ -61,11 +98,36 @@ RustDesk 直连主机在添加时增加“固定 IP / 动态 IP”选项，并�
 使用 RustDesk `PeerDiscovery` protobuf，通过 UDP 广播 `255.255.255.255:21119`
 发送 ping，响应中的 peer ID 映射到来源 IP，直连端口默认为 `21118`。
 
-当前 [HostListPage.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/pages/HostListPage.ets:3166)
-只把 `hostId` 传给 `RemoteDesktop`；[RemoteDesktop.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/pages/RemoteDesktop.ets:9276)
-再从 HostSyncService 取主机并读取 `rustdeskDirectHost`。动态模式必须在这条
-路径上增加一次性 endpoint handoff，不能直接把本次发现的 IP 写回共享主机对象
-后调用普通 `updateHost`。
+当前 [HostListPage.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/pages/HostListPage.ets:3291)
+的 `connectToHost()` 流程为：`beginConnectionAttempt`（3261）→ 锁定 gate →
+RustDesk 直连校验 → Pro preflight → `router.pushUrl({url:'pages/RemoteDesktop', params:{hostId}})`，
+再在成功/失败路径上 `releaseConnectionAttempt`（3278）。动态模式应插在锁定 gate
+之后、Pro preflight 之前：扫描 → peer ID 精确匹配 → 一次性 endpoint token →
+路由参数携带 token；扫描期间保持 connection attempt 占用，防止重复点击。
+
+[RemoteDesktop.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/pages/RemoteDesktop.ets:10109)
+在会话构建阶段读取 `rustdeskDirectHost`，空地址抛
+`E-RUSTDESK-DIRECT-HOST`。动态模式必须改为消费 endpoint token 覆盖本次
+`sessionHost/sessionPort`，token 失效时 fail closed，不能回退旧 IP。认证侧
+（`openRustDeskAuthSheet` / `confirmRustDeskAuthChoice` 及认证选择持久化）动态和
+固定模式共用同一套流程，只是临时 IP 不能写回主机配置。
+
+### 2.4 跨模块影响矩阵（本轮审计结论）
+
+| 模块 | 现有代码位置 | 动态模式影响点 | 兼容保证 |
+| --- | --- | --- | --- |
+| `RemoteHost` | 直连字段约 251 行，验证逻辑随 `isValid`/`getValidationErrors` | 新增 `rustdeskDirectAddressMode`；固定分支保持现有 IP 必填，动态分支允许空 IP 且必须有 peer ID | 缺失/未知模式按 fixed 兼容；RDP/SSH/VNC 验证路径不进入动态分支 |
+| `CloudStore` | `TABLES` 294、`setDistributedTables` 939、`hostToBucket` 8986、`hostCloudExtensionValues` 5985、`applyCloudHostExtension` 5859 | 动态记录拒绝写云表；`displayconfig` 云扩展必须排除动态字段 | 固定/中继主机投影逐字节不变；旧记录反序列化行为不变 |
+| `HostSyncService` | `loadFromCloud` 108、`clearForScopeTransition` 316、`visibleDataSignature` 295、CRUD 376-464、`reconcileRustDeskProHosts` 717 | 云加载后合并本地动态表；CRUD 分流；签名和统计包含合并后列表 | 云端固定主机加载/删除/同步语义不变；21116→21118 迁移只作用于云静态直连记录 |
+| `HostListPage` | `connectToHost` 3291、connection attempt 3261/3278 | 动态点击时先扫描并生成 token；路由参数带 token | 固定主机点击不触发扫描；锁定 gate、Pro preflight 顺序不变 |
+| `RemoteDesktop` | 会话构建 10109-10124、认证选择持久化 | 动态模式消费一次性 token，禁止旧 IP 回退 | 固定模式继续读 `rustdeskDirectHost/Port`；认证/密码/TOTP/方向配置路径不变 |
+| `RustDeskAddFlow` / `RustDeskHostAddHandoff` | `buildHost` 111、草稿 clone | 地址模式选择、草稿恢复、保存并连接重新扫描 | 固定模式 IP 必填和默认端口来源不变 |
+| `RustDeskLanDiscoveryService` | `startScan` 201、`seenPeers` 去重 211-250 | 保留同 ID 多地址并上报冲突；扫描 busy 显式化 | ping/protobuf/超时策略不变；固定主机不调用它 |
+| `LocalBackupPolicy` / `BackupManifestV3` / `CloudStore` | 白名单 `['vnclocalrecords']`（32）、`exportAllLocalTableRows` 3294、restore 3717-3734 | 本地完整/脱敏备份扩展 `rustdesklocalhosts` | 恢复不触发 cloud push；旧备份 manifest 仍可读取 |
+| `RustDeskProSyncService` / `RustDeskProSyncPolicy` | `getAllRelays` 162、`reconcileRustDeskProHosts` 717 | Pro reconcile 已按 `sourceType==='rustdesk_pro'` 过滤（策略 27-29 行），动态手工记录天然不被接管 | 增加防御性测试；动态记录绝不进入 Pro 写入分支 |
+| `RelayDirectoryPolicy` / relay 系列 | 只处理 relay 配置 | 不遍历主机卡片，动态记录不参与 relay 目录 | 无影响 |
+| `KeyVaultPage` 等消费者 | 通过 HostSyncService 取合并列表 | 动态卡片出现在合并列表中，凭据展示按现有本机规则 | 不引入任何云端语义；密码仍走 DataCrypto |
+| 测试 | 既有 `RemoteHost`、`CloudSyncPolicy`、`CloudTableAdapter`、`LocalBackupPolicy`、`HostSyncMergePolicy` 等纯策略用例 | 新增动态端点/存储用例，不修改既有断言 | 既有用例作为固定模式回归基线 |
 
 ## 3. 用户体验合同
 
@@ -122,12 +184,17 @@ rustdeskDirectAddressMode: 'fixed' | 'dynamic'
 规则：
 
 - 缺失、空值、未知值全部兼容为 `fixed`，保证旧版本记录升级后行为不变。
+- `toJSON/fromJSON` 必须提供该字段的兼容默认值；`serializedSnapshotChanged`
+  基于 `toJSON` 做可见快照签名比较（[HostSyncService.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/services/HostSyncService.ets:295)），
+  需要回归测试确保旧记录升级前后的签名稳定、不产生虚假数据变化事件。
 - 该字段只描述 IP 生命周期，不改变 `rustdeskDirectEnabled` 的“直连/中继”
   协议选择。
 - 动态模式只允许 `rustdeskDirectEnabled=true`、`protocol='rustdesk'`、
   `sourceType!='rustdesk_pro'` 的手工直连主机。
 - `rustdeskProManaged=true` 的地址簿主机不能切换成动态模式；其 endpoint 由
   Pro 地址簿/控制面 owner 管理，不能被本地局域网发现覆盖。
+- 该字段只在内存合并且落在本地动态表，不写入 `remotehosts` 云表列，也不进入
+  `displayconfig` 云扩展字段。
 
 ### 4.2 字段语义
 
@@ -236,6 +303,18 @@ CloudStore 的 `insertHost` 和 `updateHost` 也应增加底层防线：如果�
 直连记录，直接返回明确的 `local_only_record_rejected`，防止未来新的调用方
 绕过 HostSyncService 把动态记录写进云表。
 
+`hostCloudExtensionValues()` 必须显式排除地址模式相关字段，包括：
+`rustdeskdirectenabled`、`rustdeskdirecthost`、`rustdeskdirectport` 以及新增的
+`rustdeskdirectaddressmode`。固定直连主机的这三个既有字段仍按现状投影进
+`displayconfig`（保持旧行为），只有动态模式字段不参与投影。同步需要配套测试：
+构造动态主机时断言 `projectRemoteHostCloudExtension` 输出不含上述键，构造固定
+直连主机时断言输出与现状逐键一致。
+
+另外，`displayconfig` 投影和 `applyCloudHostExtension` 还原是成对逻辑。若未来
+固定主机与动态主机出现同 ID 的迁移窗口，`applyCloudHostExtension` 从云行
+还原动态标记的异常路径必须在进入 `RemoteHost` 之前被云行防御过滤拦截，不能
+靠反序列化后的二次判断兜底。
+
 ### 5.2 读取规则
 
 HostSyncService 初始化和云回调时不能继续简单地 `hosts.clear()` 后只装入
@@ -251,6 +330,13 @@ HostSyncService 初始化和云回调时不能继续简单地 `hosts.clear()` �
 脱敏诊断并进入迁移/清理队列；只有确认该行是本机模式迁移残留时，才允许删除
 云行。不能通过“云端动态行覆盖本地动态行”的方式恢复它。
 
+读取顺序必须与端口迁移共存：`loadFromCloud` 中 21116→21118 的自动迁移
+（[HostSyncService.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/services/HostSyncService.ets:160)）
+只遍历云静态直连记录；本地动态记录在迁移循环之后合并，且永远不进入该迁移。
+合并后的 `this.hosts` 已经是 `visibleDataSignature` 的数据源，因此动态记录
+自然纳入快照签名；实施时保证合并发生在签名计算之前，避免云回调触发重复
+emit 或漏 emit。
+
 ### 5.3 云同步选择和云端统计
 
 - `rustdesklocalhosts` 不出现在云同步设置的可选表列表中。
@@ -258,6 +344,34 @@ HostSyncService 初始化和云回调时不能继续简单地 `hosts.clear()` �
 - 云同步关闭时，动态主机仍然可以在本机使用。
 - 手动本地备份是独立边界，不等同于云同步；若用户显式选择完整本地备份，
   可以备份动态卡片，但不能因此触发云上传。
+- 云同步统计（行数、待上传/待下载、成功/失败）和设置页可选表列表都不包含
+  `rustdesklocalhosts`。
+
+HostSyncService 的统计口径：动态卡片进入合并后的 `this.hosts` 后，
+`getHostCount` / `getLockedHostCount` / `getRustDeskHostCount` 等总览计数自然
+包含动态卡片，这是期望行为；但 Pro/relay 关联、`reconcileRustDeskProHosts`
+（[HostSyncService.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/services/HostSyncService.ets:717)）
+和云端导出路径必须过滤动态记录。实现时新增纯函数
+`isLocalOnlyDynamicRustDeskHost(host)`，所有统计/过滤调用方在接入前按调用意图
+逐一确认（总览计数要含、云端和 Pro 路径要排除），并在测试中固定这两类断言。
+
+### 5.4 本地备份边界
+
+若动态表要参与本地完整/脱敏备份，实施范围必须同步扩展（不是单纯加一张表）：
+
+- [LocalBackupPolicy.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/services/LocalBackupPolicy.ets:32)
+  的本地表白名单扩展 `rustdesklocalhosts`，并补充对应的
+  `localBackupLocalTableColumns()` 列白名单。
+- [CloudStore.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/services/CloudStore.ets:3294)
+  `exportAllLocalTableRows()` 与 `restoreDeviceLocalRows()`（5401）按新表适配；
+  恢复动态表不得触发 `pushTable('remotehosts')`，也不得产生任何云写入。
+- [BackupManifestV3.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/services/BackupManifestV3.ets:415)
+  的 localTables 校验和脱敏逻辑加入新表：完整备份保留加密 envelope，脱敏备份
+  去掉密码并要求恢复后重新输入。
+- 旧版本备份（manifest 或 `LegacySharedStoreMigrator` 只认 `vnclocalrecords`）
+  不包含动态表时按“没有动态卡片”处理，不报错、不迁移成固定主机。
+- 恢复语义：动态卡片恢复后仍为 local-only，仍然每次连接前重新扫描；恢复过程
+  不把任何记录写入 `remotehosts`。
 
 ## 6. 模式迁移和兼容
 
@@ -378,7 +492,7 @@ HostListPage 路由只传 `hostId` 和随机 token，不传密码、不传完整
 RemoteDesktop 读取 token 时必须校验 owner、账号 generation、host ID、peer ID
 和 TTL，并在消费后立即删除 token。
 
-RemoteDesktop 当前在 [RemoteDesktop.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/pages/RemoteDesktop.ets:9288)
+RemoteDesktop 当前在 [RemoteDesktop.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/pages/RemoteDesktop.ets:10109)
 读取 `rustdeskDirectHost`。后续实现要改为：
 
 - 固定模式：继续读取保存的 `rustdeskDirectHost/Port`。
@@ -458,12 +572,15 @@ resolver。
 | 数据库 | `/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/services/CloudStore.ets` | 本地表 schema、动态 CRUD、防误写云表、本地备份桥接 |
 | 同步 owner | `/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/services/HostSyncService.ets` | 云静态主机和本地动态主机合并、迁移、观测写入分流 |
 | 云策略 | `CloudSyncPolicy.ets`、`CloudSyncSelectionPolicy.ets`、`CloudTableAdapter.ets` | 确保本地表不进入分布式表、云选择或云行投影 |
+| 云扩展投影 | [CloudStore.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/services/CloudStore.ets:5985) `hostCloudExtensionValues` | 动态模式字段不进入 `displayconfig` 云扩展；固定字段投影保持不变 |
 | 发现 | `/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/services/RustDeskLanDiscoveryService.ets` | 冲突地址保留、扫描并发和结果去重规则 |
 | 解析器 | 新增 `RustDeskDynamicEndpointResolver.ets` | 连接前扫描、超时、取消、ID 匹配 |
 | handoff | 新增 `RustDeskDynamicEndpointStore.ets` | 短 TTL、作用域绑定、一次性 endpoint token |
 | 主机列表 | `/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/pages/HostListPage.ets` | 点击动态卡片前解析、连接 generation、路由 token、模式迁移入口 |
 | 连接页 | `/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/pages/RemoteDesktop.ets` | 消费 token，动态模式禁止旧 IP 回退 |
 | 本地备份 | `LocalBackupPolicy.ets`、`CloudStore.ets`、`LocalBackupService.ets` | 完整备份/脱敏备份的本地动态表支持 |
+| 备份清单 | `BackupManifestV3.ets` | localTables 校验、脱敏规则和 manifest 兼容 |
+| Pro/relay 边界 | `RustDeskProSyncService.ets`、`RustDeskProSyncPolicy.ets`、`HostSyncService.ets` | 动态记录不进入 Pro reconcile 输入、relay 关联和云端导出 |
 | 测试 | `/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/test` | 纯策略、存储边界、迁移、匹配、token 和回归测试 |
 
 不应修改 RustDesk native/FFI 连接协议；动态 IP 只改变连接前 endpoint 解析和
@@ -476,9 +593,12 @@ session config 输入。
 交付：
 
 - 地址模式类型、兼容默认值和验证规则。
-- 云同步资格判断和 `remotehosts` 拒绝动态记录规则。
+- 云同步资格判断和 `remotehosts` 拒绝动态记录规则；`displayconfig` 云扩展
+  排除规则（固定字段投影逐键不变）。
 - discovery 结果匹配、0/1/多结果和端口限制策略。
 - endpoint token 的 TTL、owner/generation 校验规则。
+- Pro reconcile 输入过滤断言：动态手工记录不会被 `isManagedByAccount`
+  接管。
 
 完成条件：纯函数测试先通过；没有 UI 或数据库改动也能覆盖固定/动态边界。
 
@@ -490,6 +610,11 @@ session config 输入。
 - `RustDeskLocalHostStore` CRUD。
 - HostSyncService 合并云静态主机和本地动态主机。
 - 账号切换、加密锁定/解锁、删除和连接观测的本地分流。
+- `visibleDataSignature` 覆盖合并后的动态记录；`loadFromCloud` 的端口迁移
+  循环明确排除动态记录。
+- CloudStore `insertHost/updateHost` 对动态记录返回 `local_only_record_rejected`；
+  `hostCloudExtensionValues` 不投影动态字段。
+- 云行防御过滤：带动态标记的异常云行进入清理/迁移路径，不进入可见列表。
 
 完成条件：动态新增/编辑/删除不会生成 `remotehosts` 行或 cloud push；固定
 主机现有测试不回归；同账号不同 owner scope 不互相看到动态卡片。
@@ -502,6 +627,8 @@ session config 输入。
 - 动态模式不再要求 IP；固定模式行为保持不变。
 - 固定到动态、动态到固定的双阶段迁移和恢复 receipt。
 - 动态卡片的“仅本机”和“最近发现”展示。
+- 编辑现有固定/动态主机路径回归：编辑动态主机不写云行，编辑固定主机
+  不触发扫描；固定→动态和动态→固定迁移失败都回到原可用模式。
 
 完成条件：所有模式迁移失败都保持原可用模式，不出现重复卡片或丢失凭据。
 
@@ -513,6 +640,7 @@ session config 输入。
 - peer ID 精确匹配、冲突地址处理、超时/取消/重复点击保护。
 - endpoint token 路由到 RemoteDesktop。
 - RemoteDesktop 动态模式禁止读取旧 IP 回退。
+- 动态/固定共用认证流程回归：认证选择、密码、TOTP、锁定 gate 顺序不变。
 
 完成条件：目标 IP 改变后第二次点击使用新 IP；扫描失败绝不启动 native
 连接；固定模式不经过扫描且连接路径保持原有行为。
@@ -522,6 +650,7 @@ session config 输入。
 交付：
 
 - 本地完整/脱敏备份策略。
+- 本地备份恢复不触发 cloud push；`BackupManifestV3` 校验和脱敏覆盖新表。
 - 脱敏日志和同步统计不包含动态记录。
 - Phone/Pad/PC 小屏的卡片状态和扫描反馈验收。
 - 同局域网真实 RustDesk 设备、不同子网失败场景和 IP 变更场景记录。
@@ -541,17 +670,29 @@ session config 输入。
 - 不同 ID、名称相同或 MAC 相同但 peer ID 不同，不能匹配。
 - local-only 记录不允许 cloud upload/download。
 - endpoint token 的 scope、generation、TTL 和一次性消费。
+- `toJSON/fromJSON` 缺省地址模式兼容 fixed，且旧记录序列化快照签名不变。
+- `isLocalOnlyDynamicRustDeskHost` 在总览计数（包含）和云端/Pro 路径（排除）
+  两类调用意图下都返回正确结果。
 
 ### 12.2 HostSyncService/CloudStore 测试
 
 - 动态 `addHost` 只写本地表，不调用 `insertHost('remotehosts')`。
+- CloudStore `insertHost/updateHost` 收到动态记录返回
+  `local_only_record_rejected`。
+- `hostCloudExtensionValues`/`projectRemoteHostCloudExtension` 投影不含
+  `rustdeskdirectenabled`、`rustdeskdirecthost`、`rustdeskdirectport`、
+  `rustdeskdirectaddressmode`；固定直连主机投影与现状逐键一致。
 - 动态的最近发现、lastConnected、health 不触发 cloud update。
 - `loadFromCloud` 不会用云快照清空本地动态卡片。
+- `loadFromCloud` 的 21116→21118 端口迁移不触碰本地动态记录。
 - 云端固定主机仍能正常加载、更新、删除和同步。
 - 同账号另一设备的云回调不会创建动态卡片。
 - 当前设备账号切换后动态卡片不可见，切回原 scope 后可以恢复。
 - 加密已配置但锁定时，动态密码不以可用明文暴露。
 - 动态云行残留被过滤并进入清理/迁移路径，不重复展示。
+- 合并后 `visibleDataSignature` 随动态记录增删变化；云快照不变时不会重复 emit。
+- 计数语义：`getHostCount` 等总览计数包含动态卡片，Pro reconcile 输入和
+  relay 关联路径不含动态记录。
 
 ### 12.3 UI 和连接测试
 
@@ -565,12 +706,16 @@ session config 输入。
 - 动态连接的认证、密码、TOTP、锁定、方向和会话渲染行为与固定直连一致。
 - dynamic -> fixed 和 fixed -> dynamic 都不产生重复卡片。
 - RemoteDesktop 连接失败重试不会复用过期 endpoint。
+- 编辑动态主机（改名称/分组/认证）不产生云写入，不改变地址模式。
+- 编辑固定直连主机不触发局域网扫描；固定模式 IP 必填校验保持现状。
+- 固定主机点击连接全程不调用 resolver，连接路径与现状一致。
 
 ### 12.4 本地备份测试
 
 - 完整本地备份包含动态卡片且恢复后仍然是 local-only。
 - 脱敏备份不包含动态密码，恢复后卡片可见但连接前要求重新输入密码。
 - 恢复动态本地表不会把记录加入 `remotehosts` 或触发 cloud push。
+- 旧版本备份（无动态表）恢复成功，不产生动态卡片也不报错。
 - 云同步设置中看不到 `rustdesklocalhosts`。
 
 ## 13. 验收矩阵
@@ -589,6 +734,10 @@ session config 输入。
 | 同账号其他设备 | 只收到固定主机，不收到动态主机 |
 | 账号切换 | 动态记录按 owner scope 隔离，不跨账号泄露 |
 | 应用重启 | 动态卡片恢复；连接前仍然重新扫描 |
+| 云扩展字段 | 动态模式字段不进入 `displayconfig` 云扩展；固定直连投影与现状一致 |
+| 云行残留 | 带动态标记的异常云行被过滤进入清理路径，不展示、不复制到其他设备 |
+| 本地备份恢复 | 动态卡片恢复后仍 local-only，不触发 cloud push |
+| 固定主机回归 | 旧直连记录、云同步、点击连接、RDP/SSH/VNC、Pro、备份恢复全部保持原行为 |
 | 清除应用数据 | 动态卡片和本地密码随本地数据清除，不宣称云端可恢复 |
 | 公网动态 IP | 明确提示不支持，不自动伪装成局域网发现成功 |
 
@@ -599,14 +748,21 @@ session config 输入。
 1. `remotehosts` 目前承担所有主机的同步和本地 CRUD。若只在 UI 层过滤动态
    卡片，云端仍可能收到动态记录；必须在 CloudStore 和 HostSyncService 两层
    都做防线。
-2. 当前连接页通过 `hostId` 重新加载主机。若 endpoint token 丢失后回退到
+2. `displayconfig` 云扩展是比主表列更隐蔽的泄露口：`hostToBucket` 和
+   `hostCloudExtensionValues` 都会投影直连字段。即使动态记录没有进入
+   `remotehosts` 主行，扩展字段也可能把地址模式或最近 IP 带到其他设备；必须
+   在投影函数层排除动态字段并配套固定投影回归测试。
+3. 当前连接页通过 `hostId` 重新加载主机。若 endpoint token 丢失后回退到
    `rustdeskDirectHost`，IP 变更场景会重新出现旧地址连接风险；动态分支必须
    fail closed。
-3. 当前发现服务按 peer ID 去重，多网卡或异常设备可能产生同 ID 多地址；实现
+4. 当前发现服务按 peer ID 去重，多网卡或异常设备可能产生同 ID 多地址；实现
    前需要补充冲突语义，不能把静默去重当作安全匹配。
-4. 本地动态表和云行迁移跨越两个持久化 owner，不能假设一个 RDB 事务覆盖两者；
+5. 本地动态表和云行迁移跨越两个持久化 owner，不能假设一个 RDB 事务覆盖两者；
    必须使用阶段 receipt/tombstone 和启动恢复。
-5. 动态直连只解决局域网地址变化，不解决公网可达性、NAT 穿透或 RustDesk
+6. HostSyncService 是统一主机 owner，`getAllHosts` 会被 Pro reconcile 消费；
+   若动态记录意外进入该输入，Pro 同步会把它当作手工记录处理（策略本身按
+   `sourceType` 过滤），因此需要过滤测试而不是依赖策略内过滤兜底。
+7. 动态直连只解决局域网地址变化，不解决公网可达性、NAT 穿透或 RustDesk
    relay 选择。
 
 ### 回滚策略

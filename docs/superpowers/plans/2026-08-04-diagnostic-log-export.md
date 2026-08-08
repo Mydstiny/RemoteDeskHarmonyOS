@@ -1,7 +1,28 @@
-# 诊断日志导出 Implementation Plan
+# 诊断日志导出 Implementation Plan（现状复核版）
 
-> **Status:** design only. This plan was written after a read-only repository
-> evaluation on 2026-08-04. No production code is changed by this document.
+> **Status:** design only. This plan was revalidated read-only on 2026-08-08.
+> Only this document is updated; no production code is changed by this
+> document.
+
+## Revalidation Snapshot
+
+- 当前项目分支是 `codex/ssh-terminal-complete-upgrade`，相对 `main` 已有大量
+  SSH、RDP、RustDesk、渲染、云备份和 ArkTS 工作树改动；状态工具仍报告
+  `REVIEW_REQUIRED`。本功能不能借用、覆盖或重排这些未提交改动，也不能把本计划
+  当作创建新分支或清理工作树的理由。
+- 当前已有三类可复用的只读诊断能力：RDP `getRdpRenderStats`、RustDesk
+  `getSessionDiagnostics`、SSH `getSshTerminalDiagnostics`。它们是当前快照，不是
+  历史事件缓冲；计划必须保留它们的 ABI 和既有 UI 轮询行为不变。
+- SSH 诊断已经是计数器/时间戳模型，并带有 `sessionGeneration` 和 payload-free
+  约束；新 recorder 必须适配这一边界，不能引入终端字节、命令或文本缓存。
+- RustDesk 同时存在主进程 FFI、helper IPC 和 Rust `eprintln!` 路径；不能把
+  `eprintln!`、helper 原始 IPC 或当前 OH_LOG 文本直接变成导出数据源。
+- `FeedbackSettingsSheet` 当前负责邮件/社群反馈，`LocalBackupService` 当前负责
+  账号范围的云数据备份。诊断导出必须是独立服务和独立文件格式，不能复用这两个
+  业务对象的状态机或数据语义。
+- 当前工作树的混合改动和现有诊断边界意味着：第一实施 checkpoint 必须是策略、
+  schema 和纯内存测试；在它通过审查前，不接入协议 fast path、不改现有日志调用、
+  不改共享 session registry。
 
 ## Goal
 
@@ -30,6 +51,60 @@
 - 不导出密码、Token、私钥、认证响应、剪贴板文本、键盘文本、鼠标轨迹、终端输入输出、命令、屏幕帧、音频内容、远端路径原文、URL 查询参数或完整主机地址。
 - 不把诊断包放入云同步表，不改变现有备份格式，不把诊断包视为用户配置备份。
 - 第一版不自动发送邮件或上传开发者服务；任何后续发送都必须单独取得用户确认。
+
+## Compatibility and Isolation Rules
+
+这些规则是“不得破坏其他模组功能”的硬约束，每个实现 checkpoint 都必须逐条
+验证：
+
+- 诊断 recorder 默认启用但对业务是旁路的；任何 recorder 初始化、字段校验、内存
+  满、快照失败或导出失败都只能丢弃诊断数据并上报内部计数，不能改变连接结果、
+  重连、输入、渲染、解码、音频、剪贴板、SFTP 任务或后台保活状态。
+- 不修改既有 `getRdpRenderStats`、`getSessionDiagnostics`、
+  `getSshTerminalDiagnostics` 的字段含义、返回码、NAPI 注册名和轮询频率。新接口
+  只读调用这些快照，必要时通过 adapter 复制为诊断 schema。
+- 不在第一阶段把 `DiagnosticRecorder` 放进 `session_registry` 的所有权模型；
+  session registry 只提供只读的 opaque reference/generation 适配，避免改变会话
+  建立、销毁、切换、后台交接和旧回调拒绝逻辑。
+- 不修改现有 `OH_LOG_*`、ArkTS `hilog` 或 Rust `eprintln!` 的行为来实现导出；
+  诊断事件只能从明确的状态边界和快照 adapter 产生。日志迁移另立任务，避免一次
+  大范围替换造成协议行为回归。
+- 每个模组接入都必须有独立 feature gate 或可关闭注册点，并允许只编译/启用
+  `core.lifecycle` 与单一协议模块；某模组未注册、旧 ABI、helper 未运行或 provider
+  不支持时，导出 manifest 标记 unsupported，不阻塞其他模块。
+- 采集点禁止执行文件 I/O、等待锁、网络调用、NAPI 回调或 UI 操作。若某个状态点
+  无法满足非阻塞要求，先只纳入导出时快照，不在运行路径记录历史事件。
+- 不把诊断配置、事件缓存、临时文件放入 CloudStore、SFTP task store、会话持久化
+  或用户备份 schema；卸载/退出时只清理诊断临时文件，不触碰其他数据。
+- 导出期间必须固定 `exportStart`、模块集合和 session generation 视图；连接重连、
+  页面销毁、后台切换和协议切换只影响该次快照的 `supported`/缺失标记，不能让旧
+  事件写入新会话。
+- 若用户没有选择某协议模块，不调用该协议的诊断 provider；这既是隐私约束，也是
+  降低跨模组副作用和避免无关 native ABI 调用的约束。
+
+## Safer Delivery Order
+
+计划不按“把所有日志统一迁移”推进，而按可回滚的边界推进：
+
+1. **Checkpoint A：策略与 schema。** 只新增纯策略、模块目录、字段白名单、时间
+   选项和 JSONL 校验测试；不接入 native、Rust、NAPI、页面或现有日志。
+2. **Checkpoint B：独立 recorder。** recorder 只接收已验证的结构化事件，先用
+   native 单元测试证明有界、并发、淘汰和失败隔离；不注册任何生产 producer。
+3. **Checkpoint C：单模组试点。** 先接入 `core.lifecycle`，再接入已有 SSH 诊断
+   快照 adapter。验证不会影响 SSH session generation、SFTP/background handoff、
+   xterm 回调和输入队列；通过后才允许扩大范围。
+4. **Checkpoint D：RDP/RustDesk/VNC/渲染/音频/输入。** 每次只接一个模组，保持既有
+   快照接口和 helper/FFI 边界，完成对应 focused test、双 Hvigor 门禁和独立复核后
+   才进入下一个模组。
+5. **Checkpoint E：导出 UI 与本地保存。** 最后接入反馈入口和文件选择器，避免 UI
+   失败影响连接页；导出服务只消费 recorder/provider，不反向控制协议模块。
+6. **Checkpoint F：设备矩阵与交付。** 验证取消、短写、重连、后台、Pad/phone/PC
+   布局和手动邮件附加；任何缺设备或真实端点证据都记录为 blocker，不用 host-only
+   结果替代。
+
+每个 checkpoint 都应有单独 commit、声明影响范围和回滚点。若现有工作树仍包含
+   未提交的共享文件改动，实施前先完成该 checkpoint 的范围核对；不得通过机械合并
+   或大范围格式化“顺手”改动其他模组。
 
 ## Product Contract
 
@@ -223,8 +298,8 @@ manifest 至少包含：
 - Create: `entry/src/main/cpp/diagnostics/diagnostic_recorder.cpp`
 - Create: `entry/src/main/cpp/test/diagnostic_recorder_test.cpp`
 - Create or modify: `entry/src/main/ets/services/DiagnosticRecorder.ets`
-- Modify: `entry/src/main/cpp/extensions/session_registry.h`
-- Modify: `entry/src/main/cpp/extensions/extension_loader_napi.cpp`
+- Create: `entry/src/main/cpp/diagnostics/diagnostic_session_context.h`
+- Modify only after Checkpoint B review: `entry/src/main/cpp/extensions/extension_loader_napi.cpp`
 
 **Interfaces:**
 
@@ -236,6 +311,9 @@ manifest 至少包含：
 - [ ] Implement fixed-window snapshot and deterministic ordering.
 - [ ] Test concurrent producers, full buffer, event truncation, stale generation and recorder failure isolation.
 - [ ] Verify no allocation or blocking file I/O occurs on the input/render/network hot paths.
+- [ ] Keep session correlation in a diagnostic-owned opaque context first; do not modify
+  session registry ownership, teardown, reconnect, background handoff or stale-callback
+  rejection in this task.
 
 ### Task 3: Producer integration by protocol and subsystem
 
@@ -252,6 +330,19 @@ manifest 至少包含：
 - Modify: selected connection/lifecycle services and pages
 
 - [ ] Start with high-value state transitions and failures; do not mechanically migrate all existing logs.
+- [ ] Integrate in the order `core.lifecycle` -> SSH snapshot adapter -> RDP snapshot/event
+  adapter -> RustDesk snapshot/event adapter -> VNC -> render/decode -> input/clipboard ->
+  audio; each module is a separate checkpoint and can be disabled independently.
+- [ ] For SSH, use existing payload-free counters and generation; never add terminal text,
+  command text or input bytes to the recorder. Confirm SFTP/background ownership remains
+  unchanged.
+- [ ] For RustDesk, keep FFI and helper IPC as separate providers; do not widen the C ABI or
+  export helper payloads merely to obtain more detail. Existing sensitive-id helpers may
+  inform a new opaque reference policy but are not a substitute for field allow-lists.
+- [ ] For RDP and VNC, preserve certificate/Gateway/transport refusal behavior and provider
+  capability gates; diagnostics must not turn an unsupported route into a connection attempt.
+- [ ] For render/decode/input/audio, use sampled counters and error boundaries only; do not
+  record per-frame, per-key, clipboard, audio or screen payloads.
 - [ ] Replace raw error payload export candidates with event codes and scalar fields.
 - [ ] Preserve existing HiLog calls where useful for developer builds, but make them independent from the export path.
 - [ ] Add event coverage for RDP, RustDesk, SSH/SFTP, VNC, render/decode, input/clipboard, audio and lifecycle.
@@ -287,6 +378,10 @@ manifest 至少包含：
 - Modify: native NAPI declarations/implementations for missing snapshot providers
 
 - [ ] Aggregate existing RDP, RustDesk, SSH and local-resource snapshots without changing their current UI behavior.
+- [ ] Treat existing RDP/RustDesk/SSH snapshots as read-only adapters with explicit schema
+  version/capability mapping; no provider may mutate or reset the live snapshot.
+- [ ] Collect only selected providers and tolerate provider disappearance during page/session
+  teardown; return `supported=false` with a reason code instead of zero-filled fake data.
 - [ ] Define VNC/SFTP snapshot availability and explicit unsupported states.
 - [ ] Serialize manifest, events, snapshots and summary as valid UTF-8 JSONL.
 - [ ] Enforce export byte limit, truncation marker, hash verification and no-event behavior.
@@ -308,6 +403,10 @@ manifest 至少包含：
 - [ ] Keep export progress and picker cancellation recoverable; prevent duplicate export requests while one is active.
 - [ ] Display a clear redaction notice and state that the file is intended for manual attachment.
 - [ ] Verify small-screen Sheet behavior and Pad/PC layout without nesting a second settings card/sheet unnecessarily.
+- [ ] Keep the existing feedback mail/community flows unchanged; the diagnostic action is a
+  sibling action and must not alter mail recipients, subject, body or QR image saving.
+- [ ] Keep `LocalBackupService` unchanged; only reuse its already-proven bounded file I/O
+  pattern through a neutral helper if extraction is necessary, with backup tests passing.
 
 ### Task 7: Share handoff, optional second phase
 
@@ -329,6 +428,16 @@ manifest 至少包含：
 - [ ] Test each protocol's representative failure path and verify selected-module filtering.
 - [ ] Record unavailable HDC/device or endpoint evidence as blockers; do not replace it with host-only results.
 - [ ] Complete independent review of the declared diagnostic scope before merge.
+- [ ] Before every checkpoint, run `git diff --stat`, `git diff --check` and the workspace
+  status command; verify only declared diagnostic files changed. Existing mixed-worktree
+  files remain user-owned and must not be included in a diagnostic commit.
+- [ ] After each native/ArkTS/Rust checkpoint, run both mandatory Hvigor commands even when
+  the change appears isolated; run the focused protocol tests and compare the relevant
+  existing snapshot/UI behavior before and after.
+- [ ] Run negative regression checks: recorder disabled, recorder full, provider missing,
+  export cancelled, stale session generation, SSH host switch, SFTP picker/background handoff,
+  RDP certificate refusal, RustDesk helper unavailable, VNC TLS failure and render backend
+  rejection. All must preserve their pre-existing result and cleanup behavior.
 
 ## Test Matrix
 
@@ -377,6 +486,18 @@ manifest 至少包含：
 - 应用重启后历史事件丢失的限制在产品文案和 manifest 中明确；持久化 crash ring 不作为本计划隐式承诺。
 - 第一版不自动上传、不自动发送邮件；用户可以保存文件并手动附加给开发者。
 - 所有代码改动完成后通过项目规定的两项 Hvigor 门禁，并完成独立复核和真实设备保存验证。
+- 诊断 recorder/provider 被禁用、初始化失败、缓存满或导出失败时，RDP、RustDesk、
+  SSH/SFTP、VNC、渲染、输入、音频和备份功能的既有结果、时序、清理和错误码不变。
+- 既有 RDP/RustDesk/SSH 快照 API 的 ABI、schema、字段含义和 UI 轮询行为保持兼容；
+  新增诊断导出只通过只读 adapter 取值。
+- SSH 的 host switch、重连 generation、SFTP picker、后台 handoff 和 xterm 输入/输出
+  回调在 recorder 开启与关闭两种状态下均通过回归测试；RustDesk helper 不可用、RDP
+  Gateway 拒绝、VNC TLS 失败和 render backend rejection 也必须保持原有 fail-closed
+  行为。
+- 每个模组可以独立不注册或报告 unsupported；缺失一个 provider 不会阻止其他已选
+  模块导出，也不会触发该模组的连接或重连。
+- 计划实施前后都能从 `git diff` 明确区分诊断变更与当前 SSH/RDP/RustDesk 等混合
+  工作树改动；不得把用户已有修改误提交到诊断 checkpoint。
 
 ## Risks and Follow-ups
 
@@ -385,3 +506,12 @@ manifest 至少包含：
 - **应用被杀导致记录丢失：** 若实际支持需求包含“崩溃后下次启动导出”，另立持久化 30–40 分钟 crash ring 计划，采用批量写盘和严格权限隔离。
 - **脱敏遗漏：** 事件字段白名单、创建时拒绝、导出前 schema 校验和单元测试四层共同防护；不能只依赖当前 `SafeLogger` 正则。
 - **邮件/分享 API 差异：** 在本地保存稳定并有设备证据后再立项，不把附件能力混入第一阶段验收。
+- **混合工作树造成误合并：** 当前任务分支已有跨模组未提交修改，实施时必须逐 checkpoint
+  声明文件范围、只暂存诊断文件，并在提交前运行状态脚本；无法隔离时暂停并记录 blocker。
+- **共享生命周期回归：** session registry、adapter teardown、background handoff 和
+  NAPI ABI 是高风险边界；第一版用只读 opaque context/adapter 绕开所有权重构，只有
+  focused regression 和独立 review 通过后才考虑更深的接入。
+- **已有诊断快照语义被误用：** 快照只代表读取时刻，不能伪装成历史事件；manifest
+  必须区分 event、snapshot、unsupported，并保留 provider schema/capability 信息。
+- **RustDesk 隔离边界扩大：** Rust FFI、helper IPC 与主进程日志的生命周期不同；若
+  需要新增跨进程事件，另立 ABI/IPC 计划，不在本功能中直接改协议消息或复用敏感 payload。

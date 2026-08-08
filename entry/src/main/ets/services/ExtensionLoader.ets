@@ -209,6 +209,27 @@ export class ExtensionLoader {
     return -1;
   }
 
+  /**
+   * Inspect a retained SSH session without adopting it or changing the
+   * foreground facade owner. The terminal tab bar uses this to reconcile a
+   * handshake that completed while another host was visible.
+   */
+  peekDetachedSshSession(hostId: string): number {
+    const normalizedHostId: string = hostId.trim();
+    if (normalizedHostId.length === 0) { return -1; }
+    for (let index = this.detachedSshSessions.length - 1; index >= 0; index--) {
+      const candidate: DetachedSshSession = this.detachedSshSessions[index];
+      if (candidate.hostId !== normalizedHostId) { continue; }
+      let state: number = 0;
+      try { state = rdpnapi.getConnectionState(candidate.sessionId) as number; } catch (_err) { state = 0; }
+      if (state === 2 || state === 3) {
+        return candidate.sessionId;
+      }
+      this.detachedSshSessions.splice(index, 1);
+    }
+    return -1;
+  }
+
   /** Re-enable input after a detached SSH view has installed its callback. */
   resumeSshSession(sessionId: number): boolean {
     if (sessionId <= 0) { return false; }

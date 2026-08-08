@@ -69,6 +69,7 @@ import {
 } from '../services/SshTerminalPipService';
 import {
   terminalLogicalViewportHeight,
+  terminalKeyboardBottomInsetPx,
   terminalTouchDragScrollLines,
   terminalVisualBottomOffset,
 } from '../services/SshTerminalScrollPolicy';
@@ -109,7 +110,11 @@ import {
   sshXtermTabRenderRevision
 } from '../services/SshXtermTabSurfacePolicy';
 import { VirtualKeyBar } from '../components/VirtualKeyBar';
-import { normalizeSshTerminalLineSpacing } from '../services/SshSettingsPolicy';
+import {
+  normalizeSshTerminalLineSpacing,
+  SshTerminalAppearance
+} from '../services/SshSettingsPolicy';
+import { SshSettingsService } from '../services/SshSettingsService';
 import {
   TransferSession,
   TransferStage,
@@ -205,6 +210,12 @@ const SSH_TERMINAL_INPUT_FOCUS_RETRY_DELAYS_MS: number[] = [24, 80, 180];
  */
 const SSH_TERMINAL_SURFACE_WAKE_INTERVAL_MS: number = 64;
 const SSH_TERMINAL_SURFACE_WAKE_RETRIES: number = 12;
+/**
+ * A phone ArkWeb cold start can finish after the SSH session generation has
+ * already changed. Re-arm the idempotent ready callback for several seconds
+ * so one coalesced @Watch turn cannot leave the terminal behind its mask.
+ */
+const SSH_XTERM_READY_RECOVERY_DELAYS_MS: number[] = [64, 160, 320, 640, 1200, 2000, 3200, 5000];
 
 interface PendingTerminalInput {
   /** Monotonic ArkUI admission order used to keep a later paste behind older input. */
@@ -276,6 +287,9 @@ struct SshTerminal {
   private xtermReadyGenerations: Map<string, number> = new Map<string, number>();
   /** 即使连续两个 chunk 文本相同，也用序号触发终端核心消费。 */
   @State termOutputSequence: number = 0;
+  /** Revision restore target; only the matching retained xterm document resets. */
+  @State xtermTranscriptResetIdentity: string = '';
+  @State xtermTranscriptResetRequest: number = 0;
   /** 由成熟终端前端/VT 状态驱动的输入模式；保留给虚拟功能栏策略。 */
   @State bracketedPasteEnabled: boolean = false;
   @State terminalMouseTracking: number = 0;
@@ -482,6 +496,8 @@ struct SshTerminal {
   private terminalSurfaceMountToken: number = 0;
   /** Wakes a newly committed renderer after ArkUI has created its surface. */
   private terminalSurfaceCommitWakeTimer: number = -1;
+  /** Re-arms a slow visible xterm document until the current revision reports ready. */
+  private xtermReadyRecoveryTimer: number = -1;
   /** Retries a mount that observes the live session during a state transition. */
   private terminalSurfaceMountRetryCount: number = 0;
   /** Prevents repeated connected-state probes from starving one mount turn. */
@@ -499,6 +515,7 @@ struct SshTerminal {
   @State renderFontVp: number = 18;
   private kbCtrl: TextAreaController = new TextAreaController();
   private srv: HostSyncService = HostSyncService.getInstance();
+  private sshSettings: SshSettingsService = SshSettingsService.getInstance();
   private loader: ExtensionLoader = ExtensionLoader.getInstance();
   private hostId: string = '';
   private sessionId: number = -1;
@@ -778,6 +795,24 @@ struct SshTerminal {
     };
     this.terminalInputFocusRetryTimer = setTimeout(
       retry, SSH_TERMINAL_INPUT_FOCUS_RETRY_DELAYS_MS[retryIndex]);
+  }
+
+  /**
+   * In phone or explicit Pad/PC virtual mode an editor exit normally means the
+   * user dismissed the software keyboard. Do not fight that gesture with the
+   * physical-keyboard focus retry loop; a canvas/key-bar tap will reopen it.
+   */
+  private onTerminalEditorExit(reason: string): void {
+    const userDismissibleVirtualIme: boolean = this.virtualKeyBarRequested() &&
+      (this.breakpoint === 'sm' || this.sshInputMode === 1);
+    if (userDismissibleVirtualIme && !this.tabSwitchInFlight) {
+      this.softKeyboardRequested = false;
+      this.clearTerminalInputFocusRetry();
+      hilog.debug(0x0000, 'SshTerminal', '[input] virtual editor exit reason=' + reason +
+        ' retry=0');
+      return;
+    }
+    this.scheduleTerminalInputFocusRetry();
   }
 
   private isPageGenerationActive(generation: number): boolean {
@@ -1116,6 +1151,47 @@ struct SshTerminal {
       this.xtermSurfaceGenerationForHost(normalizedHostId);
   }
 
+  private clearXtermReadyRecovery(): void {
+    if (this.xtermReadyRecoveryTimer !== -1) {
+      clearTimeout(this.xtermReadyRecoveryTimer);
+      this.xtermReadyRecoveryTimer = -1;
+    }
+  }
+
+  /**
+   * The page accepts readiness only for the current host revision. A cold
+   * mobile WebView may publish revision 0 while SSH is committing revision 1;
+   * repeatedly re-arming the component callback closes that race without
+   * reloading a healthy retained document.
+   */
+  private scheduleXtermReadyRecovery(hostId: string, attempt: number = 0): void {
+    this.clearXtermReadyRecovery();
+    const normalizedHostId: string = hostId.trim();
+    if (normalizedHostId.length === 0 || attempt >= SSH_XTERM_READY_RECOVERY_DELAYS_MS.length ||
+      this.terminalClosing || this.xtermSurfaceReadyForHost(normalizedHostId)) {
+      return;
+    }
+    const pageGeneration: number = this.pageGeneration;
+    const bindingGeneration: number = this.sshBindingGeneration;
+    this.xtermReadyRecoveryTimer = setTimeout((): void => {
+      this.xtermReadyRecoveryTimer = -1;
+      if (!this.isSshBindingGenerationActive(pageGeneration, bindingGeneration) ||
+        this.terminalClosing || !this.connected ||
+        this.hostId.trim() !== normalizedHostId ||
+        this.visibleSshHostId.trim() !== normalizedHostId ||
+        this.terminalSurfaceCommittedHostId.trim() !== normalizedHostId ||
+        this.xtermSurfaceReadyForHost(normalizedHostId)) {
+        return;
+      }
+      this.xtermReadyProbeRequest = this.xtermReadyProbeRequest + 1;
+      this.terminalSurfaceRefreshRequest = this.terminalSurfaceRefreshRequest + 1;
+      hilog.info(0x0000, 'SshTerminal', '[xterm] ready recovery host=' + normalizedHostId +
+        ' revision=' + this.xtermSurfaceGenerationForHost(normalizedHostId).toString() +
+        ' attempt=' + (attempt + 1).toString());
+      this.scheduleXtermReadyRecovery(normalizedHostId, attempt + 1);
+    }, SSH_XTERM_READY_RECOVERY_DELAYS_MS[attempt]);
+  }
+
   private markXtermSurfaceNotReady(hostId: string): void {
     const normalizedHostId: string = hostId.trim();
     if (normalizedHostId.length > 0) { this.xtermReadyGenerations.delete(normalizedHostId); }
@@ -1151,11 +1227,44 @@ struct SshTerminal {
   }
 
   /**
+   * A retained host can finish reconnecting while another tab owns the page.
+   * Reconcile only its registry metadata; never adopt/resume the native
+   * session here, so its xterm document and socket remain suspended in place.
+   */
+  private reconcileRetainedSshTabStates(): void {
+    const activeHostId: string = this.hostId.trim();
+    const views: SshTerminalTabView[] = this.sshTabStore.views();
+    for (let index = 0; index < views.length; index++) {
+      const view: SshTerminalTabView = views[index];
+      if (view.hostId.trim() === activeHostId) { continue; }
+      const retainedSessionId: number = view.sessionId > 0
+        ? view.sessionId : this.loader.peekDetachedSshSession(view.hostId);
+      if (retainedSessionId <= 0) { continue; }
+      const nativeState: number = this.loader.getConnectionState(retainedSessionId);
+      if (nativeState !== SSH_STATE_CONNECTED && nativeState !== SSH_STATE_RECONNECTING) {
+        continue;
+      }
+      const nextState: SshTerminalTabState = nativeState === SSH_STATE_CONNECTED
+        ? 'connected' : 'reconnecting';
+      if (view.state === nextState && view.sessionId === retainedSessionId && view.generation > 0) {
+        continue;
+      }
+      const generation: number = this.loader.getSshTerminalDiagnostics(
+        retainedSessionId).sessionGeneration;
+      this.sshTabStore.update(view.hostId, nextState, retainedSessionId, '', generation);
+      hilog.info(0x0001, 'SshTerminal', '[tab] retained state reconciled host=' + view.hostId +
+        ' session=' + retainedSessionId.toString() + ' state=' + nextState +
+        ' generation=' + generation.toString());
+    }
+  }
+
+  /**
    * Invalidate the visible terminal before adopting another SSH binding. The
    * binding key is observable; hostId itself is intentionally page-owned and
    * is not sufficient to drive an ArkUI rebuild.
    */
   private resetTerminalSurfaceBinding(): void {
+    this.clearXtermReadyRecovery();
     this.markXtermSurfaceNotReady(this.hostId);
     this.terminalSurfaceMountToken++;
     if (this.terminalSurfaceMountTimer !== -1) {
@@ -1291,6 +1400,7 @@ struct SshTerminal {
       }
       if (bindingChanged || !this.xtermReady) {
         this.xtermReadyProbeRequest = this.xtermReadyProbeRequest + 1;
+        this.scheduleXtermReadyRecovery(normalizedHostId);
       }
       return;
     }
@@ -1413,6 +1523,12 @@ struct SshTerminal {
       if (this.connecting) { return this.tabStateLabel('connecting'); }
     }
     return this.tabStateLabel(tab.state);
+  }
+
+  /** Page-owned host identity is the authoritative native-surface selector. */
+  private sshTabSurfaceActive(tab: SshTerminalTabView): boolean {
+    const visibleHostId: string = this.visibleSshHostId.trim();
+    return visibleHostId.length > 0 && tab.hostId.trim() === visibleHostId;
   }
 
   private sshTabHosts(): RemoteHost[] {
@@ -1693,6 +1809,8 @@ struct SshTerminal {
     this.sshTabStore.openAndActivate(targetHostId, this.hostLabel, this.userAtHost);
     this.xtermReady = this.xtermSurfaceReadyForHost(targetHostId);
     this.refreshSshTabViews();
+    hilog.info(0x0001, 'SshTerminal', '[tab] visible host committed previous=' + previousHostId +
+      ' target=' + targetHostId + ' retained=' + this.sshTabViews.length.toString());
 
     const adoptedSessionId: number = this.loader.adoptDetachedSshSession(targetHostId);
     if (adoptedSessionId > 0) {
@@ -2270,12 +2388,21 @@ struct SshTerminal {
   }
 
   private barBottomOffset(): number {
-    return terminalVisualBottomOffset(this.isDesktopDevice, this.kbHeight, this.navHeight);
+    return terminalVisualBottomOffset(
+      this.terminalUsesDesktopInputLayout(), this.kbHeight, this.navHeight);
+  }
+
+  /** Explicit virtual-keyboard mode must use mobile-style bottom avoidance on PC too. */
+  private terminalUsesDesktopInputLayout(): boolean {
+    return this.isDesktopDevice && !this.virtualKeyBarRequested();
   }
 
   private virtualKeyBarRequested(): boolean {
     // 手机保持原有输入和底部栏逻辑；设置项只作用于 Pad/PC。
-    if (this.breakpoint === 'sm') { return !this.physicalKeyboardConnected; }
+    // HarmonyOS phones expose the built-in IME as a keyboard input device on
+    // some models. The legacy phone layout always owns its bottom function
+    // rail; do not hide it because that system device looks physical.
+    if (this.breakpoint === 'sm') { return true; }
     if (this.sshInputMode === 1) { return true; }
     if (this.sshInputMode === 2) { return false; }
     if (this.isDesktopDevice) { return false; }
@@ -2286,7 +2413,27 @@ struct SshTerminal {
     // The bar belongs to the connected SSH workspace, not to the xterm boot
     // lifecycle. Its height is reserved independently, so it remains usable
     // while a retained WebView is waiting for its first ready callback.
-    return this.connected && this.sshTabViews.length > 0 && this.virtualKeyBarRequested();
+    return !this.terminalClosing && this.sshTabViews.length > 0 && this.virtualKeyBarRequested();
+  }
+
+  private terminalBottomSafeRows(): number {
+    // Keep the phone layout identical to the legacy compact terminal. Pad/PC
+    // physical-keyboard mode reserves a stable prompt area above the system
+    // navigation strip, even when ArkUI temporarily reports a narrow window.
+    if (!this.isPadDevice && !this.isDesktopDevice) { return 0; }
+    if (this.sshInputMode === 1) { return 0; }
+    if (this.isDesktopDevice || this.sshInputMode === 2 || this.physicalKeyboardConnected) {
+      return 5;
+    }
+    return 0;
+  }
+
+  private terminalXtermBottomInsetPx(): number {
+    // Pad/PC virtual-keyboard mode already has a real key-bar sibling below
+    // ArkWeb. Keep only a small cell-safe gap so the prompt sits close to the
+    // controls. Phone and physical-keyboard layouts retain the accepted
+    // legacy inset.
+    return this.breakpoint !== 'sm' && this.sshInputMode === 1 ? 2 : 10;
   }
 
   /**
@@ -2298,6 +2445,9 @@ struct SshTerminal {
    */
   private terminalSoftwareKeyboardEnabled(): boolean {
     if (!this.virtualKeyBarRequested()) { return false; }
+    // Phone keeps the 1.0.8 software-keyboard entry regardless of the Pad/PC
+    // input-mode preference or the system IME's inputDevice classification.
+    if (this.breakpoint === 'sm') { return true; }
     // Mode 1 is an explicit user choice: a detected hardware keyboard must
     // not silently turn the requested software keyboard off.
     if (this.sshInputMode === 1) { return true; }
@@ -2355,10 +2505,27 @@ struct SshTerminal {
     return this.terminalRowsViewportHeight();
   }
 
+  /**
+   * Keep the invisible Pad/PC virtual-IME editor next to the command area.
+   * Anchoring it at (0, 0) makes HarmonyOS place the candidate window and
+   * transient caret over the terminal toolbar. Phone and physical-keyboard
+   * layouts retain their established anchor unchanged.
+   */
+  private terminalImeAnchorX(): number {
+    if (this.breakpoint === 'sm' || this.sshInputMode !== 1) { return 0; }
+    const viewportWidth: number = this.termAreaW > 0 ? this.termAreaW : this.shellAreaW;
+    return Math.max(0, (viewportWidth - 1) / 2);
+  }
+
+  private terminalImeAnchorY(): number {
+    if (this.breakpoint === 'sm' || this.sshInputMode !== 1) { return 0; }
+    return Math.max(0, this.terminalPaneHeight() - 2);
+  }
+
   private terminalRowsViewportHeight(): number {
     const shellHeight: number = this.shellViewportHeight();
     return terminalLogicalViewportHeight(
-      this.isDesktopDevice,
+      this.terminalUsesDesktopInputLayout(),
       shellHeight,
       this.cellHvp,
       this.rowsBottomOffset(),
@@ -2517,7 +2684,7 @@ struct SshTerminal {
   }
 
   private onKeyboardInsetChange(): void {
-    if (this.isDesktopDevice || !this.connected) { return; }
+    if (this.terminalUsesDesktopInputLayout() || !this.connected) { return; }
     this.recalcGrid();
     // 键盘收起 (kbHeight → 0) 时, terminalPaneHeight 会先增大再触发 onAreaChange→recalcGrid→PTY resize (140ms)。
     // 标准 Settled (0/48/140/260ms) 的 0ms 可能跑在 resize 之前被 followBottom=false 覆盖。
@@ -4728,6 +4895,19 @@ struct SshTerminal {
     const pageGeneration: number = ++this.pageGeneration;
     const bindingGeneration: number = ++this.sshBindingGeneration;
     this.terminalClosing = false;
+    try {
+      // A direct/deep SSH route can be created before HostListPage initializes
+      // AppStorage. Read the durable appearance here as well so mobile xterm
+      // never boots with a default font that masks the user's saved choice.
+      const appearance: SshTerminalAppearance =
+        this.sshSettings.init(getContext(this) as common.Context);
+      this.fontSize = appearance.fontSize;
+      this.lineSpacing = appearance.lineSpacing;
+      hilog.info(0x0000, 'SshTerminal', '[appearance] restored font=' +
+        appearance.fontSize.toString() + ' lineSpacing=' + appearance.lineSpacing.toString());
+    } catch (err) {
+      hilog.warn(0x0000, 'SshTerminal', '[appearance] restore deferred: ' + JSON.stringify(err));
+    }
     this.clearTerminalInputFocusRetry();
     this.nativeRendererUnavailable = false;
     this.clearPreflightBinding();
@@ -4916,6 +5096,7 @@ struct SshTerminal {
       this.hostLabel = initialHost.label;
       this.userAtHost = initialHost.username + '@' + initialHost.host + ':' + initialHost.port;
       this.sshTabStore.openAndActivate(initialHostId, this.hostLabel, this.userAtHost);
+      this.reconcileRetainedSshTabStates();
       this.refreshSshTabViews();
     }
 
@@ -5359,7 +5540,7 @@ struct SshTerminal {
     const oldNavHeight: number = this.navHeight;
     try {
       const keyboardArea: window.AvoidArea = w.getWindowAvoidArea(window.AvoidAreaType.TYPE_KEYBOARD);
-      this.kbHeight = px2vp(keyboardArea.bottomRect.height);
+      this.kbHeight = px2vp(this.keyboardBottomInsetPx(w, keyboardArea));
     } catch (_e) { /* ignore */ }
     let topInset: number = 0;
     try {
@@ -5377,7 +5558,7 @@ struct SshTerminal {
       this.navHeight = Math.max(this.navHeight, px2vp(indicatorArea.bottomRect.height));
     } catch (_e) { /* ignore */ }
     this.topSafeHeight = topInset;
-    if (!this.isDesktopDevice && this.connected &&
+    if (!this.terminalUsesDesktopInputLayout() && this.connected &&
       (Math.abs(oldKbHeight - this.kbHeight) >= 1 || Math.abs(oldNavHeight - this.navHeight) >= 1)) {
       this.recalcGrid();
       if (this.orientationTransitioning) {
@@ -5385,6 +5566,25 @@ struct SshTerminal {
       } else {
         this.requestTerminalScrollToBottomSettled();
       }
+    }
+  }
+
+  private keyboardBottomInsetPx(w: window.Window, area: window.AvoidArea): number {
+    try {
+      const rect: window.Rect = area.bottomRect;
+      const windowRect: window.Rect = w.getWindowProperties().windowRect;
+      return terminalKeyboardBottomInsetPx(
+        area.visible,
+        rect.top,
+        rect.width,
+        rect.height,
+        windowRect.width,
+        windowRect.height
+      );
+    } catch (err) {
+      hilog.warn(0x0001, 'SshTerminal', '[avoidArea] keyboard geometry unavailable: ' +
+        JSON.stringify(err));
+      return 0;
     }
   }
 
@@ -5448,7 +5648,11 @@ struct SshTerminal {
         this.syncAvoidHeights(w);
         this.avoidCb = (data: window.AvoidAreaOptions): void => {
           if (data.type === window.AvoidAreaType.TYPE_KEYBOARD) {
-            this.kbHeight = px2vp(data.area.bottomRect.height);
+            const insetPx: number = this.keyboardBottomInsetPx(w, data.area);
+            this.kbHeight = px2vp(insetPx);
+            hilog.info(0x0000, 'SshTerminal', '[avoidArea] keyboard rect=' +
+              JSON.stringify(data.area.bottomRect) + ' visible=' + data.area.visible.toString() +
+              ' bottomInsetPx=' + insetPx.toString());
           } else if (data.type === window.AvoidAreaType.TYPE_SYSTEM ||
             data.type === window.AvoidAreaType.TYPE_NAVIGATION_INDICATOR ||
             data.type === window.AvoidAreaType.TYPE_CUTOUT) {
@@ -5573,6 +5777,7 @@ struct SshTerminal {
   }
 
   private probeLatencyOnce(): void {
+    this.reconcileRetainedSshTabStates();
     if (!this.connected || this.sessionId <= 0 || this.latencyProbeRunning) { return; }
     if (!this.syncNativeConnectionState()) { return; }
     const pageGeneration: number = this.pageGeneration;
@@ -5932,7 +6137,14 @@ struct SshTerminal {
     this.startLatencyProbe();
     void this.prepareSshPip(pageGeneration, bindingGeneration, bindingHostId);
 
-    if (this.isDesktopDevice) {
+    if (this.breakpoint !== 'sm' && this.sshInputMode === 1) {
+      setTimeout((): void => {
+        if (this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId) &&
+          this.sessionId === connectedSessionId) {
+          this.focusKeyboard(true);
+        }
+      }, 100);
+    } else if (this.isDesktopDevice) {
       setTimeout((): void => {
         if (this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId) &&
           this.sessionId === connectedSessionId) {
@@ -6172,7 +6384,7 @@ struct SshTerminal {
     this.sendTerminalBytes(encoded, this.isTerminalControlSequence(encoded));
   }
 
-  /** xterm owns physical keyboard/IME encoding; forward only the active tab. */
+  /** Forward xterm's fallback input only when it belongs to the active tab. */
   private onXtermDataForHost(hostId: string, sessionGeneration: number, data: string,
     surfaceIdentity: string): void {
     const normalizedHostId: string = hostId.trim();
@@ -6188,6 +6400,22 @@ struct SshTerminal {
     }
     hilog.debug(0x0000, 'SshTerminal', '[input] xterm accepted chars=' + data.length.toString());
     this.sendTerminalBytes(data, this.isTerminalControlSequence(data));
+  }
+
+  private onXtermFocusForHost(hostId: string, sessionGeneration: number, focused: boolean,
+    surfaceIdentity: string): void {
+    if (!focused) { return; }
+    const normalizedHostId: string = hostId.trim();
+    const reportedRevision: number = sshXtermTabRenderRevision(sessionGeneration);
+    if (this.terminalClosing || normalizedHostId !== this.hostId.trim() ||
+      this.xtermSurfaceIdentityForHost(normalizedHostId, reportedRevision) !== surfaceIdentity.trim() ||
+      reportedRevision !== this.xtermSurfaceGenerationForHost(normalizedHostId)) {
+      hilog.debug(0x0000, 'SshTerminal', '[input] xterm focus rejected host=' + normalizedHostId +
+        ' active=' + this.hostId.trim() + ' revision=' + reportedRevision.toString());
+      return;
+    }
+    hilog.debug(0x0000, 'SshTerminal', '[input] xterm focus accepted host=' + normalizedHostId);
+    this.focusKeyboard(false);
   }
 
   private onXtermReadyForHost(hostId: string, sessionGeneration: number,
@@ -6216,18 +6444,24 @@ struct SshTerminal {
       this.xtermReadyGenerations.get(normalizedHostId);
     if (previousReadyRevision !== undefined && previousReadyRevision !== reportedRevision) {
       const outputBuffer: XtermOutputBuffer = this.xtermOutputBufferForHost(normalizedHostId);
-      if (outputBuffer.size() === 0) {
-        const transcript: string = this.sshTranscriptStore.snapshot(normalizedHostId);
-        if (transcript.length > 0) {
-          outputBuffer.enqueue(transcript);
-          this.termOutputSequence = this.termOutputSequence + 1;
-          hilog.info(0x0000, 'SshTerminal', '[xterm] transcript replay host=' + normalizedHostId +
-            ' chars=' + transcript.length.toString());
-        }
+      const transcript: string = this.sshTranscriptStore.snapshot(normalizedHostId);
+      // A revision handoff can finish after ArkWeb has already painted a
+      // restored in-flight batch. Appending the full transcript at that point
+      // duplicates the welcome banner. Replace the queue and ask only this
+      // document to reset before consuming the single authoritative snapshot.
+      outputBuffer.clear();
+      if (transcript.length > 0) {
+        outputBuffer.enqueue(transcript);
       }
+      this.xtermTranscriptResetIdentity = surfaceIdentity.trim();
+      this.xtermTranscriptResetRequest = this.xtermTranscriptResetRequest + 1;
+      hilog.info(0x0000, 'SshTerminal', '[xterm] transcript replace host=' + normalizedHostId +
+        ' chars=' + transcript.length.toString() +
+        ' revision=' + reportedRevision.toString());
     }
     this.xtermReadyGenerations.set(normalizedHostId, reportedRevision);
     if (normalizedHostId === this.hostId.trim()) {
+      this.clearXtermReadyRecovery();
       this.xtermReady = true;
       this.focusKeyboard(false);
       this.requestTerminalScrollToBottomSettled();
@@ -6329,12 +6563,10 @@ struct SshTerminal {
     if (requestSoftwareKeyboard) {
       this.softKeyboardRequested = true;
     }
-    // Keep the visible xterm helper textarea as a second, mature input path.
-    // This request is ignored by inactive surfaces and lets xterm recover when
-    // ArkUI cannot attach the hidden TextArea to the current IME turn.
-    this.terminalFocusRequest = this.terminalFocusRequest + 1;
-    // ArkWeb's helper textarea is not a reliable HarmonyOS IME anchor. Keep
-    // the native TextArea as the primary IME owner. When the software keyboard
+    // ArkWeb and ArkUI cannot both own keyboard focus reliably on API 23.
+    // Keep the native TextArea as the single input owner; xterm reports canvas
+    // focus through the bridge and remains responsible only for rendering.
+    // When the software keyboard
     // was explicitly requested, wait for the ArkUI state turn before asking
     // for focus; otherwise the old enableKeyboardOnFocus value can be used for
     // this request and no IME editing session is created.
@@ -10261,7 +10493,8 @@ struct SshTerminal {
           }
         }.width('100%').layoutWeight(1).justifyContent(FlexAlign.Center).backgroundColor('#0D0D0D')
       } else {
-        Stack({ alignContent: Alignment.TopStart }) {
+        Column() {
+          Stack({ alignContent: Alignment.TopStart }) {
           // Once the xterm WebView is mounted it must remain visible even if a
           // late ArkWeb ready callback is still being retried. Otherwise a
           // missed proxy callback turns a real terminal into a permanent full
@@ -10282,7 +10515,7 @@ struct SshTerminal {
                   .onClick((): void => { this.closeSessionAndBack(); })
               }
             }
-            .width('100%').height(this.terminalPaneHeight()).justifyContent(FlexAlign.Center)
+            .width('100%').height('100%').justifyContent(FlexAlign.Center)
             .backgroundColor('#0D0D0D').zIndex(30)
           }
 
@@ -10294,16 +10527,20 @@ struct SshTerminal {
                   this.sshTabStore.sessionGeneration(tab.hostId)),
                 surfaceRefreshRequest: this.terminalSurfaceRefreshRequest,
                 readyProbeRequest: this.xtermReadyProbeRequest,
-                active: tab.active,
+                active: this.sshTabSurfaceActive(tab),
                 cols: this.termCols,
                 rows: this.termRows,
                 viewportWidth: this.termAreaW,
                 fontSize: this.fontSize,
                 lineSpacing: normalizeSshTerminalLineSpacing(this.lineSpacing),
                 bottomAlignSparseContent: !this.isDesktopDevice,
-                viewportHeight: this.terminalPaneHeight(),
+                bottomAlignSafeRows: this.terminalBottomSafeRows(),
+                bottomInsetPx: this.terminalXtermBottomInsetPx(),
+                viewportHeight: this.termAreaH,
                 outputBuffer: this.xtermOutputBufferForHost(tab.hostId),
                 outputSequence: this.termOutputSequence,
+                transcriptResetIdentity: this.xtermTranscriptResetIdentity,
+                transcriptResetRequest: this.xtermTranscriptResetRequest,
                 focusRequest: this.terminalFocusRequest,
                 copyRequest: this.copyRequest,
                 copiedText: this.copiedText,
@@ -10325,13 +10562,25 @@ struct SshTerminal {
                   this.onXtermReadyForHost(tab.hostId,
                     this.sshTabStore.sessionGeneration(tab.hostId),
                     surfaceIdentity);
+                },
+                onTerminalFocus: (focused: boolean, surfaceIdentity: string): void => {
+                  this.onXtermFocusForHost(tab.hostId,
+                    this.sshTabStore.sessionGeneration(tab.hostId),
+                    focused, surfaceIdentity);
                 }
               })
                 .width('100%')
-                .height(this.terminalPaneHeight())
-                .opacity(tab.active ? 1 : 0)
-                .zIndex(tab.active ? 1 : 0)
-                .hitTestBehavior(tab.active ? HitTestMode.Default : HitTestMode.None)
+                .height('100%')
+                // ArkWeb owns a native composition surface. Opacity/zIndex
+                // alone can leave the newest host surface above an older tab.
+                // Hidden preserves the WebView/JS heap and its scrollback but
+                // removes the inactive native surface from composition.
+                .visibility(this.sshTabSurfaceActive(tab) ?
+                  Visibility.Visible : Visibility.Hidden)
+                .opacity(this.sshTabSurfaceActive(tab) ? 1 : 0)
+                .zIndex(this.sshTabSurfaceActive(tab) ? 1 : 0)
+                .hitTestBehavior(this.sshTabSurfaceActive(tab) ?
+                  HitTestMode.Default : HitTestMode.None)
             }, (tab: SshTerminalTabView): string => tab.tabId)
 
             // Keep a persistent TextArea as the sole ArkUI IME anchor. TextArea
@@ -10350,13 +10599,12 @@ struct SshTerminal {
               .border({ width: 0 })
               .width(1).height(1)
               .opacity(0.01)
-              .position({ x: 0, y: 0 })
+              .position({ x: this.terminalImeAnchorX(), y: this.terminalImeAnchorY() })
               .hitTestBehavior(HitTestMode.Transparent)  // 透明命中, 不拦截父 onClick
               .focusable(true)
-              // Keep the first physical-keyboard/forced-keyboard entry path
-              // eligible for default focus; later focus is still page-owned.
-              .defaultFocus(!this.xtermReady && (this.isDesktopDevice || this.physicalKeyboardConnected ||
-                (this.breakpoint !== 'sm' && this.sshInputMode === 2)))
+              // Readiness and canvas-focus callbacks explicitly own focus.
+              // Default focus races ArkWeb's helper textarea during startup.
+              .defaultFocus(false)
               // The page owns focus explicitly. Letting the 1x1 anchor focus
               // itself on a canvas touch causes a blur/editing race on API 23.
               .focusOnTouch(false)
@@ -10404,13 +10652,13 @@ struct SshTerminal {
               })
               .onBlur((): void => {
                 hilog.debug(0x0000, 'SshTerminal', '[input] sshKbInput blur');
-                this.scheduleTerminalInputFocusRetry();
+                this.onTerminalEditorExit('blur');
               })
               .onEditChange((isEditing: boolean): void => {
                 hilog.debug(0x0000, 'SshTerminal', '[input] sshKbInput editing=' +
                   (isEditing ? '1' : '0') + ' connected=' + (this.connected ? '1' : '0'));
                 if (!isEditing) {
-                  this.scheduleTerminalInputFocusRetry();
+                  this.onTerminalEditorExit('editing');
                 }
               })
           }
@@ -10446,8 +10694,17 @@ struct SshTerminal {
             }
           })
           .bindContextMenu(this.TermMenu(), ResponseType.LongPress)
+          }
+          .width('100%')
+          .height(0)
+          .layoutWeight(1)
+          .constraintSize({ minHeight: 0 })
+          .clip(true)
 
-          // 虚拟键盘栏 — 仅手机/平板, 悬浮到系统键盘或导航栏上边缘。
+          // The terminal viewport, key bar and system inset are real Column
+          // siblings. This keeps the bar at the bottom without mixing the
+          // physical-pixel Area coordinates with ArkUI vp positioning, and it
+          // guarantees that ArkWeb never renders underneath the controls.
           if (this.virtualKeyBarVisible()) {
             Column() {
               VirtualKeyBar({
@@ -10464,14 +10721,25 @@ struct SshTerminal {
             }
             .width('100%')
             .height(VirtualKeyBar.TOTAL_H)
-            .align(Alignment.BottomStart)
-            .margin({ bottom: this.barBottomOffset() })
             .zIndex(20)
             .hitTestBehavior(HitTestMode.Default)
+
+            if (this.barBottomOffset() > 0) {
+              Column()
+                .width('100%')
+                .height(this.barBottomOffset())
+                .backgroundColor('#0D0D0D')
+                .hitTestBehavior(HitTestMode.None)
+            }
           }
         }
         .width('100%')
-        .height('100%')
+        // This shell is below the SSH header inside the page Column. Giving it
+        // 100% of the full page height makes it extend past the window by the
+        // header height, so the bottom key rows are clipped. Weight it into
+        // the actual remaining viewport instead.
+        .height(0)
+        .layoutWeight(1)
         .constraintSize({ minHeight: 0 })
         .clip(true)
         .onAreaChange((_o: Area, n: Area): void => {

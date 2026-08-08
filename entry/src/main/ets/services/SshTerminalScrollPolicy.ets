@@ -51,6 +51,36 @@ export function terminalVisualBottomOffset(
   return Math.max(Math.max(0, keyboardHeight), Math.max(0, navigationHeight));
 }
 
+/**
+ * Convert WindowManager's keyboard bottom rect into a real full-width bottom
+ * inset. Floating and side keyboards can report a tall bottomRect even though
+ * they do not cover the terminal's bottom edge; treating that height as a
+ * docked keyboard sends the virtual key bar to the top of the page.
+ */
+export function terminalKeyboardBottomInsetPx(
+  visible: boolean,
+  rectTop: number,
+  rectWidth: number,
+  rectHeight: number,
+  windowWidth: number,
+  windowHeight: number
+): number {
+  if (!visible) { return 0; }
+  const safeWindowWidth: number = Math.max(0, windowWidth);
+  const safeWindowHeight: number = Math.max(0, windowHeight);
+  const safeRectTop: number = Math.max(0, rectTop);
+  const safeRectWidth: number = Math.max(0, rectWidth);
+  const safeRectHeight: number = Math.max(0, rectHeight);
+  if (safeWindowWidth <= 0 || safeWindowHeight <= 0 ||
+    safeRectWidth <= 0 || safeRectHeight <= 0) {
+    return 0;
+  }
+  const reachesBottom: boolean = safeRectTop + safeRectHeight >= safeWindowHeight - 2;
+  const coversTerminalWidth: boolean = safeRectWidth >= safeWindowWidth * 0.55;
+  const plausibleDockedHeight: boolean = safeRectHeight <= safeWindowHeight * 0.65;
+  return reachesBottom && coversTerminalWidth && plausibleDockedHeight ? safeRectHeight : 0;
+}
+
 export function terminalLogicalViewportHeight(
   isDesktopDevice: boolean,
   shellAreaHeight: number,
