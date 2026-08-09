@@ -5,7 +5,7 @@
 - Task: `ssh-terminal-complete-upgrade`
 - Base: `main@d2769ad4b`
 - Branch: `codex/ssh-terminal-complete-upgrade`
-- Code checkpoints: `6924a1124` (`feat: harden remote sessions and SSH workspace`), `a9554a331` (`fix: harden DevEco builds and session recovery`), `fec26e2` (`fix: close SFTP and pointer recovery races`), `0be27d7` (`feat(ssh): add forwarding workspace`), `bc5132c` (`fix(ssh-ui): finalize forwarding workspace`), `41944ff` (`feat(settings): finalize 1.1.0 personalization defaults`), `29073afaf` (`fix: prioritize TOTP issuer logos`), `b1635d30a` (`fix(ui): dock Pad touchpad controls on right`), `6b17444a9` (`fix(rustdesk): repair mobile relay spacing`), `01d191b` (`feat(onboarding): refresh 1.1.0 guide pages`), `98a18c40f` (`fix(ssh-ui): remove keyboard mode bottom gap`), `a5ba18c87` (`fix(rustdesk): repair PC hardware presentation`), `6f8f387` (`feat(settings): expose onboarding review guides`), `d1e4acfba` (`chore(repo): ignore generated Python bytecode`) and `dec23b430` (`fix(compliance): require licensed TOTP brand assets`).
+- Code checkpoints: `6924a1124` (`feat: harden remote sessions and SSH workspace`), `a9554a331` (`fix: harden DevEco builds and session recovery`), `fec26e2` (`fix: close SFTP and pointer recovery races`), `0be27d7` (`feat(ssh): add forwarding workspace`), `bc5132c` (`fix(ssh-ui): finalize forwarding workspace`), `41944ff` (`feat(settings): finalize 1.1.0 personalization defaults`), `29073afaf` (`fix: prioritize TOTP issuer logos`), `b1635d30a` (`fix(ui): dock Pad touchpad controls on right`), `6b17444a9` (`fix(rustdesk): repair mobile relay spacing`), `01d191b` (`feat(onboarding): refresh 1.1.0 guide pages`), `98a18c40f` (`fix(ssh-ui): remove keyboard mode bottom gap`), `a5ba18c87` (`fix(rustdesk): repair PC hardware presentation`), `6f8f387` (`feat(settings): expose onboarding review guides`), `d1e4acfba` (`chore(repo): ignore generated Python bytecode`), `dec23b430` (`fix(compliance): require licensed TOTP brand assets`) and `f61bafa` (`test(ssh): avoid secret scanner false positive`).
 - Phase: implementation and independent review are complete; push, PR, required `open-source-compliance` and merge are pending. Remaining device acceptance and endpoint interoperability stay open; xterm.js remains the visible renderer.
 
 ## Current Outcome
@@ -37,14 +37,15 @@
 
 - `git diff --check`: pass.
 - Host native suite outside the sandbox: `339 passed, 0 failed, 339 total`; the sandbox run reached 323/339 with only 16 existing VNC loopback fixture startup failures.
-- `default@OhosTestCompileArkTS`: final candidate `dec23b430` passed with `BUILD SUCCESSFUL in 11 s 884 ms`.
-- `assembleHap`: final candidate `dec23b430` passed with `BUILD SUCCESSFUL in 13 s 967 ms`, including BuildNativeWithNinja, PackageHap and SignHap.
+- `default@OhosTestCompileArkTS`: final code candidate `f61bafa` passed with `BUILD SUCCESSFUL in 8 s 411 ms`.
+- `assembleHap`: final code candidate `f61bafa` passed with `BUILD SUCCESSFUL in 15 s 27 ms`, including BuildNativeWithNinja, PackageHap and SignHap.
 - IDE-like Ninja command inspection under `PATH=/usr/bin:/bin` shows absolute Cargo, rustc, clang/clang++, llvm-ar, sysroot and encoded rustflags.
 - Signed HAP: `entry/build/default/outputs/default/entry-default-signed.hap`, SHA-256 `61c9604123eaa9cbf89c7613a67f7522459a0ea7ccfa87f579d807ca383ec8d6`.
 - Wireless MLR-AL10 `192.168.3.236:40123`: direct SSH connected and Local `127.0.0.1:8022 -> 127.0.0.1:22` listened under the App UID. A temporary HDC `28022 -> 8022` mapping carried a real OpenSSH banner, client identification and server KEXINIT in both directions; the dark Pad sheet updated to `连接 1` / `流量 1.1 KB`. The temporary mapping was removed after acceptance.
 - Full Rust run outside the sandbox: `176 passed, 1 existing rendezvous public-address fixture failure`; all VP9, terminal, cursor and network groups affected by the current diff passed.
 - TOTP generator check is synchronized; validator reports 280 assets, zero errors and synchronized compliance records. The reviewed package now declares `AGPL-3.0-or-later AND CC0-1.0 AND MIT`; no package has `licenseDeclared=NOASSERTION`.
-- `ohosTest@OhosTestCompileArkTS` remains unavailable because task registration fails with `00306054`. Light cannot run locally because `pwsh` is absent; the required GitHub check remains the authoritative publication gate.
+- Local open-source compliance `Light`: pass using the ignored repository-local PowerShell runtime. The same required check must still pass on GitHub before merge.
+- `ohosTest@OhosTestCompileArkTS` remains unavailable because task registration fails with `00306054`.
 
 ## Review
 
@@ -53,7 +54,7 @@
 - `29073afaf..6b17444a9` received a direct changed-path audit, layout policy coverage, `git diff --check` and both Hvigor gates. TOTP logo preference, Pad control docking and the RustDesk relay Phone layout still need device acceptance.
 - `01d191b` received a direct content/path audit, registry regression coverage, `git diff --check` and both Hvigor gates. Phone/Pad Swiper pagination, text fit and Settings-sheet visual acceptance remain open.
 - `6f8f387` received a direct changed-path audit, `git diff --check` and both Hvigor gates. Its two Settings review entries still need device visual acceptance.
-- Independent reviewer `019fe594-c49a-77f2-ad7f-1c76c1fc6ef4` (`gpt-5.6-sol`, low) reviewed `origin/main@34946adbc..dec23b430` read-only and returned `PASS`: no blocking or actionable correctness, race, regression, sensitive-file or machine-local-file findings. Documentation-only receipt updates after `dec23b430` do not invalidate this code review.
+- Independent reviewer `019fe594-c49a-77f2-ad7f-1c76c1fc6ef4` (`gpt-5.6-sol`, low) reviewed `origin/main@34946adbc..f61bafa` read-only and returned `PASS`: no blocking or actionable correctness, race, regression, sensitive-file or machine-local-file findings. It explicitly confirmed that the post-hook fixture split preserves runtime semantics and does not expand the secret-scanner allowlist. Documentation-only receipt updates after `f61bafa` do not invalidate this code review.
 - Do not mark Level B endpoint interoperability complete without real traffic evidence.
 
 ## Next
@@ -72,4 +73,3 @@
 - RustDesk relay Phone FAB clearance and collapsed/advanced add-sheet sizing are policy-test-compile/build verified but not yet device accepted.
 - The 12-page release Swiper passed direct device review; the 10-page first-install/Settings tutorials remain registry-test-compile/build verified but not yet visually accepted on Phone/Pad.
 - The simplified three-entry Settings tutorial section and adaptive RustDesk relay editor height are not yet visually accepted on a device.
-- Light compliance cannot run locally because `pwsh` is missing; the SBOM `NOASSERTION` blocker has been removed and the required GitHub check is pending.

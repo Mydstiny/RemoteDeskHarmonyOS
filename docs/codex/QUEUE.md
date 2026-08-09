@@ -41,5 +41,4 @@ Updated: 2026-08-09 Asia/Shanghai
 
 - `ohosTest@OhosTestCompileArkTS` is unregistered (`00306054`).
 - Real HTTP/SOCKS proxy, ProxyJump, Remote/Dynamic forwarding and external FRP endpoint infrastructure is unavailable; Local forwarding traffic is no longer blocked.
-- The local Light gate cannot start because `pwsh` is absent; the SBOM `NOASSERTION` blocker is fixed and the required GitHub check is pending.
 - Native SSH GPU surface is not an acceptance path after API 23 BufferQueue abort reproduction.
