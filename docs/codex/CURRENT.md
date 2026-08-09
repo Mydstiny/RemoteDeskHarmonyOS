@@ -18,6 +18,9 @@
 - Added per-table terminal statistics and precise Huawei cloud progress-code diagnostics.
 - Made portable backup export omit historical orphan extension rows without deleting or weakening validation of local data.
 - Added ownership, coordinator wiring, backup policy and legacy-upgrade regressions.
+- Restricted cloud `usersettings` to cross-device appearance only; RDP/RustDesk protocol, input, display,
+  quality, terminal, live-view and device-capability preferences now remain in device Preferences.
+- Kept legacy cloud preference rows intact but ignored by the new client, so upgrades require no destructive migration.
 
 ## Compatibility Guardrails
 
@@ -29,16 +32,18 @@
 ## Verification
 
 - `git diff --check`: PASS.
-- `default@OhosTestCompileArkTS`: PASS on 2026-08-09 after the final code changes.
-- `assembleHap`: PASS (`BUILD SUCCESSFUL in 27 s 644 ms`) on 2026-08-09 after the final code changes.
+- `default@OhosTestCompileArkTS`: PASS on 2026-08-09 after the final usersettings isolation changes.
+- `assembleHap`: PASS (`BUILD SUCCESSFUL in 1 min 4 s 985 ms`) on 2026-08-09 after the final usersettings isolation changes.
 - `python3 scripts/verify_legacy_upgrade.py`: PASS for `1.0.7@d2bc6c9982` and initial `1.0.8@a3d47c464a`; all fixture rows preserved, personalization upgrade PASS, schema version 4.
 - Phone `192.168.3.235:38451`: signed HAP installed; user-confirmed full cloud overwrite upload succeeded on 2026-08-09.
 - Phone backup: full backup passed snapshot/staging validation and entered the system save picker; picker was canceled intentionally, with no public file left behind.
 - Huawei Cloud Space schema was inspected read-only: `remotehosts` matches the projected String/Integer columns and contains no Asset field.
+- Devices `192.168.3.235:38451` and `192.168.3.236:40123`: repair HAP installed; user verified that
+  changing/uploading RustDesk control mode on device A no longer changes device B after pull.
 
 ## Next
 
-1. Create the requested checkpoint commit.
+1. Create the requested follow-up commit for usersettings device isolation.
 2. Run the required independent review against the committed scope and address any findings.
 3. Complete Pad/PC and second-device personalization-isolation acceptance before release/PR closure.
 

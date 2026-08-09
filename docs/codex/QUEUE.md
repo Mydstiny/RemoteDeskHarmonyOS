@@ -4,7 +4,7 @@ Updated: 2026-08-09 Asia/Shanghai
 
 ## Now
 
-- Commit the user-verified implementation on `codex/host-local-personalization`.
+- Commit the user-verified usersettings device-isolation follow-up on `codex/host-local-personalization`.
 - Run independent review on the committed policy, cloud coordinator, backup and upgrade-simulation scope.
 
 ## Next

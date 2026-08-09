@@ -114,10 +114,6 @@ import {
   shouldRedactLockedCiphertext
 } from './SensitiveDataStatePolicy';
 import {
-  VIRTUAL_MOUSE_STYLE_RESTORE_VERSION_KEY,
-  shouldApplyCloudVirtualMouseStyle
-} from './RemoteCursorStylePolicy';
-import {
   SSH_LEGACY_FONT_SIZE_KEY,
   SSH_LEGACY_FOREGROUND_COLOR_KEY,
   SSH_LEGACY_LINE_SPACING_KEY,
@@ -4030,11 +4026,8 @@ export class CloudStore implements CryptoCloudStore {
     const settings: Record<string, CloudUserSettingValue> = this.loadUserSettings();
     const keys: string[] = Object.keys(settings);
     if (keys.length === 0) { return; }
-    let applyVirtualMouseStyle: boolean = false;
     try {
       const prefs = preferences.getPreferencesSync(this.appContext, { name: 'RemoteDesktopAppPrefs' });
-      const restoreVersion: number = prefs.getSync(VIRTUAL_MOUSE_STYLE_RESTORE_VERSION_KEY, 0) as number;
-      applyVirtualMouseStyle = shouldApplyCloudVirtualMouseStyle(restoreVersion);
       const storedSshColor: Object = prefs.getSync(SSH_TERMINAL_FOREGROUND_COLOR_KEY, '') as Object;
       const storedLegacySshColor: Object = prefs.getSync(SSH_LEGACY_FOREGROUND_COLOR_KEY, '') as Object;
       const storedSshFontSize: Object = prefs.getSync(SSH_TERMINAL_FONT_SIZE_KEY, 0) as Object;
@@ -4057,7 +4050,6 @@ export class CloudStore implements CryptoCloudStore {
         const key: string = keys[i];
         if (!cloudUserSettingIsSyncable(key)) { continue; }
         if (isSshTerminalAppearanceKey(key)) { continue; }
-        if (key === 'virtualMouseStyle' && !applyVirtualMouseStyle) { continue; }
         prefs.putSync(key, settings[key]);
         AppStorage.setOrCreate(key, settings[key]);
       }

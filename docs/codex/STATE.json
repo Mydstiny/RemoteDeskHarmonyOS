@@ -6,7 +6,7 @@
   "head": "2feb12e0d",
   "phase": "implementation-validated-awaiting-review",
   "status": "active",
-  "next": "Create the user-requested checkpoint commit, run independent review, then complete Pad/PC and second-device isolation acceptance before PR closure.",
+  "next": "Create the user-requested usersettings isolation commit, run independent review, then complete remaining Pad/PC acceptance before PR closure.",
   "blockers": [],
   "planPaths": [
     "docs/codex/plans/2026-08-09-host-local-personalization-plan.md"
@@ -15,14 +15,17 @@
     "status": "REVIEW_REQUIRED",
     "taskId": "",
     "scope": [
+      "entry/src/main/ets/pages/HostListPage.ets",
       "entry/src/main/ets/model/RemoteHost.ets",
       "entry/src/main/ets/services/BackupManifestV3.ets",
       "entry/src/main/ets/services/CloudStore.ets",
       "entry/src/main/ets/services/CloudSyncCoordinator.ets",
+      "entry/src/main/ets/services/CloudSyncSettingsPolicy.ets",
       "entry/src/main/ets/services/HostLocalPersonalizationPolicy.ets",
       "entry/src/main/ets/services/HostSyncService.ets",
       "entry/src/main/ets/services/LocalBackupPolicy.ets",
       "entry/src/main/ets/services/LocalBackupService.ets",
+      "entry/src/main/ets/services/SshSettingsService.ets",
       "entry/src/main/ets/services/VncHostService.ets",
       "entry/src/main/ets/services/VncModelPolicy.ets",
       "entry/src/test",
@@ -34,11 +37,12 @@
   "lastVerification": {
     "baseline": "main@2feb12e0d clean and equal to origin/main at task start on 2026-08-09",
     "diffCheck": "PASS on 2026-08-09",
-    "testCompile": "default@OhosTestCompileArkTS PASS on 2026-08-09 after final code changes",
-    "assembleHap": "PASS, BUILD SUCCESSFUL in 27 s 644 ms on 2026-08-09 after final code changes",
+    "testCompile": "default@OhosTestCompileArkTS PASS on 2026-08-09 after final usersettings isolation changes",
+    "assembleHap": "PASS, BUILD SUCCESSFUL in 1 min 4 s 985 ms on 2026-08-09 after final usersettings isolation changes",
     "legacyUpgrade": "PASS for 1.0.7@d2bc6c9982 and initial 1.0.8@a3d47c464a; rows preserved and personalization upgrade passed",
     "phoneCloudUpload": "PASS on 192.168.3.235:38451; user confirmed full overwrite upload succeeded on 2026-08-09",
-    "phoneBackup": "PASS through snapshot and staging validation into the system save picker; picker canceled intentionally"
+    "phoneBackup": "PASS through snapshot and staging validation into the system save picker; picker canceled intentionally",
+    "twoDevicePreferenceIsolation": "PASS on 192.168.3.235:38451 and 192.168.3.236:40123; user confirmed RustDesk control mode no longer crosses devices after upload and pull"
   },
   "updated": "2026-08-09 Asia/Shanghai"
 }
