@@ -303,6 +303,11 @@ import {
   MOONLIGHT_RESTORE_QUARANTINE_KEY
 } from './MoonlightBackupPolicy';
 import { MoonlightRepositoryReadResult } from './MoonlightRepository';
+import { MoonlightDeletionCommandType } from './MoonlightDeletionPolicy';
+import {
+  MoonlightDeletionMutationRequest,
+  MoonlightDeletionMutationResult
+} from './MoonlightDeletionCommandService';
 import {
   CryptoCommittedState,
   CryptoLifecycleDurableState,
@@ -11129,6 +11134,239 @@ export class CloudStore implements CryptoCloudStore {
       hilog.warn(0x0001, 'CloudSync',
         '[CloudStore] Moonlight app cache commit failed: ' + safeError(error));
       return false;
+    }
+  }
+
+  /**
+   * D3 local command support. Distributed Moonlight deletion stays closed
+   * until D2-07 has real AGC receipts and a terminal cloud lifecycle port.
+   */
+  moonlightCloudDeletionReady(
+    _lease: AccountSessionLease
+  ): boolean {
+    return false;
+  }
+
+  moonlightOwnerRuntimeStateCount(
+    lease: AccountSessionLease,
+    recordIds: string[],
+    includeOwnerMarker: boolean
+  ): number {
+    if (!this.store || !this.isLeaseCurrent(lease)) { return -1; }
+    let count: number = 0;
+    let journal: relationalStore.ResultSet | null = null;
+    let quarantine: relationalStore.ResultSet | null = null;
+    let marker: relationalStore.ResultSet | null = null;
+    try {
+      const journalPredicates = new relationalStore.RdbPredicates(
+        LOCAL_MUTATION_JOURNAL_TABLE);
+      journalPredicates.equalTo('tablename', MOONLIGHT_LOCAL_TABLE);
+      journal = this.store.querySync(journalPredicates);
+      const journalRecordIdColumn: number =
+        journal.getColumnIndex('recordid');
+      while (journal.goToNextRow()) {
+        const recordId: string = journal.getString(journalRecordIdColumn);
+        if (includeOwnerMarker || recordIds.indexOf(recordId) >= 0) {
+          count++;
+        }
+      }
+
+      const quarantinePredicates = new relationalStore.RdbPredicates(
+        MIGRATION_QUARANTINE_TABLE);
+      quarantinePredicates.equalTo('migrationid', 'moonlight-runtime-v1');
+      quarantine = this.store.querySync(quarantinePredicates);
+      const idColumn: number = quarantine.getColumnIndex('id');
+      const ownerPrefix: string = 'moonlight-runtime-v1:' +
+        lease.ownerScopeId + ':';
+      while (quarantine.goToNextRow()) {
+        const recordIdColumn: number =
+          quarantine.getColumnIndex('recordid');
+        const recordId: string = quarantine.getString(recordIdColumn);
+        if (quarantine.getString(idColumn).indexOf(ownerPrefix) === 0 &&
+            (includeOwnerMarker || recordIds.indexOf(recordId) >= 0)) {
+          count++;
+        }
+      }
+
+      if (includeOwnerMarker) {
+        const markerPredicates = new relationalStore.RdbPredicates(
+          LOCAL_METADATA_TABLE);
+        markerPredicates.equalTo('key', MOONLIGHT_RESTORE_QUARANTINE_KEY);
+        marker = this.store.querySync(markerPredicates);
+        if (marker.goToFirstRow()) { count++; }
+      }
+      return this.isLeaseCurrent(lease) ? count : -1;
+    } catch (_error) {
+      return -1;
+    } finally {
+      if (journal !== null) {
+        try { journal.close(); } catch (_ignored) {}
+      }
+      if (quarantine !== null) {
+        try { quarantine.close(); } catch (_ignored) {}
+      }
+      if (marker !== null) {
+        try { marker.close(); } catch (_ignored) {}
+      }
+    }
+  }
+
+  /**
+   * Physically remove an exact, previewed owner-local set in one transaction.
+   * The corresponding local-only journal intents are removed, not replaced by
+   * delete intents, because this path must never manufacture a cloud delete.
+   */
+  commitMoonlightDeletion(
+    lease: AccountSessionLease,
+    request: MoonlightDeletionMutationRequest
+  ): MoonlightDeletionMutationResult {
+    const failure = (code: 'stale_lease' | 'invalid_request' |
+      'cloud_unavailable' | 'write_failed',
+      localCommitted: boolean = false): MoonlightDeletionMutationResult => {
+      return {
+        ok: false,
+        code,
+        localCommitted,
+        cloudAttempted: false,
+        cloudTerminal: false
+      };
+    };
+    if (!this.store || !this.isLeaseCurrent(lease)) {
+      return failure('stale_lease');
+    }
+    if (!this.localMutationAllowed()) { return failure('write_failed'); }
+    if (request.writeCloudTombstones) {
+      return failure('cloud_unavailable');
+    }
+    const localCommands: MoonlightDeletionCommandType[] = [
+      'delete_local_data', 'forget_host', 'unpair_host', 'delete_profile'
+    ];
+    if (localCommands.indexOf(request.command) < 0 ||
+        request.clearOwnerRuntimeState !==
+          (request.command === 'delete_local_data') ||
+        !Number.isSafeInteger(request.expectedRuntimeStateCount) ||
+        request.expectedRuntimeStateCount < 0 ||
+        !Number.isSafeInteger(request.nowMs) || request.nowMs <= 0) {
+      return failure('invalid_request');
+    }
+    const recordIds: string[] = [];
+    const cacheIds: string[] = [];
+    for (let i = 0; i < request.recordIds.length; i++) {
+      const id: string = request.recordIds[i];
+      if (id.trim() !== id || id.length === 0 || id.length > 128 ||
+          recordIds.indexOf(id) >= 0) {
+        return failure('invalid_request');
+      }
+      recordIds.push(id);
+    }
+    for (let i = 0; i < request.cacheIds.length; i++) {
+      const id: string = request.cacheIds[i];
+      if (!/^[0-9a-f]{64}$/.test(id) || cacheIds.indexOf(id) >= 0) {
+        return failure('invalid_request');
+      }
+      cacheIds.push(id);
+    }
+    if (recordIds.length === 0 && cacheIds.length === 0 &&
+        !request.clearOwnerRuntimeState) {
+      return {
+        ok: true,
+        code: 'ok',
+        localCommitted: false,
+        cloudAttempted: false,
+        cloudTerminal: false
+      };
+    }
+    try {
+      this.store.beginTransaction();
+      const runtimeStateCount: number =
+        this.moonlightOwnerRuntimeStateCount(
+          lease, recordIds, request.clearOwnerRuntimeState);
+      if (runtimeStateCount !== request.expectedRuntimeStateCount) {
+        throw new Error('Moonlight runtime deletion preview changed');
+      }
+      for (let i = 0; i < recordIds.length; i++) {
+        const row = new relationalStore.RdbPredicates(
+          MOONLIGHT_LOCAL_TABLE);
+        row.equalTo('id', recordIds[i]);
+        row.equalTo('userid', lease.ownerScopeId);
+        if (!rdbSingleRowAffected(this.store.deleteSync(row))) {
+          throw new Error('Moonlight local deletion preview changed');
+        }
+        const journal = new relationalStore.RdbPredicates(
+          LOCAL_MUTATION_JOURNAL_TABLE);
+        journal.equalTo('id', this.localExtensionId(
+          MOONLIGHT_LOCAL_TABLE, recordIds[i]));
+        this.store.deleteSync(journal);
+      }
+      for (let i = 0; i < cacheIds.length; i++) {
+        const cache = new relationalStore.RdbPredicates(
+          MOONLIGHT_APP_CACHE_TABLE);
+        cache.equalTo('id', cacheIds[i]);
+        cache.equalTo('userid', lease.ownerScopeId);
+        if (!rdbSingleRowAffected(this.store.deleteSync(cache))) {
+          throw new Error('Moonlight cache deletion preview changed');
+        }
+      }
+      const runtimeQuarantineIds: string[] = [];
+      const runtimeQuarantine = new relationalStore.RdbPredicates(
+        MIGRATION_QUARANTINE_TABLE);
+      runtimeQuarantine.equalTo('migrationid', 'moonlight-runtime-v1');
+      const quarantined: relationalStore.ResultSet =
+        this.store.querySync(runtimeQuarantine);
+      try {
+        const idColumn: number = quarantined.getColumnIndex('id');
+        const recordIdColumn: number =
+          quarantined.getColumnIndex('recordid');
+        const ownerPrefix: string = 'moonlight-runtime-v1:' +
+          lease.ownerScopeId + ':';
+        while (quarantined.goToNextRow()) {
+          const quarantineId: string = quarantined.getString(idColumn);
+          const recordId: string = quarantined.getString(recordIdColumn);
+          if (quarantineId.indexOf(ownerPrefix) === 0 &&
+              (request.clearOwnerRuntimeState ||
+               recordIds.indexOf(recordId) >= 0)) {
+            runtimeQuarantineIds.push(quarantineId);
+          }
+        }
+      } finally {
+        quarantined.close();
+      }
+      for (let i = 0; i < runtimeQuarantineIds.length; i++) {
+        const quarantine = new relationalStore.RdbPredicates(
+          MIGRATION_QUARANTINE_TABLE);
+        quarantine.equalTo('id', runtimeQuarantineIds[i]);
+        this.store.deleteSync(quarantine);
+      }
+      if (request.clearOwnerRuntimeState) {
+        const moonlightJournal = new relationalStore.RdbPredicates(
+          LOCAL_MUTATION_JOURNAL_TABLE);
+        moonlightJournal.equalTo('tablename', MOONLIGHT_LOCAL_TABLE);
+        this.store.deleteSync(moonlightJournal);
+        const restoreMarker = new relationalStore.RdbPredicates(
+          LOCAL_METADATA_TABLE);
+        restoreMarker.equalTo('key', MOONLIGHT_RESTORE_QUARANTINE_KEY);
+        this.store.deleteSync(restoreMarker);
+      }
+      if (!this.isLeaseCurrent(lease)) {
+        throw new Error('Moonlight deletion lease changed');
+      }
+      this.store.commit();
+      if (!this.isLeaseCurrent(lease)) {
+        return failure('stale_lease', true);
+      }
+      return {
+        ok: true,
+        code: 'ok',
+        localCommitted: true,
+        cloudAttempted: false,
+        cloudTerminal: false
+      };
+    } catch (error) {
+      try { this.store.rollBack(); } catch (_ignored) {}
+      hilog.warn(0x0001, 'CloudSync',
+        '[CloudStore] Moonlight local deletion failed: ' + safeError(error));
+      return failure(this.isLeaseCurrent(lease) ?
+        'write_failed' : 'stale_lease');
     }
   }
 

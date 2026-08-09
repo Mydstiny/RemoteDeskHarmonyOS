@@ -90,6 +90,7 @@ import moonlightCloudSyncSelectionPolicyTest from '../../../test/MoonlightCloudS
 import moonlightCloudSyncServiceTest from '../../../test/MoonlightCloudSyncService.test';
 import moonlightDataLifecycleBarrierTest from '../../../test/MoonlightDataLifecycleBarrier.test';
 import moonlightDeletionPolicyTest from '../../../test/MoonlightDeletionPolicy.test';
+import moonlightDeletionCommandServiceTest from '../../../test/MoonlightDeletionCommandService.test';
 import moonlightCloudStatusPolicyTest from '../../../test/MoonlightCloudStatusPolicy.test';
 import moonlightBackupPolicyTest from '../../../test/MoonlightBackupPolicy.test';
 import { FOCUSED_TEST_REGISTRATION_AUDIT } from '../../../main/ets/services/FocusedTestRegistrationAudit';
@@ -156,6 +157,7 @@ function registerFocusedRepairSuite(scope: string): number {
     moonlightCloudSyncServiceTest();
     moonlightDataLifecycleBarrierTest();
     moonlightDeletionPolicyTest();
+    moonlightDeletionCommandServiceTest();
     moonlightCloudStatusPolicyTest();
     moonlightBackupPolicyTest();
   } else {
@@ -183,7 +185,8 @@ function focusedDescribeNames(scope: string): string[] {
       'MoonlightRepository', 'MoonlightAppCacheService',
       'MoonlightSensitiveTransferPolicy', 'MoonlightCloudSyncSelectionPolicy',
       'MoonlightCloudSyncService', 'MoonlightDataLifecycleBarrier',
-      'MoonlightDeletionPolicy', 'MoonlightCloudStatusPolicy',
+      'MoonlightDeletionPolicy', 'MoonlightDeletionCommandService',
+      'MoonlightCloudStatusPolicy',
       'MoonlightBackupPolicy'];
   }
   if (scope === 'RustDeskProAddressBookPolicy') {
@@ -247,7 +250,7 @@ function focusedDescribeNames(scope: string): string[] {
 }
 
 function expectedFocusedCount(scope: string): number {
-  if (scope === 'MoonlightDomainPolicy') { return 122; }
+  if (scope === 'MoonlightDomainPolicy') { return 138; }
   if (scope === 'RustDeskProAddressBookPolicy') { return 8; }
   if (scope === 'RustDeskProAddressBookApiService') { return 4; }
   if (scope === 'RustDeskProAddressBookSyncService') { return 7; }

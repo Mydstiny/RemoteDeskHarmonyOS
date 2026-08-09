@@ -1,5 +1,6 @@
 import { describe, expect, it } from '@ohos/hypium';
 import {
+  MoonlightDeletionCommandType,
   MoonlightDeletionContext,
   resolveMoonlightDeletionImpact
 } from '../main/ets/services/MoonlightDeletionPolicy';
@@ -8,8 +9,10 @@ function context(): MoonlightDeletionContext {
   return {
     ownerScopeId: 'owner-a', hostId: 'host-a', profileId: 'profile-a',
     physicalCloudSelected: true,
+    selectedLogicalScopeCount: 3, settingsRecordCount: 1,
     hostRecordCount: 1, profileRecordCount: 2, trustRecordCount: 1,
-    identityRecordCount: 1, appCacheCount: 10
+    identityRecordCount: 1, appCacheCount: 10,
+    localRuntimeStateCount: 2, secureIdentityCount: 1
   };
 }
 
@@ -27,7 +30,7 @@ export default function moonlightDeletionPolicyTest(): void {
       (): void => {
         const impact = resolveMoonlightDeletionImpact(
           'delete_cloud_data', context());
-        expect(impact.cloudTombstonesRequired).assertEqual(5);
+        expect(impact.cloudTombstonesRequired).assertEqual(6);
         expect(impact.waitForCloudTerminal).assertTrue();
         expect(impact.localDataPreserved).assertTrue();
         expect(impact.confirmationLevel).assertEqual('danger');
@@ -37,9 +40,21 @@ export default function moonlightDeletionPolicyTest(): void {
       (): void => {
         const impact = resolveMoonlightDeletionImpact(
           'delete_local_data', context());
-        expect(impact.localRowsRemoved).assertEqual(5);
+        expect(impact.localRowsRemoved).assertEqual(6);
         expect(impact.cacheRowsRemoved).assertEqual(10);
+        expect(impact.localRuntimeStatesRemoved).assertEqual(2);
+        expect(impact.secureIdentitiesRemoved).assertEqual(1);
         expect(impact.cloudTombstonesRequired).assertEqual(0);
+        expect(impact.identityPreserved).assertFalse();
+      });
+
+    it('treats_cancel_sync_as_unchanged_when_no_physical_or_logical_scope_exists',
+      0, (): void => {
+        const value: MoonlightDeletionContext = context();
+        value.physicalCloudSelected = false;
+        value.selectedLogicalScopeCount = 0;
+        expect(resolveMoonlightDeletionImpact(
+          'cancel_sync', value).selectionChanged).assertFalse();
       });
 
     it('forget_host_removes_host_profiles_trust_and_cache_but_preserves_identity',
@@ -68,6 +83,9 @@ export default function moonlightDeletionPolicyTest(): void {
         invalidContext.profileId = '';
         expect(resolveMoonlightDeletionImpact(
           'delete_profile', invalidContext).valid).assertFalse();
+        expect(resolveMoonlightDeletionImpact(
+          'unknown' as MoonlightDeletionCommandType,
+          context()).valid).assertFalse();
       });
   });
 }
