@@ -1,0 +1,94 @@
+{
+  "schemaVersion": 1,
+  "fetchedAt": "2026-08-10",
+  "vendorRoot": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c",
+  "buildReceipts": {
+    "sdkApi": "23",
+    "sdkVersion": "6.1.0.32",
+    "compiler": "OHOS Clang 15.0.4",
+    "opensslVersion": "3.4.1",
+    "archives": {
+      "arm64-v8a": {
+        "libmoonlight-common-c.a": "29de0219207d8b022e4d5ab091955c95b32a65d524241de7f5c28d055ab4af78",
+        "libenet.a": "d2b501dd34bea4d9233037089ddf8c91c956edbe73ad56d4d7a6d2290375d1e0"
+      },
+      "x86_64": {
+        "libmoonlight-common-c.a": "67970f8f3ad4a652846165b4af1c942a0da311074a76f3e93af64ad327553666",
+        "libenet.a": "7f79768b2368c59ee83378ccc97386ae26e4a72448d656cf0beff682ee9d51cf"
+      }
+    }
+  },
+  "components": [
+    {
+      "id": "moonlight-common-c",
+      "name": "moonlight-common-c",
+      "spdxPackageId": "SPDXRef-Package-Moonlight-Common-C",
+      "repository": "https://github.com/moonlight-stream/moonlight-common-c",
+      "revision": "e41355ea01670fd4c830b384009d31dd0339a705",
+      "tree": "405b39fdc543dceb7644bdcda65e1bb4c7a28ab2",
+      "path": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c",
+      "excludeDirectories": [
+        "enet",
+        "nanors"
+      ],
+      "executableFiles": [],
+      "gitlinks": [
+        {
+          "path": "enet",
+          "revision": "aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1"
+        },
+        {
+          "path": "nanors",
+          "revision": "b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a"
+        }
+      ],
+      "license": "GPL-3.0-only",
+      "licenseFile": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/LICENSE.txt",
+      "licenseSha256": "589ed823e9a84c56feb95ac58e7cf384626b9cbf4fda2a907bc36e103de1bad2",
+      "fileCount": 43,
+      "contentManifestSha256": "63074450596d46d1dc48e80f23f44d6ee909cee8b2a650a6c00fb8fdfefa3cc2",
+      "downloadLocation": "https://github.com/moonlight-stream/moonlight-common-c/tree/e41355ea01670fd4c830b384009d31dd0339a705",
+      "purl": "pkg:github/moonlight-stream/moonlight-common-c@e41355ea01670fd4c830b384009d31dd0339a705"
+    },
+    {
+      "id": "moonlight-enet",
+      "name": "Moonlight ENet fork",
+      "spdxPackageId": "SPDXRef-Package-Moonlight-ENet",
+      "repository": "https://github.com/cgutman/enet",
+      "revision": "aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1",
+      "tree": "0995d597d91e071eb1e673d93bee797246a00c76",
+      "gitlinkPath": "enet",
+      "path": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/enet",
+      "excludeDirectories": [],
+      "executableFiles": [],
+      "gitlinks": [],
+      "license": "MIT",
+      "licenseFile": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/enet/LICENSE",
+      "licenseSha256": "77f94e3be39938801163844b8bf9a4f12badcc0da136e9886e7da14a816d74d3",
+      "fileCount": 38,
+      "contentManifestSha256": "500e83281fa8546c3ce25b1d1513956ee56035d03af9e2320e26804f1809d2a9",
+      "downloadLocation": "https://github.com/cgutman/enet/tree/aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1",
+      "purl": "pkg:github/cgutman/enet@aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1"
+    },
+    {
+      "id": "moonlight-nanors",
+      "name": "nanors",
+      "spdxPackageId": "SPDXRef-Package-Moonlight-Nanors",
+      "repository": "https://github.com/sleepybishop/nanors",
+      "revision": "b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a",
+      "tree": "b06686f843269415217ebeb90c8975be297f0d30",
+      "gitlinkPath": "nanors",
+      "path": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/nanors",
+      "excludeDirectories": [],
+      "executableFiles": [],
+      "gitlinks": [],
+      "license": "MIT",
+      "licenseFile": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/nanors/LICENSE",
+      "licenseSha256": "3fdda5f011d8490331950398e86427d67dfae05e048681476c2c6b8c34bdd033",
+      "fileCount": 36,
+      "contentManifestSha256": "6e35c00ffe6361ee5fb45fd4c4bc470f94d6ead3596778c633e007f8f3e9b2e0",
+      "downloadLocation": "https://github.com/sleepybishop/nanors/tree/b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a",
+      "purl": "pkg:github/sleepybishop/nanors@b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a"
+    }
+  ]
+}

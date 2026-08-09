@@ -36,6 +36,11 @@ $required = @(
   'docs/compliance/OWNERSHIP_AND_RELICENSING.md',
   'docs/compliance/LICENSE_DECISION_RECORD.md',
   'docs/compliance/SOURCE_OFFER.md',
+  'docs/compliance/MOONLIGHT_COMMON_C_PROVENANCE.md',
+  'entry/src/main/cpp/moonlight/upstream/UPSTREAM.lock.json',
+  'scripts/build_moonlight_common_vendor.sh',
+  'scripts/build_moonlight_common_vendor.ps1',
+  'scripts/verify_moonlight_vendor.py',
   'rustdesk_vendor/libs/hbb_common/protos/UPSTREAM.yml',
   'rustdesk_vendor/libs/hbb_common/protos/NOTICE'
 )
@@ -171,6 +176,22 @@ if (Test-Path $sbomPath) {
   }
 }
 
+$moonlightVerifier = Join-Path $root 'scripts/verify_moonlight_vendor.py'
+$pythonCommand = Get-Command python3 -ErrorAction SilentlyContinue
+if (-not $pythonCommand) {
+  $pythonCommand = Get-Command python -ErrorAction SilentlyContinue
+}
+if (-not $pythonCommand) {
+  Add-Failure 'Python is required for the Moonlight vendored-source gate.'
+} elseif (Test-Path $moonlightVerifier) {
+  $moonlightOutput = @(& $pythonCommand.Source $moonlightVerifier 2>&1)
+  if ($LASTEXITCODE -ne 0) {
+    Add-Failure ('Moonlight vendored-source gate failed: ' + ($moonlightOutput -join '; '))
+  }
+} else {
+  Add-Failure 'Moonlight vendored-source verifier is missing.'
+}
+
 $previousErrorAction = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
 $diffCheck = @(& git -C $root diff --check 2>&1)
@@ -181,6 +202,15 @@ if ($diffExitCode -ne 0) {
 }
 
 if ($Mode -eq 'Release') {
+  $moonlightBuildScript = Join-Path $root 'scripts/build_moonlight_common_vendor.ps1'
+  try {
+    $moonlightBuildOutput = @(& $moonlightBuildScript -RepositoryRoot $root 2>&1)
+    if ($LASTEXITCODE -ne 0) {
+      Add-Failure ('Release blocked: Moonlight dual-ABI build gate failed: ' + ($moonlightBuildOutput -join '; '))
+    }
+  } catch {
+    Add-Failure ('Release blocked: Moonlight dual-ABI build gate failed: ' + $_.Exception.Message)
+  }
   $approvalPath = Join-Path $root 'docs/compliance/RELEASE_APPROVAL.json'
   $approval = Get-Content -Raw $approvalPath | ConvertFrom-Json
   if (-not $approval.credentialsRotated) {
