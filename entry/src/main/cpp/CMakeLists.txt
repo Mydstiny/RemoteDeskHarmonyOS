@@ -114,6 +114,11 @@ set(SECURITY_SOURCES
     security/security_napi.cpp
 )
 
+# -- Moonlight native ownership base (no NAPI/Host API/media/input yet) --
+set(MOONLIGHT_SOURCES
+    moonlight/core/MoonlightSessionOwner.cpp
+)
+
 # -- NAPI 入口 --
 set(NAPI_ENTRY
     napi_init.cpp
@@ -131,6 +136,7 @@ set(ALL_SOURCES
     ${SECURITY_SOURCES}
     ${VNC_SOURCES}
     ${TERMINAL_SOURCES}
+    ${MOONLIGHT_SOURCES}
 )
 
 # ============================================================
@@ -225,6 +231,7 @@ if(RDP_BUILD_TESTS)
         test/rustdesk_connection_continuity_executor_test.cpp
         test/decoder_pipeline_lifecycle_policy_test.cpp
         test/safe_log_test.cpp
+        test/moonlight_session_owner_test.cpp
         test/vnc_des_test.cpp
         test/vnc_cursor_protocol_test.cpp
         test/vnc_transport_policy_test.cpp
@@ -248,6 +255,7 @@ if(RDP_BUILD_TESTS)
         render/video_backpressure_controller.cpp
         render/video_perf_counters.cpp
         extensions/session_teardown_executor.cpp
+        moonlight/core/MoonlightSessionOwner.cpp
         vnc/vnc_des.cpp
         vnc/vnc_cursor_protocol.cpp
         vnc/vnc_rfb_protocol.cpp
