@@ -531,7 +531,7 @@ struct HostListPage {
   @State settingsLeafSheetMode: number = SETTINGS_SHEET_NONE;
   @State vncSettingsLeafDirty: boolean = false;
   @State expandedSettingsSection: string = SETTINGS_SECTION_NONE;
-  @State aboutSheetMode: number = 0; // 0=使用教程 1=关于应用 2=隐私政策 3=前置操作
+  @State aboutSheetMode: number = 0; // 0=使用教程 1=关于应用 2=隐私政策 3=前置操作 4=更新日志 5=新用户引导
   // 合并 Sheet: 单 bindSheet + mode 切换 (避免 $$ 多 bindSheet 错位)
   @State showPopupSheet: boolean = false;
   @State popupSheetMode: number = 0; // 0=crypto, 1=about(用 aboutSheetMode 子路由), 2=SSH host key, 4=RDP certificate
@@ -9951,7 +9951,7 @@ struct HostListPage {
 
         ListItem() {
           this.settingsAccordionHeader(SETTINGS_SECTION_TUTORIAL, $r('sys.symbol.doc_plaintext'),
-            '教程', '快速使用和前置操作指南')
+            '教程', '更新内容、快速使用和前置操作指南')
         }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
 
         // --- 教程卡片 ---
@@ -9960,6 +9960,24 @@ struct HostListPage {
             Text('教程').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
               .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
             Column() {
+              this.cardActionRow($r('app.media.icon_info'), '本版本更新日志',
+                CURRENT_RELEASE_VERSION + ' · 查看全部 12 项功能与修复',
+                (): void => {
+                  this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
+                    this.aboutSheetMode = 4;
+                    this.popupSheetMode = 1;
+                  });
+                })
+              this.cardDivider()
+              this.cardActionRow($r('app.media.icon_info'), '新用户引导',
+                '查看首次安装展示的 10 页使用引导',
+                (): void => {
+                  this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
+                    this.aboutSheetMode = 5;
+                    this.popupSheetMode = 1;
+                  });
+                })
+              this.cardDivider()
               this.cardActionRow($r('app.media.icon_info'), '简单使用教程', '了解连接、传输、同步、安全与反馈',
                 (): void => {
                   this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
