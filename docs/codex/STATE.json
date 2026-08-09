@@ -4,12 +4,10 @@
   "branch": "codex/privacy-permission-disclosure",
   "base": "d840e662a",
   "head": "d840e662a",
-  "phase": "reviewed-awaiting-compliance",
+  "phase": "ready-to-publish",
   "status": "active",
-  "next": "Provide PowerShell 7 and pass the exact Light compliance gate before push; then deploy Pages and update the AppGallery user_grant declaration.",
-  "blockers": [
-    "PowerShell 7 (pwsh) is unavailable on this Mac, so scripts/verify_open_source_release.ps1 -Mode Light cannot run exactly."
-  ],
+  "next": "Publish the branch when authorized, confirm the deployed privacy URL, then update the AppGallery user_grant declaration.",
+  "blockers": [],
   "planPaths": [
     "docs/codex/plans/2026-08-09-privacy-permission-disclosure-plan.md"
   ],
@@ -34,7 +32,7 @@
     "diffCheck": "PASS on final working tree, 2026-08-09",
     "testCompile": "PASS: default@OhosTestCompileArkTS exit 0 after review remediation, 2026-08-09",
     "assembleHap": "PASS: assembleHap exit 0, BUILD SUCCESSFUL in 10 s 206 ms after review remediation, 2026-08-09",
-    "lightCompliance": "BLOCKED: exact PowerShell gate unavailable because pwsh is missing; manual shell equivalent PASS on 2026-08-09"
+    "lightCompliance": "PASS: exact verify_open_source_release.ps1 -Mode Light through repository PowerShell resolver, 2026-08-09"
   },
   "updated": "2026-08-09 Asia/Shanghai"
 }

@@ -5,7 +5,7 @@
 - Task: `privacy-permission-disclosure`
 - Base: `main@d840e662a`
 - Branch: `codex/privacy-permission-disclosure`
-- Phase: independently reviewed; awaiting exact Light compliance and publishing.
+- Phase: locally complete, independently reviewed and ready to publish.
 
 ## Context
 
@@ -47,16 +47,16 @@
 - `git diff --check`: PASS.
 - Manual shell equivalent of the Light compliance checks, including required
   tracked artifacts, protocol hashes, SPDX metadata and secret patterns: PASS.
-- Exact `verify_open_source_release.ps1 -Mode Light`: BLOCKED because this Mac
-  currently has no PowerShell 7 (`pwsh`).
+- Exact `verify_open_source_release.ps1 -Mode Light`: PASS through the
+  repository-provided PowerShell resolver.
 
 ## Next
 
-1. Install/provide PowerShell 7 and run the exact Light compliance gate before push.
-2. Publish the branch, deploy Pages, then use the public privacy URL and exact
+1. Publish the branch and deploy Pages when authorized.
+2. Confirm the public privacy URL, then use it and the exact
    permission-purpose wording in AppGallery.
 
 ## Blockers
 
-- PowerShell 7 (`pwsh`) is unavailable, so the required exact Light compliance
-  script cannot run locally yet; this blocks finish-check/push, not local review.
+- None for local implementation. The public page and AppGallery declaration do
+  not change until the branch is published and the AppGallery form is updated.
