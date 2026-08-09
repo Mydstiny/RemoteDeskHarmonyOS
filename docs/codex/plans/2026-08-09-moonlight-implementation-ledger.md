@@ -4,7 +4,7 @@
 > 分支：`codex/moonlight-complete-upgrade`
 > 初始基线：`main@aeb0cdac5`，与 `origin/main` 一致
 > 总计划：`docs/superpowers/plans/2026-07-28-moonlight-harmonyos-complete-upgrade-plan.md`
-> 台账状态：G0、D1、D2 本地/休眠策略以及 D3 账户屏障、删除/状态策略、便携备份和本地恢复已形成 checkpoint；D2-05～D2-07 与 D3 在线/多设备部分等待外部回执；只把有可复现证据的项目标记为通过
+> 台账状态：G0、D1、D2 本地/休眠策略、D3 本地生命周期以及 N1-01 官方源码隔离 vendoring 已形成 checkpoint；D2-05～D2-07 与 D3 在线/多设备部分等待外部回执；只把有可复现证据的项目标记为通过
 
 ## 1. 执行约束
 
@@ -22,7 +22,7 @@
 | --- | --- | --- | --- |
 | G0-01 | PASS | 2026-08-09 从干净 `main@aeb0cdac5` 创建唯一任务分支；初始 ahead/behind 均为 0 | 状态文档和代码范围随 checkpoint 更新 |
 | G0-02 | PASS | 官方四仓 HEAD、common-c 子模块、关键文件哈希已锁定，见第 3 节 | N1 vendoring 时重新核对 remote HEAD；任何升级重新审计 |
-| G0-03 | CONDITIONAL PASS | GPL/AGPL、MIT、Apache-2.0、BSD-3-Clause 组合可分发；来源、NOTICE、SBOM 和 source offer 合同已冻结 | 实际 vendoring 后必须更新 `THIRD_PARTY_NOTICES.md`、SPDX SBOM、artifact hashes 和源码归档 |
+| G0-03 | PASS FOR N1-01 / RELEASE CONDITIONAL | GPL/AGPL、MIT、Apache-2.0、BSD-3-Clause 组合边界已落到 NOTICE、SPDX、artifact hashes、source offer 和离线 tree 校验 | 最终二进制发布仍需完整 release approval/源码归档；任何上游升级重新审计 |
 | G0-04 | PASS FOR POLICY | 已核对 Sunshine `GHSA-ph75-mgxh-mv57`；最低允许版本固定为修复版 `v2026.516.143833` | N1 serverinfo 必须 fail closed 阻断更低或不可判定的危险版本；真实主机复测 |
 | G0-05 | STATIC PASS / RUNTIME PENDING | API 23 双 ABI 编译和链接通过；虚拟机为 ARM64 API 24，系统服务存在 | 增加仓库内独立 probe target；探针必须在 HAP/AppSpawn 进程内运行，独立 `/data/local/tmp` 结果无效 |
 | G0-06 | PARTIAL | 虚拟机确认 AVCodec、AudioPolicy、输入、网络、Keystore、Asset 服务；枚举到键盘/鼠标/触屏/触控板 | H.264 Surface、Opus、音频焦点、pointer capture、实体手柄和高级反馈需 HAP 内/实机探针 |
@@ -217,21 +217,50 @@ D3 账户生命周期代码检查点为 `05e96d3`；便携备份/本地恢复检
 `b27a58a`；本地删除命令检查点为 `ea32ffa`。聚焦聚合器现登记 19 个 Moonlight describe、138 个 test；只声明
 `default@OhosTestCompileArkTS` 编译注册通过，不声明 Hypium 设备执行。
 
-## 11. 2026-08-10 checkpoint 验证
+## 11. N1 官方 common-c checkpoint
 
-- `default@OhosTestCompileArkTS`：D3-06 最终源码后退出码 0；19 个 describe、138 个 Moonlight test 编译注册。
-- signed `assembleHap`：D3-06 最终源码后退出码 0，`BUILD SUCCESSFUL in 14 s 43 ms`。
+| ID | 状态 | 当前证据 | 唯一下一边界 |
+| --- | --- | --- | --- |
+| N1-01 | PASS | `0013ba034` 原样纳入 common-c `e41355e...`、ENet `aca8784...`、nanors `b1e3c22...` 共 117 个文件；锁文件记录 commit/tree/license/file manifest/build receipt；校验器离线重建三个官方 Git tree，并把两个子模块按 `160000` gitlink 注入 common-c tree | 不再编辑 upstream；升级 revision 时必须重新生成 lock、NOTICE、SPDX、hash、source offer 和双 ABI receipt |
+| N1-02 | READY | 主 `CMakeLists.txt` 已有 ABI 选择、现有 OpenSSL 3.4.1 imported `ssl`/`crypto`、`rdpnapi` shared target 和 RDP-only native test early return；N1-01 wrapper 已证明 API 23 两 ABI静态构建 | 只建立 target-scoped product link；不加 NAPI/runtime/UI，不把 upstream include/宏变为目录或全局属性 |
+| N1-03～N1-08 | PENDING | D1 session/host/pairing/catalog 合同与 D3 runtime ports 已冻结 | 必须逐 ID 推进；N1-02 未通过前不创建 runtime owner |
+
+N1-01 的可复现证据：
+
+- `verify_moonlight_vendor.py` 在 Git worktree 与无 `.git` 的普通源码归档中均 PASS；后者只跳过 Git index 检查，117 个工作树字节、license、artifact hash、SPDX、NOTICE 和三个官方 tree 仍全部核验。
+- shell 与 PowerShell 7 均在新临时目录构建 `arm64-v8a`、`x86_64`，四个 archive SHA-256 与 `UPSTREAM.lock.json` 一致；Release 合规模式实际调用同一 PowerShell 双 ABI 门禁，Light 只执行快速离线门禁。
+- nanors 原始 `make check` 的 6 个 Perl test 文件及 RS16/RS16 AFFT 最终测试通过；common-c/ENet 本 revision 没有上游 CMake test target。
+- 合规生成器连续两次运行三份输出 hash 完全一致；签名 HAP 与两 ABI `librdpnapi.so` 都没有 Moonlight/common-c/ENet 文件或符号，现有八张云表未改变。
+- 首个 `gpt-5.6-sol low` 有界审查确认官方 commit/tree/gitlink/117 文件字节与产品隔离，提出的 tree 绑定、源码归档模式、NOTICE 幂等和 Release 双 ABI 四项问题均已修复并由上述机器门禁覆盖；不为同一 checkpoint 重派审查。最终整合前只剩一个 reviewer 名额。
+
+N1-02 必须按以下原子步骤执行：
+
+1. 先保存两 ABI `librdpnapi.so` 的 exported/undefined symbol inventory、签名 HAP 文件清单和现有 native/Hvigor 结果，作为回归基线；build timestamp 导致的整文件 hash 不能当 ABI 判据。
+2. 新建唯一项目边界 `entry/src/main/cpp/moonlight/CMakeLists.txt`；由它设置目录作用域的 `BUILD_SHARED_LIBS=OFF`、`ENET_NO_INSTALL=ON`、PIC、现有 OpenSSL include/crypto archive，并 `add_subdirectory(upstream/moonlight-common-c)`。禁止修改 upstream。
+3. 该边界必须校验 `moonlight-common-c` 与 `enet` 都是 `STATIC_LIBRARY`，仅在这两个第三方 target 上保留 API 23 Clang 的 `-Wno-unused-command-line-argument`；不得降低 `rdpnapi` 或其他协议 warning policy。
+4. 将 N1-01 的 standalone `vendor-build/CMakeLists.txt` 改为消费同一项目边界，消除两套 target 定义；重跑 shell/PowerShell receipt，证明重构没有改变四个 archive。
+5. 主 `entry/src/main/cpp/CMakeLists.txt` 只在现有 `ssl`/`crypto` imported target 定义后加入 Moonlight 子目录，并用 `PRIVATE`/`LINK_ONLY` 语义把包装 target 接到 `rdpnapi`。不使用 `include_directories()`、`add_definitions()`、`link_directories()` 或 `--whole-archive`。
+6. 不新增 `ALL_SOURCES`、`napi_init.cpp`、extension registry、ProtocolAdapter、ArkTS 声明、云表、资源、FAB/设置页或 feature truth；N1-02 完成后 UI 仍只有灰色“即将支持”。
+7. 两 ABI产品构建后验证：common-c/ENet 目标实际参与依赖图；`rdpnapi` 没有未解析 `Li*`/`enet_*`/OpenSSL 符号；没有新增 NAPI export；upstream 路径没有传播为全局 include；RDP/RustDesk/SSH/VNC native tests 仍通过。
+8. 重跑 N1-01 双 ABI receipt、`default@OhosTestCompileArkTS`、signed `assembleHap`、TOTP/Light、diff/state 门禁；单独 checkpoint 后才允许领取 N1-03。
+
+## 12. 2026-08-10 checkpoint 验证
+
+- `default@OhosTestCompileArkTS`：N1-01 最终源码后退出码 0；19 个 describe、138 个 Moonlight test 编译注册。
+- signed `assembleHap`：N1-01 最终源码后退出码 0，`BUILD SUCCESSFUL in 7 s 74 ms`。
 - host `rdp_native_tests`：沙箱内本地 TLS fixture 因 socket 监听限制为
   326/342；按门禁在沙箱外复跑为 **342/342 PASS**，确认不是代码回归。
 - `scripts/probe_moonlight_platform.sh`：arm64-v8a、x86_64 均 PASS。
-- `verify_open_source_release.ps1 -Mode Light`：D3 checkpoint 后 PASS。
-- `git diff --check`、`codex_state validate`：D3 状态文档更新后 PASS。
+- `verify_open_source_release.ps1 -Mode Light`：N1-01 后 PASS；Release 中 Moonlight 双 ABI子门通过，完整发布仍被两个外部 approval boolean 正确阻断。
+- `verify_moonlight_vendor.py`：三个官方 Git tree、117 个 exact 文件、Git index 与无 Git 源码归档模式均 PASS；合规生成器幂等 PASS。
+- `build_moonlight_common_vendor.sh/.ps1`：API 23 arm64-v8a/x86_64 静态 archive 均匹配锁定 receipt。
+- `git diff --check`、`codex_state validate`：N1-01 代码 checkpoint 后 PASS。
 - `CloudSyncPolicy.CLOUD_SYNC_TABLES` 静态复核仍精确为既有 8 表；Moonlight 云表、local mirror 和 app cache 均未进入在线注册集合。
 - HDC 当前返回 `Connect server failed`；早期 ARM64 API 24 RDB receipt 仍有效，但本次没有新增虚拟设备 Hypium 或恢复运行时证据。
 
-## 12. 下一执行序列
+## 13. 下一执行序列
 
-1. N1-01 独立 vendor 官方固定 common-c/ENet/nanors，先完成 provenance、LICENSE、NOTICE、SBOM/source offer、上游原文/项目 patch 分离、双 ABI 静态目标和回退证据，不接产品 NAPI、不开放入口。
+1. 严格按第 11 节 8 步执行 N1-02，只建立 project-owned 静态 target 与 `rdpnapi` 的私有构建边；不接 NAPI/runtime/UI，不改变 capability truth。
 2. D2-05/06 由 AGC 开发/测试/生产环境提供 schema/授权/索引 receipt；缺失时 D2-07、D3-01 在线 wiring、D3-05 cloud-first promotion、D3-06 cloud terminal 和 D3-08 云矩阵继续阻断。
 3. N1 Host Control port 可用后再接 D3-06 remote unpair；端口失败只允许返回带 warning 的真实本地终态，不伪造主机已解绑。
 4. 补 HAP 内 typed capability probe；真实 Sunshine 和用户 ARM64 真机未提供前，host-control/streaming/protocol truth 继续为 false。

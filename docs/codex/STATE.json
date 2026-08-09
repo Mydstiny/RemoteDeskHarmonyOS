@@ -3,10 +3,10 @@
   "task": "moonlight-complete-upgrade",
   "branch": "codex/moonlight-complete-upgrade",
   "base": "aeb0cdac5",
-  "head": "ea32ffa",
-  "phase": "n1-upstream-vendoring",
+  "head": "0013ba034",
+  "phase": "n1-common-core-linkage",
   "status": "active",
-  "next": "Execute N1-01 as an isolated vendoring checkpoint for the pinned official common-c, ENet, and nanors sources with provenance, license, SBOM/source-offer, patch separation, and dual-ABI static-build evidence; do not add product NAPI or enable UI.",
+  "next": "Execute only N1-02: add a project-owned CMake boundary that builds the pinned common-c and ENet as isolated static targets and links them privately to rdpnapi using the existing OpenSSL input; keep NAPI, session/runtime code, global include paths, protocol truth, cloud registration, and UI unchanged.",
   "blockers": [
     "ohosTest@OhosTestCompileArkTS is not registered (00306054); 138 focused D1-D3 tests in 19 describe groups are compiled and registered but not executed on device",
     "AGC development/test/production Moonlight schema, authorization, and index receipts are absent; D2-07 distributed registration is blocked",
@@ -19,7 +19,7 @@
   ],
   "review": {
     "status": "REVIEW_REQUIRED",
-    "taskId": "",
+    "taskId": "019fe77b-3eba-7be0-b006-df659fbe6851",
     "scope": [
       "docs/codex/CURRENT.md",
       "docs/codex/QUEUE.md",
@@ -46,16 +46,17 @@
       "entry/src/main/module.json5"
     ],
     "receiptId": "",
-    "reason": "D3 account lifecycle, portable backup/local restore, and lease-fenced local deletion are checkpointed; bounded review remains required before integration. At most two sol-low reviewer agents may be used."
+    "reason": "N1-01 checkpoint 0013ba034 incorporated all four findings from the first sol-low review and passed the replacement machine gates. Do not redispatch that review; one bounded sol-low review remains available before final integration, and no matching PASS receipt exists yet."
   },
   "lastVerification": {
     "baseline": "clean main@aeb0cdac5 equal to origin/main at task start on 2026-08-09",
-    "diffCheck": "pass for D3 deletion command checkpoint ea32ffa on 2026-08-10",
-    "testCompile": "pass default@OhosTestCompileArkTS for ea32ffa on 2026-08-10; 138 focused Moonlight tests in 19 describe groups compile-registered",
-    "assembleHap": "pass signed production HAP for ea32ffa in 14.043s on 2026-08-10",
+    "diffCheck": "pass for N1-01 checkpoint 0013ba034 on 2026-08-10",
+    "testCompile": "pass default@OhosTestCompileArkTS for N1-01 on 2026-08-10; 138 focused Moonlight tests in 19 describe groups compile-registered",
+    "assembleHap": "pass signed production HAP for N1-01; signed HAP and both rdpnapi ABIs contain no Moonlight/common-c/ENet content",
     "nativeTests": "pass 342/342 outside socket-restricted sandbox on 2026-08-09",
-    "moonlightPlatformProbe": "pass arm64-v8a and x86_64 API 23 compile-link probe on 2026-08-09",
-    "lightCompliance": "pass for D3 deletion command checkpoint on 2026-08-10",
+    "moonlightPlatformProbe": "pass arm64-v8a and x86_64 API 23 compile-link probe; isolated common-c/ENet shell and PowerShell builds match four locked archive receipts",
+    "moonlightVendor": "pass 117 exact files, three reconstructed official Git trees, no-Git source archive mode, idempotent compliance generation, dual-ABI Release subgate, and nanors upstream tests",
+    "lightCompliance": "pass for N1-01 checkpoint on 2026-08-10; Release remains blocked only by external credential-rotation and device-matrix approvals",
     "moonlightRdbRuntime": "pass on ARM64 API 24 emulator: user_version=5, exact 19/20/16 columns, tables=3 and owner-bound receipts=1 after process restart",
     "ohosTest": "blocked task-not-registered 00306054 and current HDC Connect server failed; no execution pass claimed"
   },

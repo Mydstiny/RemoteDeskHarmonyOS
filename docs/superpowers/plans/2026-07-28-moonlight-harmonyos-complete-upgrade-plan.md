@@ -3,7 +3,7 @@
 > 文档状态：第四次深度审计完成；已于 2026-08-09 从 G0 开始实施
 > 首次评估日期：2026-07-28；二次完成性审计日期：2026-07-29；第三次 HarmonyOS 人因/UI 审计日期：2026-08-01；第四次源码对齐日期：2026-08-08
 > 当前实施基线：任务 `moonlight-complete-upgrade`；分支 `codex/moonlight-complete-upgrade`；基线 `main@aeb0cdac5`，与 `origin/main` 一致
-> 当前实施进度：G0、D1、D2-01～D2-04 与 dormant D2-08～D2-10 已形成 checkpoint；HarmonyOS 虚拟设备已验证 owner-store v5、19/20/16 列三表和幂等 schema receipt；AGC 三环境未回执，故 D2-05～D2-07 未放行，六个发布 truth 仍全 false
+> 当前实施进度：G0、D1、D2 本地/休眠策略、D3 本地生命周期和 N1-01 官方 common-c/ENet/nanors 隔离 vendoring 已形成 checkpoint；HarmonyOS 虚拟设备已验证 owner-store v5、19/20/16 列三表和幂等 schema receipt；AGC 三环境未回执，故 D2-05～D2-07 未放行，六个发布 truth 仍全 false
 > 适用仓库：/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS
 > 上游实施锁定：2026-08-09 已只读复核并固定 moonlight-common-c `e41355ea01670fd4c830b384009d31dd0339a705`（ENet `aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1`、nanors `b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a`）、Moonlight Android `f10085f552b367cf7203007693d91c322a0a2936`、Moonlight Qt `2e13ed9977bc31c73caf8428f08f58d793313ece`、Sunshine 测试 pin `v2026.808.164219` / `25c06d79b54f3d092d3fedd5f5ba44989f394692`；完整哈希、许可证和能力证据见 `docs/codex/plans/2026-08-09-moonlight-implementation-ledger.md`
 > 原评估轮次仅更新计划文件；2026-08-09 起的实施变更严格按第 15 节任务 ID、仓库门禁和 fail-closed feature policy 推进。
@@ -2622,6 +2622,20 @@ D3-04/05 的不可变实现合同如下：
 | N1-07 | 实现 app catalog、launch/resume/quit 命令；区分“仅断开”和“退出主机应用”，记录 success/failure/unknown | 官方客户端互操作、主机忙、已有 app、quit 无响应、id 失效 | 请求发出不算成功；不会默认 quit |
 | N1-08 | 新建 `moonlight/moonlight_napi.cpp` 和 ArkTS `MoonlightNativeApi.d.ts`/`MoonlightHostService.ets`：typed request/event，所有事件含 session/request generation | NAPI 参数错误、回调线程 marshal、取消、页面销毁、迟到事件 | 不扩张通用 `ProtocolAdapter` 承载 pairing/catalog；提交 `host-control` checkpoint |
 
+#### 15.7.1 N1-01 已完成事实与 N1-02 唯一执行合同（2026-08-10）
+
+N1-01 已由 checkpoint `0013ba034` 完成：117 个上游文件原样保存在独立目录，common-c、ENet、nanors 的 commit/tree/license/content manifest 已机器锁定；校验器可在普通无 `.git` 源码归档中重建三个官方 Git tree，并以 `160000` 模式验证 common-c 的两个 gitlink。shell/PowerShell 7 双 ABI静态构建都匹配锁文件中的四个 deterministic receipt；NOTICE/SPDX/hash/source offer、patch 分离与幂等生成门禁已落地。产品 `CMakeLists.txt`、NAPI、ArkTS、云表注册和 UI 未接线，签名 HAP 与 `rdpnapi` 仍不含 Moonlight 符号。
+
+N1-02 只能修改主 CMake、项目拥有的 `moonlight/CMakeLists.txt`、N1-01 standalone wrapper 及必要的构建验证脚本/文档，按顺序执行：
+
+1. 记录两 ABI `rdpnapi` export/undefined symbol inventory、签名 HAP 内容和现有 native/Hvigor 基线；不以包含 build timestamp 的整库 hash 判断 ABI 回归。
+2. 在 `moonlight/CMakeLists.txt` 唯一定义静态 common-c/ENet target：复用 `libs/openssl/install`，目录作用域关闭 shared build/install，校验 ABI输入和 target 类型，只给两个第三方 target 加狭窄 Clang 诊断豁免。
+3. standalone `vendor-build` 必须改为消费同一边界并继续命中 N1-01 四个 archive receipt；不得复制第二套 CMake 配置或编辑 upstream。
+4. 主 CMake 在既有 OpenSSL imported target 之后 `add_subdirectory(moonlight)`，只以 `PRIVATE`/`LINK_ONLY` 语义链接包装 target；不得新增全局 include、definition、link directory 或 whole-archive。
+5. 不新增 NAPI/ArkTS/runtime source，不注册协议/云表，不改变六个 capability truth、FAB、设置或路由；静态 archive 因尚无引用而不应凭空形成用户可调用能力。
+6. 两 ABI验证目标参与依赖图、无未解析 `Li*`/`enet_*`/OpenSSL 符号、无新增 NAPI export、上游 include 未全局泄漏；再跑现有协议 native tests、N1 receipt、双 Hvigor、signed HAP、TOTP/Light、diff/state。
+7. N1-02 单独提交；任一 ABI、现有协议或产品隔离证据失败就回退该构建边，不进入 N1-03。
+
 ### 15.8 N2：RTSP、视频、音频和媒体时钟
 
 | ID | 文件与精确动作 | 必须验证 | 完成证据/提交点 |
@@ -2740,10 +2754,10 @@ Moonlight 能从“即将支持”变成可点击，仅当下列事实同时成�
 | 云适配 | exact 19 列 adapter、row-sensitive transfer、五 scope selection store、dormant materializer 和独立云状态 policy 已存在；`CloudSyncPolicy.TABLES` 仍是原有 8 表 | 可以验证/隔离/本地物化候选 row，所有结果明确 `cloudAttempted=false`；状态不会把 pending/quarantine 伪装成 synced | D2-07 必须等三环境 AGC receipt；之后才做 D3-01 coordinator、cloud-first promotion 和 D3-08 |
 | 云数据 | `moonlightrecordv1` 是唯一未来分布式物理表；`moonlightlocalrecords` 和 `moonlightappcache` 永远本地 | 19 列 schema 已在 ARM64 API 24 owner-store 实例化和重开验证 | cache 不进云/备份；local mirror 只有 promotion 后才投影；identity 继续默认关闭 |
 | 便携备份 | Backup V3 optional Moonlight descriptor、cloud/local 双 section、exact admission 和 local-only resolver 已存在 | redacted=settings/host/profile，full 额外 trust candidate；identity/secret/cache/marker 永远排除；旧 V3 可读 | cloud-enabled restore promotion 与设备故障矩阵仍 pending；不能另建含 identity 的“完整备份”旁路 |
-| Native | 只有独立 API 23 双 ABI link probe；尚未 vendor common-c，也没有 Moonlight NAPI/session/media/input 实现 | 只能声明 SDK 符号静态可链接，不能声明配对、解码、音频或输入可用 | 从 N1-01 开始，依赖和补丁单独落地；没有真实 Sunshine 时不越过运行验收 |
+| Native | N1-01 已原样 vendor 117 个 common-c/ENet/nanors 文件，具备离线三 tree 校验、独立 CMake wrapper 和 API 23 双 ABI deterministic receipt；主产品尚未链接，也没有 Moonlight NAPI/session/media/input 实现 | 可声明固定上游源码与独立静态构建可复现，不能声明配对、解码、音频或输入可用 | N1-02 只把同一静态 target 私有接入 `rdpnapi` 构建图；没有真实 Sunshine 时不越过运行验收 |
 | UI | `HostListPage.ets` 当前仅有禁用的 Moonlight FAB 项、system Symbol 和“即将支持”；没有 Moonlight 添加/目录/设置/会话页 | 入口信息可见但不可交互；点击无副作用 | 直到 U1 的数据与 N1 host-control 前置都满足，保持现状；不提前建可保存假表单 |
 | 品牌 | 官方 SVG 已固定 hash，但尚无 provenance/商标/视觉验收 receipt | 只能使用现有 system Symbol 回退 | `moonlightBrandAssetReady=false`；品牌门通过后再替换资源并保留 NOTICE |
-| 验证 | 19 个 describe、138 个 D1-D3 测试用例已进入聚合器；两项 Hvigor、signed HAP、Light、双 ABI probe 通过 | 只声明测试编译注册，不声明 Hypium 设备执行 | `ohosTest` task 未注册且当前 HDC 连接失败；最终功能验收必须在用户 ARM64 实机和真实 Sunshine 上完成 |
+| 验证 | 19 个 describe、138 个 D1-D3 测试用例已进入聚合器；两项 Hvigor、signed HAP、Light、双 ABI probe、三 tree/源码归档和 common-c 双入口双 ABI receipt 通过 | 只声明测试编译注册、源码/构建完整性，不声明 Hypium 设备执行或串流可用 | `ohosTest` task 未注册且当前 HDC 连接失败；最终功能验收必须在用户 ARM64 实机和真实 Sunshine 上完成 |
 
 当前数据流只能是：
 
@@ -2759,7 +2773,7 @@ UI（当前无 Moonlight 可写页面）
   -> [D2-07 尚关闭：不得调用 Moonlight setDistributedTables]
   -> [AGC dev/test/prod receipt 齐全后才可能启用 moonlightrecordv1]
 
-Sunshine / common-c / media / input 当前完全不在这条已实现链路中。
+Sunshine / 产品链接的 common-c / media / input 当前完全不在这条已实现链路中；N1-01 upstream 只存在于隔离源码与构建门禁。
 ~~~
 
 后续模型每次只领取一个最小任务 ID，并严格执行以下循环：
@@ -2774,6 +2788,6 @@ Sunshine / common-c / media / input 当前完全不在这条已实现链路中�
 8. 更新实施台账中的状态、证据、blocker 和唯一下一任务；同步 `CURRENT/QUEUE/STATE`，再用精确文件列表形成一个可回滚提交。
 9. 只有当任务合同、测试和对应门禁均通过时标记 `PASS`；“代码写完”“构建通过”“请求已排队”均不是产品能力完成。
 
-当前唯一可直接继续的代码任务是 N1-01 隔离 vendoring：只引入 G0 固定的官方 common-c/ENet/nanors 原文、许可证/provenance、NOTICE/SBOM/source offer、项目 patch 边界和双 ABI 静态构建证据，不在同一 checkpoint 接产品 NAPI/UI。D2-05/06 由 AGC 外部环境提供证据，D2-07 依赖二者；D3 的 cloud terminal、真实 unpair 和多设备矩阵分别等待 D2-07、N1 Host Control 和外部设备。任何执行者都不得因为云端受阻而把 `moonlightrecordv1` 塞入现有八表注册清单，也不得因为 native 未接入而先把灰色入口改成可点击。
+当前唯一可直接继续的代码任务是 N1-02 构建边接线：只按第 15.7.1 节把 N1-01 的同一静态 common-c/ENet target 私有接到 `rdpnapi`，不新增 NAPI/runtime/ArkTS/UI，也不改变 capability truth。D2-05/06 由 AGC 外部环境提供证据，D2-07 依赖二者；D3 的 cloud terminal、真实 unpair 和多设备矩阵分别等待 D2-07、N1 Host Control 和外部设备。任何执行者都不得因为云端受阻而把 `moonlightrecordv1` 塞入现有八表注册清单，也不得因为 native 尚不可调用而先把灰色入口改成可点击。
 
 <!-- PLAN_BODY_END -->
