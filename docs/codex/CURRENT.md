@@ -5,8 +5,8 @@
 - Task: `moonlight-complete-upgrade`
 - Base: `main@aeb0cdac5`
 - Branch: `codex/moonlight-complete-upgrade`
-- Phase: G0, D1-D3 local/dormant lifecycle and N1-01～N1-05 are checkpointed;
-  AGC registration and runtime-backed HUKS, pairing and lifecycle remain blocked.
+- Phase: G0, D1-D3 local/dormant lifecycle and N1-01～N1-06 are checkpointed;
+  N1-07 dormant Host Control is next; AGC and product runtime remain blocked.
 
 ## Context
 
@@ -74,27 +74,28 @@
   until an in-HAP AppSpawn probe proves either direct HUKS TLS signing or HUKS
   AES-GCM wrapping plus atomic encrypted-blob persistence; no plaintext fallback
   exists.
+- N1-06 checkpoint `6f7094038` adds a hidden injected pairing state machine:
+  official four-step HTTP plus final pinned HTTPS transcript, SHA-256/default-
+  blocked SHA-1, canonical certificate/trust candidate, exact lane/cancel/deadline,
+  no replay, one-shot unpair, atomic commit/rollback/repair and full secret cleanse.
+  It reuses N1-04/N1-05 and remains unreachable from NAPI/HAP runtime.
 - Current gates: both Hvigor tasks, 138-test ArkTS registration, signed HAP,
-  native and ASan/UBSan 384/384, API 23 dual-ABI probe/build, source-archive,
-  Git-tree, receipt, TOTP, Light and isolation all passed. Both ABI symbol/NAPI
-  inventories and 423 HAP paths remain exact; each ABI keeps 48 `rdpnapi` plus
-  one private Host API and two private secure-identity compile commands with zero
-  upstream include leaks. HDC still says `Connect server failed`, so no new
-  Hypium or HUKS runtime execution is claimed. One of two
-  `sol low` reviews was used for N1-01; all four findings were fixed and
-  machine-verified without redispatching a review loop.
+  native and ASan/UBSan 400/400, strict/analyzer, API 23 dual-ABI probe/build,
+  source/Git-tree, TOTP, Light and isolation passed. ABI inventories remain
+  arm64 16103/698/716 and x86_64 15634/696/711; HAP remains 423 paths. Each ABI
+  keeps 48 `rdpnapi` plus 1 Host API, 2 identity and 1 pairing private commands,
+  with no upstream include leak. HDC still says `Connect server failed`; no new
+  Hypium/HUKS/Sunshine runtime claim exists. One of two `sol low` reviews was
+  used for N1-01; the remaining one stays reserved for final integration.
 
 ## Next
 
-1. Execute only N1-06 as an injected/dormant native pairing state machine. Reuse
-   N1-04 for every HTTP/XML operation and N1-05 for the exact identity lease;
-   implement the locked official salt/PIN, server-certificate candidate,
-   challenge, signed-secret, final challenge and best-effort rollback sequence
-   with exact request/generation/owner cancellation and full secret zeroization.
-   Do not add a second transport/identity store, production NAPI/UI, trust/cloud
-   persistence, catalog/media/input or any feature truth. Because the product
-   identity backend is not runtime-proven, N1-06 may pass only through injected
-   test seams and must remain unreachable in the signed HAP.
+1. Execute only N1-07 as an injected/dormant Host Control orchestrator. Reuse
+   N1-04 for authenticated catalog/asset and launch/resume/explicit quit; require
+   precondition/action/postcondition truth, exact generation/cancel/deadline,
+   maybe-sent no replay and move-only launch-material cleanse. Do not write the
+   ArkTS cache or add NAPI/UI/cloud/media/input/feature truth. Product identity
+   remains unavailable, so N1-07 must stay unreachable from the signed HAP.
 2. Keep D3-01 online coordinator wiring, D3-05 cloud-first promotion, D3-06
    cloud tombstone terminal execution and D3-08
    multi-device matrix blocked until development/test/production AGC receipts
