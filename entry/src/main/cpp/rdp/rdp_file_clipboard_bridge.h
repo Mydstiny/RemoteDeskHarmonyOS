@@ -23,6 +23,8 @@ public:
     bool attach(CliprdrClientContext* channel);
     void detach();
     bool available() const;
+    /** True only while a live cliprdr carrier is attached to this bridge. */
+    bool attached() const;
 
     RdpFileClipboardOfferResult publishLocalFiles(const std::vector<std::string>& paths);
     void clearLocalFiles();

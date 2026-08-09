@@ -180,9 +180,8 @@ fn connect_parsed_endpoint(
     stage: &str,
     timeout: Duration,
 ) -> io::Result<TcpStream> {
-    let endpoint_id = crate::safe_diagnostics::sensitive_id(
-        &format!("{}:{}", endpoint.host, endpoint.port),
-    );
+    let endpoint_id =
+        crate::safe_diagnostics::sensitive_id(&format!("{}:{}", endpoint.host, endpoint.port));
     let candidates: Vec<_> = (endpoint.host.as_str(), endpoint.port)
         .to_socket_addrs()
         .map_err(|error| {
@@ -190,7 +189,9 @@ fn connect_parsed_endpoint(
                 io::ErrorKind::AddrNotAvailable,
                 format!(
                     "{} resolve failed endpoint_id={} error_kind={:?}",
-                    stage, endpoint_id, error.kind()
+                    stage,
+                    endpoint_id,
+                    error.kind()
                 ),
             )
         })?
@@ -235,10 +236,7 @@ fn connect_parsed_endpoint(
         None => {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
-                format!(
-                    "{} connect timed out endpoint_id={}",
-                    stage, endpoint_id
-                ),
+                format!("{} connect timed out endpoint_id={}", stage, endpoint_id),
             ));
         }
     };
@@ -246,7 +244,9 @@ fn connect_parsed_endpoint(
         error.kind(),
         format!(
             "{} connect failed endpoint_id={} error_kind={:?}",
-            stage, endpoint_id, error.kind()
+            stage,
+            endpoint_id,
+            error.kind()
         ),
     ))
 }

@@ -17,6 +17,7 @@
 #include <napi/native_api.h>
 #include <hilog/log.h>
 #include "terminal/terminal_core_napi.h"
+#include "terminal/ssh_terminal_renderer.h"
 
 #undef LOG_DOMAIN
 #undef LOG_TAG
@@ -159,6 +160,10 @@ static napi_value Init(napi_env env, napi_value exports) {
     // 终端核心 (Rust terminal_core bridge)
     TerminalCoreNapi::Init(env, exports);
     OH_LOG_INFO(LOG_APP, "[NAPI] TerminalCore 已注册");
+
+    // SSH 终端原生渲染器 (OH_Drawing 画布)
+    SshTerminalRendererNapi::Init(env, exports);
+    OH_LOG_INFO(LOG_APP, "[NAPI] SshTerminalRenderer 已注册");
 
     OH_LOG_INFO(LOG_APP, "[NAPI] rdpnapi 模块初始化完成");
     return exports;

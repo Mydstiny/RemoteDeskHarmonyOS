@@ -9,6 +9,8 @@ import {
 import { VncCloudSyncService } from './VncCloudSyncService';
 import { VncSecretService } from './VncSecretService';
 import { vncGatewayAvailability } from './VncGatewayProtocolPolicy';
+import { VncTrustService } from './VncTrustService';
+import { vncGatewayTrustEndpointChanged } from './VncTrustInvalidationPolicy';
 
 export interface VncGatewayView extends VncGatewayValues {
   id: string;
@@ -30,6 +32,7 @@ export class VncGatewayService {
   private static instance: VncGatewayService;
   private readonly cloud: CloudStore = CloudStore.getInstance();
   private readonly secrets: VncSecretService = VncSecretService.getInstance();
+  private readonly trust: VncTrustService = VncTrustService.getInstance();
   private userId: string = 'device-local';
   private initialized: boolean = false;
   private listenerBound: boolean = false;
@@ -123,6 +126,20 @@ export class VncGatewayService {
       return result;
     }
     result.id = record.id;
+    if (current !== null && vncGatewayTrustEndpointChanged(current, values)) {
+      // Invalidate before touching the gateway token. A persistence failure
+      // therefore rejects the endpoint mutation before secret state changes.
+      const invalidation = this.trust.invalidateOwner('gateway', record.id);
+      if (!invalidation.ok) {
+        const rolledBack: boolean = currentRecord === null
+          ? this.cloud.discardVncRecordAfterFailedCreate(record.userId, record.id)
+          : this.cloud.upsertVncRecord(currentRecord);
+        result.message = rolledBack
+          ? invalidation.message + '；网关配置已回滚'
+          : invalidation.message + '；网关配置回滚失败，请检查 VNC 数据状态';
+        return result;
+      }
+    }
     if (accessToken.length > 0) {
       const secretResult = this.secrets.save(record.userId, record.id, 'gateway', 'gateway_token',
         accessToken, values.label, allowPlaintext);
@@ -146,8 +163,14 @@ export class VncGatewayService {
   }
 
   remove(id: string): boolean {
+    const previousRecord: VncRecord | null = this.findActiveRecord(id);
     const ok: boolean = this.cloud.deleteVncRecord(this.getUserId(), id);
     if (ok) {
+      const invalidation = this.trust.invalidateOwner('gateway', id);
+      if (!invalidation.ok) {
+        if (previousRecord !== null) { this.cloud.upsertVncRecord(previousRecord); }
+        return false;
+      }
       this.secrets.remove(this.getUserId(), id, 'gateway_token');
       this.emitChange();
     }

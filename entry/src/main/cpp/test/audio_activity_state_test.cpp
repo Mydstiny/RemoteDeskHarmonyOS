@@ -29,3 +29,23 @@ RDP_TEST_CASE(audio_activity_reset_clears_activity_and_mute) {
     RDP_ASSERT(!state.isMuted());
     RDP_ASSERT(!state.shouldDropIncomingPcm());
 }
+
+RDP_TEST_CASE(audio_activity_uses_monotonic_inactivity_and_one_shot_suspend) {
+    AudioActivityState state;
+    state.recordPcmFrame(480, 1000);
+    RDP_ASSERT_EQ(state.lastPcmAtMs(), static_cast<uint64_t>(1000));
+    RDP_ASSERT(!state.pollInactivity(2499));
+    RDP_ASSERT(state.pollInactivity(2500));
+    RDP_ASSERT(state.inactivitySuspended());
+    RDP_ASSERT(!state.pollInactivity(5000));
+    state.markResumed();
+    RDP_ASSERT(!state.inactivitySuspended());
+}
+
+RDP_TEST_CASE(audio_activity_clock_rollback_does_not_suspend_early) {
+    AudioActivityState state;
+    state.recordPcmFrame(480, 5000);
+    RDP_ASSERT(!state.pollInactivity(4999));
+    RDP_ASSERT(!state.pollInactivity(6000));
+    RDP_ASSERT(state.pollInactivity(6500));
+}

@@ -27,7 +27,7 @@ const CLOUD_COLUMNS: Record<string, string[]> = {
     'locked', 'locktype', 'syncversion', 'createdat', 'updatedat'
   ],
   'totpentries': [
-    'id', 'userid', 'issuer', 'account', 'secret', 'algorithm', 'digits', 'period', 'iconurl',
+    'id', 'userid', 'issuer', 'account', 'displayname', 'secret', 'algorithm', 'digits', 'period', 'iconurl',
     'locked', 'locktype', 'syncversion', 'createdat', 'updatedat'
   ],
   'usersettings': ['id', 'userid', 'payload', 'schemaversion', 'updatedat'],
@@ -43,15 +43,22 @@ const CLOUD_COLUMNS: Record<string, string[]> = {
 const LOCAL_ONLY_COLUMNS: Record<string, string[]> = {
   'remotehosts': [
     'password', 'sshkeypassphrase', 'sshkeyid', 'sshhostkeyalgorithm',
+    'sshproxypassword', 'sshproxykeypassphrase',
     'sshhostkeyfingerprintsha256', 'sshhostkeyrawbase64', 'sshhostkeytrustedat',
     'sshhostkeytrustmode', 'rdpcertificatefingerprintsha256', 'rdpcertificatesubject',
-    'rdpcertificateissuer', 'rdpcertificatecommonname', 'rdpcertificatetrustedat',
+    'rdpcertificateissuer', 'rdpcertificatecommonname', 'rdpcertificatenotbeforems',
+    'rdpcertificatenotafterms', 'rdpcertificatetrustedat',
     'rdpcertificatetrustmode', 'rdpcertificateallowuntrustedroot',
-    'rdpcertificateallowhostmismatch', 'rustdeskrelayid', 'rustdeskaccountid',
+    'rdpcertificateallowhostmismatch', 'rdpcertificaterouteidentity',
+    'rdpgatewaycertificatefingerprintsha256', 'rdpgatewaycertificatesubject',
+    'rdpgatewaycertificateissuer', 'rdpgatewaycertificatecommonname',
+    'rdpgatewaycertificatenotbeforems', 'rdpgatewaycertificatenotafterms',
+    'rdpgatewaycertificatetrustedat', 'rdpgatewaycertificatetrustmode',
+    'rdpgatewaycertificateallowuntrustedroot',
+    'rdpgatewaycertificateallowhostmismatch', 'rdpgatewaycertificaterouteidentity',
+    'rustdeskrelayid', 'rustdeskaccountid',
     'rustdeskpasswordmode', 'rustdeskauthmode', 'rustdeskdirectenabled',
     'rustdeskdirecthost', 'rustdeskdirectport', 'rdpcredentialid', 'sourcetype',
-    'rustdeskproaccountid', 'rustdeskpropeerid', 'rustdeskproplatform',
-    'rustdeskpromanaged', 'rustdeskprolastseenat', 'rustdeskprosyncerror',
     'rustdesktargetdevice', 'rustdeskadaptiveorientation'
   ],
   'sshkeys': ['formatversion', 'privatekeyencrypted'],
@@ -59,16 +66,16 @@ const LOCAL_ONLY_COLUMNS: Record<string, string[]> = {
 };
 
 // 这些字段在既有 remotehosts 云表中没有独立列，但属于跨设备连接配置。
-// 密码、SSH/RDP 设备信任和本机授权决策绝不进入该扩展。
+// 密码、SSH/RDP 设备信任和本机授权决策绝不进入该扩展。Peer TOTP
+// binding 是设备 owner-scoped 本地数据，严禁借 displayconfig 扩展跨设备。
 const REMOTE_HOST_CLOUD_EXTENSION_COLUMNS: string[] = [
   'sshkeyid', 'rustdeskrelayid', 'rustdeskaccountid',
   'rustdeskpasswordmode', 'rustdeskauthmode',
   'rustdeskdirectenabled', 'rustdeskdirecthost', 'rustdeskdirectport', 'sshproxytype',
-  'rustdesktotpentryid', 'rustdesktotpautosubmit',
+  'sshproxyauthmethod', 'sshproxykeyid',
   'rdpcredentialid', 'rdpauthmode', 'rdprestrictedadminsecretsource', 'sourcetype',
-  'rustdeskproaccountid', 'rustdeskpropeerid',
-  'rustdeskproplatform', 'rustdeskpromanaged', 'rustdeskprolastseenat',
-  'rustdeskprosyncerror', 'rustdesktargetdevice', 'rustdeskadaptiveorientation'
+  'rdpendpointmode', 'rdpgatewaytransport', 'rdpgatewayservername',
+  'rustdesktargetdevice', 'rustdeskadaptiveorientation'
 ];
 
 const REMOTE_HOST_EXTENSION_KEY: string = '_remoteDeskExtensionV1';

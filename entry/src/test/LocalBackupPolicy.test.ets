@@ -142,6 +142,9 @@ export default function localBackupPolicyTest(): void {
           id: 'totp-1', userid: 'owner-test',
           secret: 'totp-secret'
         });
+        tables['vncrecordv2'].push({
+          id: 'vnc-trust-1', userid: 'owner-test', recordtype: 'trust', deletedat: '0'
+        });
         const document = createLocalBackupDocument(
           tables, 100, '1.0.10', [{
             id: 'remotehosts:host-1', tablename: 'remotehosts',
@@ -154,6 +157,16 @@ export default function localBackupPolicyTest(): void {
         expect(document.manifest?.crypto.mode).assertEqual('full');
         expect(document.manifest?.crypto.verifierIncluded).assertTrue();
         expect(document.manifest?.trust.deviceTrustIncluded).assertTrue();
+        expect(document.manifest?.trust.vncTrustCandidatesIncluded).assertTrue();
+        expect(document.manifest?.trust.vncLocalConfirmationMarkerIncluded).assertFalse();
+        const preview = createLocalBackupRestorePreview(document);
+        expect(preview.vncTrustCandidatesIncluded).assertTrue();
+        expect(preview.vncLocalConfirmationMarkerIncluded).assertFalse();
+        const restorePlan = adaptLocalBackupDocumentForRestore(
+          document, 'owner-test', false);
+        expect(restorePlan !== null).assertTrue();
+        expect((restorePlan?.tables['vncrecordv2'] || []).length).assertEqual(1);
+        expect((restorePlan?.localTables['vnclocalrecords'] || []).length).assertEqual(0);
         expect(document.manifest?.trust.plaintextConsentIncluded)
           .assertFalse();
         expect(document.tables['cryptoparams'] !== undefined)
@@ -200,11 +213,15 @@ export default function localBackupPolicyTest(): void {
       });
       const document = createLocalBackupDocument(tables, 100, '1.0.7', [{
         id: 'remotehosts:h1', tablename: 'remotehosts', recordid: 'h1',
-        payload: '{"rustdeskdirectport":"21117","rustdesktargetdevice":"phone","rustdeskadaptiveorientation":"1"}', updatedat: '100'
+        payload: '{"rustdeskdirectport":"21117","rustdesktargetdevice":"phone",' +
+          '"rustdeskadaptiveorientation":"1","rdpendpointmode":"microsoft_rd_gateway",' +
+          '"rdpgatewaytransport":"no-websockets",' +
+          '"rdpgatewayservername":"gateway.example.test"}', updatedat: '100'
       }], {}, 'owner-test');
       const parsed = validateLocalBackupDocument(JSON.stringify(document));
       expect(parsed !== null).assertTrue();
       expect(parsed?.extensions?.length).assertEqual(1);
+      expect(parsed?.extensions?.[0]['payload'].indexOf('rdpendpointmode') >= 0).assertTrue();
     });
 
     it('rejects_duplicate_primary_keys', 0, (): void => {
@@ -270,7 +287,10 @@ export default function localBackupPolicyTest(): void {
           '"sshhostkeyfingerprintsha256":"nested-fingerprint",' +
           '"password":"nested-password",' +
           '"futureSecret":"unknown",' +
-          '"rustdeskdirectport":"21117"}}'
+          '"rustdeskdirectport":"21117",' +
+          '"rdpendpointmode":"microsoft_rd_gateway",' +
+          '"rdpgatewaytransport":"no-websockets",' +
+          '"rdpgatewayservername":"gateway.example.test"}}'
       });
       tables['sshkeys'].push({
         id: 'key-1', userid: 'owner-test',
@@ -296,9 +316,7 @@ export default function localBackupPolicyTest(): void {
           recordid: 'host-1',
           payload: '{"sshkeypassphrase":"passphrase",' +
             '"sshhostkeyfingerprintsha256":"trust",' +
-            '"rustdeskdirectport":"21117",' +
-            '"rustdesktotpentryid":"totp-1",' +
-            '"rustdesktotpautosubmit":"1"}',
+            '"rustdeskdirectport":"21117"}',
           updatedat: '100'
         }], {}, 'owner-test');
       expect(document.tables['cryptoparams'] === undefined)
@@ -317,11 +335,15 @@ export default function localBackupPolicyTest(): void {
         .indexOf('futureSecret') < 0).assertTrue();
       expect(document.tables['remotehosts'][0]['displayconfig']
         .indexOf('rustdeskdirectport') >= 0).assertTrue();
+      expect(document.tables['remotehosts'][0]['displayconfig']
+        .indexOf('rdpendpointmode') >= 0).assertTrue();
       expect(document.extensions?.[0]['payload'])
         .assertEqual('{"sshhostkeyfingerprintsha256":"trust",' +
-          '"rustdeskdirectport":"21117",' +
-          '"rustdesktotpentryid":"totp-1",' +
-          '"rustdesktotpautosubmit":"1"}');
+          '"rustdeskdirectport":"21117"}');
+      expect(JSON.stringify(document).indexOf('rustdesktotpentryid'))
+        .assertEqual(-1);
+      expect(JSON.stringify(document).indexOf('rustdesktotpautosubmit'))
+        .assertEqual(-1);
       expect(document.tables['sshkeys'][0]['privatekey'] ===
         undefined).assertTrue();
       expect(document.tables['totpentries'][0]['secret'] ===
@@ -411,6 +433,8 @@ export default function localBackupPolicyTest(): void {
         tables, 100, '1.0.8', [], {
           vnclocalrecords: [secret, trust]
         }, owner);
+      expect(document.manifest?.trust.vncTrustCandidatesIncluded).assertFalse();
+      expect(document.manifest?.trust.vncLocalConfirmationMarkerIncluded).assertFalse();
       expect(document.tables['vncrecordv2'].length).assertEqual(1);
       expect(document.tables['vncrecordv2'][0]['id'])
         .assertEqual('vnc-host');

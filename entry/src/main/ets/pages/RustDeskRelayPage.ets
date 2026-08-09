@@ -32,9 +32,29 @@ import {
 } from '../services/RustDeskControlPlanePolicy';
 import { RustDeskRelayConfigPasteSheet } from '../components/resourceadd/modern/RustDeskRelayConfigPasteSheet';
 import { VncGatewayAddFlow } from '../components/resourceadd/VncGatewayAddFlow';
+import { VncCertificateTrustManagerSheet } from '../components/VncCertificateTrustManagerSheet';
 import { VncGatewayService, VncGatewayView } from '../services/VncGatewayService';
 import { VncGatewayValues } from '../services/VncModelPolicy';
+import { VncHostValues } from '../services/VncModelPolicy';
 import { vncGatewayAvailability } from '../services/VncGatewayProtocolPolicy';
+import { AccountSessionCoordinator } from '../services/AccountSessionCoordinator';
+import { ExtensionLoader } from '../services/ExtensionLoader';
+import {
+  VncTrustEndpoint,
+  VncTrustView,
+  VncTrustService,
+  vncStoreIdentityFingerprint
+} from '../services/VncTrustService';
+import {
+  resolveVncTlsEndpoint,
+  vncTlsGatewayInput,
+  vncTlsHostInput,
+  VncTlsEndpointResolution
+} from '../services/VncTlsEndpointPolicy';
+import {
+  classifyVncGatewayHealth,
+  VncGatewayHealthResult
+} from '../services/VncGatewayHealthPolicy';
 import { protocolIcon } from '../services/ProtocolIconPolicy';
 import {
   RustDeskRelayCloudSyncOutcome,
@@ -49,10 +69,32 @@ import {
   RustDeskRelaySetupDraft
 } from '../services/RustDeskRelaySetupCoordinator';
 import { DataMutationStage } from '../services/DataMutationResult';
+import {
+  rustDeskRelayCompactEditorHeight,
+  rustDeskRelayDirectoryBottomClearance,
+  rustDeskRelaySheetUsesLargeLayout
+} from '../services/RustDeskRelayLayoutPolicy';
 
 class TcpTestResult {
   ok: boolean = false;
   lat: number = 0;
+}
+
+interface ProSyncToastResult {
+  message: string;
+  capabilityReady: boolean;
+}
+
+interface VncDeepCheckBinding {
+  gatewayId: string;
+  ownerId: string;
+  userId: string;
+  storeIdentityFingerprint: string;
+  endpointBindingFingerprint: string;
+  accountGeneration: number;
+  tlsRequired: boolean;
+  enabled: boolean;
+  repeaterTarget: string;
 }
 
 @Component
@@ -116,23 +158,32 @@ export struct RustDeskRelayPage {
   @State proBusy: boolean = false;
   @State testingRelayId: string = '';
   @State relaySheetClosing: boolean = false;
+  @State relayViewportHeight: number = 0;
   @State relayViewRevision: number = 0;
   @State proViewRevision: number = 0;
   @State vncViewRevision: number = 0;
   @State editingVncGateway: VncGatewayView | null = null;
   @State testingVncGatewayId: string = '';
+  @State testingVncGatewayRequestId: number = 0;
   @State vncTestResultId: string = '';
   @State vncTestResult: string = '';
   private pendingHostAddReturnRelayId: string = '';
   private srv: HostSyncService = HostSyncService.getInstance();
   private proSync: RustDeskProSyncService = RustDeskProSyncService.getInstance();
   private vncGatewayService: VncGatewayService = VncGatewayService.getInstance();
+  private vncTrustService: VncTrustService = VncTrustService.getInstance();
+  private extensionLoader: ExtensionLoader = ExtensionLoader.getInstance();
   private relayImporter: RustDeskRelayImportService = new RustDeskRelayImportService();
   private relaySetup: RustDeskRelaySetupCoordinator =
     RustDeskRelaySetupCoordinator.getInstance();
   private dataUnsubscribe: (() => void) | null = null;
   private proDataUnsubscribe: (() => void) | null = null;
   private vncDataUnsubscribe: (() => void) | null = null;
+  private vncDeepBinding: VncDeepCheckBinding | null = null;
+  private pendingVncTrustEndpoint: VncTrustEndpoint | null = null;
+  private pendingVncTrustFingerprint: string = '';
+  private pendingVncTrustBinding: VncDeepCheckBinding | null = null;
+  private vncDeepAttemptGeneration: number = 0;
   private pageActive: boolean = false;
 
   private pal(): Palette {
@@ -146,7 +197,9 @@ export struct RustDeskRelayPage {
 
   aboutToAppear(): void {
     this.pageActive = true;
-    this.vncGatewayService.init(getContext(this) as common.Context);
+    const context = getContext(this) as common.Context;
+    this.vncGatewayService.init(context);
+    this.vncTrustService.init(context);
     this.proSync.init(getContext(this) as common.Context);
     this.registerDataRefreshListener();
     this.load();
@@ -158,6 +211,18 @@ export struct RustDeskRelayPage {
   onPageShow(): void { this.load(); }
   aboutToDisappear(): void {
     this.pageActive = false;
+    this.vncDeepAttemptGeneration += 1;
+    if (this.testingVncGatewayRequestId > 0) {
+      this.extensionLoader.cancelVncGatewayDeep(this.testingVncGatewayRequestId);
+      this.testingVncGatewayRequestId = 0;
+    }
+    this.testingVncGatewayId = '';
+    this.vncDeepBinding = null;
+    this.vncTestResultId = '';
+    this.vncTestResult = '';
+    this.pendingVncTrustEndpoint = null;
+    this.pendingVncTrustFingerprint = '';
+    this.pendingVncTrustBinding = null;
     if (this.dataUnsubscribe) {
       this.dataUnsubscribe();
       this.dataUnsubscribe = null;
@@ -185,6 +250,7 @@ export struct RustDeskRelayPage {
     }
     if (!this.vncDataUnsubscribe) {
       this.vncDataUnsubscribe = this.vncGatewayService.onChange((): void => {
+        this.invalidateVncDeepCheck();
         if (this.pageActive) { this.loadVncGateways(); }
       });
     }
@@ -320,7 +386,7 @@ export struct RustDeskRelayPage {
     if (this.vncTestResultId === gateway.id && this.vncTestResult.startsWith('✗')) {
       return '端口异常';
     }
-    return '可用 · 未检测';
+    return '未检测 · 协议未验证';
   }
 
   private vncGatewayStatusColor(gateway: VncGatewayView): string {
@@ -525,6 +591,39 @@ export struct RustDeskRelayPage {
     this.proBusy = false;
     this.sheetContent = 3;
     this.showSheet = true;
+  }
+
+  private proSyncToastResult(
+    accountId: string,
+    count: number,
+    loginFlow: boolean
+  ): ProSyncToastResult {
+    const status = this.proSync.getConnectionCapabilityStatus(accountId);
+    if (status !== undefined && status.tokenProjected) {
+      return {
+        capabilityReady: true,
+        message: loginFlow
+          ? (count > 0
+            ? 'Pro 已同步 ' + count.toString() + ' 台设备，控制面绑定校验通过'
+            : '登录成功，地址簿为空；控制面绑定校验通过')
+          : (count > 0
+            ? 'Pro 已同步 ' + count.toString() + ' 台设备，控制面绑定校验通过'
+            : '同步完成，控制面绑定校验通过')
+      };
+    }
+    if (status !== undefined && !status.requiresAccount) {
+      return {
+        capabilityReady: false,
+        message: '地址簿同步成功；当前连接配置为' +
+          rustDeskControlPlaneProfileLabel(status.profile) +
+          '，仅使用地址簿 HTTP 会话，不向控制面发送地址簿令牌'
+      };
+    }
+    return {
+      capabilityReady: false,
+      message: '地址簿同步成功；控制面绑定尚未满足，连接不会发送地址簿令牌。' +
+        '请检查账号、API、ID/Relay 端点和服务器 Key 是否属于同一部署'
+    };
   }
 
   // ==================== Relay CRUD ====================
@@ -766,11 +865,258 @@ export struct RustDeskRelayPage {
     this.vncTestResult = '⏳ TCP 端口检测中…';
     const result = await this.tcpTest(gateway.host, gateway.port);
     if (result.ok) {
-      this.vncTestResult = '✓ TCP 端口可达 (' + result.lat.toString() + 'ms)';
+      const health: VncGatewayHealthResult = classifyVncGatewayHealth({
+        transport: gateway.transport,
+        enabled: gateway.enabled,
+        repeaterMode: gateway.repeaterMode,
+        target: gateway.targetId,
+        tcpReachable: true,
+        tlsRequired: gateway.tls,
+        certificateConfirmed: false,
+        pinMatched: false,
+        repeaterBannerOk: false,
+        targetPaired: false,
+        rfbBannerReady: false,
+        deepCheckAttempted: false,
+        errorCode: ''
+      });
+      this.vncTestResult = '✓ ' + health.message + ' (' + result.lat.toString() + 'ms)';
     } else {
-      this.vncTestResult = '✗ TCP 端口不可达';
+      const health: VncGatewayHealthResult = classifyVncGatewayHealth({
+        transport: gateway.transport,
+        enabled: gateway.enabled,
+        repeaterMode: gateway.repeaterMode,
+        target: gateway.targetId,
+        tcpReachable: false,
+        tlsRequired: gateway.tls,
+        certificateConfirmed: false,
+        pinMatched: false,
+        repeaterBannerOk: false,
+        targetPaired: false,
+        rfbBannerReady: false,
+        deepCheckAttempted: false,
+        errorCode: 'E-VNC-GATEWAY-TCP'
+      });
+      this.vncTestResult = '✗ ' + health.message;
     }
     this.testingVncGatewayId = '';
+  }
+
+  /** Resolve the exact gateway endpoint used by trust and native deep checks. */
+  private resolveVncGatewayEndpoint(gateway: VncGatewayView): VncTlsEndpointResolution {
+    const scope = AccountSessionCoordinator.getInstance().currentScope();
+    const store: string = vncStoreIdentityFingerprint(scope.storeIdentity);
+    const hostValues: VncHostValues = {
+      label: gateway.label,
+      host: gateway.host,
+      port: gateway.port,
+      username: '',
+      gatewayId: gateway.id,
+      transport: 'ultravnc_repeater',
+      repeaterMode: 'mode12',
+      rememberPassword: false,
+      viewOnly: false,
+      displayOverrideEnabled: false,
+      scalingMode: 'fit',
+      clipboardEnabled: false,
+      securityPolicy: gateway.tls ? 'secure_only' : 'trusted_network',
+      tls: gateway.tls,
+      locked: false,
+      lockType: 0
+    };
+    return resolveVncTlsEndpoint(
+      vncTlsHostInput(gateway.id, scope.ownerScopeId, hostValues, gateway.targetId, store),
+      vncTlsGatewayInput(gateway.id, scope.ownerScopeId, gateway, store));
+  }
+
+  private sameVncDeepBinding(left: VncDeepCheckBinding | null,
+    right: VncDeepCheckBinding | null): boolean {
+    if (left === null || right === null) { return false; }
+    return left.gatewayId === right.gatewayId && left.ownerId === right.ownerId &&
+      left.userId === right.userId && left.storeIdentityFingerprint === right.storeIdentityFingerprint &&
+      left.endpointBindingFingerprint === right.endpointBindingFingerprint &&
+      left.accountGeneration === right.accountGeneration && left.tlsRequired === right.tlsRequired &&
+      left.enabled === right.enabled && left.repeaterTarget === right.repeaterTarget;
+  }
+
+  private deepBindingStillCurrent(binding: VncDeepCheckBinding): boolean {
+    const scope = AccountSessionCoordinator.getInstance().currentScope();
+    if (scope.ownerScopeId !== binding.userId || scope.generation !== binding.accountGeneration) {
+      return false;
+    }
+    const store = vncStoreIdentityFingerprint(scope.storeIdentity);
+    if (store !== binding.storeIdentityFingerprint) { return false; }
+    const gateway = this.vncGatewayService.find(binding.gatewayId);
+    if (gateway === null || gateway.userId !== binding.userId || gateway.enabled !== binding.enabled ||
+      gateway.tls !== binding.tlsRequired || gateway.targetId !== binding.repeaterTarget) { return false; }
+    const endpoint = this.resolveVncGatewayEndpoint(gateway);
+    return endpoint.ok && endpoint.endpointBindingFingerprint === binding.endpointBindingFingerprint;
+  }
+
+  private invalidateVncDeepCheck(): void {
+    const binding = this.vncDeepBinding === null ? this.pendingVncTrustBinding : this.vncDeepBinding;
+    if (binding === null || this.deepBindingStillCurrent(binding)) { return; }
+    this.vncDeepAttemptGeneration += 1;
+    if (this.testingVncGatewayRequestId > 0) {
+      this.extensionLoader.cancelVncGatewayDeep(this.testingVncGatewayRequestId);
+    }
+    this.testingVncGatewayRequestId = 0;
+    this.testingVncGatewayId = '';
+    this.vncDeepBinding = null;
+    this.pendingVncTrustBinding = null;
+    this.pendingVncTrustEndpoint = null;
+    this.pendingVncTrustFingerprint = '';
+    this.vncTestResultId = binding.gatewayId;
+    this.vncTestResult = '✗ E-VNC-GATEWAY-BINDING · 账号、存储或端点已变化，请重新检查';
+  }
+
+  private async doDeepTestVncGateway(gateway: VncGatewayView): Promise<void> {
+    const availability = vncGatewayAvailability(gateway.transport, gateway.tls,
+      gateway.tokenConfigured, gateway.repeaterMode);
+    if (!availability.enabled) {
+      this.vncTestResultId = gateway.id;
+      this.vncTestResult = '✗ ' + availability.message;
+      return;
+    }
+    const endpoint = this.resolveVncGatewayEndpoint(gateway);
+    if (!endpoint.ok || endpoint.trustOwner === null) {
+      this.vncTestResultId = gateway.id;
+      this.vncTestResult = '✗ ' + (endpoint.errorCode || 'E-VNC-ENDPOINT-INVALID');
+      return;
+    }
+    const trustEndpoint: VncTrustEndpoint = {
+      ownerType: endpoint.trustOwner.ownerType,
+      ownerId: endpoint.trustOwner.ownerId,
+      userId: endpoint.trustOwner.userId,
+      storeIdentityFingerprint: endpoint.trustOwner.storeIdentityFingerprint,
+      endpointBindingFingerprint: endpoint.trustOwner.endpointBindingFingerprint
+    };
+    const expectedFingerprint: string = gateway.tls
+      ? this.vncTrustService.trustedFingerprintForEndpoint(trustEndpoint) : '';
+    const scope = AccountSessionCoordinator.getInstance().currentScope();
+    const binding: VncDeepCheckBinding = {
+      gatewayId: gateway.id,
+      ownerId: endpoint.trustOwner.ownerId,
+      userId: endpoint.trustOwner.userId,
+      storeIdentityFingerprint: endpoint.trustOwner.storeIdentityFingerprint,
+      endpointBindingFingerprint: endpoint.trustOwner.endpointBindingFingerprint,
+      accountGeneration: scope.generation,
+      tlsRequired: endpoint.tlsRequired,
+      enabled: gateway.enabled,
+      repeaterTarget: endpoint.repeaterTarget
+    };
+    if (!this.deepBindingStillCurrent(binding)) {
+      this.vncTestResultId = gateway.id;
+      this.vncTestResult = '✗ E-VNC-GATEWAY-BINDING · 当前 Gateway 已变化';
+      return;
+    }
+    this.pendingVncTrustEndpoint = null;
+    this.pendingVncTrustFingerprint = '';
+    this.pendingVncTrustBinding = null;
+    this.vncDeepBinding = binding;
+    const attemptGeneration: number = ++this.vncDeepAttemptGeneration;
+    this.testingVncGatewayId = gateway.id;
+    this.vncTestResultId = gateway.id;
+    this.vncTestResult = '⏳ VNC 深度协议检查中…';
+    let requestId: number = 0;
+    try {
+      const probe = this.extensionLoader.probeVncGatewayDeepAsync(
+        endpoint.connectHost, endpoint.connectPort, endpoint.transport,
+        gateway.repeaterMode, endpoint.repeaterTarget, endpoint.tlsRequired,
+        expectedFingerprint, 10000, endpoint.trustOwner.ownerType, endpoint.trustOwner.ownerId,
+        endpoint.trustOwner.userId, endpoint.trustOwner.storeIdentityFingerprint,
+        endpoint.trustOwner.endpointBindingFingerprint, scope.generation, gateway.enabled);
+      requestId = probe.requestId;
+      this.testingVncGatewayRequestId = requestId;
+      const result = await probe;
+      if (!this.pageActive || this.vncDeepAttemptGeneration !== attemptGeneration ||
+        this.testingVncGatewayRequestId !== requestId || this.vncTestResultId !== gateway.id ||
+        !this.sameVncDeepBinding(this.vncDeepBinding, binding) ||
+        !this.deepBindingStillCurrent(binding) || result.ownerId !== binding.ownerId ||
+        result.userId !== binding.userId || result.storeIdentityFingerprint !== binding.storeIdentityFingerprint ||
+        result.endpointBindingFingerprint !== binding.endpointBindingFingerprint ||
+        result.accountGeneration !== binding.accountGeneration) {
+        return;
+      }
+      if (result.code === 'E-VNC-CERT-TRUST-REQUIRED' || result.code === 'E-VNC-CERT-CHANGED') {
+        this.pendingVncTrustEndpoint = trustEndpoint;
+        this.pendingVncTrustFingerprint = result.certificateFingerprintSha256;
+        this.pendingVncTrustBinding = binding;
+        this.vncTestResult = '✗ ' + result.code + ' · 请在证书信任 Sheet 中确认当前指纹';
+        if (result.certificateFingerprintSha256 !== '') {
+          this.sheetContent = 11;
+          this.showSheet = true;
+        }
+        return;
+      }
+      this.vncTestResult = result.protocolReady
+        ? '✓ ' + result.message
+        : '✗ ' + result.code + (result.message === '' ? '' : ' · ' + result.message);
+    } catch (_error) {
+      if (this.pageActive && this.vncDeepAttemptGeneration === attemptGeneration &&
+        this.testingVncGatewayRequestId === requestId && this.vncTestResultId === gateway.id) {
+        this.vncTestResult = '✗ E-VNC-GATEWAY-DEEP · 深度检查失败';
+      }
+    } finally {
+      if (this.vncDeepAttemptGeneration === attemptGeneration &&
+        this.testingVncGatewayRequestId === requestId &&
+        this.vncTestResultId === gateway.id && this.sameVncDeepBinding(this.vncDeepBinding, binding)) {
+        this.testingVncGatewayRequestId = 0;
+        this.testingVncGatewayId = '';
+        this.vncDeepBinding = null;
+      }
+    }
+  }
+
+  private cancelDeepTestVncGateway(): void {
+    if (this.testingVncGatewayRequestId <= 0) { return; }
+    const requestId: number = this.testingVncGatewayRequestId;
+    this.vncDeepAttemptGeneration += 1;
+    this.extensionLoader.cancelVncGatewayDeep(requestId);
+    this.testingVncGatewayRequestId = 0;
+    this.testingVncGatewayId = '';
+    this.vncDeepBinding = null;
+    this.vncTestResult = '⏳ 正在取消 VNC 深度检查…';
+  }
+
+  private canConfirmPendingVncTrust(): boolean {
+    const binding = this.pendingVncTrustBinding;
+    const pending = this.pendingVncTrustEndpoint;
+    if (binding === null || pending === null || this.pendingVncTrustFingerprint === '') { return false; }
+    if (!this.deepBindingStillCurrent(binding)) {
+      this.pendingVncTrustBinding = null;
+      this.pendingVncTrustEndpoint = null;
+      this.pendingVncTrustFingerprint = '';
+      this.vncTestResult = '✗ E-VNC-GATEWAY-BINDING · endpoint 已变化，请重新检查';
+      return false;
+    }
+    const gateway = this.vncGatewayService.find(binding.gatewayId);
+    if (gateway === null) { return false; }
+    const endpoint = this.resolveVncGatewayEndpoint(gateway);
+    const owner = endpoint.trustOwner;
+    if (!endpoint.ok || owner === null || owner.endpointBindingFingerprint !== binding.endpointBindingFingerprint ||
+      owner.storeIdentityFingerprint !== pending.storeIdentityFingerprint || owner.userId !== pending.userId ||
+      owner.ownerId !== pending.ownerId || owner.ownerType !== pending.ownerType) {
+      this.pendingVncTrustBinding = null;
+      this.pendingVncTrustEndpoint = null;
+      this.pendingVncTrustFingerprint = '';
+      this.vncTestResult = '✗ E-VNC-GATEWAY-BINDING · endpoint 已变化，请重新检查';
+      return false;
+    }
+    this.pendingVncTrustEndpoint = {
+      ownerType: owner.ownerType,
+      ownerId: owner.ownerId,
+      userId: owner.userId,
+      storeIdentityFingerprint: owner.storeIdentityFingerprint,
+      endpointBindingFingerprint: owner.endpointBindingFingerprint
+    };
+    return true;
+  }
+
+  private openPendingVncCertificateTrust(): void {
+    if (this.pendingVncTrustEndpoint === null || this.pendingVncTrustFingerprint === '') { return; }
+    this.sheetContent = 11;
+    this.showSheet = true;
   }
 
   private doDeleteRelay(id: string): void {
@@ -816,20 +1162,10 @@ export struct RustDeskRelayPage {
       this.loadProAccounts();
       this.formProPwd = '';
       const count = result.addedIds.length + result.updatedIds.length;
-      const account: RustDeskProAccountState | undefined =
-        this.proSync.getAccount(accountId);
-      const capabilityReady: boolean =
-        account?.controlPlaneCapabilityProof !== undefined;
+      const toast = this.proSyncToastResult(accountId, count, true);
       promptAction.showToast({
-        message: capabilityReady
-          ? (count > 0
-            ? 'Pro 已同步 ' + count.toString() +
-              ' 台设备，控制面身份已绑定'
-            : '登录成功，地址簿为空；控制面身份已绑定')
-          : (count > 0
-            ? '地址簿已同步；尚无可验证的控制面能力证明，连接按 API-only 模式且不发送地址簿令牌'
-            : '登录成功；尚无可验证的控制面能力证明，连接按 API-only 模式'),
-        duration: capabilityReady ? 2200 : 3600
+        message: toast.message,
+        duration: toast.capabilityReady ? 2200 : 3600
       });
       this.closeSheet();
     } catch (err) {
@@ -844,18 +1180,10 @@ export struct RustDeskRelayPage {
       const result = await this.proSync.sync(accountId);
       this.loadProAccounts();
       const count = result.addedIds.length + result.updatedIds.length;
-      const account: RustDeskProAccountState | undefined =
-        this.proSync.getAccount(accountId);
-      const capabilityReady: boolean =
-        account?.controlPlaneCapabilityProof !== undefined;
+      const toast = this.proSyncToastResult(accountId, count, false);
       promptAction.showToast({
-        message: capabilityReady
-          ? (count > 0
-            ? 'Pro 已同步 ' + count.toString() +
-              ' 台设备，控制面身份已重新验证'
-            : '同步完成，控制面身份已重新验证')
-          : '地址簿同步成功；尚无可验证的控制面能力证明，连接按 API-only 模式且不发送地址簿令牌',
-        duration: capabilityReady ? 2200 : 3600
+        message: toast.message,
+        duration: toast.capabilityReady ? 2200 : 3600
       });
     } catch (err) {
       this.formProError = err instanceof Error ? err.message : 'Pro 同步失败';
@@ -895,13 +1223,18 @@ export struct RustDeskRelayPage {
     return this.isDesktopDevice && this.breakpoint === 'xl';
   }
 
-  private relaySheetHeight(): SheetSize {
-    return this.sheetContent === 1 || this.sheetContent === 10
-      ? SheetSize.LARGE : SheetSize.FIT_CONTENT;
+  private relaySheetHeight(): SheetSize | number {
+    if (rustDeskRelaySheetUsesLargeLayout(this.sheetContent, this.showRelayAdvanced)) {
+      return SheetSize.LARGE;
+    }
+    if (this.sheetContent === 1) {
+      return rustDeskRelayCompactEditorHeight(this.breakpoint, this.relayViewportHeight);
+    }
+    return SheetSize.FIT_CONTENT;
   }
 
   private relaySheetKeyboardAvoidMode(): SheetKeyboardAvoidMode {
-    return this.sheetContent === 1 || this.sheetContent === 10
+    return rustDeskRelaySheetUsesLargeLayout(this.sheetContent, this.showRelayAdvanced)
       ? SheetKeyboardAvoidMode.RESIZE_ONLY
       : SheetKeyboardAvoidMode.TRANSLATE_AND_SCROLL;
   }
@@ -947,7 +1280,9 @@ export struct RustDeskRelayPage {
                 this.tabletGrid()
               }
             }
-            Column().height(120)
+            if (this.breakpoint !== 'sm') {
+              Column().height(rustDeskRelayDirectoryBottomClearance(this.breakpoint))
+            }
           }.width('100%').padding({ left: this.contentSidePadding(), right: this.contentSidePadding() })
         }
         .width('100%').height('100%').align(Alignment.TopStart)
@@ -956,6 +1291,12 @@ export struct RustDeskRelayPage {
       }
     }
     .width('100%').height('100%')
+    .onAreaChange((_old: Area, next: Area): void => {
+      const height: number = next.height as number;
+      if (Number.isFinite(height) && height > 0 && Math.abs(height - this.relayViewportHeight) >= 1) {
+        this.relayViewportHeight = height;
+      }
+    })
     .overlay(this.TitleBarOverlay(), { align: Alignment.Top })
     .bindSheet($$this.showSheet, this.relaySheetBuilder(), {
       height: this.relaySheetHeight(),
@@ -1054,6 +1395,9 @@ export struct RustDeskRelayPage {
           )
         )
       }, (gateway: VncGatewayView): string => gateway.id + ':' + this.vncViewRevision.toString())
+      ListItem() {
+        Column().height(rustDeskRelayDirectoryBottomClearance(this.breakpoint))
+      }
     }
     .width('100%')
     .listDirection(Axis.Vertical)
@@ -1363,6 +1707,21 @@ export struct RustDeskRelayPage {
               .fontSize(13).height(36).backgroundColor(this.accentColor).fontColor(Color.White).borderRadius(8)
               .padding({ left: 14, right: 14 }).enabled(this.testingVncGatewayId === '')
               .onClick((): void => { void this.doTestVncGateway(this.selectedPcVncGateway as VncGatewayView); })
+            Button(this.testingVncGatewayId === (this.selectedPcVncGateway as VncGatewayView).id
+              && this.testingVncGatewayRequestId > 0 ? '取消深度' : '深度测试')
+              .fontSize(13).height(36).backgroundColor(this.pal().surface)
+              .fontColor(this.accentColor).borderRadius(8).margin({ left: 8 })
+              .padding({ left: 14, right: 14 })
+              .enabled(this.testingVncGatewayId === '' ||
+                (this.testingVncGatewayId === (this.selectedPcVncGateway as VncGatewayView).id &&
+                this.testingVncGatewayRequestId > 0))
+              .onClick((): void => {
+                if (this.testingVncGatewayRequestId > 0) {
+                  this.cancelDeepTestVncGateway();
+                } else {
+                  void this.doDeepTestVncGateway(this.selectedPcVncGateway as VncGatewayView);
+                }
+              })
             Button('编辑').fontSize(13).height(36).backgroundColor(this.pal().surface).fontColor(this.pal().text2)
               .borderRadius(8).margin({ left: 8 }).padding({ left: 14, right: 14 })
               .onClick((): void => { this.openEditVncGatewaySheet(this.selectedPcVncGateway as VncGatewayView); })
@@ -1395,7 +1754,8 @@ export struct RustDeskRelayPage {
           Text(vncGatewayAvailability((this.selectedPcVncGateway as VncGatewayView).transport,
             (this.selectedPcVncGateway as VncGatewayView).tls,
             (this.selectedPcVncGateway as VncGatewayView).tokenConfigured,
-            (this.selectedPcVncGateway as VncGatewayView).repeaterMode).message || '尚未执行 TCP 检测')
+            (this.selectedPcVncGateway as VncGatewayView).repeaterMode).message ||
+            '尚未执行 Gateway 检查；TCP 端口测试不等于协议链路就绪')
             .fontSize(12).fontColor(this.pal().text3).width('100%').padding(12)
             .borderRadius(10).backgroundColor(this.pal().surface)
         }
@@ -1601,6 +1961,19 @@ export struct RustDeskRelayPage {
           .backgroundColor(this.pal().surface).fontColor(this.accentColor)
           .enabled(this.testingVncGatewayId === '')
           .onClick((): void => { void this.doTestVncGateway(gateway); })
+        Button(this.testingVncGatewayId === gateway.id && this.testingVncGatewayRequestId > 0
+          ? '取消深度' : '深度测试')
+          .layoutWeight(1).height(32).fontSize(11).borderRadius(8)
+          .backgroundColor(this.pal().surface).fontColor(this.accentColor)
+          .enabled(this.testingVncGatewayId === '' ||
+            (this.testingVncGatewayId === gateway.id && this.testingVncGatewayRequestId > 0))
+          .onClick((): void => {
+            if (this.testingVncGatewayRequestId > 0) {
+              this.cancelDeepTestVncGateway();
+            } else {
+              void this.doDeepTestVncGateway(gateway);
+            }
+          })
         Button('删除').layoutWeight(1).height(32).fontSize(11).borderRadius(8)
           .backgroundColor(this.pal().surface).fontColor(this.pal().danger).margin({ left: 7 })
           .onClick((): void => { this.doDeleteVncGateway(gateway); })
@@ -2178,6 +2551,20 @@ export struct RustDeskRelayPage {
           plainStorageConfirmed: boolean): void => {
           this.saveVncGateway(values, id, accessToken, plainStorageConfirmed);
         }
+      })
+    } else if (this.sheetContent === 11) {
+      VncCertificateTrustManagerSheet({
+        pendingEndpoint: this.pendingVncTrustEndpoint,
+        pendingFingerprintSha256: this.pendingVncTrustFingerprint,
+        canConfirmPending: (): boolean => this.canConfirmPendingVncTrust(),
+        onClose: (): void => { this.closeSheet(); },
+        onConfirmed: (): void => {
+          this.pendingVncTrustEndpoint = null;
+          this.pendingVncTrustFingerprint = '';
+          this.pendingVncTrustBinding = null;
+          this.closeSheet();
+        },
+        onRecheck: (_trust: VncTrustView, _hostId: string): void => { this.closeSheet(); }
       })
     } else if (this.sheetContent === 9) {
       RustDeskRelayConfigPasteSheet({

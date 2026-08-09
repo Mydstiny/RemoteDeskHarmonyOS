@@ -157,19 +157,26 @@ export function resolveRustDeskConnectionContext(
   const proofMatches: boolean =
     rustDeskControlPlaneCapabilityProofMatches(
       input.capabilityProof, binding);
-  const bindingVerified: boolean =
-    proofMatches || rustDeskControlPlaneBindingIdentity(binding).ok;
+  const identityVerified: boolean =
+    rustDeskControlPlaneBindingIdentity(binding).ok;
+  const proofProvided: boolean = input.capabilityProof !== undefined;
+  // A missing proof may use the same-deployment binding gate.  An explicitly
+  // present but untrusted proof must never be silently treated as missing.
+  const bindingVerified: boolean = proofProvided
+    ? proofMatches : identityVerified;
   // Without a trusted attestation, binding identity itself is the capability
   // source: the account token demonstrably came from the same API origin as
   // the configured relay. A locally fabricated proof is never accepted: if a
   // proof exists it must be trusted AND match this exact binding.
   const effectiveSource: RustDeskControlPlaneCapabilitySource =
-    capabilitySource === 'none' && bindingVerified
-      ? (profile === 'official_server_pro_token'
-        ? 'official_server_pro' : 'verified_third_party')
-      : (sourceFitsProfile && proofMatches ? capabilitySource : 'none');
+    proofProvided
+      ? (sourceFitsProfile && proofMatches ? capabilitySource : 'none')
+      : (identityVerified
+        ? (profile === 'official_server_pro_token'
+          ? 'official_server_pro' : 'verified_third_party')
+        : 'none');
   const verified: boolean = bindingVerified &&
-    (capabilitySource === 'none' || (sourceFitsProfile && proofMatches));
+    (!proofProvided || sourceFitsProfile);
   const accessToken: string = rustDeskControlPlaneTokenForConnection(
     profile, false, input.accessToken,
     verified ? effectiveSource : 'none');

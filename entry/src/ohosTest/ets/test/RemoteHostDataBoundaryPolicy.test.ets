@@ -11,20 +11,18 @@ import {
 
 export default function remoteHostDataBoundaryPolicyTest(): void {
   describe('RemoteHostDataBoundaryPolicy', (): void => {
-    it('cloud_extension_keeps_totp_reference_but_not_device_trust',
+    it('cloud_extension_strips_peer_totp_reference_and_device_trust',
       0, (): void => {
-        const projected = projectRemoteHostCloudExtension({
-          rustdesktotpentryid: 'totp-1',
-          rustdesktotpautosubmit: '1',
-          sshhostkeyfingerprintsha256: 'SHA256:local',
-          rdpcertificateallowhostmismatch: '1'
-        });
+        const source: Record<string, string> = {} as Record<string, string>;
+        source['rustdesktotpentryid'] = 'totp-1';
+        source['rustdesktotpautosubmit'] = '1';
+        source['sshhostkeyfingerprintsha256'] = 'SHA256:local';
+        source['rdpcertificateallowhostmismatch'] = '1';
+        const projected: Record<string, string> = projectRemoteHostCloudExtension(source);
         const decoded = decodeRemoteHostDisplayPayload(
           encodeRemoteHostDisplayPayload('{}', projected));
-        expect(decoded.extension['rustdesktotpentryid'])
-          .assertEqual('totp-1');
-        expect(decoded.extension['rustdesktotpautosubmit'])
-          .assertEqual('1');
+        expect(decoded.extension['rustdesktotpentryid']).assertUndefined();
+        expect(decoded.extension['rustdesktotpautosubmit']).assertUndefined();
         expect(decoded.extension[
           'sshhostkeyfingerprintsha256']).assertUndefined();
         expect(decoded.extension[
@@ -36,10 +34,11 @@ export default function remoteHostDataBoundaryPolicyTest(): void {
         const extracted = extractLegacyRemoteHostDeviceTrust(
           '{"_remoteDeskExtensionV1":{' +
           '"sshhostkeyfingerprintsha256":"cloud-old"}}');
-        const merged = mergeRemoteHostDeviceTrust(
-          { sshhostkeyfingerprintsha256: 'physical-old' },
-          extracted,
-          { sshhostkeyfingerprintsha256: 'local-new' });
+        const physical: Record<string, string> = {} as Record<string, string>;
+        physical['sshhostkeyfingerprintsha256'] = 'physical-old';
+        const local: Record<string, string> = {} as Record<string, string>;
+        local['sshhostkeyfingerprintsha256'] = 'local-new';
+        const merged = mergeRemoteHostDeviceTrust(physical, extracted, local);
         expect(merged['sshhostkeyfingerprintsha256'])
           .assertEqual('local-new');
       });

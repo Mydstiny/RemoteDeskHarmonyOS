@@ -9,7 +9,7 @@ import { common } from '@kit.AbilityKit';
 import { VncSettingsService } from '../services/VncSettingsService';
 import { VncHostService, VncHostView } from '../services/VncHostService';
 import { VncGatewayService, VncGatewayView } from '../services/VncGatewayService';
-import { VncTrustService, VncTrustView } from '../services/VncTrustService';
+import { VncTrustView } from '../services/VncTrustService';
 import { DataCrypto } from '../services/DataCrypto';
 import {
   VncSettingsValues,
@@ -25,10 +25,12 @@ import {
   VncColorDepth,
   VncLocalCursorMode
 } from '../services/VncModelPolicy';
-import { VncCloudSyncScope, vncCloudSyncScopes } from '../services/VncCloudSyncSelectionPolicy';
 import { Palette, buildDark, buildLight, AppTheme } from '../common/Theme';
 import { VncAddFlow } from '../components/hostadd/VncAddFlow';
+import { VncCertificateTrustManagerSheet } from '../components/VncCertificateTrustManagerSheet';
+import { buildVncTrustDirectory, VncTrustDirectoryItem } from '../services/VncTrustEndpointDirectory';
 import { SETTINGS_PANEL_DISMISS_TO_LEAF_OPEN_MS } from '../services/SettingsSheetRoutePolicy';
+import { isSelectableVncDefaultGateway, VncSelectableGateway } from '../services/VncHostDefaultsPolicy';
 
 @Entry
 @Component
@@ -73,7 +75,7 @@ export struct VncSettingsPage {
 
   @State hosts: VncHostView[] = [];
   @State gateways: VncGatewayView[] = [];
-  @State trusts: VncTrustView[] = [];
+  @State showTrustManagerSheet: boolean = false;
   @State hostFormVisible: boolean = false;
   @State hostFlowVisible: boolean = false;
   @State hostFlowEditingId: string = '';
@@ -109,18 +111,16 @@ export struct VncSettingsPage {
   @State gatewayEnabled: boolean = true;
   @State editingGatewayId: string = '';
   @State errorMessage: string = '';
-  @State cloudStatus: string = '本机数据加载中';
+  @State pendingDefaultGatewayCleanupId: string = '';
   @State cryptoReady: boolean = false;
   @State revision: number = 0;
 
   private readonly settings: VncSettingsService = VncSettingsService.getInstance();
   private readonly hostService: VncHostService = VncHostService.getInstance();
   private readonly gatewayService: VncGatewayService = VncGatewayService.getInstance();
-  private readonly trustService: VncTrustService = VncTrustService.getInstance();
   private settingsUnsubscribe: (() => void) | null = null;
   private hostUnsubscribe: (() => void) | null = null;
   private gatewayUnsubscribe: (() => void) | null = null;
-  private trustUnsubscribe: (() => void) | null = null;
   private cryptoUnsubscribe: (() => void) | null = null;
   private pageActive: boolean = false;
 
@@ -129,12 +129,6 @@ export struct VncSettingsPage {
   }
 
   private font(): string { return AppTheme.fontFamily; }
-
-  private redactedFingerprint(value: string): string {
-    const normalized: string = value.trim().toLowerCase();
-    if (normalized.length <= 12) { return normalized === '' ? '未知指纹' : '•••'; }
-    return normalized.substring(0, 8) + '…' + normalized.substring(normalized.length - 8);
-  }
 
   private topSafeHeightVp(): number {
     return this.topRectHeight > 0 ? px2vp(this.topRectHeight) : AppTheme.layout.statusBarH;
@@ -146,7 +140,6 @@ export struct VncSettingsPage {
     this.settings.init(context);
     this.hostService.init(context);
     this.gatewayService.init(context);
-    this.trustService.init(context);
     this.bindListeners();
     this.load();
   }
@@ -158,7 +151,6 @@ export struct VncSettingsPage {
     if (this.settingsUnsubscribe) { this.settingsUnsubscribe(); this.settingsUnsubscribe = null; }
     if (this.hostUnsubscribe) { this.hostUnsubscribe(); this.hostUnsubscribe = null; }
     if (this.gatewayUnsubscribe) { this.gatewayUnsubscribe(); this.gatewayUnsubscribe = null; }
-    if (this.trustUnsubscribe) { this.trustUnsubscribe(); this.trustUnsubscribe = null; }
     if (this.cryptoUnsubscribe) { this.cryptoUnsubscribe(); this.cryptoUnsubscribe = null; }
   }
 
@@ -176,11 +168,6 @@ export struct VncSettingsPage {
     if (this.gatewayUnsubscribe === null) {
       this.gatewayUnsubscribe = this.gatewayService.onChange((): void => {
         if (this.pageActive) { this.loadGateways(); }
-      });
-    }
-    if (this.trustUnsubscribe === null) {
-      this.trustUnsubscribe = this.trustService.onChange((): void => {
-        if (this.pageActive) { this.loadTrusts(); }
       });
     }
     if (this.cryptoUnsubscribe === null) {
@@ -224,11 +211,9 @@ export struct VncSettingsPage {
     this.syncGateways = values.syncGateways;
     this.syncSecrets = values.syncSecrets;
     this.syncTrust = values.syncTrust;
-    this.cloudStatus = this.settings.cloudSyncStatus();
     this.cryptoReady = DataCrypto.getInstance().isReady();
     this.loadHosts();
     this.loadGateways();
-    this.loadTrusts();
   }
 
   private loadHosts(): void {
@@ -241,9 +226,50 @@ export struct VncSettingsPage {
     this.revision += 1;
   }
 
-  private loadTrusts(): void {
-    this.trusts = this.trustService.list();
-    this.revision += 1;
+  private async clearDefaultGatewayReference(gatewayId: string): Promise<boolean> {
+    const normalizedId: string = gatewayId.trim();
+    if (normalizedId === '') { return true; }
+    const ok: boolean = await this.settings.clearDefaultGatewayIf(normalizedId);
+    if (ok) {
+      if (this.defaultGatewayId.trim() === normalizedId) { this.defaultGatewayId = ''; }
+      if (this.pendingDefaultGatewayCleanupId.trim() === normalizedId) {
+        this.pendingDefaultGatewayCleanupId = '';
+        this.errorMessage = '';
+      }
+      return true;
+    }
+    this.pendingDefaultGatewayCleanupId = normalizedId;
+    this.errorMessage = '默认 Gateway 引用清理失败，请重试；连接默认值仍保持待清理状态';
+    return false;
+  }
+
+  private async retryDefaultGatewayCleanup(): Promise<void> {
+    if (this.pendingDefaultGatewayCleanupId === '') { return; }
+    await this.clearDefaultGatewayReference(this.pendingDefaultGatewayCleanupId);
+  }
+
+  private selectableDefaultGateways(): VncGatewayView[] {
+    const userId: string = this.settings.getUserId();
+    const result: VncGatewayView[] = [];
+    for (let i = 0; i < this.gateways.length; i++) {
+      const gateway: VncGatewayView = this.gateways[i];
+      const selectable: VncSelectableGateway = {
+        id: gateway.id, userId: gateway.userId, transport: gateway.transport,
+        repeaterMode: gateway.repeaterMode, enabled: gateway.enabled
+      };
+      if (isSelectableVncDefaultGateway(selectable, userId)) { result.push(gateway); }
+    }
+    return result;
+  }
+
+  private defaultGatewayIsSelectable(): boolean {
+    const selected: string = this.defaultGatewayId.trim();
+    if (selected === '') { return false; }
+    const gateways: VncGatewayView[] = this.selectableDefaultGateways();
+    for (let i = 0; i < gateways.length; i++) {
+      if (gateways[i].id === selected) { return true; }
+    }
+    return false;
   }
 
   private numberValue(text: string, fallback: number): number {
@@ -301,7 +327,7 @@ export struct VncSettingsPage {
             : DataCrypto.getInstance().isSetupComplete()
               ? '应用加密已锁定。现有 AES-GCM 密文会保留并等待解锁；未解锁时不会覆盖云端。新密码可关闭“记住密码”后临时使用。'
               : '应用加密未启用。明确选择记住密码的 VNC 凭据可能以未加密形式进入 vncrecordv2；请确认风险。')
-          : 'trust 指纹只同步记录，不会自动信任新设备；每台新设备仍须人工确认。',
+          : '只同步 VNC 证书候选和元数据，不同步本机 confirmation marker；新设备仍须人工确认。',
         buttons: [{ text: '取消', color: this.pal().text2 }, { text: '确认开启', color: this.accentColor }]
       }).then((result: Object): void => {
         const values: Record<string, number> = result as Record<string, number>;
@@ -315,12 +341,17 @@ export struct VncSettingsPage {
   }
 
   private async persistSettings(): Promise<void> {
+    if (this.defaultTransport === 'ultravnc_repeater' && !this.defaultGatewayIsSelectable()) {
+      this.errorMessage = this.selectableDefaultGateways().length === 0
+        ? '没有可用的 mode12 Gateway；请先启用一个 VNC Gateway，或改用 TCP'
+        : '请选择当前账号下已启用的 mode12 Gateway，或改用 TCP';
+      return;
+    }
     const result =
       await this.settings.save(
         this.settingsValues());
     this.errorMessage = result.ok ? '' : result.message;
     if (result.ok) {
-      this.cloudStatus = this.settings.cloudSyncStatus();
       promptAction.showToast({ message: 'VNC 设置已保存', duration: 1600 });
     }
   }
@@ -377,6 +408,10 @@ export struct VncSettingsPage {
     saveWithPlaintextConsent(false);
   }
 
+  private async clearDefaultGatewayBeforeMutation(gatewayId: string): Promise<boolean> {
+    return await this.clearDefaultGatewayReference(gatewayId);
+  }
+
   private saveGateway(): void {
     const values: VncGatewayValues = {
       label: this.gatewayLabel,
@@ -389,7 +424,9 @@ export struct VncSettingsPage {
       tls: this.gatewayTls,
       enabled: this.gatewayEnabled
     };
-    const saveWithPlaintextConsent = (allowPlaintext: boolean): void => {
+    const saveWithPlaintextConsent = async (allowPlaintext: boolean): Promise<void> => {
+      if (!values.enabled && this.editingGatewayId.trim() !== '' &&
+        !await this.clearDefaultGatewayBeforeMutation(this.editingGatewayId)) { return; }
       const result = this.gatewayService.save(values, this.editingGatewayId, this.gatewayToken,
         allowPlaintext);
       if (!result.ok) { this.errorMessage = result.message; return; }
@@ -405,7 +442,7 @@ export struct VncSettingsPage {
         buttons: [{ text: '取消', color: this.pal().text2 }, { text: '确认保存', color: this.pal().danger }]
       }).then((dialog: Object): void => {
         const values: Record<string, number> = dialog as Record<string, number>;
-        if (values['index'] === 1) { saveWithPlaintextConsent(true); }
+        if (values['index'] === 1) { void saveWithPlaintextConsent(true); }
       });
       return;
     }
@@ -413,7 +450,7 @@ export struct VncSettingsPage {
       this.errorMessage = '应用加密已锁定；请先解锁后保存 Gateway 令牌，或留空保留现有令牌';
       return;
     }
-    saveWithPlaintextConsent(false);
+    void saveWithPlaintextConsent(false);
   }
 
   private deleteHost(host: VncHostView): void {
@@ -432,8 +469,18 @@ export struct VncSettingsPage {
       buttons: [{ text: '取消', color: this.pal().text2 }, { text: '删除', color: this.pal().danger }]
     }).then((result: Object): void => {
       const values: Record<string, number> = result as Record<string, number>;
-      if (values['index'] === 1 && this.gatewayService.remove(gateway.id)) { this.loadGateways(); }
+      if (values['index'] === 1) { void this.removeGatewayAfterConfirmation(gateway); }
     });
+  }
+
+  private async removeGatewayAfterConfirmation(gateway: VncGatewayView): Promise<void> {
+    if (!await this.clearDefaultGatewayBeforeMutation(gateway.id)) { return; }
+    if (!this.gatewayService.remove(gateway.id)) {
+      this.errorMessage = 'VNC Gateway 删除失败；默认引用已清除为直连，请重试';
+      return;
+    }
+    this.errorMessage = '';
+    this.loadGateways();
   }
 
   private editGateway(gateway: VncGatewayView): void {
@@ -574,40 +621,6 @@ export struct VncSettingsPage {
     this.gatewayTls = false; this.gatewayEnabled = true;
   }
 
-  private scopeChecked(scope: VncCloudSyncScope): boolean {
-    const selected: VncCloudSyncScope[] = this.settings.selectedScopes();
-    return selected.indexOf(scope) >= 0;
-  }
-
-  private scopeTitle(scope: VncCloudSyncScope): string {
-    if (scope === 'settings') { return 'VNC 设置'; }
-    if (scope === 'hosts') { return 'VNC 主机'; }
-    if (scope === 'gateways') { return 'VNC 网关与 Repeater'; }
-    if (scope === 'secrets') { return 'VNC 密码与令牌'; }
-    return 'VNC trust 指纹';
-  }
-
-  private scopeDescription(scope: VncCloudSyncScope): string {
-    if (scope === 'settings') { return '连接、显示和安全默认值'; }
-    if (scope === 'hosts') { return '不包含明文密码'; }
-    if (scope === 'gateways') { return '端点和配对能力，不包含令牌'; }
-    if (scope === 'secrets') { return '默认关闭；按“记住密码”策略保存，明文需再次确认'; }
-    return '只同步指纹记录，新设备不自动信任';
-  }
-
-  private toggleScope(scope: VncCloudSyncScope): void {
-    const selected: VncCloudSyncScope[] = this.settings.selectedScopes();
-    const next: VncCloudSyncScope[] = selected.indexOf(scope) >= 0
-      ? selected.filter((item: VncCloudSyncScope): boolean => item !== scope)
-      : selected.concat([scope]);
-    if (scope === 'secrets') { this.syncSecrets = next.indexOf('secrets') >= 0; }
-    if (scope === 'trust') { this.syncTrust = next.indexOf('trust') >= 0; }
-    if (scope === 'settings') { this.syncPreferences = next.indexOf('settings') >= 0; }
-    if (scope === 'hosts') { this.syncHosts = next.indexOf('hosts') >= 0; }
-    if (scope === 'gateways') { this.syncGateways = next.indexOf('gateways') >= 0; }
-    this.saveSettings();
-  }
-
   @Builder private header() {
     Row() {
       SymbolGlyph($r('sys.symbol.chevron_left')).fontSize(22).fontColor([this.pal().text])
@@ -666,7 +679,27 @@ export struct VncSettingsPage {
     Column() {
       this.cardTitle('连接与显示', '只影响 VNC；RDP、RustDesk 和 SSH 使用自己的设置')
       Text('默认传输').fontSize(12).fontColor(this.pal().text3).margin({ bottom: 6 })
-      this.transportChoices(this.defaultTransport, (value: VncTransport): void => { this.defaultTransport = value; })
+      this.transportChoices(this.defaultTransport, (value: VncTransport): void => {
+        this.defaultTransport = value;
+        if (value !== 'ultravnc_repeater') { this.defaultGatewayId = ''; }
+      })
+      if (this.defaultTransport === 'ultravnc_repeater') {
+        Text('默认 Gateway').fontSize(12).fontColor(this.pal().text3).margin({ top: 2, bottom: 6 })
+        if (this.selectableDefaultGateways().length === 0) {
+          Text('暂无可用的 mode12 Gateway；保存 Repeater 默认前请先启用 Gateway。')
+            .fontSize(11).fontColor(this.pal().danger).margin({ bottom: 8 })
+        } else {
+          Column() {
+            ForEach(this.selectableDefaultGateways(), (gateway: VncGatewayView): void => {
+              Button(gateway.label.trim() === '' ? gateway.host + ':' + gateway.port.toString() : gateway.label)
+                .width('100%').height(36).fontSize(12).borderRadius(8)
+                .backgroundColor(this.defaultGatewayId === gateway.id ? this.accentColor : this.pal().surface)
+                .fontColor(this.defaultGatewayId === gateway.id ? Color.White : this.pal().text2)
+                .onClick((): void => { this.defaultGatewayId = gateway.id; });
+            }, (gateway: VncGatewayView): string => gateway.id + ':' + this.revision.toString())
+          }.width('100%').margin({ bottom: 8 })
+        }
+      }
       this.input('默认端口', '5900', this.defaultPortText, (value: string): void => { this.defaultPortText = value; })
       this.input('连接超时', '10000 ms', this.connectTimeoutText, (value: string): void => { this.connectTimeoutText = value; })
       this.input('认证超时', '15000 ms', this.authTimeoutText, (value: string): void => { this.authTimeoutText = value; })
@@ -727,35 +760,6 @@ export struct VncSettingsPage {
           .onClick((): void => { this.securityPolicy = 'allow_plaintext'; })
       }.width('100%')
       Button('保存 VNC 设置').width('100%').height(42).margin({ top: 14 }).borderRadius(10)
-        .backgroundColor(this.accentColor).fontColor(Color.White).onClick((): void => { this.saveSettings(); })
-    }.width('100%').padding(16).borderRadius(18).backgroundColor(this.pal().card)
-      .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
-  }
-
-  @Builder private syncCard() {
-    Column() {
-      this.cardTitle('VNC 云同步', '唯一云表：vncrecordv2；本地覆盖表：vnclocalrecords')
-      Text(this.cloudStatus).fontSize(12).fontColor(this.pal().text3).fontFamily(this.font()).margin({ bottom: 10 })
-      ForEach(vncCloudSyncScopes(), (scope: VncCloudSyncScope) => {
-        Row() {
-          Checkbox().select(this.scopeChecked(scope)).selectedColor(this.accentColor)
-            .onChange((): void => { this.toggleScope(scope); })
-          Column() {
-            Text(this.scopeTitle(scope)).fontSize(14).fontColor(this.pal().text).fontFamily(this.font())
-            Text(this.scopeDescription(scope)).fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 3 })
-          }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 8 })
-        }.width('100%').padding({ top: 8, bottom: 8 })
-      }, (scope: VncCloudSyncScope): string => scope)
-      this.settingToggle('设置同步', '同步开关状态也只属于 VNC', this.syncPreferences,
-        (value: boolean): void => { this.syncPreferences = value; })
-      Row() {
-        Text('加密状态').fontSize(13).fontColor(this.pal().text2).layoutWeight(1)
-        Text(DataCrypto.getInstance().isReady() ? '已解锁：记住的凭据使用 AES-GCM 保存' :
-          (DataCrypto.getInstance().isSetupComplete() ? '已锁定：可临时连接，保存密文需解锁' :
-            '未启用：记住的凭据保存前需明确确认风险'))
-          .fontSize(11).fontColor(DataCrypto.getInstance().isReady() ? this.pal().success : this.pal().text3)
-      }.width('100%').margin({ top: 8 })
-      Button('保存同步选择').width('100%').height(40).margin({ top: 12 }).borderRadius(10)
         .backgroundColor(this.accentColor).fontColor(Color.White).onClick((): void => { this.saveSettings(); })
     }.width('100%').padding(16).borderRadius(18).backgroundColor(this.pal().card)
       .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
@@ -866,28 +870,39 @@ export struct VncSettingsPage {
       .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
   }
 
+  private openTrustManager(): void {
+    this.showTrustManagerSheet = true;
+  }
+
+  private recheckTrust(trust: VncTrustView, selectedHostId: string): void {
+    const directory: VncTrustDirectoryItem[] = buildVncTrustDirectory([trust], this.hostService.list(), this.gatewayService.list());
+    const directoryItem: VncTrustDirectoryItem | undefined = directory[0];
+    if (directoryItem === undefined || directoryItem.selectedHostId === '' ||
+      directoryItem.selectedHostId !== selectedHostId || directoryItem.status !== 'current') {
+      promptAction.showToast({ message: 'VNC endpoint 已变化或无法唯一定位，请从当前主机重新检查', duration: 2200 });
+      return;
+    }
+    const host: VncHostView | null = this.hostService.find(selectedHostId);
+    if (host === null) {
+      promptAction.showToast({ message: '找不到当前账号下的 VNC endpoint，请先确认主机或 Gateway 仍存在', duration: 2200 });
+      return;
+    }
+    this.showTrustManagerSheet = false;
+    setTimeout((): void => {
+      if (this.pageActive) {
+        router.pushUrl({ url: 'pages/RemoteDesktop', params: { vncHostId: host.id } });
+      }
+    }, 360);
+  }
+
   @Builder private trustCardSection() {
     Column() {
-      this.cardTitle('VNC trust', '仅显示已由用户确认的指纹；云恢复不会自动信任')
-      if (this.trusts.length === 0) {
-        Text('当前没有已确认的 TLS / VeNCrypt 指纹。首次连接时由 VNC 会话完成二次确认。')
-          .fontSize(12).fontColor(this.pal().text3).width('100%')
-      } else {
-        ForEach(this.trusts, (trust: VncTrustView) => {
-          Row() {
-            Column() {
-              Text(trust.ownerId).fontSize(13).fontColor(this.pal().text)
-              Text(this.redactedFingerprint(trust.fingerprintSha256)).fontSize(10).fontColor(this.pal().text3).fontFamily('monospace')
-                .maxLines(2).margin({ top: 3 })
-              Text(trust.confirmed ? '本设备已确认' : '待本设备重新确认')
-                .fontSize(10).fontColor(trust.confirmed ? this.pal().success : this.pal().danger)
-                .margin({ top: 3 })
-            }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-            Button('忘记').height(30).fontSize(11).borderRadius(7).backgroundColor(this.pal().surface)
-              .fontColor(this.pal().danger).onClick((): void => { this.trustService.remove(trust.id); })
-          }.width('100%').padding(10).borderRadius(10).backgroundColor(this.pal().surface).margin({ bottom: 7 })
-        }, (trust: VncTrustView): string => trust.id + ':' + this.revision.toString())
-      }
+      this.cardTitle('VNC TLS 证书信任', '统一在数据安全中查看、忘记和重新检查')
+      Text('主机与 Gateway 使用各自的 endpoint-bound 信任记录；云恢复只带候选和元数据，本机 confirmation marker 永不上传。')
+        .fontSize(12).fontColor(this.pal().text3).lineHeight(19).width('100%').margin({ bottom: 12 })
+      Button('打开 VNC TLS 证书信任管理').width('100%').height(42).borderRadius(10)
+        .backgroundColor(this.accentColor).fontColor(Color.White)
+        .onClick((): void => { this.openTrustManager(); })
     }.width('100%').padding(16).borderRadius(18).backgroundColor(this.pal().card)
       .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
   }
@@ -900,14 +915,19 @@ export struct VncSettingsPage {
           if (this.errorMessage !== '') {
             Text(this.errorMessage).fontSize(12).fontColor(this.pal().danger).fontFamily(this.font())
               .width('100%').padding(12).borderRadius(12).backgroundColor(this.pal().surface)
+            if (this.pendingDefaultGatewayCleanupId !== '') {
+              Button('重试清理默认 Gateway 引用').width('100%').height(38).borderRadius(9)
+                .backgroundColor(this.pal().surface).fontColor(this.accentColor)
+                .onClick((): void => { void this.retryDefaultGatewayCleanup(); })
+            }
           }
-          Text('主机、Gateway 与 trust 由 VNC owner 独立管理；默认设置和云同步范围请从主设置页的 VNC 分组进入。')
+          Text('主机、Gateway 与 trust 由 VNC owner 独立管理；默认设置请从主设置页的 VNC 分组进入。')
             .fontSize(12).fontColor(this.pal().text3).lineHeight(19).width('100%')
             .padding(12).borderRadius(12).backgroundColor(this.pal().surface)
           this.hostCardSection()
           this.gatewayDirectorySection()
           this.trustCardSection()
-          Text('VNC trust：首次 TLS/VeNCrypt 指纹必须由用户确认；云端恢复的 trust 记录不会自动变成信任。')
+          Text('VNC trust：首次 TLS/VeNCrypt 指纹必须由用户确认；云端恢复的候选记录不会自动变成信任。')
             .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).width('100%').padding({ left: 4, right: 4, bottom: 20 })
         }.width('100%').padding({ left: 16, right: 16, bottom: 24 })
       }.layoutWeight(1).scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
@@ -924,5 +944,22 @@ export struct VncSettingsPage {
         maskColor: 'rgba(0,0,0,0.4)',
         onDisappear: (): void => { this.finishHostFlowDismiss(); }
       })
+      .bindSheet($$this.showTrustManagerSheet, this.trustManagerSheet(), {
+        height: SheetSize.LARGE,
+        preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
+        dragBar: this.breakpoint === 'sm',
+        backgroundColor: this.pal().sheetBg,
+        blurStyle: BlurStyle.NONE,
+        showClose: false,
+        maskColor: 'rgba(0,0,0,0.4)',
+        onDisappear: (): void => { this.showTrustManagerSheet = false; }
+      })
+  }
+
+  @Builder private trustManagerSheet() {
+    VncCertificateTrustManagerSheet({
+      onClose: (): void => { this.showTrustManagerSheet = false; },
+      onRecheck: (trust: VncTrustView, hostId: string): void => { this.recheckTrust(trust, hostId); }
+    })
   }
 }

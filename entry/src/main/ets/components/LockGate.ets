@@ -1,10 +1,9 @@
 /**
- * LockGate.ets — 生物识别锁认证门 (v10)
+ * LockGate.ets — 生物识别锁认证门。
  *
- * 官方原生逻辑: 将设备支持的所有认证类型一次性传入,
- * 系统Widget自动处理级联: 人脸→指纹→密码 (无需应用层编排)
- * - 三样都不支持 → 12500010 (未录入认证信息)
- * - lockType 非 'biometric'/'' → 直接通过
+ * UserAuthInstance 是系统级资源，不允许多个业务同时 start，也不能只
+ * resolve Promise 而把 result listener 留在实例上。这里把所有调用串成
+ * single-flight 队列，并把实例清理绑定到唯一的 finish 路径。
  */
 import { Palette, buildDark, buildLight } from '../common/Theme';
 import { userAuth } from '@kit.UserAuthenticationKit';
@@ -16,83 +15,138 @@ export class LockGateResult {
   errMsg: string = '';
 }
 
-export function showLockGate(label: string, lockType: string): Promise<LockGateResult> {
-  return new Promise((resolve) => {
-    if (lockType === 'biometric' || lockType === '') {
-      const title: string = label || '验证身份';
-      const challenge: Uint8Array = new Uint8Array(16);
-      for (let i = 0; i < 16; i++) { challenge[i] = (i + 1) as number; }
+interface LockGateRequest {
+  label: string;
+  resolve: (result: LockGateResult) => void;
+}
 
-      // 检测设备支持的认证类型
-      const types: userAuth.UserAuthType[] = [];
-      let hasBio: boolean = false;
-      let pinOk: boolean = false;
+class LockGateResultCallback {
+  onResult: (result: userAuth.UserAuthResult) => void =
+    (_result: userAuth.UserAuthResult): void => {};
+}
 
-      try {
-        userAuth.getAvailableStatus(userAuth.UserAuthType.FACE, userAuth.AuthTrustLevel.ATL1);
-        types.push(userAuth.UserAuthType.FACE);
-        hasBio = true;
-      } catch { /* FACE不可用 */ }
-      try {
-        userAuth.getAvailableStatus(userAuth.UserAuthType.FINGERPRINT, userAuth.AuthTrustLevel.ATL1);
-        types.push(userAuth.UserAuthType.FINGERPRINT);
-        hasBio = true;
-      } catch { /* FINGERPRINT不可用 */ }
-      try {
-        userAuth.getAvailableStatus(userAuth.UserAuthType.PIN, userAuth.AuthTrustLevel.ATL1);
-        types.push(userAuth.UserAuthType.PIN);
-        pinOk = true;
-      } catch { /* PIN不可用 */ }
+// ArkTS does not support the TypeScript utility type ReturnType in all
+// DevEco compiler versions. Keep the small API surface we actually use here
+// instead of depending on a compiler-only inferred type.
+interface LockGateAuthInstance {
+  on(event: string, callback: Object): void;
+  off(event: string, callback: Object): void;
+  start(): void;
+  cancel(): void;
+}
 
-      // 三个都没有 → 未录入
-      if (types.length === 0) {
-        resolve({ ok: false, code: 12500010, errMsg: '[showLockGate] 未录入认证信息' });
+const lockGateQueue: LockGateRequest[] = [];
+let lockGateRunning: boolean = false;
+
+function isUnsupportedAuthResult(code: number): boolean {
+  return code === 12500005 || code === 12500006 || code === 12500010;
+}
+
+function pumpLockGate(): void {
+  if (lockGateRunning || lockGateQueue.length === 0) {
+    return;
+  }
+  lockGateRunning = true;
+  const request: LockGateRequest | undefined = lockGateQueue.shift();
+  if (request === undefined) {
+    lockGateRunning = false;
+    return;
+  }
+
+  const challenge: Uint8Array = new Uint8Array(16);
+  for (let i = 0; i < 16; i++) { challenge[i] = (i + 1) as number; }
+  const widgetParam: userAuth.WidgetParam = { title: request.label || '验证身份' };
+  const candidates: userAuth.UserAuthType[] = [
+    userAuth.UserAuthType.FACE,
+    userAuth.UserAuthType.FINGERPRINT,
+    userAuth.UserAuthType.PIN
+  ];
+
+  let finished: boolean = false;
+  const finishRequest = (result: LockGateResult): void => {
+    if (finished) { return; }
+    finished = true;
+    lockGateRunning = false;
+    request.resolve(result);
+    setTimeout((): void => { pumpLockGate(); }, 0);
+  };
+
+  const tryCandidate = (index: number, lastCode: number, lastMessage: string): void => {
+    if (finished) { return; }
+    if (index >= candidates.length) {
+      finishRequest({ ok: false, code: lastCode, errMsg: lastMessage });
+      return;
+    }
+    const authParam: userAuth.AuthParam = {
+      challenge: challenge,
+      authType: [candidates[index]],
+      authTrustLevel: userAuth.AuthTrustLevel.ATL1
+    };
+    let instance: LockGateAuthInstance | undefined;
+    const callback: LockGateResultCallback = new LockGateResultCallback();
+    let settledInstance: boolean = false;
+    const cleanupInstance = (): void => {
+      if (instance === undefined) { return; }
+      try { instance.off('result', callback); } catch (_e) { /* API 23 may reject late off */ }
+      try { instance.cancel(); } catch (_e) { /* completed/cancelled instances are idempotent */ }
+      instance = undefined;
+    };
+    const settleInstance = (result: LockGateResult, nextIndex: number = -1): void => {
+      if (settledInstance || finished) { return; }
+      settledInstance = true;
+      cleanupInstance();
+      if (nextIndex >= 0) {
+        tryCandidate(nextIndex, result.code, result.errMsg);
+      } else {
+        finishRequest(result);
+      }
+    };
+    callback.onResult = (result: userAuth.UserAuthResult): void => {
+      const code: number = result.result as number;
+      if (code === userAuth.UserAuthResultCode.SUCCESS) {
+        settleInstance({ ok: true, code: 0, errMsg: '' });
+      } else if (isUnsupportedAuthResult(code)) {
+        settleInstance({ ok: false, code: code, errMsg: '' }, index + 1);
+      } else {
+        settleInstance({ ok: false, code: code, errMsg: '' });
+      }
+    };
+    try {
+      instance = userAuth.getUserAuthInstance(authParam, widgetParam) as LockGateAuthInstance;
+      if (!instance || typeof instance.start !== 'function') {
+        settleInstance({ ok: false, code: -1, errMsg: 'UserAuthInstance 不可用' }, index + 1);
         return;
       }
-
-      // 一次性传入所有可用类型, 系统Widget原生处理级联
-      const typesStr: string = '[' + types.map((t: userAuth.UserAuthType) => t as number).join(',') + ']';
-      const ap: userAuth.AuthParam = {
-        challenge: challenge,
-        authType: types,
-        authTrustLevel: userAuth.AuthTrustLevel.ATL1
-      };
-      const wp: userAuth.WidgetParam = { title: title };
-
-      try {
-        const inst = userAuth.getUserAuthInstance(ap, wp);
-        if (!inst || typeof inst.start !== 'function') {
-          resolve({ ok: false, code: -1, errMsg: '[showLockGate] getInstance null types=' + typesStr });
-          return;
-        }
-        inst.on('result', {
-          onResult: (result: userAuth.UserAuthResult) => {
-            if (result.result === userAuth.UserAuthResultCode.SUCCESS) {
-              resolve({ ok: true, code: 0, errMsg: '' });
-            } else {
-              resolve({ ok: false, code: result.result as number,
-                errMsg: '[showLockGate] code=' + (result.result as number) + ' types=' + typesStr });
-            }
-          }
-        });
-        inst.start();
-      } catch (err) {
-        const be: BusinessError = err as BusinessError;
-        resolve({ ok: false, code: -1,
-          errMsg: '[showLockGate] getInstance: code=' + be.code + ' msg=' + be.message + ' types=' + typesStr });
-      }
-    } else {
-      resolve({ ok: true, code: 0, errMsg: '' });
+      instance.on('result', callback);
+      instance.start();
+    } catch (err) {
+      const businessError: BusinessError = err as BusinessError;
+      const code: number = typeof businessError.code === 'number' ? businessError.code : -1;
+      const message: string = typeof businessError.message === 'string' ? businessError.message : '';
+      settleInstance({ ok: false, code: code, errMsg: message }, index + 1);
     }
+  };
+
+  tryCandidate(0, 12500010, '');
+}
+
+export function showLockGate(label: string, lockType: string): Promise<LockGateResult> {
+  if (lockType !== 'biometric' && lockType !== '') {
+    const result: LockGateResult = new LockGateResult();
+    result.ok = true;
+    return Promise.resolve(result);
+  }
+  return new Promise((resolve: (result: LockGateResult) => void): void => {
+    lockGateQueue.push({ label: label || '验证身份', resolve: resolve });
+    pumpLockGate();
   });
 }
 
 /** 根据认证失败的错误码返回用户友好的提示消息 */
 export function lockGateErrorMessage(r: LockGateResult): string {
-  if (r.errMsg !== '') { return r.errMsg; }
   const code: number = r.code;
   switch (code) {
-    case -1: return r.errMsg !== '' ? r.errMsg : '认证服务启动失败';
+    case -1: return '系统身份认证启动失败，请检查设备 PIN/生物识别设置后重试';
     case 12500003: return ''; // 用户取消
     case 12500004: return '认证超时';
     case 12500005: return '设备不支持该认证方式';
@@ -101,7 +155,7 @@ export function lockGateErrorMessage(r: LockGateResult): string {
     case 12500009: return '认证器已锁定，请稍后重试';
     case 12500010: return '未录入认证信息，请先在设置中录入';
     case 12500013: return 'PIN码已过期';
-    default: return '认证失败 (code: ' + code + ')';
+    default: return r.errMsg !== '' ? r.errMsg : '认证失败 (code: ' + code + ')';
   }
 }
 

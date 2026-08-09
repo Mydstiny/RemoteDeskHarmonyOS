@@ -43,7 +43,8 @@ export function hasRemoteSessionPipVideo(
   rendererReady: boolean,
   surfaceReady: boolean,
   decoderReady: boolean,
-  rdpFrameReady: boolean
+  rdpFrameReady: boolean,
+  vncFrameReady: boolean = false
 ): boolean {
   if (!rendererReady || !surfaceReady) {
     return false;
@@ -51,7 +52,36 @@ export function hasRemoteSessionPipVideo(
   if (protocol === 'rdp') {
     return rdpFrameReady;
   }
+  if (protocol === 'vnc') {
+    return vncFrameReady;
+  }
   return decoderReady;
+}
+
+/**
+ * RustDesk PIP migration must be based on a frame that reached the renderer.
+ * A received/decoded frame alone can still be queued against the old Surface.
+ */
+export function hasRustDeskPresentedFrame(
+  receivedFrames: number,
+  presentedFrames: number,
+  width: number,
+  height: number
+): boolean {
+  return receivedFrames > 0 && presentedFrames > 0 && width > 0 && height > 0;
+}
+
+/**
+ * VNC delivers complete RAW BGRA frames directly to the renderer. Its
+ * presentation counter is therefore the source of truth; no decoder or
+ * received-frame counter is involved in VNC readiness.
+ */
+export function hasVncPresentedFrame(
+  presentedFrames: number,
+  width: number,
+  height: number
+): boolean {
+  return presentedFrames > 0 && width > 0 && height > 0;
 }
 
 /**
@@ -79,6 +109,20 @@ export function shouldCreatePreauthenticatedRustDeskPipeline(
   rendererReady: boolean
 ): boolean {
   return preAuthenticated && protocol === 'rustdesk' && !decoderReady && !rendererReady;
+}
+
+/**
+ * A RustDesk decoder owns callbacks into the renderer's GL context. Stop that
+ * pipeline before the page renderer is moved to the independent PIP surface;
+ * destroying the renderer first leaves hardware NativeImage callbacks bound
+ * to a stale EGL owner. Software decoding follows the same ordered handoff so
+ * both codec paths retain one lifecycle contract.
+ */
+export function shouldDetachRustDeskDecoderBeforePipTransfer(
+  protocol: string,
+  decoderReady: boolean
+): boolean {
+  return protocol === 'rustdesk' && decoderReady;
 }
 
 /**

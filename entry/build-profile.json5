@@ -3,7 +3,7 @@
   "buildOption": {
     "externalNativeOptions": {
       "path": "./src/main/cpp/CMakeLists.txt",
-      "arguments": "-DUSE_REAL_FREERDP=ON",
+      "arguments": "-DUSE_REAL_FREERDP=ON -DRDP_BUILD_CALLBACK_TESTS=OFF -DRDP_BUILD_TESTS=OFF -DRDP_STRICT_WARNINGS=ON",
       "cppFlags": "",
       "abiFilters": ["arm64-v8a", "x86_64"]
     },
@@ -35,7 +35,17 @@
     },
     {
       "name": "ohosTest",
-      "runtimeOS": "HarmonyOS"
+      "runtimeOS": "HarmonyOS",
+      "config": {
+        "buildOption": {
+          "externalNativeOptions": {
+            "path": "./src/ohosTest/cpp/CMakeLists.txt",
+            "arguments": "-DUSE_REAL_FREERDP=ON -DRDP_STRICT_WARNINGS=ON -DRDP_OHOS_TEST_NATIVE_CALLBACK_ENTRY=ON",
+            "cppFlags": "",
+            "abiFilters": ["arm64-v8a", "x86_64"]
+          }
+        }
+      }
     }
   ]
 }

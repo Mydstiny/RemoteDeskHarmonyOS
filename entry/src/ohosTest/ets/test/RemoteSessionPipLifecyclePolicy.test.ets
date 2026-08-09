@@ -7,8 +7,11 @@ import {
   RemoteSessionPipLifecycleAction,
   hasRemoteSessionPipVideo,
   hasRdpRemoteSessionPipFrame,
+  hasRustDeskPresentedFrame,
+  hasVncPresentedFrame,
   shouldPrepareRemoteSessionPip,
   shouldCreatePreauthenticatedRustDeskPipeline,
+  shouldDetachRustDeskDecoderBeforePipTransfer,
   resolveRemoteSessionPipLifecycle,
   resolveRemoteSessionPipContentSize
 } from '../../../main/ets/services/RemoteSessionPipLifecyclePolicy';
@@ -44,6 +47,11 @@ export default function remoteSessionPipLifecyclePolicyTest(): void {
       expect(hasRemoteSessionPipVideo('rdp', true, true, false, false)).assertFalse();
     });
 
+    it('uses_the_vnc_presented_frame_instead_of_a_decoder_handle', 0, (): void => {
+      expect(hasRemoteSessionPipVideo('vnc', true, true, false, false, true)).assertTrue();
+      expect(hasRemoteSessionPipVideo('vnc', true, true, false, false, false)).assertFalse();
+    });
+
     it('accepts_rdp_owned_frame_before_graphics_metadata', 0, (): void => {
       expect(hasRdpRemoteSessionPipFrame(1, 4096)).assertTrue();
       expect(hasRdpRemoteSessionPipFrame(1, 0)).assertFalse();
@@ -55,12 +63,30 @@ export default function remoteSessionPipLifecyclePolicyTest(): void {
       expect(hasRemoteSessionPipVideo('rustdesk', true, true, false, true)).assertFalse();
     });
 
+    it('requires_a_presented_rustdesk_frame_before_pip_transfer', 0, (): void => {
+      expect(hasRustDeskPresentedFrame(1, 0, 1920, 1080)).assertFalse();
+      expect(hasRustDeskPresentedFrame(1, 1, 0, 1080)).assertFalse();
+      expect(hasRustDeskPresentedFrame(1, 1, 1920, 1080)).assertTrue();
+    });
+
+    it('requires_a_presented_vnc_frame_before_pip_transfer', 0, (): void => {
+      expect(hasVncPresentedFrame(0, 1920, 1080)).assertFalse();
+      expect(hasVncPresentedFrame(1, 0, 1080)).assertFalse();
+      expect(hasVncPresentedFrame(1, 1920, 1080)).assertTrue();
+    });
+
     it('creates_the_pre_authenticated_pipeline_only_once', 0, (): void => {
       expect(shouldCreatePreauthenticatedRustDeskPipeline(true, 'rustdesk', false, false)).assertTrue();
       expect(shouldCreatePreauthenticatedRustDeskPipeline(true, 'rustdesk', true, false)).assertFalse();
       expect(shouldCreatePreauthenticatedRustDeskPipeline(true, 'rustdesk', false, true)).assertFalse();
       expect(shouldCreatePreauthenticatedRustDeskPipeline(false, 'rustdesk', false, false)).assertFalse();
       expect(shouldCreatePreauthenticatedRustDeskPipeline(true, 'rdp', false, false)).assertFalse();
+    });
+
+    it('detaches_the_rustdesk_decoder_before_moving_the_pip_renderer', 0, (): void => {
+      expect(shouldDetachRustDeskDecoderBeforePipTransfer('rustdesk', true)).assertTrue();
+      expect(shouldDetachRustDeskDecoderBeforePipTransfer('rustdesk', false)).assertFalse();
+      expect(shouldDetachRustDeskDecoderBeforePipTransfer('rdp', true)).assertFalse();
     });
 
     it('uses_remote_video_dimensions_for_content_ratio', 0, (): void => {

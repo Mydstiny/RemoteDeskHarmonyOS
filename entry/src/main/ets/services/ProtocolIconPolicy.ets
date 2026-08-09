@@ -10,6 +10,7 @@ export type ProtocolIconKey =
   | 'rustdesk'
   | 'ssh'
   | 'vnc'
+  | 'moonlight'
   | 'rustdesk_relay'
   | 'vnc_gateway'
   | 'key_vault'
@@ -23,9 +24,11 @@ export function protocolIcon(key: ProtocolIconKey): Resource {
     case 'rustdesk':
       return $r('sys.symbol.cloud_fill');
     case 'ssh':
-      return $r('sys.symbol.desktop_fill');
+      return $r('sys.symbol.code_square');
     case 'vnc':
       return $r('sys.symbol.display');
+    case 'moonlight':
+      return $r('sys.symbol.gamecontroller_fill');
     case 'rustdesk_relay':
       return $r('sys.symbol.cloud_fill');
     case 'vnc_gateway':
@@ -47,6 +50,7 @@ export function protocolIconLabel(key: ProtocolIconKey): string {
     case 'rustdesk': return 'RustDesk';
     case 'ssh': return 'SSH';
     case 'vnc': return 'VNC';
+    case 'moonlight': return 'Moonlight';
     case 'rustdesk_relay': return 'RustDesk 中继';
     case 'vnc_gateway': return 'VNC Gateway';
     case 'key_vault': return '密钥保险库';

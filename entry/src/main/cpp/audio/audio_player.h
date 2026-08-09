@@ -2,9 +2,9 @@
  * audio_player.h — 低延迟音频播放器
  *
  * 基于 OHAudio (OH_AudioRenderer) 的 PCM 音频播放器。
- * 使用 FAST 延迟模式，适合远程桌面实时音频场景。
+ * 使用普通延迟模式配合远程桌面 PCM 抖动缓冲，避免高频空拉取与视频解码争用。
  *
- * 参数: 48kHz, 双声道, 16-bit PCM, 低延迟模式
+ * 参数: 48kHz, 双声道, 16-bit PCM, 普通延迟模式
  */
 
 #include <napi/native_api.h>
@@ -21,6 +21,10 @@
 #include <ohaudio/native_audiostream_base.h>
 
 #include "audio_queue_policy.h"
+#include "render/callback_admission_context.h"
+#include "render/decoder_callback_gate.h"
+#include "render/platform_lifecycle.h"
+#include "render/video_perf_counters.h"
 
 /** 音频播放器状态 */
 enum class AudioPlayerState {
@@ -48,9 +52,9 @@ enum class AudioPlayerError {
  * 每个远程桌面连接创建一个实例。
  * 通过 AudioDataCallback 从协议后端接收 PCM 数据。
  */
-class AudioPlayer {
+class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
 public:
-    AudioPlayer();
+    explicit AudioPlayer(Render::DecoderSessionIdentity owner = {});
     ~AudioPlayer();
 
     /**
@@ -69,6 +73,11 @@ public:
      */
     int Write(const uint8_t* data, size_t size);
 
+    /** Bind the opaque registry token before the platform stream starts. */
+    bool BindCallbackHandle(int64_t handle);
+    /** Close platform callback admission before registry/object teardown. */
+    void BeginCallbackTeardown();
+
     /** 暂停播放 */
     void Pause();
 
@@ -78,14 +87,36 @@ public:
     /** 停止播放 */
     void Stop();
 
+    /** Suspend after monotonic audio inactivity; clear queue and prebuffer. */
+    void SuspendForInactivity();
+
     /** 销毁播放器，释放资源 */
     void Destroy();
 
     /** 获取当前状态 */
-    AudioPlayerState GetState() const { return state_; }
+    AudioPlayerState GetState() const;
 
     /** 是否正在运行 */
-    bool IsRunning() const { return state_ == AudioPlayerState::RUNNING; }
+    bool IsRunning() const;
+
+#if defined(RDP_NATIVE_CALLBACK_TESTING)
+    using TestWriteCallback = std::function<void(void*, int32_t)>;
+    void* CallbackUserDataForTesting() const { return callbackContext_.get(); }
+    std::shared_ptr<Render::CallbackAdmissionContext> CallbackContextForTesting() const {
+        return callbackContext_;
+    }
+    void SetWriteCallbackForTesting(TestWriteCallback callback) {
+        writeCallbackGate_.Set(std::move(callback));
+    }
+    bool HoldCallbackAdmissionForTesting();
+    void ReleaseCallbackAdmissionForTesting();
+    void MarkPlatformResourceLiveForTesting();
+    int PlatformResourceDestroyCountForTesting() const;
+    static OH_AudioData_Callback_Result InvokeWriteCallbackForTesting(
+        void* userData, void* audioData, int32_t audioDataSize) {
+        return OnWriteData(nullptr, userData, audioData, audioDataSize);
+    }
+#endif
 
     int SampleRate() const { return sampleRate_; }
     int Channels() const { return channels_; }
@@ -95,6 +126,7 @@ private:
     OH_AudioStreamBuilder* builder_;      // 流构建器
     int                   sampleRate_;
     int                   channels_;
+    const Render::DecoderSessionIdentity owner_;
     AudioPlayerState      state_;
     std::mutex            bufferMutex_;
     std::vector<uint8_t>  pcmBuffer_;
@@ -111,8 +143,29 @@ private:
     std::atomic<uint64_t> silenceBytes_ {0};
     std::atomic<uint64_t> droppedBytes_ {0};
     std::atomic<uint64_t> lastDiagMs_ {0};
+    using AudioWriteCallback = std::function<void(void*, int32_t)>;
+    DecoderCallbackGate<AudioWriteCallback> writeCallbackGate_;
+    std::shared_ptr<Render::CallbackAdmissionContext> callbackContext_;
+    std::shared_ptr<std::atomic<int>> callbackResourceDestroyCount_ =
+        std::make_shared<std::atomic<int>>(0);
+#if defined(RDP_NATIVE_CALLBACK_TESTING)
+    std::unique_ptr<Render::CallbackAdmissionContext::Lease> callbackTestLease_;
+    bool testPlatformResourceLive_ = false;
+#endif
+    Render::PlatformLifecycle platformLifecycle_;
+    mutable std::mutex lifecycleMutex_;
+    bool rendererStopped_ = false;
+    bool destroying_ = false;
+    bool suspendedForInactivity_ = false;
+    // A shared-owned Init must keep the object alive after Destroy hands the
+    // platform-resource cleanup back to the Init thread.  This is a one-shot
+    // handoff hold, not a permanent self-cycle; every Init completion path
+    // clears it before returning.
+    std::shared_ptr<AudioPlayer> initLifetimeHold_;
 
     bool CreateStream();
+    void CompleteDeferredDestroyOnInitOwner();
+    void ReleaseInitLifetimeHold();
     int FillAudioBuffer(void* audioData, int32_t audioDataSize);
     size_t FrameBytes() const;
     size_t QueuedBytesLocked() const;
@@ -129,12 +182,28 @@ private:
 namespace AudioPlayerNapi {
     napi_value Init(napi_env env, napi_value exports);
     int DispatchActiveNative(const uint8_t* data, size_t size, int sampleRate, int channels);
+    int DispatchActiveNative(const Render::DecoderSessionIdentity& owner,
+                             const uint8_t* data, size_t size, int sampleRate, int channels);
     void DestroyActiveNative();
     std::shared_ptr<AudioPlayer> TakeActiveNative();
+    std::shared_ptr<AudioPlayer> TakeActiveNative(const Render::DecoderSessionIdentity& owner);
+    void SetActiveSessionOwner(const Render::DecoderSessionIdentity& owner);
+    void ClearActiveSessionOwner(const Render::DecoderSessionIdentity& owner);
     void DestroyDetachedNative(int64_t handle, std::shared_ptr<AudioPlayer> activePlayer);
+    void DestroyDetachedNative(int64_t handle, std::shared_ptr<AudioPlayer> activePlayer,
+                               const Render::DecoderSessionIdentity& owner);
     bool IsActivePlaybackReceiving();
+    bool PollActiveAudioInactivity(const Render::DecoderSessionIdentity& owner,
+                                   uint64_t nowMs);
+    bool SuspendActiveNative(const Render::DecoderSessionIdentity& owner);
     bool IsActiveAudioMuted();
     void SetActiveAudioMuted(bool muted);
+#if defined(RDP_NATIVE_CALLBACK_TESTING)
+    std::shared_ptr<AudioPlayer> RegisterCallbackTestPlayer(
+        const Render::DecoderSessionIdentity& owner, int64_t& handle);
+    void DestroyCallbackTestPlayer(int64_t handle,
+                                   const Render::DecoderSessionIdentity& owner);
+#endif
 }
 
 #endif // AUDIO_PLAYER_H

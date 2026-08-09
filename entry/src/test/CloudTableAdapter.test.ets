@@ -12,6 +12,7 @@ import {
   extractLegacyRemoteHostDeviceTrust,
   mergeRemoteHostDeviceTrust
 } from '../main/ets/services/RemoteHostDeviceTrustPolicy';
+import { TotpEntry } from '../main/ets/model/TotpEntry';
 
 describe('CloudTableAdapter', (): void => {
   it('projects remote host password to the existing passward cloud field', (): void => {
@@ -65,10 +66,11 @@ describe('CloudTableAdapter', (): void => {
       rustdeskproaccountid: 'account-1',
       rustdesktargetdevice: 'phone',
       rustdeskadaptiveorientation: '1',
-      rustdesktotpentryid: 'totp-1',
-      rustdesktotpautosubmit: '1',
       rdpauthmode: 'restricted_admin',
       rdprestrictedadminsecretsource: 'ntlm_hash',
+      rdpendpointmode: 'microsoft_rd_gateway',
+      rdpgatewaytransport: 'no-websockets',
+      rdpgatewayservername: 'gateway.example.test',
       sshhostkeyfingerprintsha256: 'must-stay-local',
       rdpcertificateallowhostmismatch: '1',
       rdprestrictedadminhash: '0123456789ABCDEF0123456789ABCDEF',
@@ -82,13 +84,16 @@ describe('CloudTableAdapter', (): void => {
     const decoded = decodeRemoteHostDisplayPayload(encoded);
     expect(decoded.extension['rustdeskdirectport']).assertEqual('21117');
     expect(decoded.extension['sshproxytype']).assertEqual('socks5');
-    expect(decoded.extension['rustdeskproaccountid']).assertEqual('account-1');
+    expect(decoded.extension['rustdeskproaccountid']).assertUndefined();
     expect(decoded.extension['rustdesktargetdevice']).assertEqual('phone');
     expect(decoded.extension['rustdeskadaptiveorientation']).assertEqual('1');
-    expect(decoded.extension['rustdesktotpentryid']).assertEqual('totp-1');
-    expect(decoded.extension['rustdesktotpautosubmit']).assertEqual('1');
+    expect(decoded.extension['rustdesktotpentryid']).assertUndefined();
+    expect(decoded.extension['rustdesktotpautosubmit']).assertUndefined();
     expect(decoded.extension['rdpauthmode']).assertEqual('restricted_admin');
     expect(decoded.extension['rdprestrictedadminsecretsource']).assertEqual('ntlm_hash');
+    expect(decoded.extension['rdpendpointmode']).assertEqual('microsoft_rd_gateway');
+    expect(decoded.extension['rdpgatewaytransport']).assertEqual('no-websockets');
+    expect(decoded.extension['rdpgatewayservername']).assertEqual('gateway.example.test');
     expect(decoded.extension['rdprestrictedadminhash']).assertUndefined();
     expect(decoded.extension['password']).assertUndefined();
     expect(decoded.extension['sshkeypassphrase']).assertUndefined();
@@ -99,15 +104,26 @@ describe('CloudTableAdapter', (): void => {
     expect(decoded.displayConfigJson.indexOf('"width":1920') >= 0).assertTrue();
   });
 
+  it('keeps RDP Gateway route fields out of the fixed cloud table schema', (): void => {
+    const columns: string[] = cloudTableColumns('remotehosts');
+    expect(columns.indexOf('rdpendpointmode')).assertEqual(-1);
+    expect(columns.indexOf('rdpgatewaytransport')).assertEqual(-1);
+    expect(columns.indexOf('rdpgatewayservername')).assertEqual(-1);
+  });
+
   it('extracts_legacy_device_trust_only_for_local_migration', (): void => {
     const legacy: string =
       '{"width":1280,"_remoteDeskExtensionV1":{' +
       '"sshhostkeyfingerprintsha256":"SHA256:old",' +
       '"sshhostkeytrustedat":"100",' +
+      '"rdpcertificatenotbeforems":"1000",' +
+      '"rdpgatewaycertificatenotafterms":"2000",' +
       '"rustdeskdirecthost":"192.0.2.4"}}';
     const extracted = extractLegacyRemoteHostDeviceTrust(legacy);
     expect(extracted['sshhostkeyfingerprintsha256'])
       .assertEqual('SHA256:old');
+    expect(extracted['rdpcertificatenotbeforems']).assertEqual('1000');
+    expect(extracted['rdpgatewaycertificatenotafterms']).assertEqual('2000');
     expect(extracted['rustdeskdirecthost'])
       .assertUndefined();
     const merged = mergeRemoteHostDeviceTrust(
@@ -123,5 +139,25 @@ describe('CloudTableAdapter', (): void => {
     const decoded = decodeRemoteHostDisplayPayload(legacy);
     expect(decoded.displayConfigJson).assertEqual(legacy);
     expect(Object.keys(decoded.extension).length).assertEqual(0);
+  });
+
+  it('keeps_totpentries_schema_exact_and_brand_fields_local_only', (): void => {
+    const expected: string[] = [
+      'id', 'userid', 'issuer', 'account', 'displayname', 'secret', 'algorithm', 'digits',
+      'period', 'iconurl', 'locked', 'locktype', 'syncversion', 'createdat', 'updatedat'
+    ];
+    const actual: string[] = cloudTableColumns('totpentries');
+    expect(actual.length).assertEqual(expected.length);
+    for (let index = 0; index < expected.length; index++) {
+      expect(actual[index]).assertEqual(expected[index]);
+    }
+    expect(actual.indexOf('brandid')).assertEqual(-1);
+    expect(actual.indexOf('avatarmode')).assertEqual(-1);
+    const entry: TotpEntry = new TotpEntry();
+    const json: Record<string, Object> = entry.toJSON() as Record<string, Object>;
+    expect(json['brandId']).assertUndefined();
+    expect(json['avatarMode']).assertUndefined();
+    expect(json['brandid']).assertUndefined();
+    expect(json['avatarmode']).assertUndefined();
   });
 });

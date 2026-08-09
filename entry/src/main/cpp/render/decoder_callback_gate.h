@@ -6,8 +6,10 @@
 #define DECODER_CALLBACK_GATE_H
 
 #include <cstddef>
+#include <chrono>
 #include <condition_variable>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <utility>
 
@@ -18,28 +20,34 @@
 template <typename Callback>
 class DecoderCallbackGate {
 public:
-    void Set(Callback callback) {
-        std::unique_lock<std::mutex> lock(mutex_);
-        callback_ = std::move(callback);
-        if (!callback_) {
-            callbackCv_.wait(lock, [this]() { return inFlight_ == 0; });
+    DecoderCallbackGate() : state_(std::make_shared<State>()) {}
+
+    bool Set(Callback callback) {
+        const std::shared_ptr<State> state = state_;
+        std::unique_lock<std::mutex> lock(state->mutex);
+        state->callback = std::move(callback);
+        if (!state->callback) {
+            return state->callbackCv.wait_for(lock, std::chrono::milliseconds(500),
+                [&]() { return state->inFlight == 0; });
         }
+        return true;
     }
 
-    void ClearAndWait() {
-        Set(nullptr);
+    bool ClearAndWait() {
+        return Set(nullptr);
     }
 
     template <typename... Args>
     void Invoke(Args&&... args) {
+        const std::shared_ptr<State> state = state_;
         Callback callback;
         {
-            std::lock_guard<std::mutex> lock(mutex_);
-            if (!callback_) {
+            std::lock_guard<std::mutex> lock(state->mutex);
+            if (!state->callback) {
                 return;
             }
-            callback = callback_;
-            ++inFlight_;
+            callback = state->callback;
+            ++state->inFlight;
         }
 
         try {
@@ -48,22 +56,26 @@ public:
             // Decoder callbacks run on codec/render threads. Never allow an
             // exception to escape and terminate the process.
         }
-        FinishInvocation();
+        FinishInvocation(state);
     }
 
 private:
-    void FinishInvocation() {
-        std::lock_guard<std::mutex> lock(mutex_);
-        --inFlight_;
-        if (inFlight_ == 0) {
-            callbackCv_.notify_all();
+    struct State {
+        std::mutex mutex;
+        std::condition_variable callbackCv;
+        Callback callback;
+        size_t inFlight = 0;
+    };
+
+    void FinishInvocation(const std::shared_ptr<State>& state) {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        --state->inFlight;
+        if (state->inFlight == 0) {
+            state->callbackCv.notify_all();
         }
     }
 
-    std::mutex mutex_;
-    std::condition_variable callbackCv_;
-    Callback callback_;
-    size_t inFlight_ = 0;
+    std::shared_ptr<State> state_;
 };
 
 #endif // DECODER_CALLBACK_GATE_H

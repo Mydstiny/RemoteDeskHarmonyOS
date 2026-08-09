@@ -14,12 +14,19 @@
 
 #include "rustdesk_bridge.h"
 #include "rustdesk_display_control_plane.h"
+#include "rustdesk_ffi_lifetime_policy.h"
 #include "rustdesk_ipc.h"
 #include "common/safe_log.h"
 #include "extensions/extension_registry.h"
+#include "render/video_perf_counters.h"
 #include <hilog/log.h>
 #include <algorithm>
+#include <condition_variable>
+#include <cctype>
+#include <future>
+#include <memory>
 #include <string>
+#include <thread>
 
 // Rust FFI 函数声明 (extern "C", 来自 librustdesk_ffi.a)
 #ifdef RUSTDESK_USE_REAL_CORE
@@ -48,6 +55,16 @@ extern "C" {
         void (*on_display)(const void*, void*),
         void (*on_auth)(int, const char*, void*),
         void* user_data);
+    void* rustdesk_connect_v4(
+        const void* cfg,
+        void (*on_frame)(const void*, void*),
+        void (*on_audio)(const void*, void*),
+        void (*on_cursor)(const void*, void*),
+        void (*on_disconnect)(int, const char*, void*),
+        void (*on_display)(const void*, void*),
+        void (*on_auth)(int, const char*, void*),
+        void (*on_progress)(int, const char*, void*),
+        void* user_data);
     void  rustdesk_disconnect(void* handle);
     void  rustdesk_cancel_pending_connect();
     void  rustdesk_cancel_pending_connect_for_session(uint64_t session_id);
@@ -56,6 +73,7 @@ extern "C" {
     void  rustdesk_send_key(void* handle, unsigned int scancode, bool pressed);
     void  rustdesk_send_mouse(void* handle, int x, int y, unsigned int button, bool pressed);
     void  rustdesk_send_mouse_wheel(void* handle, int x, int y, int delta);
+    bool  rustdesk_send_mouse_wheel_2d(void* handle, int x, int y);
     void  rustdesk_send_text(void* handle, const char* text);
     bool  rustdesk_change_display_resolution(void* handle, int display, int width, int height);
     bool  rustdesk_send_touch_scale(void* handle, int scale);
@@ -65,6 +83,7 @@ extern "C" {
     struct RustDeskFfiTransferStatus { uint32_t state; uint64_t transferId; uint64_t transferredBytes;
         uint64_t totalBytes; uint32_t diagnosticCode; };
     bool  rustdesk_get_transfer_status(void* handle, RustDeskFfiTransferStatus* out_status);
+    size_t rustdesk_get_transfer_error(void* handle, char* buffer, size_t buffer_len);
     void  rustdesk_send_clipboard(void* handle, const unsigned char* data, unsigned int len);
     size_t rustdesk_get_clipboard(void* handle, unsigned char* buffer, size_t buffer_len);
     bool  rustdesk_request_frame_refresh(void* handle);
@@ -230,8 +249,150 @@ static std::atomic<uint64_t> g_nextRustDeskCursorGeneration {1};
 // store after reconnecting with the same numeric session id.
 struct RustDeskFfiCallbackContext {
     void* impl = nullptr;
+    std::shared_ptr<void> implKeepAlive;
     uint64_t generation = 0;
+    uint64_t ownerToken = 0;
+    uint64_t admissionEpoch = 0;
 };
+
+namespace {
+
+// rustdesk_disconnect() joins the Rust stream thread.  Keep re-entrant
+// disconnects non-blocking until the current FFI callback has returned.
+thread_local bool g_inRustDeskFfiCallback = false;
+
+class RustDeskFfiCallbackScope final {
+public:
+    RustDeskFfiCallbackScope() : previous_(g_inRustDeskFfiCallback) {
+        g_inRustDeskFfiCallback = true;
+    }
+    ~RustDeskFfiCallbackScope() {
+        if (active_ != nullptr &&
+            active_->fetch_sub(1, std::memory_order_acq_rel) == 1 &&
+            condition_ != nullptr) {
+            condition_->notify_all();
+        }
+        g_inRustDeskFfiCallback = previous_;
+    }
+    RustDeskFfiCallbackScope(const RustDeskFfiCallbackScope&) = delete;
+    RustDeskFfiCallbackScope& operator=(const RustDeskFfiCallbackScope&) = delete;
+
+    void track(std::atomic<uint32_t>* active, std::mutex* mutex,
+               std::condition_variable* condition) {
+        if (active_ != nullptr || active == nullptr || mutex == nullptr ||
+            condition == nullptr) {
+            return;
+        }
+        active_ = active;
+        mutex_ = mutex;
+        condition_ = condition;
+        active_->fetch_add(1, std::memory_order_acq_rel);
+    }
+
+private:
+    bool previous_ = false;
+    std::atomic<uint32_t>* active_ = nullptr;
+    std::mutex* mutex_ = nullptr;
+    std::condition_variable* condition_ = nullptr;
+};
+
+class RustDeskCleanupGateScope final {
+public:
+    explicit RustDeskCleanupGateScope(
+        const std::shared_ptr<std::promise<void>>& gate) noexcept : gate_(gate) {}
+    ~RustDeskCleanupGateScope() noexcept {
+        if (!gate_) { return; }
+        try {
+            gate_->set_value();
+        } catch (...) {
+            // The cleanup worker must never turn a callback unwind into a
+            // second exception. A duplicate signal only means it is awake.
+        }
+    }
+    RustDeskCleanupGateScope(const RustDeskCleanupGateScope&) = delete;
+    RustDeskCleanupGateScope& operator=(const RustDeskCleanupGateScope&) = delete;
+
+private:
+    const std::shared_ptr<std::promise<void>>& gate_;
+};
+
+template<typename ImplType>
+static bool IsRustDeskCallbackOwnerActive(
+    const ImplType* impl, const RustDeskFfiCallbackContext* context) {
+    if (impl == nullptr || context == nullptr || context->generation == 0 ||
+        context->ownerToken == 0) {
+        return false;
+    }
+    const Render::DecoderSessionIdentity owner {
+        impl->sessionId.load(std::memory_order_acquire),
+        context->generation,
+        context->ownerToken,
+    };
+    return Render::SharedSessionSinkOwnerLease().accepts(owner);
+}
+
+static std::string rdLowercase(std::string value) {
+    for (char& character : value) {
+        character = static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
+    }
+    return value;
+}
+
+static RustDeskTransportErrorClass rdClassifyTransportMessage(
+    int state, const char* message) {
+    if (state == 0) {
+        return RustDeskTransportErrorClass::None;
+    }
+    const std::string text = rdLowercase(message ? message : "");
+    const auto contains = [&text](const char* needle) {
+        return text.find(needle) != std::string::npos;
+    };
+    if (contains("2fa") || contains("two-factor") || contains("two factor")) {
+        return RustDeskTransportErrorClass::TwoFactor;
+    }
+    if (contains("approval") || contains("approve") || contains("consent")) {
+        return RustDeskTransportErrorClass::Approval;
+    }
+    if (contains("auth") || contains("password") || contains("credential")) {
+        return RustDeskTransportErrorClass::Auth;
+    }
+    if (contains("license")) return RustDeskTransportErrorClass::License;
+    if (contains("key") || contains("public key") || contains("access key")) {
+        return RustDeskTransportErrorClass::Key;
+    }
+    if (contains("protocol") || contains("handshake")) {
+        return RustDeskTransportErrorClass::Protocol;
+    }
+    if (contains("crypto") || contains("decrypt") || contains("encrypt")) {
+        return RustDeskTransportErrorClass::Crypto;
+    }
+    if (contains("connection reset") || contains("reset by peer") ||
+        contains("os error 104")) {
+        return RustDeskTransportErrorClass::Reset;
+    }
+    if (contains("connection aborted") || contains("aborted") ||
+        contains("os error 103")) {
+        return RustDeskTransportErrorClass::Aborted;
+    }
+    if (contains("broken pipe") || contains("brokenpipe") || contains("os error 32")) {
+        return RustDeskTransportErrorClass::BrokenPipe;
+    }
+    if (contains("timed out") || contains("timeout") || contains("os error 110")) {
+        return RustDeskTransportErrorClass::Timeout;
+    }
+    if (contains("network is unreachable") || contains("network unreachable") ||
+        contains("os error 101")) {
+        return RustDeskTransportErrorClass::Unreachable;
+    }
+    if (contains("network is down") || contains("network down") || contains("os error 100")) {
+        return RustDeskTransportErrorClass::NetworkDown;
+    }
+    // Unknown stream failures are not retried. Retrying authentication or
+    // protocol failures is worse than surfacing them to the existing UI.
+    return RustDeskTransportErrorClass::Unknown;
+}
+
+} // namespace
 
 // ============================================================
 // RustDesk 真实 TCP 连接 (在独立线程中运行)
@@ -494,6 +655,25 @@ struct RustDeskBridge::Impl {
     std::atomic<bool>       ffiStreamEnded {false};
     std::atomic<uint64_t>   sessionId {0};
     std::atomic<uint64_t>   cursorGeneration {0};
+    std::atomic<uint64_t>   ownerToken {0};
+    RustDeskBridge::ContinuityGenerationCallback continuityGenerationCallback;
+    std::atomic<uint64_t>   ffiAdmissionEpoch {1};
+    std::mutex              continuityAdmissionMutex;
+    std::shared_ptr<RustDeskConnectionContinuityExecutor> continuityExecutor =
+        std::make_shared<RustDeskConnectionContinuityExecutor>();
+    RustDeskContinuityQuiesceState continuityQuiesce;
+    std::atomic<bool>         awaitingFirstGenerationFrame {false};
+    std::atomic<uint64_t>     nextContinuityAttemptToken {1};
+    std::atomic<uint64_t>     continuityAttemptToken {0};
+    std::atomic<uint32_t>     continuityConnectCallCount {0};
+    std::atomic<bool>         continuityNetworkCallCancelled {false};
+    std::atomic<bool>         networkAvailable {true};
+    std::atomic<uint64_t>     networkGeneration {0};
+#if defined(RDP_NATIVE_CALLBACK_TESTING)
+    std::function<void()> firstFrameClaimHook;
+    std::function<void(int)> continuityAttemptStageHook;
+    std::function<int(uint64_t, uint64_t)> continuityConnectResultHook;
+#endif
     std::atomic<uint64_t>   callbackVideoFrames {0};
     std::atomic<uint64_t>   callbackVideoBytes {0};
     std::atomic<uint64_t>   callbackKeyframes {0};
@@ -501,17 +681,34 @@ struct RustDeskBridge::Impl {
     std::atomic<int>        callbackWidth {0};
     std::atomic<int>        callbackHeight {0};
     std::atomic<uint64_t>   lastFrameAtMs {0};
+    std::atomic<uint64_t>   callbackAdmissionRejects {0};
     RemoteCursorStore       cursorStore;
     int                     ipcFd = -1;   // IPC socket fd (IPC 模式)
     int                     sockFd = -1;  // TCP socket fd (实验模式)
 #ifdef RUSTDESK_USE_REAL_CORE
-    std::unique_ptr<RustDeskFfiCallbackContext> ffiCallbackContext;
+    std::shared_ptr<RustDeskFfiCallbackContext> ffiCallbackContext;
+    std::atomic<uint32_t> ffiCallbackActive {0};
+    std::mutex ffiCallbackMutex;
+    std::condition_variable ffiCallbackCv;
     // FFI connect() 在后台执行，但不能 detach：断开时必须等待它结束，
     // 否则旧连接可能在下一次连接已经开始后仍持有 rendezvous/relay 资源。
     std::thread              ffiConnectThread;
+    std::shared_ptr<std::atomic<bool>> ffiConnectDone =
+        std::make_shared<std::atomic<bool>>(true);
     // 流线程通过 onFfiDisconnect 回调结束时，不能从自身 join；把延迟释放
     // 的线程保留下来，由 disconnect() 统一 join，避免释放任务悬空。
     std::vector<std::thread> ffiCleanupThreads;
+    std::vector<std::shared_ptr<std::atomic<bool>>> ffiCleanupDone;
+    // Workers handed to the process-wide deferred join owner keep the FFI
+    // callback context alive until their underlying Rust thread has joined.
+    std::atomic<uint32_t> ffiDeferredJoinCount {0};
+    // Count every rustdesk_connect_v4() call until its returned handle has
+    // completed rustdesk_disconnect(). A raw callback user-data pointer may
+    // be read before the callback-active counter can be incremented.
+    std::atomic<uint32_t> ffiHandleJoinPending {0};
+    // Last-resort queue used only if a callback cleanup worker cannot be
+    // created. It is drained by continuity maintenance or explicit teardown.
+    std::vector<void*> ffiDeferredHandles;
 #endif
 
     void setState(ConnectionState s, const std::string& msg = "") {
@@ -523,6 +720,15 @@ struct RustDeskBridge::Impl {
         }
         if (cb) { cb(s, msg); }
     }
+
+    ~Impl() {
+        if (continuityExecutor) {
+            continuityExecutor->setCallbacks({});
+            continuityExecutor->shutdown();
+            (void)RustDeskConnectionContinuityExecutor::shutdownDeferredWithin(
+                std::chrono::milliseconds(500));
+        }
+    }
 };
 
 static uint64_t rdSteadyNowMs() {
@@ -532,6 +738,132 @@ static uint64_t rdSteadyNowMs() {
 }
 
 #ifdef RUSTDESK_USE_REAL_CORE
+static RustDeskFfiLifetime::CallbackContextRegistry<
+    RustDeskFfiCallbackContext>& rdFfiCallbackRegistry() {
+    // Deliberately leak the registry at process exit. Native callbacks can be
+    // racing library shutdown, and static destruction would reintroduce a
+    // use-after-free at the registry boundary.
+    static auto* registry = new RustDeskFfiLifetime::CallbackContextRegistry<
+        RustDeskFfiCallbackContext>();
+    return *registry;
+}
+
+static std::shared_ptr<RustDeskFfiCallbackContext>
+rdAcquireFfiCallbackContext(void* userData) {
+    return rdFfiCallbackRegistry().acquire(userData);
+}
+
+static bool rdPublishFfiCallbackContext(
+    const std::shared_ptr<RustDeskFfiCallbackContext>& context) {
+    return rdFfiCallbackRegistry().publish(context);
+}
+
+static void rdRetireFfiCallbackContextLocked(RustDeskBridge::Impl* impl) {
+    if (impl == nullptr ||
+        !RustDeskFfiLifetime::CanRetireCallbackContext(
+            impl->ffiHandleJoinPending.load(std::memory_order_acquire),
+            impl->ffiCallbackActive.load(std::memory_order_acquire),
+            impl->displayControl.hasHandle(),
+            impl->ffiDeferredJoinCount.load(std::memory_order_acquire),
+            !impl->ffiDeferredHandles.empty())) {
+        return;
+    }
+    const auto context = impl->ffiCallbackContext;
+    (void)rdFfiCallbackRegistry().retire(context);
+    impl->ffiCallbackContext.reset();
+}
+
+static void rdReleaseFfiHandleReservation(RustDeskBridge::Impl* impl) {
+    if (impl == nullptr) {
+        return;
+    }
+    const uint32_t previous = impl->ffiHandleJoinPending.fetch_sub(
+        1, std::memory_order_acq_rel);
+    if (previous == 0) {
+        impl->ffiHandleJoinPending.store(0, std::memory_order_release);
+        OH_LOG_ERROR(LOG_APP,
+            "[RustDesk-FFI] handle join reservation underflow");
+    }
+}
+
+static void rdDisconnectFfiHandle(RustDeskBridge::Impl* impl, void* handle) {
+    if (handle != nullptr) {
+        rustdesk_disconnect(handle);
+    }
+    rdReleaseFfiHandleReservation(impl);
+}
+
+static void rdQueueDeferredFfiHandle(RustDeskBridge::Impl* impl, void* handle) {
+    if (impl == nullptr || handle == nullptr) {
+        return;
+    }
+    try {
+        std::lock_guard<std::mutex> lock(impl->mutex);
+        impl->ffiDeferredHandles.push_back(handle);
+        OH_LOG_WARN(LOG_APP,
+            "[RustDesk-FFI] handle cleanup queued for maintenance handle=%{public}p pending=%{public}u",
+            handle,
+            impl->ffiHandleJoinPending.load(std::memory_order_acquire));
+    } catch (...) {
+        // There is no safe callback-thread fallback. Keeping the reservation
+        // prevents context retirement; process teardown will report the leak.
+        OH_LOG_ERROR(LOG_APP,
+            "[RustDesk-FFI] deferred handle queue allocation failed handle=%{public}p",
+            handle);
+    }
+}
+
+static void rdDrainDeferredFfiHandles(RustDeskBridge::Impl* impl) {
+    if (impl == nullptr || g_inRustDeskFfiCallback ||
+        impl->ffiCallbackActive.load(std::memory_order_acquire) != 0) {
+        return;
+    }
+    std::vector<void*> handles;
+    {
+        std::lock_guard<std::mutex> lock(impl->mutex);
+        handles.swap(impl->ffiDeferredHandles);
+    }
+    for (void* handle : handles) {
+        rdDisconnectFfiHandle(impl, handle);
+    }
+}
+
+static bool rdCanRetireFfiCallbackContextLocked(
+    const RustDeskBridge::Impl* impl) {
+    if (impl == nullptr) {
+        return false;
+    }
+    return RustDeskFfiLifetime::CanRetireCallbackContext(
+        impl->ffiHandleJoinPending.load(std::memory_order_acquire),
+        impl->ffiCallbackActive.load(std::memory_order_acquire),
+        impl->displayControl.hasHandle(),
+        impl->ffiDeferredJoinCount.load(std::memory_order_acquire),
+        !impl->ffiDeferredHandles.empty());
+}
+
+struct RustDeskFfiConnectReservation final {
+    explicit RustDeskFfiConnectReservation(RustDeskBridge::Impl* impl)
+        : impl_(impl) {
+        if (impl_ != nullptr) {
+            impl_->ffiHandleJoinPending.fetch_add(1, std::memory_order_acq_rel);
+        }
+    }
+
+    ~RustDeskFfiConnectReservation() {
+        if (impl_ != nullptr && !transferred_) {
+            rdReleaseFfiHandleReservation(impl_);
+        }
+    }
+
+    void transferToHandleOwner() {
+        transferred_ = true;
+    }
+
+private:
+    RustDeskBridge::Impl* impl_ = nullptr;
+    bool transferred_ = false;
+};
+
 struct RustDeskFfiVideoFrameV1 {
     const uint8_t* data;
     size_t         size;
@@ -653,14 +985,62 @@ static int rdFfiCodecPreference(CodecType codec) {
 }
 
 void RustDeskBridge::onFfiFrame(const void* framePtr, void* userData) {
-    auto* context = static_cast<RustDeskFfiCallbackContext*>(userData);
+    RustDeskFfiCallbackScope callbackScope;
+    const auto context = rdAcquireFfiCallbackContext(userData);
     auto* impl = context ? static_cast<RustDeskBridge::Impl*>(context->impl) : nullptr;
+    if (impl) {
+        callbackScope.track(&impl->ffiCallbackActive, &impl->ffiCallbackMutex,
+                            &impl->ffiCallbackCv);
+    }
     auto* ffiFrame = static_cast<const RustDeskFfiVideoFrameV2*>(framePtr);
-    if (!context || !impl ||
-        context->generation != impl->cursorGeneration.load(std::memory_order_acquire) ||
-        impl->disconnectRequested.load(std::memory_order_acquire) ||
-        impl->ffiStreamEnded.load(std::memory_order_acquire) ||
-        !ffiFrame || !ffiFrame->data || ffiFrame->size == 0) {
+    const char* rejectReason = nullptr;
+    if (!context) {
+        rejectReason = "missing_context";
+    } else if (!impl) {
+        rejectReason = "missing_impl";
+    } else if (context->generation != impl->cursorGeneration.load(std::memory_order_acquire)) {
+        rejectReason = "generation_mismatch";
+    } else if (context->ownerToken == 0 ||
+               context->ownerToken != impl->ownerToken.load(std::memory_order_acquire)) {
+        rejectReason = "owner_mismatch";
+    } else if (context->admissionEpoch == 0 ||
+               context->admissionEpoch != impl->ffiAdmissionEpoch.load(std::memory_order_acquire)) {
+        rejectReason = "admission_epoch_mismatch";
+    } else if (impl->disconnectRequested.load(std::memory_order_acquire)) {
+        rejectReason = "disconnect_requested";
+    } else if (impl->ffiStreamEnded.load(std::memory_order_acquire)) {
+        rejectReason = "stream_ended";
+    } else if (!impl->continuityQuiesce.decoderAllowed()) {
+        rejectReason = "decoder_quiesced";
+    } else if (!IsRustDeskCallbackOwnerActive(impl, context.get())) {
+        rejectReason = "inactive_callback_owner";
+    } else if (!ffiFrame || !ffiFrame->data || ffiFrame->size == 0) {
+        rejectReason = "empty_frame";
+    }
+    if (rejectReason != nullptr) {
+        if (impl) {
+            const uint64_t rejected = impl->callbackAdmissionRejects.fetch_add(
+                1, std::memory_order_relaxed) + 1;
+            if (rejected <= 8 || rejected % 300 == 0) {
+                OH_LOG_WARN(LOG_APP,
+                    "[RustDesk-FFI] frame rejected before dispatch reason=%{public}s count=%{public}llu generation=%{public}llu owner=%{public}llu epoch=%{public}llu",
+                    rejectReason,
+                    static_cast<unsigned long long>(rejected),
+                    static_cast<unsigned long long>(context ? context->generation : 0),
+                    static_cast<unsigned long long>(context ? context->ownerToken : 0),
+                    static_cast<unsigned long long>(context ? context->admissionEpoch : 0));
+            }
+        }
+        return;
+    }
+
+    const Render::DecoderSessionIdentity callbackOwner {
+        impl->sessionId.load(std::memory_order_acquire),
+        context->generation,
+        context->ownerToken,
+    };
+    auto sinkLease = Render::SharedSessionSinkOwnerLease().acquire(callbackOwner);
+    if (!sinkLease) {
         return;
     }
     if (ffiFrame->abiVersion < kRustDeskVideoFrameAbiVersion ||
@@ -681,8 +1061,11 @@ void RustDeskBridge::onFfiFrame(const void* framePtr, void* userData) {
         [&]() {
             return context->generation ==
                     impl->cursorGeneration.load(std::memory_order_acquire) &&
+                context->ownerToken == impl->ownerToken.load(std::memory_order_acquire) &&
+                context->admissionEpoch == impl->ffiAdmissionEpoch.load(std::memory_order_acquire) &&
                 !impl->disconnectRequested.load(std::memory_order_acquire) &&
-                !impl->ffiStreamEnded.load(std::memory_order_acquire);
+                !impl->ffiStreamEnded.load(std::memory_order_acquire) &&
+                IsRustDeskCallbackOwnerActive(impl, context.get());
         },
         [&](const RustDeskDisplaySwitchGateDecision& displayDecision) {
     RustDeskDisplayStateCallback displayCallback;
@@ -706,6 +1089,11 @@ void RustDeskBridge::onFfiFrame(const void* framePtr, void* userData) {
     impl->callbackWidth.store(ffiFrame->width, std::memory_order_relaxed);
     impl->callbackHeight.store(ffiFrame->height, std::memory_order_relaxed);
     impl->lastFrameAtMs.store(rdSteadyNowMs(), std::memory_order_release);
+    VideoFrameCallback cb;
+    {
+        std::lock_guard<std::mutex> lock(impl->mutex);
+        cb = impl->videoCallback;
+    }
     {
         using Clock = std::chrono::steady_clock;
         static std::mutex cadenceMutex;
@@ -769,14 +1157,9 @@ void RustDeskBridge::onFfiFrame(const void* framePtr, void* userData) {
             ffiFrame->size,
             ffiFrame->isKeyFrame ? "yes" : "no",
             static_cast<unsigned long long>(ffiFrame->timestamp),
-            impl->videoCallback ? "yes" : "no");
+            cb ? "yes" : "no");
     }
 
-    VideoFrameCallback cb;
-    {
-        std::lock_guard<std::mutex> lock(impl->mutex);
-        cb = impl->videoCallback;
-    }
     if (cb) {
         VideoFrame frame;
         frame.data = ffiFrame->data;
@@ -790,17 +1173,65 @@ void RustDeskBridge::onFfiFrame(const void* framePtr, void* userData) {
         cb(frame);
     }
         });
+
+    const uint64_t frameGeneration = context->generation;
+    const uint64_t frameOwnerToken = context->ownerToken;
+    const uint64_t frameAdmissionEpoch = context->admissionEpoch;
+    if (impl->awaitingFirstGenerationFrame.exchange(false, std::memory_order_acq_rel)) {
+        RustDeskConnectionContinuityExecutor::ActionAdmission admission =
+            [impl, frameGeneration, frameOwnerToken, frameAdmissionEpoch]() {
+                return impl->cursorGeneration.load(std::memory_order_acquire) ==
+                        frameGeneration &&
+                    impl->ownerToken.load(std::memory_order_acquire) == frameOwnerToken &&
+                    impl->ffiAdmissionEpoch.load(std::memory_order_acquire) ==
+                        frameAdmissionEpoch &&
+                    !impl->disconnectRequested.load(std::memory_order_acquire) &&
+                    !impl->ffiStreamEnded.load(std::memory_order_acquire);
+            };
+#if defined(RDP_NATIVE_CALLBACK_TESTING)
+        std::function<void()> firstFrameClaimHook;
+        {
+            std::lock_guard<std::mutex> lock(impl->continuityAdmissionMutex);
+            firstFrameClaimHook = impl->firstFrameClaimHook;
+        }
+        if (firstFrameClaimHook) {
+            firstFrameClaimHook();
+        }
+#endif
+        impl->continuityExecutor->firstGenerationFrameArrived(std::move(admission));
+    }
 }
 
 void RustDeskBridge::onFfiAudio(const void* audioPtr, void* userData) {
-    auto* context = static_cast<RustDeskFfiCallbackContext*>(userData);
+    RustDeskFfiCallbackScope callbackScope;
+    const auto context = rdAcquireFfiCallbackContext(userData);
     auto* impl = context ? static_cast<RustDeskBridge::Impl*>(context->impl) : nullptr;
+    if (impl) {
+        callbackScope.track(&impl->ffiCallbackActive, &impl->ffiCallbackMutex,
+                            &impl->ffiCallbackCv);
+    }
     auto* ffiAudio = static_cast<const RustDeskFfiAudioData*>(audioPtr);
     if (!context || !impl ||
         context->generation != impl->cursorGeneration.load(std::memory_order_acquire) ||
+        context->ownerToken == 0 ||
+        context->ownerToken != impl->ownerToken.load(std::memory_order_acquire) ||
+        context->admissionEpoch == 0 ||
+        context->admissionEpoch != impl->ffiAdmissionEpoch.load(std::memory_order_acquire) ||
         impl->disconnectRequested.load(std::memory_order_acquire) ||
         impl->ffiStreamEnded.load(std::memory_order_acquire) ||
+        !impl->continuityQuiesce.audioAllowed() ||
+        !IsRustDeskCallbackOwnerActive(impl, context.get()) ||
         !ffiAudio || !ffiAudio->data || ffiAudio->size == 0) {
+        return;
+    }
+
+    const Render::DecoderSessionIdentity callbackOwner {
+        impl->sessionId.load(std::memory_order_acquire),
+        context->generation,
+        context->ownerToken,
+    };
+    auto sinkLease = Render::SharedSessionSinkOwnerLease().acquire(callbackOwner);
+    if (!sinkLease) {
         return;
     }
 
@@ -847,8 +1278,13 @@ void RustDeskBridge::onFfiAudio(const void* audioPtr, void* userData) {
 }
 
 void RustDeskBridge::onFfiCursor(const void* cursorPtr, void* userData) {
-    auto* context = static_cast<RustDeskFfiCallbackContext*>(userData);
+    RustDeskFfiCallbackScope callbackScope;
+    const auto context = rdAcquireFfiCallbackContext(userData);
     auto* impl = context ? static_cast<RustDeskBridge::Impl*>(context->impl) : nullptr;
+    if (impl) {
+        callbackScope.track(&impl->ffiCallbackActive, &impl->ffiCallbackMutex,
+                            &impl->ffiCallbackCv);
+    }
     auto* cursor = static_cast<const RustDeskFfiCursorUpdate*>(cursorPtr);
     if (!context || !impl || !cursor) {
         return;
@@ -859,8 +1295,13 @@ void RustDeskBridge::onFfiCursor(const void* cursorPtr, void* userData) {
     std::lock_guard<std::mutex> lock(impl->mutex);
     if (context->generation == 0 ||
         context->generation != impl->cursorGeneration.load(std::memory_order_acquire) ||
+        context->ownerToken == 0 ||
+        context->ownerToken != impl->ownerToken.load(std::memory_order_acquire) ||
+        context->admissionEpoch == 0 ||
+        context->admissionEpoch != impl->ffiAdmissionEpoch.load(std::memory_order_acquire) ||
         impl->disconnectRequested.load(std::memory_order_acquire) ||
-        impl->ffiStreamEnded.load(std::memory_order_acquire)) {
+        impl->ffiStreamEnded.load(std::memory_order_acquire) ||
+        !IsRustDeskCallbackOwnerActive(impl, context.get())) {
         return;
     }
 
@@ -920,13 +1361,23 @@ void RustDeskBridge::onFfiCursor(const void* cursorPtr, void* userData) {
 }
 
 void RustDeskBridge::onFfiDisplay(const void* snapshotPtr, void* userData) {
-    auto* context = static_cast<RustDeskFfiCallbackContext*>(userData);
+    RustDeskFfiCallbackScope callbackScope;
+    const auto context = rdAcquireFfiCallbackContext(userData);
     auto* impl = context ? static_cast<RustDeskBridge::Impl*>(context->impl) : nullptr;
+    if (impl) {
+        callbackScope.track(&impl->ffiCallbackActive, &impl->ffiCallbackMutex,
+                            &impl->ffiCallbackCv);
+    }
     auto* snapshot = static_cast<const RustDeskFfiDisplaySnapshot*>(snapshotPtr);
     if (!context || !impl ||
         context->generation != impl->cursorGeneration.load(std::memory_order_acquire) ||
+        context->ownerToken == 0 ||
+        context->ownerToken != impl->ownerToken.load(std::memory_order_acquire) ||
+        context->admissionEpoch == 0 ||
+        context->admissionEpoch != impl->ffiAdmissionEpoch.load(std::memory_order_acquire) ||
         impl->disconnectRequested.load(std::memory_order_acquire) ||
         impl->ffiStreamEnded.load(std::memory_order_acquire) ||
+        !IsRustDeskCallbackOwnerActive(impl, context.get()) ||
         !snapshot || snapshot->version != kRustDeskDisplaySnapshotVersion ||
         snapshot->currentDisplay < 0) {
         return;
@@ -937,8 +1388,11 @@ void RustDeskBridge::onFfiDisplay(const void* snapshotPtr, void* userData) {
         [&]() {
             return context->generation ==
                     impl->cursorGeneration.load(std::memory_order_acquire) &&
+                context->ownerToken == impl->ownerToken.load(std::memory_order_acquire) &&
+                context->admissionEpoch == impl->ffiAdmissionEpoch.load(std::memory_order_acquire) &&
                 !impl->disconnectRequested.load(std::memory_order_acquire) &&
-                !impl->ffiStreamEnded.load(std::memory_order_acquire);
+                !impl->ffiStreamEnded.load(std::memory_order_acquire) &&
+                IsRustDeskCallbackOwnerActive(impl, context.get());
         },
         [&](const RustDeskDisplaySwitchGateDecision& decision) {
             RustDeskDisplayStateCallback callback;
@@ -953,8 +1407,13 @@ void RustDeskBridge::onFfiDisplay(const void* snapshotPtr, void* userData) {
 }
 
 void RustDeskBridge::onFfiAuth(int state, const char* message, void* userData) {
-    auto* context = static_cast<RustDeskFfiCallbackContext*>(userData);
+    RustDeskFfiCallbackScope callbackScope;
+    const auto context = rdAcquireFfiCallbackContext(userData);
     auto* impl = context ? static_cast<RustDeskBridge::Impl*>(context->impl) : nullptr;
+    if (impl) {
+        callbackScope.track(&impl->ffiCallbackActive, &impl->ffiCallbackMutex,
+                            &impl->ffiCallbackCv);
+    }
     if (!context || !impl) {
         return;
     }
@@ -962,6 +1421,10 @@ void RustDeskBridge::onFfiAuth(int state, const char* message, void* userData) {
         std::lock_guard<std::mutex> lock(impl->mutex);
         if (context->generation == 0 ||
             context->generation != impl->cursorGeneration.load(std::memory_order_acquire) ||
+            context->ownerToken == 0 ||
+            context->ownerToken != impl->ownerToken.load(std::memory_order_acquire) ||
+            context->admissionEpoch == 0 ||
+            context->admissionEpoch != impl->ffiAdmissionEpoch.load(std::memory_order_acquire) ||
             impl->disconnectRequested.load(std::memory_order_acquire)) {
             return;
         }
@@ -979,22 +1442,58 @@ void RustDeskBridge::onFfiAuth(int state, const char* message, void* userData) {
     impl->setState(ConnectionState::AUTHENTICATING, eventMessage);
 }
 
-void RustDeskBridge::onFfiDisconnect(int state, const char* message, void* userData) {
-    auto* context = static_cast<RustDeskFfiCallbackContext*>(userData);
+void RustDeskBridge::onFfiProgress(int stage, const char* message, void* userData) {
+    RustDeskFfiCallbackScope callbackScope;
+    const auto context = rdAcquireFfiCallbackContext(userData);
     auto* impl = context ? static_cast<RustDeskBridge::Impl*>(context->impl) : nullptr;
+    if (impl) {
+        callbackScope.track(&impl->ffiCallbackActive, &impl->ffiCallbackMutex,
+                            &impl->ffiCallbackCv);
+    }
+    if (!context || !impl || context->generation == 0 ||
+        context->generation != impl->cursorGeneration.load(std::memory_order_acquire) ||
+        context->ownerToken == 0 ||
+        context->ownerToken != impl->ownerToken.load(std::memory_order_acquire) ||
+        context->admissionEpoch == 0 ||
+        context->admissionEpoch != impl->ffiAdmissionEpoch.load(std::memory_order_acquire) ||
+        impl->disconnectRequested.load(std::memory_order_acquire) ||
+        impl->ffiStreamEnded.load(std::memory_order_acquire)) {
+        return;
+    }
+    const char* progressMessage = message ? message : "RustDesk: 正在连接";
+    OH_LOG_INFO(LOG_APP, "[RustDesk-FFI] handshake stage=%{public}d msg=%{public}s",
+                stage, progressMessage);
+    impl->setState(ConnectionState::CONNECTING, progressMessage);
+}
+
+void RustDeskBridge::onFfiDisconnect(int state, const char* message, void* userData) noexcept try {
+    RustDeskFfiCallbackScope callbackScope;
+    const auto context = rdAcquireFfiCallbackContext(userData);
+    auto* impl = context ? static_cast<RustDeskBridge::Impl*>(context->impl) : nullptr;
+    if (impl) {
+        callbackScope.track(&impl->ffiCallbackActive, &impl->ffiCallbackMutex,
+                            &impl->ffiCallbackCv);
+    }
     bool wasConnected = false;
     bool requested = false;
     bool stale = false;
     uint64_t currentGeneration = 0;
     void* endedHandle = nullptr;
     std::shared_ptr<std::promise<void>> cleanupGate;
+    RustDeskCleanupGateScope cleanupGateScope(cleanupGate);
+    bool queueEndedHandleAfterUnlock = false;
     if (!context || !impl) {
         stale = true;
     } else {
+        std::lock_guard<std::mutex> admissionLock(impl->continuityAdmissionMutex);
         auto displayLease = impl->displayControl.acquireDisplayLease();
         std::lock_guard<std::mutex> lock(impl->mutex);
         currentGeneration = impl->cursorGeneration.load(std::memory_order_acquire);
-        if (context->generation == 0 || context->generation != currentGeneration) {
+        if (context->generation == 0 || context->generation != currentGeneration ||
+            context->ownerToken == 0 ||
+            context->ownerToken != impl->ownerToken.load(std::memory_order_acquire) ||
+            context->admissionEpoch == 0 ||
+            context->admissionEpoch != impl->ffiAdmissionEpoch.load(std::memory_order_acquire)) {
             stale = true;
         } else {
             impl->ffiStreamEnded.store(true, std::memory_order_release);
@@ -1018,20 +1517,62 @@ void RustDeskBridge::onFfiDisconnect(int state, const char* message, void* userD
                     OH_LOG_INFO(LOG_APP,
                         "[RustDesk-FFI] scheduling stale handle cleanup=%{public}p reason=stream-ended",
                         endedHandle);
-                    cleanupGate = std::make_shared<std::promise<void>>();
-                    std::future<void> cleanupReady = cleanupGate->get_future();
-                    impl->ffiCleanupThreads.emplace_back([endedHandle,
-                                                           cleanupReady = std::move(cleanupReady)]() mutable {
-                        // rustdesk_disconnect joins the streaming thread.
-                        // Waiting for the callback to return is mandatory;
-                        // otherwise this worker could join its own callback
-                        // thread and deadlock.
-                        cleanupReady.wait();
-                        rustdesk_disconnect(endedHandle);
-                    });
+                    std::thread cleanupThread;
+                    bool cleanupWorkerOwnsHandle = false;
+                    try {
+                        cleanupGate = std::make_shared<std::promise<void>>();
+                        std::future<void> cleanupReady = cleanupGate->get_future();
+                        const auto cleanupDone =
+                            std::make_shared<std::atomic<bool>>(false);
+                        const std::shared_ptr<void> implKeepAlive = context->implKeepAlive;
+                        // Allocate both parallel owner slots before creating a
+                        // worker. Once the thread exists, publishing its
+                        // noexcept move and shared completion fence cannot
+                        // leave only one vector updated.
+                        impl->ffiCleanupThreads.reserve(
+                            impl->ffiCleanupThreads.size() + 1);
+                        impl->ffiCleanupDone.reserve(
+                            impl->ffiCleanupDone.size() + 1);
+                        cleanupThread = std::thread(
+                            [endedHandle, cleanupDone, impl, implKeepAlive,
+                             cleanupReady = std::move(cleanupReady)]() mutable {
+                                // rustdesk_disconnect joins the streaming thread.
+                                // Waiting for the callback to return is mandatory;
+                                // otherwise this worker could join its own callback
+                                // thread and deadlock.
+                                cleanupReady.wait();
+                                rdDisconnectFfiHandle(impl, endedHandle);
+                                cleanupDone->store(true, std::memory_order_release);
+                            });
+                        cleanupWorkerOwnsHandle = true;
+                        impl->ffiCleanupThreads.emplace_back(std::move(cleanupThread));
+                        impl->ffiCleanupDone.push_back(cleanupDone);
+                    } catch (...) {
+                        OH_LOG_ERROR(LOG_APP,
+                            "[RustDesk-FFI] cleanup worker start failed; handle retained=%{public}p",
+                            endedHandle);
+                        // A successfully created worker is the sole owner of
+                        // endedHandle even if publication unexpectedly fails.
+                        // It captures Impl keep-alive and is fenced until this
+                        // callback returns, so detaching the still-local
+                        // worker is safer than publishing the handle twice.
+                        if (cleanupThread.joinable()) {
+                            cleanupThread.detach();
+                        }
+                        if (!cleanupWorkerOwnsHandle) {
+                            // rdQueueDeferredFfiHandle locks impl->mutex. This
+                            // callback still holds that mutex here, so defer
+                            // the queue operation until after the admission
+                            // scope has released it.
+                            queueEndedHandleAfterUnlock = true;
+                        }
+                    }
                 }
             }
         }
+    }
+    if (queueEndedHandleAfterUnlock) {
+        rdQueueDeferredFfiHandle(impl, endedHandle);
     }
     if (stale) {
         OH_LOG_INFO(LOG_APP,
@@ -1060,17 +1601,129 @@ void RustDeskBridge::onFfiDisconnect(int state, const char* message, void* userD
             OH_LOG_WARN(LOG_APP,
                 "[RustDesk-FFI] stream stopped state=%{public}d msg=%{public}s connected=%{public}s requested=%{public}s",
                 state, stopMessage, wasConnected ? "yes" : "no", "no");
-            impl->setState(ConnectionState::ERROR, stopMessage);
+            const RustDeskTransportErrorClass errorClass =
+                rdClassifyTransportMessage(state, stopMessage);
+            const uint64_t eventGeneration = context->generation;
+            const uint64_t eventOwnerToken = context->ownerToken;
+            const uint64_t eventAdmissionEpoch = context->admissionEpoch;
+            const uint64_t eventSessionId =
+                impl->sessionId.load(std::memory_order_acquire);
+            RustDeskTransportEvent event {
+                true,
+                errorClass,
+                impl->networkGeneration.load(std::memory_order_acquire),
+                false,
+                impl->networkAvailable.load(std::memory_order_acquire),
+                rdSteadyNowMs(),
+            };
+            RustDeskConnectionContinuityExecutor::ActionAdmission admission =
+                [impl, eventSessionId, eventGeneration, eventOwnerToken,
+                 eventAdmissionEpoch]() {
+                    return impl->sessionId.load(std::memory_order_acquire) ==
+                            eventSessionId &&
+                        impl->cursorGeneration.load(std::memory_order_acquire) ==
+                            eventGeneration &&
+                        impl->ownerToken.load(std::memory_order_acquire) ==
+                            eventOwnerToken &&
+                        impl->ffiAdmissionEpoch.load(std::memory_order_acquire) ==
+                            eventAdmissionEpoch &&
+                        !impl->disconnectRequested.load(std::memory_order_acquire);
+                };
+            (void)impl->continuityExecutor->onTransportEvent(
+                event, std::move(admission));
         }
     }
-    if (cleanupGate) {
-        cleanupGate->set_value();
-    }
+} catch (const std::exception& ex) {
+    OH_LOG_ERROR(LOG_APP,
+        "[RustDesk-FFI] disconnect callback exception contained: %{public}s",
+        ex.what());
+} catch (...) {
+    OH_LOG_ERROR(LOG_APP,
+        "[RustDesk-FFI] disconnect callback exception contained: unknown");
 }
 #endif
 
 RustDeskBridge::RustDeskBridge(RustDeskMode mode)
-    : impl_(std::make_unique<Impl>()), mode_(mode) {
+    : impl_(std::make_shared<Impl>()), mode_(mode) {
+    RustDeskConnectionContinuityExecutor::Callbacks continuityCallbacks;
+    continuityCallbacks.fastQuiesce = [this]() {
+        applyContinuityFastQuiesce();
+    };
+    continuityCallbacks.publishVisibleState = [this](const std::string& event) {
+        if (event == "REAUTH") {
+            impl_->setState(ConnectionState::AUTHENTICATING,
+                "Continuity|event=REAUTH");
+        } else if (event == "FAILED" ||
+                   event == "FAILED_RETRY_BUDGET_EXHAUSTED") {
+            impl_->setState(ConnectionState::ERROR,
+                "Continuity|event=FAILED");
+        } else if (event == "WAITING_NETWORK") {
+            impl_->setState(ConnectionState::DISCONNECTED,
+                "Continuity|event=WAITING_NETWORK");
+        } else if (event == "CONNECTED") {
+            impl_->setState(ConnectionState::CONNECTED,
+                "Continuity|event=CONNECTED");
+        } else {
+            impl_->setState(ConnectionState::RECONNECTING,
+                std::string("Continuity|event=") + event);
+        }
+    };
+    continuityCallbacks.makeAttemptTicket = [this]() {
+        RustDeskConnectionContinuityExecutor::AttemptTicket ticket;
+        const auto impl = impl_;
+        ticket.sessionId = impl->sessionId.load(std::memory_order_acquire);
+        ticket.sessionGeneration = impl->cursorGeneration.load(std::memory_order_acquire);
+        ticket.ownerToken = impl->ownerToken.load(std::memory_order_acquire);
+        ticket.admissionEpoch = impl->ffiAdmissionEpoch.load(std::memory_order_acquire);
+        ticket.attemptToken = impl->nextContinuityAttemptToken.fetch_add(
+            1, std::memory_order_relaxed);
+        impl->continuityAttemptToken.store(ticket.attemptToken,
+                                           std::memory_order_release);
+        const uint64_t sessionId = ticket.sessionId;
+        const uint64_t generation = ticket.sessionGeneration;
+        const uint64_t ownerToken = ticket.ownerToken;
+        const uint64_t admissionEpoch = ticket.admissionEpoch;
+        const uint64_t attemptToken = ticket.attemptToken;
+        ticket.validator = [impl, sessionId, generation, ownerToken,
+                            admissionEpoch, attemptToken]() {
+            return impl->sessionId.load(std::memory_order_acquire) == sessionId &&
+                impl->cursorGeneration.load(std::memory_order_acquire) == generation &&
+                impl->ownerToken.load(std::memory_order_acquire) == ownerToken &&
+                impl->ffiAdmissionEpoch.load(std::memory_order_acquire) == admissionEpoch &&
+                impl->continuityAttemptToken.load(std::memory_order_acquire) == attemptToken &&
+                !impl->disconnectRequested.load(std::memory_order_acquire);
+        };
+        return ticket;
+    };
+    continuityCallbacks.prepareAttemptTicket = [this](
+        const RustDeskConnectionContinuityExecutor::AttemptTicket& source) {
+        const auto prepared = prepareContinuityAttempt(source);
+        return prepared.value_or(
+            RustDeskConnectionContinuityExecutor::PreparedAttemptTicket {});
+    };
+    continuityCallbacks.startAttemptWithPreparedTicket = [this](
+        const RustDeskConnectionContinuityExecutor::PreparedAttemptTicket& ticket) {
+        return startContinuityAttempt(ticket);
+    };
+    continuityCallbacks.cancelAttempt = [this]() {
+#ifdef RUSTDESK_USE_REAL_CORE
+        rustdesk_cancel_pending_connect_for_session(
+            impl_->sessionId.load(std::memory_order_acquire));
+#endif
+    };
+    continuityCallbacks.maintenancePoll = [this](uint64_t nowMs) {
+        onContinuityMaintenance(nowMs);
+    };
+    continuityCallbacks.firstGenerationReady = [this]() {
+        std::lock_guard<std::mutex> lock(impl_->continuityAdmissionMutex);
+        if (impl_->disconnectRequested.load(std::memory_order_acquire) ||
+            impl_->ffiStreamEnded.load(std::memory_order_acquire)) {
+            return;
+        }
+        impl_->continuityQuiesce.reopenPresentationAfterFirstFrame();
+        impl_->continuityQuiesce.reopenAudioAfterPrebuffer();
+    };
+    impl_->continuityExecutor->setCallbacks(std::move(continuityCallbacks));
     const char* modeLabel = (mode == RustDeskMode::IPC) ? "IPC" :
         (mode == RustDeskMode::FFI ? "FFI" : "EXPERIMENTAL");
     OH_LOG_INFO(LOG_APP, "[RustDesk] RustDeskBridge created (mode=%{public}s)", modeLabel);
@@ -1079,17 +1732,30 @@ RustDeskBridge::RustDeskBridge(RustDeskMode mode)
 void RustDeskBridge::setSessionIdentity(uint64_t sessionId) {
     const uint64_t generation =
         g_nextRustDeskCursorGeneration.fetch_add(1, std::memory_order_relaxed);
+    {
+        std::lock_guard<std::mutex> admissionLock(impl_->continuityAdmissionMutex);
+        impl_->ffiAdmissionEpoch.fetch_add(1, std::memory_order_acq_rel);
+        impl_->ffiStreamEnded.store(true, std::memory_order_release);
+        impl_->continuityAttemptToken.store(0, std::memory_order_release);
+        impl_->continuityNetworkCallCancelled.store(true, std::memory_order_release);
+        impl_->awaitingFirstGenerationFrame.store(false, std::memory_order_release);
+    }
     auto displayLease = impl_->displayControl.acquireDisplayLease();
-    std::lock_guard<std::mutex> lock(impl_->mutex);
-    impl_->sessionId.store(sessionId, std::memory_order_release);
-    impl_->cursorGeneration.store(generation, std::memory_order_release);
-    impl_->callbackVideoFrames.store(0, std::memory_order_release);
-    impl_->callbackVideoBytes.store(0, std::memory_order_release);
-    impl_->callbackKeyframes.store(0, std::memory_order_release);
-    impl_->callbackCodec.store(-1, std::memory_order_release);
-    impl_->callbackWidth.store(0, std::memory_order_release);
-    impl_->callbackHeight.store(0, std::memory_order_release);
-    impl_->lastFrameAtMs.store(0, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        impl_->sessionId.store(sessionId, std::memory_order_release);
+        impl_->cursorGeneration.store(generation, std::memory_order_release);
+        impl_->ownerToken.store(0, std::memory_order_release);
+        impl_->callbackVideoFrames.store(0, std::memory_order_release);
+        impl_->callbackVideoBytes.store(0, std::memory_order_release);
+        impl_->callbackKeyframes.store(0, std::memory_order_release);
+        impl_->callbackCodec.store(-1, std::memory_order_release);
+        impl_->callbackWidth.store(0, std::memory_order_release);
+        impl_->callbackHeight.store(0, std::memory_order_release);
+        impl_->lastFrameAtMs.store(0, std::memory_order_release);
+    }
+    impl_->continuityExecutor->begin(sessionId, generation, rdSteadyNowMs());
+    impl_->continuityQuiesce.reopen();
     displayLease.reset();
     impl_->cursorStore.reset(sessionId, "rustdesk", generation);
     // RustDesk does not guarantee that an unchanged cursor shape is repeated
@@ -1098,6 +1764,318 @@ void RustDeskBridge::setSessionIdentity(uint64_t sessionId) {
     // until the protocol supplies the real cursor bitmap.
     impl_->cursorStore.setFallbackShape();
     impl_->cursorStore.setVisible(true);
+}
+
+void RustDeskBridge::setSessionOwnerToken(uint64_t ownerToken) {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    impl_->ownerToken.store(ownerToken, std::memory_order_release);
+}
+
+void RustDeskBridge::setContinuityGenerationCallback(
+    ContinuityGenerationCallback callback) {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    impl_->continuityGenerationCallback = std::move(callback);
+}
+
+void RustDeskBridge::onNetworkChanged(bool available, uint64_t networkGeneration) {
+    impl_->networkAvailable.store(available, std::memory_order_release);
+    impl_->networkGeneration.store(networkGeneration, std::memory_order_release);
+    if (mode_ != RustDeskMode::FFI) {
+        return;
+    }
+    impl_->continuityExecutor->onNetworkAvailable(
+        available, networkGeneration, rdSteadyNowMs());
+}
+
+RustDeskContinuityQuiesceSnapshot RustDeskBridge::continuityQuiesceSnapshot() const {
+    return impl_->continuityQuiesce.snapshot();
+}
+
+std::optional<RustDeskConnectionContinuityExecutor::PreparedAttemptTicket>
+RustDeskBridge::prepareContinuityAttempt(
+    const RustDeskConnectionContinuityExecutor::AttemptTicket& source) {
+#if defined(RDP_NATIVE_CALLBACK_TESTING)
+    std::function<void(int)> stageHook;
+    {
+        std::lock_guard<std::mutex> lock(impl_->continuityAdmissionMutex);
+        stageHook = impl_->continuityAttemptStageHook;
+    }
+    if (stageHook) {
+        stageHook(0);
+    }
+#endif
+
+    const uint64_t attemptToken =
+        impl_->nextContinuityAttemptToken.fetch_add(1, std::memory_order_relaxed);
+    RustDeskConnectionContinuityExecutor::PreparedAttemptTicket prepared;
+    {
+        std::lock_guard<std::mutex> admissionLock(impl_->continuityAdmissionMutex);
+        if (!source.valid() || !source.validator || !source.validator() ||
+            source.sessionId != impl_->sessionId.load(std::memory_order_acquire) ||
+            source.sessionGeneration != impl_->cursorGeneration.load(std::memory_order_acquire) ||
+            source.ownerToken != impl_->ownerToken.load(std::memory_order_acquire) ||
+            source.admissionEpoch != impl_->ffiAdmissionEpoch.load(std::memory_order_acquire) ||
+            impl_->disconnectRequested.load(std::memory_order_acquire)) {
+            return std::nullopt;
+        }
+        const uint64_t sessionId = source.sessionId;
+        const uint64_t sessionGeneration = source.sessionGeneration;
+        const uint64_t ownerToken = source.ownerToken;
+        // A transport reconnect is a new FFI stream, not a new native sink
+        // owner. Keep the decoder/renderer owner stable and rotate only the
+        // FFI admission epoch so callbacks from the retired stream are still
+        // rejected without dropping the active video pipeline.
+        const uint64_t admissionEpoch =
+            impl_->ffiAdmissionEpoch.fetch_add(1, std::memory_order_acq_rel) + 1;
+        impl_->continuityAttemptToken.store(attemptToken, std::memory_order_release);
+        impl_->ffiStreamEnded.store(true, std::memory_order_release);
+        impl_->awaitingFirstGenerationFrame.store(
+            mode_ == RustDeskMode::FFI, std::memory_order_release);
+        impl_->continuityNetworkCallCancelled.store(false, std::memory_order_release);
+        prepared.sessionId = sessionId;
+        prepared.sessionGeneration = sessionGeneration;
+        prepared.ownerToken = ownerToken;
+        prepared.admissionEpoch = admissionEpoch;
+        prepared.attemptToken = attemptToken;
+        prepared.validator = [impl = impl_, sessionId, sessionGeneration,
+                              ownerToken, admissionEpoch, attemptToken]() {
+            return impl->sessionId.load(std::memory_order_acquire) == sessionId &&
+                impl->cursorGeneration.load(std::memory_order_acquire) == sessionGeneration &&
+                impl->ownerToken.load(std::memory_order_acquire) == ownerToken &&
+                impl->ffiAdmissionEpoch.load(std::memory_order_acquire) == admissionEpoch &&
+                impl->continuityAttemptToken.load(std::memory_order_acquire) == attemptToken &&
+                !impl->disconnectRequested.load(std::memory_order_acquire);
+        };
+    }
+
+#if defined(RDP_NATIVE_CALLBACK_TESTING)
+    if (stageHook) {
+        stageHook(1);
+    }
+#endif
+    if (!prepared.valid() || !prepared.validator()) {
+        return std::nullopt;
+    }
+
+    auto displayLease = impl_->displayControl.acquireDisplayLease();
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        impl_->callbackVideoFrames.store(0, std::memory_order_release);
+        impl_->callbackVideoBytes.store(0, std::memory_order_release);
+        impl_->callbackKeyframes.store(0, std::memory_order_release);
+        impl_->callbackCodec.store(-1, std::memory_order_release);
+        impl_->callbackWidth.store(0, std::memory_order_release);
+        impl_->callbackHeight.store(0, std::memory_order_release);
+        impl_->lastFrameAtMs.store(0, std::memory_order_release);
+    }
+    displayLease.reset();
+    impl_->cursorStore.reset(prepared.sessionId, "rustdesk", prepared.sessionGeneration);
+    impl_->cursorStore.setFallbackShape();
+    impl_->cursorStore.setVisible(true);
+
+    ContinuityGenerationCallback generationCallback;
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        generationCallback = impl_->continuityGenerationCallback;
+    }
+    const bool activated = !generationCallback ||
+        (prepared.validator() && generationCallback(
+            prepared.sessionId, prepared.sessionGeneration, prepared.ownerToken));
+    if (!activated || !prepared.validator()) {
+        std::lock_guard<std::mutex> admissionLock(impl_->continuityAdmissionMutex);
+        if (impl_->continuityAttemptToken.load(std::memory_order_acquire) ==
+            prepared.attemptToken) {
+            impl_->continuityAttemptToken.store(0, std::memory_order_release);
+        }
+        return std::nullopt;
+    }
+    impl_->continuityQuiesce.reopenGenerationAdmission();
+    return prepared;
+}
+
+bool RustDeskBridge::startContinuityAttempt(
+    const RustDeskConnectionContinuityExecutor::PreparedAttemptTicket& ticket) {
+    if (mode_ != RustDeskMode::FFI || !ticket.valid() ||
+        !ticket.validator || !ticket.validator()) {
+        return false;
+    }
+
+#ifdef RUSTDESK_USE_REAL_CORE
+    // The old stream owns the callback context until its cleanup worker has
+    // joined. A new FFI context is not published across that boundary.
+    rdDrainDeferredFfiHandles(impl_.get());
+    std::thread completedConnect;
+    std::vector<std::thread> completedCleanup;
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        if (impl_->ffiConnectThread.joinable()) {
+            if (!impl_->ffiConnectDone ||
+                !impl_->ffiConnectDone->load(std::memory_order_acquire)) {
+                return false;
+            }
+            completedConnect = std::move(impl_->ffiConnectThread);
+            impl_->ffiConnectDone = std::make_shared<std::atomic<bool>>(true);
+        }
+        for (const auto& done : impl_->ffiCleanupDone) {
+            if (!done || !done->load(std::memory_order_acquire)) {
+                return false;
+            }
+        }
+        completedCleanup = std::move(impl_->ffiCleanupThreads);
+        impl_->ffiCleanupDone.clear();
+    }
+    if (completedConnect.joinable()) {
+        completedConnect.join();
+    }
+    for (std::thread& worker : completedCleanup) {
+        if (worker.joinable()) {
+            worker.join();
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        if (!rdCanRetireFfiCallbackContextLocked(impl_.get())) {
+            return false;
+        }
+        rdRetireFfiCallbackContextLocked(impl_.get());
+    }
+#endif
+
+    ConnectionConfig reconnectConfig;
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        reconnectConfig = impl_->config;
+    }
+    if (reconnectConfig.host.empty() && !reconnectConfig.rdDirectIp) {
+        return false;
+    }
+
+#if defined(RDP_NATIVE_CALLBACK_TESTING)
+    std::function<void(int)> stageHook;
+    {
+        std::lock_guard<std::mutex> lock(impl_->continuityAdmissionMutex);
+        stageHook = impl_->continuityAttemptStageHook;
+    }
+    if (stageHook) {
+        stageHook(2);
+    }
+    if (!ticket.validator()) {
+        return false;
+    }
+#endif
+
+    {
+        std::lock_guard<std::mutex> admissionLock(impl_->continuityAdmissionMutex);
+        if (!ticket.validator() ||
+            impl_->continuityNetworkCallCancelled.load(std::memory_order_acquire)) {
+            return false;
+        }
+        // This counter is incremented at the last cancellable admission
+        // boundary. A disconnect after this point can discard the result, but
+        // cannot allow it to publish a new handle or state.
+        impl_->continuityConnectCallCount.fetch_add(1, std::memory_order_acq_rel);
+    }
+
+#if defined(RDP_NATIVE_CALLBACK_TESTING)
+    if (stageHook) {
+        stageHook(3);
+    }
+    if (!ticket.validator()) {
+        return false;
+    }
+    std::function<int(uint64_t, uint64_t)> resultHook;
+    {
+        std::lock_guard<std::mutex> lock(impl_->continuityAdmissionMutex);
+        resultHook = impl_->continuityConnectResultHook;
+    }
+    if (resultHook) {
+        const int result = resultHook(ticket.sessionGeneration, ticket.attemptToken);
+        const bool succeeded = result == 0 && ticket.validator() &&
+            !impl_->continuityNetworkCallCancelled.load(std::memory_order_acquire);
+        impl_->continuityExecutor->recordAttemptResult(succeeded, rdSteadyNowMs());
+        return succeeded;
+    }
+#endif
+
+    const int result = connectInternal(reconnectConfig, &ticket);
+    if (result != 0) {
+        if (ticket.validator()) {
+            impl_->continuityExecutor->recordAttemptResult(false, rdSteadyNowMs());
+        }
+        return false;
+    }
+    return true;
+}
+
+void RustDeskBridge::applyContinuityFastQuiesce() {
+    const uint64_t startedAt = rdSteadyNowMs();
+    impl_->continuityQuiesce.closeForTransportLoss();
+    impl_->ffiStreamEnded.store(true, std::memory_order_release);
+    // This bridge has no additional platform audio/decoder stop call. The
+    // FFI handle is detached by onFfiDisconnect and joined by the continuity
+    // worker before a new context is published.
+    impl_->continuityQuiesce.markDeferredDestroyComplete();
+    impl_->continuityQuiesce.recordFastQuiesceDuration(
+        rdSteadyNowMs() - startedAt);
+}
+
+void RustDeskBridge::onContinuityMaintenance(uint64_t /*nowMs*/) {
+#ifdef RUSTDESK_USE_REAL_CORE
+    rdDrainDeferredFfiHandles(impl_.get());
+    std::vector<std::thread> completed;
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        if (impl_->ffiConnectThread.joinable() && impl_->ffiConnectDone &&
+            impl_->ffiConnectDone->load(std::memory_order_acquire)) {
+            completed.push_back(std::move(impl_->ffiConnectThread));
+            impl_->ffiConnectDone = std::make_shared<std::atomic<bool>>(true);
+        }
+        size_t index = 0;
+        while (index < impl_->ffiCleanupThreads.size()) {
+            if (index >= impl_->ffiCleanupDone.size() ||
+                !impl_->ffiCleanupDone[index] ||
+                !impl_->ffiCleanupDone[index]->load(std::memory_order_acquire)) {
+                ++index;
+                continue;
+            }
+            completed.push_back(std::move(impl_->ffiCleanupThreads[index]));
+            impl_->ffiCleanupThreads.erase(impl_->ffiCleanupThreads.begin() + index);
+            impl_->ffiCleanupDone.erase(impl_->ffiCleanupDone.begin() + index);
+        }
+    }
+    for (std::thread& worker : completed) {
+        if (worker.joinable()) {
+            worker.join();
+        }
+    }
+    rdDrainDeferredFfiHandles(impl_.get());
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        if (!impl_->ffiConnectThread.joinable() &&
+            impl_->ffiCleanupThreads.empty() &&
+            rdCanRetireFfiCallbackContextLocked(impl_.get())) {
+            rdRetireFfiCallbackContextLocked(impl_.get());
+        }
+    }
+#endif
+}
+
+uint64_t RustDeskBridge::sessionGeneration() const {
+    return impl_->cursorGeneration.load(std::memory_order_acquire);
+}
+
+bool RustDeskBridge::reportVideoPressureForSession(uint64_t sessionId,
+                                                   uint64_t generation,
+                                                   uint64_t ownerToken,
+                                                   int level) {
+    if (sessionId == 0 || generation == 0 || ownerToken == 0 ||
+        impl_->sessionId.load(std::memory_order_acquire) != sessionId ||
+        impl_->cursorGeneration.load(std::memory_order_acquire) != generation ||
+        impl_->ownerToken.load(std::memory_order_acquire) != ownerToken) {
+        return false;
+    }
+    reportVideoPressure(level);
+    return true;
 }
 
 bool RustDeskBridge::submitTwoFactorCode(const std::string& code) {
@@ -1498,17 +2476,33 @@ int RustDeskBridge::connect(const ConnectionConfig& cfg) {
     bool hasFfiHandle = false;
     bool hasFfiConnectThread = false;
     bool hasFfiCleanupThreads = false;
+    bool hasFfiDeferredWork = false;
 #ifdef RUSTDESK_USE_REAL_CORE
     hasFfiHandle = impl_->displayControl.hasHandle();
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
         hasFfiConnectThread = impl_->ffiConnectThread.joinable();
         hasFfiCleanupThreads = !impl_->ffiCleanupThreads.empty();
+        hasFfiDeferredWork =
+            impl_->ffiHandleJoinPending.load(std::memory_order_acquire) != 0 ||
+            impl_->ffiDeferredJoinCount.load(std::memory_order_acquire) != 0 ||
+            !impl_->ffiDeferredHandles.empty();
     }
 #endif
     if (getState() != ConnectionState::DISCONNECTED || hasFfiHandle ||
-        hasFfiConnectThread || hasFfiCleanupThreads) {
+        hasFfiConnectThread || hasFfiCleanupThreads || hasFfiDeferredWork) {
         disconnect();
+    }
+    return connectInternal(cfg, nullptr);
+}
+
+int RustDeskBridge::connectInternal(
+    const ConnectionConfig& cfg,
+    const RustDeskConnectionContinuityExecutor::PreparedAttemptTicket* continuityTicket) {
+    if (continuityTicket &&
+        (!continuityTicket->valid() || !continuityTicket->validator ||
+         !continuityTicket->validator())) {
+        return -50;
     }
     // setSessionIdentity() can run before connect() tears down a previous FFI
     // stream. Re-seed the store after that teardown so the old disconnect
@@ -1521,9 +2515,13 @@ int RustDeskBridge::connect(const ConnectionConfig& cfg) {
         impl_->cursorStore.setFallbackShape();
         impl_->cursorStore.setVisible(true);
     }
-    impl_->config = cfg;
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        impl_->config = cfg;
+    }
     impl_->disconnectRequested.store(false);
     impl_->ffiStreamEnded.store(false);
+    impl_->continuityNetworkCallCancelled.store(false, std::memory_order_release);
     const uint64_t serial = ++impl_->connectSerial;
     impl_->setState(ConnectionState::CONNECTING, "Connecting...");
     const std::string connectionStrategy = cfg.rdConnectionStrategy.empty()
@@ -1588,22 +2586,46 @@ int RustDeskBridge::connect(const ConnectionConfig& cfg) {
                     cfg.rdAccessToken.empty() ? "absent" : "present", cfg.rdRelayPort);
 
         RustDeskBridge::Impl* impl = impl_.get();
+        const std::shared_ptr<Impl> keepAlive = impl_;
+        const bool continuityAttempt = continuityTicket != nullptr;
+        const RustDeskConnectionContinuityExecutor::PreparedAttemptTicket attemptTicket =
+            continuityTicket ? *continuityTicket
+                             : RustDeskConnectionContinuityExecutor::PreparedAttemptTicket {};
         const uint64_t callbackGeneration =
             impl_->cursorGeneration.load(std::memory_order_acquire);
-        std::thread connectThread([impl, cfg, ffiPeerId, logHost, serial, callbackGeneration, sessionId]() {
-            auto callbackContext = std::make_unique<RustDeskFfiCallbackContext>();
+        const auto connectDone = std::make_shared<std::atomic<bool>>(false);
+        std::thread connectThread([impl, keepAlive, cfg, ffiPeerId, logHost, serial,
+                                   callbackGeneration, sessionId, continuityAttempt,
+                                   attemptTicket, connectDone]() {
+            struct CompletionGuard {
+                std::shared_ptr<std::atomic<bool>> done;
+                ~CompletionGuard() {
+                    if (done) done->store(true, std::memory_order_release);
+                }
+            } completion {connectDone};
+            auto callbackContext = std::make_shared<RustDeskFfiCallbackContext>();
             callbackContext->impl = impl;
+            callbackContext->implKeepAlive = keepAlive;
             callbackContext->generation = callbackGeneration;
+            callbackContext->ownerToken = impl->ownerToken.load(std::memory_order_acquire);
+            callbackContext->admissionEpoch = impl->ffiAdmissionEpoch.load(std::memory_order_acquire);
             RustDeskFfiCallbackContext* callbackUserData = callbackContext.get();
             {
                 std::lock_guard<std::mutex> lock(impl->mutex);
                 if (serial != impl->connectSerial.load(std::memory_order_acquire) ||
                     callbackGeneration != impl->cursorGeneration.load(std::memory_order_acquire) ||
                     impl->disconnectRequested.load(std::memory_order_acquire) ||
+                    (continuityAttempt && (!attemptTicket.valid() ||
+                        !attemptTicket.validator || !attemptTicket.validator())) ||
                     impl->ffiCallbackContext != nullptr) {
                     return;
                 }
-                impl->ffiCallbackContext = std::move(callbackContext);
+                if (!rdPublishFfiCallbackContext(callbackContext)) {
+                    OH_LOG_ERROR(LOG_APP,
+                        "[RustDesk-FFI] callback context registry publish failed");
+                    return;
+                }
+                impl->ffiCallbackContext = callbackContext;
             }
             RustDeskFfiConfig ffiCfg = {};  // 零初始化 — 消除未初始化 padding/新字段风险
             ffiCfg.host     = cfg.host.c_str();
@@ -1649,15 +2671,27 @@ int RustDeskBridge::connect(const ConnectionConfig& cfg) {
                 ffiCfg.fps,
                 ffiCfg.relay_fallback_port);
 
-            void* ffiHandle = rustdesk_connect_v3(
+            // The Rust stream can invoke a callback synchronously during the
+            // connect call (the display snapshot is one such path). Reserve
+            // the callback context before crossing the FFI boundary and keep
+            // the reservation until the returned handle is disconnected.
+            RustDeskFfiConnectReservation handleReservation(impl);
+            void* ffiHandle = rustdesk_connect_v4(
                 &ffiCfg, onFfiFrame, onFfiAudio, onFfiCursor, onFfiDisconnect,
-                onFfiDisplay, onFfiAuth, callbackUserData);
+                onFfiDisplay, onFfiAuth, onFfiProgress, callbackUserData);
+            if (ffiHandle != nullptr) {
+                handleReservation.transferToHandleOwner();
+            }
             bool discardHandle = serial != impl->connectSerial.load() ||
-                impl->disconnectRequested.load() || impl->ffiStreamEnded.load();
+                impl->disconnectRequested.load() || impl->ffiStreamEnded.load() ||
+                (continuityAttempt && (!attemptTicket.validator ||
+                    !attemptTicket.validator()));
             if (!discardHandle) {
                 std::lock_guard<std::mutex> lock(impl->mutex);
                 discardHandle = serial != impl->connectSerial.load() ||
-                    impl->disconnectRequested.load() || impl->ffiStreamEnded.load();
+                    impl->disconnectRequested.load() || impl->ffiStreamEnded.load() ||
+                    (continuityAttempt && (!attemptTicket.validator ||
+                        !attemptTicket.validator()));
                 if (!discardHandle && ffiHandle != nullptr &&
                     !impl->displayControl.attachHandle(ffiHandle)) {
                     discardHandle = true;
@@ -1668,7 +2702,7 @@ int RustDeskBridge::connect(const ConnectionConfig& cfg) {
                     OH_LOG_INFO(LOG_APP,
                         "[RustDesk-FFI] late/ended connect result discarded handle=%{public}p",
                         ffiHandle);
-                    rustdesk_disconnect(ffiHandle);
+                    rdDisconnectFfiHandle(impl, ffiHandle);
                 }
                 return;
             }
@@ -1680,7 +2714,12 @@ int RustDeskBridge::connect(const ConnectionConfig& cfg) {
                 std::string errMsg = errBuf[0] != '\0'
                     ? std::string("FFI connection failed: ") + errBuf
                     : "FFI connection failed - check host/port and network";
-                impl->setState(ConnectionState::ERROR, errMsg);
+                if (continuityAttempt && attemptTicket.validator &&
+                    attemptTicket.validator()) {
+                    impl->continuityExecutor->recordAttemptResult(false, rdSteadyNowMs());
+                } else {
+                    impl->setState(ConnectionState::ERROR, errMsg);
+                }
                 return;
             }
 
@@ -1695,8 +2734,14 @@ int RustDeskBridge::connect(const ConnectionConfig& cfg) {
                 if (impl->displayControl.ownsHandle(ffiHandle) &&
                     serial == impl->connectSerial.load() &&
                     !impl->disconnectRequested.load() &&
-                    !impl->ffiStreamEnded.load()) {
+                    !impl->ffiStreamEnded.load() &&
+                    (!continuityAttempt || (attemptTicket.validator &&
+                                             attemptTicket.validator()))) {
                     impl->state = ConnectionState::CONNECTED;
+                    if (continuityAttempt) {
+                        impl->awaitingFirstGenerationFrame.store(
+                            true, std::memory_order_release);
+                    }
                     connectedCallback = impl->stateCallback;
                     publishedConnected = true;
                 }
@@ -1705,6 +2750,10 @@ int RustDeskBridge::connect(const ConnectionConfig& cfg) {
                 OH_LOG_INFO(LOG_APP,
                     "[RustDesk-FFI] connect completed after teardown, handle=%{public}p",
                     ffiHandle);
+                void* orphanHandle = impl->displayControl.detachHandleIf(ffiHandle);
+                if (orphanHandle != nullptr) {
+                    rdDisconnectFfiHandle(impl, orphanHandle);
+                }
                 return;
             }
             if (connectedCallback) {
@@ -1715,6 +2764,7 @@ int RustDeskBridge::connect(const ConnectionConfig& cfg) {
         {
             std::lock_guard<std::mutex> lock(impl_->mutex);
             impl_->ffiConnectThread = std::move(connectThread);
+            impl_->ffiConnectDone = connectDone;
         }
         return 0;
 
@@ -1771,10 +2821,35 @@ int RustDeskBridge::connect(const ConnectionConfig& cfg) {
 }
 
 void RustDeskBridge::disconnect() {
+    disconnectImpl(true);
+}
+
+void RustDeskBridge::disconnectImpl(bool cancelContinuity) {
+    if (!impl_) {
+        return;
+    }
+
     const uint64_t sessionId = impl_->sessionId.load(std::memory_order_acquire);
     const uint64_t disconnectGeneration =
         impl_->cursorGeneration.load(std::memory_order_acquire);
-    impl_->disconnectRequested.store(true);
+
+    // Invalidate every queued callback and reconnect ticket before entering a
+    // blocking teardown. The admission mutex is deliberately released before
+    // any state callback, FFI destructor, or thread join can run.
+    {
+        std::lock_guard<std::mutex> admissionLock(impl_->continuityAdmissionMutex);
+        impl_->ffiAdmissionEpoch.fetch_add(1, std::memory_order_acq_rel);
+        impl_->disconnectRequested.store(true, std::memory_order_release);
+        impl_->ffiStreamEnded.store(true, std::memory_order_release);
+        impl_->continuityAttemptToken.store(0, std::memory_order_release);
+        impl_->continuityNetworkCallCancelled.store(true, std::memory_order_release);
+        impl_->awaitingFirstGenerationFrame.store(false, std::memory_order_release);
+    }
+    if (cancelContinuity) {
+        impl_->continuityExecutor->cancel();
+    }
+    applyContinuityFastQuiesce();
+
 #ifdef RUSTDESK_USE_REAL_CORE
     void* ffiHandle = nullptr;
 #endif
@@ -1786,8 +2861,7 @@ void RustDeskBridge::disconnect() {
 #ifdef RUSTDESK_USE_REAL_CORE
         // Detach while the display lifecycle boundary is exclusive. Existing
         // handle leases have drained, and no later FFI call can acquire this
-        // pointer. rustdesk_disconnect() runs after releasing the boundary
-        // because it joins the stream that emits onFfiDisconnect().
+        // pointer. The Rust destructor runs after this boundary is released.
         ffiHandle = impl_->displayControl.detachHandle();
 #endif
     }
@@ -1797,49 +2871,128 @@ void RustDeskBridge::disconnect() {
         close(impl_->ipcFd);
         impl_->ipcFd = -1;
     }
+
 #ifdef RUSTDESK_USE_REAL_CORE
     // FFI 句柄在登录完成前尚未返回，先取消等待中的连接尝试，避免点击返回后
     // 审批等待线程继续占用中继连接。
     rustdesk_cancel_pending_connect_for_session(sessionId);
+
     std::thread ffiConnectThread;
+    std::shared_ptr<std::atomic<bool>> ffiConnectDone;
     std::vector<std::thread> ffiCleanupThreads;
+    std::vector<std::shared_ptr<std::atomic<bool>>> ffiCleanupDone;
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
         ffiConnectThread = std::move(impl_->ffiConnectThread);
+        ffiConnectDone = std::move(impl_->ffiConnectDone);
         ffiCleanupThreads = std::move(impl_->ffiCleanupThreads);
+        ffiCleanupDone = std::move(impl_->ffiCleanupDone);
+        impl_->ffiConnectDone = std::make_shared<std::atomic<bool>>(true);
     }
+
+    const bool callbackThread = g_inRustDeskFfiCallback;
+    bool deferredThreadJoin = false;
+    const auto deferThread = [&](std::thread worker,
+                                 std::shared_ptr<std::atomic<bool>> done) {
+        if (!worker.joinable()) {
+            return;
+        }
+        deferredThreadJoin = true;
+        impl_->ffiDeferredJoinCount.fetch_add(1, std::memory_order_acq_rel);
+        try {
+            RustDeskContinuityDeferred::enqueue(
+                std::move(worker), impl_, std::move(done),
+                [keepAlive = impl_]() noexcept {
+                    keepAlive->ffiDeferredJoinCount.fetch_sub(
+                        1, std::memory_order_acq_rel);
+                });
+        } catch (...) {
+            impl_->ffiDeferredJoinCount.fetch_sub(1, std::memory_order_acq_rel);
+            OH_LOG_ERROR(LOG_APP,
+                "[RustDesk-FFI] deferred thread enqueue failed; restoring worker ownership");
+            // The deferred queue normally cannot fail after the worker has
+            // been created. Keep a failed publication recoverable by putting
+            // the worker back under Impl; the next non-callback disconnect or
+            // maintenance pass will join it.
+            try {
+                std::lock_guard<std::mutex> lock(impl_->mutex);
+                impl_->ffiCleanupThreads.emplace_back(std::move(worker));
+                if (done) {
+                    impl_->ffiCleanupDone.push_back(std::move(done));
+                }
+            } catch (...) {
+                OH_LOG_ERROR(LOG_APP,
+                    "[RustDesk-FFI] failed to retain deferred worker; terminating to avoid detached teardown");
+                std::terminate();
+            }
+        }
+    };
+
     if (mode_ == RustDeskMode::FFI && ffiHandle != nullptr) {
-        rustdesk_disconnect(ffiHandle);
-    }
-    if (ffiConnectThread.joinable()) {
-        if (ffiConnectThread.get_id() == std::this_thread::get_id()) {
-            OH_LOG_ERROR(LOG_APP,
-                "[RustDesk-FFI] disconnect called from connect thread; refusing self-join");
-            ffiConnectThread.detach();
+        if (!callbackThread) {
+            rdDisconnectFfiHandle(impl_.get(), ffiHandle);
         } else {
-            ffiConnectThread.join();
+            // rustdesk_disconnect() joins the stream producer. If the bridge
+            // is re-entered from an FFI callback, wait for all callbacks to
+            // leave before invoking that destructor on a deferred worker.
+            auto done = std::make_shared<std::atomic<bool>>(false);
+            std::thread handleCleanup([impl = impl_, ffiHandle, done]() {
+                {
+                    std::unique_lock<std::mutex> lock(impl->ffiCallbackMutex);
+                    impl->ffiCallbackCv.wait(lock, [impl]() {
+                        return impl->ffiCallbackActive.load(
+                                   std::memory_order_acquire) == 0;
+                    });
+                }
+                rdDisconnectFfiHandle(impl.get(), ffiHandle);
+                done->store(true, std::memory_order_release);
+            });
+            deferThread(std::move(handleCleanup), done);
         }
     }
-    for (std::thread& cleanupThread : ffiCleanupThreads) {
-        if (!cleanupThread.joinable()) {
-            continue;
+
+    const auto joinOrDefer = [&](std::thread& worker,
+                                 const std::shared_ptr<std::atomic<bool>>& done) {
+        if (!worker.joinable()) {
+            return;
         }
-        if (cleanupThread.get_id() == std::this_thread::get_id()) {
-            OH_LOG_ERROR(LOG_APP,
-                "[RustDesk-FFI] cleanup thread attempted self-join; refusing self-join");
-            cleanupThread.detach();
-        } else {
-            cleanupThread.join();
+        if (callbackThread || worker.get_id() == std::this_thread::get_id()) {
+            deferThread(std::move(worker), done);
+            return;
         }
+        worker.join();
+    };
+
+    joinOrDefer(ffiConnectThread, ffiConnectDone);
+    for (size_t index = 0; index < ffiCleanupThreads.size(); ++index) {
+        const auto done = index < ffiCleanupDone.size()
+            ? ffiCleanupDone[index] : nullptr;
+        joinOrDefer(ffiCleanupThreads[index], done);
     }
-    {
-        std::lock_guard<std::mutex> lock(impl_->mutex);
+
+    if (!deferredThreadJoin && !callbackThread) {
+        std::unique_lock<std::mutex> lock(impl_->ffiCallbackMutex);
+        impl_->ffiCallbackCv.wait(lock, [this]() {
+            return impl_->ffiCallbackActive.load(std::memory_order_acquire) == 0;
+        });
+        lock.unlock();
+        rdDrainDeferredFfiHandles(impl_.get());
+        std::lock_guard<std::mutex> stateLock(impl_->mutex);
         // All FFI callbacks and cleanup workers have quiesced before the
         // generation context is reclaimed. A subsequent connect allocates a
         // fresh context with a fresh generation.
-        impl_->ffiCallbackContext.reset();
+        if (rdCanRetireFfiCallbackContextLocked(impl_.get())) {
+            rdRetireFfiCallbackContextLocked(impl_.get());
+        } else {
+            OH_LOG_INFO(LOG_APP,
+                "[RustDesk-FFI] callback context retirement deferred pending=%{public}u deferredJoins=%{public}u queuedHandles=%{public}zu",
+                impl_->ffiHandleJoinPending.load(std::memory_order_acquire),
+                impl_->ffiDeferredJoinCount.load(std::memory_order_acquire),
+                impl_->ffiDeferredHandles.size());
+        }
     }
 #endif
+
     if (impl_->sockFd >= 0) {
         shutdown(impl_->sockFd, SHUT_RDWR);
         close(impl_->sockFd);
@@ -1948,6 +3101,16 @@ void RustDeskBridge::sendMouseWheel(int x, int y, int delta) {
     }
 }
 
+bool RustDeskBridge::sendTouchpadWheel(int x, int y) {
+#ifdef RUSTDESK_USE_REAL_CORE
+    auto handleLease = impl_->displayControl.acquireHandle();
+    if (mode_ == RustDeskMode::FFI && handleLease) {
+        return rustdesk_send_mouse_wheel_2d(handleLease.get(), x, y);
+    }
+#endif
+    return false;
+}
+
 void RustDeskBridge::sendText(const std::string& text) {
 #ifdef RUSTDESK_USE_REAL_CORE
     auto handleLease = impl_->displayControl.acquireHandle();
@@ -1999,7 +3162,23 @@ SessionTransferStatus RustDeskBridge::getSessionTransferStatus() {
         RustDeskFfiTransferStatus ffi {};
         if (rustdesk_get_transfer_status(handleLease.get(), &ffi)) {
             if (ffi.state == 3) impl_->transferStatus.markRustDeskConfirmed(ffi.transferId, ffi.totalBytes);
-            else if (ffi.state == 4) impl_->transferStatus.markRustDeskFailed(ffi.transferId, "remote_transfer_failed");
+            else if (ffi.state == 4) {
+                char errorBuffer[512] = {0};
+                rustdesk_get_transfer_error(handleLease.get(), errorBuffer, sizeof(errorBuffer));
+                const std::string diagnostic = errorBuffer[0] != '\0'
+                    ? std::string(errorBuffer)
+                    : "remote_transfer_failed";
+                const SessionTransferStatus current = impl_->transferStatus.snapshot();
+                if (current.rustdeskTransfer != TransferRuntimeState::FAILED ||
+                    current.transferId != ffi.transferId ||
+                    current.diagnosticCode != diagnostic) {
+                    OH_LOG_ERROR(LOG_APP,
+                        "[RustDesk-FFI] file transfer failed id=%{public}llu detail=%{public}s",
+                        static_cast<unsigned long long>(ffi.transferId),
+                        diagnostic.c_str());
+                }
+                impl_->transferStatus.markRustDeskFailed(ffi.transferId, diagnostic);
+            }
             else if (ffi.state == 2) impl_->transferStatus.markRustDeskProgress(ffi.transferId, ffi.transferredBytes, ffi.totalBytes);
         }
     }
@@ -2082,6 +3261,175 @@ void RustDeskBridge::setVideoCallback(VideoFrameCallback cb) {
     std::lock_guard<std::mutex> lock(impl_->mutex);
     impl_->videoCallback = std::move(cb);
 }
+
+#ifdef RDP_NATIVE_CALLBACK_TESTING
+bool RustDeskBridge::InvokeVideoCallbackForTesting(
+    const uint8_t* data, size_t size, int width, int height, int codec,
+    uint64_t timestamp, bool isKeyFrame, int display, uint64_t generation,
+    uint64_t ownerToken) {
+#ifdef RUSTDESK_USE_REAL_CORE
+    if (!impl_ || !data || size == 0) {
+        return false;
+    }
+
+    // setSessionIdentity() intentionally starts a generation in the ended
+    // state until connectInternal() publishes its FFI stream. The test entry
+    // models that publication without opening a socket, while retaining the
+    // exact production callback and owner/generation checks below.
+    {
+        std::lock_guard<std::mutex> admissionLock(impl_->continuityAdmissionMutex);
+        if (generation != impl_->cursorGeneration.load(std::memory_order_acquire) ||
+            ownerToken == 0 ||
+            ownerToken != impl_->ownerToken.load(std::memory_order_acquire) ||
+            impl_->disconnectRequested.load(std::memory_order_acquire)) {
+            return false;
+        }
+        impl_->ffiStreamEnded.store(false, std::memory_order_release);
+    }
+
+    const uint64_t before = impl_->callbackVideoFrames.load(std::memory_order_acquire);
+    auto context = std::make_shared<RustDeskFfiCallbackContext>();
+    context->impl = impl_.get();
+    context->implKeepAlive = impl_;
+    context->generation = generation;
+    context->ownerToken = ownerToken;
+    context->admissionEpoch = impl_->ffiAdmissionEpoch.load(std::memory_order_acquire);
+    if (!rdPublishFfiCallbackContext(context)) {
+        return false;
+    }
+    RustDeskFfiVideoFrameV2 frame {
+        data, size, width, height, codec, timestamp, isKeyFrame, display,
+        kRustDeskVideoFrameAbiVersion, sizeof(RustDeskFfiVideoFrameV2),
+    };
+    onFfiFrame(&frame, context.get());
+    (void)rdFfiCallbackRegistry().retire(context);
+    return impl_->callbackVideoFrames.load(std::memory_order_acquire) != before;
+#else
+    (void)data;
+    (void)size;
+    (void)width;
+    (void)height;
+    (void)codec;
+    (void)timestamp;
+    (void)isKeyFrame;
+    (void)display;
+    (void)generation;
+    (void)ownerToken;
+    return false;
+#endif
+}
+
+bool RustDeskBridge::InvokeTransportCallbackForTesting(
+    int state, const char* errorClass, uint64_t networkGeneration,
+    bool userInitiated, uint64_t generation, uint64_t ownerToken) {
+#ifdef RUSTDESK_USE_REAL_CORE
+    if (!impl_ || generation == 0 || ownerToken == 0) {
+        return false;
+    }
+
+    const uint64_t before = impl_->continuityQuiesce.snapshot().quiesceCount;
+    const uint64_t eventSessionId = impl_->sessionId.load(std::memory_order_acquire);
+    const uint64_t eventAdmissionEpoch =
+        impl_->ffiAdmissionEpoch.load(std::memory_order_acquire);
+    {
+        std::lock_guard<std::mutex> admissionLock(impl_->continuityAdmissionMutex);
+        if (generation != impl_->cursorGeneration.load(std::memory_order_acquire) ||
+            ownerToken != impl_->ownerToken.load(std::memory_order_acquire) ||
+            eventAdmissionEpoch !=
+                impl_->ffiAdmissionEpoch.load(std::memory_order_acquire) ||
+            impl_->disconnectRequested.load(std::memory_order_acquire)) {
+            return false;
+        }
+        // A production disconnect callback arrives after the stream has
+        // stopped. Keep this synthetic entry equivalent without requiring a
+        // live Rust handle.
+        impl_->ffiStreamEnded.store(true, std::memory_order_release);
+    }
+
+    RustDeskTransportErrorClass classified =
+        RustDeskTransportErrorClassFromString(rdLowercase(errorClass ? errorClass : ""));
+    if (classified == RustDeskTransportErrorClass::Unknown) {
+        classified = rdClassifyTransportMessage(state, errorClass);
+    }
+    if (state == 0) {
+        classified = RustDeskTransportErrorClass::None;
+    }
+    RustDeskTransportEvent event {
+        state != 0,
+        classified,
+        networkGeneration,
+        userInitiated,
+        impl_->networkAvailable.load(std::memory_order_acquire),
+        rdSteadyNowMs(),
+    };
+    RustDeskConnectionContinuityExecutor::ActionAdmission admission =
+        [impl = impl_, eventSessionId, generation, ownerToken, eventAdmissionEpoch]() {
+            return impl->sessionId.load(std::memory_order_acquire) == eventSessionId &&
+                impl->cursorGeneration.load(std::memory_order_acquire) == generation &&
+                impl->ownerToken.load(std::memory_order_acquire) == ownerToken &&
+                impl->ffiAdmissionEpoch.load(std::memory_order_acquire) == eventAdmissionEpoch &&
+                !impl->disconnectRequested.load(std::memory_order_acquire);
+        };
+    (void)impl_->continuityExecutor->onTransportEvent(event, std::move(admission));
+    return impl_->continuityQuiesce.snapshot().quiesceCount > before;
+#else
+    (void)state;
+    (void)errorClass;
+    (void)networkGeneration;
+    (void)userInitiated;
+    (void)generation;
+    (void)ownerToken;
+    return false;
+#endif
+}
+
+void RustDeskBridge::SetAttemptDequeuedHookForTesting(std::function<void()> hook) {
+    if (impl_) {
+        impl_->continuityExecutor->setAttemptDequeuedHookForTesting(std::move(hook));
+    }
+}
+
+void RustDeskBridge::SetFirstFrameClaimHookForTesting(std::function<void()> hook) {
+    std::lock_guard<std::mutex> lock(impl_->continuityAdmissionMutex);
+    impl_->firstFrameClaimHook = std::move(hook);
+}
+
+void RustDeskBridge::SetContinuityAttemptStageHookForTesting(
+    std::function<void(int)> hook) {
+    std::lock_guard<std::mutex> lock(impl_->continuityAdmissionMutex);
+    impl_->continuityAttemptStageHook = std::move(hook);
+}
+
+void RustDeskBridge::SetContinuityConnectResultHookForTesting(
+    std::function<int(uint64_t, uint64_t)> hook) {
+    std::lock_guard<std::mutex> lock(impl_->continuityAdmissionMutex);
+    impl_->continuityConnectResultHook = std::move(hook);
+}
+
+void RustDeskBridge::SetContinuityConfigForTesting(const ConnectionConfig& config) {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    impl_->config = config;
+}
+
+uint32_t RustDeskBridge::continuityConnectCallCountForTesting() const {
+    return impl_->continuityConnectCallCount.load(std::memory_order_acquire);
+}
+
+void RustDeskBridge::ArmFirstGenerationFrameForTesting() {
+    {
+        std::lock_guard<std::mutex> admissionLock(impl_->continuityAdmissionMutex);
+        impl_->ffiAdmissionEpoch.fetch_add(1, std::memory_order_acq_rel);
+        impl_->disconnectRequested.store(false, std::memory_order_release);
+        impl_->ffiStreamEnded.store(false, std::memory_order_release);
+        impl_->continuityAttemptToken.store(0, std::memory_order_release);
+        impl_->continuityNetworkCallCancelled.store(false, std::memory_order_release);
+    }
+    impl_->continuityQuiesce.closeForTransportLoss();
+    impl_->continuityQuiesce.reopenGenerationAdmission();
+    impl_->awaitingFirstGenerationFrame.store(true, std::memory_order_release);
+}
+#endif
+
 void RustDeskBridge::setAudioCallback(AudioDataCallback cb) {
     std::lock_guard<std::mutex> lock(impl_->mutex);
     impl_->audioCallback = std::move(cb);

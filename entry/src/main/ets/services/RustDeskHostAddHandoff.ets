@@ -17,6 +17,9 @@ export class RustDeskHostAddDraft {
   relayId: string = '';
   password: string = '';
   passwordMode: number = 0;
+  // 只保存本机验证器条目 ID，不包含 TOTP secret。
+  totpEntryId: string = '';
+  totpAutoSubmit: boolean = false;
   targetDevice: RustDeskTargetDevice = 'computer';
   adaptiveOrientation: boolean = false;
 }
@@ -46,6 +49,8 @@ export function cloneRustDeskHostAddDraft(
   result.relayId = source.relayId;
   result.password = source.password;
   result.passwordMode = source.passwordMode === 1 ? 1 : 0;
+  result.totpEntryId = source.totpEntryId;
+  result.totpAutoSubmit = source.totpAutoSubmit && result.totpEntryId !== '';
   result.targetDevice = source.targetDevice;
   result.adaptiveOrientation =
     source.targetDevice === 'phone' && source.adaptiveOrientation;

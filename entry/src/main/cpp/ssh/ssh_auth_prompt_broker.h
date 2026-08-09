@@ -1,0 +1,221 @@
+/**
+ * One-shot keyboard-interactive prompt broker.
+ *
+ * libssh2 invokes its callback on the SSH owner reactor.  The broker exposes
+ * the current prompt to NAPI, waits for one response round, and clears all
+ * response material before returning.  It never persists credentials.
+ */
+#ifndef SSH_AUTH_PROMPT_BROKER_H
+#define SSH_AUTH_PROMPT_BROKER_H
+
+#include <algorithm>
+#include <chrono>
+#include <condition_variable>
+#include <cstdint>
+#include <mutex>
+#include <string>
+#include <vector>
+
+struct SshAuthPrompt {
+    std::string text;
+    bool echo = false;
+};
+
+struct SshAuthPromptRequest {
+    uint32_t schemaVersion = 1;
+    uint64_t requestId = 0;
+    uint64_t sessionId = 0;
+    uint64_t generation = 0;
+    std::string targetHost;
+    std::string hop;
+    uint32_t round = 0;
+    std::string name;
+    std::string instruction;
+    std::vector<SshAuthPrompt> prompts;
+    uint64_t expiresAtMs = 0;
+};
+
+struct SshAuthPromptResponse {
+    uint32_t schemaVersion = 1;
+    uint64_t requestId = 0;
+    uint64_t sessionId = 0;
+    uint64_t generation = 0;
+    std::vector<std::string> responses;
+    bool cancelled = false;
+};
+
+enum class SshAuthPromptWaitResult : uint8_t {
+    Responded = 0,
+    Cancelled,
+    TimedOut,
+    Closed,
+};
+
+class SshAuthPromptBroker final {
+public:
+    static constexpr uint32_t kMaxPrompts = 32;
+    static constexpr size_t kMaxPromptBytes = 4096;
+    static constexpr std::chrono::seconds kTimeout {120};
+
+    SshAuthPromptBroker() = default;
+    SshAuthPromptBroker(const SshAuthPromptBroker&) = delete;
+    SshAuthPromptBroker& operator=(const SshAuthPromptBroker&) = delete;
+
+    SshAuthPromptWaitResult waitForResponse(
+        uint64_t sessionId, uint64_t generation, const std::string& targetHost,
+        const std::string& hop, const char* name, int nameLen,
+        const char* instruction, int instructionLen,
+        const std::vector<SshAuthPrompt>& prompts,
+        std::vector<std::string>& responses) {
+        responses.clear();
+        if (prompts.empty()) {
+            return SshAuthPromptWaitResult::Responded;
+        }
+
+        SshAuthPromptRequest request;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (closed_ || pending_) {
+                return closed_ ? SshAuthPromptWaitResult::Closed
+                               : SshAuthPromptWaitResult::Cancelled;
+            }
+            request.requestId = ++nextRequestId_;
+            request.sessionId = sessionId;
+            request.generation = generation;
+            request.targetHost = bounded(targetHost, 255);
+            request.hop = bounded(hop, 96);
+            request.round = ++round_;
+            request.name = bounded(name, nameLen, 512);
+            request.instruction = bounded(instruction, instructionLen, 4096);
+            request.prompts = prompts;
+            if (request.prompts.size() > kMaxPrompts) {
+                request.prompts.resize(kMaxPrompts);
+            }
+            request.expiresAtMs = nowMs() +
+                static_cast<uint64_t>(kTimeout.count()) * 1000ULL;
+            pendingRequest_ = request;
+            pending_ = true;
+            responseReady_ = false;
+            cancelled_ = false;
+            responseValues_.clear();
+        }
+        cv_.notify_all();
+
+        std::unique_lock<std::mutex> lock(mutex_);
+        const auto deadline = std::chrono::steady_clock::now() + kTimeout;
+        while (!responseReady_ && !cancelled_ && !closed_) {
+            if (cv_.wait_until(lock, deadline) == std::cv_status::timeout) {
+                break;
+            }
+        }
+        SshAuthPromptWaitResult result = SshAuthPromptWaitResult::Responded;
+        if (closed_) {
+            result = SshAuthPromptWaitResult::Closed;
+        } else if (cancelled_) {
+            result = SshAuthPromptWaitResult::Cancelled;
+        } else if (!responseReady_) {
+            result = SshAuthPromptWaitResult::TimedOut;
+        } else {
+            responses.swap(responseValues_);
+        }
+        clearPendingLocked();
+        return result;
+    }
+
+    bool snapshot(SshAuthPromptRequest& out) const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!pending_ || closed_) { return false; }
+        out = pendingRequest_;
+        return true;
+    }
+
+    bool respond(const SshAuthPromptResponse& response) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!pending_ || closed_ || response.requestId != pendingRequest_.requestId ||
+            response.sessionId != pendingRequest_.sessionId ||
+            response.generation != pendingRequest_.generation || response.cancelled ||
+            response.responses.size() != pendingRequest_.prompts.size()) {
+            return false;
+        }
+        for (const std::string& value : response.responses) {
+            if (value.size() > kMaxPromptBytes) { return false; }
+        }
+        responseValues_ = response.responses;
+        responseReady_ = true;
+        cv_.notify_all();
+        return true;
+    }
+
+    bool cancel(uint64_t requestId, uint64_t sessionId, uint64_t generation) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!pending_ || closed_ || requestId != pendingRequest_.requestId ||
+            sessionId != pendingRequest_.sessionId ||
+            generation != pendingRequest_.generation) {
+            return false;
+        }
+        cancelled_ = true;
+        cv_.notify_all();
+        return true;
+    }
+
+    void cancelAll() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        cancelled_ = true;
+        cv_.notify_all();
+    }
+
+    void close() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        closed_ = true;
+        cancelled_ = true;
+        clearPendingLocked();
+        cv_.notify_all();
+    }
+
+    void resetForNewConnection() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        closed_ = false;
+        cancelled_ = false;
+        round_ = 0;
+        clearPendingLocked();
+    }
+
+private:
+    static uint64_t nowMs() {
+        return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count());
+    }
+
+    static std::string bounded(const char* value, int length, size_t maxLength) {
+        if (value == nullptr || length <= 0) { return {}; }
+        return std::string(value, std::min<size_t>(static_cast<size_t>(length), maxLength));
+    }
+
+    static std::string bounded(const std::string& value, size_t maxLength) {
+        return value.substr(0, maxLength);
+    }
+
+    void clearPendingLocked() {
+        pending_ = false;
+        responseReady_ = false;
+        for (std::string& value : responseValues_) {
+            volatile char* bytes = value.data();
+            for (size_t index = 0; index < value.size(); ++index) { bytes[index] = '\0'; }
+        }
+        responseValues_.clear();
+        pendingRequest_ = {};
+    }
+
+    mutable std::mutex mutex_;
+    std::condition_variable cv_;
+    bool pending_ = false;
+    bool responseReady_ = false;
+    bool cancelled_ = false;
+    bool closed_ = false;
+    uint64_t nextRequestId_ = 0;
+    uint32_t round_ = 0;
+    SshAuthPromptRequest pendingRequest_;
+    std::vector<std::string> responseValues_;
+};
+
+#endif // SSH_AUTH_PROMPT_BROKER_H

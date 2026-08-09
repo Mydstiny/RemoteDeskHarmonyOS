@@ -35,9 +35,17 @@ const REMOTE_HOST_EXTENSION_PAYLOAD_COLUMNS: string[] = [
   'password', 'sshkeypassphrase', 'sshkeyid', 'sshhostkeyalgorithm',
   'sshhostkeyfingerprintsha256', 'sshhostkeyrawbase64', 'sshhostkeytrustedat',
   'sshhostkeytrustmode', 'rdpcertificatefingerprintsha256', 'rdpcertificatesubject',
-  'rdpcertificateissuer', 'rdpcertificatecommonname', 'rdpcertificatetrustedat',
+  'rdpcertificateissuer', 'rdpcertificatecommonname', 'rdpcertificatenotbeforems',
+  'rdpcertificatenotafterms', 'rdpcertificatetrustedat',
   'rdpcertificatetrustmode', 'rdpcertificateallowuntrustedroot',
-  'rdpcertificateallowhostmismatch', 'rustdeskrelayid', 'rustdeskaccountid',
+  'rdpcertificateallowhostmismatch', 'rdpcertificaterouteidentity',
+  'rdpgatewaycertificatefingerprintsha256', 'rdpgatewaycertificatesubject',
+  'rdpgatewaycertificateissuer', 'rdpgatewaycertificatecommonname',
+  'rdpgatewaycertificatenotbeforems', 'rdpgatewaycertificatenotafterms',
+  'rdpgatewaycertificatetrustedat', 'rdpgatewaycertificatetrustmode',
+  'rdpgatewaycertificateallowuntrustedroot',
+  'rdpgatewaycertificateallowhostmismatch',
+  'rdpgatewaycertificaterouteidentity', 'rustdeskrelayid', 'rustdeskaccountid',
   'rustdeskpasswordmode', 'rustdeskauthmode', 'rustdeskdirectenabled',
   'rustdeskdirecthost', 'rustdeskdirectport', 'rdpcredentialid', 'rdpauthmode',
   'rdprestrictedadminsecretsource', 'sourcetype', 'rustdeskproaccountid',
@@ -63,7 +71,7 @@ export function localBackupColumnsForTable(table: string): string[] {
   if (table === 'cryptoparams') { return ['id', 'key', 'value']; }
   if (table === 'usersettings') { return ['id', 'userid', 'key', 'value', 'payload', 'schemaversion', 'updatedat']; }
   if (table === 'remotehosts') {
-    return ['id', 'userid', 'label', 'protocol', 'host', 'port', 'username', 'password', 'passward', 'customhostname', 'sshusekey', 'sshkeypath', 'sshkeydata', 'sshkeypassphrase', 'sshkeyid', 'sshhostkeyalgorithm', 'sshhostkeyfingerprintsha256', 'sshhostkeyrawbase64', 'sshhostkeytrustedat', 'sshhostkeytrustmode', 'rdpcertificatefingerprintsha256', 'rdpcertificatesubject', 'rdpcertificateissuer', 'rdpcertificatecommonname', 'rdpcertificatetrustedat', 'rdpcertificatetrustmode', 'rdpcertificateallowuntrustedroot', 'rdpcertificateallowhostmismatch', 'proxyhost', 'proxyport', 'proxyusername', 'gatewayhost', 'gatewayport', 'displayconfig', 'locked', 'locktype', 'isfavorite', 'groupid', 'sortorder', 'icon', 'lastconnected', 'lasthealth', 'lastlatency', 'syncversion', 'rustdeskrelayid', 'rustdeskaccountid', 'rustdeskpasswordmode', 'rustdeskauthmode', 'rustdeskdirectenabled', 'rustdeskdirecthost', 'rustdeskdirectport', 'rdpcredentialid', 'sourcetype', 'rustdeskproaccountid', 'rustdeskpropeerid', 'rustdeskproplatform', 'rustdeskpromanaged', 'rustdeskprolastseenat', 'rustdeskprosyncerror', 'createdat', 'updatedat'];
+    return ['id', 'userid', 'label', 'protocol', 'host', 'port', 'username', 'password', 'passward', 'customhostname', 'sshusekey', 'sshkeypath', 'sshkeydata', 'sshkeypassphrase', 'sshkeyid', 'sshhostkeyalgorithm', 'sshhostkeyfingerprintsha256', 'sshhostkeyrawbase64', 'sshhostkeytrustedat', 'sshhostkeytrustmode', 'rdpcertificatefingerprintsha256', 'rdpcertificatesubject', 'rdpcertificateissuer', 'rdpcertificatecommonname', 'rdpcertificatenotbeforems', 'rdpcertificatenotafterms', 'rdpcertificatetrustedat', 'rdpcertificatetrustmode', 'rdpcertificateallowuntrustedroot', 'rdpcertificateallowhostmismatch', 'rdpcertificaterouteidentity', 'rdpgatewaycertificatefingerprintsha256', 'rdpgatewaycertificatesubject', 'rdpgatewaycertificateissuer', 'rdpgatewaycertificatecommonname', 'rdpgatewaycertificatenotbeforems', 'rdpgatewaycertificatenotafterms', 'rdpgatewaycertificatetrustedat', 'rdpgatewaycertificatetrustmode', 'rdpgatewaycertificateallowuntrustedroot', 'rdpgatewaycertificateallowhostmismatch', 'rdpgatewaycertificaterouteidentity', 'proxyhost', 'proxyport', 'proxyusername', 'gatewayhost', 'gatewayport', 'displayconfig', 'locked', 'locktype', 'isfavorite', 'groupid', 'sortorder', 'icon', 'lastconnected', 'lasthealth', 'lastlatency', 'syncversion', 'rustdeskrelayid', 'rustdeskaccountid', 'rustdeskpasswordmode', 'rustdeskauthmode', 'rustdeskdirectenabled', 'rustdeskdirecthost', 'rustdeskdirectport', 'rdpcredentialid', 'sourcetype', 'rustdeskproaccountid', 'rustdeskpropeerid', 'rustdeskproplatform', 'rustdeskpromanaged', 'rustdeskprolastseenat', 'rustdeskprosyncerror', 'createdat', 'updatedat'];
   }
   if (table === 'rdpcredentials') {
     return ['id', 'userid', 'label', 'username', 'password',
@@ -71,7 +79,7 @@ export function localBackupColumnsForTable(table: string): string[] {
   }
   if (table === 'rustdeskrelays') { return ['id', 'userid', 'idserver', 'idserverport', 'relayserver', 'relayport', 'apiserver', 'apiusername', 'apipassword', 'key', 'healthstatus', 'healthlatency', 'healthcheckedat', 'apiloginstatus', 'accountsjson', 'syncversion', 'createdat', 'updatedat']; }
   if (table === 'sshkeys') { return ['id', 'userid', 'label', 'keytype', 'publickey', 'privatekey', 'fingerprint', 'comment', 'locked', 'locktype', 'syncversion', 'createdat', 'updatedat', 'formatversion', 'privatekeyencrypted']; }
-  if (table === 'totpentries') { return ['id', 'userid', 'issuer', 'account', 'secret', 'algorithm', 'digits', 'period', 'iconurl', 'locked', 'locktype', 'syncversion', 'createdat', 'updatedat']; }
+  if (table === 'totpentries') { return ['id', 'userid', 'issuer', 'account', 'displayname', 'secret', 'algorithm', 'digits', 'period', 'iconurl', 'locked', 'locktype', 'syncversion', 'createdat', 'updatedat']; }
   if (table === 'vncrecordv2') {
     return ['id', 'userid', 'recordtype', 'ownerid', 'ownertype', 'secretkind', 'payload', 'ciphertext', 'envelopeversion', 'cryptoversion', 'keyversion', 'aadversion', 'payloadhashsha256', 'syncversion', 'schemaversion', 'resetepoch', 'createdat', 'updatedat', 'deletedat'];
   }
@@ -97,7 +105,7 @@ export function localBackupLocalTableColumns(table: string): string[] {
 
 function localBackupIntegerColumns(table: string): string[] {
   if (table === 'usersettings') { return ['schemaversion', 'updatedat']; }
-  if (table === 'remotehosts') { return ['port', 'sshusekey', 'sshhostkeytrustedat', 'sshhostkeytrustmode', 'rdpcertificatetrustedat', 'rdpcertificatetrustmode', 'rdpcertificateallowuntrustedroot', 'rdpcertificateallowhostmismatch', 'proxyport', 'gatewayport', 'locked', 'locktype', 'isfavorite', 'sortorder', 'lastconnected', 'lasthealth', 'lastlatency', 'syncversion', 'rustdeskpasswordmode', 'rustdeskdirectenabled', 'rustdeskdirectport', 'rustdeskpromanaged', 'rustdeskprolastseenat', 'createdat', 'updatedat']; }
+  if (table === 'remotehosts') { return ['port', 'sshusekey', 'sshhostkeytrustedat', 'sshhostkeytrustmode', 'rdpcertificatetrustedat', 'rdpcertificatetrustmode', 'rdpcertificateallowuntrustedroot', 'rdpcertificateallowhostmismatch', 'rdpgatewaycertificatetrustedat', 'rdpgatewaycertificatetrustmode', 'rdpgatewaycertificateallowuntrustedroot', 'rdpgatewaycertificateallowhostmismatch', 'proxyport', 'gatewayport', 'locked', 'locktype', 'isfavorite', 'sortorder', 'lastconnected', 'lasthealth', 'lastlatency', 'syncversion', 'rustdeskpasswordmode', 'rustdeskdirectenabled', 'rustdeskdirectport', 'rustdeskpromanaged', 'rustdeskprolastseenat', 'createdat', 'updatedat']; }
   if (table === 'rdpcredentials') { return ['createdat', 'updatedat']; }
   if (table === 'rustdeskrelays') { return ['idserverport', 'relayport', 'healthlatency', 'healthcheckedat', 'syncversion', 'createdat', 'updatedat']; }
   if (table === 'sshkeys') { return ['keytype', 'locked', 'locktype', 'syncversion', 'createdat', 'updatedat', 'formatversion', 'privatekeyencrypted']; }
@@ -203,6 +211,22 @@ function sectionManifest(
   };
 }
 
+function hasActiveVncTrustRows(data: PortableBackupData): boolean {
+  const tables: Array<Array<Record<string, string>>> = [
+    data.tables['vncrecordv2'] || [],
+    data.localTables['vnclocalrecords'] || []
+  ];
+  for (let t = 0; t < tables.length; t++) {
+    for (let r = 0; r < tables[t].length; r++) {
+      if (tables[t][r]['recordtype'] === 'trust' &&
+        Number(tables[t][r]['deletedat'] || '0') <= 0) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 function createBackupManifestV3(
   data: PortableBackupRedactionResult, createdAt: number,
   appVersion: string, accountScope: string, rdbSchemaVersion: number,
@@ -249,6 +273,10 @@ function createBackupManifestV3(
     },
     trust: {
       deviceTrustIncluded: true,
+      vncTrustCandidatesIncluded: sensitivityMode === 'full' && hasActiveVncTrustRows(data),
+      // The confirmation marker is stored only in device-local Preferences;
+      // it is never present in either localTables or the cloud table.
+      vncLocalConfirmationMarkerIncluded: false,
       plaintextConsentIncluded:
         sensitivityMode === 'full' && !sourceCryptoConfigured,
       loginTokensIncluded: sensitivityMode === 'full'
@@ -593,8 +621,10 @@ function validateRedactedV3Rows(
 /**
  * Full-backup validation: rows must keep the exact owner and known columns
  * (already enforced by backupRowsContainOnlyKnownColumns/normalize), VNC rows
- * may include secret/trust rows, and cryptoparams rows are expected when the
- * source was encrypted. There is deliberately no redaction-equality check.
+ * may include secret rows and trust candidate metadata, and cryptoparams rows
+ * are expected when the source was encrypted. The device-local confirmation
+ * marker is not a row and is never accepted from a backup. There is
+ * deliberately no redaction-equality check.
  */
 function validateFullV3Rows(
   document: LocalBackupDocument,
@@ -691,9 +721,10 @@ function validPortableVncRows(
 }
 
 /**
- * Full-backup VNC filter: keeps secret/trust rows (ciphertext or plaintext by
- * the user's explicit choice) and only drops tombstoned rows. Owner rebinding
- * happens before this filter, so rows already carry the target owner.
+ * Full-backup VNC filter: keeps secret rows and trust candidate metadata
+ * (ciphertext or plaintext by the user's explicit choice) and only drops
+ * tombstoned rows. Owner rebinding happens before this filter, so rows already
+ * carry the target owner. Device-local confirmation markers are not rows.
  */
 function validFullVncRows(
   rows: Array<Record<string, string>>, owner: string
@@ -739,7 +770,12 @@ export function createLocalBackupRestorePreview(
     tombstoneCount,
     secretsIncluded: document.manifest?.crypto.mode === 'full',
     deviceTrustIncluded:
-      document.manifest?.trust.deviceTrustIncluded === true
+      document.manifest?.trust.deviceTrustIncluded === true,
+    vncTrustCandidatesIncluded:
+      document.manifest?.trust.vncTrustCandidatesIncluded === true,
+    // A valid document can never transport this marker. Keep the preview
+    // explicit so callers cannot accidentally imply that restore re-trusts.
+    vncLocalConfirmationMarkerIncluded: false
   };
 }
 

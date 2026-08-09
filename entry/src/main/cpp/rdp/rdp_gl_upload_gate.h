@@ -12,6 +12,7 @@ enum class RdpGlUploadDecision : int32_t {
     InsufficientSamples = 0,
     KeepDirectUpload = 1,
     PboExperimentEligible = 2,
+    PboRetained = 3,
 };
 
 struct RdpGlUploadGateSnapshot {
@@ -21,6 +22,8 @@ struct RdpGlUploadGateSnapshot {
     int64_t uploadSwapP95Us = 0;
     int64_t workerP95Us = 0;
     int uploadSwapSharePermille = 0;
+    bool pboExperimentActive = false;
+    bool pboRetained = false;
 };
 
 class RdpGlUploadGate {
@@ -30,6 +33,10 @@ public:
 
     void reset();
     void recordPresent(const RdpPresentMetrics& present);
+    /** Claim the one-shot PBO experiment after a direct-upload baseline. */
+    bool beginPboExperiment();
+    /** Finish the one-shot experiment and publish its retained/fallback state. */
+    void finishPboExperiment(bool retained, int64_t experimentWorkerP95Us);
     RdpGlUploadGateSnapshot snapshot() const;
     bool canRunPboExperiment(bool gles3Capable, bool pixelUnpackBufferCapable) const;
 

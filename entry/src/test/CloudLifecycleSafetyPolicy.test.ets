@@ -3,6 +3,7 @@ import {
   CloudAccountBinding,
   cloudAccountBindingIsValid,
   cloudDistributedRegistrationAllowed,
+  cloudRegistrationRetryAllowed,
   cloudTransferAllowed,
   legacyCloudRestTransferAllowed,
   portableBackupExportAllowed,
@@ -54,6 +55,36 @@ export default function cloudLifecycleSafetyPolicyTest(): void {
       expect(portableBackupExportAllowed()).assertTrue();
       expect(portableBackupRestoreAllowed()).assertTrue();
       expect(legacyCloudRestTransferAllowed()).assertFalse();
+    });
+
+    it('retries_only_a_bound_unavailable_store_after_the_cooldown', 0, (): void => {
+      const bound: CloudAccountBinding = {
+        state: 'bound',
+        ownerScopeId: 'owner-a',
+        storeIdentity: 'remotedesktop.db',
+        generation: 2,
+        platformIdentityFingerprint:
+          'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' +
+          'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+      };
+      expect(cloudRegistrationRetryAllowed(
+        true, true, true, bound, false, false,
+        1000, 0, 15000)).assertTrue();
+      expect(cloudRegistrationRetryAllowed(
+        true, true, true, bound, false, false,
+        10000, 1000, 15000)).assertFalse();
+      expect(cloudRegistrationRetryAllowed(
+        true, true, true, bound, false, false,
+        16000, 1000, 15000)).assertTrue();
+      expect(cloudRegistrationRetryAllowed(
+        true, true, true, bound, true, false,
+        16000, 1000, 15000)).assertFalse();
+      expect(cloudRegistrationRetryAllowed(
+        true, true, true, bound, false, true,
+        16000, 1000, 15000)).assertFalse();
+      expect(cloudRegistrationRetryAllowed(
+        true, true, true, unboundCloudAccountBinding(), false, false,
+        16000, 0, 15000)).assertFalse();
     });
   });
 }

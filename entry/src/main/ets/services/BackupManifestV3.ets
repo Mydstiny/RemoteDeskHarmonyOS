@@ -12,7 +12,9 @@ export type BackupRestoreMode = 'merge' | 'replace_selected';
  * redacted: portable config only (no passwords/private keys/2FA/tokens).
  * full: complete backup chosen by the user; secrets are kept as stored
  * (ciphertext when the source has crypto, plaintext otherwise by the user's
- * explicit choice), device trust (public keys/certificates) is always kept.
+ * explicit choice), public device trust is kept as data. VNC trust rows are
+ * candidates/metadata only; the device-local confirmation marker is never
+ * portable.
  */
 export type BackupSensitivityMode = 'redacted' | 'full';
 
@@ -37,6 +39,10 @@ export interface BackupCryptoDescriptorV3 {
 
 export interface BackupTrustDescriptorV3 {
   deviceTrustIncluded: boolean;
+  /** VNC trust rows may be carried as candidates in an explicit full backup. */
+  vncTrustCandidatesIncluded?: boolean;
+  /** Must always be false: this marker lives only in device Preferences. */
+  vncLocalConfirmationMarkerIncluded?: boolean;
   plaintextConsentIncluded: boolean;
   loginTokensIncluded: boolean;
 }
@@ -77,6 +83,8 @@ export interface BackupRestorePreview {
   tombstoneCount: number;
   secretsIncluded: boolean;
   deviceTrustIncluded: boolean;
+  vncTrustCandidatesIncluded: boolean;
+  vncLocalConfirmationMarkerIncluded: boolean;
 }
 
 const SECRET_COLUMNS: Record<string, string[]> = {
@@ -90,16 +98,29 @@ const SECRET_COLUMNS: Record<string, string[]> = {
 };
 
 // Device trust columns (SSH host public keys, RDP certificates) are retained
-// in every backup mode; they are public data, not secrets.
+// in every backup mode; they are public data, not secrets. VNC trust rows are
+// intentionally different: redacted backups omit them, while full backups
+// carry only candidate metadata and never the local confirmation marker.
 
 const REMOTE_HOST_EXTENSION_TRUST: string[] = [
   'sshhostkeyalgorithm', 'sshhostkeyfingerprintsha256',
   'sshhostkeyrawbase64', 'sshhostkeytrustedat', 'sshhostkeytrustmode',
+  'sshjumphostkeyalgorithm', 'sshjumphostkeyfingerprintsha256',
+  'sshjumphostkeyrawbase64', 'sshjumphostkeytrustedat', 'sshjumphostkeytrustmode',
   'rdpcertificatefingerprintsha256', 'rdpcertificatesubject',
   'rdpcertificateissuer', 'rdpcertificatecommonname',
+  'rdpcertificatenotbeforems', 'rdpcertificatenotafterms',
   'rdpcertificatetrustedat', 'rdpcertificatetrustmode',
   'rdpcertificateallowuntrustedroot',
-  'rdpcertificateallowhostmismatch'
+  'rdpcertificateallowhostmismatch', 'rdpcertificaterouteidentity',
+  'rdpgatewaycertificatefingerprintsha256',
+  'rdpgatewaycertificatesubject', 'rdpgatewaycertificateissuer',
+  'rdpgatewaycertificatecommonname', 'rdpgatewaycertificatenotbeforems',
+  'rdpgatewaycertificatenotafterms', 'rdpgatewaycertificatetrustedat',
+  'rdpgatewaycertificatetrustmode',
+  'rdpgatewaycertificateallowuntrustedroot',
+  'rdpgatewaycertificateallowhostmismatch',
+  'rdpgatewaycertificaterouteidentity'
 ];
 
 const REMOTE_HOST_EXTENSION_SAFE: string[] = [
@@ -107,12 +128,10 @@ const REMOTE_HOST_EXTENSION_SAFE: string[] = [
   'rustdeskpasswordmode', 'rustdeskauthmode',
   'rustdeskdirectenabled', 'rustdeskdirecthost',
   'rustdeskdirectport', 'sshproxytype', 'rdpcredentialid',
-  'rdpauthmode', 'sourcetype', 'rustdeskproaccountid',
-  'rustdeskpropeerid', 'rustdeskproplatform',
-  'rustdeskpromanaged', 'rustdeskprolastseenat',
-  'rustdeskprosyncerror', 'rustdesktargetdevice',
-  'rustdeskadaptiveorientation', 'rustdesktotpentryid',
-  'rustdesktotpautosubmit'
+  'sshproxyauthmethod', 'sshproxykeyid',
+  'rdpauthmode', 'sourcetype', 'rustdesktargetdevice',
+  'rustdeskadaptiveorientation', 'rdpendpointmode',
+  'rdpgatewaytransport', 'rdpgatewayservername'
 ];
 
 const DISPLAY_CONFIG_SAFE: string[] = [
@@ -353,7 +372,8 @@ export function redactPortableBackupData(
     const secretColumns: string[] = SECRET_COLUMNS[table] || [];
     // Device trust (SSH host public keys, RDP certificates) is NOT secret and
     // is intentionally retained in every backup mode; only secret columns are
-    // removed by the redacted mode.
+    // removed by the redacted mode. VNC trust rows were handled above and are
+    // excluded from this portable configuration mode.
     const removed: string[] = secretColumns;
     const nextRows: Array<Record<string, string>> = [];
     for (let r = 0; r < sourceRows.length; r++) {
@@ -415,8 +435,9 @@ export function redactPortableBackupData(
 /**
  * Complete backup selected explicitly by the user: every column (including
  * passwords/private keys/2FA/tokens as stored, device trust, cryptoparams,
- * VNC secret/trust rows and full extension payloads) is preserved. When the
- * source has crypto configured the secrets are ciphertext and the backup
+ * VNC secret rows and trust candidate metadata) is preserved. The local VNC
+ * confirmation marker remains device-only and is never part of this data.
+ * When the source has crypto configured, the secrets are ciphertext and the backup
  * carries cryptoparams so the same master password can unlock them on the
  * target; otherwise they are plaintext by the user's explicit choice.
  */
@@ -498,6 +519,8 @@ export function backupManifestV3IsStructurallyValid(
 ): boolean {
   const mode: string = manifest && manifest.crypto
     ? manifest.crypto.mode : '';
+  const trust: BackupTrustDescriptorV3 | null = manifest && manifest.trust
+    ? manifest.trust : null;
   if (!manifest || manifest.formatVersion !== 3 ||
     !Number.isFinite(manifest.rdbSchemaVersion) ||
     manifest.rdbSchemaVersion < 1 ||
@@ -507,7 +530,15 @@ export function backupManifestV3IsStructurallyValid(
     (manifest.restoreMode !== 'merge' &&
       manifest.restoreMode !== 'replace_selected') ||
     !Array.isArray(manifest.sections) ||
-    (mode !== 'redacted' && mode !== 'full')) {
+    (mode !== 'redacted' && mode !== 'full') || trust === null ||
+    typeof trust.deviceTrustIncluded !== 'boolean' ||
+    typeof trust.plaintextConsentIncluded !== 'boolean' ||
+    typeof trust.loginTokensIncluded !== 'boolean' ||
+    (typeof trust.vncTrustCandidatesIncluded !== 'undefined' &&
+      typeof trust.vncTrustCandidatesIncluded !== 'boolean') ||
+    trust.vncLocalConfirmationMarkerIncluded === true ||
+    (typeof trust.vncLocalConfirmationMarkerIncluded !== 'undefined' &&
+      typeof trust.vncLocalConfirmationMarkerIncluded !== 'boolean')) {
     return false;
   }
   // Redacted configs must never carry verifier or secret material; full
@@ -515,8 +546,9 @@ export function backupManifestV3IsStructurallyValid(
   // plaintext consent (unencrypted source) exactly as the user chose.
   if (mode === 'redacted' &&
     (manifest.crypto.verifierIncluded ||
-      manifest.trust.plaintextConsentIncluded ||
-      manifest.trust.loginTokensIncluded)) {
+      trust.plaintextConsentIncluded ||
+      trust.loginTokensIncluded ||
+      trust.vncTrustCandidatesIncluded === true)) {
     return false;
   }
   const ids: Set<string> = new Set<string>();

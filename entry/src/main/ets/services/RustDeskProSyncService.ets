@@ -25,6 +25,13 @@ import {
   RustDeskControlPlaneCapabilityIssueResult
 } from './RustDeskControlPlaneCapabilityPolicy';
 import {
+  resolveRustDeskConnectionContext,
+  RustDeskConnectionContext
+} from './RustDeskConnectionContextPolicy';
+import {
+  RustDeskControlPlaneProfile
+} from './RustDeskControlPlanePolicy';
+import {
   cloneRustDeskControlPlaneCapabilityProof
 } from '../model/RustDeskControlPlaneCapabilityModels';
 
@@ -39,6 +46,18 @@ export interface RustDeskProLoginInput {
 interface RustDeskProOperation {
   generation: number;
   lease: AccountSessionLease;
+}
+
+/**
+ * UI-safe snapshot of the same control-plane gate used before connecting.
+ * Never expose the access token through this status object.
+ */
+export interface RustDeskProControlPlaneStatus {
+  profile: RustDeskControlPlaneProfile
+  requiresAccount: boolean
+  ready: boolean
+  tokenProjected: boolean
+  code: string
 }
 
 export class RustDeskProSyncService {
@@ -308,6 +327,55 @@ export class RustDeskProSyncService {
     account.lastSyncAt = Date.now();
     account.lastSyncError = '';
     return result;
+  }
+
+  /**
+   * Resolve the effective connection gate for UI status.  The sync toast must
+   * use this same gate instead of checking only the optional persisted proof:
+   * binding identity is a valid runtime gate even while the attestation
+   * registry is intentionally empty.
+   */
+  getConnectionCapabilityStatus(
+    accountId: string
+  ): RustDeskProControlPlaneStatus | undefined {
+    const account: RustDeskProAccountState | undefined =
+      this.credentials.get(accountId);
+    if (account === undefined) { return undefined; }
+    const relay: RustDeskRelayConfig | undefined =
+      this.hosts.getAllRelays().find(
+        (item: RustDeskRelayConfig): boolean => item.id === account.relayId);
+    if (relay === undefined) { return undefined; }
+    const context: RustDeskConnectionContext =
+      resolveRustDeskConnectionContext({
+        direct: false,
+        relayId: relay.id,
+        profile: relay.controlPlaneProfile,
+        keyMode: relay.keyMode,
+        accountId: account.id,
+        accountRelayId: account.relayId,
+        accountPresent: true,
+        accountLoginStatus: account.loginStatus,
+        accessToken: account.accessToken,
+        accessTokenFingerprint: account.accessTokenFingerprint,
+        tokenGeneration: account.tokenGeneration,
+        ownerScopeId: CloudStore.getInstance().currentScope().ownerScopeId,
+        accountApiServer: account.serverUrl,
+        configuredApiServer: relay.apiServer,
+        idServer: relay.idServer,
+        idServerPort: relay.idServerPort,
+        relayServer: relay.relayServer,
+        relayPort: relay.relayPort,
+        serverKeyMode: relay.keyMode,
+        serverKey: relay.key,
+        capabilityProof: account.controlPlaneCapabilityProof
+      });
+    return {
+      profile: context.profile,
+      requiresAccount: context.requiresAccount,
+      ready: context.ready,
+      tokenProjected: context.accessToken.trim().length > 0,
+      code: context.code
+    };
   }
 
   private bindAuthenticatedControlPlaneCapability(

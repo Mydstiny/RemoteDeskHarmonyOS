@@ -150,7 +150,7 @@ bool compactUsesHighBytes(const VncRfbProtocol::PixelFormat& format) {
         format.redShift >= 8 && format.greenShift >= 8 && format.blueShift >= 8;
 }
 
-bool decodePixel(const VncRfbProtocol::PixelFormat& format, const uint8_t* data,
+[[maybe_unused]] bool decodePixel(const VncRfbProtocol::PixelFormat& format, const uint8_t* data,
                  size_t available, bool compact, std::array<uint8_t, 4>& rgba) {
     if (!validPixelFormat(format) || data == nullptr) {
         return false;
@@ -741,6 +741,23 @@ bool decodeZrleTilesInto(const VncRfbProtocol::PixelFormat& format,
 }
 
 } // namespace
+
+namespace VncRfbProtocol {
+
+bool protocolBannerIsSupported(const uint8_t* data, size_t size) {
+    if (data == nullptr || size != kProtocolVersionBytes ||
+        std::memcmp(data, "RFB ", 4) != 0 || data[11] != '\n' ||
+        data[4] != '0' || data[5] != '0' || data[6] != '3' || data[7] != '.') {
+        return false;
+    }
+    for (size_t i = 8; i < 11; ++i) {
+        if (data[i] < '0' || data[i] > '9') { return false; }
+    }
+    const int minor = (data[8] - '0') * 100 + (data[9] - '0') * 10 + (data[10] - '0');
+    return minor >= 3;
+}
+
+} // namespace VncRfbProtocol
 
 namespace VncRfbProtocol {
 

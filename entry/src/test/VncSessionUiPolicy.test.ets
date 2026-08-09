@@ -1,10 +1,52 @@
 import { describe, it, expect } from '@ohos/hypium';
 import {
+  OverlayPlacement,
+  OverlayPlacementRequest,
+  OverlayViewport,
+  resolveOverlayDragPreference,
+  resolveOverlayPlacement
+} from '../main/ets/services/RemoteOverlayViewportPolicy';
+import {
   nextVncControlMode,
   nextVncDisplayScaleMode,
   shouldShowVncSessionToolbar,
-  vncToolbarAutoCollapseDelayMs
+  vncToolbarAutoCollapseDelayMs,
+  vncToolbarDefaultSide,
+  vncToolbarPositionPreferenceKey,
+  vncToolbarRailHeight,
+  vncToolbarRailWidth
 } from '../main/ets/services/VncSessionUiPolicy';
+
+function mobileViewport(): OverlayViewport {
+  return {
+    width: 360,
+    height: 760,
+    systemTop: 24,
+    systemBottom: 20,
+    systemLeft: 0,
+    systemRight: 0,
+    cutoutRects: [],
+    keyboardRect: null,
+    orientation: 'portrait',
+    deviceClass: 'phone',
+    occupiedRects: [],
+    generation: 1
+  };
+}
+
+function vncPhoneRailRequest(): OverlayPlacementRequest {
+  return {
+    ownerId: 'vnc-toolbar',
+    preferredSide: 'right',
+    yRatio: 0.5,
+    handleSize: vncToolbarRailWidth('phone', true),
+    railWidth: vncToolbarRailWidth('phone', false),
+    railHeight: vncToolbarRailHeight('phone', false, false),
+    menuWidth: 0,
+    menuHeight: 0,
+    expanded: false
+  };
+}
 
 export default function vncSessionUiPolicyTest(): void {
   describe('VncSessionUiPolicy', (): void => {
@@ -32,6 +74,63 @@ export default function vncSessionUiPolicyTest(): void {
       expect(vncToolbarAutoCollapseDelayMs(true, false)).assertEqual(20000);
       expect(vncToolbarAutoCollapseDelayMs(true, true)).assertEqual(0);
       expect(vncToolbarAutoCollapseDelayMs(false, false)).assertEqual(0);
+    });
+
+    it('keeps_pc_on_legacy_toolbar_geometry', 0, (): void => {
+      expect(vncToolbarRailWidth('pc', false)).assertEqual(0);
+      expect(vncToolbarRailWidth('pc', true)).assertEqual(0);
+      expect(vncToolbarRailHeight('pc', false, false)).assertEqual(0);
+      expect(vncToolbarDefaultSide('pc')).assertEqual('right');
+    });
+
+    it('uses_edge_rail_dimensions_for_phone_and_pad', 0, (): void => {
+      expect(vncToolbarRailWidth('phone', false)).assertEqual(76);
+      expect(vncToolbarRailWidth('phone', true)).assertEqual(44);
+      expect(vncToolbarRailHeight('phone', false, false)).assertEqual(301);
+      expect(vncToolbarRailHeight('phone', false, true)).assertEqual(44);
+      expect(vncToolbarRailWidth('pad', false)).assertEqual(76);
+      expect(vncToolbarRailHeight('pad', false, false)).assertEqual(350);
+      expect(vncToolbarRailHeight('pad', true, false)).assertEqual(379);
+      expect(vncToolbarRailHeight('pad', true, true)).assertEqual(44);
+    });
+
+    it('isolates_vnc_position_preferences_by_device_and_orientation', 0, (): void => {
+      expect(vncToolbarPositionPreferenceKey('phone', 'portrait', 'side'))
+        .assertEqual('vncSessionToolbar:phone:portrait:side');
+      expect(vncToolbarPositionPreferenceKey('pad', 'landscape', 'yRatio'))
+        .assertEqual('vncSessionToolbar:pad:landscape:yRatio');
+      expect(vncToolbarPositionPreferenceKey('pc', 'portrait', 'side'))
+        .assertEqual('vncSessionToolbar:pc:portrait:side');
+    });
+
+    it('moves_vnc_phone_rail_away_from_keyboard_and_collision', 0, (): void => {
+      const viewport: OverlayViewport = mobileViewport();
+      viewport.keyboardRect = { x: 0, y: 520, width: 360, height: 240 };
+      viewport.occupiedRects = [{ x: 284, y: 180, width: 76, height: 300 }];
+      const placement: OverlayPlacement = resolveOverlayPlacement(viewport, vncPhoneRailRequest());
+      expect(placement.side).assertEqual('left');
+      expect(placement.recovery).assertEqual('none');
+      expect(placement.railRect.y >= viewport.systemTop).assertTrue();
+      expect(placement.railRect.y + placement.railRect.height <= viewport.keyboardRect.y).assertTrue();
+    });
+
+    it('hides_vnc_rail_when_no_safe_mobile_slot_exists', 0, (): void => {
+      const viewport: OverlayViewport = mobileViewport();
+      viewport.occupiedRects = [{ x: 0, y: 24, width: 360, height: 716 }];
+      const placement: OverlayPlacement = resolveOverlayPlacement(viewport, vncPhoneRailRequest());
+      expect(placement.fallback).assertEqual('hidden');
+      expect(placement.recovery).assertEqual('retry-after-resize');
+      expect(placement.railRect.width).assertEqual(0);
+      expect(placement.handleRect.width).assertEqual(0);
+    });
+
+    it('clamps_vnc_drag_to_keyboard_boundary_and_persists_side', 0, (): void => {
+      const viewport: OverlayViewport = mobileViewport();
+      viewport.keyboardRect = { x: 0, y: 520, width: 360, height: 240 };
+      const placement: OverlayPlacement = resolveOverlayPlacement(viewport, vncPhoneRailRequest());
+      const moved = resolveOverlayDragPreference(viewport, placement, -1000, 1000);
+      expect(moved.side).assertEqual('left');
+      expect(moved.yRatio <= 520 / 760).assertTrue();
     });
   });
 }

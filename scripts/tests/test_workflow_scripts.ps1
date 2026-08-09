@@ -17,7 +17,7 @@ foreach ($script in $scripts) {
 }
 
 $workflow = Get-Content -Raw -LiteralPath (Join-Path $repo 'scripts\dev_workflow.ps1')
-foreach ($required in @('main must exactly match origin/main', 'Unfinished task branches exist', 'core.hooksPath', 'verify_open_source_release.ps1', "ValidateSet('status', 'sync', 'start', 'doctor', 'finish-check')", 'submodule', 'Sync-PublicMain')) {
+foreach ($required in @('main must exactly match origin/main', 'Unfinished task branches exist', 'core.hooksPath', 'verify_open_source_release.ps1', "ValidateSet('status', 'bootstrap', 'sync', 'start', 'doctor', 'finish-check')", 'codex_state.mjs', 'submodule', 'Sync-PublicMain')) {
   if ($workflow -notmatch [regex]::Escape($required)) {
     throw "dev_workflow.ps1 is missing guard: $required"
   }
@@ -37,6 +37,13 @@ foreach ($required in @('fetch --prune origin', 'pull --ff-only origin main', 's
   if ($macWorkflowText -notmatch [regex]::Escape($required)) {
     throw "sync_workspace.sh is missing operation: $required"
   }
+}
+
+if (-not (Test-Path -LiteralPath (Join-Path $repo 'scripts\codex_state.mjs'))) {
+  throw 'codex_state.mjs is missing.'
+}
+if (-not (Test-Path -LiteralPath (Join-Path $repo 'scripts\tests\test_codex_state.sh'))) {
+  throw 'test_codex_state.sh is missing.'
 }
 
 $history = Get-Content -Raw -LiteralPath (Join-Path $repo 'scripts\history_tool.ps1')

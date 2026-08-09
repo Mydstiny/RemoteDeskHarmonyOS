@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <cstddef>
+#include <mutex>
 
 namespace Render {
 
@@ -28,11 +29,11 @@ public:
     void onKeyframeRequested();
     void reset();
 
-    bool isWaitingForKeyframe() const { return waitingForKeyframe_; }
-    bool shouldRequestKeyframe() const { return keyframeRequestPending_; }
-    uint64_t droppedFrames() const { return droppedFrames_; }
-    uint64_t waitKeyframeDrops() const { return waitKeyframeDrops_; }
-    uint64_t keyframeRequests() const { return keyframeRequests_; }
+    bool isWaitingForKeyframe() const;
+    bool shouldRequestKeyframe() const;
+    uint64_t droppedFrames() const;
+    uint64_t waitKeyframeDrops() const;
+    uint64_t keyframeRequests() const;
 
 private:
     size_t maxQueuedFrames_;
@@ -41,6 +42,7 @@ private:
     uint64_t droppedFrames_;
     uint64_t waitKeyframeDrops_;
     uint64_t keyframeRequests_;
+    mutable std::mutex mutex_;
 };
 
 } // namespace Render

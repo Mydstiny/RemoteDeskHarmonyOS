@@ -18,10 +18,16 @@ const SHARED_GUIDE_PAGES: GuideContentPage[] = [
     desc: 'RDP 连接 Windows，RustDesk 负责跨平台远控，SSH/SFTP 管理服务器，VNC 连接标准兼容设备。先按目标设备选择协议。'
   },
   {
-    id: 'add-and-organize',
+    id: 'vnc-first-steps',
     symbol: $rawfile('icons/globe-alt.svg'),
-    title: '添加、分组，再连接',
-    desc: '从统一“添加”入口选择协议并保存主机；再用分组和协议筛选整理设备。连接前仍可检查地址、端口和账号。'
+    title: 'VNC：先确认服务与端口',
+    desc: '确认远端已启用 VNC 服务，再填写地址、端口和密码。连接质量不理想时，可在主机设置中调整画质、编码和输入选项。'
+  },
+  {
+    id: 'add-and-organize',
+    symbol: $rawfile('icons/folder-open.svg'),
+    title: '添加、分组并观察主机',
+    desc: '从统一“添加”入口选择协议并保存主机，再按类型分组整理设备。在线检测和性能监控都可按需开启，不使用时保持关闭即可。'
   },
   {
     id: 'verify-before-trust',
@@ -33,13 +39,25 @@ const SHARED_GUIDE_PAGES: GuideContentPage[] = [
     id: 'session-controls',
     symbol: $rawfile('icons/computer-desktop.svg'),
     title: '按设备选择操控方式',
-    desc: '手机可用触控和虚拟键盘，Pad/PC 可配合触控板、鼠标与实体键盘；会话控制栏用于切换输入、缩放和断开。'
+    desc: '手机和 Pad 可使用虚拟触控板，PC 推荐实体键鼠。双指缩放画面；双指长按后拖动可平移画布，会话控制栏还能切换输入方式。'
+  },
+  {
+    id: 'ssh-workspace',
+    symbol: $rawfile('icons/command-line.svg'),
+    title: 'SSH：多会话各自独立',
+    desc: 'SSH 工作台可同时连接多台主机并保留各自终端。需要访问内网服务时，可为当前主机配置本地、远程或动态隧道转发。'
   },
   {
     id: 'files-and-tools',
     symbol: $rawfile('icons/folder-open.svg'),
-    title: '文件、剪贴板与安全工具',
-    desc: '用 SFTP 浏览和传输文件，按会话能力同步文本剪贴板；密钥库与验证器帮助保管 SSH 密钥和一次性验证码。'
+    title: '用 SFTP 管理与传输文件',
+    desc: '在 SSH 会话中打开 SFTP，可浏览本机和远端目录、上传下载或在两台 SSH 主机间传输。重要任务中断后可从任务记录继续处理。'
+  },
+  {
+    id: 'two-factor-and-credentials',
+    symbol: $rawfile('icons/key.svg'),
+    title: '密钥、证书与 2FA 分开保管',
+    desc: '验证器使用真实供应商 Logo 帮助识别动态口令；SSH 密钥、RDP 证书信任和 RustDesk 凭据仍独立保存，连接时只选择需要的凭据。'
   },
   {
     id: 'cloud-and-backup',

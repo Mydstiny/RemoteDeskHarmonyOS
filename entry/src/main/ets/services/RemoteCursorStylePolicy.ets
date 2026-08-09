@@ -6,6 +6,8 @@ export const VIRTUAL_MOUSE_STYLE_RESTORE_VERSION_KEY: string = 'virtualMouseStyl
 export const REMOTE_CURSOR_FALLBACK_EDGE_VP: number = 22;
 export const REMOTE_CURSOR_MIN_EDGE_VP: number = 18;
 export const REMOTE_CURSOR_MAX_EDGE_VP: number = 48;
+export const REMOTE_NATIVE_POINTER_SCALE: number = 1.5;
+export const REMOTE_NATIVE_POINTER_MAX_EDGE_PX: number = 64;
 
 export function remoteCursorSnapshotChanged(previousX: number, previousY: number,
   previousReady: boolean, nextX: number, nextY: number, nextReady: boolean): boolean {
@@ -108,4 +110,19 @@ export function resolveRemoteCursorVisualScale(width: number, height: number,
   const minScale: number = REMOTE_CURSOR_MIN_EDGE_VP / edge;
   const maxScale: number = REMOTE_CURSOR_MAX_EDGE_VP / edge;
   return Math.max(minScale, Math.min(maxScale, safeProjectedScale));
+}
+
+/**
+ * Native physical pointers use protocol pixels directly, which makes small
+ * remote cursors hard to see on a Pad. Enlarge only small cursors and keep
+ * their aspect ratio; larger protocol cursors are never shrunk.
+ */
+export function resolveRemoteNativePointerScale(width: number, height: number): number {
+  const edge: number = Math.max(width, height);
+  if (!Number.isFinite(edge) || edge <= 0) {
+    return 1;
+  }
+  const boundedScale: number = Math.min(REMOTE_NATIVE_POINTER_SCALE,
+    REMOTE_NATIVE_POINTER_MAX_EDGE_PX / edge);
+  return Math.max(1, boundedScale);
 }

@@ -3,15 +3,26 @@ import { RemoteHost } from '../../model/RemoteHost';
 import { SshKey } from '../../model/SshKey';
 import { KeyVaultService } from '../../services/KeyVaultService';
 import { ModernKeyVaultAddFlow } from '../resourceadd/modern/ModernKeyVaultAddFlow';
+import { SshProxyEditor } from '../ssh/SshProxyEditor';
+import { SshProxyProfileV1 } from '../../services/SshProxyProfilePolicy';
+import {
+  SshProxyEditorBuildResult,
+  SshProxyEditorValue,
+  applySshProxyProfileToLegacyHost,
+  buildSshProxyProfile,
+  defaultSshProxyEditorValue
+} from '../../services/SshProxyEditorPolicy';
 
 @Component
 export struct SshAddFlow {
   @StorageProp('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
+  @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
   @Prop @Watch('onKeysChanged') keys: SshKey[] = [];
   onBackToProtocols: () => void = (): void => {};
-  onSave: (host: RemoteHost, connectNow: boolean) => void =
-    (_host: RemoteHost, _connectNow: boolean): void => {};
+  onClose: () => void = (): void => {};
+  onSave: (host: RemoteHost, connectNow: boolean, proxyProfile: SshProxyProfileV1) => void =
+    (_host: RemoteHost, _connectNow: boolean, _proxyProfile: SshProxyProfileV1): void => {};
   @State step: number = 1;
   @State label: string = '';
   @State address: string = '';
@@ -21,11 +32,13 @@ export struct SshAddFlow {
   @State password: string = '';
   @State keyId: string = '';
   @State passphrase: string = '';
+  @State proxyEditorValue: SshProxyEditorValue = defaultSshProxyEditorValue();
   @State addingKey: boolean = false;
   @State newlyAddedKeys: SshKey[] = [];
   @State errorText: string = '';
 
   private keyVault = KeyVaultService.getInstance();
+  private pendingProxyProfile: SshProxyProfileV1 | null = null;
 
   private onKeysChanged(): void {
     this.newlyAddedKeys = [];
@@ -46,6 +59,14 @@ export struct SshAddFlow {
     host.password = this.useKey ? '' : this.password; host.sshUseKey = this.useKey;
     host.sshKeyId = this.useKey ? this.keyId : ''; host.sshKeyPassphrase = this.useKey ? this.passphrase : '';
     host.sshKeyData = ''; host.sshKeyPath = '';
+    const proxy: SshProxyEditorBuildResult = buildSshProxyProfile(
+      host.id, host.host, host.port, this.proxyEditorValue);
+    if (!proxy.valid || proxy.profile === null) {
+      this.errorText = proxy.message || '连接方式配置无效';
+      return null;
+    }
+    applySshProxyProfileToLegacyHost(host, proxy.profile);
+    this.pendingProxyProfile = proxy.profile;
     return host;
   }
 
@@ -86,6 +107,10 @@ export struct SshAddFlow {
         Text('添加 SSH 主机').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
         Text(this.step === 1 ? '1/2  基础信息' : '2/2  登录认证').fontSize(12).fontColor(this.pal().text3).margin({ top: 3 })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
+      Button() {
+        SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
+      }.width(44).height(44).borderRadius(22).padding(0).backgroundColor(this.pal().surface)
+        .onClick((): void => { this.onClose(); })
     }.width('100%').margin({ bottom: 18 })
   }
 
@@ -104,11 +129,18 @@ export struct SshAddFlow {
         this.field('地址', this.address, 'IP 地址或域名', (v: string): void => { this.address = v; })
         this.field('端口', this.portText, '22', (v: string): void => { this.portText = v; })
         this.field('用户名', this.username, 'SSH 登录用户名', (v: string): void => { this.username = v; })
+        SshProxyEditor({
+          keys: this.availableKeys(),
+          onChange: (value: SshProxyEditorValue): void => { this.proxyEditorValue = value; }
+        })
         Button('下一步').width('100%').height(44).borderRadius(12).backgroundColor(this.accentColor)
           .fontColor(Color.White).onClick((): void => {
             const port: number = parseInt(this.portText);
             if (this.label.trim() === '' || this.address.trim() === '' || this.username.trim() === '' ||
               isNaN(port) || port <= 0 || port > 65535) { this.errorText = '请完整填写基础信息和有效端口'; return; }
+            const proxy: SshProxyEditorBuildResult = buildSshProxyProfile(
+              'draft-host', this.address, port, this.proxyEditorValue);
+            if (!proxy.valid) { this.errorText = proxy.message || '连接方式配置无效'; return; }
             this.errorText = ''; this.step = 2;
           })
       } else {
@@ -150,14 +182,21 @@ export struct SshAddFlow {
         }
         Row() {
           Button('保存').layoutWeight(1).height(44).borderRadius(12).backgroundColor(this.pal().surface)
-            .fontColor(this.accentColor).onClick((): void => { const host = this.buildHost(); if (host) { this.onSave(host, false); } })
+            .fontColor(this.accentColor).onClick((): void => {
+              const host = this.buildHost();
+              if (host && this.pendingProxyProfile) { this.onSave(host, false, this.pendingProxyProfile); }
+            })
           Button('保存并连接').layoutWeight(1).height(44).borderRadius(12).margin({ left: 8 })
             .backgroundColor(this.accentColor).fontColor(Color.White)
-            .onClick((): void => { const host = this.buildHost(); if (host) { this.onSave(host, true); } })
+            .onClick((): void => {
+              const host = this.buildHost();
+              if (host && this.pendingProxyProfile) { this.onSave(host, true, this.pendingProxyProfile); }
+            })
         }.width('100%')
       }
       if (this.errorText !== '') { Text(this.errorText).fontSize(12).fontColor(this.pal().danger).margin({ top: 10 }) }
-      }.width('100%').padding({ left: 20, right: 20, top: 20, bottom: 22 }).backgroundColor(this.pal().card)
+      }.width(this.breakpoint === 'xl' ? 900 : '100%')
+        .padding({ left: 20, right: 20, top: 20, bottom: 22 }).backgroundColor(this.pal().card)
     }
   }
 }

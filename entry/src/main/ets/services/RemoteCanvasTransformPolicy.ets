@@ -61,9 +61,11 @@ export function normalizeLocalViewScaleMode(value: string): LocalViewScaleMode {
   return 'fit';
 }
 
-/** Resolve a stored display scale without turning an old derived value into a new default. */
-export function resolveInitialRemoteDisplayScaleMode(value: string, preferenceVersion: number): LocalViewScaleMode {
-  if (Number.isFinite(preferenceVersion) && preferenceVersion >= REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION) {
+/** Resolve a stored display scale while preserving explicit state across app updates. */
+export function resolveInitialRemoteDisplayScaleMode(value: string, preferenceVersion: number,
+  storedPreferencePresent: boolean = false): LocalViewScaleMode {
+  if (storedPreferencePresent ||
+    (Number.isFinite(preferenceVersion) && preferenceVersion >= REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION)) {
     return normalizeLocalViewScaleMode(value);
   }
   return 'fit';

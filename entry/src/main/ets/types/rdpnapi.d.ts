@@ -4,8 +4,13 @@ declare module 'librdpnapi.so' {
   export function listProtocols(): ProtocolInfo[];
 
   export function connect(config: SessionConfig): number;
-  export function connectSshAsync(config: SessionConfig): Promise<number>;
+  /** The native Promise carries the reserved session identity before it settles. */
+  export function connectSshAsync(config: SessionConfig, foreground?: boolean): Promise<number> & {
+    sessionId: number;
+    generation: number;
+  };
   export function getPendingSshConnectId(): number;
+  export function getPendingSshConnectIds(): number[];
   export function disconnect(sessionId: number, rendererHandle?: number,
     decoderHandle?: number, audioHandle?: number): number;
   export function beginDisconnect(sessionId: number, rendererHandle: number,
@@ -17,32 +22,71 @@ declare module 'librdpnapi.so' {
   export function sendKey(sessionId: number, scancode: number, pressed: boolean): void;
   export function sendMouse(sessionId: number, x: number, y: number, button: number, pressed: boolean): void;
   export function sendMouseWheel(sessionId: number, x: number, y: number, delta: number): void;
+  export function sendRustDeskTouchpadWheel(sessionId: number, x: number, y: number): boolean;
   export function sendText(sessionId: number, text: string): void;
+  export function enqueueSshTerminalInput(sessionId: number, text: string,
+    expectedGeneration?: number, control?: boolean, ordered?: boolean,
+    orderedEnd?: boolean): SshTerminalInputEnqueueResult;
   export function sendFile(sessionId: number, remotePath: string, data: ArrayBuffer): number;
   export function writeRemoteFileChunk(sessionId: number, remotePath: string, data: ArrayBuffer, offset: number, truncate: boolean): number;
   export function writeRemoteFileChunkAsync(sessionId: number, remotePath: string, data: ArrayBuffer,
-    offset: number, truncate: boolean): Promise<SftpWriteAsyncResult>;
+    offset: number, truncate: boolean, expectedGeneration?: number): Promise<SftpWriteAsyncResult>;
   export function listRemoteDir(sessionId: number, remotePath: string): SftpFileEntry[];
-  export function listRemoteDirAsync(sessionId: number, remotePath: string): Promise<SftpListAsyncResult>;
+  export function listRemoteDirAsync(sessionId: number, remotePath: string,
+    expectedGeneration?: number): Promise<SftpListAsyncResult>;
   export function readRemoteFile(sessionId: number, remotePath: string): ArrayBuffer;
   export function readRemoteFileChunk(sessionId: number, remotePath: string, offset: number, maxLen: number): ArrayBuffer;
   export function readRemoteFileChunkAsync(sessionId: number, remotePath: string, offset: number,
-    maxLen: number): Promise<SftpReadAsyncResult>;
+    maxLen: number, expectedGeneration?: number): Promise<SftpReadAsyncResult>;
   export function removeRemoteFile(sessionId: number, remotePath: string): number;
-  export function removeRemoteFileAsync(sessionId: number, remotePath: string): Promise<SftpMutationAsyncResult>;
+  export function removeRemoteFileAsync(sessionId: number, remotePath: string,
+    expectedGeneration?: number): Promise<SftpMutationAsyncResult>;
   export function removeRemoteDir(sessionId: number, remotePath: string): number;
-  export function removeRemoteDirAsync(sessionId: number, remotePath: string): Promise<SftpMutationAsyncResult>;
+  export function removeRemoteDirAsync(sessionId: number, remotePath: string,
+    expectedGeneration?: number): Promise<SftpMutationAsyncResult>;
   export function makeRemoteDir(sessionId: number, remotePath: string): number;
-  export function makeRemoteDirAsync(sessionId: number, remotePath: string): Promise<SftpMutationAsyncResult>;
+  export function makeRemoteDirAsync(sessionId: number, remotePath: string,
+    expectedGeneration?: number): Promise<SftpMutationAsyncResult>;
   export function renameRemotePath(sessionId: number, oldPath: string, newPath: string): number;
   export function renameRemotePathAsync(sessionId: number, oldPath: string,
-    newPath: string): Promise<SftpMutationAsyncResult>;
+    newPath: string, atomic?: boolean, expectedGeneration?: number): Promise<SftpMutationAsyncResult>;
   export function sendClipboard(sessionId: number, data: ArrayBuffer): void;
   export function setSessionClipboardFiles(sessionId: number, paths: string[]): boolean;
   export function getSessionClipboardText(sessionId: number): string;
   export function isSessionClipboardReady(sessionId: number): boolean;
+  export function setSessionClipboardEnabled(sessionId: number, enabled: boolean): boolean;
 
   export function getConnectionState(sessionId: number): number;
+  export function getSshAuthPrompt(sessionId: number, sessionGeneration: number): SshAuthPromptRequest | null;
+  export function respondSshAuthPrompt(response: SshAuthPromptResponse): boolean;
+  export function cancelSshAuthPrompt(sessionId: number, sessionGeneration: number,
+    requestId: number): boolean;
+  export function getSshSessionSnapshot(sessionId: number,
+    sessionGeneration: number): SshSessionSnapshot;
+  export function getSshSessionEvents(sessionId: number, channelId: string,
+    sessionGeneration: number, afterSequence?: number): SshSessionEventsResult;
+  export function configureSshForwarding(sessionId: number, sessionGeneration: number,
+    config: SshForwardingConfig): number;
+  export function removeSshForwarding(sessionId: number, sessionGeneration: number,
+    id: string): number;
+  export function startSshForwarding(sessionId: number, sessionGeneration: number,
+    id: string): number;
+  export function markSshForwardingListening(sessionId: number, sessionGeneration: number,
+    id: string): number;
+  export function failSshForwarding(sessionId: number, sessionGeneration: number,
+    id: string, error: number): number;
+  export function stopSshForwarding(sessionId: number, sessionGeneration: number,
+    id: string): number;
+  export function completeSshForwardingStop(sessionId: number, sessionGeneration: number,
+    id: string): number;
+  export function acquireSshForwardingConnection(sessionId: number, sessionGeneration: number,
+    id: string): number;
+  export function releaseSshForwardingConnection(sessionId: number, sessionGeneration: number,
+    id: string): number;
+  export function getSshForwardingSnapshots(sessionId: number,
+    sessionGeneration: number): SshForwardingSnapshotsResult;
+  export function onRustDeskNetworkChanged(sessionId: number, sessionGeneration: number,
+    available: boolean, networkGeneration: number): boolean;
   export function submitRustDesk2FA(sessionId: number, code: string): boolean;
   export function getRemoteCursorSnapshot(sessionId: number, includePixels?: boolean): RemoteCursorSnapshot;
   export function getRemoteCursorSnapshotPixelsAsync(sessionId: number): Promise<RemoteCursorSnapshot>;
@@ -51,9 +95,23 @@ declare module 'librdpnapi.so' {
   export function probeRdpCertificate(host: string, port: number, serverName: string): RdpCertificateInfo;
   export function probeRdpCertificateAsync(host: string, port: number,
     serverName: string): Promise<RdpCertificateInfo>;
+  export function probeRdpCertificateRouteAsync(
+    request: RdpPreflightRequest): Promise<RdpPreflightResult>;
+  export function probeRustDeskPresenceAsync(host: string, port: number, serverKey: string,
+    peerId: string, token: string, direct: boolean, keyMode: number): Promise<RustDeskPresenceResult>;
+  export function probeVncCertificateAsync(host: string, port: number,
+    serverName: string, timeoutMs?: number): VncCertificateProbePromise;
+  export function cancelVncCertificateProbe(requestId: number): boolean;
+  export function probeVncGatewayDeepAsync(host: string, port: number, transport: string,
+    repeaterMode: string, target: string, tls: boolean, expectedFingerprint: string,
+    timeoutMs: number, ownerType: string, ownerId: string, userId: string,
+    storeIdentityFingerprint: string, endpointBindingFingerprint: string,
+    accountGeneration: number, enabled: boolean): VncGatewayDeepHealthPromise;
+  export function cancelVncGatewayDeep(requestId: number): boolean;
   export function getRdpRenderStats(sessionId: number): RdpRenderStats;
   export function getSessionDiagnostics(sessionId: number): RustDeskDiagnosticsSnapshot;
   export function getRustDeskDiagnostics(sessionId: number): RustDeskDiagnosticsSnapshot;
+  export function replayPendingRustDeskFrame(sessionId: number): boolean;
   export function getRustDeskDisplayCapabilities(sessionId: number): RustDeskDisplayCapabilities;
   export function beginRustDeskDisplaySwitch(sessionId: number,
     display: number): RustDeskDisplaySwitchRequest;
@@ -68,6 +126,7 @@ declare module 'librdpnapi.so' {
   export function presentRdpCachedFrame(sessionId: number): boolean;
 
   export function readData(sessionId: number): string;
+  export function getSshTerminalDiagnostics(sessionId: number): SshTerminalDiagnosticsSnapshot;
   export function execSshCommand(sessionId: number, command: string,
     timeoutMs?: number): SshCommandResult;
   export function execSshCommandAsync(sessionId: number, command: string,
@@ -82,6 +141,8 @@ declare module 'librdpnapi.so' {
   export function measureSshLatency(sessionId: number): number;
   export function measureSshLatencyAsync(sessionId: number): Promise<number>;
   export function setOnDataCallback(sessionId: number, cb: ((data: ArrayBuffer) => void) | null): void;
+  export function detachSshSession(sessionId: number): boolean;
+  export function resumeSshSession(sessionId: number): boolean;
   export function setHelperSocketPath(socketPath: string, binPath: string): void;
 
   // SSH 密钥工具 (函数声明)
@@ -92,7 +153,11 @@ declare module 'librdpnapi.so' {
   export function installSshPublicKey(host: string, port: number, username: string, password: string, privateKeyPem: string, passphrase: string, publicKey: string): SshPublicKeyInstallResult;
   export function testSshKeyAuth(host: string, port: number, username: string, privateKeyPem: string,
     passphrase: string, proxy?: SshProxyConfig): SshAuthTestResult;
+  export function testSshKeyAuthAsync(host: string, port: number, username: string, privateKeyPem: string,
+    passphrase: string, proxy?: SshProxyConfig): Promise<SshAuthTestResult>;
   export function probeSshHostKey(host: string, port: number, proxy?: SshProxyConfig): SshHostKeyInfo;
+  export function probeSshHostKeyAsync(host: string, port: number,
+    proxy?: SshProxyConfig): Promise<SshHostKeyInfo>;
 
   export function initRenderer(xcId: string, width: number, height: number): number;
   export function destroyRenderer(handle: number): void;
@@ -107,7 +172,8 @@ declare module 'librdpnapi.so' {
   export function requestFrameRefresh(): void;
   export function getRendererViewport(handle: number): RendererViewport | null;
 
-  export function initDecoder(width: number, height: number, codecType: number): number;
+  export function initDecoder(width: number, height: number, codecType: number,
+    rendererHandle?: number, desktopSurfaceCompatibility?: boolean): number;
   export function destroyDecoder(handle: number): void;
   export function decodeFrame(handle: number, data: ArrayBuffer, size: number, timestamp: number): number;
   export function getTextureId(handle: number): number;
@@ -115,6 +181,7 @@ declare module 'librdpnapi.so' {
   export function bindVideoPipeline(decoderHandle: number, rendererHandle: number): boolean;
   export function detachVideoPipeline(decoderHandle: number): boolean;
   export function requestDecoderRecovery(decoderHandle: number): boolean;
+  export function rebindActiveVideoPipeline(): boolean;
 
   export function initAudioPlayer(sampleRate?: number, channels?: number): number;
   export function destroyAudioPlayer(handle: number): void;
@@ -132,6 +199,7 @@ declare module 'librdpnapi.so' {
 
   export function terminalCoreCreate(cols: number, rows: number): number;
   export function terminalCoreDestroy(handle: number): void;
+  export function terminalCoreSetDefaultForeground(handle: number, foreground: number): void;
   export function terminalCoreWrite(handle: number, data: string): void;
   export function terminalCoreWriteBytes(handle: number, data: ArrayBuffer): void;
   export function terminalCoreResize(handle: number, cols: number, rows: number): void;
@@ -139,6 +207,27 @@ declare module 'librdpnapi.so' {
   export function terminalCoreScrollToBottom(handle: number): void;
   export function terminalCoreSnapshot(handle: number): TerminalCoreSnapshot;
   export function terminalCoreDirtySnapshot(handle: number): TerminalCoreSnapshot;
+
+  export function sshTerminalRendererCreate(surfaceId: string, widthPx: number,
+    heightPx: number, cols: number, rows: number, cellWidthPx: number,
+    cellHeightPx: number, fontSizePx: number, foreground: number, background: number,
+    viewportHeightPx: number, visibleHeightPx: number, bottomAlign: boolean): number;
+  export function sshTerminalRendererDestroy(handle: number): void;
+  export function sshTerminalRendererBindSurface(handle: number, surfaceId: string,
+    widthPx: number, heightPx: number): number;
+  export function sshTerminalRendererHasSurfaceFlushFailure(handle: number): boolean;
+  export function sshTerminalRendererWriteBytes(handle: number, data: ArrayBuffer): void;
+  export function sshTerminalRendererRefresh(handle: number): boolean;
+  export function sshTerminalRendererResize(handle: number, cols: number, rows: number,
+    cellWidthPx: number, cellHeightPx: number, fontSizePx: number): void;
+  export function sshTerminalRendererSetAppearance(handle: number, fontSizePx: number,
+    foreground: number, background: number): void;
+  export function sshTerminalRendererSetViewport(handle: number, viewportHeightPx: number,
+    visibleHeightPx: number, bottomAlign: boolean): void;
+  export function sshTerminalRendererScrollView(handle: number, deltaLines: number): void;
+  export function sshTerminalRendererScrollToBottom(handle: number): void;
+  export function sshTerminalRendererContent(handle: number): string;
+  export function sshTerminalRendererMode(handle: number): TerminalCoreMode;
 }
 
 interface SessionVersionInfo {
@@ -176,10 +265,13 @@ export interface RdpCertificateInfo {
   ok: boolean;
   host: string;
   port: number;
+  serverName: string;
   commonName: string;
   subject: string;
   issuer: string;
   fingerprintSha256: string;
+  notBeforeMs: number;
+  notAfterMs: number;
   flags: number;
   rootTrusted: boolean;
   hostMismatch: boolean;
@@ -187,11 +279,136 @@ export interface RdpCertificateInfo {
   errorMessage: string;
 }
 
+export type RdpEndpointMode = 'direct_rdp' | 'transparent_tcp_rdp' |
+  'microsoft_rd_gateway' | 'vendor_https_bastion' | 'azure_bastion' | 'unknown_gateway';
+export type RdpGatewayTransport = 'auto' | 'http' | 'rpc' | 'websocket' | 'no-websockets';
+
+export interface RdpPreflightRoute {
+  endpointMode?: RdpEndpointMode;
+  targetHost: string;
+  targetPort?: number;
+  targetServerName?: string;
+  gatewayHost?: string;
+  gatewayPort?: number;
+  gatewayServerName?: string;
+  gatewayTransport?: RdpGatewayTransport;
+}
+
+export interface RdpPreflightRequest {
+  route: RdpPreflightRoute;
+  username?: string;
+  password?: string;
+  domain?: string;
+  targetRestrictedAdmin?: boolean;
+  expectedTargetFingerprintSha256?: string;
+  expectedGatewayFingerprintSha256?: string;
+  targetAllowUntrustedRoot?: boolean;
+  targetAllowHostMismatch?: boolean;
+  gatewayAllowUntrustedRoot?: boolean;
+  gatewayAllowHostMismatch?: boolean;
+  generation?: number;
+  requestId?: string;
+}
+
+export interface RdpCertificateRecord {
+  present: boolean;
+  rootTrusted: boolean;
+  hostMismatch: boolean;
+  flags: number;
+  host: string;
+  port: number;
+  stage: 'gateway' | 'target' | string;
+  serverName: string;
+  commonName: string;
+  subject: string;
+  issuer: string;
+  fingerprintSha256: string;
+  notBeforeMs: number;
+  notAfterMs: number;
+}
+
+export interface RdpPreflightResult {
+  ok: boolean;
+  endpointMode: RdpEndpointMode | string;
+  routeIdentity: string;
+  generation: number;
+  requestId: string;
+  stage: 'endpoint' | 'gateway' | 'tunnel' | 'negotiation' | 'target' | string;
+  errorCode: string;
+  errorMessage: string;
+  /** Requested Gateway policy; does not prove the wire transport. */
+  gatewayTransportRequested: string;
+  /** Final transport branch, or 'unknown' when no observation exists. */
+  gatewayTransportNegotiated: string;
+  /** @deprecated Compatibility alias for gatewayTransportRequested. */
+  gatewayTransportSelected: string;
+  requiresGatewayAuth: boolean;
+  requiresUserDecision: boolean;
+  gatewayCertificate: RdpCertificateRecord;
+  targetCertificate: RdpCertificateRecord;
+}
+
+export interface RustDeskPresenceResult {
+  state: number;
+  latencyMs: number;
+  errorCode: number;
+}
+
+export interface VncCertificateInfo {
+  ok: boolean;
+  host: string;
+  port: number;
+  serverName: string;
+  fingerprintSha256: string;
+  commonName: string;
+  subject: string;
+  issuer: string;
+  notBeforeMs: number;
+  notAfterMs: number;
+  rootTrusted: boolean;
+  hostMismatch: boolean;
+  tlsVersion: string;
+  cipherCategory: string;
+  errorCode: number;
+  errorMessageCategory: string;
+  errorMessage: string;
+}
+
+export interface VncCertificateProbePromise extends Promise<VncCertificateInfo> {
+  requestId: number;
+}
+
+export interface VncGatewayDeepHealthResult {
+  stage: string;
+  code: string;
+  message: string;
+  protocolReady: boolean;
+  certificateFingerprintSha256: string;
+  ownerType: string;
+  ownerId: string;
+  userId: string;
+  storeIdentityFingerprint: string;
+  endpointBindingFingerprint: string;
+  accountGeneration: number;
+}
+
+export interface VncGatewayDeepHealthPromise extends Promise<VncGatewayDeepHealthResult> {
+  requestId: number;
+}
+
 export interface RdpRenderStats {
   paintCount: number;
   renderedPaintCount: number;
   firstPaintMs: number;
   lastPaintMs: number;
+  lastRemoteUpdateAgeMs: number;
+  eventLoopAgeMs: number;
+  eventLoopBlockMaxUs: number;
+  lastInputPostAgeMs: number;
+  eventLoopTicks: number;
+  networkCheckCount: number;
+  networkCheckFailures: number;
+  inputPostFailures: number;
   lastRenderResult: number;
   skippedPaintCount: number;
   slowRenderCount: number;
@@ -400,6 +617,9 @@ export interface SessionConfig {
   customHostname: string;
   gatewayHost: string;
   gatewayPort: number;
+  rdpEndpointMode?: RdpEndpointMode;
+  rdpGatewayTransport?: RdpGatewayTransport;
+  rdpGatewayServerName?: string;
   domain: string;
   codec: string;
   multiMonitor: boolean;
@@ -414,16 +634,28 @@ export interface SessionConfig {
   privateKeyPem: string;
   privateKeyPassphrase: string;
   keyboardInteractiveResponses?: string[];
-  sshProxyType?: 'direct' | 'http_connect' | 'socks5' | 'legacy_gateway';
+  sshProxyType?: 'direct' | 'http_connect' | 'socks5' | 'frp_tcp' | 'frp_visitor' |
+    'frp_stcp' | 'frp_sudp' | 'frp_xtcp' | 'ssh_jump' | 'legacy_gateway';
   sshProxyHost?: string;
   sshProxyPort?: number;
   sshProxyUsername?: string;
   sshProxyPassword?: string;
+  sshProxyAuthMethod?: 'password' | 'publickey' | 'kbd-interactive';
+  sshProxyPrivateKeyPem?: string;
+  sshProxyPrivateKeyPassphrase?: string;
+  sshProxyKeyboardInteractiveResponses?: string[];
+  sshRoute?: SshRoute;
+  sshJumpHopHandoffs?: SshJumpHopHandoff[];
   expectedHostKeyRawBase64?: string;
   expectedHostKeyFingerprintSha256?: string;
+  sshJumpHostKeyRawBase64?: string;
+  sshJumpHostKeyFingerprintSha256?: string;
   expectedRdpCertificateFingerprintSha256?: string;
+  expectedRdpGatewayCertificateFingerprintSha256?: string;
   rdpAllowUntrustedRoot?: boolean;
   rdpAllowHostMismatch?: boolean;
+  rdpGatewayAllowUntrustedRoot?: boolean;
+  rdpGatewayAllowHostMismatch?: boolean;
   // RustDesk 扩展字段
   rdImageQuality?: number;   // 0=fast, 1=balanced, 2=quality
   rdDirectIp?: boolean;      // 直连IP模式
@@ -449,6 +681,7 @@ export interface SessionConfig {
   vncTransport?: string;
   vncGatewayHost?: string;
   vncGatewayPort?: number;
+  vncServerName?: string;
   vncGatewayPath?: string;
   vncRepeaterMode?: string;
   vncRepeaterTarget?: string;
@@ -466,31 +699,270 @@ export interface SessionConfig {
   vncExpectedCertificateFingerprintSha256?: string;
 }
 
+export type SshRouteType = 'direct' | 'http_connect' | 'socks5' | 'frp_tcp' |
+  'ssh_jump' | 'frp_visitor' | 'frp_stcp' | 'frp_sudp' | 'frp_xtcp';
+
+export interface SshJumpHop {
+  host: string;
+  port: number;
+  username: string;
+  authMethod: 'password' | 'publickey' | 'kbd-interactive';
+  expectedHostKeyRawBase64?: string;
+  expectedHostKeyFingerprintSha256?: string;
+  connectTimeoutMs: number;
+}
+
+/** Secrets are supplied only in the one-shot SSH session handoff. */
+export interface SshJumpHopHandoff {
+  password?: string;
+  privateKeyPem?: string;
+  privateKeyPassphrase?: string;
+  keyboardInteractiveResponses?: string[];
+}
+
+/** Route metadata is durable; credentials remain in the one-shot handoff. */
+export interface SshRoute {
+  schemaVersion: number;
+  type: SshRouteType;
+  endpointHost: string;
+  endpointPort: number;
+  hops: SshJumpHop[];
+  controlId?: string;
+  connectTimeoutMs: number;
+}
+
 export interface SftpFileEntry {
   name: string;
   path: string;
   isDirectory: boolean;
+  isSymbolicLink: boolean;
+  isSpecialFile: boolean;
   size: number;
+  mode: number;
+  uid: number;
+  gid: number;
+  atime: number;
   mtime: number;
 }
 
 export interface SftpListAsyncResult {
   errorCode: number;
+  transportLost?: boolean;
   entries: SftpFileEntry[];
 }
 
 export interface SftpReadAsyncResult {
   errorCode: number;
+  transportLost?: boolean;
   data: ArrayBuffer;
 }
 
 export interface SftpWriteAsyncResult {
   errorCode: number;
+  transportLost?: boolean;
   bytesWritten: number;
+  durability?: 'durable' | 'unsupported' | 'failed';
 }
 
 export interface SftpMutationAsyncResult {
   errorCode: number;
+  transportLost?: boolean;
+  atomic?: boolean;
+}
+
+export interface SshForwardingConfig {
+  schemaVersion?: number;
+  id: string;
+  mode: number; // 0=local, 1=remote, 2=dynamic
+  bindHost?: string;
+  bindPort: number;
+  targetHost?: string;
+  targetPort?: number;
+  maxConnections?: number;
+  enabled?: boolean;
+  allowPublicBind?: boolean;
+  minBindPort?: number;
+  maxBindPort?: number;
+  maxBytes?: number;
+  expiresAtMs?: number;
+}
+
+export interface SshAuthPrompt {
+  text: string;
+  echo: boolean;
+}
+
+export interface SshAuthPromptRequest {
+  schemaVersion: number;
+  requestId: number;
+  sessionId: number;
+  generation: number;
+  targetHost: string;
+  hop: string;
+  round: number;
+  name: string;
+  instruction: string;
+  prompts: SshAuthPrompt[];
+  expiresAtMs: number;
+}
+
+export interface SshAuthPromptResponse {
+  schemaVersion?: number;
+  requestId: number;
+  sessionId: number;
+  generation: number;
+  responses: string[];
+  cancelled?: boolean;
+}
+
+export interface SshSessionSnapshot {
+  schemaVersion: number;
+  errorCode: number;
+  sessionId: number;
+  generation: number;
+  channelId: string;
+  state: number;
+  stateName: string;
+  eventSequence: number;
+  host: string;
+  port: number;
+  backgroundLimited: boolean;
+  lastEventType: string;
+}
+
+export interface SshEventEnvelope {
+  schemaVersion: number;
+  sessionId: number;
+  generation: number;
+  channelId: string;
+  taskId: string;
+  requestId: string;
+  sequence: number;
+  timestampMs: number;
+  priority: number;
+  type: string;
+  payloadJson?: string;
+}
+
+export interface SshSessionEventsResult {
+  schemaVersion: number;
+  errorCode: number;
+  sessionId: number;
+  channelId: string;
+  generation: number;
+  afterSequence: number;
+  events: SshEventEnvelope[];
+}
+
+export interface SshForwardingSnapshot {
+  schemaVersion: number;
+  id: string;
+  mode: number;
+  bindHost: string;
+  bindPort: number;
+  targetHost: string;
+  targetPort: number;
+  maxConnections: number;
+  enabled: boolean;
+  allowPublicBind: boolean;
+  state: number; // 0=stopped, 1=starting, 2=listening, 3=stopping, 4=failed
+  sessionGeneration: number;
+  activeConnections: number;
+  lastError: number;
+  minBindPort: number;
+  maxBindPort: number;
+  maxBytes: number;
+  ownerSessionId: number;
+  ownerChannelId: string;
+  ownerGeneration: number;
+  transferredBytes: number;
+  expiresAtMs: number;
+}
+
+export interface SshForwardingProfile {
+  schemaVersion: number;
+  id: string;
+  mode: number;
+  bindHost: string;
+  bindPort: number;
+  targetHost: string;
+  targetPort: number;
+  maxConnections: number;
+  enabled: boolean;
+  allowPublicBind: boolean;
+  minBindPort?: number;
+  maxBindPort?: number;
+  maxBytes?: number;
+  expiresAtMs?: number;
+}
+
+export interface SshForwardingRuntime {
+  schemaVersion: number;
+  id: string;
+  state: number;
+  sessionId: number;
+  channelId: string;
+  generation: number;
+  activeConnections: number;
+  transferredBytes: number;
+  lastError: number;
+}
+
+export interface SshForwardingSnapshotsResult {
+  errorCode: number;
+  sessionId: number;
+  sessionGeneration: number;
+  snapshots: SshForwardingSnapshot[];
+}
+
+export interface SshTerminalDiagnosticsSnapshot {
+  supported: boolean;
+  sessionActive: boolean;
+  schemaVersion: number;
+  sessionId: number;
+  sessionGeneration: number;
+  channelId: string;
+  inputEvents: number;
+  inputBytes: number;
+  nativeEnqueueEvents: number;
+  writeAttempts: number;
+  writeCompleteEvents: number;
+  writeBytes: number;
+  writeEagain: number;
+  remoteReadEvents: number;
+  remoteReadBytes: number;
+  callbackAcceptedEvents: number;
+  callbackAcceptedBytes: number;
+  callbackQueueFull: number;
+  callbackDeliveryErrors: number;
+  callbackClosed: number;
+  inputDuplicate: number;
+  inputLoss: number;
+  inputReorder: number;
+  ownerStallEvents: number;
+  coverageMask: number;
+  coverageComplete: boolean;
+  inputQueueDepth: number;
+  inputQueueBytes: number;
+  inputQueueMaxDepth: number;
+  inputQueueMaxBytes: number;
+  lastInputSequence: number;
+  lastInputCapturedAtNs: number;
+  lastNativeEnqueueAtNs: number;
+  lastWriteAttemptAtNs: number;
+  lastWriteCompleteAtNs: number;
+  lastRemoteReadAtNs: number;
+  maxInputToWriteAttemptNs: number;
+  maxInputToWriteCompleteNs: number;
+}
+
+export interface SshTerminalInputEnqueueResult {
+  accepted: boolean;
+  status: 'accepted' | 'queueFull' | 'sessionClosed' | 'staleGeneration' | 'invalid';
+  sequence: number;
+  generation: number;
+  queueDepth: number;
+  queueBytes: number;
 }
 
 export interface SshCommandResult {
@@ -597,6 +1069,12 @@ export interface SshProxyConfig {
   port?: number;
   username?: string;
   password?: string;
+  privateKeyPem?: string;
+  privateKeyPassphrase?: string;
+  authMethod?: 'password' | 'publickey' | 'kbd-interactive';
+  keyboardInteractiveResponses?: string[];
+  expectedHostKeyRawBase64?: string;
+  expectedHostKeyFingerprintSha256?: string;
 }
 
 export interface SshHostKeyInfo {

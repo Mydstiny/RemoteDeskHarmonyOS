@@ -731,6 +731,8 @@ export struct RemoteModifierPanel {
     }
     }
     .width('100%').height('100%')
-    .hitTestBehavior(HitTestMode.None)
+    // The full-screen wrapper must let its positioned child buttons receive
+    // events while still allowing taps outside the panel to pass through.
+    .hitTestBehavior(HitTestMode.Transparent)
   }
 }

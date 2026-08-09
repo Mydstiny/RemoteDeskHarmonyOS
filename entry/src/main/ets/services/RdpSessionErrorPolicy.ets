@@ -43,10 +43,21 @@ export function normalizeRdpErrorCode(raw: string, fallback: string): string {
   while (hex.length > 1 && hex.charAt(0) === '0') {
     hex = hex.substring(1);
   }
+  if (hex.length === 1) {
+    hex = '0' + hex;
+  }
   return '0x' + hex;
 }
 
 function modelForCode(code: string, source: RdpSessionErrorSource): RdpSessionErrorDialogModel {
+  if (source === RdpSessionErrorSource.LOCAL_RENDER_WATCHDOG) {
+    return {
+      title: '画面正在恢复',
+      message: '连接仍保持，检测到本地送显暂时受阻，系统正在重试。',
+      code: 'RDP-LOCAL-RENDER-STALL',
+      source
+    };
+  }
   switch (code) {
     case 'E-RDP-AUTH-CRYPTO-LOCKED':
       return {
@@ -102,6 +113,13 @@ function modelForCode(code: string, source: RdpSessionErrorSource): RdpSessionEr
       return {
         title: '你的会话已断开',
         message: '远程会话中的图形显示组件启动失败。',
+        code,
+        source
+      };
+    case '0x01':
+      return {
+        title: '服务器请求断开会话',
+        message: '服务器请求结束当前会话（RPC initiated disconnect）；这不是图形管线故障。',
         code,
         source
       };

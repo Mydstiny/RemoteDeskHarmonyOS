@@ -6,7 +6,15 @@
  */
 import { common, Want } from '@kit.AbilityKit';
 import { AppConfig, AppTheme, Palette, buildLight, buildDark } from '../common/Theme';
-import { GuideContentPage, settingsUsageGuidePages } from '../services/GuideContentRegistry';
+import {
+  GuideContentPage,
+  settingsUsageGuidePages
+} from '../services/GuideContentRegistry';
+import {
+  CURRENT_RELEASE_VERSION,
+  pagesForReleasedVersion,
+  ReleaseNotePage
+} from '../services/ReleaseNotesRegistry';
 
 @Component
 export struct AboutSettingsSheet {
@@ -19,6 +27,10 @@ export struct AboutSettingsSheet {
   @State usageGuideIndex: number = 0;
   private usageGuideController: SwiperController = new SwiperController();
   private readonly usageGuideItems: GuideContentPage[] = settingsUsageGuidePages();
+  @State releaseNotesIndex: number = 0;
+  private releaseNotesController: SwiperController = new SwiperController();
+  private readonly releaseNotesItems: ReleaseNotePage[] =
+    pagesForReleasedVersion(CURRENT_RELEASE_VERSION);
 
   private pal(): Palette {
     return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor);
@@ -56,9 +68,90 @@ export struct AboutSettingsSheet {
       this.aboutAppSheet();
     } else if (this.aboutSheetMode === 2) {
       this.privacyPolicySheet();
-    } else {
+    } else if (this.aboutSheetMode === 3) {
       this.preRequisiteSheet();
+    } else {
+      this.releaseNotesSheet();
     }
+  }
+
+  @Builder releaseNotesSheet() {
+    Column() {
+      Row() {
+        Text(CURRENT_RELEASE_VERSION + ' 本版本更新日志').fontSize(20).fontWeight(FontWeight.Bold)
+          .fontColor(this.pal().text).fontFamily(this.font())
+        Blank()
+        SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
+          .width(36).height(36).onClick((): void => { this.onClose(); })
+      }.width('100%').padding({ left: 24, right: 20, top: 20 }).margin({ bottom: 4 })
+
+      Swiper(this.releaseNotesController) {
+        ForEach(this.releaseNotesItems, (item: ReleaseNotePage, index: number) => {
+          Column() {
+            Column() {
+              Image(item.symbol).width(48).height(48).fillColor(this.accentColor)
+            }
+            .width(96).height(96).borderRadius(26)
+            .justifyContent(FlexAlign.Center)
+            .backgroundColor(this.pal().surface)
+            .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+            .margin({ bottom: 18 })
+            .scale({
+              x: this.releaseNotesIndex === index ? 1 : 0.86,
+              y: this.releaseNotesIndex === index ? 1 : 0.86
+            })
+            .animation({ duration: 240, curve: Curve.EaseOut })
+
+            Text(item.title)
+              .fontSize(22).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+              .textAlign(TextAlign.Center).fontFamily(this.font()).margin({ bottom: 10 })
+
+            Text(item.desc)
+              .fontSize(14).fontColor(this.pal().text2).textAlign(TextAlign.Center)
+              .lineHeight(21).width('88%').fontFamily(this.font())
+          }
+          .width('100%').justifyContent(FlexAlign.Center)
+          .padding({ bottom: 40 })
+        }, (item: ReleaseNotePage) => item.id)
+      }
+      .loop(false).indicator(false).duration(250).curve(Curve.EaseOut)
+      .onChange((i: number): void => { this.releaseNotesIndex = i; })
+      .height(this.usageGuideHeight())
+
+      Row() {
+        Text(this.releaseNotesIndex > 0 ? '上一步' : '关闭')
+          .fontSize(14).fontColor(this.pal().text2).width(72).textAlign(TextAlign.Start)
+          .onClick((): void => {
+            if (this.releaseNotesIndex > 0) {
+              this.releaseNotesController.showPrevious();
+            } else {
+              this.onClose();
+            }
+          })
+        Blank()
+        Text((this.releaseNotesIndex + 1).toString() + ' / ' +
+          this.releaseNotesItems.length.toString())
+          .fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
+        Blank()
+        Text(this.releaseNotesIndex < this.releaseNotesItems.length - 1 ? '下一步' : '完成')
+          .fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.accentColor)
+          .width(72).textAlign(TextAlign.End)
+          .onClick((): void => {
+            if (this.releaseNotesIndex < this.releaseNotesItems.length - 1) {
+              this.releaseNotesController.showNext();
+            } else {
+              this.onClose();
+            }
+          })
+      }.width('100%').padding({ left: 28, right: 28, bottom: 28, top: 8 })
+    }
+    .width('100%')
+    .constraintSize({ maxWidth: 620, maxHeight: this.breakpoint === 'sm' ? 500 : 560 })
+    .clip(true)
+    .backgroundColor(this.pal().bg)
+    .backgroundBlurStyle(BlurStyle.Regular)
+    .borderRadius(this.breakpoint === 'sm' ?
+      { topLeft: 22, topRight: 22, bottomLeft: 0, bottomRight: 0 } : 24)
   }
 
   @Builder usageGuideSheet() {

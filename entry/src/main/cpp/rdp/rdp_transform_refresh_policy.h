@@ -24,10 +24,20 @@ struct RdpTransformRefreshDecision {
 
 inline RdpTransformRefreshDecision DecideRdpTransformRefresh(
     bool hasSourceFrame, bool transformRequested, int64_t nowUs,
-    int64_t nextSourcePresentAtUs, int64_t nextTransformPresentAtUs) {
+    int64_t nextSourcePresentAtUs, int64_t nextTransformPresentAtUs,
+    int64_t sourceEnqueuedAtUs = 0) {
     // A real remote frame already applies the newest transform while it
     // uploads, so it wins over an otherwise redundant retained redraw.
+    // Pacing is a lower bound, not a permission to display an obsolete frame.
+    // Once the latest source frame has waited beyond this bound, present it
+    // immediately even when the nominal refresh deadline is still ahead.
+    constexpr int64_t kMaxSourceQueueWaitUs = 50000;
+    const bool sourceWaitedTooLong = hasSourceFrame && sourceEnqueuedAtUs > 0 &&
+        nowUs - sourceEnqueuedAtUs >= kMaxSourceQueueWaitUs;
     if (hasSourceFrame && RdpFrameScheduler::IsDue(nowUs, nextSourcePresentAtUs)) {
+        return {RdpTransformRefreshAction::PresentSourceFrame, nowUs};
+    }
+    if (sourceWaitedTooLong) {
         return {RdpTransformRefreshAction::PresentSourceFrame, nowUs};
     }
     if (transformRequested &&

@@ -11,7 +11,10 @@ interface SshPreflightTokenData {
   hostId: string;
   expectedHostKeyRawBase64: string;
   expectedHostKeyFingerprintSha256: string;
+  expectedJumpHostKeyRawBase64: string;
+  expectedJumpHostKeyFingerprintSha256: string;
   privateKeyPassphrase: string;
+  proxyPrivateKeyPassphrase?: string;
   createdAt?: number; // 由服务内部设置
 }
 

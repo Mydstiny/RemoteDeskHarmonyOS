@@ -84,6 +84,8 @@ set(AUDIO_SOURCES
 # -- SSH 适配器 --
 set(SSH_SOURCES
     ssh/ssh_adapter.cpp
+    ssh/ssh_forwarding_manager.cpp
+    ssh/ssh_session_manager.cpp
     ssh/ssh_key_tool.cpp
 )
 
@@ -93,6 +95,7 @@ set(VNC_SOURCES
     vnc/vnc_cursor_protocol.cpp
     vnc/vnc_des.cpp
     vnc/vnc_rfb_protocol.cpp
+    vnc/vnc_certificate_probe.cpp
     vnc/vnc_transport.cpp
     vnc/vnc_rfb_engine.cpp
 )
@@ -100,6 +103,8 @@ set(VNC_SOURCES
 # -- 终端核心 (Rust terminal_core NAPI bridge) --
 set(TERMINAL_SOURCES
     terminal/terminal_core_napi.cpp
+    terminal/ssh_terminal_renderer.cpp
+    terminal/ssh_terminal_renderer_napi.cpp
 )
 
 # -- 安全管理 --
@@ -151,6 +156,7 @@ include_directories(
 # ============================================================
 option(RDP_BUILD_TESTS "Build lightweight native unit tests" OFF)
 option(RDP_TESTS_ONLY "Configure only lightweight native unit tests" OFF)
+option(RDP_BUILD_CALLBACK_TESTS "Build OHOS production callback-entry barrier tests" OFF)
 if(RDP_BUILD_TESTS)
     # Compile the actual VNC transport and RFB engine into the host test
     # target as a link/ABI gate. Wire-level decisions are additionally
@@ -167,6 +173,17 @@ if(RDP_BUILD_TESTS)
         test/remote_cursor_snapshot_test.cpp
         test/rustdesk_display_switch_gate_test.cpp
         test/video_perf_counters_test.cpp
+        test/ssh_terminal_diagnostics_test.cpp
+        test/ssh_auth_policy_test.cpp
+        test/ssh_auth_prompt_broker_test.cpp
+        test/ssh_pty_recovery_policy_test.cpp
+        test/ssh_reconnect_policy_test.cpp
+        test/ssh_network_lifecycle_policy_test.cpp
+        test/ssh_session_manager_test.cpp
+        test/ssh_pending_connect_registry_test.cpp
+        test/ssh_route_policy_test.cpp
+        test/ssh_forwarding_manager_test.cpp
+        test/ssh_sftp_operation_policy_test.cpp
         test/video_activity_state_test.cpp
         test/rdp_audio_policy_test.cpp
         test/audio_queue_policy_test.cpp
@@ -176,6 +193,8 @@ if(RDP_BUILD_TESTS)
         test/rdp_presentation_metrics_test.cpp
         test/rdp_shutdown_state_test.cpp
         test/session_teardown_executor_test.cpp
+        test/session_registry_test.cpp
+        test/disconnect_request_registry_test.cpp
         test/rdp_background_frame_cache_test.cpp
         test/rdp_damage_accumulator_test.cpp
         test/rdp_frame_scheduler_test.cpp
@@ -183,6 +202,8 @@ if(RDP_BUILD_TESTS)
         test/rdp_gl_upload_gate_test.cpp
         test/rdp_graphics_lifecycle_test.cpp
         test/rdp_certificate_policy_test.cpp
+        test/rdp_gateway_policy_test.cpp
+        test/rdp_negotiation_parser_test.cpp
         test/rdp_auth_identity_policy_test.cpp
         test/rdp_auth_mode_policy_test.cpp
         test/rdp_performance_policy_test.cpp
@@ -191,16 +212,25 @@ if(RDP_BUILD_TESTS)
         test/rdp_file_clipboard_offer_test.cpp
         test/gl_surface_lifecycle_policy_test.cpp
         test/native_image_context_policy_test.cpp
+        test/presentation_geometry_policy_test.cpp
         test/decoder_recovery_policy_test.cpp
         test/software_decoder_callback_gate_test.cpp
         test/decoder_callback_gate_test.cpp
+        test/decoder_callback_lifecycle_policy_test.cpp
+        test/callback_admission_context_test.cpp
+        test/rustdesk_ffi_lifetime_policy_test.cpp
+        test/rustdesk_connection_continuity_owner_test.cpp
+        test/rustdesk_connection_continuity_executor_test.cpp
         test/decoder_pipeline_lifecycle_policy_test.cpp
         test/safe_log_test.cpp
         test/vnc_des_test.cpp
         test/vnc_cursor_protocol_test.cpp
         test/vnc_transport_policy_test.cpp
+        test/vnc_certificate_probe_test.cpp
         common/safe_log.cpp
         input/remote_cursor_snapshot.cpp
+        ssh/ssh_forwarding_manager.cpp
+        ssh/ssh_session_manager.cpp
         rdp/rdp_audio_policy.cpp
         rdp/rdp_auth_identity_policy.cpp
         rdp/rdp_auth_mode_policy.cpp
@@ -219,12 +249,19 @@ if(RDP_BUILD_TESTS)
         vnc/vnc_des.cpp
         vnc/vnc_cursor_protocol.cpp
         vnc/vnc_rfb_protocol.cpp
+        vnc/vnc_certificate_probe.cpp
         vnc/vnc_transport.cpp
         vnc/vnc_rfb_engine.cpp
         test/vnc_rfb_protocol_test.cpp
     )
     target_include_directories(rdp_native_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+    # Policy/executor tests may use the explicit test-only ticket factory;
+    # never enable this definition on the production rdpnapi target.
+    target_compile_definitions(rdp_native_tests PRIVATE
+        RDP_NATIVE_CALLBACK_TESTING=1
+        RDP_TESTS_ONLY=1
     )
     # RDP_TESTS_ONLY returns before the production-wide C++ standard block
     # below. Keep the standalone host test target explicit so headers using
@@ -285,9 +322,19 @@ include_directories(
 # FreeRDP 3.x 静态库 (交叉编译产出) — RDP-1
 # ============================================================
 option(USE_REAL_FREERDP "Use real FreeRDP 3.x client library" OFF)
+option(RDP_STRICT_WARNINGS "Treat native warnings as errors for acceptance builds" OFF)
 
 if(USE_REAL_FREERDP)
     add_definitions(-DUSE_REAL_FREERDP -DWITH_FREERDP_DEPRECATED)
+
+    # The prebuilt FreeRDP headers intentionally expose a small set of
+    # deprecated compatibility entry points. Keep the exemption on the one
+    # production translation unit that calls those third-party APIs; project
+    # sources and all other headers remain under -Werror.
+    if(RDP_STRICT_WARNINGS)
+        set_source_files_properties(rdp/freerdp_adapter.cpp PROPERTIES
+            COMPILE_OPTIONS "-Wno-deprecated-declarations")
+    endif()
 
     set(FREERDP_PREBUILT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../../libs/freerdp-ohos/${OHOS_ARCH})
 
@@ -332,6 +379,12 @@ endif()
 
 # 警告选项
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra")
+if(RDP_STRICT_WARNINGS)
+    # OHOS clang can report the injected --gcc-toolchain argument as unused;
+    # this is a toolchain diagnostic, not a source warning. Keep that single
+    # narrow exemption explicit for strict cross-architecture builds.
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Werror -Wno-unused-command-line-argument")
+endif()
 
 # ============================================================
 # 构建目标 (必须先于 target_link_libraries)
@@ -378,6 +431,7 @@ target_link_libraries(rdpnapi PUBLIC
     libGLESv3.so           # OpenGL ES 3.0
     libnative_image.so     # NativeImage 零拷贝纹理
     libnative_window.so    # SurfaceId -> OHNativeWindow
+    libnative_drawing.so   # OH_Drawing 终端画布
 )
 
 # 多媒体 (硬件解码)
@@ -399,6 +453,12 @@ endif()
 target_link_libraries(rdpnapi PUBLIC
     libohaudio.so          # OHAudio 渲染器/采集器
 )
+
+# OHOS system network observer used by RustDesk continuity. Host focused
+# tests do not link this platform library; OHOS real/no-real targets do.
+if(OHOS_ARCH)
+    target_link_libraries(rdpnapi PUBLIC libnet_connection.so)
+endif()
 
 # 安全 (HUKS + CryptoArchitectureKit)
 target_link_libraries(rdpnapi PUBLIC
@@ -473,9 +533,11 @@ endif()
 # RustDesk FFI 静态库
 if(OHOS_ARCH STREQUAL "x86_64")
     set(RUSTDESK_FFI_TARGET x86_64-unknown-linux-ohos)
+    set(RUSTDESK_FFI_CLANG_TARGET x86_64-linux-ohos)
     set(RUSTDESK_FFI_LIB ${CMAKE_CURRENT_SOURCE_DIR}/../../../../rustdesk_ffi/target/x86_64-unknown-linux-ohos/release/librustdesk_ffi.a)
 elseif(OHOS_ARCH STREQUAL "arm64-v8a" OR OHOS_ARCH STREQUAL "aarch64")
     set(RUSTDESK_FFI_TARGET aarch64-unknown-linux-ohos)
+    set(RUSTDESK_FFI_CLANG_TARGET aarch64-linux-ohos)
     set(RUSTDESK_FFI_LIB ${CMAKE_CURRENT_SOURCE_DIR}/../../../../rustdesk_ffi/target/aarch64-unknown-linux-ohos/release/librustdesk_ffi.a)
 else()
     message(FATAL_ERROR
@@ -489,7 +551,42 @@ set(RUSTDESK_FFI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../../rustdesk_ffi)
 set(RUSTDESK_PROTO_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../../rustdesk_vendor/libs/hbb_common/protos)
 set(RUSTDESK_OPUS_LIB_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../../libs/opus-ohos/${OHOS_ARCH})
 set(RUSTDESK_OPUS_LIBRARY ${RUSTDESK_OPUS_LIB_DIR}/libopus.a)
-find_program(RUSTDESK_CARGO_EXECUTABLE cargo REQUIRED)
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/ResolveRustCargo.cmake)
+resolve_rustdesk_rust_toolchain(
+    RUSTDESK_CARGO_EXECUTABLE
+    RUSTDESK_RUSTC_EXECUTABLE)
+string(TOUPPER "${RUSTDESK_FFI_TARGET}" RUSTDESK_FFI_TARGET_ENV_UPPER)
+string(REPLACE "-" "_"
+    RUSTDESK_FFI_TARGET_ENV_UPPER "${RUSTDESK_FFI_TARGET_ENV_UPPER}")
+
+# Cargo target configuration otherwise resolves `clang++` through PATH. That
+# fails when DevEco is launched from Finder because its IDE build environment
+# does not inherit the shell toolchain PATH. Mirror scripts/macos_env.sh here
+# with CMake's already selected OHOS compiler and sysroot.
+if(CMAKE_SYSROOT AND EXISTS "${CMAKE_SYSROOT}")
+    set(RUSTDESK_OHOS_SYSROOT "${CMAKE_SYSROOT}")
+else()
+    get_filename_component(RUSTDESK_OHOS_LLVM_BIN
+        "${CMAKE_CXX_COMPILER}" DIRECTORY)
+    get_filename_component(RUSTDESK_OHOS_LLVM_DIR
+        "${RUSTDESK_OHOS_LLVM_BIN}" DIRECTORY)
+    get_filename_component(RUSTDESK_OHOS_NATIVE_ROOT
+        "${RUSTDESK_OHOS_LLVM_DIR}" DIRECTORY)
+    set(RUSTDESK_OHOS_SYSROOT "${RUSTDESK_OHOS_NATIVE_ROOT}/sysroot")
+endif()
+if(NOT EXISTS "${CMAKE_CXX_COMPILER}" OR
+   NOT EXISTS "${RUSTDESK_OHOS_SYSROOT}")
+    message(FATAL_ERROR
+        "RustDesk: incomplete OHOS C++ toolchain: "
+        "compiler=${CMAKE_CXX_COMPILER}, sysroot=${RUSTDESK_OHOS_SYSROOT}")
+endif()
+
+# Cargo splits RUSTFLAGS on spaces, which corrupts a Windows DevEco sysroot
+# such as "C:/Program Files/...". CARGO_ENCODED_RUSTFLAGS uses ASCII unit
+# separators and therefore preserves each linker argument as one rustc token.
+string(ASCII 31 RUSTDESK_CARGO_RUSTFLAG_SEPARATOR)
+set(RUSTDESK_CARGO_ENCODED_RUSTFLAGS
+    "-Clink-arg=--target=${RUSTDESK_FFI_CLANG_TARGET}${RUSTDESK_CARGO_RUSTFLAG_SEPARATOR}-Clink-arg=--sysroot=${RUSTDESK_OHOS_SYSROOT}")
 
 if(NOT EXISTS ${RUSTDESK_PROTO_DIR}/message.proto OR NOT EXISTS ${RUSTDESK_PROTO_DIR}/rendezvous.proto)
     message(FATAL_ERROR
@@ -513,7 +610,11 @@ add_custom_command(
     COMMAND ${CMAKE_COMMAND} -E env
         "OPUS_LIB_DIR=${RUSTDESK_OPUS_LIB_DIR}"
         "CC_${RUSTDESK_FFI_TARGET}=${CMAKE_C_COMPILER}"
+        "CXX_${RUSTDESK_FFI_TARGET}=${CMAKE_CXX_COMPILER}"
         "AR_${RUSTDESK_FFI_TARGET}=${CMAKE_AR}"
+        "RUSTC=${RUSTDESK_RUSTC_EXECUTABLE}"
+        "CARGO_TARGET_${RUSTDESK_FFI_TARGET_ENV_UPPER}_LINKER=${CMAKE_CXX_COMPILER}"
+        "CARGO_ENCODED_RUSTFLAGS=${RUSTDESK_CARGO_ENCODED_RUSTFLAGS}"
         ${RUSTDESK_CARGO_EXECUTABLE} build --release --target ${RUSTDESK_FFI_TARGET}
     WORKING_DIRECTORY ${RUSTDESK_FFI_DIR}
     DEPENDS
@@ -534,3 +635,19 @@ set_target_properties(rustdesk_ffi PROPERTIES
     IMPORTED_LOCATION ${RUSTDESK_FFI_LIB}
 )
 target_link_libraries(rdpnapi PUBLIC rustdesk_ffi)
+
+if(RDP_BUILD_CALLBACK_TESTS)
+    if(NOT USE_REAL_FREERDP)
+        message(FATAL_ERROR
+            "RDP_BUILD_CALLBACK_TESTS requires USE_REAL_FREERDP=ON so the "
+            "callback carrier always registers all 9 production entries")
+    endif()
+    target_compile_definitions(rdpnapi PRIVATE RDP_NATIVE_CALLBACK_TESTING=1)
+    add_executable(rdp_callback_tests
+        test/callback_entry_integration_test.cpp
+    )
+    target_compile_definitions(rdp_callback_tests PRIVATE RDP_NATIVE_CALLBACK_TESTING=1)
+    target_include_directories(rdp_callback_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_compile_features(rdp_callback_tests PRIVATE cxx_std_17)
+    target_link_libraries(rdp_callback_tests PRIVATE rdpnapi)
+endif()

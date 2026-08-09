@@ -17,9 +17,9 @@ use std::net::{Shutdown, TcpStream};
 use std::os::raw::c_int;
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, LazyLock, Mutex};
-use std::time::Duration;
-use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Condvar, LazyLock, Mutex};
+use std::time::{Duration, Instant};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 pub mod connector;
 pub mod crypto;
@@ -36,12 +36,14 @@ pub mod terminal_core;
 use protocol::message_proto::{
     AudioFormat, AudioFrame, EncodedVideoFrames, VideoFrame, VideoFrame_oneof_union,
 };
+use protocol::rendezvous::RendezvousClient;
 use protocol::session::AuthEventCallback;
 use control_inbox::ControlInbox;
 use cursor_state::CursorStreamUpdate;
 use std::sync::mpsc::Sender;
 
 static LAST_ERROR: Mutex<String> = Mutex::new(String::new());
+static RUSTDESK_MOUSE_ENQUEUE_COUNT: AtomicU64 = AtomicU64::new(0);
 // 每个连接尝试都有独立 epoch。取消一个 session 只标记它自己的 epoch，
 // 不会让另一个 RustDesk 连接的 2FA/批准等待线程退出。
 static CONNECT_EPOCH: AtomicU64 = AtomicU64::new(0);
@@ -336,6 +338,16 @@ pub struct RustDeskConfig {
     /// explicit port when one is advertised.
     /// Appended to preserve the established C ABI field order.
     pub relay_fallback_port: c_int,
+}
+
+/// Result of a non-authenticating RustDesk liveness probe.
+/// state: 0=unknown, 1=online, 2=offline.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RustDeskPresenceResult {
+    pub state: c_int,
+    pub latency_ms: c_int,
+    pub error_code: c_int,
 }
 
 const DEFAULT_RELAY_PORT: u16 = 21117;
@@ -689,6 +701,236 @@ enum FrameCallbackKind {
     V2(FrameCallbackV2),
 }
 
+// This queue only decouples the socket/ACK loop from the native callback; the
+// native decoder owns the actual presentation queue.  RustDesk can release a
+// short burst after a delayed TCP read, so leave enough room for that burst
+// without turning ordinary network jitter into a remote encoder restart.
+const VIDEO_CALLBACK_QUEUE_CAPACITY: usize = 16;
+// Full-resolution macOS VP9 can release close to one second of dependent
+// frames in one TCP burst. The native software decoder already owns a 30-frame
+// reference-safe recovery boundary, so let VP9 reach that owner instead of
+// dropping at the smaller cross-codec callback boundary and needlessly asking
+// the host to rebuild its encoder. Hardware codecs retain the 16-frame limit.
+const VP9_VIDEO_CALLBACK_QUEUE_CAPACITY: usize = 30;
+const FFI_VP9_CODEC: c_int = 3;
+
+fn video_callback_queue_capacity(codec: c_int) -> usize {
+    if codec == FFI_VP9_CODEC {
+        VP9_VIDEO_CALLBACK_QUEUE_CAPACITY
+    } else {
+        VIDEO_CALLBACK_QUEUE_CAPACITY
+    }
+}
+
+struct QueuedVideoFrame {
+    data: Vec<u8>,
+    width: c_int,
+    height: c_int,
+    codec: c_int,
+    timestamp: u64,
+    is_key_frame: bool,
+    display: c_int,
+}
+
+struct VideoCallbackQueueState {
+    frames: VecDeque<QueuedVideoFrame>,
+    closed: bool,
+    // Once a dependent frame is dropped, later deltas are no longer a safe
+    // continuation of the decoder reference chain. Request one refresh and
+    // suppress all further refreshes until the resulting keyframe arrives.
+    awaiting_key_frame: bool,
+}
+
+enum VideoQueueOutcome {
+    Queued {
+        evicted: usize,
+        request_refresh: bool,
+    },
+    Dropped {
+        request_refresh: bool,
+    },
+    Disconnected,
+}
+
+/// Keep the network/ACK loop independent from native decode and render work.
+/// The queue is intentionally small: a slow decoder must not turn into a
+/// growing latency buffer. A new keyframe replaces stale queued work when the
+/// queue is full; dependent frames are never allowed to evict it.
+struct VideoCallbackQueue {
+    state: Mutex<VideoCallbackQueueState>,
+    wake: Condvar,
+}
+
+impl VideoCallbackQueue {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(VideoCallbackQueueState {
+                frames: VecDeque::with_capacity(VP9_VIDEO_CALLBACK_QUEUE_CAPACITY),
+                closed: false,
+                awaiting_key_frame: false,
+            }),
+            wake: Condvar::new(),
+        }
+    }
+
+    fn enqueue(&self, frame: QueuedVideoFrame) -> VideoQueueOutcome {
+        let Ok(mut state) = self.state.lock() else {
+            return VideoQueueOutcome::Disconnected;
+        };
+        if state.closed {
+            return VideoQueueOutcome::Disconnected;
+        }
+
+        let mut evicted = 0;
+        if state.awaiting_key_frame {
+            if !frame.is_key_frame {
+                // The first overflow already requested a refresh. Repeating
+                // RefreshVideo for every arriving delta makes the macOS host
+                // tear down and recreate its VP9 encoder every few seconds.
+                return VideoQueueOutcome::Dropped {
+                    request_refresh: false,
+                };
+            }
+            evicted = state.frames.len();
+            state.frames.clear();
+            state.awaiting_key_frame = false;
+        } else if state.frames.len() >= video_callback_queue_capacity(frame.codec) {
+            if frame.is_key_frame {
+                // A fresh keyframe is a complete decoder restart point. Drop
+                // all older deltas so recovery does not replay stale frames
+                // ahead of the keyframe.
+                evicted = state.frames.len();
+                state.frames.clear();
+            } else {
+                // Preserve the already queued, ordered prefix. Dropping the
+                // new dependent frame breaks the future reference chain, so
+                // request exactly one keyframe and wait for it. In particular,
+                // do not enqueue more dependent frames or issue one refresh
+                // per frame while the keyframe is in flight.
+                state.awaiting_key_frame = true;
+                return VideoQueueOutcome::Dropped {
+                    request_refresh: true,
+                };
+            }
+        }
+
+        state.frames.push_back(frame);
+        drop(state);
+        self.wake.notify_one();
+        VideoQueueOutcome::Queued {
+            evicted,
+            request_refresh: false,
+        }
+    }
+
+    fn pop(&self) -> Option<QueuedVideoFrame> {
+        let mut state = self.state.lock().ok()?;
+        loop {
+            if let Some(frame) = state.frames.pop_front() {
+                drop(state);
+                self.wake.notify_all();
+                return Some(frame);
+            }
+            if state.closed {
+                return None;
+            }
+            state = self.wake.wait(state).ok()?;
+        }
+    }
+
+    fn close(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.closed = true;
+        }
+        self.wake.notify_all();
+    }
+}
+
+struct VideoCallbackWorker {
+    queue: Arc<VideoCallbackQueue>,
+    handle: Option<std::thread::JoinHandle<()>>,
+    controls: Arc<ControlInbox>,
+    queued: u64,
+    dropped: u64,
+}
+
+impl VideoCallbackWorker {
+    fn start(
+        on_frame: Option<FrameCallbackKind>,
+        user_data: usize,
+        controls: Arc<ControlInbox>,
+    ) -> Self {
+        let queue = Arc::new(VideoCallbackQueue::new());
+        let Some(on_frame) = on_frame else {
+            return Self {
+                queue,
+                handle: None,
+                controls,
+                queued: 0,
+                dropped: 0,
+            };
+        };
+        let worker_queue = Arc::clone(&queue);
+        let handle = std::thread::spawn(move || {
+            while let Some(frame) = worker_queue.pop() {
+                dispatch_queued_video_frame(&frame, on_frame, user_data as *mut c_void);
+            }
+        });
+        Self {
+            queue,
+            handle: Some(handle),
+            controls,
+            queued: 0,
+            dropped: 0,
+        }
+    }
+
+    fn enqueue(&mut self, frame: QueuedVideoFrame) {
+        match self.queue.enqueue(frame) {
+            VideoQueueOutcome::Queued {
+                evicted,
+                request_refresh,
+            } => {
+                self.queued += 1;
+                self.dropped += evicted as u64;
+                if request_refresh {
+                    let _ = self.controls.enqueue(ControlMsg::RefreshVideo);
+                }
+            }
+            VideoQueueOutcome::Dropped { request_refresh } => {
+                self.dropped += 1;
+                if request_refresh {
+                    let _ = self.controls.enqueue(ControlMsg::RefreshVideo);
+                }
+                if self.dropped <= 5 || self.dropped % 60 == 0 {
+                    eprintln!(
+                        "[RustDesk-FFI] video callback queue full dropped={} queued={} -> refresh={}",
+                        self.dropped,
+                        self.queued,
+                        request_refresh,
+                    );
+                }
+            }
+            VideoQueueOutcome::Disconnected => {
+                self.dropped += 1;
+            }
+        }
+    }
+
+    fn stop(&mut self) {
+        self.queue.close();
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+        if self.dropped > 0 {
+            eprintln!(
+                "[RustDesk-FFI] video callback worker stopped queued={} dropped={}",
+                self.queued, self.dropped,
+            );
+        }
+    }
+}
+
 // ============================================================
 // 内部类型: RustDesk 客户端句柄
 // ============================================================
@@ -716,6 +958,12 @@ pub(crate) enum ControlMsg {
         x: i32,
         y: i32,
         delta: i32,
+    },
+    /// Two-dimensional wheel delta from a physical touchpad. Unlike the
+    /// legacy wheel message, x/y are both protocol wheel deltas.
+    MouseWheel2D {
+        x: i32,
+        y: i32,
     },
     Text {
         text: String,
@@ -779,10 +1027,12 @@ struct RustDeskClient {
     api_token: String,
     password: String,
     request_approval: bool,
+    direct_connection: bool,
     controls: Arc<ControlInbox>,
     shutdown_stream: Option<TcpStream>,
     stream_handle: Option<std::thread::JoinHandle<io::Result<()>>>,
     transfer_status: Arc<Mutex<RustDeskTransferStatus>>,
+    transfer_error: Arc<Mutex<String>>,
     remote_clipboard: Arc<Mutex<Vec<u8>>>,
     stream_stats: Arc<Mutex<RustDeskStreamStats>>,
     display_state: Arc<Mutex<RustDeskDisplayState>>,
@@ -823,68 +1073,89 @@ fn split_remote_file_path(remote_path: &str) -> (&str, &str) {
     }
 }
 
+fn dispatch_queued_video_frame(
+    frame: &QueuedVideoFrame,
+    on_frame: FrameCallbackKind,
+    user_data: *mut c_void,
+) {
+    static FFI_FRAME_CB_COUNT: AtomicU64 = AtomicU64::new(0);
+    static FFI_SUBFRAME_TOTAL: AtomicU64 = AtomicU64::new(0);
+
+    let callback_started = Instant::now();
+    match on_frame {
+        FrameCallbackKind::V1(callback) => {
+            let ffi_frame = FfiVideoFrame {
+                data: frame.data.as_ptr(),
+                size: frame.data.len(),
+                width: frame.width,
+                height: frame.height,
+                codec: frame.codec,
+                timestamp: frame.timestamp,
+                is_key_frame: frame.is_key_frame,
+            };
+            callback(&ffi_frame, user_data);
+        }
+        FrameCallbackKind::V2(callback) => {
+            let ffi_frame = FfiVideoFrameV2 {
+                data: frame.data.as_ptr(),
+                size: frame.data.len(),
+                width: frame.width,
+                height: frame.height,
+                codec: frame.codec,
+                timestamp: frame.timestamp,
+                is_key_frame: frame.is_key_frame,
+                display: frame.display,
+                abi_version: RUSTDESK_VIDEO_FRAME_ABI_VERSION,
+                struct_size: std::mem::size_of::<FfiVideoFrameV2>() as u32,
+            };
+            callback(&ffi_frame, user_data);
+        }
+    }
+    let callback_elapsed = callback_started.elapsed();
+    if callback_elapsed >= Duration::from_millis(50) {
+        eprintln!(
+            "[RustDesk-FFI] native video callback slow elapsed_ms={} codec={} size={} keyframe={} display={}",
+            callback_elapsed.as_millis(),
+            frame.codec,
+            frame.data.len(),
+            frame.is_key_frame,
+            frame.display,
+        );
+    }
+    FFI_FRAME_CB_COUNT.fetch_add(1, Ordering::Relaxed);
+    FFI_SUBFRAME_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
 fn dispatch_encoded_frames(
     frames: &EncodedVideoFrames,
     codec: c_int,
     width: c_int,
     height: c_int,
     display: c_int,
-    on_frame: FrameCallbackKind,
-    user_data: *mut c_void,
+    video_worker: &mut VideoCallbackWorker,
 ) {
-    static FFI_FRAME_CB_COUNT: AtomicU64 = AtomicU64::new(0);
-    static FFI_SUBFRAME_TOTAL: AtomicU64 = AtomicU64::new(0);
     for frame in frames.get_frames() {
         let data = frame.get_data();
         if data.is_empty() {
             continue;
         }
-        let timestamp = frame.get_pts().max(0) as u64;
-        let is_key_frame = frame.get_key();
-        match on_frame {
-            FrameCallbackKind::V1(callback) => {
-                let ffi_frame = FfiVideoFrame {
-                    data: data.as_ptr(),
-                    size: data.len(),
-                    width,
-                    height,
-                    codec,
-                    timestamp,
-                    is_key_frame,
-                };
-                callback(&ffi_frame, user_data);
-            }
-            FrameCallbackKind::V2(callback) => {
-                let ffi_frame = FfiVideoFrameV2 {
-                    data: data.as_ptr(),
-                    size: data.len(),
-                    width,
-                    height,
-                    codec,
-                    timestamp,
-                    is_key_frame,
-                    display,
-                    abi_version: RUSTDESK_VIDEO_FRAME_ABI_VERSION,
-                    struct_size: std::mem::size_of::<FfiVideoFrameV2>() as u32,
-                };
-                callback(&ffi_frame, user_data);
-            }
-        }
-        // Fast-path counters only (no format/IO in hot path)
-        FFI_FRAME_CB_COUNT.fetch_add(1, Ordering::Relaxed);
-        FFI_SUBFRAME_TOTAL.fetch_add(1, Ordering::Relaxed);
+        video_worker.enqueue(QueuedVideoFrame {
+            data: data.to_vec(),
+            width,
+            height,
+            codec,
+            timestamp: frame.get_pts().max(0) as u64,
+            is_key_frame: frame.get_key(),
+            display,
+        });
     }
 }
 
 fn dispatch_video_frame(
     frame: &VideoFrame,
     display_state: &Arc<Mutex<RustDeskDisplayState>>,
-    on_frame: Option<FrameCallbackKind>,
-    user_data: *mut c_void,
+    video_worker: &mut VideoCallbackWorker,
 ) {
-    let Some(on_frame) = on_frame else {
-        return;
-    };
     let display = frame.get_display();
     let (width, height) = display_state
         .lock()
@@ -900,19 +1171,19 @@ fn dispatch_video_frame(
 
     match frame.union {
         Some(VideoFrame_oneof_union::h264s(ref frames)) => {
-            dispatch_encoded_frames(frames, 0, width, height, display, on_frame, user_data);
+            dispatch_encoded_frames(frames, 0, width, height, display, video_worker);
         }
         Some(VideoFrame_oneof_union::h265s(ref frames)) => {
-            dispatch_encoded_frames(frames, 1, width, height, display, on_frame, user_data);
+            dispatch_encoded_frames(frames, 1, width, height, display, video_worker);
         }
         Some(VideoFrame_oneof_union::vp8s(ref frames)) => {
-            dispatch_encoded_frames(frames, 2, width, height, display, on_frame, user_data);
+            dispatch_encoded_frames(frames, 2, width, height, display, video_worker);
         }
         Some(VideoFrame_oneof_union::vp9s(ref frames)) => {
-            dispatch_encoded_frames(frames, 3, width, height, display, on_frame, user_data);
+            dispatch_encoded_frames(frames, 3, width, height, display, video_worker);
         }
         Some(VideoFrame_oneof_union::av1s(ref frames)) => {
-            dispatch_encoded_frames(frames, 4, width, height, display, on_frame, user_data);
+            dispatch_encoded_frames(frames, 4, width, height, display, video_worker);
         }
         Some(VideoFrame_oneof_union::rgb(_)) | Some(VideoFrame_oneof_union::yuv(_)) | None => {}
     }
@@ -1063,9 +1334,12 @@ struct AudioPipeline {
     sample_rate: u32,
     channels: u32,
     format_received: bool,
+    pending_frames: VecDeque<Vec<u8>>,
     frames_pushed: u64,
     frames_dropped: u64,
 }
+
+const MAX_PENDING_AUDIO_FRAMES: usize = 16;
 
 impl AudioPipeline {
     fn new() -> Self {
@@ -1074,6 +1348,7 @@ impl AudioPipeline {
             sample_rate: 48000,
             channels: 2,
             format_received: false,
+            pending_frames: VecDeque::with_capacity(MAX_PENDING_AUDIO_FRAMES),
             frames_pushed: 0,
             frames_dropped: 0,
         }
@@ -1105,10 +1380,26 @@ impl AudioPipeline {
         self.worker = AudioWorker::start(sr, ch, on_audio, user_data);
         self.format_received = self.worker.is_some();
         if self.format_received {
+            // RustDesk can deliver audio_frame before misc.audio_format on a
+            // cold stream. Replay the bounded pre-format queue in order once
+            // the decoder has the real sample format.
+            let pending = std::mem::take(&mut self.pending_frames);
+            if let Some(ref worker) = self.worker {
+                for frame in pending {
+                    if worker.push(&frame) {
+                        self.frames_pushed += 1;
+                    } else {
+                        self.frames_dropped += 1;
+                    }
+                }
+            }
             eprintln!(
-                "[RustDesk-FFI] audio pipeline {}Hz {}ch worker=started",
-                sr, ch
+                "[RustDesk-FFI] audio pipeline {}Hz {}ch worker=started pending_replayed={}",
+                sr, ch, self.frames_pushed
             );
+        } else {
+            // Keep the frames until a later format notification can start the
+            // worker; this is still bounded by MAX_PENDING_AUDIO_FRAMES.
         }
     }
 
@@ -1118,10 +1409,18 @@ impl AudioPipeline {
             return;
         }
         let Some(ref worker) = self.worker else {
-            if self.frames_dropped == 0 {
-                eprintln!("[RustDesk-FFI] audio push: no worker yet, dropping frame");
+            if self.pending_frames.len() >= MAX_PENDING_AUDIO_FRAMES {
+                self.pending_frames.pop_front();
+                self.frames_dropped += 1;
+                if self.frames_dropped <= 5 || self.frames_dropped % 100 == 0 {
+                    eprintln!(
+                        "[RustDesk-FFI] audio format pending: bounded queue dropped={} buffered={}",
+                        self.frames_dropped,
+                        self.pending_frames.len()
+                    );
+                }
             }
-            self.frames_dropped += 1;
+            self.pending_frames.push_back(data.to_vec());
             return;
         };
         if worker.push(data) {
@@ -1143,6 +1442,7 @@ impl AudioPipeline {
             w.stop();
         }
         self.worker = None;
+        self.pending_frames.clear();
     }
 }
 
@@ -1234,6 +1534,7 @@ fn rustdesk_connect_impl(
     on_disconnect: Option<DisconnectCallback>,
     on_display: Option<DisplayCallback>,
     on_auth: Option<AuthEventCallback>,
+    on_progress: Option<connector::ConnectProgressCallback>,
     user_data: *mut c_void,
 ) -> *mut c_void {
     clear_last_error();
@@ -1331,6 +1632,7 @@ fn rustdesk_connect_impl(
     // 运行完整连接管线
     let mut c = connector::RustDeskConnector::new_with_connection_id(connection_id, connect_epoch);
     c.set_auth_callback(on_auth, user_data);
+    c.set_progress_callback(on_progress, user_data);
     let result = if config.direct_connection {
         // 直连模式: host=peer IP, port=peer port, 跳过 rendezvous
         eprintln!(
@@ -1403,6 +1705,8 @@ fn rustdesk_connect_impl(
                 connection_path: if config.direct_connection { 1 } else { 0 },
                 ..RustDeskStreamStats::default()
             }));
+            let transfer_status = Arc::new(Mutex::new(RustDeskTransferStatus::default()));
+            let transfer_error = Arc::new(Mutex::new(String::new()));
             let stream_stats_for_thread = Arc::clone(&stream_stats);
             let stream_display_state = Arc::clone(&display_state);
             let frame_display_state = Arc::clone(&display_state);
@@ -1419,6 +1723,11 @@ fn rustdesk_connect_impl(
             let stream_handle = std::thread::spawn(move || {
                 let callback_user_data = callback_user_data as *mut c_void;
                 let audio_pipeline = RefCell::new(AudioPipeline::new());
+                let mut video_worker = VideoCallbackWorker::start(
+                    on_frame,
+                    callback_user_data as usize,
+                    Arc::clone(&stream_controls),
+                );
                 let result = c.run_streaming(
                     preferred_codec,
                     image_quality,
@@ -1432,8 +1741,7 @@ fn rustdesk_connect_impl(
                         dispatch_video_frame(
                             frame,
                             &frame_display_state,
-                            on_frame,
-                            callback_user_data,
+                            &mut video_worker,
                         )
                     },
                     |format| {
@@ -1470,6 +1778,11 @@ fn rustdesk_connect_impl(
                     },
                 );
 
+                // Drain the bounded callback queue before the stream thread
+                // reports disconnect. This preserves FIFO frame order and
+                // keeps callback context lifetime valid through the final
+                // native callback.
+                video_worker.stop();
                 // Stop audio worker
                 audio_pipeline.borrow_mut().stop();
 
@@ -1509,10 +1822,12 @@ fn rustdesk_connect_impl(
                 api_token,
                 password,
                 request_approval,
+                direct_connection: config.direct_connection,
                 controls,
                 shutdown_stream,
                 stream_handle: Some(stream_handle),
-                transfer_status: Arc::new(Mutex::new(RustDeskTransferStatus::default())),
+                transfer_status,
+                transfer_error,
                 remote_clipboard,
                 stream_stats,
                 display_state,
@@ -1548,6 +1863,7 @@ pub extern "C" fn rustdesk_connect(
         on_disconnect,
         None,
         None,
+        None,
         user_data,
     )
 }
@@ -1570,6 +1886,7 @@ pub extern "C" fn rustdesk_connect_v2(
         on_cursor,
         on_disconnect,
         on_display,
+        None,
         None,
         user_data,
     )
@@ -1595,6 +1912,35 @@ pub extern "C" fn rustdesk_connect_v3(
         on_disconnect,
         on_display,
         on_auth,
+        None,
+        user_data,
+    )
+}
+
+/// Create a RustDesk connection using V2 frame/display callbacks, auth events,
+/// and per-handshake progress messages. This extends v3 without changing the
+/// older entry points used by existing integrations.
+#[no_mangle]
+pub extern "C" fn rustdesk_connect_v4(
+    cfg: *const RustDeskConfig,
+    on_frame: Option<FrameCallbackV2>,
+    on_audio: Option<AudioCallback>,
+    on_cursor: Option<CursorCallback>,
+    on_disconnect: Option<DisconnectCallback>,
+    on_display: Option<DisplayCallback>,
+    on_auth: Option<AuthEventCallback>,
+    on_progress: Option<connector::ConnectProgressCallback>,
+    user_data: *mut c_void,
+) -> *mut c_void {
+    rustdesk_connect_impl(
+        cfg,
+        on_frame.map(FrameCallbackKind::V2),
+        on_audio,
+        on_cursor,
+        on_disconnect,
+        on_display,
+        on_auth,
+        on_progress,
         user_data,
     )
 }
@@ -1688,6 +2034,109 @@ pub extern "C" fn rustdesk_last_error(buffer: *mut c_char, buffer_len: usize) ->
         }
     }
     bytes.len()
+}
+
+/// Probe a RustDesk peer without opening a desktop session.
+///
+/// Rendezvous responses are authoritative for relay/ID mode: a route response
+/// means the peer is currently registered, while an explicit refusal means it
+/// is offline or unknown to the server. Network and protocol failures remain
+/// unknown so the homepage does not turn a broken client/server path into a
+/// false offline result. Direct mode only checks the configured peer listener.
+#[no_mangle]
+pub extern "C" fn rustdesk_probe_presence(
+    cfg: *const RustDeskConfig,
+    out_result: *mut RustDeskPresenceResult,
+) -> bool {
+    if out_result.is_null() {
+        return false;
+    }
+    let mut result = RustDeskPresenceResult {
+        state: 0,
+        latency_ms: -1,
+        error_code: 3,
+    };
+    if cfg.is_null() {
+        unsafe { *out_result = result; }
+        return true;
+    }
+
+    let config = unsafe { &*cfg };
+    let started = Instant::now();
+    let host = ffi_string(config.host);
+    let peer_id = ffi_string(config.username);
+    let server_key = ffi_string(config.key);
+    let api_token = ffi_string(config.token);
+    let port = if config.port > 0 {
+        config.port as u16
+    } else if config.direct_connection {
+        21118
+    } else {
+        21116
+    };
+
+    let probe = if host.trim().is_empty() || (!config.direct_connection && peer_id.trim().is_empty()) {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "RustDesk presence endpoint or peer identity is missing",
+        ))
+    } else if config.direct_connection {
+        net::connect_tcp_host(
+            &host,
+            port,
+            "rustdesk_presence_direct",
+            Duration::from_secs(3),
+        )
+        .map(|_| ())
+    } else {
+        let shared_access_key = config.key_mode == 2;
+        let rendezvous_secure = !shared_access_key &&
+            !server_key.trim().is_empty() && !api_token.trim().is_empty();
+        let mut rendezvous = RendezvousClient::new();
+        rendezvous
+            .connect_with_timeout(
+                &host,
+                port,
+                &server_key,
+                rendezvous_secure,
+                Duration::from_secs(3),
+            )
+            .and_then(|_| {
+                rendezvous.request_force_relay(
+                    &peer_id,
+                    &server_key,
+                    &api_token,
+                    protocol::rendezvous_proto::ConnType::DEFAULT_CONN,
+                )
+            })
+            .map(|_| ())
+    };
+
+    result.latency_ms = started
+        .elapsed()
+        .as_millis()
+        .min(i32::MAX as u128) as c_int;
+    match probe {
+        Ok(()) => {
+            result.state = 1;
+            result.error_code = 0;
+        }
+        Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => {
+            result.state = 2;
+            result.error_code = 1;
+        }
+        Err(error) if error.kind() == io::ErrorKind::TimedOut => {
+            result.error_code = 2;
+        }
+        Err(error) if matches!(error.kind(), io::ErrorKind::InvalidInput | io::ErrorKind::InvalidData) => {
+            result.error_code = 3;
+        }
+        Err(_) => {
+            result.error_code = 4;
+        }
+    }
+    unsafe { *out_result = result; }
+    true
 }
 
 /// Copy a non-destructive stream telemetry snapshot for one FFI connection.
@@ -2057,7 +2506,20 @@ pub extern "C" fn rustdesk_send_mouse(
             pressed,
         }
     };
-    ctx.controls.enqueue(msg);
+    let queued = ctx.controls.enqueue(msg);
+    let index = RUSTDESK_MOUSE_ENQUEUE_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+    if button != u32::MAX || index <= 20 || index % 120 == 0 {
+        eprintln!(
+            "[RustDesk-FFI] input enqueue kind={} number={} x={} y={} button={} pressed={} queued={}",
+            if button == u32::MAX { "mouse_move" } else { "mouse" },
+            index,
+            x,
+            y,
+            button,
+            pressed,
+            queued,
+        );
+    }
 }
 
 /// 发送鼠标滚轮事件
@@ -2068,6 +2530,16 @@ pub extern "C" fn rustdesk_send_mouse_wheel(handle: *mut c_void, x: i32, y: i32,
     }
     let ctx = unsafe { &*(handle as *const RustDeskClient) };
     ctx.controls.enqueue(ControlMsg::MouseWheel { x, y, delta });
+}
+
+/// Send a two-dimensional physical-touchpad wheel event.
+#[no_mangle]
+pub extern "C" fn rustdesk_send_mouse_wheel_2d(handle: *mut c_void, x: i32, y: i32) -> bool {
+    if handle.is_null() || (x == 0 && y == 0) {
+        return false;
+    }
+    let ctx = unsafe { &*(handle as *const RustDeskClient) };
+    ctx.controls.enqueue(ControlMsg::MouseWheel2D { x, y })
 }
 
 /// 发送文本
@@ -2092,6 +2564,17 @@ pub extern "C" fn rustdesk_send_text(handle: *mut c_void, text: *const c_char) {
 /// remote_path: 目标路径 (如 `C:\Users\Public\Documents\RemoteDesktop\readme.txt`)
 /// data: 文件字节
 /// len: 数据长度
+fn should_retry_file_transfer_compat_route(
+    conn_type: protocol::rendezvous_proto::ConnType,
+    state: &connector::ConnState,
+) -> bool {
+    conn_type == protocol::rendezvous_proto::ConnType::FILE_TRANSFER
+        && matches!(
+            state,
+            connector::ConnState::RequestingRelay | connector::ConnState::ConnectingToPeer
+        )
+}
+
 #[no_mangle]
 pub extern "C" fn rustdesk_send_file(
     handle: *mut c_void,
@@ -2112,6 +2595,9 @@ pub extern "C" fn rustdesk_send_file(
         *status = RustDeskTransferStatus { state: 2, transfer_id, transferred_bytes: 0,
             total_bytes: len as u64, diagnostic_code: 0 };
     }
+    if let Ok(mut error) = ctx.transfer_error.lock() {
+        error.clear();
+    }
     let host = ctx.host.clone();
     let port = ctx.port;
     let relay_fallback_port = ctx.relay_fallback_port;
@@ -2121,23 +2607,98 @@ pub extern "C" fn rustdesk_send_file(
     let peer_id = ctx.peer_id.clone();
     let password = ctx.password.clone();
     let request_approval = ctx.request_approval;
+    let direct_connection = ctx.direct_connection;
     let remote_path_owned = path.clone();
     let remote_dir = split_remote_file_path(&path).0.to_string();
     let transfer_status = Arc::clone(&ctx.transfer_status);
+    let transfer_error = Arc::clone(&ctx.transfer_error);
 
     std::thread::spawn(move || {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let mut connector = connector::RustDeskConnector::new();
-            connector
-                .connect_file_transfer(&host, port, relay_fallback_port, &server_key, &api_token, &peer_id, &password, &remote_dir,
-                    request_approval, shared_access_key)
-                .and_then(|_| {
-                    connector.upload_file_once(
-                        &remote_path_owned,
-                        file_data,
-                        Duration::from_secs(30),
+            let mut connector = if direct_connection {
+                let mut candidate = connector::RustDeskConnector::new();
+                candidate.connect_file_transfer_direct(
+                    &host,
+                    port,
+                    &password,
+                    &remote_dir,
+                )?;
+                candidate
+            } else {
+                // Modern peers advertise FILE_TRANSFER at rendezvous. HarmonyOS
+                // 1.0.7 used DEFAULT_CONN for the route and then identified the
+                // dedicated file session in LoginRequest.file_transfer. Keep the
+                // official modern route first, but retry a fresh connection with
+                // the proven 1.0.7 route when an older/custom hbbs does not answer.
+                let route_types = [
+                    protocol::rendezvous_proto::ConnType::FILE_TRANSFER,
+                    protocol::rendezvous_proto::ConnType::DEFAULT_CONN,
+                ];
+                let mut connected = None;
+                let mut route_errors = Vec::new();
+                let mut last_route_kind = std::io::ErrorKind::NotConnected;
+                for conn_type in route_types {
+                    let mut candidate = connector::RustDeskConnector::new();
+                    match candidate.connect_file_transfer(
+                        &host,
+                        port,
+                        relay_fallback_port,
+                        &server_key,
+                        &api_token,
+                        &peer_id,
+                        &password,
+                        &remote_dir,
+                        request_approval,
+                        shared_access_key,
+                        conn_type,
+                    ) {
+                        Ok(()) => {
+                            eprintln!(
+                                "[RustDesk-FFI] file-transfer route connected conn_type={:?}",
+                                conn_type
+                            );
+                            connected = Some(candidate);
+                            break;
+                        }
+                        Err(err) => {
+                            last_route_kind = err.kind();
+                            let fallback = should_retry_file_transfer_compat_route(
+                                conn_type,
+                                candidate.state(),
+                            );
+                            eprintln!(
+                                "[RustDesk-FFI] file-transfer route failed conn_type={:?} stage={:?} kind={:?} err={} fallback={}",
+                                conn_type,
+                                candidate.state(),
+                                err.kind(),
+                                err,
+                                fallback
+                            );
+                            route_errors.push(format!("{:?}:{:?}:{}", conn_type, err.kind(), err));
+                            // Compatibility mode is only a rendezvous/relay
+                            // fallback. Never retry an authentication, peer-key,
+                            // permission, or upload failure as DEFAULT_CONN.
+                            if !fallback {
+                                break;
+                            }
+                        }
+                    }
+                }
+                connected.ok_or_else(|| {
+                    std::io::Error::new(
+                        last_route_kind,
+                        format!(
+                            "file-transfer route failed for modern and 1.0.7 compatibility modes [{}]",
+                            route_errors.join(" | ")
+                        ),
                     )
-                })
+                })?
+            };
+            connector.upload_file_once(
+                &remote_path_owned,
+                file_data,
+                Duration::from_secs(30),
+            )
         }))
         .unwrap_or_else(|_| {
             Err(std::io::Error::new(
@@ -2148,12 +2709,26 @@ pub extern "C" fn rustdesk_send_file(
 
         match result {
             Ok(()) => {
+                if let Ok(mut error) = transfer_error.lock() {
+                    error.clear();
+                }
                 if let Ok(mut status) = transfer_status.lock() {
                     *status = RustDeskTransferStatus { state: 3, transfer_id,
                         transferred_bytes: len as u64, total_bytes: len as u64, diagnostic_code: 0 };
                 }
             }
-            Err(_) => {
+            Err(err) => {
+                let message = format!(
+                    "file-transfer failed transfer_id={} kind={:?} err={}",
+                    transfer_id,
+                    err.kind(),
+                    err
+                );
+                set_last_error(message.clone());
+                eprintln!("[RustDesk-FFI] {}", message);
+                if let Ok(mut error) = transfer_error.lock() {
+                    *error = message;
+                }
                 if let Ok(mut status) = transfer_status.lock() {
                     *status = RustDeskTransferStatus { state: 4, transfer_id,
                         transferred_bytes: 0, total_bytes: len as u64, diagnostic_code: 1 };
@@ -2172,6 +2747,35 @@ pub extern "C" fn rustdesk_get_transfer_status(handle: *mut c_void,
     let status = match ctx.transfer_status.lock() { Ok(value) => *value, Err(_) => return false };
     unsafe { *out_status = status; }
     true
+}
+
+/// Copy the failure owned by the current file-transfer worker. Unlike the
+/// process-wide last-error string, this value cannot be overwritten by normal
+/// mouse, keyboard, refresh, or video-control traffic on the desktop session.
+#[no_mangle]
+pub extern "C" fn rustdesk_get_transfer_error(
+    handle: *mut c_void,
+    buffer: *mut c_char,
+    buffer_len: usize,
+) -> usize {
+    if handle.is_null() {
+        return 0;
+    }
+    let ctx = unsafe { &*(handle as *const RustDeskClient) };
+    let message = ctx
+        .transfer_error
+        .lock()
+        .map(|error| error.clone())
+        .unwrap_or_else(|_| "file-transfer error lock poisoned".to_string());
+    let bytes = message.as_bytes();
+    if !buffer.is_null() && buffer_len > 0 {
+        let copy_len = bytes.len().min(buffer_len - 1);
+        unsafe {
+            ptr::copy_nonoverlapping(bytes.as_ptr(), buffer as *mut u8, copy_len);
+            *buffer.add(copy_len) = 0;
+        }
+    }
+    bytes.len()
 }
 
 /// 发送剪贴板内容到远程
@@ -2226,10 +2830,12 @@ mod tests {
             api_token: String::new(),
             password: String::new(),
             request_approval: false,
+            direct_connection: false,
             controls: Arc::new(ControlInbox::default()),
             shutdown_stream: None,
             stream_handle: None,
             transfer_status: Arc::new(Mutex::new(RustDeskTransferStatus::default())),
+            transfer_error: Arc::new(Mutex::new(String::new())),
             remote_clipboard: Arc::new(Mutex::new(Vec::new())),
             stream_stats: Arc::new(Mutex::new(RustDeskStreamStats::default())),
             display_state: Arc::new(Mutex::new(display_state)),
@@ -2244,6 +2850,32 @@ mod tests {
             relay_fallback_port_from_config(u16::MAX as c_int + 1),
             DEFAULT_RELAY_PORT
         );
+    }
+
+    #[test]
+    fn legacy_file_route_is_only_a_rendezvous_transport_fallback() {
+        use crate::protocol::rendezvous_proto::ConnType;
+
+        assert!(should_retry_file_transfer_compat_route(
+            ConnType::FILE_TRANSFER,
+            &connector::ConnState::RequestingRelay,
+        ));
+        assert!(should_retry_file_transfer_compat_route(
+            ConnType::FILE_TRANSFER,
+            &connector::ConnState::ConnectingToPeer,
+        ));
+        assert!(!should_retry_file_transfer_compat_route(
+            ConnType::FILE_TRANSFER,
+            &connector::ConnState::KeyExchanging,
+        ));
+        assert!(!should_retry_file_transfer_compat_route(
+            ConnType::FILE_TRANSFER,
+            &connector::ConnState::LoggingIn,
+        ));
+        assert!(!should_retry_file_transfer_compat_route(
+            ConnType::DEFAULT_CONN,
+            &connector::ConnState::RequestingRelay,
+        ));
     }
 
     #[test]
@@ -2378,13 +3010,18 @@ mod tests {
         encoded.mut_frames().push(encoded_frame);
         frame.union = Some(VideoFrame_oneof_union::h264s(encoded));
         let mut received = Vec::new();
+        let mut video_worker = VideoCallbackWorker::start(
+            Some(FrameCallbackKind::V1(collect_legacy_frame)),
+            &mut received as *mut Vec<(i32, i32)> as usize,
+            Arc::new(ControlInbox::default()),
+        );
 
         dispatch_video_frame(
             &frame,
             &display_state,
-            Some(FrameCallbackKind::V1(collect_legacy_frame)),
-            &mut received as *mut Vec<(i32, i32)> as *mut c_void,
+            &mut video_worker,
         );
+        video_worker.stop();
 
         assert_eq!(received, vec![(2560, 1440)]);
     }
@@ -2419,15 +3056,167 @@ mod tests {
         encoded.mut_frames().push(encoded_frame);
         frame.union = Some(VideoFrame_oneof_union::h264s(encoded));
         let mut received = Vec::new();
+        let mut video_worker = VideoCallbackWorker::start(
+            Some(FrameCallbackKind::V2(collect_display_frame)),
+            &mut received as *mut Vec<(i32, i32, i32, u32)> as usize,
+            Arc::new(ControlInbox::default()),
+        );
 
         dispatch_video_frame(
             &frame,
             &display_state,
-            Some(FrameCallbackKind::V2(collect_display_frame)),
-            &mut received as *mut Vec<(i32, i32, i32, u32)> as *mut c_void,
+            &mut video_worker,
         );
+        video_worker.stop();
 
         assert_eq!(received, vec![(1, 2560, 1440, RUSTDESK_VIDEO_FRAME_ABI_VERSION)]);
+    }
+
+    #[test]
+    fn video_callback_queue_keeps_new_keyframe_as_the_recovery_boundary() {
+        let queue = VideoCallbackQueue::new();
+        for timestamp in 0..VIDEO_CALLBACK_QUEUE_CAPACITY as u64 {
+            let outcome = queue.enqueue(QueuedVideoFrame {
+                data: vec![timestamp as u8],
+                width: 1280,
+                height: 720,
+                codec: 0,
+                timestamp,
+                is_key_frame: false,
+                display: 0,
+            });
+            assert!(matches!(outcome, VideoQueueOutcome::Queued { .. }));
+        }
+
+        let outcome = queue.enqueue(QueuedVideoFrame {
+            data: vec![0xff],
+            width: 1280,
+            height: 720,
+            codec: 0,
+            timestamp: VIDEO_CALLBACK_QUEUE_CAPACITY as u64,
+            is_key_frame: true,
+            display: 0,
+        });
+        assert!(matches!(
+            outcome,
+            VideoQueueOutcome::Queued {
+                evicted: VIDEO_CALLBACK_QUEUE_CAPACITY,
+                request_refresh: false,
+            }
+        ));
+
+        let state = queue.state.lock().expect("video queue state");
+        assert_eq!(state.frames.len(), 1);
+        assert!(state.frames.front().expect("keyframe").is_key_frame);
+    }
+
+    #[test]
+    fn video_callback_queue_requests_only_one_refresh_until_keyframe_arrives() {
+        let queue = VideoCallbackQueue::new();
+        for timestamp in 0..VIDEO_CALLBACK_QUEUE_CAPACITY as u64 {
+            let outcome = queue.enqueue(QueuedVideoFrame {
+                data: vec![timestamp as u8],
+                width: 1280,
+                height: 720,
+                codec: 0,
+                timestamp,
+                is_key_frame: true,
+                display: 0,
+            });
+            assert!(matches!(outcome, VideoQueueOutcome::Queued { .. }));
+        }
+
+        let outcome = queue.enqueue(QueuedVideoFrame {
+            data: vec![0xee],
+            width: 1280,
+            height: 720,
+            codec: 0,
+            timestamp: VIDEO_CALLBACK_QUEUE_CAPACITY as u64,
+            is_key_frame: false,
+            display: 0,
+        });
+        assert!(matches!(
+            outcome,
+            VideoQueueOutcome::Dropped {
+                request_refresh: true,
+            }
+        ));
+
+        let repeated_delta = queue.enqueue(QueuedVideoFrame {
+            data: vec![0xef],
+            width: 1280,
+            height: 720,
+            codec: 0,
+            timestamp: VIDEO_CALLBACK_QUEUE_CAPACITY as u64 + 1,
+            is_key_frame: false,
+            display: 0,
+        });
+        assert!(matches!(
+            repeated_delta,
+            VideoQueueOutcome::Dropped {
+                request_refresh: false,
+            }
+        ));
+
+        let recovery_keyframe = queue.enqueue(QueuedVideoFrame {
+            data: vec![0xff],
+            width: 1280,
+            height: 720,
+            codec: 0,
+            timestamp: VIDEO_CALLBACK_QUEUE_CAPACITY as u64 + 2,
+            is_key_frame: true,
+            display: 0,
+        });
+        assert!(matches!(
+            recovery_keyframe,
+            VideoQueueOutcome::Queued {
+                evicted: VIDEO_CALLBACK_QUEUE_CAPACITY,
+                request_refresh: false,
+            }
+        ));
+
+        let state = queue.state.lock().expect("video queue state");
+        assert_eq!(state.frames.len(), 1);
+        assert!(state.frames.front().expect("recovery keyframe").is_key_frame);
+        assert!(!state.awaiting_key_frame);
+    }
+
+    #[test]
+    fn video_callback_queue_allows_vp9_burst_to_reach_native_recovery_boundary() {
+        let queue = VideoCallbackQueue::new();
+        for timestamp in 0..VP9_VIDEO_CALLBACK_QUEUE_CAPACITY as u64 {
+            let outcome = queue.enqueue(QueuedVideoFrame {
+                data: vec![timestamp as u8],
+                width: 2940,
+                height: 1912,
+                codec: FFI_VP9_CODEC,
+                timestamp,
+                is_key_frame: false,
+                display: 0,
+            });
+            assert!(matches!(outcome, VideoQueueOutcome::Queued { .. }));
+        }
+
+        let state = queue.state.lock().expect("video queue state");
+        assert_eq!(state.frames.len(), VP9_VIDEO_CALLBACK_QUEUE_CAPACITY);
+        assert!(!state.awaiting_key_frame);
+        drop(state);
+
+        let overflow = queue.enqueue(QueuedVideoFrame {
+            data: vec![0xff],
+            width: 2940,
+            height: 1912,
+            codec: FFI_VP9_CODEC,
+            timestamp: VP9_VIDEO_CALLBACK_QUEUE_CAPACITY as u64,
+            is_key_frame: false,
+            display: 0,
+        });
+        assert!(matches!(
+            overflow,
+            VideoQueueOutcome::Dropped {
+                request_refresh: true,
+            }
+        ));
     }
 
     #[test]
@@ -2483,6 +3272,22 @@ mod tests {
             ControlMsg::TouchPanUpdate { x: -10, y: 12 },
             ControlMsg::TouchPanEnd { x: 90, y: 212 },
         ]));
+    }
+
+    #[test]
+    fn physical_touchpad_wheel_ffi_enqueues_two_axes() {
+        let mut client = test_client_with_display_state(RustDeskDisplayState::default());
+        let handle = &mut client as *mut RustDeskClient as *mut c_void;
+
+        assert!(!rustdesk_send_mouse_wheel_2d(handle, 0, 0));
+        assert!(rustdesk_send_mouse_wheel_2d(handle, 6, -4));
+        assert!(rustdesk_send_mouse_wheel_2d(handle, -2, 1));
+
+        let controls = client.controls.take_batch(8);
+        assert!(matches!(
+            controls.as_slice(),
+            [ControlMsg::MouseWheel2D { x: 4, y: -3 }]
+        ));
     }
 
     /// 测试空配置返回 null

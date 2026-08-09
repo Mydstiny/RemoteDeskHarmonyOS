@@ -21,7 +21,8 @@ void InputHandler::setActiveAdapter(std::shared_ptr<ProtocolAdapter> adapter) {
     activeAdapter_ = std::move(adapter);
 }
 
-void InputHandler::handleKeyEvent(uint32_t scancode, bool pressed, uint32_t keyCode, uint32_t modifiers) {
+void InputHandler::handleKeyEvent(uint32_t scancode, bool pressed, uint32_t keyCode,
+                                  uint32_t /*modifiers*/) {
     OH_LOG_DEBUG(LOG_APP, "[Input] 键盘: scan=%{public}u, code=%{public}u, pressed=%{public}s",
                  scancode, keyCode, pressed ? "down" : "up");
     std::shared_ptr<ProtocolAdapter> adapter;

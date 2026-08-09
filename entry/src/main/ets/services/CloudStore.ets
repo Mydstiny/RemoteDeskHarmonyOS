@@ -119,10 +119,12 @@ import {
 import {
   SSH_LEGACY_FONT_SIZE_KEY,
   SSH_LEGACY_FOREGROUND_COLOR_KEY,
+  SSH_LEGACY_LINE_SPACING_KEY,
   SSH_SETTINGS_SCHEMA_VERSION,
   SSH_SETTINGS_SCHEMA_VERSION_KEY,
   SSH_TERMINAL_FONT_SIZE_KEY,
   SSH_TERMINAL_FOREGROUND_COLOR_KEY,
+  SSH_TERMINAL_LINE_SPACING_KEY,
   SshTerminalAppearance,
   hasSshTerminalAppearanceCloudSettings,
   isSshTerminalAppearanceKey,
@@ -176,6 +178,7 @@ import {
   CLOUD_LIFECYCLE_BLOCKED_REASON,
   cloudAccountBindingIsValid,
   cloudDistributedRegistrationAllowed,
+  cloudRegistrationRetryAllowed,
   cloudTransferAllowed,
   remoteCryptoLifecycleMutationAllowed,
   unboundCloudAccountBinding
@@ -295,7 +298,7 @@ const LOCAL_METADATA_TABLE: string = 'localmetadata';
 const LOCAL_MUTATION_JOURNAL_TABLE: string = 'localmutationjournal';
 const MIGRATION_RECEIPT_TABLE: string = 'migrationreceipts';
 const MIGRATION_QUARANTINE_TABLE: string = 'migrationquarantine';
-const ACCOUNT_STORE_SCHEMA_VERSION: number = 3;
+const ACCOUNT_STORE_SCHEMA_VERSION: number = 4;
 const CANONICAL_SECRET_STORAGE_VERSION_KEY: string = 'canonical_secret_storage_version';
 const CANONICAL_SECRET_STORAGE_VERSION: string = '3';
 const DEVICE_LOCAL_HOST_TRUST_MIGRATION_KEY: string =
@@ -415,6 +418,8 @@ export class CloudStore implements CryptoCloudStore {
   private initialized: boolean = false;
   private initPromise: Promise<void> | null = null;
   private cloudAvailable: boolean = false;
+  private cloudRegistrationRetryPromise: Promise<boolean> | null = null;
+  private lastCloudRegistrationRetryAtMs: number = 0;
   private cloudServiceGuidanceNeeded: boolean = false;
   private onChangeCallbacks: Array<() => void> = [];
   private onCryptoResetCallbacks: Array<() => void> = [];
@@ -693,6 +698,11 @@ export class CloudStore implements CryptoCloudStore {
   }
 
   private async closeCurrentStore(): Promise<boolean> {
+    const pendingRegistration: Promise<boolean> | null =
+      this.cloudRegistrationRetryPromise;
+    if (pendingRegistration !== null) {
+      try { await pendingRegistration; } catch (_registrationError) {}
+    }
     const closing: relationalStore.RdbStore | null = this.store;
     const closingLease: AccountSessionLease | null = this.currentAccountLease();
     this.mutationGateOpen = false;
@@ -734,6 +744,8 @@ export class CloudStore implements CryptoCloudStore {
     this.cryptoLifecycleState = null;
     this.cloudDownloadActive = false;
     this.indeterminateCloudSyncOperation = null;
+    this.cloudRegistrationRetryPromise = null;
+    this.lastCloudRegistrationRetryAtMs = 0;
     this.clearManualDownloadSnapshot();
     return true;
   }
@@ -887,10 +899,13 @@ export class CloudStore implements CryptoCloudStore {
         // the production startup-recovery gate.
         this.initialized = true;
       }
-      if (!(await this
-        .recoverPendingVncSelectionReenableTransaction())) {
-        throw new Error(
-          'pending VNC selection transaction recovery failed');
+      if (!this
+        .retirePendingVncSelectionReenableTransaction()) {
+        // The retired VNC scope transaction is cloud-only state. Keep the
+        // account RDB usable and leave VNC upload fail-closed; it must never
+        // invalidate a successful Account Kit login or disable other tables.
+        hilog.error(0x0001, 'CloudSync',
+          '遗留 VNC 选择事务隔离失败：账号继续可用，VNC 上传保持暂停');
       }
       if (startupRecoveryVerification) {
         return;
@@ -1526,11 +1541,11 @@ export class CloudStore implements CryptoCloudStore {
         const vncBlocked: boolean =
           tables.indexOf(VNC_CLOUD_TABLE) >= 0;
         if (vncBlocked && tables.length === 1) {
-          return 'VNC 云表存在待完成的首次云端核对，上传已暂停；请先在 VNC 云同步设置中完成该表的首次核对（云端表结构异常时，修复 AGC vncrecord 表后重新保存范围即可恢复）';
+          return 'VNC 云表正在后台完成首次云端核对，核对结束前仅暂停 VNC 上传；无需修改 VNC 设置，请稍后重试';
         }
-        return '同步范围存在待完成的云端优先核对（' +
+        return '云表正在后台完成云端优先核对（' +
           tables.join(',') +
-          '），请先在对应设置中完成首次同步后再上传';
+          '）；核对结束前仅暂停相关表上传，无需修改协议设置，请稍后重试';
       }
     }
     return '';
@@ -1759,6 +1774,18 @@ export class CloudStore implements CryptoCloudStore {
       completeStartupDownload: (
         tables: string[]): boolean => {
         if (!this.reconcileStartupMutationSnapshot(tables)) {
+          return false;
+        }
+        // Keep selection-reenable promotion inside the coordinator's startup
+        // transaction.  The coordinator does not publish bootstrap=ready (or
+        // flush deferred uploads) until this finalizer succeeds.  Finalize the
+        // selection metadata before clearing the before-image, so a failed
+        // promotion still goes through the normal startup rollback path.
+        if (!this.markStartupSelectionReenablePulled()) {
+          return false;
+        }
+        if (!this.prepareSelectionReenablePromotions() ||
+          !this.releaseSelectionReenableBarriers()) {
           return false;
         }
         return this.completeCloudDownloadTransaction();
@@ -2857,7 +2884,8 @@ export class CloudStore implements CryptoCloudStore {
       restoreSelectionReenableBarrier: (
         table: string,
         previousPhase:
-          CloudSelectionReenablePhase | null
+          CloudSelectionReenablePhase | null,
+        verify: boolean = true
       ): boolean => {
         if (table !== VNC_CLOUD_TABLE) {
           return false;
@@ -2865,13 +2893,13 @@ export class CloudStore implements CryptoCloudStore {
         if (verification !== null) {
           return verification
             .restoreSelectionReenableBarrier(
-              table,
-              previousPhase);
+              table, previousPhase,
+              verify);
         }
         return this
           .restoreSelectionReenableBarrier(
-            table,
-            previousPhase);
+            table, previousPhase,
+            verify);
       },
       deleteLocalMetadata:
         (key: string): boolean =>
@@ -2924,8 +2952,12 @@ export class CloudStore implements CryptoCloudStore {
     };
   }
 
-  private async recoverPendingVncSelectionReenableTransaction():
-    Promise<boolean> {
+  private retirePendingVncSelectionReenableTransaction():
+    boolean {
+    const checkpointBefore:
+      CloudMetadataReadResult =
+      this.readLocalMetadataState(
+        VNC_SELECTION_REENABLE_TRANSACTION_KEY);
     const runner:
       CloudStoreStartupRecoveryRunner | null =
       this.vncSelectionStartupRecoveryRunner();
@@ -2933,7 +2965,19 @@ export class CloudStore implements CryptoCloudStore {
       this.markVncSelectionRecoveryRequired();
       return false;
     }
-    return await runner.recoverPending();
+    const retired: boolean =
+      runner.retireLegacySelectionCheckpoint();
+    if (retired) {
+      if (checkpointBefore.state === 'present') {
+        // Force the normal protected startup bootstrap so the pending VNC
+        // barrier is released only after the entire physical table has been
+        // pulled successfully.
+        this.cloudBootstrapCompleted = false;
+      }
+      hilog.warn(0x0001, 'CloudSync',
+        '已退役旧 VNC 分栏事务；整表 cloud-first 完成前仅暂停 VNC 上传');
+    }
+    return retired;
   }
 
   /**
@@ -3927,11 +3971,15 @@ export class CloudStore implements CryptoCloudStore {
       const storedLegacySshColor: Object = prefs.getSync(SSH_LEGACY_FOREGROUND_COLOR_KEY, '') as Object;
       const storedSshFontSize: Object = prefs.getSync(SSH_TERMINAL_FONT_SIZE_KEY, 0) as Object;
       const storedLegacySshFontSize: Object = prefs.getSync(SSH_LEGACY_FONT_SIZE_KEY, 0) as Object;
+      const storedSshLineSpacing: Object = prefs.getSync(SSH_TERMINAL_LINE_SPACING_KEY, 0) as Object;
+      const storedLegacySshLineSpacing: Object = prefs.getSync(SSH_LEGACY_LINE_SPACING_KEY, 0) as Object;
       const currentSshAppearance: SshTerminalAppearance = resolveSshTerminalAppearance(
         typeof storedSshColor === 'string' ? storedSshColor as string : '',
         typeof storedLegacySshColor === 'string' ? storedLegacySshColor as string : '',
         typeof storedSshFontSize === 'number' ? storedSshFontSize as number : 0,
-        typeof storedLegacySshFontSize === 'number' ? storedLegacySshFontSize as number : 0
+        typeof storedLegacySshFontSize === 'number' ? storedLegacySshFontSize as number : 0,
+        typeof storedSshLineSpacing === 'number' ? storedSshLineSpacing as number : 0,
+        typeof storedLegacySshLineSpacing === 'number' ? storedLegacySshLineSpacing as number : 0
       );
       const hasSshSettings: boolean = hasSshTerminalAppearanceCloudSettings(settings);
       const nextSshAppearance: SshTerminalAppearance = hasSshSettings
@@ -3948,13 +3996,17 @@ export class CloudStore implements CryptoCloudStore {
       if (hasSshSettings) {
         prefs.putSync(SSH_TERMINAL_FOREGROUND_COLOR_KEY, nextSshAppearance.foregroundColor);
         prefs.putSync(SSH_TERMINAL_FONT_SIZE_KEY, nextSshAppearance.fontSize);
+        prefs.putSync(SSH_TERMINAL_LINE_SPACING_KEY, nextSshAppearance.lineSpacing);
         prefs.putSync(SSH_LEGACY_FOREGROUND_COLOR_KEY, nextSshAppearance.foregroundColor);
         prefs.putSync(SSH_LEGACY_FONT_SIZE_KEY, nextSshAppearance.fontSize);
+        prefs.putSync(SSH_LEGACY_LINE_SPACING_KEY, nextSshAppearance.lineSpacing);
         prefs.putSync(SSH_SETTINGS_SCHEMA_VERSION_KEY, SSH_SETTINGS_SCHEMA_VERSION);
         AppStorage.setOrCreate(SSH_TERMINAL_FOREGROUND_COLOR_KEY, nextSshAppearance.foregroundColor);
         AppStorage.setOrCreate(SSH_TERMINAL_FONT_SIZE_KEY, nextSshAppearance.fontSize);
+        AppStorage.setOrCreate(SSH_TERMINAL_LINE_SPACING_KEY, nextSshAppearance.lineSpacing);
         AppStorage.setOrCreate(SSH_LEGACY_FOREGROUND_COLOR_KEY, nextSshAppearance.foregroundColor);
         AppStorage.setOrCreate(SSH_LEGACY_FONT_SIZE_KEY, nextSshAppearance.fontSize);
+        AppStorage.setOrCreate(SSH_LEGACY_LINE_SPACING_KEY, nextSshAppearance.lineSpacing);
       }
       prefs.flushSync();
     } catch (err) {
@@ -4470,10 +4522,24 @@ export class CloudStore implements CryptoCloudStore {
         rdpcertificatesubject TEXT,
         rdpcertificateissuer TEXT,
         rdpcertificatecommonname TEXT,
+        rdpcertificatenotbeforems INTEGER,
+        rdpcertificatenotafterms INTEGER,
         rdpcertificatetrustedat INTEGER,
         rdpcertificatetrustmode INTEGER,
         rdpcertificateallowuntrustedroot INTEGER,
         rdpcertificateallowhostmismatch INTEGER,
+        rdpcertificaterouteidentity TEXT,
+        rdpgatewaycertificatefingerprintsha256 TEXT,
+        rdpgatewaycertificatesubject TEXT,
+        rdpgatewaycertificateissuer TEXT,
+        rdpgatewaycertificatecommonname TEXT,
+        rdpgatewaycertificatenotbeforems INTEGER,
+        rdpgatewaycertificatenotafterms INTEGER,
+        rdpgatewaycertificatetrustedat INTEGER,
+        rdpgatewaycertificatetrustmode INTEGER,
+        rdpgatewaycertificateallowuntrustedroot INTEGER,
+        rdpgatewaycertificateallowhostmismatch INTEGER,
+        rdpgatewaycertificaterouteidentity TEXT,
         proxyhost TEXT,
         proxyport INTEGER,
         proxyusername TEXT,
@@ -4522,10 +4588,24 @@ export class CloudStore implements CryptoCloudStore {
       'rdpcertificatesubject TEXT',
       'rdpcertificateissuer TEXT',
       'rdpcertificatecommonname TEXT',
+      'rdpcertificatenotbeforems INTEGER',
+      'rdpcertificatenotafterms INTEGER',
       'rdpcertificatetrustedat INTEGER',
       'rdpcertificatetrustmode INTEGER',
       'rdpcertificateallowuntrustedroot INTEGER',
-      'rdpcertificateallowhostmismatch INTEGER'
+      'rdpcertificateallowhostmismatch INTEGER',
+      'rdpcertificaterouteidentity TEXT',
+      'rdpgatewaycertificatefingerprintsha256 TEXT',
+      'rdpgatewaycertificatesubject TEXT',
+      'rdpgatewaycertificateissuer TEXT',
+      'rdpgatewaycertificatecommonname TEXT',
+      'rdpgatewaycertificatenotbeforems INTEGER',
+      'rdpgatewaycertificatenotafterms INTEGER',
+      'rdpgatewaycertificatetrustedat INTEGER',
+      'rdpgatewaycertificatetrustmode INTEGER',
+      'rdpgatewaycertificateallowuntrustedroot INTEGER',
+      'rdpgatewaycertificateallowhostmismatch INTEGER',
+      'rdpgatewaycertificaterouteidentity TEXT'
     ];
     for (const colDef of hostKeyCols) {
       await this.ensureColumn('remotehosts', colDef);
@@ -4572,6 +4652,7 @@ export class CloudStore implements CryptoCloudStore {
         userid TEXT,
         issuer TEXT,
         account TEXT,
+        displayname TEXT,
         secret TEXT,
         algorithm INTEGER,
         digits INTEGER,
@@ -4584,6 +4665,7 @@ export class CloudStore implements CryptoCloudStore {
         updatedat INTEGER
       )
     `);
+    await this.ensureColumn('totpentries', 'displayname TEXT');
     // 密码学参数表 (盐值+验证器, 云同步以实现跨设备解密)
     this.schemaStep = 'create:cryptoparams';
     await this.store.executeSql(`
@@ -4933,6 +5015,82 @@ export class CloudStore implements CryptoCloudStore {
   isCloudAvailable(): boolean {
     return this.initialized && this.store !== null && this.cloudAvailable &&
       cloudTransferAllowed(this.cloudAccountBinding);
+  }
+
+  /**
+   * Recover a transient platform registration failure without reopening the
+   * account database. This only re-registers the same fenced physical store;
+   * callers still run the normal coordinator-owned cloud-first bootstrap
+   * before any upload is released.
+   */
+  async retryCloudRegistration(): Promise<boolean> {
+    if (this.isCloudAvailable()) { return true; }
+    if (this.cloudRegistrationRetryPromise !== null) {
+      return await this.cloudRegistrationRetryPromise;
+    }
+    const retryStore: relationalStore.RdbStore | null = this.store;
+    const retryLease: AccountSessionLease | null = this.currentAccountLease();
+    const nowMs: number = Date.now();
+    if (!cloudRegistrationRetryAllowed(
+      this.initialized,
+      retryStore !== null,
+      retryLease !== null,
+      this.cloudAccountBinding,
+      this.cloudAvailable,
+      false,
+      nowMs,
+      this.lastCloudRegistrationRetryAtMs)) {
+      return false;
+    }
+    if (retryStore === null || retryLease === null) { return false; }
+    this.lastCloudRegistrationRetryAtMs = nowMs;
+    const operation: Promise<boolean> = (async (): Promise<boolean> => {
+      try {
+        await retryStore.setDistributedTables(
+          TABLES,
+          relationalStore.DistributedType.DISTRIBUTED_CLOUD,
+          { autoSync: cloudDistributedTableAutoSync() }
+        );
+        if (this.store !== retryStore ||
+          !this.isLeaseCurrent(retryLease) ||
+          !cloudTransferAllowed(this.cloudAccountBinding)) {
+          hilog.warn(0x0001, 'CloudSync',
+            'setDistributedTables 重试完成但账号作用域已变化，忽略迟到结果');
+          return false;
+        }
+        this.cloudAvailable = true;
+        this.cloudServiceGuidanceNeeded = false;
+        this.lastError = '';
+        if (this.cloudChangeObserver === null) {
+          this.subscribeCloudChanges();
+        }
+        this.notifyDataSnapshotChanged();
+        hilog.info(0x0001, 'CloudSync',
+          'setDistributedTables 重试成功 — 当前账号端云连接已恢复');
+        return true;
+      } catch (error) {
+        const be: BusinessError = error as BusinessError;
+        const code: number = be && typeof be.code === 'number' ? be.code : 0;
+        const message: string = be && typeof be.message === 'string'
+          ? be.message : safeError(error);
+        this.cloudAvailable = false;
+        this.cloudServiceGuidanceNeeded =
+          cloudServiceGuidanceRequiredForMessage(message);
+        this.lastError = 'setDistributedTables retry: code=' +
+          code.toString() + ' msg=' + message;
+        hilog.warn(0x0001, 'CloudSync', this.lastError);
+        this.notifyDataSnapshotChanged();
+        return false;
+      }
+    })();
+    this.cloudRegistrationRetryPromise = operation;
+    try {
+      return await operation;
+    } finally {
+      if (this.cloudRegistrationRetryPromise === operation) {
+        this.cloudRegistrationRetryPromise = null;
+      }
+    }
   }
 
   /** Show the Huawei Cloud Space guidance after registration or explicit sync reports an unavailable service. */
@@ -5675,9 +5833,17 @@ export class CloudStore implements CryptoCloudStore {
       'sshkeypassphrase', 'sshkeyid', 'sshhostkeyalgorithm',
       'sshhostkeyfingerprintsha256', 'sshhostkeyrawbase64', 'sshhostkeytrustedat',
       'sshhostkeytrustmode', 'rdpcertificatefingerprintsha256', 'rdpcertificatesubject',
-      'rdpcertificateissuer', 'rdpcertificatecommonname', 'rdpcertificatetrustedat',
+      'rdpcertificateissuer', 'rdpcertificatecommonname', 'rdpcertificatenotbeforems',
+      'rdpcertificatenotafterms', 'rdpcertificatetrustedat',
       'rdpcertificatetrustmode', 'rdpcertificateallowuntrustedroot',
-      'rdpcertificateallowhostmismatch', 'rustdeskrelayid', 'rustdeskaccountid',
+      'rdpcertificateallowhostmismatch', 'rdpcertificaterouteidentity',
+      'rdpgatewaycertificatefingerprintsha256', 'rdpgatewaycertificatesubject',
+      'rdpgatewaycertificateissuer', 'rdpgatewaycertificatecommonname',
+      'rdpgatewaycertificatenotbeforems', 'rdpgatewaycertificatenotafterms',
+      'rdpgatewaycertificatetrustedat', 'rdpgatewaycertificatetrustmode',
+      'rdpgatewaycertificateallowuntrustedroot',
+      'rdpgatewaycertificateallowhostmismatch',
+      'rdpgatewaycertificaterouteidentity', 'rustdeskrelayid', 'rustdeskaccountid',
       'rustdeskpasswordmode', 'rustdeskauthmode', 'rustdeskdirectenabled',
       'rustdeskdirecthost', 'rustdeskdirectport', 'rdpcredentialid', 'rdpauthmode',
       'rdprestrictedadminsecretsource', 'sourcetype',
@@ -5699,6 +5865,12 @@ export class CloudStore implements CryptoCloudStore {
     host.sshKeyPassphrase = this.decryptIfReady(
       crypto, 'localextensions/remotehosts', host.id,
       'sshkeypassphrase', get('sshkeypassphrase', host.sshKeyPassphrase));
+    host.sshProxyPassword = this.decryptIfReady(
+      crypto, 'localextensions/remotehosts', host.id,
+      'sshproxypassword', get('sshproxypassword', host.sshProxyPassword));
+    host.sshProxyKeyPassphrase = this.decryptIfReady(
+      crypto, 'localextensions/remotehosts', host.id,
+      'sshproxykeypassphrase', get('sshproxykeypassphrase', host.sshProxyKeyPassphrase));
     host.sshHostKeyAlgorithm =
       get('sshhostkeyalgorithm', host.sshHostKeyAlgorithm);
     host.sshHostKeyFingerprintSha256 =
@@ -5712,6 +5884,16 @@ export class CloudStore implements CryptoCloudStore {
     host.sshHostKeyTrustMode = Number(
       get('sshhostkeytrustmode',
         host.sshHostKeyTrustMode.toString()));
+    host.sshJumpHostKeyAlgorithm =
+      get('sshjumphostkeyalgorithm', host.sshJumpHostKeyAlgorithm);
+    host.sshJumpHostKeyFingerprintSha256 =
+      get('sshjumphostkeyfingerprintsha256', host.sshJumpHostKeyFingerprintSha256);
+    host.sshJumpHostKeyRawBase64 =
+      get('sshjumphostkeyrawbase64', host.sshJumpHostKeyRawBase64);
+    host.sshJumpHostKeyTrustedAt = Number(
+      get('sshjumphostkeytrustedat', host.sshJumpHostKeyTrustedAt.toString()));
+    host.sshJumpHostKeyTrustMode = Number(
+      get('sshjumphostkeytrustmode', host.sshJumpHostKeyTrustMode.toString()));
     host.rdpCertificateFingerprintSha256 =
       get('rdpcertificatefingerprintsha256',
         host.rdpCertificateFingerprintSha256);
@@ -5724,6 +5906,10 @@ export class CloudStore implements CryptoCloudStore {
     host.rdpCertificateCommonName =
       get('rdpcertificatecommonname',
         host.rdpCertificateCommonName);
+    host.rdpCertificateNotBeforeMs = Number(
+      get('rdpcertificatenotbeforems', host.rdpCertificateNotBeforeMs.toString()));
+    host.rdpCertificateNotAfterMs = Number(
+      get('rdpcertificatenotafterms', host.rdpCertificateNotAfterMs.toString()));
     host.rdpCertificateTrustedAt = Number(
       get('rdpcertificatetrustedat',
         host.rdpCertificateTrustedAt.toString()));
@@ -5736,6 +5922,36 @@ export class CloudStore implements CryptoCloudStore {
     host.rdpCertificateAllowHostMismatch =
       get('rdpcertificateallowhostmismatch',
         host.rdpCertificateAllowHostMismatch ? '1' : '0') === '1';
+    host.rdpCertificateRouteIdentity =
+      get('rdpcertificaterouteidentity', host.rdpCertificateRouteIdentity);
+    host.rdpGatewayCertificateFingerprintSha256 =
+      get('rdpgatewaycertificatefingerprintsha256',
+        host.rdpGatewayCertificateFingerprintSha256);
+    host.rdpGatewayCertificateSubject =
+      get('rdpgatewaycertificatesubject', host.rdpGatewayCertificateSubject);
+    host.rdpGatewayCertificateIssuer =
+      get('rdpgatewaycertificateissuer', host.rdpGatewayCertificateIssuer);
+    host.rdpGatewayCertificateCommonName =
+      get('rdpgatewaycertificatecommonname', host.rdpGatewayCertificateCommonName);
+    host.rdpGatewayCertificateNotBeforeMs = Number(
+      get('rdpgatewaycertificatenotbeforems', host.rdpGatewayCertificateNotBeforeMs.toString()));
+    host.rdpGatewayCertificateNotAfterMs = Number(
+      get('rdpgatewaycertificatenotafterms', host.rdpGatewayCertificateNotAfterMs.toString()));
+    host.rdpGatewayCertificateTrustedAt = Number(
+      get('rdpgatewaycertificatetrustedat',
+        host.rdpGatewayCertificateTrustedAt.toString()));
+    host.rdpGatewayCertificateTrustMode = Number(
+      get('rdpgatewaycertificatetrustmode',
+        host.rdpGatewayCertificateTrustMode.toString()));
+    host.rdpGatewayCertificateAllowUntrustedRoot =
+      get('rdpgatewaycertificateallowuntrustedroot',
+        host.rdpGatewayCertificateAllowUntrustedRoot ? '1' : '0') === '1';
+    host.rdpGatewayCertificateAllowHostMismatch =
+      get('rdpgatewaycertificateallowhostmismatch',
+        host.rdpGatewayCertificateAllowHostMismatch ? '1' : '0') === '1';
+    host.rdpGatewayCertificateRouteIdentity =
+      get('rdpgatewaycertificaterouteidentity',
+        host.rdpGatewayCertificateRouteIdentity);
     return host;
   }
 
@@ -5743,8 +5959,17 @@ export class CloudStore implements CryptoCloudStore {
   private applyCloudHostExtension(host: RemoteHost, values: Record<string, string>): RemoteHost {
     const get = (key: string, fallback: string): string => values[key] !== undefined ? values[key] : fallback;
     host.sshKeyId = get('sshkeyid', host.sshKeyId);
+    const sshProxyAuthMethod: string = get('sshproxyauthmethod', host.sshProxyAuthMethod);
+    if (sshProxyAuthMethod === 'password' || sshProxyAuthMethod === 'publickey' ||
+      sshProxyAuthMethod === 'kbd-interactive') {
+      host.sshProxyAuthMethod = sshProxyAuthMethod;
+    }
+    host.sshProxyKeyId = get('sshproxykeyid', host.sshProxyKeyId);
     const sshProxyType: string = get('sshproxytype', host.sshProxyType);
     if (sshProxyType === 'http_connect' || sshProxyType === 'socks5' ||
+      sshProxyType === 'frp_tcp' || sshProxyType === 'frp_visitor' ||
+      sshProxyType === 'frp_stcp' || sshProxyType === 'frp_sudp' ||
+      sshProxyType === 'frp_xtcp' || sshProxyType === 'ssh_jump' ||
       sshProxyType === 'legacy_gateway' || sshProxyType === 'direct') {
       host.sshProxyType = sshProxyType;
     }
@@ -5759,6 +5984,9 @@ export class CloudStore implements CryptoCloudStore {
     host.rdpAuthMode = normalizeRdpAuthMode(get('rdpauthmode', host.rdpAuthMode));
     host.rdpRestrictedAdminSecretSource = normalizeRdpRestrictedAdminSecretSource(
       get('rdprestrictedadminsecretsource', host.rdpRestrictedAdminSecretSource));
+    host.rdpEndpointMode = get('rdpendpointmode', host.rdpEndpointMode);
+    host.rdpGatewayTransport = get('rdpgatewaytransport', host.rdpGatewayTransport) || 'auto';
+    host.rdpGatewayServerName = get('rdpgatewayservername', host.rdpGatewayServerName);
     host.rustdeskPasswordMode = Number(get('rustdeskpasswordmode', host.rustdeskPasswordMode.toString()));
     host.rustdeskAuthMode = get('rustdeskauthmode', host.rustdeskAuthMode) === 'request_approval' ? 'request_approval' : 'password';
     host.rustdeskDirectEnabled = get('rustdeskdirectenabled', host.rustdeskDirectEnabled ? '1' : '0') === '1';
@@ -5783,6 +6011,12 @@ export class CloudStore implements CryptoCloudStore {
     values['sshkeypassphrase'] = this.encryptIfReady(
       crypto, 'localextensions/remotehosts', host.id,
       'sshkeypassphrase', host.sshKeyPassphrase);
+    values['sshproxypassword'] = this.encryptIfReady(
+      crypto, 'localextensions/remotehosts', host.id,
+      'sshproxypassword', host.sshProxyPassword);
+    values['sshproxykeypassphrase'] = this.encryptIfReady(
+      crypto, 'localextensions/remotehosts', host.id,
+      'sshproxykeypassphrase', host.sshProxyKeyPassphrase);
     values['sshhostkeyalgorithm'] =
       host.sshHostKeyAlgorithm;
     values['sshhostkeyfingerprintsha256'] =
@@ -5793,6 +6027,16 @@ export class CloudStore implements CryptoCloudStore {
       host.sshHostKeyTrustedAt.toString();
     values['sshhostkeytrustmode'] =
       host.sshHostKeyTrustMode.toString();
+    values['sshjumphostkeyalgorithm'] =
+      host.sshJumpHostKeyAlgorithm;
+    values['sshjumphostkeyfingerprintsha256'] =
+      host.sshJumpHostKeyFingerprintSha256;
+    values['sshjumphostkeyrawbase64'] =
+      host.sshJumpHostKeyRawBase64;
+    values['sshjumphostkeytrustedat'] =
+      host.sshJumpHostKeyTrustedAt.toString();
+    values['sshjumphostkeytrustmode'] =
+      host.sshJumpHostKeyTrustMode.toString();
     values['rdpcertificatefingerprintsha256'] =
       host.rdpCertificateFingerprintSha256;
     values['rdpcertificatesubject'] =
@@ -5801,6 +6045,10 @@ export class CloudStore implements CryptoCloudStore {
       host.rdpCertificateIssuer;
     values['rdpcertificatecommonname'] =
       host.rdpCertificateCommonName;
+    values['rdpcertificatenotbeforems'] =
+      host.rdpCertificateNotBeforeMs.toString();
+    values['rdpcertificatenotafterms'] =
+      host.rdpCertificateNotAfterMs.toString();
     values['rdpcertificatetrustedat'] =
       host.rdpCertificateTrustedAt.toString();
     values['rdpcertificatetrustmode'] =
@@ -5809,6 +6057,30 @@ export class CloudStore implements CryptoCloudStore {
       host.rdpCertificateAllowUntrustedRoot ? '1' : '0';
     values['rdpcertificateallowhostmismatch'] =
       host.rdpCertificateAllowHostMismatch ? '1' : '0';
+    values['rdpcertificaterouteidentity'] =
+      host.rdpCertificateRouteIdentity;
+    values['rdpgatewaycertificatefingerprintsha256'] =
+      host.rdpGatewayCertificateFingerprintSha256;
+    values['rdpgatewaycertificatesubject'] =
+      host.rdpGatewayCertificateSubject;
+    values['rdpgatewaycertificateissuer'] =
+      host.rdpGatewayCertificateIssuer;
+    values['rdpgatewaycertificatecommonname'] =
+      host.rdpGatewayCertificateCommonName;
+    values['rdpgatewaycertificatenotbeforems'] =
+      host.rdpGatewayCertificateNotBeforeMs.toString();
+    values['rdpgatewaycertificatenotafterms'] =
+      host.rdpGatewayCertificateNotAfterMs.toString();
+    values['rdpgatewaycertificatetrustedat'] =
+      host.rdpGatewayCertificateTrustedAt.toString();
+    values['rdpgatewaycertificatetrustmode'] =
+      host.rdpGatewayCertificateTrustMode.toString();
+    values['rdpgatewaycertificateallowuntrustedroot'] =
+      host.rdpGatewayCertificateAllowUntrustedRoot ? '1' : '0';
+    values['rdpgatewaycertificateallowhostmismatch'] =
+      host.rdpGatewayCertificateAllowHostMismatch ? '1' : '0';
+    values['rdpgatewaycertificaterouteidentity'] =
+      host.rdpGatewayCertificateRouteIdentity;
     return values;
   }
 
@@ -5818,6 +6090,8 @@ export class CloudStore implements CryptoCloudStore {
     host.normalizeRdpAuthentication();
     values['sshkeyid'] = host.sshKeyId;
     values['sshproxytype'] = host.sshProxyType;
+    values['sshproxyauthmethod'] = host.sshProxyAuthMethod;
+    values['sshproxykeyid'] = host.sshProxyKeyId;
     values['rustdeskrelayid'] = host.rustdeskRelayId;
     values['rustdeskaccountid'] = host.rustdeskAccountId;
     values['rustdeskpasswordmode'] = host.rustdeskPasswordMode.toString();
@@ -5832,6 +6106,9 @@ export class CloudStore implements CryptoCloudStore {
     values['rdpcredentialid'] = host.rdpCredentialId;
     values['rdpauthmode'] = host.rdpAuthMode;
     values['rdprestrictedadminsecretsource'] = host.rdpRestrictedAdminSecretSource;
+    values['rdpendpointmode'] = host.rdpEndpointMode;
+    values['rdpgatewaytransport'] = host.rdpGatewayTransport;
+    values['rdpgatewayservername'] = host.rdpGatewayServerName;
     values['sourcetype'] = host.sourceType;
     values['rustdeskproaccountid'] = host.rustdeskProAccountId;
     values['rustdeskpropeerid'] = host.rustdeskProPeerId;
@@ -5929,8 +6206,12 @@ export class CloudStore implements CryptoCloudStore {
           }
         }
         const deviceLocal: Record<string, string> = {};
-        if (migratedValues['sshkeypassphrase'] !== undefined) {
-          deviceLocal['sshkeypassphrase'] = migratedValues['sshkeypassphrase'];
+        const localSecretKeys: string[] = [
+          'sshkeypassphrase', 'sshproxypassword', 'sshproxykeypassphrase'
+        ];
+        for (let keyIndex = 0; keyIndex < localSecretKeys.length; keyIndex++) {
+          const key = localSecretKeys[keyIndex];
+          if (migratedValues[key] !== undefined) { deviceLocal[key] = migratedValues[key]; }
         }
         if (Object.keys(deviceLocal).length > 0) {
           if (!this.saveLocalExtension('remotehosts', id, deviceLocal)) {
@@ -6032,9 +6313,12 @@ export class CloudStore implements CryptoCloudStore {
           mergeRemoteHostDeviceTrust(
             physical, historical, local);
         const nextLocal: Record<string, string> = {};
-        if (local['sshkeypassphrase'] !== undefined) {
-          nextLocal['sshkeypassphrase'] =
-            local['sshkeypassphrase'];
+        const localSecretKeys: string[] = [
+          'sshkeypassphrase', 'sshproxypassword', 'sshproxykeypassphrase'
+        ];
+        for (let keyIndex = 0; keyIndex < localSecretKeys.length; keyIndex++) {
+          const key = localSecretKeys[keyIndex];
+          if (local[key] !== undefined) { nextLocal[key] = local[key]; }
         }
         if (remoteHostDeviceTrustIsMeaningful(trust)) {
           const trustKeys: string[] = Object.keys(trust);
@@ -6119,10 +6403,24 @@ export class CloudStore implements CryptoCloudStore {
       rdpcertificatesubject: '',
       rdpcertificateissuer: '',
       rdpcertificatecommonname: '',
+      rdpcertificatenotbeforems: 0,
+      rdpcertificatenotafterms: 0,
       rdpcertificatetrustedat: 0,
       rdpcertificatetrustmode: 0,
       rdpcertificateallowuntrustedroot: 0,
-      rdpcertificateallowhostmismatch: 0
+      rdpcertificateallowhostmismatch: 0,
+      rdpcertificaterouteidentity: '',
+      rdpgatewaycertificatefingerprintsha256: '',
+      rdpgatewaycertificatesubject: '',
+      rdpgatewaycertificateissuer: '',
+      rdpgatewaycertificatecommonname: '',
+      rdpgatewaycertificatenotbeforems: 0,
+      rdpgatewaycertificatenotafterms: 0,
+      rdpgatewaycertificatetrustedat: 0,
+      rdpgatewaycertificatetrustmode: 0,
+      rdpgatewaycertificateallowuntrustedroot: 0,
+      rdpgatewaycertificateallowhostmismatch: 0,
+      rdpgatewaycertificaterouteidentity: ''
     };
   }
 
@@ -6988,7 +7286,8 @@ export class CloudStore implements CryptoCloudStore {
             continue;
           }
           const sensitive: boolean =
-            (table === 'remotehosts' && key === 'sshkeypassphrase') ||
+            (table === 'remotehosts' && (key === 'sshkeypassphrase' ||
+              key === 'sshproxypassword' || key === 'sshproxykeypassphrase')) ||
             (table === RDP_RESTRICTED_ADMIN_SECRET_TABLE &&
               (key === 'hash' || key === 'binding'));
           if (!sensitive || value === '') {
@@ -7548,10 +7847,11 @@ export class CloudStore implements CryptoCloudStore {
           const value: string = source[key];
           // This retired shadow must never survive an encryption transition.
           if (key === 'password') { changed = true; continue; }
-          if (key === 'sshkeypassphrase' && crypto.isEncrypted(value)) {
+          if ((key === 'sshkeypassphrase' || key === 'sshproxypassword' ||
+            key === 'sshproxykeypassphrase') && crypto.isEncrypted(value)) {
             next[key] = crypto.decryptScopedOrLegacy(
               this.currentOwnerScopeId(), 'localextensions/remotehosts',
-              recordId, 'sshkeypassphrase', value,
+              recordId, key, value,
               this.readVncResetEpoch());
             changed = true;
           } else {
@@ -8892,6 +9192,10 @@ export class CloudStore implements CryptoCloudStore {
     h.rdpCertificateSubject = getStr('rdpcertificatesubject');
     h.rdpCertificateIssuer = getStr('rdpcertificateissuer');
     h.rdpCertificateCommonName = getStr('rdpcertificatecommonname');
+    const rdpCertNotBeforeIdx: number = rs.getColumnIndex('rdpcertificatenotbeforems');
+    h.rdpCertificateNotBeforeMs = rdpCertNotBeforeIdx >= 0 ? rs.getLong(rdpCertNotBeforeIdx) : 0;
+    const rdpCertNotAfterIdx: number = rs.getColumnIndex('rdpcertificatenotafterms');
+    h.rdpCertificateNotAfterMs = rdpCertNotAfterIdx >= 0 ? rs.getLong(rdpCertNotAfterIdx) : 0;
     const rdpCertTrustedAtIdx: number = rs.getColumnIndex('rdpcertificatetrustedat');
     h.rdpCertificateTrustedAt = rdpCertTrustedAtIdx >= 0 ? rs.getLong(rdpCertTrustedAtIdx) : 0;
     const rdpCertTrustModeIdx: number = rs.getColumnIndex('rdpcertificatetrustmode');
@@ -8900,11 +9204,34 @@ export class CloudStore implements CryptoCloudStore {
     h.rdpCertificateAllowUntrustedRoot = allowRootIdx >= 0 && rs.getLong(allowRootIdx) === 1;
     const allowMismatchIdx: number = rs.getColumnIndex('rdpcertificateallowhostmismatch');
     h.rdpCertificateAllowHostMismatch = allowMismatchIdx >= 0 && rs.getLong(allowMismatchIdx) === 1;
+    const rdpGatewayCertNotBeforeIdx: number = rs.getColumnIndex('rdpgatewaycertificatenotbeforems');
+    h.rdpGatewayCertificateNotBeforeMs = rdpGatewayCertNotBeforeIdx >= 0 ?
+      rs.getLong(rdpGatewayCertNotBeforeIdx) : 0;
+    const rdpGatewayCertNotAfterIdx: number = rs.getColumnIndex('rdpgatewaycertificatenotafterms');
+    h.rdpGatewayCertificateNotAfterMs = rdpGatewayCertNotAfterIdx >= 0 ?
+      rs.getLong(rdpGatewayCertNotAfterIdx) : 0;
+    const rdpGatewayCertTrustModeIdx: number = rs.getColumnIndex('rdpgatewaycertificatetrustmode');
+    h.rdpGatewayCertificateTrustMode = rdpGatewayCertTrustModeIdx >= 0 ?
+      rs.getLong(rdpGatewayCertTrustModeIdx) : 0;
+    const rdpGatewayAllowRootIdx: number = rs.getColumnIndex('rdpgatewaycertificateallowuntrustedroot');
+    h.rdpGatewayCertificateAllowUntrustedRoot = rdpGatewayAllowRootIdx >= 0 &&
+      rs.getLong(rdpGatewayAllowRootIdx) === 1;
+    const rdpGatewayAllowMismatchIdx: number = rs.getColumnIndex('rdpgatewaycertificateallowhostmismatch');
+    h.rdpGatewayCertificateAllowHostMismatch = rdpGatewayAllowMismatchIdx >= 0 &&
+      rs.getLong(rdpGatewayAllowMismatchIdx) === 1;
+    h.rdpGatewayCertificateFingerprintSha256 = getStr('rdpgatewaycertificatefingerprintsha256');
+    h.rdpGatewayCertificateSubject = getStr('rdpgatewaycertificatesubject');
+    h.rdpGatewayCertificateIssuer = getStr('rdpgatewaycertificateissuer');
+    h.rdpGatewayCertificateCommonName = getStr('rdpgatewaycertificatecommonname');
+    h.rdpGatewayCertificateRouteIdentity = getStr('rdpgatewaycertificaterouteidentity');
     h.proxyHost = rs.getString(rs.getColumnIndex('proxyhost'));
     h.proxyPort = rs.getLong(rs.getColumnIndex('proxyport'));
     h.proxyUsername = rs.getString(rs.getColumnIndex('proxyusername'));
     h.gatewayHost = rs.getString(rs.getColumnIndex('gatewayhost'));
     h.gatewayPort = rs.getLong(rs.getColumnIndex('gatewayport'));
+    h.rdpEndpointMode = getStr('rdpendpointmode');
+    h.rdpGatewayTransport = getStr('rdpgatewaytransport') || 'auto';
+    h.rdpGatewayServerName = getStr('rdpgatewayservername');
     const dcJson: string = rs.getString(rs.getColumnIndex('displayconfig'));
     const displayPayload: RemoteHostDisplayPayload = decodeRemoteHostDisplayPayload(dcJson);
     if (displayPayload.displayConfigJson) {
@@ -9342,6 +9669,26 @@ export class CloudStore implements CryptoCloudStore {
     h.proxyUsername = rs.getString(rs.getColumnIndex('proxyusername'));
     h.gatewayHost = rs.getString(rs.getColumnIndex('gatewayhost'));
     h.gatewayPort = rs.getLong(rs.getColumnIndex('gatewayport'));
+    const rawRdpCertNotBeforeIdx: number = rs.getColumnIndex('rdpcertificatenotbeforems');
+    h.rdpCertificateNotBeforeMs = rawRdpCertNotBeforeIdx >= 0 ?
+      rs.getLong(rawRdpCertNotBeforeIdx) : 0;
+    const rawRdpCertNotAfterIdx: number = rs.getColumnIndex('rdpcertificatenotafterms');
+    h.rdpCertificateNotAfterMs = rawRdpCertNotAfterIdx >= 0 ?
+      rs.getLong(rawRdpCertNotAfterIdx) : 0;
+    const rawGatewayCertNotBeforeIdx: number = rs.getColumnIndex('rdpgatewaycertificatenotbeforems');
+    h.rdpGatewayCertificateNotBeforeMs = rawGatewayCertNotBeforeIdx >= 0 ?
+      rs.getLong(rawGatewayCertNotBeforeIdx) : 0;
+    const rawGatewayCertNotAfterIdx: number = rs.getColumnIndex('rdpgatewaycertificatenotafterms');
+    h.rdpGatewayCertificateNotAfterMs = rawGatewayCertNotAfterIdx >= 0 ?
+      rs.getLong(rawGatewayCertNotAfterIdx) : 0;
+    const endpointModeIndex: number = rs.getColumnIndex('rdpendpointmode');
+    const gatewayTransportIndex: number = rs.getColumnIndex('rdpgatewaytransport');
+    const gatewayServerNameIndex: number = rs.getColumnIndex('rdpgatewayservername');
+    h.rdpEndpointMode = endpointModeIndex >= 0 ? rs.getString(endpointModeIndex) : '';
+    h.rdpGatewayTransport = gatewayTransportIndex >= 0 ?
+      (rs.getString(gatewayTransportIndex) || 'auto') : 'auto';
+    h.rdpGatewayServerName = gatewayServerNameIndex >= 0 ?
+      rs.getString(gatewayServerNameIndex) : '';
     const dcJson = rs.getString(rs.getColumnIndex('displayconfig'));
     const displayPayload: RemoteHostDisplayPayload = decodeRemoteHostDisplayPayload(dcJson);
     if (displayPayload.displayConfigJson) {
@@ -9468,6 +9815,7 @@ export class CloudStore implements CryptoCloudStore {
     e.userId = rs.getString(rs.getColumnIndex('userid'));
     e.issuer = rs.getString(rs.getColumnIndex('issuer'));
     e.account = rs.getString(rs.getColumnIndex('account'));
+    e.displayName = rs.getString(rs.getColumnIndex('displayname'));
     e.secret = rs.getString(rs.getColumnIndex('secret')); // raw
     e.algorithm = rs.getLong(rs.getColumnIndex('algorithm'));
     e.digits = rs.getLong(rs.getColumnIndex('digits'));
@@ -9605,7 +9953,7 @@ export class CloudStore implements CryptoCloudStore {
   private totpToBucketRaw(e: TotpEntry): relationalStore.ValuesBucket {
     const vb: relationalStore.ValuesBucket = {};
     vb['id'] = e.id; vb['userid'] = this.currentOwnerScopeId(); vb['issuer'] = e.issuer;
-    vb['account'] = e.account; vb['secret'] = e.secret;
+    vb['account'] = e.account; vb['displayname'] = e.displayName; vb['secret'] = e.secret;
     vb['algorithm'] = e.algorithm; vb['digits'] = e.digits; vb['period'] = e.period;
     vb['iconurl'] = e.iconUrl; vb['locked'] = e.locked ? 1 : 0;
     vb['locktype'] = e.lockType; vb['syncversion'] = e.syncVersion;
@@ -9735,6 +10083,7 @@ export class CloudStore implements CryptoCloudStore {
     vb['userid'] = this.currentOwnerScopeId();
     vb['issuer'] = e.issuer;
     vb['account'] = e.account;
+    vb['displayname'] = e.displayName;
     vb['secret'] = this.encryptIfReady(
       crypto, 'totpentries', e.id, 'secret', e.secret);
     vb['algorithm'] = e.algorithm;
@@ -9750,12 +10099,16 @@ export class CloudStore implements CryptoCloudStore {
 
   private rowToTotpEntry(rs: relationalStore.ResultSet): TotpEntry {
     const crypto = DataCrypto.getInstance();
-    const getStr = (col: string): string => rs.getString(rs.getColumnIndex(col));
+    const getStr = (col: string): string => {
+      const index: number = rs.getColumnIndex(col);
+      return index >= 0 ? rs.getString(index) : '';
+    };
     const e = new TotpEntry();
     e.id = getStr('id');
     e.userId = getStr('userid');
     e.issuer = getStr('issuer');
     e.account = getStr('account');
+    e.displayName = getStr('displayname');
     e.secret = this.decryptIfReady(
       crypto, 'totpentries', e.id, 'secret', getStr('secret'));
     e.algorithm = rs.getLong(rs.getColumnIndex('algorithm'));

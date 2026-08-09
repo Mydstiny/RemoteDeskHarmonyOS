@@ -20,6 +20,12 @@ export default function releaseNotesPolicyTest(): void {
     it('rejects_invalid_release_versions', 0, (): void => {
       expect(resolveStartupMode(true, 'bad', '1.1.0', true)).assertEqual(StartupMode.LOGIN);
     });
+    it('forces_release_notes_for_explicit_acceptance_review', 0, (): void => {
+      expect(resolveStartupMode(false, '', '1.1.0', true, true)).assertEqual(StartupMode.RELEASE_NOTES);
+      expect(resolveStartupMode(true, '1.1.0', '1.1.0', true, true)).assertEqual(StartupMode.RELEASE_NOTES);
+      expect(resolveStartupMode(true, '1.1.0', 'bad', true, true)).assertEqual(StartupMode.LOGIN);
+      expect(resolveStartupMode(true, '1.1.0', '1.1.0', false, true)).assertEqual(StartupMode.LOGIN);
+    });
     it('uses_bottom_sheet_for_phone_guides', 0, (): void => {
       expect(shouldPresentGuideAsBottomSheet(StartupMode.FIRST_INSTALL_GUIDE, 'sm')).assertTrue();
       expect(shouldPresentGuideAsBottomSheet(StartupMode.RELEASE_NOTES, 'sm')).assertTrue();

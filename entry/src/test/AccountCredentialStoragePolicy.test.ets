@@ -45,6 +45,34 @@ export default function accountCredentialStoragePolicyTest(): void {
       expect(parsed.metadata?.refreshTokenStored ?? true).assertFalse();
     });
 
+    it('accepts_the_exact_1_0_7_and_initial_1_0_8_credential_shape', 0, (): void => {
+      const fixtures: string[] = [
+        JSON.stringify({
+          unionID: 'legacy-union-107', openID: 'legacy-open-107',
+          authorizationCode: 'expired-one-time-code', idToken: '',
+          accessToken: '', refreshToken: '', tokenExpiresAt: 0,
+          displayName: '1.0.7 User', loginTime: 1700000000000
+        }),
+        JSON.stringify({
+          unionID: 'legacy-union-108', openID: 'legacy-open-108',
+          authorizationCode: '', idToken: '', accessToken: 'legacy-access',
+          refreshToken: 'legacy-refresh', tokenExpiresAt: 1700003600000,
+          displayName: '1.0.8 User', loginTime: 1700000000000
+        })
+      ];
+      for (let i = 0; i < fixtures.length; i++) {
+        const parsed = parseAccountCredentialRecord(fixtures[i]);
+        expect(parsed.metadata === null).assertFalse();
+        expect(parsed.requiresRewrite).assertTrue();
+        expect(parsed.metadata?.unionID ?? '').assertEqual(
+          i === 0 ? 'legacy-union-107' : 'legacy-union-108');
+        expect(parsed.metadata?.openID ?? '').assertEqual(
+          i === 0 ? 'legacy-open-107' : 'legacy-open-108');
+        expect(parsed.metadata?.displayName ?? '').assertEqual(
+          i === 0 ? '1.0.7 User' : '1.0.8 User');
+      }
+    });
+
     it('enforces_the_official_one_kib_asset_limit', 0, (): void => {
       expect(accountCredentialSecretFitsAssetStore('')).assertTrue();
       expect(accountCredentialSecretFitsAssetStore(

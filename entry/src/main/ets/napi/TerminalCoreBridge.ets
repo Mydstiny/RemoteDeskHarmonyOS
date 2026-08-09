@@ -1,8 +1,8 @@
 /**
  * TerminalCoreBridge.ets — Rust terminal_core 的 ArkTS 门面。
  *
- * 当前文件只定义类型和延迟调用包装, 不切换现有 SSH UI。
- * 后续 C++ NAPI 注册 terminalCore* 方法后, NativeTerminalRenderer 可直接复用此门面。
+ * Rust terminal_core 的 ArkTS 门面。VT 状态和默认终端外观通过同一条
+ * NAPI 链路进入 Rust；字号等绘制几何仍由 renderer 管理。
  */
 import rdpnapi from 'librdpnapi.so';
 import { TerminalCoreSnapshot } from '../types/rdpnapi';
@@ -11,6 +11,7 @@ export { TerminalCoreCell, TerminalCoreMode, TerminalCoreSnapshot } from '../typ
 interface TerminalCoreNativeModule {
   terminalCoreCreate?: (cols: number, rows: number) => number;
   terminalCoreDestroy?: (handle: number) => void;
+  terminalCoreSetDefaultForeground?: (handle: number, foreground: number) => void;
   terminalCoreWrite?: (handle: number, data: string) => void;
   terminalCoreWriteBytes?: (handle: number, data: ArrayBuffer) => void;
   terminalCoreResize?: (handle: number, cols: number, rows: number) => void;
@@ -40,6 +41,12 @@ export class TerminalCoreBridge {
     const fn = this.native.terminalCoreDestroy;
     if (fn === undefined) { throw new Error('terminalCoreDestroy is not registered'); }
     fn(handle);
+  }
+
+  setDefaultForeground(handle: number, foreground: number): void {
+    const fn = this.native.terminalCoreSetDefaultForeground;
+    if (fn === undefined) { return; }
+    fn(handle, foreground);
   }
 
   write(handle: number, data: string): void {

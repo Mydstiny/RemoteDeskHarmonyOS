@@ -5,8 +5,9 @@
 // BytesCodec 帧承载 secretbox 加密 payload。
 
 use super::rendezvous_proto::{
-    ConnType, KeyExchange, NatType, PunchHoleRequest, RegisterPeer, RegisterPeerResponse,
-    RegisterPk, RendezvousMessage, RendezvousMessage_oneof_union, RequestRelay,
+    ConnType, KeyExchange, NatType, PunchHoleRequest, PunchHoleResponse, RegisterPeer,
+    RegisterPeerResponse, RegisterPk, RendezvousMessage, RendezvousMessage_oneof_union,
+    RequestRelay,
 };
 use super::wire;
 use crate::crypto;
@@ -87,6 +88,7 @@ fn punch_hole_request_message(
     licence_key: &str,
     token: &str,
     strategy: RendezvousConnectionStrategy,
+    conn_type: ConnType,
 ) -> RendezvousMessage {
     let mut req = PunchHoleRequest::new();
     req.set_id(peer_id.to_string());
@@ -95,7 +97,7 @@ fn punch_hole_request_message(
     if !token.is_empty() {
         req.set_token(token.to_string());
     }
-    req.set_conn_type(ConnType::DEFAULT_CONN);
+    req.set_conn_type(conn_type);
     req.set_version(HARMONY_RENDEZVOUS_VERSION.to_string());
     req.set_force_relay(strategy.force_relay());
 
@@ -104,12 +106,17 @@ fn punch_hole_request_message(
     msg
 }
 
-fn request_relay_message(id: &str, uuid: &str, licence_key: &str) -> RendezvousMessage {
+fn request_relay_message(
+    id: &str,
+    uuid: &str,
+    licence_key: &str,
+    conn_type: ConnType,
+) -> RendezvousMessage {
     let mut req = RequestRelay::new();
     req.set_id(id.to_string());
     req.set_uuid(uuid.to_string());
     req.set_licence_key(licence_key.to_string());
-    req.set_conn_type(ConnType::DEFAULT_CONN);
+    req.set_conn_type(conn_type);
 
     let mut msg = RendezvousMessage::new();
     msg.union = Some(RendezvousMessage_oneof_union::request_relay(req));
@@ -135,12 +142,23 @@ impl RendezvousClient {
         server_key: &str,
         secure: bool,
     ) -> io::Result<()> {
+        self.connect_with_timeout(host, port, server_key, secure, Duration::from_secs(10))
+    }
+
+    pub fn connect_with_timeout(
+        &mut self,
+        host: &str,
+        port: u16,
+        server_key: &str,
+        secure: bool,
+        timeout: Duration,
+    ) -> io::Result<()> {
         self.state = RdState::Connecting;
 
-        let stream = net::connect_tcp_host(host, port, "rendezvous", Duration::from_secs(10))?;
+        let stream = net::connect_tcp_host(host, port, "rendezvous", timeout)?;
 
-        stream.set_read_timeout(Some(Duration::from_secs(30)))?;
-        stream.set_write_timeout(Some(Duration::from_secs(10)))?;
+        stream.set_read_timeout(Some(timeout))?;
+        stream.set_write_timeout(Some(timeout))?;
 
         self.stream = Some(stream);
         if secure {
@@ -154,14 +172,24 @@ impl RendezvousClient {
         peer_id: &str,
         licence_key: &str,
         token: &str,
+        conn_type: ConnType,
     ) -> io::Result<PunchHoleInfo> {
         self.ensure_connected()?;
         let strategy = RendezvousConnectionStrategy::ForceRelay;
         let req_debug = format!(
-            "{},conn=DEFAULT_CONN,force_relay=true,token={},key={},version={}",
+            "{},conn={:?},force_relay=true,token={},key={},version={}",
             strategy.diagnostic(),
-            if token.is_empty() { "absent" } else { "present" },
-            if licence_key.is_empty() { "absent" } else { "present" },
+            conn_type,
+            if token.is_empty() {
+                "absent"
+            } else {
+                "present"
+            },
+            if licence_key.is_empty() {
+                "absent"
+            } else {
+                "present"
+            },
             HARMONY_RENDEZVOUS_VERSION
         );
 
@@ -169,64 +197,110 @@ impl RendezvousClient {
         // normal signing public key or an arbitrary administrator supplied
         // shared access value; verification is handled separately by the
         // connector when a public key is actually available.
-        let msg = punch_hole_request_message(peer_id, licence_key, token, strategy);
+        let msg = punch_hole_request_message(peer_id, licence_key, token, strategy, conn_type);
+        // A PunchHoleRequest is one rendezvous transaction over a reliable
+        // TCP stream.  The server can interleave coordination messages for a
+        // controlled-peer role before the controller's PunchHoleResponse, but
+        // resending the request at that point starts a second transaction and
+        // some hbbs versions never answer either one.  Send exactly once and
+        // keep consuming the bounded set of unrelated messages instead.
         self.send_message(&msg)?;
+        let mut last_unexpected = "none";
+        for attempt in 1u64..=3 {
+            if let Some(stream) = self.stream.as_ref() {
+                stream.set_read_timeout(Some(Duration::from_secs(3)))?;
+            }
 
-        let response = self.read_next_non_keyexchange()?;
-        match response.union {
-            Some(RendezvousMessage_oneof_union::punch_hole_response(resp)) => {
-                if resp.get_socket_addr().is_empty() {
-                    let other = resp.get_other_failure();
-                    let reason = if other.is_empty() {
-                        format!("punch hole refused: {:?}", resp.get_failure())
-                    } else {
-                        other.to_string()
-                    };
-                    return Err(io::Error::new(
-                        io::ErrorKind::ConnectionRefused,
-                        format!("{} ({})", reason, req_debug),
-                    ));
+            let response = match self.read_next_non_keyexchange() {
+                Ok(response) => response,
+                Err(err)
+                    if err.kind() == io::ErrorKind::TimedOut
+                        || err.kind() == io::ErrorKind::WouldBlock =>
+                {
+                    last_unexpected = "timeout";
+                    eprintln!(
+                        "[RustDesk-FFI] rendezvous route read_attempt={} timed_out=true request_resent=false",
+                        attempt
+                    );
+                    continue;
                 }
-                let relay_server = resp.get_relay_server().to_string();
-                // OSS hbbs may ignore force_relay and answer a direct peer
-                // address in socket_addr without a relay_server. That is a
-                // valid punch response, not an error: the caller connects the
-                // returned address directly (official client behavior).
-                let peer_addr: SocketAddr = decode_socket_addr(resp.get_socket_addr())?;
-                Ok(PunchHoleInfo {
-                    relay_server,
-                    signed_pk: resp.get_pk().to_vec(),
-                    peer_addr: Some(peer_addr),
-                    relay_uuid: None,
-                })
+                Err(err) => return Err(err),
+            };
+            match response.union {
+                Some(RendezvousMessage_oneof_union::punch_hole_response(resp)) => {
+                    if resp.get_socket_addr().is_empty() {
+                        let other = resp.get_other_failure();
+                        let reason = if other.is_empty() {
+                            format!("punch hole refused: {:?}", resp.get_failure())
+                        } else {
+                            other.to_string()
+                        };
+                        return Err(io::Error::new(
+                            io::ErrorKind::ConnectionRefused,
+                            format!("{} ({})", reason, req_debug),
+                        ));
+                    }
+                    let relay_server = resp.get_relay_server().to_string();
+                    // OSS hbbs may ignore force_relay and answer a direct peer
+                    // address in socket_addr without a relay_server. That is a
+                    // valid punch response, not an error: the caller connects the
+                    // returned address directly (official client behavior).
+                    let peer_addr: SocketAddr = decode_socket_addr(resp.get_socket_addr())?;
+                    return Ok(PunchHoleInfo {
+                        relay_server,
+                        signed_pk: resp.get_pk().to_vec(),
+                        peer_addr: Some(peer_addr),
+                        relay_uuid: None,
+                    });
+                }
+                Some(RendezvousMessage_oneof_union::relay_response(resp)) => {
+                    if !resp.get_refuse_reason().is_empty() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::ConnectionRefused,
+                            format!("{} ({})", resp.get_refuse_reason(), req_debug),
+                        ));
+                    }
+                    let relay_server = resp.get_relay_server().to_string();
+                    let relay_uuid = resp.get_uuid().to_string();
+                    if relay_server.is_empty() || relay_uuid.is_empty() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("relay response missing server or uuid ({})", req_debug),
+                        ));
+                    }
+                    return Ok(PunchHoleInfo {
+                        relay_server,
+                        signed_pk: resp.get_pk().to_vec(),
+                        peer_addr: None,
+                        relay_uuid: Some(relay_uuid),
+                    });
+                }
+                Some(RendezvousMessage_oneof_union::punch_hole(_)) => {
+                    // This is a server-side coordination message for the
+                    // controlled-peer role, not the route response requested
+                    // by this controller connection. Keep reading the same
+                    // transaction instead of aborting or resending it.
+                    last_unexpected = "punch_hole";
+                }
+                Some(_) => {
+                    last_unexpected = "other";
+                }
+                None => {
+                    last_unexpected = "empty";
+                }
             }
-            Some(RendezvousMessage_oneof_union::relay_response(resp)) => {
-                if !resp.get_refuse_reason().is_empty() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::ConnectionRefused,
-                        format!("{} ({})", resp.get_refuse_reason(), req_debug),
-                    ));
-                }
-                let relay_server = resp.get_relay_server().to_string();
-                let relay_uuid = resp.get_uuid().to_string();
-                if relay_server.is_empty() || relay_uuid.is_empty() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("relay response missing server or uuid ({})", req_debug),
-                    ));
-                }
-                Ok(PunchHoleInfo {
-                    relay_server,
-                    signed_pk: resp.get_pk().to_vec(),
-                    peer_addr: None,
-                    relay_uuid: Some(relay_uuid),
-                })
-            }
-            other => Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("expected PunchHoleResponse, got: {:?}", other),
-            )),
+            eprintln!(
+                "[RustDesk-FFI] rendezvous route read_attempt={} unexpected={} keep_reading=true request_resent=false",
+                attempt, last_unexpected
+            );
         }
+        Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            format!(
+                "rendezvous route response unavailable after 3 attempts last={}",
+                last_unexpected
+            ),
+        ))
     }
 
     pub fn register_peer(&mut self, peer_id: &str) -> io::Result<bool> {
@@ -404,6 +478,7 @@ impl RendezvousClient {
         relay_server: &str,
         relay_fallback_port: u16,
         server_key: &str,
+        conn_type: ConnType,
     ) -> io::Result<TcpStream> {
         let mut stream = net::connect_tcp_endpoint(
             relay_server,
@@ -415,7 +490,7 @@ impl RendezvousClient {
         stream.set_write_timeout(Some(Duration::from_secs(10)))?;
 
         // hbbr uses the same exact shared `-k` comparison as hbbs.
-        let msg = request_relay_message(id, uuid, server_key);
+        let msg = request_relay_message(id, uuid, server_key, conn_type);
         let payload = msg
             .write_to_bytes()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
@@ -707,9 +782,17 @@ impl Drop for RendezvousClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::rendezvous_proto::{PunchHole, RelayResponse};
     use std::io::ErrorKind;
     use std::net::TcpListener;
     use std::thread;
+
+    fn encode_test_ipv4(addr: SocketAddrV4) -> Vec<u8> {
+        // AddrMangle with a deterministic zero time component. Production
+        // decoding accepts the full 16-byte little-endian representation.
+        let ip = u32::from_le_bytes(addr.ip().octets()) as u128;
+        ((ip << 49) | addr.port() as u128).to_le_bytes().to_vec()
+    }
 
     #[test]
     fn arbitrary_shared_access_key_is_preserved_in_punch_and_relay_messages() {
@@ -720,10 +803,11 @@ mod tests {
             key,
             token,
             RendezvousConnectionStrategy::ForceRelay,
+            ConnType::DEFAULT_CONN,
         );
         let punch_bytes = punch.write_to_bytes().expect("serialize punch request");
-        let parsed_punch: RendezvousMessage = protobuf::parse_from_bytes(&punch_bytes)
-            .expect("parse punch request");
+        let parsed_punch: RendezvousMessage =
+            protobuf::parse_from_bytes(&punch_bytes).expect("parse punch request");
         match parsed_punch.union {
             Some(RendezvousMessage_oneof_union::punch_hole_request(req)) => {
                 assert_eq!(req.get_licence_key(), key);
@@ -736,13 +820,48 @@ mod tests {
             other => panic!("expected PunchHoleRequest, got: {:?}", other),
         }
 
-        let relay = request_relay_message("peer-123", "uuid-123", key);
+        let relay = request_relay_message(
+            "peer-123",
+            "uuid-123",
+            key,
+            ConnType::DEFAULT_CONN,
+        );
         let relay_bytes = relay.write_to_bytes().expect("serialize relay request");
-        let parsed_relay: RendezvousMessage = protobuf::parse_from_bytes(&relay_bytes)
-            .expect("parse relay request");
+        let parsed_relay: RendezvousMessage =
+            protobuf::parse_from_bytes(&relay_bytes).expect("parse relay request");
         match parsed_relay.union {
             Some(RendezvousMessage_oneof_union::request_relay(req)) => {
                 assert_eq!(req.get_licence_key(), key);
+            }
+            other => panic!("expected RequestRelay, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn file_transfer_connection_type_is_preserved_in_route_messages() {
+        let punch = punch_hole_request_message(
+            "peer-123",
+            "key",
+            "token",
+            RendezvousConnectionStrategy::ForceRelay,
+            ConnType::FILE_TRANSFER,
+        );
+        match punch.union {
+            Some(RendezvousMessage_oneof_union::punch_hole_request(req)) => {
+                assert_eq!(req.get_conn_type(), ConnType::FILE_TRANSFER);
+            }
+            other => panic!("expected PunchHoleRequest, got: {:?}", other),
+        }
+
+        let relay = request_relay_message(
+            "peer-123",
+            "uuid-123",
+            "key",
+            ConnType::FILE_TRANSFER,
+        );
+        match relay.union {
+            Some(RendezvousMessage_oneof_union::request_relay(req)) => {
+                assert_eq!(req.get_conn_type(), ConnType::FILE_TRANSFER);
             }
             other => panic!("expected RequestRelay, got: {:?}", other),
         }
@@ -754,8 +873,10 @@ mod tests {
         // address in socket_addr (no relay_server). The client must accept
         // that as a direct-connect punch response, not InvalidData.
         let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 5)), 21118);
-        let mut encoded: Vec<u8> = vec![10, 0, 0, 5];
-        encoded.extend_from_slice(&21118u16.to_le_bytes());
+        let encoded = encode_test_ipv4(SocketAddrV4::new(
+            Ipv4Addr::new(10, 0, 0, 5),
+            21118,
+        ));
         let mut resp = PunchHoleResponse::new();
         resp.set_socket_addr(encoded);
         let mut msg = RendezvousMessage::new();
@@ -771,10 +892,54 @@ mod tests {
         });
 
         let mut rd = RendezvousClient::new();
-        rd.connect("127.0.0.1", port, "", false).expect("connect rendezvous");
-        let info = rd.request_force_relay("peer-123", "key", "").expect("force relay");
+        rd.connect("127.0.0.1", port, "", false)
+            .expect("connect rendezvous");
+        let info = rd
+            .request_force_relay("peer-123", "key", "", ConnType::DEFAULT_CONN)
+            .expect("force relay");
         assert!(info.relay_server.is_empty(), "no relay server expected");
         assert_eq!(info.peer_addr, Some(addr), "direct peer address expected");
+        server_thread.join().expect("server thread");
+    }
+
+    #[test]
+    fn force_relay_keeps_reading_after_an_unrelated_punch_hole_message() {
+        let mut punch = PunchHole::new();
+        punch.set_relay_server("relay.example:21117".to_string());
+        let mut unexpected = RendezvousMessage::new();
+        unexpected.union = Some(RendezvousMessage_oneof_union::punch_hole(punch));
+        let unexpected_payload = unexpected
+            .write_to_bytes()
+            .expect("serialize unrelated punch hole");
+
+        let mut relay = RelayResponse::new();
+        relay.set_relay_server("relay.example:21117".to_string());
+        relay.set_uuid("file-transfer-route".to_string());
+        let mut expected = RendezvousMessage::new();
+        expected.union = Some(RendezvousMessage_oneof_union::relay_response(relay));
+        let expected_payload = expected
+            .write_to_bytes()
+            .expect("serialize relay response");
+
+        let server = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        let port = server.local_addr().expect("server addr").port();
+        let server_thread = thread::spawn(move || {
+            let (mut stream, _) = server.accept().expect("accept");
+            let _first = wire::read_frame(&mut stream).expect("read first request");
+            wire::write_frame(&mut stream, &unexpected_payload)
+                .expect("write unrelated punch hole");
+            wire::write_frame(&mut stream, &expected_payload)
+                .expect("write relay response");
+        });
+
+        let mut rd = RendezvousClient::new();
+        rd.connect("127.0.0.1", port, "", false)
+            .expect("connect rendezvous");
+        let info = rd
+            .request_force_relay("peer-123", "key", "", ConnType::FILE_TRANSFER)
+            .expect("retry should obtain relay route");
+        assert_eq!(info.relay_server, "relay.example:21117");
+        assert_eq!(info.relay_uuid.as_deref(), Some("file-transfer-route"));
         server_thread.join().expect("server thread");
     }
 
@@ -854,13 +1019,23 @@ mod tests {
                 .accept()
                 .expect("relay connection was not accepted");
             let payload = wire::read_frame(&mut stream).expect("relay request frame missing");
-            assert!(!payload.is_empty(), "relay request frame should not be empty");
+            assert!(
+                !payload.is_empty(),
+                "relay request frame should not be empty"
+            );
         });
 
         let client = RendezvousClient::new();
         let relay_endpoint = format!("localhost:{}", port);
         let stream = client
-            .create_relay("peer", "uuid", &relay_endpoint, 1, "")
+            .create_relay(
+                "peer",
+                "uuid",
+                &relay_endpoint,
+                1,
+                "",
+                ConnType::DEFAULT_CONN,
+            )
             .expect("relay hostname should resolve and connect");
         drop(stream);
         accept_thread.join().expect("accept thread panicked");
@@ -878,12 +1053,22 @@ mod tests {
                 .accept()
                 .expect("relay connection was not accepted");
             let payload = wire::read_frame(&mut stream).expect("relay request frame missing");
-            assert!(!payload.is_empty(), "relay request frame should not be empty");
+            assert!(
+                !payload.is_empty(),
+                "relay request frame should not be empty"
+            );
         });
 
         let client = RendezvousClient::new();
         let stream = client
-            .create_relay("peer", "uuid", "localhost", port, "")
+            .create_relay(
+                "peer",
+                "uuid",
+                "localhost",
+                port,
+                "",
+                ConnType::DEFAULT_CONN,
+            )
             .expect("configured relay fallback port should connect");
         drop(stream);
         accept_thread.join().expect("accept thread panicked");

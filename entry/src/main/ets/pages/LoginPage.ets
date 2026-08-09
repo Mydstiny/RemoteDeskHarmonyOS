@@ -128,9 +128,11 @@ struct LoginPage {
       }
     } finally {
       // Empty responses and provider errors are normal recovery paths. Never
-      // leave a fresh install behind an infinite full-screen spinner.
+      // leave a fresh install behind an infinite full-screen spinner. A
+      // failed silent authorization is not an explicit logout: keep the
+      // persisted account credential and account RDB intact so an upgraded
+      // 1.0.7/1.0.8 user can retry authorization without destructive fallback.
       if (shouldShowLoginAfterSilentAttempt(restored)) {
-        await AccountSessionCoordinator.getInstance().transitionToOffline('silent-login-failed');
         this.checkingLogin = false;
       }
     }
@@ -241,7 +243,7 @@ struct LoginPage {
         idToken: '',
         displayName,
         avatarUrl: avatarUri
-      });
+      }, { deferCloudBootstrap: true });
     if (!transition.ok) {
       this.loginError = transition.message === '' ? '登录失败：账号数据域切换未完成' : transition.message;
       return false;

@@ -14,6 +14,7 @@
 
 #include <string>
 #include <cstdint>
+#include <vector>
 #include <libssh2.h>
 
 // ============================================================
@@ -64,6 +65,12 @@ struct SshProxyOptions {
     int port = 0;
     std::string username;
     std::string password;
+    std::string privateKeyPem;
+    std::string privateKeyPassphrase;
+    std::string authMethod;  // password | publickey | kbd-interactive
+    std::vector<std::string> keyboardInteractiveResponses;
+    std::string expectedHostKeyRawBase64;
+    std::string expectedHostKeyFingerprintSha256;
 };
 
 struct SshHostKeyInfo {

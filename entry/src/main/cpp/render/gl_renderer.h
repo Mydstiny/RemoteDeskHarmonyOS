@@ -12,6 +12,8 @@
 #define GL_RENDERER_H
 
 #include "rdp/rdp_presentation_metrics.h"
+#include "native_image_context_policy.h"
+#include "video_perf_counters.h"
 
 #include <atomic>
 #include <cstdint>
@@ -50,6 +52,8 @@ public:
      *                   由 HardwareDecoder::GetTextureId() 提供
      */
     void RenderFrame(GLuint textureId);
+    void RenderFrame(GLuint textureId,
+                     const Render::NativeImageTransform& textureTransform);
 
     /**
      * 渲染原始 BGRA 像素帧 (RDP GDI 直出路径 — 无需硬解)
@@ -66,12 +70,22 @@ public:
     RdpPresentMetrics PresentRawBGRARect(const uint8_t* bgraData, int width, int height,
                                          int stride, int dirtyX, int dirtyY,
                                          int dirtyWidth, int dirtyHeight, uint64_t generation);
+    // Present a compact dirty rectangle whose pixel buffer contains only the
+    // rectangle rows, while width/height still describe the full desktop.
+    RdpPresentMetrics PresentRawBGRARectCompact(const uint8_t* bgraData, size_t size,
+                                                int width, int height, int stride,
+                                                int dirtyX, int dirtyY, int dirtyWidth,
+                                                int dirtyHeight, uint64_t generation);
+    /** Enable the GLES3 pixel-unpack upload path after the RDP latency gate
+     * has collected a direct-upload baseline. */
+    void SetPboUploadEnabled(bool enabled);
 
     /**
      * 调整渲染区域大小
      */
     void Resize(int width, int height);
     void SetSourceSize(int width, int height);
+    void SetOesSourceSize(int width, int height);
     /** Apply a local canvas transform. Pan uses a top-left surface origin.
      *  Returns the published transform version, or zero for invalid input. */
     uint64_t SetCanvasTransform(double scale, double panX, double panY);
@@ -134,14 +148,25 @@ private:
 
     // GL 资源 (外部 OES 纹理路径)
     GLuint shaderProgram_;   // NV12→RGB 着色器程序
-    GLuint samplerLocation_; // uniform samplerExternalOES 位置
+    GLint  samplerLocation_; // uniform samplerExternalOES 位置
+    GLint  oesTransformLocation_; // NativeImage producer transform
 
     // GL 资源 (原始 BGRA 像素路径 — RDP GDI)
     GLuint rawShaderProgram_;   // BGRA→RGB 着色器程序
     GLuint rawTexture_;         // BGRA 像素纹理 (GL_TEXTURE_2D)
-    GLuint rawSamplerLocation_; // uniform sampler2D 位置
+    GLint  rawSamplerLocation_; // uniform sampler2D 位置
+    GLuint uploadPbo_[2];        // double-buffered pixel-unpack staging
+    size_t uploadPboCapacity_[2];
+    int uploadPboIndex_;
+    bool pboUploadEnabled_;
+    bool pboUploadFailedLogged_;
     int rawTextureWidth_;
     int rawTextureHeight_;
+    // The current RAW callback dimensions are presentation state, not GL
+    // allocation metadata. They are cleared with the renderer/session path
+    // so a previous software frame cannot size a later session.
+    int rawPresentationWidth_;
+    int rawPresentationHeight_;
 
     // 共享 GL 几何体
     GLuint vbo_;             // 全屏四边形顶点缓冲
@@ -150,8 +175,19 @@ private:
     // 渲染状态
     int  width_;
     int  height_;
+    // sourceWidth_/sourceHeight_ are the logical stream dimensions used for
+    // input mapping. The active viewport keeps RAW BGRA texture geometry and
+    // OES logical geometry separate; delayed hardware callbacks must never
+    // rewrite the software path.
     int  sourceWidth_;
     int  sourceHeight_;
+    int  oesSourceWidth_;
+    int  oesSourceHeight_;
+    enum class PresentationPath : uint8_t {
+        UNKNOWN = 0,
+        OES = 1,
+        RAW_BGRA = 2,
+    } presentationPath_;
     int  lastVpX_;
     int  lastVpY_;
     int  lastVpW_;
@@ -179,6 +215,7 @@ private:
     std::atomic<int> snapshotSurfaceHeight_;
     std::atomic<uint64_t> snapshotTransformVersion_;
     int  rawFrameCount_;
+    int  oesFrameCount_;
     int64_t rendererHandle_;
     bool initialized_;
     bool destroying_;
@@ -196,15 +233,20 @@ private:
     GLuint CreateRawShaderProgram();
     void   CreateQuadGeometry();
     void   SetupRawTexture(int width, int height);
+    bool   UploadRawPixelsWithPbo(const uint8_t* uploadData, int uploadW, int uploadH,
+                                  int sourceStride, int uploadX, int uploadY);
+    void   DestroyUploadPbosLocked();
     void   ApplyPendingCanvasTransformLocked();
     void   RequestRedraw();
     void   CalculateViewport(int sourceWidth, int sourceHeight,
                              int& vpX, int& vpY, int& vpW, int& vpH) const;
+    void   CalculateActiveViewport(int& vpX, int& vpY, int& vpW, int& vpH) const;
     void   PublishViewportSnapshot(int vpX, int vpY, int vpW, int vpH);
     RdpPresentMetrics RenderRawBGRAInternal(const uint8_t* bgraData, int width, int height,
                                             int stride, bool useDirtyRect, int dirtyX,
                                             int dirtyY, int dirtyWidth, int dirtyHeight,
-                                            uint64_t generation);
+                                            uint64_t generation, size_t dataSize = 0,
+                                            bool compactDirtyBuffer = false);
     RdpPresentMetrics RenderRetainedFrameLocked(uint64_t expectedGeneration);
 };
 
@@ -215,32 +257,88 @@ private:
 namespace RendererNapi {
     napi_value Init(napi_env env, napi_value exports);
     void MakeCurrent(int64_t handle);
+    void MakeCurrent(int64_t handle, const Render::DecoderSessionIdentity& owner);
     void ReleaseCurrent(int64_t handle);
+    void ReleaseCurrent(int64_t handle, const Render::DecoderSessionIdentity& owner);
     void SetRendererSourceSize(int64_t handle, int width, int height);
+    void SetRendererSourceSize(int64_t handle, const Render::DecoderSessionIdentity& owner,
+                               int width, int height);
     void RenderNative(int64_t handle, GLuint textureId);
+    void RenderNative(int64_t handle, const Render::DecoderSessionIdentity& owner,
+                      GLuint textureId);
+    void RenderNative(int64_t handle, const Render::DecoderSessionIdentity& owner,
+                      GLuint textureId,
+                      const Render::NativeImageTransform& textureTransform);
     void SetActiveSourceSize(int width, int height);
+    void SetActiveSourceSize(const Render::DecoderSessionIdentity& owner, int width, int height);
     RdpPresentationTarget GetActivePresentationTarget();
+    RdpPresentationTarget GetActivePresentationTarget(const Render::DecoderSessionIdentity& owner);
+    // The caller must already hold the shared session sink lease. This is used
+    // by callbacks that keep one lease across source read, staging, and queue
+    // submission; it intentionally does not acquire the lease again.
+    RdpPresentationTarget GetActivePresentationTargetUnderOwnerLease(
+        const Render::DecoderSessionIdentity& owner);
     bool HasReadyActiveRenderer(uint64_t* generation = nullptr);
     RdpPresentMetrics PresentRawBgraActive(const uint8_t* data, size_t size, int width,
+                                           int height, int stride, uint64_t generation);
+    RdpPresentMetrics PresentRawBgraActive(const Render::DecoderSessionIdentity& owner,
+                                           const uint8_t* data, size_t size, int width,
                                            int height, int stride, uint64_t generation);
     RdpPresentMetrics PresentRawBgraRectActive(const uint8_t* data, size_t size, int width,
                                                int height, int stride, int dirtyX, int dirtyY,
                                                int dirtyWidth, int dirtyHeight,
                                                uint64_t generation);
+    RdpPresentMetrics PresentRawBgraRectActive(const Render::DecoderSessionIdentity& owner,
+                                               const uint8_t* data, size_t size, int width,
+                                               int height, int stride, int dirtyX, int dirtyY,
+                                               int dirtyWidth, int dirtyHeight,
+                                               uint64_t generation);
+    RdpPresentMetrics PresentRawBgraRectCompactActive(
+        const uint8_t* data, size_t size, int width, int height, int stride,
+        int dirtyX, int dirtyY, int dirtyWidth, int dirtyHeight, uint64_t generation);
+    RdpPresentMetrics PresentRawBgraRectCompactActive(
+        const Render::DecoderSessionIdentity& owner, const uint8_t* data, size_t size,
+        int width, int height, int stride, int dirtyX, int dirtyY, int dirtyWidth,
+        int dirtyHeight, uint64_t generation);
     RdpPresentMetrics PresentRetainedActive(uint64_t generation);
+    RdpPresentMetrics PresentRetainedActive(const Render::DecoderSessionIdentity& owner,
+                                            uint64_t generation);
     int RenderRawBgraActive(const uint8_t* data, size_t size, int width, int height, int stride);
     int RenderRawBgraRectActive(const uint8_t* data, size_t size, int width, int height, int stride,
                                 int dirtyX, int dirtyY, int dirtyWidth, int dirtyHeight);
+    int RenderRawBgraActive(const Render::DecoderSessionIdentity& owner,
+                            const uint8_t* data, size_t size, int width, int height, int stride);
+    void RenderRetained(int64_t handle, const Render::DecoderSessionIdentity& owner);
+    bool SetActiveRenderer(int64_t handle, const Render::DecoderSessionIdentity& owner);
     void SetActiveRenderer(int64_t handle);
+    // The caller must already hold the shared session sink lease. This is a
+    // validation-only boundary for two-phase bind/init paths which cannot
+    // reacquire the non-reentrant shared lease.
+    bool IsActiveRendererForOwnerUnderLease(
+        int64_t handle, const Render::DecoderSessionIdentity& owner);
+    /** Return the live renderer token for an exact session owner, or zero. */
+    int64_t GetActiveRendererHandle(const Render::DecoderSessionIdentity& owner);
+    void SetActiveSessionOwner(const Render::DecoderSessionIdentity& owner);
+    void ClearActiveSessionOwner(const Render::DecoderSessionIdentity& owner);
     void SetRendererRedrawCallback(int64_t handle, std::function<void()> callback);
+    void SetRendererRedrawCallback(int64_t handle, const Render::DecoderSessionIdentity& owner,
+                                   std::function<void()> callback);
     uint64_t RegisterActiveRedrawCallback(std::function<void()> callback);
     void UnregisterActiveRedrawCallback(uint64_t token);
     void RenderRetained(int64_t handle);
     RdpPresentationMetricsSnapshot GetActivePresentationStats();
+    RdpPresentationMetricsSnapshot GetActivePresentationStats(
+        const Render::DecoderSessionIdentity& owner);
+    bool SetActivePboUpload(bool enabled);
+    bool SetActivePboUpload(const Render::DecoderSessionIdentity& owner, bool enabled);
     void InvalidateActivePresentation();
+    void InvalidateActivePresentation(const Render::DecoderSessionIdentity& owner);
     bool ReenableActivePresentation();
+    bool ReenableActivePresentation(const Render::DecoderSessionIdentity& owner);
     void DeactivateRenderer(int64_t handle);
+    void DeactivateRenderer(int64_t handle, const Render::DecoderSessionIdentity& owner);
     void DestroyRendererHandle(int64_t handle);
+    void DestroyRendererHandle(int64_t handle, const Render::DecoderSessionIdentity& owner);
 }
 
 #endif // GL_RENDERER_H

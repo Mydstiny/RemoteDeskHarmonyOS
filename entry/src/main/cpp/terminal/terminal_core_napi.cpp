@@ -1,7 +1,7 @@
 /**
  * terminal_core_napi.cpp — Rust terminal_core 的 NAPI 桥接实现
  *
- * 将 Rust C ABI (terminal_core_napi.h) 的 9 个函数包装为 NAPI 方法,
+ * 将 Rust C ABI (terminal_core_napi.h) 的 10 个函数包装为 NAPI 方法,
  * 注册到 librdpnapi.so, 供 ArkTS TerminalCoreBridge 调用。
  *
  * 注册的方法 (全部驼峰, 与 rdpnapi.d.ts 一致):
@@ -212,6 +212,33 @@ static napi_value NapiTerminalCoreDestroy(napi_env env, napi_callback_info info)
     if (handle) {
         terminal_core_destroy(handle);
         OH_LOG_INFO(LOG_APP, "[TerminalCore] destroy: handle=%{public}p", handle);
+    }
+
+    napi_value undefined;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+/**
+ * terminalCoreSetDefaultForeground(handle: number, foreground: number): void
+ *
+ * The color is passed as ARGB so the terminal core, rather than Canvas, owns
+ * the default-cell appearance and can mark affected rows dirty.
+ */
+static napi_value NapiTerminalCoreSetDefaultForeground(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    NAPI_ASSERT_ARGC(env, argc, 2);
+    NAPI_ASSERT_TYPE(env, args[0], napi_number, "handle");
+    NAPI_ASSERT_TYPE(env, args[1], napi_number, "foreground");
+
+    void* handle = getHandle(env, args[0]);
+    if (handle) {
+        int64_t foreground = 0;
+        napi_get_value_int64(env, args[1], &foreground);
+        terminal_core_set_default_foreground(handle, static_cast<uint32_t>(foreground));
     }
 
     napi_value undefined;
@@ -454,6 +481,10 @@ napi_value TerminalCoreNapi::Init(napi_env env, napi_value exports) {
                          NapiTerminalCoreDestroy, nullptr, &fn);
     napi_set_named_property(env, exports, "terminalCoreDestroy", fn);
 
+    napi_create_function(env, "terminalCoreSetDefaultForeground", NAPI_AUTO_LENGTH,
+                         NapiTerminalCoreSetDefaultForeground, nullptr, &fn);
+    napi_set_named_property(env, exports, "terminalCoreSetDefaultForeground", fn);
+
     napi_create_function(env, "terminalCoreWrite", NAPI_AUTO_LENGTH,
                          NapiTerminalCoreWrite, nullptr, &fn);
     napi_set_named_property(env, exports, "terminalCoreWrite", fn);
@@ -482,6 +513,6 @@ napi_value TerminalCoreNapi::Init(napi_env env, napi_value exports) {
                          NapiTerminalCoreDirtySnapshot, nullptr, &fn);
     napi_set_named_property(env, exports, "terminalCoreDirtySnapshot", fn);
 
-    OH_LOG_INFO(LOG_APP, "[TerminalCore] NAPI 方法已注册: 9 个 terminalCore* 函数");
+    OH_LOG_INFO(LOG_APP, "[TerminalCore] NAPI 方法已注册: 10 个 terminalCore* 函数");
     return exports;
 }

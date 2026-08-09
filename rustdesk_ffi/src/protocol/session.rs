@@ -29,6 +29,12 @@ const AUTH_EVENT_ACCEPTED: i32 = 0;
 const AUTH_EVENT_REQUIRED: i32 = 1;
 const AUTH_EVENT_WRONG_CODE: i32 = 2;
 
+/// Native clients let the peer release encoder work as soon as a video frame
+/// is written to the socket. `video_received` is only valid when this login
+/// flag is true; sending it while the flag is false releases the same encoder
+/// credit twice and produces burst/gap video cadence on the peer.
+pub const VIDEO_ACK_REQUIRED: bool = false;
+
 /// 会话状态
 #[derive(Debug, Clone, PartialEq)]
 pub enum SessionState {
@@ -248,6 +254,7 @@ impl Session {
         login.set_session_id(0);
         login.set_version("2.0.0".to_string());
         login.set_my_platform("OHOS".to_string());
+        login.set_video_ack_required(VIDEO_ACK_REQUIRED);
         if let Some(dir) = file_transfer_dir {
             let mut ft = FileTransfer::new();
             ft.set_dir(dir.to_string());
@@ -479,7 +486,7 @@ impl Session {
         let payload = msg
             .write_to_bytes()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-        channel.send(&payload)?;
+        channel.send_low_priority(&payload)?;
         Ok(())
     }
 
@@ -514,7 +521,11 @@ impl Session {
             session_id: self.connection_id,
         };
         let mut auth_receiver: Option<Receiver<String>> = None;
-        let mut last_challenge = Self::challenge_fingerprint(initial_hash);
+        // The initial challenge is not a completed LoginRequest. In
+        // particular, approval-mode peers commonly echo that same hash; the
+        // first echo must still receive a LoginRequest. Repeated hashes are
+        // retransmissions, not permission to silently stop asking.
+        let mut last_challenge: Option<[u8; 32]> = None;
         let mut last_variant = "none".to_string();
 
         // 官方在等待被控端批准时保持加密通道，期间允许 TestDelay 保活。
@@ -602,7 +613,6 @@ impl Session {
                             if request_approval {
                                 self.state = SessionState::WaitingRemoteApproval;
                                 last_variant = "no_password_access".to_string();
-                                deadline = Instant::now() + APPROVAL_TIMEOUT;
                                 continue;
                             }
                             // 非批准模式（密码连接）收到该串：被控端是点击批准
@@ -615,7 +625,8 @@ impl Session {
                             ));
                         }
                         if err == REQUIRE_2FA {
-                            if auth_receiver.is_none() {
+                            let first_two_factor_challenge = auth_receiver.is_none();
+                            if first_two_factor_challenge {
                                 let (sender, receiver) = mpsc::channel();
                                 crate::register_pending_2fa(
                                     self.connect_epoch,
@@ -624,7 +635,9 @@ impl Session {
                                 )?;
                                 auth_receiver = Some(receiver);
                             }
-                            deadline = Instant::now() + PEER_2FA_TIMEOUT;
+                            if first_two_factor_challenge {
+                                deadline = Instant::now() + PEER_2FA_TIMEOUT;
+                            }
                             self.state = SessionState::WaitingPeer2FA;
                             self.notify_auth_event(AUTH_EVENT_REQUIRED, REQUIRE_2FA);
                             last_variant = "2fa_required".to_string();
@@ -650,11 +663,13 @@ impl Session {
                 }
                 Some(Message_oneof_union::hash(hash)) if request_approval => {
                     let fingerprint = Self::challenge_fingerprint(&hash);
-                    if fingerprint == last_challenge {
-                        last_variant = "duplicate_hash".to_string();
-                        continue;
-                    }
-                    last_challenge = fingerprint;
+                    let duplicate = last_challenge == Some(fingerprint);
+                    last_challenge = Some(fingerprint);
+                    last_variant = if duplicate {
+                        "duplicate_hash_resend".to_string()
+                    } else {
+                        "approval_hash".to_string()
+                    };
                     self.state = SessionState::WaitingRemoteApproval;
                     Self::send_login_request(
                         channel,
@@ -800,6 +815,7 @@ impl Session {
         login.set_session_id(0); // 服务端会分配
         login.set_version("2.0.0".to_string());
         login.set_my_platform("OHOS".to_string());
+        login.set_video_ack_required(VIDEO_ACK_REQUIRED);
 
         // OptionMessage: 图像质量等
         let mut opt = OptionMessage::new();
@@ -969,6 +985,14 @@ impl Drop for PendingTwoFactorGuard {
 mod tests {
     use super::*;
     use protobuf::Message as ProtoMessage;
+
+    #[test]
+    fn native_login_contract_does_not_request_per_frame_video_ack() {
+        let mut login = LoginRequest::new();
+        login.set_video_ack_required(VIDEO_ACK_REQUIRED);
+
+        assert!(!login.get_video_ack_required());
+    }
 
     #[test]
     fn refresh_video_message_keeps_refresh_video_oneof_variant() {

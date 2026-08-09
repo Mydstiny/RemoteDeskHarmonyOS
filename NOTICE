@@ -8,5 +8,5 @@ notices shipped with each third-party component.
 
 This distribution includes protocol definitions derived from RustDesk and
 binary/source components from FreeRDP, OpenSSL, FFmpeg, libssh2, Mbed TLS,
-Opus, the platform zlib library, Huawei/OpenHarmony SDK packages, and Rust crates. No project license
+Opus, the platform zlib library, Huawei/OpenHarmony SDK packages, and Rust crates including the Apache-2.0 Alacritty terminal core. No project license
 statement removes or replaces their upstream notices.

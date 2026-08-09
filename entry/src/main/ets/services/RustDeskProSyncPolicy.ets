@@ -85,9 +85,16 @@ export function reconcileRustDeskProHosts(existing: RemoteHost[], relayId: strin
     host.rustdeskProAccountId = accountId;
     host.rustdeskProPeerId = peerId;
     host.rustdeskProPlatform = peer.platform;
-    host.rustdeskProLastSeenAt = syncedAt;
-    host.rustdeskProSyncError = '';
-    if (peer.password.length > 0) { host.password = peer.password; }
+    // The address-book timestamp describes the server snapshot, not the peer's
+    // liveness. Clear the old value so the homepage cannot show a freshly
+    // synchronized but unreachable peer as online.
+    host.rustdeskProLastSeenAt = 0;
+    host.rustdeskProSyncError = 'probe_pending';
+    // A sync may provide a password for a newly imported peer, but it must not
+    // replace a password that the user has already entered locally.
+    if (host.password.length === 0 && peer.password.length > 0) {
+      host.password = peer.password;
+    }
     if (peer.password.length === 0 && host.password.length === 0) {
       // 空密码没有可用的设备凭据；只要用户没有保存密码，就使用官方点击批准闭环。
       host.rustdeskAuthMode = 'request_approval';

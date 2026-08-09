@@ -29,7 +29,16 @@ sync_public_main() {
   git_at submodule update --init --recursive
   printf 'Synchronized main with origin/main at %s.\n' "$(git_at rev-parse --short=9 main)"
   if [ -f "$root/docs/codex/CURRENT.md" ]; then
-    printf '%s\n' 'Shared state: docs/codex/CURRENT.md' 'Shared queue: docs/codex/QUEUE.md'
+    printf '%s\n' 'Shared state: docs/codex/STATE.json + docs/codex/CURRENT.md' 'Shared queue: docs/codex/QUEUE.md'
+  fi
+}
+
+state_status() {
+  action_name="$1"
+  if command -v node >/dev/null 2>&1; then
+    node "$root/scripts/codex_state.mjs" "$action_name"
+  else
+    printf '%s\n' 'state=unavailable' 'state-reason=node-not-found'
   fi
 }
 
@@ -52,11 +61,8 @@ require_pwsh() {
 }
 
 case "$action" in
-  status)
-    printf '%s\n' "workspace=$root" "branch=$(git_at branch --show-current)" "head=$(git_at rev-parse --short=9 HEAD)" "main=$(git_at rev-parse --short=9 main)" "origin_main=$(git_at rev-parse --short=9 origin/main)"
-    printf '%s\n' "changes=$(git_at status --porcelain | wc -l | tr -d ' ')" "worktrees=$(git_at worktree list --porcelain | awk '/^worktree / { count++ } END { print count + 0 }')"
-    active="$(active_branches || true)"
-    [ -n "$active" ] && printf 'active-branches=%s\n' "$(printf '%s' "$active" | tr '\n' ',')" || printf '%s\n' 'active-branches=none'
+  status|bootstrap)
+    state_status "$action"
     ;;
   sync)
     sync_public_main
@@ -71,7 +77,7 @@ case "$action" in
     active="$(active_branches || true)"
     [ -z "$active" ] || fail "unfinished task branches exist: $(printf '%s' "$active" | tr '\n' ' ')"
     git_at switch -c "codex/$task"
-    printf 'Started codex/%s. Update docs/codex/CURRENT.md before implementation.\n' "$task"
+    printf 'Started codex/%s. Update docs/codex/STATE.json and CURRENT.md before implementation.\n' "$task"
     ;;
   doctor)
     errors=0
@@ -81,6 +87,14 @@ case "$action" in
     [ "$worktrees" -eq 1 ] || { printf '%s\n' "ERROR: expected one persistent worktree, found $worktrees" >&2; errors=1; }
     active="$(active_branches || true)"
     [ -z "$active" ] || { printf '%s\n' "ERROR: unfinished task branches exist: $active" >&2; errors=1; }
+    if command -v node >/dev/null 2>&1; then
+      if ! node "$root/scripts/codex_state.mjs" validate; then
+        errors=1
+      fi
+    else
+      printf '%s\n' 'ERROR: node is required to validate compact Codex state' >&2
+      errors=1
+    fi
     [ "$errors" -eq 0 ] || exit 1
     printf '%s\n' 'Workflow doctor passed.'
     ;;
@@ -95,6 +109,6 @@ case "$action" in
     printf 'Finish check passed for %s -> main.\n' "$branch"
     ;;
   *)
-    fail "unknown action '$action'; use status, sync, start <task>, doctor, or finish-check"
+    fail "unknown action '$action'; use status, bootstrap, sync, start <task>, doctor, or finish-check"
     ;;
 esac

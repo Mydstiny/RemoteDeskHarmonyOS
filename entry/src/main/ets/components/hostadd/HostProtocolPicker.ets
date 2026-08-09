@@ -1,4 +1,4 @@
-/** Four-protocol entry for the modern add-host wizard. */
+/** Protocol entry for the modern add-host wizard. */
 import { AppTheme, Palette, buildDark, buildLight } from '../../common/Theme';
 import { ProtocolIconKey, protocolIcon } from '../../services/ProtocolIconPolicy';
 
@@ -24,7 +24,7 @@ export struct HostProtocolPicker {
       if (enabled) {
         SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(18).fontColor([this.pal().text3])
       } else {
-        Text('暂不可用').fontSize(11).fontColor(this.pal().text3)
+        Text('即将支持').fontSize(11).fontColor(this.pal().text3)
           .padding({ left: 8, right: 8, top: 3, bottom: 3 }).borderRadius(8)
           .backgroundColor(this.pal().surface)
       }
@@ -49,6 +49,7 @@ export struct HostProtocolPicker {
       this.protocolOption('rustdesk', 'RustDesk', '中继、直连与局域网发现', true)
       this.protocolOption('ssh', 'SSH', '密码或密钥登录服务器', true)
       this.protocolOption('vnc', 'VNC', '跨平台屏幕控制、直连与 UltraVNC Repeater', true)
+      this.protocolOption('moonlight', 'Moonlight', '低延迟游戏与桌面串流', false)
     }.width('100%').padding({ left: 20, right: 20, top: 20, bottom: 18 })
     .backgroundColor(this.pal().card)
   }

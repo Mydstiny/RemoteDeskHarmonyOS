@@ -4,6 +4,42 @@ import {
   rustDeskActionAvailability
 } from '../services/RemoteSessionTopBarPolicy';
 import { RemoteSessionCapabilities } from '../services/RemoteSessionCapabilityPolicy';
+import {
+  RustDeskDisplayCapabilities,
+  RustDeskDisplayInfo,
+  RustDeskDisplayResolution
+} from '../types/rdpnapi';
+import { RustDeskDisplaySwitchState } from '../services/RustDeskDisplaySwitchPolicy';
+
+const EMPTY_RUSTDESK_DISPLAY_CAPABILITIES: RustDeskDisplayCapabilities = {
+  supported: false,
+  currentDisplay: 0,
+  switchGeneration: 0,
+  readySwitchGeneration: 0,
+  pendingDisplay: -1,
+  inputBlocked: false,
+  width: 0,
+  height: 0,
+  originalWidth: 0,
+  originalHeight: 0,
+  scaleMilli: 1000,
+  geometryEpoch: 0,
+  resolutions: [],
+  displays: []
+};
+
+const EMPTY_RUSTDESK_DISPLAY_SWITCH_STATE: RustDeskDisplaySwitchState = {
+  generation: 0,
+  pendingDisplay: -1,
+  startedAtMs: 0,
+  inputBlocked: false,
+  timeoutNotified: false
+};
+
+const EMPTY_RUSTDESK_DISPLAY_RESOLUTION: RustDeskDisplayResolution = {
+  width: 0,
+  height: 0
+};
 
 export interface RemoteSessionTopBarActions {
   onDisconnect: () => void;
@@ -19,6 +55,8 @@ export interface RemoteSessionTopBarActions {
   onSetViewScaleMode: (mode: string) => void;
   onResetCanvasTransform: () => void;
   onOpenRustDeskResolution: () => void;
+  onSelectRustDeskDisplay: (display: number) => void;
+  onSetRustDeskDisplayResolution: (width: number, height: number) => void;
   onSetRustDeskImageQuality: (quality: number) => void;
   onSetRustDeskCodec: (codec: number) => void;
   onToggleShowLocalCursor: (on: boolean) => void;
@@ -40,6 +78,7 @@ export struct RemoteSessionTopBar {
     maxVisibleButtons: 7,
     menuWidth: 360
   };
+  @Prop @Watch('onEdgeRailChanged') edgeRail: boolean = false;
   @Prop privacyMode: boolean = false;
   @Prop audioEnabled: boolean = true;
   @Prop clipboardEnabled: boolean = true;
@@ -54,6 +93,9 @@ export struct RemoteSessionTopBar {
   @Prop swapMouseButtons: boolean = false;
   @Prop touchpadSpeed: number = 1.0;
   @Prop keyboardOpen: boolean = false;
+  @Prop rustDeskDisplayCapabilities: RustDeskDisplayCapabilities = EMPTY_RUSTDESK_DISPLAY_CAPABILITIES;
+  @Prop rustDeskDisplaySwitchState: RustDeskDisplaySwitchState = EMPTY_RUSTDESK_DISPLAY_SWITCH_STATE;
+  @Prop pendingDisplayResolution: RustDeskDisplayResolution = EMPTY_RUSTDESK_DISPLAY_RESOLUTION;
   @Prop capabilities: RemoteSessionCapabilities = {
     connect: { enabled: false, reason: '远程会话尚未连接' },
     clipboardSend: { enabled: false, reason: '远程会话尚未连接' },
@@ -82,6 +124,8 @@ export struct RemoteSessionTopBar {
     onSetViewScaleMode: (_mode: string): void => {},
     onResetCanvasTransform: (): void => {},
     onOpenRustDeskResolution: (): void => {},
+    onSelectRustDeskDisplay: (_display: number): void => {},
+    onSetRustDeskDisplayResolution: (_width: number, _height: number): void => {},
     onSetRustDeskImageQuality: (_quality: number): void => {},
     onSetRustDeskCodec: (_codec: number): void => {},
     onToggleShowLocalCursor: (_on: boolean): void => {},
@@ -143,7 +187,17 @@ export struct RemoteSessionTopBar {
     }
   }
 
+  private onEdgeRailChanged(): void {
+    this.clearAutoCollapseTimer();
+    this.activeMenu = '';
+    this.collapsed = false;
+    this.pinned = false;
+    this.scheduleAutoCollapse();
+  }
+
   aboutToAppear(): void {
+    this.collapsed = false;
+    this.activeMenu = '';
     this.scheduleAutoCollapse();
   }
 
@@ -156,9 +210,40 @@ export struct RemoteSessionTopBar {
     return count * this.layout.iconSize + (count + 1) * this.layout.itemGap;
   }
 
-  private menuLeft(): number {
+  private menuLeft(width: number = this.layout.menuWidth): number {
+    if (this.edgeRail) {
+      return 0;
+    }
     const fullWidth: number = this.toolbarWidth();
-    return Math.max(0, (fullWidth - this.layout.menuWidth) / 2);
+    return Math.max(0, (fullWidth - width) / 2);
+  }
+
+  private menuTop(): number {
+    return this.edgeRail ? 0 : this.layout.iconSize + 12;
+  }
+
+  private edgeRailWidth(): number {
+    return this.layout.iconSize + 12;
+  }
+
+  private edgeRailButtonCount(): number {
+    return this.layout.deviceClass === 'phone' ? 5 : 6;
+  }
+
+  private edgeRailHeight(): number {
+    const buttonCount: number = this.edgeRailButtonCount();
+    return buttonCount * this.layout.iconSize +
+      Math.max(0, buttonCount - 1) * this.layout.itemGap + 12 +
+      this.layout.itemGap + 30;
+  }
+
+  private edgeRailCanvasHeight(): number {
+    return Math.max(520, this.edgeRailHeight());
+
+  }
+
+  private edgeRailOffsetY(): number {
+    return Math.max(0, (this.edgeRailCanvasHeight() - this.edgeRailHeight()) / 2);
   }
 
   private qualityLabel(value: number): string {
@@ -174,6 +259,104 @@ export struct RemoteSessionTopBar {
     if (value === 4) { return 'H264'; }
     if (value === 5) { return 'H265'; }
     return '自动';
+  }
+
+  private hasRustDeskDisplayData(): boolean {
+    return this.rustDeskDisplayCapabilities.supported &&
+      (this.rustDeskDisplayCapabilities.displays.length > 0 ||
+        this.rustDeskDisplayCapabilities.resolutions.length > 0);
+  }
+
+  private rustDeskDisplaySwitchPending(): boolean {
+    return this.rustDeskDisplaySwitchState.inputBlocked ||
+      this.rustDeskDisplayCapabilities.inputBlocked ||
+      this.rustDeskDisplayCapabilities.pendingDisplay >= 0;
+  }
+
+  private rustDeskDisplayTarget(): number {
+    if (this.rustDeskDisplaySwitchState.inputBlocked &&
+      this.rustDeskDisplaySwitchState.pendingDisplay >= 0) {
+      return this.rustDeskDisplaySwitchState.pendingDisplay;
+    }
+    if (this.rustDeskDisplayCapabilities.pendingDisplay >= 0) {
+      return this.rustDeskDisplayCapabilities.pendingDisplay;
+    }
+    return this.rustDeskDisplayCapabilities.currentDisplay;
+  }
+
+  private rustDeskDisplayInfo(displayId: number): RustDeskDisplayInfo | null {
+    for (const display of this.rustDeskDisplayCapabilities.displays) {
+      if (display.display === displayId) {
+        return display;
+      }
+    }
+    return null;
+  }
+
+  private rustDeskDisplayLabel(display: RustDeskDisplayInfo | null, displayId: number): string {
+    if (display !== null && display.name.trim().length > 0) {
+      return display.name;
+    }
+    return '显示器 ' + (displayId + 1).toString();
+  }
+
+  private rustDeskDisplaySizeLabel(display: RustDeskDisplayInfo | null): string {
+    if (display === null) {
+      return '';
+    }
+    const width: number = display.width > 0 ? display.width : display.originalWidth;
+    const height: number = display.height > 0 ? display.height : display.originalHeight;
+    return width > 0 && height > 0 ? width.toString() + ' × ' + height.toString() : '';
+  }
+
+  private rustDeskDisplayResolutionLabel(resolution: RustDeskDisplayResolution): string {
+    return resolution.width.toString() + ' × ' + resolution.height.toString();
+  }
+
+  private currentRustDeskDisplayLabel(): string {
+    const displayId: number = this.rustDeskDisplayCapabilities.currentDisplay;
+    return this.rustDeskDisplayLabel(this.rustDeskDisplayInfo(displayId), displayId);
+  }
+
+  private displaySwitchStatusLabel(): string {
+    const target: number = this.rustDeskDisplayTarget();
+    if (this.rustDeskDisplaySwitchPending()) {
+      return '正在切换到 ' + this.rustDeskDisplayLabel(this.rustDeskDisplayInfo(target), target);
+    }
+    return '当前：' + this.currentRustDeskDisplayLabel();
+  }
+
+  private displayResolutionStatusLabel(): string {
+    if (this.pendingDisplayResolution.width > 0 && this.pendingDisplayResolution.height > 0) {
+      return '待应用：' + this.rustDeskDisplayResolutionLabel(this.pendingDisplayResolution);
+    }
+    if (this.rustDeskDisplayCapabilities.width > 0 && this.rustDeskDisplayCapabilities.height > 0) {
+      return this.rustDeskDisplayCapabilities.width.toString() + ' × ' +
+        this.rustDeskDisplayCapabilities.height.toString();
+    }
+    return '分辨率读取中';
+  }
+
+  private isRustDeskDisplaySelected(displayId: number): boolean {
+    return displayId === this.rustDeskDisplayTarget();
+  }
+
+  private isRustDeskDisplayCurrent(displayId: number): boolean {
+    return displayId === this.rustDeskDisplayCapabilities.currentDisplay;
+  }
+
+  private isRustDeskDisplayPending(displayId: number): boolean {
+    return this.isRustDeskDisplaySelected(displayId) && this.rustDeskDisplaySwitchPending() &&
+      !this.isRustDeskDisplayCurrent(displayId);
+  }
+
+  private isRustDeskDisplayResolutionSelected(resolution: RustDeskDisplayResolution): boolean {
+    if (this.pendingDisplayResolution.width > 0 && this.pendingDisplayResolution.height > 0) {
+      return resolution.width === this.pendingDisplayResolution.width &&
+        resolution.height === this.pendingDisplayResolution.height;
+    }
+    return resolution.width === this.rustDeskDisplayCapabilities.width &&
+      resolution.height === this.rustDeskDisplayCapabilities.height;
   }
 
   @Builder
@@ -243,64 +426,166 @@ export struct RemoteSessionTopBar {
     .backgroundColor('rgba(255,255,255,0.96)')
     .borderRadius(10)
     .shadow({ radius: 10, color: 'rgba(0,0,0,0.22)', offsetY: 2 })
-    .position({ x: this.menuLeft(), y: this.layout.iconSize + 12 })
+    .position({ x: this.menuLeft(), y: this.menuTop() })
   }
 
   @Builder
   private displayMenu() {
     Column() {
-      this.menuItem('适应窗口', 'displaySettings', (): void => {
-        this.actions.onSetViewScaleMode('fit');
-      }, this.viewScaleMode === 'fit')
-      this.menuItem('100%', 'displaySettings', (): void => {
-        this.actions.onSetViewScaleMode('100');
-      }, this.viewScaleMode === '100')
-      this.menuItem('125%', 'displaySettings', (): void => {
-        this.actions.onSetViewScaleMode('125');
-      }, this.viewScaleMode === '125')
-      this.menuItem('150%', 'displaySettings', (): void => {
-        this.actions.onSetViewScaleMode('150');
-      }, this.viewScaleMode === '150')
-      this.menuItem('175%', 'displaySettings', (): void => {
-        this.actions.onSetViewScaleMode('175');
-      }, this.viewScaleMode === '175')
-      this.menuItem('200%', 'displaySettings', (): void => {
-        this.actions.onSetViewScaleMode('200');
-      }, this.viewScaleMode === '200')
-      this.menuItem('自定义缩放', 'displaySettings', (): void => {
-        this.actions.onSetViewScaleMode('custom');
-      }, this.viewScaleMode === 'custom')
-      this.menuItem('重新居中画面', 'displaySettings', (): void => {
-        this.actions.onResetCanvasTransform();
-      })
-      this.menuItem('画质: ' + this.qualityLabel(this.imageQuality), 'displaySettings', (): void => {
-        const next: number = this.imageQuality >= 2 ? 0 : this.imageQuality + 1;
-        this.actions.onSetRustDeskImageQuality(next);
-      })
-      this.menuItem('编解码: ' + this.codecLabel(this.codec), 'displaySettings', (): void => {
-        const next: number = this.codec >= 5 ? 0 : this.codec + 1;
-        this.actions.onSetRustDeskCodec(next);
-      })
-      this.menuItem('显示器与分辨率', 'resolutionSettings', (): void => {
-        this.actions.onOpenRustDeskResolution();
-      })
-      this.menuItem('虚拟显示器', 'virtualDisplay', (): void => {})
-      this.menuItem('隐私模式', 'togglePrivacyMode', (): void => {
-        this.actions.onTogglePrivacy(!this.privacyMode);
-      }, this.privacyMode)
-      this.menuItem('静音', 'toggleAudio', (): void => {
-        this.actions.onToggleAudio(!this.audioEnabled);
-      }, !this.audioEnabled)
-      this.menuItem('允许复制粘贴文件', 'toggleFilePaste', (): void => {
-        this.actions.onToggleFilePaste(!this.filePasteEnabled);
-      }, this.filePasteEnabled)
+      Scroll() {
+        Column() {
+          this.menuItem('适应窗口', 'displaySettings', (): void => {
+            this.actions.onSetViewScaleMode('fit');
+          }, this.viewScaleMode === 'fit')
+          this.menuItem('100%', 'displaySettings', (): void => {
+            this.actions.onSetViewScaleMode('100');
+          }, this.viewScaleMode === '100')
+          this.menuItem('125%', 'displaySettings', (): void => {
+            this.actions.onSetViewScaleMode('125');
+          }, this.viewScaleMode === '125')
+          this.menuItem('150%', 'displaySettings', (): void => {
+            this.actions.onSetViewScaleMode('150');
+          }, this.viewScaleMode === '150')
+          this.menuItem('175%', 'displaySettings', (): void => {
+            this.actions.onSetViewScaleMode('175');
+          }, this.viewScaleMode === '175')
+          this.menuItem('200%', 'displaySettings', (): void => {
+            this.actions.onSetViewScaleMode('200');
+          }, this.viewScaleMode === '200')
+          this.menuItem('自定义缩放', 'displaySettings', (): void => {
+            this.actions.onSetViewScaleMode('custom');
+          }, this.viewScaleMode === 'custom')
+          this.menuItem('重新居中画面', 'displaySettings', (): void => {
+            this.actions.onResetCanvasTransform();
+          })
+
+          if (this.hasRustDeskDisplayData()) {
+            Column({ space: 6 }) {
+              Text('远端显示器').fontSize(12).fontColor('#6B7280')
+                .margin({ left: 8, top: 4 }).alignSelf(ItemAlign.Start)
+              Row() {
+                Column() {
+                  Text(this.displaySwitchStatusLabel()).fontSize(14).fontWeight(FontWeight.Medium)
+                    .fontColor('#111111').maxLines(1)
+                    .textOverflow({ overflow: TextOverflow.Ellipsis })
+                  Text(this.displayResolutionStatusLabel()).fontSize(11).fontColor('#6B7280')
+                    .margin({ top: 2 })
+                }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+                if (this.rustDeskDisplaySwitchPending()) {
+                  Text('切换中').fontSize(11).fontColor(this.accentColor)
+                } else {
+                  SymbolGlyph($r('sys.symbol.checkmark')).fontSize(15).fontColor([this.accentColor])
+                }
+              }
+              .width('100%').padding({ left: 12, right: 12, top: 8, bottom: 8 })
+              .backgroundColor('rgba(0,125,255,0.08)').borderRadius(6)
+
+              if (this.rustDeskDisplayCapabilities.displays.length > 0) {
+                Text('选择显示器').fontSize(12).fontColor('#6B7280')
+                  .margin({ left: 8, top: 4 }).alignSelf(ItemAlign.Start)
+                ForEach(this.rustDeskDisplayCapabilities.displays,
+                  (display: RustDeskDisplayInfo): void => {
+                    Row() {
+                      Column() {
+                        Text(this.rustDeskDisplayLabel(display, display.display)).fontSize(13)
+                          .fontColor(this.isRustDeskDisplaySelected(display.display) ? '#FFFFFF' : '#374151').maxLines(1)
+                          .textOverflow({ overflow: TextOverflow.Ellipsis })
+                        Text(this.rustDeskDisplaySizeLabel(display)).fontSize(10)
+                          .fontColor(this.isRustDeskDisplaySelected(display.display) ?
+                            'rgba(255,255,255,0.78)' : '#6B7280')
+                          .margin({ top: 2 })
+                      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+                      if (this.isRustDeskDisplayPending(display.display)) {
+                        Text('切换中').fontSize(10).fontColor('#FFFFFF')
+                      } else if (this.isRustDeskDisplayCurrent(display.display) &&
+                        !this.rustDeskDisplaySwitchPending()) {
+                        SymbolGlyph($r('sys.symbol.checkmark')).fontSize(15).fontColor(['#FFFFFF'])
+                      }
+                    }
+                    .width('100%').height(48).padding({ left: 12, right: 12, top: 6, bottom: 6 })
+                    .backgroundColor(this.isRustDeskDisplaySelected(display.display) ?
+                      this.accentColor : '#F3F4F6').borderRadius(6)
+                    .opacity(display.online ? 1 : 0.55)
+                    .onClick((): void => {
+                      this.noteUserActivity();
+                      if (!display.online) {
+                        this.actions.onUnsupported('resolutionSettings', '该远端显示器当前离线');
+                        return;
+                      }
+                      this.actions.onSelectRustDeskDisplay(display.display);
+                    })
+                  }, (display: RustDeskDisplayInfo): string => display.display.toString())
+              }
+
+              Divider().strokeWidth(1).color('#E5E7EB').margin({ top: 4, bottom: 2 })
+              Text('当前显示器分辨率').fontSize(12).fontColor('#6B7280')
+                .margin({ left: 8, top: 4 }).alignSelf(ItemAlign.Start)
+              ForEach(this.rustDeskDisplayCapabilities.resolutions,
+                (resolution: RustDeskDisplayResolution): void => {
+                  Row() {
+                    Text(this.rustDeskDisplayResolutionLabel(resolution)).fontSize(13)
+                      .fontColor(this.isRustDeskDisplayResolutionSelected(resolution) ?
+                        '#FFFFFF' : '#374151').layoutWeight(1)
+                    if (this.isRustDeskDisplayResolutionSelected(resolution)) {
+                      SymbolGlyph($r('sys.symbol.checkmark')).fontSize(15).fontColor(['#FFFFFF'])
+                    }
+                  }
+                  .width('100%').height(40).padding({ left: 12, right: 12 })
+                  .backgroundColor(this.isRustDeskDisplayResolutionSelected(resolution) ?
+                    this.accentColor : '#F3F4F6').borderRadius(6)
+                  .opacity(this.rustDeskDisplaySwitchPending() ? 0.55 : 1)
+                  .onClick((): void => {
+                    this.noteUserActivity();
+                    if (!this.rustDeskDisplaySwitchPending()) {
+                      this.actions.onSetRustDeskDisplayResolution(resolution.width, resolution.height);
+                    }
+                  })
+                }, (resolution: RustDeskDisplayResolution): string =>
+                  resolution.width.toString() + 'x' + resolution.height.toString())
+              if (this.rustDeskDisplayCapabilities.resolutions.length === 0) {
+                Text('当前显示器暂无可选分辨率').fontSize(12).fontColor('#6B7280')
+                  .width('100%').textAlign(TextAlign.Center).padding({ top: 8, bottom: 4 })
+              }
+              this.menuItem('打开完整显示器与分辨率面板', 'resolutionSettings', (): void => {
+                this.actions.onOpenRustDeskResolution();
+              })
+            }.width('100%')
+          } else {
+            this.menuItem('显示器与分辨率', 'resolutionSettings', (): void => {
+              this.actions.onOpenRustDeskResolution();
+            })
+          }
+
+          this.menuItem('画质: ' + this.qualityLabel(this.imageQuality), 'displaySettings', (): void => {
+            const next: number = this.imageQuality >= 2 ? 0 : this.imageQuality + 1;
+            this.actions.onSetRustDeskImageQuality(next);
+          })
+          this.menuItem('编解码: ' + this.codecLabel(this.codec), 'displaySettings', (): void => {
+            const next: number = this.codec >= 5 ? 0 : this.codec + 1;
+            this.actions.onSetRustDeskCodec(next);
+          })
+          this.menuItem('虚拟显示器', 'virtualDisplay', (): void => {})
+          this.menuItem('隐私模式', 'togglePrivacyMode', (): void => {
+            this.actions.onTogglePrivacy(!this.privacyMode);
+          }, this.privacyMode)
+          this.menuItem('静音', 'toggleAudio', (): void => {
+            this.actions.onToggleAudio(!this.audioEnabled);
+          }, !this.audioEnabled)
+          this.menuItem('允许复制粘贴文件', 'toggleFilePaste', (): void => {
+            this.actions.onToggleFilePaste(!this.filePasteEnabled);
+          }, this.filePasteEnabled)
+        }
+      }
+      .width('100%')
+      .constraintSize({ maxHeight: 500 })
+      .scrollBar(BarState.Off)
     }
     .width(this.layout.menuWidth)
     .padding(12)
     .backgroundColor('rgba(255,255,255,0.96)')
     .borderRadius(10)
     .shadow({ radius: 10, color: 'rgba(0,0,0,0.22)', offsetY: 2 })
-    .position({ x: this.menuLeft(), y: this.layout.iconSize + 12 })
+    .position({ x: this.menuLeft(), y: this.menuTop() })
   }
 
   @Builder
@@ -334,7 +619,7 @@ export struct RemoteSessionTopBar {
     .backgroundColor('rgba(255,255,255,0.96)')
     .borderRadius(10)
     .shadow({ radius: 10, color: 'rgba(0,0,0,0.22)', offsetY: 2 })
-    .position({ x: this.menuLeft(), y: this.layout.iconSize + 12 })
+    .position({ x: this.menuLeft(), y: this.menuTop() })
   }
 
   @Builder
@@ -348,7 +633,7 @@ export struct RemoteSessionTopBar {
     .backgroundColor('rgba(255,255,255,0.96)')
     .borderRadius(10)
     .shadow({ radius: 10, color: 'rgba(0,0,0,0.22)', offsetY: 2 })
-    .position({ x: Math.max(0, (this.toolbarWidth() - 180) / 2), y: this.layout.iconSize + 12 })
+    .position({ x: this.menuLeft(180), y: this.menuTop() })
   }
 
   @Builder
@@ -367,12 +652,16 @@ export struct RemoteSessionTopBar {
         this.iconButton($r('sys.symbol.keyboard'), this.keyboardOpen ? '#2A9D8F' : this.accentColor,
           (): void => { this.toggleMenu('keyboardMouse'); })
         Blank().width(this.layout.itemGap)
-        this.iconButton($r('sys.symbol.message'), this.accentColor, (): void => { this.toggleMenu('chat'); })
-        Blank().width(this.layout.itemGap)
-        this.iconButton($r('sys.symbol.record_circle'), this.accentColor, (): void => {
-          this.runAction('recordSession', (): void => {});
-        }, 18)
-        Blank().width(this.layout.itemGap)
+        if (this.layout.deviceClass !== 'phone') {
+          this.iconButton($r('sys.symbol.message'), this.accentColor, (): void => { this.toggleMenu('chat'); })
+          Blank().width(this.layout.itemGap)
+        }
+        if (this.layout.deviceClass === 'pc') {
+          this.iconButton($r('sys.symbol.record_circle'), this.accentColor, (): void => {
+            this.runAction('recordSession', (): void => {});
+          }, 18)
+          Blank().width(this.layout.itemGap)
+        }
         this.iconButton($r('sys.symbol.xmark'), '#FF5353', (): void => { this.actions.onDisconnect(); }, 18)
       }
       .height(this.layout.iconSize + 12)
@@ -425,31 +714,140 @@ export struct RemoteSessionTopBar {
     })
   }
 
-  build() {
-    Stack({ alignContent: Alignment.Top }) {
-      if (this.collapsed) {
-        Row() {
-          SymbolGlyph($r('sys.symbol.ellipsis_bubble'))
-            .fontSize(18)
-            .fontColor(['#444444'])
+  @Builder
+  private edgeRailBody() {
+    Stack() {
+      Column() {
+        this.iconButton(this.pinned ? $r('sys.symbol.lock_fill') : $r('sys.symbol.ohos_lock'),
+          this.pinned ? '#3A3A3A' : this.accentColor, (): void => {
+            this.pinned = !this.pinned;
+            this.scheduleAutoCollapse();
+          })
+        Blank().height(this.layout.itemGap)
+        this.iconButton($r('sys.symbol.bolt_fill'), this.accentColor, (): void => {
+          this.toggleMenu('control');
+        })
+        Blank().height(this.layout.itemGap)
+        this.iconButton($r('sys.symbol.desktop_fill'), this.accentColor, (): void => {
+          this.toggleMenu('display');
+        })
+        Blank().height(this.layout.itemGap)
+        this.iconButton($r('sys.symbol.keyboard'), this.keyboardOpen ? '#2A9D8F' : this.accentColor,
+          (): void => { this.toggleMenu('keyboardMouse'); })
+        if (this.layout.deviceClass !== 'phone') {
+          Blank().height(this.layout.itemGap)
+          this.iconButton($r('sys.symbol.message'), this.accentColor, (): void => {
+            this.toggleMenu('chat');
+          })
         }
-        .width(58)
-        .height(28)
+        Blank().height(this.layout.itemGap)
+        this.iconButton($r('sys.symbol.xmark'), '#FF5353', (): void => {
+          this.actions.onDisconnect();
+        }, 18)
+        Blank().height(this.layout.itemGap)
+        Row() {
+          SymbolGlyph($r('sys.symbol.chevron_right'))
+            .fontSize(16)
+            .fontColor(['#444444'])
+          Text('隐藏').fontSize(10).fontColor('#444444').margin({ left: 4 })
+        }
+        .height(30)
+        .width(this.edgeRailWidth() - 12)
         .justifyContent(FlexAlign.Center)
         .backgroundColor('rgba(255,255,255,0.92)')
-        .borderRadius({ topLeft: 0, topRight: 0, bottomLeft: 8, bottomRight: 8 })
-        .shadow({ radius: 8, color: 'rgba(0,0,0,0.22)', offsetY: 2 })
+        .borderRadius(7)
+        .accessibilityText('隐藏 RustDesk 贴边栏')
         .onClick((): void => {
-          this.collapsed = false;
-          this.scheduleAutoCollapse();
+          this.collapsed = true;
+          this.closeMenus();
         })
+      }
+      .width(this.edgeRailWidth())
+      .padding(6)
+      .backgroundColor('rgba(255,255,255,0.94)')
+      .borderRadius({ topLeft: 10, bottomLeft: 10, topRight: 0, bottomRight: 0 })
+      .shadow({ radius: 10, color: 'rgba(0,0,0,0.24)', offsetX: -2 })
+      .position({ x: this.layout.menuWidth + this.layout.itemGap, y: this.edgeRailOffsetY() })
+
+      if (this.activeMenu === 'control') {
+        this.controlMenu()
+      }
+      if (this.activeMenu === 'display') {
+        this.displayMenu()
+      }
+      if (this.activeMenu === 'keyboardMouse') {
+        this.keyboardMouseMenu()
+      }
+      if (this.activeMenu === 'chat') {
+        this.chatMenu()
+      }
+    }
+    .width(this.layout.menuWidth + this.edgeRailWidth() + this.layout.itemGap)
+    .height(this.edgeRailCanvasHeight())
+    .position({ x: '100%', y: '50%' })
+    .markAnchor({ x: '100%', y: '50%' })
+  }
+
+  @Builder
+  private edgeRailHandle() {
+    Row() {
+      SymbolGlyph($r('sys.symbol.chevron_left'))
+        .fontSize(18)
+        .fontColor(['#444444'])
+    }
+    .width(30)
+    .height(72)
+    .justifyContent(FlexAlign.Center)
+    .backgroundColor('rgba(255,255,255,0.92)')
+    .borderRadius({ topLeft: 10, bottomLeft: 10, topRight: 0, bottomRight: 0 })
+    .shadow({ radius: 8, color: 'rgba(0,0,0,0.22)', offsetX: -2 })
+    .accessibilityText('展开 RustDesk 贴边栏')
+    .position({ x: '100%', y: '50%' })
+    .markAnchor({ x: '100%', y: '50%' })
+    .onClick((): void => {
+      this.collapsed = false;
+      this.scheduleAutoCollapse();
+    })
+  }
+
+  build() {
+    Stack() {
+      if (this.edgeRail) {
+        if (this.collapsed) {
+          this.edgeRailHandle()
+        } else {
+          this.edgeRailBody()
+        }
       } else {
-        this.toolbarBody()
+        Stack({ alignContent: Alignment.Top }) {
+          if (this.collapsed) {
+            Row() {
+              SymbolGlyph($r('sys.symbol.ellipsis_bubble'))
+                .fontSize(18)
+                .fontColor(['#444444'])
+            }
+            .width(58)
+            .height(28)
+            .justifyContent(FlexAlign.Center)
+            .backgroundColor('rgba(255,255,255,0.92)')
+            .borderRadius({ topLeft: 0, topRight: 0, bottomLeft: 8, bottomRight: 8 })
+            .shadow({ radius: 8, color: 'rgba(0,0,0,0.22)', offsetY: 2 })
+            .onClick((): void => {
+              this.collapsed = false;
+              this.scheduleAutoCollapse();
+            })
+          } else {
+            this.toolbarBody()
+          }
+        }
+        .width('100%')
+        .height(this.collapsed ? 32 : 540)
+        .position({ x: 0, y: this.layout.topOffset })
+        .hitTestBehavior(HitTestMode.Transparent)
       }
     }
     .width('100%')
-    .height(this.collapsed ? 32 : 540)
-    .position({ x: 0, y: this.layout.topOffset })
+    .height('100%')
     .hitTestBehavior(HitTestMode.Transparent)
   }
 }

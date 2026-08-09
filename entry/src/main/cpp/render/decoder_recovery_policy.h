@@ -5,6 +5,8 @@
 
 namespace Render {
 
+constexpr uint32_t kMaxDecoderRecoveryAttemptsPerBinding = 2;
+
 inline bool ShouldRequestDecoderRecoveryAfterForegroundRestore(bool foregroundRestore,
                                                                int64_t decoderHandle,
                                                                int64_t rendererHandle) {
@@ -17,6 +19,18 @@ inline bool ShouldDecodeFrameTriggerRecovery(bool recoveryRequested, bool frameI
 
 inline bool ShouldDropFrameWhileWaitingRecoveryKeyframe(bool recoveryRequested, bool frameIsKeyframe) {
     return recoveryRequested && !frameIsKeyframe;
+}
+
+inline bool ShouldArmDecoderRecovery(bool alreadyRequested, bool terminal) {
+    return !alreadyRequested && !terminal;
+}
+
+inline bool CanStartDecoderRecovery(uint32_t attempts, bool terminal) {
+    return !terminal && attempts < kMaxDecoderRecoveryAttemptsPerBinding;
+}
+
+inline bool ShouldEnterTerminalDecoderRecovery(bool recreated, uint32_t attempts) {
+    return !recreated || attempts >= kMaxDecoderRecoveryAttemptsPerBinding;
 }
 
 } // namespace Render

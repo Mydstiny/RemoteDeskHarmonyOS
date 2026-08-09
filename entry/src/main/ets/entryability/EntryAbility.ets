@@ -4,7 +4,7 @@
  * HarmonyOS 6 沉浸式窗口 + 主题初始化。
  * 网络权限由系统授予；移动端握姿权限由主机页首屏渲染后异步申请。
  */
-import { AbilityConstant, ConfigurationConstant, UIAbility, Want, Configuration } from '@kit.AbilityKit';
+import { AbilityConstant, common, ConfigurationConstant, UIAbility, Want, Configuration } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
 import { buffer } from '@kit.ArkTS';
@@ -19,6 +19,8 @@ import { BreakpointUtil } from '../utils/BreakpointUtil';
 import { ExtensionLoader } from '../services/ExtensionLoader';
 import { RemoteSessionBackgroundTaskService } from '../services/RemoteSessionBackgroundTaskService';
 import { RemoteSessionPipService } from '../services/RemoteSessionPipService';
+import { SshTerminalBackgroundTaskService } from '../services/SshTerminalBackgroundTaskService';
+import { SshTerminalPipService } from '../services/SshTerminalPipService';
 import {
   DEFAULT_DARK_HALO_COLOR,
   DEFAULT_LIGHT_HALO_COLOR,
@@ -27,6 +29,13 @@ import {
   HALO_COLOR_LIGHT_KEY,
   resolveStoredHaloColorForTheme
 } from '../services/HaloColorPolicy';
+import {
+  PERSONALIZATION_DEFAULTS_FRESH_INSTALL_KEY,
+  PERSONALIZATION_DEFAULTS_PROFILE_VERSION,
+  PERSONALIZATION_DEFAULTS_PROFILE_VERSION_KEY,
+  PersonalizationDefaultsProfile,
+  resolvePersonalizationDefaultsProfile
+} from '../services/PersonalizationDefaultsPolicy';
 import auth from '@hw-agconnect/auth';
 
 const DOMAIN = 0x0000;
@@ -67,6 +76,18 @@ export default class EntryAbility extends UIAbility {
       return;
     }
     this.shutdownPromise = (async (): Promise<void> => {
+      // SSH owns a separate detached session/PiP. Clean it independently so
+      // a slow RDP/RustDesk/VNC PiP transition cannot postpone SSH cleanup.
+      const sshCleanup: Promise<void> = (async (): Promise<void> => {
+        try {
+          await SshTerminalPipService.getInstance().stop();
+          await SshTerminalBackgroundTaskService.getInstance().stop(
+            this.context as common.UIAbilityContext);
+        } catch (err) {
+          hilog.warn(DOMAIN, TAG, 'SSH background task shutdown failed: %{public}s',
+            JSON.stringify(err));
+        }
+      })();
       let stopped: boolean = false;
       for (let attempt: number = 0; attempt < 2 && !stopped; attempt++) {
         try {
@@ -89,8 +110,10 @@ export default class EntryAbility extends UIAbility {
         hilog.error(DOMAIN, TAG,
           'PIP shutdown barrier did not reach terminal state; native disconnect deferred source=%{public}s',
           source);
+        await sshCleanup;
         return;
       }
+      await sshCleanup;
       this.disconnectRemoteSessions(source);
     })();
   }
@@ -109,6 +132,20 @@ export default class EntryAbility extends UIAbility {
       let savedWallpaper: string = sysDark ? '#1A1A2E' : '#FFFFFF';
       try {
         const prefs = preferences.getPreferencesSync(this.context, { name: 'RemoteDesktopAppPrefs' });
+        const storedProfileVersion: number =
+          prefs.getSync(PERSONALIZATION_DEFAULTS_PROFILE_VERSION_KEY, 0) as number;
+        const profile: PersonalizationDefaultsProfile = resolvePersonalizationDefaultsProfile(
+          storedProfileVersion,
+          prefs.getSync(PERSONALIZATION_DEFAULTS_FRESH_INSTALL_KEY, false) as boolean,
+          prefs.hasSync('firstLaunch'));
+        if (!Number.isFinite(storedProfileVersion) ||
+          storedProfileVersion < PERSONALIZATION_DEFAULTS_PROFILE_VERSION) {
+          prefs.putSync(PERSONALIZATION_DEFAULTS_PROFILE_VERSION_KEY, profile.version);
+          prefs.putSync(PERSONALIZATION_DEFAULTS_FRESH_INSTALL_KEY, profile.freshInstall);
+          prefs.flushSync();
+        }
+        AppStorage.setOrCreate<boolean>(PERSONALIZATION_DEFAULTS_FRESH_INSTALL_KEY,
+          profile.freshInstall);
         followSystem = prefs.getSync('followSystem', true) as boolean;
         const prefTheme: string = prefs.getSync('currentTheme', savedTheme) as string;
         if (prefTheme === 'dark' || prefTheme === 'light') { savedTheme = prefTheme; }
@@ -268,6 +305,14 @@ export default class EntryAbility extends UIAbility {
       RemoteSessionBackgroundTaskService.getInstance().stopSessionTask(this.context);
     } catch (err) {
       hilog.warn(DOMAIN, TAG, 'stopSessionTask on foreground failed: %{public}s', JSON.stringify(err));
+    }
+    try {
+      void SshTerminalPipService.getInstance().stop();
+      void SshTerminalBackgroundTaskService.getInstance().stop(
+        this.context as common.UIAbilityContext);
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, 'SSH background task stop on foreground failed: %{public}s',
+        JSON.stringify(err));
     }
     hilog.info(DOMAIN, TAG, 'Ability onForeground');
   }

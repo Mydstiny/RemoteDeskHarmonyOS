@@ -33,6 +33,7 @@ let gWidth: number = 360;
 let gFoldableDevice: boolean = false;
 let gFoldStatus: display.FoldStatus = display.FoldStatus.FOLD_STATUS_UNKNOWN;
 let gFoldListenerRegistered: boolean = false;
+let gPadDevice: boolean = false;
 
 function px2vpSync(px: number): number {
   try {
@@ -80,6 +81,14 @@ function detectDesktopDevice(): boolean {
   }
 }
 
+function detectPadDevice(): boolean {
+  try {
+    return deviceInfo.deviceType === 'tablet';
+  } catch (_e) {
+    return false;
+  }
+}
+
 const foldStatusCallback: Callback<display.FoldStatus> = (status: display.FoldStatus): void => {
   gFoldStatus = status;
   hilog.info(DOMAIN, TAG, '折叠状态变化: ' + status.toString());
@@ -97,6 +106,8 @@ function updateBp(width: number): void {
   AppStorage.setOrCreate<boolean>('isWideScreen', isWide(bp));
   AppStorage.setOrCreate<boolean>('isPC', isPc(bp));
   AppStorage.setOrCreate<boolean>('isDesktopDevice', gDesktopDevice);
+  AppStorage.setOrCreate<boolean>('isPadDevice', gPadDevice ||
+    (gFoldableDevice && gFoldStatus !== display.FoldStatus.FOLD_STATUS_FOLDED));
   AppStorage.setOrCreate<boolean>('isFoldableDevice', gFoldableDevice);
   AppStorage.setOrCreate<boolean>('isFoldedDevice',
     gFoldableDevice && gFoldStatus === display.FoldStatus.FOLD_STATUS_FOLDED);
@@ -126,6 +137,7 @@ export class BreakpointUtil {
   static init(win: window.Window): void {
     try {
       gDesktopDevice = detectDesktopDevice();
+      gPadDevice = detectPadDevice();
       hilog.info(DOMAIN, TAG, "设备类型: " + deviceInfo.deviceType + " desktop=" + gDesktopDevice.toString());
       gFoldableDevice = display.isFoldable();
       if (gFoldableDevice) {

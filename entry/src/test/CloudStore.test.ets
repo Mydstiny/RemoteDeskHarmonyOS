@@ -312,6 +312,7 @@ export default function cloudStoreTest() {
       entry.userId = 'union_abc';
       entry.issuer = 'GitHub';
       entry.account = 'user@example.com';
+      entry.displayName = 'Work GitHub';
       entry.secret = 'JBSWY3DPEHPK3PXP';
       entry.algorithm = TotpAlgorithm.SHA1;
       entry.digits = 6;
@@ -329,6 +330,7 @@ export default function cloudStoreTest() {
       expect(restored.userId).assertEqual(entry.userId);
       expect(restored.issuer).assertEqual(entry.issuer);
       expect(restored.account).assertEqual(entry.account);
+      expect(restored.displayName).assertEqual(entry.displayName);
       expect(restored.secret).assertEqual(entry.secret);
       expect(restored.algorithm).assertEqual(entry.algorithm);
       expect(restored.digits).assertEqual(entry.digits);

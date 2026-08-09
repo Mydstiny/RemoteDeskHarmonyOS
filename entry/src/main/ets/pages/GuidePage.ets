@@ -19,6 +19,9 @@ const GUIDE_KEY = 'guide_shown_v4';
 const LAST_SEEN_RELEASE_KEY = 'last_seen_release_version';
 const GUIDE_SHEET_ENTER_DELAY_MS = 120;
 const GUIDE_SHEET_REFLOW_DELAY_MS = 80;
+// Set true only during explicit release acceptance to show the update Swiper
+// on every launch regardless of the persisted read marker.
+const FORCE_RELEASE_NOTES_REVIEW: boolean = false;
 
 @Entry
 @Component
@@ -45,7 +48,8 @@ struct GuidePage {
       const shown: boolean = prefs.getSync(GUIDE_KEY, false) as boolean;
       const lastSeen: string = prefs.getSync(LAST_SEEN_RELEASE_KEY, '') as string;
       const releasePages: ReleaseNotePage[] = pagesForReleasedVersion(CURRENT_RELEASE_VERSION);
-      this.mode = resolveStartupMode(shown, lastSeen, CURRENT_RELEASE_VERSION, releasePages.length > 0);
+      this.mode = resolveStartupMode(shown, lastSeen, CURRENT_RELEASE_VERSION,
+        releasePages.length > 0, FORCE_RELEASE_NOTES_REVIEW);
       if (this.mode === StartupMode.LOGIN) {
         router.replaceUrl({ url: 'pages/LoginPage' });
         return;
@@ -187,14 +191,19 @@ struct GuidePage {
 
         Blank()
 
-        Row({ space: 8 }) {
-          ForEach(this.activePages, (_: GuideContentPage, i: number) => {
-            Column()
-              .width(this.currentIndex === i ? 24 : 8).height(8)
-              .borderRadius(4)
-              .backgroundColor(this.currentIndex === i ? this.accentColor : this.pal().divider)
-              .animation({ duration: 200, curve: Curve.EaseOut })
-          }, (page: GuideContentPage) => page.id)
+        if (this.activePages.length <= 10) {
+          Row({ space: 8 }) {
+            ForEach(this.activePages, (_: GuideContentPage, i: number) => {
+              Column()
+                .width(this.currentIndex === i ? 24 : 8).height(8)
+                .borderRadius(4)
+                .backgroundColor(this.currentIndex === i ? this.accentColor : this.pal().divider)
+                .animation({ duration: 200, curve: Curve.EaseOut })
+            }, (page: GuideContentPage) => page.id)
+          }
+        } else {
+          Text((this.currentIndex + 1).toString() + ' / ' + this.activePages.length.toString())
+            .fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
         }
 
         Blank()

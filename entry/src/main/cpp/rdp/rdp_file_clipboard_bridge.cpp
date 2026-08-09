@@ -90,6 +90,11 @@ bool RdpFileClipboardBridge::available() const {
            fileDescriptorFormatId_ != 0;
 }
 
+bool RdpFileClipboardBridge::attached() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return channel_ != nullptr;
+}
+
 RdpFileClipboardOfferResult RdpFileClipboardBridge::publishLocalFiles(
     const std::vector<std::string>& paths) {
     std::lock_guard<std::mutex> lock(mutex_);

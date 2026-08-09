@@ -12,15 +12,25 @@
 
 1. 无论 session 从哪个父目录启动，先定位并进入本项目根目录；读取本文件以及
    工作区根目录的 `AGENTS.md`（存在时）。
-2. 读取脱敏共享状态：`docs/codex/CURRENT.md`。
+2. 读取脱敏共享状态短卡：`docs/codex/CURRENT.md`；机器字段以
+   `docs/codex/STATE.json` 为准，不读取原始 Codex 记忆。
 3. 读取精简任务队列：`docs/codex/QUEUE.md`。
-4. 仅在涉及架构/历史约束时读取：`docs/codex/DECISIONS.md` 和
-   `docs/codex/HANDOFF.md`。
+4. 仅在状态或任务链接要求时读取：`docs/codex/DECISIONS.md`、
+   `docs/codex/HANDOFF.md`、计划或 `docs/codex/archive/YYYY-MM/`。
 5. 根据平台运行 `scripts/dev_workflow.ps1 status` 或
-   `scripts/sync_workspace.sh status`，核对实际 Git 状态。
+   `scripts/sync_workspace.sh status`，核对实际 Git 状态和 `review=...` 判定。
 6. 向用户报告：当前阶段、活动任务、当前分支/commit、相对 `main` 状态、最近验证、下一步和 blocker。
 
-若没有完成上述启动门禁，不得开始新的代码修改或声称已经完成任务。
+若没有完成上述启动门禁，不得开始新的代码修改或声称已经完成任务。正常启动只消费短卡和队列；归档内容按需查询，不作为每 session 的固定输入。
+
+### 状态与审查去重
+
+- `scripts/codex_state.mjs` 是跨平台状态计算器，由 Bash/PowerShell 工作流入口调用。
+- `STATE.json` 保存任务、基线、计划路径、审查范围和 blocker；`REVIEW_RECEIPTS.jsonl` 只保存结构化审查事实。
+- 只有任务 `base`、计划 hash、声明的代码范围树 hash 同时匹配 `status=PASS` receipt，才输出 `SKIP_FULL_REVIEW`。
+- 只有文档变化时沿用代码审查；代码、计划、基线或审查范围变化时输出 `REVIEW_REQUIRED`，并给出增量路径。
+- `BLOCKED`/`RESUME_REVIEW` 必须复用原 reviewer task ID；没有报告不得写 PASS，也不得因为上下文压缩重复派发。
+- 未提交代码位于声明范围内时，审查状态保持 `REVIEW_REQUIRED`，先做 checkpoint commit。
 
 不要复制或读取 Windows/Mac 的 Codex 原始记忆目录；需要共享的内容只能整理进
 `docs/codex/`。旧 Claude/Codex 中转站仅为各设备本地只读归档。
@@ -81,12 +91,12 @@ Windows 使用 DevEco 自带的 `hvigorw.js`/`hvigorw.bat` 执行相同的 `modu
 ## session 结束流程
 
 1. 运行强制的 Hvigor `default@OhosTestCompileArkTS` 和生产 `assembleHap`，再运行与变更范围匹配的附加验证，并记录准确结果。
-2. 更新 `CURRENT.md`：活动分支、commit、已完成、验证、下一步、blocker。
-3. 更新 `QUEUE.md`：完成项移除或归档，只保留 Now / Next / Later。
-4. 只有出现长期有效的架构规则或通用坑位时才更新 `DECISIONS.md`。
+2. 更新 `STATE.json` 和 `CURRENT.md`：活动分支、commit、阶段、已完成、验证、下一步、blocker、review 状态。
+3. 更新 `QUEUE.md`：完成项移除，只保留 Now / Next / Later；旧事实进入月度 archive。
+4. 只有出现长期有效的架构规则或通用坑位时才更新 `DECISIONS.md`；独立审查写入 `REVIEW_RECEIPTS.jsonl`，不写 raw session transcript。
 5. 任务完整完成时必须走 push/PR/required check/merge，并回到同步的 `main`；未完成则留在同一活动分支。
 
-历史记录按月归档，不在 CURRENT/QUEUE 中无限追加。
+`CURRENT.md` 不超过 120 行，`QUEUE.md` 只保留短队列。历史记录按月归档，不在 CURRENT/QUEUE 中无限追加。
 
 ## 本地参考
 

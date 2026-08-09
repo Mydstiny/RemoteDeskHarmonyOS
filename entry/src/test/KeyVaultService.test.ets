@@ -403,6 +403,8 @@ export default function keyVaultServiceTest() {
     it('displayLabel_should_format_correctly', 0, () => {
       const e1 = makeTotpEntry('GitHub', 'user@github.com');
       expect(e1.displayLabel()).assertEqual('GitHub (user@github.com)');
+      e1.displayName = '公司 GitHub';
+      expect(e1.displayLabel()).assertEqual('公司 GitHub');
 
       const e2 = makeTotpEntry('GenericIssuer', '');
       e2.account = '';

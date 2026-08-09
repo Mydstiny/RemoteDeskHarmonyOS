@@ -13,6 +13,7 @@ import { SshKey } from '../model/SshKey';
 import { TotpEntry } from '../model/TotpEntry';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { legacyCloudRestTransferAllowed } from './CloudLifecycleSafetyPolicy';
+import { rustDeskProHostPortableJSON } from './RustDeskProSyncPolicy';
 
 const TAG = 'CloudSyncService';
 const DOMAIN = 0x0014;
@@ -116,7 +117,8 @@ export class CloudSyncService {
 
   async syncHosts(hosts: RemoteHost[]): Promise<void> {
     if (!this.isReady()) { return; }
-    const body = { unionID: this.unionID, hosts: hosts.map((h: RemoteHost) => h.toJSON()) };
+    const body = { unionID: this.unionID, hosts: hosts.map((h: RemoteHost): Record<string, Object> =>
+      rustDeskProHostPortableJSON(h)) };
     const result = await this.post('/hosts', body);
     if (result) {
       hilog.info(DOMAIN, TAG, "同步 " + hosts.length.toString() + " 个主机到云端");

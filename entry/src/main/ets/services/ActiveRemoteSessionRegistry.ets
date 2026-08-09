@@ -50,11 +50,11 @@ export class ActiveRemoteSessionRegistry {
     }
   }
 
-  setActive(record: ActiveRemoteSessionRecord): void {
+  setActive(record: ActiveRemoteSessionRecord): boolean {
     if (record.ownerScopeId !== this.ownerScopeId ||
       record.accountGeneration !== this.accountGeneration ||
       this.ownerScopeId.length === 0 || this.accountGeneration <= 0) {
-      return;
+      return false;
     }
     const now: number = Date.now();
     const next: ActiveRemoteSessionRecord = {
@@ -72,6 +72,7 @@ export class ActiveRemoteSessionRegistry {
       updatedAtMs: now
     };
     this.write(next);
+    return true;
   }
 
   getActive(): ActiveRemoteSessionRecord | null {
@@ -112,37 +113,40 @@ export class ActiveRemoteSessionRegistry {
       active.restoreNeeded;
   }
 
-  markRenderDetached(): void {
+  markRenderDetached(): boolean {
     const active = this.getActive();
     if (active === null) {
-      return;
+      return false;
     }
     active.renderAttached = false;
     active.restoreNeeded = true;
     active.updatedAtMs = Date.now();
     this.write(active);
+    return true;
   }
 
-  markRenderAttached(surfaceId: string): void {
+  markRenderAttached(surfaceId: string): boolean {
     const active = this.getActive();
     if (active === null) {
-      return;
+      return false;
     }
     active.renderAttached = true;
     active.restoreNeeded = false;
     active.latestSurfaceId = surfaceId;
     active.updatedAtMs = Date.now();
     this.write(active);
+    return true;
   }
 
-  markRestoreNeeded(value: boolean): void {
+  markRestoreNeeded(value: boolean): boolean {
     const active = this.getActive();
     if (active === null) {
-      return;
+      return false;
     }
     active.restoreNeeded = value;
     active.updatedAtMs = Date.now();
     this.write(active);
+    return true;
   }
 
   clear(_reason: string): void {

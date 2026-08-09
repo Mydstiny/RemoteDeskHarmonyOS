@@ -7,6 +7,8 @@
  */
 #include "ssh_key_tool.h"
 #include "ssh_algorithm_prefs.h"
+#include "ssh_auth_policy.h"
+#include "ssh_route_policy.h"
 
 #include <openssl/evp.h>
 #include <openssl/pem.h>
@@ -17,12 +19,16 @@
 #include <openssl/ec.h>
 #include <libssh2.h>
 #include <cstring>
+#include <climits>
 #include <vector>
 #include <algorithm>
 #include <thread>
 #include <chrono>
 #include <cerrno>
 #include <cstdlib>
+#include <array>
+#include <memory>
+#include <sys/select.h>
 
 #ifdef __OHOS__
 #include <sys/socket.h>
@@ -74,6 +80,79 @@ static std::string base64Encode(const unsigned char* data, size_t len) {
         result.pop_back();
     }
     return result;
+}
+
+static bool verifyHostKeyBinding(LIBSSH2_SESSION* session,
+                                 const std::string& expectedRawBase64,
+                                 const std::string& expectedFingerprintSha256) {
+    if (session == nullptr || (expectedRawBase64.empty() &&
+                               expectedFingerprintSha256.empty())) {
+        return true;
+    }
+    size_t keyLen = 0;
+    int keyType = LIBSSH2_HOSTKEY_TYPE_UNKNOWN;
+    const char* rawKey = libssh2_session_hostkey(session, &keyLen, &keyType);
+    (void)keyType;
+    if (rawKey == nullptr || keyLen == 0) { return false; }
+    if (!expectedRawBase64.empty() &&
+        base64Encode(reinterpret_cast<const unsigned char*>(rawKey), keyLen) !=
+            expectedRawBase64) {
+        return false;
+    }
+    if (!expectedFingerprintSha256.empty()) {
+        const char* fingerprint = libssh2_hostkey_hash(session, LIBSSH2_HOSTKEY_HASH_SHA256);
+        if (fingerprint == nullptr) { return false; }
+        std::string encoded = base64Encode(
+            reinterpret_cast<const unsigned char*>(fingerprint), 32);
+        while (!encoded.empty() && encoded.back() == '=') { encoded.pop_back(); }
+        if ("SHA256:" + encoded != expectedFingerprintSha256) { return false; }
+    }
+    return true;
+}
+
+struct SshProxyKeyboardContext {
+    const std::string* password = nullptr;
+    const std::vector<std::string>* explicitResponses = nullptr;
+};
+
+static void sshProxyKeyboardInteractiveCallback(
+    const char* name, int nameLen, const char* instruction, int instructionLen,
+    int numPrompts, const LIBSSH2_USERAUTH_KBDINT_PROMPT* prompts,
+    LIBSSH2_USERAUTH_KBDINT_RESPONSE* responses, void** abstract) {
+    (void)name;
+    (void)nameLen;
+    (void)instruction;
+    (void)instructionLen;
+    if (numPrompts <= 0 || responses == nullptr || abstract == nullptr ||
+        *abstract == nullptr) {
+        return;
+    }
+    auto* context = static_cast<SshProxyKeyboardContext*>(*abstract);
+    for (int index = 0; index < numPrompts; ++index) {
+        std::string response;
+        if (context->explicitResponses != nullptr && index >= 0 &&
+            static_cast<size_t>(index) < context->explicitResponses->size()) {
+            response = (*context->explicitResponses)[static_cast<size_t>(index)];
+        } else if (prompts != nullptr && context->password != nullptr &&
+                   sshKeyboardInteractivePromptCanUsePassword(prompts[index].echo)) {
+            response = *context->password;
+        }
+        if (response.empty()) {
+            responses[index].text = nullptr;
+            responses[index].length = 0;
+            continue;
+        }
+        char* allocated = static_cast<char*>(std::malloc(response.size()));
+        if (allocated == nullptr) {
+            responses[index].text = nullptr;
+            responses[index].length = 0;
+            continue;
+        }
+        std::memcpy(allocated, response.data(), response.size());
+        responses[index].text = allocated;
+        responses[index].length = static_cast<unsigned int>(
+            std::min<size_t>(response.size(), UINT_MAX));
+    }
 }
 
 /** Base64 解码 (标准 PEM body, 忽略换行空白) */
@@ -270,6 +349,11 @@ static int pemPassphraseCallback(char* buf, int size, int, void* userdata) {
     buf[len] = '\0';
     return len;
 }
+
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#endif
 
 /**
  * 将原始公钥字节编码为 OpenSSH authorized_keys 格式行
@@ -478,6 +562,10 @@ static std::string sshKeyTypeForPkey(EVP_PKEY* pkey) {
     }
     return "";
 }
+
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#endif
 
 /**
  * 计算 OpenSSH 风格 SHA256 fingerprint。
@@ -954,6 +1042,211 @@ static void closeSocketFd(int sock) {
 #endif
 }
 
+static bool setSocketIoTimeout(int sock, int timeoutSec);
+
+struct SshJumpOperationState {
+    int bastionSock = -1;
+    int relayFd = -1;
+    LIBSSH2_SESSION* session = nullptr;
+    LIBSSH2_CHANNEL* channel = nullptr;
+};
+
+static void closeSshJumpOperationState(const std::shared_ptr<SshJumpOperationState>& state) {
+    if (state->channel != nullptr) {
+        libssh2_channel_free(state->channel);
+        state->channel = nullptr;
+    }
+    if (state->session != nullptr) {
+        libssh2_session_free(state->session);
+        state->session = nullptr;
+    }
+    if (state->relayFd >= 0) {
+        closeSocketFd(state->relayFd);
+        state->relayFd = -1;
+    }
+    if (state->bastionSock >= 0) {
+        closeSocketFd(state->bastionSock);
+        state->bastionSock = -1;
+    }
+}
+
+static void runSshJumpOperationRelay(const std::shared_ptr<SshJumpOperationState>& state) {
+    constexpr size_t kRelayLimit = 512 * 1024;
+    std::vector<uint8_t> toChannel;
+    std::vector<uint8_t> toLocal;
+    std::array<uint8_t, 64 * 1024> buffer {};
+    bool localEof = false;
+    bool channelEof = false;
+
+    while (true) {
+        bool progress = false;
+        if (!localEof && toChannel.size() < kRelayLimit) {
+            const ssize_t received = recv(state->relayFd, buffer.data(), buffer.size(), 0);
+            if (received > 0) {
+                toChannel.insert(toChannel.end(), buffer.begin(), buffer.begin() + received);
+                progress = true;
+            } else if (received == 0) {
+                localEof = true;
+                libssh2_channel_send_eof(state->channel);
+            } else if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+                break;
+            }
+        }
+        if (!toChannel.empty()) {
+            const ssize_t written = libssh2_channel_write(
+                state->channel, reinterpret_cast<const char*>(toChannel.data()), toChannel.size());
+            if (written > 0) {
+                toChannel.erase(toChannel.begin(), toChannel.begin() + written);
+                progress = true;
+            } else if (written < 0 && written != LIBSSH2_ERROR_EAGAIN) {
+                break;
+            }
+        }
+        if (!channelEof && toLocal.size() < kRelayLimit) {
+            const ssize_t received = libssh2_channel_read(
+                state->channel, reinterpret_cast<char*>(buffer.data()), buffer.size());
+            if (received > 0) {
+                toLocal.insert(toLocal.end(), buffer.begin(), buffer.begin() + received);
+                progress = true;
+            } else if (received == 0 && libssh2_channel_eof(state->channel)) {
+                channelEof = true;
+                shutdown(state->relayFd, SHUT_WR);
+            } else if (received < 0 && received != LIBSSH2_ERROR_EAGAIN) {
+                break;
+            }
+        }
+        if (!toLocal.empty()) {
+            const ssize_t written = send(state->relayFd, toLocal.data(), toLocal.size(), 0);
+            if (written > 0) {
+                toLocal.erase(toLocal.begin(), toLocal.begin() + written);
+                progress = true;
+            } else if (written < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+                break;
+            }
+        }
+        if (localEof && channelEof && toChannel.empty() && toLocal.empty()) { break; }
+        if (progress) { continue; }
+
+        fd_set readSet;
+        fd_set writeSet;
+        FD_ZERO(&readSet);
+        FD_ZERO(&writeSet);
+        FD_SET(state->relayFd, &readSet);
+        if (!toLocal.empty()) { FD_SET(state->relayFd, &writeSet); }
+        FD_SET(state->bastionSock, &readSet);
+        FD_SET(state->bastionSock, &writeSet);
+        const int maxFd = std::max(state->relayFd, state->bastionSock);
+        struct timeval tv = {0, 100000};
+        const int selected = select(maxFd + 1, &readSet, &writeSet, nullptr, &tv);
+        if (selected < 0 && errno != EINTR) { break; }
+    }
+    closeSshJumpOperationState(state);
+}
+
+static int connectThroughSshJumpOperation(
+    const std::string& host, int port, const SshProxyOptions& proxy) {
+    const std::string authMethod = proxy.authMethod.empty() ? "password" : proxy.authMethod;
+    if (proxy.host.empty() || proxy.port <= 0 || proxy.port > 65535 ||
+        proxy.username.empty() ||
+        (authMethod != "password" && authMethod != "publickey" &&
+         authMethod != "kbd-interactive" && authMethod != "keyboard-interactive")) {
+        return -2;
+    }
+    const int bastionSock = tcpConnectWithTimeout(proxy.host, proxy.port, 10);
+    if (bastionSock < 0) { return -1; }
+    if (!setSocketIoTimeout(bastionSock, 10)) {
+        closeSocketFd(bastionSock);
+        return -1;
+    }
+
+    const std::shared_ptr<SshJumpOperationState> state =
+        std::make_shared<SshJumpOperationState>();
+    state->bastionSock = bastionSock;
+    state->session = libssh2_session_init();
+    if (state->session == nullptr) {
+        closeSshJumpOperationState(state);
+        return -1;
+    }
+    libssh2_session_set_blocking(state->session, 1);
+    applySshAlgorithmPreferences(state->session);
+    int rc = libssh2_session_handshake(state->session, state->bastionSock);
+    if (rc != 0) {
+        closeSshJumpOperationState(state);
+        return -2;
+    }
+
+    if (!verifyHostKeyBinding(state->session, proxy.expectedHostKeyRawBase64,
+                              proxy.expectedHostKeyFingerprintSha256)) {
+        closeSshJumpOperationState(state);
+        return -2;
+    }
+
+    char* methods = libssh2_userauth_list(
+        state->session, proxy.username.c_str(), proxy.username.size());
+    const std::string advertised = methods == nullptr ? std::string() : std::string(methods);
+    const char* advertisedMethod = authMethod == "publickey" ? "publickey" :
+        (authMethod == "password" ? "password" : "keyboard-interactive");
+    if (!advertised.empty() && !sshAuthMethodAdvertised(advertised, advertisedMethod)) {
+        closeSshJumpOperationState(state);
+        return -2;
+    }
+
+    if (authMethod == "publickey") {
+        if (proxy.privateKeyPem.empty()) {
+            closeSshJumpOperationState(state);
+            return -2;
+        }
+        rc = libssh2_userauth_publickey_frommemory(
+            state->session, proxy.username.c_str(), proxy.username.size(),
+            nullptr, 0, proxy.privateKeyPem.c_str(), proxy.privateKeyPem.size(),
+            proxy.privateKeyPassphrase.empty() ? nullptr : proxy.privateKeyPassphrase.c_str());
+    } else if (authMethod == "kbd-interactive" || authMethod == "keyboard-interactive") {
+        SshProxyKeyboardContext context {
+            &proxy.password, &proxy.keyboardInteractiveResponses
+        };
+        void** abstract = libssh2_session_abstract(state->session);
+        if (abstract != nullptr) { *abstract = &context; }
+        rc = libssh2_userauth_keyboard_interactive(
+            state->session, proxy.username.c_str(),
+            &sshProxyKeyboardInteractiveCallback);
+    } else {
+        if (proxy.password.empty()) {
+            closeSshJumpOperationState(state);
+            return -2;
+        }
+        rc = libssh2_userauth_password(state->session, proxy.username.c_str(), proxy.password.c_str());
+    }
+    if (rc != 0) {
+        closeSshJumpOperationState(state);
+        return -2;
+    }
+    state->channel = libssh2_channel_direct_tcpip(state->session, host.c_str(), port);
+    if (state->channel == nullptr) {
+        closeSshJumpOperationState(state);
+        return -2;
+    }
+
+    int socketPair[2] = {-1, -1};
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, socketPair) != 0) {
+        closeSshJumpOperationState(state);
+        return -1;
+    }
+    for (int fd : socketPair) {
+        const int flags = fcntl(fd, F_GETFL, 0);
+        if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+            close(socketPair[0]);
+            close(socketPair[1]);
+            closeSshJumpOperationState(state);
+            return -1;
+        }
+    }
+    const int targetSock = socketPair[0];
+    state->relayFd = socketPair[1];
+    libssh2_session_set_blocking(state->session, 0);
+    std::thread([state]() { runSshJumpOperationRelay(state); }).detach();
+    return targetSock;
+}
+
 static bool setSocketIoTimeout(int sock, int timeoutSec) {
     if (sock < 0 || timeoutSec <= 0) {
         return false;
@@ -1068,6 +1361,11 @@ static bool connectThroughProxy(
     const std::string proxyType = proxy.type.empty() ? "direct" : proxy.type;
     if (proxyType == "direct") {
         return true;
+    }
+    if (proxyType == "frp_tcp") {
+        // The socket was opened against the FRP mapped endpoint by
+        // connectForSshOperation; no HTTP/SOCKS handshake belongs here.
+        return proxy.host.size() <= 255 && proxy.port > 0 && proxy.port <= 65535;
     }
     if ((proxyType != "http_connect" && proxyType != "socks5") ||
         proxy.host.empty() || proxy.port <= 0 || proxy.port > 65535 ||
@@ -1218,6 +1516,13 @@ static bool connectThroughProxy(
 static int connectForSshOperation(
     const std::string& host, int port, const SshProxyOptions& proxy) {
     const std::string proxyType = proxy.type.empty() ? "direct" : proxy.type;
+    if (!sshRouteTypeIsKnown(proxyType) || proxyType == "legacy_gateway" ||
+        sshRouteTypeNeedsFrpControlPlane(proxyType)) {
+        return -3;
+    }
+    if (proxyType == "ssh_jump") {
+        return connectThroughSshJumpOperation(host, port, proxy);
+    }
     const bool direct = proxyType == "direct";
     const std::string connectHost = direct ? host : proxy.host;
     const int connectPort = direct ? port : proxy.port;
@@ -1464,8 +1769,9 @@ SshAuthTestResult testSshKeyAuth(
 
     int sock = connectForSshOperation(host, port, proxy);
     if (sock < 0) {
-        result.code = -1;
-        result.message = sock == -2 ? "SSH proxy handshake failed" : "TCP connect failed";
+        result.code = sock == -3 ? kSshProxyUnsupportedError : -1;
+        result.message = sock == -3 ? "SSH route is unsupported" :
+            (sock == -2 ? "SSH proxy handshake failed" : "TCP connect failed");
         return result;
     }
 
@@ -1543,9 +1849,10 @@ SshHostKeyInfo probeSshHostKey(
     // Step 1: TCP connect
     int sock = connectForSshOperation(host, port, proxy);
     if (sock < 0) {
-        result.errorCode = -1;
-        result.errorMessage = (sock == -2 ? "SSH proxy handshake failed: " :
-            "TCP connect failed: ") + host + ":" + std::to_string(port);
+        result.errorCode = sock == -3 ? -5 : -1;
+        result.errorMessage = (sock == -3 ? "SSH route is unsupported: " :
+            (sock == -2 ? "SSH proxy handshake failed: " : "TCP connect failed: ")) +
+            host + ":" + std::to_string(port);
         return result;
     }
 

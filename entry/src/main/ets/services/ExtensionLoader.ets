@@ -14,6 +14,13 @@ import {
   SshHostKeyInfo,
   SshProxyConfig,
   RdpCertificateInfo,
+  RdpCertificateRecord,
+  RdpPreflightRequest,
+  RdpPreflightResult,
+  RustDeskPresenceResult,
+  VncCertificateProbePromise,
+  VncGatewayDeepHealthPromise,
+  VncGatewayDeepHealthResult,
   RdpRenderStats,
   RendererViewport,
   RustDeskDisplayCapabilities,
@@ -23,6 +30,14 @@ import {
   RemoteCursorSnapshot,
   SessionTransferStatus,
   SshCommandResult,
+  SshTerminalDiagnosticsSnapshot,
+  SshTerminalInputEnqueueResult,
+  SshAuthPromptRequest,
+  SshAuthPromptResponse,
+  SshSessionSnapshot,
+  SshSessionEventsResult,
+  SshForwardingConfig,
+  SshForwardingSnapshotsResult,
   SftpListAsyncResult,
   SftpReadAsyncResult,
   SftpWriteAsyncResult,
@@ -42,15 +57,35 @@ import { shouldBindSurfaceBeforeForegroundRenderer } from './RemoteForegroundRes
 const TAG = 'ExtensionLoader';
 const DOMAIN = 0x0013;
 
+interface DetachedSshSession {
+  sessionId: number;
+  hostId: string;
+  detachedAt: number;
+}
+
+export interface SshNativeConnectPromise extends Promise<number> {
+  sessionId: number;
+  generation: number;
+}
+
+export interface SshPendingConnectIdentity {
+  sessionId: number;
+  generation: number;
+  foreground: boolean;
+}
+
 export class ExtensionLoader {
   private static instance: ExtensionLoader;
   private currentSessionId: number = -1;
   private sshConnectGeneration: number = 0;
+  private pendingSshConnects: Map<number, SshPendingConnectIdentity> =
+    new Map<number, SshPendingConnectIdentity>();
   private rendererHandle: number = -1;
   private decoderHandle: number = -1;
   private audioPlayerHandle: number = -1;
   private teardownRequestId: number = 0;
   private diagnosticsLastErrorAtMs: number = 0;
+  private detachedSshSessions: DetachedSshSession[] = [];
 
   static getInstance(): ExtensionLoader {
     if (!ExtensionLoader.instance) { ExtensionLoader.instance = new ExtensionLoader(); }
@@ -70,34 +105,160 @@ export class ExtensionLoader {
     }
   }
 
-  async connectSshAsync(config: SessionConfig): Promise<number> {
-    const generation: number = ++this.sshConnectGeneration;
+  connectSshAsync(config: SessionConfig, foreground: boolean = true): SshNativeConnectPromise {
     try {
-      const pendingPromise: Promise<number> = rdpnapi.connectSshAsync(config) as Promise<number>;
-      // The native Promise resolves only after DNS/KEX/authentication. Make
-      // the reserved session visible immediately so page teardown can cancel
-      // a connection that is still in flight.
-      const pendingId: number = rdpnapi.getPendingSshConnectId() as number;
-      if (generation === this.sshConnectGeneration && pendingId > 0) {
-        this.currentSessionId = pendingId;
+      const nativePromise: SshNativeConnectPromise =
+        rdpnapi.connectSshAsync(config, foreground) as SshNativeConnectPromise;
+      const identity: SshPendingConnectIdentity = {
+        sessionId: nativePromise.sessionId,
+        generation: nativePromise.generation,
+        foreground
+      };
+      if (identity.sessionId <= 0 || identity.generation <= 0) {
+        hilog.error(DOMAIN, TAG, '[ExtensionLoader] connectSshAsync: native identity missing');
+        const rejected: SshNativeConnectPromise = Promise.resolve(-1) as SshNativeConnectPromise;
+        rejected.sessionId = -1;
+        rejected.generation = 0;
+        return rejected;
       }
-      const result: number = await pendingPromise;
-      if (generation !== this.sshConnectGeneration) {
-        return -1;
+      this.pendingSshConnects.set(identity.sessionId, identity);
+      // Only the foreground owner updates the legacy facade target. Detached
+      // SFTP sessions remain addressable through their explicit session id.
+      if (foreground) {
+        this.currentSessionId = identity.sessionId;
       }
-      this.currentSessionId = result;
-      return result;
+      const settled: SshNativeConnectPromise = nativePromise.then(
+        (result: number): number => {
+          this.pendingSshConnects.delete(identity.sessionId);
+          if (foreground && this.currentSessionId === identity.sessionId) {
+            this.currentSessionId = result > 0 ? result : -1;
+          }
+          return result;
+        },
+        (err: Object): number => {
+          this.pendingSshConnects.delete(identity.sessionId);
+          if (foreground && this.currentSessionId === identity.sessionId) {
+            this.currentSessionId = -1;
+          }
+          hilog.error(DOMAIN, TAG, '[ExtensionLoader] connectSshAsync: ' + JSON.stringify(err));
+          return -1;
+        }) as SshNativeConnectPromise;
+      settled.sessionId = identity.sessionId;
+      settled.generation = identity.generation;
+      return settled;
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] connectSshAsync: ' + JSON.stringify(err));
-      if (generation === this.sshConnectGeneration) {
-        this.currentSessionId = -1;
-      }
-      return -1;
+      const rejected: SshNativeConnectPromise = Promise.resolve(-1) as SshNativeConnectPromise;
+      rejected.sessionId = -1;
+      rejected.generation = 0;
+      return rejected;
     }
   }
 
+  getSshPendingConnects(): SshPendingConnectIdentity[] {
+    const result: SshPendingConnectIdentity[] = [];
+    this.pendingSshConnects.forEach((identity: SshPendingConnectIdentity): void => {
+      result.push({
+        sessionId: identity.sessionId,
+        generation: identity.generation,
+        foreground: identity.foreground
+      });
+    });
+    return result;
+  }
+
+  /** Detach only the SSH view consumer; the native session remains live. */
+  detachSshSession(sessionId: number, hostId: string): boolean {
+    const normalizedHostId: string = hostId.trim();
+    if (sessionId <= 0 || normalizedHostId.length === 0) { return false; }
+    try {
+      const detached: boolean = rdpnapi.detachSshSession(sessionId) as boolean;
+      if (!detached) { return false; }
+      let replaced: boolean = false;
+      for (let index = 0; index < this.detachedSshSessions.length; index++) {
+        if (this.detachedSshSessions[index].sessionId === sessionId) {
+          this.detachedSshSessions[index] = {
+            sessionId, hostId: normalizedHostId, detachedAt: Date.now()
+          };
+          replaced = true;
+          break;
+        }
+      }
+      if (!replaced) {
+        this.detachedSshSessions.push({ sessionId, hostId: normalizedHostId, detachedAt: Date.now() });
+      }
+      if (this.currentSessionId === sessionId) { this.currentSessionId = -1; }
+      return true;
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, '[ExtensionLoader] detachSshSession: ' + JSON.stringify(err));
+      return false;
+    }
+  }
+
+  /** Find a live detached SSH session for the host and make it the facade target. */
+  adoptDetachedSshSession(hostId: string): number {
+    const normalizedHostId: string = hostId.trim();
+    if (normalizedHostId.length === 0) { return -1; }
+    for (let index = this.detachedSshSessions.length - 1; index >= 0; index--) {
+      const candidate: DetachedSshSession = this.detachedSshSessions[index];
+      if (candidate.hostId !== normalizedHostId) { continue; }
+      let state: number = 0;
+      try { state = rdpnapi.getConnectionState(candidate.sessionId) as number; } catch (_err) { state = 0; }
+      if (state !== 2 && state !== 3) {
+        this.detachedSshSessions.splice(index, 1);
+        continue;
+      }
+      this.detachedSshSessions.splice(index, 1);
+      this.currentSessionId = candidate.sessionId;
+      return candidate.sessionId;
+    }
+    return -1;
+  }
+
+  /**
+   * Inspect a retained SSH session without adopting it or changing the
+   * foreground facade owner. The terminal tab bar uses this to reconcile a
+   * handshake that completed while another host was visible.
+   */
+  peekDetachedSshSession(hostId: string): number {
+    const normalizedHostId: string = hostId.trim();
+    if (normalizedHostId.length === 0) { return -1; }
+    for (let index = this.detachedSshSessions.length - 1; index >= 0; index--) {
+      const candidate: DetachedSshSession = this.detachedSshSessions[index];
+      if (candidate.hostId !== normalizedHostId) { continue; }
+      let state: number = 0;
+      try { state = rdpnapi.getConnectionState(candidate.sessionId) as number; } catch (_err) { state = 0; }
+      if (state === 2 || state === 3) {
+        return candidate.sessionId;
+      }
+      this.detachedSshSessions.splice(index, 1);
+    }
+    return -1;
+  }
+
+  /** Re-enable input after a detached SSH view has installed its callback. */
+  resumeSshSession(sessionId: number): boolean {
+    if (sessionId <= 0) { return false; }
+    try { return rdpnapi.resumeSshSession(sessionId) as boolean; } catch (_err) { return false; }
+  }
+
+  /** Explicitly close one SSH session, including a detached session. */
+  disconnectSshSession(sessionId: number): number {
+    if (sessionId <= 0) { return 0; }
+    this.pendingSshConnects.delete(sessionId);
+    this.detachedSshSessions = this.detachedSshSessions.filter(
+      (candidate: DetachedSshSession): boolean => candidate.sessionId !== sessionId);
+    let requestId: number = 0;
+    try { requestId = rdpnapi.disconnect(sessionId, -1, -1, -1) as number; } catch (err) {
+      hilog.warn(DOMAIN, TAG, '[ExtensionLoader] disconnectSshSession: ' + JSON.stringify(err));
+    }
+    if (this.currentSessionId === sessionId) { this.currentSessionId = -1; }
+    if (requestId > 0) { this.teardownRequestId = requestId; }
+    return requestId;
+  }
+
   disconnect(): number {
-    this.sshConnectGeneration++;
+    if (this.currentSessionId > 0) { this.pendingSshConnects.delete(this.currentSessionId); }
     let requestId: number = 0;
     try {
       if (this.currentSessionId > 0 || this.rendererHandle > 0 ||
@@ -119,7 +280,7 @@ export class ExtensionLoader {
   }
 
   disconnectAll(): number {
-    this.sshConnectGeneration++;
+    this.pendingSshConnects.clear();
     let requestId: number = 0;
     try {
       requestId = rdpnapi.disconnectAll(
@@ -188,10 +349,13 @@ export class ExtensionLoader {
         ok: false,
         host,
         port,
+        serverName,
         commonName: '',
         subject: '',
         issuer: '',
         fingerprintSha256: '',
+        notBeforeMs: 0,
+        notAfterMs: 0,
         flags: 0,
         rootTrusted: false,
         hostMismatch: false,
@@ -210,16 +374,125 @@ export class ExtensionLoader {
         ok: false,
         host,
         port,
+        serverName,
         commonName: '',
         subject: '',
         issuer: '',
         fingerprintSha256: '',
+        notBeforeMs: 0,
+        notAfterMs: 0,
         flags: 0,
         rootTrusted: false,
         hostMismatch: false,
         errorCode: -1,
         errorMessage: 'RDP 证书探测异常 [E-RDP-CERT-ASYNC]'
       };
+    }
+  }
+
+  async probeRdpCertificateRouteAsync(
+    request: RdpPreflightRequest): Promise<RdpPreflightResult> {
+    try {
+      return await rdpnapi.probeRdpCertificateRouteAsync(request) as RdpPreflightResult;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG,
+        '[ExtensionLoader] probeRdpCertificateRouteAsync: ' + JSON.stringify(err));
+      const route = request.route;
+      const emptyCertificate: RdpCertificateRecord = {
+        present: false, rootTrusted: false, hostMismatch: false, flags: 0,
+        host: route.targetHost, port: route.targetPort ?? 3389,
+        stage: 'target', serverName: route.targetServerName ?? route.targetHost,
+        commonName: '', subject: '', issuer: '', fingerprintSha256: '',
+        notBeforeMs: 0, notAfterMs: 0
+      };
+      return {
+        ok: false,
+        endpointMode: route.endpointMode ?? (route.gatewayHost ? 'microsoft_rd_gateway' : 'direct_rdp'),
+        routeIdentity: '',
+        generation: request.generation ?? 0,
+        requestId: request.requestId ?? '',
+        stage: 'endpoint',
+        errorCode: 'E-RDP-PREFLIGHT-NAPI',
+        errorMessage: 'RDP 路由证书预检异常',
+        gatewayTransportRequested: route.gatewayTransport ?? 'auto',
+        gatewayTransportNegotiated: 'unknown',
+        gatewayTransportSelected: route.gatewayTransport ?? 'auto',
+        requiresGatewayAuth: false,
+        requiresUserDecision: false,
+        gatewayCertificate: {
+          present: false, rootTrusted: false, hostMismatch: false, flags: 0,
+          host: route.gatewayHost ?? '', port: route.gatewayPort ?? 443,
+          stage: 'gateway', serverName: route.gatewayServerName ?? route.gatewayHost ?? '',
+          commonName: '', subject: '', issuer: '', fingerprintSha256: '',
+          notBeforeMs: 0, notAfterMs: 0
+        },
+        targetCertificate: emptyCertificate
+      } as RdpPreflightResult;
+    }
+  }
+
+  async probeRustDeskPresenceAsync(host: string, port: number, serverKey: string,
+    peerId: string, token: string, direct: boolean, keyMode: number): Promise<RustDeskPresenceResult> {
+    try {
+      return await rdpnapi.probeRustDeskPresenceAsync(host, port, serverKey, peerId, token,
+        direct, keyMode) as RustDeskPresenceResult;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] probeRustDeskPresenceAsync: ' + JSON.stringify(err));
+      return { state: 0, latencyMs: -1, errorCode: 5 };
+    }
+  }
+
+  probeVncCertificateAsync(host: string, port: number, serverName: string,
+    timeoutMs: number = 10000): VncCertificateProbePromise {
+    try {
+      return rdpnapi.probeVncCertificateAsync(host, port, serverName, timeoutMs) as VncCertificateProbePromise;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] probeVncCertificateAsync: ' + JSON.stringify(err));
+      // A synchronous NAPI failure cannot provide a cancellable request id;
+      // propagate it so callers fail closed instead of receiving an
+      // un-cancellable promise with a fabricated token.
+      throw new Error(JSON.stringify(err));
+    }
+  }
+
+  cancelVncCertificateProbe(requestId: number): boolean {
+    try {
+      return rdpnapi.cancelVncCertificateProbe(requestId) as boolean;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] cancelVncCertificateProbe: ' + JSON.stringify(err));
+      return false;
+    }
+  }
+
+  probeVncGatewayDeepAsync(host: string, port: number, transport: string,
+    repeaterMode: string, target: string, tls: boolean, expectedFingerprint: string,
+    timeoutMs: number, ownerType: string, ownerId: string, userId: string,
+    storeIdentityFingerprint: string, endpointBindingFingerprint: string,
+    accountGeneration: number, enabled: boolean): VncGatewayDeepHealthPromise {
+    try {
+      return rdpnapi.probeVncGatewayDeepAsync(host, port, transport, repeaterMode, target,
+        tls, expectedFingerprint, timeoutMs, ownerType, ownerId, userId,
+        storeIdentityFingerprint, endpointBindingFingerprint, accountGeneration,
+        enabled) as VncGatewayDeepHealthPromise;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] probeVncGatewayDeepAsync: ' + JSON.stringify(err));
+      const failure: VncGatewayDeepHealthResult = {
+        stage: 'FAILED', code: 'E-VNC-GATEWAY-DEEP', message: 'Gateway 深度检查失败', protocolReady: false,
+        certificateFingerprintSha256: '', ownerType: '', ownerId: '', userId: '',
+        storeIdentityFingerprint: '', endpointBindingFingerprint: '', accountGeneration: 0
+      };
+      const promise: VncGatewayDeepHealthPromise = Promise.resolve(failure) as VncGatewayDeepHealthPromise;
+      promise.requestId = 0;
+      return promise;
+    }
+  }
+
+  cancelVncGatewayDeep(requestId: number): boolean {
+    try {
+      return rdpnapi.cancelVncGatewayDeep(requestId) as boolean;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] cancelVncGatewayDeep: ' + JSON.stringify(err));
+      return false;
     }
   }
 
@@ -233,6 +506,14 @@ export class ExtensionLoader {
         renderedPaintCount: 0,
         firstPaintMs: 0,
         lastPaintMs: 0,
+        lastRemoteUpdateAgeMs: -1,
+        eventLoopAgeMs: -1,
+        eventLoopBlockMaxUs: 0,
+        lastInputPostAgeMs: -1,
+        eventLoopTicks: 0,
+        networkCheckCount: 0,
+        networkCheckFailures: 0,
+        inputPostFailures: 0,
         lastRenderResult: -1,
         skippedPaintCount: 0,
         slowRenderCount: 0,
@@ -380,9 +661,11 @@ export class ExtensionLoader {
     }
   }
 
-  initDecoder(w: number, h: number, c: number): number {
+  initDecoder(w: number, h: number, c: number, rendererHandle: number = -1,
+    desktopSurfaceCompatibility: boolean = false): number {
     try {
-      this.decoderHandle = rdpnapi.initDecoder(w, h, c) as number;
+      this.decoderHandle = rdpnapi.initDecoder(
+        w, h, c, rendererHandle, desktopSurfaceCompatibility) as number;
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] initDecoder: ' + JSON.stringify(err));
       this.decoderHandle = -1;
@@ -418,13 +701,64 @@ export class ExtensionLoader {
   getRendererHandle(): number { return this.rendererHandle; }
   getDecoderHandle(): number { return this.decoderHandle; }
 
+  bindRendererToSession(rendererHandle: number, sessionId: number): boolean {
+    if (rendererHandle <= 0 || sessionId <= 0) {
+      return false;
+    }
+    try {
+      const bound: boolean = rdpnapi.bindRendererToSession(rendererHandle, sessionId) as boolean;
+      hilog.info(DOMAIN, TAG, '[ExtensionLoader] bindRendererToSession renderer=' +
+        rendererHandle.toString() + ' session=' + sessionId.toString() +
+        ' bound=' + bound.toString());
+      return bound;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] bindRendererToSession: ' + JSON.stringify(err));
+      return false;
+    }
+  }
+
   // ====== 渲染管线操作 ======
 
   bindVideoPipeline(decoderHandle: number, rendererHandle: number): boolean {
     try {
-      return rdpnapi.bindVideoPipeline(decoderHandle, rendererHandle) as boolean;
+      const bound: boolean = rdpnapi.bindVideoPipeline(decoderHandle, rendererHandle) as boolean;
+      if (bound && this.currentSessionId > 0) {
+        // RustDesk may deliver its first keyframe while connect() is
+        // publishing the session but before ArkTS can bind the decoder. The
+        // native loader retains that keyframe and replays it at this barrier.
+        const replayed: boolean = rdpnapi.replayPendingRustDeskFrame(
+          this.currentSessionId) as boolean;
+        hilog.info(DOMAIN, TAG, '[ExtensionLoader] replayPendingRustDeskFrame: ' +
+          replayed.toString());
+      }
+      return bound;
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] bindVideoPipeline: ' + JSON.stringify(err));
+      return false;
+    }
+  }
+
+  /**
+   * Re-activate the surviving decoder and bind it to the current renderer
+   * after a background/PIP surface transfer. A plain bind cannot acquire a
+   * decoder that was intentionally deactivated during the transfer.
+   */
+  rebindActiveVideoPipeline(): boolean {
+    try {
+      const rebound: boolean = rdpnapi.rebindActiveVideoPipeline() as boolean;
+      if (rebound && this.currentSessionId > 0) {
+        const replayed: boolean = rdpnapi.replayPendingRustDeskFrame(
+          this.currentSessionId) as boolean;
+        hilog.info(DOMAIN, TAG, '[ExtensionLoader] rebindActiveVideoPipeline: ' +
+          rebound.toString() + ' replayed=' + replayed.toString());
+      } else {
+        hilog.info(DOMAIN, TAG, '[ExtensionLoader] rebindActiveVideoPipeline: ' +
+          rebound.toString());
+      }
+      return rebound;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] rebindActiveVideoPipeline: ' +
+        JSON.stringify(err));
       return false;
     }
   }
@@ -617,6 +951,16 @@ export class ExtensionLoader {
     }
   }
 
+  sendRustDeskTouchpadWheel(sessionId: number, x: number, y: number): boolean {
+    try {
+      return rdpnapi.sendRustDeskTouchpadWheel(sessionId, x, y) as boolean;
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG,
+        '[ExtensionLoader] sendRustDeskTouchpadWheel unavailable: ' + JSON.stringify(err));
+      return false;
+    }
+  }
+
   initAudioPlayer(sr?: number, ch?: number): number {
     try {
       this.audioPlayerHandle = rdpnapi.initAudioPlayer(sr ?? 48000, ch ?? 2) as number;
@@ -698,6 +1042,24 @@ export class ExtensionLoader {
     }
   }
 
+  enqueueTerminalInput(sessionId: number, data: string, expectedGeneration: number = 0,
+    control: boolean = false, ordered: boolean = false, orderedEnd: boolean = false): SshTerminalInputEnqueueResult {
+    try {
+      return rdpnapi.enqueueSshTerminalInput(
+        sessionId, data, expectedGeneration, control, ordered, orderedEnd) as SshTerminalInputEnqueueResult;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] enqueueTerminalInput: ' + JSON.stringify(err));
+      return {
+        accepted: false,
+        status: 'sessionClosed',
+        sequence: 0,
+        generation: 0,
+        queueDepth: 0,
+        queueBytes: 0
+      };
+    }
+  }
+
   sendText(sessionId: number, text: string): void {
     try {
       rdpnapi.sendText(sessionId, text);
@@ -725,9 +1087,10 @@ export class ExtensionLoader {
   }
 
   async writeRemoteFileChunkAsync(sessionId: number, remotePath: string, data: ArrayBuffer,
-    offset: number, truncate: boolean): Promise<SftpWriteAsyncResult> {
+    offset: number, truncate: boolean, expectedGeneration: number = 0): Promise<SftpWriteAsyncResult> {
     try {
-      return await (rdpnapi.writeRemoteFileChunkAsync(sessionId, remotePath, data, offset, truncate) as Promise<SftpWriteAsyncResult>);
+      return await (rdpnapi.writeRemoteFileChunkAsync(
+        sessionId, remotePath, data, offset, truncate, expectedGeneration) as Promise<SftpWriteAsyncResult>);
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] writeRemoteFileChunkAsync: ' + JSON.stringify(err));
       return { errorCode: -1, bytesWritten: -1 };
@@ -743,9 +1106,11 @@ export class ExtensionLoader {
     }
   }
 
-  async listRemoteDirAsync(sessionId: number, remotePath: string): Promise<SftpListAsyncResult> {
+  async listRemoteDirAsync(sessionId: number, remotePath: string,
+    expectedGeneration: number = 0): Promise<SftpListAsyncResult> {
     try {
-      return await (rdpnapi.listRemoteDirAsync(sessionId, remotePath) as Promise<SftpListAsyncResult>);
+      return await (rdpnapi.listRemoteDirAsync(
+        sessionId, remotePath, expectedGeneration) as Promise<SftpListAsyncResult>);
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] listRemoteDirAsync: ' + JSON.stringify(err));
       return { errorCode: -1, entries: [] };
@@ -771,9 +1136,10 @@ export class ExtensionLoader {
   }
 
   async readRemoteFileChunkAsync(sessionId: number, remotePath: string, offset: number,
-    maxLen: number): Promise<SftpReadAsyncResult> {
+    maxLen: number, expectedGeneration: number = 0): Promise<SftpReadAsyncResult> {
     try {
-      return await (rdpnapi.readRemoteFileChunkAsync(sessionId, remotePath, offset, maxLen) as Promise<SftpReadAsyncResult>);
+      return await (rdpnapi.readRemoteFileChunkAsync(
+        sessionId, remotePath, offset, maxLen, expectedGeneration) as Promise<SftpReadAsyncResult>);
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] readRemoteFileChunkAsync: ' + JSON.stringify(err));
       return { errorCode: -1, data: new ArrayBuffer(0) };
@@ -789,9 +1155,11 @@ export class ExtensionLoader {
     }
   }
 
-  async removeRemoteFileAsync(sessionId: number, remotePath: string): Promise<SftpMutationAsyncResult> {
+  async removeRemoteFileAsync(sessionId: number, remotePath: string,
+    expectedGeneration: number = 0): Promise<SftpMutationAsyncResult> {
     try {
-      return await (rdpnapi.removeRemoteFileAsync(sessionId, remotePath) as Promise<SftpMutationAsyncResult>);
+      return await (rdpnapi.removeRemoteFileAsync(
+        sessionId, remotePath, expectedGeneration) as Promise<SftpMutationAsyncResult>);
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] removeRemoteFileAsync: ' + JSON.stringify(err));
       return { errorCode: -1 };
@@ -807,9 +1175,11 @@ export class ExtensionLoader {
     }
   }
 
-  async removeRemoteDirAsync(sessionId: number, remotePath: string): Promise<SftpMutationAsyncResult> {
+  async removeRemoteDirAsync(sessionId: number, remotePath: string,
+    expectedGeneration: number = 0): Promise<SftpMutationAsyncResult> {
     try {
-      return await (rdpnapi.removeRemoteDirAsync(sessionId, remotePath) as Promise<SftpMutationAsyncResult>);
+      return await (rdpnapi.removeRemoteDirAsync(
+        sessionId, remotePath, expectedGeneration) as Promise<SftpMutationAsyncResult>);
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] removeRemoteDirAsync: ' + JSON.stringify(err));
       return { errorCode: -1 };
@@ -825,9 +1195,11 @@ export class ExtensionLoader {
     }
   }
 
-  async makeRemoteDirAsync(sessionId: number, remotePath: string): Promise<SftpMutationAsyncResult> {
+  async makeRemoteDirAsync(sessionId: number, remotePath: string,
+    expectedGeneration: number = 0): Promise<SftpMutationAsyncResult> {
     try {
-      return await (rdpnapi.makeRemoteDirAsync(sessionId, remotePath) as Promise<SftpMutationAsyncResult>);
+      return await (rdpnapi.makeRemoteDirAsync(
+        sessionId, remotePath, expectedGeneration) as Promise<SftpMutationAsyncResult>);
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] makeRemoteDirAsync: ' + JSON.stringify(err));
       return { errorCode: -1 };
@@ -844,9 +1216,11 @@ export class ExtensionLoader {
   }
 
   async renameRemotePathAsync(sessionId: number, oldPath: string,
-    newPath: string): Promise<SftpMutationAsyncResult> {
+    newPath: string, atomic: boolean = false,
+    expectedGeneration: number = 0): Promise<SftpMutationAsyncResult> {
     try {
-      return await (rdpnapi.renameRemotePathAsync(sessionId, oldPath, newPath) as Promise<SftpMutationAsyncResult>);
+      return await (rdpnapi.renameRemotePathAsync(
+        sessionId, oldPath, newPath, atomic, expectedGeneration) as Promise<SftpMutationAsyncResult>);
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] renameRemotePathAsync: ' + JSON.stringify(err));
       return { errorCode: -1 };
@@ -870,6 +1244,16 @@ export class ExtensionLoader {
     }
   }
 
+  setSessionClipboardEnabled(sessionId: number, enabled: boolean): boolean {
+    try {
+      return rdpnapi.setSessionClipboardEnabled(sessionId, enabled) as boolean;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG,
+        '[ExtensionLoader] setSessionClipboardEnabled: ' + JSON.stringify(err));
+      return false;
+    }
+  }
+
   readData(sessionId: number): string {
     try {
       const result: string = rdpnapi.readData(sessionId) as string;
@@ -877,6 +1261,54 @@ export class ExtensionLoader {
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] readData: ' + JSON.stringify(err));
       return '';
+    }
+  }
+
+  getSshTerminalDiagnostics(sessionId: number): SshTerminalDiagnosticsSnapshot {
+    try {
+      return rdpnapi.getSshTerminalDiagnostics(sessionId) as SshTerminalDiagnosticsSnapshot;
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, '[ExtensionLoader] getSshTerminalDiagnostics: ' + JSON.stringify(err));
+      return {
+        supported: false,
+        sessionActive: false,
+        schemaVersion: 2,
+        sessionId,
+        sessionGeneration: 0,
+        channelId: 'pty',
+        inputEvents: 0,
+        inputBytes: 0,
+        nativeEnqueueEvents: 0,
+        writeAttempts: 0,
+        writeCompleteEvents: 0,
+        writeBytes: 0,
+        writeEagain: 0,
+        remoteReadEvents: 0,
+        remoteReadBytes: 0,
+        callbackAcceptedEvents: 0,
+        callbackAcceptedBytes: 0,
+        callbackQueueFull: 0,
+        callbackDeliveryErrors: 0,
+        callbackClosed: 0,
+        inputDuplicate: 0,
+        inputLoss: 0,
+        inputReorder: 0,
+        ownerStallEvents: 0,
+        coverageMask: 0,
+        coverageComplete: false,
+        inputQueueDepth: 0,
+        inputQueueBytes: 0,
+        inputQueueMaxDepth: 0,
+        inputQueueMaxBytes: 0,
+        lastInputSequence: 0,
+        lastInputCapturedAtNs: 0,
+        lastNativeEnqueueAtNs: 0,
+        lastWriteAttemptAtNs: 0,
+        lastWriteCompleteAtNs: 0,
+        lastRemoteReadAtNs: 0,
+        maxInputToWriteAttemptNs: 0,
+        maxInputToWriteCompleteNs: 0
+      };
     }
   }
 
@@ -956,6 +1388,178 @@ export class ExtensionLoader {
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] getConnectionState: ' + JSON.stringify(err));
       return 0;
+    }
+  }
+
+  getSshAuthPrompt(sessionId: number, sessionGeneration: number): SshAuthPromptRequest | null {
+    try {
+      return rdpnapi.getSshAuthPrompt(sessionId, sessionGeneration) as SshAuthPromptRequest | null;
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, '[ExtensionLoader] getSshAuthPrompt: ' + JSON.stringify(err));
+      return null;
+    }
+  }
+
+  respondSshAuthPrompt(response: SshAuthPromptResponse): boolean {
+    try {
+      return rdpnapi.respondSshAuthPrompt(response) as boolean;
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, '[ExtensionLoader] respondSshAuthPrompt: ' + JSON.stringify(err));
+      return false;
+    }
+  }
+
+  cancelSshAuthPrompt(sessionId: number, sessionGeneration: number, requestId: number): boolean {
+    try {
+      return rdpnapi.cancelSshAuthPrompt(
+        sessionId, sessionGeneration, requestId) as boolean;
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, '[ExtensionLoader] cancelSshAuthPrompt: ' + JSON.stringify(err));
+      return false;
+    }
+  }
+
+  getSshSessionSnapshot(sessionId: number, sessionGeneration: number): SshSessionSnapshot {
+    try {
+      return rdpnapi.getSshSessionSnapshot(
+        sessionId, sessionGeneration) as SshSessionSnapshot;
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, '[ExtensionLoader] getSshSessionSnapshot: ' + JSON.stringify(err));
+      return {
+        schemaVersion: 1,
+        errorCode: -72,
+        sessionId,
+        generation: 0,
+        channelId: 'shell',
+        state: 0,
+        stateName: 'Created',
+        eventSequence: 0,
+        host: '',
+        port: 22,
+        backgroundLimited: false,
+        lastEventType: ''
+      };
+    }
+  }
+
+  getSshSessionEvents(sessionId: number, channelId: string, sessionGeneration: number,
+    afterSequence: number = 0): SshSessionEventsResult {
+    const normalizedChannelId: string = channelId.trim();
+    const normalizedAfterSequence: number = Number.isFinite(afterSequence) && afterSequence >= 0
+      ? Math.floor(afterSequence) : 0;
+    try {
+      return rdpnapi.getSshSessionEvents(
+        sessionId, normalizedChannelId, sessionGeneration, normalizedAfterSequence) as SshSessionEventsResult;
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, '[ExtensionLoader] getSshSessionEvents: ' + JSON.stringify(err));
+      return {
+        schemaVersion: 1,
+        errorCode: -81,
+        sessionId,
+        channelId: normalizedChannelId,
+        generation: 0,
+        afterSequence: normalizedAfterSequence,
+        events: []
+      };
+    }
+  }
+
+  configureSshForwarding(sessionId: number, sessionGeneration: number,
+    config: SshForwardingConfig): number {
+    try {
+      return rdpnapi.configureSshForwarding(sessionId, sessionGeneration, config) as number;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] configureSshForwarding: ' + JSON.stringify(err));
+      return -74;
+    }
+  }
+
+  removeSshForwarding(sessionId: number, sessionGeneration: number, id: string): number {
+    try {
+      return rdpnapi.removeSshForwarding(sessionId, sessionGeneration, id) as number;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] removeSshForwarding: ' + JSON.stringify(err));
+      return -74;
+    }
+  }
+
+  startSshForwarding(sessionId: number, sessionGeneration: number, id: string): number {
+    try {
+      return rdpnapi.startSshForwarding(sessionId, sessionGeneration, id) as number;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] startSshForwarding: ' + JSON.stringify(err));
+      return -74;
+    }
+  }
+
+  markSshForwardingListening(sessionId: number, sessionGeneration: number, id: string): number {
+    try {
+      return rdpnapi.markSshForwardingListening(sessionId, sessionGeneration, id) as number;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG,
+        '[ExtensionLoader] markSshForwardingListening: ' + JSON.stringify(err));
+      return -74;
+    }
+  }
+
+  failSshForwarding(sessionId: number, sessionGeneration: number,
+    id: string, error: number): number {
+    try {
+      return rdpnapi.failSshForwarding(sessionId, sessionGeneration, id, error) as number;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] failSshForwarding: ' + JSON.stringify(err));
+      return -74;
+    }
+  }
+
+  stopSshForwarding(sessionId: number, sessionGeneration: number, id: string): number {
+    try {
+      return rdpnapi.stopSshForwarding(sessionId, sessionGeneration, id) as number;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] stopSshForwarding: ' + JSON.stringify(err));
+      return -74;
+    }
+  }
+
+  completeSshForwardingStop(sessionId: number, sessionGeneration: number, id: string): number {
+    try {
+      return rdpnapi.completeSshForwardingStop(sessionId, sessionGeneration, id) as number;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG,
+        '[ExtensionLoader] completeSshForwardingStop: ' + JSON.stringify(err));
+      return -74;
+    }
+  }
+
+  acquireSshForwardingConnection(sessionId: number, sessionGeneration: number, id: string): number {
+    try {
+      return rdpnapi.acquireSshForwardingConnection(sessionId, sessionGeneration, id) as number;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG,
+        '[ExtensionLoader] acquireSshForwardingConnection: ' + JSON.stringify(err));
+      return -74;
+    }
+  }
+
+  releaseSshForwardingConnection(sessionId: number, sessionGeneration: number, id: string): number {
+    try {
+      return rdpnapi.releaseSshForwardingConnection(sessionId, sessionGeneration, id) as number;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG,
+        '[ExtensionLoader] releaseSshForwardingConnection: ' + JSON.stringify(err));
+      return -74;
+    }
+  }
+
+  getSshForwardingSnapshots(sessionId: number,
+    sessionGeneration: number): SshForwardingSnapshotsResult {
+    try {
+      return rdpnapi.getSshForwardingSnapshots(
+        sessionId, sessionGeneration) as SshForwardingSnapshotsResult;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG,
+        '[ExtensionLoader] getSshForwardingSnapshots: ' + JSON.stringify(err));
+      return { errorCode: -74, sessionId, sessionGeneration: 0, snapshots: [] };
     }
   }
 
@@ -1144,6 +1748,20 @@ export class ExtensionLoader {
     }
   }
 
+  /** 测试 SSH 密钥认证；native 网络工作在线程池执行，不阻塞 ArkTS/UI 线程。 */
+  async testSshKeyAuthAsync(host: string, port: number, username: string,
+                            privateKeyPem: string, passphrase: string,
+                            proxy?: SshProxyConfig): Promise<SshAuthTestResult> {
+    try {
+      return await rdpnapi.testSshKeyAuthAsync(
+        host, port, username, privateKeyPem, passphrase, proxy) as SshAuthTestResult;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] testSshKeyAuthAsync: ' + JSON.stringify(err));
+      return { ok: false, code: -99,
+               message: '[CC-SSHKEY-08] testSshKeyAuthAsync NAPI error: ' + JSON.stringify(err) };
+    }
+  }
+
   /**
    * 探测 SSH 主机公钥 (仅 TCP + KEX, 不做用户认证)
    * 同步阻塞 1-5s, 调用方应显示 loading 状态
@@ -1158,6 +1776,22 @@ export class ExtensionLoader {
         fingerprintSha256: '', rawBase64: '', serverBanner: '',
         errorCode: -99,
         errorMessage: '[CC-SSH-09] probeSshHostKey NAPI error: ' + JSON.stringify(err)
+      };
+    }
+  }
+
+  /** 探测 SSH 主机公钥；native DNS/TCP/KEX 在线程池执行。 */
+  async probeSshHostKeyAsync(host: string, port: number,
+                             proxy?: SshProxyConfig): Promise<SshHostKeyInfo> {
+    try {
+      return await rdpnapi.probeSshHostKeyAsync(host, port, proxy) as SshHostKeyInfo;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] probeSshHostKeyAsync: ' + JSON.stringify(err));
+      return {
+        ok: false, host: host, port: port, algorithm: '',
+        fingerprintSha256: '', rawBase64: '', serverBanner: '',
+        errorCode: -99,
+        errorMessage: '[CC-SSH-09] probeSshHostKeyAsync NAPI error: ' + JSON.stringify(err)
       };
     }
   }
@@ -1217,7 +1851,7 @@ export class ExtensionLoader {
    * 重新初始化 renderer 并绑定 surface。
    */
   reattachRenderForForeground(surfaceId: string, width: number,
-    height: number): ExtensionResult<number> {
+    height: number, sessionId: number = this.currentSessionId): ExtensionResult<number> {
     try {
       if (!shouldBindSurfaceBeforeForegroundRenderer(surfaceId, width, height)) {
         return errResult(ExtensionErrorCode.ERR_SURFACE_INVALID,
@@ -1229,13 +1863,22 @@ export class ExtensionLoader {
           'setXComponentSurfaceId 失败', 'surfaceId=' + surfaceId);
       }
       hilog.info(DOMAIN, TAG, '[ExtensionLoader] reattachRenderForForeground: surface rebound id=' + surfaceId);
-      this.rendererHandle = rdpnapi.initRenderer(surfaceId, width, height) as number;
-      if (this.rendererHandle <= 0) {
+      const rendererHandle: number = rdpnapi.initRenderer(surfaceId, width, height) as number;
+      if (rendererHandle <= 0) {
         return errResult(ExtensionErrorCode.ERR_SURFACE_INVALID,
           'initRenderer 失败', 'surfaceId=' + surfaceId);
       }
+      if (sessionId > 0 && !this.bindRendererToSession(rendererHandle, sessionId)) {
+        // The protocol session is still alive, so a renderer that could not be
+        // admitted to its owner must not remain as an unowned active target.
+        try { rdpnapi.destroyRenderer(rendererHandle); } catch (_e) { /* best effort */ }
+        return errResult(ExtensionErrorCode.ERR_NATIVE_CALL_FAILED,
+          'renderer owner 绑定失败', 'renderer=' + rendererHandle.toString() +
+          ' session=' + sessionId.toString());
+      }
+      this.rendererHandle = rendererHandle;
       hilog.info(DOMAIN, TAG, '[ExtensionLoader] reattachRenderForForeground: handle=' +
-        this.rendererHandle.toString());
+        rendererHandle.toString() + ' session=' + sessionId.toString());
       return okResult(this.rendererHandle);
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] reattachRenderForForeground: ' + JSON.stringify(err));

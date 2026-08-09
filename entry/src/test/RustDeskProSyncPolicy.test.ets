@@ -4,14 +4,17 @@ import { RustDeskProPeer } from '../main/ets/model/RustDeskProModels';
 import {
   reconcileRustDeskProHosts,
   rustDeskProHostId,
-  shouldPreserveManagedRustDeskRoute
+  shouldPreserveManagedRustDeskRoute,
+  rustDeskProHostPersistenceProjection,
+  rustDeskProHostPortableJSON
 } from '../main/ets/services/RustDeskProSyncPolicy';
 
-function peer(id: string, alias: string, platform: string = ''): RustDeskProPeer {
+function peer(id: string, alias: string, platform: string = '', password: string = ''): RustDeskProPeer {
   const value = new RustDeskProPeer();
   value.id = id;
   value.alias = alias;
   value.platform = platform;
+  value.password = password;
   return value;
 }
 
@@ -28,6 +31,31 @@ function manualHost(id: string): RemoteHost {
 
 export default function rustDeskProSyncPolicyTest() {
   describe('RustDeskProSyncPolicy', () => {
+    it('does_not_decode_address_book_hash_as_password', 0, () => {
+      const fromHash = RustDeskProPeer.fromJSON({
+        id: '123',
+        hash: 'c2VydmVyLWhhc2g='
+      } as Record<string, Object>);
+      expect(fromHash.password).assertEqual('');
+
+      const explicit = RustDeskProPeer.fromJSON({
+        id: '123',
+        password: 'server-password'
+      } as Record<string, Object>);
+      expect(explicit.password).assertEqual('server-password');
+    });
+
+    it('does_not_replace_a_manual_password_on_resync', 0, () => {
+      const first = reconcileRustDeskProHosts([], 'relay-1', 'acct-1',
+        [peer('123', 'Office', '', 'server-password')], 100);
+      first.hosts[0].password = 'manual-password';
+      first.hosts[0].rustdeskAuthMode = 'password';
+      const second = reconcileRustDeskProHosts(first.hosts, 'relay-1', 'acct-1',
+        [peer('123', 'Office', '', 'rotated-server-password')], 200);
+      expect(second.hosts[0].password).assertEqual('manual-password');
+      expect(second.hosts[0].rustdeskAuthMode).assertEqual('password');
+    });
+
     it('creates_stable_managed_hosts', 0, () => {
       const result = reconcileRustDeskProHosts([], 'relay-1', 'acct-1', [peer('123', 'Office', 'Windows')], 100);
       expect(result.addedIds.length).assertEqual(1);
@@ -36,7 +64,7 @@ export default function rustDeskProSyncPolicyTest() {
       expect(result.hosts[0].sourceType).assertEqual('rustdesk_pro');
       expect(result.hosts[0].rustdeskProManaged).assertTrue();
       expect(result.hosts[0].rustdeskProPlatform).assertEqual('Windows');
-      expect(result.hosts[0].label).assertEqual('Office');
+      expect(result.hosts[0].label).assertEqual('RustDesk Pro 设备');
     });
 
     it('stores_relay_endpoint_for_imported_hosts', 0, () => {
@@ -61,7 +89,8 @@ export default function rustDeskProSyncPolicyTest() {
       expect(second.updatedIds.length).assertEqual(1);
       expect(second.hosts[0].label).assertEqual('我的别名');
       expect(second.hosts[0].groupId).assertEqual('ops');
-      expect(second.hosts[0].rustdeskProLastSeenAt).assertEqual(200);
+      expect(second.hosts[0].rustdeskProLastSeenAt).assertEqual(0);
+      expect(second.hosts[0].rustdeskProSyncError).assertEqual('probe_pending');
     });
 
     it('marks_missing_peer_without_deleting_it', 0, () => {
@@ -76,6 +105,27 @@ export default function rustDeskProSyncPolicyTest() {
       expect(shouldPreserveManagedRustDeskRoute(true, false)).assertTrue();
       expect(shouldPreserveManagedRustDeskRoute(true, true)).assertFalse();
       expect(shouldPreserveManagedRustDeskRoute(false, true)).assertFalse();
+    });
+
+    it('removes_pro_identity_from_persistence_but_preserves_local_fields', 0, () => {
+      const result = reconcileRustDeskProHosts([], 'relay-1', 'acct-1', [peer('123', 'Office')], 100);
+      const live = result.hosts[0];
+      live.label = '我的本地别名';
+      live.groupId = 'local-group';
+      const safe = rustDeskProHostPersistenceProjection(live);
+      expect(safe.label).assertEqual('我的本地别名');
+      expect(safe.groupId).assertEqual('local-group');
+      expect(safe.customHostname).assertEqual('');
+      expect(safe.rustdeskAccountId).assertEqual('');
+      expect(safe.rustdeskProPeerId).assertEqual('');
+      expect(safe.rustdeskProAccountId).assertEqual('');
+      expect(safe.rustdeskProManaged).assertFalse();
+      const portable = rustDeskProHostPortableJSON(live);
+      expect(portable['rustdeskProPeerId'] === undefined).assertTrue();
+      expect(portable['rustdeskProAccountId'] === undefined).assertTrue();
+      expect(portable['sourceType'] === undefined).assertTrue();
+      expect(portable['label']).assertEqual('我的本地别名');
+      expect(portable['groupId']).assertEqual('local-group');
     });
   });
 }

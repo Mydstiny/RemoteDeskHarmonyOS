@@ -15,10 +15,12 @@
 #define RUSTDESK_BRIDGE_H
 
 #include "extensions/protocol_adapter.h"
+#include "rustdesk_connection_continuity_executor.h"
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <vector>
 
 /** Non-destructive RustDesk stream diagnostics returned to the NAPI layer. */
@@ -117,6 +119,13 @@ struct RustDeskFfiConfig {
     int         relay_fallback_port;
 };
 
+/** Result of a non-authenticating RustDesk peer presence probe. */
+struct RustDeskPresenceResult {
+    int state = 0;      // 0=unknown, 1=online, 2=offline
+    int latencyMs = -1;
+    int errorCode = 0;
+};
+
 static_assert(offsetof(RustDeskFfiConfig, relay_fallback_port) == 96,
               "RustDeskConfig ABI tail offset changed; update Rust and C++ together");
 static_assert(sizeof(RustDeskFfiConfig) == 104,
@@ -133,6 +142,16 @@ enum class RustDeskMode {
  */
 class RustDeskBridge : public ProtocolAdapter {
 public:
+    // The real-core lifetime helpers need the incomplete type while keeping
+    // its storage private to the bridge.
+    struct Impl;
+
+    // Kept as a source-compatible boundary for the session registry. The
+    // relay rollback does not implement transport continuity, but callers
+    // must still be able to bind and validate the current session identity.
+    using ContinuityGenerationCallback =
+        std::function<bool(uint64_t sessionId, uint64_t generation, uint64_t ownerToken)>;
+
     explicit RustDeskBridge(RustDeskMode mode = RustDeskMode::IPC);
     ~RustDeskBridge() override;
 
@@ -146,16 +165,25 @@ public:
     void            disconnect() override;
     ConnectionState getState() override;
     void            setSessionIdentity(uint64_t sessionId) override;
+    void            setSessionOwnerToken(uint64_t ownerToken);
+    void            setContinuityGenerationCallback(ContinuityGenerationCallback callback);
+    void            onNetworkChanged(bool available, uint64_t networkGeneration);
+    uint64_t        sessionGeneration() const;
     bool            submitTwoFactorCode(const std::string& code);
     RustDeskDiagnosticsStats getDiagnostics() const;
     RemoteCursorSnapshot getRemoteCursorSnapshot(bool includePixels) override;
     void            requestFrameRefresh() override;
     void            reportVideoPressure(int level) override;
+    bool            reportVideoPressureForSession(uint64_t sessionId,
+                                                  uint64_t generation,
+                                                  uint64_t ownerToken,
+                                                  int level);
 
     // ---- 输入事件 ----
     void sendKey(uint32_t scancode, bool pressed) override;
     void sendMouse(int x, int y, MouseButton button, bool pressed) override;
     void sendMouseWheel(int x, int y, int delta) override;
+    bool sendTouchpadWheel(int x, int y);
     void sendText(const std::string& text) override;
     void setDisplayStateCallback(RustDeskDisplayStateCallback callback);
     RustDeskDisplayCapabilities getDisplayCapabilities() const;
@@ -168,9 +196,10 @@ public:
     bool sendTouchPan(int phase, int x, int y);
     int  sendFileData(const std::string& remotePath, const uint8_t* data, uint32_t len) override;
     SessionTransferStatus getSessionTransferStatus() override;
-    void sendClipboardData(const uint8_t* data, uint32_t len);
+    void sendClipboardData(const uint8_t* data, uint32_t len) override;
     std::string getClipboardText() override;
     bool isClipboardReceiveReady() override;
+    RustDeskContinuityQuiesceSnapshot continuityQuiesceSnapshot() const;
 
     // ---- 编码能力 ----
     bool supportsCodec(CodecType codec) override;
@@ -181,14 +210,45 @@ public:
     void setAudioCallback(AudioDataCallback callback) override;
     void setConnectionStateCallback(ConnectionStateCallback callback) override;
 
+#ifdef RDP_NATIVE_CALLBACK_TESTING
+    bool InvokeVideoCallbackForTesting(const uint8_t* data, size_t size,
+                                       int width, int height, int codec,
+                                       uint64_t timestamp, bool isKeyFrame,
+                                       int display, uint64_t generation,
+                                       uint64_t ownerToken);
+    bool InvokeTransportCallbackForTesting(int state, const char* errorClass,
+                                           uint64_t networkGeneration,
+                                           bool userInitiated, uint64_t generation,
+                                           uint64_t ownerToken);
+    void SetAttemptDequeuedHookForTesting(std::function<void()> hook);
+    void SetFirstFrameClaimHookForTesting(std::function<void()> hook);
+    void SetContinuityAttemptStageHookForTesting(std::function<void(int)> hook);
+    void SetContinuityConnectResultHookForTesting(
+        std::function<int(uint64_t, uint64_t)> hook);
+    void SetContinuityConfigForTesting(const ConnectionConfig& config);
+    uint32_t continuityConnectCallCountForTesting() const;
+    void ArmFirstGenerationFrameForTesting();
+#endif
+
     // ---- 扩展功能 ----
     bool supportsNatTraversal() override;
     bool supportsFileTransfer() override;
 
 private:
-    struct Impl;
-    std::unique_ptr<Impl> impl_;
+    std::shared_ptr<Impl> impl_;
     RustDeskMode mode_;
+
+    std::optional<RustDeskConnectionContinuityExecutor::PreparedAttemptTicket>
+        prepareContinuityAttempt(
+            const RustDeskConnectionContinuityExecutor::AttemptTicket& source);
+    bool startContinuityAttempt(
+        const RustDeskConnectionContinuityExecutor::PreparedAttemptTicket& ticket);
+    int connectInternal(
+        const ConnectionConfig& cfg,
+        const RustDeskConnectionContinuityExecutor::PreparedAttemptTicket* continuityTicket);
+    void applyContinuityFastQuiesce();
+    void onContinuityMaintenance(uint64_t nowMs);
+    void disconnectImpl(bool cancelContinuity);
 
 #ifdef RUSTDESK_USE_REAL_CORE
     static void onFfiFrame(const void* frame, void* userData);
@@ -196,7 +256,8 @@ private:
     static void onFfiCursor(const void* cursor, void* userData);
     static void onFfiDisplay(const void* snapshot, void* userData);
     static void onFfiAuth(int state, const char* message, void* userData);
-    static void onFfiDisconnect(int state, const char* message, void* userData);
+    static void onFfiProgress(int stage, const char* message, void* userData);
+    static void onFfiDisconnect(int state, const char* message, void* userData) noexcept;
 #endif
 
 #ifdef RUSTDESK_EXPERIMENTAL

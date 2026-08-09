@@ -21,6 +21,26 @@ RDP_TEST_CASE(video_backpressure_soft_overflow_admits_latest_non_key) {
     RDP_ASSERT_EQ(controller.keyframeRequests(), 1ULL);
 }
 
+RDP_TEST_CASE(video_backpressure_coalesces_soft_overflow_refresh_until_keyframe) {
+    VideoBackpressureController controller(3);
+
+    RDP_ASSERT(controller.admitFrame(3, false) ==
+               VideoFrameAdmission::AcceptAfterSoftDrop);
+    RDP_ASSERT(controller.shouldRequestKeyframe());
+    RDP_ASSERT(controller.admitFrame(3, false) ==
+               VideoFrameAdmission::AcceptAfterSoftDrop);
+    RDP_ASSERT(controller.shouldRequestKeyframe());
+    RDP_ASSERT_EQ(controller.keyframeRequests(), 1ULL);
+
+    RDP_ASSERT(controller.admitFrame(0, true) == VideoFrameAdmission::Accept);
+    RDP_ASSERT(!controller.shouldRequestKeyframe());
+
+    RDP_ASSERT(controller.admitFrame(3, false) ==
+               VideoFrameAdmission::AcceptAfterSoftDrop);
+    RDP_ASSERT(controller.shouldRequestKeyframe());
+    RDP_ASSERT_EQ(controller.keyframeRequests(), 2ULL);
+}
+
 RDP_TEST_CASE(video_backpressure_drops_until_recovery_keyframe) {
     VideoBackpressureController controller(3);
     controller.enterHardWaitForKeyframe();
@@ -32,6 +52,7 @@ RDP_TEST_CASE(video_backpressure_drops_until_recovery_keyframe) {
     RDP_ASSERT(key == VideoFrameAdmission::AcceptRecoveryKeyframe);
     RDP_ASSERT(!controller.isWaitingForKeyframe());
     RDP_ASSERT(!controller.shouldRequestKeyframe());
+    RDP_ASSERT_EQ(controller.droppedFrames(), 0ULL);
     RDP_ASSERT_EQ(controller.waitKeyframeDrops(), 1ULL);
 }
 

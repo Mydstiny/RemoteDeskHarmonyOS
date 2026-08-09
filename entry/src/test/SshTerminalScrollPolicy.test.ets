@@ -8,11 +8,13 @@ import {
   shouldHonorAutoScrollToBottom,
   terminalDragScrollLines,
   terminalGridTop,
+  terminalKeyboardBottomInsetPx,
   terminalSparseContentGridTop,
   terminalLogicalViewportHeight,
   terminalRowsBottomOffset,
   terminalTouchDragScrollLines,
   terminalVisualBottomOffset,
+  terminalXtermBottomSafeRows,
   terminalTouchSurfaceOffsetY
 } from '../main/ets/services/SshTerminalScrollPolicy';
 
@@ -66,12 +68,32 @@ export default function sshTerminalScrollPolicyTest(): void {
       expect(terminalLogicalViewportHeight(true, 749, 16, 28, 94)).assertEqual(749);
     });
 
+    it('should_not_duplicate_the_bottom_bar_gap_inside_xterm', 0, (): void => {
+      expect(terminalXtermBottomSafeRows(true, 5)).assertEqual(0);
+    });
+
+    it('should_preserve_bounded_fallback_rows_for_a_standalone_surface', 0, (): void => {
+      expect(terminalXtermBottomSafeRows(false, 9)).assertEqual(6);
+    });
+
     it('should_keep_pty_rows_stable_when_soft_keyboard_appears', 0, (): void => {
       expect(terminalRowsBottomOffset(false, 300, 28)).assertEqual(28);
     });
 
     it('should_keep_visual_offset_tracking_soft_keyboard', 0, (): void => {
       expect(terminalVisualBottomOffset(false, 300, 28)).assertEqual(300);
+    });
+
+    it('should_use_full_width_docked_keyboard_as_bottom_inset', 0, (): void => {
+      expect(terminalKeyboardBottomInsetPx(true, 980, 2560, 620, 2560, 1600)).assertEqual(620);
+    });
+
+    it('should_ignore_floating_keyboard_bottom_rect', 0, (): void => {
+      expect(terminalKeyboardBottomInsetPx(true, 820, 620, 780, 2560, 1600)).assertEqual(0);
+    });
+
+    it('should_ignore_implausibly_tall_keyboard_bottom_rect', 0, (): void => {
+      expect(terminalKeyboardBottomInsetPx(true, 180, 2560, 1420, 2560, 1600)).assertEqual(0);
     });
 
     it('should_top_align_visible_terminal_after_scrollback_exists', 0, (): void => {

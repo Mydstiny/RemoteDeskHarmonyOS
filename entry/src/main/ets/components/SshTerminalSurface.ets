@@ -1,5 +1,5 @@
 /**
- * NativeTerminalRenderer.ets — Rust terminal_core 驱动的 Canvas 渲染器
+ * SshTerminalSurface.ets — Alacritty terminal_core 驱动的终端表面
  *
  * 将 ANSI/VT 解析完全交给 Rust terminal_core, ArkTS 只负责 Canvas 绘制 snapshot。
  *
@@ -24,6 +24,12 @@ import {
   shouldHonorAutoScrollToBottom,
   terminalGridTop
 } from '../services/SshTerminalScrollPolicy';
+import {
+  terminalCellIndex,
+  terminalDimensionsMatchSnapshot,
+  terminalGridDimension
+} from '../services/TerminalRendererPolicy';
+import { TerminalCoreRegistry } from '../services/TerminalCoreRegistry';
 
 /** 默认前景色 (与 Rust DEFAULT_FG = 0xFFE8EAED 一致, 用于 cell.fg 比较) */
 const DEFAULT_FG: number = 0xFFE8EAED;
@@ -33,6 +39,8 @@ const DEFAULT_BG: number = 0xFF0B0F14;
 const TERMINAL_BG_CSS: string = '#0D0D0D';
 /** 选区高亮底色 */
 const SELECTION_BG: string = 'rgba(90,140,255,0.40)';
+/** 单次 Canvas 更新的最大 SSH 输出量, 避免长输出阻塞 ArkUI 帧循环。 */
+const TERMINAL_INPUT_FRAME_BUDGET_BYTES: number = 256 * 1024;
 
 /**
  * SSH 输出字节的稳定传输载体。
@@ -41,15 +49,100 @@ const SELECTION_BG: string = 'rgba(90,140,255,0.40)';
  * 观察代理，watch 回调中访问 byteLength 时走 Reflect.get(target, key, proxy)，
  * ArrayBuffer 内置 byteLength getter 要求 this 是真实 ArrayBuffer（internal
  * slot），代理对象没有 → 抛 “don't have internal slot” 导致整页闪退。
- * 该载体是普通对象，父组件写入、子组件读取都绕开观察代理；inputSequence 序号
- * 仍由 @Prop @Watch 驱动消费。
+ * 该载体本身也会作为 GpuTerminalRenderer 的 @Prop 传递，ArkUI 仍可能代理它。
+ * 因此队列的 ArrayBuffer 必须完全放在模块级非观察状态中，载体对象只保留一个
+ * 字符串 ID；inputSequence 序号仍由 @Prop @Watch 驱动消费。
  */
+class TerminalInputBufferState {
+  buffers: ArrayBuffer[] = [];
+  bytes: number = 0;
+}
+
+const terminalInputBufferStates: Map<string, TerminalInputBufferState> =
+  new Map<string, TerminalInputBufferState>();
+let terminalInputBufferSequence: number = 0;
+
 export class TerminalInputBuffer {
-  buffer: ArrayBuffer = new ArrayBuffer(0);
+  /** ArkUI may proxy this object; keep the only object-owned value primitive. */
+  private readonly stateId: string;
+
+  constructor() {
+    terminalInputBufferSequence += 1;
+    this.stateId = 'ssh-terminal-input-' + terminalInputBufferSequence.toString();
+    terminalInputBufferStates.set(this.stateId, new TerminalInputBufferState());
+  }
+
+  private state(): TerminalInputBufferState {
+    let state: TerminalInputBufferState | undefined =
+      terminalInputBufferStates.get(this.stateId);
+    if (state === undefined) {
+      // A proxied/reused component can outlive an explicit clear. Recreate the
+      // state lazily while retaining the same stable primitive identity.
+      state = new TerminalInputBufferState();
+      terminalInputBufferStates.set(this.stateId, state);
+    }
+    return state;
+  }
+
+  enqueue(buffer: ArrayBuffer): void {
+    if (buffer.byteLength === 0) { return; }
+    const state: TerminalInputBufferState = this.state();
+    state.buffers.push(buffer);
+    state.bytes += buffer.byteLength;
+  }
+
+  drain(maxBytes: number = -1): ArrayBuffer[] {
+    const state: TerminalInputBufferState = this.state();
+    if (state.buffers.length === 0) { return []; }
+    if (!Number.isFinite(maxBytes) || maxBytes <= 0) {
+      const buffers: ArrayBuffer[] = state.buffers;
+      state.buffers = [];
+      state.bytes = 0;
+      return buffers;
+    }
+
+    const limit: number = Math.max(1, Math.floor(maxBytes));
+    let selectedBytes: number = 0;
+    const selected: ArrayBuffer[] = [];
+    while (state.buffers.length > 0 && selectedBytes < limit) {
+      const next: ArrayBuffer = state.buffers[0];
+      const remaining: number = limit - selectedBytes;
+      if (next.byteLength <= remaining) {
+        selected.push(next);
+        state.buffers.shift();
+        selectedBytes += next.byteLength;
+        continue;
+      }
+      // A single native callback can exceed the frame budget. Split only
+      // that boundary; the terminal parser accepts partial UTF-8/VT input
+      // and the remainder stays at the head of the ordered queue.
+      const prefix: ArrayBuffer = next.slice(0, remaining);
+      state.buffers[0] = next.slice(remaining);
+      selected.push(prefix);
+      selectedBytes += prefix.byteLength;
+      break;
+    }
+    state.bytes = Math.max(0, state.bytes - selectedBytes);
+    return selected;
+  }
+
+  clear(): void {
+    const state: TerminalInputBufferState = this.state();
+    state.buffers = [];
+    state.bytes = 0;
+  }
+
+  size(): number {
+    return this.state().buffers.length;
+  }
+
+  byteLength(): number {
+    return this.state().bytes;
+  }
 }
 
 @Component
-export struct NativeTerminalRenderer {
+export struct SshTerminalSurface {
   @Prop @Watch('onResize') cols: number = 80;
   @Prop @Watch('onResize') rows: number = 24;
   @Prop @Watch('onViewportSizeChange') viewportWidth: number = 0;
@@ -59,6 +152,8 @@ export struct NativeTerminalRenderer {
   @Prop @Watch('onCellSizeChange') cellWvp: number = 9;
   @Prop @Watch('onCellSizeChange') cellHvp: number = 20;
   @Prop @Watch('onFontChange') fontSize: number = 18;
+  /** Stable SSH tab key; keeps the VT core alive across visible-page swaps. */
+  @Prop coreKey: string = '';
   /** 由 SshTerminal 在构造时传入的稳定引用（普通字段，不参与状态观察）。 */
   inputBuffer: TerminalInputBuffer = new TerminalInputBuffer();
   @Prop @Watch('onInputSequenceChange') inputSequence: number = 0;
@@ -77,6 +172,7 @@ export struct NativeTerminalRenderer {
   /** 终端核心句柄 (Rust heap 分配) */
   private handle: number = 0;
   private bridge: TerminalCoreBridge = new TerminalCoreBridge();
+  private coreRegistry: TerminalCoreRegistry = TerminalCoreRegistry.getInstance();
   private ctx: CanvasRenderingContext2D =
     new CanvasRenderingContext2D(new RenderingContextSettings(true));
   @State cellW: number = 9;
@@ -102,12 +198,26 @@ export struct NativeTerminalRenderer {
   /** 上一次绘制使用的顶部偏移, 偏移变化时需要全量重绘避免残影 */
   private lastGridTop: number = 0;
   private lastCanvasArea: string = '';
+  /** 输入可能先于 Canvas onReady 到达；ready 前保留在 inputBuffer 中。 */
+  private canvasReady: boolean = false;
+  /** 页面复用时 Canvas 可能不再触发 onReady, 记录该组件曾完成过表面初始化。 */
+  private surfaceEverReady: boolean = false;
+  /** 复用页面预初始化后, 等待新 surface 的 ready/area 回调再确认一次。 */
+  private surfaceReadyProbePending: boolean = false;
+  private inputDrainTimer: number = -1;
+  /** Coalesce cols/rows updates so a transient mixed-size grid is never drawn. */
+  private resizeTimer: number = -1;
 
   aboutToAppear(): void {
     this.resetLifecycleState();
     this.lastRows = this.rows;
     this.calcCellSize();
-    this.handle = this.bridge.create(this.cols, this.rows);
+    this.handle = this.coreRegistry.acquire(this.coreKey, this.cols, this.rows, this.bridge);
+    this.applyForegroundColorToCore();
+    if (this.surfaceEverReady) {
+      this.markCanvasReady();
+      this.surfaceReadyProbePending = true;
+    }
     // 光标 530ms 闪烁
     this.blinkTimer = setInterval((): void => {
       this.cursorVisible = !this.cursorVisible;
@@ -120,10 +230,17 @@ export struct NativeTerminalRenderer {
       clearInterval(this.blinkTimer);
       this.blinkTimer = -1;
     }
-    if (this.handle > 0) {
-      this.bridge.destroy(this.handle);
-      this.handle = 0;
+    if (this.inputDrainTimer !== -1) {
+      clearTimeout(this.inputDrainTimer);
+      this.inputDrainTimer = -1;
     }
+    if (this.resizeTimer !== -1) {
+      clearTimeout(this.resizeTimer);
+      this.resizeTimer = -1;
+    }
+    // The VT core belongs to the SSH tab, not the transient visible page. It
+    // is destroyed by SshTerminal only when the user exits all SSH tabs.
+    this.handle = 0;
     this.resetLifecycleState();
   }
 
@@ -140,6 +257,8 @@ export struct NativeTerminalRenderer {
     this.lastViewportHeight = 0;
     this.lastCanvasArea = '';
     this.lastModeSignature = '';
+    this.canvasReady = false;
+    this.surfaceReadyProbePending = false;
   }
 
   private notifyTerminalMode(snapshot: TerminalCoreSnapshot): void {
@@ -183,7 +302,26 @@ export struct NativeTerminalRenderer {
 
   /** 前景色设置变更 → 全量重绘 (光标+文字都需要刷新) */
   private onFgColorChange(): void {
+    this.applyForegroundColorToCore();
     this.renderFull();
+  }
+
+  /**
+   * Keep the persisted SSH appearance in the VT core. The renderer still
+   * consumes the same setting for cursor paint and as a compatibility fallback
+   * when an older native library is loaded.
+   */
+  private applyForegroundColorToCore(): void {
+    if (this.handle <= 0) { return; }
+    const color: string = this.terminalFgColor.trim();
+    if (color.length !== 7 || color.charAt(0) !== '#') { return; }
+    const red: number = parseInt(color.substring(1, 3), 16);
+    const green: number = parseInt(color.substring(3, 5), 16);
+    const blue: number = parseInt(color.substring(5, 7), 16);
+    if (!Number.isFinite(red) || !Number.isFinite(green) || !Number.isFinite(blue)) { return; }
+    const foreground: number = 0xFF000000 + red * 0x10000 + green * 0x100 + blue;
+    this.bridge.setDefaultForeground(this.handle, foreground);
+    this.lastSnapshot = this.bridge.snapshot(this.handle);
   }
 
   /** 父页面请求回到底部 — 键盘弹起/终端高度变化后保证最新行可见 */
@@ -214,14 +352,29 @@ export struct NativeTerminalRenderer {
 
   private onResize(): void {
     if (this.cols <= 0 || this.rows <= 0) { return; }
+    this.scheduleResize();
+  }
+
+  private scheduleResize(): void {
+    if (this.resizeTimer !== -1) { return; }
+    this.resizeTimer = setTimeout((): void => {
+      this.resizeTimer = -1;
+      this.applyResize();
+    }, 0);
+  }
+
+  private applyResize(): void {
+    if (this.cols <= 0 || this.rows <= 0) { return; }
     if (this.handle > 0) {
-      this.bridge.resize(this.handle, this.cols, this.rows);
+      const nextCols: number = terminalGridDimension(this.cols);
+      const nextRows: number = terminalGridDimension(this.rows);
+      this.bridge.resize(this.handle, nextCols, nextRows);
       if (this.followBottom) {
         this.bridge.scrollToBottom(this.handle);
       }
       this.lastSnapshot = this.bridge.snapshot(this.handle);
     }
-    this.lastRows = this.rows;
+    this.lastRows = terminalGridDimension(this.rows);
     this.renderFull();
   }
 
@@ -247,15 +400,66 @@ export struct NativeTerminalRenderer {
   // ============================================================
 
   private onInputSequenceChange(): void {
-    if (this.handle <= 0) { return; }
-    if (this.inputBuffer.buffer.byteLength === 0) { return; }
-    // inputData is one ordered SSH byte chunk. The Rust core owns bounded
-    // scrollback and parses UTF-8/VT sequences without a lossy JS conversion.
-    this.bridge.writeBytes(this.handle, this.inputBuffer.buffer);
+    this.consumeInputQueue();
+  }
+
+  private scheduleInputDrain(): void {
+    if (this.inputDrainTimer !== -1 || this.terminalInputIsEmpty() ||
+      this.handle <= 0 || !this.canvasReady) { return; }
+    this.inputDrainTimer = setTimeout((): void => {
+      this.inputDrainTimer = -1;
+      this.consumeInputQueue();
+    }, 0);
+  }
+
+  private terminalInputIsEmpty(): boolean {
+    return this.inputBuffer.size() === 0;
+  }
+
+  /**
+   * Consume every output batch admitted before this frame. Keeping the queue
+   * in the stable parent-owned object prevents a later @Watch event from
+   * replacing an earlier ArrayBuffer while the Canvas is still initializing.
+   */
+  private consumeInputQueue(): void {
+    if (this.handle <= 0 || !this.canvasReady) { return; }
+    const buffers: ArrayBuffer[] = this.inputBuffer.drain(TERMINAL_INPUT_FRAME_BUDGET_BYTES);
+    if (buffers.length === 0) { return; }
+    for (let index = 0; index < buffers.length; index++) {
+      const buffer: ArrayBuffer = buffers[index];
+      if (buffer.byteLength === 0) { continue; }
+      // Each item is an ordered SSH byte chunk. The Rust core owns bounded
+      // scrollback and parses UTF-8/VT sequences without a lossy JS conversion.
+      this.bridge.writeBytes(this.handle, buffer);
+    }
     if (this.followBottom) {
       this.bridge.scrollToBottom(this.handle);
     }
     this.applyDirtySnapshot();
+    this.scheduleInputDrain();
+  }
+
+  private markCanvasReady(): void {
+    if (this.handle <= 0) { return; }
+    this.surfaceReadyProbePending = false;
+    if (this.canvasReady) {
+      // A reused component can receive onReady for a newly allocated surface
+      // after aboutToAppear optimistically restored the previous surface.
+      // Refresh the backing canvas before consuming any pending output.
+      this.calcCellSize();
+      this.lastSnapshot = this.bridge.snapshot(this.handle);
+      this.notifyTerminalMode(this.lastSnapshot);
+      this.renderFull();
+      this.consumeInputQueue();
+      return;
+    }
+    this.canvasReady = true;
+    this.surfaceEverReady = true;
+    this.calcCellSize();
+    this.lastSnapshot = this.bridge.snapshot(this.handle);
+    this.notifyTerminalMode(this.lastSnapshot);
+    this.renderFull();
+    this.consumeInputQueue();
   }
 
   /** 获取脏快照并增量渲染 */
@@ -358,6 +562,7 @@ export struct NativeTerminalRenderer {
     }
     if (bottomRow < 0) { bottomRow = 0; }
     const contentH: number = (bottomRow + 1) * this.cellH;
+    const gridRows: number = snap ? snap.rows : terminalGridDimension(this.rows);
     const visibleH: number = this.visibleViewportHeight > 0 ? this.visibleViewportHeight : this.viewportHeight;
     const topInset: number = Math.max(0, this.viewportHeight - visibleH);
     // screenTop > 0 只说明缓冲区存在历史内容，不代表当前可见区正在浏览历史。
@@ -370,7 +575,7 @@ export struct NativeTerminalRenderer {
       this.bottomAlignSparseContent,
       topInset,
       visibleH,
-      this.rows * this.cellH,
+      gridRows * this.cellH,
       contentH,
       sparseLimit,
       hasScrollback
@@ -386,11 +591,15 @@ export struct NativeTerminalRenderer {
   }
 
   private canvasWidth(): number {
-    return Math.max(this.cols * this.cellW, Math.ceil(this.viewportWidth));
+    const snap: TerminalCoreSnapshot | null = this.lastSnapshot;
+    const gridCols: number = snap ? snap.cols : terminalGridDimension(this.cols);
+    return Math.max(gridCols * this.cellW, Math.ceil(this.viewportWidth));
   }
 
   private canvasHeight(): number {
-    return Math.max(this.rows * this.cellH, Math.ceil(this.viewportHeight));
+    const snap: TerminalCoreSnapshot | null = this.lastSnapshot;
+    const gridRows: number = snap ? snap.rows : terminalGridDimension(this.rows);
+    return Math.max(gridRows * this.cellH, Math.ceil(this.viewportHeight));
   }
 
   // ============================================================
@@ -416,13 +625,20 @@ export struct NativeTerminalRenderer {
   // ============================================================
 
   private renderFull(): void {
-    if (this.cellW <= 0 || this.cellH <= 0 || this.cols <= 0 || this.rows <= 0) { return; }
+    const snap: TerminalCoreSnapshot | null = this.lastSnapshot;
+    if (this.cellW <= 0 || this.cellH <= 0 || this.cols <= 0 || this.rows <= 0 || !snap) {
+      return;
+    }
+    if (!terminalDimensionsMatchSnapshot(this.cols, this.rows, snap.cols, snap.rows)) {
+      this.scheduleResize();
+      return;
+    }
     const top: number = this.gridTop();
     const ctx: CanvasRenderingContext2D = this.ctx;
     ctx.fillStyle = TERMINAL_BG_CSS;
     ctx.fillRect(0, 0, this.canvasWidth(), this.canvasHeight());
     this.clearTopInset();
-    for (let r = 0; r < this.rows; r++) {
+    for (let r = 0; r < snap.rows; r++) {
       this.drawRow(r);
     }
     this.drawCursor();
@@ -431,7 +647,12 @@ export struct NativeTerminalRenderer {
   }
 
   private renderIncremental(): void {
-    if (this.cellW <= 0 || this.cellH <= 0) { return; }
+    const snap: TerminalCoreSnapshot | null = this.lastSnapshot;
+    if (this.cellW <= 0 || this.cellH <= 0 || !snap) { return; }
+    if (!terminalDimensionsMatchSnapshot(this.cols, this.rows, snap.cols, snap.rows)) {
+      this.scheduleResize();
+      return;
+    }
     const top: number = this.gridTop();
     if (top !== this.lastGridTop) {
       this.renderFull();
@@ -440,7 +661,7 @@ export struct NativeTerminalRenderer {
     this.eraseOldCursor();
     this.dirtyRows.forEach((absR: number): void => {
       // dirtyRows 是快照中的视口行号 (0..rows-1)
-      if (absR >= 0 && absR < this.rows) {
+      if (absR >= 0 && absR < snap.rows) {
         this.drawRow(absR);
       }
     });
@@ -449,7 +670,12 @@ export struct NativeTerminalRenderer {
   }
 
   private renderCursorOnly(): void {
-    if (this.cellW <= 0 || this.cellH <= 0) { return; }
+    const snap: TerminalCoreSnapshot | null = this.lastSnapshot;
+    if (this.cellW <= 0 || this.cellH <= 0 || !snap) { return; }
+    if (!terminalDimensionsMatchSnapshot(this.cols, this.rows, snap.cols, snap.rows)) {
+      this.scheduleResize();
+      return;
+    }
     this.eraseOldCursor();
     this.drawCursor();
   }
@@ -474,19 +700,22 @@ export struct NativeTerminalRenderer {
 
   /** 画一整行 */
   private drawRow(r: number): void {
-    if (r < 0 || r >= this.rows) { return; }
     const snap: TerminalCoreSnapshot | null = this.lastSnapshot;
-    if (!snap) { return; }
+    if (!snap || r < 0 || r >= snap.rows) { return; }
     const ctx: CanvasRenderingContext2D = this.ctx;
     const y: number = this.gridTop() + r * this.cellH;
     // 清整行 — 使用统一终端背景色
     ctx.fillStyle = TERMINAL_BG_CSS;
     ctx.fillRect(0, y, this.canvasWidth(), this.cellH);
-    for (let c = 0; c < this.cols; c++) {
-      const idx: number = r * snap.cols + c;
+    for (let c = 0; c < snap.cols; c++) {
+      const idx: number = terminalCellIndex(snap.cols, snap.rows, r, c);
       if (idx >= snap.cells.length) { continue; }
       const cell: TerminalCoreCell = snap.cells[idx];
+      // The wide head paints both cells. Painting the continuation again can
+      // overwrite the glyph or create a one-cell seam on some Canvas backends.
+      if (cell.wideContinuation) { continue; }
       const x: number = c * this.cellW;
+      const paintWidth: number = cell.wide ? this.cellW * 2 : this.cellW;
       let fg: number = cell.fg;
       let bg: number = cell.bg;
       if (cell.inverse) {
@@ -496,13 +725,13 @@ export struct NativeTerminalRenderer {
       }
       // 背景 (非默认色)
       if (bg !== DEFAULT_BG) {
-        ctx.fillStyle = NativeTerminalRenderer.rgbaToCss(bg);
-        ctx.fillRect(x, y, this.cellW, this.cellH);
+        ctx.fillStyle = SshTerminalSurface.rgbaToCss(bg);
+        ctx.fillRect(x, y, paintWidth, this.cellH);
       }
       // 前景字符
       if (cell.ch === ' ' || cell.ch === '\x00') { continue; }
       // 默认前景色用 SSH 终端设置替代 Rust 硬编码灰色
-      ctx.fillStyle = (fg === DEFAULT_FG) ? this.terminalFgColor : NativeTerminalRenderer.rgbaToCss(fg);
+      ctx.fillStyle = (fg === DEFAULT_FG) ? this.terminalFgColor : SshTerminalSurface.rgbaToCss(fg);
       ctx.font = this.canvasFont(cell.bold, cell.italic);
       ctx.textBaseline = 'middle';
       ctx.fillText(cell.ch, x, y + this.cellH * 0.50);
@@ -511,7 +740,7 @@ export struct NativeTerminalRenderer {
         ctx.lineWidth = Math.max(1, this.cellH * 0.06);
         ctx.beginPath();
         ctx.moveTo(x, y + this.cellH - Math.max(1, this.cellH * 0.12));
-        ctx.lineTo(x + this.cellW, y + this.cellH - Math.max(1, this.cellH * 0.12));
+        ctx.lineTo(x + paintWidth, y + this.cellH - Math.max(1, this.cellH * 0.12));
         ctx.stroke();
       }
     }
@@ -519,42 +748,47 @@ export struct NativeTerminalRenderer {
 
   /** 画单个 cell — 用于 eraseOldCursor */
   private drawCellAt(r: number, c: number): void {
-    if (r < 0 || r >= this.rows || c < 0 || c >= this.cols) { return; }
     const snap: TerminalCoreSnapshot | null = this.lastSnapshot;
+    if (!snap) { return; }
+    let cellCol: number = c;
+    let idx: number = terminalCellIndex(snap.cols, snap.rows, r, cellCol);
+    if (idx < 0 || idx >= snap.cells.length) { return; }
+    if (snap.cells[idx].wideContinuation && cellCol > 0) {
+      cellCol -= 1;
+      idx = terminalCellIndex(snap.cols, snap.rows, r, cellCol);
+    }
+    if (idx < 0 || idx >= snap.cells.length) { return; }
+    const cell: TerminalCoreCell = snap.cells[idx];
     const ctx: CanvasRenderingContext2D = this.ctx;
-    const x: number = c * this.cellW;
+    const x: number = cellCol * this.cellW;
     const y: number = this.gridTop() + r * this.cellH;
+    const paintWidth: number = cell.wide ? this.cellW * 2 : this.cellW;
     // 清该格 — 使用统一终端背景色
     ctx.fillStyle = TERMINAL_BG_CSS;
-    ctx.fillRect(x, y, this.cellW, this.cellH);
-    if (!snap) { return; }
-    const idx: number = r * snap.cols + c;
-    if (idx < snap.cells.length) {
-      const cell: TerminalCoreCell = snap.cells[idx];
-      let fg: number = cell.fg;
-      let bg: number = cell.bg;
-      if (cell.inverse) {
-        const swapped: number = fg;
-        fg = bg;
-        bg = swapped;
-      }
-      if (bg !== DEFAULT_BG) {
-        ctx.fillStyle = NativeTerminalRenderer.rgbaToCss(bg);
-        ctx.fillRect(x, y, this.cellW, this.cellH);
-      }
-      if (cell.ch !== ' ' && cell.ch !== '\x00') {
-        ctx.fillStyle = (fg === DEFAULT_FG) ? this.terminalFgColor : NativeTerminalRenderer.rgbaToCss(fg);
-        ctx.font = this.canvasFont(cell.bold, cell.italic);
-        ctx.textBaseline = 'middle';
-        ctx.fillText(cell.ch, x, y + this.cellH * 0.50);
-        if (cell.underline) {
-          ctx.strokeStyle = ctx.fillStyle;
-          ctx.lineWidth = Math.max(1, this.cellH * 0.06);
-          ctx.beginPath();
-          ctx.moveTo(x, y + this.cellH - Math.max(1, this.cellH * 0.12));
-          ctx.lineTo(x + this.cellW, y + this.cellH - Math.max(1, this.cellH * 0.12));
-          ctx.stroke();
-        }
+    ctx.fillRect(x, y, paintWidth, this.cellH);
+    let fg: number = cell.fg;
+    let bg: number = cell.bg;
+    if (cell.inverse) {
+      const swapped: number = fg;
+      fg = bg;
+      bg = swapped;
+    }
+    if (bg !== DEFAULT_BG) {
+      ctx.fillStyle = SshTerminalSurface.rgbaToCss(bg);
+      ctx.fillRect(x, y, paintWidth, this.cellH);
+    }
+    if (cell.ch !== ' ' && cell.ch !== '\x00' && !cell.wideContinuation) {
+      ctx.fillStyle = (fg === DEFAULT_FG) ? this.terminalFgColor : SshTerminalSurface.rgbaToCss(fg);
+      ctx.font = this.canvasFont(cell.bold, cell.italic);
+      ctx.textBaseline = 'middle';
+      ctx.fillText(cell.ch, x, y + this.cellH * 0.50);
+      if (cell.underline) {
+        ctx.strokeStyle = ctx.fillStyle;
+        ctx.lineWidth = Math.max(1, this.cellH * 0.06);
+        ctx.beginPath();
+        ctx.moveTo(x, y + this.cellH - Math.max(1, this.cellH * 0.12));
+        ctx.lineTo(x + paintWidth, y + this.cellH - Math.max(1, this.cellH * 0.12));
+        ctx.stroke();
       }
     }
   }
@@ -565,8 +799,8 @@ export struct NativeTerminalRenderer {
     if (!snap) { return; }
     const cursorViewY: number = this.cursorViewY(snap);
     const cursorX: number = snap.cursorX;
-    if (this.cursorVisible && cursorViewY >= 0 && cursorViewY < this.rows &&
-      cursorX >= 0 && cursorX < this.cols) {
+    if (this.cursorVisible && snap.cursorVisible && cursorViewY >= 0 && cursorViewY < snap.rows &&
+      cursorX >= 0 && cursorX < snap.cols) {
       const ctx: CanvasRenderingContext2D = this.ctx;
       const cx: number = cursorX * this.cellW;
       const cy: number = this.gridTop() + cursorViewY * this.cellH;
@@ -599,12 +833,7 @@ export struct NativeTerminalRenderer {
   build() {
     Canvas(this.ctx)
       .onReady((): void => {
-        this.calcCellSize();
-        if (this.handle > 0) {
-          this.lastSnapshot = this.bridge.snapshot(this.handle);
-          this.notifyTerminalMode(this.lastSnapshot);
-        }
-        this.renderFull();
+        this.markCanvasReady();
       })
       .width('100%')
       .height('100%')
@@ -616,6 +845,12 @@ export struct NativeTerminalRenderer {
         if (area !== this.lastCanvasArea) {
           this.lastCanvasArea = area;
           hilog.info(0x0000, 'NativeTerminal', `[areaDiag] canvas ${area}`);
+        }
+        if (n.width > 0 && n.height > 0 &&
+          (!this.canvasReady || this.surfaceReadyProbePending)) {
+          // Reused ArkUI surfaces can skip a second onReady callback; a
+          // positive laid-out canvas is safe to render and consume into.
+          this.markCanvasReady();
         }
       })
       .focusable(false)

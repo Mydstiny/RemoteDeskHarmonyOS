@@ -9,7 +9,7 @@ import { ExtensionLoader } from '../services/ExtensionLoader';
 import { KeyVaultService } from '../services/KeyVaultService';
 import { SshPreflightService } from '../services/SshPreflightService';
 import { HostSyncService } from '../services/HostSyncService';
-import { SshHostKeyInfo } from '../types/rdpnapi';
+import { SshHostKeyInfo, SshProxyConfig } from '../types/rdpnapi';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 
 const TAG = 'SshPreflight';
@@ -30,6 +30,7 @@ export class SshPreflightController {
   host: RemoteHost;
   state: SshPreflightState = SshPreflightState.PROBING;
   hostKeyInfo: SshHostKeyInfo | null = null;
+  jumpHostKeyInfo: SshHostKeyInfo | null = null;
   error: string = '';
   passphraseInput: string = '';
   passphraseShowPw: boolean = false;
@@ -57,18 +58,37 @@ export class SshPreflightController {
   private async probe(): Promise<void> {
     try {
       await new Promise<void>((r) => setTimeout(r, 80));
-      const info = this.loader.probeSshHostKey(this.host.host, this.host.port);
+      const info = await this.loader.probeSshHostKeyAsync(
+        this.host.host, this.host.port, this.proxyConfig(false));
       if (!info.ok) {
         this.state = SshPreflightState.ERROR;
         this.error = info.errorMessage || '无法读取 SSH 主机指纹';
         return;
       }
+      let jumpInfo: SshHostKeyInfo | null = null;
+      if (this.usesJump()) {
+        jumpInfo = await this.loader.probeSshHostKeyAsync(this.host.proxyHost, this.host.proxyPort);
+        if (!jumpInfo.ok) {
+          this.state = SshPreflightState.ERROR;
+          this.error = '无法读取跳板机 SSH 主机指纹: ' +
+            (jumpInfo.errorMessage || '跳板机 KEX 握手失败');
+          return;
+        }
+      }
       this.hostKeyInfo = info;
-      const savedRaw = this.host.sshHostKeyRawBase64;
-      const trustMode = this.host.sshHostKeyTrustMode;
-      if (trustMode === 1 && savedRaw === info.rawBase64) {
+      this.jumpHostKeyInfo = jumpInfo;
+      const targetChanged = this.host.sshHostKeyTrustMode === 1 &&
+        this.host.sshHostKeyRawBase64 !== '' && this.host.sshHostKeyRawBase64 !== info.rawBase64;
+      const jumpChanged = jumpInfo !== null && this.host.sshJumpHostKeyTrustMode === 1 &&
+        this.host.sshJumpHostKeyRawBase64 !== '' &&
+        this.host.sshJumpHostKeyRawBase64 !== jumpInfo.rawBase64;
+      const targetNeedsTrust = this.host.sshHostKeyTrustMode !== 1 ||
+        this.host.sshHostKeyRawBase64 === '' || this.host.sshHostKeyRawBase64 !== info.rawBase64;
+      const jumpNeedsTrust = jumpInfo !== null && (this.host.sshJumpHostKeyTrustMode !== 1 ||
+        this.host.sshJumpHostKeyRawBase64 === '' || this.host.sshJumpHostKeyRawBase64 !== jumpInfo.rawBase64);
+      if (!targetChanged && !jumpChanged && !targetNeedsTrust && !jumpNeedsTrust) {
         this.state = SshPreflightState.TRUSTED_MATCH;
-      } else if (trustMode === 1 && savedRaw !== '' && savedRaw !== info.rawBase64) {
+      } else if (targetChanged || jumpChanged) {
         this.state = SshPreflightState.HOST_KEY_CHANGED;
       } else {
         this.state = SshPreflightState.TRUST_FIRST_TIME;
@@ -82,12 +102,8 @@ export class SshPreflightController {
   retry(): void { this.probe(); }
 
   trustAndContinue(): void {
-    if (!this.hostKeyInfo) { return; }
-    this.host.sshHostKeyAlgorithm = this.hostKeyInfo.algorithm;
-    this.host.sshHostKeyFingerprintSha256 = this.hostKeyInfo.fingerprintSha256;
-    this.host.sshHostKeyRawBase64 = this.hostKeyInfo.rawBase64;
-    this.host.sshHostKeyTrustedAt = Date.now();
-    this.host.sshHostKeyTrustMode = 1;
+    if (!this.hostKeyInfo || (this.usesJump() && !this.jumpHostKeyInfo)) { return; }
+    this.applyTrust();
     this.srv.updateHost(this.host);
     this.checkPassphrase();
   }
@@ -95,14 +111,54 @@ export class SshPreflightController {
   continueAfterMatch(): void { this.checkPassphrase(); }
 
   async updateTrustAndContinue(): Promise<void> {
-    if (!this.hostKeyInfo) { return; }
-    this.host.sshHostKeyAlgorithm = this.hostKeyInfo.algorithm;
-    this.host.sshHostKeyFingerprintSha256 = this.hostKeyInfo.fingerprintSha256;
-    this.host.sshHostKeyRawBase64 = this.hostKeyInfo.rawBase64;
-    this.host.sshHostKeyTrustedAt = Date.now();
-    this.host.sshHostKeyTrustMode = 1;
+    if (!this.hostKeyInfo || (this.usesJump() && !this.jumpHostKeyInfo)) { return; }
+    this.applyTrust();
     this.srv.updateHost(this.host);
     this.checkPassphrase();
+  }
+
+  private usesJump(): boolean {
+    return this.host.sshProxyType === 'ssh_jump' && this.host.proxyHost.trim() !== '' &&
+      this.host.proxyPort > 0 && this.host.proxyPort <= 65535;
+  }
+
+  private proxyConfig(includeExpectedJumpKey: boolean = true): SshProxyConfig {
+    let keyData: string = '';
+    if (this.host.sshProxyKeyId !== '') {
+      const ref = KeyVaultService.getInstance().getSshKey(this.host.sshProxyKeyId);
+      if (ref) { keyData = ref.privateKey; }
+    }
+    return {
+      type: this.host.proxyHost.trim() !== '' ? this.host.sshProxyType : 'direct',
+      host: this.host.proxyHost,
+      port: this.host.proxyPort,
+      username: this.host.proxyUsername,
+      password: this.host.sshProxyType === 'ssh_jump' ? this.host.sshProxyPassword : '',
+      privateKeyPem: this.host.sshProxyType === 'ssh_jump' ? keyData : '',
+      privateKeyPassphrase: this.host.sshProxyType === 'ssh_jump' ? this.host.sshProxyKeyPassphrase : '',
+      authMethod: this.host.sshProxyType === 'ssh_jump' ? this.host.sshProxyAuthMethod : undefined,
+      expectedHostKeyRawBase64: includeExpectedJumpKey && this.host.sshProxyType === 'ssh_jump'
+        ? this.host.sshJumpHostKeyRawBase64 : '',
+      expectedHostKeyFingerprintSha256: includeExpectedJumpKey && this.host.sshProxyType === 'ssh_jump'
+        ? this.host.sshJumpHostKeyFingerprintSha256 : ''
+    };
+  }
+
+  private applyTrust(): void {
+    const trustedAt: number = Date.now();
+    this.host.sshHostKeyAlgorithm = this.hostKeyInfo?.algorithm || this.host.sshHostKeyAlgorithm;
+    this.host.sshHostKeyFingerprintSha256 = this.hostKeyInfo?.fingerprintSha256 ||
+      this.host.sshHostKeyFingerprintSha256;
+    this.host.sshHostKeyRawBase64 = this.hostKeyInfo?.rawBase64 || this.host.sshHostKeyRawBase64;
+    this.host.sshHostKeyTrustedAt = trustedAt;
+    this.host.sshHostKeyTrustMode = 1;
+    if (this.jumpHostKeyInfo) {
+      this.host.sshJumpHostKeyAlgorithm = this.jumpHostKeyInfo.algorithm;
+      this.host.sshJumpHostKeyFingerprintSha256 = this.jumpHostKeyInfo.fingerprintSha256;
+      this.host.sshJumpHostKeyRawBase64 = this.jumpHostKeyInfo.rawBase64;
+      this.host.sshJumpHostKeyTrustedAt = trustedAt;
+      this.host.sshJumpHostKeyTrustMode = 1;
+    }
   }
 
   private checkPassphrase(): void {
@@ -132,9 +188,9 @@ export class SshPreflightController {
         const ref = KeyVaultService.getInstance().getSshKey(this.host.sshKeyId);
         if (ref) { keyData = ref.privateKey; }
       }
-      const result = this.loader.testSshKeyAuth(
+      const result = await this.loader.testSshKeyAuthAsync(
         this.host.host, this.host.port, this.host.username,
-        keyData, this.passphraseInput
+        keyData, this.passphraseInput, this.proxyConfig()
       );
       if (result.ok) {
         if (this.passphraseSaveToHost) {
@@ -159,7 +215,11 @@ export class SshPreflightController {
       hostId: this.host.id,
       expectedHostKeyRawBase64: this.hostKeyInfo?.rawBase64 || this.host.sshHostKeyRawBase64,
       expectedHostKeyFingerprintSha256: this.hostKeyInfo?.fingerprintSha256 || this.host.sshHostKeyFingerprintSha256,
-      privateKeyPassphrase: this.passphraseInput || this.host.sshKeyPassphrase
+      expectedJumpHostKeyRawBase64: this.jumpHostKeyInfo?.rawBase64 || this.host.sshJumpHostKeyRawBase64,
+      expectedJumpHostKeyFingerprintSha256: this.jumpHostKeyInfo?.fingerprintSha256 ||
+        this.host.sshJumpHostKeyFingerprintSha256,
+      privateKeyPassphrase: this.passphraseInput || this.host.sshKeyPassphrase,
+      proxyPrivateKeyPassphrase: this.host.sshProxyKeyPassphrase
     });
     if (this.onReadyCallback) { this.onReadyCallback(); }
   }

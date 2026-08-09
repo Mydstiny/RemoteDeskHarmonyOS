@@ -1,10 +1,10 @@
 # RemoteDeskHarmonyOS Moonlight / Sunshine 串流能力完备升级计划
 
-> 文档状态：完成二次深度评估，待后续立项实施
-> 首次评估日期：2026-07-28；二次完成性审计日期：2026-07-29
-> 当前评估快照：分支 codex/cloud-data-lifecycle-root-fix，HEAD d2f365c32；本地 main 23940521a
+> 文档状态：完成第四次“当前源码漂移、统一 UI、云数据生命周期”深度审计，待后续立项实施
+> 首次评估日期：2026-07-28；二次完成性审计日期：2026-07-29；第三次 HarmonyOS 人因/UI 审计日期：2026-08-01；第四次源码对齐日期：2026-08-08
+> 当前评估收口快照：活动任务 `ssh-terminal-complete-upgrade`；分支 `codex/ssh-terminal-complete-upgrade`，HEAD `4646fb910`；本地 `main` `d2769ad4b`；当前分支相对本地 `main` ahead 155、behind 0
 > 适用仓库：/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS
-> 上游评估快照：moonlight-common-c e41355ea01670fd4c830b384009d31dd0339a705；Moonlight Android f10085f552b367cf7203007693d91c322a0a2936；Moonlight Qt 546cb72e32e5ac04bbc7e0b3a254176e5696685a；Sunshine 3893c5bcdadc5f0beaa127670531afbfd60519ea
+> 上游评估快照：协议细节仍以已审计的 moonlight-common-c `e41355ea01670fd4c830b384009d31dd0339a705`、Moonlight Android `f10085f552b367cf7203007693d91c322a0a2936`、Moonlight Qt `546cb72e32e5ac04bbc7e0b3a254176e5696685a`、Sunshine `3893c5bcdadc5f0beaa127670531afbfd60519ea` 和 MoonlightOH `a48821e2d309c4282d79a053e6a85245eb438a7b` 为证据基线；2026-08-08 官方仓库活跃度复核已确认上游继续演进，P0 必须从官方仓库重新锁定 commit、子模块和安全公告，不能把上述旧快照直接作为实施 pin
 > 本轮变更边界：只更新本计划文件；不修改 ArkTS、C/C++、Rust、配置、依赖、云表、测试或构建流程代码。
 
 ## 0. 结论先行
@@ -29,7 +29,7 @@ Moonlight/GameStream 的核心价值是低延迟音视频和游戏输入闭环�
 - 用项目现有 C/C++ NAPI、OH_AVCodec、NativeImage、GLRenderer、OHAudio、ArkUI 和会话生命周期能力做 HarmonyOS 平台适配；
 - 第一版只保证局域网或用户已配置的可达网络、Sunshine 现代版本、H.264 + Opus、键鼠/触摸/实体手柄的可验证闭环；
 - HEVC、AV1、HDR、YUV 4:4:4、7.1、触觉高级反馈和复杂公网网络在能力探测通过后逐项开放；
-- 新增一张物理云同步表 moonlightrecord，使用 recordType 区分 settings、host、profile、trust、secret；不把 Moonlight 数据写入 remotehosts、usersettings、rustdeskrelays、vncrecord 或 SSH 表；
+- 新增且只新增一张版本化物理云同步表 `moonlightrecordv1`，使用 `recordType` 区分 settings、host、profile、trust、secret；本地另有不注册云同步的 `moonlightlocalrecords` 镜像和 `moonlightappcache` 可重建缓存；不把 Moonlight 数据写入 `remotehosts`、`usersettings`、`rustdeskrelays`、实际 VNC 云表 `vncrecordv2` 或 SSH 表；
 - 配对私钥默认只保存在本机安全存储，不默认上云；跨设备恢复必须是用户明确开启、加密就绪且经过重新确认的可选能力。
 
 ### 0.2 当前可行性等级
@@ -61,7 +61,7 @@ Moonlight/GameStream 的核心价值是低延迟音视频和游戏输入闭环�
 
 ### 1.1 工作区状态
 
-二次完成性审计收口时工作区位于 `codex/cloud-data-lifecycle-root-fix`，HEAD 为 `d2f365c32`（`fix: persist cloud sync lifecycle state`），本地 `main` 为 `23940521a`，`origin/main` 为 `bfae6ef30`。评估期间现有活动任务先后落入账户作用域隔离和云同步生命周期持久化，覆盖本计划依赖的 account session、sensitive barrier、cloud-first/retry 状态和相关测试；工作树仍有多项用户已有修改/未跟踪文件，且数量可能随并行活动任务变化。本计划不接管、不覆盖、不整理这些变化，也不要求 stash、reset、切换分支或新建任务分支。
+第四次审计收口时工作区位于 `codex/ssh-terminal-complete-upgrade`，HEAD 为 `4646fb910`，本地 `main` 为 `d2769ad4b`；状态脚本判定当前存在未完成活动任务、10 项工作树变化和 `REVIEW_REQUIRED`。审计过程中活动 SSH 分支由其他在途工作继续推进，因此这里记录最终收口快照；变化属于当前 SSH、文档和其他用户任务，本计划不接管、不覆盖、不整理，也不要求 stash、reset、切换分支或新建任务分支。第四次审计重新核对了当前 account session、物理 store 隔离、cloud-first/bootstrap、VNC 单表领域、便携备份 V3、设置 sheet router、协议入口、Theme/Breakpoint 和连接会话浮层，以下设计以这批当前源码为准。
 
 本轮只允许修改一个既有计划文件：
 
@@ -85,7 +85,7 @@ Moonlight/GameStream 的核心价值是低延迟音视频和游戏输入闭环�
 | --- | --- | --- | --- |
 | C/C++ NAPI 主库 | entry/src/main/cpp/CMakeLists.txt | 统一 native 构建、NAPI 出口、OpenSSL、Opus、OHOS 系统库 | 当前目标是单体 rdpnapi；Moonlight 应先以独立静态子目标隔离，再链接主库 |
 | ProtocolAdapter | entry/src/main/cpp/extensions/protocol_adapter.h | 基础连接/状态/键鼠/视频/音频回调抽象 | 当前接口是远程桌面单连接思维，没有配对、应用目录、RTSP 阶段、手柄、码率和流配置 |
-| ExtensionLoader | entry/src/main/cpp/extensions/extension_loader_napi.cpp | 协议注册、会话激活、native 回调到 ArkTS 的边界 | 当前存在进程级 g_activeConnection 和 active decoder/audio 路径，Moonlight 需要 session + generation 作用域 |
+| ExtensionLoader | entry/src/main/cpp/extensions/extension_loader_napi.cpp | 协议注册、会话激活、native 回调到 ArkTS 的边界；当前 decoder/audio 已具备 owner/generation 回调门 | 仍有进程级 `g_activeConnection` 和 InputHandler active adapter 边界；Moonlight 需要在不回退现有 owner gate 的前提下清除最后的全局输入/活动适配器歧义 |
 | 硬解管线 | entry/src/main/cpp/render/hw_decoder.h、hw_decoder.cpp | OH_AVCodec、NativeImage、Surface、GL OES 纹理、关键帧恢复、队列上限 | Moonlight 回调是 DECODE_UNIT 链，不是简单的单 buffer VideoFrame；需要保存 SPS/PPS/VPS 和 frameType |
 | GLRenderer | entry/src/main/cpp/render/gl_renderer.h、gl_renderer.cpp | XComponent、GL context、NativeImage texture、重绘和 Surface 生命周期 | 必须把旧会话回调和新会话 generation 隔离，不能把 Moonlight 纹理事件写入全局旧 owner |
 | OHAudio | entry/src/main/cpp/audio/audio_player.cpp | S16LE PCM 播放、低时延模式、队列、欠载统计、暂停/恢复 | Moonlight common-c 的音频回调需要由 Opus decoder 产出 PCM；多声道必须能力探测后降级 |
@@ -94,7 +94,8 @@ Moonlight/GameStream 的核心价值是低延迟音视频和游戏输入闭环�
 | Native handle 生命周期 | entry/src/main/ets/services/NativeSessionHandles.ets | 后台只脱附 renderer、前台重新绑定 Surface、请求关键帧、完全断连 | Moonlight 需要补充视频暂停/丢帧、音频 flush、输入关闭和 RTSP/UDP 关闭顺序 |
 | PIP/后台 | entry/src/main/ets/services/RemoteSessionPipLifecyclePolicy.ets、RemoteSessionBackgroundTaskService.ets | decoderReady、远端尺寸、PIP 准备、multiDeviceConnection、audioPlayback | Moonlight 的背景播放必须依赖实际媒体状态和 AVSession/长时任务准入，不可只复用 RDP 文案 |
 | 云同步 | entry/src/main/ets/services/CloudStore.ets、CloudSyncCoordinator.ets、CloudSyncLifecyclePolicy.ets | 显式表选择、持久生命周期状态、云优先启动、重试、journal、冲突阻断 | Moonlight 必须新增独立 physical table 和 logical record type，不可被普通 selectedTables 无上下文上传 |
-| VNC 隔离数据设计 | entry/src/main/ets/model/VncRecord.ets、services/VncRecordPolicy.ets | 19 列单表 envelope、recordType、hash、resetEpoch、secret opt-in、local mirror | Moonlight 应建立自己的 moonlightrecord，不复制 VNC 业务字段，也不引用 VNC secret owner |
+| VNC 隔离数据设计 | entry/src/main/ets/model/VncRecord.ets、services/VncRecordPolicy.ets | 实际云表 `vncrecordv2` 的 19 列单表 envelope、recordType、hash、resetEpoch、secret opt-in、`vnclocalrecords` mirror | Moonlight 建立自己的 `moonlightrecordv1`，只复用物理 envelope 和生命周期原则，不复制 VNC 业务字段、逻辑 scope、secret/trust owner 或历史表名 |
+| 便携备份 V3 | entry/src/main/ets/services/LocalBackupPolicy.ets、LocalBackupService.ets、BackupManifestV3.ets | 已支持按表 inventory、full/redacted、owner 校验、quarantine 和事务恢复；VNC 云记录与本地覆盖层均参与 | Moonlight 必须显式登记云表与本地覆盖层，不能沿用旧计划中“mirror 一律排除”的错误假设；身份私钥仍需更严格排除 |
 
 ### 1.4 当前缺口
 
@@ -107,8 +108,11 @@ Moonlight/GameStream 的核心价值是低延迟音视频和游戏输入闭环�
 5. AudioData 以 PCM 为主要回调形态，但 Moonlight 音频回调需要在本地执行 Opus/Opus multistream 解码。
 6. InputHandler 没有 Game Controller Kit、控制器槽位、振动、LED、运动、触摸点和可靠输入 flush 的专用接口。
 7. ExtensionLoader 和 decoder/audio pipeline 仍有全局 active 路径；Moonlight 的网络线程、视频线程、音频线程、输入线程和 UI generation 必须成组销毁。
-8. HostProtocolPicker 当前展示 RDP、RustDesk、SSH、VNC；设置策略当前有 RDP、RustDesk、SSH、VNC，Moonlight 需要独立入口和独立设置 owner。
-9. 当前 cloud sync 已注册 cryptoparams、usersettings、remotehosts、rdpcredentials、rustdeskrelays、sshkeys、totpentries、vncrecord；新增 Moonlight 时只能增加一个新的物理业务表 moonlightrecord。
+8. `HostProtocolPicker` 当前已在 RDP、RustDesk、SSH、VNC 后展示禁用的 Moonlight 预告项；设置策略仍只有 RDP、RustDesk、SSH、VNC，Moonlight 实施时需要独立设置 section/route owner。
+9. 当前 cloud sync 实际注册 `cryptoparams`、`usersettings`、`remotehosts`、`rdpcredentials`、`rustdeskrelays`、`sshkeys`、`totpentries`、`vncrecordv2`；新增 Moonlight 时只增加一个版本化物理业务表 `moonlightrecordv1`，且必须先在所有目标 AGC 环境部署 schema，再进入客户端注册清单。
+10. 当前 `CloudSyncSelectionPolicy` 新安装默认空数组；Moonlight 物理表不能因升级自动选中。VNC 逻辑 scope 是专有实现，不存在可直接复用的通用“隔离领域插件”，Moonlight 要按相同安全性质新增独立 coordinator/service wiring，同时禁止在本任务中顺带重构成熟 VNC 行为。
+11. 当前只有已验证平台云身份能打开 canonical `remotedesktop.db` 并注册云表；未验证账号使用 `remotedesktop_owner-<sha>.db`，设备本地使用 `remotedesktop_device_local.db`，两者始终 local-only。旧计划中“每个账号各自云数据库”的表述已废弃。
+12. 当前添加主机 FAB 已显示灰色 Moonlight 入口、“即将支持”和低延迟说明，点击无副作用；预览图标仍是 `sys.symbol.gamecontroller_fill`。正式开放前才替换为经品牌许可/来源确认的官方 Moonlight 资产，并保留系统 Symbol 无障碍/缺失回退。
 
 ### 1.5 二次完成性审计矩阵
 
@@ -154,15 +158,38 @@ Moonlight/GameStream 的核心价值是低延迟音视频和游戏输入闭环�
 
 #### 本次实际审计的上游快照
 
-| 项目 | 2026-07-29 审计 revision | 本计划使用方式 |
+| 项目 | 审计 revision/日期 | 本计划使用方式 |
 | --- | --- | --- |
 | moonlight-common-c | `e41355ea01670fd4c830b384009d31dd0339a705` | 协议、线程、媒体和输入的主要实现证据 |
 | common-c ENet submodule | `aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1`，来源 `cgutman/enet` | 必须与 common-c 一起锁定；禁止替换成系统/任意 ENet |
 | Moonlight Android | `f10085f552b367cf7203007693d91c322a0a2936` | 配对、NvHTTP、证书 pin、launch 参数和移动端生命周期参考 |
 | Moonlight Qt | `546cb72e32e5ac04bbc7e0b3a254176e5696685a` | 设置能力、桌面输入、HDR/高阶 codec、产品诊断参考 |
 | Sunshine | `3893c5bcdadc5f0beaa127670531afbfd60519ea` | 现代服务端互操作和测试环境参考；不打包 |
+| MoonlightOH | `a48821e2d309c4282d79a053e6a85245eb438a7b`（2026-08-01 审计） | HarmonyOS 原生页面、输入、媒体和生命周期的人因/UI 可行性对照；不作为协议依赖或视觉资产来源 |
 
 这些 revision 是“本计划评估过的证据快照”，不是未来实施时可无条件直接合入的依赖版本。P0 必须先比较新旧 revision、检查 security advisory、submodule、ABI/API、许可证和协议变化，再决定继续使用本快照还是升级；任何升级都要重新跑 parser/fuzz/真机/合规门禁。
+
+#### 2.1.1 成熟 HarmonyOS Moonlight 项目的人因/UI 审计
+
+第三次审计以 [MoonlightOH](https://gitee.com/smdsbz/moonlight-ohos) revision `a48821e2d309c4282d79a053e6a85245eb438a7b` 为主要 HarmonyOS 原生参考，并以 [likuai2010/moonlight-harmonyos](https://github.com/likuai2010/moonlight-harmonyos) 为历史对照。前者在 2026-04 仍有维护记录，使用 ArkUI、Navigation、XComponent、OH_AVCodec/OHAudio 和 native common-c 路径，公开源码/截图覆盖主机发现、手动添加、PIN 配对、应用目录、global→server→app 分层配置、连接阶段、触控/触控板、虚拟键盘、HDR/硬解和性能统计；后者公开进展主要集中在 2023–2024 年，适合作为早期 HarmonyOS 移植可行性证据，不作为当前交互基线。
+
+本审计只吸收被源码和截图证明的鸿蒙交互模式，不复制其页面代码、视觉资产或产品声明：
+
+| 参考能力 | 审计结论 | 本项目处理 |
+| --- | --- | --- |
+| mDNS 扫描 + 手动 IP/域名 | 原生鸿蒙可行，符合首次添加的两种心理模型 | 保留双入口，但进入本项目分步 Sheet，并增加权限解释、去重、地址族、端口、取消和错误就地恢复 |
+| 主机→应用封面目录 | 符合 Moonlight 用户“先选主机，再选游戏/桌面”的任务模型 | 采用响应式目录；点击 app 先开启动确认/本次设置 Sheet，不直接发起不可撤销 launch |
+| global→server→app 分层配置 | 与本计划 settings/host/profile 作用域一致 | 保留分层，增加来源标签、继承摘要、单项重置和“仅本次”临时覆盖，避免用户忘记当前修改作用域 |
+| Touch / Trackpad 分段切换 | 经原生项目证明可用，且与本项目 VNC/RustDesk 控制模式一致 | 作为连接内一级快捷控制；模式切换后给出短文字反馈并清理旧手势状态 |
+| 连接内虚拟键盘与性能统计 | 原生可行，也与本项目 RemoteModifierPanel/DiagnosticsHud 能力重叠 | 复用本项目键盘、修饰键、组合键和可拖动诊断 owner，避免再造第二套全屏键盘/统计浮层 |
+| 固定黑底、`#111` 卡片和大量原始 Slider | 视觉只适合单一深色演示，参数密度和可发现性不足 | 拒绝照搬；全部使用 Theme/AppTheme、预设优先、能力裁剪、说明副标题和高级折叠 |
+| 点击 app 立即串流 | 对熟练用户快，但容易在蜂窝网络、主机忙或 profile 变化时误启动 | 默认进入可一眼确认的 launch Sheet；可提供用户显式开启的“受信任局域网快速启动”偏好 |
+| StageStarting/网络差均使用阻塞 LoadingDialog | 遮挡上下文、无法表达阶段、取消和降级 | 改成非模态阶段卡/遮罩；首帧前可取消，网络差只显示节流 banner，媒体中断才进入重连遮罩 |
+| 侧滑删除、长按 app 才能配置 | 对触控发现性弱，鼠标/键盘也不一致 | 主动作可见，次要动作进入显式“更多”；长按/右键仅作为冗余快捷方式，不是唯一入口 |
+| 返回键打开串流操作 Sheet | 能防止误退出 | 保留其意图，但与本项目规则统一：先释放鼠标捕获，再展开控制条，再显示断开确认；实体停止入口始终可见 |
+| 后台隐藏后中断、显示后自动 resume | 能节省资源，但自动恢复可能重新发送媒体/输入 | 不直接采用；由 foreground/PIP/用户设置和 session generation 决定，恢复前输入保持锁定并请求新关键帧 |
+
+HarmonyOS 设计依据以华为官方[设计指南](https://developer.huawei.com/consumer/cn/design/?catalogVersion=V1)、[设计入门](https://developer.huawei.com/consumer/cn/design/devstart/)、[焦点导航](https://developer.huawei.com/consumer/cn/doc/design-guides/hmi-focus-0000001748650376)、[光标交互](https://developer.huawei.com/consumer/cn/doc/design-guides/hmi-cursor-0000001795531205)和[应用 UX 体验标准](https://developer.huawei.com/consumer/cn/doc/design-guides/ux-guidelines-overview-0000001760867048)为准。MoonlightOH 只证明具体能力在 HarmonyOS 上有成熟先例，不覆盖本项目 API 23、主题、多账号、云同步、单 Sheet owner、无障碍和多协议一致性门禁。
 
 ### 2.2 主机发现、控制和可达性
 
@@ -205,8 +232,8 @@ Moonlight 的控制面不是单一长连接。目标流程应拆成以下可观�
 
 - `protocolCompatUniqueId`：按官方 NvHTTP 兼容行为使用经过 exact-revision 验证的固定协议值，使 resume/quit 能识别其他 Moonlight 客户端启动的应用；它不是用户/设备标识，不进云。
 - `requestId`：每次 HTTP/配对/launch 的随机请求关联 ID，只用于当前操作和脱敏诊断。
-- `installationId`：本地随机安装 ID，只用于安装级缓存/诊断关联，清除数据或重装后重建；不发送给主机、不写 moonlightrecord、不直接作为冲突 origin。
-- `originDeviceId`：每个 owner-store 首次写 Moonlight 数据时独立生成的随机同步 origin，只在该 owner 的记录间可关联；同一安装的账号 A、账号 B 和 device-local 使用不同值，不从 installationId、UnionID 或硬件 ID 派生。
+- `installationId`：本地随机安装 ID，只用于安装级缓存/诊断关联，清除数据或重装后重建；不发送给主机、不写 `moonlightrecordv1`、不直接作为冲突 origin。
+- `originId`：每个 owner-store 首次写 Moonlight 数据时独立生成的随机同步 origin，保存在 canonical payload 的 `_meta` 中，只在该 owner 的记录间可关联；同一安装的账号 A、账号 B 和 device-local 使用不同值，不从 installationId、UnionID 或硬件 ID 派生。
 - `ownerScopeId`：华为账号/设备本地数据边界，只用于本地与云隔离，绝不写入 GameStream `uniqueid`。
 
 P0 必须用 Sunshine 的 launch/resume/cancel 和“由另一官方 Moonlight 客户端启动”场景验证固定协议值；未通过前不开放跨客户端 quit。
@@ -250,7 +277,7 @@ P0 必须用 Sunshine 的 launch/resume/cancel 和“由另一官方 Moonlight �
 
 - `encryptionFlags` 使用 `ENCFLG_NONE`、`ENCFLG_AUDIO`、`ENCFLG_VIDEO`、`ENCFLG_ALL` 表达音视频流加密请求；输入流始终按协议加密。
 - launch/resume 生成的 `rikey`/`rikeyid` 是会话级材料，必须与 common-c `remoteInputAesKey`/IV 及主机参数一致；它们只存在于当前 session owner 的安全内存中。
-- `rikey`、`rikeyid`、派生 key、IV、认证 tag 不写日志、不进诊断快照、不进 `moonlightrecord`、不进入崩溃上报；停止、失败、账户切换和进程退出时清零。
+- `rikey`、`rikeyid`、派生 key、IV、认证 tag 不写日志、不进诊断快照、不进 `moonlightrecordv1`、不进入崩溃上报；停止、失败、账户切换和进程退出时清零。
 - 现代 Sunshine 首选音频+视频全流加密；只有在设备 AES 性能探针显示全流加密会破坏目标帧率/温控时，才允许根据产品策略降级。
 - 设置项只提供“自动（推荐）”“要求全流加密”“兼容模式”三态；“要求全流加密”协商失败必须 fail closed，不能静默退回未加密。
 - “兼容模式”仅面向明确识别的旧主机，显示风险、作用域和本次/长期选择；不得把 legacy SHA-1 配对和媒体不加密混成一个总开关。
@@ -623,7 +650,7 @@ Moonlight 的“连接仍在运行”不能成为账户切换的软提示后继�
 | P5 音频 MVP | Opus stereo 低时延播放 | Opus decoder、PCM adapter、OHAudio、音频焦点、underrun 统计 | P3 | 视频音频同步稳定；焦点丢失、后台、断连不残留播放 |
 | P6 输入 MVP | 键鼠、触摸和实体手柄输入；反馈默认关闭 | InputBridge、按键释放保险、控制器映射、反馈 capability fail-closed 门 | P3、Game Controller probe | 至少两类手柄、触摸多点、键鼠在真实主机可用；页面退出无悬挂输入；无反馈 API 时 UI 不暴露 |
 | P7 会话产品化 | 做好前后台、网络切换、重连、退出和资源回收 | lifecycle state、PIP、后台任务、reconnect policy、诊断页 | P4-P6 | 20 次 connect/disconnect/rebind 循环无 native 崩溃和旧画面 |
-| P8 数据和 UI | 加入独立主机、应用、设置和单云表 | Moonlight model/policy/pages、moonlightrecord、owner/lease/barrier、迁移隔离、云冲突、UI/无障碍和功能开关 | P2、P7 的接口稳定；云生命周期总门具备 | 新/老/多设备/切账号用户完成全流程；云开关关闭时零上传；旧协议 UI 无回归 |
+| P8 数据和 UI | 加入独立主机、应用、设置和单云表 | Moonlight model/policy/pages、`moonlightrecordv1`、owner/lease/barrier、迁移隔离、云冲突、UI/无障碍和功能开关 | P2、P7 的接口稳定；云生命周期总门具备 | 新/老/多设备/切账号用户完成全流程；云开关关闭时零上传；旧协议 UI 无回归 |
 | P9 硬化与发布 | 兼容、性能、安全、合规和灰度 | fuzz、网络矩阵、功耗/温控、SBOM、第三方 notice、源码包、发布开关 | P0-P8 | 第 13 节所有 release gate 通过 |
 
 ### 5.2 P0 的具体决策清单
@@ -641,7 +668,7 @@ P0 不能只写“评估完成”，必须产出以下可审计结论：
 9. manifest 权限/backgroundModes 的差异表、申请时机、拒绝降级和隐私声明更新。
 10. 当前 Theme/Breakpoint/sheet/settings route 的 UI 基线截图与无障碍基线。
 11. raw relative mouse、pointer capture/constraint、焦点丢失释放和每个系统快捷键的真机支持矩阵。
-12. Sunshine 最低安全版本/advisory 结果，以及 `moonlightrecord` 22 列 schema、长度、索引和云环境审批。
+12. Sunshine 最低安全版本/advisory 结果，以及 `moonlightrecordv1` 19 列 schema、长度、索引、owner 规则和三个 AGC 环境的部署审批。
 13. ActiveRemoteSessionRegistry 的跨协议互斥和进程异常退出 SessionRecoveryMarker 的架构评审。
 
 任何一项没有证据，都只能标记为 pending，不能在设置项里显示为已支持。
@@ -673,7 +700,7 @@ Moonlight 的 native 依赖、头文件和 NAPI 出口都应在这个边界内�
 - 如果 common-c 依赖或 API23 解码器导致构建/运行时风险，回滚边界是移除 Moonlight static target、NAPI export 和 ArkTS route；不得回滚已有 RDP/VNC 的 decoder/audio 改动。
 - 如果云表迁移失败，停止新增 Moonlight 上云，保留本地 mirror 和用户手动导出；不能删除已有 cloud rows。
 - 如果某个手柄驱动导致崩溃，先关闭该 device profile 的 Game Controller capability，不关闭视频和键鼠。
-- `CLOUD_LIFECYCLE_V2_ROLLOUT_ENABLED`、`REMOTE_CRYPTO_LIFECYCLE_V2_ENABLED`、`PORTABLE_BACKUP_V3_WRITE_ENABLED`、`LEGACY_CLOUD_REST_TRANSFER_ENABLED` 等总门保持 fail closed；Moonlight 子开关不得越权打开上层能力。
+- 遵守 `CLOUD_LIFECYCLE_V2_ROLLOUT_ENABLED`、`REMOTE_CRYPTO_LIFECYCLE_V2_ENABLED`、`PORTABLE_BACKUP_V3_WRITE_ENABLED`、`LEGACY_CLOUD_REST_TRANSFER_ENABLED` 的当前值和 fail-closed 语义；Moonlight 子开关不得越权打开上层能力。第四次审计时 cloud lifecycle 与 portable backup 已为 true，remote crypto 与 legacy REST 仍为 false。
 - 远端 feature flag 只决定入口/启动/子能力是否可用，不能远端删除数据、变更信任或上传 secret。关闭能力后仍保留查看、导出和删除数据的路径。
 
 ## 6. ArkTS 模型、服务和状态机
@@ -769,21 +796,24 @@ stateDiagram-v2
 
 Moonlight 只增加一张云端业务表：
 
-- 云端物理表：moonlightrecord
-- 本地镜像表：moonlightlocalrecords
+- 云端物理表：`moonlightrecordv1`；这是唯一新增的 AGC/分布式业务表。
+- 本地覆盖层：`moonlightlocalrecords`；位于当前 owner 的物理数据库，不调用 `setDistributedTables()`。
+- 本地应用缓存：`moonlightappcache`；只缓存主机返回的应用目录、封面 ETag/摘要和过期时间，不进云、不进便携备份。
 
-本地镜像不是第二张云业务表；它只用于离线启动、journal、冲突暂存和待上传状态。不得另建 moonlightsettings、moonlighthosts、moonlightapps、moonlighttrust 或 moonlightsecrets 云表。应用目录和诊断数据默认是本地缓存，不进入云同步表。
+`moonlightlocalrecords` 不是第二张云业务表，而是与当前 `vnclocalrecords` 相同性质的本地事实层：所有合法写入先在这里形成 owner-scoped 可恢复状态，物理表和逻辑 scope 均获准时再向云端投影。journal、quarantine、bootstrap marker、selection、恢复 receipt 和 session recovery marker 仍用各自现有基础设施，不塞进业务 row。不得另建 `moonlightsettings`、`moonlighthosts`、`moonlightapps`、`moonlighttrust` 或 `moonlightsecrets` 云表。
 
-CloudSyncPolicy 后续只增加 moonlightrecord 的表级注册和权限判断。所有逻辑记录通过 recordType 区分，和当前 VNC 的单表 envelope 思路一致，但 Moonlight 必须拥有自己的 schemaVersion、校验器和 secret 规则。
+版本后缀是物理 schema 合同的一部分：首版直接命名 `moonlightrecordv1`，未来不在生产中原地改变列语义；若确需不兼容物理结构，另立 `moonlightrecordv2` 迁移项目。`CloudSyncPolicy` 只增加 `moonlightrecordv1`，所有逻辑记录由 `recordtype` 区分。不得写入当前 `remotehosts`、`usersettings`、`vncrecordv2` 或任一其他协议表。
+
+AGC 上线顺序是硬门禁：开发/测试/生产三个目标环境先创建并验证表、权限、索引和空表读写，再合入包含该表名的客户端。因为当前 `setDistributedTables(TABLES, DISTRIBUTED_CLOUD, false)` 按完整清单注册，不能假设缺少一个新表时其余表仍必然成功；在 API 23 未证明安全的“可选单表重复注册”能力前，不用运行时开关掩盖未部署 schema。
 
 ### 7.2 表结构
 
-以当前 VNC 的 19 列 envelope 为兼容基线，再为真实双设备并发增加 `baseversion`、`mutationid`、`origindeviceid` 三列；最终云表固定为 22 列。三列属于同一 `moonlightrecord`，不是第二张冲突表。云数据库控制台 schema、ArkTS row model、validator、migration 和本地 mirror 必须使用完全相同的列名与整数语义。
+第四次审计后取消旧版“22 列 Moonlight 特例”。当前 `CloudStore`、`CloudTableAdapter`、VNC validator、备份 inventory 和冲突裁决已经围绕成熟的 19 列 envelope 工作；额外物理列会扩大公共云基础设施改造并制造第二套并发模型。`moonlightrecordv1` 固定复用同样的 19 个物理列，并把 Moonlight 专属的 `baseSyncVersion`、`mutationId`、`originId`、`fieldVersions` 放入 canonical payload 的 `_meta` 对象。它们受 `payloadhashsha256` 覆盖，secret row 也只在非敏感元数据 payload 中携带，不成为明文身份材料。
 
 云端/分布式表的规范 DDL 形状如下；实际建表由项目既有 CloudStore/云控制台迁移通道执行，不允许客户端在生产环境临时建云表：
 
 ~~~sql
-CREATE TABLE moonlightrecord (
+CREATE TABLE moonlightrecordv1 (
   id TEXT PRIMARY KEY,
   userid TEXT,
   recordtype TEXT,
@@ -798,9 +828,6 @@ CREATE TABLE moonlightrecord (
   aadversion INTEGER,
   payloadhashsha256 TEXT,
   syncversion INTEGER,
-  baseversion INTEGER,
-  mutationid TEXT,
-  origindeviceid TEXT,
   schemaversion INTEGER,
   resetepoch INTEGER,
   createdat INTEGER,
@@ -827,9 +854,6 @@ CREATE TABLE moonlightlocalrecords (
   aadversion INTEGER,
   payloadhashsha256 TEXT,
   syncversion INTEGER,
-  baseversion INTEGER,
-  mutationid TEXT,
-  origindeviceid TEXT,
   schemaversion INTEGER,
   resetepoch INTEGER,
   createdat INTEGER,
@@ -847,16 +871,13 @@ CREATE TABLE moonlightlocalrecords (
 | userid | 已验证 owner 的不可逆作用域值，最多 128 字符；device-local row 不得上传 |
 | recordtype | `settings`、`host`、`profile`、`trust`、`secret` 之一，最多 16 字符 |
 | ownerid | 业务 owner ID，最多 128 字符；与 userid/store lease 一起校验 |
-| ownertype | `user`、`device`、`host`、`profile` 之一，最多 16 字符 |
-| secretkind | `none`、`serverTrust`、`clientIdentityEnvelope` 之一，最多 32 字符；session token/PIN/rikey 永不成为云记录 |
-| payload | UTF-8 规范化 JSON，最多 64 KiB；secret 仅放非敏感 envelope 元数据 |
+| ownertype | `account`、`host`、`profile` 或 tombstone 的空字符串之一，最多 16 字符；不使用含糊的 `user/device` |
+| secretkind | 空字符串或 `client_identity`，最多 32 字符；trust 不是 secretKind，PIN/session token/rikey 永不成为云记录 |
+| payload | UTF-8 RFC 8785 canonical JSON，最多 64 KiB；包含业务对象和 `_meta`，secret 只放不可恢复的 envelope 元数据 |
 | ciphertext | 端到端加密 envelope，最多 128 KiB；非 secret 为空字符串 |
 | envelopeversion/cryptoversion/keyversion/aadversion | 非负整数；不支持的较新版本隔离 |
 | payloadhashsha256 | 按第 7.4 节逐 recordType 字节合同计算的 SHA-256，小写 64 位十六进制；历史列名不代表 secret 只 hash payload |
-| syncversion | 当前记录逻辑版本，非负整数；写入时等于 `baseversion + 1` |
-| baseversion | 写者开始编辑时观察到的 syncversion，非负整数，用于识别并发分支 |
-| mutationid | 每次持久 mutation 的安全随机 ID，最多 64 字符；重试复用同一个值以保证幂等 |
-| origindeviceid | owner-store 内随机、不可反推硬件/账号的 origin ID，最多 64 字符；不是 OAID、UDID、序列号或原始 installationId |
+| syncversion | 当前记录逻辑版本，非负整数；新 mutation 通常为观察版本 + 1；同当前 VNC 冲突策略由 `resetepoch > syncversion > updatedat > id` 形成 row 级确定序 |
 | schemaversion/resetepoch | 非负整数；resetepoch 只在明确重置/复活操作递增 |
 | createdat/updatedat | Unix epoch milliseconds 非负整数；服务端规范化时间优先，本机时间不单独决定胜负 |
 | deletedat | `0` 表示存活，正整数表示 tombstone 时间；全链路禁止一处用 null、一处用 0 |
@@ -864,11 +885,36 @@ CREATE TABLE moonlightlocalrecords (
 
 云服务为兼容性可能不支持列级 NOT NULL/CHECK，因此“DDL 可空”不代表业务可空。写入、拉取、恢复、迁移四条路径都必须运行同一个 validator；字段缺失、越界、非法枚举、负数、hash 格式错误或 live/tombstone 语义冲突全部隔离，不用默认值悄悄修复。单行总体积、云端列类型、索引数和 TEXT 上限必须在 P0 云环境实测，若平台上限更小，只能收紧本计划上限，不能拆成第二张云表规避。
 
-初始迁移标识定为 `moonlightrecord_schema_v1_22col`，业务 row 的 `schemaversion=1`。云端 22 列和授权规则先部署并通过空表/回滚演练，客户端 feature flag 才可识别；不允许 19 列实验 row 与 22 列正式 row 混写。未来加列必须先保持旧 reader 可隔离/只读，再提升 migration/schemaVersion，不能复用 v1 原地改变列语义。
+初始迁移标识定为 `moonlightrecordv1_schema_19col_v1`，业务 row 的 `schemaversion=1`。云数据库控制台、ArkTS row model、`CloudTableAdapter`、validator、本地覆盖层和备份清单必须逐列一致；必须有自动测试比较列名集合、类型和默认归一化。任何遗留 22 列实验数据都只能由独立迁移器读取并隔离，不能与正式 v1 混写。
 
-`originDeviceId` 的生命周期也固定：账号切换复用该 owner-store 已有随机值；清除该 owner 本地数据、卸载/重装或创建新 device-local store 后生成新值；便携备份不把当前 writer origin 作为独立设备配置导出。导入/云拉取时保留历史 row 自带的 origin 以验证旧 mutation，但用户在当前设备产生的下一次 mutation 必须写当前 owner-store 的新 origin。
+所有 live payload 都必须带如下 `_meta`；它是业务 JSON 的保留键，用户设置模型不能覆盖：
+
+~~~json
+{
+  "_meta": {
+    "mutationId": "random-id-reused-for-retry",
+    "originId": "owner-store-random-id",
+    "baseSyncVersion": 0,
+    "fieldVersions": {}
+  }
+}
+~~~
+
+`originId` 是 owner-store 内随机值，不得取 OAID、UDID、序列号、UnionID 或硬件信息。账号再次绑定同一 canonical store 时复用；清除此 owner 数据、创建新的 local-only store 或重装后重新生成。便携备份保留历史 row 自带的 `_meta` 以便冲突审计，但不把当前设备 writer origin 单独导出为设备配置；导入后的下一次用户写入使用目标 owner-store 的新 origin。tombstone payload 固定 `{}`，不携带 `_meta`，幂等和排序只依赖 19 列 envelope。
+
+严格 owner 矩阵如下，任何不匹配都进 quarantine：
+
+| recordType | ownerType | ownerId | secretKind |
+| --- | --- | --- | --- |
+| settings | `account` | 当前 `userid` | 空 |
+| host | `account` | 当前 `userid` | 空 |
+| profile | `host` | 被引用的 host record id | 空 |
+| trust | `host` | 被引用的 host record id | 空 |
+| secret | `account` | 当前 `userid` | `client_identity` |
 
 ### 7.3 recordType 规范
+
+以下示例为可读性省略统一 `_meta`；实际 live row 必须由 `MoonlightRecordPolicy` 在 canonicalization 前注入第 7.2 节元数据。业务 DTO、UI 表单和导入文件不得直接设置 `_meta`。
 
 #### settings
 
@@ -906,6 +952,8 @@ CREATE TABLE moonlightlocalrecords (
 }
 ~~~
 
+全局设置只存跨主机默认值。设备能力探测结果、最近自适应码率、当前音量、物理手柄编号、窗口尺寸和 diagnostics HUD 状态属于本机/会话状态，不同步。`allowLegacySha1` 初始和升级默认始终为 false，只有明确兼容流程才临时作用于指定 host，不能靠云全局开启。
+
 #### host
 
 保存主机身份和可达性，不保存 PIN：
@@ -925,10 +973,12 @@ CREATE TABLE moonlightlocalrecords (
     "mac": null,
     "broadcast": null
   },
-  "lastSeenAt": 0,
-  "catalogVersion": 0
+  "lastSuccessfulAddressKey": "",
+  "userOrder": 0
 }
 ~~~
+
+`lastSeenAt`、实时在线状态、往返时延、主机能力、运行中的 app、目录版本和探测到的端口放 `moonlightappcache`/内存快照，不制造高频云写。`paired` 也不是 host row 的权威字段：是否可用必须由当前 owner 的 client identity、trust 候选、本机确认和一次 server validation 共同推导。
 
 #### profile
 
@@ -950,9 +1000,12 @@ CREATE TABLE moonlightlocalrecords (
     "controllerSlot": 0,
     "mouseMode": "relative"
   },
-  "lastUsedAt": 0
+  "favorite": true,
+  "userOrder": 0
 }
 ~~~
+
+最近使用时间、封面路径、主机返回标题和当前运行状态仅本地缓存；只有用户编辑的收藏、排序和覆盖项进入 profile。host 删除会 tombstone 从属 profile，删除 profile 不向 Sunshine 发送“删除应用”。
 
 #### trust
 
@@ -964,24 +1017,21 @@ CREATE TABLE moonlightlocalrecords (
   "hostId": "host-record-id",
   "serverCertificateSha256": "hex-or-base64-fingerprint",
   "pairingGeneration": 7,
-  "trustState": "trusted",
-  "trustedAt": 0,
-  "lastValidatedAt": 0,
-  "sourceOriginId": "random-install-origin-id"
+  "candidateObservedAt": 0
 }
 ~~~
 
-如果 trust 跨设备同步，首次在新设备使用时仍要执行本地确认或重新验证；云端的 trust 记录不能绕过证书变更保护。
+云端 trust 只能是“待验证候选”，不能保存 `trusted=true` 之类会让另一设备静默信任的结论。本机确认 receipt 必须与 secure-store owner、当前 `AccountSessionLease`、server UUID 和证书指纹绑定，留在本机且不进云/便携备份。证书指纹改变一律进入 `TRUST_CONFLICT`，阻止连接并展示旧/新短指纹与重新配对动作。
 
 #### secret
 
-只有用户显式打开“同步 Moonlight 配对身份”，并且用户密钥和端到端加密能力就绪时才创建。payload 只放元信息，私钥和客户端证书进入 ciphertext；禁止放 PIN、明文私钥、可复用 session token。
+首个发布版本保留 `secret/client_identity` schema 和 UI 说明，但逻辑 scope 默认关闭，且在 `REMOTE_CRYPTO_LIFECYCLE_V2_ENABLED`、威胁模型、跨设备恢复和吊销测试全部通过前不可打开。默认配对身份只进入 HUKS/Asset Store 支持的本机安全存储，cloud/local row 仅保存不可用于取出其他 owner 私钥的 alias/版本元数据；PIN、明文私钥、session token、`rikey`/`rikeyid` 永不持久化。未来用户显式开启身份同步时，私钥与客户端证书只能进入 DataCrypto authenticated ciphertext。
 
 ### 7.4 加密、AAD 和同步规则
 
 Moonlight 应复用项目现有 DataCrypto/CloudStore envelope，但不能把 VNC 的 owner、secretKind 或 payload 直接当作 Moonlight 语义。每条记录的 AAD 至少包括：
 
-- cloud table name；
+- cloud table name，固定 `moonlightrecordv1`；
 - recordType；
 - id；
 - ownerId；
@@ -991,7 +1041,7 @@ Moonlight 应复用项目现有 DataCrypto/CloudStore envelope，但不能把 VN
 - keyVersion；
 - aadVersion；
 - resetEpoch；
-- syncVersion、baseVersion、mutationId 和 originDeviceId；
+- syncVersion；`_meta` 已在 canonical payload/hash 中受完整性检查，不作为不存在的物理列重复编码；
 - deletedAt。
 
 `payloadhashsha256` 的输入不得由各端自行 `JSON.stringify`。v1 固定以下规范：
@@ -1006,42 +1056,41 @@ Moonlight 应复用项目现有 DataCrypto/CloudStore envelope，但不能把 VN
 
 1. settings、host、profile：规范化 JSON 放 payload，使用 payload hash 做完整性校验；地址、server UUID 等仍按项目整体数据保护策略决定是否整体加密。
 2. trust：至少对记录做完整性保护；证书指纹不作为私钥处理，但证书变更必须可审计。
-3. secret：私钥材料只写 ciphertext；payload 仅含不可用来取出其他 owner 密钥的 secure-store alias 元信息、随机 source origin 和恢复状态，不含硬件设备 ID。
+3. secret：私钥材料只写 ciphertext；payload 仅含 identity 版本、证书摘要、随机 origin 和恢复状态，不放可跨 owner 取出本机 key 的裸 alias，更不含硬件设备 ID。
 4. 禁止把任何密码、PIN、私钥、access token、调试抓包数据写入普通 payload。
 5. 密钥轮换只改变 keyVersion/cryptoVersion，不改变 record ID；迁移失败时保留旧 ciphertext 并标记待迁移。
 6. 用户关闭 secret sync 时，先停止新 secret 上传，再按当前云数据删除/撤销策略生成 tombstone，不直接删除本地仍在使用的私钥。
 
 #### 并发写入和确定性合并
 
-每个 writer 读取记录时捕获 `baseVersion = observed.syncVersion`，一次用户 mutation 使用新的随机 `mutationId` 和本安装随机 `originDeviceId`，提交 `syncVersion = baseVersion + 1`。网络重试必须复用原 mutationId；同一 mutationId 不同 payload/hash 视为数据损坏而隔离。相同 id、相同 baseVersion、不同 mutationId 且 payload/hash 不同即为并发分支，不能用简单 last-write-wins 吞掉。
+每个 writer 读取记录时把 `observed.syncversion` 写入 `_meta.baseSyncVersion`，一次用户 mutation 生成新的 `_meta.mutationId` 并使用当前 owner-store `_meta.originId`；网络重试必须复用完整 canonical row。同一 mutationId 出现不同 payload/hash 视为数据损坏而隔离。相同 id、相同 baseSyncVersion、不同 mutationId 且业务 payload 不同，标记为并发分支；`_meta` 用于检测和解释冲突，但不改变公共 19 列 adapter。
 
 确定性总序只用于需要选出可继续同步的 canonical row，优先级固定为：
 
-1. `resetEpoch` 较大；
-2. `syncVersion` 较大；
-3. 服务端规范化 `updatedAt` 较大；仅有不可信客户端时间时此项不得单独裁决；
-4. `mutationId` UTF-8 字节序较大；
-5. `payloadHashSha256` 字节序较大。
+1. `resetepoch` 较大；
+2. `syncversion` 较大；
+3. 规范化 `updatedat` 较大；
+4. 仍相等时，只有内容完全相同才视为幂等；内容不同则隔离，不用客户端时间或 mutationId 随意吞掉安全冲突。
 
-同一记录的 id 相同，禁止把 id 当最后 tie-breaker。五项仍完全相同但内容不同属于 invariant violation，双方都隔离并阻断上传。合并后生成新 mutation，`baseVersion` 指向已消费 canonical 版本，不能原样回写某一分支伪装成已合并。
+当前 VNC 通用 row 排序含 `id` 作为最后稳定键；对同一个 Moonlight id 它不提供额外裁决，因此 envelope 三项相同而内容不同属于 invariant violation，双方都隔离并阻断上传。真正完成三方合并后必须生成新 mutation 和更高 `syncversion`，不能原样回写某一分支伪装成已合并。
 
 recordType 合并合同：
 
 | recordType | 并发处理 |
 | --- | --- |
-| settings | payload 内维护按 JSON path 的 field version map；不重叠路径可三方合并，同一字段冲突按总序选 canonical，并在同步详情中保留“另一设备设置未采用”的可见记录 |
+| settings | `_meta.fieldVersions` 只覆盖稳定设置 key；不重叠路径可三方合并，同一字段并发冲突按 envelope canonical row 选择并在同步详情保留未采用提示 |
 | host | 地址集合可按规范化地址 key 合并；displayName/lastSeen 等低风险字段按 field version；serverUuid、host identity、证书关联冲突必须阻断并重新验证，不能把两个主机拼接 |
 | profile | 不重叠的 stream/input override key 可三方合并；同一 key 按总序；appId/hostId 并发变化进入用户选择，禁止启动含糊 profile |
 | trust | 相同 server certificate fingerprint 可合并更新时间；不同 fingerprint 永不自动选择，标记 `TRUST_CONFLICT` 并要求重新验证/配对 |
 | secret | 第 7.4 节 `moonlight-secret-v1` canonical hash 相同可幂等合并；不同有效 secret 永不自动恢复或覆盖，隔离双方并要求用户选择来源或重新配对 |
 
-tombstone 对“基于同一或更旧 baseVersion”的普通 mutation 获胜，阻止离线旧设备把已删对象复活。复活只能由用户明确执行，创建更高 `resetEpoch` 的新 mutation，并重新经过 owner、trust/secret 和云授权确认。客户端墙上时钟不参与安全决策；离线并发、时钟回拨、重试乱序和 tombstone race 都必须进入双设备测试。
+tombstone 通过更高 `resetepoch`/`syncversion` 阻止离线旧设备把已删对象复活。复活只能由用户明确执行并创建更高 `resetepoch` 的 live row，再经过 owner、trust/secret 和云授权确认。客户端墙上时钟不参与安全决策；离线并发、时钟回拨、重试乱序和 tombstone race 都必须进入双设备测试。
 
 ### 7.5 云同步生命周期
 
 | 时点 | 行为 |
 | --- | --- |
-| 登录/打开云同步 | 拉取 moonlightrecord schema，验证 envelope/hash，创建本地镜像 |
+| 登录/打开云同步 | 仅在 verified platform cloud binding 下从 canonical `remotedesktop.db` 拉取 `moonlightrecordv1`，验证 envelope/hash，物化到本地覆盖层 |
 | 打开 Moonlight 页面 | 只读取账户级已物化的本地快照，并向集中式 CloudSyncCoordinator 请求/观察刷新；页面不得自行启动第二套 cloud-first/merge。secure secret 由本机优先，云 secret 只呈现待恢复状态 |
 | 添加/编辑主机 | 先写本地 journal，再按 selectedTables 和用户授权上传 |
 | 配对成功 | 默认只更新本地 secret/trust；若用户开启 secret sync，显示明确确认后才上传 |
@@ -1055,10 +1104,11 @@ Malformed row、未知 recordType、schema 过新、hash 不匹配和 AAD 不匹
 
 ### 7.6 账户作用域和存储身份
 
-`userid` 不能只当作一列过滤条件；Moonlight 数据的物理数据库、内存 cache、journal、selection 和 callback 都必须绑定当前 `AccountScopeToken`：
+`userid` 不能只当作一列过滤条件；Moonlight 数据的物理数据库、内存 cache、journal、selection 和 callback 都必须绑定当前 `AccountSessionLease`（`ownerScopeId + storeIdentity + generation + storeInstanceId`）：
 
-- 华为账号作用域：由已验证 UnionID 的不可逆 SHA-256 派生 `ownerScopeId`，使用该 owner 对应的独立数据库身份。
-- 设备本地作用域：使用独立的 device-local owner 和 `remotedesktop_device_local.db`，不得伪造云账号 userid。
+- 已验证平台云身份：由已验证 UnionID 的不可逆 SHA-256 派生 `ownerScopeId`，并且只有 canonical `remotedesktop.db` 能注册/打开分布式表。
+- 尚未验证或不具备平台云身份的账号：使用 `remotedesktop_owner-<sha>.db`，即使 UI 中已登录也只能 local-only，不注册云表。
+- 设备本地作用域：使用 `remotedesktop_device_local.db`，不得伪造云账号 userid，始终 local-only。
 - 每个本地 `moonlightlocalrecords` 行、journal、quarantine、migration receipt 都写入 owner 证据或受 owner 专属数据库隔离。
 - MoonlightService 不长期缓存裸 `CloudStore`；每次 mutation/snapshot 获得短期 lease，并在完成前验证 lease 仍为 current。
 - 账号处于 authenticating、switching、locked、blocked 或 cloud binding 不一致时，允许只读显示已安全加载的当前 owner 数据，但禁止配对 secret 恢复、云 mutation 和跨 owner 合并。
@@ -1080,7 +1130,7 @@ Moonlight 接入当前 CloudStore/Coordinator 时必须遵守以下顺序：
 8. restore/import 期间 `restore quarantine` 阻断普通 Moonlight 写入；完成验证并原子切换后才重开 gate。
 9. 页面层只能订阅 repository/materialized snapshot 和请求 Coordinator refresh，不能持有 CloudStore、直接拉表、写 bootstrap marker 或在每次 onAppear 做云合并。
 
-当前 `CloudLifecycleSafetyPolicy` 的云生命周期 v2、远端加密生命周期 v2、portable backup v3 write 和 legacy REST transfer 开关均为 fail-closed 状态。Moonlight 不得为了赶进度绕过这些总门；P8 的退出条件必须包含相应策略已具备、灰度开关明确且关闭时零上传。
+第四次审计时 `CloudLifecycleSafetyPolicy` 的 cloud lifecycle v2 与 portable backup v3 已启用，remote crypto lifecycle v2 与 legacy REST transfer 仍关闭。Moonlight 不得硬编码假设这些值永远不变，也不得借普通分布式表绕过远端加密总门；P8 的退出条件必须覆盖 enabled/disabled 两套测试，任何门关闭时都零 secret 上传、零跨 owner 恢复。
 
 ~~~mermaid
 flowchart TD
@@ -1109,24 +1159,24 @@ flowchart TD
 
 ### 7.9 单表选择、逻辑记录选择和删除语义
 
-普通云同步选择器只暴露一个物理项“Moonlight（主机、配置与设置）”，对应 `moonlightrecord`。表被选中后仍需按 recordType 和敏感度二次授权：
+普通云同步选择器只暴露一个物理项“Moonlight（主机、配置与设置）”，对应 `moonlightrecordv1`；不要在用户主文案里泄漏版本化物理名，详情/诊断才显示。表级选择之外，新建 owner-scoped `MoonlightCloudSyncSelectionStore` 和纯策略，逻辑 scope 固定为 `settings | hosts | profiles | trust | identity`。这套 wiring 可借鉴 VNC，但不得复用 `RemoteDesktopVncPrefs`、VNC key、VNC record-type mapper 或 VNC coordinator 状态。
 
-当前 [CloudSyncSelectionPolicy.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/services/CloudSyncSelectionPolicy.ets) 的新安装默认是空数组，因此 `moonlightrecord` 的有效默认必须是“未选择/不上传”。下表的“表选中后默认”只描述用户显式勾选这张物理表、账号与 store 已 ready、`CloudLifecycleSafetyPolicy` 总门通过之后的 recordType 行为，不能被实现为安装默认打开。
+当前 [CloudSyncSelectionPolicy.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/services/CloudSyncSelectionPolicy.ets) 新安装默认空数组，当前 VNC 逻辑 scope 默认也为空。Moonlight 两层选择默认都必须为空；用户勾选物理项时进入 Moonlight 范围确认页，由用户明确选择非敏感范围，不得自动填充并立即上传。有效上传条件为：verified canonical store + 物理表已选择 + 对应逻辑 scope 已选择 + cloud-first/bootstrap 完成 + 当前 lease 有效 + row validator 通过。
 
-| recordType | 表选中后默认 | 用户额外选择 | 关闭/删除行为 |
+| recordType | 逻辑 scope | 默认 | 开启后的行为 | 关闭/删除行为 |
 | --- | --- | --- | --- |
-| settings | 同步 | 无 | 停止上传，按用户选择保留本地或生成 tombstone |
-| host | 同步 | 无 | 级联 profile/trust 的影响预览 |
-| profile | 同步 | 无 | 保留本地 app cache，不删除主机应用 |
-| trust | 不自动跨设备启用 | “同步信任摘要” | 新设备仍需确认；删除不等同于删除 secret |
-| secret | 关闭 | “同步配对身份”+端到端加密就绪+再次确认 | 先撤销恢复/上传，再 tombstone；本机私钥是否删除另行确认 |
+| settings | `settings` | 关闭 | 同步用户明确设置，不同步能力/会话态 | 只停投影；不删除本地 row，不写云 tombstone |
+| host | `hosts` | 关闭 | 同步主机定义，不同步在线态/配对结论 | 删除动作另行确认，host tombstone 前预览 profile/trust 影响 |
+| profile | `profiles` | 关闭 | 同步收藏和用户覆盖项，不同步目录缓存 | 保留本地 app cache，不删除 Sunshine 应用 |
+| trust | `trust` | 关闭 | 只同步证书候选摘要，新设备仍需本地确认 | 停同步不撤销本地确认；“删除云候选”单独写 tombstone |
+| secret | `identity` | 关闭且首版 capability 不可用 | 仅在 remote crypto lifecycle、E2E 和恢复评审通过后允许显式开启 | 先停恢复/上传；云 tombstone、本机身份删除、主机 unpair 三个独立确认 |
 
-用户不能在 cloud selector 中看到五张逻辑表，也不能因为勾选 `moonlightrecord` 就自动上传 secret。删除云数据、删除当前设备数据、从主机解除配对、删除某一 profile 是四个不同动作，确认页必须分别说明影响设备、可恢复性和主机端状态。
+`MoonlightRepository.upsert()` 始终先写当前 owner 的 local overlay；只有上述有效条件满足才写云投影。取消物理或逻辑选择只停止后续投影，绝不把“取消同步”解释为“删除云数据”。重新开启必须先 cloud-first 拉取并解决冲突，再将仅本地候选提升到云；禁止 local-first 覆盖另一设备。删除云数据、删除当前设备数据、删除/忘记主机、从 Sunshine 解除配对、删除 profile 是不同命令和确认页。
 
 ### 7.10 单表容量、索引、留存和服务端安全
 
 - `id` 是唯一物理主键；owner/recordType 是必须校验的业务隔离维度，不宣称 RDB 中存在并未定义的 `owner + id` 复合主键。
-- 目标二级索引固定为 `(userid, recordtype, deletedat)`、`(ownerid, recordtype)`、`(updatedat)`；P0 必须在云数据库验证允许的联合索引、排序和分布式表限制。若平台不支持某索引，需记录替代查询/分页成本和数据上限，不得静默全表扫描。
+- 目标二级索引候选为 `(userid, recordtype, deletedat)`、`(ownerid, recordtype)`、`(updatedat)`；P0 必须在 AGC API 23 对应环境验证是否支持联合索引、排序和分布式表限制，只有控制台实际创建/查询证据后才称为“已建立”。若平台不支持，记录替代查询、分页成本和行数上限，不得静默全表扫描。
 - `payload`/`ciphertext` 设置明确长度上限；应用图标、日志、媒体包、性能时间序列不进入表，避免单行/总容量失控。
 - app catalog 仅本地缓存并设过期时间；profile 只存 titleSnapshot 和 appId。
 - tombstone 有最短跨设备传播窗口，清理必须确认所有 active device generation 已观察到或达到服务端留存策略；不能本地删除后立即物理清除云行。
@@ -1136,15 +1186,22 @@ flowchart TD
 
 ### 7.11 本地便携备份、导出和恢复
 
-当前 `PORTABLE_BACKUP_V3_WRITE_ENABLED` 为 fail-closed。Moonlight 在该总门、格式版本、恢复事务和安全评审全部通过前不得被加入便携备份写入；不能因为云表已存在就被当前 [LocalBackupService.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/services/LocalBackupService.ets) 的通用表遍历意外导出。
+第四次审计时 `LOCAL_BACKUP_VERSION=3` 且 `PORTABLE_BACKUP_V3_WRITE_ENABLED=true`，当前备份 manifest 以表 inventory 承载内容，VNC 的云表和 local overlay 都会参与 full/redacted 选择。Moonlight 必须显式登记 `moonlightrecordv1` 与 `moonlightlocalrecords`，否则未开启云同步的本地主机会在备份中丢失；`moonlightappcache`、journal、quarantine、receipt、bootstrap、selection 和 recovery marker 明确排除。
 
-首版普通便携备份的合同：
+格式决策：保持 `LOCAL_BACKUP_VERSION=3`，把两张本地 RDB 表作为新的可选 inventory section；原因是当前 V3 已是 table-driven envelope，无需只为新增协议改变公共格式。实施前必须添加兼容测试证明：旧 V3 文件在新版本恢复时 Moonlight section 缺失等价于“无 Moonlight 数据”；带 Moonlight section 的新文件若被旧客户端拒绝，应明确提示“备份来自较新版本”，不能部分导入。若测试发现旧 reader 会静默丢弃未知 section，则停止并升级为 Backup V4，不能带风险发布。
 
-- Moonlight 首次出现于 `LOCAL_BACKUP_VERSION=3`；v1/v2 reader 不认识 Moonlight 时必须明确拒绝过新文件，v3 reader 对 v1/v2 文件按“没有 Moonlight 数据”处理，不生成默认行。
-- 只包含经过当前 owner 验证的 host/profile/settings，以及脱敏 trust 摘要；不包含 secret/client private key、PIN、rikey/rikeyid、session/access token、完整客户端证书内容。
-- 不包含 `moonlightlocalrecords` mirror、journal、quarantine、migration receipt、bootstrap marker、图标/应用目录缓存、诊断或 recovery marker；这些都是可重建或设备专属状态。
-- manifest 记录备份格式/版本、App 和 Moonlight schema 版本、创建时间、recordType 计数、规范化内容 hash、来源 owner kind 和不可逆短标识；不保存原始 UnionID、硬件 ID 或 installationId。
-- 导出前展示包含范围和明确排除项；文件生成成功、hash 校验和系统分享目标接管分别是不同终态，取消分享不谎报“备份失败”。
+备份内容矩阵：
+
+| 内容 | 脱敏备份 | 完整备份（首版） | 恢复规则 |
+| --- | --- | --- | --- |
+| settings/host/profile | 包含 | 包含 | 经过 owner、schema、引用和 hash 校验；来源 local/cloud 去重后只保留 canonical row |
+| trust 候选摘要 | 排除 | 包含 | 恢复后仍为候选，不生成本机确认 receipt，不可绕过证书警告 |
+| secret/client identity | 排除 | **仍排除** | manifest 明示“Moonlight 配对身份未备份”；恢复后要求重新配对 |
+| `moonlightlocalrecords` | 按上面 recordType 过滤后包含 | 按上面 recordType 过滤后包含 | 这是 local-only 用户的主要数据来源，不当作可重建 cache 丢弃 |
+| app catalog/封面、在线态、诊断、session marker | 排除 | 排除 | 启动后重新获取；不伪造旧运行状态 |
+| PIN、rikey/rikeyid、HTTP/session token、私钥 alias/本机确认 receipt | 排除 | 排除 | 无恢复通道，日志/manifest 也不得出现 |
+
+manifest 记录 App/备份/Moonlight schema 版本、两个表 section、各 recordType 的 included/omitted/count、canonical 内容 hash、来源 owner kind 和不可逆短标识；不保存原始 UnionID、硬件 ID、installationId 或当前 writer origin。导出预览明确显示“主机与配置 N 条、信任候选 N 条、配对身份 0 条（不备份）”。文件生成、hash 自校验和系统分享目标接管是三个状态，取消分享不谎报“备份失败”。
 
 “带配对身份的加密备份”是未来独立功能，不借普通备份夹带 secret。它必须另行通过端到端 KDF/密钥托管、恢复身份确认、吊销、HUKS wrapping 可移植性和威胁模型评审；未通过时唯一跨设备路径是恢复 host/profile 后重新配对。
 
@@ -1153,7 +1210,7 @@ flowchart TD
 1. 解析到 restore quarantine，不接触当前 live 表；
 2. 验证 manifest/hash、版本、所有 row validator、owner kind、AAD 和引用完整性；
 3. 显示新增/覆盖/冲突/忽略/隔离计数，用户确认目标 owner；
-4. 对同 id 使用第 7.4 节 baseVersion/mutation 合同，host identity/trust 冲突阻断；不按导入文件时间覆盖；
+4. 对同 id 使用第 7.4 节 19 列 envelope + `_meta` 合同，host identity/trust 冲突阻断；不按导入文件创建时间覆盖；
 5. 已登录且该表启用云同步时，先完成 cloud-first/bootstrap，再决定导入数据是否可排队上传；
 6. 在当前 `AccountSessionLease` 内原子提交，任何失败整批回滚；切换账号、锁屏或取消立即撤销 restore lease；
 7. device-local 备份默认仍恢复为 device-local；迁入账号 scope 必须经过单独、逐类的数据迁移确认，secret 永不随普通迁移。
@@ -1175,7 +1232,9 @@ flowchart TD
 - 串流内 HUD/控制中心；
 - 网络与协议诊断页。
 
-不要把 Moonlight 的应用目录塞进通用 HostListPage 的“连接主机”按钮里。HostListPage 只显示主机摘要和最近使用的 profile；点击 Moonlight 主机进入其 app catalog，点击 app profile 才启动串流。
+第四次审计确认，现代“添加主机”FAB 的 `HostProtocolPicker` 已经在 VNC 后展示 `Moonlight`：整项灰色禁用、带“即将支持”和低延迟串流副标题，点击路径因 `enabled=false` 不触发 `onSelect`。当前 `ProtocolIconPolicy` 仍返回 `sys.symbol.gamecontroller_fill`，这是占位回退，不是官方品牌资产。后续只在 P0 完成品牌/许可证/来源复核后替换图标 owner；在 P0-P8 门禁全部通过前保持禁用，不创建草稿、不打开路由、不写设置/数据库/云表。
+
+不要把 Moonlight 的应用目录塞进通用 HostListPage 的“连接主机”按钮里。HostListPage 只显示主机摘要和最近使用的 profile；点击 Moonlight 主机进入其 app catalog，点击 app profile 先进入第 8.14.6 节的启动确认 Sheet，再由用户明确开始串流。
 
 ### 8.2 新增主机完整流程
 
@@ -1275,7 +1334,7 @@ flowchart TD
 | 后台 | 无可见 Surface 时视频 | 丢弃并保活/系统决定 | 不缓存无限视频帧；回前台请求 IDR |
 | 安全 | 证书变更 | 阻断 | 不提供“永远信任” |
 | 安全 | 保存配对身份 | 仅本机 | 使用安全存储；删除主机时二次确认 |
-| 云 | 同步 host/profile/settings | 关闭（新安装有效默认） | 用户显式选择 moonlightrecord、账号/store ready、cloud-first 和生命周期总门全部通过后才生效 |
+| 云 | 同步 host/profile/settings | 物理表和五个逻辑 scope 均关闭 | 用户显式选择 `moonlightrecordv1` 及对应逻辑范围、verified canonical store ready、cloud-first 和生命周期总门全部通过后才生效 |
 | 云 | 同步 trust | 关闭；表选中后可确认 | 跨设备仍需本地信任确认，不能因 host/profile 同步自动开启 |
 | 云 | 同步配对身份 | 关闭 | 需要端到端加密和单独确认 |
 | 界面 | 减少动效 | 跟随系统；不可读时 App 内手动 | 关闭持续 halo/循环动画和 HUD 缩放，不影响状态反馈 |
@@ -1314,20 +1373,23 @@ Moonlight 不建立独立皮肤。所有页面和浮层必须直接消费 `Theme
 
 具体组件基线：
 
-- `HostProtocolPicker` 和 `ResourceFabPicker` 继续保持相同结构：选项约 68vp、左右 18vp、24vp `SymbolGlyph`、标题 16、副标题 12、圆角 16、间隔 10；新增 Moonlight 必须同时出现在两个入口，不能只改一个。
-- `ProtocolIconPolicy` 增加唯一 `moonlight` key，并从 API 23 可用的系统 Symbol 中选定一个经编译探针验证的图标；不引入裸 SVG，也不在本计划虚构具体 symbol 名。
+- `HostProtocolPicker` 保持现有协议选项结构：选项约 68vp、左右 18vp、图标视觉尺寸约 24vp、标题 16、副标题 12、圆角 16、间隔 10。Moonlight 位于 VNC 之后；预告阶段整行使用现有禁用透明度/语义色，右侧以文字 badge 显示“即将支持”，不能只依赖灰色表达不可用。`ResourceFabPicker` 只承载 SSH 密钥、2FA 和中继等资源添加方式，不为 Moonlight 重复增加主机协议入口。
+- 正式协议身份图标使用 Moonlight 官方仓库/发行物实际发布的品牌图形，不使用通用游戏手柄、月亮、显示器或第三方重绘替代。已审计 Moonlight Qt revision `546cb72e32e5ac04bbc7e0b3a254176e5696685a` 的 [`app/res/moonlight.svg`](https://github.com/moonlight-stream/moonlight-qt/blob/546cb72e32e5ac04bbc7e0b3a254176e5696685a/app/res/moonlight.svg) 只作为来源证据；P0 必须重新从当日官方 commit 取资产、记录 commit/path/SHA-256/许可证与品牌使用结论，不能盲用旧 pin。
+- 官方图形应作为本地资源随 HAP 打包，禁止运行时热链 GitHub/CDN，也禁止从搜索引擎、图标站或第三方 fork 下载。若 HarmonyOS 资源管线需要把 SVG 转为 PNG/WebP，必须保留原始 256×256 viewBox、圆形边界、白色内圆和八向放射图形的比例与留白，只做确定性的格式/尺寸转换，不重绘、不裁切、不改变品牌构图；原始上游文件、转换脚本/参数和输出 SHA-256 一并留档。
+- 官方图标由 `Image`/项目品牌资源策略渲染。实施时把 `ProtocolIconPolicy` 扩展为显式 `systemSymbol | brandedAsset` 描述器，保留现有协议调用的兼容 wrapper；不得让各页面硬编码路径。Host picker、主机卡片、详情页、设置页和诊断页消费同一个 owner，资产加载失败才回退当前 `gamecontroller_fill` 并保持可访问名称。
+- 禁用占位态通过整行 opacity 和项目语义色实现，不修改官方素材文件来制作“灰色版”；浅色、深色、accent、减少透明度和高对比度下都要验证图标边界清楚。图标提供 `accessibilityText="Moonlight"`，不可用状态另行播报“即将支持”，不能把品牌图形本身当作唯一状态信息。
 - 主机卡片沿用 `HostListPage` 的 card palette、边框/blur、约 14vp 圆角和 66/80vp 紧凑/常规高度；Moonlight 的在线、配对、同步信息通过现有 secondary/tertiary 文本和状态 badge 表达。
 - 空间不足时先隐藏诊断摘要和最近 codec，不隐藏主机名、配对警告、主动作和可访问名称。
 
 ### 8.8 导航、sheet 和设置路由
 
-当前 `HostListPage` 使用单个 mounted `bindSheet` 承载资源/安全选择和设置叶页。Moonlight 必须进入这个既有 owner：
+当前 `HostListPage` 已把 Sheet 所有权分成明确边界：现代添加 FAB 的协议/添加流使用一个 mounted add Sheet；设置使用一个 root panel 加一个 leaf Sheet router；连接前置使用独立 remote-host/preflight Sheet 和队列。Moonlight 必须接入这三条既有链，不能再创建第四个长期 mounted root Sheet：
 
 1. `sm` 使用带 drag bar 的底部 sheet；`md/lg/xl` 使用居中 sheet；mask 和 dismiss 行为保持当前实现。
-2. 不在 Moonlight sheet 内再弹第二个 bindSheet；需要深层流程时先关闭 owner sheet，等待现有 360ms 路由节奏，再进入下一个 leaf/page。
+2. 不在 Moonlight sheet 内再弹第二个 `bindSheet`；“保存并打开/连接”复用 `HostAddConnectionHandoffPolicy` 的 `onDisappear` 生命周期边界，不能靠固定 360ms 定时器猜测动画完成。应用目录等长流程进入 Navigation 页面；启动确认进入既有 preflight owner/队列。
 3. PIN、证书变更、secret 云同步和删除属于不能误触关闭的事务页：支持系统返回，但有未提交敏感状态时使用 dirty-dismiss 确认。
 4. `SettingsAccordionPolicy` 中 Moonlight 作为独立协议分组放在 VNC 之后，保持 RDP → RustDesk → SSH → VNC → Moonlight 的既有认知顺序。
-5. `SettingsSheetRoutePolicy` 为 Moonlight 分配独立连续 mode 范围和 owner；不得复用 VNC 12–22 或通过布尔值组合路由。
+5. 第四次审计时 `SettingsSheetRoutePolicy` 已使用 VNC 12–22、Terminal line spacing 23。实施时先新增 route contract test，再从当时最大 mode + 1 起为 Moonlight 分配连续常量；不得复用 12–23、不得在页面散落数字、不得以多个布尔值组合路由。
 6. 手机/平板沿用浮动 HDS Tabs；PC/2in1 `xl` 沿用 sidebar。进入串流后临时隐藏主导航，但退出后恢复原 tab/sidebar、滚动位置和焦点。
 7. 任何异步结果只更新当前 route owner；用户关闭配对/诊断页后，旧请求不得重新打开 sheet。
 
@@ -1414,6 +1476,307 @@ HUD 分三层，避免一次性铺满画面：
 
 截图只能证明布局；配对、焦点、输入释放、旋转连续性和屏幕朗读还必须有录屏/自动化/真机操作证据。
 
+### 8.14 第四次源码对齐后的完备页面与人因设计合同
+
+本节是 Moonlight UI/UX 的实施级合同；如与 8.1–8.13 的概括性描述存在粒度差异，以本节更具体的页面、交互、浮层和验收规则为准，但不得放宽前述安全、云同步、生命周期和能力门禁。
+
+#### 8.14.1 人因目标与统一原则
+
+Moonlight 同时面对“只想立即开玩”的熟练用户和“不理解主机、PIN、codec、码率”的首次用户。设计以识别优于回忆、渐进披露、就地反馈、防误触、最小视觉遮挡和跨输入一致为核心：
+
+1. **任务优先而非参数优先**：主路径只回答“连接哪台主机、启动哪个应用、是否现在开始”；codec、色域、包长等放入有默认值的高级层。
+2. **分阶段减少选择压力**：单屏不同时暴露发现、配对、应用选择和全部串流参数。每个步骤只保留一个主动作、一个次动作和必要的取消/返回。
+3. **Fitts 命中合同**：普通触控热区不低于 44×44vp；串流内高频键盘/控制模式/停止入口不低于 48×48vp；相邻危险与普通动作至少间隔 12vp，危险动作不放在用户连续滑动/点击的末端。
+4. **Hick 选择合同**：一级快捷操作最多 5 个，超出进入“更多”；同一设置行默认提供不超过 4 个常用预设，更多值进入二级选择或自定义。
+5. **错误预防优先**：不允许点击应用卡片后无确认地占用计费网络、强退主机现有应用或覆盖 profile；地址、证书、能力和网络问题在对应字段/阶段就地显示。
+6. **控制—反馈邻近**：用户改变模式后 100ms 内出现按下/选中反馈；需要网络/native 的动作立即进入 pending 状态，400ms 后展示阶段，3s 后展示已等待时长，10s 后提供诊断/取消，不出现无限 spinner。
+7. **沉浸与安全并存**：串流画面默认无永久大工具栏，但边缘控制柄、系统返回逻辑和键盘/手柄可达路径保证停止不依赖隐藏手势。
+8. **同协议内一致、跨协议可迁移**：先把 VNC `VncSheetScaffold` 的 header/滚动 body/固定 footer/短屏 density 抽成协议无关 `RemoteConfigSheetScaffold`，VNC 保留零行为差异 wrapper，Moonlight 再提供自己的品牌 header；设置沿用 HostListPage accordion + leaf Sheet；连接内沿用 VNC 紧凑工具栏、RustDesk 自动收起顶栏、RemoteModifierPanel 和 DiagnosticsHud 的交互语法，但颜色全部走 Theme，不照抄 RustDesk 现有硬编码白色视觉。
+9. **模式状态可见**：触控、触控板、相对鼠标、键盘捕获、控制器槽位、静音、HDR/降级、PIP 和重连都必须同时有图标、短文本和无障碍状态，不能只改变颜色。
+10. **中断可恢复**：来电、锁屏、切网、旋转、折叠、PIP、软键盘、鼠标捕获和焦点变化均先完成输入 release，再改变媒体/Surface；UI 不用“页面还在”推断 native 会话仍有效。
+
+#### 8.14.2 信息架构与页面地图
+
+~~~text
+添加主机 FAB
+  └─ 协议选择（Moonlight 预告期禁用；开放后进入添加流程）
+      └─ Moonlight 添加主机 Sheet
+          ├─ 1/4 查找主机：自动发现 / 手动地址
+          ├─ 2/4 验证主机：身份、地址、可达性、命名
+          ├─ 3/4 配对与信任：PIN、证书指纹、失败恢复
+          └─ 4/4 完成：目录摘要、默认 app/profile、保存/保存并打开
+
+Moonlight 主机卡片
+  └─ 主机详情页
+      ├─ 应用目录（默认 tab）
+      ├─ 主机状态与网络诊断
+      ├─ 主机级设置
+      ├─ 配对/证书管理
+      └─ 删除/重新配对
+
+应用卡片
+  └─ 启动确认 Sheet
+      ├─ 有效设置摘要与本次覆盖
+      ├─ 网络/主机忙/能力降级提示
+      └─ 开始串流
+          └─ 连接阶段页/遮罩
+              └─ 串流页面
+                  ├─ 最小状态层
+                  ├─ 快捷控制条
+                  ├─ 控制中心 Sheet
+                  ├─ 键盘/修饰键/虚拟控制器
+                  ├─ 诊断浮窗
+                  └─ 重连/安全/停止事务层
+~~~
+
+用户从已配对主机再次启动最近应用时，主路径应不超过“主机卡片→应用卡片→开始串流”三次明确动作；首次添加的四步不是四张独立页面栈，而是一个可回退、保留草稿且由单一 Sheet owner 承载的事务流。
+
+#### 8.14.3 Moonlight 添加主机 Sheet
+
+整体外观使用 `MoonlightSheetScaffold(RemoteConfigSheetScaffold)`：继承当前 `VNC_SHEET_MAX_WIDTH=620vp`、短屏 density、固定 header/滚动 body/固定 footer，手机 `SheetType.BOTTOM`、其他断点 `CENTER`；header 显示统一品牌图标、标题、“n/4 + 步骤名”和返回。抽取顺序必须是“先锁定 VNC layout/policy/截图测试→提取协议无关 scaffold→VNC wrapper 回归零差异→Moonlight 接入”，不能为了 Moonlight 一次性重写 VNC。软键盘采用 `RESIZE_ONLY`，不把 footer 顶出可视区。退出时若已有手输地址、已选主机或已生成临时 identity，弹出“继续添加 / 丢弃草稿”，扫描结果本身不算脏数据。
+
+**1/4 查找主机**
+
+- 顶部双选项卡为“自动发现”和“手动输入”，默认自动发现；切换不清空另一页输入。
+- 自动发现先显示 2–3 行 Sunshine 前置说明，再按“已保存”“新发现”分组展示主机卡片。卡片包含主机名、局域网地址脱敏摘要、在线/已配对状态、最近发现时间和选择圆点。
+- 扫描区必须有“正在发现（已找到 n 台）”“暂停”“重新扫描”和“改用手动输入”，不能只有旋转指示器。只有用户进入自动发现时才申请/解释所需局域网发现能力；拒绝权限后手动输入仍完全可用。
+- 多地址按 server UUID 合并成一张卡，展开后显示 IPv4/IPv6/域名候选和 RTT；不以主机名或 IP 单独去重。
+- 手动页包含“主机地址”一个主要输入和折叠的“自定义端口”。支持域名、IPv4、带方括号 IPv6 和粘贴 `host:port`；解析结果在输入框下实时显示，不在提交后才报格式错误。
+- footer 主按钮为“验证主机”，未选中/地址非法时禁用并有说明；返回回协议选择。
+
+**2/4 验证主机**
+
+- 顶部状态卡同时显示“正在联系主机 / 已找到 Sunshine / 兼容 GameStream / 无法验证”，并列出当前尝试的地址族和可取消进度。
+- 成功后显示服务器名称、server UUID 短指纹、服务端类型/版本、配对状态、应用目录能力和媒体端口检查摘要；地址与端口可展开编辑。
+- 用户填写“显示名称”，默认取服务器名称但不自动覆盖用户已编辑值；可选 Wake-on-LAN 信息折叠在高级区域。
+- TCP 控制面成功但 UDP 尚未验证时允许继续，明确写“可以保存主机，启动前仍会检查媒体网络”；服务端版本命中安全阻断时禁止下一步并给出升级说明。
+- 若同 owner 已存在相同 server UUID，主动作改为“查看已有主机”，可选择“更新地址”；不创建重复记录。
+- footer 为“上一步 / 继续配对”或已配对时“上一步 / 检查信任”。
+
+**3/4 配对与信任**
+
+- 未配对时使用独立事务卡显示四位 PIN：视觉上四个大号数字格，语义上一个只读敏感值；主说明固定为“请在主机端输入此 PIN”，并显示主机名、倒计时和当前阶段。
+- 操作为“重新生成”“按需朗读”“取消配对”；默认不复制 PIN、不自动朗读、不允许输入框编辑。PIN 超时后立即变为不可用并清除内存，页面明确要求重新生成。
+- 配对网络等待期间保留取消；失败在卡内显示“主机未确认 / PIN 错误 / 连接中断 / 版本不兼容”，分别提供重新生成、检查 Sunshine、网络诊断，不用一个通用 toast。
+- challenge 成功后切换到证书信任卡，展示主机名、SHA-256 指纹分组摘要、首次见到时间和“该指纹将用于识别这台主机”；主按钮“信任并继续”，次按钮“拒绝并取消配对”。
+- 已配对且指纹匹配时不重复展示 PIN，只显示“身份已验证”；证书变化必须红色阻断，不能在添加流程内默认覆盖旧 trust。
+
+**4/4 完成与复核**
+
+- 摘要卡显示名称、主机类型、首选地址、配对/信任、网络检查和数据保存范围；地址仅显示必要摘要。
+- 拉取应用目录并展示最多 3 个最近/推荐 app 缩略图与“共 n 个应用”；目录失败不丢弃已完成配对，提供“稍后刷新”。
+- “默认打开”可选“应用目录”或一个 app；不强迫创建 app profile。选中 app 后只生成继承全局设置的轻量 profile。
+- 高级折叠只提供“为此主机覆盖串流默认值”入口，不在完成页复制完整设置表。
+- footer 为“保存”和主强调“保存并打开应用目录”；只有用户已选择 app 且通过启动前检查时才可出现“保存并启动”，避免首次添加后意外占用网络。
+- 保存成功必须以 owner store 持久终态为准；云同步排队只显示“已保存，等待同步”，不能写“已同步”。
+
+#### 8.14.4 主机详情与应用目录
+
+主机详情页在 sm 为纵向页面，在 md/lg 为主机摘要 + 应用网格，在 xl 为 HostList sidebar + 常驻详情 pane。顶部主机摘要不使用独立品牌皮肤，沿用 `Palette.card/surface/cardBorder`、HarmonyOS Sans 和当前 accent：
+
+- 左侧官方 Moonlight 图标与主机名；次行显示“在线 / 未知 / 离线 / 需重新配对”、最近成功地址和最后在线时间。
+- 右侧主动作“启动最近应用”仅在存在最近 profile 且预检可用时显示；其他动作进入“更多”。
+- 状态 chips 包括“已配对”“证书变化”“待同步”“主机忙”“目录缓存”，每项有文字；颜色只是增强。
+- 快捷区为“唤醒”“刷新目录”“网络诊断”“主机设置”，不可用时保留位置并解释原因，避免布局跳动。
+
+应用目录页面：
+
+- 顶部固定搜索、筛选（全部/最近/收藏/隐藏）和刷新；刷新时保留旧目录并在顶部显示进度，不清空网格。
+- app 卡使用 3:4 封面、标题、主机运行状态和 profile 摘要；封面缺失时使用统一占位图，不拉伸低分辨率图片。
+- 触控单击 app 打开启动确认 Sheet；鼠标双击/Enter 仍默认打开同一确认，只有用户显式启用“受信任局域网快速启动”后才可直接开始。
+- 每张卡有可见“更多”按钮：编辑此应用设置、收藏、隐藏、查看详情；长按/右键提供同样菜单作为冗余。
+- 主机已有应用运行时，在目录顶部显示“主机正在运行：X”；提供“继续当前会话”“启动所选应用”“结束主机应用”三个语义清晰的动作，最后一项为危险操作并独立确认，禁止自动 cancel 后重试。
+- 空目录显示 Sunshine 配置引导、刷新和诊断；离线时展示目录缓存时间，允许编辑 profile，但“开始串流”禁用并说明主机离线。
+
+#### 8.14.5 设置首页、作用域与完整设置项
+
+Settings accordion 在 VNC 后加入 Moonlight，摘要为“串流、音频、输入、网络、安全、后台和云同步”。展开后使用与 VNC 相同的卡片和 `protocolActionRow`，包含以下叶页：
+
+1. **快速设置**：体验预设、有效配置摘要、恢复推荐值。
+2. **视频与画面**：分辨率、帧率、码率、codec、HDR、色彩、帧节奏和缩放。
+3. **音频**：启用、声道、主机同时播放、音量和焦点行为。
+4. **输入与控制器**：触控/触控板/鼠标、键盘捕获、控制器、虚拟控制和反馈。
+5. **网络与安全**：地址策略、计费网络、重连、加密、legacy 兼容和 Wake-on-LAN。
+6. **后台与画中画**：PIP、后台音频、锁屏/无 Surface 行为。
+7. **性能监视与诊断**：HUD、采样、日志和脱敏导出。
+8. **Moonlight 云同步范围**：唯一 `moonlightrecordv1` 的 settings/hosts/profiles/trust/identity 五个逻辑 scope；所有 scope 默认关闭，identity 首版保持不可用。
+9. **配对身份与 Trust**：当前 client identity、主机证书、重新配对和本机清理。
+10. **管理 Moonlight 主机**：主机、profile、缓存和删除状态。
+
+全局、主机和 app profile 使用同一套叶页组件，但顶部必须有固定的“当前作用域”卡：
+
+- `全局默认`：修改所有未覆盖主机/app 的默认值。
+- `此主机`：默认显示“继承全局”；打开“为此主机覆盖”后才允许编辑。
+- `此应用`：逐组或逐项继承，值旁显示来源 badge（全局/主机/此应用）。
+- `仅本次`：只在启动确认/连接控制中心出现，离开会话自动丢弃；用户可显式“保存为此应用默认”。
+- 每个叶页提供“重置本页覆盖”，每一行提供“恢复继承”；不以清空整个 profile 代替单项恢复。
+
+设置控件合同如下：
+
+| 分组 | 首层呈现 | 二级/高级设计 | 防错与即时说明 |
+| --- | --- | --- | --- |
+| 体验预设 | 平衡（推荐）/低延迟/高画质/省电 | 展开查看映射到的分辨率、fps、码率、codec | 用户改任一映射值后标记“自定义”，不神秘覆盖 |
+| 分辨率 | 自动/设备原生/1080p/更多 | 720p、1440p、4K、16:10 和自定义宽高 | 只展示 host+device 可用项；预计缩放与比例在下方预览 |
+| 帧率 | 自动/30/60/更多 | 90/120/自定义仅能力通过后出现 | 显示设备刷新率、主机上限与实际协商可能回退 |
+| 码率 | 自动（推荐）+ 质量三档 | 自定义 Slider + 数字输入，范围随分辨率/fps 变化 | 同时显示预计每小时流量和当前网络建议；不以固定 10–100Mbps 套所有场景 |
+| Codec | 自动/H.264/HEVC/AV1 | 10-bit、YUV444 进入专业项 | 每项显示主机/设备支持；不可用不是可保存选项 |
+| HDR/色彩 | HDR 开关，默认关 | Rec.601/709/2020、limited/full 仅高级 | HDR 打开时自动展示必要条件，不静默改 codec/色域 |
+| 帧节奏 | 自动/低延迟/平滑 | jitter/queue 只在诊断实验项 | 用一句话说明延迟与稳定性取舍 |
+| 音频 | 音频开关、Stereo | 5.1/7.1、主机同时播放、焦点策略 | 输出设备不支持时禁用并说明；音频失败可无音频继续 |
+| 触控 | 直接触控/触控板/绝对鼠标/相对鼠标 | 移动/滚动速度、轻点超时、死区放在“灵敏度”Sheet | 预设低/标准/高优先；高级 Slider 有重置和实时试用区 |
+| 键盘 | 手动捕获、显示本地快捷键提示 | 系统快捷键逐项转发 | 始终保留本地逃生键；改变捕获先 release 当前按键 |
+| 控制器 | 自动槽位、实体优先 | 映射、死区、反向轴、虚拟布局 | 只显示系统已枚举设备；反馈/运动能力 fail closed |
+| 网络 | 自动地址、自动重连、计费网络每次询问 | 地址族、base port、local/remote、包长进入高级诊断 | 改端口先测试；公网提示不宣称提供中继 |
+| 安全 | 串流加密 Auto（推荐） | 要求全加密、legacy SHA-1 例外 | 当前主机不支持时显示影响；高危选项需要风险确认 |
+| 后台 | PIP、后台音频 | 无 Surface 视频策略只读展示实际行为 | 系统不允许时显示入口和原因，不假开关 |
+| 诊断 | HUD 关/简洁/详细 | 采样间隔、日志级别、导出 | Debug 显示隐私提示；导出前脱敏预览 |
+
+设置不在滑杆拖动每一帧持久化；拖动结束/选择确认后写 draft，用户离开叶页时原子提交。保存失败保持 draft 和错误，不回滚 UI 到看似成功的值。能力变化导致旧值失效时保留“原值 + 当前实际值 + 原因”，由用户选择采用推荐值或继续保留待设备可用。
+
+#### 8.14.6 启动确认与连接阶段页面
+
+点击应用后打开单一启动确认 Sheet，避免 MoonlightOH 式点击即 launch：
+
+- header 显示 app 封面、标题、主机名和在线状态。
+- “本次串流”摘要以四个可扫读 chips 显示分辨率、fps、codec/HDR、预计码率；点“调整”进入本次覆盖，不写 profile。
+- 网络卡显示局域网/计费网络、控制面/UDP 预检和预计流量。计费网络按用户策略要求单次确认。
+- 输入卡显示当前模式和实体控制器数量；没有控制器不阻止桌面 app，但游戏型 profile 可提示虚拟/实体控制方案。
+- 主机忙时默认“继续当前会话”或返回目录；“结束现有应用并启动”必须独立危险确认。
+- 主按钮“开始串流”，次动作“保存本次设置为此应用默认”；后者只有实际变更时出现。
+
+开始后进入连接阶段页/全屏遮罩，而不是连续弹 LoadingDialog。背景使用 app 封面模糊/主题实色，中央阶段卡按顺序显示：联系主机→启动/恢复应用→协商 RTSP→建立视频→建立音频→建立输入→等待首帧。已完成阶段打勾，当前阶段有进度，未开始阶段弱化；底部始终有“取消”。
+
+- 0–400ms 不闪现加载卡，避免快速局域网连接的视觉抖动。
+- 400ms 后显示当前阶段；3s 后显示已等待时长；10s 后增加“查看网络诊断”。
+- 视频首帧前不宣称“已连接”；音频失败时阶段卡提供“无音频继续 / 返回设置”；输入失败时提供“只观看继续 / 重试输入”。
+- 用户取消先冻结新输入、取消 HTTP/RTSP/common-c，再回目录；迟到成功事件因 generation 不匹配被丢弃。
+- 失败页保留 app/主机上下文，主文案为可行动原因，技术码折叠；动作按错误类型提供“重试”“降低设置重试”“网络诊断”“返回目录”。
+
+#### 8.14.7 串流页面层级与 Z-order
+
+串流页不建立新的全局视觉语言。画面背景固定黑色；浮层使用 `rgba(14,18,28,0.72–0.90)`、白色主文本、当前 accent 和轻边框，确保在任意游戏画面上可读；减少透明度时改为不透明深色 surface。层级固定如下：
+
+| 层级 | 内容 | 输入规则 |
+| --- | --- | --- |
+| L0 远端画面 | XComponent/Surface、letterbox、远端光标 | 默认接收远端输入；几何变化由 content rect 驱动 |
+| L1 虚拟输入 | 触摸区域、虚拟鼠标/手柄、按键按下态 | 只在相应模式启用；与系统手势安全区和 HUD 热区互斥 |
+| L2 最小状态 | 边缘控制柄、连接质量、捕获/只读/PIP 状态 | 控制柄热区≥44vp；状态本身不拦截画面输入 |
+| L3 快捷工具与辅助浮窗 | 快捷控制条、修饰键、诊断 dock、控制器提示 | 打开时进入 `overlayInteraction`，阻止触摸穿透并先结束远端手势 |
+| L4 事务遮罩 | 重连、证书变化、音视频致命错误、停止确认 | 模态；冻结所有远端输入并保持本地退出可用 |
+| L5 系统 owner | 单一 bindSheet、系统权限/输入法/PIP | 同时最多一个 App Sheet；关闭完成后才打开下一个 |
+
+进入任何 L3/L4 交互前发送当前 touch cancel、mouse up、key up/controller neutral；关闭后不重放旧事件。浮层拖动位置按设备/方向/profile 保存，但旋转、折叠或窗口缩小时先 clamp 到安全区，不能留在屏幕外。
+
+#### 8.14.8 最小状态层与快捷工具条
+
+**边缘控制柄**是永远可发现的入口：默认吸附握持手相反侧的中部安全区，视觉为 28–32vp 宽胶囊，但命中区至少 44×56vp；显示 Moonlight 星芒/“控”短标识和连接质量点。可拖动换侧，不响应双击危险动作。首次串流用一次非模态气泡说明“点此打开控制，系统返回也可打开”。
+
+**连接质量 chip**默认仅在状态变化后显示 3s：`良好 / 波动 / 较差 / 正在重连`，不以实时数字持续吸引注意。持续较差超过阈值才保留，点击打开网络诊断。安全/输入捕获状态可与其并列，但一行最多两个 chip。
+
+**快捷工具条**由单击画面空白、边缘控制柄、三指轻点或系统返回（未捕获时）打开；3s 无交互自动收起，触控板/鼠标 hover 或焦点在条内时暂停计时，用户可固定：
+
+- sm：底部/侧边 5 项——控制模式、键盘、控制器、更多、断开。
+- md/lg：最多 7 项——增加音频、画面/PIP；不足项进入更多。
+- xl：顶部居中，沿用 RustDesk 自动收起语法，支持鼠标 hover、快捷键和固定。
+- 每项为图标 + 8–10fp 短标签，热区至少 48vp；当前模式使用 accent + 文本，不用纯色判断。
+- “断开”使用危险色并与其他按钮隔 12vp；不能把“退出主机应用”放在工具条一级。
+- 工具条展开不会改变画面缩放；落在画面上的区域由 overlay hit map 排除远端输入。
+
+#### 8.14.9 控制中心 Sheet 的完整功能
+
+“更多”打开唯一控制中心。sm 为底部 Sheet，md/lg/xl 为居中/右侧控制 pane；顶部显示 app、主机、串流时间和实际协商摘要。分组不超过六个，最近使用分组可记忆但危险动作位置固定：
+
+| 分组 | 一级功能 | 二级/行为 |
+| --- | --- | --- |
+| 会话 | 返回画面、PIP、断开本地串流 | “退出主机应用”单独放底部危险区；显示主机响应成功/失败/未知 |
+| 控制 | Touch/触控板/绝对鼠标/相对鼠标、键盘、修饰键、控制器 | 触控板灵敏度与映射进二级；模式切换即时生效并可保存到 profile |
+| 画面 | 适应/填充/1:1、低延迟/平滑、亮度/HDR 实际状态 | codec/分辨率/fps 如需重连则标“下次连接”，不伪装为实时生效 |
+| 音频 | 静音、音量、输出设备摘要、主机同时播放 | 声道/codec 需要重连时进入下次连接草稿；焦点丢失显示原因 |
+| 网络 | 质量、RTT/丢包/FEC 摘要、立即重连、地址 | 切换地址先冻结输入并重建 generation；不允许叠加第二会话 |
+| 诊断 | 简洁/详细 HUD、复制脱敏诊断、日志 | 默认用户只看可行动摘要；专业指标进入可拖动 dock |
+
+任何当前会话修改都显示 `仅本次` badge；存在变更时控制中心底部出现“保存为此应用默认”，并列出将保存的项目。关闭 Sheet 不自动持久化临时设置。
+
+#### 8.14.10 连接中的全部辅助浮窗/功能
+
+| 浮窗/功能 | 默认状态与位置 | 内容和动作 | 人因/安全合同 |
+| --- | --- | --- | --- |
+| 鼠标捕获提示 | PC 首次捕获时顶部 chip，3s 后缩成图标 | “已捕获鼠标 · Esc 释放” | 第一次 Esc 只释放，第二次 Esc 打开工具条；永远不吞系统保留逃生键 |
+| 触控模式提示 | 模式切换后画面中央下方 1.2s | 模式名 + 一句手势摘要 | 不阻塞输入；读屏只在用户触发切换时播报一次 |
+| 虚拟键盘 | 底部，跟随输入法/横竖屏 | 文本输入、Esc/Tab/Ctrl/Alt/Shift/Win、Fn、方向/Del/Enter | 打开前 cancel 画面手势；关闭/失焦/退出补发全部 key-up；不允许触摸穿透 |
+| 修饰键面板 | 复用 RemoteModifierPanel，可吸附拖动 | 单击一次、长按锁定、Fn 层、组合键 | once/locked 有文字/边框双重状态；会话终止全部归零 |
+| 快捷键面板 | 从修饰键/控制中心打开 | Ctrl+Alt+Del、Alt+Tab、Win、复制粘贴等能力允许项 | 高风险组合需明确标签；不支持项置灰并说明，不发送半套按键 |
+| 虚拟鼠标条 | 无实体鼠标且选择触控板时按需显示 | 左/右/中键、滚轮、拖拽锁 | 热区≥48vp；拖拽锁有常驻状态和一键释放；实体鼠标接入可自动收起 |
+| 虚拟控制器 | MVP 默认关闭；第二版按 profile | 摇杆、方向键、ABXY、肩键/扳机、菜单、布局编辑 | 实体手柄接入默认收起；编辑布局期间不发送游戏输入；退出/切后台发送 neutral frame |
+| 控制器设备 chip | 手柄连接/断开后显示 3s | 设备名、槽位、电量/能力、重新映射 | 不暴露系统未提供能力；断开时远端槽位立即 neutral |
+| 音频焦点 banner | 焦点丢失时顶部非模态 | “音频已暂停：其他应用正在播放” + 恢复 | 不反复抢焦点；恢复由策略/用户操作决定 |
+| 网络质量 banner | 持续劣化后顶部 | 原因摘要、降低码率/诊断 | 节流，轻微抖动不遮画面；建议动作先作为本次设置 |
+| 性能 HUD | 默认关；简洁模式为可拖动 76×38 chip | FPS/延迟/质量；点击展开 | 复用 DiagnosticsHud 拖动阈值、吸附和安全区；不每帧触发 ArkUI 重排 |
+| 详细诊断 dock | 用户主动打开 | 实际 codec、分辨率/fps、码率、RTT、丢包/FEC、解码/渲染 p50/p95、音频 underrun、输入丢弃 | 指标采样节流；专业值不可用显示“—”，不造 0；支持脱敏复制 |
+| PIP 控制 | 系统 PIP | 播放/暂停语义、返回、断开 | PIP 不提供危险“退出主机应用”；无 Surface 输入全部锁定 |
+| 重连遮罩 | 媒体中断才出现 | 最近一帧 + “画面已暂停”、attempt/预算、立即重试、退出 | 禁止把旧静帧当在线；输入冻结；超预算进入失败终态 |
+| 安全阻断卡 | 证书变化/加密降级 | 指纹变化、影响、重新配对/退出 | 位于 L4，不允许“一直忽略”；技术细节可展开 |
+| 错误恢复 Sheet | 解码/音频/输入可降级或失败 | 降低画质重试、无音频继续、只观看继续、诊断 | 只提供真实可执行动作；错误码折叠且脱敏 |
+| 停止确认 Sheet | 点断开/第二次返回 | 默认“仅断开并保留主机应用”、危险“同时退出主机应用”、取消 | 默认焦点在仅断开；主机 quit 失败不得阻塞本地 cleanup；结果分成功/失败/未知 |
+| 系统/应用 toast | 短暂完成反馈 | 已切换模式、已保存 profile 等 | 只有真实终态才宣称成功；错误不用瞬时 toast 承载全部说明 |
+
+#### 8.14.11 输入、手势与误触防护
+
+- 画面单击默认只负责远端点击；“单击显示 HUD”只在用户轻点边缘空白/控制柄或显式开启时生效，不能和直接触控模式争用同一手势。三指轻点可以作为快捷入口，但控制柄/返回键必须提供等价可发现路径。
+- Touch 模式一指/多点透传；触控板模式一指移动、单击左键、双指滚动、双指轻点右键、长按拖拽。所有手势在设置页提供动画/文字示例，可关闭冲突手势。
+- 直接触控与画面 pinch/pan 的优先级按模式决定；开始缩放前 cancel 远端触点，缩放结束后不把最后触点重放给远端。
+- 工具条、浮窗和虚拟键盘出现时建立明确 hit map；“半透明”不意味着点击可穿透。
+- 控制模式改变、旋转、Surface 重绑、PIP、后台、锁屏、失焦、手柄断开和会话 generation 变化都必须调用统一 input flush。
+- 触控板高级项采用“低/标准/高”预设 + 可选高级 Slider；实时试用区只移动本地示意光标，不向主机发送测试动作。
+- 长按只用于增强动作（修饰键锁定、卡片更多），不得作为添加、设置、停止、释放捕获的唯一入口。
+
+#### 8.14.12 响应式、握姿和多输入适配
+
+| 场景 | 关键布局 | 高频操作位置 | 特殊规则 |
+| --- | --- | --- | --- |
+| sm 竖屏添加/设置 | 单列 Sheet、固定 footer | 主按钮靠下，返回在 header | 软键盘不遮主动作；大字号时预设自动换行 |
+| sm 横屏串流 | 画面全屏、边缘柄、底部 5 项工具条 | 根据握姿把柄吸附到非主握侧 | 左右系统返回区、打孔/圆角和虚拟手柄保留安全间距 |
+| md 折叠展开/平板 | 主机摘要 + 两列目录；控制中心居中/侧栏 | 边缘柄靠近当前握持侧但不遮内容 | 半折叠不跨铰链放关键按钮；旋转只重排不重连 |
+| lg 大平板 | 2–3 列目录、详情/设置双栏 | 画面侧边控制中心 | 虚拟键盘可缩放，不能覆盖停止入口 |
+| xl PC/2in1 | sidebar + 详情 pane；串流自由窗口/全屏 | 顶部自动收起工具条、键盘快捷键、右键菜单 | hover/focus/pressed/disabled 完整；鼠标捕获与窗口失焦规则明确 |
+| 手柄主导 | app grid 有焦点环，A 选择/B 返回 | 快捷控制可由保留组合键打开 | 焦点不进入纯视频像素；停止需可通过手柄完成但防单键误触 |
+
+握姿自适应只改变控制柄/常用控件对齐，不改变危险动作语义或步骤顺序。用户拖动后的显式位置优先于自动握姿；窗口尺寸显著变化时按归一化边缘/比例恢复并 clamp。
+
+#### 8.14.13 组件 owner 与复用边界
+
+后续实现建议形成以下 owner；名称是计划合同，不代表本轮创建文件：
+
+| 组件/页面 owner | 职责 | 复用来源 |
+| --- | --- | --- |
+| `RemoteConfigSheetScaffold` + `MoonlightHostAddFlow` | 通用布局无协议状态；Moonlight owner 负责四步草稿、异步 generation、保存/打开 | 从 VncSheetScaffold 小步抽取，VNC wrapper 保持兼容；发现逻辑只借鉴 RustDesk 任务模型 |
+| `MoonlightHostDetailPage` | 主机摘要、状态、目录 owner 和详情动作 | HostCard/HostList 响应式布局 |
+| `MoonlightAppCatalog` | 搜索/筛选/封面/缓存/更多菜单 | MoonlightOH app grid 的任务模型，不复制视觉代码 |
+| `MoonlightLaunchSheet` | 有效配置、计费网络、主机忙、开始串流 | 进入现有 remote-host/preflight Sheet owner 与队列，不新挂 root bindSheet |
+| `MoonlightConnectStageOverlay` | 阶段进度、取消、降级和失败恢复 | RemoteSessionState + 非模态事务卡 |
+| `MoonlightSessionToolbar` | 最多 5/7 项快捷控制、收起、固定 | VncSessionToolbar + RemoteSessionTopBar |
+| `MoonlightControlCenter` | 六组本次设置和保存 profile | RemoteDesktop control panel + settings leaf components |
+| `MoonlightDiagnosticsHud` | 简洁 chip、详细 dock、拖动/吸附 | RustDesk/VNC DiagnosticsHud；新增 Moonlight 指标 |
+| `RemoteModifierPanel` | 修饰键、Fn、组合键 | 原组件直接复用，仅通过 capability 配置 |
+| `MoonlightControllerOverlay` | 虚拟控制器、布局编辑、实体手柄状态 | 独立 owner，不混进键盘/鼠标面板 |
+
+Moonlight 不复用 RustDesk/VNC 的协议状态或设置存储，只复用无状态视觉构件和通用输入/浮层基础设施。所有 owner 读取同一个 sessionId/generation/capability snapshot；浮窗不得各自直接查询 native 全局状态。
+
+#### 8.14.14 人因与任务验收指标
+
+除视觉截图外，P8/P9 必须用真机录屏、可访问性检查和事件日志验证：
+
+- 已配对回访用户从主机详情启动最近 app 不超过 3 次明确动作；从沉浸画面执行“仅断开”不超过 2 次动作。
+- 首次用户不阅读外部文档也能找到自动发现、手动添加、PIN 所在位置、返回和取消；5 名内部走查者中至少 4 名一次完成，失败点必须回灌设计。
+- 所有常用/危险触控热区达到本节尺寸；用触控边界可视化验证相邻热区无重叠，危险动作不存在滑动穿越触发。
+- 地址错误、主机重复、PIN 超时、证书变化、计费网络、codec 不支持、音频失败、输入失败和 UDP 不通均在对应任务上下文内恢复，不要求用户返回首页重来。
+- 工具条打开/关闭、控制模式切换和浮窗拖动不产生远端幽灵点击；每条路径都有 input flush/neutral 事件证据。
+- 连接阶段在 400ms/3s/10s 阈值行为正确；取消后无迟到路由，首帧前不显示“已连接”。
+- light/dark、自定义 accent、减少透明度、大字号和屏幕朗读下，官方品牌图标、状态、badge 和危险动作均可辨认；图标无文字时必须有 accessibilityText。
+- 方向键/键盘/手柄焦点可遍历所有可交互元素，不进入 disabled/纯装饰节点；焦点离开并返回页面后恢复到合理对象。
+- sm/md/lg/xl、旋转、折叠/展开、自由窗口和 PIP 变化不重启会话、不丢停止入口、不把浮窗留在屏幕外。
+- 与 RDP/RustDesk/SSH/VNC 做并排回归：同类主动作、返回、Sheet、设置行、工具条、诊断 dock 和确认文案的视觉/交互语法一致；Moonlight 的游戏特性不反向改变旧协议默认行为。
+
 ## 9. 全用户流程和生命周期
 
 ### 9.1 生命周期总览
@@ -1447,7 +1810,7 @@ sequenceDiagram
   A->>S: commit trust
   S->>N: persist pin / finalize pairing
   N-->>S: paired
-  opt 用户已显式选择 moonlightrecord 且云总门通过
+  opt 用户已显式选择 moonlightrecordv1 及对应逻辑 scope 且云总门通过
     S->>C: 同步获准的 host/profile/settings
   end
   U->>A: 选择应用并启动
@@ -1608,7 +1971,7 @@ PIP：
 卸载/清除数据：
 
 - 由系统生命周期负责本地文件清理；
-- 发布文档说明云端 moonlightrecord 不会因卸载自动消失；
+- 发布文档说明云端 `moonlightrecordv1` 不会因卸载自动消失；
 - 提供账号内删除云数据的明确入口；
 - 任何导出文件都必须不包含明文私钥/PIN，且导入需要二次确认。
 
@@ -1705,7 +2068,7 @@ ArkTS 层测试：
 - capability policy 的交集/降级；
 - HostProtocolPicker、ResourceFabPicker、route 和返回栈；
 - host/profile/trust/secret record validator；
-- baseVersion/mutationId/originDeviceId、resetEpoch 总序、field-level 三方合并、时钟回拨、并发 tombstone/显式复活、trust/secret 冲突阻断；
+- 19 列 envelope、payload `_meta.baseSyncVersion/mutationId/originId/fieldVersions`、resetEpoch 总序、field-level 三方合并、时钟回拨、并发 tombstone/显式复活、trust/secret 冲突阻断；
 - malformed cloud row、suspicious empty snapshot、legacy owner 不明和 restore row quarantine；
 - AccountSessionLease 过期、账号 A→B、storeInstance 变化、mutation gate/barrier drain 和旧云回调丢弃；
 - cloud-first bootstrap、1s/5s/30s blocking retry、tombstone 清理和 selected table + recordType 二次授权；
@@ -1814,6 +2177,7 @@ ArkTS 层测试：
 5. 复用现有 Opus/OpenSSL 时核对当前 libs/opus-ohos、OpenSSL 和静态链接 notice；不得另引入无来源二进制。
 6. 添加源代码 tag、源码归档、SBOM、第三方清单、许可证文件和构建 manifest。
 7. 对外发布 HAP 前验证 clean clone 可按 SOURCE_OFFER 规则获得对应源代码和构建说明。
+8. 使用 Moonlight 官方品牌图标时，将上游仓库 URL、exact revision、原始路径、获取日期、原始/转换文件 SHA-256、GPL-3.0 许可证归属和本地资源路径写入第三方素材清单、SBOM/构建 manifest 与发布 notice；保留未修改的上游原件和可复现转换记录。不得以“只是图标”或“官方 Logo”为由跳过许可证、商标/品牌使用复核。
 
 必须参考的本地规则：
 
@@ -1918,14 +2282,18 @@ ArkTS 层测试：
 - [ ] 旧 RDP、RustDesk、SSH、VNC 的连接、渲染、设置和云同步无回归。
 - [ ] ActiveRemoteSessionRegistry 串行仲裁其他协议↔Moonlight/PIP；旧会话未终态时新会话不能获得媒体/输入 owner。
 - [ ] API 23 Game Controller 输入与至少两类手柄通过；rumble/LED/motion 未经独立官方能力探针不会出现在可用设置中。
-- [ ] Moonlight 只使用 moonlightrecord 一张云业务表，本地 mirror 不注册成云表，secret 默认不上云。
-- [ ] 新安装 moonlightrecord 默认未选择；22 列 schema/DDL、长度、三个目标索引、baseVersion/mutationId/originDeviceId 和 `id` 单主键与实现一致。
+- [ ] Moonlight 只使用 `moonlightrecordv1` 一张云业务表，`moonlightlocalrecords` 与 `moonlightappcache` 不注册成云表，identity 默认不上云。
+- [ ] 新安装物理表与五个逻辑 scope 均默认未选择；19 列 schema/DDL、长度、索引实测、payload `_meta` 和 `id` 单主键与实现一致。
 - [ ] cloud-first bootstrap、可疑空快照、阻断重试、tombstone、malformed/legacy quarantine 和删除终态均有双设备证据。
 - [ ] device-local↔账号、账号 A↔B、退出保留/清除、静默登录、重装恢复均不跨 owner；旧 lease/callback 无法写新 store。
 - [ ] 账户切换时 SensitiveDataBarrier 能停止 Moonlight PIP/后台/native/输入/媒体/secret restore 并清零会话密钥；失败时切换 fail closed。
-- [ ] 两台设备同时编辑 host/profile/settings 可按 field-level/baseVersion 总序确定性合并；trust/secret 身份冲突不静默覆盖，tombstone 不被旧离线写复活。
+- [ ] 两台设备同时编辑 host/profile/settings 可按 19 列 envelope 与 `_meta.fieldVersions/baseSyncVersion` 合同合并；trust/identity 冲突不静默覆盖，tombstone 不被旧离线写复活。
 - [ ] 普通便携备份排除 secret/mirror/journal/recovery marker；恢复经过 owner/restore quarantine/cloud-first/原子回滚矩阵。
 - [ ] light/dark/accent/wallpaper/halo、sm/md/lg/xl、折叠屏/平板/PC、单 sheet、焦点、大字号、屏幕朗读和减少动效矩阵通过。
+- [ ] “添加主机”FAB 中 Moonlight 位于 VNC 之后；预告阶段使用同一份官方品牌资源、整项灰色禁用、显示“即将支持”且点击零副作用。官方图标的 exact revision、原始路径、SHA-256、转换记录、GPL/品牌复核、SBOM 和 notice 均可追溯。
+- [ ] 正式开放后的四步添加流覆盖发现/手动输入、主机验证、PIN/证书信任和完成复核；所有异步步骤可取消，草稿、迟到回调和 owner 隔离符合第 8.14.3 节。
+- [ ] 应用卡片默认先进入启动确认 Sheet；计费网络、主机忙、能力降级和仅本次覆盖均可见，不会点击即 launch、自动结束主机应用或静默持久化 profile。
+- [ ] 串流 L0-L5 层级、边缘控制柄、快捷工具条、控制中心、键盘/修饰键、虚拟控制、诊断 dock、重连/安全/停止事务层均按第 8.14 节完成互斥、input flush、44/48vp 热区和多断点验收。
 - [ ] 从触控、鼠标、键盘和实体手柄都能完成添加/配对/启动/释放/停止；停止与安全阻断始终可达。
 - [ ] 默认“只断开”保留主机应用；显式“退出主机应用”单独报告成功/失败/未知，失败不残留本地资源。
 - [ ] 前台/PIP 强杀、系统回收和重启后只提示 Resume/quit/忽略，不自动重连或结束主机应用，且使用全新 generation/会话密钥。
@@ -1993,12 +2361,20 @@ hvigorw --mode module -p module=entry -p product=default assembleHap --analyze=n
 - [Moonlight common-c security advisory](https://github.com/moonlight-stream/moonlight-common-c/security/advisories/GHSA-4927-23jw-rq62)
 - [RFC 8785 JSON Canonicalization Scheme](https://www.rfc-editor.org/rfc/rfc8785)
 
-### 14.2 鸿蒙官方能力资料
+### 14.2 成熟 HarmonyOS Moonlight 项目审计对照
+
+- [MoonlightOH / moonlight-ohos](https://gitee.com/smdsbz/moonlight-ohos)：本轮主要原生参考，审计 revision `a48821e2d309c4282d79a053e6a85245eb438a7b`；用于验证 ArkUI/XComponent、添加/配对、应用目录、分层设置和连接内控制模式，不作为协议实现、视觉资产或许可证结论的替代品。
+- [likuai2010/moonlight-harmonyos](https://github.com/likuai2010/moonlight-harmonyos)：历史 HarmonyOS 移植对照；用于核验早期软/硬解、音频、配对和虚拟控制器路线，不作为当前产品交互基线。
+
+### 14.3 鸿蒙官方能力与人因设计资料
 
 - [HarmonyOS Developer](https://developer.huawei.com/consumer/cn/develop/)
 - [HarmonyOS 文档中心](https://developer.huawei.com/consumer/cn/doc/)
-- [HarmonyOS 设计中心](https://developer.huawei.com/consumer/cn/design)
+- [HarmonyOS 设计中心](https://developer.huawei.com/consumer/cn/design/?catalogVersion=V1)
+- [HarmonyOS 设计入门](https://developer.huawei.com/consumer/cn/design/devstart/)
 - [焦点导航规范](https://developer.huawei.com/consumer/cn/doc/design-guides/hmi-focus-0000001748650376)
+- [光标交互规范](https://developer.huawei.com/consumer/cn/doc/design-guides/hmi-cursor-0000001795531205)
+- [HarmonyOS 应用 UX 体验标准](https://developer.huawei.com/consumer/cn/doc/design-guides/ux-guidelines-overview-0000001760867048)
 - [HarmonyOS 电脑应用开发入门](https://developer.huawei.com/consumer/cn/multidevice/pc/get-started/)
 - [设备兼容规则](https://developer.huawei.com/consumer/cn/doc/doccenter-architecture/device-compatible)
 - [OHAudio playback](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides-V5/using-ohaudio-for-playback-V5)
@@ -2010,8 +2386,10 @@ hvigorw --mode module -p module=entry -p product=default assembleHap --analyze=n
 - [Account Kit](https://developer.huawei.com/consumer/cn/sdk/account-kit)
 - [云数据库](https://developer.huawei.com/consumer/cn/agconnect/cloud-base)
 
-### 14.3 本项目代码和规则证据
+### 14.4 本项目代码和规则证据
 
+- [AGENTS.md](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/AGENTS.md)
+- [DECISIONS.md](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/docs/codex/DECISIONS.md)
 - [README.md](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/README.md)
 - [protocol_adapter.h](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/cpp/extensions/protocol_adapter.h)
 - [extension_loader_napi.cpp](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/cpp/extensions/extension_loader_napi.cpp)
@@ -2024,9 +2402,17 @@ hvigorw --mode module -p module=entry -p product=default assembleHap --analyze=n
 - [RemoteSessionPipLifecyclePolicy.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/services/RemoteSessionPipLifecyclePolicy.ets)
 - [RemoteSessionBackgroundTaskService.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/services/RemoteSessionBackgroundTaskService.ets)
 - [ActiveRemoteSessionRegistry.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/services/ActiveRemoteSessionRegistry.ets)
+- [RemoteSessionCapabilityPolicy.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/services/RemoteSessionCapabilityPolicy.ets)
+- [RemoteSessionTopBar.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/components/RemoteSessionTopBar.ets)
+- [VncSessionToolbar.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/components/VncSessionToolbar.ets)
+- [RemoteModifierPanel.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/components/RemoteModifierPanel.ets)
+- [RemoteShortcutSurface.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/components/RemoteShortcutSurface.ets)
 - [Theme.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/common/Theme.ets)
 - [BreakpointUtil.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/utils/BreakpointUtil.ets)
 - [HostProtocolPicker.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/components/hostadd/HostProtocolPicker.ets)
+- [HostAddConnectionHandoffPolicy.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/services/HostAddConnectionHandoffPolicy.ets)
+- [VncSheetScaffold.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/components/vnc/VncSheetScaffold.ets)
+- [VncSheetLayoutPolicy.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/services/VncSheetLayoutPolicy.ets)
 - [ResourceFabPicker.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/components/resourceadd/ResourceFabPicker.ets)
 - [ProtocolIconPolicy.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/services/ProtocolIconPolicy.ets)
 - [HostListPage.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/pages/HostListPage.ets)
@@ -2038,18 +2424,23 @@ hvigorw --mode module -p module=entry -p product=default assembleHap --analyze=n
 - [CloudLifecycleSafetyPolicy.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/services/CloudLifecycleSafetyPolicy.ets)
 - [CloudSyncPolicy.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/services/CloudSyncPolicy.ets)
 - [CloudSyncSelectionPolicy.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/services/CloudSyncSelectionPolicy.ets)
+- [CloudTableAdapter.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/services/CloudTableAdapter.ets)
+- [CloudSensitiveTransferPolicy.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/services/CloudSensitiveTransferPolicy.ets)
 - [CloudSyncCoordinator.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/services/CloudSyncCoordinator.ets)
 - [CloudSyncCoordinatorPolicy.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/services/CloudSyncCoordinatorPolicy.ets)
 - [CloudSyncLifecyclePolicy.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/services/CloudSyncLifecyclePolicy.ets)
 - [LegacySharedStoreMigrationPolicy.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/services/LegacySharedStoreMigrationPolicy.ets)
 - [LocalBackupPolicy.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/services/LocalBackupPolicy.ets)
 - [LocalBackupService.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/services/LocalBackupService.ets)
+- [BackupManifestV3.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/services/BackupManifestV3.ets)
 - [VncRecord.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/model/VncRecord.ets)
 - [VncRecordPolicy.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/services/VncRecordPolicy.ets)
+- [VncCloudSyncSelectionPolicy.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/services/VncCloudSyncSelectionPolicy.ets)
+- [VncCloudSyncSelectionStore.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/services/VncCloudSyncSelectionStore.ets)
 - [CMakeLists.txt](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/cpp/CMakeLists.txt)
 - [module.json5](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/module.json5)
 
-### 14.4 实施开始前的最终确认
+### 14.5 实施开始前的最终确认
 
 真正开始编码前，负责人必须在计划 issue 或 ADR 中补齐：
 
@@ -2057,7 +2448,7 @@ hvigorw --mode module -p module=entry -p product=default assembleHap --analyze=n
 2. API23 probe 结果和真实设备清单；
 3. Sunshine/legacy 主机支持边界；
 4. client identity 本地安全存储 API；
-5. moonlightrecord 云端 schema migration 版本；
+5. `moonlightrecordv1` 19 列云端 schema migration 版本及开发/测试/生产部署 receipt；
 6. secret sync 是否首版完全关闭；
 7. PIP/后台的系统准入证明；
 8. 发布合规负责人和 source offer 交付物；
@@ -2065,14 +2456,249 @@ hvigorw --mode module -p module=entry -p product=default assembleHap --analyze=n
 10. feature flag、灰度用户和回滚开关；
 11. AccountSessionLease/SensitiveDataBarrier/legacy migration 的接入评审和账号 A↔B 真机脚本；
 12. 单物理云表、索引/长度/留存/服务端规则和 cloud-first bootstrap 的云环境评审；
-13. Moonlight 设置 route mode、系统 Symbol、sm/md/lg/xl 页面状态稿和无障碍验收人；
+13. Moonlight 设置 route mode、官方品牌资源/辅助系统 Symbol、sm/md/lg/xl 页面状态稿和无障碍验收人；
 14. 流加密策略、AES 性能结果、secret 恢复策略和 rumble/LED/motion 的明确支持结论。
 15. 配对 PIN 的主机端输入流程、owner-scoped RSA identity/HUKS-OpenSSL 路线和证书轮换删除语义；
 16. 默认只断开与显式 quit 的双命令合同，以及跨官方客户端 launch/resume/quit 的 protocolCompatUniqueId 互操作证据；
 17. ActiveRemoteSessionRegistry 跨协议仲裁和 SessionRecoveryMarker 强杀恢复设计；
-18. 22 列 moonlightrecord、并发 mutation/tombstone 总序和普通便携备份恢复评审；
+18. 19 列 `moonlightrecordv1`、payload `_meta`、并发 mutation/tombstone 总序和便携备份 V3 双 section 恢复评审；
 19. Sunshine `v2026.516.143833` 或更高安全基线及所有当日未关闭 security advisory 的处置结论。
 
 在这些确认完成前，Moonlight 只能保持为本计划中的待立项能力，不能通过 UI 暗示已经可连接或已经兼容全部 Sunshine/GameStream 主机。
+
+## 15. 面向逐步执行模型的文件级实施手册
+
+本节是第四次审计后新增的执行层。它不替代第 2–14 节的协议、安全、UI 和验收合同，而是把这些合同拆成可以逐项验证、逐项提交、失败即停的工作包。后续无论由 GPT-5.6 Luna、其他模型或人工执行，都必须按任务 ID 顺序维护执行台账；不能把一个阶段压缩成“接入 Moonlight”“完善 UI”或“支持云同步”一次完成。
+
+### 15.1 执行纪律和单步完成格式
+
+每次开始工作必须先执行仓库 `AGENTS.md` 的启动流程，继续当时未完成的 `codex/<task>` 分支，不切走、不 stash、不 reset、不覆盖用户修改。正式 Moonlight 实施应在当前 SSH 活动任务闭环并回到最新 `main` 后另行立项；本计划留在当前分支只代表文档评估，不授权现在实施。
+
+每个任务 ID 都使用以下五段式记录，缺一项不得标为完成：
+
+1. **基线**：分支、HEAD、main、工作树、依赖 pin、目标设备/主机版本。
+2. **范围**：本任务允许创建/修改的文件；发现额外公共改动时先更新计划并说明原因。
+3. **合同**：输入、输出、owner/generation、失败/取消、持久化、UI 文案或 ABI 的明确行为。
+4. **验证**：先运行本任务定向测试，再运行 `git diff --check`；阶段末运行双 Hvigor、native/双 ABI、Light 合规和独立复核。
+5. **证据**：测试命令与结果、真机/主机日志、截图/录屏、AGC receipt、依赖 SHA/许可证、已知限制和回滚点。
+
+一次提交只完成一个可命名合同；纯模型/策略、RDB schema、云协调、native control、媒体、输入、页面、会话浮层和发布合规不得混为一个提交。测试必须和生产变更同提交。任何 capability probe 未通过时保留 feature flag 关闭并写 blocker，不通过伪实现、空回调、硬编码 true 或隐藏失败来推进。
+
+全程禁止以下捷径：
+
+- 不把 Moonlight host/profile 塞进 `remotehosts`、Moonlight默认值塞进 `usersettings`、配对身份塞进其他协议 credentials。
+- 不复用 `vncrecordv2`、`vnclocalrecords`、`RemoteDesktopVncPrefs` 或 VNC secret/trust owner；只复用经测试的通用 envelope/生命周期性质。
+- 不在 AGC 三环境 schema 部署完成前把 `moonlightrecordv1` 加入生产 `TABLES`。
+- 不在页面里直连 `CloudStore`、HUKS、HTTP/common-c 或全局 native 单例；UI 只调用当前 owner/session 的 service/repository。
+- 不在 `RemoteDesktop.ets` 继续堆叠大段 Moonlight 业务；新增逻辑放独立 policy/service/component，入口页只组装。
+- 不复制 MoonlightOH、Moonlight Android/Qt 的 UI 或第三方资源；代码/协议/品牌来源分别留证。
+- 不在首版云同步或便携备份中携带 PIN、session token、`rikey`、私钥、本机 trust receipt、应用封面或诊断日志。
+- 不把“保存成功”“已同步”“已连接”“已退出主机应用”建立在排队/请求发出之上，必须等待对应持久/云/首帧/主机响应终态。
+
+### 15.2 依赖图和发布开关
+
+~~~mermaid
+flowchart LR
+  G0["G0 基线、上游、安全、能力探针"] --> D1["D1 领域模型与纯策略"]
+  D1 --> D2["D2 本地覆盖层与单云表"]
+  D2 --> D3["D3 账户、云选择、备份恢复"]
+  G0 --> N1["N1 common-c 与主机控制面"]
+  N1 --> N2["N2 视频与音频"]
+  N1 --> N3["N3 输入与控制器"]
+  D1 --> U1["U1 统一 scaffold、入口、设置、目录"]
+  D3 --> U1
+  N1 --> U1
+  N2 --> S1["S1 会话页、浮层与生命周期"]
+  N3 --> S1
+  U1 --> S1
+  S1 --> R1["R1 端到端、安全、性能、灰度发布"]
+~~~
+
+开关分层固定为：
+
+| 开关/能力 | 默认 | 何时可开 | 关闭时合同 |
+| --- | --- | --- | --- |
+| `moonlightBrandAssetReady` | false | 官方资产 provenance/许可证/视觉验收完成 | 当前 system Symbol 占位；入口仍可显示“即将支持” |
+| `moonlightHostControlReady` | false | 真实 Sunshine 完成 serverinfo/pair/catalog/launch/quit | 不出现可交互添加/配对入口 |
+| `moonlightStreamingReady` | false | H.264+Opus+输入+生命周期 MVP 真机门通过 | 主机管理即使灰度可用，也不出现“开始串流” |
+| `moonlightCloudSchemaReady` | false（构建期） | 三个 AGC 环境表/权限/索引 receipt 完整 | 不把表名加入分布式注册清单；local-only 可独立工作 |
+| `moonlightCloudIdentityReady` | false | remote crypto lifecycle、E2E、恢复/撤销评审通过 | identity scope 置灰且零 secret row 上传 |
+| `moonlightProtocolAvailable` | false | G0–S1 MVP 全部通过 | FAB 项保持禁用和“即将支持”，点击零副作用 |
+
+这些名称是计划语义，实施时应集中到 `MoonlightFeaturePolicy.ets`/native build config，不能在页面散落布尔值。构建期开关只控制尚未部署的 schema/依赖，用户级开关只控制已安全交付能力；远端开关不能替代缺失的本地 schema 或 ABI。
+
+### 15.3 G0：重建基线、锁定来源并完成能力探针
+
+| ID | 允许范围与动作 | 必须验证/产物 | 停止条件与提交点 |
+| --- | --- | --- | --- |
+| G0-01 | 只读运行 workspace status，记录当时 `CURRENT/QUEUE/STATE`、branch/HEAD/main/dirty tree；确认不存在需继续的旧任务后才创建 Moonlight 任务分支 | 启动摘要和代码范围指纹 | 存在未完成分支就继续旧任务，不创建 Moonlight 分支 |
+| G0-02 | 从官方 `moonlight-common-c`、Moonlight Android、Moonlight Qt、Sunshine 仓库重新抓取当日 HEAD/release；记录 commit、tag、submodule、SHA-256 | `docs/codex` 任务计划中的 upstream lock；链接只指官方源 | 网络/commit 无法验证即 blocker；不沿用本文旧 snapshot |
+| G0-03 | 审计 common-c、ENet、Opus、OpenSSL、官方图标及任何补丁的许可证/NOTICE/source-offer 义务 | SBOM 草案、许可证矩阵、source bundle 方案、Light 结果 | 任一组合不满足分发要求则不 vendoring |
+| G0-04 | 核对 Sunshine 当日 security advisories；最低基线不得低于修复 GHSA-ph75 的 `v2026.516.143833`，并处理之后所有适用公告 | 支持/阻断版本表，真实测试主机版本 | 主机落入已知关键漏洞基线则 UI 阻断并给升级说明 |
+| G0-05 | 创建独立 native probe target，检查 API 23 双 ABI 的 socket/TLS/thread/monotonic clock、OH_AVCodec H.264 surface、OHAudio、Input Kit、Game Controller headers/libs | arm64-v8a/x86_64 编译结果和一台 ARM64 真机运行日志 | header 存在但运行失败仍算未支持；不在产品设置显示 |
+| G0-06 | 真机探测 H.264 profile/level/resolution/fps、Surface 重建、Opus stereo、音频焦点、raw relative mouse/pointer capture、手柄枚举；高级反馈逐项探测 | `capability matrix`，每格是 supported/unsupported/pending + 证据 | pending 只能保持隐藏/禁用，不写“兼容” |
+| G0-07 | 准备至少两台 Sunshine 主机/版本和局域网、IPv6、计费网络/受限网络；记录显卡编码器、端口和可恢复快照 | 可重复测试清单，不含口令/私钥 | 无真实主机则只能继续纯策略/构建，不进入主机控制验收 |
+| G0-08 | 冻结 MVP：Sunshine 安全基线、LAN/用户自备可达网络、H.264、Opus stereo、键鼠/触控、已验证实体手柄；HEVC/AV1/HDR/7.1/rumble/公网便利功能默认关闭 | ADR/产品矩阵，feature flags 初值 | 决策未签字不进入 native vendoring；提交 `plan/probe` checkpoint |
+
+### 15.4 D1：领域模型、状态机和纯策略（不接 UI、云或 native）
+
+| ID | 文件与精确动作 | 定向测试 | 完成证据/下一步 |
+| --- | --- | --- | --- |
+| D1-01 | 新建 `entry/src/main/ets/model/MoonlightModels.ets`：定义 Host、Address、App、Profile、Settings、TrustCandidate、IdentityMetadata、EffectiveSettings；所有字段有长度/枚举/默认值，不含运行态 | `entry/src/test/MoonlightModels.test.ets` 覆盖合法/缺失/越界/未知枚举 | DTO 可独立编译；禁止引用 UI/CloudStore |
+| D1-02 | 新建 `model/MoonlightRecord.ets`：精确声明 19 列 row、五种 recordType、owner 矩阵和 local row；物理字段名全部小写 | schema 列名集合/顺序、live/tombstone shape、localonly 测试 | 与第 7.2 节逐列一致 |
+| D1-03 | 新建 `services/MoonlightRecordPolicy.ets`：canonical JSON、NFC/JCS、`_meta` 注入、payload hash、引用校验、size limit、tombstone、quarantine reason | `MoonlightRecordPolicy.test.ets` 覆盖每种 row、篡改、过新 schema、重复 key、NaN、hash、owner mismatch | 纯函数，无 RDB/时间/随机隐式依赖；随机/时钟由调用方传入 |
+| D1-04 | 在 policy 中实现 current envelope order 和 `_meta` 并发检测；settings/profile 仅合并允许的 fieldVersions，host identity/trust/secret 冲突 fail closed | 两 writer、重试幂等、时钟回拨、相同 envelope 不同内容、tombstone/复活矩阵 | 不改变 VNC policy；冲突理由稳定可展示 |
+| D1-05 | 新建 `MoonlightSettingsPolicy.ets`：全局→host→profile→session 四层合并、能力裁剪、实际值/请求值/原因 | preset、继承、逐项重置、unsupported codec/HDR/7.1、临时设置不持久化 | UI 可只消费 effective snapshot |
+| D1-06 | 新建 `MoonlightCapabilityPolicy.ets` 和 `MoonlightFeaturePolicy.ets`：把 probe/host/native/云/发布能力变为可测试 truth，默认 fail closed | capability 组合表，确保一个下层 false 不会被 UI 子开关越权 | 不读取页面状态，不硬编码“所有设备支持” |
+| D1-07 | 新建 `MoonlightSessionState.ets`：disconnected/discovering/verifying/pairing/catalog/launching/negotiating/video/audio/input/firstFrame/streaming/reconnecting/stopping/failed，并定义合法迁移和错误码映射 | 合法/非法迁移、cancel、迟到 generation、降级、first-frame gate | 通用 `RemoteSessionState` 暂不修改；提交 `domain-policy` checkpoint |
+
+### 15.5 D2：`moonlightrecordv1`、local overlay 与云适配
+
+本阶段先完成本地 schema 和纯 adapter，再部署 AGC，最后才改注册表清单。每一步都要从当前源码重新确认 `CloudStore` schema version，使用“当前版本 + 1”，不得照抄本文假设值。
+
+| ID | 文件与精确动作 | 定向测试/数据合同 | 完成证据/停止条件 |
+| --- | --- | --- | --- |
+| D2-01 | 在 `CloudStore.ets` 的同一个 owner-store schema migration 新建 `moonlightrecordv1`、`moonlightlocalrecords` 与 local-only `moonlightappcache`；只有第一张具备后续 distributed registration 资格 | 从每个仍支持旧 schema 升级、重复打开幂等、失败回滚、19/20 列 envelope 与 cache schema exact test | migration receipt 和本地 RDB inspection；不得碰用户现有表数据，cache 不出现在云表清单 |
+| D2-02 | 新建 `MoonlightRepository.ets`：所有 upsert/tombstone 先写 local overlay，接受 `AccountSessionLease`，写前后校验 owner/generation/storeInstance | stale lease、事务失败、重复 mutation、本地模式、账号 A/B 同 id | local-only 主机可完整增删改，零 cloud 调用 |
+| D2-03 | 新建 app cache service：使用 D2-01 的 `moonlightappcache`，key 含 owner+host+app，保存 ETag/hash/expiry/artwork local path；限制条数/体积并 LRU 清理 | 过期、目录为空、部分刷新、封面损坏、owner 切换、磁盘不足 | cache 删除不删除 profile；不出现在 CloudSyncPolicy/BackupManifest |
+| D2-04 | 修改 `CloudTableAdapter.ets`，增加 `moonlightrecordv1` exact 19 列映射；未知/缺列拒绝，不做默认补齐 | 扩展 `CloudTableAdapter.test.ets` 比较 column set、round-trip、malformed row | adapter 只传 envelope，不解释业务 payload |
+| D2-05 | 在 AGC 开发环境按第 7.2 节创建表、权限和已验证索引，运行空表/单行/tombstone/分页/删除演练 | 控制台导出或受控 receipt，列类型/长度/索引/用户隔离结果 | 任一不一致先改计划/schema；不得先改客户端 TABLES |
+| D2-06 | 将相同 schema 部署测试和生产环境；用非生产测试 owner 验证服务端授权，禁止跨 userid | 三环境 schema hash/时间/执行人/回滚方案 | 生产未部署则 `moonlightCloudSchemaReady=false`，停止 D2-07 |
+| D2-07 | 修改 `CloudSyncPolicy.ets` 把 `moonlightrecordv1` 加入分布式表；修改 `CloudSyncSelectionPolicy.ets` 作为一个普通可选择 physical item，默认数组仍为空 | 扩展两项现有测试：顺序、注册集合、default empty、normalize、加密表分类 | 旧 8 表行为和顺序回归；setDistributedTables 真机成功 |
+| D2-08 | 修改 `CloudSensitiveTransferPolicy.ets` 增加 Moonlight row-aware 检查：任何进入 physical projection 的 live identity row 都必须是 authenticated ciphertext；identity scope 关闭时 repository 不新建/提升 identity 云 row，既有 ciphertext row 仍按安全策略处理；crypto reset 时暂停会携带身份行的整表 native-first | 无 identity、合法 ciphertext、plaintext/坏 envelope、scope off、crypto configured/reset、只含非 secret row 测试 | 不能因 settings 同步顺带发布本地 identity，不能把已在云端的 ciphertext 误当明文删除，也不能破坏 VNC 规则 |
+| D2-09 | 新建 `MoonlightCloudSyncSelectionPolicy.ets`/`Store.ets`：五 scope、默认 `[]`、ownerScopeId preference key、stage→RDB projection→persist 回滚合同 | normalization、owner A/B、Preferences 写失败、identity capability false | 不读取 VNC prefs；UI 与 durable selection 不分裂 |
+| D2-10 | 新建 `MoonlightCloudSyncService.ets`：recordType→scope、pull validate/materialize、local promotion、tombstone、quarantine；页面不可调用 CloudStore | physical off/logical off/identity off/cloud-first/promotion/malformed/partial table failure | 单表失败不回滚其他协议或登录；提交 `cloud-table-adapter` checkpoint |
+
+### 15.6 D3：CloudCoordinator、账户切换、敏感屏障和备份恢复
+
+| ID | 文件与精确动作 | 必须验证 | 完成证据/提交点 |
+| --- | --- | --- | --- |
+| D3-01 | 在 `CloudSyncCoordinator.ets` 增加 Moonlight table request/status/retry/bootstrap wiring；优先新增 `CloudStoreMoonlightLifecycleWiring.ets`，避免继续把领域逻辑塞进 coordinator | 启动 pull、手动上传/下载、retry 1/5/30s、suspicious empty、partial failure、stale callback | VNC wiring 测试全绿；Moonlight 状态能独立展示 |
+| D3-02 | repository/coordinator 所有 promise/callback 携带完整 `AccountSessionLease`；完成前二次校验，旧 generation 只能被丢弃并计数 | 账号 A 请求→切 B→A 迟到成功/失败/进度；storeInstance 重开 | B 的 UI/RDB/selection 零污染 |
+| D3-03 | 修改 `AccountSessionCoordinator.ets` 和 `SensitiveDataBarrier.ets`：切换前关闭 Moonlight mutation/launch，停止 session、pairing、identity restore、journal/cloud task，再 quiesce store | 正常/失败/超时/强杀/重复切换；barrier 失败保持旧 owner | 不允许“先换 owner 后等旧任务”；独立 lifecycle test |
+| D3-04 | 把 `moonlightrecordv1` 与 `moonlightlocalrecords` 登记到 `BackupManifestV3.ets`、`LocalBackupPolicy.ets`、`LocalBackupService.ets`；实现第 7.11 内容矩阵 | 旧 V3→新 app、新 V3→旧 reader 行为、redacted/full、local-only、unknown section、32 MiB、hash | manifest 明示 identity omitted；不含 cache/marker/journal |
+| D3-05 | 在 `CloudStoreRestoreResolutionWiring.ets` 增加 Moonlight resolver：两个 section 先 quarantine/去重，最终只提交 local overlay；已启用云时 cloud-first 后再 promotion | 同 id 双来源、云 tombstone、trust conflict、账号 A 文件→B、device-local→account、恢复中切账号/磁盘满 | 导入不直接 local-first 覆盖云；失败整批回滚 |
+| D3-06 | 实现“取消同步/删除云数据/删除本地/忘记主机/unpair/删除 profile”五类命令对象和影响预览；云删除写 tombstone 并等待终态 | 每个命令影响集合、撤销/重试、主机无响应、其他设备可见性 | 文案与实际删除集一致，取消选择不写 tombstone |
+| D3-07 | 扩展云设置状态模型：physical selection、五 scope、bootstrap、pending upload、quarantine、last success/error 独立展示 | offline、无 platform identity、crypto locked、partial failure、empty selection | 不用一个“已同步”布尔覆盖所有状态 |
+| D3-08 | 运行双设备/双账号/设备本地数据矩阵和便携备份恢复矩阵，保存脱敏 receipt | 第 7.5–7.11 全矩阵，其他 8 表同步回归 | `data-lifecycle` checkpoint；未通过不做 UI 的云开关 |
+
+### 15.7 N1：官方 common-c、Host API、配对与应用控制
+
+| ID | 文件与精确动作 | 必须验证 | 完成证据/提交点 |
+| --- | --- | --- | --- |
+| N1-01 | 按 G0 pin 把原样 upstream 放 `entry/src/main/cpp/moonlight/upstream/`，补 commit/SHA/license 清单；项目补丁放独立 `patches/`，不直接失去来源 | 双 ABI 单独静态库构建、upstream tests（可用时）、source archive 重建一致 | 无产品 NAPI；`vendor-common-c` 独立提交 |
+| N1-02 | 修改 CMake 将 common-c/ENet 作为隔离静态目标链接 `rdpnapi`；警告、宏、异常/RTTI、OpenSSL/Opus 符号边界明确 | RDP/RustDesk/SSH/VNC 在不启用 Moonlight 时二进制/测试不回退；符号/ABI 检查 | 不把 upstream include 全局泄漏 |
+| N1-03 | 新建 `moonlight/core/MoonlightSessionOwner.*`：sessionId、generation、owner token、cancel token、线程/回调计数；common-c start/stop 全局串行但实例状态独立 | 两个启动请求仲裁、重复 stop、stop 中新 start、旧 callback | 不依赖 `g_activeConnection` 判断归属 |
+| N1-04 | 新建 `moonlight/core/MoonlightHostApi.*`：serverinfo、version/capability、app list、launch/resume/quit、超时、取消、地址尝试；与媒体 adapter 分开 | XML/parser fuzz、HTTP 状态、TLS 错误、IPv4/IPv6、超时、取消、响应脱敏 | host API 不持久化 secret、不调用 ArkUI |
+| N1-05 | 新建 secure identity bridge：owner-scoped RSA/client cert 生命周期、HUKS/Asset Store alias metadata、内存清零；OpenSSL 只获得最短期签名/解密能力 | owner A/B、重装、删除、并发 pairing、alias 不可跨 owner、日志扫描 | 无明文私钥落盘；探针不支持时 blocker |
+| N1-06 | 实现官方兼容 pairing 状态机：生成 PIN→challenge→主机确认→server cert candidate→用户 trust→commit；取消/超时 best-effort unpair | 真实 Sunshine、错误 PIN、超时、证书变化、取消时临时 identity 清理 | UI 尚不接入；事件序列/错误码稳定 |
+| N1-07 | 实现 app catalog、launch/resume/quit 命令；区分“仅断开”和“退出主机应用”，记录 success/failure/unknown | 官方客户端互操作、主机忙、已有 app、quit 无响应、id 失效 | 请求发出不算成功；不会默认 quit |
+| N1-08 | 新建 `moonlight/moonlight_napi.cpp` 和 ArkTS `MoonlightNativeApi.d.ts`/`MoonlightHostService.ets`：typed request/event，所有事件含 session/request generation | NAPI 参数错误、回调线程 marshal、取消、页面销毁、迟到事件 | 不扩张通用 `ProtocolAdapter` 承载 pairing/catalog；提交 `host-control` checkpoint |
+
+### 15.8 N2：RTSP、视频、音频和媒体时钟
+
+| ID | 文件与精确动作 | 必须验证 | 完成证据/提交点 |
+| --- | --- | --- | --- |
+| N2-01 | 定义 `MoonlightStreamConfig`/协商结果，严格区分 requested/effective；只允许 capability intersection | H.264 baseline MVP、unsupported codec/fps/size、host fallback | UI 后续只能显示 effective，不猜测 |
+| N2-02 | 桥接 common-c RTSP/SDP、video/audio/control callbacks 到 owner；建立阶段事件和 cancel 边界 | 每阶段超时/取消/乱序/失败；无首帧不进入 streaming | 事件序列匹配 D1 状态机 |
+| N2-03 | 新建 `moonlight/media/MoonlightVideoBridge.*`：把 `DECODE_UNIT` 的 LENTRY 链按 buffer type 组装/零拷贝边界，保存 SPS/PPS/VPS、frameType、decode number | 分片、配置帧、IDR、乱序/丢包、过大帧、fuzz/ASan 可用环境 | 不把链首指针当单 buffer |
+| N2-04 | 通过现有 `hw_decoder` owner/generation API 接 OH_AVCodec；补 Moonlight codec config/keyframe request/queue policy，不回退现有 renderer lease | Surface 创建/销毁/重绑、旧 generation、首帧、20 次 PIP/rebind、黑屏恢复 | 若需公共 decoder 改动，先加旧协议回归测试 |
+| N2-05 | 定义无 Surface 策略：继续网络但丢弃视频/按 capability 暂停，不无限缓存；重新绑定后请求 IDR | 后台、锁屏、PIP、旋转、fold/window resize、Surface 丢失 | 内存稳定，恢复首帧有时限 |
+| N2-06 | 新建 `MoonlightAudioBridge.*`：Opus/Opus multistream→S16LE PCM，首版 stereo；明确采样率、frame size、PLC/FEC、降混 | golden PCM、损坏包、丢包、stereo、unsupported surround、内存清零 | 复用现有 Opus 时避免重复符号/版本冲突 |
+| N2-07 | 接现有 owner/generation-aware `audio_player`，实现 queue/flush/pause/resume/focus；音频失败允许用户选择无音频继续 | underrun、焦点丢失、切后台、断开后无残音、旧 callback | 不把音频 ready 当视频 first-frame |
+| N2-08 | 建立 media clock/stats：network→decode→render、audio queue、FEC/丢包、p50/p95；采样节流，native 汇总后低频送 ArkTS | 统计正确性、不可用值为 absent 而非 0、性能开销 | 默认日志不含地址/token/媒体 payload |
+| N2-09 | 真实设备完成 720p/1080p、30/60fps、2 小时、温控、前后台/PIP/旋转；H.264+Opus 为唯一 release blocker | 第 10.5 节阈值和录屏/log receipt | HEVC/AV1/HDR/7.1 不通过只保持关闭；提交 `media-mvp` checkpoint |
+
+### 15.9 N3：键鼠、触摸、实体/虚拟控制器和输入释放
+
+| ID | 文件与精确动作 | 必须验证 | 完成证据/提交点 |
+| --- | --- | --- | --- |
+| N3-01 | 新建 `MoonlightInputBridge.*`，输入事件均带 session/generation/device/source/timestamp；owner 路由不依赖现有全局 active adapter | 旧 session 丢弃、两协议仲裁、失焦、重复事件 | 对公共 InputHandler 的改动有旧协议测试 |
+| N3-02 | 建立 HarmonyOS key→Moonlight key 合同、修饰键 once/lock、text vs physical key、全量 key-up | 常用键、Ctrl/Alt/Shift/Win/Fn、IME、软硬键盘、异常退出 | 永远保留本地逃生键 |
+| N3-03 | 实现绝对鼠标、相对鼠标、capture/constraint、滚轮、按钮和 content-rect 映射；不支持 raw 时降级并解释 | letterbox/fill/1:1、DPI、窗口失焦、Esc 两段、按钮释放 | 不产生坐标越界/幽灵按键 |
+| N3-04 | 实现直接触控与触控板手势，多点 id 稳定；overlay hit map 与远端区域互斥 | 多点、手势 cancel、旋转/缩放、软键盘、L3/L4 overlay | 模式切换前统一 flush |
+| N3-05 | 用 API 23 probe 结果接实体控制器：稳定 device→slot 映射、轴/死区/trigger、断开 neutral；多玩家能力未验证就限制一槽 | 至少两类手柄、热插拔、蓝牙断开、后台、slot 冲突 | 未枚举能力不出 UI |
+| N3-06 | rumble/LED/motion/battery 分能力接口；默认返回 unsupported，只有官方 API+真机证据才开启 | capability false 零调用，支持设备生命周期/频率限制 | 不以空成功模拟反馈 |
+| N3-07 | 新建统一 `MoonlightInputFlushPolicy`：overlay、mode change、失焦、PIP、后台、Surface、reconnect、stop、generation change 全部 key-up/mouse-up/touch-cancel/controller-neutral | 每一触发点事件序列和幂等；stop 超时仍本地释放 | 这是 S1 UI 的前置硬门 |
+| N3-08 | 虚拟控制器只先定义模型/布局验证/编辑态不发送；MVP 若未排期则 feature flag 关闭 | safe area、冲突热区、布局坏数据、编辑/退出 neutral | 不让占位 UI 暗示已支持；提交 `input-mvp` checkpoint |
+
+### 15.10 U1：统一视觉、添加流程、主机/目录与设置
+
+| ID | 文件与精确动作 | 必须验证 | 完成证据/提交点 |
+| --- | --- | --- | --- |
+| U1-01 | 快照 `VncSheetLayoutPolicy.test.ets` 和 VNC sm/md/lg/xl、短屏、大字体截图；提取 `RemoteConfigSheetScaffold.ets`，`VncSheetScaffold` 变薄 wrapper | VNC DOM/截图/交互零差异、620vp、density/footer/返回 | scaffold 不持有协议状态/图标硬编码；独立提交 |
+| U1-02 | P0 品牌门通过后添加官方 SVG/确定性转换输出、provenance/SHA/notice；扩展 `ProtocolIconPolicy` 为 system/branded descriptor | light/dark/disabled/high contrast/load failure/accessibility | 门未通过则保留 `gamecontroller_fill`；不自行重绘 |
+| U1-03 | 扩展 `HostProtocolPicker.test`（若不存在则创建）：当前预告态位置、灰色、“即将支持”、点击零副作用；随后仅由 `moonlightProtocolAvailable` 控制启用 | disabled/enabled、键盘/读屏/手柄焦点 | 不改 `ResourceFabPicker`；入口提交可独立回滚 |
+| U1-04 | 新建 `components/hostadd/MoonlightHostAddFlow.ets` 和四步纯 state policy；挂入现有 add Sheet owner | 自动/手动、重复 host、PIN、trust、dirty dismiss、cancel/迟到 generation、短屏/键盘 | 保存成功以 local overlay commit 为准 |
+| U1-05 | “保存并打开”复用 `HostAddConnectionHandoffPolicy.onDisappear`；禁止 fixed delay；目录 page 由 Navigation 打开 | 快速双击、关闭页面、sheet animation、迟到 callback | 同时只有一个 add/preflight sheet |
+| U1-06 | 新建 `MoonlightHostDetailPage.ets`/`MoonlightAppCatalogPage.ets`，HostList 只做薄聚合和导航；目录读 local cache 并异步刷新 | 空/旧缓存/部分失败/离线/主机忙/大目录/封面坏/搜索/焦点 | app cache 失败不删 profile |
+| U1-07 | 新建 `MoonlightLaunchSheet.ets`，接现有 preflight owner/queue；显示 effective config、计费网络、输入和主机忙，开始前不 launch | 400ms/3s/10s、取消、降级、重复开始、主机现有 app | app 单击不直接占网/quit |
+| U1-08 | 修改 `SettingsAccordionPolicy.ets` 在 VNC 后、安全前增加 Moonlight；64vp header、20vp radius、blur/palette/action row 与现有一致 | section order、折叠互斥、light/dark/xl/大字号 | 不在 HostListPage 内硬编码独立视觉 |
+| U1-09 | 修改 `SettingsSheetRoutePolicy.ets` 从当时最大 mode+1 分配连续 Moonlight routes；增加 route→title/height/owner test | 无重复/无 magic number/返回/rapid route | 不复用 VNC 12–22/Terminal 23 |
+| U1-10 | 新建 Moonlight 设置 leaf components：快速、视频、音频、输入、网络安全、后台、诊断、云范围、身份 Trust、主机管理；共享 scope header 与 inheritance controls | 全局/host/profile/session、能力禁用原因、draft/commit failure、reset inheritance | Slider 结束才持久化；session 值不自动上云 |
+| U1-11 | 云范围页消费 D3 状态，物理表和五 scope 默认关闭；identity 显示高敏感说明且首版 disabled | 无账号/未验证账号/crypto off/bootstrap/pending/error/delete cloud | 不显示五张物理表，不宣称 queued 为 synced |
+| U1-12 | 完成 Theme/Breakpoint/无障碍验收：只用 `AppTheme` token；sm<600、md 600–839、lg 840–1439、xl≥1440；PC 300vp sidebar 现状不回退 | light/dark/accent/wallpaper/halo/reduce motion/transparency、200% 字体、读屏、键盘/手柄焦点 | `product-ui` checkpoint；视觉差异有截图批准 |
+
+### 15.11 S1：连接页、浮层、PIP、后台和全生命周期
+
+| ID | 文件与精确动作 | 必须验证 | 完成证据/提交点 |
+| --- | --- | --- | --- |
+| S1-01 | 在 `RemoteSessionState.ets`、`ActiveRemoteSessionRegistry.ets`、`RemoteSessionCapabilityPolicy.ets` 增加 moonlight；registry 只存最小恢复信息，不存 token/PIN/地址明文 | protocol union、account generation、capability truth、旧版本 marker | clipboard/file transfer/multi-display 等不支持能力明确 false |
+| S1-02 | 新建 `MoonlightSessionCoordinator.ets`，串起 launch→common-c→firstFrame→streaming→stop；`RemoteDesktop.ets` 只增加薄入口/组件装配 | 每阶段 cancel/fail/degrade、重复 start、跨协议仲裁、迟到 callback | 不建立第二个 active remote session |
+| S1-03 | 新建 `MoonlightConnectStageOverlay.ets`：400ms 后阶段、3s 时长、10s 诊断；首帧前不显示 connected | 快速 LAN 不闪、audio/input 降级、错误动作、取消 | 技术码折叠/脱敏 |
+| S1-04 | 新建 `MoonlightSessionToolbar.ets`：sm edge rail、md/lg 5/7 项、xl 顶部自动收起；交互借鉴 VNC/RustDesk，颜色走 Theme-adapted streaming tokens | auto-hide/pin/hover/focus/safe area/44–48vp/危险间距 | 不复制 `RemoteSessionTopBar` 的硬编码白色 |
+| S1-05 | 复用 `RemoteModifierHandle/Panel`、`RemoteShortcutSurface`，通过 capability/catalog 配置；打开 L3 前统一 input flush | once/locked、拖动/吸附、组合键完整、关闭归零 | 不 fork 修饰键状态机 |
+| S1-06 | 新建 `MoonlightControlCenter.ets`，进入现有单 Sheet owner；分会话/控制/画面/音频/网络/诊断，临时变更有“仅本次” | 关闭不保存、保存 profile、需重连项、危险 quit 区 | 不嵌套 bindSheet，不改变画面缩放 |
+| S1-07 | 新建 `MoonlightDiagnosticsHud.ets`，复用现有 drag/snap/safe-area policy；native 低频 snapshot，compact/expanded | unavailable=`—`、采样节流、拖动不触发远端输入、脱敏复制 | 默认关闭，性能开销达标 |
+| S1-08 | 接 `NativeSessionHandles`、PIP policy、background task、音频焦点、Surface rebind；无 Surface 时按 N2 策略，回前台请求 IDR | 前后台/PIP/锁屏/旋转/折叠/自由窗/来电/焦点/强杀 | 20 次循环无旧画面/残音/悬挂输入 |
+| S1-09 | 实现有限预算重连与网络切换：冻结输入、停止旧 generation、重新协商、保留静帧并标“画面已暂停” | Wi-Fi↔蜂窝、IPv4↔IPv6、断网/恢复、用户取消、预算耗尽 | 不并行两个 common-c connection |
+| S1-10 | 实现 disconnect/quit 两命令和 teardown 序：input neutral→stop new callbacks→media/control/network→audio/decoder/renderer→background/PIP→registry marker；主机 quit 结果独立 | 每阶段失败/超时、重复 stop、账号切换、进程回收 | 本地 cleanup 不被远端无响应阻塞；`session-lifecycle` checkpoint |
+
+### 15.12 R1：端到端矩阵、安全、性能、合规和灰度
+
+| ID | 工作包 | 必须通过 | 失败处理 |
+| --- | --- | --- | --- |
+| R1-01 | 自动测试总矩阵 | Moonlight unit/contract/fuzz/native；现有 RDP/RustDesk/SSH/VNC/cloud/backup/settings/session 全回归 | 任一旧协议回归先修复，不以“无关”跳过 |
+| R1-02 | 仓库强制门禁 | `git diff --check`、`default@OhosTestCompileArkTS`、`assembleHap`、双 ABI/native tests、Light compliance | 任何失败记录 blocker，不引用旧 session |
+| R1-03 | 真机/主机功能矩阵 | 新装、升级、device-local、验证/未验证账号、配对、目录、launch/resume/disconnect/quit、H.264+Opus、键鼠/触摸/手柄 | 单格 pending 不进入支持声明 |
+| R1-04 | 网络和长期稳定 | LAN/IPv6/NAT64 可用场景、丢包/抖动/乱序/MTU、切网、2h/8h、20/100 次连接循环 | 明确 capability/范围降级或 blocker |
+| R1-05 | 数据生命周期 | 双设备并发、账号 A↔B、登出/清数据/卸载、cloud-first、tombstone、selection、restore、磁盘满/强杀 | 任何跨 owner/secret 泄漏为发布阻断 |
+| R1-06 | 安全评审 | TLS/cert change/pairing/legacy SHA-1/secure store/memory zero/log redaction/fuzz/advisory/minimum Sunshine | 高危项不允许灰度豁免 |
+| R1-07 | UI/人因/无障碍 | 第 8.14 节任务录屏、热区、误触、读屏、焦点、四断点、主题、减少动效/透明度 | 入口可发现但危险动作必须防误触 |
+| R1-08 | 合规交付 | exact source archive、patches、SBOM、licenses/notices、官方品牌 provenance、隐私/数据安全说明 | `NOASSERTION` 或缺失 source offer 保持 blocker |
+| R1-09 | 独立复核 | reviewer 按代码范围和本计划逐项检查 owner/generation、云、native teardown、UI capability truth；修复后重跑受影响及全门禁 | 未解决 P0/P1 问题不合并 |
+| R1-10 | 灰度顺序 | 先内部 host-control→内部 streaming→小比例 LAN H.264→扩大设备矩阵；cloud physical/table scope 后开，identity 永远最后且可继续关闭 | crash/黑屏/数据错误/安全信号触发远端 UI 开关关闭和版本回滚，不删除用户本地数据 |
+
+### 15.13 每阶段交接单和最终 Definition of Done
+
+每个阶段结束时必须留下同一种交接单，后续模型只从该交接单和仓库状态继续，不凭聊天记忆重做：
+
+~~~text
+阶段/任务 ID：
+基线 branch / HEAD / main：
+本提交修改文件：
+明确未修改的相邻系统：
+合同已实现：
+定向测试与结果：
+全量门禁与结果：
+真机/AGC/主机证据路径：
+许可证/SBOM/品牌证据：
+当前 feature flags：
+已知限制与 blocker：
+下一任务唯一入口条件：
+回滚 commit/动作：
+~~~
+
+Moonlight 能从“即将支持”变成可点击，仅当下列事实同时成立：
+
+- 官方品牌资产与协议依赖 provenance 完整，许可证/SBOM/source offer/Light 通过；
+- `moonlightrecordv1` 已在全部目标 AGC 环境部署，local-only/verified cloud/账号切换/备份恢复无数据越界；
+- 真实 Sunshine 安全版本完成配对、目录、launch、H.264+Opus、至少键鼠/触控和一类已承诺手柄；
+- 视频首帧、音频、输入释放、Surface/PIP/后台/切网/停止的 owner+generation 证据完整；
+- 添加、设置、目录、启动、浮层、错误和删除流程在四断点、主题、无障碍下通过；
+- 两项 Hvigor、native 双 ABI/测试、`git diff --check`、Light、独立复核和旧协议回归全部为当次新结果；
+- 所有未完成高级能力保持隐藏/禁用并有真实原因，不影响 MVP 的诚实交付。
+
+在此之前，当前灰色 Moonlight FAB 入口和“即将支持”就是唯一正确的用户可见状态。
 
 <!-- PLAN_BODY_END -->

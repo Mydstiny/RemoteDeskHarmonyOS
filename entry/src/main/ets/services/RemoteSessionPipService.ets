@@ -3,7 +3,7 @@
  *
  * AVSession supplies the system media identity and controls; PiPWindow owns
  * the actual XComponent surface shown in the floating video window. The
- * controller is prepared while the main window is visible and the system
+ * The controller is prepared while the main window is visible and the system
  * performs the background auto-start transition.
  */
 import { common } from '@kit.AbilityKit';
@@ -214,7 +214,10 @@ export class RemoteSessionPipService {
   private stoppedHandler: ((reason: string) => void) | null = null;
   private surfaceChangedHandler: PipSurfaceChangedHandler | null = null;
   private stateCallback: PipStateHandler | null = null;
-  private stopInFlight: Promise<boolean> | null = null;
+  /** All WMS-facing operations must run in one order. */
+  private operationTail: Promise<void> = Promise.resolve();
+  /** Includes a prepare queued behind another PIP operation. */
+  private prepareRequestCount: number = 0;
 
   static getInstance(): RemoteSessionPipService {
     if (RemoteSessionPipService.instance === null) {
@@ -232,6 +235,21 @@ export class RemoteSessionPipService {
     contentWidth: number, contentHeight: number,
     onStopped: ((reason: string) => void) | null = null,
     onSurfaceChanged: PipSurfaceChangedHandler | null = null): Promise<boolean> {
+    this.prepareRequestCount += 1;
+    return this.enqueueOperation<boolean>(async (): Promise<boolean> => {
+      try {
+        return await this.prepareInternal(
+          context, uiContext, contentWidth, contentHeight, onStopped, onSurfaceChanged);
+      } finally {
+        this.prepareRequestCount = Math.max(0, this.prepareRequestCount - 1);
+      }
+    });
+  }
+
+  private async prepareInternal(context: common.UIAbilityContext, uiContext: UIContext,
+    contentWidth: number, contentHeight: number,
+    onStopped: ((reason: string) => void) | null,
+    onSurfaceChanged: PipSurfaceChangedHandler | null): Promise<boolean> {
     if (!PiPWindow.isPiPEnabled()) {
       hilog.info(DOMAIN, TAG, 'PIP unsupported or disabled by system');
       return false;
@@ -246,7 +264,7 @@ export class RemoteSessionPipService {
       return true;
     }
     if (this.controller !== null) {
-      const stopped: boolean = await this.stop();
+      const stopped: boolean = await this.stopInternal();
       if (!stopped) {
         hilog.warn(DOMAIN, TAG, '[PIP-PREPARE] previous controller did not reach terminal state');
         return false;
@@ -302,7 +320,7 @@ export class RemoteSessionPipService {
       created.setAutoStartEnabled(true);
       if (generation !== this.operationGeneration) {
         if (this.controller === created) {
-          await this.stop();
+          await this.stopInternal();
         }
         return false;
       }
@@ -317,7 +335,7 @@ export class RemoteSessionPipService {
       hilog.warn(DOMAIN, TAG, '[PIP-PREPARE] failed code=' + this.errorCode(be) +
         ' message=' + this.errorMessage(be));
       if (created !== null && this.controller === created) {
-        await this.stop();
+        await this.stopInternal();
       } else if (created !== null) {
         await this.disposeCreatedController(created, createdNode, callback);
       } else if (createdNode !== null) {
@@ -342,20 +360,29 @@ export class RemoteSessionPipService {
     onSurfaceReady: PipSurfaceReadyHandler | null = null,
     onStopped: ((reason: string) => void) | null = null,
     onSurfaceChanged: PipSurfaceChangedHandler | null = null): Promise<boolean> {
+    return this.enqueueOperation<boolean>(() => this.startInternal(
+      context, uiContext, contentWidth, contentHeight,
+      onSurfaceReady, onStopped, onSurfaceChanged));
+  }
+
+  private async startInternal(context: common.UIAbilityContext, uiContext: UIContext,
+    contentWidth: number, contentHeight: number,
+    onSurfaceReady: PipSurfaceReadyHandler | null,
+    onStopped: ((reason: string) => void) | null,
+    onSurfaceChanged: PipSurfaceChangedHandler | null): Promise<boolean> {
     if (!PiPWindow.isPiPEnabled()) {
       hilog.info(DOMAIN, TAG, 'PIP unsupported or disabled by system');
       return false;
     }
     this.stoppedHandler = onStopped;
     this.surfaceChangedHandler = onSurfaceChanged;
+    // A background call may be queued immediately after the foreground
+    // prepare request. The queue lets that prepare finish, but start must
+    // never create a new controller after the main window is hidden.
     if (!this.prepared || this.controller === null || this.pipComponentController === null) {
-      const preparedOk: boolean = await this.prepare(
-        context, uiContext, contentWidth, contentHeight, onStopped, onSurfaceChanged);
-      if (!preparedOk) {
-        return false;
-      }
+      hilog.warn(DOMAIN, TAG, '[PIP-AUTOSTART] no foreground-prepared controller');
+      return false;
     }
-
     const generation: number = this.operationGeneration;
     const owner: PiPWindow.PiPController | null = this.controller;
     const pipController: RemoteSessionPipXComponentController | null = this.pipComponentController;
@@ -383,8 +410,8 @@ export class RemoteSessionPipService {
         return false;
       }
       // The first SurfaceRect can be the full-display placeholder. Re-read
-      // after renderer attach so a real 1239x774-style window size cannot be
-      // lost in the handoff race.
+      // after renderer attach so the real PIP window size is not lost in the
+      // handoff race.
       pipController.notifyCurrentSurface();
       this.active = true;
       this.windowStarted = true;
@@ -398,7 +425,7 @@ export class RemoteSessionPipService {
       const be: BusinessError = err as BusinessError;
       hilog.warn(DOMAIN, TAG, '[PIP-AUTOSTART] failed code=' + this.errorCode(be) +
         ' message=' + this.errorMessage(be));
-      const stopped: boolean = await this.stop();
+      const stopped: boolean = await this.stopInternal();
       if (!stopped) {
         hilog.warn(DOMAIN, TAG, '[PIP-AUTOSTART] controller teardown is still pending');
       }
@@ -413,19 +440,7 @@ export class RemoteSessionPipService {
    * the system and its state callback remains responsible for final cleanup.
    */
   async stop(): Promise<boolean> {
-    if (this.stopInFlight !== null) {
-      await this.stopInFlight;
-      return this.controller === null;
-    }
-    const operation: Promise<boolean> = this.stopInternal();
-    this.stopInFlight = operation;
-    try {
-      return await operation;
-    } finally {
-      if (this.stopInFlight === operation) {
-        this.stopInFlight = null;
-      }
-    }
+    return this.enqueueOperation<boolean>(() => this.stopInternal());
   }
 
   updateContentSize(width: number, height: number): void {
@@ -450,6 +465,11 @@ export class RemoteSessionPipService {
   /** True while a foreground-prepared controller is armed for auto-start. */
   isPrepared(): boolean {
     return this.prepared && this.controller !== null;
+  }
+
+  /** True when prepare is already armed or queued from the foreground. */
+  isPreparedOrPreparing(): boolean {
+    return this.isPrepared() || this.prepareRequestCount > 0;
   }
 
   /**
@@ -712,5 +732,15 @@ export class RemoteSessionPipService {
 
   private errorMessage(error: BusinessError): string {
     return error.message === undefined ? JSON.stringify(error) : error.message;
+  }
+
+  private enqueueOperation<T>(operation: () => Promise<T>): Promise<T> {
+    const queued: Promise<T> = this.operationTail.then(
+      (): Promise<T> => operation(),
+      (): Promise<T> => operation());
+    this.operationTail = queued.then(
+      (): void => { return; },
+      (): void => { return; });
+    return queued;
   }
 }

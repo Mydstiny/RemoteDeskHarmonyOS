@@ -150,6 +150,7 @@
 | UX-10 | SSH/SFTP 关键图标、Canvas、虚拟键栏和列表缺少系统化 accessibility/focus 语义；Canvas 不可获焦，隐藏输入框捕获并重获 Tab | 读屏无法理解终端；键盘用户进入终端后难以遍历应用操作 | accessibility 和焦点逃逸是 Level A 条件，不是发布后 polish |
 | UX-11 | 现代 SSH 新建流程只有密码/密钥，代理只在旧编辑器出现，且 HTTP CONNECT/SOCKS5 被标为“跳板机” | 新建与编辑能力不一致；可能误导用户以为支持 ProxyJump | 统一 profile 编辑器，能力未实现时准确命名并显式“不支持” |
 | UX-12 | 已有基础教程提到 SSH/SFTP/指纹，但没有 MFA、指纹变化、代理认证、后台断线和 SFTP 恢复专项说明 | 用户遇到安全或失败状态时缺少下一步 | 用户文档与结构化错误、帮助入口同步交付 |
+| UX-13 | FRP TCP 映射没有独立 transport 语义，用户容易把 frps 地址/端口填入 HTTP CONNECT/SOCKS5 或 SSH 跳板字段；KEX 失败只显示笼统的 `-22` | TCP 已连通但目标不是 SSH 时被误判为登录失败，无法区分控制端口、映射端口、非 TCP 模式和算法不兼容 | 增加 `frp_tcp` 透明映射 profile、首包非消费探测、阶段化错误和专门验收矩阵；FRP Visitor/非 TCP 模式单独立项 |
 
 当前可接受范围仅限“单主机、前台、短时间 Shell”和“小文件、单任务、前台 SFTP”。在完成 P0/P1 及 API 23 真机矩阵前，不得把现状表述为成熟跨端 SSH/SFTP。
 
@@ -595,7 +596,8 @@ diagnosticId
 #### 每主机 profile
 
 - host、port、username。
-- transport：direct/http_connect/socks5/ssh_jump。
+- transport：direct/frp_tcp/http_connect/socks5/ssh_jump。
+- `frp_tcp` 只表示“由 FRP 暴露的原始 TCP SSH 端点”：App 连接 frps 公网地址和 `remote_port`，底层复用 direct TCP，不在 SSH session 内实现 frps 控制协议、token 或 Visitor。不得把 frps 控制端口、内网 `local_ip` 或 HTTP/SOCKS5 代理字段当作目标。
 - credential reference 和 preferred auth。
 - host-key policy reference。
 - TERM、request PTY、locale、environment、shell/remote command、working directory。
@@ -624,6 +626,7 @@ diagnosticId
 | MFA prompt 欺骗 | UI 显示目标主机、当前 hop、服务端 instruction；禁止后台静默回答未知 prompt |
 | 弱算法降级 | 安全策略默认禁用弱算法；兼容模式按主机显式开启并显示警告 |
 | 代理绕过 | profile 明确 transport；配置代理失败时不得回退直连 |
+| FRP 端点混淆 | `frp_tcp` 与 HTTP CONNECT/SOCKS5/ssh_jump 分开建模；不能因端口可达就跳过 SSH banner、host key 和算法策略 |
 | 输出 DoS | 有界队列、payload 上限、OSC/DCS 长度限制、scrollback 上限 |
 | OSC 本地副作用 | OSC 52 默认关闭；远端不能直接操作文件、导航、权限或系统设置 |
 | SFTP 路径穿越 | 规范化路径、限制递归、明确 symlink 策略、特殊文件拒绝 |
@@ -979,6 +982,17 @@ P0 退出条件：
 - compression 开关和 CPU/流量基准。
 - rekey 时间/流量阈值和长连接测试。
 
+#### FRP TCP 透明映射与 KEX 诊断
+
+- `frp_tcp` 是 direct TCP 的显式产品语义，不是内置 frpc；配置只包含公网 `frps host`、映射 `remote_port`、目标 SSH 凭据和 host-key policy。
+- 仅接受 FRP `type=tcp` 的原始字节转发。HTTP/HTTPS、UDP、STCP、XTCP、Visitor 和 frps 控制端口必须明确显示为不支持或进入独立能力流程。
+- `probeSshHostKey`、密钥认证测试和正式 connect 必须使用同一份 resolved transport snapshot；预检不得直连而正式连接走代理，或相反。
+- 在 libssh2 KEX 前使用有界、不可消费的 `MSG_PEEK`/等效读取检查首包，至少区分 SSH identification、HTTP 响应、TLS record、空连接和未知非 SSH 数据；不得记录完整首包、凭据或远端 payload。
+- 将 libssh2 原始错误分为 `transport.not_ssh`、`kex.algorithm_mismatch`、`kex.protocol_error`、`kex.timeout` 和 `hostkey.mismatch` 等稳定诊断原因。`ERR_SSH_KEX_FAILED (-22)` 不能在 UI 中被翻译成“用户名或密码错误”。
+- 诊断必须包含阶段、目标端口类型提示、server banner（成功读取时）和下一步；失败时不得自动改走 direct、HTTP CONNECT 或 SOCKS5。
+
+验收：公网 frps `remote_port -> OpenSSH:22` 的密码/公钥/首次 host-key 信任/重连通过；误用 frps 控制端口、错误 `remote_port`、HTTP/HTTPS/UDP 映射、非 SSH 服务、断开和不兼容旧算法均返回可区分错误；高 RTT、丢包、frpc/frps 重启和网络切换不破坏取消、清理和重试语义。
+
 ### P1-6：多 Tab 和成熟终端 UX（3～5 人周）
 
 - 会话列表、Tab 切换、关闭确认、后台状态。
@@ -1016,6 +1030,13 @@ P1 退出条件：
 - resize/Unicode/search/selection/SFTP/多 Tab 通过真机矩阵。
 - Phone/Pad/PC 的布局、焦点、外设、读屏、前后台和传输恢复通过第 10.11～10.12 节。
 - 达到 Level A。
+
+### P2-0：FRP Visitor 与非 TCP 模式（按需独立立项）
+
+- `frp_tcp` 不覆盖 STCP、SUDP、XTCP、Visitor、服务端 token 握手或通过 frpc 发现内网服务。
+- 如产品必须支持这些模式，先在 transport 层评估移植受支持版本的 frpc 协议核心或受控 sidecar；不得让 SSH adapter 自己拼接 FRP 控制报文。
+- 该能力必须独立管理 token/visitor 凭据、连接生命周期、前后台限制、网络切换、版本兼容、日志脱敏和资源上限，并为 SSH 的 probe/connect/close 提供同一条已建立的 byte stream。
+- 未完成独立互操作矩阵前，UI 必须明确“不支持”，不能把这些模式伪装成 `frp_tcp`、HTTP CONNECT、SOCKS5 或 ProxyJump。
 
 ### P2-1：ProxyJump/Bastion（3～6 人周）
 
@@ -1222,6 +1243,8 @@ parser 必须有 precedence、first-value-wins/append 语义测试和安全上�
 - direct。
 - HTTP CONNECT 无认证/认证/407/超时。
 - SOCKS5 无认证/认证/remote DNS/地址类型。
+- FRP `type=tcp`：公网 `frps host:remote_port` 到 OpenSSH 目标、首次信任、密码/公钥、重连和高 RTT。
+- FRP 错误端点：控制端口、错误映射端口、HTTP/HTTPS/UDP/STCP/XTCP/Visitor、非 SSH 服务和端口关闭；验证 `-22` 被细分为可行动的 transport/KEX 原因。
 - 单跳/多跳 ProxyJump。
 - Wi-Fi 切换、断网、代理重启、服务器重启。
 
@@ -1595,6 +1618,8 @@ hvigorw --mode module -p module=entry -p product=default assembleHap --analyze=n
 
 ## 16. 执行清单
 
+> 2026-08-04 SSH/SFTP checkpoint：WP-T0～WP-T3、WP-S0，以及 SFTP 的持久元数据、本地 provider 和 Pad/PC 工作区基线已完成代码实现、定向测试和宿主构建门禁；本次 SFTP checkpoint 可标记完成。它不等同于完整后台任务引擎：真实 provider/endpoint 真机验收、UDMF 拖放、后台恢复和 Level A 全量条件仍保持未完成，交由后续专项处理。
+
 ### 开始前
 
 - [ ] 当前活动任务已闭环。
@@ -1617,11 +1642,12 @@ hvigorw --mode module -p module=entry -p product=default assembleHap --analyze=n
 - [ ] 后台连续任务、通知停止和前台 health check。
 - [ ] HUKS/声明和账号 scope。
 - [ ] 统一错误/cancel/diagnostics。
-- [ ] WP-T0 输入/渲染可观测基线。
-- [ ] WP-T1 非阻塞 terminal input queue。
-- [ ] WP-T2 单 owner SSH reactor 和 SFTP 公平调度。
-- [ ] WP-T3 物理键盘/IME 单提交和焦点逃逸。
-- [ ] WP-S0 partial/resume identity/verify/atomic commit 数据完整性底线。
+- [x] WP-T0 输入/渲染可观测基线（代码/宿主测试完成，设备指标待测）。
+- [x] WP-T1 非阻塞 terminal input queue（代码/宿主测试完成，设备指标待测）。
+- [x] WP-T2 单 owner SSH reactor 和 SFTP 公平调度（代码/宿主测试完成，设备指标待测）。
+- [x] WP-T3 物理键盘/IME 单提交和焦点逃逸（代码/宿主测试完成，实体键盘真机待测）。
+- [x] WP-S0 partial/resume identity/verify/atomic commit 数据完整性底线（代码/策略测试完成，API 23 provider/网络故障矩阵待测）。
+- [x] SFTP checkpoint：持久任务元数据、本地 provider/目录授权、Pad/PC 双栏工作区和远端/本地操作布局（页面集成完成，真实 provider/endpoint、后台 payload、UDMF 和生命周期矩阵待测）。
 - [ ] 其他模组回归。
 
 ### P1
@@ -1633,6 +1659,7 @@ hvigorw --mode module -p module=entry -p product=default assembleHap --analyze=n
 - [ ] input encoder/IME/mouse。
 - [ ] SFTP task engine/queue/checkpoint/0B/atomic commit。
 - [ ] PTY/profile/algorithm policy。
+- [ ] `frp_tcp` 透明映射、KEX 首包诊断、`-22` 错误细分和公网端点互操作矩阵。
 - [ ] Phone 紧凑布局和可配置虚拟键栏。
 - [ ] Pad 横屏/分屏/实体键盘/指针/SFTP 双区。
 - [ ] PC 自由窗口/多 Tab/分屏/可停靠 SFTP/拖放。
@@ -1645,6 +1672,7 @@ hvigorw --mode module -p module=entry -p product=default assembleHap --analyze=n
 ### P2
 
 - [ ] ProxyJump。
+- [ ] FRP Visitor/STCP/SUDP/XTCP 等非 TCP 模式（仅在独立立项后启用）。
 - [ ] forwarding。
 - [ ] agent/certificate。
 - [ ] 选定企业认证。
@@ -1654,16 +1682,16 @@ hvigorw --mode module -p module=entry -p product=default assembleHap --analyze=n
 
 ### 每个里程碑
 
-- [ ] 定向测试。
-- [ ] Rust/native/ArkTS 测试。
-- [ ] 双 ABI。
-- [ ] `default@OhosTestCompileArkTS`。
-- [ ] `assembleHap`。
-- [ ] `git diff --check`。
+- [x] 定向测试。
+- [x] Rust/native/ArkTS 测试（宿主 native 与 ArkTS 编译；ohosTest 未注册）。
+- [x] 双 ABI（构建产物门禁完成；设备运行证据待测）。
+- [x] `default@OhosTestCompileArkTS`。
+- [x] `assembleHap`。
+- [x] `git diff --check`。
 - [ ] Light 合规。
-- [ ] 子 agent 复核。
+- [x] 当前会话 self-review（用户已取消独立审查会话）。
 - [ ] API 23 真机。
-- [ ] CURRENT/QUEUE 更新。
+- [x] CURRENT/QUEUE 更新。
 
 ---
 
@@ -2016,6 +2044,15 @@ record 只携带短期 opaque drag token、来源 pane、item count、允许动�
 - 取消后说明 partial 是否保留用于恢复；清理 partial 是独立可恢复/可确认动作。
 
 ### 18.6 SFTP 可靠性工作包
+
+#### 当前 SFTP checkpoint 状态（2026-08-04）
+
+- [x] WP-S0：`.partial`、resume identity、verify、atomic commit、0B 和取消/失败保留语义。
+- [x] WP-S1/S2 checkpoint：持久任务元数据、恢复状态、本地 provider 能力选择、目录授权和远端/本地文件视图。
+- [x] Pad/PC workspace baseline：全屏双栏布局、远端操作集中左侧、本地授权/文件操作集中右侧；Phone 保持原始 Sheet/虚拟键栏行为。
+- [ ] 完整后台 payload 执行、全局 transfer queue、UDMF 拖放、后台连续任务和 Level A 真机/endpoint 矩阵。
+
+本状态只关闭本次已实现的 SFTP checkpoint，不提前宣称第 15.1 节的完整生产级 SSH/SFTP。
 
 #### WP-S0：现有单文件路径的数据完整性封口（P0）
 

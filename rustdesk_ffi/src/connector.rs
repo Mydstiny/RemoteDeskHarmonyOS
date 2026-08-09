@@ -32,13 +32,16 @@ use crate::protocol::message_proto::{
     VideoFrame, VideoFrame_oneof_union,
 };
 use crate::protocol::rendezvous::RendezvousClient;
-use crate::protocol::session::{AuthEventCallback, Session};
+use crate::protocol::rendezvous_proto::ConnType as RendezvousConnType;
+use crate::protocol::session::{AuthEventCallback, Session, VIDEO_ACK_REQUIRED};
 use crate::protocol::wire;
 use protobuf::{Message as ProtoMessage, ProtobufEnum};
 
+use std::ffi::{c_char, c_void, CString};
 use std::io;
 use std::io::ErrorKind;
 use std::net::TcpStream;
+use std::os::raw::c_int;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -49,6 +52,14 @@ const SLOW_VIDEO_CALLBACK_WARN: Duration = Duration::from_millis(50);
 const SLOW_VIDEO_ACK_WARN: Duration = Duration::from_millis(50);
 const VP9_CODEC_PREFERENCE: i32 = 2;
 const BACKPRESSURE_FPS: [u32; 4] = [60, 45, 30, 15];
+// Full-resolution software VP9 needs useful headroom for the short bursts
+// observed from the macOS encoder. Avoid the old 30 -> 15 cliff: each native
+// pressure level makes one bounded step. Other codec/resolution paths retain
+// their existing targets.
+const VP9_BACKPRESSURE_FPS: [u32; 4] = [30, 26, 22, 18];
+const VP9_PRESSURE_RECOVERY_HOLD_WINDOWS: u32 = 12;
+const VP9_HIGH_RESOLUTION_PIXEL_THRESHOLD: u64 = 4_000_000;
+const VP9_HIGH_RESOLUTION_FPS: u32 = 30;
 
 #[derive(Default, Debug)]
 struct PhysicalModifierState {
@@ -117,16 +128,99 @@ impl PhysicalModifierState {
     }
 }
 
+fn is_vp9_stream(preferred_codec: i32, active_codec: i32) -> bool {
+    preferred_codec == VP9_CODEC_PREFERENCE || active_codec == VP9_CODEC_PREFERENCE
+}
+
+fn resolution_aware_fps_ceiling(
+    active_codec: i32,
+    width: i32,
+    height: i32,
+    configured_fps: u32,
+) -> u32 {
+    if active_codec != VP9_CODEC_PREFERENCE || width <= 0 || height <= 0 {
+        return configured_fps;
+    }
+    let pixels = (width as u64).saturating_mul(height as u64);
+    if pixels >= VP9_HIGH_RESOLUTION_PIXEL_THRESHOLD {
+        configured_fps.min(VP9_HIGH_RESOLUTION_FPS)
+    } else {
+        configured_fps
+    }
+}
+
+fn uses_bounded_vp9_pressure_targets(active_codec: i32, width: i32, height: i32) -> bool {
+    if active_codec != VP9_CODEC_PREFERENCE || width <= 0 || height <= 0 {
+        return false;
+    }
+    (width as u64).saturating_mul(height as u64) >= VP9_HIGH_RESOLUTION_PIXEL_THRESHOLD
+}
+
 fn pressure_target_fps(
-    preferred_codec: i32,
+    _preferred_codec: i32,
     active_codec: i32,
     configured_fps: u32,
     pressure_level: u32,
+    bounded_vp9_pressure: bool,
 ) -> u32 {
-    if preferred_codec == VP9_CODEC_PREFERENCE || active_codec == VP9_CODEC_PREFERENCE {
-        return configured_fps;
+    let targets = if bounded_vp9_pressure && active_codec == VP9_CODEC_PREFERENCE {
+        VP9_BACKPRESSURE_FPS
+    } else {
+        BACKPRESSURE_FPS
+    };
+    configured_fps.min(targets[pressure_level.min(3) as usize])
+}
+
+fn advance_applied_pressure_level(
+    preferred_codec: i32,
+    active_codec: i32,
+    applied_level: u32,
+    requested_level: u32,
+    recovery_windows: u32,
+    bounded_vp9_pressure: bool,
+) -> (u32, u32) {
+    let applied = applied_level.min(3);
+    let requested = requested_level.min(3);
+    if requested >= applied {
+        return (requested, 0);
     }
-    configured_fps.min(BACKPRESSURE_FPS[pressure_level.min(3) as usize])
+    // High-resolution VP9 pressure already has one native/session hysteresis
+    // owner. Apply its recovery signal immediately instead of adding another
+    // per-level 12-second Rust hold on top.
+    if bounded_vp9_pressure {
+        return (requested, 0);
+    }
+    if !is_vp9_stream(preferred_codec, active_codec) {
+        return (requested, 0);
+    }
+
+    let next_windows = recovery_windows.saturating_add(1);
+    if next_windows < VP9_PRESSURE_RECOVERY_HOLD_WINDOWS {
+        return (applied, next_windows);
+    }
+    (applied.saturating_sub(1).max(requested), 0)
+}
+
+fn pressure_change_requires_refresh(preferred_codec: i32, active_codec: i32) -> bool {
+    !is_vp9_stream(preferred_codec, active_codec)
+}
+
+fn changed_pressure_target_fps(
+    preferred_codec: i32,
+    active_codec: i32,
+    configured_fps: u32,
+    current_stream_fps: u32,
+    pressure_level: u32,
+    bounded_vp9_pressure: bool,
+) -> Option<u32> {
+    let target = pressure_target_fps(
+        preferred_codec,
+        active_codec,
+        configured_fps,
+        pressure_level,
+        bounded_vp9_pressure,
+    );
+    (target != current_stream_fps).then_some(target)
 }
 
 fn should_emit_control_diagnostics(last_report: Instant, now: Instant) -> bool {
@@ -170,6 +264,13 @@ pub enum ConnState {
     Error(String),
 }
 
+/// Progress emitted while the synchronous RustDesk handshake is running.
+/// The FFI entry point executes this work on a native worker thread, so the
+/// callback is deliberately small and carries only a short, owned C string
+/// valid for the duration of the call.
+pub type ConnectProgressCallback =
+    extern "C" fn(stage: c_int, message: *const c_char, user_data: *mut c_void);
+
 /// RustDesk `-k` is an access credential, not necessarily the server signing
 /// public key.  Keeping both values separate lets an administrator use an
 /// arbitrary shared value without pretending that it verifies identities.
@@ -194,6 +295,7 @@ pub struct RustDeskConnector {
     peer_pk: Option<[u8; 32]>,
     crypto_channel: Option<CryptoChannel>,
     session: Session,
+    progress_callback: Option<(ConnectProgressCallback, usize)>,
     /// streaming 消息统计 — 诊断对端停止发送前的行为
     pub stream_stats: String,
 }
@@ -209,6 +311,10 @@ struct PendingFileUpload {
 struct AwaitingFileDone {
     id: i32,
     file_name: String,
+}
+
+fn file_upload_sender_complete(pending_uploads: usize) -> bool {
+    pending_uploads == 0
 }
 
 /// Keep the wire keyboard mode tied to the negotiated peer capabilities instead
@@ -234,7 +340,38 @@ impl RustDeskConnector {
             peer_pk: None,
             crypto_channel: None,
             session: Session::new_with_connection_id(connection_id, connect_epoch),
+            progress_callback: None,
             stream_stats: String::new(),
+        }
+    }
+
+    pub fn set_progress_callback(
+        &mut self,
+        callback: Option<ConnectProgressCallback>,
+        user_data: *mut std::ffi::c_void,
+    ) {
+        self.progress_callback = callback.map(|cb| (cb, user_data as usize));
+    }
+
+    fn set_connect_state(&mut self, state: ConnState) {
+        let (stage, message) = match &state {
+            ConnState::RendezvousConnecting => (0, "RustDesk: 正在连接协调服务器"),
+            ConnState::RegisteringPeer => (0, "RustDesk: 正在登记远端身份"),
+            ConnState::RegisteringPk => (0, "RustDesk: 正在交换服务器密钥"),
+            ConnState::RequestingRelay => (1, "RustDesk: 正在请求中继路径"),
+            ConnState::ConnectingToPeer => (2, "RustDesk: 正在连接远端设备"),
+            ConnState::KeyExchanging => (3, "RustDesk: 正在建立加密通道"),
+            ConnState::LoggingIn => (4, "RustDesk: 正在验证设备凭据"),
+            ConnState::Connected => (5, "RustDesk: 认证完成，正在等待首帧"),
+            ConnState::Disconnected | ConnState::Error(_) => (-1, ""),
+        };
+        self.state = state;
+        if stage < 0 {
+            return;
+        }
+        if let Some((callback, user_data)) = self.progress_callback {
+            let c_message = CString::new(message).unwrap_or_else(|_| CString::new("").unwrap());
+            callback(stage, c_message.as_ptr(), user_data as *mut std::ffi::c_void);
         }
     }
 
@@ -272,15 +409,20 @@ impl RustDeskConnector {
         let rendezvous_secure = !shared_access_key && !server_key.trim().is_empty() &&
             !api_token.trim().is_empty();
         // === Phase 1: Rendezvous 握手 ===
-        self.state = ConnState::RendezvousConnecting;
+        self.set_connect_state(ConnState::RendezvousConnecting);
         let mut rd = RendezvousClient::new();
         // 客户端连接远端 ID 时不要 RegisterPeer；RegisterPeer 是被控端注册自己的 ID。
         // Server Pro 的控制端会话 token 必须进入 PunchHoleRequest/RequestRelay。
         // 只有同时拥有真实公钥和 token 时才启用 upstream 的 rendezvous secure_tcp。
         rd.connect(rendezvous_host, rendezvous_port, server_key, rendezvous_secure)?;
 
-        self.state = ConnState::RequestingRelay;
-        let punch = rd.request_force_relay(peer_id, credentials.access_key, api_token)?;
+        self.set_connect_state(ConnState::RequestingRelay);
+        let punch = rd.request_force_relay(
+            peer_id,
+            credentials.access_key,
+            api_token,
+            RendezvousConnType::DEFAULT_CONN,
+        )?;
 
         // === Phase 2: Peer TCP + 加密通道 ===
         eprintln!(
@@ -292,7 +434,7 @@ impl RustDeskConnector {
         );
 
         let mut peer_stream = if let Some(relay_uuid) = punch.relay_uuid {
-            self.state = ConnState::ConnectingToPeer;
+            self.set_connect_state(ConnState::ConnectingToPeer);
             eprintln!(
                 "[RustDesk-FFI] force-relay ticket accepted relay_endpoint=present"
             );
@@ -302,9 +444,10 @@ impl RustDeskConnector {
                 &punch.relay_server,
                 relay_fallback_port,
                 credentials.access_key,
+                RendezvousConnType::DEFAULT_CONN,
             )?
         } else if !punch.relay_server.trim().is_empty() {
-            self.state = ConnState::RequestingRelay;
+            self.set_connect_state(ConnState::RequestingRelay);
             let mut relay_rd = RendezvousClient::new();
             relay_rd.connect(rendezvous_host, rendezvous_port, server_key, rendezvous_secure)?;
             let relay_uuid = relay_rd.request_relay_uuid(
@@ -313,7 +456,7 @@ impl RustDeskConnector {
                 !punch.signed_pk.is_empty(),
                 api_token,
             )?;
-            self.state = ConnState::ConnectingToPeer;
+            self.set_connect_state(ConnState::ConnectingToPeer);
             eprintln!(
                 "[RustDesk-FFI] force-relay request approved relay_endpoint=present"
             );
@@ -323,11 +466,12 @@ impl RustDeskConnector {
                 &punch.relay_server,
                 relay_fallback_port,
                 credentials.access_key,
+                RendezvousConnType::DEFAULT_CONN,
             )?
         } else if let Some(peer_addr) = punch.peer_addr {
             // OSS hbbs answered a direct peer address and no relay endpoint.
             // Connect it directly instead of failing the whole pipeline.
-            self.state = ConnState::ConnectingToPeer;
+            self.set_connect_state(ConnState::ConnectingToPeer);
             eprintln!(
                 "[RustDesk-FFI] punch response direct peer endpoint present"
             );
@@ -340,7 +484,7 @@ impl RustDeskConnector {
         };
 
         // KeyExchange: 发送自己的公钥，接收对端公钥
-        self.state = ConnState::KeyExchanging;
+        self.set_connect_state(ConnState::KeyExchanging);
         let channel_key = self.secure_peer_connection(
             &mut peer_stream,
             peer_id,
@@ -360,7 +504,7 @@ impl RustDeskConnector {
         self.crypto_channel = Some(crypto);
 
         // === Phase 3: Login ===
-        self.state = ConnState::LoggingIn;
+        self.set_connect_state(ConnState::LoggingIn);
         let crypto = self.crypto_channel.as_mut().unwrap();
         self.session.login_encrypted(
             crypto,
@@ -374,7 +518,7 @@ impl RustDeskConnector {
             request_approval,
         )?;
 
-        self.state = ConnState::Connected;
+        self.set_connect_state(ConnState::Connected);
         Ok(())
     }
 
@@ -404,7 +548,7 @@ impl RustDeskConnector {
         fps: u32,
     ) -> io::Result<()> {
         // === Phase 1: TCP 直连 peer ===
-        self.state = ConnState::ConnectingToPeer;
+        self.set_connect_state(ConnState::ConnectingToPeer);
         eprintln!(
             "[RustDesk-FFI] direct connect endpoint=provided port={}",
             peer_port
@@ -422,7 +566,7 @@ impl RustDeskConnector {
         // The first frame is the Hash challenge sent by Connection::on_open;
         // Session::login_encrypted only describes the existing API name and
         // works with either encrypted or plain CryptoChannel frames.
-        self.state = ConnState::LoggingIn;
+        self.set_connect_state(ConnState::LoggingIn);
         let crypto = CryptoChannel::new_plain(stream);
         self.crypto_channel = Some(crypto);
 
@@ -442,8 +586,52 @@ impl RustDeskConnector {
             false,
         )?;
 
-        self.state = ConnState::Connected;
+        self.set_connect_state(ConnState::Connected);
         eprintln!("[RustDesk-FFI] direct plain connection established");
+        Ok(())
+    }
+
+    /// Open the dedicated RustDesk file-transfer session against a peer's
+    /// direct-IP listener. Direct sessions do not have a rendezvous server:
+    /// the listener starts with the plain Hash/LoginRequest exchange and the
+    /// LoginRequest.file_transfer field selects file-transfer mode.
+    pub fn connect_file_transfer_direct(
+        &mut self,
+        peer_host: &str,
+        peer_port: u16,
+        password: &str,
+        remote_dir: &str,
+    ) -> io::Result<()> {
+        crate::set_last_error(format!(
+            "file-transfer direct connecting port={}",
+            peer_port
+        ));
+        self.set_connect_state(ConnState::ConnectingToPeer);
+        let peer_stream = net::connect_tcp_host(
+            peer_host,
+            peer_port,
+            "direct file transfer",
+            Duration::from_secs(10),
+        )?;
+        peer_stream.set_read_timeout(Some(Duration::from_secs(30)))?;
+        peer_stream.set_write_timeout(Some(Duration::from_secs(10)))?;
+
+        self.crypto_channel = Some(CryptoChannel::new_plain(peer_stream));
+        crate::set_last_error("file-transfer direct peer login".to_string());
+        self.set_connect_state(ConnState::LoggingIn);
+        let crypto = self.crypto_channel.as_mut().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotConnected,
+                "direct file-transfer channel is unavailable",
+            )
+        })?;
+        // RustDesk's direct listener expects its address as LoginRequest.username,
+        // matching the main direct desktop connection.
+        self.session
+            .login_file_transfer_encrypted(crypto, peer_host, password, remote_dir, false)?;
+        crate::set_last_error("file-transfer direct peer login complete".to_string());
+        self.set_connect_state(ConnState::Connected);
+        eprintln!("[RustDesk-FFI] direct file-transfer session established");
         Ok(())
     }
 
@@ -459,21 +647,27 @@ impl RustDeskConnector {
         remote_dir: &str,
         request_approval: bool,
         shared_access_key: bool,
+        rendezvous_conn_type: RendezvousConnType,
     ) -> io::Result<()> {
         let credentials = RendezvousCredentials::new(server_key, shared_access_key);
         let rendezvous_secure = !shared_access_key && !server_key.trim().is_empty() &&
             !api_token.trim().is_empty();
         crate::set_last_error(format!(
-            "file-transfer rendezvous connecting port={} strategy=force_relay",
-            rendezvous_port
+            "file-transfer rendezvous connecting port={} strategy=force_relay conn_type={:?}",
+            rendezvous_port, rendezvous_conn_type
         ));
-        self.state = ConnState::RendezvousConnecting;
+        self.set_connect_state(ConnState::RendezvousConnecting);
         let mut rd = RendezvousClient::new();
         rd.connect(rendezvous_host, rendezvous_port, server_key, rendezvous_secure)?;
 
         crate::set_last_error("file-transfer requesting force relay".to_string());
-        self.state = ConnState::RequestingRelay;
-        let punch = rd.request_force_relay(peer_id, credentials.access_key, api_token)?;
+        self.set_connect_state(ConnState::RequestingRelay);
+        let punch = rd.request_force_relay(
+            peer_id,
+            credentials.access_key,
+            api_token,
+            rendezvous_conn_type,
+        )?;
         crate::set_last_error(format!(
             "file-transfer force-relay response relay_endpoint={} relay_ticket={} signed_pk_len={}",
             if punch.relay_server.is_empty() { "absent" } else { "present" },
@@ -489,16 +683,17 @@ impl RustDeskConnector {
 
         let mut peer_stream = if let Some(relay_uuid) = punch.relay_uuid {
             crate::set_last_error("file-transfer connecting approved relay".to_string());
-            self.state = ConnState::ConnectingToPeer;
+            self.set_connect_state(ConnState::ConnectingToPeer);
             rd.create_relay(
                 peer_id,
                 &relay_uuid,
                 &punch.relay_server,
                 relay_fallback_port,
                 credentials.access_key,
+                rendezvous_conn_type,
             )?
         } else if !punch.relay_server.trim().is_empty() {
-            self.state = ConnState::RequestingRelay;
+            self.set_connect_state(ConnState::RequestingRelay);
             let mut relay_rd = RendezvousClient::new();
             crate::set_last_error("file-transfer requesting relay ticket".to_string());
             relay_rd.connect(rendezvous_host, rendezvous_port, server_key, rendezvous_secure)?;
@@ -509,16 +704,17 @@ impl RustDeskConnector {
                 api_token,
             )?;
             crate::set_last_error("file-transfer connecting approved relay".to_string());
-            self.state = ConnState::ConnectingToPeer;
+            self.set_connect_state(ConnState::ConnectingToPeer);
             relay_rd.create_relay(
                 peer_id,
                 &relay_uuid,
                 &punch.relay_server,
                 relay_fallback_port,
                 credentials.access_key,
+                rendezvous_conn_type,
             )?
         } else if let Some(peer_addr) = punch.peer_addr {
-            self.state = ConnState::ConnectingToPeer;
+            self.set_connect_state(ConnState::ConnectingToPeer);
             eprintln!(
                 "[RustDesk-FFI] file-transfer punch response direct peer endpoint present"
             );
@@ -531,7 +727,7 @@ impl RustDeskConnector {
         };
 
         crate::set_last_error("file-transfer key exchanging".to_string());
-        self.state = ConnState::KeyExchanging;
+        self.set_connect_state(ConnState::KeyExchanging);
         let channel_key = self.secure_peer_connection(
             &mut peer_stream,
             peer_id,
@@ -546,12 +742,12 @@ impl RustDeskConnector {
         self.crypto_channel = Some(crypto);
 
         crate::set_last_error("file-transfer peer login".to_string());
-        self.state = ConnState::LoggingIn;
+        self.set_connect_state(ConnState::LoggingIn);
         let crypto = self.crypto_channel.as_mut().unwrap();
         self.session
             .login_file_transfer_encrypted(crypto, peer_id, password, remote_dir, request_approval)?;
         crate::set_last_error("file-transfer peer login complete".to_string());
-        self.state = ConnState::Connected;
+        self.set_connect_state(ConnState::Connected);
         Ok(())
     }
 
@@ -582,7 +778,13 @@ impl RustDeskConnector {
         let mut last_wait_report = 0u64;
         let path_id = crate::safe_diagnostics::sensitive_id(remote_path);
 
-        while (!pending.is_empty() || !awaiting_done.is_empty()) && started.elapsed() < timeout {
+        // RustDesk's upload protocol is sender-complete once the final
+        // FileResponse::Done frame has been written. The receiver consumes
+        // that frame and reports completion to its own connection manager; it
+        // does not echo another Done frame back to the sender. Waiting for
+        // `awaiting_done` to become empty therefore turns every otherwise
+        // successful upload into a 30-second timeout.
+        while !file_upload_sender_complete(pending.len()) && started.elapsed() < timeout {
             match crypto.recv() {
                 Ok(plaintext) => {
                     let msg: Message = protobuf::parse_from_bytes(&plaintext)
@@ -625,22 +827,12 @@ impl RustDeskConnector {
                     let elapsed = started.elapsed().as_secs();
                     if elapsed > last_wait_report {
                         last_wait_report = elapsed;
-                        if awaiting_done.is_empty() {
-                            crate::set_last_error(format!(
-                                "file-transfer waiting peer confirm path_id={} elapsed={}s pending={}",
-                                path_id,
-                                elapsed,
-                                pending.len()
-                            ));
-                        } else {
-                            crate::set_last_error(format!(
-                                "file-transfer waiting remote done path_id={} elapsed={}s pending={} awaiting_done={}",
-                                path_id,
-                                elapsed,
-                                pending.len(),
-                                awaiting_done.len()
-                            ));
-                        }
+                        crate::set_last_error(format!(
+                            "file-transfer waiting peer confirm path_id={} elapsed={}s pending={}",
+                            path_id,
+                            elapsed,
+                            pending.len()
+                        ));
                     }
                     continue;
                 }
@@ -649,16 +841,19 @@ impl RustDeskConnector {
         }
         crypto.set_read_timeout(None).ok();
 
-        if pending.is_empty() && awaiting_done.is_empty() {
-            crate::set_last_error(format!("file transfer done path_id={}", path_id));
+        if file_upload_sender_complete(pending.len()) {
+            crate::set_last_error(format!(
+                "file transfer sent path_id={} final_done_frames={}",
+                path_id,
+                awaiting_done.len()
+            ));
             Ok(())
         } else {
             Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 format!(
-                    "file-transfer peer did not finish upload pending={} awaiting_done={}",
-                    pending.len(),
-                    awaiting_done.len()
+                    "file-transfer peer did not confirm upload pending={}",
+                    pending.len()
                 ),
             ))
         }
@@ -828,6 +1023,142 @@ impl RustDeskConnector {
         (tx_key, rx_key)
     }
 
+    fn pump_control_messages(
+        crypto: &mut CryptoChannel,
+        controls: &ControlInbox,
+        remote_upload_dir: Option<&str>,
+        pending_file_uploads: &mut Vec<PendingFileUpload>,
+        requested_pressure_level: &mut u32,
+        physical_modifiers: &mut PhysicalModifierState,
+        remote_keyboard_transport: RemoteKeyboardTransport,
+        stream_started: Instant,
+        sent_control_total: &mut u64,
+        sent_mouse_moves: &mut u64,
+        sent_mouse_buttons: &mut u64,
+        control_send_errors: &mut u64,
+    ) -> io::Result<()> {
+        crypto.check_streaming_writer()?;
+        if controls.shutdown_requested() {
+            return Err(io::Error::new(
+                ErrorKind::Interrupted,
+                "control shutdown requested",
+            ));
+        }
+
+        for control in Self::next_control_batch(controls) {
+            if controls.shutdown_requested() {
+                return Err(io::Error::new(
+                    ErrorKind::Interrupted,
+                    "control shutdown requested",
+                ));
+            }
+
+            match control {
+                crate::ControlMsg::Shutdown => {
+                    return Err(io::Error::new(
+                        ErrorKind::Interrupted,
+                        "control shutdown requested",
+                    ));
+                }
+                crate::ControlMsg::VideoPressure { level } => {
+                    *requested_pressure_level = level.min(3);
+                }
+                crate::ControlMsg::SendFile { remote_path, data } => {
+                    let upload_path = Self::normalize_remote_upload_path(
+                        &remote_path,
+                        remote_upload_dir,
+                    );
+                    let upload_path_id = crate::safe_diagnostics::sensitive_id(&upload_path);
+                    let original_path_id = crate::safe_diagnostics::sensitive_id(&remote_path);
+                    crate::set_last_error(format!(
+                        "streaming: send file path_id={} size={}",
+                        upload_path_id,
+                        data.len()
+                    ));
+                    eprintln!(
+                        "[RustDesk-FFI] streaming: send file path_id={} original_path_id={} size={}",
+                        upload_path_id,
+                        original_path_id,
+                        data.len()
+                    );
+                    match Self::request_file_upload(crypto, &upload_path, data) {
+                        Ok(upload) => pending_file_uploads.push(upload),
+                        Err(e) => {
+                            crate::set_last_error(format!(
+                                "streaming: file send error path_id={} err={}",
+                                upload_path_id, e
+                            ));
+                            eprintln!("[RustDesk-FFI] streaming: file send error: {}", e);
+                        }
+                    }
+                }
+                crate::ControlMsg::Clipboard { content } => {
+                    let mut cb = Clipboard::new();
+                    cb.set_format(ClipboardFormat::Text);
+                    cb.set_content(content);
+                    let mut msg = Message::new();
+                    msg.union = Some(Message_oneof_union::clipboard(cb));
+                    if let Err(e) = Self::send_message_encrypted(crypto, &msg) {
+                        eprintln!("[RustDesk-FFI] clipboard send error: {}", e);
+                    }
+                }
+                msg => {
+                    let kind = Self::control_msg_kind(&msg);
+                    let pointer = match &msg {
+                        crate::ControlMsg::MouseEvent { x, y, .. }
+                        | crate::ControlMsg::MouseMove { x, y }
+                        | crate::ControlMsg::MouseWheel { x, y, .. }
+                        | crate::ControlMsg::MouseWheel2D { x, y } => Some((*x, *y)),
+                        _ => None,
+                    };
+                    *sent_control_total += 1;
+                    let control_number = *sent_control_total;
+                    if kind == "mouse_move" {
+                        *sent_mouse_moves += 1;
+                    } else if kind == "mouse" {
+                        *sent_mouse_buttons += 1;
+                    }
+                    let pointer_sample = match kind {
+                        "mouse_move" => *sent_mouse_moves <= 20 || *sent_mouse_moves % 120 == 0,
+                        "mouse" => *sent_mouse_buttons <= 20 || *sent_mouse_buttons % 120 == 0,
+                        _ => false,
+                    };
+                    let send_started = Instant::now();
+                    let send_result = Self::send_control_message(
+                        crypto,
+                        msg,
+                        physical_modifiers,
+                        remote_keyboard_transport,
+                    );
+                    let send_elapsed = send_started.elapsed();
+                    if pointer_sample || send_elapsed >= Duration::from_millis(20) {
+                        let (x, y) = pointer.unwrap_or((0, 0));
+                        eprintln!(
+                            "[RustDesk-FFI] control send kind={} number={} x={} y={} dequeue_elapsed_ms={} send_elapsed_ms={} result={}",
+                            kind,
+                            control_number,
+                            x,
+                            y,
+                            Instant::now().duration_since(stream_started).as_millis(),
+                            send_elapsed.as_millis(),
+                            if send_result.is_ok() { "ok" } else { "error" },
+                        );
+                    }
+                    if let Err(e) = send_result {
+                        *control_send_errors += 1;
+                        eprintln!(
+                            "[RustDesk-FFI] streaming: control msg error kind={:?} msg={}",
+                            e.kind(),
+                            e
+                        );
+                        return Err(e);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// 运行 streaming 循环 (阻塞)
     ///
     /// 持续接收加密消息，分发到回调。
@@ -912,7 +1243,11 @@ impl RustDeskConnector {
         let mut current_backpressure_level: u32 = 0; // 0=normal, 1=mild, 2=moderate, 3=severe
         let mut requested_pressure_level: u32 = 0;
         let mut applied_pressure_level: u32 = 0;
+        let mut vp9_pressure_recovery_windows: u32 = 0;
         let mut active_video_codec: i32 = 0;
+        let mut bounded_vp9_pressure = false;
+        let mut stream_fps_ceiling = fps;
+        let mut stream_options_fps = fps;
         const DEGRADE_AFTER_OVERLOAD_WINDOWS: u32 = 5; // need 5s of overload before degrade
         const RECOVER_AFTER_CLEAN_WINDOWS: u32 = 30; // 30s of clean before recover
         const OVERLOAD_VIDEO_THRESHOLD: u64 = 3; // <3 fps sustained = genuine decoder overload
@@ -925,14 +1260,20 @@ impl RustDeskConnector {
             fps,
         ) {
             eprintln!(
-                "[RustDesk-FFI] streaming: initial stream options failed: {}",
+                "[RustDesk-FFI] streaming: initial stream options failed: {}, exiting",
                 err
             );
+            return Err(err);
         } else {
             stream_options_sent_count += 1;
             stream_options_reasserted = true;
             eprintln!("[RustDesk-FFI] streaming: initial stream options reasserted");
         }
+        crypto.start_streaming_writer()?;
+        eprintln!(
+            "[RustDesk-FFI] streaming: single writer started after handshake video_ack_required={}",
+            VIDEO_ACK_REQUIRED
+        );
 
         'streaming: while self.state == ConnState::Connected {
             let diagnostic_now = Instant::now();
@@ -966,90 +1307,26 @@ impl RustDeskConnector {
                 last_control_diagnostic_at = diagnostic_now;
             }
 
-            if controls.shutdown_requested() {
-                eprintln!("[RustDesk-FFI] streaming: shutdown requested, exiting loop");
-                self.state = ConnState::Disconnected;
-                break 'streaming;
-            }
-
-            for control in Self::next_control_batch(controls.as_ref()) {
-                if controls.shutdown_requested() {
+            if let Err(err) = Self::pump_control_messages(
+                crypto,
+                controls.as_ref(),
+                remote_upload_dir.as_deref(),
+                &mut pending_file_uploads,
+                &mut requested_pressure_level,
+                &mut physical_modifiers,
+                remote_keyboard_transport,
+                stream_started,
+                &mut sent_control_total,
+                &mut sent_mouse_moves,
+                &mut sent_mouse_buttons,
+                &mut control_send_errors,
+            ) {
+                if err.kind() == ErrorKind::Interrupted {
                     eprintln!("[RustDesk-FFI] streaming: shutdown requested, exiting loop");
                     self.state = ConnState::Disconnected;
                     break 'streaming;
                 }
-
-                match control {
-                    crate::ControlMsg::Shutdown => {
-                        eprintln!("[RustDesk-FFI] streaming: shutdown requested, exiting loop");
-                        self.state = ConnState::Disconnected;
-                        break 'streaming;
-                    }
-                    crate::ControlMsg::VideoPressure { level } => {
-                        requested_pressure_level = level.min(3);
-                    }
-                    crate::ControlMsg::SendFile { remote_path, data } => {
-                        let upload_path = Self::normalize_remote_upload_path(
-                            &remote_path,
-                            remote_upload_dir.as_deref(),
-                        );
-                        let upload_path_id =
-                            crate::safe_diagnostics::sensitive_id(&upload_path);
-                        let original_path_id =
-                            crate::safe_diagnostics::sensitive_id(&remote_path);
-                        crate::set_last_error(format!(
-                            "streaming: send file path_id={} size={}",
-                            upload_path_id,
-                            data.len()
-                        ));
-                        // 文件传输: 先发 receive，等远端 digest 后再发数据块。
-                        eprintln!(
-                            "[RustDesk-FFI] streaming: send file path_id={} original_path_id={} size={}",
-                            upload_path_id,
-                            original_path_id,
-                            data.len()
-                        );
-                        match Self::request_file_upload(crypto, &upload_path, data) {
-                            Ok(upload) => pending_file_uploads.push(upload),
-                            Err(e) => {
-                                crate::set_last_error(format!(
-                                    "streaming: file send error path_id={} err={}",
-                                    upload_path_id, e
-                                ));
-                                eprintln!("[RustDesk-FFI] streaming: file send error: {}", e);
-                            }
-                        }
-                    }
-                    crate::ControlMsg::Clipboard { content } => {
-                        // 剪贴板同步: 将内容发送到远程剪贴板
-                        let mut cb = Clipboard::new();
-                        cb.set_format(ClipboardFormat::Text);
-                        cb.set_content(content);
-                        let mut msg = Message::new();
-                        msg.union = Some(Message_oneof_union::clipboard(cb));
-                        if let Err(e) = Self::send_message_encrypted(crypto, &msg) {
-                            eprintln!("[RustDesk-FFI] clipboard send error: {}", e);
-                        }
-                    }
-                    msg => {
-                        let kind = Self::control_msg_kind(&msg);
-                        sent_control_total += 1;
-                        if kind == "mouse_move" {
-                            sent_mouse_moves += 1;
-                        } else if kind == "mouse" {
-                            sent_mouse_buttons += 1;
-                        }
-                        if let Err(e) = Self::send_control_message(
-                            crypto,
-                            msg,
-                            &mut physical_modifiers,
-                            remote_keyboard_transport,
-                        ) {
-                            control_send_errors += 1;
-                            eprintln!("[RustDesk-FFI] streaming: control msg error: {}", e);
-                        }
-                    }
-                }
+                return Err(err);
             }
 
             Self::flush_stale_file_uploads(
@@ -1058,11 +1335,31 @@ impl RustDeskConnector {
                 &mut awaiting_file_done,
             )?;
 
-            let plaintext = match crypto.recv() {
+            let plaintext = match crypto.recv_with_pump(|crypto| {
+                Self::pump_control_messages(
+                    crypto,
+                    controls.as_ref(),
+                    remote_upload_dir.as_deref(),
+                    &mut pending_file_uploads,
+                    &mut requested_pressure_level,
+                    &mut physical_modifiers,
+                    remote_keyboard_transport,
+                    stream_started,
+                    &mut sent_control_total,
+                    &mut sent_mouse_moves,
+                    &mut sent_mouse_buttons,
+                    &mut control_send_errors,
+                )
+            }) {
                 Ok(plaintext) => {
                     empty_reads = 0; // 重置空读计数
                     last_successful_receive_at = Instant::now();
                     plaintext
+                }
+                Err(err) if err.kind() == ErrorKind::Interrupted => {
+                    eprintln!("[RustDesk-FFI] streaming: shutdown requested, exiting loop");
+                    self.state = ConnState::Disconnected;
+                    break 'streaming;
                 }
                 Err(err)
                     if err.kind() == ErrorKind::WouldBlock || err.kind() == ErrorKind::TimedOut =>
@@ -1074,7 +1371,13 @@ impl RustDeskConnector {
                             "[RustDesk-FFI] streaming: {}s no data, sending refresh_video",
                             empty_reads / 50
                         );
-                        let _ = Session::send_refresh_video(crypto);
+                        if let Err(err) = Session::send_refresh_video(crypto) {
+                            eprintln!(
+                                "[RustDesk-FFI] streaming: refresh_video failed: {}, exiting",
+                                err
+                            );
+                            return Err(err);
+                        }
                     }
                     continue;
                 }
@@ -1140,6 +1443,58 @@ impl RustDeskConnector {
                     let actual_codec = Self::video_frame_codec_preference(vf);
                     let ffi_codec = Self::video_frame_ffi_codec(vf);
                     active_video_codec = actual_codec;
+                    let (source_width, source_height) = display_state
+                        .lock()
+                        .map(|state| (state.width, state.height))
+                        .unwrap_or((0, 0));
+                    bounded_vp9_pressure = uses_bounded_vp9_pressure_targets(
+                        active_video_codec,
+                        source_width,
+                        source_height,
+                    );
+                    let next_stream_fps_ceiling = resolution_aware_fps_ceiling(
+                        active_video_codec,
+                        source_width,
+                        source_height,
+                        fps,
+                    );
+                    if next_stream_fps_ceiling != stream_fps_ceiling {
+                        stream_fps_ceiling = next_stream_fps_ceiling;
+                        let target_fps = pressure_target_fps(
+                            preferred_codec,
+                            active_video_codec,
+                            stream_fps_ceiling,
+                            applied_pressure_level,
+                            bounded_vp9_pressure,
+                        );
+                        eprintln!(
+                            "[RustDesk-FFI] resolution fps ceiling codec={} size={}x{} configured={} ceiling={} target={}",
+                            Self::video_frame_codec_name(vf),
+                            source_width,
+                            source_height,
+                            fps,
+                            stream_fps_ceiling,
+                            target_fps,
+                        );
+                        if target_fps != stream_options_fps {
+                            Session::send_runtime_options(
+                                crypto,
+                                preferred_codec,
+                                image_quality,
+                                privacy_mode,
+                                audio_enabled,
+                                Some(target_fps),
+                            )?;
+                            if pressure_change_requires_refresh(
+                                preferred_codec,
+                                active_video_codec,
+                            ) {
+                                Session::send_refresh_video(crypto)?;
+                            }
+                            stream_options_fps = target_fps;
+                            stream_options_sent_count += 1;
+                        }
+                    }
                     if let Ok(mut stats) = stream_stats.lock() {
                         stats.video_messages = video_count;
                         stats.video_frames = encoded_subframe_total;
@@ -1181,29 +1536,25 @@ impl RustDeskConnector {
                         );
                     }
 
-                    let video_ack_started = Instant::now();
-                    let video_ack_result = Session::send_video_received(crypto);
-                    let video_ack_elapsed = video_ack_started.elapsed();
-                    if video_ack_elapsed >= SLOW_VIDEO_ACK_WARN {
-                        eprintln!(
-                            "[RustDesk-FFI] video ack slow elapsed_ms={} video={}",
-                            video_ack_elapsed.as_millis(),
-                            video_count,
-                        );
-                    }
-                    if let Err(err) = video_ack_result {
-                        eprintln!(
-                            "[RustDesk-FFI] streaming: video_received ack failed: {}",
-                            err
-                        );
-                    } else {
-                        video_received_ack_count += 1;
-                        if video_received_ack_count <= 3 || video_received_ack_count % 120 == 0 {
+                    if VIDEO_ACK_REQUIRED {
+                        let video_ack_started = Instant::now();
+                        let video_ack_result = Session::send_video_received(crypto);
+                        let video_ack_elapsed = video_ack_started.elapsed();
+                        if video_ack_elapsed >= SLOW_VIDEO_ACK_WARN {
                             eprintln!(
-                                "[RustDesk-FFI] streaming: video_received ack #{} video={}",
-                                video_received_ack_count, video_count
+                                "[RustDesk-FFI] video ack slow elapsed_ms={} video={}",
+                                video_ack_elapsed.as_millis(),
+                                video_count,
                             );
                         }
+                        if let Err(err) = video_ack_result {
+                            eprintln!(
+                                "[RustDesk-FFI] streaming: video_received ack failed: {}, exiting",
+                                err
+                            );
+                            return Err(err);
+                        }
+                        video_received_ack_count += 1;
                     }
                 }
                 Some(Message_oneof_union::audio_frame(ref af)) => {
@@ -1222,21 +1573,23 @@ impl RustDeskConnector {
                 Some(Message_oneof_union::test_delay(test_delay)) => {
                     last_msg_kind = "test_delay";
                     test_delay_echo_count += 1;
+                    let last_delay_ms = test_delay.get_last_delay();
+                    let target_bitrate_kbps = test_delay.get_target_bitrate();
                     if let Ok(mut stats) = stream_stats.lock() {
-                        stats.last_delay_ms = test_delay.get_last_delay();
-                        stats.target_bitrate_kbps = test_delay.get_target_bitrate();
+                        stats.last_delay_ms = last_delay_ms;
+                        stats.target_bitrate_kbps = target_bitrate_kbps;
                         stats.test_delay_count = test_delay_echo_count;
                     }
                     let count = msg_stats.entry("test_delay").or_default();
                     *count += 1;
-                    if test_delay_echo_count <= 3 || test_delay_echo_count % 60 == 0 {
-                        eprintln!(
-                            "[RustDesk-FFI] streaming: echoed test_delay #{} elapsed={}ms video={}",
-                            *count,
-                            Instant::now().duration_since(stream_started).as_millis(),
-                            video_count
-                        );
-                    }
+                    eprintln!(
+                        "[RustDesk-FFI] streaming: test_delay #{} elapsed_ms={} last_delay_ms={} target_bitrate_kbps={} video={}",
+                        *count,
+                        Instant::now().duration_since(stream_started).as_millis(),
+                        last_delay_ms,
+                        target_bitrate_kbps,
+                        video_count
+                    );
 
                     // 服务端依赖 TestDelay 往返来更新视频 QoS；流阶段也必须回包。
                     let mut out = Message::new();
@@ -1403,35 +1756,68 @@ impl RustDeskConnector {
             }
             let now = Instant::now();
             if now.duration_since(window_started) >= Duration::from_secs(1) {
-                if requested_pressure_level != applied_pressure_level {
-                    applied_pressure_level = requested_pressure_level;
+                let (next_applied_pressure_level, next_recovery_windows) =
+                    advance_applied_pressure_level(
+                        preferred_codec,
+                        active_video_codec,
+                        applied_pressure_level,
+                        requested_pressure_level,
+                        vp9_pressure_recovery_windows,
+                        bounded_vp9_pressure,
+                    );
+                vp9_pressure_recovery_windows = next_recovery_windows;
+                if next_applied_pressure_level != applied_pressure_level {
+                    applied_pressure_level = next_applied_pressure_level;
                     current_backpressure_level = applied_pressure_level;
                     consecutive_overload_windows = 0;
                     consecutive_clean_windows = 0;
-                    let fps = pressure_target_fps(
+                    let target_fps = pressure_target_fps(
                         preferred_codec,
                         active_video_codec,
-                        fps,
+                        stream_fps_ceiling,
                         applied_pressure_level,
+                        bounded_vp9_pressure,
                     );
                     eprintln!(
-                        "[RustDesk-FFI] LOCAL PRESSURE level={} fps={} quality={} total_video={}",
-                        applied_pressure_level, fps, image_quality, video_count
-                    );
-                    let _ = Session::send_runtime_options(
-                        crypto,
-                        preferred_codec,
+                        "[RustDesk-FFI] LOCAL PRESSURE level={} fps={} quality={} total_video={} options_changed={}",
+                        applied_pressure_level,
+                        target_fps,
                         image_quality,
-                        privacy_mode,
-                        audio_enabled,
-                        Some(fps),
+                        video_count,
+                        target_fps != stream_options_fps,
                     );
-                    let _ = Session::send_refresh_video(crypto);
+                    if let Some(target_fps) = changed_pressure_target_fps(
+                        preferred_codec,
+                        active_video_codec,
+                        stream_fps_ceiling,
+                        stream_options_fps,
+                        applied_pressure_level,
+                        bounded_vp9_pressure,
+                    ) {
+                        Session::send_runtime_options(
+                            crypto,
+                            preferred_codec,
+                            image_quality,
+                            privacy_mode,
+                            audio_enabled,
+                            Some(target_fps),
+                        )?;
+                        if pressure_change_requires_refresh(preferred_codec, active_video_codec) {
+                            Session::send_refresh_video(crypto)?;
+                        }
+                        stream_options_fps = target_fps;
+                        stream_options_sent_count += 1;
+                    }
                 }
                 // T-131: Backpressure hysteresis — video-only overload detection
                 // Audio frames are NOT a decoder overload signal; they're independent.
                 // Overload = sustained very low video throughput (< 3 fps) for 5+ seconds.
-                let is_overload = requested_pressure_level > 0
+                // Native/session telemetry is the sole hysteresis owner for the
+                // bounded high-resolution VP9 path. Preserve this legacy fallback
+                // exactly for all other codec/resolution combinations.
+                let use_legacy_backpressure = !bounded_vp9_pressure;
+                let is_overload = use_legacy_backpressure
+                    && requested_pressure_level > 0
                     && window_video < OVERLOAD_VIDEO_THRESHOLD
                     && video_count > 20; // only after initial burst (avoid false trigger on connect)
                 if is_overload {
@@ -1442,28 +1828,43 @@ impl RustDeskConnector {
                     {
                         current_backpressure_level += 1;
                         consecutive_overload_windows = 0;
-                        let fps = pressure_target_fps(
+                        let target_fps = pressure_target_fps(
                             preferred_codec,
                             active_video_codec,
-                            fps,
+                            stream_fps_ceiling,
                             current_backpressure_level,
+                            bounded_vp9_pressure,
                         );
                         let quality = image_quality;
                         eprintln!(
                             "[RustDesk-FFI] BACKPRESSURE DEGRADE level={} fps={} quality={} window_video={} total_video={}",
-                            current_backpressure_level, fps, quality, window_video, video_count
+                            current_backpressure_level, target_fps, quality, window_video, video_count
                         );
-                        let _ = Session::send_runtime_options(
-                            crypto,
+                        if let Some(target_fps) = changed_pressure_target_fps(
                             preferred_codec,
-                            quality,
-                            privacy_mode,
-                            audio_enabled,
-                            Some(fps),
-                        );
-                        let _ = Session::send_refresh_video(crypto);
+                            active_video_codec,
+                            stream_fps_ceiling,
+                            stream_options_fps,
+                            current_backpressure_level,
+                            bounded_vp9_pressure,
+                        ) {
+                            Session::send_runtime_options(
+                                crypto,
+                                preferred_codec,
+                                quality,
+                                privacy_mode,
+                                audio_enabled,
+                                Some(target_fps),
+                            )?;
+                            if pressure_change_requires_refresh(preferred_codec, active_video_codec)
+                            {
+                                Session::send_refresh_video(crypto)?;
+                            }
+                            stream_options_fps = target_fps;
+                            stream_options_sent_count += 1;
+                        }
                     }
-                } else {
+                } else if use_legacy_backpressure {
                     consecutive_clean_windows += 1;
                     consecutive_overload_windows = 0;
                     if consecutive_clean_windows >= RECOVER_AFTER_CLEAN_WINDOWS
@@ -1471,25 +1872,37 @@ impl RustDeskConnector {
                     {
                         current_backpressure_level -= 1;
                         consecutive_clean_windows = 0;
-                        let fps = pressure_target_fps(
+                        let target_fps = pressure_target_fps(
                             preferred_codec,
                             active_video_codec,
-                            fps,
+                            stream_fps_ceiling,
                             current_backpressure_level,
+                            bounded_vp9_pressure,
                         );
                         let quality = image_quality;
                         eprintln!(
                             "[RustDesk-FFI] BACKPRESSURE RECOVER level={} fps={} quality={} total_video={}",
-                            current_backpressure_level, fps, quality, video_count
+                            current_backpressure_level, target_fps, quality, video_count
                         );
-                        let _ = Session::send_runtime_options(
-                            crypto,
+                        if let Some(target_fps) = changed_pressure_target_fps(
                             preferred_codec,
-                            quality,
-                            privacy_mode,
-                            audio_enabled,
-                            Some(fps),
-                        );
+                            active_video_codec,
+                            stream_fps_ceiling,
+                            stream_options_fps,
+                            current_backpressure_level,
+                            bounded_vp9_pressure,
+                        ) {
+                            Session::send_runtime_options(
+                                crypto,
+                                preferred_codec,
+                                quality,
+                                privacy_mode,
+                                audio_enabled,
+                                Some(target_fps),
+                            )?;
+                            stream_options_fps = target_fps;
+                            stream_options_sent_count += 1;
+                        }
                     }
                 }
                 let last_video_age_ms =
@@ -1706,16 +2119,29 @@ impl RustDeskConnector {
                     2 => 0x02,
                     _ => 0x01,
                 };
-                let event_type = if pressed { 1 } else { 2 };
-                Self::send_mouse_event_encrypted(crypto, x, y, (button_mask << 3) | event_type)
+                let messages = Self::build_mouse_button_messages(
+                    x,
+                    y,
+                    button_mask,
+                    pressed,
+                    physical_modifiers,
+                );
+                for message in messages {
+                    Self::send_message_encrypted(crypto, &message)?;
+                }
+                Ok(())
             }
             crate::ControlMsg::MouseMove { x, y } => {
-                Self::send_mouse_event_encrypted(crypto, x, y, 0)
+                Self::send_mouse_event_encrypted(crypto, x, y, 0, physical_modifiers)
             }
             crate::ControlMsg::MouseWheel { x, y, delta } => {
                 let _ = (x, y);
                 crate::set_last_error(format!("send mouse wheel delta={}", delta));
-                Self::send_mouse_event_encrypted(crypto, 0, delta, 3)
+                Self::send_mouse_event_encrypted(crypto, 0, delta, 3, physical_modifiers)
+            }
+            crate::ControlMsg::MouseWheel2D { x, y } => {
+                crate::set_last_error(format!("send mouse wheel 2d x={} y={}", x, y));
+                Self::send_mouse_event_encrypted(crypto, x, y, 3, physical_modifiers)
             }
             crate::ControlMsg::Text { text } => Self::send_text_event_encrypted(crypto, &text),
             crate::ControlMsg::ChangeDisplayResolution { display, width, height } => {
@@ -1762,6 +2188,7 @@ impl RustDeskConnector {
             crate::ControlMsg::MouseEvent { .. } => "mouse",
             crate::ControlMsg::MouseMove { .. } => "mouse_move",
             crate::ControlMsg::MouseWheel { .. } => "mouse_wheel",
+            crate::ControlMsg::MouseWheel2D { .. } => "mouse_wheel_2d",
             crate::ControlMsg::Text { .. } => "text",
             crate::ControlMsg::SendFile { .. } => "send_file",
             crate::ControlMsg::Clipboard { .. } => "clipboard",
@@ -2677,18 +3104,64 @@ impl RustDeskConnector {
         Self::send_message_encrypted(crypto, &msg)
     }
 
+    fn build_mouse_message(
+        x: i32,
+        y: i32,
+        mask: i32,
+        physical_modifiers: &PhysicalModifierState,
+    ) -> Message {
+        let mut mouse = MouseEvent::new();
+        mouse.set_x(x);
+        mouse.set_y(y);
+        mouse.set_mask(mask);
+        for modifier in physical_modifiers.active_groups() {
+            mouse.modifiers.push(modifier.into());
+        }
+        let mut msg = Message::new();
+        msg.union = Some(Message_oneof_union::mouse_event(mouse));
+        msg
+    }
+
+    /// RustDesk's macOS server applies a button to the current cursor position
+    /// and ignores coordinates carried by DOWN/UP. Match the official client:
+    /// anchor the cursor immediately before DOWN, then send button messages at
+    /// (0, 0). UP must not inject another MOVE while the button is held because
+    /// macOS interprets that sequence as a drag, even when the coordinates are
+    /// unchanged.
+    fn build_mouse_button_messages(
+        x: i32,
+        y: i32,
+        button_mask: i32,
+        pressed: bool,
+        physical_modifiers: &PhysicalModifierState,
+    ) -> Vec<Message> {
+        let event_type = if pressed { 1 } else { 2 };
+        let mut messages = Vec::with_capacity(if pressed { 2 } else { 1 });
+        if pressed {
+            messages.push(Self::build_mouse_message(
+                x,
+                y,
+                0,
+                physical_modifiers,
+            ));
+        }
+        messages.push(Self::build_mouse_message(
+            0,
+            0,
+            (button_mask << 3) | event_type,
+            physical_modifiers,
+        ));
+        messages
+    }
+
     fn send_mouse_event_encrypted(
         crypto: &mut CryptoChannel,
         x: i32,
         y: i32,
         mask: i32,
+        physical_modifiers: &PhysicalModifierState,
     ) -> io::Result<()> {
-        let mut mouse = MouseEvent::new();
-        mouse.set_x(x);
-        mouse.set_y(y);
-        mouse.set_mask(mask);
-        let mut msg = Message::new();
-        msg.union = Some(Message_oneof_union::mouse_event(mouse));
+        let msg = Self::build_mouse_message(x, y, mask, physical_modifiers);
         Self::send_message_encrypted(crypto, &msg)
     }
 
@@ -3184,9 +3657,12 @@ impl RustDeskConnector {
 #[cfg(test)]
 mod tests {
     use super::{
-        pressure_target_fps, should_refresh_for_video_starvation, ControlKey,
-        KeyEvent_oneof_union, Message_oneof_union, RustDeskConnector,
-        PhysicalModifierState, RemoteKeyboardTransport, RendezvousCredentials,
+        advance_applied_pressure_level, changed_pressure_target_fps,
+        pressure_change_requires_refresh, pressure_target_fps, resolution_aware_fps_ceiling,
+        should_refresh_for_video_starvation, ControlKey, KeyEvent_oneof_union,
+        Message_oneof_union, PhysicalModifierState, RemoteKeyboardTransport,
+        RendezvousCredentials, RustDeskConnector, VP9_PRESSURE_RECOVERY_HOLD_WINDOWS,
+        uses_bounded_vp9_pressure_targets,
     };
     use crate::protocol::message_proto::{
         DisplayInfo, Hash, LoginResponse, Message, Misc_oneof_union, PeerInfo,
@@ -3686,18 +4162,69 @@ mod tests {
     }
 
     #[test]
-    fn vp9_pressure_keeps_the_configured_60fps_target() {
-        for level in 0..=3 {
-            assert_eq!(pressure_target_fps(2, 0, 60, level), 60);
-            assert_eq!(pressure_target_fps(4, 2, 60, level), 60);
-        }
+    fn bounded_vp9_pressure_uses_gradual_targets() {
+        assert_eq!(pressure_target_fps(2, 2, 30, 0, true), 30);
+        assert_eq!(pressure_target_fps(2, 2, 30, 1, true), 26);
+        assert_eq!(pressure_target_fps(4, 2, 30, 2, true), 22);
+        assert_eq!(pressure_target_fps(4, 2, 30, 3, true), 18);
+    }
+
+    #[test]
+    fn high_resolution_vp9_uses_a_stable_thirty_fps_ceiling() {
+        assert_eq!(resolution_aware_fps_ceiling(2, 2940, 1912, 60), 30);
+        assert_eq!(resolution_aware_fps_ceiling(2, 3840, 2160, 25), 25);
+        assert_eq!(resolution_aware_fps_ceiling(2, 2560, 1440, 60), 60);
+        assert_eq!(resolution_aware_fps_ceiling(4, 2940, 1912, 60), 60);
+        assert_eq!(resolution_aware_fps_ceiling(2, 0, 1912, 60), 60);
+        assert!(uses_bounded_vp9_pressure_targets(2, 2940, 1912));
+        assert!(!uses_bounded_vp9_pressure_targets(2, 2560, 1440));
+        assert!(!uses_bounded_vp9_pressure_targets(4, 2940, 1912));
+    }
+
+    #[test]
+    fn file_upload_completion_does_not_require_a_remote_done_echo() {
+        assert!(!super::file_upload_sender_complete(1));
+        assert!(super::file_upload_sender_complete(0));
     }
 
     #[test]
     fn non_vp9_pressure_never_raises_the_configured_target() {
-        assert_eq!(pressure_target_fps(4, 4, 30, 0), 30);
-        assert_eq!(pressure_target_fps(4, 4, 60, 2), 30);
-        assert_eq!(pressure_target_fps(4, 4, 60, 3), 15);
+        assert_eq!(pressure_target_fps(4, 4, 30, 0, false), 30);
+        assert_eq!(pressure_target_fps(4, 4, 60, 2, false), 30);
+        assert_eq!(pressure_target_fps(4, 4, 60, 3, false), 15);
+        assert_eq!(pressure_target_fps(2, 2, 30, 1, false), 30);
+    }
+
+    #[test]
+    fn unchanged_pressure_fps_does_not_reapply_stream_options() {
+        assert_eq!(changed_pressure_target_fps(2, 2, 30, 30, 3, true), Some(18));
+        assert_eq!(changed_pressure_target_fps(2, 2, 30, 18, 3, true), None);
+        assert_eq!(changed_pressure_target_fps(4, 4, 30, 30, 1, false), None);
+        assert_eq!(changed_pressure_target_fps(4, 4, 60, 60, 2, false), Some(30));
+        assert_eq!(changed_pressure_target_fps(4, 4, 60, 15, 0, false), Some(60));
+    }
+
+    #[test]
+    fn pressure_recovery_has_only_one_hysteresis_owner() {
+        assert_eq!(advance_applied_pressure_level(4, 2, 0, 2, 0, true), (2, 0));
+        assert_eq!(advance_applied_pressure_level(4, 2, 3, 0, 7, true), (0, 0));
+
+        let mut level = 2;
+        let mut windows = 0;
+        for _ in 1..VP9_PRESSURE_RECOVERY_HOLD_WINDOWS {
+            (level, windows) = advance_applied_pressure_level(4, 2, level, 0, windows, false);
+            assert_eq!(level, 2);
+        }
+        (level, windows) = advance_applied_pressure_level(4, 2, level, 0, windows, false);
+        assert_eq!((level, windows), (1, 0));
+    }
+
+    #[test]
+    fn pressure_recovery_and_refresh_policy_preserve_hardware_behavior() {
+        assert_eq!(advance_applied_pressure_level(4, 4, 2, 0, 8, false), (0, 0));
+        assert!(pressure_change_requires_refresh(4, 4));
+        assert!(!pressure_change_requires_refresh(2, 0));
+        assert!(!pressure_change_requires_refresh(4, 2));
     }
 
     #[test]
@@ -3753,6 +4280,54 @@ mod tests {
         }
         RustDeskConnector::build_key_message(2076, false, &mut modifiers).unwrap();
         assert!(modifiers.active_groups().is_empty());
+    }
+
+    #[test]
+    fn mouse_button_messages_match_official_macos_focus_semantics() {
+        let mut modifiers = PhysicalModifierState::default();
+        modifiers.update(2076, true);
+
+        let down = RustDeskConnector::build_mouse_button_messages(
+            2184,
+            1806,
+            0x01,
+            true,
+            &modifiers,
+        );
+        assert_eq!(down.len(), 2);
+        let down_move = match &down[0].union {
+            Some(Message_oneof_union::mouse_event(mouse)) => mouse,
+            _ => panic!("mouse down must begin with a move"),
+        };
+        assert_eq!((down_move.x, down_move.y, down_move.mask), (2184, 1806, 0));
+        assert!(down_move
+            .modifiers
+            .iter()
+            .any(|modifier| *modifier == ControlKey::Meta));
+
+        let down_button = match &down[1].union {
+            Some(Message_oneof_union::mouse_event(mouse)) => mouse,
+            _ => panic!("mouse down must end with a button event"),
+        };
+        assert_eq!((down_button.x, down_button.y, down_button.mask), (0, 0, 9));
+        assert!(down_button
+            .modifiers
+            .iter()
+            .any(|modifier| *modifier == ControlKey::Meta));
+
+        let up = RustDeskConnector::build_mouse_button_messages(
+            2184,
+            1806,
+            0x01,
+            false,
+            &modifiers,
+        );
+        assert_eq!(up.len(), 1);
+        let up_button = match &up[0].union {
+            Some(Message_oneof_union::mouse_event(mouse)) => mouse,
+            _ => panic!("mouse up must contain only a button event"),
+        };
+        assert_eq!((up_button.x, up_button.y, up_button.mask), (0, 0, 10));
     }
 
     #[test]
@@ -4059,6 +4634,54 @@ mod tests {
         RustDeskConnector::new()
             .connect_direct("127.0.0.1", port, "peer-123", "", 0, 1, false, false, 30)
             .expect("official direct login should accept a plain Hash challenge");
+        accept_thread.join().expect("accept thread panicked");
+    }
+
+    #[test]
+    fn direct_file_transfer_uses_plain_login_with_file_transfer_mode() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener bind failed");
+        let port = listener
+            .local_addr()
+            .expect("listener address missing")
+            .port();
+        let accept_thread = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("direct file connection missing");
+            let mut hash = Hash::new();
+            hash.set_salt("salt".to_string());
+            hash.set_challenge("challenge".to_string());
+            let mut challenge = Message::new();
+            challenge.union = Some(Message_oneof_union::hash(hash));
+            wire::write_frame(&mut stream, &challenge.write_to_bytes().unwrap()).unwrap();
+
+            let login_payload = wire::read_frame(&mut stream).unwrap();
+            let login: Message = protobuf::parse_from_bytes(&login_payload).unwrap();
+            match login.union {
+                Some(Message_oneof_union::login_request(request)) => {
+                    assert_eq!(request.get_username(), "127.0.0.1");
+                    assert!(request.has_file_transfer());
+                    assert_eq!(
+                        request.get_file_transfer().get_dir(),
+                        r"C:\Users\Public\Documents"
+                    );
+                    assert!(!request.get_file_transfer().get_show_hidden());
+                }
+                other => panic!("expected file-transfer LoginRequest, got: {:?}", other),
+            }
+
+            let response = LoginResponse::new();
+            let mut response_message = Message::new();
+            response_message.union = Some(Message_oneof_union::login_response(response));
+            wire::write_frame(&mut stream, &response_message.write_to_bytes().unwrap()).unwrap();
+        });
+
+        RustDeskConnector::new()
+            .connect_file_transfer_direct(
+                "127.0.0.1",
+                port,
+                "",
+                r"C:\Users\Public\Documents",
+            )
+            .expect("direct file transfer should use the peer login protocol");
         accept_thread.join().expect("accept thread panicked");
     }
 }

@@ -118,7 +118,7 @@ export struct SshKeyInstallSheet {
         this.step = 2;
         this.verifying = true;
 
-        const testResult: SshAuthTestResult = this.loader.testSshKeyAuth(
+        const testResult: SshAuthTestResult = await this.loader.testSshKeyAuthAsync(
           host.host, host.port, host.username,
           this.targetKey.privateKey, ''
         );

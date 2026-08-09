@@ -4,7 +4,9 @@ import {
   cancelTransfer,
   downloadResumeOffset,
   isRemoteCompletionConfirmed,
+  pauseTransfer,
   recordConfirmedUploadWrite,
+  resumeTransfer,
   shouldShowTransferCancelAction,
   transferProgressPanelHeight,
   TransferSession,
@@ -31,7 +33,7 @@ export default function transferSessionPolicyTest(): void {
       expect(canTransition('completed', 'transferring')).assertFalse();
     });
 
-    it('cancels_a_cancellable_transferring_session', 0, (): void => {
+  it('cancels_a_cancellable_transferring_session', 0, (): void => {
       const session: TransferSession = {
         id: 'ssh-upload-1', protocol: 'ssh', direction: 'upload', fileName: 'report.txt',
         totalBytes: 1024, transferredBytes: 512, stage: 'transferring', canCancel: true,
@@ -42,6 +44,31 @@ export default function transferSessionPolicyTest(): void {
       expect(cancelled.canCancel).assertFalse();
     });
 
+    it('pauses_and_resumes_a_cancellable_transfer', 0, (): void => {
+      const session: TransferSession = {
+        id: 'ssh-upload-pause', protocol: 'ssh', direction: 'upload', fileName: 'report.txt',
+        totalBytes: 1024, transferredBytes: 512, stage: 'transferring', canCancel: true,
+        diagnosticCode: ''
+      };
+      const paused: TransferSession = pauseTransfer(session);
+      expect(paused.stage).assertEqual('paused');
+      expect(paused.canCancel).assertTrue();
+      const resumed: TransferSession = resumeTransfer(paused);
+      expect(resumed.stage).assertEqual('transferring');
+      expect(resumed.transferredBytes).assertEqual(512);
+    });
+
+    it('allows_a_waiting_transfer_to_resume_after_connection_returns', 0, (): void => {
+      const session: TransferSession = {
+        id: 'ssh-download-waiting', protocol: 'ssh', direction: 'download', fileName: 'report.txt',
+        totalBytes: 1024, transferredBytes: 512, stage: 'waitingRemote', canCancel: true,
+        diagnosticCode: 'waiting-for-connection'
+      };
+      const resumed: TransferSession = resumeTransfer(session);
+      expect(resumed.stage).assertEqual('transferring');
+      expect(resumed.transferredBytes).assertEqual(512);
+    });
+
     it('reserves_visible_space_for_cancellable_transfer_actions', 0, (): void => {
       const session: TransferSession = {
         id: 'ssh-upload-2', protocol: 'ssh', direction: 'upload', fileName: 'archive.zip',
@@ -49,6 +76,12 @@ export default function transferSessionPolicyTest(): void {
         diagnosticCode: ''
       };
       expect(transferProgressPanelHeight(session)).assertEqual(116);
+      const waiting: TransferSession = {
+        id: 'ssh-upload-waiting', protocol: 'ssh', direction: 'upload', fileName: 'archive.zip',
+        totalBytes: 1024, transferredBytes: 512, stage: 'waitingRemote', canCancel: true,
+        diagnosticCode: 'waiting-for-connection'
+      };
+      expect(transferProgressPanelHeight(waiting)).assertEqual(116);
       expect(transferProgressPanelHeight(null)).assertEqual(70);
     });
 
@@ -59,6 +92,12 @@ export default function transferSessionPolicyTest(): void {
         diagnosticCode: ''
       };
       expect(shouldShowTransferCancelAction(session)).assertTrue();
+      const waiting: TransferSession = {
+        id: 'ssh-upload-waiting-action', protocol: 'ssh', direction: 'upload', fileName: 'backup.zip',
+        totalBytes: 1024, transferredBytes: 512, stage: 'waitingRemote', canCancel: true,
+        diagnosticCode: 'waiting-for-connection'
+      };
+      expect(shouldShowTransferCancelAction(waiting)).assertTrue();
       expect(shouldShowTransferCancelAction(null)).assertFalse();
     });
 

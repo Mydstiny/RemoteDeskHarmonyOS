@@ -2115,7 +2115,7 @@ export default function cloudDataWiringTest():
           .assertFalse();
       });
 
-    it('routes_committed_authoritative_checkpoint_into_startup_recovery_wiring',
+    it('retires_legacy_vnc_scope_checkpoint_without_blocking_account_startup',
       0, async (): Promise<void> => {
         const successMetadata =
           new MetadataMapQueryPort();
@@ -2148,7 +2148,7 @@ export default function cloudDataWiringTest():
           .assertTrue();
         expect(recoveryIo
           .recoveredStage)
-          .assertEqual('authoritative');
+          .assertEqual('');
         expect(recoveryIo
           .recoveredCallback)
           .assertTrue();
@@ -2156,22 +2156,22 @@ export default function cloudDataWiringTest():
           .checkpointPresent())
           .assertFalse();
         expect(recoveryIo
-          .stagedScopes.join(','))
-          .assertEqual('settings');
+          .stagedScopes.length)
+          .assertEqual(0);
         expect(recoveryIo.events.join(','))
           .assertEqual(
-            'metadata,restore,scopes:stage,' +
-            'scopes:persist,begin,lifecycle,' +
-            'barrier:vncrecord,delete:' +
+            'begin,barrier:vncrecordv2,delete:' +
             VNC_SELECTION_REENABLE_TRANSACTION_KEY +
-            ',commit,publish,recovered');
+            ',delete:cloud_bootstrap_completed_v1,' +
+            'commit,lifecycle,publish,recovered');
         expect(recoveryIo
           .recoveryRequired)
           .assertFalse();
 
         const failures:
           RecoveryFault[] = [
-          'restore', 'delete', 'commit'
+          'begin', 'barrier', 'delete',
+          'commit', 'lifecycle'
         ];
         for (let i = 0;
           i < failures.length; i++) {
@@ -2201,10 +2201,11 @@ export default function cloudDataWiringTest():
                 failedIo);
           await failedStartup.init(null);
           expect(failedStartup.isReady())
-            .assertFalse();
+            .assertTrue();
           expect(failedIo
             .checkpointPresent())
-            .assertTrue();
+            .assertEqual(
+              failures[i] !== 'lifecycle');
           expect(failedIo
             .recoveryRequired)
             .assertTrue();

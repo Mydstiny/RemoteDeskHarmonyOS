@@ -7,8 +7,10 @@ export type RemoteTopBarMenuId = 'control' | 'display' | 'keyboardMouse' | 'chat
 export interface RemoteTopBarContext {
   protocol: string;
   isDesktopDevice: boolean;
+  isPadDevice: boolean;
   breakpoint: string;
   rustdeskControlMode: number;
+  physicalKeyboardMouseConnected: boolean;
 }
 
 export interface RemoteTopBarLayout {
@@ -30,7 +32,7 @@ const RUSTDESK_DISABLED_REASONS: Record<string, string> = {
   'textChat': '文字聊天需要 RustDesk 会话消息通道接入后启用',
   'voiceCall': '语音通话需要 RustDesk 音频输入和通话信令接入后启用',
   'recordSession': '录制需要本地录屏/编码保存链路接入后启用',
-  'resolutionSettings': '分辨率切换需要 RustDesk 显示枚举和 resize 协议接入后启用',
+  'resolutionSettings': '远端显示器能力尚未同步完成',
   'virtualDisplay': '虚拟显示器需要 RustDesk 虚拟显示控制协议接入后启用',
   'remoteCamera': '查看摄像头需要 RustDesk 摄像头流接入后启用',
   'terminal': '终端需要 RustDesk 远程 shell 能力接入后启用',
@@ -41,11 +43,12 @@ const RUSTDESK_DISABLED_REASONS: Record<string, string> = {
   'restartRemote': '重启远程电脑需要远端系统命令协议接入后启用'
 };
 
-export function remoteTopBarDeviceClass(isDesktopDevice: boolean, breakpoint: string): RemoteTopBarDeviceClass {
+export function remoteTopBarDeviceClass(isDesktopDevice: boolean, _breakpoint: string,
+  isPadDevice: boolean): RemoteTopBarDeviceClass {
   if (isDesktopDevice) {
     return 'pc';
   }
-  if (breakpoint === 'md' || breakpoint === 'lg' || breakpoint === 'xl') {
+  if (isPadDevice) {
     return 'pad';
   }
   return 'phone';
@@ -54,8 +57,10 @@ export function remoteTopBarDeviceClass(isDesktopDevice: boolean, breakpoint: st
 export function shouldShowRustDeskTopBar(
   protocol: string,
   isDesktopDevice: boolean,
-  _breakpoint: string,
-  rustdeskControlMode: number
+  breakpoint: string,
+  rustdeskControlMode: number,
+  physicalKeyboardMouseConnected: boolean,
+  isPadDevice: boolean
 ): boolean {
   if (protocol !== 'rustdesk') {
     return false;
@@ -63,11 +68,37 @@ export function shouldShowRustDeskTopBar(
   if (isDesktopDevice) {
     return true;
   }
-  return rustdeskControlMode === 2;
+  const deviceClass: RemoteTopBarDeviceClass = remoteTopBarDeviceClass(isDesktopDevice, breakpoint, isPadDevice);
+  if (deviceClass === 'pad') {
+    return true;
+  }
+  // On a phone the rail is only useful when the session is in keyboard/mouse
+  // mode and a real external input device is present. Touch and virtual
+  // touchpad sessions must leave the remote canvas unobstructed.
+  return rustdeskControlMode === 2 && physicalKeyboardMouseConnected;
 }
 
-export function remoteTopBarLayout(isDesktopDevice: boolean, breakpoint: string): RemoteTopBarLayout {
-  const deviceClass: RemoteTopBarDeviceClass = remoteTopBarDeviceClass(isDesktopDevice, breakpoint);
+/**
+ * Keep Pad pointing modes on the same right-side rail so switching between
+ * virtual touchpad and physical keyboard/mouse does not move session controls
+ * across the remote canvas. Phones retain the compact rail only for physical
+ * keyboard/mouse mode, where the top system-bar edge is most constrained.
+ */
+export function shouldUseRustDeskEdgeRail(protocol: string, isDesktopDevice: boolean,
+  breakpoint: string, rustdeskControlMode: number, isPadDevice: boolean): boolean {
+  if (protocol !== 'rustdesk' || isDesktopDevice) {
+    return false;
+  }
+  const deviceClass: RemoteTopBarDeviceClass = remoteTopBarDeviceClass(isDesktopDevice, breakpoint, isPadDevice);
+  if (deviceClass === 'pad') {
+    return rustdeskControlMode === 0 || rustdeskControlMode === 2;
+  }
+  return deviceClass === 'phone' && rustdeskControlMode === 2;
+}
+
+export function remoteTopBarLayout(isDesktopDevice: boolean, breakpoint: string,
+  isPadDevice: boolean): RemoteTopBarLayout {
+  const deviceClass: RemoteTopBarDeviceClass = remoteTopBarDeviceClass(isDesktopDevice, breakpoint, isPadDevice);
   if (deviceClass === 'pc') {
     return { deviceClass, iconSize: 44, itemGap: 8, topOffset: 8, maxVisibleButtons: 7, menuWidth: 360 };
   }
@@ -79,7 +110,8 @@ export function remoteTopBarLayout(isDesktopDevice: boolean, breakpoint: string)
 
 function knownRustDeskCapabilities(): RemoteSessionCapabilities {
   return resolveSessionCapabilities({
-    protocol: 'rustdesk', connected: true, rdpDriveMounted: false, rdpClipboardReady: false, sftpConnected: false,
+    protocol: 'rustdesk', connected: true, rdpDriveMounted: false, rdpClipboardEnabled: true,
+    rdpClipboardReady: false, sftpConnected: false,
     rustDeskVerifiedPeer: true, rustDeskInboundClipboard: true, rustDeskTransferConfirmed: true,
     vncClipboardEnabled: false, vncClipboardReady: false, vncViewOnly: true
   });
@@ -98,6 +130,9 @@ export function rustDeskActionAvailability(actionId: string,
     actionId === 'keyboardMouseSettings' || actionId === 'browseMode' ||
     actionId === 'togglePrivacyMode' || actionId === 'toggleAudio') {
     return capabilities.connect;
+  }
+  if (actionId === 'resolutionSettings') {
+    return capabilities.multiDisplay;
   }
   const reason: string = RUSTDESK_DISABLED_REASONS[actionId] ?? '当前版本尚未接入该 RustDesk 官方能力';
   return { enabled: false, reason };

@@ -9,6 +9,9 @@ RDP_TEST_CASE(transfer_runtime_status_reports_rdp_mount_only_after_success) {
 
     status.markRdpDriveMounted();
     RDP_ASSERT(status.snapshot().rdpDriveMounted);
+
+    status.reset();
+    RDP_ASSERT(!status.snapshot().rdpDriveMounted);
 }
 
 RDP_TEST_CASE(transfer_runtime_status_tracks_rustdesk_progress_and_terminal_results) {

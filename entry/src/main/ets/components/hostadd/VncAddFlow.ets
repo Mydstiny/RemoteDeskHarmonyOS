@@ -19,6 +19,7 @@ import {
 } from '../../services/VncModelPolicy';
 import { VncSettingsService } from '../../services/VncSettingsService';
 import { VncGatewayView } from '../../services/VncGatewayService';
+import { resolveVncHostDefaults, VncSelectableGateway } from '../../services/VncHostDefaultsPolicy';
 import { VncHostView } from '../../services/VncHostService';
 import { vncGatewayAvailability } from '../../services/VncGatewayProtocolPolicy';
 import { protocolIcon } from '../../services/ProtocolIconPolicy';
@@ -69,8 +70,17 @@ export struct VncAddFlow {
 
   aboutToAppear(): void {
     const defaults = this.settings.get();
-    this.portText = defaults.defaultPort.toString();
-    this.repeaterMode = defaults.repeaterMode;
+    const selectableGateways: VncSelectableGateway[] = this.gateways.map(
+      (gateway: VncGatewayView): VncSelectableGateway => ({
+        id: gateway.id, userId: gateway.userId, transport: gateway.transport,
+        repeaterMode: gateway.repeaterMode, enabled: gateway.enabled
+      }));
+    const scopeUserId: string = this.gateways.length > 0 ? this.gateways[0].userId : '';
+    const resolved = resolveVncHostDefaults(defaults, scopeUserId, selectableGateways);
+    this.transport = resolved.transport;
+    this.gatewayId = resolved.gatewayId;
+    this.portText = resolved.port.toString();
+    this.repeaterMode = resolved.repeaterMode;
     this.viewOnly = defaults.viewOnly;
     this.displayOverrideEnabled = false;
     this.scalingMode = defaults.scalingMode;
@@ -78,6 +88,15 @@ export struct VncAddFlow {
     this.securityPolicy = defaults.securityPolicy;
     this.tls = defaults.securityPolicy === 'secure_only';
     this.passwordConfigured = false;
+    if (this.transport === 'ultravnc_repeater') {
+      const gateway: VncGatewayView | undefined = this.selectedGateway();
+      if (gateway !== undefined) {
+        this.portText = gateway.port.toString();
+        if (this.repeaterTargetId.trim() === '' && gateway.targetId.trim() !== '') {
+          this.repeaterTargetId = gateway.targetId;
+        }
+      }
+    }
     const host: VncHostView | null = this.initialHost;
     if (host !== null) {
       this.label = host.label;

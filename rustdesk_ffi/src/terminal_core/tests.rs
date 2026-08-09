@@ -1,9 +1,13 @@
 use super::cell::{DEFAULT_BG, DEFAULT_FG};
+#[cfg(feature = "alacritty_terminal")]
+use super::ffi::terminal_core_set_default_foreground;
 use super::ffi::{
     terminal_core_create, terminal_core_destroy, terminal_core_free_snapshot,
     terminal_core_snapshot, terminal_core_write,
 };
 use super::Terminal;
+#[cfg(feature = "alacritty_terminal")]
+use super::{AlacrittyTerminal, AlacrittyTerminalConfig};
 
 fn screen_text(term: &Terminal) -> Vec<String> {
     let snap = term.snapshot();
@@ -313,7 +317,13 @@ fn resize_taller_restores_scrollback_above_bottom_cursor() {
     assert_eq!(after.screen_top, 0);
     assert_eq!(after.view_top, 0);
     assert_eq!(after.cursor_y, 4);
-    assert_eq!(screen_text(&term).iter().map(|row| &row[..1]).collect::<Vec<_>>(), vec!["1", "2", "3", "4", "5"]);
+    assert_eq!(
+        screen_text(&term)
+            .iter()
+            .map(|row| &row[..1])
+            .collect::<Vec<_>>(),
+        vec!["1", "2", "3", "4", "5"]
+    );
 }
 
 #[test]
@@ -325,13 +335,25 @@ fn resize_shorter_then_taller_preserves_content_and_absolute_cursor() {
     let short = term.snapshot();
     assert_eq!(short.screen_top, 2);
     assert_eq!(short.cursor_y, 2);
-    assert_eq!(screen_text(&term).iter().map(|row| &row[..1]).collect::<Vec<_>>(), vec!["3", "4", "5"]);
+    assert_eq!(
+        screen_text(&term)
+            .iter()
+            .map(|row| &row[..1])
+            .collect::<Vec<_>>(),
+        vec!["3", "4", "5"]
+    );
 
     term.resize(8, 5);
     let tall = term.snapshot();
     assert_eq!(tall.screen_top, 0);
     assert_eq!(tall.cursor_y, 4);
-    assert_eq!(screen_text(&term).iter().map(|row| &row[..1]).collect::<Vec<_>>(), vec!["1", "2", "3", "4", "5"]);
+    assert_eq!(
+        screen_text(&term)
+            .iter()
+            .map(|row| &row[..1])
+            .collect::<Vec<_>>(),
+        vec!["1", "2", "3", "4", "5"]
+    );
 }
 
 #[test]
@@ -484,6 +506,24 @@ fn ffi_snapshot_roundtrip_exposes_cells_and_metadata() {
     }
 }
 
+#[cfg(feature = "alacritty_terminal")]
+#[test]
+fn ffi_foreground_setting_reaches_the_active_alacritty_core() {
+    unsafe {
+        let handle = terminal_core_create(8, 2);
+        assert!(!handle.is_null());
+
+        terminal_core_write(handle, b"N".as_ptr(), 1);
+        terminal_core_set_default_foreground(handle, 0xFF11_2233);
+        let snapshot = terminal_core_snapshot(handle);
+        assert!(!snapshot.is_null());
+        assert_eq!((*snapshot).cells_ptr.read().fg, 0xFF11_2233);
+
+        terminal_core_free_snapshot(snapshot);
+        terminal_core_destroy(handle);
+    }
+}
+
 // ── 备用屏 (Alternate Screen) ──────────────────────────────────────────
 
 #[test]
@@ -607,7 +647,13 @@ fn resize_in_alt_screen_reflows_saved_main_view_without_alt_content() {
     assert_eq!(restored.screen_top, 0);
     assert_eq!(restored.view_top, 0);
     assert_eq!(restored.cursor_y, 4);
-    assert_eq!(screen_text(&term).iter().map(|row| &row[..1]).collect::<Vec<_>>(), vec!["1", "2", "3", "4", "5"]);
+    assert_eq!(
+        screen_text(&term)
+            .iter()
+            .map(|row| &row[..1])
+            .collect::<Vec<_>>(),
+        vec!["1", "2", "3", "4", "5"]
+    );
 }
 
 // ── 光标保存/恢复 ──────────────────────────────────────────────────────
@@ -917,4 +963,127 @@ fn reverse_index_moves_cursor_up() {
     // 反向索引 (ESC M)
     term.write(b"\x1bM");
     assert_eq!(term.snapshot().cursor_y, 1);
+}
+
+#[cfg(feature = "alacritty_terminal")]
+fn assert_snapshot_parity(
+    label: &str,
+    legacy: &super::TerminalSnapshot,
+    alacritty: &super::TerminalSnapshot,
+) {
+    assert_eq!(
+        (legacy.cols, legacy.rows),
+        (alacritty.cols, alacritty.rows),
+        "{label}: geometry"
+    );
+    assert_eq!(
+        (legacy.cursor_x, legacy.cursor_y, legacy.cursor_visible),
+        (
+            alacritty.cursor_x,
+            alacritty.cursor_y,
+            alacritty.cursor_visible
+        ),
+        "{label}: cursor"
+    );
+    assert_eq!(
+        (
+            legacy.bracketed_paste,
+            legacy.mouse_tracking,
+            legacy.sgr_mouse,
+            legacy.application_cursor_keys,
+            legacy.application_keypad,
+            legacy.auto_wrap,
+        ),
+        (
+            alacritty.bracketed_paste,
+            alacritty.mouse_tracking,
+            alacritty.sgr_mouse,
+            alacritty.application_cursor_keys,
+            alacritty.application_keypad,
+            alacritty.auto_wrap,
+        ),
+        "{label}: modes"
+    );
+    assert_eq!(legacy.cells, alacritty.cells, "{label}: visible cells");
+}
+
+#[cfg(feature = "alacritty_terminal")]
+#[test]
+fn alacritty_matches_legacy_for_unicode_and_ansi_fixture() {
+    let fixture =
+        b"\x1b[2J\x1b[Hshell: \xe4\xb8\xad\xe6\x96\x87 \xf0\x9f\x9a\x80\x1b[1;38;5;45mOK\x1b[0m";
+    let mut legacy = Terminal::new(24, 4);
+    let mut alacritty = AlacrittyTerminal::new(24, 4, AlacrittyTerminalConfig::default());
+
+    legacy.write(fixture);
+    alacritty.write(fixture);
+
+    assert_snapshot_parity("unicode-ansi", &legacy.snapshot(), &alacritty.snapshot());
+}
+
+#[cfg(feature = "alacritty_terminal")]
+#[test]
+fn alacritty_matches_legacy_for_tui_modes_and_alternate_screen() {
+    let fixture =
+        b"\x1b[?1049h\x1b[2J\x1b[H\x1b[1;32mTUI\x1b[0m\x1b[?25l\x1b[?1;1002;1006;2004h\x1b=";
+    let mut legacy = Terminal::new(20, 5);
+    let mut alacritty = AlacrittyTerminal::new(20, 5, AlacrittyTerminalConfig::default());
+
+    legacy.write(fixture);
+    alacritty.write(fixture);
+
+    assert_snapshot_parity("tui-alt", &legacy.snapshot(), &alacritty.snapshot());
+
+    legacy.write(b"\x1b[?1049l\x1b>");
+    alacritty.write(b"\x1b[?1049l\x1b>");
+    assert_snapshot_parity("tui-restore", &legacy.snapshot(), &alacritty.snapshot());
+}
+
+#[cfg(feature = "alacritty_terminal")]
+#[test]
+fn alacritty_matches_legacy_after_resize_and_large_output() {
+    let mut legacy = Terminal::new(32, 4);
+    let mut alacritty = AlacrittyTerminal::new(32, 4, AlacrittyTerminalConfig::default());
+    for index in 0..1024 {
+        let line = format!("line-{index:04}\r\n");
+        legacy.write(line.as_bytes());
+        alacritty.write(line.as_bytes());
+    }
+
+    legacy.resize(48, 6);
+    alacritty.resize(48, 6);
+    assert_snapshot_parity("large-resize", &legacy.snapshot(), &alacritty.snapshot());
+    assert!(legacy.snapshot().screen_top > 0);
+    assert!(alacritty.snapshot().screen_top > 0);
+}
+
+#[cfg(feature = "alacritty_terminal")]
+#[test]
+fn alacritty_damage_rows_match_legacy_for_a_single_line_update() {
+    let mut legacy = Terminal::new(16, 4);
+    let mut alacritty = AlacrittyTerminal::new(16, 4, AlacrittyTerminalConfig::default());
+    legacy.dirty_snapshot();
+    alacritty.dirty_snapshot();
+
+    legacy.write(b"changed");
+    alacritty.write(b"changed");
+    let legacy_dirty = legacy.dirty_snapshot();
+    let alacritty_dirty = alacritty.dirty_snapshot();
+
+    assert_eq!(
+        legacy_dirty.cells, alacritty_dirty.cells,
+        "damage: visible cells"
+    );
+    assert!(!legacy_dirty.dirty_rows.is_empty());
+    assert!(!alacritty_dirty.dirty_rows.is_empty());
+    assert!(legacy_dirty
+        .dirty_rows
+        .iter()
+        .all(|row| *row < legacy_dirty.rows));
+    assert!(alacritty_dirty
+        .dirty_rows
+        .iter()
+        .all(|row| *row < alacritty_dirty.rows));
+    assert!(legacy_dirty.dirty_rows.contains(&0));
+    assert!(alacritty_dirty.dirty_rows.contains(&0));
 }

@@ -8,6 +8,8 @@ import {
 } from './VncModelPolicy';
 import { VncCloudSyncService } from './VncCloudSyncService';
 import { VncSecretLoadResult, VncSecretSaveResult, VncSecretService } from './VncSecretService';
+import { VncTrustService } from './VncTrustService';
+import { vncHostTrustEndpointChanged } from './VncTrustInvalidationPolicy';
 
 export interface VncHostView extends VncHostValues {
   id: string;
@@ -29,6 +31,7 @@ export class VncHostService {
   private static instance: VncHostService;
   private readonly cloud: CloudStore = CloudStore.getInstance();
   private readonly secrets: VncSecretService = VncSecretService.getInstance();
+  private readonly trust: VncTrustService = VncTrustService.getInstance();
   private userId: string = 'device-local';
   private initialized: boolean = false;
   private listenerBound: boolean = false;
@@ -112,6 +115,20 @@ export class VncHostService {
       return result;
     }
     result.id = record.id;
+    if (current !== null && vncHostTrustEndpointChanged(current, values)) {
+      // Invalidate before touching the password so a failed marker write can
+      // roll the configuration back without a second secret mutation.
+      const invalidation = this.trust.invalidateOwner('host', record.id);
+      if (!invalidation.ok) {
+        const rolledBack: boolean = currentRecord === null
+          ? this.cloud.discardVncRecordAfterFailedCreate(record.userId, record.id)
+          : this.cloud.upsertVncRecord(currentRecord);
+        result.message = rolledBack
+          ? invalidation.message + '；主机配置已回滚'
+          : invalidation.message + '；主机配置回滚失败，请检查 VNC 数据状态';
+        return result;
+      }
+    }
     const existingSecret: boolean = currentRecord !== null &&
       this.secrets.has(record.userId, record.id, 'vnc_password');
     if (password.length > 0 && values.rememberPassword) {
@@ -142,8 +159,14 @@ export class VncHostService {
   }
 
   remove(id: string): boolean {
+    const previousRecord: VncRecord | null = this.findActiveRecord(id);
     const removed: boolean = this.cloud.deleteVncRecord(this.getUserId(), id);
     if (removed) {
+      const invalidation = this.trust.invalidateOwner('host', id);
+      if (!invalidation.ok) {
+        if (previousRecord !== null) { this.cloud.upsertVncRecord(previousRecord); }
+        return false;
+      }
       this.secrets.remove(this.getUserId(), id, 'vnc_password');
       this.emitChange();
     }

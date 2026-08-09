@@ -15,8 +15,71 @@ source and license files before redistribution.
 | Opus | built by `scripts/build_opus_ohos.sh` | BSD-3-Clause | RustDesk audio decode |
 | zlib | platform/API 23 system library; see `docs/compliance/ZLIB_SYSTEM_PROVENANCE.md` | Zlib | VNC ZRLE and FreeRDP compression |
 | Rust crates | versions locked in `rustdesk_ffi/Cargo.lock` | per-crate, recorded in SBOM | RustDesk bridge and terminal support |
+| Alacritty terminal | `alacritty_terminal` `0.26.0`; crates.io registry; transitive crates are listed individually in the SBOM | Apache-2.0; per-crate licenses for transitives | Rust VT/ANSI terminal state machine |
 | `@hw-agconnect/auth` | `entry/oh-package.json5` / lockfile | Huawei package terms | authentication/cloud integration |
 | Hypium / Hamock | root package lock | OpenHarmony package terms | tests only |
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<!-- TOTP_BRAND_NOTICE_BEGIN -->
+| Simple Icons TOTP brand batch | `simple-icons@16.21.0`; https://github.com/simple-icons/simple-icons/tree/16.21.0 | CC0-1.0 | 251 local community glyphs under `entry/src/main/resources/rawfile/totp-brands/`; per-asset source, revision, SHA-256 and trademark guidance are authoritative in `entry/src/main/resources/rawfile/totp_brand_manifest.json`; these community glyphs are not asserted to be official logos. 67 exact login domains and 279 reviewed issuer aliases are recorded separately; unproven domains remain empty. |
+| TOTP reviewed supplier/logo overrides | Reviewed local assets listed in `officialOverrides` within `totp_brand_manifest.json`; per-asset source, SHA-256 and trademark guidance are authoritative there | 29 reviewed override assets; catalog vectors are labeled separately from official assets; use is limited to supplier identification and remains subject to each brand's trademark rules. |
+<!-- TOTP_BRAND_NOTICE_END -->
 
 Artifact hashes are generated in `docs/compliance/THIRD_PARTY_ARTIFACTS.sha256`.
 A component with an unknown source, license, or hash is a release blocker.

@@ -425,12 +425,13 @@ function _hmacSha512(key: Uint8Array, message: Uint8Array): Uint8Array {
 
 function _generateCode(
   secretBase32: string, algorithm: TotpAlgorithm,
-  digits: number, period: number): TotpCode {
+  digits: number, period: number, nowMs: number = Date.now()): TotpCode {
 
-  const now: number = Math.floor(Date.now() / 1000);
+  const now: number = Math.max(0, Math.floor(nowMs / 1000));
   const counterVal: number = Math.floor(now / period);
   const remaining: number = period - (now % period);
   const progress: number = 1.0 - (remaining / period);
+  const validUntilMs: number = (counterVal + 1) * period * 1000;
 
   const keyBytes: Uint8Array = decodeBase32(secretBase32);
 
@@ -464,7 +465,8 @@ function _generateCode(
   const codeNum: number = binary % modVal;
 
   return { code: codeNum.toString().padStart(digits, '0'), remaining: remaining,
-    total: period, progress: progress };
+    total: period, progress: progress, counter: counterVal,
+    validUntilMs: validUntilMs, valid: validUntilMs > nowMs };
 }
 
 // ==================== 公开 API ====================
@@ -472,6 +474,11 @@ function _generateCode(
 export class TotpEngine {
   static generateCode(entry: TotpEntry): TotpCode {
     return _generateCode(entry.secret, entry.algorithm, entry.digits, entry.period);
+  }
+
+  /** Deterministic runtime-only generation for safe-window and boundary policy. */
+  static generateCodeAt(entry: TotpEntry, nowMs: number): TotpCode {
+    return _generateCode(entry.secret, entry.algorithm, entry.digits, entry.period, nowMs);
   }
 
   static decodeBase32(input: string): Uint8Array {

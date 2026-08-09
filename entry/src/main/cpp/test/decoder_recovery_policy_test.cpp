@@ -15,3 +15,17 @@ RDP_TEST_CASE(decoder_recovery_waits_for_keyframe_before_recreate) {
     RDP_ASSERT(!Render::ShouldDecodeFrameTriggerRecovery(true, false));
     RDP_ASSERT(!Render::ShouldDecodeFrameTriggerRecovery(false, true));
 }
+
+RDP_TEST_CASE(decoder_recovery_coalesces_and_bounds_surface_failures) {
+    RDP_ASSERT(Render::ShouldArmDecoderRecovery(false, false));
+    RDP_ASSERT(!Render::ShouldArmDecoderRecovery(true, false));
+    RDP_ASSERT(!Render::ShouldArmDecoderRecovery(false, true));
+    RDP_ASSERT(Render::CanStartDecoderRecovery(0, false));
+    RDP_ASSERT(Render::CanStartDecoderRecovery(1, false));
+    RDP_ASSERT(!Render::CanStartDecoderRecovery(
+        Render::kMaxDecoderRecoveryAttemptsPerBinding, false));
+    RDP_ASSERT(!Render::CanStartDecoderRecovery(0, true));
+    RDP_ASSERT(!Render::ShouldEnterTerminalDecoderRecovery(true, 1));
+    RDP_ASSERT(Render::ShouldEnterTerminalDecoderRecovery(true, 2));
+    RDP_ASSERT(Render::ShouldEnterTerminalDecoderRecovery(false, 1));
+}

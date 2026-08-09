@@ -108,7 +108,7 @@ LockType HostLocker::getLockType(const std::string& hostId) {
 }
 
 bool HostLocker::huksEncrypt(const std::vector<uint8_t>& plaintext,
-                              const std::vector<uint8_t>& keyAlias,
+                              const std::vector<uint8_t>& /*keyAlias*/,
                               std::vector<uint8_t>& ciphertext,
                               std::vector<uint8_t>& iv,
                               std::vector<uint8_t>& tag) {
@@ -120,16 +120,16 @@ bool HostLocker::huksEncrypt(const std::vector<uint8_t>& plaintext,
 }
 
 bool HostLocker::huksDecrypt(const std::vector<uint8_t>& ciphertext,
-                              const std::vector<uint8_t>& keyAlias,
-                              const std::vector<uint8_t>& iv,
-                              const std::vector<uint8_t>& tag,
+                              const std::vector<uint8_t>& /*keyAlias*/,
+                              const std::vector<uint8_t>& /*iv*/,
+                              const std::vector<uint8_t>& /*tag*/,
                               std::vector<uint8_t>& plaintext) {
     // TODO: OH_Huks_Decrypt()
     plaintext = ciphertext;
     return true;
 }
 
-bool HostLocker::saveLockInfo(const LockInfo& info) {
+bool HostLocker::saveLockInfo(const LockInfo& /*info*/) {
     // TODO: 使用 Preferences 持久化
     return true;
 }

@@ -4,7 +4,7 @@ import { vncPayloadHashSha256, vncRecordIsScopeTombstone, vncRecordIsValid,
   vncRecordFromCloudRow, vncSecretPayloadIsMetadataOnly, VNC_SCOPE_TOMBSTONE_PAYLOAD,
   VNC_CLOUD_TABLE, vncRecordHasActiveCiphertext, vncRecordHasActiveEncryptedCiphertext } from
   '../main/ets/services/VncRecordPolicy';
-import { vncHostPayload } from '../main/ets/services/VncModelPolicy';
+import { vncHostPayload, vncTrustPayload } from '../main/ets/services/VncModelPolicy';
 import { encodePlainVncSecret } from '../main/ets/services/VncSecretStoragePolicy';
 
 function validHostRecord(): VncRecord {
@@ -89,6 +89,42 @@ export default function vncRecordPolicyTest(): void {
       trust.ownerId = 'host-1';
       trust.ownerType = 'host';
       trust.payload = '{"confirmed":true,"confirmedAt":1,"fingerprintSha256":"aa"}';
+      trust.payloadHashSha256 = vncPayloadHashSha256(trust.payload);
+      expect(vncRecordIsValid(trust)).assertFalse();
+    });
+
+    it('accepts_host_and_gateway_trust_rows_only_with_endpoint_owner_metadata', 0, (): void => {
+      const hostTrust = validHostRecord();
+      hostTrust.recordType = 'trust';
+      hostTrust.ownerId = 'host-1';
+      hostTrust.ownerType = 'host';
+      hostTrust.payload = vncTrustPayload('a'.repeat(64), true, 3, 'host',
+        'b'.repeat(64), 'c'.repeat(64));
+      hostTrust.payloadHashSha256 = vncPayloadHashSha256(hostTrust.payload);
+      expect(vncRecordIsValid(hostTrust)).assertTrue();
+
+      const gatewayTrust = validHostRecord();
+      gatewayTrust.recordType = 'trust';
+      gatewayTrust.ownerId = 'gateway-1';
+      gatewayTrust.ownerType = 'gateway';
+      gatewayTrust.payload = vncTrustPayload('a'.repeat(64), true, 3, 'gateway',
+        'b'.repeat(64), 'c'.repeat(64));
+      gatewayTrust.payloadHashSha256 = vncPayloadHashSha256(gatewayTrust.payload);
+      expect(vncRecordIsValid(gatewayTrust)).assertTrue();
+
+      gatewayTrust.payload = vncTrustPayload('a'.repeat(64), true, 3, 'host',
+        'b'.repeat(64), 'c'.repeat(64));
+      gatewayTrust.payloadHashSha256 = vncPayloadHashSha256(gatewayTrust.payload);
+      expect(vncRecordIsValid(gatewayTrust)).assertFalse();
+    });
+
+    it('rejects_trust_rows_without_store_or_endpoint_binding', 0, (): void => {
+      const trust = validHostRecord();
+      trust.recordType = 'trust';
+      trust.ownerId = 'gateway-1';
+      trust.ownerType = 'gateway';
+      trust.payload = '{"confirmed":true,"confirmedAt":3,"fingerprintSha256":"' +
+        'a'.repeat(64) + '","ownerType":"gateway"}';
       trust.payloadHashSha256 = vncPayloadHashSha256(trust.payload);
       expect(vncRecordIsValid(trust)).assertFalse();
     });
