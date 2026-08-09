@@ -183,6 +183,12 @@ public:
                               std::uint16_t port, std::string path, std::string url,
                               bool requiresClientIdentity, bool requiresServerPin,
                               std::size_t responseBudget);
+    ~MoonlightTransportRequest();
+
+    MoonlightTransportRequest(const MoonlightTransportRequest&) = delete;
+    MoonlightTransportRequest& operator=(const MoonlightTransportRequest&) = delete;
+    MoonlightTransportRequest(MoonlightTransportRequest&&) = delete;
+    MoonlightTransportRequest& operator=(MoonlightTransportRequest&&) = delete;
 
     const MoonlightHostRequestKey& key() const noexcept;
     MoonlightHostOperation operation() const noexcept;
@@ -213,7 +219,7 @@ private:
     const std::uint16_t port_;
     const std::string method_{"GET"};
     const std::string path_;
-    const std::string url_;
+    std::string url_;
     const bool requiresClientIdentity_;
     const bool requiresServerPin_;
     const std::size_t responseBudget_;
@@ -233,6 +239,10 @@ public:
     using CancellationProbe = std::function<bool()>;
 
     virtual ~MoonlightHostTransport() = default;
+    // Pairing values are carried in the URL by the upstream GameStream
+    // protocol. Implementations must treat request.url() and response bodies
+    // as ephemeral, must not retain them, and must expose only redacted
+    // diagnostics after execute() returns.
     virtual MoonlightTransportOutcome
     execute(const MoonlightTransportRequest& request,
             std::chrono::steady_clock::time_point absoluteDeadline,
@@ -323,12 +333,17 @@ public:
     MoonlightHostApi(const MoonlightHostApi&) = delete;
     MoonlightHostApi& operator=(const MoonlightHostApi&) = delete;
 
+    // Pure validation path for higher-level state machines that must prove a
+    // request is admissible before performing any local or remote mutation.
+    MoonlightHostError validate(const MoonlightHostCall& call) const noexcept;
     MoonlightHostResult execute(const MoonlightHostCall& call) noexcept;
     bool cancel(const MoonlightHostRequestKey& key) noexcept;
     bool markStale(const MoonlightHostRequestKey& key) noexcept;
 
 #if defined(RDP_NATIVE_CALLBACK_TESTING)
     static std::optional<std::string> percentEncodeQueryValueForTesting(const std::string& value);
+    static std::uint64_t secureCleanseCountForTesting() noexcept;
+    static void resetSecureCleanseCountForTesting() noexcept;
 #endif
 
 private:

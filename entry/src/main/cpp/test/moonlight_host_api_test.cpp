@@ -104,6 +104,40 @@ private:
     std::vector<CapturedRequest> captures_;
 };
 
+class NonRetainingPairingTransport final : public MoonlightHostTransport {
+public:
+    MoonlightTransportOutcome execute(const MoonlightTransportRequest& request,
+                                      std::chrono::steady_clock::time_point,
+                                      const CancellationProbe&) override {
+        sawSensitiveRequest_ = containsRaw(request.url(), "A1B2C3D4") &&
+                               containsRaw(request.url(), "0011223344556677");
+        redacted_ = request.redactedDebugString();
+        return xmlResponseBody();
+    }
+
+    bool sawSensitiveRequest() const noexcept { return sawSensitiveRequest_; }
+    const std::string& redacted() const noexcept { return redacted_; }
+
+private:
+    static bool containsRaw(const std::string& value, const std::string& needle) {
+        return value.find(needle) != std::string::npos;
+    }
+
+    static MoonlightTransportOutcome xmlResponseBody() {
+        MoonlightTransportOutcome outcome;
+        outcome.stage = MoonlightTransportStage::Body;
+        outcome.sendState = MoonlightTransportSendState::ConfirmedResponse;
+        outcome.httpStatus = 200;
+        outcome.body = "<root status_code=\"200\"><paired>1</paired>"
+                       "<plaincert>AABBCCDD</plaincert></root>";
+        outcome.receivedBodyBytes = outcome.body.size();
+        return outcome;
+    }
+
+    bool sawSensitiveRequest_ = false;
+    std::string redacted_;
+};
+
 class BlockingGate final {
 public:
     void entered() {
@@ -293,7 +327,12 @@ RDP_TEST_CASE(moonlight_host_api_rejects_invalid_keys_endpoints_ports_and_querie
     RDP_ASSERT_EQ(api.execute(call).error, MoonlightHostError::InvalidRequest);
     call.timeout = 120s;
     call.query[2].value.assign(MoonlightHostLimits::kMaxUrlBytes + 1U, 'A');
+    RDP_ASSERT_EQ(api.validate(call), MoonlightHostError::UrlTooLong);
     RDP_ASSERT_EQ(api.execute(call).error, MoonlightHostError::UrlTooLong);
+    RDP_ASSERT(transport->captures().empty());
+
+    call.query[2].value = "AABBCCDD";
+    RDP_ASSERT_EQ(api.validate(call), MoonlightHostError::None);
     RDP_ASSERT(transport->captures().empty());
 }
 
@@ -405,6 +444,27 @@ RDP_TEST_CASE(moonlight_host_api_builds_official_pair_asset_and_action_shapes) {
         RDP_ASSERT_EQ(result.asset.size(), static_cast<std::size_t>(6));
         RDP_ASSERT(contains(captures[0].url, "appid=42&AssetType=2&AssetIdx=0"));
     }
+}
+
+RDP_TEST_CASE(moonlight_host_api_cleanses_ephemeral_pairing_wire_scratch) {
+    MoonlightHostApi::resetSecureCleanseCountForTesting();
+    auto transport = std::make_shared<NonRetainingPairingTransport>();
+    MoonlightHostApi api(transport, uuidGenerator());
+    auto call = callFor(MoonlightHostOperation::Pair);
+    call.query = {
+        {"phrase", "getservercert"},
+        {"salt", "00112233445566778899AABBCCDDEEFF"},
+        {"clientcert", "A1B2C3D4"},
+    };
+    call.timeout = 120s;
+
+    const auto result = api.execute(call);
+    RDP_ASSERT(result.ok());
+    RDP_ASSERT(transport->sawSensitiveRequest());
+    RDP_ASSERT(!contains(transport->redacted(), "0011223344556677"));
+    RDP_ASSERT(!contains(transport->redacted(), "A1B2C3D4"));
+    RDP_ASSERT(contains(transport->redacted(), "salt=<redacted>"));
+    RDP_ASSERT(MoonlightHostApi::secureCleanseCountForTesting() >= 8U);
 }
 
 RDP_TEST_CASE(moonlight_host_api_builds_launch_resume_cancel_and_redacts_every_value) {

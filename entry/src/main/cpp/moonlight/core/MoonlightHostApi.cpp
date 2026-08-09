@@ -20,6 +20,42 @@ constexpr const char* kProtocolUniqueId = "0123456789ABCDEF";
 constexpr std::size_t kMaxServerFieldBytes = 1024U;
 constexpr std::size_t kMaxPairingFieldBytes = 256U * 1024U;
 
+#if defined(RDP_NATIVE_CALLBACK_TESTING)
+std::atomic<std::uint64_t> gSecureCleanseCount{0};
+#endif
+
+void secureWipe(void* pointer, std::size_t size) noexcept {
+    auto* bytes = static_cast<volatile unsigned char*>(pointer);
+    while (size > 0U) {
+        *bytes = 0U;
+        ++bytes;
+        --size;
+    }
+    std::atomic_signal_fence(std::memory_order_seq_cst);
+}
+
+void secureWipeString(std::string& value) noexcept {
+    if (!value.empty()) {
+        secureWipe(value.data(), value.size());
+#if defined(RDP_NATIVE_CALLBACK_TESTING)
+        gSecureCleanseCount.fetch_add(1U, std::memory_order_relaxed);
+#endif
+    }
+    value.clear();
+}
+
+class StringWiper final {
+public:
+    explicit StringWiper(std::string& value) noexcept : value_(value) {}
+    ~StringWiper() { secureWipeString(value_); }
+
+    StringWiper(const StringWiper&) = delete;
+    StringWiper& operator=(const StringWiper&) = delete;
+
+private:
+    std::string& value_;
+};
+
 struct RequestKeyHash final {
     std::size_t operator()(const MoonlightHostRequestKey& key) const noexcept {
         const auto mix = [](std::size_t seed, std::uint64_t value) {
@@ -332,6 +368,17 @@ struct QueryShape final {
     bool requiresServerPin = false;
     bool readOnly = false;
     bool xmlResponse = true;
+
+    QueryShape() = default;
+    QueryShape(const QueryShape&) = default;
+    QueryShape& operator=(const QueryShape&) = default;
+    QueryShape(QueryShape&&) noexcept = default;
+    QueryShape& operator=(QueryShape&&) noexcept = default;
+    ~QueryShape() {
+        for (auto& parameter : parameters) {
+            secureWipeString(parameter.value);
+        }
+    }
 };
 
 bool exactNames(const std::vector<MoonlightHostQueryParameter>& query,
@@ -416,8 +463,11 @@ QueryShape makeQueryShape(const MoonlightHostCall& call) {
         const int stages = static_cast<int>(getCert) + static_cast<int>(challenge) +
                            static_cast<int>(challengeResponse) + static_cast<int>(secret);
         std::string phrase;
+        StringWiper phraseWiper(phrase);
         std::string salt;
+        StringWiper saltWiper(salt);
         std::string clientCert;
+        StringWiper clientCertWiper(clientCert);
         if (stages != 1 ||
             (getCert &&
              (!queryContains(call.query, "phrase", &phrase) || phrase != "getservercert" ||
@@ -511,6 +561,7 @@ QueryShape makeQueryShape(const MoonlightHostCall& call) {
             break;
         }
         std::string value;
+        StringWiper valueWiper(value);
         if (!queryContains(call.query, "appid", &value) || !parsePositive32(value) ||
             !queryContains(call.query, "mode", &value) || !validMode(value) ||
             !queryContains(call.query, "rikey", &value) || value.size() != 32U || !isHex(value) ||
@@ -655,6 +706,14 @@ MoonlightHostError buildUrl(const MoonlightHostAddress& address, MoonlightHostSc
     output += authorityFor(address);
     output += ":" + std::to_string(port) + shape.path;
     std::vector<MoonlightHostQueryParameter> parameters = shape.parameters;
+    struct ParameterWiper final {
+        std::vector<MoonlightHostQueryParameter>& values;
+        ~ParameterWiper() {
+            for (auto& parameter : values) {
+                secureWipeString(parameter.value);
+            }
+        }
+    } parameterWiper{parameters};
     parameters.push_back({"uniqueid", kProtocolUniqueId});
     parameters.push_back({"uuid", uuid});
     for (std::size_t index = 0; index < parameters.size(); ++index) {
@@ -686,6 +745,16 @@ enum class XmlIssue : std::uint8_t {
 struct XmlAttribute final {
     std::string name;
     std::string value;
+
+    XmlAttribute() = default;
+    XmlAttribute(const XmlAttribute&) = default;
+    XmlAttribute& operator=(const XmlAttribute&) = default;
+    XmlAttribute(XmlAttribute&&) noexcept = default;
+    XmlAttribute& operator=(XmlAttribute&&) noexcept = default;
+    ~XmlAttribute() {
+        secureWipeString(name);
+        secureWipeString(value);
+    }
 };
 
 struct XmlNode final {
@@ -693,6 +762,16 @@ struct XmlNode final {
     std::vector<XmlAttribute> attributes;
     std::string text;
     std::vector<XmlNode> children;
+
+    XmlNode() = default;
+    XmlNode(const XmlNode&) = default;
+    XmlNode& operator=(const XmlNode&) = default;
+    XmlNode(XmlNode&&) noexcept = default;
+    XmlNode& operator=(XmlNode&&) noexcept = default;
+    ~XmlNode() {
+        secureWipeString(name);
+        secureWipeString(text);
+    }
 };
 
 class StrictXmlParser final {
@@ -780,7 +859,8 @@ private:
             if (end == std::string::npos || end - index > 16U) {
                 return false;
             }
-            const auto entity = raw.substr(index + 1U, end - index - 1U);
+            auto entity = raw.substr(index + 1U, end - index - 1U);
+            StringWiper entityWiper(entity);
             if (entity == "amp") {
                 output.push_back('&');
             } else if (entity == "lt") {
@@ -885,7 +965,8 @@ private:
                 end - offset_ > MoonlightHostLimits::kMaxAttributeBytes) {
                 return end == std::string::npos ? XmlIssue::Malformed : XmlIssue::Budget;
             }
-            const auto raw = input_.substr(offset_, end - offset_);
+            auto raw = input_.substr(offset_, end - offset_);
+            StringWiper rawWiper(raw);
             if (raw.find('<') != std::string::npos || !decodeEntities(raw, attribute.value) ||
                 attribute.value.size() > MoonlightHostLimits::kMaxAttributeBytes) {
                 return attribute.value.size() > MoonlightHostLimits::kMaxAttributeBytes
@@ -938,8 +1019,11 @@ private:
             if (end - offset_ > MoonlightHostLimits::kMaxTextNodeBytes) {
                 return XmlIssue::Budget;
             }
+            auto raw = input_.substr(offset_, end - offset_);
+            StringWiper rawWiper(raw);
             std::string decoded;
-            if (!decodeEntities(input_.substr(offset_, end - offset_), decoded) ||
+            StringWiper decodedWiper(decoded);
+            if (!decodeEntities(raw, decoded) ||
                 decoded.size() > MoonlightHostLimits::kMaxTextNodeBytes) {
                 return decoded.size() > MoonlightHostLimits::kMaxTextNodeBytes
                            ? XmlIssue::Budget
@@ -1318,6 +1402,8 @@ MoonlightTransportRequest::MoonlightTransportRequest(
       path_(std::move(path)), url_(std::move(url)), requiresClientIdentity_(requiresClientIdentity),
       requiresServerPin_(requiresServerPin), responseBudget_(responseBudget) {}
 
+MoonlightTransportRequest::~MoonlightTransportRequest() { secureWipeString(url_); }
+
 const MoonlightHostRequestKey& MoonlightTransportRequest::key() const noexcept { return key_; }
 MoonlightHostOperation MoonlightTransportRequest::operation() const noexcept { return operation_; }
 MoonlightHostScheme MoonlightTransportRequest::scheme() const noexcept { return scheme_; }
@@ -1465,6 +1551,7 @@ MoonlightHostResult executeRegistered(const std::shared_ptr<HostApiState>& impl,
                 return result;
             }
             std::string url;
+            StringWiper urlWiper(url);
             const auto urlError =
                 buildUrl(call.endpoint.addresses[attempt], scheme, port, shape, uuid, url);
             if (urlError != MoonlightHostError::None) {
@@ -1480,6 +1567,7 @@ MoonlightHostResult executeRegistered(const std::shared_ptr<HostApiState>& impl,
                 std::move(url), shape.requiresClientIdentity, shape.requiresServerPin,
                 MoonlightHostLimits::kMaxBodyBytes);
             MoonlightTransportOutcome outcome;
+            StringWiper outcomeBodyWiper(outcome.body);
             try {
                 outcome = impl->transport->execute(request, deadline, [state]() {
                     return dispositionError(state) != MoonlightHostError::None;
@@ -1727,6 +1815,25 @@ MoonlightHostResult executeRegistered(const std::shared_ptr<HostApiState>& impl,
 
 } // namespace
 
+MoonlightHostError MoonlightHostApi::validate(const MoonlightHostCall& call) const noexcept {
+    try {
+        const auto impl = std::atomic_load_explicit(&impl_, std::memory_order_acquire);
+        if (impl == nullptr) {
+            return MoonlightHostError::ShuttingDown;
+        }
+        const auto shape = makeQueryShape(call);
+        const auto error = validateCall(call, shape);
+        if (error != MoonlightHostError::None) {
+            return error;
+        }
+        return impl->transport != nullptr && impl->uuidGenerator
+                   ? MoonlightHostError::None
+                   : MoonlightHostError::InvalidRequest;
+    } catch (...) {
+        return MoonlightHostError::InternalFailure;
+    }
+}
+
 MoonlightHostResult MoonlightHostApi::execute(const MoonlightHostCall& call) noexcept {
     MoonlightHostResult result;
     result.key = call.key;
@@ -1812,6 +1919,14 @@ MoonlightHostApi::percentEncodeQueryValueForTesting(const std::string& value) {
         return std::nullopt;
     }
     return encoded;
+}
+
+std::uint64_t MoonlightHostApi::secureCleanseCountForTesting() noexcept {
+    return gSecureCleanseCount.load(std::memory_order_relaxed);
+}
+
+void MoonlightHostApi::resetSecureCleanseCountForTesting() noexcept {
+    gSecureCleanseCount.store(0U, std::memory_order_relaxed);
 }
 #endif
 
