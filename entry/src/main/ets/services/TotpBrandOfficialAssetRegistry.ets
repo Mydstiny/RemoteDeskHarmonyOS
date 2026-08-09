@@ -1,6 +1,6 @@
 /** GENERATED FILE. Edit totp_brand_manifest.json and rerun the generator. */
 
-export const TOTP_OFFICIAL_BRAND_SOURCE_SHA256: string = "07364144fbfc80c4fb0cc7a7470c785cd68bba44fb76def736213aca4c8cd00c";
+export const TOTP_OFFICIAL_BRAND_SOURCE_SHA256: string = "ae219e75e546aeb3a6ac0598e72b52b95fdc513bb4311881cdc0364f5c15dac1";
 
 export interface TotpOfficialBrandEntry {
   brandId: string;
@@ -25,17 +25,6 @@ export const TOTP_OFFICIAL_BRANDS: TotpOfficialBrandEntry[] = [
     sha256: "5bcaca44adebed6dda51fb7fbe6bb4d59c6438db591736fbfc3f9bfa425010bb",
     sourceType: "official",
     brandColor: "#4285F4"
-  },
-  {
-    brandId: "x",
-    displayName: "X",
-    aliases: ["x", "twitter"],
-    exactDomains: ["x.com", "twitter.com"],
-    localAsset: "totp-brands/official/x.svg",
-    assetBytes: 430,
-    sha256: "dd46f96b6f47fcd33683b79ddfaf3daca1d4f8aeba3c0f2bde1584c69cc699d4",
-    sourceType: "official",
-    brandColor: "#000000"
   },
   {
     brandId: "microsoft",
@@ -69,17 +58,6 @@ export const TOTP_OFFICIAL_BRANDS: TotpOfficialBrandEntry[] = [
     sha256: "9d090a828bd2c8dba6f94252b4f96feea495ebc0681e366a99edc3c119b69a9b",
     sourceType: "official",
     brandColor: "#024EFF"
-  },
-  {
-    brandId: "baota",
-    displayName: "宝塔面板",
-    aliases: ["宝塔", "宝塔面板", "宝塔 linux 面板", "baota", "baota panel", "bt panel"],
-    exactDomains: ["bt.cn"],
-    localAsset: "totp-brands/official/baota.png",
-    assetBytes: 1523,
-    sha256: "511d71c825d63c9ecc33cee1e9876baedcf191b87fa4346643c1c2dfd040380b",
-    sourceType: "official",
-    brandColor: "#20A53A"
   },
   {
     brandId: "aws",
@@ -377,11 +355,9 @@ export function findTotpOfficialBrand(issuerKey: string, domainKey: string): Tot
 export function totpOfficialBrandAssetPath(brandId: string): string {
   switch (brandId) {
     case "google": return "totp-brands/official/google.svg";
-    case "x": return "totp-brands/official/x.svg";
     case "microsoft": return "totp-brands/official/microsoft.svg";
     case "linkedin": return "totp-brands/official/linkedin.svg";
     case "rustdesk": return "totp-brands/official/rustdesk.svg";
-    case "baota": return "totp-brands/official/baota.png";
     case "aws": return "totp-brands/catalog/aws.svg";
     case "slack": return "totp-brands/catalog/slack.svg";
     case "adobe": return "totp-brands/catalog/adobe.svg";
@@ -414,11 +390,9 @@ export function totpOfficialBrandAssetPath(brandId: string): string {
 export function totpOfficialBrandAssetResource(brandId: string): Resource | null {
   switch (brandId) {
     case "google": return $rawfile("totp-brands/official/google.svg");
-    case "x": return $rawfile("totp-brands/official/x.svg");
     case "microsoft": return $rawfile("totp-brands/official/microsoft.svg");
     case "linkedin": return $rawfile("totp-brands/official/linkedin.svg");
     case "rustdesk": return $rawfile("totp-brands/official/rustdesk.svg");
-    case "baota": return $rawfile("totp-brands/official/baota.png");
     case "aws": return $rawfile("totp-brands/catalog/aws.svg");
     case "slack": return $rawfile("totp-brands/catalog/slack.svg");
     case "adobe": return $rawfile("totp-brands/catalog/adobe.svg");

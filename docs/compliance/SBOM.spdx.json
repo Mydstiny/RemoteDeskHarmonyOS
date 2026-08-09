@@ -976,8 +976,8 @@
       "versionInfo": "totp-brand-manifest-2026.08.03-si-16.21.0-r8-mainstream-logo-catalog",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": true,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
+      "licenseConcluded": "AGPL-3.0-or-later AND CC0-1.0 AND MIT",
+      "licenseDeclared": "AGPL-3.0-or-later AND CC0-1.0 AND MIT",
       "copyrightText": "NOASSERTION",
       "externalRefs": [],
       "comment": "Reviewed supplier logo assets selected for offline TOTP matching; each source, hash, license assertion and trademark guidance is recorded in the officialOverrides section of the single-source TOTP manifest; svglogos-catalog entries are not asserted to be official brand-kit assets."
@@ -5017,22 +5017,6 @@
       "comment": "sourceUrl=https://github.com/gilbarbara/logos/blob/4de741f8503d5e81abf5dfa05214690e938296bf/logos/google-icon.svg; brandSourceUrl=https://about.google/brand-resource-center/; brandGuidelines=https://about.google/brand-resource-center/; license=MIT; licenseUrl=https://github.com/gilbarbara/logos/blob/4de741f8503d5e81abf5dfa05214690e938296bf/LICENSE; trademarkGuidelines=https://about.google/brand-resource-center/; officialAssetVerified=true; assetSha256=5bcaca44adebed6dda51fb7fbe6bb4d59c6438db591736fbfc3f9bfa425010bb"
     },
     {
-      "SPDXID": "SPDXRef-File-TotpOfficialBrand-x",
-      "fileName": "entry/src/main/resources/rawfile/totp-brands/official/x.svg",
-      "checksums": [
-        {
-          "algorithm": "SHA256",
-          "checksumValue": "dd46f96b6f47fcd33683b79ddfaf3daca1d4f8aeba3c0f2bde1584c69cc699d4"
-        }
-      ],
-      "licenseConcluded": "NOASSERTION",
-      "licenseInfoInFiles": [
-        "NOASSERTION"
-      ],
-      "copyrightText": "NOASSERTION",
-      "comment": "sourceUrl=https://about.x.com/content/dam/about-twitter/x/brand-toolkit/x-logo.zip#logo.svg; brandSourceUrl=https://about.x.com/en/who-we-are/brand-toolkit; brandGuidelines=https://about.x.com/en/who-we-are/brand-toolkit; license=NOASSERTION; licenseUrl=https://about.x.com/en/who-we-are/brand-toolkit; trademarkGuidelines=https://about.x.com/en/who-we-are/brand-toolkit; officialAssetVerified=true; assetSha256=dd46f96b6f47fcd33683b79ddfaf3daca1d4f8aeba3c0f2bde1584c69cc699d4"
-    },
-    {
       "SPDXID": "SPDXRef-File-TotpOfficialBrand-microsoft",
       "fileName": "entry/src/main/resources/rawfile/totp-brands/official/microsoft.svg",
       "checksums": [
@@ -5079,22 +5063,6 @@
       ],
       "copyrightText": "NOASSERTION",
       "comment": "sourceUrl=https://github.com/rustdesk/rustdesk/blob/93d064a9b0eb58ab94db88ff727a877ef773c0d8/res/logo.svg; brandSourceUrl=https://rustdesk.com/; brandGuidelines=https://rustdesk.com/; license=AGPL-3.0-or-later; licenseUrl=https://github.com/rustdesk/rustdesk/blob/93d064a9b0eb58ab94db88ff727a877ef773c0d8/LICENSE; trademarkGuidelines=https://rustdesk.com/; officialAssetVerified=true; assetSha256=9d090a828bd2c8dba6f94252b4f96feea495ebc0681e366a99edc3c119b69a9b"
-    },
-    {
-      "SPDXID": "SPDXRef-File-TotpOfficialBrand-baota",
-      "fileName": "entry/src/main/resources/rawfile/totp-brands/official/baota.png",
-      "checksums": [
-        {
-          "algorithm": "SHA256",
-          "checksumValue": "511d71c825d63c9ecc33cee1e9876baedcf191b87fa4346643c1c2dfd040380b"
-        }
-      ],
-      "licenseConcluded": "NOASSERTION",
-      "licenseInfoInFiles": [
-        "NOASSERTION"
-      ],
-      "copyrightText": "NOASSERTION",
-      "comment": "sourceUrl=https://www.bt.cn/favicon.ico; brandSourceUrl=https://www.bt.cn/; brandGuidelines=https://www.bt.cn/; license=NOASSERTION; licenseUrl=https://www.bt.cn/; trademarkGuidelines=https://www.bt.cn/; officialAssetVerified=true; assetSha256=511d71c825d63c9ecc33cee1e9876baedcf191b87fa4346643c1c2dfd040380b"
     },
     {
       "SPDXID": "SPDXRef-File-TotpOfficialBrand-aws",
@@ -6761,11 +6729,6 @@
     {
       "spdxElementId": "SPDXRef-Package-TOTP-Official-Brand-Assets",
       "relationshipType": "CONTAINS",
-      "relatedSpdxElement": "SPDXRef-File-TotpOfficialBrand-x"
-    },
-    {
-      "spdxElementId": "SPDXRef-Package-TOTP-Official-Brand-Assets",
-      "relationshipType": "CONTAINS",
       "relatedSpdxElement": "SPDXRef-File-TotpOfficialBrand-microsoft"
     },
     {
@@ -6777,11 +6740,6 @@
       "spdxElementId": "SPDXRef-Package-TOTP-Official-Brand-Assets",
       "relationshipType": "CONTAINS",
       "relatedSpdxElement": "SPDXRef-File-TotpOfficialBrand-rustdesk"
-    },
-    {
-      "spdxElementId": "SPDXRef-Package-TOTP-Official-Brand-Assets",
-      "relationshipType": "CONTAINS",
-      "relatedSpdxElement": "SPDXRef-File-TotpOfficialBrand-baota"
     },
     {
       "spdxElementId": "SPDXRef-Package-TOTP-Official-Brand-Assets",

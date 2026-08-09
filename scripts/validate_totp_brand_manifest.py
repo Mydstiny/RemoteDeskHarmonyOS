@@ -436,6 +436,8 @@ def main() -> int:
             errors.append(f"{prefix}.sourceType must be official or svglogos-catalog")
         if source_type == "official" and entry.get("officialAssetVerified") is not True:
             errors.append(f"{prefix}.officialAssetVerified must be true for official assets")
+        if entry.get("licenseType") == "NOASSERTION":
+            errors.append(f"{prefix}.licenseType must declare an SPDX license")
         if source_type == SVGLOGOS_CATALOG_SOURCE_TYPE:
             if entry.get("officialAssetVerified") is not False:
                 errors.append(f"{prefix}.officialAssetVerified must be false for catalog assets")

@@ -43,30 +43,6 @@
       "officialAssetVerified": true
     },
     {
-      "brandId": "x",
-      "displayName": "X",
-      "aliases": [
-        "x",
-        "twitter"
-      ],
-      "exactDomains": [
-        "x.com",
-        "twitter.com"
-      ],
-      "localAsset": "totp-brands/official/x.svg",
-      "assetBytes": 430,
-      "sha256": "dd46f96b6f47fcd33683b79ddfaf3daca1d4f8aeba3c0f2bde1584c69cc699d4",
-      "brandColor": "#000000",
-      "sourceType": "official",
-      "sourceUrl": "https://about.x.com/content/dam/about-twitter/x/brand-toolkit/x-logo.zip#logo.svg",
-      "brandSourceUrl": "https://about.x.com/en/who-we-are/brand-toolkit",
-      "brandGuidelines": "https://about.x.com/en/who-we-are/brand-toolkit",
-      "licenseType": "NOASSERTION",
-      "licenseUrl": "https://about.x.com/en/who-we-are/brand-toolkit",
-      "trademarkGuidelines": "https://about.x.com/en/who-we-are/brand-toolkit",
-      "officialAssetVerified": true
-    },
-    {
       "brandId": "microsoft",
       "displayName": "Microsoft",
       "aliases": [
@@ -142,33 +118,6 @@
       "licenseType": "AGPL-3.0-or-later",
       "licenseUrl": "https://github.com/rustdesk/rustdesk/blob/93d064a9b0eb58ab94db88ff727a877ef773c0d8/LICENSE",
       "trademarkGuidelines": "https://rustdesk.com/",
-      "officialAssetVerified": true
-    },
-    {
-      "brandId": "baota",
-      "displayName": "宝塔面板",
-      "aliases": [
-        "宝塔",
-        "宝塔面板",
-        "宝塔 Linux 面板",
-        "baota",
-        "baota panel",
-        "bt panel"
-      ],
-      "exactDomains": [
-        "bt.cn"
-      ],
-      "localAsset": "totp-brands/official/baota.png",
-      "assetBytes": 1523,
-      "sha256": "511d71c825d63c9ecc33cee1e9876baedcf191b87fa4346643c1c2dfd040380b",
-      "brandColor": "#20A53A",
-      "sourceType": "official",
-      "sourceUrl": "https://www.bt.cn/favicon.ico",
-      "brandSourceUrl": "https://www.bt.cn/",
-      "brandGuidelines": "https://www.bt.cn/",
-      "licenseType": "NOASSERTION",
-      "licenseUrl": "https://www.bt.cn/",
-      "trademarkGuidelines": "https://www.bt.cn/",
       "officialAssetVerified": true
     },
     {

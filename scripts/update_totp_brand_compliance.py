@@ -120,6 +120,10 @@ def file_records(
 def update_sbom(manifest: dict) -> None:
     sbom = json.loads(SBOM_PATH.read_text(encoding="utf-8"))
     official_overrides = manifest.get("officialOverrides", [])
+    official_licenses = sorted({entry["licenseType"] for entry in official_overrides})
+    if not official_licenses or "NOASSERTION" in official_licenses:
+        raise SystemExit("reviewed TOTP overrides require explicit SPDX licenses")
+    official_license_expression = " AND ".join(official_licenses)
     old_package_ids = {PACKAGE_ID, OFFICIAL_PACKAGE_ID}
     packages = [package for package in sbom.get("packages", [])
                 if package.get("SPDXID") not in old_package_ids]
@@ -155,8 +159,8 @@ def update_sbom(manifest: dict) -> None:
         "versionInfo": manifest["manifestVersion"],
         "downloadLocation": "NOASSERTION",
         "filesAnalyzed": True,
-        "licenseConcluded": "NOASSERTION",
-        "licenseDeclared": "NOASSERTION",
+        "licenseConcluded": official_license_expression,
+        "licenseDeclared": official_license_expression,
         "copyrightText": "NOASSERTION",
         "externalRefs": [],
         "comment": (

@@ -296,11 +296,9 @@ f86155933bd7183ab9468162c275d4200079b1b52173590f88692f02c722f287 *entry/src/main
 a098fcabece245681c9c913ba69d4e47be7c2c2fe9e2655bcec6feb90f7c362d *entry/src/main/resources/rawfile/totp-brands/wellsfargo.svg
 d6a508cfa1085e0a482b32bf444e11bea74b920140294feacf32543aae049430 *entry/src/main/resources/rawfile/totp-brands/cashapp.svg
 5bcaca44adebed6dda51fb7fbe6bb4d59c6438db591736fbfc3f9bfa425010bb *entry/src/main/resources/rawfile/totp-brands/official/google.svg
-dd46f96b6f47fcd33683b79ddfaf3daca1d4f8aeba3c0f2bde1584c69cc699d4 *entry/src/main/resources/rawfile/totp-brands/official/x.svg
 0a70bb4ba26d5cf9bbd377a82c7a14c845cda823032547505f7f8baa9921740a *entry/src/main/resources/rawfile/totp-brands/official/microsoft.svg
 e14ad9c44fe2388edfd215688583a79a1c27148116191b5e73a85d96b5edc673 *entry/src/main/resources/rawfile/totp-brands/official/linkedin.svg
 9d090a828bd2c8dba6f94252b4f96feea495ebc0681e366a99edc3c119b69a9b *entry/src/main/resources/rawfile/totp-brands/official/rustdesk.svg
-511d71c825d63c9ecc33cee1e9876baedcf191b87fa4346643c1c2dfd040380b *entry/src/main/resources/rawfile/totp-brands/official/baota.png
 3a4720542e42a50cd738f6150f54efe8161c1aaed601af07ea4ad3a19d5f18c2 *entry/src/main/resources/rawfile/totp-brands/catalog/aws.svg
 cf3c36c4ec98189ac7195410f0b93839b33527a71d023b69960d95129a4532a2 *entry/src/main/resources/rawfile/totp-brands/catalog/slack.svg
 443e0339c7ef407c61b77d01f10a2b884b658dcbb1dda1db34521b5b6998c1ae *entry/src/main/resources/rawfile/totp-brands/catalog/adobe.svg
@@ -326,4 +324,4 @@ e27c7caef5cbab0197868dd16d650ba954b23ae2bc993cd3d1de6b65584d50b0 *entry/src/main
 fd8f15d858ef358db65da7da90215eaa97b407456fcbf050f6d59f383825a93e *entry/src/main/resources/rawfile/totp-brands/catalog/zoho.svg
 920ebb57c753e9c4cf5763966e4f06897641851de403667d33945a3313b3043c *entry/src/main/resources/rawfile/totp-brands/catalog/zapier.svg
 fe77d7d1ca1169a02e3c8d5daeb687e897bbbe392f934c87aee8f242cce6c73d *entry/src/main/resources/rawfile/totp-brands/catalog/authy.svg
-9d3a8aa97a954d0d119fb654b7b043454f5f4fee474e64da686bf7a8ce5f8403 *entry/src/main/resources/rawfile/totp_brand_manifest.json
+a058ed82f182712b84838d57e6a73ad93b7f9e3134ec9404325ecdf01fd93438 *entry/src/main/resources/rawfile/totp_brand_manifest.json
