@@ -75,9 +75,15 @@ export default function remoteSessionTopBarPolicyTest(): void {
       expect(shouldUseRustDeskEdgeRail('rustdesk', false, 'lg', 2, true)).assertTrue();
     });
 
-    it('touch_modes_and_desktop_sessions_should_keep_top_bar', 0, (): void => {
+    it('pad_virtual_touchpad_should_share_the_keyboard_mouse_edge_rail', 0, (): void => {
+      expect(shouldUseRustDeskEdgeRail('rustdesk', false, 'lg', 0, true)).assertTrue();
+      expect(shouldUseRustDeskEdgeRail('rustdesk', false, 'md', 0, true)).assertTrue();
+    });
+
+    it('phone_touch_modes_pad_direct_touch_and_desktop_should_keep_top_bar', 0, (): void => {
       expect(shouldUseRustDeskEdgeRail('rustdesk', false, 'sm', 0, false)).assertFalse();
       expect(shouldUseRustDeskEdgeRail('rustdesk', false, 'sm', 1, false)).assertFalse();
+      expect(shouldUseRustDeskEdgeRail('rustdesk', false, 'lg', 1, true)).assertFalse();
       expect(shouldUseRustDeskEdgeRail('rustdesk', true, 'xl', 2, false)).assertFalse();
       expect(shouldUseRustDeskEdgeRail('rdp', false, 'sm', 2, false)).assertFalse();
     });

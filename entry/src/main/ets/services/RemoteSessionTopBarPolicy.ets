@@ -78,14 +78,22 @@ export function shouldShowRustDeskTopBar(
   return rustdeskControlMode === 2 && physicalKeyboardMouseConnected;
 }
 
-/** Mobile keyboard/mouse sessions keep controls off the system-bar edges. */
+/**
+ * Keep Pad pointing modes on the same right-side rail so switching between
+ * virtual touchpad and physical keyboard/mouse does not move session controls
+ * across the remote canvas. Phones retain the compact rail only for physical
+ * keyboard/mouse mode, where the top system-bar edge is most constrained.
+ */
 export function shouldUseRustDeskEdgeRail(protocol: string, isDesktopDevice: boolean,
   breakpoint: string, rustdeskControlMode: number, isPadDevice: boolean): boolean {
-  if (protocol !== 'rustdesk' || isDesktopDevice || rustdeskControlMode !== 2) {
+  if (protocol !== 'rustdesk' || isDesktopDevice) {
     return false;
   }
   const deviceClass: RemoteTopBarDeviceClass = remoteTopBarDeviceClass(isDesktopDevice, breakpoint, isPadDevice);
-  return deviceClass === 'phone' || deviceClass === 'pad';
+  if (deviceClass === 'pad') {
+    return rustdeskControlMode === 0 || rustdeskControlMode === 2;
+  }
+  return deviceClass === 'phone' && rustdeskControlMode === 2;
 }
 
 export function remoteTopBarLayout(isDesktopDevice: boolean, breakpoint: string,
