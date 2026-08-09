@@ -4,7 +4,7 @@
 > 分支：`codex/moonlight-complete-upgrade`
 > 初始基线：`main@aeb0cdac5`，与 `origin/main` 一致
 > 总计划：`docs/superpowers/plans/2026-07-28-moonlight-harmonyos-complete-upgrade-plan.md`
-> 台账状态：G0 静态基线与 D1 已形成 checkpoint；D2 本地数据层待实施；只把有可复现证据的项目标记为通过
+> 台账状态：G0、D1 与 D2-01～D2-04 已形成 checkpoint；D2-05～D2-07 等待 AGC 外部回执；只把有可复现证据的项目标记为通过
 
 ## 1. 执行约束
 
@@ -157,19 +157,46 @@ SDK 根：`/Users/mydestiny/Library/OpenHarmony/Sdk/23`。
 `default@OhosTestCompileArkTS` 编译且 focused allowlist/count 一致，不宣称
 Hypium 真机执行通过。
 
-## 9. 2026-08-09 checkpoint 验证
+## 9. D2 本地数据层 checkpoint
+
+| ID | 状态 | 落地产物与合同 |
+| --- | --- | --- |
+| D2-01 | PASS | owner-store schema 从 4 升为 5；用单一 schema policy 创建并逐列核验 `moonlightrecordv1` 19 列、`moonlightlocalrecords` 20 列、`moonlightappcache` 16 列；只有 `id` 是主键；owner 核验后写 `moonlightrecordv1_schema_19col_v1` receipt |
+| D2-02 | PASS | `MoonlightRepository` 和 `CloudStore` port 携带完整 `AccountSessionLease`；写前/写后校验 owner、generation、storeInstance；upsert/tombstone 只事务写 local overlay + journal + readback；retry 幂等、mutation 复用隔离、同 id 跨 owner 隔离、云调用恒为零 |
+| D2-03 | PASS | `MoonlightAppCacheService` 使用 owner+host+app SHA-256 key；完整/部分目录刷新语义分离；超期优先、再稳定 LRU；2048 条、64 MiB 总量、2 MiB 单项边界；cache 事务不触碰 profile/cloud/backup |
+| D2-04 | PASS | `CloudTableAdapter` 增加 Moonlight exact 19 列合同；缺列、未知列、非 exact 20 列 mirror、`localonly=1` 全部拒绝；payload 保持 opaque，不做默认补齐 |
+| D2-05 | EXTERNAL PENDING | 尚无 AGC 开发环境 schema/权限/索引/分页/删除 receipt | 不修改生产 `TABLES` |
+| D2-06 | EXTERNAL PENDING | 尚无测试与生产环境等价 receipt | `moonlightCloudSchemaReady=false` |
+| D2-07 | BLOCKED BY D2-05/06 | `CloudSyncPolicy` 仍精确返回既有 8 表，Moonlight 三表均不在注册集合 | 三环境回执齐全前禁止放行 |
+| D2-08～D2-10 | PENDING | row-aware sensitive transfer、逻辑 scope 选择、materialization/quarantine 服务为下一段 | 必须在 registration=false 下先完成纯策略与测试 |
+
+聚焦聚合器现登记 11 个 Moonlight describe、70 个 test；同样只声明
+`default@OhosTestCompileArkTS` 编译注册通过，不把缺失的 Hypium 设备执行写成通过。
+D2-01～D2-04 的代码与测试检查点为 `3bbdc61`。
+
+### 9.1 ARM64 HarmonyOS 虚拟设备 RDB receipt
+
+- 设备：`127.0.0.1:5555`，ARM64 HarmonyOS API 24。
+- 安装：当前签名 `entry-default-signed.hap` 覆盖安装并由 AppSpawn 启动。
+- 物理库：`remotedesktop_device_local.db`；`PRAGMA user_version=5`。
+- `PRAGMA table_info`：云候选/本地 mirror/cache 分别严格 19/20/16 列，顺序、类型和唯一 `id` 主键与 policy 一致。
+- receipt：owner=`device-local`、store=`remotedesktop_device_local.db`、status=`completed`、counts=`19/20/16`。
+- 杀进程重开后：`tables=3`、同 migration receipt `count=1`，证明重复打开幂等且没有重复回执。
+- 静态和运行时均确认 `CloudSyncPolicy` 仍只有既有 8 表；本次没有执行 Moonlight `setDistributedTables`。
+
+## 10. 2026-08-09 checkpoint 验证
 
 - `default@OhosTestCompileArkTS`：PASS。
-- signed `assembleHap`：PASS，`BUILD SUCCESSFUL in 2 min 4 s 692 ms`。
+- signed `assembleHap`：最终 D2 计划和状态文件更新后再次 PASS，`BUILD SUCCESSFUL in 6 s 598 ms`。
 - host `rdp_native_tests`：沙箱内本地 TLS fixture 因 socket 监听限制为
   326/342；按门禁在沙箱外复跑为 **342/342 PASS**，确认不是代码回归。
 - `scripts/probe_moonlight_platform.sh`：arm64-v8a、x86_64 均 PASS。
 - `verify_open_source_release.ps1 -Mode Light`：PASS。
-- `git diff --check`、`codex_state validate`：文档更新后需最终复跑。
+- `git diff --check`、`codex_state validate`：D2 计划和状态文件更新后 PASS。
 
-## 10. 下一执行序列
+## 11. 下一执行序列
 
-1. D2-01 先在当前 owner-store migration 中只创建本地三表，逐版本升级、回滚、幂等和 exact schema 测试通过前不接 repository。
-2. D2-02/D2-03 实现携带完整 account lease 的 local-first repository 与有界 LRU app cache。
-3. D2-04 只增加 exact 19 列 adapter；AGC 开发/测试/生产 receipt 不全时，不把 `moonlightrecordv1` 加入 `TABLES`。
-4. 补 HAP 内 typed capability probe；真实 Sunshine 和用户 ARM64 真机未提供前，host-control/streaming/protocol truth 继续为 false。
+1. D2-08 增加 Moonlight row-aware sensitive transfer policy，identity capability=false 时不创建/提升 secret，但不破坏既有 opaque ciphertext。
+2. D2-09 增加 owner-scoped 五逻辑 scope selection policy/store，默认 `[]`，stage→RDB projection→Preferences persist 任一步失败回滚。
+3. D2-10 增加 dormant cloud sync service 的 validate/materialize/conflict/quarantine/promotion 合同；因 D2-07 未放行，不得执行真实 Moonlight cloud transfer。
+4. 继续 D3 备份/account lifecycle 纯策略；补 HAP 内 typed capability probe。真实 Sunshine 和用户 ARM64 真机未提供前，host-control/streaming/protocol truth 继续为 false。

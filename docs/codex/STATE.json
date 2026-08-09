@@ -3,13 +3,14 @@
   "task": "moonlight-complete-upgrade",
   "branch": "codex/moonlight-complete-upgrade",
   "base": "aeb0cdac5",
-  "head": "992d0fe",
-  "phase": "d2-local-schema-repository-adapter",
+  "head": "3bbdc61",
+  "phase": "d2-dormant-cloud-policy",
   "status": "active",
-  "next": "Implement D2 local schema migrations, owner-generation-fenced repository, app cache, and exact cloud adapter while cloud registration stays disabled.",
+  "next": "Implement D2-08 through D2-10 row-sensitive transfer, owner-scoped logical selection, and dormant cloud materialization while cloud registration remains disabled.",
   "blockers": [
-    "ohosTest@OhosTestCompileArkTS is not registered (00306054); 43 focused D1 tests are compiled and registered but not executed on device",
-    "HAP runtime capability probes, real Sunshine hosts, AGC schema receipts, and physical ARM64 acceptance remain pending"
+    "ohosTest@OhosTestCompileArkTS is not registered (00306054); 70 focused D1/D2 tests are compiled and registered but not executed on device",
+    "AGC development/test/production Moonlight schema, authorization, and index receipts are absent; D2-07 distributed registration is blocked",
+    "HAP media/input capability probes, real Sunshine hosts, and physical ARM64 acceptance remain pending"
   ],
   "planPaths": [
     "docs/superpowers/plans/2026-07-28-moonlight-harmonyos-complete-upgrade-plan.md",
@@ -44,16 +45,17 @@
       "entry/src/main/module.json5"
     ],
     "receiptId": "",
-    "reason": "New full Moonlight implementation task; review is required after checkpointed implementation. At most two sol-low reviewer agents may be used."
+    "reason": "Full Moonlight implementation is active; review is required after checkpointed implementation. At most two sol-low reviewer agents may be used."
   },
   "lastVerification": {
     "baseline": "clean main@aeb0cdac5 equal to origin/main at task start on 2026-08-09",
-    "diffCheck": "pass on the final D1 tree on 2026-08-09",
-    "testCompile": "pass default@OhosTestCompileArkTS on 2026-08-09; 43 focused Moonlight tests compile-registered",
-    "assembleHap": "pass signed production HAP after the final D1 test-count/document update in 7.759s on 2026-08-09",
+    "diffCheck": "pass after the D2 plan and status update on 2026-08-09",
+    "testCompile": "pass default@OhosTestCompileArkTS after the D2 plan and status update on 2026-08-09; 70 focused Moonlight tests compile-registered",
+    "assembleHap": "pass signed production HAP after the final D2 plan and status update in 6.598s on 2026-08-09",
     "nativeTests": "pass 342/342 outside socket-restricted sandbox on 2026-08-09",
     "moonlightPlatformProbe": "pass arm64-v8a and x86_64 API 23 compile-link probe on 2026-08-09",
-    "lightCompliance": "pass on 2026-08-09",
+    "lightCompliance": "pass after the D2 plan and status update on 2026-08-09",
+    "moonlightRdbRuntime": "pass on ARM64 API 24 emulator: user_version=5, exact 19/20/16 columns, tables=3 and owner-bound receipts=1 after process restart",
     "ohosTest": "blocked task-not-registered 00306054; no execution pass claimed"
   },
   "updated": "2026-08-09 Asia/Shanghai"
