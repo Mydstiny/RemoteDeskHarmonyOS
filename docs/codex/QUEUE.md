@@ -4,14 +4,13 @@ Updated: 2026-08-09 Asia/Shanghai
 
 ## Now
 
-- D2-08/D2-09/D2-10: implement Moonlight row-sensitive transfer policy,
-  owner-scoped logical selection store and dormant cloud materialization service.
+- D3: add Moonlight account-session/barrier wiring, portable backup inventory,
+  restore resolution and deletion-impact contracts while every cloud truth stays false.
 - Keep `moonlightrecordv1` out of the distributed table list until D2-05/D2-06
   produce development, test and production AGC receipts.
 
 ## Next
 
-- D3: account lifecycle, local backup/restore inventory and recovery policy.
 - N1-N3: host control, pairing, media and input.
 - U1-S1: unified UI, connection overlays, PIP/background/reconnect/teardown.
 

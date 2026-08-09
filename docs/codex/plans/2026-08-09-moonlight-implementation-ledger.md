@@ -168,11 +168,13 @@ Hypium 真机执行通过。
 | D2-05 | EXTERNAL PENDING | 尚无 AGC 开发环境 schema/权限/索引/分页/删除 receipt | 不修改生产 `TABLES` |
 | D2-06 | EXTERNAL PENDING | 尚无测试与生产环境等价 receipt | `moonlightCloudSchemaReady=false` |
 | D2-07 | BLOCKED BY D2-05/06 | `CloudSyncPolicy` 仍精确返回既有 8 表，Moonlight 三表均不在注册集合 | 三环境回执齐全前禁止放行 |
-| D2-08～D2-10 | PENDING | row-aware sensitive transfer、逻辑 scope 选择、materialization/quarantine 服务为下一段 | 必须在 registration=false 下先完成纯策略与测试 |
+| D2-08 | PASS | `CloudSensitiveTransferPolicy` 对 Moonlight 逐行 exact/semantic 验证；普通行不依赖 identity crypto；live identity 上传要求 configured crypto + authenticated ciphertext；reset 后既有密文只允许 opaque 下载保留 | 不沿用普通表“crypto off 可按明文上传”的规则；unsafe snapshot 只暂停 Moonlight 物理表 |
+| D2-09 | PASS | 独立五 scope policy/store 默认 `[]`，固定 owner preference key；identity capability=false 时主动裁剪；stage→RDB projection→Preferences persist，失败回滚投影、内存和 durable 值 | 不复用 VNC prefs；所有步骤携带完整 account lease |
+| D2-10 | PASS | dormant `MoonlightCloudSyncService` 完成 physical/logical/identity gate、cloud-first validate/materialize、tombstone、redacted quarantine、partial failure 和 selected local promotion | 只经 port 操作、页面不可拿 CloudStore；`cloudAttempted=false`，不改变 8 表注册集合 |
 
-聚焦聚合器现登记 11 个 Moonlight describe、70 个 test；同样只声明
+聚焦聚合器现登记 14 个 Moonlight describe、92 个 test；同样只声明
 `default@OhosTestCompileArkTS` 编译注册通过，不把缺失的 Hypium 设备执行写成通过。
-D2-01～D2-04 的代码与测试检查点为 `3bbdc61`。
+D2-01～D2-04 的代码与测试检查点为 `3bbdc61`；D2-08～D2-10 为 `5d9c2ff`。
 
 ### 9.1 ARM64 HarmonyOS 虚拟设备 RDB receipt
 
@@ -187,7 +189,7 @@ D2-01～D2-04 的代码与测试检查点为 `3bbdc61`。
 ## 10. 2026-08-09 checkpoint 验证
 
 - `default@OhosTestCompileArkTS`：PASS。
-- signed `assembleHap`：最终 D2 计划和状态文件更新后再次 PASS，`BUILD SUCCESSFUL in 6 s 598 ms`。
+- signed `assembleHap`：D2-08～D2-10 后 PASS，`BUILD SUCCESSFUL in 7 s 710 ms`。
 - host `rdp_native_tests`：沙箱内本地 TLS fixture 因 socket 监听限制为
   326/342；按门禁在沙箱外复跑为 **342/342 PASS**，确认不是代码回归。
 - `scripts/probe_moonlight_platform.sh`：arm64-v8a、x86_64 均 PASS。
@@ -196,7 +198,6 @@ D2-01～D2-04 的代码与测试检查点为 `3bbdc61`。
 
 ## 11. 下一执行序列
 
-1. D2-08 增加 Moonlight row-aware sensitive transfer policy，identity capability=false 时不创建/提升 secret，但不破坏既有 opaque ciphertext。
-2. D2-09 增加 owner-scoped 五逻辑 scope selection policy/store，默认 `[]`，stage→RDB projection→Preferences persist 任一步失败回滚。
-3. D2-10 增加 dormant cloud sync service 的 validate/materialize/conflict/quarantine/promotion 合同；因 D2-07 未放行，不得执行真实 Moonlight cloud transfer。
-4. 继续 D3 备份/account lifecycle 纯策略；补 HAP 内 typed capability probe。真实 Sunshine 和用户 ARM64 真机未提供前，host-control/streaming/protocol truth 继续为 false。
+1. 进入 D3 account lease、SensitiveDataBarrier 和本地备份/恢复 inventory；先做纯策略和端口，Moonlight 云 transfer 继续关闭。
+2. D2-05/06 由 AGC 开发/测试/生产环境提供 schema/授权/索引 receipt；缺失时 D2-07 继续阻断。
+3. 补 HAP 内 typed capability probe；真实 Sunshine 和用户 ARM64 真机未提供前，host-control/streaming/protocol truth 继续为 false。

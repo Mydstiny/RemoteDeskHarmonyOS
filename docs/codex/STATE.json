@@ -3,12 +3,12 @@
   "task": "moonlight-complete-upgrade",
   "branch": "codex/moonlight-complete-upgrade",
   "base": "aeb0cdac5",
-  "head": "3bbdc61",
-  "phase": "d2-dormant-cloud-policy",
+  "head": "5d9c2ff",
+  "phase": "d3-account-backup-lifecycle",
   "status": "active",
-  "next": "Implement D2-08 through D2-10 row-sensitive transfer, owner-scoped logical selection, and dormant cloud materialization while cloud registration remains disabled.",
+  "next": "Implement D3 account lease and sensitive barrier wiring plus portable backup and restore contracts while Moonlight cloud registration remains disabled.",
   "blockers": [
-    "ohosTest@OhosTestCompileArkTS is not registered (00306054); 70 focused D1/D2 tests are compiled and registered but not executed on device",
+    "ohosTest@OhosTestCompileArkTS is not registered (00306054); 92 focused D1/D2 tests are compiled and registered but not executed on device",
     "AGC development/test/production Moonlight schema, authorization, and index receipts are absent; D2-07 distributed registration is blocked",
     "HAP media/input capability probes, real Sunshine hosts, and physical ARM64 acceptance remain pending"
   ],
@@ -50,8 +50,8 @@
   "lastVerification": {
     "baseline": "clean main@aeb0cdac5 equal to origin/main at task start on 2026-08-09",
     "diffCheck": "pass after the D2 plan and status update on 2026-08-09",
-    "testCompile": "pass default@OhosTestCompileArkTS after the D2 plan and status update on 2026-08-09; 70 focused Moonlight tests compile-registered",
-    "assembleHap": "pass signed production HAP after the final D2 plan and status update in 6.598s on 2026-08-09",
+    "testCompile": "pass default@OhosTestCompileArkTS with D2-08 through D2-10 on 2026-08-09; 92 focused Moonlight tests compile-registered",
+    "assembleHap": "pass signed production HAP with D2-08 through D2-10 in 7.710s on 2026-08-09",
     "nativeTests": "pass 342/342 outside socket-restricted sandbox on 2026-08-09",
     "moonlightPlatformProbe": "pass arm64-v8a and x86_64 API 23 compile-link probe on 2026-08-09",
     "lightCompliance": "pass after the D2 plan and status update on 2026-08-09",

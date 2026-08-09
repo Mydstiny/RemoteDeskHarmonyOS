@@ -3,7 +3,7 @@
 > 文档状态：第四次深度审计完成；已于 2026-08-09 从 G0 开始实施
 > 首次评估日期：2026-07-28；二次完成性审计日期：2026-07-29；第三次 HarmonyOS 人因/UI 审计日期：2026-08-01；第四次源码对齐日期：2026-08-08
 > 当前实施基线：任务 `moonlight-complete-upgrade`；分支 `codex/moonlight-complete-upgrade`；基线 `main@aeb0cdac5`，与 `origin/main` 一致
-> 当前实施进度：G0、D1 与 D2-01～D2-04 已形成 checkpoint；HarmonyOS 虚拟设备已验证 owner-store v5、19/20/16 列三表和幂等 schema receipt；AGC 三环境未回执，故 D2-05～D2-07 未放行，六个发布 truth 仍全 false
+> 当前实施进度：G0、D1、D2-01～D2-04 与 dormant D2-08～D2-10 已形成 checkpoint；HarmonyOS 虚拟设备已验证 owner-store v5、19/20/16 列三表和幂等 schema receipt；AGC 三环境未回执，故 D2-05～D2-07 未放行，六个发布 truth 仍全 false
 > 适用仓库：/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS
 > 上游实施锁定：2026-08-09 已只读复核并固定 moonlight-common-c `e41355ea01670fd4c830b384009d31dd0339a705`（ENet `aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1`、nanors `b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a`）、Moonlight Android `f10085f552b367cf7203007693d91c322a0a2936`、Moonlight Qt `2e13ed9977bc31c73caf8428f08f58d793313ece`、Sunshine 测试 pin `v2026.808.164219` / `25c06d79b54f3d092d3fedd5f5ba44989f394692`；完整哈希、许可证和能力证据见 `docs/codex/plans/2026-08-09-moonlight-implementation-ledger.md`
 > 原评估轮次仅更新计划文件；2026-08-09 起的实施变更严格按第 15 节任务 ID、仓库门禁和 fail-closed feature policy 推进。
@@ -2709,13 +2709,13 @@ Moonlight 能从“即将支持”变成可点击，仅当下列事实同时成�
 | 层次 | 当前源码事实 | 当前可声明能力 | 下一任务边界 |
 | --- | --- | --- | --- |
 | 领域模型 | `MoonlightModels.ets`、`MoonlightRecord.ets`、六个 Moonlight policy/state 文件已存在；D1 共 43 个测试源 | DTO、canonical/hash、19/20 列 envelope、冲突、设置裁剪、feature truth 和 session 状态机可编译 | 不改 UI、CloudCoordinator 或 native；D1 只有发现缺陷时才回开 |
-| 本地数据 | `MoonlightStoragePolicy.ets`、`MoonlightRepository.ets`、`MoonlightAppCache.ets`、`MoonlightAppCacheService.ets` 已存在；`CloudStore.ets` owner schema 为 v5 | owner-store 中 19/20/16 三表、lease fenced local-first upsert/tombstone、目录 cache 与有界 LRU | D2-08～D2-10 只能增加 dormant policy/service，不得偷偷注册云表 |
-| 云适配 | `CloudTableAdapter.ets` 已认识 exact 19 列 envelope；`CloudSyncPolicy.TABLES` 仍是原有 8 表 | 可以纯函数验证/投影候选 row；没有 Moonlight 云上传、下载或“已同步”能力 | 先完成 row-sensitive gate、五 scope selection 和 materializer；D2-07 必须等三环境 AGC receipt |
+| 本地数据 | `MoonlightStoragePolicy.ets`、`MoonlightRepository.ets`、`MoonlightAppCache.ets`、`MoonlightAppCacheService.ets` 已存在；`CloudStore.ets` owner schema 为 v5 | owner-store 中 19/20/16 三表、lease fenced local-first upsert/tombstone、目录 cache 与有界 LRU | D3 才接 account barrier/backup；不得偷偷注册云表 |
+| 云适配 | exact 19 列 adapter、row-sensitive transfer、五 scope selection store 和 dormant materializer 已存在；`CloudSyncPolicy.TABLES` 仍是原有 8 表 | 可以验证/隔离/本地物化候选 row，所有结果明确 `cloudAttempted=false`；没有 Moonlight 云上传、下载或“已同步”能力 | D3 只接生命周期/备份；D2-07 必须等三环境 AGC receipt |
 | 云数据 | `moonlightrecordv1` 是唯一未来分布式物理表；`moonlightlocalrecords` 和 `moonlightappcache` 永远本地 | 19 列 schema 已在 ARM64 API 24 owner-store 实例化和重开验证 | cache 不进云/备份；local mirror 只有 promotion 后才投影；identity 继续默认关闭 |
 | Native | 只有独立 API 23 双 ABI link probe；尚未 vendor common-c，也没有 Moonlight NAPI/session/media/input 实现 | 只能声明 SDK 符号静态可链接，不能声明配对、解码、音频或输入可用 | 从 N1-01 开始，依赖和补丁单独落地；没有真实 Sunshine 时不越过运行验收 |
 | UI | `HostListPage.ets` 当前仅有禁用的 Moonlight FAB 项、system Symbol 和“即将支持”；没有 Moonlight 添加/目录/设置/会话页 | 入口信息可见但不可交互；点击无副作用 | 直到 U1 的数据与 N1 host-control 前置都满足，保持现状；不提前建可保存假表单 |
 | 品牌 | 官方 SVG 已固定 hash，但尚无 provenance/商标/视觉验收 receipt | 只能使用现有 system Symbol 回退 | `moonlightBrandAssetReady=false`；品牌门通过后再替换资源并保留 NOTICE |
-| 验证 | 11 个 describe、70 个 D1/D2 测试源已进入聚合器；两项 Hvigor、signed HAP、Light、双 ABI probe 通过 | 只声明测试编译注册，不声明 Hypium 设备执行 | `ohosTest` task 未注册；最终功能验收必须在用户 ARM64 实机和真实 Sunshine 上完成 |
+| 验证 | 14 个 describe、92 个 D1/D2 测试源已进入聚合器；两项 Hvigor、signed HAP、Light、双 ABI probe 通过 | 只声明测试编译注册，不声明 Hypium 设备执行 | `ohosTest` task 未注册；最终功能验收必须在用户 ARM64 实机和真实 Sunshine 上完成 |
 
 当前数据流只能是：
 
@@ -2724,7 +2724,7 @@ UI（当前无 Moonlight 可写页面）
   -> 未来 Moonlight service/repository
   -> MoonlightRepository
   -> moonlightlocalrecords + cloudsyncjournal（原子本地提交）
-  -> [D2-08～D2-10 dormant validate/materialize/projection]
+  -> D2-08～D2-10 dormant validate/materialize/projection（已实现，零 cloud I/O）
   -> [D2-07 尚关闭：不得调用 Moonlight setDistributedTables]
   -> [AGC dev/test/prod receipt 齐全后才可能启用 moonlightrecordv1]
 
@@ -2743,6 +2743,6 @@ Sunshine / common-c / media / input 当前完全不在这条已实现链路中�
 8. 更新实施台账中的状态、证据、blocker 和唯一下一任务；同步 `CURRENT/QUEUE/STATE`，再用精确文件列表形成一个可回滚提交。
 9. 只有当任务合同、测试和对应门禁均通过时标记 `PASS`；“代码写完”“构建通过”“请求已排队”均不是产品能力完成。
 
-当前唯一可直接继续的代码任务是 D2-08，然后是 D2-09、D2-10。D2-05/06 由 AGC 外部环境提供证据，D2-07 依赖二者；N1、D3 的不依赖外部环境部分可在 D2 dormant checkpoint 后按依赖图继续。任何执行者都不得因为云端受阻而把 `moonlightrecordv1` 塞入现有八表注册清单，也不得因为 native 未接入而先把灰色入口改成可点击。
+当前唯一可直接继续的代码阶段是 D3 中不依赖真实 AGC transfer 的 account barrier、备份、恢复和删除影响合同。D2-05/06 由 AGC 外部环境提供证据，D2-07 依赖二者；N1 可按依赖图独立开始。任何执行者都不得因为云端受阻而把 `moonlightrecordv1` 塞入现有八表注册清单，也不得因为 native 未接入而先把灰色入口改成可点击。
 
 <!-- PLAN_BODY_END -->
