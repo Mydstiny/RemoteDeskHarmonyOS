@@ -58,7 +58,7 @@ export function forwardingProfilePreferenceKey(ownerHostId: string): string {
 
 const PROFILE_KEYS: string[] = [
   'id', 'mode', 'bindHost', 'bindPort', 'targetHost', 'targetPort', 'maxConnections',
-  'enabled', 'allowPublicBind', 'minBindPort', 'maxBindPort', 'maxBytes', 'expiresAtMs'
+  'enabled', 'startPolicy', 'allowPublicBind', 'minBindPort', 'maxBindPort', 'maxBytes', 'expiresAtMs'
 ];
 
 function hasOnlyProfileKeys(profile: SshForwardingProfile): boolean {

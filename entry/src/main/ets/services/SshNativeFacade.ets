@@ -9,6 +9,8 @@
 import {
   SessionConfig,
   SftpListAsyncResult,
+  SshForwardingConfig,
+  SshForwardingSnapshotsResult,
   SshSessionEventsResult,
   SshSessionSnapshot,
   SshTerminalInputEnqueueResult
@@ -87,6 +89,53 @@ export class SshNativeFacade {
   }
 
   accepts(handle: SshSessionHandle): boolean { return this.store.accepts(handle); }
+
+  forwardingSessionState(handle: SshSessionHandle): SshSessionLifecycleState | '' {
+    const context = this.store.context(handle);
+    return context === null ? '' : context.state;
+  }
+
+  configureSshForwarding(handle: SshSessionHandle, config: SshForwardingConfig): number {
+    if (!this.store.accepts(handle)) { return -75; }
+    return this.loader.configureSshForwarding(handle.sessionId, handle.generation, config);
+  }
+
+  removeSshForwarding(handle: SshSessionHandle, id: string): number {
+    if (!this.store.accepts(handle)) { return -75; }
+    return this.loader.removeSshForwarding(handle.sessionId, handle.generation, id);
+  }
+
+  startSshForwarding(handle: SshSessionHandle, id: string): number {
+    if (!this.store.accepts(handle)) { return -75; }
+    return this.loader.startSshForwarding(handle.sessionId, handle.generation, id);
+  }
+
+  stopSshForwarding(handle: SshSessionHandle, id: string): number {
+    if (!this.store.accepts(handle)) { return -75; }
+    return this.loader.stopSshForwarding(handle.sessionId, handle.generation, id);
+  }
+
+  completeSshForwardingStop(handle: SshSessionHandle, id: string): number {
+    if (!this.store.accepts(handle)) { return -75; }
+    return this.loader.completeSshForwardingStop(handle.sessionId, handle.generation, id);
+  }
+
+  acquireSshForwardingConnection(handle: SshSessionHandle, id: string): number {
+    if (!this.store.accepts(handle)) { return -75; }
+    return this.loader.acquireSshForwardingConnection(handle.sessionId, handle.generation, id);
+  }
+
+  releaseSshForwardingConnection(handle: SshSessionHandle, id: string): number {
+    if (!this.store.accepts(handle)) { return -75; }
+    return this.loader.releaseSshForwardingConnection(handle.sessionId, handle.generation, id);
+  }
+
+  getSshForwardingSnapshots(handle: SshSessionHandle): SshForwardingSnapshotsResult {
+    if (!this.store.accepts(handle)) {
+      return { errorCode: -75, sessionId: handle.sessionId, sessionGeneration: 0, snapshots: [] };
+    }
+    return this.loader.getSshForwardingSnapshots(handle.sessionId, handle.generation);
+  }
 
   snapshot(handle: SshSessionHandle): SshSessionSnapshot {
     if (!this.store.accepts(handle)) {

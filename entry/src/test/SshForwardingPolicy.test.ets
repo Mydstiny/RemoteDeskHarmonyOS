@@ -3,6 +3,7 @@ import {
   SSH_FORWARDING_MAX_CONNECTIONS,
   SSH_FORWARDING_MAX_PROFILES,
   SshForwardingProfile,
+  SshForwardingStartPolicy,
   defaultSshForwardingProfile,
   validateSshForwardingProfile,
   validateSshForwardingProfiles
@@ -25,6 +26,7 @@ export default function sshForwardingPolicyTest(): void {
       expect(defaultSshForwardingProfile('local').minBindPort).assertEqual(1);
       expect(defaultSshForwardingProfile('local').maxBindPort).assertEqual(65535);
       expect(defaultSshForwardingProfile('local').maxBytes).assertEqual(0);
+      expect(defaultSshForwardingProfile('local').startPolicy).assertEqual('manual');
     });
 
     it('validates local and dynamic mode contracts', 0, (): void => {
@@ -63,6 +65,10 @@ export default function sshForwardingPolicyTest(): void {
       invalidBytes.maxBytes = -1;
       expect(validateSshForwardingProfile(invalidBytes).code)
         .assertEqual('E-SSH-FORWARD-BYTE-LIMIT');
+      const invalidStartPolicy: SshForwardingProfile = localProfile();
+      invalidStartPolicy.startPolicy = 'unexpected' as SshForwardingStartPolicy;
+      expect(validateSshForwardingProfile(invalidStartPolicy).code)
+        .assertEqual('E-SSH-FORWARD-START-POLICY');
       const duplicate: SshForwardingProfile = localProfile();
       expect(validateSshForwardingProfiles([localProfile(), duplicate]).code)
         .assertEqual('E-SSH-FORWARD-DUPLICATE-ID');

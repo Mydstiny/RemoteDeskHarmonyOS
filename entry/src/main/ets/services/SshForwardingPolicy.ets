@@ -6,6 +6,7 @@
  * become a public listener by accident.
  */
 export type SshForwardingMode = 'local' | 'remote' | 'dynamic';
+export type SshForwardingStartPolicy = 'manual' | 'onSessionReady';
 
 export interface SshForwardingProfile {
   id: string;
@@ -16,6 +17,7 @@ export interface SshForwardingProfile {
   targetPort: number;
   maxConnections: number;
   enabled: boolean;
+  startPolicy?: SshForwardingStartPolicy;
   /** Public bind is an explicit user choice, never an implicit default. */
   allowPublicBind: boolean;
   minBindPort?: number;
@@ -52,6 +54,10 @@ function isForwardingMode(value: string): value is SshForwardingMode {
   return value === 'local' || value === 'remote' || value === 'dynamic';
 }
 
+function isStartPolicy(value: string): value is SshForwardingStartPolicy {
+  return value === 'manual' || value === 'onSessionReady';
+}
+
 function isValidPort(value: number): boolean {
   return Number.isFinite(value) && Number.isInteger(value) && value >= 1 && value <= 65535;
 }
@@ -79,6 +85,8 @@ function normalizedProfile(profile: SshForwardingProfile): SshForwardingProfile 
     ? SSH_FORWARDING_DEFAULT_MAX_BIND_PORT : profile.maxBindPort;
   const maxBytes: number = profile.maxBytes === undefined ? 0 : profile.maxBytes;
   const expiresAtMs: number = profile.expiresAtMs === undefined ? 0 : profile.expiresAtMs;
+  const startPolicy: SshForwardingStartPolicy = profile.startPolicy === undefined
+    ? 'manual' : (isStartPolicy(profile.startPolicy) ? profile.startPolicy : 'manual');
   return {
     id: profile.id.trim().substring(0, 96),
     mode,
@@ -88,6 +96,7 @@ function normalizedProfile(profile: SshForwardingProfile): SshForwardingProfile 
     targetPort: profile.targetPort,
     maxConnections: profile.maxConnections,
     enabled: profile.enabled === true,
+    startPolicy,
     allowPublicBind: profile.allowPublicBind === true,
     minBindPort,
     maxBindPort,
@@ -106,6 +115,7 @@ export function defaultSshForwardingProfile(mode: SshForwardingMode): SshForward
     targetPort: 0,
     maxConnections: SSH_FORWARDING_DEFAULT_MAX_CONNECTIONS,
     enabled: true,
+    startPolicy: 'manual',
     allowPublicBind: false,
     minBindPort: SSH_FORWARDING_DEFAULT_MIN_BIND_PORT,
     maxBindPort: SSH_FORWARDING_DEFAULT_MAX_BIND_PORT,
@@ -127,6 +137,14 @@ export function validateSshForwardingProfile(profile: SshForwardingProfile): Ssh
   }
   if (!isForwardingMode(normalized.mode)) {
     return { valid: false, code: 'E-SSH-FORWARD-MODE', message: '转发模式无效', profile: normalized };
+  }
+  if (profile.startPolicy !== undefined && !isStartPolicy(profile.startPolicy)) {
+    return {
+      valid: false,
+      code: 'E-SSH-FORWARD-START-POLICY',
+      message: '自动启动策略无效',
+      profile: normalized
+    };
   }
   if (normalized.bindHost.length === 0 || normalized.bindHost.length > 255) {
     return { valid: false, code: 'E-SSH-FORWARD-BIND-HOST', message: '监听地址无效', profile: normalized };

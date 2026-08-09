@@ -147,6 +147,7 @@ import sshForwardingPolicyTest from './SshForwardingPolicy.test';
 import sshProxyProfilePolicyTest from './SshProxyProfilePolicy.test';
 import sshProxyProfileStoreTest from './SshProxyProfileStore.test';
 import sshForwardingProfileStoreTest from './SshForwardingProfileStore.test';
+import sshForwardingControllerTest from './SshForwardingController.test';
 
 export default function testsuite() {
   localUnitTest();
@@ -298,4 +299,5 @@ export default function testsuite() {
   sshProxyProfilePolicyTest();
   sshProxyProfileStoreTest();
   sshForwardingProfileStoreTest();
+  sshForwardingControllerTest();
 }
