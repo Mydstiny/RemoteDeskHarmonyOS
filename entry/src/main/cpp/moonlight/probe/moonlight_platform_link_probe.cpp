@@ -21,6 +21,8 @@
 #include <sys/socket.h>
 #include <time.h>
 
+#include "../security/MoonlightSecureIdentity.h"
+
 namespace {
 
 template<typename Function>
@@ -46,6 +48,11 @@ int main()
         IsLinked(&socket) && IsLinked(&clock_gettime) && IsLinked(&pthread_create);
     const bool cryptoSymbolsLinked =
         IsLinked(&TLS_method) && IsLinked(&SSL_CTX_new) && IsLinked(&EVP_sha256);
+    const bool identityBoundaryLinked =
+        remotedesk::moonlight::moonlightSecureIdentityPlatformCompileProbe();
 
-    return platformSymbolsLinked && transportSymbolsLinked && cryptoSymbolsLinked ? 0 : 1;
+    return platformSymbolsLinked && transportSymbolsLinked &&
+                   cryptoSymbolsLinked && identityBoundaryLinked
+               ? 0
+               : 1;
 }
