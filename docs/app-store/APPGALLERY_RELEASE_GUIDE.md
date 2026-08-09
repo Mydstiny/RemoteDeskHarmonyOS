@@ -1,15 +1,15 @@
 # AppGallery 上架准备与提交流程
 
-更新日期：2026-06-30
+更新日期：2026-08-09
 
 ## 一、当前已准备
 
-1. 已准备隐私政策：`docs/app-store/PRIVACY_POLICY.md`
+1. 已准备隐私政策：`docs/app-store/PRIVACY_POLICY.md`；公开页面发布路径为 `https://mydstiny.github.io/RemoteDeskHarmonyOS/privacy/`
 2. 已准备用户使用文档：`docs/app-store/USER_GUIDE.md`
 3. 已新增发布与隐私自查清单：`docs/app-store/RELEASE_PRIVACY_CHECKLIST.md`
 4. 应用内设置页新增简单使用教程和关于应用弹窗入口。
 5. 引导页已按当前协议入口、云同步、安全和 PC 适配能力重构。
-6. 权限声明已集中在 `entry/src/main/module.json5`，相机和生物识别为使用时授权。
+6. 权限声明已集中在 `entry/src/main/module.json5`，分布式数据管理、相机和生物识别为使用时授权。
 
 ## 二、上架前仍需人工确认
 
@@ -58,9 +58,9 @@ $env:OHOS_SDK_HOME='C:\Program Files\Huawei\DevEco Studio\sdk'
 
 1. 登录 AppGallery Connect。
 2. 创建项目和 HarmonyOS 应用，包名必须与 `AppScope/app.json5` 一致。
-3. 开通 Account Kit、Cloud DB、生物识别相关能力，并按项目实际需要配置云数据库表。
-4. 上传 HAP 包。
-5. 填写基本信息、应用分类、标签、隐私政策链接、权限用途说明。
+3. 开通 Account Kit、华为云空间服务、生物识别相关能力，并按项目实际需要配置云表。
+4. 上传签名后的 APP/HAP 包。
+5. 填写基本信息、应用分类、标签、隐私政策链接和权限用途说明；隐私政策链接使用 `https://mydstiny.github.io/RemoteDeskHarmonyOS/privacy/`，并明确声明 `ohos.permission.DISTRIBUTED_DATASYNC` 用于用户登录华为账号并使用云同步时，通过华为云空间服务同步跨设备数据。
 6. 上传应用图标和 3 到 8 张真实截图。
 7. 填写版本说明并提交审核。
 
@@ -80,7 +80,7 @@ $env:OHOS_SDK_HOME='C:\Program Files\Huawei\DevEco Studio\sdk'
 ## 六、审核重点自查
 
 1. 首次进入应用不能在未授权前收集非必要个人信息。
-2. 权限申请必须发生在功能触发时，相机只用于 TOTP 扫码，生物识别只用于安全验证。
+2. 权限申请必须发生在功能触发时：分布式数据管理权限只用于用户登录后的云同步，相机只用于 TOTP 扫码，生物识别只用于安全验证。
 3. 设置页必须能看到版本、使用教程、关于应用和隐私政策入口或链接。
 4. 所有按钮应有响应，空状态应可理解。
 5. 真机连续使用、断网、登录失败、连接失败、切后台恢复都不能崩溃。

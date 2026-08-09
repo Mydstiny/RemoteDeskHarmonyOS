@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>RemoteDesktop 隐私政策</title>
+  <style>
+    :root { color-scheme: light dark; font-family: system-ui, -apple-system, sans-serif; }
+    body { margin: 0; background: Canvas; color: CanvasText; line-height: 1.75; }
+    main { box-sizing: border-box; max-width: 860px; margin: 0 auto; padding: 32px 22px 64px; }
+    h1 { margin-bottom: 0.2em; font-size: 2rem; }
+    h2 { margin-top: 1.8em; font-size: 1.3rem; }
+    code { overflow-wrap: anywhere; }
+    .date { color: GrayText; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>RemoteDesktop 隐私政策</h1>
+    <p class="date">更新日期：2026-08-09<br>生效日期：2026-08-09</p>
+    <p>本隐私政策适用于 HarmonyOS NEXT 应用“RemoteDesktop”。本应用用于在你的设备和你配置的远程主机之间建立 RDP、RustDesk、SSH、VNC 连接；同时提供主机配置管理、华为账号同步、密钥保险库、TOTP 验证器和本地安全保护能力。</p>
+
+    <h2>一、我们收集和处理的信息</h2>
+    <p>本应用仅在实现功能所必需的范围内处理数据：</p>
+    <ol>
+      <li>账号信息：华为账号 UnionID、昵称、头像，用于账号登录和跨设备同步。</li>
+      <li>主机配置：主机名称、IP 或域名、端口、协议类型、分组、显示配置、RustDesk 中继配置。</li>
+      <li>敏感凭据：远程主机密码、SSH 私钥、TOTP secret、RustDesk 中继账户密码。</li>
+      <li>应用偏好：主题、强调色、壁纸、终端字号、RDP/RustDesk 画质与控制模式等设置。</li>
+      <li>权限相关数据：相机实时画面仅用于扫描 TOTP 二维码，不保存照片或视频；生物识别由系统处理，本应用只接收认证通过或失败结果。</li>
+    </ol>
+    <p>本应用不收集远程桌面屏幕内容、SSH 会话历史、精确位置、通讯录、短信、通话记录、已安装应用列表、IMEI 或序列号。</p>
+
+    <h2>二、数据用途</h2>
+    <ol>
+      <li>建立远程连接：根据你保存的主机配置发起 RDP、RustDesk、SSH 或 VNC 连接。</li>
+      <li>云同步：在你登录华为账号并使用云同步功能时，通过华为云空间服务，在同一华为账号的设备间同步主机核心配置、加密凭据、密钥、TOTP、RustDesk 中继、VNC 记录及共享设置。设备专属的显示、输入、画质和控制模式等个性化设置仅保存在当前设备。</li>
+      <li>安全保护：使用主密码、AES-256-GCM 加密、生物识别验证和 TOTP 隐私保护，降低敏感数据被未授权访问的风险。</li>
+      <li>个性化体验：根据你的主题、壁纸、窗口尺寸和控制模式偏好调整界面。</li>
+    </ol>
+
+    <h2>三、权限说明</h2>
+    <ol>
+      <li><code>ohos.permission.INTERNET</code>：用于连接你指定的远程主机、RustDesk 中继以及华为账号和云空间服务。</li>
+      <li><code>ohos.permission.GET_NETWORK_INFO</code>：用于判断当前网络是否可用，并展示远程连接和云同步的网络状态。</li>
+      <li><code>ohos.permission.KEEP_BACKGROUND_RUNNING</code>：用于你主动建立远程会话后维持必要的数据传输、音频播放或多设备连接；不会用于无关的后台活动。</li>
+      <li><code>ohos.permission.FILE_ACCESS_PERSIST</code>：用于在你通过系统文件选择器选择 SFTP 本地文件或目录后，保存该 URI 的访问授权，以便应用或设备重启后继续访问；该权限不会授予应用访问其他未选择文件的能力。</li>
+      <li><code>ohos.permission.DISTRIBUTED_DATASYNC</code>（分布式数据管理权限）：在你登录华为账号并使用云同步功能时，用于通过华为云空间服务，在同一华为账号的设备间同步主机核心配置、加密凭据、密钥、TOTP、RustDesk 中继、VNC 记录及共享设置。</li>
+      <li><code>ohos.permission.CAMERA</code>：仅在你主动扫描 TOTP 二维码时申请，用于识别二维码内容，不保存照片或视频。</li>
+      <li><code>ohos.permission.ACCESS_BIOMETRIC</code>：仅在你启用主机安全锁或 TOTP 隐私保护时用于系统认证；本应用不会取得你的指纹或面部特征数据。</li>
+      <li><code>ohos.permission.DETECT_GESTURE</code>：用于握持手势检测和界面适配优化。</li>
+    </ol>
+    <p>拒绝 <code>ohos.permission.DISTRIBUTED_DATASYNC</code> 后，云同步功能不可用，但不影响应用的本地基础功能；拒绝相机或生物识别权限不会影响其他基础功能。</p>
+
+    <h2>四、数据存储与保护</h2>
+    <p>敏感数据使用主密码派生的数据加密密钥进行 AES-256-GCM 加密。主密码不会明文存储，数据加密密钥仅存在于内存中。你忘记主密码后，我们无法帮你恢复已加密数据。</p>
+    <p>云同步数据通过华为云空间服务传输和保存。敏感字段在离开设备前已加密。远程桌面视频、音频、输入和会话内文本数据在连接过程中传输，不由本应用服务器中转或保存。</p>
+
+    <h2>五、第三方共享</h2>
+    <p>本应用不集成广告 SDK，不进行用户画像，不向第三方出售或共享你的个人信息。</p>
+    <p>本应用使用华为官方 Kit 和华为云空间服务提供账号、云同步、生物识别、加密和关键资产存储能力。相关数据处理遵循华为服务的规则。RustDesk 中继服务器由你自行选择或配置，本应用不是中继服务提供方。</p>
+
+    <h2>六、你的权利</h2>
+    <p>你可以在应用内查看、修改、删除主机、密钥、TOTP 和中继配置。你可以退出华为账号以停止云同步，也可以在设置中关闭或重置加密。重置加密会清空相关数据，请谨慎操作。</p>
+    <p>你也可以通过系统设置撤回相机、生物识别和分布式数据管理等权限授权。</p>
+
+    <h2>七、未成年人保护</h2>
+    <p>本应用不面向未成年人设计。如未成年人需要使用，应在监护人陪同和同意下使用。</p>
+
+    <h2>八、政策更新</h2>
+    <p>隐私政策发生重大变化时，我们会在应用内或发布说明中提示。继续使用本应用即表示你已了解更新后的政策。</p>
+
+    <h2>九、联系我们</h2>
+    <p>如有隐私相关问题、意见或投诉，请联系：<a href="mailto:lijiong1219@petalmail.com">lijiong1219@petalmail.com</a></p>
+  </main>
+</body>
+</html>
