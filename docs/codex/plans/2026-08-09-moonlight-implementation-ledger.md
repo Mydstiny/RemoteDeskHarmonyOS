@@ -224,8 +224,9 @@ D3 账户生命周期代码检查点为 `05e96d3`；便携备份/本地恢复检
 | N1-01 | PASS | `0013ba034` 原样纳入 common-c `e41355e...`、ENet `aca8784...`、nanors `b1e3c22...` 共 117 个文件；锁文件记录 commit/tree/license/file manifest/build receipt；校验器离线重建三个官方 Git tree，并把两个子模块按 `160000` gitlink 注入 common-c tree | 不再编辑 upstream；升级 revision 时必须重新生成 lock、NOTICE、SPDX、hash、source offer 和双 ABI receipt |
 | N1-02 | PASS | `99edc58` 新增唯一项目 CMake 边界，standalone/product 共用同一 static/PIC/OpenSSL/warning policy；两 ABI 私有链接 `common-c`/ENet，但链接前后动态符号、NAPI 相关面和 423 项 HAP 清单完全一致 | 不回开构建边；N1-03 只能新增 session owner 与定向测试，不接 NAPI/runtime UI |
 | N1-03 | PASS | `18cdd39aa` 新增 hidden pure-native owner；13 个确定性用例证明并发 start、cancel/interrupt 栅栏、stop/drain、stale key、异常和析构；全量 native 355/355 | 不回开 owner 车道；N1-04 只能以 exact request key 消费其归属合同，不另建 active pointer/singleton |
-| N1-04 | READY | N1-03 已通过；锁定的官方 Android `NvHTTP`/`PairingManager` revision、D1 host/catalog DTO 和错误/安全合同可作为 wire 事实 | 建立 transport-injected、严格有界且不可由 UI 调用的 Host API core；identity/pairing orchestration/NAPI 留给后续 ID |
-| N1-05～N1-08 | PENDING | D1 host/pairing/catalog 合同与 D3 runtime ports 已冻结 | 必须逐 ID 推进；N1-04 未通过前不创建 secure identity/pairing/NAPI surface |
+| N1-04 | PASS | `fd2d7ec92` 新增 transport-injected pure-native Host API；15 个确定性用例覆盖 official request/XML、exact cancel/deadline、地址 fallback、mutation unknown、trust/cancel verification、fuzz 与脱敏；全量 native/ASan/UBSan 370/370 | 不回开 Host API parser/request owner；N1-05 只提供 owner-scoped identity/短期 TLS material lease，不创建第二套 HTTP、pairing 或 NAPI |
+| N1-05 | READY | N1-04 已通过；owner/installation 作用域、RSA-2048 client cert、HUKS-first/包裹 PKCS#8 fallback、安全删除与 D3 identity port 合同已冻结 | 建立 native secure identity bridge 与平台探针；HAP/AppSpawn 内能力未证实时保持 runtime ready=false，严禁明文私钥 fallback |
+| N1-06～N1-08 | PENDING | D1 host/pairing/catalog 合同与 D3 runtime ports 已冻结 | 必须逐 ID 推进；N1-05 未通过前不创建 pairing/NAPI surface |
 
 N1-01 的可复现证据：
 
@@ -315,7 +316,10 @@ NAPI。必须按以下原子步骤执行：
    先走 HTTPS；`applist`/`appasset`/pair challenge/launch/resume/cancel 必须是
    authenticated HTTPS。`pair`/`unpair` 的低层 request 形状可构造，但 N1-06 前
    不执行配对密码学；launch/resume 只消费调用者给出的 opaque launch material，
-   N1-04 不生成/持久化 `rikey`。证书不匹配只能返回 `trustConflict`；允许为重新
+   N1-04 不生成/持久化 `rikey`；`rikey` 必须是 32 hex、`rikeyid` 兼容官方
+   `SecureRandom.nextInt()` 的 signed 32-bit，且 request 固定 `corever=1`。cancel
+   返回 200 后还必须用 authenticated HTTPS `serverinfo` 复核 `currentgame=0`；忙、
+   失败或无法判定都不能写成功。证书不匹配只能返回 `trustConflict`；允许为重新
    配对读取 HTTP 候选，但绝不能借此维持 paired/launch truth。
 6. transport 是唯一注入 seam，接收 immutable request、absolute deadline、
    cancel probe 和 response budget，返回 DNS/connect/TLS/HTTP/body 阶段及
@@ -325,9 +329,10 @@ NAPI。必须按以下原子步骤执行：
    自动换地址重放，必须返回 `unknown` 交给显式用户重试/主机复核。
 7. 全部输入先过 budget：URL ≤ 8 KiB、body ≤ 4 MiB、XML depth ≤ 32、elements
    ≤ 16384、每元素 attributes ≤ 16、name ≤ 64 bytes、attribute ≤ 1 KiB、单 text
-   node ≤ 256 KiB、apps ≤ 2048、title ≤ 1 KiB。拒绝 DTD、DOCTYPE、processing
-   instruction、外部/自定义 entity、NUL、非法 UTF-8、未闭合/错配标签、重复 root
-   和 trailing non-whitespace；只解码五个 XML builtin entity 与合法 numeric entity。
+   node ≤ 256 KiB、apps ≤ 2048、title ≤ 1 KiB。只允许一个有界且位于 root 前的
+   XML declaration；拒绝其他 processing instruction、DTD、DOCTYPE、外部/自定义
+   entity、NUL、非法 UTF-8、未闭合/错配标签、重复 root 和 trailing
+   non-whitespace；只解码五个 XML builtin entity 与合法 numeric entity。
 8. root 必须带唯一十进制 `status_code`；按官方兼容行为接受 `0..UINT32_MAX` 后映射
    到 signed 32-bit（包括 `0xFFFFFFFF → -1`），只有 200 进入业务解析。
    serverinfo 必填 `uniqueid/appversion/state/PairStatus/currentgame`，version 必须为
@@ -335,8 +340,9 @@ NAPI。必须按以下原子步骤执行：
    是有界 optional。app list 只提交正整数唯一 ID、非空 title 和可选 HDR；未知字段
    忽略，缺字段计入 bounded partial，冲突 duplicate ID 或同 ID 不同 title 整批失败。
 9. timeout 使用一次 absolute budget，不因 DNS、地址切换或 body progress 重置；
-   参考官方 3s short-connect、5s long-connect、7s read，但 caller 只能在冻结的最小/
-   最大范围内选择。HTTP transport status 与 XML root status 分开保存；404、401、
+   参考官方 3s short-connect、5s long-connect、7s read，但 caller budget 下限固定
+   100ms，普通操作上限 30s，只有用户正在等待 PIN 的初始 `getservercert` pair
+   阶段可到 120s。HTTP transport status 与 XML root status 分开保存；404、401、
    TLS version、chain、pin mismatch、timeout、cancel、body-too-large、malformed XML、
    host busy 和 action unknown 都有稳定 code，不能压成一个“连接失败”。
 10. diagnostics 只保留 operation、stage、attempt index、family、port、HTTP/XML status、
@@ -350,27 +356,56 @@ NAPI。必须按以下原子步骤执行：
     unknown result 和日志 canary。通过全量 native、双 ABI产品编译/符号/HAP 隔离、
     双 Hvigor、vendor/TOTP/Light/diff/state 后单独 checkpoint，才允许 N1-05。
 
-## 12. 2026-08-10 N1-01～N1-03 checkpoint 验证
+N1-04 完成证据：
+
+- 代码 checkpoint `fd2d7ec92` 只修改主 CMake，并新增
+  `MoonlightHostApi.h/.cpp` 与一个 focused native test 文件；没有 NAPI、ArkTS、
+  production transport/identity、pairing orchestration、媒体、输入、云、资源、UI
+  或 feature truth 变化。
+- public PIMPL/header 无 common-c、OpenSSL、NAPI/ArkUI include；每个请求绑定非零
+  `requestId + generation + ownerToken`，使用同一 monotonic absolute deadline、
+  exact cancellation/stale fence，析构 cancel/drain 且没有 worker/detach。
+- request builder 对齐锁定的官方 Android revision，包括端口、fixed uniqueid、逐请求
+  UUID、IPv6/SNI 分离、pair/app/launch/resume/cancel query；只读按 caller 冻结地址
+  顺序 fallback，mutation 只有 `notSent` 才可重试，任何 maybe-sent 结果均为
+  `actionUnknown`。cancel 以 authenticated `serverinfo/currentgame` 再确认。
+- parser 事务式提交并实施 4 MiB/32 depth/16384 element/16 attrs/64-byte name/
+  1 KiB attr/256 KiB text/2048 apps/1 KiB title 全部预算；允许唯一 leading XML
+  declaration，拒绝其他 PI、DTD/custom entity、NUL、非法 UTF-8、重复 root 与尾随
+  junk。15 个定向用例还包含 512 个确定性随机 body 与截断 corpus。
+- 沙箱外全量 native **370/370 PASS**；同一 370 项在 ASan/UBSan 下 PASS、无报告。
+  macOS sanitizer 不支持 leak detection，因此明确以 `detect_leaks=0` 运行，未伪造
+  LSan 证据。
+- arm64-v8a/x86_64 各保持 48 个 `rdpnapi` compile command，并恰有一个 private
+  Host API archive command、零 upstream include leak；defined/undefined/
+  `napi|init|register` inventories 分别保持 16103/698/716 与 15634/696/711，均和
+  N1-03 基线逐字相同；签名 HAP 仍为同一 423 项。
+- 最终代码上的双 Hvigor、双 ABI platform probe、common-c 四个 locked receipt、
+  vendor 三 tree/117 文件/合规生成幂等、TOTP、Light 与 diff 均 PASS；HDC 仍为
+  `Connect server failed`，未新增 Hypium、真实 Sunshine 或用户实机声明。
+
+## 12. 2026-08-10 N1-01～N1-04 checkpoint 验证
 
 - `default@OhosTestCompileArkTS`：N1-02 最终源码后退出码 0；19 个 describe、138 个 Moonlight test 编译注册。
 - signed `assembleHap`：N1-02 最终源码后退出码 0，`BUILD SUCCESSFUL in 7 s 242 ms`；423 项路径 inventory 与 N1-02 前一致。
-- host `rdp_native_tests`：N1-03 最终二进制新增 13 个 owner 用例；沙箱内只有
-  16 个本地 TLS fixture 因 socket 监听限制失败，按门禁在沙箱外复跑为
-  **355/355 PASS**，确认不是代码回归。
+- host `rdp_native_tests`：N1-04 最终二进制新增 15 个 Host API 用例；按门禁在
+  允许 loopback socket 的环境复跑为 **370/370 PASS**，ASan/UBSan 同为 370/370。
 - `scripts/probe_moonlight_platform.sh`：arm64-v8a、x86_64 均 PASS。
 - `verify_open_source_release.ps1 -Mode Light`：N1-02 后 PASS；Release 中 Moonlight 双 ABI子门通过，完整发布仍被两个外部 approval boolean 正确阻断。
 - `verify_moonlight_vendor.py`：三个官方 Git tree、117 个 exact 文件、Git index 与无 Git 源码归档模式均 PASS；合规生成器幂等 PASS。
 - `build_moonlight_common_vendor.sh/.ps1`：API 23 arm64-v8a/x86_64 静态 archive 均匹配锁定 receipt。
-- `git diff --check`、`codex_state validate`：N1-03 代码 checkpoint 后 PASS。
+- `git diff --check`：N1-04 代码 checkpoint 后 PASS；`codex_state validate` 在本次
+  状态文档更新后执行并记录。
 - `CloudSyncPolicy.CLOUD_SYNC_TABLES` 静态复核仍精确为既有 8 表；Moonlight 云表、local mirror 和 app cache 均未进入在线注册集合。
 - HDC 当前返回 `Connect server failed`；早期 ARM64 API 24 RDB receipt 仍有效，但本次没有新增虚拟设备 Hypium 或恢复运行时证据。
 
 ## 13. 下一执行序列
 
-1. 严格按第 11.1 节执行 N1-04，只建立 transport-injected Host API 协议核心、
-   strict bounded XML、official NvHTTP request/result 合同、exact request cancel/
-   deadline/address policy 与 host tests；不接 secure identity/pairing/NAPI/media/
-   input/UI，不改变 capability truth。
+1. 严格按主计划第 15.7.4 节执行 N1-05，只建立 owner-scoped secure identity
+   bridge、RSA/client-certificate 兼容材料、HUKS-first capability decision、最短期
+   OpenSSL lease、locked-memory zeroization 与 inventory/deletion/account barrier
+   tests；不接 pairing/NAPI/media/input/UI/cloud identity，不改变 capability truth，
+   平台能力未证实时 fail closed。
 2. D2-05/06 由 AGC 开发/测试/生产环境提供 schema/授权/索引 receipt；缺失时 D2-07、D3-01 在线 wiring、D3-05 cloud-first promotion、D3-06 cloud terminal 和 D3-08 云矩阵继续阻断。
 3. N1 Host Control port 可用后再接 D3-06 remote unpair；端口失败只允许返回带 warning 的真实本地终态，不伪造主机已解绑。
 4. 补 HAP 内 typed capability probe；真实 Sunshine 和用户 ARM64 真机未提供前，host-control/streaming/protocol truth 继续为 false。

@@ -5,20 +5,16 @@
 - Task: `moonlight-complete-upgrade`
 - Base: `main@aeb0cdac5`
 - Branch: `codex/moonlight-complete-upgrade`
-- Phase: G0, D1, D2 local storage/dormant cloud policies, D3 account lifecycle,
-  deletion/status policies, portable backup/local restore and N1-01 exact
-  upstream vendoring, N1-02 private product linkage and N1-03 native session
-  ownership are checkpointed; AGC deployment/registration and runtime-backed
-  lifecycle remain blocked.
+- Phase: G0, D1-D3 local/dormant data lifecycle, N1-01 vendoring, N1-02 private
+  linkage, N1-03 session ownership and N1-04 bounded Host API are checkpointed;
+  AGC registration and runtime-backed lifecycle remain blocked.
 
 ## Context
 
 - Implement the complete Moonlight/Sunshine upgrade plan without regressing RDP,
   RustDesk, SSH/SFTP, VNC, cloud synchronization, backup or account isolation.
-- Authoritative plan:
-  `docs/superpowers/plans/2026-07-28-moonlight-harmonyos-complete-upgrade-plan.md`.
-- Live evidence ledger:
-  `docs/codex/plans/2026-08-09-moonlight-implementation-ledger.md`.
+- Authoritative plan: `docs/superpowers/plans/2026-07-28-moonlight-harmonyos-complete-upgrade-plan.md`.
+- Live ledger: `docs/codex/plans/2026-08-09-moonlight-implementation-ledger.md`.
 - The existing disabled Moonlight FAB entry remains the only user-visible state
   until host-control, streaming, data, lifecycle and release gates all pass.
 - UI debugging may use the connected HDC virtual device; final acceptance remains
@@ -40,8 +36,7 @@
   registration set. Repository/cache operations require the complete account
   lease, recheck generation before/after local transactions, journal user rows,
   reject cross-owner data and never invoke cloud I/O. The cloud adapter rejects
-  missing/unknown columns and `localonly=1`.
-- D2 local-first code/test checkpoint: `3bbdc61`.
+  missing/unknown columns and `localonly=1`. Checkpoint: `3bbdc61`.
 - D2 row-sensitive transfer rejects malformed/plain identity rows, the five
   owner-scoped logical scopes default to `[]`, and selection replacement follows
   stage → RDB projection → Preferences persist with rollback. The dormant
@@ -80,26 +75,30 @@
 - N1-03 checkpoint `18cdd39aa` adds the hidden pure-native process-wide owner,
   exact session/generation/token admission, interrupt fence, move-only leases
   and fail-closed drain without NAPI or UI.
-- Current gates: `default@OhosTestCompileArkTS` passed with 138 focused Moonlight
-  tests in 19 describe groups compile-registered; signed `assembleHap` passed;
-  host native tests passed 355/355, including 13 deterministic owner cases;
-  API 23 probe and isolated common-c builds passed both ABIs; source-archive,
-  Git-tree, receipt, TOTP, Light and HAP-isolation gates passed. Both ABI
-  defined/undefined/NAPI-init-register inventories remain exact, the signed HAP
-  remains the same 423 paths, and all 48 product compile commands per ABI have
-  zero upstream include leaks. HDC currently reports `Connect server failed`,
-  so no new virtual-device Hypium execution is claimed. One of at most two
+- N1-04 checkpoint `fd2d7ec92` adds a transport-injected pure-native Host API:
+  official requests, one deadline, exact cancel/stale fences, read-only fallback,
+  mutation no-replay/unknown, cancel verification, bounded XML and redacted
+  diagnostics, without a NAPI caller, identity, pairing, media, input or UI.
+- Current gates: both Hvigor tasks, 138-test ArkTS registration, signed HAP,
+  native and ASan/UBSan 370/370, API 23 dual-ABI probe/build, source-archive,
+  Git-tree, receipt, TOTP, Light and isolation all passed. Both ABI symbol/NAPI
+  inventories and 423 HAP paths remain exact; each ABI keeps 48 `rdpnapi` plus
+  one private Host API command with zero upstream include leaks. HDC still says
+  `Connect server failed`, so no new Hypium execution is claimed. One of two
   `sol low` reviews was used for N1-01; all four findings were fixed and
   machine-verified without redispatching a review loop.
 
 ## Next
 
-1. Execute only N1-04: add the pure-native `MoonlightHostApi` protocol core and
-   focused host tests. Implement bounded request/response models, strict XML,
-   official NvHTTP URL/endpoint compatibility, exact request generation,
-   cancellation/deadline/address-attempt policy and redacted diagnostics behind
-   an injected transport. Do not add NAPI, production credentials/pairing,
-   media/input, UI or feature truth.
+1. Execute only N1-05: add the owner-scoped secure identity bridge and focused
+   native/platform tests. Freeze the `ownerScopeId + installationId` alias
+   derivation, RSA-2048/self-signed client-certificate compatibility, HUKS
+   non-exportable-key versus wrapped-PKCS#8 capability decision, shortest-lived
+   OpenSSL lease, locked-memory zeroization, enumeration/deletion and account
+   barrier contracts. Do not add pairing orchestration, NAPI/UI, cloud identity,
+   media/input or any feature truth; if HUKS/OpenSSL integration cannot be proven
+   inside the HAP/AppSpawn identity, keep runtime readiness false and record the
+   blocker rather than falling back to plaintext.
 2. Keep D3-01 online coordinator wiring, D3-05 cloud-first promotion, D3-06
    cloud tombstone terminal execution and D3-08
    multi-device matrix blocked until development/test/production AGC receipts
