@@ -38,10 +38,12 @@ export default function sshProxyEditorPolicyTest(): void {
       value.hops[0].host = 'jump-1.example';
       value.hops[0].username = 'user-1';
       value.hops[0].authMethod = 'password';
+      value.hops[0].expectedHostKeyFingerprintSha256 = 'SHA256:jump-1';
       for (let index: number = 1; index < 3; index++) {
         const hop = defaultSshProxyHop(index);
         hop.host = 'jump-' + (index + 1).toString() + '.example';
         hop.username = 'user-' + (index + 1).toString();
+        hop.expectedHostKeyFingerprintSha256 = 'SHA256:jump-' + (index + 1).toString();
         value.hops.push(hop);
       }
       const result = buildSshProxyProfile('host-a', 'target.example', 22, value);
@@ -51,6 +53,7 @@ export default function sshProxyEditorPolicyTest(): void {
       const fourth = defaultSshProxyHop(3);
       fourth.host = 'jump-4.example';
       fourth.username = 'user-4';
+      fourth.expectedHostKeyFingerprintSha256 = 'SHA256:jump-4';
       value.hops.push(fourth);
       expect(buildSshProxyProfile('host-a', 'target.example', 22, value).code)
         .assertEqual('E-SSH-PROXY-HOP-LIMIT');
@@ -61,6 +64,7 @@ export default function sshProxyEditorPolicyTest(): void {
       value.kind = 'ssh_jump';
       value.hops[0].host = 'jump.example';
       value.hops[0].username = 'jump-user';
+      value.hops[0].expectedHostKeyFingerprintSha256 = 'SHA256:jump';
       const result = buildSshProxyProfile('host-a', 'target.example', 22, value);
       const host: RemoteHost = new RemoteHost();
       applySshProxyProfileToLegacyHost(host, result.profile!);

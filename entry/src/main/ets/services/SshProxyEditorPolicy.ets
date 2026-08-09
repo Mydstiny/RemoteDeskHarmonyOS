@@ -54,6 +54,34 @@ export function defaultSshProxyEditorValue(): SshProxyEditorValue {
   };
 }
 
+export function sshProxyEditorValueFromProfile(profile: SshProxyProfileV1): SshProxyEditorValue {
+  const value: SshProxyEditorValue = defaultSshProxyEditorValue();
+  value.kind = profile.route.type as SshProxyEditorKind;
+  value.proxyHost = profile.proxyHost || '';
+  value.proxyPortText = (profile.proxyPort ||
+    (value.kind === 'socks5' ? 1080 : (value.kind === 'frp_tcp' ? 60022 : 8080))).toString();
+  value.proxyUsername = profile.proxyUsername || '';
+  value.proxyAuthRequired = profile.proxyAuthRequired === true;
+  if (profile.route.type === 'ssh_jump') {
+    value.hops = profile.route.hops.map((hop: SshJumpHop, index: number): SshProxyHopDraft => {
+      const metadata: SshProxyHopMetadataV1 | undefined = profile.hopMetadata === undefined
+        ? undefined : profile.hopMetadata[index];
+      return {
+        hopId: metadata === undefined ? 'hop-' + index.toString() : metadata.hopId,
+        label: metadata === undefined ? '跳板机 ' + (index + 1).toString() : metadata.label,
+        host: hop.host,
+        portText: hop.port.toString(),
+        username: hop.username,
+        authMethod: hop.authMethod,
+        keyId: metadata === undefined ? '' : metadata.keyId,
+        expectedHostKeyFingerprintSha256: hop.expectedHostKeyFingerprintSha256 || '',
+        connectTimeoutMs: hop.connectTimeoutMs
+      };
+    });
+  }
+  return value;
+}
+
 function validPortText(value: string): number {
   const port: number = parseInt(value.trim());
   return Number.isFinite(port) && Number.isInteger(port) && port >= 1 && port <= 65535 ? port : 0;
@@ -91,7 +119,15 @@ export function buildSshProxyProfile(hostId: string, targetHost: string, targetP
         authMethod: draft.authMethod, connectTimeoutMs: draft.connectTimeoutMs
       };
       const fingerprint: string = draft.expectedHostKeyFingerprintSha256.trim();
-      if (fingerprint.length > 0) { hop.expectedHostKeyFingerprintSha256 = fingerprint; }
+      if (fingerprint.length === 0) {
+        return {
+          valid: false,
+          code: 'E-SSH-PROXY-HOP-HOST-KEY-REQUIRED',
+          message: '第 ' + (index + 1).toString() + ' 跳缺少 SHA256 host-key 指纹',
+          profile: null
+        };
+      }
+      hop.expectedHostKeyFingerprintSha256 = fingerprint;
       route.hops.push(hop);
       metadata.push({
         hopId: draft.hopId.trim(), label: draft.label.trim(),

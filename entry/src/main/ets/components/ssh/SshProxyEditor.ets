@@ -15,6 +15,7 @@ export struct SshProxyEditor {
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
   @Prop keys: SshKey[] = [];
+  @Prop value: SshProxyEditorValue = defaultSshProxyEditorValue();
   onChange: (value: SshProxyEditorValue) => void = (_value: SshProxyEditorValue): void => {};
   @State kind: SshProxyEditorKind = 'direct';
   @State proxyHost: string = '';
@@ -189,7 +190,7 @@ export struct SshProxyEditor {
         }.width('100%')
         this.authButtons(index, this.hops[index])
         if (this.hops[index].authMethod === 'publickey') { this.keyPicker(index, this.hops[index]) }
-        this.field('Host key 指纹（可在连接前确认）',
+        this.field('Host key 指纹（必填）',
           this.hops[index].expectedHostKeyFingerprintSha256, 'SHA256:...', (value: string): void => {
             this.updateHop(index, (hop: SshProxyHopDraft): void => {
               hop.expectedHostKeyFingerprintSha256 = value;
@@ -278,7 +279,17 @@ export struct SshProxyEditor {
     }.width('100%')
   }
 
-  aboutToAppear(): void { this.publish(); }
+  aboutToAppear(): void {
+    this.kind = this.value.kind;
+    this.proxyHost = this.value.proxyHost;
+    this.proxyPortText = this.value.proxyPortText;
+    this.proxyUsername = this.value.proxyUsername;
+    this.proxyAuthRequired = this.value.proxyAuthRequired;
+    this.hops = this.value.hops.map((hop: SshProxyHopDraft): SshProxyHopDraft => this.cloneHop(hop));
+    if (this.hops.length === 0) { this.hops = [defaultSshProxyHop(0)]; }
+    this.selectedHop = 0;
+    this.publish();
+  }
 
   build() {
     Column({ space: 12 }) {

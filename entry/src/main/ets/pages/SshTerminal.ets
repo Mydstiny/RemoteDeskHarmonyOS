@@ -115,6 +115,12 @@ import {
   SshTerminalAppearance
 } from '../services/SshSettingsPolicy';
 import { SshSettingsService } from '../services/SshSettingsService';
+import { SshProxyProfileStore } from '../services/SshProxyProfileStore';
+import {
+  SshProxyRuntimePlan,
+  resolveSshProxyRuntimePlan,
+  sshProxyRuntimeHasStrictJumpBindings
+} from '../services/SshProxyRuntimePolicy';
 import {
   TransferSession,
   TransferStage,
@@ -516,6 +522,8 @@ struct SshTerminal {
   private kbCtrl: TextAreaController = new TextAreaController();
   private srv: HostSyncService = HostSyncService.getInstance();
   private sshSettings: SshSettingsService = SshSettingsService.getInstance();
+  private sshProxyProfiles: SshProxyProfileStore = new SshProxyProfileStore();
+  private sshProxyProfilesReady: boolean = false;
   private loader: ExtensionLoader = ExtensionLoader.getInstance();
   private hostId: string = '';
   private sessionId: number = -1;
@@ -3057,6 +3065,79 @@ struct SshTerminal {
     }];
   }
 
+  /** Terminal connections use the canonical profile; SFTP keeps its accepted legacy path. */
+  private terminalSshProxyPlan(host: RemoteHost): SshProxyRuntimePlan {
+    return resolveSshProxyRuntimePlan(host, this.sshProxyProfiles.load(host.id));
+  }
+
+  private async terminalProxyPassword(plan: SshProxyRuntimePlan,
+    pageGeneration: number, bindingGeneration: number, hostId: string): Promise<string> {
+    if (!plan.proxyAuthRequired ||
+      (plan.route.type !== 'http_connect' && plan.route.type !== 'socks5')) { return ''; }
+    const password: string = await this.promptSshSecret(
+      plan.route.type === 'http_connect' ? 'HTTP 代理认证' : 'SOCKS5 代理认证',
+      plan.proxyUsername.length > 0 ? '请输入 ' + plan.proxyUsername + ' 的代理密码' : '请输入代理密码',
+      '代理密码');
+    if (!this.isSshBindingActive(pageGeneration, bindingGeneration, hostId)) { return ''; }
+    if (password.length === 0) { throw new Error('已取消代理认证 [E-SSH-PROXY-AUTH-CANCELLED]'); }
+    return password;
+  }
+
+  private async terminalJumpHandoffs(host: RemoteHost, plan: SshProxyRuntimePlan,
+    pageGeneration: number, bindingGeneration: number): Promise<SshJumpHopHandoff[]> {
+    if (plan.route.type !== 'ssh_jump') { return []; }
+    if (!sshProxyRuntimeHasStrictJumpBindings(plan)) {
+      throw new Error('ProxyJump 每一跳都必须配置 SHA256 host-key 指纹 [E-SSH-JUMP-HOSTKEY]');
+    }
+    const handoffs: SshJumpHopHandoff[] = [];
+    for (let index: number = 0; index < plan.route.hops.length; index++) {
+      const hop: SshJumpHop = plan.route.hops[index];
+      const label: string = '第 ' + (index + 1).toString() + ' 跳 ' + hop.username + '@' + hop.host;
+      if (hop.authMethod === 'kbd-interactive') {
+        handoffs.push({ password: '', privateKeyPem: '', privateKeyPassphrase: '',
+          keyboardInteractiveResponses: [] });
+        continue;
+      }
+      if (hop.authMethod === 'password') {
+        let password: string = plan.source === 'legacy' && index === 0 ? host.sshProxyPassword : '';
+        if (password.length === 0) {
+          password = await this.promptSshSecret('ProxyJump 认证', label + ' 的 SSH 密码', 'SSH 密码');
+          if (!this.isSshBindingActive(pageGeneration, bindingGeneration, host.id)) { return []; }
+        }
+        if (password.length === 0) {
+          throw new Error('已取消第 ' + (index + 1).toString() + ' 跳认证 [E-SSH-JUMP-AUTH-CANCELLED]');
+        }
+        handoffs.push({ password, privateKeyPem: '', privateKeyPassphrase: '',
+          keyboardInteractiveResponses: [] });
+        continue;
+      }
+      const keyId: string = index < plan.hopKeyIds.length ? plan.hopKeyIds[index] :
+        (plan.source === 'legacy' && index === 0 ? host.sshProxyKeyId : '');
+      const key = KeyVaultService.getInstance().getSshKey(keyId);
+      if (key === undefined || key.privateKey.length === 0) {
+        throw new Error('第 ' + (index + 1).toString() +
+          ' 跳私钥不存在或已从密钥保险库移除 [E-SSH-JUMP-KEY-MISSING]');
+      }
+      let passphrase: string = plan.source === 'legacy' && index === 0
+        ? (this.preflightProxyPassphrase || host.sshProxyKeyPassphrase) : '';
+      let info: SshPrivateKeyInfo = this.loader.inspectSshPrivateKey(key.privateKey, passphrase);
+      if (info.ok && !info.encrypted) {
+        passphrase = '';
+      } else if (!info.ok || passphrase.length === 0) {
+        passphrase = await this.promptSshSecret('ProxyJump 私钥', label + ' 的私钥密码', '私钥密码');
+        if (!this.isSshBindingActive(pageGeneration, bindingGeneration, host.id)) { return []; }
+        info = this.loader.inspectSshPrivateKey(key.privateKey, passphrase);
+        if (!info.ok) {
+          throw new Error('第 ' + (index + 1).toString() +
+            ' 跳私钥密码错误或密钥不可用 [E-SSH-JUMP-PASSPHRASE]');
+        }
+      }
+      handoffs.push({ password: '', privateKeyPem: key.privateKey,
+        privateKeyPassphrase: passphrase, keyboardInteractiveResponses: [] });
+    }
+    return handoffs;
+  }
+
   private attachSftpSessionOwner(session: SshSftpEngineSession): SshSftpTrackedSession | null {
     const ownerToken: SshSftpTrackedSession | null = this.sftpTaskEngine.attachSession(session);
     if (ownerToken !== null) { this.sftpSessionOwners.set(ownerToken.hostId, ownerToken); }
@@ -4895,12 +4976,14 @@ struct SshTerminal {
     const pageGeneration: number = ++this.pageGeneration;
     const bindingGeneration: number = ++this.sshBindingGeneration;
     this.terminalClosing = false;
+    this.sshProxyProfilesReady = false;
     try {
       // A direct/deep SSH route can be created before HostListPage initializes
       // AppStorage. Read the durable appearance here as well so mobile xterm
       // never boots with a default font that masks the user's saved choice.
-      const appearance: SshTerminalAppearance =
-        this.sshSettings.init(getContext(this) as common.Context);
+      const sshContext: common.Context = getContext(this) as common.Context;
+      const appearance: SshTerminalAppearance = this.sshSettings.init(sshContext);
+      this.sshProxyProfilesReady = this.sshProxyProfiles.init(sshContext);
       this.fontSize = appearance.fontSize;
       this.lineSpacing = appearance.lineSpacing;
       hilog.info(0x0000, 'SshTerminal', '[appearance] restored font=' +
@@ -5828,6 +5911,9 @@ struct SshTerminal {
   private passphraseResolve: ((v: string) => void) | null = null;
   @State passphraseInput: string = '';
   @State passphraseShowPw: boolean = false;
+  @State secretPromptTitle: string = '私钥密码';
+  @State secretPromptMessage: string = '此私钥已加密，请输入密码';
+  @State secretPromptPlaceholder: string = '输入密码';
   // T-210: preflight token 数据 (从 HostList 传递)
   private preflightHostId: string = '';
   private preflightPassphrase: string = '';
@@ -5848,21 +5934,29 @@ struct SshTerminal {
   }
 
   private promptPassphrase(): Promise<string> {
+    return this.promptSshSecret('私钥密码', '此私钥已加密，请输入密码', '输入密码');
+  }
+
+  private promptSshSecret(title: string, message: string, placeholder: string): Promise<string> {
     return new Promise<string>((resolve: (v: string) => void) => {
       this.passphraseResolve = resolve;
       this.passphraseInput = '';
+      this.passphraseShowPw = false;
+      this.secretPromptTitle = title;
+      this.secretPromptMessage = message;
+      this.secretPromptPlaceholder = placeholder;
       this.showPassphraseSheet = true;
     });
   }
 
   @Builder passphraseSheet() {
     Column() {
-      Text('私钥密码').fontSize(18).fontWeight(FontWeight.Bold)
+      Text(this.secretPromptTitle).fontSize(18).fontWeight(FontWeight.Bold)
         .fontColor(this.pal().text).margin({ bottom: 8 })
-      Text('此私钥已加密, 请输入密码').fontSize(14)
+      Text(this.secretPromptMessage).fontSize(14)
         .fontColor(this.pal().text2).margin({ bottom: 16 })
       Row() {
-        TextInput({ placeholder: '输入密码', text: this.passphraseInput })
+        TextInput({ placeholder: this.secretPromptPlaceholder, text: this.passphraseInput })
           .type(this.passphraseShowPw ? InputType.Normal : InputType.Password)
           .height(40).backgroundColor(this.pal().surface).borderRadius(8)
           .fontColor(this.pal().text).placeholderColor(this.pal().text3)
@@ -5924,37 +6018,9 @@ struct SshTerminal {
           keyEncryptedHint = ref.privateKeyEncrypted;
         }
       }
-      let proxyKeyData: string = '';
-      let proxyKeyEncryptedHint: boolean = false;
-      if (host.sshProxyKeyId !== '') {
-        const proxyKey = KeyVaultService.getInstance().getSshKey(host.sshProxyKeyId);
-        if (proxyKey) {
-          proxyKeyData = proxyKey.privateKey;
-          proxyKeyEncryptedHint = proxyKey.privateKeyEncrypted;
-        }
-      }
       const useKey: boolean = host.sshUseKey && keyData.length > 0;
       // T-210: 优先使用 preflight token 中的 passphrase; 否则用 host 保存的; 最后才弹窗
       const preflightMatchesHost: boolean = this.preflightHostId === host.id;
-      let resolvedProxyPassphrase: string = (preflightMatchesHost ? this.preflightProxyPassphrase : '') ||
-        host.sshProxyKeyPassphrase || '';
-      if (host.sshProxyType === 'ssh_jump' && host.sshProxyAuthMethod === 'publickey') {
-        if (proxyKeyData.length === 0) {
-          throw new Error('跳板机私钥不存在或已从密钥保险库移除 [E-SSH-PROXY-KEY-MISSING]');
-        }
-        let proxyKeyInfo: SshPrivateKeyInfo = this.loader.inspectSshPrivateKey(
-          proxyKeyData, resolvedProxyPassphrase);
-        if (proxyKeyInfo.ok && !proxyKeyInfo.encrypted) {
-          resolvedProxyPassphrase = '';
-        } else if (resolvedProxyPassphrase === '' || proxyKeyEncryptedHint || !proxyKeyInfo.ok) {
-          resolvedProxyPassphrase = await this.promptPassphrase();
-          if (!this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId)) { return; }
-          proxyKeyInfo = this.loader.inspectSshPrivateKey(proxyKeyData, resolvedProxyPassphrase);
-          if (!proxyKeyInfo.ok) {
-            throw new Error('跳板机私钥密码错误或密钥不可用 [E-SSH-PROXY-PASSPHRASE]');
-          }
-        }
-      }
       let keyPassphrase: string = (preflightMatchesHost ? this.preflightPassphrase : '') ||
         host.sshKeyPassphrase || '';
       if (useKey) {
@@ -5967,6 +6033,19 @@ struct SshTerminal {
           if (!this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId)) { return; }
         }
       }
+      if (!this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId)) { return; }
+      if (!this.sshProxyProfilesReady) {
+        throw new Error('SSH 连接方式存储不可读 [E-SSH-PROXY-STORE]');
+      }
+      const proxyPlan: SshProxyRuntimePlan = this.terminalSshProxyPlan(host);
+      if (!proxyPlan.valid) {
+        throw new Error(proxyPlan.message + ' [' + proxyPlan.code + ']');
+      }
+      const proxyPassword: string = await this.terminalProxyPassword(
+        proxyPlan, pageGeneration, bindingGeneration, bindingHostId);
+      if (!this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId)) { return; }
+      const jumpHandoffs: SshJumpHopHandoff[] = await this.terminalJumpHandoffs(
+        host, proxyPlan, pageGeneration, bindingGeneration);
       if (!this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId)) { return; }
 
       const cfg: SessionConfig = {
@@ -5982,15 +6061,15 @@ struct SshTerminal {
         // credential and never falls back to the target credential.
         gatewayHost: '',
         gatewayPort: 0,
-        sshRoute: this.sshRouteForHost(host),
-        sshJumpHopHandoffs: this.sshJumpHopHandoffsForHost(
-          host, proxyKeyData, resolvedProxyPassphrase),
-        sshProxyType: host.proxyHost.length > 0 ? host.sshProxyType : 'direct',
-        sshProxyHost: host.proxyHost,
-        sshProxyPort: host.proxyPort,
-        sshProxyUsername: host.proxyUsername,
-        sshProxyPassword: '',
-        sshProxyAuthMethod: host.sshProxyType === 'ssh_jump' ? host.sshProxyAuthMethod : undefined,
+        sshRoute: proxyPlan.route,
+        sshJumpHopHandoffs: jumpHandoffs,
+        sshProxyType: proxyPlan.route.type,
+        sshProxyHost: proxyPlan.proxyHost,
+        sshProxyPort: proxyPlan.proxyPort,
+        sshProxyUsername: proxyPlan.proxyUsername,
+        sshProxyPassword: proxyPassword,
+        sshProxyAuthMethod: proxyPlan.route.type === 'ssh_jump' && proxyPlan.route.hops.length > 0
+          ? proxyPlan.route.hops[0].authMethod : undefined,
         sshProxyPrivateKeyPem: '',
         sshProxyPrivateKeyPassphrase: '',
         domain: '',

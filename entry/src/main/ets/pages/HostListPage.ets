@@ -112,13 +112,26 @@ import {
 import { ExtensionLoader } from '../services/ExtensionLoader';
 import { SshKeyImportService, SshKeyImportResult } from '../services/SshKeyImportService';
 import { SshXtermPrewarmSurface } from '../components/SshXtermSurface';
+import { SshProxyEditor } from '../components/ssh/SshProxyEditor';
 import { SshSettingsService } from '../services/SshSettingsService';
 import { SshProxyProfileV1 } from '../services/SshProxyProfilePolicy';
 import { SshProxyProfileStore } from '../services/SshProxyProfileStore';
 import {
-  normalizeSshEndpointTransport,
-  sshEditorTransportForStoredHost
-} from '../services/SshTransportPolicy';
+  SshProxyEditorBuildResult,
+  SshProxyEditorKind,
+  SshProxyEditorValue,
+  applySshProxyProfileToLegacyHost,
+  buildSshProxyProfile,
+  defaultSshProxyEditorValue,
+  defaultSshProxyHop,
+  sshProxyEditorValueFromProfile
+} from '../services/SshProxyEditorPolicy';
+import {
+  SshProxyRuntimePlan,
+  resolveSshProxyRuntimePlan,
+  sshProxyRuntimeHasStrictJumpBindings,
+  sshProxyRuntimeNeedsTerminalSecrets
+} from '../services/SshProxyRuntimePolicy';
 import {
   nextRdpCertificateProbeGeneration,
   shouldApplyRdpCertificateProbeResult
@@ -689,7 +702,6 @@ struct HostListPage {
   @StorageLink('rdpDriveName') rdpDriveName: string = 'RemoteDesktop';
   @StorageLink('rdpControlMode') rdpControlMode: number = 0; // 0=触控板, 1=直接触控, 2=键鼠
   @StorageLink('rdpAuthIdentityMode') rdpAuthIdentityMode: number = 1; // 0=MicrosoftAccount\\邮箱, 1=域+邮箱, 2=裸邮箱, 3=.\\AzureAD\\邮箱, 4=AzureAD域
-  @State sheetUseProxy: boolean = false;
   @State sheetPwdMode: number = 0; // 0=一次性密码, 1=永久密码
   @State sheetRustdeskAuthMode: string = 'password'; // password | request_approval
   @State sheetRustdeskDirectEnabled: boolean = false; // per-host 直连开关
@@ -699,14 +711,7 @@ struct HostListPage {
   @State sheetRustdeskTotpAutoSubmit: boolean = false;
   @State sheetRustdeskTargetDevice: RustDeskTargetDevice = 'computer';
   @State sheetRustdeskAdaptiveOrientation: boolean = false;
-  @State sheetProxyHost: string = '';
-  @State sheetProxyPort: number = 22;
-  @State sheetProxyUser: string = '';
-  @State sheetProxyType: string = 'http_connect';
-  @State sheetProxyAuthMethod: string = 'password';
-  @State sheetProxyKeyId: string = '';
-  @State sheetProxyPassword: string = '';
-  @State sheetProxyKeyPassphrase: string = '';
+  @State sheetSshProxyEditorValue: SshProxyEditorValue = defaultSshProxyEditorValue();
   @StorageLink('currentBreakpoint') @Watch('onBreakpointChange') breakpoint: string = 'sm';
   @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
   @StorageProp('topRectHeight') topRectHeight: number = 0;
@@ -3362,6 +3367,32 @@ struct HostListPage {
       return;
     }
     if (host.protocol === 'ssh') {
+      const storedProxyProfile: SshProxyProfileV1 | null = this.sshProxyProfiles.load(host.id);
+      if (storedProxyProfile !== null) {
+        const proxyPlan: SshProxyRuntimePlan = resolveSshProxyRuntimePlan(host, storedProxyProfile);
+        if (!proxyPlan.valid) {
+          promptAction.showToast({ message: proxyPlan.message, duration: 2400 });
+          return;
+        }
+        if (proxyPlan.route.type === 'ssh_jump' &&
+          !sshProxyRuntimeHasStrictJumpBindings(proxyPlan)) {
+          promptAction.showToast({
+            message: 'ProxyJump 每一跳都必须填写 SHA256 host-key 指纹', duration: 2600
+          });
+          return;
+        }
+        // The legacy preflight API can only authenticate a single flat hop.
+        // Credential-bearing profiles are handed to the terminal's one-shot
+        // broker, where all ordered hops and dynamic MFA prompts are retained.
+        if (proxyPlan.route.type === 'ssh_jump' ||
+          sshProxyRuntimeNeedsTerminalSecrets(proxyPlan)) {
+          const sshParams: Record<string, Object> = {};
+          sshParams['hostId'] = host.id;
+          sshParams['authenticated'] = true;
+          router.pushUrl({ url: 'pages/SshTerminal', params: sshParams });
+          return;
+        }
+      }
       // T-210: SSH 前置校验 (指纹 + 私钥密码) → 通过后才路由
       this.openSshPreflight(host);
     } else if (host.protocol === 'rdp') {
@@ -6093,6 +6124,33 @@ struct HostListPage {
     }
   }
 
+  private sshProxyEditorValueForHost(host: RemoteHost): SshProxyEditorValue {
+    const stored: SshProxyProfileV1 | null = this.sshProxyProfiles.load(host.id);
+    if (stored !== null) { return sshProxyEditorValueFromProfile(stored); }
+    const value: SshProxyEditorValue = defaultSshProxyEditorValue();
+    const legacyType: string = host.proxyHost.trim().length === 0 ? 'direct' : host.sshProxyType;
+    if (legacyType === 'direct' || legacyType === 'http_connect' || legacyType === 'socks5' ||
+      legacyType === 'ssh_jump' || legacyType === 'frp_tcp') {
+      value.kind = legacyType as SshProxyEditorKind;
+    }
+    if (value.kind === 'http_connect' || value.kind === 'socks5' || value.kind === 'frp_tcp') {
+      value.proxyHost = host.proxyHost;
+      value.proxyPortText = host.proxyPort.toString();
+      value.proxyUsername = host.proxyUsername;
+    } else if (value.kind === 'ssh_jump') {
+      const hop = defaultSshProxyHop(0);
+      hop.hopId = 'legacy-hop-1';
+      hop.host = host.proxyHost;
+      hop.portText = host.proxyPort.toString();
+      hop.username = host.proxyUsername;
+      hop.authMethod = host.sshProxyAuthMethod;
+      hop.keyId = host.sshProxyAuthMethod === 'publickey' ? host.sshProxyKeyId : '';
+      hop.expectedHostKeyFingerprintSha256 = host.sshJumpHostKeyFingerprintSha256;
+      value.hops = [hop];
+    }
+    return value;
+  }
+
   // 编辑主机 (锁定状态需先鉴权)
   private async editHost(host: RemoteHost): Promise<void> {
     const vncHostId: string = this.vncRecordIdForHost(host);
@@ -6172,16 +6230,13 @@ struct HostListPage {
     this.sheetKeyId = latestHost.sshKeyId;
     this.sheetKeyPassphrase = latestHost.sshKeyPassphrase;
     this.sheetKeyMode = latestHost.sshKeyId !== '' ? 1 : 0;
-    this.sheetProxyHost = latestHost.proxyHost;
-    this.sheetProxyPort = latestHost.proxyPort;
-    this.sheetProxyUser = latestHost.proxyUsername;
-    this.sheetProxyType = sshEditorTransportForStoredHost(
-      latestHost.proxyHost, latestHost.sshProxyType);
-    this.sheetUseProxy = (latestHost.proxyHost !== '');
-    this.sheetProxyAuthMethod = latestHost.sshProxyAuthMethod;
-    this.sheetProxyKeyId = latestHost.sshProxyKeyId;
-    this.sheetProxyPassword = latestHost.sshProxyPassword;
-    this.sheetProxyKeyPassphrase = latestHost.sshProxyKeyPassphrase;
+    this.sheetSshProxyEditorValue = latestHost.protocol === 'ssh'
+      ? this.sshProxyEditorValueForHost(latestHost) : defaultSshProxyEditorValue();
+    if (latestHost.protocol === 'ssh' && latestHost.proxyHost.trim().length > 0 &&
+      latestHost.sshProxyType !== 'http_connect' && latestHost.sshProxyType !== 'socks5' &&
+      latestHost.sshProxyType !== 'ssh_jump' && latestHost.sshProxyType !== 'frp_tcp') {
+      this.sheetErr = '旧 FRP 控制面模式不能直接迁移，请重新选择外部 FRP TCP 入口';
+    }
     this.openSheetSafely((): void => { this.showAddSheet = true; });
   }
 
@@ -13129,97 +13184,14 @@ struct HostListPage {
         }
       }
 
-      // 代理开关
-      Row() {
-        Text('代理转发 (跳板机)').fontSize(13).fontColor(this.pal().text).fontFamily(this.font())
-        Blank()
-        Toggle({ type: ToggleType.Switch, isOn: this.sheetUseProxy }).selectedColor(this.accentColor)
-          .scale({ x: 0.88, y: 0.88 })
-          .onChange((on: boolean) => { this.sheetUseProxy = on; })
-      }.width('100%').height(36).margin({ top: 6 })
-
-      if (this.sheetUseProxy) {
-        this.fieldRow('代理地址', 'gateway.example.com', this.sheetProxyHost, (v: string): void => { this.sheetProxyHost = v; })
-        Row() {
-          Text('代理类型').fontSize(13).fontColor(this.pal().text).fontFamily(this.font())
-          Blank()
-          Button(this.sshProxyTypeLabel()).fontSize(12).fontColor(this.accentColor)
-            .backgroundColor(this.pal().surface).borderRadius(8)
-            .onClick((): void => { this.cycleSshProxyType(); })
-        }.width('100%').height(36)
-        Row() {
-          Column() {
-            this.fieldRow('代理端口', '22', this.sheetProxyPort.toString(), (v: string): void => {
-              const n: number = parseInt(v); this.sheetProxyPort = isNaN(n) ? 22 : n;
-            })
-          }.width('30%')
-          Column() {
-            this.fieldRow('代理用户', 'root', this.sheetProxyUser, (v: string): void => { this.sheetProxyUser = v; })
-          }.width('60%').margin({ left: 12 })
-        }.width('100%')
-        if (this.sheetProxyType === 'ssh_jump') {
-          this.sshProxyAuthSection()
+      SshProxyEditor({
+        keys: this.keyVault.getAllSshKeys(),
+        value: this.sheetSshProxyEditorValue,
+        onChange: (value: SshProxyEditorValue): void => {
+          this.sheetSshProxyEditorValue = value;
         }
-      }
+      })
     }.width('100%')
-  }
-
-  @Builder sshProxyAuthSection() {
-    Column() {
-      Text('跳板机认证（独立于目标主机）').fontSize(12).fontWeight(FontWeight.Medium)
-        .fontColor(this.pal().text).fontFamily(this.font()).width('100%')
-        .margin({ top: 4, bottom: 8 })
-      Row() {
-        Button('密码').layoutWeight(1).height(34).borderRadius(8)
-          .backgroundColor(this.sheetProxyAuthMethod === 'password' ? this.accentColor : this.pal().surface)
-          .fontColor(this.sheetProxyAuthMethod === 'password' ? Color.White : this.pal().text2)
-          .onClick((): void => { this.sheetProxyAuthMethod = 'password'; })
-        Button('私钥').layoutWeight(1).height(34).borderRadius(8).margin({ left: 8 })
-          .backgroundColor(this.sheetProxyAuthMethod === 'publickey' ? this.accentColor : this.pal().surface)
-          .fontColor(this.sheetProxyAuthMethod === 'publickey' ? Color.White : this.pal().text2)
-          .onClick((): void => { this.sheetProxyAuthMethod = 'publickey'; })
-      }.width('100%').margin({ bottom: 8 })
-      if (this.sheetProxyAuthMethod === 'password') {
-        Column() {
-          Text('跳板机密码').fontSize(11).fontColor(this.pal().text2).fontFamily(this.font())
-            .margin({ bottom: 4 })
-          TextInput({ placeholder: '跳板机 SSH 密码', text: this.sheetProxyPassword })
-            .type(InputType.Password).height(38).backgroundColor(this.pal().surface).borderRadius(8)
-            .fontColor(this.pal().text).placeholderColor(this.pal().text3).fontFamily(this.font())
-            .fontSize(13).padding({ left: 10, right: 10 })
-            .onChange((v: string): void => { this.sheetProxyPassword = v; })
-        }.width('100%').margin({ bottom: 8 })
-      } else {
-        if (this.keyVault.getAllSshKeys().length === 0) {
-          Text('密钥库为空，请先添加跳板机私钥').fontSize(11).fontColor(this.pal().text3)
-            .width('100%').padding({ top: 6, bottom: 6 })
-        } else {
-          ForEach(this.keyVault.getAllSshKeys(), (key: SshKey) => {
-            Row() {
-              Column() {
-                Text(key.label).fontSize(12).fontColor(this.pal().text).maxLines(1)
-                Text(key.fingerprint).fontSize(9).fontColor(this.pal().text3).maxLines(1)
-              }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-              if (this.sheetProxyKeyId === key.id) {
-                SymbolGlyph($r('sys.symbol.checkmark')).fontSize(15).fontColor([this.accentColor])
-              }
-            }.width('100%').padding({ left: 10, right: 10, top: 7, bottom: 7 })
-              .borderRadius(8).backgroundColor(this.sheetProxyKeyId === key.id ?
-                this.pal().surface : Color.Transparent)
-              .onClick((): void => { this.sheetProxyKeyId = key.id; })
-          }, (key: SshKey): string => 'classic-proxy:' + key.id)
-        }
-        Column() {
-          Text('跳板机私钥密码（如有）').fontSize(11).fontColor(this.pal().text2).fontFamily(this.font())
-            .margin({ bottom: 4 })
-          TextInput({ placeholder: '加密私钥的 passphrase', text: this.sheetProxyKeyPassphrase })
-            .type(InputType.Password).height(38).backgroundColor(this.pal().surface).borderRadius(8)
-            .fontColor(this.pal().text).placeholderColor(this.pal().text3).fontFamily(this.font())
-            .fontSize(13).padding({ left: 10, right: 10 })
-            .onChange((v: string): void => { this.sheetProxyKeyPassphrase = v; })
-        }.width('100%').margin({ top: 6 })
-      }
-    }.width('100%').padding({ top: 4, bottom: 4 })
   }
 
   private switchSshKeyMode(mode: number): void {
@@ -13229,38 +13201,6 @@ struct HostListPage {
     this.sheetKeyPassphrase = '';
     this.sheetKeyPath = '';
     this.sheetKeyText = '';
-  }
-
-  private sshProxyTypeLabel(): string {
-    if (this.sheetProxyType === 'socks5') { return 'SOCKS5'; }
-    if (this.sheetProxyType === 'frp_tcp') { return 'FRP TCP'; }
-    if (this.sheetProxyType === 'frp_visitor') { return 'FRP Visitor'; }
-    if (this.sheetProxyType === 'frp_stcp') { return 'FRP STCP'; }
-    if (this.sheetProxyType === 'frp_sudp') { return 'FRP SUDP'; }
-    if (this.sheetProxyType === 'frp_xtcp') { return 'FRP XTCP'; }
-    if (this.sheetProxyType === 'ssh_jump') { return 'ProxyJump'; }
-    if (this.sheetProxyType === 'legacy_gateway') { return '旧跳板机（需改）'; }
-    return 'HTTP CONNECT';
-  }
-
-  private cycleSshProxyType(): void {
-    if (this.sheetProxyType === 'http_connect') {
-      this.sheetProxyType = 'socks5';
-    } else if (this.sheetProxyType === 'socks5') {
-      this.sheetProxyType = 'frp_tcp';
-    } else if (this.sheetProxyType === 'frp_tcp') {
-      this.sheetProxyType = 'frp_visitor';
-    } else if (this.sheetProxyType === 'frp_visitor') {
-      this.sheetProxyType = 'frp_stcp';
-    } else if (this.sheetProxyType === 'frp_stcp') {
-      this.sheetProxyType = 'frp_sudp';
-    } else if (this.sheetProxyType === 'frp_sudp') {
-      this.sheetProxyType = 'frp_xtcp';
-    } else if (this.sheetProxyType === 'frp_xtcp') {
-      this.sheetProxyType = 'ssh_jump';
-    } else {
-      this.sheetProxyType = 'http_connect';
-    }
   }
 
   @Builder rustDeskTotpBindingSection() {
@@ -13869,11 +13809,8 @@ struct HostListPage {
     this.sheetRdpBlankPasswordConfirmed = false;
     this.sheetUseKey = false; this.sheetKeyPath = ''; this.sheetKeyText = '';
     this.sheetKeyId = ''; this.sheetKeyPassphrase = '';
-    this.sheetKeyMode = 0; this.sheetUseProxy = false;
-    this.sheetProxyHost = ''; this.sheetProxyPort = 22; this.sheetProxyUser = '';
-    this.sheetProxyType = 'http_connect';
-    this.sheetProxyAuthMethod = 'password'; this.sheetProxyKeyId = '';
-    this.sheetProxyPassword = ''; this.sheetProxyKeyPassphrase = '';
+    this.sheetKeyMode = 0;
+    this.sheetSshProxyEditorValue = defaultSshProxyEditorValue();
     this.vncHostTransport = 'direct_tcp'; this.vncHostRepeaterMode = 'mode12';
     this.vncHostGatewayId = ''; this.vncHostPasswordConfigured = false;
     this.vncHostRememberPassword = false;
@@ -13980,6 +13917,7 @@ struct HostListPage {
     const editingId: string = this.editingHostId;
     const existingHost: RemoteHost | undefined = editingId !== '' ? this.srv.getHost(editingId) : undefined;
     const h: RemoteHost = existingHost ? RemoteHost.fromJSON(existingHost.toJSON()) : new RemoteHost();
+    let sshProxyProfileToSave: SshProxyProfileV1 | null = null;
     if (editingId !== '') { h.id = editingId; }
     else { h.id = RemoteHost.generateId(); }
     h.label = this.label; h.protocol = this.proto;
@@ -14068,51 +14006,14 @@ struct HostListPage {
       h.sshKeyData = this.sheetKeyText;
       h.sshKeyId = this.sheetKeyId;
       h.sshKeyPassphrase = this.sheetKeyPassphrase;
-      h.sshProxyType = 'direct';
-      h.proxyHost = ''; h.proxyPort = 0; h.proxyUsername = '';
-      h.sshProxyAuthMethod = 'password';
-      h.sshProxyKeyId = '';
-      h.sshProxyPassword = '';
-      h.sshProxyKeyPassphrase = '';
-      if (this.sheetUseProxy) {
-        if (this.sheetProxyHost.trim() === '' || this.sheetProxyPort <= 0 || this.sheetProxyPort > 65535) {
-          this.sheetErr = '代理地址或端口无效';
-          return;
-        }
-        if (this.sheetProxyType !== 'http_connect' && this.sheetProxyType !== 'socks5' &&
-          this.sheetProxyType !== 'frp_tcp' && this.sheetProxyType !== 'frp_visitor' &&
-          this.sheetProxyType !== 'frp_stcp' && this.sheetProxyType !== 'frp_sudp' &&
-          this.sheetProxyType !== 'frp_xtcp' && this.sheetProxyType !== 'ssh_jump') {
-          this.sheetErr = '当前传输类型不可用，请选择已列出的 SSH 或 FRP 模式';
-          return;
-        }
-        h.proxyHost = this.sheetProxyHost; h.proxyPort = this.sheetProxyPort;
-        h.proxyUsername = this.sheetProxyUser;
-        // Keep the selected transport identity intact. FRP TCP is a raw SSH
-        // endpoint and must never be persisted as an HTTP CONNECT proxy.
-        h.sshProxyType = normalizeSshEndpointTransport(this.sheetProxyType);
-        if (h.sshProxyType === 'ssh_jump') {
-          if (this.sheetProxyAuthMethod !== 'password' && this.sheetProxyAuthMethod !== 'publickey') {
-            this.sheetErr = '跳板机认证方式无效';
-            return;
-          }
-          h.sshProxyAuthMethod = this.sheetProxyAuthMethod;
-          if (h.sshProxyAuthMethod === 'publickey') {
-            if (this.sheetProxyKeyId === '') {
-              this.sheetErr = '请选择跳板机私钥';
-              return;
-            }
-            h.sshProxyKeyId = this.sheetProxyKeyId;
-            h.sshProxyKeyPassphrase = this.sheetProxyKeyPassphrase;
-          } else {
-            if (this.sheetProxyPassword === '') {
-              this.sheetErr = '请输入跳板机密码';
-              return;
-            }
-            h.sshProxyPassword = this.sheetProxyPassword;
-          }
-        }
+      const proxyBuild: SshProxyEditorBuildResult = buildSshProxyProfile(
+        h.id, h.host, h.port, this.sheetSshProxyEditorValue);
+      if (!proxyBuild.valid || proxyBuild.profile === null) {
+        this.sheetErr = proxyBuild.message || 'SSH 连接方式无效';
+        return;
       }
+      sshProxyProfileToSave = proxyBuild.profile;
+      applySshProxyProfileToLegacyHost(h, proxyBuild.profile);
     }
     const e: string[] = h.getValidationErrors();
     if (e.length > 0) { this.sheetErr = e[0]; return; }
@@ -14172,6 +14073,12 @@ struct HostListPage {
       previousRestrictedAdminHash = '';
       return;
     }
+    const previousSshProxyProfile: SshProxyProfileV1 | null =
+      h.protocol === 'ssh' ? this.sshProxyProfiles.load(h.id) : null;
+    if (sshProxyProfileToSave !== null && !this.sshProxyProfiles.upsert(sshProxyProfileToSave)) {
+      this.sheetErr = 'SSH 连接方式保存失败，主机未修改';
+      return;
+    }
     let saved: boolean = false;
     if (editingId !== '') {
       saved = this.srv.updateHost(h);
@@ -14180,6 +14087,13 @@ struct HostListPage {
       saved = this.srv.addHost(h);
     }
     if (!saved) {
+      if (sshProxyProfileToSave !== null) {
+        if (previousSshProxyProfile !== null) {
+          this.sshProxyProfiles.upsert(previousSshProxyProfile);
+        } else {
+          this.sshProxyProfiles.remove(h.id);
+        }
+      }
       if (shouldPersistRestrictedAdminHash) {
         // The local secret was written before the host row so that the
         // existing save path can remain synchronous.  If the row fails,
@@ -14197,6 +14111,9 @@ struct HostListPage {
       hilog.error(0x0001, 'HostList', 'save host failed protocol=' + h.protocol + ' id=' + h.id);
       previousRestrictedAdminHash = '';
       return;
+    }
+    if (existingHost !== undefined && existingHost.protocol === 'ssh' && h.protocol !== 'ssh') {
+      this.sshProxyProfiles.remove(existingHost.id);
     }
     this.refreshHostSnapshotAfterMutation();
     previousRestrictedAdminHash = '';
