@@ -74,6 +74,13 @@ import rustDeskProAddressBookSyncServiceTest from '../../../test/RustDeskProAddr
 import rustDeskProAddressBookUiPolicyTest from '../../../test/RustDeskProAddressBookUiPolicy.test';
 import totpBrandResourceIntegrationTest from './TotpBrandResourceIntegration.test';
 import nativeCallbackEntryIntegrationTest from './NativeCallbackEntryIntegration.test';
+import moonlightModelsTest from '../../../test/MoonlightModels.test';
+import moonlightRecordTest from '../../../test/MoonlightRecord.test';
+import moonlightRecordPolicyTest from '../../../test/MoonlightRecordPolicy.test';
+import moonlightCapabilityPolicyTest from '../../../test/MoonlightCapabilityPolicy.test';
+import moonlightSettingsPolicyTest from '../../../test/MoonlightSettingsPolicy.test';
+import moonlightRecordConflictPolicyTest from '../../../test/MoonlightRecordConflictPolicy.test';
+import moonlightSessionStateTest from '../../../test/MoonlightSessionState.test';
 import { FOCUSED_TEST_REGISTRATION_AUDIT } from '../../../main/ets/services/FocusedTestRegistrationAudit';
 
 function requestedClassScope(): string {
@@ -121,6 +128,14 @@ function registerFocusedRepairSuite(scope: string): number {
     remoteModifierStateControllerTest();
   } else if (scope === 'RemoteSessionTopBarPolicy') {
     remoteSessionTopBarPolicyTest();
+  } else if (scope === 'MoonlightDomainPolicy') {
+    moonlightModelsTest();
+    moonlightRecordTest();
+    moonlightRecordPolicyTest();
+    moonlightCapabilityPolicyTest();
+    moonlightSettingsPolicyTest();
+    moonlightRecordConflictPolicyTest();
+    moonlightSessionStateTest();
   } else {
     return 0;
   }
@@ -138,6 +153,11 @@ function registerFocusedRepairSuite(scope: string): number {
 function focusedDescribeNames(scope: string): string[] {
   if (scope === 'RemoteOverlayViewportPolicy_contract') {
     return ['RemoteOverlayViewportPolicy_contract'];
+  }
+  if (scope === 'MoonlightDomainPolicy') {
+    return ['MoonlightModels', 'MoonlightRecord', 'MoonlightRecordPolicy',
+      'MoonlightCapabilityPolicy', 'MoonlightSettingsPolicy', 'MoonlightRecordConflictPolicy',
+      'MoonlightSessionState'];
   }
   if (scope === 'RustDeskProAddressBookPolicy') {
     return ['RustDeskProAddressBookPolicy'];
@@ -200,6 +220,7 @@ function focusedDescribeNames(scope: string): string[] {
 }
 
 function expectedFocusedCount(scope: string): number {
+  if (scope === 'MoonlightDomainPolicy') { return 43; }
   if (scope === 'RustDeskProAddressBookPolicy') { return 8; }
   if (scope === 'RustDeskProAddressBookApiService') { return 4; }
   if (scope === 'RustDeskProAddressBookSyncService') { return 7; }
@@ -318,4 +339,11 @@ export default function testsuite() {
   totpBrandServiceTest();
   totpBrandResourceIntegrationTest();
   nativeCallbackEntryIntegrationTest();
+  moonlightModelsTest();
+  moonlightRecordTest();
+  moonlightRecordPolicyTest();
+  moonlightCapabilityPolicyTest();
+  moonlightSettingsPolicyTest();
+  moonlightRecordConflictPolicyTest();
+  moonlightSessionStateTest();
 }

@@ -1,0 +1,175 @@
+# Moonlight 完整升级实施台账
+
+> 任务：`moonlight-complete-upgrade`
+> 分支：`codex/moonlight-complete-upgrade`
+> 初始基线：`main@aeb0cdac5`，与 `origin/main` 一致
+> 总计划：`docs/superpowers/plans/2026-07-28-moonlight-harmonyos-complete-upgrade-plan.md`
+> 台账状态：G0 静态基线与 D1 已形成 checkpoint；D2 本地数据层待实施；只把有可复现证据的项目标记为通过
+
+## 1. 执行约束
+
+1. 严格按总计划第 15 节的 G0 → D1 → D2/D3 → N1/N2/N3 → U1/S1 → R1 顺序推进。
+2. Moonlight 是独立协议域。不得把 host、profile、trust、identity 或设置写进其他协议表。
+3. 尚未通过能力探针、真实 Sunshine 和 ARM64 真机门禁的功能保持 fail closed，不以占位实现宣称支持。
+4. AGC 三环境 schema receipt 完成前，`moonlightrecordv1` 不进入生产分布式表注册集合。
+5. 每个代码任务将测试与实现同提交；阶段末执行 native/ArkTS 定向测试、双 Hvigor、assembleHap、Light 和一次有界复核。
+6. 本任务最多使用两个审查智能体，模型只允许 `sol low`；不得因上下文压缩重复派发同一审查。
+7. 虚拟机用于开发期 UI 和基础能力验证；最终媒体、输入、功耗、后台和网络结论以用户 ARM64 实机验收为准。
+
+## 2. G0 执行状态
+
+| ID | 状态 | 当前证据 | 后续门禁 |
+| --- | --- | --- | --- |
+| G0-01 | PASS | 2026-08-09 从干净 `main@aeb0cdac5` 创建唯一任务分支；初始 ahead/behind 均为 0 | 状态文档和代码范围随 checkpoint 更新 |
+| G0-02 | PASS | 官方四仓 HEAD、common-c 子模块、关键文件哈希已锁定，见第 3 节 | N1 vendoring 时重新核对 remote HEAD；任何升级重新审计 |
+| G0-03 | CONDITIONAL PASS | GPL/AGPL、MIT、Apache-2.0、BSD-3-Clause 组合可分发；来源、NOTICE、SBOM 和 source offer 合同已冻结 | 实际 vendoring 后必须更新 `THIRD_PARTY_NOTICES.md`、SPDX SBOM、artifact hashes 和源码归档 |
+| G0-04 | PASS FOR POLICY | 已核对 Sunshine `GHSA-ph75-mgxh-mv57`；最低允许版本固定为修复版 `v2026.516.143833` | N1 serverinfo 必须 fail closed 阻断更低或不可判定的危险版本；真实主机复测 |
+| G0-05 | STATIC PASS / RUNTIME PENDING | API 23 双 ABI 编译和链接通过；虚拟机为 ARM64 API 24，系统服务存在 | 增加仓库内独立 probe target；探针必须在 HAP/AppSpawn 进程内运行，独立 `/data/local/tmp` 结果无效 |
+| G0-06 | PARTIAL | 虚拟机确认 AVCodec、AudioPolicy、输入、网络、Keystore、Asset 服务；枚举到键盘/鼠标/触屏/触控板 | H.264 Surface、Opus、音频焦点、pointer capture、实体手柄和高级反馈需 HAP 内/实机探针 |
+| G0-07 | EXTERNAL PENDING | 尚未登记两台可恢复的真实 Sunshine 主机 | 允许继续纯模型、构建和 local-only UI；不允许宣称 host-control/streaming ready |
+| G0-08 | FROZEN FAIL-CLOSED | MVP 和首发禁用能力已冻结，见第 7 节 | 只有对应 capability receipt 通过后才能逐项打开 feature truth |
+
+## 3. 2026-08-09 官方上游锁定
+
+所有来源均为官方仓库，只把 commit 当作内容身份；标签只是可读版本名。
+
+| 组件 | 官方来源 | 固定 revision | 可复现证据 |
+| --- | --- | --- | --- |
+| moonlight-common-c | `https://github.com/moonlight-stream/moonlight-common-c` | `e41355ea01670fd4c830b384009d31dd0339a705` | tree `405b39fdc543dceb7644bdcda65e1bb4c7a28ab2`；LICENSE SHA-256 `589ed823e9a84c56feb95ac58e7cf384626b9cbf4fda2a907bc36e103de1bad2` |
+| common-c ENet | common-c gitlink，官方要求使用修改版 | `aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1` | LICENSE SHA-256 `77f94e3be39938801163844b8bf9a4f12badcc0da136e9886e7da14a816d74d3` |
+| common-c nanors | common-c gitlink | `b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a` | LICENSE SHA-256 `3fdda5f011d8490331950398e86427d67dfae05e048681476c2c6b8c34bdd033` |
+| Moonlight Android | `https://github.com/moonlight-stream/moonlight-android` | `f10085f552b367cf7203007693d91c322a0a2936` | tree `ff0595858eaf30d170e8791d85f93a37dfa65346`；PairingManager SHA-256 `83858d10e77026777acbee6857c95a0af22dc025a0b1f76072704639ac5d572a`；NvHTTP SHA-256 `30a10971eb9b417162dc11948696cc3f32dc96bcb79da5afb6f207c8c1c0e152` |
+| Moonlight Qt | `https://github.com/moonlight-stream/moonlight-qt` | `2e13ed9977bc31c73caf8428f08f58d793313ece` | tree `bd12a9a7737cf25744e2141337601a2c9a49bc4d`；其 common-c gitlink 与本次 pin 相同 |
+| Moonlight 官方图标 | Moonlight Qt `app/res/moonlight.svg` | 随 Qt revision | SVG SHA-256 `6fd0ee4fe5b4aad5abaa5d5c9acb9f7d1bda0abadfe9d1582115de9b4ba16aa2` |
+| Sunshine | `https://github.com/LizardByte/Sunshine` | 测试 pin `v2026.808.164219` / `25c06d79b54f3d092d3fedd5f5ba44989f394692` | 最低安全基线 `v2026.516.143833` / `14ffa6f...`；当前稳定标签另含 `v2026.726.710` / `7cb9207...` |
+| MoonlightOH 参考 | `https://gitee.com/smdsbz/moonlight-ohos` | `a48821e2d309c4282d79a053e6a85245eb438a7b` | 2026-08-09 HEAD 复核未漂移；只用于 HarmonyOS 交互/平台证据，不作为依赖或资产源 |
+| moonlight-harmonyos 参考 | `https://github.com/likuai2010/moonlight-harmonyos` | `e64392de5f00ee771140aa3f6e7d2b96db21e67a` | 2026-08-09 HEAD；只作历史实现对照 |
+
+实施采用以下边界：
+
+- 协议核心只 vendoring `moonlight-common-c` 及其固定 ENet/nanors 子模块。
+- 配对、Host API 和证书语义参考 Moonlight Android，但不复制 Android UI/JNI/生命周期。
+- 设置和输入语义参考 Moonlight Qt，但不移植 Qt/SDL。
+- Sunshine 只作为互操作服务端，不进入客户端产物。
+- MoonlightOH 只验证 HarmonyOS 页面、XComponent、OH_AVCodec/OHAudio 和输入路线，不复制其代码或视觉资产。
+
+## 4. 许可证、品牌和发布合同
+
+| 内容 | 许可证/边界 | 本项目动作 |
+| --- | --- | --- |
+| RemoteDeskHarmonyOS 组合产物 | AGPL-3.0-or-later | 继续以现有 AGPL 网络源码提供政策发布 |
+| moonlight-common-c | GPL-3.0 | 与 AGPLv3 组合兼容；保留原 LICENSE、copyright、revision 和修改说明 |
+| ENet | MIT | 保留 LICENSE 和 copyright；必须使用 common-c 固定 fork/revision |
+| nanors | MIT | 保留 LICENSE 和 copyright |
+| OpenSSL 3.4.1 | Apache-2.0，仓库已分发 | 复用现有静态产物，不重复引入；重新生成 SBOM/哈希即可 |
+| Opus | BSD-3-Clause，仓库已分发 | 复用现有双 ABI 静态产物，不重复造轮子 |
+| 官方 Moonlight SVG | 随 GPL 源仓分发；商标许可与代码许可是两条边界 | provenance/NOTICE/source bundle 与品牌审核通过前，产品继续使用 `sys.symbol.gamecontroller_fill` 回退，不把图标 ready 写死为 true |
+| Sunshine | 不分发 | 记录测试版本和安全状态，不复制服务端源码/素材 |
+
+N1-01 的同一提交必须：
+
+1. 将原样上游源码、子模块和 LICENSE 放入独立 upstream 目录；项目改动仅放 patch/platform adapter。
+2. 增加 `THIRD_PARTY_NOTICES.md` 项、SPDX package/relationship、`THIRD_PARTY_ARTIFACTS.sha256` 和固定 revision 清单。
+3. 更新 `SOURCE_OFFER.md`，保证 HAP 对应源码归档可重建同一 common-c/ENet/nanors 内容。
+4. 运行 `scripts/dev_workflow.sh light`；任何未知许可证、缺失源码或哈希不一致直接阻断发布。
+
+## 5. Sunshine 安全和兼容政策
+
+1. `GHSA-ph75-mgxh-mv57` 是客户端证书校验绕过问题，关键修复基线为 `v2026.516.143833`。
+2. serverinfo 能可靠判定主机低于基线时，配对和连接都阻断，显示“Sunshine 版本存在已知安全风险，请先升级”。
+3. 版本不可判定、第三方 fork 或非标准版本字符串不自动等同安全；进入“需要确认/不支持”状态，并保存脱敏诊断，不静默放行。
+4. 真实互操作主机优先固定到 `v2026.808.164219`；另保留一台最低允许版本用于兼容回归。
+5. 发布前重新读取官方 advisories；所有本 pin 之后适用的高危/严重公告都必须有升级、阻断或明确不受影响的证据。
+
+## 6. HarmonyOS API 23 / 虚拟机能力矩阵
+
+### 6.1 SDK 双 ABI 静态探针
+
+SDK 根：`/Users/mydestiny/Library/OpenHarmony/Sdk/23`。
+
+同一最小 C++ 探针在 `arm64-v8a` 和 `x86_64` 均完成编译/链接，直接引用：
+
+- `OH_AVCodec_GetCapability`
+- `OH_AudioStreamBuilder_Create`
+- `OH_GameDevice_GetAllDeviceInfos`
+- `OH_Huks_GenerateKeyItem`
+- `OH_Asset_Add`
+- `OH_Input_GetDeviceIds`
+- `OH_NetConn_HasDefaultNet`
+
+双 ABI 链接所需 SDK 库均存在：`libnative_media_codecbase.so`、`libohaudio.so`、`libohgame_controller.z.so`、`libhuks_ndk.z.so`、`libasset_ndk.z.so`、`libohinput.so`、`libnet_connection.so`。
+
+### 6.2 Game Controller Kit 边界
+
+- API 23 SDK 包含 device enumeration、button/axis monitor 和 game pad 类型，API 引入版本为 21。
+- 当前头文件未找到 rumble/vibration、LED、gyro/motion、accelerometer 或 battery API。
+- 因此首版只允许“枚举 + 按键/轴输入”；振动、LED、运动和电量状态保持 `unsupported`，设置项隐藏，不用空回调伪装支持。
+
+### 6.3 2026-08-09 虚拟机只读证据
+
+| 项 | 结果 | 判定 |
+| --- | --- | --- |
+| 设备 | `127.0.0.1:5555`，ARM64，HarmonyOS emulator `6.1.0.125`，API 24 | 可用于 API 23 向上兼容和 UI 调试；不能代替 API 23/真实手柄真机 |
+| 网络 | `NetConnManager` available，默认网络 `netId=101` | 基础网络服务可用；UDP/IPv6/NAT64 仍待流量级验证 |
+| 媒体 | `AVCodecService`、`libnative_media_codecbase.so` 存在 | H.264 profile/level/Surface/首帧仍需 HAP 内 probe |
+| 音频 | `AudioPolicyService` 存在，可查询 device/stream/pipe/session | OHAudio stereo、焦点、路由切换仍需 HAP 内 probe |
+| 安全 | `KeystoreService`、`AssetService` 在 system ability list | HUKS key lifecycle、Asset owner 隔离仍需应用身份内测试 |
+| 输入 | `MultimodalInput` 枚举 6 个设备：键盘、鼠标、触屏、触控板等 | 键鼠/触控基础存在；relative pointer capture、实体手柄仍 pending |
+
+把 NDK 可执行文件直接放到 `/data/local/tmp` 运行得到 `probe_exit=127`，原因是该独立进程没有 AppSpawn/应用 linker namespace，无法加载 `libark_jsruntime.so` 及 platformsdk 依赖。此结果不证明 API 不支持，也不能算运行通过。仓库内 probe 必须由 HAP 内 NAPI 调用，记录每项 capability 的真实结果。
+
+## 7. 冻结的 MVP 与 feature truth
+
+### 7.1 首发允许范围
+
+- Sunshine `v2026.516.143833` 或更高，首要测试版本为 `v2026.808.164219`。
+- 局域网或用户自行保证可达的网络，不承诺免配置公网穿透。
+- H.264 硬解、Opus stereo、60 fps 以内的设备/主机能力交集。
+- 键盘、鼠标、触控；实体手柄只在枚举、映射、全量释放和真机证据都通过后开放。
+- 默认断开只结束客户端流；显式“退出主机应用”使用独立确认命令。
+- 配对身份默认仅本机安全存储；云身份同步默认关闭且必须单独通过密码学、恢复、撤销审查。
+
+### 7.2 默认关闭/隐藏
+
+- HEVC、AV1、HDR、YUV 4:4:4、7.1、120 fps/高刷。
+- rumble、LED、motion、controller battery、多玩家高级反馈。
+- 自动公网/NAT 穿透、UPnP 自动改路由、未经确认的计费网络串流。
+- 官方品牌图标、Host Control、Streaming、Cloud Schema、Cloud Identity、Protocol Available 六个发布 truth 初值全部为 false。
+
+### 7.3 不因 G0 外部条件阻塞的工作
+
+在真实 Sunshine/ARM64 实机尚未提供时，可以继续：D1 全部纯模型/策略、D2 本地 schema/repository/cache 和未注册云表 adapter、D3 不触发真实 AGC 的纯策略/备份适配、U1 禁用入口和 local-only 页面骨架、native 双 ABI 编译。以下工作不得声称验收完成：真实配对、catalog/launch/quit、首帧串流、媒体性能、实体手柄、后台/PIP、网络切换和生产云同步。
+
+## 8. D1 领域策略 checkpoint
+
+| ID | 状态 | 落地产物与合同 |
+| --- | --- | --- |
+| D1-01 | PASS | `MoonlightModels.ets` 定义 Host/Address/App/Profile/Settings/TrustCandidate/IdentityMetadata/EffectiveSettings，字段有边界、枚举、安全默认值且不含 session secret |
+| D1-02 | PASS | `MoonlightRecord.ets` 固定一张 19 列云 envelope、一张 20 列 local mirror 和独立 app cache 表名；owner/secret/localonly 矩阵有测试 |
+| D1-03 | PASS | `MoonlightRecordPolicy.ets` 完成重复 key 预扫描、NFC canonical JSON、`_meta`、三类 hash domain、大小限制、逐 recordType 语义验证、嵌套敏感键拦截、tombstone 和稳定 quarantine reason |
+| D1-04 | PASS | `MoonlightRecordConflictPolicy.ets` 固定 `resetEpoch > syncVersion > updatedAt`，覆盖 retry 幂等、mutation 复用损坏、同 envelope 异内容隔离、同 epoch tombstone、显式复活、字段合并和身份/trust/secret fail-closed |
+| D1-05 | PASS | `MoonlightSettingsPolicy.ets` 完成 global→host→profile→session、作用域限制、requested/effective/adjustment 和 capability clipping |
+| D1-06 | PASS | capability 与 feature truth 分离，平台/主机/网络取交集，六个发布 truth 默认全 false且下层不可越权 |
+| D1-07 | PASS | `MoonlightSessionState.ets` 覆盖发现至停止/失败的阶段、generation/sequence fence、媒体/首帧门、重连重置、取消和稳定错误映射 |
+
+测试聚合器登记 7 个 Moonlight describe、43 个 test。由于项目没有注册
+`ohosTest@OhosTestCompileArkTS`（`00306054`），当前证据只证明测试源随
+`default@OhosTestCompileArkTS` 编译且 focused allowlist/count 一致，不宣称
+Hypium 真机执行通过。
+
+## 9. 2026-08-09 checkpoint 验证
+
+- `default@OhosTestCompileArkTS`：PASS。
+- signed `assembleHap`：PASS，`BUILD SUCCESSFUL in 2 min 4 s 692 ms`。
+- host `rdp_native_tests`：沙箱内本地 TLS fixture 因 socket 监听限制为
+  326/342；按门禁在沙箱外复跑为 **342/342 PASS**，确认不是代码回归。
+- `scripts/probe_moonlight_platform.sh`：arm64-v8a、x86_64 均 PASS。
+- `verify_open_source_release.ps1 -Mode Light`：PASS。
+- `git diff --check`、`codex_state validate`：文档更新后需最终复跑。
+
+## 10. 下一执行序列
+
+1. D2-01 先在当前 owner-store migration 中只创建本地三表，逐版本升级、回滚、幂等和 exact schema 测试通过前不接 repository。
+2. D2-02/D2-03 实现携带完整 account lease 的 local-first repository 与有界 LRU app cache。
+3. D2-04 只增加 exact 19 列 adapter；AGC 开发/测试/生产 receipt 不全时，不把 `moonlightrecordv1` 加入 `TABLES`。
+4. 补 HAP 内 typed capability probe；真实 Sunshine 和用户 ARM64 真机未提供前，host-control/streaming/protocol truth 继续为 false。

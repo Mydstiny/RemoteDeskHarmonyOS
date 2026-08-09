@@ -156,6 +156,13 @@ import sshForwardingEditorPolicyTest from './SshForwardingEditorPolicy.test';
 import sshModalCoordinatorTest from './SshModalCoordinator.test';
 import sshSessionStoreTest from './SshSessionStore.test';
 import hostLocalPersonalizationPolicyTest from './HostLocalPersonalizationPolicy.test';
+import moonlightModelsTest from './MoonlightModels.test';
+import moonlightRecordTest from './MoonlightRecord.test';
+import moonlightRecordPolicyTest from './MoonlightRecordPolicy.test';
+import moonlightCapabilityPolicyTest from './MoonlightCapabilityPolicy.test';
+import moonlightSettingsPolicyTest from './MoonlightSettingsPolicy.test';
+import moonlightRecordConflictPolicyTest from './MoonlightRecordConflictPolicy.test';
+import moonlightSessionStateTest from './MoonlightSessionState.test';
 
 export default function testsuite() {
   localUnitTest();
@@ -316,4 +323,11 @@ export default function testsuite() {
   sshModalCoordinatorTest();
   sshSessionStoreTest();
   hostLocalPersonalizationPolicyTest();
+  moonlightModelsTest();
+  moonlightRecordTest();
+  moonlightRecordPolicyTest();
+  moonlightCapabilityPolicyTest();
+  moonlightSettingsPolicyTest();
+  moonlightRecordConflictPolicyTest();
+  moonlightSessionStateTest();
 }
