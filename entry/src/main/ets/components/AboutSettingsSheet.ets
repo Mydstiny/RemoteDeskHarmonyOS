@@ -7,7 +7,6 @@
 import { common, Want } from '@kit.AbilityKit';
 import { AppConfig, AppTheme, Palette, buildLight, buildDark } from '../common/Theme';
 import {
-  firstInstallGuidePages,
   GuideContentPage,
   settingsUsageGuidePages
 } from '../services/GuideContentRegistry';
@@ -28,7 +27,6 @@ export struct AboutSettingsSheet {
   @State usageGuideIndex: number = 0;
   private usageGuideController: SwiperController = new SwiperController();
   private readonly usageGuideItems: GuideContentPage[] = settingsUsageGuidePages();
-  private readonly firstInstallGuideItems: GuideContentPage[] = firstInstallGuidePages();
   @State releaseNotesIndex: number = 0;
   private releaseNotesController: SwiperController = new SwiperController();
   private readonly releaseNotesItems: ReleaseNotePage[] =
@@ -49,14 +47,6 @@ export struct AboutSettingsSheet {
     return this.breakpoint === 'sm' ? 300 : 340;
   }
 
-  private currentUsageGuideItems(): GuideContentPage[] {
-    return this.aboutSheetMode === 5 ? this.firstInstallGuideItems : this.usageGuideItems;
-  }
-
-  private currentUsageGuideTitle(): string {
-    return this.aboutSheetMode === 5 ? '新用户引导' : '简单使用教程';
-  }
-
   private openUrl(url: string): void {
     try {
       const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
@@ -72,7 +62,7 @@ export struct AboutSettingsSheet {
   }
 
   build() {
-    if (this.aboutSheetMode === 0 || this.aboutSheetMode === 5) {
+    if (this.aboutSheetMode === 0) {
       this.usageGuideSheet();
     } else if (this.aboutSheetMode === 1) {
       this.aboutAppSheet();
@@ -167,7 +157,7 @@ export struct AboutSettingsSheet {
   @Builder usageGuideSheet() {
     Column() {
       Row() {
-        Text(this.currentUsageGuideTitle()).fontSize(20).fontWeight(FontWeight.Bold)
+        Text('简单使用教程').fontSize(20).fontWeight(FontWeight.Bold)
           .fontColor(this.pal().text).fontFamily(this.font())
         Blank()
         SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
@@ -175,7 +165,7 @@ export struct AboutSettingsSheet {
       }.width('100%').padding({ left: 24, right: 20, top: 20 }).margin({ bottom: 4 })
 
       Swiper(this.usageGuideController) {
-        ForEach(this.currentUsageGuideItems(), (item: GuideContentPage, index: number) => {
+        ForEach(this.usageGuideItems, (item: GuideContentPage, index: number) => {
           Column() {
             Column() {
               Image(item.symbol).width(48).height(48).fillColor(this.accentColor)
@@ -219,7 +209,7 @@ export struct AboutSettingsSheet {
           })
         Blank()
         Row({ space: 7 }) {
-          ForEach(this.currentUsageGuideItems(), (_dot: GuideContentPage, i: number) => {
+          ForEach(this.usageGuideItems, (_dot: GuideContentPage, i: number) => {
             Column()
               .width(this.usageGuideIndex === i ? 22 : 7).height(7).borderRadius(4)
               .backgroundColor(this.usageGuideIndex === i ? this.accentColor : this.pal().divider)
@@ -227,11 +217,11 @@ export struct AboutSettingsSheet {
           }, (_dot: GuideContentPage) => _dot.id)
         }
         Blank()
-        Text(this.usageGuideIndex < this.currentUsageGuideItems().length - 1 ? '下一步' : '完成')
+        Text(this.usageGuideIndex < this.usageGuideItems.length - 1 ? '下一步' : '完成')
           .fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.accentColor)
           .width(72).textAlign(TextAlign.End)
           .onClick((): void => {
-            if (this.usageGuideIndex < this.currentUsageGuideItems().length - 1) {
+            if (this.usageGuideIndex < this.usageGuideItems.length - 1) {
               this.usageGuideController.showNext();
             } else {
               this.onClose();

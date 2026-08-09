@@ -531,7 +531,7 @@ struct HostListPage {
   @State settingsLeafSheetMode: number = SETTINGS_SHEET_NONE;
   @State vncSettingsLeafDirty: boolean = false;
   @State expandedSettingsSection: string = SETTINGS_SECTION_NONE;
-  @State aboutSheetMode: number = 0; // 0=使用教程 1=关于应用 2=隐私政策 3=前置操作 4=更新日志 5=新用户引导
+  @State aboutSheetMode: number = 0; // 0=使用教程 1=关于应用 2=隐私政策 3=前置操作 4=更新日志
   // 合并 Sheet: 单 bindSheet + mode 切换 (避免 $$ 多 bindSheet 错位)
   @State showPopupSheet: boolean = false;
   @State popupSheetMode: number = 0; // 0=crypto, 1=about(用 aboutSheetMode 子路由), 2=SSH host key, 4=RDP certificate
@@ -9968,15 +9968,6 @@ struct HostListPage {
                 (): void => {
                   this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
                     this.aboutSheetMode = 4;
-                    this.popupSheetMode = 1;
-                  });
-                })
-              this.cardDivider()
-              this.cardActionRow($r('app.media.icon_info'), '新用户引导',
-                '查看首次安装展示的 10 页使用引导',
-                (): void => {
-                  this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
-                    this.aboutSheetMode = 5;
                     this.popupSheetMode = 1;
                   });
                 })

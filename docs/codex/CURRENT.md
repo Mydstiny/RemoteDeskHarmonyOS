@@ -22,7 +22,8 @@
 - 1.1.0 captures a clean-install profile before LoginPage writes its launch marker. Saved update-user preferences remain authoritative; new Phone/Pad installs default remote controls to touchpad and SSH to the software keyboard, while new PC installs default all four protocols to physical keyboard/mouse. Canvas pinch zoom and RustDesk presence/grouping default off, official remote cursor/background display/real 2FA logos default on, SSH uses the system terminal-style symbol, and VNC option rows now use semantic symbols.
 - Phone RustDesk relay lists now own a 200 vp scroll-tail clearance, keeping the final card above the parent FAB even with many relays. The classic relay add sheet fits its collapsed content and switches to the large resize-only layout only after advanced configuration is expanded; the VNC gateway editor remains large.
 - The 1.1.0 update Swiper is rewritten as 12 focused pages led by VNC, followed by RustDesk, host organization/monitoring, SSH/SFTP/forwarding, RDP certificate validation, authenticator logos and input fixes. First-install and Settings usage guides now share nine instructional pages plus their own final page; long release notes use a compact numeric pager.
-- Settings → Tutorial now exposes both `本版本更新日志` and `新用户引导` as repeatable review Swipers backed by the production registries. The existing Settings usage tutorial and prerequisite guide remain separate; opening review entries never changes the startup release-read marker.
+- Settings → Tutorial keeps three non-duplicated entries: `本版本更新日志`, `简单使用教程` and the prerequisite guide. The first-install guide remains part of onboarding but is no longer repeated in Settings; opening the release notes never changes the startup release-read marker.
+- The collapsed RustDesk relay add/edit sheet now uses 68–72% of the available window height, bounded to 480–620 vp when space permits; advanced configuration still expands to the large resize-only layout.
 
 ## IDE Build Repair
 
@@ -67,6 +68,6 @@
 - 1.1.0 clean-install/update classification and the Phone/Pad/PC default matrix are code/test-compile/build verified but not yet device accepted.
 - RustDesk relay Phone FAB clearance and collapsed/advanced add-sheet sizing are policy-test-compile/build verified but not yet device accepted.
 - The 12-page release Swiper and 10-page first-install/Settings tutorials are registry-test-compile/build verified but not yet visually accepted on Phone/Pad.
-- The repeatable Settings entries for release notes and the exact first-install guide are build verified but not yet opened on a device.
+- The simplified three-entry Settings tutorial section and adaptive RustDesk relay editor height are not yet visually accepted on a device.
 - Light compliance cannot run locally because `pwsh` is missing and is also blocked by baseline SBOM package `totp-reviewed-brand-assets` with `licenseDeclared=NOASSERTION`.
 - Independent review of the committed workspace through `6f8f387` is pending by explicit direct-execution instruction.

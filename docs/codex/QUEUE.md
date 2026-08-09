@@ -7,8 +7,9 @@ Updated: 2026-08-09 Asia/Shanghai
 - Independently review the committed increment through `6f8f387` and keep the review state open until it passes.
 - Device-check 1.1.0 clean-install versus update inheritance, Phone/Pad/PC input defaults, SSH terminal symbol, VNC semantic option symbols, TOTP logo matching and Pad control docking.
 - On a Phone, verify that the final RustDesk relay card scrolls fully above the FAB and that the collapsed add sheet is compact before expanding advanced configuration.
-- On Phone and Pad, verify all 12 update pages and all 10 first-install/Settings tutorial pages for pagination, text fit, final actions and sheet sizing.
-- From Settings → Tutorial, repeatedly open `本版本更新日志` and `新用户引导`; confirm they use the production 12-page and exact first-install 10-page registries without changing startup read state.
+- On Phone and Pad, verify all 12 update pages, the 10-page first-install guide and the 10-page Settings usage tutorial for pagination, text fit, final actions and sheet sizing.
+- From Settings → Tutorial, confirm the duplicate `新用户引导` entry is gone and repeatedly opening `本版本更新日志` does not change startup read state.
+- Verify the collapsed RustDesk relay add/edit sheet is comfortably tall on Phone/Pad/PC, remains bounded in split-screen, and expands to the large layout only after advanced configuration opens.
 - Provision and run the real HTTP CONNECT, SOCKS5, ProxyJump, external FRP TCP/Visitor and Remote/Dynamic forwarding traffic matrix. Local forwarding already passed real SSH banner/KEX traffic on the wireless Pad.
 - Keep xterm.js as the visible terminal renderer; do not re-enable Native Drawing on API 23.
 

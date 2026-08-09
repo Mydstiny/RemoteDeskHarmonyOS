@@ -70,6 +70,7 @@ import {
 } from '../services/RustDeskRelaySetupCoordinator';
 import { DataMutationStage } from '../services/DataMutationResult';
 import {
+  rustDeskRelayCompactEditorHeight,
   rustDeskRelayDirectoryBottomClearance,
   rustDeskRelaySheetUsesLargeLayout
 } from '../services/RustDeskRelayLayoutPolicy';
@@ -157,6 +158,7 @@ export struct RustDeskRelayPage {
   @State proBusy: boolean = false;
   @State testingRelayId: string = '';
   @State relaySheetClosing: boolean = false;
+  @State relayViewportHeight: number = 0;
   @State relayViewRevision: number = 0;
   @State proViewRevision: number = 0;
   @State vncViewRevision: number = 0;
@@ -1221,9 +1223,14 @@ export struct RustDeskRelayPage {
     return this.isDesktopDevice && this.breakpoint === 'xl';
   }
 
-  private relaySheetHeight(): SheetSize {
-    return rustDeskRelaySheetUsesLargeLayout(this.sheetContent, this.showRelayAdvanced)
-      ? SheetSize.LARGE : SheetSize.FIT_CONTENT;
+  private relaySheetHeight(): SheetSize | number {
+    if (rustDeskRelaySheetUsesLargeLayout(this.sheetContent, this.showRelayAdvanced)) {
+      return SheetSize.LARGE;
+    }
+    if (this.sheetContent === 1) {
+      return rustDeskRelayCompactEditorHeight(this.breakpoint, this.relayViewportHeight);
+    }
+    return SheetSize.FIT_CONTENT;
   }
 
   private relaySheetKeyboardAvoidMode(): SheetKeyboardAvoidMode {
@@ -1284,6 +1291,12 @@ export struct RustDeskRelayPage {
       }
     }
     .width('100%').height('100%')
+    .onAreaChange((_old: Area, next: Area): void => {
+      const height: number = next.height as number;
+      if (Number.isFinite(height) && height > 0 && Math.abs(height - this.relayViewportHeight) >= 1) {
+        this.relayViewportHeight = height;
+      }
+    })
     .overlay(this.TitleBarOverlay(), { align: Alignment.Top })
     .bindSheet($$this.showSheet, this.relaySheetBuilder(), {
       height: this.relaySheetHeight(),
