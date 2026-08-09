@@ -50,11 +50,11 @@ export const SSH_FORWARDING_DEFAULT_MIN_BIND_PORT: number = 1;
 export const SSH_FORWARDING_DEFAULT_MAX_BIND_PORT: number = 65535;
 const SSH_FORWARDING_MAX_SAFE_INTEGER: number = 9007199254740991;
 
-function isForwardingMode(value: string): value is SshForwardingMode {
+function isForwardingMode(value: string): boolean {
   return value === 'local' || value === 'remote' || value === 'dynamic';
 }
 
-function isStartPolicy(value: string): value is SshForwardingStartPolicy {
+function isStartPolicy(value: string): boolean {
   return value === 'manual' || value === 'onSessionReady';
 }
 
@@ -78,7 +78,8 @@ function boundedHost(value: string, fallback: string = ''): string {
 }
 
 function normalizedProfile(profile: SshForwardingProfile): SshForwardingProfile {
-  const mode: SshForwardingMode = isForwardingMode(profile.mode) ? profile.mode : 'local';
+  const mode: SshForwardingMode = isForwardingMode(profile.mode)
+    ? profile.mode as SshForwardingMode : 'local';
   const minBindPort: number = profile.minBindPort === undefined
     ? SSH_FORWARDING_DEFAULT_MIN_BIND_PORT : profile.minBindPort;
   const maxBindPort: number = profile.maxBindPort === undefined
@@ -86,7 +87,8 @@ function normalizedProfile(profile: SshForwardingProfile): SshForwardingProfile 
   const maxBytes: number = profile.maxBytes === undefined ? 0 : profile.maxBytes;
   const expiresAtMs: number = profile.expiresAtMs === undefined ? 0 : profile.expiresAtMs;
   const startPolicy: SshForwardingStartPolicy = profile.startPolicy === undefined
-    ? 'manual' : (isStartPolicy(profile.startPolicy) ? profile.startPolicy : 'manual');
+    ? 'manual' : (isStartPolicy(profile.startPolicy)
+      ? profile.startPolicy as SshForwardingStartPolicy : 'manual');
   return {
     id: profile.id.trim().substring(0, 96),
     mode,

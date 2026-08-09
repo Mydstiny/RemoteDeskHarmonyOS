@@ -132,7 +132,14 @@ interface OwnerState {
 }
 
 function cloneProfile(profile: SshForwardingProfile): SshForwardingProfile {
-  return { ...profile };
+  return {
+    id: profile.id, mode: profile.mode, bindHost: profile.bindHost, bindPort: profile.bindPort,
+    targetHost: profile.targetHost, targetPort: profile.targetPort,
+    maxConnections: profile.maxConnections, enabled: profile.enabled,
+    startPolicy: profile.startPolicy, allowPublicBind: profile.allowPublicBind,
+    minBindPort: profile.minBindPort, maxBindPort: profile.maxBindPort,
+    maxBytes: profile.maxBytes, expiresAtMs: profile.expiresAtMs
+  };
 }
 
 export class SshForwardingProfileStore {

@@ -23,11 +23,25 @@ export interface SshForwardingRuntimeRecord {
 export const SSH_FORWARDING_RUNTIME_LIMIT: number = 256;
 
 function cloneProfile(profile: SshForwardingProfile): SshForwardingProfile {
-  return { ...profile };
+  return {
+    id: profile.id, mode: profile.mode, bindHost: profile.bindHost, bindPort: profile.bindPort,
+    targetHost: profile.targetHost, targetPort: profile.targetPort,
+    maxConnections: profile.maxConnections, enabled: profile.enabled,
+    startPolicy: profile.startPolicy, allowPublicBind: profile.allowPublicBind,
+    minBindPort: profile.minBindPort, maxBindPort: profile.maxBindPort,
+    maxBytes: profile.maxBytes, expiresAtMs: profile.expiresAtMs
+  };
 }
 
 function cloneRuntime(runtime: SshForwardingRuntimeRecord): SshForwardingRuntimeRecord {
-  return { ...runtime, profile: cloneProfile(runtime.profile) };
+  return {
+    schemaVersion: 1, profileId: runtime.profileId, sessionId: runtime.sessionId,
+    channelId: runtime.channelId, generation: runtime.generation,
+    profile: cloneProfile(runtime.profile), state: runtime.state,
+    activeConnections: runtime.activeConnections, transferredBytes: runtime.transferredBytes,
+    lastError: runtime.lastError, actualBindHost: runtime.actualBindHost,
+    actualBindPort: runtime.actualBindPort, updatedAtMs: runtime.updatedAtMs
+  };
 }
 
 function runtimeKey(handle: SshSessionHandle, profileId: string): string {
@@ -63,13 +77,13 @@ export class SshForwardingRuntimeStore {
       actualBindHost: profile.bindHost,
       actualBindPort: profile.bindPort,
       updatedAtMs: Date.now()
-    } : {
-      ...existing,
-      profile: cloneProfile(profile),
-      state,
-      lastError: error,
-      updatedAtMs: Date.now()
-    };
+    } : cloneRuntime(existing);
+    if (existing !== undefined) {
+      runtime.profile = cloneProfile(profile);
+      runtime.state = state;
+      runtime.lastError = error;
+      runtime.updatedAtMs = Date.now();
+    }
     this.records.set(key, runtime);
     return cloneRuntime(runtime);
   }
@@ -142,6 +156,16 @@ export class SshForwardingRuntimeStore {
     this.records.forEach((runtime: SshForwardingRuntimeRecord, key: string): void => {
       if (runtime.sessionId === handle.sessionId && runtime.channelId === handle.channelId &&
         runtime.generation === handle.generation) { keys.push(key); }
+    });
+    for (let index: number = 0; index < keys.length; index++) { this.records.delete(keys[index]); }
+    return keys.length;
+  }
+
+  clearOlderGenerations(handle: SshSessionHandle): number {
+    const keys: string[] = [];
+    this.records.forEach((runtime: SshForwardingRuntimeRecord, key: string): void => {
+      if (runtime.sessionId === handle.sessionId && runtime.channelId === handle.channelId &&
+        runtime.generation !== handle.generation) { keys.push(key); }
     });
     for (let index: number = 0; index < keys.length; index++) { this.records.delete(keys[index]); }
     return keys.length;

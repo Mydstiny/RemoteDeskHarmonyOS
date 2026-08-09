@@ -324,7 +324,14 @@ export class SshSessionStore {
     const record: SshSessionRecord | undefined = this.records.get(handle.sessionId);
     if (record === undefined) { return false; }
     if (state !== 'Created') {
-      if (!canTransition(record.context.state, state)) { return false; }
+      // registerExisting adopts a native session whose transport/auth work
+      // happened before this registry observed it. Ready is therefore a
+      // deliberate adoption edge, not a normal Created lifecycle shortcut.
+      const adoptedReady: boolean = record.context.state === 'Created' && state === 'Ready';
+      if (!canTransition(record.context.state, state) && !adoptedReady) {
+        this.removeRecord(handle.sessionId);
+        return false;
+      }
       const event: SshSessionStoreEvent = this.appendEvent(record, 'session.adopted');
       record.context.state = state;
       this.notify({ kind: 'changed', context: cloneContext(record.context), event: cloneEvent(event) });

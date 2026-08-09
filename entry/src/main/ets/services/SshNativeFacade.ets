@@ -15,7 +15,7 @@ import {
   SshSessionSnapshot,
   SshTerminalInputEnqueueResult
 } from '../types/rdpnapi';
-import { ExtensionLoader } from './ExtensionLoader';
+import { ExtensionLoader, SshNativeConnectPromise } from './ExtensionLoader';
 import {
   SshSessionHandle,
   SshSessionLifecycleState,
@@ -47,7 +47,7 @@ export class SshNativeFacade {
 
   connectSshAsync(config: SessionConfig, hostId: string, label: string,
     address: string, foreground: boolean = true): SshConnectHandoff | null {
-    const nativePromise = this.loader.connectSshAsync(config, foreground);
+    const nativePromise: SshNativeConnectPromise = this.loader.connectSshAsync(config, foreground);
     const handle: SshSessionHandle = {
       sessionId: nativePromise.sessionId,
       channelId: 'shell',
@@ -203,7 +203,8 @@ export class SshNativeFacade {
 
   listRemoteDirAsync(handle: SshSessionHandle, remotePath: string): Promise<SftpListAsyncResult> {
     if (!this.store.accepts(handle)) {
-      return Promise.resolve({ errorCode: -83, entries: [] });
+      const rejected: SftpListAsyncResult = { errorCode: -83, entries: [] };
+      return Promise.resolve(rejected);
     }
     return this.loader.listRemoteDirAsync(handle.sessionId, remotePath, handle.generation);
   }

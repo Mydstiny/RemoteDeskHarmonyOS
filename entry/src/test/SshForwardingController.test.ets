@@ -168,10 +168,21 @@ export default function sshForwardingControllerTest(): void {
       const results = controller.reconcile(nextHandle, [automatic]);
       expect(results.length).assertEqual(1);
       expect(results[0].accepted).assertTrue();
-      expect(controller.list(oldHandle)[0].state).assertEqual('needsRebind');
+      expect(controller.list(oldHandle).length).assertEqual(0);
       expect(native.calls[0]).assertEqual('configure:3:2:auto');
       expect(native.calls[1]).assertEqual('start:3:auto');
       expect(native.calls.some((call: string): boolean => call.indexOf('3:1') >= 0)).assertFalse();
+    });
+
+    it('retires_session_runtime_records_after_stopping_native_listeners', 0, (): void => {
+      const native: FakeForwardingNative = new FakeForwardingNative();
+      const current: SshSessionHandle = handle(4);
+      native.accept(current);
+      const controller: SshForwardingController = new SshForwardingController(native);
+      expect(controller.start(current, profile('retired')).accepted).assertTrue();
+      expect(controller.list(current).length).assertEqual(1);
+      expect(controller.releaseSession(current).length).assertEqual(1);
+      expect(controller.list(current).length).assertEqual(0);
     });
 
     it('isolates_at_least_eight_sessions', 0, (): void => {

@@ -96,6 +96,7 @@ function operationResult(operation: SshForwardingOperation, profileId: string, c
 }
 
 export class SshForwardingController {
+  private static instance: SshForwardingController | null = null;
   private readonly native: SshForwardingNativePort;
   private readonly runtimes: SshForwardingRuntimeStore;
 
@@ -103,6 +104,13 @@ export class SshForwardingController {
     runtimes: SshForwardingRuntimeStore = new SshForwardingRuntimeStore()) {
     this.native = native;
     this.runtimes = runtimes;
+  }
+
+  static getInstance(): SshForwardingController {
+    if (SshForwardingController.instance === null) {
+      SshForwardingController.instance = new SshForwardingController();
+    }
+    return SshForwardingController.instance;
   }
 
   configure(handle: SshSessionHandle, profile: SshForwardingProfile): SshForwardingOperationResult {
@@ -212,6 +220,10 @@ export class SshForwardingController {
         results.push(this.configure(handle, profile));
       }
     }
+    // A successfully adopted generation owns fresh native listeners. Runtime
+    // records from older generations are no longer actionable and must not
+    // accumulate in the process-wide controller.
+    this.runtimes.clearOlderGenerations(handle);
     return results;
   }
 
@@ -252,6 +264,12 @@ export class SshForwardingController {
     for (let index: number = 0; index < runtimes.length; index++) {
       results.push(this.stop(handle, runtimes[index].profileId));
     }
+    return results;
+  }
+
+  releaseSession(handle: SshSessionHandle): SshForwardingOperationResult[] {
+    const results: SshForwardingOperationResult[] = this.stopAll(handle);
+    this.runtimes.clear(handle);
     return results;
   }
 

@@ -114,7 +114,7 @@ export struct SshProxyEditor {
       this.routeButton('HTTP CONNECT', 'http_connect')
       this.routeButton('SOCKS5', 'socks5')
       this.routeButton('SSH 跳板', 'ssh_jump')
-      this.routeButton('FRP TCP 入口', 'frp_tcp')
+      this.routeButton('FRP TCP/Visitor', 'frp_tcp')
     }.width('100%')
   }
 
@@ -249,11 +249,11 @@ export struct SshProxyEditor {
       } else if (this.kind === 'ssh_jump') {
         this.jumpContent()
       } else {
-        Text(this.kind === 'frp_tcp' ? '填写外部 frpc/frps 已暴露的 TCP SSH 入口；App 不运行 FRP 控制面。' :
+        Text(this.kind === 'frp_tcp' ? '填写外部 frpc/frps 或 Visitor 已在本机/网络中暴露的 TCP 入口；App 只连接该入口，不运行 FRP 控制面。' :
           '代理只用于建立到目标 SSH 的 TCP 连接。')
           .fontSize(12).fontColor(this.pal().text2).width('100%').margin({ bottom: 12 })
-        this.field(this.kind === 'frp_tcp' ? 'FRP TCP 入口' : '代理地址', this.proxyHost,
-          this.kind === 'frp_tcp' ? 'frps.example.com' : 'proxy.example.com', (value: string): void => {
+        this.field(this.kind === 'frp_tcp' ? '外部 FRP TCP/Visitor 入口' : '代理地址', this.proxyHost,
+          this.kind === 'frp_tcp' ? '127.0.0.1 或 frps.example.com' : 'proxy.example.com', (value: string): void => {
             this.proxyHost = value; this.publish();
           })
         this.field('端口', this.proxyPortText, this.kind === 'frp_tcp' ? '60022' :
@@ -318,7 +318,7 @@ export struct SshProxyEditor {
               .backgroundColor(this.kind === 'ssh_jump' ? this.accentColor : this.pal().surface)
               .fontColor(this.kind === 'ssh_jump' ? Color.White : this.pal().text2)
               .onClick((): void => { this.selectKind('ssh_jump'); })
-            Button('FRP TCP').height(40).borderRadius(10).fontSize(12)
+            Button('FRP').height(40).borderRadius(10).fontSize(12)
               .backgroundColor(this.kind === 'frp_tcp' ? this.accentColor : this.pal().surface)
               .fontColor(this.kind === 'frp_tcp' ? Color.White : this.pal().text2)
               .onClick((): void => { this.selectKind('frp_tcp'); })

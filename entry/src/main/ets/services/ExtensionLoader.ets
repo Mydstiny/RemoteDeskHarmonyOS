@@ -63,7 +63,7 @@ interface DetachedSshSession {
   detachedAt: number;
 }
 
-interface SshNativeConnectPromise extends Promise<number> {
+export interface SshNativeConnectPromise extends Promise<number> {
   sessionId: number;
   generation: number;
 }
@@ -105,7 +105,7 @@ export class ExtensionLoader {
     }
   }
 
-  connectSshAsync(config: SessionConfig, foreground: boolean = true): Promise<number> {
+  connectSshAsync(config: SessionConfig, foreground: boolean = true): SshNativeConnectPromise {
     try {
       const nativePromise: SshNativeConnectPromise =
         rdpnapi.connectSshAsync(config, foreground) as SshNativeConnectPromise;
@@ -116,7 +116,10 @@ export class ExtensionLoader {
       };
       if (identity.sessionId <= 0 || identity.generation <= 0) {
         hilog.error(DOMAIN, TAG, '[ExtensionLoader] connectSshAsync: native identity missing');
-        return Promise.resolve(-1);
+        const rejected: SshNativeConnectPromise = Promise.resolve(-1) as SshNativeConnectPromise;
+        rejected.sessionId = -1;
+        rejected.generation = 0;
+        return rejected;
       }
       this.pendingSshConnects.set(identity.sessionId, identity);
       // Only the foreground owner updates the legacy facade target. Detached
@@ -145,7 +148,10 @@ export class ExtensionLoader {
       return settled;
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] connectSshAsync: ' + JSON.stringify(err));
-      return Promise.resolve(-1);
+      const rejected: SshNativeConnectPromise = Promise.resolve(-1) as SshNativeConnectPromise;
+      rejected.sessionId = -1;
+      rejected.generation = 0;
+      return rejected;
     }
   }
 

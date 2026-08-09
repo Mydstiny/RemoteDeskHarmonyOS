@@ -121,6 +121,27 @@ import {
   resolveSshProxyRuntimePlan,
   sshProxyRuntimeHasStrictJumpBindings
 } from '../services/SshProxyRuntimePolicy';
+import { SshForwardingSheet } from '../components/ssh/SshForwardingSheet';
+import { SshForwardingProfile } from '../services/SshForwardingPolicy';
+import { SshForwardingProfileStore } from '../services/SshForwardingProfileStore';
+import {
+  SshForwardingController,
+  SshForwardingOperationResult,
+  SshForwardingSnapshotResult
+} from '../services/SshForwardingController';
+import { SshForwardingRuntimeRecord } from '../services/SshForwardingRuntimeStore';
+import {
+  sshForwardingModeLabel,
+  sshForwardingProfileNeedsPublicConfirmation
+} from '../services/SshForwardingEditorPolicy';
+import { SshNativeFacade } from '../services/SshNativeFacade';
+import {
+  SshSessionContext,
+  SshSessionHandle,
+  SshSessionLifecycleState,
+  sameSshSessionHandle
+} from '../services/SshSessionStore';
+import { SshModalCoordinator, SshModalDecision } from '../services/SshModalCoordinator';
 import {
   TransferSession,
   TransferStage,
@@ -380,6 +401,12 @@ struct SshTerminal {
   @State sshAuthPrompt: SshAuthPromptRequest | null = null;
   @State sshAuthPromptValues: string[] = [];
   @State showSshAuthPromptSheet: boolean = false;
+  /** Generation-owned local/remote/dynamic SSH forwarding workspace. */
+  @State showForwardingSheet: boolean = false;
+  @State forwardingProfiles: SshForwardingProfile[] = [];
+  @State forwardingRuntimes: SshForwardingRuntimeRecord[] = [];
+  @State forwardingStatus: string = '';
+  @State forwardingSheetMountToken: number = 0;
   /** SFTP 文件传输面板 */
   @State showSftpPanel: boolean = false;
   @State showSftpSheet: boolean = false;
@@ -524,6 +551,13 @@ struct SshTerminal {
   private sshSettings: SshSettingsService = SshSettingsService.getInstance();
   private sshProxyProfiles: SshProxyProfileStore = new SshProxyProfileStore();
   private sshProxyProfilesReady: boolean = false;
+  private sshForwardingProfiles: SshForwardingProfileStore = new SshForwardingProfileStore();
+  private sshForwardingProfilesReady: boolean = false;
+  private sshNativeFacade: SshNativeFacade = SshNativeFacade.getInstance();
+  private sshForwardingController: SshForwardingController = SshForwardingController.getInstance();
+  private forwardingModalCoordinator: SshModalCoordinator = new SshModalCoordinator();
+  private forwardingRefreshTimer: number = -1;
+  private forwardingReconciledHandles: Set<string> = new Set<string>();
   private loader: ExtensionLoader = ExtensionLoader.getInstance();
   private hostId: string = '';
   private sessionId: number = -1;
@@ -1717,6 +1751,10 @@ struct SshTerminal {
     }
 
     this.hostId = targetHostId;
+    this.forwardingProfiles = [];
+    this.forwardingRuntimes = [];
+    this.forwardingStatus = '';
+    this.refreshForwardingProfiles(targetHostId);
     this.visibleSshHostId = targetHostId;
     this.hostLabel = host.label;
     this.userAtHost = host.username + '@' + host.host + ':' + host.port.toString();
@@ -1839,6 +1877,7 @@ struct SshTerminal {
   }
 
   private closeAllSshTabs(): void {
+    this.releaseAllForwardingSessions();
     const sessionIds: number[] = this.sshTabStore.closeAll();
     for (let index = 0; index < sessionIds.length; index++) {
       this.loader.disconnectSshSession(sessionIds[index]);
@@ -1852,6 +1891,7 @@ struct SshTerminal {
     // SFTP host selection is rendered inside the existing SFTP surface. Do
     // not stack another native sheet while that surface is visible.
     if (this.showSftpPanel || this.showSftpSheet || this.sftpPeerHostPicker ||
+      this.showForwardingSheet ||
       this.sshTabPickerClosing) { return; }
     this.showSshTabPicker = true;
   }
@@ -4977,6 +5017,15 @@ struct SshTerminal {
     const bindingGeneration: number = ++this.sshBindingGeneration;
     this.terminalClosing = false;
     this.sshProxyProfilesReady = false;
+    this.sshForwardingProfilesReady = false;
+    this.clearForwardingRefreshTimer();
+    this.forwardingModalCoordinator.invalidate();
+    this.forwardingSheetMountToken = this.forwardingModalCoordinator.currentToken();
+    this.showForwardingSheet = false;
+    this.forwardingProfiles = [];
+    this.forwardingRuntimes = [];
+    this.forwardingStatus = '';
+    this.forwardingReconciledHandles.clear();
     try {
       // A direct/deep SSH route can be created before HostListPage initializes
       // AppStorage. Read the durable appearance here as well so mobile xterm
@@ -4984,6 +5033,7 @@ struct SshTerminal {
       const sshContext: common.Context = getContext(this) as common.Context;
       const appearance: SshTerminalAppearance = this.sshSettings.init(sshContext);
       this.sshProxyProfilesReady = this.sshProxyProfiles.init(sshContext);
+      this.sshForwardingProfilesReady = this.sshForwardingProfiles.init(sshContext);
       this.fontSize = appearance.fontSize;
       this.lineSpacing = appearance.lineSpacing;
       hilog.info(0x0000, 'SshTerminal', '[appearance] restored font=' +
@@ -5175,6 +5225,7 @@ struct SshTerminal {
       ? this.srv.getHost(initialHostId) : undefined;
     if (initialHost !== undefined) {
       this.hostId = initialHostId;
+      this.refreshForwardingProfiles();
       this.visibleSshHostId = initialHostId;
       this.hostLabel = initialHost.label;
       this.userAtHost = initialHost.username + '@' + initialHost.host + ':' + initialHost.port;
@@ -5210,6 +5261,7 @@ struct SshTerminal {
       const id: string = p['hostId'] as string;
       if (id) {
         this.hostId = id;
+        this.refreshForwardingProfiles();
         this.visibleSshHostId = id.trim();
         const transcript: string = this.sshTranscriptStore.snapshot(this.hostId);
         if (transcript.length > 0) {
@@ -5297,6 +5349,9 @@ struct SshTerminal {
     ++this.pageGeneration;
     ++this.sshBindingGeneration;
     this.terminalClosing = true;
+    this.clearForwardingRefreshTimer();
+    this.showForwardingSheet = false;
+    this.forwardingModalCoordinator.invalidate();
     this.clearSftpSheetTransitionTimers();
     ++this.sftpSheetTransitionToken;
     ++this.sftpRootSheetMountToken;
@@ -5367,6 +5422,8 @@ struct SshTerminal {
               // any active SFTP record paused at its last durable checkpoint.
               this.detachCapturedSftpSessionOwner(backgroundOwner);
               this.sshTabStore.invalidateSession(backgroundInfo.hostId, 'error', 'backgroundLimited');
+              this.releaseForwardingSession(backgroundInfo.hostId, backgroundInfo.sessionId,
+                this.sshTabStore.sessionGeneration(backgroundInfo.hostId));
               this.loader.disconnectSshSession(backgroundInfo.sessionId);
             });
         }
@@ -5427,6 +5484,7 @@ struct SshTerminal {
     const requestSessionId: number = this.sessionId;
     const shouldCloseAllSshSessions: boolean = !preserveSshInBackground;
     if (shouldCloseAllSshSessions) {
+      this.releaseAllForwardingSessions();
       const allSessionIds: number[] = this.sshTabStore.closeAll();
       this.sshTranscriptStore.clearAll();
       for (let index = 0; index < allSessionIds.length; index++) {
@@ -5815,6 +5873,7 @@ struct SshTerminal {
         this.sessionId).sessionGeneration;
       if (generation > 0) {
         this.sshSessionGeneration = generation;
+        this.bindForwardingSession(this.hostId, this.sessionId, generation);
         this.attachSftpSessionOwner({
           hostId: this.hostId,
           sessionId: this.sessionId,
@@ -5828,6 +5887,7 @@ struct SshTerminal {
       // the latency timer can observe the eventual CONNECTED state. Do not
       // turn a transient reconnect into the page's terminal error screen.
       if (!this.connected) { this.connecting = true; }
+      this.markForwardingSessionReconnecting();
       this.detachSftpSessionOwner(this.hostId, this.sessionId);
       this.sshTabStore.update(this.hostId, 'reconnecting', this.sessionId);
       return false;
@@ -5854,6 +5914,7 @@ struct SshTerminal {
     this.connecting = false;
     const message: string = this.loader.getConnectionLastMessage(this.sessionId);
     this.connectionError = message.length > 0 ? message : 'SSH 会话已断开';
+    this.releaseForwardingSession(this.hostId, this.sessionId, this.sshSessionGeneration);
     this.markXtermSurfaceNotReady(this.hostId);
     this.sshTabStore.invalidateSession(this.hostId, 'error', this.connectionError);
     return false;
@@ -6141,6 +6202,7 @@ struct SshTerminal {
     this.sshTabStore.activate(bindingHostId);
     if (!this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId) ||
       this.sessionId !== connectedSessionId) {
+      this.releaseForwardingSession(bindingHostId, connectedSessionId, sessionGeneration);
       this.loader.disconnectSshSession(connectedSessionId);
       this.sessionId = -1;
       return false;
@@ -6176,6 +6238,15 @@ struct SshTerminal {
       return false;
     }
 
+    if (!this.bindForwardingSession(bindingHostId, connectedSessionId, sessionGeneration)) {
+      // Forwarding is an optional SSH channel feature. Keep the terminal live,
+      // but fail the workspace closed instead of issuing unowned native calls.
+      this.forwardingStatus = '失败：隧道运行时无法绑定当前 SSH 会话';
+      hilog.error(0x0001, 'SshTerminal', '[forwarding] session bind rejected host=' +
+        bindingHostId + ' session=' + connectedSessionId.toString() + '/' +
+        sessionGeneration.toString());
+    }
+
     this.attachSftpSessionOwner({
       hostId: bindingHostId,
       sessionId: connectedSessionId,
@@ -6184,6 +6255,7 @@ struct SshTerminal {
 
     if (!this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId) ||
       this.sessionId !== connectedSessionId) {
+      this.releaseForwardingSession(bindingHostId, connectedSessionId, sessionGeneration);
       this.loader.disconnectSshSession(connectedSessionId);
       this.sessionId = -1;
       return false;
@@ -6294,6 +6366,7 @@ struct SshTerminal {
     }
     if (this.sessionId > 0) {
       this.detachSftpSessionOwner(this.hostId, this.sessionId);
+      this.releaseForwardingSession(this.hostId, this.sessionId, this.sshSessionGeneration);
       this.loader.disconnectSshSession(this.sessionId);
       await this.loader.waitForPendingTeardown();
     }
@@ -6307,6 +6380,11 @@ struct SshTerminal {
   /** Explicit page exit owns the SSH session; ordinary page disposal only detaches the view. */
   private closeSessionAndBack(): void {
     if (this.terminalClosing) { return; }
+    if (this.showForwardingSheet ||
+      this.forwardingModalCoordinator.currentPhase() === 'closing') {
+      this.closeForwardingSheet();
+      return;
+    }
     this.explicitSessionClose = true;
     const sftpVisible: boolean = this.showSftpPanel || this.showSftpSheet ||
       this.sftpPeerHostPicker;
@@ -6745,6 +6823,404 @@ struct SshTerminal {
       if (a.isDirectory !== b.isDirectory) { return a.isDirectory ? -1 : 1; }
       return a.name.localeCompare(b.name);
     });
+  }
+
+  private refreshForwardingProfiles(ownerHostId: string = this.hostId): void {
+    const owner: string = ownerHostId.trim();
+    if (!this.sshForwardingProfilesReady || owner.length === 0) {
+      if (owner === this.hostId.trim()) { this.forwardingProfiles = []; }
+      return;
+    }
+    if (owner === this.hostId.trim()) {
+      this.forwardingProfiles = this.sshForwardingProfiles.list(owner);
+    }
+  }
+
+  private currentForwardingHandle(): SshSessionHandle | null {
+    if (this.sessionId <= 0 || this.sshSessionGeneration <= 0 || this.hostId.trim().length === 0) {
+      return null;
+    }
+    const expected: SshSessionHandle = {
+      sessionId: this.sessionId,
+      channelId: 'shell',
+      generation: this.sshSessionGeneration
+    };
+    const registered: SshSessionHandle | null = this.sshNativeFacade.handleForHost(this.hostId);
+    if (registered === null || !sameSshSessionHandle(registered, expected) ||
+      !this.sshNativeFacade.accepts(expected)) {
+      return null;
+    }
+    return expected;
+  }
+
+  private forwardingHandleKey(handle: SshSessionHandle): string {
+    return handle.sessionId.toString() + '|' + handle.channelId + '|' +
+      handle.generation.toString();
+  }
+
+  private forwardingOperationMessage(action: string, result: SshForwardingOperationResult): string {
+    if (result.accepted) { return action + '成功'; }
+    if (result.message.length > 0) { return '失败：' + result.message; }
+    if (result.code === -64) { return '失败：非 loopback 监听尚未确认'; }
+    if (result.code === -65 || result.code === -67) { return '失败：端口必须为 1-65535'; }
+    if (result.code === -73) { return '失败：规则正在运行，请先停止'; }
+    if (result.code === -74) { return '失败：当前 SSH 会话尚未就绪'; }
+    if (result.code === -75) { return '失败：SSH 会话 generation 已变化，请重试'; }
+    if (result.code === -77) { return '失败：已达到最大连接数'; }
+    if (result.code === -80) { return '失败：监听端口被占用或远端拒绝转发'; }
+    if (result.code === -81) { return '失败：已达到规则流量上限'; }
+    if (result.code === -82) { return '失败：规则已过期'; }
+    return '失败：SSH 隧道错误 ' + result.code.toString();
+  }
+
+  private updateForwardingSnapshot(handle: SshSessionHandle | null = this.currentForwardingHandle()): void {
+    if (handle === null) {
+      this.forwardingRuntimes = [];
+      return;
+    }
+    const snapshot: SshForwardingSnapshotResult = this.sshForwardingController.snapshot(handle);
+    if (!snapshot.accepted) {
+      this.forwardingRuntimes = [];
+      if (this.showForwardingSheet) {
+        this.forwardingStatus = snapshot.stale
+          ? '失败：会话已更新，正在等待隧道重新绑定'
+          : '失败：无法读取隧道运行状态 ' + snapshot.code.toString();
+      }
+      return;
+    }
+    this.forwardingRuntimes = snapshot.runtimes;
+  }
+
+  private bindForwardingSession(ownerHostId: string, sessionId: number, generation: number): boolean {
+    const owner: string = ownerHostId.trim();
+    if (owner.length === 0 || sessionId <= 0 || generation <= 0) { return false; }
+    const handle: SshSessionHandle = { sessionId, channelId: 'shell', generation };
+    const sessionStore = this.sshNativeFacade.sessionStore();
+    const nativeReady: boolean = this.loader.getConnectionState(sessionId) === SSH_STATE_CONNECTED;
+    const initialState: SshSessionLifecycleState = nativeReady ? 'Ready' : 'Connecting';
+    let existing: SshSessionHandle | null = this.sshNativeFacade.handleForHost(owner);
+    let shouldReconcile: boolean = !this.forwardingReconciledHandles.has(
+      this.forwardingHandleKey(handle));
+
+    if (existing !== null) {
+      const context: SshSessionContext | null = sessionStore.context(existing);
+      if (context !== null && (context.state === 'Closed' || context.state === 'Failed')) {
+        if (context.state === 'Failed') { sessionStore.close(existing, 'session.replaced'); }
+        sessionStore.removeClosed(existing);
+        existing = null;
+      }
+    }
+
+    if (existing !== null && sameSshSessionHandle(existing, handle)) {
+      const context: SshSessionContext | null = sessionStore.context(existing);
+      if (nativeReady) {
+        if (!this.sshNativeFacade.bindExistingSession(owner, this.hostLabel, this.userAtHost,
+          handle, 'Ready')) { return false; }
+      } else if (context !== null && context.state === 'Created' &&
+        !this.sshNativeFacade.bindExistingSession(owner, this.hostLabel, this.userAtHost,
+          handle, 'Connecting')) {
+        return false;
+      }
+    } else if (existing !== null && existing.sessionId === sessionId &&
+      existing.channelId === 'shell' && existing.generation < generation) {
+      this.forwardingReconciledHandles.delete(this.forwardingHandleKey(existing));
+      const rebound: SshSessionHandle | null = this.sshNativeFacade.rebindGeneration(
+        existing, generation);
+      if (rebound === null || !sameSshSessionHandle(rebound, handle)) {
+        return false;
+      }
+      if (nativeReady && !this.sshNativeFacade.bindExistingSession(owner, this.hostLabel,
+        this.userAtHost, handle, 'Ready')) { return false; }
+      shouldReconcile = true;
+    } else {
+      if (existing !== null) {
+        // A callback carrying an older identity must never replace a newer
+        // generation or a different live native session.
+        if (existing.sessionId === sessionId && existing.generation > generation) { return false; }
+        if (this.sshNativeFacade.accepts(existing)) {
+          this.sshForwardingController.releaseSession(existing);
+          sessionStore.close(existing, 'session.replaced');
+        }
+        sessionStore.removeClosed(existing);
+      }
+      if (!this.sshNativeFacade.bindExistingSession(owner, this.hostLabel, this.userAtHost,
+        handle, initialState)) { return false; }
+      shouldReconcile = true;
+    }
+
+    const profiles: SshForwardingProfile[] = this.sshForwardingProfilesReady
+      ? this.sshForwardingProfiles.list(owner) : [];
+    if (owner === this.hostId.trim()) { this.forwardingProfiles = profiles; }
+    if (this.sshForwardingController.list(handle).length > 0) {
+      this.forwardingReconciledHandles.add(this.forwardingHandleKey(handle));
+      shouldReconcile = false;
+    }
+    if (shouldReconcile && nativeReady) {
+      const results: SshForwardingOperationResult[] =
+        this.sshForwardingController.reconcile(handle, profiles);
+      this.forwardingReconciledHandles.add(this.forwardingHandleKey(handle));
+      const failure: SshForwardingOperationResult | undefined = results.find(
+        (result: SshForwardingOperationResult): boolean => !result.accepted);
+      if (failure !== undefined && owner === this.hostId.trim()) {
+        this.forwardingStatus = this.forwardingOperationMessage('自动恢复', failure);
+      } else if (profiles.some((profile: SshForwardingProfile): boolean =>
+        profile.enabled && profile.startPolicy === 'onSessionReady') && owner === this.hostId.trim()) {
+        this.forwardingStatus = '自动启动规则已绑定到新的 SSH 会话';
+      }
+    }
+    if (owner === this.hostId.trim()) { this.updateForwardingSnapshot(handle); }
+    return true;
+  }
+
+  private markForwardingSessionReconnecting(): void {
+    const handle: SshSessionHandle | null = this.currentForwardingHandle();
+    if (handle === null) { return; }
+    this.sshNativeFacade.sessionStore().transition(
+      handle, 'Reconnecting', 'transport.reconnecting');
+    this.forwardingReconciledHandles.delete(this.forwardingHandleKey(handle));
+    this.forwardingRuntimes = this.sshForwardingController.list(handle).map(
+      (runtime: SshForwardingRuntimeRecord): SshForwardingRuntimeRecord => {
+        return {
+          schemaVersion: 1, profileId: runtime.profileId, sessionId: runtime.sessionId,
+          channelId: runtime.channelId, generation: runtime.generation, profile: runtime.profile,
+          state: 'needsRebind', activeConnections: runtime.activeConnections,
+          transferredBytes: runtime.transferredBytes, lastError: runtime.lastError,
+          actualBindHost: runtime.actualBindHost, actualBindPort: runtime.actualBindPort,
+          updatedAtMs: runtime.updatedAtMs
+        };
+      });
+  }
+
+  private releaseForwardingSession(ownerHostId: string, sessionId: number,
+    generation: number = 0): void {
+    const owner: string = ownerHostId.trim();
+    const handle: SshSessionHandle | null = this.sshNativeFacade.handleForHost(owner);
+    if (handle === null || handle.sessionId !== sessionId ||
+      (generation > 0 && handle.generation !== generation)) { return; }
+    const sessionStore = this.sshNativeFacade.sessionStore();
+    if (this.sshNativeFacade.accepts(handle)) {
+      this.sshForwardingController.releaseSession(handle);
+      sessionStore.close(handle, 'session.disconnect.requested');
+    }
+    this.forwardingReconciledHandles.delete(this.forwardingHandleKey(handle));
+    sessionStore.removeClosed(handle);
+    if (owner === this.hostId.trim()) { this.forwardingRuntimes = []; }
+  }
+
+  private releaseAllForwardingSessions(): void {
+    const contexts: SshSessionContext[] = this.sshNativeFacade.sessionStore().contexts();
+    for (let index: number = 0; index < contexts.length; index++) {
+      const context: SshSessionContext = contexts[index];
+      this.releaseForwardingSession(context.hostId, context.sessionId, context.generation);
+    }
+    this.forwardingRuntimes = [];
+  }
+
+  private clearForwardingRefreshTimer(): void {
+    if (this.forwardingRefreshTimer !== -1) {
+      clearInterval(this.forwardingRefreshTimer);
+      this.forwardingRefreshTimer = -1;
+    }
+  }
+
+  private startForwardingRefreshTimer(token: number): void {
+    this.clearForwardingRefreshTimer();
+    this.forwardingRefreshTimer = setInterval((): void => {
+      if (this.terminalClosing || !this.showForwardingSheet ||
+        token !== this.forwardingSheetMountToken) {
+        this.clearForwardingRefreshTimer();
+        return;
+      }
+      this.updateForwardingSnapshot();
+    }, 1000);
+  }
+
+  private openForwardingSheet(): void {
+    if (this.terminalClosing) { return; }
+    if (this.showSftpPanel || this.showSftpSheet || this.sftpPeerHostPicker ||
+      this.showSshTabPicker || this.showSshAuthPromptSheet || this.showPassphraseSheet) {
+      promptAction.showToast({ message: '请先关闭当前弹窗' });
+      return;
+    }
+    if (this.currentForwardingHandle() === null && this.sessionId > 0 &&
+      this.sshSessionGeneration > 0) {
+      this.bindForwardingSession(this.hostId, this.sessionId, this.sshSessionGeneration);
+    }
+    this.refreshForwardingProfiles();
+    this.updateForwardingSnapshot();
+    const decision: SshModalDecision = this.forwardingModalCoordinator.requestOpen();
+    if (!decision.mount) { return; }
+    this.forwardingSheetMountToken = decision.token;
+    this.showForwardingSheet = true;
+  }
+
+  private closeForwardingSheet(): void {
+    const decision: SshModalDecision = this.forwardingModalCoordinator.requestClose();
+    if (!decision.dismiss) { return; }
+    this.clearForwardingRefreshTimer();
+    this.showForwardingSheet = false;
+  }
+
+  private onForwardingSheetAppear(token: number): void {
+    if (!this.forwardingModalCoordinator.noteAppeared(token)) { return; }
+    this.startForwardingRefreshTimer(token);
+  }
+
+  private onForwardingSheetDisappear(token: number): void {
+    this.clearForwardingRefreshTimer();
+    const decision: SshModalDecision = this.forwardingModalCoordinator.noteDisappeared(token);
+    if (!decision.mount || this.terminalClosing) { return; }
+    this.forwardingSheetMountToken = decision.token;
+    this.refreshForwardingProfiles();
+    this.updateForwardingSnapshot();
+    this.showForwardingSheet = true;
+  }
+
+  private async saveForwardingProfile(profile: SshForwardingProfile): Promise<void> {
+    const owner: string = this.hostId.trim();
+    const pageGeneration: number = this.pageGeneration;
+    const activeRuntime: SshForwardingRuntimeRecord | undefined = this.forwardingRuntimes.find(
+      (runtime: SshForwardingRuntimeRecord): boolean => runtime.profileId === profile.id &&
+        (runtime.state === 'starting' || runtime.state === 'listening' || runtime.state === 'stopping'));
+    if (activeRuntime !== undefined) {
+      this.forwardingStatus = '失败：运行中的规则需要先停止';
+      return;
+    }
+    if (sshForwardingProfileNeedsPublicConfirmation(profile)) {
+      if (!profile.allowPublicBind) {
+        this.forwardingStatus = '失败：请先开启“允许非 loopback 监听”';
+        return;
+      }
+      const decision = await promptAction.showDialog({
+        title: '确认开放监听地址',
+        message: profile.bindHost + ':' + profile.bindPort.toString() +
+          ' 可能被局域网或公网设备访问。仅在你信任当前网络和目标服务时继续。',
+        buttons: [
+          { text: '取消', color: this.pal().text2 },
+          { text: '确认保存', color: this.pal().danger }
+        ]
+      });
+      if (decision.index !== 1 || this.terminalClosing || pageGeneration !== this.pageGeneration ||
+        owner !== this.hostId.trim()) { return; }
+    }
+    if (!this.sshForwardingProfilesReady ||
+      !this.sshForwardingProfiles.upsert(owner, profile)) {
+      this.forwardingStatus = '失败：无法保存 SSH 隧道规则';
+      return;
+    }
+    this.refreshForwardingProfiles(owner);
+    const handle: SshSessionHandle | null = this.currentForwardingHandle();
+    if (handle === null || !profile.enabled) {
+      if (handle !== null) { this.sshForwardingController.stop(handle, profile.id); }
+      this.forwardingStatus = handle === null ? '规则已保存，将在 SSH 会话就绪后生效' : '规则已保存';
+      this.updateForwardingSnapshot(handle);
+      return;
+    }
+    const result: SshForwardingOperationResult = profile.startPolicy === 'onSessionReady'
+      ? this.sshForwardingController.start(handle, profile)
+      : this.sshForwardingController.configure(handle, profile);
+    this.forwardingStatus = this.forwardingOperationMessage(
+      profile.startPolicy === 'onSessionReady' ? '保存并启动' : '保存', result);
+    this.updateForwardingSnapshot(handle);
+  }
+
+  private startForwardingProfile(profileId: string): void {
+    const handle: SshSessionHandle | null = this.currentForwardingHandle();
+    const profile: SshForwardingProfile | undefined = this.forwardingProfiles.find(
+      (item: SshForwardingProfile): boolean => item.id === profileId);
+    if (handle === null || profile === undefined) {
+      this.forwardingStatus = '失败：当前 SSH 会话尚未就绪';
+      return;
+    }
+    const result: SshForwardingOperationResult = this.sshForwardingController.start(handle, profile);
+    this.forwardingStatus = this.forwardingOperationMessage('启动', result);
+    this.updateForwardingSnapshot(handle);
+  }
+
+  private stopForwardingProfile(profileId: string): void {
+    const handle: SshSessionHandle | null = this.currentForwardingHandle();
+    if (handle === null) {
+      this.forwardingStatus = '失败：当前 SSH 会话已变化';
+      return;
+    }
+    const result: SshForwardingOperationResult = this.sshForwardingController.stop(handle, profileId);
+    this.forwardingStatus = this.forwardingOperationMessage('停止', result);
+    this.updateForwardingSnapshot(handle);
+  }
+
+  private async removeForwardingProfile(profileId: string): Promise<void> {
+    const profile: SshForwardingProfile | undefined = this.forwardingProfiles.find(
+      (item: SshForwardingProfile): boolean => item.id === profileId);
+    if (profile === undefined) { return; }
+    const owner: string = this.hostId.trim();
+    const pageGeneration: number = this.pageGeneration;
+    const decision = await promptAction.showDialog({
+      title: '删除隧道规则',
+      message: '删除 ' + sshForwardingModeLabel(profile.mode) + ' ' +
+        profile.bindHost + ':' + profile.bindPort.toString() + '？正在运行时会先安全停止。',
+      buttons: [
+        { text: '取消', color: this.pal().text2 },
+        { text: '删除', color: this.pal().danger }
+      ]
+    });
+    if (decision.index !== 1 || this.terminalClosing || pageGeneration !== this.pageGeneration ||
+      owner !== this.hostId.trim()) { return; }
+    const handle: SshSessionHandle | null = this.currentForwardingHandle();
+    if (handle !== null) {
+      const result: SshForwardingOperationResult =
+        this.sshForwardingController.remove(handle, profileId);
+      if (!result.accepted) {
+        this.forwardingStatus = this.forwardingOperationMessage('删除', result);
+        this.updateForwardingSnapshot(handle);
+        return;
+      }
+    }
+    if (!this.sshForwardingProfiles.remove(owner, profileId)) {
+      this.forwardingStatus = '失败：无法删除 SSH 隧道规则';
+      return;
+    }
+    this.refreshForwardingProfiles(owner);
+    this.forwardingStatus = '规则已删除';
+    this.updateForwardingSnapshot(handle);
+  }
+
+  private forwardingListeningCount(): number {
+    return this.forwardingRuntimes.filter((runtime: SshForwardingRuntimeRecord): boolean =>
+      runtime.state === 'listening').length;
+  }
+
+  private forwardingHasError(): boolean {
+    return this.forwardingRuntimes.some((runtime: SshForwardingRuntimeRecord): boolean =>
+      runtime.state === 'failed' || runtime.state === 'stale');
+  }
+
+  private forwardingSheetHeight(): SheetSize | number {
+    if (this.breakpoint === 'sm') { return SheetSize.LARGE; }
+    const available: number = this.shellAreaH > 0 ? this.shellAreaH : 760;
+    return Math.max(1, Math.min(720, available - 32));
+  }
+
+  private forwardingSheetWidth(): Dimension {
+    if (this.breakpoint === 'sm') { return '100%'; }
+    const available: number = this.shellAreaW > 0 ? this.shellAreaW : 1100;
+    return Math.max(1, Math.min(980, available - 40));
+  }
+
+  @Builder
+  private ForwardingSheetContent(token: number) {
+    SshForwardingSheet({
+      profiles: this.forwardingProfiles,
+      runtimes: this.forwardingRuntimes,
+      connected: this.currentForwardingHandle() !== null,
+      hostLabel: this.hostLabel,
+      statusMessage: this.forwardingStatus,
+      onClose: (): void => { this.closeForwardingSheet(); },
+      onSave: (profile: SshForwardingProfile): void => { void this.saveForwardingProfile(profile); },
+      onStart: (profileId: string): void => { this.startForwardingProfile(profileId); },
+      onStop: (profileId: string): void => { this.stopForwardingProfile(profileId); },
+      onRemove: (profileId: string): void => { void this.removeForwardingProfile(profileId); },
+      onRefresh: (): void => { this.updateForwardingSnapshot(); }
+    }).onAppear((): void => { this.onForwardingSheetAppear(token); })
   }
 
   private async refreshSftp(path?: string): Promise<void> {
@@ -10529,7 +11005,30 @@ struct SshTerminal {
           .backgroundColor(this.chromeChipBg())
           .margin({ right: 8 })
           .onClick((): void => { this.openSftpPanel(); })
-
+          Stack({ alignContent: Alignment.TopEnd }) {
+            Row({ space: 4 }) {
+              Text('⇄').fontSize(18).fontColor('rgba(242,244,247,0.88)')
+              if (this.isDesktopDevice) {
+                Text('隧道').fontSize(11).fontColor('rgba(242,244,247,0.78)')
+              }
+            }
+            .width(this.isDesktopDevice ? 62 : 34)
+            .height(34)
+            .justifyContent(FlexAlign.Center)
+            if (this.forwardingListeningCount() > 0) {
+              Text(this.forwardingListeningCount().toString()).fontSize(8).fontColor(Color.White)
+                .width(18).height(15).textAlign(TextAlign.Center).borderRadius(8)
+                .backgroundColor(this.accentColor).padding({ left: 3, right: 3 })
+            } else if (this.forwardingHasError()) {
+              Column().width(9).height(9).borderRadius(5).backgroundColor(this.pal().danger)
+            }
+          }
+          .width(this.isDesktopDevice ? 62 : 34)
+          .height(34)
+          .borderRadius(17)
+          .backgroundColor(this.chromeChipBg())
+          .margin({ right: 8 })
+          .onClick((): void => { this.openForwardingSheet(); })
         }
         Row() {
           Column().width(8).height(8).borderRadius(4)
@@ -10901,6 +11400,33 @@ struct SshTerminal {
             // The binding and onDisappear callback own one deterministic exit.
           },
           onDisappear: this.sftpPeerHostPickerDisappearHandler(this.sftpPeerHostPickerMountToken)
+        })
+
+      // Forwarding owns one independent native Sheet and never nests another
+      // Sheet. SshModalCoordinator serializes rapid open/close transitions.
+      Column()
+        .width('100%')
+        .height('100%')
+        .hitTestBehavior(HitTestMode.None)
+        .bindSheet($$this.showForwardingSheet,
+          this.ForwardingSheetContent(this.forwardingSheetMountToken), {
+          height: this.forwardingSheetHeight(),
+          preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
+          width: this.forwardingSheetWidth(),
+          dragBar: this.breakpoint === 'sm',
+          backgroundColor: this.pal().sheetBg,
+          blurStyle: BlurStyle.NONE,
+          showClose: false,
+          maskColor: 'rgba(0,0,0,0.42)',
+          onWillDismiss: (action: DismissSheetAction): void => {
+            this.forwardingModalCoordinator.requestClose();
+            this.clearForwardingRefreshTimer();
+            this.showForwardingSheet = false;
+            action.dismiss();
+          },
+          onDisappear: (): void => {
+            this.onForwardingSheetDisappear(this.forwardingSheetMountToken);
+          }
         })
     }
     .width('100%').height('100%')
