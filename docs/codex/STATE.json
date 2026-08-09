@@ -3,10 +3,10 @@
   "task": "moonlight-complete-upgrade",
   "branch": "codex/moonlight-complete-upgrade",
   "base": "aeb0cdac5",
-  "head": "99edc58",
-  "phase": "n1-session-owner",
+  "head": "18cdd39aa",
+  "phase": "n1-host-api",
   "status": "active",
-  "next": "Execute only N1-03: add and test the pure native MoonlightSessionOwner with one process-wide common-c start/interrupt/stop lane, exact session/generation/owner-token admission, cancellation, callback and worker leases, and fail-closed stop/drain; keep NAPI, host API, media/input, protocol truth, cloud registration, and UI unchanged.",
+  "next": "Execute only N1-04: add and test the pure native MoonlightHostApi protocol core with bounded request/response types, strict XML and official NvHTTP endpoint/query compatibility, exact request generation, cancellation/deadline/address-attempt policy, mutation ambiguity handling, and redacted diagnostics behind an injected transport; keep production identity/pairing, NAPI, media/input, protocol truth, cloud registration, and UI unchanged.",
   "blockers": [
     "ohosTest@OhosTestCompileArkTS is not registered (00306054); 138 focused D1-D3 tests in 19 describe groups are compiled and registered but not executed on device",
     "AGC development/test/production Moonlight schema, authorization, and index receipts are absent; D2-07 distributed registration is blocked",
@@ -46,17 +46,17 @@
       "entry/src/main/module.json5"
     ],
     "receiptId": "",
-    "reason": "N1-01 checkpoint 0013ba034 incorporated all four findings from the first sol-low review; N1-02 checkpoint 99edc58 then passed its isolated linkage and regression gates without dispatching another agent. Do not redispatch the first review; one bounded sol-low review remains available before final integration, and no matching PASS receipt exists yet."
+    "reason": "N1-01 checkpoint 0013ba034 incorporated all four findings from the first sol-low review; N1-02 checkpoint 99edc58 and N1-03 checkpoint 18cdd39aa then passed their isolated linkage/ownership and regression gates without dispatching another agent. Do not redispatch the first review; one bounded sol-low review remains available before final integration, and no matching PASS receipt exists yet."
   },
   "lastVerification": {
     "baseline": "clean main@aeb0cdac5 equal to origin/main at task start on 2026-08-09",
-    "diffCheck": "pass for N1-02 checkpoint 99edc58 on 2026-08-10",
-    "testCompile": "pass default@OhosTestCompileArkTS for N1-02 on 2026-08-10; 138 focused Moonlight tests in 19 describe groups compile-registered",
-    "assembleHap": "pass signed production HAP for N1-02; the 423-path HAP inventory and both rdpnapi dynamic symbol inventories are identical to the pre-link baseline",
-    "nativeTests": "pass 342/342 outside socket-restricted sandbox on 2026-08-09",
+    "diffCheck": "pass for N1-03 code checkpoint 18cdd39aa on 2026-08-10",
+    "testCompile": "pass default@OhosTestCompileArkTS for N1-03 on 2026-08-10; 138 focused Moonlight tests in 19 describe groups compile-registered",
+    "assembleHap": "pass signed production HAP for N1-03; the 423-path HAP inventory and both rdpnapi defined/undefined/NAPI-init-register inventories are identical to the N1-03 baseline",
+    "nativeTests": "pass 355/355 outside socket-restricted sandbox on 2026-08-10, including 13 deterministic MoonlightSessionOwner cases",
     "moonlightPlatformProbe": "pass arm64-v8a and x86_64 API 23 compile-link probe; after the N1-02 shared-boundary refactor, shell and PowerShell common-c/ENet builds still match four locked archive receipts",
-    "moonlightVendor": "pass 117 exact files, three reconstructed official Git trees and Git index; N1-02 leaves all upstream bytes unchanged and leaks zero upstream includes into 47 product compile commands per ABI",
-    "lightCompliance": "pass for N1-02 checkpoint on 2026-08-10; Release remains blocked only by external credential-rotation and device-matrix approvals",
+    "moonlightVendor": "pass 117 exact files, three reconstructed official Git trees and Git index; N1-03 leaves all upstream bytes unchanged and leaks zero upstream includes into 48 product compile commands per ABI",
+    "lightCompliance": "pass for N1-03 checkpoint on 2026-08-10; Release remains blocked only by external credential-rotation and device-matrix approvals",
     "moonlightRdbRuntime": "pass on ARM64 API 24 emulator: user_version=5, exact 19/20/16 columns, tables=3 and owner-bound receipts=1 after process restart",
     "ohosTest": "blocked task-not-registered 00306054 and current HDC Connect server failed; no execution pass claimed"
   },

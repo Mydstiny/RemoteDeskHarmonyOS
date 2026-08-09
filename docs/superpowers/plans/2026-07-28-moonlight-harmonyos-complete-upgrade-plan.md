@@ -2651,6 +2651,82 @@ N1-03 只能修改主 CMake、新建的 `moonlight/core/MoonlightSessionOwner.h/
 7. 测试用 condition/barrier 和有界 deadline 证明两个并发 start、blocked-start 中 stop、一次 interrupt/stop、start failure、重复/stale stop、callback/worker drain、timeout fail closed、旧 generation callback 拒绝、snapshot/count 和 driver exception；禁止以 sleep 猜竞态。
 8. 生产 `MOONLIGHT_SOURCES` 与 host test source 只登记 owner；不新增 Host API、NAPI/ArkTS、媒体/输入、secure identity、云/UI/资源或 capability true。新增定向测试和既有 native 全回归、双 ABI/符号/HAP 隔离、双 Hvigor、TOTP/Light/diff/state 均通过后单独提交，才允许 N1-04。
 
+#### 15.7.3 N1-03 已完成事实与 N1-04 唯一执行合同（2026-08-10）
+
+N1-03 已由代码 checkpoint `18cdd39aa` 完成。`MoonlightSessionOwner` 只使用
+项目自有 hidden C++ 类型，key 固定为非零 `sessionId + generation + ownerToken`；
+生产只有 process singleton，测试实例仅在既有 native-test define 下开放。一个 owner
+从 start admission 到 callback/worker drain、interrupt 和 stop 全程占用唯一车道；
+cancel 在 common-c interrupt flag 初始化后的显式 fence 才触发。interrupt 从预留到
+返回都计入 control operation，因此新 start 和 stop 不能越过一个尚未返回的
+interrupt。超时保持 `stopping` 和车道占用，不 detach、不清指针伪装成功。
+
+13 个 barrier/deadline 用例覆盖真实并发 start、stop-during-start、late interruptible
+fence、interrupt/stop 串行、start/stop/interrupt 异常、stale generation、重复 stop、
+callback/worker drain、timeout fail closed 与析构 join；沙箱外 native **355/355
+PASS**。两 ABI产品各有 48 个非上游 compile command、恰一个 owner command、零
+upstream include leak；defined/undefined/`napi|init|register` inventory 与基线逐字
+相同，签名 HAP 仍为同一 423 项。双 Hvigor、vendor、TOTP、Light、diff/state 均
+通过。NAPI、ArkTS、云、资源、UI 和所有 feature truth 没有改变。
+
+N1-04 必须把锁定的官方 Android `NvHTTP`/`PairingManager` revision 当作 wire 事实，
+但不能复制 Android/OkHttp/XmlPullParser 实现，也不能把后续 pairing/identity/UI
+提前塞进本步。按以下原子步骤执行：
+
+1. 以 `18cdd39aa` 保存 355 项 native、两 ABI symbol/NAPI audit、每 ABI 48 条
+   产品命令和 423 项 HAP inventory。代码范围只允许主 CMake、新建
+   `moonlight/core/MoonlightHostApi.h/.cpp` 与一个 focused native test 文件；若
+   发现必须改旧协议/公共网络层，先停下补计划和旧协议回归，不复制 VNC/RDP 私有
+   socket helper。
+2. public header 只包含项目自有 C++17 value type/PIMPL：endpoint、operation、
+   immutable request/response、server-info、app、launch/quit terminal result、stable
+   error 与 diagnostic snapshot。不得包含 common-c/OpenSSL/NAPI/ArkUI header，
+   不得接受/返回 PIN、PEM 私钥、session token 或原始 `rikey` bytes。
+3. 每个操作携带不可重绑定的非零 `requestId + generation + ownerToken` 和 shared
+   cancel state；开始、每次 attempt、transport 返回、解析 commit 前都复核 exact
+   key 与同一 monotonic absolute deadline。迟到 response 只能成为 stale/cancelled，
+   不能发布给新 generation；析构 cancel 并 drain，不 detach worker。
+4. URL builder 固定官方兼容值：HTTP 默认 `47989`、HTTPS 默认 `47984`、
+   `uniqueid=0123456789ABCDEF`、每请求独立 UUID。IPv6 authority 正确加 bracket，
+   SNI/serverName 与连接地址分离，query 逐值 percent-encode；只允许 GET、
+   `http/https`、端口 `1..65535` 与白名单 endpoint，拒绝 redirect/proxy/user-info/
+   fragment/CRLF 和重复保留参数。
+5. `serverinfo` 可在未配对 HTTP 读取候选；已有 pin 时先走 HTTPS。`applist`、
+   `appasset`、pair challenge、launch/resume/cancel 必须 authenticated HTTPS。证书
+   不匹配只返回 `trustConflict`；为重新配对读取的 HTTP candidate 不能维持 paired/
+   launch truth。N1-04 可形成 pair/unpair request shape，但不执行 N1-06 密码学；
+   launch/resume 只消费 caller 提供的 opaque launch material，不生成/持久化 rikey。
+6. 唯一 transport seam 接收 immutable request、absolute deadline、cancel probe 与
+   response budget，返回 DNS/connect/TLS/HTTP/body stage 以及
+   `notSent / sentResponseUnknown / confirmedResponse`。read-only 可按冻结的地址
+   优先级顺序尝试；mutation 一旦可能已发送就禁止换地址自动重放，返回 unknown
+   交给显式复核。N1-05 再实现 owner-scoped TLS client identity adapter；N1-04
+   没有 NAPI caller，也不持久化 transport secret。
+7. budget 固定为 URL ≤ 8 KiB、body ≤ 4 MiB、XML depth ≤ 32、elements ≤ 16384、
+   attributes ≤ 16/element、name ≤ 64 bytes、attribute ≤ 1 KiB、单 text ≤ 256 KiB、
+   apps ≤ 2048、title ≤ 1 KiB。拒绝 DTD/DOCTYPE/processing instruction、外部或
+   自定义 entity、NUL、非法 UTF-8、未闭合/错配标签、重复 root 和 trailing
+   non-whitespace；只解码五个 builtin entity 与合法 numeric entity。
+8. XML root 必须有唯一十进制 `status_code`；按官方行为接受 `0..UINT32_MAX` 后
+   映射 signed 32-bit（含 `0xFFFFFFFF → -1`），只有 200 提交业务结果。serverinfo
+   必填 `uniqueid/appversion/state/PairStatus/currentgame`，appversion 必须四段有界
+   整数；其他 host/version/port/address/GPU/codec/luma 字段是有界 optional。
+   applist 只提交正整数唯一 ID、非空 title 和可选 HDR；缺字段计入 bounded partial，
+   冲突 duplicate ID 或同 ID 不同 title 整批失败。
+9. timeout 只使用一个 absolute budget，不能因 DNS、地址切换或 body progress
+   重置；参考官方 3s short-connect、5s long-connect、7s read，并冻结 caller 可选
+   上下限。HTTP status 与 XML status 分开；404/401、TLS version/chain/pin、timeout、
+   cancel、body-too-large、malformed XML、host busy、action unknown 都使用 stable
+   code。diagnostics 只保留 operation/stage/attempt/family/port/status/bytes/duration/
+   masked endpoint，禁止完整 host、query、UUID、证书、PIN、token、rikey、XML body
+   或 app title；debug formatter redact 所有 query value。
+10. focused tests 覆盖官方 serverinfo/applist/launch/resume/cancel fixtures、未知字段、
+    partial app、duplicate ID、`0xFFFFFFFF`、DTD/entity bomb、深度/数量/长度/UTF-8/
+    截断、IPv4/IPv6/percent encoding、HTTP/XML status、TLS/pin error、deadline/cancel/
+    stale generation、read-only fallback、mutation no-replay、unknown result 和 secret
+    canary。全量 native、双 ABI产品/符号/HAP、双 Hvigor、vendor/TOTP/Light/diff/
+    state 全通过并单独 checkpoint 后，才允许 N1-05。
+
 ### 15.8 N2：RTSP、视频、音频和媒体时钟
 
 | ID | 文件与精确动作 | 必须验证 | 完成证据/提交点 |
@@ -2769,10 +2845,10 @@ Moonlight 能从“即将支持”变成可点击，仅当下列事实同时成�
 | 云适配 | exact 19 列 adapter、row-sensitive transfer、五 scope selection store、dormant materializer 和独立云状态 policy 已存在；`CloudSyncPolicy.TABLES` 仍是原有 8 表 | 可以验证/隔离/本地物化候选 row，所有结果明确 `cloudAttempted=false`；状态不会把 pending/quarantine 伪装成 synced | D2-07 必须等三环境 AGC receipt；之后才做 D3-01 coordinator、cloud-first promotion 和 D3-08 |
 | 云数据 | `moonlightrecordv1` 是唯一未来分布式物理表；`moonlightlocalrecords` 和 `moonlightappcache` 永远本地 | 19 列 schema 已在 ARM64 API 24 owner-store 实例化和重开验证 | cache 不进云/备份；local mirror 只有 promotion 后才投影；identity 继续默认关闭 |
 | 便携备份 | Backup V3 optional Moonlight descriptor、cloud/local 双 section、exact admission 和 local-only resolver 已存在 | redacted=settings/host/profile，full 额外 trust candidate；identity/secret/cache/marker 永远排除；旧 V3 可读 | cloud-enabled restore promotion 与设备故障矩阵仍 pending；不能另建含 identity 的“完整备份”旁路 |
-| Native | N1-01 已原样 vendor 117 个 common-c/ENet/nanors 文件；N1-02 以唯一 CMake 边界完成 product/standalone API 23 双 ABI static 构建和私有链接，符号、include 与 HAP inventory 保持隔离；尚无 Moonlight NAPI/session/media/input 实现 | 可声明固定上游源码、静态构建和无运行时入口的产品链接可复现，不能声明配对、解码、音频或输入可用 | N1-03 只创建 process-wide common-c operation lane、exact session owner/cancel/lease 和 native tests；没有真实 Sunshine 时不越过运行验收 |
+| Native | N1-01 已原样 vendor 117 个 common-c/ENet/nanors 文件；N1-02 完成唯一 CMake 边界和双 ABI 私有链接；N1-03 已有 process-wide `MoonlightSessionOwner`、exact key/cancel/lease 和 13 个竞态测试；仍无 Moonlight NAPI/Host API/media/input caller | 可声明固定上游、可复现静态构建和 pure-native owner 生命周期；不能声明配对、目录、launch、解码、音频或输入可用 | N1-04 只创建 strict bounded Host API protocol core 与 injected transport tests；没有 secure identity/NAPI/真实 Sunshine 时不越过运行验收 |
 | UI | `HostListPage.ets` 当前仅有禁用的 Moonlight FAB 项、system Symbol 和“即将支持”；没有 Moonlight 添加/目录/设置/会话页 | 入口信息可见但不可交互；点击无副作用 | 直到 U1 的数据与 N1 host-control 前置都满足，保持现状；不提前建可保存假表单 |
 | 品牌 | 官方 SVG 已固定 hash，但尚无 provenance/商标/视觉验收 receipt | 只能使用现有 system Symbol 回退 | `moonlightBrandAssetReady=false`；品牌门通过后再替换资源并保留 NOTICE |
-| 验证 | 19 个 describe、138 个 D1-D3 测试用例已进入聚合器；N1-02 后两项 Hvigor、signed HAP、Light、342/342 host native、双 ABI probe、三 tree/源码归档、双入口 receipt 与产品 symbol/include/HAP 隔离通过 | 只声明测试编译注册、源码/构建完整性，不声明 Hypium 设备执行或串流可用 | `ohosTest` task 未注册且当前 HDC 连接失败；最终功能验收必须在用户 ARM64 实机和真实 Sunshine 上完成 |
+| 验证 | 19 个 describe、138 个 D1-D3 测试用例已进入聚合器；N1-03 后两项 Hvigor、signed HAP、Light、355/355 host native、双 ABI probe、三 tree/源码归档、双入口 receipt 与产品 symbol/include/HAP 隔离通过 | 只声明测试编译注册、源码/构建完整性和 owner unit contract，不声明 Hypium 设备执行或串流可用 | `ohosTest` task 未注册且当前 HDC 连接失败；最终功能验收必须在用户 ARM64 实机和真实 Sunshine 上完成 |
 
 当前数据流只能是：
 
@@ -2788,7 +2864,9 @@ UI（当前无 Moonlight 可写页面）
   -> [D2-07 尚关闭：不得调用 Moonlight setDistributedTables]
   -> [AGC dev/test/prod receipt 齐全后才可能启用 moonlightrecordv1]
 
-Sunshine / common-c runtime / media / input 当前完全不在这条已实现链路中；N1-02 只有无引用的私有静态产品链接，没有 session owner 或 callable API。
+Sunshine Host API / common-c runtime / media / input 当前仍不在这条已实现链路中；
+N1-03 只有不可从 NAPI 调用的 pure-native session owner，没有 serverinfo、pairing、
+launch 或 streaming API。
 ~~~
 
 后续模型每次只领取一个最小任务 ID，并严格执行以下循环：
@@ -2803,6 +2881,14 @@ Sunshine / common-c runtime / media / input 当前完全不在这条已实现链
 8. 更新实施台账中的状态、证据、blocker 和唯一下一任务；同步 `CURRENT/QUEUE/STATE`，再用精确文件列表形成一个可回滚提交。
 9. 只有当任务合同、测试和对应门禁均通过时标记 `PASS`；“代码写完”“构建通过”“请求已排队”均不是产品能力完成。
 
-当前唯一可直接继续的代码任务是 N1-03 session owner：只按第 15.7.2 节建立 process-wide common-c operation lane、exact session/generation/owner token、cancel 与 callback/worker lease，并以 focused host native tests 证明 start/stop/drain 竞态；不新增 Host API、NAPI/runtime 调用、ArkTS/UI，也不改变 capability truth。D2-05/06 由 AGC 外部环境提供证据，D2-07 依赖二者；D3 的 cloud terminal、真实 unpair 和多设备矩阵分别等待 D2-07、N1 Host Control 和外部设备。任何执行者都不得因为云端受阻而把 `moonlightrecordv1` 塞入现有八表注册清单，也不得因为 native 尚不可调用而先把灰色入口改成可点击。
+当前唯一可直接继续的代码任务是 N1-04 Host API protocol core：只按第 15.7.3
+节建立 transport-injected request/response、strict bounded XML、official NvHTTP
+endpoint/query、exact request cancel/deadline/address attempt、mutation ambiguity 与
+redacted diagnostics，并以 focused host native tests 证明；不新增 secure identity、
+pairing orchestration、NAPI/runtime caller、ArkTS/UI，也不改变 capability truth。
+D2-05/06 由 AGC 外部环境提供证据，D2-07 依赖二者；D3 的 cloud terminal、真实
+unpair 和多设备矩阵分别等待 D2-07、N1 Host Control 和外部设备。任何执行者都
+不得因为云端受阻而把 `moonlightrecordv1` 塞入现有八表注册清单，也不得因为
+native 尚不可调用而先把灰色入口改成可点击。
 
 <!-- PLAN_BODY_END -->

@@ -7,8 +7,9 @@
 - Branch: `codex/moonlight-complete-upgrade`
 - Phase: G0, D1, D2 local storage/dormant cloud policies, D3 account lifecycle,
   deletion/status policies, portable backup/local restore and N1-01 exact
-  upstream vendoring plus N1-02 private product linkage are checkpointed; AGC
-  deployment/registration and runtime-backed lifecycle remain blocked.
+  upstream vendoring, N1-02 private product linkage and N1-03 native session
+  ownership are checkpointed; AGC deployment/registration and runtime-backed
+  lifecycle remain blocked.
 
 ## Context
 
@@ -24,16 +25,6 @@
   on the user's physical device.
 - Independent review is limited to at most two reviewer agents, both using
   `sol low`; do not redispatch the same review after context compaction.
-
-## Scope
-
-- G0 upstream/security/license locks and HarmonyOS API 23 probes.
-- D1-D3 Moonlight models, one `moonlightrecordv1` cloud table, local overlay,
-  account/cloud/backup lifecycle and tests.
-- N1-N3 official common-c control/media/input integration.
-- U1-S1 unified add/settings/catalog/session UI and lifecycle.
-- Required common policies only where Moonlight cannot be integrated safely
-  without them; existing protocol behavior must remain unchanged.
 
 ## Verification
 
@@ -86,21 +77,29 @@
   ABIs. Exported/undefined/NAPI-related symbols and the 423-path signed-HAP
   inventory are byte-identical to the pre-link baseline; no upstream include
   reaches 47 product compile commands. Checkpoint: `99edc58`.
+- N1-03 checkpoint `18cdd39aa` adds the hidden pure-native process-wide owner,
+  exact session/generation/token admission, interrupt fence, move-only leases
+  and fail-closed drain without NAPI or UI.
 - Current gates: `default@OhosTestCompileArkTS` passed with 138 focused Moonlight
   tests in 19 describe groups compile-registered; signed `assembleHap` passed;
-  host native tests passed 342/342 outside the socket-restricted sandbox;
-  Moonlight API 23 probe and isolated common-c builds passed both ABIs; source-archive,
-  Git-tree, receipt, TOTP, Light and HAP-isolation gates passed. HDC currently
-  reports `Connect server failed`, so no new virtual-device Hypium execution is
-  claimed. One of at most two `sol low` reviews was used for N1-01; all four
-  findings were fixed and machine-verified without redispatching a review loop.
+  host native tests passed 355/355, including 13 deterministic owner cases;
+  API 23 probe and isolated common-c builds passed both ABIs; source-archive,
+  Git-tree, receipt, TOTP, Light and HAP-isolation gates passed. Both ABI
+  defined/undefined/NAPI-init-register inventories remain exact, the signed HAP
+  remains the same 423 paths, and all 48 product compile commands per ABI have
+  zero upstream include leaks. HDC currently reports `Connect server failed`,
+  so no new virtual-device Hypium execution is claimed. One of at most two
+  `sol low` reviews was used for N1-01; all four findings were fixed and
+  machine-verified without redispatching a review loop.
 
 ## Next
 
-1. Execute only N1-03: add the pure native `MoonlightSessionOwner` and focused
-   host tests. Enforce one process-wide common-c start/interrupt/stop lane,
-   exact session/generation/owner-token admission, cancellation and callback/
-   worker drain; do not add NAPI, host API, media/input, UI or feature truth.
+1. Execute only N1-04: add the pure-native `MoonlightHostApi` protocol core and
+   focused host tests. Implement bounded request/response models, strict XML,
+   official NvHTTP URL/endpoint compatibility, exact request generation,
+   cancellation/deadline/address-attempt policy and redacted diagnostics behind
+   an injected transport. Do not add NAPI, production credentials/pairing,
+   media/input, UI or feature truth.
 2. Keep D3-01 online coordinator wiring, D3-05 cloud-first promotion, D3-06
    cloud tombstone terminal execution and D3-08
    multi-device matrix blocked until development/test/production AGC receipts
