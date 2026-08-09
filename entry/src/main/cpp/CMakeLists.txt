@@ -125,6 +125,9 @@ set(MOONLIGHT_SECURE_IDENTITY_SOURCES
 set(MOONLIGHT_PAIRING_SOURCE
     moonlight/pairing/MoonlightPairingManager.cpp
 )
+set(MOONLIGHT_HOST_CONTROL_SOURCE
+    moonlight/control/MoonlightHostControl.cpp
+)
 set(MOONLIGHT_SOURCES
     moonlight/core/MoonlightSessionOwner.cpp
 )
@@ -244,6 +247,7 @@ if(RDP_BUILD_TESTS)
         test/moonlight_host_api_test.cpp
         test/moonlight_secure_identity_test.cpp
         test/moonlight_pairing_manager_test.cpp
+        test/moonlight_host_control_test.cpp
         test/moonlight_session_owner_test.cpp
         test/vnc_des_test.cpp
         test/vnc_cursor_protocol_test.cpp
@@ -272,6 +276,7 @@ if(RDP_BUILD_TESTS)
         moonlight/core/MoonlightSessionOwner.cpp
         moonlight/security/MoonlightSecureIdentity.cpp
         moonlight/pairing/MoonlightPairingManager.cpp
+        moonlight/control/MoonlightHostControl.cpp
         vnc/vnc_des.cpp
         vnc/vnc_cursor_protocol.cpp
         vnc/vnc_rfb_protocol.cpp
@@ -475,6 +480,27 @@ set_target_properties(remotedesk_moonlight_pairing PROPERTIES
     POSITION_INDEPENDENT_CODE ON
 )
 
+# N1-07 host-control orchestration boundary. It consumes the existing Host API
+# and remains unreferenced by product/NAPI code until the runtime identity and
+# authenticated transport receipts exist. Catalog snapshots are process-local;
+# this target has no ArkTS cache, RDB, cloud, media, or input dependency.
+add_library(remotedesk_moonlight_host_control STATIC ${MOONLIGHT_HOST_CONTROL_SOURCE})
+target_compile_features(remotedesk_moonlight_host_control PRIVATE cxx_std_17)
+target_include_directories(remotedesk_moonlight_host_control PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${OPENSSL_DIR}/include
+)
+target_compile_options(remotedesk_moonlight_host_control PRIVATE
+    -fvisibility=hidden
+    -fvisibility-inlines-hidden
+)
+target_link_libraries(remotedesk_moonlight_host_control PRIVATE
+    remotedesk_moonlight_host_api
+)
+set_target_properties(remotedesk_moonlight_host_control PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+)
+
 # 定义共享库目标
 add_library(rdpnapi SHARED ${ALL_SOURCES})
 target_compile_definitions(rdpnapi PRIVATE
@@ -482,11 +508,13 @@ target_compile_definitions(rdpnapi PRIVATE
     REMOTEDESK_BUILD_TIME_UTC="${REMOTEDESK_BUILD_TIME_UTC}"
 )
 target_link_libraries(rdpnapi PRIVATE
+    remotedesk_moonlight_host_control
     remotedesk_moonlight_pairing
     remotedesk_moonlight_host_api
     remotedesk_moonlight_secure_identity
 )
 target_link_options(rdpnapi PRIVATE
+    "-Wl,--exclude-libs,libremotedesk_moonlight_host_control.a"
     "-Wl,--exclude-libs,libremotedesk_moonlight_pairing.a"
     "-Wl,--exclude-libs,libremotedesk_moonlight_host_api.a"
     "-Wl,--exclude-libs,libremotedesk_moonlight_secure_identity.a"
