@@ -14,6 +14,7 @@ import {
   terminalRowsBottomOffset,
   terminalTouchDragScrollLines,
   terminalVisualBottomOffset,
+  terminalXtermBottomSafeRows,
   terminalTouchSurfaceOffsetY
 } from '../main/ets/services/SshTerminalScrollPolicy';
 
@@ -65,6 +66,14 @@ export default function sshTerminalScrollPolicyTest(): void {
 
     it('should_keep_desktop_terminal_rows_based_on_full_shell_height', 0, (): void => {
       expect(terminalLogicalViewportHeight(true, 749, 16, 28, 94)).assertEqual(749);
+    });
+
+    it('should_not_duplicate_the_bottom_bar_gap_inside_xterm', 0, (): void => {
+      expect(terminalXtermBottomSafeRows(true, 5)).assertEqual(0);
+    });
+
+    it('should_preserve_bounded_fallback_rows_for_a_standalone_surface', 0, (): void => {
+      expect(terminalXtermBottomSafeRows(false, 9)).assertEqual(6);
     });
 
     it('should_keep_pty_rows_stable_when_soft_keyboard_appears', 0, (): void => {

@@ -72,6 +72,7 @@ import {
   terminalKeyboardBottomInsetPx,
   terminalTouchDragScrollLines,
   terminalVisualBottomOffset,
+  terminalXtermBottomSafeRows,
 } from '../services/SshTerminalScrollPolicy';
 import {
   SshEncodedKey,
@@ -2470,15 +2471,11 @@ struct SshTerminal {
   }
 
   private terminalBottomSafeRows(): number {
-    // Keep the phone layout identical to the legacy compact terminal. Pad/PC
-    // physical-keyboard mode reserves a stable prompt area above the system
-    // navigation strip, even when ArkUI temporarily reports a narrow window.
-    if (!this.isPadDevice && !this.isDesktopDevice) { return 0; }
-    if (this.sshInputMode === 1) { return 0; }
-    if (this.isDesktopDevice || this.sshInputMode === 2 || this.physicalKeyboardConnected) {
-      return 5;
-    }
-    return 0;
+    // The terminal viewport, optional virtual key bar and system inset are
+    // real ArkUI siblings. Reserving another five rows inside xterm left the
+    // virtual-keyboard-sized blank area visible in physical keyboard/mouse
+    // mode even though no key bar was mounted.
+    return terminalXtermBottomSafeRows(true, 5);
   }
 
   private terminalXtermBottomInsetPx(): number {

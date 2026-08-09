@@ -52,6 +52,18 @@ export function terminalVisualBottomOffset(
 }
 
 /**
+ * xterm must not reserve a second bottom area when ArkUI already lays out the
+ * terminal, optional virtual key bar and system inset as separate siblings.
+ */
+export function terminalXtermBottomSafeRows(
+  arkUiOwnsBottomLayout: boolean,
+  fallbackSafeRows: number
+): number {
+  if (arkUiOwnsBottomLayout) { return 0; }
+  return Math.max(0, Math.min(6, Math.floor(fallbackSafeRows)));
+}
+
+/**
  * Convert WindowManager's keyboard bottom rect into a real full-width bottom
  * inset. Floating and side keyboards can report a tall bottomRect even though
  * they do not cover the terminal's bottom edge; treating that height as a
