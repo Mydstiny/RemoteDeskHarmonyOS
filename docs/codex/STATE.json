@@ -3,13 +3,14 @@
   "task": "moonlight-complete-upgrade",
   "branch": "codex/moonlight-complete-upgrade",
   "base": "aeb0cdac5",
-  "head": "5d9c2ff",
-  "phase": "d3-account-backup-lifecycle",
+  "head": "b27a58a",
+  "phase": "d3-deletion-command-execution",
   "status": "active",
-  "next": "Implement D3 account lease and sensitive barrier wiring plus portable backup and restore contracts while Moonlight cloud registration remains disabled.",
+  "next": "Implement the lease-fenced D3-06 local deletion command layer behind the completed impact policy; leave cloud tombstones and remote unpair dormant until real ports and AGC receipts exist.",
   "blockers": [
-    "ohosTest@OhosTestCompileArkTS is not registered (00306054); 92 focused D1/D2 tests are compiled and registered but not executed on device",
+    "ohosTest@OhosTestCompileArkTS is not registered (00306054); 122 focused D1-D3 tests in 18 describe groups are compiled and registered but not executed on device",
     "AGC development/test/production Moonlight schema, authorization, and index receipts are absent; D2-07 distributed registration is blocked",
+    "The configured HDC virtual device currently returns Connect server failed, blocking new runtime receipts",
     "HAP media/input capability probes, real Sunshine hosts, and physical ARM64 acceptance remain pending"
   ],
   "planPaths": [
@@ -45,18 +46,18 @@
       "entry/src/main/module.json5"
     ],
     "receiptId": "",
-    "reason": "Full Moonlight implementation is active; review is required after checkpointed implementation. At most two sol-low reviewer agents may be used."
+    "reason": "D3 account lifecycle and portable backup/local restore are checkpointed; bounded review remains required before integration. At most two sol-low reviewer agents may be used."
   },
   "lastVerification": {
     "baseline": "clean main@aeb0cdac5 equal to origin/main at task start on 2026-08-09",
-    "diffCheck": "pass after the D2 plan and status update on 2026-08-09",
-    "testCompile": "pass default@OhosTestCompileArkTS with D2-08 through D2-10 on 2026-08-09; 92 focused Moonlight tests compile-registered",
-    "assembleHap": "pass signed production HAP with D2-08 through D2-10 in 7.710s on 2026-08-09",
+    "diffCheck": "pass for D3 portable backup/local restore code checkpoint b27a58a on 2026-08-10",
+    "testCompile": "pass default@OhosTestCompileArkTS after the D3 state-document update on 2026-08-10; 122 focused Moonlight tests in 18 describe groups compile-registered",
+    "assembleHap": "pass signed production HAP after the D3 state-document update in 3m46.041s on 2026-08-10",
     "nativeTests": "pass 342/342 outside socket-restricted sandbox on 2026-08-09",
     "moonlightPlatformProbe": "pass arm64-v8a and x86_64 API 23 compile-link probe on 2026-08-09",
-    "lightCompliance": "pass after the D2 plan and status update on 2026-08-09",
+    "lightCompliance": "pass for D3 portable backup/local restore checkpoint on 2026-08-10",
     "moonlightRdbRuntime": "pass on ARM64 API 24 emulator: user_version=5, exact 19/20/16 columns, tables=3 and owner-bound receipts=1 after process restart",
-    "ohosTest": "blocked task-not-registered 00306054; no execution pass claimed"
+    "ohosTest": "blocked task-not-registered 00306054 and current HDC Connect server failed; no execution pass claimed"
   },
-  "updated": "2026-08-09 Asia/Shanghai"
+  "updated": "2026-08-10 Asia/Shanghai"
 }

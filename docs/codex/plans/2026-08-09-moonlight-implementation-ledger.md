@@ -4,7 +4,7 @@
 > 分支：`codex/moonlight-complete-upgrade`
 > 初始基线：`main@aeb0cdac5`，与 `origin/main` 一致
 > 总计划：`docs/superpowers/plans/2026-07-28-moonlight-harmonyos-complete-upgrade-plan.md`
-> 台账状态：G0、D1 与 D2-01～D2-04 已形成 checkpoint；D2-05～D2-07 等待 AGC 外部回执；只把有可复现证据的项目标记为通过
+> 台账状态：G0、D1、D2 本地/休眠策略以及 D3 账户屏障、删除/状态策略、便携备份和本地恢复已形成 checkpoint；D2-05～D2-07 与 D3 在线/多设备部分等待外部回执；只把有可复现证据的项目标记为通过
 
 ## 1. 执行约束
 
@@ -186,18 +186,52 @@ D2-01～D2-04 的代码与测试检查点为 `3bbdc61`；D2-08～D2-10 为 `5d9c
 - 杀进程重开后：`tables=3`、同 migration receipt `count=1`，证明重复打开幂等且没有重复回执。
 - 静态和运行时均确认 `CloudSyncPolicy` 仍只有既有 8 表；本次没有执行 Moonlight `setDistributedTables`。
 
-## 10. 2026-08-09 checkpoint 验证
+## 10. D3 账户、删除、云状态和备份恢复 checkpoint
 
-- `default@OhosTestCompileArkTS`：PASS。
-- signed `assembleHap`：D2-08～D2-10 后 PASS，`BUILD SUCCESSFUL in 7 s 710 ms`。
+| ID | 状态 | 已落地合同 | 仍需完成/不得越界 |
+| --- | --- | --- | --- |
+| D3-01 | ONLINE BLOCKED / STATUS POLICY PASS | `MoonlightCloudStatusPolicy` 将 physical selection、五 scope、bootstrap、pending、quarantine、last success/error、identity crypto lock 分开建模 | `moonlightrecordv1` 尚未注册，禁止把策略结果当成在线同步；真实 request/retry/bootstrap wiring 等 D2-07 |
+| D3-02 | LOCAL/DORMANT PASS | repository、selection、materializer 和 barrier 均携带完整 lease 并在事务/回调边界复核 owner、generation、storeInstance | 真实 CloudSyncCoordinator callback 尚不存在，必须在 D2-07 后补账号 A→B 迟到回调实测 |
+| D3-03 | CONTRACT PASS / RUNTIME PORT PENDING | `SensitiveDataBarrier` 在 store quiesce 前调用 Moonlight drain；顺序固定为关闭 mutation/launch→session→pairing→identity restore→cloud/journal→runtime secrets；`AccountSessionCoordinator` 激活 store 后绑定新 lease；任一步失败保持切换 fail closed | N1 runtime port 未注册时是安全 no-op；真实 session/pairing/native secret drain 要在 N1/S1 后做强杀和超时验收 |
+| D3-04 | PASS | 保持 Backup V3；可选 descriptor 与 `moonlightrecordv1`/`moonlightlocalrecords` 双 section 已进入 manifest/inventory；旧 V3 缺 section 等价于无 Moonlight；新 V3 未被旧 inventory 认识时必须拒绝 | 不增加 Backup V4；若后续发现旧 reader 静默忽略未知 section，立即停发并改 V4 |
+| D3-05 | LOCAL RESTORE PASS / CLOUD PROMOTION BLOCKED | 两个 section 先 exact/owner/semantic 验证和去重冲突裁决，再只输出 `moonlightlocalrecords` 且 `localonly=1`；tombstone 保留，identity 冲突、等 envelope 歧义和 orphan profile/trust 隔离；恢复不会设置旧协议共用的“已恢复未上传”总 marker | 云已启用后的 cloud-first/promotion 等 D2-07；恢复中切账号、磁盘满、杀进程的设备级原子性仍归 D3-08 |
+| D3-06 | IMPACT POLICY PASS / EXECUTION PENDING | 六类命令的影响集合已冻结：取消同步、删云、删本地、忘记主机、unpair、删 profile；区分本地删除、cache 删除、cloud tombstone、远端 best-effort、等待云终态和确认级别 | 下一步增加 lease-fenced 命令执行器；当前不伪造 cloud tombstone 或远端 unpair 成功 |
+| D3-07 | POLICY PASS / UI PENDING | 云状态不再压成单一“已同步”布尔；异常计数和 identity lock 均为独立状态 | U1-11 才接设置页面；physical/schema truth 为 false 时 UI 必须显示不可用/关闭 |
+| D3-08 | EXTERNAL PENDING | 纯策略与构建矩阵已有自动测试覆盖 | 双设备、双账号、device-local、真实云、恢复中故障和既有 8 表同步回归尚无 receipt |
+
+### 10.1 便携备份 V3 冻结矩阵
+
+| 内容 | redacted | full | 恢复终态 |
+| --- | --- | --- | --- |
+| settings / host / profile | 包含 | 包含 | 当前 owner 的 local overlay，`localonly=1` |
+| trust candidate | 排除 | 可包含 | 仍只是候选；没有本机 trust receipt |
+| secret / client identity / PIN / token / private key | 排除 | 排除 | 无恢复通道，明确要求重新配对 |
+| app cache / journal / quarantine / receipt / bootstrap / selection / recovery marker | 排除 | 排除 | 不创建、不推断 |
+
+源库 admission 比导出过滤更严格：未知列、缺列、外来 owner、重复 id、
+非法 `localonly` 或语义损坏会让整次备份失败，不能通过“过滤掉坏行”生成看似
+成功的不完整文件。restore 重新绑定目标 owner，但不会把来源 owner、设备 ID 或
+writer origin 另存成设备配置；下一次本机写入继续使用目标 owner-store 的 origin。
+
+D3 账户生命周期代码检查点为 `05e96d3`；便携备份/本地恢复检查点为
+`b27a58a`。聚焦聚合器现登记 18 个 Moonlight describe、122 个 test；只声明
+`default@OhosTestCompileArkTS` 编译注册通过，不声明 Hypium 设备执行。
+
+## 11. 2026-08-10 checkpoint 验证
+
+- `default@OhosTestCompileArkTS`：D3 状态文档同步后复跑退出码 0；18 个 describe、122 个 Moonlight test 编译注册。第一次增量进程异常静默且被明确中止，不计作结果；同命令重跑通过。
+- signed `assembleHap`：D3 状态文档同步后复跑退出码 0，`BUILD SUCCESSFUL in 3 min 46 s 41 ms`；第一次静默进程被明确中止，不计作结果；D3 backup 最终源码检查点此前也曾在 16.162s 通过，clean 全量 HAP 亦通过。
 - host `rdp_native_tests`：沙箱内本地 TLS fixture 因 socket 监听限制为
   326/342；按门禁在沙箱外复跑为 **342/342 PASS**，确认不是代码回归。
 - `scripts/probe_moonlight_platform.sh`：arm64-v8a、x86_64 均 PASS。
-- `verify_open_source_release.ps1 -Mode Light`：PASS。
-- `git diff --check`、`codex_state validate`：D2 计划和状态文件更新后 PASS。
+- `verify_open_source_release.ps1 -Mode Light`：D3 checkpoint 后 PASS。
+- `git diff --check`、`codex_state validate`：D3 状态文档更新后 PASS。
+- `CloudSyncPolicy.CLOUD_SYNC_TABLES` 静态复核仍精确为既有 8 表；Moonlight 云表、local mirror 和 app cache 均未进入在线注册集合。
+- HDC 当前返回 `Connect server failed`；早期 ARM64 API 24 RDB receipt 仍有效，但本次没有新增虚拟设备 Hypium 或恢复运行时证据。
 
-## 11. 下一执行序列
+## 12. 下一执行序列
 
-1. 进入 D3 account lease、SensitiveDataBarrier 和本地备份/恢复 inventory；先做纯策略和端口，Moonlight 云 transfer 继续关闭。
-2. D2-05/06 由 AGC 开发/测试/生产环境提供 schema/授权/索引 receipt；缺失时 D2-07 继续阻断。
-3. 补 HAP 内 typed capability probe；真实 Sunshine 和用户 ARM64 真机未提供前，host-control/streaming/protocol truth 继续为 false。
+1. 执行 D3-06 命令层：先写 lease/rollback/impact-consistency 测试，再实现仅本地可完成的删除；cloud tombstone 与 host unpair 只能经显式端口并在端口不存在时 fail closed。
+2. D2-05/06 由 AGC 开发/测试/生产环境提供 schema/授权/索引 receipt；缺失时 D2-07、D3-01 在线 wiring、D3-05 cloud-first promotion 和 D3-08 云矩阵继续阻断。
+3. N1-01 独立 vendor 官方固定 common-c/ENet/nanors，先完成 provenance、LICENSE、NOTICE、SBOM/source offer、双 ABI 静态目标和回退证据，不接产品 NAPI、不开放入口。
+4. 补 HAP 内 typed capability probe；真实 Sunshine 和用户 ARM64 真机未提供前，host-control/streaming/protocol truth 继续为 false。

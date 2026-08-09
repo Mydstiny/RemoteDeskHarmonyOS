@@ -5,8 +5,9 @@
 - Task: `moonlight-complete-upgrade`
 - Base: `main@aeb0cdac5`
 - Branch: `codex/moonlight-complete-upgrade`
-- Phase: G0, D1, D2 local storage and D2 dormant cloud policies are checkpointed;
-  AGC deployment/registration remains blocked and D3 lifecycle work is next.
+- Phase: G0, D1, D2 local storage/dormant cloud policies, D3 account lifecycle,
+  deletion/status policies and portable backup/local restore are checkpointed;
+  AGC deployment/registration and runtime-backed lifecycle remain blocked.
 
 ## Context
 
@@ -57,26 +58,45 @@
 - API 24 ARM64 emulator receipt: owner-store `user_version=5`; table shapes are
   exactly 19/20/16 columns; one owner-bound migration receipt remains after a
   process restart (`tables=3`, `receipts=1`).
-- Current gates: `default@OhosTestCompileArkTS` passed with 92 focused Moonlight
-  tests compile-registered; signed `assembleHap` passed in 7.710s; host native
+- D3 account transitions now invoke an ordered Moonlight barrier before store
+  quiescence and bind the resulting account lease after store activation. The
+  dormant port closes mutation/launch first, then drains session, pairing,
+  identity restore and cloud/journal work before clearing runtime secrets;
+  failure keeps the transition fail closed. Checkpoint: `05e96d3`.
+- D3 portable backup keeps format V3 and adds optional exact Moonlight cloud and
+  local sections. Redacted mode carries settings/host/profile; full mode may add
+  trust candidates; both always omit client identity, secret material, app
+  cache, journal and recovery markers. Restore resolves both sections into only
+  `moonlightlocalrecords` with `localonly=1`, quarantines ambiguity/orphans and
+  requires re-pairing. Old V3 files remain readable. Checkpoint: `b27a58a`.
+- Current gates: `default@OhosTestCompileArkTS` passed with 122 focused Moonlight
+  tests in 18 describe groups compile-registered; signed `assembleHap` passed;
+  host native
   tests passed 342/342 outside the socket-
   restricted sandbox; Moonlight API 23 probe passed arm64-v8a and x86_64;
-  Light compliance passed.
+  Light compliance passed. HDC currently reports `Connect server failed`, so no
+  new virtual-device Hypium execution is claimed for the D3 checkpoint.
 
 ## Next
 
-1. Implement D3 account lease/barrier and local backup/restore inventory without
-   enabling Moonlight cloud transfer or changing existing protocol behavior.
-2. Do not implement D2-07 registration until development/test/production AGC
+1. Implement the executable D3-06 local command layer behind the completed
+   deletion-impact policy; keep cloud tombstones and host unpair calls dormant
+   until their real ports exist, and preserve transaction/lease rollback.
+2. Keep D3-01 online coordinator wiring, D3-05 cloud-first promotion and D3-08
+   multi-device matrix blocked until development/test/production AGC receipts
+   permit D2-07 registration.
+3. Begin N1-01 official common-c vendoring only as an isolated provenance,
+   license and dual-ABI build checkpoint; do not expose product availability.
+4. Do not implement D2-07 registration until development/test/production AGC
    schema, authorization and index receipts complete D2-05/D2-06.
-3. Continue D3 backup/account lifecycle integration without enabling cloud,
-   identity, host-control, streaming or protocol availability truth.
 
 ## Blockers
 
-- `ohosTest@OhosTestCompileArkTS` remains unregistered (`00306054`), so the 92
-  focused D1/D2 tests are compile-registered but no on-device Hypium pass is claimed.
+- `ohosTest@OhosTestCompileArkTS` remains unregistered (`00306054`), so the 122
+  focused D1-D3 tests are compile-registered but no on-device Hypium pass is claimed.
 - AGC development/test/production `moonlightrecordv1` schema, authorization and
   index receipts are absent; the table is therefore not in `CloudSyncPolicy.TABLES`.
+- The configured HDC virtual device is currently unreachable (`Connect server
+  failed`); this does not invalidate earlier RDB receipts but blocks new runtime checks.
 - HAP/AppSpawn runtime probes, two real Sunshine hosts, AGC schema receipts and
   final ARM64 physical-device acceptance remain external release blockers.

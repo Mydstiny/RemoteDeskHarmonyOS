@@ -2583,6 +2583,30 @@ flowchart LR
 | D3-07 | 扩展云设置状态模型：physical selection、五 scope、bootstrap、pending upload、quarantine、last success/error 独立展示 | offline、无 platform identity、crypto locked、partial failure、empty selection | 不用一个“已同步”布尔覆盖所有状态 |
 | D3-08 | 运行双设备/双账号/设备本地数据矩阵和便携备份恢复矩阵，保存脱敏 receipt | 第 7.5–7.11 全矩阵，其他 8 表同步回归 | `data-lifecycle` checkpoint；未通过不做 UI 的云开关 |
 
+#### 15.6.1 D3 实施校准（2026-08-10）
+
+后续执行必须按下表领取剩余动作，不能仅凭原任务标题重复实现已经落地的合同：
+
+| ID | 当前源码状态 | 已完成边界 | 唯一剩余边界 |
+| --- | --- | --- | --- |
+| D3-01 | ONLINE BLOCKED / STATUS POLICY PASS | 独立状态 policy 已覆盖 physical、五 scope、bootstrap、pending、quarantine、last success/error、identity crypto lock | 真实 request/retry/bootstrap wiring 依赖 D2-07；不得提前改八表集合 |
+| D3-02 | LOCAL/DORMANT PASS | repository、selection、materializer、barrier 均使用完整 `AccountSessionLease` 并在事务边界复核 | D2-07 后补真实 coordinator callback 的 A→B 迟到污染测试 |
+| D3-03 | CONTRACT PASS / RUNTIME PENDING | `SensitiveDataBarrier` 已在 store quiesce 前按 mutation/launch→session→pairing→identity restore→cloud/journal→runtime secrets 排序 drain；新 store 激活后绑定 lease | N1/S1 注册真实 runtime port 后补超时、强杀、旧 callback 和 secret 清零验收 |
+| D3-04 | PASS | Backup V3 optional descriptor 和 cloud/local 双 section 已落地；旧 V3 无 section 可读，新 V3 对旧 inventory fail closed；redacted/full 矩阵固定 | 任何旧 reader 静默忽略未知 section 的新证据都会触发 Backup V4，不允许带风险兼容 |
+| D3-05 | LOCAL RESTORE PASS / CLOUD PROMOTION BLOCKED | exact/owner/semantic validation、冲突/孤儿 quarantine、tombstone、目标 owner rebound 和最终仅 `moonlightlocalrecords`/`localonly=1` 已落地 | D2-07 后才能做 cloud-first/promotion；设备级故障原子性归 D3-08 |
+| D3-06 | IMPACT POLICY PASS / EXECUTION PENDING | 六类命令的删除集合、cache、tombstone、best-effort remote、终态等待和确认级别已冻结 | 下一最小任务只实现 lease-fenced 命令执行器；缺 cloud/host port 时必须 fail closed |
+| D3-07 | POLICY PASS / UI PENDING | 不使用“已同步”单布尔，状态输出已独立建模 | U1-11 消费此 snapshot；physical/schema truth 为 false 时必须显示 off/unavailable |
+| D3-08 | EXTERNAL PENDING | 122 个 Moonlight 测试源覆盖纯策略和编译合同 | 双设备/双账号/device-local/真实云/恢复故障/旧八表回归需要外部环境 receipt |
+
+D3-04/05 的不可变实现合同如下：
+
+1. 备份格式仍为 V3；Moonlight descriptor 和两个 section 都是 V3 的可选扩展，旧文件缺失等价于 Moonlight 记录数为零。
+2. redacted 只允许 settings、host、profile；full 在此基础上只增加 trust candidate。两种模式都排除 secret/client identity、PIN、token、私钥、本机 trust receipt、app cache、journal、quarantine、bootstrap、selection 和 recovery marker。
+3. 源库 admission 对未知/缺失列、外来 owner、重复 id、非法 `localonly` 和语义损坏整批失败；不能把坏行静默过滤后生成不完整备份。
+4. 恢复同时裁决 cloud/local section，但最终只原子提交目标 owner 的 local overlay，全部 `localonly=1`；不会直接触发云上传，也不会设置会冻结 RDP/SSH/VNC/RustDesk 的公共恢复 marker。
+5. 相同 id 的等 envelope 歧义或 identity 冲突隔离双方；live profile/trust 没有 active host 时隔离；trust 恢复后仍是候选，配对身份始终要求重新配对。
+6. D3-03 代码 checkpoint 为 `05e96d3`，D3-04/05 checkpoint 为 `b27a58a`；18 个 describe、122 个 Moonlight test 只具备编译注册证据，当前不宣称 Hypium 设备执行。
+
 ### 15.7 N1：官方 common-c、Host API、配对与应用控制
 
 | ID | 文件与精确动作 | 必须验证 | 完成证据/提交点 |
@@ -2702,20 +2726,22 @@ Moonlight 能从“即将支持”变成可点击，仅当下列事实同时成�
 
 在此之前，当前灰色 Moonlight FAB 入口和“即将支持”就是唯一正确的用户可见状态。
 
-### 15.14 当前源码事实、未创建文件与唯一继续点（2026-08-09）
+### 15.14 当前源码事实、未创建文件与唯一继续点（2026-08-10）
 
 本节是后续执行者进入仓库后的防漂移索引。它只记录当前分支中已经存在且有证据的事实；第 15.5～15.12 节提到但未列在“已存在”中的文件名都是未来落点，不能被当作已有能力引用。
 
 | 层次 | 当前源码事实 | 当前可声明能力 | 下一任务边界 |
 | --- | --- | --- | --- |
-| 领域模型 | `MoonlightModels.ets`、`MoonlightRecord.ets`、六个 Moonlight policy/state 文件已存在；D1 共 43 个测试源 | DTO、canonical/hash、19/20 列 envelope、冲突、设置裁剪、feature truth 和 session 状态机可编译 | 不改 UI、CloudCoordinator 或 native；D1 只有发现缺陷时才回开 |
-| 本地数据 | `MoonlightStoragePolicy.ets`、`MoonlightRepository.ets`、`MoonlightAppCache.ets`、`MoonlightAppCacheService.ets` 已存在；`CloudStore.ets` owner schema 为 v5 | owner-store 中 19/20/16 三表、lease fenced local-first upsert/tombstone、目录 cache 与有界 LRU | D3 才接 account barrier/backup；不得偷偷注册云表 |
-| 云适配 | exact 19 列 adapter、row-sensitive transfer、五 scope selection store 和 dormant materializer 已存在；`CloudSyncPolicy.TABLES` 仍是原有 8 表 | 可以验证/隔离/本地物化候选 row，所有结果明确 `cloudAttempted=false`；没有 Moonlight 云上传、下载或“已同步”能力 | D3 只接生命周期/备份；D2-07 必须等三环境 AGC receipt |
+| 领域模型 | `MoonlightModels.ets`、`MoonlightRecord.ets`、领域 policy/state、删除影响、云状态和备份策略已存在；D1-D3 共 122 个测试用例 | DTO、canonical/hash、19/20 列 envelope、冲突、设置裁剪、feature truth、session 状态、删除预览和备份/恢复裁决可编译 | D1 合同只有发现缺陷时才回开；删除执行只消费既有 impact，不再平行定义语义 |
+| 本地数据 | `MoonlightStoragePolicy.ets`、`MoonlightRepository.ets`、`MoonlightAppCache.ets`、`MoonlightAppCacheService.ets` 已存在；`CloudStore.ets` owner schema 为 v5 | owner-store 中 19/20/16 三表、lease fenced local-first upsert/tombstone、目录 cache 与有界 LRU；V3 restore 最终只写 local overlay | 下一步 D3-06 命令执行器复用 repository/transaction；不得另建删除存储或偷偷注册云表 |
+| 账户生命周期 | `MoonlightDataLifecycleBarrier` 已接入 `SensitiveDataBarrier` 和 `AccountSessionCoordinator`；无 runtime port 时安全 no-op | 账户切换顺序、失败回开旧 gate 和新 lease bind 的纯合同已编译 | N1/S1 注册唯一 runtime port 后补真实 session/pairing/native drain；页面不得旁路 barrier |
+| 云适配 | exact 19 列 adapter、row-sensitive transfer、五 scope selection store、dormant materializer 和独立云状态 policy 已存在；`CloudSyncPolicy.TABLES` 仍是原有 8 表 | 可以验证/隔离/本地物化候选 row，所有结果明确 `cloudAttempted=false`；状态不会把 pending/quarantine 伪装成 synced | D2-07 必须等三环境 AGC receipt；之后才做 D3-01 coordinator、cloud-first promotion 和 D3-08 |
 | 云数据 | `moonlightrecordv1` 是唯一未来分布式物理表；`moonlightlocalrecords` 和 `moonlightappcache` 永远本地 | 19 列 schema 已在 ARM64 API 24 owner-store 实例化和重开验证 | cache 不进云/备份；local mirror 只有 promotion 后才投影；identity 继续默认关闭 |
+| 便携备份 | Backup V3 optional Moonlight descriptor、cloud/local 双 section、exact admission 和 local-only resolver 已存在 | redacted=settings/host/profile，full 额外 trust candidate；identity/secret/cache/marker 永远排除；旧 V3 可读 | cloud-enabled restore promotion 与设备故障矩阵仍 pending；不能另建含 identity 的“完整备份”旁路 |
 | Native | 只有独立 API 23 双 ABI link probe；尚未 vendor common-c，也没有 Moonlight NAPI/session/media/input 实现 | 只能声明 SDK 符号静态可链接，不能声明配对、解码、音频或输入可用 | 从 N1-01 开始，依赖和补丁单独落地；没有真实 Sunshine 时不越过运行验收 |
 | UI | `HostListPage.ets` 当前仅有禁用的 Moonlight FAB 项、system Symbol 和“即将支持”；没有 Moonlight 添加/目录/设置/会话页 | 入口信息可见但不可交互；点击无副作用 | 直到 U1 的数据与 N1 host-control 前置都满足，保持现状；不提前建可保存假表单 |
 | 品牌 | 官方 SVG 已固定 hash，但尚无 provenance/商标/视觉验收 receipt | 只能使用现有 system Symbol 回退 | `moonlightBrandAssetReady=false`；品牌门通过后再替换资源并保留 NOTICE |
-| 验证 | 14 个 describe、92 个 D1/D2 测试源已进入聚合器；两项 Hvigor、signed HAP、Light、双 ABI probe 通过 | 只声明测试编译注册，不声明 Hypium 设备执行 | `ohosTest` task 未注册；最终功能验收必须在用户 ARM64 实机和真实 Sunshine 上完成 |
+| 验证 | 18 个 describe、122 个 D1-D3 测试源已进入聚合器；两项 Hvigor、signed HAP、Light、双 ABI probe 通过 | 只声明测试编译注册，不声明 Hypium 设备执行 | `ohosTest` task 未注册且当前 HDC 连接失败；最终功能验收必须在用户 ARM64 实机和真实 Sunshine 上完成 |
 
 当前数据流只能是：
 
@@ -2724,7 +2750,9 @@ UI（当前无 Moonlight 可写页面）
   -> 未来 Moonlight service/repository
   -> MoonlightRepository
   -> moonlightlocalrecords + cloudsyncjournal（原子本地提交）
+  -> D3 lifecycle barrier（账号切换前 drain；runtime port 尚未注册）
   -> D2-08～D2-10 dormant validate/materialize/projection（已实现，零 cloud I/O）
+  -> Backup V3（cloud/local 双 section）-> restore resolver -> localonly=1
   -> [D2-07 尚关闭：不得调用 Moonlight setDistributedTables]
   -> [AGC dev/test/prod receipt 齐全后才可能启用 moonlightrecordv1]
 
@@ -2743,6 +2771,6 @@ Sunshine / common-c / media / input 当前完全不在这条已实现链路中�
 8. 更新实施台账中的状态、证据、blocker 和唯一下一任务；同步 `CURRENT/QUEUE/STATE`，再用精确文件列表形成一个可回滚提交。
 9. 只有当任务合同、测试和对应门禁均通过时标记 `PASS`；“代码写完”“构建通过”“请求已排队”均不是产品能力完成。
 
-当前唯一可直接继续的代码阶段是 D3 中不依赖真实 AGC transfer 的 account barrier、备份、恢复和删除影响合同。D2-05/06 由 AGC 外部环境提供证据，D2-07 依赖二者；N1 可按依赖图独立开始。任何执行者都不得因为云端受阻而把 `moonlightrecordv1` 塞入现有八表注册清单，也不得因为 native 未接入而先把灰色入口改成可点击。
+当前唯一可直接继续的 D3 代码任务是 D3-06 的 lease-fenced 命令执行器；它只能完成真实本地事务，缺少 cloud/host port 时必须返回不可执行，不能伪造 tombstone 或 unpair 终态。与其并行依赖图允许从 N1-01 开始隔离 vendoring，但同一 checkpoint 不混入产品 NAPI/UI。D2-05/06 由 AGC 外部环境提供证据，D2-07 依赖二者。任何执行者都不得因为云端受阻而把 `moonlightrecordv1` 塞入现有八表注册清单，也不得因为 native 未接入而先把灰色入口改成可点击。
 
 <!-- PLAN_BODY_END -->
