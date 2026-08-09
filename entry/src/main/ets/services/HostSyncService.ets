@@ -36,6 +36,7 @@ import { RustDeskProCredentialStore } from './RustDeskProCredentialStore';
 import {
   rustDeskRelayCapabilityIdentityChanged
 } from './RustDeskControlPlaneCapabilityPolicy';
+import { remoteHostCloudBaseChanged } from './HostLocalPersonalizationPolicy';
 
 export class HostSyncService {
   private static instance: HostSyncService;
@@ -49,7 +50,6 @@ export class HostSyncService {
   private localHostObservationAt: Map<string, number> = new Map();
   private localHostConfigObservationAt: Map<string, number> = new Map();
   private deletedHostAt: Map<string, number> = new Map();
-  private healthCloudWriteAt: Map<string, number> = new Map();
   private localRdpCredentialObservationAt: Map<string, number> = new Map();
   private deletedRdpCredentialAt: Map<string, number> = new Map();
   private localRelayObservationAt: Map<string, number> = new Map();
@@ -320,7 +320,6 @@ export class HostSyncService {
     this.localHostObservationAt.clear();
     this.localHostConfigObservationAt.clear();
     this.deletedHostAt.clear();
-    this.healthCloudWriteAt.clear();
     this.localRdpCredentialObservationAt.clear();
     this.deletedRdpCredentialAt.clear();
     this.localRelayObservationAt.clear();
@@ -410,8 +409,10 @@ export class HostSyncService {
     const observedAt: number = Date.now();
     this.localHostConfigObservationAt.set(host.id, observedAt);
     this.deletedHostAt.delete(host.id);
+    const cloudBaseChanged: boolean = remoteHostCloudBaseChanged(current, host);
     if (this.ready) {
-      const ok: boolean = this.cloud.updateHost(host);
+      const ok: boolean = cloudBaseChanged ? this.cloud.updateHost(host) :
+        this.cloud.updateHostLocalPersonalization(host);
       if (!ok) {
         this.localHostConfigObservationAt.delete(host.id);
         hilog.error(0x0001, 'CloudSync',
@@ -419,7 +420,7 @@ export class HostSyncService {
           rustDeskRelayIdFingerprint(host.id));
         return false;
       }
-      this.cloud.pushTable('remotehosts');
+      if (cloudBaseChanged) { this.cloud.pushTable('remotehosts'); }
     }
     this.hosts.set(host.id, host);
     this.emitDataChange();
@@ -454,7 +455,6 @@ export class HostSyncService {
     const result: boolean = this.hosts.delete(id);
     if (result) {
       this.localHostObservationAt.delete(id);
-      this.healthCloudWriteAt.delete(id);
     }
     if (result && this.ready) { this.cloud.pushTable('remotehosts'); }
     if (result) { this.emitDataChange(); }
@@ -477,7 +477,6 @@ export class HostSyncService {
       }
       if (this.hosts.delete(id)) {
         this.localHostObservationAt.delete(id);
-        this.healthCloudWriteAt.delete(id);
         removed++;
       }
     }
@@ -531,19 +530,12 @@ export class HostSyncService {
     this.persistLocalHostObservation(host.id, next, false);
   }
 
-  private persistLocalHostObservation(hostId: string, next: RemoteHost, forceCloud: boolean): void {
+  private persistLocalHostObservation(hostId: string, next: RemoteHost, _forceCloud: boolean): void {
     const now: number = Date.now();
     this.localHostObservationAt.set(hostId, now);
-    let cloudSaved: boolean = false;
-    const lastCloudWrite: number = this.healthCloudWriteAt.get(hostId) ?? 0;
-    if (this.ready && (forceCloud || now - lastCloudWrite >= 30000)) {
-      cloudSaved = this.cloud.updateHost(next);
-      if (cloudSaved) {
-        this.healthCloudWriteAt.set(hostId, now);
-        this.cloud.pushTable('remotehosts');
-      } else {
-        hilog.warn(0x0001, 'CloudSync', 'HostSyncService.persistLocalHostObservation: CloudStore 写入失败');
-      }
+    if (this.ready && !this.cloud.updateHostLocalPersonalization(next)) {
+      hilog.warn(0x0001, 'CloudSync',
+        'HostSyncService.persistLocalHostObservation: 本机观测写入失败');
     }
     // 即使云写入暂时失败，列表卡片也必须先看到本次本机观测。
     this.hosts.set(hostId, next);
@@ -732,6 +724,7 @@ export class HostSyncService {
     result.updatedIds.forEach((id: string): void => { changedIds.add(id); });
     result.missingIds.forEach((id: string): void => { changedIds.add(id); });
     let changed = false;
+    let cloudChanged = false;
     changedIds.forEach((id: string): void => {
       const next = result.hosts.find((host: RemoteHost): boolean => host.id === id);
       if (!next) { return; }
@@ -747,17 +740,24 @@ export class HostSyncService {
         }
         this.hosts.set(id, next);
         changed = true;
+        cloudChanged = true;
         return;
       }
-      if (this.ready && !this.cloud.updateHost(next)) {
+      const cloudBaseChanged: boolean =
+        remoteHostCloudBaseChanged(current, next);
+      const persisted: boolean = !this.ready ||
+        (cloudBaseChanged ? this.cloud.updateHost(next) :
+          this.cloud.updateHostLocalPersonalization(next));
+      if (!persisted) {
         this.localHostConfigObservationAt.delete(id);
         hilog.error(0x0001, 'CloudSync', 'Pro 主机更新失败: ' + id);
         return;
       }
       this.hosts.set(id, next);
       changed = true;
+      cloudChanged = cloudChanged || cloudBaseChanged;
     });
-    if (changed && this.ready) { this.cloud.pushTable('remotehosts'); }
+    if (cloudChanged && this.ready) { this.cloud.pushTable('remotehosts'); }
     if (changed) { this.emitDataChange(); }
     return result;
   }

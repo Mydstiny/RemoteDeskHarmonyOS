@@ -5,6 +5,7 @@ import {
   LocalBackupDocument,
   createLocalBackupDocument,
   createLocalBackupRestorePreview,
+  localBackupExtensionOwnerTable,
   localBackupCanonicalPayload,
   localBackupSha256,
   validateLocalBackupDocument
@@ -83,6 +84,13 @@ function portableVncHostRow(
 
 export default function localBackupPolicyTest(): void {
   describe('LocalBackupPolicy', (): void => {
+    it('maps_restricted_admin_extensions_to_remote_host_owners', 0, (): void => {
+      expect(localBackupExtensionOwnerTable('rdprestrictedadminsecrets'))
+        .assertEqual('remotehosts');
+      expect(localBackupExtensionOwnerTable('rdpcredentials'))
+        .assertEqual('rdpcredentials');
+    });
+
     it('accepts_an_empty_v3_redacted_backup', 0, (): void => {
       const document = createLocalBackupDocument(emptyTables(), 100, '1.0.5');
       expect(validateLocalBackupDocument(JSON.stringify(document)) !== null).assertTrue();
@@ -150,7 +158,10 @@ export default function localBackupPolicyTest(): void {
             id: 'remotehosts:host-1', tablename: 'remotehosts',
             recordid: 'host-1',
             payload: '{"sshkeypassphrase":"passphrase",' +
+              '"sshproxypassword":"proxy-password",' +
+              '"sshproxykeypassphrase":"proxy-passphrase",' +
               '"sshhostkeyfingerprintsha256":"trust",' +
+              '"sshjumphostkeyalgorithm":"ssh-ed25519",' +
               '"rustdeskdirectport":"21117"}',
             updatedat: '100'
           }], {}, 'owner-test', 3, true, 'full');
@@ -181,7 +192,10 @@ export default function localBackupPolicyTest(): void {
           .assertEqual('totp-secret');
         expect(document.extensions?.[0]['payload'])
           .assertEqual('{"sshkeypassphrase":"passphrase",' +
+            '"sshproxypassword":"proxy-password",' +
+            '"sshproxykeypassphrase":"proxy-passphrase",' +
             '"sshhostkeyfingerprintsha256":"trust",' +
+            '"sshjumphostkeyalgorithm":"ssh-ed25519",' +
             '"rustdeskdirectport":"21117"}');
         expect(validateLocalBackupDocument(
           JSON.stringify(document)) !== null).assertTrue();
@@ -216,12 +230,28 @@ export default function localBackupPolicyTest(): void {
         payload: '{"rustdeskdirectport":"21117","rustdesktargetdevice":"phone",' +
           '"rustdeskadaptiveorientation":"1","rdpendpointmode":"microsoft_rd_gateway",' +
           '"rdpgatewaytransport":"no-websockets",' +
-          '"rdpgatewayservername":"gateway.example.test"}', updatedat: '100'
+          '"rdpgatewayservername":"gateway.example.test",' +
+          '"sshproxytype":"ssh_jump","sshproxyauthmethod":"publickey",' +
+          '"sshproxykeyid":"jump-key",' +
+          '"sshjumphostkeyalgorithm":"ssh-ed25519",' +
+          '"sshjumphostkeyfingerprintsha256":"SHA256:jump",' +
+          '"sshjumphostkeyrawbase64":"AAAA",' +
+          '"sshjumphostkeytrustedat":"99","sshjumphostkeytrustmode":"1",' +
+          '"localpersonalizationversion":"1",' +
+          '"localdisplayconfig":"{\\"width\\":1280,\\"height\\":720}",' +
+          '"locallastconnected":"101","locallasthealth":"3",' +
+          '"locallastlatency":"72",' +
+          '"localrustdeskadaptiveorientation":"1",' +
+          '"localrustdeskprolastseenat":"202",' +
+          '"localrustdeskprosyncerror":"not_seen"}', updatedat: '100'
       }], {}, 'owner-test');
       const parsed = validateLocalBackupDocument(JSON.stringify(document));
       expect(parsed !== null).assertTrue();
       expect(parsed?.extensions?.length).assertEqual(1);
       expect(parsed?.extensions?.[0]['payload'].indexOf('rdpendpointmode') >= 0).assertTrue();
+      expect(parsed?.extensions?.[0]['payload'].indexOf('sshproxytype') >= 0).assertTrue();
+      expect(parsed?.extensions?.[0]['payload'].indexOf('sshjumphostkeyalgorithm') >= 0).assertTrue();
+      expect(parsed?.extensions?.[0]['payload'].indexOf('localdisplayconfig') >= 0).assertTrue();
     });
 
     it('rejects_duplicate_primary_keys', 0, (): void => {

@@ -1,5 +1,6 @@
 import { picker, fileIo } from '@kit.CoreFileKit';
 import { util } from '@kit.ArkTS';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import {
   CloudStore,
   PortableBackupSnapshot
@@ -78,8 +79,12 @@ export class LocalBackupService {
     appVersion: string, stagingDirectory: string,
     sensitivityMode: BackupSensitivityMode = 'redacted'
   ): Promise<boolean> {
+    hilog.info(0x0001, 'LocalBackupService',
+      'backup export start mode=' + sensitivityMode);
     if (!portableBackupExportAllowed()) {
       this.lastErrorCode = 'unsafe_legacy_backup';
+      hilog.error(0x0001, 'LocalBackupService',
+        'backup export blocked code=' + this.lastErrorCode);
       return false;
     }
     const now: number = Date.now();
@@ -88,6 +93,8 @@ export class LocalBackupService {
       snapshot = this.cloud.createPortableBackupSnapshot();
     } catch (_e) {
       this.lastErrorCode = 'snapshot_failed';
+      hilog.error(0x0001, 'LocalBackupService',
+        'backup export snapshot failed');
       return false;
     }
     const document: LocalBackupDocument = createLocalBackupDocument(
@@ -96,7 +103,15 @@ export class LocalBackupService {
       snapshot.rdbSchemaVersion, snapshot.sourceCryptoConfigured,
       sensitivityMode);
     const bytes: Uint8Array = new util.TextEncoder().encode(JSON.stringify(document));
-    if (bytes.length > LOCAL_BACKUP_MAX_BYTES) { this.lastErrorCode = 'too_large'; return false; }
+    hilog.info(0x0001, 'LocalBackupService',
+      'backup document created bytes=' + bytes.length.toString() +
+      ' extensions=' + snapshot.extensions.length.toString());
+    if (bytes.length > LOCAL_BACKUP_MAX_BYTES) {
+      this.lastErrorCode = 'too_large';
+      hilog.error(0x0001, 'LocalBackupService',
+        'backup export too large bytes=' + bytes.length.toString());
+      return false;
+    }
     const baseName: string =
       'RemoteDesktop-backup-' + now.toString() + '.json';
     const temporaryPath: string =
@@ -104,10 +119,18 @@ export class LocalBackupService {
     const readyPath: string = stagingDirectory + '/' + baseName;
     try {
       if (!this.writePrivateStagingFile(temporaryPath, bytes)) {
+        hilog.error(0x0001, 'LocalBackupService',
+          'backup staging write failed code=' + this.lastErrorCode);
         return false;
       }
       fileIo.renameSync(temporaryPath, readyPath);
-      if (!this.verifyFile(readyPath, bytes)) { return false; }
+      if (!this.verifyFile(readyPath, bytes)) {
+        hilog.error(0x0001, 'LocalBackupService',
+          'backup staging verify failed code=' + this.lastErrorCode);
+        return false;
+      }
+      hilog.info(0x0001, 'LocalBackupService',
+        'backup staging verified');
       const options: picker.DocumentSaveOptions = {
         newFileNames: [baseName]
       };
@@ -115,6 +138,8 @@ export class LocalBackupService {
         await new picker.DocumentViewPicker().save(options);
       if (uris.length === 0) {
         this.lastErrorCode = 'cancelled';
+        hilog.warn(0x0001, 'LocalBackupService',
+          'backup document picker cancelled');
         return false;
       }
       const file = fileIo.openSync(
@@ -123,18 +148,30 @@ export class LocalBackupService {
       try {
         const written = BoundedDocumentIo.writeFully(file.fd, bytes);
         this.lastErrorCode = written.code;
-        if (!written.ok) { return false; }
+        if (!written.ok) {
+          hilog.error(0x0001, 'LocalBackupService',
+            'backup destination write failed code=' + this.lastErrorCode);
+          return false;
+        }
         fileIo.fsyncSync(file.fd);
       } finally {
         fileIo.closeSync(file);
       }
-      if (!this.verifyFile(uris[0], bytes)) { return false; }
+      if (!this.verifyFile(uris[0], bytes)) {
+        hilog.error(0x0001, 'LocalBackupService',
+          'backup destination verify failed code=' + this.lastErrorCode);
+        return false;
+      }
       this.lastErrorCode = 'cancelled';
+      hilog.info(0x0001, 'LocalBackupService',
+        'backup export complete');
       return true;
     } catch (_e) {
       if (this.lastErrorCode === 'cancelled') {
         this.lastErrorCode = 'io_error';
       }
+      hilog.error(0x0001, 'LocalBackupService',
+        'backup export exception code=' + this.lastErrorCode);
       return false;
     } finally {
       LocalBackupService.unlinkIfPresent(temporaryPath);

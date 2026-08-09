@@ -1041,6 +1041,35 @@ class FakeVncStartupRecoveryIo
 export default function cloudDataWiringTest():
   void {
   describe('CloudDataWiring', (): void => {
+    it('continues_vnc_manual_upload_after_an_ordinary_table_fails',
+      0, async (): Promise<void> => {
+        const coordinator = new CloudSyncCoordinator(
+          new FixedSelectionSource(['remotehosts']),
+          new ControlledRetryClock(),
+          new FixedVncSelectionSource(true));
+        const hooks = new CoordinatorHooks();
+        const executions: string[] = [];
+        expect(coordinator.bind(
+          accountLease(), accountBinding(),
+          async (table: string,
+            direction: CloudSyncDirection): Promise<boolean> => {
+            executions.push(direction + ':' + table);
+            return table !== 'remotehosts';
+          },
+          (_tables: string[]): void => {},
+          hooks)).assertTrue();
+
+        const result: CloudSyncOperationResult =
+          await coordinator.requestManualUpload();
+        expect(result.ok).assertFalse();
+        expect(result.failedTables.join(','))
+          .assertEqual('remotehosts');
+        expect(executions.join(','))
+          .assertEqual('nativeFirst:remotehosts,nativeFirst:vncrecordv2');
+        expect(await coordinator.dispose(
+          accountLease(), 1000)).assertTrue();
+      });
+
     it('serializes_live_sync_exclusive_restore_event_retry_and_upload',
       0, async (): Promise<void> => {
         const clock =

@@ -9,6 +9,7 @@ are verified with SQLite's integrity checker.
 
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 import subprocess
@@ -162,6 +163,175 @@ def insert_full_row(
     )
 
 
+def verify_device_local_personalization_upgrade(
+    connection: sqlite3.Connection, label: str
+) -> None:
+    """Exercise the lossless old-row -> local override -> mixed-writer path."""
+    host_id = f"compat-host-{label}"
+    legacy_display = json.dumps(
+        {
+            "width": 1280,
+            "height": 720,
+            "multiMonitor": False,
+            "monitorCount": 1,
+            "dynamicResolution": True,
+            "colorDepth": 32,
+        },
+        separators=(",", ":"),
+    )
+    connection.execute(
+        """
+        INSERT INTO remotehosts
+          (id, userid, label, protocol, host, port, displayconfig,
+           lastconnected, lasthealth, lastlatency)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            host_id,
+            "legacy-owner",
+            "Legacy host",
+            "rdp",
+            "192.0.2.10",
+            3389,
+            legacy_display,
+            1700000000101,
+            3,
+            72,
+        ),
+    )
+    # Reads need no migration row. The first current-version local save creates
+    # an additive envelope without mutating any legacy cloud column.
+    seeded = {
+        "localpersonalizationversion": "1",
+        "localdisplayconfig": legacy_display,
+        "locallastconnected": "1700000000101",
+        "locallasthealth": "3",
+        "locallastlatency": "72",
+        "localrustdeskadaptiveorientation": "0",
+        "localrustdeskprolastseenat": "0",
+        "localrustdeskprosyncerror": "",
+    }
+    connection.execute(
+        """
+        INSERT INTO localextensions (id, tablename, recordid, payload, updatedat)
+        VALUES (?, 'remotehosts', ?, ?, 1)
+        """,
+        (f"remotehosts:{host_id}", host_id, json.dumps(seeded, sort_keys=True)),
+    )
+    # A Phone changes only its local display/health. A simultaneous cloud-base
+    # rename must retain the old wire snapshot for 1.0.7/1.0.8 readers.
+    phone = dict(seeded)
+    phone["localdisplayconfig"] = json.dumps(
+        {"width": 2340, "height": 1080}, separators=(",", ":")
+    )
+    phone["locallastlatency"] = "18"
+    connection.execute(
+        "UPDATE localextensions SET payload=?, updatedat=2 WHERE id=?",
+        (json.dumps(phone, sort_keys=True), f"remotehosts:{host_id}"),
+    )
+    connection.execute(
+        "UPDATE remotehosts SET label='Renamed host' WHERE id=?", (host_id,)
+    )
+    cloud_row = connection.execute(
+        """
+        SELECT label, displayconfig, lastconnected, lasthealth, lastlatency
+        FROM remotehosts WHERE id=?
+        """,
+        (host_id,),
+    ).fetchone()
+    if cloud_row != (
+        "Renamed host",
+        legacy_display,
+        1700000000101,
+        3,
+        72,
+    ):
+        raise AssertionError(f"{label}: new client rewrote legacy cloud personalization")
+
+    # A still-installed old client may later update its legacy columns. The
+    # established local envelope on this device must survive unchanged.
+    old_writer_display = json.dumps(
+        {"width": 1920, "height": 1080}, separators=(",", ":")
+    )
+    connection.execute(
+        """
+        UPDATE remotehosts
+        SET displayconfig=?, lastconnected=?, lasthealth=?, lastlatency=?
+        WHERE id=?
+        """,
+        (old_writer_display, 1700000000202, 2, 41, host_id),
+    )
+    persisted_phone = connection.execute(
+        "SELECT payload FROM localextensions WHERE id=?",
+        (f"remotehosts:{host_id}",),
+    ).fetchone()[0]
+    if json.loads(persisted_phone) != phone:
+        raise AssertionError(f"{label}: old writer overwrote device-local personalization")
+
+    # A second current client with no envelope starts from the latest compatible
+    # wire value; no local row is required for login or table initialization.
+    second_device_seed = connection.execute(
+        "SELECT displayconfig, lastconnected, lasthealth, lastlatency "
+        "FROM remotehosts WHERE id=?",
+        (host_id,),
+    ).fetchone()
+    if second_device_seed != (old_writer_display, 1700000000202, 2, 41):
+        raise AssertionError(f"{label}: second-device legacy fallback is not lossless")
+
+    # VNC keeps its old host payload complete while a localmetadata envelope
+    # owns device presentation. No cloud schema or extra distributed table is
+    # needed for the override.
+    vnc_id = f"compat-vnc-{label}"
+    vnc_legacy = {
+        "label": "Legacy VNC",
+        "host": "192.0.2.20",
+        "port": 5900,
+        "username": "",
+        "gatewayId": "",
+        "transport": "direct_tcp",
+        "repeaterMode": "mode12",
+        "rememberPassword": False,
+        "viewOnly": False,
+        "displayOverrideEnabled": True,
+        "scalingMode": "fit",
+        "clipboardEnabled": True,
+        "securityPolicy": "secure_only",
+        "tls": True,
+        "locked": False,
+        "lockType": 0,
+    }
+    vnc_wire = json.dumps(vnc_legacy, separators=(",", ":"), sort_keys=True)
+    connection.execute(
+        """
+        INSERT INTO vncrecordv2
+          (id, userid, recordtype, ownerid, ownertype, payload,
+           syncversion, schemaversion, createdat, updatedat, deletedat)
+        VALUES (?, 'legacy-owner', 'host', 'legacy-owner', 'account', ?, 1, 1, 1, 1, 0)
+        """,
+        (vnc_id, vnc_wire),
+    )
+    vnc_local = json.dumps(
+        {
+            "version": 1,
+            "rememberPassword": False,
+            "viewOnly": True,
+            "displayOverrideEnabled": True,
+            "scalingMode": "pan",
+            "clipboardEnabled": False,
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    connection.execute(
+        "INSERT INTO localmetadata (key, value, updatedat) VALUES (?, ?, 1)",
+        (f"vnc_host_local_personalization_v1:{vnc_id}", vnc_local),
+    )
+    if connection.execute(
+        "SELECT payload FROM vncrecordv2 WHERE id=?", (vnc_id,)
+    ).fetchone()[0] != vnc_wire:
+        raise AssertionError(f"{label}: VNC local override changed the legacy wire payload")
+
+
 def verify_release(label: str, commit: str, current_source: str) -> None:
     old_source = git_source(commit)
     old_schema = table_columns_from_source(old_source)
@@ -188,6 +358,8 @@ def verify_release(label: str, commit: str, current_source: str) -> None:
             if actual != [tuple(expected)]:
                 raise AssertionError(f"{label}: legacy row changed in {table}")
 
+        verify_device_local_personalization_upgrade(connection, label)
+
         for table, columns in current_schema.items():
             if table in old_schema:
                 old_names = {name for name, _affinity in old_schema[table]}
@@ -210,7 +382,7 @@ def verify_release(label: str, commit: str, current_source: str) -> None:
         print(
             f"PASS {label} commit={commit[:10]} legacyTables={len(old_schema)} "
             f"currentTables={len(current_schema)} preservedRows={len(snapshots)} "
-            f"schemaVersion={version}"
+            f"personalizationUpgrade=pass schemaVersion={version}"
         )
     finally:
         connection.close()
