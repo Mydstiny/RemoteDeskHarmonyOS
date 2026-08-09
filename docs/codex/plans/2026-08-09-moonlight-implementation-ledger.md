@@ -225,8 +225,9 @@ D3 账户生命周期代码检查点为 `05e96d3`；便携备份/本地恢复检
 | N1-02 | PASS | `99edc58` 新增唯一项目 CMake 边界，standalone/product 共用同一 static/PIC/OpenSSL/warning policy；两 ABI 私有链接 `common-c`/ENet，但链接前后动态符号、NAPI 相关面和 423 项 HAP 清单完全一致 | 不回开构建边；N1-03 只能新增 session owner 与定向测试，不接 NAPI/runtime UI |
 | N1-03 | PASS | `18cdd39aa` 新增 hidden pure-native owner；13 个确定性用例证明并发 start、cancel/interrupt 栅栏、stop/drain、stale key、异常和析构；全量 native 355/355 | 不回开 owner 车道；N1-04 只能以 exact request key 消费其归属合同，不另建 active pointer/singleton |
 | N1-04 | PASS | `fd2d7ec92` 新增 transport-injected pure-native Host API；15 个确定性用例覆盖 official request/XML、exact cancel/deadline、地址 fallback、mutation unknown、trust/cancel verification、fuzz 与脱敏；全量 native/ASan/UBSan 370/370 | 不回开 Host API parser/request owner；N1-05 只提供 owner-scoped identity/短期 TLS material lease，不创建第二套 HTTP、pairing 或 NAPI |
-| N1-05 | READY | N1-04 已通过；owner/installation 作用域、RSA-2048 client cert、HUKS-first/包裹 PKCS#8 fallback、安全删除与 D3 identity port 合同已冻结 | 建立 native secure identity bridge 与平台探针；HAP/AppSpawn 内能力未证实时保持 runtime ready=false，严禁明文私钥 fallback |
-| N1-06～N1-08 | PENDING | D1 host/pairing/catalog 合同与 D3 runtime ports 已冻结 | 必须逐 ID 推进；N1-05 未通过前不创建 pairing/NAPI surface |
+| N1-05 | PASS | `599882ada` 新增 hidden pure-native secure identity core：owner+installation opaque alias、RSA-2048 client cert、move-only sign/TLS lease、zeroization、exact mutation/drain/inventory/delete 和 fail-closed HUKS/Asset boundary；14 个定向用例；native/ASan/UBSan 384/384 | HAP/AppSpawn runtime proof 缺失，product backend 保持 unavailable；N1-06 只能消费注入 seam 做 dormant pairing，不得以 plaintext/software store 绕过 |
+| N1-06 | READY / DORMANT ONLY | N1-04 Host API 与 N1-05 identity lease 合同已通过；官方 Android PairingManager revision 已锁定 | 建立 injected native pairing state machine；无 runtime identity receipt、真实 Sunshine 和 trust persistence port 时不得从签名 HAP 调用，不接 NAPI/UI |
+| N1-07～N1-08 | PENDING | D1 catalog/command 合同与 D3 runtime ports 已冻结 | 必须逐 ID 推进；N1-06 未通过前不创建 catalog command 或 NAPI surface |
 
 N1-01 的可复现证据：
 
@@ -384,28 +385,92 @@ N1-04 完成证据：
   vendor 三 tree/117 文件/合规生成幂等、TOTP、Light 与 diff 均 PASS；HDC 仍为
   `Connect server failed`，未新增 Hypium、真实 Sunshine 或用户实机声明。
 
-## 12. 2026-08-10 N1-01～N1-04 checkpoint 验证
+### 11.2 N1-05 secure identity 完成事实
 
-- `default@OhosTestCompileArkTS`：N1-02 最终源码后退出码 0；19 个 describe、138 个 Moonlight test 编译注册。
-- signed `assembleHap`：N1-02 最终源码后退出码 0，`BUILD SUCCESSFUL in 7 s 242 ms`；423 项路径 inventory 与 N1-02 前一致。
-- host `rdp_native_tests`：N1-04 最终二进制新增 15 个 Host API 用例；按门禁在
-  允许 loopback socket 的环境复跑为 **370/370 PASS**，ASan/UBSan 同为 370/370。
+N1-05 代码 checkpoint 为 `599882ada`。本步只新增
+`MoonlightSecureIdentity.h/.cpp`、窄平台 backend/probe、一个 focused native test
+文件和主 CMake 私有静态归档接线；没有修改 `host_locker.cpp`、`DataCrypto`、旧协议
+credential store、ArkTS/NAPI、云表、资源、路由、UI 或六项 capability truth。
+
+1. alias 输入只能是已验证的 lowercase SHA-256 owner fingerprint 与 installation ID；
+   以 domain-separated SHA-256 派生固定 64 字符 `rdml-v1-` + 56 hex。原始 owner、
+   UnionID 和 installation ID 不出现在 alias、metadata、diagnostic 或 inventory。
+2. 生成材料严格对齐锁定的 Moonlight Android revision
+   `f10085f552b367cf7203007693d91c322a0a2936`：RSA-2048、public exponent 65537、
+   SHA256withRSA、自签 X.509 v3、单一 CN `NVIDIA GameStream Client`、正 8-byte
+   随机 serial、约 20 年有效期、PEM LF 与 PKCS#8。提交前重新解析并验证算法、
+   位数、指数、subject、serial、时间窗、自签名、key/cert pair、canonical DER/PEM
+   和 SHA-256 fingerprint；坏随机源与 partial 结果 fail closed。
+3. private material 只存在于 move-only secure buffer/lease。buffer 尽力 `mlock` 并
+   把 page-lock 事实显式暴露为 capability/测试证据，所有释放路径用
+   `OPENSSL_cleanse` 后 `munlock`；签名与 `SSL_CTX` 配置不返回 private bytes，lease
+   结束后 EVP key 由 OpenSSL 释放。日志和 terminal result 只含 masked alias、stable
+   code、operation 与 duration。
+4. 每个 alias 只有一个 mutation owner，operation key 固定为非零
+   `requestId + generation + ownerToken`。ensure/rotate/delete/acquire/inventory/cancel
+   都实施 exact stale/cancel fence；delete/rotate 先关新 lease admission 再 drain。
+   store/erase 调用前 cancel 胜出，已成功原子提交后 commit 胜出；unknown outcome
+   关闭 admission 并要求显式 delete repair，不做危险回滚。已有 identity 的 ensure
+   被取消也绝不删除原记录。
+5. backend contract 要求 store 前加密、load 返回新解密的 move-only buffer、每次
+   平台 I/O 自带有限 deadline、原子持久化且无 plaintext fallback。API 23 双 ABI
+   编译探针确认 HUKS alias 上限 64、RSA-2048/SHA-256/PKCS#1 signer、AES-GCM wrapping
+   与 Asset metadata API 可链接；Asset secret 小于 1024 bytes，不能直接容纳 PKCS#8
+   或靠分片绕过。编译链接不能证明 AppSpawn 权限、硬件语义、TLS provider 或原子
+   encrypted blob，因此 product backend 正确返回 `RuntimeProofRequired` 且所有
+   storage operation 为 unavailable。
+6. 14 个定向用例覆盖 alias owner/install 隔离、官方证书、签名/TLS、page lock/
+   cleanse、owner inventory/exact deletion、cross-owner、lease drain/timeout、rotation、
+   concurrent ensure/cancel、commit-wins race、corruption/AAD-equivalent mismatch、
+   outcome unknown、已知失败 rollback、entropy failure、orphan/duplicate inventory 和
+   unproven capability。fake plaintext backend 只编译进 `RDP_TESTS_ONLY` host target，
+   不进入产品归档。
+7. 沙箱外全量 native **384/384 PASS**，ASan/UBSan 同为 **384/384 PASS** 且无
+   sanitizer 报告；macOS 不支持该二进制的 LSan，明确使用 `detect_leaks=0`，没有
+   伪造 leak receipt。strict warnings、`clang --analyze`、双 ABI API 23 strict build
+   和 platform probe 均通过。
+8. arm64-v8a/x86_64 产品仍各为 48 个 `rdpnapi` compile command，并分别有 1 个
+   private Host API 与 2 个 private secure-identity compile command，零 upstream
+   include leak。defined/undefined/`napi|init|register` inventory 保持
+   16103/698/716 与 15634/696/711，和 N1-04 基线逐字相同；签名 HAP 仍为 423 项。
+9. 最终文档状态上的两项 Hvigor 均退出 0，signed `assembleHap` 为
+   `BUILD SUCCESSFUL in 21 s 735 ms`；vendor 三 tree/117 文件、shell/PowerShell 四个
+   archive receipt、TOTP 251 assets、Light 和 diff 全部 PASS。HDC 返回
+   `Connect server failed`，所以本步没有 HAP runtime HUKS、Hypium、真实 Sunshine
+   或用户 ARM64 真机声明。
+
+N1-06 的唯一合法入口是依赖注入的 dormant native pairing state machine：所有
+HTTP/XML 必须经 N1-04，所有 client cert/signing 必须经 N1-05 exact lease；不得复制
+transport、parser、certificate generator 或 secret store。product identity backend
+仍 unavailable，因此 N1-06 只能形成 host-test/platform-static checkpoint，不能被
+NAPI/UI 或签名 HAP runtime 调用。详细原子步骤以主计划第 15.7.5 节为准。
+
+## 12. 2026-08-10 N1-01～N1-05 checkpoint 验证
+
+- `default@OhosTestCompileArkTS`：N1-05 最终源码后退出码 0；既有 19 个 describe、
+  138 个 Moonlight test 编译注册，本步没有新增 ArkTS 测试 surface。
+- signed `assembleHap`：N1-05 最终源码后退出码 0，
+  `BUILD SUCCESSFUL in 21 s 735 ms`；423 项路径 inventory 与 N1-04 前一致。
+- host `rdp_native_tests`：N1-05 最终二进制新增 14 个 secure identity 用例；按
+  门禁在允许 loopback socket 的环境复跑为 **384/384 PASS**，ASan/UBSan 同为
+  384/384。
 - `scripts/probe_moonlight_platform.sh`：arm64-v8a、x86_64 均 PASS。
-- `verify_open_source_release.ps1 -Mode Light`：N1-02 后 PASS；Release 中 Moonlight 双 ABI子门通过，完整发布仍被两个外部 approval boolean 正确阻断。
+- `verify_open_source_release.ps1 -Mode Light`：N1-05 后 PASS；Release 中 Moonlight 双
+  ABI子门通过，完整发布仍被两个外部 approval boolean 正确阻断。
 - `verify_moonlight_vendor.py`：三个官方 Git tree、117 个 exact 文件、Git index 与无 Git 源码归档模式均 PASS；合规生成器幂等 PASS。
 - `build_moonlight_common_vendor.sh/.ps1`：API 23 arm64-v8a/x86_64 静态 archive 均匹配锁定 receipt。
-- `git diff --check`：N1-04 代码 checkpoint 后 PASS；`codex_state validate` 在本次
+- `git diff --check`：N1-05 代码 checkpoint 后 PASS；`codex_state validate` 在本次
   状态文档更新后执行并记录。
 - `CloudSyncPolicy.CLOUD_SYNC_TABLES` 静态复核仍精确为既有 8 表；Moonlight 云表、local mirror 和 app cache 均未进入在线注册集合。
 - HDC 当前返回 `Connect server failed`；早期 ARM64 API 24 RDB receipt 仍有效，但本次没有新增虚拟设备 Hypium 或恢复运行时证据。
 
 ## 13. 下一执行序列
 
-1. 严格按主计划第 15.7.4 节执行 N1-05，只建立 owner-scoped secure identity
-   bridge、RSA/client-certificate 兼容材料、HUKS-first capability decision、最短期
-   OpenSSL lease、locked-memory zeroization 与 inventory/deletion/account barrier
-   tests；不接 pairing/NAPI/media/input/UI/cloud identity，不改变 capability truth，
-   平台能力未证实时 fail closed。
+1. 严格按主计划第 15.7.5 节执行 N1-06，只建立 injected/dormant native pairing
+   state machine；完整复用 N1-04 Host API 与 N1-05 identity lease，按官方顺序处理
+   PIN salt、server cert candidate、challenge、signed secret、final challenge、取消/
+   超时和 best-effort unpair。不得接 production NAPI/UI、trust/cloud persistence、
+   catalog/media/input 或 feature truth；runtime identity 未证明时签名 HAP 不可达。
 2. D2-05/06 由 AGC 开发/测试/生产环境提供 schema/授权/索引 receipt；缺失时 D2-07、D3-01 在线 wiring、D3-05 cloud-first promotion、D3-06 cloud terminal 和 D3-08 云矩阵继续阻断。
 3. N1 Host Control port 可用后再接 D3-06 remote unpair；端口失败只允许返回带 warning 的真实本地终态，不伪造主机已解绑。
 4. 补 HAP 内 typed capability probe；真实 Sunshine 和用户 ARM64 真机未提供前，host-control/streaming/protocol truth 继续为 false。
