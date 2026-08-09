@@ -24,7 +24,7 @@
 - The 1.1.0 update Swiper is rewritten as 12 focused pages led by VNC, followed by RustDesk, host organization/monitoring, SSH/SFTP/forwarding, RDP certificate validation, authenticator logos and input fixes. First-install and Settings usage guides now share nine instructional pages plus their own final page; long release notes use a compact numeric pager.
 - Settings → Tutorial keeps three non-duplicated entries: `本版本更新日志`, `简单使用教程` and the prerequisite guide. The first-install guide remains part of onboarding but is no longer repeated in Settings; opening the release notes never changes the startup release-read marker.
 - The collapsed RustDesk relay add/edit sheet now uses 68–72% of the available window height, bounded to 480–620 vp when space permits; advanced configuration still expands to the large resize-only layout.
-- `GuidePage` currently enables the explicit `FORCE_RELEASE_NOTES_REVIEW` acceptance switch, so the 1.1.0 update Swiper appears on every launch even after its read marker is stored. This is a temporary review state.
+- The 1.1.0 update Swiper passed direct device review. Its explicit `FORCE_RELEASE_NOTES_REVIEW` acceptance switch is disabled again, restoring the normal once-per-version startup policy.
 
 ## IDE Build Repair
 
@@ -68,8 +68,7 @@
 - External keyboard plus third-party IME coverage is incomplete.
 - 1.1.0 clean-install/update classification and the Phone/Pad/PC default matrix are code/test-compile/build verified but not yet device accepted.
 - RustDesk relay Phone FAB clearance and collapsed/advanced add-sheet sizing are policy-test-compile/build verified but not yet device accepted.
-- The 12-page release Swiper and 10-page first-install/Settings tutorials are registry-test-compile/build verified but not yet visually accepted on Phone/Pad.
+- The 12-page release Swiper passed direct device review; the 10-page first-install/Settings tutorials remain registry-test-compile/build verified but not yet visually accepted on Phone/Pad.
 - The simplified three-entry Settings tutorial section and adaptive RustDesk relay editor height are not yet visually accepted on a device.
-- The forced every-launch update Swiper is waiting for direct device review and must be restored to the normal once-per-version policy after acceptance.
 - Light compliance cannot run locally because `pwsh` is missing and is also blocked by baseline SBOM package `totp-reviewed-brand-assets` with `licenseDeclared=NOASSERTION`.
 - Independent review of the committed workspace through `6f8f387` is pending by explicit direct-execution instruction.
