@@ -157,6 +157,8 @@ include_directories(
 option(RDP_BUILD_TESTS "Build lightweight native unit tests" OFF)
 option(RDP_TESTS_ONLY "Configure only lightweight native unit tests" OFF)
 option(RDP_BUILD_CALLBACK_TESTS "Build OHOS production callback-entry barrier tests" OFF)
+option(MOONLIGHT_BUILD_PLATFORM_PROBE
+    "Build the standalone Moonlight API/ABI compile-link probe" OFF)
 if(RDP_BUILD_TESTS)
     # Compile the actual VNC transport and RFB engine into the host test
     # target as a link/ABI gate. Wire-level decisions are additionally
@@ -486,6 +488,34 @@ target_link_libraries(rdpnapi PUBLIC
     ssl
     crypto
 )
+
+# G0 compile/link probe. This target is opt-in and excluded from rdpnapi/HAP,
+# so introducing the capability gate cannot change any existing protocol's
+# runtime dependency graph. Runtime probing is added later through a typed
+# in-app NAPI boundary after its owner/lifecycle contract exists.
+if(MOONLIGHT_BUILD_PLATFORM_PROBE)
+    add_executable(moonlight_platform_link_probe EXCLUDE_FROM_ALL
+        moonlight/probe/moonlight_platform_link_probe.cpp
+    )
+    target_compile_features(moonlight_platform_link_probe PRIVATE cxx_std_17)
+    target_include_directories(moonlight_platform_link_probe PRIVATE
+        ${OPENSSL_DIR}/include
+    )
+    target_link_libraries(moonlight_platform_link_probe PRIVATE
+        libnative_media_codecbase.so
+        libohaudio.so
+        libohgame_controller.z.so
+        libhuks_ndk.z.so
+        libasset_ndk.z.so
+        libohinput.so
+        libnet_connection.so
+        ssl
+        crypto
+    )
+    set_target_properties(moonlight_platform_link_probe PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/moonlight-probe
+    )
+endif()
 
 # ============================================================
 # FreeRDP 3.x 链接 (USE_REAL_FREERDP=ON 时启用)

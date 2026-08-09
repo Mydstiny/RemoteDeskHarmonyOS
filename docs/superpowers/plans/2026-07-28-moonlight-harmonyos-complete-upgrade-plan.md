@@ -1,11 +1,12 @@
 # RemoteDeskHarmonyOS Moonlight / Sunshine 串流能力完备升级计划
 
-> 文档状态：完成第四次“当前源码漂移、统一 UI、云数据生命周期”深度审计，待后续立项实施
+> 文档状态：第四次深度审计完成；已于 2026-08-09 从 G0 开始实施
 > 首次评估日期：2026-07-28；二次完成性审计日期：2026-07-29；第三次 HarmonyOS 人因/UI 审计日期：2026-08-01；第四次源码对齐日期：2026-08-08
-> 当前评估收口快照：活动任务 `ssh-terminal-complete-upgrade`；分支 `codex/ssh-terminal-complete-upgrade`，HEAD `4646fb910`；本地 `main` `d2769ad4b`；当前分支相对本地 `main` ahead 155、behind 0
+> 当前实施基线：任务 `moonlight-complete-upgrade`；分支 `codex/moonlight-complete-upgrade`；基线 `main@aeb0cdac5`，与 `origin/main` 一致
+> 当前实施进度：G0 静态/API 23 双 ABI基线和 D1 领域纯策略已形成 checkpoint；六个发布 truth 仍全 false；D2 本地三表、repository 和 adapter 为下一阶段
 > 适用仓库：/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS
-> 上游评估快照：协议细节仍以已审计的 moonlight-common-c `e41355ea01670fd4c830b384009d31dd0339a705`、Moonlight Android `f10085f552b367cf7203007693d91c322a0a2936`、Moonlight Qt `546cb72e32e5ac04bbc7e0b3a254176e5696685a`、Sunshine `3893c5bcdadc5f0beaa127670531afbfd60519ea` 和 MoonlightOH `a48821e2d309c4282d79a053e6a85245eb438a7b` 为证据基线；2026-08-08 官方仓库活跃度复核已确认上游继续演进，P0 必须从官方仓库重新锁定 commit、子模块和安全公告，不能把上述旧快照直接作为实施 pin
-> 本轮变更边界：只更新本计划文件；不修改 ArkTS、C/C++、Rust、配置、依赖、云表、测试或构建流程代码。
+> 上游实施锁定：2026-08-09 已只读复核并固定 moonlight-common-c `e41355ea01670fd4c830b384009d31dd0339a705`（ENet `aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1`、nanors `b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a`）、Moonlight Android `f10085f552b367cf7203007693d91c322a0a2936`、Moonlight Qt `2e13ed9977bc31c73caf8428f08f58d793313ece`、Sunshine 测试 pin `v2026.808.164219` / `25c06d79b54f3d092d3fedd5f5ba44989f394692`；完整哈希、许可证和能力证据见 `docs/codex/plans/2026-08-09-moonlight-implementation-ledger.md`
+> 原评估轮次仅更新计划文件；2026-08-09 起的实施变更严格按第 15 节任务 ID、仓库门禁和 fail-closed feature policy 推进。
 
 ## 0. 结论先行
 
@@ -163,8 +164,8 @@ Moonlight/GameStream 的核心价值是低延迟音视频和游戏输入闭环�
 | moonlight-common-c | `e41355ea01670fd4c830b384009d31dd0339a705` | 协议、线程、媒体和输入的主要实现证据 |
 | common-c ENet submodule | `aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1`，来源 `cgutman/enet` | 必须与 common-c 一起锁定；禁止替换成系统/任意 ENet |
 | Moonlight Android | `f10085f552b367cf7203007693d91c322a0a2936` | 配对、NvHTTP、证书 pin、launch 参数和移动端生命周期参考 |
-| Moonlight Qt | `546cb72e32e5ac04bbc7e0b3a254176e5696685a` | 设置能力、桌面输入、HDR/高阶 codec、产品诊断参考 |
-| Sunshine | `3893c5bcdadc5f0beaa127670531afbfd60519ea` | 现代服务端互操作和测试环境参考；不打包 |
+| Moonlight Qt | `2e13ed9977bc31c73caf8428f08f58d793313ece`（2026-08-09 实施复核） | 设置能力、桌面输入、HDR/高阶 codec、产品诊断参考；其 common-c gitlink与本次 pin 一致 |
+| Sunshine | `v2026.808.164219` / `25c06d79b54f3d092d3fedd5f5ba44989f394692`（2026-08-09 实施复核） | 现代服务端互操作和测试环境参考；不打包；最低安全基线仍为 `v2026.516.143833` |
 | MoonlightOH | `a48821e2d309c4282d79a053e6a85245eb438a7b`（2026-08-01 审计） | HarmonyOS 原生页面、输入、媒体和生命周期的人因/UI 可行性对照；不作为协议依赖或视觉资产来源 |
 
 这些 revision 是“本计划评估过的证据快照”，不是未来实施时可无条件直接合入的依赖版本。P0 必须先比较新旧 revision、检查 security advisory、submodule、ABI/API、许可证和协议变化，再决定继续使用本快照还是升级；任何升级都要重新跑 parser/fuzz/真机/合规门禁。
@@ -2472,7 +2473,7 @@ hvigorw --mode module -p module=entry -p product=default assembleHap --analyze=n
 
 ### 15.1 执行纪律和单步完成格式
 
-每次开始工作必须先执行仓库 `AGENTS.md` 的启动流程，继续当时未完成的 `codex/<task>` 分支，不切走、不 stash、不 reset、不覆盖用户修改。正式 Moonlight 实施应在当前 SSH 活动任务闭环并回到最新 `main` 后另行立项；本计划留在当前分支只代表文档评估，不授权现在实施。
+每次开始工作必须先执行仓库 `AGENTS.md` 的启动流程，继续当时未完成的 `codex/<task>` 分支，不切走、不 stash、不 reset、不覆盖用户修改。前置 SSH 与隐私任务已经闭环；Moonlight 已于 2026-08-09 从干净 `main@aeb0cdac5` 立项并进入 `codex/moonlight-complete-upgrade`，后续实施以任务台账和仓库门禁为准。
 
 每个任务 ID 都使用以下五段式记录，缺一项不得标为完成：
 
