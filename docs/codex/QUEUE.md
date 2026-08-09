@@ -4,7 +4,7 @@ Updated: 2026-08-09 Asia/Shanghai
 
 ## Now
 
-- Independently review the committed increment through `6f8f387` and keep the review state open until it passes.
+- Publish reviewed candidate `dec23b430` through branch push, ready PR, required `open-source-compliance`, merge and local `main` synchronization.
 - Device-check 1.1.0 clean-install versus update inheritance, Phone/Pad/PC input defaults, SSH terminal symbol, VNC semantic option symbols, TOTP logo matching and Pad control docking.
 - On a Phone, verify that the final RustDesk relay card scrolls fully above the FAB and that the collapsed add sheet is compact before expanding advanced configuration.
 - On Phone and Pad, verify all 12 update pages, the 10-page first-install guide and the 10-page Settings usage tutorial for pagination, text fit, final actions and sheet sizing.
@@ -40,8 +40,6 @@ Updated: 2026-08-09 Asia/Shanghai
 ## Known Blockers
 
 - `ohosTest@OhosTestCompileArkTS` is unregistered (`00306054`).
-- Light compliance baseline reports `totp-reviewed-brand-assets` as `licenseDeclared=NOASSERTION`.
 - Real HTTP/SOCKS proxy, ProxyJump, Remote/Dynamic forwarding and external FRP endpoint infrastructure is unavailable; Local forwarding traffic is no longer blocked.
-- The local Light gate cannot start because `pwsh` is absent; the existing `NOASSERTION` baseline remains unresolved.
-- Independent review through `6f8f387` is pending under the user's direct-execution instruction.
+- The local Light gate cannot start because `pwsh` is absent; the SBOM `NOASSERTION` blocker is fixed and the required GitHub check is pending.
 - Native SSH GPU surface is not an acceptance path after API 23 BufferQueue abort reproduction.
