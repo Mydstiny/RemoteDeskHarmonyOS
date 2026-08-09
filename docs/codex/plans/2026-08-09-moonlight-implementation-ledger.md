@@ -222,8 +222,9 @@ D3 账户生命周期代码检查点为 `05e96d3`；便携备份/本地恢复检
 | ID | 状态 | 当前证据 | 唯一下一边界 |
 | --- | --- | --- | --- |
 | N1-01 | PASS | `0013ba034` 原样纳入 common-c `e41355e...`、ENet `aca8784...`、nanors `b1e3c22...` 共 117 个文件；锁文件记录 commit/tree/license/file manifest/build receipt；校验器离线重建三个官方 Git tree，并把两个子模块按 `160000` gitlink 注入 common-c tree | 不再编辑 upstream；升级 revision 时必须重新生成 lock、NOTICE、SPDX、hash、source offer 和双 ABI receipt |
-| N1-02 | READY | 主 `CMakeLists.txt` 已有 ABI 选择、现有 OpenSSL 3.4.1 imported `ssl`/`crypto`、`rdpnapi` shared target 和 RDP-only native test early return；N1-01 wrapper 已证明 API 23 两 ABI静态构建 | 只建立 target-scoped product link；不加 NAPI/runtime/UI，不把 upstream include/宏变为目录或全局属性 |
-| N1-03～N1-08 | PENDING | D1 session/host/pairing/catalog 合同与 D3 runtime ports 已冻结 | 必须逐 ID 推进；N1-02 未通过前不创建 runtime owner |
+| N1-02 | PASS | `99edc58` 新增唯一项目 CMake 边界，standalone/product 共用同一 static/PIC/OpenSSL/warning policy；两 ABI 私有链接 `common-c`/ENet，但链接前后动态符号、NAPI 相关面和 423 项 HAP 清单完全一致 | 不回开构建边；N1-03 只能新增 session owner 与定向测试，不接 NAPI/runtime UI |
+| N1-03 | READY | N1-02 的产品/独立双 ABI 门禁均通过；上游明确 `LiStartConnection`/`LiStopConnection` 非线程安全且 interrupt 后必须等待 start 返回 | 建立唯一 common-c 操作车道和 exact owner/generation callback gate；不把当前 active pointer 当归属真相 |
+| N1-04～N1-08 | PENDING | D1 host/pairing/catalog 合同与 D3 runtime ports 已冻结 | 必须逐 ID 推进；N1-03 未通过前不创建 Host API 或 NAPI surface |
 
 N1-01 的可复现证据：
 
@@ -244,23 +245,43 @@ N1-02 必须按以下原子步骤执行：
 7. 两 ABI产品构建后验证：common-c/ENet 目标实际参与依赖图；`rdpnapi` 没有未解析 `Li*`/`enet_*`/OpenSSL 符号；没有新增 NAPI export；upstream 路径没有传播为全局 include；RDP/RustDesk/SSH/VNC native tests 仍通过。
 8. 重跑 N1-01 双 ABI receipt、`default@OhosTestCompileArkTS`、signed `assembleHap`、TOTP/Light、diff/state 门禁；单独 checkpoint 后才允许领取 N1-03。
 
-## 12. 2026-08-10 checkpoint 验证
+N1-02 完成证据：
 
-- `default@OhosTestCompileArkTS`：N1-01 最终源码后退出码 0；19 个 describe、138 个 Moonlight test 编译注册。
-- signed `assembleHap`：N1-01 最终源码后退出码 0，`BUILD SUCCESSFUL in 7 s 74 ms`。
+- 代码 checkpoint `99edc58` 只修改主 CMake、新项目边界和 standalone wrapper；上游、NAPI、ArkTS、云注册、资源和 UI 零变化。
+- arm64-v8a/x86_64 的 link graph 都包含 common-c、ENet 和既有 ABI 对应 OpenSSL crypto archive；47 个非上游产品 compile command 均无 upstream include path。
+- 链接前后两 ABI动态定义/未定义 symbol inventory 与 `napi|register|init` 审计集合逐字相同，没有未解析 `Li*`、`enet_*`、`OPENSSL_*`；因无引用，静态 archive 没有被 whole-archive 拉入产品。
+- 签名 HAP 路径 inventory 前后均为 423 项且逐字相同；灰色 Moonlight FAB、“即将支持”和所有 capability truth 未改变。
+- host native tests 在允许 loopback socket 的环境中 342/342 PASS；shell/PowerShell 双 ABI构建仍命中四个 N1-01 locked receipt。
+- 两项 Hvigor、signed HAP、Git tree/index vendor gate、TOTP、Light、diff/state 均在最终 N1-02 源码上 PASS；未新增 Hypium/真实 Sunshine/用户实机声明。
+
+N1-03 必须按以下原子步骤执行：
+
+1. 先保存 `99edc58` 的 native test 总数、两 ABI动态符号/HAP inventory 与构建结果；N1-03 不得以旧协议代码改动换取 Moonlight owner。
+2. 仅新建 `moonlight/core/MoonlightSessionOwner.h/.cpp` 和 `test/moonlight_session_owner_test.cpp`，并在主 CMake 的独立 `MOONLIGHT_SOURCES` 与 host test source 中登记；public header 不暴露 common-c 结构或上游 include。
+3. 定义非零且不可重绑定的 `sessionId + generation + ownerToken` key、`idle/starting/running/stopping/stopped/failed` 生命周期和 per-owner cancel token；所有 mutation/callback/stop 都要求 exact key。
+4. 用唯一进程级 coordinator 串行 future common-c `start → interrupt/stop` operation；第二个 start 立即返回 stable busy，不排队、不抢占。操作通过窄 callable/driver seam 注入测试，N1-03 不构造假的 server/stream config，也不调用 Host API。
+5. stop 在 starting 时只请求一次 cancel/interrupt，并等待 start 返回后才允许 stop；running 时 stop 最多调用一次；重复 stop 幂等，stale stop 零副作用。超时后保持 stopping 和全局车道占用，不能放行新 session。
+6. callback/worker 使用不可复制 RAII lease：只在 exact current key 且 admission open 时计数；stop 先关 admission，再等待已入场 lease 归零。旧 generation、owner token、关门后和新 session 建立后的迟到 callback 必须拒绝，不能查询可变 `g_activeConnection` 后归到新 owner。
+7. 定向测试至少覆盖：非法零 key、两个并发 start、start 失败释放、stop-during-blocked-start、重复 stop、stale stop、callback/worker drain、drain timeout fail closed、旧 generation callback、exact snapshot/count、驱动异常边界和析构无遗留线程；每个测试使用有界 barrier/deadline，不 sleep 猜时序。
+8. N1-03 不新增 NAPI/ArkTS、Host API、媒体、输入、HUKS、云、路由、资源或 feature flag；通过新增 native tests、既有 342 项回归、双 ABI产品编译/符号隔离、两项 Hvigor、signed HAP、TOTP/Light、diff/state 后单独提交，才允许 N1-04。
+
+## 12. 2026-08-10 N1-01/N1-02 checkpoint 验证
+
+- `default@OhosTestCompileArkTS`：N1-02 最终源码后退出码 0；19 个 describe、138 个 Moonlight test 编译注册。
+- signed `assembleHap`：N1-02 最终源码后退出码 0，`BUILD SUCCESSFUL in 7 s 242 ms`；423 项路径 inventory 与 N1-02 前一致。
 - host `rdp_native_tests`：沙箱内本地 TLS fixture 因 socket 监听限制为
   326/342；按门禁在沙箱外复跑为 **342/342 PASS**，确认不是代码回归。
 - `scripts/probe_moonlight_platform.sh`：arm64-v8a、x86_64 均 PASS。
-- `verify_open_source_release.ps1 -Mode Light`：N1-01 后 PASS；Release 中 Moonlight 双 ABI子门通过，完整发布仍被两个外部 approval boolean 正确阻断。
+- `verify_open_source_release.ps1 -Mode Light`：N1-02 后 PASS；Release 中 Moonlight 双 ABI子门通过，完整发布仍被两个外部 approval boolean 正确阻断。
 - `verify_moonlight_vendor.py`：三个官方 Git tree、117 个 exact 文件、Git index 与无 Git 源码归档模式均 PASS；合规生成器幂等 PASS。
 - `build_moonlight_common_vendor.sh/.ps1`：API 23 arm64-v8a/x86_64 静态 archive 均匹配锁定 receipt。
-- `git diff --check`、`codex_state validate`：N1-01 代码 checkpoint 后 PASS。
+- `git diff --check`、`codex_state validate`：N1-02 代码 checkpoint 后 PASS。
 - `CloudSyncPolicy.CLOUD_SYNC_TABLES` 静态复核仍精确为既有 8 表；Moonlight 云表、local mirror 和 app cache 均未进入在线注册集合。
 - HDC 当前返回 `Connect server failed`；早期 ARM64 API 24 RDB receipt 仍有效，但本次没有新增虚拟设备 Hypium 或恢复运行时证据。
 
 ## 13. 下一执行序列
 
-1. 严格按第 11 节 8 步执行 N1-02，只建立 project-owned 静态 target 与 `rdpnapi` 的私有构建边；不接 NAPI/runtime/UI，不改变 capability truth。
+1. 严格按第 11 节 8 步执行 N1-03，只建立 process-wide common-c 操作车道、exact session owner/cancel/callback-worker lease 与 host tests；不接 Host API/NAPI/media/input/UI，不改变 capability truth。
 2. D2-05/06 由 AGC 开发/测试/生产环境提供 schema/授权/索引 receipt；缺失时 D2-07、D3-01 在线 wiring、D3-05 cloud-first promotion、D3-06 cloud terminal 和 D3-08 云矩阵继续阻断。
 3. N1 Host Control port 可用后再接 D3-06 remote unpair；端口失败只允许返回带 warning 的真实本地终态，不伪造主机已解绑。
 4. 补 HAP 内 typed capability probe；真实 Sunshine 和用户 ARM64 真机未提供前，host-control/streaming/protocol truth 继续为 false。

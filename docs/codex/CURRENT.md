@@ -7,8 +7,8 @@
 - Branch: `codex/moonlight-complete-upgrade`
 - Phase: G0, D1, D2 local storage/dormant cloud policies, D3 account lifecycle,
   deletion/status policies, portable backup/local restore and N1-01 exact
-  upstream vendoring are checkpointed; AGC deployment/registration and
-  runtime-backed lifecycle remain blocked.
+  upstream vendoring plus N1-02 private product linkage are checkpointed; AGC
+  deployment/registration and runtime-backed lifecycle remain blocked.
 
 ## Context
 
@@ -81,11 +81,15 @@
   records SPDX/NOTICE/source-offer data and deterministic API 23 dual-ABI static
   receipts, and remains absent from product NAPI/HAP symbols. Checkpoint:
   `0013ba034`.
+- N1-02 adds one project-owned CMake target boundary, reuses it from the
+  standalone receipt build and privately links common-c/ENet to both product
+  ABIs. Exported/undefined/NAPI-related symbols and the 423-path signed-HAP
+  inventory are byte-identical to the pre-link baseline; no upstream include
+  reaches 47 product compile commands. Checkpoint: `99edc58`.
 - Current gates: `default@OhosTestCompileArkTS` passed with 138 focused Moonlight
   tests in 19 describe groups compile-registered; signed `assembleHap` passed;
-  host native
-  tests passed 342/342 outside the socket-restricted sandbox; Moonlight API 23
-  probe and isolated common-c builds passed arm64-v8a and x86_64; source-archive,
+  host native tests passed 342/342 outside the socket-restricted sandbox;
+  Moonlight API 23 probe and isolated common-c builds passed both ABIs; source-archive,
   Git-tree, receipt, TOTP, Light and HAP-isolation gates passed. HDC currently
   reports `Connect server failed`, so no new virtual-device Hypium execution is
   claimed. One of at most two `sol low` reviews was used for N1-01; all four
@@ -93,10 +97,10 @@
 
 ## Next
 
-1. Execute only N1-02: add a project-owned CMake boundary that builds the pinned
-   common-c/ENet as static targets and links them privately to `rdpnapi`, reusing
-   the existing OpenSSL target. Do not add NAPI exports, runtime/session code,
-   global include paths, UI changes or feature-truth changes.
+1. Execute only N1-03: add the pure native `MoonlightSessionOwner` and focused
+   host tests. Enforce one process-wide common-c start/interrupt/stop lane,
+   exact session/generation/owner-token admission, cancellation and callback/
+   worker drain; do not add NAPI, host API, media/input, UI or feature truth.
 2. Keep D3-01 online coordinator wiring, D3-05 cloud-first promotion, D3-06
    cloud tombstone terminal execution and D3-08
    multi-device matrix blocked until development/test/production AGC receipts
