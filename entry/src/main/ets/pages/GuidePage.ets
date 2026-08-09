@@ -187,14 +187,19 @@ struct GuidePage {
 
         Blank()
 
-        Row({ space: 8 }) {
-          ForEach(this.activePages, (_: GuideContentPage, i: number) => {
-            Column()
-              .width(this.currentIndex === i ? 24 : 8).height(8)
-              .borderRadius(4)
-              .backgroundColor(this.currentIndex === i ? this.accentColor : this.pal().divider)
-              .animation({ duration: 200, curve: Curve.EaseOut })
-          }, (page: GuideContentPage) => page.id)
+        if (this.activePages.length <= 10) {
+          Row({ space: 8 }) {
+            ForEach(this.activePages, (_: GuideContentPage, i: number) => {
+              Column()
+                .width(this.currentIndex === i ? 24 : 8).height(8)
+                .borderRadius(4)
+                .backgroundColor(this.currentIndex === i ? this.accentColor : this.pal().divider)
+                .animation({ duration: 200, curve: Curve.EaseOut })
+            }, (page: GuideContentPage) => page.id)
+          }
+        } else {
+          Text((this.currentIndex + 1).toString() + ' / ' + this.activePages.length.toString())
+            .fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
         }
 
         Blank()

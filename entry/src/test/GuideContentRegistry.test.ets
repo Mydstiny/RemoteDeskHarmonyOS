@@ -14,7 +14,7 @@ export default function guideContentRegistryTest(): void {
     it('keeps_first_install_and_settings_guides_equal_except_final_page', 0, (): void => {
       const firstInstall: GuideContentPage[] = firstInstallGuidePages();
       const settings: GuideContentPage[] = settingsUsageGuidePages();
-      expect(firstInstall.length).assertEqual(7);
+      expect(firstInstall.length).assertEqual(10);
       expect(settings.length).assertEqual(firstInstall.length);
       for (let i = 0; i < firstInstall.length - 1; i++) {
         expect(settings[i].id).assertEqual(firstInstall[i].id);
@@ -30,10 +30,13 @@ export default function guideContentRegistryTest(): void {
     it('covers_current_user_facing_capabilities', 0, (): void => {
       const pages: GuideContentPage[] = firstInstallGuidePages();
       expect(containsPage(pages, 'four-protocol-workspace')).assertTrue();
+      expect(containsPage(pages, 'vnc-first-steps')).assertTrue();
       expect(containsPage(pages, 'add-and-organize')).assertTrue();
       expect(containsPage(pages, 'verify-before-trust')).assertTrue();
       expect(containsPage(pages, 'session-controls')).assertTrue();
+      expect(containsPage(pages, 'ssh-workspace')).assertTrue();
       expect(containsPage(pages, 'files-and-tools')).assertTrue();
+      expect(containsPage(pages, 'two-factor-and-credentials')).assertTrue();
       expect(containsPage(pages, 'cloud-and-backup')).assertTrue();
     });
 
