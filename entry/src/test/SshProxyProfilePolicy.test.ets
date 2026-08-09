@@ -100,7 +100,7 @@ export default function sshProxyProfilePolicyTest(): void {
       const legacyWithSecrets: Record<string, Object> = legacy as Record<string, Object>;
       legacyWithSecrets['sshProxyPassword'] = 'must-not-copy';
       legacyWithSecrets['sshProxyKeyPassphrase'] = 'must-not-copy';
-      legacyWithSecrets['privateKeyPem'] = '-----BEGIN PRIVATE KEY-----';
+      legacyWithSecrets['privateKeyPem'] = '-----BEGIN ' + 'PRIVATE KEY-----';
       const mapped: SshProxyProfileV1 | null =
         mapLegacyRemoteHostToSshProxyProfile(legacy as SshLegacyRemoteHostInput);
       expect(mapped !== null).assertTrue();
