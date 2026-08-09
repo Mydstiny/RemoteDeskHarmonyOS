@@ -341,7 +341,7 @@ def main() -> int:
         entries.append(entry)
         imported.append(entry)
     manifest["officialOverrides"] = entries
-    manifest["manifestVersion"] = "totp-brand-manifest-2026.08.03-si-16.21.0-r7-mainstream-logo-catalog"
+    manifest["manifestVersion"] = "totp-brand-manifest-2026.08.03-si-16.21.0-r8-mainstream-logo-catalog"
     MANIFEST_PATH.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(json.dumps({
         "catalogOverrides": len(imported),

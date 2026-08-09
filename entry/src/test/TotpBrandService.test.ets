@@ -149,6 +149,14 @@ export default function totpBrandServiceTest(): number {
       expect(resolveTotpBrand('', 'alice@googleusercontent.com').brandId).assertEqual('');
     });
 
+    it('never_lets_an_account_provider_override_a_non_empty_issuer', 0, (): void => {
+      expect(resolveTotpBrand('LinkedIn', 'alice@gmail.com').brandId).assertEqual('linkedin');
+      expect(resolveTotpBrand('OpenAI', 'alice@gmail.com').brandId).assertEqual('openai');
+      expect(resolveTotpBrand('ChatGPT', 'alice@gmail.com').brandId).assertEqual('openai');
+      expect(resolveTotpBrand('Unknown Service', 'alice@gmail.com').brandId).assertEqual('');
+      expect(resolveTotpBrand('', 'alice@gmail.com').brandId).assertEqual('google');
+    });
+
     it('prefers_reviewed_official_supplier_assets', 0, (): void => {
       const google = resolveTotpBrand('Google', 'alice@gmail.com');
       expect(google.sourceType).assertEqual('official');

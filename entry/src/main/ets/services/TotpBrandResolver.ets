@@ -85,11 +85,20 @@ function findEntry(
   const domainKey: string = accountDomain(account);
   const official: TotpOfficialBrandEntry | null = findTotpOfficialBrand(issuerKey, domainKey);
   if (official !== null) { return official; }
+  if (issuerKey.length > 0) {
+    for (let index = 0; index < TOTP_BRAND_MANIFEST.length; index++) {
+      const entry: TotpBrandManifestEntry = TOTP_BRAND_MANIFEST[index];
+      for (let aliasIndex = 0; aliasIndex < entry.aliases.length; aliasIndex++) {
+        if (issuerKey === normalizeAlias(entry.aliases[aliasIndex])) { return entry; }
+      }
+    }
+    // The account is commonly an unrelated email address. A non-empty issuer
+    // must therefore never be replaced by the account provider's logo.
+    return null;
+  }
+  if (domainKey.length === 0) { return null; }
   for (let index = 0; index < TOTP_BRAND_MANIFEST.length; index++) {
     const entry: TotpBrandManifestEntry = TOTP_BRAND_MANIFEST[index];
-    for (let aliasIndex = 0; aliasIndex < entry.aliases.length; aliasIndex++) {
-      if (issuerKey === normalizeAlias(entry.aliases[aliasIndex])) { return entry; }
-    }
     for (let domainIndex = 0; domainIndex < entry.exactDomains.length; domainIndex++) {
       if (domainKey === normalizeVerifiedDomain(entry.exactDomains[domainIndex])) {
         return entry;

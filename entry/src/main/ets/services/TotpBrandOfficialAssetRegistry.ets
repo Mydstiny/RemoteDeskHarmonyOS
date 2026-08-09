@@ -1,6 +1,6 @@
 /** GENERATED FILE. Edit totp_brand_manifest.json and rerun the generator. */
 
-export const TOTP_OFFICIAL_BRAND_SOURCE_SHA256: string = "c24f56da54a4aafdb5a66413c3d730c42b14f35e3bec4848ec78d074122b1d33";
+export const TOTP_OFFICIAL_BRAND_SOURCE_SHA256: string = "07364144fbfc80c4fb0cc7a7470c785cd68bba44fb76def736213aca4c8cd00c";
 
 export interface TotpOfficialBrandEntry {
   brandId: string;
@@ -32,8 +32,8 @@ export const TOTP_OFFICIAL_BRANDS: TotpOfficialBrandEntry[] = [
     aliases: ["x", "twitter"],
     exactDomains: ["x.com", "twitter.com"],
     localAsset: "totp-brands/official/x.svg",
-    assetBytes: 733,
-    sha256: "2c89d657423e4668d12422488ee4e624b5f2bfe0dec5ae6d71f2f9470306f4db",
+    assetBytes: 430,
+    sha256: "dd46f96b6f47fcd33683b79ddfaf3daca1d4f8aeba3c0f2bde1584c69cc699d4",
     sourceType: "official",
     brandColor: "#000000"
   },
@@ -73,7 +73,7 @@ export const TOTP_OFFICIAL_BRANDS: TotpOfficialBrandEntry[] = [
   {
     brandId: "baota",
     displayName: "宝塔面板",
-    aliases: ["宝塔", "宝塔面板", "宝塔 Linux 面板", "baota", "baota panel", "bt panel"],
+    aliases: ["宝塔", "宝塔面板", "宝塔 linux 面板", "baota", "baota panel", "bt panel"],
     exactDomains: ["bt.cn"],
     localAsset: "totp-brands/official/baota.png",
     assetBytes: 1523,
@@ -84,7 +84,7 @@ export const TOTP_OFFICIAL_BRANDS: TotpOfficialBrandEntry[] = [
   {
     brandId: "aws",
     displayName: "AWS",
-    aliases: ["AWS", "Amazon Web Services", "Amazon AWS"],
+    aliases: ["aws", "amazon web services", "amazon aws"],
     exactDomains: ["aws.amazon.com", "amazonaws.com"],
     localAsset: "totp-brands/catalog/aws.svg",
     assetBytes: 8235,
@@ -95,7 +95,7 @@ export const TOTP_OFFICIAL_BRANDS: TotpOfficialBrandEntry[] = [
   {
     brandId: "slack",
     displayName: "Slack",
-    aliases: ["Slack", "Slack Technologies"],
+    aliases: ["slack", "slack technologies"],
     exactDomains: ["slack.com"],
     localAsset: "totp-brands/catalog/slack.svg",
     assetBytes: 2807,
@@ -106,7 +106,7 @@ export const TOTP_OFFICIAL_BRANDS: TotpOfficialBrandEntry[] = [
   {
     brandId: "adobe",
     displayName: "Adobe",
-    aliases: ["Adobe", "Adobe Creative Cloud"],
+    aliases: ["adobe", "adobe creative cloud"],
     exactDomains: ["adobe.com"],
     localAsset: "totp-brands/catalog/adobe.svg",
     assetBytes: 576,
@@ -117,7 +117,7 @@ export const TOTP_OFFICIAL_BRANDS: TotpOfficialBrandEntry[] = [
   {
     brandId: "openai",
     displayName: "OpenAI",
-    aliases: ["OpenAI", "ChatGPT"],
+    aliases: ["openai", "chatgpt"],
     exactDomains: ["openai.com", "chatgpt.com"],
     localAsset: "totp-brands/catalog/openai.svg",
     assetBytes: 3741,
@@ -128,7 +128,7 @@ export const TOTP_OFFICIAL_BRANDS: TotpOfficialBrandEntry[] = [
   {
     brandId: "anthropic",
     displayName: "Anthropic",
-    aliases: ["Anthropic"],
+    aliases: ["anthropic"],
     exactDomains: ["anthropic.com"],
     localAsset: "totp-brands/catalog/anthropic.svg",
     assetBytes: 1340,
@@ -139,7 +139,7 @@ export const TOTP_OFFICIAL_BRANDS: TotpOfficialBrandEntry[] = [
   {
     brandId: "claude",
     displayName: "Claude",
-    aliases: ["Claude", "Claude AI"],
+    aliases: ["claude", "claude ai"],
     exactDomains: ["claude.ai"],
     localAsset: "totp-brands/catalog/claude.svg",
     assetBytes: 3897,
@@ -150,7 +150,7 @@ export const TOTP_OFFICIAL_BRANDS: TotpOfficialBrandEntry[] = [
   {
     brandId: "oracle",
     displayName: "Oracle",
-    aliases: ["Oracle"],
+    aliases: ["oracle"],
     exactDomains: ["oracle.com"],
     localAsset: "totp-brands/catalog/oracle.svg",
     assetBytes: 3256,
@@ -161,7 +161,7 @@ export const TOTP_OFFICIAL_BRANDS: TotpOfficialBrandEntry[] = [
   {
     brandId: "ibm",
     displayName: "IBM",
-    aliases: ["IBM"],
+    aliases: ["ibm"],
     exactDomains: ["ibm.com"],
     localAsset: "totp-brands/catalog/ibm.svg",
     assetBytes: 4777,
@@ -172,7 +172,7 @@ export const TOTP_OFFICIAL_BRANDS: TotpOfficialBrandEntry[] = [
   {
     brandId: "salesforce",
     displayName: "Salesforce",
-    aliases: ["Salesforce"],
+    aliases: ["salesforce"],
     exactDomains: ["salesforce.com"],
     localAsset: "totp-brands/catalog/salesforce.svg",
     assetBytes: 18293,
@@ -183,7 +183,7 @@ export const TOTP_OFFICIAL_BRANDS: TotpOfficialBrandEntry[] = [
   {
     brandId: "twilio",
     displayName: "Twilio",
-    aliases: ["Twilio"],
+    aliases: ["twilio"],
     exactDomains: ["twilio.com"],
     localAsset: "totp-brands/catalog/twilio.svg",
     assetBytes: 1499,
@@ -194,7 +194,7 @@ export const TOTP_OFFICIAL_BRANDS: TotpOfficialBrandEntry[] = [
   {
     brandId: "android",
     displayName: "Android",
-    aliases: ["Android"],
+    aliases: ["android"],
     exactDomains: ["android.com"],
     localAsset: "totp-brands/catalog/android.svg",
     assetBytes: 4903,
@@ -205,7 +205,7 @@ export const TOTP_OFFICIAL_BRANDS: TotpOfficialBrandEntry[] = [
   {
     brandId: "microsoftazure",
     displayName: "Microsoft Azure",
-    aliases: ["Microsoft Azure", "Azure"],
+    aliases: ["microsoft azure", "azure"],
     exactDomains: ["azure.com"],
     localAsset: "totp-brands/catalog/microsoftazure.svg",
     assetBytes: 3408,
@@ -216,7 +216,7 @@ export const TOTP_OFFICIAL_BRANDS: TotpOfficialBrandEntry[] = [
   {
     brandId: "microsoftteams",
     displayName: "Microsoft Teams",
-    aliases: ["Microsoft Teams", "Teams"],
+    aliases: ["microsoft teams", "teams"],
     exactDomains: ["teams.microsoft.com"],
     localAsset: "totp-brands/catalog/microsoftteams.svg",
     assetBytes: 5580,
@@ -227,7 +227,7 @@ export const TOTP_OFFICIAL_BRANDS: TotpOfficialBrandEntry[] = [
   {
     brandId: "microsoftedge",
     displayName: "Microsoft Edge",
-    aliases: ["Microsoft Edge", "Edge"],
+    aliases: ["microsoft edge", "edge"],
     exactDomains: ["microsoftedge.com"],
     localAsset: "totp-brands/catalog/microsoftedge.svg",
     assetBytes: 4790,
@@ -238,7 +238,7 @@ export const TOTP_OFFICIAL_BRANDS: TotpOfficialBrandEntry[] = [
   {
     brandId: "deepseek",
     displayName: "DeepSeek",
-    aliases: ["DeepSeek", "深度求索"],
+    aliases: ["deepseek", "深度求索"],
     exactDomains: ["deepseek.com"],
     localAsset: "totp-brands/catalog/deepseek.svg",
     assetBytes: 5204,
@@ -249,7 +249,7 @@ export const TOTP_OFFICIAL_BRANDS: TotpOfficialBrandEntry[] = [
   {
     brandId: "unionpay",
     displayName: "UnionPay",
-    aliases: ["UnionPay", "中国银联", "银联"],
+    aliases: ["unionpay", "中国银联", "银联"],
     exactDomains: ["unionpay.com", "unionpay.com.cn"],
     localAsset: "totp-brands/catalog/unionpay.svg",
     assetBytes: 17610,
@@ -260,7 +260,7 @@ export const TOTP_OFFICIAL_BRANDS: TotpOfficialBrandEntry[] = [
   {
     brandId: "firebase",
     displayName: "Firebase",
-    aliases: ["Firebase"],
+    aliases: ["firebase"],
     exactDomains: ["firebase.google.com"],
     localAsset: "totp-brands/catalog/firebase.svg",
     assetBytes: 2040,
@@ -271,7 +271,7 @@ export const TOTP_OFFICIAL_BRANDS: TotpOfficialBrandEntry[] = [
   {
     brandId: "supabase",
     displayName: "Supabase",
-    aliases: ["Supabase"],
+    aliases: ["supabase"],
     exactDomains: ["supabase.com"],
     localAsset: "totp-brands/catalog/supabase.svg",
     assetBytes: 1713,
@@ -282,7 +282,7 @@ export const TOTP_OFFICIAL_BRANDS: TotpOfficialBrandEntry[] = [
   {
     brandId: "hashicorp",
     displayName: "HashiCorp",
-    aliases: ["HashiCorp"],
+    aliases: ["hashicorp"],
     exactDomains: ["hashicorp.com"],
     localAsset: "totp-brands/catalog/hashicorp.svg",
     assetBytes: 827,
@@ -293,7 +293,7 @@ export const TOTP_OFFICIAL_BRANDS: TotpOfficialBrandEntry[] = [
   {
     brandId: "vmware",
     displayName: "VMware",
-    aliases: ["VMware"],
+    aliases: ["vmware"],
     exactDomains: ["vmware.com"],
     localAsset: "totp-brands/catalog/vmware.svg",
     assetBytes: 6098,
@@ -304,7 +304,7 @@ export const TOTP_OFFICIAL_BRANDS: TotpOfficialBrandEntry[] = [
   {
     brandId: "snyk",
     displayName: "Snyk",
-    aliases: ["Snyk"],
+    aliases: ["snyk"],
     exactDomains: ["snyk.io"],
     localAsset: "totp-brands/catalog/snyk.svg",
     assetBytes: 12050,
@@ -315,7 +315,7 @@ export const TOTP_OFFICIAL_BRANDS: TotpOfficialBrandEntry[] = [
   {
     brandId: "auth0",
     displayName: "Auth0",
-    aliases: ["Auth0", "Auth0 by Okta"],
+    aliases: ["auth0", "auth0 by okta"],
     exactDomains: ["auth0.com"],
     localAsset: "totp-brands/catalog/auth0.svg",
     assetBytes: 877,
@@ -326,7 +326,7 @@ export const TOTP_OFFICIAL_BRANDS: TotpOfficialBrandEntry[] = [
   {
     brandId: "zoho",
     displayName: "Zoho",
-    aliases: ["Zoho", "Zoho Corporation"],
+    aliases: ["zoho", "zoho corporation"],
     exactDomains: ["zoho.com"],
     localAsset: "totp-brands/catalog/zoho.svg",
     assetBytes: 7903,
@@ -337,7 +337,7 @@ export const TOTP_OFFICIAL_BRANDS: TotpOfficialBrandEntry[] = [
   {
     brandId: "zapier",
     displayName: "Zapier",
-    aliases: ["Zapier"],
+    aliases: ["zapier"],
     exactDomains: ["zapier.com"],
     localAsset: "totp-brands/catalog/zapier.svg",
     assetBytes: 7318,
@@ -348,7 +348,7 @@ export const TOTP_OFFICIAL_BRANDS: TotpOfficialBrandEntry[] = [
   {
     brandId: "authy",
     displayName: "Authy",
-    aliases: ["Authy", "Twilio Authy"],
+    aliases: ["authy", "twilio authy"],
     exactDomains: ["authy.com"],
     localAsset: "totp-brands/catalog/authy.svg",
     assetBytes: 2397,
@@ -359,11 +359,17 @@ export const TOTP_OFFICIAL_BRANDS: TotpOfficialBrandEntry[] = [
 ];
 
 export function findTotpOfficialBrand(issuerKey: string, domainKey: string): TotpOfficialBrandEntry | null {
+  if (issuerKey.length > 0) {
+    for (let index = 0; index < TOTP_OFFICIAL_BRANDS.length; index++) {
+      const entry: TotpOfficialBrandEntry = TOTP_OFFICIAL_BRANDS[index];
+      if (entry.aliases.indexOf(issuerKey) >= 0) { return entry; }
+    }
+    return null;
+  }
+  if (domainKey.length === 0) { return null; }
   for (let index = 0; index < TOTP_OFFICIAL_BRANDS.length; index++) {
     const entry: TotpOfficialBrandEntry = TOTP_OFFICIAL_BRANDS[index];
-    if (entry.aliases.indexOf(issuerKey) >= 0 || entry.exactDomains.indexOf(domainKey) >= 0) {
-      return entry;
-    }
+    if (entry.exactDomains.indexOf(domainKey) >= 0) { return entry; }
   }
   return null;
 }

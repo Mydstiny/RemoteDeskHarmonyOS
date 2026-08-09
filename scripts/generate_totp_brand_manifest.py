@@ -10,7 +10,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import sys
+import unicodedata
 from pathlib import Path
 
 
@@ -45,6 +47,12 @@ def ts_string(value: str) -> str:
 
 def ts_array(values: list[str]) -> str:
     return "[" + ", ".join(ts_string(value) for value in values) + "]"
+
+
+def normalized_alias(value: str) -> str:
+    normalized = unicodedata.normalize("NFKC", value).strip().lower()
+    normalized = re.sub(r"[._-]+", " ", normalized)
+    return re.sub(r"\s+", " ", normalized)
 
 
 def render_manifest_ets(manifest: dict) -> str:
@@ -209,11 +217,12 @@ def render_official_registry_ets(manifest: dict) -> str:
     ]
     rendered_entries: list[str] = []
     for entry in entries:
+        normalized_aliases = [normalized_alias(value) for value in entry["aliases"]]
         rendered_entries.extend([
             "  {",
             f"    brandId: {ts_string(entry['brandId'])},",
             f"    displayName: {ts_string(entry['displayName'])},",
-            f"    aliases: {ts_array(entry['aliases'])},",
+            f"    aliases: {ts_array(normalized_aliases)},",
             f"    exactDomains: {ts_array(entry['exactDomains'])},",
             f"    localAsset: {ts_string(entry['localAsset'])},",
             f"    assetBytes: {int(entry['assetBytes'])},",
@@ -229,11 +238,17 @@ def render_official_registry_ets(manifest: dict) -> str:
         "];",
         "",
         "export function findTotpOfficialBrand(issuerKey: string, domainKey: string): TotpOfficialBrandEntry | null {",
+        "  if (issuerKey.length > 0) {",
+        "    for (let index = 0; index < TOTP_OFFICIAL_BRANDS.length; index++) {",
+        "      const entry: TotpOfficialBrandEntry = TOTP_OFFICIAL_BRANDS[index];",
+        "      if (entry.aliases.indexOf(issuerKey) >= 0) { return entry; }",
+        "    }",
+        "    return null;",
+        "  }",
+        "  if (domainKey.length === 0) { return null; }",
         "  for (let index = 0; index < TOTP_OFFICIAL_BRANDS.length; index++) {",
         "    const entry: TotpOfficialBrandEntry = TOTP_OFFICIAL_BRANDS[index];",
-        "    if (entry.aliases.indexOf(issuerKey) >= 0 || entry.exactDomains.indexOf(domainKey) >= 0) {",
-        "      return entry;",
-        "    }",
+        "    if (entry.exactDomains.indexOf(domainKey) >= 0) { return entry; }",
         "  }",
         "  return null;",
         "}",

@@ -973,7 +973,7 @@
     {
       "name": "totp-reviewed-brand-assets",
       "SPDXID": "SPDXRef-Package-TOTP-Official-Brand-Assets",
-      "versionInfo": "totp-brand-manifest-2026.08.03-si-16.21.0-r7-mainstream-logo-catalog",
+      "versionInfo": "totp-brand-manifest-2026.08.03-si-16.21.0-r8-mainstream-logo-catalog",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": true,
       "licenseConcluded": "NOASSERTION",
@@ -5022,15 +5022,15 @@
       "checksums": [
         {
           "algorithm": "SHA256",
-          "checksumValue": "2c89d657423e4668d12422488ee4e624b5f2bfe0dec5ae6d71f2f9470306f4db"
+          "checksumValue": "dd46f96b6f47fcd33683b79ddfaf3daca1d4f8aeba3c0f2bde1584c69cc699d4"
         }
       ],
-      "licenseConcluded": "MIT",
+      "licenseConcluded": "NOASSERTION",
       "licenseInfoInFiles": [
-        "MIT"
+        "NOASSERTION"
       ],
       "copyrightText": "NOASSERTION",
-      "comment": "sourceUrl=https://github.com/gilbarbara/logos/blob/4de741f8503d5e81abf5dfa05214690e938296bf/logos/x.svg; brandSourceUrl=https://about.x.com/en/who-we-are/brand-toolkit; brandGuidelines=https://about.x.com/en/who-we-are/brand-toolkit; license=MIT; licenseUrl=https://github.com/gilbarbara/logos/blob/4de741f8503d5e81abf5dfa05214690e938296bf/LICENSE; trademarkGuidelines=https://about.x.com/en/who-we-are/brand-toolkit; officialAssetVerified=true; assetSha256=2c89d657423e4668d12422488ee4e624b5f2bfe0dec5ae6d71f2f9470306f4db"
+      "comment": "sourceUrl=https://about.x.com/content/dam/about-twitter/x/brand-toolkit/x-logo.zip#logo.svg; brandSourceUrl=https://about.x.com/en/who-we-are/brand-toolkit; brandGuidelines=https://about.x.com/en/who-we-are/brand-toolkit; license=NOASSERTION; licenseUrl=https://about.x.com/en/who-we-are/brand-toolkit; trademarkGuidelines=https://about.x.com/en/who-we-are/brand-toolkit; officialAssetVerified=true; assetSha256=dd46f96b6f47fcd33683b79ddfaf3daca1d4f8aeba3c0f2bde1584c69cc699d4"
     },
     {
       "SPDXID": "SPDXRef-File-TotpOfficialBrand-microsoft",

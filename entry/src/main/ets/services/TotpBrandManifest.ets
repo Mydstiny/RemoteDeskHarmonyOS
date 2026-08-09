@@ -1,7 +1,7 @@
 /** GENERATED FILE. Edit totp_brand_manifest.json and rerun the generator. */
 
-export const TOTP_BRAND_MANIFEST_VERSION: string = "totp-brand-manifest-2026.08.03-si-16.21.0-r7-mainstream-logo-catalog";
-export const TOTP_BRAND_MANIFEST_SOURCE_SHA256: string = "c24f56da54a4aafdb5a66413c3d730c42b14f35e3bec4848ec78d074122b1d33";
+export const TOTP_BRAND_MANIFEST_VERSION: string = "totp-brand-manifest-2026.08.03-si-16.21.0-r8-mainstream-logo-catalog";
+export const TOTP_BRAND_MANIFEST_SOURCE_SHA256: string = "07364144fbfc80c4fb0cc7a7470c785cd68bba44fb76def736213aca4c8cd00c";
 export const TOTP_BRAND_ASSET_TARGET: number = 200;
 export const TOTP_BRAND_ALIAS_TARGET: number = 250;
 

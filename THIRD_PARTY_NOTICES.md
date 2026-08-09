@@ -72,6 +72,8 @@ source and license files before redistribution.
 
 
 
+
+
 <!-- TOTP_BRAND_NOTICE_BEGIN -->
 | Simple Icons TOTP brand batch | `simple-icons@16.21.0`; https://github.com/simple-icons/simple-icons/tree/16.21.0 | CC0-1.0 | 251 local community glyphs under `entry/src/main/resources/rawfile/totp-brands/`; per-asset source, revision, SHA-256 and trademark guidance are authoritative in `entry/src/main/resources/rawfile/totp_brand_manifest.json`; these community glyphs are not asserted to be official logos. 67 exact login domains and 279 reviewed issuer aliases are recorded separately; unproven domains remain empty. |
 | TOTP reviewed supplier/logo overrides | Reviewed local assets listed in `officialOverrides` within `totp_brand_manifest.json`; per-asset source, SHA-256 and trademark guidance are authoritative there | 31 reviewed override assets; catalog vectors are labeled separately from official assets; use is limited to supplier identification and remains subject to each brand's trademark rules. |

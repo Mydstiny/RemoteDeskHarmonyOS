@@ -1,5 +1,5 @@
 {
-  "manifestVersion": "totp-brand-manifest-2026.08.03-si-16.21.0-r7-mainstream-logo-catalog",
+  "manifestVersion": "totp-brand-manifest-2026.08.03-si-16.21.0-r8-mainstream-logo-catalog",
   "hashScope": "SHA-256 of the packaged local asset bytes, including the final newline",
   "upstream": {
     "name": "simple-icons",
@@ -14,7 +14,7 @@
     "aliasesAndDomains": 250,
     "policy": "Only fixed-version provenance-complete assets; no official-logo claim for community glyphs; login domains are independently audited and may be intentionally empty; quantity targets are reported separately from semantic validity."
   },
-  "runtimePolicy": "Runtime uses only this bundled manifest and rawfiles for exact issuer/domain matches; there is no remote brand lookup. Unknown or unmatched suppliers render initials. The explicit mainstream set is supplemented by reviewed fixed-commit logo-catalog overrides.",
+  "runtimePolicy": "Runtime uses only this bundled manifest and rawfiles. Exact issuer matches have global priority; account-domain fallback is allowed only when the issuer is empty. There is no remote brand lookup, and unknown or unmatched suppliers render initials. The explicit mainstream set is supplemented by reviewed fixed-commit logo-catalog overrides.",
   "officialOverrides": [
     {
       "brandId": "google",
@@ -54,15 +54,15 @@
         "twitter.com"
       ],
       "localAsset": "totp-brands/official/x.svg",
-      "assetBytes": 733,
-      "sha256": "2c89d657423e4668d12422488ee4e624b5f2bfe0dec5ae6d71f2f9470306f4db",
+      "assetBytes": 430,
+      "sha256": "dd46f96b6f47fcd33683b79ddfaf3daca1d4f8aeba3c0f2bde1584c69cc699d4",
       "brandColor": "#000000",
       "sourceType": "official",
-      "sourceUrl": "https://github.com/gilbarbara/logos/blob/4de741f8503d5e81abf5dfa05214690e938296bf/logos/x.svg",
+      "sourceUrl": "https://about.x.com/content/dam/about-twitter/x/brand-toolkit/x-logo.zip#logo.svg",
       "brandSourceUrl": "https://about.x.com/en/who-we-are/brand-toolkit",
       "brandGuidelines": "https://about.x.com/en/who-we-are/brand-toolkit",
-      "licenseType": "MIT",
-      "licenseUrl": "https://github.com/gilbarbara/logos/blob/4de741f8503d5e81abf5dfa05214690e938296bf/LICENSE",
+      "licenseType": "NOASSERTION",
+      "licenseUrl": "https://about.x.com/en/who-we-are/brand-toolkit",
       "trademarkGuidelines": "https://about.x.com/en/who-we-are/brand-toolkit",
       "officialAssetVerified": true
     },

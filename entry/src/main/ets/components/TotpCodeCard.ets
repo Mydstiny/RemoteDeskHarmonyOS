@@ -311,6 +311,13 @@ export struct TotpCodeCard {
     return !this.customAvatarReady && !this.brandReady && !decodedAssetVisible;
   }
 
+  private brandLogoBackground(visual: TotpBrandVisual): string {
+    // X distributes a transparent white SVG in its official brand kit. Keep
+    // the official bytes unchanged and give that variant its required dark
+    // field in both light and dark app themes.
+    return visual.slug === 'x' ? visual.background : this.pal().surface;
+  }
+
   @Builder
   private brandAvatar(
     visual: TotpBrandVisual,
@@ -328,7 +335,7 @@ export struct TotpCodeCard {
       if (this.shouldRenderDirectBrandResource(visual)) {
         Image(this.directBrandResource(visual) as Resource)
           .width(42).height(42).padding(9).borderRadius(21)
-          .backgroundColor(this.pal().surface)
+          .backgroundColor(this.brandLogoBackground(visual))
           .objectFit(ImageFit.Contain)
           .onComplete((): void => {
             if (token !== null && this.avatarState.onComplete(token)) {
@@ -349,7 +356,7 @@ export struct TotpCodeCard {
       if (this.shouldRenderBrandAsset(visual)) {
         Image(this.brandPixelMap as image.PixelMap)
           .width(42).height(42).padding(9).borderRadius(21)
-          .backgroundColor(this.pal().surface)
+          .backgroundColor(this.brandLogoBackground(visual))
           .objectFit(ImageFit.Contain)
           .opacity(totpBrandAssetVisibility(
             this.avatarState.snapshot(), this.brandPixelMap !== null) === 'asset' ? 1 : 0)
