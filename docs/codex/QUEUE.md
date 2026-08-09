@@ -4,8 +4,9 @@ Updated: 2026-08-09 Asia/Shanghai
 
 ## Now
 
-- Independently review the committed increment through `41944ff` and keep the review state open until it passes.
-- Device-check 1.1.0 clean-install versus update inheritance, Phone/Pad/PC input defaults, SSH terminal symbol and VNC semantic option symbols.
+- Independently review the committed increment through `6b17444a9` and keep the review state open until it passes.
+- Device-check 1.1.0 clean-install versus update inheritance, Phone/Pad/PC input defaults, SSH terminal symbol, VNC semantic option symbols, TOTP logo matching and Pad control docking.
+- On a Phone, verify that the final RustDesk relay card scrolls fully above the FAB and that the collapsed add sheet is compact before expanding advanced configuration.
 - Provision and run the real HTTP CONNECT, SOCKS5, ProxyJump, external FRP TCP/Visitor and Remote/Dynamic forwarding traffic matrix. Local forwarding already passed real SSH banner/KEX traffic on the wireless Pad.
 - Keep xterm.js as the visible terminal renderer; do not re-enable Native Drawing on API 23.
 
@@ -39,5 +40,5 @@ Updated: 2026-08-09 Asia/Shanghai
 - Light compliance baseline reports `totp-reviewed-brand-assets` as `licenseDeclared=NOASSERTION`.
 - Real HTTP/SOCKS proxy, ProxyJump, Remote/Dynamic forwarding and external FRP endpoint infrastructure is unavailable; Local forwarding traffic is no longer blocked.
 - The local Light gate cannot start because `pwsh` is absent; the existing `NOASSERTION` baseline remains unresolved.
-- Independent review through `bc5132c` is pending under the user's direct-execution instruction.
+- Independent review through `6b17444a9` is pending under the user's direct-execution instruction.
 - Native SSH GPU surface is not an acceptance path after API 23 BufferQueue abort reproduction.
