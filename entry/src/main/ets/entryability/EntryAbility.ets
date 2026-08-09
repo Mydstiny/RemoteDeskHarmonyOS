@@ -29,6 +29,13 @@ import {
   HALO_COLOR_LIGHT_KEY,
   resolveStoredHaloColorForTheme
 } from '../services/HaloColorPolicy';
+import {
+  PERSONALIZATION_DEFAULTS_FRESH_INSTALL_KEY,
+  PERSONALIZATION_DEFAULTS_PROFILE_VERSION,
+  PERSONALIZATION_DEFAULTS_PROFILE_VERSION_KEY,
+  PersonalizationDefaultsProfile,
+  resolvePersonalizationDefaultsProfile
+} from '../services/PersonalizationDefaultsPolicy';
 import auth from '@hw-agconnect/auth';
 
 const DOMAIN = 0x0000;
@@ -125,6 +132,20 @@ export default class EntryAbility extends UIAbility {
       let savedWallpaper: string = sysDark ? '#1A1A2E' : '#FFFFFF';
       try {
         const prefs = preferences.getPreferencesSync(this.context, { name: 'RemoteDesktopAppPrefs' });
+        const storedProfileVersion: number =
+          prefs.getSync(PERSONALIZATION_DEFAULTS_PROFILE_VERSION_KEY, 0) as number;
+        const profile: PersonalizationDefaultsProfile = resolvePersonalizationDefaultsProfile(
+          storedProfileVersion,
+          prefs.getSync(PERSONALIZATION_DEFAULTS_FRESH_INSTALL_KEY, false) as boolean,
+          prefs.hasSync('firstLaunch'));
+        if (!Number.isFinite(storedProfileVersion) ||
+          storedProfileVersion < PERSONALIZATION_DEFAULTS_PROFILE_VERSION) {
+          prefs.putSync(PERSONALIZATION_DEFAULTS_PROFILE_VERSION_KEY, profile.version);
+          prefs.putSync(PERSONALIZATION_DEFAULTS_FRESH_INSTALL_KEY, profile.freshInstall);
+          prefs.flushSync();
+        }
+        AppStorage.setOrCreate<boolean>(PERSONALIZATION_DEFAULTS_FRESH_INSTALL_KEY,
+          profile.freshInstall);
         followSystem = prefs.getSync('followSystem', true) as boolean;
         const prefTheme: string = prefs.getSync('currentTheme', savedTheme) as string;
         if (prefTheme === 'dark' || prefTheme === 'light') { savedTheme = prefTheme; }

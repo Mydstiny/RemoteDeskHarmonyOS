@@ -24,7 +24,7 @@ export function protocolIcon(key: ProtocolIconKey): Resource {
     case 'rustdesk':
       return $r('sys.symbol.cloud_fill');
     case 'ssh':
-      return $r('sys.symbol.desktop_fill');
+      return $r('sys.symbol.code_square');
     case 'vnc':
       return $r('sys.symbol.display');
     case 'moonlight':

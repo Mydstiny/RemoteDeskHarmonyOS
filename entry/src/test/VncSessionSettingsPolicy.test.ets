@@ -18,6 +18,12 @@ function hostWithScaling(scalingMode: 'fit' | 'integer' | 'one_to_one' | 'pan',
 
 export default function vncSessionSettingsPolicyTest(): void {
   describe('VncSessionSettingsPolicy', (): void => {
+    it('accepts_device_class_control_defaults_for_new_users', 0, (): void => {
+      expect(defaultVncSettings().controlMode).assertEqual(0);
+      expect(defaultVncSettings(2).controlMode).assertEqual(2);
+      expect(defaultVncSettings(9).controlMode).assertEqual(0);
+    });
+
     it('keeps_an_explicit_host_scale_choice', 0, (): void => {
       const settings: VncSettingsValues = defaultVncSettings();
       const effective = resolveEffectiveVncSessionSettings(settings, hostWithScaling('one_to_one', true));

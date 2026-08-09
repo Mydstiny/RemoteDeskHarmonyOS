@@ -34,6 +34,11 @@ export default function remoteCanvasTransformPolicyTest() {
         .assertEqual('custom');
     });
 
+    it('inherits an existing display scale even before the current version marker', 0, () => {
+      expect(resolveInitialRemoteDisplayScaleMode('100', 0, true)).assertEqual('100');
+      expect(resolveInitialRemoteDisplayScaleMode('custom', 1, true)).assertEqual('custom');
+    });
+
     it('keeps fit centered and resolves 100 percent against contain scale', 0, () => {
       const fit = baseCanvasTransform('fit', 100, viewport);
       expect(fit.scale).assertEqual(1);

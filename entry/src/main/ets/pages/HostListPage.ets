@@ -14,7 +14,6 @@ import { inputDevice } from '@kit.InputKit';
 import { HostSyncService } from '../services/HostSyncService';
 import { AuthService } from '../services/AuthService';
 import { KeyVaultService } from '../services/KeyVaultService';
-import { remoteControlModeDefaultForDevice } from '../services/RemotePhysicalKeyboardPolicy';
 import {
   AccountSessionCoordinator,
   AccountTransitionResult
@@ -316,6 +315,11 @@ import {
   resolveCanvasGestureZoomPreference
 } from '../services/RemoteCanvasZoomPreferencePolicy';
 import {
+  PERSONALIZATION_DEFAULTS_FRESH_INSTALL_KEY,
+  PersonalizationDefaults,
+  personalizationDefaults
+} from '../services/PersonalizationDefaultsPolicy';
+import {
   CLOUD_SYNC_SHEET_ACTIONS,
   CLOUD_SYNC_SHEET_DOWNLOADING,
   CLOUD_SYNC_SHEET_DOWNLOAD_CONFIRM,
@@ -469,7 +473,7 @@ struct HostListPage {
   @State hostPageTitle: string = '远程主机';
   @State loginRefreshKey: number = 0;
   @StorageLink('groupedHostCards') groupedHostCards: boolean = false;
-  @StorageLink('rustdeskPresenceDetectionEnabled') rustdeskPresenceDetectionEnabled: boolean = true;
+  @StorageLink('rustdeskPresenceDetectionEnabled') rustdeskPresenceDetectionEnabled: boolean = false;
   @State expandedHostGroup: string = '';
   @State activeRemoteHostId: string = '';
   @State accountDisplayName: string = '';
@@ -503,7 +507,7 @@ struct HostListPage {
   @State addSheetClosing: boolean = false;
   // Keep the released storage/cloud key while exposing the broader FAB-style semantics in UI code.
   @StorageLink('hostAddMode') fabAddStyle: string = 'modern';
-  @StorageLink('virtualMouseStyle') virtualMouseStyle: string = 'circle';
+  @StorageLink('virtualMouseStyle') virtualMouseStyle: string = 'arrow';
   @StorageLink('totpLogoMode') totpLogoMode: string = 'logo';
   @State lanScanning: boolean = false;
   @State lanScanResults: DiscoveredRustDeskPeer[] = [];
@@ -743,7 +747,7 @@ struct HostListPage {
   @State showTerminalFgColor: boolean = false;
   @StorageLink('sshTerminalFontSize') terminalFontSize: number = 18;
   @StorageLink('sshTerminalLineSpacing') terminalLineSpacing: number = 1.12;
-  @StorageLink('sshInputMode') sshInputMode: number = 0; // 0=自动, 1=虚拟键盘, 2=实体键鼠
+  @StorageLink('sshInputMode') sshInputMode: number = 1; // 0=自动, 1=虚拟键盘, 2=实体键鼠
   @State showTerminalFontSize: boolean = false;
   @State showRdpCredentialSheet: boolean = false;
   @State showRdpCredentialEditorSheet: boolean = false;
@@ -999,22 +1003,30 @@ struct HostListPage {
     // 恢复 TOTP 隐私保护状态 (Preferences 持久化)
     try {
       const prefs = preferences.getPreferencesSync(getContext(this), { name: 'RemoteDesktopAppPrefs' });
+      const defaults: PersonalizationDefaults = personalizationDefaults(
+        prefs.getSync(PERSONALIZATION_DEFAULTS_FRESH_INSTALL_KEY,
+          AppStorage.get<boolean>(PERSONALIZATION_DEFAULTS_FRESH_INSTALL_KEY) ?? false) as boolean,
+        this.isDesktopDevice);
       // 核心外观设置
       const savedTheme: string = prefs.getSync('currentTheme', '') as string;
       const savedAccent: string = prefs.getSync('accentColor', '') as string;
       const savedFollowSystem: boolean = prefs.getSync('followSystem', true) as boolean;
       const savedAmbientLightEffect: boolean = prefs.getSync('ambientLightEffectEnabled', false) as boolean;
-      const savedLiveViewEnabled: boolean = prefs.getSync('liveViewEnabled', true) as boolean;
+      const savedLiveViewEnabled: boolean =
+        prefs.getSync('liveViewEnabled', defaults.liveViewEnabled) as boolean;
       const savedLiveViewMode: number = prefs.getSync('liveViewMode', 1) as number;
       const savedHostAddMode: string = prefs.getSync('hostAddMode', 'modern') as string;
-      const savedVirtualMouseStyle: string = prefs.getSync('virtualMouseStyle', 'circle') as string;
-      const savedTotpLogoMode: string = prefs.getSync('totpLogoMode', 'logo') as string;
-      const savedGroupedHostCards: boolean = prefs.getSync('groupedHostCards', false) as boolean;
+      const savedVirtualMouseStyle: string =
+        prefs.getSync('virtualMouseStyle', defaults.virtualMouseStyle) as string;
+      const savedTotpLogoMode: string = prefs.getSync('totpLogoMode', defaults.totpLogoMode) as string;
+      const savedGroupedHostCards: boolean =
+        prefs.getSync('groupedHostCards', defaults.groupedHostCards) as boolean;
       const savedRustDeskPresenceDetection: boolean =
-        prefs.getSync('rustdeskPresenceDetectionEnabled', true) as boolean;
+        prefs.getSync('rustdeskPresenceDetectionEnabled',
+          defaults.rustdeskPresenceDetectionEnabled) as boolean;
       const savedWallpaper: string = prefs.getSync('wallpaperColor', '') as string;
       const savedUseNativeCore: boolean = prefs.getSync('useNativeTerminalCore', true) as boolean;
-      const savedSshInputMode: number = prefs.getSync('sshInputMode', 0) as number;
+      const savedSshInputMode: number = prefs.getSync('sshInputMode', defaults.sshInputMode) as number;
       if (!savedFollowSystem && savedTheme !== '') {
         AppStorage.setOrCreate('currentTheme', savedTheme);
         this.theme = savedTheme;
@@ -1079,7 +1091,8 @@ struct HostListPage {
       const savedRustDeskReverseWheel: boolean = prefs.getSync('rustdeskReverseWheel', false) as boolean;
       const savedRustDeskSwapMouseButtons: boolean = prefs.getSync('rustdeskSwapMouseButtons', false) as boolean;
       const savedRustDeskTouchpadSpeed: number = prefs.getSync('rustdeskTouchpadSpeed', 1.0) as number;
-      const savedControlMode: number = prefs.getSync('rustdeskControlMode', 0) as number;
+      const savedControlMode: number =
+        prefs.getSync('rustdeskControlMode', defaults.rustdeskControlMode) as number;
       const savedRdpDesktopPreset: number = prefs.getSync('rdpDesktopPreset', 1) as number;
       const savedRdpDesktopResolutionId: string = prefs.getSync('rdpDesktopResolutionId', '') as string;
       const savedRemoteDisplayScaleMode: string = prefs.getSync('remoteDisplayScaleMode', '') as string;
@@ -1090,34 +1103,52 @@ struct HostListPage {
       const canvasGestureZoomDefaultVersion: number =
         prefs.getSync('canvasGestureZoomDefaultVersion', 0) as number;
       const canvasZoomPreference = resolveCanvasGestureZoomPreference(
-        prefs.getSync('canvasGestureZoomEnabled', false) as boolean,
+        prefs.getSync('canvasGestureZoomEnabled', defaults.canvasGestureZoomEnabled) as boolean,
         canvasGestureZoomDefaultVersion,
-        prefs.getSync('canvasGestureZoomUserConfigured', false) as boolean);
+        prefs.getSync('canvasGestureZoomUserConfigured', false) as boolean,
+        prefs.hasSync('canvasGestureZoomEnabled'),
+        defaults.canvasGestureZoomEnabled);
       const savedCanvasGestureZoomEnabled: boolean = canvasZoomPreference.enabled;
       const savedRdpColorDepth: number = prefs.getSync('rdpColorDepth', 32) as number;
       const savedRdpAudioEnabled: boolean = prefs.getSync('rdpAudioEnabled', true) as boolean;
       const savedRdpClipboardEnabled: boolean = prefs.getSync('rdpClipboardEnabled', true) as boolean;
       const savedRdpShowDiagnostics: boolean = prefs.getSync('rdpShowDiagnostics', false) as boolean;
       const rdpDriveDefaultVersion: number = prefs.getSync('rdpDriveDefaultVersion', 0) as number;
+      const hasSavedRdpDriveEnabled: boolean = prefs.hasSync('rdpDriveEnabled');
       let savedRdpDriveEnabled: boolean = prefs.getSync('rdpDriveEnabled', true) as boolean;
       if (rdpDriveDefaultVersion < 3) {
-        savedRdpDriveEnabled = true;
-        prefs.putSync('rdpDriveEnabled', true);
+        if (!hasSavedRdpDriveEnabled) {
+          savedRdpDriveEnabled = true;
+          prefs.putSync('rdpDriveEnabled', savedRdpDriveEnabled);
+        }
         prefs.putSync('rdpDriveDefaultVersion', 3);
-        prefs.flush();
       }
       const savedRdpDriveName: string = prefs.getSync('rdpDriveName', 'RemoteDesktop') as string;
-      const savedRdpControlMode: number = prefs.getSync('rdpControlMode', 0) as number;
+      const savedRdpControlMode: number =
+        prefs.getSync('rdpControlMode', defaults.rdpControlMode) as number;
       const rdpAuthIdentityModeDefaultVersion: number =
         prefs.getSync('rdpAuthIdentityModeDefaultVersion', 0) as number;
+      const hasSavedRdpAuthIdentityMode: boolean = prefs.hasSync('rdpAuthIdentityMode');
       let savedRdpAuthIdentityMode: number = prefs.getSync('rdpAuthIdentityMode', 1) as number;
       if (rdpAuthIdentityModeDefaultVersion < 1) {
-        if (savedRdpAuthIdentityMode === 0) {
+        if (!hasSavedRdpAuthIdentityMode) {
           savedRdpAuthIdentityMode = 1;
           prefs.putSync('rdpAuthIdentityMode', 1);
         }
         prefs.putSync('rdpAuthIdentityModeDefaultVersion', 1);
-        prefs.flush();
+      }
+      if (!prefs.hasSync('liveViewEnabled')) { prefs.putSync('liveViewEnabled', savedLiveViewEnabled); }
+      if (!prefs.hasSync('virtualMouseStyle')) { prefs.putSync('virtualMouseStyle', savedVirtualMouseStyle); }
+      if (!prefs.hasSync('totpLogoMode')) { prefs.putSync('totpLogoMode', savedTotpLogoMode); }
+      if (!prefs.hasSync('groupedHostCards')) { prefs.putSync('groupedHostCards', savedGroupedHostCards); }
+      if (!prefs.hasSync('rustdeskPresenceDetectionEnabled')) {
+        prefs.putSync('rustdeskPresenceDetectionEnabled', savedRustDeskPresenceDetection);
+      }
+      if (!prefs.hasSync('sshInputMode')) { prefs.putSync('sshInputMode', savedSshInputMode); }
+      if (!prefs.hasSync('rustdeskControlMode')) { prefs.putSync('rustdeskControlMode', savedControlMode); }
+      if (!prefs.hasSync('rdpControlMode')) { prefs.putSync('rdpControlMode', savedRdpControlMode); }
+      if (!prefs.hasSync('canvasGestureZoomEnabled')) {
+        prefs.putSync('canvasGestureZoomEnabled', savedCanvasGestureZoomEnabled);
       }
       this.totpPageLocked = savedLock;
       this.rustdeskImageQuality = savedQuality >= 0 && savedQuality <= 2 ? savedQuality : 1;
@@ -1146,7 +1177,7 @@ struct HostListPage {
       this.rdpDesktopResolutionId = normalizeRdpResolutionId(savedRdpDesktopResolutionId, this.rdpDesktopPreset);
       this.rdpDesktopPreset = legacyRdpPresetForResolutionId(this.rdpDesktopResolutionId);
       this.remoteDisplayScaleMode = resolveInitialRemoteDisplayScaleMode(savedRemoteDisplayScaleMode,
-        remoteDisplayScalePreferenceVersion);
+        remoteDisplayScalePreferenceVersion, prefs.hasSync('remoteDisplayScaleMode'));
       this.remoteDisplayCustomScalePercent = Math.max(50, Math.min(300,
         Number.isFinite(savedRemoteDisplayCustomScalePercent) ? savedRemoteDisplayCustomScalePercent : 100));
       this.canvasGestureZoomEnabled = savedCanvasGestureZoomEnabled;
@@ -1206,8 +1237,6 @@ struct HostListPage {
     this.migrateVirtualMouseStyleCloudSetting();
     this.registerDataRefreshListeners();
     this.loadAfterServiceReady();
-    this.applyDesktopRdpInputMode();
-    this.applyDesktopRustDeskInputMode();
     this.registerInputDeviceWatcher();
     this.syncAmbientLightMonitor();
     this.ensureGripMonitorOnPageShow();
@@ -1234,8 +1263,6 @@ struct HostListPage {
       this.load(true, false);
     }
     this.refreshCryptoStatus();
-    this.applyDesktopRdpInputMode();
-    this.applyDesktopRustDeskInputMode();
     this.syncAmbientLightMonitor();
     this.ensureGripMonitorOnPageShow();
     this.handleVncRelayRouteRequest();
@@ -6747,24 +6774,6 @@ struct HostListPage {
     return mode >= 0 && mode <= 2 ? mode : 0;
   }
 
-  private applyDesktopRdpInputMode(): void {
-    if (remoteControlModeDefaultForDevice(this.isDesktopDevice) === 2) {
-      this.rdpControlMode = 2;
-      AppStorage.setOrCreate('rdpControlMode', 2);
-      hilog.info(0x0001, 'HostList',
-        'PC device detected, RDP input mode defaults to physical keyboard/mouse');
-    }
-  }
-
-  private applyDesktopRustDeskInputMode(): void {
-    if (remoteControlModeDefaultForDevice(this.isDesktopDevice) === 2) {
-      this.rustdeskControlMode = 2;
-      AppStorage.setOrCreate('rustdeskControlMode', 2);
-      hilog.info(0x0001, 'HostList',
-        'PC device detected, RustDesk input mode defaults to physical keyboard/mouse');
-    }
-  }
-
   private registerInputDeviceWatcher(): void {
     if (this.inputDeviceListenerRegistered) { return; }
     try {
@@ -9712,43 +9721,43 @@ struct HostListPage {
             Text('VNC').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
               .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
             Column() {
-              this.protocolActionRow(protocolIcon('vnc'), '连接默认值',
+              this.protocolActionRow($r('sys.symbol.link'), '连接默认值',
                 'TCP 直连、Repeater mode12 与默认端口',
                 (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_CONNECTION); })
               this.cardDivider()
-              this.protocolActionRow(protocolIcon('vnc'), '超时与连接行为',
+              this.protocolActionRow($r('sys.symbol.timer'), '超时与连接行为',
                 '连接、认证与首帧超时，只作用于 VNC',
                 (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_TIMEOUT); })
               this.cardDivider()
-              this.protocolActionRow(protocolIcon('vnc'), '安全策略与 TLS',
+              this.protocolActionRow($r('sys.symbol.lock_shield'), '安全策略与 TLS',
                 '仅安全、可信网络与明文风险策略',
                 (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_SECURITY); })
               this.cardDivider()
-              this.protocolActionRow(protocolIcon('vnc'), '显示与画面',
+              this.protocolActionRow($r('sys.symbol.display'), '显示与画面',
                 '本地缩放、画质、编码、色深和帧率',
                 (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_DISPLAY); })
               this.cardDivider()
-              this.protocolActionRow(protocolIcon('vnc'), '输入与光标',
+              this.protocolActionRow($r('sys.symbol.mouse'), '输入与光标',
                 '只读、控制模式、鼠标、触控板和滚轮',
                 (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_INPUT); })
               this.cardDivider()
-              this.protocolActionRow(protocolIcon('vnc'), '性能监视看板',
+              this.protocolActionRow($r('sys.symbol.performance'), '性能监视看板',
                 '连接实况、帧率、送显、停滞与采样频率',
                 (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_PERFORMANCE); })
               this.cardDivider()
-              this.protocolActionRow(protocolIcon('vnc'), '剪贴板',
+              this.protocolActionRow($r('sys.symbol.text_clipboard'), '剪贴板',
                 '单独控制 VNC 文本剪贴板',
                 (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_CLIPBOARD); })
               this.cardDivider()
-              this.protocolActionRow(protocolIcon('vnc'), 'Trust / 证书管理',
+              this.protocolActionRow($r('sys.symbol.checkmark_shield'), 'Trust / 证书管理',
                 '独立于 RDP 证书和 SSH 主机指纹',
                 (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_TRUST); })
               this.cardDivider()
-              this.protocolActionRow(protocolIcon('vnc'), '管理 VNC 主机',
+              this.protocolActionRow($r('sys.symbol.computer_host_fill'), '管理 VNC 主机',
                 this.vncHosts.list().length.toString() + ' 台 · 不写入 remotehosts',
                 (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_HOSTS); })
               this.cardDivider()
-              this.protocolActionRow(protocolIcon('vnc_gateway'), '管理 VNC Gateway',
+              this.protocolActionRow($r('sys.symbol.cloud_fill'), '管理 VNC Gateway',
                 this.vncGateways.list().length.toString() + ' 个 · 在第三页中继目录管理',
                 (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_GATEWAY); })
             }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)

@@ -96,10 +96,11 @@ export interface VncTrustCertificateMetadata {
   hostMismatch: boolean;
 }
 
-export function defaultVncSettings(): VncSettingsValues {
+export function defaultVncSettings(controlMode: number = 0): VncSettingsValues {
   return {
     defaultTransport: 'direct_tcp', defaultPort: 5900, connectTimeoutMs: 10000,
-    authTimeoutMs: 15000, firstFrameTimeoutMs: 15000, viewOnly: false, controlMode: 0,
+    authTimeoutMs: 15000, firstFrameTimeoutMs: 15000, viewOnly: false,
+    controlMode: controlMode === 2 ? 2 : 0,
     showDiagnostics: false, scalingMode: 'fit', displayScaleMode: 'fit',
     customScalePercent: 100, imageQualityPreset: 'balanced', preferredEncoding: 'auto',
     colorDepth: 'auto', frameRateLimit: 30, jpegQuality: 6,

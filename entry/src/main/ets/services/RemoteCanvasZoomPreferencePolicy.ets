@@ -1,7 +1,8 @@
 /**
  * Version the canvas-zoom default independently from the user's later toggle.
- * Existing installations used a device-dependent default, so the rollout
- * intentionally turns the feature off once and then preserves explicit input.
+ * Existing installations used a device-dependent default. A stored value is
+ * user state and must survive an update; only a genuinely missing value takes
+ * the 1.1.0 clean-install default.
  */
 export const CANVAS_GESTURE_ZOOM_PREFERENCE_VERSION: number = 2;
 
@@ -12,17 +13,12 @@ export interface CanvasGestureZoomPreference {
 }
 
 export function resolveCanvasGestureZoomPreference(storedEnabled: boolean,
-  storedVersion: number, storedUserConfigured: boolean): CanvasGestureZoomPreference {
-  if (!Number.isFinite(storedVersion) || storedVersion < CANVAS_GESTURE_ZOOM_PREFERENCE_VERSION) {
-    return {
-      enabled: false,
-      userConfigured: false,
-      version: CANVAS_GESTURE_ZOOM_PREFERENCE_VERSION
-    };
-  }
+  _storedVersion: number, storedUserConfigured: boolean,
+  storedPreferencePresent: boolean = true, missingPreferenceDefault: boolean = false
+): CanvasGestureZoomPreference {
   return {
-    enabled: storedEnabled,
-    userConfigured: storedUserConfigured,
+    enabled: storedPreferencePresent ? storedEnabled : missingPreferenceDefault,
+    userConfigured: storedPreferencePresent ? storedUserConfigured : false,
     version: CANVAS_GESTURE_ZOOM_PREFERENCE_VERSION
   };
 }

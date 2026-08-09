@@ -24,6 +24,10 @@ import { VncCloudSyncScope } from './VncCloudSyncSelectionPolicy';
 import { VNC_CLOUD_TABLE } from './VncRecordPolicy';
 import { VncGatewayService, VncGatewayView } from './VncGatewayService';
 import { isSelectableVncDefaultGateway, VncSelectableGateway } from './VncHostDefaultsPolicy';
+import {
+  PERSONALIZATION_DEFAULTS_FRESH_INSTALL_KEY,
+  personalizationDefaults
+} from './PersonalizationDefaultsPolicy';
 
 export interface VncSettingsSaveResult {
   ok: boolean;
@@ -206,7 +210,14 @@ export class VncSettingsService {
 
   private load(): void {
     const record: VncRecord | null = this.settingsRecord();
-    if (record === null) { this.values = defaultVncSettings(); return; }
+    if (record === null) {
+      const freshInstall: boolean =
+        AppStorage.get<boolean>(PERSONALIZATION_DEFAULTS_FRESH_INSTALL_KEY) ?? false;
+      const isDesktopDevice: boolean = AppStorage.get<boolean>('isDesktopDevice') ?? false;
+      this.values = defaultVncSettings(
+        personalizationDefaults(freshInstall, isDesktopDevice).vncControlMode);
+      return;
+    }
     this.values = this.parsePayload(record.payload);
   }
 

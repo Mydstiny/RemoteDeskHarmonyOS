@@ -417,7 +417,6 @@ import {
   shouldChoosePhysicalKeyboardLayout,
   physicalKeyboardLayoutForProtocol,
   shouldAutoSwitchVncKeyboardMouseMode,
-  remoteControlModeDefaultForDevice,
   shouldConsumeRemoteBack
 } from '../services/RemotePhysicalKeyboardPolicy';
 import {
@@ -742,7 +741,7 @@ struct RemoteDesktop {
   @StorageLink('rustdeskReverseWheel') rustdeskReverseWheel: boolean = false;
   @StorageLink('rustdeskSwapMouseButtons') rustdeskSwapMouseButtons: boolean = false;
   @StorageLink('rustdeskTouchpadSpeed') rustdeskTouchpadSpeed: number = 1.0;
-  @StorageLink('virtualMouseStyle') virtualMouseStyle: string = 'circle';
+  @StorageLink('virtualMouseStyle') virtualMouseStyle: string = 'arrow';
   @StorageLink('rdpControlMode') @Watch('onRemoteControlModeChange')
   rdpControlMode: number = 0; // 0=touchpad, 1=direct touch, 2=keyboard/mouse
   @StorageLink('rdpClipboardEnabled') @Watch('onRdpClipboardSettingChange')
@@ -1233,34 +1232,6 @@ struct RemoteDesktop {
 
   private pal(): Palette {
     return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor);
-  }
-
-  private applyDesktopKeyboardMouseMode(): void {
-    const defaultMode: number = remoteControlModeDefaultForDevice(this.isDesktopDevice);
-    if (defaultMode !== 2) { return; }
-    const host: RemoteHost | null = this.pendingHost;
-    if (!host) { return; }
-    if (host.protocol === 'rdp') {
-      this.rdpControlMode = defaultMode;
-      AppStorage.setOrCreate('rdpControlMode', defaultMode);
-      hilog.info(RD_DOMAIN, RD_TAG,
-        'PC device detected, RDP control mode defaults to physical keyboard/mouse');
-      return;
-    }
-    if (host.protocol === 'rustdesk') {
-      this.rustdeskControlMode = defaultMode;
-      AppStorage.setOrCreate('rustdeskControlMode', defaultMode);
-      hilog.info(RD_DOMAIN, RD_TAG,
-        'PC device detected, RustDesk control mode defaults to physical keyboard/mouse');
-      return;
-    }
-    if (host.protocol === 'vnc') {
-      if (this.pendingVncHost !== null && !this.pendingVncHost.viewOnly) {
-        this.vncControlMode = defaultMode;
-      }
-      hilog.info(RD_DOMAIN, RD_TAG,
-        'PC device detected, VNC control mode defaults to physical keyboard/mouse');
-    }
   }
 
   private registerInputDeviceWatcher(): void {
@@ -3969,7 +3940,8 @@ struct RemoteDesktop {
       const storedMode: string = prefs.getSync('remoteDisplayScaleMode', '') as string;
       const storedVersion: number =
         prefs.getSync(REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION_KEY, 0) as number;
-      this.remoteDisplayScaleMode = resolveInitialRemoteDisplayScaleMode(storedMode, storedVersion);
+      this.remoteDisplayScaleMode = resolveInitialRemoteDisplayScaleMode(
+        storedMode, storedVersion, prefs.hasSync('remoteDisplayScaleMode'));
       AppStorage.setOrCreate('remoteDisplayScaleMode', this.remoteDisplayScaleMode);
       if (!Number.isFinite(storedVersion) || storedVersion < REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION) {
         prefs.putSync('remoteDisplayScaleMode', this.remoteDisplayScaleMode);
@@ -6368,7 +6340,6 @@ struct RemoteDesktop {
         this.vncTransientPassword = '';
         this.hostLabel = vncHost.label;
         this.preAuthenticatedSessionPending = false;
-        this.applyDesktopKeyboardMouseMode();
         this.vncCertificateState = VncCertificatePreflightState.IDLE;
         this.vncCertificateExpectedFingerprint = '';
         this.vncCertificateEndpoint = null;
@@ -6427,7 +6398,6 @@ struct RemoteDesktop {
             // the native connection reaches its success callback.
             await this.applyRustDeskOrientationPolicy('page-appear', true);
           }
-          this.applyDesktopKeyboardMouseMode();
           const restoring: boolean = this.prepareRegistryRestore(host);
           if (restoring) {
             this.restoreFromBackground();
