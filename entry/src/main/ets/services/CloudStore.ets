@@ -79,6 +79,7 @@ import {
 } from './CloudSyncSettingsPolicy';
 import {
   localBackupColumnsForTable,
+  localBackupExtensionOwnerTable,
   localBackupLocalExtensionColumns,
   localBackupLocalTableColumns,
   localBackupLocalTableNames,
@@ -113,10 +114,6 @@ import {
   shouldRedactLockedCiphertext
 } from './SensitiveDataStatePolicy';
 import {
-  VIRTUAL_MOUSE_STYLE_RESTORE_VERSION_KEY,
-  shouldApplyCloudVirtualMouseStyle
-} from './RemoteCursorStylePolicy';
-import {
   SSH_LEGACY_FONT_SIZE_KEY,
   SSH_LEGACY_FOREGROUND_COLOR_KEY,
   SSH_LEGACY_LINE_SPACING_KEY,
@@ -146,6 +143,11 @@ import {
   projectRemoteHostDeviceTrust,
   remoteHostDeviceTrustIsMeaningful
 } from './RemoteHostDeviceTrustPolicy';
+import {
+  applyRemoteHostLocalPersonalization,
+  RemoteHostLegacyPersonalization,
+  remoteHostLocalPersonalizationValues
+} from './HostLocalPersonalizationPolicy';
 import {
   VNC_CLOUD_TABLE,
   VNC_LOCAL_TABLE,
@@ -295,6 +297,8 @@ import {
 const TABLES: string[] = cloudSyncTableNames();
 const RDP_RESTRICTED_ADMIN_SECRET_TABLE: string = 'rdprestrictedadminsecrets';
 const LOCAL_METADATA_TABLE: string = 'localmetadata';
+const VNC_HOST_LOCAL_PERSONALIZATION_PREFIX: string =
+  'vnc_host_local_personalization_v1:';
 const LOCAL_MUTATION_JOURNAL_TABLE: string = 'localmutationjournal';
 const MIGRATION_RECEIPT_TABLE: string = 'migrationreceipts';
 const MIGRATION_QUARANTINE_TABLE: string = 'migrationquarantine';
@@ -428,6 +432,8 @@ export class CloudStore implements CryptoCloudStore {
   private syncSuccessCount: number = 0;
   private syncFailCount: number = 0;
   private lastError: string = '';
+  private lastSyncProgressCode: number = -1;
+  private lastSyncProgressTable: string = '';
   // 诊断: 记录 createTables 当前执行的 DDL 步骤, 失败时精确定位语句
   private schemaStep: string = '';
   private lastSyncFailureKind: CloudSyncFailureKind = 'none';
@@ -1159,7 +1165,16 @@ export class CloudStore implements CryptoCloudStore {
       hilog.warn(0x0001, 'CloudSync', 'manual upload blocked: local business tables are empty');
       return false;
     }
+    this.lastSyncProgressCode = -1;
+    this.lastSyncProgressTable = '';
     const result = await CloudSyncCoordinator.getInstance().requestManualUpload();
+    this.lastSyncFailureKind = result.failureKind;
+    hilog.info(0x0001, 'CloudSync',
+      'manual upload result ok=' + result.ok.toString() +
+      ' tables=' + result.tables.join(',') +
+      ' failed=' + result.failedTables.join(',') +
+      ' kind=' + result.failureKind +
+      ' rollbackFailed=' + result.rollbackFailed.toString());
     return result.ok;
   }
 
@@ -1604,17 +1619,36 @@ export class CloudStore implements CryptoCloudStore {
       state.ownerScopeId !== this.currentScopeToken.ownerScopeId ||
       state.storeIdentity !== this.currentScopeToken.storeIdentity ||
       state.generation !== this.currentScopeToken.generation) {
+      hilog.error(0x0001, 'CloudSync',
+        '云同步持久状态前置校验失败 store=' + (this.store !== null).toString() +
+        ' lease=' + (this.currentLease !== null).toString() +
+        ' ownerMatch=' +
+        (state.ownerScopeId === this.currentScopeToken.ownerScopeId).toString() +
+        ' storeMatch=' +
+        (state.storeIdentity === this.currentScopeToken.storeIdentity).toString() +
+        ' generationMatch=' +
+        (state.generation === this.currentScopeToken.generation).toString() +
+        ' phase=' + state.phase);
       return false;
     }
     try {
       const encoded: string =
         JSON.stringify(state);
-      return this.writeLocalMetadata(
+      const written: boolean = this.writeLocalMetadata(
         CLOUD_SYNC_DURABLE_STATE_KEY,
-        encoded) &&
+        encoded);
+      const verified: boolean = written &&
         this.localMetadataValueMatches(
           CLOUD_SYNC_DURABLE_STATE_KEY,
           encoded);
+      if (!verified) {
+        hilog.error(0x0001, 'CloudSync',
+          '云同步持久状态提交失败 phase=' + state.phase +
+          ' written=' + written.toString() +
+          ' verified=' + verified.toString() +
+          ' bytes=' + encoded.length.toString());
+      }
+      return verified;
     } catch (err) {
       hilog.error(0x0001, 'CloudSync',
         '云同步持久状态写入失败: ' + safeError(err));
@@ -3099,6 +3133,21 @@ export class CloudStore implements CryptoCloudStore {
 
   getLastSyncErrorMessage(): string {
     if (this.lastSyncFailureKind === 'none') { return ''; }
+    if (this.lastSyncProgressCode === 6) {
+      return '华为云空间拒绝了 ' + this.lastSyncProgressTable +
+        ' 的上传（系统进度码 6：云端空间不足）。其他表的结果已保留；请勿反复覆盖上传。';
+    }
+    if (this.lastSyncProgressCode === 5) {
+      return '华为云空间中的 ' + this.lastSyncProgressTable +
+        ' 已达到记录上限，其他表的结果已保留。';
+    }
+    if (this.lastSyncProgressCode === 4) {
+      return '华为云空间中的 ' + this.lastSyncProgressTable +
+        ' 正被其他同步任务占用，请稍后重试。';
+    }
+    if (this.lastSyncProgressCode === 3) {
+      return '系统已关闭华为云空间同步，请在系统设置中启用后重试。';
+    }
     return cloudSyncFailureMessage(this.lastSyncFailureKind);
   }
 
@@ -3306,6 +3355,21 @@ export class CloudStore implements CryptoCloudStore {
         for (let i = 0; i < columns.length; i++) {
           const index: number = rows.getColumnIndex(columns[i]);
           if (index >= 0 && !rows.isColumnNull(index)) { row[columns[i]] = rows.getString(index); }
+        }
+        const extensionTable: string = row['tablename'] || '';
+        const recordId: string = row['recordid'] || '';
+        const ownerTable: string =
+          localBackupExtensionOwnerTable(extensionTable);
+        // Historical deletes could leave a non-distributed extension behind.
+        // It has no restorable owner and must not make the entire portable
+        // backup unusable. Keep the local row untouched; omit it only from the
+        // exported snapshot and retain strict import validation.
+        if (recordId !== '' && ownerTable !== '' &&
+          !this.portableRowExists(ownerTable, recordId)) {
+          hilog.warn(0x0001, 'LocalBackup',
+            'portable backup skipped orphan extension table=' +
+            extensionTable + ' ownerTable=' + ownerTable);
+          continue;
         }
         result.push(row);
       }
@@ -3962,11 +4026,8 @@ export class CloudStore implements CryptoCloudStore {
     const settings: Record<string, CloudUserSettingValue> = this.loadUserSettings();
     const keys: string[] = Object.keys(settings);
     if (keys.length === 0) { return; }
-    let applyVirtualMouseStyle: boolean = false;
     try {
       const prefs = preferences.getPreferencesSync(this.appContext, { name: 'RemoteDesktopAppPrefs' });
-      const restoreVersion: number = prefs.getSync(VIRTUAL_MOUSE_STYLE_RESTORE_VERSION_KEY, 0) as number;
-      applyVirtualMouseStyle = shouldApplyCloudVirtualMouseStyle(restoreVersion);
       const storedSshColor: Object = prefs.getSync(SSH_TERMINAL_FOREGROUND_COLOR_KEY, '') as Object;
       const storedLegacySshColor: Object = prefs.getSync(SSH_LEGACY_FOREGROUND_COLOR_KEY, '') as Object;
       const storedSshFontSize: Object = prefs.getSync(SSH_TERMINAL_FONT_SIZE_KEY, 0) as Object;
@@ -3989,7 +4050,6 @@ export class CloudStore implements CryptoCloudStore {
         const key: string = keys[i];
         if (!cloudUserSettingIsSyncable(key)) { continue; }
         if (isSshTerminalAppearanceKey(key)) { continue; }
-        if (key === 'virtualMouseStyle' && !applyVirtualMouseStyle) { continue; }
         prefs.putSync(key, settings[key]);
         AppStorage.setOrCreate(key, settings[key]);
       }
@@ -4402,6 +4462,20 @@ export class CloudStore implements CryptoCloudStore {
             hilog.info(0x0001, 'CloudSync', label + ' progress table=' + table +
               ' schedule=' + schedule.toString() + ' code=' + code.toString());
             if (!cloudSyncProgressFinished(schedule)) { return; }
+            const tableDetails: relationalStore.TableDetails | undefined =
+              progress.details ? progress.details[table] : undefined;
+            const statistic: relationalStore.Statistic | undefined =
+              tableDetails === undefined ? undefined :
+                (direction === 'nativeFirst' ? tableDetails.upload :
+                  tableDetails.download);
+            if (statistic !== undefined) {
+              hilog.info(0x0001, 'CloudSync', label +
+                ' terminal statistics table=' + table +
+                ' total=' + statistic.total.toString() +
+                ' successful=' + statistic.successful.toString() +
+                ' failed=' + statistic.failed.toString() +
+                ' remained=' + statistic.remained.toString());
+            }
             clearWatchdog();
             if (cloudSyncProgressSucceeded(schedule, code)) {
               if (!cloudSyncTargetTableCompleted(progress.details, table)) {
@@ -4411,6 +4485,8 @@ export class CloudStore implements CryptoCloudStore {
               if (direction === 'cloudFirst') { finishCloudFirstSuccess(); }
               else { recordSuccess(); }
             } else {
+              this.lastSyncProgressCode = code;
+              this.lastSyncProgressTable = table;
               recordFailure('progressCode=' + code.toString(),
                 classifyCloudSyncProgressCode(code));
             }
@@ -5258,7 +5334,11 @@ export class CloudStore implements CryptoCloudStore {
       const bucket: relationalStore.ValuesBucket = { key, value, updatedat: Date.now() };
       return rdbInsertSucceeded(this.store.insertSync(LOCAL_METADATA_TABLE, bucket,
         relationalStore.ConflictResolution.ON_CONFLICT_REPLACE));
-    } catch (_e) { return false; }
+    } catch (err) {
+      hilog.error(0x0001, 'CloudSync',
+        '本地元数据写入异常 key=' + key + ' err=' + safeError(err));
+      return false;
+    }
   }
 
   private deleteLocalMetadata(key: string): boolean {
@@ -5952,7 +6032,10 @@ export class CloudStore implements CryptoCloudStore {
     host.rdpGatewayCertificateRouteIdentity =
       get('rdpgatewaycertificaterouteidentity',
         host.rdpGatewayCertificateRouteIdentity);
-    return host;
+    // Old rows have no envelope and simply keep using their decoded cloud
+    // value. The first local save creates the envelope; reads never perform a
+    // migration write or become a login/startup gate.
+    return applyRemoteHostLocalPersonalization(host, values);
   }
 
   /** Apply only the portable extension decoded from the cloud row. Never persist from a decoder. */
@@ -6081,6 +6164,11 @@ export class CloudStore implements CryptoCloudStore {
       host.rdpGatewayCertificateAllowHostMismatch ? '1' : '0';
     values['rdpgatewaycertificaterouteidentity'] =
       host.rdpGatewayCertificateRouteIdentity;
+    const personalization: Record<string, string> = remoteHostLocalPersonalizationValues(host);
+    const personalizationKeys: string[] = Object.keys(personalization);
+    for (let i = 0; i < personalizationKeys.length; i++) {
+      values[personalizationKeys[i]] = personalization[personalizationKeys[i]];
+    }
     return values;
   }
 
@@ -8306,7 +8394,9 @@ export class CloudStore implements CryptoCloudStore {
     let code = 'local_write_failed';
     try {
       this.store.beginTransaction();
-      const vb = this.hostToBucket(host);
+      const legacyPersonalization: RemoteHostLegacyPersonalization | null =
+        this.loadRemoteHostLegacyPersonalization(host.id);
+      const vb = this.hostToBucket(host, legacyPersonalization);
       vb['updatedat'] = Date.now();
       const predicates = new relationalStore.RdbPredicates('remotehosts');
       predicates.equalTo('id', host.id);
@@ -8322,6 +8412,36 @@ export class CloudStore implements CryptoCloudStore {
       hilog.error(0x0001, 'CloudSync', '[CloudStore] updateHost 失败: ' + JSON.stringify(err));
       return this.setLastMutation(DataMutationResult.failure(host.id, code as 'local_write_failed' |
         'not_found' | 'extension_write_failed' | 'journal_write_failed', '主机更新未完成'));
+    }
+  }
+
+  /** Persist only per-device host state; never journal or push a cloud row. */
+  updateHostLocalPersonalization(host: RemoteHost): boolean {
+    if (!this.store) {
+      return this.setLastMutation(DataMutationResult.failure(
+        host.id, 'not_ready', '本地数据库未就绪'));
+    }
+    if (!this.localMutationAllowed()) {
+      return this.setLastMutation(DataMutationResult.failure(
+        host.id, 'restore_in_progress', '恢复进行中，暂不能保存'));
+    }
+    if (!this.recordOwnerWriteAllowed(host.userId)) {
+      return this.setLastMutation(DataMutationResult.failure(
+        host.id, 'invalid_data', '主机属于其他账号，已拒绝更新'));
+    }
+    try {
+      this.store.beginTransaction();
+      if (!this.saveHostExtension(host)) {
+        throw new Error('host local personalization update failed');
+      }
+      this.store.commit();
+      return this.setLastMutation(DataMutationResult.success(host.id));
+    } catch (err) {
+      try { this.store.rollBack(); } catch (_ignored) {}
+      hilog.error(0x0001, 'CloudSync',
+        '[CloudStore] update local host personalization failed: ' + safeError(err));
+      return this.setLastMutation(DataMutationResult.failure(
+        host.id, 'extension_write_failed', '本机主机设置保存未完成'));
     }
   }
 
@@ -9089,7 +9209,54 @@ export class CloudStore implements CryptoCloudStore {
       .then((result): void => { if (result.ok && callback) { callback(); } });
   }
 
-  private hostToBucket(h: RemoteHost): relationalStore.ValuesBucket {
+  private loadRemoteHostLegacyPersonalization(
+    id: string
+  ): RemoteHostLegacyPersonalization | null {
+    if (!this.store || id === '') { return null; }
+    let rows: relationalStore.ResultSet | null = null;
+    try {
+      const predicates = new relationalStore.RdbPredicates('remotehosts');
+      predicates.equalTo('id', id);
+      this.addCurrentOwnerPredicate(predicates);
+      rows = this.store.querySync(predicates);
+      if (!rows.goToNextRow()) { rows.close(); return null; }
+      const displayIndex: number = rows.getColumnIndex('displayconfig');
+      const rawDisplay: string = displayIndex >= 0 ? rows.getString(displayIndex) : '{}';
+      const displayPayload: RemoteHostDisplayPayload = decodeRemoteHostDisplayPayload(rawDisplay);
+      const adaptiveColumnIndex: number = rows.getColumnIndex('rustdeskadaptiveorientation');
+      const adaptiveExtension: string =
+        displayPayload.extension['rustdeskadaptiveorientation'] || '';
+      const adaptive: boolean = adaptiveExtension === '1' ||
+        (adaptiveExtension === '' && adaptiveColumnIndex >= 0 &&
+          rows.getString(adaptiveColumnIndex) === '1');
+      const connectedIndex: number = rows.getColumnIndex('lastconnected');
+      const healthIndex: number = rows.getColumnIndex('lasthealth');
+      const latencyIndex: number = rows.getColumnIndex('lastlatency');
+      const proLastSeenIndex: number = rows.getColumnIndex('rustdeskprolastseenat');
+      const proSyncErrorIndex: number = rows.getColumnIndex('rustdeskprosyncerror');
+      const result: RemoteHostLegacyPersonalization = {
+        displayConfigJson: displayPayload.displayConfigJson || '{}',
+        lastConnected: connectedIndex >= 0 ? rows.getLong(connectedIndex) : 0,
+        lastHealth: healthIndex >= 0 ? rows.getLong(healthIndex) : 0,
+        lastLatency: latencyIndex >= 0 ? rows.getLong(latencyIndex) : 0,
+        rustdeskAdaptiveOrientation: adaptive,
+        rustdeskProLastSeenAt: proLastSeenIndex >= 0 ? rows.getLong(proLastSeenIndex) : 0,
+        rustdeskProSyncError: proSyncErrorIndex >= 0 ? rows.getString(proSyncErrorIndex) : ''
+      };
+      rows.close();
+      return result;
+    } catch (err) {
+      if (rows !== null) { try { rows.close(); } catch (_ignored) {} }
+      hilog.warn(0x0001, 'CloudSync',
+        '[CloudStore] read legacy host personalization failed: ' + safeError(err));
+      return null;
+    }
+  }
+
+  private hostToBucket(
+    h: RemoteHost,
+    legacyPersonalization: RemoteHostLegacyPersonalization | null = null
+  ): relationalStore.ValuesBucket {
     h.normalizeRdpAuthentication();
     const crypto = DataCrypto.getInstance();
     const vb: relationalStore.ValuesBucket = {};
@@ -9123,18 +9290,31 @@ export class CloudStore implements CryptoCloudStore {
     vb['proxyusername'] = h.proxyUsername;
     vb['gatewayhost'] = h.gatewayHost;
     vb['gatewayport'] = h.gatewayPort;
+    const cloudExtensionValues: Record<string, string> = this.hostCloudExtensionValues(h);
+    if (legacyPersonalization !== null) {
+      cloudExtensionValues['rustdeskadaptiveorientation'] =
+        legacyPersonalization.rustdeskAdaptiveOrientation ? '1' : '0';
+      cloudExtensionValues['rustdeskprolastseenat'] =
+        legacyPersonalization.rustdeskProLastSeenAt.toString();
+      cloudExtensionValues['rustdeskprosyncerror'] =
+        legacyPersonalization.rustdeskProSyncError;
+    }
     vb['displayconfig'] = encodeRemoteHostDisplayPayload(
-      JSON.stringify(h.displayConfig.toJSON()),
-      projectRemoteHostCloudExtension(this.hostCloudExtensionValues(h))
+      legacyPersonalization === null ? JSON.stringify(h.displayConfig.toJSON()) :
+        legacyPersonalization.displayConfigJson,
+      projectRemoteHostCloudExtension(cloudExtensionValues)
     );
     vb['locked'] = h.locked ? 1 : 0;
     vb['locktype'] = h.lockType;
     vb['groupid'] = h.groupId;
     vb['sortorder'] = h.sortOrder;
     vb['icon'] = h.icon;
-    vb['lastconnected'] = h.lastConnected;
-    vb['lasthealth'] = h.lastHealth;
-    vb['lastlatency'] = h.lastLatency;
+    vb['lastconnected'] = legacyPersonalization === null ? h.lastConnected :
+      legacyPersonalization.lastConnected;
+    vb['lasthealth'] = legacyPersonalization === null ? h.lastHealth :
+      legacyPersonalization.lastHealth;
+    vb['lastlatency'] = legacyPersonalization === null ? h.lastLatency :
+      legacyPersonalization.lastLatency;
     vb['rustdeskrelayid'] = h.rustdeskRelayId;
     vb['rustdeskaccountid'] = h.rustdeskAccountId;
     vb['rustdeskpasswordmode'] = h.rustdeskPasswordMode;
@@ -9148,8 +9328,10 @@ export class CloudStore implements CryptoCloudStore {
     vb['rustdeskpropeerid'] = h.rustdeskProPeerId;
     vb['rustdeskproplatform'] = h.rustdeskProPlatform;
     vb['rustdeskpromanaged'] = h.rustdeskProManaged ? 1 : 0;
-    vb['rustdeskprolastseenat'] = h.rustdeskProLastSeenAt;
-    vb['rustdeskprosyncerror'] = h.rustdeskProSyncError;
+    vb['rustdeskprolastseenat'] = legacyPersonalization === null ? h.rustdeskProLastSeenAt :
+      legacyPersonalization.rustdeskProLastSeenAt;
+    vb['rustdeskprosyncerror'] = legacyPersonalization === null ? h.rustdeskProSyncError :
+      legacyPersonalization.rustdeskProSyncError;
     vb['syncversion'] = h.syncVersion;
     vb['createdat'] = h.createdAt;
     return this.cloudBucket('remotehosts', vb);
@@ -10123,6 +10305,22 @@ export class CloudStore implements CryptoCloudStore {
   }
 
   // ==================== Isolated VNC record domain ====================
+
+  /** Local-only VNC host override; this namespace is never a distributed table. */
+  loadVncHostLocalPersonalization(id: string): string {
+    return id === '' ? '' :
+      this.readLocalMetadata(VNC_HOST_LOCAL_PERSONALIZATION_PREFIX + id);
+  }
+
+  saveVncHostLocalPersonalization(id: string, payload: string): boolean {
+    return id !== '' && this.writeLocalMetadata(
+      VNC_HOST_LOCAL_PERSONALIZATION_PREFIX + id, payload);
+  }
+
+  deleteVncHostLocalPersonalization(id: string): boolean {
+    return id === '' || this.deleteLocalMetadata(
+      VNC_HOST_LOCAL_PERSONALIZATION_PREFIX + id);
+  }
 
   loadAllVncRecordsRaw(includeDeleted: boolean = false): VncRecord[] {
     // DataCrypto migration must inspect both selected and deselected logical

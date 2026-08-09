@@ -1,7 +1,10 @@
 import { common } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
 import { CloudStore } from './CloudStore';
-import { CloudUserSettingValue } from './CloudSyncSettingsPolicy';
+import {
+  cloudUserSettingIsSyncable,
+  CloudUserSettingValue
+} from './CloudSyncSettingsPolicy';
 import {
   SSH_LEGACY_FONT_SIZE_KEY,
   SSH_LEGACY_FOREGROUND_COLOR_KEY,
@@ -158,6 +161,7 @@ export class SshSettingsService {
   }
 
   private publishCloudSetting(key: string, value: CloudUserSettingValue): void {
+    if (!cloudUserSettingIsSyncable(key)) { return; }
     try {
       CloudStore.getInstance().upsertUserSetting(key, value);
     } catch (_e) { /* Cloud sync is best effort and cannot block local SSH use. */ }

@@ -32,9 +32,14 @@ const LOCAL_EXTENSION_TABLES: string[] = [
 const LOCAL_BACKUP_LOCAL_TABLES: string[] = ['vnclocalrecords'];
 const REMOTE_HOST_EXTENSION_PAYLOAD_COLUMNS: string[] = [
   // `password` is a legacy shadow that migration may still need to recover.
-  'password', 'sshkeypassphrase', 'sshkeyid', 'sshhostkeyalgorithm',
+  'password', 'sshkeypassphrase', 'sshproxypassword',
+  'sshproxykeypassphrase', 'sshkeyid', 'sshproxytype',
+  'sshproxyauthmethod', 'sshproxykeyid', 'sshhostkeyalgorithm',
   'sshhostkeyfingerprintsha256', 'sshhostkeyrawbase64', 'sshhostkeytrustedat',
-  'sshhostkeytrustmode', 'rdpcertificatefingerprintsha256', 'rdpcertificatesubject',
+  'sshhostkeytrustmode', 'sshjumphostkeyalgorithm',
+  'sshjumphostkeyfingerprintsha256', 'sshjumphostkeyrawbase64',
+  'sshjumphostkeytrustedat', 'sshjumphostkeytrustmode',
+  'rdpcertificatefingerprintsha256', 'rdpcertificatesubject',
   'rdpcertificateissuer', 'rdpcertificatecommonname', 'rdpcertificatenotbeforems',
   'rdpcertificatenotafterms', 'rdpcertificatetrustedat',
   'rdpcertificatetrustmode', 'rdpcertificateallowuntrustedroot',
@@ -48,11 +53,16 @@ const REMOTE_HOST_EXTENSION_PAYLOAD_COLUMNS: string[] = [
   'rdpgatewaycertificaterouteidentity', 'rustdeskrelayid', 'rustdeskaccountid',
   'rustdeskpasswordmode', 'rustdeskauthmode', 'rustdeskdirectenabled',
   'rustdeskdirecthost', 'rustdeskdirectport', 'rdpcredentialid', 'rdpauthmode',
-  'rdprestrictedadminsecretsource', 'sourcetype', 'rustdeskproaccountid',
+  'rdprestrictedadminsecretsource', 'rdpendpointmode',
+  'rdpgatewaytransport', 'rdpgatewayservername', 'sourcetype',
+  'rustdeskproaccountid',
   'rustdeskpropeerid', 'rustdeskproplatform', 'rustdeskpromanaged',
   'rustdeskprolastseenat', 'rustdeskprosyncerror', 'rustdesktargetdevice',
   'rustdeskadaptiveorientation', 'rustdesktotpentryid',
-  'rustdesktotpautosubmit'
+  'rustdesktotpautosubmit', 'localpersonalizationversion',
+  'localdisplayconfig', 'locallastconnected', 'locallasthealth',
+  'locallastlatency', 'localrustdeskadaptiveorientation',
+  'localrustdeskprolastseenat', 'localrustdeskprosyncerror'
 ];
 
 export interface LocalBackupDocument {
@@ -88,6 +98,11 @@ export function localBackupColumnsForTable(table: string): string[] {
 
 export function localBackupLocalExtensionColumns(): string[] {
   return ['id', 'tablename', 'recordid', 'payload', 'updatedat'];
+}
+
+/** Resolve the durable owner row for a device-local extension. */
+export function localBackupExtensionOwnerTable(table: string): string {
+  return table === 'rdprestrictedadminsecrets' ? 'remotehosts' : table;
 }
 
 export function localBackupLocalTableNames(): string[] {
@@ -927,17 +942,34 @@ function validateLocalExtensions(rows: Array<Record<string, string>>,
   for (let i = 0; i < rows.length; i++) {
     const keys: string[] = Object.keys(rows[i]);
     if ((rows[i]['id'] || '') === '' || (rows[i]['tablename'] || '') === '' ||
-      (rows[i]['recordid'] || '') === '' || (rows[i]['payload'] || '') === '') { return false; }
+      (rows[i]['recordid'] || '') === '' || (rows[i]['payload'] || '') === '') {
+      hilog.error(0x0001, 'LocalBackupPolicy',
+        'extension invalid identity index=' + i.toString());
+      return false;
+    }
     if (LOCAL_EXTENSION_TABLES.indexOf(rows[i]['tablename']) < 0 ||
       rows[i]['id'] !== rows[i]['tablename'] + ':' + rows[i]['recordid'] ||
       extensionIds.has(rows[i]['id']) ||
-      extensionBindings.has(rows[i]['tablename'] + ':' + rows[i]['recordid'])) { return false; }
-    for (let k = 0; k < keys.length; k++) {
-      if (allowed.indexOf(keys[k]) < 0 || typeof rows[i][keys[k]] !== 'string') { return false; }
+      extensionBindings.has(rows[i]['tablename'] + ':' + rows[i]['recordid'])) {
+      hilog.error(0x0001, 'LocalBackupPolicy',
+        'extension invalid binding id=' + rows[i]['id'] +
+        ' table=' + rows[i]['tablename']);
+      return false;
     }
-    if (rows[i]['updatedat'] !== undefined && !isStrictIntegerText(rows[i]['updatedat'])) { return false; }
-    const ownerTable: string = rows[i]['tablename'] === 'rdprestrictedadminsecrets'
-      ? 'remotehosts' : rows[i]['tablename'];
+    for (let k = 0; k < keys.length; k++) {
+      if (allowed.indexOf(keys[k]) < 0 || typeof rows[i][keys[k]] !== 'string') {
+        hilog.error(0x0001, 'LocalBackupPolicy',
+          'extension invalid column id=' + rows[i]['id'] + ' key=' + keys[k]);
+        return false;
+      }
+    }
+    if (rows[i]['updatedat'] !== undefined && !isStrictIntegerText(rows[i]['updatedat'])) {
+      hilog.error(0x0001, 'LocalBackupPolicy',
+        'extension invalid updatedat id=' + rows[i]['id']);
+      return false;
+    }
+    const ownerTable: string =
+      localBackupExtensionOwnerTable(rows[i]['tablename']);
     const owners: Array<Record<string, string>> = tables[ownerTable] || [];
     let ownerFound: boolean = false;
     for (let ownerIndex = 0; ownerIndex < owners.length; ownerIndex++) {
@@ -945,6 +977,8 @@ function validateLocalExtensions(rows: Array<Record<string, string>>,
     }
     if (!ownerFound &&
       Object.keys(tables).indexOf(ownerTable) >= 0) {
+      hilog.error(0x0001, 'LocalBackupPolicy',
+        'extension orphan id=' + rows[i]['id'] + ' ownerTable=' + ownerTable);
       return false;
     }
     try {
@@ -955,13 +989,23 @@ function validateLocalExtensions(rows: Array<Record<string, string>>,
       const payloadColumns: string[] = localExtensionPayloadColumns(rows[i]['tablename']);
       for (let k = 0; k < payloadKeys.length; k++) {
         const key: string = payloadKeys[k];
-        if (payloadColumns.indexOf(key) < 0 || typeof values[key] !== 'string') { return false; }
+        if (payloadColumns.indexOf(key) < 0 || typeof values[key] !== 'string') {
+          hilog.error(0x0001, 'LocalBackupPolicy',
+            'extension invalid payload id=' + rows[i]['id'] + ' key=' + key);
+          return false;
+        }
         if ((key === 'formatversion' || key === 'privatekeyencrypted') &&
           values[key] !== '' && !isStrictIntegerText(values[key])) {
+          hilog.error(0x0001, 'LocalBackupPolicy',
+            'extension invalid integer payload id=' + rows[i]['id'] + ' key=' + key);
           return false;
         }
       }
-    } catch (_e) { return false; }
+    } catch (_e) {
+      hilog.error(0x0001, 'LocalBackupPolicy',
+        'extension invalid json id=' + rows[i]['id']);
+      return false;
+    }
     extensionIds.add(rows[i]['id']);
     extensionBindings.add(rows[i]['tablename'] + ':' + rows[i]['recordid']);
   }

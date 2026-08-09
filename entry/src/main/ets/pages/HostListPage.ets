@@ -20,6 +20,7 @@ import {
 } from '../services/AccountSessionCoordinator';
 import { DataCrypto } from '../services/DataCrypto';
 import { CloudStore } from '../services/CloudStore';
+import { cloudUserSettingIsSyncable } from '../services/CloudSyncSettingsPolicy';
 import {
   VncTrustService,
   VncTrustView,
@@ -216,10 +217,7 @@ import { shouldPrepareClassicVncEditor } from '../services/VncHostFlowPolicy';
 import { resolveRustDeskBadges } from '../services/RustDeskCardBadgePolicy';
 import { cloudSyncDetailSpec } from '../services/CloudSyncGuidancePolicy';
 import {
-  normalizeRemoteCursorStyle,
-  shouldApplyCloudVirtualMouseStyle,
-  VIRTUAL_MOUSE_STYLE_RESTORE_VERSION,
-  VIRTUAL_MOUSE_STYLE_RESTORE_VERSION_KEY
+  normalizeRemoteCursorStyle
 } from '../services/RemoteCursorStylePolicy';
 import {
   settingsLeafSheetClosedState,
@@ -1234,7 +1232,6 @@ struct HostListPage {
     // The home page is a core path.  Loading it must not await an optional
     // permission dialog or sensor service.
     await this.load(true, true);
-    this.migrateVirtualMouseStyleCloudSetting();
     this.registerDataRefreshListeners();
     this.loadAfterServiceReady();
     this.registerInputDeviceWatcher();
@@ -1250,7 +1247,6 @@ struct HostListPage {
       CloudStore.getInstance().isCloudAvailable();
     this.refreshCloudRegistration();
     CloudSyncCoordinator.getInstance().flushDeferredAutomaticPushes();
-    this.migrateVirtualMouseStyleCloudSetting();
     this.updateWindowMetrics();
     if (this.skipInitialPageShowLoad) {
       this.skipInitialPageShowLoad = false;
@@ -6499,7 +6495,9 @@ struct HostListPage {
       prefs.putSync(key, value);
       prefs.flushSync();
     } catch (_e) { /* ignore */ }
-    CloudStore.getInstance().upsertUserSetting(key, value);
+    if (cloudUserSettingIsSyncable(key)) {
+      CloudStore.getInstance().upsertUserSetting(key, value);
+    }
   }
 
   private persistRustDeskBooleanPref(key: string, value: boolean): void {
@@ -6509,7 +6507,9 @@ struct HostListPage {
       prefs.putSync(key, value);
       prefs.flushSync();
     } catch (_e) { /* ignore */ }
-    CloudStore.getInstance().upsertUserSetting(key, value);
+    if (cloudUserSettingIsSyncable(key)) {
+      CloudStore.getInstance().upsertUserSetting(key, value);
+    }
   }
 
   /** RustDesk diagnostics are device-local UI preferences; never cloud-sync them. */
@@ -6535,25 +6535,9 @@ struct HostListPage {
       prefs.putSync(key, value);
       prefs.flushSync();
     } catch (_e) { /* ignore */ }
-    CloudStore.getInstance().upsertUserSetting(key, value);
-  }
-
-  /**
-   * Re-enable style sync without allowing the old release's cloud value to
-   * override the local choice on first launch after the feature is restored.
-   */
-  private migrateVirtualMouseStyleCloudSetting(): void {
-    const cloud = CloudStore.getInstance();
-    if (!cloud.isReady()) { return; }
-    try {
-      const prefs = preferences.getPreferencesSync(getContext(this), { name: 'RemoteDesktopAppPrefs' });
-      const restoreVersion: number = prefs.getSync(VIRTUAL_MOUSE_STYLE_RESTORE_VERSION_KEY, 0) as number;
-      if (shouldApplyCloudVirtualMouseStyle(restoreVersion)) { return; }
-      const style: string = normalizeRemoteCursorStyle(this.virtualMouseStyle);
-      if (!cloud.upsertUserSetting('virtualMouseStyle', style)) { return; }
-      prefs.putSync(VIRTUAL_MOUSE_STYLE_RESTORE_VERSION_KEY, VIRTUAL_MOUSE_STYLE_RESTORE_VERSION);
-      prefs.flushSync();
-    } catch (_e) { /* cloud migration retries on the next page show */ }
+    if (cloudUserSettingIsSyncable(key)) {
+      CloudStore.getInstance().upsertUserSetting(key, value);
+    }
   }
 
   /** 初始云端恢复完成后覆盖本地的可同步偏好；账号/锁定状态不会进入此路径。 */
@@ -6561,19 +6545,16 @@ struct HostListPage {
     const settings = CloudStore.getInstance().loadUserSettings();
     const keys: string[] = Object.keys(settings);
     if (keys.length === 0) { return; }
-    let applyVirtualMouseStyle: boolean = false;
     try {
       const prefs = preferences.getPreferencesSync(getContext(this), { name: 'RemoteDesktopAppPrefs' });
-      const restoreVersion: number = prefs.getSync(VIRTUAL_MOUSE_STYLE_RESTORE_VERSION_KEY, 0) as number;
-      applyVirtualMouseStyle = shouldApplyCloudVirtualMouseStyle(restoreVersion);
       this.sshSettings.applyCloudSettings(settings);
       for (let i = 0; i < keys.length; i++) {
         const key: string = keys[i];
+        if (!cloudUserSettingIsSyncable(key)) { continue; }
         if (key === 'sshTerminalForegroundColor' || key === 'sshTerminalFontSize' ||
           key === 'sshTerminalLineSpacing' || key === 'terminalFgColor' ||
           key === 'terminalFontSize' || key === 'terminalLineSpacing' ||
           key === 'groupedHostCards') { continue; }
-        if (key === 'virtualMouseStyle' && !applyVirtualMouseStyle) { continue; }
         const value = settings[key];
         prefs.putSync(key, value);
         AppStorage.setOrCreate(key, value);
@@ -6582,20 +6563,11 @@ struct HostListPage {
     } catch (_e) { return; }
     const accent = settings['accentColor'];
     if (typeof accent === 'string') { this.accentColor = accent; }
-    const liveEnabled = settings['liveViewEnabled'];
-    if (typeof liveEnabled === 'boolean') { this.liveViewEnabled = liveEnabled; }
-    const liveMode = settings['liveViewMode'];
-    if (typeof liveMode === 'number' && liveMode >= 0 && liveMode <= 2) { this.liveViewMode = liveMode; }
     const syncedTheme = settings['currentTheme'];
     if (typeof syncedTheme === 'string' && (syncedTheme === 'light' || syncedTheme === 'dark')) {
       this.theme = syncedTheme;
       this.refreshHaloPresets();
       this.syncHaloColorForCurrentTheme();
-    }
-    const syncedVirtualMouseStyle = settings['virtualMouseStyle'];
-    if (applyVirtualMouseStyle && typeof syncedVirtualMouseStyle === 'string') {
-      this.virtualMouseStyle = normalizeRemoteCursorStyle(syncedVirtualMouseStyle);
-      AppStorage.setOrCreate('virtualMouseStyle', this.virtualMouseStyle);
     }
   }
 
@@ -10788,9 +10760,9 @@ struct HostListPage {
                   void this.toggleCloudSyncTable(table);
                 })
               Column() {
-                Text(table === 'usersettings' ? '个性化与协议设置' : table === 'remotehosts' ? '远程主机' : table === 'rdpcredentials' ? 'Windows 登录凭据' : table === 'rustdeskrelays' ? 'RustDesk 中继配置' : table === 'sshkeys' ? 'SSH 密钥' : table === 'totpentries' ? '双重验证动态口令' : 'VNC 记录（vncrecord）')
+                Text(table === 'usersettings' ? '跨设备外观设置' : table === 'remotehosts' ? '远程主机' : table === 'rdpcredentials' ? 'Windows 登录凭据' : table === 'rustdeskrelays' ? 'RustDesk 中继配置' : table === 'sshkeys' ? 'SSH 密钥' : table === 'totpentries' ? '双重验证动态口令' : 'VNC 记录（vncrecord）')
                   .fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
-                Text(table === 'usersettings' ? '主题、外观和协议偏好' : table === 'vncrecordv2' ? 'VNC 设置、主机、Gateway、加密机密和 trust 候选元数据' : '包含敏感数据，启用时自动同步加密参数')
+                Text(table === 'usersettings' ? '仅同步主题、壁纸等可跨设备复用的外观偏好' : table === 'vncrecordv2' ? 'VNC 设置、主机、Gateway、加密机密和 trust 候选元数据' : '包含敏感数据，启用时自动同步加密参数')
                   .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 3 })
               }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
             }.width('100%').padding(14).borderRadius(14).backgroundColor(this.pal().surface).margin({ bottom: 8 })

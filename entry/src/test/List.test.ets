@@ -155,6 +155,7 @@ import sshProxyRuntimePolicyTest from './SshProxyRuntimePolicy.test';
 import sshForwardingEditorPolicyTest from './SshForwardingEditorPolicy.test';
 import sshModalCoordinatorTest from './SshModalCoordinator.test';
 import sshSessionStoreTest from './SshSessionStore.test';
+import hostLocalPersonalizationPolicyTest from './HostLocalPersonalizationPolicy.test';
 
 export default function testsuite() {
   localUnitTest();
@@ -314,4 +315,5 @@ export default function testsuite() {
   sshForwardingEditorPolicyTest();
   sshModalCoordinatorTest();
   sshSessionStoreTest();
+  hostLocalPersonalizationPolicyTest();
 }

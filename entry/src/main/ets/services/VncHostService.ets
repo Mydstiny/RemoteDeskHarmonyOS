@@ -10,6 +10,11 @@ import { VncCloudSyncService } from './VncCloudSyncService';
 import { VncSecretLoadResult, VncSecretSaveResult, VncSecretService } from './VncSecretService';
 import { VncTrustService } from './VncTrustService';
 import { vncHostTrustEndpointChanged } from './VncTrustInvalidationPolicy';
+import {
+  applyVncHostLocalPersonalization,
+  vncHostCloudValuesForSave,
+  vncHostLocalPersonalizationPayload
+} from './HostLocalPersonalizationPolicy';
 
 export interface VncHostView extends VncHostValues {
   id: string;
@@ -97,6 +102,8 @@ export class VncHostService {
     if (errors.length > 0) { result.message = errors[0]; return result; }
     const currentRecord: VncRecord | null = id === '' ? null : this.findActiveRecord(id);
     const current: VncHostView | null = currentRecord === null ? null : this.toView(currentRecord);
+    const previousCloudValues: VncHostValues | null = currentRecord === null ? null :
+      this.parsePayload(currentRecord.payload);
     const record: VncRecord = new VncRecord();
     const now: number = Date.now();
     record.id = id === '' ? VncRecord.generateId('vnchost') : id;
@@ -105,12 +112,22 @@ export class VncHostService {
     record.ownerId = record.userId;
     record.ownerType = 'account';
     record.secretKind = '';
-    record.payload = vncHostPayload(values);
+    record.payload = vncHostPayload(vncHostCloudValuesForSave(values, previousCloudValues));
     record.createdAt = current === null ? now : current.createdAt;
     record.updatedAt = now;
     record.syncVersion = current === null ? 1 : current.syncVersion + 1;
     finalizeVncRecord(record);
-    if (!this.cloud.upsertVncRecord(record)) {
+    const previousLocalPayload: string =
+      this.cloud.loadVncHostLocalPersonalization(record.id);
+    if (!this.cloud.saveVncHostLocalPersonalization(
+      record.id, vncHostLocalPersonalizationPayload(values))) {
+      result.message = 'VNC 本机个性化设置保存失败';
+      return result;
+    }
+    const cloudBaseChanged: boolean = currentRecord === null ||
+      currentRecord.payload !== record.payload;
+    if (cloudBaseChanged && !this.cloud.upsertVncRecord(record)) {
+      this.restoreLocalPersonalization(record.id, previousLocalPayload);
       result.message = this.cloud.getLastMutationResult().message || 'VNC 主机保存失败';
       return result;
     }
@@ -120,9 +137,10 @@ export class VncHostService {
       // roll the configuration back without a second secret mutation.
       const invalidation = this.trust.invalidateOwner('host', record.id);
       if (!invalidation.ok) {
-        const rolledBack: boolean = currentRecord === null
+        const rolledBack: boolean = !cloudBaseChanged ? true : currentRecord === null
           ? this.cloud.discardVncRecordAfterFailedCreate(record.userId, record.id)
           : this.cloud.upsertVncRecord(currentRecord);
+        this.restoreLocalPersonalization(record.id, previousLocalPayload);
         result.message = rolledBack
           ? invalidation.message + '；主机配置已回滚'
           : invalidation.message + '；主机配置回滚失败，请检查 VNC 数据状态';
@@ -135,9 +153,10 @@ export class VncHostService {
       const secretResult = this.secrets.save(record.userId, record.id, 'host', 'vnc_password', password,
         values.label, allowPlaintext);
       if (!secretResult.ok) {
-        const rolledBack: boolean = currentRecord === null
+        const rolledBack: boolean = !cloudBaseChanged ? true : currentRecord === null
           ? this.cloud.discardVncRecordAfterFailedCreate(record.userId, record.id)
           : this.cloud.upsertVncRecord(currentRecord);
+        this.restoreLocalPersonalization(record.id, previousLocalPayload);
         result.message = rolledBack
           ? secretResult.message + '；主机配置已回滚'
           : secretResult.message + '；主机配置回滚失败，请检查 VNC 数据状态';
@@ -145,9 +164,10 @@ export class VncHostService {
       }
     } else if (!values.rememberPassword && existingSecret) {
       if (!this.secrets.remove(record.userId, record.id, 'vnc_password')) {
-        const rolledBack: boolean = currentRecord === null
+        const rolledBack: boolean = !cloudBaseChanged ? true : currentRecord === null
           ? this.cloud.deleteVncRecord(record.userId, record.id)
           : this.cloud.upsertVncRecord(currentRecord);
+        this.restoreLocalPersonalization(record.id, previousLocalPayload);
         result.message = rolledBack ? 'VNC 密码删除失败，主机配置已回滚' :
           'VNC 密码删除失败且主机配置回滚失败，请检查 VNC 数据状态';
         return result;
@@ -168,6 +188,7 @@ export class VncHostService {
         return false;
       }
       this.secrets.remove(this.getUserId(), id, 'vnc_password');
+      this.cloud.deleteVncHostLocalPersonalization(id);
       this.emitChange();
     }
     return removed;
@@ -198,7 +219,16 @@ export class VncHostService {
   }
 
   private toView(record: VncRecord): VncHostView {
-    const values: VncHostValues = this.parsePayload(record.payload);
+    const cloudValues: VncHostValues = this.parsePayload(record.payload);
+    const localPayload: string = this.cloud.loadVncHostLocalPersonalization(record.id);
+    if (localPayload === '') {
+      // Old installations inherit legacy presentation without any migration
+      // write. Password intent is always derived from this device's secret.
+      cloudValues.rememberPassword =
+        this.secrets.has(record.userId, record.id, 'vnc_password');
+    }
+    const values: VncHostValues =
+      applyVncHostLocalPersonalization(cloudValues, localPayload);
     const view: VncHostView = {
       id: record.id,
       userId: record.userId,
@@ -297,6 +327,14 @@ export class VncHostService {
       }
     }
     return null;
+  }
+
+  private restoreLocalPersonalization(id: string, previousPayload: string): void {
+    if (previousPayload === '') {
+      this.cloud.deleteVncHostLocalPersonalization(id);
+      return;
+    }
+    this.cloud.saveVncHostLocalPersonalization(id, previousPayload);
   }
 
   private emitChange(): void {

@@ -847,6 +847,9 @@ export class CloudSyncCoordinator {
     }
     if (!this.bootstrapCompleted && this.hooks && this.hooks.markCloudBootstrapCompleted &&
       !this.hooks.markCloudBootstrapCompleted()) {
+      hilog.error(DOMAIN, TAG,
+        'explicit sync transfer succeeded but bootstrap marker write failed source=' +
+        result.source + ' tables=' + result.tables.join(','));
       this.startupState = 'pending';
       return {
         ok: false, source: result.source, tables: result.tables.slice(),
@@ -855,6 +858,9 @@ export class CloudSyncCoordinator {
     }
     this.bootstrapCompleted = true;
     if (!this.persistBootstrapCompletion()) {
+      hilog.error(DOMAIN, TAG,
+        'explicit sync transfer succeeded but bootstrap lifecycle persist failed source=' +
+        result.source + ' tables=' + result.tables.join(','));
       this.startupState = 'pending';
       return {
         ok: false, source: result.source, tables: result.tables.slice(),
@@ -914,6 +920,11 @@ export class CloudSyncCoordinator {
         (resolvingRestore &&
           restoredTables.indexOf(
             VNC_CLOUD_TABLE) >= 0));
+    hilog.info(DOMAIN, TAG,
+      'manual upload plan ordinary=' + tables.join(',') +
+      ' vncSelected=' + this.vncPhysicalTableSelected().toString() +
+      ' includeVnc=' + includeVnc.toString() +
+      ' restorePending=' + resolvingRestore.toString());
     const request: CloudSyncRequest = {
       source: 'manualUpload',
       direction: 'nativeFirst',
@@ -942,9 +953,9 @@ export class CloudSyncCoordinator {
     }
     const journalRevisions: Record<string, number> = this.captureJournalRevisions(request.tables);
     return this.enqueue(request).then((result: CloudSyncOperationResult): Promise<CloudSyncOperationResult> => {
-      if (!result.ok) { return Promise.resolve(result); }
       for (let i = 0; i < request.tables.length; i++) {
         const table: string = request.tables[i];
+        if (result.failedTables.indexOf(table) >= 0) { continue; }
         this.clearAutomaticSyncBlock(table);
         this.acknowledgeJournal(table, journalRevisions[table] || 0);
         const currentJournalRevision: number = this.captureJournalRevisions([table])[table] || 0;
@@ -958,25 +969,26 @@ export class CloudSyncCoordinator {
       // serialized without ever uploading the whole physical table blindly.
       if (includeVnc) {
         return this.requestVncManualUpload(false).then((vncResult: CloudSyncOperationResult): CloudSyncOperationResult => {
-          if (!vncResult.ok) { return vncResult; }
           const tables: string[] = snapshotCloudSyncTables(
             result.tables.concat(vncResult.tables));
+          const failedTables: string[] = snapshotCloudSyncTables(
+            result.failedTables.concat(vncResult.failedTables));
           const combined: CloudSyncOperationResult = {
-            ok: true,
+            ok: failedTables.length === 0 && !result.rollbackFailed &&
+              !vncResult.rollbackFailed,
             source: 'manualUpload',
             tables,
-            failedTables: [],
-            rollbackFailed: false,
-            failureKind: 'none'
+            failedTables,
+            rollbackFailed: result.rollbackFailed || vncResult.rollbackFailed,
+            failureKind: result.failureKind !== 'none' ? result.failureKind :
+              vncResult.failureKind
           };
-          return this.completeExplicitBootstrap(
-            combined, resolvingRestore
-              ? restoredTables : tables);
+          return combined.ok ? this.completeExplicitBootstrap(
+            combined, tables) : combined;
         });
       }
-      return Promise.resolve(this.completeExplicitBootstrap(
-        result, resolvingRestore
-          ? restoredTables : result.tables));
+      return Promise.resolve(result.ok ? this.completeExplicitBootstrap(
+        result, result.tables) : result);
     });
   }
 
@@ -2293,7 +2305,12 @@ export class CloudSyncCoordinator {
       return false;
     }
     try {
-      if (!this.hooks.persistDurableState(state)) { return false; }
+      if (!this.hooks.persistDurableState(state)) {
+        hilog.error(DOMAIN, TAG,
+          'persist cloud lifecycle state rejected phase=' + state.phase +
+          ' generation=' + state.generation.toString());
+        return false;
+      }
       this.durableState = state;
       return true;
     } catch (err) {

@@ -131,7 +131,13 @@ const REMOTE_HOST_EXTENSION_SAFE: string[] = [
   'sshproxyauthmethod', 'sshproxykeyid',
   'rdpauthmode', 'sourcetype', 'rustdesktargetdevice',
   'rustdeskadaptiveorientation', 'rdpendpointmode',
-  'rdpgatewaytransport', 'rdpgatewayservername'
+  'rdpgatewaytransport', 'rdpgatewayservername',
+  // Device-local host presentation remains portable only through an explicit
+  // local backup. These keys are never projected into a distributed table.
+  'localpersonalizationversion', 'localdisplayconfig',
+  'locallastconnected', 'locallasthealth', 'locallastlatency',
+  'localrustdeskadaptiveorientation', 'localrustdeskprolastseenat',
+  'localrustdeskprosyncerror'
 ];
 
 const DISPLAY_CONFIG_SAFE: string[] = [
