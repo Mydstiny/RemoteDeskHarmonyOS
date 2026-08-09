@@ -4440,6 +4440,9 @@ struct HostListPage {
     this.vncCertificateProbeGeneration = nextVncCertificateProbeGeneration(
       this.vncCertificateProbeGeneration);
     this.vncCertificateAttemptGeneration = attemptGeneration;
+    // Connection arbitration is owned by the projected HostList record. Keep
+    // that exact ID so cancelling this VNC preflight releases the right lock.
+    this.vncCertificateClosingHostId = routeHostId;
     this.vncCertificateHostId = host.id;
     this.vncCertificateHostLabel = host.label;
     this.vncCertificateWarning = '';
