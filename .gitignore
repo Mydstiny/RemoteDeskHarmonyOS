@@ -20,6 +20,8 @@ Thumbs.db
 *.keystore
 *.swp
 *~
+**/__pycache__/
+*.py[cod]
 
 .codegenie/
 build-profile.json5
