@@ -1,11 +1,11 @@
 # SSH Full Upgrade Queue
 
-Updated: 2026-08-08 Asia/Shanghai
+Updated: 2026-08-09 Asia/Shanghai
 
 ## Now
 
-- Close the final independent review for `fec26e2`; all SFTP transport/rename/cancel, cursor owner and VP9 policy findings have fixes and fresh build/Rust evidence.
-- Commit compact state, accepted SFTP UI plans and diagnostic-plan updates without staging untracked `nwc`.
+- Independently review the forwarding increment through `bc5132c` and keep the review state open until the committed increment passes.
+- Provision and run the real HTTP CONNECT, SOCKS5, ProxyJump, external FRP TCP/Visitor and Remote/Dynamic forwarding traffic matrix. Local forwarding already passed real SSH banner/KEX traffic on the wireless Pad.
 - Keep xterm.js as the visible terminal renderer; do not re-enable Native Drawing on API 23.
 
 ## Level A Follow-up
@@ -15,11 +15,11 @@ Updated: 2026-08-08 Asia/Shanghai
 - Exercise durable SFTP against real endpoints: zero-byte, large file, recursive, cancel/retry, network loss, app restart, same-host copy and dual-SSH transfer.
 - Verify authentication interruption during background SFTP, including host-key confirmation and multi-round MFA.
 
-## Level B
+## Level B Acceptance
 
-- Bind each ProxyJump hop to independent host-key/auth/error context and validate one-to-three-hop OpenSSH chains.
-- Finish local/remote/dynamic forwarding socket/channel integration behind the generation-owned runtime contract.
-- Validate HTTP CONNECT, SOCKS5, raw `frp_tcp` and forwarding cleanup across reconnect/close.
+- Validate each ProxyJump hop's independent host-key/auth/error context on one-to-three-hop OpenSSH chains.
+- Extend the accepted Local traffic path with limits/disconnect/reconnect/stale-generation pressure, and validate Remote/Dynamic listeners with real traffic.
+- Validate HTTP CONNECT, SOCKS5 and external FRP TCP/Visitor endpoints; the App must remain a TCP client and never embed FRP control-plane behavior.
 
 ## FRP Non-TCP
 
@@ -36,5 +36,7 @@ Updated: 2026-08-08 Asia/Shanghai
 
 - `ohosTest@OhosTestCompileArkTS` is unregistered (`00306054`).
 - Light compliance baseline reports `totp-reviewed-brand-assets` as `licenseDeclared=NOASSERTION`.
-- Real ProxyJump, forwarding and FRP endpoint infrastructure is unavailable.
+- Real HTTP/SOCKS proxy, ProxyJump, Remote/Dynamic forwarding and external FRP endpoint infrastructure is unavailable; Local forwarding traffic is no longer blocked.
+- The local Light gate cannot start because `pwsh` is absent; the existing `NOASSERTION` baseline remains unresolved.
+- Independent review through `bc5132c` is pending under the user's direct-execution instruction.
 - Native SSH GPU surface is not an acceptance path after API 23 BufferQueue abort reproduction.

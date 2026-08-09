@@ -1,10 +1,32 @@
 # SSH 代理设置与隧道转发实施计划（Sol 简版）
 
-- 状态：`PROPOSED`，只是一份执行计划
-- 日期：2026-08-08
+- 状态：`IMPLEMENTED_WITH_ENDPOINT_BLOCKERS`
+- 日期：2026-08-08；实施收口：2026-08-09
 - 分支：`codex/ssh-terminal-complete-upgrade`
+- 实施提交：`da17c451f`、`905eec109`、`1881fd2`、`ec771bff0`、`0be27d7`、`bc5132c`
 - 上位计划：`docs/codex/plans/2026-08-08-ssh-level-b-frp-completion-plan.md`
 - 目标：让 SSH 连接支持代理设置，以及 local/remote/dynamic 隧道转发
+
+## 实施结果（2026-08-09）
+
+代码和 Pad 实机 UI 已完成，真实代理/跳板/FRP/转发端点矩阵仍是交付 blocker：
+
+- 代理 profile、持久化、校验、统一编辑器和 SSH 连接 handoff 已接线；支持 Direct、HTTP CONNECT、SOCKS5、一至三跳 ProxyJump，以及外部 FRP TCP/Visitor 已暴露的普通 TCP endpoint。
+- App 没有引入 frpc、FRP 控制面、token、visitor secret、STCP/XTCP/SUDP 建链或静默降级。
+- Local、Remote、Dynamic 使用现有 Native forwarding 数据链路，并由 `sessionId/channelId/generation` 所有权、controller、runtime store 和 session 生命周期统一管理。
+- SSH 终端新增 Pad/PC 宽 bindSheet 转发工作区；Phone 走单栏布局。总览、添加/编辑和确认弹窗固定深色并分层呈现，支持 loopback 默认、公开监听二次确认、手动/自动启动、运行状态、连接数、流量、错误、启动/停止/删除。
+- `SshModalCoordinator` 串行化打开、关闭、重复点击和迟到 `onDisappear`；页面 detach 不误停后台 runtime，显式关闭 session 才释放该 session 的 listener。
+- 用户明确验收后仅恢复了 SFTP Pad/PC 双栏布局判定；SFTP 任务引擎和 store 未修改，RDP、RustDesk、VNC、Native GPU renderer 未修改。
+
+本轮验证：
+
+- `default@OhosTestCompileArkTS`：通过。
+- `assembleHap`：`BUILD SUCCESSFUL in 32 s 998 ms`；签名 HAP SHA-256 `f07a54cf5a5e57b16411faa95295dbd6214c77bb39b2ba20bc35a0835fa36946`。
+- Host Native suite：沙箱外 `339 passed, 0 failed, 339 total`；沙箱内仅 16 个既有 VNC loopback fixture 受限。
+- 无线 MLR-AL10 `192.168.3.236:40123`：Direct SSH 连接通过；宽 bindSheet、规则创建/展示/启动、深色嵌套弹窗和删除确认通过。
+- 已保存并启动 Local `127.0.0.1:8022 -> 127.0.0.1:22`。临时 HDC `28022 -> 8022` 映射传输了真实 OpenSSH banner、客户端 identification 和服务端 KEXINIT；UI 实时显示 `连接 1` / `流量 1.1 KB`，证明 Local 双向数据链路和 runtime 统计通过。临时映射已移除。
+- `ohosTest@OhosTestCompileArkTS` 仍因 `00306054` 不可用；本机缺少 `pwsh`，Light gate 无法启动，且既有 SBOM `NOASSERTION` blocker 未解除。
+- 未提供真实 HTTP CONNECT、SOCKS5、ProxyJump、外部 FRP、Remote/Dynamic endpoint；这些互操作验收仍未通过，不能由已通过的 Local 结果外推。
 
 ## 1. 本计划只做什么
 
@@ -462,14 +484,14 @@ Phone、Pad、PC/2in1 必测：
 
 ### 代理设置
 
-- [ ] Direct 不回归。
+- [x] Direct 不回归（无线实机 SSH 连接通过）。
 - [ ] HTTP CONNECT 真实连接通过。
 - [ ] SOCKS5 真实连接通过。
 - [ ] 一至三跳 ProxyJump 通过。
 - [ ] 每跳独立认证和 host-key 错误正确。
 - [ ] 外部 FRP TCP endpoint 通过。
-- [ ] App 不包含 FRP 控制面和 secret。
-- [ ] 重连不会复用旧 route channel。
+- [x] App 不包含 FRP 控制面和 secret。
+- [x] 重连不会复用旧 route channel（generation 策略与回归测试通过；真实多跳端点仍待验收）。
 
 ### 隧道转发
 
@@ -478,18 +500,18 @@ Phone、Pad、PC/2in1 必测：
 - [ ] Dynamic forwarding 完成 SOCKS5 CONNECT。
 - [ ] 监听失败能显示并清理。
 - [ ] SSH 断线后 listener 和连接清理。
-- [ ] stale callback 不污染新 generation。
+- [x] stale callback 不污染新 generation（controller/session store 回归测试通过）。
 - [ ] 页面关闭不误停后台 runtime。
 - [ ] session 关闭会停止其全部 runtime。
 
 ### UI 和隔离
 
 - [ ] Phone 保持原始交互。
-- [ ] Pad/PC 使用统一宽 sheet。
-- [ ] 关闭按钮、标题和内容不重叠。
-- [ ] 连续开关 sheet 无竞态。
-- [ ] SFTP 没有代码改动。
-- [ ] RDP/RustDesk/VNC 没有代码改动。
+- [x] Pad/PC 使用统一宽 sheet（无线 Pad 通过）。
+- [x] 关闭按钮、标题和内容不重叠。
+- [x] 连续开关 sheet 无竞态（关闭/重开/双击通过）。
+- [x] SFTP 页面、任务引擎和 store 没有代码改动。
+- [x] RDP/RustDesk/VNC 没有代码改动。
 
 ## 10. 每个提交前的强制门禁
 
