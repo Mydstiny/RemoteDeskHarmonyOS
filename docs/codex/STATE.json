@@ -4,9 +4,9 @@
   "branch": "codex/privacy-permission-disclosure",
   "base": "d840e662a",
   "head": "d840e662a",
-  "phase": "review-remediation",
+  "phase": "reviewed-awaiting-compliance",
   "status": "active",
-  "next": "Checkpoint and independently review the completed disclosure scope; provide PowerShell 7 and pass the exact Light compliance gate before push.",
+  "next": "Provide PowerShell 7 and pass the exact Light compliance gate before push; then deploy Pages and update the AppGallery user_grant declaration.",
   "blockers": [
     "PowerShell 7 (pwsh) is unavailable on this Mac, so scripts/verify_open_source_release.ps1 -Mode Light cannot run exactly."
   ],
@@ -14,7 +14,7 @@
     "docs/codex/plans/2026-08-09-privacy-permission-disclosure-plan.md"
   ],
   "review": {
-    "status": "REVIEW_REQUIRED",
+    "status": "PASS",
     "taskId": "/root/privacy_disclosure_review",
     "scope": [
       ".github/workflows/feedback-pages.yml",
@@ -26,8 +26,8 @@
       "entry/src/main/ets/components/AboutSettingsSheet.ets",
       "entry/src/main/resources/base/element/string.json"
     ],
-    "receiptId": "",
-    "reason": "First review findings were remediated; the committed final scope requires independent re-review."
+    "receiptId": "privacy-permission-disclosure-pass-2026-08-09",
+    "reason": "Independent remediation review passed with no P0/P1/P2/P3 findings."
   },
   "lastVerification": {
     "baseline": "main@d840e662a clean and equal to origin/main at task start on 2026-08-09",
