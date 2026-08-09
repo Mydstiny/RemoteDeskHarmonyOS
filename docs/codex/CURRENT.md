@@ -5,7 +5,7 @@
 - Task: `privacy-permission-disclosure`
 - Base: `main@d840e662a`
 - Branch: `codex/privacy-permission-disclosure`
-- Phase: verification and checkpoint review.
+- Phase: review remediation and re-verification.
 
 ## Context
 
@@ -20,6 +20,11 @@
   which the existing GitHub Pages workflow packages alongside the feedback page.
 - Runtime permission declarations, cloud synchronization code and signing
   material were not changed.
+- The first independent review found overbroad claims about encryption and
+  device-local personalization. The policy now states the actual conditional
+  encryption behavior and the old-version cloud compatibility snapshots.
+- Refusal/withdrawal impact is now identical in the public policy, in-app
+  summary and AppGallery submission wording; stale VNC mock wording was removed.
 
 ## Scope
 
@@ -31,8 +36,10 @@
 ## Verification
 
 - Baseline: clean `main@d840e662a`, equal to `origin/main` on 2026-08-09.
-- Final-state `default@OhosTestCompileArkTS`: PASS, exit 0 on 2026-08-09.
-- Final-state `assembleHap`: PASS, exit 0, `BUILD SUCCESSFUL in 15 s 326 ms`.
+- Post-review-remediation `default@OhosTestCompileArkTS`: PASS, exit 0 on
+  2026-08-09.
+- Post-review-remediation `assembleHap`: PASS, exit 0,
+  `BUILD SUCCESSFUL in 10 s 206 ms`.
 - JSON, workflow YAML, Pages artifact simulation, literal permission and Huawei
   Cloud Space terminology checks: PASS.
 - `git diff --check`: PASS.
@@ -43,7 +50,8 @@
 
 ## Next
 
-1. Create a checkpoint commit and independently review the declared scope.
+1. Commit the review remediations and ask the same independent reviewer to
+   re-check the expanded declared scope.
 2. Install/provide PowerShell 7 and run the exact Light compliance gate before push.
 3. Publish the branch, deploy Pages, then use the public privacy URL and exact
    permission-purpose wording in AppGallery.

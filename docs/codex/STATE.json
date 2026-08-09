@@ -4,7 +4,7 @@
   "branch": "codex/privacy-permission-disclosure",
   "base": "d840e662a",
   "head": "d840e662a",
-  "phase": "verification",
+  "phase": "review-remediation",
   "status": "active",
   "next": "Checkpoint and independently review the completed disclosure scope; provide PowerShell 7 and pass the exact Light compliance gate before push.",
   "blockers": [
@@ -15,24 +15,25 @@
   ],
   "review": {
     "status": "REVIEW_REQUIRED",
-    "taskId": "",
+    "taskId": "/root/privacy_disclosure_review",
     "scope": [
       ".github/workflows/feedback-pages.yml",
       "docs/app-store/APPGALLERY_RELEASE_GUIDE.md",
       "docs/app-store/PRIVACY_POLICY.md",
       "docs/app-store/RELEASE_PRIVACY_CHECKLIST.md",
+      "docs/app-store/USER_GUIDE.md",
       "docs/feedback/privacy/index.html",
       "entry/src/main/ets/components/AboutSettingsSheet.ets",
       "entry/src/main/resources/base/element/string.json"
     ],
     "receiptId": "",
-    "reason": "Completed privacy disclosure and public policy page require checkpoint commit and independent review."
+    "reason": "First review findings were remediated; the committed final scope requires independent re-review."
   },
   "lastVerification": {
     "baseline": "main@d840e662a clean and equal to origin/main at task start on 2026-08-09",
     "diffCheck": "PASS on final working tree, 2026-08-09",
-    "testCompile": "PASS: default@OhosTestCompileArkTS exit 0 on final working tree, 2026-08-09",
-    "assembleHap": "PASS: assembleHap exit 0, BUILD SUCCESSFUL in 15 s 326 ms on final working tree, 2026-08-09",
+    "testCompile": "PASS: default@OhosTestCompileArkTS exit 0 after review remediation, 2026-08-09",
+    "assembleHap": "PASS: assembleHap exit 0, BUILD SUCCESSFUL in 10 s 206 ms after review remediation, 2026-08-09",
     "lightCompliance": "BLOCKED: exact PowerShell gate unavailable because pwsh is missing; manual shell equivalent PASS on 2026-08-09"
   },
   "updated": "2026-08-09 Asia/Shanghai"

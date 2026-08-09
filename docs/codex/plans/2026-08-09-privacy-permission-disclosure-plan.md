@@ -16,8 +16,9 @@ Cloud Space synchronization permission.
    complete-policy link at a real public privacy page; align the system permission
    prompt reason with the same trigger and purpose.
 3. Publish a privacy-only static page through the existing GitHub Pages workflow.
-4. Update the AppGallery release guide and permission checklist to use the actual
-   Huawei Cloud Space service terminology and current permission set.
+4. Update the AppGallery release guide, user guide and permission checklist to
+   use the actual Huawei Cloud Space terminology, current permission set and
+   conditional encryption behavior.
 
 ## Guardrails
 
@@ -26,7 +27,10 @@ Cloud Space synchronization permission.
 - Keep `DISTRIBUTED_DATASYNC`; cloud synchronization depends on it.
 - State clearly that refusing the permission disables cloud synchronization but
   does not prevent local use.
-- Do not claim that device-local personalization is uploaded.
+- State accurately that current devices use local personalization while legacy
+  compatibility snapshots or historical values may remain in cloud rows.
+- Do not claim that sensitive fields are always encrypted when application
+  encryption has not been enabled.
 
 ## Verification
 
