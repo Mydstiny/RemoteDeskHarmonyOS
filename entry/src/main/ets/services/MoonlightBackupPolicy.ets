@@ -1,0 +1,251 @@
+import {
+  MOONLIGHT_LOCAL_RECORD_COLUMNS,
+  MOONLIGHT_RECORD_COLUMNS,
+  MoonlightRecord,
+  moonlightLocalOnlyFlagIsValid,
+  moonlightRecordFromCloudRow,
+  moonlightRecordToCloudRow
+} from '../model/MoonlightRecord';
+import {
+  MoonlightConflictDecision,
+  resolveMoonlightRecordConflict
+} from './MoonlightRecordConflictPolicy';
+import { moonlightValidateRecord } from './MoonlightRecordPolicy';
+
+export type MoonlightBackupMode = 'redacted' | 'full';
+
+export const MOONLIGHT_RESTORE_QUARANTINE_KEY: string =
+  'moonlight_restored_not_activated_v1';
+
+export interface MoonlightBackupFilterResult {
+  rows: Array<Record<string, string>>;
+  excludedRows: number;
+}
+
+export interface MoonlightBackupRestoreResolution {
+  rows: Array<Record<string, string>>;
+  quarantinedRows: number;
+  sourceRows: number;
+}
+
+function copyExactRow(
+  source: Record<string, string>, columns: string[]
+): Record<string, string> | null {
+  const keys: string[] = Object.keys(source);
+  if (keys.length !== columns.length) { return null; }
+  const row: Record<string, string> = {};
+  for (let i = 0; i < columns.length; i++) {
+    const key: string = columns[i];
+    if (typeof source[key] !== 'string') { return null; }
+    row[key] = source[key];
+  }
+  return row;
+}
+
+function recordTypeIsPortable(
+  record: MoonlightRecord, mode: MoonlightBackupMode
+): boolean {
+  if (record.recordType === 'secret') { return false; }
+  if (mode === 'redacted' && record.recordType === 'trust') {
+    return false;
+  }
+  return record.recordType === 'settings' ||
+    record.recordType === 'host' ||
+    record.recordType === 'profile' ||
+    record.recordType === 'trust';
+}
+
+/** Source-store admission is stricter than redaction: malformed rows abort. */
+export function moonlightBackupSourceRowsAreValid(
+  rows: Array<Record<string, string>>,
+  owner: string,
+  localTable: boolean
+): boolean {
+  const columns: string[] = localTable
+    ? MOONLIGHT_LOCAL_RECORD_COLUMNS : MOONLIGHT_RECORD_COLUMNS;
+  const ids: Set<string> = new Set<string>();
+  for (let i = 0; i < rows.length; i++) {
+    const exact: Record<string, string> | null =
+      copyExactRow(rows[i], columns);
+    if (exact === null || exact['userid'] !== owner ||
+      ids.has(exact['id'] || '')) {
+      return false;
+    }
+    if (localTable &&
+      !moonlightLocalOnlyFlagIsValid(Number(exact['localonly']))) {
+      return false;
+    }
+    if (!moonlightValidateRecord(
+      moonlightRecordFromCloudRow(exact)).valid) {
+      return false;
+    }
+    ids.add(exact['id']);
+  }
+  return true;
+}
+
+/**
+ * Moonlight client identity is omitted even from a full portable backup.
+ * Full mode adds only certificate trust candidates; it never adds private-key
+ * bytes, pairing PINs, session tokens, cache rows or device-local approval.
+ */
+export function filterMoonlightBackupRows(
+  rows: Array<Record<string, string>>,
+  mode: MoonlightBackupMode,
+  localTable: boolean
+): MoonlightBackupFilterResult {
+  const result: Array<Record<string, string>> = [];
+  let excludedRows: number = 0;
+  const columns: string[] = localTable
+    ? MOONLIGHT_LOCAL_RECORD_COLUMNS : MOONLIGHT_RECORD_COLUMNS;
+  for (let i = 0; i < rows.length; i++) {
+    const exact: Record<string, string> | null =
+      copyExactRow(rows[i], columns);
+    if (exact === null) {
+      excludedRows++;
+      continue;
+    }
+    if (localTable &&
+      !moonlightLocalOnlyFlagIsValid(Number(exact['localonly']))) {
+      excludedRows++;
+      continue;
+    }
+    const record: MoonlightRecord = moonlightRecordFromCloudRow(exact);
+    if (!moonlightValidateRecord(record).valid ||
+      !recordTypeIsPortable(record, mode)) {
+      excludedRows++;
+      continue;
+    }
+    result.push(exact);
+  }
+  return { rows: result, excludedRows };
+}
+
+export function moonlightBackupRowsAreValid(
+  rows: Array<Record<string, string>>,
+  owner: string,
+  mode: MoonlightBackupMode,
+  localTable: boolean
+): boolean {
+  const filtered: MoonlightBackupFilterResult =
+    filterMoonlightBackupRows(rows, mode, localTable);
+  if (filtered.excludedRows !== 0 || filtered.rows.length !== rows.length) {
+    return false;
+  }
+  for (let i = 0; i < rows.length; i++) {
+    if (rows[i]['userid'] !== owner) { return false; }
+  }
+  return true;
+}
+
+function reboundRecord(
+  row: Record<string, string>, targetOwner: string
+): MoonlightRecord | null {
+  const rebound: Record<string, string> = {};
+  for (let i = 0; i < MOONLIGHT_RECORD_COLUMNS.length; i++) {
+    const key: string = MOONLIGHT_RECORD_COLUMNS[i];
+    if (typeof row[key] !== 'string') { return null; }
+    rebound[key] = row[key];
+  }
+  rebound['userid'] = targetOwner;
+  if (rebound['ownertype'] === 'account') {
+    rebound['ownerid'] = targetOwner;
+  }
+  const record: MoonlightRecord = moonlightRecordFromCloudRow(rebound);
+  return moonlightValidateRecord(record).valid ? record : null;
+}
+
+function localRestoreRow(
+  record: MoonlightRecord
+): Record<string, string> {
+  const source: Record<string, string> =
+    moonlightRecordToCloudRow(record);
+  const row: Record<string, string> = {};
+  for (let i = 0; i < MOONLIGHT_RECORD_COLUMNS.length; i++) {
+    const key: string = MOONLIGHT_RECORD_COLUMNS[i];
+    row[key] = source[key];
+  }
+  // Portable restore is intentionally local-first. D2-07 may later promote
+  // selected rows only after cloud-first bootstrap and explicit user consent.
+  row['localonly'] = '1';
+  return row;
+}
+
+/**
+ * Resolve the cloud section and local overlay into one local-only projection.
+ * No synthetic merge context is invented during restore. Ambiguous equal
+ * envelopes and identity conflicts are quarantined instead of guessed.
+ */
+export function resolveMoonlightBackupForRestore(
+  cloudRows: Array<Record<string, string>>,
+  localRows: Array<Record<string, string>>,
+  targetOwner: string,
+  mode: MoonlightBackupMode
+): MoonlightBackupRestoreResolution {
+  const filteredCloud: MoonlightBackupFilterResult =
+    filterMoonlightBackupRows(cloudRows, mode, false);
+  const filteredLocal: MoonlightBackupFilterResult =
+    filterMoonlightBackupRows(localRows, mode, true);
+  const records: Map<string, MoonlightRecord> =
+    new Map<string, MoonlightRecord>();
+  const blockedIds: Set<string> = new Set<string>();
+  let quarantinedRows: number = filteredCloud.excludedRows +
+    filteredLocal.excludedRows;
+  const candidates: Array<Record<string, string>> =
+    filteredCloud.rows.concat(filteredLocal.rows);
+  for (let i = 0; i < candidates.length; i++) {
+    const candidate: MoonlightRecord | null =
+      reboundRecord(candidates[i], targetOwner);
+    const id: string = candidates[i]['id'] || '';
+    if (candidate === null || id === '' || blockedIds.has(id)) {
+      quarantinedRows++;
+      continue;
+    }
+    const current: MoonlightRecord | undefined = records.get(id);
+    if (current === undefined) {
+      records.set(id, candidate);
+      continue;
+    }
+    const decision: MoonlightConflictDecision =
+      resolveMoonlightRecordConflict(current, candidate, null);
+    if (decision.action === 'quarantine_both' ||
+      decision.record === null) {
+      records.delete(id);
+      blockedIds.add(id);
+      quarantinedRows += 2;
+      continue;
+    }
+    if (decision.action === 'quarantine_candidate') {
+      quarantinedRows++;
+      continue;
+    }
+    records.set(id, decision.record);
+  }
+  const ids: string[] = Array.from(records.keys()).sort();
+  const activeHostIds: Set<string> = new Set<string>();
+  for (let i = 0; i < ids.length; i++) {
+    const record: MoonlightRecord =
+      records.get(ids[i]) as MoonlightRecord;
+    if (record.recordType === 'host' && record.deletedAt === 0) {
+      activeHostIds.add(record.id);
+    }
+  }
+  const rows: Array<Record<string, string>> = [];
+  for (let i = 0; i < ids.length; i++) {
+    const record: MoonlightRecord =
+      records.get(ids[i]) as MoonlightRecord;
+    if ((record.recordType === 'profile' ||
+      record.recordType === 'trust') &&
+      record.deletedAt === 0 &&
+      !activeHostIds.has(record.ownerId)) {
+      quarantinedRows++;
+      continue;
+    }
+    rows.push(localRestoreRow(record));
+  }
+  return {
+    rows,
+    quarantinedRows,
+    sourceRows: cloudRows.length + localRows.length
+  };
+}

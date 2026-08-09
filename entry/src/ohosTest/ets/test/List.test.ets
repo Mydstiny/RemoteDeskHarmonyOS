@@ -91,6 +91,7 @@ import moonlightCloudSyncServiceTest from '../../../test/MoonlightCloudSyncServi
 import moonlightDataLifecycleBarrierTest from '../../../test/MoonlightDataLifecycleBarrier.test';
 import moonlightDeletionPolicyTest from '../../../test/MoonlightDeletionPolicy.test';
 import moonlightCloudStatusPolicyTest from '../../../test/MoonlightCloudStatusPolicy.test';
+import moonlightBackupPolicyTest from '../../../test/MoonlightBackupPolicy.test';
 import { FOCUSED_TEST_REGISTRATION_AUDIT } from '../../../main/ets/services/FocusedTestRegistrationAudit';
 
 function requestedClassScope(): string {
@@ -156,6 +157,7 @@ function registerFocusedRepairSuite(scope: string): number {
     moonlightDataLifecycleBarrierTest();
     moonlightDeletionPolicyTest();
     moonlightCloudStatusPolicyTest();
+    moonlightBackupPolicyTest();
   } else {
     return 0;
   }
@@ -181,7 +183,8 @@ function focusedDescribeNames(scope: string): string[] {
       'MoonlightRepository', 'MoonlightAppCacheService',
       'MoonlightSensitiveTransferPolicy', 'MoonlightCloudSyncSelectionPolicy',
       'MoonlightCloudSyncService', 'MoonlightDataLifecycleBarrier',
-      'MoonlightDeletionPolicy', 'MoonlightCloudStatusPolicy'];
+      'MoonlightDeletionPolicy', 'MoonlightCloudStatusPolicy',
+      'MoonlightBackupPolicy'];
   }
   if (scope === 'RustDeskProAddressBookPolicy') {
     return ['RustDeskProAddressBookPolicy'];
@@ -244,7 +247,7 @@ function focusedDescribeNames(scope: string): string[] {
 }
 
 function expectedFocusedCount(scope: string): number {
-  if (scope === 'MoonlightDomainPolicy') { return 109; }
+  if (scope === 'MoonlightDomainPolicy') { return 122; }
   if (scope === 'RustDeskProAddressBookPolicy') { return 8; }
   if (scope === 'RustDeskProAddressBookApiService') { return 4; }
   if (scope === 'RustDeskProAddressBookSyncService') { return 7; }

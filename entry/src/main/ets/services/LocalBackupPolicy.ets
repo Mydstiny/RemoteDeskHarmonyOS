@@ -21,6 +21,19 @@ import {
   vncRecordFromCloudRow,
   vncRecordIsValid
 } from './VncRecordPolicy';
+import {
+  MOONLIGHT_CLOUD_TABLE,
+  MOONLIGHT_LOCAL_RECORD_COLUMNS,
+  MOONLIGHT_LOCAL_TABLE,
+  MOONLIGHT_RECORD_COLUMNS,
+  MOONLIGHT_SCHEMA_VERSION
+} from '../model/MoonlightRecord';
+import {
+  moonlightBackupRowsAreValid,
+  moonlightBackupSourceRowsAreValid,
+  MoonlightBackupRestoreResolution,
+  resolveMoonlightBackupForRestore
+} from './MoonlightBackupPolicy';
 
 export const LOCAL_BACKUP_FORMAT: string = 'remotedesktop-local-backup';
 export const LOCAL_BACKUP_VERSION: number = 3;
@@ -29,7 +42,11 @@ const DISTRIBUTED_SYSTEM_COLUMNS: string[] = ['#_deleted_flag'];
 const LOCAL_EXTENSION_TABLES: string[] = [
   'remotehosts', 'rdpcredentials', 'sshkeys', 'rdprestrictedadminsecrets'
 ];
-const LOCAL_BACKUP_LOCAL_TABLES: string[] = ['vnclocalrecords'];
+export const LOCAL_BACKUP_PORTABLE_TABLES: string[] =
+  CLOUD_SYNC_TABLES.concat([MOONLIGHT_CLOUD_TABLE]);
+const LEGACY_LOCAL_BACKUP_LOCAL_TABLES: string[] = ['vnclocalrecords'];
+const LOCAL_BACKUP_LOCAL_TABLES: string[] =
+  LEGACY_LOCAL_BACKUP_LOCAL_TABLES.concat([MOONLIGHT_LOCAL_TABLE]);
 const REMOTE_HOST_EXTENSION_PAYLOAD_COLUMNS: string[] = [
   // `password` is a legacy shadow that migration may still need to recover.
   'password', 'sshkeypassphrase', 'sshproxypassword',
@@ -93,6 +110,9 @@ export function localBackupColumnsForTable(table: string): string[] {
   if (table === 'vncrecordv2') {
     return ['id', 'userid', 'recordtype', 'ownerid', 'ownertype', 'secretkind', 'payload', 'ciphertext', 'envelopeversion', 'cryptoversion', 'keyversion', 'aadversion', 'payloadhashsha256', 'syncversion', 'schemaversion', 'resetepoch', 'createdat', 'updatedat', 'deletedat'];
   }
+  if (table === MOONLIGHT_CLOUD_TABLE) {
+    return MOONLIGHT_RECORD_COLUMNS.slice();
+  }
   return [];
 }
 
@@ -115,6 +135,9 @@ export function localBackupLocalTableColumns(table: string): string[] {
       'envelopeversion', 'cryptoversion', 'keyversion', 'aadversion', 'payloadhashsha256',
       'syncversion', 'schemaversion', 'resetepoch', 'createdat', 'updatedat', 'deletedat', 'localonly'];
   }
+  if (table === MOONLIGHT_LOCAL_TABLE) {
+    return MOONLIGHT_LOCAL_RECORD_COLUMNS.slice();
+  }
   return [];
 }
 
@@ -126,6 +149,11 @@ function localBackupIntegerColumns(table: string): string[] {
   if (table === 'sshkeys') { return ['keytype', 'locked', 'locktype', 'syncversion', 'createdat', 'updatedat', 'formatversion', 'privatekeyencrypted']; }
   if (table === 'totpentries') { return ['algorithm', 'digits', 'period', 'locked', 'locktype', 'syncversion', 'createdat', 'updatedat']; }
   if (table === 'vncrecordv2') { return ['envelopeversion', 'cryptoversion', 'keyversion', 'aadversion', 'syncversion', 'schemaversion', 'resetepoch', 'createdat', 'updatedat', 'deletedat']; }
+  if (table === MOONLIGHT_CLOUD_TABLE) {
+    return ['envelopeversion', 'cryptoversion', 'keyversion',
+      'aadversion', 'syncversion', 'schemaversion', 'resetepoch',
+      'createdat', 'updatedat', 'deletedat'];
+  }
   return [];
 }
 
@@ -133,6 +161,11 @@ function localBackupLocalTableIntegerColumns(table: string): string[] {
   if (table === 'vnclocalrecords') {
     return ['envelopeversion', 'cryptoversion', 'keyversion', 'aadversion', 'syncversion',
       'schemaversion', 'resetepoch', 'createdat', 'updatedat', 'deletedat', 'localonly'];
+  }
+  if (table === MOONLIGHT_LOCAL_TABLE) {
+    return ['envelopeversion', 'cryptoversion', 'keyversion',
+      'aadversion', 'syncversion', 'schemaversion', 'resetepoch',
+      'createdat', 'updatedat', 'deletedat', 'localonly'];
   }
   return [];
 }
@@ -177,7 +210,7 @@ export function localBackupCanonicalPayload(
 ): string {
   const ordered: Record<string, Array<Record<string, string>>> = {};
   const inventory: string[] = tableInventory === undefined
-    ? CLOUD_SYNC_TABLES : tableInventory;
+    ? LOCAL_BACKUP_PORTABLE_TABLES : tableInventory;
   const presentNames: string[] = Object.keys(tables);
   for (let i = 0; i < inventory.length; i++) {
     const table: string = inventory[i];
@@ -242,6 +275,22 @@ function hasActiveVncTrustRows(data: PortableBackupData): boolean {
   return false;
 }
 
+function hasActiveMoonlightTrustRows(data: PortableBackupData): boolean {
+  const tables: Array<Array<Record<string, string>>> = [
+    data.tables[MOONLIGHT_CLOUD_TABLE] || [],
+    data.localTables[MOONLIGHT_LOCAL_TABLE] || []
+  ];
+  for (let t = 0; t < tables.length; t++) {
+    for (let r = 0; r < tables[t].length; r++) {
+      if (tables[t][r]['recordtype'] === 'trust' &&
+        Number(tables[t][r]['deletedat'] || '0') <= 0) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 function createBackupManifestV3(
   data: PortableBackupRedactionResult, createdAt: number,
   appVersion: string, accountScope: string, rdbSchemaVersion: number,
@@ -250,8 +299,8 @@ function createBackupManifestV3(
 ): BackupManifestV3 {
   const sections: BackupSectionManifestV3[] = [];
   const tableNames: string[] = Object.keys(data.tables);
-  for (let i = 0; i < CLOUD_SYNC_TABLES.length; i++) {
-    const table: string = CLOUD_SYNC_TABLES[i];
+  for (let i = 0; i < LOCAL_BACKUP_PORTABLE_TABLES.length; i++) {
+    const table: string = LOCAL_BACKUP_PORTABLE_TABLES[i];
     const present: boolean = tableNames.indexOf(table) >= 0;
     sections.push(sectionManifest(
       'cloud:' + table, 'cloud_table', table, present,
@@ -295,6 +344,18 @@ function createBackupManifestV3(
       plaintextConsentIncluded:
         sensitivityMode === 'full' && !sourceCryptoConfigured,
       loginTokensIncluded: sensitivityMode === 'full'
+    },
+    moonlight: {
+      schemaVersion: MOONLIGHT_SCHEMA_VERSION,
+      settingsHostsProfilesIncluded: true,
+      trustCandidatesIncluded:
+        sensitivityMode === 'full' &&
+        hasActiveMoonlightTrustRows(data),
+      // Pairing identity is device-bound and omitted even from an explicit
+      // full backup. Restore therefore always requires re-pairing.
+      clientIdentityIncluded: false,
+      clientIdentityOmitted: true,
+      restoreLocalOnly: true
     }
   };
 }
@@ -317,6 +378,15 @@ export function createLocalBackupDocument(
   sourceCryptoConfigured: boolean = false,
   sensitivityMode: BackupSensitivityMode = 'redacted'
 ): LocalBackupDocument {
+  if ((tables[MOONLIGHT_CLOUD_TABLE] !== undefined &&
+    !moonlightBackupSourceRowsAreValid(
+      tables[MOONLIGHT_CLOUD_TABLE], accountScope, false)) ||
+    (localTables[MOONLIGHT_LOCAL_TABLE] !== undefined &&
+      !moonlightBackupSourceRowsAreValid(
+        localTables[MOONLIGHT_LOCAL_TABLE], accountScope, true))) {
+    throw new Error(
+      'portable backup contains invalid Moonlight source rows');
+  }
   const portable: PortableBackupRedactionResult =
     sensitivityMode === 'full'
       ? fullPortableBackupData(tables, extensions, localTables)
@@ -357,8 +427,10 @@ export function validateLocalBackupDocument(text: string): LocalBackupDocument |
     }
     const names: string[] = Object.keys(document.tables);
     const inventory: string[] = [];
-    for (let i = 0; i < CLOUD_SYNC_TABLES.length; i++) {
-      const table: string = CLOUD_SYNC_TABLES[i];
+    const allowedTables: string[] = document.version >= 3
+      ? LOCAL_BACKUP_PORTABLE_TABLES : CLOUD_SYNC_TABLES;
+    for (let i = 0; i < allowedTables.length; i++) {
+      const table: string = allowedTables[i];
       if (names.indexOf(table) >= 0) { inventory.push(table); }
     }
     if (inventory.length !== names.length) {
@@ -465,20 +537,37 @@ function validateBackupManifestV3(
       (manifest === undefined ? 'none' : (manifest.crypto ? manifest.crypto.mode : 'no-crypto')));
     return false;
   }
+  const hasMoonlightDescriptor: boolean =
+    manifest.moonlight !== undefined;
+  const manifestCloudTables: string[] = hasMoonlightDescriptor
+    ? LOCAL_BACKUP_PORTABLE_TABLES : CLOUD_SYNC_TABLES;
+  const manifestLocalTables: string[] = hasMoonlightDescriptor
+    ? LOCAL_BACKUP_LOCAL_TABLES : LEGACY_LOCAL_BACKUP_LOCAL_TABLES;
+  const documentLocalTables:
+    Record<string, Array<Record<string, string>>> =
+    document.localTables === undefined ?
+      {} as Record<string, Array<Record<string, string>>> :
+      document.localTables;
+  if (!hasMoonlightDescriptor &&
+    (inventory.indexOf(MOONLIGHT_CLOUD_TABLE) >= 0 ||
+      Object.keys(documentLocalTables)
+        .indexOf(MOONLIGHT_LOCAL_TABLE) >= 0)) {
+    return false;
+  }
   if (
     manifest.sourceAppVersion !== document.appVersion ||
     manifest.createdAt !== document.createdAt ||
     manifest.restoreMode !== 'merge' ||
     manifest.sections.length !==
-      CLOUD_SYNC_TABLES.length + LOCAL_BACKUP_LOCAL_TABLES.length + 1) {
+      manifestCloudTables.length + manifestLocalTables.length + 1) {
     hilog.error(0x0001, 'LocalBackupPolicy', 'manifest stage=meta sections=' +
       manifest.sections.length.toString() + ' app=' + manifest.sourceAppVersion +
       ' vs ' + document.appVersion + ' createdAt=' +
       manifest.createdAt.toString() + ' vs ' + document.createdAt.toString());
     return false;
   }
-  for (let i = 0; i < CLOUD_SYNC_TABLES.length; i++) {
-    const table: string = CLOUD_SYNC_TABLES[i];
+  for (let i = 0; i < manifestCloudTables.length; i++) {
+    const table: string = manifestCloudTables[i];
     const section: BackupSectionManifestV3 | null =
       manifestSection(manifest, 'cloud:' + table);
     const present: boolean = inventory.indexOf(table) >= 0;
@@ -510,8 +599,8 @@ function validateBackupManifestV3(
   const localTables: Record<string, Array<Record<string, string>>> =
     document.localTables || {};
   const localNames: string[] = Object.keys(localTables);
-  for (let i = 0; i < LOCAL_BACKUP_LOCAL_TABLES.length; i++) {
-    const table: string = LOCAL_BACKUP_LOCAL_TABLES[i];
+  for (let i = 0; i < manifestLocalTables.length; i++) {
+    const table: string = manifestLocalTables[i];
     const present: boolean = localNames.indexOf(table) >= 0;
     const section: BackupSectionManifestV3 | null =
       manifestSection(manifest, 'local:' + table);
@@ -520,6 +609,20 @@ function validateBackupManifestV3(
       !sectionMatchesRows(
         section, present, present ? localTables[table] : [],
         localBackupLocalTableColumns(table))) {
+      return false;
+    }
+  }
+  if (hasMoonlightDescriptor) {
+    const moonlightData: PortableBackupData = {
+      tables: document.tables,
+      extensions,
+      localTables
+    };
+    const expectedTrustCandidates: boolean =
+      manifest.crypto.mode === 'full' &&
+      hasActiveMoonlightTrustRows(moonlightData);
+    if (manifest.moonlight?.trustCandidatesIncluded !==
+      expectedTrustCandidates) {
       return false;
     }
   }
@@ -628,9 +731,19 @@ function validateRedactedV3Rows(
     !validateVncBackupRows(normalizedTables['vncrecordv2'], owner)) {
     return false;
   }
+  if (normalizedTables[MOONLIGHT_CLOUD_TABLE] !== undefined &&
+    !moonlightBackupRowsAreValid(
+      normalizedTables[MOONLIGHT_CLOUD_TABLE], owner,
+      'redacted', false)) {
+    return false;
+  }
   const localVnc: Array<Record<string, string>> =
     (document.localTables || {})['vnclocalrecords'] || [];
-  return validateVncBackupRows(localVnc, owner);
+  if (!validateVncBackupRows(localVnc, owner)) { return false; }
+  const localMoonlight: Array<Record<string, string>> =
+    (document.localTables || {})[MOONLIGHT_LOCAL_TABLE] || [];
+  return moonlightBackupRowsAreValid(
+    localMoonlight, owner, 'redacted', true);
 }
 
 /**
@@ -674,6 +787,18 @@ function validateFullV3Rows(
       return false;
     }
   }
+  if (normalizedTables[MOONLIGHT_CLOUD_TABLE] !== undefined &&
+    !moonlightBackupRowsAreValid(
+      normalizedTables[MOONLIGHT_CLOUD_TABLE], owner,
+      'full', false)) {
+    return false;
+  }
+  const localMoonlight: Array<Record<string, string>> =
+    (document.localTables || {})[MOONLIGHT_LOCAL_TABLE] || [];
+  if (!moonlightBackupRowsAreValid(
+    localMoonlight, owner, 'full', true)) {
+    return false;
+  }
   if (manifest.crypto.sourceCryptoConfigured &&
     (normalizedTables['cryptoparams'] === undefined ||
       normalizedTables['cryptoparams'].length === 0)) {
@@ -703,7 +828,7 @@ function reboundRows(
   const ownerTables: string[] = [
     'usersettings', 'remotehosts', 'rdpcredentials',
     'rustdeskrelays', 'sshkeys', 'totpentries', 'vncrecordv2',
-    'vnclocalrecords'
+    'vnclocalrecords', MOONLIGHT_CLOUD_TABLE, MOONLIGHT_LOCAL_TABLE
   ];
   for (let i = 0; i < rows.length; i++) {
     const row: Record<string, string> = {};
@@ -715,6 +840,11 @@ function reboundRows(
       row['userid'] = targetOwner;
     }
     if ((table === 'vncrecordv2' || table === 'vnclocalrecords') &&
+      row['ownertype'] === 'account') {
+      row['ownerid'] = targetOwner;
+    }
+    if ((table === MOONLIGHT_CLOUD_TABLE ||
+      table === MOONLIGHT_LOCAL_TABLE) &&
       row['ownertype'] === 'account') {
       row['ownerid'] = targetOwner;
     }
@@ -762,8 +892,8 @@ export function createLocalBackupRestorePreview(
   const absentTables: string[] = [];
   let rowCount: number = 0;
   let tombstoneCount: number = 0;
-  for (let i = 0; i < CLOUD_SYNC_TABLES.length; i++) {
-    const table: string = CLOUD_SYNC_TABLES[i];
+  for (let i = 0; i < LOCAL_BACKUP_PORTABLE_TABLES.length; i++) {
+    const table: string = LOCAL_BACKUP_PORTABLE_TABLES[i];
     if (presentTables.indexOf(table) < 0) {
       absentTables.push(table);
       continue;
@@ -790,7 +920,13 @@ export function createLocalBackupRestorePreview(
       document.manifest?.trust.vncTrustCandidatesIncluded === true,
     // A valid document can never transport this marker. Keep the preview
     // explicit so callers cannot accidentally imply that restore re-trusts.
-    vncLocalConfirmationMarkerIncluded: false
+    vncLocalConfirmationMarkerIncluded: false,
+    moonlightIncluded: document.manifest?.moonlight !== undefined,
+    moonlightTrustCandidatesIncluded:
+      document.manifest?.moonlight?.trustCandidatesIncluded === true,
+    moonlightClientIdentityIncluded: false,
+    moonlightRepairPairingRequired:
+      document.manifest?.moonlight !== undefined
   };
 }
 
@@ -823,10 +959,12 @@ export function adaptLocalBackupDocumentForRestore(
           document.tables, document.extensions || [],
           document.localTables || {});
   const tables: Record<string, Array<Record<string, string>>> = {};
-  const presentTables: string[] = Object.keys(portable.tables);
+  const sourcePresentTables: string[] = Object.keys(portable.tables);
+  const presentTables: string[] = [];
   let quarantinedRows: number = portable.excludedRows;
-  for (let i = 0; i < presentTables.length; i++) {
-    const table: string = presentTables[i];
+  for (let i = 0; i < sourcePresentTables.length; i++) {
+    const table: string = sourcePresentTables[i];
+    if (table === MOONLIGHT_CLOUD_TABLE) { continue; }
     const rebound: Array<Record<string, string>> =
       reboundRows(table, portable.tables[table], owner);
     if (table === 'vncrecordv2') {
@@ -839,12 +977,15 @@ export function adaptLocalBackupDocumentForRestore(
     } else {
       tables[table] = rebound;
     }
+    presentTables.push(table);
   }
   const localTables: Record<string, Array<Record<string, string>>> = {};
-  const presentLocalTables: string[] =
+  const sourcePresentLocalTables: string[] =
     Object.keys(portable.localTables);
-  for (let i = 0; i < presentLocalTables.length; i++) {
-    const table: string = presentLocalTables[i];
+  const presentLocalTables: string[] = [];
+  for (let i = 0; i < sourcePresentLocalTables.length; i++) {
+    const table: string = sourcePresentLocalTables[i];
+    if (table === MOONLIGHT_LOCAL_TABLE) { continue; }
     const rebound: Array<Record<string, string>> =
       reboundRows(table, portable.localTables[table], owner);
     if (table === 'vnclocalrecords') {
@@ -857,6 +998,21 @@ export function adaptLocalBackupDocumentForRestore(
     } else {
       localTables[table] = rebound;
     }
+    presentLocalTables.push(table);
+  }
+  const moonlightPresent: boolean =
+    document.manifest?.moonlight !== undefined &&
+    (sourcePresentTables.indexOf(MOONLIGHT_CLOUD_TABLE) >= 0 ||
+      sourcePresentLocalTables.indexOf(MOONLIGHT_LOCAL_TABLE) >= 0);
+  if (moonlightPresent) {
+    const moonlight: MoonlightBackupRestoreResolution =
+      resolveMoonlightBackupForRestore(
+        portable.tables[MOONLIGHT_CLOUD_TABLE] || [],
+        portable.localTables[MOONLIGHT_LOCAL_TABLE] || [],
+        owner, sensitivityMode);
+    localTables[MOONLIGHT_LOCAL_TABLE] = moonlight.rows;
+    presentLocalTables.push(MOONLIGHT_LOCAL_TABLE);
+    quarantinedRows += moonlight.quarantinedRows;
   }
   return {
     sourceFormatVersion: document.version,

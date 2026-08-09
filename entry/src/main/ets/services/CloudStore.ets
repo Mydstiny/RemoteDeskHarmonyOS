@@ -38,6 +38,7 @@ import { VncRecord } from '../model/VncRecord';
 import {
   MOONLIGHT_APP_CACHE_TABLE,
   MOONLIGHT_CLOUD_TABLE,
+  MOONLIGHT_LOCAL_RECORD_COLUMNS,
   MOONLIGHT_LOCAL_TABLE,
   MOONLIGHT_RECORD_COLUMNS,
   MoonlightRecord,
@@ -298,6 +299,9 @@ import {
   moonlightStorageSchemaContractIsExact
 } from './MoonlightStoragePolicy';
 import { moonlightValidateRecord } from './MoonlightRecordPolicy';
+import {
+  MOONLIGHT_RESTORE_QUARANTINE_KEY
+} from './MoonlightBackupPolicy';
 import { MoonlightRepositoryReadResult } from './MoonlightRepository';
 import {
   CryptoCommittedState,
@@ -3437,11 +3441,18 @@ export class CloudStore implements CryptoCloudStore {
     }
     try {
       this.store.beginTransaction();
+      const portableTables:
+        Record<string, Array<Record<string, string>>> =
+        this.exportAllTableRows();
+      // Moonlight remains a normal local RDB table until D2-07. It is added
+      // only to the portable snapshot and never to TABLES/setDistributedTables.
+      portableTables[MOONLIGHT_CLOUD_TABLE] =
+        this.exportTableRows(MOONLIGHT_CLOUD_TABLE);
       const snapshot: PortableBackupSnapshot = {
         accountScope: this.currentOwnerScopeId(),
         rdbSchemaVersion: this.store.version,
         sourceCryptoConfigured: this.getCryptoStatus() === 'active',
-        tables: this.exportAllTableRows(),
+        tables: portableTables,
         extensions: this.exportLocalExtensionRows(),
         localTables: this.exportAllLocalTableRows()
       };
@@ -3458,7 +3469,8 @@ export class CloudStore implements CryptoCloudStore {
     return [
       'usersettings', 'remotehosts', 'rdpcredentials',
       'rustdeskrelays', 'sshkeys', 'totpentries',
-      VNC_CLOUD_TABLE, VNC_LOCAL_TABLE
+      VNC_CLOUD_TABLE, VNC_LOCAL_TABLE,
+      MOONLIGHT_CLOUD_TABLE, MOONLIGHT_LOCAL_TABLE
     ].indexOf(table) >= 0;
   }
 
@@ -3486,7 +3498,8 @@ export class CloudStore implements CryptoCloudStore {
     if (!this.store) {
       throw new Error('portable restore store unavailable');
     }
-    const allowed: string[] = table === VNC_LOCAL_TABLE
+    const allowed: string[] =
+      localBackupLocalTableNames().indexOf(table) >= 0
       ? localBackupLocalTableColumns(table)
       : localBackupColumnsForTable(table);
     let changed: number = 0;
@@ -3521,6 +3534,18 @@ export class CloudStore implements CryptoCloudStore {
         if (!vncRecordIsValid(vncRecordFromCloudRow(validationRow))) {
           throw new Error('portable restore invalid VNC row: ' + id);
         }
+      }
+      if (table === MOONLIGHT_LOCAL_TABLE) {
+        if (source['localonly'] !== '1' ||
+          keys.length !== MOONLIGHT_LOCAL_RECORD_COLUMNS.length ||
+          !moonlightValidateRecord(
+            moonlightRecordFromCloudRow(source)).valid) {
+          throw new Error(
+            'portable restore invalid Moonlight row: ' + id);
+        }
+        // Reassert the local-first boundary even if a caller constructed the
+        // plan manually rather than through LocalBackupPolicy.
+        bucket['localonly'] = 1;
       }
       const exists: boolean = this.portableRowExists(table, id);
       if (exists) {
@@ -3669,6 +3694,7 @@ export class CloudStore implements CryptoCloudStore {
     try {
       this.store.beginTransaction();
       let changed: number = 0;
+      let cloudQuarantineChanged: number = 0;
       for (let i = 0; i < plan.presentTables.length; i++) {
         const table: string = plan.presentTables[i];
         if (TABLES.indexOf(table) < 0 ||
@@ -3679,7 +3705,10 @@ export class CloudStore implements CryptoCloudStore {
         const rows: Array<Record<string, string>> =
           plan.tables[table] || [];
         if (rows.length === 0) { continue; }
-        changed += this.mergePortableRows(table, rows);
+        const tableChanged: number =
+          this.mergePortableRows(table, rows);
+        changed += tableChanged;
+        cloudQuarantineChanged += tableChanged;
         if (!this.recordTableMutation(
           table, 'portable_restore_merge')) {
           throw new Error(
@@ -3695,6 +3724,7 @@ export class CloudStore implements CryptoCloudStore {
         const extensionChanged: number =
           this.mergePortableExtensions(plan.extensions);
         changed += extensionChanged;
+        cloudQuarantineChanged += extensionChanged;
         if (extensionChanged > 0) {
           const extensionTables: string[] = [];
           for (let i = 0; i < plan.extensions.length; i++) {
@@ -3730,6 +3760,7 @@ export class CloudStore implements CryptoCloudStore {
           table, plan.localTables[table] || []);
         changed += localChanged;
         if (localChanged > 0 && table === VNC_LOCAL_TABLE) {
+          cloudQuarantineChanged += localChanged;
           if (!this.recordTableMutation(
             VNC_CLOUD_TABLE,
             'portable_restore_local_vnc_merge') ||
@@ -3740,8 +3771,15 @@ export class CloudStore implements CryptoCloudStore {
               'portable local VNC quarantine failed');
           }
         }
+        if (localChanged > 0 &&
+          table === MOONLIGHT_LOCAL_TABLE &&
+          !this.writeLocalMetadata(
+            MOONLIGHT_RESTORE_QUARANTINE_KEY, '1')) {
+          throw new Error(
+            'portable Moonlight restore quarantine failed');
+        }
       }
-      if (changed > 0 && !this.writeLocalMetadata(
+      if (cloudQuarantineChanged > 0 && !this.writeLocalMetadata(
         RESTORED_NOT_UPLOADED_KEY, '1')) {
         throw new Error(
           'portable restore quarantine marker failed');
