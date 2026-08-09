@@ -113,6 +113,8 @@ import { ExtensionLoader } from '../services/ExtensionLoader';
 import { SshKeyImportService, SshKeyImportResult } from '../services/SshKeyImportService';
 import { SshXtermPrewarmSurface } from '../components/SshXtermSurface';
 import { SshSettingsService } from '../services/SshSettingsService';
+import { SshProxyProfileV1 } from '../services/SshProxyProfilePolicy';
+import { SshProxyProfileStore } from '../services/SshProxyProfileStore';
 import {
   normalizeSshEndpointTransport,
   sshEditorTransportForStoredHost
@@ -821,6 +823,7 @@ struct HostListPage {
   private loader: ExtensionLoader = ExtensionLoader.getInstance();
   private sshKeyImporter: SshKeyImportService = new SshKeyImportService();
   private readonly sshSettings: SshSettingsService = SshSettingsService.getInstance();
+  private readonly sshProxyProfiles: SshProxyProfileStore = new SshProxyProfileStore();
   private lightSensing: LightSensingService = LightSensingService.getInstance();
   @State showPassphraseSheet: boolean = false;
   private hlPassphraseResolve: ((v: string) => void) | null = null;
@@ -986,6 +989,7 @@ struct HostListPage {
     this.updateWindowMetrics();
     this.refreshHaloPresets();
     this.sshSettings.init(getContext(this) as common.Context);
+    this.sshProxyProfiles.init(getContext(this) as common.Context);
     this.proSync.init(getContext(this) as common.Context);
     // 恢复 TOTP 隐私保护状态 (Preferences 持久化)
     try {
@@ -1517,6 +1521,27 @@ struct HostListPage {
       if (requiresLocalRestrictedAdminHash) {
         CloudStore.getInstance().clearRdpRestrictedAdminHash(host.id);
       }
+      promptAction.showToast({ message: '保存主机失败，请稍后重试', duration: 1800 });
+      return;
+    }
+    this.refreshHostSnapshotAfterMutation();
+    this.pendingAddSheetConnectHostId = pendingHostIdForHostAddSave(connectNow, host.id);
+    this.requestAddSheetClose();
+  }
+
+  private saveSshHostFromAddFlow(host: RemoteHost, connectNow: boolean,
+    proxyProfile: SshProxyProfileV1): void {
+    if (!shouldAcceptHostAddSave(this.addSheetClosing, this.pendingAddSheetConnectHostId)) {
+      hilog.info(0x0001, 'HostList', 'ignored repeated SSH add-host save while Sheet is closing');
+      return;
+    }
+    if (host.protocol !== 'ssh' || proxyProfile.hostId !== host.id ||
+      !this.sshProxyProfiles.upsert(proxyProfile)) {
+      promptAction.showToast({ message: 'SSH 连接方式保存失败，未写入主机', duration: 2200 });
+      return;
+    }
+    if (!this.srv.addHost(host)) {
+      this.sshProxyProfiles.remove(host.id);
       promptAction.showToast({ message: '保存主机失败，请稍后重试', duration: 1800 });
       return;
     }
@@ -12067,7 +12092,8 @@ struct HostListPage {
   }
 
   private hostAddSheetHeight(): SheetSize {
-    return this.isVncAddSheet() ? SheetSize.LARGE : SheetSize.FIT_CONTENT;
+    return this.isVncAddSheet() || this.modernAddProtocol === 'ssh'
+      ? SheetSize.LARGE : SheetSize.FIT_CONTENT;
   }
 
   private hostAddSheetKeyboardAvoidMode(): SheetKeyboardAvoidMode {
@@ -12144,8 +12170,9 @@ struct HostListPage {
       SshAddFlow({
         keys: this.keyVault.getAllSshKeys(),
         onBackToProtocols: (): void => { this.modernAddProtocol = ''; this.addSheetShowsModernPicker = true; },
-        onSave: (host: RemoteHost, connectNow: boolean): void => {
-          this.saveHostFromAddFlow(host, connectNow);
+        onClose: (): void => { this.requestAddSheetClose(); },
+        onSave: (host: RemoteHost, connectNow: boolean, proxyProfile: SshProxyProfileV1): void => {
+          this.saveSshHostFromAddFlow(host, connectNow, proxyProfile);
         }
       })
     } else if (this.modernAddProtocol === 'vnc') {

@@ -94,6 +94,7 @@ export default function sshProxyProfilePolicyTest(): void {
         proxyPort: 2200,
         proxyUsername: 'jump-user',
         sshProxyAuthMethod: 'publickey',
+        sshProxyKeyId: 'jump-key-id',
         sshJumpHostKeyFingerprintSha256: 'SHA256:bastion'
       };
       const legacyWithSecrets: Record<string, Object> = legacy as Record<string, Object>;
@@ -108,9 +109,23 @@ export default function sshProxyProfilePolicyTest(): void {
       expect(mapped?.route.endpointHost).assertEqual('target.example');
       expect(mapped?.route.hops.length).assertEqual(1);
       expect(mapped?.route.hops[0].host).assertEqual('bastion.example');
+      expect(mapped?.hopMetadata?.[0].keyId).assertEqual('jump-key-id');
       const serialized: string = JSON.stringify(mapped);
       expect(serialized.indexOf('must-not-copy')).assertEqual(-1);
       expect(serialized.indexOf('privateKeyPem')).assertEqual(-1);
+    });
+
+    it('persists_proxy_endpoints_and_rejects_embedded_frp_control_plane_routes', 0, (): void => {
+      const http: SshProxyProfileV1 = profile('http-host');
+      http.route.type = 'http_connect';
+      http.proxyHost = 'proxy.example';
+      http.proxyPort = 8080;
+      http.proxyAuthRequired = true;
+      expect(validateSshProxyProfile(http).valid).assertTrue();
+      expect(validateSshProxyProfile(http).profile?.proxyPort).assertEqual(8080);
+      const visitor: SshProxyProfileV1 = profile('visitor-host');
+      visitor.route.type = 'frp_visitor';
+      expect(validateSshProxyProfile(visitor).code).assertEqual('E-SSH-PROXY-FRP-CONTROL-PLANE');
     });
 
     it('uses_only_canonical_profile_fields_and_denies_secret_fields', 0, (): void => {

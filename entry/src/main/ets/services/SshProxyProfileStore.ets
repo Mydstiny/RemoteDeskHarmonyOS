@@ -1,10 +1,12 @@
 import { common } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
 import {
+  SshProxyHopMetadataV1,
   SshProxyProfileV1,
   deserializeSshProxyProfiles,
   serializeSshProxyProfiles
 } from './SshProxyProfilePolicy';
+import { SshJumpHop } from '../types/rdpnapi';
 
 export const SSH_PROXY_PROFILE_PREFERENCES_NAME: string = 'RemoteDesktopSshProxyProfilePrefs';
 export const SSH_PROXY_PROFILE_PREFERENCES_KEY: string = 'ssh.proxy.profiles.v1';
@@ -49,18 +51,37 @@ export function setSshProxyProfilePreferenceAdapterForTest(
 }
 
 function cloneProfile(profile: SshProxyProfileV1): SshProxyProfileV1 {
+  const hops: SshJumpHop[] = profile.route.hops.map((hop: SshJumpHop): SshJumpHop => ({
+    host: hop.host,
+    port: hop.port,
+    username: hop.username,
+    authMethod: hop.authMethod,
+    expectedHostKeyRawBase64: hop.expectedHostKeyRawBase64,
+    expectedHostKeyFingerprintSha256: hop.expectedHostKeyFingerprintSha256,
+    connectTimeoutMs: hop.connectTimeoutMs
+  } as SshJumpHop));
   const result: SshProxyProfileV1 = {
     schemaVersion: 1,
     hostId: profile.hostId,
     route: {
       schemaVersion: profile.route.schemaVersion, type: profile.route.type,
       endpointHost: profile.route.endpointHost, endpointPort: profile.route.endpointPort,
-      hops: profile.route.hops.map((hop) => ({ ...hop })),
+      hops,
       connectTimeoutMs: profile.route.connectTimeoutMs
     }
   };
   if (profile.route.controlId !== undefined) { result.route.controlId = profile.route.controlId; }
+  if (profile.proxyHost !== undefined) { result.proxyHost = profile.proxyHost; }
+  if (profile.proxyPort !== undefined) { result.proxyPort = profile.proxyPort; }
   if (profile.proxyUsername !== undefined) { result.proxyUsername = profile.proxyUsername; }
+  if (profile.proxyAuthRequired !== undefined) { result.proxyAuthRequired = profile.proxyAuthRequired; }
+  if (profile.hopMetadata !== undefined) {
+    result.hopMetadata = profile.hopMetadata.map(
+      (item: SshProxyHopMetadataV1): SshProxyHopMetadataV1 => ({
+        hopId: item.hopId, label: item.label, keyId: item.keyId,
+        hostKeyPolicy: item.hostKeyPolicy, position: item.position
+      }));
+  }
   if (profile.updatedAtMs !== undefined) { result.updatedAtMs = profile.updatedAtMs; }
   return result;
 }

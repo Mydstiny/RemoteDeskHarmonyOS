@@ -7,12 +7,27 @@ const SSH_PROXY_MAX_TEXT: number = 255;
 const SSH_PROXY_MAX_ID: number = 128;
 const SSH_PROXY_MAX_TIMEOUT_MS: number = 2147483647;
 
+export type SshProxyHopHostKeyPolicy = 'strict';
+
+/** Durable UI metadata kept parallel to the frozen native hop array. */
+export interface SshProxyHopMetadataV1 {
+  hopId: string;
+  label: string;
+  keyId: string;
+  hostKeyPolicy: SshProxyHopHostKeyPolicy;
+  position: number;
+}
+
 /** Durable SSH proxy metadata. Credentials are deliberately not part of this shape. */
 export interface SshProxyProfileV1 {
   schemaVersion: 1;
   hostId: string;
   route: SshRoute;
+  proxyHost?: string;
+  proxyPort?: number;
   proxyUsername?: string;
+  proxyAuthRequired?: boolean;
+  hopMetadata?: SshProxyHopMetadataV1[];
   updatedAtMs?: number;
 }
 
@@ -66,7 +81,10 @@ const ROUTE_TYPES: SshRouteType[] = [
   'direct', 'http_connect', 'socks5', 'frp_tcp', 'ssh_jump',
   'frp_visitor', 'frp_stcp', 'frp_sudp', 'frp_xtcp'
 ];
-const PROFILE_KEYS: string[] = ['schemaVersion', 'hostId', 'route', 'proxyUsername', 'updatedAtMs'];
+const PROFILE_KEYS: string[] = [
+  'schemaVersion', 'hostId', 'route', 'proxyHost', 'proxyPort', 'proxyUsername',
+  'proxyAuthRequired', 'hopMetadata', 'updatedAtMs'
+];
 const ROUTE_KEYS: string[] = [
   'schemaVersion', 'type', 'endpointHost', 'endpointPort', 'hops', 'controlId', 'connectTimeoutMs'
 ];
@@ -74,13 +92,14 @@ const HOP_KEYS: string[] = [
   'host', 'port', 'username', 'authMethod',
   'expectedHostKeyRawBase64', 'expectedHostKeyFingerprintSha256', 'connectTimeoutMs'
 ];
+const HOP_METADATA_KEYS: string[] = ['hopId', 'label', 'keyId', 'hostKeyPolicy', 'position'];
 
 function isObject(value: Object): boolean {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 function hasOwn(value: Object, key: string): boolean {
-  return Object.prototype.hasOwnProperty.call(value, key);
+  return Object.keys(value as Record<string, Object>).indexOf(key) >= 0;
 }
 
 function hasOnlyKeys(value: Object, allowed: string[]): boolean {
@@ -113,7 +132,7 @@ function validTimestamp(value: Object): boolean {
     Number.isInteger(value as number) && (value as number) >= 0;
 }
 
-function knownRouteType(value: string): value is SshRouteType {
+function knownRouteType(value: string): boolean {
   return ROUTE_TYPES.indexOf(value as SshRouteType) >= 0;
 }
 
@@ -225,7 +244,7 @@ export function validateSshRoute(route: SshRoute): SshRouteValidationResult {
     return invalidRoute('E-SSH-PROXY-CONTROL-ID', 'SSH route controlId 无效', route);
   }
   const normalized: SshRoute = {
-    schemaVersion: SSH_PROXY_ROUTE_SCHEMA_VERSION, type: typeValue,
+    schemaVersion: SSH_PROXY_ROUTE_SCHEMA_VERSION, type: typeValue as SshRouteType,
     endpointHost, endpointPort: record['endpointPort'] as number,
     hops, connectTimeoutMs: record['connectTimeoutMs'] as number
   };
@@ -250,6 +269,34 @@ export function validateSshProxyProfile(profile: SshProxyProfileV1): SshProxyPro
   if (!route.valid) {
     return { valid: false, code: route.code, message: route.message, profile: null };
   }
+  if (route.route.type === 'frp_visitor' || route.route.type === 'frp_stcp' ||
+    route.route.type === 'frp_sudp' || route.route.type === 'frp_xtcp') {
+    return {
+      valid: false,
+      code: 'E-SSH-PROXY-FRP-CONTROL-PLANE',
+      message: '应用只接收外部 FRP 已暴露的 TCP 入口',
+      profile: null
+    };
+  }
+  const proxyHost: string | null = text(record, 'proxyHost');
+  if (proxyHost === null || proxyHost.length > SSH_PROXY_MAX_TEXT) {
+    return { valid: false, code: 'E-SSH-PROXY-HOST', message: 'proxyHost 无效', profile: null };
+  }
+  const needsProxyEndpoint: boolean = route.route.type === 'http_connect' ||
+    route.route.type === 'socks5' || route.route.type === 'frp_tcp';
+  if (needsProxyEndpoint && (proxyHost.length === 0 || !validPort(record['proxyPort']))) {
+    return { valid: false, code: 'E-SSH-PROXY-ENDPOINT', message: '代理或 FRP TCP 入口无效', profile: null };
+  }
+  if (!needsProxyEndpoint && (proxyHost.length > 0 || hasOwn(record, 'proxyPort'))) {
+    return { valid: false, code: 'E-SSH-PROXY-ENDPOINT-NOT-ALLOWED', message: '当前路由不允许 proxy endpoint', profile: null };
+  }
+  if (hasOwn(record, 'proxyAuthRequired') && typeof record['proxyAuthRequired'] !== 'boolean') {
+    return { valid: false, code: 'E-SSH-PROXY-AUTH-FLAG', message: '代理认证标记无效', profile: null };
+  }
+  const proxyAuthRequired: boolean = record['proxyAuthRequired'] === true;
+  if (proxyAuthRequired && route.route.type !== 'http_connect' && route.route.type !== 'socks5') {
+    return { valid: false, code: 'E-SSH-PROXY-AUTH-NOT-ALLOWED', message: '当前路由不允许代理认证', profile: null };
+  }
   const username: string | null = text(record, 'proxyUsername');
   if (username === null || username.length > SSH_PROXY_MAX_TEXT) {
     return { valid: false, code: 'E-SSH-PROXY-USERNAME', message: 'proxyUsername 无效', profile: null };
@@ -257,10 +304,53 @@ export function validateSshProxyProfile(profile: SshProxyProfileV1): SshProxyPro
   if (hasOwn(record, 'updatedAtMs') && !validTimestamp(record['updatedAtMs'])) {
     return { valid: false, code: 'E-SSH-PROXY-UPDATED-AT', message: 'updatedAtMs 无效', profile: null };
   }
+  const metadata: SshProxyHopMetadataV1[] = [];
+  if (hasOwn(record, 'hopMetadata')) {
+    if (!Array.isArray(record['hopMetadata'])) {
+      return { valid: false, code: 'E-SSH-PROXY-HOP-METADATA', message: 'hopMetadata 必须是数组', profile: null };
+    }
+    const rawMetadata: Object[] = record['hopMetadata'] as Object[];
+    if (rawMetadata.length !== route.route.hops.length || route.route.type !== 'ssh_jump') {
+      return { valid: false, code: 'E-SSH-PROXY-HOP-METADATA-COUNT', message: '跳板元数据必须与 hops 一一对应', profile: null };
+    }
+    const hopIds: Set<string> = new Set<string>();
+    for (let index: number = 0; index < rawMetadata.length; index++) {
+      const rawItem: Object = rawMetadata[index];
+      if (!isObject(rawItem) || !hasOnlyKeys(rawItem, HOP_METADATA_KEYS)) {
+        return { valid: false, code: 'E-SSH-PROXY-HOP-METADATA-FIELDS', message: '跳板元数据字段无效', profile: null };
+      }
+      const item: Record<string, Object> = rawItem as Record<string, Object>;
+      const hopId: string | null = text(item, 'hopId', true);
+      const label: string | null = text(item, 'label', true);
+      const keyId: string | null = text(item, 'keyId');
+      if (hopId === null || hopId.length === 0 || hopId.length > SSH_PROXY_MAX_ID || hopIds.has(hopId) ||
+        label === null || label.length === 0 || label.length > SSH_PROXY_MAX_TEXT ||
+        keyId === null || keyId.length > SSH_PROXY_MAX_ID || item['hostKeyPolicy'] !== 'strict' ||
+        item['position'] !== index) {
+        return { valid: false, code: 'E-SSH-PROXY-HOP-METADATA', message: '跳板元数据无效', profile: null };
+      }
+      if (route.route.hops[index].authMethod === 'publickey' && keyId.length === 0) {
+        return { valid: false, code: 'E-SSH-PROXY-HOP-KEY', message: '公钥认证的跳板缺少密钥引用', profile: null };
+      }
+      if (route.route.hops[index].authMethod !== 'publickey' && keyId.length > 0) {
+        return { valid: false, code: 'E-SSH-PROXY-HOP-KEY-NOT-ALLOWED', message: '非公钥认证不允许密钥引用', profile: null };
+      }
+      hopIds.add(hopId);
+      metadata.push({ hopId, label, keyId, hostKeyPolicy: 'strict', position: index });
+    }
+  } else if (route.route.type === 'ssh_jump') {
+    return { valid: false, code: 'E-SSH-PROXY-HOP-METADATA-REQUIRED', message: '跳板路由缺少元数据', profile: null };
+  }
   const normalized: SshProxyProfileV1 = {
     schemaVersion: 1, hostId, route: route.route
   };
+  if (needsProxyEndpoint) {
+    normalized.proxyHost = proxyHost;
+    normalized.proxyPort = record['proxyPort'] as number;
+  }
   if (username.length > 0) { normalized.proxyUsername = username; }
+  if (proxyAuthRequired) { normalized.proxyAuthRequired = true; }
+  if (metadata.length > 0) { normalized.hopMetadata = metadata; }
   if (hasOwn(record, 'updatedAtMs')) { normalized.updatedAtMs = record['updatedAtMs'] as number; }
   return { valid: true, code: '', message: '', profile: normalized };
 }
@@ -342,7 +432,18 @@ export function mapLegacyRemoteHostToSshProxyProfile(
     route.hops.push(hop);
   }
   const result: SshProxyProfileV1 = { schemaVersion: 1, hostId, route };
+  if (type === 'http_connect' || type === 'socks5' || type === 'frp_tcp') {
+    result.proxyHost = (source.proxyHost || '').trim();
+    result.proxyPort = source.proxyPort === undefined ? 0 : source.proxyPort;
+  }
   const username: string = (source.sshProxyUsername || source.proxyUsername || '').trim();
   if (username.length > 0) { result.proxyUsername = username; }
+  if (type === 'ssh_jump') {
+    result.hopMetadata = [{
+      hopId: 'legacy-hop-1', label: '跳板机 1',
+      keyId: (source.sshProxyKeyId || '').trim(),
+      hostKeyPolicy: 'strict', position: 0
+    }];
+  }
   return validateSshProxyProfile(result).profile;
 }
