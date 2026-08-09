@@ -189,3 +189,55 @@ export function moonlightExpectedSecretKind(recordType: MoonlightRecordType): Mo
 export function moonlightLocalOnlyFlagIsValid(value: number): boolean {
   return value === 0 || value === 1;
 }
+
+export function moonlightRecordToCloudRow(
+  record: MoonlightRecord
+): Record<string, string> {
+  const row: Record<string, string> = {};
+  row['id'] = record.id;
+  row['userid'] = record.userId;
+  row['recordtype'] = record.recordType;
+  row['ownerid'] = record.ownerId;
+  row['ownertype'] = record.ownerType;
+  row['secretkind'] = record.secretKind;
+  row['payload'] = record.payload;
+  row['ciphertext'] = record.ciphertext;
+  row['envelopeversion'] = record.envelopeVersion.toString();
+  row['cryptoversion'] = record.cryptoVersion.toString();
+  row['keyversion'] = record.keyVersion.toString();
+  row['aadversion'] = record.aadVersion.toString();
+  row['payloadhashsha256'] = record.payloadHashSha256;
+  row['syncversion'] = record.syncVersion.toString();
+  row['schemaversion'] = record.schemaVersion.toString();
+  row['resetepoch'] = record.resetEpoch.toString();
+  row['createdat'] = record.createdAt.toString();
+  row['updatedat'] = record.updatedAt.toString();
+  row['deletedat'] = record.deletedAt.toString();
+  return row;
+}
+
+export function moonlightRecordFromCloudRow(
+  row: Record<string, string>
+): MoonlightRecord {
+  const record = new MoonlightRecord();
+  record.id = row['id'] || '';
+  record.userId = row['userid'] || '';
+  record.recordType = (row['recordtype'] || '') as MoonlightRecordType;
+  record.ownerId = row['ownerid'] || '';
+  record.ownerType = (row['ownertype'] || '') as MoonlightOwnerType;
+  record.secretKind = (row['secretkind'] || '') as MoonlightSecretKind;
+  record.payload = row['payload'] || '';
+  record.ciphertext = row['ciphertext'] || '';
+  record.envelopeVersion = Number(row['envelopeversion']);
+  record.cryptoVersion = Number(row['cryptoversion']);
+  record.keyVersion = Number(row['keyversion']);
+  record.aadVersion = Number(row['aadversion']);
+  record.payloadHashSha256 = row['payloadhashsha256'] || '';
+  record.syncVersion = Number(row['syncversion']);
+  record.schemaVersion = Number(row['schemaversion']);
+  record.resetEpoch = Number(row['resetepoch']);
+  record.createdAt = Number(row['createdat']);
+  record.updatedAt = Number(row['updatedat']);
+  record.deletedAt = Number(row['deletedat']);
+  return record;
+}

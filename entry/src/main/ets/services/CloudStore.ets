@@ -35,6 +35,20 @@ import { RdpCredential } from '../model/RdpCredential';
 import { SshKey, SshKeyType } from '../model/SshKey';
 import { TotpEntry, TotpAlgorithm } from '../model/TotpEntry';
 import { VncRecord } from '../model/VncRecord';
+import {
+  MOONLIGHT_APP_CACHE_TABLE,
+  MOONLIGHT_CLOUD_TABLE,
+  MOONLIGHT_LOCAL_TABLE,
+  MOONLIGHT_RECORD_COLUMNS,
+  MoonlightRecord,
+  moonlightLocalOnlyFlagIsValid,
+  moonlightRecordFromCloudRow,
+  moonlightRecordToCloudRow
+} from '../model/MoonlightRecord';
+import {
+  MoonlightAppCacheEntry,
+  moonlightAppCacheEntryIsValid
+} from '../model/MoonlightAppCache';
 import { DataCrypto, CryptoCloudStore } from './DataCrypto';
 import { hashForLog, safeError } from '../utils/SafeLogger';
 import { cloudSyncTableNames, CloudSyncDirection } from './CloudSyncPolicy';
@@ -273,6 +287,19 @@ import {
   recoverCloudSyncDurableState
 } from './CloudSyncLifecyclePolicy';
 import {
+  MOONLIGHT_APP_CACHE_COLUMNS,
+  MOONLIGHT_CACHE_INTEGER_COLUMNS,
+  MOONLIGHT_OWNER_STORE_SCHEMA_VERSION,
+  MOONLIGHT_RECORD_INTEGER_COLUMNS,
+  MOONLIGHT_SCHEMA_MIGRATION_ID,
+  moonlightAppCacheTableCreateSql,
+  moonlightCloudTableCreateSql,
+  moonlightLocalTableCreateSql,
+  moonlightStorageSchemaContractIsExact
+} from './MoonlightStoragePolicy';
+import { moonlightValidateRecord } from './MoonlightRecordPolicy';
+import { MoonlightRepositoryReadResult } from './MoonlightRepository';
+import {
   CryptoCommittedState,
   CryptoLifecycleDurableState,
   cryptoLifecycleCanConfigure,
@@ -302,7 +329,8 @@ const VNC_HOST_LOCAL_PERSONALIZATION_PREFIX: string =
 const LOCAL_MUTATION_JOURNAL_TABLE: string = 'localmutationjournal';
 const MIGRATION_RECEIPT_TABLE: string = 'migrationreceipts';
 const MIGRATION_QUARANTINE_TABLE: string = 'migrationquarantine';
-const ACCOUNT_STORE_SCHEMA_VERSION: number = 4;
+const ACCOUNT_STORE_SCHEMA_VERSION: number =
+  MOONLIGHT_OWNER_STORE_SCHEMA_VERSION;
 const CANONICAL_SECRET_STORAGE_VERSION_KEY: string = 'canonical_secret_storage_version';
 const CANONICAL_SECRET_STORAGE_VERSION: string = '3';
 const DEVICE_LOCAL_HOST_TRUST_MIGRATION_KEY: string =
@@ -860,6 +888,9 @@ export class CloudStore implements CryptoCloudStore {
           'Account Kit scope or independent platform cloud identity does not match target binding');
       }
       this.verifyStoreIdentity();
+      if (!this.writeMoonlightSchemaReceipt()) {
+        throw new Error('Moonlight schema migration receipt write failed');
+      }
       const migrator: LegacySharedStoreMigrator =
         LegacySharedStoreMigrator.getInstance();
       if (this.currentScopeToken.kind === 'huawei_account' &&
@@ -4558,6 +4589,38 @@ export class CloudStore implements CryptoCloudStore {
       'ALTER TABLE ' + table + ' ADD COLUMN ' + columnDefinition);
   }
 
+  private tableHasExactColumns(table: string, expected: string[]): boolean {
+    const actual: string[] = this.tableColumns(table);
+    if (actual.length !== expected.length) { return false; }
+    for (let i = 0; i < expected.length; i++) {
+      if (actual[i] !== expected[i]) { return false; }
+    }
+    return true;
+  }
+
+  private writeMoonlightSchemaReceipt(): boolean {
+    if (!this.store || this.currentLease === null) { return false; }
+    const now: number = Date.now();
+    const bucket: relationalStore.ValuesBucket = {
+      id: MOONLIGHT_SCHEMA_MIGRATION_ID + ':' +
+        this.currentLease.ownerScopeId,
+      migrationid: MOONLIGHT_SCHEMA_MIGRATION_ID,
+      sourcestore: this.currentLease.storeIdentity,
+      sourcefingerprint: MOONLIGHT_RECORD_COLUMNS.join(','),
+      targetowner: this.currentLease.ownerScopeId,
+      targetstore: this.currentLease.storeIdentity,
+      status: 'completed',
+      countsjson: '{"cloudColumns":19,"localColumns":20,"cacheColumns":16}',
+      errordetail: '',
+      startedat: now,
+      updatedat: now,
+      completedat: now
+    };
+    return rdbInsertSucceeded(this.store.insertSync(
+      MIGRATION_RECEIPT_TABLE, bucket,
+      relationalStore.ConflictResolution.ON_CONFLICT_REPLACE));
+  }
+
   /** Atomic schema migration. RdbStore.version is the only schema truth. */
   private async createTables(): Promise<void> {
     if (!this.store) { return; }
@@ -4571,6 +4634,9 @@ export class CloudStore implements CryptoCloudStore {
     // 因此 schema 迁移不包手动事务; 所有 DDL 均幂等 (IF NOT EXISTS + 列检测),
     // 中途失败重跑可自愈, 不再依赖事务回滚保证原子性。
     try {
+    if (!moonlightStorageSchemaContractIsExact()) {
+      throw new Error('Moonlight in-memory schema contract mismatch');
+    }
     this.schemaStep = 'create:remotehosts';
     await this.store.executeSql(`
       CREATE TABLE IF NOT EXISTS remotehosts (
@@ -4927,6 +4993,27 @@ export class CloudStore implements CryptoCloudStore {
         createdat INTEGER
       )
     `);
+    // Moonlight gets one future cloud-eligible envelope table, one local
+    // source-of-truth overlay, and one rebuildable local cache. D2 deliberately
+    // does not add any of them to TABLES/setDistributedTables.
+    this.schemaStep = 'create:' + MOONLIGHT_CLOUD_TABLE;
+    await this.store.executeSql(moonlightCloudTableCreateSql());
+    this.schemaStep = 'create:' + MOONLIGHT_LOCAL_TABLE;
+    await this.store.executeSql(moonlightLocalTableCreateSql());
+    this.schemaStep = 'create:' + MOONLIGHT_APP_CACHE_TABLE;
+    await this.store.executeSql(moonlightAppCacheTableCreateSql());
+    this.schemaStep = 'verify:moonlight-schema';
+    if (!this.tableHasExactColumns(
+      MOONLIGHT_CLOUD_TABLE, MOONLIGHT_RECORD_COLUMNS) ||
+      !this.tableHasExactColumns(
+        MOONLIGHT_LOCAL_TABLE,
+        MOONLIGHT_RECORD_COLUMNS.concat(['localonly'])) ||
+      !this.tableHasExactColumns(
+        MOONLIGHT_APP_CACHE_TABLE,
+        MOONLIGHT_APP_CACHE_COLUMNS)) {
+      throw new Error(
+        'Moonlight table shape differs from the v1 19/20/16-column contract');
+    }
     // Device-local VNC rows never enter setDistributedTables. They are used
     // for non-syncable caches and local key/trust mirrors only.
     this.schemaStep = 'create:vnclocalrecords';
@@ -10768,5 +10855,375 @@ export class CloudStore implements CryptoCloudStore {
       if (index >= 0 && !rows.isColumnNull(index)) { source[column] = rows.getString(index); }
     }
     return vncRecordFromCloudRow(source);
+  }
+
+  // ==================== Moonlight local-first D2 domain ====================
+
+  readMoonlightLocalRecord(
+    lease: AccountSessionLease, id: string
+  ): MoonlightRepositoryReadResult {
+    if (!this.store || !this.isLeaseCurrent(lease) || id.trim() === '') {
+      return { ok: false, record: null, localOnly: 1 };
+    }
+    try {
+      const record: MoonlightRecord | null =
+        this.findMoonlightLocalRecordRaw(lease, id);
+      if (record !== null && !moonlightValidateRecord(record).valid) {
+        return { ok: false, record: null, localOnly: 1 };
+      }
+      const localOnly: number = record === null ? 1 :
+        this.findMoonlightLocalOnlyFlag(lease, id);
+      if (!moonlightLocalOnlyFlagIsValid(localOnly)) {
+        return { ok: false, record: null, localOnly: 1 };
+      }
+      return {
+        ok: true,
+        record: record,
+        localOnly: localOnly
+      };
+    } catch (_error) {
+      return { ok: false, record: null, localOnly: 1 };
+    }
+  }
+
+  loadMoonlightLocalRecords(
+    lease: AccountSessionLease,
+    includeDeleted: boolean = false
+  ): MoonlightRecord[] | null {
+    if (!this.store || !this.isLeaseCurrent(lease)) { return null; }
+    const result: MoonlightRecord[] = [];
+    let rows: relationalStore.ResultSet | null = null;
+    try {
+      const predicates = new relationalStore.RdbPredicates(
+        MOONLIGHT_LOCAL_TABLE);
+      predicates.equalTo('userid', lease.ownerScopeId);
+      predicates.orderByDesc('updatedat');
+      rows = this.store.querySync(predicates);
+      while (rows.goToNextRow()) {
+        const record: MoonlightRecord =
+          this.moonlightRecordFromResult(rows);
+        const localOnlyIndex: number = rows.getColumnIndex('localonly');
+        const localOnly: number = localOnlyIndex < 0 ||
+          rows.isColumnNull(localOnlyIndex) ? -1 : rows.getLong(localOnlyIndex);
+        if (!moonlightValidateRecord(record).valid ||
+            record.userId !== lease.ownerScopeId ||
+            !moonlightLocalOnlyFlagIsValid(localOnly)) {
+          return null;
+        }
+        if (includeDeleted || record.deletedAt === 0) { result.push(record); }
+      }
+      return this.isLeaseCurrent(lease) ? result : null;
+    } catch (error) {
+      hilog.warn(0x0001, 'CloudSync',
+        '[CloudStore] load Moonlight local records failed: ' + safeError(error));
+      return null;
+    } finally {
+      if (rows !== null) {
+        try { rows.close(); } catch (_ignored) {}
+      }
+    }
+  }
+
+  commitMoonlightLocalRecord(
+    lease: AccountSessionLease, record: MoonlightRecord,
+    localOnly: number, operation: string
+  ): boolean {
+    if (!this.store || !this.isLeaseCurrent(lease) ||
+        !this.localMutationAllowed() ||
+        !moonlightLocalOnlyFlagIsValid(localOnly) ||
+        record.userId !== lease.ownerScopeId ||
+        !moonlightValidateRecord(record).valid ||
+        (operation !== 'upsert' && operation !== 'tombstone')) {
+      return false;
+    }
+    try {
+      this.store.beginTransaction();
+      const inserted: boolean = rdbInsertSucceeded(this.store.insertSync(
+        MOONLIGHT_LOCAL_TABLE,
+        this.moonlightRecordToBucket(record, localOnly),
+        relationalStore.ConflictResolution.ON_CONFLICT_REPLACE));
+      if (!inserted || !this.recordLocalMutation(
+        MOONLIGHT_LOCAL_TABLE, record.id, operation)) {
+        throw new Error('Moonlight local row or journal write failed');
+      }
+      const readback: MoonlightRecord | null =
+        this.findMoonlightLocalRecordRaw(lease, record.id);
+      if (readback === null ||
+          !this.moonlightRecordsEqual(readback, record) ||
+          !this.isLeaseCurrent(lease)) {
+        throw new Error('Moonlight local row readback mismatch');
+      }
+      this.store.commit();
+      return this.isLeaseCurrent(lease);
+    } catch (error) {
+      try { this.store.rollBack(); } catch (_ignored) {}
+      hilog.warn(0x0001, 'CloudSync',
+        '[CloudStore] Moonlight local commit failed: ' + safeError(error));
+      return false;
+    }
+  }
+
+  recordMoonlightQuarantine(
+    lease: AccountSessionLease, recordId: string, reason: string,
+    payloadHashSha256: string
+  ): boolean {
+    if (!this.store || !this.isLeaseCurrent(lease) ||
+        recordId.trim() === '' || reason.trim() === '' ||
+        reason.length > 128 ||
+        (payloadHashSha256 !== '' &&
+         !/^[0-9a-f]{64}$/.test(payloadHashSha256))) {
+      return false;
+    }
+    const now: number = Date.now();
+    const bucket: relationalStore.ValuesBucket = {
+      id: 'moonlight-runtime-v1:' + lease.ownerScopeId + ':' +
+        recordId + ':' + now.toString(),
+      migrationid: 'moonlight-runtime-v1',
+      tablename: MOONLIGHT_LOCAL_TABLE,
+      recordid: recordId,
+      reason: reason,
+      payloadhashsha256: payloadHashSha256,
+      // Runtime quarantine is deliberately redacted. Untrusted payload and
+      // ciphertext are never copied into a second persistence surface.
+      payloadciphertext: '',
+      redactedsummary: 'Moonlight record rejected; current local row preserved',
+      createdat: now
+    };
+    try {
+      return rdbInsertSucceeded(this.store.insertSync(
+        MIGRATION_QUARANTINE_TABLE, bucket,
+        relationalStore.ConflictResolution.ON_CONFLICT_REPLACE));
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  loadMoonlightAppCacheEntries(
+    lease: AccountSessionLease, hostId: string = ''
+  ): MoonlightAppCacheEntry[] | null {
+    if (!this.store || !this.isLeaseCurrent(lease)) { return null; }
+    const result: MoonlightAppCacheEntry[] = [];
+    let rows: relationalStore.ResultSet | null = null;
+    try {
+      const predicates = new relationalStore.RdbPredicates(
+        MOONLIGHT_APP_CACHE_TABLE);
+      predicates.equalTo('userid', lease.ownerScopeId);
+      if (hostId.trim() !== '') { predicates.equalTo('hostid', hostId); }
+      predicates.orderByAsc('sortorder');
+      rows = this.store.querySync(predicates);
+      while (rows.goToNextRow()) {
+        const entry: MoonlightAppCacheEntry =
+          this.moonlightAppCacheEntryFromResult(rows);
+        if (!moonlightAppCacheEntryIsValid(entry) ||
+            entry.userId !== lease.ownerScopeId ||
+            (hostId.trim() !== '' && entry.hostId !== hostId)) {
+          return null;
+        }
+        result.push(entry);
+      }
+      return this.isLeaseCurrent(lease) ? result : null;
+    } catch (error) {
+      hilog.warn(0x0001, 'CloudSync',
+        '[CloudStore] Moonlight app cache read failed: ' + safeError(error));
+      return null;
+    } finally {
+      if (rows !== null) {
+        try { rows.close(); } catch (_ignored) {}
+      }
+    }
+  }
+
+  commitMoonlightAppCacheRefresh(
+    lease: AccountSessionLease, hostId: string,
+    hostRows: MoonlightAppCacheEntry[], evictedIds: string[]
+  ): boolean {
+    if (!this.store || !this.isLeaseCurrent(lease) ||
+        !this.localMutationAllowed() || hostId.trim() === '') {
+      return false;
+    }
+    const rowIds: string[] = [];
+    for (let i = 0; i < hostRows.length; i++) {
+      if (!moonlightAppCacheEntryIsValid(hostRows[i]) ||
+          hostRows[i].userId !== lease.ownerScopeId ||
+          hostRows[i].hostId !== hostId ||
+          rowIds.indexOf(hostRows[i].id) >= 0) {
+        return false;
+      }
+      rowIds.push(hostRows[i].id);
+    }
+    const uniqueEvictions: string[] = [];
+    for (let i = 0; i < evictedIds.length; i++) {
+      if (!/^[0-9a-f]{64}$/.test(evictedIds[i]) ||
+          uniqueEvictions.indexOf(evictedIds[i]) >= 0) {
+        return false;
+      }
+      uniqueEvictions.push(evictedIds[i]);
+    }
+    try {
+      this.store.beginTransaction();
+      const oldHostRows = new relationalStore.RdbPredicates(
+        MOONLIGHT_APP_CACHE_TABLE);
+      oldHostRows.equalTo('userid', lease.ownerScopeId);
+      oldHostRows.equalTo('hostid', hostId);
+      this.store.deleteSync(oldHostRows);
+      for (let i = 0; i < hostRows.length; i++) {
+        if (!rdbInsertSucceeded(this.store.insertSync(
+          MOONLIGHT_APP_CACHE_TABLE,
+          this.moonlightAppCacheEntryToBucket(hostRows[i]),
+          relationalStore.ConflictResolution.ON_CONFLICT_REPLACE))) {
+          throw new Error('Moonlight app cache row insert failed');
+        }
+      }
+      for (let i = 0; i < uniqueEvictions.length; i++) {
+        const eviction = new relationalStore.RdbPredicates(
+          MOONLIGHT_APP_CACHE_TABLE);
+        eviction.equalTo('id', uniqueEvictions[i]);
+        eviction.equalTo('userid', lease.ownerScopeId);
+        this.store.deleteSync(eviction);
+      }
+      if (!this.isLeaseCurrent(lease)) {
+        throw new Error('Moonlight app cache lease changed');
+      }
+      this.store.commit();
+      return this.isLeaseCurrent(lease);
+    } catch (error) {
+      try { this.store.rollBack(); } catch (_ignored) {}
+      hilog.warn(0x0001, 'CloudSync',
+        '[CloudStore] Moonlight app cache commit failed: ' + safeError(error));
+      return false;
+    }
+  }
+
+  private findMoonlightLocalRecordRaw(
+    lease: AccountSessionLease, id: string
+  ): MoonlightRecord | null {
+    if (!this.store || !this.isLeaseCurrent(lease)) { return null; }
+    const predicates = new relationalStore.RdbPredicates(
+      MOONLIGHT_LOCAL_TABLE);
+    predicates.equalTo('id', id);
+    predicates.equalTo('userid', lease.ownerScopeId);
+    const rows: relationalStore.ResultSet = this.store.querySync(predicates);
+    try {
+      return rows.goToFirstRow() ? this.moonlightRecordFromResult(rows) : null;
+    } finally {
+      rows.close();
+    }
+  }
+
+  private findMoonlightLocalOnlyFlag(
+    lease: AccountSessionLease, id: string
+  ): number {
+    if (!this.store || !this.isLeaseCurrent(lease)) { return -1; }
+    const predicates = new relationalStore.RdbPredicates(
+      MOONLIGHT_LOCAL_TABLE);
+    predicates.equalTo('id', id);
+    predicates.equalTo('userid', lease.ownerScopeId);
+    const rows: relationalStore.ResultSet = this.store.querySync(predicates);
+    try {
+      if (!rows.goToFirstRow()) { return -1; }
+      const index: number = rows.getColumnIndex('localonly');
+      return index < 0 || rows.isColumnNull(index) ? -1 : rows.getLong(index);
+    } finally {
+      rows.close();
+    }
+  }
+
+  private moonlightRecordToBucket(
+    record: MoonlightRecord, localOnly: number
+  ): relationalStore.ValuesBucket {
+    const source: Record<string, string> =
+      moonlightRecordToCloudRow(record);
+    const bucket: relationalStore.ValuesBucket = {};
+    for (let i = 0; i < MOONLIGHT_RECORD_COLUMNS.length; i++) {
+      const key: string = MOONLIGHT_RECORD_COLUMNS[i];
+      bucket[key] = MOONLIGHT_RECORD_INTEGER_COLUMNS.indexOf(key) >= 0 ?
+        Number(source[key]) : source[key];
+    }
+    bucket['localonly'] = localOnly;
+    return bucket;
+  }
+
+  private moonlightRecordFromResult(
+    rows: relationalStore.ResultSet
+  ): MoonlightRecord {
+    const source: Record<string, string> = {};
+    for (let i = 0; i < MOONLIGHT_RECORD_COLUMNS.length; i++) {
+      const key: string = MOONLIGHT_RECORD_COLUMNS[i];
+      const index: number = rows.getColumnIndex(key);
+      if (index >= 0 && !rows.isColumnNull(index)) {
+        source[key] = rows.getString(index);
+      }
+    }
+    return moonlightRecordFromCloudRow(source);
+  }
+
+  private moonlightRecordsEqual(
+    left: MoonlightRecord, right: MoonlightRecord
+  ): boolean {
+    const leftRow: Record<string, string> = moonlightRecordToCloudRow(left);
+    const rightRow: Record<string, string> = moonlightRecordToCloudRow(right);
+    for (let i = 0; i < MOONLIGHT_RECORD_COLUMNS.length; i++) {
+      const key: string = MOONLIGHT_RECORD_COLUMNS[i];
+      if (leftRow[key] !== rightRow[key]) { return false; }
+    }
+    return true;
+  }
+
+  private moonlightAppCacheEntryToBucket(
+    entry: MoonlightAppCacheEntry
+  ): relationalStore.ValuesBucket {
+    return {
+      id: entry.id,
+      userid: entry.userId,
+      hostid: entry.hostId,
+      appid: entry.appId,
+      title: entry.title,
+      iconetag: entry.iconEtag,
+      iconhashsha256: entry.iconHashSha256,
+      artworklocalpath: entry.artworkLocalPath,
+      catalogetag: entry.catalogEtag,
+      cataloghashsha256: entry.catalogHashSha256,
+      available: entry.available ? 1 : 0,
+      sortorder: entry.sortOrder,
+      lastcatalogat: entry.lastCatalogAt,
+      expiresat: entry.expiresAt,
+      lastaccessedat: entry.lastAccessedAt,
+      sizebytes: entry.sizeBytes
+    };
+  }
+
+  private moonlightAppCacheEntryFromResult(
+    rows: relationalStore.ResultSet
+  ): MoonlightAppCacheEntry {
+    const entry = new MoonlightAppCacheEntry();
+    for (let i = 0; i < MOONLIGHT_APP_CACHE_COLUMNS.length; i++) {
+      const key: string = MOONLIGHT_APP_CACHE_COLUMNS[i];
+      const index: number = rows.getColumnIndex(key);
+      if (index < 0 || rows.isColumnNull(index)) { continue; }
+      if (MOONLIGHT_CACHE_INTEGER_COLUMNS.indexOf(key) >= 0) {
+        const value: number = rows.getLong(index);
+        if (key === 'available') { entry.available = value !== 0; }
+        else if (key === 'sortorder') { entry.sortOrder = value; }
+        else if (key === 'lastcatalogat') { entry.lastCatalogAt = value; }
+        else if (key === 'expiresat') { entry.expiresAt = value; }
+        else if (key === 'lastaccessedat') { entry.lastAccessedAt = value; }
+        else if (key === 'sizebytes') { entry.sizeBytes = value; }
+      } else {
+        const value: string = rows.getString(index);
+        if (key === 'id') { entry.id = value; }
+        else if (key === 'userid') { entry.userId = value; }
+        else if (key === 'hostid') { entry.hostId = value; }
+        else if (key === 'appid') { entry.appId = value; }
+        else if (key === 'title') { entry.title = value; }
+        else if (key === 'iconetag') { entry.iconEtag = value; }
+        else if (key === 'iconhashsha256') { entry.iconHashSha256 = value; }
+        else if (key === 'artworklocalpath') { entry.artworkLocalPath = value; }
+        else if (key === 'catalogetag') { entry.catalogEtag = value; }
+        else if (key === 'cataloghashsha256') {
+          entry.catalogHashSha256 = value;
+        }
+      }
+    }
+    return entry;
   }
 }

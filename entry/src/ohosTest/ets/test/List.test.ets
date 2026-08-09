@@ -81,6 +81,10 @@ import moonlightCapabilityPolicyTest from '../../../test/MoonlightCapabilityPoli
 import moonlightSettingsPolicyTest from '../../../test/MoonlightSettingsPolicy.test';
 import moonlightRecordConflictPolicyTest from '../../../test/MoonlightRecordConflictPolicy.test';
 import moonlightSessionStateTest from '../../../test/MoonlightSessionState.test';
+import moonlightStoragePolicyTest from '../../../test/MoonlightStoragePolicy.test';
+import moonlightCloudTableAdapterTest from '../../../test/MoonlightCloudTableAdapter.test';
+import moonlightRepositoryTest from '../../../test/MoonlightRepository.test';
+import moonlightAppCacheServiceTest from '../../../test/MoonlightAppCacheService.test';
 import { FOCUSED_TEST_REGISTRATION_AUDIT } from '../../../main/ets/services/FocusedTestRegistrationAudit';
 
 function requestedClassScope(): string {
@@ -136,6 +140,10 @@ function registerFocusedRepairSuite(scope: string): number {
     moonlightSettingsPolicyTest();
     moonlightRecordConflictPolicyTest();
     moonlightSessionStateTest();
+    moonlightStoragePolicyTest();
+    moonlightCloudTableAdapterTest();
+    moonlightRepositoryTest();
+    moonlightAppCacheServiceTest();
   } else {
     return 0;
   }
@@ -157,7 +165,8 @@ function focusedDescribeNames(scope: string): string[] {
   if (scope === 'MoonlightDomainPolicy') {
     return ['MoonlightModels', 'MoonlightRecord', 'MoonlightRecordPolicy',
       'MoonlightCapabilityPolicy', 'MoonlightSettingsPolicy', 'MoonlightRecordConflictPolicy',
-      'MoonlightSessionState'];
+      'MoonlightSessionState', 'MoonlightStoragePolicy', 'MoonlightCloudTableAdapter',
+      'MoonlightRepository', 'MoonlightAppCacheService'];
   }
   if (scope === 'RustDeskProAddressBookPolicy') {
     return ['RustDeskProAddressBookPolicy'];
@@ -220,7 +229,7 @@ function focusedDescribeNames(scope: string): string[] {
 }
 
 function expectedFocusedCount(scope: string): number {
-  if (scope === 'MoonlightDomainPolicy') { return 43; }
+  if (scope === 'MoonlightDomainPolicy') { return 70; }
   if (scope === 'RustDeskProAddressBookPolicy') { return 8; }
   if (scope === 'RustDeskProAddressBookApiService') { return 4; }
   if (scope === 'RustDeskProAddressBookSyncService') { return 7; }
@@ -346,4 +355,8 @@ export default function testsuite() {
   moonlightSettingsPolicyTest();
   moonlightRecordConflictPolicyTest();
   moonlightSessionStateTest();
+  moonlightStoragePolicyTest();
+  moonlightCloudTableAdapterTest();
+  moonlightRepositoryTest();
+  moonlightAppCacheServiceTest();
 }

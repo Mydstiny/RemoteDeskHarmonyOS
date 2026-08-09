@@ -163,6 +163,10 @@ import moonlightCapabilityPolicyTest from './MoonlightCapabilityPolicy.test';
 import moonlightSettingsPolicyTest from './MoonlightSettingsPolicy.test';
 import moonlightRecordConflictPolicyTest from './MoonlightRecordConflictPolicy.test';
 import moonlightSessionStateTest from './MoonlightSessionState.test';
+import moonlightStoragePolicyTest from './MoonlightStoragePolicy.test';
+import moonlightCloudTableAdapterTest from './MoonlightCloudTableAdapter.test';
+import moonlightRepositoryTest from './MoonlightRepository.test';
+import moonlightAppCacheServiceTest from './MoonlightAppCacheService.test';
 
 export default function testsuite() {
   localUnitTest();
@@ -330,4 +334,8 @@ export default function testsuite() {
   moonlightSettingsPolicyTest();
   moonlightRecordConflictPolicyTest();
   moonlightSessionStateTest();
+  moonlightStoragePolicyTest();
+  moonlightCloudTableAdapterTest();
+  moonlightRepositoryTest();
+  moonlightAppCacheServiceTest();
 }

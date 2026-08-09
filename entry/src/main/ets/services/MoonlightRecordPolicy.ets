@@ -350,12 +350,13 @@ export function moonlightPayloadWithMeta(
   const values: Record<string, Object> = {};
   const keys: string[] = Object.keys(businessPayload);
   for (let i = 0; i < keys.length; i++) { values[keys[i]] = businessPayload[keys[i]]; }
-  values['_meta'] = {
+  const encodedMeta: MoonlightRecordMeta = {
     mutationId: meta.mutationId,
     originId: meta.originId,
     baseSyncVersion: meta.baseSyncVersion,
     fieldVersions: meta.fieldVersions
   };
+  values['_meta'] = encodedMeta;
   return moonlightCanonicalizeJson(JSON.stringify(values));
 }
 
@@ -534,7 +535,8 @@ function settingsPayloadIsValid(values: Record<string, Object>): boolean {
     'schemaVersion', 'video', 'audio', 'input', 'network', 'background', 'security',
     'diagnostics', '_meta'
   ])) { return false; }
-  return moonlightSettingsAreValid(businessPayload(values) as MoonlightSettings);
+  return moonlightSettingsAreValid(
+    businessPayload(values) as Object as MoonlightSettings);
 }
 
 function hostPayloadIsValid(record: MoonlightRecord, values: Record<string, Object>): boolean {
@@ -733,10 +735,10 @@ export function moonlightRecordIsValid(record: MoonlightRecord): boolean {
   return moonlightValidateRecord(record).valid;
 }
 
-export function moonlightOwnerTypeIsKnown(value: string): value is MoonlightOwnerType {
+export function moonlightOwnerTypeIsKnown(value: string): boolean {
   return ownerTypeKnown(value);
 }
 
-export function moonlightSecretKindIsKnown(value: string): value is MoonlightSecretKind {
+export function moonlightSecretKindIsKnown(value: string): boolean {
   return secretKindKnown(value);
 }
