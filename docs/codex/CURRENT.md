@@ -69,8 +69,15 @@
   cache, journal and recovery markers. Restore resolves both sections into only
   `moonlightlocalrecords` with `localonly=1`, quarantines ambiguity/orphans and
   requires re-pairing. Old V3 files remain readable. Checkpoint: `b27a58a`.
-- Current gates: `default@OhosTestCompileArkTS` passed with 122 focused Moonlight
-  tests in 18 describe groups compile-registered; signed `assembleHap` passed;
+- D3 deletion commands now derive an owner-scoped preview from live records,
+  cache, journal/quarantine/restore state and secure-identity inventory, then
+  recompute it before execution. Local delete/forget/profile mutations are one
+  CloudStore transaction; cloud tombstones and Host Control unpair fail closed
+  without real ports. Secure identity cleanup precedes metadata deletion and
+  reports partial terminal state honestly. Checkpoint: `ea32ffa`.
+- Current gates: `default@OhosTestCompileArkTS` passed with 138 focused Moonlight
+  tests in 19 describe groups compile-registered; signed `assembleHap` passed
+  in 14.043s;
   host native
   tests passed 342/342 outside the socket-
   restricted sandbox; Moonlight API 23 probe passed arm64-v8a and x86_64;
@@ -79,20 +86,20 @@
 
 ## Next
 
-1. Implement the executable D3-06 local command layer behind the completed
-   deletion-impact policy; keep cloud tombstones and host unpair calls dormant
-   until their real ports exist, and preserve transaction/lease rollback.
-2. Keep D3-01 online coordinator wiring, D3-05 cloud-first promotion and D3-08
+1. Begin N1-01 as an isolated official upstream vendoring checkpoint: exact
+   common-c/ENet/nanors revisions, provenance, licenses, NOTICE, SBOM/source
+   offer, patches separation and dual-ABI static build. Do not add product NAPI,
+   enable the FAB or claim runtime support in the same checkpoint.
+2. Keep D3-01 online coordinator wiring, D3-05 cloud-first promotion, D3-06
+   cloud tombstone terminal execution and D3-08
    multi-device matrix blocked until development/test/production AGC receipts
    permit D2-07 registration.
-3. Begin N1-01 official common-c vendoring only as an isolated provenance,
-   license and dual-ABI build checkpoint; do not expose product availability.
-4. Do not implement D2-07 registration until development/test/production AGC
+3. Do not implement D2-07 registration until development/test/production AGC
    schema, authorization and index receipts complete D2-05/D2-06.
 
 ## Blockers
 
-- `ohosTest@OhosTestCompileArkTS` remains unregistered (`00306054`), so the 122
+- `ohosTest@OhosTestCompileArkTS` remains unregistered (`00306054`), so the 138
   focused D1-D3 tests are compile-registered but no on-device Hypium pass is claimed.
 - AGC development/test/production `moonlightrecordv1` schema, authorization and
   index receipts are absent; the table is therefore not in `CloudSyncPolicy.TABLES`.
