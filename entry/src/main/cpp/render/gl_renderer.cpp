@@ -274,6 +274,20 @@ void main() {
 }
 )";
 
+/** NativeImage OES vertex shader — applies the producer's per-frame transform. */
+static const char* VERTEX_SHADER_OES = R"(#version 300 es
+precision mediump float;
+layout(location = 0) in vec2 aPosition;
+layout(location = 1) in vec2 aTexCoord;
+out vec2 vTexCoord;
+uniform mat4 uTexTransform;
+
+void main() {
+    gl_Position = vec4(aPosition, 0.0, 1.0);
+    vTexCoord = (uTexTransform * vec4(aTexCoord, 0.0, 1.0)).xy;
+}
+)";
+
 /**
  * 片段着色器 — NV12→RGB 转换 + 外部纹理采样
  *
@@ -358,7 +372,7 @@ static const float QUAD_VERTICES[] = {
 GLRenderer::GLRenderer()
     : eglDisplay_(EGL_NO_DISPLAY), eglContext_(EGL_NO_CONTEXT),
       eglSurface_(EGL_NO_SURFACE), eglConfig_(nullptr),
-      shaderProgram_(0), samplerLocation_(0),
+      shaderProgram_(0), samplerLocation_(0), oesTransformLocation_(-1),
       rawShaderProgram_(0), rawTexture_(0), rawSamplerLocation_(0),
       uploadPbo_{0, 0}, uploadPboCapacity_{0, 0}, uploadPboIndex_(0),
       pboUploadEnabled_(false), pboUploadFailedLogged_(false),
@@ -445,6 +459,18 @@ bool GLRenderer::MakeCurrent() {
     if (g_surfaceDetached.load(std::memory_order_acquire)) {
         OH_LOG_WARN(LOG_APP, "[GL] eglMakeCurrent skipped: XComponent surface already detached");
         return false;
+    }
+    // The hardware decoder render thread intentionally retains this context
+    // between NativeImage frames. Rebinding an already-current context for
+    // both UpdateSurfaceImage and RenderFrame creates redundant native-fence
+    // work on the PC graphics stack and can turn a quiet 2 fps stream into a
+    // visible half-second delay. RAW/software callers release after each draw
+    // and therefore keep their existing behavior.
+    if (eglGetCurrentDisplay() == eglDisplay_ &&
+        eglGetCurrentContext() == eglContext_ &&
+        eglGetCurrentSurface(EGL_DRAW) == eglSurface_ &&
+        eglGetCurrentSurface(EGL_READ) == eglSurface_) {
+        return true;
     }
     if (!eglMakeCurrent(eglDisplay_, eglSurface_, eglSurface_, eglContext_)) {
         OH_LOG_WARN(LOG_APP, "[GL] eglMakeCurrent failed: %{public}x", eglGetError());
@@ -610,6 +636,13 @@ bool GLRenderer::InitGL() {
         return false;
     }
     samplerLocation_ = glGetUniformLocation(shaderProgram_, "uTexture");
+    oesTransformLocation_ = glGetUniformLocation(shaderProgram_, "uTexTransform");
+    if (samplerLocation_ < 0 || oesTransformLocation_ < 0) {
+        OH_LOG_ERROR(LOG_APP,
+                     "[GL] OES shader uniforms missing sampler=%{public}d transform=%{public}d",
+                     samplerLocation_, oesTransformLocation_);
+        return false;
+    }
 
     // 创建 BGRA 着色器程序 (RDP GDI 路径)
     rawShaderProgram_ = CreateRawShaderProgram();
@@ -669,7 +702,7 @@ GLuint GLRenderer::CompileShader(GLenum type, const char* source) {
 
 GLuint GLRenderer::CreateShaderProgram() {
     // 当前使用简化版着色器 (单纹理外部 OES)
-    GLuint vertShader = CompileShader(GL_VERTEX_SHADER, VERTEX_SHADER);
+    GLuint vertShader = CompileShader(GL_VERTEX_SHADER, VERTEX_SHADER_OES);
     GLuint fragShader = CompileShader(GL_FRAGMENT_SHADER, FRAGMENT_SHADER_SIMPLE);
     // 后续替换为 FRAGMENT_SHADER_NV12 以支持真实 NV12 解码数据
 
@@ -1102,6 +1135,11 @@ void GLRenderer::CreateQuadGeometry() {
 }
 
 void GLRenderer::RenderFrame(GLuint textureId) {
+    RenderFrame(textureId, Render::IdentityNativeImageTransform());
+}
+
+void GLRenderer::RenderFrame(
+    GLuint textureId, const Render::NativeImageTransform& textureTransform) {
     std::lock_guard<std::mutex> lock(lifecycleMutex_);
     using clock = std::chrono::steady_clock;
     const auto drawBeginAt = clock::now();
@@ -1153,6 +1191,8 @@ void GLRenderer::RenderFrame(GLuint textureId) {
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_EXTERNAL_OES, textureId);
     glUniform1i(samplerLocation_, 0);
+    glUniformMatrix4fv(oesTransformLocation_, 1, GL_FALSE,
+                       textureTransform.data());
 
     // 绘制全屏四边形
     glBindVertexArray(vao_);
@@ -3010,6 +3050,13 @@ void RendererNapi::RenderNative(int64_t handle, GLuint textureId) {
 
 void RendererNapi::RenderNative(
     int64_t handle, const Render::DecoderSessionIdentity& owner, GLuint textureId) {
+    RenderNative(handle, owner, textureId,
+                 Render::IdentityNativeImageTransform());
+}
+
+void RendererNapi::RenderNative(
+    int64_t handle, const Render::DecoderSessionIdentity& owner, GLuint textureId,
+    const Render::NativeImageTransform& textureTransform) {
     auto sinkLease = Render::SharedSessionSinkOwnerLease().acquire(owner);
     if (!sinkLease) {
         return;
@@ -3023,7 +3070,7 @@ void RendererNapi::RenderNative(
         renderer = AcquireRendererLocked(handle, true);
     }
     if (renderer) {
-        renderer->RenderFrame(textureId);
+        renderer->RenderFrame(textureId, textureTransform);
     }
 }
 

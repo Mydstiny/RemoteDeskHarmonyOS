@@ -173,7 +173,7 @@ declare module 'librdpnapi.so' {
   export function getRendererViewport(handle: number): RendererViewport | null;
 
   export function initDecoder(width: number, height: number, codecType: number,
-    rendererHandle?: number): number;
+    rendererHandle?: number, desktopSurfaceCompatibility?: boolean): number;
   export function destroyDecoder(handle: number): void;
   export function decodeFrame(handle: number, data: ArrayBuffer, size: number, timestamp: number): number;
   export function getTextureId(handle: number): number;

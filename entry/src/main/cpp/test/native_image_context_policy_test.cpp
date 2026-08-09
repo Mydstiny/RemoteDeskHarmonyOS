@@ -1,6 +1,8 @@
 #include "test_runner.h"
 #include "render/native_image_context_policy.h"
 
+#include <limits>
+
 RDP_TEST_CASE(native_image_policy_detaches_before_releasing_current_context) {
     RDP_ASSERT(Render::ShouldDetachNativeImageOnRenderThreadStop(true, true));
 }
@@ -43,4 +45,54 @@ RDP_TEST_CASE(native_image_policy_consumes_latest_notification_sequence) {
         Render::kNativeImageSurfaceRecoveryThreshold - 1));
     RDP_ASSERT(Render::ShouldRequestNativeImageRecovery(
         Render::kNativeImageSurfaceRecoveryThreshold));
+}
+
+RDP_TEST_CASE(native_image_policy_keeps_mobile_orientation_contract) {
+    const float desktopFlip[16] = {
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, -1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 1.0f
+    };
+    const Render::NativeImageTransform identity =
+        Render::IdentityNativeImageTransform();
+    const Render::NativeImageTransform mobile =
+        Render::ResolveNativeImagePresentationTransform(
+            false, 0, desktopFlip, identity);
+    RDP_ASSERT(mobile == identity);
+    RDP_ASSERT(!Render::ShouldRenderNativeImageImmediately(false));
+}
+
+RDP_TEST_CASE(native_image_policy_applies_valid_desktop_transform) {
+    const float desktopFlip[16] = {
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, -1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 1.0f
+    };
+    const Render::NativeImageTransform identity =
+        Render::IdentityNativeImageTransform();
+    const Render::NativeImageTransform desktop =
+        Render::ResolveNativeImagePresentationTransform(
+            true, 0, desktopFlip, identity);
+    RDP_ASSERT(desktop[5] == -1.0f);
+    RDP_ASSERT(desktop[13] == 1.0f);
+    RDP_ASSERT(Render::ShouldRenderNativeImageImmediately(true));
+}
+
+RDP_TEST_CASE(native_image_policy_rejects_incomplete_desktop_transform) {
+    float invalid[16] = {
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 1.0f
+    };
+    invalid[6] = std::numeric_limits<float>::quiet_NaN();
+    Render::NativeImageTransform previous =
+        Render::IdentityNativeImageTransform();
+    previous[12] = 0.25f;
+    RDP_ASSERT(Render::ResolveNativeImagePresentationTransform(
+        true, 40001000, invalid, previous) == previous);
+    RDP_ASSERT(Render::ResolveNativeImagePresentationTransform(
+        true, 0, invalid, previous) == previous);
 }

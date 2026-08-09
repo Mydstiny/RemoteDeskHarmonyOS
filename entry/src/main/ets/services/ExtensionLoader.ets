@@ -661,9 +661,11 @@ export class ExtensionLoader {
     }
   }
 
-  initDecoder(w: number, h: number, c: number, rendererHandle: number = -1): number {
+  initDecoder(w: number, h: number, c: number, rendererHandle: number = -1,
+    desktopSurfaceCompatibility: boolean = false): number {
     try {
-      this.decoderHandle = rdpnapi.initDecoder(w, h, c, rendererHandle) as number;
+      this.decoderHandle = rdpnapi.initDecoder(
+        w, h, c, rendererHandle, desktopSurfaceCompatibility) as number;
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] initDecoder: ' + JSON.stringify(err));
       this.decoderHandle = -1;

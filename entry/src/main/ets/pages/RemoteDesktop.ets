@@ -10452,9 +10452,15 @@ struct RemoteDesktop {
       // before connect have no owner and fail closed, producing a connected
       // RustDesk session with no consumer and therefore a blank screen.
       if (!isVnc) {
-        const dHandle: number = this.loader.initDecoder(w, h, decoderCodec, this.rendererHandle);
+        const desktopRustDeskSurfaceCompatibility: boolean =
+          host.protocol === 'rustdesk' && this.isDesktopDevice;
+        const dHandle: number = this.loader.initDecoder(
+          w, h, decoderCodec, this.rendererHandle,
+          desktopRustDeskSurfaceCompatibility);
         hilog.info(RD_DOMAIN, RD_TAG, 'initDecoder returned: ' + dHandle +
-          ' ownerSession=' + sid.toString());
+          ' ownerSession=' + sid.toString() +
+          ' desktopSurface=' +
+          (desktopRustDeskSurfaceCompatibility ? '1' : '0'));
         if (dHandle <= 0) {
           throw new Error('解码器初始化失败 [E-DECODER-INIT] rc=' + dHandle);
         }
@@ -11716,8 +11722,11 @@ struct RemoteDesktop {
         else if (codecPref === 3) { decoderCodec = 4; }
         else if (codecPref === 4) { decoderCodec = 0; }
         else if (codecPref === 5) { decoderCodec = 1; }
+        const desktopRustDeskSurfaceCompatibility: boolean =
+          restoringRustDesk && this.isDesktopDevice;
         const decoder: number = this.loader.initDecoder(
-          desktop.width, desktop.height, decoderCodec, renderer);
+          desktop.width, desktop.height, decoderCodec, renderer,
+          desktopRustDeskSurfaceCompatibility);
         if (decoder <= 0) {
           throw new Error('后台恢复解码器初始化失败 [E-DECODER-RESTORE-INIT] rc=' + decoder);
         }

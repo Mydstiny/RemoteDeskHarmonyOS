@@ -12,6 +12,7 @@
 #define GL_RENDERER_H
 
 #include "rdp/rdp_presentation_metrics.h"
+#include "native_image_context_policy.h"
 #include "video_perf_counters.h"
 
 #include <atomic>
@@ -51,6 +52,8 @@ public:
      *                   由 HardwareDecoder::GetTextureId() 提供
      */
     void RenderFrame(GLuint textureId);
+    void RenderFrame(GLuint textureId,
+                     const Render::NativeImageTransform& textureTransform);
 
     /**
      * 渲染原始 BGRA 像素帧 (RDP GDI 直出路径 — 无需硬解)
@@ -145,12 +148,13 @@ private:
 
     // GL 资源 (外部 OES 纹理路径)
     GLuint shaderProgram_;   // NV12→RGB 着色器程序
-    GLuint samplerLocation_; // uniform samplerExternalOES 位置
+    GLint  samplerLocation_; // uniform samplerExternalOES 位置
+    GLint  oesTransformLocation_; // NativeImage producer transform
 
     // GL 资源 (原始 BGRA 像素路径 — RDP GDI)
     GLuint rawShaderProgram_;   // BGRA→RGB 着色器程序
     GLuint rawTexture_;         // BGRA 像素纹理 (GL_TEXTURE_2D)
-    GLuint rawSamplerLocation_; // uniform sampler2D 位置
+    GLint  rawSamplerLocation_; // uniform sampler2D 位置
     GLuint uploadPbo_[2];        // double-buffered pixel-unpack staging
     size_t uploadPboCapacity_[2];
     int uploadPboIndex_;
@@ -262,6 +266,9 @@ namespace RendererNapi {
     void RenderNative(int64_t handle, GLuint textureId);
     void RenderNative(int64_t handle, const Render::DecoderSessionIdentity& owner,
                       GLuint textureId);
+    void RenderNative(int64_t handle, const Render::DecoderSessionIdentity& owner,
+                      GLuint textureId,
+                      const Render::NativeImageTransform& textureTransform);
     void SetActiveSourceSize(int width, int height);
     void SetActiveSourceSize(const Render::DecoderSessionIdentity& owner, int width, int height);
     RdpPresentationTarget GetActivePresentationTarget();

@@ -373,13 +373,24 @@ void HardwareDecoder::OnNewOutputBuffer(OH_AVCodec* codec, uint32_t index,
     if (buffer != nullptr && OH_AVBuffer_GetBufferAttr(buffer, &attr) == AV_ERR_OK) {
         target.decoder->recordOutputLatency(attr.pts);
     }
-    // Remote desktop frames are interactive state, not a media timeline. Use
-    // the current monotonic time so buffers completed before the same VSYNC
-    // may collapse to the newest frame instead of extending visible latency.
-    const int64_t renderTimestampNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count();
-    OH_AVErrCode ret = OH_VideoDecoder_RenderOutputBufferAtTime(
-        codec, index, renderTimestampNs);
+    OH_AVErrCode ret = AV_ERR_OK;
+    if (Render::ShouldRenderNativeImageImmediately(
+            target.decoder->desktopSurfaceCompatibility_)) {
+        // The PC Surface implementation rejects the native-fence sync used by
+        // RenderOutputBufferAtTime and can retain the newest quiet-desktop
+        // frame until the next packet (typically ~500 ms). Remote desktop has
+        // no media timeline, so publish PC output as soon as it is decoded.
+        ret = OH_VideoDecoder_RenderOutputBuffer(codec, index);
+    } else {
+        // Preserve the already accepted Phone/Pad path. Frames completed before
+        // the same VSYNC may collapse to the newest image without changing the
+        // mobile hardware-decoder presentation contract.
+        const int64_t renderTimestampNs =
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count();
+        ret = OH_VideoDecoder_RenderOutputBufferAtTime(
+            codec, index, renderTimestampNs);
+    }
     if (ret != AV_ERR_OK) {
         std::lock_guard<std::mutex> telemetryLock(target.decoder->telemetryMutex_);
         SaturatingAdd(target.decoder->renderOutputFailureCount_, 1);
@@ -523,9 +534,12 @@ const char* HardwareDecoder::GetMimeType(CodecType codec) {
     }
 }
 
-int HardwareDecoder::Init(int width, int height, CodecType codec, int64_t rendererHandle) {
-    OH_LOG_INFO(LOG_APP, "[Decoder] Init: %{public}dx%{public}d codec=%{public}s",
-                width, height, GetMimeType(codec));
+int HardwareDecoder::Init(int width, int height, CodecType codec, int64_t rendererHandle,
+                          bool desktopSurfaceCompatibility) {
+    OH_LOG_INFO(LOG_APP,
+                "[Decoder] Init: %{public}dx%{public}d codec=%{public}s desktopSurface=%{public}s",
+                width, height, GetMimeType(codec),
+                desktopSurfaceCompatibility ? "yes" : "no");
 
     // A failed init retires the callback context together with any platform
     // objects that had already registered a callback.  A later reconnect must
@@ -538,6 +552,9 @@ int HardwareDecoder::Init(int width, int height, CodecType codec, int64_t render
     width_ = width;
     height_ = height;
     codecType_ = codec;
+    desktopSurfaceCompatibility_ = desktopSurfaceCompatibility;
+    textureTransform_ = Render::IdentityNativeImageTransform();
+    textureTransformLogged_ = false;
     {
         std::lock_guard<std::mutex> lk(mutex_);
         frameAvailableCount_ = 0;
@@ -1394,10 +1411,30 @@ void HardwareDecoder::handleOutputBuffer(uint32_t /*index*/) {
                 std::chrono::steady_clock::time_point::min();
             consecutiveSurfaceUpdateFailures_ = 0;
         }
+        if (updated && desktopSurfaceCompatibility_) {
+            float producerTransform[16] = {};
+            const int32_t transformRet = OH_NativeImage_GetTransformMatrixV2(
+                nativeImage_, producerTransform);
+            textureTransform_ =
+                Render::ResolveNativeImagePresentationTransform(
+                    true, transformRet, producerTransform, textureTransform_);
+            if (!textureTransformLogged_) {
+                textureTransformLogged_ = true;
+                OH_LOG_INFO(LOG_APP,
+                            "[Decoder] desktop NativeImage transform ret=%{public}d row0=[%{public}f,%{public}f,%{public}f,%{public}f] row1=[%{public}f,%{public}f,%{public}f,%{public}f] row3=[%{public}f,%{public}f,%{public}f,%{public}f]",
+                            transformRet,
+                            textureTransform_[0], textureTransform_[4],
+                            textureTransform_[8], textureTransform_[12],
+                            textureTransform_[1], textureTransform_[5],
+                            textureTransform_[9], textureTransform_[13],
+                            textureTransform_[3], textureTransform_[7],
+                            textureTransform_[11], textureTransform_[15]);
+            }
+        }
     }
 
     // 通知渲染器: 纹理就绪
-    frameCallbackGate_.Invoke(textureId_, width_, height_);
+    frameCallbackGate_.Invoke(textureId_, width_, height_, textureTransform_);
     uint64_t count = 0;
     {
         std::lock_guard<std::mutex> telemetryLock(telemetryMutex_);
@@ -1861,6 +1898,9 @@ struct DecoderContext {
     std::shared_ptr<HardwareDecoder> decoder;
     std::shared_ptr<SoftwareDecoder> softwareDecoder;
     bool useSoftware = false;
+    // Explicitly set only for RustDesk sessions running in the PC layout.
+    // Phone/Pad keep their released output scheduling and texture orientation.
+    bool desktopSurfaceCompatibility = false;
     // Serializes decode/rebind/detach/destroy and keeps a context alive while
     // a caller is using it through the registry below.
     std::mutex pipelineMutex;
@@ -2340,9 +2380,12 @@ bool ConfigurePipeline(const std::shared_ptr<DecoderContext>& ctx,
     ctx->decoder->SetReleaseCurrentCallback([rendererHandle, owner]() {
         RendererNapi::ReleaseCurrent(rendererHandle, owner);
     });
-    ctx->decoder->SetFrameCallback([rendererHandle, owner](GLuint textureId, int, int) {
-        RendererNapi::RenderNative(rendererHandle, owner, textureId);
-    });
+    ctx->decoder->SetFrameCallback(
+        [rendererHandle, owner](GLuint textureId, int, int,
+                                const Render::NativeImageTransform& textureTransform) {
+            RendererNapi::RenderNative(
+                rendererHandle, owner, textureId, textureTransform);
+        });
     const std::weak_ptr<HardwareDecoder> weakDecoder = ctx->decoder;
     if (ownerLeaseAlreadyHeld) {
         RendererNapi::SetRendererRedrawCallback(rendererHandle, [weakDecoder]() {
@@ -2418,7 +2461,8 @@ bool RecreateDecoderForFrame(const std::shared_ptr<DecoderContext>& ctx, const V
             RendererNapi::MakeCurrent(ctx->rendererHandle);
         }
     }
-    int result = decoder->Init(frame.width, frame.height, frame.codec);
+    int result = decoder->Init(frame.width, frame.height, frame.codec, -1,
+                               ctx->desktopSurfaceCompatibility);
     if (ctx->rendererHandle > 0) {
         if (owner.valid()) {
             RendererNapi::ReleaseCurrent(ctx->rendererHandle, owner);
@@ -2884,11 +2928,12 @@ void DestroyCallbackTestDecoder(
 
 /**
  * NAPI: initDecoder(width: number, height: number, codec: number,
- *                   rendererHandle?: number): number
+ *                   rendererHandle?: number,
+ *                   desktopSurfaceCompatibility?: boolean): number
  */
 napi_value NapiInitDecoder(napi_env env, napi_callback_info info) {
-    size_t argc = 4;
-    napi_value args[4] = {nullptr, nullptr, nullptr, nullptr};
+    size_t argc = 5;
+    napi_value args[5] = {nullptr, nullptr, nullptr, nullptr, nullptr};
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
 
     int32_t width, height, codecInt;
@@ -2899,6 +2944,10 @@ napi_value NapiInitDecoder(napi_env env, napi_callback_info info) {
     if (argc >= 4 && args[3] != nullptr) {
         napi_get_value_int64(env, args[3], &rendererHandle);
     }
+    bool desktopSurfaceCompatibility = false;
+    if (argc >= 5 && args[4] != nullptr) {
+        napi_get_value_bool(env, args[4], &desktopSurfaceCompatibility);
+    }
 
     CodecType codec = static_cast<CodecType>(codecInt);
 
@@ -2906,6 +2955,7 @@ napi_value NapiInitDecoder(napi_env env, napi_callback_info info) {
     // callback can resolve token -> owner/generation -> strong decoder lease.
     auto ctx = std::make_shared<DecoderContext>();
     ctx->useSoftware = false;
+    ctx->desktopSurfaceCompatibility = desktopSurfaceCompatibility;
     ctx->width = width;
     ctx->height = height;
     const int64_t handleValue = RegisterDecoderContext(ctx);
@@ -2914,7 +2964,9 @@ napi_value NapiInitDecoder(napi_env env, napi_callback_info info) {
         if (decoder->SetCallbackIdentity(handleValue, ctx->owner,
                                           ctx->decoderGeneration)) {
             ctx->decoder = decoder;
-            const int result = decoder->Init(width, height, codec, rendererHandle);
+            const int result = decoder->Init(
+                width, height, codec, rendererHandle,
+                desktopSurfaceCompatibility);
             if (result == 0) {
                 napi_value handle;
                 napi_create_int64(env, handleValue, &handle);
@@ -2937,6 +2989,8 @@ napi_value NapiInitDecoder(napi_env env, napi_callback_info info) {
             auto softwareCtx = std::make_shared<DecoderContext>();
             softwareCtx->softwareDecoder = softwareDecoder;
             softwareCtx->useSoftware = true;
+            softwareCtx->desktopSurfaceCompatibility =
+                desktopSurfaceCompatibility;
             softwareCtx->width = width;
             softwareCtx->height = height;
             const int64_t softwareHandle = RegisterDecoderContext(softwareCtx);

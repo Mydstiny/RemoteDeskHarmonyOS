@@ -14,6 +14,7 @@
 #include "decoder_callback_gate.h"
 #include "callback_admission_context.h"
 #include "extensions/protocol_adapter.h"
+#include "native_image_context_policy.h"
 #include "video_perf_counters.h"
 #include "video_backpressure_controller.h"
 #include <GLES3/gl3.h>
@@ -89,7 +90,8 @@ enum class DecoderError {
 };
 
 /** 解码帧就绪回调 */
-using DecoderFrameCallback = std::function<void(GLuint textureId, int width, int height)>;
+using DecoderFrameCallback = std::function<void(GLuint textureId, int width, int height,
+    const Render::NativeImageTransform& textureTransform)>;
 using DecoderMakeCurrentCallback = std::function<void()>;
 using DecoderReleaseCurrentCallback = std::function<void()>;
 
@@ -139,7 +141,8 @@ public:
      * @param codec   编码类型 (H264 或 H265)
      * @return 0=成功, 负数=错误码
      */
-    int Init(int width, int height, CodecType codec, int64_t rendererHandle = -1);
+    int Init(int width, int height, CodecType codec, int64_t rendererHandle = -1,
+             bool desktopSurfaceCompatibility = false);
 
     /**
      * 送入编码帧数据 (线程安全, 入队等待解码器回调取走)
@@ -258,6 +261,10 @@ private:
     OH_NativeImage* nativeImage_ = nullptr;    // NativeImage (零拷贝纹理)
     void*          nativeWindow_ = nullptr;     // OHNativeWindow* (从 NativeImage 获取, 存为 void* 避免头文件冲突)
     GLuint          textureId_ = 0;            // NativeImage 关联的 GL 纹理 ID
+    Render::NativeImageTransform textureTransform_ =
+        Render::IdentityNativeImageTransform();
+    bool            desktopSurfaceCompatibility_ = false;
+    bool            textureTransformLogged_ = false;
     int             width_ = 0;
     int             height_ = 0;
     CodecType       codecType_ = CodecType::H264;
