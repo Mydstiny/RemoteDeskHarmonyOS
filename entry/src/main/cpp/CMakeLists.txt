@@ -489,6 +489,14 @@ target_link_libraries(rdpnapi PUBLIC
     crypto
 )
 
+# N1-02 build-only Moonlight boundary. The pinned common-c/ENet archives are
+# linked privately and expose no NAPI or runtime registration. Product sources
+# do not inherit upstream include paths or definitions; callable/session work
+# begins in later checkpoints.
+set(REMOTEDESK_MOONLIGHT_OPENSSL_ROOT "${OPENSSL_DIR}")
+add_subdirectory(moonlight)
+target_link_libraries(rdpnapi PRIVATE remotedesk_moonlight_common)
+
 # G0 compile/link probe. This target is opt-in and excluded from rdpnapi/HAP,
 # so introducing the capability gate cannot change any existing protocol's
 # runtime dependency graph. Runtime probing is added later through a typed
