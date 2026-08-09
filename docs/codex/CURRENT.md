@@ -5,8 +5,8 @@
 - Task: `moonlight-complete-upgrade`
 - Base: `main@aeb0cdac5`
 - Branch: `codex/moonlight-complete-upgrade`
-- Phase: G0, D1-D3 local/dormant lifecycle and N1-01～N1-06 are checkpointed;
-  N1-07 dormant Host Control is next; AGC and product runtime remain blocked.
+- Phase: G0, D1-D3 local/dormant lifecycle and N1-01～N1-07 are checkpointed;
+  N1-08 fail-closed typed bridge is next; AGC and product runtime remain blocked.
 
 ## Context
 
@@ -79,26 +79,28 @@
   blocked SHA-1, canonical certificate/trust candidate, exact lane/cancel/deadline,
   no replay, one-shot unpair, atomic commit/rollback/repair and full secret cleanse.
   It reuses N1-04/N1-05 and remains unreachable from NAPI/HAP runtime.
+- N1-07 checkpoint `019ed98b4` adds a hidden injected Host Control: authenticated
+  catalog/asset, launch/resume/explicit quit, preflight/action/postcondition truth,
+  exact generation/cancel/deadline, global single mutation, no replay and secret/
+  RTSP cleanse. It only reuses N1-04 and remains unreachable from NAPI/HAP runtime.
 - Current gates: both Hvigor tasks, 138-test ArkTS registration, signed HAP,
-  native and ASan/UBSan 400/400, strict/analyzer, API 23 dual-ABI probe/build,
+  native and ASan/UBSan 426/426, strict/analyzer, API 23 dual-ABI probe/build,
   source/Git-tree, TOTP, Light and isolation passed. ABI inventories remain
   arm64 16103/698/716 and x86_64 15634/696/711; HAP remains 423 paths. Each ABI
-  keeps 48 `rdpnapi` plus 1 Host API, 2 identity and 1 pairing private commands,
-  with no upstream include leak. HDC still says `Connect server failed`; no new
-  Hypium/HUKS/Sunshine runtime claim exists. One of two `sol low` reviews was
+  keeps 48 `rdpnapi` plus 1 Host API, 2 identity, 1 pairing and 1 Host Control
+  private commands, with no upstream include leak. HDC still says
+  `Connect server failed`; no new Hypium/HUKS/Sunshine runtime claim exists. One of two `sol low` reviews was
   used for N1-01; the remaining one stays reserved for final integration.
 
 ## Next
 
-1. Execute only N1-07 as an injected/dormant Host Control orchestrator. Reuse
-   N1-04 for authenticated catalog/asset and launch/resume/explicit quit; require
-   precondition/action/postcondition truth, exact generation/cancel/deadline,
-   maybe-sent no replay and move-only launch-material cleanse. Do not write the
-   ArkTS cache or add NAPI/UI/cloud/media/input/feature truth. Product identity
-   remains unavailable, so N1-07 must stay unreachable from the signed HAP.
-2. Keep D3-01 online coordinator wiring, D3-05 cloud-first promotion, D3-06
-   cloud tombstone terminal execution and D3-08
-   multi-device matrix blocked until development/test/production AGC receipts
+1. Execute only N1-08 as an independent typed async NAPI/ArkTS Host Service
+   bridge. Exact native keys/cancel/env teardown and full account lease/cache
+   fencing are mandatory. The production factory must return unavailable before
+   network while runtime identity/transport/trust/commit receipts are absent;
+   do not enable FAB/UI/cloud/media/input or any release truth.
+2. Keep D3-01 online wiring, D3-05 cloud promotion, D3-06 cloud terminal and
+   D3-08 multi-device matrix blocked until development/test/production AGC receipts
    permit D2-07 registration.
 3. Do not implement D2-07 registration until development/test/production AGC
    schema, authorization and index receipts complete D2-05/D2-06.
