@@ -5,8 +5,8 @@
 - Task: `ssh-terminal-complete-upgrade`
 - Base: `main@d2769ad4b`
 - Branch: `codex/ssh-terminal-complete-upgrade`
-- Code checkpoints: `6924a1124` (`feat: harden remote sessions and SSH workspace`), `a9554a331` (`fix: harden DevEco builds and session recovery`), `fec26e2` (`fix: close SFTP and pointer recovery races`), `0be27d7` (`feat(ssh): add forwarding workspace`) and `bc5132c` (`fix(ssh-ui): finalize forwarding workspace`).
-- Phase: Level A and SFTP UI are accepted; Level B proxy/forwarding code, Pad UI and real Local-forward traffic are implemented. Remaining endpoint interoperability and independent review stay open; xterm.js remains the visible renderer.
+- Code checkpoints: `6924a1124` (`feat: harden remote sessions and SSH workspace`), `a9554a331` (`fix: harden DevEco builds and session recovery`), `fec26e2` (`fix: close SFTP and pointer recovery races`), `0be27d7` (`feat(ssh): add forwarding workspace`), `bc5132c` (`fix(ssh-ui): finalize forwarding workspace`) and `41944ff` (`feat(settings): finalize 1.1.0 personalization defaults`).
+- Phase: Level A and SFTP UI are accepted; Level B proxy/forwarding code, Pad UI and real Local-forward traffic are implemented. The 1.1.0 personalization/default and protocol-icon polish is committed. Remaining device acceptance, endpoint interoperability and independent review stay open; xterm.js remains the visible renderer.
 
 ## Current Outcome
 
@@ -19,6 +19,7 @@
 - Local/remote/dynamic forwarding is wired through the existing Native listeners/channels with generation-owned controller/runtime cleanup. The terminal has a compact dark forwarding bindSheet, separate dark add/edit and confirmation sheets, public-listener confirmation, manual/automatic lifecycle, live runtime metrics and serialized close/reopen behavior. Runtime cards now read reactive snapshots directly instead of retaining their first Builder argument.
 - Visitor/STCP/SUDP/XTCP protocol handling remains explicit fail-closed; it is not silently downgraded to Direct, proxy or `frp_tcp`.
 - RustDesk/RDP/VNC work already present in the mixed tree was preserved. RustDesk VP9 software pressure and high-resolution FPS ceiling changes are included in the current checkpoint; RDP Gateway trust stages remain separate and fail closed for unsupported credential combinations.
+- 1.1.0 captures a clean-install profile before LoginPage writes its launch marker. Saved update-user preferences remain authoritative; new Phone/Pad installs default remote controls to touchpad and SSH to the software keyboard, while new PC installs default all four protocols to physical keyboard/mouse. Canvas pinch zoom and RustDesk presence/grouping default off, official remote cursor/background display/real 2FA logos default on, SSH uses the system terminal-style symbol, and VNC option rows now use semantic symbols.
 
 ## IDE Build Repair
 
@@ -31,10 +32,10 @@
 
 - `git diff --check`: pass.
 - Host native suite outside the sandbox: `339 passed, 0 failed, 339 total`; the sandbox run reached 323/339 with only 16 existing VNC loopback fixture startup failures.
-- `default@OhosTestCompileArkTS`: pass after `bc5132c`, including the forwarding snapshot statistics regression.
-- `assembleHap`: `BUILD SUCCESSFUL in 32 s 998 ms`; `BuildNativeWithNinja`, PackageHap and SignHap passed.
+- `default@OhosTestCompileArkTS`: pass for the `41944ff` 1.1.0 personalization policy and regressions.
+- `assembleHap`: `BUILD SUCCESSFUL in 21 s 974 ms`; `BuildNativeWithNinja`, PackageHap and SignHap passed.
 - IDE-like Ninja command inspection under `PATH=/usr/bin:/bin` shows absolute Cargo, rustc, clang/clang++, llvm-ar, sysroot and encoded rustflags.
-- Signed HAP: `entry/build/default/outputs/default/entry-default-signed.hap`, SHA-256 `f07a54cf5a5e57b16411faa95295dbd6214c77bb39b2ba20bc35a0835fa36946`.
+- Signed HAP: `entry/build/default/outputs/default/entry-default-signed.hap`, SHA-256 `1d50f35519262aba466b29c9351b8253b86d77539bdd0040b95d8a4a92259e44`.
 - Wireless MLR-AL10 `192.168.3.236:40123`: direct SSH connected and Local `127.0.0.1:8022 -> 127.0.0.1:22` listened under the App UID. A temporary HDC `28022 -> 8022` mapping carried a real OpenSSH banner, client identification and server KEXINIT in both directions; the dark Pad sheet updated to `连接 1` / `流量 1.1 KB`. The temporary mapping was removed after acceptance.
 - Full Rust run outside the sandbox: `176 passed, 1 existing rendezvous public-address fixture failure`; all VP9, terminal, cursor and network groups affected by the current diff passed.
 - `ohosTest@OhosTestCompileArkTS` remains unavailable because task registration fails with `00306054`. Light could not start because `pwsh` is absent; the existing SBOM `NOASSERTION` blocker also remains.
@@ -42,13 +43,14 @@
 ## Review
 
 - `0be27d7..bc5132c` received a direct changed-path review, `git diff --check`, both Hvigor gates and wireless Pad UI/data-flow acceptance. The user requested direct completion without subagent delegation, so this is not an independent reviewer pass.
+- `41944ff` received a direct changed-path/default-inheritance audit, `git diff --check` and both Hvigor gates. Clean-install/update and Phone/Pad/PC visual acceptance remain separate from this build evidence.
 - Keep `review=REVIEW_REQUIRED` until an independent reviewer checks the committed increment. Do not mark Level B endpoint interoperability complete without real traffic evidence.
 
 ## Next
 
-1. Provision real HTTP CONNECT, SOCKS5, one-to-three-hop OpenSSH, external FRP TCP/Visitor plus Remote/Dynamic forwarding endpoints and run the remaining matrix.
-2. Run an independent review through `bc5132c` and resolve findings without touching SFTP or other protocols.
-3. Continue Phone/PC, physical keyboard, third-party IME, rotation, split-window, PiP, foreground/background and network-switch acceptance.
+1. Run an independent review through `41944ff` and resolve findings without touching SFTP or other protocols.
+2. Validate clean-install versus update inheritance plus Phone/Pad/PC defaults and the SSH/VNC symbols on devices.
+3. Provision real HTTP CONNECT, SOCKS5, one-to-three-hop OpenSSH, external FRP TCP/Visitor plus Remote/Dynamic forwarding endpoints and run the remaining matrix.
 
 ## Blockers / Evidence Gaps
 
@@ -56,5 +58,6 @@
 - Background SFTP process-restart/authentication recovery and real endpoint interruption tests remain open despite durable code paths.
 - Native Drawing remains disabled for visible SSH after API 23 `41207000` / BufferQueue `SIGABRT`; xterm.js is the acceptance renderer.
 - External keyboard plus third-party IME coverage is incomplete.
+- 1.1.0 clean-install/update classification and the Phone/Pad/PC default matrix are code/test-compile/build verified but not yet device accepted.
 - Light compliance cannot run locally because `pwsh` is missing and is also blocked by baseline SBOM package `totp-reviewed-brand-assets` with `licenseDeclared=NOASSERTION`.
-- Independent review of the forwarding workspace is pending by explicit direct-execution instruction.
+- Independent review of the committed workspace through `41944ff` is pending by explicit direct-execution instruction.

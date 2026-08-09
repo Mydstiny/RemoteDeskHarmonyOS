@@ -4,7 +4,8 @@ Updated: 2026-08-09 Asia/Shanghai
 
 ## Now
 
-- Independently review the forwarding increment through `bc5132c` and keep the review state open until the committed increment passes.
+- Independently review the committed increment through `41944ff` and keep the review state open until it passes.
+- Device-check 1.1.0 clean-install versus update inheritance, Phone/Pad/PC input defaults, SSH terminal symbol and VNC semantic option symbols.
 - Provision and run the real HTTP CONNECT, SOCKS5, ProxyJump, external FRP TCP/Visitor and Remote/Dynamic forwarding traffic matrix. Local forwarding already passed real SSH banner/KEX traffic on the wireless Pad.
 - Keep xterm.js as the visible terminal renderer; do not re-enable Native Drawing on API 23.
 
