@@ -114,7 +114,10 @@ set(SECURITY_SOURCES
     security/security_napi.cpp
 )
 
-# -- Moonlight native ownership base (no NAPI/Host API/media/input yet) --
+# -- Moonlight native ownership and bounded Host API protocol core --
+set(MOONLIGHT_HOST_API_SOURCE
+    moonlight/core/MoonlightHostApi.cpp
+)
 set(MOONLIGHT_SOURCES
     moonlight/core/MoonlightSessionOwner.cpp
 )
@@ -231,6 +234,7 @@ if(RDP_BUILD_TESTS)
         test/rustdesk_connection_continuity_executor_test.cpp
         test/decoder_pipeline_lifecycle_policy_test.cpp
         test/safe_log_test.cpp
+        test/moonlight_host_api_test.cpp
         test/moonlight_session_owner_test.cpp
         test/vnc_des_test.cpp
         test/vnc_cursor_protocol_test.cpp
@@ -255,6 +259,7 @@ if(RDP_BUILD_TESTS)
         render/video_backpressure_controller.cpp
         render/video_perf_counters.cpp
         extensions/session_teardown_executor.cpp
+        moonlight/core/MoonlightHostApi.cpp
         moonlight/core/MoonlightSessionOwner.cpp
         vnc/vnc_des.cpp
         vnc/vnc_cursor_protocol.cpp
@@ -400,11 +405,32 @@ endif()
 # 构建目标 (必须先于 target_link_libraries)
 # ============================================================
 
+# Build the Host API core as a private archive. Until its typed N-API owner is
+# introduced, no product translation unit references it, so the linker verifies
+# the cross-ABI object without pulling it into librdpnapi.so. Once referenced,
+# --exclude-libs keeps implementation and libc++ template details local.
+add_library(remotedesk_moonlight_host_api STATIC ${MOONLIGHT_HOST_API_SOURCE})
+target_compile_features(remotedesk_moonlight_host_api PRIVATE cxx_std_17)
+target_include_directories(remotedesk_moonlight_host_api PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_compile_options(remotedesk_moonlight_host_api PRIVATE
+    -fvisibility=hidden
+    -fvisibility-inlines-hidden
+)
+set_target_properties(remotedesk_moonlight_host_api PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+)
+
 # 定义共享库目标
 add_library(rdpnapi SHARED ${ALL_SOURCES})
 target_compile_definitions(rdpnapi PRIVATE
     REMOTEDESK_GIT_SHORT_SHA="${REMOTEDESK_GIT_SHORT_SHA}"
     REMOTEDESK_BUILD_TIME_UTC="${REMOTEDESK_BUILD_TIME_UTC}"
+)
+target_link_libraries(rdpnapi PRIVATE remotedesk_moonlight_host_api)
+target_link_options(rdpnapi PRIVATE
+    "-Wl,--exclude-libs,libremotedesk_moonlight_host_api.a"
 )
 
 # VNC full-screen ZRLE decode is production-rate code even in a signed Debug
