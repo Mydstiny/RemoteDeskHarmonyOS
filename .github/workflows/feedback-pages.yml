@@ -27,10 +27,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p site/feedback
+          mkdir -p site/feedback site/privacy
+          grep -Fq 'ohos.permission.DISTRIBUTED_DATASYNC' docs/feedback/privacy/index.html
           cp docs/feedback/index.html site/index.html
           cp docs/feedback/chanlian.json site/feedback/chanlian.json
           cp docs/feedback/chanlian-current.jpg site/feedback/chanlian-current.jpg
+          cp docs/feedback/privacy/index.html site/privacy/index.html
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5

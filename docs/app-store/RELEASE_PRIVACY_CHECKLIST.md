@@ -1,6 +1,6 @@
 # 发布与隐私自查清单
 
-更新日期：2026-06-30
+更新日期：2026-08-09
 
 范围：本清单用于 AppGallery 提交前的最后人工审计。当前云同步策略冻结，不在本清单中推进 schemaVersion、tombstone、deviceId 或冲突合并策略变化；这里只检查发布配置、权限、敏感配置、日志和能力文案是否真实可发布。
 
@@ -18,11 +18,13 @@
 
 | 权限 | 源码位置 | 当前用途 | 发布前动作 |
 |---|---|---|---|
-| `ohos.permission.INTERNET` | `entry/src/main/module.json5` | 远程连接、RustDesk 中继、华为账号/Cloud DB 同步 | 保留 |
+| `ohos.permission.INTERNET` | `entry/src/main/module.json5` | 远程连接、RustDesk 中继、华为账号和云空间服务 | 保留 |
+| `ohos.permission.GET_NETWORK_INFO` | `entry/src/main/module.json5` | 判断远程连接和云同步所需的网络状态 | 保留 |
 | `ohos.permission.KEEP_BACKGROUND_RUNNING` | `entry/src/main/module.json5` | 远程会话后台保活、后台音频/文件传输 | 保留，但商店权限说明必须写清楚远程连接场景 |
+| `ohos.permission.FILE_ACCESS_PERSIST` | `entry/src/main/module.json5` | 持久化用户通过系统 Picker 授权的 SFTP 文件或目录 URI | 保留；隐私政策说明其不提供全盘访问能力 |
+| `ohos.permission.DISTRIBUTED_DATASYNC` | `entry/src/main/module.json5` | 用户登录华为账号并使用云同步时，通过华为云空间服务同步跨设备数据 | 保留；软件包、隐私政策和 AppGallery 权限用途说明必须一致 |
 | `ohos.permission.CAMERA` | `entry/src/main/module.json5` | TOTP 二维码扫描时按需申请 | 保留，确认首次启动不主动申请 |
 | `ohos.permission.ACCESS_BIOMETRIC` | `entry/src/main/module.json5` | 主机安全锁、TOTP 隐私保护 | 保留，确认仅功能触发时使用 |
-| `ohos.permission.ACTIVITY_MOTION` | `entry/src/main/module.json5` | 握持/沉浸式适配检测 | 发布前必须真机确认功能入口；若无明确用户价值，应移除或延后 |
 | `ohos.permission.DETECT_GESTURE` | `entry/src/main/module.json5` | 握持/沉浸式适配检测 | 发布前必须真机确认功能入口；若无明确用户价值，应移除或延后 |
 
 ## 三、能力文案真实性
@@ -32,7 +34,7 @@
 | RustDesk | 已完成阶段性连接、音频、输入、视频与中继配置链路 | 可作为核心能力描述，但避免承诺兼容所有自建服务器 |
 | SSH | SSH 终端、密钥、预检、触控滚动已完成阶段性闭环 | 可作为核心能力描述 |
 | RDP | FreeRDP 真链路仍需按构建开关和真机验证确认 | 可描述为 RDP 入口和持续验证能力，不得承诺所有企业网关/重定向能力 |
-| VNC | `entry/src/main/cpp/vnc/vnc_adapter.cpp` 仍是 mock | 只写“预留/规划中入口”或隐藏；不得写成完整可用 |
+| VNC | 已接入实际 RFB 3.3/3.7/3.8 客户端、Raw/ZRLE、输入和多种 transport；具体能力仍受服务器、安全类型与网关兼容性限制 | 可作为核心连接能力描述，但不得承诺兼容所有 VNC 服务器、安全类型或网关 |
 | 系统剪贴板 | native `clipboard_bridge.cpp` 仍需确认是否接入真实系统 pasteboard；部分路径可能只是缓存/会话内转发 | 只描述文本粘贴/会话剪贴能力，避免承诺完整系统双向同步 |
 | 麦克风采集 | `audio_capturer.cpp` 存在 TODO/mock 风险 | 不得承诺麦克风转发，除非后续完成 OHAudio capturer smoke |
 | 文件传输 | RDP drive/RustDesk file 入口存在，但后台队列/取消/重试仍待强化 | 可描述基础文件发送，避免承诺后台可靠队列 |
@@ -59,6 +61,7 @@ rg -n "VNC|麦克风|microphone|系统剪贴板|clipboard" docs/app-store
 ## 六、发布前阻断项
 
 1. `bundleName`、`vendor`、Release Profile、AGC 配置未确认时，不提交 AppGallery。
-2. VNC、麦克风、系统剪贴板未完成真实接入前，不在应用市场描述中作为完整能力宣传。
+2. 麦克风、系统剪贴板未完成真实接入前，不在应用市场描述中作为完整能力宣传；VNC 可以描述为实际连接能力，但不得承诺覆盖所有服务器、安全类型或网关。
 3. SafeLogger/native safe_log 完成前，不提交含连接凭据调试日志的候选包。
 4. 使用新版 ArkTS 测试入口 `default@OhosTestCompileArkTS` 与 `onDeviceTest` 验收；旧版 `default@OhosTestBuildArkTS` 无法加载 HarmonyOS 扩展 Kit，不作为发布阻断依据。
+5. `user_grant` 权限与公开隐私政策、应用内隐私摘要和 AppGallery 权限用途说明不一致时，不提交审核。

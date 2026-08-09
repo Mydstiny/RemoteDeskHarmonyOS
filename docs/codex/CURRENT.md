@@ -2,51 +2,61 @@
 
 ## Active Task
 
-- Task: `host-local-personalization`
-- Base: `main@2feb12e0d`
-- Branch: `codex/host-local-personalization`
-- Phase: implementation and field validation complete; checkpoint commit and independent review pending.
+- Task: `privacy-permission-disclosure`
+- Base: `main@d840e662a`
+- Branch: `codex/privacy-permission-disclosure`
+- Phase: locally complete, independently reviewed and ready to publish.
 
-## Completed
+## Context
 
-- Classified synchronized host identity separately from device-local display, input, quality and usage preferences.
-- Added versioned local personalization overlays while retaining every legacy cloud column and decoder.
-- Preserved legacy cloud personalization on unrelated host updates; new hosts remain readable by 1.0.7/1.0.8 clients.
-- Routed RustDesk Server Pro reconciliation through the same cloud-base comparison, preventing status refreshes from dirtying all `remotehosts` rows.
-- Kept VNC device-specific settings local and removed the obsolete VNC-specific cloud gate/entry.
-- Made manual upload settle successful tables independently and continue the VNC leg when another table fails.
-- Added per-table terminal statistics and precise Huawei cloud progress-code diagnostics.
-- Made portable backup export omit historical orphan extension rows without deleting or weakening validation of local data.
-- Added ownership, coordinator wiring, backup policy and legacy-upgrade regressions.
-- Restricted cloud `usersettings` to cross-device appearance only; RDP/RustDesk protocol, input, display,
-  quality, terminal, live-view and device-capability preferences now remain in device Preferences.
-- Kept legacy cloud preference rows intact but ignored by the new client, so upgrades require no destructive migration.
+- AppGallery reported that the package declares the `user_grant` permission
+  `ohos.permission.DISTRIBUTED_DATASYNC`, while the submitted privacy policy does
+  not declare it explicitly.
+- The signed 1.1.0 App package was verified successfully and must retain this
+  permission for Huawei Cloud Space synchronization.
+- The canonical, public and in-app policies now explicitly disclose the exact
+  permission, trigger, purpose and refusal impact.
+- The in-app complete-policy link now targets the dedicated `/privacy/` page,
+  which the existing GitHub Pages workflow packages alongside the feedback page.
+- Runtime permission declarations, cloud synchronization code and signing
+  material were not changed.
+- The first independent review found overbroad claims about encryption and
+  device-local personalization. The policy now states the actual conditional
+  encryption behavior and the old-version cloud compatibility snapshots.
+- Refusal/withdrawal impact is now identical in the public policy, in-app
+  summary and AppGallery submission wording; stale VNC mock wording was removed.
+- Independent remediation review of `0026e4252`: PASS with no P0/P1/P2/P3
+  findings; receipt `privacy-permission-disclosure-pass-2026-08-09`.
 
-## Compatibility Guardrails
+## Scope
 
-- Existing distributed-table names, columns and registration remain unchanged.
-- Missing, malformed or future-version local overrides fall back to legacy values and never gate login or cloud initialization.
-- Cloud-first reads and old-client writes cannot overwrite an established local override on another device.
-- Existing 1.0.7/1.0.8 rows upgrade in place; no destructive migration or mandatory cloud rewrite was introduced.
+- Canonical and public privacy policy wording.
+- In-app privacy summary and complete-policy URL.
+- Existing GitHub Pages packaging workflow.
+- AppGallery permission checklist and release guide terminology.
 
 ## Verification
 
+- Baseline: clean `main@d840e662a`, equal to `origin/main` on 2026-08-09.
+- Post-review-remediation `default@OhosTestCompileArkTS`: PASS, exit 0 on
+  2026-08-09.
+- Post-review-remediation `assembleHap`: PASS, exit 0,
+  `BUILD SUCCESSFUL in 10 s 206 ms`.
+- JSON, workflow YAML, Pages artifact simulation, literal permission and Huawei
+  Cloud Space terminology checks: PASS.
 - `git diff --check`: PASS.
-- `default@OhosTestCompileArkTS`: PASS on 2026-08-09 after the final usersettings isolation changes.
-- `assembleHap`: PASS (`BUILD SUCCESSFUL in 1 min 4 s 985 ms`) on 2026-08-09 after the final usersettings isolation changes.
-- `python3 scripts/verify_legacy_upgrade.py`: PASS for `1.0.7@d2bc6c9982` and initial `1.0.8@a3d47c464a`; all fixture rows preserved, personalization upgrade PASS, schema version 4.
-- Phone `192.168.3.235:38451`: signed HAP installed; user-confirmed full cloud overwrite upload succeeded on 2026-08-09.
-- Phone backup: full backup passed snapshot/staging validation and entered the system save picker; picker was canceled intentionally, with no public file left behind.
-- Huawei Cloud Space schema was inspected read-only: `remotehosts` matches the projected String/Integer columns and contains no Asset field.
-- Devices `192.168.3.235:38451` and `192.168.3.236:40123`: repair HAP installed; user verified that
-  changing/uploading RustDesk control mode on device A no longer changes device B after pull.
+- Manual shell equivalent of the Light compliance checks, including required
+  tracked artifacts, protocol hashes, SPDX metadata and secret patterns: PASS.
+- Exact `verify_open_source_release.ps1 -Mode Light`: PASS through the
+  repository-provided PowerShell resolver.
 
 ## Next
 
-1. Create the requested follow-up commit for usersettings device isolation.
-2. Run the required independent review against the committed scope and address any findings.
-3. Complete Pad/PC and second-device personalization-isolation acceptance before release/PR closure.
+1. Publish the branch and deploy Pages when authorized.
+2. Confirm the public privacy URL, then use it and the exact
+   permission-purpose wording in AppGallery.
 
 ## Blockers
 
-- None for the checkpoint commit.
+- None for local implementation. The public page and AppGallery declaration do
+  not change until the branch is published and the AppGallery form is updated.

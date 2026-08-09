@@ -1,18 +1,19 @@
-# Host Local Personalization Queue
+# Privacy Permission Disclosure Queue
 
 Updated: 2026-08-09 Asia/Shanghai
 
 ## Now
 
-- Commit the user-verified usersettings device-isolation follow-up on `codex/host-local-personalization`.
-- Run independent review on the committed policy, cloud coordinator, backup and upgrade-simulation scope.
+- Permission disclosure implementation, mandatory builds, exact Light compliance
+  and independent review are complete on the task branch.
+- Preserve the guardrail that no cloud-sync runtime or package permission was changed.
 
 ## Next
 
-- Verify a second device receives cloud host identity while retaining its own display/input preferences.
-- Recheck Pad and PC upgrade/cloud behavior before release acceptance.
-- Push and update the 1.0.8-to-1.1.0 PR only after review and device acceptance are complete.
+- Publish the task branch, wait for Pages deployment, then update the
+  AppGallery privacy URL and permission declaration before resubmission.
 
 ## Later
 
-- Extend the same versioned local-override envelope to future protocol-specific device preferences.
+- Add an automated package-versus-policy permission consistency check if future
+  releases introduce more `user_grant` permissions.

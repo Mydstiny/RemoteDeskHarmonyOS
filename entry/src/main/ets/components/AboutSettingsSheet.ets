@@ -327,13 +327,17 @@ export struct AboutSettingsSheet {
             '账号信息、主机配置、远程连接凭据、SSH 私钥、TOTP 密钥、RustDesk 中继配置和应用偏好。' +
             '远程桌面画面、SSH 会话内容不会持久化保存。')
           this.policySection('权限用途',
-            '网络权限用于连接目标主机和云同步；相机只在扫描 2FA 二维码时使用；' +
+            '网络权限用于连接目标主机；ohos.permission.DISTRIBUTED_DATASYNC（分布式数据管理权限）' +
+            '只在你登录华为账号并使用云同步时，用于通过华为云空间服务同步跨设备数据；' +
+            '拒绝或撤回该权限后云同步不可用，但不影响本地基础功能；' +
+            '相机只在扫描 2FA 二维码时使用；' +
             '生物识别只在主机锁或 TOTP 隐私保护验证时使用。')
           this.policySection('数据安全',
-            '敏感数据使用主密码派生密钥进行 AES-256-GCM 加密。' +
-            '主密码丢失后无法恢复已加密数据，请自行妥善保存。')
+            '启用并解锁应用加密后，受保护的敏感字段使用主密码派生密钥进行 AES-256-GCM 加密；' +
+            '未启用应用加密时，你选择保存和同步的部分凭据可能以未加密形式保存或同步，' +
+            '相关设置会要求确认风险。主密码丢失后无法恢复已加密数据，请自行妥善保存。')
           this.policySection('第三方共享',
-            '本应用不集成广告 SDK，不出售个人信息。华为账号与云同步由华为官方 Kit 提供；' +
+            '本应用不集成广告 SDK，不出售个人信息。华为账号与云空间服务由华为官方 Kit 提供；' +
             'RustDesk 中继服务器由你自行选择。')
           this.policySection('联系我们',
             '如有隐私或数据处理问题，请发送邮件至 lijiong1219@petalmail.com。')
@@ -350,7 +354,7 @@ export struct AboutSettingsSheet {
           .borderRadius(16).backgroundColor(this.pal().surface)
           .margin({ bottom: 12 })
           .onClick((): void => {
-            this.openUrl('https://mydstiny.github.io/RemoteDeskHarmonyOS/');
+            this.openUrl('https://mydstiny.github.io/RemoteDeskHarmonyOS/privacy/');
           })
         }.width('100%').padding({ left: 24, right: 24, bottom: 22 })
       }.height(this.breakpoint === 'sm' ? 440 : 520)
