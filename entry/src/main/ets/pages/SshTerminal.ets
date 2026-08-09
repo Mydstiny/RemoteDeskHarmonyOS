@@ -197,7 +197,6 @@ import {
   shouldMountSftpPeerPicker,
   shouldCommitSftpPeerSelection,
   shouldAllowSftpRootSheetDismiss,
-  shouldUseSftpExpandedWorkspace,
   sftpExpandedWorkspaceMinHeight,
   shouldDriveSftpNativeDismissAction
 } from '../services/SheetTransitionPolicy';
@@ -407,6 +406,12 @@ struct SshTerminal {
   @State forwardingRuntimes: SshForwardingRuntimeRecord[] = [];
   @State forwardingStatus: string = '';
   @State forwardingSheetMountToken: number = 0;
+  @State showForwardingConfirmSheet: boolean = false;
+  @State forwardingConfirmTitle: string = '';
+  @State forwardingConfirmMessage: string = '';
+  @State forwardingConfirmAction: string = '确认';
+  @State forwardingConfirmDanger: boolean = false;
+  private forwardingConfirmResolve: ((confirmed: boolean) => void) | null = null;
   /** SFTP 文件传输面板 */
   @State showSftpPanel: boolean = false;
   @State showSftpSheet: boolean = false;
@@ -5352,6 +5357,7 @@ struct SshTerminal {
     this.clearForwardingRefreshTimer();
     this.showForwardingSheet = false;
     this.forwardingModalCoordinator.invalidate();
+    this.finishForwardingConfirmation(false);
     this.clearSftpSheetTransitionTimers();
     ++this.sftpSheetTransitionToken;
     ++this.sftpRootSheetMountToken;
@@ -7091,16 +7097,12 @@ struct SshTerminal {
         this.forwardingStatus = '失败：请先开启“允许非 loopback 监听”';
         return;
       }
-      const decision = await promptAction.showDialog({
-        title: '确认开放监听地址',
-        message: profile.bindHost + ':' + profile.bindPort.toString() +
+      const confirmed: boolean = await this.promptForwardingConfirmation(
+        '确认开放监听地址',
+        profile.bindHost + ':' + profile.bindPort.toString() +
           ' 可能被局域网或公网设备访问。仅在你信任当前网络和目标服务时继续。',
-        buttons: [
-          { text: '取消', color: this.pal().text2 },
-          { text: '确认保存', color: this.pal().danger }
-        ]
-      });
-      if (decision.index !== 1 || this.terminalClosing || pageGeneration !== this.pageGeneration ||
+        '确认保存', true);
+      if (!confirmed || this.terminalClosing || pageGeneration !== this.pageGeneration ||
         owner !== this.hostId.trim()) { return; }
     }
     if (!this.sshForwardingProfilesReady ||
@@ -7154,16 +7156,12 @@ struct SshTerminal {
     if (profile === undefined) { return; }
     const owner: string = this.hostId.trim();
     const pageGeneration: number = this.pageGeneration;
-    const decision = await promptAction.showDialog({
-      title: '删除隧道规则',
-      message: '删除 ' + sshForwardingModeLabel(profile.mode) + ' ' +
+    const confirmed: boolean = await this.promptForwardingConfirmation(
+      '删除隧道规则',
+      '删除 ' + sshForwardingModeLabel(profile.mode) + ' ' +
         profile.bindHost + ':' + profile.bindPort.toString() + '？正在运行时会先安全停止。',
-      buttons: [
-        { text: '取消', color: this.pal().text2 },
-        { text: '删除', color: this.pal().danger }
-      ]
-    });
-    if (decision.index !== 1 || this.terminalClosing || pageGeneration !== this.pageGeneration ||
+      '删除', true);
+    if (!confirmed || this.terminalClosing || pageGeneration !== this.pageGeneration ||
       owner !== this.hostId.trim()) { return; }
     const handle: SshSessionHandle | null = this.currentForwardingHandle();
     if (handle !== null) {
@@ -7197,13 +7195,69 @@ struct SshTerminal {
   private forwardingSheetHeight(): SheetSize | number {
     if (this.breakpoint === 'sm') { return SheetSize.LARGE; }
     const available: number = this.shellAreaH > 0 ? this.shellAreaH : 760;
-    return Math.max(1, Math.min(720, available - 32));
+    const preferred: number = this.forwardingProfiles.length === 0 ? 360 : 460;
+    return Math.max(1, Math.min(preferred, available - 32));
   }
 
   private forwardingSheetWidth(): Dimension {
     if (this.breakpoint === 'sm') { return '100%'; }
     const available: number = this.shellAreaW > 0 ? this.shellAreaW : 1100;
-    return Math.max(1, Math.min(980, available - 40));
+    const preferred: number = this.forwardingProfiles.length === 0 ? 560 : 660;
+    return Math.max(1, Math.min(preferred, available - 40));
+  }
+
+  private promptForwardingConfirmation(title: string, message: string,
+    action: string, danger: boolean): Promise<boolean> {
+    if (this.forwardingConfirmResolve !== null) {
+      const previousResolve: (confirmed: boolean) => void = this.forwardingConfirmResolve;
+      this.forwardingConfirmResolve = null;
+      previousResolve(false);
+    }
+    this.forwardingConfirmTitle = title;
+    this.forwardingConfirmMessage = message;
+    this.forwardingConfirmAction = action;
+    this.forwardingConfirmDanger = danger;
+    this.showForwardingConfirmSheet = true;
+    return new Promise<boolean>((resolve: (confirmed: boolean) => void): void => {
+      this.forwardingConfirmResolve = resolve;
+    });
+  }
+
+  private finishForwardingConfirmation(confirmed: boolean): void {
+    this.showForwardingConfirmSheet = false;
+    const resolve: ((confirmed: boolean) => void) | null = this.forwardingConfirmResolve;
+    this.forwardingConfirmResolve = null;
+    if (resolve !== null) { resolve(confirmed); }
+  }
+
+  private forwardingConfirmSheetHeight(): SheetSize | number {
+    return SheetSize.FIT_CONTENT;
+  }
+
+  private forwardingConfirmSheetWidth(): Dimension {
+    if (this.breakpoint === 'sm') { return '100%'; }
+    const available: number = this.shellAreaW > 0 ? this.shellAreaW : 1100;
+    return Math.max(1, Math.min(420, available - 48));
+  }
+
+  @Builder
+  private ForwardingConfirmSheetContent() {
+    Column({ space: 14 }) {
+      Text(this.forwardingConfirmTitle)
+        .width('100%').fontSize(18).fontWeight(FontWeight.Bold).fontColor('#F5F7FA')
+      Text(this.forwardingConfirmMessage)
+        .width('100%').fontSize(13).fontColor('#AEB9C6').lineHeight(20)
+      Row({ space: 10 }) {
+        Button('取消').layoutWeight(1).height(42).borderRadius(10)
+          .backgroundColor('#232B36').fontColor('#D7DEE8')
+          .onClick((): void => { this.finishForwardingConfirmation(false); })
+        Button(this.forwardingConfirmAction).layoutWeight(1).height(42).borderRadius(10)
+          .backgroundColor(this.forwardingConfirmDanger ? '#B63843' : this.accentColor)
+          .fontColor('#FFFFFF')
+          .onClick((): void => { this.finishForwardingConfirmation(true); })
+      }.width('100%')
+    }.width('100%').padding({ left: 20, right: 20, top: 18, bottom: 18 })
+      .alignItems(HorizontalAlign.Start).backgroundColor('#171D25')
   }
 
   @Builder
@@ -7863,12 +7917,11 @@ struct SshTerminal {
   }
 
   private sftpWideLayout(): boolean {
-    // Width alone cannot distinguish a phone in landscape from a Pad. Keep
-    // the phone workflow on its original bottom sheet and reserve the
-    // two-pane workspace for actual Pad/desktop surfaces.
-    const width: number = this.shellAreaW > 0 ? this.shellAreaW : 1280;
-    const height: number = this.shellAreaH > 0 ? this.shellAreaH : 760;
-    return shouldUseSftpExpandedWorkspace(this.isPadDevice, this.isDesktopDevice, width, height);
+    // Pad and PC share one stable two-pane interaction model. Logical vp
+    // thresholds vary with display density and previously collapsed both into
+    // the stacked phone-like workspace. Only Phone keeps the 1.0.8 single-pane
+    // flow; Pad/PC retain two panes and let the native Sheet size its surface.
+    return this.sftpPadPcLayout();
   }
 
   private sftpUsesRootBindSheet(): boolean {
@@ -11414,7 +11467,7 @@ struct SshTerminal {
           preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
           width: this.forwardingSheetWidth(),
           dragBar: this.breakpoint === 'sm',
-          backgroundColor: this.pal().sheetBg,
+          backgroundColor: '#171D25',
           blurStyle: BlurStyle.NONE,
           showClose: false,
           maskColor: 'rgba(0,0,0,0.42)',
@@ -11426,6 +11479,33 @@ struct SshTerminal {
           },
           onDisappear: (): void => {
             this.onForwardingSheetDisappear(this.forwardingSheetMountToken);
+          }
+        })
+
+      // Tunnel confirmations use a dedicated dark Sheet instead of the system
+      // AlertDialog, whose title/message colors still follow the global theme.
+      Column()
+        .width('100%')
+        .height('100%')
+        .hitTestBehavior(HitTestMode.None)
+        .bindSheet($$this.showForwardingConfirmSheet,
+          this.ForwardingConfirmSheetContent(), {
+          height: this.forwardingConfirmSheetHeight(),
+          preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
+          width: this.forwardingConfirmSheetWidth(),
+          dragBar: false,
+          backgroundColor: '#171D25',
+          blurStyle: BlurStyle.NONE,
+          showClose: false,
+          maskColor: 'rgba(0,0,0,0.48)',
+          onWillDismiss: (action: DismissSheetAction): void => {
+            this.finishForwardingConfirmation(false);
+            action.dismiss();
+          },
+          onDisappear: (): void => {
+            if (this.forwardingConfirmResolve !== null) {
+              this.finishForwardingConfirmation(false);
+            }
           }
         })
     }

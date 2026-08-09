@@ -1,4 +1,4 @@
-import { Palette, buildDark, buildLight } from '../../common/Theme';
+import { Palette, buildDark } from '../../common/Theme';
 import {
   SshForwardingMode,
   SshForwardingProfile,
@@ -17,10 +17,10 @@ import {
   SshForwardingRuntimeRecord,
   SshForwardingRuntimeState
 } from '../../services/SshForwardingRuntimeStore';
+import { SshModalCoordinator, SshModalDecision } from '../../services/SshModalCoordinator';
 
 @Component
 export struct SshForwardingSheet {
-  @StorageProp('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
   @Prop @Watch('onProfilesChanged') profiles: SshForwardingProfile[] = [];
@@ -39,10 +39,21 @@ export struct SshForwardingSheet {
   @State draft: SshForwardingDraft = defaultSshForwardingDraft('local', 'ssh-forward-new');
   @State editorMessage: string = '';
   @State dirty: boolean = false;
+  @State showRuleEditorSheet: boolean = false;
+  @State ruleEditorMountToken: number = 0;
+  @State ruleEditorCreating: boolean = true;
   private idNonce: number = 0;
+  private ruleEditorCoordinator: SshModalCoordinator = new SshModalCoordinator();
+  private pendingEditorProfileId: string = '';
+  private restoreProfileId: string = '';
+  private restoreDraft: SshForwardingDraft = defaultSshForwardingDraft('local', 'ssh-forward-restore');
+  private restoreDirty: boolean = false;
 
   private pal(): Palette {
-    return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor);
+    // The tunnel workspace is deliberately dark in every system color mode.
+    // This keeps the terminal-adjacent workflow visually stable and prevents
+    // a nested rule sheet from switching palette while its parent is open.
+    return buildDark(this.accentColor);
   }
 
   private newId(): string {
@@ -82,9 +93,69 @@ export struct SshForwardingSheet {
     this.editorMessage = '';
   }
 
+  private mountRuleEditor(decision: SshModalDecision): void {
+    this.restoreProfileId = this.selectedProfileId;
+    this.restoreDraft = this.cloneDraft(this.draft);
+    this.restoreDirty = this.dirty;
+    const profile: SshForwardingProfile | undefined = this.profiles.find(
+      (item: SshForwardingProfile): boolean => item.id === this.pendingEditorProfileId);
+    if (profile === undefined) {
+      this.ruleEditorCreating = true;
+      this.createProfile('local');
+    } else {
+      this.ruleEditorCreating = false;
+      this.selectProfile(profile);
+    }
+    this.ruleEditorMountToken = decision.token;
+    this.showRuleEditorSheet = true;
+  }
+
+  private openNewRuleEditor(): void {
+    this.pendingEditorProfileId = '';
+    const decision: SshModalDecision = this.ruleEditorCoordinator.requestOpen();
+    if (decision.mount) { this.mountRuleEditor(decision); }
+  }
+
+  private openProfileRuleEditor(profile: SshForwardingProfile): void {
+    if (this.runtimeActive(this.runtimeFor(profile.id))) {
+      this.editorMessage = '运行中的规则需要先停止，再编辑。';
+      return;
+    }
+    this.pendingEditorProfileId = profile.id;
+    const decision: SshModalDecision = this.ruleEditorCoordinator.requestOpen();
+    if (decision.mount) { this.mountRuleEditor(decision); }
+  }
+
+  private restoreRuleEditorSelection(): void {
+    this.selectedProfileId = this.restoreProfileId;
+    this.draft = this.cloneDraft(this.restoreDraft);
+    this.dirty = this.restoreDirty;
+    this.editorMessage = '';
+  }
+
+  private closeNewRuleEditor(restore: boolean): void {
+    const decision: SshModalDecision = this.ruleEditorCoordinator.requestClose();
+    if (!decision.dismiss) { return; }
+    if (restore) { this.restoreRuleEditorSelection(); }
+    this.showRuleEditorSheet = false;
+  }
+
+  private onRuleEditorAppear(token: number): void {
+    this.ruleEditorCoordinator.noteAppeared(token);
+  }
+
+  private onRuleEditorDisappear(token: number): void {
+    const decision: SshModalDecision = this.ruleEditorCoordinator.noteDisappeared(token);
+    if (decision.mount) { this.mountRuleEditor(decision); }
+  }
+
   private onProfilesChanged(): void {
     if (this.profiles.length === 0) {
-      if (!this.dirty) { this.createProfile('local'); }
+      if (!this.showRuleEditorSheet) {
+        this.selectedProfileId = '';
+        this.dirty = false;
+        this.editorMessage = '';
+      }
       return;
     }
     const selected: SshForwardingProfile | undefined = this.profiles.find(
@@ -131,7 +202,7 @@ export struct SshForwardingSheet {
     });
   }
 
-  private saveDraft(): void {
+  private saveDraft(closeRuleEditor: boolean = false): void {
     if (this.runtimeActive(this.selectedRuntime())) {
       this.editorMessage = '运行中的规则需要先停止，再修改或保存。';
       return;
@@ -145,6 +216,7 @@ export struct SshForwardingSheet {
     this.dirty = false;
     this.editorMessage = '';
     this.onSave(result.profile);
+    if (closeRuleEditor) { this.closeNewRuleEditor(false); }
   }
 
   private stateLabel(state: SshForwardingRuntimeState): string {
@@ -206,12 +278,12 @@ export struct SshForwardingSheet {
           .layoutWeight(1)
         Button('+ 新建').height(40).borderRadius(10).fontSize(12)
           .backgroundColor(this.pal().surface).fontColor(this.accentColor)
-          .onClick((): void => { this.createProfile('local'); })
+          .onClick((): void => { this.openNewRuleEditor(); })
       }.width('100%')
       if (this.profiles.length === 0) {
         Column({ space: 6 }) {
           Text('还没有转发规则').fontSize(13).fontColor(this.pal().text2)
-          Text('在右侧填写并保存第一条规则。').fontSize(11).fontColor(this.pal().text3)
+          Text('点击“新建”打开规则编辑弹窗。').fontSize(11).fontColor(this.pal().text3)
         }.width('100%').padding(16).backgroundColor(this.pal().surface).borderRadius(12)
       } else {
         ForEach(this.profiles, (profile: SshForwardingProfile): void => {
@@ -235,27 +307,28 @@ export struct SshForwardingSheet {
     }.width('100%').alignItems(HorizontalAlign.Start)
   }
 
-  @Builder private runtimeCard(runtime: SshForwardingRuntimeRecord | null) {
+  @Builder private runtimeCard() {
     Column({ space: 8 }) {
       Row() {
         Text('运行状态').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
           .layoutWeight(1)
         Column().width(8).height(8).borderRadius(4)
-          .backgroundColor(this.stateColor(runtime?.state ?? 'stopped'))
-        Text(runtime === null ? '未启动' : this.stateLabel(runtime.state))
+          .backgroundColor(this.stateColor(this.selectedRuntime()?.state ?? 'stopped'))
+        Text(this.selectedRuntime() === null ? '未启动' : this.stateLabel(this.selectedRuntime()!.state))
           .fontSize(11).fontColor(this.pal().text2).margin({ left: 6 })
       }.width('100%')
-      if (runtime !== null) {
-        Text('监听 ' + runtime.actualBindHost + ':' + runtime.actualBindPort.toString())
+      if (this.selectedRuntime() !== null) {
+        Text('监听 ' + this.selectedRuntime()!.actualBindHost + ':' +
+          this.selectedRuntime()!.actualBindPort.toString())
           .fontSize(11).fontColor(this.pal().text2).width('100%')
         Row() {
-          Text('连接 ' + runtime.activeConnections.toString()).fontSize(11)
+          Text('连接 ' + this.selectedRuntime()!.activeConnections.toString()).fontSize(11)
             .fontColor(this.pal().text3).layoutWeight(1)
-          Text('流量 ' + this.formatBytes(runtime.transferredBytes)).fontSize(11)
+          Text('流量 ' + this.formatBytes(this.selectedRuntime()!.transferredBytes)).fontSize(11)
             .fontColor(this.pal().text3)
         }.width('100%')
-        if (runtime.lastError !== 0) {
-          Text('错误代码 ' + runtime.lastError.toString()).fontSize(11)
+        if (this.selectedRuntime()!.lastError !== 0) {
+          Text('错误代码 ' + this.selectedRuntime()!.lastError.toString()).fontSize(11)
             .fontColor(this.pal().danger).width('100%')
         }
       } else {
@@ -266,7 +339,7 @@ export struct SshForwardingSheet {
       .alignItems(HorizontalAlign.Start)
   }
 
-  @Builder private editor() {
+  @Builder private editor(creating: boolean = false) {
     Scroll() {
       Column({ space: 12 }) {
         Row({ space: 8 }) {
@@ -377,39 +450,164 @@ export struct SshForwardingSheet {
             .width('100%')
         }
 
-        this.runtimeCard(this.selectedRuntime())
+        if (!creating) { this.runtimeCard() }
+
+        if (creating) {
+          Row({ space: 8 }) {
+            Button('取消').layoutWeight(1).height(44).borderRadius(10)
+              .backgroundColor(this.pal().surface).fontColor(this.pal().text2)
+              .onClick((): void => { this.closeNewRuleEditor(true); })
+            Button(this.ruleEditorCreating ? '创建规则' : '保存修改')
+              .layoutWeight(1).height(44).borderRadius(10)
+              .backgroundColor(this.accentColor).fontColor(Color.White)
+              .onClick((): void => { this.saveDraft(true); })
+          }.width('100%')
+        } else {
+          Row({ space: 8 }) {
+            Button('保存').layoutWeight(1).height(44).borderRadius(10)
+              .backgroundColor(this.accentColor).fontColor(Color.White)
+              .enabled(!this.runtimeActive(this.selectedRuntime()))
+              .onClick((): void => { this.saveDraft(); })
+            if (this.runtimeActive(this.selectedRuntime())) {
+              Button('停止').layoutWeight(1).height(44).borderRadius(10)
+                .backgroundColor(this.pal().surface).fontColor(this.pal().danger)
+                .onClick((): void => { this.onStop(this.selectedProfileId); })
+            } else {
+              Button('启动').layoutWeight(1).height(44).borderRadius(10)
+                .backgroundColor(this.pal().surface).fontColor(this.accentColor)
+                .enabled(this.connected && this.selectedProfile() !== null && !this.dirty && this.draft.enabled)
+                .onClick((): void => { this.onStart(this.selectedProfileId); })
+            }
+            Button('删除').width(64).height(44).borderRadius(10)
+              .backgroundColor(this.pal().surface).fontColor(this.pal().danger)
+              .enabled(this.selectedProfile() !== null)
+              .onClick((): void => { this.onRemove(this.selectedProfileId); })
+          }.width('100%')
+        }
+      }.width('100%').padding({ bottom: 20 }).alignItems(HorizontalAlign.Start)
+    }.width('100%').height('100%').scrollBar(BarState.Auto)
+  }
+
+  @Builder private emptyEditor() {
+    Column({ space: 10 }) {
+      Text(this.profiles.length === 0 ? '还没有转发规则' : '选择或新建转发规则')
+        .fontSize(16).fontWeight(FontWeight.Medium)
+        .fontColor(this.pal().text)
+      Text(this.profiles.length === 0
+        ? '新建 Local、Remote 或 Dynamic 规则后，可在这里查看状态并启动。'
+        : '已有规则可在左侧选择后编辑；点击“+ 新建”会打开独立的规则编辑弹窗。')
+        .fontSize(12).fontColor(this.pal().text3).textAlign(TextAlign.Center)
+        .constraintSize({ maxWidth: 360 })
+      Button('+ 新建规则').height(44).borderRadius(10).fontSize(13)
+        .backgroundColor(this.accentColor).fontColor(Color.White)
+        .onClick((): void => { this.openNewRuleEditor(); })
+    }.width('100%').height('100%').justifyContent(FlexAlign.Center)
+  }
+
+  @Builder private overviewPanel() {
+    if (this.selectedProfile() === null) {
+      this.emptyEditor()
+    } else {
+      Column({ space: 12 }) {
+        Row() {
+          Column({ space: 4 }) {
+            Text(sshForwardingModeLabel(this.selectedProfile()!.mode) + ' 转发')
+              .fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+            Text(this.profileSummary(this.selectedProfile()!))
+              .fontSize(11).fontColor(this.pal().text3).maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+          }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+          Button('编辑').height(38).width(64).borderRadius(9).fontSize(12)
+            .backgroundColor(this.pal().surface).fontColor(this.accentColor)
+            .enabled(!this.runtimeActive(this.selectedRuntime()))
+            .onClick((): void => { this.openProfileRuleEditor(this.selectedProfile()!); })
+        }.width('100%')
+
+        Column({ space: 8 }) {
+          Row() {
+            Text('监听地址').fontSize(11).fontColor(this.pal().text3).layoutWeight(1)
+            Text(this.selectedProfile()!.bindHost + ':' +
+              this.selectedProfile()!.bindPort.toString())
+              .fontSize(11).fontColor(this.pal().text)
+          }.width('100%')
+          Row() {
+            Text('目标').fontSize(11).fontColor(this.pal().text3).layoutWeight(1)
+            Text(this.selectedProfile()!.mode === 'dynamic' ? 'SOCKS5 CONNECT' :
+              this.selectedProfile()!.targetHost + ':' + this.selectedProfile()!.targetPort.toString())
+              .fontSize(11).fontColor(this.pal().text)
+          }.width('100%')
+          Row() {
+            Text('启动策略').fontSize(11).fontColor(this.pal().text3).layoutWeight(1)
+            Text(this.selectedProfile()!.startPolicy === 'onSessionReady' ? '连接后自动启动' : '手动启动')
+              .fontSize(11).fontColor(this.pal().text)
+          }.width('100%')
+        }.width('100%').padding(12).borderRadius(12).backgroundColor(this.pal().surface)
+
+        this.runtimeCard()
+
+        if (this.editorMessage.length > 0) {
+          Text(this.editorMessage).fontSize(11).fontColor(this.pal().danger).width('100%')
+        }
+        if (this.statusMessage.length > 0) {
+          Text(this.statusMessage).fontSize(11)
+            .fontColor(this.statusMessage.startsWith('失败') ? this.pal().danger : this.pal().text2)
+            .width('100%')
+        }
 
         Row({ space: 8 }) {
-          Button('保存').layoutWeight(1).height(44).borderRadius(10)
-            .backgroundColor(this.accentColor).fontColor(Color.White)
-            .enabled(!this.runtimeActive(this.selectedRuntime()))
-            .onClick((): void => { this.saveDraft(); })
           if (this.runtimeActive(this.selectedRuntime())) {
-            Button('停止').layoutWeight(1).height(44).borderRadius(10)
+            Button('停止').layoutWeight(1).height(42).borderRadius(10)
               .backgroundColor(this.pal().surface).fontColor(this.pal().danger)
               .onClick((): void => { this.onStop(this.selectedProfileId); })
           } else {
-            Button('启动').layoutWeight(1).height(44).borderRadius(10)
-              .backgroundColor(this.pal().surface).fontColor(this.accentColor)
-              .enabled(this.connected && this.selectedProfile() !== null && !this.dirty && this.draft.enabled)
+            Button('启动').layoutWeight(1).height(42).borderRadius(10)
+              .backgroundColor(this.accentColor).fontColor(Color.White)
+              .enabled(this.connected && this.selectedProfile()!.enabled)
               .onClick((): void => { this.onStart(this.selectedProfileId); })
           }
-          Button('删除').width(64).height(44).borderRadius(10)
+          Button('删除').width(76).height(42).borderRadius(10)
             .backgroundColor(this.pal().surface).fontColor(this.pal().danger)
-            .enabled(this.selectedProfile() !== null)
             .onClick((): void => { this.onRemove(this.selectedProfileId); })
         }.width('100%')
-      }.width('100%').padding({ bottom: 20 }).alignItems(HorizontalAlign.Start)
-    }.width('100%').height('100%').scrollBar(BarState.Auto)
+      }.width('100%').height('100%').alignItems(HorizontalAlign.Start)
+    }
+  }
+
+  @Builder private NewRuleEditorContent(token: number) {
+    Column() {
+      Row() {
+        Column({ space: 3 }) {
+          Text(this.ruleEditorCreating ? '添加转发规则' : '编辑转发规则')
+            .fontSize(18).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+          Text('选择 Local、Remote 或 Dynamic，并确认监听范围。')
+            .fontSize(11).fontColor(this.pal().text3).maxLines(1)
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+        Button('×').width(44).height(44).borderRadius(22).fontSize(22)
+          .backgroundColor(this.pal().surface).fontColor(this.pal().text2)
+          .onClick((): void => { this.closeNewRuleEditor(true); })
+      }.width('100%').height(56)
+      Divider().color(this.pal().divider).margin({ bottom: 12 })
+      Column() { this.editor(true) }.width('100%').layoutWeight(1)
+    }.width('100%').height('100%')
+      .padding({ left: 20, right: 20, top: 14, bottom: 16 })
+      .backgroundColor(this.pal().sheetBg)
+      .onAppear((): void => { this.onRuleEditorAppear(token); })
   }
 
   aboutToAppear(): void {
     if (this.profiles.length > 0) {
       this.selectProfile(this.profiles[0]);
     } else {
-      this.createProfile('local');
+      this.selectedProfileId = '';
+      this.dirty = false;
+      this.editorMessage = '';
     }
     this.onRefresh();
+  }
+
+  aboutToDisappear(): void {
+    this.ruleEditorCoordinator.invalidate();
+    this.showRuleEditorSheet = false;
   }
 
   build() {
@@ -428,12 +626,14 @@ export struct SshForwardingSheet {
 
       Divider().color(this.pal().divider).margin({ bottom: 12 })
 
-      if (this.breakpoint === 'sm') {
+      if (this.profiles.length === 0) {
+        Column() { this.emptyEditor() }.width('100%').layoutWeight(1)
+      } else if (this.breakpoint === 'sm') {
         Scroll() {
           Row({ space: 8 }) {
             Button('+ 新建').height(44).borderRadius(10).fontSize(12)
               .backgroundColor(this.pal().surface).fontColor(this.accentColor)
-              .onClick((): void => { this.createProfile('local'); })
+              .onClick((): void => { this.openNewRuleEditor(); })
             ForEach(this.profiles, (profile: SshForwardingProfile): void => {
               Button(sshForwardingModeLabel(profile.mode) + ' ' + profile.bindPort.toString())
                 .height(44).borderRadius(10).fontSize(12)
@@ -444,7 +644,7 @@ export struct SshForwardingSheet {
             }, (profile: SshForwardingProfile): string => 'ssh-forward-mobile-' + profile.id)
           }.width('100%')
         }.width('100%').height(52).scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off)
-        Column() { this.editor() }.width('100%').layoutWeight(1)
+        Column() { this.overviewPanel() }.width('100%').layoutWeight(1)
       } else {
         Row({ space: 16 }) {
           Scroll() {
@@ -452,12 +652,32 @@ export struct SshForwardingSheet {
           }.width(270).height('100%').scrollBar(BarState.Auto)
             .padding({ right: 4 })
           Divider().vertical(true).color(this.pal().divider).height('100%')
-          Column() { this.editor() }.layoutWeight(1).height('100%')
+          Column() { this.overviewPanel() }.layoutWeight(1).height('100%')
         }.width('100%').layoutWeight(1).constraintSize({ minHeight: 0 })
           .alignItems(VerticalAlign.Top)
       }
     }.width('100%').height('100%')
       .padding({ left: 20, right: 20, top: 14, bottom: 16 })
       .backgroundColor(this.pal().sheetBg)
+      .bindSheet($$this.showRuleEditorSheet,
+        this.NewRuleEditorContent(this.ruleEditorMountToken), {
+        height: this.breakpoint === 'sm' ? SheetSize.LARGE : 520,
+        preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
+        width: this.breakpoint === 'sm' ? '100%' : 560,
+        dragBar: this.breakpoint === 'sm',
+        backgroundColor: this.pal().sheetBg,
+        blurStyle: BlurStyle.NONE,
+        showClose: false,
+        maskColor: 'rgba(0,0,0,0.42)',
+        onWillDismiss: (action: DismissSheetAction): void => {
+          this.ruleEditorCoordinator.requestClose();
+          this.restoreRuleEditorSelection();
+          this.showRuleEditorSheet = false;
+          action.dismiss();
+        },
+        onDisappear: (): void => {
+          this.onRuleEditorDisappear(this.ruleEditorMountToken);
+        }
+      })
   }
 }

@@ -1,6 +1,7 @@
 import { describe, it, expect } from '@ohos/hypium';
 import {
   SshForwardingConfig,
+  SshForwardingSnapshot,
   SshForwardingSnapshotsResult
 } from '../main/ets/types/rdpnapi';
 import {
@@ -18,6 +19,7 @@ class FakeForwardingNative implements SshForwardingNativePort {
   readonly generations: Map<number, number> = new Map<number, number>();
   readonly calls: string[] = [];
   readonly configs: SshForwardingConfig[] = [];
+  snapshots: SshForwardingSnapshot[] = [];
   configureCode: number = 0;
   startCode: number = 0;
   stopCode: number = 0;
@@ -82,7 +84,7 @@ class FakeForwardingNative implements SshForwardingNativePort {
       errorCode: this.snapshotCode,
       sessionId: handle.sessionId,
       sessionGeneration: handle.generation,
-      snapshots: []
+      snapshots: this.snapshots
     };
   }
 }
@@ -211,6 +213,50 @@ export default function sshForwardingControllerTest(): void {
       expect(result.accepted).assertFalse();
       expect(result.state).assertEqual('failed');
       expect(native.calls.length).assertEqual(1);
+    });
+
+    it('refreshes_connection_and_byte_statistics_from_matching_native_snapshots', 0, (): void => {
+      const native: FakeForwardingNative = new FakeForwardingNative();
+      const current: SshSessionHandle = handle(10, 3);
+      native.accept(current);
+      const controller: SshForwardingController = new SshForwardingController(native);
+      expect(controller.start(current, profile('stats')).accepted).assertTrue();
+      native.snapshots = [{
+        schemaVersion: 1,
+        id: 'stats',
+        mode: 0,
+        bindHost: '127.0.0.1',
+        bindPort: 8022,
+        targetHost: 'target.example',
+        targetPort: 22,
+        maxConnections: 4,
+        enabled: true,
+        allowPublicBind: false,
+        state: 2,
+        sessionGeneration: 3,
+        activeConnections: 2,
+        lastError: 0,
+        minBindPort: 1,
+        maxBindPort: 65535,
+        maxBytes: 0,
+        ownerSessionId: 10,
+        ownerChannelId: 'shell',
+        ownerGeneration: 3,
+        transferredBytes: 4096,
+        expiresAtMs: 0
+      }];
+      const refreshed = controller.snapshot(current);
+      expect(refreshed.accepted).assertTrue();
+      expect(refreshed.runtimes.length).assertEqual(1);
+      expect(refreshed.runtimes[0].activeConnections).assertEqual(2);
+      expect(refreshed.runtimes[0].transferredBytes).assertEqual(4096);
+
+      native.snapshots[0] = { ...native.snapshots[0], ownerGeneration: 2,
+        activeConnections: 7, transferredBytes: 8192 };
+      const staleOwner = controller.snapshot(current);
+      expect(staleOwner.accepted).assertTrue();
+      expect(staleOwner.runtimes[0].activeConnections).assertEqual(2);
+      expect(staleOwner.runtimes[0].transferredBytes).assertEqual(4096);
     });
   });
 }
