@@ -69,6 +69,10 @@ import {
   RustDeskRelaySetupDraft
 } from '../services/RustDeskRelaySetupCoordinator';
 import { DataMutationStage } from '../services/DataMutationResult';
+import {
+  rustDeskRelayDirectoryBottomClearance,
+  rustDeskRelaySheetUsesLargeLayout
+} from '../services/RustDeskRelayLayoutPolicy';
 
 class TcpTestResult {
   ok: boolean = false;
@@ -1218,12 +1222,12 @@ export struct RustDeskRelayPage {
   }
 
   private relaySheetHeight(): SheetSize {
-    return this.sheetContent === 1 || this.sheetContent === 10
+    return rustDeskRelaySheetUsesLargeLayout(this.sheetContent, this.showRelayAdvanced)
       ? SheetSize.LARGE : SheetSize.FIT_CONTENT;
   }
 
   private relaySheetKeyboardAvoidMode(): SheetKeyboardAvoidMode {
-    return this.sheetContent === 1 || this.sheetContent === 10
+    return rustDeskRelaySheetUsesLargeLayout(this.sheetContent, this.showRelayAdvanced)
       ? SheetKeyboardAvoidMode.RESIZE_ONLY
       : SheetKeyboardAvoidMode.TRANSLATE_AND_SCROLL;
   }
@@ -1269,7 +1273,9 @@ export struct RustDeskRelayPage {
                 this.tabletGrid()
               }
             }
-            Column().height(120)
+            if (this.breakpoint !== 'sm') {
+              Column().height(rustDeskRelayDirectoryBottomClearance(this.breakpoint))
+            }
           }.width('100%').padding({ left: this.contentSidePadding(), right: this.contentSidePadding() })
         }
         .width('100%').height('100%').align(Alignment.TopStart)
@@ -1376,6 +1382,9 @@ export struct RustDeskRelayPage {
           )
         )
       }, (gateway: VncGatewayView): string => gateway.id + ':' + this.vncViewRevision.toString())
+      ListItem() {
+        Column().height(rustDeskRelayDirectoryBottomClearance(this.breakpoint))
+      }
     }
     .width('100%')
     .listDirection(Axis.Vertical)

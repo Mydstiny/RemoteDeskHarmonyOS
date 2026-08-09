@@ -132,6 +132,7 @@ import rustDeskConnectionContextPolicyTest from './RustDeskConnectionContextPoli
 import rustDeskConnectionStrategyPolicyTest from './RustDeskConnectionStrategyPolicy.test';
 import rustDeskControlPlaneCapabilityPolicyTest from './RustDeskControlPlaneCapabilityPolicy.test';
 import rustDeskRelayPersistencePolicyTest from './RustDeskRelayPersistencePolicy.test';
+import rustDeskRelayLayoutPolicyTest from './RustDeskRelayLayoutPolicy.test';
 import rustDeskDisplaySwitchPolicyTest from './RustDeskDisplaySwitchPolicy.test';
 import totpBrandServiceTest from './TotpBrandService.test';
 import remoteOverlayViewportPolicyTest from './RemoteOverlayViewportPolicy.test';
@@ -290,6 +291,7 @@ export default function testsuite() {
   rustDeskConnectionStrategyPolicyTest();
   rustDeskControlPlaneCapabilityPolicyTest();
   rustDeskRelayPersistencePolicyTest();
+  rustDeskRelayLayoutPolicyTest();
   rustDeskDisplaySwitchPolicyTest();
   totpBrandServiceTest();
   remoteOverlayViewportPolicyTest();
