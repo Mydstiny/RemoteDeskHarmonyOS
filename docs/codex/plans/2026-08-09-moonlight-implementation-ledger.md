@@ -4,7 +4,7 @@
 > 分支：`codex/moonlight-complete-upgrade`
 > 初始基线：`main@aeb0cdac5`，与 `origin/main` 一致
 > 总计划：`docs/superpowers/plans/2026-07-28-moonlight-harmonyos-complete-upgrade-plan.md`
-> 台账状态：G0、D1、D2 本地/休眠策略、D3 本地生命周期以及 N1-01～N1-07 已形成 checkpoint；当前唯一代码任务为 N1-08 fail-closed typed NAPI/Host Service bridge；D2-05～D2-07、D3 在线/多设备和产品运行时仍等待外部回执，只把有可复现证据的项目标记为通过
+> 台账状态：G0、D1、D2 本地/休眠策略、D3 本地生命周期以及 N1-01～N1-08 已形成 checkpoint；当前唯一代码任务为 N2-01 dormant stream-config/offer 纯合同；D2-05～D2-07、D3 在线/多设备和产品运行时仍等待外部回执，只把有可复现证据的项目标记为通过
 
 ## 1. 执行约束
 
@@ -228,7 +228,7 @@ D3 账户生命周期代码检查点为 `05e96d3`；便携备份/本地恢复检
 | N1-05 | PASS | `599882ada` 新增 hidden pure-native secure identity core：owner+installation opaque alias、RSA-2048 client cert、move-only sign/TLS lease、zeroization、exact mutation/drain/inventory/delete 和 fail-closed HUKS/Asset boundary；14 个定向用例；native/ASan/UBSan 384/384 | HAP/AppSpawn runtime proof 缺失，product backend 保持 unavailable；N1-06 只能消费注入 seam 做 dormant pairing，不得以 plaintext/software store 绕过 |
 | N1-06 | CONTRACT PASS / DORMANT | `6f7094038` 新增 hidden injected pairing state machine，逐包复用 N1-04、逐签名复用 N1-05；15 组 pairing 故障/竞态用例，native/ASan/UBSan 400/400 | product identity backend 仍 unavailable；无 NAPI/UI/真实 trust port/真实 Sunshine，不宣称可配对 |
 | N1-07 | CONTRACT PASS / DORMANT | `019ed98b4` 新增 hidden injected Host Control，复用 N1-04 完成 authenticated catalog/asset、launch/resume/explicit quit、三段 truth、generation/cancel/deadline、maybe-sent no replay 和 launch material/RTSP cleanse；26 组定向用例，native/ASan/UBSan 426/426 | product identity/transport 仍 unavailable；无 NAPI/UI/真实 Sunshine，不宣称目录或主机控制可用 |
-| N1-08 | READY / FAIL-CLOSED BRIDGE ONLY | D1 typed contract、D2 app cache、D3 lease/barrier 和 N1-06/N1-07 均已冻结 | 只建独立 typed async NAPI/Host Service；production factory 首包前 unavailable，FAB、云、媒体、输入和六项 truth 不变 |
+| N1-08 | CONTRACT PASS / DORMANT | `aecd2ea4e` 新增 NAPI-free exact bridge、五个独立 `moonlight*` NAPI 属性和 lease/cache-fenced `MoonlightHostService`；product runtime 首包前 `runtime_proof_required`；14 native + 13 ArkTS focused cases，普通/ASan/UBSan 440/440 | 无真实 identity/transport/trust/commit/Sunshine 回执；FAB、云注册、媒体、输入和六项 truth 不变；N2-01 只能建纯 stream offer，不得把 bridgeCompiled 当可用 |
 
 N1-01 的可复现证据：
 
@@ -520,36 +520,89 @@ capability truth 变化。
 10. HDC 仍返回 `Connect server failed`，所以没有新增 Hypium、HAP runtime identity/
     transport、真实 Sunshine 或用户 ARM64 真机声明。
 
-N1-08 的唯一合法入口是主计划第 15.7.7 节定义的 fail-closed typed bridge：独立
-Moonlight NAPI 负责 exact DTO、async work、单次 settlement、取消与 env teardown，
-ArkTS `MoonlightHostService` 负责完整账户 lease、迟到结果丢弃和既有 app cache 提交。
-production factory 在 runtime identity/transport/trust/commit 未证明时必须零网络返回
-unavailable；不得扩张 `ProtocolAdapter`、接 UI/媒体/输入/云或改变六项 truth。
+### 11.5 N1-08 typed bridge 完成事实
 
-## 12. 2026-08-10 N1-01～N1-07 checkpoint 验证
+N1-08 代码 checkpoint 为 `aecd2ea4e`；本轮 sanitizer 发现的既有
+`ExecutorDeferredOwner` 初始化竞态以独立 checkpoint `aa3b947` 修复。除该最小原生
+生命周期修复外，本步只修改主 CMake、`napi_init.cpp`、唯一发布 d.ts、测试聚合器，并
+新增 `MoonlightNativeBridge`、独立 Moonlight NAPI、`MoonlightHostService` 和 focused
+tests；没有修改 UI、路由、资源、FeaturePolicy、云表注册、媒体、输入或其他协议。
 
-- `default@OhosTestCompileArkTS`：N1-07 最终源码后退出码 0；既有 19 个 describe、
-  138 个 Moonlight test 编译注册，本步没有新增 ArkTS 测试 surface。
-- signed `assembleHap`：N1-07 最终源码后退出码 0；423 项路径 inventory 与 N1-06
-  一致。
-- host `rdp_native_tests`：N1-07 最终二进制为 **426/426 PASS**，ASan/UBSan 同为
-  426/426；新增 26 组 Host Control 用例。
-- `scripts/probe_moonlight_platform.sh`：arm64-v8a、x86_64 均 PASS。
-- `verify_open_source_release.ps1 -Mode Light`：N1-07 后 PASS；Release 中 Moonlight 双
-  ABI子门通过，完整发布仍被两个外部 approval boolean 正确阻断。
-- `verify_moonlight_vendor.py`：三个官方 Git tree、117 个 exact 文件、Git index 与无 Git 源码归档模式均 PASS；合规生成器幂等 PASS。
-- `build_moonlight_common_vendor.sh/.ps1`：API 23 arm64-v8a/x86_64 静态 archive 均匹配锁定 receipt。
-- `git diff --check`：N1-07 代码 checkpoint 后 PASS；`codex_state validate` 在本次
-  状态文档更新后执行并记录。
-- `CloudSyncPolicy.CLOUD_SYNC_TABLES` 静态复核仍精确为既有 8 表；Moonlight 云表、local mirror 和 app cache 均未进入在线注册集合。
-- HDC 当前返回 `Connect server failed`；早期 ARM64 API 24 RDB receipt 仍有效，但本次没有新增虚拟设备 Hypium 或恢复运行时证据。
+1. NAPI-free bridge 以 exact 非零 request/generation/owner key、owner/host generation
+   watermark、duplicate retirement、active registry、bounded 256 event queue、exact
+   cancel/cancelOwner 和 shutdown cancel/drain 管理进程边界；PIN、RI key、RTSP scratch
+   在所有终态清零。
+2. product `MoonlightUnavailableRuntimePort` 的 identity/transport/trust/commit/pairing/
+   host-control capability 全 false，任何操作在 DNS/socket/TLS 前稳定返回
+   `runtime_proof_required`；fake runtime 只存在于 host test，不进入 release truth。
+3. NAPI 只增加五个 `moonlight*` 属性，exact parser 拒绝 unknown field/type、NaN/
+   Infinity、非 safe integer、越界字符串/数组和 binary shape；worker 不创建 JS value，
+   completion 单次 settlement，env cleanup 关闭 admission、取消 work、shutdown/drain。
+4. 发布声明只更新 `entry/src/main/cpp/types/librdpnapi/index.d.ts`；旧
+   `entry/src/main/ets/types/rdpnapi.d.ts` 经消费者盘点不是同一发布镜像，因此未复制一份
+   drifting declaration。
+5. ArkTS `MoonlightHostService` 只消费 injected native/lease/cache ports。请求、结果、
+   event 和 cache 前后都复核 ownerScope/storeIdentity/generation/storeInstance；stale 只
+   计数丢弃。只有 confirmed、complete、partial=0、唯一正 app ID 的 catalog 才调用现有
+   app cache complete refresh，cache failure 不篡改 native truth。
+6. 14 个新增 native case 覆盖 product packet-free unavailable、exact DTO、typed result/
+   event、duplicate key retirement、external cancel-before-runtime、bounded result/event、
+   stale/cancel/cross-owner、secret cleanse、exception 和 destructor drain；全量普通测试
+   **440/440 PASS**。
+7. ASan/UBSan 首次复跑捕获 deferred owner 的 thread-before-state 初始化；成员声明顺序
+   修复后连续三轮均 **440/440 PASS**。bridge/NAPI/test/deferred-owner 四份
+   `clang --analyze` 均零诊断，strict `-Wall -Wextra -Werror` 通过。
+8. 13 个新增 ArkTS case 覆盖 native 注入、lease/store 重开、A→B stale、完整/部分目录
+   cache、cache/release exception、launch material release、cancel/dispose/event；聚合器现
+   为 20 个 describe、151 个 compile-registered Moonlight test。Hypium 未执行。
+9. 最终双 ABI defined 与 `napi|init|register` 集合和 N1-07 逐项相同；undefined 无删除且
+   仅增加 `napi_add_env_cleanup_hook`、`napi_cancel_async_work`、`napi_create_error`、
+   `napi_get_property_names`、`napi_get_typedarray_info`、`napi_has_named_property`、
+   `napi_is_typedarray` 七项。inventory 为 arm64 16103/705/716、x86 15634/703/711。
+10. 每 ABI 88 条 compile command 中 48 条仍为 `rdpnapi`；bridge/NAPI 两条位于最后链接
+    且 `--exclude-libs` 的 private archive，upstream include leak=0。signed HAP 仍 423
+    路径；两项 Hvigor、双 ABI probe、vendor 三 tree/117 文件、TOTP 251、Light 和 diff
+    全 PASS。HDC 仍为 `Connect server failed`，无新增 runtime/Sunshine/真机声明。
+
+N2-01 的唯一合法入口是主计划第 15.7.8 节定义的纯 stream-config/offer 合同：只新增
+project-owned requested/effective/capability/adjustment value types、deterministic resolver、
+同源 launch projection 和 focused native tests。不得 include common-c wire struct、扩张
+NAPI、启动 RTSP、接 renderer/audio/input/UI/云或改变六项 truth；`offer_ready` 不是
+`negotiated`，后者只能由 N2-02 的真实 RTSP/renderer selection 产生。
+
+## 12. 2026-08-10 N1-01～N1-08 checkpoint 验证
+
+- `default@OhosTestCompileArkTS`：N1-08 最终源码后 **BUILD SUCCESSFUL**；20 个
+  describe、151 个 Moonlight test 编译注册，不声明设备执行。
+- signed `assembleHap`：N1-08 最终源码后 **BUILD SUCCESSFUL**；signed HAP 为 423
+  路径，SHA-256 `c048abb478f91853320ca4517fe18f6db152b72097158bd2f22ef387c209deaf`。
+- host `rdp_native_tests`：普通 **440/440 PASS**；修复初始化竞态后 ASan/UBSan 连续
+  三轮 **440/440 PASS**，`detect_leaks=0` 仅因为当前 macOS sanitizer runtime 不支持。
+- bridge、NAPI、bridge test、deferred owner 四份 analyzer 零字节诊断；两 ABI产品
+  strict `-Werror` 编译通过。
+- `scripts/probe_moonlight_platform.sh`：arm64-v8a、x86_64 API 23 compile/link 均 PASS；
+  这不是 HAP/AppSpawn runtime receipt。
+- `verify_open_source_release.ps1 -Mode Light`、三个官方 Git tree/117 exact file vendor
+  gate、TOTP 251 entries 均 PASS；本步不改任何 upstream byte 或 compliance pin。
+- product ABI audit：defined/NAPI-filtered 集合零变化；undefined 只增加上列 7 个 NAPI
+  import；bridge/NAPI upstream include leak=0；HAP path inventory 零变化。
+- `CloudSyncPolicy.CLOUD_SYNC_TABLES` 静态复核仍精确为既有 8 表；Moonlight cloud、
+  local mirror 和 app cache 均未进入在线注册集合，所有 feature truth 仍 false。
+- HDC 当前返回 `Connect server failed`；早期 ARM64 API 24 RDB receipt 仍有效，但本次
+  没有新增虚拟设备 Hypium、HUKS/TLS、真实 Sunshine 或用户 ARM64 真机证据。
 
 ## 13. 下一执行序列
 
-1. 严格按主计划第 15.7.7 节执行 N1-08，只建立独立 typed async NAPI 与 ArkTS
-   `MoonlightHostService`；native exact key/cancel/teardown 与 ArkTS account lease/cache
-   commit 各守边界。production factory 在 HAP identity/transport/trust/commit 未证明时
-   首包前 unavailable；不得接 FAB/路由/媒体/输入/云或改变 feature truth。
-2. D2-05/06 由 AGC 开发/测试/生产环境提供 schema/授权/索引 receipt；缺失时 D2-07、D3-01 在线 wiring、D3-05 cloud-first promotion、D3-06 cloud terminal 和 D3-08 云矩阵继续阻断。
-3. N1 Host Control port 可用后再接 D3-06 remote unpair；端口失败只允许返回带 warning 的真实本地终态，不伪造主机已解绑。
-4. 补 HAP 内 typed capability probe；真实 Sunshine 和用户 ARM64 真机未提供前，host-control/streaming/protocol truth 继续为 false。
+1. 严格按主计划第 15.7.8 节执行 N2-01，只建立 deterministic、无网络/线程/secret 的
+   requested/effective stream offer、capability snapshot、stable adjustment 和同源 launch
+   projection；仅允许主 CMake、新建 `MoonlightStreamConfig.*`、focused native test 和
+   状态文档，不接 common-c RTSP/NAPI/renderer/audio/input/UI。
+2. N2-01 通过独立 checkpoint 后才进入 N2-02 唯一 common-c adapter 和 RTSP/callback
+   owner；HAP identity/transport receipts 缺失时 production runtime 仍 packet-free
+   unavailable，不能因纯配置测试通过就改变 host-control/streaming/protocol truth。
+3. D2-05/06 由 AGC 开发/测试/生产环境提供 schema/授权/索引 receipt；缺失时 D2-07、
+   D3-01 在线 wiring、D3-05 cloud-first promotion、D3-06 cloud terminal 和 D3-08 云矩阵
+   继续阻断。
+4. N1 Host Control product port 可用后再接 D3-06 remote unpair；端口失败只允许返回带
+   warning 的真实本地终态，不伪造主机已解绑。真实 Sunshine 和用户 ARM64 真机未提供
+   前，host-control/streaming/protocol truth 继续为 false。

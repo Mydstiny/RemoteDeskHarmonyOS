@@ -3,7 +3,7 @@
 > 文档状态：第四次深度审计完成；已于 2026-08-09 从 G0 开始实施
 > 首次评估日期：2026-07-28；二次完成性审计日期：2026-07-29；第三次 HarmonyOS 人因/UI 审计日期：2026-08-01；第四次源码对齐日期：2026-08-08
 > 当前实施基线：任务 `moonlight-complete-upgrade`；分支 `codex/moonlight-complete-upgrade`；基线 `main@aeb0cdac5`，与 `origin/main` 一致
-> 当前实施进度：G0、D1、D2 本地/休眠策略、D3 本地生命周期以及 N1-01～N1-07 已形成 checkpoint；当前唯一代码任务为 fail-closed 的 N1-08 typed NAPI/Host Service bridge。HarmonyOS 虚拟设备已验证 owner-store v5、19/20/16 列三表和幂等 schema receipt；AGC 三环境、HAP/AppSpawn secure-identity/transport runtime、真实 Sunshine 与 ARM64 实机回执仍缺失，故云注册、用户入口和运行时能力保持 fail closed，六个发布 truth 仍全 false
+> 当前实施进度：G0、D1、D2 本地/休眠策略、D3 本地生命周期以及 N1-01～N1-08 已形成 checkpoint；当前唯一代码任务为纯函数、dormant 的 N2-01 stream-config/offer 合同。HarmonyOS 虚拟设备已验证 owner-store v5、19/20/16 列三表和幂等 schema receipt；AGC 三环境、HAP/AppSpawn secure-identity/transport runtime、真实 Sunshine 与 ARM64 实机回执仍缺失，故云注册、用户入口和运行时能力保持 fail closed，六个发布 truth 仍全 false
 > 适用仓库：/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS
 > 上游实施锁定：2026-08-09 已只读复核并固定 moonlight-common-c `e41355ea01670fd4c830b384009d31dd0339a705`（ENet `aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1`、nanors `b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a`）、Moonlight Android `f10085f552b367cf7203007693d91c322a0a2936`、Moonlight Qt `2e13ed9977bc31c73caf8428f08f58d793313ece`、Sunshine 测试 pin `v2026.808.164219` / `25c06d79b54f3d092d3fedd5f5ba44989f394692`；完整哈希、许可证和能力证据见 `docs/codex/plans/2026-08-09-moonlight-implementation-ledger.md`
 > 原评估轮次仅更新计划文件；2026-08-09 起的实施变更严格按第 15 节任务 ID、仓库门禁和 fail-closed feature policy 推进。
@@ -3116,6 +3116,132 @@ N1-08 只能把已冻结的 N1-03/N1-06/N1-07 合同做成 typed、可取消、�
     checkpoint 后才能进入 N2-01 stream config；真实 pairing/catalog/launch 和 runtime
     feature truth 仍等待 HAP identity/transport 与 Sunshine 回执，不能由 N1-08 宣称通过。
 
+#### 15.7.8 N1-08 已完成事实与 N2-01 唯一执行合同（2026-08-10）
+
+N1-08 已由代码 checkpoint `aecd2ea4e` 完成；同轮 sanitizer 暴露的既有 deferred-owner
+成员初始化竞态以独立 checkpoint `aa3b947` 修复。新增边界严格限定为 NAPI-free
+`MoonlightNativeBridge`、独立 `moonlight*` NAPI、唯一发布 d.ts、ArkTS
+`MoonlightHostService` 和 focused tests；没有修改 `ProtocolAdapter`、`HostListPage`、
+`MoonlightFeaturePolicy`、`CloudSyncPolicy`、媒体、输入、资源、路由或三张 Moonlight
+数据表。灰色 FAB 与“即将支持”保持不变，在线云注册仍精确为既有 8 表。
+
+native bridge 固定 exact 非零 `requestId+generation+ownerToken`、owner/host generation
+watermark、同 lane duplicate retirement、bounded 256 event queue、exact cancel/cancelOwner、
+shutdown cancel/drain 和 PIN/RI key/RTSP 清零。product runtime port 的
+identity/transport/trust/commit/pairing/host-control capability 全为 false，所有操作于
+DNS/socket/TLS 前返回 `runtime_proof_required`；测试 fake 不进入 release truth。NAPI 只
+注册 `moonlightGetBridgeCapabilities`、`moonlightRequestAsync`、
+`moonlightCancelRequest`、`moonlightCancelOwner`、`moonlightPollEvents` 五个属性，严格
+拒绝未知字段、错误类型、非 safe integer 和越界 binary；worker 不创建 JS value，env
+cleanup 先关 admission、取消 async work、再 shutdown/drain。ArkTS service 在调用前、
+completion/event/cache 前后复核完整 `AccountSessionLease` 和 store instance；只有
+confirmed、complete、零 partial、唯一正 app ID 的目录才提交既有 local app cache，
+cache 错误不改写 native truth，launch material 在 NAPI 复制后立即释放并清零。
+
+14 个新增 native case 使全量普通测试达到 **440/440 PASS**；ASan/UBSan 修复成员初始化
+顺序后连续三轮均为 **440/440 PASS**。13 个 ArkTS case 使 Moonlight 聚合器达到 20 个
+describe、151 个 compile-registered test。bridge/NAPI/test/deferred-owner 四份 analyzer
+均零诊断，产品双 ABI strict `-Werror` 通过。arm64 动态 inventory 为
+16103 defined / 705 undefined / 716 `napi|init|register`，x86_64 为
+15634 / 703 / 711；defined 和 NAPI-filtered 集合与 N1-07 逐项相同，undefined 无删除且
+只增加 7 个计划内系统 NAPI import。每 ABI 88 条 compile command 中 48 条仍属于
+`rdpnapi`，bridge/NAPI 两条位于 `--exclude-libs` private archive，upstream include leak
+为 0；signed HAP 仍为同一 423 路径。最终两项 Hvigor、双 ABI API 23 probe、vendor 三
+tree/117 文件、TOTP 251 项和 Light 全通过。HDC 仍为 `Connect server failed`，所以没有
+新增 Hypium、HAP runtime HUKS/TLS、真实 Sunshine、真实配对/目录/launch 或 ARM64
+实体机声明。
+
+N2-01 只定义“从当前 D1 设置快照到 common-c 可消费 offer 之间”的纯配置合同，不启动
+RTSP，不创建 decoder/audio/input，不扩张 NAPI，也不让入口可用。后续模型必须按以下
+原子顺序实现，不得把 `offer_ready` 写成“已协商”或“已连接”：
+
+1. 以 `aecd2ea4e` 和 `aa3b947` 为基线，保存 440 项 native/ASan、151 项 ArkTS
+   compile registration、双 ABI symbol/NAPI/include 和 423 路径 HAP inventory。允许的
+   代码落点只为主 CMake、新建 `moonlight/media/MoonlightStreamConfig.h/.cpp`、新建
+   `test/moonlight_stream_config_test.cpp` 及聚合登记；只有发现现有 D1 合同自相矛盾时
+   才先停下更新计划，不顺手改 NAPI、Host Service、renderer/audio 或 UI。
+2. 新 header 只暴露项目自有 C++17 value types/PIMPL，不 include `Limelight.h`、ArkTS、
+   NAPI、OH_AVCodec、OHAudio、页面或数据库。实现进入 hidden/private archive，产品双
+   ABI必须实际编译但不产生新动态 export/import；common-c 的
+   `STREAM_CONFIGURATION` 数字常量和回调注册只允许在 N2-02 的单一 adapter 中映射。
+3. 输入分三份且都不可变：`MoonlightRequestedStreamConfig` 保存 D1 requested 与既有
+   adjustment；`MoonlightStreamCapabilitySnapshot` 保存经来源/版本/expiry 验证的 host、
+   platform、network/display 能力；`MoonlightStreamConfigIdentity` 保存 owner token、
+   session generation、host ID、server UUID、settings revision、host capability generation
+   和 platform-probe generation。不得接受 userId、页面对象、地址明文、PIN、RI key、
+   RTSP URL、decoder handle 或全局 active adapter。
+4. D1 是唯一持久设置真源：N2-01 不重做 global→host→profile→session 合并，不修改
+   `MoonlightSettingsPolicy` 的 durable schema，也不把 native adjustment 回写云表。
+   native 只做“启动瞬间能力可能已漂移”的第二次 intersection，并把新增 adjustment 以
+   stable code 追加；UI 后续同时显示用户 requested、D1 effective 和本次 runtime
+   effective，不能只显示最终数字掩盖降级。
+5. 当前 `MoonlightSettings` schemaVersion=1 的码率是 1000～200000 的显式
+   `bitrateKbps`，不存在 auto sentinel。N2-01 禁止把 0、负数或缺字段解释成自动；未来
+   UI 若提供“自动码率”，必须先做独立领域/schema migration。纯 resolver 使用 checked
+   arithmetic，保证传给 common-c 的 kbps、FEC 计算和诊断不会溢出 32-bit signed int。
+6. 分辨率预设固定映射为 720p=1280×720、1080p=1920×1080、1440p=2560×1440、
+   2160p=3840×2160；custom 使用现有 bounded width/height。`host` 表示可信 host
+   recommended mode，必须由 capability snapshot 给出；不存在、过期或 generation 不符
+   时返回 `host_mode_pending`，不得猜成客户端 viewport、默认 1080p 或 custom 字段。
+   最终尺寸必须在 host/device 交集内、为正且满足 codec chroma alignment；任何向下
+   对齐或 4K→1080p fallback 都产生显式 adjustment。
+7. codec 结果分为 `offeredCodecs` 和 RTSP 后才可能出现的 `selectedCodec`。N2-01 只产出
+   offer，`selectedCodec` 必须 absent；H.264 是 MVP 必需 fallback，但只有 HAP 内 decoder
+   probe 和 host 同时 supported 才可进入 offer。HEVC/AV1/10-bit/YUV444/HDR 逐 profile
+   相交，pending 等价 unavailable。requested=auto 可按已证明优先级给出多个候选；用户
+   指定 codec 失效时沿用 D1 的 fail-safe H.264 adjustment；无 H.264 时整体
+   `mvp_codec_unavailable`，绝不把空 mask 送入 common-c。
+8. 高级组合单独裁决：仅 H.264 时不得接受宽或高超过 4096；HDR 必须同时具备 host
+   HDR、显示链、10-bit HEVC/AV1 profile、Surface/PIP 色彩证据；YUV444 必须匹配具体
+   8/10-bit profile 和 renderer 证据。关闭 HDR/YUV444 时保留 requested 和 reason，不能
+   静默切色域；N2-01 的安全 SDR 输出只能是已证明的 Rec.709/limited 或明确 absent，
+   不能复制 Android 平台常量猜 HarmonyOS 色彩能力。
+9. `launchRefreshRate`、stream fps 与 `clientRefreshRateX100` 是三个字段：前两者来自
+   D1 effective fps 和 host/device 上限，display refresh 只来自当前窗口/显示探针；缺失
+   时 `clientRefreshRateX100=0`，不得伪造 60Hz。latencyMode 只作为后续 queue/frame
+   pacing policy 输入，N2-01 不改现有 renderer 队列，也不声称 fps 已实际送达。
+10. `bitrateKbps` 必须同时受 D1 范围、host encoder、device decode/thermal tier 和
+    network budget 上限约束；任一必要上限 pending 时配置只能 `capability_pending`，不能
+    用固定经验值冒充实测。高质量音频约 15Mbps 阈值和 common-c 20% FEC 语义仅用于
+    checked projection/test，不二次增加 20%，诊断同时保留 configured 与预计 encoder
+    budget，避免把两者混为一谈。
+11. packet/remote mode 不是用户持久设置。未证明的路径和公网/计费路径有效 packet size
+    固定 1024；大于 1024 只在本地路径、地址族、VPN/NAT64 和 MTU receipt 明确后允许，
+    并保持 16-byte/encryption overhead 约束。`remote=auto` 只能在 N2-02 由单一网络
+    detector 解析；N2-01 记录 unresolved，不复制 Android 1392 或自己再建 RFC1918
+    heuristic。计费网络未确认直接返回 `metered_confirmation_required`。
+12. audio 只允许 disabled 或已证明的 Opus stereo MVP；5.1/7.1 必须 host、common-c
+    multistream、Harmony 输出 route 和 OHAudio channel layout 同时通过。输出同时包含
+    project-owned layout 与 launch 所需 surround semantics，但 N2-02 才映射官方
+    `AUDIO_CONFIGURATION_*`；`playOnHost` 保持用户意图。audio disabled 的 common-c
+    discard/no-audio callback 路线未证明前标记 pending，不以 stereo 占位宣称已静音。
+13. encryption 输出是 policy requirement，不是已协商事实：remote input 永远要求 exact
+    ephemeral key/IV；`required` 必须等待 host/common-c 对目标 data streams 的证明并在
+    缺一项时阻断，`compatible` 也不得关闭 remote-input protection，`auto` 保留候选。
+    N2-01 类型禁止携带 key/IV；N2-02 在 owner lease 内最后注入并在 start/失败/stop 清零。
+14. resolver 一次性产出同源的 `effectiveStreamOffer` 与 `launchProjection`，width/height/
+    launch fps/HDR/audio layout/playOnHost 必须逐字段一致；不得由 Host Service 和
+    common-c adapter 分别再算一遍。controller bitmap、persist gamepad 和 input key material
+    在 N3 前固定安全零/false，不能由 stream config 猜测实体手柄。
+15. result 状态至少区分 `invalid_request`、`capability_pending`、`confirmation_required`、
+    `offer_ready`、`rejected`；adjustment 使用 bounded stable field/code/requested/effective，
+    不含本地化文案和敏感值。只有 N2-02 收到合法 RTSP/renderer selection 后才能生成
+    `negotiated`，只有 decoder 首帧后 D1 session state 才能进入 streaming。
+16. resolver 必须 deterministic、无时钟/网络/线程/global state；capability expiry 由调用方
+    传入单调时刻后判定。相同 identity+input 得到 byte-equivalent result；任一 owner、
+    session、host/server UUID、settings/capability generation 变化都要求重新 resolve，旧
+    offer 不得用于 launch 或连接。
+17. focused tests 必须覆盖全部预设/custom/host-pending、奇数尺寸、边界/溢出、H.264
+    MVP、forced/auto codec、4K fallback、HDR/10-bit/YUV444 组合、fps/display 三字段、
+    bitrate/FEC 上限、local/remote/IPv6/NAT64 packet、计费确认、audio disabled/stereo/
+    surround、encryption 三模式、stale generations、launch/stream projection 一致、
+    adjustment 稳定性和 deterministic property/fuzz corpus；不以 sleep 或真实网络测试纯函数。
+18. 完成时重跑普通 native 与 ASan/UBSan、strict/analyzer、双 ABI compile/symbol/include/
+    HAP isolation、两项 Hvigor、platform probe、vendor/TOTP/Light/diff/state。defined/NAPI
+    集合、7 个 N1-08 NAPI import allowlist和 423 路径 HAP 必须保持不变；新增配置源码只
+    能作为 private command 出现。独立 checkpoint 后 N2-02 才能建立唯一 common-c
+    adapter/RTSP callback owner，且产品 capability truth 仍不得因纯配置合同变为 true。
+
 ### 15.8 N2：RTSP、视频、音频和媒体时钟
 
 | ID | 文件与精确动作 | 必须验证 | 完成证据/提交点 |
@@ -3234,16 +3360,16 @@ Moonlight 能从“即将支持”变成可点击，仅当下列事实同时成�
 | 云适配 | exact 19 列 adapter、row-sensitive transfer、五 scope selection store、dormant materializer 和独立云状态 policy 已存在；`CloudSyncPolicy.TABLES` 仍是原有 8 表 | 可以验证/隔离/本地物化候选 row，所有结果明确 `cloudAttempted=false`；状态不会把 pending/quarantine 伪装成 synced | D2-07 必须等三环境 AGC receipt；之后才做 D3-01 coordinator、cloud-first promotion 和 D3-08 |
 | 云数据 | `moonlightrecordv1` 是唯一未来分布式物理表；`moonlightlocalrecords` 和 `moonlightappcache` 永远本地 | 19 列 schema 已在 ARM64 API 24 owner-store 实例化和重开验证 | cache 不进云/备份；local mirror 只有 promotion 后才投影；identity 继续默认关闭 |
 | 便携备份 | Backup V3 optional Moonlight descriptor、cloud/local 双 section、exact admission 和 local-only resolver 已存在 | redacted=settings/host/profile，full 额外 trust candidate；identity/secret/cache/marker 永远排除；旧 V3 可读 | cloud-enabled restore promotion 与设备故障矩阵仍 pending；不能另建含 identity 的“完整备份”旁路 |
-| Native | N1-01～N1-07 的 vendor/build/owner/Host API/secure identity/pairing/Host Control 均已 checkpoint；`MoonlightHostControl` 继续 hidden 且无 NAPI caller，authenticated catalog/asset、launch/resume/explicit quit、exact truth/generation/cancel/deadline/no-replay/zeroization 均有 host-test 证据；仍无 production transport/media/input caller | 可声明固定上游、可复现构建及 pure-native dormant contract；HAP runtime identity/transport backend 仍 unavailable，不能声明真实配对、目录、launch、解码、音频或输入可用 | N1-08 只建立 typed、可取消、代际安全且 runtime fail-closed 的 NAPI/Host Service bridge；不借桥接解除 FAB、feature truth、云或串流门禁 |
+| Native | N1-01～N1-08 的 vendor/build/owner/Host API/secure identity/pairing/Host Control/typed bridge 均已 checkpoint；五个独立 `moonlight*` NAPI 属性和 `MoonlightHostService` 已存在，但 product runtime port 在首包前稳定 unavailable；authenticated catalog/asset、launch/resume/explicit quit、exact truth/generation/cancel/deadline/no-replay/zeroization 均只有 dormant host-test 证据，仍无 production transport/media/input caller | 可声明固定上游、可复现构建、typed DTO/cancel/env teardown、完整账户 lease/cache fence 和 packet-free fail-closed 行为；HAP runtime identity/transport backend 仍 unavailable，不能声明真实配对、目录、launch、解码、音频或输入可用 | N2-01 只建立 project-owned requested/effective stream offer 纯合同；不接 common-c RTSP、NAPI、renderer/audio/input，也不借配置对象解除 FAB、feature truth、云或串流门禁 |
 | UI | `HostListPage.ets` 当前仅有禁用的 Moonlight FAB 项、system Symbol 和“即将支持”；没有 Moonlight 添加/目录/设置/会话页 | 入口信息可见但不可交互；点击无副作用 | 直到 U1 的数据与 N1 host-control 前置都满足，保持现状；不提前建可保存假表单 |
 | 品牌 | 官方 SVG 已固定 hash，但尚无 provenance/商标/视觉验收 receipt | 只能使用现有 system Symbol 回退 | `moonlightBrandAssetReady=false`；品牌门通过后再替换资源并保留 NOTICE |
-| 验证 | 19 个 describe、138 个 D1-D3 用例已进入 ArkTS 聚合器；N1-07 后两项 Hvigor、signed HAP、Light、426/426 host native 与 ASan/UBSan、strict/analyzer、双 ABI probe、三 tree/源码归档及产品 symbol/include/HAP 隔离通过 | 只声明测试编译注册、源码/构建完整性和 owner/Host API/secure identity/pairing/Host Control dormant unit contract，不声明 Hypium、HAP runtime HUKS/TLS、真实 Sunshine 或串流可用 | `ohosTest` task 未注册且当前 HDC 连接失败；最终功能验收必须在用户 ARM64 实机和真实 Sunshine 上完成 |
+| 验证 | 20 个 describe、151 个 Moonlight 用例已进入 ArkTS 聚合器；N1-08 后两项 Hvigor、signed HAP、Light、普通 440/440、ASan/UBSan 连续三轮 440/440、strict/analyzer、双 ABI probe、三 tree/源码归档及产品 symbol/include/HAP 隔离通过 | 只声明测试编译注册、源码/构建完整性和 owner/Host API/secure identity/pairing/Host Control/typed bridge dormant unit contract，不声明 Hypium、HAP runtime HUKS/TLS、真实 Sunshine 或串流可用 | `ohosTest` task 未注册且当前 HDC 连接失败；最终功能验收必须在用户 ARM64 实机和真实 Sunshine 上完成 |
 
 当前数据流只能是：
 
 ~~~text
-UI（当前无 Moonlight 可写页面）
-  -> 未来 Moonlight service/repository
+UI（当前无 Moonlight 可写页面，FAB 仍禁用）
+  -> MoonlightHostService（已存在但无 UI caller；production native port 首包前 unavailable）
   -> MoonlightRepository
   -> moonlightlocalrecords + cloudsyncjournal（原子本地提交）
   -> D3 lifecycle barrier（账号切换前 drain；runtime port 尚未注册）
@@ -3254,9 +3380,9 @@ UI（当前无 Moonlight 可写页面）
   -> [AGC dev/test/prod receipt 齐全后才可能启用 moonlightrecordv1]
 
 Sunshine common-c runtime / production transport / media / input 当前仍不在这条已实现链路
-中；N1-04～N1-07 的 Host API、secure identity、pairing 与 Host Control 都不可从 NAPI
-调用，product identity/transport backend 继续 fail closed，不能据此声明 serverinfo、
-pairing、catalog、launch 或 streaming 可用。
+中；N1-08 typed NAPI 可以被加载，但 product runtime port 会在 DNS/socket/TLS 前返回
+`runtime_proof_required`，不会实例化可用的 N1-06/N1-07 pairing/Host Control backend。
+因此不能据此声明 serverinfo、pairing、catalog、launch 或 streaming 可用。
 ~~~
 
 后续模型每次只领取一个最小任务 ID，并严格执行以下循环：
@@ -3271,12 +3397,12 @@ pairing、catalog、launch 或 streaming 可用。
 8. 更新实施台账中的状态、证据、blocker 和唯一下一任务；同步 `CURRENT/QUEUE/STATE`，再用精确文件列表形成一个可回滚提交。
 9. 只有当任务合同、测试和对应门禁均通过时标记 `PASS`；“代码写完”“构建通过”“请求已排队”均不是产品能力完成。
 
-当前唯一可直接继续的代码任务是 N1-08 typed bridge：严格按第 15.7.7 节把
-N1-06/N1-07 包装成 exact-key、async、可取消、单次 settlement 的独立 Moonlight NAPI，
-并由 ArkTS `MoonlightHostService` 绑定完整账户 lease 和既有 app cache。production factory
-在 HAP identity/transport/trust/commit 回执缺失时必须于首包前返回 unavailable；不得
-扩张 `ProtocolAdapter`、不得把 cache 写云、不得接 UI/路由/媒体/输入，也不得改变六项
-capability truth。N1-08 的导出存在只证明桥已编译，不证明真实 Host Control 可用。
+当前唯一可直接继续的代码任务是 N2-01 stream config：严格按第 15.7.8 节新增
+project-owned、deterministic、无网络/线程/secret 的 requested/effective stream offer 和
+launch projection，一次性裁决当前 D1 设置快照与经 generation 证明的 host/platform/
+network/display capability。它不得 include common-c public wire struct、不得扩张 NAPI、
+不得启动 RTSP、不得接 renderer/audio/input/UI，也不得改变六项 capability truth；
+`offer_ready` 只表示参数可进入 N2-02，绝不表示 codec 已协商、首帧已到或串流可用。
 D2-05/06 由 AGC 外部环境提供证据，D2-07 依赖二者；D3 的 cloud terminal、真实
 unpair 和多设备矩阵分别等待 D2-07、N1 Host Control 和外部设备。任何执行者都
 不得因为云端受阻而把 `moonlightrecordv1` 塞入现有八表注册清单，也不得因为
