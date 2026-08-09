@@ -19,6 +19,9 @@ const GUIDE_KEY = 'guide_shown_v4';
 const LAST_SEEN_RELEASE_KEY = 'last_seen_release_version';
 const GUIDE_SHEET_ENTER_DELAY_MS = 120;
 const GUIDE_SHEET_REFLOW_DELAY_MS = 80;
+// 1.1.0 acceptance switch: keep the update Swiper visible on every launch
+// until the release review is complete, regardless of the persisted read marker.
+const FORCE_RELEASE_NOTES_REVIEW: boolean = true;
 
 @Entry
 @Component
@@ -45,7 +48,8 @@ struct GuidePage {
       const shown: boolean = prefs.getSync(GUIDE_KEY, false) as boolean;
       const lastSeen: string = prefs.getSync(LAST_SEEN_RELEASE_KEY, '') as string;
       const releasePages: ReleaseNotePage[] = pagesForReleasedVersion(CURRENT_RELEASE_VERSION);
-      this.mode = resolveStartupMode(shown, lastSeen, CURRENT_RELEASE_VERSION, releasePages.length > 0);
+      this.mode = resolveStartupMode(shown, lastSeen, CURRENT_RELEASE_VERSION,
+        releasePages.length > 0, FORCE_RELEASE_NOTES_REVIEW);
       if (this.mode === StartupMode.LOGIN) {
         router.replaceUrl({ url: 'pages/LoginPage' });
         return;

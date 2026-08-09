@@ -23,7 +23,10 @@ export function compareReleaseVersion(left: string, right: string): number {
 }
 
 export function resolveStartupMode(guideShown: boolean, lastSeen: string, current: string,
-  hasCurrentReleaseNotes: boolean): StartupMode {
+  hasCurrentReleaseNotes: boolean, forceReleaseNotes: boolean = false): StartupMode {
+  if (forceReleaseNotes && hasCurrentReleaseNotes && parseVersion(current) !== null) {
+    return StartupMode.RELEASE_NOTES;
+  }
   if (!guideShown) { return StartupMode.FIRST_INSTALL_GUIDE; }
   if (!hasCurrentReleaseNotes || parseVersion(current) === null) {
     return StartupMode.LOGIN;
