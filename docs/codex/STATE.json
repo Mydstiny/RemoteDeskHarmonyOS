@@ -3,10 +3,10 @@
   "task": "ssh-terminal-complete-upgrade",
   "branch": "codex/ssh-terminal-complete-upgrade",
   "base": "d2769ad4b",
-  "head": "01d191b",
-  "phase": "ssh-forwarding-and-1.1.0-release-guide-implemented-acceptance-pending",
+  "head": "6f8f387",
+  "phase": "ssh-forwarding-and-1.1.0-review-guides-implemented-acceptance-pending",
   "status": "active",
-  "next": "Independently review through 01d191b, device-check clean-install/update inheritance, Phone/Pad/PC defaults, the 12-page update and 10-page first-install/Settings Swipers, SSH/VNC symbols, TOTP logo matching, Pad control docking and the RustDesk relay Phone layout, then validate the remaining real proxy/forwarding endpoints.",
+  "next": "Independently review through 6f8f387, repeatedly inspect the production 12-page release log and exact 10-page first-install guide from Settings Tutorial, then device-check the remaining 1.1.0 defaults/layouts and validate the remaining real proxy/forwarding endpoints.",
   "blockers": [
     "HDC target 5KLBB25928203528 passed cold SSH, ordered input, 300 KiB output, Home background retention, PiP/re-entry and 90-second idle commands; true external-keyboard and third-party-IME coverage remains open.",
     "ohosTest@OhosTestCompileArkTS is not registered (00306054).",
@@ -20,10 +20,11 @@
     "Light compliance cannot start locally because pwsh is missing and is also blocked by baseline SBOM package totp-reviewed-brand-assets with licenseDeclared=NOASSERTION.",
     "SDK-bundled CMake rebuilt the host native target and production BuildNativeWithNinja passed.",
     "Keyboard-interactive prompt UI is code-only; no real MFA endpoint or device screenshot is claimed.",
-    "Independent review through 01d191b is pending because the user requested direct completion without subagent delegation.",
+    "Independent review through 6f8f387 is pending because the user requested direct completion without subagent delegation.",
     "The 1.1.0 clean-install/update classification and Phone/Pad/PC default matrix are code, policy-test-compile and build verified; real device acceptance is still open.",
     "RustDesk relay Phone FAB clearance and collapsed/advanced add-sheet sizing are policy-test-compile/build verified; real Phone device acceptance is still open.",
     "The 12-page update Swiper and 10-page first-install/Settings tutorials are registry-test-compile/build verified; Phone/Pad visual acceptance is still open.",
+    "Settings now exposes repeatable production-registry release-note and exact first-install Swipers; device visual acceptance is still open.",
     "Windows RustDesk stream repair is code/test/build verified but real-session FPS, input-latency and reconnect acceptance is still pending."
   ],
   "planPaths": [
@@ -67,6 +68,7 @@
       "entry/src/main/ets/services/RemoteCanvasZoomPreferencePolicy.ets",
       "entry/src/main/ets/services/RemoteSessionTopBarPolicy.ets",
       "entry/src/main/ets/pages/GuidePage.ets",
+      "entry/src/main/ets/components/AboutSettingsSheet.ets",
       "entry/src/main/ets/services/GuideContentRegistry.ets",
       "entry/src/main/ets/services/ReleaseNotesRegistry.ets",
       "entry/src/main/ets/pages/RustDeskRelayPage.ets",
@@ -155,18 +157,18 @@
       "rustdesk_ffi/src/protocol/rendezvous.rs"
     ],
     "receiptId": "ssh-terminal-xterm-ack-reload-pass-2026-08-06",
-    "reason": "The reviewer found IDE toolchain, SFTP transport/rename/cancel, cursor-owner and VP9 policy edge cases. This session fixed them through a9554a331 and fec26e2; the final read-only follow-up plus review of the 1.1.0 polish and guide refresh through 01d191b is pending."
+    "reason": "The reviewer found IDE toolchain, SFTP transport/rename/cancel, cursor-owner and VP9 policy edge cases. This session fixed them through a9554a331 and fec26e2; the final read-only follow-up plus review of the 1.1.0 polish and explicit guide review entries through 6f8f387 is pending."
   },
   "lastVerification": {
     "host_native_tests": "337-pass-0-fail-337-total-outside-sandbox-2026-08-08",
     "rust_terminal_core_tests": "full-no-default-features-outside-sandbox-176-pass-1-preexisting-rendezvous-fixture-public-address-failure-177-total-2026-08-08",
     "rustdeskPhysicalTouchpad": "focused-no-default-features-3-pass-0-fail-2026-08-06",
     "terminalParity": "alacritty-67-pass-fallback-57-pass-unicode-ansi-tui-resize-large-output-damage-2026-08-04",
-    "default@OhosTestCompileArkTS": "pass-after-01d191b-equivalent-arkts-tree-12-release-pages-10-tutorial-pages-and-regressions-2026-08-09",
-    "assembleHap": "pass-build-successful-1m14s900ms;BuildNativeWithNinja-package-sign-pass-sha256-565918d130f78cab6e0a756f25131298ec04e412da95508c5c781191ba699e48;mixed-working-tree-contained-uncommitted-native-renderer-and-ssh-edits-outside-01d191b-2026-08-09",
+    "default@OhosTestCompileArkTS": "pass-through-6f8f387-settings-release-log-and-first-install-review-entry-integration-2026-08-09",
+    "assembleHap": "pass-build-successful-16s447ms-after-one-transient-generated-icon-audio-3-svg-package-size-race;BuildNativeWithNinja-package-sign-pass-sha256-61c9604123eaa9cbf89c7613a67f7522459a0ea7ccfa87f579d807ca383ec8d6-2026-08-09",
     "devEcoRustToolchain": "pass-absolute-cargo-rustc-clang-clangxx-llvm-ar-sysroot-and-CARGO_ENCODED_RUSTFLAGS-confirmed-under-PATH-usr-bin-bin",
     "sshKeyboardInteractivePromptUi": "pass-multi-prompt-echo-mask-cancel-expiry-stale-snapshot-fence-code-only-2026-08-07",
-    "gitDiffCheck": "pass-release-notes-first-install-and-settings-guide-refresh-2026-08-09",
+    "gitDiffCheck": "pass-settings-tutorial-explicit-release-log-and-first-install-guide-review-entries-2026-08-09",
     "sftpSheetRace": "pass-independent-root-host-delayed-first-read-pad-open-close-reopen-nested-picker-2026-08-07",
     "mobileSftpSheetHandoff": "pass-phone-bottom-pad-wide-bind-sheet-picker-width-isPadDevice-reset-chooser-close-inset-code-only-2026-08-06",
     "backgroundSftpHandoff": "pass-invalid-task-id-context-fallback-retained-tab-reattach-code-only-2026-08-06",

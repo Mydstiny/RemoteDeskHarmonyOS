@@ -5,7 +5,7 @@
 - Task: `ssh-terminal-complete-upgrade`
 - Base: `main@d2769ad4b`
 - Branch: `codex/ssh-terminal-complete-upgrade`
-- Code checkpoints: `6924a1124` (`feat: harden remote sessions and SSH workspace`), `a9554a331` (`fix: harden DevEco builds and session recovery`), `fec26e2` (`fix: close SFTP and pointer recovery races`), `0be27d7` (`feat(ssh): add forwarding workspace`), `bc5132c` (`fix(ssh-ui): finalize forwarding workspace`), `41944ff` (`feat(settings): finalize 1.1.0 personalization defaults`), `29073afaf` (`fix: prioritize TOTP issuer logos`), `b1635d30a` (`fix(ui): dock Pad touchpad controls on right`), `6b17444a9` (`fix(rustdesk): repair mobile relay spacing`) and `01d191b` (`feat(onboarding): refresh 1.1.0 guide pages`).
+- Code checkpoints: `6924a1124` (`feat: harden remote sessions and SSH workspace`), `a9554a331` (`fix: harden DevEco builds and session recovery`), `fec26e2` (`fix: close SFTP and pointer recovery races`), `0be27d7` (`feat(ssh): add forwarding workspace`), `bc5132c` (`fix(ssh-ui): finalize forwarding workspace`), `41944ff` (`feat(settings): finalize 1.1.0 personalization defaults`), `29073afaf` (`fix: prioritize TOTP issuer logos`), `b1635d30a` (`fix(ui): dock Pad touchpad controls on right`), `6b17444a9` (`fix(rustdesk): repair mobile relay spacing`), `01d191b` (`feat(onboarding): refresh 1.1.0 guide pages`), `98a18c40f` (`fix(ssh-ui): remove keyboard mode bottom gap`), `a5ba18c87` (`fix(rustdesk): repair PC hardware presentation`) and `6f8f387` (`feat(settings): expose onboarding review guides`).
 - Phase: Level A and SFTP UI are accepted; Level B proxy/forwarding code, Pad UI and real Local-forward traffic are implemented. The 1.1.0 personalization/default and protocol-icon polish plus the second mobile-layout polish pass are committed. Remaining device acceptance, endpoint interoperability and independent review stay open; xterm.js remains the visible renderer.
 
 ## Current Outcome
@@ -22,6 +22,7 @@
 - 1.1.0 captures a clean-install profile before LoginPage writes its launch marker. Saved update-user preferences remain authoritative; new Phone/Pad installs default remote controls to touchpad and SSH to the software keyboard, while new PC installs default all four protocols to physical keyboard/mouse. Canvas pinch zoom and RustDesk presence/grouping default off, official remote cursor/background display/real 2FA logos default on, SSH uses the system terminal-style symbol, and VNC option rows now use semantic symbols.
 - Phone RustDesk relay lists now own a 200 vp scroll-tail clearance, keeping the final card above the parent FAB even with many relays. The classic relay add sheet fits its collapsed content and switches to the large resize-only layout only after advanced configuration is expanded; the VNC gateway editor remains large.
 - The 1.1.0 update Swiper is rewritten as 12 focused pages led by VNC, followed by RustDesk, host organization/monitoring, SSH/SFTP/forwarding, RDP certificate validation, authenticator logos and input fixes. First-install and Settings usage guides now share nine instructional pages plus their own final page; long release notes use a compact numeric pager.
+- Settings → Tutorial now exposes both `本版本更新日志` and `新用户引导` as repeatable review Swipers backed by the production registries. The existing Settings usage tutorial and prerequisite guide remain separate; opening review entries never changes the startup release-read marker.
 
 ## IDE Build Repair
 
@@ -34,10 +35,10 @@
 
 - `git diff --check`: pass.
 - Host native suite outside the sandbox: `339 passed, 0 failed, 339 total`; the sandbox run reached 323/339 with only 16 existing VNC loopback fixture startup failures.
-- `default@OhosTestCompileArkTS`: pass for the `01d191b`-equivalent ArkTS tree, including 12 release-note and 10 tutorial-page registry regressions.
-- `assembleHap`: `BUILD SUCCESSFUL in 1 min 14 s 900 ms`; `BuildNativeWithNinja`, PackageHap and SignHap passed. The working tree also contained concurrent uncommitted native renderer/SSH edits outside `01d191b`.
+- `default@OhosTestCompileArkTS`: pass through `6f8f387`, including the Settings review entry integration.
+- `assembleHap`: the first PackageHap attempt hit a transient generated `icon_audio 3.svg` size race; the unchanged exact command then passed with `BUILD SUCCESSFUL in 16 s 447 ms`, including BuildNativeWithNinja, PackageHap and SignHap.
 - IDE-like Ninja command inspection under `PATH=/usr/bin:/bin` shows absolute Cargo, rustc, clang/clang++, llvm-ar, sysroot and encoded rustflags.
-- Signed HAP: `entry/build/default/outputs/default/entry-default-signed.hap`, SHA-256 `565918d130f78cab6e0a756f25131298ec04e412da95508c5c781191ba699e48`.
+- Signed HAP: `entry/build/default/outputs/default/entry-default-signed.hap`, SHA-256 `61c9604123eaa9cbf89c7613a67f7522459a0ea7ccfa87f579d807ca383ec8d6`.
 - Wireless MLR-AL10 `192.168.3.236:40123`: direct SSH connected and Local `127.0.0.1:8022 -> 127.0.0.1:22` listened under the App UID. A temporary HDC `28022 -> 8022` mapping carried a real OpenSSH banner, client identification and server KEXINIT in both directions; the dark Pad sheet updated to `连接 1` / `流量 1.1 KB`. The temporary mapping was removed after acceptance.
 - Full Rust run outside the sandbox: `176 passed, 1 existing rendezvous public-address fixture failure`; all VP9, terminal, cursor and network groups affected by the current diff passed.
 - `ohosTest@OhosTestCompileArkTS` remains unavailable because task registration fails with `00306054`. Light could not start because `pwsh` is absent; the existing SBOM `NOASSERTION` blocker also remains.
@@ -48,12 +49,13 @@
 - `41944ff` received a direct changed-path/default-inheritance audit, `git diff --check` and both Hvigor gates. Clean-install/update and Phone/Pad/PC visual acceptance remain separate from this build evidence.
 - `29073afaf..6b17444a9` received a direct changed-path audit, layout policy coverage, `git diff --check` and both Hvigor gates. TOTP logo preference, Pad control docking and the RustDesk relay Phone layout still need device acceptance.
 - `01d191b` received a direct content/path audit, registry regression coverage, `git diff --check` and both Hvigor gates. Phone/Pad Swiper pagination, text fit and Settings-sheet visual acceptance remain open.
+- `6f8f387` received a direct changed-path audit, `git diff --check` and both Hvigor gates. Its two Settings review entries still need device visual acceptance.
 - Keep `review=REVIEW_REQUIRED` until an independent reviewer checks the committed increment. Do not mark Level B endpoint interoperability complete without real traffic evidence.
 
 ## Next
 
-1. Run an independent review through `01d191b` and resolve findings without touching SFTP or other protocols.
-2. Validate clean-install versus update inheritance plus Phone/Pad/PC defaults, both onboarding Swipers, the SSH/VNC symbols, TOTP logo matching, Pad control docking and the RustDesk relay Phone list/add-sheet layout on devices.
+1. Run an independent review through `6f8f387` and resolve findings without touching SFTP or other protocols.
+2. Review both explicit Settings tutorial Swipers, then validate clean-install versus update inheritance plus Phone/Pad/PC defaults, the SSH/VNC symbols, TOTP logo matching, Pad control docking and the RustDesk relay Phone layout on devices.
 3. Provision real HTTP CONNECT, SOCKS5, one-to-three-hop OpenSSH, external FRP TCP/Visitor plus Remote/Dynamic forwarding endpoints and run the remaining matrix.
 
 ## Blockers / Evidence Gaps
@@ -65,5 +67,6 @@
 - 1.1.0 clean-install/update classification and the Phone/Pad/PC default matrix are code/test-compile/build verified but not yet device accepted.
 - RustDesk relay Phone FAB clearance and collapsed/advanced add-sheet sizing are policy-test-compile/build verified but not yet device accepted.
 - The 12-page release Swiper and 10-page first-install/Settings tutorials are registry-test-compile/build verified but not yet visually accepted on Phone/Pad.
+- The repeatable Settings entries for release notes and the exact first-install guide are build verified but not yet opened on a device.
 - Light compliance cannot run locally because `pwsh` is missing and is also blocked by baseline SBOM package `totp-reviewed-brand-assets` with `licenseDeclared=NOASSERTION`.
-- Independent review of the committed workspace through `01d191b` is pending by explicit direct-execution instruction.
+- Independent review of the committed workspace through `6f8f387` is pending by explicit direct-execution instruction.
