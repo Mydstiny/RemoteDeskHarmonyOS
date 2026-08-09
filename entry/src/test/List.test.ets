@@ -170,6 +170,9 @@ import moonlightAppCacheServiceTest from './MoonlightAppCacheService.test';
 import moonlightSensitiveTransferPolicyTest from './MoonlightSensitiveTransferPolicy.test';
 import moonlightCloudSyncSelectionPolicyTest from './MoonlightCloudSyncSelectionPolicy.test';
 import moonlightCloudSyncServiceTest from './MoonlightCloudSyncService.test';
+import moonlightDataLifecycleBarrierTest from './MoonlightDataLifecycleBarrier.test';
+import moonlightDeletionPolicyTest from './MoonlightDeletionPolicy.test';
+import moonlightCloudStatusPolicyTest from './MoonlightCloudStatusPolicy.test';
 
 export default function testsuite() {
   localUnitTest();
@@ -344,4 +347,7 @@ export default function testsuite() {
   moonlightSensitiveTransferPolicyTest();
   moonlightCloudSyncSelectionPolicyTest();
   moonlightCloudSyncServiceTest();
+  moonlightDataLifecycleBarrierTest();
+  moonlightDeletionPolicyTest();
+  moonlightCloudStatusPolicyTest();
 }

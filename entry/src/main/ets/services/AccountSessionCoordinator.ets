@@ -32,6 +32,7 @@ import {
 } from './CloudSyncCoordinator';
 import { cloudTransferAllowed } from './CloudLifecycleSafetyPolicy';
 import { safeError } from '../utils/SafeLogger';
+import { MoonlightDataLifecycleBarrier } from './MoonlightDataLifecycleBarrier';
 
 export interface AccountLoginIdentity extends CredentialParams {
   avatarUrl: string;
@@ -624,6 +625,12 @@ export class AccountSessionCoordinator {
       .bindScope(this.context, this.current.ownerScopeId);
     ActiveRemoteSessionRegistry.getInstance()
       .bindScope(this.current.ownerScopeId, this.current.generation);
+    const lease = CloudStore.getInstance().currentAccountLease();
+    if (lease !== null &&
+      !MoonlightDataLifecycleBarrier.getInstance().bindScope(lease)) {
+      hilog.error(0x0001, 'AccountSession',
+        'Moonlight scope binding failed; feature remains closed');
+    }
   }
 
   private async recoverDeviceLocal(generation: number, message: string): Promise<AccountTransitionResult> {
