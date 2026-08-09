@@ -8,6 +8,14 @@
  * plaintext row from being published by an unrelated later table sync.
  */
 
+import {
+  MOONLIGHT_CLOUD_TABLE,
+  MoonlightRecord,
+  moonlightRecordFromCloudRow
+} from '../model/MoonlightRecord';
+import { normalizeMoonlightCloudRowExact } from './CloudTableAdapter';
+import { moonlightValidateRecord } from './MoonlightRecordPolicy';
+
 export type CloudCiphertextProbe = (value: string) => boolean;
 
 const SENSITIVE_BUSINESS_TABLES: string[] = [
@@ -94,6 +102,76 @@ function encryptedRowsAreSafe(
   return true;
 }
 
+function exactMoonlightRecord(
+  row: Record<string, string>
+): MoonlightRecord | null {
+  const exact: Record<string, string> | null =
+    normalizeMoonlightCloudRowExact(row);
+  if (exact === null) { return null; }
+  const record: MoonlightRecord = moonlightRecordFromCloudRow(exact);
+  return moonlightValidateRecord(record).valid ? record : null;
+}
+
+export function moonlightCloudRowsCarryLiveIdentity(
+  rows: Array<Record<string, string>>
+): boolean {
+  for (let i = 0; i < rows.length; i++) {
+    const record: MoonlightRecord | null = exactMoonlightRecord(rows[i]);
+    // A malformed row that claims to be an identity is treated as sensitive;
+    // callers must not use malformed input to bypass a crypto-reset barrier.
+    if (record === null) {
+      if (rows[i]['recordtype'] === 'secret' &&
+          rows[i]['deletedat'] === '0') { return true; }
+      continue;
+    }
+    if (record.recordType === 'secret' && record.deletedAt === 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Moonlight is row-sensitive. Ordinary settings/host/profile/trust rows may
+ * transfer without remote identity crypto, but every live identity row must
+ * be a valid envelope whose ciphertext passes the authenticated-ciphertext
+ * probe. Tombstones contain no key material and remain portable.
+ */
+export function moonlightCloudRowsAreUploadSafe(
+  rows: Array<Record<string, string>>,
+  cryptoConfigured: boolean,
+  ciphertextProbe: CloudCiphertextProbe
+): boolean {
+  for (let i = 0; i < rows.length; i++) {
+    const record: MoonlightRecord | null = exactMoonlightRecord(rows[i]);
+    if (record === null) { return false; }
+    if (record.recordType === 'secret' && record.deletedAt === 0 &&
+        (!cryptoConfigured || !ciphertextProbe(record.ciphertext))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * A device whose local crypto was reset may still retain an already-encrypted
+ * cloud identity opaquely. It cannot promote/upload it until crypto is
+ * configured again, but download validation must not reinterpret ciphertext
+ * as plaintext or manufacture a deletion.
+ */
+export function moonlightCloudRowsAreDownloadCompatible(
+  rows: Array<Record<string, string>>,
+  ciphertextProbe: CloudCiphertextProbe
+): boolean {
+  for (let i = 0; i < rows.length; i++) {
+    const record: MoonlightRecord | null = exactMoonlightRecord(rows[i]);
+    if (record === null) { return false; }
+    if (record.recordType === 'secret' && record.deletedAt === 0 &&
+        !ciphertextProbe(record.ciphertext)) { return false; }
+  }
+  return true;
+}
+
 /**
  * Native-first is stricter than download compatibility. Even an empty
  * sensitive table remains blocked while crypto is disabled, because it may
@@ -105,6 +183,10 @@ export function cloudTableRowsAreUploadSafe(
   cryptoConfigured: boolean,
   ciphertextProbe: CloudCiphertextProbe
 ): boolean {
+  if (table === MOONLIGHT_CLOUD_TABLE) {
+    return moonlightCloudRowsAreUploadSafe(
+      rows, cryptoConfigured, ciphertextProbe);
+  }
   if (!cloudTableRequiresConfiguredCrypto(table)) { return true; }
   // Encryption configuration is the user's explicit choice, never a
   // presumption. Without a configured crypto contract the secrets upload as
@@ -126,6 +208,9 @@ export function cloudTableRowsAreDownloadCompatible(
   cryptoConfigured: boolean,
   ciphertextProbe: CloudCiphertextProbe
 ): boolean {
+  if (table === MOONLIGHT_CLOUD_TABLE) {
+    return moonlightCloudRowsAreDownloadCompatible(rows, ciphertextProbe);
+  }
   if (table === 'cryptoparams' ||
     SENSITIVE_BUSINESS_TABLES.indexOf(table) < 0 ||
     !cryptoConfigured) {
@@ -159,4 +244,19 @@ export function vncSelectionAfterLocalCryptoTransition(
 ): string[] {
   if (reset) { return []; }
   return selected.filter((scope: string): boolean => scope !== 'secrets');
+}
+
+/** Remove only the Moonlight physical table whose current snapshot is unsafe. */
+export function moonlightSelectionAfterLocalCryptoTransition(
+  selected: string[],
+  rows: Array<Record<string, string>>,
+  cryptoConfigured: boolean,
+  ciphertextProbe: CloudCiphertextProbe
+): string[] {
+  if (moonlightCloudRowsAreUploadSafe(
+    rows, cryptoConfigured, ciphertextProbe)) {
+    return selected.slice();
+  }
+  return selected.filter((table: string): boolean =>
+    table !== MOONLIGHT_CLOUD_TABLE);
 }
