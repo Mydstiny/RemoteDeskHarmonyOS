@@ -167,6 +167,7 @@ import moonlightStoragePolicyTest from './MoonlightStoragePolicy.test';
 import moonlightCloudTableAdapterTest from './MoonlightCloudTableAdapter.test';
 import moonlightRepositoryTest from './MoonlightRepository.test';
 import moonlightAppCacheServiceTest from './MoonlightAppCacheService.test';
+import moonlightHostServiceTest from './MoonlightHostService.test';
 import moonlightSensitiveTransferPolicyTest from './MoonlightSensitiveTransferPolicy.test';
 import moonlightCloudSyncSelectionPolicyTest from './MoonlightCloudSyncSelectionPolicy.test';
 import moonlightCloudSyncServiceTest from './MoonlightCloudSyncService.test';
@@ -346,6 +347,7 @@ export default function testsuite() {
   moonlightCloudTableAdapterTest();
   moonlightRepositoryTest();
   moonlightAppCacheServiceTest();
+  moonlightHostServiceTest();
   moonlightSensitiveTransferPolicyTest();
   moonlightCloudSyncSelectionPolicyTest();
   moonlightCloudSyncServiceTest();

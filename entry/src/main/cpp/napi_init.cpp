@@ -16,6 +16,7 @@
 
 #include <napi/native_api.h>
 #include <hilog/log.h>
+#include "moonlight/moonlight_napi.h"
 #include "terminal/terminal_core_napi.h"
 #include "terminal/ssh_terminal_renderer.h"
 
@@ -164,6 +165,12 @@ static napi_value Init(napi_env env, napi_value exports) {
     // SSH 终端原生渲染器 (OH_Drawing 画布)
     SshTerminalRendererNapi::Init(env, exports);
     OH_LOG_INFO(LOG_APP, "[NAPI] SshTerminalRenderer 已注册");
+
+    // Moonlight typed bridge remains runtime fail-closed until the in-HAP
+    // identity/transport receipts exist. Registering the DTO boundary does not
+    // make the disabled FAB entry or protocol capability available.
+    MoonlightNapi::Init(env, exports);
+    OH_LOG_INFO(LOG_APP, "[NAPI] Moonlight typed bridge 已注册（runtime fail-closed）");
 
     OH_LOG_INFO(LOG_APP, "[NAPI] rdpnapi 模块初始化完成");
     return exports;

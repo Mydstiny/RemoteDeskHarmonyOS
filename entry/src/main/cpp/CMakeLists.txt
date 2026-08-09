@@ -128,6 +128,12 @@ set(MOONLIGHT_PAIRING_SOURCE
 set(MOONLIGHT_HOST_CONTROL_SOURCE
     moonlight/control/MoonlightHostControl.cpp
 )
+set(MOONLIGHT_BRIDGE_SOURCE
+    moonlight/bridge/MoonlightNativeBridge.cpp
+)
+set(MOONLIGHT_NAPI_SOURCE
+    moonlight/moonlight_napi.cpp
+)
 set(MOONLIGHT_SOURCES
     moonlight/core/MoonlightSessionOwner.cpp
 )
@@ -248,6 +254,7 @@ if(RDP_BUILD_TESTS)
         test/moonlight_secure_identity_test.cpp
         test/moonlight_pairing_manager_test.cpp
         test/moonlight_host_control_test.cpp
+        test/moonlight_native_bridge_test.cpp
         test/moonlight_session_owner_test.cpp
         test/vnc_des_test.cpp
         test/vnc_cursor_protocol_test.cpp
@@ -277,6 +284,7 @@ if(RDP_BUILD_TESTS)
         moonlight/security/MoonlightSecureIdentity.cpp
         moonlight/pairing/MoonlightPairingManager.cpp
         moonlight/control/MoonlightHostControl.cpp
+        ${MOONLIGHT_BRIDGE_SOURCE}
         vnc/vnc_des.cpp
         vnc/vnc_cursor_protocol.cpp
         vnc/vnc_rfb_protocol.cpp
@@ -501,6 +509,23 @@ set_target_properties(remotedesk_moonlight_host_control PROPERTIES
     POSITION_INDEPENDENT_CODE ON
 )
 
+# N1-08 typed bridge and N-API owner. Keep this boundary in a private archive
+# and link it after the product's existing static dependencies. The rdpnapi
+# --exclude-libs contract preserves the established dynamic ABI when libc++
+# emits duplicate COMDAT helpers and keeps bridge implementation details local.
+# Only MoonlightNapi::Init is referenced by napi_init.cpp.
+add_library(remotedesk_moonlight_bridge STATIC
+    ${MOONLIGHT_BRIDGE_SOURCE}
+    ${MOONLIGHT_NAPI_SOURCE}
+)
+target_compile_features(remotedesk_moonlight_bridge PRIVATE cxx_std_17)
+target_include_directories(remotedesk_moonlight_bridge PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+set_target_properties(remotedesk_moonlight_bridge PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+)
+
 # 定义共享库目标
 add_library(rdpnapi SHARED ${ALL_SOURCES})
 target_compile_definitions(rdpnapi PRIVATE
@@ -518,6 +543,7 @@ target_link_options(rdpnapi PRIVATE
     "-Wl,--exclude-libs,libremotedesk_moonlight_pairing.a"
     "-Wl,--exclude-libs,libremotedesk_moonlight_host_api.a"
     "-Wl,--exclude-libs,libremotedesk_moonlight_secure_identity.a"
+    "-Wl,--exclude-libs,libremotedesk_moonlight_bridge.a"
 )
 
 # VNC full-screen ZRLE decode is production-rate code even in a signed Debug
@@ -795,6 +821,10 @@ set_target_properties(rustdesk_ffi PROPERTIES
     IMPORTED_LOCATION ${RUSTDESK_FFI_LIB}
 )
 target_link_libraries(rdpnapi PUBLIC rustdesk_ffi)
+
+# Deliberately last: existing product/static-library COMDAT definitions retain
+# their established visibility before the dormant Moonlight bridge is pulled.
+target_link_libraries(rdpnapi PRIVATE remotedesk_moonlight_bridge)
 
 if(RDP_BUILD_CALLBACK_TESTS)
     if(NOT USE_REAL_FREERDP)

@@ -1,3 +1,131 @@
+export type MoonlightNativeOperation =
+  'pair' | 'catalog' | 'asset' | 'launch' | 'resume' | 'quit';
+export type MoonlightNativeCode =
+  'ok' | 'invalid_argument' | 'busy' | 'runtime_proof_required' | 'unavailable' |
+  'unpaired' | 'app_not_found' | 'invalid_catalog' | 'resume_required' |
+  'host_busy' | 'confirmation_required' | 'action_rejected' | 'outcome_unknown' |
+  'cancelled' | 'stale' | 'deadline_exceeded' | 'transport_failure' |
+  'protocol_failure' | 'repair_required' | 'shutting_down';
+export type MoonlightNativeTruth =
+  'not_attempted' | 'confirmed' | 'failed' | 'unknown';
+export type MoonlightNativeTerminalStage = 'complete' | 'failed' | 'cancelled';
+
+export interface MoonlightNativeRequestKey {
+  requestId: number;
+  generation: number;
+  ownerToken: number;
+}
+
+export interface MoonlightNativeAddress {
+  value: string;
+  family: 'unspecified' | 'ipv4' | 'ipv6';
+}
+
+export interface MoonlightNativeEndpoint {
+  serverName: string;
+  addresses: MoonlightNativeAddress[];
+  httpPort?: number;
+  httpsPort?: number;
+  pinnedTrustAvailable?: boolean;
+  allowHttpPairingCandidate?: boolean;
+}
+
+export interface MoonlightNativeLaunchConfiguration {
+  width?: number;
+  height?: number;
+  refreshRate?: number;
+  additionalStates?: boolean;
+  sops?: boolean;
+  hdr?: boolean;
+  playAudioOnHost?: boolean;
+  surroundAudioInfo?: number;
+  remoteControllersBitmap?: number;
+  gamepadMask?: number;
+  persistGamepads?: boolean;
+}
+
+export interface MoonlightNativeRequest {
+  operation: MoonlightNativeOperation;
+  key: MoonlightNativeRequestKey;
+  ownerScopeFingerprint: string;
+  installationId?: string;
+  hostId: string;
+  serverUuid: string;
+  endpoint: MoonlightNativeEndpoint;
+  timeoutMs?: number;
+  appId?: number;
+  catalogGeneration?: number;
+  expectedCurrentAppId?: number;
+  userConfirmedTermination?: boolean;
+  allowLegacySha1?: boolean;
+  pin?: ArrayBuffer | Uint8Array;
+  riKey?: ArrayBuffer | Uint8Array;
+  riKeyId?: number;
+  launchConfiguration?: MoonlightNativeLaunchConfiguration;
+}
+
+export interface MoonlightNativeApp {
+  id: number;
+  title: string;
+  hdrSupported?: boolean;
+}
+
+export interface MoonlightNativeDiagnostic {
+  stage: string;
+  code: string;
+  httpStatus: number;
+  xmlStatus: number;
+  transportAttempts: number;
+  byteCount: number;
+  appIdFingerprint: number;
+}
+
+export interface MoonlightNativeResult {
+  operation: MoonlightNativeOperation;
+  key: MoonlightNativeRequestKey;
+  code: MoonlightNativeCode;
+  terminalStage: MoonlightNativeTerminalStage;
+  preflightTruth: MoonlightNativeTruth;
+  actionTruth: MoonlightNativeTruth;
+  postconditionTruth: MoonlightNativeTruth;
+  partialAppCount: number;
+  observedAtMs: number;
+  idempotent: boolean;
+  mutationMayHaveBeenSent: boolean;
+  apps: MoonlightNativeApp[];
+  asset: ArrayBuffer;
+  rtspSessionUrl?: string;
+  diagnostics: MoonlightNativeDiagnostic[];
+}
+
+export interface MoonlightBridgeCapabilities {
+  bridgeCompiled: boolean;
+  identityReady: boolean;
+  transportReady: boolean;
+  trustReady: boolean;
+  commitReady: boolean;
+  pairingReady: boolean;
+  hostControlReady: boolean;
+  blocker: string;
+}
+
+export interface MoonlightNativeEvent {
+  sequence: number;
+  monotonicTimestampMs: number;
+  operation: MoonlightNativeOperation;
+  key: MoonlightNativeRequestKey;
+  code: MoonlightNativeCode;
+  terminalStage: MoonlightNativeTerminalStage;
+}
+
+export function moonlightGetBridgeCapabilities(): MoonlightBridgeCapabilities;
+export function moonlightRequestAsync(request: MoonlightNativeRequest):
+  Promise<MoonlightNativeResult> & MoonlightNativeRequestKey;
+export function moonlightCancelRequest(key: MoonlightNativeRequestKey): boolean;
+export function moonlightCancelOwner(ownerToken: number): number;
+export function moonlightPollEvents(ownerToken: number, afterSequence?: number,
+  limit?: number): MoonlightNativeEvent[];
+
 export const VERSION: SessionVersionInfo;
 
   export function listProtocols(): ProtocolInfo[];
