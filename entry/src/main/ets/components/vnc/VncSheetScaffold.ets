@@ -102,6 +102,9 @@ export struct VncSheetScaffold {
               .margin({ bottom: this.compactHeight() ? 8 : 14 })
           }
           this.contentBuilder()
+          if (this.showFooter) {
+            this.footerBuilder()
+          }
         }.width('100%').padding({
           left: 20,
           right: 20,
@@ -109,27 +112,11 @@ export struct VncSheetScaffold {
         })
       }
       .width('100%')
-      if (this.showFooter) {
-        Column() {
-          Divider().strokeWidth(0.5).color(this.pal().divider)
-          Row() {
-            this.footerBuilder()
-          }.width('100%').padding({
-            left: 20,
-            right: 20,
-            top: this.compactHeight() ? 6 : 12,
-            bottom: this.compactHeight() ? 4 : 10
-          })
-        }
-        .width('100%')
-        .safeAreaPadding({ bottom: this.bottomSafePadding })
-        .backgroundColor(this.pal().card)
-      }
     }
     .width('100%')
     .height('auto')
     .constraintSize({ maxWidth: VNC_SHEET_MAX_WIDTH })
-    .backgroundColor(this.pal().sheetBg)
+    .backgroundColor(this.pal().card)
     .onAreaChange((_old: Area, next: Area): void => {
       const height: number = next.height as number;
       if (Number.isFinite(height) && height > 0 && Math.abs(height - this.measuredHeight) >= 0.5) {

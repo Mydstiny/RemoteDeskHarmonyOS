@@ -213,9 +213,9 @@ export struct SshAddFlow {
               Text(this.errorText).fontSize(12).fontColor(this.pal().danger).margin({ top: 10 })
             }
           }.width('100%')
-        }.width('100%')
+      }
       .width(this.breakpoint === 'xl' ? 900 : '100%')
-      .height(this.breakpoint === 'sm' ? 'auto' : '100%')
+      .height('auto')
         .padding({ left: 20, right: 20, top: 20, bottom: 22 }).backgroundColor(this.pal().card)
     }
   }
