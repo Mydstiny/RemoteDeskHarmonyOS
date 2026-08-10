@@ -123,8 +123,7 @@ export struct SshAddFlow {
       })
     } else {
       Column() {
-        Scroll() {
-          Column() {
+        Column() {
             this.header()
             if (this.step === 1) {
               this.field('名称', this.label, '例如：生产服务器', (v: string): void => { this.label = v; })
@@ -214,10 +213,9 @@ export struct SshAddFlow {
               Text(this.errorText).fontSize(12).fontColor(this.pal().danger).margin({ top: 10 })
             }
           }.width('100%')
-        }
-        .width('100%').layoutWeight(1).scrollBar(BarState.Auto)
-      }
-      .width(this.breakpoint === 'xl' ? 900 : '100%').height('100%')
+        }.width('100%')
+      .width(this.breakpoint === 'xl' ? 900 : '100%')
+      .height(this.breakpoint === 'sm' ? 'auto' : '100%')
         .padding({ left: 20, right: 20, top: 20, bottom: 22 }).backgroundColor(this.pal().card)
     }
   }

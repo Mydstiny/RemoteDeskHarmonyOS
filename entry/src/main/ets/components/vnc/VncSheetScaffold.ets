@@ -94,7 +94,7 @@ export struct VncSheetScaffold {
       if (!this.actionOnlyHeight()) {
         this.header()
       }
-      Scroll() {
+      Column() {
         Column() {
           if (this.subtitle !== '' && (this.stepText !== '' || this.compactHeight())) {
             Text(this.subtitle).fontSize(11).fontColor(this.pal().text3)
@@ -108,10 +108,7 @@ export struct VncSheetScaffold {
           bottom: this.compactHeight() ? 8 : 18
         })
       }
-      .layoutWeight(1)
       .width('100%')
-      .scrollBar(BarState.Auto)
-      .edgeEffect(EdgeEffect.Spring)
       if (this.showFooter) {
         Column() {
           Divider().strokeWidth(0.5).color(this.pal().divider)
@@ -130,9 +127,9 @@ export struct VncSheetScaffold {
       }
     }
     .width('100%')
-    .height('100%')
+    .height('auto')
     .constraintSize({ maxWidth: VNC_SHEET_MAX_WIDTH })
-    .backgroundColor(this.pal().bg)
+    .backgroundColor(this.pal().sheetBg)
     .onAreaChange((_old: Area, next: Area): void => {
       const height: number = next.height as number;
       if (Number.isFinite(height) && height > 0 && Math.abs(height - this.measuredHeight) >= 0.5) {
