@@ -4,7 +4,7 @@
 > 分支：`codex/moonlight-complete-upgrade`
 > 初始基线：`main@aeb0cdac5`，与 `origin/main` 一致
 > 总计划：`docs/superpowers/plans/2026-07-28-moonlight-harmonyos-complete-upgrade-plan.md`
-> 台账状态：G0、D1、D2 本地/休眠策略、D3 本地生命周期、N1-01～N1-08 与 N2-01 已形成 checkpoint；当前唯一代码任务为 N2-02 dormant common-c adapter/RTSP callback owner；D2-05～D2-07、D3 在线/多设备和产品运行时仍等待外部回执，只把有可复现证据的项目标记为通过
+> 台账状态：G0、D1、D2 本地/休眠策略、D3 本地生命周期、N1-01～N1-08 与 N2-01～N2-02 已形成 checkpoint；当前唯一代码任务为 N2-03 dormant video decode-unit bridge；D2-05～D2-07、D3 在线/多设备和产品运行时仍等待外部回执，只把有可复现证据的项目标记为通过
 
 ## 1. 执行约束
 
@@ -230,6 +230,7 @@ D3 账户生命周期代码检查点为 `05e96d3`；便携备份/本地恢复检
 | N1-07 | CONTRACT PASS / DORMANT | `019ed98b4` 新增 hidden injected Host Control，复用 N1-04 完成 authenticated catalog/asset、launch/resume/explicit quit、三段 truth、generation/cancel/deadline、maybe-sent no replay 和 launch material/RTSP cleanse；26 组定向用例，native/ASan/UBSan 426/426 | product identity/transport 仍 unavailable；无 NAPI/UI/真实 Sunshine，不宣称目录或主机控制可用 |
 | N1-08 | CONTRACT PASS / DORMANT | `aecd2ea4e` 新增 NAPI-free exact bridge、五个独立 `moonlight*` NAPI 属性和 lease/cache-fenced `MoonlightHostService`；product runtime 首包前 `runtime_proof_required`；14 native + 13 ArkTS focused cases，普通/ASan/UBSan 440/440 | 无真实 identity/transport/trust/commit/Sunshine 回执；FAB、云注册、媒体、输入和六项 truth 不变；N2-01 只能建纯 stream offer，不得把 bridgeCompiled 当可用 |
 | N2-01 | CONTRACT PASS / DORMANT | `db5865c53` 新增 project-owned deterministic stream offer、四类 generation/source/version/expiry capability snapshot、stable adjustment 和同源 launch projection；36 focused cases，全量/ASan/UBSan 476/476 | 无 common-c wire/NAPI/RTSP/media/input/UI/cloud caller；`selectedCodec` 始终 absent，FAB、8 表在线注册和六项 truth 不变；N2-02 只能建唯一 adapter/RTSP callback owner |
+| N2-02 | CONTRACT PASS / DORMANT | `248e704ab` 新增唯一 hidden common-c adapter，并只为既有 owner 增加 exact-key non-blocking `requestStop`；官方 struct/mask、RI/IV、process-global router、11-stage/deadline/termination、setup-derived video/audio、callback drain/cleanse 共 21 个 focused case；普通与 ASan/UBSan 497/497 | product media port 恒 unavailable，archive 无 NAPI/ArkTS/UI/cloud caller；transport-ready 不是首帧，8 表、灰色 FAB 和六项 truth 不变；N2-03 只能建立 bounded video decode-unit bridge |
 
 N1-01 的可复现证据：
 
@@ -573,7 +574,7 @@ vendor/TOTP/Light 全通过。每 ABI 只增加一条 stream-config command（�
 仍 48），动态 inventory 与 423 路径 HAP 逐项不变。`offer_ready` 仍不是 negotiated，
 `selectedCodec` 始终 absent，在线云注册、FAB 和六项 truth 没有变化。
 
-## 12. 2026-08-10 N1-01～N2-01 checkpoint 验证
+## 12. 2026-08-10 N1-01～N2-02 checkpoint 验证
 
 - `default@OhosTestCompileArkTS`：N2-01 最终源码后 **BUILD SUCCESSFUL**；20 个
   describe、151 个 Moonlight test 编译注册，不声明设备执行。
@@ -595,16 +596,46 @@ vendor/TOTP/Light 全通过。每 ABI 只增加一条 stream-config command（�
 - HDC 当前 `list targets` 无输出并在人工中断后退出；早期 ARM64 API 24 RDB receipt 仍有效，但本次
   没有新增虚拟设备 Hypium、HUKS/TLS、真实 Sunshine 或用户 ARM64 真机证据。
 
+N2-02 `248e704ab` 在上述 N2-01 基线上只增加一个 dormant native archive、一个显式
+EXCLUDE_FROM_ALL 官方 common-c link probe、20 个 adapter case，以及由失败测试冻结的
+owner `requestStop` case。adapter header 不暴露 `Limelight.h`；product `.cpp` 精确初始化
+并映射 `SERVER_INFORMATION`、`STREAM_CONFIGURATION` 和全部 callback struct，唯一调用
+`LiStartConnection/LiInterruptConnection/LiStopConnection`。process-global router 只保存
+accepted exact key/weak invocation，高水位阻断旧 owner；所有 callback 经 owner/local lease，
+finalize 先关闭 admission、等待 in-flight、退休 router，再清 RI key/IV/key ID/RTSP/backing。
+setup/init 是 negotiated video/audio 的唯一真值，11 个 stage 严格单调，scheduler 只调用
+owner 的 non-blocking stop request；`transportReady` 永不产生 `firstFrameReady`。
+
+- host 普通测试 **497/497 PASS**；ASan/UBSan 连续三轮 **497/497 PASS**，macOS runtime
+  不支持 leak sanitizer，故明确使用 `detect_leaks=0`。strict
+  `-Wall -Wextra -Wpedantic -Werror` 与四份 clang analyzer 均通过。
+- TSan binary 可构建；全量运行在进入 Moonlight 用例前停于既有
+  `rustdesk_continuity_executor_deferred_owner_reclaims_after_release` 的 TSan 定时断言，
+  之前无 `ThreadSanitizer`/race/SUMMARY 输出。N2-02 的 async blocked-media callback、
+  external termination、stale callback 与 destructor barrier 在普通/ASan 中确定性通过，
+  作为本机可用的等价 race harness；不把未完成的全量 TSan 写成 PASS。
+- 两 ABI 产品 `rdpnapi` 与 `moonlight_common_c_adapter_link_probe` 均编译链接；每 ABI
+  90 条永久 command 中 `rdpnapi` 仍 48、adapter 恰 1，零 upstream include leak。
+  arm64 16103/705、x86_64 15634/703 的 defined/undefined name+type 集合，以及各 147
+  条 NAPI name+type+size 子集均与 N2-01 基线逐项相同。
+- `default@OhosTestCompileArkTS` 与 signed `assembleHap` 均 **BUILD SUCCESSFUL**；HAP
+  SHA-256 `3d67e3a743207d39df8e4bb81ba7f49efd7acd8896f412000defc6670af05578`，排序后
+  423 路径与基线逐项相同且无 adapter/common-c 新路径。
+- API 23 双 ABI platform probe、三棵官方 Git tree/117 exact files、TOTP 251 entries、
+  Light、diff 均 PASS。在线云注册仍精确 8 表；Moonlight FAB disabled/“即将支持”各
+  1 项，11 个 feature input 初值和六项发布 truth 均未放行。
+- 第二个也是最后一个允许的 `gpt-5.6-sol low` reviewer 只读审查
+  `49735f1a1..248e704ab`，对官方映射、owner/router、竞态、cleanse、产品隔离、测试与
+  本节事实给出 PASS、无 P0/P1/P2；两次 reviewer 名额已用完，不再派发新 reviewer。
+
 ## 13. 下一执行序列
 
-1. 严格按主计划第 15.7.9 节执行 N2-02，只建立唯一 common-c adapter、process-global
-   callback routing slot、stage/deadline/termination 状态机、selected codec/audio 真值和
-   RI key/IV/RTSP cleanse。只允许主 CMake、新建 `MoonlightCommonCAdapter.*`、focused
-   native test 与必要且先证明的 owner/Host-Control 最小合同增量；不接 NAPI、ArkTS、
-   renderer/audio payload、input、UI 或云。
-2. N2-02 必须复用 N1-03 `MoonlightSessionOwner` 的唯一 driver lane；product identity/
-   transport/media ports 缺回执时仍 fail closed。`negotiated`/`transport-ready` 不是首帧、
-   streaming 或 protocol available，不能改变 HostProtocolPicker、feature truth 或 8 表注册。
+1. 严格按主计划 N2-03 执行一个 hidden `MoonlightVideoBridge`：只消费 N2-02 media port
+   交出的 `DECODE_UNIT`/`LENTRY`，先冻结 bounded chain ownership、buffer type、codec
+   config、frame/decode number、IDR 与 backpressure 合同；不接 NAPI/ArkTS/UI/云。
+2. N2-03 不得把 LENTRY 首指针当连续 payload，不得绕过既有 generation-aware decoder
+   owner，也不连接 OH_AVCodec/Surface；assembled/submitted 不是首帧、streaming 或
+   protocol available，HostProtocolPicker、feature truth 和 8 表注册继续不变。
 3. D2-05/06 由 AGC 开发/测试/生产环境提供 schema/授权/索引 receipt；缺失时 D2-07、
    D3-01 在线 wiring、D3-05 cloud-first promotion、D3-06 cloud terminal 和 D3-08 云矩阵
    继续阻断。

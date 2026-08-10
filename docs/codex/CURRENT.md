@@ -5,8 +5,8 @@
 - Task: `moonlight-complete-upgrade`
 - Base: `main@aeb0cdac5`
 - Branch: `codex/moonlight-complete-upgrade`
-- Phase: G0, D1-D3 local/dormant lifecycle, N1-01～N1-08 and N2-01 are checkpointed;
-  N2-02 dormant common-c adapter is next; AGC and product runtime remain blocked.
+- Phase: G0, D1-D3 local/dormant lifecycle, N1-01～N1-08 and N2-01～N2-02 are
+  checkpointed; N2-03 dormant video decode-unit bridge is next; AGC/runtime remain blocked.
 
 ## Context
 
@@ -81,23 +81,24 @@
   Product runtime remains packet-free `runtime_proof_required`; no UI/cloud/media/
   input truth changed. Sanitizer also exposed and checkpointed the pre-existing
   deferred-owner thread-before-state initialization fix as `aa3b947`.
-- N2-01 checkpoint `db5865c53` adds only the hidden project-owned deterministic
-  stream offer and same-source launch projection. Its 36 cases bring native and
-  three ASan/UBSan runs to 476/476; strict/analyzer, both Hvigor tasks, API 23
-  dual-ABI probe, vendor/TOTP/Light and isolation pass. ABI inventories remain
-  arm64 16103/705/716 and x86_64 15634/703/711; HAP remains 423 paths with SHA-256
-  `095700a5af1823645689d913b4c995f5cca662eafa6202fec12b0eb68156a0ac`.
-  Each ABI has 89 commands, still 48 `rdpnapi`; only one private stream-config
-  command was added. `selectedCodec` stays absent and UI/cloud/runtime truth is
-  unchanged. HDC list-targets hung until interrupted; no new runtime claim exists.
-  One of two `sol low` reviews was used; the other remains for final integration.
+- N2-01 `db5865c53` adds only a deterministic stream offer. N2-02 `248e704ab`
+  maps it through one hidden common-c adapter and the existing owner lane: exact
+  official structs/masks, process-global callback routing, 11-stage/deadline/
+  termination state, setup-derived codec/audio truth, callback drain and RI/IV/
+  RTSP cleanse. Product media is absent, so start remains packet-free unavailable.
+  Twenty-one focused cases bring normal and three ASan/UBSan runs to 497/497;
+  strict/analyzer and deterministic race barriers pass. Full TSan stops before
+  Moonlight at an existing RustDesk continuity timing assertion, with no TSan report.
+  Both Hvigor tasks, dual-ABI official link probe, vendor/TOTP/Light and isolation
+  pass. Each ABI has 90 commands, still 48 `rdpnapi`, with one adapter command and
+  no include leak; final `sol low` review passed; ABI/HAP/UI/cloud stay fixed; six truths are false.
 
 ## Next
 
-1. Execute only N2-02: map the completed offer through one common-c adapter and
-   the existing session-owner lane; own RTSP stages, callback routing, timeout,
-   selected codec/audio and secret cleanse. Do not expand NAPI, wire ArkTS/UI/cloud,
-   carry media payload or input, or change release truth. Negotiated is not first-frame.
+1. Execute only N2-03: add a hidden video decode-unit bridge that validates and
+   assembles common-c `DECODE_UNIT`/`LENTRY` chains behind the N2-02 media port.
+   Do not wire NAPI/ArkTS/UI/cloud/input, change the existing decoder owner, or
+   claim first-frame/streaming/release truth.
 2. Keep D3-01 online wiring, D3-05 cloud promotion, D3-06 cloud terminal and
    D3-08 multi-device matrix blocked until development/test/production AGC receipts
    permit D2-07 registration.
