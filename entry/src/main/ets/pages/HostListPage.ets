@@ -907,6 +907,9 @@ struct HostListPage {
   private searchTimer: number = -1;
   private presetColors: string[] = ['#FFFFFF','#F0F0F0','#F0F5FA','#FFF8F0','#F5F0F8','#1A1A2E','#1E4377','#2D1B4E'];
   @State wallpaperItems: WallpaperItem[] = [];
+  // The long VNC/SSH add flows use a bounded sheet on phones. Keep the
+  // viewport height in vp so the sheet can leave room for the system bars.
+  @State windowH: number = 720;
   private inputDeviceListenerRegistered: boolean = false;
   private inputDevicePromptVisible: boolean = false;
   private externalInputPromptedThisSession: boolean = false;
@@ -3089,8 +3092,12 @@ struct HostListPage {
     try {
       const d: display.Display = display.getDefaultDisplaySync();
       this.windowW = d.width;
+      this.windowH = d.height;
       this.isFullScreen = (d.width >= d.width - 4);
-    } catch (_err) { this.windowW = 360; }
+    } catch (_err) {
+      this.windowW = 360;
+      this.windowH = 720;
+    }
   }
 
   // 手动切换主题时同步更新状态栏 (与 EntryAbility.updateStatusBar 一致)
@@ -12231,9 +12238,17 @@ struct HostListPage {
     return this.isClassicVncAddSheet() || this.modernAddProtocol === 'vnc';
   }
 
-  private hostAddSheetHeight(): SheetSize {
-    return this.isVncAddSheet() || this.modernAddProtocol === 'ssh'
-      ? SheetSize.LARGE : SheetSize.FIT_CONTENT;
+  private hostAddSheetHeight(): SheetSize | number {
+    const isLongFlow: boolean = this.isVncAddSheet() || this.modernAddProtocol === 'ssh';
+    if (isLongFlow && this.breakpoint === 'sm') {
+      // Keep the footer reachable while allowing the body to scroll. The
+      // bounds avoid an oversized sheet on tall phones and a clipped one on
+      // compact devices/landscape windows.
+      const availableHeight: number = Math.max(420,
+        this.windowH - this.topSafeHeightVp() - 24);
+      return Math.min(760, availableHeight);
+    }
+    return isLongFlow ? SheetSize.LARGE : SheetSize.FIT_CONTENT;
   }
 
   private hostAddSheetKeyboardAvoidMode(): SheetKeyboardAvoidMode {

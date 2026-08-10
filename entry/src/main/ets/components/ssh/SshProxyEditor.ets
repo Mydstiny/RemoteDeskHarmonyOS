@@ -108,6 +108,13 @@ export struct SshProxyEditor {
       .onClick((): void => { this.selectKind(value); })
   }
 
+  @Builder private compactRouteButton(label: string, value: SshProxyEditorKind) {
+    Button(label).layoutWeight(1).height(40).borderRadius(10).fontSize(11)
+      .backgroundColor(this.kind === value ? this.accentColor : this.pal().surface)
+      .fontColor(this.kind === value ? Color.White : this.pal().text2)
+      .onClick((): void => { this.selectKind(value); })
+  }
+
   @Builder private routeSelector() {
     Column({ space: 8 }) {
       this.routeButton('直连', 'direct')
@@ -300,30 +307,18 @@ export struct SshProxyEditor {
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
       }.width('100%')
       if (this.breakpoint === 'sm') {
-        Scroll() {
+        Column({ space: 8 }) {
           Row({ space: 8 }) {
-            Button('直连').height(40).borderRadius(10).fontSize(12)
-              .backgroundColor(this.kind === 'direct' ? this.accentColor : this.pal().surface)
-              .fontColor(this.kind === 'direct' ? Color.White : this.pal().text2)
-              .onClick((): void => { this.selectKind('direct'); })
-            Button('HTTP').height(40).borderRadius(10).fontSize(12)
-              .backgroundColor(this.kind === 'http_connect' ? this.accentColor : this.pal().surface)
-              .fontColor(this.kind === 'http_connect' ? Color.White : this.pal().text2)
-              .onClick((): void => { this.selectKind('http_connect'); })
-            Button('SOCKS5').height(40).borderRadius(10).fontSize(12)
-              .backgroundColor(this.kind === 'socks5' ? this.accentColor : this.pal().surface)
-              .fontColor(this.kind === 'socks5' ? Color.White : this.pal().text2)
-              .onClick((): void => { this.selectKind('socks5'); })
-            Button('跳板').height(40).borderRadius(10).fontSize(12)
-              .backgroundColor(this.kind === 'ssh_jump' ? this.accentColor : this.pal().surface)
-              .fontColor(this.kind === 'ssh_jump' ? Color.White : this.pal().text2)
-              .onClick((): void => { this.selectKind('ssh_jump'); })
-            Button('FRP').height(40).borderRadius(10).fontSize(12)
-              .backgroundColor(this.kind === 'frp_tcp' ? this.accentColor : this.pal().surface)
-              .fontColor(this.kind === 'frp_tcp' ? Color.White : this.pal().text2)
-              .onClick((): void => { this.selectKind('frp_tcp'); })
+            this.compactRouteButton('直连', 'direct')
+            this.compactRouteButton('HTTP CONNECT', 'http_connect')
+            this.compactRouteButton('SOCKS5', 'socks5')
           }.width('100%')
-        }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).width('100%')
+          Row({ space: 8 }) {
+            this.compactRouteButton('SSH 跳板', 'ssh_jump')
+            this.compactRouteButton('FRP TCP', 'frp_tcp')
+            Blank().layoutWeight(1)
+          }.width('100%')
+        }.width('100%').margin({ bottom: 2 })
         this.details()
       } else {
         Row({ space: 20 }) {
