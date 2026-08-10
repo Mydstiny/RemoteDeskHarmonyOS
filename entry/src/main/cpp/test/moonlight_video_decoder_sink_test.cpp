@@ -69,6 +69,23 @@ public:
         return {submitStatus_, bindingChanged_, reboundBinding_};
     }
 
+    MoonlightDecoderPortSuspendStatus suspend(
+        const MoonlightVideoDecoderBinding& binding,
+        std::chrono::milliseconds) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        lastBinding_ = binding;
+        return MoonlightDecoderPortSuspendStatus::Suspended;
+    }
+
+    MoonlightDecoderPortRebindStatus rebind(
+        const MoonlightVideoDecoderBinding& current,
+        const MoonlightVideoDecoderBinding& next) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        lastBinding_ = current;
+        reboundBinding_ = next;
+        return MoonlightDecoderPortRebindStatus::Rebound;
+    }
+
     MoonlightDecoderPortStopStatus stop(
         const MoonlightVideoDecoderBinding& binding,
         std::chrono::milliseconds) override {

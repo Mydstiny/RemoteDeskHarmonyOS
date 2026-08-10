@@ -149,6 +149,9 @@ set(MOONLIGHT_VIDEO_DECODER_SINK_SOURCE
 set(MOONLIGHT_VIDEO_DECODER_SINK_PLATFORM_SOURCE
     moonlight/media/MoonlightVideoDecoderSinkPlatform.cpp
 )
+set(MOONLIGHT_VIDEO_SURFACE_LIFECYCLE_SOURCE
+    moonlight/media/MoonlightVideoSurfaceLifecycle.cpp
+)
 set(MOONLIGHT_SOURCES
     moonlight/core/MoonlightSessionOwner.cpp
 )
@@ -275,6 +278,7 @@ if(RDP_BUILD_TESTS)
         test/moonlight_common_c_adapter_test.cpp
         test/moonlight_video_bridge_test.cpp
         test/moonlight_video_decoder_sink_test.cpp
+        test/moonlight_video_surface_lifecycle_test.cpp
         test/vnc_des_test.cpp
         test/vnc_cursor_protocol_test.cpp
         test/vnc_transport_policy_test.cpp
@@ -308,6 +312,7 @@ if(RDP_BUILD_TESTS)
         ${MOONLIGHT_COMMON_C_ADAPTER_SOURCE}
         ${MOONLIGHT_VIDEO_BRIDGE_SOURCE}
         ${MOONLIGHT_VIDEO_DECODER_SINK_SOURCE}
+        ${MOONLIGHT_VIDEO_SURFACE_LIFECYCLE_SOURCE}
         vnc/vnc_des.cpp
         vnc/vnc_cursor_protocol.cpp
         vnc/vnc_rfb_protocol.cpp
@@ -612,13 +617,15 @@ target_link_libraries(remotedesk_moonlight_common_c_adapter PRIVATE
     remotedesk_moonlight_video_bridge
 )
 
-# N2-04 exact-owner decoder sink. The pure lifecycle/status implementation is
-# host-tested; the OHOS translation unit may only consume the existing shared
+# N2-04 exact-owner decoder sink plus the N2-05 pure Surface lifecycle. The
+# lifecycle/status implementation is host-tested; the OHOS translation unit
+# may only consume the existing shared
 # decoder/renderer owner APIs and remains unreferenced until a runtime-proven
 # renderer binding is injected by the future session coordinator.
 add_library(remotedesk_moonlight_video_decoder_sink STATIC
     ${MOONLIGHT_VIDEO_DECODER_SINK_SOURCE}
     ${MOONLIGHT_VIDEO_DECODER_SINK_PLATFORM_SOURCE}
+    ${MOONLIGHT_VIDEO_SURFACE_LIFECYCLE_SOURCE}
 )
 target_compile_features(remotedesk_moonlight_video_decoder_sink PRIVATE cxx_std_17)
 target_include_directories(remotedesk_moonlight_video_decoder_sink PRIVATE

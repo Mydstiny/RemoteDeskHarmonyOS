@@ -4135,6 +4135,72 @@ bool DecoderNapi::RequestActiveDecoderRecovery(const DecoderSessionIdentity& own
     return true;
 }
 
+bool DecoderNapi::RebindOwnedVideoPipeline(
+    int64_t decoderHandle, uint64_t decoderGeneration,
+    int64_t rendererHandle, uint64_t rendererGeneration,
+    const DecoderSessionIdentity& owner) {
+    if (decoderHandle <= 0 || decoderGeneration == 0 || rendererHandle <= 0 ||
+        rendererGeneration == 0 || !owner.valid() ||
+        !Render::SharedSessionSinkOwnerLease().accepts(owner)) {
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> ownerLock(g_activeDecoderOwnerMutex);
+        if (!Render::SessionOwnerMatches(g_activeDecoderOwner, owner)) {
+            return false;
+        }
+    }
+    if (RendererNapi::GetActiveRendererHandle(owner) != rendererHandle ||
+        RendererNapi::GetActiveRendererGeneration(rendererHandle, owner) !=
+            rendererGeneration) {
+        return false;
+    }
+
+    const auto metadata = g_decoderRegistry.snapshot(decoderHandle);
+    if (!metadata.found || metadata.destroying || metadata.boundOwner != owner ||
+        metadata.active || !metadata.detached ||
+        !g_decoderRegistry.activate(decoderHandle, owner)) {
+        return false;
+    }
+
+    bool exactDetachedDecoder = false;
+    {
+        auto lease = g_decoderRegistry.acquire(decoderHandle, owner);
+        if (lease) {
+            std::lock_guard<std::mutex> pipelineLock(lease->pipelineMutex);
+            exactDetachedDecoder =
+                lease->boundOwner == owner &&
+                lease->decoderGeneration == decoderGeneration &&
+                !lease->pipelineTransitioning.load(std::memory_order_acquire) &&
+                !lease->videoPipelineAttached.load(std::memory_order_acquire) &&
+                !lease->owner.valid() && lease->rendererHandle == 0;
+        }
+    }
+    if (!exactDetachedDecoder ||
+        RendererNapi::GetActiveRendererHandle(owner) != rendererHandle ||
+        RendererNapi::GetActiveRendererGeneration(rendererHandle, owner) !=
+            rendererGeneration) {
+        g_decoderRegistry.deactivate(decoderHandle, owner);
+        return false;
+    }
+
+    if (!BindVideoPipeline(decoderHandle, rendererHandle, owner)) {
+        g_decoderRegistry.deactivate(decoderHandle, owner);
+        return false;
+    }
+    const auto telemetry = GetActivePresentationTelemetry(owner);
+    const bool exactRebind = telemetry.valid && telemetry.ready &&
+        telemetry.owner == owner && telemetry.decoderHandle == decoderHandle &&
+        telemetry.decoderGeneration == decoderGeneration &&
+        telemetry.rendererHandle == rendererHandle &&
+        telemetry.rendererGeneration == rendererGeneration;
+    if (!exactRebind) {
+        (void)DetachVideoPipeline(decoderHandle, owner);
+        return false;
+    }
+    return true;
+}
+
 bool DecoderNapi::RebindActiveVideoPipeline(const DecoderSessionIdentity& owner) {
     if (!owner.valid() || !Render::SharedSessionSinkOwnerLease().accepts(owner)) {
         return false;

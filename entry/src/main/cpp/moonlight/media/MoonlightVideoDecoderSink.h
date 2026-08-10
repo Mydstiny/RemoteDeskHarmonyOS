@@ -68,6 +68,23 @@ enum class MoonlightDecoderPortSubmitStatus : std::uint8_t {
     Failed,
 };
 
+enum class MoonlightDecoderPortSuspendStatus : std::uint8_t {
+    Suspended,
+    AlreadySuspended,
+    Stale,
+    TimedOut,
+    Failed,
+};
+
+enum class MoonlightDecoderPortRebindStatus : std::uint8_t {
+    Rebound,
+    RuntimeProofRequired,
+    Unsupported,
+    Stale,
+    Busy,
+    Failed,
+};
+
 struct REMOTEDESK_MOONLIGHT_DECODER_HIDDEN MoonlightDecoderPortSubmitResult final {
     MoonlightDecoderPortSubmitStatus status =
         MoonlightDecoderPortSubmitStatus::Failed;
@@ -108,6 +125,12 @@ public:
     virtual MoonlightDecoderPortSubmitResult submit(
         const MoonlightVideoDecoderBinding& binding,
         std::shared_ptr<const MoonlightOwnedVideoAccessUnit> accessUnit) = 0;
+    virtual MoonlightDecoderPortSuspendStatus suspend(
+        const MoonlightVideoDecoderBinding& binding,
+        std::chrono::milliseconds timeout) = 0;
+    virtual MoonlightDecoderPortRebindStatus rebind(
+        const MoonlightVideoDecoderBinding& current,
+        const MoonlightVideoDecoderBinding& next) = 0;
     virtual MoonlightDecoderPortStopStatus stop(
         const MoonlightVideoDecoderBinding& binding,
         std::chrono::milliseconds timeout) = 0;
@@ -139,10 +162,30 @@ enum class MoonlightVideoDecoderStopStatus : std::uint8_t {
     PortFailure,
 };
 
+enum class MoonlightVideoDecoderSuspendStatus : std::uint8_t {
+    Suspended,
+    AlreadySuspended,
+    Stale,
+    TimedOut,
+    PortFailure,
+};
+
+enum class MoonlightVideoDecoderRebindStatus : std::uint8_t {
+    Rebound,
+    InvalidRequest,
+    RuntimeProofRequired,
+    Unsupported,
+    Stale,
+    Busy,
+    PortFailure,
+};
+
 struct REMOTEDESK_MOONLIGHT_DECODER_HIDDEN MoonlightVideoDecoderSnapshot final {
     bool matched = false;
     bool running = false;
     bool admissionOpen = false;
+    bool suspended = false;
+    bool waitingForIdr = false;
     bool firstFrameReady = false;
     MoonlightVideoDecoderBinding binding {};
     std::size_t inFlightSubmissions = 0U;
@@ -174,6 +217,11 @@ public:
     bool available(const MoonlightStreamCodecProfile& profile) override;
     MoonlightVideoSinkStatus submit(
         std::shared_ptr<const MoonlightOwnedVideoAccessUnit> accessUnit) override;
+    MoonlightVideoDecoderSuspendStatus suspend(
+        const MoonlightSessionKey& key,
+        std::chrono::milliseconds timeout = std::chrono::seconds(5)) noexcept;
+    MoonlightVideoDecoderRebindStatus rebind(
+        const MoonlightVideoDecoderBinding& binding) noexcept;
     MoonlightVideoDecoderStopStatus stop(
         const MoonlightSessionKey& key,
         std::chrono::milliseconds timeout = std::chrono::seconds(5)) noexcept;

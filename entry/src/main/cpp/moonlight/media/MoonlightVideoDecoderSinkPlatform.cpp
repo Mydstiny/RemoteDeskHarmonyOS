@@ -116,6 +116,7 @@ public:
         ownerTokenHighWater_ = requested.key.ownerToken;
         configurationGeneration_ = 0U;
         active_ = true;
+        suspended_ = false;
         return MoonlightDecoderPortStartStatus::Started;
     }
 
@@ -126,6 +127,7 @@ public:
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (!active_ || requested != binding_ || accessUnit == nullptr ||
+                suspended_ ||
                 accessUnit->key != binding_.key ||
                 !sameProfile(accessUnit->profile, binding_.profile)) {
                 return {MoonlightDecoderPortSubmitStatus::Stale, false, {}};
@@ -194,9 +196,78 @@ public:
         return {result, bindingChanged, acceptedBinding};
     }
 
+    MoonlightDecoderPortSuspendStatus suspend(
+        const MoonlightVideoDecoderBinding& requested,
+        std::chrono::milliseconds) override {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!active_ || binding_ != requested) {
+                return MoonlightDecoderPortSuspendStatus::Stale;
+            }
+            if (suspended_) {
+                return MoonlightDecoderPortSuspendStatus::AlreadySuspended;
+            }
+        }
+        if (!DecoderNapi::DetachVideoPipeline(
+                requested.decoderHandle, decoderOwner(requested.key))) {
+            return MoonlightDecoderPortSuspendStatus::Failed;
+        }
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!active_ || binding_ != requested) {
+            return MoonlightDecoderPortSuspendStatus::Stale;
+        }
+        suspended_ = true;
+        return MoonlightDecoderPortSuspendStatus::Suspended;
+    }
+
+    MoonlightDecoderPortRebindStatus rebind(
+        const MoonlightVideoDecoderBinding& current,
+        const MoonlightVideoDecoderBinding& next) override {
+        if (!next.runtimeProof.valid()) {
+            return MoonlightDecoderPortRebindStatus::RuntimeProofRequired;
+        }
+        if (!mvpProfile(next.profile)) {
+            return MoonlightDecoderPortRebindStatus::Unsupported;
+        }
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!active_ || !suspended_ || binding_ != current) {
+                return MoonlightDecoderPortRebindStatus::Stale;
+            }
+        }
+
+        const DecoderSessionIdentity owner = decoderOwner(next.key);
+        if (!DecoderNapi::IsActiveSessionOwner(owner) ||
+            RendererNapi::GetActiveRendererHandle(owner) != next.rendererHandle ||
+            RendererNapi::GetActiveRendererGeneration(
+                next.rendererHandle, owner) != next.rendererGeneration) {
+            return MoonlightDecoderPortRebindStatus::Stale;
+        }
+        if (!DecoderNapi::RebindOwnedVideoPipeline(
+                next.decoderHandle, next.decoderGeneration,
+                next.rendererHandle, next.rendererGeneration, owner)) {
+            return MoonlightDecoderPortRebindStatus::Failed;
+        }
+        const auto telemetry = DecoderNapi::GetActivePresentationTelemetry(owner);
+        if (!telemetryMatches(telemetry, next)) {
+            (void)DecoderNapi::DetachVideoPipeline(next.decoderHandle, owner);
+            return MoonlightDecoderPortRebindStatus::Stale;
+        }
+
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!active_ || !suspended_ || binding_ != current) {
+            (void)DecoderNapi::DetachVideoPipeline(next.decoderHandle, owner);
+            return MoonlightDecoderPortRebindStatus::Stale;
+        }
+        binding_ = next;
+        suspended_ = false;
+        return MoonlightDecoderPortRebindStatus::Rebound;
+    }
+
     MoonlightDecoderPortStopStatus stop(
         const MoonlightVideoDecoderBinding& requested,
         std::chrono::milliseconds) override {
+        bool wasSuspended = false;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (!active_) {
@@ -207,11 +278,15 @@ public:
             if (binding_ != requested) {
                 return MoonlightDecoderPortStopStatus::Stale;
             }
+            wasSuspended = suspended_;
             active_ = false;
+            suspended_ = false;
         }
 
         const DecoderSessionIdentity owner = decoderOwner(requested.key);
-        (void)DecoderNapi::DetachVideoPipeline(requested.decoderHandle, owner);
+        if (!wasSuspended) {
+            (void)DecoderNapi::DetachVideoPipeline(requested.decoderHandle, owner);
+        }
         DecoderNapi::DestroyDecoderHandle(requested.decoderHandle, owner);
         std::lock_guard<std::mutex> lock(mutex_);
         configurationGeneration_ = 0U;
@@ -226,7 +301,7 @@ public:
         const MoonlightVideoDecoderBinding& requested) override {
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            if (!active_ || binding_ != requested) {
+            if (!active_ || suspended_ || binding_ != requested) {
                 return {};
             }
         }
@@ -254,6 +329,7 @@ private:
     std::uint64_t ownerTokenHighWater_ = 0U;
     std::uint64_t configurationGeneration_ = 0U;
     bool active_ = false;
+    bool suspended_ = false;
 };
 
 } // namespace

@@ -547,8 +547,7 @@ MoonlightVideoBridge& MoonlightVideoBridge::process() {
     return bridge;
 }
 
-#if defined(RDP_NATIVE_CALLBACK_TESTING)
-std::unique_ptr<MoonlightVideoBridge> MoonlightVideoBridge::createForTesting(
+std::unique_ptr<MoonlightVideoBridge> MoonlightVideoBridge::create(
     std::shared_ptr<MoonlightVideoDecoderSink> sink,
     MoonlightVideoLimits limits) {
     if (sink == nullptr || !validLimits(limits)) {
@@ -556,6 +555,13 @@ std::unique_ptr<MoonlightVideoBridge> MoonlightVideoBridge::createForTesting(
     }
     return std::unique_ptr<MoonlightVideoBridge>(
         new MoonlightVideoBridge(std::make_unique<Impl>(std::move(sink), limits)));
+}
+
+#if defined(RDP_NATIVE_CALLBACK_TESTING)
+std::unique_ptr<MoonlightVideoBridge> MoonlightVideoBridge::createForTesting(
+    std::shared_ptr<MoonlightVideoDecoderSink> sink,
+    MoonlightVideoLimits limits) {
+    return create(std::move(sink), limits);
 }
 #endif
 

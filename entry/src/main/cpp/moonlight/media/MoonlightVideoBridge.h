@@ -117,6 +117,7 @@ enum class MoonlightVideoSubmitStatus : std::uint8_t {
     Unsupported,
     SinkFailure,
     RuntimeProofRequired,
+    NoSurface,
 };
 
 enum class MoonlightVideoDropReason : std::uint8_t {
@@ -124,6 +125,7 @@ enum class MoonlightVideoDropReason : std::uint8_t {
     WaitingForIdr,
     DuplicateOrReordered,
     Teardown,
+    NoSurface,
 };
 
 enum class MoonlightVideoStopStatus : std::uint8_t {
@@ -191,6 +193,13 @@ private:
 
 public:
     static MoonlightVideoBridge& process();
+
+    // Hidden composition seam for protocol-owned lifecycle coordinators. The
+    // returned bridge still owns every access-unit copy and never retains a
+    // borrowed common-c fragment pointer.
+    static std::unique_ptr<MoonlightVideoBridge> create(
+        std::shared_ptr<MoonlightVideoDecoderSink> sink,
+        MoonlightVideoLimits limits = {});
 
 #if defined(RDP_NATIVE_CALLBACK_TESTING)
     static std::unique_ptr<MoonlightVideoBridge> createForTesting(

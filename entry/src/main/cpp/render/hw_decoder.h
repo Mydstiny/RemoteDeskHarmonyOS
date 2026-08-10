@@ -455,6 +455,11 @@ namespace DecoderNapi {
     bool RequestActiveDecoderRecovery(const DecoderSessionIdentity& owner);
     /** Rebind a surviving decoder to the current renderer after transport continuity. */
     bool RebindActiveVideoPipeline(const DecoderSessionIdentity& owner);
+    /** Exact hidden rebind seam for a protocol-owned detached decoder. */
+    REMOTEDESK_DECODER_INTERNAL bool RebindOwnedVideoPipeline(
+        int64_t decoderHandle, uint64_t decoderGeneration,
+        int64_t rendererHandle, uint64_t rendererGeneration,
+        const DecoderSessionIdentity& owner);
     bool BindVideoPipeline(int64_t decoderHandle, int64_t rendererHandle);
     bool BindVideoPipeline(int64_t decoderHandle, int64_t rendererHandle,
                            const DecoderSessionIdentity& owner);
