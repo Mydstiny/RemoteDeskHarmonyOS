@@ -4,15 +4,16 @@
 > 分支：`codex/moonlight-complete-upgrade`
 > 初始基线：`main@aeb0cdac5`，与 `origin/main` 一致
 > 总计划：`docs/superpowers/plans/2026-07-28-moonlight-harmonyos-complete-upgrade-plan.md`
-> 台账状态：G0、D1、D2 本地/休眠策略、D3 本地生命周期、N1-01～N1-08 与 N2-01～N2-05 已形成 checkpoint；当前唯一代码任务为 N2-06 dormant Opus→PCM bridge；D2-05～D2-07、D3 在线/多设备和产品运行时仍等待外部回执，只把有可复现证据的项目标记为通过
+> 台账状态：G0、D1、D2 本地/休眠策略、D3 本地生命周期、N1-01～N1-08 与 N2-01～N2-06 已形成 checkpoint；N2-07 是唯一下一代码任务。2026-08-10 产品决定 Moonlight 暂不接入云同步，当前只开发本地主机存储；`moonlightrecordv1`、Moonlight cloud selection/transfer/secret recovery 全部 parked，不进入当前执行序列。D3 在线/多设备和产品运行时仍等待外部回执，只把有可复现证据的项目标记为通过
 
 ## 1. 执行约束
 
 1. 严格按总计划第 15 节的 G0 → D1 → D2/D3 → N1/N2/N3 → U1/S1 → R1 顺序推进。
 2. Moonlight 是独立协议域。不得把 host、profile、trust、identity 或设置写进其他协议表。
 3. 尚未通过能力探针、真实 Sunshine 和 ARM64 真机门禁的功能保持 fail closed，不以占位实现宣称支持。
-4. AGC 三环境 schema receipt 完成前，`moonlightrecordv1` 不进入生产分布式表注册集合。
-5. 每个代码任务将测试与实现同提交；阶段末执行 native/ArkTS 定向测试、双 Hvigor、assembleHap、Light 和一次有界复核。
+4. Moonlight 当前为 local-only：`moonlightlocalrecords`/`moonlightappcache` 是唯一业务持久化路径；
+   `moonlightrecordv1` 不创建、不注册、不上传，CloudSync/selection/transfer 不实例化。
+5. 每个代码任务将测试与实现同提交；阶段末执行 native/ArkTS 定向测试、双 Hvigor、assembleHap、Light 和一次有界复核；当前本地数据任务必须覆盖 owner lease、备份、恢复、删除和零云调用。
 6. 本任务最多使用两个审查智能体，模型只允许 `sol low`；不得因上下文压缩重复派发同一审查。
 7. 虚拟机用于开发期 UI 和基础能力验证；最终媒体、输入、功耗、后台和网络结论以用户 ARM64 实机验收为准。
 
@@ -233,7 +234,8 @@ D3 账户生命周期代码检查点为 `05e96d3`；便携备份/本地恢复检
 | N2-02 | CONTRACT PASS / DORMANT | `248e704ab` 新增唯一 hidden common-c adapter，并只为既有 owner 增加 exact-key non-blocking `requestStop`；官方 struct/mask、RI/IV、process-global router、11-stage/deadline/termination、setup-derived video/audio、callback drain/cleanse 共 21 个 focused case；普通与 ASan/UBSan 497/497 | product media port 恒 unavailable，archive 无 NAPI/ArkTS/UI/cloud caller；transport-ready 不是首帧，8 表、灰色 FAB 和六项 truth 不变；N2-03 只能建立 bounded video decode-unit bridge |
 | N2-03 | CONTRACT PASS / DORMANT | `34d2ffa7a` 新增 hidden `MoonlightVideoBridge`、owned AU/config generation、IDR/backpressure/teardown，并在唯一 adapter `.cpp` 内 bounded 投影官方 `DECODE_UNIT/LENTRY`；8 focused bridge + 1 adapter case；普通/strict/TSan 506/506、ASan/UBSan 三轮、analyzer 全通过 | product sink unavailable、`firstFrameReady=false`，无 OH_AVCodec/Surface/NAPI/UI/cloud/audio/input；8 表、灰色 FAB、11 false inputs 和六项 truth 不变；N2-04 只能复用既有 decoder owner |
 | N2-04 | CONTRACT PASS / DORMANT | `bee0ac1da` 新增 hidden pure sink + OHOS port，复用既有 decoder/renderer exact owner；H.264 config-IDR recreate、typed pressure/stale/failure 和 output→NativeImage→actual swap 三段首帧；9 focused case；普通/strict/TSan 515/515、ASan 三轮、analyzer、双 ABI/callback carrier通过 | archive 无 factory caller/NAPI/ArkTS/UI/cloud/audio/input；HAP runtime media proof 缺失，8 表、灰色 FAB、11 false inputs 和六项 truth 不变；N2-05 只能增加 pure-native Surface lifecycle |
-| N2-05 | CONTRACT PASS / DORMANT | `7992279c7` 新增 hidden pure-native Surface lifecycle；无 Surface 在 copy/queue 前 typed drop，temporary suspend exact detach 且保留 decoder handle，同 key/decoder/display + 更高 Surface/renderer/runtime-proof generation 才 rebind；8 focused case；普通/strict/TSan 523/523、ASan 三轮、analyzer、双 ABI/callback carrier通过 | 无 ArkTS/PIP/NAPI/cloud/audio/input/product caller；423-path HAP、动态 ABI、8 表、灰色 FAB、11 false inputs 和六项 truth 不变；N2-06 只能新增 dormant Opus→PCM bridge |
+| N2-05 | CONTRACT PASS / DORMANT | `7992279c7` 新增 hidden pure-native Surface lifecycle；无 Surface 在 copy/queue 前 typed drop，temporary suspend exact detach 且保留 decoder handle，同 key/decoder/display + 更高 Surface/renderer/runtime-proof generation 才 rebind；8 focused case；普通/strict/TSan 523/523、ASan 三轮、analyzer、双 ABI/callback carrier通过 | 无 ArkTS/PIP/NAPI/cloud/audio/input/product caller；423-path HAP、动态 ABI、8 表、灰色 FAB、11 false inputs 和六项 truth 不变；N2-06 已完成 |
+| N2-06 | CONTRACT PASS / DORMANT `8d2fd15b3` | hidden pure-native `MoonlightAudioBridge`；exact 48 kHz stereo family-1 Opus multistream→interleaved S16LE，common-c `nullptr+0` PLC、1400-byte packet、23040-byte PCM、single in-flight、owner/config/operation generation、typed failures、stop timeout retry、cleanup/zeroization；10 new tests PASS；两 ABI product native/link probe PASS | 不接 `audio_player`/OHAudio/NAPI/ArkTS/UI/cloud/input/product caller；FAB、8 cloud tables、六项 truth 保持关闭；最终 Hvigor 受用户另行修改的 ArkTS/cloud 文件阻塞 |
 
 N1-01 的可复现证据：
 
@@ -738,24 +740,13 @@ remote negotiated dimensions 或既有 first-frame receipt。stop exact、幂等
 
 ## 13. 下一执行序列
 
-1. 严格按主计划第 15.7.13 节执行 N2-06：新增唯一 hidden pure-native
-   `MoonlightAudioBridge.h/.cpp` 与 focused test；只消费 N2-02 已校验的
-   `MoonlightCommonCAudioSelection` 和同步 borrowed audio callback，不接 common-c product
-   media port、`audio_player`、NAPI、ArkTS、UI、云、输入或 product caller。
-2. 复用仓库现有 `libs/opus-ohos/<ABI>/libopus.a` 1.5.2 与同一最终链接；不得复制 RustDesk
-   `AudioWorker`、新增 Opus archive/版本或另建 audio/session owner。MVP 只接 exact 48 kHz、
-   2-channel、streams=1、coupledStreams=1、mapping `{0,1}`；5.1/7.1/降混 typed unsupported。
-3. bridge 状态与所有调用携带 exact key/config generation；setup→start→submit/PLC→stop→cleanup
-   顺序 fail closed。borrowed packet 在返回前要么同步解码，要么复制进有界 owned work item；
-   单包、frame size、PCM bytes 和 in-flight 均有常量上限，损坏/超大/旧 generation/teardown
-   分 typed 结果，stop 关闭 admission、drain decode、销毁 decoder、清 PCM/scratch/config。
-4. 生成 interleaved S16LE，冻结 clipping/rounding/endian、null+0 PLC 与 FEC=false；audio ready、
-   decoded PCM 或 sink accepted 永不设置视频 first-frame、streaming/protocolAvailable 或 FAB。
-   N2-07 才按 exact owner 把 PCM 接入既有 `AudioPlayerNapi::DispatchActiveNative` 与现有 registry/
-   queue，不能创建 Moonlight 私有 OHAudio owner。
-5. D2-05/06 由 AGC 开发/测试/生产环境提供 schema/授权/索引 receipt；缺失时 D2-07、
-   D3-01 在线 wiring、D3-05 cloud-first promotion、D3-06 cloud terminal 和 D3-08 云矩阵
-   继续阻断。
-6. N1 Host Control product port 可用后再接 D3-06 remote unpair；端口失败只允许返回带
-   warning 的真实本地终态，不伪造主机已解绑。真实 Sunshine 和用户 ARM64 真机未提供
-   前，host-control/streaming/protocol truth 继续为 false。
+1. N2-07：按 exact `DecoderSessionIdentity` 将 N2-06 PCM sink 接到现有
+   `AudioPlayerNapi::DispatchActiveNative`、`g_audioRegistry` 和有界 queue；处理 mute/focus/
+   background/pause/resume/flush，不创建 Moonlight 私有 OHAudio owner。
+2. 保持 N2-06 dormant：不接 NAPI/ArkTS/UI/PIP/后台、云或 input；不把 audio ready、accepted
+   PCM 或 common-c `AudioStreamStart` 变成 video first-frame、streaming/protocolAvailable、FAB
+   或任何 release truth。
+3. S1-08 才按现有 `NativeSessionHandles`、Surface/PIP/background 生命周期装配媒体；U1/S1 的
+   设置、目录、连接浮层继续只消费 local Repository/cache、Host Control 和 media prerequisites。
+4. Moonlight 云同步（`moonlightrecordv1`、selection/transfer/secret recovery）继续 parked；
+   真实 Sunshine、设备/网络/功耗矩阵和用户 ARM64 实机验收仍是外部门禁。

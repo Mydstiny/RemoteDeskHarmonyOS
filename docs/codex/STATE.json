@@ -3,13 +3,13 @@
   "task": "moonlight-complete-upgrade",
   "branch": "codex/moonlight-complete-upgrade",
   "base": "aeb0cdac5",
-  "head": "7992279c7",
-  "phase": "n2-audio-bridge-dormant",
+  "head": "8d2fd15b3",
+  "phase": "n2-audio-player-handoff-pending",
   "status": "active",
-  "next": "Execute only N2-06 under plan section 15.7.13: add one hidden pure-native MoonlightAudioBridge plus deterministic tests. Consume N2-02's validated MoonlightCommonCAudioSelection and synchronous borrowed audio callback without wiring the common-c product media port. Reuse exactly the repository's libopus 1.5.2 artifact; do not copy RustDesk AudioWorker, link another Opus, create another audio/session owner, or touch audio_player. MVP accepts only exact 48 kHz stereo family-1 multistream and returns typed Unsupported for surround/downmix. Freeze exact key/config/generation admission, bounded packet and PCM ownership, PLC, S16LE conversion, blocked-decode drain, idempotent teardown and zeroization. Do not modify NAPI, ArkTS UI/PIP/background, cloud or input, and never let audio readiness or accepted PCM set video first-frame, FAB, streaming/protocolAvailable, or another release truth.",
+  "next": "Execute only N2-07: connect the dormant N2-06 PCM sink to the existing exact-owner audio_player registry and bounded queue. Reuse DecoderSessionIdentity, DispatchActiveNative and g_audioRegistry; implement generation-fenced queue/flush/pause/resume/focus/background behavior without creating a Moonlight-specific OHAudio owner. Keep NAPI, ArkTS UI/PIP, cloud and input out of this checkpoint, and never let audio readiness set video first-frame, FAB, streaming/protocolAvailable or another release truth.",
   "blockers": [
     "ohosTest@OhosTestCompileArkTS is not registered (00306054); 151 focused Moonlight tests in 20 describe groups are compile-registered but not executed on device",
-    "AGC development/test/production Moonlight schema, authorization, and index receipts are absent; D2-07 distributed registration is blocked",
+    "Moonlight cloud sync and moonlightrecordv1 are explicitly parked; the current rollout remains local-only",
     "The configured HDC target has no new reproducible receipt; prior ARM64 API 24 RDB evidence remains valid but no new runtime claim is made",
     "HAP/AppSpawn HUKS identity and H.264 NativeImage/renderer media capabilities are not runtime-proven; product identity and video sinks intentionally remain unavailable",
     "Real Sunshine hosts, input/media/network/power matrices, and user ARM64 physical acceptance remain pending"
@@ -46,17 +46,17 @@
       "entry/src/main/module.json5"
     ],
     "lastReceiptId": "moonlight-n2-02-sol-low-pass-248e704ab-2026-08-10",
-    "reason": "Both user-allowed gpt-5.6-sol low reviewer slots were consumed by N1-01 and N2-02. N2-03, N2-04 and N2-05 completed full machine gates and line-by-line self-review but have no matching independent receipt; do not dispatch or fabricate a third reviewer."
+    "reason": "Both user-allowed gpt-5.6-sol low reviewer slots were consumed by N1-01 and N2-02. N2-03 through N2-06 completed scoped machine gates and line-by-line self-review but have no matching independent receipt; do not dispatch or fabricate a third reviewer."
   },
   "lastVerification": {
     "baseline": "clean main@aeb0cdac5 equal to origin/main at task start on 2026-08-09",
-    "diffCheck": "pass for N2-05 code checkpoint 7992279c7; synchronized plan/status document diff and state validation are rerun before the documentation checkpoint",
-    "testCompile": "pass default@OhosTestCompileArkTS for final N2-05 source; 151 focused Moonlight ArkTS tests in 20 describe groups remain compile-registered; no device execution is claimed",
-    "assembleHap": "pass signed production HAP; SHA-256 e2598c67896e04949409dbe93d26ec8a7ee390a53e1052aa0c7c8e0c692453c8; sorted 423-path inventory is identical to the N2-04 baseline",
-    "nativeTests": "pass 523/523 normal, strict Werror and full TSan; pass three consecutive 523/523 ASan/UBSan clean rebuilds with detect_leaks=0 because macOS leak sanitizer is unsupported; full scan-build reports zero bugs",
+    "diffCheck": "pass for N2-06 code checkpoint 8d2fd15b3; synchronized plan/status document diff and state validation are rerun before the documentation checkpoint",
+    "testCompile": "blocked after final native rebuild by user-owned ArkTS/cloud edits: LegacySharedStoreMigrator.ets:293 references undefined hilog; no new N2-06 HAP claim",
+    "assembleHap": "blocked after final native rebuild by user-owned ArkTS/cloud edits: CloudStore.ets:746 references verifiedUnionId outside its scope; last successful signed HAP remains the N2-05 baseline and is not claimed for N2-06",
+    "nativeTests": "N2-06 host normal: 533 total, 517 passed and 16 pre-existing VNC local TLS fixture start failures; all 10 new Moonlight audio tests pass. Strict Werror build passes with command-line-only suppression for existing SSH test warnings; both DevEco ABIs and both Opus link probes pass",
     "moonlightPlatformProbe": "pass arm64-v8a and x86_64 API 23 compile-link probe plus official common-c adapter link probe; this is not an in-HAP runtime receipt",
     "moonlightVendor": "pass 117 exact files and three reconstructed official Git trees; each ABI has 94 permanent compile commands: 48 rdpnapi, 1 adapter, 1 video bridge and 3 decoder sink/lifecycle units; arm64 16103/705 and x86_64 15634/703 defined/undefined ABI sets and both 147-entry NAPI subsets equal the N2-04 baseline",
-    "isolation": "pass: Limelight.h remains confined to the adapter implementation; the bridge and pure sink/lifecycle have no NAPI or ArkTS dependency, the OHOS port/lifecycle have no product caller, and both ABI callback carriers compile; no ArkTS or cloud file changed; online cloud registry remains exactly 8 tables; Moonlight FAB/disabled/coming-soon each occur once; 11 feature defaults are false and platform defaults are 11 pending, 1 unsupported, 0 supported",
+    "isolation": "pass for the committed N2-06 scope: changes are confined to the hidden Moonlight audio bridge, the common-c PLC seam, private CMake link targets and focused native tests. No RDP, RustDesk, SSH, VNC, NAPI, ArkTS, UI, cloud, input or shared audio-player business source changed; no product caller exists; online cloud registry remains exactly 8 tables and all release truths remain closed",
     "lightCompliance": "pass together with the synchronized 251-entry TOTP manifest and vendor gate; Release remains blocked on external runtime and device evidence",
     "moonlightRdbRuntime": "pass on prior ARM64 API 24 emulator: user_version=5, exact 19/20/16 columns, tables=3 and owner-bound receipts=1 after process restart",
     "ohosTest": "blocked task-not-registered 00306054; no on-device execution pass claimed"
