@@ -420,7 +420,10 @@ import {
   shouldAutoSwitchVncKeyboardMouseMode,
   shouldConsumeRemoteBack
 } from '../services/RemotePhysicalKeyboardPolicy';
-import { normalizeVncPhysicalKeyCode } from '../services/VncPhysicalKeyboardPolicy';
+import {
+  normalizeVncPhysicalKeyCode,
+  normalizeVncPhysicalKeyEventCode
+} from '../services/VncPhysicalKeyboardPolicy';
 import {
   accumulateContinuousRemoteWheel,
   applyRemoteWheelDirection,
@@ -8037,6 +8040,11 @@ struct RemoteDesktop {
       physicalKeyboardLayoutForProtocol(protocol, this.physicalKeyboardLayout), normalizedKeyCode);
   }
 
+  private normalizeVncKeyEventCode(event: KeyEvent): number {
+    const keyText: string = event.keyText === undefined || event.keyText === null ? '' : event.keyText;
+    return normalizeVncPhysicalKeyEventCode(event.keyCode, keyText);
+  }
+
   private clearRemoteInputFocusSchedule(): void {
     if (this.remoteInputFocusTimer >= 0) {
       clearTimeout(this.remoteInputFocusTimer);
@@ -14288,7 +14296,7 @@ struct RemoteDesktop {
       return false;
     }
     const keyCode: number = this.isVncSession() ?
-      normalizeVncPhysicalKeyCode(event.keyCode) : event.keyCode;
+      this.normalizeVncKeyEventCode(event) : event.keyCode;
     if (this.isPhysicalModifierKey(keyCode) || this.isFixedControlKey(keyCode) ||
       this.isFunctionKey(keyCode) || this.hasAnyModifier()) {
       return true;
@@ -14507,7 +14515,7 @@ struct RemoteDesktop {
       }
       const rawKeyCode: number = event.keyCode;
       const kc: number = this.isVncSession() ?
-        normalizeVncPhysicalKeyCode(rawKeyCode) : rawKeyCode;
+        this.normalizeVncKeyEventCode(event) : rawKeyCode;
       if (!this.isPhysicalModifierKey(kc)) {
         this.reconcilePhysicalModifiersFromEvent(event);
       }

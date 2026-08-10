@@ -328,6 +328,7 @@ if(RDP_BUILD_TESTS)
         vnc/vnc_certificate_probe.cpp
         vnc/vnc_transport.cpp
         vnc/vnc_rfb_engine.cpp
+        test/vnc_keymap_test.cpp
         test/vnc_rfb_protocol_test.cpp
     )
     target_include_directories(rdp_native_tests PRIVATE

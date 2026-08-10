@@ -68,6 +68,7 @@ public:
     bool invokeFrameCallbackForTesting(const VideoFrame& frame);
     int startWorkerForTesting(std::function<void()> callback);
     void setStopObserverForTesting(std::function<void()> observer);
+    static uint32_t keySymForHarmonyCodeForTesting(uint32_t keyCode);
 #endif
 
 private:
