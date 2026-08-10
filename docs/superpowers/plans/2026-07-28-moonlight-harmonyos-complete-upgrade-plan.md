@@ -3,7 +3,7 @@
 > 文档状态：第四次深度审计完成；已于 2026-08-09 从 G0 开始实施
 > 首次评估日期：2026-07-28；二次完成性审计日期：2026-07-29；第三次 HarmonyOS 人因/UI 审计日期：2026-08-01；第四次源码对齐日期：2026-08-08
 > 当前实施基线：任务 `moonlight-complete-upgrade`；分支 `codex/moonlight-complete-upgrade`；基线 `main@aeb0cdac5`，与 `origin/main` 一致
-> 当前实施进度：G0、D1、D2 本地/休眠策略、D3 本地生命周期、N1-01～N1-08、dormant N2-01 stream offer、N2-02 common-c adapter、N2-03 video decode-unit bridge 与 N2-04 generation-fenced H.264 decoder sink 已形成 checkpoint；当前唯一代码任务为 N2-05 Surface 缺失/迁移/重绑生命周期。HarmonyOS 虚拟设备已验证 owner-store v5、19/20/16 列三表和幂等 schema receipt；AGC 三环境、HAP/AppSpawn secure-identity/transport/media runtime、真实 Sunshine 与 ARM64 实机回执仍缺失，故云注册、用户入口和运行时能力保持 fail closed，六个发布 truth 仍全 false
+> 当前实施进度：G0、D1、D2 本地/休眠策略、D3 本地生命周期、N1-01～N1-08、dormant N2-01 stream offer、N2-02 common-c adapter、N2-03 video decode-unit bridge、N2-04 generation-fenced H.264 decoder sink 与 N2-05 exact-generation Surface lifecycle 已形成 checkpoint；当前唯一代码任务为 N2-06 dormant Opus→PCM bridge。HarmonyOS 虚拟设备已验证 owner-store v5、19/20/16 列三表和幂等 schema receipt；AGC 三环境、HAP/AppSpawn secure-identity/transport/media runtime、真实 Sunshine 与 ARM64 实机回执仍缺失，故云注册、用户入口和运行时能力保持 fail closed，六个发布 truth 仍全 false
 > 适用仓库：/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS
 > 上游实施锁定：2026-08-09 已只读复核并固定 moonlight-common-c `e41355ea01670fd4c830b384009d31dd0339a705`（ENet `aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1`、nanors `b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a`）、Moonlight Android `f10085f552b367cf7203007693d91c322a0a2936`、Moonlight Qt `2e13ed9977bc31c73caf8428f08f58d793313ece`、Sunshine 测试 pin `v2026.808.164219` / `25c06d79b54f3d092d3fedd5f5ba44989f394692`；完整哈希、许可证和能力证据见 `docs/codex/plans/2026-08-09-moonlight-implementation-ledger.md`
 > 原评估轮次仅更新计划文件；2026-08-09 起的实施变更严格按第 15 节任务 ID、仓库门禁和 fail-closed feature policy 推进。
@@ -3647,6 +3647,117 @@ controller、后台任务、音频、输入、云或可点击产品入口：
     无 HAP/AppSpawn Surface/PIP runtime receipt 时 product wiring、FAB、六项 truth 仍关闭；
     N2-06 才开始 Opus bridge，S1-08 才把 N2-05 接到 ArkTS/PIP/后台生命周期。
 
+#### 15.7.13 N2-05 已完成事实与 N2-06 唯一执行合同（2026-08-10）
+
+N2-05 已由代码 checkpoint `7992279c7` 完成。新增内容是 NAPI-free、hidden/private 的
+`MoonlightVideoSurfaceLifecycle` 和 8 个 focused case；它组合 N2-03 bridge 与 N2-04 sink，
+没有 product factory caller，也没有修改 ArkTS、PIP service、NAPI、云、音频或输入。无
+Surface gate 位于 bridge copy/queue 之前，typed `NoSurface` 不保留 AU 且只合并一次 IDR；
+temporary suspend 关闭 admission、drain submit、清 first-frame 并 exact detach，但保留 decoder
+registry handle/config generation。rebind 只接受同 key/decoder/profile/display 和严格更高的
+Surface、renderer、runtime-proof generation；它清首帧并等待新 IDR。同 generation resize 只改
+viewport。stop exact、幂等、timeout 后可重试，并可由更高 owner token 重新使用。
+
+验证结果：host 普通、strict `-Werror`、完整 TSan 与最终三轮 ASan/UBSan 均
+**523/523 PASS**，scan-build 全目标零报告；双 ABI 产品、sink/lifecycle archive 和 callback
+carrier 通过，每 ABI 94 条永久 command 为 `rdpnapi=48`、adapter=1、video bridge=1、
+decoder sink/lifecycle=3。动态 ABI 与 N2-04 完全一致：arm64 16103/705、x86_64
+15634/703 defined/undefined，两 ABI NAPI 子集各 147。两项 Hvigor BUILD SUCCESSFUL；signed
+HAP SHA-256 为 `e2598c67896e04949409dbe93d26ec8a7ee390a53e1052aa0c7c8e0c692453c8`，
+423 paths 与基线一致。在线云注册仍是 8 表，FAB 仍只有一个 disabled Moonlight 和一个
+“即将支持”，11 个 feature inputs 默认 false，平台能力默认 11 pending/1 unsupported/0
+supported；HDC 为 `[Empty]`，不声明 Surface/PIP/H.264 runtime 或真实首帧可用。
+
+N2-06 的源码审计基线也已冻结：官方 common-c 的 audio init 已投影为
+`MoonlightCommonCAudioSelection {layout, opus}`，其中 opus 包含 sampleRate/channelCount/
+streams/coupledStreams/samplesPerFrame/mapping；官方 `AudioStream.c` 单个 UDP packet 上限为
+1400 bytes，并用 `decodeAndPlaySample(nullptr, 0)` 表示一个丢包的 PLC 请求。当前 adapter
+却会跳过 `count==0`，且 `onAudioPayload()` 会拒绝 null+0；这是 N2-06 必须先用失败测试修正的
+既有 seam，不能通过定时器猜丢包。项目已有唯一 OHAudio owner/registry、callback admission、
+120–300 ms prebuffer 与有界 PCM queue（`audio_player.*`/`audio_queue_policy.*`），但 N2-06
+不得接入或复制它们。`scripts/build_opus_ohos.sh` 以固定 SHA-256 构建 libopus 1.5.2；两个 ABI
+现有 `libs/opus-ohos/<ABI>/libopus.a` 已由 RustDesk FFI 的最终链接消费，并包含 mono/stereo 与
+multistream decoder symbols。N2-06 必须证明最终链接只有这一版本/一组定义，不能再引入
+Homebrew/FFmpeg/另一份 vendored Opus 到产品。
+
+N2-06 只能按以下原子顺序执行；它只冻结 borrowed Opus callback→owned bounded decode→PCM
+handoff，不创建 OHAudio renderer，不接产品会话：
+
+1. 以 `7992279c7` 保存 523 项普通/strict/TSan/ASan、双 ABI 94/48/1/1/3 command、
+   symbol/NAPI、423-path HAP、双 Hvigor、Opus archive hash/symbol inventory，以及现有
+   RustDesk audio owner/registry/queue 与 RDP/VNC 回归基线。允许修改范围仅为新建
+   `MoonlightAudioBridge.h/.cpp`、必要的 OHOS-only private Opus port、focused tests、最窄
+   CMake source/link 声明，以及为 PLC seam 增加的 adapter test/实现；不得修改
+   `audio_player.*`、`audio_queue_policy.*`、RustDesk worker、NAPI/ArkTS/UI/cloud/input。
+2. 先写失败测试冻结官方 callback 语义：`bytes==nullptr && count==0` 是一个 PLC work item；
+   `nullptr+positive`、`non-null+zero`、negative C count 和 `count>1400` 均拒绝。adapter 的
+   1 MiB 通用上限不得成为 bridge 分配上限；`commonAudioPayload()` 和
+   `Invocation::onAudioPayload()` 只做最窄改动，把合法 null+0 在 active audio stage 内同步
+   转交 media port。PLC 也必须持有 callback/owner lease，stop/cleanup 后的 PLC 一律 stale。
+3. 新增 project-owned hidden `MoonlightAudioDecoderPort` 与 `MoonlightAudioPcmSink`，由
+   `MoonlightAudioBridge` 注入；bridge 不 include `Limelight.h`、NAPI、OHAudio、
+   `audio_player.h` 或 RustDesk 头。port 只负责 decoder create/decode/destroy，sink 只接收
+   本次调用期有效的 PCM view 和 exact stream identity；二者都不得保存 process-global active
+   pointer、另建 session owner、线程、无限队列或 detached cleanup。
+4. stream identity 固定为 exact `MoonlightSessionKey + audioConfigurationGeneration`；状态固定
+   为 `Idle → Configured → Started → Stopping → Stopped → Cleaned`，另有 terminal `Failed`。
+   setup/start/submit/stop/cleanup 每次都校验 exact key/generation 和单调 operation generation；
+   旧 owner、重复/逆序事件分别返回 typed `Stale/AlreadyApplied/InvalidState/Busy`，错误 key
+   不能停止或清理当前 decoder。一次 bridge 只持有一个 decoder，重配必须先 exact cleanup。
+5. MVP admission 只接受 N2-01 offered `Stereo` 和官方 48 kHz family-1 stereo multistream：
+   `channelCount=2`、`streams=1`、`coupledStreams=1`、mapping 前两项 `{0,1}` 且余项为 0，
+   `samplesPerFrame` 为 120..5760 且 120 对齐。`Disabled` 不创建 bridge；mono、5.1、7.1、
+   mapping 置换、未知 layout、降混和重采样均 typed `Unsupported`，不静默变成立体声，也不把
+   common-c 对 1–8 声道的结构校验误写成产品已支持。
+6. OHOS-only port 使用 libopus multistream integer decode ABI，输出 frame count 必须
+   `>0 && <= configured samplesPerFrame`；普通 packet 固定 `decode_fec=0`，null+0 固定调用
+   decoder PLC，frame size 使用 negotiated `samplesPerFrame`。本 checkpoint 不主动 FEC、
+   不根据 sequence 猜 PLC 次数、不重采样、不做音量/降混；损坏包和 codec error 返回 typed
+   `Malformed/DecodeFailed`，保持 decoder 可继续，只有 decoder state corruption 才 terminal。
+7. borrowed packet 在 callback 返回前同步复制到 bridge-owned、容量最多 1400 bytes 的 work
+   item；每 bridge 同时最多一个 decode in flight，竞争 submit 返回 `Backpressure`，不阻塞
+   common-c 网络线程排队。PLC work item 长度为 0。解码 scratch 最多
+   `5760 frames × 2 channels × sizeof(int16_t)=23040 bytes`；有效 PCM 严格按实际 frame count
+   截断并显式序列化为 interleaved S16LE，禁止暴露未初始化尾部、宿主 endian 或 float
+   rounding 差异。sink 返回前 PCM 只读；需要保留时由 N2-07 现有 player 自己同步复制。
+8. 结果至少区分 `Accepted/PlcAccepted/Backpressure/Malformed/Unsupported/Stale/
+   InvalidState/SinkRejected/DecodeFailed/Terminal`，receipt 携带 exact key/config generation、
+   operation generation、input bytes、decoded frames/PCM bytes 和是否 PLC；不携带 payload、
+   PCM、host 地址、key/token。计数器饱和/有界，日志采样且脱敏。普通音频包失败不能请求
+   video IDR，也不能改变 video bridge、Surface lifecycle 或首帧 receipt。
+9. stop 顺序固定为关闭新 submit admission→等待 in-flight decode/sink callback drain→清
+   started truth→decoder reset/destroy；cleanup 再清 packet/PCM scratch、selection、generation
+   和计数敏感临时状态。timeout 后 admission 保持关闭，decoder 不提前释放，下一次 exact
+   stop/cleanup 可重试。析构走同一同步/延迟清理合同，不 detach thread、不 sleep 猜时序；
+   packet、PCM scratch 和 mapping backing 在 release 前 secure wipe，测试用 poison/observer
+   证明没有跨 session residual audio。
+10. PCM sink accepted、`audioReady()`、common-c `AudioStreamStart` 和任意音频计数都不是
+    video first-frame、streaming ready 或 protocol available。N2-06 archive 无 product media
+    port caller时 `audioReady()` 继续 false；不因 decoder compile/link 成功改变 FAB、
+    capability snapshot、六项 release truth 或连接阶段 UI。音频失败/无音频继续的用户决策
+    属于 N2-07/S1，不在本 checkpoint 制造假回调。
+11. Opus 依赖只解析到固定的 1.5.2 artifact。优先让新 private port 由现有最终链接中的同一
+    archive 满足；若静态库顺序需要调整，只改最窄 target order/group，并保存 link map，证明
+    `opus_multistream_decoder_create/decode/destroy/get_version_string` 各只有一个产品定义，
+    RustDesk 原有 `opus_decoder_*` 仍解析、动态 ABI/NAPI 不变。禁止 `--whole-archive`、复制
+    `.a`、改 RustDesk Cargo feature 或把 Opus symbols 导出为产品 API。
+12. focused tests 至少覆盖：合法 stereo setup/start、tracked Opus packet→golden S16LE、
+    null+0 PLC、损坏/截断/1/1400/1401-byte packet、frame count 0/过大、5.1/7.1/mono/mapping
+    unsupported、错误/旧 key 与 generation、重复/逆序 lifecycle、sink reject、decode failure
+    后恢复、并发 backpressure、blocked decode/sink stop timeout+retry、cleanup zeroization、
+    20 次 setup/start/PLC/stop/cleanup 和旧协议 audio/video 回归。时序只用 barrier/fake port；
+    不 sleep。golden fixture 必须记录 Opus 版本、编码参数、packet hash 与 expected PCM hash；
+    product 1.5.2 compile-link 和真实解码运行时 receipt 分开陈述，不能用 fake port 冒充真机。
+13. 普通/三轮 ASan、完整 TSan、strict/analyzer、双 ABI 产品与 callback carrier、Opus single-
+    definition/link-map、ABI/NAPI/HAP path、双 Hvigor、platform/vendor/TOTP/Light/diff/state 全通过
+    后单独 checkpoint。若 host golden 使用系统 codec，必须额外报告其版本且不能把它写成
+    产品 1.5.2 runtime receipt；HDC/实机未执行仍保持 blocker。
+14. N2-07 才把 bridge PCM sink 按 exact `DecoderSessionIdentity` 接到现有
+    `AudioPlayerNapi::DispatchActiveNative(owner, ...)`、`g_audioRegistry` 和既有有界 queue，
+    并处理 mute/focus/background/pause/resume/flush。N2-06 不调用
+    `SetActiveSessionOwner/ClearActiveSessionOwner`，不建 Moonlight 私有 renderer。S1-08 才接
+    ArkTS/PIP/后台；HAP/AppSpawn audio runtime receipt 前用户入口和发布 truth 继续关闭。
+
 ### 15.8 N2：RTSP、视频、音频和媒体时钟
 
 | ID | 文件与精确动作 | 必须验证 | 完成证据/提交点 |
@@ -3655,8 +3766,8 @@ controller、后台任务、音频、输入、云或可点击产品入口：
 | N2-02 | **CONTRACT PASS / DORMANT `248e704ab`**：唯一 hidden adapter 把 N2-01 offer 映射到官方 common-c，并复用既有 owner 收束 process-global callbacks、11-stage/deadline/termination、setup-derived video/audio 与 secret cleanse | 21 focused；普通/ASan/UBSan 497/497；strict/analyzer/race harness、双 ABI/HAP/NAPI/include、双 Hvigor与合规通过；最终 `sol low` review 无 P0/P1/P2 | product media port unavailable，无 NAPI/UI/cloud caller；transport-ready 不是 first-frame；N2-03 只接 decode-unit bridge |
 | N2-03 | **CONTRACT PASS / DORMANT `34d2ffa7a`**：bounded `DECODE_UNIT/LENTRY` projection、owned AU、SPS/PPS/VPS generation、IDR/backpressure/teardown；上游无 offset/decodeNumber | 8 focused；普通/strict/TSan 506/506、ASan/UBSan 三轮、analyzer、双 ABI/HAP/NAPI/include、双 Hvigor与合规通过 | product sink unavailable、first-frame 恒 false；N2-04 只接既有 decoder owner |
 | N2-04 | **CONTRACT PASS / DORMANT `bee0ac1da`**：窄 sink/port 复用既有 decoder/renderer exact owner；H.264 Annex-B、typed admission/config recreate、output→NativeImage→actual swap 三段首帧 | 9 focused；全量/strict/TSan 515/515、ASan 三轮、analyzer、双 ABI/callback/HAP/NAPI/双 Hvigor通过 | archive 无 caller，不新增 singleton/NAPI/UI；HAP runtime proof 前仍 unavailable，N2-05 只加 Surface lifecycle |
-| N2-05 | 按 15.7.12 新建 pure-native exact-generation Surface lifecycle；无 Surface 时零缓存丢视频，temporary suspend 保留连接/decoder owner，page/PIP/page 重绑后单次请求 IDR | 无 Surface、后台、PIP、旋转/fold/resize、stale generation、blocked callback、20 次迁移和旧协议回归 | 不改 ArkTS/PIP 页面装配；内存有界，新 Surface 三段首帧有时限；S1-08 才接产品生命周期 |
-| N2-06 | 新建 `MoonlightAudioBridge.*`：Opus/Opus multistream→S16LE PCM，首版 stereo；明确采样率、frame size、PLC/FEC、降混 | golden PCM、损坏包、丢包、stereo、unsupported surround、内存清零 | 复用现有 Opus 时避免重复符号/版本冲突 |
+| N2-05 | **CONTRACT PASS / DORMANT `7992279c7`**：pure-native exact-generation Surface lifecycle；无 Surface copy 前 typed drop，temporary suspend 保留 connection/decoder handle，exact rebind 后等新 IDR，同 generation resize 不清首帧 | 8 focused；全量/strict/TSan 523/523、ASan 三轮、analyzer、双 ABI/callback/HAP/NAPI/双 Hvigor通过 | 无 ArkTS/PIP/NAPI/product caller；423 paths、ABI、8 表、灰 FAB 和六项 truth 不变；S1-08 才接产品生命周期 |
+| N2-06 | 按 15.7.13 新建 dormant `MoonlightAudioBridge.*`：48 kHz exact stereo family-1 Opus multistream→S16LE PCM；修正官方 null+0 PLC seam，冻结 owner/config generation、有界 ownership、typed result 与 teardown | real/fake 分层 golden PCM、PLC、损坏/边界包、unsupported surround、blocked decode/sink、zeroization、20 cycles、Opus single-definition link map | 只复用现有 pinned 1.5.2，不接 `audio_player`/NAPI/UI；音频 ready 永不替代视频首帧，N2-07 才接现有 owner/queue |
 | N2-07 | 接现有 owner/generation-aware `audio_player`，实现 queue/flush/pause/resume/focus；音频失败允许用户选择无音频继续 | underrun、焦点丢失、切后台、断开后无残音、旧 callback | 不把音频 ready 当视频 first-frame |
 | N2-08 | 建立 media clock/stats：network→decode→render、audio queue、FEC/丢包、p50/p95；采样节流，native 汇总后低频送 ArkTS | 统计正确性、不可用值为 absent 而非 0、性能开销 | 默认日志不含地址/token/媒体 payload |
 | N2-09 | 真实设备完成 720p/1080p、30/60fps、2 小时、温控、前后台/PIP/旋转；H.264+Opus 为唯一 release blocker | 第 10.5 节阈值和录屏/log receipt | HEVC/AV1/HDR/7.1 不通过只保持关闭；提交 `media-mvp` checkpoint |
@@ -3765,10 +3876,10 @@ Moonlight 能从“即将支持”变成可点击，仅当下列事实同时成�
 | 云适配 | exact 19 列 adapter、row-sensitive transfer、五 scope selection store、dormant materializer 和独立云状态 policy 已存在；`CloudSyncPolicy.TABLES` 仍是原有 8 表 | 可以验证/隔离/本地物化候选 row，所有结果明确 `cloudAttempted=false`；状态不会把 pending/quarantine 伪装成 synced | D2-07 必须等三环境 AGC receipt；之后才做 D3-01 coordinator、cloud-first promotion 和 D3-08 |
 | 云数据 | `moonlightrecordv1` 是唯一未来分布式物理表；`moonlightlocalrecords` 和 `moonlightappcache` 永远本地 | 19 列 schema 已在 ARM64 API 24 owner-store 实例化和重开验证 | cache 不进云/备份；local mirror 只有 promotion 后才投影；identity 继续默认关闭 |
 | 便携备份 | Backup V3 optional Moonlight descriptor、cloud/local 双 section、exact admission 和 local-only resolver 已存在 | redacted=settings/host/profile，full 额外 trust candidate；identity/secret/cache/marker 永远排除；旧 V3 可读 | cloud-enabled restore promotion 与设备故障矩阵仍 pending；不能另建含 identity 的“完整备份”旁路 |
-| Native | N1-01～N1-08、N2-01 offer、N2-02 common-c adapter、N2-03 owned video bridge 和 N2-04 dormant H.264 decoder sink 均已 checkpoint；唯一 owner lane 收束官方 callback，bounded bridge 复制 AU，sink 复用既有 decoder/renderer generation 和三段 present ack；product 无 caller | 可声明固定上游、官方 common-c compile-link、owned AU、typed H.264 decoder admission 和 exact-generation first-frame contract；HAP runtime identity/transport/media backend仍 unavailable，不能声明真实配对、目录、launch、解码、音频、输入或首帧可用 | N2-05 只加 pure-native Surface suspend/rebind policy；不接 NAPI/ArkTS/PIP 页面，不新增 owner/singleton，也不解除 FAB、云表或发布 truth 门禁 |
+| Native | N1-01～N1-08、N2-01 offer、N2-02 common-c adapter、N2-03 owned video bridge、N2-04 dormant H.264 sink 和 N2-05 exact-generation Surface lifecycle 均已 checkpoint；唯一 owner lane 收束官方 callback，Surface 缺失在 copy 前丢弃，temporary suspend/exact rebind 复用既有 decoder handle；product 无 caller | 可声明固定上游、官方 common-c compile-link、owned AU、typed H.264 admission、三段 first-frame 与 pure-native Surface lifecycle 合同；HAP runtime identity/transport/media backend仍 unavailable，不能声明真实配对、目录、launch、解码、音频、输入或首帧可用 | N2-06 只加 dormant stereo Opus→S16LE bridge并修正 null+0 PLC seam；不接现有 `audio_player`、NAPI/ArkTS/PIP 页面，不新增 owner/singleton，也不解除 FAB、云表或发布 truth 门禁 |
 | UI | `HostListPage.ets` 当前仅有禁用的 Moonlight FAB 项、system Symbol 和“即将支持”；没有 Moonlight 添加/目录/设置/会话页 | 入口信息可见但不可交互；点击无副作用 | 直到 U1 的数据与 N1 host-control 前置都满足，保持现状；不提前建可保存假表单 |
 | 品牌 | 官方 SVG 已固定 hash，但尚无 provenance/商标/视觉验收 receipt | 只能使用现有 system Symbol 回退 | `moonlightBrandAssetReady=false`；品牌门通过后再替换资源并保留 NOTICE |
-| 验证 | 20 个 describe、151 个 Moonlight ArkTS 用例已进入聚合器；N2-04 后两项 Hvigor、423-path signed HAP、普通/strict/完整 TSan 515/515、ASan/UBSan 三轮、analyzer、双 ABI产品/callback carrier、三 tree/117 文件、TOTP 251及 symbol/NAPI/HAP 隔离通过 | 只声明测试编译注册、源码/构建完整性和 dormant unit/compile-link/decoder contract，不声明 Hypium、HAP runtime HUKS/TLS/media、真实 Sunshine、首帧或串流可用 | `ohosTest` task 未注册且当前 HDC 无新 receipt；最终功能验收必须在用户 ARM64 实机和真实 Sunshine 上完成 |
+| 验证 | 20 个 describe、151 个 Moonlight ArkTS 用例已进入聚合器；N2-05 后两项 Hvigor、423-path signed HAP、普通/strict/完整 TSan 523/523、ASan/UBSan 三轮、analyzer、双 ABI产品/callback carrier、三 tree/117 文件、TOTP 251及 symbol/NAPI/HAP 隔离通过 | 只声明测试编译注册、源码/构建完整性和 dormant unit/compile-link/decoder/Surface lifecycle contract，不声明 Hypium、HAP runtime HUKS/TLS/media、真实 Sunshine、首帧或串流可用 | `ohosTest` task 未注册且当前 HDC 为 `[Empty]`；最终功能验收必须在用户 ARM64 实机和真实 Sunshine 上完成 |
 
 当前数据流只能是：
 
@@ -3802,12 +3913,13 @@ Sunshine common-c runtime / production transport / media / input 当前仍不在
 8. 更新实施台账中的状态、证据、blocker 和唯一下一任务；同步 `CURRENT/QUEUE/STATE`，再用精确文件列表形成一个可回滚提交。
 9. 只有当任务合同、测试和对应门禁均通过时标记 `PASS`；“代码写完”“构建通过”“请求已排队”均不是产品能力完成。
 
-当前唯一可直接继续的代码任务是 N2-04 generation-fenced OH_AVCodec integration：严格按
-第 15.7.11 节让 N2-03 owned AU 经过窄 sink 复用既有 decoder registry、shared session
-owner、callback gate、Surface/renderer 与 deferred retire。它不得回开 common-c router 或
-bridge ownership，不得另建 session/decoder owner，不得扩张 NAPI、接 ArkTS/UI/云、
-audio/input，也不得把 accepted submit、PushInput 或单独 output callback 当首帧；只有 exact
-generation 的 NativeImage 更新与 renderer ack 才可能形成 first-frame receipt。
+当前唯一可直接继续的代码任务是 N2-06 dormant Opus→PCM bridge：严格按第 15.7.13 节先用
+失败测试修正官方 null+0 PLC seam，再建立 exact key/config-generation、1400-byte packet 与
+23040-byte PCM 上限、stereo family-1 admission、typed decode result、drain/zeroization 和 pinned
+Opus 1.5.2 single-definition link contract。它不得复制 RustDesk `AudioWorker`，不得接或修改
+现有 `audio_player` owner/registry/queue，不得另建 session/audio owner，不得扩张 NAPI、接
+ArkTS/UI/PIP/云/input，也不得把 audio ready、PCM accepted 或 common-c AudioStreamStart 当作
+视频 first-frame、streaming 或 protocolAvailable；N2-07 才做 exact-owner OHAudio handoff。
 D2-05/06 由 AGC 外部环境提供证据，D2-07 依赖二者；D3 的 cloud terminal、真实
 unpair 和多设备矩阵分别等待 D2-07、N1 Host Control 和外部设备。任何执行者都
 不得因为云端受阻而把 `moonlightrecordv1` 塞入现有八表注册清单，也不得因为
