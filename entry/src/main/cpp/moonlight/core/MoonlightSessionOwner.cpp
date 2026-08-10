@@ -199,61 +199,83 @@ MoonlightStartResult MoonlightSessionOwner::start(std::uint64_t sessionId,
     return {MoonlightStartStatus::Accepted, state->key};
 }
 
-MoonlightStopStatus MoonlightSessionOwner::stop(
+MoonlightStopStatus MoonlightSessionOwner::requestStop(
+    const MoonlightSessionKey& key) noexcept {
+    std::shared_ptr<State> state;
+    return requestStopInternal(key, state);
+}
+
+MoonlightStopStatus MoonlightSessionOwner::requestStopInternal(
     const MoonlightSessionKey& key,
-    std::chrono::milliseconds timeout) {
+    std::shared_ptr<State>& state) noexcept {
     if (!key.valid()) {
         return MoonlightStopStatus::InvalidKey;
     }
 
-    std::shared_ptr<State> state;
     bool invokeInterruptNow = false;
-    {
-        std::lock_guard<std::mutex> lock(impl_->mutex);
-        state = impl_->active;
-        if (state == nullptr) {
-            if (impl_->lastTerminal.matched && impl_->lastTerminal.key == key) {
-                return impl_->lastTerminal.driverFailure == MoonlightDriverFailure::None
-                           ? MoonlightStopStatus::AlreadyTerminal
-                           : MoonlightStopStatus::DriverFailure;
+    try {
+        {
+            std::lock_guard<std::mutex> lock(impl_->mutex);
+            state = impl_->active;
+            if (state == nullptr) {
+                if (impl_->lastTerminal.matched && impl_->lastTerminal.key == key) {
+                    return impl_->lastTerminal.driverFailure == MoonlightDriverFailure::None
+                               ? MoonlightStopStatus::AlreadyTerminal
+                               : MoonlightStopStatus::DriverFailure;
+                }
+                return MoonlightStopStatus::StaleOwner;
             }
-            return MoonlightStopStatus::StaleOwner;
-        }
-        if (state->key != key) {
-            return MoonlightStopStatus::StaleOwner;
-        }
-        if (isTerminal(state->phase)) {
-            const auto result = state->driverFailure == MoonlightDriverFailure::None
-                                    ? MoonlightStopStatus::AlreadyTerminal
-                                    : MoonlightStopStatus::DriverFailure;
-            reapActiveLocked(state);
-            return result;
+            if (state->key != key) {
+                state.reset();
+                return MoonlightStopStatus::StaleOwner;
+            }
+            if (isTerminal(state->phase)) {
+                const auto result = state->driverFailure == MoonlightDriverFailure::None
+                                        ? MoonlightStopStatus::AlreadyTerminal
+                                        : MoonlightStopStatus::DriverFailure;
+                reapActiveLocked(state);
+                return result;
+            }
+
+            state->cancellationRequested = true;
+            state->admissionOpen = false;
+            if (state->phase == MoonlightSessionPhase::Starting) {
+                state->phase = MoonlightSessionPhase::Stopping;
+                if (state->startInvoked && state->startInterruptible &&
+                    !state->startReturned && !state->interruptInvoked) {
+                    state->interruptInvoked = true;
+                    ++state->controlOperations;
+                    invokeInterruptNow = true;
+                }
+            } else if (state->phase == MoonlightSessionPhase::Running) {
+                state->phase = MoonlightSessionPhase::Stopping;
+                if (!state->stopScheduled) {
+                    state->stopScheduled = true;
+                    impl_->pendingStop = state;
+                }
+            }
+            impl_->stateCv.notify_all();
         }
 
-        state->cancellationRequested = true;
-        state->admissionOpen = false;
-        if (state->phase == MoonlightSessionPhase::Starting) {
-            state->phase = MoonlightSessionPhase::Stopping;
-            if (state->startInvoked && state->startInterruptible &&
-                !state->startReturned && !state->interruptInvoked) {
-                state->interruptInvoked = true;
-                ++state->controlOperations;
-                invokeInterruptNow = true;
-            }
-        } else if (state->phase == MoonlightSessionPhase::Running) {
-            state->phase = MoonlightSessionPhase::Stopping;
-            if (!state->stopScheduled) {
-                state->stopScheduled = true;
-                impl_->pendingStop = state;
-            }
+        if (invokeInterruptNow) {
+            invokeInterrupt(state);
         }
-        impl_->stateCv.notify_all();
+        impl_->workerCv.notify_all();
+        return MoonlightStopStatus::StopRequested;
+    } catch (...) {
+        state.reset();
+        return MoonlightStopStatus::DriverFailure;
     }
+}
 
-    if (invokeInterruptNow) {
-        invokeInterrupt(state);
+MoonlightStopStatus MoonlightSessionOwner::stop(
+    const MoonlightSessionKey& key,
+    std::chrono::milliseconds timeout) {
+    std::shared_ptr<State> state;
+    const auto requestStatus = requestStopInternal(key, state);
+    if (requestStatus != MoonlightStopStatus::StopRequested) {
+        return requestStatus;
     }
-    impl_->workerCv.notify_all();
 
     const auto boundedTimeout = timeout < std::chrono::milliseconds::zero()
                                     ? std::chrono::milliseconds::zero()

@@ -137,6 +137,9 @@ set(MOONLIGHT_NAPI_SOURCE
 set(MOONLIGHT_STREAM_CONFIG_SOURCE
     moonlight/media/MoonlightStreamConfig.cpp
 )
+set(MOONLIGHT_COMMON_C_ADAPTER_SOURCE
+    moonlight/media/MoonlightCommonCAdapter.cpp
+)
 set(MOONLIGHT_SOURCES
     moonlight/core/MoonlightSessionOwner.cpp
 )
@@ -260,6 +263,7 @@ if(RDP_BUILD_TESTS)
         test/moonlight_native_bridge_test.cpp
         test/moonlight_stream_config_test.cpp
         test/moonlight_session_owner_test.cpp
+        test/moonlight_common_c_adapter_test.cpp
         test/vnc_des_test.cpp
         test/vnc_cursor_protocol_test.cpp
         test/vnc_transport_policy_test.cpp
@@ -290,6 +294,7 @@ if(RDP_BUILD_TESTS)
         moonlight/control/MoonlightHostControl.cpp
         ${MOONLIGHT_BRIDGE_SOURCE}
         ${MOONLIGHT_STREAM_CONFIG_SOURCE}
+        ${MOONLIGHT_COMMON_C_ADAPTER_SOURCE}
         vnc/vnc_des.cpp
         vnc/vnc_cursor_protocol.cpp
         vnc/vnc_rfb_protocol.cpp
@@ -550,6 +555,27 @@ set_target_properties(remotedesk_moonlight_stream_config PROPERTIES
     POSITION_INDEPENDENT_CODE ON
 )
 
+# N2-02 sole common-c adapter. The public header remains project-owned C++17;
+# only its implementation sees Limelight.h and the official callback structs.
+# It stays in an unreferenced private archive until media/runtime proof exists.
+add_library(remotedesk_moonlight_common_c_adapter STATIC
+    ${MOONLIGHT_COMMON_C_ADAPTER_SOURCE}
+)
+target_compile_features(remotedesk_moonlight_common_c_adapter PRIVATE cxx_std_17)
+target_include_directories(remotedesk_moonlight_common_c_adapter PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_compile_options(remotedesk_moonlight_common_c_adapter PRIVATE
+    -fvisibility=hidden
+    -fvisibility-inlines-hidden
+)
+target_link_libraries(remotedesk_moonlight_common_c_adapter PRIVATE
+    remotedesk_moonlight_stream_config
+)
+set_target_properties(remotedesk_moonlight_common_c_adapter PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+)
+
 # 定义共享库目标
 add_library(rdpnapi SHARED ${ALL_SOURCES})
 target_compile_definitions(rdpnapi PRIVATE
@@ -557,6 +583,7 @@ target_compile_definitions(rdpnapi PRIVATE
     REMOTEDESK_BUILD_TIME_UTC="${REMOTEDESK_BUILD_TIME_UTC}"
 )
 target_link_libraries(rdpnapi PRIVATE
+    remotedesk_moonlight_common_c_adapter
     remotedesk_moonlight_stream_config
     remotedesk_moonlight_host_control
     remotedesk_moonlight_pairing
@@ -570,6 +597,7 @@ target_link_options(rdpnapi PRIVATE
     "-Wl,--exclude-libs,libremotedesk_moonlight_secure_identity.a"
     "-Wl,--exclude-libs,libremotedesk_moonlight_bridge.a"
     "-Wl,--exclude-libs,libremotedesk_moonlight_stream_config.a"
+    "-Wl,--exclude-libs,libremotedesk_moonlight_common_c_adapter.a"
 )
 
 # VNC full-screen ZRLE decode is production-rate code even in a signed Debug
@@ -669,6 +697,30 @@ target_link_libraries(rdpnapi PUBLIC
 set(REMOTEDESK_MOONLIGHT_OPENSSL_ROOT "${OPENSSL_DIR}")
 add_subdirectory(moonlight)
 target_link_libraries(rdpnapi PRIVATE remotedesk_moonlight_common)
+target_link_libraries(remotedesk_moonlight_common_c_adapter PRIVATE
+    remotedesk_moonlight_common
+)
+
+# Explicitly built in N2-02 receipts. Calling the hidden smoke symbol forces
+# the otherwise dormant archive to resolve all official common-c entry points.
+file(GENERATE
+    OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/moonlight_common_c_adapter_link_probe.cpp"
+    CONTENT "#include \"moonlight/media/MoonlightCommonCAdapter.h\"\nint main() { return remotedesk::moonlight::MoonlightCommonCAdapter::productionLinkSmoke(); }\n"
+)
+add_executable(moonlight_common_c_adapter_link_probe EXCLUDE_FROM_ALL
+    "${CMAKE_CURRENT_BINARY_DIR}/moonlight_common_c_adapter_link_probe.cpp"
+)
+set_target_properties(moonlight_common_c_adapter_link_probe PROPERTIES
+    EXPORT_COMPILE_COMMANDS OFF
+)
+target_compile_features(moonlight_common_c_adapter_link_probe PRIVATE cxx_std_17)
+target_include_directories(moonlight_common_c_adapter_link_probe PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_link_libraries(moonlight_common_c_adapter_link_probe PRIVATE
+    remotedesk_moonlight_common_c_adapter
+    remotedesk_moonlight_common
+)
 
 # G0 compile/link probe. This target is opt-in and excluded from rdpnapi/HAP,
 # so introducing the capability gate cannot change any existing protocol's

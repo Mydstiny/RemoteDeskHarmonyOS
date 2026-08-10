@@ -64,6 +64,7 @@ enum class MoonlightStopStatus : std::uint8_t {
     StaleOwner,
     TimedOut,
     DriverFailure,
+    StopRequested,
 };
 
 enum class MoonlightDriverFailure : std::uint8_t {
@@ -184,6 +185,9 @@ public:
     MoonlightStartResult start(std::uint64_t sessionId,
                                std::uint64_t generation,
                                Driver driver);
+    // Closes admission and schedules the exact owner's interrupt/stop path,
+    // but never waits for start, callbacks, workers, or driver.stop to drain.
+    MoonlightStopStatus requestStop(const MoonlightSessionKey& key) noexcept;
     MoonlightStopStatus stop(
         const MoonlightSessionKey& key,
         std::chrono::milliseconds timeout = std::chrono::seconds(5));
@@ -200,6 +204,9 @@ private:
 
     bool cancellationRequested(const std::shared_ptr<State>& state) const noexcept;
     bool markStartInterruptible(const std::shared_ptr<State>& state) noexcept;
+    MoonlightStopStatus requestStopInternal(
+        const MoonlightSessionKey& key,
+        std::shared_ptr<State>& state) noexcept;
     void invokeInterrupt(const std::shared_ptr<State>& state) noexcept;
     void releaseAdmission(const std::shared_ptr<State>& state,
                           MoonlightLeaseKind kind) noexcept;

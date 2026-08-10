@@ -409,6 +409,42 @@ RDP_TEST_CASE(moonlight_session_owner_drain_timeout_keeps_global_lane_closed) {
     RDP_ASSERT_EQ(otherStarts.load(), 0);
 }
 
+RDP_TEST_CASE(moonlight_session_owner_request_stop_is_exact_and_non_blocking) {
+    auto owner = MoonlightSessionOwner::createForTesting();
+    std::atomic<int> starts {0};
+    std::atomic<int> interrupts {0};
+    std::atomic<int> stops {0};
+    TestGate stopGate;
+    auto driver = immediateDriver(starts, interrupts, stops);
+    driver.stop = [&]() { stops.fetch_add(1); stopGate.enter(); };
+    const auto accepted = owner->start(55, 9, std::move(driver));
+    RDP_ASSERT(owner->waitForPhase(accepted.key, MoonlightSessionPhase::Running, 1s));
+
+    auto callback = owner->acquireCallback(accepted.key);
+    RDP_ASSERT(callback.valid());
+    auto stale = accepted.key;
+    ++stale.ownerToken;
+    RDP_ASSERT_EQ(owner->requestStop(stale), MoonlightStopStatus::StaleOwner);
+    RDP_ASSERT_EQ(owner->requestStop(accepted.key),
+                  MoonlightStopStatus::StopRequested);
+
+    const auto stopping = owner->snapshot(accepted.key);
+    RDP_ASSERT_EQ(stopping.phase, MoonlightSessionPhase::Stopping);
+    RDP_ASSERT(stopping.cancellationRequested);
+    RDP_ASSERT(!stopping.admissionOpen);
+    RDP_ASSERT(!stopGate.waitEntered(40ms));
+    RDP_ASSERT_EQ(stops.load(), 0);
+
+    callback.reset();
+    RDP_ASSERT(stopGate.waitEntered(1s));
+    RDP_ASSERT(owner->waitForPhase(accepted.key, MoonlightSessionPhase::Stopped, 1s));
+    RDP_ASSERT_EQ(owner->requestStop(accepted.key),
+                  MoonlightStopStatus::AlreadyTerminal);
+    RDP_ASSERT_EQ(starts.load(), 1);
+    RDP_ASSERT_EQ(interrupts.load(), 0);
+    RDP_ASSERT_EQ(stops.load(), 1);
+}
+
 RDP_TEST_CASE(moonlight_session_owner_rejects_old_generation_after_new_start) {
     auto owner = MoonlightSessionOwner::createForTesting();
     std::atomic<int> starts {0};
