@@ -3,6 +3,7 @@
 
 #include "moonlight/core/MoonlightSessionOwner.h"
 #include "moonlight/media/MoonlightStreamConfig.h"
+#include "moonlight/media/MoonlightVideoBridge.h"
 
 #include <array>
 #include <chrono>
@@ -115,7 +116,10 @@ public:
     virtual void startVideo() noexcept = 0;
     virtual void stopVideo() noexcept = 0;
     virtual void cleanupVideo() noexcept = 0;
-    virtual int submitVideoPayload(const void* opaqueDecodeUnit) noexcept = 0;
+    // Synchronous borrowed-view boundary. Implementations must copy any bytes
+    // they retain before returning from this call.
+    virtual MoonlightVideoSubmitResult submitVideoPayload(
+        const MoonlightVideoDecodeUnitView& decodeUnit) noexcept = 0;
     virtual bool setupAudio(const MoonlightCommonCAudioSelection& selection) noexcept = 0;
     virtual void startAudio() noexcept = 0;
     virtual void stopAudio() noexcept = 0;
@@ -282,7 +286,7 @@ public:
     static bool videoStart() noexcept;
     static bool videoStop() noexcept;
     static bool videoCleanup() noexcept;
-    static int videoPayload(const void* opaqueDecodeUnit) noexcept;
+    static int videoPayload(const MoonlightVideoDecodeUnitView& decodeUnit) noexcept;
     static int audioInit(std::int32_t rawAudioConfiguration,
                          const MoonlightCommonCOpusConfig& opus) noexcept;
     static bool audioStart() noexcept;
@@ -290,6 +294,7 @@ public:
     static bool audioCleanup() noexcept;
     static bool audioPayload(const std::uint8_t* bytes,
                              std::size_t byteCount) noexcept;
+    static bool finalizing() noexcept;
     static std::optional<MoonlightCommonCTestWireSnapshot> wireSnapshot() noexcept;
     static std::int32_t videoFormatForProfile(
         const MoonlightStreamCodecProfile& profile) noexcept;

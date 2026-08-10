@@ -68,9 +68,24 @@ public:
     void startVideo() noexcept override { ++videoStarts_; }
     void stopVideo() noexcept override { ++videoStops_; }
     void cleanupVideo() noexcept override { ++videoCleanups_; }
-    int submitVideoPayload(const void*) noexcept override {
+    MoonlightVideoSubmitResult submitVideoPayload(
+        const MoonlightVideoDecodeUnitView& decodeUnit) noexcept override {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            videoPayloadKey_ = decodeUnit.key;
+            videoPayloadProfile_ = decodeUnit.profile;
+            videoPayloadFrameNumber_ = decodeUnit.frameNumber;
+        }
         ++videoPayloads_;
-        return videoPayloadResult_.load();
+        MoonlightVideoSubmitResult result;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            result.status = videoSubmitStatus_;
+            result.requestIdr = videoSubmitRequestIdr_;
+        }
+        result.sinkCalled = true;
+        result.ownedBytes = decodeUnit.fullLength;
+        return result;
     }
     bool setupAudio(const MoonlightCommonCAudioSelection& selection) noexcept override {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -93,6 +108,12 @@ public:
     void rejectVideo() noexcept { acceptVideo_.store(false); }
     void rejectAudio() noexcept { acceptAudio_.store(false); }
     void blockVideoSetup(AdapterGate& gate) noexcept { videoSetupGate_ = &gate; }
+    void setVideoSubmitResult(MoonlightVideoSubmitStatus status,
+                              bool requestIdr) noexcept {
+        std::lock_guard<std::mutex> lock(mutex_);
+        videoSubmitStatus_ = status;
+        videoSubmitRequestIdr_ = requestIdr;
+    }
     std::size_t videoSetups() const noexcept { return videoSetups_.load(); }
     std::size_t audioSetups() const noexcept { return audioSetups_.load(); }
     std::size_t videoStops() const noexcept { return videoStops_.load(); }
@@ -100,6 +121,18 @@ public:
     std::size_t videoCleanups() const noexcept { return videoCleanups_.load(); }
     std::size_t audioCleanups() const noexcept { return audioCleanups_.load(); }
     std::size_t videoPayloads() const noexcept { return videoPayloads_.load(); }
+    MoonlightSessionKey videoPayloadKey() const noexcept {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return videoPayloadKey_;
+    }
+    MoonlightStreamCodecProfile videoPayloadProfile() const noexcept {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return videoPayloadProfile_;
+    }
+    std::int32_t videoPayloadFrameNumber() const noexcept {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return videoPayloadFrameNumber_;
+    }
     std::size_t audioPayloads() const noexcept { return audioPayloads_.load(); }
     std::size_t audioPayloadBytes() const noexcept { return audioPayloadBytes_.load(); }
 
@@ -109,7 +142,6 @@ private:
     std::atomic<bool> audioReady_ {true};
     std::atomic<bool> acceptVideo_ {true};
     std::atomic<bool> acceptAudio_ {true};
-    std::atomic<int> videoPayloadResult_ {0};
     std::atomic<std::size_t> videoSetups_ {0U};
     std::atomic<std::size_t> audioSetups_ {0U};
     std::atomic<std::size_t> videoStarts_ {0U};
@@ -123,12 +155,35 @@ private:
     std::atomic<std::size_t> audioPayloadBytes_ {0U};
     std::optional<MoonlightCommonCVideoSelection> videoSelection_;
     std::optional<MoonlightCommonCAudioSelection> audioSelection_;
+    MoonlightSessionKey videoPayloadKey_ {};
+    MoonlightStreamCodecProfile videoPayloadProfile_ {};
+    std::int32_t videoPayloadFrameNumber_ = -1;
+    MoonlightVideoSubmitStatus videoSubmitStatus_ =
+        MoonlightVideoSubmitStatus::Accepted;
+    bool videoSubmitRequestIdr_ = false;
     AdapterGate* videoSetupGate_ = nullptr;
 };
 
 MoonlightStreamCodecProfile h264Profile() {
     return {MoonlightStreamCodec::H264, MoonlightStreamBitDepth::Bit8,
             MoonlightStreamChroma::Yuv420};
+}
+
+MoonlightVideoDecodeUnitView testVideoPayload(
+    std::uint8_t* bytes, std::size_t byteCount,
+    MoonlightVideoFragmentView& fragment,
+    std::int32_t frameNumber = 1) {
+    fragment = {bytes, byteCount, MoonlightVideoBufferType::PictureData, nullptr};
+    MoonlightVideoDecodeUnitView unit;
+    unit.frameNumber = frameNumber;
+    unit.frameType = MoonlightVideoFrameType::Predicted;
+    unit.receiveTimeUs = 10U;
+    unit.enqueueTimeUs = 20U;
+    unit.presentationTimeUs = 30U;
+    unit.fullLength = byteCount;
+    unit.bufferList = &fragment;
+    unit.colorSpace = 1U;
+    return unit;
 }
 
 MoonlightStreamCodecProfile hevcMain8Profile() {
@@ -1077,6 +1132,12 @@ RDP_TEST_CASE(moonlight_common_c_adapter_finalization_waits_inflight_media_callb
                                 ? adapter->requestStop(accepted.key)
                                 : MoonlightStopStatus::InvalidKey;
     const auto blocked = adapter->snapshot(accepted.key);
+    const auto finalizingDeadline = std::chrono::steady_clock::now() + 1s;
+    while (!MoonlightCommonCTestHarness::finalizing() &&
+           std::chrono::steady_clock::now() < finalizingDeadline) {
+        std::this_thread::yield();
+    }
+    const bool finalizing = MoonlightCommonCTestHarness::finalizing();
     mediaGate.release();
     const bool callbackJoined = callbackScope.cancelAndJoin();
     const bool stopped = owner->waitForPhase(
@@ -1088,6 +1149,7 @@ RDP_TEST_CASE(moonlight_common_c_adapter_finalization_waits_inflight_media_callb
     RDP_ASSERT(blocked.matched);
     RDP_ASSERT(!blocked.terminal);
     RDP_ASSERT(!blocked.secretsCleared);
+    RDP_ASSERT(finalizing);
     RDP_ASSERT(callbackJoined);
     RDP_ASSERT(stopped);
     RDP_ASSERT_EQ(interrupts.load(), 1);
@@ -1135,10 +1197,13 @@ RDP_TEST_CASE(moonlight_common_c_adapter_payload_callbacks_are_lease_guarded_and
             if (!driveStagesWithNegotiation()) {
                 return -1;
             }
-            int opaque = 1;
+            std::uint8_t videoBytes[2] {0x01U, 0x02U};
+            MoonlightVideoFragmentView videoFragment;
+            auto videoUnit = testVideoPayload(
+                videoBytes, sizeof(videoBytes), videoFragment, 17);
             const std::uint8_t audio[4] {1U, 2U, 3U, 4U};
             callbacksAccepted.store(
-                MoonlightCommonCTestHarness::videoPayload(&opaque) == 0 &&
+                MoonlightCommonCTestHarness::videoPayload(videoUnit) == 0 &&
                 MoonlightCommonCTestHarness::audioPayload(audio, sizeof(audio)));
             return callbacksAccepted.load() ? 0 : -1;
         }, []() {},
@@ -1153,11 +1218,68 @@ RDP_TEST_CASE(moonlight_common_c_adapter_payload_callbacks_are_lease_guarded_and
     RDP_ASSERT(owner->waitForPhase(accepted.key, MoonlightSessionPhase::Running, 1s));
     RDP_ASSERT(callbacksAccepted.load());
     RDP_ASSERT_EQ(media->videoPayloads(), static_cast<std::size_t>(1));
+    RDP_ASSERT(media->videoPayloadKey() == accepted.key);
+    const auto payloadProfile = media->videoPayloadProfile();
+    RDP_ASSERT_EQ(payloadProfile.codec, h264Profile().codec);
+    RDP_ASSERT_EQ(payloadProfile.bitDepth, h264Profile().bitDepth);
+    RDP_ASSERT_EQ(payloadProfile.chroma, h264Profile().chroma);
+    RDP_ASSERT_EQ(media->videoPayloadFrameNumber(), 17);
     RDP_ASSERT_EQ(media->audioPayloads(), static_cast<std::size_t>(1));
     RDP_ASSERT_EQ(media->audioPayloadBytes(), static_cast<std::size_t>(4));
     RDP_ASSERT_EQ(adapter->stop(accepted.key, 1s), MoonlightStopStatus::Stopped);
-    int stale = 1;
-    RDP_ASSERT(MoonlightCommonCTestHarness::videoPayload(&stale) != 0);
+    std::uint8_t staleBytes[1] {0x03U};
+    MoonlightVideoFragmentView staleFragment;
+    auto stale = testVideoPayload(staleBytes, sizeof(staleBytes), staleFragment);
+    RDP_ASSERT(MoonlightCommonCTestHarness::videoPayload(stale) != 0);
+}
+
+RDP_TEST_CASE(moonlight_common_c_adapter_coalesces_idr_requests_until_accepted_idr) {
+    auto owner = MoonlightSessionOwner::createForTesting();
+    auto media = std::make_shared<FakeMediaPort>();
+    auto clock = std::make_shared<std::atomic<std::uint64_t>>(15500U);
+    std::array<std::atomic<int>, 4U> returns;
+    for (auto& value : returns) {
+        value.store(99);
+    }
+    MoonlightCommonCTestDriver driver {
+        [&]() {
+            if (!driveStagesWithNegotiation()) {
+                return -1;
+            }
+            std::uint8_t bytes[1] {0x01U};
+            MoonlightVideoFragmentView fragment;
+            auto unit = testVideoPayload(bytes, sizeof(bytes), fragment, 1);
+            media->setVideoSubmitResult(MoonlightVideoSubmitStatus::NeedIdr, true);
+            returns[0].store(MoonlightCommonCTestHarness::videoPayload(unit));
+            unit.frameNumber = 2;
+            returns[1].store(MoonlightCommonCTestHarness::videoPayload(unit));
+
+            media->setVideoSubmitResult(MoonlightVideoSubmitStatus::Accepted, false);
+            unit.frameNumber = 3;
+            unit.frameType = MoonlightVideoFrameType::IdR;
+            returns[2].store(MoonlightCommonCTestHarness::videoPayload(unit));
+
+            media->setVideoSubmitResult(MoonlightVideoSubmitStatus::Backpressure, true);
+            unit.frameNumber = 4;
+            unit.frameType = MoonlightVideoFrameType::Predicted;
+            returns[3].store(MoonlightCommonCTestHarness::videoPayload(unit));
+            return 0;
+        }, []() {},
+        []() {
+            (void)MoonlightCommonCTestHarness::videoStop();
+            (void)MoonlightCommonCTestHarness::audioStop();
+            (void)MoonlightCommonCTestHarness::videoCleanup();
+            (void)MoonlightCommonCTestHarness::audioCleanup();
+        }};
+    auto adapter = makeAdapter(*owner, std::move(driver), media, clock);
+    const auto accepted = adapter->start(makeRequest(clock->load(), 776U));
+    RDP_ASSERT(owner->waitForPhase(accepted.key, MoonlightSessionPhase::Running, 1s));
+    RDP_ASSERT_EQ(returns[0].load(), -1);
+    RDP_ASSERT_EQ(returns[1].load(), 0);
+    RDP_ASSERT_EQ(returns[2].load(), 0);
+    RDP_ASSERT_EQ(returns[3].load(), -1);
+    RDP_ASSERT_EQ(media->videoPayloads(), static_cast<std::size_t>(4U));
+    RDP_ASSERT_EQ(adapter->stop(accepted.key, 1s), MoonlightStopStatus::Stopped);
 }
 
 RDP_TEST_CASE(moonlight_common_c_adapter_contains_driver_exception_and_cleanses) {

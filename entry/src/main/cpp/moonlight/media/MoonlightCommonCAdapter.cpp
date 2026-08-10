@@ -26,6 +26,10 @@ constexpr std::size_t kMaximumAddressLength = 255U;
 constexpr std::size_t kMaximumVersionLength = 64U;
 constexpr std::size_t kMaximumRtspUrlLength = 2048U;
 constexpr std::size_t kMaximumAudioPayloadBytes = 1024U * 1024U;
+constexpr std::size_t kMaximumVideoFragments = 64U;
+constexpr std::size_t kMaximumVideoFragmentBytes = 4U * 1024U * 1024U;
+constexpr std::size_t kMaximumVideoAccessUnitBytes = 16U * 1024U * 1024U;
+constexpr std::size_t kMaximumVideoConfigurationBytes = 1024U * 1024U;
 constexpr std::uint64_t kMaximumDeadlineWindowMs = 10U * 60U * 1000U;
 constexpr std::int32_t kMinimumWidth = 320;
 constexpr std::int32_t kMaximumWidth = 7680;
@@ -65,6 +69,109 @@ static_assert(SCM_H264 == 0x00000001 && SCM_HEVC == 0x00000100 &&
               SCM_HEVC_REXT10_444 == 0x00100000 &&
               SCM_AV1_HIGH8_444 == 0x00200000 &&
               SCM_AV1_HIGH10_444 == 0x00400000);
+static_assert(BUFFER_TYPE_PICDATA == 0 && BUFFER_TYPE_SPS == 1 &&
+              BUFFER_TYPE_PPS == 2 && BUFFER_TYPE_VPS == 3);
+static_assert(FRAME_TYPE_PFRAME == 0 && FRAME_TYPE_IDR == 1);
+static_assert(COLORSPACE_REC_601 == 0 && COLORSPACE_REC_709 == 1 &&
+              COLORSPACE_REC_2020 == 2);
+static_assert(DR_OK == 0 && DR_NEED_IDR == -1);
+static_assert(static_cast<int>(MoonlightVideoBufferType::PictureData) ==
+              BUFFER_TYPE_PICDATA);
+static_assert(static_cast<int>(MoonlightVideoBufferType::SequenceParameterSet) ==
+              BUFFER_TYPE_SPS);
+static_assert(static_cast<int>(MoonlightVideoBufferType::PictureParameterSet) ==
+              BUFFER_TYPE_PPS);
+static_assert(static_cast<int>(MoonlightVideoBufferType::VideoParameterSet) ==
+              BUFFER_TYPE_VPS);
+static_assert(static_cast<int>(MoonlightVideoFrameType::Predicted) ==
+              FRAME_TYPE_PFRAME);
+static_assert(static_cast<int>(MoonlightVideoFrameType::IdR) == FRAME_TYPE_IDR);
+
+struct ProjectedCommonCVideoUnit final {
+    MoonlightVideoDecodeUnitView view;
+    std::array<MoonlightVideoFragmentView, kMaximumVideoFragments> fragments {};
+    std::array<const LENTRY*, kMaximumVideoFragments> sourceEntries {};
+};
+
+bool projectCommonCVideoUnit(PDECODE_UNIT source,
+                             const MoonlightSessionKey& key,
+                             const MoonlightStreamCodecProfile& profile,
+                             ProjectedCommonCVideoUnit& projected) noexcept {
+    projected = {};
+    if (source == nullptr || !key.valid() || source->frameNumber < 0 ||
+        (source->frameType != FRAME_TYPE_PFRAME &&
+         source->frameType != FRAME_TYPE_IDR) ||
+        source->fullLength <= 0 ||
+        static_cast<std::size_t>(source->fullLength) >
+            kMaximumVideoAccessUnitBytes ||
+        source->bufferList == nullptr ||
+        source->receiveTimeUs > source->enqueueTimeUs ||
+        source->colorspace > COLORSPACE_REC_2020) {
+        return false;
+    }
+
+    std::size_t fragmentCount = 0U;
+    std::size_t totalLength = 0U;
+    std::size_t configurationLength = 0U;
+    for (const LENTRY* entry = source->bufferList; entry != nullptr;
+         entry = entry->next) {
+        if (fragmentCount == kMaximumVideoFragments ||
+            std::find(projected.sourceEntries.begin(),
+                      projected.sourceEntries.begin() +
+                          static_cast<std::ptrdiff_t>(fragmentCount),
+                      entry) != projected.sourceEntries.begin() +
+                                   static_cast<std::ptrdiff_t>(fragmentCount) ||
+            entry->data == nullptr || entry->length <= 0) {
+            return false;
+        }
+        const auto length = static_cast<std::size_t>(entry->length);
+        if (length > kMaximumVideoFragmentBytes ||
+            length > kMaximumVideoAccessUnitBytes - totalLength ||
+            (entry->bufferType != BUFFER_TYPE_PICDATA &&
+             entry->bufferType != BUFFER_TYPE_SPS &&
+             entry->bufferType != BUFFER_TYPE_PPS &&
+             entry->bufferType != BUFFER_TYPE_VPS)) {
+            return false;
+        }
+        if (entry->bufferType != BUFFER_TYPE_PICDATA) {
+            if (length > kMaximumVideoConfigurationBytes - configurationLength) {
+                return false;
+            }
+            configurationLength += length;
+        }
+        projected.sourceEntries[fragmentCount] = entry;
+        projected.fragments[fragmentCount] = {
+            reinterpret_cast<const std::uint8_t*>(entry->data), length,
+            static_cast<MoonlightVideoBufferType>(entry->bufferType), nullptr};
+        if (fragmentCount != 0U) {
+            projected.fragments[fragmentCount - 1U].next =
+                &projected.fragments[fragmentCount];
+        }
+        totalLength += length;
+        ++fragmentCount;
+    }
+    if (fragmentCount == 0U ||
+        totalLength != static_cast<std::size_t>(source->fullLength)) {
+        return false;
+    }
+
+    projected.view.key = key;
+    projected.view.profile = profile;
+    projected.view.frameNumber = source->frameNumber;
+    projected.view.frameType =
+        static_cast<MoonlightVideoFrameType>(source->frameType);
+    projected.view.hostProcessingLatencyDeciMs =
+        source->frameHostProcessingLatency;
+    projected.view.receiveTimeUs = source->receiveTimeUs;
+    projected.view.enqueueTimeUs = source->enqueueTimeUs;
+    projected.view.presentationTimeUs = source->presentationTimeUs;
+    projected.view.rtpTimestamp = source->rtpTimestamp;
+    projected.view.fullLength = totalLength;
+    projected.view.bufferList = &projected.fragments[0];
+    projected.view.hdrActive = source->hdrActive;
+    projected.view.colorSpace = source->colorspace;
+    return true;
+}
 
 void secureWipe(void* pointer, std::size_t length) noexcept {
     auto* bytes = static_cast<volatile std::uint8_t*>(pointer);
@@ -540,7 +647,10 @@ public:
     void startVideo() noexcept override {}
     void stopVideo() noexcept override {}
     void cleanupVideo() noexcept override {}
-    int submitVideoPayload(const void*) noexcept override { return DR_NEED_IDR; }
+    MoonlightVideoSubmitResult submitVideoPayload(
+        const MoonlightVideoDecodeUnitView& decodeUnit) noexcept override {
+        return MoonlightVideoBridge::process().submit(decodeUnit);
+    }
     bool setupAudio(const MoonlightCommonCAudioSelection&) noexcept override { return false; }
     void startAudio() noexcept override {}
     void stopAudio() noexcept override {}
@@ -605,7 +715,8 @@ public:
     bool onVideoStart() noexcept;
     bool onVideoStop() noexcept;
     bool onVideoCleanup() noexcept;
-    int onVideoPayload(const void* opaqueDecodeUnit) noexcept;
+    int onVideoPayload(const MoonlightVideoDecodeUnitView& decodeUnit) noexcept;
+    int onCommonCVideoPayload(PDECODE_UNIT decodeUnit) noexcept;
     int onAudioInit(std::int32_t rawAudioConfiguration,
                     const MoonlightCommonCOpusConfig& opus) noexcept;
     bool onAudioStart() noexcept;
@@ -619,6 +730,7 @@ public:
     std::vector<MoonlightCommonCEvent> drainEvents() noexcept;
 #if defined(RDP_NATIVE_CALLBACK_TESTING)
     MoonlightCommonCTestWireSnapshot testWireSnapshot() const noexcept;
+    bool testFinalizing() const noexcept;
 #endif
 
 private:
@@ -683,6 +795,11 @@ private:
     void finalize(bool driverException = false) noexcept;
     void cleanseLocked() noexcept;
     bool lifecycleCallbackAllowedLocked() const noexcept;
+    bool bindVideoIdentityLocked(MoonlightVideoDecodeUnitView& decodeUnit) noexcept;
+    int requestVideoIdrOnceLocked() noexcept;
+    int mapVideoSubmitResultLocked(
+        const MoonlightVideoDecodeUnitView& decodeUnit,
+        const MoonlightVideoSubmitResult& result) noexcept;
 
     AdapterRuntime* const runtime_;
     MoonlightSessionOwner* const owner_;
@@ -713,6 +830,7 @@ private:
     bool videoStarted_ = false;
     bool videoStopped_ = false;
     bool videoCleaned_ = false;
+    bool videoIdrRequestPending_ = false;
     bool audioSetupActive_ = false;
     bool audioStarted_ = false;
     bool audioStopped_ = false;
@@ -788,10 +906,20 @@ bool routeVideoCleanup() noexcept {
     const auto invocation = routedInvocation();
     return invocation != nullptr && invocation->onVideoCleanup();
 }
-int routeVideoPayload(const void* payload) noexcept {
+#if defined(RDP_NATIVE_CALLBACK_TESTING)
+int routeVideoPayload(const MoonlightVideoDecodeUnitView& decodeUnit) noexcept {
     const auto invocation = routedInvocation();
-    return invocation == nullptr ? DR_NEED_IDR : invocation->onVideoPayload(payload);
+    return invocation == nullptr ? DR_NEED_IDR
+                                 : invocation->onVideoPayload(decodeUnit);
 }
+#endif
+#if !defined(RDP_TESTS_ONLY)
+int routeCommonCVideoPayload(PDECODE_UNIT decodeUnit) noexcept {
+    const auto invocation = routedInvocation();
+    return invocation == nullptr ? DR_NEED_IDR
+                                 : invocation->onCommonCVideoPayload(decodeUnit);
+}
+#endif
 int routeAudioInit(std::int32_t configuration,
                    const MoonlightCommonCOpusConfig& opus) noexcept {
     const auto invocation = routedInvocation();
@@ -835,7 +963,9 @@ int commonVideoSetup(int format, int width, int height, int redrawRate, void*, i
 void commonVideoStart() { (void)routeVideoStart(); }
 void commonVideoStop() { (void)routeVideoStop(); }
 void commonVideoCleanup() { (void)routeVideoCleanup(); }
-int commonVideoPayload(PDECODE_UNIT decodeUnit) { return routeVideoPayload(decodeUnit); }
+int commonVideoPayload(PDECODE_UNIT decodeUnit) {
+    return routeCommonCVideoPayload(decodeUnit);
+}
 int commonAudioInit(int configuration, const POPUS_MULTISTREAM_CONFIGURATION opus,
                     void*, int) {
     if (opus == nullptr) {
@@ -1744,6 +1874,7 @@ bool Invocation::onVideoStart() noexcept {
             video_.has_value() && !videoStarted_ && !videoCleaned_;
         if (valid) {
             videoStarted_ = true;
+            videoIdrRequestPending_ = false;
         }
     }
     if (!valid) {
@@ -1791,16 +1922,74 @@ bool Invocation::onVideoCleanup() noexcept {
     return true;
 }
 
-int Invocation::onVideoPayload(const void* opaqueDecodeUnit) noexcept {
+bool Invocation::bindVideoIdentityLocked(
+    MoonlightVideoDecodeUnitView& decodeUnit) noexcept {
+    if (!videoStarted_ || videoStopped_ || videoCleaned_ || !video_.has_value()) {
+        return false;
+    }
+    decodeUnit.key = key_;
+    decodeUnit.profile = video_->profile;
+    return true;
+}
+
+int Invocation::requestVideoIdrOnceLocked() noexcept {
+    if (videoIdrRequestPending_) {
+        return DR_OK;
+    }
+    videoIdrRequestPending_ = true;
+    return DR_NEED_IDR;
+}
+
+int Invocation::mapVideoSubmitResultLocked(
+    const MoonlightVideoDecodeUnitView& decodeUnit,
+    const MoonlightVideoSubmitResult& result) noexcept {
+    if (result.status == MoonlightVideoSubmitStatus::Accepted &&
+        decodeUnit.frameType == MoonlightVideoFrameType::IdR) {
+        videoIdrRequestPending_ = false;
+    }
+    return result.requestIdr ? requestVideoIdrOnceLocked() : DR_OK;
+}
+
+int Invocation::onVideoPayload(
+    const MoonlightVideoDecodeUnitView& decodeUnit) noexcept {
     auto lease = acquireCallback();
-    if (!lease.valid() || opaqueDecodeUnit == nullptr) { return DR_NEED_IDR; }
+    if (!lease.valid()) { return DR_NEED_IDR; }
+    auto exact = decodeUnit;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (!videoStarted_ || videoStopped_ || videoCleaned_) {
-            return DR_NEED_IDR;
+        if (!bindVideoIdentityLocked(exact)) {
+            return requestVideoIdrOnceLocked();
         }
     }
-    return media_->submitVideoPayload(opaqueDecodeUnit);
+    const auto result = media_->submitVideoPayload(exact);
+    std::lock_guard<std::mutex> lock(mutex_);
+    return mapVideoSubmitResultLocked(exact, result);
+}
+
+int Invocation::onCommonCVideoPayload(PDECODE_UNIT decodeUnit) noexcept {
+    auto lease = acquireCallback();
+    if (!lease.valid()) { return DR_NEED_IDR; }
+
+    MoonlightSessionKey exactKey;
+    MoonlightStreamCodecProfile exactProfile;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        MoonlightVideoDecodeUnitView identity;
+        if (!bindVideoIdentityLocked(identity)) {
+            return requestVideoIdrOnceLocked();
+        }
+        exactKey = identity.key;
+        exactProfile = identity.profile;
+    }
+
+    ProjectedCommonCVideoUnit projected;
+    if (!projectCommonCVideoUnit(decodeUnit, exactKey, exactProfile, projected)) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return requestVideoIdrOnceLocked();
+    }
+    const auto result = media_->submitVideoPayload(projected.view);
+    std::lock_guard<std::mutex> lock(mutex_);
+    return mapVideoSubmitResultLocked(projected.view, result);
 }
 
 int Invocation::onAudioInit(std::int32_t rawAudioConfiguration,
@@ -2053,6 +2242,11 @@ MoonlightCommonCTestWireSnapshot Invocation::testWireSnapshot() const noexcept {
     result.remoteInputKey = wire_.remoteInputKey;
     result.remoteInputIv = wire_.remoteInputIv;
     return result;
+}
+
+bool Invocation::testFinalizing() const noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return finalizing_;
 }
 #endif
 
@@ -2492,8 +2686,9 @@ int MoonlightCommonCTestHarness::videoSetup(std::int32_t format, std::int32_t wi
 bool MoonlightCommonCTestHarness::videoStart() noexcept { return routeVideoStart(); }
 bool MoonlightCommonCTestHarness::videoStop() noexcept { return routeVideoStop(); }
 bool MoonlightCommonCTestHarness::videoCleanup() noexcept { return routeVideoCleanup(); }
-int MoonlightCommonCTestHarness::videoPayload(const void* payload) noexcept {
-    return routeVideoPayload(payload);
+int MoonlightCommonCTestHarness::videoPayload(
+    const MoonlightVideoDecodeUnitView& decodeUnit) noexcept {
+    return routeVideoPayload(decodeUnit);
 }
 int MoonlightCommonCTestHarness::audioInit(
     std::int32_t configuration, const MoonlightCommonCOpusConfig& opus) noexcept {
@@ -2505,6 +2700,10 @@ bool MoonlightCommonCTestHarness::audioCleanup() noexcept { return routeAudioCle
 bool MoonlightCommonCTestHarness::audioPayload(const std::uint8_t* bytes,
                                                std::size_t count) noexcept {
     return routeAudioPayload(bytes, count);
+}
+bool MoonlightCommonCTestHarness::finalizing() noexcept {
+    const auto invocation = routedInvocation();
+    return invocation != nullptr && invocation->testFinalizing();
 }
 std::optional<MoonlightCommonCTestWireSnapshot>
 MoonlightCommonCTestHarness::wireSnapshot() noexcept {
