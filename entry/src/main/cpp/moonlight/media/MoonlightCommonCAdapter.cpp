@@ -25,7 +25,9 @@ constexpr std::size_t kMaximumCodecProfiles = 16U;
 constexpr std::size_t kMaximumAddressLength = 255U;
 constexpr std::size_t kMaximumVersionLength = 64U;
 constexpr std::size_t kMaximumRtspUrlLength = 2048U;
-constexpr std::size_t kMaximumAudioPayloadBytes = 1024U * 1024U;
+// AudioStream.c receives at most MAX_PACKET_SIZE (1400) bytes and uses the
+// exact null+zero callback shape for one packet-loss-concealment request.
+constexpr std::size_t kMaximumAudioPayloadBytes = 1400U;
 constexpr std::size_t kMaximumVideoFragments = 64U;
 constexpr std::size_t kMaximumVideoFragmentBytes = 4U * 1024U * 1024U;
 constexpr std::size_t kMaximumVideoAccessUnitBytes = 16U * 1024U * 1024U;
@@ -941,6 +943,13 @@ bool routeAudioPayload(const std::uint8_t* bytes, std::size_t count) noexcept {
     const auto invocation = routedInvocation();
     return invocation != nullptr && invocation->onAudioPayload(bytes, count);
 }
+void routeRawAudioPayload(const std::uint8_t* bytes, std::int32_t count) noexcept {
+    if (bytes == nullptr && count == 0) {
+        (void)routeAudioPayload(nullptr, 0U);
+    } else if (bytes != nullptr && count > 0) {
+        (void)routeAudioPayload(bytes, static_cast<std::size_t>(count));
+    }
+}
 
 #if !defined(RDP_TESTS_ONLY)
 void commonStageStarting(int stage) { (void)routeStageStarting(stage); }
@@ -984,10 +993,7 @@ void commonAudioStart() { (void)routeAudioStart(); }
 void commonAudioStop() { (void)routeAudioStop(); }
 void commonAudioCleanup() { (void)routeAudioCleanup(); }
 void commonAudioPayload(char* bytes, int count) {
-    if (count > 0) {
-        (void)routeAudioPayload(reinterpret_cast<const std::uint8_t*>(bytes),
-                                static_cast<std::size_t>(count));
-    }
+    routeRawAudioPayload(reinterpret_cast<const std::uint8_t*>(bytes), count);
 }
 
 class ProductDriverPort final : public DriverPort {
@@ -2104,8 +2110,10 @@ bool Invocation::onAudioCleanup() noexcept {
 bool Invocation::onAudioPayload(const std::uint8_t* bytes,
                                 std::size_t byteCount) noexcept {
     auto lease = acquireCallback();
-    if (!lease.valid() || bytes == nullptr || byteCount == 0U ||
-        byteCount > kMaximumAudioPayloadBytes) {
+    const bool plc = bytes == nullptr && byteCount == 0U;
+    const bool packet = bytes != nullptr && byteCount > 0U &&
+        byteCount <= kMaximumAudioPayloadBytes;
+    if (!lease.valid() || (!plc && !packet)) {
         return false;
     }
     {
@@ -2700,6 +2708,10 @@ bool MoonlightCommonCTestHarness::audioCleanup() noexcept { return routeAudioCle
 bool MoonlightCommonCTestHarness::audioPayload(const std::uint8_t* bytes,
                                                std::size_t count) noexcept {
     return routeAudioPayload(bytes, count);
+}
+void MoonlightCommonCTestHarness::audioPayloadRaw(
+    const std::uint8_t* bytes, std::int32_t count) noexcept {
+    routeRawAudioPayload(bytes, count);
 }
 bool MoonlightCommonCTestHarness::finalizing() noexcept {
     const auto invocation = routedInvocation();

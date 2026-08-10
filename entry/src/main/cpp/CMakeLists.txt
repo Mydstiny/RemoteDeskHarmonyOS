@@ -152,6 +152,12 @@ set(MOONLIGHT_VIDEO_DECODER_SINK_PLATFORM_SOURCE
 set(MOONLIGHT_VIDEO_SURFACE_LIFECYCLE_SOURCE
     moonlight/media/MoonlightVideoSurfaceLifecycle.cpp
 )
+set(MOONLIGHT_AUDIO_BRIDGE_SOURCE
+    moonlight/media/MoonlightAudioBridge.cpp
+)
+set(MOONLIGHT_AUDIO_BRIDGE_PLATFORM_SOURCE
+    moonlight/media/MoonlightAudioBridgePlatform.cpp
+)
 set(MOONLIGHT_SOURCES
     moonlight/core/MoonlightSessionOwner.cpp
 )
@@ -279,6 +285,7 @@ if(RDP_BUILD_TESTS)
         test/moonlight_video_bridge_test.cpp
         test/moonlight_video_decoder_sink_test.cpp
         test/moonlight_video_surface_lifecycle_test.cpp
+        test/moonlight_audio_bridge_test.cpp
         test/vnc_des_test.cpp
         test/vnc_cursor_protocol_test.cpp
         test/vnc_transport_policy_test.cpp
@@ -313,6 +320,8 @@ if(RDP_BUILD_TESTS)
         ${MOONLIGHT_VIDEO_BRIDGE_SOURCE}
         ${MOONLIGHT_VIDEO_DECODER_SINK_SOURCE}
         ${MOONLIGHT_VIDEO_SURFACE_LIFECYCLE_SOURCE}
+        ${MOONLIGHT_AUDIO_BRIDGE_SOURCE}
+        ${MOONLIGHT_AUDIO_BRIDGE_PLATFORM_SOURCE}
         vnc/vnc_des.cpp
         vnc/vnc_cursor_protocol.cpp
         vnc/vnc_rfb_protocol.cpp
@@ -329,13 +338,18 @@ if(RDP_BUILD_TESTS)
     target_compile_definitions(rdp_native_tests PRIVATE
         RDP_NATIVE_CALLBACK_TESTING=1
         RDP_TESTS_ONLY=1
+        RDP_MOONLIGHT_HOST_OPUS_TEST=1
     )
     # RDP_TESTS_ONLY returns before the production-wide C++ standard block
     # below. Keep the standalone host test target explicit so headers using
     # std::optional and other C++17 facilities compile consistently.
     target_compile_features(rdp_native_tests PRIVATE cxx_std_17)
     target_include_directories(rdp_native_tests PRIVATE ${OPENSSL_INCLUDE_DIR})
-    target_link_libraries(rdp_native_tests PRIVATE OpenSSL::SSL OpenSSL::Crypto ZLIB::ZLIB)
+    find_library(REMOTEDESK_HOST_OPUS_LIBRARY NAMES opus REQUIRED)
+    target_link_libraries(rdp_native_tests PRIVATE
+        OpenSSL::SSL OpenSSL::Crypto ZLIB::ZLIB
+        ${REMOTEDESK_HOST_OPUS_LIBRARY}
+    )
 endif()
 
 if(RDP_TESTS_ONLY)
@@ -642,6 +656,26 @@ set_target_properties(remotedesk_moonlight_video_decoder_sink PROPERTIES
     POSITION_INDEPENDENT_CODE ON
 )
 
+# N2-06 borrowed Opus callback -> bounded owned decode -> S16LE handoff.
+# The archive has no product/NAPI caller and deliberately does not include or
+# link the existing OHAudio owner. The platform translation unit consumes only
+# the already pinned libopus 1.5.2 artifact selected later in this file.
+add_library(remotedesk_moonlight_audio_bridge STATIC
+    ${MOONLIGHT_AUDIO_BRIDGE_SOURCE}
+    ${MOONLIGHT_AUDIO_BRIDGE_PLATFORM_SOURCE}
+)
+target_compile_features(remotedesk_moonlight_audio_bridge PRIVATE cxx_std_17)
+target_include_directories(remotedesk_moonlight_audio_bridge PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_compile_options(remotedesk_moonlight_audio_bridge PRIVATE
+    -fvisibility=hidden
+    -fvisibility-inlines-hidden
+)
+set_target_properties(remotedesk_moonlight_audio_bridge PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+)
+
 # 定义共享库目标
 add_library(rdpnapi SHARED ${ALL_SOURCES})
 target_compile_definitions(rdpnapi PRIVATE
@@ -649,6 +683,7 @@ target_compile_definitions(rdpnapi PRIVATE
     REMOTEDESK_BUILD_TIME_UTC="${REMOTEDESK_BUILD_TIME_UTC}"
 )
 target_link_libraries(rdpnapi PRIVATE
+    remotedesk_moonlight_audio_bridge
     remotedesk_moonlight_video_decoder_sink
     remotedesk_moonlight_video_bridge
     remotedesk_moonlight_common_c_adapter
@@ -668,6 +703,7 @@ target_link_options(rdpnapi PRIVATE
     "-Wl,--exclude-libs,libremotedesk_moonlight_common_c_adapter.a"
     "-Wl,--exclude-libs,libremotedesk_moonlight_video_bridge.a"
     "-Wl,--exclude-libs,libremotedesk_moonlight_video_decoder_sink.a"
+    "-Wl,--exclude-libs,libremotedesk_moonlight_audio_bridge.a"
 )
 
 # VNC full-screen ZRLE decode is production-rate code even in a signed Debug
@@ -938,6 +974,35 @@ if(NOT EXISTS ${RUSTDESK_OPUS_LIBRARY})
         "RustDesk: missing ${RUSTDESK_OPUS_LIBRARY}. "
         "Run scripts/build_rustdesk_ffi_ohos.sh ${OHOS_ARCH} before building the HAP.")
 endif()
+
+# Reuse the exact same pinned archive as RustDesk. This link-only edge does not
+# create another Opus build/version; the dormant Moonlight archive is not
+# pulled into rdpnapi until a future product media port references it.
+target_link_libraries(remotedesk_moonlight_audio_bridge PRIVATE
+    ${RUSTDESK_OPUS_LIBRARY}
+)
+
+# Build explicitly in N2-06 receipts. It forces the otherwise dormant platform
+# port to resolve the multistream create/decode/destroy/version ABI without
+# adding a product/NAPI caller or a file to the signed HAP.
+file(GENERATE
+    OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/moonlight_audio_bridge_link_probe.cpp"
+    CONTENT "#include \"moonlight/media/MoonlightAudioBridge.h\"\nint main() { return remotedesk::moonlight::MoonlightAudioBridge::productionLinkSmoke(); }\n"
+)
+add_executable(moonlight_audio_bridge_link_probe EXCLUDE_FROM_ALL
+    "${CMAKE_CURRENT_BINARY_DIR}/moonlight_audio_bridge_link_probe.cpp"
+)
+set_target_properties(moonlight_audio_bridge_link_probe PROPERTIES
+    EXPORT_COMPILE_COMMANDS OFF
+)
+target_compile_features(moonlight_audio_bridge_link_probe PRIVATE cxx_std_17)
+target_include_directories(moonlight_audio_bridge_link_probe PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_link_libraries(moonlight_audio_bridge_link_probe PRIVATE
+    remotedesk_moonlight_audio_bridge
+    ${RUSTDESK_OPUS_LIBRARY}
+)
 
 add_custom_command(
     OUTPUT ${RUSTDESK_FFI_LIB}

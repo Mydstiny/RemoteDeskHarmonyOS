@@ -294,6 +294,8 @@ public:
     static bool audioCleanup() noexcept;
     static bool audioPayload(const std::uint8_t* bytes,
                              std::size_t byteCount) noexcept;
+    static void audioPayloadRaw(const std::uint8_t* bytes,
+                                std::int32_t byteCount) noexcept;
     static bool finalizing() noexcept;
     static std::optional<MoonlightCommonCTestWireSnapshot> wireSnapshot() noexcept;
     static std::int32_t videoFormatForProfile(

@@ -96,9 +96,13 @@ public:
     void startAudio() noexcept override { ++audioStarts_; }
     void stopAudio() noexcept override { ++audioStops_; }
     void cleanupAudio() noexcept override { ++audioCleanups_; }
-    void submitAudioPayload(const std::uint8_t*, std::size_t byteCount) noexcept override {
+    void submitAudioPayload(const std::uint8_t* bytes,
+                            std::size_t byteCount) noexcept override {
         ++audioPayloads_;
         audioPayloadBytes_.fetch_add(byteCount);
+        if (bytes == nullptr && byteCount == 0U) {
+            ++audioPlcPayloads_;
+        }
     }
 
     void setReady(bool video, bool audio) noexcept {
@@ -135,6 +139,7 @@ public:
     }
     std::size_t audioPayloads() const noexcept { return audioPayloads_.load(); }
     std::size_t audioPayloadBytes() const noexcept { return audioPayloadBytes_.load(); }
+    std::size_t audioPlcPayloads() const noexcept { return audioPlcPayloads_.load(); }
 
 private:
     mutable std::mutex mutex_;
@@ -153,6 +158,7 @@ private:
     std::atomic<std::size_t> videoPayloads_ {0U};
     std::atomic<std::size_t> audioPayloads_ {0U};
     std::atomic<std::size_t> audioPayloadBytes_ {0U};
+    std::atomic<std::size_t> audioPlcPayloads_ {0U};
     std::optional<MoonlightCommonCVideoSelection> videoSelection_;
     std::optional<MoonlightCommonCAudioSelection> audioSelection_;
     MoonlightSessionKey videoPayloadKey_ {};
@@ -1205,6 +1211,12 @@ RDP_TEST_CASE(moonlight_common_c_adapter_payload_callbacks_are_lease_guarded_and
             callbacksAccepted.store(
                 MoonlightCommonCTestHarness::videoPayload(videoUnit) == 0 &&
                 MoonlightCommonCTestHarness::audioPayload(audio, sizeof(audio)));
+            MoonlightCommonCTestHarness::audioPayloadRaw(nullptr, 0);
+            MoonlightCommonCTestHarness::audioPayloadRaw(audio, 0);
+            MoonlightCommonCTestHarness::audioPayloadRaw(nullptr, 1);
+            std::array<std::uint8_t, 1401U> oversizedAudio {};
+            MoonlightCommonCTestHarness::audioPayloadRaw(
+                oversizedAudio.data(), static_cast<std::int32_t>(oversizedAudio.size()));
             return callbacksAccepted.load() ? 0 : -1;
         }, []() {},
         [&]() {
@@ -1224,8 +1236,9 @@ RDP_TEST_CASE(moonlight_common_c_adapter_payload_callbacks_are_lease_guarded_and
     RDP_ASSERT_EQ(payloadProfile.bitDepth, h264Profile().bitDepth);
     RDP_ASSERT_EQ(payloadProfile.chroma, h264Profile().chroma);
     RDP_ASSERT_EQ(media->videoPayloadFrameNumber(), 17);
-    RDP_ASSERT_EQ(media->audioPayloads(), static_cast<std::size_t>(1));
+    RDP_ASSERT_EQ(media->audioPayloads(), static_cast<std::size_t>(2));
     RDP_ASSERT_EQ(media->audioPayloadBytes(), static_cast<std::size_t>(4));
+    RDP_ASSERT_EQ(media->audioPlcPayloads(), static_cast<std::size_t>(1));
     RDP_ASSERT_EQ(adapter->stop(accepted.key, 1s), MoonlightStopStatus::Stopped);
     std::uint8_t staleBytes[1] {0x03U};
     MoonlightVideoFragmentView staleFragment;
