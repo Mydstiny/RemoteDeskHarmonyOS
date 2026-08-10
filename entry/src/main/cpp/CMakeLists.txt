@@ -134,6 +134,9 @@ set(MOONLIGHT_BRIDGE_SOURCE
 set(MOONLIGHT_NAPI_SOURCE
     moonlight/moonlight_napi.cpp
 )
+set(MOONLIGHT_STREAM_CONFIG_SOURCE
+    moonlight/media/MoonlightStreamConfig.cpp
+)
 set(MOONLIGHT_SOURCES
     moonlight/core/MoonlightSessionOwner.cpp
 )
@@ -255,6 +258,7 @@ if(RDP_BUILD_TESTS)
         test/moonlight_pairing_manager_test.cpp
         test/moonlight_host_control_test.cpp
         test/moonlight_native_bridge_test.cpp
+        test/moonlight_stream_config_test.cpp
         test/moonlight_session_owner_test.cpp
         test/vnc_des_test.cpp
         test/vnc_cursor_protocol_test.cpp
@@ -285,6 +289,7 @@ if(RDP_BUILD_TESTS)
         moonlight/pairing/MoonlightPairingManager.cpp
         moonlight/control/MoonlightHostControl.cpp
         ${MOONLIGHT_BRIDGE_SOURCE}
+        ${MOONLIGHT_STREAM_CONFIG_SOURCE}
         vnc/vnc_des.cpp
         vnc/vnc_cursor_protocol.cpp
         vnc/vnc_rfb_protocol.cpp
@@ -526,6 +531,25 @@ set_target_properties(remotedesk_moonlight_bridge PROPERTIES
     POSITION_INDEPENDENT_CODE ON
 )
 
+# N2-01 pure requested/effective stream-offer resolver. It has no common-c,
+# N-API, ArkTS, media, audio, input, network, or database include/link edge.
+# Cross-compiling the private archive proves both product ABIs while the lack of
+# a product caller keeps all runtime/release capability truth unchanged.
+add_library(remotedesk_moonlight_stream_config STATIC
+    ${MOONLIGHT_STREAM_CONFIG_SOURCE}
+)
+target_compile_features(remotedesk_moonlight_stream_config PRIVATE cxx_std_17)
+target_include_directories(remotedesk_moonlight_stream_config PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_compile_options(remotedesk_moonlight_stream_config PRIVATE
+    -fvisibility=hidden
+    -fvisibility-inlines-hidden
+)
+set_target_properties(remotedesk_moonlight_stream_config PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+)
+
 # 定义共享库目标
 add_library(rdpnapi SHARED ${ALL_SOURCES})
 target_compile_definitions(rdpnapi PRIVATE
@@ -533,6 +557,7 @@ target_compile_definitions(rdpnapi PRIVATE
     REMOTEDESK_BUILD_TIME_UTC="${REMOTEDESK_BUILD_TIME_UTC}"
 )
 target_link_libraries(rdpnapi PRIVATE
+    remotedesk_moonlight_stream_config
     remotedesk_moonlight_host_control
     remotedesk_moonlight_pairing
     remotedesk_moonlight_host_api
@@ -544,6 +569,7 @@ target_link_options(rdpnapi PRIVATE
     "-Wl,--exclude-libs,libremotedesk_moonlight_host_api.a"
     "-Wl,--exclude-libs,libremotedesk_moonlight_secure_identity.a"
     "-Wl,--exclude-libs,libremotedesk_moonlight_bridge.a"
+    "-Wl,--exclude-libs,libremotedesk_moonlight_stream_config.a"
 )
 
 # VNC full-screen ZRLE decode is production-rate code even in a signed Debug
