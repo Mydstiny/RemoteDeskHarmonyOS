@@ -333,6 +333,7 @@ import {
 import { RemoteProtocol } from '../services/RemoteSessionState';
 import {
   canUseRustDeskAdaptiveOrientation,
+  normalizeRustDeskTargetDevice,
   rustDeskOrientationPolicy
 } from '../services/RemoteOrientationPolicy';
 import {
@@ -1035,7 +1036,8 @@ struct RemoteDesktop {
   private touchGestureDone: boolean = false; // 双指手势已完成, 抑制剩余手指的多余点击
   private touchMaxFingers: number = 0;       // 本次手势最高手指数 (用于三指检测)
   private activeTouchPoints: Map<number, LocalPoint> = new Map<number, LocalPoint>();
-  private canvasTransform: CanvasTransform = { scale: 1, panX: 0, panY: 0 };
+  private canvasTransform: CanvasTransform = { scale: 1, panX: 0, panY: 0, rotation: 0 };
+  private canvasRotationQuarterTurns: number = 0;
   private canvasTransformInitialized: boolean = false;
   // A default display scale must be recalculated when the surface or stream
   // geometry changes.  Only a real local canvas pinch owns a persistent
@@ -1814,6 +1816,12 @@ struct RemoteDesktop {
   private isRustDeskSession(): boolean {
     const host: RemoteHost | null = this.pendingHost;
     return host !== null && host.protocol === 'rustdesk';
+  }
+
+  private isRustDeskPhoneSession(): boolean {
+    const host: RemoteHost | null = this.pendingHost;
+    return host !== null && host.protocol === 'rustdesk' &&
+      normalizeRustDeskTargetDevice(host.rustdeskTargetDevice) === 'phone';
   }
 
   private async refreshPhysicalKeyboardPresence(reason: string): Promise<void> {
@@ -4321,7 +4329,8 @@ struct RemoteDesktop {
         }
       }
     }
-    this.canvasTransform = baseCanvasTransform(mode, customScalePercent, viewport);
+    this.canvasTransform = baseCanvasTransform(mode, customScalePercent, viewport,
+      this.canvasRotationQuarterTurns);
     this.canvasTransformInitialized = true;
     this.canvasTransformGestureModified = false;
     this.applyCanvasTransform();
@@ -4333,9 +4342,11 @@ struct RemoteDesktop {
     }
     const viewport: CanvasViewport = this.currentCanvasViewport();
     this.canvasTransform = clampCanvasTransform(this.canvasTransform, viewport);
+    this.canvasRotationQuarterTurns = this.canvasTransform.rotation ?? 0;
     const submittedVersion: number = this.loader.setRendererCanvasTransform(this.rendererHandle,
       this.canvasTransform.scale,
-      this.canvasTransform.panX, this.canvasTransform.panY);
+      this.canvasTransform.panX, this.canvasTransform.panY,
+      this.canvasRotationQuarterTurns);
     if (Number.isFinite(submittedVersion) && submittedVersion > 0) {
       this.rendererCanvasTransformPendingVersion = submittedVersion;
     }
@@ -4343,6 +4354,24 @@ struct RemoteDesktop {
     // calculation mirrors GLRenderer::CalculateViewport and avoids a NAPI
     // read on every pinch update.
     this.updateRendererViewportCacheForCanvasTransform(viewport);
+  }
+
+  /** Rotate only the displayed RustDesk phone canvas; the peer keeps its native orientation. */
+  private rotateRustDeskRemoteCanvas(): void {
+    if (!this.isRustDeskPhoneSession()) {
+      promptAction.showToast({ message: '仅控制手机模式支持旋转远端画面', duration: 1400 });
+      return;
+    }
+    this.resetRustDeskInputAfterGeometryChange('rustdesk-canvas-rotation');
+    this.canvasRotationQuarterTurns = (this.canvasRotationQuarterTurns + 1) % 4;
+    this.resetCanvasToDisplayDefault(true);
+    this.requestRemoteCursorViewRefresh(true);
+    this.syncRemoteSystemPointer('rustdesk-canvas-rotation', this.remoteSurfaceHovered !== false, true);
+    const angle: number = this.canvasRotationQuarterTurns * 90;
+    promptAction.showToast({
+      message: angle === 0 ? '远端画面已恢复原方向' : '远端画面已旋转 ' + angle.toString() + '°',
+      duration: 1400
+    });
   }
 
   private shouldUseRustDeskRemoteAppTouchScale(): boolean {
@@ -5119,6 +5148,9 @@ struct RemoteDesktop {
       },
       onResetCanvasTransform: (): void => {
         this.resetCanvasTransformFromMenu();
+      },
+      onRotateRemoteDisplay: (): void => {
+        this.rotateRustDeskRemoteCanvas();
       },
       onOpenRustDeskResolution: (): void => {
         this.openRustDeskDisplayResolutionMenu();
@@ -7511,13 +7543,18 @@ struct RemoteDesktop {
   private updateRendererViewportCacheForCanvasTransform(viewport: CanvasViewport): void {
     const sourceWidth: number = Math.max(1, viewport.sourceWidth);
     const sourceHeight: number = Math.max(1, viewport.sourceHeight);
+    const displayedSourceWidth: number = this.canvasRotationQuarterTurns % 2 === 1 ?
+      sourceHeight : sourceWidth;
+    const displayedSourceHeight: number = this.canvasRotationQuarterTurns % 2 === 1 ?
+      sourceWidth : sourceHeight;
     const surfaceWidth: number = Math.max(1, viewport.surfaceWidth);
     const surfaceHeight: number = Math.max(1, viewport.surfaceHeight);
-    const contain: number = Math.min(surfaceWidth / sourceWidth, surfaceHeight / sourceHeight);
+    const contain: number = Math.min(surfaceWidth / displayedSourceWidth,
+      surfaceHeight / displayedSourceHeight);
     const physicalScale: number = contain * Math.max(0.01,
       Math.min(CANVAS_TRANSFORM_MAX_SCALE, this.canvasTransform.scale));
-    const viewportW: number = Math.max(1, Math.round(sourceWidth * physicalScale));
-    const viewportH: number = Math.max(1, Math.round(sourceHeight * physicalScale));
+    const viewportW: number = Math.max(1, Math.round(displayedSourceWidth * physicalScale));
+    const viewportH: number = Math.max(1, Math.round(displayedSourceHeight * physicalScale));
     this.rendererViewportCache = {
       transformVersion: this.rendererCanvasTransformPendingVersion,
       sourceWidth,
@@ -7782,17 +7819,20 @@ struct RemoteDesktop {
         surfaceWidthPx,
         surfaceHeightPx,
         surfaceWidthVp,
-        surfaceHeightVp
+        surfaceHeightVp,
+        rotation: this.canvasRotationQuarterTurns
       };
     }
 
     const sourceW: number = this.rendererSourceWidth > 0 ? this.rendererSourceWidth : remoteW;
     const sourceH: number = this.rendererSourceHeight > 0 ? this.rendererSourceHeight : remoteH;
-    const scaleW: number = surfaceWidthPx / sourceW;
-    const scaleH: number = surfaceHeightPx / sourceH;
+    const displayedSourceW: number = this.canvasRotationQuarterTurns % 2 === 1 ? sourceH : sourceW;
+    const displayedSourceH: number = this.canvasRotationQuarterTurns % 2 === 1 ? sourceW : sourceH;
+    const scaleW: number = surfaceWidthPx / displayedSourceW;
+    const scaleH: number = surfaceHeightPx / displayedSourceH;
     const scale: number = Math.min(scaleW, scaleH);
-    const viewportW: number = Math.max(1, sourceW * scale);
-    const viewportH: number = Math.max(1, sourceH * scale);
+    const viewportW: number = Math.max(1, displayedSourceW * scale);
+    const viewportH: number = Math.max(1, displayedSourceH * scale);
     return {
       remoteWidth: remoteW,
       remoteHeight: remoteH,
@@ -7803,7 +7843,8 @@ struct RemoteDesktop {
       surfaceWidthPx,
       surfaceHeightPx,
       surfaceWidthVp,
-      surfaceHeightVp
+      surfaceHeightVp,
+      rotation: this.canvasRotationQuarterTurns
     };
   }
 
@@ -9924,6 +9965,10 @@ struct RemoteDesktop {
       }
       this.rendererSourceWidth = 0;
       this.rendererSourceHeight = 0;
+      this.canvasRotationQuarterTurns = 0;
+      this.canvasTransform = { scale: 1, panX: 0, panY: 0, rotation: 0 };
+      this.canvasTransformInitialized = false;
+      this.canvasTransformGestureModified = false;
       this.vncGeometryReady = !isVnc;
       this.rustDeskDisplaySwitchState = idleRustDeskDisplaySwitchState();
       this.rustDeskDisplayCapabilities = EMPTY_RUSTDESK_DISPLAY_CAPABILITIES;
@@ -15241,6 +15286,7 @@ struct RemoteDesktop {
           reverseWheel: this.rustdeskReverseWheel,
           swapMouseButtons: this.rustdeskSwapMouseButtons,
           touchpadSpeed: this.rustdeskTouchpadSpeed,
+          rustDeskPhoneTarget: this.isRustDeskPhoneSession(),
           keyboardOpen: this.keyboardOpen,
           rustDeskDisplayCapabilities: this.rustDeskDisplayCapabilities,
           rustDeskDisplaySwitchState: this.rustDeskDisplaySwitchState,

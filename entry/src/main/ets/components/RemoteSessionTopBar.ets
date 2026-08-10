@@ -54,6 +54,7 @@ export interface RemoteSessionTopBarActions {
   onToggleFilePaste: (on: boolean) => void;
   onSetViewScaleMode: (mode: string) => void;
   onResetCanvasTransform: () => void;
+  onRotateRemoteDisplay: () => void;
   onOpenRustDeskResolution: () => void;
   onSelectRustDeskDisplay: (display: number) => void;
   onSetRustDeskDisplayResolution: (width: number, height: number) => void;
@@ -92,6 +93,7 @@ export struct RemoteSessionTopBar {
   @Prop reverseWheel: boolean = false;
   @Prop swapMouseButtons: boolean = false;
   @Prop touchpadSpeed: number = 1.0;
+  @Prop rustDeskPhoneTarget: boolean = false;
   @Prop keyboardOpen: boolean = false;
   @Prop rustDeskDisplayCapabilities: RustDeskDisplayCapabilities = EMPTY_RUSTDESK_DISPLAY_CAPABILITIES;
   @Prop rustDeskDisplaySwitchState: RustDeskDisplaySwitchState = EMPTY_RUSTDESK_DISPLAY_SWITCH_STATE;
@@ -123,6 +125,7 @@ export struct RemoteSessionTopBar {
     onToggleFilePaste: (_on: boolean): void => {},
     onSetViewScaleMode: (_mode: string): void => {},
     onResetCanvasTransform: (): void => {},
+    onRotateRemoteDisplay: (): void => {},
     onOpenRustDeskResolution: (): void => {},
     onSelectRustDeskDisplay: (_display: number): void => {},
     onSetRustDeskDisplayResolution: (_width: number, _height: number): void => {},
@@ -458,6 +461,11 @@ export struct RemoteSessionTopBar {
           this.menuItem('重新居中画面', 'displaySettings', (): void => {
             this.actions.onResetCanvasTransform();
           })
+          if (this.rustDeskPhoneTarget) {
+            this.menuItem('旋转远端画面（顺时针 90°）', 'rotateDisplay', (): void => {
+              this.actions.onRotateRemoteDisplay();
+            })
+          }
 
           if (this.hasRustDeskDisplayData()) {
             Column({ space: 6 }) {

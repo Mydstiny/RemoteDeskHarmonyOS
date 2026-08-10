@@ -95,6 +95,7 @@ export default function remoteSessionTopBarPolicyTest(): void {
       expect(rustDeskActionAvailability('refreshFrame').enabled).assertTrue();
       expect(rustDeskActionAvailability('fileTransfer').enabled).assertTrue();
       expect(rustDeskActionAvailability('ctrlAltDel').enabled).assertTrue();
+      expect(rustDeskActionAvailability('rotateDisplay').enabled).assertTrue();
     });
 
     it('unwired_official_actions_should_be_disabled_with_reason', 0, (): void => {

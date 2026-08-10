@@ -98,7 +98,8 @@ public:
     void SetOesSourceSize(int width, int height);
     /** Apply a local canvas transform. Pan uses a top-left surface origin.
      *  Returns the published transform version, or zero for invalid input. */
-    uint64_t SetCanvasTransform(double scale, double panX, double panY);
+    uint64_t SetCanvasTransform(double scale, double panX, double panY,
+                                int rotationQuarterTurns = 0);
     /** Register the decoder-owner wake callback; it must not touch EGL/GL. */
     void SetRedrawCallback(std::function<void()> callback);
     /** Register the active RDP session wake callback independently of decoder ownership. */
@@ -160,11 +161,13 @@ private:
     GLuint shaderProgram_;   // NV12→RGB 着色器程序
     GLint  samplerLocation_; // uniform samplerExternalOES 位置
     GLint  oesTransformLocation_; // NativeImage producer transform
+    GLint  canvasRotationLocation_; // uniform uCanvasRotation 位置
 
     // GL 资源 (原始 BGRA 像素路径 — RDP GDI)
     GLuint rawShaderProgram_;   // BGRA→RGB 着色器程序
     GLuint rawTexture_;         // BGRA 像素纹理 (GL_TEXTURE_2D)
     GLint  rawSamplerLocation_; // uniform sampler2D 位置
+    GLint  rawCanvasRotationLocation_; // uniform uCanvasRotation 位置
     GLuint uploadPbo_[2];        // double-buffered pixel-unpack staging
     size_t uploadPboCapacity_[2];
     int uploadPboIndex_;
@@ -205,11 +208,13 @@ private:
     double canvasScale_;
     double canvasPanX_;
     double canvasPanY_;
+    int canvasRotationQuarterTurns_;
     std::mutex transformPublishMutex_;
     std::atomic<uint64_t> canvasTransformVersion_;
     std::atomic<double> pendingCanvasScale_;
     std::atomic<double> pendingCanvasPanX_;
     std::atomic<double> pendingCanvasPanY_;
+    std::atomic<int> pendingCanvasRotationQuarterTurns_;
     uint64_t appliedCanvasTransformVersion_;
     // Lock-free viewport snapshot for ArkTS/NAPI coordinate mapping. The
     // render lifecycle mutex may be held across eglSwapBuffers(), so readers

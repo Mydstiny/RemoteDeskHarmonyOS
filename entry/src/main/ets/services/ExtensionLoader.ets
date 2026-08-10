@@ -881,9 +881,11 @@ export class ExtensionLoader {
     }
   }
 
-  setRendererCanvasTransform(handle: number, scale: number, panX: number, panY: number): number {
+  setRendererCanvasTransform(handle: number, scale: number, panX: number, panY: number,
+    rotationQuarterTurns: number = 0): number {
     try {
-      return rdpnapi.setRendererCanvasTransform(handle, scale, panX, panY) as number;
+      return rdpnapi.setRendererCanvasTransform(handle, scale, panX, panY,
+        rotationQuarterTurns) as number;
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] setRendererCanvasTransform: ' + JSON.stringify(err));
       return 0;

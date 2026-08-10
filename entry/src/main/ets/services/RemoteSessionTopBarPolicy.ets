@@ -127,6 +127,7 @@ export function rustDeskActionAvailability(actionId: string,
   }
   if (actionId === 'disconnect' || actionId === 'refreshFrame' || actionId === 'ctrlAltDel' ||
     actionId === 'toggleKeyboard' || actionId === 'displaySettings' ||
+    actionId === 'rotateDisplay' ||
     actionId === 'keyboardMouseSettings' || actionId === 'browseMode' ||
     actionId === 'togglePrivacyMode' || actionId === 'toggleAudio') {
     return capabilities.connect;
