@@ -4,8 +4,8 @@
 
 - Task: `moonlight-complete-upgrade`
 - Base: `main@aeb0cdac5`; branch: `codex/moonlight-complete-upgrade`
-- Phase: G0、D1-D3 local/dormant、N1-01～N1-08、N2-01～N2-03 已 checkpoint；
-  当前唯一代码任务是 N2-04 generation-fenced OH_AVCodec integration。
+- Phase: G0、D1-D3 local/dormant、N1-01～N1-08、N2-01～N2-04 已 checkpoint；
+  当前唯一代码任务是 N2-05 Surface 缺失/迁移/重绑生命周期。
 - Authoritative plan: `docs/superpowers/plans/2026-07-28-moonlight-harmonyos-complete-upgrade-plan.md`
 - Live ledger: `docs/codex/plans/2026-08-09-moonlight-implementation-ledger.md`
 
@@ -20,7 +20,7 @@
 - 11 个 feature inputs 默认全 false；六项 release snapshot 未放行。平台能力默认
   11 pending、controller rumble 1 unsupported、0 supported。
 - 两个允许的 `gpt-5.6-sol low` reviewer 名额均已使用，不得因压缩或新 checkpoint 重派；
-  N2-03 无第三份审查回执，状态机应诚实显示 `REVIEW_REQUIRED`。
+  N2-03/N2-04 无第三份审查回执，状态机应诚实显示 `REVIEW_REQUIRED`。
 
 ## Checkpoint Facts
 
@@ -40,32 +40,34 @@
   保存 SPS/PPS/VPS generation，并冻结 IDR/backpressure/stale/teardown。上游 `LENTRY` 无
   offset，`DECODE_UNIT` 无 decodeNumber；只使用 `frameNumber`。product sink unavailable，
   无 OH_AVCodec/Surface/NAPI/ArkTS/UI/cloud/audio/input，`firstFrameReady=false`。
+- N2-04 `bee0ac1da`：hidden pure decoder sink + OHOS port，复用既有 decoder/renderer
+  exact owner、callback gate、NativeImage 和 retire lane；H.264 config-IDR recreate、typed
+  admission 以及 output→NativeImage→actual EGL swap 三段首帧已冻结。archive 无
+  factory caller/NAPI/ArkTS/UI/cloud/audio/input，HAP runtime proof 缺失，产品仍不可达。
 
-## N2-03 Verification
+## N2-04 Verification
 
-- host normal、strict `-Werror`、完整 TSan：**506/506 PASS**；ASan/UBSan clean rebuild
-  连续三轮 **506/506 PASS**；scan-build 全目标零报告。
-- 两 ABI `rdpnapi` 与官方 adapter probe PASS；每 ABI 91 条永久 command：`rdpnapi=48`、
-  adapter=1、video bridge=1、probe=0。bridge 无平台媒体/NAPI include；`Limelight.h` 只在
-  adapter `.cpp`。
-- ABI 与 N2-02 基线逐项一致：arm64 defined/undefined 16103/705、x86_64 15634/703，
+- host normal、strict `-Werror`、完整 TSan：**515/515 PASS**；ASan/UBSan clean rebuild
+  连续三轮 **515/515 PASS**；scan-build 全目标零报告。
+- 两 ABI `rdpnapi`、sink archive 和 callback-entry carrier PASS；每 ABI 93 条永久 command：
+  `rdpnapi=48`、adapter=1、video bridge=1、decoder sink=2。
+- ABI 与 N2-03 基线逐项一致：arm64 defined/undefined 16103/705、x86_64 15634/703，
   两 ABI NAPI 子集各 147。
 - `default@OhosTestCompileArkTS` 与 signed `assembleHap` 均 BUILD SUCCESSFUL；HAP SHA-256
-  `d5311acdf2d8e02385cf7bf2d33bd737e971584058b0c90d9ef7c1a0bfa9d045`，423 paths 不变。
-- API 23 双 ABI platform probe、三 tree/117 files、TOTP 251、Light、vendor、diff 和
-  云表/FAB/truth 隔离检查均 PASS。
+  `65db3cb5d303dd37c86fbefac514fa2bc7f9749ba6a5487151a14648b752e1bd`，423 paths 不变。
+- API 23 双 ABI platform probe、三 tree/117 files、TOTP 251、vendor 与前置 Light receipt
+  通过；最终文档 Light/diff/state 在本 checkpoint 文档提交前重跑。
 
 ## Next
 
-1. 只执行主计划 15.7.11 的 N2-04：新增窄 Moonlight decoder sink，使 N2-03 owned AU
-   复用现有 `hw_decoder` registry、shared session owner、callback gate、Surface/renderer
-   和 deferred retire；bridge 继续不 include 平台/NAPI 头。
-2. 先冻结旧协议 create/bind/decode/rebind/detach/destroy、display、keyframe recovery 与锁序，
-   再增加最窄 exact-owner pure-native seam；不得调用全局 setter 抢占其他协议 owner。
-3. MVP 仅 runtime-proven H.264 8-bit 4:2:0。submit/PushInput/output callback 都不是首帧；
-   exact generation 的 output→NativeImage update→renderer owner ack 三段齐全才可发布 receipt。
-4. Product wiring、FAB、UI、云表及六项 truth 继续关闭；N2-05 才处理 Surface absent、PIP、
-   后台与 rebind policy。
+1. 只执行主计划 15.7.12 的 N2-05：新增 pure-native Surface lifecycle，组合 N2-04
+   sink/port；不得修改 `RemoteDesktop.ets`、PIP service、NAPI、云、音频或输入。
+2. 无 Surface 时保持 transport，payload 在复制/排队前 O(1) 丢弃且只合并一次 IDR；
+   temporary suspend 关闭 admission、drain callback、exact detach，但保留 decoder handle。
+3. 新 Surface 必须携带同一 key 和严格更新的 renderer/runtime-proof generation；exact rebind
+   后清首帧并等新 IDR。page→PIP→page、后台无 PIP、resize/rotation/fold 和 20 次循环均用
+   barrier/fake port 验证，不 sleep 猜测时序。
+4. S1-08 才做 ArkTS/PIP/后台装配；HAP runtime receipt 前 FAB、UI、云表和六项 truth关闭。
 
 ## Blockers
 
