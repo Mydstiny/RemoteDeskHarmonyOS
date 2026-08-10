@@ -1135,17 +1135,26 @@ void GLRenderer::CreateQuadGeometry() {
 }
 
 void GLRenderer::RenderFrame(GLuint textureId) {
-    RenderFrame(textureId, Render::IdentityNativeImageTransform());
+    (void)PresentFrame(textureId, Render::IdentityNativeImageTransform());
 }
 
 void GLRenderer::RenderFrame(
     GLuint textureId, const Render::NativeImageTransform& textureTransform) {
+    (void)PresentFrame(textureId, textureTransform);
+}
+
+RdpPresentMetrics GLRenderer::PresentFrame(
+    GLuint textureId, const Render::NativeImageTransform& textureTransform) {
+    RdpPresentMetrics metrics;
     std::lock_guard<std::mutex> lock(lifecycleMutex_);
     using clock = std::chrono::steady_clock;
     const auto drawBeginAt = clock::now();
     if (destroying_ || g_surfaceDetached.load(std::memory_order_acquire) || !initialized_) {
         OH_LOG_WARN(LOG_APP, "[GL] 渲染器未初始化, 跳过渲染");
-        return;
+        metrics.result = g_surfaceDetached.load(std::memory_order_acquire)
+            ? RdpPresentResult::SurfaceDetached
+            : RdpPresentResult::RendererNotReady;
+        return metrics;
     }
     const int oesWidth = oesSourceWidth_ > 0 ? oesSourceWidth_ : sourceWidth_;
     const int oesHeight = oesSourceHeight_ > 0 ? oesSourceHeight_ : sourceHeight_;
@@ -1155,7 +1164,8 @@ void GLRenderer::RenderFrame(
     // 绑定上下文
     // 清屏
     if (!MakeCurrent()) {
-        return;
+        metrics.result = RdpPresentResult::MakeCurrentFailed;
+        return metrics;
     }
     // SetRendererSourceSize() stages the current OES output dimensions
     // immediately before this callback. Do not clear them on a raw->OES
@@ -1209,7 +1219,6 @@ void GLRenderer::RenderFrame(
         OH_LOG_WARN(LOG_APP, "[GL] 渲染后 GL 错误: %{public}x", err);
     }
 
-    RdpPresentMetrics metrics;
     metrics.result = swapped ? RdpPresentResult::Presented : RdpPresentResult::SwapFailed;
     metrics.drawUs = std::chrono::duration_cast<std::chrono::microseconds>(
         drawAt - drawBeginAt).count();
@@ -1226,6 +1235,7 @@ void GLRenderer::RenderFrame(
                     width_, height_, viewportX, viewportY, viewportW, viewportH,
                     canvasScale_);
     }
+    return metrics;
 }
 
 void GLRenderer::Resize(int width, int height) {
@@ -2170,6 +2180,23 @@ bool RendererNapi::IsActiveRendererForOwnerUnderLease(
     return IsActiveRendererOwnerAndHandleLocked(handle, owner);
 }
 
+uint64_t RendererNapi::GetActiveRendererGenerationUnderOwnerLease(
+    int64_t handle, const Render::DecoderSessionIdentity& owner) {
+    std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+    const auto context = FindRendererContextLocked(handle);
+    return context && IsActiveRendererOwnerAndHandleLocked(handle, owner)
+        ? context->generation : 0U;
+}
+
+uint64_t RendererNapi::GetActiveRendererGeneration(
+    int64_t handle, const Render::DecoderSessionIdentity& owner) {
+    auto sinkLease = Render::SharedSessionSinkOwnerLease().acquire(owner);
+    if (!sinkLease) {
+        return 0U;
+    }
+    return GetActiveRendererGenerationUnderOwnerLease(handle, owner);
+}
+
 int64_t RendererNapi::GetActiveRendererHandle(
     const Render::DecoderSessionIdentity& owner) {
     auto sinkLease = Render::SharedSessionSinkOwnerLease().acquire(owner);
@@ -3057,21 +3084,47 @@ void RendererNapi::RenderNative(
 void RendererNapi::RenderNative(
     int64_t handle, const Render::DecoderSessionIdentity& owner, GLuint textureId,
     const Render::NativeImageTransform& textureTransform) {
+    (void)PresentNative(handle, owner, textureId, textureTransform);
+}
+
+RdpPresentMetrics RendererNapi::PresentNative(
+    int64_t handle, const Render::DecoderSessionIdentity& owner, GLuint textureId,
+    const Render::NativeImageTransform& textureTransform) {
+    RdpPresentMetrics metrics;
     auto sinkLease = Render::SharedSessionSinkOwnerLease().acquire(owner);
     if (!sinkLease) {
-        return;
+        metrics.result = RdpPresentResult::NoActiveRenderer;
+        return metrics;
     }
     std::shared_ptr<GLRenderer> renderer;
+    uint64_t generation = 0U;
     {
         std::lock_guard<std::mutex> lock(g_activeRendererMutex);
         if (!IsActiveRendererOwnerAndHandleLocked(handle, owner)) {
-            return;
+            metrics.result = RdpPresentResult::GenerationMismatch;
+            return metrics;
         }
-        renderer = AcquireRendererLocked(handle, true);
+        renderer = AcquireRendererLocked(handle, true, &generation);
     }
-    if (renderer) {
-        renderer->RenderFrame(textureId, textureTransform);
+    if (!renderer || generation == 0U) {
+        metrics.result = RdpPresentResult::NoActiveRenderer;
+        return metrics;
     }
+    metrics = renderer->PresentFrame(textureId, textureTransform);
+    metrics.generation = generation;
+    if (metrics.presented()) {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        const auto context = FindRendererContextLocked(handle);
+        if (!context || context->generation != generation ||
+            !IsActiveRendererOwnerAndHandleLocked(handle, owner)) {
+            // The swap happened on the retained old renderer, but it is not a
+            // presentation acknowledgement for the currently bound Surface.
+            // Legacy RenderNative callers still retain the actual draw; only
+            // the exact-owner proof is fenced out.
+            metrics.result = RdpPresentResult::GenerationMismatch;
+        }
+    }
+    return metrics;
 }
 
 void RendererNapi::SetActiveSourceSize(int width, int height) {

@@ -345,6 +345,18 @@ struct MoonlightVideoBridge::Impl final {
                         built.accessUnit->bytes.size(), built.accessUnit->fragments.size(),
                         configurationGeneration};
             }
+            if (decodeUnit.frameType == MoonlightVideoFrameType::IdR) {
+                built.accessUnit->codecConfigurationChanged =
+                    configurationGeneration == 0U || vps != built.vps ||
+                    sps != built.sps || pps != built.pps;
+                built.accessUnit->codecConfigurationGeneration =
+                    built.accessUnit->codecConfigurationChanged
+                        ? configurationGeneration + 1U
+                        : configurationGeneration;
+            } else {
+                built.accessUnit->codecConfigurationGeneration =
+                    configurationGeneration;
+            }
         }
 
         MoonlightVideoSinkStatus sinkStatus = MoonlightVideoSinkStatus::Failed;
@@ -368,13 +380,12 @@ struct MoonlightVideoBridge::Impl final {
             ++acceptedFrames;
             lastAcceptedFrameNumber = decodeUnit.frameNumber;
             if (decodeUnit.frameType == MoonlightVideoFrameType::IdR) {
-                const bool changed = configurationGeneration == 0U ||
-                    vps != built.vps || sps != built.sps || pps != built.pps;
-                if (changed) {
+                if (built.accessUnit->codecConfigurationChanged) {
                     vps = std::move(built.vps);
                     sps = std::move(built.sps);
                     pps = std::move(built.pps);
-                    ++configurationGeneration;
+                    configurationGeneration =
+                        built.accessUnit->codecConfigurationGeneration;
                 }
                 hasAcceptedIdr = true;
                 waitingForIdr = false;
@@ -388,6 +399,9 @@ struct MoonlightVideoBridge::Impl final {
             result.status = MoonlightVideoSubmitStatus::NeedIdr;
             ++droppedFrames;
             result.requestIdr = armIdrLocked();
+        } else if (sinkStatus == MoonlightVideoSinkStatus::Stale) {
+            result.status = MoonlightVideoSubmitStatus::Stale;
+            ++staleFrames;
         } else if (sinkStatus == MoonlightVideoSinkStatus::Unsupported) {
             result.status = MoonlightVideoSubmitStatus::Unsupported;
         } else {

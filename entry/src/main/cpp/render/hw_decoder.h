@@ -30,6 +30,12 @@
 #include <string>
 #include <thread>
 
+#if defined(__GNUC__) || defined(__clang__)
+#define REMOTEDESK_DECODER_INTERNAL __attribute__((visibility("hidden")))
+#else
+#define REMOTEDESK_DECODER_INTERNAL
+#endif
+
 // OH_AVCodec / NativeImage 前向声明
 struct OH_AVCodec;
 struct OH_AVFormat;
@@ -61,6 +67,28 @@ struct DecoderTelemetrySnapshot {
     bool lowLatencyEnabled = false;
 };
 
+// Private native presentation proof kept separate from the established
+// diagnostics DTO so existing RDP/RustDesk/VNC NAPI output and ABI remain
+// byte-for-byte stable.
+struct REMOTEDESK_DECODER_INTERNAL DecoderPresentationTelemetrySnapshot {
+    bool valid = false;
+    bool ready = false;
+    bool hardware = false;
+    int codec = 0;
+    int width = 0;
+    int height = 0;
+    DecoderSessionIdentity owner {};
+    int64_t decoderHandle = 0;
+    int64_t rendererHandle = 0;
+    uint64_t decoderGeneration = 0;
+    uint64_t displayGeneration = 0;
+    int display = -1;
+    uint64_t rendererGeneration = 0;
+    uint64_t renderedOutputBuffers = 0;
+    uint64_t nativeImageFrames = 0;
+    uint64_t rendererPresentedFrames = 0;
+};
+
 struct HardwareTelemetrySnapshot {
     size_t queueDepth = 0;
     uint64_t inputDroppedFrames = 0;
@@ -68,6 +96,7 @@ struct HardwareTelemetrySnapshot {
     uint64_t inputTruncated = 0;
     uint64_t renderOutputFailures = 0;
     uint64_t updateSurfaceFailures = 0;
+    uint64_t renderedOutputBuffers = 0;
     uint64_t outputFrames = 0;
     int64_t codecLatencyMs = 0;
     int64_t codecLatencyMaxMs = 0;
@@ -87,6 +116,13 @@ enum class DecoderError {
     INPUT_FAILED = -4,
     OUTPUT_FAILED = -5,
     FLUSH_FAILED = -6
+};
+
+enum class REMOTEDESK_DECODER_INTERNAL HardwareDecodeAdmission : uint8_t {
+    Queued,
+    Backpressure,
+    NeedKeyframe,
+    Failed,
 };
 
 /** 解码帧就绪回调 */
@@ -152,6 +188,9 @@ public:
      * @return 0=成功
      */
     int Decode(const uint8_t* data, size_t size, uint64_t timestamp, bool isKeyFrame = false);
+    REMOTEDESK_DECODER_INTERNAL int DecodeOwned(
+        const uint8_t* data, size_t size, uint64_t timestamp, bool isKeyFrame,
+        HardwareDecodeAdmission& admission);
 
     /** Bind the opaque DecoderContext token before OH_AVCodec is started. */
     bool SetCallbackIdentity(int64_t token, const DecoderSessionIdentity& owner,
@@ -285,6 +324,7 @@ private:
     std::atomic<uint64_t> keyframeRecoveryCount_ {0};
     std::atomic<uint64_t> inputTruncatedCount_ {0};
     std::atomic<uint64_t> renderOutputFailureCount_ {0};
+    std::atomic<uint64_t> renderedOutputBufferCount_ {0};
     std::atomic<uint64_t> updateSurfaceFailureCount_ {0};
     std::atomic<uint64_t> coalescedSurfaceNotificationCount_ {0};
     std::atomic<uint64_t> inputPushFailureCount_ {0};
@@ -389,12 +429,26 @@ namespace DecoderNapi {
     constexpr int kDecodeSoftwareFrameDropped = 3;
     constexpr int kDecodeSoftwareKeyframeRequired = 4;
     constexpr int kDecodeHardwareKeyframeRequired = 5;
+    enum class OwnedSubmitStatus : uint8_t {
+        Accepted,
+        Backpressure,
+        NeedKeyframe,
+        Stale,
+        Failed,
+    };
     napi_value Init(napi_env env, napi_value exports);
     int DecodeNative(int64_t handle, const VideoFrame& frame);
     int DecodeActiveNative(const DecoderSessionIdentity& owner, const VideoFrame& frame);
+    /** Exact-owner typed boundary for non-NAPI protocol sinks. */
+    REMOTEDESK_DECODER_INTERNAL OwnedSubmitStatus DecodeOwnedNative(
+        int64_t decoderHandle, uint64_t decoderGeneration,
+        uint64_t displayGeneration, const DecoderSessionIdentity& owner,
+        const VideoFrame& frame);
     bool IsActiveSessionOwner(const DecoderSessionIdentity& owner);
     bool IsActiveDisplayFrame(const DecoderSessionIdentity& owner, const VideoFrame& frame);
     DecoderTelemetrySnapshot GetActiveTelemetry(const DecoderSessionIdentity& expectedOwner);
+    REMOTEDESK_DECODER_INTERNAL DecoderPresentationTelemetrySnapshot
+    GetActivePresentationTelemetry(const DecoderSessionIdentity& expectedOwner);
     void SetActiveSessionId(const DecoderSessionIdentity& owner);
     void ClearActiveSessionId(const DecoderSessionIdentity& owner);
     bool SetActiveDisplay(const DecoderSessionIdentity& owner, int display);
@@ -418,8 +472,18 @@ namespace DecoderNapi {
     bool SetCallbackTestPipelineState(int64_t handle,
                                       const DecoderSessionIdentity& owner,
                                       bool attached, bool transitioning);
+    bool PublishCallbackTestDecoder(
+        int64_t handle, const DecoderSessionIdentity& owner);
+    OwnedSubmitStatus DecodeOwnedNativeForTesting(
+        int64_t decoderHandle, uint64_t decoderGeneration,
+        uint64_t displayGeneration, const DecoderSessionIdentity& owner,
+        const VideoFrame& frame);
+    DecoderPresentationTelemetrySnapshot GetActivePresentationTelemetryForTesting(
+        const DecoderSessionIdentity& expectedOwner);
     void DestroyCallbackTestDecoder(int64_t handle, const DecoderSessionIdentity& owner);
 #endif
 }
+
+#undef REMOTEDESK_DECODER_INTERNAL
 
 #endif // HW_DECODER_H

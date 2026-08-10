@@ -26,6 +26,12 @@
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 
+#if defined(__GNUC__) || defined(__clang__)
+#define REMOTEDESK_RENDER_INTERNAL __attribute__((visibility("hidden")))
+#else
+#define REMOTEDESK_RENDER_INTERNAL
+#endif
+
 /**
  * GLRenderer — OpenGL ES 3.0 渲染器
  *
@@ -54,6 +60,10 @@ public:
     void RenderFrame(GLuint textureId);
     void RenderFrame(GLuint textureId,
                      const Render::NativeImageTransform& textureTransform);
+    /** Present one OES frame and return the actual EGL swap result. */
+    REMOTEDESK_RENDER_INTERNAL RdpPresentMetrics PresentFrame(
+        GLuint textureId,
+        const Render::NativeImageTransform& textureTransform);
 
     /**
      * 渲染原始 BGRA 像素帧 (RDP GDI 直出路径 — 无需硬解)
@@ -269,6 +279,10 @@ namespace RendererNapi {
     void RenderNative(int64_t handle, const Render::DecoderSessionIdentity& owner,
                       GLuint textureId,
                       const Render::NativeImageTransform& textureTransform);
+    REMOTEDESK_RENDER_INTERNAL RdpPresentMetrics PresentNative(
+        int64_t handle, const Render::DecoderSessionIdentity& owner,
+        GLuint textureId,
+        const Render::NativeImageTransform& textureTransform);
     void SetActiveSourceSize(int width, int height);
     void SetActiveSourceSize(const Render::DecoderSessionIdentity& owner, int width, int height);
     RdpPresentationTarget GetActivePresentationTarget();
@@ -316,6 +330,10 @@ namespace RendererNapi {
     // reacquire the non-reentrant shared lease.
     bool IsActiveRendererForOwnerUnderLease(
         int64_t handle, const Render::DecoderSessionIdentity& owner);
+    REMOTEDESK_RENDER_INTERNAL uint64_t GetActiveRendererGenerationUnderOwnerLease(
+        int64_t handle, const Render::DecoderSessionIdentity& owner);
+    REMOTEDESK_RENDER_INTERNAL uint64_t GetActiveRendererGeneration(
+        int64_t handle, const Render::DecoderSessionIdentity& owner);
     /** Return the live renderer token for an exact session owner, or zero. */
     int64_t GetActiveRendererHandle(const Render::DecoderSessionIdentity& owner);
     void SetActiveSessionOwner(const Render::DecoderSessionIdentity& owner);
@@ -340,5 +358,7 @@ namespace RendererNapi {
     void DestroyRendererHandle(int64_t handle);
     void DestroyRendererHandle(int64_t handle, const Render::DecoderSessionIdentity& owner);
 }
+
+#undef REMOTEDESK_RENDER_INTERNAL
 
 #endif // GL_RENDERER_H

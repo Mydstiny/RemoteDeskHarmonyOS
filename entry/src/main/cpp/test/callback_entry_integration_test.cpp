@@ -332,11 +332,20 @@ RDP_TEST_CASE(oh_avcodec_production_entries_reject_old_generation) {
 RDP_TEST_CASE(oh_avcodec_callbacks_are_retained_during_pipeline_transition) {
     const Render::DecoderSessionIdentity owner {81041, 1, 8104101};
     ActivateOwner(owner);
+    DecoderNapi::SetActiveSessionId(owner);
+    RDP_ASSERT(DecoderNapi::SetActiveDisplay(owner, 0));
 
     int64_t handle = 0;
     auto decoder = DecoderNapi::RegisterCallbackTestDecoder(owner, handle);
     RDP_ASSERT(decoder != nullptr);
     RDP_ASSERT(handle > 0);
+    RDP_ASSERT(DecoderNapi::PublishCallbackTestDecoder(handle, owner));
+    const auto telemetry =
+        DecoderNapi::GetActivePresentationTelemetryForTesting(owner);
+    RDP_ASSERT(telemetry.valid);
+    RDP_ASSERT_EQ(telemetry.decoderHandle, handle);
+    RDP_ASSERT(telemetry.decoderGeneration > 0U);
+    RDP_ASSERT(telemetry.displayGeneration > 0U);
     RDP_ASSERT(DecoderNapi::SetCallbackTestPipelineState(handle, owner, false, true));
 
     auto contextOwner = decoder->CallbackContextForTesting();
@@ -350,8 +359,47 @@ RDP_TEST_CASE(oh_avcodec_callbacks_are_retained_during_pipeline_transition) {
     RDP_ASSERT_EQ(decoder->PendingInputBufferCountForTesting(), static_cast<size_t>(1));
     RDP_ASSERT_EQ(decoder->FrameAvailableCountForTesting(), static_cast<uint64_t>(1));
 
+    const std::array<uint8_t, 4> bytes {{0x00U, 0x00U, 0x01U, 0x65U}};
+    VideoFrame frame;
+    frame.data = bytes.data();
+    frame.size = bytes.size();
+    frame.width = 1920;
+    frame.height = 1080;
+    frame.codec = CodecType::H264;
+    frame.timestamp = 12345U;
+    frame.isKeyFrame = true;
+    frame.display = 0;
+
+    RDP_ASSERT_EQ(DecoderNapi::DecodeOwnedNativeForTesting(
+                      handle, telemetry.decoderGeneration,
+                      telemetry.displayGeneration, owner, frame),
+                  DecoderNapi::OwnedSubmitStatus::Backpressure);
+    RDP_ASSERT_EQ(DecoderNapi::DecodeActiveNative(owner, frame),
+                  DecoderNapi::kDecodeInactiveSession);
+
     RDP_ASSERT(DecoderNapi::SetCallbackTestPipelineState(handle, owner, true, false));
+    RDP_ASSERT_EQ(DecoderNapi::DecodeOwnedNativeForTesting(
+                      handle + 1, telemetry.decoderGeneration,
+                      telemetry.displayGeneration, owner, frame),
+                  DecoderNapi::OwnedSubmitStatus::Stale);
+    RDP_ASSERT_EQ(DecoderNapi::DecodeOwnedNativeForTesting(
+                      handle, telemetry.decoderGeneration + 1U,
+                      telemetry.displayGeneration, owner, frame),
+                  DecoderNapi::OwnedSubmitStatus::Stale);
+    RDP_ASSERT_EQ(DecoderNapi::DecodeOwnedNativeForTesting(
+                      handle, telemetry.decoderGeneration,
+                      telemetry.displayGeneration + 1U, owner, frame),
+                  DecoderNapi::OwnedSubmitStatus::Stale);
+    // This synthetic decoder is intentionally not initialized. The exact
+    // path must report a typed platform failure, never guess generic -1 as
+    // accepted.
+    RDP_ASSERT_EQ(DecoderNapi::DecodeOwnedNativeForTesting(
+                      handle, telemetry.decoderGeneration,
+                      telemetry.displayGeneration, owner, frame),
+                  DecoderNapi::OwnedSubmitStatus::Failed);
+
     DecoderNapi::DestroyCallbackTestDecoder(handle, owner);
+    DecoderNapi::ClearActiveSessionId(owner);
     DeactivateOwner(owner);
 }
 

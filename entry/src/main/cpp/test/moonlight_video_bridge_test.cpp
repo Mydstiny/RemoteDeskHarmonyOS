@@ -203,6 +203,9 @@ RDP_TEST_CASE(moonlight_video_bridge_copies_all_metadata_fragments_and_h264_conf
     RDP_ASSERT_EQ(owned->rtpTimestamp, unit.rtpTimestamp);
     RDP_ASSERT_EQ(owned->hdrActive, unit.hdrActive);
     RDP_ASSERT_EQ(owned->colorSpace, unit.colorSpace);
+    RDP_ASSERT_EQ(owned->codecConfigurationGeneration,
+                  static_cast<std::uint64_t>(1U));
+    RDP_ASSERT(owned->codecConfigurationChanged);
     RDP_ASSERT_EQ(owned->fragments[0].offset, static_cast<std::size_t>(0U));
     RDP_ASSERT_EQ(owned->fragments[1].offset, fixture.sps.size());
     RDP_ASSERT_EQ(owned->fragments[2].offset,
@@ -398,6 +401,9 @@ RDP_TEST_CASE(moonlight_video_bridge_configuration_generation_changes_only_on_ne
     auto same = fixture.idr(key, 2);
     RDP_ASSERT_EQ(bridge->submit(same).configurationGeneration,
                   static_cast<std::uint64_t>(1U));
+    RDP_ASSERT_EQ(sink->submitted(1U)->codecConfigurationGeneration,
+                  static_cast<std::uint64_t>(1U));
+    RDP_ASSERT(!sink->submitted(1U)->codecConfigurationChanged);
 
     sink->setStatus(MoonlightVideoSinkStatus::NeedIdr);
     fixture.sps[3] = 0x69U;
@@ -413,6 +419,9 @@ RDP_TEST_CASE(moonlight_video_bridge_configuration_generation_changes_only_on_ne
     const auto changedResult = bridge->submit(changed);
     RDP_ASSERT_EQ(changedResult.configurationGeneration,
                   static_cast<std::uint64_t>(2U));
+    RDP_ASSERT_EQ(sink->submitted(3U)->codecConfigurationGeneration,
+                  static_cast<std::uint64_t>(2U));
+    RDP_ASSERT(sink->submitted(3U)->codecConfigurationChanged);
     RDP_ASSERT_EQ(bridge->configuration(key)->sps[3], static_cast<std::uint8_t>(0x69U));
 }
 
@@ -438,16 +447,20 @@ RDP_TEST_CASE(moonlight_video_bridge_rejects_duplicate_reverse_stale_and_sink_fa
     stale.profile = hevc();
     RDP_ASSERT_EQ(bridge->submit(stale).status, MoonlightVideoSubmitStatus::Stale);
 
+    sink->setStatus(MoonlightVideoSinkStatus::Stale);
+    auto staleSink = fixture.predicted(key, 5);
+    RDP_ASSERT_EQ(bridge->submit(staleSink).status,
+                  MoonlightVideoSubmitStatus::Stale);
     sink->setStatus(MoonlightVideoSinkStatus::Unsupported);
-    auto unsupported = fixture.predicted(key, 5);
+    auto unsupported = fixture.predicted(key, 6);
     RDP_ASSERT_EQ(bridge->submit(unsupported).status,
                   MoonlightVideoSubmitStatus::Unsupported);
     sink->setStatus(MoonlightVideoSinkStatus::Failed);
-    auto failed = fixture.predicted(key, 6);
+    auto failed = fixture.predicted(key, 7);
     RDP_ASSERT_EQ(bridge->submit(failed).status,
                   MoonlightVideoSubmitStatus::SinkFailure);
     sink->throwOnSubmit_ = true;
-    auto exceptional = fixture.predicted(key, 7);
+    auto exceptional = fixture.predicted(key, 8);
     RDP_ASSERT_EQ(bridge->submit(exceptional).status,
                   MoonlightVideoSubmitStatus::SinkFailure);
 }

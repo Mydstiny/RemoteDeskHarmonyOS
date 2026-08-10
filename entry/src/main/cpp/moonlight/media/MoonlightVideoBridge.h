@@ -74,6 +74,10 @@ struct REMOTEDESK_MOONLIGHT_VIDEO_HIDDEN MoonlightOwnedVideoAccessUnit final {
     std::uint32_t rtpTimestamp = 0U;
     bool hdrActive = false;
     std::uint8_t colorSpace = 0U;
+    // Prospective decoder configuration generation for this AU. The bridge
+    // commits it only after the sink accepts the IDR that carries the change.
+    std::uint64_t codecConfigurationGeneration = 0U;
+    bool codecConfigurationChanged = false;
     std::vector<std::uint8_t> bytes;
     std::vector<MoonlightOwnedVideoFragment> fragments;
 };
@@ -82,6 +86,7 @@ enum class MoonlightVideoSinkStatus : std::uint8_t {
     Accepted,
     Backpressure,
     NeedIdr,
+    Stale,
     Unsupported,
     Failed,
 };
