@@ -782,6 +782,7 @@ export interface SessionConfig {
   rdpAllowUntrustedRoot?: boolean;
   rdpAllowHostMismatch?: boolean;
   rdpCertificateAllowUnpinnedOnce?: boolean;
+  rdpAllowStandardSecurityOnce?: boolean;
   rdpCertificateAllowTimeAnomalyOnce?: boolean;
   rdpGatewayAllowUntrustedRoot?: boolean;
   rdpGatewayAllowHostMismatch?: boolean;

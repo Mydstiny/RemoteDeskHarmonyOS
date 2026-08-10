@@ -126,6 +126,8 @@ inline constexpr const char* kRiskUntrustedRoot = "UNTRUSTED_ROOT";
 inline constexpr const char* kRiskHostnameMismatch = "HOSTNAME_MISMATCH";
 inline constexpr const char* kRiskCertificateChanged = "CERTIFICATE_CHANGED";
 inline constexpr const char* kRiskCertificateTimeInvalid = "CERTIFICATE_TIME_INVALID";
+inline constexpr const char* kRiskCertificateMetadataUnavailable =
+    "CERTIFICATE_METADATA_UNAVAILABLE";
 inline constexpr const char* kRiskStandardRdpSecurity = "STANDARD_RDP_SECURITY";
 inline constexpr const char* kRiskTlsProbeReset = "TLS_PROBE_RESET";
 inline constexpr const char* kRiskGatewayCertificate = "GATEWAY_CERTIFICATE_RISK";
@@ -164,6 +166,15 @@ inline bool messageDescribesTlsProbeReset(const std::string& message) {
         messageContains(message, "zero_return");
 }
 
+inline bool messageDescribesProbeTimeout(const std::string& message) {
+    return messageContains(message, "ETIMEDOUT") ||
+        messageContains(message, "Connection timed out") ||
+        messageContains(message, "connection timed out") ||
+        messageContains(message, "errno=" + std::to_string(ETIMEDOUT) + ":") ||
+        messageContains(message, "errno=" + std::to_string(EAGAIN) + ":") ||
+        messageContains(message, "errno=" + std::to_string(EWOULDBLOCK) + ":");
+}
+
 struct ProbeFailureClassification {
     std::string status = kUnavailable;
     std::vector<std::string> riskFlags;
@@ -174,13 +185,13 @@ inline ProbeFailureClassification classifyProbeFailure(int errorCode,
     ProbeFailureClassification classification;
     const bool reset = messageDescribesTlsProbeReset(message) ||
         messageContains(message, "errno=" + std::to_string(ECONNRESET) + ":");
+    const bool timedOut = messageDescribesProbeTimeout(message);
     switch (errorCode) {
         case -11:
         case -31:
             classification.status = kTransportFailed;
             break;
         case -12:
-        case -13:
         case -32:
             classification.status = kTransportFailed;
             break;
@@ -201,23 +212,43 @@ inline ProbeFailureClassification classifyProbeFailure(int errorCode,
             classification.status = kInconclusive;
             addUniqueRiskFlag(classification.riskFlags, kRiskStandardRdpSecurity);
             break;
+        case -13:
         case -14:
+            // TCP is already established when the manual X.224 probe writes
+            // or reads its negotiation PDU. Only an actual timeout is a
+            // transport failure. Other peer/protocol failures may be handled
+            // by FreeRDP differently and therefore remain advisory.
+            if (timedOut) {
+                classification.status = kTransportFailed;
+            } else {
+                classification.status = kInconclusive;
+                if (reset) {
+                    addUniqueRiskFlag(classification.riskFlags, kRiskTlsProbeReset);
+                }
+            }
+            break;
         case -17:
+        case -37:
+            classification.status = kInconclusive;
+            addUniqueRiskFlag(classification.riskFlags, kRiskCertificateMetadataUnavailable);
+            break;
         case -19:
         case -20:
         case -21:
         case -22:
         case -25:
         case -36:
-        case -37:
-        case -38:
             classification.status = kInconclusive;
             if (reset || errorCode == -22 || errorCode == -36) {
                 addUniqueRiskFlag(classification.riskFlags, kRiskTlsProbeReset);
             }
-            if (errorCode == -25 || errorCode == -38) {
+            if (errorCode == -25) {
                 addUniqueRiskFlag(classification.riskFlags, kRiskCertificateTimeInvalid);
             }
+            break;
+        case -38:
+            classification.status = kInconclusive;
+            addUniqueRiskFlag(classification.riskFlags, kRiskCertificateMetadataUnavailable);
             break;
         default:
             classification.status = kUnavailable;
@@ -237,6 +268,12 @@ inline ProbeFailureClassification classifyErrorCode(const std::string& errorCode
     } else if (errorCode == "E-RDP-GATEWAY-TUNNEL" ||
                errorCode == "E-RDP-GATEWAY-AUTH") {
         classification.status = kTransportFailed;
+    } else if (errorCode == "E-RDP-GATEWAY-AUTH-REQUIRED") {
+        // The preflight did not receive credentials needed to inspect the
+        // target. This is not an authentication rejection or tunnel failure;
+        // let the real connection collect or use credentials after the user
+        // acknowledges the incomplete diagnostic.
+        classification.status = kInconclusive;
     } else if ((errorCode == "E-RDP-GATEWAY-TLS" || errorCode == "E-RDP-TARGET-TLS") &&
                (messageContains(message, "Unable to create FreeRDP") ||
                 messageContains(message, "FreeRDP runtime"))) {
@@ -268,6 +305,53 @@ inline ProbeFailureClassification classifyErrorCode(const std::string& errorCode
         classification.status = kInconclusive;
     }
     return classification;
+}
+
+// This is a routing rule, not a certificate-trust rule. Preflight TLS and
+// certificate diagnostics must still reach the real FreeRDP callback after an
+// explicit user choice. Only failures that make a connection impossible before
+// any trust choice can block that handoff.
+inline bool preflightAllowsRealConnection(const std::string& status,
+                                          const std::string& errorCode,
+                                          const std::vector<std::string>& riskFlags = {}) {
+    // Certificate/TLS probe diagnostics are advisory even when an older
+    // caller incorrectly labels them transportFailed.  The real FreeRDP
+    // callback still requires the route-bound user decision; this merely
+    // prevents the inspection transport from becoming that decision.
+    if (errorCode == "E-RDP-TARGET-TLS" ||
+        errorCode == "E-RDP-GATEWAY-TLS" ||
+        errorCode == "E-RDP-TARGET-CERT" ||
+        errorCode == "E-RDP-GATEWAY-CERT" ||
+        errorCode == "E-RDP-CERT" ||
+        errorCode == "E-RDP-NEGOTIATION" ||
+        errorCode == "E-RDP-PREFLIGHT-NAPI" ||
+        errorCode == "E-RDP-PREFLIGHT-EXCEPTION" ||
+        errorCode == "E-RDP-BASTION-UNSUPPORTED" ||
+        errorCode == "E-RDP-GATEWAY-AWARE-UNAVAILABLE" ||
+        errorCode == "E-RDP-GATEWAY-AUTH-REQUIRED") {
+        return true;
+    }
+    if (hasRiskFlag(riskFlags, kRiskTlsProbeReset)) {
+      return true;
+    }
+    if (status == kCompleted || status == kInconclusive) {
+        return true;
+    }
+    if (status == kTransportFailed) {
+        return false;
+    }
+    return errorCode != "E-RDP-TARGET-DNS" &&
+        errorCode != "E-RDP-GATEWAY-DNS" &&
+        errorCode != "E-RDP-TARGET-TCP" &&
+        errorCode != "E-RDP-GATEWAY-TCP" &&
+        errorCode != "E-RDP-TARGET-TIMEOUT" &&
+        errorCode != "E-RDP-GATEWAY-TUNNEL" &&
+        errorCode != "E-RDP-GATEWAY-AUTH" &&
+        errorCode != "E-RDP-ENDPOINT" &&
+        errorCode != "E-RDP-GATEWAY-SNI" &&
+        errorCode != "E-RDP-ADAPTER" &&
+        errorCode != "E-RDP-CERT-ROUTE-STALE" &&
+        errorCode != "E-RDP-FREERDP-NEGOTIATION";
 }
 
 } // namespace RdpPreflightPolicy

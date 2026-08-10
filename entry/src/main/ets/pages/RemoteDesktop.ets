@@ -855,6 +855,7 @@ struct RemoteDesktop {
   // Transient RDP certificate decisions are handed from the preflight page
   // to the real FreeRDP callback path. They are never persisted in RemoteHost.
   private rdpCertificateAllowUnpinnedOnce: boolean = false;
+  private rdpAllowStandardSecurityOnce: boolean = false;
   private rdpCertificateAllowTimeAnomalyOnce: boolean = false;
   private rdpGatewayCertificateAllowUnpinnedOnce: boolean = false;
   private rdpGatewayCertificateAllowTimeAnomalyOnce: boolean = false;
@@ -8559,6 +8560,7 @@ struct RemoteDesktop {
       return host;
     }
     this.rdpCertificateAllowUnpinnedOnce = false;
+    this.rdpAllowStandardSecurityOnce = false;
     this.rdpCertificateAllowTimeAnomalyOnce = false;
     this.rdpGatewayCertificateAllowUnpinnedOnce = false;
     this.rdpGatewayCertificateAllowTimeAnomalyOnce = false;
@@ -8568,6 +8570,8 @@ struct RemoteDesktop {
       (params['rdpGatewayCertificateOneTimeFingerprintSha256'] as string) || '';
     const targetUnpinnedOnce: boolean =
       (params['rdpCertificateAllowUnpinnedOnce'] as boolean) === true;
+    const allowStandardSecurityOnce: boolean =
+      (params['rdpAllowStandardSecurityOnce'] as boolean) === true;
     const targetTimeAnomalyOnce: boolean =
       (params['rdpCertificateAllowTimeAnomalyOnce'] as boolean) === true;
     const gatewayUnpinnedOnce: boolean =
@@ -8575,7 +8579,7 @@ struct RemoteDesktop {
     const gatewayTimeAnomalyOnce: boolean =
       (params['rdpGatewayCertificateAllowTimeAnomalyOnce'] as boolean) === true;
     if (fingerprint.length === 0 && gatewayFingerprint.length === 0 &&
-      !targetUnpinnedOnce && !targetTimeAnomalyOnce &&
+      !targetUnpinnedOnce && !allowStandardSecurityOnce && !targetTimeAnomalyOnce &&
       !gatewayUnpinnedOnce && !gatewayTimeAnomalyOnce) {
       return host;
     }
@@ -8587,6 +8591,7 @@ struct RemoteDesktop {
     }
     this.rdpCertificateTransientRouteIdentity = routeIdentity;
     this.rdpCertificateAllowUnpinnedOnce = targetUnpinnedOnce;
+    this.rdpAllowStandardSecurityOnce = allowStandardSecurityOnce;
     this.rdpCertificateAllowTimeAnomalyOnce = targetTimeAnomalyOnce;
     this.rdpGatewayCertificateAllowUnpinnedOnce = gatewayUnpinnedOnce;
     this.rdpGatewayCertificateAllowTimeAnomalyOnce = gatewayTimeAnomalyOnce;
@@ -10043,6 +10048,7 @@ struct RemoteDesktop {
       let rdpTargetAllowUntrustedRoot: boolean = false;
       let rdpTargetAllowHostMismatch: boolean = false;
       let rdpTargetAllowUnpinnedOnce: boolean = false;
+      let rdpAllowStandardSecurityOnce: boolean = false;
       let rdpTargetAllowTimeAnomalyOnce: boolean = false;
       let rdpGatewayAllowUntrustedRoot: boolean = false;
       let rdpGatewayAllowHostMismatch: boolean = false;
@@ -10063,6 +10069,8 @@ struct RemoteDesktop {
         rdpTargetAllowHostMismatch = targetIdentityMatches && host.rdpCertificateAllowHostMismatch;
         rdpTargetAllowUnpinnedOnce = transientRouteMatches &&
           this.rdpCertificateAllowUnpinnedOnce;
+        rdpAllowStandardSecurityOnce = transientRouteMatches &&
+          this.rdpAllowStandardSecurityOnce;
         rdpTargetAllowTimeAnomalyOnce = transientRouteMatches &&
           this.rdpCertificateAllowTimeAnomalyOnce;
         if (routeMode === 'microsoft_rd_gateway') {
@@ -10079,7 +10087,8 @@ struct RemoteDesktop {
         }
         if (expectedRdpTargetFingerprint.length === 0 ||
           (routeMode === 'microsoft_rd_gateway' && expectedRdpGatewayFingerprint.length === 0)) {
-          const targetDecisionAvailable: boolean = rdpTargetAllowUnpinnedOnce;
+          const targetDecisionAvailable: boolean = rdpTargetAllowUnpinnedOnce ||
+            rdpAllowStandardSecurityOnce;
           const gatewayDecisionAvailable: boolean = routeMode !== 'microsoft_rd_gateway' ||
             rdpGatewayAllowUnpinnedOnce;
           if (targetDecisionAvailable && gatewayDecisionAvailable) {
@@ -10434,6 +10443,7 @@ struct RemoteDesktop {
         rdpAllowUntrustedRoot: rdpTargetAllowUntrustedRoot,
         rdpAllowHostMismatch: rdpTargetAllowHostMismatch,
         rdpCertificateAllowUnpinnedOnce: rdpTargetAllowUnpinnedOnce,
+        rdpAllowStandardSecurityOnce: rdpAllowStandardSecurityOnce,
         rdpCertificateAllowTimeAnomalyOnce: rdpTargetAllowTimeAnomalyOnce,
         rdpGatewayAllowUntrustedRoot: rdpGatewayAllowUntrustedRoot,
         rdpGatewayAllowHostMismatch: rdpGatewayAllowHostMismatch,

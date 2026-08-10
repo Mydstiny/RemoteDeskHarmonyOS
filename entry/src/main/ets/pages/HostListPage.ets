@@ -103,10 +103,14 @@ import {
   rdpGatewayTransportSummary,
   rdpCertificateLegacyProbeErrorCode,
   rdpCertificateLegacyProbeStage,
+  rdpCertificateEffectiveRiskFlags,
+  rdpCertificatePreflightAllowsRealConnection,
+  rdpCertificateRoutePreflightAllowsRealConnection,
   rdpCertificateValidityState,
   rdpCertificateRiskSummary,
   rdpPreflightStatusLabel,
   rdpCertificateWarningMessage,
+  shouldEnableStandardRdpSecurityOnce,
   shouldRouteRdpCertificateAfterSheetDisappear,
   shouldShowRdpCertificateProbeSheetBeforeProbe,
   shouldPersistRdpCertificateTrust
@@ -3669,7 +3673,8 @@ struct HostListPage {
       gatewayTransportNegotiated: 'unknown',
       gatewayTransportSelected: host.rdpGatewayTransport || 'auto',
       requiresGatewayAuth: false,
-      requiresUserDecision: info.ok,
+      requiresUserDecision: info.ok || rdpCertificatePreflightAllowsRealConnection(
+        info.preflightStatus, info.errorCode),
       gatewayCertificate: {
         present: false, rootTrusted: false, hostMismatch: false, flags: 0,
         host: host.gatewayHost, port: host.gatewayPort, stage: 'gateway',
@@ -3678,7 +3683,7 @@ struct HostListPage {
         notBeforeMs: 0, notAfterMs: 0, riskFlags: []
       },
       targetCertificate: {
-        present: info.ok,
+        present: info.ok && info.fingerprintSha256.length > 0,
         rootTrusted: info.rootTrusted,
         hostMismatch: info.hostMismatch,
         flags: info.flags,
@@ -3718,15 +3723,27 @@ struct HostListPage {
     target: RdpCertificateInfo, gateway: RdpCertificateInfo): string {
     const result: RdpPreflightResult | null = this.rdpCertificateRouteResult;
     const gatewayFlags: string[] = result === null ? gateway.riskFlags :
-      (result.gatewayRiskFlags || gateway.riskFlags || []);
+      rdpCertificateEffectiveRiskFlags(result.gatewayRiskFlags, gateway.riskFlags);
     const targetFlags: string[] = result === null ? target.riskFlags :
-      (result.targetRiskFlags || target.riskFlags || []);
+      rdpCertificateEffectiveRiskFlags(result.targetRiskFlags, target.riskFlags);
     const structuredRisk: string = rdpCertificateRiskSummary(
       gatewayFlags.concat(targetFlags));
-    const gatewayWarning: string = !gateway.rootTrusted ? 'Gateway 根证书未受信。' :
-      (gateway.hostMismatch ? 'Gateway 证书名称不匹配。' : 'Gateway 证书已通过名称和根证书检查。');
-    const targetWarning: string = !target.rootTrusted ? '目标 RDP 根证书未受信。' :
-      (target.hostMismatch ? '目标 RDP 证书名称不匹配。' : '目标 RDP 证书已通过名称和根证书检查。');
+    const gatewayRisk: string = rdpCertificateRiskSummary(gatewayFlags);
+    const targetRisk: string = rdpCertificateRiskSummary(targetFlags);
+    const gatewayWarning: string = !gateway.ok
+      ? (gatewayRisk.length > 0 ? 'Gateway 证书未取得，风险：' + gatewayRisk + '。'
+        : 'Gateway 证书尚未取得。')
+      : (gatewayRisk.length > 0 ? 'Gateway 风险：' + gatewayRisk + '。'
+        : (gateway.rootTrusted
+          ? (gateway.hostMismatch ? 'Gateway 证书名称不匹配。' : 'Gateway 证书链已受信。')
+          : 'Gateway 证书链不受信。'));
+    const targetWarning: string = !target.ok
+      ? (targetRisk.length > 0 ? '目标 RDP 证书未取得，风险：' + targetRisk + '。'
+        : '目标 RDP 证书尚未取得。')
+      : (targetRisk.length > 0 ? '目标 RDP 风险：' + targetRisk + '。'
+        : (target.rootTrusted
+          ? (target.hostMismatch ? '目标 RDP 证书名称不匹配。' : '目标 RDP 证书链已受信。')
+          : '目标 RDP 证书链不受信。'));
     return '连接将先经过 RD Gateway，再进入目标 RDP。' + gatewayWarning + targetWarning +
       (structuredRisk.length > 0 ? ' 风险：' + structuredRisk + '。' : '');
   }
@@ -4004,7 +4021,8 @@ struct HostListPage {
         this.rdpCertificateInfo = null;
         this.rdpCertificateState = this.classifyRdpGatewayCertificate(host, routeResult);
         const gatewayRiskSummary: string = rdpCertificateRiskSummary(
-          routeResult.gatewayRiskFlags || []);
+          rdpCertificateEffectiveRiskFlags(
+            routeResult.gatewayRiskFlags, routeResult.gatewayCertificate.riskFlags));
         this.rdpCertificateWarning = (gatewayRiskSummary || '已取得 Gateway 证书') +
           '。已在不发送账号密码的独立 TLS 连接中取得 Gateway 证书；' +
           '确认后才会使用凭据建立 Gateway 隧道并检查目标 RDP 证书。';
@@ -4018,8 +4036,12 @@ struct HostListPage {
         return;
       }
       if (!routeResult.ok || !info.ok || info.fingerprintSha256.length === 0) {
-        const inconclusive: boolean = routeResult.preflightStatus === 'inconclusive';
-        if (!inconclusive) {
+        // `requiresUserDecision` is diagnostic metadata from native code, not
+        // an admission control. Only a known transport/configuration failure
+        // may prevent the user from handing the route to real FreeRDP.
+        const advisory: boolean = rdpCertificateRoutePreflightAllowsRealConnection(
+          routeResult.preflightStatus, routeResult.errorCode, routeResult.riskFlags || []);
+        if (!advisory) {
           this.rdpCertificateInfo = info.ok ? info : null;
           this.rdpCertificateState = RdpCertificatePreflightState.ERROR;
           this.rdpCertificateErrorStage = routeResult.stage;
@@ -4079,7 +4101,9 @@ struct HostListPage {
         hostMismatch: info.hostMismatch,
         errorMessage: info.errorMessage,
         preflightStatus: routeResult.preflightStatus,
-        riskFlags: routeResult.targetRiskFlags || info.riskFlags
+        riskFlags: rdpCertificateEffectiveRiskFlags(
+          routeResult.targetRiskFlags, info.riskFlags),
+        requiresUserDecision: routeResult.requiresUserDecision
       };
       this.rdpCertificateState = classifyRdpCertificateProbe(probeView, {
         trustMode: host.rdpCertificateTrustMode,
@@ -4107,7 +4131,9 @@ struct HostListPage {
           hostMismatch: gatewayInfo.hostMismatch,
           errorMessage: gatewayInfo.errorMessage,
           preflightStatus: gatewayInfo.preflightStatus,
-          riskFlags: routeResult.gatewayRiskFlags || gatewayInfo.riskFlags
+          riskFlags: rdpCertificateEffectiveRiskFlags(
+            routeResult.gatewayRiskFlags, gatewayInfo.riskFlags),
+          requiresUserDecision: routeResult.requiresUserDecision
         }, {
           trustMode: oneTimeGatewayTrust ? RDP_CERTIFICATE_EXPLICIT_TRUST_MODE :
             host.rdpGatewayCertificateTrustMode,
@@ -4128,7 +4154,8 @@ struct HostListPage {
       this.rdpCertificateWarning = rdpCertificateWarningMessage(
         host.host,
         info.rootTrusted,
-        info.hostMismatch
+        info.hostMismatch,
+        rdpCertificateEffectiveRiskFlags(routeResult.targetRiskFlags, info.riskFlags)
       );
       if (gatewayInfo !== null) {
         this.rdpCertificateWarning = this.rdpCertificateWarningForRoute(host, info, gatewayInfo);
@@ -4152,13 +4179,57 @@ struct HostListPage {
         return;
       }
       const elapsed: number = Date.now() - startedAt;
-      this.rdpCertificateState = RdpCertificatePreflightState.ERROR;
-      this.rdpCertificateErrorStage = 'endpoint';
-      this.rdpCertificateErrorCode = 'E-RDP-PREFLIGHT-EXCEPTION';
-      this.rdpCertificateError = '探测 RDP 证书异常: ' + (e instanceof Error ? e.message : JSON.stringify(e));
+      const routeMode: string = this.rdpCertificateRouteMode(host);
+      const gatewayRoute: boolean = routeMode === 'microsoft_rd_gateway';
+      const exceptionMessage: string = e instanceof Error ? e.message : JSON.stringify(e);
+      const exceptionRiskFlags: string[] = gatewayRoute
+        ? ['GATEWAY_CERTIFICATE_RISK', 'TARGET_CERTIFICATE_RISK']
+        : ['TARGET_CERTIFICATE_RISK'];
+      const emptyRecord = (stage: string, endpointHost: string, endpointPort: number,
+        serverName: string): RdpCertificateRecord => ({
+        present: false, rootTrusted: false, hostMismatch: false, flags: 0,
+        host: endpointHost, port: endpointPort, stage, serverName,
+        commonName: '', subject: '', issuer: '', fingerprintSha256: '',
+        notBeforeMs: 0, notAfterMs: 0,
+        riskFlags: ['CERTIFICATE_METADATA_UNAVAILABLE']
+      });
+      const advisoryResult: RdpPreflightResult = {
+        ok: false,
+        preflightStatus: 'unavailable',
+        riskFlags: exceptionRiskFlags,
+        gatewayRiskFlags: gatewayRoute ? ['GATEWAY_CERTIFICATE_RISK'] : [],
+        targetRiskFlags: ['TARGET_CERTIFICATE_RISK'],
+        endpointMode: routeMode,
+        routeIdentity: rdpRouteIdentity(host),
+        generation,
+        requestId: host.id + ':' + generation.toString(),
+        stage: gatewayRoute ? 'gateway' : 'target',
+        errorCode: 'E-RDP-PREFLIGHT-EXCEPTION',
+        errorMessage: 'RDP 证书预检不可用：' + exceptionMessage,
+        gatewayTransportRequested: host.rdpGatewayTransport || 'auto',
+        gatewayTransportNegotiated: 'unknown',
+        gatewayTransportSelected: host.rdpGatewayTransport || 'auto',
+        requiresGatewayAuth: false,
+        requiresUserDecision: true,
+        gatewayCertificate: emptyRecord('gateway', host.gatewayHost,
+          host.gatewayPort > 0 ? host.gatewayPort : 443,
+          host.rdpGatewayServerName || host.gatewayHost),
+        targetCertificate: emptyRecord('target', host.host, host.port,
+          host.customHostname || host.host)
+      };
+      this.rdpCertificateRouteResult = advisoryResult;
+      this.rdpCertificateInfo = null;
+      this.rdpGatewayCertificateInfo = null;
+      this.rdpCertificateState = RdpCertificatePreflightState.TRUST_FIRST_TIME;
+      this.rdpCertificateErrorStage = advisoryResult.stage;
+      this.rdpCertificateErrorCode = advisoryResult.errorCode;
+      this.rdpCertificateError = advisoryResult.errorMessage;
+      this.rdpCertificateWarning = rdpPreflightStatusLabel(advisoryResult.preflightStatus) +
+        '：' + rdpCertificateRiskSummary(advisoryResult.riskFlags) +
+        '。最终是否继续由你决定。';
       hilog.error(0x0001, 'HostList',
         'RDP certificate probe exception host=' + maskHost(host.host) + ':' + host.port.toString() +
-          ' elapsedMs=' + elapsed.toString() + ' err=' + this.rdpCertificateError);
+          ' elapsedMs=' + elapsed.toString() + ' err=' + exceptionMessage);
       if (!this.showRdpCertificatePreflight) {
         this.openSheetSafely((): void => {
           this.openRemoteHostSheet(REMOTE_HOST_SHEET_RDP_CERTIFICATE, (): void => {
@@ -4222,14 +4293,17 @@ struct HostListPage {
     }
     const gateway: RdpCertificateInfo = this.rdpCertificateInfoFromRecord(
       result.gatewayCertificate);
-    const gatewayTimeAnomaly: boolean = (result.gatewayRiskFlags || []).indexOf(
+    const gatewayRiskFlags: string[] = rdpCertificateEffectiveRiskFlags(
+      result.gatewayRiskFlags, gateway.riskFlags);
+    const gatewayTimeAnomaly: boolean = gatewayRiskFlags.indexOf(
       'CERTIFICATE_TIME_INVALID') >= 0;
-    if (shouldPersistRdpCertificateTrust(decision) && gatewayTimeAnomaly) {
-      this.rdpCertificateState = RdpCertificatePreflightState.ERROR;
-      this.rdpCertificateErrorStage = 'gateway';
-      this.rdpCertificateErrorCode = 'E-RDP-GATEWAY-CERT';
-      this.rdpCertificateError =
-        'Gateway 证书时间异常，不能保存为长期信任；可选择继续一次 [E-RDP-GATEWAY-CERT]';
+    const gatewayMetadataUnavailable: boolean = gatewayRiskFlags.indexOf(
+      'CERTIFICATE_METADATA_UNAVAILABLE') >= 0;
+    const gatewayNeedsOneTimeDiagnosticAllowance: boolean =
+      gatewayTimeAnomaly || gatewayMetadataUnavailable;
+    if (shouldPersistRdpCertificateTrust(decision) && gateway.fingerprintSha256.trim() === '') {
+      this.rdpCertificateWarning =
+        '预检未取得可保存的 Gateway 证书；请选择“确认并检查目标”一次，或返回修改配置。';
       return;
     }
 
@@ -4248,25 +4322,36 @@ struct HostListPage {
       updated.rdpGatewayCertificateAllowUntrustedRoot = !gateway.rootTrusted;
       updated.rdpGatewayCertificateAllowHostMismatch = gateway.hostMismatch;
       if (!this.srv.updateHost(updated)) {
-        this.rdpCertificateState = RdpCertificatePreflightState.ERROR;
-        this.rdpCertificateErrorStage = 'gateway';
-        this.rdpCertificateErrorCode = 'E-RDP-CERT-PERSIST';
-        this.rdpCertificateError =
-          '无法保存 Gateway 证书信任，已停止发送凭据 [E-RDP-CERT-PERSIST]';
+        // Persistence is not a transport failure. Keep the observed risk and
+        // let the user explicitly fall back to a one-time connection.
+        this.rdpCertificateState = RdpCertificatePreflightState.TRUST_FIRST_TIME;
+        this.rdpCertificateErrorStage = '';
+        this.rdpCertificateErrorCode = '';
+        this.rdpCertificateError = '';
+        this.rdpCertificateWarning =
+          '无法保存 Gateway 证书信任；风险仍保留。可选择继续连接一次，或返回修改配置。';
         return;
       }
       probeHost = updated;
-      this.rdpGatewayPreflightOneTimeFingerprint = '';
-      this.rdpGatewayPreflightOneTimeAllowUntrustedRoot = false;
-      this.rdpGatewayPreflightOneTimeAllowHostMismatch = false;
-      this.rdpGatewayPreflightOneTimeAllowTimeAnomaly = false;
-      this.rdpGatewayPreflightOneTimeRouteIdentity = '';
+      // Persist the observed pin, but keep the time/metadata exception scoped
+      // to this probe and real connection. A later connection shows the risk
+      // again instead of silently accepting it.
+      this.rdpGatewayPreflightOneTimeFingerprint = gatewayNeedsOneTimeDiagnosticAllowance ?
+        gateway.fingerprintSha256 : '';
+      this.rdpGatewayPreflightOneTimeAllowUntrustedRoot =
+        gatewayNeedsOneTimeDiagnosticAllowance && !gateway.rootTrusted;
+      this.rdpGatewayPreflightOneTimeAllowHostMismatch =
+        gatewayNeedsOneTimeDiagnosticAllowance && gateway.hostMismatch;
+      this.rdpGatewayPreflightOneTimeAllowTimeAnomaly = gatewayNeedsOneTimeDiagnosticAllowance;
+      this.rdpGatewayPreflightOneTimeRouteIdentity = gatewayNeedsOneTimeDiagnosticAllowance ?
+        result.routeIdentity : '';
     } else {
       this.rdpGatewayPreflightOneTimeFingerprint = gateway.fingerprintSha256;
       this.rdpGatewayPreflightOneTimeAllowUntrustedRoot = !gateway.rootTrusted;
       this.rdpGatewayPreflightOneTimeAllowHostMismatch = gateway.hostMismatch;
       this.rdpGatewayPreflightOneTimeAllowTimeAnomaly =
-        result.gatewayRiskFlags.indexOf('CERTIFICATE_TIME_INVALID') >= 0;
+        gatewayRiskFlags.indexOf('CERTIFICATE_TIME_INVALID') >= 0 ||
+        gatewayRiskFlags.indexOf('CERTIFICATE_METADATA_UNAVAILABLE') >= 0;
       this.rdpGatewayPreflightOneTimeRouteIdentity = result.routeIdentity;
     }
 
@@ -4298,7 +4383,7 @@ struct HostListPage {
       // Continue without a one-time pin.  The real FreeRDP certificate
       // callback remains authoritative and can present a fresh risk to the
       // user when the advisory probe could not observe a certificate.
-      this.doRdpCertificateRoute(host, result);
+      this.doRdpCertificateRoute(host, result, true);
       return;
     }
     const routed: RemoteHost = this.applyRdpCertificateDecisionToHost(
@@ -4306,7 +4391,7 @@ struct HostListPage {
       result,
       RdpCertificatePreflightDecision.CONTINUE_ONCE
     );
-    this.doRdpCertificateRoute(routed, result);
+    this.doRdpCertificateRoute(routed, result, true);
   }
 
   private doRdpCertificateTrust(host: RemoteHost): void {
@@ -4317,17 +4402,12 @@ struct HostListPage {
         host, result, RdpCertificatePreflightDecision.TRUST);
       return;
     }
-    if (!this.rdpCertificateInfo) {
+    if (!this.rdpCertificateInfo || this.rdpCertificateInfo.fingerprintSha256.trim() === '') {
       this.rdpCertificateWarning = '预检未取得可保存的证书，不能保存未知证书；请选择“继续连接”一次。';
       return;
     }
     if (!this.rdpCertificateResultMatchesLiveRoute(host, result)) {
       this.rejectStaleRdpCertificateResult();
-      return;
-    }
-    if ((result.targetRiskFlags || []).indexOf('CERTIFICATE_TIME_INVALID') >= 0 ||
-      (result.gatewayRiskFlags || []).indexOf('CERTIFICATE_TIME_INVALID') >= 0) {
-      this.rdpCertificateWarning = '证书时间异常不能保存为长期信任；请选择“继续连接”一次。';
       return;
     }
     const updated: RemoteHost = this.applyRdpCertificateDecisionToHost(
@@ -4336,18 +4416,22 @@ struct HostListPage {
       RdpCertificatePreflightDecision.TRUST
     );
     if (!this.srv.updateHost(updated)) {
-      this.rdpCertificateState = RdpCertificatePreflightState.ERROR;
-      this.rdpCertificateErrorStage = result.endpointMode === 'microsoft_rd_gateway' ?
-        'gateway' : 'target';
-      this.rdpCertificateErrorCode = 'E-RDP-CERT-PERSIST';
-      this.rdpCertificateError =
-        '无法保存 RDP 证书信任，已停止连接 [E-RDP-CERT-PERSIST]';
+      // Saving a pin can fail independently of connection viability. Leave
+      // the user at the decision point rather than converting it into a
+      // preflight veto.
+      this.rdpCertificateState = RdpCertificatePreflightState.TRUST_FIRST_TIME;
+      this.rdpCertificateErrorStage = '';
+      this.rdpCertificateErrorCode = '';
+      this.rdpCertificateError = '';
+      this.rdpCertificateWarning =
+        '无法保存 RDP 证书信任；风险仍保留。可选择继续连接一次，或返回修改配置。';
       return;
     }
     this.doRdpCertificateRoute(updated);
   }
 
-  private doRdpCertificateRoute(host: RemoteHost, oneTimeResult?: RdpPreflightResult): void {
+  private doRdpCertificateRoute(host: RemoteHost, oneTimeResult?: RdpPreflightResult,
+    userApprovedAdvisory: boolean = false): void {
     if (this.rdpCertificateClosing) {
       return;
     }
@@ -4362,17 +4446,38 @@ struct HostListPage {
     if (diagnosticResult) {
       const target = diagnosticResult.targetCertificate;
       const gateway = diagnosticResult.gatewayCertificate;
+      const targetRiskFlags: string[] = rdpCertificateEffectiveRiskFlags(
+        diagnosticResult.targetRiskFlags, target.riskFlags);
+      const gatewayRiskFlags: string[] = rdpCertificateEffectiveRiskFlags(
+        diagnosticResult.gatewayRiskFlags, gateway.riskFlags);
+      const preflightAllowsRealConnection: boolean =
+        rdpCertificateRoutePreflightAllowsRealConnection(
+          diagnosticResult.preflightStatus, diagnosticResult.errorCode,
+          diagnosticResult.riskFlags || []);
       params['rdpCertificateOneTimeRouteIdentity'] = diagnosticResult.routeIdentity;
       params['rdpCertificatePreflightStatus'] = diagnosticResult.preflightStatus;
       params['rdpCertificatePreflightRiskFlags'] = diagnosticResult.riskFlags;
       params['rdpGatewayCertificatePreflightRiskFlags'] = diagnosticResult.gatewayRiskFlags;
+      const standardSecurityRisk: boolean =
+        targetRiskFlags.indexOf(
+          'STANDARD_RDP_SECURITY') >= 0;
+      // A diagnostic risk must not enable Standard RDP Security by itself.
+      // Only the explicit Continue Once action can set this transient flag.
+      params['rdpAllowStandardSecurityOnce'] = shouldEnableStandardRdpSecurityOnce(
+        userApprovedAdvisory, targetRiskFlags.length > 0
+          ? targetRiskFlags : diagnosticResult.riskFlags);
       if (target.present && target.fingerprintSha256.length > 0) {
         params['rdpCertificateOneTimeFingerprintSha256'] = target.fingerprintSha256;
         params['rdpCertificateOneTimeAllowUntrustedRoot'] = !target.rootTrusted;
         params['rdpCertificateOneTimeAllowHostMismatch'] = target.hostMismatch;
         params['rdpCertificateAllowTimeAnomalyOnce'] =
-          (diagnosticResult.targetRiskFlags || []).indexOf('CERTIFICATE_TIME_INVALID') >= 0;
-      } else if (diagnosticResult.preflightStatus === 'inconclusive') {
+          targetRiskFlags.indexOf('CERTIFICATE_TIME_INVALID') >= 0 ||
+          targetRiskFlags.indexOf('CERTIFICATE_METADATA_UNAVAILABLE') >= 0;
+        params['rdpCertificateAllowUnpinnedOnce'] = userApprovedAdvisory &&
+          targetRiskFlags.indexOf(
+            'CERTIFICATE_METADATA_UNAVAILABLE') >= 0;
+      } else if (userApprovedAdvisory && preflightAllowsRealConnection &&
+        !standardSecurityRisk) {
         params['rdpCertificateAllowUnpinnedOnce'] = true;
       }
       if (gateway.present && gateway.fingerprintSha256.length > 0) {
@@ -4380,9 +4485,13 @@ struct HostListPage {
         params['rdpGatewayCertificateOneTimeAllowUntrustedRoot'] = !gateway.rootTrusted;
         params['rdpGatewayCertificateOneTimeAllowHostMismatch'] = gateway.hostMismatch;
         params['rdpGatewayCertificateAllowTimeAnomalyOnce'] =
-          (diagnosticResult.gatewayRiskFlags || []).indexOf('CERTIFICATE_TIME_INVALID') >= 0;
-      } else if (diagnosticResult.endpointMode === 'microsoft_rd_gateway' &&
-        diagnosticResult.preflightStatus === 'inconclusive') {
+          gatewayRiskFlags.indexOf('CERTIFICATE_TIME_INVALID') >= 0 ||
+          gatewayRiskFlags.indexOf('CERTIFICATE_METADATA_UNAVAILABLE') >= 0;
+        params['rdpGatewayCertificateAllowUnpinnedOnce'] = userApprovedAdvisory &&
+          gatewayRiskFlags.indexOf(
+            'CERTIFICATE_METADATA_UNAVAILABLE') >= 0;
+      } else if (userApprovedAdvisory && preflightAllowsRealConnection &&
+        diagnosticResult.endpointMode === 'microsoft_rd_gateway') {
         params['rdpGatewayCertificateAllowUnpinnedOnce'] = true;
       }
     }
@@ -12240,21 +12349,20 @@ struct HostListPage {
 
   private hostAddSheetHeight(): SheetSize | number {
     const isLongFlow: boolean = this.isVncAddSheet() || this.modernAddProtocol === 'ssh';
+    if (this.isVncAddSheet() || this.modernAddProtocol === 'ssh') {
+      return SheetSize.FIT_CONTENT;
+    }
     if (isLongFlow && this.breakpoint === 'sm') {
-      // Keep the footer reachable while allowing the body to scroll. The
-      // bounds avoid an oversized sheet on tall phones and a clipped one on
-      // compact devices/landscape windows.
-      const availableHeight: number = Math.max(420,
-        this.windowH - this.topSafeHeightVp() - 24);
-      return Math.min(760, availableHeight);
+      return SheetSize.FIT_CONTENT;
     }
     return isLongFlow ? SheetSize.LARGE : SheetSize.FIT_CONTENT;
   }
 
   private hostAddSheetKeyboardAvoidMode(): SheetKeyboardAvoidMode {
-    return this.isVncAddSheet()
-      ? SheetKeyboardAvoidMode.RESIZE_ONLY
-      : SheetKeyboardAvoidMode.TRANSLATE_AND_SCROLL;
+    if (this.isVncAddSheet() && this.breakpoint !== 'sm') {
+      return SheetKeyboardAvoidMode.RESIZE_ONLY;
+    }
+    return SheetKeyboardAvoidMode.TRANSLATE_AND_SCROLL;
   }
 
   @Builder hostAddSheetContent() {
@@ -14543,14 +14651,10 @@ struct HostListPage {
         });
         return;
       }
-      if ((result.targetRiskFlags || []).indexOf('CERTIFICATE_TIME_INVALID') >= 0 ||
-        (result.gatewayRiskFlags || []).indexOf('CERTIFICATE_TIME_INVALID') >= 0) {
-        promptAction.showToast({
-          message: '证书时间异常，不能直接保存为长期信任；请在连接前选择继续一次',
-          duration: 2800
-        });
-        return;
-      }
+      const targetRiskFlags: string[] = rdpCertificateEffectiveRiskFlags(
+        result.targetRiskFlags, result.targetCertificate.riskFlags);
+      const gatewayRiskFlags: string[] = rdpCertificateEffectiveRiskFlags(
+        result.gatewayRiskFlags, result.gatewayCertificate.riskFlags);
       if (!this.rdpCertificateResultMatchesLiveRoute(host, result)) {
         promptAction.showToast({
           message: 'RDP 路由在证书刷新期间发生变化，请重新获取 [E-RDP-CERT-ROUTE-STALE]',
@@ -14585,8 +14689,18 @@ struct HostListPage {
         updated.rdpGatewayCertificateAllowHostMismatch = gateway.hostMismatch;
         updated.rdpGatewayCertificateRouteIdentity = result.routeIdentity;
       }
-      this.srv.updateHost(updated);
-      promptAction.showToast({ message: 'RDP 证书已更新并信任', duration: 1500 });
+      if (!this.srv.updateHost(updated)) {
+        promptAction.showToast({ message: 'RDP 证书已读取，但保存信任失败', duration: 2200 });
+        return;
+      }
+      const riskSummary: string = rdpCertificateRiskSummary(
+        targetRiskFlags.concat(gatewayRiskFlags));
+      promptAction.showToast({
+        message: riskSummary.length > 0 ?
+          'RDP 证书已更新并信任；仍需注意：' + riskSummary :
+          'RDP 证书已更新并信任',
+        duration: riskSummary.length > 0 ? 2800 : 1500
+      });
     } catch (err) {
       promptAction.showToast({ message: '重新获取异常: ' + JSON.stringify(err), duration: 2500 });
     } finally {

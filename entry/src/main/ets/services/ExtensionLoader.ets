@@ -53,6 +53,7 @@ import {
   errResult
 } from './ExtensionResult';
 import { shouldBindSurfaceBeforeForegroundRenderer } from './RemoteForegroundRestorePolicy';
+import { rdpRouteIdentityForValues } from '../model/RemoteHost';
 
 const TAG = 'ExtensionLoader';
 const DOMAIN = 0x0013;
@@ -402,19 +403,36 @@ export class ExtensionLoader {
       hilog.error(DOMAIN, TAG,
         '[ExtensionLoader] probeRdpCertificateRouteAsync: ' + JSON.stringify(err));
       const route = request.route;
+      const endpointMode: string = route.endpointMode ??
+        (route.gatewayHost ? 'microsoft_rd_gateway' : 'direct_rdp');
+      const routeIdentity: string = rdpRouteIdentityForValues(
+        endpointMode,
+        route.targetHost,
+        route.targetPort ?? 3389,
+        route.targetServerName ?? route.targetHost,
+        route.gatewayHost ?? '',
+        route.gatewayPort ?? 443,
+        route.gatewayServerName ?? route.gatewayHost ?? '',
+        route.gatewayTransport ?? 'auto');
+      const gatewayRisk: string[] = endpointMode === 'microsoft_rd_gateway'
+        ? ['GATEWAY_CERTIFICATE_RISK'] : [];
+      const targetRisk: string[] = ['TARGET_CERTIFICATE_RISK'];
       const emptyCertificate: RdpCertificateRecord = {
         present: false, rootTrusted: false, hostMismatch: false, flags: 0,
         host: route.targetHost, port: route.targetPort ?? 3389,
         stage: 'target', serverName: route.targetServerName ?? route.targetHost,
         commonName: '', subject: '', issuer: '', fingerprintSha256: '',
-        notBeforeMs: 0, notAfterMs: 0, riskFlags: []
+        notBeforeMs: 0, notAfterMs: 0,
+        riskFlags: ['CERTIFICATE_METADATA_UNAVAILABLE']
       };
       return {
         ok: false,
         preflightStatus: 'unavailable',
-        riskFlags: [], gatewayRiskFlags: [], targetRiskFlags: [],
-        endpointMode: route.endpointMode ?? (route.gatewayHost ? 'microsoft_rd_gateway' : 'direct_rdp'),
-        routeIdentity: '',
+        riskFlags: gatewayRisk.concat(targetRisk),
+        gatewayRiskFlags: gatewayRisk,
+        targetRiskFlags: targetRisk,
+        endpointMode,
+        routeIdentity,
         generation: request.generation ?? 0,
         requestId: request.requestId ?? '',
         stage: 'endpoint',
@@ -424,13 +442,14 @@ export class ExtensionLoader {
         gatewayTransportNegotiated: 'unknown',
         gatewayTransportSelected: route.gatewayTransport ?? 'auto',
         requiresGatewayAuth: false,
-        requiresUserDecision: false,
+        requiresUserDecision: true,
         gatewayCertificate: {
           present: false, rootTrusted: false, hostMismatch: false, flags: 0,
           host: route.gatewayHost ?? '', port: route.gatewayPort ?? 443,
           stage: 'gateway', serverName: route.gatewayServerName ?? route.gatewayHost ?? '',
           commonName: '', subject: '', issuer: '', fingerprintSha256: '',
-          notBeforeMs: 0, notAfterMs: 0, riskFlags: []
+          notBeforeMs: 0, notAfterMs: 0,
+          riskFlags: ['CERTIFICATE_METADATA_UNAVAILABLE']
         },
         targetCertificate: emptyCertificate
       } as RdpPreflightResult;

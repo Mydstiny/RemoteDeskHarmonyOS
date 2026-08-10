@@ -3754,6 +3754,7 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     getBool("rdpAllowUntrustedRoot", cfg.rdpAllowUntrustedRoot);
     getBool("rdpAllowHostMismatch", cfg.rdpAllowHostMismatch);
     getBool("rdpCertificateAllowUnpinnedOnce", cfg.rdpCertificateAllowUnpinnedOnce);
+    getBool("rdpAllowStandardSecurityOnce", cfg.rdpAllowStandardSecurityOnce);
     getBool("rdpCertificateAllowTimeAnomalyOnce", cfg.rdpCertificateAllowTimeAnomalyOnce);
     getBool("rdpGatewayAllowUntrustedRoot", cfg.rdpGatewayAllowUntrustedRoot);
     getBool("rdpGatewayAllowHostMismatch", cfg.rdpGatewayAllowHostMismatch);
