@@ -3,7 +3,7 @@
 > 文档状态：第四次深度审计完成；已于 2026-08-09 从 G0 开始实施
 > 首次评估日期：2026-07-28；二次完成性审计日期：2026-07-29；第三次 HarmonyOS 人因/UI 审计日期：2026-08-01；第四次源码对齐日期：2026-08-08
 > 当前实施基线：任务 `moonlight-complete-upgrade`；分支 `codex/moonlight-complete-upgrade`；基线 `main@aeb0cdac5`，与 `origin/main` 一致
-> 当前实施进度：G0、D1、D2 本地/休眠策略、D3 本地生命周期以及 N1-01～N1-08 已形成 checkpoint；当前唯一代码任务为纯函数、dormant 的 N2-01 stream-config/offer 合同。HarmonyOS 虚拟设备已验证 owner-store v5、19/20/16 列三表和幂等 schema receipt；AGC 三环境、HAP/AppSpawn secure-identity/transport runtime、真实 Sunshine 与 ARM64 实机回执仍缺失，故云注册、用户入口和运行时能力保持 fail closed，六个发布 truth 仍全 false
+> 当前实施进度：G0、D1、D2 本地/休眠策略、D3 本地生命周期、N1-01～N1-08 以及 dormant N2-01 stream-config/offer 已形成 checkpoint；当前唯一代码任务为 N2-02 单一 common-c adapter 与 RTSP/callback owner。HarmonyOS 虚拟设备已验证 owner-store v5、19/20/16 列三表和幂等 schema receipt；AGC 三环境、HAP/AppSpawn secure-identity/transport/media runtime、真实 Sunshine 与 ARM64 实机回执仍缺失，故云注册、用户入口和运行时能力保持 fail closed，六个发布 truth 仍全 false
 > 适用仓库：/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS
 > 上游实施锁定：2026-08-09 已只读复核并固定 moonlight-common-c `e41355ea01670fd4c830b384009d31dd0339a705`（ENet `aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1`、nanors `b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a`）、Moonlight Android `f10085f552b367cf7203007693d91c322a0a2936`、Moonlight Qt `2e13ed9977bc31c73caf8428f08f58d793313ece`、Sunshine 测试 pin `v2026.808.164219` / `25c06d79b54f3d092d3fedd5f5ba44989f394692`；完整哈希、许可证和能力证据见 `docs/codex/plans/2026-08-09-moonlight-implementation-ledger.md`
 > 原评估轮次仅更新计划文件；2026-08-09 起的实施变更严格按第 15 节任务 ID、仓库门禁和 fail-closed feature policy 推进。
@@ -3242,11 +3242,163 @@ RTSP，不创建 decoder/audio/input，不扩张 NAPI，也不让入口可用。
     能作为 private command 出现。独立 checkpoint 后 N2-02 才能建立唯一 common-c
     adapter/RTSP callback owner，且产品 capability truth 仍不得因纯配置合同变为 true。
 
+#### 15.7.9 N2-01 已完成事实与 N2-02 唯一执行合同（2026-08-10）
+
+N2-01 已由代码 checkpoint `db5865c53` 完成。新增
+`MoonlightStreamConfig.h/.cpp` 只暴露 project-owned C++17 值类型，在 private/hidden
+archive 中被 arm64-v8a 与 x86_64 产品命令实际编译；没有 include `Limelight.h`、NAPI、
+ArkTS、OH_AVCodec、OHAudio、页面、RDB 或云 SDK，也没有运行时 caller。resolver 对
+requested、D1 effective、既有 adjustment、owner/session/host/settings generation 以及
+host/platform/network/display 四类带 source/version/expiry 的 capability snapshot 做一次
+确定性交集，同时生成同源 launch projection。结果严格区分 invalid、pending、confirmation、
+offer-ready 与 rejected；`selectedCodec` 在所有 N2-01 路径都 absent。
+
+36 个 focused native case 覆盖固定预设、host/custom、奇数与越界尺寸、H.264 MVP、
+forced/auto codec、HDR/10-bit/YUV444、fps/display/launch 三字段、bitrate/FEC、local/remote/
+IPv6/NAT64 packet、计费确认、audio disabled/stereo/surround、三种 encryption、stale
+generation、adjustment、同源 projection 和 deterministic/malformed corpus，使全量测试达到
+**476/476 PASS**，ASan/UBSan 连续三轮也为 **476/476 PASS**。strict `-Werror` 与 analyzer
+零诊断；每 ABI 由 88 条增至 89 条命令且只增加 1 条 stream-config command，48 条
+`rdpnapi` 命令不变。两 ABI defined/undefined/NAPI inventories 仍精确为 arm64
+16103/705/716、x86_64 15634/703/711，与 N1-08 逐项相同；signed HAP 仍为 423 路径，
+SHA-256 为 `095700a5af1823645689d913b4c995f5cca662eafa6202fec12b0eb68156a0ac`。
+两项 Hvigor、API 23 双 ABI probe、三棵官方 Git tree/117 文件、TOTP 251、Light、diff
+均通过。在线 `CloudSyncPolicy` 仍精确 8 表，`HostProtocolPicker` 中 Moonlight 仍为
+disabled 并显示“即将支持”，所有 feature truth 仍 false。当前 HDC `list targets` 无输出，
+人工中断后退出；本 checkpoint 不声明 Hypium、HAP runtime、真实 Sunshine 或实体机通过。
+
+N2-02 只把 N2-01 的 offer 映射进当前锁定
+`moonlight-common-c@e41355ea01670fd4c830b384009d31dd0339a705` 的公共 C API，
+并把其 process-global、non-thread-safe 的 start/interrupt/stop 与 callback 生命周期收束到
+既有 `MoonlightSessionOwner`。官方 `Limelight.h` 明确 `LiStartConnection()` 非线程安全，
+`LiInterruptConnection()` 后必须等原 start 返回才能开始下一连接；`Connection.c` 又持有
+全局 `StreamConfig/ListenerCallbacks/VideoCallbacks/AudioCallbacks/NegotiatedVideoFormat`。
+因此不得为 RTSP、媒体或输入再创建平行 active-session owner。后续模型必须按以下原子
+顺序执行，一次只完成这个 dormant native 边界：
+
+1. 以 `db5865c53` 保存 476 项 native/ASan、151 项 ArkTS compile registration、两 ABI
+   89/48 command、symbol/NAPI/include 与 423 路径 HAP 基线。允许修改的代码范围只为主
+   CMake、新建 `moonlight/media/MoonlightCommonCAdapter.h/.cpp`、新建
+   `test/moonlight_common_c_adapter_test.cpp` 及必要聚合登记；如确需改
+   `MoonlightSessionOwner` 或 `MoonlightHostControl`，必须先用失败测试证明现有合同无法
+   表达的 exact lifecycle/secret handoff，并在本计划中记录最小增量。当前已识别的唯一
+   owner 缺口是 deadline 线程不能安全调用 blocking `stop()`；先以失败测试证明，再只加
+   exact-key、non-blocking、与 `stop()` 共用状态转换的 `requestStop()`。禁止顺手改 NAPI、
+   ArkTS service、renderer/audio/input、UI、数据或旧协议。
+2. adapter header 只暴露 project-owned C++17 request/result/event/PIMPL，不 include
+   `Limelight.h`。仅 `.cpp` 的单一 translation unit 可见 `SERVER_INFORMATION`、
+   `STREAM_CONFIGURATION`、callback structs、`VIDEO_FORMAT_*`、`AUDIO_CONFIGURATION_*`、
+   `ENCFLG_*` 与 `Li*`；所有官方数字映射集中在这里并有 compile-time/asserted golden
+   tests，其他源码不得复制 common-c mask。
+3. request 在 admission 前只携带非零 `sessionId+generation`、独立命名的 account owner
+   token、N2-01 identity/canonical offer、host/server generation、masked endpoint 的实际
+   连接地址、appversion、optional
+   GFE version、server codec mode、RTSP session URL、absolute overall deadline 和每阶段
+   deadline。不得接受 userId、页面/JS value、数据库对象、可变全局设置、PIN、证书私钥、
+   任意 query/body 或 decoder handle；request 入 owner 后不可重绑定。
+4. 新建 move-only、不可复制的 `MoonlightRtspLaunchLease`，只在一次 launch/resume 与一次
+   start 间携带 exact 16-byte RI key、signed 32-bit `rikeyid`、RTSP URL 和对应 account
+   owner/session/host/settings generation；它只能在 driver.start 中从
+   `StartContext.key()` 一次性绑定 N1-03 生成的 `MoonlightSessionKey.ownerToken`，两个
+   owner token 不得复用字段名或相互推导。当前 N1-08 会把 RI key 作为 ArkTS 输入再立即
+   清零，不能作为最终产品密钥所有权；N2-02 仍不扩 NAPI，product wiring 前必须把随机
+   生成、launch query 与 adapter 消费收回同一 native session owner。官方 Moonlight
+   Android `NvConnection`（已锁定 `f10085f552b367cf7203007693d91c322a0a2936`）使用
+   128-bit AES key、随机 signed int key ID，并以 Java 默认 big-endian
+   `ByteBuffer.allocate(16).putInt(rikeyid)` 构造 IV；为正/负/边界 key ID 建 16-byte
+   golden vector，禁止 native-endian `memcpy`。
+5. `STREAM_CONFIGURATION` 必须先调用 `LiInitializeStreamConfiguration()`，再逐字段映射
+   N2-01 effective offer：width/height/fps/bitrate/packet、resolved local/remote（永不传
+   `STREAM_CFG_AUTO`）、audio layout、offered profile mask、display refresh、color、
+   encryption flags；最后复制 RI key/IV。所有 int 转换 checked，packet 已是 16-byte
+   对齐，H.264/10-bit/444/profile mask 与 offer 一一对应，空 codec mask 或 unknown enum
+   在 `LiStartConnection()` 前失败。
+6. `SERVER_INFORMATION` 必须先调用 `LiInitializeServerInformation()`；address、appversion、
+   GFE version、RTSP URL 的 backing storage 由 invocation 持有到 stop/drain 完成，不能
+   指向临时 `std::string::c_str()`。`serverCodecModeSupport` 只能来自同 generation 的
+   authenticated host capability，不从 offered mask 反推。RTSP URL 只允许受限 scheme/
+   长度/端口形态且永不进入日志、事件或崩溃诊断。
+7. 因 connection/video/audio callbacks 多数没有 context 参数，adapter 只能有一个
+   process-global callback routing slot；该 slot 不是第二个 session owner，只能由
+   `MoonlightSessionOwner` accepted key 安装。slot 保存 invocation weak/shared state 与
+   exact key，高水位阻止旧 generation 重入；安装、读取、退休在一把窄 mutex 下完成，
+   不持锁调用 common-c 或下游 callback。旧 slot 完全退休前绝不安装新 slot。
+8. adapter 的 `start()` 只构造一份 `MoonlightSessionOwner::Driver`：driver.start 先用
+   `StartContext.key()` 一次性绑定 invocation/launch lease 并安装 router，再唯一调用
+   `LiStartConnection()`；driver.interrupt 唯一调用 `LiInterruptConnection()`，driver.stop
+   唯一调用 `LiStopConnection()`。首个合法 `stageStarting` 回调必须立即调用
+   `StartContext.markInterruptible()`，从而关闭 cancel-before-first-stage 的 lost-cancel
+   窗口；禁止在调用 `LiStartConnection()` 前盲调 interrupt，也禁止 adapter 自建并行
+   start semaphore/active pointer。
+9. stage callback 映射使用 project-owned enum，精确覆盖官方 1～11：platform、name
+   resolution、audio init、RTSP handshake、control/video/input init 与 control/video/audio/
+   input start。状态机只接受 `starting(S) → complete(S)` 或 `starting(S) → failed(S)`，
+   stage 单调前进；duplicate、reverse、unknown、complete-without-start 都置 protocol
+   violation 并请求 interrupt。仅在 0～11 范围内才可调用 `LiGetStageName()`，用户文案
+   后续由 ArkTS stable code 本地化，不能把上游英文当永久 ABI。
+10. 每个 adapter 只有一个 joinable deadline scheduler，等待 injected monotonic clock/
+    condition variable 上当前 exact key 的 overall 或 stage deadline；它不持有 invocation
+    强引用，超时只调用 N1 owner 的 non-blocking `requestStop(key)`，由 owner 唯一 control
+    lane 决定 interrupt/stop，不直接并发调用 common-c API。正常终态清除登记；adapter
+    析构先确认无 active owner，再停止并 join scheduler，不 detach、不用 sleep 猜时序。
+    timeout、user cancel、account drain、host generation 失效使用同一状态转换。
+11. `DecoderRendererSetup(videoFormat, width, height, redrawRate, context, flags)` 是唯一
+    negotiated video profile 来源。只接受一个已 offered 的官方 exact profile bit，且尺寸/
+    refresh 与 effective offer 相容；然后产出 project-owned selected codec/profile 快照。
+    多 bit、unknown、未 offered、10-bit/444/HDR 不一致或 media port 拒绝立即失败。不得读
+    common-c internal `NegotiatedVideoFormat`，也不得在 RTSP stage complete 时提前声称
+    negotiated。
+12. `AudioRendererInit(audioConfiguration, opusConfig, ...)` 是唯一 negotiated audio 来源；
+    验证 0xCA magic、channel count/mask、sampleRate/streams/coupledStreams/samplesPerFrame/
+    mapping 边界及 N2-01 offered layout。N2-06 前 product audio port 不 ready 时 setup
+    必须失败；测试 fake 可证明 stereo/surround mapping，但不能改变产品 capability truth。
+13. N2-03/N2-06 前不实现 payload 管线。video submit、audio sample、start/stop/cleanup
+    callbacks 只转发给 injected readiness-aware media ports；product 缺 port 时在 setup/init
+    阶段 fail closed，绝不默默丢 payload 后报告连接成功。callback 入口先从 router 获取
+    exact invocation，再获取 `MoonlightSessionOwner::AdmissionLease`；stale/cancelled/closed
+    admission 只安全丢弃并计数，绝不触达新 session。
+14. connectionStarted 只表示 common-c transport stages 已建立，不能令 D1 进入
+    `streaming`；只有 N2-03/04 decoder 提交并确认首帧后才允许。connection status/HDR
+    callback 形成 bounded stable event；rumble、motion、LED、adaptive trigger 在 N3 前
+    保持 disabled/no-op 并不得声称输入支持。上游 variadic log callback 进入固定长度脱敏
+    sink，地址、RTSP、key、UUID、媒体 payload 以 canary 测试证明不会外泄。
+15. start 非零返回、stageFailed、connectionTerminated、media setup failure、deadline 与
+    cancel 都映射为单一 terminal result；保存 project code、mapped stage、raw bounded
+    error、port flags 和 sequence，不保存完整 endpoint。上游 `Connection.c` 的 termination
+    callback 可能从 detached thread 到达，adapter callback lease 与 router retirement
+    fence 必须保证 stop/析构后无 UAF、无 late terminal、无旧事件投递。
+16. stop 顺序固定为：关闭新 callback/media admission → 清除 deadline 登记 → 标记
+    cancellation → starting 时 interrupt、running 时 stop → 等 `LiStartConnection()` 返回 →
+    等 common-c stop/cleanup 与所有 callback/worker lease drain → 退休 router slot → 清零
+    secret/config/string backing → 释放 owner。scheduler 只在 adapter 析构
+    且无 active invocation 时 join；重复 stop 幂等，错误 key 只返回 stale，绝不停止新 owner。
+17. RI key、IV、signed key ID scratch、RTSP URL 与包含它们的 `STREAM_CONFIGURATION`
+    在 start failure、interrupt、normal stop、external termination、deadline、account drain、
+    exception 和析构全部显式 cleanse；move-from 对象也归零。测试提供 cleanse counter 和
+    secret/log/event canary；key/IV 不进入 canonical result、云表、备份、diagnostic 或 NAPI。
+18. result/event 至少区分 invalid、busy、runtime-proof-required、starting、stage-progress、
+    negotiated、transport-ready、cancelled、timeout、terminated、failed、stale；所有事件带
+    exact key、monotonic sequence、stage 和 generation。`negotiated` 必须同时包含经 setup
+    验证的 selected video profile及实际 audio layout；`transport-ready` 仍不是 first-frame、
+    running UI 或 release-ready。
+19. focused tests 使用 injected common-c driver/callback harness、fake clock、barrier 和
+    property corpus，至少覆盖全部字段/mask golden mapping、big-endian RI IV、string lifetime、
+    owner busy、cancel-before-first-stage/during-each-stage/after-start、stage 乱序/重复/unknown、
+    setup selected codec、audio Opus shape、media-not-ready、callback stale/late、termination
+    thread、deadline、stop idempotence、exception、destructor drain、cleanse/log canary；不连
+    真实网络、不依赖 sleep。另做锁定 common-c 的 compile-link smoke，证明 production
+    `.cpp` 实际调用官方初始化与 start/interrupt/stop，而不是测试 fake-only 实现。
+20. 完成时重跑普通 native 与连续三轮 ASan/UBSan、TSan 可用环境或等价 deterministic
+    race harness、strict/analyzer、双 ABI compile/symbol/include/HAP isolation、两项 Hvigor、
+    platform/vendor/TOTP/Light/diff/state。不得新增 NAPI export/import、HAP path、云表、路由、
+    UI 资源或 feature truth；独立 checkpoint 后唯一下一任务才是 N2-03 video decode-unit
+    bridge，N2-04 首帧前仍不得把 FAB、streaming/protocol truth 改为 true。
+
 ### 15.8 N2：RTSP、视频、音频和媒体时钟
 
 | ID | 文件与精确动作 | 必须验证 | 完成证据/提交点 |
 | --- | --- | --- | --- |
-| N2-01 | 定义 `MoonlightStreamConfig`/协商结果，严格区分 requested/effective；只允许 capability intersection | H.264 baseline MVP、unsupported codec/fps/size、host fallback | UI 后续只能显示 effective，不猜测 |
+| N2-01 | **CONTRACT PASS / DORMANT `db5865c53`**：定义 `MoonlightStreamConfig` requested/effective/offer，严格区分 capability intersection 与 negotiated | 36 focused；全量与 ASan/UBSan 476/476；双 ABI/HAP/NAPI 隔离不变 | UI 后续同时显示 requested/D1 effective/runtime effective，不猜测；当前无 runtime caller |
 | N2-02 | 桥接 common-c RTSP/SDP、video/audio/control callbacks 到 owner；建立阶段事件和 cancel 边界 | 每阶段超时/取消/乱序/失败；无首帧不进入 streaming | 事件序列匹配 D1 状态机 |
 | N2-03 | 新建 `moonlight/media/MoonlightVideoBridge.*`：把 `DECODE_UNIT` 的 LENTRY 链按 buffer type 组装/零拷贝边界，保存 SPS/PPS/VPS、frameType、decode number | 分片、配置帧、IDR、乱序/丢包、过大帧、fuzz/ASan 可用环境 | 不把链首指针当单 buffer |
 | N2-04 | 通过现有 `hw_decoder` owner/generation API 接 OH_AVCodec；补 Moonlight codec config/keyframe request/queue policy，不回退现有 renderer lease | Surface 创建/销毁/重绑、旧 generation、首帧、20 次 PIP/rebind、黑屏恢复 | 若需公共 decoder 改动，先加旧协议回归测试 |
@@ -3397,12 +3549,12 @@ Sunshine common-c runtime / production transport / media / input 当前仍不在
 8. 更新实施台账中的状态、证据、blocker 和唯一下一任务；同步 `CURRENT/QUEUE/STATE`，再用精确文件列表形成一个可回滚提交。
 9. 只有当任务合同、测试和对应门禁均通过时标记 `PASS`；“代码写完”“构建通过”“请求已排队”均不是产品能力完成。
 
-当前唯一可直接继续的代码任务是 N2-01 stream config：严格按第 15.7.8 节新增
-project-owned、deterministic、无网络/线程/secret 的 requested/effective stream offer 和
-launch projection，一次性裁决当前 D1 设置快照与经 generation 证明的 host/platform/
-network/display capability。它不得 include common-c public wire struct、不得扩张 NAPI、
-不得启动 RTSP、不得接 renderer/audio/input/UI，也不得改变六项 capability truth；
-`offer_ready` 只表示参数可进入 N2-02，绝不表示 codec 已协商、首帧已到或串流可用。
+当前唯一可直接继续的代码任务是 N2-02 common-c adapter：严格按第 15.7.9 节把已完成
+的 N2-01 offer 一次性映射到官方 `STREAM_CONFIGURATION/SERVER_INFORMATION`，并把
+process-global callback router、`LiStartConnection/LiInterruptConnection/LiStopConnection`、
+阶段事件、deadline、selected codec/audio 与 secret cleanse 全部收束到既有
+`MoonlightSessionOwner`。它不得扩张 NAPI、接 ArkTS/UI/云、实现媒体 payload 或输入，
+也不得改变六项 capability truth；`negotiated/transport-ready` 都不表示首帧已到或串流可用。
 D2-05/06 由 AGC 外部环境提供证据，D2-07 依赖二者；D3 的 cloud terminal、真实
 unpair 和多设备矩阵分别等待 D2-07、N1 Host Control 和外部设备。任何执行者都
 不得因为云端受阻而把 `moonlightrecordv1` 塞入现有八表注册清单，也不得因为

@@ -5,8 +5,8 @@
 - Task: `moonlight-complete-upgrade`
 - Base: `main@aeb0cdac5`
 - Branch: `codex/moonlight-complete-upgrade`
-- Phase: G0, D1-D3 local/dormant lifecycle and N1-01～N1-08 are checkpointed;
-  N2-01 dormant stream-config/offer contract is next; AGC and product runtime remain blocked.
+- Phase: G0, D1-D3 local/dormant lifecycle, N1-01～N1-08 and N2-01 are checkpointed;
+  N2-02 dormant common-c adapter is next; AGC and product runtime remain blocked.
 
 ## Context
 
@@ -81,24 +81,23 @@
   Product runtime remains packet-free `runtime_proof_required`; no UI/cloud/media/
   input truth changed. Sanitizer also exposed and checkpointed the pre-existing
   deferred-owner thread-before-state initialization fix as `aa3b947`.
-- Current gates: both Hvigor tasks, 151-test ArkTS registration in 20 describe
-  groups, signed HAP, native 440/440 and three consecutive ASan/UBSan 440/440,
-  strict/four analyzer passes, API 23 dual-ABI probe/build,
-  source/Git-tree, TOTP, Light and isolation passed. ABI inventories remain
-  arm64 16103/705/716 and x86_64 15634/703/711; the only undefined additions are
-  seven exact NAPI imports, and HAP remains 423 paths. Each ABI has 88 commands,
-  keeps 48 `rdpnapi`, and puts bridge/NAPI in a private `--exclude-libs` archive
-  with no upstream include leak. HDC still says
-  `Connect server failed`; no new Hypium/HUKS/Sunshine runtime claim exists. One of two `sol low` reviews was
-  used for N1-01; the remaining one stays reserved for final integration.
+- N2-01 checkpoint `db5865c53` adds only the hidden project-owned deterministic
+  stream offer and same-source launch projection. Its 36 cases bring native and
+  three ASan/UBSan runs to 476/476; strict/analyzer, both Hvigor tasks, API 23
+  dual-ABI probe, vendor/TOTP/Light and isolation pass. ABI inventories remain
+  arm64 16103/705/716 and x86_64 15634/703/711; HAP remains 423 paths with SHA-256
+  `095700a5af1823645689d913b4c995f5cca662eafa6202fec12b0eb68156a0ac`.
+  Each ABI has 89 commands, still 48 `rdpnapi`; only one private stream-config
+  command was added. `selectedCodec` stays absent and UI/cloud/runtime truth is
+  unchanged. HDC list-targets hung until interrupted; no new runtime claim exists.
+  One of two `sol low` reviews was used; the other remains for final integration.
 
 ## Next
 
-1. Execute only N2-01 as a project-owned deterministic stream-config/offer
-   contract. Add pure requested/effective/capability/adjustment value types,
-   same-source launch projection and focused native tests; do not include the
-   common-c wire struct, expand NAPI, start RTSP, touch renderer/audio/input/UI,
-   or change any release truth. `offer_ready` is not `negotiated`.
+1. Execute only N2-02: map the completed offer through one common-c adapter and
+   the existing session-owner lane; own RTSP stages, callback routing, timeout,
+   selected codec/audio and secret cleanse. Do not expand NAPI, wire ArkTS/UI/cloud,
+   carry media payload or input, or change release truth. Negotiated is not first-frame.
 2. Keep D3-01 online wiring, D3-05 cloud promotion, D3-06 cloud terminal and
    D3-08 multi-device matrix blocked until development/test/production AGC receipts
    permit D2-07 registration.
@@ -111,8 +110,8 @@
   focused Moonlight tests are compile-registered but no on-device Hypium pass is claimed.
 - AGC development/test/production `moonlightrecordv1` schema, authorization and
   index receipts are absent; the table is therefore not in `CloudSyncPolicy.TABLES`.
-- The configured HDC virtual device is currently unreachable (`Connect server
-  failed`); this does not invalidate earlier RDB receipts but blocks new runtime checks.
+- The configured HDC virtual device currently gives no list-targets response and
+  was interrupted; this does not invalidate earlier RDB receipts but blocks runtime checks.
 - HAP/AppSpawn access to HUKS-backed RSA TLS signing, or to HUKS AES-GCM wrapping
   plus an atomic app-private encrypted-blob backend, has not been runtime-proven;
   the N1-05 product identity backend therefore intentionally returns unavailable.
