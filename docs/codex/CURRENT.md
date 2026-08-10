@@ -3,118 +3,75 @@
 ## Active Task
 
 - Task: `moonlight-complete-upgrade`
-- Base: `main@aeb0cdac5`
-- Branch: `codex/moonlight-complete-upgrade`
-- Phase: G0, D1-D3 local/dormant lifecycle, N1-01～N1-08 and N2-01～N2-02 are
-  checkpointed; N2-03 dormant video decode-unit bridge is next; AGC/runtime remain blocked.
+- Base: `main@aeb0cdac5`; branch: `codex/moonlight-complete-upgrade`
+- Phase: G0、D1-D3 local/dormant、N1-01～N1-08、N2-01～N2-03 已 checkpoint；
+  当前唯一代码任务是 N2-04 generation-fenced OH_AVCodec integration。
+- Authoritative plan: `docs/superpowers/plans/2026-07-28-moonlight-harmonyos-complete-upgrade-plan.md`
+- Live ledger: `docs/codex/plans/2026-08-09-moonlight-implementation-ledger.md`
 
-## Context
+## Non-negotiable State
 
-- Complete Moonlight/Sunshine without regressing RDP, RustDesk, SSH/SFTP, VNC,
-  cloud synchronization, backup or account isolation.
-- Authoritative plan: `docs/superpowers/plans/2026-07-28-moonlight-harmonyos-complete-upgrade-plan.md`.
-- Live ledger: `docs/codex/plans/2026-08-09-moonlight-implementation-ledger.md`.
-- The existing disabled Moonlight FAB entry remains the only user-visible state
-  until host-control, streaming, data, lifecycle and release gates all pass.
-- Independent review is limited to at most two reviewer agents, both using
-  `sol low`; do not redispatch the same review after context compaction.
+- 不影响 RDP、RustDesk、SSH/SFTP、VNC、云同步、备份和账户隔离；公共 decoder 改动先补
+  旧协议失败回归，不新增 Moonlight 私有 decoder/session owner。
+- `CloudSyncPolicy.CLOUD_SYNC_TABLES` 仍精确为原 8 表；`moonlightrecordv1` 仅为未来云表，
+  三环境 AGC schema/auth/index receipt 前不得注册。
+- FAB 只有一个 Moonlight 项，`enabled=false`，只有一个“即将支持”；不得提前创建可保存
+  的假页面或可点击入口。
+- 11 个 feature inputs 默认全 false；六项 release snapshot 未放行。平台能力默认
+  11 pending、controller rumble 1 unsupported、0 supported。
+- 两个允许的 `gpt-5.6-sol low` reviewer 名额均已使用，不得因压缩或新 checkpoint 重派；
+  N2-03 无第三份审查回执，状态机应诚实显示 `REVIEW_REQUIRED`。
 
-## Verification
+## Checkpoint Facts
 
-- Baseline: clean `main@aeb0cdac5`, equal to `origin/main`, 2026-08-09.
-- Official upstream pins, license hashes, API 23 dual-ABI static probe and an
-  ARM64 API 24 virtual-device service inventory are recorded in the ledger.
-- D1 contains bounded DTOs, exact 19/20-column envelopes, canonical/quarantine/
-  conflict policy, four-layer settings, fail-closed feature truth and session state.
-- D2 creates exact `moonlightrecordv1`, `moonlightlocalrecords` and
-  `moonlightappcache` schemas without changing the eight-table distributed
-  registration set. Lease-fenced repository/cache operations reject cross-owner
-  data and cloud I/O; the adapter rejects malformed/local-only rows. `3bbdc61`.
-- D2 row-sensitive transfer rejects malformed/plain identity rows, the five
-  owner-scoped logical scopes default to `[]`, and selection replacement follows
-  stage → RDB projection → Preferences with rollback; dormant materialization is
-  lease-fenced and always reports `cloudAttempted=false`. `5d9c2ff`.
-- API 24 ARM64 emulator receipt: owner-store `user_version=5`; table shapes are
-  exactly 19/20/16 columns; one owner-bound migration receipt remains after a
-  process restart (`tables=3`, `receipts=1`).
-- D3 account transitions now invoke an ordered Moonlight barrier before store
-  quiescence, drains mutation/launch→session→pairing→identity→cloud/journal→secret,
-  then binds the new lease; failure stays closed. `05e96d3`.
-- D3 portable backup keeps format V3 and adds optional exact Moonlight cloud and
-  local sections. Redacted mode carries settings/host/profile; full mode may add
-  trust candidates; identity/secret/cache/journal/markers are excluded. Restore
-  writes only local-only overlay, quarantines ambiguity and requires re-pairing.
-  Old V3 remains readable. `b27a58a`.
-- D3 deletion commands now derive an owner-scoped preview from live records,
-  cache, journal/quarantine/restore state and secure-identity inventory, then
-  recompute before execution. Local deletion is transactional; unavailable cloud/
-  Host ports fail closed; identity cleanup precedes metadata. `ea32ffa`.
-- N1-01 checkpoint `0013ba034` vendors 117 unchanged common-c/ENet/nanors files,
-  reconstructs all three Git trees offline, records compliance/source/dual-ABI
-  receipts and remains absent from product NAPI/HAP symbols.
-- N1-02 checkpoint `99edc58` adds the single CMake target boundary and privately
-  links common-c/ENet to both ABIs while preserving symbol and 423-path HAP
-  inventories with no upstream include in product commands.
-- N1-03 checkpoint `18cdd39aa` adds the hidden pure-native process-wide owner,
-  exact session/generation/token admission, interrupt fence, move-only leases
-  and fail-closed drain without NAPI or UI.
-- N1-04 checkpoint `fd2d7ec92` adds a transport-injected pure-native Host API:
-  official requests, one deadline, exact cancel/stale fences, read-only fallback,
-  mutation no-replay/unknown, cancel verification, bounded XML and redacted
-  diagnostics, without a NAPI caller, identity, pairing, media, input or UI.
-- N1-05 checkpoint `599882ada` adds owner+installation-scoped opaque identity,
-  RSA-2048 certificate and move-only signing/TLS leases with cleanse, exact
-  lifecycle and a fail-closed HUKS/Asset boundary. Product stays unavailable until
-  an in-HAP probe proves direct signing or HUKS-wrapped atomic encrypted storage;
-  no plaintext fallback exists.
-- N1-06 checkpoint `6f7094038` adds a hidden injected pairing state machine:
-  official four-step HTTP plus final pinned HTTPS transcript, SHA-256/default-
-  blocked SHA-1, canonical certificate/trust candidate, exact lane/cancel/deadline,
-  no replay, one-shot unpair, atomic commit/rollback/repair and full secret cleanse.
-  It reuses N1-04/N1-05 and remains unreachable from NAPI/HAP runtime.
-- N1-07 checkpoint `019ed98b4` adds a hidden injected Host Control: authenticated
-  catalog/asset, launch/resume/explicit quit, preflight/action/postcondition truth,
-  exact generation/cancel/deadline, global single mutation, no replay and secret/
-  RTSP cleanse. It only reuses N1-04 and remains unreachable from NAPI/HAP runtime.
-- N1-08 checkpoint `aecd2ea4e` adds a NAPI-free exact bridge, five independent
-  `moonlight*` NAPI properties and lease/cache-fenced `MoonlightHostService`.
-  Product runtime remains packet-free `runtime_proof_required`; no UI/cloud/media/
-  input truth changed. Sanitizer also exposed and checkpointed the pre-existing
-  deferred-owner thread-before-state initialization fix as `aa3b947`.
-- N2-01 `db5865c53` adds only a deterministic stream offer. N2-02 `248e704ab`
-  maps it through one hidden common-c adapter and the existing owner lane: exact
-  official structs/masks, process-global callback routing, 11-stage/deadline/
-  termination state, setup-derived codec/audio truth, callback drain and RI/IV/
-  RTSP cleanse. Product media is absent, so start remains packet-free unavailable.
-  Twenty-one focused cases bring normal and three ASan/UBSan runs to 497/497;
-  strict/analyzer and deterministic race barriers pass. Full TSan stops before
-  Moonlight at an existing RustDesk continuity timing assertion, with no TSan report.
-  Both Hvigor tasks, dual-ABI official link probe, vendor/TOTP/Light and isolation
-  pass. Each ABI has 90 commands, still 48 `rdpnapi`, with one adapter command and
-  no include leak; final `sol low` review passed; ABI/HAP/UI/cloud stay fixed; six truths are false.
+- D1-D3：19/20 列 cloud/local envelope、16 列 app cache、四层设置、冲突/隔离、账户 barrier、
+  Backup V3 与 deletion exact preview/terminal 已完成；ARM64 API 24 emulator owner-store
+  `user_version=5`，19/20/16 列、tables=3、重启后 receipt=1。
+- N1-01～N1-02：117 个锁定 upstream 文件、三个可重建 Git tree、唯一 CMake 边界和双 ABI
+  private link 已完成，upstream bytes 与产品 NAPI/HAP 面保持隔离。
+- N1-03～N1-08：唯一 owner lane、injected Host API、secure identity seam、pairing、Host Control、
+  exact native bridge 和五个 typed NAPI 属性已完成 dormant contract；product identity/transport
+  runtime proof 缺失，因此首包前 `runtime_proof_required`，不声明配对/目录/launch 可用。
+- N2-01 `db5865c53`：只生成 deterministic stream offer。
+- N2-02 `248e704ab`：唯一 hidden common-c adapter；官方 struct/mask、process-global callback、
+  11-stage/deadline/termination、setup-derived video/audio、callback drain 和 RI/IV/RTSP cleanse。
+- N2-03 `34d2ffa7a`：hidden `MoonlightVideoBridge`；adapter 在唯一 `.cpp` 内把官方
+  `DECODE_UNIT/LENTRY` bounded 投影到 project view，bridge 复制 owned AU/fragment offset，
+  保存 SPS/PPS/VPS generation，并冻结 IDR/backpressure/stale/teardown。上游 `LENTRY` 无
+  offset，`DECODE_UNIT` 无 decodeNumber；只使用 `frameNumber`。product sink unavailable，
+  无 OH_AVCodec/Surface/NAPI/ArkTS/UI/cloud/audio/input，`firstFrameReady=false`。
+
+## N2-03 Verification
+
+- host normal、strict `-Werror`、完整 TSan：**506/506 PASS**；ASan/UBSan clean rebuild
+  连续三轮 **506/506 PASS**；scan-build 全目标零报告。
+- 两 ABI `rdpnapi` 与官方 adapter probe PASS；每 ABI 91 条永久 command：`rdpnapi=48`、
+  adapter=1、video bridge=1、probe=0。bridge 无平台媒体/NAPI include；`Limelight.h` 只在
+  adapter `.cpp`。
+- ABI 与 N2-02 基线逐项一致：arm64 defined/undefined 16103/705、x86_64 15634/703，
+  两 ABI NAPI 子集各 147。
+- `default@OhosTestCompileArkTS` 与 signed `assembleHap` 均 BUILD SUCCESSFUL；HAP SHA-256
+  `d5311acdf2d8e02385cf7bf2d33bd737e971584058b0c90d9ef7c1a0bfa9d045`，423 paths 不变。
+- API 23 双 ABI platform probe、三 tree/117 files、TOTP 251、Light、vendor、diff 和
+  云表/FAB/truth 隔离检查均 PASS。
 
 ## Next
 
-1. Execute only N2-03: add a hidden video decode-unit bridge that validates and
-   assembles common-c `DECODE_UNIT`/`LENTRY` chains behind the N2-02 media port.
-   Do not wire NAPI/ArkTS/UI/cloud/input, change the existing decoder owner, or
-   claim first-frame/streaming/release truth.
-2. Keep D3-01 online wiring, D3-05 cloud promotion, D3-06 cloud terminal and
-   D3-08 multi-device matrix blocked until development/test/production AGC receipts
-   permit D2-07 registration.
-3. Do not implement D2-07 registration until development/test/production AGC
-   schema, authorization and index receipts complete D2-05/D2-06.
+1. 只执行主计划 15.7.11 的 N2-04：新增窄 Moonlight decoder sink，使 N2-03 owned AU
+   复用现有 `hw_decoder` registry、shared session owner、callback gate、Surface/renderer
+   和 deferred retire；bridge 继续不 include 平台/NAPI 头。
+2. 先冻结旧协议 create/bind/decode/rebind/detach/destroy、display、keyframe recovery 与锁序，
+   再增加最窄 exact-owner pure-native seam；不得调用全局 setter 抢占其他协议 owner。
+3. MVP 仅 runtime-proven H.264 8-bit 4:2:0。submit/PushInput/output callback 都不是首帧；
+   exact generation 的 output→NativeImage update→renderer owner ack 三段齐全才可发布 receipt。
+4. Product wiring、FAB、UI、云表及六项 truth 继续关闭；N2-05 才处理 Surface absent、PIP、
+   后台与 rebind policy。
 
 ## Blockers
 
-- `ohosTest@OhosTestCompileArkTS` remains unregistered (`00306054`), so the 151
-  focused Moonlight tests are compile-registered but no on-device Hypium pass is claimed.
-- AGC development/test/production `moonlightrecordv1` schema, authorization and
-  index receipts are absent; the table is therefore not in `CloudSyncPolicy.TABLES`.
-- The configured HDC virtual device currently gives no list-targets response and
-  was interrupted; this does not invalidate earlier RDB receipts but blocks runtime checks.
-- HAP/AppSpawn access to HUKS-backed RSA TLS signing, or to HUKS AES-GCM wrapping
-  plus an atomic app-private encrypted-blob backend, has not been runtime-proven;
-  the N1-05 product identity backend therefore intentionally returns unavailable.
-- HAP/AppSpawn runtime probes, two real Sunshine hosts, AGC schema receipts and
-  final ARM64 physical-device acceptance remain external release blockers.
+- `ohosTest@OhosTestCompileArkTS` 未注册（`00306054`）；151 个 Moonlight ArkTS tests 仅
+  compile-registered，不声明设备 Hypium PASS。
+- AGC development/test/production 的 `moonlightrecordv1` schema/auth/index receipt 缺失。
+- 当前 HDC target 没有新的可复现 receipt；早期 RDB emulator receipt 仍有效。
+- HAP/AppSpawn secure identity、H.264/NativeImage/renderer media 和 input capability probes 缺失。
+- 两台真实 Sunshine host、网络/功耗/后台矩阵与用户 ARM64 实机最终验收仍 pending。

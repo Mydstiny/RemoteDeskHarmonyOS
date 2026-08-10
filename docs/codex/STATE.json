@@ -3,23 +3,23 @@
   "task": "moonlight-complete-upgrade",
   "branch": "codex/moonlight-complete-upgrade",
   "base": "aeb0cdac5",
-  "head": "248e704ab",
-  "phase": "n2-video-bridge-dormant",
+  "head": "34d2ffa7a",
+  "phase": "n2-decoder-integration-dormant",
   "status": "active",
-  "next": "Execute only N2-03 as one hidden video decode-unit bridge behind the N2-02 media port: validate and assemble bounded DECODE_UNIT/LENTRY chains, preserve buffer type, frame/decode metadata and codec configuration, and return stable IDR/backpressure truth; do not expand NAPI, wire ArkTS/UI/cloud/audio/input/renderer, create another decoder/session owner, or claim decoded/submitted as first-frame, streaming, protocol available, or release-ready.",
+  "next": "Execute only N2-04 under plan section 15.7.11: add one narrow Moonlight decoder sink that feeds N2-03 owned H.264 access units through the existing hw_decoder registry, shared session owner, callback gates, Surface/renderer and deferred-retire lifecycle. Freeze old-protocol behavior first; do not create another decoder/session owner, expand NAPI, wire ArkTS/UI/cloud/audio/input, enable the FAB, or infer first-frame from submit, PushInput, output callback or telemetry without exact-generation NativeImage and renderer acknowledgement.",
   "blockers": [
-    "ohosTest@OhosTestCompileArkTS is not registered (00306054); 151 focused Moonlight tests in 20 describe groups are compiled and registered but not executed on device",
+    "ohosTest@OhosTestCompileArkTS is not registered (00306054); 151 focused Moonlight tests in 20 describe groups are compile-registered but not executed on device",
     "AGC development/test/production Moonlight schema, authorization, and index receipts are absent; D2-07 distributed registration is blocked",
-    "The configured HDC virtual device currently gives no list-targets response and was interrupted, blocking new runtime receipts",
-    "HAP/AppSpawn HUKS RSA-to-OpenSSL signing or HUKS AES-GCM wrapping plus atomic encrypted-blob persistence is not runtime-proven; the N1-05 product identity backend intentionally returns unavailable",
-    "HAP media/input capability probes, real Sunshine hosts, and physical ARM64 acceptance remain pending"
+    "The configured HDC target has no new reproducible receipt; prior ARM64 API 24 RDB evidence remains valid but no new runtime claim is made",
+    "HAP/AppSpawn HUKS identity and H.264 NativeImage/renderer media capabilities are not runtime-proven; product identity and video sinks intentionally remain unavailable",
+    "Real Sunshine hosts, input/media/network/power matrices, and user ARM64 physical acceptance remain pending"
   ],
   "planPaths": [
     "docs/superpowers/plans/2026-07-28-moonlight-harmonyos-complete-upgrade-plan.md",
     "docs/codex/plans/2026-08-09-moonlight-implementation-ledger.md"
   ],
   "review": {
-    "status": "PASS",
+    "status": "EXHAUSTED",
     "taskId": "019fe966-d99a-7ce1-8b53-4ef725597053",
     "scope": [
       "docs/codex/CURRENT.md",
@@ -45,20 +45,21 @@
       "entry/src/test",
       "entry/src/main/module.json5"
     ],
-    "receiptId": "moonlight-n2-02-sol-low-pass-248e704ab-2026-08-10",
-    "reason": "The second and final allowed gpt-5.6-sol low read-only review passed 49735f1a1..248e704ab with no P0/P1/P2 finding. It verified official common-c mapping, sole-owner/router lifecycle, cancel/deadline/termination races, secret cleanse, product fail-closed isolation, tests and the five documentation updates. Both reviewer allowances are now consumed; do not dispatch another reviewer."
+    "lastReceiptId": "moonlight-n2-02-sol-low-pass-248e704ab-2026-08-10",
+    "reason": "Both user-allowed gpt-5.6-sol low reviewer slots were consumed by N1-01 and N2-02. N2-03 completed full machine gates and line-by-line self-review but has no matching independent receipt; do not dispatch or fabricate a third reviewer."
   },
   "lastVerification": {
     "baseline": "clean main@aeb0cdac5 equal to origin/main at task start on 2026-08-09",
-    "diffCheck": "pass for N2-02 code checkpoint 248e704ab on 2026-08-10",
-    "testCompile": "pass default@OhosTestCompileArkTS for final N2-02 code on 2026-08-10; 151 focused Moonlight ArkTS tests in 20 describe groups remain compile-registered; no device execution is claimed",
-    "assembleHap": "pass signed production HAP for final N2-02 code; SHA-256 3d67e3a743207d39df8e4bb81ba7f49efd7acd8896f412000defc6670af05578; its sorted 423-path inventory is byte-identical to the N2-01 baseline and contains no common-c adapter artifact",
-    "nativeTests": "pass 497/497 and three consecutive passes of 497/497 under ASan/UBSan; 21 N2-02 cases cover owner requestStop plus common-c mapping, stages, cancel/deadline, negotiated video/audio, payload/lifecycle fences, stale/termination, cleanse and destructor drain; strict Werror and analyzer pass; full TSan stops before Moonlight at an existing RustDesk continuity timing assertion with no ThreadSanitizer report, so deterministic barrier tests are the race receipt",
-    "moonlightPlatformProbe": "pass arm64-v8a and x86_64 API 23 compile-link probe plus explicit N2-02 adapter link probe against official common-c callbacks and LiStart/LiInterrupt/LiStop; this is not an in-HAP runtime receipt",
-    "moonlightVendor": "pass 117 exact files, three reconstructed official Git trees and Git index; N2-02 leaves all upstream bytes unchanged; each ABI has 90 compile commands, keeps 48 rdpnapi commands, adds exactly one private adapter command with zero upstream include leaks; arm64 16103/705 and x86_64 15634/703 defined/undefined ABI sets and both 147-entry NAPI subsets are identical to the N2-01 baseline",
-    "lightCompliance": "pass for N2-02 checkpoint on 2026-08-10 together with the synchronized 251-entry TOTP manifest; Release remains blocked only by external credential-rotation and device-matrix approvals",
-    "moonlightRdbRuntime": "pass on ARM64 API 24 emulator: user_version=5, exact 19/20/16 columns, tables=3 and owner-bound receipts=1 after process restart",
-    "ohosTest": "blocked task-not-registered 00306054 and current HDC list-targets no-response; no execution pass claimed"
+    "diffCheck": "pass for N2-03 code checkpoint 34d2ffa7a on 2026-08-10",
+    "testCompile": "pass default@OhosTestCompileArkTS for final N2-03 source; 151 focused Moonlight ArkTS tests in 20 describe groups remain compile-registered; no device execution is claimed",
+    "assembleHap": "pass signed production HAP; SHA-256 d5311acdf2d8e02385cf7bf2d33bd737e971584058b0c90d9ef7c1a0bfa9d045; sorted 423-path inventory is identical to the N2-02 baseline",
+    "nativeTests": "pass 506/506 normal, strict Werror and full TSan; pass three consecutive 506/506 ASan/UBSan clean rebuilds with detect_leaks=0 because macOS leak sanitizer is unsupported; full scan-build reports zero bugs",
+    "moonlightPlatformProbe": "pass arm64-v8a and x86_64 API 23 compile-link probe plus official common-c adapter link probe; this is not an in-HAP runtime receipt",
+    "moonlightVendor": "pass 117 exact files and three reconstructed official Git trees; each ABI has 91 permanent compile commands: 48 rdpnapi, 1 adapter, 1 video bridge, 0 probe; arm64 16103/705 and x86_64 15634/703 defined/undefined ABI sets and both 147-entry NAPI subsets equal the N2-02 baseline",
+    "isolation": "pass: Limelight.h only in the adapter implementation; bridge has no OH_AVCodec, Surface, NAPI or ArkTS dependency; online cloud registry remains exactly 8 tables; Moonlight FAB/disabled/coming-soon each occur once; 11 feature defaults are false and platform defaults are 11 pending, 1 unsupported, 0 supported",
+    "lightCompliance": "pass together with the synchronized 251-entry TOTP manifest and vendor gate; Release remains blocked on external runtime and device evidence",
+    "moonlightRdbRuntime": "pass on prior ARM64 API 24 emulator: user_version=5, exact 19/20/16 columns, tables=3 and owner-bound receipts=1 after process restart",
+    "ohosTest": "blocked task-not-registered 00306054; no on-device execution pass claimed"
   },
   "updated": "2026-08-10 Asia/Shanghai"
 }

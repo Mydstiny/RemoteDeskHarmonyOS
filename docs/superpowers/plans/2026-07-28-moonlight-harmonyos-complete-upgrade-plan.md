@@ -3,7 +3,7 @@
 > 文档状态：第四次深度审计完成；已于 2026-08-09 从 G0 开始实施
 > 首次评估日期：2026-07-28；二次完成性审计日期：2026-07-29；第三次 HarmonyOS 人因/UI 审计日期：2026-08-01；第四次源码对齐日期：2026-08-08
 > 当前实施基线：任务 `moonlight-complete-upgrade`；分支 `codex/moonlight-complete-upgrade`；基线 `main@aeb0cdac5`，与 `origin/main` 一致
-> 当前实施进度：G0、D1、D2 本地/休眠策略、D3 本地生命周期、N1-01～N1-08、dormant N2-01 stream offer 与 N2-02 common-c adapter 已形成 checkpoint；当前唯一代码任务为 N2-03 video decode-unit bridge。HarmonyOS 虚拟设备已验证 owner-store v5、19/20/16 列三表和幂等 schema receipt；AGC 三环境、HAP/AppSpawn secure-identity/transport/media runtime、真实 Sunshine 与 ARM64 实机回执仍缺失，故云注册、用户入口和运行时能力保持 fail closed，六个发布 truth 仍全 false
+> 当前实施进度：G0、D1、D2 本地/休眠策略、D3 本地生命周期、N1-01～N1-08、dormant N2-01 stream offer、N2-02 common-c adapter 与 N2-03 video decode-unit bridge 已形成 checkpoint；当前唯一代码任务为 N2-04 generation-fenced OH_AVCodec integration。HarmonyOS 虚拟设备已验证 owner-store v5、19/20/16 列三表和幂等 schema receipt；AGC 三环境、HAP/AppSpawn secure-identity/transport/media runtime、真实 Sunshine 与 ARM64 实机回执仍缺失，故云注册、用户入口和运行时能力保持 fail closed，六个发布 truth 仍全 false
 > 适用仓库：/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS
 > 上游实施锁定：2026-08-09 已只读复核并固定 moonlight-common-c `e41355ea01670fd4c830b384009d31dd0339a705`（ENet `aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1`、nanors `b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a`）、Moonlight Android `f10085f552b367cf7203007693d91c322a0a2936`、Moonlight Qt `2e13ed9977bc31c73caf8428f08f58d793313ece`、Sunshine 测试 pin `v2026.808.164219` / `25c06d79b54f3d092d3fedd5f5ba44989f394692`；完整哈希、许可证和能力证据见 `docs/codex/plans/2026-08-09-moonlight-implementation-ledger.md`
 > 原评估轮次仅更新计划文件；2026-08-09 起的实施变更严格按第 15 节任务 ID、仓库门禁和 fail-closed feature policy 推进。
@@ -3439,8 +3439,10 @@ N2-03 只能按以下原子顺序执行，不回开 N2-02 的 router/owner/stage
    `moonlight/media/MoonlightVideoBridge.h/.cpp` 与 focused native test；公共 decoder 若无
    失败测试证明现有 generation/ownership 合同不足不得修改。
 2. bridge 输入必须是只在 callback lease 内有效的 `DECODE_UNIT` view；立即校验非空链、
-   `fullLength`、entry 数量、每项 `length/offset/data`、整数溢出、buffer type、frame type、
-   decode/frame number 与 codec profile。设置单 frame/单 entry/总 payload 有界上限，任何
+   `fullLength`、entry 数量、每项 `length/data`、整数溢出、buffer type、frame type、
+   `frameNumber` 与 codec profile。锁定 common-c 的 `LENTRY` 没有 offset 字段，
+   `DECODE_UNIT` 也没有 decodeNumber；offset 只能由本地按链顺序计算。设置单 frame/单
+   entry/总 payload 有界上限，任何
    malformed、cycle、截断、重复 config 或长度不一致在读 payload 前 fail closed。
 3. 不把 LENTRY 首指针当连续 buffer。按链顺序建立 project-owned immutable fragment view；
    只有下游需要连续 Annex-B/access unit 时才在有界 owner buffer 中一次组装。明确复制与
@@ -3459,12 +3461,92 @@ N2-03 只能按以下原子顺序执行，不回开 N2-02 的 router/owner/stage
 7. teardown 顺序为关闭 submit admission→等待 in-flight bridge lease→清 config/payload
    owner buffers→释放 session generation；旧 callback、重复 stop、sink exception、析构中
    blocked submit 都必须有 deterministic barrier 测试，不 detach、不 sleep 猜时序。
-8. focused tests 至少覆盖单/多 LENTRY、config+IDR、fragment 顺序、offset/fullLength、
-   空/cycle/过长/溢出/截断/unknown type、frame/decode number 边界、stale generation、
+8. focused tests 至少覆盖单/多 LENTRY、config+IDR、fragment 顺序、本地计算的
+   offset/fullLength、空/cycle/过长/溢出/截断/unknown type、frame number 边界、stale generation、
    backpressure/need-IDR、sink exception、blocked submit teardown、payload/log canary 和
    deterministic malformed corpus；普通/三轮 ASan、strict/analyzer、TSan 或等价 race
    harness、双 ABI/HAP/NAPI/include、双 Hvigor、vendor/TOTP/Light/diff/state 全通过后
    单独 checkpoint。N2-04 前 first-frame/streaming/protocol truth 必须继续 false。
+
+#### 15.7.11 N2-03 已完成事实与 N2-04 唯一执行合同（2026-08-10）
+
+N2-03 已由代码 checkpoint `34d2ffa7a` 完成。新增 hidden/private
+`MoonlightVideoBridge`、项目自有 borrowed view/owned access-unit DTO、一个 dormant
+unavailable product sink 和 8 个 focused case；N2-02 adapter 的唯一 `.cpp` 同步把官方
+`PDECODE_UNIT/LENTRY` 投影到固定 64 项 project view，header、bridge 和测试都不暴露
+`Limelight.h`。单 fragment、单 AU、codec config 上限分别为 4 MiB、16 MiB、1 MiB；
+`fullLength`、cycle、数量、长度加法、type、frame/profile/time/colorspace 和 H.264/HEVC/AV1
+锁定链形状在复制前 fail closed。callback 返回前完成连续 owned bytes 与本地 fragment
+offset 复制，绝不保留 upstream pointer；H.264 保存 SPS/PPS，HEVC 保存 VPS/SPS/PPS，
+AV1 只接受 picture data。config generation 只在新的 accepted IDR 内容变化时增长。
+
+bridge 复用 N1-03 的 exact `MoonlightSessionKey` 和 owner-token high-water，不创建线程池或
+第二 session/decoder owner。submission 串行化；P frame 在 accepted IDR 前、sink
+backpressure/need-IDR 后保持 gated，IDR 请求按 invocation 合并，accepted IDR 才重新打开。
+stop 先关闭 admission，再有界等待 in-flight；timeout 后仍保持关闭，后续 stop 可完成 drain，
+析构等待最后 lease。product sink 永远 unavailable，`firstFrameReady` 硬保持 false；无
+OH_AVCodec、Surface、NAPI、ArkTS、UI、云、音频或输入 caller。
+
+验证结果：普通、strict `-Werror` 与完整 TSan 均 **506/506 PASS**；ASan/UBSan 连续三轮
+**506/506 PASS**，scan-build 全目标零报告。两 ABI 产品和 adapter link probe 通过；每 ABI
+91 条永久 command 中 `rdpnapi` 仍 48、adapter 1、video bridge 1。arm64
+16103/705、x86_64 15634/703 的 defined/undefined 集合及各 147 条 NAPI 子集与 N2-02 基线
+逐项一致。两项 Hvigor、API 23 双 ABI platform probe、三 tree/117 文件、TOTP 251、Light、
+diff 均通过；signed HAP SHA-256
+`d5311acdf2d8e02385cf7bf2d33bd737e971584058b0c90d9ef7c1a0bfa9d045`，423 路径不变。
+在线注册仍精确 8 表，FAB 只有一个 disabled Moonlight 和一个“即将支持”；11 个 feature
+input 默认 false，平台能力默认 11 pending/1 unsupported/0 supported。两个允许的 reviewer
+名额此前均已用完，本 checkpoint 只有完整机器门禁与逐文件自审，不伪造第三份审查回执。
+
+N2-04 只能按以下原子顺序执行；不得回开已经冻结的 common-c router、bridge ownership、
+云模型或 UI：
+
+1. 以 `34d2ffa7a` 保存 506 项普通/ASan/TSan、两 ABI 91/48/1/1 command、symbol/NAPI、
+   423-path HAP、双 Hvigor和 8 表/灰入口/全 false truth 基线。先为现有 RDP/RustDesk/VNC
+   decoder owner、display、Surface bind/rebind、teardown 和 keyframe recovery 补失败回归；
+   公共 `hw_decoder` 改动必须由这些测试证明且不得改变旧协议结果码或锁顺序。
+2. 新增一个窄的 project-owned Moonlight decoder sink/port 实现文件；只有该实现可 include
+   `render/hw_decoder.h` 和平台媒体头。`MoonlightVideoBridge` 继续只认识 owned AU 与抽象
+   sink，不 include NAPI/OH_AVCodec/Surface。不得复制 `HardwareDecoder`、registry、
+   `SharedSessionSinkOwnerLease`、renderer owner、callback gate 或 retire owner。
+3. decoder start request 必须携带 exact Moonlight key、映射后的 `DecoderSessionIdentity`、
+   negotiated profile、width/height、renderer handle、surface/display generation 和 runtime
+   proof。任一值 absent、owner lease 不接受、active owner/handle 不匹配、renderer 已被别的
+   协议占用或平台 capability 未证实时，必须在创建 codec/网络继续前返回 unavailable/stale；
+   不得调用 `SetActiveSessionId/SetActiveDisplay` 抢占旧协议全局 owner。
+4. 若公共 API 缺少 pure-native exact-owner create/decode/detach/destroy，先用测试冻结后只加
+   最窄 overload，并内部复用既有 registry generation、callback identity-before-start、
+   `BindVideoPipeline`、pipeline transition mutex、deferred retire 和 shared sink lease。
+   禁止把内部 handle 暴露到 ArkTS/NAPI，也禁止建立 Moonlight 私有 active pointer。
+5. MVP 只启用 runtime-proven H.264 8-bit 4:2:0；HEVC/AV1/HDR/YUV444 继续返回
+   unsupported/pending。把 accepted owned AU 的连续 Annex-B bytes、`presentationTimeUs`、
+   IDR flag、negotiated dimensions 和 codec 精确投影为现有 `VideoFrame`；配置必须随 IDR
+   同一 AU 提交。config generation 改变时只在新 IDR 上 flush/recreate，旧 generation AU
+   不得进入新 codec。
+6. 把现有 decoder admission 结果翻译为 stable sink truth：成功才 `Accepted`；pipeline
+   busy/queue pressure 为 `Backpressure`；hardware/software keyframe-required 为 `NeedIdr`；
+   owner/display/generation 不匹配为 `Stale`；capability 不满足为 `Unsupported`；平台错误为
+   `Failed`。不得把通用 `-1` 猜成成功，也不得在持有 decoder/pipeline/owner 锁时进入
+   common-c 或调用 IDR 请求。
+7. `submit accepted`、`OH_VideoDecoder_PushInputBuffer` 成功和 output callback 都不是单独的
+   首帧证据。只有 exact key/generation 的 output buffer 成功交给 NativeImage、
+   `UpdateSurfaceImage` 成功且 renderer owner 接受该纹理后，才能发布一次 first-frame receipt；
+   Surface absent/rebind/teardown、旧 callback 或仅 telemetry 增长均保持 false。若现有 void
+   render callback 无法证明接受，N2-04 必须新增 project-owned ack seam，而不能推断。
+8. teardown 固定为 bridge close admission→decoder sink close→停止 frame/error callback
+   admission→detach renderer/Surface→等待 codec/image/render worker lease→destroy registry
+   handle→清 config/first-frame receipt；blocked submit、late input/output/frame callback、
+   callback 中 stop、重复 stop、Surface rebind 和 owner replacement 必须确定性通过，不
+   detach、不 sleep 猜测。
+9. product wiring 仍不得经 NAPI/UI 启动；只有 HAP/AppSpawn API 23 的 H.264 decode、
+   NativeImage/renderer first-frame 与 teardown probe 都有 receipt，product sink 的
+   `available()` 才可针对该 exact profile 返回 true。N2-04 checkpoint 后 FAB、云表、
+   `streaming/protocolAvailable` 仍 false；N2-05 才处理 Surface 缺失/PIP/后台策略。
+10. focused tests 必须覆盖 exact-owner create/bind/decode/detach/destroy、H.264 config+IDR、
+    P-before-IDR、config generation recreate、queue pressure/IDR 合并、旧 owner/display/surface
+    generation、renderer 拒绝、output/NativeImage/renderer ack 三段首帧、blocked callbacks、
+    20 次 rebind/teardown 和旧协议全量回归。普通/三轮 ASan、完整 TSan、strict/analyzer、
+    双 ABI/HAP/NAPI/include、双 Hvigor、vendor/TOTP/Light/diff/state 全通过后单独 checkpoint。
 
 ### 15.8 N2：RTSP、视频、音频和媒体时钟
 
@@ -3472,8 +3554,8 @@ N2-03 只能按以下原子顺序执行，不回开 N2-02 的 router/owner/stage
 | --- | --- | --- | --- |
 | N2-01 | **CONTRACT PASS / DORMANT `db5865c53`**：定义 `MoonlightStreamConfig` requested/effective/offer，严格区分 capability intersection 与 negotiated | 36 focused；全量与 ASan/UBSan 476/476；双 ABI/HAP/NAPI 隔离不变 | UI 后续同时显示 requested/D1 effective/runtime effective，不猜测；当前无 runtime caller |
 | N2-02 | **CONTRACT PASS / DORMANT `248e704ab`**：唯一 hidden adapter 把 N2-01 offer 映射到官方 common-c，并复用既有 owner 收束 process-global callbacks、11-stage/deadline/termination、setup-derived video/audio 与 secret cleanse | 21 focused；普通/ASan/UBSan 497/497；strict/analyzer/race harness、双 ABI/HAP/NAPI/include、双 Hvigor与合规通过；最终 `sol low` review 无 P0/P1/P2 | product media port unavailable，无 NAPI/UI/cloud caller；transport-ready 不是 first-frame；N2-03 只接 decode-unit bridge |
-| N2-03 | 新建 `moonlight/media/MoonlightVideoBridge.*`：把 `DECODE_UNIT` 的 LENTRY 链按 buffer type 组装/零拷贝边界，保存 SPS/PPS/VPS、frameType、decode number | 分片、配置帧、IDR、乱序/丢包、过大帧、fuzz/ASan 可用环境 | 不把链首指针当单 buffer |
-| N2-04 | 通过现有 `hw_decoder` owner/generation API 接 OH_AVCodec；补 Moonlight codec config/keyframe request/queue policy，不回退现有 renderer lease | Surface 创建/销毁/重绑、旧 generation、首帧、20 次 PIP/rebind、黑屏恢复 | 若需公共 decoder 改动，先加旧协议回归测试 |
+| N2-03 | **CONTRACT PASS / DORMANT `34d2ffa7a`**：bounded `DECODE_UNIT/LENTRY` projection、owned AU、SPS/PPS/VPS generation、IDR/backpressure/teardown；上游无 offset/decodeNumber | 8 focused；普通/strict/TSan 506/506、ASan/UBSan 三轮、analyzer、双 ABI/HAP/NAPI/include、双 Hvigor与合规通过 | product sink unavailable、first-frame 恒 false；N2-04 只接既有 decoder owner |
+| N2-04 | 以窄 Moonlight sink 复用现有 `hw_decoder` registry/shared owner/callback/Surface/retire API；H.264 Annex-B、typed admission、三段 renderer ack 首帧 | exact owner、config+IDR、pressure、stale generation、Surface 创建/销毁/重绑、旧协议回归、20 次 rebind | 不新增 decoder singleton/NAPI/UI；HAP runtime proof 前仍 unavailable，N2-05 前不声明串流 |
 | N2-05 | 定义无 Surface 策略：继续网络但丢弃视频/按 capability 暂停，不无限缓存；重新绑定后请求 IDR | 后台、锁屏、PIP、旋转、fold/window resize、Surface 丢失 | 内存稳定，恢复首帧有时限 |
 | N2-06 | 新建 `MoonlightAudioBridge.*`：Opus/Opus multistream→S16LE PCM，首版 stereo；明确采样率、frame size、PLC/FEC、降混 | golden PCM、损坏包、丢包、stereo、unsupported surround、内存清零 | 复用现有 Opus 时避免重复符号/版本冲突 |
 | N2-07 | 接现有 owner/generation-aware `audio_player`，实现 queue/flush/pause/resume/focus；音频失败允许用户选择无音频继续 | underrun、焦点丢失、切后台、断开后无残音、旧 callback | 不把音频 ready 当视频 first-frame |
@@ -3584,10 +3666,10 @@ Moonlight 能从“即将支持”变成可点击，仅当下列事实同时成�
 | 云适配 | exact 19 列 adapter、row-sensitive transfer、五 scope selection store、dormant materializer 和独立云状态 policy 已存在；`CloudSyncPolicy.TABLES` 仍是原有 8 表 | 可以验证/隔离/本地物化候选 row，所有结果明确 `cloudAttempted=false`；状态不会把 pending/quarantine 伪装成 synced | D2-07 必须等三环境 AGC receipt；之后才做 D3-01 coordinator、cloud-first promotion 和 D3-08 |
 | 云数据 | `moonlightrecordv1` 是唯一未来分布式物理表；`moonlightlocalrecords` 和 `moonlightappcache` 永远本地 | 19 列 schema 已在 ARM64 API 24 owner-store 实例化和重开验证 | cache 不进云/备份；local mirror 只有 promotion 后才投影；identity 继续默认关闭 |
 | 便携备份 | Backup V3 optional Moonlight descriptor、cloud/local 双 section、exact admission 和 local-only resolver 已存在 | redacted=settings/host/profile，full 额外 trust candidate；identity/secret/cache/marker 永远排除；旧 V3 可读 | cloud-enabled restore promotion 与设备故障矩阵仍 pending；不能另建含 identity 的“完整备份”旁路 |
-| Native | N1-01～N1-08、N2-01 offer 和 N2-02 common-c adapter 均已 checkpoint；唯一 owner lane 收束官方 start/interrupt/stop、process-global callback、11-stage/deadline/termination、setup-derived codec/audio 和 secret cleanse；product media port 仍在网络前 unavailable，无 production transport/media/input caller | 可声明固定上游、可复现构建、typed DTO/cancel/env teardown、完整账户 lease/cache fence、官方 common-c compile-link 与 packet-free fail-closed 行为；HAP runtime identity/transport/media backend仍 unavailable，不能声明真实配对、目录、launch、解码、音频或输入可用 | N2-03 只建立 bounded `DECODE_UNIT/LENTRY` bridge；不接 NAPI/ArkTS/UI/cloud/renderer，也不借 transport-ready 解除 FAB、feature truth 或首帧门禁 |
+| Native | N1-01～N1-08、N2-01 offer、N2-02 common-c adapter 和 N2-03 owned video bridge 均已 checkpoint；唯一 owner lane 收束官方 start/interrupt/stop 与 callback；bounded bridge 复制 `DECODE_UNIT/LENTRY`、保存 codec config 并收束 IDR/backpressure/teardown；product sink 仍 unavailable | 可声明固定上游、官方 common-c compile-link、packet-free fail-closed、owned AU 与 deterministic video bridge contract；无 OH_AVCodec/Surface caller，HAP runtime identity/transport/media backend仍 unavailable，不能声明真实配对、目录、launch、解码、音频、输入或首帧可用 | N2-04 只以窄 sink 复用既有 decoder registry/shared owner/Surface/renderer；不新增 owner/singleton/NAPI/UI/cloud，也不借 submit/output telemetry 解除 FAB 或首帧门禁 |
 | UI | `HostListPage.ets` 当前仅有禁用的 Moonlight FAB 项、system Symbol 和“即将支持”；没有 Moonlight 添加/目录/设置/会话页 | 入口信息可见但不可交互；点击无副作用 | 直到 U1 的数据与 N1 host-control 前置都满足，保持现状；不提前建可保存假表单 |
 | 品牌 | 官方 SVG 已固定 hash，但尚无 provenance/商标/视觉验收 receipt | 只能使用现有 system Symbol 回退 | `moonlightBrandAssetReady=false`；品牌门通过后再替换资源并保留 NOTICE |
-| 验证 | 20 个 describe、151 个 Moonlight ArkTS 用例已进入聚合器；N2-02 后两项 Hvigor、423-path signed HAP、Light、普通与 ASan/UBSan 497/497、strict/analyzer/race harness、双 ABI官方 adapter probe、三 tree/117 文件、TOTP 251及产品 symbol/include/HAP 隔离通过 | 只声明测试编译注册、源码/构建完整性和 dormant unit/compile-link contract，不声明 Hypium、完整 TSan、HAP runtime HUKS/TLS/media、真实 Sunshine、首帧或串流可用 | `ohosTest` task 未注册且当前 HDC 连接失败；TSan 被既有 RustDesk timing assertion 截断；最终功能验收必须在用户 ARM64 实机和真实 Sunshine 上完成 |
+| 验证 | 20 个 describe、151 个 Moonlight ArkTS 用例已进入聚合器；N2-03 后两项 Hvigor、423-path signed HAP、Light、普通/strict/完整 TSan 506/506、ASan/UBSan 三轮、analyzer、双 ABI官方 adapter probe、三 tree/117 文件、TOTP 251及产品 symbol/include/HAP 隔离通过 | 只声明测试编译注册、源码/构建完整性和 dormant unit/compile-link/owned-payload contract，不声明 Hypium、HAP runtime HUKS/TLS/media、真实 Sunshine、首帧或串流可用 | `ohosTest` task 未注册且当前 HDC 无新 receipt；最终功能验收必须在用户 ARM64 实机和真实 Sunshine 上完成 |
 
 当前数据流只能是：
 
@@ -3621,15 +3703,13 @@ Sunshine common-c runtime / production transport / media / input 当前仍不在
 8. 更新实施台账中的状态、证据、blocker 和唯一下一任务；同步 `CURRENT/QUEUE/STATE`，再用精确文件列表形成一个可回滚提交。
 9. 只有当任务合同、测试和对应门禁均通过时标记 `PASS`；“代码写完”“构建通过”“请求已排队”均不是产品能力完成。
 
-当前唯一可直接继续的代码任务是 N2-03 video decode-unit bridge：严格按第 15.7.10 节
-消费 N2-02 media port 的 bounded `DECODE_UNIT/LENTRY`，冻结 fragment ownership、codec
-configuration、frame/decode metadata、IDR/backpressure 与 teardown 合同。它不得回开
-process-global router 或另建 session/decoder owner，不得扩张 NAPI、接 ArkTS/UI/云、
-OH_AVCodec/Surface/audio/input，也不得改变六项 capability truth；assembled/submitted
-都不表示首帧已到或串流可用。
+当前唯一可直接继续的代码任务是 N2-04 generation-fenced OH_AVCodec integration：严格按
+第 15.7.11 节让 N2-03 owned AU 经过窄 sink 复用既有 decoder registry、shared session
+owner、callback gate、Surface/renderer 与 deferred retire。它不得回开 common-c router 或
+bridge ownership，不得另建 session/decoder owner，不得扩张 NAPI、接 ArkTS/UI/云、
+audio/input，也不得把 accepted submit、PushInput 或单独 output callback 当首帧；只有 exact
+generation 的 NativeImage 更新与 renderer ack 才可能形成 first-frame receipt。
 D2-05/06 由 AGC 外部环境提供证据，D2-07 依赖二者；D3 的 cloud terminal、真实
 unpair 和多设备矩阵分别等待 D2-07、N1 Host Control 和外部设备。任何执行者都
 不得因为云端受阻而把 `moonlightrecordv1` 塞入现有八表注册清单，也不得因为
-native 尚不可调用而先把灰色入口改成可点击。
-
 <!-- PLAN_BODY_END -->
