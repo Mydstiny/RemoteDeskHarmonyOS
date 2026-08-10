@@ -410,7 +410,11 @@ export interface RdpCertificateInfo {
   hostMismatch: boolean;
   errorCode: number;
   errorMessage: string;
+  preflightStatus: RdpPreflightStatus;
+  riskFlags: string[];
 }
+
+export type RdpPreflightStatus = 'completed' | 'inconclusive' | 'unavailable' | 'transportFailed';
 
 export type RdpEndpointMode = 'direct_rdp' | 'transparent_tcp_rdp' |
   'microsoft_rd_gateway' | 'vendor_https_bastion' | 'azure_bastion' | 'unknown_gateway';
@@ -437,8 +441,10 @@ export interface RdpPreflightRequest {
   expectedGatewayFingerprintSha256?: string;
   targetAllowUntrustedRoot?: boolean;
   targetAllowHostMismatch?: boolean;
+  targetAllowTimeAnomaly?: boolean;
   gatewayAllowUntrustedRoot?: boolean;
   gatewayAllowHostMismatch?: boolean;
+  gatewayAllowTimeAnomaly?: boolean;
   generation?: number;
   requestId?: string;
 }
@@ -458,10 +464,15 @@ export interface RdpCertificateRecord {
   fingerprintSha256: string;
   notBeforeMs: number;
   notAfterMs: number;
+  riskFlags: string[];
 }
 
 export interface RdpPreflightResult {
   ok: boolean;
+  preflightStatus: RdpPreflightStatus;
+  riskFlags: string[];
+  gatewayRiskFlags: string[];
+  targetRiskFlags: string[];
   endpointMode: RdpEndpointMode | string;
   routeIdentity: string;
   generation: number;
@@ -770,8 +781,12 @@ export interface SessionConfig {
   expectedRdpGatewayCertificateFingerprintSha256?: string;
   rdpAllowUntrustedRoot?: boolean;
   rdpAllowHostMismatch?: boolean;
+  rdpCertificateAllowUnpinnedOnce?: boolean;
+  rdpCertificateAllowTimeAnomalyOnce?: boolean;
   rdpGatewayAllowUntrustedRoot?: boolean;
   rdpGatewayAllowHostMismatch?: boolean;
+  rdpGatewayCertificateAllowUnpinnedOnce?: boolean;
+  rdpGatewayCertificateAllowTimeAnomalyOnce?: boolean;
   // RustDesk 扩展字段
   rdImageQuality?: number;   // 0=fast, 1=balanced, 2=quality
   rdDirectIp?: boolean;      // 直连IP模式

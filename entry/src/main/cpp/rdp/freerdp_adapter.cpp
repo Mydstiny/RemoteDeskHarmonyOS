@@ -175,6 +175,28 @@ RdpPreflightResult makeRdpPreflightError(const RdpPreflightRequest& request,
     result.stage = stage;
     result.errorCode = errorCode;
     result.errorMessage = errorMessage;
+    const RdpPreflightPolicy::ProbeFailureClassification classification =
+        RdpPreflightPolicy::classifyErrorCode(errorCode, errorMessage);
+    result.preflightStatus = classification.status;
+    result.riskFlags = classification.riskFlags;
+    if (stage == "gateway" || stage == "tunnel") {
+        result.gatewayRiskFlags = classification.riskFlags;
+    } else if (stage == "target" || stage == "target_cert" || stage == "negotiation") {
+        result.targetRiskFlags = classification.riskFlags;
+    }
+    if (stage == "gateway" && !classification.riskFlags.empty()) {
+        RdpPreflightPolicy::addUniqueRiskFlag(
+            result.riskFlags, RdpPreflightPolicy::kRiskGatewayCertificate);
+        RdpPreflightPolicy::addUniqueRiskFlag(
+            result.gatewayRiskFlags, RdpPreflightPolicy::kRiskGatewayCertificate);
+    }
+    if ((stage == "target" || stage == "target_cert" || stage == "negotiation") &&
+        !classification.riskFlags.empty()) {
+        RdpPreflightPolicy::addUniqueRiskFlag(
+            result.riskFlags, RdpPreflightPolicy::kRiskTargetCertificate);
+        RdpPreflightPolicy::addUniqueRiskFlag(
+            result.targetRiskFlags, RdpPreflightPolicy::kRiskTargetCertificate);
+    }
     RdpGatewayPolicy::initializeGatewayTransportResult(
         result, request.route.gatewayTransport);
     return result;
@@ -366,6 +388,28 @@ bool x509ValidityToMillis(X509* cert, int64_t& notBeforeMs, int64_t& notAfterMs)
     return nowMs >= notBeforeMs && nowMs <= notAfterMs;
 }
 
+void annotateCertificateValidity(X509* cert, RdpCertificateInfo& info) {
+    const bool notBeforeParsed = cert != nullptr &&
+        asn1TimeToMillis(X509_get0_notBefore(cert), info.notBeforeMs);
+    const bool notAfterParsed = cert != nullptr &&
+        asn1TimeToMillis(X509_get0_notAfter(cert), info.notAfterMs);
+    if (!notBeforeParsed || !notAfterParsed || info.notAfterMs <= info.notBeforeMs) {
+        RdpPreflightPolicy::addUniqueRiskFlag(
+            info.riskFlags, RdpPreflightPolicy::kRiskCertificateTimeInvalid);
+        info.errorCode = -25;
+        info.errorMessage = "RDP certificate validity metadata is unavailable";
+        return;
+    }
+    const int64_t nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    if (nowMs < info.notBeforeMs || nowMs > info.notAfterMs) {
+        RdpPreflightPolicy::addUniqueRiskFlag(
+            info.riskFlags, RdpPreflightPolicy::kRiskCertificateTimeInvalid);
+        info.errorCode = -25;
+        info.errorMessage = "RDP certificate is expired or not yet valid";
+    }
+}
+
 int64_t probeNowUs() {
     using clock = std::chrono::steady_clock;
     return std::chrono::duration_cast<std::chrono::microseconds>(
@@ -379,6 +423,10 @@ RdpCertificateInfo makeProbeError(const std::string& host, int port, int code,
     info.port = port > 0 ? port : kDefaultRdpPort;
     info.errorCode = code;
     info.errorMessage = message;
+    const RdpPreflightPolicy::ProbeFailureClassification classification =
+        RdpPreflightPolicy::classifyProbeFailure(code, message);
+    info.preflightStatus = classification.status;
+    info.riskFlags = classification.riskFlags;
     OH_LOG_WARN(LOG_APP, "[RDP-CERT] probe failed host=%{public}s:%{public}d code=%{public}d msg=%{public}s",
                 SafeLog::MaskHost(host).c_str(), info.port, code, message.c_str());
     return info;
@@ -632,8 +680,7 @@ RdpCertificateInfo probeGatewayCertificateOverTls(const std::string& host, int p
     info.subject = x509NameToString(X509_get_subject_name(certificate));
     info.issuer = x509NameToString(X509_get_issuer_name(certificate));
     info.fingerprintSha256 = sha256FingerprintFromCert(certificate);
-    if (info.fingerprintSha256.empty() ||
-        !x509ValidityToMillis(certificate, info.notBeforeMs, info.notAfterMs)) {
+    if (info.fingerprintSha256.empty()) {
         X509_free(certificate);
         SSL_shutdown(ssl);
         SSL_free(ssl);
@@ -642,6 +689,7 @@ RdpCertificateInfo probeGatewayCertificateOverTls(const std::string& host, int p
         return makeProbeError(host, effectivePort, -38,
                               "RD Gateway certificate metadata is unavailable");
     }
+    annotateCertificateValidity(certificate, info);
     info.hostMismatch = !RdpCertificateValidation::hostnameMatches(
         certificate, verifyName);
 
@@ -655,10 +703,15 @@ RdpCertificateInfo probeGatewayCertificateOverTls(const std::string& host, int p
     }
     if (!info.rootTrusted) {
         info.flags |= kRdpCertFlagUntrustedRoot;
+        RdpPreflightPolicy::addUniqueRiskFlag(
+            info.riskFlags, RdpPreflightPolicy::kRiskUntrustedRoot);
     }
     if (info.hostMismatch) {
         info.flags |= kRdpCertFlagHostMismatch;
+        RdpPreflightPolicy::addUniqueRiskFlag(
+            info.riskFlags, RdpPreflightPolicy::kRiskHostnameMismatch);
     }
+    info.preflightStatus = RdpPreflightPolicy::kCompleted;
     if (storeCtx != nullptr) {
         X509_STORE_CTX_free(storeCtx);
     }
@@ -915,7 +968,7 @@ RdpCertificateInfo probeRdpCertificateOverTls(const std::string& host, int port,
     info.subject = x509NameToString(X509_get_subject_name(cert));
     info.issuer = x509NameToString(X509_get_issuer_name(cert));
     info.fingerprintSha256 = sha256FingerprintFromCert(cert);
-    if (!x509ValidityToMillis(cert, info.notBeforeMs, info.notAfterMs)) {
+    if (info.fingerprintSha256.empty()) {
         X509_free(cert);
         SSL_shutdown(ssl);
         SSL_free(ssl);
@@ -924,6 +977,7 @@ RdpCertificateInfo probeRdpCertificateOverTls(const std::string& host, int port,
         return makeProbeError(host, effectivePort, -25,
                               "RDP certificate validity metadata is unavailable");
     }
+    annotateCertificateValidity(cert, info);
 
     info.hostMismatch = !RdpCertificateValidation::hostnameMatches(cert, verifyName);
 
@@ -936,10 +990,16 @@ RdpCertificateInfo probeRdpCertificateOverTls(const std::string& host, int port,
     }
     if (!info.rootTrusted) {
         info.flags |= kRdpCertFlagUntrustedRoot;
+        RdpPreflightPolicy::addUniqueRiskFlag(
+            info.riskFlags, RdpPreflightPolicy::kRiskUntrustedRoot);
     }
     if (info.hostMismatch) {
         info.flags |= kRdpCertFlagHostMismatch;
+        RdpPreflightPolicy::addUniqueRiskFlag(
+            info.riskFlags, RdpPreflightPolicy::kRiskHostnameMismatch);
     }
+
+    info.preflightStatus = RdpPreflightPolicy::kCompleted;
 
     if (storeCtx) {
         X509_STORE_CTX_free(storeCtx);
@@ -2596,6 +2656,13 @@ static RdpCertificateRecord rdpCertificateRecordFromInfo(
     record.fingerprintSha256 = info.fingerprintSha256;
     record.notBeforeMs = info.notBeforeMs;
     record.notAfterMs = info.notAfterMs;
+    record.riskFlags = info.riskFlags;
+    if (!record.riskFlags.empty()) {
+        RdpPreflightPolicy::addUniqueRiskFlag(
+            record.riskFlags, stage == "gateway"
+                ? RdpPreflightPolicy::kRiskGatewayCertificate
+                : RdpPreflightPolicy::kRiskTargetCertificate);
+    }
     return record;
 }
 
@@ -2668,6 +2735,19 @@ static int captureRdpPreflightCertificate(freerdp* instance, const BYTE* data,
         }
         return 0;
     }
+    const std::string& expectedFingerprint = gateway
+        ? state->request.expectedGatewayFingerprintSha256
+        : state->request.expectedTargetFingerprintSha256;
+    if (!expectedFingerprint.empty() &&
+        !RdpCertificatePolicy::FingerprintMatches(
+            expectedFingerprint, record.fingerprintSha256)) {
+        RdpPreflightPolicy::addUniqueRiskFlag(
+            record.riskFlags, RdpPreflightPolicy::kRiskCertificateChanged);
+    }
+    if ((flags & VERIFY_CERT_FLAG_CHANGED) != 0) {
+        RdpPreflightPolicy::addUniqueRiskFlag(
+            record.riskFlags, RdpPreflightPolicy::kRiskCertificateChanged);
+    }
     record.commonName = [&]() {
         BIO* bio = BIO_new_mem_buf(data, static_cast<int>(length));
         if (!bio) {
@@ -2681,11 +2761,20 @@ static int captureRdpPreflightCertificate(freerdp* instance, const BYTE* data,
         const std::string commonName = x509CommonName(cert);
         record.subject = x509NameToString(X509_get_subject_name(cert));
         record.issuer = x509NameToString(X509_get_issuer_name(cert));
-        if (!x509ValidityToMillis(cert, record.notBeforeMs, record.notAfterMs)) {
-            if (gateway) {
-                state->gatewayCertificateMetadataInvalid = true;
-            } else {
-                state->targetCertificateMetadataInvalid = true;
+        const bool notBeforeParsed = asn1TimeToMillis(
+            X509_get0_notBefore(cert), record.notBeforeMs);
+        const bool notAfterParsed = asn1TimeToMillis(
+            X509_get0_notAfter(cert), record.notAfterMs);
+        if (!notBeforeParsed || !notAfterParsed ||
+            record.notAfterMs <= record.notBeforeMs) {
+            RdpPreflightPolicy::addUniqueRiskFlag(
+                record.riskFlags, RdpPreflightPolicy::kRiskCertificateTimeInvalid);
+        } else {
+            const int64_t nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
+            if (nowMs < record.notBeforeMs || nowMs > record.notAfterMs) {
+                RdpPreflightPolicy::addUniqueRiskFlag(
+                    record.riskFlags, RdpPreflightPolicy::kRiskCertificateTimeInvalid);
             }
         }
         record.hostMismatch = !RdpCertificateValidation::hostnameMatches(
@@ -2693,9 +2782,19 @@ static int captureRdpPreflightCertificate(freerdp* instance, const BYTE* data,
         record.rootTrusted = rootTrustedFromPem(data, length);
         if (!record.rootTrusted) {
             record.flags |= kRdpCertFlagUntrustedRoot;
+            RdpPreflightPolicy::addUniqueRiskFlag(
+                record.riskFlags, RdpPreflightPolicy::kRiskUntrustedRoot);
         }
         if (record.hostMismatch) {
             record.flags |= kRdpCertFlagHostMismatch;
+            RdpPreflightPolicy::addUniqueRiskFlag(
+                record.riskFlags, RdpPreflightPolicy::kRiskHostnameMismatch);
+        }
+        if (!record.riskFlags.empty()) {
+            RdpPreflightPolicy::addUniqueRiskFlag(
+                record.riskFlags, gateway
+                    ? RdpPreflightPolicy::kRiskGatewayCertificate
+                    : RdpPreflightPolicy::kRiskTargetCertificate);
         }
         X509_free(cert);
         return commonName;
@@ -2707,7 +2806,8 @@ static int captureRdpPreflightCertificate(freerdp* instance, const BYTE* data,
         const bool gatewayAllowed = RdpGatewayPolicy::trustAllowsStage(
             record, state->request.expectedGatewayFingerprintSha256,
             state->request.gatewayAllowUntrustedRoot,
-            state->request.gatewayAllowHostMismatch);
+            state->request.gatewayAllowHostMismatch,
+            state->request.gatewayAllowTimeAnomaly);
         state->result.gatewayCertificate = std::move(record);
         if (!gatewayAllowed) {
             // The raw TLS inspection and the authenticated Gateway connection
@@ -2788,12 +2888,41 @@ static RdpPreflightResult probeRdpCertificateRouteWithFreeRdp(
         request.route.gatewayServerName);
     result.gatewayCertificate = rdpCertificateRecordFromInfo(
         inspectedGateway, "gateway");
+    if (!request.expectedGatewayFingerprintSha256.empty() &&
+        !RdpCertificatePolicy::FingerprintMatches(
+            request.expectedGatewayFingerprintSha256,
+            result.gatewayCertificate.fingerprintSha256)) {
+        RdpPreflightPolicy::addUniqueRiskFlag(
+            result.gatewayCertificate.riskFlags,
+            RdpPreflightPolicy::kRiskCertificateChanged);
+    }
+    result.preflightStatus = inspectedGateway.ok ? RdpPreflightPolicy::kCompleted :
+        (inspectedGateway.preflightStatus.empty() ? RdpPreflightPolicy::kUnavailable :
+            inspectedGateway.preflightStatus);
+    result.gatewayRiskFlags = result.gatewayCertificate.riskFlags;
+    result.riskFlags = result.gatewayRiskFlags;
+    if (!result.gatewayRiskFlags.empty()) {
+        RdpPreflightPolicy::addUniqueRiskFlag(
+            result.gatewayRiskFlags, RdpPreflightPolicy::kRiskGatewayCertificate);
+        RdpPreflightPolicy::addUniqueRiskFlag(
+            result.riskFlags, RdpPreflightPolicy::kRiskGatewayCertificate);
+    }
     if (!result.gatewayCertificate.present) {
         result.stage = "gateway";
-        result.errorCode = "E-RDP-GATEWAY-TLS";
+        result.errorCode = inspectedGateway.errorCode == -31 ? "E-RDP-GATEWAY-DNS" :
+            (inspectedGateway.errorCode == -32 ? "E-RDP-GATEWAY-TCP" :
+                "E-RDP-GATEWAY-TLS");
         result.errorMessage = inspectedGateway.errorMessage.empty()
             ? "RD Gateway TLS certificate was not received"
             : inspectedGateway.errorMessage;
+        result.requiresUserDecision = result.preflightStatus ==
+            RdpPreflightPolicy::kInconclusive;
+        if (result.preflightStatus == RdpPreflightPolicy::kInconclusive) {
+            RdpPreflightPolicy::addUniqueRiskFlag(
+                result.gatewayRiskFlags, RdpPreflightPolicy::kRiskGatewayCertificate);
+            RdpPreflightPolicy::addUniqueRiskFlag(
+                result.riskFlags, RdpPreflightPolicy::kRiskGatewayCertificate);
+        }
         return result;
     }
     if (!RdpGatewayPolicy::gatewayCertificateAllowsCredentialUse(
@@ -2820,12 +2949,22 @@ static RdpPreflightResult probeRdpCertificateRouteWithFreeRdp(
     if (!instance) {
         result.errorCode = "E-RDP-GATEWAY-TLS";
         result.errorMessage = "Unable to create FreeRDP preflight instance";
+        const RdpPreflightPolicy::ProbeFailureClassification classification =
+            RdpPreflightPolicy::classifyErrorCode(result.errorCode, result.errorMessage);
+        result.preflightStatus = classification.status;
+        result.riskFlags = classification.riskFlags;
+        result.gatewayRiskFlags = classification.riskFlags;
         return result;
     }
     if (!freerdp_context_new(instance)) {
         freerdp_free(instance);
         result.errorCode = "E-RDP-GATEWAY-TLS";
         result.errorMessage = "Unable to create FreeRDP preflight context";
+        const RdpPreflightPolicy::ProbeFailureClassification classification =
+            RdpPreflightPolicy::classifyErrorCode(result.errorCode, result.errorMessage);
+        result.preflightStatus = classification.status;
+        result.riskFlags = classification.riskFlags;
+        result.gatewayRiskFlags = classification.riskFlags;
         return result;
     }
 
@@ -2912,39 +3051,49 @@ static RdpPreflightResult probeRdpCertificateRouteWithFreeRdp(
     const bool gatewaySeen = state->result.gatewayCertificate.present;
     const bool targetSeen = state->result.targetCertificate.present;
     if (targetSeen && gatewaySeen && !state->unsupportedFlags &&
-        !state->gatewayCertificateMetadataInvalid &&
-        !state->targetCertificateMetadataInvalid) {
+        !state->gatewayCertificateRejected) {
         result.ok = true;
+        result.preflightStatus = RdpPreflightPolicy::kCompleted;
         result.stage = "target";
         result.errorCode.clear();
         result.errorMessage.clear();
         result.gatewayCertificate = state->result.gatewayCertificate;
         result.targetCertificate = state->result.targetCertificate;
+        result.gatewayRiskFlags = result.gatewayCertificate.riskFlags;
+        result.targetRiskFlags = result.targetCertificate.riskFlags;
+        result.riskFlags.clear();
+        RdpPreflightPolicy::mergeRiskFlags(result.riskFlags, result.gatewayRiskFlags);
+        RdpPreflightPolicy::mergeRiskFlags(result.riskFlags, result.targetRiskFlags);
         result.requiresGatewayAuth = false;
         result.requiresUserDecision =
             !RdpGatewayPolicy::gatewayTrustAllowsRoute(
                 request, result.gatewayCertificate, result.targetCertificate);
-    } else if (state->gatewayCertificateMetadataInvalid) {
-        result.stage = "gateway";
-        result.errorCode = "E-RDP-GATEWAY-CERT";
-        result.errorMessage = "RD Gateway certificate validity metadata is unavailable";
-    } else if (state->targetCertificateMetadataInvalid) {
-        result.stage = "target";
-        result.errorCode = "E-RDP-TARGET-CERT";
-        result.errorMessage = "Target RDP certificate validity metadata is unavailable";
     } else if (state->gatewayCertificateRejected) {
         result.stage = "gateway";
         result.errorCode = "E-RDP-GATEWAY-CERT";
+        result.preflightStatus = RdpPreflightPolicy::kInconclusive;
         result.errorMessage =
             "RD Gateway certificate changed after credential-free TLS inspection";
+        RdpPreflightPolicy::addUniqueRiskFlag(
+            result.gatewayRiskFlags, RdpPreflightPolicy::kRiskCertificateChanged);
+        RdpPreflightPolicy::addUniqueRiskFlag(
+            result.gatewayRiskFlags, RdpPreflightPolicy::kRiskGatewayCertificate);
+        RdpPreflightPolicy::addUniqueRiskFlag(
+            result.riskFlags, RdpPreflightPolicy::kRiskCertificateChanged);
+        RdpPreflightPolicy::addUniqueRiskFlag(
+            result.riskFlags, RdpPreflightPolicy::kRiskGatewayCertificate);
+        result.requiresUserDecision = true;
     } else if (state->unsupportedFlags) {
         result.stage = gatewaySeen ? "gateway" : "target";
         result.errorCode = "E-RDP-CERT";
+        result.preflightStatus = RdpPreflightPolicy::kInconclusive;
         result.errorMessage = "FreeRDP returned an unsupported certificate callback flag";
+        result.requiresUserDecision = true;
     } else if (gatewaySeen) {
         result.stage = "tunnel";
         result.errorCode = request.username.empty() ? "E-RDP-GATEWAY-AUTH" :
             "E-RDP-GATEWAY-TUNNEL";
+        result.preflightStatus = RdpPreflightPolicy::kTransportFailed;
         result.errorMessage = request.username.empty()
             ? "RD Gateway authentication is required before the target certificate can be read"
             : "RD Gateway did not provide the tunneled target RDP certificate";
@@ -2952,13 +3101,27 @@ static RdpPreflightResult probeRdpCertificateRouteWithFreeRdp(
     } else {
         result.stage = "gateway";
         result.errorCode = "E-RDP-GATEWAY-TLS";
+        result.preflightStatus = RdpPreflightPolicy::kInconclusive;
         result.errorMessage = lastError == 0 ?
             "RD Gateway TLS certificate was not received" :
             std::string("RD Gateway connection failed: ") +
                 freerdpErrorName(lastError);
+        result.requiresUserDecision = true;
+        RdpPreflightPolicy::addUniqueRiskFlag(
+            result.gatewayRiskFlags, RdpPreflightPolicy::kRiskGatewayCertificate);
+        RdpPreflightPolicy::addUniqueRiskFlag(
+            result.riskFlags, RdpPreflightPolicy::kRiskGatewayCertificate);
     }
     result.gatewayCertificate = state->result.gatewayCertificate;
     result.targetCertificate = state->result.targetCertificate;
+    if (result.gatewayRiskFlags.empty()) {
+        result.gatewayRiskFlags = result.gatewayCertificate.riskFlags;
+    }
+    if (result.targetRiskFlags.empty()) {
+        result.targetRiskFlags = result.targetCertificate.riskFlags;
+    }
+    RdpPreflightPolicy::mergeRiskFlags(result.riskFlags, result.gatewayRiskFlags);
+    RdpPreflightPolicy::mergeRiskFlags(result.riskFlags, result.targetRiskFlags);
     freerdp_context_free(instance);
     freerdp_free(instance);
     return result;
@@ -2978,6 +3141,8 @@ DWORD FreeRdpAdapter::evaluateCertificate(const char* host, UINT16 port,
     std::string verificationName;
     bool allowHostMismatch = false;
     bool allowUntrustedRoot = false;
+    bool allowUnpinnedOnce = false;
+    bool allowTimeAnomalyOnce = false;
     std::string endpointMode;
     {
         std::lock_guard<std::mutex> lock(impl_->configMutex);
@@ -2990,6 +3155,12 @@ DWORD FreeRdpAdapter::evaluateCertificate(const char* host, UINT16 port,
         allowUntrustedRoot = gatewayCertificate
             ? impl_->config.rdpGatewayAllowUntrustedRoot
             : impl_->config.rdpAllowUntrustedRoot;
+        allowUnpinnedOnce = gatewayCertificate
+            ? impl_->config.rdpGatewayCertificateAllowUnpinnedOnce
+            : impl_->config.rdpCertificateAllowUnpinnedOnce;
+        allowTimeAnomalyOnce = gatewayCertificate
+            ? impl_->config.rdpGatewayCertificateAllowTimeAnomalyOnce
+            : impl_->config.rdpCertificateAllowTimeAnomalyOnce;
         verificationName = gatewayCertificate
             ? (impl_->config.rdpGatewayServerName.empty()
                 ? impl_->config.gatewayHost : impl_->config.rdpGatewayServerName)
@@ -3048,11 +3219,16 @@ DWORD FreeRdpAdapter::evaluateCertificate(const char* host, UINT16 port,
     // FreeRDP's own hostname-mismatch flag is produced. Recompute SAN/CN
     // matching from the certificate instead of trusting that flag alone.
     hostMismatch = !pemHostMatches;
+    // This flag is set only by an explicit, route-bound Continue Once handoff
+    // from the preflight UI. It remains valid even when an older saved pin is
+    // present: the user is explicitly choosing to evaluate the live callback
+    // certificate once rather than silently accepting the old pin.
+    const bool unpinnedOnceForCurrentRoute = allowUnpinnedOnce;
     const bool fingerprintOk = RdpCertificatePolicy::FingerprintMatches(
-        expectedFingerprint, fingerprint);
-    const bool hostOk = !hostMismatch || allowHostMismatch;
+        expectedFingerprint, fingerprint) || unpinnedOnceForCurrentRoute;
+    const bool hostOk = !hostMismatch || allowHostMismatch || unpinnedOnceForCurrentRoute;
     const bool rootTrusted = rootTrustedFromPem(pemData, pemLength);
-    const bool rootOk = rootTrusted || allowUntrustedRoot;
+    const bool rootOk = rootTrusted || allowUntrustedRoot || unpinnedOnceForCurrentRoute;
     bool validityOk = true;
     if (pemData != nullptr && pemLength > 0) {
         BIO* bio = BIO_new_mem_buf(pemData, static_cast<int>(pemLength));
@@ -3065,7 +3241,7 @@ DWORD FreeRdpAdapter::evaluateCertificate(const char* host, UINT16 port,
             X509_free(cert);
         }
     }
-    if (!validityOk) {
+    if (!validityOk && !allowTimeAnomalyOnce && !unpinnedOnceForCurrentRoute) {
         OH_LOG_ERROR(LOG_APP,
             "[RDP] %s certificate validity is not current or cannot be parsed flags=0x%{public}08X",
             gatewayCertificate ? "gateway" : "target", flags);
@@ -5993,6 +6169,16 @@ RdpPreflightResult FreeRdpAdapter::probeRdpCertificateRoute(
         route.targetHost, route.targetPort, route.targetServerName);
     RdpPreflightResult result;
     result.ok = info.ok;
+    result.preflightStatus = info.ok ? RdpPreflightPolicy::kCompleted :
+        (info.preflightStatus.empty() ? RdpPreflightPolicy::kUnavailable : info.preflightStatus);
+    result.riskFlags = info.riskFlags;
+    result.targetRiskFlags = info.riskFlags;
+    if (!info.riskFlags.empty()) {
+        RdpPreflightPolicy::addUniqueRiskFlag(
+            result.riskFlags, RdpPreflightPolicy::kRiskTargetCertificate);
+        RdpPreflightPolicy::addUniqueRiskFlag(
+            result.targetRiskFlags, RdpPreflightPolicy::kRiskTargetCertificate);
+    }
     result.endpointMode = route.endpointMode;
     result.routeIdentity = RdpGatewayPolicy::routeIdentity(route);
     result.generation = normalized.generation;
@@ -6002,8 +6188,9 @@ RdpPreflightResult FreeRdpAdapter::probeRdpCertificateRoute(
     result.errorMessage = info.errorMessage;
     RdpGatewayPolicy::initializeGatewayTransportResult(
         result, normalized.route.gatewayTransport);
-    result.requiresUserDecision = info.ok;
-    result.targetCertificate.present = info.ok;
+    result.requiresUserDecision = info.ok ||
+        result.preflightStatus == RdpPreflightPolicy::kInconclusive;
+    result.targetCertificate.present = info.ok && !info.fingerprintSha256.empty();
     result.targetCertificate.stage = "target";
     result.targetCertificate.host = info.host;
     result.targetCertificate.port = info.port;
@@ -6017,9 +6204,22 @@ RdpPreflightResult FreeRdpAdapter::probeRdpCertificateRoute(
     result.targetCertificate.flags = info.flags;
     result.targetCertificate.rootTrusted = info.rootTrusted;
     result.targetCertificate.hostMismatch = info.hostMismatch;
+    result.targetCertificate.riskFlags = info.riskFlags;
+    if (!normalized.expectedTargetFingerprintSha256.empty() &&
+        !RdpCertificatePolicy::FingerprintMatches(
+            normalized.expectedTargetFingerprintSha256,
+            result.targetCertificate.fingerprintSha256)) {
+        RdpPreflightPolicy::addUniqueRiskFlag(
+            result.targetCertificate.riskFlags, RdpPreflightPolicy::kRiskCertificateChanged);
+        RdpPreflightPolicy::addUniqueRiskFlag(
+            result.targetRiskFlags, RdpPreflightPolicy::kRiskCertificateChanged);
+        RdpPreflightPolicy::addUniqueRiskFlag(
+            result.riskFlags, RdpPreflightPolicy::kRiskCertificateChanged);
+    }
     if (info.ok && RdpGatewayPolicy::trustAllowsStage(
             result.targetCertificate, normalized.expectedTargetFingerprintSha256,
-            normalized.targetAllowUntrustedRoot, normalized.targetAllowHostMismatch)) {
+            normalized.targetAllowUntrustedRoot, normalized.targetAllowHostMismatch,
+            normalized.targetAllowTimeAnomaly)) {
         result.requiresUserDecision = false;
     }
     return result;
@@ -6711,6 +6911,16 @@ RdpPreflightResult FreeRdpAdapter::probeRdpCertificateRoute(
         normalizedRoute.targetServerName);
     RdpPreflightResult result;
     result.ok = info.ok;
+    result.preflightStatus = info.ok ? RdpPreflightPolicy::kCompleted :
+        (info.preflightStatus.empty() ? RdpPreflightPolicy::kUnavailable : info.preflightStatus);
+    result.riskFlags = info.riskFlags;
+    result.targetRiskFlags = info.riskFlags;
+    if (!info.riskFlags.empty()) {
+        RdpPreflightPolicy::addUniqueRiskFlag(
+            result.riskFlags, RdpPreflightPolicy::kRiskTargetCertificate);
+        RdpPreflightPolicy::addUniqueRiskFlag(
+            result.targetRiskFlags, RdpPreflightPolicy::kRiskTargetCertificate);
+    }
     result.endpointMode = normalizedRoute.endpointMode;
     result.routeIdentity = RdpGatewayPolicy::routeIdentity(normalizedRoute);
     result.generation = normalized.generation;
@@ -6720,8 +6930,9 @@ RdpPreflightResult FreeRdpAdapter::probeRdpCertificateRoute(
     result.errorMessage = info.errorMessage;
     RdpGatewayPolicy::initializeGatewayTransportResult(
         result, normalized.route.gatewayTransport);
-    result.requiresUserDecision = info.ok;
-    result.targetCertificate.present = info.ok;
+    result.requiresUserDecision = info.ok ||
+        result.preflightStatus == RdpPreflightPolicy::kInconclusive;
+    result.targetCertificate.present = info.ok && !info.fingerprintSha256.empty();
     result.targetCertificate.stage = "target";
     result.targetCertificate.host = info.host;
     result.targetCertificate.port = info.port;
@@ -6735,9 +6946,22 @@ RdpPreflightResult FreeRdpAdapter::probeRdpCertificateRoute(
     result.targetCertificate.flags = info.flags;
     result.targetCertificate.rootTrusted = info.rootTrusted;
     result.targetCertificate.hostMismatch = info.hostMismatch;
+    result.targetCertificate.riskFlags = info.riskFlags;
+    if (!request.expectedTargetFingerprintSha256.empty() &&
+        !RdpCertificatePolicy::FingerprintMatches(
+            request.expectedTargetFingerprintSha256,
+            result.targetCertificate.fingerprintSha256)) {
+        RdpPreflightPolicy::addUniqueRiskFlag(
+            result.targetCertificate.riskFlags, RdpPreflightPolicy::kRiskCertificateChanged);
+        RdpPreflightPolicy::addUniqueRiskFlag(
+            result.targetRiskFlags, RdpPreflightPolicy::kRiskCertificateChanged);
+        RdpPreflightPolicy::addUniqueRiskFlag(
+            result.riskFlags, RdpPreflightPolicy::kRiskCertificateChanged);
+    }
     if (info.ok && RdpGatewayPolicy::trustAllowsStage(
             result.targetCertificate, request.expectedTargetFingerprintSha256,
-            request.targetAllowUntrustedRoot, request.targetAllowHostMismatch)) {
+            request.targetAllowUntrustedRoot, request.targetAllowHostMismatch,
+            request.targetAllowTimeAnomaly)) {
         result.requiresUserDecision = false;
     }
     return result;

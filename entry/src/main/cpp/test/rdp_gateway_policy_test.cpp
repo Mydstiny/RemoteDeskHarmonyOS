@@ -199,11 +199,12 @@ RDP_TEST_CASE(rdp_gateway_policy_does_not_send_credentials_before_gateway_identi
 
     gateway.rootTrusted = true;
     gateway.hostMismatch = false;
+    RDP_ASSERT(!RdpGatewayPolicy::gatewayCertificateAllowsCredentialUse(request, gateway));
+    request.expectedGatewayFingerprintSha256 = gateway.fingerprintSha256;
     RDP_ASSERT(RdpGatewayPolicy::gatewayCertificateAllowsCredentialUse(request, gateway));
 
     gateway.rootTrusted = false;
     RDP_ASSERT(!RdpGatewayPolicy::gatewayCertificateAllowsCredentialUse(request, gateway));
-    request.expectedGatewayFingerprintSha256 = gateway.fingerprintSha256;
     request.gatewayAllowUntrustedRoot = true;
     RDP_ASSERT(RdpGatewayPolicy::gatewayCertificateAllowsCredentialUse(request, gateway));
 
@@ -343,6 +344,56 @@ RDP_TEST_CASE(rdp_gateway_policy_rejects_missing_or_invalid_stage_records) {
         certificate,
         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         false, false));
+}
+
+RDP_TEST_CASE(rdp_preflight_policy_keeps_probe_risks_nonfatal) {
+    const auto standard = RdpPreflightPolicy::classifyProbeFailure(
+        -18, "RDP server selected Standard RDP Security");
+    RDP_ASSERT(standard.status == RdpPreflightPolicy::kInconclusive);
+    RDP_ASSERT(RdpPreflightPolicy::hasRiskFlag(
+        standard.riskFlags, RdpPreflightPolicy::kRiskStandardRdpSecurity));
+
+    const auto reset = RdpPreflightPolicy::classifyProbeFailure(
+        -22, "RDP TLS handshake failed (errno=104:Connection reset by peer)");
+    RDP_ASSERT(reset.status == RdpPreflightPolicy::kInconclusive);
+    RDP_ASSERT(RdpPreflightPolicy::hasRiskFlag(
+        reset.riskFlags, RdpPreflightPolicy::kRiskTlsProbeReset));
+
+    const auto eof = RdpPreflightPolicy::classifyProbeFailure(
+        -22, "RDP TLS handshake failed (sslError=ZERO_RETURN)");
+    RDP_ASSERT(eof.status == RdpPreflightPolicy::kInconclusive);
+    RDP_ASSERT(RdpPreflightPolicy::hasRiskFlag(
+        eof.riskFlags, RdpPreflightPolicy::kRiskTlsProbeReset));
+
+    const auto dns = RdpPreflightPolicy::classifyProbeFailure(
+        -11, "Unable to resolve RDP host");
+    RDP_ASSERT(dns.status == RdpPreflightPolicy::kTransportFailed);
+    RDP_ASSERT(dns.riskFlags.empty());
+
+    const auto runtimeUnavailable = RdpPreflightPolicy::classifyErrorCode(
+        "E-RDP-GATEWAY-TLS", "Unable to create FreeRDP preflight instance");
+    RDP_ASSERT(runtimeUnavailable.status == RdpPreflightPolicy::kUnavailable);
+}
+
+RDP_TEST_CASE(rdp_preflight_policy_time_anomaly_requires_explicit_stage_decision) {
+    const int64_t nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    const std::string fingerprint(
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    RdpCertificateRecord gateway;
+    gateway.present = true;
+    gateway.rootTrusted = true;
+    gateway.fingerprintSha256 = fingerprint;
+    gateway.notBeforeMs = nowMs - 120000;
+    gateway.notAfterMs = nowMs - 60000;
+    RdpPreflightRequest request;
+    request.expectedGatewayFingerprintSha256 = fingerprint;
+    RDP_ASSERT(!RdpGatewayPolicy::trustAllowsStage(gateway, fingerprint, false, false));
+    request.gatewayAllowTimeAnomaly = true;
+    RDP_ASSERT(RdpGatewayPolicy::trustAllowsStage(
+        gateway, fingerprint, false, false, true));
+    RDP_ASSERT(RdpGatewayPolicy::gatewayCertificateAllowsCredentialUse(
+        request, gateway));
 }
 
 RDP_TEST_CASE(rdp_gateway_policy_requires_both_stage_pins_and_isolates_rotation) {

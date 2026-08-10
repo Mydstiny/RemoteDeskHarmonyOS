@@ -6,6 +6,13 @@ export enum RdpCertificatePreflightState {
   ERROR = 4
 }
 
+export type RdpPreflightStatus = 'completed' | 'inconclusive' | 'unavailable' | 'transportFailed';
+
+export const RDP_PREFLIGHT_COMPLETED: RdpPreflightStatus = 'completed';
+export const RDP_PREFLIGHT_INCONCLUSIVE: RdpPreflightStatus = 'inconclusive';
+export const RDP_PREFLIGHT_UNAVAILABLE: RdpPreflightStatus = 'unavailable';
+export const RDP_PREFLIGHT_TRANSPORT_FAILED: RdpPreflightStatus = 'transportFailed';
+
 export enum RdpCertificatePreflightDecision {
   CONTINUE_ONCE = 0,
   TRUST = 1
@@ -33,9 +40,9 @@ export function rdpCertificateRouteIsCurrent(
 export function shouldFallbackToNativeRdpConnectionAfterResolverFailure(errorCode: number,
   trustMode: number, savedFingerprintSha256: string,
   savedRouteIdentity: string, currentRouteIdentity: string): boolean {
-  return errorCode === -11 && trustMode === RDP_CERTIFICATE_EXPLICIT_TRUST_MODE &&
-    savedFingerprintSha256.trim().length > 0 &&
-    rdpCertificateRouteIsCurrent(savedRouteIdentity, currentRouteIdentity);
+  // DNS failure is a transport failure under the explicit preflight
+  // contract. A saved pin must not turn it into an implicit connect decision.
+  return false;
 }
 
 export interface RdpCertificateProbeView {
@@ -50,6 +57,57 @@ export interface RdpCertificateProbeView {
   rootTrusted: boolean;
   hostMismatch: boolean;
   errorMessage: string;
+  preflightStatus?: RdpPreflightStatus;
+  riskFlags?: string[];
+}
+
+export function rdpCertificateRiskLabel(flag: string): string {
+  switch (flag) {
+    case 'UNTRUSTED_ROOT':
+      return '证书链不受信';
+    case 'HOSTNAME_MISMATCH':
+      return '主机名不匹配';
+    case 'CERTIFICATE_CHANGED':
+      return '证书已变化';
+    case 'CERTIFICATE_TIME_INVALID':
+      return '证书时间异常';
+    case 'STANDARD_RDP_SECURITY':
+      return '服务器未提供 TLS 证书，连接安全性较低';
+    case 'TLS_PROBE_RESET':
+      return '预检无法完成，可能是服务端、网关或协议兼容性问题';
+    case 'GATEWAY_CERTIFICATE_RISK':
+      return 'Gateway 证书存在风险';
+    case 'TARGET_CERTIFICATE_RISK':
+      return '目标 RDP 证书存在风险';
+    case 'UNKNOWN_GATEWAY_PROTOCOL':
+      return '当前预检无法识别该网关协议';
+    default:
+      return flag;
+  }
+}
+
+export function rdpCertificateRiskSummary(flags: string[] = []): string {
+  const unique: string[] = [];
+  flags.forEach((flag: string): void => {
+    if (flag.trim() !== '' && unique.indexOf(flag) < 0) {
+      unique.push(flag);
+    }
+  });
+  return unique.map((flag: string): string => rdpCertificateRiskLabel(flag)).join('；');
+}
+
+export function rdpPreflightStatusLabel(status: RdpPreflightStatus): string {
+  switch (status) {
+    case RDP_PREFLIGHT_COMPLETED:
+      return '预检已完成';
+    case RDP_PREFLIGHT_INCONCLUSIVE:
+      return '预检结果不确定';
+    case RDP_PREFLIGHT_TRANSPORT_FAILED:
+      return '连接通道失败';
+    case RDP_PREFLIGHT_UNAVAILABLE:
+    default:
+      return '预检不可用';
+  }
 }
 
 export function rdpCertificateValidityState(
@@ -195,12 +253,17 @@ export function classifyRdpCertificateProbe(
   probe: RdpCertificateProbeView,
   trust: RdpCertificateTrustView
 ): RdpCertificatePreflightState {
+  if ((probe.riskFlags || []).indexOf('CERTIFICATE_CHANGED') >= 0) {
+    return RdpCertificatePreflightState.CERTIFICATE_CHANGED;
+  }
   if (!probe.ok || probe.fingerprintSha256.length === 0) {
+    if (probe.preflightStatus === RDP_PREFLIGHT_INCONCLUSIVE) {
+      return RdpCertificatePreflightState.TRUST_FIRST_TIME;
+    }
     return RdpCertificatePreflightState.ERROR;
   }
-  if (rdpCertificateValidityState(probe.notBeforeMs ?? 0, probe.notAfterMs ?? 0) !== 'valid') {
-    return RdpCertificatePreflightState.ERROR;
-  }
+  const certificateTimeState: string = rdpCertificateValidityState(
+    probe.notBeforeMs ?? 0, probe.notAfterMs ?? 0);
   if (trust.trustMode === RDP_CERTIFICATE_EXPLICIT_TRUST_MODE && trust.savedFingerprintSha256.length > 0) {
     if (trust.routeBound !== true) {
       return RdpCertificatePreflightState.TRUST_FIRST_TIME;
@@ -212,6 +275,9 @@ export function classifyRdpCertificateProbe(
       return RdpCertificatePreflightState.TRUST_FIRST_TIME;
     }
     if (!probe.rootTrusted && trust.savedAllowUntrustedRoot !== true) {
+      return RdpCertificatePreflightState.TRUST_FIRST_TIME;
+    }
+    if (certificateTimeState !== 'valid') {
       return RdpCertificatePreflightState.TRUST_FIRST_TIME;
     }
     return RdpCertificatePreflightState.TRUSTED_MATCH;

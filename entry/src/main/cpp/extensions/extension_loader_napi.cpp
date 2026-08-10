@@ -1640,11 +1640,20 @@ static napi_value CreateRdpCertificateInfoValue(napi_env env, const RdpCertifica
     SetObjectString(env, result, "fingerprintSha256", cert.fingerprintSha256);
     SetObjectInt64(env, result, "notBeforeMs", cert.notBeforeMs);
     SetObjectInt64(env, result, "notAfterMs", cert.notAfterMs);
+    SetObjectString(env, result, "preflightStatus", cert.preflightStatus);
     SetObjectInt32(env, result, "flags", cert.flags);
     SetObjectBool(env, result, "rootTrusted", cert.rootTrusted);
     SetObjectBool(env, result, "hostMismatch", cert.hostMismatch);
     SetObjectInt32(env, result, "errorCode", cert.errorCode);
     SetObjectString(env, result, "errorMessage", cert.errorMessage);
+    napi_value riskFlags;
+    napi_create_array_with_length(env, cert.riskFlags.size(), &riskFlags);
+    for (size_t index = 0; index < cert.riskFlags.size(); ++index) {
+        napi_value flag;
+        napi_create_string_utf8(env, cert.riskFlags[index].c_str(), NAPI_AUTO_LENGTH, &flag);
+        napi_set_element(env, riskFlags, static_cast<uint32_t>(index), flag);
+    }
+    napi_set_named_property(env, result, "riskFlags", riskFlags);
     return result;
 }
 
@@ -1666,6 +1675,14 @@ static napi_value CreateRdpCertificateRecordValue(
     SetObjectString(env, result, "fingerprintSha256", cert.fingerprintSha256);
     SetObjectInt64(env, result, "notBeforeMs", cert.notBeforeMs);
     SetObjectInt64(env, result, "notAfterMs", cert.notAfterMs);
+    napi_value riskFlags;
+    napi_create_array_with_length(env, cert.riskFlags.size(), &riskFlags);
+    for (size_t index = 0; index < cert.riskFlags.size(); ++index) {
+        napi_value flag;
+        napi_create_string_utf8(env, cert.riskFlags[index].c_str(), NAPI_AUTO_LENGTH, &flag);
+        napi_set_element(env, riskFlags, static_cast<uint32_t>(index), flag);
+    }
+    napi_set_named_property(env, result, "riskFlags", riskFlags);
     return result;
 }
 
@@ -1674,6 +1691,7 @@ static napi_value CreateRdpPreflightResultValue(
     napi_value result;
     napi_create_object(env, &result);
     SetObjectBool(env, result, "ok", preflight.ok);
+    SetObjectString(env, result, "preflightStatus", preflight.preflightStatus);
     SetObjectString(env, result, "endpointMode",
                     RdpGatewayPolicy::endpointModeName(preflight.endpointMode));
     SetObjectString(env, result, "routeIdentity", preflight.routeIdentity);
@@ -1689,6 +1707,19 @@ static napi_value CreateRdpPreflightResultValue(
     SetObjectString(env, result, "gatewayTransportSelected", preflight.gatewayTransportSelected);
     SetObjectBool(env, result, "requiresGatewayAuth", preflight.requiresGatewayAuth);
     SetObjectBool(env, result, "requiresUserDecision", preflight.requiresUserDecision);
+    auto setRiskArray = [&](const char* key, const std::vector<std::string>& flags) {
+        napi_value array;
+        napi_create_array_with_length(env, flags.size(), &array);
+        for (size_t index = 0; index < flags.size(); ++index) {
+            napi_value flag;
+            napi_create_string_utf8(env, flags[index].c_str(), NAPI_AUTO_LENGTH, &flag);
+            napi_set_element(env, array, static_cast<uint32_t>(index), flag);
+        }
+        napi_set_named_property(env, result, key, array);
+    };
+    setRiskArray("riskFlags", preflight.riskFlags);
+    setRiskArray("gatewayRiskFlags", preflight.gatewayRiskFlags);
+    setRiskArray("targetRiskFlags", preflight.targetRiskFlags);
     napi_value gatewayCertificate = CreateRdpCertificateRecordValue(
         env, preflight.gatewayCertificate);
     napi_value targetCertificate = CreateRdpCertificateRecordValue(
@@ -1794,10 +1825,14 @@ static bool ReadRdpPreflightRequest(
                            request.targetAllowUntrustedRoot, false) ||
         !ReadNapiNamedBool(env, value, "targetAllowHostMismatch",
                            request.targetAllowHostMismatch, false) ||
+        !ReadNapiNamedBool(env, value, "targetAllowTimeAnomaly",
+                           request.targetAllowTimeAnomaly, false) ||
         !ReadNapiNamedBool(env, value, "gatewayAllowUntrustedRoot",
                            request.gatewayAllowUntrustedRoot, false) ||
         !ReadNapiNamedBool(env, value, "gatewayAllowHostMismatch",
                            request.gatewayAllowHostMismatch, false) ||
+        !ReadNapiNamedBool(env, value, "gatewayAllowTimeAnomaly",
+                           request.gatewayAllowTimeAnomaly, false) ||
         !ReadNapiNamedString(env, value, "requestId", request.requestId, false)) {
         errorMessage = "RDP preflight trust fields are invalid";
         return false;
@@ -3718,8 +3753,14 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
               cfg.expectedRdpGatewayCertificateFingerprintSha256);
     getBool("rdpAllowUntrustedRoot", cfg.rdpAllowUntrustedRoot);
     getBool("rdpAllowHostMismatch", cfg.rdpAllowHostMismatch);
+    getBool("rdpCertificateAllowUnpinnedOnce", cfg.rdpCertificateAllowUnpinnedOnce);
+    getBool("rdpCertificateAllowTimeAnomalyOnce", cfg.rdpCertificateAllowTimeAnomalyOnce);
     getBool("rdpGatewayAllowUntrustedRoot", cfg.rdpGatewayAllowUntrustedRoot);
     getBool("rdpGatewayAllowHostMismatch", cfg.rdpGatewayAllowHostMismatch);
+    getBool("rdpGatewayCertificateAllowUnpinnedOnce",
+            cfg.rdpGatewayCertificateAllowUnpinnedOnce);
+    getBool("rdpGatewayCertificateAllowTimeAnomalyOnce",
+            cfg.rdpGatewayCertificateAllowTimeAnomalyOnce);
     getInt("rdPasswordMode", cfg.rdPasswordMode);
     getInt("rdAuthMode", cfg.rdAuthMode);
     getInt("rdPasswordLength", cfg.rdPasswordLength);

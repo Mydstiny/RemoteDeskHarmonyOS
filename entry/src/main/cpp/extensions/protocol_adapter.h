@@ -134,8 +134,12 @@ struct ConnectionConfig {
     std::string expectedRdpGatewayCertificateFingerprintSha256; // RDP Gateway: 独立证书 SHA256
     bool        rdpAllowUntrustedRoot; // RDP: 当前连接允许无法回溯根证书
     bool        rdpAllowHostMismatch;  // RDP: 当前连接允许证书名称不匹配
+    bool        rdpCertificateAllowUnpinnedOnce; // RDP: 用户已明确允许本次未知证书
+    bool        rdpCertificateAllowTimeAnomalyOnce; // RDP: 用户已明确允许本次时间异常
     bool        rdpGatewayAllowUntrustedRoot;
     bool        rdpGatewayAllowHostMismatch;
+    bool        rdpGatewayCertificateAllowUnpinnedOnce;
+    bool        rdpGatewayCertificateAllowTimeAnomalyOnce;
     int         rdPasswordMode;    // RustDesk: 0=一次性, 1=永久
     int         rdAuthMode;        // RustDesk: 0=设备密码, 1=请求被控端点击批准
     int         rdPasswordLength;  // RustDesk: 临时密码长度
@@ -185,7 +189,10 @@ struct ConnectionConfig {
           rdImageQuality(1), rdDirectIp(false), rdConnectionStrategy(), rdDirectPort(21118),
           rdLanDiscovery(true), rdPrivacyMode(false), rdAudioEnabled(true), rdClipboardEnabled(true),
           rdDriveName("RemoteDesktop"), rdpAllowUntrustedRoot(false), rdpAllowHostMismatch(false),
+          rdpCertificateAllowUnpinnedOnce(false), rdpCertificateAllowTimeAnomalyOnce(false),
           rdpGatewayAllowUntrustedRoot(false), rdpGatewayAllowHostMismatch(false),
+          rdpGatewayCertificateAllowUnpinnedOnce(false),
+          rdpGatewayCertificateAllowTimeAnomalyOnce(false),
           rdPasswordMode(0), rdAuthMode(0), rdPasswordLength(6), rdServerKeyMode(0),
           rdRelayPort(21117),
           vncTransport("direct_tcp"), vncGatewayPort(5901), vncGatewayPath("/vnc"),
@@ -252,6 +259,8 @@ struct RdpCertificateInfo {
     bool hostMismatch = false;
     int errorCode = 0;
     std::string errorMessage;
+    std::string preflightStatus = "unavailable";
+    std::vector<std::string> riskFlags;
 };
 
 /** RDP 原生渲染统计, 用于 ArkTS 侧识别已连接但未出画面的异常 */

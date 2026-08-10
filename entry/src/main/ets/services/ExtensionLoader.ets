@@ -360,7 +360,9 @@ export class ExtensionLoader {
         rootTrusted: false,
         hostMismatch: false,
         errorCode: -1,
-        errorMessage: 'RDP 证书探测异常'
+        errorMessage: 'RDP 证书探测异常',
+        preflightStatus: 'unavailable',
+        riskFlags: []
       };
     }
   }
@@ -385,7 +387,9 @@ export class ExtensionLoader {
         rootTrusted: false,
         hostMismatch: false,
         errorCode: -1,
-        errorMessage: 'RDP 证书探测异常 [E-RDP-CERT-ASYNC]'
+        errorMessage: 'RDP 证书探测异常 [E-RDP-CERT-ASYNC]',
+        preflightStatus: 'unavailable',
+        riskFlags: []
       };
     }
   }
@@ -403,10 +407,12 @@ export class ExtensionLoader {
         host: route.targetHost, port: route.targetPort ?? 3389,
         stage: 'target', serverName: route.targetServerName ?? route.targetHost,
         commonName: '', subject: '', issuer: '', fingerprintSha256: '',
-        notBeforeMs: 0, notAfterMs: 0
+        notBeforeMs: 0, notAfterMs: 0, riskFlags: []
       };
       return {
         ok: false,
+        preflightStatus: 'unavailable',
+        riskFlags: [], gatewayRiskFlags: [], targetRiskFlags: [],
         endpointMode: route.endpointMode ?? (route.gatewayHost ? 'microsoft_rd_gateway' : 'direct_rdp'),
         routeIdentity: '',
         generation: request.generation ?? 0,
@@ -424,7 +430,7 @@ export class ExtensionLoader {
           host: route.gatewayHost ?? '', port: route.gatewayPort ?? 443,
           stage: 'gateway', serverName: route.gatewayServerName ?? route.gatewayHost ?? '',
           commonName: '', subject: '', issuer: '', fingerprintSha256: '',
-          notBeforeMs: 0, notAfterMs: 0
+          notBeforeMs: 0, notAfterMs: 0, riskFlags: []
         },
         targetCertificate: emptyCertificate
       } as RdpPreflightResult;

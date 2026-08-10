@@ -420,6 +420,7 @@ import {
   shouldAutoSwitchVncKeyboardMouseMode,
   shouldConsumeRemoteBack
 } from '../services/RemotePhysicalKeyboardPolicy';
+import { normalizeVncPhysicalKeyCode } from '../services/VncPhysicalKeyboardPolicy';
 import {
   accumulateContinuousRemoteWheel,
   applyRemoteWheelDirection,
@@ -848,6 +849,13 @@ struct RemoteDesktop {
   private orientationApplied: boolean = false;
   private connectAttemptId: number = 0;
   private pendingHost: RemoteHost | null = null;
+  // Transient RDP certificate decisions are handed from the preflight page
+  // to the real FreeRDP callback path. They are never persisted in RemoteHost.
+  private rdpCertificateAllowUnpinnedOnce: boolean = false;
+  private rdpCertificateAllowTimeAnomalyOnce: boolean = false;
+  private rdpGatewayCertificateAllowUnpinnedOnce: boolean = false;
+  private rdpGatewayCertificateAllowTimeAnomalyOnce: boolean = false;
+  private rdpCertificateTransientRouteIdentity: string = '';
   private pendingVncHost: VncHostView | null = null;
   // Set only by the RustDesk Pro preflight handoff. It is consumed after the
   // first renderer/decoder pair is installed and is never inferred from a
@@ -8023,8 +8031,10 @@ struct RemoteDesktop {
 
   private mapPhysicalKeyCode(keyCode: number): number {
     const protocol: string = this.pendingHost === null ? '' : this.pendingHost.protocol;
+    const normalizedKeyCode: number = protocol === 'vnc' ?
+      normalizeVncPhysicalKeyCode(keyCode) : keyCode;
     return mapPhysicalKeyForRemoteLayout(
-      physicalKeyboardLayoutForProtocol(protocol, this.physicalKeyboardLayout), keyCode);
+      physicalKeyboardLayoutForProtocol(protocol, this.physicalKeyboardLayout), normalizedKeyCode);
   }
 
   private clearRemoteInputFocusSchedule(): void {
@@ -8540,8 +8550,25 @@ struct RemoteDesktop {
     if (host.protocol !== 'rdp') {
       return host;
     }
+    this.rdpCertificateAllowUnpinnedOnce = false;
+    this.rdpCertificateAllowTimeAnomalyOnce = false;
+    this.rdpGatewayCertificateAllowUnpinnedOnce = false;
+    this.rdpGatewayCertificateAllowTimeAnomalyOnce = false;
+    this.rdpCertificateTransientRouteIdentity = '';
     const fingerprint: string = (params['rdpCertificateOneTimeFingerprintSha256'] as string) || '';
-    if (fingerprint.length === 0) {
+    const gatewayFingerprint: string =
+      (params['rdpGatewayCertificateOneTimeFingerprintSha256'] as string) || '';
+    const targetUnpinnedOnce: boolean =
+      (params['rdpCertificateAllowUnpinnedOnce'] as boolean) === true;
+    const targetTimeAnomalyOnce: boolean =
+      (params['rdpCertificateAllowTimeAnomalyOnce'] as boolean) === true;
+    const gatewayUnpinnedOnce: boolean =
+      (params['rdpGatewayCertificateAllowUnpinnedOnce'] as boolean) === true;
+    const gatewayTimeAnomalyOnce: boolean =
+      (params['rdpGatewayCertificateAllowTimeAnomalyOnce'] as boolean) === true;
+    if (fingerprint.length === 0 && gatewayFingerprint.length === 0 &&
+      !targetUnpinnedOnce && !targetTimeAnomalyOnce &&
+      !gatewayUnpinnedOnce && !gatewayTimeAnomalyOnce) {
       return host;
     }
     const routeIdentity: string = (params['rdpCertificateOneTimeRouteIdentity'] as string) || '';
@@ -8550,17 +8577,22 @@ struct RemoteDesktop {
         'RDP one-time certificate route identity mismatch; refusing override host=' + maskHost(host.host));
       return host;
     }
+    this.rdpCertificateTransientRouteIdentity = routeIdentity;
+    this.rdpCertificateAllowUnpinnedOnce = targetUnpinnedOnce;
+    this.rdpCertificateAllowTimeAnomalyOnce = targetTimeAnomalyOnce;
+    this.rdpGatewayCertificateAllowUnpinnedOnce = gatewayUnpinnedOnce;
+    this.rdpGatewayCertificateAllowTimeAnomalyOnce = gatewayTimeAnomalyOnce;
     const resolved: RemoteHost = RemoteHost.fromJSON(host.toJSON());
-    resolved.rdpCertificateFingerprintSha256 = fingerprint;
-    resolved.rdpCertificateTrustMode = 0;
-    resolved.rdpCertificateTrustedAt = 0;
-    resolved.rdpCertificateAllowUntrustedRoot =
-      (params['rdpCertificateOneTimeAllowUntrustedRoot'] as boolean) === true;
-    resolved.rdpCertificateAllowHostMismatch =
-      (params['rdpCertificateOneTimeAllowHostMismatch'] as boolean) === true;
-    resolved.rdpCertificateRouteIdentity = routeIdentity;
-    const gatewayFingerprint: string =
-      (params['rdpGatewayCertificateOneTimeFingerprintSha256'] as string) || '';
+    if (fingerprint.length > 0) {
+      resolved.rdpCertificateFingerprintSha256 = fingerprint;
+      resolved.rdpCertificateTrustMode = 0;
+      resolved.rdpCertificateTrustedAt = 0;
+      resolved.rdpCertificateAllowUntrustedRoot =
+        (params['rdpCertificateOneTimeAllowUntrustedRoot'] as boolean) === true;
+      resolved.rdpCertificateAllowHostMismatch =
+        (params['rdpCertificateOneTimeAllowHostMismatch'] as boolean) === true;
+      resolved.rdpCertificateRouteIdentity = routeIdentity;
+    }
     if (gatewayFingerprint.length > 0) {
       resolved.rdpGatewayCertificateFingerprintSha256 = gatewayFingerprint;
       resolved.rdpGatewayCertificateTrustMode = 0;
@@ -10002,11 +10034,17 @@ struct RemoteDesktop {
       let expectedRdpGatewayFingerprint: string = '';
       let rdpTargetAllowUntrustedRoot: boolean = false;
       let rdpTargetAllowHostMismatch: boolean = false;
+      let rdpTargetAllowUnpinnedOnce: boolean = false;
+      let rdpTargetAllowTimeAnomalyOnce: boolean = false;
       let rdpGatewayAllowUntrustedRoot: boolean = false;
       let rdpGatewayAllowHostMismatch: boolean = false;
+      let rdpGatewayAllowUnpinnedOnce: boolean = false;
+      let rdpGatewayAllowTimeAnomalyOnce: boolean = false;
       if (host.protocol === 'rdp') {
         const routeMode: string = normalizeRdpEndpointMode(host.rdpEndpointMode, host.gatewayHost);
         const routeIdentity: string = rdpRouteIdentity(host);
+        const transientRouteMatches: boolean = rdpCertificateRouteIsCurrent(
+          this.rdpCertificateTransientRouteIdentity, routeIdentity);
         const targetIdentityMatches: boolean = rdpCertificateRouteIsCurrent(
           host.rdpCertificateRouteIdentity, routeIdentity);
         const gatewayIdentityMatches: boolean = rdpCertificateRouteIsCurrent(
@@ -10015,6 +10053,10 @@ struct RemoteDesktop {
           host.rdpCertificateFingerprintSha256.trim() : '';
         rdpTargetAllowUntrustedRoot = targetIdentityMatches && host.rdpCertificateAllowUntrustedRoot;
         rdpTargetAllowHostMismatch = targetIdentityMatches && host.rdpCertificateAllowHostMismatch;
+        rdpTargetAllowUnpinnedOnce = transientRouteMatches &&
+          this.rdpCertificateAllowUnpinnedOnce;
+        rdpTargetAllowTimeAnomalyOnce = transientRouteMatches &&
+          this.rdpCertificateAllowTimeAnomalyOnce;
         if (routeMode === 'microsoft_rd_gateway') {
           expectedRdpGatewayFingerprint = gatewayIdentityMatches ?
             host.rdpGatewayCertificateFingerprintSha256.trim() : '';
@@ -10022,12 +10064,25 @@ struct RemoteDesktop {
             host.rdpGatewayCertificateAllowUntrustedRoot;
           rdpGatewayAllowHostMismatch = gatewayIdentityMatches &&
             host.rdpGatewayCertificateAllowHostMismatch;
+          rdpGatewayAllowUnpinnedOnce = transientRouteMatches &&
+            this.rdpGatewayCertificateAllowUnpinnedOnce;
+          rdpGatewayAllowTimeAnomalyOnce = transientRouteMatches &&
+            this.rdpGatewayCertificateAllowTimeAnomalyOnce;
         }
         if (expectedRdpTargetFingerprint.length === 0 ||
           (routeMode === 'microsoft_rd_gateway' && expectedRdpGatewayFingerprint.length === 0)) {
+          const targetDecisionAvailable: boolean = rdpTargetAllowUnpinnedOnce;
+          const gatewayDecisionAvailable: boolean = routeMode !== 'microsoft_rd_gateway' ||
+            rdpGatewayAllowUnpinnedOnce;
+          if (targetDecisionAvailable && gatewayDecisionAvailable) {
+            // The user explicitly chose Continue Once after an inconclusive
+            // preflight. Keep the real callback authoritative; it may still
+            // reject malformed PEM, an unsupported route, or a changed pin.
+          } else {
           throw new Error(routeMode === 'microsoft_rd_gateway'
             ? 'RDP Gateway 与目标证书信任未绑定当前路由，请重新进行证书检查 [E-RDP-CERT-ROUTE-STALE]'
             : 'RDP 证书尚未完成当前主机确认，请重新进行证书检查 [E-RDP-CERT-REQUIRED]');
+          }
         }
       }
       const w: number = desktop.width;
@@ -10370,8 +10425,12 @@ struct RemoteDesktop {
         expectedRdpGatewayCertificateFingerprintSha256: expectedRdpGatewayFingerprint,
         rdpAllowUntrustedRoot: rdpTargetAllowUntrustedRoot,
         rdpAllowHostMismatch: rdpTargetAllowHostMismatch,
+        rdpCertificateAllowUnpinnedOnce: rdpTargetAllowUnpinnedOnce,
+        rdpCertificateAllowTimeAnomalyOnce: rdpTargetAllowTimeAnomalyOnce,
         rdpGatewayAllowUntrustedRoot: rdpGatewayAllowUntrustedRoot,
         rdpGatewayAllowHostMismatch: rdpGatewayAllowHostMismatch,
+        rdpGatewayCertificateAllowUnpinnedOnce: rdpGatewayAllowUnpinnedOnce,
+        rdpGatewayCertificateAllowTimeAnomalyOnce: rdpGatewayAllowTimeAnomalyOnce,
         rdPasswordMode: host.rustdeskPasswordMode,
         rdAuthMode: rustDeskRequestApproval ? 1 : 0,
         rdRelayId: host.rustdeskRelayId,
@@ -14228,12 +14287,13 @@ struct RemoteDesktop {
     if (!this.keyboardOpen) {
       return false;
     }
-    const keyCode: number = event.keyCode;
+    const keyCode: number = this.isVncSession() ?
+      normalizeVncPhysicalKeyCode(event.keyCode) : event.keyCode;
     if (this.isPhysicalModifierKey(keyCode) || this.isFixedControlKey(keyCode) ||
       this.isFunctionKey(keyCode) || this.hasAnyModifier()) {
       return true;
     }
-    return this.printableTextForPhysicalKey(event).length === 0;
+    return this.printableTextForPhysicalKey(event, keyCode).length === 0;
   }
 
   /** 输入框代理的前置按键回调：在 IME 消费功能键前将其发送到远端。 */
@@ -14445,7 +14505,9 @@ struct RemoteDesktop {
       if (!isDown && !isUp) {
         return true;
       }
-      const kc: number = event.keyCode;
+      const rawKeyCode: number = event.keyCode;
+      const kc: number = this.isVncSession() ?
+        normalizeVncPhysicalKeyCode(rawKeyCode) : rawKeyCode;
       if (!this.isPhysicalModifierKey(kc)) {
         this.reconcilePhysicalModifiersFromEvent(event);
       }
@@ -14485,12 +14547,25 @@ struct RemoteDesktop {
         return true;
       }
 
+      // Ctrl+Space must be checked before the fixed-control branch because
+      // Space itself is a fixed control key. This VNC-only path leaves the
+      // existing RustDesk keyboard contract untouched.
+      if (kc === KEYCODE_SPACE && this.isVncSession() &&
+        this.physicalKeyboardLayout === RemoteKeyboardLayout.MACOS &&
+        this.physicalCtrlDown && !this.physicalAltDown && !this.physicalShiftDown && !this.physicalWinDown) {
+        if (isDown) {
+          this.sendMacInputSourceShortcut('pre-ime');
+        }
+        return true;
+      }
+
       // 非修饰键控制键: 始终走 sendKey (Tab/Enter/Esc/Del/方向键/F键等)
       if (this.isFixedControlKey(kc)) {
-        const useRustDeskMacCaps: boolean = kc === KEYCODE_CAPS_LOCK &&
+        const useMacCaps: boolean = kc === KEYCODE_CAPS_LOCK &&
           this.physicalKeyboardLayout === RemoteKeyboardLayout.MACOS &&
-          this.pendingHost !== null && this.pendingHost.protocol === 'rustdesk';
-        if (useRustDeskMacCaps) {
+          this.pendingHost !== null &&
+          (this.pendingHost.protocol === 'rustdesk' || this.pendingHost.protocol === 'vnc');
+        if (useMacCaps) {
           return this.handleRustDeskMacCapsLock(isDown, isUp);
         }
         const remoteKeyCode: number = this.mapPhysicalKeyCode(kc);
@@ -14498,14 +14573,6 @@ struct RemoteDesktop {
         hilog.info(RD_DOMAIN, RD_TAG,
           'hwkey-control code=' + kc.toString() + ' remote=' + remoteKeyCode.toString() +
             ' down=' + (isDown ? 'yes' : 'no'));
-        return true;
-      }
-
-      if (kc === KEYCODE_SPACE && this.physicalKeyboardLayout === RemoteKeyboardLayout.MACOS &&
-        this.physicalCtrlDown && !this.physicalAltDown && !this.physicalShiftDown && !this.physicalWinDown) {
-        if (isDown) {
-          this.sendMacInputSourceShortcut('pre-ime');
-        }
         return true;
       }
 
@@ -14559,13 +14626,13 @@ struct RemoteDesktop {
    * API 23 文档规定 unicode 才是当前按键的 Unicode 值；部分外设/系统
    * 版本可能不给 unicode，因此保留按键码回退以覆盖常见 US 键盘字符。
    */
-  private printableTextForPhysicalKey(event: KeyEvent): string {
+  private printableTextForPhysicalKey(event: KeyEvent, keyCodeOverride?: number): string {
     const unicode: number | undefined = event.unicode;
     if (unicode !== undefined && unicode >= 0x21 && unicode <= 0x7E) {
       return String.fromCharCode(unicode);
     }
 
-    const keyCode: number = event.keyCode;
+    const keyCode: number = keyCodeOverride === undefined ? event.keyCode : keyCodeOverride;
     let base: string = '';
     if (keyCode >= KEYCODE_0 && keyCode <= KEYCODE_9) {
       base = String.fromCharCode(48 + keyCode - KEYCODE_0);
