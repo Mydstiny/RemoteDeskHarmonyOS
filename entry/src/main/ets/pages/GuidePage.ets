@@ -80,7 +80,10 @@ struct GuidePage {
   }
 
   private usesGuideSheet(): boolean {
-    return this.mode !== StartupMode.LOGIN;
+    // 首次安装引导必须先作为页面首屏渲染。冷启动时系统 bindSheet 可能
+    // 尚未完成宿主挂载，若把首屏完全交给 Sheet，挂载竞态会再次呈现白屏。
+    // 版本更新说明继续使用既有 Sheet，不改变更新弹窗的显示路径。
+    return this.mode === StartupMode.RELEASE_NOTES;
   }
 
   private onBackgroundFlagChange(): void {
@@ -245,7 +248,13 @@ struct GuidePage {
 
   build() {
     Stack() {
-      Column().width('100%').height('100%').backgroundColor(this.pal().bg)
+      if (this.usesGuideSheet()) {
+        // 更新说明由系统 Sheet 承载，底层只需要提供全屏宿主节点。
+        Column().width('100%').height('100%').backgroundColor(this.pal().bg)
+      } else {
+        // 首次安装引导直接占据页面，保证即使 Sheet 首次挂载失败也有可见内容。
+        this.guidePanel(false)
+      }
     }
     .width('100%').height('100%')
     .backgroundColor(this.pal().bg)
@@ -292,6 +301,11 @@ struct GuidePage {
     this.cancelGuideSheetEnter();
     this.cancelGuideSheetReopen();
     this.persistCompletion();
+    if (!this.usesGuideSheet()) {
+      // 首次引导不是 Sheet，没有 onDisappear 回调负责路由；完成后直接进入登录页。
+      router.replaceUrl({ url: 'pages/LoginPage' });
+      return;
+    }
     this.showGuideSheet = false;
   }
 }

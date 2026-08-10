@@ -26,15 +26,17 @@ export default function releaseNotesPolicyTest(): void {
       expect(resolveStartupMode(true, '1.1.0', 'bad', true, true)).assertEqual(StartupMode.LOGIN);
       expect(resolveStartupMode(true, '1.1.0', '1.1.0', false, true)).assertEqual(StartupMode.LOGIN);
     });
-    it('uses_bottom_sheet_for_phone_guides', 0, (): void => {
-      expect(shouldPresentGuideAsBottomSheet(StartupMode.FIRST_INSTALL_GUIDE, 'sm')).assertTrue();
+    it('keeps_first_install_guide_in_page_content', 0, (): void => {
+      expect(shouldPresentGuideAsBottomSheet(StartupMode.FIRST_INSTALL_GUIDE, 'sm')).assertFalse();
+      expect(shouldPresentGuideAsCenterSheet(StartupMode.FIRST_INSTALL_GUIDE, 'md')).assertFalse();
+      expect(shouldPresentGuideAsCenterSheet(StartupMode.FIRST_INSTALL_GUIDE, 'xl')).assertFalse();
+    });
+    it('uses_bottom_sheet_for_phone_release_notes', 0, (): void => {
       expect(shouldPresentGuideAsBottomSheet(StartupMode.RELEASE_NOTES, 'sm')).assertTrue();
-      expect(shouldPresentGuideAsBottomSheet(StartupMode.FIRST_INSTALL_GUIDE, 'md')).assertFalse();
+      expect(shouldPresentGuideAsBottomSheet(StartupMode.RELEASE_NOTES, 'md')).assertFalse();
       expect(shouldPresentGuideAsBottomSheet(StartupMode.LOGIN, 'sm')).assertFalse();
     });
-    it('uses_center_sheet_for_pad_and_pc_guides', 0, (): void => {
-      expect(shouldPresentGuideAsCenterSheet(StartupMode.FIRST_INSTALL_GUIDE, 'sm')).assertFalse();
-      expect(shouldPresentGuideAsCenterSheet(StartupMode.FIRST_INSTALL_GUIDE, 'md')).assertTrue();
+    it('uses_center_sheet_for_pad_and_pc_release_notes', 0, (): void => {
       expect(shouldPresentGuideAsCenterSheet(StartupMode.RELEASE_NOTES, 'md')).assertTrue();
       expect(shouldPresentGuideAsCenterSheet(StartupMode.RELEASE_NOTES, 'xl')).assertTrue();
       expect(shouldPresentGuideAsCenterSheet(StartupMode.LOGIN, 'xl')).assertFalse();

@@ -37,16 +37,16 @@ export function resolveStartupMode(guideShown: boolean, lastSeen: string, curren
 }
 
 /**
- * 手机端的首次教程和版本更新都使用底部系统 Sheet。
- * 登录模式没有引导内容，不应触发 Sheet。
+ * 首次安装引导必须作为页面首屏渲染，不能依赖系统 Sheet 的冷启动挂载时序。
+ * 只有版本更新说明使用底部 Sheet，避免再次引入首次打开白屏。
  */
 export function shouldPresentGuideAsBottomSheet(mode: StartupMode, breakpoint: string): boolean {
-  return mode !== StartupMode.LOGIN && breakpoint === 'sm';
+  return mode === StartupMode.RELEASE_NOTES && breakpoint === 'sm';
 }
 
 /**
- * Pad/PC 端的首次教程和版本更新都使用居中系统 Sheet。
+ * Pad/PC 端只有版本更新说明使用居中系统 Sheet；首次教程直接显示在页面中。
  */
 export function shouldPresentGuideAsCenterSheet(mode: StartupMode, breakpoint: string): boolean {
-  return mode !== StartupMode.LOGIN && breakpoint !== 'sm';
+  return mode === StartupMode.RELEASE_NOTES && breakpoint !== 'sm';
 }
