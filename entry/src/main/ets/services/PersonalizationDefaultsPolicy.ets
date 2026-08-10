@@ -1,5 +1,5 @@
 /**
- * 1.1.0 personalization bootstrap.
+ * 1.1.1 personalization bootstrap.
  *
  * The profile is captured before LoginPage writes its first-launch marker, so
  * a clean install can receive the new defaults without turning an app update
@@ -47,7 +47,7 @@ export function resolvePersonalizationDefaultsProfile(storedVersion: number,
 
 /**
  * Missing keys on an update retain the historical experience. Missing keys on
- * a clean 1.1.0 install receive the new device-class defaults. Callers still
+ * a clean 1.1.1 install receive the new device-class defaults. Callers still
  * use Preferences.hasSync first, so saved user choices always win.
  */
 export function personalizationDefaults(freshInstall: boolean,

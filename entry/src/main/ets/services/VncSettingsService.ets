@@ -274,7 +274,7 @@ export class VncSettingsService {
       repeaterMode: values.repeaterMode || defaults.repeaterMode,
       // Preserve the payload fields for older builds, but publish the unified
       // physical-table contract so a legacy client never interprets a partial
-      // 1.1.0 record as disabled data.
+      // 1.1.1 record as disabled data.
       syncPreferences: true,
       syncHosts: true,
       syncGateways: true,

@@ -3,7 +3,7 @@ import { VncRecordType } from '../model/VncRecord';
 /**
  * Legacy releases exposed five logical selectors for the single VNC cloud
  * table. Huawei Cloud Space registers and transfers the physical table as one
- * unit, so 1.1.0 treats every valid VNC record type as selected whenever the
+ * unit, so 1.1.1 treats every valid VNC record type as selected whenever the
  * ordinary table selector enables `vncrecordv2`.
  *
  * Keep the scope type and preference key as a compatibility boundary for old

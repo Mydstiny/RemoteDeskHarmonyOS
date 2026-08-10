@@ -11,10 +11,10 @@ function containsPage(pages: ReleaseNotePage[], id: string): boolean {
 
 export default function releaseNotesRegistryTest(): void {
   describe('ReleaseNotesRegistry', (): void => {
-    it('describes_the_complete_1_1_0_update', 0, (): void => {
+    it('describes_the_complete_1_1_1_update', 0, (): void => {
       const pages: ReleaseNotePage[] = pagesForReleasedVersion(CURRENT_RELEASE_VERSION);
       expect(pages.length).assertEqual(12);
-      expect(containsPage(pages, 'release-1-1-0')).assertTrue();
+      expect(containsPage(pages, 'release-1-1-1')).assertTrue();
       expect(containsPage(pages, 'release-vnc-performance')).assertTrue();
       expect(containsPage(pages, 'release-vnc-input')).assertTrue();
       expect(containsPage(pages, 'release-rustdesk-performance')).assertTrue();
@@ -25,8 +25,8 @@ export default function releaseNotesRegistryTest(): void {
       expect(containsPage(pages, 'release-rdp-security')).assertTrue();
       expect(containsPage(pages, 'release-authenticator-logos')).assertTrue();
       expect(containsPage(pages, 'release-input-fixes')).assertTrue();
-      expect(pages[pages.length - 1].id).assertEqual('welcome-1-1-0');
-      expect(pages[pages.length - 1].title).assertEqual('欢迎使用 1.1.0');
+      expect(pages[pages.length - 1].id).assertEqual('welcome-1-1-1');
+      expect(pages[pages.length - 1].title).assertEqual('欢迎使用 1.1.1');
     });
 
     it('does_not_advertise_unverified_or_removed_features', 0, (): void => {

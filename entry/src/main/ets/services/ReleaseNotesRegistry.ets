@@ -1,4 +1,4 @@
-export const CURRENT_RELEASE_VERSION: string = '1.1.0';
+export const CURRENT_RELEASE_VERSION: string = '1.1.1';
 
 export interface ReleaseNotePage {
   id: string;
@@ -11,9 +11,9 @@ export function pagesForReleasedVersion(version: string): ReleaseNotePage[] {
   if (version !== CURRENT_RELEASE_VERSION) { return []; }
   return [
     {
-      id: 'release-1-1-0',
+      id: 'release-1-1-1',
       symbol: $rawfile('icons/computer-desktop.svg'),
-      title: '1.1.0：VNC 与远程工作台焕新',
+      title: '1.1.1：VNC 与远程工作台焕新',
       desc: '这一版以 VNC 全链路升级为主线，并重构 SSH/SFTP、强化 RustDesk 与 RDP，同时补齐主机管理、2FA 和多设备输入体验。'
     },
     {
@@ -77,9 +77,9 @@ export function pagesForReleasedVersion(version: string): ReleaseNotePage[] {
       desc: '修复双指缩放与画布移动冲突：双指长按后拖动即可平移画布；同时修复 PC 端触控板无法正常操控远端的问题。'
     },
     {
-      id: 'welcome-1-1-0',
+      id: 'welcome-1-1-1',
       symbol: $rawfile('icons/globe-alt.svg'),
-      title: '欢迎使用 1.1.0',
+      title: '欢迎使用 1.1.1',
       desc: '现在可以从主机工作台开始体验新版 VNC、RustDesk、SSH/SFTP 与 RDP。更多开关和协议细节可在设置及简单使用教程中随时查看。'
     }
   ];
