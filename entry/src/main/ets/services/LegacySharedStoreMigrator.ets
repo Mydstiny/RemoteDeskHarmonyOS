@@ -3,6 +3,7 @@ import { cryptoFramework } from '@kit.CryptoArchitectureKit';
 import { relationalStore } from '@kit.ArkData';
 import { fileIo } from '@kit.CoreFileKit';
 import { util } from '@kit.ArkTS';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import { AccountScopeToken, accountStoreIdentity } from './AccountScopePolicy';
 import {
   accountScopedCryptoParamsMayMigrate,
@@ -25,6 +26,7 @@ const RECEIPT_TABLE: string = 'migrationreceipts';
 const QUARANTINE_TABLE: string = 'migrationquarantine';
 const JOURNAL_TABLE: string = 'localmutationjournal';
 const MIGRATION_ID: string = 'legacy-shared-store-v1';
+const OWNER_CLAIM_MIGRATION_ID: string = 'legacy-owner-claim-v2';
 /** Store-scoped metadata that must survive an account-scope migration. */
 const CARRYOVER_METADATA_EXCLUDE_KEYS: string[] = [
   'store_owner_scope_id',
@@ -45,6 +47,18 @@ const OWNER_TABLES: string[] = [
 ];
 const EXPLICIT_OWNER_TABLES: string[] = [
   'remotehosts',
+  'rustdeskrelays',
+  'sshkeys',
+  'totpentries',
+  'usersettings',
+  'vncrecords',
+  'vncrecord',
+  'vncrecordv2'
+];
+/** Tables that carried userid in the pre-ownerScopeId cloud store. */
+const LEGACY_OWNER_CLAIM_TABLES: string[] = [
+  'remotehosts',
+  'rdpcredentials',
   'rustdeskrelays',
   'sshkeys',
   'totpentries',
@@ -165,6 +179,125 @@ export class LegacySharedStoreMigrator {
       });
   }
 
+  /**
+   * Claim rows written by 1.0.7/1.0.8 directly in the canonical physical
+   * store. Those releases used a blank userid or the raw UnionID, while the
+   * current app reads only owner-<sha256 UnionID>. The claim changes userid
+   * only, preserves every primary key and payload column, and is committed
+   * with a scoped receipt so a crashed upgrade can safely retry.
+   */
+  async claimLegacyRowsInPlace(
+    target: relationalStore.RdbStore,
+    scope: AccountScopeToken,
+    verifiedUnionId: string = ''
+  ): Promise<LegacySharedStoreMigrationResult> {
+    const empty: LegacySharedStoreMigrationResult = {
+      found: false, migrated: false, copiedRows: 0,
+      quarantinedRows: 0, skippedRows: 0
+    };
+    if (scope.kind !== 'huawei_account' ||
+      verifiedUnionId.trim().length === 0) {
+      return empty;
+    }
+    const receiptId: string = OWNER_CLAIM_MIGRATION_ID + ':' +
+      scope.ownerScopeId;
+    if (this.receiptCommitted(target, receiptId)) {
+      return {
+        found: true, migrated: true, copiedRows: 0,
+        quarantinedRows: 0, skippedRows: 0
+      };
+    }
+    const selected: Map<string, Set<string>> =
+      new Map<string, Set<string>>();
+    const startedAt: number = Date.now();
+    target.beginTransaction();
+    try {
+      this.writeReceipt(
+        target, receiptId, scope,
+        this.sha256Hex(
+          'in-place:' + scope.storeIdentity + ':' +
+            scope.schemaRevision.toString()),
+        'running', '{}', '', startedAt, 0,
+        OWNER_CLAIM_MIGRATION_ID,
+        scope.storeIdentity);
+      const counts: number[] =
+        this.claimOwnerRowsWithinTransaction(
+          target, scope, verifiedUnionId,
+          LEGACY_OWNER_CLAIM_TABLES, selected);
+      if (counts[0] > 0) {
+        this.writeMigrationJournal(
+          target, receiptId, selected,
+          OWNER_CLAIM_MIGRATION_ID,
+          'legacy_owner_claimed_not_uploaded');
+      }
+      const countsJson: string = JSON.stringify({
+        claimedRows: counts[0],
+        skippedRows: counts[1]
+      });
+      this.writeReceipt(
+        target, receiptId, scope,
+        this.sha256Hex(
+          'in-place:' + scope.storeIdentity + ':' +
+            scope.schemaRevision.toString()),
+        'committed', countsJson, '', startedAt, Date.now(),
+        OWNER_CLAIM_MIGRATION_ID,
+        scope.storeIdentity);
+      target.commit();
+      return {
+        found: true, migrated: true, copiedRows: counts[0],
+        quarantinedRows: 0, skippedRows: counts[1]
+      };
+    } catch (err) {
+      try { target.rollBack(); } catch (_rollbackError) {}
+      throw new Error(
+        'legacy owner claim failed: ' + this.errorDetail(err));
+    }
+  }
+
+  /**
+   * Cloud-first can bring a legacy row back after the startup receipt was
+   * committed. Re-run the same owner decision for the affected table; the
+   * operation is idempotent and writes a table-level journal only when a row
+   * actually changes.
+   */
+  normalizeLegacyRowsInPlace(
+    target: relationalStore.RdbStore,
+    scope: AccountScopeToken,
+    verifiedUnionId: string,
+    table: string
+  ): number {
+    if (scope.kind !== 'huawei_account' ||
+      verifiedUnionId.trim().length === 0 ||
+      LEGACY_OWNER_CLAIM_TABLES.indexOf(table) < 0) {
+      return 0;
+    }
+    const selected: Map<string, Set<string>> =
+      new Map<string, Set<string>>();
+    const receiptId: string = OWNER_CLAIM_MIGRATION_ID + ':postpull:' +
+      scope.ownerScopeId + ':' + Date.now().toString();
+    target.beginTransaction();
+    try {
+      const counts: number[] =
+        this.claimOwnerRowsWithinTransaction(
+          target, scope, verifiedUnionId,
+          [table], selected);
+      if (counts[0] > 0) {
+        this.writeMigrationJournal(
+          target, receiptId, selected,
+          OWNER_CLAIM_MIGRATION_ID,
+          'legacy_owner_normalized_not_uploaded');
+      }
+      target.commit();
+      return counts[0];
+    } catch (err) {
+      try { target.rollBack(); } catch (_rollbackError) {}
+      hilog.warn(0x0001, 'CloudSync',
+        'legacy owner post-pull normalization failed table=' +
+        table + ' err=' + this.errorDetail(err));
+      return -1;
+    }
+  }
+
   private copySource(source: relationalStore.RdbStore,
     target: relationalStore.RdbStore, scope: AccountScopeToken,
     verifiedUnionId: string, receiptId: string, sourcePath: string,
@@ -181,7 +314,8 @@ export class LegacySharedStoreMigrator {
         ? accountScopedCryptoParamsMayMigrate(
             distinctOwners, scope.ownerScopeId)
         : legacyCryptoParamsMayMigrate(
-            distinctOwners, scope.kind, verifiedUnionId);
+            distinctOwners, scope.kind, verifiedUnionId,
+            scope.ownerScopeId);
     const legacyVncResetEpoch: number = cryptoOwnershipProven
       ? this.readLegacyVncResetEpoch(source) : 0;
     const sourceFingerprint: string = this.sourceFingerprint(
@@ -235,7 +369,7 @@ export class LegacySharedStoreMigrator {
         // carry userid == unionID. Normalize them to the target owner scope so
         // the app's userid-filtered reads keep showing them.
         copiedRows += this.normalizeLegacyOwnerRows(
-          target, verifiedUnionId, scope.ownerScopeId);
+          target, scope, verifiedUnionId, selected);
       }
       this.writeMigrationJournal(target, receiptId, selected, migrationId,
         sourceKind === 'account_scope'
@@ -299,7 +433,8 @@ export class LegacySharedStoreMigrator {
           ? accountScopedRowOwnershipDecision(
               userId, scope.ownerScopeId)
           : legacyRowOwnershipDecision(
-              userId, scope.kind, verifiedUnionId);
+              userId, scope.kind, verifiedUnionId,
+              scope.ownerScopeId);
       if (decision === 'quarantine_missing_owner') {
         quarantined++;
         this.writeQuarantine(target, receiptId, sourceTable, recordId,
@@ -454,35 +589,80 @@ export class LegacySharedStoreMigrator {
     return copied;
   }
 
-  private normalizeLegacyOwnerRows(target: relationalStore.RdbStore,
-    legacyUnionId: string, targetOwnerScopeId: string): number {
-    const unionId: string = legacyUnionId.trim();
-    if (unionId.length === 0) { return 0; }
-    const tables: string[] = [
-      'remotehosts',
-      'rdpcredentials',
-      'rustdeskrelays',
-      'sshkeys',
-      'totpentries',
-      'usersettings',
-      'vncrecords',
-      'vncrecord',
-      'vncrecordv2'
-    ];
-    let updated: number = 0;
+  private normalizeLegacyOwnerRows(
+    target: relationalStore.RdbStore,
+    scope: AccountScopeToken,
+    legacyUnionId: string,
+    selected: Map<string, Set<string>>
+  ): number {
+    if (legacyUnionId.trim().length === 0) { return 0; }
+    const counts: number[] =
+      this.claimOwnerRowsWithinTransaction(
+        target, scope, legacyUnionId,
+        LEGACY_OWNER_CLAIM_TABLES, selected);
+    return counts[0];
+  }
+
+  /** Returns [claimedRows, skippedRows] and must run inside a transaction. */
+  private claimOwnerRowsWithinTransaction(
+    target: relationalStore.RdbStore,
+    scope: AccountScopeToken,
+    verifiedUnionId: string,
+    tables: string[],
+    selected: Map<string, Set<string>>
+  ): number[] {
+    let claimed: number = 0;
+    let skipped: number = 0;
     for (let i = 0; i < tables.length; i++) {
-      if (!this.tableExists(target, tables[i]) ||
-        this.tableColumns(target, tables[i]).indexOf('userid') < 0) {
+      const table: string = tables[i];
+      if (!this.tableExists(target, table) ||
+        this.tableColumns(target, table).indexOf('userid') < 0) {
         continue;
       }
-      const predicates =
-        new relationalStore.RdbPredicates(tables[i]);
-      predicates.equalTo('userid', unionId);
-      const changed: number = target.updateSync(
-        { userid: targetOwnerScopeId }, predicates);
-      if (changed > 0) { updated += changed; }
+      let rows: relationalStore.ResultSet | null = null;
+      const claimIds: string[] = [];
+      try {
+        rows = target.querySync(
+          new relationalStore.RdbPredicates(table));
+        while (rows.goToNextRow()) {
+          const sourceRow: relationalStore.ValuesBucket = rows.getRow();
+          const recordId: string =
+            this.stringValue(sourceRow['id']);
+          const owner: string =
+            this.stringValue(sourceRow['userid']);
+          const decision: LegacyRowOwnershipDecision =
+            legacyRowOwnershipDecision(
+              owner, scope.kind, verifiedUnionId,
+              scope.ownerScopeId);
+          if (decision !== 'target' ||
+            owner.trim() === scope.ownerScopeId.trim()) {
+            if (decision === 'other_owner') { skipped++; }
+            continue;
+          }
+          if (recordId.length === 0) {
+            skipped++;
+            continue;
+          }
+          claimIds.push(recordId);
+        }
+      } finally {
+        if (rows !== null) { rows.close(); }
+      }
+      for (let j = 0; j < claimIds.length; j++) {
+        const predicates =
+          new relationalStore.RdbPredicates(table);
+        predicates.equalTo('id', claimIds[j]);
+        const changed: number = target.updateSync(
+          { userid: scope.ownerScopeId }, predicates);
+        if (changed > 0) {
+          claimed += changed;
+          this.recordSelection(selected, table, claimIds[j]);
+        } else {
+          skipped++;
+        }
+      }
     }
-    return updated;
+    return [claimed, skipped];
   }
 
   private copyAllRows(source: relationalStore.RdbStore,

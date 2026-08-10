@@ -323,7 +323,10 @@ import {
   newCryptoLifecycleDurableState,
   recoverCryptoLifecycleDurableState
 } from './CryptoLifecyclePolicy';
-import { LegacySharedStoreMigrator } from './LegacySharedStoreMigrator';
+import {
+  LegacySharedStoreMigrationResult,
+  LegacySharedStoreMigrator
+} from './LegacySharedStoreMigrator';
 import { parseLegacyRelayJson } from './LegacyRelayMigrationPolicy';
 import {
   LegacyVncRowMigrationDecision,
@@ -489,6 +492,10 @@ export class CloudStore implements CryptoCloudStore {
   // from the current Account Kit authorization; this store verifies that it
   // derives the exact owner and physical database before enabling cloud I/O.
   private currentScopeToken: AccountScopeToken = deviceLocalScopeToken(1);
+  // Kept only for the active Account Kit session. It is never persisted or
+  // logged; the value lets a later cloud-first callback normalize rows written
+  // by 1.0.7/1.0.8 with a raw UnionID.
+  private currentVerifiedUnionId: string = '';
   private currentLease: AccountSessionLease | null = null;
   private storeInstanceSequence: number = 0;
   private cloudSyncOperationSequence: number = 0;
@@ -784,6 +791,7 @@ export class CloudStore implements CryptoCloudStore {
     }
     this.store = null;
     this.currentLease = null;
+    this.currentVerifiedUnionId = '';
     this.cryptoLifecycleState = null;
     this.cloudDownloadActive = false;
     this.indeterminateCloudSyncOperation = null;
@@ -812,6 +820,7 @@ export class CloudStore implements CryptoCloudStore {
       platformIdentityFingerprint:
         token.platformIdentityFingerprint
     };
+    this.currentVerifiedUnionId = verifiedUnionId.trim();
     this.cloudAccountBinding = cloudAccountBindingForScope(this.currentScopeToken);
     this.startupSyncPending = true;
     this.cloudDownloadActive = false;
@@ -910,6 +919,15 @@ export class CloudStore implements CryptoCloudStore {
         // recover any pending download transaction carried over with it.
         await migrator.migrateAccountScopedStoreIfNeeded(
           context, this.store, this.currentScopeToken, verifiedUnionId);
+        const claimed:
+          LegacySharedStoreMigrationResult =
+          await migrator.claimLegacyRowsInPlace(
+            this.store, this.currentScopeToken, verifiedUnionId);
+        if (claimed.copiedRows > 0) {
+          hilog.info(0x0001, 'CloudSync',
+            '已认领 1.0.7/1.0.8 旧 owner 行数=' +
+            claimed.copiedRows.toString());
+        }
       } else {
         await migrator.migrateIfNeeded(
           context, this.store, this.currentScopeToken, verifiedUnionId,
@@ -2038,8 +2056,16 @@ export class CloudStore implements CryptoCloudStore {
 
   private captureCloudDownloadPayload():
     CloudDownloadTransactionPayload {
+    const snapshot: Record<string, Array<Record<string, string>>> = {};
+    for (let i = 0; i < TABLES.length; i++) {
+      // Rollback images must include legacy/foreign physical rows as well as
+      // the current owner. They may be hidden by the userid predicate, but a
+      // whole-table restore must never erase them after a partial cloud pull.
+      snapshot[TABLES[i]] =
+        this.exportTableRows(TABLES[i], true);
+    }
     return {
-      snapshot: this.exportAllTableRows(),
+      snapshot,
       extensions: this.exportLocalExtensionRows(),
       metadata: this.exportLocalMetadataRows(),
       mutationJournal:
@@ -2415,8 +2441,11 @@ export class CloudStore implements CryptoCloudStore {
     }
     try {
       this.store.beginTransaction();
-      this.manualDownloadSnapshot =
-        this.exportAllTableRows();
+      this.manualDownloadSnapshot = {};
+      for (let i = 0; i < TABLES.length; i++) {
+        this.manualDownloadSnapshot[TABLES[i]] =
+          this.exportTableRows(TABLES[i], true);
+      }
       this.manualDownloadExtensions =
         this.exportLocalExtensionRows();
       this.manualDownloadMetadata =
@@ -3207,7 +3236,10 @@ export class CloudStore implements CryptoCloudStore {
     return snapshot;
   }
 
-  private exportTableRows(table: string): Array<Record<string, string>> {
+  private exportTableRows(
+    table: string,
+    includeAllPhysicalOwners: boolean = false
+  ): Array<Record<string, string>> {
     const result: Array<Record<string, string>> = [];
     if (!this.store) {
       throw new Error('portable backup store unavailable');
@@ -3215,7 +3247,7 @@ export class CloudStore implements CryptoCloudStore {
     let rows: relationalStore.ResultSet | null = null;
     try {
       const predicates = new relationalStore.RdbPredicates(table);
-      if (table !== 'cryptoparams') {
+      if (table !== 'cryptoparams' && !includeAllPhysicalOwners) {
         this.addCurrentOwnerPredicate(predicates);
       }
       rows = this.store.querySync(predicates);
@@ -4223,6 +4255,33 @@ export class CloudStore implements CryptoCloudStore {
     }
   }
 
+  /**
+   * A cloud-first operation can materialize rows authored by a pre-1.1.0
+   * client after startup migration has already committed its receipt. Claim
+   * those rows before owner-filtered validation/readback, otherwise they would
+   * remain physically present but invisible on the next device.
+   */
+  private normalizeLegacyOwnersAfterCloudPull(table: string): boolean {
+    if (!this.store || this.currentScopeToken.kind !== 'huawei_account' ||
+      this.currentVerifiedUnionId.length === 0) {
+      return true;
+    }
+    const changed: number =
+      LegacySharedStoreMigrator.getInstance()
+        .normalizeLegacyRowsInPlace(
+          this.store,
+          this.currentScopeToken,
+          this.currentVerifiedUnionId,
+          table);
+    if (changed < 0) { return false; }
+    if (changed > 0) {
+      hilog.info(0x0001, 'CloudSync',
+        '云端拉取后规范化旧 owner 行 table=' + table +
+        ' count=' + changed.toString());
+    }
+    return true;
+  }
+
   private syncTableAsync(table: string, direction: CloudSyncDirection, label: string): Promise<boolean> {
     return new Promise<boolean>((resolve) => {
       if (!this.store || !this.cloudAvailable || this.currentLease === null) {
@@ -4278,7 +4337,7 @@ export class CloudStore implements CryptoCloudStore {
         (label === 'startup' || label === 'foreground' || label === 'cloudEvent');
       const beforeVisibleRows: number = protectsEmptySnapshot ? this.countVisibleTableRows(table) : 0;
       const protectedRows: Array<Record<string, string>> = protectsEmptySnapshot
-        ? this.exportTableRows(table) : [];
+        ? this.exportTableRows(table, true) : [];
       if (protectsEmptySnapshot && beforeVisibleRows > 0 && protectedRows.length === 0) {
         this.lastSyncFailureKind = 'empty_snapshot';
         this.lastError = label + ' ' + table + ': EMPTY_CLOUD_SNAPSHOT safety snapshot unavailable';
@@ -4391,6 +4450,10 @@ export class CloudStore implements CryptoCloudStore {
       const finishCloudFirstSuccess = (): void => {
         if (!operationIsCurrent()) {
           finishFailure('stale account lease', 'unknown');
+          return;
+        }
+        if (!this.normalizeLegacyOwnersAfterCloudPull(table)) {
+          finishFailure('legacy owner normalization failed', 'unknown');
           return;
         }
         const afterVisibleRows: number = this.countVisibleTableRows(table);
