@@ -172,6 +172,9 @@ struct MoonlightInputFlushPolicy::Impl final {
     mutable std::mutex mutex;
     MoonlightInputFlushSnapshot state{};
     std::optional<MoonlightInputFlushContext> request;
+    // Mapper pending suffixes keep using request. A newer terminal escalation
+    // has a distinct exact replay key that must not rewrite that old context.
+    std::optional<MoonlightInputFlushContext> completionRequest;
     std::optional<MoonlightInputFlushContext> lastCompletedRequest;
 
     bool validContext(const MoonlightInputFlushContext& context) const noexcept {
@@ -363,7 +366,9 @@ struct MoonlightInputFlushPolicy::Impl final {
                             : MoonlightInputFlushState::Suspended;
                         state.completedFlushes =
                             saturatingIncrement(state.completedFlushes);
-                        lastCompletedRequest = request;
+                        lastCompletedRequest = completionRequest.has_value()
+                            ? completionRequest : request;
+                        completionRequest.reset();
                         request.reset();
                         return makeResult(MoonlightInputFlushStatus::Applied,
                                           state.stage,
@@ -390,7 +395,9 @@ struct MoonlightInputFlushPolicy::Impl final {
                             saturatingIncrement(state.localOnlyStops);
                         state.completedFlushes =
                             saturatingIncrement(state.completedFlushes);
-                        lastCompletedRequest = request;
+                        lastCompletedRequest = completionRequest.has_value()
+                            ? completionRequest : request;
+                        completionRequest.reset();
                         request.reset();
                         return makeResult(MoonlightInputFlushStatus::AppliedLocally,
                                           state.stage,
@@ -488,6 +495,7 @@ MoonlightInputFlushResult MoonlightInputFlushPolicy::flush(
             impl_->state.lastDisposition = disposition;
             impl_->state.lastOperationGeneration = context.operationGeneration;
             impl_->state.lastTimestampUs = context.monotonicTimestampUs;
+            impl_->completionRequest = context;
             return impl_->drive();
         }
         if (trigger != impl_->state.lastTrigger ||
@@ -570,6 +578,7 @@ MoonlightInputFlushResult MoonlightInputFlushPolicy::flush(
     impl_->state.admissionOpen = false;
     impl_->state.localReleased = false;
     impl_->state.boundaryApplied = false;
+    impl_->completionRequest.reset();
     impl_->request = context;
     return impl_->drive();
 }

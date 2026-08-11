@@ -744,9 +744,10 @@ RDP_TEST_CASE(moonlight_input_flush_stop_escalates_component_pending_to_local_re
     RDP_ASSERT_EQ(fixture.policy->flush(
         MoonlightInputFlushTrigger::FocusLost, fixture.context()).status,
         MoonlightInputFlushStatus::Pending);
+    const auto stopContext = fixture.context(101U, 1100U, 11U);
     const auto result = fixture.policy->flush(
         MoonlightInputFlushTrigger::SessionStop,
-        fixture.context(101U, 1100U, 11U));
+        stopContext);
     RDP_ASSERT_EQ(result.status, MoonlightInputFlushStatus::Applied);
     RDP_ASSERT(result.localReleased && result.boundaryApplied);
     RDP_ASSERT_EQ(fixture.policy->snapshot(fixture.identity).state,
@@ -756,6 +757,29 @@ RDP_TEST_CASE(moonlight_input_flush_stop_escalates_component_pending_to_local_re
     RDP_ASSERT_EQ(keyboard.pressedNonModifierKeys, static_cast<std::size_t>(0));
     RDP_ASSERT_EQ(fixture.bridge->snapshot(fixture.identity).state,
                   MoonlightInputState::Stopped);
+    RDP_ASSERT_EQ(fixture.policy->flush(
+        MoonlightInputFlushTrigger::SessionStop, stopContext).status,
+        MoonlightInputFlushStatus::AlreadyApplied);
+}
+
+RDP_TEST_CASE(moonlight_input_flush_local_terminal_escalation_replays_exact_stop) {
+    FlushFixture fixture(false);
+    fixture.seedKeyboard();
+    fixture.port->setSendScript({MoonlightInputPortStatus::Backpressure,
+                                 MoonlightInputPortStatus::Accepted});
+    fixture.port->setFlushScript({false});
+    RDP_ASSERT_EQ(fixture.policy->flush(
+        MoonlightInputFlushTrigger::FocusLost, fixture.context()).status,
+        MoonlightInputFlushStatus::Pending);
+    const auto stopContext = fixture.context(101U, 1100U, 11U);
+    const auto result = fixture.policy->flush(
+        MoonlightInputFlushTrigger::SessionStop, stopContext);
+    RDP_ASSERT_EQ(result.status, MoonlightInputFlushStatus::AppliedLocally);
+    RDP_ASSERT(result.localReleased && !result.boundaryApplied);
+    RDP_ASSERT_EQ(fixture.policy->flush(
+        MoonlightInputFlushTrigger::SessionStop, stopContext).status,
+        MoonlightInputFlushStatus::AlreadyApplied);
+    RDP_ASSERT_EQ(fixture.port->flushCount(), static_cast<std::size_t>(1));
 }
 
 } // namespace
