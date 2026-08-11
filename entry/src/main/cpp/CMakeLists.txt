@@ -167,6 +167,9 @@ set(MOONLIGHT_AUDIO_PLAYER_SINK_PLATFORM_SOURCE
 set(MOONLIGHT_MEDIA_CLOCK_STATS_SOURCE
     moonlight/media/MoonlightMediaClockStats.cpp
 )
+set(MOONLIGHT_INPUT_BRIDGE_SOURCE
+    moonlight/input/MoonlightInputBridge.cpp
+)
 set(MOONLIGHT_SOURCES
     moonlight/core/MoonlightSessionOwner.cpp
 )
@@ -302,6 +305,7 @@ if(RDP_BUILD_TESTS)
         test/moonlight_audio_bridge_test.cpp
         test/moonlight_audio_player_sink_test.cpp
         test/moonlight_media_clock_stats_test.cpp
+        test/moonlight_input_bridge_test.cpp
         test/vnc_des_test.cpp
         test/vnc_cursor_protocol_test.cpp
         test/vnc_transport_policy_test.cpp
@@ -340,6 +344,7 @@ if(RDP_BUILD_TESTS)
         ${MOONLIGHT_AUDIO_BRIDGE_PLATFORM_SOURCE}
         ${MOONLIGHT_AUDIO_PLAYER_SINK_SOURCE}
         ${MOONLIGHT_MEDIA_CLOCK_STATS_SOURCE}
+        ${MOONLIGHT_INPUT_BRIDGE_SOURCE}
         vnc/vnc_des.cpp
         vnc/vnc_cursor_protocol.cpp
         vnc/vnc_rfb_protocol.cpp
@@ -713,6 +718,23 @@ set_target_properties(remotedesk_moonlight_media_clock_stats PROPERTIES
     POSITION_INDEPENDENT_CODE ON
 )
 
+# N3-01 exact-owner input admission/router. It remains a hidden private
+# archive with no product caller until the later mapping and NAPI tasks.
+add_library(remotedesk_moonlight_input_bridge STATIC
+    ${MOONLIGHT_INPUT_BRIDGE_SOURCE}
+)
+target_compile_features(remotedesk_moonlight_input_bridge PRIVATE cxx_std_17)
+target_include_directories(remotedesk_moonlight_input_bridge PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_compile_options(remotedesk_moonlight_input_bridge PRIVATE
+    -fvisibility=hidden
+    -fvisibility-inlines-hidden
+)
+set_target_properties(remotedesk_moonlight_input_bridge PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+)
+
 # 定义共享库目标
 add_library(rdpnapi SHARED ${ALL_SOURCES})
 target_compile_definitions(rdpnapi PRIVATE
@@ -720,6 +742,7 @@ target_compile_definitions(rdpnapi PRIVATE
     REMOTEDESK_BUILD_TIME_UTC="${REMOTEDESK_BUILD_TIME_UTC}"
 )
 target_link_libraries(rdpnapi PRIVATE
+    remotedesk_moonlight_input_bridge
     remotedesk_moonlight_media_clock_stats
     remotedesk_moonlight_audio_bridge
     remotedesk_moonlight_video_decoder_sink
@@ -743,6 +766,7 @@ target_link_options(rdpnapi PRIVATE
     "-Wl,--exclude-libs,libremotedesk_moonlight_video_decoder_sink.a"
     "-Wl,--exclude-libs,libremotedesk_moonlight_audio_bridge.a"
     "-Wl,--exclude-libs,libremotedesk_moonlight_media_clock_stats.a"
+    "-Wl,--exclude-libs,libremotedesk_moonlight_input_bridge.a"
 )
 
 # VNC full-screen ZRLE decode is production-rate code even in a signed Debug
