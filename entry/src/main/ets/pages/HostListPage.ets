@@ -75,6 +75,7 @@ import { ColorPickerSheet } from '../components/ColorPickerSheet';
 import { HostAddWizardSheet } from '../components/hostadd/HostAddWizardSheet';
 import { RdpAddFlow } from '../components/hostadd/RdpAddFlow';
 import { RustDeskAddFlow } from '../components/hostadd/RustDeskAddFlow';
+import { MoonlightHostAddFlow } from '../components/hostadd/MoonlightHostAddFlow';
 import { SshAddFlow } from '../components/hostadd/SshAddFlow';
 import { VncAddFlow } from '../components/hostadd/VncAddFlow';
 import {
@@ -506,6 +507,7 @@ struct HostListPage {
   @State showAddSheet: boolean = false;
   @State addSheetShowsModernPicker: boolean = false;
   @State modernAddProtocol: string = '';
+  @State moonlightAddOwnerToken: number = 1;
   @State vncAddFromModernPicker: boolean = false;
   @State addSheetClosing: boolean = false;
   // Keep the released storage/cloud key while exposing the broader FAB-style semantics in UI code.
@@ -12348,6 +12350,9 @@ struct HostListPage {
   }
 
   private hostAddSheetHeight(): SheetSize | number {
+    if (this.modernAddProtocol === 'moonlight') {
+      return this.breakpoint === 'sm' ? SheetSize.FIT_CONTENT : SheetSize.LARGE;
+    }
     const isLongFlow: boolean = this.isVncAddSheet() || this.modernAddProtocol === 'ssh';
     if (this.isVncAddSheet() || this.modernAddProtocol === 'ssh') {
       return SheetSize.FIT_CONTENT;
@@ -12368,9 +12373,13 @@ struct HostListPage {
   @Builder hostAddSheetContent() {
     if (this.addSheetShowsModernPicker) {
       HostAddWizardSheet({
+        moonlightProtocolAvailable: false,
         onSelectProtocol: (protocol: string): void => {
           this.modernAddProtocol = protocol;
           this.addSheetShowsModernPicker = false;
+          if (protocol === 'moonlight') {
+            this.moonlightAddOwnerToken += 1;
+          }
           if (protocol === 'vnc') {
             this.prepareVncAddFlow();
             this.vncAddFromModernPicker = true;
@@ -12427,6 +12436,17 @@ struct HostListPage {
         },
         onSave: (host: RemoteHost, connectNow: boolean): void => {
           this.saveHostFromAddFlow(host, connectNow);
+        }
+      })
+    } else if (this.modernAddProtocol === 'moonlight') {
+      MoonlightHostAddFlow({
+        ownerToken: this.moonlightAddOwnerToken,
+        onBackToProtocols: (): void => {
+          this.modernAddProtocol = '';
+          this.addSheetShowsModernPicker = true;
+        },
+        onSaved: (_openCatalog: boolean): void => {
+          this.requestAddSheetClose();
         }
       })
     } else if (this.modernAddProtocol === 'ssh') {
