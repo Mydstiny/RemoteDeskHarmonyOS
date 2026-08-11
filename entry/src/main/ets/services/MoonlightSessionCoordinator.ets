@@ -33,6 +33,7 @@ export interface MoonlightSessionStartRequest {
 
 export interface MoonlightRuntimePort {
   start(request: MoonlightSessionStartRequest, operationGeneration: number): boolean;
+  cancel(operationGeneration: number, reason: string): boolean;
   stop(nativeSessionId: number, reason: string): boolean;
 }
 
@@ -52,6 +53,7 @@ export type MoonlightCoordinatorResultCode =
   'started' | 'runtime_unavailable' | 'invalid_request' | 'active_session_busy' |
   'duplicate_start' | 'runtime_start_failed' | 'applied' | 'stale_generation' |
   'stale_sequence' | 'invalid_transition' | 'native_session_missing' |
+  'native_session_mismatch' | 'stop_failed' | 'stop_timeout' |
   'registry_rejected' | 'registry_lost' | 'surface_missing' | 'render_not_attached' |
   'not_active' | 'stop_requested' | 'already_stopping' | 'stopped';
 
@@ -116,9 +118,11 @@ export class MoonlightSessionCoordinator {
   private readonly runtime: MoonlightRuntimePort | null;
   private state: MoonlightSessionStateSnapshot | null = null;
   private nativeSessionId: number = -1;
+  private reservationSessionId: number = -1;
   private operationGeneration: number = 0;
   private boundOwnerScopeId: string = '';
   private boundAccountGeneration: number = 0;
+  private stopDeadlineAtMs: number = 0;
 
   constructor(runtime: MoonlightRuntimePort | null = null,
     registry: ActiveRemoteSessionRegistry = ActiveRemoteSessionRegistry.getInstance()) {
@@ -145,6 +149,7 @@ export class MoonlightSessionCoordinator {
   }
 
   start(request: MoonlightSessionStartRequest): MoonlightCoordinatorResult {
+    this.expireStopIfNeeded(Date.now());
     if (!this.validRequest(request)) {
       return this.result(false, 'invalid_request');
     }
@@ -155,10 +160,6 @@ export class MoonlightSessionCoordinator {
     if (!terminal(this.state)) {
       return this.result(false, 'duplicate_start');
     }
-    if (this.registry.getActive() !== null) {
-      return this.result(false, 'active_session_busy');
-    }
-
     if (this.boundOwnerScopeId !== request.ownerScopeId ||
       this.boundAccountGeneration !== request.accountGeneration) {
       this.bindScope(request.ownerScopeId, request.accountGeneration);
@@ -178,6 +179,25 @@ export class MoonlightSessionCoordinator {
     if (!firstTransition.applied) {
       return this.result(false, 'invalid_transition');
     }
+    const reservationSessionId: number = this.operationGeneration;
+    const reserved: boolean = this.registry.reserveActive({
+      ownerScopeId: request.ownerScopeId,
+      accountGeneration: request.accountGeneration,
+      sessionId: reservationSessionId,
+      hostId: request.hostId,
+      protocol: RemoteProtocol.moonlight,
+      hostAddress: '',
+      protocolConnected: false,
+      renderAttached: false,
+      restoreNeeded: false,
+      latestSurfaceId: '',
+      createdAtMs: Date.now(),
+      updatedAtMs: Date.now()
+    });
+    if (!reserved) {
+      return this.result(false, 'active_session_busy');
+    }
+    this.reservationSessionId = reservationSessionId;
     this.state = firstTransition.state;
     const started: boolean = this.runtime.start(request, this.operationGeneration);
     if (!started) {
@@ -187,12 +207,15 @@ export class MoonlightSessionCoordinator {
       };
       const failed = applyMoonlightSessionEvent(this.state, failedEvent);
       this.state = failed.applied ? failed.state : this.state;
+      this.clearOwnedRegistry();
+      this.reservationSessionId = -1;
       return this.result(false, 'runtime_start_failed');
     }
     return this.result(true, 'started');
   }
 
   handleRuntimeEvent(event: MoonlightCoordinatorEvent): MoonlightCoordinatorResult {
+    this.expireStopIfNeeded(Date.now());
     if (this.state === null) {
       return this.result(false, 'not_active');
     }
@@ -201,6 +224,10 @@ export class MoonlightSessionCoordinator {
     }
     if (event.type === 'launchAccepted' && !validSessionId(event.nativeSessionId)) {
       return this.result(false, 'native_session_missing');
+    }
+    if (this.nativeSessionId > 0 && event.type !== 'launchAccepted' &&
+      event.nativeSessionId !== this.nativeSessionId) {
+      return this.result(false, 'native_session_mismatch');
     }
     if (event.type === 'firstFrameRendered' && !boundedText(event.surfaceId, 256)) {
       return this.result(false, 'surface_missing');
@@ -226,12 +253,13 @@ export class MoonlightSessionCoordinator {
     this.state = transition.state;
 
     if (event.type === 'launchAccepted') {
-      this.nativeSessionId = event.nativeSessionId;
       const now: number = Date.now();
-      const registered: boolean = this.registry.setActive({
+      const registered: boolean = this.reservationSessionId > 0 &&
+        this.registry.promoteReserved(this.state.ownerScopeId, this.boundAccountGeneration,
+          this.reservationSessionId, {
         ownerScopeId: this.state.ownerScopeId,
         accountGeneration: this.boundAccountGeneration,
-        sessionId: this.nativeSessionId,
+        sessionId: event.nativeSessionId,
         hostId: this.state.hostId,
         protocol: RemoteProtocol.moonlight,
         hostAddress: '',
@@ -246,6 +274,8 @@ export class MoonlightSessionCoordinator {
         this.invalidate('registry_rejected');
         return this.result(false, 'registry_rejected');
       }
+      this.nativeSessionId = event.nativeSessionId;
+      this.reservationSessionId = -1;
     }
 
     if (event.type === 'firstFrameRendered') {
@@ -261,11 +291,14 @@ export class MoonlightSessionCoordinator {
     if (event.type === 'failed' || event.type === 'stopped') {
       this.clearOwnedRegistry();
       this.nativeSessionId = -1;
+      this.reservationSessionId = -1;
+      this.stopDeadlineAtMs = 0;
     }
     return this.result(true, event.type === 'stopped' ? 'stopped' : 'applied');
   }
 
   requestStop(reason: string = 'user-stop'): MoonlightCoordinatorResult {
+    this.expireStopIfNeeded(Date.now());
     if (this.state === null || this.state.phase === 'disconnected' || this.state.phase === 'failed') {
       return this.result(false, 'not_active');
     }
@@ -282,13 +315,16 @@ export class MoonlightSessionCoordinator {
       return this.result(false, 'invalid_transition');
     }
     this.state = transition.state;
-    if (this.runtime !== null && this.nativeSessionId > 0) {
-      this.runtime.stop(this.nativeSessionId, reason);
+    if (!this.requestRuntimeStop(reason)) {
+      this.forceLocalTerminal('STOP_FAILED');
+      return this.result(false, 'stop_failed');
     }
+    this.stopDeadlineAtMs = Date.now() + 5000;
     return this.result(true, 'stop_requested');
   }
 
   cancel(reason: string = 'user-cancel'): MoonlightCoordinatorResult {
+    this.expireStopIfNeeded(Date.now());
     if (this.state === null || this.state.phase === 'disconnected' || this.state.phase === 'failed') {
       return this.result(false, 'not_active');
     }
@@ -305,9 +341,11 @@ export class MoonlightSessionCoordinator {
       return this.result(false, 'invalid_transition');
     }
     this.state = transition.state;
-    if (this.runtime !== null && this.nativeSessionId > 0) {
-      this.runtime.stop(this.nativeSessionId, reason);
+    if (!this.requestRuntimeStop(reason)) {
+      this.forceLocalTerminal('STOP_FAILED');
+      return this.result(false, 'stop_failed');
     }
+    this.stopDeadlineAtMs = Date.now() + 5000;
     return this.result(true, 'stop_requested');
   }
 
@@ -319,6 +357,7 @@ export class MoonlightSessionCoordinator {
   }
 
   snapshotForRoute(hostId: string, appId: string): MoonlightSessionStateSnapshot | null {
+    this.expireStopIfNeeded(Date.now());
     if (this.state === null || this.state.hostId !== hostId || this.state.appId !== appId) {
       return null;
     }
@@ -329,6 +368,15 @@ export class MoonlightSessionCoordinator {
     this.invalidate('test-reset');
     this.state = null;
     this.nativeSessionId = -1;
+    this.reservationSessionId = -1;
+    this.stopDeadlineAtMs = 0;
+  }
+
+  expireStop(nowMs: number = Date.now()): MoonlightCoordinatorResult {
+    if (this.expireStopIfNeeded(nowMs)) {
+      return this.result(false, 'stop_timeout');
+    }
+    return this.result(false, 'not_active');
   }
 
   private validRequest(request: MoonlightSessionStartRequest): boolean {
@@ -338,9 +386,13 @@ export class MoonlightSessionCoordinator {
   }
 
   private clearOwnedRegistry(): void {
-    if (this.nativeSessionId > 0 && this.state !== null) {
+    if (this.state !== null && this.nativeSessionId > 0) {
       this.registry.clearIfMatches(this.state.ownerScopeId, this.boundAccountGeneration,
         this.nativeSessionId, RemoteProtocol.moonlight);
+    }
+    if (this.state !== null && this.reservationSessionId > 0) {
+      this.registry.clearIfMatches(this.state.ownerScopeId, this.boundAccountGeneration,
+        this.reservationSessionId, RemoteProtocol.moonlight);
     }
   }
 
@@ -349,10 +401,55 @@ export class MoonlightSessionCoordinator {
       if (this.runtime !== null) {
         this.runtime.stop(this.nativeSessionId, reason);
       }
-      this.clearOwnedRegistry();
+    } else if (this.reservationSessionId > 0 && this.runtime !== null) {
+      this.runtime.cancel(this.operationGeneration, reason);
     }
+    this.clearOwnedRegistry();
     this.state = null;
     this.nativeSessionId = -1;
+    this.reservationSessionId = -1;
+    this.stopDeadlineAtMs = 0;
+  }
+
+  private requestRuntimeStop(reason: string): boolean {
+    if (this.runtime === null) {
+      return false;
+    }
+    if (this.nativeSessionId > 0) {
+      return this.runtime.stop(this.nativeSessionId, reason);
+    }
+    if (this.reservationSessionId > 0) {
+      return this.runtime.cancel(this.operationGeneration, reason);
+    }
+    return true;
+  }
+
+  private forceLocalTerminal(nativeError: string): void {
+    if (this.state !== null && this.state.phase === 'stopping') {
+      const terminalEvent: MoonlightSessionEvent = {
+        type: 'failed', generation: this.state.generation,
+        sequence: this.state.lastEventSequence + 1,
+        nativeError: nativeError, detailCode: 'local_terminal'
+      };
+      const transition = applyMoonlightSessionEvent(this.state, terminalEvent);
+      if (transition.applied) {
+        this.state = transition.state;
+      }
+    }
+    this.clearOwnedRegistry();
+    this.state = null;
+    this.nativeSessionId = -1;
+    this.reservationSessionId = -1;
+    this.stopDeadlineAtMs = 0;
+  }
+
+  private expireStopIfNeeded(nowMs: number): boolean {
+    if (this.state === null || this.state.phase !== 'stopping' ||
+      this.stopDeadlineAtMs <= 0 || nowMs < this.stopDeadlineAtMs) {
+      return false;
+    }
+    this.forceLocalTerminal('STOP_TIMEOUT');
+    return true;
   }
 
   private result(accepted: boolean, code: MoonlightCoordinatorResultCode): MoonlightCoordinatorResult {

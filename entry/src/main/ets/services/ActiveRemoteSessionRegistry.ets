@@ -62,6 +62,12 @@ export class ActiveRemoteSessionRegistry {
     if (record.protocol === RemoteProtocol.moonlight && record.hostAddress.length > 0) {
       return false;
     }
+    const current: ActiveRemoteSessionRecord | null = this.getActive();
+    if (current !== null && (current.ownerScopeId !== record.ownerScopeId ||
+      current.accountGeneration !== record.accountGeneration ||
+      current.sessionId !== record.sessionId || current.protocol !== record.protocol)) {
+      return false;
+    }
     const now: number = Date.now();
     const next: ActiveRemoteSessionRecord = {
       ownerScopeId: record.ownerScopeId,
@@ -78,6 +84,41 @@ export class ActiveRemoteSessionRegistry {
       updatedAtMs: now
     };
     this.write(next);
+    return true;
+  }
+
+  reserveActive(record: ActiveRemoteSessionRecord): boolean {
+    if (this.getActive() !== null) {
+      return false;
+    }
+    return this.setActive(record);
+  }
+
+  promoteReserved(ownerScopeId: string, accountGeneration: number, reservationSessionId: number,
+    next: ActiveRemoteSessionRecord): boolean {
+    const current: ActiveRemoteSessionRecord | null = this.getActive();
+    if (current === null || current.ownerScopeId !== ownerScopeId ||
+      current.accountGeneration !== accountGeneration ||
+      current.sessionId !== reservationSessionId || current.protocol !== RemoteProtocol.moonlight ||
+      next.ownerScopeId !== ownerScopeId || next.accountGeneration !== accountGeneration ||
+      next.protocol !== RemoteProtocol.moonlight || next.hostAddress.length > 0) {
+      return false;
+    }
+    const now: number = Date.now();
+    this.write({
+      ownerScopeId: next.ownerScopeId,
+      accountGeneration: next.accountGeneration,
+      sessionId: next.sessionId,
+      hostId: next.hostId,
+      protocol: next.protocol,
+      hostAddress: next.hostAddress,
+      protocolConnected: next.protocolConnected,
+      renderAttached: next.renderAttached,
+      restoreNeeded: next.restoreNeeded,
+      latestSurfaceId: next.latestSurfaceId,
+      createdAtMs: current.createdAtMs > 0 ? current.createdAtMs : now,
+      updatedAtMs: now
+    });
     return true;
   }
 

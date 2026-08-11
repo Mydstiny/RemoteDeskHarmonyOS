@@ -14,9 +14,12 @@ import { MoonlightSessionStateSnapshot } from '../main/ets/services/MoonlightSes
 
 class FakeMoonlightRuntime implements MoonlightRuntimePort {
   startCalls: number = 0;
+  cancelCalls: number = 0;
   stopCalls: number = 0;
   lastAddress: string = '';
   startResult: boolean = true;
+  cancelResult: boolean = true;
+  stopResult: boolean = true;
 
   start(request: MoonlightSessionStartRequest, _operationGeneration: number): boolean {
     this.startCalls += 1;
@@ -24,9 +27,14 @@ class FakeMoonlightRuntime implements MoonlightRuntimePort {
     return this.startResult;
   }
 
+  cancel(_operationGeneration: number, _reason: string): boolean {
+    this.cancelCalls += 1;
+    return this.cancelResult;
+  }
+
   stop(_nativeSessionId: number, _reason: string): boolean {
     this.stopCalls += 1;
-    return true;
+    return this.stopResult;
   }
 }
 
@@ -119,14 +127,14 @@ export default function moonlightSessionCoordinatorTest(): void {
       const activeBeforeFrame: ActiveRemoteSessionRecord | null = activeMoonlightRecord(registry);
       expect(activeBeforeFrame !== null).assertTrue();
       expect((activeBeforeFrame as ActiveRemoteSessionRecord).hostAddress).assertEqual('');
-      expect(coordinator.handleRuntimeEvent(event('videoReady', generation, 6)).accepted).assertTrue();
-      expect(coordinator.handleRuntimeEvent(event('audioReady', generation, 7)).accepted).assertTrue();
-      expect(coordinator.handleRuntimeEvent(event('inputReady', generation, 8)).accepted).assertTrue();
-      expect(coordinator.handleRuntimeEvent(event('streamStable', generation, 9)).code)
+      expect(coordinator.handleRuntimeEvent(event('videoReady', generation, 6, 42)).accepted).assertTrue();
+      expect(coordinator.handleRuntimeEvent(event('audioReady', generation, 7, 42)).accepted).assertTrue();
+      expect(coordinator.handleRuntimeEvent(event('inputReady', generation, 8, 42)).accepted).assertTrue();
+      expect(coordinator.handleRuntimeEvent(event('streamStable', generation, 9, 42)).code)
         .assertEqual('render_not_attached');
       expect(coordinator.handleRuntimeEvent(event('firstFrameRendered', generation, 9, 42, 'surface-1'))
         .accepted).assertTrue();
-      const streaming = coordinator.handleRuntimeEvent(event('streamStable', generation, 10));
+      const streaming = coordinator.handleRuntimeEvent(event('streamStable', generation, 10, 42));
       expect(streaming.accepted).assertTrue();
       expect((streaming.state as MoonlightSessionStateSnapshot).phase).assertEqual('streaming');
       expect((activeMoonlightRecord(registry) as ActiveRemoteSessionRecord).renderAttached).assertTrue();
@@ -149,6 +157,74 @@ export default function moonlightSessionCoordinatorTest(): void {
       const stopped = coordinator.handleRuntimeEvent(event('stopped', generation, 6, 42));
       expect(stopped.code).assertEqual('stopped');
       expect(activeMoonlightRecord(registry)).assertNull();
+      coordinator.resetForTest();
+      registry.resetForTest();
+    });
+
+    it('reserves_the_shared_registry_before_runtime_start', 0, (): void => {
+      const runtime: FakeMoonlightRuntime = new FakeMoonlightRuntime();
+      const registry: ActiveRemoteSessionRegistry = ActiveRemoteSessionRegistry.getInstance();
+      registry.resetForTest();
+      registry.bindScope('owner-1', 1);
+      const coordinator: MoonlightSessionCoordinator = new MoonlightSessionCoordinator(runtime, registry);
+      expect(coordinator.start(request()).accepted).assertTrue();
+      const competing: boolean = registry.setActive({
+        ownerScopeId: 'owner-1', accountGeneration: 1, sessionId: 77, hostId: 'rdp-host',
+        protocol: RemoteProtocol.rdp, hostAddress: '10.0.0.3', protocolConnected: true,
+        renderAttached: false, restoreNeeded: false, latestSurfaceId: '', createdAtMs: 1, updatedAtMs: 1
+      });
+      expect(competing).assertFalse();
+      coordinator.resetForTest();
+      registry.resetForTest();
+    });
+
+    it('cancels_a_prelaunch_reservation_and_local_terminates_on_stop_failure', 0, (): void => {
+      const runtime: FakeMoonlightRuntime = new FakeMoonlightRuntime();
+      const registry: ActiveRemoteSessionRegistry = ActiveRemoteSessionRegistry.getInstance();
+      registry.resetForTest();
+      registry.bindScope('owner-1', 1);
+      const coordinator: MoonlightSessionCoordinator = new MoonlightSessionCoordinator(runtime, registry);
+      expect(coordinator.start(request()).accepted).assertTrue();
+      expect(coordinator.cancel('user-cancel').accepted).assertTrue();
+      expect(runtime.cancelCalls).assertEqual(1);
+      expect(activeMoonlightRecord(registry)).assertNull();
+
+      const second: MoonlightSessionCoordinator = new MoonlightSessionCoordinator(runtime, registry);
+      expect(second.start(request()).accepted).assertTrue();
+      const generation: number = (second.snapshotForRoute('host-1', 'app-1') as MoonlightSessionStateSnapshot).generation;
+      second.handleRuntimeEvent(event('beginVerification', generation, 2));
+      second.handleRuntimeEvent(event('catalogReady', generation, 3));
+      second.handleRuntimeEvent(event('launchRequested', generation, 4));
+      second.handleRuntimeEvent(event('launchAccepted', generation, 5, 43));
+      runtime.stopResult = false;
+      expect(second.requestStop('stop-failure').code).assertEqual('stop_failed');
+      expect(activeMoonlightRecord(registry)).assertNull();
+
+      runtime.stopResult = true;
+      const third: MoonlightSessionCoordinator = new MoonlightSessionCoordinator(runtime, registry);
+      expect(third.start(request()).accepted).assertTrue();
+      const thirdGeneration: number =
+        (third.snapshotForRoute('host-1', 'app-1') as MoonlightSessionStateSnapshot).generation;
+      third.handleRuntimeEvent(event('beginVerification', thirdGeneration, 2));
+      third.handleRuntimeEvent(event('catalogReady', thirdGeneration, 3));
+      third.handleRuntimeEvent(event('launchRequested', thirdGeneration, 4));
+      third.handleRuntimeEvent(event('launchAccepted', thirdGeneration, 5, 44));
+      expect(third.requestStop('stop-timeout').accepted).assertTrue();
+      expect(third.expireStop(Date.now() + 6000).code).assertEqual('stop_timeout');
+      expect(activeMoonlightRecord(registry)).assertNull();
+      registry.resetForTest();
+    });
+
+    it('rejects_callbacks_from_a_different_native_session', 0, (): void => {
+      const runtime: FakeMoonlightRuntime = new FakeMoonlightRuntime();
+      const registry: ActiveRemoteSessionRegistry = ActiveRemoteSessionRegistry.getInstance();
+      registry.resetForTest();
+      registry.bindScope('owner-1', 1);
+      const coordinator: MoonlightSessionCoordinator = new MoonlightSessionCoordinator(runtime, registry);
+      const generation: number = reachNegotiating(coordinator);
+      expect(coordinator.handleRuntimeEvent(event('videoReady', generation, 6, 99)).code)
+        .assertEqual('native_session_mismatch');
+      expect(coordinator.handleRuntimeEvent(event('videoReady', generation, 6, 42)).accepted).assertTrue();
       coordinator.resetForTest();
       registry.resetForTest();
     });
