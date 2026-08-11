@@ -561,6 +561,13 @@ export function committedMoonlightHostAddId(
   return localCommitted ? hostId.trim() : '';
 }
 
+export function moonlightHostAddSaveCanBegin(
+  state: MoonlightHostAddState
+): boolean {
+  return state.step === 4 && state.paired && state.trustState === 'trusted' &&
+    state.activeOperation === 'none' && !state.savedLocally;
+}
+
 export function setMoonlightHostAddDisplayName(
   state: MoonlightHostAddState,
   displayName: string

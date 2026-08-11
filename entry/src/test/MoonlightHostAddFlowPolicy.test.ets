@@ -18,6 +18,7 @@ import {
   moonlightHostAddDiscoveryIsCurrent,
   moonlightHostAddOperationIsCurrent,
   moonlightHostAddPinDigits,
+  moonlightHostAddSaveCanBegin,
   MoonlightHostAddBeginResult,
   MoonlightHostAddCandidate,
   MoonlightHostAddDiscoveryBeginResult,
@@ -158,13 +159,17 @@ export default function moonlightHostAddFlowPolicyTest(): void {
       });
       expect(state.catalog?.appCount).assertEqual(2);
 
+      expect(moonlightHostAddSaveCanBegin(state)).assertTrue();
       begin = beginMoonlightHostAddOperation(state, 'save');
+      expect(moonlightHostAddSaveCanBegin(begin.state)).assertFalse();
       state = completeMoonlightHostAddSave(begin.state, begin.key, false, 'disk full');
       expect(state.savedLocally).assertFalse();
       expect(state.errorText).assertEqual('disk full');
+      expect(moonlightHostAddSaveCanBegin(state)).assertTrue();
       begin = beginMoonlightHostAddOperation(state, 'save');
       state = completeMoonlightHostAddSave(begin.state, begin.key, true);
       expect(state.savedLocally).assertTrue();
+      expect(moonlightHostAddSaveCanBegin(state)).assertFalse();
     });
 
     it('hands_off_only_a_stable_id_from_a_completed_local_commit', 0, (): void => {

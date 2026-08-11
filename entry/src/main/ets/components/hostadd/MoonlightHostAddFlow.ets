@@ -21,6 +21,7 @@ import {
   moonlightHostAddDiscoveryIsCurrent,
   moonlightHostAddOperationIsCurrent,
   moonlightHostAddPinDigits,
+  moonlightHostAddSaveCanBegin,
   MoonlightHostAddBeginResult,
   MoonlightHostAddCandidate,
   MoonlightHostAddCatalogSummary,
@@ -450,7 +451,10 @@ export struct MoonlightHostAddFlow {
   }
 
   private async save(openCatalog: boolean): Promise<void> {
-    if (this.flow.step !== 4 || !this.flow.paired || this.flow.trustState !== 'trusted') {
+    if (this.flow.activeOperation !== 'none' || this.flow.savedLocally) {
+      return;
+    }
+    if (!moonlightHostAddSaveCanBegin(this.flow)) {
       this.withError('主机尚未完成配对与信任');
       return;
     }
