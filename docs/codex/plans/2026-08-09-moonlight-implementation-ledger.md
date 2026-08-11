@@ -244,7 +244,7 @@ D3 账户生命周期代码检查点为 `05e96d3`；便携备份/本地恢复检
 | N3-04 | CONTRACT PASS / DORMANT `ebd2fa0bc5` | hidden `MoonlightTouchMapper`；官方 28-byte direct-touch body、10 个稳定 contact id、cancel/cancel-all、旋转/content rect、overlay lifetime ownership；触控板复用 N3-03 完成一指/双指/长按/三指本地动作，固定 3 contacts/16 observed lanes、exact generation 和 retry；21 个 focused case | direct capability/platform listener 均 fail closed；私有 archive 无 caller 且未进入 `rdpnapi`；无公共 InputHandler/NAPI/ArkTS/UI/cloud/thread/queue；N3-05 下一 |
 | N3-05 | CONTRACT PASS / DORMANT `1aadfba24` | hidden `MoonlightControllerMapper`；official arrival/state 参数投影、API 23 button/axis/trigger/hat、7%/13% deadzone、Y 反向、stable slot 0、full-state frame、background neutral、disconnect active-mask clear、exact device/source generation 与 retry；16 个 focused case | GameControllerKit 仅 compile-link probe；无双手柄真机证据时一槽，反馈能力全关闭；archive 无 caller 且未进入 `rdpnapi`；无公共 InputHandler/NAPI/ArkTS/UI/cloud/thread/queue；N3-06 下一 |
 | N3-06 | CONTRACT PASS / DORMANT `baa9cafef` | hidden `MoonlightControllerFeedback`；official API∩physical-device evidence、rumble/trigger rumble/RGB LED/adaptive trigger/motion/battery typed command、single pending retry、200Hz/120s 上限、exact owner/device/operation generation 与 release lifecycle；16 个 focused case | API 23 product evidence 全 false，capability false 零 port 调用；archive 无 caller 且未进入 `rdpnapi`；无公共 InputHandler/NAPI/ArkTS/UI/cloud/thread/queue；N3-07 下一 |
-| N3-07 | CONTRACT PASS / DORMANT `02cb13aae` | hidden `MoonlightInputFlushPolicy`；直接组合 touch→pointer→keyboard→controller→bridge，覆盖 12 个 lifecycle trigger、exact request/retry、幂等、suspend/resume、failed-suspend→stop escalation 和 remote-stop-failure local terminal；19 个 focused case | 私有 archive 无 caller 且未进入 `rdpnapi`；无公共 InputHandler/NAPI/ArkTS/UI/cloud/thread/queue；N3-08 下一 |
+| N3-07 | CONTRACT PASS / DORMANT `02cb13aae` + `36b4e13df` + `337c4f35e` + `ee073afcb` | hidden policy 在 mapper release 前原子关闭真实 bridge admission，只接受 lifecycle release；组合 touch→pointer→keyboard→controller→bridge，覆盖 12 trigger、component failure/owner loss、pending/suspended→stop、exact terminal replay、stale stop 和 local terminal；26 个 focused case | 私有 archive 无 caller且未进入 `rdpnapi`；无公共 InputHandler/NAPI/ArkTS/UI/cloud/thread/queue；N3-08 下一 |
 
 N1-01 的可复现证据：
 
@@ -916,36 +916,44 @@ LED ownership，resume 不重放。
   `InputHandler`、共享 telemetry/render/audio、RDP/RustDesk/SSH/VNC 业务源、NAPI、ArkTS、UI、
   云、日志或 product caller。HDC `Connect server failed`，不声明真机 feedback runtime 能力。
 
-N3-07 `02cb13aae` 新增 hidden/private `MoonlightInputFlushPolicy`、19 个 focused case 和独立私有
+N3-07 `02cb13aae`、审查修复 `36b4e13df`/`337c4f35e` 与终止回放证据补强 `ee073afcb` 新增 hidden/private policy、26 个
+focused case 和独立私有
 archive。它不定义第二套输入端口，直接组合既有 `MoonlightTouchMapper`、`MoonlightPointerMapper`、
 `MoonlightKeyboardMapper`、`MoonlightControllerMapper` 与唯一 `MoonlightInputBridge`。固定顺序为
 touch cancel→pointer release→keyboard release→controller neutral/disconnect→bridge neutral；覆盖
 overlay、control mode、rotation、focus、PIP、background、screen lock、Surface detach、reconnect、
 session stop、input generation change 和 controller disconnect。每个阶段保留 exact context 与 pending
-suffix，其他请求不得越过；重复请求幂等。非终止触发进入 suspend 并只以更高 operation generation
-resume；reconnect/stop/generation 终止旧输入。suspend boundary 可用更高 generation 重试且不重放
-mapper release；stop escalation 不重放，最终 bridge stop 失败时 mapper 已释放、admission 永久关闭并
-返回 local-terminal，不把远端失败伪装成成功。
+suffix，其他请求不得越过；重复请求幂等。`beginFlush()` 在 release 前把唯一 bridge 推进
+`ReleasePending`，普通 mapper input 被拒绝，只有 boundary 内的 lifecycle release 可继续。非终止触发
+进入 suspend 并只以更高 operation generation resume；reconnect/stop/generation 终止旧输入。
+suspend boundary 重试不重放 mapper；terminal 可从 component pending 或 suspended 升级，component
+永久失败/owner loss 会丢弃全部 mapper 本地状态并继续 stop，remote stop 失败则 local-terminal。
+stale terminal request 不清本地状态；pending→terminal 的 mapper drain context 与 completion replay key
+分离，remote/local-terminal 两种 exact stop 重放都返回 `AlreadyApplied` 且零端口副作用。
 
-- host normal 连续三轮与 strict 最终均为 **678 total / 662 pass / 16 fail**；19 个 N3-07 用例
-  全 PASS，16 项失败仍仅为既有 VNC 本地 TLS fixture `start()`。ASan/UBSan 连续三轮与 TSan
-  同为 **662/16**，无 sanitizer/data-race report；focused host clang analyzer 为空报告。
-- arm64-v8a/x86_64 archive 分别为 358100/349932 bytes 且各含一个 policy object；无 caller 时
+- host normal 与 strict 均为 **685 total / 669 pass / 16 fail**；26 个 N3-07 用例全 PASS，16 项失败
+  仍仅为既有 VNC 本地 TLS fixture `start()`。ASan/UBSan 顺序连续三轮与 TSan 同为 **669/16**，无
+  sanitizer/data-race report；七份 focused host clang analyzer 均为零诊断。
+- arm64-v8a/x86_64 archive 分别为 369470/361710 bytes 且各含一个 policy object；无 caller 时
   object 未进入 `rdpnapi`，dynamic defined/undefined 仍为 arm64 **16114/705**、x86_64
   **15645/703**，产品库无 flush-policy 符号。
 - 双 Hvigor 与 signed `assembleHap` BUILD SUCCESSFUL，HAP 333 paths；Light、117-file vendor、TOTP
   与 `git diff --check` PASS。未修改 common-c、公共 `InputHandler`、共享 telemetry/render/audio、
   RDP/RustDesk/SSH/VNC 业务源、NAPI、ArkTS、UI、云、日志或 product caller。HDC 返回
   `Connect server failed`，不声明 HAP/虚拟机/真机输入 runtime。
+- 复用既有 `gpt-5.6-sol low` task `019fe966-d99a-7ce1-8b53-4ef725597053` 完成最终只读复核；
+  `ee073afcb` 后 P0/P1/P2/P3 均为 0。复核确认两条 terminal replay 测试固定旧 suspend
+  sequence/timestamp 与 event/flush 零增量，私有 archive 无 caller，不影响旧协议功能或性能。
 
 ## 13. 下一执行序列
 
 1. N2-09 保持 EXTERNAL PENDING：必须由真实 Sunshine 与用户 ARM64 实机完成 720p/1080p、
    30/60fps、两小时、温控、前后台/PIP/旋转和网络矩阵；不得用 host 单测或虚拟机代替。
 2. 当前唯一可直接执行的代码任务是 dormant N3-08：建立虚拟控制器模型与确定性布局 validator，
-   覆盖 safe area、冲突热区、坏布局 fallback、编辑态零发送；button/stick/trigger/dpad full-state
-   必须复用 N3-05 mapper→N3-01 bridge→official common-c 原生链路，退出/后台经 N3-07 neutral。
-   MVP feature flag 保持 false，不接产品 UI/NAPI/云，不创建第二套 input owner/port。
+   覆盖 safe area、冲突热区、坏布局 fallback、编辑态零发送。实体 listener 与虚拟 typed ingress 的
+   button/stick/trigger/dpad 只在 native 聚合 full-state，并复用 N3-05→N3-01→official common-c；
+   physical↔virtual handoff 必须先 accepted `active-mask=0` removal、确认 slot 0 clear，再用更高
+   operation/source generation 接管，失败则终止当前 session。不得创建第二 input owner/port/slot。
 3. 保持 N2-08 与 N3-01～N3-07 dormant：不接 NAPI/ArkTS/UI/PIP/后台、云或日志，不把任何结果变成 video
    first-frame、streaming/protocolAvailable、FAB 或 release truth。
 4. S1-08 才按现有 `NativeSessionHandles`、Surface/PIP/background 生命周期装配媒体；U1/S1 的

@@ -5,7 +5,7 @@
 - Task: `moonlight-complete-upgrade`
 - Base: `main@aeb0cdac5`; branch: `codex/moonlight-complete-upgrade`
 - Phase: G0、D1-D3 local/dormant、N1-01～N1-08、N2-01～N2-08、N3-01～N3-07 已 checkpoint；N3-07
-  代码为 `02cb13aae`。N2-09 等待真实设备，唯一可执行代码任务为 dormant N3-08；Moonlight 暂不接入云同步，当前只推进本地主机存储，云表/CloudSync 方案 parked。
+  代码为 `02cb13aae`，审查修复为 `36b4e13df`、`337c4f35e`，终止回放证据补强为 `ee073afcb`。N2-09 等待真实设备，唯一可执行代码任务为 dormant N3-08；Moonlight 暂不接入云同步，当前只推进本地主机存储，云表/CloudSync 方案 parked。
 - Authoritative plan: `docs/superpowers/plans/2026-07-28-moonlight-harmonyos-complete-upgrade-plan.md`
 - Live ledger: `docs/codex/plans/2026-08-09-moonlight-implementation-ledger.md`
 
@@ -21,7 +21,7 @@
 - 11 个 feature inputs 默认全 false；六项 release snapshot 未放行。平台能力默认
   11 pending、controller rumble 1 unsupported、0 supported。
 - 最多两个 `gpt-5.6-sol low` reviewer 实例；后续复核必须复用既有 task ID，不得新建第三个；
-  N2-03～N3-07 暂无匹配回执，状态机保持 `RESUME_REVIEW/REVIEW_REQUIRED`。
+  N3-07 已由既有 task `019fe966-d99a-7ce1-8b53-4ef725597053` 复核 PASS，N2-03～N3-06 仍无匹配回执。
 
 ## Checkpoint Facts
 
@@ -85,24 +85,25 @@
 - N3-06 `baa9cafef`：hidden `MoonlightControllerFeedback` 以 official API 与 exact physical-device evidence
   交集控制 rumble/trigger rumble/RGB LED/motion/battery，adaptive trigger 独立门禁；API 23
   product evidence 全 false，unsupported 零 port 调用。固定单 pending retry、200Hz motion、120s battery refresh、exact owner/device/operation generation 和 release 生命周期；无产品 caller。
-- N3-07 `02cb13aae`：hidden `MoonlightInputFlushPolicy` 组合既有 touch→pointer→keyboard→controller→
-  bridge release，覆盖 overlay/mode/rotation/focus/PIP/background/lock/Surface/reconnect/stop/
-  generation/controller-disconnect；exact retry、幂等、suspend/resume 和 stop local-terminal 已冻结。
+- N3-07 `02cb13aae` + `36b4e13df` + `337c4f35e` + `ee073afcb`：hidden policy 在 mapper release 前原子关闭
+  bridge admission，只放行 bounded lifecycle release；覆盖全部 lifecycle trigger、component permanent
+  failure/owner loss/pending→stop、suspended→stop、stale stop、exact retry/idempotence 和 local-terminal。
 
 ## N3-07 Verification
 
-- host normal 连续三轮与 strict 最终：**678 total / 662 passed / 16 failed**；16 项仍仅为既有 VNC
-  本地 TLS fixture `start()` 环境失败，新增 19 个 N3-07 focused tests 全 PASS。
-- ASan/UBSan 连续三轮与 TSan 同为 662/16，均无 sanitizer/data-race report；analyzer 零诊断。
+- host normal 与 strict：**685 total / 669 passed / 16 failed**；16 项仍仅为既有 VNC 本地 TLS
+  fixture `start()` 环境失败，26 个 N3-07 focused tests 全 PASS。
+- ASan/UBSan 顺序连续三轮与 TSan 同为 669/16，均无 sanitizer/data-race report；analyzer 零诊断。
   双 ABI flush archive 非空，但无 caller 时 object 不进入 `rdpnapi`；动态符号数仍为 arm64
-  **16114/705**、x86_64 **15645/703**，无 feedback 符号或 `ohgame_controller` 依赖。
+  **16114/705**、x86_64 **15645/703**，无 flush-policy/input mapper 动态符号。
 - 两项 Hvigor、signed 333-path HAP、Light、vendor、TOTP 与 diff check 全 PASS；未改 common-c、公共
   InputHandler、共享 telemetry/audio/render、旧协议业务源、NAPI/ArkTS/UI/云。HDC 无可用 target。
 
 ## Next
 
-1. N3-08：建立 dormant 虚拟控制器模型/布局 validator，并把 button/stick/trigger/dpad full-state
-   复用 N3-05→N3-01→common-c 原生链路；编辑态零发送，退出/后台经 N3-07 neutral，不接 UI/NAPI/云。
+1. N3-08：建立 dormant 虚拟控制器模型/布局 validator；实体 listener 与虚拟 typed ingress 都只在
+   native 聚合 full-state 并走 N3-05→N3-01→common-c。physical↔virtual 切换必须先发送
+   `disconnect(active-mask=0)`、确认 slot 0 清除，再以更高 generation 接管；编辑态零发送，不接 UI/NAPI/云。
 2. N2-09 保持 external pending：真实设备 720p/1080p、30/60fps、2 小时、温控、前后台/PIP/
    旋转和 H.264+Opus receipt 只能由真实 Sunshine 与用户 ARM64 实机提供。
 3. S1-08 才消费 N2-05 native contract，接现有 `NativeSessionHandles`/PIP/background 生命周期；
@@ -116,5 +117,4 @@
   compile-registered，不声明设备 Hypium PASS。
 - 当前 HDC target 没有新的可复现 receipt；早期 RDB emulator receipt 仍有效。
 - HAP/AppSpawn secure identity、H.264/NativeImage/renderer media 和 input capability probes 缺失。
-- N2-09 真实设备媒体、功耗、前后台/PIP/旋转矩阵仍 pending，不阻止纯 dormant N3 合同开发。
-- 两台真实 Sunshine host、网络/功耗/后台矩阵与用户 ARM64 实机最终验收仍 pending。
+- N2-09 两台真实 Sunshine、用户 ARM64 实机的媒体/网络/功耗/生命周期矩阵仍 pending，不阻止 dormant N3 合同开发。

@@ -4,9 +4,9 @@ Updated: 2026-08-11 Asia/Shanghai
 
 ## Now
 
-- N3-07 checkpoint `02cb13aae`: hidden `MoonlightInputFlushPolicy` composes the existing touch,
-  pointer, keyboard, controller and bridge release contracts for every planned lifecycle trigger;
-  exact retry, idempotence, suspend/resume and local-terminal stop are covered by 19 new tests.
+- N3-07 `02cb13aae` + fixes `36b4e13df`/`337c4f35e` + test evidence `ee073afcb`: bridge admission closes before mapper release and
+  accepts only lifecycle-release events; component permanent failure, owner loss, pending/suspended
+  stop escalation, exact terminal replay and stale stop are covered by 26 focused tests.
 - Its private dual-ABI archive has no product caller and contributes no object or dynamic symbol to
   `rdpnapi`; ABI counts remain identical to N3-04. No production common-c, shared `InputHandler`,
   telemetry/audio/render, cloud source or existing protocol business source was modified.
@@ -17,8 +17,9 @@ Updated: 2026-08-11 Asia/Shanghai
 ## Next
 
 - N3-08 (next actionable): define a dormant virtual-controller model and deterministic layout
-  validator; route its button/stick/trigger/dpad full-state through the existing native N3-05 mapper,
-  N3-01 bridge and common-c port, with edit-mode zero-send and N3-07 lifecycle neutral.
+  validator. Physical listener and virtual typed ingress must aggregate/transmit controller full-state
+  natively through N3-05→N3-01→common-c; handoff requires accepted active-mask=0 removal, slot 0 clear,
+  then higher-generation connect. Edit mode is zero-send and all lifecycle release reuses N3-07.
 - N2-09 remains external pending for real Sunshine and ARM64 physical media testing.
 - S1-08: consume the dormant N2-05 native contract from the existing
   `NativeSessionHandles`/PIP/background lifecycle only after media prerequisites.
@@ -28,7 +29,6 @@ Updated: 2026-08-11 Asia/Shanghai
 
 ## Later
 
-- Real Sunshine/device/network/power matrix, full regression and user ARM64 physical
-  acceptance. Moonlight cloud sync (`moonlightrecordv1`, cloud selection and secret
-  recovery) is parked for a separately approved task. Reuse an existing `sol low` reviewer task ID
-  for later checkpoints; do not create a third reviewer instance.
+- Real Sunshine/device/network/power matrix, full regression and user ARM64 acceptance.
+  Moonlight cloud sync (`moonlightrecordv1`, selection and secret recovery) stays parked.
+  N3-07 reused the existing `sol low` reviewer and passed; reuse it again, never create a third instance.
