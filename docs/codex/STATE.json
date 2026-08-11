@@ -3,13 +3,13 @@
   "task": "moonlight-complete-upgrade",
   "branch": "codex/moonlight-complete-upgrade",
   "base": "aeb0cdac5",
-  "head": "1787da821",
-  "phase": "n3-input-touch-pending",
+  "head": "ebd2fa0bc5",
+  "phase": "n3-input-controller-pending",
   "status": "active",
-  "next": "N2-09 remains external-pending for real Sunshine and ARM64 physical media evidence. Execute only the next actionable dormant task N3-04: define pure-native direct-touch and touchpad gesture contracts with stable contact ids, cancellation, coordinate transforms and overlay/remote hit-map exclusion. Keep all platform input capabilities fail closed until HAP/device proof; do not modify or wire shared InputHandler, NAPI, ArkTS, UI or a product caller, and do not change first-frame, FAB, streaming/protocolAvailable or release truth.",
+  "next": "N2-09 remains external-pending for real Sunshine and ARM64 physical media evidence. Execute only the next actionable dormant task N3-05: define pure-native physical-controller mapping from API 23 probe facts, with stable device-to-slot ownership, bounded axes/triggers/dead zones and disconnect neutral. Keep one slot until multi-player capability has real-device proof; do not modify or wire shared InputHandler, NAPI, ArkTS, UI or a product caller, and do not change first-frame, FAB, streaming/protocolAvailable or release truth.",
   "blockers": [
     "ohosTest@OhosTestCompileArkTS is not registered (00306054); 151 focused Moonlight tests in 20 describe groups are compile-registered but not executed on device",
-    "The configured HDC target has no new reproducible receipt; prior ARM64 API 24 RDB evidence remains valid but no new runtime claim is made",
+    "HDC currently returns Connect server failed; prior ARM64 API 24 RDB evidence remains valid but no new runtime claim is made",
     "HAP/AppSpawn HUKS identity and H.264 NativeImage/renderer media capabilities are not runtime-proven; product identity and video sinks intentionally remain unavailable",
     "N2-09 real Sunshine 720p/1080p, 30/60fps, two-hour, thermal, background/PIP/rotation and user ARM64 physical acceptance remain pending; this does not block dormant N3 input-contract work"
   ],
@@ -45,18 +45,18 @@
       "entry/src/main/module.json5"
     ],
     "lastReceiptId": "moonlight-n2-02-sol-low-pass-248e704ab-2026-08-10",
-    "reason": "Both user-allowed gpt-5.6-sol low reviewer slots were consumed by N1-01 and N2-02. N2-03 through N3-03 completed scoped machine gates and line-by-line self-review but have no matching independent receipt; do not dispatch or fabricate a third reviewer."
+    "reason": "Both user-allowed gpt-5.6-sol low reviewer slots were consumed by N1-01 and N2-02. N2-03 through N3-04 completed scoped machine gates and line-by-line self-review but have no matching independent receipt; do not dispatch or fabricate a third reviewer."
   },
   "lastVerification": {
     "baseline": "clean main@aeb0cdac5 equal to origin/main at task start on 2026-08-09",
-    "diffCheck": "pass for N3-03 code checkpoint 1787da821 and synchronized plan/status documents",
-    "testCompile": "pass default@OhosTestCompileArkTS on final N3-03 source; no on-device Hypium execution is claimed",
-    "assembleHap": "pass signed production HAP on final N3-03 source; 333 archive paths; the signing output is intentionally not tracked by hash because each signing run is non-deterministic",
-    "nativeTests": "N3-03 final normal passed three consecutive runs and strict passed with 606 total, 590 passed and 16 pre-existing VNC local TLS fixture start failures; all 18 new pointer tests pass. ASan/UBSan passed three consecutive 590/16 runs and the final TSan run passed the same 590/16 result with no sanitizer report; focused clang analyzer reported no diagnostics",
-    "moonlightPlatformProbe": "pass arm64-v8a and x86_64 product compile of the hidden N3-03 pointer archive; both archives contain MoonlightPointerMapper.cpp.o, but without a caller their objects are not pulled into rdpnapi. Packaged rdpnapi contains no MoonlightPointer, MoonlightKeyboard or MoonlightInput local/dynamic symbol. This is not an in-HAP runtime receipt",
-    "moonlightVendor": "pass from the unchanged pinned vendor boundary: 117 exact files and three reconstructed official Git trees; N3-03 adds no dependency, source archive or upstream change",
-    "isolation": "pass for committed N3-03 scope: a hidden fixed-capacity pointer mapper, its focused test and private archive. It owns no thread/queue/singleton, emits no log, and has no NAPI/ArkTS/UI/cloud/product caller. No production common-c, shared InputHandler/telemetry/audio/render, RDP, RustDesk, SSH or VNC business source changed. arm64-v8a 16114/705 and x86_64 15645/703 defined/undefined dynamic symbol counts remain identical to the N2-08/N3-01/N3-02 product baseline",
-    "lightCompliance": "pass on final N3-03 source; no dependency/compliance inventory changed and Release remains blocked on external runtime/device evidence",
+    "diffCheck": "pass for N3-04 code checkpoint ebd2fa0bc5 and synchronized plan/status documents",
+    "testCompile": "pass default@OhosTestCompileArkTS on final N3-04 source; no on-device Hypium execution is claimed",
+    "assembleHap": "pass signed production HAP on final N3-04 source; 333 archive paths; the signing output is intentionally not tracked by hash because each signing run is non-deterministic",
+    "nativeTests": "N3-04 final normal passed three consecutive runs and strict passed with 627 total, 611 passed and 16 pre-existing VNC local TLS fixture start failures; all 21 new touch tests pass. ASan/UBSan passed three consecutive 611/16 runs and the final TSan run passed the same 611/16 result with no sanitizer report; focused clang analyzer reported no diagnostics",
+    "moonlightPlatformProbe": "pass arm64-v8a and x86_64 product compile of the hidden N3-04 touch archive; both archives contain MoonlightTouchMapper.cpp.o, but without a caller their objects are not pulled into rdpnapi. Packaged rdpnapi contains no MoonlightTouch, MoonlightPointer or MoonlightInput local/dynamic symbol. This is not an in-HAP runtime receipt",
+    "moonlightVendor": "pass from the unchanged pinned vendor boundary: 117 exact files and three reconstructed official Git trees; N3-04 adds no dependency, source archive or upstream change",
+    "isolation": "pass for committed N3-04 scope: a hidden fixed-capacity touch mapper, bounded extensions to the private pointer mapper, its focused test and private archive. It owns no thread/queue/singleton, emits no log, and has no NAPI/ArkTS/UI/cloud/product caller. No production common-c, shared InputHandler/telemetry/audio/render, RDP, RustDesk, SSH or VNC business source changed. arm64-v8a 16114/705 and x86_64 15645/703 defined/undefined dynamic symbol counts remain identical to the N2-08/N3-01/N3-02/N3-03 product baseline",
+    "lightCompliance": "pass on final N3-04 source; no dependency/compliance inventory changed and Release remains blocked on external runtime/device evidence",
     "moonlightRdbRuntime": "pass on prior ARM64 API 24 emulator: user_version=5, exact 19/20/16 columns, tables=3 and owner-bound receipts=1 after process restart",
     "ohosTest": "blocked task-not-registered 00306054; no on-device execution pass claimed"
   },
