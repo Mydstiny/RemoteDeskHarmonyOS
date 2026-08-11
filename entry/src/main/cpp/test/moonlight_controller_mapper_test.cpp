@@ -200,6 +200,27 @@ RDP_TEST_CASE(moonlight_controller_two_profiles_hotplug_reuse_stable_slot_zero) 
     RDP_ASSERT_EQ(removal.state.buttonFlags, static_cast<std::uint32_t>(0));
 }
 
+RDP_TEST_CASE(moonlight_controller_retired_lane_reuses_generation_and_rejects_old_replay) {
+    ControllerFixture fixture;
+    for (std::uint64_t generation = 1U; generation <= 20U; ++generation) {
+        const std::uint64_t timestamp = generation * 100U;
+        RDP_ASSERT_EQ(fixture.mapper->connect(controllerContext(
+            fixture.identity, 1U, timestamp, 71U, generation),
+            xboxProfile()).status, MoonlightControllerStatus::Applied);
+        RDP_ASSERT_EQ(fixture.mapper->disconnect(controllerContext(
+            fixture.identity, 2U, timestamp + 10U, 71U, generation)).status,
+            MoonlightControllerStatus::Applied);
+    }
+    RDP_ASSERT_EQ(fixture.mapper->snapshot(fixture.identity).observedLanes,
+                  static_cast<std::size_t>(1));
+    RDP_ASSERT_EQ(fixture.mapper->connect(controllerContext(
+        fixture.identity, 3U, 5000U, 71U, 1U), xboxProfile()).status,
+        MoonlightControllerStatus::StaleEvent);
+    RDP_ASSERT_EQ(fixture.mapper->connect(controllerContext(
+        fixture.identity, 1U, 5100U, 71U, 21U), xboxProfile()).status,
+        MoonlightControllerStatus::Applied);
+}
+
 RDP_TEST_CASE(moonlight_controller_unproven_multiplayer_rejects_second_device) {
     ControllerFixture fixture;
     RDP_ASSERT_EQ(fixture.mapper->connect(
@@ -433,6 +454,12 @@ RDP_TEST_CASE(moonlight_controller_profile_and_sample_capabilities_are_strict) {
         MoonlightControllerStatus::InvalidRequest);
     sample = {};
     sample.leftStickX = std::numeric_limits<double>::infinity();
+    RDP_ASSERT_EQ(fixture.mapper->update(
+        controllerContext(fixture.identity, 2U, 110U), sample).status,
+        MoonlightControllerStatus::InvalidRequest);
+    sample = {};
+    sample.hasHatAxes = false;
+    sample.hatX = std::numeric_limits<double>::quiet_NaN();
     RDP_ASSERT_EQ(fixture.mapper->update(
         controllerContext(fixture.identity, 2U, 110U), sample).status,
         MoonlightControllerStatus::InvalidRequest);

@@ -97,6 +97,8 @@ enum class MoonlightControllerAggregatorState : std::uint8_t {
     LifecyclePending,
     Suspended,
     HandoffRemoving,
+    HandoffBoundaryPending,
+    HandoffResuming,
     HandoffConnecting,
     Terminating,
     Stopped,
@@ -195,6 +197,10 @@ MoonlightControllerHandoffRequest final {
     // validated layout so a UI caller cannot advertise wire capabilities.
     MoonlightControllerProfile targetPhysicalProfile{};
     MoonlightInputFlushContext disconnectFlush{};
+    // Reserved only for retrying a failed suspend boundary. It must be newer
+    // than disconnectFlush and older than resumeOperationGeneration.
+    std::uint64_t boundaryRetryOperationGeneration = 0U;
+    std::uint64_t boundaryRetryTimestampUs = 0U;
     std::uint64_t resumeOperationGeneration = 0U;
     // Exact terminal escalation supplied by the single input owner. It must
     // be newer than both disconnect and resume generations.
@@ -286,6 +292,10 @@ MoonlightControllerAggregator final {
     MoonlightControllerAggregatorResult handleLifecycle(
         MoonlightInputFlushTrigger trigger,
         const MoonlightInputFlushContext& context) noexcept;
+    MoonlightControllerAggregatorResult retryLifecycleBoundary(
+        const MoonlightInputIdentity& identity,
+        std::uint64_t operationGeneration,
+        std::uint64_t monotonicTimestampUs) noexcept;
     MoonlightControllerAggregatorResult resumeLifecycle(
         const MoonlightInputIdentity& identity,
         std::uint64_t operationGeneration) noexcept;

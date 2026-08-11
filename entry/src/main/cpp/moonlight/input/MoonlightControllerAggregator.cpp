@@ -446,6 +446,9 @@ bool sameHandoff(const MoonlightControllerHandoffRequest& left,
     return sameSourceContext(left.target, right.target) &&
         sameProfile(left.targetPhysicalProfile, right.targetPhysicalProfile) &&
         sameFlushContext(left.disconnectFlush, right.disconnectFlush) &&
+        left.boundaryRetryOperationGeneration ==
+            right.boundaryRetryOperationGeneration &&
+        left.boundaryRetryTimestampUs == right.boundaryRetryTimestampUs &&
         left.resumeOperationGeneration == right.resumeOperationGeneration &&
         sameFlushContext(left.terminalFlush, right.terminalFlush);
 }
@@ -555,6 +558,19 @@ bool validTrigger(double value) noexcept {
     return finite(value) && value >= 0.0 && value <= 1.0;
 }
 
+bool knownPhase(MoonlightVirtualControllerPhase phase) noexcept {
+    switch (phase) {
+        case MoonlightVirtualControllerPhase::Begin:
+        case MoonlightVirtualControllerPhase::Change:
+        case MoonlightVirtualControllerPhase::End:
+        case MoonlightVirtualControllerPhase::Cancel:
+            return true;
+        case MoonlightVirtualControllerPhase::Invalid:
+            return false;
+    }
+    return false;
+}
+
 bool zeroValues(const MoonlightVirtualControllerEvent& event) noexcept {
     return event.primary == 0.0 && event.secondary == 0.0;
 }
@@ -618,7 +634,7 @@ bool applyVirtualSemantic(const MoonlightVirtualControllerEvent& event,
                           const MoonlightVirtualControllerElement& element,
                           MoonlightControllerSample& sample,
                           ContactArray& contacts) noexcept {
-    if (event.pointerId == 0U || event.phase == MoonlightVirtualControllerPhase::Invalid) {
+    if (event.pointerId == 0U || !knownPhase(event.phase)) {
         return false;
     }
     ContactLane* contact = findPointer(contacts, event.pointerId);
@@ -1270,6 +1286,51 @@ MoonlightControllerAggregatorResult MoonlightControllerAggregator::handleLifecyc
 }
 
 MoonlightControllerAggregatorResult
+MoonlightControllerAggregator::retryLifecycleBoundary(
+    const MoonlightInputIdentity& identity,
+    std::uint64_t operationGeneration,
+    std::uint64_t monotonicTimestampUs) noexcept {
+    if (impl_ == nullptr || !identity.valid() || operationGeneration == 0U ||
+        monotonicTimestampUs == 0U) {
+        return {};
+    }
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    if (identity != impl_->identity) {
+        return impl_->reject(MoonlightControllerAggregatorStatus::StaleOwner);
+    }
+    if (impl_->snapshotState.state !=
+            MoonlightControllerAggregatorState::LifecyclePending ||
+        !impl_->pendingLifecycle.has_value() ||
+        moonlightInputFlushDisposition(impl_->pendingLifecycle->trigger) !=
+            MoonlightInputFlushDisposition::Suspend ||
+        operationGeneration <=
+            impl_->pendingLifecycle->context.operationGeneration ||
+        monotonicTimestampUs <
+            impl_->pendingLifecycle->context.monotonicTimestampUs) {
+        return impl_->reject(MoonlightControllerAggregatorStatus::InvalidState);
+    }
+    const auto pending = *impl_->pendingLifecycle;
+    const auto result = impl_->flushPolicy->retryBoundary(
+        identity, operationGeneration, monotonicTimestampUs);
+    auto aggregated = flushResult(result);
+    if (!flushSuccess(result.status)) {
+        return aggregated;
+    }
+    impl_->pendingFrame.reset();
+    impl_->pendingLifecycle.reset();
+    impl_->clearContactsAndSample();
+    impl_->snapshotState.lastControlGeneration = operationGeneration;
+    impl_->snapshotState.lifecycleFlushes = saturatingIncrement(
+        impl_->snapshotState.lifecycleFlushes);
+    if (pending.trigger ==
+        MoonlightInputFlushTrigger::ControllerDisconnected) {
+        impl_->clearActive();
+    }
+    impl_->snapshotState.state = MoonlightControllerAggregatorState::Suspended;
+    return aggregated;
+}
+
+MoonlightControllerAggregatorResult
 MoonlightControllerAggregator::resumeLifecycle(
     const MoonlightInputIdentity& identity,
     std::uint64_t operationGeneration) noexcept {
@@ -1299,6 +1360,8 @@ MoonlightControllerAggregatorResult MoonlightControllerAggregator::switchSource(
     const MoonlightControllerHandoffRequest& request) noexcept {
     if (impl_ == nullptr || !request.target.valid() ||
         request.disconnectFlush.operationGeneration == 0U ||
+        request.boundaryRetryOperationGeneration == 0U ||
+        request.boundaryRetryTimestampUs == 0U ||
         request.resumeOperationGeneration == 0U ||
         request.terminalFlush.operationGeneration == 0U) {
         return {};
@@ -1331,12 +1394,16 @@ MoonlightControllerAggregatorResult MoonlightControllerAggregator::switchSource(
                                             impl_->active.context) ||
             !controllerContextMatchesSource(request.terminalFlush.controller,
                                             impl_->active.context) ||
-            request.resumeOperationGeneration <=
+            request.boundaryRetryOperationGeneration <=
                 request.disconnectFlush.operationGeneration ||
+            request.resumeOperationGeneration <=
+                request.boundaryRetryOperationGeneration ||
             request.terminalFlush.operationGeneration <=
                 request.resumeOperationGeneration ||
-            request.terminalFlush.monotonicTimestampUs <
+            request.boundaryRetryTimestampUs <
                 request.disconnectFlush.monotonicTimestampUs ||
+            request.terminalFlush.monotonicTimestampUs <
+                request.boundaryRetryTimestampUs ||
             request.target.monotonicTimestampUs <
                 request.disconnectFlush.monotonicTimestampUs ||
             (request.target.kind == MoonlightControllerSourceKind::Virtual &&
@@ -1349,18 +1416,43 @@ MoonlightControllerAggregatorResult MoonlightControllerAggregator::switchSource(
             MoonlightControllerAggregatorState::HandoffRemoving;
     }
 
+    bool removalComplete = false;
     if (impl_->snapshotState.state ==
         MoonlightControllerAggregatorState::HandoffRemoving) {
         const auto removal = impl_->flushPolicy->flush(
             MoonlightInputFlushTrigger::ControllerDisconnected,
             request.disconnectFlush);
         if (!flushSuccess(removal.status)) {
+            if (removal.status == MoonlightInputFlushStatus::BoundaryFailure &&
+                removal.retryable) {
+                impl_->snapshotState.state =
+                    MoonlightControllerAggregatorState::HandoffBoundaryPending;
+                return flushResult(removal);
+            }
             if (removal.status == MoonlightInputFlushStatus::Pending ||
                 removal.retryable) {
                 return flushResult(removal);
             }
             return impl_->terminalize(request);
         }
+        removalComplete = true;
+    }
+
+    if (impl_->snapshotState.state ==
+        MoonlightControllerAggregatorState::HandoffBoundaryPending) {
+        const auto boundary = impl_->flushPolicy->retryBoundary(
+            impl_->identity, request.boundaryRetryOperationGeneration,
+            request.boundaryRetryTimestampUs);
+        if (!flushSuccess(boundary.status)) {
+            if (boundary.retryable) {
+                return flushResult(boundary);
+            }
+            return impl_->terminalize(request);
+        }
+        removalComplete = true;
+    }
+
+    if (removalComplete) {
         const auto mapperSnapshot = impl_->mapper->snapshot(impl_->identity);
         if (!mapperSnapshot.matched || mapperSnapshot.active ||
             mapperSnapshot.deviceId != 0U ||
@@ -1369,6 +1461,12 @@ MoonlightControllerAggregatorResult MoonlightControllerAggregator::switchSource(
             return impl_->terminalize(request);
         }
         impl_->clearActive();
+        impl_->snapshotState.state =
+            MoonlightControllerAggregatorState::HandoffResuming;
+    }
+
+    if (impl_->snapshotState.state ==
+        MoonlightControllerAggregatorState::HandoffResuming) {
         const auto resumed = impl_->flushPolicy->resume(
             impl_->identity, request.resumeOperationGeneration);
         if (!flushSuccess(resumed.status)) {

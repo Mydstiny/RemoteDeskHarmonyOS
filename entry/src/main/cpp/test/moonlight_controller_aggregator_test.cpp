@@ -4,6 +4,7 @@
 #include <array>
 #include <condition_variable>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -50,9 +51,11 @@ class AggregateOwnerGate final : public MoonlightInputOwnerGate {
   public:
     bool withOwner(const MoonlightInputIdentity& identity,
                    MoonlightInputOwnedOperation& operation) noexcept override {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (!available_ || identity != identity_) {
-            return false;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!available_ || identity != identity_) {
+                return false;
+            }
         }
         operation.execute();
         return true;
@@ -62,6 +65,11 @@ class AggregateOwnerGate final : public MoonlightInputOwnerGate {
         std::lock_guard<std::mutex> lock(mutex_);
         identity_ = identity;
         available_ = true;
+    }
+
+    void setAvailable(bool available) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        available_ = available;
     }
 
   private:
@@ -90,12 +98,20 @@ class AggregatePort final : public MoonlightInputPort {
     }
 
     bool flushNeutral(const MoonlightInputFlushRequest& request) noexcept override {
-        std::lock_guard<std::mutex> lock(mutex_);
-        flushes_.push_back(request);
-        if (flushIndex_ < flushScript_.size()) {
-            return flushScript_[flushIndex_++];
+        bool result = true;
+        std::function<void()> afterFlush;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            flushes_.push_back(request);
+            if (flushIndex_ < flushScript_.size()) {
+                result = flushScript_[flushIndex_++];
+            }
+            afterFlush = std::move(afterNextFlush_);
         }
-        return true;
+        if (afterFlush) {
+            afterFlush();
+        }
+        return result;
     }
 
     void setSendScript(std::vector<MoonlightInputPortStatus> script) {
@@ -108,6 +124,11 @@ class AggregatePort final : public MoonlightInputPort {
         std::lock_guard<std::mutex> lock(mutex_);
         flushScript_ = std::move(script);
         flushIndex_ = 0U;
+    }
+
+    void setAfterNextFlush(std::function<void()> callback) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        afterNextFlush_ = std::move(callback);
     }
 
     void blockNextSend() {
@@ -153,6 +174,7 @@ class AggregatePort final : public MoonlightInputPort {
     std::size_t flushIndex_ = 0U;
     std::vector<MoonlightInputEvent> events_;
     std::vector<MoonlightInputFlushRequest> flushes_;
+    std::function<void()> afterNextFlush_;
     bool blockNext_ = false;
     bool blocked_ = false;
     bool released_ = false;
@@ -247,8 +269,10 @@ struct AggregateFixture final {
         MoonlightControllerHandoffRequest request;
         request.target = virtualContext(identity, 1U, 400U);
         request.disconnectFlush = flushContext(oldSource, 10U, 350U, oldSequence);
-        request.resumeOperationGeneration = 11U;
-        request.terminalFlush = flushContext(oldSource, 12U, 450U,
+        request.boundaryRetryOperationGeneration = 11U;
+        request.boundaryRetryTimestampUs = 375U;
+        request.resumeOperationGeneration = 12U;
+        request.terminalFlush = flushContext(oldSource, 13U, 450U,
                                              oldSequence + 1U);
         return request;
     }
@@ -529,6 +553,44 @@ RDP_TEST_CASE(moonlight_controller_stale_layout_source_and_invalid_values_are_ze
     RDP_ASSERT_EQ(fixture.port->eventCount(), count);
 }
 
+RDP_TEST_CASE(moonlight_controller_unknown_virtual_phase_is_zero_send) {
+    AggregateFixture fixture;
+    const auto layout = fixture.installFallback();
+    RDP_ASSERT_EQ(fixture.aggregator->connectVirtual(
+        virtualContext(fixture.identity, 1U, 100U)).status,
+        MoonlightControllerAggregatorStatus::Applied);
+    const auto stick = findElement(
+        layout, MoonlightVirtualControllerElementKind::LeftStick);
+    RDP_ASSERT_EQ(fixture.aggregator->ingestVirtual(virtualEvent(
+        virtualContext(fixture.identity, 2U, 110U), stick, 1U,
+        MoonlightVirtualControllerPhase::Begin, 0.25, -0.25)).status,
+        MoonlightControllerAggregatorStatus::Applied);
+    const auto count = fixture.port->eventCount();
+    const auto invalidPhase = static_cast<MoonlightVirtualControllerPhase>(255U);
+    RDP_ASSERT_EQ(fixture.aggregator->ingestVirtual(virtualEvent(
+        virtualContext(fixture.identity, 3U, 120U), stick, 1U,
+        invalidPhase, 0.75, 0.75)).status,
+        MoonlightControllerAggregatorStatus::InvalidRequest);
+    RDP_ASSERT_EQ(fixture.port->eventCount(), count);
+}
+
+RDP_TEST_CASE(moonlight_controller_inactive_hat_nan_never_enters_pending_retry) {
+    AggregateFixture fixture;
+    RDP_ASSERT_EQ(fixture.aggregator->connectPhysical(
+        physicalContext(fixture.identity, 1U, 100U), physicalProfile()).status,
+        MoonlightControllerAggregatorStatus::Applied);
+    fixture.port->setSendScript({MoonlightInputPortStatus::Backpressure});
+    MoonlightControllerSample sample;
+    sample.hasHatAxes = false;
+    sample.hatX = std::numeric_limits<double>::quiet_NaN();
+    const auto count = fixture.port->eventCount();
+    RDP_ASSERT_EQ(fixture.aggregator->ingestPhysical(
+        physicalContext(fixture.identity, 2U, 110U), sample).status,
+        MoonlightControllerAggregatorStatus::InvalidRequest);
+    RDP_ASSERT_EQ(fixture.port->eventCount(), count);
+    RDP_ASSERT(!fixture.aggregator->snapshot(fixture.identity).pendingFrame);
+}
+
 RDP_TEST_CASE(moonlight_controller_source_handoff_removes_slot_before_new_arrival) {
     AggregateFixture fixture;
     fixture.installFallback();
@@ -577,9 +639,11 @@ RDP_TEST_CASE(moonlight_controller_virtual_to_physical_handoff_is_also_remove_fi
     request.targetPhysicalProfile = physicalProfile();
     request.disconnectFlush = fixture.flushContext(
         oldSource, 10U, 350U, 3U);
-    request.resumeOperationGeneration = 11U;
+    request.boundaryRetryOperationGeneration = 11U;
+    request.boundaryRetryTimestampUs = 375U;
+    request.resumeOperationGeneration = 12U;
     request.terminalFlush = fixture.flushContext(
-        oldSource, 12U, 450U, 4U);
+        oldSource, 13U, 450U, 4U);
     RDP_ASSERT_EQ(fixture.aggregator->switchSource(request).status,
                   MoonlightControllerAggregatorStatus::Applied);
     MoonlightControllerWireCommand removal;
@@ -616,6 +680,150 @@ RDP_TEST_CASE(moonlight_controller_handoff_backpressure_retries_exact_removal) {
                   MoonlightControllerAggregatorStatus::Applied);
     RDP_ASSERT_EQ(fixture.aggregator->snapshot(fixture.identity).activeSource,
                   MoonlightControllerSourceKind::Virtual);
+}
+
+RDP_TEST_CASE(moonlight_controller_handoff_boundary_retry_does_not_replay_removal) {
+    AggregateFixture fixture;
+    fixture.installFallback();
+    RDP_ASSERT_EQ(fixture.aggregator->connectPhysical(
+        physicalContext(fixture.identity, 1U, 100U), physicalProfile()).status,
+        MoonlightControllerAggregatorStatus::Applied);
+    fixture.port->setFlushScript({false, true});
+    const auto request = fixture.physicalToVirtual(2U);
+    const auto first = fixture.aggregator->switchSource(request);
+    RDP_ASSERT_EQ(first.flushStatus,
+                  MoonlightInputFlushStatus::BoundaryFailure);
+    RDP_ASSERT(first.retryable);
+    RDP_ASSERT_EQ(fixture.port->eventCount(), static_cast<std::size_t>(2));
+    RDP_ASSERT_EQ(fixture.port->flushCount(), static_cast<std::size_t>(1));
+    RDP_ASSERT_EQ(fixture.aggregator->switchSource(request).status,
+                  MoonlightControllerAggregatorStatus::Applied);
+    RDP_ASSERT_EQ(fixture.port->eventCount(), static_cast<std::size_t>(3));
+    RDP_ASSERT_EQ(fixture.port->flushCount(), static_cast<std::size_t>(2));
+    MoonlightControllerWireCommand removal;
+    MoonlightControllerWireCommand arrival;
+    RDP_ASSERT(decodeMoonlightControllerCommand(fixture.port->eventAt(1U), removal));
+    RDP_ASSERT(decodeMoonlightControllerCommand(fixture.port->eventAt(2U), arrival));
+    RDP_ASSERT_EQ(removal.activeGamepadMask, static_cast<std::uint16_t>(0));
+    RDP_ASSERT_EQ(arrival.operation,
+                  MoonlightControllerCommandOperation::Arrival);
+}
+
+RDP_TEST_CASE(moonlight_controller_handoff_resume_retry_skips_completed_removal) {
+    AggregateFixture fixture;
+    fixture.installFallback();
+    RDP_ASSERT_EQ(fixture.aggregator->connectPhysical(
+        physicalContext(fixture.identity, 1U, 100U), physicalProfile()).status,
+        MoonlightControllerAggregatorStatus::Applied);
+    fixture.port->setAfterNextFlush([gate = fixture.gate]() {
+        gate->setAvailable(false);
+    });
+    const auto request = fixture.physicalToVirtual(2U);
+    const auto first = fixture.aggregator->switchSource(request);
+    RDP_ASSERT_EQ(first.flushStatus,
+                  MoonlightInputFlushStatus::BoundaryFailure);
+    RDP_ASSERT(first.retryable);
+    RDP_ASSERT_EQ(fixture.port->eventCount(), static_cast<std::size_t>(2));
+    RDP_ASSERT_EQ(fixture.port->flushCount(), static_cast<std::size_t>(1));
+    fixture.gate->setAvailable(true);
+    RDP_ASSERT_EQ(fixture.aggregator->switchSource(request).status,
+                  MoonlightControllerAggregatorStatus::Applied);
+    RDP_ASSERT_EQ(fixture.port->eventCount(), static_cast<std::size_t>(3));
+    RDP_ASSERT_EQ(fixture.port->flushCount(), static_cast<std::size_t>(1));
+}
+
+RDP_TEST_CASE(moonlight_controller_target_arrival_backpressure_retries_without_removal) {
+    AggregateFixture fixture;
+    fixture.installFallback();
+    RDP_ASSERT_EQ(fixture.aggregator->connectPhysical(
+        physicalContext(fixture.identity, 1U, 100U), physicalProfile()).status,
+        MoonlightControllerAggregatorStatus::Applied);
+    fixture.port->setSendScript({MoonlightInputPortStatus::Accepted,
+                                 MoonlightInputPortStatus::Backpressure,
+                                 MoonlightInputPortStatus::Accepted});
+    const auto request = fixture.physicalToVirtual(2U);
+    RDP_ASSERT_EQ(fixture.aggregator->switchSource(request).status,
+                  MoonlightControllerAggregatorStatus::Pending);
+    RDP_ASSERT_EQ(fixture.port->eventCount(), static_cast<std::size_t>(3));
+    RDP_ASSERT_EQ(fixture.aggregator->switchSource(request).status,
+                  MoonlightControllerAggregatorStatus::Applied);
+    RDP_ASSERT_EQ(fixture.port->eventCount(), static_cast<std::size_t>(4));
+    MoonlightControllerWireCommand removal;
+    MoonlightControllerWireCommand firstArrival;
+    MoonlightControllerWireCommand retriedArrival;
+    RDP_ASSERT(decodeMoonlightControllerCommand(fixture.port->eventAt(1U), removal));
+    RDP_ASSERT(decodeMoonlightControllerCommand(
+        fixture.port->eventAt(2U), firstArrival));
+    RDP_ASSERT(decodeMoonlightControllerCommand(
+        fixture.port->eventAt(3U), retriedArrival));
+    RDP_ASSERT_EQ(removal.activeGamepadMask, static_cast<std::uint16_t>(0));
+    RDP_ASSERT_EQ(firstArrival.operation,
+                  MoonlightControllerCommandOperation::Arrival);
+    RDP_ASSERT_EQ(retriedArrival.operation,
+                  MoonlightControllerCommandOperation::Arrival);
+}
+
+RDP_TEST_CASE(moonlight_controller_target_arrival_failure_terminates_session) {
+    AggregateFixture fixture;
+    fixture.installFallback();
+    RDP_ASSERT_EQ(fixture.aggregator->connectPhysical(
+        physicalContext(fixture.identity, 1U, 100U), physicalProfile()).status,
+        MoonlightControllerAggregatorStatus::Applied);
+    fixture.port->setSendScript({MoonlightInputPortStatus::Accepted,
+                                 MoonlightInputPortStatus::Unsupported});
+    const auto result = fixture.aggregator->switchSource(
+        fixture.physicalToVirtual(2U));
+    RDP_ASSERT_EQ(result.status,
+                  MoonlightControllerAggregatorStatus::SessionTerminated);
+    RDP_ASSERT_EQ(fixture.aggregator->snapshot(fixture.identity).state,
+                  MoonlightControllerAggregatorState::Stopped);
+}
+
+RDP_TEST_CASE(moonlight_controller_twenty_handoffs_reuse_retired_source_lanes) {
+    AggregateFixture fixture;
+    fixture.installFallback();
+    auto active = physicalContext(fixture.identity, 1U, 100U);
+    RDP_ASSERT_EQ(fixture.aggregator->connectPhysical(
+        active, physicalProfile()).status,
+        MoonlightControllerAggregatorStatus::Applied);
+    for (std::uint64_t index = 0U; index < 20U; ++index) {
+        const std::uint64_t generation = index + 2U;
+        const std::uint64_t operation = 10U + index * 4U;
+        const std::uint64_t timestamp = 1000U + index * 100U;
+        const std::uint64_t releaseSequence = index + 2U;
+        MoonlightControllerHandoffRequest request;
+        if ((index % 2U) == 0U) {
+            request.target = virtualContext(
+                fixture.identity, 1U, timestamp + 30U, 7U, generation, 801U);
+        } else {
+            request.target = physicalContext(
+                fixture.identity, 1U, timestamp + 30U, generation, 701U);
+            request.targetPhysicalProfile = physicalProfile();
+        }
+        request.disconnectFlush = fixture.flushContext(
+            active, operation, timestamp + 10U, releaseSequence);
+        request.boundaryRetryOperationGeneration = operation + 1U;
+        request.boundaryRetryTimestampUs = timestamp + 20U;
+        request.resumeOperationGeneration = operation + 2U;
+        request.terminalFlush = fixture.flushContext(
+            active, operation + 3U, timestamp + 40U,
+            releaseSequence + 1U);
+        const auto handoffResult = fixture.aggregator->switchSource(request);
+        RDP_ASSERT_EQ(handoffResult.status,
+                      MoonlightControllerAggregatorStatus::Applied);
+        active = request.target;
+    }
+    const auto mapperSnapshot = fixture.controller->snapshot(fixture.identity);
+    RDP_ASSERT(mapperSnapshot.active);
+    RDP_ASSERT_EQ(mapperSnapshot.observedLanes, static_cast<std::size_t>(2));
+    const auto count = fixture.port->eventCount();
+    MoonlightControllerSample staleSample;
+    staleSample.buttonFlags = kMoonlightControllerButtonA;
+    RDP_ASSERT_EQ(fixture.aggregator->ingestPhysical(
+        physicalContext(fixture.identity, 99U, 5000U, 1U, 701U),
+        staleSample).status,
+        MoonlightControllerAggregatorStatus::StaleSource);
+    RDP_ASSERT_EQ(fixture.port->eventCount(), count);
 }
 
 RDP_TEST_CASE(moonlight_controller_failed_removal_terminates_without_new_source) {
@@ -710,6 +918,37 @@ RDP_TEST_CASE(moonlight_controller_all_lifecycle_triggers_reuse_n3_07_release) {
                           static_cast<std::uint32_t>(0));
         }
     }
+}
+
+RDP_TEST_CASE(moonlight_controller_lifecycle_boundary_retry_never_replays_mapper_release) {
+    AggregateFixture fixture;
+    const auto source = physicalContext(fixture.identity, 1U, 100U);
+    RDP_ASSERT_EQ(fixture.aggregator->connectPhysical(
+        source, physicalProfile()).status,
+        MoonlightControllerAggregatorStatus::Applied);
+    MoonlightControllerSample sample;
+    sample.buttonFlags = kMoonlightControllerButtonA;
+    RDP_ASSERT_EQ(fixture.aggregator->ingestPhysical(
+        physicalContext(fixture.identity, 2U, 110U), sample).status,
+        MoonlightControllerAggregatorStatus::Applied);
+    fixture.port->setFlushScript({false, true});
+    const auto first = fixture.aggregator->handleLifecycle(
+        MoonlightInputFlushTrigger::Backgrounded,
+        fixture.flushContext(source, 10U, 300U, 3U));
+    RDP_ASSERT_EQ(first.flushStatus,
+                  MoonlightInputFlushStatus::BoundaryFailure);
+    RDP_ASSERT(first.retryable);
+    const auto eventsAfterRelease = fixture.port->eventCount();
+    RDP_ASSERT_EQ(fixture.aggregator->retryLifecycleBoundary(
+        fixture.identity, 11U, 320U).status,
+        MoonlightControllerAggregatorStatus::Applied);
+    RDP_ASSERT_EQ(fixture.port->eventCount(), eventsAfterRelease);
+    RDP_ASSERT_EQ(fixture.port->flushCount(), static_cast<std::size_t>(2));
+    RDP_ASSERT_EQ(fixture.aggregator->snapshot(fixture.identity).state,
+                  MoonlightControllerAggregatorState::Suspended);
+    RDP_ASSERT_EQ(fixture.aggregator->resumeLifecycle(
+        fixture.identity, 12U).status,
+        MoonlightControllerAggregatorStatus::Applied);
 }
 
 RDP_TEST_CASE(moonlight_controller_lifecycle_suspend_resumes_same_neutral_source) {

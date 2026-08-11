@@ -20,6 +20,7 @@ enum class ObserveStatus : std::uint8_t {
 
 struct ObservedControllerLane final {
     bool occupied = false;
+    bool retired = false;
     std::uint64_t deviceId = 0U;
     MoonlightInputSource source = MoonlightInputSource::Invalid;
     std::uint64_t sourceGeneration = 0U;
@@ -113,10 +114,14 @@ std::size_t observedLaneCount(const ControllerState& state) noexcept {
 ObserveStatus observe(ControllerState& state,
                       const MoonlightControllerEventContext& context) noexcept {
     ObservedControllerLane* freeLane = nullptr;
+    ObservedControllerLane* reusableLane = nullptr;
     for (ObservedControllerLane& lane : state.lanes) {
         if (lane.occupied && lane.deviceId == context.deviceId &&
             lane.source == context.source &&
             lane.sourceGeneration == context.sourceGeneration) {
+            if (lane.retired) {
+                return ObserveStatus::Stale;
+            }
             if (context.sourceSequence == lane.lastSequence) {
                 return ObserveStatus::Duplicate;
             }
@@ -128,17 +133,45 @@ ObserveStatus observe(ControllerState& state,
             lane.lastTimestampUs = context.monotonicTimestampUs;
             return ObserveStatus::Ready;
         }
+        if (lane.occupied && lane.retired &&
+            lane.deviceId == context.deviceId &&
+            lane.source == context.source) {
+            if (context.sourceGeneration < lane.sourceGeneration) {
+                return ObserveStatus::Stale;
+            }
+            if (context.sourceGeneration > lane.sourceGeneration) {
+                reusableLane = &lane;
+            }
+        }
         if (!lane.occupied && freeLane == nullptr) {
             freeLane = &lane;
         }
     }
+    if (reusableLane != nullptr) {
+        *reusableLane = {true, false, context.deviceId, context.source,
+                         context.sourceGeneration, context.sourceSequence,
+                         context.monotonicTimestampUs};
+        return ObserveStatus::Ready;
+    }
     if (freeLane == nullptr) {
         return ObserveStatus::Capacity;
     }
-    *freeLane = {true, context.deviceId, context.source,
+    *freeLane = {true, false, context.deviceId, context.source,
                  context.sourceGeneration,
                  context.sourceSequence, context.monotonicTimestampUs};
     return ObserveStatus::Ready;
+}
+
+void retireObservedLane(ControllerState& state,
+                        const MoonlightControllerEventContext& context) noexcept {
+    for (ObservedControllerLane& lane : state.lanes) {
+        if (lane.occupied && lane.deviceId == context.deviceId &&
+            lane.source == context.source &&
+            lane.sourceGeneration == context.sourceGeneration) {
+            lane.retired = true;
+            return;
+        }
+    }
 }
 
 MoonlightControllerStatus controllerStatus(
@@ -337,8 +370,7 @@ bool mapMoonlightControllerSample(
         !finiteUnit(sample.rightStickX) || !finiteUnit(sample.rightStickY) ||
         !finiteTrigger(sample.leftTrigger) ||
         !finiteTrigger(sample.rightTrigger) ||
-        (sample.hasHatAxes &&
-         (!finiteUnit(sample.hatX) || !finiteUnit(sample.hatY)))) {
+        !finiteUnit(sample.hatX) || !finiteUnit(sample.hatY)) {
         mapped = {};
         return false;
     }
@@ -685,6 +717,7 @@ MoonlightControllerResult MoonlightControllerMapper::disconnect(
     candidate.stateFrames = saturatingIncrement(candidate.stateFrames);
     candidate.neutralFrames = saturatingIncrement(candidate.neutralFrames);
     candidate.removals = saturatingIncrement(candidate.removals);
+    retireObservedLane(candidate, context);
     return impl_->dispatch(context, stateCommand({}, false),
                            std::move(candidate), true);
 }
