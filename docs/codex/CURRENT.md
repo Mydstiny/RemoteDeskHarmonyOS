@@ -4,9 +4,9 @@
 
 - Task: `moonlight-complete-upgrade`
 - Base: `main@aeb0cdac5`; branch: `codex/moonlight-complete-upgrade`
-- Phase: G0、D1-D3 local/dormant、N1-01～N1-08、N2-01～N2-08、N3-01 已 checkpoint；
-  N3-01 代码 checkpoint 为 `fe46025ef`。N2-09 等待真实设备，当前唯一可执行代码任务为
-  dormant N3-02。2026-08-10 决策为
+- Phase: G0、D1-D3 local/dormant、N1-01～N1-08、N2-01～N2-08、N3-01～N3-02 已 checkpoint；
+  N3-02 代码 checkpoint 为 `a552b30a2`。N2-09 等待真实设备，当前唯一可执行代码任务为
+  dormant N3-03。2026-08-10 决策为
   Moonlight 暂不接入云同步，当前只推进本地主机存储；云表/CloudSync 方案 parked。
 - Authoritative plan: `docs/superpowers/plans/2026-07-28-moonlight-harmonyos-complete-upgrade-plan.md`
 - Live ledger: `docs/codex/plans/2026-08-09-moonlight-implementation-ledger.md`
@@ -70,25 +70,29 @@
   `MoonlightSessionOwner` 与共享跨协议 `SessionSinkOwnerLease`，固定最多 32 个 source lane 和
   64-byte payload，完成 stale/duplicate/backpressure、失焦/停止 neutral flush、retry、resume、
   cleanup 和并发序列化合同。未修改公共 `InputHandler`，无产品 caller、NAPI、ArkTS、UI 或云。
+- N3-02 `a552b30a2`：hidden `MoonlightKeyboardMapper` 把现有 HarmonyOS key namespace 映射为
+  官方 `0x8000|VK` 合同；固定 8 个普通键、双侧四类修饰键与最多 16 条释放命令，完成 once/lock、
+  物理键/UTF-8 文本分流、逐命令状态提交、backpressure 精确续传、跨设备 key-up 拒绝、全量反序
+  释放与物理 Esc 本地逃生。无产品 caller、公共 InputHandler、NAPI、ArkTS、UI、云、线程或队列。
 
-## N3-01 Verification
+## N3-02 Verification
 
-- host normal 连续三轮与 strict 最终：**573 total / 557 passed / 16 failed**；16 个失败仍仅为既有 VNC
-  本地 TLS fixture `start()` 环境失败，新增 12 个 N3-01 focused tests 全 PASS。
-- ASan/UBSan 连续三轮与 TSan 同为 557/16，均无 sanitizer report；focused clang analyzer
+- host normal 连续三轮与 strict 最终：**588 total / 572 passed / 16 failed**；16 个失败仍仅为既有 VNC
+  本地 TLS fixture `start()` 环境失败，新增 15 个 N3-02 focused tests 全 PASS。
+- ASan/UBSan 连续三轮与 TSan 同为 572/16，均无 sanitizer report；focused clang analyzer
   零诊断。arm64-v8a/x86_64 均生成非空私有 archive；无 caller 时 archive object 不进入
   `rdpnapi`，两 ABI defined/undefined 动态符号数量仍为 arm64 **16114/705**、x86_64
-  **15645/703**，本地/动态符号均无 `MoonlightInput`。
-- 两项 Hvigor 与 signed `assembleHap` 均 BUILD SUCCESSFUL；当前 signed HAP SHA-256
-  `645308dff61bb65c959ddb9f704eba1334f04fca5af74af59131183965326ba9`，333 paths。
-- Light 与 `git diff --check` 通过；仅改 Moonlight 输入新文件、focused test 和私有 CMake
-  target，未改 common-c、公共 `InputHandler`、共享 telemetry/audio/render 或任一旧协议业务源。
+  **15645/703**，本地/动态符号均无 `MoonlightKeyboard`/`MoonlightInput`。
+- 两项 Hvigor 与 signed `assembleHap` 均 BUILD SUCCESSFUL；signed HAP 共 333 paths。
+- Light 与 `git diff --check` 通过；只新增 Moonlight 键盘文件、focused test、私有 CMake target，
+  并修正 N3-01 测试允许 stop-first 的合法串行结果；未改任何生产旧协议业务源、common-c、公共
+  `InputHandler` 或共享 telemetry/audio/render。
   HDC 无 target，不声明真实 Sunshine、输入、媒体延迟或性能能力。
 
 ## Next
 
-1. N3-02：在 N3-01 的 bounded command body 内建立 HarmonyOS key→Moonlight key 纯 native 合同，
-   覆盖修饰键 once/lock、text vs physical key、全量 key-up 与本地逃生键；仍不接公共
+1. N3-03：继续 dormant pure-native 输入合同，实现绝对/相对鼠标、按钮、滚轮和 content-rect
+   映射；capture/constraint/raw-relative 仍必须等待 API 23/HAP/实机能力证据，不接公共
    `InputHandler`、NAPI、ArkTS、UI 或 product caller。
 2. N2-09 保持 external pending：真实设备 720p/1080p、30/60fps、2 小时、温控、前后台/PIP/
    旋转和 H.264+Opus receipt 只能由真实 Sunshine 与用户 ARM64 实机提供。
