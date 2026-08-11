@@ -4,7 +4,7 @@
 > 分支：`codex/moonlight-complete-upgrade`
 > 初始基线：`main@aeb0cdac5`，与 `origin/main` 一致
 > 总计划：`docs/superpowers/plans/2026-07-28-moonlight-harmonyos-complete-upgrade-plan.md`
-> 台账状态：G0、D1、D2 本地/休眠策略、D3 本地生命周期、N1-01～N1-08、N2-01～N2-08、N3-01～N3-08 与 U1-01～U1-12 已形成 checkpoint；当前代码 checkpoint 为 `6b0c1aa8`，U1 增量审查 P0/P1/P2/P3 全 0，N2-09 等待真实 Sunshine/ARM64 实机外部回执，S1-01/S1-02 为下一实现边界。Moonlight UI 唯一基线为现有 RustDesk FAB/协议选择/添加流程与通用 Theme token；VNC 只作为隔离/回归边界，不作为 Moonlight UI scaffold。2026-08-10 产品决定 Moonlight 暂不接入云同步，当前只开发本地主机存储；`moonlightrecordv1`、Moonlight cloud selection/transfer/secret recovery 全部 parked，不进入当前执行序列。D3 在线/多设备和产品运行时仍等待外部回执，只把有可复现证据的项目标记为通过
+> 台账状态：G0、D1、D2 本地/休眠策略、D3 本地生命周期、N1-01～N1-08、N2-01～N2-08、N3-01～N3-08、U1-01～U1-12 与 S1-01/S1-02 已形成 checkpoint；当前代码 checkpoint 为 `647113a5`，S1 增量审查已通过既有 reviewer task，N2-09 等待真实 Sunshine/ARM64 实机外部回执，S1-03 为下一实现边界。Moonlight UI 唯一基线为现有 RustDesk FAB/协议选择/添加流程与通用 Theme token；VNC 只作为隔离/回归边界，不作为 Moonlight UI scaffold。2026-08-10 产品决定 Moonlight 暂不接入云同步，当前只开发本地主机存储；`moonlightrecordv1`、Moonlight cloud selection/transfer/secret recovery 全部 parked，不进入当前执行序列。D3 在线/多设备和产品运行时仍等待外部回执，只把有可复现证据的项目标记为通过
 
 ## 1. 执行约束
 
@@ -1086,13 +1086,29 @@ stale terminal request 不清本地状态；pending→terminal 的 mapper drain 
 - 最新 fresh r2 证据只使用本次最新 HAP 重装后生成的文件：PC `/private/tmp/moonlight-final-20260811-r2-pc-full.jpeg`；phone `/private/tmp/moonlight-final-20260811-r2-phone-settings.jpeg`、`...-scroll.jpeg`；accordion `/private/tmp/moonlight-final-20260811-r2-moonlight-accordion.jpeg`、`...-lower.jpeg`；quick sheet `/private/tmp/moonlight-final-20260811-r2-quick-sheet.jpeg`；network sheet `/private/tmp/moonlight-final-20260811-r2-network-sheet.jpeg`，每项均有对应 `.json` UI tree。r2 证明 PC RDP 主页未受影响、Moonlight 独立灰栏位存在、手机九段设置统一排版、无重复“主机管理”、网络安全开关为不可操作的安全状态。
 - `default@OhosTestCompileArkTS`、`assembleHap` 均按项目强制命令重新 BUILD SUCCESSFUL；最终签名 HAP SHA-256 为 `7a723ce9b300d6b8e131006472ed2efa8d7985a8cd672385857e468a84181b87`；沙箱外 HDC 已在 `127.0.0.1:5555` 与 `127.0.0.1:5557` 安装并启动。`ohosTest` 仍因 `00306054` 未注册而不宣称设备 PASS。
 
+## 12.22 S1-01/S1-02 dormant session coordinator checkpoint（2026-08-12）
+
+- `8b1ccd22` 在既有状态模型中加入 `RemoteProtocol.moonlight` 和 capability policy。Moonlight 的 clipboard/file/multi-display 能力明确保持 unavailable；streaming 只有在 runtime、Host Control 和 transport 三项事实同时为 true 时才可能打开，当前 product runtime port 为 `null`，所以仍 fail closed。
+- `ActiveRemoteSessionRegistry` 继续是唯一 active-session owner。Moonlight marker 只在 native launch 已被接受后登记，地址字段固定为空；transient `hostAddress` 只随 start request 传给未来 runtime port，不能写入 AppStorage/registry。清理使用 ownerScopeId、accountGeneration、sessionId、protocol 的 exact match，避免迟到回调清掉其他协议会话。
+- `MoonlightSessionCoordinator` 是无 socket/native/media/cloud 的纯 ArkTS dormant seam：校验 scope 与请求、拒绝 runtime 缺失、拒绝重复/跨协议活动会话、generation/sequence fence、要求 nativeSessionId 和 Surface ID、按 first-frame 后才允许 streamStable，并统一 stop/cancel/transport-loss/owner-account invalidation 清理。
+- `MoonlightAppCatalogPage` 只负责把当前本地主机的首选地址格式化为一次性参数；`MoonlightStreamPage` 绑定当前 AccountSessionCoordinator scope，账户切换时使旧回调失效，离开页面时取消 route-owned session 并退订监听。未修改 CloudStore、cloud table、common-c/native/NAPI/GameController/OHAudio 或既有协议业务路径。
+- 新增 6 个 `MoonlightSessionCoordinator` focused cases、1 个 capability case，并注册到 `List.test.ets`；该 suite 仍为 compile-registered，`ohosTest` 因 `00306054` 未注册而不宣称设备执行 PASS。
+- `default@OhosTestCompileArkTS` 与 `assembleHap` 均在 `8b1ccd22` 后按强制命令退出 0；signed HAP SHA-256 为 `2dfcac96bb2b3873b4a8e31623f1bf37e67197b394857b0dac91bf97eb6f7258`。沙箱外 HDC 已将该 HAP 安装并启动于 PC `127.0.0.1:5555` 与手机 `127.0.0.1:5557`。
+- 本 checkpoint 只使用 2026-08-12 新截图证据：`/private/tmp/moonlight-final-20260812-s1-final-pc-root.jpeg`、`/private/tmp/moonlight-final-20260812-s1-final-pc-picker.jpeg`、`/private/tmp/moonlight-final-20260812-s1-final-pc-picker-click.jpeg` 及对应 JSON。PC 上 RDP 仍为活动页；Moonlight 是独立灰色协议项，显示官方几何可着色图标与“即将支持”；点击后仍停留在 `pages/HostListPage`。
+- `4548499c` 修复了 review 指出的三项 P1：reserve/promote 原子跨协议仲裁、prelaunch cancel 与 stop failure/timeout 的本地终止清理、native session ID callback fence；新增 3 个 focused cases，合计 9 个 coordinator cases。
+- `647113a5` 增加实际 5 秒 stop watchdog，并修正 prelaunch cancel 测试为“stopped 或 watchdog terminal 后清除 reservation”；复用 reviewer task 对完整 `6b0c1aa8..647113a5` 范围最终 PASS，无 actionable findings。
+- 本 checkpoint 最终只使用 2026-08-12 最新 HAP 重装后重新抓取并查看的 `final3` 证据：PC 根页 `/private/tmp/moonlight-final-20260812-s1-final3-pc-root.jpeg`；手机根页、协议选择器及禁用点击 `/private/tmp/moonlight-final-20260812-s1-final3-phone-root.jpeg`、`/private/tmp/moonlight-final-20260812-s1-final3-phone-picker.jpeg`、`/private/tmp/moonlight-final-20260812-s1-final3-phone-picker-click.jpeg`；设置/展开/bindSheet `/private/tmp/moonlight-final-20260812-s1-final3-phone-settings.jpeg`、`/private/tmp/moonlight-final-20260812-s1-final3-phone-settings-lower.jpeg`、`/private/tmp/moonlight-final-20260812-s1-final3-phone-moonlight-accordion2.jpeg`、`/private/tmp/moonlight-final-20260812-s1-final3-phone-quick-sheet2.jpeg`。PC RDP 仍为活动页；Moonlight 是独立灰色协议项，显示官方几何可着色图标与“即将支持”；点击后仍停留在 `pages/HostListPage`；无旧截图进入当前验收结论。
+- 最终部署签名 HAP SHA-256 为 `95d9cc17067981b7e5c4bdae3ec7fe3d0de14060a0dc75e87b638dca328fe504`。
+- PC 大屏 final4 新图 `/private/tmp/moonlight-final-20260812-s1-final4-pc-maximized2.jpeg` 已确认独立灰色 Moonlight 侧栏栏位；`/private/tmp/moonlight-final-20260812-s1-final4-pc-picker2.jpeg` 与 `/private/tmp/moonlight-final-20260812-s1-final4-pc-picker-click.jpeg` 已确认大屏添加 FAB、灰色“即将支持”和禁用点击无路由副作用。手机 final4 新图为 `/private/tmp/moonlight-final-20260812-s1-final4-phone-root.jpeg`、`/private/tmp/moonlight-final-20260812-s1-final4-phone-picker2.jpeg`、`/private/tmp/moonlight-final-20260812-s1-final4-phone-picker-click.jpeg`、`/private/tmp/moonlight-final-20260812-s1-final4-phone-settings-top.jpeg`、`/private/tmp/moonlight-final-20260812-s1-final4-phone-settings-lower2.jpeg`、`/private/tmp/moonlight-final-20260812-s1-final4-phone-moonlight-accordion2.jpeg`、`/private/tmp/moonlight-final-20260812-s1-final4-phone-quick-sheet3.jpeg`；全部为本轮重新抓取并查看，不使用旧截图。
+- 代码增量复核复用 reviewer task `019fe966-d99a-7ce1-8b53-4ef725597053`，最终范围为 `6b0c1aa8..647113a5`，PASS 且无 actionable findings。唯一下一实现边界改为 S1-03；N2-09、S1-05A 和真实媒体/手柄/长稳验收继续 external pending。
+
 ## 13. 下一执行序列
 
 1. N2-09 保持 EXTERNAL PENDING：必须由真实 Sunshine 与用户 ARM64 实机完成 720p/1080p、
    30/60fps、两小时、温控、前后台/PIP/旋转和网络矩阵；不得用 host 单测或虚拟机代替。
 2. U1-06～U1-12 的 local-only UI shell 已完成：主机管理归首页、目录/详情读本地 records/cache、设置统一进入
    同一 bindSheet、连接/串流浮层保持 dormant；不接真实 Host Control/runtime/cloud，不把 cache 或请求态伪装成在线/已刷新。
-3. 下一实现序列为 S1-01/S1-02：只把已存在的 UI shell 接到唯一 remote-session registry/coordinator；保持 N2-08 与
+3. S1-01/S1-02 已完成 dormant registry/coordinator contract；下一实现序列为 S1-03：只把阶段 overlay 接到 coordinator snapshot；保持 N2-08 与
    N3-01～N3-08 dormant，不把任何结果变成 video
    first-frame、streaming/protocolAvailable、FAB 或 release truth。
 4. S1-05A 才接真实 HarmonyOS GameController listener 与虚拟 typed NAPI；S1-08 才按现有

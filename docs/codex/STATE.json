@@ -3,10 +3,10 @@
   "task": "moonlight-complete-upgrade",
   "branch": "codex/moonlight-complete-upgrade",
   "base": "aeb0cdac5",
-  "head": "6b0c1aa8ade337a9a8744a258cea2fb0538e8bcf",
-  "phase": "u1-ui-shell-closeout-s1-01-pending",
+  "head": "647113a5",
+  "phase": "s1-01-s1-02-dormant-coordinator",
   "status": "active",
-  "next": "S1-01/S1-02: connect the local-only Moonlight UI shell to the single existing remote-session registry/coordinator while keeping picker, Host Control, transport, media, input, first-frame and cloud truth fail closed. S1-05A later adds the native HarmonyOS GameController listener and narrow typed NAPI; N2-09 remains real Sunshine/ARM64 external evidence.",
+  "next": "S1-03: connect the local-only Moonlight connection-stage overlay to coordinator snapshots while keeping picker, Host Control, transport, media, input, first-frame and cloud truth fail closed. S1-05A later adds the native HarmonyOS GameController listener and narrow typed NAPI; N2-09 remains real Sunshine/ARM64 external evidence.",
   "blockers": [
     "ohosTest@OhosTestCompileArkTS is not registered (00306054); 162 focused Moonlight tests in 21 describe groups plus 8 shared host-add handoff cases are compile-registered but not executed on device",
     "HAP/AppSpawn secure identity, real Sunshine transport/media/first-frame, OHAudio/Surface lifecycle and physical controller runtime capabilities remain unproven",
@@ -21,28 +21,31 @@
     "status": "PASS",
     "taskId": "019fe966-d99a-7ce1-8b53-4ef725597053",
     "scope": [
-      "2c37b0edf..6b0c1aa8",
-      "entry/src/main/ets/pages/HostListPage.ets",
-      "entry/src/main/ets/services/MoonlightRecordPolicy.ets",
-      "entry/src/main/ets/pages/MoonlightSettingsPage.ets",
+      "6b0c1aa8..647113a5",
+      "entry/src/main/ets/services/RemoteSessionState.ets",
+      "entry/src/main/ets/services/ActiveRemoteSessionRegistry.ets",
+      "entry/src/main/ets/services/RemoteSessionCapabilityPolicy.ets",
+      "entry/src/main/ets/services/MoonlightSessionCoordinator.ets",
+      "entry/src/main/ets/pages/MoonlightAppCatalogPage.ets",
       "entry/src/main/ets/pages/MoonlightStreamPage.ets",
-      "entry/src/test/MoonlightRecordPolicy.test.ets",
-      "entry/src/test/MoonlightSettingsLocalService.test.ets"
+      "entry/src/test/MoonlightSessionCoordinator.test.ets",
+      "entry/src/test/RemoteSessionCapabilityPolicy.test.ets",
+      "entry/src/test/List.test.ets"
     ],
-    "lastReceiptId": "moonlight-u1-ui-shell-fix-final-gpt5-6b0c1aa8-2026-08-11",
-    "reason": "The existing reviewer task was reused for 2c37b0edf..6b0c1aa8. Re-review PASS: P0/P1/P2/P3 all zero; legacy-read/new-write policy, forced-safe certificate controls, localCommitted save truth, stream timer fencing and official tintable desktop icon are closed. RDP, RustDesk, SSH/SFTP, VNC, public input, native/CMake/NAPI, CloudSyncPolicy and existing cloud-table registration remain isolated. CloudStore.ets is explicitly excluded."
+    "lastReceiptId": "moonlight-s1-session-coordinator-final-docs-647113a5-2026-08-12",
+    "reason": "The existing reviewer task was reused for the complete 6b0c1aa8..647113a5 delta. Final review PASS: the three original P1 findings plus the watchdog/test follow-up are closed with no actionable findings. CloudStore.ets is explicitly excluded."
   },
   "lastVerification": {
-    "diffCheck": "pass after 6b0c1aa8 and final documentation edits",
-    "testCompile": "pass: exact default@OhosTestCompileArkTS with --analyze=normal --parallel --incremental --no-daemon after 6b0c1aa8",
-    "assembleHap": "pass: exact assembleHap with --analyze=normal --parallel --incremental --no-daemon after 6b0c1aa8; final signed HAP SHA-256 7a723ce9b300d6b8e131006472ed2efa8d7985a8cd672385857e468a84181b87",
+    "diffCheck": "pass after final docs/receipt synchronization; only the intentional closeout commit remains",
+    "testCompile": "pass: exact default@OhosTestCompileArkTS with --analyze=normal --parallel --incremental --no-daemon after 647113a5",
+    "assembleHap": "pass: exact assembleHap with --analyze=normal --parallel --incremental --no-daemon after 647113a5; final deployed signed HAP SHA-256 95d9cc17067981b7e5c4bdae3ec7fe3d0de14060a0dc75e87b638dca328fe504",
     "hapPath": "entry/build/default/outputs/default/entry-default-signed.hap",
-    "hdcRuntime": "pass outside sandbox after the 6b0c1aa8 build: signed HAP installed and EntryAbility started on PC 127.0.0.1:5555 and phone 127.0.0.1:5557; latest fresh r2 evidence only /private/tmp/moonlight-final-20260811-r2-pc-full.jpeg/.json, /private/tmp/moonlight-final-20260811-r2-phone-settings.jpeg/.json and /private/tmp/moonlight-final-20260811-r2-phone-settings-scroll.jpeg/.json",
-    "uiAcceptance": "latest fresh r2 PC full-screen shows a separate official tintable Moonlight sidebar slot and one 即将支持 while RDP remains active; latest fresh r2 phone accordion shows all nine sections with no 主机管理; quick/network/lower sheets are captured in /private/tmp/moonlight-final-20260811-r2-quick-sheet.jpeg, /private/tmp/moonlight-final-20260811-r2-moonlight-lower.jpeg and /private/tmp/moonlight-final-20260811-r2-network-sheet.jpeg with matching JSON trees",
+    "hdcRuntime": "pass outside sandbox after the final 647113a5 HAP: signed HAP installed and EntryAbility started on PC 127.0.0.1:5555 and phone 127.0.0.1:5557; fresh final4 evidence uses /private/tmp/moonlight-final-20260812-s1-final4-pc-maximized2.jpeg, /private/tmp/moonlight-final-20260812-s1-final4-pc-picker2.jpeg, /private/tmp/moonlight-final-20260812-s1-final4-pc-picker-click.jpeg, /private/tmp/moonlight-final-20260812-s1-final4-phone-root.jpeg, /private/tmp/moonlight-final-20260812-s1-final4-phone-picker2.jpeg and /private/tmp/moonlight-final-20260812-s1-final4-phone-picker-click.jpeg",
+    "uiAcceptance": "only fresh 2026-08-12 final4 evidence viewed during this checkpoint is recorded: PC large-screen sidebar visibly contains the grey Moonlight slot with 即将支持; PC and phone disabled clicks remain on pages/HostListPage. Phone settings evidence covers /private/tmp/moonlight-final-20260812-s1-final4-phone-settings-top.jpeg, /private/tmp/moonlight-final-20260812-s1-final4-phone-settings-lower2.jpeg, /private/tmp/moonlight-final-20260812-s1-final4-phone-moonlight-accordion2.jpeg and /private/tmp/moonlight-final-20260812-s1-final4-phone-quick-sheet3.jpeg; no old screenshot is used",
     "focusedTests": "Moonlight aggregate is 162 tests in 21 describe groups; shared HostAddConnectionHandoffPolicy has 8 cases; all are compile-registered",
-    "isolation": "review PASS for 2c37b0edf..6b0c1aa8: no RustDesk, RDP, SSH/SFTP or VNC business source, public input, native/CMake/NAPI, CloudSyncPolicy or existing cloud-table registration changed; HostListPage remains a thin fail-closed integration and the user CloudStore diff is excluded",
+    "isolation": "static pass for 6b0c1aa8..647113a5: no RustDesk, RDP, SSH/SFTP or VNC business source, public input, native/CMake/NAPI, CloudSyncPolicy or existing cloud-table registration changed; Moonlight uses the existing registry/coordinator boundary and the user CloudStore diff is excluded; reviewer PASS",
     "lightCompliance": "pass previously for official icon provenance, vendor, SBOM, NOTICE, SPDX and artifact hash; the 6b0c1aa8 review fixes do not change those artifacts",
     "ohosTest": "blocked task-not-registered 00306054; no on-device execution pass claimed"
   },
-  "updated": "2026-08-11 Asia/Shanghai"
+  "updated": "2026-08-12 Asia/Shanghai"
 }

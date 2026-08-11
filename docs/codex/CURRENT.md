@@ -4,8 +4,8 @@
 
 - Task: `moonlight-complete-upgrade`
 - Base: `main@aeb0cdac5`; branch: `codex/moonlight-complete-upgrade`
-- Code checkpoint: `6b0c1aa8` (`fix(moonlight): close ui review findings`)
-- Phase: U1-06～U1-12 local-only UI shell closeout complete; S1 runtime wiring and N2-09 external evidence remain pending.
+- Code checkpoint: `647113a5` (`fix(moonlight): enforce stop watchdog`; includes `8b1ccd22` and `4548499c` dormant coordinator fixes)
+- Phase: U1-06～U1-12 local-only UI shell closeout complete; S1-01/S1-02 dormant session wiring contract complete; S1-03 is next. Runtime, media, input and N2-09 external evidence remain pending.
 - Authoritative plan: `docs/superpowers/plans/2026-07-28-moonlight-harmonyos-complete-upgrade-plan.md`
 - Live ledger: `docs/codex/plans/2026-08-09-moonlight-implementation-ledger.md`
 - The only uncommitted file is the user-owned `entry/src/main/ets/services/CloudStore.ets` cloud-sync change; it is intentionally excluded from this task and remains untouched.
@@ -28,20 +28,27 @@
 - Desktop has a separate grey Moonlight sidebar slot even when other host cards are grouped. The FAB flow still passes `moonlightProtocolAvailable: false`.
 - The review fixes keep legacy readable settings metadata compatible while rejecting legacy paths for new writes, lock certificate-change switches to the model-required safe state, treat `localCommitted` as the terminal local-save truth, and cancel/fence stream-sheet reopen timers on page exit.
 
+## Dormant session checkpoint (`8b1ccd22` + `4548499c` + `647113a5`)
+
+- `RemoteProtocol.moonlight`, the shared capability policy and the existing `ActiveRemoteSessionRegistry` now carry Moonlight without creating a second session owner. The registry rejects Moonlight records containing a transient endpoint and clears only an exact owner/account/session/protocol marker.
+- `MoonlightSessionCoordinator` is a pure ArkTS, runtime-injected seam. It serializes launch, discovery, first-frame, stream-stable, transport-loss, stop/cancel and stale-callback transitions; it binds owner/account generation and requires a runtime port plus all three runtime capability truths before start. The singleton has no injected runtime, so production remains fail closed.
+- `MoonlightAppCatalogPage` is a thin adapter that passes a transient host address only to the future runtime port; it never writes that address to the shared registry or local/cloud storage. `MoonlightStreamPage` binds the current account scope and invalidates/cleans up on account changes and route exit.
+- Added nine coordinator cases, a Moonlight capability case and test-list registration. No common-c/native/NAPI/GameController/OHAudio/Surface/cloud/product caller was added; the UI picker and launch flow remain unavailable.
+- `4548499c` closes the first review findings: registry reservation is atomic against a competing protocol, launch promotion requires the exact reservation, prelaunch cancellation reaches the runtime port, stop failure immediately becomes local-terminal, and post-launch callbacks must carry the matching native session ID. `647113a5` adds the actual 5-second watchdog and verifies prelaunch reservation cleanup only after a stopped event or terminal timeout.
+
 ## Verification
 
-- Exact `default@OhosTestCompileArkTS ... --no-daemon`: BUILD SUCCESSFUL after `6b0c1aa8`.
-- Exact `assembleHap ... --no-daemon`: BUILD SUCCESSFUL after `6b0c1aa8`; final signed HAP SHA-256 is `7a723ce9b300d6b8e131006472ed2efa8d7985a8cd672385857e468a84181b87`.
-- Fresh sandbox-external HDC install/start succeeded on PC `127.0.0.1:5555` and phone `127.0.0.1:5557` after the latest build.
-- Latest fresh r2 PC evidence: `/private/tmp/moonlight-final-20260811-r2-pc-full.jpeg` and `.json` — RDP remains the active page; Moonlight is a separate grey sidebar slot with the official tintable geometry and “即将支持”.
-- Latest fresh r2 phone evidence: `/private/tmp/moonlight-final-20260811-r2-phone-settings.jpeg`, `/private/tmp/moonlight-final-20260811-r2-phone-settings-scroll.jpeg` and corresponding `.json` UI trees — Moonlight subtitle is `串流画面、音频、控制与本地安全设置`, the nine sections are present, and no “主机管理” row exists.
-- Latest fresh r2 sheet evidence: `/private/tmp/moonlight-final-20260811-r2-moonlight-accordion.jpeg`, `/private/tmp/moonlight-final-20260811-r2-quick-sheet.jpeg`, `/private/tmp/moonlight-final-20260811-r2-moonlight-lower.jpeg`, `/private/tmp/moonlight-final-20260811-r2-network-sheet.jpeg` and corresponding `.json` UI trees — unified bindSheet layout, RustDesk visual language, and disabled certificate-change control are visible.
+- Exact `default@OhosTestCompileArkTS ... --no-daemon`: BUILD SUCCESSFUL after `647113a5`.
+- Exact `assembleHap ... --no-daemon`: BUILD SUCCESSFUL after `647113a5`; final deployed signed HAP SHA-256 is `95d9cc17067981b7e5c4bdae3ec7fe3d0de14060a0dc75e87b638dca328fe504`.
+- Fresh sandbox-external HDC install/start succeeded on PC `127.0.0.1:5555` and phone `127.0.0.1:5557` after the `647113a5` build.
+- Latest fresh 2026-08-12 evidence from the final deployed HAP: PC large-screen root/sidebar `/private/tmp/moonlight-final-20260812-s1-final4-pc-maximized2.jpeg`; PC picker/disabled-click `/private/tmp/moonlight-final-20260812-s1-final4-pc-picker2.jpeg` and `/private/tmp/moonlight-final-20260812-s1-final4-pc-picker-click.jpeg`; phone root/picker/disabled-click `/private/tmp/moonlight-final-20260812-s1-final4-phone-root.jpeg`, `/private/tmp/moonlight-final-20260812-s1-final4-phone-picker2.jpeg`, `/private/tmp/moonlight-final-20260812-s1-final4-phone-picker-click.jpeg`. RDP remains unchanged; PC shows a separate grey Moonlight sidebar slot with the official tintable geometry and “即将支持”; clicking the disabled row leaves the picker open on `pages/HostListPage`.
+- Latest fresh 2026-08-12 phone settings evidence: `/private/tmp/moonlight-final-20260812-s1-final4-phone-settings-top.jpeg`, `/private/tmp/moonlight-final-20260812-s1-final4-phone-settings-lower2.jpeg`, `/private/tmp/moonlight-final-20260812-s1-final4-phone-moonlight-accordion2.jpeg`, and `/private/tmp/moonlight-final-20260812-s1-final4-phone-quick-sheet3.jpeg`. The layout remains readable, Moonlight is one consolidated settings section, its child entries open as a separate bindSheet, and no redundant “主机管理” row exists; only these newly captured and viewed images are used for the current acceptance record.
 - Moonlight focused tests remain compile-registered (162 tests in 21 describe groups plus 8 shared host-add handoff cases); `ohosTest` remains unregistered (`00306054`), so no device Hypium PASS is claimed.
-- Incremental reviewer task `019fe966-d99a-7ce1-8b53-4ef725597053` re-reviewed `2c37b0edf..6b0c1aa8` and returned PASS: P0/P1/P2/P3 all zero. Static isolation also passed: RDP, RustDesk, SSH/SFTP, VNC, public input, native/CMake/NAPI, `CloudSyncPolicy` and existing cloud-table registration were not changed by this Moonlight range.
+- Incremental reviewer task `019fe966-d99a-7ce1-8b53-4ef725597053` rechecked the `6b0c1aa8..647113a5` delta and returned PASS with no actionable findings. Static isolation for the code range is unchanged: RDP, RustDesk, SSH/SFTP, VNC, public input, native/CMake/NAPI, `CloudSyncPolicy` and existing cloud-table registration were not changed.
 - `git diff --check` and state validation pass. The user-owned `CloudStore.ets` diff is excluded from the review and remains unstaged.
 
 ## Next / blockers
 
-- Next implementation boundary: S1-01/S1-02 session registry/coordinator, then S1-05A native GameController ingress and N2-09 real Sunshine/ARM64 external evidence. Keep every product capability false until its runtime receipt exists.
+- Next implementation boundary: S1-03 connection-stage overlay, then S1-04/S1-05A UI/input wiring and N2-09 real Sunshine/ARM64 external evidence. Keep every product capability false until its runtime receipt exists.
 - Remaining acceptance is not a release claim: real AppSpawn secure identity, Sunshine transport/media/first frame, OHAudio/Surface lifecycle, physical controller, on-device Hypium, and long-run performance are unproven.
 - `ohosTest@OhosTestCompileArkTS` is still blocked by unregistered task `00306054`.
