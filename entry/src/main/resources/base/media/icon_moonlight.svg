@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 256 256">
+  <!-- Monochrome, tintable transform of Moonlight Qt app/res/moonlight.svg. -->
+  <path fill="currentColor" fill-rule="evenodd" d="M128 0a128 128 0 1 0 0 256 128 128 0 0 0 0-256zm0 32a96 96 0 1 1 0 192 96 96 0 0 1 0-192z"/>
+  <path fill="currentColor" fill-rule="evenodd" d="M137.66 132H224v-8h-86.34l61.05-61.05-5.66-5.66L132 118.34V32h-8v86.34L62.95 57.29l-5.66 5.66L118.34 124H32v8h86.34l-61.05 61.05 5.66 5.66L124 137.66V224h8v-86.34l61.05 61.05 5.66-5.66L137.66 132z"/>
+</svg>

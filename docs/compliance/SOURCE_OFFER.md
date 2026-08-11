@@ -16,5 +16,10 @@ Moonlight 产物一旦进入 HAP，源码归档必须完整包含
 核验本 HAP 对应的完整上游源码。若任何 project patch 存在，源码归档
 必须同时包含补丁、基准 revision、应用顺序和修改说明。
 
+发布包中的 Moonlight 协议图标源码是
+`entry/src/main/resources/base/media/icon_moonlight.svg`。源码归档必须同时
+包含 `docs/compliance/MOONLIGHT_ICON_PROVENANCE.md`，使接收者能够核对
+Moonlight Qt 固定 revision、原始 SVG 哈希、确定性单色转换和本地文件哈希。
+
 签名证书、口令、AGConnect secret 与用户数据不是对应源码的一部分；
 非秘密配置结构和构建说明必须包含在源码归档中。

@@ -1,9 +1,9 @@
 /**
  * Protocol identity icons shared by settings, host add flows and relay cards.
  *
- * Keep protocol identity on API 23 SymbolGlyph resources.  This prevents a
- * raw SVG from silently becoming the visual owner of a protocol in one
- * surface while another surface uses a different icon family.
+ * Existing protocols keep their API 23 SymbolGlyph resources. Moonlight may
+ * use its audited official-geometry asset on surfaces that support a branded
+ * descriptor, with the original system symbol retained as a fail-safe.
  */
 export type ProtocolIconKey =
   | 'rdp'
@@ -16,6 +16,15 @@ export type ProtocolIconKey =
   | 'key_vault'
   | 'totp'
   | 'settings';
+
+export type ProtocolIconKind = 'system' | 'brand';
+
+export interface ProtocolIconDescriptor {
+  kind: ProtocolIconKind;
+  resource: Resource;
+  fallback: Resource;
+  tintable: boolean;
+}
 
 export function protocolIcon(key: ProtocolIconKey): Resource {
   switch (key) {
@@ -42,6 +51,19 @@ export function protocolIcon(key: ProtocolIconKey): Resource {
     default:
       return $r('sys.symbol.display');
   }
+}
+
+export function protocolIconDescriptor(key: ProtocolIconKey): ProtocolIconDescriptor {
+  const fallback: Resource = protocolIcon(key);
+  if (key === 'moonlight') {
+    return {
+      kind: 'brand',
+      resource: $r('app.media.icon_moonlight'),
+      fallback: fallback,
+      tintable: true
+    };
+  }
+  return { kind: 'system', resource: fallback, fallback: fallback, tintable: true };
 }
 
 export function protocolIconLabel(key: ProtocolIconKey): string {

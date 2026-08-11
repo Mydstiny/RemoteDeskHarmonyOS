@@ -37,6 +37,7 @@ $required = @(
   'docs/compliance/LICENSE_DECISION_RECORD.md',
   'docs/compliance/SOURCE_OFFER.md',
   'docs/compliance/MOONLIGHT_COMMON_C_PROVENANCE.md',
+  'docs/compliance/MOONLIGHT_ICON_PROVENANCE.md',
   'entry/src/main/cpp/moonlight/upstream/UPSTREAM.lock.json',
   'scripts/build_moonlight_common_vendor.sh',
   'scripts/build_moonlight_common_vendor.ps1',
@@ -47,6 +48,33 @@ $required = @(
 foreach ($relative in $required) {
   if (-not (Test-Path (Join-Path $root $relative))) {
     Add-Failure "Missing required compliance file: $relative"
+  }
+}
+
+$moonlightIconRelative = 'entry/src/main/resources/base/media/icon_moonlight.svg'
+$moonlightIconPath = Join-Path $root $moonlightIconRelative
+$moonlightIconExpectedSha256 = '4f5ef547e33767287e3438a6d1598a1bdef6e49df4678a5f7f214ec58c9e5886'
+if (-not (Test-Path $moonlightIconPath -PathType Leaf)) {
+  Add-Failure "Missing Moonlight protocol icon: $moonlightIconRelative"
+} elseif ((Get-FileHash $moonlightIconPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne
+    $moonlightIconExpectedSha256) {
+  Add-Failure 'Moonlight protocol icon changed without provenance review.'
+}
+$moonlightIconProvenancePath = Join-Path $root 'docs/compliance/MOONLIGHT_ICON_PROVENANCE.md'
+if (Test-Path $moonlightIconProvenancePath -PathType Leaf) {
+  $moonlightIconProvenance = Get-Content -Raw $moonlightIconProvenancePath
+  if ($moonlightIconProvenance -notmatch '2e13ed9977bc31c73caf8428f08f58d793313ece' -or
+      $moonlightIconProvenance -notmatch '6fd0ee4fe5b4aad5abaa5d5c9acb9f7d1bda0abadfe9d1582115de9b4ba16aa2' -or
+      $moonlightIconProvenance -notmatch $moonlightIconExpectedSha256) {
+    Add-Failure 'Moonlight protocol icon provenance is incomplete or stale.'
+  }
+}
+$artifactHashPath = Join-Path $root 'docs/compliance/THIRD_PARTY_ARTIFACTS.sha256'
+if (Test-Path $artifactHashPath -PathType Leaf) {
+  $moonlightIconHashRecord = $moonlightIconExpectedSha256 + ' *' + $moonlightIconRelative
+  $artifactHashLines = @(Get-Content $artifactHashPath)
+  if (@($artifactHashLines | Where-Object { $_ -eq $moonlightIconHashRecord }).Count -ne 1) {
+    Add-Failure 'Moonlight protocol icon artifact hash record is missing or duplicated.'
   }
 }
 

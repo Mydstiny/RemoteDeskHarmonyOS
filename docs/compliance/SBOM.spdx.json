@@ -983,6 +983,24 @@
       "comment": "Reviewed supplier logo assets selected for offline TOTP matching; each source, hash, license assertion and trademark guidance is recorded in the officialOverrides section of the single-source TOTP manifest; svglogos-catalog entries are not asserted to be official brand-kit assets."
     },
     {
+      "name": "moonlight-qt-official-protocol-icon",
+      "SPDXID": "SPDXRef-Package-Moonlight-Qt-Icon",
+      "versionInfo": "2e13ed9977bc31c73caf8428f08f58d793313ece",
+      "downloadLocation": "https://github.com/moonlight-stream/moonlight-qt/tree/2e13ed9977bc31c73caf8428f08f58d793313ece",
+      "filesAnalyzed": true,
+      "licenseConcluded": "GPL-3.0-only",
+      "licenseDeclared": "GPL-3.0-only",
+      "copyrightText": "See upstream repository and THIRD_PARTY_NOTICES.md",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:github/moonlight-stream/moonlight-qt@2e13ed9977bc31c73caf8428f08f58d793313ece"
+        }
+      ],
+      "comment": "Official app/res/moonlight.svg originalSha256=6fd0ee4fe5b4aad5abaa5d5c9acb9f7d1bda0abadfe9d1582115de9b4ba16aa2; packaged deterministic monochrome tintable transform; geometry and trademark boundary documented in docs/compliance/MOONLIGHT_ICON_PROVENANCE.md"
+    },
+    {
       "name": "moonlight-common-c",
       "SPDXID": "SPDXRef-Package-Moonlight-Common-C",
       "versionInfo": "e41355ea01670fd4c830b384009d31dd0339a705",
@@ -1038,6 +1056,22 @@
     }
   ],
   "files": [
+    {
+      "SPDXID": "SPDXRef-File-Moonlight-Qt-Icon",
+      "fileName": "entry/src/main/resources/base/media/icon_moonlight.svg",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "4f5ef547e33767287e3438a6d1598a1bdef6e49df4678a5f7f214ec58c9e5886"
+        }
+      ],
+      "licenseConcluded": "GPL-3.0-only",
+      "licenseInfoInFiles": [
+        "GPL-3.0-only"
+      ],
+      "copyrightText": "See upstream Moonlight Qt repository",
+      "comment": "sourceUrl=https://github.com/moonlight-stream/moonlight-qt/blob/2e13ed9977bc31c73caf8428f08f58d793313ece/app/res/moonlight.svg; originalSha256=6fd0ee4fe5b4aad5abaa5d5c9acb9f7d1bda0abadfe9d1582115de9b4ba16aa2; deterministic monochrome tintable transform; packagedSha256=4f5ef547e33767287e3438a6d1598a1bdef6e49df4678a5f7f214ec58c9e5886"
+    },
     {
       "SPDXID": "SPDXRef-File-TotpBrand-apple",
       "fileName": "entry/src/main/resources/rawfile/totp-brands/apple.svg",
@@ -8793,6 +8827,11 @@
       "relatedSpdxElement": "SPDXRef-File-TotpOfficialBrand-authy"
     },
     {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Qt-Icon",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-Moonlight-Qt-Icon"
+    },
+    {
       "spdxElementId": "SPDXRef-Package-Moonlight-Common-C",
       "relationshipType": "CONTAINS",
       "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-8bcbe6feafe10d42e6eea8bd"
@@ -9376,6 +9415,11 @@
       "spdxElementId": "SPDXRef-Package-Moonlight-Common-C",
       "relationshipType": "CONTAINS",
       "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-0de47e80321fe0e484c886fd"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-RemoteDeskHarmonyOS",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-Moonlight-Qt-Icon"
     },
     {
       "spdxElementId": "SPDXRef-Package-RemoteDeskHarmonyOS",

@@ -177,6 +177,7 @@ import moonlightDeletionPolicyTest from './MoonlightDeletionPolicy.test';
 import moonlightDeletionCommandServiceTest from './MoonlightDeletionCommandService.test';
 import moonlightCloudStatusPolicyTest from './MoonlightCloudStatusPolicy.test';
 import moonlightBackupPolicyTest from './MoonlightBackupPolicy.test';
+import hostProtocolPickerPolicyTest from './HostProtocolPickerPolicy.test';
 
 export default function testsuite() {
   localUnitTest();
@@ -358,4 +359,5 @@ export default function testsuite() {
   moonlightDeletionCommandServiceTest();
   moonlightCloudStatusPolicyTest();
   moonlightBackupPolicyTest();
+  hostProtocolPickerPolicyTest();
 }
