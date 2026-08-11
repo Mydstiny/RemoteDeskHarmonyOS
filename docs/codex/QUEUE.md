@@ -4,36 +4,34 @@ Updated: 2026-08-11 Asia/Shanghai
 
 ## Now
 
-- N3-08 `fef723770` + review fix `6787cc3fb`: fixed-capacity native physical/virtual controller aggregator and deterministic
-  layout validator are complete. Physical full-state and virtual semantic events share slot 0 but are
-  fenced by source/device/generation and use only N3-05→N3-01→official common-c.
-- Both directions use remove-first handoff with separate boundary-retry/resume generations; retired mapper
-  lanes reject old events while supporting 20+ alternating handoffs. Twenty-eight focused tests,
-  normal/strict/sanitizers/TSan/analyzer, both Hvigor gates and signed HAP pass.
-- The private dual-ABI archive has no product caller and contributes no object or dynamic symbol to
-  `rdpnapi`; ABI counts remain arm64 16114/705 and x86_64 15645/703. No production common-c, shared
-  `InputHandler`, telemetry/audio/render, cloud source or existing protocol business source was modified.
-- Keep FAB disabled, all six release truths false and online cloud registration
-  at exactly 8 tables. Moonlight itself is local-only for the current rollout;
-  do not create or register `moonlightrecordv1`.
+- U1-01～U1-03 are complete in `c38ff6265` with review fixes `71e9902c9`, `7eaad950b`.
+- Moonlight uses the same `HostProtocolPicker.protocolOption()` card contract as RustDesk and the same
+  existing FAB → picker → single-Sheet ownership path. Default state remains disabled, 0.58 opacity,
+  exactly one “即将支持”, and a tap produces no route.
+- The protocol icon is a deterministic tintable transform of the pinned official Moonlight Qt SVG with
+  exact provenance/SHA/compliance records and a HarmonyOS system-symbol fallback.
+- Both Hvigor gates, signed HAP, Light/vendor/SBOM/hash/diff checks and sandbox-external HDC
+  install/start/render/disabled-tap verification pass.
+- RustDesk flow, HostList FAB owner, all protocol business sources, native sources and cloud sources are
+  unchanged. Cloud registration remains exactly 8 tables; Moonlight remains local-only.
+- Existing reviewer task `019fe966-d99a-7ce1-8b53-4ef725597053` returned final PASS for
+  `99eecdbea..7eaad950b` with P0/P1/P2/P3 all zero; do not create another reviewer.
 
 ## Next
 
-- U1-01 (next actionable): snapshot VNC sm/md/lg/xl, short-screen and large-font layout/interaction
-  baselines, extract protocol-neutral `RemoteConfigSheetScaffold.ets`, and reduce `VncSheetScaffold`
-  to a thin wrapper with zero VNC DOM/screenshot/interaction differences.
-- S1-05A later connects the real HarmonyOS GameController native listener and narrow virtual typed
-  NAPI ingress to N3-08. Until then physical controller transport is a tested dormant native seam, not
-  a product runtime capability; ArkTS must never encode or directly transmit controller wire data.
+- U1-04 is the only next actionable UI task: create `MoonlightHostAddFlow.ets` plus pure four-step state
+  policy for local host discovery/manual address, pairing/trust and local save.
+- U1-04 must directly reuse RustDesk's visual and interaction grammar: header/step copy, mode cards,
+  fields, errors, 44vp primary button, back/close behavior and the existing single Sheet owner. Do not
+  copy RustDesk relay/TOTP/credential business state and do not use another protocol page as a scaffold.
+- Keep the picker disabled until U1-04 and its Host Control/runtime prerequisites are genuinely ready.
+- S1-05A later connects the real HarmonyOS GameController native listener and narrow virtual typed NAPI
+  to N3-08. ArkTS never encodes or directly transmits controller wire data.
 - N2-09 remains external pending for real Sunshine and ARM64 physical media testing.
-- S1-08: consume the dormant N2-05 native contract from the existing
-  `NativeSessionHandles`/PIP/background lifecycle only after media prerequisites.
-- U1/S1 UI, settings, catalog, connection overlays and lifecycle against the
-  existing local `MoonlightRepository`, local app cache, Host Control and media
-  prerequisites; no cloud status or sync settings.
 
 ## Later
 
-- Real Sunshine/device/network/power matrix, full regression and user ARM64 acceptance.
-  Moonlight cloud sync (`moonlightrecordv1`, selection and secret recovery) stays parked.
-  N3-08 reuses the existing `sol low` reviewer; reuse it again, never create a third instance.
+- Local-only Moonlight host detail, app catalog, launch preflight, settings, connection overlays and
+  lifecycle tasks continue in plan order after U1-04.
+- Real Sunshine/device/network/power matrix, full existing-protocol regression and user ARM64 acceptance.
+- Moonlight cloud sync (`moonlightrecordv1`, selection and secret recovery) stays parked.
