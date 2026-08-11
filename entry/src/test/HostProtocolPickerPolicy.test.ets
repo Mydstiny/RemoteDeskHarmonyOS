@@ -10,6 +10,7 @@ import {
 } from '../main/ets/services/HostProtocolPickerPolicy';
 import {
   MOONLIGHT_ICON_FALLBACK_SYMBOL,
+  moonlightSystemFallbackIcon,
   protocolIconDescriptor
 } from '../main/ets/services/ProtocolIconPolicy';
 
@@ -53,7 +54,10 @@ export default function hostProtocolPickerPolicyTest(): void {
       const rustdesk = protocolIconDescriptor('rustdesk');
       expect(moonlight.kind).assertEqual('brand');
       expect(moonlight.tintable).assertTrue();
+      expect(MOONLIGHT_ICON_FALLBACK_SYMBOL).assertEqual('gamecontroller_fill');
       expect(moonlight.fallbackName).assertEqual(MOONLIGHT_ICON_FALLBACK_SYMBOL);
+      expect(JSON.stringify(moonlight.fallback))
+        .assertEqual(JSON.stringify(moonlightSystemFallbackIcon()));
       expect(resolveMoonlightPickerIconMode(false)).assertEqual('brand');
       expect(resolveMoonlightPickerIconMode(true)).assertEqual('system-fallback');
       expect(resolveHostProtocolPickerIconTint(true, '#007DFF', '#808080'))

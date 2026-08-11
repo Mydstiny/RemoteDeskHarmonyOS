@@ -28,6 +28,11 @@ export interface ProtocolIconDescriptor {
   tintable: boolean;
 }
 
+/** Single resource owner for the literal Moonlight fallback mapping. */
+export function moonlightSystemFallbackIcon(): Resource {
+  return $r('sys.symbol.gamecontroller_fill');
+}
+
 export function protocolIcon(key: ProtocolIconKey): Resource {
   switch (key) {
     case 'rdp':
@@ -39,7 +44,7 @@ export function protocolIcon(key: ProtocolIconKey): Resource {
     case 'vnc':
       return $r('sys.symbol.display');
     case 'moonlight':
-      return $r('sys.symbol.gamecontroller_fill');
+      return moonlightSystemFallbackIcon();
     case 'rustdesk_relay':
       return $r('sys.symbol.cloud_fill');
     case 'vnc_gateway':

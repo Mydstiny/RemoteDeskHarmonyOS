@@ -30,6 +30,7 @@ $required = @(
   'THIRD_PARTY_NOTICES.md',
   'REUSE.toml',
   'LICENSES/AGPL-3.0-or-later.txt',
+  'LICENSES/GPL-3.0-only.txt',
   'LICENSES/Apache-2.0.txt',
   'docs/compliance/SBOM.spdx.json',
   'docs/compliance/THIRD_PARTY_ARTIFACTS.sha256',
@@ -83,6 +84,14 @@ if (Test-Path $reusePath -PathType Leaf) {
   $moonlightReusePattern = '(?s)\[\[annotations\]\]\s*path\s*=\s*"entry/src/main/resources/base/media/icon_moonlight\.svg"\s*precedence\s*=\s*"override"\s*SPDX-FileCopyrightText\s*=\s*"Moonlight Game Streaming Project contributors"\s*SPDX-License-Identifier\s*=\s*"GPL-3\.0-only"'
   if ($reuseMetadata -notmatch $moonlightReusePattern) {
     Add-Failure 'Moonlight protocol icon REUSE override is missing or inconsistent.'
+  }
+}
+$gpl3LicensePath = Join-Path $root 'LICENSES/GPL-3.0-only.txt'
+if (Test-Path $gpl3LicensePath -PathType Leaf) {
+  $gpl3ExpectedSha256 = '589ed823e9a84c56feb95ac58e7cf384626b9cbf4fda2a907bc36e103de1bad2'
+  if ((Get-FileHash $gpl3LicensePath -Algorithm SHA256).Hash.ToLowerInvariant() -ne
+      $gpl3ExpectedSha256) {
+    Add-Failure 'GPL-3.0-only license text is missing or changed.'
   }
 }
 $thirdPartyNoticePath = Join-Path $root 'THIRD_PARTY_NOTICES.md'
@@ -235,6 +244,9 @@ if (Test-Path $sbomPath) {
     })
     if ($moonlightIconPackage.Count -ne 1 -or
         $moonlightIconPackage[0].versionInfo -ne '2e13ed9977bc31c73caf8428f08f58d793313ece' -or
+        $moonlightIconPackage[0].filesAnalyzed -ne $true -or
+        $moonlightIconPackage[0].packageVerificationCode.packageVerificationCodeValue -ne
+          'b87433cda9e9811ef51c3a784e6c31c3a3b00a82' -or
         $moonlightIconPackage[0].licenseDeclared -ne 'GPL-3.0-only' -or
         $moonlightIconPackage[0].licenseConcluded -ne 'GPL-3.0-only' -or
         $moonlightIconPackage[0].copyrightText -ne 'Moonlight Game Streaming Project contributors') {

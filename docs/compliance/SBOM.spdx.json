@@ -988,6 +988,9 @@
       "versionInfo": "2e13ed9977bc31c73caf8428f08f58d793313ece",
       "downloadLocation": "https://github.com/moonlight-stream/moonlight-qt/tree/2e13ed9977bc31c73caf8428f08f58d793313ece",
       "filesAnalyzed": true,
+      "packageVerificationCode": {
+        "packageVerificationCodeValue": "b87433cda9e9811ef51c3a784e6c31c3a3b00a82"
+      },
       "licenseConcluded": "GPL-3.0-only",
       "licenseDeclared": "GPL-3.0-only",
       "copyrightText": "Moonlight Game Streaming Project contributors",

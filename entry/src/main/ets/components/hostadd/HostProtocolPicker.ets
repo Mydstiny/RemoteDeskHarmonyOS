@@ -37,7 +37,9 @@ export struct HostProtocolPicker {
           .margin({ right: 14 })
           .onError((): void => { this.moonlightIconFailed = true; })
       } else {
-        SymbolGlyph(protocolIcon(protocol as ProtocolIconKey)).fontSize(24)
+        SymbolGlyph(protocol === 'moonlight' ?
+          protocolIconDescriptor('moonlight').fallback :
+          protocolIcon(protocol as ProtocolIconKey)).fontSize(24)
           .fontColor([resolveHostProtocolPickerIconTint(
             enabled, this.accentColor, this.pal().text3)]).margin({ right: 14 })
       }
