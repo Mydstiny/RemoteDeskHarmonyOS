@@ -9,6 +9,7 @@ import {
   cancelMoonlightHostAddDiscovery,
   cancelMoonlightHostAddOperation,
   cloneMoonlightHostAddState,
+  committedMoonlightHostAddId,
   completeMoonlightHostAddCatalog,
   completeMoonlightHostAddPairing,
   completeMoonlightHostAddSave,
@@ -51,6 +52,7 @@ export interface MoonlightPairingCompletion {
 
 export interface MoonlightLocalSaveResult {
   localCommitted: boolean;
+  hostId: string;
   errorText: string;
 }
 
@@ -88,6 +90,7 @@ function unavailableCatalog(): Promise<MoonlightHostAddCatalogSummary> {
 function unavailableLocalSave(): Promise<MoonlightLocalSaveResult> {
   const result: MoonlightLocalSaveResult = {
     localCommitted: false,
+    hostId: '',
     errorText: '本地主机保存能力尚未接入'
   };
   return Promise.resolve(result);
@@ -149,7 +152,11 @@ export struct MoonlightHostAddFlow {
     _key: MoonlightHostAddOperationKey
   ): Promise<MoonlightLocalSaveResult> => unavailableLocalSave();
   onOpenExistingHost: (hostId: string) => void = (_hostId: string): void => {};
-  onSaved: (openCatalog: boolean) => void = (_openCatalog: boolean): void => {};
+  onSaved: (hostId: string, openCatalog: boolean, ownerToken: number) => void = (
+    _hostId: string,
+    _openCatalog: boolean,
+    _ownerToken: number
+  ): void => {};
   onDiscardTemporaryState: () => void = (): void => {};
 
   @State flow: MoonlightHostAddState = createMoonlightHostAddState(0);
@@ -454,9 +461,16 @@ export struct MoonlightHostAddFlow {
       const result: MoonlightLocalSaveResult =
         await this.onSaveLocal(cloneMoonlightHostAddState(this.flow), openCatalog, begin.key);
       if (!moonlightHostAddOperationIsCurrent(this.flow, begin.key)) { return; }
+      const committedHostId: string = committedMoonlightHostAddId(
+        result.localCommitted, result.hostId);
+      const localCommitted: boolean = committedHostId !== '';
+      const errorText: string = result.localCommitted && !localCommitted ?
+        '本地主机已写入但未返回稳定 ID，无法完成页面交接' : result.errorText;
       this.flow = completeMoonlightHostAddSave(
-        this.flow, begin.key, result.localCommitted, result.errorText);
-      if (result.localCommitted) { this.onSaved(openCatalog); }
+        this.flow, begin.key, localCommitted, errorText);
+      if (localCommitted) {
+        this.onSaved(committedHostId, openCatalog, begin.key.ownerToken);
+      }
     } catch (_error) {
       if (moonlightHostAddOperationIsCurrent(this.flow, begin.key)) {
         this.withError('本地主机保存失败，请重试');

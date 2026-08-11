@@ -390,9 +390,15 @@ import {
   shouldApplyConnectionAttempt
 } from '../services/ConnectionAttemptPolicy';
 import {
+  createHostAddPostSaveHandoff,
+  emptyHostAddPostSaveHandoff,
+  HostAddPostSaveHandoff,
+  hostAddPostSaveHandoffIsPending,
   pendingHostIdForHostAddSave,
+  shouldAcceptHostAddPostSaveHandoff,
   shouldAcceptHostAddSave,
-  shouldStartHostAddConnectionAfterDisappear
+  shouldStartHostAddConnectionAfterDisappear,
+  shouldStartHostAddPostSaveAfterDisappear
 } from '../services/HostAddConnectionHandoffPolicy';
 import { motion } from '@kit.MultimodalAwarenessKit';
 import { HostDataSource } from '../datasources/DataSources';
@@ -676,6 +682,9 @@ struct HostListPage {
   // 保存并连接必须等新增主机 Sheet 的 native onDisappear 后再交给鉴权 Sheet。
   private pendingAddSheetConnectHostId: string = '';
   private pendingVncConnectHostId: string = '';
+  private moonlightCatalogHandoffGeneration: number = 0;
+  private pendingMoonlightCatalogHandoff: HostAddPostSaveHandoff =
+    emptyHostAddPostSaveHandoff();
   private pendingVncGatewayDirectoryOpen: boolean = false;
   private pendingRustDeskRelayDirectoryOpen: boolean = false;
   private connectionAttemptGeneration: number = 0;
@@ -1625,6 +1634,37 @@ struct HostListPage {
     this.requestAddSheetClose();
   }
 
+  private invalidateMoonlightCatalogHandoff(): void {
+    this.moonlightCatalogHandoffGeneration += 1;
+    this.pendingMoonlightCatalogHandoff = emptyHostAddPostSaveHandoff();
+  }
+
+  private handleMoonlightHostSaved(
+    hostId: string,
+    openCatalog: boolean,
+    ownerToken: number
+  ): void {
+    if (!shouldAcceptHostAddPostSaveHandoff(
+      this.pageActive,
+      this.addSheetClosing,
+      this.pendingMoonlightCatalogHandoff,
+      this.moonlightAddOwnerToken,
+      ownerToken,
+      hostId
+    )) {
+      hilog.info(0x0001, 'HostList',
+        'ignored stale or repeated Moonlight post-save handoff');
+      return;
+    }
+    if (openCatalog) {
+      const generation: number = this.moonlightCatalogHandoffGeneration + 1;
+      this.moonlightCatalogHandoffGeneration = generation;
+      this.pendingMoonlightCatalogHandoff = createHostAddPostSaveHandoff(
+        'moonlight_catalog', hostId, ownerToken, generation);
+    }
+    this.requestAddSheetClose();
+  }
+
   private handleAddSheetDisappear(): void {
     this.noteSheetDismissed();
     this.addSheetClosing = false;
@@ -1635,6 +1675,9 @@ struct HostListPage {
     this.pendingVncConnectHostId = '';
     const pendingHostId: string = this.pendingAddSheetConnectHostId;
     this.pendingAddSheetConnectHostId = '';
+    const pendingMoonlightCatalog: HostAddPostSaveHandoff =
+      this.pendingMoonlightCatalogHandoff;
+    this.pendingMoonlightCatalogHandoff = emptyHostAddPostSaveHandoff();
     const openVncGatewayDirectory: boolean = this.pendingVncGatewayDirectoryOpen;
     this.pendingVncGatewayDirectoryOpen = false;
     const openRustDeskRelayDirectory: boolean = this.pendingRustDeskRelayDirectoryOpen;
@@ -1664,6 +1707,28 @@ struct HostListPage {
     if (!preserveForm) {
       this.resetForm();
       this.rustDeskAddResumeDraft = null;
+    }
+
+    if (hostAddPostSaveHandoffIsPending(pendingMoonlightCatalog)) {
+      if (!shouldStartHostAddPostSaveAfterDisappear(
+        this.pageActive,
+        this.addSheetClosing,
+        this.moonlightAddOwnerToken,
+        this.moonlightCatalogHandoffGeneration,
+        pendingMoonlightCatalog,
+        'moonlight_catalog'
+      )) {
+        hilog.info(0x0001, 'HostList',
+          'dropped stale Moonlight catalog handoff after add-host Sheet disappeared');
+        return;
+      }
+      // U1-05 establishes the same native onDisappear boundary used by the
+      // RustDesk add path. U1-06 owns the actual Navigation destination and
+      // local-cache reload; until then all save ports and the picker remain
+      // fail-closed, so this branch cannot be reached in the product.
+      hilog.info(0x0001, 'HostList',
+        'Moonlight catalog handoff accepted; Navigation destination remains dormant');
+      return;
     }
 
     if (openVncGatewayDirectory || openRustDeskRelayDirectory) {
@@ -2642,6 +2707,7 @@ struct HostListPage {
 
   aboutToDisappear(): void {
     this.pageActive = false;
+    this.invalidateMoonlightCatalogHandoff();
     this.hostPresencePageGeneration += 1;
     this.hostLoadRefreshPresence = false;
     if (this.hostLoadRefreshTimer !== -1) {
@@ -12378,6 +12444,7 @@ struct HostListPage {
           this.modernAddProtocol = protocol;
           this.addSheetShowsModernPicker = false;
           if (protocol === 'moonlight') {
+            this.invalidateMoonlightCatalogHandoff();
             this.moonlightAddOwnerToken += 1;
           }
           if (protocol === 'vnc') {
@@ -12442,11 +12509,13 @@ struct HostListPage {
       MoonlightHostAddFlow({
         ownerToken: this.moonlightAddOwnerToken,
         onBackToProtocols: (): void => {
+          this.invalidateMoonlightCatalogHandoff();
+          this.moonlightAddOwnerToken += 1;
           this.modernAddProtocol = '';
           this.addSheetShowsModernPicker = true;
         },
-        onSaved: (_openCatalog: boolean): void => {
-          this.requestAddSheetClose();
+        onSaved: (hostId: string, openCatalog: boolean, ownerToken: number): void => {
+          this.handleMoonlightHostSaved(hostId, openCatalog, ownerToken);
         }
       })
     } else if (this.modernAddProtocol === 'ssh') {

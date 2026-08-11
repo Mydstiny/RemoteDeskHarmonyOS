@@ -6,6 +6,7 @@ import {
   beginMoonlightHostAddOperation,
   cancelMoonlightHostAddDiscovery,
   cancelMoonlightHostAddOperation,
+  committedMoonlightHostAddId,
   completeMoonlightHostAddCatalog,
   completeMoonlightHostAddPairing,
   completeMoonlightHostAddSave,
@@ -164,6 +165,13 @@ export default function moonlightHostAddFlowPolicyTest(): void {
       begin = beginMoonlightHostAddOperation(state, 'save');
       state = completeMoonlightHostAddSave(begin.state, begin.key, true);
       expect(state.savedLocally).assertTrue();
+    });
+
+    it('hands_off_only_a_stable_id_from_a_completed_local_commit', 0, (): void => {
+      expect(committedMoonlightHostAddId(true, ' moonlight-host-a '))
+        .assertEqual('moonlight-host-a');
+      expect(committedMoonlightHostAddId(false, 'moonlight-host-a')).assertEqual('');
+      expect(committedMoonlightHostAddId(true, ' ')).assertEqual('');
     });
 
     it('rejects_late_async_results_after_cancel_or_owner_change', 0, (): void => {

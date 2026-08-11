@@ -549,6 +549,18 @@ export function completeMoonlightHostAddSave(
   return next;
 }
 
+/**
+ * A post-save route may carry only the stable ID returned by the successful
+ * local repository commit. A queued/requested write or an object snapshot is
+ * never sufficient to open a destination page.
+ */
+export function committedMoonlightHostAddId(
+  localCommitted: boolean,
+  hostId: string
+): string {
+  return localCommitted ? hostId.trim() : '';
+}
+
 export function setMoonlightHostAddDisplayName(
   state: MoonlightHostAddState,
   displayName: string
