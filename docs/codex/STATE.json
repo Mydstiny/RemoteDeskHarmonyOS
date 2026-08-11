@@ -3,44 +3,40 @@
   "task": "moonlight-complete-upgrade",
   "branch": "codex/moonlight-complete-upgrade",
   "base": "aeb0cdac5",
-  "head": "094a8b3b",
-  "phase": "u1-save-open-handoff-complete-u1-06-pending",
+  "head": "2c37b0edf",
+  "phase": "u1-ui-shell-closeout-s1-01-pending",
   "status": "active",
-  "next": "Execute U1-06 only: using RustDesk and shared Theme tokens as the sole visual and interaction baseline, create local-only MoonlightHostDetailPage and MoonlightAppCatalogPage Navigation destinations. HostList remains a thin aggregator; pages reload by stable local host ID and use owner/generation-fenced local cache refresh for empty, stale, partial, offline, host-busy, large-catalog and broken-cover states. Keep the picker false and all real Host Control, persistence, runtime, NAPI and cloud ports fail closed. VNC remains only an isolation/regression boundary, never a Moonlight UI scaffold. S1-05A later connects the real HarmonyOS GameController native listener and narrow typed NAPI to the dormant N3-08 full-state path; ArkTS never encodes or directly transmits controller protocol.",
+  "next": "S1-01/S1-02: connect the local-only Moonlight UI shell to the single existing remote-session registry/coordinator while keeping picker, Host Control, transport, media, input, first-frame and cloud truth fail closed. S1-05A later adds the native HarmonyOS GameController listener and narrow typed NAPI; N2-09 remains real Sunshine/ARM64 external evidence.",
   "blockers": [
     "ohosTest@OhosTestCompileArkTS is not registered (00306054); 162 focused Moonlight tests in 21 describe groups plus 8 shared host-add handoff cases are compile-registered but not executed on device",
-    "HAP/AppSpawn secure identity and real Sunshine transport/media/first-frame runtime capabilities remain unproven",
-    "The real HarmonyOS GameController listener and typed NAPI ingress remain deferred to S1-05A; physical controller transport is not yet a product runtime capability",
-    "N2-09 real Sunshine 720p/1080p, 30/60fps, two-hour, thermal, background/PIP/rotation and user ARM64 physical acceptance remain pending"
+    "HAP/AppSpawn secure identity, real Sunshine transport/media/first-frame, OHAudio/Surface lifecycle and physical controller runtime capabilities remain unproven",
+    "N2-09 real Sunshine 720p/1080p, 30/60fps, two-hour, thermal, background/PIP/rotation and user ARM64 physical acceptance remain pending",
+    "The user-owned CloudStore.ets cloud-sync diff is intentionally outside this Moonlight checkpoint and remains unstaged"
   ],
   "planPaths": [
     "docs/superpowers/plans/2026-07-28-moonlight-harmonyos-complete-upgrade-plan.md",
     "docs/codex/plans/2026-08-09-moonlight-implementation-ledger.md"
   ],
   "review": {
-    "status": "PASS",
+    "status": "REVIEW_REQUIRED",
     "taskId": "019fe966-d99a-7ce1-8b53-4ef725597053",
     "scope": [
-      "708172c08..094a8b3b",
-      "entry/src/main/ets/components/hostadd/MoonlightHostAddFlow.ets",
-      "entry/src/main/ets/pages/HostListPage.ets",
-      "entry/src/main/ets/services/HostAddConnectionHandoffPolicy.ets",
-      "entry/src/main/ets/services/MoonlightHostAddFlowPolicy.ets",
-      "entry/src/test/HostAddConnectionHandoffPolicy.test.ets",
-      "entry/src/test/MoonlightHostAddFlowPolicy.test.ets"
+      "094a8b3b..2c37b0edf",
+      "entry/src/main/ets/pages/HostListPage.ets"
     ],
     "lastReceiptId": "moonlight-u1-05-gpt5-094a8b3b-2026-08-11",
-    "reason": "Existing reviewer task 019fe966-d99a-7ce1-8b53-4ef725597053 was reused. Its first U1-05 review found one P2 committed-without-stable-ID rewrite risk. After 094a8b3b separated repository commit truth from catalog handoff eligibility, final read-only review returned PASS with P0/P1/P2/P3 all zero, confirming the RustDesk-only visual baseline, native Sheet onDisappear boundary, no fixed delay or second Sheet, exact owner/generation fencing, disabled picker and isolation from native, cloud and other protocol business paths."
+    "reason": "The existing reviewer task was reused for the incremental U1-06～U1-12 UI shell isolation review. Its result is pending; the prior PASS only covered 708172c08..094a8b3b and must not be reused for this new code range. CloudStore.ets is explicitly excluded."
   },
   "lastVerification": {
-    "diffCheck": "pass for U1-05 code and closeout documents",
-    "testCompile": "pass default@OhosTestCompileArkTS after final U1-05 review fix; no on-device Hypium execution is claimed",
-    "assembleHap": "pass signed production HAP after U1-05 with the current certificate; SHA-256 89ab30e1327e9f902e2370cfa9308fc5a29f9d559e7aaedf2168becb5e3883af",
-    "hdcRuntime": "pass outside sandbox on 127.0.0.1:5555: final signed HAP installed, force-stopped and started; final UI dump /private/tmp/moonlight-u1-05-final-094a8b3b.json shows one RustDesk, one Moonlight and one coming-soon label, Moonlight parent opacity 0.58, and no Moonlight add route or 1/4 after tap",
+    "diffCheck": "pass before documentation closeout; rerun after final documentation edits",
+    "testCompile": "pass: exact default@OhosTestCompileArkTS with --analyze=normal --parallel --incremental --no-daemon after 2c37b0edf",
+    "assembleHap": "pass: exact assembleHap with --analyze=normal --parallel --incremental --no-daemon after documentation closeout; signed HAP SHA-256 4d01a1026402538e0014ffa3cac9a925f301d62e0eec5c6d393e7f0de0a1618f",
+    "hapPath": "entry/build/default/outputs/default/entry-default-signed.hap",
+    "hdcRuntime": "pass outside sandbox after the final build: signed HAP installed and EntryAbility started on PC 127.0.0.1:5555 and phone 127.0.0.1:5557; fresh evidence only /private/tmp/moonlight-final-20260811-pc-full.jpeg/.json and /private/tmp/moonlight-final-20260811-phone-settings.jpeg/.json",
+    "uiAcceptance": "fresh PC full-screen tree shows a separate Moonlight sidebar slot and one 即将支持 while RDP remains the active page; fresh phone settings tree shows 串流画面、音频、控制与本地安全设置 and no 主机管理",
     "focusedTests": "Moonlight aggregate is 162 tests in 21 describe groups; shared HostAddConnectionHandoffPolicy has 8 cases; all are compile-registered",
-    "isolation": "pass: RustDeskAddFlow, CloudStore, CloudSyncPolicy, all native sources and all other protocol business sources are unchanged; HostListPage contains only a thin dormant branch and explicitly passes moonlightProtocolAvailable=false; cloud registration remains exactly 8 tables; disabled Moonlight flow does not mount or start repository, native, network, timer, thread or background work; U1-05 adds no fixed delay, second Sheet, Navigation destination, NAPI or product runtime caller",
-    "lightCompliance": "pass with exact official Moonlight Qt icon provenance, upstream/package SHA-256, NOTICE, SPDX, source offer and artifact hash",
-    "moonlightVendor": "pass: 117 exact source files and three reconstructed official Git trees",
+    "isolation": "static pass for the Moonlight code range: no RustDesk, RDP, SSH/SFTP or VNC business source, native source, CloudSyncPolicy or online cloud-table registration changed; HostListPage remains a thin fail-closed integration and the user CloudStore diff is excluded",
+    "lightCompliance": "pass previously for official icon provenance, vendor, SBOM, NOTICE, SPDX and artifact hash; documentation-only closeout does not change those artifacts",
     "ohosTest": "blocked task-not-registered 00306054; no on-device execution pass claimed"
   },
   "updated": "2026-08-11 Asia/Shanghai"
