@@ -4,9 +4,9 @@
 
 - Task: `moonlight-complete-upgrade`
 - Base: `main@aeb0cdac5`; branch: `codex/moonlight-complete-upgrade`
-- Phase: G0、D1-D3 local/dormant、N1-01～N1-08、N2-01～N2-08 已 checkpoint；
-  N2-08 代码 checkpoint 为 `57b1d7da4`。N2-09 等待真实设备，当前唯一可执行代码任务为
-  dormant N3-01。2026-08-10 决策为
+- Phase: G0、D1-D3 local/dormant、N1-01～N1-08、N2-01～N2-08、N3-01 已 checkpoint；
+  N3-01 代码 checkpoint 为 `fe46025ef`。N2-09 等待真实设备，当前唯一可执行代码任务为
+  dormant N3-02。2026-08-10 决策为
   Moonlight 暂不接入云同步，当前只推进本地主机存储；云表/CloudSync 方案 parked。
 - Authoritative plan: `docs/superpowers/plans/2026-07-28-moonlight-harmonyos-complete-upgrade-plan.md`
 - Live ledger: `docs/codex/plans/2026-08-09-moonlight-implementation-ledger.md`
@@ -23,7 +23,7 @@
 - 11 个 feature inputs 默认全 false；六项 release snapshot 未放行。平台能力默认
   11 pending、controller rumble 1 unsupported、0 supported。
 - 两个允许的 `gpt-5.6-sol low` reviewer 名额均已使用，不得因压缩或新 checkpoint 重派；
-  N2-03/N2-04 无第三份审查回执，状态机应诚实显示 `REVIEW_REQUIRED`。
+  N2-03～N3-01 无第三份审查回执，状态机应诚实显示 `REVIEW_REQUIRED`。
 
 ## Checkpoint Facts
 
@@ -65,24 +65,31 @@
   common-c exact RTP/FEC counters；optional 保持 absent-vs-zero，owner/window/source generation、
   counter decrease、节流、饱和、stop/cleanup 和迟到 sample 均 fail closed。无日志、线程、
   NAPI/ArkTS/UI/cloud/product caller。
+- N3-01 `fe46025ef`：hidden `MoonlightInputBridge` 统一承载 exact session/generation/
+  owner/input generation、device/source/source generation/sequence/monotonic timestamp；复用唯一
+  `MoonlightSessionOwner` 与共享跨协议 `SessionSinkOwnerLease`，固定最多 32 个 source lane 和
+  64-byte payload，完成 stale/duplicate/backpressure、失焦/停止 neutral flush、retry、resume、
+  cleanup 和并发序列化合同。未修改公共 `InputHandler`，无产品 caller、NAPI、ArkTS、UI 或云。
 
-## N2-08 Verification
+## N3-01 Verification
 
-- host normal/strict：**561 total / 545 passed / 16 failed**；16 个失败仍仅为既有 VNC 本地 TLS
-  fixture `start()` 环境失败，新增 13 个 N2-08 focused tests 全 PASS。
-- ASan/UBSan 连续三轮与 TSan 同为 545/16，均无 sanitizer report；focused clang analyzer
-  零诊断。arm64-v8a/x86_64 均生成私有 archive；无 caller 时 archive object 不进入
-  `rdpnapi`，两 ABI defined/undefined 动态符号集合与 N2-07 产物逐项一致。
+- host normal 连续三轮与 strict 最终：**573 total / 557 passed / 16 failed**；16 个失败仍仅为既有 VNC
+  本地 TLS fixture `start()` 环境失败，新增 12 个 N3-01 focused tests 全 PASS。
+- ASan/UBSan 连续三轮与 TSan 同为 557/16，均无 sanitizer report；focused clang analyzer
+  零诊断。arm64-v8a/x86_64 均生成非空私有 archive；无 caller 时 archive object 不进入
+  `rdpnapi`，两 ABI defined/undefined 动态符号数量仍为 arm64 **16114/705**、x86_64
+  **15645/703**，本地/动态符号均无 `MoonlightInput`。
 - 两项 Hvigor 与 signed `assembleHap` 均 BUILD SUCCESSFUL；当前 signed HAP SHA-256
-  `5bf7cd91809c7c9e46cf15aa1d8b963946f0d805b91a867ef98492aa441860fe`，333 paths。
-- Light 与 `git diff --check` 通过；仅改 Moonlight 新文件、focused test 和私有 CMake target，
-  未改 common-c、共享 telemetry/audio/render 或任一旧协议业务源。HDC 无 target，不声明真实
-  Sunshine、媒体延迟或性能能力。
+  `645308dff61bb65c959ddb9f704eba1334f04fca5af74af59131183965326ba9`，333 paths。
+- Light 与 `git diff --check` 通过；仅改 Moonlight 输入新文件、focused test 和私有 CMake
+  target，未改 common-c、公共 `InputHandler`、共享 telemetry/audio/render 或任一旧协议业务源。
+  HDC 无 target，不声明真实 Sunshine、输入、媒体延迟或性能能力。
 
 ## Next
 
-1. N3-01：新建 dormant `MoonlightInputBridge`，所有输入携带 exact session/generation/device/
-   source/timestamp，复用唯一 Moonlight owner lane；不接 InputHandler、NAPI、ArkTS 或 UI。
+1. N3-02：在 N3-01 的 bounded command body 内建立 HarmonyOS key→Moonlight key 纯 native 合同，
+   覆盖修饰键 once/lock、text vs physical key、全量 key-up 与本地逃生键；仍不接公共
+   `InputHandler`、NAPI、ArkTS、UI 或 product caller。
 2. N2-09 保持 external pending：真实设备 720p/1080p、30/60fps、2 小时、温控、前后台/PIP/
    旋转和 H.264+Opus receipt 只能由真实 Sunshine 与用户 ARM64 实机提供。
 3. S1-08 才消费 N2-05 native contract，接现有 `NativeSessionHandles`/PIP/background 生命周期；
