@@ -3,6 +3,7 @@ import { MoonlightRecord } from '../main/ets/model/MoonlightRecord';
 import {
   moonlightCanonicalizeJson,
   MoonlightRecordMeta,
+  moonlightMutableFieldPaths,
   moonlightPayloadWithMeta,
   moonlightRecordPayloadHashSha256,
   moonlightValidateRecord
@@ -67,6 +68,13 @@ export default function moonlightRecordPolicyTest(): void {
         .assertEqual('invalid_meta');
       expect(moonlightPayloadWithMeta({ _meta: {}, schemaVersion: 1 }, baseMeta(), 'host').reason)
         .assertEqual('invalid_meta');
+    });
+
+    it('does_not_expose_common_display_or_pip_paths_as_moonlight_mutations', 0, (): void => {
+      const paths: string[] = moonlightMutableFieldPaths('settings');
+      expect(paths.indexOf('video.scalingMode') < 0).assertTrue();
+      expect(paths.indexOf('background.allowPip') < 0).assertTrue();
+      expect(paths.indexOf('background.noSurfaceVideo') >= 0).assertTrue();
     });
 
     it('validates_a_canonical_live_host_and_rejects_tampering', 0, (): void => {

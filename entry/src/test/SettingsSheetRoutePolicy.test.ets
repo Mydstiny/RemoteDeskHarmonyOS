@@ -1,6 +1,7 @@
 import { describe, it, expect } from '@ohos/hypium';
 import {
   SETTINGS_SHEET_ACCOUNT,
+  SETTINGS_SHEET_MOONLIGHT_QUICK,
   SETTINGS_PANEL_DISMISS_TO_LEAF_OPEN_MS,
   SETTINGS_SHEET_VNC_CLIPBOARD,
   SETTINGS_SHEET_VNC_CONNECTION,
@@ -15,6 +16,9 @@ import {
   settingsLeafSheetUsesSystemCloseButton,
   shouldDelaySettingsLeafOpenForPanel,
   settingsLeafOpenDelayMs,
+  moonlightSettingsLeafSheetHeight,
+  moonlightSettingsRouteSpec,
+  moonlightSettingsRouteSpecs,
   vncSettingsLeafSheetHeight
 } from '../main/ets/services/SettingsSheetRoutePolicy';
 
@@ -46,6 +50,22 @@ export default function settingsSheetRoutePolicyTest() {
       expect(vncSettingsLeafSheetHeight(SETTINGS_SHEET_VNC_HOSTS)).assertEqual(260);
       expect(vncSettingsLeafSheetHeight(SETTINGS_SHEET_VNC_GATEWAY)).assertEqual(260);
       expect(vncSettingsLeafSheetHeight(SETTINGS_SHEET_ACCOUNT)).assertEqual(0);
+    });
+
+    it('allocates_contiguous_owned_moonlight_routes_after_existing_modes', 0, (): void => {
+      const specs = moonlightSettingsRouteSpecs();
+      expect(specs.length).assertEqual(9);
+      expect(specs[0].mode).assertEqual(SETTINGS_SHEET_MOONLIGHT_QUICK);
+      for (let i = 0; i < specs.length; i++) {
+        expect(specs[i].mode).assertEqual(24 + i);
+        expect(specs[i].owner).assertEqual('moonlight');
+        expect(specs[i].height > 0).assertTrue();
+        expect(specs[i].title.length > 0).assertTrue();
+      }
+      expect(moonlightSettingsRouteSpec(SETTINGS_SHEET_MOONLIGHT_QUICK)?.section).assertEqual('quick');
+      expect(moonlightSettingsLeafSheetHeight(SETTINGS_SHEET_MOONLIGHT_QUICK)).assertEqual(480);
+      expect(moonlightSettingsLeafSheetHeight(SETTINGS_SHEET_VNC_CONNECTION)).assertEqual(0);
+      expect(moonlightSettingsRouteSpec(23)).assertNull();
     });
   });
 }

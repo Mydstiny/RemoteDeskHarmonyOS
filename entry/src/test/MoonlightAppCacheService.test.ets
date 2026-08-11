@@ -191,5 +191,21 @@ export default function moonlightAppCacheServiceTest(): void {
       expect(failed.code).assertEqual('write_failed');
       expect(port.rows.size).assertEqual(0);
     });
+
+    it('loads_expired_and_unavailable_rows_for_offline_ui_without_writing', 0, (): void => {
+      const port = new MemoryMoonlightAppCachePort();
+      const stale: MoonlightAppCacheEntry =
+        entry('owner-a', 'host-1', 'stale', 'Old Game', 100, 100);
+      const vanished: MoonlightAppCacheEntry =
+        entry('owner-a', 'host-1', 'gone', 'Vanished Game', 100, 1000);
+      vanished.available = false;
+      port.rows.set(stale.id, stale);
+      port.rows.set(vanished.id, vanished);
+      const snapshot = new MoonlightAppCacheService(port)
+        .loadSnapshot(lease('owner-a'), 'host-1');
+      expect(snapshot.ok).assertTrue();
+      expect(snapshot.visibleEntries.length).assertEqual(2);
+      expect(port.commitCount).assertEqual(0);
+    });
   });
 }

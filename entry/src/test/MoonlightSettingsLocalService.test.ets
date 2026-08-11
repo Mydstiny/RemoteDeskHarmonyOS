@@ -1,0 +1,130 @@
+import { describe, it, expect } from '@ohos/hypium';
+import { MoonlightSettings, defaultMoonlightSettings } from '../main/ets/model/MoonlightModels';
+import { MoonlightRecord } from '../main/ets/model/MoonlightRecord';
+import {
+  AccountSessionLease,
+  accountSessionLeaseEquals,
+  cloneAccountSessionLease
+} from '../main/ets/services/AccountScopePolicy';
+import {
+  MoonlightRepositoryPort,
+  MoonlightRepositoryReadResult
+} from '../main/ets/services/MoonlightRepository';
+import { MoonlightSettingsLocalService } from '../main/ets/services/MoonlightSettingsLocalService';
+
+function settingsLease(owner: string, generation: number = 1): AccountSessionLease {
+  return {
+    ownerScopeId: owner,
+    storeIdentity: 'settings-store-' + owner,
+    generation: generation,
+    storeInstanceId: generation
+  };
+}
+
+class MemorySettingsPort implements MoonlightRepositoryPort {
+  activeLease: AccountSessionLease | null = settingsLease('owner-a');
+  rows: MoonlightRecord[] = [];
+  commitCount: number = 0;
+  lastLocalOnly: number = -1;
+
+  currentAccountLease(): AccountSessionLease | null {
+    return this.activeLease === null ? null : cloneAccountSessionLease(this.activeLease);
+  }
+
+  isLeaseCurrent(candidate: AccountSessionLease): boolean {
+    return accountSessionLeaseEquals(this.activeLease, candidate);
+  }
+
+  readMoonlightLocalRecord(candidate: AccountSessionLease,
+    id: string): MoonlightRepositoryReadResult {
+    if (!this.isLeaseCurrent(candidate)) { return { ok: false, record: null, localOnly: 1 }; }
+    for (let i = 0; i < this.rows.length; i++) {
+      if (this.rows[i].userId === candidate.ownerScopeId && this.rows[i].id === id) {
+        return { ok: true, record: MoonlightRecord.fromJSON(this.rows[i].toJSON()), localOnly: 1 };
+      }
+    }
+    return { ok: true, record: null, localOnly: 1 };
+  }
+
+  loadMoonlightLocalRecords(candidate: AccountSessionLease,
+    includeDeleted: boolean = false): MoonlightRecord[] | null {
+    if (!this.isLeaseCurrent(candidate)) { return null; }
+    const result: MoonlightRecord[] = [];
+    for (let i = 0; i < this.rows.length; i++) {
+      if (this.rows[i].userId === candidate.ownerScopeId &&
+          (includeDeleted || this.rows[i].deletedAt === 0)) {
+        result.push(MoonlightRecord.fromJSON(this.rows[i].toJSON()));
+      }
+    }
+    return result;
+  }
+
+  commitMoonlightLocalRecord(candidate: AccountSessionLease,
+    record: MoonlightRecord, localOnly: number,
+    _operation: string): boolean {
+    if (!this.isLeaseCurrent(candidate)) { return false; }
+    for (let i = 0; i < this.rows.length; i++) {
+      if (this.rows[i].userId === candidate.ownerScopeId && this.rows[i].id === record.id) {
+        this.rows[i] = MoonlightRecord.fromJSON(record.toJSON());
+        this.commitCount++;
+        this.lastLocalOnly = localOnly;
+        return true;
+      }
+    }
+    this.rows.push(MoonlightRecord.fromJSON(record.toJSON()));
+    this.commitCount++;
+    this.lastLocalOnly = localOnly;
+    return true;
+  }
+
+  recordMoonlightQuarantine(candidate: AccountSessionLease,
+    _recordId: string, _reason: string, _payloadHashSha256: string): boolean {
+    return this.isLeaseCurrent(candidate);
+  }
+}
+
+export default function moonlightSettingsLocalServiceTest(): void {
+  describe('MoonlightSettingsLocalService', (): void => {
+    it('loads_defaults_without_writing_when_no_local_settings_exist', 0, (): void => {
+      const port = new MemorySettingsPort();
+      const loaded = new MoonlightSettingsLocalService(port).load();
+      expect(loaded.ok).assertTrue();
+      expect(loaded.code).assertEqual('default');
+      expect(port.commitCount).assertEqual(0);
+    });
+
+    it('commits_and_reads_owner_scoped_settings_as_local_only', 0, (): void => {
+      const port = new MemorySettingsPort();
+      const service = new MoonlightSettingsLocalService(port);
+      const settings: MoonlightSettings = defaultMoonlightSettings();
+      settings.video.fps = 120;
+      const saved = service.save(settings, 1000);
+      expect(saved.ok).assertTrue();
+      expect(saved.localCommitted).assertTrue();
+      expect(port.commitCount).assertEqual(1);
+      expect(port.lastLocalOnly).assertEqual(1);
+      expect(service.load().settings.video.fps).assertEqual(120);
+    });
+
+    it('does_not_leak_settings_across_account_leases', 0, (): void => {
+      const port = new MemorySettingsPort();
+      const service = new MoonlightSettingsLocalService(port);
+      const settings: MoonlightSettings = defaultMoonlightSettings();
+      settings.audio.enabled = false;
+      expect(service.save(settings, 1000).ok).assertTrue();
+      port.activeLease = settingsLease('owner-b', 2);
+      const ownerB = service.load();
+      expect(ownerB.code).assertEqual('default');
+      expect(ownerB.settings.audio.enabled).assertTrue();
+    });
+
+    it('fails_closed_without_an_active_local_account_lease', 0, (): void => {
+      const port = new MemorySettingsPort();
+      port.activeLease = null;
+      const service = new MoonlightSettingsLocalService(port);
+      expect(service.load().code).assertEqual('not_ready');
+      expect(service.save(defaultMoonlightSettings(), 1000).localCommitted).assertFalse();
+      expect(port.commitCount).assertEqual(0);
+    });
+  });
+}

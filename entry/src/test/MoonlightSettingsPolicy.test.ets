@@ -54,7 +54,7 @@ export default function moonlightSettingsPolicyTest(): void {
         .requested.video.fps).assertEqual(30);
     });
 
-    it('clips_unavailable_codec_hdr_audio_input_rumble_and_pip', 0, (): void => {
+    it('clips_unavailable_codec_hdr_audio_input_and_rumble', 0, (): void => {
       const global = defaultMoonlightSettings();
       global.video.codecPreference = 'av1';
       global.video.resolutionMode = '2160p';
@@ -71,8 +71,7 @@ export default function moonlightSettingsPolicyTest(): void {
       expect(result.effective.audio.channels).assertEqual('stereo');
       expect(result.effective.input.touchMode).assertEqual('absoluteMouse');
       expect(result.effective.input.enableRumble).assertFalse();
-      expect(result.effective.background.allowPip).assertFalse();
-      expect(result.adjustments.length >= 8).assertTrue();
+      expect(result.adjustments.length >= 7).assertTrue();
     });
 
     it('does_not_allow_profile_or_session_to_override_security_identity', 0, (): void => {

@@ -95,7 +95,8 @@ export interface MoonlightVideoSettings {
   hdr: boolean;
   yuv444: boolean;
   latencyMode: MoonlightLatencyMode;
-  scalingMode: MoonlightScalingMode;
+  /** Legacy read compatibility; display scale is owned by app common settings. */
+  scalingMode?: MoonlightScalingMode;
 }
 
 export interface MoonlightAudioSettings {
@@ -124,7 +125,8 @@ export interface MoonlightNetworkSettings {
 }
 
 export interface MoonlightBackgroundSettings {
-  allowPip: boolean;
+  /** Legacy read compatibility; PIP is owned by app common live-view settings. */
+  allowPip?: boolean;
   allowAudioInBackground: boolean;
   noSurfaceVideo: MoonlightBackgroundVideoPolicy;
 }
@@ -232,8 +234,7 @@ export function defaultMoonlightSettings(): MoonlightSettings {
       bitrateKbps: 20000,
       hdr: false,
       yuv444: false,
-      latencyMode: 'lowLatency',
-      scalingMode: 'fit'
+      latencyMode: 'lowLatency'
     },
     audio: {
       enabled: true,
@@ -258,7 +259,6 @@ export function defaultMoonlightSettings(): MoonlightSettings {
       reconnectBudgetMs: 15500
     },
     background: {
-      allowPip: true,
       allowAudioInBackground: true,
       noSurfaceVideo: 'drop'
     },
@@ -271,6 +271,20 @@ export function defaultMoonlightSettings(): MoonlightSettings {
       logLevel: 'error'
     }
   };
+}
+
+/**
+ * Remove fields that predate the common display/live-view ownership split.
+ * They remain optional on the DTO so old local records can be read safely,
+ * but new local writes must not carry a second Moonlight-owned value.
+ */
+export function normalizeMoonlightSettingsForLocalStorage(
+  settings: MoonlightSettings
+): MoonlightSettings {
+  const normalized: MoonlightSettings = JSON.parse(JSON.stringify(settings)) as MoonlightSettings;
+  normalized.video.scalingMode = undefined;
+  normalized.background.allowPip = undefined;
+  return normalized;
 }
 
 export function moonlightAddressKey(address: MoonlightAddress): string {
@@ -392,6 +406,10 @@ export function moonlightSettingsAreValid(settings: MoonlightSettings): boolean 
       typeof settings.diagnostics !== 'object') {
     return false;
   }
+  const legacyScalingValid: boolean = settings.video.scalingMode === undefined ||
+    isOneOf(settings.video.scalingMode, ['fit', 'fill', 'oneToOne']);
+  const legacyPipValid: boolean = settings.background.allowPip === undefined ||
+    typeof settings.background.allowPip === 'boolean';
   return settings.schemaVersion === 1 &&
     isOneOf(settings.video.codecPreference, ['auto', 'h264', 'hevc', 'av1']) &&
     isOneOf(settings.video.resolutionMode, ['host', '720p', '1080p', '1440p', '2160p', 'custom']) &&
@@ -401,7 +419,7 @@ export function moonlightSettingsAreValid(settings: MoonlightSettings): boolean 
     isIntegerInRange(settings.video.bitrateKbps, 1000, 200000) &&
     typeof settings.video.hdr === 'boolean' && typeof settings.video.yuv444 === 'boolean' &&
     isOneOf(settings.video.latencyMode, ['lowLatency', 'balanced', 'smooth']) &&
-    isOneOf(settings.video.scalingMode, ['fit', 'fill', 'oneToOne']) &&
+    legacyScalingValid &&
     isOneOf(settings.audio.channels, ['stereo', 'surround51', 'surround71']) &&
     typeof settings.audio.enabled === 'boolean' && typeof settings.audio.playOnHost === 'boolean' &&
     Number.isFinite(settings.audio.volume) && settings.audio.volume >= 0 && settings.audio.volume <= 1 &&
@@ -417,7 +435,7 @@ export function moonlightSettingsAreValid(settings: MoonlightSettings): boolean 
     typeof settings.network.autoReconnect === 'boolean' &&
     isOneOf(settings.network.meteredNetwork, ['ask', 'allow', 'deny']) &&
     isIntegerInRange(settings.network.reconnectBudgetMs, 0, 120000) &&
-    typeof settings.background.allowPip === 'boolean' &&
+    legacyPipValid &&
     typeof settings.background.allowAudioInBackground === 'boolean' &&
     isOneOf(settings.background.noSurfaceVideo, ['drop', 'pause']) &&
     settings.security.blockCertificateChanges &&

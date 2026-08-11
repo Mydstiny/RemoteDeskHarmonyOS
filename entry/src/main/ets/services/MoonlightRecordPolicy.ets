@@ -65,12 +65,12 @@ const FORBIDDEN_SECRET_KEYS: string[] = [
 const SETTINGS_FIELD_PATHS: string[] = [
   'video.codecPreference', 'video.resolutionMode', 'video.customWidth', 'video.customHeight',
   'video.fps', 'video.bitrateKbps', 'video.hdr', 'video.yuv444', 'video.latencyMode',
-  'video.scalingMode', 'audio.enabled', 'audio.channels', 'audio.volume', 'audio.playOnHost',
+  'audio.enabled', 'audio.channels', 'audio.volume', 'audio.playOnHost',
   'input.touchMode', 'input.captureKeyboard', 'input.forwardSystemShortcuts',
   'input.controllerSlot', 'input.enableRumble', 'network.discovery',
   'network.preferredAddressFamily', 'network.streamEncryption', 'network.allowLegacySha1',
   'network.meteredNetwork', 'network.autoReconnect', 'network.reconnectBudgetMs',
-  'background.allowPip', 'background.allowAudioInBackground', 'background.noSurfaceVideo',
+  'background.allowAudioInBackground', 'background.noSurfaceVideo',
   'security.blockCertificateChanges', 'security.identityStorage',
   'diagnostics.showPerformanceHud', 'diagnostics.logLevel'
 ];

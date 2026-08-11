@@ -76,6 +76,12 @@ import { HostAddWizardSheet } from '../components/hostadd/HostAddWizardSheet';
 import { RdpAddFlow } from '../components/hostadd/RdpAddFlow';
 import { RustDeskAddFlow } from '../components/hostadd/RustDeskAddFlow';
 import { MoonlightHostAddFlow } from '../components/hostadd/MoonlightHostAddFlow';
+import { MoonlightBrandIcon } from '../components/moonlight/MoonlightBrandIcon';
+import { MoonlightSettingsSurface } from './MoonlightSettingsPage';
+import {
+  MoonlightSettingsSection,
+  moonlightHostRouteParams
+} from '../services/MoonlightUiPolicy';
 import { SshAddFlow } from '../components/hostadd/SshAddFlow';
 import { VncAddFlow } from '../components/hostadd/VncAddFlow';
 import {
@@ -258,6 +264,15 @@ import {
   SETTINGS_SHEET_TERMINAL_FG_COLOR,
   SETTINGS_SHEET_TERMINAL_FONT_SIZE,
   SETTINGS_SHEET_TERMINAL_LINE_SPACING,
+  SETTINGS_SHEET_MOONLIGHT_QUICK,
+  SETTINGS_SHEET_MOONLIGHT_VIDEO,
+  SETTINGS_SHEET_MOONLIGHT_AUDIO,
+  SETTINGS_SHEET_MOONLIGHT_INPUT,
+  SETTINGS_SHEET_MOONLIGHT_NETWORK_SECURITY,
+  SETTINGS_SHEET_MOONLIGHT_BACKGROUND,
+  SETTINGS_SHEET_MOONLIGHT_DIAGNOSTICS,
+  SETTINGS_SHEET_MOONLIGHT_CLOUD,
+  SETTINGS_SHEET_MOONLIGHT_TRUST,
   SETTINGS_SHEET_VNC_CLIPBOARD,
   SETTINGS_SHEET_VNC_CONNECTION,
   SETTINGS_SHEET_VNC_DISPLAY,
@@ -270,6 +285,9 @@ import {
   SETTINGS_SHEET_VNC_TRUST,
   SETTINGS_SHEET_WALLPAPER,
   SETTINGS_PANEL_DISMISS_TO_LEAF_OPEN_MS,
+  MoonlightSettingsRouteSpec,
+  moonlightSettingsLeafSheetHeight,
+  moonlightSettingsRouteSpec,
   settingsLeafSheetUsesSystemCloseButton,
   settingsLeafOpenDelayMs,
   vncSettingsLeafSheetHeight
@@ -287,6 +305,7 @@ import {
   SETTINGS_SECTION_DISPLAY_INTERACTION,
   SETTINGS_SECTION_HOME,
   SETTINGS_SECTION_NONE,
+  SETTINGS_SECTION_MOONLIGHT,
   SETTINGS_SECTION_RDP,
   SETTINGS_SECTION_RUSTDESK,
   SETTINGS_SECTION_SSH,
@@ -294,12 +313,14 @@ import {
   SETTINGS_SECTION_SECURITY,
   SETTINGS_SECTION_TUTORIAL,
   SETTINGS_VNC_ACTION_ROW_COUNT,
+  SETTINGS_MOONLIGHT_ACTION_ROW_COUNT,
   SettingsFeedbackLaunchAttempt,
   settingsFeedbackLaunchAttempts,
   settingsFeedbackMailPanelParams,
   settingsNextExpandedSection,
   settingsRatingUriCandidates,
   settingsRatingWantAction,
+  settingsMoonlightExpandedMaxHeight,
   settingsVncExpandedMaxHeight
 } from '../services/SettingsAccordionPolicy';
 import {
@@ -542,6 +563,7 @@ struct HostListPage {
   @State showSettingsLeafSheet: boolean = false;
   @State settingsLeafSheetMode: number = SETTINGS_SHEET_NONE;
   @State vncSettingsLeafDirty: boolean = false;
+  @State moonlightSettingsLeafDirty: boolean = false;
   @State expandedSettingsSection: string = SETTINGS_SECTION_NONE;
   @State aboutSheetMode: number = 0; // 0=使用教程 1=关于应用 2=隐私政策 3=前置操作 4=更新日志
   // 合并 Sheet: 单 bindSheet + mode 切换 (避免 $$ 多 bindSheet 错位)
@@ -1736,12 +1758,16 @@ struct HostListPage {
           'dropped stale Moonlight catalog handoff after add-host Sheet disappeared');
         return;
       }
-      // U1-05 establishes the same native onDisappear boundary used by the
-      // RustDesk add path. U1-06 owns the actual Navigation destination and
-      // local-cache reload; until then all save ports and the picker remain
-      // fail-closed, so this branch cannot be reached in the product.
+      const routeParams: Record<string, Object> | null =
+        moonlightHostRouteParams(pendingMoonlightCatalog.hostId);
+      if (routeParams === null) {
+        hilog.warn(0x0001, 'HostList',
+          'Moonlight catalog handoff rejected because stable ID is invalid');
+        return;
+      }
       hilog.info(0x0001, 'HostList',
-        'Moonlight catalog handoff accepted; Navigation destination remains dormant');
+        'Moonlight catalog handoff accepted after add-host Sheet disappeared');
+      router.pushUrl({ url: 'pages/MoonlightAppCatalogPage', params: routeParams });
       return;
     }
 
@@ -1986,30 +2012,37 @@ struct HostListPage {
     this.resetSettingsLeafSheetAfterDismiss();
   }
 
-  private dismissVncSettingsIfNeeded(continueAction: () => void): void {
-    if (!this.vncSettingsLeafDirty) {
+  private settingsLeafHasUnsavedChanges(): boolean {
+    return this.vncSettingsLeafDirty || this.moonlightSettingsLeafDirty;
+  }
+
+  private dismissSettingsLeafIfNeeded(continueAction: () => void): void {
+    if (!this.settingsLeafHasUnsavedChanges()) {
       continueAction();
       return;
     }
+    const moonlightDirty: boolean = this.moonlightSettingsLeafDirty;
     promptAction.showDialog({
-      title: '放弃未保存的 VNC 设置？',
-      message: '当前叶子设置还有未保存修改。放弃后这些修改不会写入本地或云端。',
+      title: moonlightDirty ? '放弃未保存的 Moonlight 设置？' : '放弃未保存的 VNC 设置？',
+      message: moonlightDirty ? '当前修改只在本地草稿中，放弃后不会写入 Moonlight 本地记录。' :
+        '当前叶子设置还有未保存修改。放弃后这些修改不会写入本地或云端。',
       buttons: [{ text: '继续编辑', color: this.pal().text2 }, { text: '放弃修改', color: this.pal().danger }]
     }).then((result: Object): void => {
       const dialogResult: Record<string, number> = result as Record<string, number>;
       if (dialogResult['index'] === 1) {
         this.vncSettingsLeafDirty = false;
+        this.moonlightSettingsLeafDirty = false;
         continueAction();
       }
     });
   }
 
-  private handleVncSettingsLeafWillDismiss(action: DismissSheetAction): void {
-    if (!this.vncSettingsLeafDirty) {
+  private handleSettingsLeafWillDismiss(action: DismissSheetAction): void {
+    if (!this.settingsLeafHasUnsavedChanges()) {
       action.dismiss();
       return;
     }
-    this.dismissVncSettingsIfNeeded((): void => { action.dismiss(); });
+    this.dismissSettingsLeafIfNeeded((): void => { action.dismiss(); });
   }
 
   private resetSettingsLeafSheetAfterDismiss(): void {
@@ -2040,6 +2073,7 @@ struct HostListPage {
     this.closeLegacySettingsSheetFlags();
     this.resetSettingsLeafSheetAfterDismiss();
     this.vncSettingsLeafDirty = false;
+    this.moonlightSettingsLeafDirty = false;
     if (this.pendingSettingsLeafSheetMode !== SETTINGS_SHEET_NONE) {
       this.scheduleSettingsLeafSheetOpen(this.pendingSettingsLeafSheetMode,
         this.pendingSettingsLeafPrepare,
@@ -2337,7 +2371,7 @@ struct HostListPage {
   }
 
   private openVncHostManagerFromSettings(): void {
-    this.dismissVncSettingsIfNeeded((): void => {
+    this.dismissSettingsLeafIfNeeded((): void => {
       this.closeSettingsLeafSheet();
       setTimeout((): void => {
         if (this.pageActive) { router.pushUrl({ url: 'pages/VncSettingsPage' }); }
@@ -2346,7 +2380,7 @@ struct HostListPage {
   }
 
   private openVncGatewayManagerFromSettings(): void {
-    this.dismissVncSettingsIfNeeded((): void => {
+    this.dismissSettingsLeafIfNeeded((): void => {
       this.closeSettingsLeafSheet();
       setTimeout((): void => {
         if (!this.pageActive) { return; }
@@ -2366,6 +2400,12 @@ struct HostListPage {
     this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
       this.popupSheetMode = POPUP_SHEET_VNC_CERTIFICATES;
     });
+  }
+
+  private openMoonlightSettingsFromSettings(mode: number): void {
+    const spec: MoonlightSettingsRouteSpec | null = moonlightSettingsRouteSpec(mode);
+    if (spec === null || spec.owner !== 'moonlight' || !this.pageActive) { return; }
+    this.openSettingsLeafSheet(mode);
   }
 
   private recheckVncTrust(trust: VncTrustView, selectedHostId: string): void {
@@ -2473,6 +2513,9 @@ struct HostListPage {
     }
     if (section === SETTINGS_SECTION_VNC) {
       return settingsVncExpandedMaxHeight(SETTINGS_VNC_ACTION_ROW_COUNT);
+    }
+    if (section === SETTINGS_SECTION_MOONLIGHT) {
+      return settingsMoonlightExpandedMaxHeight(SETTINGS_MOONLIGHT_ACTION_ROW_COUNT);
     }
     if (section === SETTINGS_SECTION_SECURITY) {
       return 560;
@@ -7521,13 +7564,13 @@ struct HostListPage {
         showClose: settingsLeafSheetUsesSystemCloseButton(),
         maskColor: 'rgba(0,0,0,0.4)',
         onWillDismiss: (action: DismissSheetAction): void => {
-          this.handleVncSettingsLeafWillDismiss(action);
+          this.handleSettingsLeafWillDismiss(action);
         },
         onWillSpringBackWhenDismiss: (action: SpringBackAction): void => {
           // Only an unsaved VNC editor must stay open while its confirmation
           // dialog is shown. Ordinary settings Sheets skip the default bounce
           // and dismiss with the same single native transition as the FAB.
-          if (this.vncSettingsLeafDirty) {
+          if (this.settingsLeafHasUnsavedChanges()) {
             action.springBack();
           }
         },
@@ -7556,6 +7599,9 @@ struct HostListPage {
                   this.sidebarTab('SSH 终端', protocolIcon('ssh'), 2)
                   this.sidebarTab('VNC 主机', protocolIcon('vnc'), 3)
                 }
+                // Moonlight remains separate even when other host cards are
+                // grouped; it has no tab index until its gates are released.
+                this.sidebarMoonlightTab()
                 this.sidebarTab('密钥保险库', protocolIcon('key_vault'), 4)
                 this.sidebarTab('2FA 验证器', protocolIcon('totp'), 5)
                 this.sidebarRelayTab('中继服务器', 6)
@@ -7809,6 +7855,30 @@ struct HostListPage {
       }
       this.updateHostFilter();
     })
+  }
+
+  /**
+   * Moonlight keeps a visible desktop slot so the protocol taxonomy is stable,
+   * but remains fail-closed until Host Control, media and input gates are real.
+   * It deliberately has no tab index and therefore cannot alter another
+   * protocol's selected state or host filter.
+   */
+  @Builder sidebarMoonlightTab() {
+    Row() {
+      SymbolGlyph(protocolIcon('moonlight')).fontSize(28)
+        .fontColor([this.pal().text3]).opacity(0.58)
+      Column() {
+        Text('Moonlight').fontSize(16).fontWeight(FontWeight.Medium)
+          .fontColor(this.pal().text3).fontFamily(this.font())
+        Text('即将支持').fontSize(10).fontColor(this.pal().text3)
+          .fontFamily(this.font()).margin({ top: 2 })
+      }.alignItems(HorizontalAlign.Start).margin({ left: 14 })
+    }
+    .width('100%').height(56).padding({ left: 24, right: 24 })
+    .borderRadius(12).margin({ left: 12, right: 12, bottom: 4 })
+    .opacity(0.58)
+    .accessibilityText('Moonlight，即将支持')
+    .onClick((): void => {})
   }
 
   @Builder sidebarSettingsBtn() {
@@ -9105,7 +9175,21 @@ struct HostListPage {
       this.settingsLeafSheetMode <= SETTINGS_SHEET_VNC_CLIPBOARD;
   }
 
+  private isMoonlightSettingsLeafSheet(): boolean {
+    return this.settingsLeafSheetMode >= SETTINGS_SHEET_MOONLIGHT_QUICK &&
+      this.settingsLeafSheetMode <= SETTINGS_SHEET_MOONLIGHT_TRUST;
+  }
+
+  private moonlightSettingsSectionForLeaf(): MoonlightSettingsSection {
+    const spec: MoonlightSettingsRouteSpec | null =
+      moonlightSettingsRouteSpec(this.settingsLeafSheetMode);
+    if (spec === null) { return 'quick'; }
+    return spec.section as MoonlightSettingsSection;
+  }
+
   private settingsLeafSheetHeight(): SheetSize | number {
+    const moonlightHeight: number = moonlightSettingsLeafSheetHeight(this.settingsLeafSheetMode);
+    if (moonlightHeight > 0) { return moonlightHeight; }
     const vncHeight: number = vncSettingsLeafSheetHeight(this.settingsLeafSheetMode);
     return vncHeight > 0 ? vncHeight : SheetSize.FIT_CONTENT;
   }
@@ -9144,12 +9228,22 @@ struct HostListPage {
         onClose: (): void => { this.closeSettingsLeafSheet(); },
         onOpenMail: (): void => { this.openFeedbackEmail(); }
       })
+    } else if (this.isMoonlightSettingsLeafSheet()) {
+      MoonlightSettingsSurface({
+        embedded: true,
+        requestedSection: this.moonlightSettingsSectionForLeaf(),
+        requestedHostId: '',
+        onClose: (): void => {
+          this.dismissSettingsLeafIfNeeded((): void => { this.closeSettingsLeafSheet(); });
+        },
+        onDirtyChanged: (dirty: boolean): void => { this.moonlightSettingsLeafDirty = dirty; }
+      })
     } else if (this.settingsLeafSheetMode >= SETTINGS_SHEET_VNC_CONNECTION &&
       this.settingsLeafSheetMode <= SETTINGS_SHEET_VNC_CLIPBOARD) {
       VncSettingsSheet({
         mode: this.settingsLeafSheetMode,
         onClose: (): void => {
-          this.dismissVncSettingsIfNeeded((): void => { this.closeSettingsLeafSheet(); });
+          this.dismissSettingsLeafIfNeeded((): void => { this.closeSettingsLeafSheet(); });
         },
         onOpenHostManager: (): void => { this.openVncHostManagerFromSettings(); },
         onOpenGatewayManager: (): void => { this.openVncGatewayManagerFromSettings(); },
@@ -9166,7 +9260,7 @@ struct HostListPage {
   }
 
   @Builder settingsAccordionHeader(section: string, icon: Resource, title: string, subtitle: string,
-    terminalStyle: boolean = false) {
+    terminalStyle: boolean = false, moonlightStyle: boolean = false) {
     Row() {
       Stack({ alignContent: Alignment.Center }) {
         Column()
@@ -9179,7 +9273,13 @@ struct HostListPage {
             y: this.settingsSectionExpanded(section) ? 1 : 0.92 })
           .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
 
-        if (terminalStyle) {
+        if (moonlightStyle) {
+          MoonlightBrandIcon({
+            iconSize: 21,
+            tint: this.settingsSectionExpanded(section) ? this.accentColor : this.pal().text,
+            accessibilityLabel: 'Moonlight'
+          })
+        } else if (terminalStyle) {
           Image($r('app.media.icon_terminal'))
             .width(21).height(21).fillColor(this.pal().text)
             .opacity(this.settingsSectionExpanded(section) ? 0 : 1)
@@ -10022,6 +10122,68 @@ struct HostListPage {
         .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_VNC) ? 1 : 0)
         .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_VNC) ? 1 : 0.98 })
         .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_VNC) ? 0 : -8 })
+        .clip(true)
+        .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
+
+        ListItem() {
+          this.settingsAccordionHeader(SETTINGS_SECTION_MOONLIGHT, protocolIcon('moonlight'),
+            'Moonlight', '串流画面、音频、控制与本地安全设置', false, true)
+        }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
+
+        ListItem() {
+          if (this.settingsSectionExpanded(SETTINGS_SECTION_MOONLIGHT)) {
+            Column() {
+              Text('Moonlight').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
+                .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
+              Column() {
+              this.protocolActionRow($r('sys.symbol.bolt_fill'), '快速设置',
+                '低延迟、平衡与画质优先预设',
+                (): void => { this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_QUICK); })
+              this.cardDivider()
+              this.protocolActionRow($r('sys.symbol.display'), '画面',
+                '编码、分辨率、帧率、码率、HDR 与缩放',
+                (): void => { this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_VIDEO); })
+              this.cardDivider()
+              this.protocolActionRow($r('sys.symbol.circle'), '音频',
+                '音量、声道、焦点与主机同时播放',
+                (): void => { this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_AUDIO); })
+              this.cardDivider()
+              this.protocolActionRow($r('sys.symbol.mouse'), '控制与手柄',
+                '触控、鼠标、键盘、虚拟与实体控制器',
+                (): void => { this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_INPUT); })
+              this.cardDivider()
+              this.protocolActionRow($r('sys.symbol.link'), '网络与安全',
+                '地址偏好、计费网络、重连预算和加密',
+                (): void => {
+                  this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_NETWORK_SECURITY);
+                })
+              this.cardDivider()
+              this.protocolActionRow($r('sys.symbol.moon_fill'), '后台串流',
+                '后台音频和无 Surface 视频策略',
+                (): void => { this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_BACKGROUND); })
+              this.cardDivider()
+              this.protocolActionRow($r('sys.symbol.performance'), '诊断',
+                '性能 HUD、日志级别和脱敏诊断导出',
+                (): void => { this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_DIAGNOSTICS); })
+              this.cardDivider()
+              this.protocolActionRow($r('sys.symbol.cloud_fill'), '云同步范围',
+                '当前仅本地，不注册或上传 Moonlight 云表',
+                (): void => { this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_CLOUD); })
+              this.cardDivider()
+              this.protocolActionRow($r('sys.symbol.lock_shield'), '配对与信任',
+                '证书变化、本地安全身份与重新配对边界',
+                (): void => { this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_TRUST); })
+              }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
+                .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
+                .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+            }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
+          }
+        }
+        .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_MOONLIGHT) ?
+          this.settingsSectionExpandedMaxHeight(SETTINGS_SECTION_MOONLIGHT) : 0 })
+        .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_MOONLIGHT) ? 1 : 0)
+        .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_MOONLIGHT) ? 1 : 0.98 })
+        .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_MOONLIGHT) ? 0 : -8 })
         .clip(true)
         .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
 

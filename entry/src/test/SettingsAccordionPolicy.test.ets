@@ -5,10 +5,12 @@ import {
   SETTINGS_SECTION_CONNECTION_LIVE,
   SETTINGS_SECTION_FEEDBACK,
   SETTINGS_SECTION_HOME,
+  SETTINGS_SECTION_MOONLIGHT,
   SETTINGS_SECTION_NONE,
   SETTINGS_SECTION_RATING,
   SETTINGS_SECTION_TUTORIAL,
   SETTINGS_VNC_ACTION_ROW_COUNT,
+  SETTINGS_MOONLIGHT_ACTION_ROW_COUNT,
   SETTINGS_RATING_SUBTITLE,
   SETTINGS_SUPPORT_EMAIL,
   SETTINGS_SUPPORT_SUBJECT,
@@ -27,6 +29,7 @@ import {
   settingsFeedbackMailtoUri,
   settingsRatingUriCandidates,
   settingsRatingWantAction,
+  settingsMoonlightExpandedMaxHeight,
   settingsVncExpandedMaxHeight
 } from '../main/ets/services/SettingsAccordionPolicy';
 
@@ -53,6 +56,17 @@ export default function settingsAccordionPolicyTest() {
       expect(SETTINGS_VNC_ACTION_ROW_COUNT).assertEqual(11);
       expect(settingsVncExpandedMaxHeight()).assertEqual(760);
       expect(settingsVncExpandedMaxHeight(12) > settingsVncExpandedMaxHeight()).assertTrue();
+    });
+
+    it('moonlight_accordion_is_independent_and_contains_all_leaf_routes', 0, (): void => {
+      expect(SETTINGS_SECTION_MOONLIGHT).assertEqual('moonlight');
+      expect(SETTINGS_MOONLIGHT_ACTION_ROW_COUNT).assertEqual(9);
+      expect(settingsMoonlightExpandedMaxHeight()).assertEqual(635);
+      expect(settingsMoonlightExpandedMaxHeight(10) > settingsMoonlightExpandedMaxHeight()).assertTrue();
+      expect(settingsNextExpandedSection(SETTINGS_SECTION_VNC, SETTINGS_SECTION_MOONLIGHT))
+        .assertEqual(SETTINGS_SECTION_MOONLIGHT);
+      expect(settingsNextExpandedSection(SETTINGS_SECTION_MOONLIGHT, SETTINGS_SECTION_MOONLIGHT))
+        .assertEqual(SETTINGS_SECTION_NONE);
     });
 
     it('feedback_and_rating_are_direct_action_rows_not_expandable_sections', 0, (): void => {

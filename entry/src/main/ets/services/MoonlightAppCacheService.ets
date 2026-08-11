@@ -271,6 +271,39 @@ export class MoonlightAppCacheService {
     return result(true, 'ok', visible);
   }
 
+  /**
+   * Read-only UI snapshot. Unlike loadVisible(), this deliberately retains
+   * expired and unavailable rows so an offline refresh never erases the last
+   * usable catalog or its associated profile presentation.
+   */
+  loadSnapshot(lease: AccountSessionLease,
+    hostId: string): MoonlightAppCacheResult {
+    const captured: AccountSessionLease = cloneAccountSessionLease(lease);
+    if (!this.leaseIsCurrent(captured)) {
+      return result(false, 'stale_lease');
+    }
+    const host: string = hostId.trim();
+    if (captured.ownerScopeId.trim() === '' || host === '') {
+      return result(false, 'invalid_owner');
+    }
+    const rows: MoonlightAppCacheEntry[] | null =
+      this.port.loadMoonlightAppCacheEntries(captured, host);
+    if (rows === null || !this.leaseIsCurrent(captured)) {
+      return result(false, rows === null ? 'read_failed' : 'stale_lease');
+    }
+    const snapshot: MoonlightAppCacheEntry[] = [];
+    for (let i = 0; i < rows.length; i++) {
+      if (!moonlightAppCacheEntryIsValid(rows[i]) ||
+          rows[i].userId !== captured.ownerScopeId ||
+          rows[i].hostId !== host) {
+        return result(false, 'read_failed');
+      }
+      snapshot.push(cloneMoonlightAppCacheEntry(rows[i]));
+    }
+    snapshot.sort(entryOrder);
+    return result(true, 'ok', snapshot);
+  }
+
   private leaseIsCurrent(lease: AccountSessionLease): boolean {
     return accountSessionLeaseEquals(
       this.port.currentAccountLease(), lease) &&

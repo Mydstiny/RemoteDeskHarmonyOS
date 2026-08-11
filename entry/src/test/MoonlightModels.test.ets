@@ -10,6 +10,7 @@ import {
   moonlightAddressKey,
   moonlightHostIsValid,
   moonlightIdentityMetadataIsValid,
+  normalizeMoonlightSettingsForLocalStorage,
   moonlightProfileIsValid,
   moonlightSettingsAreValid,
   moonlightTrustCandidateIsValid
@@ -44,6 +45,18 @@ export default function moonlightModelsTest(): void {
       expect(settings.security.blockCertificateChanges).assertTrue();
       expect(settings.security.identityStorage).assertEqual('localSecure');
       expect(moonlightSettingsAreValid(settings)).assertTrue();
+    });
+
+    it('keeps_common_display_and_pip_ownership_out_of_new_local_settings', 0, (): void => {
+      const settings = defaultMoonlightSettings();
+      expect(settings.video.scalingMode === undefined).assertTrue();
+      expect(settings.background.allowPip === undefined).assertTrue();
+      settings.video.scalingMode = 'fill';
+      settings.background.allowPip = true;
+      expect(moonlightSettingsAreValid(settings)).assertTrue();
+      const normalized = normalizeMoonlightSettingsForLocalStorage(settings);
+      expect(normalized.video.scalingMode === undefined).assertTrue();
+      expect(normalized.background.allowPip === undefined).assertTrue();
     });
 
     it('accepts_a_bounded_host_and_rejects_duplicate_or_missing_addresses', 0, (): void => {

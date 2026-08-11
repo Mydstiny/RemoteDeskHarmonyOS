@@ -177,10 +177,6 @@ function applyCapabilities(
     effective.input.enableRumble = false;
     addAdjustment(adjustments, 'input.enableRumble', true, false, 'controller_feedback_unavailable');
   }
-  if (effective.background.allowPip && !capabilities.pip) {
-    effective.background.allowPip = false;
-    addAdjustment(adjustments, 'background.allowPip', true, false, 'pip_unavailable');
-  }
   return effective;
 }
 

@@ -21,8 +21,53 @@ export const SETTINGS_SHEET_VNC_INPUT: number = 20;
 export const SETTINGS_SHEET_VNC_PERFORMANCE: number = 21;
 export const SETTINGS_SHEET_VNC_CLIPBOARD: number = 22;
 export const SETTINGS_SHEET_TERMINAL_LINE_SPACING: number = 23;
+export const SETTINGS_SHEET_MOONLIGHT_QUICK: number = 24;
+export const SETTINGS_SHEET_MOONLIGHT_VIDEO: number = 25;
+export const SETTINGS_SHEET_MOONLIGHT_AUDIO: number = 26;
+export const SETTINGS_SHEET_MOONLIGHT_INPUT: number = 27;
+export const SETTINGS_SHEET_MOONLIGHT_NETWORK_SECURITY: number = 28;
+export const SETTINGS_SHEET_MOONLIGHT_BACKGROUND: number = 29;
+export const SETTINGS_SHEET_MOONLIGHT_DIAGNOSTICS: number = 30;
+export const SETTINGS_SHEET_MOONLIGHT_CLOUD: number = 31;
+export const SETTINGS_SHEET_MOONLIGHT_TRUST: number = 32;
 
 export const SETTINGS_PANEL_DISMISS_TO_LEAF_OPEN_MS: number = 360;
+
+export interface MoonlightSettingsRouteSpec {
+  mode: number;
+  section: string;
+  title: string;
+  height: number;
+  owner: string;
+}
+
+export function moonlightSettingsRouteSpecs(): MoonlightSettingsRouteSpec[] {
+  return [
+    { mode: SETTINGS_SHEET_MOONLIGHT_QUICK, section: 'quick', title: '快速设置', height: 480, owner: 'moonlight' },
+    { mode: SETTINGS_SHEET_MOONLIGHT_VIDEO, section: 'video', title: '画面', height: 720, owner: 'moonlight' },
+    { mode: SETTINGS_SHEET_MOONLIGHT_AUDIO, section: 'audio', title: '音频', height: 500, owner: 'moonlight' },
+    { mode: SETTINGS_SHEET_MOONLIGHT_INPUT, section: 'input', title: '控制与手柄', height: 660, owner: 'moonlight' },
+    { mode: SETTINGS_SHEET_MOONLIGHT_NETWORK_SECURITY, section: 'networkSecurity', title: '网络与安全', height: 680, owner: 'moonlight' },
+    { mode: SETTINGS_SHEET_MOONLIGHT_BACKGROUND, section: 'background', title: '后台串流', height: 500, owner: 'moonlight' },
+    { mode: SETTINGS_SHEET_MOONLIGHT_DIAGNOSTICS, section: 'diagnostics', title: '诊断', height: 500, owner: 'moonlight' },
+    { mode: SETTINGS_SHEET_MOONLIGHT_CLOUD, section: 'cloud', title: '云同步范围', height: 520, owner: 'moonlight' },
+    { mode: SETTINGS_SHEET_MOONLIGHT_TRUST, section: 'trust', title: '配对与信任', height: 500, owner: 'moonlight' }
+  ];
+}
+
+export function moonlightSettingsRouteSpec(mode: number): MoonlightSettingsRouteSpec | null {
+  const specs: MoonlightSettingsRouteSpec[] = moonlightSettingsRouteSpecs();
+  for (let i = 0; i < specs.length; i++) {
+    if (specs[i].mode === mode) { return specs[i]; }
+  }
+  return null;
+}
+
+/** Moonlight leaves share one bindSheet owner and use their route density as height. */
+export function moonlightSettingsLeafSheetHeight(mode: number): number {
+  const spec: MoonlightSettingsRouteSpec | null = moonlightSettingsRouteSpec(mode);
+  return spec === null || spec.owner !== 'moonlight' ? 0 : spec.height;
+}
 
 /**
  * Content-matched heights for VNC leaf settings hosted by the settings page.
