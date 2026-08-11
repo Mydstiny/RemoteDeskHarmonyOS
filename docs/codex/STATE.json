@@ -3,15 +3,15 @@
   "task": "moonlight-complete-upgrade",
   "branch": "codex/moonlight-complete-upgrade",
   "base": "aeb0cdac5",
-  "head": "9272f1c9c",
-  "phase": "n2-media-telemetry-pending",
+  "head": "57b1d7da4",
+  "phase": "n3-input-core-pending",
   "status": "active",
-  "next": "Execute only N2-08: add hidden, bounded native media-clock and telemetry aggregation over the existing N2-02 through N2-07 receipts. Track absent-vs-zero network/decode/render/audio/FEC/loss values, p50/p95 windows, saturation and owner/generation reset; expose no NAPI or ArkTS stream until the low-frequency handoff contract is separately proven. Do not log addresses, tokens or media payload, do not modify shared protocol telemetry behavior, and do not let statistics change first-frame, FAB, streaming/protocolAvailable or release truth.",
+  "next": "N2-09 is external-pending for real Sunshine and ARM64 physical media evidence. Execute only the next actionable dormant task N3-01: add a hidden MoonlightInputBridge whose bounded events always carry exact session/generation/device/source/timestamp and are admitted by the existing Moonlight owner lane. Do not modify or wire shared InputHandler, NAPI, ArkTS or UI yet; do not create another active adapter/owner/queue/thread, and ensure stale events, focus loss and duplicate ordering fail closed without changing first-frame, FAB, streaming/protocolAvailable or release truth.",
   "blockers": [
     "ohosTest@OhosTestCompileArkTS is not registered (00306054); 151 focused Moonlight tests in 20 describe groups are compile-registered but not executed on device",
     "The configured HDC target has no new reproducible receipt; prior ARM64 API 24 RDB evidence remains valid but no new runtime claim is made",
     "HAP/AppSpawn HUKS identity and H.264 NativeImage/renderer media capabilities are not runtime-proven; product identity and video sinks intentionally remain unavailable",
-    "Real Sunshine hosts, input/media/network/power matrices, and user ARM64 physical acceptance remain pending"
+    "N2-09 real Sunshine 720p/1080p, 30/60fps, two-hour, thermal, background/PIP/rotation and user ARM64 physical acceptance remain pending; this does not block dormant N3 input-contract work"
   ],
   "planPaths": [
     "docs/superpowers/plans/2026-07-28-moonlight-harmonyos-complete-upgrade-plan.md",
@@ -45,18 +45,18 @@
       "entry/src/main/module.json5"
     ],
     "lastReceiptId": "moonlight-n2-02-sol-low-pass-248e704ab-2026-08-10",
-    "reason": "Both user-allowed gpt-5.6-sol low reviewer slots were consumed by N1-01 and N2-02. N2-03 through N2-07 completed scoped machine gates and line-by-line self-review but have no matching independent receipt; do not dispatch or fabricate a third reviewer."
+    "reason": "Both user-allowed gpt-5.6-sol low reviewer slots were consumed by N1-01 and N2-02. N2-03 through N2-08 completed scoped machine gates and line-by-line self-review but have no matching independent receipt; do not dispatch or fabricate a third reviewer."
   },
   "lastVerification": {
     "baseline": "clean main@aeb0cdac5 equal to origin/main at task start on 2026-08-09",
-    "diffCheck": "pass for N2-07 code checkpoint 9272f1c9c; synchronized plan/status document diff and state validation are rerun before the documentation checkpoint",
-    "testCompile": "pass default@OhosTestCompileArkTS on final N2-07 source in 6.017 seconds; no on-device Hypium execution is claimed",
-    "assembleHap": "pass signed production HAP on final N2-07 source in 13.904 seconds; SHA-256 a1d6e72894e2596e431f5dd4806c833611adea942559e5b52afe615abd766ef3; 333 archive paths",
-    "nativeTests": "N2-07 normal and strict: 548 total, 532 passed and 16 pre-existing VNC local TLS fixture start failures; all 10 new exact-owner audio-player sink tests pass. ASan/UBSan and final TSan runs have the same 532/16 result with no sanitizer report; an earlier TSan run had one unreported, non-reproducing extra failure",
-    "moonlightPlatformProbe": "pass arm64-v8a and x86_64 API 23 compile-link probe plus official common-c adapter link probe; this is not an in-HAP runtime receipt",
-    "moonlightVendor": "pass from the unchanged pinned vendor boundary: 117 exact files and three reconstructed official Git trees; N2-07 adds no dependency, source archive or upstream change",
-    "isolation": "pass for committed N2-07 scope: only hidden MoonlightAudioPlayerSink files, focused tests and CMake source registration changed. Production delegates to existing DispatchActiveNative, SuspendActiveNative and exact-owner TakeActiveNative; no shared audio-player, RDP, RustDesk, SSH, VNC, NAPI, ArkTS, UI, cloud or input business source changed. Both ABIs link and export no MoonlightAudioPlayer symbol; no runtime caller or release-truth mutation exists",
-    "lightCompliance": "pass on final N2-07 source; no dependency/compliance inventory changed and Release remains blocked on external runtime/device evidence",
+    "diffCheck": "pass for N2-08 code checkpoint 57b1d7da4; synchronized plan/status document diff and state validation are rerun before the documentation checkpoint",
+    "testCompile": "pass default@OhosTestCompileArkTS on final N2-08 source; no on-device Hypium execution is claimed",
+    "assembleHap": "pass signed production HAP on final N2-08 source; SHA-256 5bf7cd91809c7c9e46cf15aa1d8b963946f0d805b91a867ef98492aa441860fe; 333 archive paths",
+    "nativeTests": "N2-08 normal and strict: 561 total, 545 passed and 16 pre-existing VNC local TLS fixture start failures; all 13 new media-clock/stats tests pass. ASan/UBSan passed three consecutive 545/16 runs and TSan passed the same 545/16 result with no sanitizer report; focused clang analyzer reported no diagnostics",
+    "moonlightPlatformProbe": "pass arm64-v8a and x86_64 product compile of the hidden N2-08 archive; both archives are non-empty, but without a caller their objects are not pulled into rdpnapi. This is not an in-HAP runtime receipt",
+    "moonlightVendor": "pass from the unchanged pinned vendor boundary: 117 exact files and three reconstructed official Git trees; N2-08 adds no dependency, source archive or upstream change",
+    "isolation": "pass for committed N2-08 scope: only MoonlightMediaClockStats, its focused test and private CMake target changed. It uses a fixed maximum 256-slot window, owns no thread/queue/singleton, emits no log, and has no NAPI/ArkTS/UI/cloud/product caller. No common-c, shared telemetry/audio/render, RDP, RustDesk, SSH or VNC business source changed. arm64-v8a 16114/705 and x86_64 15645/703 defined/undefined dynamic symbol sets are byte-for-byte identical to the N2-07 product outputs",
+    "lightCompliance": "pass on final N2-08 source; no dependency/compliance inventory changed and Release remains blocked on external runtime/device evidence",
     "moonlightRdbRuntime": "pass on prior ARM64 API 24 emulator: user_version=5, exact 19/20/16 columns, tables=3 and owner-bound receipts=1 after process restart",
     "ohosTest": "blocked task-not-registered 00306054; no on-device execution pass claimed"
   },

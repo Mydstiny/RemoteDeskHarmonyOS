@@ -4,7 +4,7 @@
 > 分支：`codex/moonlight-complete-upgrade`
 > 初始基线：`main@aeb0cdac5`，与 `origin/main` 一致
 > 总计划：`docs/superpowers/plans/2026-07-28-moonlight-harmonyos-complete-upgrade-plan.md`
-> 台账状态：G0、D1、D2 本地/休眠策略、D3 本地生命周期、N1-01～N1-08 与 N2-01～N2-07 已形成 checkpoint；N2-08 是唯一下一代码任务。2026-08-10 产品决定 Moonlight 暂不接入云同步，当前只开发本地主机存储；`moonlightrecordv1`、Moonlight cloud selection/transfer/secret recovery 全部 parked，不进入当前执行序列。D3 在线/多设备和产品运行时仍等待外部回执，只把有可复现证据的项目标记为通过
+> 台账状态：G0、D1、D2 本地/休眠策略、D3 本地生命周期、N1-01～N1-08 与 N2-01～N2-08 已形成 checkpoint；N2-09 等待真实 Sunshine/ARM64 实机外部回执，当前唯一可直接执行的代码任务为 dormant N3-01。2026-08-10 产品决定 Moonlight 暂不接入云同步，当前只开发本地主机存储；`moonlightrecordv1`、Moonlight cloud selection/transfer/secret recovery 全部 parked，不进入当前执行序列。D3 在线/多设备和产品运行时仍等待外部回执，只把有可复现证据的项目标记为通过
 
 ## 1. 执行约束
 
@@ -237,6 +237,7 @@ D3 账户生命周期代码检查点为 `05e96d3`；便携备份/本地恢复检
 | N2-05 | CONTRACT PASS / DORMANT | `7992279c7` 新增 hidden pure-native Surface lifecycle；无 Surface 在 copy/queue 前 typed drop，temporary suspend exact detach 且保留 decoder handle，同 key/decoder/display + 更高 Surface/renderer/runtime-proof generation 才 rebind；8 focused case；普通/strict/TSan 523/523、ASan 三轮、analyzer、双 ABI/callback carrier通过 | 无 ArkTS/PIP/NAPI/cloud/audio/input/product caller；423-path HAP、动态 ABI、8 表、灰色 FAB、11 false inputs 和六项 truth 不变；N2-06 已完成 |
 | N2-06 | CONTRACT PASS / DORMANT `8d2fd15b3` | hidden pure-native `MoonlightAudioBridge`；exact 48 kHz stereo family-1 Opus multistream→interleaved S16LE，common-c `nullptr+0` PLC、1400-byte packet、23040-byte PCM、single in-flight、owner/config/operation generation、typed failures、stop timeout retry、cleanup/zeroization；10 new tests PASS；两 ABI product native/link probe PASS | 不接 `audio_player`/OHAudio/NAPI/ArkTS/UI/cloud/input/product caller；FAB、8 cloud tables、六项 truth 保持关闭；其后 N2-07 checkpoint 已重新通过双 Hvigor |
 | N2-07 | CONTRACT PASS / DORMANT `9272f1c9c` | hidden exact-owner `MoonlightAudioPlayerSink` 将 N2-06 PCM 委托给既有 `DispatchActiveNative`/`SuspendActiveNative`/`TakeActiveNative` 与共享 owner lease；48 kHz stereo、generation fence、mute/focus/background/pause/resume/stop/cleanup 和迟到 PCM 均有 typed 合同；10 个 focused case | 不新增 OHAudio renderer、registry、queue、线程、singleton、NAPI、ArkTS 或 product caller；N2-08 才增加纯 native media clock/stats，任何音频结果仍不改变首帧、FAB、streaming 或 release truth |
+| N2-08 | CONTRACT PASS / DORMANT `57b1d7da4` | hidden pure-native `MoonlightMediaClockStats`；exact session/window/source generation、最多 256 槽 fixed window、absent 与 measured zero 分离、network/decode/render/end-to-end/audio queue p50/p95/max、common-c RTP/FEC/recovery/OOS/invalid 精确增量、audio underrun/drop、reset baseline、节流和饱和计数；13 个 focused case | 私有 archive 未被无 caller 的 `rdpnapi` 拉入，双 ABI 动态符号集合与 N2-07 完全一致；不接 NAPI/ArkTS/UI/cloud/log/product caller；N2-09 等待外部实机，下一可执行任务为 dormant N3-01 |
 
 N1-01 的可复现证据：
 
@@ -758,14 +759,37 @@ worker、singleton、NAPI、ArkTS、UI、云或 product caller。
   Light 与 `git diff --check` PASS。HDC 当前无 target，因此不声明 OHAudio/AppSpawn、真实
   Sunshine 或 ARM64 实机运行时能力。
 
+N2-08 `57b1d7da4` 只新增 hidden/private `MoonlightMediaClockStats`、13 个 focused case 和
+独立私有 CMake archive。它使用 exact `MoonlightSessionKey + windowGeneration`、owner/window/
+source generation fence 和固定最多 256 槽窗口，区分 absent 与 measured zero；有界汇总
+network assembly、decode queue、decode、render、end-to-end、common-c host processing latency、
+audio queue 的 p50/p95/max/current count/total，并精确投影 RTP media/FEC/recovered/recovery
+failure/OOS/invalid/invalid FEC、audio underrun/drop 增量。累计源 reset/decrease 会重建 baseline，
+video stride 与 RTP/audio 时间节流、计数饱和、stop/cleanup/stale callback 均有确定性合同。
+
+- host normal 与 strict `-Wall -Wextra -Wpedantic -Werror` 均为 **561 total / 545 pass / 16 fail**；
+  13 个 N2-08 用例全 PASS，16 项仍全是既有 VNC 本地 TLS fixture `start()` 失败。ASan/UBSan
+  连续三轮和最终 TSan 同为 **545/16** 且无 sanitizer report；macOS 按既有约束使用
+  `detect_leaks=0`。focused clang analyzer 对新增实现/测试为零诊断。
+- arm64-v8a/x86_64 产品 native 均重新配置并成功链接；两个私有 archive 非空，但由于没有
+  runtime caller，其 object 未被拉入 `rdpnapi`，本地/动态符号均无 `MoonlightMediaClockStats`。
+  动态 defined/undefined 集合与 N2-07 产品逐项相同：arm64 **16114/705**、x86_64
+  **15645/703**；因此没有新增 NAPI export 或跨协议 ABI 面。
+- 最终双 Hvigor BUILD SUCCESSFUL；signed HAP SHA-256
+  `5bf7cd91809c7c9e46cf15aa1d8b963946f0d805b91a867ef98492aa441860fe`，归档 333 paths；
+  Light 与 `git diff --check` PASS。N2-08 未修改 common-c、共享 telemetry/render/audio 或
+  RDP/RustDesk/SSH/VNC 业务源码，也未新增线程、队列、singleton、NAPI、ArkTS、UI、云、日志
+  或 product caller；HDC 当前无 target，不声明真实 Sunshine/ARM64 runtime 能力。
+
 ## 13. 下一执行序列
 
-1. N2-08：建立独立、纯 native、generation-fenced media clock/stats，汇总 network→decode→
-   render、audio queue、FEC/丢包与 p50/p95；缺失值保持 absent，采样有界且默认日志脱敏。
-2. 保持 N2-07 dormant：不接 NAPI/ArkTS/UI/PIP/后台、云或 input；不把 audio ready、accepted
-   PCM 或 common-c `AudioStreamStart` 变成 video first-frame、streaming/protocolAvailable、FAB
-   或任何 release truth。
-3. S1-08 才按现有 `NativeSessionHandles`、Surface/PIP/background 生命周期装配媒体；U1/S1 的
+1. N2-09 保持 EXTERNAL PENDING：必须由真实 Sunshine 与用户 ARM64 实机完成 720p/1080p、
+   30/60fps、两小时、温控、前后台/PIP/旋转和网络矩阵；不得用 host 单测或虚拟机代替。
+2. 当前唯一可直接执行的代码任务是 dormant N3-01：建立 exact session/generation/device/
+   source/timestamp 的纯 native 输入桥和旧 session/失焦释放合同，不接 ArkTS/UI/product caller。
+3. 保持 N2-08 dormant：不接 NAPI/ArkTS/UI/PIP/后台、云或日志，不把任何统计值变成 video
+   first-frame、streaming/protocolAvailable、FAB 或 release truth。
+4. S1-08 才按现有 `NativeSessionHandles`、Surface/PIP/background 生命周期装配媒体；U1/S1 的
    设置、目录、连接浮层继续只消费 local Repository/cache、Host Control 和 media prerequisites。
-4. Moonlight 云同步（`moonlightrecordv1`、selection/transfer/secret recovery）继续 parked；
+5. Moonlight 云同步（`moonlightrecordv1`、selection/transfer/secret recovery）继续 parked；
    真实 Sunshine、设备/网络/功耗矩阵和用户 ARM64 实机验收仍是外部门禁。

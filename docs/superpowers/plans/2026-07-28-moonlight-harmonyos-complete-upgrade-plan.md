@@ -3,7 +3,7 @@
 > 文档状态：第四次深度审计完成；已于 2026-08-09 从 G0 开始实施
 > 首次评估日期：2026-07-28；二次完成性审计日期：2026-07-29；第三次 HarmonyOS 人因/UI 审计日期：2026-08-01；第四次源码对齐日期：2026-08-08
 > 当前实施基线：任务 `moonlight-complete-upgrade`；分支 `codex/moonlight-complete-upgrade`；基线 `main@aeb0cdac5`，与 `origin/main` 一致
-> 当前实施进度：G0、D1、D2 本地/休眠策略、D3 本地生命周期、N1-01～N1-08、dormant N2-01 stream offer、N2-02 common-c adapter、N2-03 video decode-unit bridge、N2-04 generation-fenced H.264 decoder sink、N2-05 exact-generation Surface lifecycle、N2-06 dormant Opus→PCM bridge 与 N2-07 exact-owner shared-audio sink 已形成 checkpoint；下一代码任务为 N2-08。2026-08-10 产品决定：Moonlight 暂不接入云同步，当前只推进 owner-scoped 本地主机存储；`moonlightrecordv1`、Moonlight CloudSync/selection/transfer 仅保留为未来停靠设计，不进入当前实施路径。HarmonyOS 虚拟设备已验证 owner-store v5、19/20/16 列三表和幂等 schema receipt；HAP/AppSpawn secure-identity/transport/media runtime、真实 Sunshine 与 ARM64 实机回执仍缺失，故云注册、用户入口和运行时能力保持 fail closed，六个发布 truth 仍全 false
+> 当前实施进度：G0、D1、D2 本地/休眠策略、D3 本地生命周期、N1-01～N1-08、dormant N2-01 stream offer、N2-02 common-c adapter、N2-03 video decode-unit bridge、N2-04 generation-fenced H.264 decoder sink、N2-05 exact-generation Surface lifecycle、N2-06 dormant Opus→PCM bridge、N2-07 exact-owner shared-audio sink 与 N2-08 bounded media clock/stats 已形成 checkpoint；N2-09 等待真实 Sunshine/ARM64 实机外部回执，当前唯一可直接执行的代码任务为 dormant N3-01。2026-08-10 产品决定：Moonlight 暂不接入云同步，当前只推进 owner-scoped 本地主机存储；`moonlightrecordv1`、Moonlight CloudSync/selection/transfer 仅保留为未来停靠设计，不进入当前实施路径。HarmonyOS 虚拟设备已验证 owner-store v5、19/20/16 列三表和幂等 schema receipt；HAP/AppSpawn secure-identity/transport/media runtime、真实 Sunshine 与 ARM64 实机回执仍缺失，故云注册、用户入口和运行时能力保持 fail closed，六个发布 truth 仍全 false
 > 适用仓库：/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS
 > 上游实施锁定：2026-08-09 已只读复核并固定 moonlight-common-c `e41355ea01670fd4c830b384009d31dd0339a705`（ENet `aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1`、nanors `b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a`）、Moonlight Android `f10085f552b367cf7203007693d91c322a0a2936`、Moonlight Qt `2e13ed9977bc31c73caf8428f08f58d793313ece`、Sunshine 测试 pin `v2026.808.164219` / `25c06d79b54f3d092d3fedd5f5ba44989f394692`；完整哈希、许可证和能力证据见 `docs/codex/plans/2026-08-09-moonlight-implementation-ledger.md`
 > 原评估轮次仅更新计划文件；2026-08-09 起的实施变更严格按第 15 节任务 ID、仓库门禁和 fail-closed feature policy 推进。
@@ -3924,10 +3924,37 @@ SHA-256 为 `a1d6e72894e2596e431f5dd4806c833611adea942559e5b52afe615abd766ef3`�
 和 diff 门禁通过。HDC 当前无 target，故不声明 OHAudio/AppSpawn、真实 Sunshine 或 ARM64
 实机运行时能力。
 
-N2-08 是唯一下一代码任务：建立纯 native、generation-fenced media clock/stats，低开销汇总
+在 N2-07 checkpoint 完成时，N2-08 的合同是建立纯 native、generation-fenced media clock/stats，低开销汇总
 network→decode→render、audio queue、FEC/丢包与 p50/p95；不可用值保持 absent，日志采样有界
 且默认不含地址、token 或媒体 payload。N2-08 不接 NAPI/ArkTS/UI/cloud，不开放用户入口或
 release truth。
+
+#### 15.7.15 N2-08 已完成事实与 N2-09 外部门禁/N3-01 唯一可执行合同（2026-08-11）
+
+N2-08 已由代码 checkpoint `57b1d7da4` 完成。新增 hidden pure-native
+`MoonlightMediaClockStats`、13 个 focused case 和独立私有 archive；使用 exact
+`MoonlightSessionKey + windowGeneration`、owner/window/source generation fence 和固定最多
+256 槽窗口，严格区分 absent 与 measured zero。它有界汇总 network assembly、decode queue、
+decode、render、end-to-end、common-c host processing latency、audio queue 的
+p50/p95/max/current count/total，并精确投影 RTP media/FEC/recovered/recovery failure/OOS/
+invalid/invalid FEC、audio underrun/drop 增量；累计源 reset/decrease baseline、video stride、
+RTP/audio 时间节流、计数饱和、stop/cleanup/stale callback 均有确定性合同。
+
+host normal、strict `-Wall -Wextra -Wpedantic -Werror`、ASan/UBSan 连续三轮和最终 TSan 均为
+**561 total / 545 pass / 16 fail**；13 个 N2-08 用例全 PASS，16 项仍全是既有 VNC 本地 TLS
+fixture `start()` 失败，sanitizer 无报告；focused clang analyzer 零诊断。arm64-v8a/x86_64
+产品 native 均重配/链接成功；两个私有 archive 非空，但没有 runtime caller，object 未被拉入
+`rdpnapi`，本地/动态符号均无 `MoonlightMediaClockStats`。动态 defined/undefined 集合与 N2-07
+逐项相同：arm64 **16114/705**、x86_64 **15645/703**，没有新增 NAPI export 或跨协议 ABI 面。
+双 Hvigor、signed HAP 和 Light 通过；HAP SHA-256
+`5bf7cd91809c7c9e46cf15aa1d8b963946f0d805b91a867ef98492aa441860fe`，333 paths。
+
+本 checkpoint 未修改 common-c、共享 telemetry/render/audio 或 RDP/RustDesk/SSH/VNC 业务源码，
+未新增线程、队列、singleton、NAPI、ArkTS、UI、云、日志或 product caller。N2-09 需要真实
+Sunshine 与用户 ARM64 实机完成媒体/温控/生命周期矩阵，当前保持 EXTERNAL PENDING；计划允许
+跨过该外部门禁继续无产品接线的 dormant N3-01。N3-01 是当前唯一可直接执行的代码任务，只建立
+exact session/generation/device/source/timestamp 输入桥、旧 session 丢弃和失焦释放合同；不得接
+ArkTS/UI/product caller，不改变灰色 FAB、现有八张云表或六项 release truth。
 
 ### 15.8 N2：RTSP、视频、音频和媒体时钟
 
@@ -3939,9 +3966,9 @@ release truth。
 | N2-04 | **CONTRACT PASS / DORMANT `bee0ac1da`**：窄 sink/port 复用既有 decoder/renderer exact owner；H.264 Annex-B、typed admission/config recreate、output→NativeImage→actual swap 三段首帧 | 9 focused；全量/strict/TSan 515/515、ASan 三轮、analyzer、双 ABI/callback/HAP/NAPI/双 Hvigor通过 | archive 无 caller，不新增 singleton/NAPI/UI；HAP runtime proof 前仍 unavailable，N2-05 只加 Surface lifecycle |
 | N2-05 | **CONTRACT PASS / DORMANT `7992279c7`**：pure-native exact-generation Surface lifecycle；无 Surface copy 前 typed drop，temporary suspend 保留 connection/decoder handle，exact rebind 后等新 IDR，同 generation resize 不清首帧 | 8 focused；全量/strict/TSan 523/523、ASan 三轮、analyzer、双 ABI/callback/HAP/NAPI/双 Hvigor通过 | 无 ArkTS/PIP/NAPI/product caller；423 paths、ABI、8 表、灰 FAB 和六项 truth 不变；S1-08 才接产品生命周期 |
 | N2-06 | **CONTRACT PASS / DORMANT `8d2fd15b3`**：hidden `MoonlightAudioBridge` 完成 48 kHz exact stereo family-1 Opus multistream→interleaved S16LE；修正官方 null+0 PLC seam，冻结 owner/config/operation generation、有界 ownership、typed result 与 teardown | host normal 533 total/517 pass/16 既有 VNC fixture fail；10 个新增 audio tests 全 PASS；strict native、arm64/x86_64 native product、两 ABI Opus link probe PASS；后续 N2-07 已重新通过双 Hvigor | 只复用现有 pinned 1.5.2，不直接接 `audio_player`/OHAudio/NAPI/UI；audio ready 永不替代视频首帧；N2-07 已用独立 sink 复用现有 owner/queue；FAB、8 表、六项 truth 仍关闭 |
-| N2-07 | **CONTRACT PASS / DORMANT `9272f1c9c`**：hidden exact-owner sink 只委托现有 `DispatchActiveNative`/`SuspendActiveNative`/`TakeActiveNative` 和 owner lease；完成 48 kHz stereo PCM、mute/focus/background/pause/resume/stop/cleanup generation fence | 10 focused 全 PASS；normal/strict/ASan/UBSan/最终 TSan 为 532 pass/16 既有 VNC fixture fail；双 ABI、双 Hvigor、signed HAP、Light 通过 | 不新增 renderer/registry/queue/worker/singleton/NAPI/ArkTS/product caller；音频不改变视频首帧或发布 truth；N2-08 下一 |
-| N2-08 | 建立 media clock/stats：network→decode→render、audio queue、FEC/丢包、p50/p95；采样节流，native 汇总后低频送 ArkTS | 统计正确性、不可用值为 absent 而非 0、性能开销 | 默认日志不含地址/token/媒体 payload |
-| N2-09 | 真实设备完成 720p/1080p、30/60fps、2 小时、温控、前后台/PIP/旋转；H.264+Opus 为唯一 release blocker | 第 10.5 节阈值和录屏/log receipt | HEVC/AV1/HDR/7.1 不通过只保持关闭；提交 `media-mvp` checkpoint |
+| N2-07 | **CONTRACT PASS / DORMANT `9272f1c9c`**：hidden exact-owner sink 只委托现有 `DispatchActiveNative`/`SuspendActiveNative`/`TakeActiveNative` 和 owner lease；完成 48 kHz stereo PCM、mute/focus/background/pause/resume/stop/cleanup generation fence | 10 focused 全 PASS；normal/strict/ASan/UBSan/最终 TSan 为 532 pass/16 既有 VNC fixture fail；双 ABI、双 Hvigor、signed HAP、Light 通过 | 不新增 renderer/registry/queue/worker/singleton/NAPI/ArkTS/product caller；音频不改变视频首帧或发布 truth；N2-08 已完成 |
+| N2-08 | **CONTRACT PASS / DORMANT `57b1d7da4`**：hidden exact-generation media clock/stats；最多 256 槽，absent/zero 分离，network/decode/render/end-to-end/audio queue p50/p95/max，RTP/FEC/audio counter reset、节流和饱和合同 | 13 focused 全 PASS；normal/strict/ASan/UBSan/TSan 545 pass/16 既有 VNC fixture fail；analyzer、双 ABI、ABI 精确不变、双 Hvigor、signed HAP、Light 通过 | 私有 archive 无 caller 时不进入 `rdpnapi`；无 NAPI/ArkTS/UI/cloud/log/product caller；N2-09 外部 pending，N3-01 下一 |
+| N2-09 | **EXTERNAL PENDING**：真实设备完成 720p/1080p、30/60fps、2 小时、温控、前后台/PIP/旋转；H.264+Opus 为唯一 release blocker | 第 10.5 节阈值和录屏/log receipt；必须真实 Sunshine + 用户 ARM64 实机 | HEVC/AV1/HDR/7.1 不通过只保持关闭；外部回执完成后提交 `media-mvp` checkpoint |
 
 ### 15.9 N3：键鼠、触摸、实体/虚拟控制器和输入释放
 
@@ -4035,7 +4062,7 @@ Moonlight 能从“即将支持”变成可点击，仅当下列事实同时成�
 
 在此之前，当前灰色 Moonlight FAB 入口和“即将支持”就是唯一正确的用户可见状态。
 
-### 15.14 当前源码事实、未创建文件与唯一继续点（2026-08-10）
+### 15.14 当前源码事实、未创建文件与唯一继续点（2026-08-11）
 
 本节是后续执行者进入仓库后的防漂移索引。它只记录当前分支中已经存在且有证据的事实；第 15.5～15.12 节提到但未列在“已存在”中的文件名都是未来落点，不能被当作已有能力引用。
 
@@ -4047,10 +4074,10 @@ Moonlight 能从“即将支持”变成可点击，仅当下列事实同时成�
 | 云适配 | exact 19 列 adapter、row-sensitive transfer、五 scope selection store、dormant materializer 和独立云状态 policy 已存在；`CloudSyncPolicy.TABLES` 仍是原有 8 表 | 可以验证/隔离/本地物化候选 row，所有结果明确 `cloudAttempted=false`；状态不会把 pending/quarantine 伪装成 synced | D2-07 必须等三环境 AGC receipt；之后才做 D3-01 coordinator、cloud-first promotion 和 D3-08 |
 | 云数据 | `moonlightrecordv1` 是唯一未来分布式物理表；`moonlightlocalrecords` 和 `moonlightappcache` 永远本地 | 19 列 schema 已在 ARM64 API 24 owner-store 实例化和重开验证 | cache 不进云/备份；local mirror 只有 promotion 后才投影；identity 继续默认关闭 |
 | 便携备份 | Backup V3 optional Moonlight descriptor、cloud/local 双 section、exact admission 和 local-only resolver 已存在 | redacted=settings/host/profile，full 额外 trust candidate；identity/secret/cache/marker 永远排除；旧 V3 可读 | cloud-enabled restore promotion 与设备故障矩阵仍 pending；不能另建含 identity 的“完整备份”旁路 |
-| Native | N1-01～N1-08、N2-01～N2-07 均已 checkpoint；N2-07 `9272f1c9c` 仅新增 hidden exact-owner PCM sink/production port/focused tests，并复用现有 audio owner/registry/queue；product 无 caller | 可声明固定上游、official common-c compile-link、owned video/PCM、共享 audio owner 和有界 generation-fenced dormant 合同；HAP runtime identity/transport/media backend仍 unavailable，不能声明真实配对、目录、launch、解码、音频、输入或首帧可用 | N2-08 只建纯 native media clock/stats；不新增 owner/singleton，也不解除 FAB、云表或发布 truth 门禁 |
+| Native | N1-01～N1-08、N2-01～N2-08 均已 checkpoint；N2-08 `57b1d7da4` 仅新增 hidden bounded media clock/stats、私有 archive 和 focused tests；product 无 caller，archive object 未进入 `rdpnapi` | 可声明固定上游、official common-c compile-link、owned video/PCM、共享 audio owner 和有界 generation-fenced dormant stats 合同；HAP runtime identity/transport/media backend仍 unavailable，不能声明真实配对、目录、launch、解码、音频、输入或首帧可用 | N2-09 等真实 Sunshine/ARM64 外部回执；N3-01 只建 dormant exact-generation 输入桥，不解除 FAB、云表或发布 truth 门禁 |
 | UI | `HostListPage.ets` 当前仅有禁用的 Moonlight FAB 项、system Symbol 和“即将支持”；没有 Moonlight 添加/目录/设置/会话页 | 入口信息可见但不可交互；点击无副作用 | 直到 U1 的数据与 N1 host-control 前置都满足，保持现状；不提前建可保存假表单 |
 | 品牌 | 官方 SVG 已固定 hash，但尚无 provenance/商标/视觉验收 receipt | 只能使用现有 system Symbol 回退 | `moonlightBrandAssetReady=false`；品牌门通过后再替换资源并保留 NOTICE |
-| 验证 | N2-07 host normal/strict/ASan/UBSan/最终 TSan 均 548 total/532 pass/16 既有 VNC TLS fixture fail；10 个新用例全 PASS；双 ABI native、无新增动态 export、双 Hvigor、signed HAP 与 Light PASS | 只声明 dormant unit/compile-link/exact-owner sink 合同和旧协议业务源码隔离；不声明 Hypium、OHAudio/AppSpawn runtime、真实 Sunshine、首帧或串流可用 | HDC 当前无 target；真实 Sunshine、虚拟机 UI 和用户 ARM64 实机验收仍待后续阶段 |
+| 验证 | N2-08 host normal/strict/ASan/UBSan/最终 TSan 均 561 total/545 pass/16 既有 VNC TLS fixture fail；13 个新用例全 PASS；analyzer、双 ABI 私有 archive、精确动态 ABI 不变、双 Hvigor、signed HAP 与 Light PASS | 只声明 dormant unit/compile-link/bounded stats 合同和旧协议业务源码隔离；不声明 Hypium、OHAudio/AppSpawn runtime、真实 Sunshine、首帧或串流可用 | HDC 当前无 target；N2-09 的真实 Sunshine/用户 ARM64 实机验收仍待外部阶段，N3-01 可继续 dormant 合同 |
 
 当前数据流只能是：
 
@@ -4084,11 +4111,11 @@ Sunshine common-c runtime / production transport / media / input 当前仍不在
 8. 更新实施台账中的状态、证据、blocker 和唯一下一任务；同步 `CURRENT/QUEUE/STATE`，再用精确文件列表形成一个可回滚提交。
 9. 只有当任务合同、测试和对应门禁均通过时标记 `PASS`；“代码写完”“构建通过”“请求已排队”均不是产品能力完成。
 
-当前唯一可直接继续的代码任务是 N2-08：在 N2-03～N2-07 的 exact generation 合同上建立
-纯 native media clock/stats，低开销汇总 network→decode→render、audio queue、FEC/丢包和
-p50/p95；不可用值必须 absent，默认日志不得含地址、token 或媒体 payload。N2-07 保持 dormant，
-不接 NAPI/ArkTS/UI/云，也不让任何音频结果改变 video first-frame、FAB、streaming 或
-protocolAvailable。
+N2-08 已完成并保持 dormant。N2-09 只能由真实 Sunshine 与用户 ARM64 实机提供媒体、温控、
+网络和生命周期回执，当前为 EXTERNAL PENDING。当前唯一可直接继续的代码任务是 N3-01：建立
+纯 native、exact session/generation/device/source/timestamp 的输入桥，覆盖旧 session 丢弃、
+多协议 owner 仲裁、失焦/断连 neutral release 与重复事件；不接 NAPI/ArkTS/UI/云/product caller，
+不让输入或统计结果改变 video first-frame、FAB、streaming 或 protocolAvailable。
 D2-05/06 由 AGC 外部环境提供证据，D2-07 依赖二者；D3 的 cloud terminal、真实
 unpair 和多设备矩阵分别等待 D2-07、N1 Host Control 和外部设备。任何执行者都
 不得因为云端受阻而把 `moonlightrecordv1` 塞入现有八表注册清单，也不得因为

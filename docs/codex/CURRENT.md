@@ -4,8 +4,9 @@
 
 - Task: `moonlight-complete-upgrade`
 - Base: `main@aeb0cdac5`; branch: `codex/moonlight-complete-upgrade`
-- Phase: G0、D1-D3 local/dormant、N1-01～N1-08、N2-01～N2-07 已 checkpoint；
-  当前唯一下一代码任务为 N2-08，N2-07 代码 checkpoint 为 `9272f1c9c`。2026-08-10 决策为
+- Phase: G0、D1-D3 local/dormant、N1-01～N1-08、N2-01～N2-08 已 checkpoint；
+  N2-08 代码 checkpoint 为 `57b1d7da4`。N2-09 等待真实设备，当前唯一可执行代码任务为
+  dormant N3-01。2026-08-10 决策为
   Moonlight 暂不接入云同步，当前只推进本地主机存储；云表/CloudSync 方案 parked。
 - Authoritative plan: `docs/superpowers/plans/2026-07-28-moonlight-harmonyos-complete-upgrade-plan.md`
 - Live ledger: `docs/codex/plans/2026-08-09-moonlight-implementation-ledger.md`
@@ -59,27 +60,35 @@
 - N2-07 `9272f1c9c`：hidden exact-owner PCM sink 把 N2-06 输出委托到既有 `audio_player`
   registry/有界 queue；复用 `DecoderSessionIdentity`、mute、focus/background suspend+flush、
   resume prebuffer 与 exact stop/cleanup。无私有 OHAudio owner/queue/worker/NAPI/产品 caller。
+- N2-08 `57b1d7da4`：hidden、固定 256 槽上限的 `MoonlightMediaClockStats` 聚合
+  network assembly、decode queue/decode/render/end-to-end、host processing、audio queue 与
+  common-c exact RTP/FEC counters；optional 保持 absent-vs-zero，owner/window/source generation、
+  counter decrease、节流、饱和、stop/cleanup 和迟到 sample 均 fail closed。无日志、线程、
+  NAPI/ArkTS/UI/cloud/product caller。
 
-## N2-07 Verification
+## N2-08 Verification
 
-- host normal/strict：**548 total / 532 passed / 16 failed**；16 个失败仍仅为既有 VNC 本地 TLS
-  fixture `start()` 环境失败，新增 10 个 N2-07 focused tests 全 PASS。
-- ASan/UBSan 与最终 TSan 同为 532/16 且无 sanitizer report；一次较早 TSan 多一项失败但无
-  report 且未复现。arm64-v8a/x86_64 产品重新编译，新增两个 TU 均入图且无动态导出。
-- `default@OhosTestCompileArkTS` 6.017s、signed `assembleHap` 13.904s 均 BUILD SUCCESSFUL；HAP
-  SHA-256 `a1d6e72894e2596e431f5dd4806c833611adea942559e5b52afe615abd766ef3`，333 paths。
-- Light 与 `git diff --check` 通过；未改共享 audio_player 或任一旧协议业务源。HDC 无 target，
-  不声明 OHAudio 实机播放、焦点路由或真实 Sunshine 音频可用。
+- host normal/strict：**561 total / 545 passed / 16 failed**；16 个失败仍仅为既有 VNC 本地 TLS
+  fixture `start()` 环境失败，新增 13 个 N2-08 focused tests 全 PASS。
+- ASan/UBSan 连续三轮与 TSan 同为 545/16，均无 sanitizer report；focused clang analyzer
+  零诊断。arm64-v8a/x86_64 均生成私有 archive；无 caller 时 archive object 不进入
+  `rdpnapi`，两 ABI defined/undefined 动态符号集合与 N2-07 产物逐项一致。
+- 两项 Hvigor 与 signed `assembleHap` 均 BUILD SUCCESSFUL；当前 signed HAP SHA-256
+  `5bf7cd91809c7c9e46cf15aa1d8b963946f0d805b91a867ef98492aa441860fe`，333 paths。
+- Light 与 `git diff --check` 通过；仅改 Moonlight 新文件、focused test 和私有 CMake target，
+  未改 common-c、共享 telemetry/audio/render 或任一旧协议业务源。HDC 无 target，不声明真实
+  Sunshine、媒体延迟或性能能力。
 
 ## Next
 
-1. N2-08：建立 owner-scoped、bounded media clock/stats，冻结 absent-vs-zero、p50/p95、
-   saturation/reset 与低频采样合同；本 checkpoint 不接 NAPI/ArkTS。
-2. S1-08 才消费 N2-05 native contract，接现有 `NativeSessionHandles`/PIP/background 生命周期；
+1. N3-01：新建 dormant `MoonlightInputBridge`，所有输入携带 exact session/generation/device/
+   source/timestamp，复用唯一 Moonlight owner lane；不接 InputHandler、NAPI、ArkTS 或 UI。
+2. N2-09 保持 external pending：真实设备 720p/1080p、30/60fps、2 小时、温控、前后台/PIP/
+   旋转和 H.264+Opus receipt 只能由真实 Sunshine 与用户 ARM64 实机提供。
+3. S1-08 才消费 N2-05 native contract，接现有 `NativeSessionHandles`/PIP/background 生命周期；
    runtime receipt 前 FAB、云表和六项 truth 继续关闭。
-3. U1/S1 UI、设置、目录、连接浮层和生命周期只接现有本地 Repository/cache、Host Control
+4. U1/S1 UI、设置、目录、连接浮层和生命周期只接现有本地 Repository/cache、Host Control
    和媒体前置条件，不增加 Moonlight 云状态或同步设置。
-4. Moonlight 云同步是单独 parked 项目，不是当前本地主机存储交付阻塞项。
 
 ## Blockers
 
@@ -87,4 +96,5 @@
   compile-registered，不声明设备 Hypium PASS。
 - 当前 HDC target 没有新的可复现 receipt；早期 RDB emulator receipt 仍有效。
 - HAP/AppSpawn secure identity、H.264/NativeImage/renderer media 和 input capability probes 缺失。
+- N2-09 真实设备媒体、功耗、前后台/PIP/旋转矩阵仍 pending，不阻止纯 dormant N3 合同开发。
 - 两台真实 Sunshine host、网络/功耗/后台矩阵与用户 ARM64 实机最终验收仍 pending。
