@@ -3,7 +3,7 @@
 > 文档状态：第四次深度审计完成；已于 2026-08-09 从 G0 开始实施
 > 首次评估日期：2026-07-28；二次完成性审计日期：2026-07-29；第三次 HarmonyOS 人因/UI 审计日期：2026-08-01；第四次源码对齐日期：2026-08-08
 > 当前实施基线：任务 `moonlight-complete-upgrade`；分支 `codex/moonlight-complete-upgrade`；基线 `main@aeb0cdac5`，与 `origin/main` 一致
-> 当前实施进度：G0、D1、D2 本地/休眠策略、D3 本地生命周期、N1-01～N1-08、dormant N2-01 stream offer、N2-02 common-c adapter、N2-03 video decode-unit bridge、N2-04 generation-fenced H.264 decoder sink、N2-05 exact-generation Surface lifecycle、N2-06 dormant Opus→PCM bridge、N2-07 exact-owner shared-audio sink、N2-08 bounded media clock/stats、N3-01 exact-owner input bridge、N3-02 bounded keyboard mapper、N3-03 bounded pointer mapper、N3-04 bounded touch mapper、N3-05 bounded physical-controller mapper、N3-06 fail-closed controller-feedback contract 与 N3-07 unified input-flush policy 已形成 checkpoint；N2-09 等待真实 Sunshine/ARM64 实机外部回执，当前唯一可直接执行的代码任务为 dormant N3-08。2026-08-10 产品决定：Moonlight 暂不接入云同步，当前只推进 owner-scoped 本地主机存储；`moonlightrecordv1`、Moonlight CloudSync/selection/transfer 仅保留为未来停靠设计，不进入当前实施路径。HarmonyOS 虚拟设备已验证 owner-store v5、19/20/16 列三表和幂等 schema receipt；HAP/AppSpawn secure-identity/transport/media/input runtime、真实 Sunshine 与 ARM64 实机回执仍缺失，故云注册、用户入口和运行时能力保持 fail closed，六个发布 truth 仍全 false
+> 当前实施进度：G0、D1、D2 本地/休眠策略、D3 本地生命周期、N1-01～N1-08、dormant N2-01 stream offer、N2-02 common-c adapter、N2-03 video decode-unit bridge、N2-04 generation-fenced H.264 decoder sink、N2-05 exact-generation Surface lifecycle、N2-06 dormant Opus→PCM bridge、N2-07 exact-owner shared-audio sink、N2-08 bounded media clock/stats、N3-01 exact-owner input bridge、N3-02 bounded keyboard mapper、N3-03 bounded pointer mapper、N3-04 bounded touch mapper、N3-05 bounded physical-controller mapper、N3-06 fail-closed controller-feedback contract、N3-07 unified input-flush policy 与 N3-08 physical/virtual controller aggregator 已形成 checkpoint；N2-09 等待真实 Sunshine/ARM64 实机外部回执，当前唯一可直接执行的代码任务为 U1-01。2026-08-10 产品决定：Moonlight 暂不接入云同步，当前只推进 owner-scoped 本地主机存储；`moonlightrecordv1`、Moonlight CloudSync/selection/transfer 仅保留为未来停靠设计，不进入当前实施路径。HarmonyOS 虚拟设备已验证 owner-store v5、19/20/16 列三表和幂等 schema receipt；HAP/AppSpawn secure-identity/transport/media/input runtime、真实 Sunshine 与 ARM64 实机回执仍缺失，故云注册、用户入口和运行时能力保持 fail closed，六个发布 truth 仍全 false
 > 适用仓库：/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS
 > 上游实施锁定：2026-08-09 已只读复核并固定 moonlight-common-c `e41355ea01670fd4c830b384009d31dd0339a705`（ENet `aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1`、nanors `b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a`）、Moonlight Android `f10085f552b367cf7203007693d91c322a0a2936`、Moonlight Qt `2e13ed9977bc31c73caf8428f08f58d793313ece`、Sunshine 测试 pin `v2026.808.164219` / `25c06d79b54f3d092d3fedd5f5ba44989f394692`；完整哈希、许可证和能力证据见 `docs/codex/plans/2026-08-09-moonlight-implementation-ledger.md`
 > 原评估轮次仅更新计划文件；2026-08-09 起的实施变更严格按第 15 节任务 ID、仓库门禁和 fail-closed feature policy 推进。
@@ -4223,6 +4223,45 @@ N3-08 必须按以下原子步骤实现，任何一步都不能绕开既有 nati
    时不得把 object 拉入 `rdpnapi`。后续 S1-05A 才增加一个窄 typed NAPI ingress 和 native listener；
    runtime receipt 前 FAB、MVP flag、input capability 与 release truth 继续关闭。
 
+#### 15.7.23 N3-08 已完成事实与 U1-01 唯一可执行合同（2026-08-11）
+
+N3-08 由代码 checkpoint `fef723770` 与审查修复 `6787cc3fb` 完成。新增 hidden/private、fixed-capacity
+`MoonlightControllerAggregator`、归一化 virtual-controller layout value objects 与 deterministic validator；
+validator 校验版本、枚举、唯一 id、finite 值、最小触控热区、safe area、冲突区、互斥 dpad 布局和
+最大容量，合法布局确定性 clamp，任何损坏布局整体回退固定安全布局。编辑态和布局安装均零远端发送。
+
+物理路径的 `ingestPhysical()` 接收纯 native 完整 `MoonlightControllerSample`，固定来源为
+`GameController`；虚拟语义固定来源为 `VirtualController`。两者共享 N3-05 slot 0，但由
+source/device/source-generation/sequence/timestamp fence 隔离，并且都只调用既有 N3-05 mapper，继而
+走 N3-01 bridge 与 official common-c。没有第二 controller encoder、input owner、port、slot、queue、
+thread 或 listener。HarmonyOS GameControllerKit 的实际 connected/disconnected/state listener 和
+`MoonlightControllerOverlay` 窄 typed NAPI ingress 明确保留到 S1-05A；ArkTS 永远不编码或直发协议。
+
+physical↔virtual 双向换源固定 remove-first：关闭新输入，N3-07 接受 controller disconnect 并发送
+`activeGamepadMask=0`，确认 mapper 的 active/device/source/source-generation 全部清空，再以更高
+operation generation resume，并以更高 source generation 连接目标。removal/clear/connect 永久失败均
+升级 N3-07 SessionStop/local-terminal；同一 session 不接纳目标来源。single exact pending frame 阻止
+overtake，全部 12 类生命周期触发继续复用 N3-07。审查修复进一步分离 boundary-retry/resume
+generation，增加 HandoffBoundaryPending/HandoffResuming、retired-lane tombstone 原位复用，并使未知
+phase 与 inactive-hat NaN fail closed；20 次双向换源后只保留两条来源 lane，旧 generation 仍拒绝。
+
+host normal/strict、ASan/UBSan 顺序三轮与 TSan 均为 **714 total / 698 pass / 16 fail**；16 项失败
+仍仅为既有 VNC 本地 TLS fixture `start()`，28 个 aggregator 与 17 个 mapper tests 全 PASS，
+sanitizer/race report 为零，四份 analyzer 零诊断。arm64-v8a/x86_64 archive 各含一个 object；
+无 caller 时 object 未进入 `rdpnapi`，无 aggregator 动态符号，defined/undefined 仍为 arm64
+**16114/705**、x86_64 **15645/703**。两项 Hvigor、signed HAP、Light/vendor/TOTP 与 diff check PASS。
+
+本 checkpoint 未修改 production common-c、公共 `InputHandler`、共享 telemetry/render/audio、
+RDP/RustDesk/SSH/VNC 业务源码、NAPI、ArkTS、UI 或云，也不改变 first-frame、streaming、灰色 FAB、
+protocolAvailable 或六项 release truth。N2-09 继续 EXTERNAL PENDING。当前唯一可直接执行的代码任务
+为 U1-01：先冻结 VNC sm/md/lg/xl、短屏和大字体布局/交互基线，再提取无协议状态、无图标硬编码的
+`RemoteConfigSheetScaffold.ets`，把 `VncSheetScaffold` 收敛为薄 wrapper；VNC DOM、截图和交互必须
+零差异。U1-01 不接 Moonlight runtime，不解除本地-only、FAB 或发布门禁。
+
+复用 reviewer task `019fe966-d99a-7ce1-8b53-4ef725597053` 对 `fef723770..6787cc3fb` 完成最终复核，
+P0/P1/P2/P3 全 0；receipt `moonlight-n3-08-gpt5-6787cc3fb-2026-08-11`。复核确认 staged boundary
+retry、retired lane、20 次换源、fail-closed 值域和 dormant 产品隔离全部闭环，未创建新 reviewer。
+
 ### 15.8 N2：RTSP、视频、音频和媒体时钟
 
 | ID | 文件与精确动作 | 必须验证 | 完成证据/提交点 |
@@ -4248,7 +4287,7 @@ N3-08 必须按以下原子步骤实现，任何一步都不能绕开既有 nati
 | N3-05 | **CONTRACT PASS / DORMANT `1aadfba24`**：official arrival/full-state 参数投影；API 23 button/axis/trigger/hat、7%/13% deadzone、Y 反向、stable slot 0、background neutral、disconnect active-mask clear、exact generation 与 retry | 16 focused 全 PASS；normal/strict/ASan/UBSan/最终 TSan 627 pass/16 既有 VNC fixture fail；analyzer、GameControllerKit 双 ABI probe、ABI 不变、双 Hvigor、signed HAP、Light/vendor/TOTP 通过 | 一槽直到双手柄真机证据；archive 无 caller 时不进入 `rdpnapi`；无公共 InputHandler/NAPI/ArkTS/UI/cloud/product caller；N3-06 下一 |
 | N3-06 | **CONTRACT PASS / DORMANT `baa9cafef`**：official API∩physical-device evidence；rumble/trigger rumble/RGB LED/adaptive trigger/motion/battery typed command、single retry、200Hz/120s、exact owner/device/operation generation 与 release lifecycle | 16 focused 全 PASS；normal/strict/ASan/UBSan/TSan 643 pass/16 既有 VNC fixture fail；analyzer、双 ABI、ABI 不变、双 Hvigor、signed HAP、Light/vendor/TOTP 通过 | API 23 evidence 全 false，unsupported 零 port 调用；archive 无 caller 时不进入 `rdpnapi`；无公共 InputHandler/NAPI/ArkTS/UI/cloud/product caller；N3-07 下一 |
 | N3-07 | **CONTRACT PASS / DORMANT `02cb13aae` + `36b4e13df` + `337c4f35e` + `ee073afcb`**：bridge admission 在 mapper release 前原子关闭且只放行 lifecycle release；统一 touch→pointer→keyboard→controller→bridge，覆盖 12 trigger、component failure/owner loss、pending/suspended stop、exact terminal replay、stale stop 和 local-terminal | 26 focused 全 PASS；normal/strict/ASan/UBSan/TSan 669 pass/16 既有 VNC fixture fail；analyzer、双 ABI、ABI 不变、双 Hvigor、signed HAP、Light/vendor/TOTP 通过 | archive 无 caller 时不进入 `rdpnapi`；无公共 InputHandler/NAPI/ArkTS/UI/cloud/product caller；N3-08 下一 |
-| N3-08 | 纯 native 虚拟控制器模型/布局验证；实体 listener 与虚拟 typed ingress 只在 native 聚合 full-state 并复用 N3-05→N3-01→common-c，ArkTS 零协议直发 | safe area、冲突热区、坏布局 fallback、active-mask=0 removal→slot clear→higher-generation connect、failed removal 禁止接管、backpressure、编辑零发送 | 不建第二 input owner/port/slot；MVP flag、NAPI/ArkTS/UI/云保持关闭；提交 `input-mvp` checkpoint |
+| N3-08 | **CONTRACT PASS / DORMANT `fef723770` + `6787cc3fb`**：fixed-capacity physical/virtual aggregator/layout validator；独立 boundary retry/resume、retired-lane tombstone；full-state 只走 N3-05→N3-01→common-c | 28 aggregator/17 mapper tests 全 PASS；normal/strict/ASan/UBSan/TSan 698 pass/16 既有 VNC fixture fail；analyzer、双 ABI、ABI 不变、双 Hvigor、signed HAP、Light/vendor/TOTP 通过 | 20 次双向换源与旧回放；真实 listener/NAPI 留到 S1-05A；无第二 owner/port/slot/queue、公共 InputHandler/ArkTS/UI/云/product caller；U1-01 下一 |
 
 ### 15.10 U1：统一视觉、添加流程、主机/目录与设置
 
@@ -4343,10 +4382,10 @@ Moonlight 能从“即将支持”变成可点击，仅当下列事实同时成�
 | 云适配 | exact 19 列 adapter、row-sensitive transfer、五 scope selection store、dormant materializer 和独立云状态 policy 已存在；`CloudSyncPolicy.TABLES` 仍是原有 8 表 | 可以验证/隔离/本地物化候选 row，所有结果明确 `cloudAttempted=false`；状态不会把 pending/quarantine 伪装成 synced | D2-07 必须等三环境 AGC receipt；之后才做 D3-01 coordinator、cloud-first promotion 和 D3-08 |
 | 云数据 | `moonlightrecordv1` 是唯一未来分布式物理表；`moonlightlocalrecords` 和 `moonlightappcache` 永远本地 | 19 列 schema 已在 ARM64 API 24 owner-store 实例化和重开验证 | cache 不进云/备份；local mirror 只有 promotion 后才投影；identity 继续默认关闭 |
 | 便携备份 | Backup V3 optional Moonlight descriptor、cloud/local 双 section、exact admission 和 local-only resolver 已存在 | redacted=settings/host/profile，full 额外 trust candidate；identity/secret/cache/marker 永远排除；旧 V3 可读 | cloud-enabled restore promotion 与设备故障矩阵仍 pending；不能另建含 identity 的“完整备份”旁路 |
-| Native | N1-01～N1-08、N2-01～N2-08、N3-01～N3-07 均已 checkpoint；N3-07 `02cb13aae` + `36b4e13df` + `337c4f35e` + `ee073afcb` 增加真实 admission fence、terminal mapper discard、exact replay 与零副作用证据；product 无 caller，archive object 未进入 `rdpnapi` | 可声明固定上游、official common-c compile-link、owned video/PCM、共享 audio owner、有界 stats、exact generation-fenced dormant input admission/release、各 mapper、feedback capability 与统一 lifecycle flush 合同；HAP runtime backend 仍 unavailable，不能声明真实配对、目录、launch、解码、音频、输入、feedback 或首帧可用 | N2-09 等真实 Sunshine/ARM64 外部回执；N3-08 建 native 虚拟控制器/layout validator、实体/虚拟 full-state seam 和 active-mask=0 handoff，不解除 FAB、云表或发布 truth 门禁 |
+| Native | N1-01～N1-08、N2-01～N2-08、N3-01～N3-08 均已 checkpoint；N3-08 `fef723770` + `6787cc3fb` 增加 fixed-capacity physical/virtual aggregator、layout validator、native full-state seam、staged handoff 与 retired-lane tombstone；product 无 caller，archive object 未进入 `rdpnapi` | 可声明固定上游、official common-c compile-link、owned video/PCM、共享 audio owner、有界 stats、exact generation-fenced dormant input admission/release、各 mapper、feedback、统一 lifecycle flush 与控制器 source arbitration 合同；HAP runtime backend 仍 unavailable，不能声明真实配对、目录、launch、解码、音频、实体手柄、输入、feedback 或首帧可用 | N2-09 等真实 Sunshine/ARM64 外部回执；S1-05A 才接真实 GameController listener/typed NAPI；U1-01 只提取协议中立配置 Sheet scaffold，不解除 FAB、云表或发布 truth 门禁 |
 | UI | `HostListPage.ets` 当前仅有禁用的 Moonlight FAB 项、system Symbol 和“即将支持”；没有 Moonlight 添加/目录/设置/会话页 | 入口信息可见但不可交互；点击无副作用 | 直到 U1 的数据与 N1 host-control 前置都满足，保持现状；不提前建可保存假表单 |
 | 品牌 | 官方 SVG 已固定 hash，但尚无 provenance/商标/视觉验收 receipt | 只能使用现有 system Symbol 回退 | `moonlightBrandAssetReady=false`；品牌门通过后再替换资源并保留 NOTICE |
-| 验证 | N3-07 host normal/strict 均 685 total/669 pass/16 既有 VNC TLS fixture fail；ASan/UBSan 顺序三轮与 TSan 同为 669/16；26 个 focused 用例全 PASS；analyzer、双 ABI archive、动态 ABI 数量不变、双 Hvigor、333-path signed HAP、Light/vendor/TOTP PASS | 只声明 dormant unit/exact-owner input、bounded mapper、feedback 与统一 flush 合同及旧协议业务源码隔离；不声明 Hypium、实体输入/feedback、AppSpawn runtime、真实 Sunshine、首帧或串流可用 | HDC `Connect server failed`；N2-09 的真实 Sunshine/用户 ARM64 实机验收仍待外部阶段，N3-08 可继续 virtual-controller model/layout validator |
+| 验证 | N3-08 host normal/strict 均 714 total/698 pass/16 既有 VNC TLS fixture fail；ASan/UBSan 三轮与 TSan 同为 698/16；28 aggregator/17 mapper tests 全 PASS；analyzer、双 ABI archive、动态 ABI 不变、双 Hvigor、signed HAP、Light/diff PASS | 只声明 dormant unit/exact-owner input、bounded mappers、feedback、统一 flush、controller source arbitration 与 native physical full-state seam；不声明 Hypium、实体 listener/feedback、AppSpawn runtime、真实 Sunshine、首帧或串流可用 | HDC/runtime GameController receipt 缺失；N2-09 真实 Sunshine/用户 ARM64 实机验收仍待外部阶段；U1-01 可继续协议中立 UI scaffold |
 
 当前数据流只能是：
 
@@ -4380,13 +4419,12 @@ Sunshine common-c runtime / production transport / media / input 当前仍不在
 8. 更新实施台账中的状态、证据、blocker 和唯一下一任务；同步 `CURRENT/QUEUE/STATE`，再用精确文件列表形成一个可回滚提交。
 9. 只有当任务合同、测试和对应门禁均通过时标记 `PASS`；“代码写完”“构建通过”“请求已排队”均不是产品能力完成。
 
-N2-08、N3-01～N3-07 已完成并保持 dormant。N2-09 只能由真实 Sunshine 与用户 ARM64 实机
-提供媒体、温控、网络和生命周期回执，当前为 EXTERNAL PENDING。当前唯一可直接继续的代码任务
-是 N3-08：建立纯 native 虚拟控制器模型与确定性布局 validator，覆盖 safe area、冲突热区、坏布局
-fallback、编辑态零发送；实体 listener 与虚拟 typed ingress 都只在 native 聚合 full-state 并走
-N3-05→N3-01→official common-c。source handoff 必须 accepted active-mask=0 removal、slot 0 清除后才
-允许更高 generation connect；失败则终止当前 session，不得接管。MVP feature flag 保持 false，不接公共
-`InputHandler`、NAPI、ArkTS、UI、云或 product caller，不新建 input owner/port，也不改变 video
+N2-08、N3-01～N3-08 已完成并保持 dormant。N2-09 只能由真实 Sunshine 与用户 ARM64 实机
+提供媒体、温控、网络和生命周期回执，当前为 EXTERNAL PENDING。N3-08 已固定纯 native
+physical/virtual full-state 聚合、remove-first handoff 与布局 validator；真实 HarmonyOS GameController
+listener 和窄 typed NAPI 仍只在 S1-05A 接线。当前唯一可直接继续的代码任务是 U1-01：冻结 VNC
+各断点、短屏和大字体基线，提取协议中立 `RemoteConfigSheetScaffold` 并保持 VNC DOM/截图/交互
+零差异。MVP feature flag 保持 false，不接 Moonlight runtime、NAPI、ArkTS UI 或云，也不改变 video
 first-frame、FAB、streaming 或 protocolAvailable。
 D2-05/06 由 AGC 外部环境提供证据，D2-07 依赖二者；D3 的 cloud terminal、真实
 unpair 和多设备矩阵分别等待 D2-07、N1 Host Control 和外部设备。任何执行者都

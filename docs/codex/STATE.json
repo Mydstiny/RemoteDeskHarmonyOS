@@ -3,10 +3,10 @@
   "task": "moonlight-complete-upgrade",
   "branch": "codex/moonlight-complete-upgrade",
   "base": "aeb0cdac5",
-  "head": "ee073afcb",
-  "phase": "n3-virtual-controller-pending",
+  "head": "6787cc3fb",
+  "phase": "n3-input-complete-u1-scaffold-pending",
   "status": "active",
-  "next": "N2-09 remains external-pending for real Sunshine and ARM64 physical media evidence. Execute only dormant N3-08: define the virtual-controller model and deterministic layout validator with safe-area/conflict validation, corrupt-layout fallback and edit zero-send. Physical GameController listener events and virtual typed-ingress semantics must aggregate and transmit full-state only in native through the existing N3-05 MoonlightControllerMapper, N3-01 MoonlightInputBridge and official common-c port. Physical-to-virtual handoff requires an accepted disconnect frame with activeGamepadMask=0, confirmed slot-0 clear, then bridge resume and source connect with higher operation/source generations; failed removal terminates the current session and must not admit the new source. Do not encode or transmit controller protocol in ArkTS, create a second input owner/port/slot, enable the MVP flag, or add product UI/NAPI/cloud/runtime caller.",
+  "next": "N2-09 remains external-pending for real Sunshine and ARM64 physical media evidence. Execute U1-01 only: snapshot the existing VNC sm/md/lg/xl, short-screen and large-font layout/interaction baselines, extract a protocol-neutral RemoteConfigSheetScaffold that owns no protocol state or icon choice, and reduce VncSheetScaffold to a thin wrapper with zero VNC DOM, screenshot or interaction differences. Keep N3-08 dormant. The real HarmonyOS GameController native listener and narrow virtual-controller typed NAPI ingress are deferred to S1-05A and must feed N3-08 native full-state aggregation; ArkTS must not encode or directly transmit controller protocol. Do not enable the MVP flag, FAB, cloud sync or any release truth.",
   "blockers": [
     "ohosTest@OhosTestCompileArkTS is not registered (00306054); 151 focused Moonlight tests in 20 describe groups are compile-registered but not executed on device",
     "HDC currently returns Connect server failed; prior ARM64 API 24 RDB evidence remains valid but no new runtime claim is made",
@@ -44,19 +44,19 @@
       "entry/src/test",
       "entry/src/main/module.json5"
     ],
-    "lastReceiptId": "moonlight-n3-07-sol-low-pass-ee073afcb-2026-08-11",
-    "reason": "Existing gpt-5.6-sol low reviewer task 019fe966-d99a-7ce1-8b53-4ef725597053 was reused and returned PASS at ee073afcb with P0/P1/P2/P3 all zero. It verified both terminal replay paths retain the old suspend sequence/timestamp with zero eventCount/flushCount deltas, production isolation and the native-only N3-08 physical/virtual controller handoff contract. No third reviewer was created."
+    "lastReceiptId": "moonlight-n3-08-gpt5-6787cc3fb-2026-08-11",
+    "reason": "Existing reviewer task 019fe966-d99a-7ce1-8b53-4ef725597053 was reused twice and returned final PASS for fef723770..6787cc3fb with P0/P1/P2/P3 all zero. It verified boundary retry does not replay removal, retired lanes support 20 alternating handoffs while rejecting old generations, unknown phase and inactive-hat NaN fail closed, target arrival/resume failures are covered, and product isolation remains exact. No new reviewer was created."
   },
   "lastVerification": {
     "baseline": "clean main@aeb0cdac5 equal to origin/main at task start on 2026-08-09",
-    "diffCheck": "pass for N3-07 checkpoint 02cb13aae, review fixes 36b4e13df and 337c4f35e, terminal replay evidence ee073afcb, and synchronized plan/status documents",
-    "testCompile": "pass default@OhosTestCompileArkTS on N3-07 review-fix source; no on-device Hypium execution is claimed",
-    "assembleHap": "pass signed production HAP on N3-07 review-fix source with 333 archive paths; signing output bytes and hash are intentionally not tracked because each signing run is non-deterministic",
-    "nativeTests": "N3-07 review-fix normal and strict each ran 685 total, 669 passed and 16 pre-existing VNC local TLS fixture start failures; all 26 N3-07 focused tests pass. ASan/UBSan passed three sequential consecutive 669/16 runs and TSan passed 669/16 with no sanitizer or data-race report; focused host clang analyzer reports contain zero diagnostics. Two earlier parallel ASan runs had one extra non-reproducing test failure each and no sanitizer report, so only sequential final runs are acceptance evidence",
-    "moonlightPlatformProbe": "pass current arm64-v8a and x86_64 build/link of the hidden N3-07 input-flush archive; archives contain one MoonlightInputFlushPolicy.cpp.o and are 369470/361710 bytes. Without a caller the object is not pulled into rdpnapi; packaged products contain no Moonlight input/flush mapper dynamic symbol. Platform proof remains compile-link only and is not a runtime controller receipt",
-    "moonlightVendor": "pass from the unchanged pinned vendor boundary: 117 exact files and three reconstructed official Git trees; N3-07 adds no dependency, source archive or upstream change",
-    "isolation": "pass for committed N3-07 review-fix scope: beginFlush closes the real bridge admission before mapper release, only mapper-generated lifecycle release crosses ReleasePending, and terminal permanent failure/owner loss discards local mapper state without adding a thread, queue, singleton, listener or product caller. No common-c, shared InputHandler, telemetry, audio, render, RDP, RustDesk, SSH, VNC, NAPI, ArkTS, UI or cloud source changed. arm64-v8a 16114/705 and x86_64 15645/703 defined/undefined dynamic symbol counts remain identical to the N2-08 through N3-07 pre-fix product baseline",
-    "lightCompliance": "pass on N3-07 review-fix source together with unchanged 117-file vendor and TOTP brand-manifest gates; no dependency/compliance inventory changed and Release remains blocked on external runtime/device evidence",
+    "diffCheck": "pass for N3-08 checkpoint fef723770, review fix 6787cc3fb and synchronized plan/status documents",
+    "testCompile": "pass default@OhosTestCompileArkTS on committed N3-08 source; no on-device Hypium execution is claimed",
+    "assembleHap": "pass signed production HAP on committed N3-08 source; signing output bytes and hash are intentionally not tracked because each signing run is non-deterministic",
+    "nativeTests": "N3-08 review-fix normal and strict each ran 714 total, 698 passed and 16 pre-existing VNC local TLS fixture start failures; all 28 aggregator and 17 mapper focused tests pass. ASan/UBSan passed three sequential consecutive 698/16 runs and TSan passed 698/16 with no sanitizer or data-race report; aggregator, mapper and both final test-file clang analyzer runs contain zero diagnostics",
+    "moonlightPlatformProbe": "pass current arm64-v8a and x86_64 build/link of the hidden N3-08 controller-aggregator archive; each archive contains one MoonlightControllerAggregator.cpp.o and is 463352/454608 bytes. Without a caller the object is not pulled into rdpnapi; packaged products contain no controller-aggregator dynamic symbol. Platform proof is a dormant native physical full-state ingress seam, not a runtime GameController listener receipt",
+    "moonlightVendor": "pass from the unchanged pinned vendor boundary: 117 exact files and three reconstructed official Git trees; N3-08 adds no dependency, source archive or upstream change",
+    "isolation": "pass for N3-08 checkpoint plus review fix: physical full-state and virtual semantic input share only the existing N3-05 mapper, N3-01 bridge, owner and slot 0; source/device/generation fences, retired-lane tombstones and staged remove/boundary-retry/resume/connect prevent coexistence, stale replay or bypass. The archive has no product caller, thread, queue, singleton, listener, NAPI or ArkTS. No production common-c, shared InputHandler, telemetry, audio, render, RDP, RustDesk, SSH, VNC, UI or cloud source changed. arm64-v8a 16114/705 and x86_64 15645/703 defined/undefined dynamic symbol counts remain identical to the pre-N3-08 product baseline",
+    "lightCompliance": "pass on committed N3-08 source with the unchanged vendor and TOTP brand-manifest gates; no dependency/compliance inventory changed and Release remains blocked on external runtime/device evidence",
     "moonlightRdbRuntime": "pass on prior ARM64 API 24 emulator: user_version=5, exact 19/20/16 columns, tables=3 and owner-bound receipts=1 after process restart",
     "ohosTest": "blocked task-not-registered 00306054; no on-device execution pass claimed"
   },

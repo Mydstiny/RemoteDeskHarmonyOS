@@ -4,7 +4,7 @@
 > 分支：`codex/moonlight-complete-upgrade`
 > 初始基线：`main@aeb0cdac5`，与 `origin/main` 一致
 > 总计划：`docs/superpowers/plans/2026-07-28-moonlight-harmonyos-complete-upgrade-plan.md`
-> 台账状态：G0、D1、D2 本地/休眠策略、D3 本地生命周期、N1-01～N1-08、N2-01～N2-08 与 N3-01～N3-07 已形成 checkpoint；N2-09 等待真实 Sunshine/ARM64 实机外部回执，当前唯一可直接执行的代码任务为 dormant N3-08。2026-08-10 产品决定 Moonlight 暂不接入云同步，当前只开发本地主机存储；`moonlightrecordv1`、Moonlight cloud selection/transfer/secret recovery 全部 parked，不进入当前执行序列。D3 在线/多设备和产品运行时仍等待外部回执，只把有可复现证据的项目标记为通过
+> 台账状态：G0、D1、D2 本地/休眠策略、D3 本地生命周期、N1-01～N1-08、N2-01～N2-08 与 N3-01～N3-08 已形成 checkpoint；N2-09 等待真实 Sunshine/ARM64 实机外部回执，当前唯一可直接执行的代码任务为 U1-01。2026-08-10 产品决定 Moonlight 暂不接入云同步，当前只开发本地主机存储；`moonlightrecordv1`、Moonlight cloud selection/transfer/secret recovery 全部 parked，不进入当前执行序列。D3 在线/多设备和产品运行时仍等待外部回执，只把有可复现证据的项目标记为通过
 
 ## 1. 执行约束
 
@@ -245,6 +245,7 @@ D3 账户生命周期代码检查点为 `05e96d3`；便携备份/本地恢复检
 | N3-05 | CONTRACT PASS / DORMANT `1aadfba24` | hidden `MoonlightControllerMapper`；official arrival/state 参数投影、API 23 button/axis/trigger/hat、7%/13% deadzone、Y 反向、stable slot 0、full-state frame、background neutral、disconnect active-mask clear、exact device/source generation 与 retry；16 个 focused case | GameControllerKit 仅 compile-link probe；无双手柄真机证据时一槽，反馈能力全关闭；archive 无 caller 且未进入 `rdpnapi`；无公共 InputHandler/NAPI/ArkTS/UI/cloud/thread/queue；N3-06 下一 |
 | N3-06 | CONTRACT PASS / DORMANT `baa9cafef` | hidden `MoonlightControllerFeedback`；official API∩physical-device evidence、rumble/trigger rumble/RGB LED/adaptive trigger/motion/battery typed command、single pending retry、200Hz/120s 上限、exact owner/device/operation generation 与 release lifecycle；16 个 focused case | API 23 product evidence 全 false，capability false 零 port 调用；archive 无 caller 且未进入 `rdpnapi`；无公共 InputHandler/NAPI/ArkTS/UI/cloud/thread/queue；N3-07 下一 |
 | N3-07 | CONTRACT PASS / DORMANT `02cb13aae` + `36b4e13df` + `337c4f35e` + `ee073afcb` | hidden policy 在 mapper release 前原子关闭真实 bridge admission，只接受 lifecycle release；组合 touch→pointer→keyboard→controller→bridge，覆盖 12 trigger、component failure/owner loss、pending/suspended→stop、exact terminal replay、stale stop 和 local terminal；26 个 focused case | 私有 archive 无 caller且未进入 `rdpnapi`；无公共 InputHandler/NAPI/ArkTS/UI/cloud/thread/queue；N3-08 下一 |
+| N3-08 | CONTRACT PASS / DORMANT `fef723770` + `6787cc3fb` | hidden fixed-capacity controller aggregator/layout validator；native physical full-state/virtual semantics 只走 N3-05→N3-01→common-c；独立 boundary-retry/resume generation、retired-lane tombstone、20 次双向换源、unknown phase/NaN fail closed、single pending、12 lifecycle/edit zero-send；28 aggregator cases | 双 ABI archive 无 caller且未进入 `rdpnapi`；真实 listener/NAPI 留到 S1-05A；无公共 InputHandler/ArkTS/UI/cloud/thread/第二 owner/port/slot/queue；U1-01 下一 |
 
 N1-01 的可复现证据：
 
@@ -945,18 +946,43 @@ stale terminal request 不清本地状态；pending→terminal 的 mapper drain 
   `ee073afcb` 后 P0/P1/P2/P3 均为 0。复核确认两条 terminal replay 测试固定旧 suspend
   sequence/timestamp 与 event/flush 零增量，私有 archive 无 caller，不影响旧协议功能或性能。
 
+## 12.16 N3-08 dormant physical/virtual controller aggregator checkpoint（2026-08-11）
+
+- `fef723770` 新增 hidden fixed-capacity `MoonlightControllerAggregator`、归一化虚拟布局 value objects
+  与确定性 validator。validator 校验 version/enum/unique id/finite value/最小热区/safe area/冲突区/
+  互斥 dpad/容量，合法数据确定性 clamp，损坏布局整体回退固定安全布局；编辑态不产生远端输入。
+- `ingestPhysical()` 是后续 HarmonyOS GameController listener 的纯 native 完整状态入口；它把物理来源
+  固定映射为 `GameController`，虚拟语义固定映射为 `VirtualController`，两者都只调用既有 N3-05
+  mapper，继而走 N3-01 bridge 与 official common-c。没有第二 encoder、owner、port、slot、queue 或线程。
+- physical↔virtual 双向换源关闭新输入，先由 N3-07 接受 controller disconnect/active-mask=0，再确认
+  mapper 的 active/device/source/source-generation 已清空，随后用更高 operation/source generation
+  resume/connect。removal 或 target connect 的永久失败升级 SessionStop，目标来源同一会话不得接管。
+- reviewer 首轮发现 boundary retry、8-lane generation exhaustion、unknown phase 与 inactive-hat NaN；
+  `6787cc3fb` 增加独立 retry/resume generation、HandoffBoundaryPending/HandoffResuming、retired-lane
+  tombstone 原位复用及 exhaustive fail-closed，并覆盖 boundary/resume/arrival/20 次换源旧回放。
+- host normal/strict、ASan/UBSan 连续三轮与 TSan 均为 **714 total / 698 pass / 16 fail**；16 项失败
+  仍只来自既有 VNC 本地 TLS fixture `start()`，28 个 aggregator 和 17 个 mapper tests 全 PASS，
+  sanitizer/race report 为零，四份 analyzer 零诊断。
+- arm64-v8a/x86_64 aggregator archives 各含一个 object（463352/454608 bytes）；无 caller 时 object 未进入
+  `rdpnapi`，产品库无 aggregator 动态符号，defined/undefined 仍为 arm64 **16114/705**、x86_64
+  **15645/703**。两项 Hvigor、signed HAP 与 diff check PASS。
+- Light 合规门（含 unchanged vendor/TOTP 检查）PASS；未修改 common-c、公共 `InputHandler`、共享 telemetry/render/audio、RDP/RustDesk/SSH/VNC 业务源、
+  NAPI、ArkTS、UI 或云。真实 HarmonyOS GameController listener 与 `MoonlightControllerOverlay` 的窄
+  typed NAPI ingress 明确保留到 S1-05A；当前不能声明实体手柄或 Moonlight 产品串流 runtime 可用。
+- 复用 reviewer task `019fe966-d99a-7ce1-8b53-4ef725597053` 完成修复复核，P0/P1/P2/P3 全 0；
+  receipt `moonlight-n3-08-gpt5-6787cc3fb-2026-08-11`，未创建新 reviewer。
+
 ## 13. 下一执行序列
 
 1. N2-09 保持 EXTERNAL PENDING：必须由真实 Sunshine 与用户 ARM64 实机完成 720p/1080p、
    30/60fps、两小时、温控、前后台/PIP/旋转和网络矩阵；不得用 host 单测或虚拟机代替。
-2. 当前唯一可直接执行的代码任务是 dormant N3-08：建立虚拟控制器模型与确定性布局 validator，
-   覆盖 safe area、冲突热区、坏布局 fallback、编辑态零发送。实体 listener 与虚拟 typed ingress 的
-   button/stick/trigger/dpad 只在 native 聚合 full-state，并复用 N3-05→N3-01→official common-c；
-   physical↔virtual handoff 必须先 accepted `active-mask=0` removal、确认 slot 0 clear，再用更高
-   operation/source generation 接管，失败则终止当前 session。不得创建第二 input owner/port/slot。
-3. 保持 N2-08 与 N3-01～N3-07 dormant：不接 NAPI/ArkTS/UI/PIP/后台、云或日志，不把任何结果变成 video
+2. 当前唯一可直接执行的代码任务是 U1-01：先快照 VNC sm/md/lg/xl、短屏和大字体布局/交互基线，
+   再提取不持有协议状态、不硬编码图标的 `RemoteConfigSheetScaffold.ets`，把 `VncSheetScaffold`
+   收敛为薄 wrapper；VNC DOM、截图和交互必须零差异。
+3. 保持 N2-08 与 N3-01～N3-08 dormant：不接 NAPI/ArkTS/UI/PIP/后台、云或日志，不把任何结果变成 video
    first-frame、streaming/protocolAvailable、FAB 或 release truth。
-4. S1-08 才按现有 `NativeSessionHandles`、Surface/PIP/background 生命周期装配媒体；U1/S1 的
-   设置、目录、连接浮层继续只消费 local Repository/cache、Host Control 和 media prerequisites。
+4. S1-05A 才接真实 HarmonyOS GameController listener 与虚拟 typed NAPI；S1-08 才按现有
+   `NativeSessionHandles`、Surface/PIP/background 生命周期装配媒体。U1/S1 设置、目录和连接浮层
+   继续只消费 local Repository/cache、Host Control 和 media prerequisites。
 5. Moonlight 云同步（`moonlightrecordv1`、selection/transfer/secret recovery）继续 parked；
    真实 Sunshine、设备/网络/功耗矩阵和用户 ARM64 实机验收仍是外部门禁。
