@@ -173,6 +173,9 @@ set(MOONLIGHT_INPUT_BRIDGE_SOURCE
 set(MOONLIGHT_KEYBOARD_MAPPER_SOURCE
     moonlight/input/MoonlightKeyboardMapper.cpp
 )
+set(MOONLIGHT_POINTER_MAPPER_SOURCE
+    moonlight/input/MoonlightPointerMapper.cpp
+)
 set(MOONLIGHT_SOURCES
     moonlight/core/MoonlightSessionOwner.cpp
 )
@@ -310,6 +313,7 @@ if(RDP_BUILD_TESTS)
         test/moonlight_media_clock_stats_test.cpp
         test/moonlight_input_bridge_test.cpp
         test/moonlight_keyboard_mapper_test.cpp
+        test/moonlight_pointer_mapper_test.cpp
         test/vnc_des_test.cpp
         test/vnc_cursor_protocol_test.cpp
         test/vnc_transport_policy_test.cpp
@@ -350,6 +354,7 @@ if(RDP_BUILD_TESTS)
         ${MOONLIGHT_MEDIA_CLOCK_STATS_SOURCE}
         ${MOONLIGHT_INPUT_BRIDGE_SOURCE}
         ${MOONLIGHT_KEYBOARD_MAPPER_SOURCE}
+        ${MOONLIGHT_POINTER_MAPPER_SOURCE}
         vnc/vnc_des.cpp
         vnc/vnc_cursor_protocol.cpp
         vnc/vnc_rfb_protocol.cpp
@@ -758,6 +763,24 @@ set_target_properties(remotedesk_moonlight_keyboard_mapper PROPERTIES
     POSITION_INDEPENDENT_CODE ON
 )
 
+# N3-03 content-rect, relative pointer, five-button, and high-resolution
+# scroll contract. It remains a hidden private archive with no InputHandler,
+# NAPI, ArkTS, UI, platform capture, or product caller.
+add_library(remotedesk_moonlight_pointer_mapper STATIC
+    ${MOONLIGHT_POINTER_MAPPER_SOURCE}
+)
+target_compile_features(remotedesk_moonlight_pointer_mapper PRIVATE cxx_std_17)
+target_include_directories(remotedesk_moonlight_pointer_mapper PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_compile_options(remotedesk_moonlight_pointer_mapper PRIVATE
+    -fvisibility=hidden
+    -fvisibility-inlines-hidden
+)
+set_target_properties(remotedesk_moonlight_pointer_mapper PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+)
+
 # 定义共享库目标
 add_library(rdpnapi SHARED ${ALL_SOURCES})
 target_compile_definitions(rdpnapi PRIVATE
@@ -765,6 +788,7 @@ target_compile_definitions(rdpnapi PRIVATE
     REMOTEDESK_BUILD_TIME_UTC="${REMOTEDESK_BUILD_TIME_UTC}"
 )
 target_link_libraries(rdpnapi PRIVATE
+    remotedesk_moonlight_pointer_mapper
     remotedesk_moonlight_keyboard_mapper
     remotedesk_moonlight_input_bridge
     remotedesk_moonlight_media_clock_stats
@@ -792,6 +816,7 @@ target_link_options(rdpnapi PRIVATE
     "-Wl,--exclude-libs,libremotedesk_moonlight_media_clock_stats.a"
     "-Wl,--exclude-libs,libremotedesk_moonlight_input_bridge.a"
     "-Wl,--exclude-libs,libremotedesk_moonlight_keyboard_mapper.a"
+    "-Wl,--exclude-libs,libremotedesk_moonlight_pointer_mapper.a"
 )
 
 # VNC full-screen ZRLE decode is production-rate code even in a signed Debug
