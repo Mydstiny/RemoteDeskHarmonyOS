@@ -248,5 +248,41 @@ export default function moonlightSessionCoordinatorTest(): void {
       expect(activeMoonlightRecord(registry)).assertNull();
       registry.resetForTest();
     });
+
+    it('publishes_only_scope_and_route_matching_snapshots', 0, (): void => {
+      const runtime: FakeMoonlightRuntime = new FakeMoonlightRuntime();
+      const registry: ActiveRemoteSessionRegistry = ActiveRemoteSessionRegistry.getInstance();
+      registry.resetForTest();
+      registry.bindScope('owner-1', 1);
+      const coordinator: MoonlightSessionCoordinator = new MoonlightSessionCoordinator(runtime, registry);
+      let matching: MoonlightSessionStateSnapshot | null = null;
+      let foreignNonNull: boolean = false;
+      const unsubscribe = coordinator.subscribeForRoute(
+        'owner-1', 1, 'host-1', 'app-1',
+        (snapshot: MoonlightSessionStateSnapshot | null): void => { matching = snapshot; });
+      const unsubscribeForeign = coordinator.subscribeForRoute(
+        'owner-1', 1, 'host-other', 'app-other',
+        (snapshot: MoonlightSessionStateSnapshot | null): void => {
+          if (snapshot !== null) { foreignNonNull = true; }
+        });
+      expect(matching).assertNull();
+      expect(coordinator.start(request()).accepted).assertTrue();
+      expect(matching !== null).assertTrue();
+      expect((matching as MoonlightSessionStateSnapshot).phase).assertEqual('discovering');
+      coordinator.handleRuntimeEvent(event('capabilityDegraded', 1, 2, 0, ''));
+      expect((matching as MoonlightSessionStateSnapshot).degradationReasons.length).assertEqual(0);
+      coordinator.handleRuntimeEvent({
+        type: 'capabilityDegraded', generation: 1, sequence: 3,
+        nativeError: '', detailCode: 'audio_degraded', nativeSessionId: 0, surfaceId: ''
+      });
+      expect((matching as MoonlightSessionStateSnapshot).degradationReasons.length).assertEqual(1);
+      expect(foreignNonNull).assertFalse();
+      coordinator.bindScope('owner-2', 2);
+      expect(matching).assertNull();
+      unsubscribe();
+      unsubscribeForeign();
+      coordinator.resetForTest();
+      registry.resetForTest();
+    });
   });
 }

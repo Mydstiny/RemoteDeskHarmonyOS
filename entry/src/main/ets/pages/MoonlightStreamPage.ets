@@ -11,7 +11,11 @@ import { RemoteModifierPanel } from '../components/RemoteModifierPanel';
 import { AccountScopeToken } from '../services/AccountScopePolicy';
 import { AccountSessionCoordinator } from '../services/AccountSessionCoordinator';
 import { MoonlightSessionCoordinator } from '../services/MoonlightSessionCoordinator';
-import { MoonlightSessionPhase } from '../services/MoonlightSessionState';
+import {
+  MoonlightSessionErrorCode,
+  MoonlightSessionPhase,
+  MoonlightSessionStateSnapshot
+} from '../services/MoonlightSessionState';
 import {
   MoonlightDiagnosticsSnapshot,
   MoonlightRouteIdentity,
@@ -40,6 +44,10 @@ struct MoonlightStreamPage {
   @State hostId: string = '';
   @State appId: string = '';
   @State phase: MoonlightSessionPhase = 'failed';
+  @State errorCode: MoonlightSessionErrorCode = 'internal';
+  @State degradationReasons: string[] = [];
+  @State elapsedMs: number = 0;
+  @State firstFrameSeen: boolean = false;
   @State showConnectStage: boolean = true;
   @State showSessionSheet: boolean = false;
   @State sheetMode: MoonlightSessionSheetMode = 'none';
@@ -71,7 +79,11 @@ struct MoonlightStreamPage {
   private readonly sessionCoordinator: MoonlightSessionCoordinator =
     MoonlightSessionCoordinator.getInstance();
   private accountScopeUnsubscribe: (() => void) | null = null;
+  private snapshotUnsubscribe: (() => void) | null = null;
   private pageActive: boolean = false;
+  private sessionGeneration: number = 0;
+  private sessionStartedAtMs: number = 0;
+  private elapsedTimer: number = -1;
   private sheetReopenGeneration: number = 0;
   private sheetReopenTimer: number = -1;
 
@@ -88,12 +100,21 @@ struct MoonlightStreamPage {
     this.appId = route.valid ? route.appId : '';
     this.scaleMode = this.commonDisplayScaleMode;
     this.phase = 'failed';
+    this.errorCode = 'internal';
+    this.degradationReasons = [];
+    this.elapsedMs = 0;
+    this.firstFrameSeen = false;
+    this.sessionGeneration = 0;
+    this.sessionStartedAtMs = 0;
+    this.clearElapsedTimer();
     this.showConnectStage = true;
     const scope: AccountScopeToken = AccountSessionCoordinator.getInstance().currentScope();
     this.sessionCoordinator.bindScope(scope.ownerScopeId, scope.generation);
+    this.bindSessionSnapshot(scope);
     this.accountScopeUnsubscribe = AccountSessionCoordinator.getInstance().onChange(
       (next: AccountScopeToken): void => {
         this.sessionCoordinator.bindScope(next.ownerScopeId, next.generation);
+        this.bindSessionSnapshot(next);
       });
   }
 
@@ -105,10 +126,101 @@ struct MoonlightStreamPage {
     this.showSessionSheet = false;
     this.flushInput('page_disappear');
     this.sessionCoordinator.cancelForRoute(this.hostId, this.appId, 'stream-page-disappear');
+    this.clearElapsedTimer();
+    if (this.snapshotUnsubscribe !== null) {
+      this.snapshotUnsubscribe();
+      this.snapshotUnsubscribe = null;
+    }
     if (this.accountScopeUnsubscribe !== null) {
       this.accountScopeUnsubscribe();
       this.accountScopeUnsubscribe = null;
     }
+  }
+
+  private bindSessionSnapshot(scope: AccountScopeToken): void {
+    if (this.snapshotUnsubscribe !== null) {
+      this.snapshotUnsubscribe();
+      this.snapshotUnsubscribe = null;
+    }
+    if (this.hostId === '' || this.appId === '') {
+      this.applySessionSnapshot(null);
+      return;
+    }
+    this.snapshotUnsubscribe = this.sessionCoordinator.subscribeForRoute(
+      scope.ownerScopeId, scope.generation, this.hostId, this.appId,
+      (snapshot: MoonlightSessionStateSnapshot | null): void => {
+        this.applySessionSnapshot(snapshot);
+      });
+  }
+
+  private applySessionSnapshot(snapshot: MoonlightSessionStateSnapshot | null): void {
+    if (!this.pageActive) { return; }
+    if (snapshot === null) {
+      this.phase = 'failed';
+      this.errorCode = 'internal';
+      this.degradationReasons = [];
+      this.elapsedMs = 0;
+      this.firstFrameSeen = false;
+      this.sessionGeneration = 0;
+      this.sessionStartedAtMs = 0;
+      this.showConnectStage = true;
+      this.clearElapsedTimer();
+      return;
+    }
+    if (snapshot.generation !== this.sessionGeneration) {
+      this.sessionGeneration = snapshot.generation;
+      this.sessionStartedAtMs = Date.now();
+      this.elapsedMs = 0;
+    }
+    this.phase = snapshot.phase;
+    this.errorCode = snapshot.errorCode;
+    this.degradationReasons = snapshot.degradationReasons.slice();
+    this.firstFrameSeen = snapshot.firstFrameSeen;
+    this.showConnectStage = !snapshot.firstFrameSeen && snapshot.phase !== 'streaming';
+    if (this.sessionStartedAtMs > 0) {
+      this.elapsedMs = Math.max(0, Date.now() - this.sessionStartedAtMs);
+    }
+    if (this.showConnectStage && snapshot.phase !== 'failed' && snapshot.phase !== 'disconnected') {
+      this.scheduleElapsedTick();
+    } else {
+      this.clearElapsedTimer();
+    }
+  }
+
+  private scheduleElapsedTick(): void {
+    if (!this.pageActive || this.elapsedTimer >= 0 || this.sessionStartedAtMs <= 0 ||
+      this.firstFrameSeen || this.phase === 'failed' || this.phase === 'disconnected') {
+      return;
+    }
+    this.elapsedTimer = setTimeout((): void => {
+      this.elapsedTimer = -1;
+      if (!this.pageActive || this.sessionStartedAtMs <= 0) { return; }
+      this.elapsedMs = Math.max(0, Date.now() - this.sessionStartedAtMs);
+      this.scheduleElapsedTick();
+    }, 250);
+  }
+
+  private clearElapsedTimer(): void {
+    if (this.elapsedTimer >= 0) {
+      clearTimeout(this.elapsedTimer);
+      this.elapsedTimer = -1;
+    }
+  }
+
+  private cancelConnection(): void {
+    const result = this.sessionCoordinator.cancelForRoute(
+      this.hostId, this.appId, 'connect-stage-cancel');
+    if (result.code === 'stop_requested') {
+      promptAction.showToast({ message: '正在安全取消连接', duration: 1400 });
+    }
+    this.flushInput('cancel_connect');
+    router.back();
+  }
+
+  private retryConnection(): void {
+    promptAction.showToast({
+      message: 'Moonlight 运行时尚未开放，当前不能重试真实连接', duration: 2000
+    });
   }
 
   private flushInput(reason: string): void {
@@ -385,13 +497,11 @@ struct MoonlightStreamPage {
 
       if (this.showConnectStage) {
         MoonlightConnectStageOverlay({
-          phase: this.phase, elapsedMs: 10001, firstFrameSeen: false, errorCode: 'internal',
-          degradationReasons: ['runtime_unavailable'],
-          onCancel: (): void => { this.flushInput('cancel_connect'); router.back(); },
-          onRetry: (): void => {
-            promptAction.showToast({ message: 'Host Control 尚未开放', duration: 1800 });
-          },
-          onDowngradeRetry: (): void => {},
+          phase: this.phase, elapsedMs: this.elapsedMs, firstFrameSeen: this.firstFrameSeen,
+          errorCode: this.errorCode, degradationReasons: this.degradationReasons,
+          onCancel: (): void => { this.cancelConnection(); },
+          onRetry: (): void => { this.retryConnection(); },
+          onDowngradeRetry: (): void => { this.retryConnection(); },
           onOpenDiagnostics: (): void => { this.showDiagnostics = true; },
           onBackToCatalog: (): void => { this.flushInput('back_to_catalog'); router.back(); }
         })

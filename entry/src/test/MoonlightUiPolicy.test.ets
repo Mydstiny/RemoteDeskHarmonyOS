@@ -124,6 +124,10 @@ export default function moonlightUiPolicyTest(): void {
       expect(moonlightConnectStagePresentation('video',
         MOONLIGHT_CONNECT_DIAGNOSTICS_DELAY_MS, false).showDiagnostics).assertTrue();
       expect(moonlightConnectStagePresentation('streaming', 12000, true).visible).assertFalse();
+      const disconnected = moonlightConnectStagePresentation('disconnected', 0, false);
+      expect(disconnected.visible).assertTrue();
+      expect(disconnected.title).assertEqual('连接已结束');
+      expect(disconnected.detail).assertEqual('连接已停止，可返回应用目录。');
     });
 
     it('keeps_disconnect_dangerous_and_controller_fail_closed', 0, (): void => {

@@ -49,6 +49,17 @@ export interface MoonlightCoordinatorEvent {
   surfaceId: string;
 }
 
+export type MoonlightSessionSnapshotListener =
+  (snapshot: MoonlightSessionStateSnapshot | null) => void;
+
+interface MoonlightSessionSnapshotSubscription {
+  ownerScopeId: string;
+  accountGeneration: number;
+  hostId: string;
+  appId: string;
+  listener: MoonlightSessionSnapshotListener;
+}
+
 export type MoonlightCoordinatorResultCode =
   'started' | 'runtime_unavailable' | 'invalid_request' | 'active_session_busy' |
   'duplicate_start' | 'runtime_start_failed' | 'applied' | 'stale_generation' |
@@ -124,6 +135,7 @@ export class MoonlightSessionCoordinator {
   private boundAccountGeneration: number = 0;
   private stopDeadlineAtMs: number = 0;
   private stopTimer: number = -1;
+  private readonly snapshotSubscriptions: MoonlightSessionSnapshotSubscription[] = [];
 
   constructor(runtime: MoonlightRuntimePort | null = null,
     registry: ActiveRemoteSessionRegistry = ActiveRemoteSessionRegistry.getInstance()) {
@@ -200,6 +212,7 @@ export class MoonlightSessionCoordinator {
     }
     this.reservationSessionId = reservationSessionId;
     this.state = firstTransition.state;
+    this.notifySnapshotSubscribers();
     const started: boolean = this.runtime.start(request, this.operationGeneration);
     if (!started) {
       const failedEvent: MoonlightSessionEvent = {
@@ -210,6 +223,7 @@ export class MoonlightSessionCoordinator {
       this.state = failed.applied ? failed.state : this.state;
       this.clearOwnedRegistry();
       this.reservationSessionId = -1;
+      this.notifySnapshotSubscribers();
       return this.result(false, 'runtime_start_failed');
     }
     return this.result(true, 'started');
@@ -296,6 +310,7 @@ export class MoonlightSessionCoordinator {
       this.reservationSessionId = -1;
       this.stopDeadlineAtMs = 0;
     }
+    this.notifySnapshotSubscribers();
     return this.result(true, event.type === 'stopped' ? 'stopped' : 'applied');
   }
 
@@ -323,6 +338,7 @@ export class MoonlightSessionCoordinator {
     }
     this.stopDeadlineAtMs = Date.now() + 5000;
     this.scheduleStopTimer();
+    this.notifySnapshotSubscribers();
     return this.result(true, 'stop_requested');
   }
 
@@ -350,6 +366,7 @@ export class MoonlightSessionCoordinator {
     }
     this.stopDeadlineAtMs = Date.now() + 5000;
     this.scheduleStopTimer();
+    this.notifySnapshotSubscribers();
     return this.result(true, 'stop_requested');
   }
 
@@ -368,12 +385,32 @@ export class MoonlightSessionCoordinator {
     return cloneState(this.state);
   }
 
+  subscribeForRoute(ownerScopeId: string, accountGeneration: number, hostId: string,
+    appId: string, listener: MoonlightSessionSnapshotListener): () => void {
+    const subscription: MoonlightSessionSnapshotSubscription = {
+      ownerScopeId: ownerScopeId.trim(), accountGeneration: accountGeneration,
+      hostId: hostId.trim(), appId: appId.trim(), listener: listener
+    };
+    if (!boundedText(subscription.ownerScopeId, 128) ||
+      !validGeneration(subscription.accountGeneration) ||
+      !boundedText(subscription.hostId, 128) || !boundedText(subscription.appId, 128)) {
+      return (): void => {};
+    }
+    this.snapshotSubscriptions.push(subscription);
+    this.notifySnapshotSubscription(subscription);
+    return (): void => {
+      const index: number = this.snapshotSubscriptions.indexOf(subscription);
+      if (index >= 0) { this.snapshotSubscriptions.splice(index, 1); }
+    };
+  }
+
   resetForTest(): void {
     this.invalidate('test-reset');
     this.state = null;
     this.nativeSessionId = -1;
     this.reservationSessionId = -1;
     this.stopDeadlineAtMs = 0;
+    this.snapshotSubscriptions.splice(0, this.snapshotSubscriptions.length);
   }
 
   expireStop(nowMs: number = Date.now()): MoonlightCoordinatorResult {
@@ -400,6 +437,29 @@ export class MoonlightSessionCoordinator {
     }
   }
 
+  private notifySnapshotSubscription(subscription: MoonlightSessionSnapshotSubscription): void {
+    const snapshot: MoonlightSessionStateSnapshot | null = cloneState(this.state);
+    const visible: MoonlightSessionStateSnapshot | null = snapshot !== null &&
+      snapshot.ownerScopeId === subscription.ownerScopeId &&
+      this.boundOwnerScopeId === subscription.ownerScopeId &&
+      this.boundAccountGeneration === subscription.accountGeneration &&
+      snapshot.hostId === subscription.hostId && snapshot.appId === subscription.appId
+      ? snapshot : null;
+    try {
+      subscription.listener(visible);
+    } catch (_error) {
+      // A stale page must not interrupt session lifecycle delivery.
+    }
+  }
+
+  private notifySnapshotSubscribers(): void {
+    const subscriptions: MoonlightSessionSnapshotSubscription[] =
+      this.snapshotSubscriptions.slice();
+    for (let i = 0; i < subscriptions.length; i++) {
+      this.notifySnapshotSubscription(subscriptions[i]);
+    }
+  }
+
   private invalidate(reason: string): void {
     if (this.nativeSessionId > 0) {
       if (this.runtime !== null) {
@@ -414,6 +474,7 @@ export class MoonlightSessionCoordinator {
     this.reservationSessionId = -1;
     this.stopDeadlineAtMs = 0;
     this.clearStopTimer();
+    this.notifySnapshotSubscribers();
   }
 
   private requestRuntimeStop(reason: string): boolean {
@@ -447,6 +508,7 @@ export class MoonlightSessionCoordinator {
     this.reservationSessionId = -1;
     this.stopDeadlineAtMs = 0;
     this.clearStopTimer();
+    this.notifySnapshotSubscribers();
   }
 
   private expireStopIfNeeded(nowMs: number): boolean {

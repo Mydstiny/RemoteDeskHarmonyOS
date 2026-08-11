@@ -336,6 +336,7 @@ export function moonlightLaunchPreflight(
 }
 
 function phaseTitle(phase: MoonlightSessionPhase): string {
+  if (phase === 'disconnected') { return '连接已结束'; }
   if (phase === 'launching') { return '正在启动主机应用'; }
   if (phase === 'negotiating') { return '正在协商串流'; }
   if (phase === 'video') { return '正在准备画面'; }
@@ -364,8 +365,9 @@ export function moonlightConnectStagePresentation(
     terminal: terminal,
     title: phaseTitle(phase),
     detail: phase === 'failed' ? moonlightErrorActionText(errorCode) :
+      (phase === 'disconnected' ? '连接已停止，可返回应用目录。' :
       (elapsed >= MOONLIGHT_CONNECT_DIAGNOSTICS_DELAY_MS ?
-        '连接时间较长，可展开诊断或取消。' : '首帧出现前不会显示“已连接”。')
+        '连接时间较长，可展开诊断或取消。' : '首帧出现前不会显示“已连接”。'))
   };
 }
 
