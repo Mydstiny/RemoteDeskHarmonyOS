@@ -123,6 +123,7 @@ export class MoonlightSessionCoordinator {
   private boundOwnerScopeId: string = '';
   private boundAccountGeneration: number = 0;
   private stopDeadlineAtMs: number = 0;
+  private stopTimer: number = -1;
 
   constructor(runtime: MoonlightRuntimePort | null = null,
     registry: ActiveRemoteSessionRegistry = ActiveRemoteSessionRegistry.getInstance()) {
@@ -289,6 +290,7 @@ export class MoonlightSessionCoordinator {
       return this.result(false, 'registry_lost');
     }
     if (event.type === 'failed' || event.type === 'stopped') {
+      this.clearStopTimer();
       this.clearOwnedRegistry();
       this.nativeSessionId = -1;
       this.reservationSessionId = -1;
@@ -320,6 +322,7 @@ export class MoonlightSessionCoordinator {
       return this.result(false, 'stop_failed');
     }
     this.stopDeadlineAtMs = Date.now() + 5000;
+    this.scheduleStopTimer();
     return this.result(true, 'stop_requested');
   }
 
@@ -346,6 +349,7 @@ export class MoonlightSessionCoordinator {
       return this.result(false, 'stop_failed');
     }
     this.stopDeadlineAtMs = Date.now() + 5000;
+    this.scheduleStopTimer();
     return this.result(true, 'stop_requested');
   }
 
@@ -409,6 +413,7 @@ export class MoonlightSessionCoordinator {
     this.nativeSessionId = -1;
     this.reservationSessionId = -1;
     this.stopDeadlineAtMs = 0;
+    this.clearStopTimer();
   }
 
   private requestRuntimeStop(reason: string): boolean {
@@ -441,6 +446,7 @@ export class MoonlightSessionCoordinator {
     this.nativeSessionId = -1;
     this.reservationSessionId = -1;
     this.stopDeadlineAtMs = 0;
+    this.clearStopTimer();
   }
 
   private expireStopIfNeeded(nowMs: number): boolean {
@@ -450,6 +456,21 @@ export class MoonlightSessionCoordinator {
     }
     this.forceLocalTerminal('STOP_TIMEOUT');
     return true;
+  }
+
+  private scheduleStopTimer(): void {
+    this.clearStopTimer();
+    this.stopTimer = setTimeout((): void => {
+      this.stopTimer = -1;
+      this.expireStopIfNeeded(Date.now());
+    }, 5000);
+  }
+
+  private clearStopTimer(): void {
+    if (this.stopTimer >= 0) {
+      clearTimeout(this.stopTimer);
+      this.stopTimer = -1;
+    }
   }
 
   private result(accepted: boolean, code: MoonlightCoordinatorResultCode): MoonlightCoordinatorResult {

@@ -184,9 +184,14 @@ export default function moonlightSessionCoordinatorTest(): void {
       registry.resetForTest();
       registry.bindScope('owner-1', 1);
       const coordinator: MoonlightSessionCoordinator = new MoonlightSessionCoordinator(runtime, registry);
-      expect(coordinator.start(request()).accepted).assertTrue();
+      const prelaunch = coordinator.start(request());
+      expect(prelaunch.accepted).assertTrue();
       expect(coordinator.cancel('user-cancel').accepted).assertTrue();
       expect(runtime.cancelCalls).assertEqual(1);
+      expect(activeMoonlightRecord(registry) !== null).assertTrue();
+      expect(coordinator.handleRuntimeEvent(event(
+        'stopped', (prelaunch.state as MoonlightSessionStateSnapshot).generation, 3)).code)
+        .assertEqual('stopped');
       expect(activeMoonlightRecord(registry)).assertNull();
 
       const second: MoonlightSessionCoordinator = new MoonlightSessionCoordinator(runtime, registry);
