@@ -180,6 +180,18 @@ export default function moonlightUiPolicyTest(): void {
       expect(moonlightToolbarAutoHideDelayMs(desktopLg, false)).assertEqual(0);
     });
 
+    it('reconciles_auto_hide_when_sheet_or_breakpoint_changes', 0, (): void => {
+      const desktopXl = moonlightToolbarLayout(true, 'xl', false);
+      const desktopLg = moonlightToolbarLayout(true, 'lg', false);
+      // Opening the control sheet cancels an existing 5-second hide timer;
+      // closing it re-arms the timer only when the current layout is xl.
+      expect(moonlightToolbarAutoHideDelayMs(desktopXl, false, true)).assertEqual(0);
+      expect(moonlightToolbarAutoHideDelayMs(desktopXl, false, false)).assertEqual(5000);
+      // A breakpoint change to lg has no automatic hide timer to carry over.
+      expect(moonlightToolbarAutoHideDelayMs(desktopLg, false, false)).assertEqual(0);
+      expect(moonlightToolbarAutoHideDelayMs(desktopLg, false, true)).assertEqual(0);
+    });
+
     it('flushes_input_for_interactive_and_transaction_overlays', 0, (): void => {
       expect(moonlightOverlayRequiresInputFlush(2)).assertFalse();
       expect(moonlightOverlayRequiresInputFlush(3)).assertTrue();

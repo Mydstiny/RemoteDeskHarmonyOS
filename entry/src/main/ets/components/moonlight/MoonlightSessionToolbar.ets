@@ -12,13 +12,13 @@ import { MoonlightBrandIcon } from './MoonlightBrandIcon';
 @Component
 export struct MoonlightSessionToolbar {
   @StorageLink('accentColor') accentColor: string = '#007DFF';
-  @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
+  @StorageProp('currentBreakpoint') @Watch('onBreakpointChange') breakpoint: string = 'sm';
   @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
   @StorageProp('isPadDevice') isPadDevice: boolean = false;
   @Prop audioAvailable: boolean = false;
   @Prop controllerAvailable: boolean = false;
   @Prop pipAvailable: boolean = false;
-  @Prop menuOpen: boolean = false;
+  @Prop @Watch('onMenuOpenChange') menuOpen: boolean = false;
   @Prop qualityColor: string = '#66DD7A';
   @Prop qualityLabel: string = '良好';
   @State private expanded: boolean = false;
@@ -62,11 +62,25 @@ export struct MoonlightSessionToolbar {
     this.clearTimer();
     const delayMs: number = moonlightToolbarAutoHideDelayMs(this.layout(), this.pinned, this.menuOpen);
     if (!this.expanded || delayMs <= 0) { return; }
+    const scheduledAutoHideMs: number = this.layout().autoHideMs;
     this.hideTimer = setTimeout((): void => {
-      if (!this.pinned) { this.expanded = false; }
+      // A Sheet open or a breakpoint switch can race with a queued callback.
+      // Re-read the current policy before collapsing; the watcher also clears
+      // and rebuilds the timer, so stale callbacks cannot hide the new layout.
+      const currentDelayMs: number = moonlightToolbarAutoHideDelayMs(
+        this.layout(), this.pinned, this.menuOpen);
+      if (currentDelayMs !== delayMs || this.layout().autoHideMs !== scheduledAutoHideMs) {
+        this.scheduleHide();
+        return;
+      }
+      if (!this.pinned && !this.menuOpen) { this.expanded = false; }
       this.clearTimer();
     }, delayMs);
   }
+
+  private onBreakpointChange(): void { this.scheduleHide(); }
+
+  private onMenuOpenChange(): void { this.scheduleHide(); }
 
   private invoke(item: MoonlightToolbarItem): void {
     if (!item.enabled) {
