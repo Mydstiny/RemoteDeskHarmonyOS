@@ -230,6 +230,7 @@ class REMOTEDESK_MOONLIGHT_CONTROLLER_HIDDEN MoonlightControllerMapper final {
     // only after the bridge accepts it.
     MoonlightControllerResult disconnect(
         const MoonlightControllerEventContext& context) noexcept;
+    bool discardLocalState(const MoonlightInputIdentity& identity) noexcept;
 
     MoonlightControllerSnapshot snapshot(
         const MoonlightInputIdentity& identity) const noexcept;

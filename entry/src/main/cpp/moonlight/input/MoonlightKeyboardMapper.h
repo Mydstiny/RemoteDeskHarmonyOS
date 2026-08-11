@@ -167,6 +167,9 @@ class REMOTEDESK_MOONLIGHT_KEYBOARD_HIDDEN MoonlightKeyboardMapper final {
     // reordering, or replaying the already accepted prefix.
     MoonlightKeyboardResult resumePending() noexcept;
     bool cancelPendingIfUnsent(const MoonlightInputIdentity& identity) noexcept;
+    // Terminal-only fallback after the remote release path can no longer
+    // complete. Clears pending commands and all pressed/latch state locally.
+    bool discardLocalState(const MoonlightInputIdentity& identity) noexcept;
     MoonlightKeyboardSnapshot snapshot(const MoonlightInputIdentity& identity) const noexcept;
 
   private:

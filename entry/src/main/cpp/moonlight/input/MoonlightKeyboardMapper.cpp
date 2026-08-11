@@ -938,6 +938,9 @@ MoonlightKeyboardResult MoonlightKeyboardMapper::releaseAll(
         return impl_->result(MoonlightKeyboardStatus::AppliedLocally,
                              MoonlightInputDispatchStatus::Accepted);
     }
+    for (std::size_t index = 0U; index < transaction.count; ++index) {
+        transaction.commands[index].event.lifecycleRelease = true;
+    }
     transaction.commands[transaction.count - 1U].stateAfter = candidate;
     return impl_->dispatchTransaction(transaction);
 }
@@ -961,6 +964,20 @@ bool MoonlightKeyboardMapper::cancelPendingIfUnsent(
         return false;
     }
     impl_->pending = {};
+    return true;
+}
+
+bool MoonlightKeyboardMapper::discardLocalState(
+    const MoonlightInputIdentity& identity) noexcept {
+    if (impl_ == nullptr) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    if (identity != impl_->identity) {
+        return false;
+    }
+    impl_->pending = {};
+    impl_->state = {};
     return true;
 }
 

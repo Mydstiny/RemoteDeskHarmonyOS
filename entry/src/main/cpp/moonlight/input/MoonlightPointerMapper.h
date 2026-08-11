@@ -273,6 +273,7 @@ class REMOTEDESK_MOONLIGHT_POINTER_HIDDEN MoonlightPointerMapper final {
 
     MoonlightPointerResult resumePending() noexcept;
     bool cancelPendingIfUnsent(const MoonlightInputIdentity& identity) noexcept;
+    bool discardLocalState(const MoonlightInputIdentity& identity) noexcept;
     MoonlightPointerSnapshot snapshot(const MoonlightInputIdentity& identity) const noexcept;
 
   private:

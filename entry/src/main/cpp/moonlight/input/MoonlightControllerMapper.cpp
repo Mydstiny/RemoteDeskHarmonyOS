@@ -265,7 +265,8 @@ std::uint8_t triggerAxis(double value,
 
 MoonlightInputEvent controllerEvent(
     const MoonlightControllerEventContext& context,
-    const MoonlightControllerWireCommand& command) noexcept {
+    const MoonlightControllerWireCommand& command,
+    bool lifecycleRelease) noexcept {
     MoonlightInputEvent event;
     event.identity = context.identity;
     event.deviceId = context.deviceId;
@@ -274,6 +275,7 @@ MoonlightInputEvent controllerEvent(
     event.sourceSequence = context.sourceSequence;
     event.monotonicTimestampUs = context.monotonicTimestampUs;
     event.kind = MoonlightInputCommandKind::Controller;
+    event.lifecycleRelease = lifecycleRelease;
     event.commandVersion = 1U;
     event.payloadSize = kMoonlightControllerCommandBytes;
     event.payload[0] = static_cast<std::uint8_t>(command.operation);
@@ -465,9 +467,10 @@ struct MoonlightControllerMapper::Impl final {
     MoonlightControllerResult dispatch(
         const MoonlightControllerEventContext& context,
         const MoonlightControllerWireCommand& command,
-        ControllerState&& candidate) noexcept {
+        ControllerState&& candidate,
+        bool lifecycleRelease = false) noexcept {
         const MoonlightInputDispatchStatus dispatchStatus =
-            bridge->dispatch(controllerEvent(context, command));
+            bridge->dispatch(controllerEvent(context, command, lifecycleRelease));
         if (dispatchStatus == MoonlightInputDispatchStatus::Accepted) {
             state = std::move(candidate);
             return {MoonlightControllerStatus::Applied, dispatchStatus};
@@ -636,7 +639,7 @@ MoonlightControllerResult MoonlightControllerMapper::neutralize(
     candidate.stateFrames = saturatingIncrement(candidate.stateFrames);
     candidate.neutralFrames = saturatingIncrement(candidate.neutralFrames);
     return impl_->dispatch(context, stateCommand({}, true),
-                           std::move(candidate));
+                           std::move(candidate), true);
 }
 
 MoonlightControllerResult MoonlightControllerMapper::disconnect(
@@ -672,7 +675,23 @@ MoonlightControllerResult MoonlightControllerMapper::disconnect(
     candidate.neutralFrames = saturatingIncrement(candidate.neutralFrames);
     candidate.removals = saturatingIncrement(candidate.removals);
     return impl_->dispatch(context, stateCommand({}, false),
-                           std::move(candidate));
+                           std::move(candidate), true);
+}
+
+bool MoonlightControllerMapper::discardLocalState(
+    const MoonlightInputIdentity& identity) noexcept {
+    if (impl_ == nullptr) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    if (identity != impl_->identity) {
+        return false;
+    }
+    const std::uint64_t localOnlyUpdates =
+        saturatingIncrement(impl_->state.localOnlyUpdates);
+    impl_->state = {};
+    impl_->state.localOnlyUpdates = localOnlyUpdates;
+    return true;
 }
 
 MoonlightControllerSnapshot MoonlightControllerMapper::snapshot(

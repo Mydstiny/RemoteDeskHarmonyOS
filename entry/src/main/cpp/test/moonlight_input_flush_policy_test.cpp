@@ -53,6 +53,11 @@ class FlushOwnerGate final : public MoonlightInputOwnerGate {
         available_ = true;
     }
 
+    void revoke() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        available_ = false;
+    }
+
   private:
     std::mutex mutex_;
     MoonlightInputIdentity identity_{};
@@ -403,6 +408,47 @@ RDP_TEST_CASE(moonlight_input_flush_suspend_resume_opens_only_new_generation) {
         MoonlightKeyboardStatus::Applied);
 }
 
+RDP_TEST_CASE(moonlight_input_flush_suspended_session_still_applies_native_stop) {
+    FlushFixture fixture(false);
+    fixture.seedKeyboard();
+    RDP_ASSERT_EQ(fixture.policy->flush(
+        MoonlightInputFlushTrigger::Backgrounded, fixture.context()).status,
+        MoonlightInputFlushStatus::Applied);
+    RDP_ASSERT_EQ(fixture.bridge->snapshot(fixture.identity).state,
+                  MoonlightInputState::Suspended);
+
+    const auto result = fixture.policy->flush(
+        MoonlightInputFlushTrigger::SessionStop,
+        fixture.context(101U, 1100U, 11U));
+    RDP_ASSERT_EQ(result.status, MoonlightInputFlushStatus::Applied);
+    RDP_ASSERT(result.localReleased && result.boundaryApplied);
+    RDP_ASSERT_EQ(fixture.bridge->snapshot(fixture.identity).state,
+                  MoonlightInputState::Stopped);
+    RDP_ASSERT_EQ(fixture.port->flushCount(), static_cast<std::size_t>(2));
+    RDP_ASSERT_EQ(fixture.port->flushAt(1U).reason,
+                  MoonlightInputSuspendReason::Stop);
+}
+
+RDP_TEST_CASE(moonlight_input_flush_stale_stop_never_discards_mapper_state) {
+    FlushFixture fixture(false);
+    fixture.seedKeyboard();
+    RDP_ASSERT_EQ(fixture.bridge->activate(fixture.identity, 200U).status,
+                  MoonlightInputControlStatus::AlreadyApplied);
+    const auto before = fixture.port->eventCount();
+
+    const auto result = fixture.policy->flush(
+        MoonlightInputFlushTrigger::SessionStop, fixture.context());
+    RDP_ASSERT_EQ(result.status, MoonlightInputFlushStatus::BoundaryFailure);
+    RDP_ASSERT(!result.localReleased && !result.boundaryApplied);
+    RDP_ASSERT_EQ(fixture.keyboard->snapshot(fixture.identity).
+                      pressedNonModifierKeys,
+                  static_cast<std::size_t>(1));
+    RDP_ASSERT_EQ(fixture.bridge->snapshot(fixture.identity).state,
+                  MoonlightInputState::Active);
+    RDP_ASSERT_EQ(fixture.port->eventCount(), before);
+    RDP_ASSERT_EQ(fixture.port->flushCount(), static_cast<std::size_t>(0));
+}
+
 RDP_TEST_CASE(moonlight_input_flush_exact_request_is_idempotent) {
     FlushFixture fixture(false);
     fixture.seedTouch();
@@ -615,6 +661,101 @@ RDP_TEST_CASE(moonlight_input_flush_concurrent_same_request_is_serial_and_idempo
          first == MoonlightInputFlushStatus::AlreadyApplied);
     RDP_ASSERT(valid);
     RDP_ASSERT_EQ(fixture.port->flushCount(), static_cast<std::size_t>(1));
+}
+
+RDP_TEST_CASE(moonlight_input_flush_closes_real_admission_while_mapper_release_is_pending) {
+    FlushFixture fixture(false);
+    fixture.seedKeyboard();
+    fixture.port->setSendScript({MoonlightInputPortStatus::Backpressure});
+    const auto context = fixture.context();
+    RDP_ASSERT_EQ(fixture.policy->flush(
+        MoonlightInputFlushTrigger::FocusLost, context).status,
+        MoonlightInputFlushStatus::Pending);
+    RDP_ASSERT_EQ(fixture.bridge->snapshot(fixture.identity).state,
+                  MoonlightInputState::ReleasePending);
+
+    MoonlightPointerStatus intruder = MoonlightPointerStatus::Applied;
+    std::thread input([&]() {
+        intruder = fixture.pointer->button(
+            fixture.pointerContext(11U, 1100U),
+            MoonlightPointerButton::Left, true).status;
+    });
+    input.join();
+    RDP_ASSERT_EQ(intruder, MoonlightPointerStatus::InvalidState);
+    RDP_ASSERT_EQ(fixture.pointer->snapshot(fixture.identity).pressedButtons,
+                  static_cast<std::size_t>(0));
+}
+
+RDP_TEST_CASE(moonlight_input_flush_terminal_discards_every_permanent_component_failure) {
+    for (std::size_t failedStage = 0U; failedStage < 4U; ++failedStage) {
+        FlushFixture fixture;
+        fixture.seedAll();
+        std::vector<MoonlightInputPortStatus> script(
+            failedStage, MoonlightInputPortStatus::Accepted);
+        script.push_back(MoonlightInputPortStatus::Unsupported);
+        fixture.port->setSendScript(std::move(script));
+        const auto result = fixture.policy->flush(
+            MoonlightInputFlushTrigger::SessionStop, fixture.context());
+        RDP_ASSERT_EQ(result.status, MoonlightInputFlushStatus::Applied);
+        RDP_ASSERT(result.localReleased && result.boundaryApplied);
+        RDP_ASSERT_EQ(fixture.policy->snapshot(fixture.identity).state,
+                      MoonlightInputFlushState::Stopped);
+        RDP_ASSERT_EQ(fixture.bridge->snapshot(fixture.identity).state,
+                      MoonlightInputState::Stopped);
+        RDP_ASSERT_EQ(fixture.touch->snapshot(fixture.identity).
+                          activeDirectContacts,
+                      static_cast<std::size_t>(0));
+        RDP_ASSERT_EQ(fixture.pointer->snapshot(fixture.identity).pressedButtons,
+                      static_cast<std::size_t>(0));
+        RDP_ASSERT_EQ(fixture.keyboard->snapshot(fixture.identity).
+                          pressedNonModifierKeys,
+                      static_cast<std::size_t>(0));
+        RDP_ASSERT(!fixture.controller->snapshot(fixture.identity).active);
+    }
+}
+
+RDP_TEST_CASE(moonlight_input_flush_terminal_owner_loss_is_local_terminal) {
+    FlushFixture fixture;
+    fixture.seedAll();
+    fixture.gate->revoke();
+    const auto result = fixture.policy->flush(
+        MoonlightInputFlushTrigger::SessionStop, fixture.context());
+    RDP_ASSERT_EQ(result.status, MoonlightInputFlushStatus::AppliedLocally);
+    RDP_ASSERT(result.localReleased && !result.boundaryApplied);
+    RDP_ASSERT_EQ(fixture.policy->snapshot(fixture.identity).state,
+                  MoonlightInputFlushState::Stopped);
+    RDP_ASSERT_EQ(fixture.bridge->snapshot(fixture.identity).state,
+                  MoonlightInputState::Stopped);
+    RDP_ASSERT_EQ(fixture.touch->snapshot(fixture.identity).activeDirectContacts,
+                  static_cast<std::size_t>(0));
+    RDP_ASSERT_EQ(fixture.pointer->snapshot(fixture.identity).pressedButtons,
+                  static_cast<std::size_t>(0));
+    RDP_ASSERT_EQ(fixture.keyboard->snapshot(fixture.identity).
+                      pressedNonModifierKeys,
+                  static_cast<std::size_t>(0));
+    RDP_ASSERT(!fixture.controller->snapshot(fixture.identity).active);
+}
+
+RDP_TEST_CASE(moonlight_input_flush_stop_escalates_component_pending_to_local_release) {
+    FlushFixture fixture(false);
+    fixture.seedKeyboard();
+    fixture.port->setSendScript({MoonlightInputPortStatus::Backpressure,
+                                 MoonlightInputPortStatus::Backpressure});
+    RDP_ASSERT_EQ(fixture.policy->flush(
+        MoonlightInputFlushTrigger::FocusLost, fixture.context()).status,
+        MoonlightInputFlushStatus::Pending);
+    const auto result = fixture.policy->flush(
+        MoonlightInputFlushTrigger::SessionStop,
+        fixture.context(101U, 1100U, 11U));
+    RDP_ASSERT_EQ(result.status, MoonlightInputFlushStatus::Applied);
+    RDP_ASSERT(result.localReleased && result.boundaryApplied);
+    RDP_ASSERT_EQ(fixture.policy->snapshot(fixture.identity).state,
+                  MoonlightInputFlushState::Stopped);
+    const auto keyboard = fixture.keyboard->snapshot(fixture.identity);
+    RDP_ASSERT(!keyboard.pending);
+    RDP_ASSERT_EQ(keyboard.pressedNonModifierKeys, static_cast<std::size_t>(0));
+    RDP_ASSERT_EQ(fixture.bridge->snapshot(fixture.identity).state,
+                  MoonlightInputState::Stopped);
 }
 
 } // namespace

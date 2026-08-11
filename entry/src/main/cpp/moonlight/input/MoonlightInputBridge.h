@@ -80,6 +80,10 @@ struct REMOTEDESK_MOONLIGHT_INPUT_HIDDEN MoonlightInputEvent final {
     std::uint64_t sourceSequence = 0U;
     std::uint64_t monotonicTimestampUs = 0U;
     MoonlightInputCommandKind kind = MoonlightInputCommandKind::Invalid;
+    // Only mapper-generated release/cancel/neutral commands set this bit.
+    // It lets the exact owner bridge reject ordinary input after beginFlush()
+    // while still draining the already-observed local state.
+    bool lifecycleRelease = false;
     std::uint16_t commandVersion = 0U;
     std::size_t payloadSize = 0U;
     std::array<std::uint8_t, kMoonlightMaximumInputPayloadBytes> payload{};
@@ -217,6 +221,11 @@ class REMOTEDESK_MOONLIGHT_INPUT_HIDDEN MoonlightInputBridge final {
     MoonlightInputControlResult activate(const MoonlightInputIdentity& identity,
                                           std::uint64_t operationGeneration) noexcept;
     MoonlightInputDispatchStatus dispatch(const MoonlightInputEvent& event) noexcept;
+    // Atomically closes ordinary input admission before mapper release starts.
+    // ReleasePending accepts only lifecycleRelease events at or before the
+    // declared boundary; focusLost()/stop() later applies the remote neutral.
+    MoonlightInputControlResult beginFlush(
+        const MoonlightInputFlushRequest& request) noexcept;
     MoonlightInputControlResult focusLost(const MoonlightInputIdentity& identity,
                                            std::uint64_t operationGeneration,
                                            std::uint64_t monotonicTimestampUs) noexcept;
@@ -225,6 +234,12 @@ class REMOTEDESK_MOONLIGHT_INPUT_HIDDEN MoonlightInputBridge final {
     MoonlightInputControlResult stop(const MoonlightInputIdentity& identity,
                                       std::uint64_t operationGeneration,
                                       std::uint64_t monotonicTimestampUs) noexcept;
+    // Terminal teardown fallback. It never calls the remote port and is used
+    // only after local mapper state has been discarded.
+    MoonlightInputControlResult stopLocally(
+        const MoonlightInputIdentity& identity,
+        std::uint64_t operationGeneration,
+        std::uint64_t monotonicTimestampUs) noexcept;
     MoonlightInputControlResult cleanup(const MoonlightInputIdentity& identity,
                                          std::uint64_t operationGeneration) noexcept;
     MoonlightInputSnapshot snapshot(const MoonlightInputIdentity& identity) const noexcept;

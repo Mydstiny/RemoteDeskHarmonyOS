@@ -401,10 +401,15 @@ MoonlightInputDispatchStatus MoonlightInputBridge::dispatch(
         impl_->ownerRejectedEvents = saturatingIncrement(impl_->ownerRejectedEvents);
         return MoonlightInputDispatchStatus::StaleOwner;
     }
-    if (impl_->state != MoonlightInputState::Active) {
+    const bool activeAdmission = impl_->state == MoonlightInputState::Active;
+    const bool releaseAdmission =
+        impl_->state == MoonlightInputState::ReleasePending &&
+        event.lifecycleRelease &&
+        event.monotonicTimestampUs <= impl_->lastBoundaryTimestampUs;
+    if (!activeAdmission && !releaseAdmission) {
         return MoonlightInputDispatchStatus::InvalidState;
     }
-    if (event.monotonicTimestampUs <= impl_->lastBoundaryTimestampUs) {
+    if (activeAdmission && event.monotonicTimestampUs <= impl_->lastBoundaryTimestampUs) {
         impl_->staleEvents = saturatingIncrement(impl_->staleEvents);
         return MoonlightInputDispatchStatus::StaleEvent;
     }
@@ -474,6 +479,55 @@ MoonlightInputDispatchStatus MoonlightInputBridge::dispatch(
     return MoonlightInputDispatchStatus::PortFailure;
 }
 
+MoonlightInputControlResult MoonlightInputBridge::beginFlush(
+    const MoonlightInputFlushRequest& request) noexcept {
+    if (impl_ == nullptr || !request.identity.valid() ||
+        request.reason == MoonlightInputSuspendReason::None ||
+        request.operationGeneration == 0U || request.monotonicTimestampUs == 0U) {
+        return controlResult(MoonlightInputControlStatus::InvalidRequest,
+                             request.identity, request.operationGeneration);
+    }
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    if (impl_->identity != request.identity) {
+        return controlResult(MoonlightInputControlStatus::Stale, request.identity,
+                             request.operationGeneration);
+    }
+    const bool exactPrepared =
+        impl_->state == MoonlightInputState::ReleasePending &&
+        impl_->suspendReason == request.reason &&
+        impl_->lastOperationGeneration == request.operationGeneration &&
+        impl_->lastBoundaryTimestampUs == request.monotonicTimestampUs;
+    if (exactPrepared) {
+        return controlResult(MoonlightInputControlStatus::AlreadyApplied,
+                             request.identity, request.operationGeneration);
+    }
+    const bool terminalUpgrade =
+        impl_->state == MoonlightInputState::ReleasePending &&
+        impl_->suspendReason == MoonlightInputSuspendReason::FocusLost &&
+        request.reason == MoonlightInputSuspendReason::Stop;
+    const bool terminalFromSuspended =
+        impl_->state == MoonlightInputState::Suspended &&
+        impl_->suspendReason == MoonlightInputSuspendReason::FocusLost &&
+        request.reason == MoonlightInputSuspendReason::Stop;
+    if (impl_->state != MoonlightInputState::Active && !terminalUpgrade &&
+        !terminalFromSuspended) {
+        return controlResult(MoonlightInputControlStatus::InvalidState,
+                             request.identity, request.operationGeneration);
+    }
+    if (request.operationGeneration <= impl_->lastOperationGeneration ||
+        request.monotonicTimestampUs < impl_->lastBoundaryTimestampUs ||
+        request.monotonicTimestampUs < impl_->latestEventTimestampUs) {
+        return controlResult(MoonlightInputControlStatus::Stale, request.identity,
+                             request.operationGeneration);
+    }
+    impl_->state = MoonlightInputState::ReleasePending;
+    impl_->suspendReason = request.reason;
+    impl_->lastOperationGeneration = request.operationGeneration;
+    impl_->lastBoundaryTimestampUs = request.monotonicTimestampUs;
+    return controlResult(MoonlightInputControlStatus::Applied, request.identity,
+                         request.operationGeneration);
+}
+
 MoonlightInputControlResult MoonlightInputBridge::focusLost(
     const MoonlightInputIdentity& requested,
     std::uint64_t operationGeneration,
@@ -502,13 +556,13 @@ MoonlightInputControlResult MoonlightInputBridge::focusLost(
         return controlResult(MoonlightInputControlStatus::AlreadyApplied, requested,
                              operationGeneration);
     }
-    const bool retry = impl_->state == MoonlightInputState::ReleasePending &&
+    const bool prepared = impl_->state == MoonlightInputState::ReleasePending &&
         impl_->suspendReason == MoonlightInputSuspendReason::FocusLost;
-    if (impl_->state != MoonlightInputState::Active && !retry) {
+    if (impl_->state != MoonlightInputState::Active && !prepared) {
         return controlResult(MoonlightInputControlStatus::InvalidState, requested,
                              operationGeneration);
     }
-    if (operationGeneration == impl_->lastOperationGeneration) {
+    if (operationGeneration == impl_->lastOperationGeneration && !prepared) {
         return controlResult(MoonlightInputControlStatus::Stale, requested,
                              operationGeneration);
     }
@@ -599,13 +653,15 @@ MoonlightInputControlResult MoonlightInputBridge::stop(
         return controlResult(MoonlightInputControlStatus::AlreadyApplied, requested,
                              operationGeneration);
     }
+    const bool prepared = impl_->state == MoonlightInputState::ReleasePending &&
+        impl_->suspendReason == MoonlightInputSuspendReason::Stop;
     if (impl_->state != MoonlightInputState::Active &&
         impl_->state != MoonlightInputState::Suspended &&
-        impl_->state != MoonlightInputState::ReleasePending) {
+        !prepared) {
         return controlResult(MoonlightInputControlStatus::InvalidState, requested,
                              operationGeneration);
     }
-    if (operationGeneration == impl_->lastOperationGeneration) {
+    if (operationGeneration == impl_->lastOperationGeneration && !prepared) {
         return controlResult(MoonlightInputControlStatus::Stale, requested,
                              operationGeneration);
     }
@@ -632,6 +688,43 @@ MoonlightInputControlResult MoonlightInputBridge::stop(
     }
     impl_->neutralFlushes = saturatingIncrement(impl_->neutralFlushes);
     impl_->state = MoonlightInputState::Stopped;
+    return controlResult(MoonlightInputControlStatus::Applied, requested,
+                         operationGeneration);
+}
+
+MoonlightInputControlResult MoonlightInputBridge::stopLocally(
+    const MoonlightInputIdentity& requested,
+    std::uint64_t operationGeneration,
+    std::uint64_t monotonicTimestampUs) noexcept {
+    if (impl_ == nullptr || !requested.valid() || operationGeneration == 0U ||
+        monotonicTimestampUs == 0U) {
+        return controlResult(MoonlightInputControlStatus::InvalidRequest, requested,
+                             operationGeneration);
+    }
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    if (impl_->identity != requested ||
+        operationGeneration < impl_->lastOperationGeneration ||
+        monotonicTimestampUs < impl_->lastBoundaryTimestampUs) {
+        return controlResult(MoonlightInputControlStatus::Stale, requested,
+                             operationGeneration);
+    }
+    if (impl_->state == MoonlightInputState::Stopped) {
+        impl_->lastOperationGeneration = operationGeneration;
+        impl_->lastBoundaryTimestampUs = monotonicTimestampUs;
+        return controlResult(MoonlightInputControlStatus::AlreadyApplied, requested,
+                             operationGeneration);
+    }
+    if (impl_->state != MoonlightInputState::Active &&
+        impl_->state != MoonlightInputState::Suspended &&
+        impl_->state != MoonlightInputState::ReleasePending) {
+        return controlResult(MoonlightInputControlStatus::InvalidState, requested,
+                             operationGeneration);
+    }
+    impl_->sourceLanes = {};
+    impl_->state = MoonlightInputState::Stopped;
+    impl_->suspendReason = MoonlightInputSuspendReason::Stop;
+    impl_->lastOperationGeneration = operationGeneration;
+    impl_->lastBoundaryTimestampUs = monotonicTimestampUs;
     return controlResult(MoonlightInputControlStatus::Applied, requested,
                          operationGeneration);
 }

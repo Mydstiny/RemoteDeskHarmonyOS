@@ -104,8 +104,18 @@ bool controllerSuccess(MoonlightControllerStatus status) noexcept {
 
 bool retryableDispatch(MoonlightInputDispatchStatus status) noexcept {
     return status == MoonlightInputDispatchStatus::Backpressure ||
-        status == MoonlightInputDispatchStatus::PortFailure ||
-        status == MoonlightInputDispatchStatus::Unsupported;
+        status == MoonlightInputDispatchStatus::PortFailure;
+}
+
+MoonlightInputSuspendReason bridgeReason(
+    MoonlightInputFlushDisposition disposition) noexcept {
+    return terminalDisposition(disposition) ? MoonlightInputSuspendReason::Stop :
+        MoonlightInputSuspendReason::FocusLost;
+}
+
+bool controlSuccess(MoonlightInputControlStatus status) noexcept {
+    return status == MoonlightInputControlStatus::Applied ||
+        status == MoonlightInputControlStatus::AlreadyApplied;
 }
 
 MoonlightInputDispatchStatus controlDispatch(
@@ -220,6 +230,26 @@ struct MoonlightInputFlushPolicy::Impl final {
                           state.boundaryApplied, retryableDispatch(dispatchStatus));
     }
 
+    bool discardLocalState(const MoonlightInputIdentity& identity) noexcept {
+        bool discarded = touch->discardLocalState(identity);
+        discarded = pointer->discardLocalState(identity) && discarded;
+        discarded = keyboard->discardLocalState(identity) && discarded;
+        if (controller != nullptr) {
+            discarded = controller->discardLocalState(identity) && discarded;
+        }
+        state.localReleased = discarded;
+        return discarded;
+    }
+
+    MoonlightInputControlResult beginFlushBoundary(
+        const MoonlightInputIdentity& identity,
+        MoonlightInputFlushDisposition disposition,
+        std::uint64_t operationGeneration,
+        std::uint64_t timestampUs) noexcept {
+        return bridge->beginFlush({identity, bridgeReason(disposition),
+                                   operationGeneration, timestampUs});
+    }
+
     MoonlightInputFlushResult drive() noexcept {
         if (!request.has_value()) {
             return rejected(MoonlightInputFlushStatus::InvalidState);
@@ -233,6 +263,13 @@ struct MoonlightInputFlushPolicy::Impl final {
                         ? touch->resumePending()
                         : touch->cancelAll(context.touch);
                     if (!touchSuccess(result.status)) {
+                        if (terminalDisposition(state.lastDisposition)) {
+                            if (!discardLocalState(context.identity)) {
+                                return componentFailure(result.dispatchStatus);
+                            }
+                            state.stage = MoonlightInputFlushStage::Boundary;
+                            break;
+                        }
                         return retryableDispatch(result.dispatchStatus) ||
                                 result.status == MoonlightTouchStatus::Pending
                             ? pending(result.dispatchStatus)
@@ -247,6 +284,13 @@ struct MoonlightInputFlushPolicy::Impl final {
                         ? pointer->resumePending()
                         : pointer->releaseAll(context.pointer);
                     if (!pointerSuccess(result.status)) {
+                        if (terminalDisposition(state.lastDisposition)) {
+                            if (!discardLocalState(context.identity)) {
+                                return componentFailure(result.dispatchStatus);
+                            }
+                            state.stage = MoonlightInputFlushStage::Boundary;
+                            break;
+                        }
                         return retryableDispatch(result.dispatchStatus) ||
                                 result.status == MoonlightPointerStatus::Pending
                             ? pending(result.dispatchStatus)
@@ -261,6 +305,13 @@ struct MoonlightInputFlushPolicy::Impl final {
                         ? keyboard->resumePending()
                         : keyboard->releaseAll(context.keyboard);
                     if (!keyboardSuccess(result.status)) {
+                        if (terminalDisposition(state.lastDisposition)) {
+                            if (!discardLocalState(context.identity)) {
+                                return componentFailure(result.dispatchStatus);
+                            }
+                            state.stage = MoonlightInputFlushStage::Boundary;
+                            break;
+                        }
                         return retryableDispatch(result.dispatchStatus) ||
                                 result.status == MoonlightKeyboardStatus::Pending
                             ? pending(result.dispatchStatus)
@@ -279,6 +330,13 @@ struct MoonlightInputFlushPolicy::Impl final {
                                     ? controller->disconnect(context.controller)
                                     : controller->neutralize(context.controller);
                             if (!controllerSuccess(result.status)) {
+                                if (terminalDisposition(state.lastDisposition)) {
+                                    if (!discardLocalState(context.identity)) {
+                                        return componentFailure(result.dispatchStatus);
+                                    }
+                                    state.stage = MoonlightInputFlushStage::Boundary;
+                                    break;
+                                }
                                 return retryableDispatch(result.dispatchStatus)
                                     ? pending(result.dispatchStatus)
                                     : componentFailure(result.dispatchStatus);
@@ -291,13 +349,13 @@ struct MoonlightInputFlushPolicy::Impl final {
                 }
                 case MoonlightInputFlushStage::Boundary: {
                     const auto control = terminalDisposition(state.lastDisposition)
-                        ? bridge->stop(context.identity, context.operationGeneration,
-                                       context.monotonicTimestampUs)
+                        ? bridge->stop(context.identity,
+                                       state.lastOperationGeneration,
+                                       state.lastTimestampUs)
                         : bridge->focusLost(context.identity,
-                                            context.operationGeneration,
-                                            context.monotonicTimestampUs);
-                    if (control.status == MoonlightInputControlStatus::Applied ||
-                        control.status == MoonlightInputControlStatus::AlreadyApplied) {
+                                            state.lastOperationGeneration,
+                                            state.lastTimestampUs);
+                    if (controlSuccess(control.status)) {
                         state.boundaryApplied = true;
                         state.stage = MoonlightInputFlushStage::Complete;
                         state.state = terminalDisposition(state.lastDisposition)
@@ -315,6 +373,16 @@ struct MoonlightInputFlushPolicy::Impl final {
                     state.boundaryFailures =
                         saturatingIncrement(state.boundaryFailures);
                     if (terminalDisposition(state.lastDisposition)) {
+                        (void)discardLocalState(context.identity);
+                        const auto localStop = bridge->stopLocally(
+                            context.identity, state.lastOperationGeneration,
+                            state.lastTimestampUs);
+                        if (!controlSuccess(localStop.status)) {
+                            return makeResult(
+                                MoonlightInputFlushStatus::BoundaryFailure,
+                                state.stage, controlDispatch(localStop.status),
+                                state.localReleased, false, false);
+                        }
                         state.boundaryApplied = false;
                         state.stage = MoonlightInputFlushStage::Complete;
                         state.state = MoonlightInputFlushState::Stopped;
@@ -326,7 +394,7 @@ struct MoonlightInputFlushPolicy::Impl final {
                         request.reset();
                         return makeResult(MoonlightInputFlushStatus::AppliedLocally,
                                           state.stage,
-                                          MoonlightInputDispatchStatus::PortFailure,
+                                          controlDispatch(control.status),
                                           true, false);
                     }
                     state.state = MoonlightInputFlushState::BoundaryPending;
@@ -400,14 +468,22 @@ MoonlightInputFlushResult MoonlightInputFlushPolicy::flush(
         return impl_->rejected(MoonlightInputFlushStatus::InvalidRequest);
     }
     if (impl_->request.has_value()) {
-        if (impl_->state.state == MoonlightInputFlushState::BoundaryPending &&
-            terminalDisposition(disposition) &&
+        if (terminalDisposition(disposition) &&
+            !terminalDisposition(impl_->state.lastDisposition) &&
             context.operationGeneration >
                 impl_->state.lastOperationGeneration &&
             context.monotonicTimestampUs >= impl_->state.lastTimestampUs) {
-            impl_->request = context;
+            const auto begin = impl_->beginFlushBoundary(
+                context.identity, disposition, context.operationGeneration,
+                context.monotonicTimestampUs);
+            if (!controlSuccess(begin.status)) {
+                return makeResult(MoonlightInputFlushStatus::BoundaryFailure,
+                                  impl_->state.stage,
+                                  controlDispatch(begin.status),
+                                  impl_->state.localReleased,
+                                  impl_->state.boundaryApplied, false);
+            }
             impl_->state.state = MoonlightInputFlushState::Flushing;
-            impl_->state.stage = MoonlightInputFlushStage::Boundary;
             impl_->state.lastTrigger = trigger;
             impl_->state.lastDisposition = disposition;
             impl_->state.lastOperationGeneration = context.operationGeneration;
@@ -442,6 +518,46 @@ MoonlightInputFlushResult MoonlightInputFlushPolicy::flush(
         (context.operationGeneration <= impl_->state.lastOperationGeneration ||
          context.monotonicTimestampUs < impl_->state.lastTimestampUs)) {
         return impl_->rejected(MoonlightInputFlushStatus::StaleOperation);
+    }
+    const auto begin = impl_->beginFlushBoundary(
+        context.identity, disposition, context.operationGeneration,
+        context.monotonicTimestampUs);
+    if (!controlSuccess(begin.status)) {
+        const auto bridgeSnapshot = impl_->bridge->snapshot(context.identity);
+        const bool bridgeAlreadyStopped =
+            bridgeSnapshot.matched &&
+            bridgeSnapshot.state == MoonlightInputState::Stopped &&
+            context.operationGeneration >=
+                bridgeSnapshot.lastOperationGeneration &&
+            context.monotonicTimestampUs >=
+                bridgeSnapshot.lastBoundaryTimestampUs;
+        if (terminalDisposition(disposition) && bridgeAlreadyStopped &&
+            impl_->discardLocalState(context.identity)) {
+            const auto localStop = impl_->bridge->stopLocally(
+                context.identity, context.operationGeneration,
+                context.monotonicTimestampUs);
+            if (controlSuccess(localStop.status)) {
+                impl_->state.state = MoonlightInputFlushState::Stopped;
+                impl_->state.stage = MoonlightInputFlushStage::Complete;
+                impl_->state.lastTrigger = trigger;
+                impl_->state.lastDisposition = disposition;
+                impl_->state.lastOperationGeneration = context.operationGeneration;
+                impl_->state.lastTimestampUs = context.monotonicTimestampUs;
+                impl_->state.admissionOpen = false;
+                impl_->state.localOnlyStops =
+                    saturatingIncrement(impl_->state.localOnlyStops);
+                impl_->state.completedFlushes =
+                    saturatingIncrement(impl_->state.completedFlushes);
+                impl_->lastCompletedRequest = context;
+                return makeResult(MoonlightInputFlushStatus::AppliedLocally,
+                                  impl_->state.stage,
+                                  controlDispatch(begin.status), true, false);
+            }
+        }
+        return makeResult(MoonlightInputFlushStatus::BoundaryFailure,
+                          impl_->state.stage, controlDispatch(begin.status),
+                          impl_->state.localReleased,
+                          impl_->state.boundaryApplied, false);
     }
     impl_->state.matched = true;
     impl_->state.identity = context.identity;

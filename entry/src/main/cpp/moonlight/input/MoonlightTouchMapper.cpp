@@ -1300,9 +1300,12 @@ struct MoonlightTouchMapper::Impl final {
                 return result(MoonlightTouchStatus::AppliedLocally,
                               MoonlightInputDispatchStatus::Accepted);
             }
+            MoonlightInputEvent event = touchEvent(
+                context, kMoonlightTouchEventCancelAll, 0U,
+                nullptr, nullptr, 0U);
+            event.lifecycleRelease = true;
             return dispatchDirect(
-                touchEvent(context, kMoonlightTouchEventCancelAll, 0U,
-                           nullptr, nullptr, 0U), candidate,
+                event, candidate,
                 MoonlightTouchStatus::Applied,
                 static_cast<std::uint64_t>(active));
         }
@@ -1521,6 +1524,23 @@ bool MoonlightTouchMapper::cancelPendingIfUnsent(
         return false;
     }
     impl_->pending = {};
+    return true;
+}
+
+bool MoonlightTouchMapper::discardLocalState(
+    const MoonlightInputIdentity& identity) noexcept {
+    if (impl_ == nullptr) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    if (identity != impl_->identity) {
+        return false;
+    }
+    const MoonlightTouchMode mode = impl_->state.mode;
+    impl_->pending = {};
+    impl_->state = {};
+    impl_->state.mode = mode;
+    impl_->localOnlyUpdates = saturatingIncrement(impl_->localOnlyUpdates);
     return true;
 }
 

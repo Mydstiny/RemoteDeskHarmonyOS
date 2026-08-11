@@ -222,6 +222,7 @@ class REMOTEDESK_MOONLIGHT_TOUCH_HIDDEN MoonlightTouchMapper final {
 
     MoonlightTouchResult resumePending() noexcept;
     bool cancelPendingIfUnsent(const MoonlightInputIdentity& identity) noexcept;
+    bool discardLocalState(const MoonlightInputIdentity& identity) noexcept;
     MoonlightTouchSnapshot snapshot(const MoonlightInputIdentity& identity) const noexcept;
 
   private:
