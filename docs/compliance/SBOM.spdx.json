@@ -990,7 +990,7 @@
       "filesAnalyzed": true,
       "licenseConcluded": "GPL-3.0-only",
       "licenseDeclared": "GPL-3.0-only",
-      "copyrightText": "See upstream repository and THIRD_PARTY_NOTICES.md",
+      "copyrightText": "Moonlight Game Streaming Project contributors",
       "externalRefs": [
         {
           "referenceCategory": "PACKAGE-MANAGER",
@@ -1069,7 +1069,7 @@
       "licenseInfoInFiles": [
         "GPL-3.0-only"
       ],
-      "copyrightText": "See upstream Moonlight Qt repository",
+      "copyrightText": "Moonlight Game Streaming Project contributors",
       "comment": "sourceUrl=https://github.com/moonlight-stream/moonlight-qt/blob/2e13ed9977bc31c73caf8428f08f58d793313ece/app/res/moonlight.svg; originalSha256=6fd0ee4fe5b4aad5abaa5d5c9acb9f7d1bda0abadfe9d1582115de9b4ba16aa2; deterministic monochrome tintable transform; packagedSha256=4f5ef547e33767287e3438a6d1598a1bdef6e49df4678a5f7f214ec58c9e5886"
     },
     {

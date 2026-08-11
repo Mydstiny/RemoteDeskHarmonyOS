@@ -6,9 +6,11 @@ import {
   protocolIconDescriptor
 } from '../../services/ProtocolIconPolicy';
 import {
+  dispatchSelectedHostProtocol,
   HostProtocolPickerOptionState,
+  resolveHostProtocolPickerIconTint,
   resolveHostProtocolPickerOption,
-  selectedHostProtocolRoute
+  resolveMoonlightPickerIconMode
 } from '../../services/HostProtocolPickerPolicy';
 
 @Component
@@ -26,15 +28,18 @@ export struct HostProtocolPicker {
 
   @Builder private protocolOption(protocol: string, title: string, subtitle: string, enabled: boolean) {
     Row() {
-      if (protocol === 'moonlight' && !this.moonlightIconFailed) {
+      if (protocol === 'moonlight' &&
+        resolveMoonlightPickerIconMode(this.moonlightIconFailed) === 'brand') {
         Image(protocolIconDescriptor('moonlight').resource)
           .width(24).height(24)
-          .fillColor(enabled ? this.accentColor : this.pal().text3)
+          .fillColor(resolveHostProtocolPickerIconTint(
+            enabled, this.accentColor, this.pal().text3))
           .margin({ right: 14 })
           .onError((): void => { this.moonlightIconFailed = true; })
       } else {
         SymbolGlyph(protocolIcon(protocol as ProtocolIconKey)).fontSize(24)
-          .fontColor([enabled ? this.accentColor : this.pal().text3]).margin({ right: 14 })
+          .fontColor([resolveHostProtocolPickerIconTint(
+            enabled, this.accentColor, this.pal().text3)]).margin({ right: 14 })
       }
       Column() {
         Text(title).fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
@@ -54,8 +59,7 @@ export struct HostProtocolPicker {
     .onClick((): void => {
       const state: HostProtocolPickerOptionState =
         resolveHostProtocolPickerOption(protocol, enabled);
-      const route: string = selectedHostProtocolRoute(state);
-      if (route !== '') { this.onSelect(route); }
+      dispatchSelectedHostProtocol(state, this.onSelect);
     })
   }
 

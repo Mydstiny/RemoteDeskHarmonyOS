@@ -25,7 +25,7 @@ source and license files before redistribution.
 <!-- MOONLIGHT_VENDOR_NOTICE_END -->
 
 <!-- MOONLIGHT_ICON_NOTICE_BEGIN -->
-| Moonlight Qt official icon | https://github.com/moonlight-stream/moonlight-qt commit `2e13ed9977bc31c73caf8428f08f58d793313ece`; original `app/res/moonlight.svg` SHA-256 `6fd0ee4fe5b4aad5abaa5d5c9acb9f7d1bda0abadfe9d1582115de9b4ba16aa2` | GPL-3.0-only | Deterministic monochrome/tintable transform used only to identify the Moonlight protocol entry; exact geometry, local SHA-256, fallback, attribution and trademark boundary are recorded in `docs/compliance/MOONLIGHT_ICON_PROVENANCE.md` |
+| Moonlight Qt official icon | Copyright Moonlight Game Streaming Project contributors; https://github.com/moonlight-stream/moonlight-qt commit `2e13ed9977bc31c73caf8428f08f58d793313ece`; original `app/res/moonlight.svg` SHA-256 `6fd0ee4fe5b4aad5abaa5d5c9acb9f7d1bda0abadfe9d1582115de9b4ba16aa2` | GPL-3.0-only | Deterministic monochrome/tintable transform used only to identify the Moonlight protocol entry; exact geometry, local SHA-256, fallback, attribution and trademark boundary are recorded in `docs/compliance/MOONLIGHT_ICON_PROVENANCE.md` |
 <!-- MOONLIGHT_ICON_NOTICE_END -->
 
 <!-- TOTP_BRAND_NOTICE_BEGIN -->

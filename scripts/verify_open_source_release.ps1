@@ -77,6 +77,37 @@ if (Test-Path $artifactHashPath -PathType Leaf) {
     Add-Failure 'Moonlight protocol icon artifact hash record is missing or duplicated.'
   }
 }
+$reusePath = Join-Path $root 'REUSE.toml'
+if (Test-Path $reusePath -PathType Leaf) {
+  $reuseMetadata = Get-Content -Raw $reusePath
+  $moonlightReusePattern = '(?s)\[\[annotations\]\]\s*path\s*=\s*"entry/src/main/resources/base/media/icon_moonlight\.svg"\s*precedence\s*=\s*"override"\s*SPDX-FileCopyrightText\s*=\s*"Moonlight Game Streaming Project contributors"\s*SPDX-License-Identifier\s*=\s*"GPL-3\.0-only"'
+  if ($reuseMetadata -notmatch $moonlightReusePattern) {
+    Add-Failure 'Moonlight protocol icon REUSE override is missing or inconsistent.'
+  }
+}
+$thirdPartyNoticePath = Join-Path $root 'THIRD_PARTY_NOTICES.md'
+if (Test-Path $thirdPartyNoticePath -PathType Leaf) {
+  $thirdPartyNotice = Get-Content -Raw $thirdPartyNoticePath
+  if ($thirdPartyNotice -notmatch 'MOONLIGHT_ICON_NOTICE_BEGIN' -or
+      $thirdPartyNotice -notmatch 'Moonlight Game Streaming Project contributors' -or
+      $thirdPartyNotice -notmatch 'GPL-3\.0-only' -or
+      $thirdPartyNotice -notmatch '2e13ed9977bc31c73caf8428f08f58d793313ece' -or
+      $thirdPartyNotice -notmatch '6fd0ee4fe5b4aad5abaa5d5c9acb9f7d1bda0abadfe9d1582115de9b4ba16aa2' -or
+      $thirdPartyNotice -notmatch 'MOONLIGHT_ICON_NOTICE_END') {
+    Add-Failure 'Moonlight protocol icon NOTICE entry is missing or inconsistent.'
+  }
+}
+$sourceOfferPath = Join-Path $root 'docs/compliance/SOURCE_OFFER.md'
+if (Test-Path $sourceOfferPath -PathType Leaf) {
+  $sourceOffer = Get-Content -Raw $sourceOfferPath
+  if ($sourceOffer -notmatch 'entry/src/main/resources/base/media/icon_moonlight\.svg' -or
+      $sourceOffer -notmatch 'GPL-3\.0-only' -or
+      $sourceOffer -notmatch '2e13ed9977bc31c73caf8428f08f58d793313ece' -or
+      $sourceOffer -notmatch '6fd0ee4fe5b4aad5abaa5d5c9acb9f7d1bda0abadfe9d1582115de9b4ba16aa2' -or
+      $sourceOffer -notmatch $moonlightIconExpectedSha256) {
+    Add-Failure 'Moonlight protocol icon source offer is missing or inconsistent.'
+  }
+}
 
 if (Test-Path (Join-Path $root 'LICENSE')) {
   $license = Get-Content -Raw (Join-Path $root 'LICENSE')
@@ -198,6 +229,49 @@ if (Test-Path $sbomPath) {
     }
     if (@($sbom.packages | Where-Object { $_.licenseDeclared -eq 'NOASSERTION' }).Count -gt 0) {
       Add-Failure 'SPDX SBOM contains packages with NOASSERTION license.'
+    }
+    $moonlightIconPackage = @($sbom.packages | Where-Object {
+      $_.SPDXID -eq 'SPDXRef-Package-Moonlight-Qt-Icon'
+    })
+    if ($moonlightIconPackage.Count -ne 1 -or
+        $moonlightIconPackage[0].versionInfo -ne '2e13ed9977bc31c73caf8428f08f58d793313ece' -or
+        $moonlightIconPackage[0].licenseDeclared -ne 'GPL-3.0-only' -or
+        $moonlightIconPackage[0].licenseConcluded -ne 'GPL-3.0-only' -or
+        $moonlightIconPackage[0].copyrightText -ne 'Moonlight Game Streaming Project contributors') {
+      Add-Failure 'SPDX Moonlight icon package metadata is missing or inconsistent.'
+    }
+    $moonlightIconFile = @($sbom.files | Where-Object {
+      $_.SPDXID -eq 'SPDXRef-File-Moonlight-Qt-Icon'
+    })
+    $moonlightIconChecksums = @()
+    $moonlightIconLicenses = @()
+    if ($moonlightIconFile.Count -eq 1) {
+      $moonlightIconChecksums = @($moonlightIconFile[0].checksums | Where-Object {
+        $_.algorithm -eq 'SHA256' -and $_.checksumValue -eq $moonlightIconExpectedSha256
+      })
+      $moonlightIconLicenses = @($moonlightIconFile[0].licenseInfoInFiles | Where-Object {
+        $_ -eq 'GPL-3.0-only'
+      })
+    }
+    if ($moonlightIconFile.Count -ne 1 -or
+        $moonlightIconFile[0].fileName -ne $moonlightIconRelative -or
+        $moonlightIconFile[0].licenseConcluded -ne 'GPL-3.0-only' -or
+        $moonlightIconFile[0].copyrightText -ne 'Moonlight Game Streaming Project contributors' -or
+        $moonlightIconChecksums.Count -ne 1 -or $moonlightIconLicenses.Count -ne 1) {
+      Add-Failure 'SPDX Moonlight icon file metadata is missing or inconsistent.'
+    }
+    $moonlightIconContains = @($sbom.relationships | Where-Object {
+      $_.spdxElementId -eq 'SPDXRef-Package-Moonlight-Qt-Icon' -and
+      $_.relationshipType -eq 'CONTAINS' -and
+      $_.relatedSpdxElement -eq 'SPDXRef-File-Moonlight-Qt-Icon'
+    })
+    $moonlightIconDepends = @($sbom.relationships | Where-Object {
+      $_.spdxElementId -eq 'SPDXRef-Package-RemoteDeskHarmonyOS' -and
+      $_.relationshipType -eq 'DEPENDS_ON' -and
+      $_.relatedSpdxElement -eq 'SPDXRef-Package-Moonlight-Qt-Icon'
+    })
+    if ($moonlightIconContains.Count -ne 1 -or $moonlightIconDepends.Count -ne 1) {
+      Add-Failure 'SPDX Moonlight icon relationships are missing or duplicated.'
     }
   } catch {
     Add-Failure 'SPDX SBOM is not valid JSON.'

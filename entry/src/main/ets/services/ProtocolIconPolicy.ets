@@ -18,11 +18,13 @@ export type ProtocolIconKey =
   | 'settings';
 
 export type ProtocolIconKind = 'system' | 'brand';
+export const MOONLIGHT_ICON_FALLBACK_SYMBOL: string = 'gamecontroller_fill';
 
 export interface ProtocolIconDescriptor {
   kind: ProtocolIconKind;
   resource: Resource;
   fallback: Resource;
+  fallbackName: string;
   tintable: boolean;
 }
 
@@ -60,10 +62,17 @@ export function protocolIconDescriptor(key: ProtocolIconKey): ProtocolIconDescri
       kind: 'brand',
       resource: $r('app.media.icon_moonlight'),
       fallback: fallback,
+      fallbackName: MOONLIGHT_ICON_FALLBACK_SYMBOL,
       tintable: true
     };
   }
-  return { kind: 'system', resource: fallback, fallback: fallback, tintable: true };
+  return {
+    kind: 'system',
+    resource: fallback,
+    fallback: fallback,
+    fallbackName: '',
+    tintable: true
+  };
 }
 
 export function protocolIconLabel(key: ProtocolIconKey): string {

@@ -9,6 +9,9 @@
 - Source URL: `https://github.com/moonlight-stream/moonlight-qt/blob/2e13ed9977bc31c73caf8428f08f58d793313ece/app/res/moonlight.svg`
 - Original SVG SHA-256: `6fd0ee4fe5b4aad5abaa5d5c9acb9f7d1bda0abadfe9d1582115de9b4ba16aa2`
 - Source repository license: `GPL-3.0-only`
+- REUSE file copyright: `Moonlight Game Streaming Project contributors`
+- REUSE precedence: exact-path `override`; the project-wide AGPL annotation does
+  not apply to this upstream-derived asset.
 
 ## Packaged deterministic transform
 

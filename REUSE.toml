@@ -7,6 +7,12 @@ SPDX-FileCopyrightText = "2026 Li Jiong and contributors"
 SPDX-License-Identifier = "AGPL-3.0-or-later"
 
 [[annotations]]
+path = "entry/src/main/resources/base/media/icon_moonlight.svg"
+precedence = "override"
+SPDX-FileCopyrightText = "Moonlight Game Streaming Project contributors"
+SPDX-License-Identifier = "GPL-3.0-only"
+
+[[annotations]]
 path = ["freerdp/**", "libs/**", "rustdesk_vendor/**", "LICENSES/**"]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "Upstream authors; see THIRD_PARTY_NOTICES.md"
