@@ -3,10 +3,10 @@
   "task": "moonlight-complete-upgrade",
   "branch": "codex/moonlight-complete-upgrade",
   "base": "aeb0cdac5",
-  "head": "baa9cafef",
-  "phase": "n3-input-flush-pending",
+  "head": "02cb13aae",
+  "phase": "n3-virtual-controller-pending",
   "status": "active",
-  "next": "N2-09 remains external-pending for real Sunshine and ARM64 physical media evidence. Execute only the next actionable dormant task N3-07: define one MoonlightInputFlushPolicy that coordinates the already-existing keyboard, pointer, touch and controller release contracts for overlay, mode change, focus loss, PIP/background, Surface loss, reconnect, stop and generation change. It must remain pure native and dormant, reuse the existing owner/input bridge and mappers, be idempotent, release local state even when remote stop times out, and add no NAPI, ArkTS, UI, cloud or product caller.",
+  "next": "N2-09 remains external-pending for real Sunshine and ARM64 physical media evidence. Execute only the next actionable dormant task N3-08: define the virtual-controller model and deterministic layout validator, including safe-area clamping, overlap and conflict-hot-zone rejection, corrupt-layout fallback, edit mode that emits no remote input, and exit/background neutral semantics through the existing N3-07 flush contract. Its button, stick, trigger and dpad full-state must reuse the existing native N3-05 MoonlightControllerMapper, N3-01 MoonlightInputBridge and official common-c port; do not encode or transmit the protocol in ArkTS or create a second input owner. Keep the MVP feature flag false and add no product UI, NAPI, cloud or runtime caller until the later scheduled UI stage.",
   "blockers": [
     "ohosTest@OhosTestCompileArkTS is not registered (00306054); 151 focused Moonlight tests in 20 describe groups are compile-registered but not executed on device",
     "HDC currently returns Connect server failed; prior ARM64 API 24 RDB evidence remains valid but no new runtime claim is made",
@@ -18,7 +18,7 @@
     "docs/codex/plans/2026-08-09-moonlight-implementation-ledger.md"
   ],
   "review": {
-    "status": "EXHAUSTED",
+    "status": "RESUME_REVIEW",
     "taskId": "019fe966-d99a-7ce1-8b53-4ef725597053",
     "scope": [
       "docs/codex/CURRENT.md",
@@ -45,18 +45,18 @@
       "entry/src/main/module.json5"
     ],
     "lastReceiptId": "moonlight-n2-02-sol-low-pass-248e704ab-2026-08-10",
-    "reason": "Both user-allowed gpt-5.6-sol low reviewer slots were consumed by N1-01 and N2-02. N2-03 through N3-06 completed scoped machine gates and line-by-line self-review but have no matching independent receipt; do not dispatch or fabricate a third reviewer."
+    "reason": "At most two gpt-5.6-sol low reviewer instances are allowed. N1-01 and N2-02 used those instances, but later checkpoints must resume an existing reviewer task ID rather than create a third. N2-03 through N3-07 completed scoped machine gates and line-by-line self-review and now require resumed incremental review; never fabricate a matching receipt."
   },
   "lastVerification": {
     "baseline": "clean main@aeb0cdac5 equal to origin/main at task start on 2026-08-09",
-    "diffCheck": "pass for N3-06 code checkpoint baa9cafef and synchronized plan/status documents",
-    "testCompile": "pass default@OhosTestCompileArkTS on final N3-06 source; no on-device Hypium execution is claimed",
-    "assembleHap": "pass signed production HAP on final N3-06 source with 333 archive paths; signing output bytes and hash are intentionally not tracked because each signing run is non-deterministic",
-    "nativeTests": "N3-06 final normal passed three consecutive runs and strict passed with 659 total, 643 passed and 16 pre-existing VNC local TLS fixture start failures; all 16 new controller-feedback tests pass. ASan/UBSan passed three consecutive 643/16 final runs and the final TSan run passed the same 643/16 result with no sanitizer report; focused clang analyzer reported no diagnostics. One earlier ASan run exposed only the pre-existing common-c finalization timing expectation, then the required final sequence was stable",
-    "moonlightPlatformProbe": "pass arm64-v8a and x86_64 build/link of the hidden N3-06 feedback archive; archives contain MoonlightControllerFeedback.cpp.o and are 352518/343878 bytes. API 23 product evidence is deliberately all false because GameControllerKit exposes no proven feedback output surface. Without a caller the feedback object is not pulled into rdpnapi; packaged products contain no MoonlightControllerFeedback symbol or ohgame_controller dependency. This is not an in-HAP or physical-controller runtime receipt",
-    "moonlightVendor": "pass from the unchanged pinned vendor boundary: 117 exact files and three reconstructed official Git trees; N3-06 adds no dependency, source archive or upstream change",
-    "isolation": "pass for committed N3-06 scope: a hidden capability-intersection controller feedback contract, its focused test and private archive. It owns no thread, queue or singleton, emits no log, and has no listener, NAPI, ArkTS, UI, cloud or product caller. No production common-c, shared InputHandler, telemetry, audio, render, RDP, RustDesk, SSH or VNC business source changed. arm64-v8a 16114/705 and x86_64 15645/703 defined/undefined dynamic symbol counts remain identical to the N2-08/N3-01/N3-02/N3-03/N3-04/N3-05 product baseline",
-    "lightCompliance": "pass on final N3-06 source together with vendor and TOTP brand-manifest gates; no dependency/compliance inventory changed and Release remains blocked on external runtime/device evidence",
+    "diffCheck": "pass for N3-07 code checkpoint 02cb13aae and synchronized plan/status documents",
+    "testCompile": "pass default@OhosTestCompileArkTS on final N3-07 source; no on-device Hypium execution is claimed",
+    "assembleHap": "pass signed production HAP on final N3-07 source with 333 archive paths; signing output bytes and hash are intentionally not tracked because each signing run is non-deterministic",
+    "nativeTests": "N3-07 final normal passed three consecutive runs and strict passed with 678 total, 662 passed and 16 pre-existing VNC local TLS fixture start failures; all 19 new unified-flush tests pass. ASan/UBSan passed three consecutive 662/16 runs and final TSan passed 662/16 with no sanitizer or data-race report; focused host clang analyzer produced empty reports. An initial ASan invocation used unsupported macOS leak detection and was discarded before the required final runs",
+    "moonlightPlatformProbe": "pass arm64-v8a and x86_64 build/link of the hidden N3-07 input-flush archive; archives contain one MoonlightInputFlushPolicy.cpp.o and are 358100/349932 bytes. Without a caller the object is not pulled into rdpnapi; packaged products contain no MoonlightInputFlushPolicy symbol. Platform probe remains compile-link only and is not a runtime input receipt",
+    "moonlightVendor": "pass from the unchanged pinned vendor boundary: 117 exact files and three reconstructed official Git trees; N3-07 adds no dependency, source archive or upstream change",
+    "isolation": "pass for committed N3-07 scope: one hidden orchestrator directly composes the existing touch, pointer, keyboard, controller and input-bridge release contracts in a fixed order. It owns no thread, queue or singleton, emits no log, and has no listener, NAPI, ArkTS, UI, cloud or product caller. No production common-c, shared InputHandler, telemetry, audio, render, RDP, RustDesk, SSH or VNC business source changed. arm64-v8a 16114/705 and x86_64 15645/703 defined/undefined dynamic symbol counts remain identical to the N2-08 through N3-06 product baseline",
+    "lightCompliance": "pass on final N3-07 source together with vendor and TOTP brand-manifest gates; no dependency/compliance inventory changed and Release remains blocked on external runtime/device evidence",
     "moonlightRdbRuntime": "pass on prior ARM64 API 24 emulator: user_version=5, exact 19/20/16 columns, tables=3 and owner-bound receipts=1 after process restart",
     "ohosTest": "blocked task-not-registered 00306054; no on-device execution pass claimed"
   },
