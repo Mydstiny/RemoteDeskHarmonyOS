@@ -425,7 +425,11 @@ RDP_TEST_CASE(moonlight_input_bridge_serializes_duplicate_dispatch_and_stop) {
     duplicate.join();
     stopper.join();
     RDP_ASSERT_EQ(first, MoonlightInputDispatchStatus::Accepted);
-    RDP_ASSERT_EQ(second, MoonlightInputDispatchStatus::Duplicate);
+    // Both waiters are serialized behind the accepted send. If stop obtains
+    // the bridge mutex first, the duplicate observes the stopped state;
+    // otherwise it observes the committed source sequence as a duplicate.
+    RDP_ASSERT(second == MoonlightInputDispatchStatus::Duplicate ||
+               second == MoonlightInputDispatchStatus::InvalidState);
     RDP_ASSERT_EQ(stopped.status, MoonlightInputControlStatus::Applied);
     RDP_ASSERT_EQ(fixture.port->sendCalls_, static_cast<std::size_t>(1U));
     RDP_ASSERT_EQ(fixture.port->flushCalls_, static_cast<std::size_t>(1U));
