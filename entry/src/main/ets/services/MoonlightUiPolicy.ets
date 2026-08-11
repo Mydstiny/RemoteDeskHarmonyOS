@@ -106,6 +106,7 @@ export interface MoonlightToolbarLayout {
   menuWidth: number;
   topOffset: number;
   autoHideMs: number;
+  maxHeight: number;
 }
 
 export interface MoonlightControlCenterLayout {
@@ -428,7 +429,8 @@ export function moonlightToolbarLayout(isDesktopDevice: boolean, breakpoint: str
     maxVisibleItems: large ? 7 : 5,
     menuWidth: small ? 300 : (normalized === 'md' ? 340 : 360),
     topOffset: edgeRail ? 56 : (normalized === 'xl' ? 16 : 12),
-    autoHideMs: !edgeRail && normalized === 'xl' ? MOONLIGHT_TOOLBAR_AUTO_HIDE_MS : 0
+    autoHideMs: !edgeRail && normalized === 'xl' ? MOONLIGHT_TOOLBAR_AUTO_HIDE_MS : 0,
+    maxHeight: edgeRail ? 360 : 0
   };
 }
 

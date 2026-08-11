@@ -423,6 +423,7 @@ struct MoonlightStreamPage {
 
       MoonlightSessionToolbar({
         audioAvailable: false, controllerAvailable: false, pipAvailable: this.pipAvailable(),
+        menuOpen: this.showSessionSheet,
         qualityColor: this.showReconnectMask ? '#FFCF70' : '#66DD7A',
         qualityLabel: this.showReconnectMask ? '正在重连' : '良好',
         onAction: (action: MoonlightToolbarAction): void => { this.toolbarAction(action); },

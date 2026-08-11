@@ -150,6 +150,12 @@ export default function moonlightUiPolicyTest(): void {
       expect(phone.edgeRail).assertTrue();
       expect(phone.maxVisibleItems).assertEqual(5);
       expect(phone.autoHideMs).assertEqual(0);
+      expect(phone.maxHeight).assertEqual(360);
+
+      const padMd = moonlightToolbarLayout(false, 'md', true);
+      expect(padMd.deviceClass).assertEqual('pad');
+      expect(padMd.edgeRail).assertTrue();
+      expect(padMd.maxHeight).assertEqual(360);
 
       const desktopMd = moonlightToolbarLayout(true, 'md', false);
       expect(desktopMd.deviceClass).assertEqual('pc');
@@ -159,6 +165,7 @@ export default function moonlightUiPolicyTest(): void {
 
       const desktopXl = moonlightToolbarLayout(true, 'xl', false);
       expect(desktopXl.maxVisibleItems).assertEqual(7);
+      expect(desktopXl.maxHeight).assertEqual(0);
       expect(moonlightToolbarAutoHideDelayMs(desktopXl, false)).assertEqual(5000);
       expect(moonlightToolbarAutoHideDelayMs(desktopXl, true)).assertEqual(0);
       expect(moonlightToolbarAutoHideDelayMs(desktopXl, false, true)).assertEqual(0);
@@ -166,6 +173,11 @@ export default function moonlightUiPolicyTest(): void {
       const sheet = moonlightControlCenterLayout(true, 'xl', false);
       expect(sheet.width).assertEqual('620vp');
       expect(sheet.rowHeight).assertEqual(68);
+
+      const desktopLg = moonlightToolbarLayout(true, 'lg', false);
+      expect(desktopLg.edgeRail).assertFalse();
+      expect(desktopLg.maxVisibleItems).assertEqual(7);
+      expect(moonlightToolbarAutoHideDelayMs(desktopLg, false)).assertEqual(0);
     });
 
     it('flushes_input_for_interactive_and_transaction_overlays', 0, (): void => {

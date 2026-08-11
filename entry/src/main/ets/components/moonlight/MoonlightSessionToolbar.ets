@@ -18,6 +18,7 @@ export struct MoonlightSessionToolbar {
   @Prop audioAvailable: boolean = false;
   @Prop controllerAvailable: boolean = false;
   @Prop pipAvailable: boolean = false;
+  @Prop menuOpen: boolean = false;
   @Prop qualityColor: string = '#66DD7A';
   @Prop qualityLabel: string = '良好';
   @State private expanded: boolean = false;
@@ -59,7 +60,7 @@ export struct MoonlightSessionToolbar {
 
   private scheduleHide(): void {
     this.clearTimer();
-    const delayMs: number = moonlightToolbarAutoHideDelayMs(this.layout(), this.pinned);
+    const delayMs: number = moonlightToolbarAutoHideDelayMs(this.layout(), this.pinned, this.menuOpen);
     if (!this.expanded || delayMs <= 0) { return; }
     this.hideTimer = setTimeout((): void => {
       if (!this.pinned) { this.expanded = false; }
@@ -68,9 +69,13 @@ export struct MoonlightSessionToolbar {
   }
 
   private invoke(item: MoonlightToolbarItem): void {
-    this.scheduleHide();
-    if (!item.enabled) { this.onUnavailable(item.disabledReason); return; }
+    if (!item.enabled) {
+      this.onUnavailable(item.disabledReason);
+      this.scheduleHide();
+      return;
+    }
     this.onAction(item.action);
+    this.scheduleHide();
   }
 
   aboutToAppear(): void {
@@ -111,6 +116,24 @@ export struct MoonlightSessionToolbar {
       .accessibilityText(this.pinned ? '取消固定工具条' : '固定工具条')
   }
 
+  @Builder private collapseItem(layout: MoonlightToolbarLayout) {
+    Button() {
+      SymbolGlyph(layout.edgeRail ? $r('sys.symbol.arrow_right') : $r('sys.symbol.chevron_up'))
+        .fontSize(17).fontColor([this.pal().text])
+    }.width(layout.edgeRail ? layout.iconSize + 18 : 44).height(50).borderRadius(14)
+      .backgroundColor(this.pal().surface)
+      .onClick((): void => { this.clearTimer(); this.expanded = false; })
+      .accessibilityText('收起串流控制工具栏')
+  }
+
+  @Builder private trailingItem(layout: MoonlightToolbarLayout) {
+    if (layout.autoHideMs > 0) {
+      this.pinItem(layout)
+    } else {
+      this.collapseItem(layout)
+    }
+  }
+
   @Builder private collapsedHandle(layout: MoonlightToolbarLayout) {
     Button() {
       Row({ space: 5 }) {
@@ -136,10 +159,15 @@ export struct MoonlightSessionToolbar {
   @Builder private expandedTools(layout: MoonlightToolbarLayout) {
     if (layout.edgeRail) {
       Column({ space: layout.itemGap }) {
-        ForEach(this.items(), (item: MoonlightToolbarItem): void => {
-          this.toolItem(item, layout);
-        }, (item: MoonlightToolbarItem): string => item.action)
-        this.pinItem(layout)
+        Scroll() {
+          Column({ space: layout.itemGap }) {
+            ForEach(this.items(), (item: MoonlightToolbarItem): void => {
+              this.toolItem(item, layout);
+            }, (item: MoonlightToolbarItem): string => item.action)
+            this.trailingItem(layout)
+          }
+        }.width(layout.iconSize + 32).constraintSize({ maxHeight: layout.maxHeight })
+          .scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
       }
       .padding(7).backgroundColor(this.pal().floatBg).borderRadius(18)
       .border({ width: 1, color: this.pal().floatBorder })
@@ -150,7 +178,7 @@ export struct MoonlightSessionToolbar {
         ForEach(this.items(), (item: MoonlightToolbarItem): void => {
           this.toolItem(item, layout);
         }, (item: MoonlightToolbarItem): string => item.action)
-        this.pinItem(layout)
+        this.trailingItem(layout)
       }
       .padding(8).backgroundColor(this.pal().floatBg).borderRadius(18)
       .border({ width: 1, color: this.pal().floatBorder })
