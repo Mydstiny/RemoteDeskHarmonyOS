@@ -177,6 +177,23 @@ export default function moonlightHostAddFlowPolicyTest(): void {
         .assertEqual('moonlight-host-a');
       expect(committedMoonlightHostAddId(false, 'moonlight-host-a')).assertEqual('');
       expect(committedMoonlightHostAddId(true, ' ')).assertEqual('');
+
+      let state: MoonlightHostAddState = verifiedStepTwo();
+      state = setMoonlightHostAddDisplayName(state, 'Gaming PC');
+      state = advanceMoonlightHostAddStep(state).state;
+      let begin: MoonlightHostAddBeginResult = beginMoonlightHostAddOperation(state, 'pair');
+      state = setMoonlightHostAddPairingPin(begin.state, begin.key, '4821', 30000, 1000);
+      state = completeMoonlightHostAddPairing(state, begin.key, true, 2000);
+      begin = beginMoonlightHostAddOperation(state, 'trust');
+      state = completeMoonlightHostAddTrust(begin.state, begin.key, true);
+      state = advanceMoonlightHostAddStep(state).state;
+      begin = beginMoonlightHostAddOperation(state, 'save');
+      state = completeMoonlightHostAddSave(
+        begin.state, begin.key, true,
+        '本地主机已保存，但未返回稳定 ID；请在主机列表刷新后打开');
+      expect(state.savedLocally).assertTrue();
+      expect(state.errorText.indexOf('未返回稳定 ID') >= 0).assertTrue();
+      expect(moonlightHostAddSaveCanBegin(state)).assertFalse();
     });
 
     it('rejects_late_async_results_after_cancel_or_owner_change', 0, (): void => {

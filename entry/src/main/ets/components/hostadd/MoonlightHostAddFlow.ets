@@ -467,13 +467,17 @@ export struct MoonlightHostAddFlow {
       if (!moonlightHostAddOperationIsCurrent(this.flow, begin.key)) { return; }
       const committedHostId: string = committedMoonlightHostAddId(
         result.localCommitted, result.hostId);
-      const localCommitted: boolean = committedHostId !== '';
-      const errorText: string = result.localCommitted && !localCommitted ?
-        '本地主机已写入但未返回稳定 ID，无法完成页面交接' : result.errorText;
+      const handoffEligible: boolean = committedHostId !== '';
+      const errorText: string = result.localCommitted && !handoffEligible ?
+        '本地主机已保存，但未返回稳定 ID；请在主机列表刷新后打开' : result.errorText;
       this.flow = completeMoonlightHostAddSave(
-        this.flow, begin.key, localCommitted, errorText);
-      if (localCommitted) {
-        this.onSaved(committedHostId, openCatalog, begin.key.ownerToken);
+        this.flow, begin.key, result.localCommitted, errorText);
+      if (result.localCommitted) {
+        this.onSaved(
+          committedHostId,
+          openCatalog && handoffEligible,
+          begin.key.ownerToken
+        );
       }
     } catch (_error) {
       if (moonlightHostAddOperationIsCurrent(this.flow, begin.key)) {

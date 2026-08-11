@@ -397,6 +397,7 @@ import {
   pendingHostIdForHostAddSave,
   shouldAcceptHostAddPostSaveHandoff,
   shouldAcceptHostAddSave,
+  shouldCloseHostAddAfterCommittedSave,
   shouldStartHostAddConnectionAfterDisappear,
   shouldStartHostAddPostSaveAfterDisappear
 } from '../services/HostAddConnectionHandoffPolicy';
@@ -1644,6 +1645,19 @@ struct HostListPage {
     openCatalog: boolean,
     ownerToken: number
   ): void {
+    if (hostId.trim() === '') {
+      if (shouldCloseHostAddAfterCommittedSave(
+        this.pageActive,
+        this.addSheetClosing,
+        this.moonlightAddOwnerToken,
+        ownerToken
+      )) {
+        hilog.warn(0x0001, 'HostList',
+          'Moonlight host committed without stable ID; closing add Sheet without catalog handoff');
+        this.requestAddSheetClose();
+      }
+      return;
+    }
     if (!shouldAcceptHostAddPostSaveHandoff(
       this.pageActive,
       this.addSheetClosing,

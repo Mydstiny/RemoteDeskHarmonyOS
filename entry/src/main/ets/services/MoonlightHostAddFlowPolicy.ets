@@ -544,7 +544,7 @@ export function completeMoonlightHostAddSave(
   const next: MoonlightHostAddState = cloneMoonlightHostAddState(state);
   next.activeOperation = 'none';
   next.savedLocally = localCommitted;
-  next.errorText = localCommitted ? '' :
+  next.errorText = localCommitted ? errorText :
     (errorText === '' ? '本地主机保存失败，请重试' : errorText);
   return next;
 }

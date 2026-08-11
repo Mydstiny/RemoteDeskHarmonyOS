@@ -8,7 +8,8 @@ import {
   shouldAcceptHostAddPostSaveHandoff,
   pendingHostIdForHostAddSave,
   shouldStartHostAddConnectionAfterDisappear,
-  shouldStartHostAddPostSaveAfterDisappear
+  shouldStartHostAddPostSaveAfterDisappear,
+  shouldCloseHostAddAfterCommittedSave
 } from '../main/ets/services/HostAddConnectionHandoffPolicy';
 
 export default function hostAddConnectionHandoffPolicyTest(): void {
@@ -79,6 +80,13 @@ export default function hostAddConnectionHandoffPolicyTest(): void {
         'none', 'moonlight-host-a', 7, 11))).assertFalse();
       expect(shouldAcceptHostAddPostSaveHandoff(
         true, false, emptyHostAddPostSaveHandoff(), 7, 8, 'moonlight-host-a')).assertFalse();
+    });
+
+    it('closes_a_committed_save_without_reopening_a_stale_owner', 0, (): void => {
+      expect(shouldCloseHostAddAfterCommittedSave(true, false, 7, 7)).assertTrue();
+      expect(shouldCloseHostAddAfterCommittedSave(true, true, 7, 7)).assertFalse();
+      expect(shouldCloseHostAddAfterCommittedSave(false, false, 7, 7)).assertFalse();
+      expect(shouldCloseHostAddAfterCommittedSave(true, false, 7, 8)).assertFalse();
     });
   });
 }

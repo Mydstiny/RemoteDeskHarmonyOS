@@ -65,6 +65,17 @@ export function shouldAcceptHostAddPostSaveHandoff(
     requestOwnerToken === currentOwnerToken;
 }
 
+export function shouldCloseHostAddAfterCommittedSave(
+  pageActive: boolean,
+  addSheetClosing: boolean,
+  currentOwnerToken: number,
+  requestOwnerToken: number
+): boolean {
+  return pageActive && !addSheetClosing &&
+    Number.isSafeInteger(currentOwnerToken) && currentOwnerToken > 0 &&
+    requestOwnerToken === currentOwnerToken;
+}
+
 export function createHostAddPostSaveHandoff(
   destination: HostAddPostSaveDestination,
   hostId: string,
