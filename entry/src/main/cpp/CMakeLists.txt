@@ -164,6 +164,9 @@ set(MOONLIGHT_AUDIO_PLAYER_SINK_SOURCE
 set(MOONLIGHT_AUDIO_PLAYER_SINK_PLATFORM_SOURCE
     moonlight/media/MoonlightAudioPlayerSinkPlatform.cpp
 )
+set(MOONLIGHT_MEDIA_CLOCK_STATS_SOURCE
+    moonlight/media/MoonlightMediaClockStats.cpp
+)
 set(MOONLIGHT_SOURCES
     moonlight/core/MoonlightSessionOwner.cpp
 )
@@ -298,6 +301,7 @@ if(RDP_BUILD_TESTS)
         test/moonlight_video_surface_lifecycle_test.cpp
         test/moonlight_audio_bridge_test.cpp
         test/moonlight_audio_player_sink_test.cpp
+        test/moonlight_media_clock_stats_test.cpp
         test/vnc_des_test.cpp
         test/vnc_cursor_protocol_test.cpp
         test/vnc_transport_policy_test.cpp
@@ -335,6 +339,7 @@ if(RDP_BUILD_TESTS)
         ${MOONLIGHT_AUDIO_BRIDGE_SOURCE}
         ${MOONLIGHT_AUDIO_BRIDGE_PLATFORM_SOURCE}
         ${MOONLIGHT_AUDIO_PLAYER_SINK_SOURCE}
+        ${MOONLIGHT_MEDIA_CLOCK_STATS_SOURCE}
         vnc/vnc_des.cpp
         vnc/vnc_cursor_protocol.cpp
         vnc/vnc_rfb_protocol.cpp
@@ -690,6 +695,24 @@ set_target_properties(remotedesk_moonlight_audio_bridge PROPERTIES
     POSITION_INDEPENDENT_CODE ON
 )
 
+# N2-08 fixed-window native aggregation. Keep it as a private hidden archive:
+# the product build compiles and ABI-checks it, while the absence of a session
+# coordinator caller cannot instantiate STL helpers in rdpnapi's dynamic ABI.
+add_library(remotedesk_moonlight_media_clock_stats STATIC
+    ${MOONLIGHT_MEDIA_CLOCK_STATS_SOURCE}
+)
+target_compile_features(remotedesk_moonlight_media_clock_stats PRIVATE cxx_std_17)
+target_include_directories(remotedesk_moonlight_media_clock_stats PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_compile_options(remotedesk_moonlight_media_clock_stats PRIVATE
+    -fvisibility=hidden
+    -fvisibility-inlines-hidden
+)
+set_target_properties(remotedesk_moonlight_media_clock_stats PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+)
+
 # 定义共享库目标
 add_library(rdpnapi SHARED ${ALL_SOURCES})
 target_compile_definitions(rdpnapi PRIVATE
@@ -697,6 +720,7 @@ target_compile_definitions(rdpnapi PRIVATE
     REMOTEDESK_BUILD_TIME_UTC="${REMOTEDESK_BUILD_TIME_UTC}"
 )
 target_link_libraries(rdpnapi PRIVATE
+    remotedesk_moonlight_media_clock_stats
     remotedesk_moonlight_audio_bridge
     remotedesk_moonlight_video_decoder_sink
     remotedesk_moonlight_video_bridge
@@ -718,6 +742,7 @@ target_link_options(rdpnapi PRIVATE
     "-Wl,--exclude-libs,libremotedesk_moonlight_video_bridge.a"
     "-Wl,--exclude-libs,libremotedesk_moonlight_video_decoder_sink.a"
     "-Wl,--exclude-libs,libremotedesk_moonlight_audio_bridge.a"
+    "-Wl,--exclude-libs,libremotedesk_moonlight_media_clock_stats.a"
 )
 
 # VNC full-screen ZRLE decode is production-rate code even in a signed Debug
