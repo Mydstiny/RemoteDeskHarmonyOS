@@ -4,7 +4,7 @@
 > 分支：`codex/moonlight-complete-upgrade`
 > 初始基线：`main@aeb0cdac5`，与 `origin/main` 一致
 > 总计划：`docs/superpowers/plans/2026-07-28-moonlight-harmonyos-complete-upgrade-plan.md`
-> 台账状态：G0、D1、D2 本地/休眠策略、D3 本地生命周期、N1-01～N1-08、N2-01～N2-08 与 N3-01～N3-05 已形成 checkpoint；N2-09 等待真实 Sunshine/ARM64 实机外部回执，当前唯一可直接执行的代码任务为 dormant N3-06。2026-08-10 产品决定 Moonlight 暂不接入云同步，当前只开发本地主机存储；`moonlightrecordv1`、Moonlight cloud selection/transfer/secret recovery 全部 parked，不进入当前执行序列。D3 在线/多设备和产品运行时仍等待外部回执，只把有可复现证据的项目标记为通过
+> 台账状态：G0、D1、D2 本地/休眠策略、D3 本地生命周期、N1-01～N1-08、N2-01～N2-08 与 N3-01～N3-06 已形成 checkpoint；N2-09 等待真实 Sunshine/ARM64 实机外部回执，当前唯一可直接执行的代码任务为 dormant N3-07。2026-08-10 产品决定 Moonlight 暂不接入云同步，当前只开发本地主机存储；`moonlightrecordv1`、Moonlight cloud selection/transfer/secret recovery 全部 parked，不进入当前执行序列。D3 在线/多设备和产品运行时仍等待外部回执，只把有可复现证据的项目标记为通过
 
 ## 1. 执行约束
 
@@ -243,6 +243,7 @@ D3 账户生命周期代码检查点为 `05e96d3`；便携备份/本地恢复检
 | N3-03 | CONTRACT PASS / DORMANT `1787da821` | hidden `MoonlightPointerMapper`；absolute/relative motion、官方五键、横纵滚轮、physical-pixel content rect、letterbox/fill/1:1/pan、四向旋转、DPI/fraction residual、exact geometry/source generation、逐命令状态提交和精确 retry；18 个 focused case | capture/constraint/raw-relative 仅有 capability resolution，product unavailable；私有 archive 无 caller 且未进入 `rdpnapi`；无公共 InputHandler/NAPI/ArkTS/UI/cloud/thread/queue；N3-04 下一 |
 | N3-04 | CONTRACT PASS / DORMANT `ebd2fa0bc5` | hidden `MoonlightTouchMapper`；官方 28-byte direct-touch body、10 个稳定 contact id、cancel/cancel-all、旋转/content rect、overlay lifetime ownership；触控板复用 N3-03 完成一指/双指/长按/三指本地动作，固定 3 contacts/16 observed lanes、exact generation 和 retry；21 个 focused case | direct capability/platform listener 均 fail closed；私有 archive 无 caller 且未进入 `rdpnapi`；无公共 InputHandler/NAPI/ArkTS/UI/cloud/thread/queue；N3-05 下一 |
 | N3-05 | CONTRACT PASS / DORMANT `1aadfba24` | hidden `MoonlightControllerMapper`；official arrival/state 参数投影、API 23 button/axis/trigger/hat、7%/13% deadzone、Y 反向、stable slot 0、full-state frame、background neutral、disconnect active-mask clear、exact device/source generation 与 retry；16 个 focused case | GameControllerKit 仅 compile-link probe；无双手柄真机证据时一槽，反馈能力全关闭；archive 无 caller 且未进入 `rdpnapi`；无公共 InputHandler/NAPI/ArkTS/UI/cloud/thread/queue；N3-06 下一 |
+| N3-06 | CONTRACT PASS / DORMANT `baa9cafef` | hidden `MoonlightControllerFeedback`；official API∩physical-device evidence、rumble/trigger rumble/RGB LED/adaptive trigger/motion/battery typed command、single pending retry、200Hz/120s 上限、exact owner/device/operation generation 与 release lifecycle；16 个 focused case | API 23 product evidence 全 false，capability false 零 port 调用；archive 无 caller 且未进入 `rdpnapi`；无公共 InputHandler/NAPI/ArkTS/UI/cloud/thread/queue；N3-07 下一 |
 
 N1-01 的可复现证据：
 
@@ -894,14 +895,34 @@ active-mask=1 的 neutral，disconnect 发送 active-mask=0 的全中立 frame �
   render/audio、RDP/RustDesk/SSH/VNC 生产业务源、NAPI、ArkTS、UI、云、日志或 product caller。
   HDC 返回 `Connect server failed`，不声明 HAP/真机实体控制器、双手柄或 Sunshine runtime 能力。
 
+N3-06 `baa9cafef` 新增 hidden/private `MoonlightControllerFeedback`、16 个 focused case 和独立
+私有 archive。合同逐能力使用 official API 与 exact physical-device evidence 的交集；API 23
+product evidence 固定全 false，所以 rumble、trigger rumble、RGB LED、adaptive trigger、motion
+与 battery 均返回 explicit unsupported 且零 port 调用。未来有双证据时仍由 exact owner、controller
+slot、device/device-generation、operation-generation 和 monotonic timestamp 栅栏约束；只允许一个
+pending command 精确重试。motion 最高 200Hz、重复/过快 sample 本地抑制，battery 同状态 120 秒
+刷新，port unsupported 只降级对应能力；suspend/unbind/cleanup/destructor 释放本地 effect/sensor/
+LED ownership，resume 不重放。
+
+- host normal 连续三轮与 strict 最终均为 **659 total / 643 pass / 16 fail**；16 个 N3-06 用例
+  全 PASS，16 项失败仍仅为既有 VNC 本地 TLS fixture `start()`。ASan/UBSan 最终连续三轮与
+  TSan 同为 **643/16**，无 sanitizer report；focused clang analyzer 零诊断。
+- arm64-v8a/x86_64 archive 分别为 352518/343878 bytes 且含单一 feedback object；无 caller 时
+  object 未进入 `rdpnapi`，dynamic defined/undefined 仍为 arm64 **16114/705**、x86_64
+  **15645/703**，产品库无 feedback 符号或 `ohgame_controller` dependency。
+- `default@OhosTestCompileArkTS` 与 signed `assembleHap` 均 BUILD SUCCESSFUL；HAP 333 paths。
+  Light、117-file vendor、TOTP 与 `git diff --check` PASS。未修改 common-c、公共
+  `InputHandler`、共享 telemetry/render/audio、RDP/RustDesk/SSH/VNC 业务源、NAPI、ArkTS、UI、
+  云、日志或 product caller。HDC `Connect server failed`，不声明真机 feedback runtime 能力。
+
 ## 13. 下一执行序列
 
 1. N2-09 保持 EXTERNAL PENDING：必须由真实 Sunshine 与用户 ARM64 实机完成 720p/1080p、
    30/60fps、两小时、温控、前后台/PIP/旋转和网络矩阵；不得用 host 单测或虚拟机代替。
-2. 当前唯一可直接执行的代码任务是 dormant N3-06：建立 controller feedback capability 合同；
-   API 23 未发现官方 rumble/LED/motion/battery 输出 API，默认必须 unsupported 且零调用，
-   不接公共 `InputHandler`、NAPI、ArkTS、UI 或 product caller。
-3. 保持 N2-08 与 N3-01～N3-05 dormant：不接 NAPI/ArkTS/UI/PIP/后台、云或日志，不把任何结果变成 video
+2. 当前唯一可直接执行的代码任务是 dormant N3-07：建立统一 `MoonlightInputFlushPolicy`，
+   协调既有 keyboard/pointer/touch/controller release 合同覆盖 overlay/mode/focus/PIP/background/
+   Surface/reconnect/stop/generation；必须幂等并在远端 stop 超时时仍完成本地释放。
+3. 保持 N2-08 与 N3-01～N3-06 dormant：不接 NAPI/ArkTS/UI/PIP/后台、云或日志，不把任何结果变成 video
    first-frame、streaming/protocolAvailable、FAB 或 release truth。
 4. S1-08 才按现有 `NativeSessionHandles`、Surface/PIP/background 生命周期装配媒体；U1/S1 的
    设置、目录、连接浮层继续只消费 local Repository/cache、Host Control 和 media prerequisites。
