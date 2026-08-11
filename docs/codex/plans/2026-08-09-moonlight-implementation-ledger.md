@@ -1102,14 +1102,39 @@ stale terminal request 不清本地状态；pending→terminal 的 mapper drain 
 - PC 大屏 final4 新图 `/private/tmp/moonlight-final-20260812-s1-final4-pc-maximized2.jpeg` 已确认独立灰色 Moonlight 侧栏栏位；`/private/tmp/moonlight-final-20260812-s1-final4-pc-picker2.jpeg` 与 `/private/tmp/moonlight-final-20260812-s1-final4-pc-picker-click.jpeg` 已确认大屏添加 FAB、灰色“即将支持”和禁用点击无路由副作用。手机 final4 新图为 `/private/tmp/moonlight-final-20260812-s1-final4-phone-root.jpeg`、`/private/tmp/moonlight-final-20260812-s1-final4-phone-picker2.jpeg`、`/private/tmp/moonlight-final-20260812-s1-final4-phone-picker-click.jpeg`、`/private/tmp/moonlight-final-20260812-s1-final4-phone-settings-top.jpeg`、`/private/tmp/moonlight-final-20260812-s1-final4-phone-settings-lower2.jpeg`、`/private/tmp/moonlight-final-20260812-s1-final4-phone-moonlight-accordion2.jpeg`、`/private/tmp/moonlight-final-20260812-s1-final4-phone-quick-sheet3.jpeg`；全部为本轮重新抓取并查看，不使用旧截图。
 - 代码增量复核复用 reviewer task `019fe966-d99a-7ce1-8b53-4ef725597053`，最终范围为 `6b0c1aa8..647113a5`，PASS 且无 actionable findings。唯一下一实现边界改为 S1-03；N2-09、S1-05A 和真实媒体/手柄/长稳验收继续 external pending。
 
+## 12.23 S1-03 connection-stage snapshot contract checkpoint（2026-08-12）
+
+- 代码 checkpoint `75d769c2` 只修改 5 个 Moonlight 页面/服务/测试文件：
+  `MoonlightSessionCoordinator.ets` 增加 ownerScope/accountGeneration/hostId/appId 精确过滤的
+  `subscribeForRoute()`，立即回放当前 route 快照，并在 start、runtime event、cancel/stop、invalidate/
+  terminal cleanup 后发布；监听器异常被隔离，reset 和退订都清空引用。没有建立第二个 session owner、线程、
+  timer、transport、media、input、native、NAPI 或云调用。
+- `MoonlightStreamPage.ets` 现在只消费 coordinator snapshot：phase、errorCode、degradationReasons、
+  elapsedMs、firstFrameSeen 均来自实际状态；页面出现/账号切换重新绑定，消失时 cancel route-owned session、
+  清理 elapsed timer、退订监听。connect stage 仅在首帧前显示，streaming/failed/disconnected 均按真实终态
+  收束，取消动作走 coordinator stop/cancel，重试继续明确 fail closed。
+- `MoonlightUiPolicy.ets` 修正 disconnected 的标题和详情，避免已结束连接再次显示“等待首帧”；新增 coordinator
+  scoped-delivery case，UI policy 追加 disconnected presentation 断言。文档约定的 focused aggregate 为
+  163 tests / 21 describe，加 8 个 shared host-add handoff cases；均只 compile-registered。
+- 强制 `default@OhosTestCompileArkTS` 与 `assembleHap` 均 BUILD SUCCESSFUL；最终签名 HAP SHA-256 为
+  `a89fc076f3edc9ca502d94fd53b0fdbb4b61c14c14bf242a250225f76917e077`。最终 HAP 已由沙箱外 HDC 重装并启动在
+  PC `127.0.0.1:5555` 与手机 `127.0.0.1:5557`；只使用本次新抓取并查看的证据：
+  `/private/tmp/moonlight-s103-final-20260812-pc-root.jpeg`、`...-pc-max.jpeg`、`...-pc-picker.jpeg`、
+  `...-pc-picker-click.jpeg`、`...-phone-root.jpeg`、`...-phone-picker.jpeg`。PC 侧栏和两端添加弹层仍为
+  灰色官方可着色图标/“即将支持”，点击禁用项无导航副作用；RDP 页面保持原样。
+- `ohosTest@OhosTestCompileArkTS` 仍因 `00306054` 未注册而不能执行 Hypium；不把模拟器 UI 验收写成真实
+  Sunshine、媒体首帧、OHAudio/Surface、实体手柄或发布能力。`git diff --check`、状态校验和静态隔离通过。
+  复用 reviewer task `019fe966-d99a-7ce1-8b53-4ef725597053` 对本次 5 文件范围复核，P0/P1/P2/P3 全 0；
+  CloudStore 与 RDP/RustDesk/SSH/SFTP/VNC、公共输入、native/CMake/NAPI、CloudSyncPolicy 和既有云表均未改。
+
 ## 13. 下一执行序列
 
 1. N2-09 保持 EXTERNAL PENDING：必须由真实 Sunshine 与用户 ARM64 实机完成 720p/1080p、
    30/60fps、两小时、温控、前后台/PIP/旋转和网络矩阵；不得用 host 单测或虚拟机代替。
 2. U1-06～U1-12 的 local-only UI shell 已完成：主机管理归首页、目录/详情读本地 records/cache、设置统一进入
    同一 bindSheet、连接/串流浮层保持 dormant；不接真实 Host Control/runtime/cloud，不把 cache 或请求态伪装成在线/已刷新。
-3. S1-01/S1-02 已完成 dormant registry/coordinator contract；下一实现序列为 S1-03：只把阶段 overlay 接到 coordinator snapshot；保持 N2-08 与
-   N3-01～N3-08 dormant，不把任何结果变成 video
+3. S1-01/S1-02/S1-03 已完成 dormant registry/coordinator 与 connection-stage snapshot contract；下一实现序列为 S1-04：只实现 RustDesk
+   风格会话 toolbar/control-center contract；保持 N2-08 与 N3-01～N3-08 dormant，不把任何结果变成 video
    first-frame、streaming/protocolAvailable、FAB 或 release truth。
 4. S1-05A 才接真实 HarmonyOS GameController listener 与虚拟 typed NAPI；S1-08 才按现有
    `NativeSessionHandles`、Surface/PIP/background 生命周期装配媒体。U1/S1 设置、目录和连接浮层

@@ -4488,7 +4488,7 @@ Sunshine、媒体首帧、OHAudio/Surface、实体手柄和 ARM64 长稳验收�
 | --- | --- | --- | --- |
 | S1-01 | **CONTRACT PASS / DORMANT `647113a5`**：在 `RemoteSessionState.ets`、`ActiveRemoteSessionRegistry.ets`、`RemoteSessionCapabilityPolicy.ets` 增加 Moonlight；registry 只存最小、无 endpoint 的恢复 marker，并用 owner/account/session/protocol 精确清理；reservation/promotion 防止跨协议覆盖 | protocol union、account generation、capability truth、旧版本 marker；9 个 coordinator cases 加入 compile-registered suite | clipboard/file transfer/multi-display 等不支持能力明确 false；host address 只允许作为未来 runtime 输入，不能进入 registry/AppStorage |
 | S1-02 | **CONTRACT PASS / DORMANT `647113a5`**：新建 `MoonlightSessionCoordinator.ets`，串起 discovery→launchAccepted→firstFrame→streamStable→stop/cancel/transportLost；`MoonlightAppCatalogPage` 与 `MoonlightStreamPage` 仅做薄装配；stop failure/actual watchdog timeout 与 native session callback fence 已补齐 | runtime/Host Control/transport 三重 gate、runtime port 缺失、重复 start、跨协议仲裁、surface 顺序、迟到 callback、owner/account 切换、精确 stop 清理；复用 reviewer PASS | 不建立第二个 active remote session；无 common-c/NAPI/OHAudio/Surface/product caller，真实能力与 picker 继续关闭 |
-| S1-03 | 新建 `MoonlightConnectStageOverlay.ets`：400ms 后阶段、3s 时长、10s 诊断；首帧前不显示 connected | 快速 LAN 不闪、audio/input 降级、错误动作、取消 | 技术码折叠/脱敏 |
+| S1-03 | **CONTRACT PASS / DORMANT `75d769c2`**：`MoonlightSessionCoordinator` 增加 owner/account/host/app 精确过滤的 snapshot subscription；`MoonlightStreamPage` 按页面/账号生命周期绑定、退订、取消和清理 elapsed timer，连接浮层消费真实 phase/error/degradation/first-frame；disconnected 文案单独收束 | 快照立即回放、foreign route 不可见、scope 变化清 null、首帧前不显示 connected、取消/stop/failed/disconnected 收束、监听器异常隔离；新增 coordinator scoped-delivery case，UI policy 增加 disconnected 断言；复用 reviewer PASS | 仍不打开 picker、Host Control、transport、media、input、OHAudio/Surface、NAPI、云或 release truth；技术码保持脱敏/可诊断 |
 | S1-04 | 新建 `MoonlightSessionToolbar.ets`：sm edge rail、md/lg 5/7 项、xl 顶部自动收起；交互直接沿用 RustDesk 会话顶栏语法，颜色走 Theme-adapted streaming tokens | auto-hide/pin/hover/focus/safe area/44–48vp/危险间距 | 不复制 `RemoteSessionTopBar` 的硬编码白色 |
 | S1-05 | 复用 `RemoteModifierHandle/Panel`、`RemoteShortcutSurface`，通过 capability/catalog 配置；打开 L3 前统一 input flush | once/locked、拖动/吸附、组合键完整、关闭归零 | 不 fork 修饰键状态机 |
 | S1-05A | 将实体 GameController native listener 与 `MoonlightControllerOverlay` 的窄 typed NAPI ingress 接到 N3-05/N3-08；实体 arrival/state 和虚拟语义事件均由 native 聚合 full-state，再只走 N3-01/common-c | connected/disconnected、ABXY/dpad/stick/trigger、active-mask=0 source handoff、failed removal 禁止接管、编辑零发送、backpressure、20 次前后台/模式切换 | ArkTS 不编码/直发协议；不接公共 `InputHandler`，不建第二 owner/slot/queue；真实设备 receipt 前 capability false |
@@ -4560,9 +4560,9 @@ Moonlight 能从“即将支持”变成可点击，仅当下列事实同时成�
 | 云数据 | `moonlightrecordv1` 是唯一未来分布式物理表；`moonlightlocalrecords` 和 `moonlightappcache` 永远本地 | 19 列 schema 已在 ARM64 API 24 owner-store 实例化和重开验证 | cache 不进云/备份；local mirror 只有 promotion 后才投影；identity 继续默认关闭 |
 | 便携备份 | Backup V3 optional Moonlight descriptor、cloud/local 双 section、exact admission 和 local-only resolver 已存在 | redacted=settings/host/profile，full 额外 trust candidate；identity/secret/cache/marker 永远排除；旧 V3 可读 | cloud-enabled restore promotion 与设备故障矩阵仍 pending；不能另建含 identity 的“完整备份”旁路 |
 | Native | N1-01～N1-08、N2-01～N2-08、N3-01～N3-08 均已 checkpoint；N3-08 `fef723770` + `6787cc3fb` 增加 fixed-capacity physical/virtual aggregator、layout validator、native full-state seam、staged handoff 与 retired-lane tombstone；product 无 caller，archive object 未进入 `rdpnapi` | 可声明固定上游、official common-c compile-link、owned video/PCM、共享 audio owner、有界 stats、exact generation-fenced dormant input admission/release、各 mapper、feedback、统一 lifecycle flush 与控制器 source arbitration 合同；HAP runtime backend 仍 unavailable，不能声明真实配对、目录、launch、解码、音频、实体手柄、输入、feedback 或首帧可用 | N2-09 等真实 Sunshine/ARM64 外部回执；S1-05A 才接真实 GameController listener/typed NAPI；U1-06 不解除 runtime、云表或发布 truth 门禁 |
-| UI | U1-01～03 提供 RustDesk 同款灰色 picker、PC 独立 sidebar slot 与官方图标；U1-04/05 建立 RustDesk 风格四步 add 与原生 Sheet `onDisappear` 稳定 ID handoff；`2c37b0edf` 完成 U1-06～U1-12 本地-only UI shell：主机详情、按主机分类目录、9 个设置 leaf、launch/连接/串流浮层、控制中心、诊断 HUD，并保持 `moonlightProtocolAvailable=false` | 可声明统一 RustDesk/Theme UI 合同、首页主机管理、local records/cache 读取、9 section bindSheet 路由和 fresh PC/phone 壳验收；不能声明真实配对、保存、Host Control、online catalog、launch、首帧、实体 listener、云同步或串流可用 | S1-01/S1-02 只接唯一 remote-session registry/coordinator；S1-05A 接 native GameController/typed NAPI；N2-09 需真实 Sunshine/ARM64 receipt；picker enable 仍需所有 runtime truth |
+| UI | U1-01～03 提供 RustDesk 同款灰色 picker、PC 独立 sidebar slot 与官方图标；U1-04/05 建立 RustDesk 风格四步 add 与原生 Sheet `onDisappear` 稳定 ID handoff；`2c37b0edf` 完成 U1-06～U1-12 本地-only UI shell；`75d769c2` 完成 S1-03 连接阶段 snapshot binding，并保持 `moonlightProtocolAvailable=false` | 可声明统一 RustDesk/Theme UI 合同、首页主机管理、local records/cache 读取、9 section bindSheet 路由、connection overlay 的真实 dormant state 绑定和 fresh PC/phone 壳验收；不能声明真实配对、保存、Host Control、online catalog、launch、首帧、实体 listener、云同步或串流可用 | S1-04 继续实现 session toolbar/control-center contract；S1-05A 接 native GameController/typed NAPI；N2-09 需真实 Sunshine/ARM64 receipt；picker enable 仍需所有 runtime truth |
 | 品牌 | Moonlight Qt 官方 SVG 与确定性单色转换已固定原始/本地 hash，provenance/NOTICE/SPDX/source offer 已落盘，系统 Symbol 保留为加载失败回退 | HDC light/disabled 视觉、资源打包和 Light 合规门通过，可声明入口品牌资产完成 | 图标存在不代表协议可用或官方背书；runtime truth 继续关闭 |
-| 验证 | `2c37b0edf` 的两项 exact Hvigor、signed HAP、diff/isolation 与 fresh sandbox-external HDC 安装/启动均通过；fresh PC full 与 fresh phone settings 只使用本次重新安装后的截图/UI tree；162 个 Moonlight focused tests/21 describe + 8 个 shared handoff cases 仅 compile-registered | 可声明 local-only UI shell、RustDesk 风格 add/save handoff、settings consolidation、disabled fail-closed 隔离；不声明 Hypium、真实添加/保存/配对/目录在线刷新、实体 listener、真实 Sunshine、首帧或串流可用 | `ohosTest` 任务仍未注册；S1-01/S1-02、S1-05A 和 N2-09 等待后续 runtime/外部阶段；用户 `CloudStore.ets` 改动不属于本 checkpoint |
+| 验证 | `75d769c2` 后两项 exact Hvigor、signed HAP、diff/isolation 与 fresh sandbox-external HDC 安装/启动均通过；只使用本次最终 HAP 重装后新抓取并查看的 PC root/max/sidebar/picker/disabled-click 与 phone root/picker 截图；163 个 documented Moonlight focused tests/21 describe + 8 个 shared handoff cases 仅 compile-registered | 可声明 local-only UI shell、RustDesk 风格 add/save handoff、settings consolidation、disabled fail-closed 隔离和 dormant connection-stage snapshot binding；不声明 Hypium、真实添加/保存/配对/目录在线刷新、实体 listener、真实 Sunshine、首帧或串流可用 | `ohosTest` 任务仍未注册；S1-04/S1-05A 和 N2-09 等待后续 runtime/外部阶段；用户 `CloudStore.ets` 改动不属于本 checkpoint |
 
 当前数据流只能是：
 
@@ -4604,12 +4604,70 @@ listener 和窄 typed NAPI 仍只在 S1-05A 接线。U1-01～U1-12 已完成 loc
 本地添加 component/policy，并以 `46a2e7d3` + `a73b8959` + `094a8b3b` 建立无 fixed delay/第二 Sheet
 的稳定 ID 保存后交接合同；`2c37b0edf` 再落地首页主机管理、主机详情/应用目录、9 段设置和
 launch/连接/串流 UI shell。picker 仍保持灰色“即将支持”点击零副作用，全部外部 port 默认 fail closed。
-S1-01/S1-02 已完成 dormant registry/coordinator contract。当前唯一直接实现边界是 S1-03：只把 UI
-stage overlay 接到 coordinator snapshot；不得把 cache 或请求态伪装成在线/已刷新，也不接真实 Host
-Control/runtime/cloud。
+S1-01/S1-02/S1-03 已完成 dormant registry/coordinator 与 connection-stage snapshot contract。当前唯一直接实现
+边界是 S1-04：只实现 RustDesk 风格 session toolbar/control-center；不得把 cache 或请求态伪装成在线/已刷新，
+也不接真实 Host Control/runtime/cloud。
 MVP feature flag 保持 false，不接 Moonlight runtime、NAPI 或云，也不改变 video
 first-frame、FAB、streaming 或 protocolAvailable。
 D2-05/06 由 AGC 外部环境提供证据，D2-07 依赖二者；D3 的 cloud terminal、真实
 unpair 和多设备矩阵分别等待 D2-07、N1 Host Control 和外部设备。任何执行者都
 不得因为云端受阻而把 `moonlightrecordv1` 塞入现有八表注册清单，也不得因为
+UI shell 或模拟器截图已存在就打开 runtime、media、input、first-frame 或 release truth。
+
+### 15.15 S1-03 实际落地与验收交接单（2026-08-12）
+
+阶段/任务 ID：S1-03 connection-stage snapshot contract
+
+基线 branch / HEAD / main：`codex/moonlight-complete-upgrade` / `75d769c2` / `main@aeb0cdac5`
+
+本提交修改文件：
+
+- `entry/src/main/ets/pages/MoonlightStreamPage.ets`
+- `entry/src/main/ets/services/MoonlightSessionCoordinator.ets`
+- `entry/src/main/ets/services/MoonlightUiPolicy.ets`
+- `entry/src/test/MoonlightSessionCoordinator.test.ets`
+- `entry/src/test/MoonlightUiPolicy.test.ets`
+
+明确未修改的相邻系统：`CloudStore.ets`（用户未提交改动）、RDP/RustDesk/SSH/SFTP/VNC 业务页、
+公共 `InputHandler`、common-c/native/CMake/NAPI、GameController/OHAudio/Surface、CloudSyncPolicy、
+现有 8 张云表和其它模块的性能路径。
+
+合同已实现：
+
+1. coordinator 的订阅按 owner scope、account generation、host ID、app ID 精确可见；立即回放、scope 变化
+   清 null、监听器异常隔离、退订和 reset 都有合同。
+2. 页面出现、账号切换、消失、cancel/stop 和 terminal cleanup 均与订阅/timer 对齐；只以 snapshot 的真实
+   phase/error/degradation/firstFrame 驱动 overlay，首帧前不显示 connected，disconnected 有独立终态文案。
+3. 真实 runtime port 缺失时继续 fail closed；重试只提示运行时未开放，不开启 transport、media、input、
+   native、cloud 或后台工作。
+
+定向测试与结果：新增 scoped snapshot delivery coordinator case；UI policy 增加 disconnected presentation
+断言。文档聚合为 163 个 focused Moonlight tests / 21 describe，加 8 个 shared handoff cases，均已编译注册；
+`ohosTest@OhosTestCompileArkTS` 仍因 `00306054` 未注册，未宣称 Hypium 执行。
+
+全量门禁与结果：精确 `default@OhosTestCompileArkTS` 与 `assembleHap` 均 `BUILD SUCCESSFUL`；
+`git diff --check`、`node scripts/codex_state.mjs validate` 和静态隔离通过。signed HAP SHA-256：
+`a89fc076f3edc9ca502d94fd53b0fdbb4b61c14c14bf242a250225f76917e077`。
+
+真机/AGC/主机证据路径：最终 HAP 通过沙箱外 HDC 安装/启动于 PC `127.0.0.1:5555` 与手机
+`127.0.0.1:5557`。本次只查看新截图：`/private/tmp/moonlight-s103-final-20260812-pc-root.jpeg`、
+`...-pc-max.jpeg`、`...-pc-picker.jpeg`、`...-pc-picker-click.jpeg`、`...-phone-root.jpeg`、
+`...-phone-picker.jpeg`。PC 侧栏与两端 picker 中 Moonlight 保持灰色官方可着色图标和“即将支持”；点击禁用项
+无导航副作用，PC RDP 页面保持原样。上述只是模拟器 UI 证据，不是 Sunshine/ARM64/实体手柄能力证据。
+
+许可证/SBOM/品牌证据：本 checkpoint 不修改品牌、vendor、SBOM、NOTICE、SPDX 或上游来源资产；沿用已审计
+的官方 Moonlight Qt 几何可着色资源和系统 Symbol fallback。
+
+当前 feature flags：`moonlightProtocolAvailable=false`；runtime、media、input、first-frame、streaming、
+cloud 和 release truth 继续关闭；Moonlight 仍 local-only。
+
+已知限制与 blocker：未有真实 Sunshine transport/media/首帧、OHAudio/Surface、HarmonyOS GameController
+listener/typed NAPI、AppSpawn secure identity、on-device Hypium、长稳/功耗/网络/用户 ARM64 证据；云同步继续
+parked，CloudStore 用户改动不在本任务。
+
+下一任务唯一入口条件：S1-04 只实现 RustDesk 风格 session toolbar/control-center contract，并继续复用
+现有 session/overlay/input policy；不得在 S1-04 偷接真实 runtime 或新建第二 owner/queue。
+
+回滚 commit/动作：回滚 `75d769c2` 即可撤销本 checkpoint；不触碰 `CloudStore.ets` 用户改动。
+
 <!-- PLAN_BODY_END -->
