@@ -21,6 +21,7 @@ enum class ObserveStatus : std::uint8_t {
 struct ObservedControllerLane final {
     bool occupied = false;
     std::uint64_t deviceId = 0U;
+    MoonlightInputSource source = MoonlightInputSource::Invalid;
     std::uint64_t sourceGeneration = 0U;
     std::uint64_t lastSequence = 0U;
     std::uint64_t lastTimestampUs = 0U;
@@ -29,6 +30,7 @@ struct ObservedControllerLane final {
 struct ControllerState final {
     bool active = false;
     std::uint64_t deviceId = 0U;
+    MoonlightInputSource source = MoonlightInputSource::Invalid;
     std::uint64_t sourceGeneration = 0U;
     MoonlightControllerProfile profile{};
     MoonlightControllerMappedState mapped{};
@@ -113,6 +115,7 @@ ObserveStatus observe(ControllerState& state,
     ObservedControllerLane* freeLane = nullptr;
     for (ObservedControllerLane& lane : state.lanes) {
         if (lane.occupied && lane.deviceId == context.deviceId &&
+            lane.source == context.source &&
             lane.sourceGeneration == context.sourceGeneration) {
             if (context.sourceSequence == lane.lastSequence) {
                 return ObserveStatus::Duplicate;
@@ -132,7 +135,8 @@ ObserveStatus observe(ControllerState& state,
     if (freeLane == nullptr) {
         return ObserveStatus::Capacity;
     }
-    *freeLane = {true, context.deviceId, context.sourceGeneration,
+    *freeLane = {true, context.deviceId, context.source,
+                 context.sourceGeneration,
                  context.sourceSequence, context.monotonicTimestampUs};
     return ObserveStatus::Ready;
 }
@@ -387,7 +391,8 @@ bool decodeMoonlightControllerCommand(
     MoonlightControllerWireCommand& command) noexcept {
     command = {};
     if (!event.identity.valid() || event.deviceId == 0U ||
-        event.source != MoonlightInputSource::GameController ||
+        (event.source != MoonlightInputSource::GameController &&
+         event.source != MoonlightInputSource::VirtualController) ||
         event.sourceGeneration == 0U || event.sourceSequence == 0U ||
         event.monotonicTimestampUs == 0U ||
         event.kind != MoonlightInputCommandKind::Controller ||
@@ -520,7 +525,8 @@ MoonlightControllerResult MoonlightControllerMapper::connect(
                              MoonlightInputDispatchStatus::StaleOwner);
     }
     if (impl_->state.active) {
-        if (impl_->state.deviceId != context.deviceId) {
+        if (impl_->state.deviceId != context.deviceId ||
+            impl_->state.source != context.source) {
             return impl_->reject(MoonlightControllerStatus::SlotCapacity,
                                  MoonlightInputDispatchStatus::SourceCapacity);
         }
@@ -550,6 +556,7 @@ MoonlightControllerResult MoonlightControllerMapper::connect(
     }
     candidate.active = true;
     candidate.deviceId = context.deviceId;
+    candidate.source = context.source;
     candidate.sourceGeneration = context.sourceGeneration;
     candidate.profile = profile;
     candidate.mapped = {};
@@ -568,7 +575,8 @@ MoonlightControllerResult MoonlightControllerMapper::update(
         return impl_->reject(MoonlightControllerStatus::StaleOwner,
                              MoonlightInputDispatchStatus::StaleOwner);
     }
-    if (!impl_->state.active || impl_->state.deviceId != context.deviceId) {
+    if (!impl_->state.active || impl_->state.deviceId != context.deviceId ||
+        impl_->state.source != context.source) {
         return impl_->reject(MoonlightControllerStatus::NotActive,
                              MoonlightInputDispatchStatus::InvalidState);
     }
@@ -614,7 +622,8 @@ MoonlightControllerResult MoonlightControllerMapper::neutralize(
         return impl_->reject(MoonlightControllerStatus::StaleOwner,
                              MoonlightInputDispatchStatus::StaleOwner);
     }
-    if (!impl_->state.active || impl_->state.deviceId != context.deviceId) {
+    if (!impl_->state.active || impl_->state.deviceId != context.deviceId ||
+        impl_->state.source != context.source) {
         return impl_->reject(MoonlightControllerStatus::NotActive,
                              MoonlightInputDispatchStatus::InvalidState);
     }
@@ -652,7 +661,8 @@ MoonlightControllerResult MoonlightControllerMapper::disconnect(
         return impl_->reject(MoonlightControllerStatus::StaleOwner,
                              MoonlightInputDispatchStatus::StaleOwner);
     }
-    if (!impl_->state.active || impl_->state.deviceId != context.deviceId) {
+    if (!impl_->state.active || impl_->state.deviceId != context.deviceId ||
+        impl_->state.source != context.source) {
         return impl_->reject(MoonlightControllerStatus::NotActive,
                              MoonlightInputDispatchStatus::InvalidState);
     }
@@ -668,6 +678,7 @@ MoonlightControllerResult MoonlightControllerMapper::disconnect(
     }
     candidate.active = false;
     candidate.deviceId = 0U;
+    candidate.source = MoonlightInputSource::Invalid;
     candidate.sourceGeneration = 0U;
     candidate.profile = {};
     candidate.mapped = {};
@@ -706,6 +717,7 @@ MoonlightControllerSnapshot MoonlightControllerMapper::snapshot(
     snapshot.active = impl_->state.active;
     snapshot.controllerNumber = 0U;
     snapshot.deviceId = impl_->state.deviceId;
+    snapshot.source = impl_->state.source;
     snapshot.sourceGeneration = impl_->state.sourceGeneration;
     snapshot.profile = impl_->state.profile;
     snapshot.state = impl_->state.mapped;

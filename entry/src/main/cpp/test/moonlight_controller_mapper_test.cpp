@@ -382,10 +382,10 @@ RDP_TEST_CASE(moonlight_controller_duplicate_stale_and_generation_change_fail_cl
     RDP_ASSERT_EQ(fixture.port->eventCount(), static_cast<std::size_t>(2));
 }
 
-RDP_TEST_CASE(moonlight_controller_wrong_source_owner_and_device_are_rejected) {
+RDP_TEST_CASE(moonlight_controller_non_controller_source_owner_and_device_are_rejected) {
     ControllerFixture fixture;
     auto context = controllerContext(fixture.identity, 1U, 100U);
-    context.source = MoonlightInputSource::VirtualController;
+    context.source = MoonlightInputSource::Touchscreen;
     RDP_ASSERT_EQ(fixture.mapper->connect(context, xboxProfile()).status,
                   MoonlightControllerStatus::InvalidRequest);
     context = controllerContext(controllerIdentity(999U), 1U, 100U);

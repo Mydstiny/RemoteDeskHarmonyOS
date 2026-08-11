@@ -108,7 +108,8 @@ struct REMOTEDESK_MOONLIGHT_CONTROLLER_HIDDEN MoonlightControllerEventContext fi
 
     constexpr bool valid() const noexcept {
         return identity.valid() && deviceId != 0U &&
-            source == MoonlightInputSource::GameController &&
+            (source == MoonlightInputSource::GameController ||
+             source == MoonlightInputSource::VirtualController) &&
             sourceGeneration != 0U && sourceSequence != 0U &&
             monotonicTimestampUs != 0U;
     }
@@ -179,6 +180,7 @@ struct REMOTEDESK_MOONLIGHT_CONTROLLER_HIDDEN MoonlightControllerSnapshot final 
     bool active = false;
     std::uint8_t controllerNumber = 0U;
     std::uint64_t deviceId = 0U;
+    MoonlightInputSource source = MoonlightInputSource::Invalid;
     std::uint64_t sourceGeneration = 0U;
     MoonlightControllerProfile profile{};
     MoonlightControllerMappedState state{};

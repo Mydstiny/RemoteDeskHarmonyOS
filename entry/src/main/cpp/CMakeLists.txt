@@ -188,6 +188,9 @@ set(MOONLIGHT_CONTROLLER_FEEDBACK_SOURCE
 set(MOONLIGHT_INPUT_FLUSH_POLICY_SOURCE
     moonlight/input/MoonlightInputFlushPolicy.cpp
 )
+set(MOONLIGHT_CONTROLLER_AGGREGATOR_SOURCE
+    moonlight/input/MoonlightControllerAggregator.cpp
+)
 set(MOONLIGHT_SOURCES
     moonlight/core/MoonlightSessionOwner.cpp
 )
@@ -330,6 +333,7 @@ if(RDP_BUILD_TESTS)
         test/moonlight_controller_mapper_test.cpp
         test/moonlight_controller_feedback_test.cpp
         test/moonlight_input_flush_policy_test.cpp
+        test/moonlight_controller_aggregator_test.cpp
         test/vnc_des_test.cpp
         test/vnc_cursor_protocol_test.cpp
         test/vnc_transport_policy_test.cpp
@@ -375,6 +379,7 @@ if(RDP_BUILD_TESTS)
         ${MOONLIGHT_CONTROLLER_MAPPER_SOURCE}
         ${MOONLIGHT_CONTROLLER_FEEDBACK_SOURCE}
         ${MOONLIGHT_INPUT_FLUSH_POLICY_SOURCE}
+        ${MOONLIGHT_CONTROLLER_AGGREGATOR_SOURCE}
         vnc/vnc_des.cpp
         vnc/vnc_cursor_protocol.cpp
         vnc/vnc_rfb_protocol.cpp
@@ -889,6 +894,32 @@ target_link_libraries(remotedesk_moonlight_input_flush_policy PRIVATE
     remotedesk_moonlight_input_bridge
 )
 
+# N3-08 fixed-capacity physical/virtual controller aggregator and normalized
+# layout validator. It reuses N3-05/N3-07 for the only controller wire path,
+# slot ownership, backpressure, lifecycle release, and source handoff. This
+# archive remains dormant with no GameController listener, NAPI, ArkTS, UI,
+# cloud, thread, queue, or product caller.
+add_library(remotedesk_moonlight_controller_aggregator STATIC
+    ${MOONLIGHT_CONTROLLER_AGGREGATOR_SOURCE}
+)
+target_compile_features(remotedesk_moonlight_controller_aggregator PRIVATE
+    cxx_std_17
+)
+target_include_directories(remotedesk_moonlight_controller_aggregator PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_compile_options(remotedesk_moonlight_controller_aggregator PRIVATE
+    -fvisibility=hidden
+    -fvisibility-inlines-hidden
+)
+set_target_properties(remotedesk_moonlight_controller_aggregator PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+)
+target_link_libraries(remotedesk_moonlight_controller_aggregator PRIVATE
+    remotedesk_moonlight_input_flush_policy
+    remotedesk_moonlight_controller_mapper
+)
+
 # 定义共享库目标
 add_library(rdpnapi SHARED ${ALL_SOURCES})
 target_compile_definitions(rdpnapi PRIVATE
@@ -896,6 +927,7 @@ target_compile_definitions(rdpnapi PRIVATE
     REMOTEDESK_BUILD_TIME_UTC="${REMOTEDESK_BUILD_TIME_UTC}"
 )
 target_link_libraries(rdpnapi PRIVATE
+    remotedesk_moonlight_controller_aggregator
     remotedesk_moonlight_input_flush_policy
     remotedesk_moonlight_controller_feedback
     remotedesk_moonlight_controller_mapper
@@ -933,6 +965,7 @@ target_link_options(rdpnapi PRIVATE
     "-Wl,--exclude-libs,libremotedesk_moonlight_controller_mapper.a"
     "-Wl,--exclude-libs,libremotedesk_moonlight_controller_feedback.a"
     "-Wl,--exclude-libs,libremotedesk_moonlight_input_flush_policy.a"
+    "-Wl,--exclude-libs,libremotedesk_moonlight_controller_aggregator.a"
 )
 
 # VNC full-screen ZRLE decode is production-rate code even in a signed Debug
