@@ -19,8 +19,10 @@ import {
 import {
   MoonlightDiagnosticsSnapshot,
   MoonlightRouteIdentity,
+  MoonlightToolbarLayout,
   MoonlightToolbarAction,
-  moonlightRouteIdentity
+  moonlightRouteIdentity,
+  moonlightToolbarLayout
 } from '../services/MoonlightUiPolicy';
 
 type MoonlightSessionSheetMode = 'none' | 'control' | 'stop';
@@ -38,6 +40,8 @@ struct MoonlightStreamPage {
   @StorageLink('currentTheme') theme: string = 'light';
   @StorageLink('accentColor') accentColor: string = '#007DFF';
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
+  @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
+  @StorageProp('isPadDevice') isPadDevice: boolean = false;
   @StorageProp('liveViewEnabled') liveViewEnabled: boolean = true;
   @StorageProp('liveViewMode') liveViewMode: number = 1;
   @StorageProp('remoteDisplayScaleMode') commonDisplayScaleMode: string = 'fit';
@@ -89,6 +93,10 @@ struct MoonlightStreamPage {
 
   private pal(): Palette {
     return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor);
+  }
+
+  private toolbarLayout(): MoonlightToolbarLayout {
+    return moonlightToolbarLayout(this.isDesktopDevice, this.breakpoint, this.isPadDevice);
   }
 
   aboutToAppear(): void {
@@ -328,8 +336,9 @@ struct MoonlightStreamPage {
       onOpenModifiers: (): void => {
         this.closeSheet(); this.flushInput('open_modifier_panel'); this.showModifierPanel = true;
       },
-      onOpenShortcuts: (): void => {
-        this.closeSheet(); this.flushInput('open_shortcut_panel'); this.showShortcutPanel = true;
+      onCopyDiagnostics: (): void => {
+        this.closeSheet();
+        promptAction.showToast({ message: '暂无真实会话指标，未复制任何敏感信息', duration: 1600 });
       },
       onOpenController: (): void => { this.closeSheet(); this.toolbarAction('controller'); },
       onControlMode: (mode: MoonlightControlMode): void => {
@@ -420,7 +429,9 @@ struct MoonlightStreamPage {
         onUnavailable: (reason: string): void => {
           promptAction.showToast({ message: reason, duration: 1800 });
         }
-      }).position({ x: this.breakpoint === 'sm' ? 8 : 30, y: 250 })
+      }).align(this.toolbarLayout().edgeRail ? Alignment.TopEnd : Alignment.Top)
+        .margin({ top: this.toolbarLayout().topOffset,
+          right: this.toolbarLayout().edgeRail ? 4 : 0 })
 
       RemoteModifierHandle({
         handleX: 0, handleY: 330, handleSide: 'left', panelVisible: this.showModifierPanel,

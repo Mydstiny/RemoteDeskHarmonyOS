@@ -1,4 +1,8 @@
 import { AppTheme, Palette, buildDark, buildLight } from '../../common/Theme';
+import {
+  MoonlightControlCenterLayout,
+  moonlightControlCenterLayout
+} from '../../services/MoonlightUiPolicy';
 
 export type MoonlightControlMode = 'touch' | 'trackpad' | 'absoluteMouse' | 'relativeMouse';
 
@@ -6,6 +10,9 @@ export type MoonlightControlMode = 'touch' | 'trackpad' | 'absoluteMouse' | 'rel
 export struct MoonlightControlCenter {
   @StorageLink('currentTheme') theme: string = 'light';
   @StorageLink('accentColor') accentColor: string = '#007DFF';
+  @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
+  @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
+  @StorageProp('isPadDevice') isPadDevice: boolean = false;
   @Prop hostName: string = '';
   @Prop appName: string = '';
   @Prop durationLabel: string = '00:00';
@@ -22,7 +29,7 @@ export struct MoonlightControlCenter {
   onClose: () => void = (): void => {};
   onOpenKeyboard: () => void = (): void => {};
   onOpenModifiers: () => void = (): void => {};
-  onOpenShortcuts: () => void = (): void => {};
+  onCopyDiagnostics: () => void = (): void => {};
   onOpenController: () => void = (): void => {};
   onControlMode: (mode: MoonlightControlMode) => void = (_mode: MoonlightControlMode): void => {};
   onToggleMute: () => void = (): void => {};
@@ -40,6 +47,10 @@ export struct MoonlightControlCenter {
     return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor);
   }
 
+  private layout(): MoonlightControlCenterLayout {
+    return moonlightControlCenterLayout(this.isDesktopDevice, this.breakpoint, this.isPadDevice);
+  }
+
   @Builder private sectionTitle(title: string, subtitle: string = '') {
     Row() {
       Text(title).fontSize(13).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
@@ -47,7 +58,7 @@ export struct MoonlightControlCenter {
       if (subtitle !== '') {
         Text(subtitle).fontSize(10).fontColor(this.accentColor).margin({ left: 8 })
       }
-    }.width('100%').margin({ top: 16, bottom: 8 })
+    }.width('100%').margin({ top: this.layout().sectionGap, bottom: 8 })
   }
 
   @Builder private actionRow(icon: Resource, title: string, detail: string,
@@ -65,7 +76,8 @@ export struct MoonlightControlCenter {
           .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 2 })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
       SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(15).fontColor([this.pal().text3])
-    }.width('100%').height(68).padding({ left: 10, right: 12, top: 6, bottom: 6 })
+    }.width('100%').height(this.layout().rowHeight)
+      .padding({ left: 10, right: 12, top: 6, bottom: 6 })
       .opacity(enabled ? 1 : 0.62).onClick((): void => { if (enabled) { action(); } })
   }
 
@@ -167,7 +179,7 @@ export struct MoonlightControlCenter {
               (): void => { this.onToggleDiagnostics(); })
             Divider().color(this.pal().divider).margin({ left: 58 })
             this.actionRow($r('sys.symbol.text_clipboard'), '复制脱敏诊断',
-              '不包含地址、PIN、证书指纹和会话密钥', (): void => { this.onOpenShortcuts(); })
+              '不包含地址、PIN、证书指纹和会话密钥', (): void => { this.onCopyDiagnostics(); })
           }.width('100%').backgroundColor(this.pal().card).borderRadius(16)
             .border({ width: 0.5, color: this.pal().cardBorder })
 
@@ -190,7 +202,8 @@ export struct MoonlightControlCenter {
         }.width('100%')
       }.layoutWeight(1).width('100%').scrollBar(BarState.Off).margin({ top: 6 })
     }
-    .width('100%').height('100%').padding({ left: 20, right: 20, top: 20 })
+    .width(this.layout().width).height('100%')
+      .padding({ left: this.layout().horizontalPadding, right: this.layout().horizontalPadding, top: 20 })
     .backgroundColor(this.pal().sheetBg)
   }
 }

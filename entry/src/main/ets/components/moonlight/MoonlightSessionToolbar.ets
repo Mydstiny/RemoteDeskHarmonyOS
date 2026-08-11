@@ -1,8 +1,11 @@
+import { Palette, buildDark } from '../../common/Theme';
 import {
-  MOONLIGHT_TOOLBAR_AUTO_HIDE_MS,
   MoonlightToolbarAction,
   MoonlightToolbarItem,
-  moonlightToolbarItems
+  MoonlightToolbarLayout,
+  moonlightToolbarAutoHideDelayMs,
+  moonlightToolbarItems,
+  moonlightToolbarLayout
 } from '../../services/MoonlightUiPolicy';
 import { MoonlightBrandIcon } from './MoonlightBrandIcon';
 
@@ -10,6 +13,8 @@ import { MoonlightBrandIcon } from './MoonlightBrandIcon';
 export struct MoonlightSessionToolbar {
   @StorageLink('accentColor') accentColor: string = '#007DFF';
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
+  @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
+  @StorageProp('isPadDevice') isPadDevice: boolean = false;
   @Prop audioAvailable: boolean = false;
   @Prop controllerAvailable: boolean = false;
   @Prop pipAvailable: boolean = false;
@@ -21,9 +26,21 @@ export struct MoonlightSessionToolbar {
   onAction: (action: MoonlightToolbarAction) => void = (_action: MoonlightToolbarAction): void => {};
   onUnavailable: (reason: string) => void = (_reason: string): void => {};
 
+  private pal(): Palette {
+    // The stream canvas is intentionally dark even when the app shell is light;
+    // accent/danger/surface tokens still follow the shared Theme system.
+    return buildDark(this.accentColor);
+  }
+
+  private layout(): MoonlightToolbarLayout {
+    return moonlightToolbarLayout(this.isDesktopDevice, this.breakpoint, this.isPadDevice);
+  }
+
   private items(): MoonlightToolbarItem[] {
+    const layout: MoonlightToolbarLayout = this.layout();
     return moonlightToolbarItems(
-      this.breakpoint, this.audioAvailable, this.controllerAvailable, this.pipAvailable);
+      this.breakpoint, this.audioAvailable, this.controllerAvailable, this.pipAvailable,
+      layout.maxVisibleItems);
   }
 
   private icon(action: MoonlightToolbarAction): Resource {
@@ -42,11 +59,12 @@ export struct MoonlightSessionToolbar {
 
   private scheduleHide(): void {
     this.clearTimer();
-    if (!this.expanded || this.pinned) { return; }
+    const delayMs: number = moonlightToolbarAutoHideDelayMs(this.layout(), this.pinned);
+    if (!this.expanded || delayMs <= 0) { return; }
     this.hideTimer = setTimeout((): void => {
       if (!this.pinned) { this.expanded = false; }
       this.clearTimer();
-    }, MOONLIGHT_TOOLBAR_AUTO_HIDE_MS);
+    }, delayMs);
   }
 
   private invoke(item: MoonlightToolbarItem): void {
@@ -55,56 +73,98 @@ export struct MoonlightSessionToolbar {
     this.onAction(item.action);
   }
 
+  aboutToAppear(): void {
+    this.expanded = false;
+    this.pinned = false;
+    this.scheduleHide();
+  }
+
   aboutToDisappear(): void { this.clearTimer(); }
 
-  @Builder private toolItem(item: MoonlightToolbarItem) {
+  @Builder private toolItem(item: MoonlightToolbarItem, layout: MoonlightToolbarLayout) {
     Button() {
       Column({ space: 2 }) {
         SymbolGlyph(this.icon(item.action)).fontSize(20)
-          .fontColor([item.dangerous ? '#FF8A80' : (item.enabled ? '#FFFFFF' : 'rgba(255,255,255,0.32)')])
+          .fontColor([item.dangerous ? this.pal().danger :
+            (item.enabled ? this.pal().text : this.pal().text3)])
         Text(item.label).fontSize(9)
-          .fontColor(item.dangerous ? '#FF8A80' : (item.enabled ? '#FFFFFF' : 'rgba(255,255,255,0.32)'))
+          .fontColor(item.dangerous ? this.pal().danger :
+            (item.enabled ? this.pal().text : this.pal().text3))
           .maxLines(1)
       }
     }
-    .width(50).height(50).borderRadius(14)
-    .backgroundColor(item.dangerous ? 'rgba(255,90,90,0.12)' : 'rgba(255,255,255,0.08)')
+    .width(layout.edgeRail ? layout.iconSize + 18 : 50).height(50).borderRadius(14)
+    .backgroundColor(item.dangerous ? this.pal().danger + '20' : this.pal().surface)
     .enabled(true)
     .opacity(item.enabled ? 1 : 0.72)
     .accessibilityText(item.enabled ? item.label : item.label + '，' + item.disabledReason)
     .onClick((): void => { this.invoke(item); })
   }
 
+  @Builder private pinItem(layout: MoonlightToolbarLayout) {
+    Button() {
+      SymbolGlyph(this.pinned ? $r('sys.symbol.pin_fill') : $r('sys.symbol.pin'))
+        .fontSize(17).fontColor([this.pinned ? this.accentColor : this.pal().text])
+    }.width(layout.edgeRail ? layout.iconSize + 18 : 44).height(50).borderRadius(14)
+      .backgroundColor(this.pal().surface)
+      .onClick((): void => { this.pinned = !this.pinned; this.scheduleHide(); })
+      .accessibilityText(this.pinned ? '取消固定工具条' : '固定工具条')
+  }
+
+  @Builder private collapsedHandle(layout: MoonlightToolbarLayout) {
+    Button() {
+      Row({ space: 5 }) {
+        MoonlightBrandIcon({ iconSize: layout.edgeRail ? 18 : 20,
+          tint: this.pal().text, accessibilityLabel: '打开 Moonlight 控制' })
+        if (layout.edgeRail) {
+          SymbolGlyph($r('sys.symbol.arrow_left')).fontSize(13).fontColor([this.pal().text2])
+        } else {
+          Column().width(7).height(7).borderRadius(4).backgroundColor(this.qualityColor)
+        }
+      }.justifyContent(FlexAlign.Center)
+    }
+    .width(layout.edgeRail ? 54 : 58).height(54).padding(0)
+    .backgroundColor(this.pal().floatBg)
+    .borderRadius(layout.edgeRail ?
+      { topLeft: 18, bottomLeft: 18, topRight: 7, bottomRight: 7 } : 18)
+    .border({ width: 1, color: this.pal().floatBorder })
+    .shadow({ radius: 12, color: this.pal().fabShadow, offsetY: 4 })
+    .onClick((): void => { this.expanded = true; this.scheduleHide(); })
+    .accessibilityText('打开串流控制，连接质量' + this.qualityLabel)
+  }
+
+  @Builder private expandedTools(layout: MoonlightToolbarLayout) {
+    if (layout.edgeRail) {
+      Column({ space: layout.itemGap }) {
+        ForEach(this.items(), (item: MoonlightToolbarItem): void => {
+          this.toolItem(item, layout);
+        }, (item: MoonlightToolbarItem): string => item.action)
+        this.pinItem(layout)
+      }
+      .padding(7).backgroundColor(this.pal().floatBg).borderRadius(18)
+      .border({ width: 1, color: this.pal().floatBorder })
+      .shadow({ radius: 18, color: this.pal().fabShadow, offsetY: 5 })
+      .onHover((hover: boolean): void => { if (hover) { this.clearTimer(); } else { this.scheduleHide(); } })
+    } else {
+      Row({ space: layout.itemGap }) {
+        ForEach(this.items(), (item: MoonlightToolbarItem): void => {
+          this.toolItem(item, layout);
+        }, (item: MoonlightToolbarItem): string => item.action)
+        this.pinItem(layout)
+      }
+      .padding(8).backgroundColor(this.pal().floatBg).borderRadius(18)
+      .border({ width: 1, color: this.pal().floatBorder })
+      .shadow({ radius: 18, color: this.pal().fabShadow, offsetY: 5 })
+      .onHover((hover: boolean): void => { if (hover) { this.clearTimer(); } else { this.scheduleHide(); } })
+    }
+  }
+
   build() {
     Stack() {
       if (!this.expanded) {
-        Row() {
-          MoonlightBrandIcon({ iconSize: 18, tint: '#FFFFFF', accessibilityLabel: '打开 Moonlight 控制' })
-          Column().width(7).height(7).borderRadius(4).backgroundColor(this.qualityColor)
-            .margin({ left: 5 })
-        }
-        .width(46).height(58).justifyContent(FlexAlign.Center)
-        .backgroundColor('rgba(14,18,28,0.78)')
-        .borderRadius({ topLeft: 18, bottomLeft: 18, topRight: 6, bottomRight: 6 })
-        .border({ width: 1, color: 'rgba(255,255,255,0.16)' })
-        .onClick((): void => { this.expanded = true; this.scheduleHide(); })
-        .accessibilityText('打开串流控制，连接质量' + this.qualityLabel)
+        this.collapsedHandle(this.layout())
       } else {
-        Row({ space: 8 }) {
-          ForEach(this.items(), (item: MoonlightToolbarItem): void => {
-            this.toolItem(item)
-          }, (item: MoonlightToolbarItem): string => item.action)
-          Button() {
-            SymbolGlyph(this.pinned ? $r('sys.symbol.pin_fill') : $r('sys.symbol.pin'))
-              .fontSize(17).fontColor([this.pinned ? this.accentColor : '#FFFFFF'])
-          }.width(44).height(50).borderRadius(14).backgroundColor('rgba(255,255,255,0.08)')
-            .onClick((): void => { this.pinned = !this.pinned; this.scheduleHide(); })
-            .accessibilityText(this.pinned ? '取消固定工具条' : '固定工具条')
-        }
-        .padding(8).backgroundColor('rgba(14,18,28,0.86)').borderRadius(18)
-        .border({ width: 1, color: 'rgba(255,255,255,0.16)' })
-        .shadow({ radius: 18, color: 'rgba(0,0,0,0.35)', offsetY: 5 })
-        .onHover((hover: boolean): void => { if (hover) { this.clearTimer(); } else { this.scheduleHide(); } })
+        this.expandedTools(this.layout())
       }
     }
   }

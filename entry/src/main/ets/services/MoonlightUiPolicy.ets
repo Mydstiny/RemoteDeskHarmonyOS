@@ -5,7 +5,7 @@ import { MoonlightSessionErrorCode, MoonlightSessionPhase } from './MoonlightSes
 export const MOONLIGHT_CONNECT_STAGE_DELAY_MS: number = 400;
 export const MOONLIGHT_CONNECT_DURATION_DELAY_MS: number = 3000;
 export const MOONLIGHT_CONNECT_DIAGNOSTICS_DELAY_MS: number = 10000;
-export const MOONLIGHT_TOOLBAR_AUTO_HIDE_MS: number = 3000;
+export const MOONLIGHT_TOOLBAR_AUTO_HIDE_MS: number = 5000;
 
 export type MoonlightCatalogStatus =
   'empty' | 'fresh' | 'stale' | 'partial' | 'offline' | 'host_busy' | 'error';
@@ -93,6 +93,26 @@ export interface MoonlightToolbarItem {
   dangerous: boolean;
   enabled: boolean;
   disabledReason: string;
+}
+
+export type MoonlightToolbarDeviceClass = 'pc' | 'pad' | 'phone';
+
+export interface MoonlightToolbarLayout {
+  deviceClass: MoonlightToolbarDeviceClass;
+  edgeRail: boolean;
+  iconSize: number;
+  itemGap: number;
+  maxVisibleItems: number;
+  menuWidth: number;
+  topOffset: number;
+  autoHideMs: number;
+}
+
+export interface MoonlightControlCenterLayout {
+  width: string;
+  horizontalPadding: number;
+  sectionGap: number;
+  rowHeight: number;
 }
 
 export interface MoonlightDiagnosticsSnapshot {
@@ -385,6 +405,50 @@ export function moonlightErrorActionText(errorCode: MoonlightSessionErrorCode): 
   return '连接已停止，可重试或返回应用目录。';
 }
 
+export function moonlightToolbarDeviceClass(isDesktopDevice: boolean,
+  isPadDevice: boolean): MoonlightToolbarDeviceClass {
+  if (isDesktopDevice) { return 'pc'; }
+  if (isPadDevice) { return 'pad'; }
+  return 'phone';
+}
+
+export function moonlightToolbarLayout(isDesktopDevice: boolean, breakpoint: string,
+  isPadDevice: boolean): MoonlightToolbarLayout {
+  const normalized: string = breakpoint.trim().toLowerCase();
+  const deviceClass: MoonlightToolbarDeviceClass =
+    moonlightToolbarDeviceClass(isDesktopDevice, isPadDevice);
+  const small: boolean = normalized === 'sm';
+  const edgeRail: boolean = small || (deviceClass === 'pad' && normalized === 'md');
+  const large: boolean = normalized === 'lg' || normalized === 'xl';
+  return {
+    deviceClass: deviceClass,
+    edgeRail: edgeRail,
+    iconSize: small ? 40 : 44,
+    itemGap: small ? 6 : 8,
+    maxVisibleItems: large ? 7 : 5,
+    menuWidth: small ? 300 : (normalized === 'md' ? 340 : 360),
+    topOffset: edgeRail ? 56 : (normalized === 'xl' ? 16 : 12),
+    autoHideMs: !edgeRail && normalized === 'xl' ? MOONLIGHT_TOOLBAR_AUTO_HIDE_MS : 0
+  };
+}
+
+export function moonlightToolbarAutoHideDelayMs(layout: MoonlightToolbarLayout,
+  pinned: boolean, menuOpen: boolean = false): number {
+  if (pinned || menuOpen || layout.autoHideMs <= 0) { return 0; }
+  return layout.autoHideMs;
+}
+
+export function moonlightControlCenterLayout(isDesktopDevice: boolean, breakpoint: string,
+  _isPadDevice: boolean): MoonlightControlCenterLayout {
+  const normalized: string = breakpoint.trim().toLowerCase();
+  return {
+    width: normalized === 'sm' ? '100%' : (isDesktopDevice && normalized === 'xl' ? '620vp' : '560vp'),
+    horizontalPadding: normalized === 'sm' ? 20 : 24,
+    sectionGap: normalized === 'sm' ? 14 : 16,
+    rowHeight: normalized === 'sm' ? 64 : 68
+  };
+}
+
 function toolbarItem(action: MoonlightToolbarAction, label: string,
   dangerous: boolean = false): MoonlightToolbarItem {
   return { action: action, label: label, dangerous: dangerous,
@@ -393,16 +457,33 @@ function toolbarItem(action: MoonlightToolbarAction, label: string,
 
 export function moonlightToolbarItems(
   breakpoint: string, audioAvailable: boolean,
-  controllerAvailable: boolean, pipAvailable: boolean
+  controllerAvailable: boolean, pipAvailable: boolean,
+  maxVisibleItems: number = 0
 ): MoonlightToolbarItem[] {
+  const normalized: string = breakpoint.trim().toLowerCase();
   const items: MoonlightToolbarItem[] = [
     toolbarItem('control', '控制'), toolbarItem('keyboard', '键盘')
   ];
+  const limit: number = maxVisibleItems > 0 ? maxVisibleItems :
+    (normalized === 'sm' ? 5 : 7);
+  if (limit <= 5) {
+    if (normalized === 'sm') {
+      const controller: MoonlightToolbarItem = toolbarItem('controller', '手柄');
+      controller.enabled = controllerAvailable;
+      controller.disabledReason = controllerAvailable ? '' : '当前设备尚未验证手柄输入能力';
+      items.push(controller);
+    } else {
+      items.push(toolbarItem('display', pipAvailable ? '画面/PIP' : '画面'));
+    }
+    items.push(toolbarItem('more', '更多'));
+    items.push(toolbarItem('disconnect', '断开', true));
+    return items;
+  }
   const controller: MoonlightToolbarItem = toolbarItem('controller', '手柄');
   controller.enabled = controllerAvailable;
   controller.disabledReason = controllerAvailable ? '' : '当前设备尚未验证手柄输入能力';
   items.push(controller);
-  if (breakpoint !== 'sm') {
+  if (normalized !== 'sm') {
     const audio: MoonlightToolbarItem = toolbarItem('audio', '音频');
     audio.enabled = audioAvailable;
     audio.disabledReason = audioAvailable ? '' : '音频能力不可用';

@@ -19,6 +19,10 @@ import {
   moonlightOverlayRequiresInputFlush,
   moonlightRouteIdentity,
   moonlightSettingsSections,
+  moonlightControlCenterLayout,
+  moonlightToolbarAutoHideDelayMs,
+  moonlightToolbarDeviceClass,
+  moonlightToolbarLayout,
   moonlightToolbarItems
 } from '../main/ets/services/MoonlightUiPolicy';
 
@@ -138,6 +142,30 @@ export default function moonlightUiPolicyTest(): void {
       expect(phone[4].action).assertEqual('disconnect');
       expect(phone[4].dangerous).assertTrue();
       expect(moonlightToolbarItems('xl', true, true, true).length).assertEqual(7);
+    });
+
+    it('resolves_responsive_toolbar_and_control_center_contract', 0, (): void => {
+      expect(moonlightToolbarDeviceClass(false, false)).assertEqual('phone');
+      const phone = moonlightToolbarLayout(false, 'sm', false);
+      expect(phone.edgeRail).assertTrue();
+      expect(phone.maxVisibleItems).assertEqual(5);
+      expect(phone.autoHideMs).assertEqual(0);
+
+      const desktopMd = moonlightToolbarLayout(true, 'md', false);
+      expect(desktopMd.deviceClass).assertEqual('pc');
+      expect(desktopMd.edgeRail).assertFalse();
+      expect(moonlightToolbarItems('md', true, false, false, desktopMd.maxVisibleItems).length)
+        .assertEqual(5);
+
+      const desktopXl = moonlightToolbarLayout(true, 'xl', false);
+      expect(desktopXl.maxVisibleItems).assertEqual(7);
+      expect(moonlightToolbarAutoHideDelayMs(desktopXl, false)).assertEqual(5000);
+      expect(moonlightToolbarAutoHideDelayMs(desktopXl, true)).assertEqual(0);
+      expect(moonlightToolbarAutoHideDelayMs(desktopXl, false, true)).assertEqual(0);
+
+      const sheet = moonlightControlCenterLayout(true, 'xl', false);
+      expect(sheet.width).assertEqual('620vp');
+      expect(sheet.rowHeight).assertEqual(68);
     });
 
     it('flushes_input_for_interactive_and_transaction_overlays', 0, (): void => {
