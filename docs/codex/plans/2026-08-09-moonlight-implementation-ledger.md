@@ -4,7 +4,7 @@
 > 分支：`codex/moonlight-complete-upgrade`
 > 初始基线：`main@aeb0cdac5`，与 `origin/main` 一致
 > 总计划：`docs/superpowers/plans/2026-07-28-moonlight-harmonyos-complete-upgrade-plan.md`
-> 台账状态：G0、D1、D2 本地/休眠策略、D3 本地生命周期、N1-01～N1-08、N2-01～N2-08 与 N3-01～N3-02 已形成 checkpoint；N2-09 等待真实 Sunshine/ARM64 实机外部回执，当前唯一可直接执行的代码任务为 dormant N3-03。2026-08-10 产品决定 Moonlight 暂不接入云同步，当前只开发本地主机存储；`moonlightrecordv1`、Moonlight cloud selection/transfer/secret recovery 全部 parked，不进入当前执行序列。D3 在线/多设备和产品运行时仍等待外部回执，只把有可复现证据的项目标记为通过
+> 台账状态：G0、D1、D2 本地/休眠策略、D3 本地生命周期、N1-01～N1-08、N2-01～N2-08 与 N3-01～N3-03 已形成 checkpoint；N2-09 等待真实 Sunshine/ARM64 实机外部回执，当前唯一可直接执行的代码任务为 dormant N3-04。2026-08-10 产品决定 Moonlight 暂不接入云同步，当前只开发本地主机存储；`moonlightrecordv1`、Moonlight cloud selection/transfer/secret recovery 全部 parked，不进入当前执行序列。D3 在线/多设备和产品运行时仍等待外部回执，只把有可复现证据的项目标记为通过
 
 ## 1. 执行约束
 
@@ -240,6 +240,7 @@ D3 账户生命周期代码检查点为 `05e96d3`；便携备份/本地恢复检
 | N2-08 | CONTRACT PASS / DORMANT `57b1d7da4` | hidden pure-native `MoonlightMediaClockStats`；exact session/window/source generation、最多 256 槽 fixed window、absent 与 measured zero 分离、network/decode/render/end-to-end/audio queue p50/p95/max、common-c RTP/FEC/recovery/OOS/invalid 精确增量、audio underrun/drop、reset baseline、节流和饱和计数；13 个 focused case | 私有 archive 未被无 caller 的 `rdpnapi` 拉入，双 ABI 动态符号集合与 N2-07 完全一致；不接 NAPI/ArkTS/UI/cloud/log/product caller；N2-09 等待外部实机，N3-01 已完成 |
 | N3-01 | CONTRACT PASS / DORMANT `fe46025ef` | hidden pure-native `MoonlightInputBridge`；exact session/owner/input/source generation、device/source/sequence/timestamp、固定 32 lanes/64-byte payload、typed stale/duplicate/backpressure、focus/stop neutral flush、retry/resume/cleanup 和并发序列化；12 个 focused case | 复用唯一 `MoonlightSessionOwner` 与共享 `SessionSinkOwnerLease`；未改公共 `InputHandler`，archive 无 caller 且未进入 `rdpnapi`；不接 NAPI/ArkTS/UI/cloud/product caller；N3-02 下一 |
 | N3-02 | CONTRACT PASS / DORMANT `a552b30a2` | hidden `MoonlightKeyboardMapper`；HarmonyOS namespace→官方 prefixed VK、双侧四类 modifier、once/lock、strict UTF-8 text、逐命令状态提交、精确 retry、跨设备 key-up 拒绝、8 普通键+8 modifier 全释放和物理 Esc 本地逃生；15 个 focused case | 私有 archive 无 caller 且未进入 `rdpnapi`；无公共 InputHandler/NAPI/ArkTS/UI/cloud/thread/queue；仅修正 N3-01 测试接受合法 stop-first 串行结果；N3-03 下一 |
+| N3-03 | CONTRACT PASS / DORMANT `1787da821` | hidden `MoonlightPointerMapper`；absolute/relative motion、官方五键、横纵滚轮、physical-pixel content rect、letterbox/fill/1:1/pan、四向旋转、DPI/fraction residual、exact geometry/source generation、逐命令状态提交和精确 retry；18 个 focused case | capture/constraint/raw-relative 仅有 capability resolution，product unavailable；私有 archive 无 caller 且未进入 `rdpnapi`；无公共 InputHandler/NAPI/ArkTS/UI/cloud/thread/queue；N3-04 下一 |
 
 N1-01 的可复现证据：
 
@@ -824,14 +825,35 @@ backpressure/port failure 精确 suffix retry 和 pending payload 清理；未�
   RDP/RustDesk/SSH/VNC 生产业务源、NAPI、ArkTS、UI、云、日志或 product caller 变化；HDC 无
   target，不声明真实设备输入或 Sunshine runtime 能力。
 
+N3-03 `1787da821` 新增 hidden/private `MoonlightPointerMapper`、18 个 focused case 和独立私有
+CMake archive。映射合同使用 physical surface pixel 与有 generation 的 content rect，支持
+letterbox/fill/1:1/pan、四向旋转和 DPI 不变的 absolute 坐标；黑边 fail closed，不夹取到远端。
+relative motion 保留小数残差且对非有限值/int16 overflow fail closed；按钮只接受官方五键并按
+device/source 精确归属，absolute press 由 position+button 原子事务发送，出界 press 被抑制但
+release 仍可送达以避免幽灵按键。横纵滚轮、反序 release-all、逐命令状态提交、backpressure/
+port failure 未接受后缀精确续传和 pending 清理由固定容量状态机覆盖。
+
+- host normal 连续三轮与 strict `-Wall -Wextra -Wpedantic -Werror` 最终均为 **606 total /
+  590 pass / 16 fail**；18 个 N3-03 用例全 PASS，16 项仍仅为既有 VNC 本地 TLS fixture
+  `start()` 失败。ASan/UBSan 连续三轮和最终 TSan 同为 **590/16** 且无 sanitizer report；
+  focused clang analyzer 零诊断。
+- arm64-v8a/x86_64 产品 native 均重新配置并链接；两个 pointer archives 均含
+  `MoonlightPointerMapper.cpp.o`，但无 caller 时 object 未被拉入 `rdpnapi`。本地/动态符号无
+  `MoonlightPointer`/`MoonlightKeyboard`/`MoonlightInput`，动态 defined/undefined 仍为 arm64
+  **16114/705**、x86_64 **15645/703**，与 N2-08/N3-01/N3-02 相同。
+- 最终双 Hvigor BUILD SUCCESSFUL；signed HAP 共 333 paths；Light 与 `git diff --check` PASS。
+  只新增 Moonlight pointer 私有文件、focused test 与 CMake target；未修改 common-c、公共
+  `InputHandler`、共享 telemetry/render/audio、RDP/RustDesk/SSH/VNC 生产业务源、NAPI、ArkTS、
+  UI、云、日志或 product caller。capture/constraint/raw-relative 仍无平台接线，不声明真机能力。
+
 ## 13. 下一执行序列
 
 1. N2-09 保持 EXTERNAL PENDING：必须由真实 Sunshine 与用户 ARM64 实机完成 720p/1080p、
    30/60fps、两小时、温控、前后台/PIP/旋转和网络矩阵；不得用 host 单测或虚拟机代替。
-2. 当前唯一可直接执行的代码任务是 dormant N3-03：在 N3-01 bounded command body 中建立
-   absolute/relative pointer、button、wheel 与 content-rect mapping 合同；capture/constraint/
-   raw-relative 保持 capability-gated，不接公共 `InputHandler`、NAPI、ArkTS、UI 或 product caller。
-3. 保持 N2-08 与 N3-01～N3-02 dormant：不接 NAPI/ArkTS/UI/PIP/后台、云或日志，不把任何结果变成 video
+2. 当前唯一可直接执行的代码任务是 dormant N3-04：建立直接触控与触控板手势、多点 id、
+   cancel/transform 与 overlay/远端 hit-map 互斥合同；不接公共 `InputHandler`、NAPI、ArkTS、
+   UI 或 product caller，模式切换前统一 flush。
+3. 保持 N2-08 与 N3-01～N3-03 dormant：不接 NAPI/ArkTS/UI/PIP/后台、云或日志，不把任何结果变成 video
    first-frame、streaming/protocolAvailable、FAB 或 release truth。
 4. S1-08 才按现有 `NativeSessionHandles`、Surface/PIP/background 生命周期装配媒体；U1/S1 的
    设置、目录、连接浮层继续只消费 local Repository/cache、Host Control 和 media prerequisites。

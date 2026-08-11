@@ -4,9 +4,9 @@
 
 - Task: `moonlight-complete-upgrade`
 - Base: `main@aeb0cdac5`; branch: `codex/moonlight-complete-upgrade`
-- Phase: G0、D1-D3 local/dormant、N1-01～N1-08、N2-01～N2-08、N3-01～N3-02 已 checkpoint；
-  N3-02 代码 checkpoint 为 `a552b30a2`。N2-09 等待真实设备，当前唯一可执行代码任务为
-  dormant N3-03。2026-08-10 决策为
+- Phase: G0、D1-D3 local/dormant、N1-01～N1-08、N2-01～N2-08、N3-01～N3-03 已 checkpoint；
+  N3-03 代码 checkpoint 为 `1787da821`。N2-09 等待真实设备，当前唯一可执行代码任务为
+  dormant N3-04。2026-08-10 决策为
   Moonlight 暂不接入云同步，当前只推进本地主机存储；云表/CloudSync 方案 parked。
 - Authoritative plan: `docs/superpowers/plans/2026-07-28-moonlight-harmonyos-complete-upgrade-plan.md`
 - Live ledger: `docs/codex/plans/2026-08-09-moonlight-implementation-ledger.md`
@@ -23,7 +23,7 @@
 - 11 个 feature inputs 默认全 false；六项 release snapshot 未放行。平台能力默认
   11 pending、controller rumble 1 unsupported、0 supported。
 - 两个允许的 `gpt-5.6-sol low` reviewer 名额均已使用，不得因压缩或新 checkpoint 重派；
-  N2-03～N3-01 无第三份审查回执，状态机应诚实显示 `REVIEW_REQUIRED`。
+  N2-03～N3-03 无第三份审查回执，状态机应诚实显示 `REVIEW_REQUIRED`。
 
 ## Checkpoint Facts
 
@@ -74,26 +74,31 @@
   官方 `0x8000|VK` 合同；固定 8 个普通键、双侧四类修饰键与最多 16 条释放命令，完成 once/lock、
   物理键/UTF-8 文本分流、逐命令状态提交、backpressure 精确续传、跨设备 key-up 拒绝、全量反序
   释放与物理 Esc 本地逃生。无产品 caller、公共 InputHandler、NAPI、ArkTS、UI、云、线程或队列。
+- N3-03 `1787da821`：hidden `MoonlightPointerMapper` 定义 absolute/relative pointer、五键、
+  横纵高分辨率滚轮和 physical-pixel content-rect 映射；覆盖 letterbox/fill/1:1/pan、四向旋转、
+  DPI 不变、fraction residual、exact geometry/source generation、逐命令状态提交、精确续传及反序
+  release-all。capture/constraint/raw-relative 只解析能力并保持 product unavailable；无 caller、
+  公共 InputHandler、NAPI、ArkTS、UI、云、线程或队列。
 
-## N3-02 Verification
+## N3-03 Verification
 
-- host normal 连续三轮与 strict 最终：**588 total / 572 passed / 16 failed**；16 个失败仍仅为既有 VNC
-  本地 TLS fixture `start()` 环境失败，新增 15 个 N3-02 focused tests 全 PASS。
-- ASan/UBSan 连续三轮与 TSan 同为 572/16，均无 sanitizer report；focused clang analyzer
+- host normal 连续三轮与 strict 最终：**606 total / 590 passed / 16 failed**；16 个失败仍仅为既有 VNC
+  本地 TLS fixture `start()` 环境失败，新增 18 个 N3-03 focused tests 全 PASS。
+- ASan/UBSan 连续三轮与最终 TSan 同为 590/16，均无 sanitizer report；focused clang analyzer
   零诊断。arm64-v8a/x86_64 均生成非空私有 archive；无 caller 时 archive object 不进入
   `rdpnapi`，两 ABI defined/undefined 动态符号数量仍为 arm64 **16114/705**、x86_64
-  **15645/703**，本地/动态符号均无 `MoonlightKeyboard`/`MoonlightInput`。
+  **15645/703**，本地/动态符号均无 `MoonlightPointer`/`MoonlightKeyboard`/`MoonlightInput`。
 - 两项 Hvigor 与 signed `assembleHap` 均 BUILD SUCCESSFUL；signed HAP 共 333 paths。
-- Light 与 `git diff --check` 通过；只新增 Moonlight 键盘文件、focused test、私有 CMake target，
-  并修正 N3-01 测试允许 stop-first 的合法串行结果；未改任何生产旧协议业务源、common-c、公共
+- Light 与 `git diff --check` 通过；只新增 Moonlight 指针文件、focused test 和私有 CMake target；
+  未改任何生产旧协议业务源、common-c、公共
   `InputHandler` 或共享 telemetry/audio/render。
   HDC 无 target，不声明真实 Sunshine、输入、媒体延迟或性能能力。
 
 ## Next
 
-1. N3-03：继续 dormant pure-native 输入合同，实现绝对/相对鼠标、按钮、滚轮和 content-rect
-   映射；capture/constraint/raw-relative 仍必须等待 API 23/HAP/实机能力证据，不接公共
-   `InputHandler`、NAPI、ArkTS、UI 或 product caller。
+1. N3-04：继续 dormant pure-native 输入合同，实现直接触控、触控板手势、多点 id 稳定和
+   overlay/远端区域互斥；所有平台输入能力仍等待 API 23/HAP/实机证据，不接公共
+   `InputHandler`、NAPI、ArkTS、UI 或 product caller，模式切换前必须统一 flush。
 2. N2-09 保持 external pending：真实设备 720p/1080p、30/60fps、2 小时、温控、前后台/PIP/
    旋转和 H.264+Opus receipt 只能由真实 Sunshine 与用户 ARM64 实机提供。
 3. S1-08 才消费 N2-05 native contract，接现有 `NativeSessionHandles`/PIP/background 生命周期；

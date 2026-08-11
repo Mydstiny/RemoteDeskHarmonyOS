@@ -3,7 +3,7 @@
 > 文档状态：第四次深度审计完成；已于 2026-08-09 从 G0 开始实施
 > 首次评估日期：2026-07-28；二次完成性审计日期：2026-07-29；第三次 HarmonyOS 人因/UI 审计日期：2026-08-01；第四次源码对齐日期：2026-08-08
 > 当前实施基线：任务 `moonlight-complete-upgrade`；分支 `codex/moonlight-complete-upgrade`；基线 `main@aeb0cdac5`，与 `origin/main` 一致
-> 当前实施进度：G0、D1、D2 本地/休眠策略、D3 本地生命周期、N1-01～N1-08、dormant N2-01 stream offer、N2-02 common-c adapter、N2-03 video decode-unit bridge、N2-04 generation-fenced H.264 decoder sink、N2-05 exact-generation Surface lifecycle、N2-06 dormant Opus→PCM bridge、N2-07 exact-owner shared-audio sink、N2-08 bounded media clock/stats、N3-01 exact-owner input bridge 与 N3-02 bounded keyboard mapper 已形成 checkpoint；N2-09 等待真实 Sunshine/ARM64 实机外部回执，当前唯一可直接执行的代码任务为 dormant N3-03。2026-08-10 产品决定：Moonlight 暂不接入云同步，当前只推进 owner-scoped 本地主机存储；`moonlightrecordv1`、Moonlight CloudSync/selection/transfer 仅保留为未来停靠设计，不进入当前实施路径。HarmonyOS 虚拟设备已验证 owner-store v5、19/20/16 列三表和幂等 schema receipt；HAP/AppSpawn secure-identity/transport/media/input runtime、真实 Sunshine 与 ARM64 实机回执仍缺失，故云注册、用户入口和运行时能力保持 fail closed，六个发布 truth 仍全 false
+> 当前实施进度：G0、D1、D2 本地/休眠策略、D3 本地生命周期、N1-01～N1-08、dormant N2-01 stream offer、N2-02 common-c adapter、N2-03 video decode-unit bridge、N2-04 generation-fenced H.264 decoder sink、N2-05 exact-generation Surface lifecycle、N2-06 dormant Opus→PCM bridge、N2-07 exact-owner shared-audio sink、N2-08 bounded media clock/stats、N3-01 exact-owner input bridge、N3-02 bounded keyboard mapper 与 N3-03 bounded pointer mapper 已形成 checkpoint；N2-09 等待真实 Sunshine/ARM64 实机外部回执，当前唯一可直接执行的代码任务为 dormant N3-04。2026-08-10 产品决定：Moonlight 暂不接入云同步，当前只推进 owner-scoped 本地主机存储；`moonlightrecordv1`、Moonlight CloudSync/selection/transfer 仅保留为未来停靠设计，不进入当前实施路径。HarmonyOS 虚拟设备已验证 owner-store v5、19/20/16 列三表和幂等 schema receipt；HAP/AppSpawn secure-identity/transport/media/input runtime、真实 Sunshine 与 ARM64 实机回执仍缺失，故云注册、用户入口和运行时能力保持 fail closed，六个发布 truth 仍全 false
 > 适用仓库：/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS
 > 上游实施锁定：2026-08-09 已只读复核并固定 moonlight-common-c `e41355ea01670fd4c830b384009d31dd0339a705`（ENet `aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1`、nanors `b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a`）、Moonlight Android `f10085f552b367cf7203007693d91c322a0a2936`、Moonlight Qt `2e13ed9977bc31c73caf8428f08f58d793313ece`、Sunshine 测试 pin `v2026.808.164219` / `25c06d79b54f3d092d3fedd5f5ba44989f394692`；完整哈希、许可证和能力证据见 `docs/codex/plans/2026-08-09-moonlight-implementation-ledger.md`
 > 原评估轮次仅更新计划文件；2026-08-09 起的实施变更严格按第 15 节任务 ID、仓库门禁和 fail-closed feature policy 推进。
@@ -4009,6 +4009,35 @@ RDP/RustDesk/SSH/VNC 业务源码，未新增 NAPI、ArkTS、UI、云、日志�
 绝对/相对鼠标、按钮、滚轮与 content-rect mapping 合同。capture/constraint/raw-relative 在
 API 23/HAP/实机证据前保持 fail closed，且不得改变灰色 FAB、现有八张云表或六项 release truth。
 
+#### 15.7.18 N3-03 已完成事实与 N3-04 唯一可执行合同（2026-08-11）
+
+N3-03 已由代码 checkpoint `1787da821` 完成。新增 hidden/private
+`MoonlightPointerMapper`、18 个 focused case 和独立私有 archive；没有 product caller。
+absolute mapping 明确以 physical surface pixel 和 generation-fenced content rect 为输入，覆盖
+letterbox/fill/1:1/pan、四向旋转与 DPI 不变映射，黑边/outside content 不 clamp 或 teleport。
+relative mapping 保存 sensitivity 后的小数残差，对非有限值与 int16 overflow fail closed。wire body
+只输出官方 common-c 的 relative/absolute、五键、纵向/横向滚轮合同；按钮状态按 device/source
+精确归属，absolute press 将位置与按键组成有界原子事务，出界 press 抑制但 release 仍可送达，
+release-all 反序发送。逐命令状态提交、single pending transaction、backpressure/port failure 未接受
+后缀精确续传、cancel-only-if-unsent、destructor 清理均由固定容量状态覆盖。
+
+host normal 连续三轮与 strict `-Wall -Wextra -Wpedantic -Werror` 最终均为 **606 total /
+590 pass / 16 fail**；18 个 N3-03 用例全 PASS，16 项仍全为既有 VNC 本地 TLS fixture
+`start()` 失败。ASan/UBSan 连续三轮与最终 TSan 同为 **590/16** 且无 sanitizer report；focused
+clang analyzer 零诊断。arm64-v8a/x86_64 产品构建均生成含
+`MoonlightPointerMapper.cpp.o` 的非空私有 archive；无 caller 时 object 未进入 `rdpnapi`。
+两 ABI 动态 defined/undefined 仍为 arm64 **16114/705**、x86_64 **15645/703**，产品/HAP 无
+`MoonlightPointer`、`MoonlightKeyboard` 或 `MoonlightInput` 本地/动态符号。双 Hvigor、signed
+HAP、Light 与 `git diff --check` 通过；HAP 共 333 paths。
+
+本 checkpoint 只新增 Moonlight pointer 私有实现/header、focused test 和 CMake target；未修改
+common-c、公共 `InputHandler`、共享 telemetry/render/audio、RDP/RustDesk/SSH/VNC 生产业务源、
+NAPI、ArkTS、UI、云、日志或产品状态。capture/constraint/raw-relative 当前只有显式 capability
+resolution，平台 wiring 仍 unavailable，不声明 HAP/真机输入能力。N2-09 继续 EXTERNAL PENDING；
+当前唯一可执行代码任务为 dormant N3-04：建立直接触控与触控板手势、稳定多点 id、cancel、
+rotation/scale transform 与 overlay/远端 hit-map 互斥合同；仍不得接公共 `InputHandler`、NAPI、
+ArkTS、UI、云或 product caller，模式切换前必须统一 flush，不改变 FAB 或六项 release truth。
+
 ### 15.8 N2：RTSP、视频、音频和媒体时钟
 
 | ID | 文件与精确动作 | 必须验证 | 完成证据/提交点 |
@@ -4029,7 +4058,7 @@ API 23/HAP/实机证据前保持 fail closed，且不得改变灰色 FAB、现�
 | --- | --- | --- | --- |
 | N3-01 | **CONTRACT PASS / DORMANT `fe46025ef`**：hidden `MoonlightInputBridge`；exact session/owner/input/source generation、device/source/sequence/timestamp、固定 32 lanes/64-byte body、typed ordering/backpressure 与 neutral-release lifecycle；owner 路由复用唯一 Moonlight owner 和共享跨协议 lease | 12 focused 全 PASS；normal/strict/ASan/UBSan/TSan 557 pass/16 既有 VNC fixture fail；analyzer、双 ABI、ABI 不变、双 Hvigor、signed HAP、Light 通过 | 未修改公共 InputHandler；archive 无 caller 时不进入 `rdpnapi`；无 NAPI/ArkTS/UI/cloud/product caller；N3-02 下一 |
 | N3-02 | **CONTRACT PASS / DORMANT `a552b30a2`**：hidden bounded keyboard mapper；HarmonyOS namespace→官方 prefixed VK、双侧 modifier once/lock、严格 UTF-8 text、逐命令状态提交、精确续传、跨设备 key-up 拒绝、16-command 全释放、物理 Esc 本地逃生 | 15 focused 全 PASS；normal/strict/ASan/UBSan/TSan 572 pass/16 既有 VNC fixture fail；analyzer、双 ABI、ABI 不变、双 Hvigor、signed HAP、Light 通过 | archive 无 caller 时不进入 `rdpnapi`；无公共 InputHandler/NAPI/ArkTS/UI/cloud/product caller；N3-03 下一 |
-| N3-03 | 实现绝对鼠标、相对鼠标、capture/constraint、滚轮、按钮和 content-rect 映射；不支持 raw 时降级并解释 | letterbox/fill/1:1、DPI、窗口失焦、Esc 两段、按钮释放 | 不产生坐标越界/幽灵按键 |
+| N3-03 | **CONTRACT PASS / DORMANT `1787da821`**：hidden bounded pointer mapper；absolute/relative、官方五键与双轴滚轮、physical-pixel content rect、letterbox/fill/1:1/pan、四向旋转、DPI/fraction residual、exact generation 与精确续传 | 18 focused 全 PASS；normal/strict/ASan/UBSan/最终 TSan 590 pass/16 既有 VNC fixture fail；analyzer、双 ABI、ABI 不变、双 Hvigor、signed HAP、Light 通过 | capture/constraint/raw-relative 仅解析能力且平台 unavailable；archive 无 caller 时不进入 `rdpnapi`；无公共 InputHandler/NAPI/ArkTS/UI/cloud/product caller；N3-04 下一 |
 | N3-04 | 实现直接触控与触控板手势，多点 id 稳定；overlay hit map 与远端区域互斥 | 多点、手势 cancel、旋转/缩放、软键盘、L3/L4 overlay | 模式切换前统一 flush |
 | N3-05 | 用 API 23 probe 结果接实体控制器：稳定 device→slot 映射、轴/死区/trigger、断开 neutral；多玩家能力未验证就限制一槽 | 至少两类手柄、热插拔、蓝牙断开、后台、slot 冲突 | 未枚举能力不出 UI |
 | N3-06 | rumble/LED/motion/battery 分能力接口；默认返回 unsupported，只有官方 API+真机证据才开启 | capability false 零调用，支持设备生命周期/频率限制 | 不以空成功模拟反馈 |
@@ -4127,10 +4156,10 @@ Moonlight 能从“即将支持”变成可点击，仅当下列事实同时成�
 | 云适配 | exact 19 列 adapter、row-sensitive transfer、五 scope selection store、dormant materializer 和独立云状态 policy 已存在；`CloudSyncPolicy.TABLES` 仍是原有 8 表 | 可以验证/隔离/本地物化候选 row，所有结果明确 `cloudAttempted=false`；状态不会把 pending/quarantine 伪装成 synced | D2-07 必须等三环境 AGC receipt；之后才做 D3-01 coordinator、cloud-first promotion 和 D3-08 |
 | 云数据 | `moonlightrecordv1` 是唯一未来分布式物理表；`moonlightlocalrecords` 和 `moonlightappcache` 永远本地 | 19 列 schema 已在 ARM64 API 24 owner-store 实例化和重开验证 | cache 不进云/备份；local mirror 只有 promotion 后才投影；identity 继续默认关闭 |
 | 便携备份 | Backup V3 optional Moonlight descriptor、cloud/local 双 section、exact admission 和 local-only resolver 已存在 | redacted=settings/host/profile，full 额外 trust candidate；identity/secret/cache/marker 永远排除；旧 V3 可读 | cloud-enabled restore promotion 与设备故障矩阵仍 pending；不能另建含 identity 的“完整备份”旁路 |
-| Native | N1-01～N1-08、N2-01～N2-08、N3-01～N3-02 均已 checkpoint；N3-02 `a552b30a2` 仅新增 hidden bounded keyboard mapper、私有 archive 和 focused tests；product 无 caller，archive object 未进入 `rdpnapi` | 可声明固定上游、official common-c compile-link、owned video/PCM、共享 audio owner、有界 stats、exact generation-fenced dormant input admission/release 与 bounded keyboard body 合同；HAP runtime identity/transport/media/input backend仍 unavailable，不能声明真实配对、目录、launch、解码、音频、输入或首帧可用 | N2-09 等真实 Sunshine/ARM64 外部回执；N3-03 只建纯 native pointer/mapping 合同，不解除 FAB、云表或发布 truth 门禁 |
+| Native | N1-01～N1-08、N2-01～N2-08、N3-01～N3-03 均已 checkpoint；N3-03 `1787da821` 仅新增 hidden bounded pointer mapper、私有 archive 和 focused tests；product 无 caller，archive object 未进入 `rdpnapi` | 可声明固定上游、official common-c compile-link、owned video/PCM、共享 audio owner、有界 stats、exact generation-fenced dormant input admission/release、keyboard 与 pointer wire/mapping 合同；HAP runtime identity/transport/media/input backend仍 unavailable，不能声明真实配对、目录、launch、解码、音频、输入或首帧可用 | N2-09 等真实 Sunshine/ARM64 外部回执；N3-04 只建纯 native touch/gesture 合同，不解除 FAB、云表或发布 truth 门禁 |
 | UI | `HostListPage.ets` 当前仅有禁用的 Moonlight FAB 项、system Symbol 和“即将支持”；没有 Moonlight 添加/目录/设置/会话页 | 入口信息可见但不可交互；点击无副作用 | 直到 U1 的数据与 N1 host-control 前置都满足，保持现状；不提前建可保存假表单 |
 | 品牌 | 官方 SVG 已固定 hash，但尚无 provenance/商标/视觉验收 receipt | 只能使用现有 system Symbol 回退 | `moonlightBrandAssetReady=false`；品牌门通过后再替换资源并保留 NOTICE |
-| 验证 | N3-02 host normal/strict/ASan/UBSan/最终 TSan 均 588 total/572 pass/16 既有 VNC TLS fixture fail；15 个新用例全 PASS；analyzer、双 ABI 私有 archive、动态 ABI 数量不变、双 Hvigor、signed HAP 与 Light PASS | 只声明 dormant unit/compile-link/exact-owner input 与 bounded keyboard 合同及旧协议业务源码隔离；不声明 Hypium、输入设备、AppSpawn runtime、真实 Sunshine、首帧或串流可用 | HDC 当前无 target；N2-09 的真实 Sunshine/用户 ARM64 实机验收仍待外部阶段，N3-03 可继续 dormant pointer 合同 |
+| 验证 | N3-03 host normal/strict/ASan/UBSan/最终 TSan 均 606 total/590 pass/16 既有 VNC TLS fixture fail；18 个新用例全 PASS；analyzer、双 ABI 私有 archive、动态 ABI 数量不变、双 Hvigor、signed HAP 与 Light PASS | 只声明 dormant unit/compile-link/exact-owner input 与 bounded keyboard/pointer 合同及旧协议业务源码隔离；不声明 Hypium、输入设备、AppSpawn runtime、真实 Sunshine、首帧或串流可用 | HDC 当前无 target；N2-09 的真实 Sunshine/用户 ARM64 实机验收仍待外部阶段，N3-04 可继续 dormant touch/gesture 合同 |
 
 当前数据流只能是：
 
@@ -4164,11 +4193,11 @@ Sunshine common-c runtime / production transport / media / input 当前仍不在
 8. 更新实施台账中的状态、证据、blocker 和唯一下一任务；同步 `CURRENT/QUEUE/STATE`，再用精确文件列表形成一个可回滚提交。
 9. 只有当任务合同、测试和对应门禁均通过时标记 `PASS`；“代码写完”“构建通过”“请求已排队”均不是产品能力完成。
 
-N2-08、N3-01 与 N3-02 已完成并保持 dormant。N2-09 只能由真实 Sunshine 与用户 ARM64 实机
+N2-08、N3-01～N3-03 已完成并保持 dormant。N2-09 只能由真实 Sunshine 与用户 ARM64 实机
 提供媒体、温控、网络和生命周期回执，当前为 EXTERNAL PENDING。当前唯一可直接继续的代码任务
-是 N3-03：在 N3-01 bounded command body 内建立纯 native absolute/relative pointer、button、
-wheel 与 content-rect mapping 合同；capture/constraint/raw-relative 在 API 23/HAP/实机证据前
-保持 fail closed，不接公共 `InputHandler`、NAPI、ArkTS、UI、云或 product caller，不让输入或
+是 N3-04：建立纯 native direct-touch/touchpad gesture、稳定多点 id、cancel/transform 与
+overlay/远端 hit-map 互斥合同；平台能力在 API 23/HAP/实机证据前保持 fail closed，不接公共
+`InputHandler`、NAPI、ArkTS、UI、云或 product caller，模式切换前统一 flush，不让输入或
 统计结果改变 video first-frame、FAB、streaming 或 protocolAvailable。
 D2-05/06 由 AGC 外部环境提供证据，D2-07 依赖二者；D3 的 cloud terminal、真实
 unpair 和多设备矩阵分别等待 D2-07、N1 Host Control 和外部设备。任何执行者都
