@@ -353,11 +353,11 @@ MoonlightPointerModeResolution resolveMoonlightPointerMode(
     return result;
 }
 
-MoonlightAbsolutePointerMapping mapMoonlightAbsolutePointer(
+MoonlightNormalizedPointerMapping mapMoonlightNormalizedPointer(
     const MoonlightPointerContentRect& content,
     double pointX,
     double pointY) noexcept {
-    MoonlightAbsolutePointerMapping result;
+    MoonlightNormalizedPointerMapping result;
     if (!validContent(content) || !std::isfinite(pointX) || !std::isfinite(pointY)) {
         return result;
     }
@@ -395,10 +395,26 @@ MoonlightAbsolutePointerMapping mapMoonlightAbsolutePointer(
     }
 
     result.status = MoonlightPointerMapStatus::Mapped;
+    result.x = sourceX;
+    result.y = sourceY;
+    return result;
+}
+
+MoonlightAbsolutePointerMapping mapMoonlightAbsolutePointer(
+    const MoonlightPointerContentRect& content,
+    double pointX,
+    double pointY) noexcept {
+    MoonlightAbsolutePointerMapping result;
+    const MoonlightNormalizedPointerMapping normalized =
+        mapMoonlightNormalizedPointer(content, pointX, pointY);
+    result.status = normalized.status;
+    if (normalized.status != MoonlightPointerMapStatus::Mapped) {
+        return result;
+    }
     result.x = static_cast<std::int16_t>(std::llround(
-        sourceX * static_cast<double>(content.referenceWidth - 1U)));
+        normalized.x * static_cast<double>(content.referenceWidth - 1U)));
     result.y = static_cast<std::int16_t>(std::llround(
-        sourceY * static_cast<double>(content.referenceHeight - 1U)));
+        normalized.y * static_cast<double>(content.referenceHeight - 1U)));
     result.referenceWidth = content.referenceWidth;
     result.referenceHeight = content.referenceHeight;
     return result;
@@ -881,6 +897,98 @@ MoonlightPointerResult MoonlightPointerMapper::scroll(
     PendingTransaction transaction;
     if (!appendScroll(transaction, context, impl_->state, horizontal,
                       static_cast<std::int16_t>(highResolutionAmount))) {
+        return impl_->invalidResult();
+    }
+    return impl_->dispatchTransaction(transaction);
+}
+
+MoonlightPointerResult MoonlightPointerMapper::click(
+    const MoonlightPointerEventContext& context,
+    MoonlightPointerButton button) noexcept {
+    if (impl_ == nullptr) {
+        return {};
+    }
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    const MoonlightPointerResult contextStatus = impl_->contextResult(context);
+    if (contextStatus.status != MoonlightPointerStatus::Applied) {
+        return contextStatus;
+    }
+    std::size_t buttonSlot = 0U;
+    if (!buttonIndex(button, buttonSlot)) {
+        return impl_->invalidResult();
+    }
+    if (impl_->pending.active) {
+        return impl_->pendingResult();
+    }
+    if (impl_->state.buttons[buttonSlot].pressed) {
+        impl_->duplicateEvents = saturatingIncrement(impl_->duplicateEvents);
+        return impl_->result(MoonlightPointerStatus::Duplicate,
+                             MoonlightInputDispatchStatus::Duplicate);
+    }
+    if (pressedButtonCount(impl_->state) >= impl_->limits.maximumPressedButtons) {
+        return impl_->result(MoonlightPointerStatus::ButtonCapacity);
+    }
+
+    PointerState pressed = impl_->state;
+    ButtonState& pressedButton = pressed.buttons[buttonSlot];
+    pressedButton.pressed = true;
+    pressedButton.deviceId = context.deviceId;
+    pressedButton.source = context.source;
+    pressedButton.pressOrder = pressed.nextPressOrder;
+    pressed.nextPressOrder = saturatingIncrement(pressed.nextPressOrder);
+
+    PendingTransaction transaction;
+    if (!appendButton(transaction, context, pressed, button,
+                      kMoonlightPointerActionPress)) {
+        return impl_->invalidResult();
+    }
+    PointerState released = pressed;
+    released.buttons[buttonSlot] = {};
+    if (pressedButtonCount(released) == 0U) {
+        released.nextPressOrder = 1U;
+    }
+    if (!appendButton(transaction, context, released, button,
+                      kMoonlightPointerActionRelease)) {
+        return impl_->invalidResult();
+    }
+    return impl_->dispatchTransaction(transaction);
+}
+
+MoonlightPointerResult MoonlightPointerMapper::scroll2D(
+    const MoonlightPointerEventContext& context,
+    std::int32_t horizontalAmount,
+    std::int32_t verticalAmount) noexcept {
+    if (impl_ == nullptr) {
+        return {};
+    }
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    const MoonlightPointerResult contextStatus = impl_->contextResult(context);
+    if (contextStatus.status != MoonlightPointerStatus::Applied) {
+        return contextStatus;
+    }
+    if (impl_->pending.active) {
+        return impl_->pendingResult();
+    }
+    if (horizontalAmount == 0 && verticalAmount == 0) {
+        return impl_->result(MoonlightPointerStatus::AlreadyApplied,
+                             MoonlightInputDispatchStatus::Accepted);
+    }
+    if (horizontalAmount < std::numeric_limits<std::int16_t>::min() ||
+        horizontalAmount > std::numeric_limits<std::int16_t>::max() ||
+        verticalAmount < std::numeric_limits<std::int16_t>::min() ||
+        verticalAmount > std::numeric_limits<std::int16_t>::max()) {
+        return impl_->result(MoonlightPointerStatus::OutOfRange);
+    }
+
+    PendingTransaction transaction;
+    if (horizontalAmount != 0 &&
+        !appendScroll(transaction, context, impl_->state, true,
+                      static_cast<std::int16_t>(horizontalAmount))) {
+        return impl_->invalidResult();
+    }
+    if (verticalAmount != 0 &&
+        !appendScroll(transaction, context, impl_->state, false,
+                      static_cast<std::int16_t>(verticalAmount))) {
         return impl_->invalidResult();
     }
     return impl_->dispatchTransaction(transaction);

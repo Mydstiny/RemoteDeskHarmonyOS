@@ -131,6 +131,15 @@ struct REMOTEDESK_MOONLIGHT_POINTER_HIDDEN MoonlightAbsolutePointerMapping final
     std::uint16_t referenceHeight = 0U;
 };
 
+// Shared physical-content transform used by absolute pointer and direct-touch
+// mapping. Coordinates are normalized to the unrotated video plane accepted by
+// LiSendTouchEvent(); black bars remain OutsideContent and are never clamped.
+struct REMOTEDESK_MOONLIGHT_POINTER_HIDDEN MoonlightNormalizedPointerMapping final {
+    MoonlightPointerMapStatus status = MoonlightPointerMapStatus::InvalidRequest;
+    double x = 0.0;
+    double y = 0.0;
+};
+
 struct REMOTEDESK_MOONLIGHT_POINTER_HIDDEN MoonlightRelativePointerWireCommand final {
     std::int16_t deltaX = 0;
     std::int16_t deltaY = 0;
@@ -192,6 +201,10 @@ REMOTEDESK_MOONLIGHT_POINTER_HIDDEN MoonlightAbsolutePointerMapping
 mapMoonlightAbsolutePointer(const MoonlightPointerContentRect& content,
                             double pointX,
                             double pointY) noexcept;
+REMOTEDESK_MOONLIGHT_POINTER_HIDDEN MoonlightNormalizedPointerMapping
+mapMoonlightNormalizedPointer(const MoonlightPointerContentRect& content,
+                              double pointX,
+                              double pointY) noexcept;
 
 REMOTEDESK_MOONLIGHT_POINTER_HIDDEN bool decodeMoonlightRelativePointerCommand(
     const MoonlightInputEvent& event,
@@ -247,6 +260,15 @@ class REMOTEDESK_MOONLIGHT_POINTER_HIDDEN MoonlightPointerMapper final {
     MoonlightPointerResult scroll(const MoonlightPointerEventContext& context,
                                    bool horizontal,
                                    std::int32_t highResolutionAmount) noexcept;
+    // Atomic synthetic click used by touchpad gesture recognition. State is
+    // committed after each accepted command so a retry sends only the suffix.
+    MoonlightPointerResult click(const MoonlightPointerEventContext& context,
+                                  MoonlightPointerButton button) noexcept;
+    // Emits horizontal then vertical high-resolution wheel commands in one
+    // bounded transaction. Zero axes are omitted.
+    MoonlightPointerResult scroll2D(const MoonlightPointerEventContext& context,
+                                     std::int32_t horizontalAmount,
+                                     std::int32_t verticalAmount) noexcept;
     MoonlightPointerResult releaseAll(const MoonlightPointerEventContext& context) noexcept;
 
     MoonlightPointerResult resumePending() noexcept;
