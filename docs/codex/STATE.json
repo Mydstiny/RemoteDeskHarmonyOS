@@ -3,7 +3,7 @@
   "task": "moonlight-complete-upgrade",
   "branch": "codex/moonlight-complete-upgrade",
   "base": "aeb0cdac5",
-  "head": "2c37b0edf",
+  "head": "3bf141407c42d27a2d3b27d602f5ec99c9aa2a1c",
   "phase": "u1-ui-shell-closeout-s1-01-pending",
   "status": "active",
   "next": "S1-01/S1-02: connect the local-only Moonlight UI shell to the single existing remote-session registry/coordinator while keeping picker, Host Control, transport, media, input, first-frame and cloud truth fail closed. S1-05A later adds the native HarmonyOS GameController listener and narrow typed NAPI; N2-09 remains real Sunshine/ARM64 external evidence.",
@@ -28,7 +28,7 @@
     "reason": "The existing reviewer task was reused for the incremental U1-06～U1-12 UI shell isolation review. Its result is pending; the prior PASS only covered 708172c08..094a8b3b and must not be reused for this new code range. CloudStore.ets is explicitly excluded."
   },
   "lastVerification": {
-    "diffCheck": "pass before documentation closeout; rerun after final documentation edits",
+    "diffCheck": "pass after final documentation edits",
     "testCompile": "pass: exact default@OhosTestCompileArkTS with --analyze=normal --parallel --incremental --no-daemon after 2c37b0edf",
     "assembleHap": "pass: exact assembleHap with --analyze=normal --parallel --incremental --no-daemon after documentation closeout; signed HAP SHA-256 4d01a1026402538e0014ffa3cac9a925f301d62e0eec5c6d393e7f0de0a1618f",
     "hapPath": "entry/build/default/outputs/default/entry-default-signed.hap",
