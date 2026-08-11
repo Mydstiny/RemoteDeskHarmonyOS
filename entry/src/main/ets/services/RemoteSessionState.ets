@@ -11,7 +11,8 @@ export enum RemoteProtocol {
   rdp = 'rdp',
   rustdesk = 'rustdesk',
   ssh = 'ssh',
-  vnc = 'vnc'
+  vnc = 'vnc',
+  moonlight = 'moonlight'
 }
 
 export enum ConnectionPhase {

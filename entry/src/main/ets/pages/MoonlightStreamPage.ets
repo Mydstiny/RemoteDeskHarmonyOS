@@ -8,6 +8,9 @@ import { MoonlightDiagnosticsHud } from '../components/moonlight/MoonlightDiagno
 import { MoonlightSessionToolbar } from '../components/moonlight/MoonlightSessionToolbar';
 import { RemoteModifierHandle } from '../components/RemoteModifierHandle';
 import { RemoteModifierPanel } from '../components/RemoteModifierPanel';
+import { AccountScopeToken } from '../services/AccountScopePolicy';
+import { AccountSessionCoordinator } from '../services/AccountSessionCoordinator';
+import { MoonlightSessionCoordinator } from '../services/MoonlightSessionCoordinator';
 import { MoonlightSessionPhase } from '../services/MoonlightSessionState';
 import {
   MoonlightDiagnosticsSnapshot,
@@ -65,6 +68,9 @@ struct MoonlightStreamPage {
   @State showNetworkBanner: boolean = false;
   @State inputFlushCount: number = 0;
   private readonly pipRuntimeAvailable: boolean = false;
+  private readonly sessionCoordinator: MoonlightSessionCoordinator =
+    MoonlightSessionCoordinator.getInstance();
+  private accountScopeUnsubscribe: (() => void) | null = null;
   private pageActive: boolean = false;
   private sheetReopenGeneration: number = 0;
   private sheetReopenTimer: number = -1;
@@ -83,6 +89,12 @@ struct MoonlightStreamPage {
     this.scaleMode = this.commonDisplayScaleMode;
     this.phase = 'failed';
     this.showConnectStage = true;
+    const scope: AccountScopeToken = AccountSessionCoordinator.getInstance().currentScope();
+    this.sessionCoordinator.bindScope(scope.ownerScopeId, scope.generation);
+    this.accountScopeUnsubscribe = AccountSessionCoordinator.getInstance().onChange(
+      (next: AccountScopeToken): void => {
+        this.sessionCoordinator.bindScope(next.ownerScopeId, next.generation);
+      });
   }
 
   aboutToDisappear(): void {
@@ -92,6 +104,11 @@ struct MoonlightStreamPage {
     this.pendingSheetMode = 'none';
     this.showSessionSheet = false;
     this.flushInput('page_disappear');
+    this.sessionCoordinator.cancelForRoute(this.hostId, this.appId, 'stream-page-disappear');
+    if (this.accountScopeUnsubscribe !== null) {
+      this.accountScopeUnsubscribe();
+      this.accountScopeUnsubscribe = null;
+    }
   }
 
   private flushInput(reason: string): void {

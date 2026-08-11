@@ -56,6 +56,12 @@ export class ActiveRemoteSessionRegistry {
       this.ownerScopeId.length === 0 || this.accountGeneration <= 0) {
       return false;
     }
+    // Moonlight's resumable registry marker is deliberately endpoint-free.
+    // The transient address may reach a future native transport port, but it
+    // must never become process-recovery or AppStorage data.
+    if (record.protocol === RemoteProtocol.moonlight && record.hostAddress.length > 0) {
+      return false;
+    }
     const now: number = Date.now();
     const next: ActiveRemoteSessionRecord = {
       ownerScopeId: record.ownerScopeId,
@@ -151,6 +157,18 @@ export class ActiveRemoteSessionRegistry {
 
   clear(_reason: string): void {
     AppStorage.setOrCreate<ActiveRemoteSessionRecord | null>(ACTIVE_REMOTE_SESSION_KEY, null);
+  }
+
+  clearIfMatches(ownerScopeId: string, accountGeneration: number, sessionId: number,
+    protocol: RemoteProtocol): boolean {
+    const active: ActiveRemoteSessionRecord | null = this.getActive();
+    if (active === null || active.ownerScopeId !== ownerScopeId ||
+      active.accountGeneration !== accountGeneration || active.sessionId !== sessionId ||
+      active.protocol !== protocol) {
+      return false;
+    }
+    this.clear('matched-session-clear');
+    return true;
   }
 
   resetForTest(): void {

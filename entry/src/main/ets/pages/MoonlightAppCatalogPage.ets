@@ -3,9 +3,11 @@ import { AppTheme, Palette, buildDark, buildLight } from '../common/Theme';
 import { MoonlightBrandIcon } from '../components/moonlight/MoonlightBrandIcon';
 import { MoonlightLaunchSheet } from '../components/moonlight/MoonlightLaunchSheet';
 import { MoonlightCatalogDataSource } from '../datasources/MoonlightCatalogDataSource';
-import { MoonlightHost } from '../model/MoonlightModels';
+import { MoonlightAddress, MoonlightHost, moonlightAddressKey } from '../model/MoonlightModels';
+import { AccountSessionCoordinator } from '../services/AccountSessionCoordinator';
 import { CloudStore } from '../services/CloudStore';
 import { MoonlightHostLocalView, MoonlightLocalViewService } from '../services/MoonlightLocalViewService';
+import { MoonlightSessionCoordinator } from '../services/MoonlightSessionCoordinator';
 import {
   MoonlightCatalogFilter,
   MoonlightCatalogItem,
@@ -16,6 +18,7 @@ import {
   filterMoonlightCatalogItems,
   moonlightCatalogOperationIsCurrent,
   moonlightCatalogPresentation,
+  moonlightAppRouteParams,
   moonlightHostRouteParams,
   moonlightRouteIdentity
 } from '../services/MoonlightUiPolicy';
@@ -114,6 +117,8 @@ struct MoonlightAppCatalogPage {
   private readonly dataSource: MoonlightCatalogDataSource = new MoonlightCatalogDataSource();
   private readonly viewService: MoonlightLocalViewService =
     new MoonlightLocalViewService(CloudStore.getInstance());
+  private readonly sessionCoordinator: MoonlightSessionCoordinator =
+    MoonlightSessionCoordinator.getInstance();
   private pageActive: boolean = false;
   private ownerScopeId: string = '';
   private refreshGeneration: number = 0;
@@ -222,6 +227,49 @@ struct MoonlightAppCatalogPage {
     this.showLaunchSheet = true;
   }
 
+  private selectedHostAddress(): string {
+    if (this.host === null || this.host.addresses.length === 0) { return ''; }
+    let selected: MoonlightAddress = this.host.addresses[0];
+    for (let i = 0; i < this.host.addresses.length; i++) {
+      if (moonlightAddressKey(this.host.addresses[i]) === this.host.preferredAddressKey) {
+        selected = this.host.addresses[i];
+        break;
+      }
+    }
+    const host: string = selected.family === 'ipv6' ? '[' + selected.host + ']' : selected.host;
+    return host + ':' + selected.port.toString();
+  }
+
+  private startSelected(): void {
+    if (this.host === null || this.selectedItem === null) { return; }
+    const scope = AccountSessionCoordinator.getInstance().currentScope();
+    const result = this.sessionCoordinator.start({
+      ownerScopeId: scope.ownerScopeId,
+      accountGeneration: scope.generation,
+      hostId: this.host.id,
+      appId: this.selectedItem.appId,
+      hostAddress: this.selectedHostAddress(),
+      runtimeAvailable: false,
+      hostControlReady: false,
+      streamingTransportReady: false
+    });
+    if (!result.accepted) {
+      promptAction.showToast({
+        message: result.code === 'runtime_unavailable'
+          ? 'Moonlight Host Control 尚未开放'
+          : 'Moonlight 会话暂不可启动（' + result.code + '）',
+        duration: 2200
+      });
+      return;
+    }
+    const params: Record<string, Object> | null =
+      moonlightAppRouteParams(this.host.id, this.selectedItem.appId);
+    if (params !== null) {
+      this.showLaunchSheet = false;
+      router.pushUrl({ url: 'pages/MoonlightStreamPage', params: params });
+    }
+  }
+
   private openSettings(): void {
     const params: Record<string, Object> | null = moonlightHostRouteParams(this.hostId);
     if (params !== null) { router.pushUrl({ url: 'pages/MoonlightSettingsPage', params: params }); }
@@ -244,7 +292,8 @@ struct MoonlightAppCatalogPage {
       runtimeAvailable: false,
       onCancel: (): void => { this.showLaunchSheet = false; },
       onOpenSettings: (): void => { this.showLaunchSheet = false; this.openSettings(); },
-      onRetry: (): void => { this.showLaunchSheet = false; this.requestRefresh(); }
+      onRetry: (): void => { this.showLaunchSheet = false; this.requestRefresh(); },
+      onStart: (): void => { this.startSelected(); }
     })
   }
 

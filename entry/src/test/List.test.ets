@@ -181,6 +181,7 @@ import hostProtocolPickerPolicyTest from './HostProtocolPickerPolicy.test';
 import moonlightHostAddFlowPolicyTest from './MoonlightHostAddFlowPolicy.test';
 import moonlightUiPolicyTest from './MoonlightUiPolicy.test';
 import moonlightSettingsLocalServiceTest from './MoonlightSettingsLocalService.test';
+import moonlightSessionCoordinatorTest from './MoonlightSessionCoordinator.test';
 
 export default function testsuite() {
   localUnitTest();
@@ -366,4 +367,5 @@ export default function testsuite() {
   moonlightHostAddFlowPolicyTest();
   moonlightUiPolicyTest();
   moonlightSettingsLocalServiceTest();
+  moonlightSessionCoordinatorTest();
 }
