@@ -4,7 +4,7 @@
 > 分支：`codex/moonlight-complete-upgrade`
 > 初始基线：`main@aeb0cdac5`，与 `origin/main` 一致
 > 总计划：`docs/superpowers/plans/2026-07-28-moonlight-harmonyos-complete-upgrade-plan.md`
-> 台账状态：G0、D1、D2 本地/休眠策略、D3 本地生命周期、N1-01～N1-08、N2-01～N2-08、N3-01～N3-08 与 U1-01～U1-03 已形成 checkpoint；N2-09 等待真实 Sunshine/ARM64 实机外部回执，当前唯一可直接执行的代码任务为 U1-04。Moonlight UI 唯一基线为现有 RustDesk FAB/协议选择/添加流程，不以 VNC 页面作为设计或抽取来源。2026-08-10 产品决定 Moonlight 暂不接入云同步，当前只开发本地主机存储；`moonlightrecordv1`、Moonlight cloud selection/transfer/secret recovery 全部 parked，不进入当前执行序列。D3 在线/多设备和产品运行时仍等待外部回执，只把有可复现证据的项目标记为通过
+> 台账状态：G0、D1、D2 本地/休眠策略、D3 本地生命周期、N1-01～N1-08、N2-01～N2-08、N3-01～N3-08 与 U1-01～U1-04 已形成 checkpoint；N2-09 等待真实 Sunshine/ARM64 实机外部回执，当前唯一可直接执行的代码任务为 U1-05。Moonlight UI 唯一基线为现有 RustDesk FAB/协议选择/添加流程。2026-08-10 产品决定 Moonlight 暂不接入云同步，当前只开发本地主机存储；`moonlightrecordv1`、Moonlight cloud selection/transfer/secret recovery 全部 parked，不进入当前执行序列。D3 在线/多设备和产品运行时仍等待外部回执，只把有可复现证据的项目标记为通过
 
 ## 1. 执行约束
 
@@ -246,7 +246,8 @@ D3 账户生命周期代码检查点为 `05e96d3`；便携备份/本地恢复检
 | N3-06 | CONTRACT PASS / DORMANT `baa9cafef` | hidden `MoonlightControllerFeedback`；official API∩physical-device evidence、rumble/trigger rumble/RGB LED/adaptive trigger/motion/battery typed command、single pending retry、200Hz/120s 上限、exact owner/device/operation generation 与 release lifecycle；16 个 focused case | API 23 product evidence 全 false，capability false 零 port 调用；archive 无 caller 且未进入 `rdpnapi`；无公共 InputHandler/NAPI/ArkTS/UI/cloud/thread/queue；N3-07 下一 |
 | N3-07 | CONTRACT PASS / DORMANT `02cb13aae` + `36b4e13df` + `337c4f35e` + `ee073afcb` | hidden policy 在 mapper release 前原子关闭真实 bridge admission，只接受 lifecycle release；组合 touch→pointer→keyboard→controller→bridge，覆盖 12 trigger、component failure/owner loss、pending/suspended→stop、exact terminal replay、stale stop 和 local terminal；26 个 focused case | 私有 archive 无 caller且未进入 `rdpnapi`；无公共 InputHandler/NAPI/ArkTS/UI/cloud/thread/queue；N3-08 下一 |
 | N3-08 | CONTRACT PASS / DORMANT `fef723770` + `6787cc3fb` | hidden fixed-capacity controller aggregator/layout validator；native physical full-state/virtual semantics 只走 N3-05→N3-01→common-c；独立 boundary-retry/resume generation、retired-lane tombstone、20 次双向换源、unknown phase/NaN fail closed、single pending、12 lifecycle/edit zero-send；28 aggregator cases | 双 ABI archive 无 caller且未进入 `rdpnapi`；真实 listener/NAPI 留到 S1-05A；无公共 InputHandler/ArkTS/UI/cloud/thread/第二 owner/port/slot/queue；U1-01～03 已完成 |
-| U1-01～03 | PASS `c38ff6265` + review fixes `71e9902c9`, `7eaad950b` | RustDesk 与 Moonlight 复用同一 `protocolOption()`；默认灰色 0.58、唯一“即将支持”、点击空 route；官方 Moonlight Qt 几何的可着色 SVG、唯一系统 fallback 与精确合规链已落盘 | 未改 RustDesk/其他协议页面、HostList FAB owner、native 或云；HDC 实际点击零导航；U1-04 下一 |
+| U1-01～03 | PASS `c38ff6265` + review fixes `71e9902c9`, `7eaad950b` | RustDesk 与 Moonlight 复用同一 `protocolOption()`；默认灰色 0.58、唯一“即将支持”、点击空 route；官方 Moonlight Qt 几何的可着色 SVG、唯一系统 fallback 与精确合规链已落盘 | 未改 RustDesk/其他协议页面、HostList FAB owner、native 或云；HDC 实际点击零导航；U1-04 已完成 |
+| U1-04 | CONTRACT PASS / DORMANT `dd6ec9c5` | RustDesk 风格四步 add flow + pure policy；自动/手动、验证、PIN、certificate trust、catalog、local commit truth、dirty dismiss 与 exact owner/generation 已冻结；10 个新增测试 | picker 仍 false，所有 runtime/persistence ports 默认 fail closed；无云/native/其他协议业务调用；U1-05 下一 |
 
 N1-01 的可复现证据：
 
@@ -1004,13 +1005,39 @@ stale terminal request 不清本地状态；pending→terminal 的 mapper drain 
 - U1-04 只能新建 Moonlight 本地四步添加流，并直接沿用 RustDesk 的 header、模式卡、字段、错误、
   主按钮、返回/关闭和单 Sheet 生命周期；不得复制 RustDesk 业务状态，也不得以其他协议页抽 scaffold。
 
+## 12.18 U1-04 RustDesk 风格四步本地添加合同 checkpoint（2026-08-11）
+
+- `dd6ec9c5` 新增 `MoonlightHostAddFlow.ets` 与 `MoonlightHostAddFlowPolicy.ets`。四步固定为
+  查找主机→验证主机→配对与信任→完成；20vp 留白、36vp 返回、20/12vp 标题层级、模式卡、
+  44vp 字段/主按钮、错误提示和单 Sheet 生命周期直接沿用 RustDesk 现有语法。
+- 自动发现结果必须同时匹配 owner token 与独立 discovery generation；离开、切手动、验证和重扫
+  均先 pause/cancel。验证、配对、信任、目录和保存继续使用 operation generation，迟到回调不提交。
+- PIN 仅接受 4 位数字并使用绝对 deadline；异常、返回、取消、过期和消失统一停止 timer、取消 owner、
+  增长 generation、清 PIN/expiry。await pairing 返回后在提交前再次检查 deadline。
+- 证书指纹必须是 64 位 SHA-256；certificate changed 在 step 2 阻断，防御性 pairing completion 也
+  保留 changed。信任持久化失败与用户显式拒绝是两个 transition；拒绝会清 paired/temporary identity，
+  不能绕过重新配对。duplicate UUID 只允许打开已有主机，不创建重复记录。
+- 完成页只在 port 返回 `localCommitted=true` 后设置本地保存成功并触发 `onSaved`；默认 discovery、
+  verify、pairing、trust、catalog、save ports 全部 fail closed，未接真实 Host Control 或 repository。
+- `HostListPage` 只增加 thin dormant route 和 owner token，并显式传
+  `moonlightProtocolAvailable: false`。因此当前产品不会挂载该组件，不访问 network/native/repository，
+  不启动 timer/thread/background work；在线云表仍为 8 表，Moonlight 云路径继续 parked。
+- 10 个新 policy cases 使 Moonlight 聚合达到 161 tests / 21 describe，覆盖地址、dirty、duplicate、
+  四步 local truth、迟到 operation、PIN expiry、changed certificate、有效指纹、discovery fence、
+  trust failure/reject 和绝对 deadline。两项 Hvigor、signed HAP、Light、117-file vendor 与 diff PASS。
+- 最终 signed HAP SHA-256 为
+  `847874f51e54a4bac23c779fcb1c544cda7a6b7d17a6f473ba8c4da9c9937d97`；沙箱外 HDC 安装/启动成功。
+  点击灰态 Moonlight 后 UI tree 仍只有“添加远程主机”“Moonlight”“即将支持”，无添加流程路由。
+- 复用 reviewer task `019fe966-d99a-7ce1-8b53-4ef725597053`。首轮问题全部修复后最终
+  P0/P1/P2/P3 为 0；未创建新 reviewer。U1-05 是唯一下一 UI 合同，仍不得开放 picker。
+
 ## 13. 下一执行序列
 
 1. N2-09 保持 EXTERNAL PENDING：必须由真实 Sunshine 与用户 ARM64 实机完成 720p/1080p、
    30/60fps、两小时、温控、前后台/PIP/旋转和网络矩阵；不得用 host 单测或虚拟机代替。
-2. U1-01～U1-03 已完成；当前唯一可直接执行的代码任务是 U1-04：新建 Moonlight 四步本地添加流，
-   视觉与交互只参考现有 RustDesk header、模式卡、字段、错误提示、44vp 主按钮、返回/关闭及单 Sheet
-   owner。不得修改 RustDesk 业务状态，不得从其他协议页面提取 Moonlight UI scaffold。
+2. U1-01～U1-04 已完成；当前唯一可直接执行的代码任务是 U1-05：复用现有
+   `HostAddConnectionHandoffPolicy.onDisappear` 完成 dormant “保存并打开”交接，禁止 fixed delay、
+   第二 Sheet owner 或在 local commit/Host Control 未接通时伪造成功。
 3. 保持 N2-08 与 N3-01～N3-08 dormant：不接 NAPI/ArkTS/UI/PIP/后台、云或日志，不把任何结果变成 video
    first-frame、streaming/protocolAvailable、FAB 或 release truth。
 4. S1-05A 才接真实 HarmonyOS GameController listener 与虚拟 typed NAPI；S1-08 才按现有

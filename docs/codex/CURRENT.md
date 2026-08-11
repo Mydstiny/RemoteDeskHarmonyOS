@@ -4,9 +4,9 @@
 
 - Task: `moonlight-complete-upgrade`
 - Base: `main@aeb0cdac5`; branch: `codex/moonlight-complete-upgrade`
-- Head checkpoint: `c38ff6265` + review fixes `71e9902c9`, `7eaad950b`
+- Head checkpoint: `dd6ec9c5`
 - Phase: G0、D1-D3 local/dormant、N1-01～N1-08、N2-01～N2-08、N3-01～N3-08、
-  U1-01～U1-03 已 checkpoint；N2-09 external pending；下一任务 U1-04。
+  U1-01～U1-04 已 checkpoint；N2-09 external pending；下一任务 U1-05。
 - Authoritative plan: `docs/superpowers/plans/2026-07-28-moonlight-harmonyos-complete-upgrade-plan.md`
 - Live ledger: `docs/codex/plans/2026-08-09-moonlight-implementation-ledger.md`
 
@@ -21,7 +21,7 @@
 - 实体手柄必须由 S1-05A 的 HarmonyOS native listener 产生完整状态，经 N3-08→N3-05→N3-01→
   official common-c 发送；ArkTS 不编码或直发手柄协议。
 
-## U1-01～U1-03 Checkpoint
+## U1-01～U1-04 Checkpoint
 
 - `c38ff6265`：Moonlight 与 RustDesk 继续调用同一个 `protocolOption()`，新增纯
   `HostProtocolPickerPolicy`；未来 enabled route 合同一致，默认 disabled route 为空。
@@ -32,27 +32,35 @@
 - 官方 Moonlight Qt `2e13ed9977bc31c73caf8428f08f58d793313ece` 图标已做确定性单色可着色转换：
   upstream SHA-256 `6fd0ee4f...`，packaged SHA-256 `4f5ef547...`，加载失败回退
   `sys.symbol.gamecontroller_fill`；provenance/NOTICE/SPDX/source offer/hash 门禁已同步。
-- 未修改 `RustDeskAddFlow.ets`、`HostListPage.ets`、CloudStore、CloudSyncPolicy、任何 native 或
-  其他协议业务文件；禁用卡片不读写 repository、不访问 native/network、不启动后台任务。
+- `dd6ec9c5` 新增 dormant `MoonlightHostAddFlow` 和纯四步 policy：发现/手动地址、验证、PIN、证书
+  信任、目录摘要与本地 commit truth；UI 直接复用 RustDesk header、模式卡、字段、44vp 按钮、
+  错误提示和同一 add Sheet owner，不复制 RustDesk relay/TOTP/credential 状态。
+- discovery 与全部异步 operation 均有 exact owner/generation fence；离开、切手动、验证和重扫均
+  cancel-before-restart。PIN 绝对 deadline、timer、owner cancel 与 secret 清理统一；证书变化在
+  trust port 前阻断；显式拒绝必须重新配对；只有 `localCommitted=true` 才产生保存成功 truth。
+- `HostListPage` 仅增加 dormant Moonlight 分支和 owner token；picker 仍显式传
+  `moonlightProtocolAvailable: false`，所以组件不会挂载，不执行 discovery/timer/network/repository。
+  未修改 `RustDeskAddFlow.ets`、CloudStore、CloudSyncPolicy、任何 native 或其他协议业务文件。
 - 现有 native N1/N2/N3 继续 dormant；真实 GameController listener/typed NAPI 仍只在 S1-05A。
 
 ## Verification
 
-- `default@OhosTestCompileArkTS`: BUILD SUCCESSFUL；154 个 Moonlight focused tests / 21 describe
+- `default@OhosTestCompileArkTS`: BUILD SUCCESSFUL；161 个 Moonlight focused tests / 21 describe
   compile-registered，未声明设备 Hypium 执行。
 - `assembleHap`: BUILD SUCCESSFUL；signed HAP 已生成、通过沙箱外 HDC 安装并启动。
-- HDC UI：协议选择页显示禁用色官方 Moonlight 图标；点击后仍停留“添加远程主机”，且只有一个
-  “即将支持”，无添加路由。
+- HDC UI：最终 `dd6ec9c5` signed HAP 安装/启动成功；点击禁用 Moonlight 后仍停留“添加远程主机”，
+  UI tree 只有一个“Moonlight”和一个“即将支持”，无“添加 Moonlight 主机”或 `1/4` 路由。
+- HAP SHA-256：`847874f51e54a4bac23c779fcb1c544cda7a6b7d17a6f473ba8c4da9c9937d97`。
 - Open-source Light、117-file Moonlight vendor、SBOM JSON、官方/本地资源 hash、
   `git diff --check` 与精确隔离检查均 PASS。
-- Reviewer: 复用 task `019fe966-d99a-7ce1-8b53-4ef725597053` 完成最终复核；
-  `99eecdbea..7eaad950b` P0/P1/P2/P3 全 0，receipt
-  `moonlight-u1-01-03-gpt5-7eaad950b-2026-08-11`，未新建 reviewer。
+- Reviewer: 复用 task `019fe966-d99a-7ce1-8b53-4ef725597053` 完成 `541aaed7a..dd6ec9c5`
+  最终复核；修复 discovery fence、changed certificate、reject retry 和 PIN deadline 后
+  P0/P1/P2/P3 全 0，未新建 reviewer。
 
 ## Next
 
-1. U1-04：新建 Moonlight 四步本地添加流；视觉/交互直接沿用 RustDesk header、模式卡、字段、
-   错误提示、44vp 主按钮、返回/关闭与单 Sheet owner，不复制 RustDesk relay/TOTP/credential 状态。
+1. U1-05：在 picker/runtime 继续 disabled 的前提下设计并验证“保存并打开”单 Sheet handoff；复用
+   `HostAddConnectionHandoffPolicy.onDisappear`，禁止 fixed delay，不能把 dormant callback 伪装成可用保存。
 2. S1-05A：接真实 HarmonyOS GameController native listener 与窄 typed NAPI；真机 receipt 前 capability false。
 3. N2-09：真实 Sunshine + ARM64 设备完成分辨率、帧率、时长、温控、网络和生命周期矩阵。
 
