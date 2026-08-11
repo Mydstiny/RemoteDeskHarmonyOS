@@ -185,6 +185,9 @@ set(MOONLIGHT_CONTROLLER_MAPPER_SOURCE
 set(MOONLIGHT_CONTROLLER_FEEDBACK_SOURCE
     moonlight/input/MoonlightControllerFeedback.cpp
 )
+set(MOONLIGHT_INPUT_FLUSH_POLICY_SOURCE
+    moonlight/input/MoonlightInputFlushPolicy.cpp
+)
 set(MOONLIGHT_SOURCES
     moonlight/core/MoonlightSessionOwner.cpp
 )
@@ -326,6 +329,7 @@ if(RDP_BUILD_TESTS)
         test/moonlight_touch_mapper_test.cpp
         test/moonlight_controller_mapper_test.cpp
         test/moonlight_controller_feedback_test.cpp
+        test/moonlight_input_flush_policy_test.cpp
         test/vnc_des_test.cpp
         test/vnc_cursor_protocol_test.cpp
         test/vnc_transport_policy_test.cpp
@@ -370,6 +374,7 @@ if(RDP_BUILD_TESTS)
         ${MOONLIGHT_TOUCH_MAPPER_SOURCE}
         ${MOONLIGHT_CONTROLLER_MAPPER_SOURCE}
         ${MOONLIGHT_CONTROLLER_FEEDBACK_SOURCE}
+        ${MOONLIGHT_INPUT_FLUSH_POLICY_SOURCE}
         vnc/vnc_des.cpp
         vnc/vnc_cursor_protocol.cpp
         vnc/vnc_rfb_protocol.cpp
@@ -860,6 +865,30 @@ target_link_libraries(remotedesk_moonlight_controller_feedback PRIVATE
     remotedesk_moonlight_input_bridge
 )
 
+# N3-07 single input-release orchestrator. It composes the existing mapper and
+# input-bridge contracts and remains dormant with no product or UI caller.
+add_library(remotedesk_moonlight_input_flush_policy STATIC
+    ${MOONLIGHT_INPUT_FLUSH_POLICY_SOURCE}
+)
+target_compile_features(remotedesk_moonlight_input_flush_policy PRIVATE cxx_std_17)
+target_include_directories(remotedesk_moonlight_input_flush_policy PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_compile_options(remotedesk_moonlight_input_flush_policy PRIVATE
+    -fvisibility=hidden
+    -fvisibility-inlines-hidden
+)
+set_target_properties(remotedesk_moonlight_input_flush_policy PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+)
+target_link_libraries(remotedesk_moonlight_input_flush_policy PRIVATE
+    remotedesk_moonlight_touch_mapper
+    remotedesk_moonlight_pointer_mapper
+    remotedesk_moonlight_keyboard_mapper
+    remotedesk_moonlight_controller_mapper
+    remotedesk_moonlight_input_bridge
+)
+
 # 定义共享库目标
 add_library(rdpnapi SHARED ${ALL_SOURCES})
 target_compile_definitions(rdpnapi PRIVATE
@@ -867,6 +896,7 @@ target_compile_definitions(rdpnapi PRIVATE
     REMOTEDESK_BUILD_TIME_UTC="${REMOTEDESK_BUILD_TIME_UTC}"
 )
 target_link_libraries(rdpnapi PRIVATE
+    remotedesk_moonlight_input_flush_policy
     remotedesk_moonlight_controller_feedback
     remotedesk_moonlight_controller_mapper
     remotedesk_moonlight_touch_mapper
@@ -902,6 +932,7 @@ target_link_options(rdpnapi PRIVATE
     "-Wl,--exclude-libs,libremotedesk_moonlight_touch_mapper.a"
     "-Wl,--exclude-libs,libremotedesk_moonlight_controller_mapper.a"
     "-Wl,--exclude-libs,libremotedesk_moonlight_controller_feedback.a"
+    "-Wl,--exclude-libs,libremotedesk_moonlight_input_flush_policy.a"
 )
 
 # VNC full-screen ZRLE decode is production-rate code even in a signed Debug
