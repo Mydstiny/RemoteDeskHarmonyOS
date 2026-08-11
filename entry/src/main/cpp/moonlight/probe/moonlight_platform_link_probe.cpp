@@ -7,6 +7,8 @@
 // platformsdk linker namespace.
 
 #include <GameControllerKit/game_device.h>
+#include <GameControllerKit/game_pad.h>
+#include <GameControllerKit/game_pad_event.h>
 #include <asset/asset_api.h>
 #include <huks/native_huks_api.h>
 #include <multimodalinput/oh_input_manager.h>
@@ -39,6 +41,15 @@ int main()
         IsLinked(&OH_AVCodec_GetCapability) &&
         IsLinked(&OH_AudioStreamBuilder_Create) &&
         IsLinked(&OH_GameDevice_GetAllDeviceInfos) &&
+        IsLinked(&OH_GameDevice_RegisterDeviceMonitor) &&
+        IsLinked(&OH_GamePad_ButtonA_RegisterButtonInputMonitor) &&
+        IsLinked(&OH_GamePad_LeftThumbstick_RegisterAxisInputMonitor) &&
+        IsLinked(&OH_GamePad_RightThumbstick_RegisterAxisInputMonitor) &&
+        IsLinked(&OH_GamePad_LeftTrigger_RegisterAxisInputMonitor) &&
+        IsLinked(&OH_GamePad_RightTrigger_RegisterAxisInputMonitor) &&
+        IsLinked(&OH_GamePad_ButtonEvent_GetDeviceId) &&
+        IsLinked(&OH_GamePad_AxisEvent_GetDeviceId) &&
+        IsLinked(&OH_GamePad_AxisEvent_GetAxisSourceType) &&
         IsLinked(&OH_Huks_GenerateKeyItem) &&
         IsLinked(&OH_Asset_Add) &&
         IsLinked(&OH_Input_GetDeviceIds) &&

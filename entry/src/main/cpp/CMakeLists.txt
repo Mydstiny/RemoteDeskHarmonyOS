@@ -179,6 +179,9 @@ set(MOONLIGHT_POINTER_MAPPER_SOURCE
 set(MOONLIGHT_TOUCH_MAPPER_SOURCE
     moonlight/input/MoonlightTouchMapper.cpp
 )
+set(MOONLIGHT_CONTROLLER_MAPPER_SOURCE
+    moonlight/input/MoonlightControllerMapper.cpp
+)
 set(MOONLIGHT_SOURCES
     moonlight/core/MoonlightSessionOwner.cpp
 )
@@ -318,6 +321,7 @@ if(RDP_BUILD_TESTS)
         test/moonlight_keyboard_mapper_test.cpp
         test/moonlight_pointer_mapper_test.cpp
         test/moonlight_touch_mapper_test.cpp
+        test/moonlight_controller_mapper_test.cpp
         test/vnc_des_test.cpp
         test/vnc_cursor_protocol_test.cpp
         test/vnc_transport_policy_test.cpp
@@ -360,6 +364,7 @@ if(RDP_BUILD_TESTS)
         ${MOONLIGHT_KEYBOARD_MAPPER_SOURCE}
         ${MOONLIGHT_POINTER_MAPPER_SOURCE}
         ${MOONLIGHT_TOUCH_MAPPER_SOURCE}
+        ${MOONLIGHT_CONTROLLER_MAPPER_SOURCE}
         vnc/vnc_des.cpp
         vnc/vnc_cursor_protocol.cpp
         vnc/vnc_rfb_protocol.cpp
@@ -807,6 +812,28 @@ target_link_libraries(remotedesk_moonlight_touch_mapper PRIVATE
     remotedesk_moonlight_pointer_mapper
 )
 
+# N3-05 API 23 physical-controller projection. The mapper is deliberately
+# limited to one stable slot until two-controller real-device evidence exists.
+# It remains a hidden private archive with no GameControllerKit listener,
+# InputHandler, NAPI, ArkTS, UI, cloud, or product caller.
+add_library(remotedesk_moonlight_controller_mapper STATIC
+    ${MOONLIGHT_CONTROLLER_MAPPER_SOURCE}
+)
+target_compile_features(remotedesk_moonlight_controller_mapper PRIVATE cxx_std_17)
+target_include_directories(remotedesk_moonlight_controller_mapper PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_compile_options(remotedesk_moonlight_controller_mapper PRIVATE
+    -fvisibility=hidden
+    -fvisibility-inlines-hidden
+)
+set_target_properties(remotedesk_moonlight_controller_mapper PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+)
+target_link_libraries(remotedesk_moonlight_controller_mapper PRIVATE
+    remotedesk_moonlight_input_bridge
+)
+
 # 定义共享库目标
 add_library(rdpnapi SHARED ${ALL_SOURCES})
 target_compile_definitions(rdpnapi PRIVATE
@@ -814,6 +841,7 @@ target_compile_definitions(rdpnapi PRIVATE
     REMOTEDESK_BUILD_TIME_UTC="${REMOTEDESK_BUILD_TIME_UTC}"
 )
 target_link_libraries(rdpnapi PRIVATE
+    remotedesk_moonlight_controller_mapper
     remotedesk_moonlight_touch_mapper
     remotedesk_moonlight_pointer_mapper
     remotedesk_moonlight_keyboard_mapper
@@ -845,6 +873,7 @@ target_link_options(rdpnapi PRIVATE
     "-Wl,--exclude-libs,libremotedesk_moonlight_keyboard_mapper.a"
     "-Wl,--exclude-libs,libremotedesk_moonlight_pointer_mapper.a"
     "-Wl,--exclude-libs,libremotedesk_moonlight_touch_mapper.a"
+    "-Wl,--exclude-libs,libremotedesk_moonlight_controller_mapper.a"
 )
 
 # VNC full-screen ZRLE decode is production-rate code even in a signed Debug
