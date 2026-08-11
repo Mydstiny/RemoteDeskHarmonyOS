@@ -158,6 +158,12 @@ set(MOONLIGHT_AUDIO_BRIDGE_SOURCE
 set(MOONLIGHT_AUDIO_BRIDGE_PLATFORM_SOURCE
     moonlight/media/MoonlightAudioBridgePlatform.cpp
 )
+set(MOONLIGHT_AUDIO_PLAYER_SINK_SOURCE
+    moonlight/media/MoonlightAudioPlayerSink.cpp
+)
+set(MOONLIGHT_AUDIO_PLAYER_SINK_PLATFORM_SOURCE
+    moonlight/media/MoonlightAudioPlayerSinkPlatform.cpp
+)
 set(MOONLIGHT_SOURCES
     moonlight/core/MoonlightSessionOwner.cpp
 )
@@ -180,6 +186,11 @@ set(ALL_SOURCES
     ${VNC_SOURCES}
     ${TERMINAL_SOURCES}
     ${MOONLIGHT_SOURCES}
+    # N2-07 hidden exact-owner adapter. It is product-linked so its calls to
+    # the one AudioPlayer registry are ABI-checked, but it has no NAPI/session
+    # caller until S1 media lifecycle wiring.
+    ${MOONLIGHT_AUDIO_PLAYER_SINK_SOURCE}
+    ${MOONLIGHT_AUDIO_PLAYER_SINK_PLATFORM_SOURCE}
 )
 
 # ============================================================
@@ -286,6 +297,7 @@ if(RDP_BUILD_TESTS)
         test/moonlight_video_decoder_sink_test.cpp
         test/moonlight_video_surface_lifecycle_test.cpp
         test/moonlight_audio_bridge_test.cpp
+        test/moonlight_audio_player_sink_test.cpp
         test/vnc_des_test.cpp
         test/vnc_cursor_protocol_test.cpp
         test/vnc_transport_policy_test.cpp
@@ -322,6 +334,7 @@ if(RDP_BUILD_TESTS)
         ${MOONLIGHT_VIDEO_SURFACE_LIFECYCLE_SOURCE}
         ${MOONLIGHT_AUDIO_BRIDGE_SOURCE}
         ${MOONLIGHT_AUDIO_BRIDGE_PLATFORM_SOURCE}
+        ${MOONLIGHT_AUDIO_PLAYER_SINK_SOURCE}
         vnc/vnc_des.cpp
         vnc/vnc_cursor_protocol.cpp
         vnc/vnc_rfb_protocol.cpp
