@@ -741,9 +741,12 @@ RDP_TEST_CASE(moonlight_input_flush_stop_escalates_component_pending_to_local_re
     fixture.seedKeyboard();
     fixture.port->setSendScript({MoonlightInputPortStatus::Backpressure,
                                  MoonlightInputPortStatus::Backpressure});
+    const auto suspendContext = fixture.context();
     RDP_ASSERT_EQ(fixture.policy->flush(
-        MoonlightInputFlushTrigger::FocusLost, fixture.context()).status,
+        MoonlightInputFlushTrigger::FocusLost, suspendContext).status,
         MoonlightInputFlushStatus::Pending);
+    const auto pendingRelease = fixture.port->eventAt(
+        fixture.port->eventCount() - 1U);
     const auto stopContext = fixture.context(101U, 1100U, 11U);
     const auto result = fixture.policy->flush(
         MoonlightInputFlushTrigger::SessionStop,
@@ -757,9 +760,19 @@ RDP_TEST_CASE(moonlight_input_flush_stop_escalates_component_pending_to_local_re
     RDP_ASSERT_EQ(keyboard.pressedNonModifierKeys, static_cast<std::size_t>(0));
     RDP_ASSERT_EQ(fixture.bridge->snapshot(fixture.identity).state,
                   MoonlightInputState::Stopped);
+    const auto resumedRelease = fixture.port->eventAt(
+        fixture.port->eventCount() - 1U);
+    RDP_ASSERT_EQ(resumedRelease.sourceSequence,
+                  pendingRelease.sourceSequence);
+    RDP_ASSERT_EQ(resumedRelease.monotonicTimestampUs,
+                  suspendContext.keyboard.monotonicTimestampUs);
+    const auto eventsBeforeReplay = fixture.port->eventCount();
+    const auto flushesBeforeReplay = fixture.port->flushCount();
     RDP_ASSERT_EQ(fixture.policy->flush(
         MoonlightInputFlushTrigger::SessionStop, stopContext).status,
         MoonlightInputFlushStatus::AlreadyApplied);
+    RDP_ASSERT_EQ(fixture.port->eventCount(), eventsBeforeReplay);
+    RDP_ASSERT_EQ(fixture.port->flushCount(), flushesBeforeReplay);
 }
 
 RDP_TEST_CASE(moonlight_input_flush_local_terminal_escalation_replays_exact_stop) {
@@ -768,18 +781,31 @@ RDP_TEST_CASE(moonlight_input_flush_local_terminal_escalation_replays_exact_stop
     fixture.port->setSendScript({MoonlightInputPortStatus::Backpressure,
                                  MoonlightInputPortStatus::Accepted});
     fixture.port->setFlushScript({false});
+    const auto suspendContext = fixture.context();
     RDP_ASSERT_EQ(fixture.policy->flush(
-        MoonlightInputFlushTrigger::FocusLost, fixture.context()).status,
+        MoonlightInputFlushTrigger::FocusLost, suspendContext).status,
         MoonlightInputFlushStatus::Pending);
+    const auto pendingRelease = fixture.port->eventAt(
+        fixture.port->eventCount() - 1U);
     const auto stopContext = fixture.context(101U, 1100U, 11U);
     const auto result = fixture.policy->flush(
         MoonlightInputFlushTrigger::SessionStop, stopContext);
     RDP_ASSERT_EQ(result.status, MoonlightInputFlushStatus::AppliedLocally);
     RDP_ASSERT(result.localReleased && !result.boundaryApplied);
+    const auto resumedRelease = fixture.port->eventAt(
+        fixture.port->eventCount() - 1U);
+    RDP_ASSERT_EQ(resumedRelease.sourceSequence,
+                  pendingRelease.sourceSequence);
+    RDP_ASSERT_EQ(resumedRelease.monotonicTimestampUs,
+                  suspendContext.keyboard.monotonicTimestampUs);
+    const auto eventsBeforeReplay = fixture.port->eventCount();
+    const auto flushesBeforeReplay = fixture.port->flushCount();
     RDP_ASSERT_EQ(fixture.policy->flush(
         MoonlightInputFlushTrigger::SessionStop, stopContext).status,
         MoonlightInputFlushStatus::AlreadyApplied);
-    RDP_ASSERT_EQ(fixture.port->flushCount(), static_cast<std::size_t>(1));
+    RDP_ASSERT_EQ(fixture.port->eventCount(), eventsBeforeReplay);
+    RDP_ASSERT_EQ(fixture.port->flushCount(), flushesBeforeReplay);
+    RDP_ASSERT_EQ(flushesBeforeReplay, static_cast<std::size_t>(1));
 }
 
 } // namespace
