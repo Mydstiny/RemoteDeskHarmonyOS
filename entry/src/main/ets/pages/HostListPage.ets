@@ -7865,8 +7865,11 @@ struct HostListPage {
    */
   @Builder sidebarMoonlightTab() {
     Row() {
-      SymbolGlyph(protocolIcon('moonlight')).fontSize(28)
-        .fontColor([this.pal().text3]).opacity(0.58)
+      MoonlightBrandIcon({
+        iconSize: 28,
+        tint: this.pal().text3,
+        accessibilityLabel: 'Moonlight，即将支持'
+      })
       Column() {
         Text('Moonlight').fontSize(16).fontWeight(FontWeight.Medium)
           .fontColor(this.pal().text3).fontFamily(this.font())

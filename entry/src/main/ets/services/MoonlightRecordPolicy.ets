@@ -74,6 +74,12 @@ const SETTINGS_FIELD_PATHS: string[] = [
   'security.blockCertificateChanges', 'security.identityStorage',
   'diagnostics.showPerformanceHud', 'diagnostics.logLevel'
 ];
+// These paths were emitted by the pre-common-display/PIP settings format. They
+// remain readable so an old local row can be loaded and normalized, but they
+// are deliberately excluded from new mutable metadata and new payloads.
+const LEGACY_SETTINGS_FIELD_PATHS: string[] = [
+  'video.scalingMode', 'background.allowPip'
+];
 const HOST_FIELD_PATHS: string[] = [
   'displayName', 'addresses', 'preferredAddressKey', 'wakeOnLan', 'userOrder'
 ];
@@ -319,6 +325,12 @@ function allowedFieldPaths(recordType: MoonlightRecordType): string[] {
   return [];
 }
 
+function readableFieldPaths(recordType: MoonlightRecordType): string[] {
+  const mutable: string[] = allowedFieldPaths(recordType);
+  if (recordType !== 'settings') { return mutable; }
+  return mutable.concat(LEGACY_SETTINGS_FIELD_PATHS);
+}
+
 export function moonlightMutableFieldPaths(recordType: MoonlightRecordType): string[] {
   return allowedFieldPaths(recordType).slice();
 }
@@ -328,7 +340,9 @@ export function moonlightRecordMetaIsValid(
 ): boolean {
   if (!isBoundedText(meta.mutationId, 128) || !isBoundedText(meta.originId, 128) ||
       !isNonNegativeInteger(meta.baseSyncVersion)) { return false; }
-  const allowed: string[] = allowedFieldPaths(recordType);
+  // Record validation is a read/migration boundary. It must accept the two
+  // legacy settings paths long enough for the caller to normalize them.
+  const allowed: string[] = readableFieldPaths(recordType);
   const keys: string[] = Object.keys(meta.fieldVersions);
   if (keys.length > allowed.length) { return false; }
   for (let i = 0; i < keys.length; i++) {
@@ -344,7 +358,7 @@ export function moonlightPayloadWithMeta(
   recordType: MoonlightRecordType
 ): MoonlightCanonicalJsonResult {
   if (typeof businessPayload['_meta'] !== 'undefined' ||
-      !moonlightRecordMetaIsValid(meta, recordType)) {
+      !moonlightRecordMetaIsValidForWrite(meta, recordType)) {
     return { ok: false, canonical: '', reason: 'invalid_meta' };
   }
   const values: Record<string, Object> = {};
@@ -358,6 +372,22 @@ export function moonlightPayloadWithMeta(
   };
   values['_meta'] = encodedMeta;
   return moonlightCanonicalizeJson(JSON.stringify(values));
+}
+
+function moonlightRecordMetaIsValidForWrite(
+  meta: MoonlightRecordMeta, recordType: MoonlightRecordType
+): boolean {
+  if (!isBoundedText(meta.mutationId, 128) || !isBoundedText(meta.originId, 128) ||
+      !isNonNegativeInteger(meta.baseSyncVersion)) { return false; }
+  const allowed: string[] = allowedFieldPaths(recordType);
+  const keys: string[] = Object.keys(meta.fieldVersions);
+  if (keys.length > allowed.length) { return false; }
+  for (let i = 0; i < keys.length; i++) {
+    if (allowed.indexOf(keys[i]) < 0 || !isNonNegativeInteger(meta.fieldVersions[keys[i]])) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function concatBytes(parts: Uint8Array[]): Uint8Array {

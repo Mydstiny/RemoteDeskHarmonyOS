@@ -1,10 +1,15 @@
 import { describe, it, expect } from '@ohos/hypium';
 import { MoonlightRecord } from '../main/ets/model/MoonlightRecord';
 import {
+  defaultMoonlightSettings,
+  normalizeMoonlightSettingsForLocalStorage
+} from '../main/ets/model/MoonlightModels';
+import {
   moonlightCanonicalizeJson,
   MoonlightRecordMeta,
   moonlightMutableFieldPaths,
   moonlightPayloadWithMeta,
+  moonlightRecordMetaIsValid,
   moonlightRecordPayloadHashSha256,
   moonlightValidateRecord
 } from '../main/ets/services/MoonlightRecordPolicy';
@@ -75,6 +80,40 @@ export default function moonlightRecordPolicyTest(): void {
       expect(paths.indexOf('video.scalingMode') < 0).assertTrue();
       expect(paths.indexOf('background.allowPip') < 0).assertTrue();
       expect(paths.indexOf('background.noSurfaceVideo') >= 0).assertTrue();
+    });
+
+    it('reads_legacy_settings_meta_and_normalizes_before_new_writes', 0, (): void => {
+      const legacyMeta: MoonlightRecordMeta = {
+        mutationId: 'legacy-settings-mutation', originId: 'owner-store-origin-1',
+        baseSyncVersion: 0,
+        fieldVersions: { 'video.scalingMode': 1, 'background.allowPip': 1 }
+      };
+      expect(moonlightRecordMetaIsValid(legacyMeta, 'settings')).assertTrue();
+      const settings = defaultMoonlightSettings();
+      settings.video.scalingMode = 'fill';
+      settings.background.allowPip = true;
+      const legacyValues: Record<string, Object> =
+        JSON.parse(JSON.stringify(settings)) as Record<string, Object>;
+      legacyValues['_meta'] = legacyMeta as Object;
+      const canonical = moonlightCanonicalizeJson(JSON.stringify(legacyValues));
+      expect(canonical.ok).assertTrue();
+      const record = new MoonlightRecord();
+      record.id = 'moonlight-settings-legacy';
+      record.userId = 'owner-1';
+      record.recordType = 'settings';
+      record.ownerId = 'owner-1';
+      record.ownerType = 'account';
+      record.payload = canonical.canonical;
+      record.syncVersion = 1;
+      record.createdAt = 100;
+      record.updatedAt = 101;
+      record.payloadHashSha256 = moonlightRecordPayloadHashSha256(record);
+      expect(moonlightValidateRecord(record).valid).assertTrue();
+      const normalized = normalizeMoonlightSettingsForLocalStorage(settings);
+      expect(normalized.video.scalingMode === undefined).assertTrue();
+      expect(normalized.background.allowPip === undefined).assertTrue();
+      expect(moonlightPayloadWithMeta({ schemaVersion: 1 }, legacyMeta, 'settings').reason)
+        .assertEqual('invalid_meta');
     });
 
     it('validates_a_canonical_live_host_and_rejects_tampering', 0, (): void => {

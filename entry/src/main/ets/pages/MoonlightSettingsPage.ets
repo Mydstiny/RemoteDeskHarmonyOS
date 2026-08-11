@@ -82,11 +82,15 @@ export struct MoonlightSettingsSurface {
   private save(): void {
     const saved: MoonlightLocalSettingsResult = this.service.save(this.settings, Date.now());
     this.saveCode = saved.code;
-    if (saved.ok && saved.localCommitted) {
+    if (saved.localCommitted) {
       this.savedSettingsCanonical = JSON.stringify(this.settings);
       this.dirty = false;
       this.onDirtyChanged(false);
-      promptAction.showToast({ message: 'Moonlight 设置已保存到当前账号本地', duration: 1800 });
+      promptAction.showToast({
+        message: saved.ok ? 'Moonlight 设置已保存到当前账号本地' :
+          '设置已提交到本地；正在等待本地回读确认',
+        duration: saved.ok ? 1800 : 2400
+      });
     } else {
       promptAction.showToast({ message: '本地设置保存失败：' + saved.code, duration: 2200 });
     }
@@ -400,10 +404,10 @@ export struct MoonlightSettingsSurface {
         'auto', 'required', 'compatible', (value: string): void => {
           this.update((next: MoonlightSettings): void => { next.network.streamEncryption = value as 'auto'; });
         })
-      this.toggleRow('阻止证书变化', '变化时必须重新核对与配对，不提供“一直忽略”',
+      this.toggleRow('阻止证书变化', '安全合同强制开启；变化时必须重新核对与配对，不提供“一直忽略”',
         this.settings.security.blockCertificateChanges, (value: boolean): void => {
           this.update((next: MoonlightSettings): void => { next.security.blockCertificateChanges = value; });
-        })
+        }, false)
       Divider().color(this.pal().divider)
       this.toggleRow('允许旧 SHA-1', '高风险兼容项，默认关闭', this.settings.network.allowLegacySha1,
         (value: boolean): void => { this.update((next: MoonlightSettings): void => { next.network.allowLegacySha1 = value; }); })
@@ -474,10 +478,10 @@ export struct MoonlightSettingsSurface {
     Column() {
       this.cardTitle(this.hostId === '' ? '全局信任策略' : '当前主机',
         this.hostId === '' ? '从具体主机详情进入可查看绑定状态' : '主机 ID：' + this.hostId)
-      this.toggleRow('阻止证书变化', '不提供永久忽略，降低中间人风险',
+      this.toggleRow('阻止证书变化', '安全合同强制开启；不提供永久忽略，降低中间人风险',
         this.settings.security.blockCertificateChanges, (value: boolean): void => {
           this.update((next: MoonlightSettings): void => { next.security.blockCertificateChanges = value; });
-        })
+        }, false)
       Row() {
         SymbolGlyph($r('sys.symbol.lock_shield_fill')).fontSize(22).fontColor([this.pal().success])
         Column() {

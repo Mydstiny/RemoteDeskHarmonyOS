@@ -26,6 +26,7 @@ class MemorySettingsPort implements MoonlightRepositoryPort {
   rows: MoonlightRecord[] = [];
   commitCount: number = 0;
   lastLocalOnly: number = -1;
+  readbackFailure: boolean = false;
 
   currentAccountLease(): AccountSessionLease | null {
     return this.activeLease === null ? null : cloneAccountSessionLease(this.activeLease);
@@ -40,7 +41,9 @@ class MemorySettingsPort implements MoonlightRepositoryPort {
     if (!this.isLeaseCurrent(candidate)) { return { ok: false, record: null, localOnly: 1 }; }
     for (let i = 0; i < this.rows.length; i++) {
       if (this.rows[i].userId === candidate.ownerScopeId && this.rows[i].id === id) {
-        return { ok: true, record: MoonlightRecord.fromJSON(this.rows[i].toJSON()), localOnly: 1 };
+        const copy = MoonlightRecord.fromJSON(this.rows[i].toJSON());
+        if (this.readbackFailure) { copy.updatedAt += 1; }
+        return { ok: true, record: copy, localOnly: 1 };
       }
     }
     return { ok: true, record: null, localOnly: 1 };
@@ -125,6 +128,16 @@ export default function moonlightSettingsLocalServiceTest(): void {
       expect(service.load().code).assertEqual('not_ready');
       expect(service.save(defaultMoonlightSettings(), 1000).localCommitted).assertFalse();
       expect(port.commitCount).assertEqual(0);
+    });
+
+    it('keeps_committed_truth_when_readback_fails_after_local_commit', 0, (): void => {
+      const port = new MemorySettingsPort();
+      port.readbackFailure = true;
+      const saved = new MoonlightSettingsLocalService(port).save(defaultMoonlightSettings(), 1000);
+      expect(saved.ok).assertFalse();
+      expect(saved.code).assertEqual('readback_failed');
+      expect(saved.localCommitted).assertTrue();
+      expect(port.commitCount).assertEqual(1);
     });
   });
 }

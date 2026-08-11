@@ -65,12 +65,17 @@ struct MoonlightStreamPage {
   @State showNetworkBanner: boolean = false;
   @State inputFlushCount: number = 0;
   private readonly pipRuntimeAvailable: boolean = false;
+  private pageActive: boolean = false;
+  private sheetReopenGeneration: number = 0;
+  private sheetReopenTimer: number = -1;
 
   private pal(): Palette {
     return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor);
   }
 
   aboutToAppear(): void {
+    this.pageActive = true;
+    this.sheetReopenGeneration += 1;
     const params: Record<string, Object> = router.getParams() as Record<string, Object>;
     const route: MoonlightRouteIdentity = moonlightRouteIdentity(params, true);
     this.hostId = route.valid ? route.hostId : '';
@@ -80,7 +85,14 @@ struct MoonlightStreamPage {
     this.showConnectStage = true;
   }
 
-  aboutToDisappear(): void { this.flushInput('page_disappear'); }
+  aboutToDisappear(): void {
+    this.pageActive = false;
+    this.sheetReopenGeneration += 1;
+    this.cancelSheetReopen();
+    this.pendingSheetMode = 'none';
+    this.showSessionSheet = false;
+    this.flushInput('page_disappear');
+  }
 
   private flushInput(reason: string): void {
     this.inputFlushCount += 1;
@@ -105,14 +117,33 @@ struct MoonlightStreamPage {
     this.showSessionSheet = true;
   }
 
-  private closeSheet(): void { this.showSessionSheet = false; }
+  private closeSheet(): void {
+    this.pendingSheetMode = 'none';
+    this.sheetReopenGeneration += 1;
+    this.cancelSheetReopen();
+    this.showSessionSheet = false;
+  }
+
+  private cancelSheetReopen(): void {
+    if (this.sheetReopenTimer >= 0) {
+      clearTimeout(this.sheetReopenTimer);
+      this.sheetReopenTimer = -1;
+    }
+  }
 
   private onSheetDisappear(): void {
     if (this.pendingSheetMode !== 'none') {
       const next: MoonlightSessionSheetMode = this.pendingSheetMode;
       this.pendingSheetMode = 'none';
       this.sheetMode = next;
-      setTimeout((): void => { this.showSessionSheet = true; }, 0);
+      const generation: number = this.sheetReopenGeneration;
+      this.cancelSheetReopen();
+      this.sheetReopenTimer = setTimeout((): void => {
+        this.sheetReopenTimer = -1;
+        if (this.pageActive && generation === this.sheetReopenGeneration) {
+          this.showSessionSheet = true;
+        }
+      }, 0);
       return;
     }
     this.sheetMode = 'none';
