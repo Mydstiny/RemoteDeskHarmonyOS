@@ -9,8 +9,9 @@ export interface HostProtocolPickerOptionState {
 }
 
 /**
- * Keeps Moonlight fail-closed while preserving the same option-card contract
- * used by the enabled RustDesk entry.
+ * Keeps the option-card contract shared with RustDesk. Callers can still
+ * pass false for a future capability gate; the released FAB passes true while
+ * Moonlight's pairing and streaming callbacks remain fail-closed.
  */
 export function resolveHostProtocolPickerOption(
   protocol: string,

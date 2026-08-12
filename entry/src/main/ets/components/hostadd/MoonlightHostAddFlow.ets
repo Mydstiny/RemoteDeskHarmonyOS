@@ -103,6 +103,7 @@ function unavailableLocalSave(): Promise<MoonlightLocalSaveResult> {
 export struct MoonlightHostAddFlow {
   @StorageProp('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
+  @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
   @Prop ownerToken: number = 0;
   @Prop candidates: MoonlightHostAddCandidate[] = [];
   @Prop discoveryRunning: boolean = false;
@@ -656,16 +657,6 @@ export struct MoonlightHostAddFlow {
             this.flow = selectMoonlightHostAddCandidate(this.flow, candidate);
           })
       }, (candidate: MoonlightHostAddCandidate): string => candidate.serverUuid)
-      if (this.visibleCandidates().length === 0 && !this.discoveryIsRunning()) {
-        Button('改用手动输入').width('100%').height(40).borderRadius(10)
-          .backgroundColor(this.pal().surface).fontColor(this.accentColor)
-          .onClick((): void => {
-            this.pauseDiscovery();
-            const next: MoonlightHostAddState = cloneMoonlightHostAddState(this.flow);
-            next.mode = 'manual';
-            this.flow = next;
-          })
-      }
     } else {
       this.field('主机地址', this.flow.manualAddressText, '例如：gaming-pc.local 或 192.168.1.10',
         (value: string): void => {
@@ -690,8 +681,21 @@ export struct MoonlightHostAddFlow {
           .width('100%').margin({ bottom: 10 })
       }
     }
-    this.primaryButton(this.flow.activeOperation === 'verify' ? '正在验证…' : '验证主机',
-      (): void => { this.verifyHost(); }, this.flow.activeOperation === 'none')
+    Column({ space: this.breakpoint === 'sm' ? 12 : 10 }) {
+      if (this.flow.mode === 'automatic' && this.visibleCandidates().length === 0 &&
+          !this.discoveryIsRunning()) {
+        Button('改用手动输入').width('100%').height(40).borderRadius(10)
+          .backgroundColor(this.pal().surface).fontColor(this.accentColor)
+          .onClick((): void => {
+            this.pauseDiscovery();
+            const next: MoonlightHostAddState = cloneMoonlightHostAddState(this.flow);
+            next.mode = 'manual';
+            this.flow = next;
+          })
+      }
+      this.primaryButton(this.flow.activeOperation === 'verify' ? '正在验证…' : '验证主机',
+        (): void => { this.verifyHost(); }, this.flow.activeOperation === 'none')
+    }.width('100%').margin({ top: 4 })
   }
 
   @Builder private verificationStep() {
@@ -871,14 +875,14 @@ export struct MoonlightHostAddFlow {
       Text('本地保存状态需要先刷新主机列表确认，当前不会重复写入。')
         .fontSize(11).fontColor(this.pal().editColor).width('100%').margin({ bottom: 10 })
     }
-    Row() {
+    Row({ space: 12 }) {
       Button(this.flow.activeOperation === 'save' ? '正在保存…' : '保存')
         .layoutWeight(1).height(44).borderRadius(12)
         .backgroundColor(this.pal().surface).fontColor(this.accentColor)
         .enabled(this.flow.activeOperation === 'none' && !this.flow.saveRecoveryRequired)
         .onClick((): void => { this.save(false); })
       Button(this.flow.activeOperation === 'save' ? '正在保存…' : '保存并打开应用目录')
-        .layoutWeight(1).height(44).borderRadius(12).margin({ left: 8 })
+        .layoutWeight(1).height(44).borderRadius(12)
         .backgroundColor(this.accentColor).fontColor(Color.White)
         .enabled(this.flow.activeOperation === 'none' && !this.flow.saveRecoveryRequired)
         .onClick((): void => { this.save(true); })
@@ -904,7 +908,7 @@ export struct MoonlightHostAddFlow {
   }
 
   build() {
-    Scroll() {
+    Column() {
       Column() {
         this.header()
         if (this.flow.step === 1) {
@@ -921,8 +925,13 @@ export struct MoonlightHostAddFlow {
             .width('100%').margin({ top: 10 })
         }
         if (this.showDiscardConfirmation) { this.discardConfirmation() }
-      }.width('100%').padding({ left: 20, right: 20, top: 20, bottom: 22 })
+      }.width('100%').padding({
+        left: this.breakpoint === 'sm' ? 20 : 24,
+        right: this.breakpoint === 'sm' ? 20 : 24,
+        top: 20,
+        bottom: this.breakpoint === 'sm' ? 28 : 24
+      })
         .backgroundColor(this.pal().card)
-    }.width('100%').scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
+    }.width('100%')
   }
 }

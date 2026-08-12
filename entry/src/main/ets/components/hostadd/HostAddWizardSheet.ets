@@ -3,7 +3,7 @@ import { HostProtocolPicker } from './HostProtocolPicker';
 
 @Component
 export struct HostAddWizardSheet {
-  @Prop moonlightProtocolAvailable: boolean = false;
+  @Prop moonlightProtocolAvailable: boolean = true;
   onSelectProtocol: (protocol: string) => void = (_protocol: string): void => {};
   onClose: () => void = (): void => {};
 

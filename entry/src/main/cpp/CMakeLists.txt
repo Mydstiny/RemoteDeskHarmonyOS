@@ -191,8 +191,12 @@ set(MOONLIGHT_INPUT_FLUSH_POLICY_SOURCE
 set(MOONLIGHT_CONTROLLER_AGGREGATOR_SOURCE
     moonlight/input/MoonlightControllerAggregator.cpp
 )
+set(MOONLIGHT_GAME_CONTROLLER_LISTENER_SOURCE
+    moonlight/input/MoonlightGameControllerListener.cpp
+)
 set(MOONLIGHT_SOURCES
     moonlight/core/MoonlightSessionOwner.cpp
+    ${MOONLIGHT_GAME_CONTROLLER_LISTENER_SOURCE}
 )
 
 # -- NAPI 入口 --
@@ -334,6 +338,7 @@ if(RDP_BUILD_TESTS)
         test/moonlight_controller_feedback_test.cpp
         test/moonlight_input_flush_policy_test.cpp
         test/moonlight_controller_aggregator_test.cpp
+        test/moonlight_game_controller_listener_test.cpp
         test/vnc_des_test.cpp
         test/vnc_cursor_protocol_test.cpp
         test/vnc_transport_policy_test.cpp
@@ -380,6 +385,7 @@ if(RDP_BUILD_TESTS)
         ${MOONLIGHT_CONTROLLER_FEEDBACK_SOURCE}
         ${MOONLIGHT_INPUT_FLUSH_POLICY_SOURCE}
         ${MOONLIGHT_CONTROLLER_AGGREGATOR_SOURCE}
+        ${MOONLIGHT_GAME_CONTROLLER_LISTENER_SOURCE}
         vnc/vnc_des.cpp
         vnc/vnc_cursor_protocol.cpp
         vnc/vnc_rfb_protocol.cpp
@@ -829,8 +835,8 @@ target_link_libraries(remotedesk_moonlight_touch_mapper PRIVATE
 
 # N3-05 API 23 physical-controller projection. The mapper is deliberately
 # limited to one stable slot until two-controller real-device evidence exists.
-# It remains a hidden private archive with no GameControllerKit listener,
-# InputHandler, NAPI, ArkTS, UI, cloud, or product caller.
+# The listener is now linked by rdpnapi; runtime session binding remains
+# outside this archive until the native Moonlight transport is available.
 add_library(remotedesk_moonlight_controller_mapper STATIC
     ${MOONLIGHT_CONTROLLER_MAPPER_SOURCE}
 )
@@ -897,8 +903,8 @@ target_link_libraries(remotedesk_moonlight_input_flush_policy PRIVATE
 # N3-08 fixed-capacity physical/virtual controller aggregator and normalized
 # layout validator. It reuses N3-05/N3-07 for the only controller wire path,
 # slot ownership, backpressure, lifecycle release, and source handoff. This
-# archive remains dormant with no GameController listener, NAPI, ArkTS, UI,
-# cloud, thread, queue, or product caller.
+# archive remains dormant as a standalone product caller; the listener/NAPI
+# seam is linked by rdpnapi and the runtime session still owns activation.
 add_library(remotedesk_moonlight_controller_aggregator STATIC
     ${MOONLIGHT_CONTROLLER_AGGREGATOR_SOURCE}
 )
@@ -1065,6 +1071,12 @@ target_link_libraries(rdpnapi PUBLIC
 set(REMOTEDESK_MOONLIGHT_OPENSSL_ROOT "${OPENSSL_DIR}")
 add_subdirectory(moonlight)
 target_link_libraries(rdpnapi PRIVATE remotedesk_moonlight_common)
+if(OHOS_ARCH AND NOT RDP_TESTS_ONLY)
+    # GameControllerKit is used only by the Moonlight listener. It is a
+    # product dependency now that the listener has a real registration and
+    # teardown path; no existing protocol target consumes this library.
+    target_link_libraries(rdpnapi PRIVATE libohgame_controller.z.so)
+endif()
 target_link_libraries(remotedesk_moonlight_common_c_adapter PRIVATE
     remotedesk_moonlight_common
 )

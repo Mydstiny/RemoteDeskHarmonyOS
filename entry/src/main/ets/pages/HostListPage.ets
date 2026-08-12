@@ -12654,7 +12654,9 @@ struct HostListPage {
 
   private hostAddSheetHeight(): SheetSize | number {
     if (this.modernAddProtocol === 'moonlight') {
-      return this.breakpoint === 'sm' ? SheetSize.FIT_CONTENT : SheetSize.LARGE;
+      // Moonlight follows the same intrinsic/adaptive host-add sheet as RustDesk;
+      // the host page must not force a large desktop sheet below short content.
+      return SheetSize.FIT_CONTENT;
     }
     const isLongFlow: boolean = this.isVncAddSheet() || this.modernAddProtocol === 'ssh';
     if (this.isVncAddSheet() || this.modernAddProtocol === 'ssh') {
@@ -12676,7 +12678,10 @@ struct HostListPage {
   @Builder hostAddSheetContent() {
     if (this.addSheetShowsModernPicker) {
       HostAddWizardSheet({
-        moonlightProtocolAvailable: false,
+        // Make Moonlight follow the same FAB route contract as RustDesk.
+        // Pairing/streaming remains guarded inside the Moonlight flow until
+        // its native runtime is available.
+        moonlightProtocolAvailable: true,
         onSelectProtocol: (protocol: string): void => {
           this.modernAddProtocol = protocol;
           this.addSheetShowsModernPicker = false;

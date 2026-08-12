@@ -2,6 +2,7 @@
 #define REMOTEDESK_MOONLIGHT_COMMON_C_ADAPTER_H
 
 #include "moonlight/core/MoonlightSessionOwner.h"
+#include "moonlight/input/MoonlightInputBridge.h"
 #include "moonlight/media/MoonlightStreamConfig.h"
 #include "moonlight/media/MoonlightVideoBridge.h"
 
@@ -235,6 +236,12 @@ struct REMOTEDESK_MOONLIGHT_COMMON_C_HIDDEN MoonlightCommonCSnapshot final {
     std::optional<MoonlightCommonCVideoSelection> video;
     std::optional<MoonlightCommonCAudioSelection> audio;
 };
+
+// The only production input port allowed to call common-c controller APIs.
+// It routes through the exact active session owner and remains fail-closed
+// when no transport-ready invocation is installed.
+REMOTEDESK_MOONLIGHT_COMMON_C_HIDDEN std::shared_ptr<MoonlightInputPort>
+createProcessMoonlightCommonCInputPort() noexcept;
 
 #if defined(RDP_NATIVE_CALLBACK_TESTING)
 struct REMOTEDESK_MOONLIGHT_COMMON_C_HIDDEN MoonlightCommonCTestDriver final {

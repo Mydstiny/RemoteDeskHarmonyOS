@@ -17,7 +17,9 @@ import {
 export struct HostProtocolPicker {
   @StorageProp('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
-  @Prop moonlightProtocolAvailable: boolean = false;
+  // The FAB entry is released. Runtime pairing/streaming callbacks still
+  // fail closed until the native session is available.
+  @Prop moonlightProtocolAvailable: boolean = true;
   onSelect: (protocol: string) => void = (_protocol: string): void => {};
   onClose: () => void = (): void => {};
   @State moonlightIconFailed: boolean = false;
