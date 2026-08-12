@@ -4,28 +4,24 @@ Updated: 2026-08-12 Asia/Shanghai
 
 ## Closed checkpoint
 
-- `6b0c1aa8` closes the local-only U1-06～U1-12 UI shell and its review fixes: homepage host management, host detail, per-host app catalog, nine-section settings, RustDesk-style launch/connection/stream overlays, desktop sidebar slot, and fresh PC/phone evidence.
-- `8b1ccd22` closes S1-01/S1-02 as a dormant contract checkpoint: Moonlight is represented in the shared session/capability model and is coordinated through the single existing active-session registry with owner/account/operation fences. The runtime port is intentionally absent, so no real connection can start.
-- `4548499c` closes the review fixes: atomic reservation/promotion prevents cross-protocol overwrite, prelaunch cancel and stop failure/timeout have local-terminal cleanup, and post-launch events require the matching native session ID.
-- `647113a5` adds the actual stop watchdog and corrects the prelaunch-cancel contract test; the reused reviewer task rechecked the complete S1 delta and returned PASS with no actionable findings.
-- `75d769c2` closes S1-03: `MoonlightSessionCoordinator` publishes owner/account/host/app-scoped snapshots, `MoonlightStreamPage` binds and tears down the subscription/timer with the route lifecycle, and the connect overlay consumes real phase/error/degradation/first-frame state without preclaiming connected.
-- The coordinator now has ten focused cases for runtime gating, cross-protocol arbitration, transient endpoint isolation, surface/first-frame ordering, stale events, stop cleanup, stop timeout, native-session mismatch, account-scope invalidation and scoped snapshot delivery. `MoonlightStreamPage` subscribes to account changes and cancels route-owned work.
-- The final incremental review reused task `019fe966-d99a-7ce1-8b53-4ef725597053` and passed with P0/P1/P2/P3 all zero. Legacy-read/new-write settings compatibility, forced-safe certificate controls, local-commit truth, stream timer fencing, and tintable desktop icon findings are closed.
-- Latest fresh `s103-final` evidence was captured only after installing the final `75d769c2` signed HAP; no old screenshot is used for this acceptance record. It covers the PC root/sidebar/picker/disabled-click and phone root/picker. The stream route remains dormant because the product runtime port is unavailable.
-- Homepage owns Moonlight host management. Moonlight settings has no duplicate host-management row and no duplicated shared display/PIP options.
-- FAB and sidebar remain explicitly disabled (`moonlightProtocolAvailable=false`); UI shell components do not open transport, native, timer, repository, cloud, or background work.
-- Both mandatory Hvigor gates, signed HAP generation, sandbox-external HDC install/start on PC and phone, fresh UI screenshots, `git diff --check`, and static cross-protocol isolation review pass for `75d769c2`.
-- User-owned `CloudStore.ets` remains the sole unstaged change and is not part of this task.
+- `6b0c1aa8` closes the local-only U1-06～U1-12 UI shell: homepage host management, host detail, per-host app catalog, nine-section settings, RustDesk-style launch/connection/stream overlays, official tintable icon and desktop sidebar slot.
+- `8b1ccd22` + `4548499c` + `647113a5` close S1-01/S1-02 dormant shared-session coordination, exact owner/account/session fences, atomic reservation/promotion, stop failure and watchdog cleanup. Runtime remains absent and fail closed.
+- `75d769c2` closes S1-03: scoped coordinator snapshots, StreamPage lifecycle subscription/teardown, real phase/error/degradation/first-frame presentation and no false connected state.
+- `fae7c36dd` + `f7f39c0f` + `665df714` close S1-04: responsive RustDesk-aligned session toolbar/control center, edge-rail bounds, explicit non-xl collapse, xl pin/5-second auto-hide, Sheet/breakpoint timer reconciliation and policy regression cases.
+- Final S1-04 review reused task `019fe966-d99a-7ce1-8b53-4ef725597053`: PASS, P0/P1/P2 = 0; one accepted P3 covers ArkUI timer instantiation limits in pure tests. No other protocol, cloud, native or runtime source was changed.
+- Final current-workspace signed HAP SHA-256 is `cb1086ccaf57ada2e7cc1d879e5df6d75ee1b249c2cfdc58d176f7e9545d1d99`; both mandatory Hvigor gates passed.
+- Final HAP was installed/started outside the sandbox on PC `127.0.0.1:5555` and phone `127.0.0.1:5557`. Final evidence is only the newly captured/viewed `moonlight-s104-final-cb1086-*` set: PC root/max/sidebar picker/disabled click and phone root/picker/disabled click all pass; no old screenshot is used.
+- FAB/sidebar and all runtime actions remain disabled (`moonlightProtocolAvailable=false`); no transport, media, controller, cloud, timer/background work is opened by the dormant product path.
+- User-owned `entry/src/main/ets/services/CloudStore.ets` remains the only unstaged change and is excluded from this task.
 
 ## Next
 
-- S1-04: session toolbar/control center contract, using the existing RustDesk visual grammar and single-sheet ownership; keep all actions fail closed until runtime evidence exists.
-- S1-05A: native HarmonyOS GameController listener plus narrow typed NAPI; ArkTS remains a view/controller surface only.
-- S1-05A: native HarmonyOS GameController listener plus narrow typed NAPI; ArkTS remains a view/controller surface only.
-- N2-09: real Sunshine + user ARM64 evidence for media, first frame, input, lifecycle, network, thermal and long-run behavior.
+- S1-05A: native HarmonyOS GameController listener plus narrow typed NAPI, feeding the existing N3-08/N3-05/N3-01/common-c chain. Do not add a public input owner, second queue or ArkTS wire encoder; real-device capability remains false until receipts exist.
+- N2-09: real Sunshine and user ARM64 evidence for pairing, H.264/Opus media, first frame, lifecycle, input, network, thermal and long-run behavior.
+- S1-06/S1-07/S1-08: continue control center/diagnostics/media lifecycle only after their specified runtime prerequisites; keep the single Sheet owner and existing input/session policy.
 
 ## Parked / blocked
 
-- Keep Moonlight cloud sync parked: no `moonlightrecordv1`, table registration, selection, transfer or secret recovery.
-- Register/execute `ohosTest` only after the project task is actually available; current blocker is `00306054` task-not-registered.
-- A signed HAP build is verified, but Moonlight itself is not a release-ready streaming capability until the runtime and external gates above produce receipts.
+- Moonlight cloud sync stays parked: no `moonlightrecordv1`, table registration, selection, transfer or secret recovery.
+- `ohosTest@OhosTestCompileArkTS` remains blocked because task `00306054` is not registered; compile registration is not device execution.
+- A signed HAP/UI shell is verified, but Moonlight is not a release-ready streaming capability until runtime, media, controller and external-device gates produce current receipts.

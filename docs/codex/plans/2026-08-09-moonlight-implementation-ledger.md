@@ -1127,14 +1127,38 @@ stale terminal request 不清本地状态；pending→terminal 的 mapper drain 
   复用 reviewer task `019fe966-d99a-7ce1-8b53-4ef725597053` 对本次 5 文件范围复核，P0/P1/P2/P3 全 0；
   CloudStore 与 RDP/RustDesk/SSH/SFTP/VNC、公共输入、native/CMake/NAPI、CloudSyncPolicy 和既有云表均未改。
 
+## 12.24 S1-04 responsive session toolbar/control-center checkpoint（2026-08-12）
+
+- 代码 checkpoint 为 `665df714`，建立在 `fae7c36dd` 与 `f7f39c0f` 之上。允许修改范围只有
+  `MoonlightUiPolicy.ets`、`MoonlightSessionToolbar.ets`、`MoonlightStreamPage.ets` 和
+  `MoonlightUiPolicy.test.ets`；用户 `CloudStore.ets` 未暂存、未修改，其他协议业务、公共输入、native/
+  CMake/NAPI、GameController/OHAudio/Surface、CloudSyncPolicy 与既有云表注册均未触及。
+- 工具栏按 RustDesk 视觉语法完成 phone/pad edge rail、desktop md/lg 5/7 项和 desktop xl 顶部布局。edge
+  rail 使用 `Scroll` + 360vp `maxHeight`；non-xl 使用显式收起；只有 xl 使用 pin + 5 秒 auto-hide。
+  `menuOpen` 与 breakpoint 通过 `@Watch` 清理/重建计时器，排队回调重新读取最新 policy，避免 Sheet 或断点
+  变化后的旧 timer 折叠新布局。control center 已按断点响应式计算尺寸，所有动作仍 capability fail closed。
+- 新增 responsive/边界与 Sheet-open、close、xl→lg policy cases；文档 focused aggregate 更新为 165 个
+  Moonlight tests / 21 describe，加 8 个 shared handoff cases，均 compile-registered。纯 ArkUI timer 无法在
+  policy unit test 中直接实例化，复核将其记录为不阻塞 P3。
+- 强制 `default@OhosTestCompileArkTS` 与 `assembleHap` 均 `BUILD SUCCESSFUL`；最终当前工作区 signed HAP SHA-256 为
+  `cb1086ccaf57ada2e7cc1d879e5df6d75ee1b249c2cfdc58d176f7e9545d1d99`。HAP 已由沙箱外 HDC 安装/启动在 PC
+  `127.0.0.1:5555` 与手机 `127.0.0.1:5557`；用户 `CloudStore.ets` 仍是任务外的未暂存变更。
+- 本次收尾仅使用最终 HAP 新抓取并查看的 UI 证据：`/private/tmp/moonlight-s104-final-cb1086-20260812-pc-root.jpeg`、
+  `...-pc-max2.jpeg`、`...-pc-picker2.jpeg`、`...-pc-picker-click.jpeg`、`...-phone-root.jpeg`、
+  `...-phone-picker2.jpeg`、`...-phone-picker-click.jpeg`。PC 独立 Moonlight 侧栏、两端灰态 picker、两端
+  禁用点击无导航副作用均通过；不使用旧截图。该证据仅证明模拟器 UI 壳，不证明 Sunshine、首帧、实体手柄或发布能力。
+- 复用 reviewer task `019fe966-d99a-7ce1-8b53-4ef725597053` 最终 PASS：P0/P1/P2=0，P3=1（可接受测试可测性
+  限制）。下一任务唯一入口改为 S1-05A；Moonlight cloud sync、`moonlightrecordv1`、runtime/media/release truth
+  继续 parked/false；`ohosTest` 仍阻塞于未注册任务 `00306054`。
+
 ## 13. 下一执行序列
 
 1. N2-09 保持 EXTERNAL PENDING：必须由真实 Sunshine 与用户 ARM64 实机完成 720p/1080p、
    30/60fps、两小时、温控、前后台/PIP/旋转和网络矩阵；不得用 host 单测或虚拟机代替。
 2. U1-06～U1-12 的 local-only UI shell 已完成：主机管理归首页、目录/详情读本地 records/cache、设置统一进入
    同一 bindSheet、连接/串流浮层保持 dormant；不接真实 Host Control/runtime/cloud，不把 cache 或请求态伪装成在线/已刷新。
-3. S1-01/S1-02/S1-03 已完成 dormant registry/coordinator 与 connection-stage snapshot contract；下一实现序列为 S1-04：只实现 RustDesk
-   风格会话 toolbar/control-center contract；保持 N2-08 与 N3-01～N3-08 dormant，不把任何结果变成 video
+3. S1-01/S1-02/S1-03/S1-04 已完成 dormant registry/coordinator、connection-stage snapshot contract 与 RustDesk
+   风格会话 toolbar/control-center contract；下一实现序列为 S1-05A，保持 N2-08 与 N3-01～N3-08 dormant，不把任何结果变成 video
    first-frame、streaming/protocolAvailable、FAB 或 release truth。
 4. S1-05A 才接真实 HarmonyOS GameController listener 与虚拟 typed NAPI；S1-08 才按现有
    `NativeSessionHandles`、Surface/PIP/background 生命周期装配媒体。U1/S1 设置、目录和连接浮层
