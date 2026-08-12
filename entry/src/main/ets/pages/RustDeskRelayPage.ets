@@ -70,9 +70,8 @@ import {
 } from '../services/RustDeskRelaySetupCoordinator';
 import { DataMutationStage } from '../services/DataMutationResult';
 import {
-  rustDeskRelayCompactEditorHeight,
   rustDeskRelayDirectoryBottomClearance,
-  rustDeskRelaySheetUsesLargeLayout
+  rustDeskRelaySheetUsesResizeOnly
 } from '../services/RustDeskRelayLayoutPolicy';
 
 class TcpTestResult {
@@ -158,7 +157,6 @@ export struct RustDeskRelayPage {
   @State proBusy: boolean = false;
   @State testingRelayId: string = '';
   @State relaySheetClosing: boolean = false;
-  @State relayViewportHeight: number = 0;
   @State relayViewRevision: number = 0;
   @State proViewRevision: number = 0;
   @State vncViewRevision: number = 0;
@@ -1223,18 +1221,10 @@ export struct RustDeskRelayPage {
     return this.isDesktopDevice && this.breakpoint === 'xl';
   }
 
-  private relaySheetHeight(): SheetSize | number {
-    if (rustDeskRelaySheetUsesLargeLayout(this.sheetContent, this.showRelayAdvanced)) {
-      return SheetSize.LARGE;
-    }
-    if (this.sheetContent === 1) {
-      return rustDeskRelayCompactEditorHeight(this.breakpoint, this.relayViewportHeight);
-    }
-    return SheetSize.FIT_CONTENT;
-  }
+  private relaySheetHeight(): SheetSize { return SheetSize.FIT_CONTENT; }
 
   private relaySheetKeyboardAvoidMode(): SheetKeyboardAvoidMode {
-    return rustDeskRelaySheetUsesLargeLayout(this.sheetContent, this.showRelayAdvanced)
+    return rustDeskRelaySheetUsesResizeOnly(this.sheetContent, this.breakpoint)
       ? SheetKeyboardAvoidMode.RESIZE_ONLY
       : SheetKeyboardAvoidMode.TRANSLATE_AND_SCROLL;
   }
@@ -1291,12 +1281,6 @@ export struct RustDeskRelayPage {
       }
     }
     .width('100%').height('100%')
-    .onAreaChange((_old: Area, next: Area): void => {
-      const height: number = next.height as number;
-      if (Number.isFinite(height) && height > 0 && Math.abs(height - this.relayViewportHeight) >= 1) {
-        this.relayViewportHeight = height;
-      }
-    })
     .overlay(this.TitleBarOverlay(), { align: Alignment.Top })
     .bindSheet($$this.showSheet, this.relaySheetBuilder(), {
       height: this.relaySheetHeight(),
@@ -2268,7 +2252,7 @@ export struct RustDeskRelayPage {
       Text('默认只需服务器地址和公钥；保存后再测试连接或登录地址簿。')
         .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
         .width('100%').lineHeight(17).margin({ top: 5, bottom: 14 })
-      Scroll() {
+      Column() {
         Column() {
           Button('粘贴 RustDesk 加密配置')
             .width('100%').height(36).fontSize(13).backgroundColor(this.pal().surface)
@@ -2414,7 +2398,7 @@ export struct RustDeskRelayPage {
           }
           Column().height(18)
         }.width('100%')
-      }.layoutWeight(1).scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
+      }.width('100%')
 
       Row() {
         Button('取消').layoutWeight(1).height(44).fontSize(14).borderRadius(11)
@@ -2427,7 +2411,7 @@ export struct RustDeskRelayPage {
           .fontColor(Color.White).borderRadius(11).margin({ left: 10 })
           .enabled(!this.relaySaving).onClick((): void => { this.doSaveRelay(); })
       }.width('100%').margin({ top: 10 })
-    }.width('100%').height('100%')
+    }.width('100%')
     .padding({ left: 24, right: 24, top: 24, bottom: this.breakpoint === 'sm' ? 24 : 30 })
     .borderRadius(this.breakpoint === 'sm' ? 0 : 20)
     .backgroundColor(this.pal().sheetBg)
