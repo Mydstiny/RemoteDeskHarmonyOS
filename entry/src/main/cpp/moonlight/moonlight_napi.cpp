@@ -1,7 +1,6 @@
 #include "moonlight/moonlight_napi.h"
 
 #include "moonlight/bridge/MoonlightNativeBridge.h"
-#include "moonlight/input/MoonlightGameControllerListener.h"
 
 #include <algorithm>
 #include <atomic>
@@ -54,80 +53,14 @@ struct AsyncRequestControl final {
     std::atomic<napi_async_work> work {nullptr};
 };
 
-class NapiControllerSink final : public MoonlightGameControllerListener::Sink {
-  public:
-    void onPhysicalControllerConnected(
-        std::uint64_t deviceId, std::uint64_t sourceGeneration,
-        const MoonlightControllerProfile& profile) noexcept override {
-        (void)profile;
-        std::lock_guard<std::mutex> lock(mutex);
-        ++onlineDevices;
-        lastDeviceId = deviceId;
-        lastSourceGeneration = sourceGeneration;
-    }
-
-    void onPhysicalControllerSample(
-        std::uint64_t deviceId, std::uint64_t sourceGeneration,
-        std::uint64_t sourceSequence, std::uint64_t monotonicTimestampUs,
-        const MoonlightControllerSample& sample) noexcept override {
-        (void)sourceSequence;
-        (void)monotonicTimestampUs;
-        (void)sample;
-        std::lock_guard<std::mutex> lock(mutex);
-        lastDeviceId = deviceId;
-        lastSourceGeneration = sourceGeneration;
-    }
-
-    void onPhysicalControllerDisconnected(
-        std::uint64_t deviceId, std::uint64_t sourceGeneration,
-        std::uint64_t sourceSequence,
-        std::uint64_t monotonicTimestampUs) noexcept override {
-        (void)sourceSequence;
-        (void)monotonicTimestampUs;
-        std::lock_guard<std::mutex> lock(mutex);
-        if (onlineDevices != 0U) {
-            --onlineDevices;
-        }
-        lastDeviceId = deviceId;
-        lastSourceGeneration = sourceGeneration;
-    }
-
-    std::size_t deviceCount() const noexcept {
-        std::lock_guard<std::mutex> lock(mutex);
-        return onlineDevices;
-    }
-
-    std::uint64_t deviceId() const noexcept {
-        std::lock_guard<std::mutex> lock(mutex);
-        return lastDeviceId;
-    }
-
-    std::uint64_t sourceGeneration() const noexcept {
-        std::lock_guard<std::mutex> lock(mutex);
-        return lastSourceGeneration;
-    }
-
-  private:
-    mutable std::mutex mutex;
-    std::size_t onlineDevices = 0U;
-    std::uint64_t lastDeviceId = 0U;
-    std::uint64_t lastSourceGeneration = 0U;
-};
-
 struct MoonlightEnvState final {
     explicit MoonlightEnvState(napi_env valueEnv)
         : env(valueEnv), bridge(std::make_shared<MoonlightNativeBridge>(
-                             std::make_shared<MoonlightUnavailableRuntimePort>())),
-          controllerSink(),
-          controllerListener(controllerSink) {
-        (void)controllerListener.start();
-    }
+                             std::make_shared<MoonlightUnavailableRuntimePort>())) {}
 
     napi_env env = nullptr;
     std::atomic<bool> closing {false};
     std::shared_ptr<MoonlightNativeBridge> bridge;
-    NapiControllerSink controllerSink;
-    MoonlightGameControllerListener controllerListener;
     std::mutex pendingMutex;
     std::unordered_map<MoonlightBridgeRequestKey,
                        std::shared_ptr<AsyncRequestControl>, NapiKeyHash> pending;
@@ -175,7 +108,6 @@ void cleanupEnvironment(void* rawData) noexcept {
         if (state->bridge != nullptr) {
             state->bridge->shutdown();
         }
-        state->controllerListener.stop();
     } catch (...) {
         // The environment is already closing; no exception may cross NAPI.
     }
@@ -746,33 +678,6 @@ void setSize(napi_env env, napi_value object, const char* name, std::size_t valu
     setSafeInteger(env, object, name, static_cast<std::uint64_t>(value));
 }
 
-napi_value controllerCapabilities(napi_env env, napi_callback_info info) {
-    std::size_t argc = 0U;
-    if (napi_get_cb_info(env, info, &argc, nullptr, nullptr, nullptr) != napi_ok ||
-        argc != 0U) {
-        napi_throw_type_error(env, "E-MOONLIGHT-CONTROLLER",
-                              "no controller capability arguments are accepted");
-        return nullptr;
-    }
-    const auto state = stateFor(env);
-    napi_value result = nullptr;
-    (void)napi_create_object(env, &result);
-    const bool listenerStarted = state != nullptr && state->controllerListener.started();
-    setBoolean(env, result, "listenerCompiled", true);
-    setBoolean(env, result, "listenerRegistered", listenerStarted);
-    setBoolean(env, result, "inputBound", false);
-    setBoolean(env, result, "inputReady", false);
-    setBoolean(env, result, "controllerAvailable", false);
-    setSize(env, result, "physicalDeviceCount",
-            state == nullptr ? 0U : state->controllerSink.deviceCount());
-    setSafeInteger(env, result, "lastDeviceId",
-                   state == nullptr ? 0U : state->controllerSink.deviceId());
-    setSafeInteger(env, result, "lastSourceGeneration",
-                   state == nullptr ? 0U : state->controllerSink.sourceGeneration());
-    setString(env, result, "blocker", "moonlight_runtime_unavailable");
-    return result;
-}
-
 napi_value createKey(napi_env env, const MoonlightBridgeRequestKey& key) {
     napi_value object = nullptr;
     (void)napi_create_object(env, &object);
@@ -1247,8 +1152,6 @@ napi_value Init(napi_env env, napi_value exports) {
          napi_default, nullptr},
         {"moonlightPollEvents", nullptr, pollEvents, nullptr, nullptr, nullptr,
          napi_default, nullptr},
-        {"moonlightGetControllerCapabilities", nullptr, controllerCapabilities,
-         nullptr, nullptr, nullptr, napi_default, nullptr},
     };
     (void)napi_define_properties(env, exports,
                                  sizeof(descriptors) / sizeof(descriptors[0]),

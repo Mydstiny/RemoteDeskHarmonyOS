@@ -4,38 +4,40 @@
 
 - Task: `moonlight-complete-upgrade`
 - Base: `main@aeb0cdac5`; branch: `codex/moonlight-complete-upgrade`
-- Code checkpoint: `db750cdb` (`feat(moonlight): wire local host add persistence`); S1-04 remains closed on top of `fae7c36dd` and `f7f39c0f`.
-- Phase: U1-13 local-only Moonlight host-add persistence is closed; S1-05A native controller ingress, runtime/media and N2-09 external evidence remain pending.
+- Code checkpoint: final adaptive FAB/add-sheet and controller-isolation fix is ready for commit; `CloudStore.ets` remains user-owned and unstaged.
+- Phase: U1-14 adaptive UI closeout plus S1-05A boundary audit; real session binding remains pending.
 - Authoritative plan: `docs/superpowers/plans/2026-07-28-moonlight-harmonyos-complete-upgrade-plan.md`
 - Live ledger: `docs/codex/plans/2026-08-09-moonlight-implementation-ledger.md`
-- User-owned `entry/src/main/ets/services/CloudStore.ets` is the only unstaged code file; it remains untouched and outside this task.
 
 ## Product decisions
 
-- Moonlight remains local-host-only. No `moonlightrecordv1` registration, cloud selection/transfer, secret recovery or cloud upload was added.
-- RustDesk is the sole Moonlight UI reference. Homepage host management is canonical; Moonlight has nine protocol sections and no duplicate host/common display/PIP management.
-- The Moonlight FAB and PC sidebar slot remain disabled: grey/tintable icon, 0.58 parent opacity, one “即将支持”, no route and no background work.
-- Real controller input remains S1-05A: HarmonyOS native listener → narrow typed NAPI → N3-08 → N3-05 → N3-01 → official common-c. ArkTS never encodes or directly sends controller wire data.
+- Moonlight data remains local-host-only. No `moonlightrecordv1`, cloud selection/transfer, secret recovery or cloud upload was added.
+- RustDesk is the sole Moonlight UI reference. Homepage host management remains canonical; Moonlight has no duplicate public display/PIP/host-management section.
+- The FAB Moonlight row follows the RustDesk route contract and opens the four-step local add shell through a separate `moonlightFabEntryAvailable` gate. Because `moonlightProtocolAvailable` remains false, the card explicitly says `仅添加` and has no runtime chevron; pairing, catalog, streaming and save callbacks remain fail-closed until runtime ports exist.
+- The PC sidebar Moonlight slot remains a separate disabled preview slot; the FAB route and sidebar preview are intentionally not the same capability gate.
+- Native controller work is isolated foundation only: the GameControllerKit listener is test-only/future-session code, is not in production `rdpnapi`, is not registered from shared NAPI, has no public controller NAPI, and has no common-c product input port. A future S1-05A session must bind one typed sink through N3-08 → N3-05 → N3-01 → common-c.
 
-## U1-13 local data closeout
+## U1-14 adaptive FAB/add closeout
 
-- `MoonlightLocalHostService` now adapts the existing injected `MoonlightRepositoryPort` only: validated host + trust rows, `localOnly=1`, owner/account lease and operation-generation fences, stable IDs and duplicate detection.
-- Host/trust writes are constructed before the first write and are guarded by readback-aware compensation. Forward tombstones, explicit revival, existing-host restoration and `not_committed`/`partial`/`uncertain` outcomes prevent blind retry or false catalog handoff.
-- `HostListPage` passes the local-save callback into the RustDesk-style add Sheet. Catalog/detail navigation still waits for the native Sheet `onDisappear` boundary and carries only stable ID + owner/generation.
-- No cache, cloud, transport, decoder, audio, input, registry, FAB or release-truth state is opened by this path.
+- `MoonlightHostAddFlow` now consumes `currentBreakpoint`, uses an intrinsic content column like `RustDeskAddFlow`, and applies phone/large-screen content padding consistently.
+- Discovery actions are one vertical action group with a 12vp small-screen gap (10vp on larger breakpoints); completion actions use a 12vp gap instead of adjacent/粘连 buttons.
+- Dynamic discovery candidates are inside a bounded `Scroll` (260vp on phone, 320vp on larger layouts); only the candidate region scrolls, preserving the actions at the bottom.
+- `HostListPage` uses `SheetSize.FIT_CONTENT` for Moonlight on every breakpoint, removing the former PC-only forced `LARGE` height and its trailing blank area.
+- The official tintable Moonlight icon remains in the picker; the FAB row opens the reviewable add shell without using that entry as runtime capability evidence. The shell-only state is visible as `仅添加`, and runtime failure messages remain explicit and fail closed.
 
 ## Verification
 
-- Exact `default@OhosTestCompileArkTS --analyze=normal --parallel --incremental --no-daemon`: `BUILD SUCCESSFUL` after `db750cdb`.
-- Exact `assembleHap --analyze=normal --parallel --incremental --no-daemon`: `BUILD SUCCESSFUL`; current signed HAP: `entry/build/default/outputs/default/entry-default-signed.hap`; SHA-256 `8a5209d438b253ccb78df6e29734bb1afdde2eb3da281aea8e3ed30c04862419`.
-- This current HAP was installed and started on PC `127.0.0.1:5555` and phone `127.0.0.1:5557`. The only current-package UI evidence is `/private/tmp/moonlight-current-hap-20260812/`: `pc-root.jpeg`, `phone-root.jpeg`, `pc-picker.jpeg`, `phone-picker.jpeg`, `moon-expanded.jpeg`, `settings-lower.jpeg` and `quick.jpeg`, with matching UI trees. No earlier package screenshot is used for the final acceptance.
-- Current-package evidence confirms homepage ownership, disabled FAB picker on PC/phone, the PC large-screen host-list layout, the consolidated Moonlight settings group, all nine Moonlight leaves across the expanded/lower captures, and a real Moonlight quick-settings bindSheet.
-- New focused coverage: 8 local persistence cases, 1 recovery-policy case and 1 post-save handoff case; all are compile-registered. `ohosTest` remains unavailable because task `00306054` is not registered; no device Hypium PASS is claimed.
-- Reused reviewer task `019fe966-d99a-7ce1-8b53-4ef725597053`: final increment PASS, P0/P1/P2=0; P3=1 is the accepted pure-test exception-path limitation. Static scope isolation confirms no adjacent protocol/native/cloud-table/runtime business change.
-- `git diff --check` and `node scripts/codex_state.mjs validate` pass after this documentation sync; the only unstaged source file remains the user-owned `CloudStore.ets`.
+- Exact `default@OhosTestCompileArkTS --analyze=normal --parallel --incremental --no-daemon`: `BUILD SUCCESSFUL` after the final UI/controller-isolation fix.
+- Exact `assembleHap --analyze=normal --parallel --incremental --no-daemon`: `BUILD SUCCESSFUL`; signed HAP `entry/build/default/outputs/default/entry-default-signed.hap`, SHA-256 `296d60a2e264ec46dd3300099640ac65895d647b76362a829030e1e0a70a5b97`.
+- That HAP was installed and started outside the sandbox on PC `127.0.0.1:5555` and phone `127.0.0.1:5557`.
+- Fresh current-package evidence is `/private/tmp/moonlight-fab-final2-20260812/`: new PC/phone homepage and picker screenshots/UI trees, all viewed from the current HAP only; the picker tree records `仅添加` on both breakpoints.
+- Visual acceptance confirms the separate entry gate, official tintable icon, explicit shell-only label, bounded candidate scroll, separated bottom actions, intrinsic PC sheet and unchanged homepage shell.
+- Native focused rerun rebuilt the listener in the host test target and reported `701 passed, 16 failed, 717 total`; the 16 failures are the known existing local TLS fixture starts. The OHOS listener translation unit also passed an API 23 arm64 syntax check. `ohosTest` remains unavailable because task `00306054` is not registered.
+- `CloudStore.ets` is the only intentional user-owned unstaged file and was not read for business changes, modified, staged or committed. No RDP/RustDesk/SSH/SFTP business file was changed.
 
 ## Next / blockers
 
-- Next implementation boundary: S1-05A native HarmonyOS GameController listener plus narrow typed NAPI and the single session-owned common-c input port. Keep controller capability false until the chain and real-device receipts exist.
-- Remaining acceptance is not a release claim: AppSpawn secure identity, real Sunshine pairing/transport/media/first-frame, OHAudio/Surface lifecycle, physical controller, on-device Hypium, network/thermal/long-run evidence remain unproven.
-- Moonlight cloud sync is intentionally parked. The user-owned CloudStore cloud-sync diff remains unstaged and is not part of this checkpoint.
+- Next implementation boundary: complete S1-05A session-owned listener → N3-08 → N3-05 → N3-01 → common-c binding only after the runtime session port exists; keep controller capability and `moonlightProtocolAvailable` false until real-device receipts.
+- Real Sunshine pairing/Host Control, catalog/launch, H.264/Opus first frame, OHAudio/Surface lifecycle, physical controller, network/thermal/long-run and user ARM64 evidence remain unproven; this is not a release-ready Moonlight streaming claim.
+- `ohosTest` remains blocked at unregistered task `00306054`; compile registration and simulator UI are not device Hypium PASS.
+- Moonlight cloud sync is intentionally parked; the user-owned cloud diff remains outside this task and is not staged or committed.

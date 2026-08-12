@@ -4,25 +4,35 @@ export type MoonlightPickerIconMode = 'brand' | 'system-fallback';
 export interface HostProtocolPickerOptionState {
   protocol: string;
   enabled: boolean;
+  routeEnabled: boolean;
+  runtimeAvailable: boolean;
+  shellOnly: boolean;
   statusLabel: string;
   opacity: number;
 }
 
 /**
- * Keeps the option-card contract shared with RustDesk. Callers can still
- * pass false for a future capability gate; the released FAB passes true while
- * Moonlight's pairing and streaming callbacks remain fail-closed.
+ * Keeps the option-card contract shared with RustDesk. The reviewable
+ * Moonlight add shell has its own explicit entry gate; it must not be used as
+ * evidence that the protocol/runtime capability is released.
  */
 export function resolveHostProtocolPickerOption(
   protocol: string,
-  moonlightProtocolAvailable: boolean
+  moonlightProtocolAvailable: boolean,
+  moonlightFabEntryAvailable: boolean = false
 ): HostProtocolPickerOptionState {
-  const enabled: boolean = protocol !== 'moonlight' || moonlightProtocolAvailable;
+  const runtimeAvailable: boolean = protocol !== 'moonlight' || moonlightProtocolAvailable;
+  const routeEnabled: boolean = runtimeAvailable ||
+    moonlightFabEntryAvailable;
+  const shellOnly: boolean = protocol === 'moonlight' && routeEnabled && !runtimeAvailable;
   return {
     protocol: protocol,
-    enabled: enabled,
-    statusLabel: enabled ? '' : HOST_PROTOCOL_COMING_SOON_LABEL,
-    opacity: enabled ? 1 : 0.58
+    enabled: routeEnabled,
+    routeEnabled: routeEnabled,
+    runtimeAvailable: runtimeAvailable,
+    shellOnly: shellOnly,
+    statusLabel: shellOnly ? '仅添加' : (routeEnabled ? '' : HOST_PROTOCOL_COMING_SOON_LABEL),
+    opacity: routeEnabled ? 1 : 0.58
   };
 }
 

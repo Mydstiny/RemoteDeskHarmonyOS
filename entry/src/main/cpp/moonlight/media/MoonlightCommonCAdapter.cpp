@@ -3,7 +3,6 @@
 // This is the only project translation unit allowed to see common-c's public C
 // structs, callback signatures, numeric masks, and Li* entry points.
 #include "moonlight/upstream/moonlight-common-c/src/Limelight.h"
-#include "moonlight/input/MoonlightControllerMapper.h"
 
 #include <algorithm>
 #include <atomic>
@@ -727,11 +726,6 @@ public:
     bool onAudioCleanup() noexcept;
     bool onAudioPayload(const std::uint8_t* bytes,
                         std::size_t byteCount) noexcept;
-#if !defined(RDP_TESTS_ONLY)
-    MoonlightInputPortStatus onControllerEvent(
-        const MoonlightInputEvent& event) noexcept;
-    bool flushController(const MoonlightInputFlushRequest& request) noexcept;
-#endif
 
     MoonlightSessionKey key() const noexcept;
     MoonlightCommonCSnapshot snapshot() const noexcept;
@@ -950,32 +944,6 @@ bool routeAudioPayload(const std::uint8_t* bytes, std::size_t count) noexcept {
     return invocation != nullptr && invocation->onAudioPayload(bytes, count);
 }
 
-#if !defined(RDP_TESTS_ONLY)
-MoonlightInputPortStatus routeControllerEvent(
-    const MoonlightInputEvent& event) noexcept {
-    const auto invocation = routedInvocation();
-    return invocation == nullptr ? MoonlightInputPortStatus::Failed
-                                  : invocation->onControllerEvent(event);
-}
-
-bool routeControllerFlush(const MoonlightInputFlushRequest& request) noexcept {
-    const auto invocation = routedInvocation();
-    return invocation != nullptr && invocation->flushController(request);
-}
-
-class ProductControllerInputPort final : public MoonlightInputPort {
-public:
-    MoonlightInputPortStatus send(
-        const MoonlightInputEvent& event) noexcept override {
-        return routeControllerEvent(event);
-    }
-
-    bool flushNeutral(
-        const MoonlightInputFlushRequest& request) noexcept override {
-        return routeControllerFlush(request);
-    }
-};
-#endif
 void routeRawAudioPayload(const std::uint8_t* bytes, std::int32_t count) noexcept {
     if (bytes == nullptr && count == 0) {
         (void)routeAudioPayload(nullptr, 0U);
@@ -2159,73 +2127,6 @@ bool Invocation::onAudioPayload(const std::uint8_t* bytes,
     return true;
 }
 
-#if !defined(RDP_TESTS_ONLY)
-MoonlightInputPortStatus Invocation::onControllerEvent(
-    const MoonlightInputEvent& event) noexcept {
-    auto lease = acquireCallback();
-    if (!lease.valid()) {
-        return MoonlightInputPortStatus::Failed;
-    }
-
-    MoonlightControllerWireCommand command;
-    if (!decodeMoonlightControllerCommand(event, command)) {
-        return MoonlightInputPortStatus::Failed;
-    }
-
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (!transportReady_ || !routerInstalled_ || terminal_ || finalizing_ ||
-            event.identity.key != key_) {
-            return MoonlightInputPortStatus::Failed;
-        }
-    }
-
-    int result = -1;
-    switch (command.operation) {
-        case MoonlightControllerCommandOperation::Arrival:
-            result = LiSendControllerArrivalEvent(
-                command.controllerNumber, command.activeGamepadMask,
-                static_cast<std::uint8_t>(command.type),
-                command.supportedButtonFlags, command.capabilities);
-            break;
-        case MoonlightControllerCommandOperation::State:
-            result = LiSendMultiControllerEvent(
-                static_cast<short>(command.controllerNumber),
-                static_cast<short>(command.activeGamepadMask),
-                static_cast<int>(command.state.buttonFlags),
-                command.state.leftTrigger, command.state.rightTrigger,
-                command.state.leftStickX, command.state.leftStickY,
-                command.state.rightStickX, command.state.rightStickY);
-            break;
-    }
-    if (result == 0) {
-        return MoonlightInputPortStatus::Accepted;
-    }
-    return result == LI_ERR_UNSUPPORTED ? MoonlightInputPortStatus::Unsupported
-                                        : MoonlightInputPortStatus::Failed;
-}
-
-bool Invocation::flushController(
-    const MoonlightInputFlushRequest& request) noexcept {
-    auto lease = acquireCallback();
-    if (!lease.valid()) {
-        return false;
-    }
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (!transportReady_ || !routerInstalled_ || terminal_ || finalizing_ ||
-            request.identity.key != key_ || request.operationGeneration == 0U ||
-            request.monotonicTimestampUs == 0U) {
-            return false;
-        }
-    }
-    const short activeMask = request.reason == MoonlightInputSuspendReason::Stop
-                                 ? 0
-                                 : 1;
-    return LiSendMultiControllerEvent(0, activeMask, 0, 0, 0, 0, 0, 0, 0) == 0;
-}
-#endif
-
 void Invocation::cleanseLocked() noexcept {
     if (secretsCleared_) { return; }
     wire_.cleanse();
@@ -2759,18 +2660,6 @@ int MoonlightCommonCAdapter::productionLinkSmoke() noexcept {
             &LiStopConnection != nullptr)
                ? 0
                : 1;
-#endif
-}
-
-std::shared_ptr<MoonlightInputPort> createProcessMoonlightCommonCInputPort() noexcept {
-#if defined(RDP_TESTS_ONLY)
-    return nullptr;
-#else
-    try {
-        return std::make_shared<ProductControllerInputPort>();
-    } catch (...) {
-        return nullptr;
-    }
 #endif
 }
 

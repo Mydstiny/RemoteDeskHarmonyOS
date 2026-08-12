@@ -17,9 +17,10 @@ import {
 export struct HostProtocolPicker {
   @StorageProp('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
-  // The FAB entry is released. Runtime pairing/streaming callbacks still
-  // fail closed until the native session is available.
-  @Prop moonlightProtocolAvailable: boolean = true;
+  // The add-shell entry and the runtime protocol capability are separate
+  // gates. The entry can be reviewed before pairing/streaming is released.
+  @Prop moonlightFabEntryAvailable: boolean = false;
+  @Prop moonlightProtocolAvailable: boolean = false;
   onSelect: (protocol: string) => void = (_protocol: string): void => {};
   onClose: () => void = (): void => {};
   @State moonlightIconFailed: boolean = false;
@@ -28,7 +29,8 @@ export struct HostProtocolPicker {
     return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor);
   }
 
-  @Builder private protocolOption(protocol: string, title: string, subtitle: string, enabled: boolean) {
+  @Builder private protocolOption(protocol: string, title: string, subtitle: string,
+    enabled: boolean, runtimeAvailable: boolean, entryAvailable: boolean) {
     Row() {
       if (protocol === 'moonlight' &&
         resolveMoonlightPickerIconMode(this.moonlightIconFailed) === 'brand') {
@@ -49,20 +51,20 @@ export struct HostProtocolPicker {
         Text(title).fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
         Text(subtitle).fontSize(12).fontColor(this.pal().text3).margin({ top: 3 })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-      if (enabled) {
+      if (enabled && runtimeAvailable) {
         SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(18).fontColor([this.pal().text3])
       } else {
-        Text(resolveHostProtocolPickerOption(protocol, enabled).statusLabel)
+        Text(resolveHostProtocolPickerOption(protocol, runtimeAvailable, entryAvailable).statusLabel)
           .fontSize(11).fontColor(this.pal().text3)
           .padding({ left: 8, right: 8, top: 3, bottom: 3 }).borderRadius(8)
           .backgroundColor(this.pal().surface)
       }
     }.width('100%').height(68).padding({ left: 18, right: 18 })
     .borderRadius(16).backgroundColor(this.pal().surface).margin({ bottom: 10 })
-    .opacity(resolveHostProtocolPickerOption(protocol, enabled).opacity)
+    .opacity(resolveHostProtocolPickerOption(protocol, runtimeAvailable, entryAvailable).opacity)
     .onClick((): void => {
       const state: HostProtocolPickerOptionState =
-        resolveHostProtocolPickerOption(protocol, enabled);
+        resolveHostProtocolPickerOption(protocol, runtimeAvailable, entryAvailable);
       dispatchSelectedHostProtocol(state, this.onSelect);
     })
   }
@@ -78,12 +80,13 @@ export struct HostProtocolPicker {
           .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
           .onClick((): void => { this.onClose(); })
       }.width('100%').margin({ bottom: 18 })
-      this.protocolOption('rdp', 'RDP', '连接 Windows 远程桌面', true)
-      this.protocolOption('rustdesk', 'RustDesk', '中继、直连与局域网发现', true)
-      this.protocolOption('ssh', 'SSH', '密码或密钥登录服务器', true)
-      this.protocolOption('vnc', 'VNC', '跨平台屏幕控制、直连与 UltraVNC Repeater', true)
+      this.protocolOption('rdp', 'RDP', '连接 Windows 远程桌面', true, true, false)
+      this.protocolOption('rustdesk', 'RustDesk', '中继、直连与局域网发现', true, true, false)
+      this.protocolOption('ssh', 'SSH', '密码或密钥登录服务器', true, true, false)
+      this.protocolOption('vnc', 'VNC', '跨平台屏幕控制、直连与 UltraVNC Repeater', true, true, false)
       this.protocolOption('moonlight', 'Moonlight', '低延迟游戏与桌面串流',
-        this.moonlightProtocolAvailable)
+        this.moonlightProtocolAvailable || this.moonlightFabEntryAvailable,
+        this.moonlightProtocolAvailable, this.moonlightFabEntryAvailable)
     }.width('100%').padding({ left: 20, right: 20, top: 20, bottom: 18 })
     .backgroundColor(this.pal().card)
   }

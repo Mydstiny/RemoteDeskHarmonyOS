@@ -632,31 +632,40 @@ export struct MoonlightHostAddFlow {
             if (this.discoveryIsRunning()) { this.pauseDiscovery(); } else { this.startDiscovery(); }
           })
       }.width('100%').margin({ bottom: 10 })
-      ForEach(this.visibleCandidates(), (candidate: MoonlightHostAddCandidate) => {
-        Row() {
-          Column() {
-            Text(candidate.displayName).fontSize(14).fontWeight(FontWeight.Medium)
-              .fontColor(this.pal().text)
-            Text((candidate.reachable ? '在线' : '状态未知') + ' · ' +
-              candidate.address.host + (candidate.paired ? ' · 已配对' : ' · 未配对'))
-              .fontSize(11).fontColor(this.pal().text3).margin({ top: 3 })
-          }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-          if (this.flow.selectedServerUuid === candidate.serverUuid) {
-            SymbolGlyph($r('sys.symbol.checkmark_circle_fill'))
-              .fontSize(20).fontColor([this.accentColor])
-          } else {
-            Text('选择').fontSize(12).fontColor(this.accentColor)
-          }
-        }.width('100%').padding(12).borderRadius(10).backgroundColor(this.pal().surface)
-          .margin({ bottom: 7 })
-          .border({
-            width: this.flow.selectedServerUuid === candidate.serverUuid ? 1 : 0,
-            color: this.accentColor
-          })
-          .onClick((): void => {
-            this.flow = selectMoonlightHostAddCandidate(this.flow, candidate);
-          })
-      }, (candidate: MoonlightHostAddCandidate): string => candidate.serverUuid)
+      // Keep the sheet intrinsic like RustDesk, but bound the dynamic result
+      // region so a crowded LAN or large font never pushes the actions out of
+      // the visible sheet. Only the candidate list scrolls.
+      Scroll() {
+        Column() {
+          ForEach(this.visibleCandidates(), (candidate: MoonlightHostAddCandidate) => {
+            Row() {
+              Column() {
+                Text(candidate.displayName).fontSize(14).fontWeight(FontWeight.Medium)
+                  .fontColor(this.pal().text)
+                Text((candidate.reachable ? '在线' : '状态未知') + ' · ' +
+                  candidate.address.host + (candidate.paired ? ' · 已配对' : ' · 未配对'))
+                  .fontSize(11).fontColor(this.pal().text3).margin({ top: 3 })
+              }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+              if (this.flow.selectedServerUuid === candidate.serverUuid) {
+                SymbolGlyph($r('sys.symbol.checkmark_circle_fill'))
+                  .fontSize(20).fontColor([this.accentColor])
+              } else {
+                Text('选择').fontSize(12).fontColor(this.accentColor)
+              }
+            }.width('100%').padding(12).borderRadius(10).backgroundColor(this.pal().surface)
+              .margin({ bottom: 7 })
+              .border({
+                width: this.flow.selectedServerUuid === candidate.serverUuid ? 1 : 0,
+                color: this.accentColor
+              })
+              .onClick((): void => {
+                this.flow = selectMoonlightHostAddCandidate(this.flow, candidate);
+              })
+          }, (candidate: MoonlightHostAddCandidate): string => candidate.serverUuid)
+        }.width('100%')
+      }.width('100%')
+        .constraintSize({ maxHeight: this.breakpoint === 'sm' ? 260 : 320 })
+        .scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
     } else {
       this.field('主机地址', this.flow.manualAddressText, '例如：gaming-pc.local 或 192.168.1.10',
         (value: string): void => {

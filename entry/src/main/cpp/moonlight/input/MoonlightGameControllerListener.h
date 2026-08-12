@@ -65,7 +65,10 @@ MoonlightGameControllerListener final {
     struct Impl;
 
   private:
-    std::unique_ptr<Impl> impl_;
+    // A callback lease keeps Impl alive while a process-global SDK callback
+    // unwinds, including when a sink destroys the listener from inside that
+    // callback.
+    std::shared_ptr<Impl> impl_;
 };
 
 } // namespace remotedesk::moonlight

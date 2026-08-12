@@ -4862,4 +4862,42 @@ GameControllerKit→typed NAPI→common-c、网络/温控/长稳和 device Hypiu
 本次仍为文档/验收收口，没有新增代码；`CloudStore.ets` 仍是用户-owned 未暂存修改。构建、HDC 安装启动和 UI 检查不改变
 `moonlightProtocolAvailable=false`、本地主机 `host/trust` 仓储边界或实体手柄 S1-05A 的未开放状态。
 
+### 15.21 U1-14 adaptive FAB/add-shell and S1-05A isolation closeout（2026-08-12）
+
+本节覆盖此前 U1-14 工作树增量，并以本节取代旧的“FAB 仍为 `即将支持`/不可进入”描述。
+
+#### 产品/UI 合同
+
+- Moonlight FAB 入口沿用 RustDesk 的“FAB → 单协议选择 Sheet → 单添加 Sheet”路由，首页仍是主机管理唯一入口；不新增设置页主机管理、不新增第二个主机列表。
+- `moonlightFabEntryAvailable` 只代表可审查的四步本地添加壳入口；`moonlightProtocolAvailable` 仍为 `false`，不能由入口可达性推导 pairing、Host Control、目录、串流、保存或 release truth 已开放。
+- 为避免“可点击即代表可串流”的误导，协议选择卡在 shell-only 状态显示官方可着色 Moonlight 图标与 `仅添加`，不显示运行能力 chevron；点击仍只进入添加壳，壳内运行时步骤继续 fail closed。
+- `MoonlightHostAddFlow` 按 RustDesk 的自适应结构使用 `currentBreakpoint`、intrinsic `FIT_CONTENT` 高度和统一 Theme token；动态发现候选单独放入手机 260vp/大屏 320vp 有界 `Scroll`，发现/完成操作组在 Scroll 外以至少 12vp（大屏 10vp）间距排列，底部按钮不再粘连且始终可见。
+
+#### 原生边界与实体手柄合同
+
+- GameControllerKit listener 仅保留为 test-only/future-session native foundation，不进入产品 `MOONLIGHT_SOURCES`、`rdpnapi`、共享 NAPI、ArkTS 类型声明或 common-c product input port；不注册进其他协议进程路径，不引入公共输入 owner、第二队列或新的线程。
+- listener 的注册失败路径会关闭 admission、等待已获得 callback lease 的回调排空后再返回；`start/stop` 继续由 lifecycle mutex 串行化；所有 GameControllerKit callback 通过单一 dispatch mutex 完成有序 sink transaction，防止断开/重连时 generation/sequence 乱序。
+- S1-05A 仍是唯一的后续实体手柄落地点：listener → 单一 session-owned typed sink → N3-08 aggregator → N3-05 mapper → N3-01/common-c；在真实 session port 和实体设备 receipt 之前保持 controller/runtime capability false。
+
+#### 当前验证与隔离事实
+
+- 精确 `default@OhosTestCompileArkTS --analyze=normal --parallel --incremental --no-daemon` 与 `assembleHap --analyze=normal --parallel --incremental --no-daemon` 均 `BUILD SUCCESSFUL`；当前签名 HAP SHA-256 为 `dfb5ec2c4dd9e67630c805fcce34b6d3eb9871765fccc910a77d86d6cbb1f16d`。
+- 当前 HAP 已通过沙箱外 HDC 安装/启动于 PC `127.0.0.1:5555` 与手机 `127.0.0.1:5557`；只使用新抓取并实际查看的 `/private/tmp/moonlight-fab-final2-20260812/` 证据。PC/手机 picker UI tree 均记录 Moonlight、官方图标和 `仅添加`；首页未受影响。
+- native focused target 编译成功；全量结果为 `701 passed, 16 failed, 717 total`，16 个失败均为既有本地 TLS fixture 启动失败，Moonlight listener/controller 合同测试通过。
+- 本 checkpoint 未改用户 `CloudStore.ets` 的业务内容，不接入云同步；未改 RDP、RustDesk、SSH/SFTP 的业务实现、公共输入路径或其性能/功能开关。`git diff --check` 通过。
+
+#### 收口边界
+
+本节完成的是自适应 UI/本地添加壳和原生隔离安全收口，不是 Moonlight 串流发布。真实 Sunshine 配对、Host Control、视频/Opus 首帧、OHAudio/Surface、session-owned 手柄发送、网络/温控/长稳及设备 Hypium 仍由 S1-05A、S1-08、N2-09 和设备门禁负责；下一实现任务唯一为 S1-05A。
+
+### 15.22 最终提交前验证收口（2026-08-12）
+
+- listener 的 callback registry 现在以 `shared_ptr<Impl>` 保持已进入 SDK callback 的对象存活；注册失败会排空 admitted callback lease，注销会释放 registry owner；sink 内同步 `stop()` 只标记 deferred stop，实际注销由 callback lease 在最外层 callback 返回后执行，避免自等待和悬空对象。
+- 当前产品精确 `default@OhosTestCompileArkTS` 与 `assembleHap` 均 `BUILD SUCCESSFUL`。最新签名 HAP 为
+  `entry/build/default/outputs/default/entry-default-signed.hap`，SHA-256 为
+  `296d60a2e264ec46dd3300099640ac65895d647b76362a829030e1e0a70a5b97`；UI 证据仍只认
+  `/private/tmp/moonlight-fab-final2-20260812/`。
+- host `rdp_native_tests` 从当前工作树重新配置/编译/运行，结果 `701 passed, 16 failed, 717 total`；失败仍为既有本地 TLS fixture 启动失败，Moonlight listener/controller 用例通过；API 23 arm64 listener syntax check 通过。
+- 本次提交继续只收口 Moonlight UI/隔离 foundation；`CloudStore.ets` 不暂存、不修改、不接入 Moonlight 云同步。产品不含 listener、GameControllerKit link、公共 controller NAPI 或 common-c controller port，因此不改变其他协议的性能/功能路径。真实 session-owned 手柄传输仍属于后续 S1-05A。
+
 <!-- PLAN_BODY_END -->

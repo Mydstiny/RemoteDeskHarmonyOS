@@ -1245,6 +1245,23 @@ ArkTS 直接编码或发送控制器线协议。
 本次仍未新增实现代码。设置仍走公共设置 → Moonlight 协议分组 → leaf → 单 bindSheet；数据仍由 `MoonlightLocalHostService`
 通过现有本地 `MoonlightRepositoryPort` 写入 `localOnly=1` 的 host/trust；云表、网络、媒体、native/NAPI 和实体手柄链路均未打开。
 
+## 12.29 U1-14 adaptive FAB/add-shell and S1-05A isolation closeout（2026-08-12）
+
+- `HostProtocolPickerPolicy` 现在把 `routeEnabled`、`runtimeAvailable` 和 `shellOnly` 分开。FAB 进入本地添加壳时只打开 route gate；`moonlightProtocolAvailable` 仍为 false，Moonlight 卡显示 `仅添加`、不显示运行 chevron，避免把可审查 UI 壳误报为可串流。
+- `MoonlightHostAddFlow` 的候选发现区使用 bounded `Scroll`，动作区在 Scroll 外保持可见；两组完成按钮使用显式间距。`HostListPage` 在 phone/pad/desktop 全部使用 `FIT_CONTENT`，PC 不再出现强制大 Sheet 的空白尾部。
+- `MoonlightGameControllerListener` 仅在 native focused test target 保留，产品 `MOONLIGHT_SOURCES`、`rdpnapi`、共享 NAPI、d.ts、common-c product input port 和产品 GameControllerKit link 均不包含它；失败注册 drain callback leases，dispatch mutex 串行 sink 事件，reconnect 仍换 generation。
+- 当前签名 HAP 为 `dfb5ec2c4dd9e67630c805fcce34b6d3eb9871765fccc910a77d86d6cbb1f16d`，精确双 Hvigor 门禁通过；新 PC/手机证据仅认 `/private/tmp/moonlight-fab-final2-20260812/`，picker tree 均有 `仅添加`。
+- native `rdp_native_tests` 编译成功，结果 `701 passed, 16 failed, 717 total`；16 项既有本地 TLS fixture 启动失败，Moonlight listener/controller 测试通过。`CloudStore.ets` 继续是用户-owned unstaged，云同步不在本 checkpoint。
+- 本 checkpoint 只改变 Moonlight UI gate/隔离 foundation，不改变其他协议业务、公共输入 owner、云表、云同步或 release truth；下一唯一实现边界为 S1-05A 的 session-owned controller sink 绑定。
+
+## 12.30 最终提交前收口验证（2026-08-12）
+
+- 修正 listener 回调所有权收口：process-global callback registry 以 `shared_ptr` 持有当前 `Impl`，注册失败/注销路径清理 owner；sink 回调只维护 callback depth，deferred stop 由最外层 callback lease 在回调完全返回后执行，避免 sink 同步调用 `stop()` 自等待。
+- 当前产品 HAP 精确双 Hvigor 门禁均 `BUILD SUCCESSFUL`，当前签名包 SHA-256 为
+  `296d60a2e264ec46dd3300099640ac65895d647b76362a829030e1e0a70a5b97`；本次 listener 变更不进入产品 `rdpnapi`，不改变 HAP 的 Moonlight runtime gate。
+- host focused `rdp_native_tests` 从本次工作树重新配置、编译并运行：`701 passed, 16 failed, 717 total`；16 个失败仍是既有本地 TLS fixture 启动失败，Moonlight listener/controller 用例全部通过。OHOS API 23 arm64 listener translation unit syntax check 通过。
+- `CloudStore.ets` 仍保持用户-owned unstaged；不接入 Moonlight 云同步。RDP、RustDesk、SSH/SFTP 的业务源、公共输入 owner、产品 NAPI/CMake link graph 未改变。
+
 ## 12.25 当前收尾复核（2026-08-12）
 
 - 当前代码 checkpoint 仍为 `665df714`，文档收尾提交为 `b1ac85dcc`；当前工作树唯一未提交文件是用户-owned

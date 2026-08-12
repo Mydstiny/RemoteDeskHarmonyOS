@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cctype>
 #include <condition_variable>
@@ -194,9 +195,20 @@ struct MoonlightGameControllerListener::Impl final {
     explicit Impl(Sink& valueSink) noexcept : sink(&valueSink) {}
 
     Sink* sink = nullptr;
+    // Serializes SDK registration/unregistration. GameControllerKit has a
+    // process-global callback table, so start/stop must not interleave.
+    mutable std::mutex lifecycleMutex;
+    // GameControllerKit callbacks have no context and may arrive concurrently.
+    // Serialize the full callback-to-sink transaction so a disconnect/reconnect
+    // cannot reorder generations or source sequences at the sink boundary.
+    mutable std::mutex dispatchMutex;
     mutable std::mutex mutex;
-    bool started = false;
-    std::size_t callbacksInFlight = 0U;
+    std::atomic<bool> started {false};
+    // A sink is allowed to request stop synchronously from its callback. The
+    // callback lease performs the final unregister after the current callback
+    // returns, instead of making stop() wait for itself.
+    std::atomic<bool> stopDeferred {false};
+    std::atomic<bool> registrationActive {false};
     std::uint64_t nextGeneration = 1U;
     std::unordered_map<std::uint64_t, std::uint64_t> generations;
     std::unordered_map<std::uint64_t, std::string> sdkIds;
@@ -215,6 +227,7 @@ struct CallbackRegistry final {
     std::mutex mutex;
     std::condition_variable cv;
     MoonlightGameControllerListener::Impl* active = nullptr;
+    std::shared_ptr<MoonlightGameControllerListener::Impl> activeOwner;
     std::size_t inFlight = 0U;
 };
 
@@ -223,32 +236,108 @@ CallbackRegistry& callbackRegistry() noexcept {
     return registry;
 }
 
-MoonlightGameControllerListener::Impl* acquireCallback() noexcept {
-    auto& registry = callbackRegistry();
-    std::lock_guard<std::mutex> lock(registry.mutex);
-    if (registry.active == nullptr || !registry.active->started) {
-        return nullptr;
-    }
-    ++registry.inFlight;
-    return registry.active;
+thread_local MoonlightGameControllerListener::Impl* currentCallbackImpl = nullptr;
+thread_local std::size_t currentCallbackDepth = 0U;
+
+bool isCurrentCallback(const MoonlightGameControllerListener::Impl& impl) noexcept {
+    return currentCallbackImpl == &impl && currentCallbackDepth != 0U;
 }
 
-void releaseCallback() noexcept {
+std::shared_ptr<MoonlightGameControllerListener::Impl> acquireCallback() noexcept {
+    auto& registry = callbackRegistry();
+    std::lock_guard<std::mutex> lock(registry.mutex);
+    if (registry.active == nullptr ||
+        registry.activeOwner == nullptr ||
+        !registry.active->started.load(std::memory_order_acquire)) {
+        return {};
+    }
+    ++registry.inFlight;
+    return registry.activeOwner;
+}
+
+bool releaseCallback(MoonlightGameControllerListener::Impl& impl) noexcept {
     auto& registry = callbackRegistry();
     std::lock_guard<std::mutex> lock(registry.mutex);
     if (registry.inFlight != 0U) {
         --registry.inFlight;
     }
     registry.cv.notify_all();
+    return registry.inFlight == 0U &&
+        impl.stopDeferred.load(std::memory_order_acquire);
+}
+
+void stopRegisteredListener(MoonlightGameControllerListener::Impl& impl) noexcept;
+void finishDeferredStop(MoonlightGameControllerListener::Impl& impl) noexcept;
+
+class SinkDispatchScope final {
+  public:
+    explicit SinkDispatchScope(MoonlightGameControllerListener::Impl& value) noexcept
+        : impl(&value) {
+        if (currentCallbackImpl == impl) {
+            ++currentCallbackDepth;
+        } else {
+            currentCallbackImpl = impl;
+            currentCallbackDepth = 1U;
+        }
+    }
+    ~SinkDispatchScope() {
+        if (currentCallbackImpl != impl || currentCallbackDepth == 0U) {
+            return;
+        }
+        --currentCallbackDepth;
+        if (currentCallbackDepth == 0U) {
+            currentCallbackImpl = nullptr;
+        }
+    }
+    SinkDispatchScope(const SinkDispatchScope&) = delete;
+    SinkDispatchScope& operator=(const SinkDispatchScope&) = delete;
+
+  private:
+    MoonlightGameControllerListener::Impl* impl = nullptr;
+};
+
+void requestStopFromCallback(MoonlightGameControllerListener::Impl& impl) noexcept {
+    auto& registry = callbackRegistry();
+    std::lock_guard<std::mutex> lock(registry.mutex);
+    impl.started.store(false, std::memory_order_release);
+    // Keep the process-global owner claimed until the monitor callbacks have
+    // actually been unregistered. A second listener must not register while
+    // this deferred teardown still owns GameControllerKit's callback table.
+    impl.stopDeferred.store(true, std::memory_order_release);
 }
 
 class CallbackLease final {
   public:
-    explicit CallbackLease(MoonlightGameControllerListener::Impl* value) noexcept
-        : impl(value) {}
-    ~CallbackLease() { if (impl != nullptr) { releaseCallback(); } }
+    explicit CallbackLease(
+        std::shared_ptr<MoonlightGameControllerListener::Impl> value) noexcept
+        : owner(std::move(value)), impl(owner.get()) {
+        if (impl != nullptr) {
+            if (currentCallbackImpl == impl) {
+                ++currentCallbackDepth;
+            } else {
+                currentCallbackImpl = impl;
+                currentCallbackDepth = 1U;
+            }
+        }
+    }
+    ~CallbackLease() {
+        if (impl == nullptr) {
+            return;
+        }
+        const bool shouldFinish = releaseCallback(*impl);
+        if (currentCallbackImpl == impl && currentCallbackDepth != 0U) {
+            --currentCallbackDepth;
+            if (currentCallbackDepth == 0U) {
+                currentCallbackImpl = nullptr;
+            }
+        }
+        if (shouldFinish) {
+            finishDeferredStop(*impl);
+        }
+    }
     CallbackLease(const CallbackLease&) = delete;
     CallbackLease& operator=(const CallbackLease&) = delete;
+    std::shared_ptr<MoonlightGameControllerListener::Impl> owner;
     MoonlightGameControllerListener::Impl* impl = nullptr;
 };
 
@@ -273,6 +362,38 @@ std::uint64_t ensureDevice(MoonlightGameControllerListener::Impl& impl,
             impl.samples[id] = {};
             impl.sequences[id] = 0U;
             impl.timestamps[id] = 0U;
+        } else if (impl.sequences[id] == 0U) {
+            // A reconnect must receive a new source generation. The previous
+            // generation may already be retired by the mapper/tombstone
+            // layer and must never be reused for a new physical source.
+            const auto generation = impl.nextGeneration == 0U ? 1U : impl.nextGeneration;
+            impl.nextGeneration = saturatingIncrement(generation);
+            impl.generations[id] = generation;
+            impl.samples[id] = {};
+            impl.timestamps[id] = 0U;
+        }
+        return id;
+    } catch (...) {
+        return 0U;
+    }
+}
+
+std::uint64_t findOnlineDevice(MoonlightGameControllerListener::Impl& impl,
+                               const char* sdkId) noexcept {
+    try {
+        const auto id = stableDeviceId(sdkId);
+        if (id == 0U) {
+            return 0U;
+        }
+        const auto boundedId = boundedText(sdkId);
+        std::lock_guard<std::mutex> lock(impl.mutex);
+        const auto existing = impl.sdkIds.find(id);
+        if (existing == impl.sdkIds.end() || existing->second != boundedId ||
+            impl.sequences[id] == 0U) {
+            // Button/axis callbacks cannot establish a device or a new
+            // generation. A late event after OFFLINE must be dropped until a
+            // fresh ONLINE event is observed.
+            return 0U;
         }
         return id;
     } catch (...) {
@@ -301,6 +422,7 @@ void emitConnected(MoonlightGameControllerListener::Impl& impl,
         impl.timestamps[id] = monotonicNowUs();
     }
     if (impl.sink != nullptr) {
+        SinkDispatchScope dispatch(impl);
         impl.sink->onPhysicalControllerConnected(id, generation, profile);
     }
 }
@@ -327,6 +449,7 @@ void emitSample(MoonlightGameControllerListener::Impl& impl,
         impl.samples[id] = sample;
     }
     if (impl.sink != nullptr) {
+        SinkDispatchScope dispatch(impl);
         impl.sink->onPhysicalControllerSample(id, generation, sequence, timestamp, sample);
     }
 }
@@ -350,6 +473,7 @@ void emitDisconnected(MoonlightGameControllerListener::Impl& impl,
         impl.samples[id] = {};
     }
     if (impl.sink != nullptr) {
+        SinkDispatchScope dispatch(impl);
         impl.sink->onPhysicalControllerDisconnected(id, generation, sequence, timestamp);
     }
     std::lock_guard<std::mutex> lock(impl.mutex);
@@ -362,6 +486,7 @@ void buttonCallback(const GamePad_ButtonEvent* event) {
     if (lease.impl == nullptr || event == nullptr) {
         return;
     }
+    std::lock_guard<std::mutex> dispatchLock(lease.impl->dispatchMutex);
     char* sdkId = nullptr;
     char* codeName = nullptr;
     GamePad_Button_ActionType action = UP;
@@ -370,7 +495,7 @@ void buttonCallback(const GamePad_ButtonEvent* event) {
         OH_GamePad_ButtonEvent_GetButtonCodeName(event, &codeName) != GAME_CONTROLLER_SUCCESS) {
         return;
     }
-    const auto id = ensureDevice(*lease.impl, sdkId);
+    const auto id = findOnlineDevice(*lease.impl, sdkId);
     if (id == 0U) {
         return;
     }
@@ -408,6 +533,7 @@ void axisCallback(const GamePad_AxisEvent* event) {
     if (lease.impl == nullptr || event == nullptr) {
         return;
     }
+    std::lock_guard<std::mutex> dispatchLock(lease.impl->dispatchMutex);
     char* sdkId = nullptr;
     GamePad_AxisSourceType source = DPAD;
     double x = 0.0;
@@ -430,7 +556,7 @@ void axisCallback(const GamePad_AxisEvent* event) {
         OH_GamePad_AxisEvent_GetGasAxisValue(event, &gas) != GAME_CONTROLLER_SUCCESS) {
         return;
     }
-    const auto id = ensureDevice(*lease.impl, sdkId);
+    const auto id = findOnlineDevice(*lease.impl, sdkId);
     if (id == 0U) {
         return;
     }
@@ -470,6 +596,7 @@ void deviceCallback(const GameDevice_DeviceEvent* event) {
     if (lease.impl == nullptr || event == nullptr) {
         return;
     }
+    std::lock_guard<std::mutex> dispatchLock(lease.impl->dispatchMutex);
     GameDevice_StatusChangedType status = OFFLINE;
     GameDevice_DeviceInfo* info = nullptr;
     if (OH_GameDevice_DeviceEvent_GetChangedType(event, &status) != GAME_CONTROLLER_SUCCESS ||
@@ -586,11 +713,53 @@ void unregisterMonitors(const std::array<Registration, N>& monitors,
     }
 }
 
+void stopRegisteredListener(MoonlightGameControllerListener::Impl& impl) noexcept {
+    impl.stopDeferred.store(false, std::memory_order_release);
+    auto& registry = callbackRegistry();
+    {
+        std::unique_lock<std::mutex> lock(registry.mutex);
+        impl.started.store(false, std::memory_order_release);
+        registry.cv.wait(lock, [&]() { return registry.inFlight == 0U; });
+    }
+    if (impl.registrationActive.exchange(false, std::memory_order_acq_rel)) {
+        unregisterMonitors(axisMonitors(), axisMonitors().size());
+        unregisterMonitors(thumbstickButtonMonitors(), thumbstickButtonMonitors().size());
+        unregisterMonitors(buttonMonitors(), buttonMonitors().size());
+        (void)OH_GameDevice_UnregisterDeviceMonitor();
+    }
+    {
+        std::lock_guard<std::mutex> lock(registry.mutex);
+        if (registry.active == &impl) {
+            registry.active = nullptr;
+            registry.activeOwner.reset();
+        }
+    }
+    std::lock_guard<std::mutex> lock(impl.mutex);
+    impl.generations.clear();
+    impl.sdkIds.clear();
+    impl.samples.clear();
+    impl.sequences.clear();
+    impl.timestamps.clear();
+    impl.stopDeferred.store(false, std::memory_order_release);
+}
+
+void finishDeferredStop(MoonlightGameControllerListener::Impl& impl) noexcept {
+    if (!impl.stopDeferred.load(std::memory_order_acquire)) {
+        return;
+    }
+    std::unique_lock<std::mutex> lifecycleLock(impl.lifecycleMutex,
+                                               std::try_to_lock);
+    if (!lifecycleLock.owns_lock()) {
+        return;
+    }
+    stopRegisteredListener(impl);
+}
+
 } // namespace
 #endif // defined(__OHOS__)
 
 MoonlightGameControllerListener::MoonlightGameControllerListener(Sink& sink) noexcept
-    : impl_(std::unique_ptr<Impl>(new (std::nothrow) Impl(sink))) {}
+    : impl_(std::shared_ptr<Impl>(new (std::nothrow) Impl(sink))) {}
 
 MoonlightGameControllerListener::~MoonlightGameControllerListener() {
     stop();
@@ -603,17 +772,40 @@ bool MoonlightGameControllerListener::start() noexcept {
     if (impl_ == nullptr) {
         return false;
     }
+    if (isCurrentCallback(*impl_)) {
+        return impl_->started.load(std::memory_order_acquire);
+    }
+    if (impl_->started.load(std::memory_order_acquire)) {
+        return !impl_->stopDeferred.load(std::memory_order_acquire);
+    }
+    std::lock_guard<std::mutex> lifecycleLock(impl_->lifecycleMutex);
     auto& registry = callbackRegistry();
     {
         std::lock_guard<std::mutex> lock(registry.mutex);
         if (registry.active != nullptr && registry.active != impl_.get()) {
             return false;
         }
-        if (impl_->started) {
-            return true;
+        if (impl_->started.load(std::memory_order_acquire)) {
+            if (!impl_->stopDeferred.load(std::memory_order_acquire)) {
+                return true;
+            }
+            // A callback requested deferred stop while another start raced
+            // through the outer fast path. Finish it only outside callbacks.
+            return false;
         }
+        if (impl_->stopDeferred.load(std::memory_order_acquire)) {
+            // The deferred callback lease still owns the process-global table.
+            return false;
+        }
+        if (impl_->registrationActive.load(std::memory_order_acquire)) {
+            // stop() has closed admission but has not finished unregistering
+            // the process-global monitor table yet.
+            return false;
+        }
+        impl_->registrationActive.store(false, std::memory_order_release);
         registry.active = impl_.get();
-        impl_->started = true;
+        registry.activeOwner = impl_;
+        impl_->started.store(true, std::memory_order_release);
     }
     std::size_t registeredButtons = 0U;
     std::size_t registeredThumbButtons = 0U;
@@ -633,14 +825,41 @@ bool MoonlightGameControllerListener::start() noexcept {
         if (deviceRegistered) {
             (void)OH_GameDevice_UnregisterDeviceMonitor();
         }
-        std::lock_guard<std::mutex> lock(registry.mutex);
-        impl_->started = false;
+        impl_->registrationActive.store(false, std::memory_order_release);
+        std::unique_lock<std::mutex> lock(registry.mutex);
+        impl_->started.store(false, std::memory_order_release);
+        // Registration failure can race with a callback already admitted by
+        // acquireCallback(). Drain those leases before returning while Impl is
+        // still alive; stop() may otherwise observe started=false and skip the
+        // teardown fence.
+        if (!isCurrentCallback(*impl_)) {
+            registry.cv.wait(lock, [&]() { return registry.inFlight == 0U; });
+        }
         if (registry.active == impl_.get()) {
             registry.active = nullptr;
+            registry.activeOwner.reset();
         }
         return false;
     }
+    impl_->registrationActive.store(true, std::memory_order_release);
+    if (impl_->stopDeferred.load(std::memory_order_acquire)) {
+        // If this is executing inside the callback that requested stop, the
+        // lease will call finishDeferredStop after the callback returns. A
+        // different stop() caller will perform the same cleanup after drain.
+        if (isCurrentCallback(*impl_)) {
+            return false;
+        }
+        stopRegisteredListener(*impl_);
+        return false;
+    }
     replayOnlineDevices();
+    if (impl_->stopDeferred.load(std::memory_order_acquire)) {
+        if (isCurrentCallback(*impl_)) {
+            return false;
+        }
+        stopRegisteredListener(*impl_);
+        return false;
+    }
     return true;
 #endif
 }
@@ -650,31 +869,12 @@ void MoonlightGameControllerListener::stop() noexcept {
     if (impl_ == nullptr) {
         return;
     }
-    auto& registry = callbackRegistry();
-    {
-        std::unique_lock<std::mutex> lock(registry.mutex);
-        if (!impl_->started) {
-            if (registry.active == impl_.get()) {
-                registry.active = nullptr;
-            }
-            return;
-        }
-        impl_->started = false;
-        if (registry.active == impl_.get()) {
-            registry.active = nullptr;
-        }
-        registry.cv.wait(lock, [&]() { return registry.inFlight == 0U; });
+    if (isCurrentCallback(*impl_)) {
+        requestStopFromCallback(*impl_);
+        return;
     }
-    unregisterMonitors(axisMonitors(), axisMonitors().size());
-    unregisterMonitors(thumbstickButtonMonitors(), thumbstickButtonMonitors().size());
-    unregisterMonitors(buttonMonitors(), buttonMonitors().size());
-    (void)OH_GameDevice_UnregisterDeviceMonitor();
-    std::lock_guard<std::mutex> lock(impl_->mutex);
-    impl_->generations.clear();
-    impl_->sdkIds.clear();
-    impl_->samples.clear();
-    impl_->sequences.clear();
-    impl_->timestamps.clear();
+    std::lock_guard<std::mutex> lifecycleLock(impl_->lifecycleMutex);
+    stopRegisteredListener(*impl_);
 #else
     (void)impl_;
 #endif
@@ -685,6 +885,7 @@ void MoonlightGameControllerListener::replayOnlineDevices() noexcept {
     if (impl_ == nullptr || !started()) {
         return;
     }
+    std::lock_guard<std::mutex> dispatchLock(impl_->dispatchMutex);
     GameDevice_AllDeviceInfos* all = nullptr;
     if (OH_GameDevice_GetAllDeviceInfos(&all) != GAME_CONTROLLER_SUCCESS || all == nullptr) {
         return;
@@ -714,8 +915,7 @@ bool MoonlightGameControllerListener::started() const noexcept {
     if (impl_ == nullptr) {
         return false;
     }
-    std::lock_guard<std::mutex> lock(impl_->mutex);
-    return impl_->started;
+    return impl_->started.load(std::memory_order_acquire);
 }
 
 std::size_t MoonlightGameControllerListener::onlineDeviceCount() const noexcept {

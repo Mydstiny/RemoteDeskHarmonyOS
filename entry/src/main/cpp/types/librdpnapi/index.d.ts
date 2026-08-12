@@ -109,18 +109,6 @@ export interface MoonlightBridgeCapabilities {
   blocker: string;
 }
 
-export interface MoonlightControllerCapabilities {
-  listenerCompiled: boolean;
-  listenerRegistered: boolean;
-  inputBound: boolean;
-  inputReady: boolean;
-  controllerAvailable: boolean;
-  physicalDeviceCount: number;
-  lastDeviceId: number;
-  lastSourceGeneration: number;
-  blocker: string;
-}
-
 export interface MoonlightNativeEvent {
   sequence: number;
   monotonicTimestampMs: number;
@@ -131,7 +119,6 @@ export interface MoonlightNativeEvent {
 }
 
 export function moonlightGetBridgeCapabilities(): MoonlightBridgeCapabilities;
-export function moonlightGetControllerCapabilities(): MoonlightControllerCapabilities;
 export function moonlightRequestAsync(request: MoonlightNativeRequest):
   Promise<MoonlightNativeResult> & MoonlightNativeRequestKey;
 export function moonlightCancelRequest(key: MoonlightNativeRequestKey): boolean;

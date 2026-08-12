@@ -12678,10 +12678,10 @@ struct HostListPage {
   @Builder hostAddSheetContent() {
     if (this.addSheetShowsModernPicker) {
       HostAddWizardSheet({
-        // Make Moonlight follow the same FAB route contract as RustDesk.
-        // Pairing/streaming remains guarded inside the Moonlight flow until
-        // its native runtime is available.
-        moonlightProtocolAvailable: true,
+        // Expose the reviewable add-shell route like RustDesk, while keeping
+        // the actual pairing/streaming capability gate closed.
+        moonlightFabEntryAvailable: true,
+        moonlightProtocolAvailable: false,
         onSelectProtocol: (protocol: string): void => {
           this.modernAddProtocol = protocol;
           this.addSheetShowsModernPicker = false;

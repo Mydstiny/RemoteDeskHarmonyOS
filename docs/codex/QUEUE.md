@@ -4,21 +4,23 @@ Updated: 2026-08-12 Asia/Shanghai
 
 ## Closed checkpoint
 
-- `db750cdb` closes U1-13 local-only host-add persistence: validated host/trust rows through the existing local repository port, owner/generation fencing, stable IDs, duplicate handling, readback-aware forward compensation/revival and Sheet `onDisappear` catalog/detail handoff.
-- `6b0c1aa8` closes U1-06～U1-12 local-only UI shell: homepage host management, host detail, per-host app catalog, nine-section settings, RustDesk-style launch/connection/stream overlays, official tintable icon and desktop sidebar slot.
-- `8b1ccd22` + `4548499c` + `647113a5` close S1-01/S1-02 dormant shared-session coordination; `75d769c2` closes S1-03 snapshots; `fae7c36dd` + `f7f39c0f` + `665df714` close S1-04 toolbar/control center. Runtime remains absent and fail closed.
-- Current signed HAP SHA-256 is `8a5209d438b253ccb78df6e29734bb1afdde2eb3da281aea8e3ed30c04862419`; both mandatory Hvigor gates passed and this HAP was installed/started on PC `5555` and phone `5557`.
-- Current-package UI evidence is only `/private/tmp/moonlight-current-hap-20260812/`; it confirms PC/phone homepage ownership, grey “即将支持” picker, PC large-screen continuity, the consolidated Moonlight settings group, all nine visible Moonlight leaves and a real quick-settings bindSheet. No earlier package screenshot is used for final acceptance.
-- User-owned `entry/src/main/ets/services/CloudStore.ets` remains the only unstaged code file and is excluded.
+- Final adaptive FAB/add-sheet closeout: the FAB Moonlight row routes like RustDesk through a separate entry-shell gate, the official tintable icon is visible, the shell-only card says `仅添加` without a runtime chevron, `FIT_CONTENT` is shared across breakpoints, the candidate region is bounded-scrollable, and bottom actions have explicit spacing. Runtime capability remains false.
+- Controller isolation closeout: GameControllerKit listener is excluded from production `rdpnapi`/shared NAPI/common-c, with no public controller API or process-global registration for other protocols. Its lifecycle/generation contract remains future S1-05A test foundation.
+- `db750cdb` closes local-only host/trust persistence with owner/generation fencing, stable IDs, readback-aware compensation/revival and Sheet `onDisappear` handoff.
+- `6b0c1aa8` closes the RustDesk-style local UI shell: homepage host management, detail/catalog, nine-section settings, launch/connection/stream overlays, official icon and desktop preview slot.
+- S1-01～S1-04 dormant session/toolbar contracts and N2-01～N2-08 native media contracts remain closed without opening product runtime truth.
+- Current signed HAP SHA-256 is `296d60a2e264ec46dd3300099640ac65895d647b76362a829030e1e0a70a5b97`; both mandatory Hvigor gates passed and it was installed/started on PC `5555` and phone `5557` before the final listener-only native closeout.
+- Current UI evidence is `/private/tmp/moonlight-fab-final2-20260812/`; every screenshot is from the current HAP and was freshly captured/viewed.
+- User-owned `entry/src/main/ets/services/CloudStore.ets` remains unstaged and is excluded.
 
 ## Next
 
-- S1-05A: add the native HarmonyOS GameController listener, narrow typed NAPI and the single session-owned common-c input port feeding N3-08/N3-05/N3-01. Do not add a second input owner/queue or ArkTS wire encoder; real-device capability remains false.
+- S1-05A: bind the isolated native listener to the single active Moonlight session input port, route through N3-08/N3-05/N3-01/common-c, and produce real physical-controller receipts. No second input owner/queue and no ArkTS wire encoder.
 - N2-09: real Sunshine and user ARM64 evidence for pairing, H.264/Opus media, first frame, lifecycle, input, network, thermal and long-run behavior.
-- S1-06/S1-07/S1-08: continue control center/diagnostics/media lifecycle only after their runtime prerequisites.
+- S1-06/S1-07/S1-08: continue control center/diagnostics/media lifecycle only after runtime prerequisites.
 
 ## Parked / blocked
 
 - Moonlight cloud sync stays parked: no `moonlightrecordv1`, table registration, selection, transfer or secret recovery.
-- `ohosTest@OhosTestCompileArkTS` remains blocked because task `00306054` is not registered; compile registration is not device execution.
-- A signed HAP/UI shell and local host persistence are verified, but Moonlight is not a release-ready streaming capability until runtime, media, controller and external-device gates produce current receipts.
+- `ohosTest@OhosTestCompileArkTS` remains blocked because task `00306054` is not registered; simulator UI and compile registration are not device execution.
+- A signed HAP, local host persistence and adaptive UI shell are verified, but Moonlight is not a release-ready streaming capability until runtime, media, controller and external-device gates produce current receipts.
