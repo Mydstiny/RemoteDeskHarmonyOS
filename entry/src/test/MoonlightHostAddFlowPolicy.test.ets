@@ -196,6 +196,24 @@ export default function moonlightHostAddFlowPolicyTest(): void {
       expect(moonlightHostAddSaveCanBegin(state)).assertFalse();
     });
 
+    it('blocks_retry_when_the_local_commit_is_partial_or_uncertain', 0, (): void => {
+      let state: MoonlightHostAddState = verifiedStepTwo();
+      state = setMoonlightHostAddDisplayName(state, 'Gaming PC');
+      state = advanceMoonlightHostAddStep(state).state;
+      let begin: MoonlightHostAddBeginResult = beginMoonlightHostAddOperation(state, 'pair');
+      state = setMoonlightHostAddPairingPin(begin.state, begin.key, '4821', 30000, 1000);
+      state = completeMoonlightHostAddPairing(state, begin.key, true, 2000);
+      begin = beginMoonlightHostAddOperation(state, 'trust');
+      state = completeMoonlightHostAddTrust(begin.state, begin.key, true);
+      state = advanceMoonlightHostAddStep(state).state;
+      begin = beginMoonlightHostAddOperation(state, 'save');
+      state = completeMoonlightHostAddSave(
+        begin.state, begin.key, false, '本地状态不确定', 'partial');
+      expect(state.savedLocally).assertFalse();
+      expect(state.saveRecoveryRequired).assertTrue();
+      expect(moonlightHostAddSaveCanBegin(state)).assertFalse();
+    });
+
     it('rejects_late_async_results_after_cancel_or_owner_change', 0, (): void => {
       let state: MoonlightHostAddState = verifiedStepTwo();
       const begin: MoonlightHostAddBeginResult = beginMoonlightHostAddOperation(state, 'pair');

@@ -56,6 +56,17 @@ export default function hostAddConnectionHandoffPolicyTest(): void {
         true, false, 7, 11, pending, 'moonlight_catalog')).assertTrue();
     });
 
+    it('routes_existing_moonlight_hosts_only_after_the_same_sheet_boundary', 0, (): void => {
+      const pending: HostAddPostSaveHandoff = createHostAddPostSaveHandoff(
+        'moonlight_host_detail', 'moonlight-host-a', 7, 12);
+      expect(shouldStartHostAddPostSaveAfterDisappear(
+        true, false, 7, 12, pending, 'moonlight_host_detail')).assertTrue();
+      expect(shouldStartHostAddPostSaveAfterDisappear(
+        true, false, 7, 12, pending, 'moonlight_catalog')).assertFalse();
+      expect(shouldStartHostAddPostSaveAfterDisappear(
+        true, true, 7, 12, pending, 'moonlight_host_detail')).assertFalse();
+    });
+
     it('drops_page_close_stale_owner_and_late_generation_callbacks', 0, (): void => {
       const pending: HostAddPostSaveHandoff = createHostAddPostSaveHandoff(
         'moonlight_catalog', 'moonlight-host-a', 7, 11);

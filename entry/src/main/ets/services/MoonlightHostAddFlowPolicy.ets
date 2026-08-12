@@ -83,6 +83,7 @@ export class MoonlightHostAddState {
   trustState: MoonlightHostAddTrustState = 'unknown';
   catalog: MoonlightHostAddCatalogSummary | null = null;
   savedLocally: boolean = false;
+  saveRecoveryRequired: boolean = false;
   errorText: string = '';
 }
 
@@ -165,6 +166,7 @@ export function cloneMoonlightHostAddState(
   result.trustState = value.trustState;
   result.catalog = cloneCatalog(value.catalog);
   result.savedLocally = value.savedLocally;
+  result.saveRecoveryRequired = value.saveRecoveryRequired;
   result.errorText = value.errorText;
   return result;
 }
@@ -536,15 +538,18 @@ export function completeMoonlightHostAddSave(
   state: MoonlightHostAddState,
   key: MoonlightHostAddOperationKey,
   localCommitted: boolean,
-  errorText: string = ''
+  errorText: string = '',
+  commitState: 'committed' | 'not_committed' | 'partial' | 'uncertain' =
+    localCommitted ? 'committed' : 'not_committed'
 ): MoonlightHostAddState {
   if (!moonlightHostAddOperationIsCurrent(state, key) || key.operation !== 'save') {
     return cloneMoonlightHostAddState(state);
   }
   const next: MoonlightHostAddState = cloneMoonlightHostAddState(state);
   next.activeOperation = 'none';
-  next.savedLocally = localCommitted;
-  next.errorText = localCommitted ? errorText :
+  next.savedLocally = localCommitted && commitState === 'committed';
+  next.saveRecoveryRequired = commitState === 'partial' || commitState === 'uncertain';
+  next.errorText = next.savedLocally ? errorText :
     (errorText === '' ? '本地主机保存失败，请重试' : errorText);
   return next;
 }
@@ -565,7 +570,7 @@ export function moonlightHostAddSaveCanBegin(
   state: MoonlightHostAddState
 ): boolean {
   return state.step === 4 && state.paired && state.trustState === 'trusted' &&
-    state.activeOperation === 'none' && !state.savedLocally;
+    state.activeOperation === 'none' && !state.savedLocally && !state.saveRecoveryRequired;
 }
 
 export function setMoonlightHostAddDisplayName(

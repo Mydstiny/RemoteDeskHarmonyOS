@@ -55,6 +55,7 @@ export interface MoonlightLocalSaveResult {
   localCommitted: boolean;
   hostId: string;
   errorText: string;
+  commitState: 'committed' | 'not_committed' | 'partial' | 'uncertain';
 }
 
 function unavailablePairingPreparation(): Promise<MoonlightPairingPreparation> {
@@ -92,7 +93,8 @@ function unavailableLocalSave(): Promise<MoonlightLocalSaveResult> {
   const result: MoonlightLocalSaveResult = {
     localCommitted: false,
     hostId: '',
-    errorText: '本地主机保存能力尚未接入'
+    errorText: '当前入口未配置本地主机保存回调',
+    commitState: 'not_committed'
   };
   return Promise.resolve(result);
 }
@@ -152,7 +154,9 @@ export struct MoonlightHostAddFlow {
     _openCatalog: boolean,
     _key: MoonlightHostAddOperationKey
   ): Promise<MoonlightLocalSaveResult> => unavailableLocalSave();
-  onOpenExistingHost: (hostId: string) => void = (_hostId: string): void => {};
+  onOpenExistingHost: (hostId: string, ownerToken: number) => void = (
+    _hostId: string, _ownerToken: number
+  ): void => {};
   onSaved: (hostId: string, openCatalog: boolean, ownerToken: number) => void = (
     _hostId: string,
     _openCatalog: boolean,
@@ -471,8 +475,8 @@ export struct MoonlightHostAddFlow {
       const errorText: string = result.localCommitted && !handoffEligible ?
         '本地主机已保存，但未返回稳定 ID；请在主机列表刷新后打开' : result.errorText;
       this.flow = completeMoonlightHostAddSave(
-        this.flow, begin.key, result.localCommitted, errorText);
-      if (result.localCommitted) {
+        this.flow, begin.key, result.localCommitted, errorText, result.commitState);
+      if (result.localCommitted && result.commitState === 'committed') {
         this.onSaved(
           committedHostId,
           openCatalog && handoffEligible,
@@ -725,7 +729,8 @@ export struct MoonlightHostAddFlow {
           .backgroundColor(this.accentColor).fontColor(Color.White)
           .onClick((): void => {
             if (this.flow.verification !== null) {
-              this.onOpenExistingHost(this.flow.verification.duplicateHostId);
+              this.onOpenExistingHost(
+                this.flow.verification.duplicateHostId, this.flow.ownerToken);
             }
           })
       } else {
@@ -862,16 +867,20 @@ export struct MoonlightHostAddFlow {
     }
     Text('不会上传到云端；目录加载失败也不会丢失已完成的配对。')
       .fontSize(11).fontColor(this.pal().text3).width('100%').margin({ bottom: 12 })
+    if (this.flow.saveRecoveryRequired) {
+      Text('本地保存状态需要先刷新主机列表确认，当前不会重复写入。')
+        .fontSize(11).fontColor(this.pal().editColor).width('100%').margin({ bottom: 10 })
+    }
     Row() {
       Button(this.flow.activeOperation === 'save' ? '正在保存…' : '保存')
         .layoutWeight(1).height(44).borderRadius(12)
         .backgroundColor(this.pal().surface).fontColor(this.accentColor)
-        .enabled(this.flow.activeOperation === 'none')
+        .enabled(this.flow.activeOperation === 'none' && !this.flow.saveRecoveryRequired)
         .onClick((): void => { this.save(false); })
       Button(this.flow.activeOperation === 'save' ? '正在保存…' : '保存并打开应用目录')
         .layoutWeight(1).height(44).borderRadius(12).margin({ left: 8 })
         .backgroundColor(this.accentColor).fontColor(Color.White)
-        .enabled(this.flow.activeOperation === 'none')
+        .enabled(this.flow.activeOperation === 'none' && !this.flow.saveRecoveryRequired)
         .onClick((): void => { this.save(true); })
     }.width('100%')
   }

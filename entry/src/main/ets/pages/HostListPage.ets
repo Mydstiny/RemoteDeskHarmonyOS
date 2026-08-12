@@ -75,13 +75,21 @@ import { ColorPickerSheet } from '../components/ColorPickerSheet';
 import { HostAddWizardSheet } from '../components/hostadd/HostAddWizardSheet';
 import { RdpAddFlow } from '../components/hostadd/RdpAddFlow';
 import { RustDeskAddFlow } from '../components/hostadd/RustDeskAddFlow';
-import { MoonlightHostAddFlow } from '../components/hostadd/MoonlightHostAddFlow';
+import {
+  MoonlightHostAddFlow,
+  MoonlightLocalSaveResult
+} from '../components/hostadd/MoonlightHostAddFlow';
 import { MoonlightBrandIcon } from '../components/moonlight/MoonlightBrandIcon';
 import { MoonlightSettingsSurface } from './MoonlightSettingsPage';
 import {
   MoonlightSettingsSection,
   moonlightHostRouteParams
 } from '../services/MoonlightUiPolicy';
+import {
+  MoonlightHostAddOperationKey,
+  MoonlightHostAddState
+} from '../services/MoonlightHostAddFlowPolicy';
+import { MoonlightLocalHostService } from '../services/MoonlightLocalHostService';
 import { SshAddFlow } from '../components/hostadd/SshAddFlow';
 import { VncAddFlow } from '../components/hostadd/VncAddFlow';
 import {
@@ -867,6 +875,8 @@ struct HostListPage {
   private readonly vncGateways: VncGatewayService = VncGatewayService.getInstance();
   private readonly vncTrust: VncTrustService = VncTrustService.getInstance();
   private readonly vncSettings: VncSettingsService = VncSettingsService.getInstance();
+  private readonly moonlightLocalHostService: MoonlightLocalHostService =
+    new MoonlightLocalHostService(CloudStore.getInstance());
   private loader: ExtensionLoader = ExtensionLoader.getInstance();
   private sshKeyImporter: SshKeyImportService = new SshKeyImportService();
   private readonly sshSettings: SshSettingsService = SshSettingsService.getInstance();
@@ -1662,6 +1672,50 @@ struct HostListPage {
     this.pendingMoonlightCatalogHandoff = emptyHostAddPostSaveHandoff();
   }
 
+  private saveMoonlightHostLocally(
+    state: MoonlightHostAddState,
+    _openCatalog: boolean,
+    key: MoonlightHostAddOperationKey
+  ): Promise<MoonlightLocalSaveResult> {
+    const result = this.moonlightLocalHostService.save(state, key, Date.now());
+    if (!result.ok) {
+      const failed: MoonlightLocalSaveResult = {
+        localCommitted: false,
+        hostId: result.hostId,
+        errorText: result.errorText,
+        commitState: result.commitState
+      };
+      return Promise.resolve(failed);
+    }
+    const saved: MoonlightLocalSaveResult = {
+      localCommitted: true,
+      hostId: result.hostId,
+      errorText: '',
+      commitState: result.commitState
+    };
+    return Promise.resolve(saved);
+  }
+
+  private openExistingMoonlightHost(hostId: string, ownerToken: number): void {
+    if (!shouldAcceptHostAddPostSaveHandoff(
+      this.pageActive,
+      this.addSheetClosing,
+      this.pendingMoonlightCatalogHandoff,
+      this.moonlightAddOwnerToken,
+      ownerToken,
+      hostId
+    )) {
+      hilog.info(0x0001, 'HostList',
+        'ignored stale or repeated Moonlight existing-host handoff');
+      return;
+    }
+    const generation: number = this.moonlightCatalogHandoffGeneration + 1;
+    this.moonlightCatalogHandoffGeneration = generation;
+    this.pendingMoonlightCatalogHandoff = createHostAddPostSaveHandoff(
+      'moonlight_host_detail', hostId, ownerToken, generation);
+    this.requestAddSheetClose();
+  }
+
   private handleMoonlightHostSaved(
     hostId: string,
     openCatalog: boolean,
@@ -1711,7 +1765,7 @@ struct HostListPage {
     this.pendingVncConnectHostId = '';
     const pendingHostId: string = this.pendingAddSheetConnectHostId;
     this.pendingAddSheetConnectHostId = '';
-    const pendingMoonlightCatalog: HostAddPostSaveHandoff =
+    const pendingMoonlightDestination: HostAddPostSaveHandoff =
       this.pendingMoonlightCatalogHandoff;
     this.pendingMoonlightCatalogHandoff = emptyHostAddPostSaveHandoff();
     const openVncGatewayDirectory: boolean = this.pendingVncGatewayDirectoryOpen;
@@ -1745,29 +1799,33 @@ struct HostListPage {
       this.rustDeskAddResumeDraft = null;
     }
 
-    if (hostAddPostSaveHandoffIsPending(pendingMoonlightCatalog)) {
+    if (hostAddPostSaveHandoffIsPending(pendingMoonlightDestination)) {
       if (!shouldStartHostAddPostSaveAfterDisappear(
         this.pageActive,
         this.addSheetClosing,
         this.moonlightAddOwnerToken,
         this.moonlightCatalogHandoffGeneration,
-        pendingMoonlightCatalog,
-        'moonlight_catalog'
+        pendingMoonlightDestination,
+        pendingMoonlightDestination.destination
       )) {
         hilog.info(0x0001, 'HostList',
           'dropped stale Moonlight catalog handoff after add-host Sheet disappeared');
         return;
       }
       const routeParams: Record<string, Object> | null =
-        moonlightHostRouteParams(pendingMoonlightCatalog.hostId);
+        moonlightHostRouteParams(pendingMoonlightDestination.hostId);
       if (routeParams === null) {
         hilog.warn(0x0001, 'HostList',
           'Moonlight catalog handoff rejected because stable ID is invalid');
         return;
       }
       hilog.info(0x0001, 'HostList',
-        'Moonlight catalog handoff accepted after add-host Sheet disappeared');
-      router.pushUrl({ url: 'pages/MoonlightAppCatalogPage', params: routeParams });
+        'Moonlight post-save handoff accepted after add-host Sheet disappeared');
+      router.pushUrl({
+        url: pendingMoonlightDestination.destination === 'moonlight_host_detail'
+          ? 'pages/MoonlightHostDetailPage' : 'pages/MoonlightAppCatalogPage',
+        params: routeParams
+      });
       return;
     }
 
@@ -12687,6 +12745,15 @@ struct HostListPage {
     } else if (this.modernAddProtocol === 'moonlight') {
       MoonlightHostAddFlow({
         ownerToken: this.moonlightAddOwnerToken,
+        onSaveLocal: (
+          state: MoonlightHostAddState,
+          openCatalog: boolean,
+          key: MoonlightHostAddOperationKey
+        ): Promise<MoonlightLocalSaveResult> =>
+          this.saveMoonlightHostLocally(state, openCatalog, key),
+        onOpenExistingHost: (hostId: string, ownerToken: number): void => {
+          this.openExistingMoonlightHost(hostId, ownerToken);
+        },
         onBackToProtocols: (): void => {
           this.invalidateMoonlightCatalogHandoff();
           this.moonlightAddOwnerToken += 1;

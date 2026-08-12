@@ -22,7 +22,8 @@ export function shouldStartHostAddConnectionAfterDisappear(
   return pageActive && !addSheetClosing && pendingHostId.trim().length > 0;
 }
 
-export type HostAddPostSaveDestination = 'none' | 'moonlight_catalog';
+export type HostAddPostSaveDestination =
+  'none' | 'moonlight_catalog' | 'moonlight_host_detail';
 
 /**
  * Stable-ID handoff for post-save destinations that must wait for the shared
