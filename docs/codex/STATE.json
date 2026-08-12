@@ -34,16 +34,16 @@
       "entry/src/test/MoonlightHostAddFlowPolicy.test.ets",
       "entry/src/test/MoonlightLocalHostService.test.ets"
     ],
-    "lastReceiptId": "moonlight-u1-13-local-host-persistence-db750cdb-2026-08-12",
+    "lastReceiptId": "moonlight-u1-13-ui-data-closeout-current-hap-2026-08-12",
     "reason": "The existing reviewer task was reused for the U1-13 increment. Final review PASS: P0/P1/P2 are zero; the only P3 is an accepted exception-path testability limitation. Host/trust construction, readback-aware forward compensation, partial/uncertain fencing and Sheet handoff were verified. CloudStore.ets is explicitly excluded; no adjacent protocol, cloud, native or runtime source changed."
   },
   "lastVerification": {
     "diffCheck": "pass: scoped U1-13 code/plan closeout diff check; CloudStore.ets remains the only intentional unstaged user change",
     "testCompile": "pass: exact default@OhosTestCompileArkTS with --analyze=normal --parallel --incremental --no-daemon after db750cdb",
-    "assembleHap": "pass: exact assembleHap with --analyze=normal --parallel --incremental --no-daemon after db750cdb; current-workspace signed HAP SHA-256 8b54784ac3112b30a5630ef074d35150fd7271099920e54ab97809ef1546263e",
+    "assembleHap": "pass: exact assembleHap with --analyze=normal --parallel --incremental --no-daemon; current-workspace signed HAP SHA-256 8a5209d438b253ccb78df6e29734bb1afdde2eb3da281aea8e3ed30c04862419",
     "hapPath": "entry/build/default/outputs/default/entry-default-signed.hap",
-    "hdcRuntime": "pass outside sandbox after db750cdb HAP: signed HAP SHA-256 8b54784ac3112b30a5630ef074d35150fd7271099920e54ab97809ef1546263e installed and EntryAbility started on PC 127.0.0.1:5555 and phone 127.0.0.1:5557; fresh evidence directory /private/tmp/moonlight-final-gate.bIGtZD/",
-    "uiAcceptance": "only newly captured and viewed latest-HAP evidence is recorded: pc-root.png, phone-root.png, pc-picker-open.png, phone-picker-open.png, pc-max.png, phone-settings-open.png, phone-moon-expanded.png and phone-quick.png; homepage ownership, disabled PC/phone picker, PC sidebar slot, consolidated Moonlight settings and quick-settings bindSheet verified; no old screenshot is used",
+    "hdcRuntime": "pass outside sandbox: current signed HAP SHA-256 8a5209d438b253ccb78df6e29734bb1afdde2eb3da281aea8e3ed30c04862419 installed and EntryAbility started on PC 127.0.0.1:5555 and phone 127.0.0.1:5557; current evidence directory /private/tmp/moonlight-current-hap-20260812/",
+    "uiAcceptance": "only newly captured and viewed current-package evidence is recorded: pc-root.jpeg, phone-root.jpeg, pc-picker.jpeg, phone-picker.jpeg, moon-expanded.jpeg, settings-lower.jpeg and quick.jpeg under /private/tmp/moonlight-current-hap-20260812/; homepage ownership, grey disabled picker contract, PC continuity, all nine Moonlight leaves, single bindSheet routing and local-only controls verified; no earlier package screenshot is used",
     "focusedTests": "new U1-13 coverage adds 8 local persistence cases, 1 recovery-policy case and 1 post-save handoff case; all compile-registered; ohosTest remains blocked at task 00306054",
     "isolation": "static/reviewer pass for 665df714..db750cdb: only Moonlight add-flow/repository adapter/handoff/test scope changed; no adjacent protocol business source, public input, native/CMake/NAPI, CloudSyncPolicy or existing cloud-table registration changed; user CloudStore diff excluded",
     "lightCompliance": "pass previously for official icon provenance, vendor, SBOM, NOTICE, SPDX and artifact hash; the 6b0c1aa8 review fixes do not change those artifacts",

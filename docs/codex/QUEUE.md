@@ -7,8 +7,8 @@ Updated: 2026-08-12 Asia/Shanghai
 - `db750cdb` closes U1-13 local-only host-add persistence: validated host/trust rows through the existing local repository port, owner/generation fencing, stable IDs, duplicate handling, readback-aware forward compensation/revival and Sheet `onDisappear` catalog/detail handoff.
 - `6b0c1aa8` closes U1-06～U1-12 local-only UI shell: homepage host management, host detail, per-host app catalog, nine-section settings, RustDesk-style launch/connection/stream overlays, official tintable icon and desktop sidebar slot.
 - `8b1ccd22` + `4548499c` + `647113a5` close S1-01/S1-02 dormant shared-session coordination; `75d769c2` closes S1-03 snapshots; `fae7c36dd` + `f7f39c0f` + `665df714` close S1-04 toolbar/control center. Runtime remains absent and fail closed.
-- Final `db750cdb` HAP SHA-256 is `8b54784ac3112b30a5630ef074d35150fd7271099920e54ab97809ef1546263e`; both mandatory Hvigor gates passed and the HAP was installed/started on PC `5555` and phone `5557`.
-- Fresh final UI evidence is only `/private/tmp/moonlight-final-gate.bIGtZD/`; it confirms PC/phone homepage ownership, grey “即将支持” picker, PC large-screen sidebar continuity, the consolidated Moonlight settings group and a real quick-settings bindSheet. No old screenshot is used.
+- Current signed HAP SHA-256 is `8a5209d438b253ccb78df6e29734bb1afdde2eb3da281aea8e3ed30c04862419`; both mandatory Hvigor gates passed and this HAP was installed/started on PC `5555` and phone `5557`.
+- Current-package UI evidence is only `/private/tmp/moonlight-current-hap-20260812/`; it confirms PC/phone homepage ownership, grey “即将支持” picker, PC large-screen continuity, the consolidated Moonlight settings group, all nine visible Moonlight leaves and a real quick-settings bindSheet. No earlier package screenshot is used for final acceptance.
 - User-owned `entry/src/main/ets/services/CloudStore.ets` remains the only unstaged code file and is excluded.
 
 ## Next

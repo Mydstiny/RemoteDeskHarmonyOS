@@ -27,12 +27,12 @@
 ## Verification
 
 - Exact `default@OhosTestCompileArkTS --analyze=normal --parallel --incremental --no-daemon`: `BUILD SUCCESSFUL` after `db750cdb`.
-- Exact `assembleHap --analyze=normal --parallel --incremental --no-daemon`: `BUILD SUCCESSFUL`; HAP: `entry/build/default/outputs/default/entry-default-signed.hap`; SHA-256 `8b54784ac3112b30a5630ef074d35150fd7271099920e54ab97809ef1546263e`.
-- HDC installed/started this latest HAP on PC `127.0.0.1:5555` and phone `127.0.0.1:5557`. Only fresh evidence from `/private/tmp/moonlight-final-gate.bIGtZD/` is used: `pc-root.png`, `phone-root.png`, `pc-picker-open.png`, `phone-picker-open.png`, `pc-max.png`, `phone-settings-open.png`, `phone-moon-expanded.png`, and `phone-quick.png`.
-- Fresh UI evidence confirms homepage ownership, disabled FAB picker on PC/phone, the PC large-screen Moonlight sidebar slot, the consolidated public host-list entry, the expanded Moonlight settings sections, and a real Moonlight quick-settings bindSheet. No old screenshot is used.
+- Exact `assembleHap --analyze=normal --parallel --incremental --no-daemon`: `BUILD SUCCESSFUL`; current signed HAP: `entry/build/default/outputs/default/entry-default-signed.hap`; SHA-256 `8a5209d438b253ccb78df6e29734bb1afdde2eb3da281aea8e3ed30c04862419`.
+- This current HAP was installed and started on PC `127.0.0.1:5555` and phone `127.0.0.1:5557`. The only current-package UI evidence is `/private/tmp/moonlight-current-hap-20260812/`: `pc-root.jpeg`, `phone-root.jpeg`, `pc-picker.jpeg`, `phone-picker.jpeg`, `moon-expanded.jpeg`, `settings-lower.jpeg` and `quick.jpeg`, with matching UI trees. No earlier package screenshot is used for the final acceptance.
+- Current-package evidence confirms homepage ownership, disabled FAB picker on PC/phone, the PC large-screen host-list layout, the consolidated Moonlight settings group, all nine Moonlight leaves across the expanded/lower captures, and a real Moonlight quick-settings bindSheet.
 - New focused coverage: 8 local persistence cases, 1 recovery-policy case and 1 post-save handoff case; all are compile-registered. `ohosTest` remains unavailable because task `00306054` is not registered; no device Hypium PASS is claimed.
 - Reused reviewer task `019fe966-d99a-7ce1-8b53-4ef725597053`: final increment PASS, P0/P1/P2=0; P3=1 is the accepted pure-test exception-path limitation. Static scope isolation confirms no adjacent protocol/native/cloud-table/runtime business change.
-- `git diff --check` and `node scripts/codex_state.mjs validate` remain required after documentation sync.
+- `git diff --check` and `node scripts/codex_state.mjs validate` pass after this documentation sync; the only unstaged source file remains the user-owned `CloudStore.ets`.
 
 ## Next / blockers
 

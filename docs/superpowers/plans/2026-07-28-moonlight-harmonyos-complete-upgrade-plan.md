@@ -4829,4 +4829,37 @@ launch、视频首帧、OHAudio、实体手柄、Sunshine 串流和 release trut
 
 回滚 commit/动作：回滚 `db750cdb` 可撤销 U1-13 本地主机保存适配；不触碰用户 `CloudStore.ets` 改动。
 
+### 15.19 设置/FAB/本地数据最终收口复核（2026-08-12）
+
+本轮只做当前 HAP 的 UI 和数据边界复核，没有新增代码，也没有触碰用户的 `CloudStore.ets`。最新沙箱外 HDC 证据保存在
+`/private/tmp/moonlight-ui-closeout2.PFyRlJ/`，并已实际查看截图与对应 UI tree：
+
+- `root-5557.jpeg`：手机首页仍是主机管理唯一入口，空状态与底部 FAB 正常；此前同一当前 HAP 的 `root-5555.jpeg` 证明 PC 大屏首页连续性。
+- `settings-toggle-check.jpeg`：Moonlight 行真实展开，图标、标题、副标题、旋转箭头和 RustDesk/Theme 卡片排版一致；展开内容进入同一设置容器，不产生第二页面或重复主机管理。
+- `settings-lower-closeout.jpeg` 与其 UI tree：九个 Moonlight leaf 全部可见且顺序固定为快速设置、画面、音频、控制与手柄、网络与安全、后台串流、诊断、云同步范围、配对与信任。
+- `moonlight-quick-sheet-closeout.jpeg`：快速设置从唯一 `bindSheet` 真实打开，三档体验预设、接收音频、自动重连和保存状态可见；副标题明确当前账号为本地范围。
+
+收口判定：设置入口已经完成“应用公共设置 → Moonlight 协议分组 → leaf → 单 bindSheet”链路；FAB/PC 栏位继续由
+`moonlightProtocolAvailable=false` fail-closed，灰色可着色官方图标与“即将支持”是当前正确产品状态；本地主机保存继续只写已有本地
+`MoonlightRepositoryPort` 的 host/trust 记录，`localOnly=1`，不注册或上传 `moonlightrecordv1`。本轮未改 RDP、RustDesk、SSH/SFTP、VNC、
+公共输入、native/CMake/NAPI、CloudSyncPolicy 或既有云表。
+
+本轮不会把 UI/HAP 验收扩大为真实 Moonlight 发布能力：真实 Sunshine 配对、Host Control、视频首帧、OHAudio/Surface、实体手柄
+GameControllerKit→typed NAPI→common-c、网络/温控/长稳和 device Hypium 仍分别由 S1-05A、S1-08、N2-09 与设备门禁负责。
+
+### 15.20 当前签名 HAP 最终验收（2026-08-12）
+
+为避免把历史包误当作当前包，本次最终验收只认最新签名 HAP：
+`entry/build/default/outputs/default/entry-default-signed.hap`，SHA-256 为
+`8a5209d438b253ccb78df6e29734bb1afdde2eb3da281aea8e3ed30c04862419`。该包已通过沙箱外 HDC 安装/启动于 PC
+`127.0.0.1:5555` 和手机 `127.0.0.1:5557`。
+
+当前包截图和 UI tree 全部落在 `/private/tmp/moonlight-current-hap-20260812/`：PC/手机首页、PC/手机 FAB 协议选择器、
+手机 Moonlight 展开、设置下半段和快速设置 bindSheet 均已重新抓取并实际查看。它们确认 Moonlight 官方可着色图标、灰态“即将支持”、
+首页主机管理归属、PC 大屏连续性、九个协议 leaf、单一 bindSheet 以及本地-only 设置文案；本条记录替代此前包的 UI 证据，不能用旧截图
+替代当前验收。
+
+本次仍为文档/验收收口，没有新增代码；`CloudStore.ets` 仍是用户-owned 未暂存修改。构建、HDC 安装启动和 UI 检查不改变
+`moonlightProtocolAvailable=false`、本地主机 `host/trust` 仓储边界或实体手柄 S1-05A 的未开放状态。
+
 <!-- PLAN_BODY_END -->

@@ -1215,6 +1215,36 @@ ArkTS 直接编码或发送控制器线协议。
 5. Moonlight 云同步（`moonlightrecordv1`、selection/transfer/secret recovery）继续 parked；
    真实 Sunshine、设备/网络/功耗矩阵和用户 ARM64 实机验收仍是外部门禁。
 
+## 12.27 设置/FAB/本地数据最终收口（2026-08-12）
+
+本轮没有新增代码；只对当前 HAP 复验设置、FAB 和本地数据边界。最新手机证据位于
+`/private/tmp/moonlight-ui-closeout2.PFyRlJ/`：`root-5557.jpeg`、`settings-toggle-check.jpeg`、
+`settings-lower-closeout.jpeg`、`moonlight-quick-sheet-closeout.jpeg` 及对应 UI tree 均来自本轮 HDC，且已实际查看。
+
+- 首页保持主机管理唯一入口；FAB 的 Moonlight 仍是灰色可着色图标、“即将支持”、无导航和无后台动作；PC 大屏独立灰色栏位不变。
+- 设置页是公共应用设置进入 Moonlight 协议分组，再进入九个 leaf 的单一 `bindSheet` 路由；没有重复“主机管理”、公共显示或 PIP 设置。
+- 九个 leaf 在最新展开截图中全部可见：快速设置、画面、音频、控制与手柄、网络与安全、后台串流、诊断、云同步范围、配对与信任。
+- 快速设置 bindSheet 的三档体验预设、接收音频、自动重连和保存状态均已看到；Moonlight 数据保持本地范围。
+- 本地主机保存仍只通过已有 `MoonlightRepositoryPort` 写 host/trust，`localOnly=1`，readback/补偿/稳定 ID 合同不变；没有新增云表、
+  `moonlightrecordv1`、CloudSyncPolicy、cache、网络、native、NAPI、媒体或公共输入路径。
+
+因此 U1-13 的设置/FAB/本地数据产品壳已收口；S1-05A、S1-08、N2-09、真实设备 Hypium 和发布 truth 仍是后续门禁，不能由本轮
+模拟器 UI/HAP 证据替代。
+
+## 12.28 当前签名 HAP/UI 最终验收（2026-08-12）
+
+最终只认当前签名包 `entry/build/default/outputs/default/entry-default-signed.hap`，SHA-256
+`8a5209d438b253ccb78df6e29734bb1afdde2eb3da281aea8e3ed30c04862419`。它已安装/启动于 PC `127.0.0.1:5555` 和手机
+`127.0.0.1:5557`；最新证据目录为 `/private/tmp/moonlight-current-hap-20260812/`。
+
+- `pc-root.jpeg` / `phone-root.jpeg`：首页主机管理和空状态未受影响。
+- `pc-picker.jpeg` / `phone-picker.jpeg`：RustDesk 风格单 Sheet 中 Moonlight 使用官方可着色几何图标、灰态显示“即将支持”，不进入添加路由。
+- `moon-expanded.jpeg` / `settings-lower.jpeg`：当前包的 Moonlight 九个 leaf 分两张滚动截图完整可见，包含控制与手柄、云同步范围和配对与信任。
+- `quick.jpeg`：当前包真实打开唯一 Moonlight 快速设置 bindSheet，三档预设、接收音频、自动重连和保存状态可见。
+
+本次仍未新增实现代码。设置仍走公共设置 → Moonlight 协议分组 → leaf → 单 bindSheet；数据仍由 `MoonlightLocalHostService`
+通过现有本地 `MoonlightRepositoryPort` 写入 `localOnly=1` 的 host/trust；云表、网络、媒体、native/NAPI 和实体手柄链路均未打开。
+
 ## 12.25 当前收尾复核（2026-08-12）
 
 - 当前代码 checkpoint 仍为 `665df714`，文档收尾提交为 `b1ac85dcc`；当前工作树唯一未提交文件是用户-owned
