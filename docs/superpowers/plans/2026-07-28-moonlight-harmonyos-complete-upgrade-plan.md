@@ -4812,7 +4812,7 @@ existing-host restore、host readback rollback、partial compensation），新�
 - `pc-root.png`、`phone-root.png`：PC/手机首页主机管理保持原状，主机管理仍归首页；
 - `pc-picker-open.png`、`phone-picker-open.png`：RustDesk 风格 FAB 协议选择器中 Moonlight 使用灰色可着色图标并显示“即将支持”；
 - `pc-max.png`：PC 大屏侧栏拥有独立的灰色 Moonlight 栏位，显示“即将支持”；
-- `phone-settings.png`：公共“主页与主机列表”仍是主机管理入口，Moonlight 作为独立协议设置分组；
+- `phone-settings-open.png`：公共“主页与主机列表”仍是主机管理入口，Moonlight 作为独立协议设置分组；
 - `phone-moon-expanded.png`：Moonlight 展开为快速设置、画面、音频、控制与手柄、网络与安全、后台串流、诊断等专属子项；
 - `phone-quick.png`：实际打开 Moonlight“快速设置”bindSheet，含低延迟/均衡/画质优先、接收音频、自动重连和保存入口；
   所有截图均来自当前 HAP，不使用旧截图。

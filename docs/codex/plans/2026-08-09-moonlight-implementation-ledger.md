@@ -1175,7 +1175,7 @@ stale terminal request 不清本地状态；pending→terminal 的 mapper drain 
   `8b54784ac3112b30a5630ef074d35150fd7271099920e54ab97809ef1546263e`。HDC 已在 PC `127.0.0.1:5555` 与手机
   `127.0.0.1:5557` 安装/启动。只查看最新 HAP 证据目录 `/private/tmp/moonlight-final-gate.bIGtZD/`：
   `pc-root.png`、`phone-root.png`、`pc-picker-open.png`、`phone-picker-open.png`、`pc-max.png`、
-  `phone-settings.png`、`phone-moon-expanded.png` 和 `phone-quick.png`；没有使用旧截图。
+  `phone-settings-open.png`、`phone-moon-expanded.png` 和 `phone-quick.png`；没有使用旧截图。
 - 最新证据确认：PC 大屏侧栏 Moonlight 独立且保持禁用；手机/PC FAB 的 Moonlight 使用灰色可着色图标并显示
   “即将支持”；手机设置页公共“主页与主机列表”仍是主机管理唯一入口，Moonlight 没有重复主机管理项；
   Moonlight 已展开为协议专属设置分组，并实际打开“快速设置”bindSheet，继续使用统一 RustDesk/Theme 排版。
