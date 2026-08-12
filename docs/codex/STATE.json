@@ -3,14 +3,14 @@
   "task": "moonlight-complete-upgrade",
   "branch": "codex/moonlight-complete-upgrade",
   "base": "aeb0cdac5",
-  "head": "db750cdb",
-  "phase": "u1-13-local-only-host-add-persistence",
+  "head": "1b0b5087c",
+  "phase": "u1-14-adaptive-ui-controller-isolation-closeout",
   "status": "active",
   "next": "S1-05A: add the native HarmonyOS GameController listener, narrow typed NAPI and the single session-owned common-c input port into the existing N3-08/N3-05/N3-01 chain; keep capability false until real-device receipts. N2-09 remains real Sunshine/ARM64 external evidence.",
   "blockers": [
     "ohosTest@OhosTestCompileArkTS is not registered (00306054); 165 documented focused Moonlight tests in 21 describe groups plus 8 shared host-add handoff cases are compile-registered but not executed on device",
     "HAP/AppSpawn secure identity, real Sunshine transport/media/first-frame, OHAudio/Surface lifecycle and physical controller runtime capabilities remain unproven",
-    "S1-05A is not implemented: official common-c LiSendControllerArrivalEvent/LiSendMultiControllerEvent and the N3 mapper/aggregator contracts are present, but ProductDriverPort has no session-owned controller input port and no HarmonyOS GameControllerKit listener/NAPI caller",
+    "S1-05A session binding is not implemented: the HarmonyOS GameControllerKit listener is test-only/future-session foundation and product capability remains false; official common-c LiSendControllerArrivalEvent/LiSendMultiControllerEvent and the N3 mapper/aggregator contracts still require a single session-owned input port",
     "N2-09 real Sunshine 720p/1080p, 30/60fps, two-hour, thermal, background/PIP/rotation and user ARM64 physical acceptance remain pending",
     "The user-owned CloudStore.ets cloud-sync diff is intentionally outside this Moonlight checkpoint and remains unstaged",
     "The local host-add path is verified by compile-registered focused cases and simulator UI only; real Sunshine/Host Control/runtime/media/controller evidence is still absent"
@@ -20,32 +20,36 @@
     "docs/codex/plans/2026-08-09-moonlight-implementation-ledger.md"
   ],
   "review": {
-    "status": "PASS",
+    "status": "REVIEW_REQUIRED",
     "taskId": "019fe966-d99a-7ce1-8b53-4ef725597053",
     "scope": [
-      "665df714..db750cdb",
+      "665df714..1b0b5087c",
+      "entry/src/main/cpp/CMakeLists.txt",
+      "entry/src/main/cpp/moonlight/input/MoonlightGameControllerListener.cpp",
+      "entry/src/main/cpp/moonlight/input/MoonlightGameControllerListener.h",
+      "entry/src/main/cpp/moonlight/media/MoonlightCommonCAdapter.cpp",
+      "entry/src/main/cpp/moonlight/media/MoonlightCommonCAdapter.h",
+      "entry/src/main/cpp/moonlight/moonlight_napi.cpp",
+      "entry/src/main/cpp/types/librdpnapi/index.d.ts",
+      "entry/src/main/ets/components/hostadd/HostAddWizardSheet.ets",
+      "entry/src/main/ets/components/hostadd/HostProtocolPicker.ets",
       "entry/src/main/ets/components/hostadd/MoonlightHostAddFlow.ets",
       "entry/src/main/ets/pages/HostListPage.ets",
-      "entry/src/main/ets/services/HostAddConnectionHandoffPolicy.ets",
-      "entry/src/main/ets/services/MoonlightHostAddFlowPolicy.ets",
-      "entry/src/main/ets/services/MoonlightLocalHostService.ets",
-      "entry/src/test/HostAddConnectionHandoffPolicy.test.ets",
-      "entry/src/test/List.test.ets",
-      "entry/src/test/MoonlightHostAddFlowPolicy.test.ets",
-      "entry/src/test/MoonlightLocalHostService.test.ets"
+      "entry/src/main/ets/services/HostProtocolPickerPolicy.ets",
+      "entry/src/test/HostProtocolPickerPolicy.test.ets"
     ],
     "lastReceiptId": "moonlight-u1-13-ui-data-closeout-current-hap-2026-08-12",
-    "reason": "The existing reviewer task was reused for the U1-13 increment. Final review PASS: P0/P1/P2 are zero; the only P3 is an accepted exception-path testability limitation. Host/trust construction, readback-aware forward compensation, partial/uncertain fencing and Sheet handoff were verified. CloudStore.ets is explicitly excluded; no adjacent protocol, cloud, native or runtime source changed."
+    "reason": "The existing reviewer task was reused for the prior U1-13 increment and remains the latest completed reviewer receipt. This final checkpoint was additionally self-audited and rebuilt; the reviewer follow-up was requested but returned no new report before the user-requested stop. CloudStore.ets is explicitly excluded."
   },
   "lastVerification": {
     "diffCheck": "pass: scoped U1-13 code/plan closeout diff check; CloudStore.ets remains the only intentional unstaged user change",
     "testCompile": "pass: exact default@OhosTestCompileArkTS with --analyze=normal --parallel --incremental --no-daemon after db750cdb",
-    "assembleHap": "pass: exact assembleHap with --analyze=normal --parallel --incremental --no-daemon; current-workspace signed HAP SHA-256 8a5209d438b253ccb78df6e29734bb1afdde2eb3da281aea8e3ed30c04862419",
+    "assembleHap": "pass: exact assembleHap with --analyze=normal --parallel --incremental --no-daemon; final signed HAP SHA-256 dfa10941f60946e30a7f288688da655c53c5f50b98a13bdcbc563b555267377d",
     "hapPath": "entry/build/default/outputs/default/entry-default-signed.hap",
-    "hdcRuntime": "pass outside sandbox: current signed HAP SHA-256 8a5209d438b253ccb78df6e29734bb1afdde2eb3da281aea8e3ed30c04862419 installed and EntryAbility started on PC 127.0.0.1:5555 and phone 127.0.0.1:5557; current evidence directory /private/tmp/moonlight-current-hap-20260812/",
-    "uiAcceptance": "only newly captured and viewed current-package evidence is recorded: pc-root.jpeg, phone-root.jpeg, pc-picker.jpeg, phone-picker.jpeg, moon-expanded.jpeg, settings-lower.jpeg and quick.jpeg under /private/tmp/moonlight-current-hap-20260812/; homepage ownership, grey disabled picker contract, PC continuity, all nine Moonlight leaves, single bindSheet routing and local-only controls verified; no earlier package screenshot is used",
+    "hdcRuntime": "pass outside sandbox: final signed HAP SHA-256 dfa10941f60946e30a7f288688da655c53c5f50b98a13bdcbc563b555267377d installed and EntryAbility started on PC 127.0.0.1:5555 and phone 127.0.0.1:5557",
+    "uiAcceptance": "fresh committed-package homepage evidence captured and viewed under /private/tmp/moonlight-final-committed-ui.JX0JXs/; detailed FAB/add-sheet evidence remains /private/tmp/moonlight-fab-final2-20260812/ and is unchanged by the product-excluded listener-only closeout",
     "focusedTests": "new U1-13 coverage adds 8 local persistence cases, 1 recovery-policy case and 1 post-save handoff case; all compile-registered; ohosTest remains blocked at task 00306054",
-    "isolation": "static/reviewer pass for 665df714..db750cdb: only Moonlight add-flow/repository adapter/handoff/test scope changed; no adjacent protocol business source, public input, native/CMake/NAPI, CloudSyncPolicy or existing cloud-table registration changed; user CloudStore diff excluded",
+    "isolation": "static self-audit for 665df714..1b0b5087c: listener excluded from production rdpnapi/shared NAPI/common-c product input and GameControllerKit link; no adjacent protocol business source changed; user CloudStore diff excluded",
     "lightCompliance": "pass previously for official icon provenance, vendor, SBOM, NOTICE, SPDX and artifact hash; the 6b0c1aa8 review fixes do not change those artifacts",
     "ohosTest": "blocked task-not-registered 00306054; no on-device execution pass claimed"
   },

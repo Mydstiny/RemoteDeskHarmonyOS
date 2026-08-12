@@ -3,7 +3,7 @@
 > 文档状态：第四次深度审计完成；已于 2026-08-09 从 G0 开始实施
 > 首次评估日期：2026-07-28；二次完成性审计日期：2026-07-29；第三次 HarmonyOS 人因/UI 审计日期：2026-08-01；第四次源码对齐日期：2026-08-08
 > 当前实施基线：任务 `moonlight-complete-upgrade`；分支 `codex/moonlight-complete-upgrade`；基线 `main@aeb0cdac5`，与 `origin/main` 一致
-> 当前实施进度：G0、D1、D2 本地/休眠策略、D3 本地生命周期、N1-01～N1-08、dormant N2-01～N2-08、N3-01～N3-08、U1-01～U1-13 以及 S1-01～S1-04 已形成 checkpoint；当前代码 checkpoint 为 `db750cdb`，S1-04 与 U1-13 增量复核已通过既有 reviewer task，N2-09 等待真实 Sunshine/ARM64 实机外部回执，S1-05A 为下一实现边界。Moonlight UI 的唯一视觉/交互基线是现有 RustDesk FAB、协议卡片、添加流程与通用 Theme token。2026-08-10 产品决定：Moonlight 暂不接入云同步，当前只推进 owner-scoped 本地主机存储；`moonlightrecordv1`、Moonlight CloudSync/selection/transfer 仅保留为未来停靠设计，不进入当前实施路径。HarmonyOS 虚拟设备已验证 owner-store v5、19/20/16 列三表和幂等 schema receipt；首页承担主机管理，当前已落地本地详情/应用目录、九段设置、launch/连接/串流 UI shell；所有真实 Host Control、secure identity、transport/media/input runtime 仍 fail closed，故 picker、保存、首帧和六个发布 truth 仍全 false
+> 当前实施进度：G0、D1、D2 本地/休眠策略、D3 本地生命周期、N1-01～N1-08、dormant N2-01～N2-08、N3-01～N3-08、U1-01～U1-14 以及 S1-01～S1-04 已形成 checkpoint；当前代码 checkpoint 为 `1b0b5087c`，S1-04 与 U1-13 增量复核已通过既有 reviewer task，U1-14 的最终 reviewer 复核在用户要求停止前未返回新回执，N2-09 等待真实 Sunshine/ARM64 实机外部回执，S1-05A 为下一实现边界。Moonlight UI 的唯一视觉/交互基线是现有 RustDesk FAB、协议卡片、添加流程与通用 Theme token。2026-08-10 产品决定：Moonlight 暂不接入云同步，当前只推进 owner-scoped 本地主机存储；`moonlightrecordv1`、Moonlight CloudSync/selection/transfer 仅保留为未来停靠设计，不进入当前实施路径。HarmonyOS 虚拟设备已验证 owner-store v5、19/20/16 列三表和幂等 schema receipt；首页承担主机管理，当前已落地本地详情/应用目录、九段设置、launch/连接/串流 UI shell；所有真实 Host Control、secure identity、transport/media/input runtime 仍 fail closed，故 picker、保存、首帧和六个发布 truth 仍全 false
 > 适用仓库：/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS
 > 上游实施锁定：2026-08-09 已只读复核并固定 moonlight-common-c `e41355ea01670fd4c830b384009d31dd0339a705`（ENet `aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1`、nanors `b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a`）、Moonlight Android `f10085f552b367cf7203007693d91c322a0a2936`、Moonlight Qt `2e13ed9977bc31c73caf8428f08f58d793313ece`、Sunshine 测试 pin `v2026.808.164219` / `25c06d79b54f3d092d3fedd5f5ba44989f394692`；完整哈希、许可证和能力证据见 `docs/codex/plans/2026-08-09-moonlight-implementation-ledger.md`
 > 原评估轮次仅更新计划文件；2026-08-09 起的实施变更严格按第 15 节任务 ID、仓库门禁和 fail-closed feature policy 推进。
@@ -4895,7 +4895,8 @@ GameControllerKit→typed NAPI→common-c、网络/温控/长稳和 device Hypiu
 - listener 的 callback registry 现在以 `shared_ptr<Impl>` 保持已进入 SDK callback 的对象存活；注册失败会排空 admitted callback lease，注销会释放 registry owner；sink 内同步 `stop()` 只标记 deferred stop，实际注销由 callback lease 在最外层 callback 返回后执行，避免自等待和悬空对象。
 - 当前产品精确 `default@OhosTestCompileArkTS` 与 `assembleHap` 均 `BUILD SUCCESSFUL`。最新签名 HAP 为
   `entry/build/default/outputs/default/entry-default-signed.hap`，SHA-256 为
-  `296d60a2e264ec46dd3300099640ac65895d647b76362a829030e1e0a70a5b97`；UI 证据仍只认
+  `dfa10941f60946e30a7f288688da655c53c5f50b98a13bdcbc563b555267377d`；最终包已重新安装/启动于 PC `5555` 与手机 `5557`，新首页证据为
+  `/private/tmp/moonlight-final-committed-ui.JX0JXs/`；详细 FAB/add-sheet 证据仍只认
   `/private/tmp/moonlight-fab-final2-20260812/`。
 - host `rdp_native_tests` 从当前工作树重新配置/编译/运行，结果 `701 passed, 16 failed, 717 total`；失败仍为既有本地 TLS fixture 启动失败，Moonlight listener/controller 用例通过；API 23 arm64 listener syntax check 通过。
 - 本次提交继续只收口 Moonlight UI/隔离 foundation；`CloudStore.ets` 不暂存、不修改、不接入 Moonlight 云同步。产品不含 listener、GameControllerKit link、公共 controller NAPI 或 common-c controller port，因此不改变其他协议的性能/功能路径。真实 session-owned 手柄传输仍属于后续 S1-05A。

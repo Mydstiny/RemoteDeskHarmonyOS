@@ -4,7 +4,7 @@
 
 - Task: `moonlight-complete-upgrade`
 - Base: `main@aeb0cdac5`; branch: `codex/moonlight-complete-upgrade`
-- Code checkpoint: final adaptive FAB/add-sheet and controller-isolation fix is ready for commit; `CloudStore.ets` remains user-owned and unstaged.
+- Code checkpoint: final adaptive FAB/add-sheet and controller-isolation fix is committed as `1b0b5087c`; `CloudStore.ets` remains user-owned and unstaged.
 - Phase: U1-14 adaptive UI closeout plus S1-05A boundary audit; real session binding remains pending.
 - Authoritative plan: `docs/superpowers/plans/2026-07-28-moonlight-harmonyos-complete-upgrade-plan.md`
 - Live ledger: `docs/codex/plans/2026-08-09-moonlight-implementation-ledger.md`
@@ -28,9 +28,9 @@
 ## Verification
 
 - Exact `default@OhosTestCompileArkTS --analyze=normal --parallel --incremental --no-daemon`: `BUILD SUCCESSFUL` after the final UI/controller-isolation fix.
-- Exact `assembleHap --analyze=normal --parallel --incremental --no-daemon`: `BUILD SUCCESSFUL`; signed HAP `entry/build/default/outputs/default/entry-default-signed.hap`, SHA-256 `296d60a2e264ec46dd3300099640ac65895d647b76362a829030e1e0a70a5b97`.
-- That HAP was installed and started outside the sandbox on PC `127.0.0.1:5555` and phone `127.0.0.1:5557`.
-- Fresh current-package evidence is `/private/tmp/moonlight-fab-final2-20260812/`: new PC/phone homepage and picker screenshots/UI trees, all viewed from the current HAP only; the picker tree records `仅添加` on both breakpoints.
+- Exact `assembleHap --analyze=normal --parallel --incremental --no-daemon`: `BUILD SUCCESSFUL`; final signed HAP `entry/build/default/outputs/default/entry-default-signed.hap`, SHA-256 `dfa10941f60946e30a7f288688da655c53c5f50b98a13bdcbc563b555267377d`.
+- That final HAP was installed and started outside the sandbox on PC `127.0.0.1:5555` and phone `127.0.0.1:5557`; fresh committed-package homepage evidence is `/private/tmp/moonlight-final-committed-ui.JX0JXs/` (`5555-root.jpeg`, `5557-root.jpeg` and UI trees), both viewed after deployment.
+- The detailed FAB/picker/add-sheet evidence remains `/private/tmp/moonlight-fab-final2-20260812/`; it was captured from the immediately preceding signed UI package and is unchanged by the final product-excluded listener-only closeout.
 - Visual acceptance confirms the separate entry gate, official tintable icon, explicit shell-only label, bounded candidate scroll, separated bottom actions, intrinsic PC sheet and unchanged homepage shell.
 - Native focused rerun rebuilt the listener in the host test target and reported `701 passed, 16 failed, 717 total`; the 16 failures are the known existing local TLS fixture starts. The OHOS listener translation unit also passed an API 23 arm64 syntax check. `ohosTest` remains unavailable because task `00306054` is not registered.
 - `CloudStore.ets` is the only intentional user-owned unstaged file and was not read for business changes, modified, staged or committed. No RDP/RustDesk/SSH/SFTP business file was changed.

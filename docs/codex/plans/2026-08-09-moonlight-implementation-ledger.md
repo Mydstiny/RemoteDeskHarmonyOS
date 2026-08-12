@@ -4,7 +4,7 @@
 > 分支：`codex/moonlight-complete-upgrade`
 > 初始基线：`main@aeb0cdac5`，与 `origin/main` 一致
 > 总计划：`docs/superpowers/plans/2026-07-28-moonlight-harmonyos-complete-upgrade-plan.md`
-> 台账状态：G0、D1、D2 本地/休眠策略、D3 本地生命周期、N1-01～N1-08、N2-01～N2-08、N3-01～N3-08、U1-01～U1-13 与 S1-01～S1-04 已形成 checkpoint；当前代码 checkpoint 为 `db750cdb`，S1-04 与 U1-13 增量审查已通过既有 reviewer task，N2-09 等待真实 Sunshine/ARM64 实机外部回执，S1-05A 为下一实现边界。Moonlight UI 唯一基线为现有 RustDesk FAB/协议选择/添加流程与通用 Theme token。2026-08-10 产品决定 Moonlight 暂不接入云同步，当前只开发本地主机存储；`moonlightrecordv1`、Moonlight cloud selection/transfer/secret recovery 全部 parked，不进入当前执行序列。D3 在线/多设备和产品运行时仍等待外部回执，只把有可复现证据的项目标记为通过
+> 台账状态：G0、D1、D2 本地/休眠策略、D3 本地生命周期、N1-01～N1-08、N2-01～N2-08、N3-01～N3-08、U1-01～U1-14 与 S1-01～S1-04 已形成 checkpoint；当前代码 checkpoint 为 `1b0b5087c`，S1-04 与 U1-13 增量审查已通过既有 reviewer task，U1-14 的最终 reviewer 复核在用户要求停止前未返回新回执，N2-09 等待真实 Sunshine/ARM64 实机外部回执，S1-05A 为下一实现边界。Moonlight UI 唯一基线为现有 RustDesk FAB/协议选择/添加流程与通用 Theme token。2026-08-10 产品决定 Moonlight 暂不接入云同步，当前只开发本地主机存储；`moonlightrecordv1`、Moonlight cloud selection/transfer/secret recovery 全部 parked，不进入当前执行序列。D3 在线/多设备和产品运行时仍等待外部回执，只把有可复现证据的项目标记为通过
 
 ## 1. 执行约束
 
@@ -1257,8 +1257,8 @@ ArkTS 直接编码或发送控制器线协议。
 ## 12.30 最终提交前收口验证（2026-08-12）
 
 - 修正 listener 回调所有权收口：process-global callback registry 以 `shared_ptr` 持有当前 `Impl`，注册失败/注销路径清理 owner；sink 回调只维护 callback depth，deferred stop 由最外层 callback lease 在回调完全返回后执行，避免 sink 同步调用 `stop()` 自等待。
-- 当前产品 HAP 精确双 Hvigor 门禁均 `BUILD SUCCESSFUL`，当前签名包 SHA-256 为
-  `296d60a2e264ec46dd3300099640ac65895d647b76362a829030e1e0a70a5b97`；本次 listener 变更不进入产品 `rdpnapi`，不改变 HAP 的 Moonlight runtime gate。
+- 当前产品 HAP 精确双 Hvigor 门禁均 `BUILD SUCCESSFUL`，最终签名包 SHA-256 为
+  `dfa10941f60946e30a7f288688da655c53c5f50b98a13bdcbc563b555267377d`；该 listener 变更不进入产品 `rdpnapi`，不改变 HAP 的 Moonlight runtime gate。最终包已重新安装/启动于 PC `5555` 与手机 `5557`，新首页证据为 `/private/tmp/moonlight-final-committed-ui.JX0JXs/`。
 - host focused `rdp_native_tests` 从本次工作树重新配置、编译并运行：`701 passed, 16 failed, 717 total`；16 个失败仍是既有本地 TLS fixture 启动失败，Moonlight listener/controller 用例全部通过。OHOS API 23 arm64 listener translation unit syntax check 通过。
 - `CloudStore.ets` 仍保持用户-owned unstaged；不接入 Moonlight 云同步。RDP、RustDesk、SSH/SFTP 的业务源、公共输入 owner、产品 NAPI/CMake link graph 未改变。
 

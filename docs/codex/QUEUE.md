@@ -9,8 +9,8 @@ Updated: 2026-08-12 Asia/Shanghai
 - `db750cdb` closes local-only host/trust persistence with owner/generation fencing, stable IDs, readback-aware compensation/revival and Sheet `onDisappear` handoff.
 - `6b0c1aa8` closes the RustDesk-style local UI shell: homepage host management, detail/catalog, nine-section settings, launch/connection/stream overlays, official icon and desktop preview slot.
 - S1-01～S1-04 dormant session/toolbar contracts and N2-01～N2-08 native media contracts remain closed without opening product runtime truth.
-- Current signed HAP SHA-256 is `296d60a2e264ec46dd3300099640ac65895d647b76362a829030e1e0a70a5b97`; both mandatory Hvigor gates passed and it was installed/started on PC `5555` and phone `5557` before the final listener-only native closeout.
-- Current UI evidence is `/private/tmp/moonlight-fab-final2-20260812/`; every screenshot is from the current HAP and was freshly captured/viewed.
+- Current signed HAP SHA-256 is `dfa10941f60946e30a7f288688da655c53c5f50b98a13bdcbc563b555267377d`; both mandatory Hvigor gates passed and it was installed/started on PC `5555` and phone `5557`.
+- Fresh committed-package homepage evidence is `/private/tmp/moonlight-final-committed-ui.JX0JXs/`; the detailed FAB/add-sheet evidence is `/private/tmp/moonlight-fab-final2-20260812/` and remains valid because the final native listener closeout is excluded from the product target.
 - User-owned `entry/src/main/ets/services/CloudStore.ets` remains unstaged and is excluded.
 
 ## Next
