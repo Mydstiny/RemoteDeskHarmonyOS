@@ -24,12 +24,14 @@ MoonlightVideoSubmitResult staleVideoResult() noexcept {
 
 struct MoonlightProductSessionMediaPort::Impl final {
     Impl(std::int64_t renderer, std::int32_t exactWidth,
-         std::int32_t exactHeight) noexcept
-        : rendererHandle(renderer), width(exactWidth), height(exactHeight) {}
+         std::int32_t exactHeight, bool playAudio) noexcept
+        : rendererHandle(renderer), width(exactWidth), height(exactHeight),
+          audioPlaybackEnabled(playAudio) {}
 
     const std::int64_t rendererHandle;
     const std::int32_t width;
     const std::int32_t height;
+    const bool audioPlaybackEnabled;
     // Serializes the complete activate/create/publish transaction with release.
     // The state mutex alone cannot cover platform calls, but allowing two binds
     // to pass its initial empty-state check would publish competing sink owners.
@@ -37,6 +39,8 @@ struct MoonlightProductSessionMediaPort::Impl final {
     mutable std::mutex mutex;
     MoonlightSessionKey key {};
     bool ownerActive = false;
+    bool discardAudioConfigured = false;
+    bool discardAudioStarted = false;
     std::shared_ptr<MoonlightProductMediaPort> delegate;
 };
 
@@ -58,14 +62,15 @@ MoonlightProductSessionMediaPort::~MoonlightProductSessionMediaPort() {
 std::shared_ptr<MoonlightProductSessionMediaPort>
 MoonlightProductSessionMediaPort::create(
     std::int64_t rendererHandle, std::int32_t width,
-    std::int32_t height) noexcept {
+    std::int32_t height, bool audioPlaybackEnabled) noexcept {
     if (rendererHandle <= 0 || width <= 0 || height <= 0) {
         return nullptr;
     }
     try {
         return std::shared_ptr<MoonlightProductSessionMediaPort>(
             new MoonlightProductSessionMediaPort(
-                std::make_unique<Impl>(rendererHandle, width, height)));
+                std::make_unique<Impl>(rendererHandle, width, height,
+                                       audioPlaybackEnabled)));
     } catch (...) {
         return nullptr;
     }
@@ -141,6 +146,8 @@ void MoonlightProductSessionMediaPort::releaseSession(
         delegate = std::move(impl_->delegate);
         ownerActive = impl_->ownerActive;
         impl_->ownerActive = false;
+        impl_->discardAudioConfigured = false;
+        impl_->discardAudioStarted = false;
         impl_->key = {};
     }
     delegate.reset();
@@ -174,23 +181,59 @@ bool MoonlightProductSessionMediaPort::videoReady() const noexcept {
 bool MoonlightProductSessionMediaPort::videoLive() const noexcept {
     MOONLIGHT_DELEGATE_BOOL(videoLive, false);
 }
-bool MoonlightProductSessionMediaPort::audioLive() const noexcept {
-    MOONLIGHT_DELEGATE_BOOL(audioLive, false);
-}
 bool MoonlightProductSessionMediaPort::audioReady(
     MoonlightStreamAudioLayout layout) const noexcept {
-    MOONLIGHT_DELEGATE_BOOL(audioReady, false, layout);
+    std::shared_ptr<MoonlightProductMediaPort> delegate;
+    bool playback = true;
+    {
+        if (impl_ == nullptr) { return false; }
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        delegate = impl_->delegate;
+        playback = impl_->audioPlaybackEnabled;
+    }
+    if (!playback) {
+        return layout == MoonlightStreamAudioLayout::Disabled && delegate != nullptr;
+    }
+    return delegate != nullptr && delegate->audioReady(layout);
 }
 bool MoonlightProductSessionMediaPort::setupVideo(
     const MoonlightCommonCVideoSelection& selection) noexcept {
     MOONLIGHT_DELEGATE_BOOL(setupVideo, false, selection);
 }
-bool MoonlightProductSessionMediaPort::setupAudio(
-    const MoonlightCommonCAudioSelection& selection) noexcept {
-    MOONLIGHT_DELEGATE_BOOL(setupAudio, false, selection);
+#undef MOONLIGHT_DELEGATE_BOOL
+
+bool MoonlightProductSessionMediaPort::audioLive() const noexcept {
+    std::shared_ptr<MoonlightProductMediaPort> delegate;
+    {
+        if (impl_ == nullptr) { return false; }
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        if (!impl_->audioPlaybackEnabled) {
+            return impl_->ownerActive && impl_->discardAudioStarted;
+        }
+        delegate = impl_->delegate;
+    }
+    return delegate != nullptr && delegate->audioLive();
 }
 
-#undef MOONLIGHT_DELEGATE_BOOL
+bool MoonlightProductSessionMediaPort::setupAudio(
+    const MoonlightCommonCAudioSelection& selection) noexcept {
+    std::shared_ptr<MoonlightProductMediaPort> delegate;
+    {
+        if (impl_ == nullptr) { return false; }
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        if (!impl_->audioPlaybackEnabled) {
+            if (!impl_->ownerActive || impl_->delegate == nullptr ||
+                selection.layout != MoonlightStreamAudioLayout::Disabled ||
+                impl_->discardAudioConfigured || impl_->discardAudioStarted) {
+                return false;
+            }
+            impl_->discardAudioConfigured = true;
+            return true;
+        }
+        delegate = impl_->delegate;
+    }
+    return delegate != nullptr && delegate->setupAudio(selection);
+}
 
 #define MOONLIGHT_DELEGATE_VOID(method, ...) \
     std::shared_ptr<MoonlightProductMediaPort> delegate; \
@@ -210,21 +253,64 @@ void MoonlightProductSessionMediaPort::stopVideo() noexcept {
 void MoonlightProductSessionMediaPort::cleanupVideo() noexcept {
     MOONLIGHT_DELEGATE_VOID(cleanupVideo);
 }
+#undef MOONLIGHT_DELEGATE_VOID
+
 void MoonlightProductSessionMediaPort::startAudio() noexcept {
-    MOONLIGHT_DELEGATE_VOID(startAudio);
-}
-void MoonlightProductSessionMediaPort::stopAudio() noexcept {
-    MOONLIGHT_DELEGATE_VOID(stopAudio);
-}
-void MoonlightProductSessionMediaPort::cleanupAudio() noexcept {
-    MOONLIGHT_DELEGATE_VOID(cleanupAudio);
-}
-void MoonlightProductSessionMediaPort::submitAudioPayload(
-    const std::uint8_t* bytes, std::size_t byteCount) noexcept {
-    MOONLIGHT_DELEGATE_VOID(submitAudioPayload, bytes, byteCount);
+    std::shared_ptr<MoonlightProductMediaPort> delegate;
+    {
+        if (impl_ == nullptr) { return; }
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        if (!impl_->audioPlaybackEnabled) {
+            if (impl_->ownerActive && impl_->discardAudioConfigured) {
+                impl_->discardAudioStarted = true;
+            }
+            return;
+        }
+        delegate = impl_->delegate;
+    }
+    if (delegate != nullptr) { delegate->startAudio(); }
 }
 
-#undef MOONLIGHT_DELEGATE_VOID
+void MoonlightProductSessionMediaPort::stopAudio() noexcept {
+    std::shared_ptr<MoonlightProductMediaPort> delegate;
+    {
+        if (impl_ == nullptr) { return; }
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        if (!impl_->audioPlaybackEnabled) {
+            impl_->discardAudioStarted = false;
+            return;
+        }
+        delegate = impl_->delegate;
+    }
+    if (delegate != nullptr) { delegate->stopAudio(); }
+}
+
+void MoonlightProductSessionMediaPort::cleanupAudio() noexcept {
+    std::shared_ptr<MoonlightProductMediaPort> delegate;
+    {
+        if (impl_ == nullptr) { return; }
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        if (!impl_->audioPlaybackEnabled) {
+            impl_->discardAudioStarted = false;
+            impl_->discardAudioConfigured = false;
+            return;
+        }
+        delegate = impl_->delegate;
+    }
+    if (delegate != nullptr) { delegate->cleanupAudio(); }
+}
+
+void MoonlightProductSessionMediaPort::submitAudioPayload(
+    const std::uint8_t* bytes, std::size_t byteCount) noexcept {
+    std::shared_ptr<MoonlightProductMediaPort> delegate;
+    {
+        if (impl_ == nullptr) { return; }
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        if (!impl_->audioPlaybackEnabled) { return; }
+        delegate = impl_->delegate;
+    }
+    if (delegate != nullptr) { delegate->submitAudioPayload(bytes, byteCount); }
+}
 
 MoonlightVideoSubmitResult MoonlightProductSessionMediaPort::submitVideoPayload(
     const MoonlightVideoDecodeUnitView& decodeUnit) noexcept {

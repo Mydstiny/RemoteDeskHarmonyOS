@@ -121,6 +121,18 @@ export default function moonlightSettingsLocalServiceTest(): void {
       expect(ownerB.settings.audio.enabled).assertTrue();
     });
 
+    it('rejects_a_draft_captured_under_a_stale_account_lease', 0, (): void => {
+      const port = new MemorySettingsPort();
+      const service = new MoonlightSettingsLocalService(port);
+      const captured: AccountSessionLease = cloneAccountSessionLease(
+        port.activeLease as AccountSessionLease);
+      port.activeLease = settingsLease('owner-b', 2);
+      const saved = service.save(defaultMoonlightSettings(), 1000, captured);
+      expect(saved.code).assertEqual('stale_account');
+      expect(saved.localCommitted).assertFalse();
+      expect(port.commitCount).assertEqual(0);
+    });
+
     it('fails_closed_without_an_active_local_account_lease', 0, (): void => {
       const port = new MemorySettingsPort();
       port.activeLease = null;

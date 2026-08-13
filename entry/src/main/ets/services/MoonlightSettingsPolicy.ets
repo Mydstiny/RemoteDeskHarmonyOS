@@ -214,3 +214,84 @@ export function resolveEffectiveMoonlightSettings(
     adjustments: adjustments
   };
 }
+
+/**
+ * Product truth for the currently shipped HarmonyOS media/input runtime.
+ * Keep this projection conservative until a real device probe is carried in
+ * the launch lease. User intent remains in `requested`; only `effective` is
+ * allowed to reach host launch, NAPI and common-c.
+ */
+export function resolveMoonlightProductSettings(
+  settings: MoonlightSettings
+): MoonlightEffectiveSettings {
+  const capabilities: MoonlightEffectiveCapabilities = {
+    codecs: ['h264'],
+    resolutions: ['host', '720p', '1080p'],
+    audioChannels: ['stereo'],
+    hdr: false,
+    yuv444: false,
+    relativePointer: false,
+    gameControllerInput: true,
+    controllerRumble: false,
+    pip: false,
+    maxWidth: 1920,
+    maxHeight: 1080,
+    maxFps: 60,
+    hostControlReady: true,
+    streamingTransportReady: true,
+    reasons: []
+  };
+  const resolved: MoonlightEffectiveSettings = resolveEffectiveMoonlightSettings(
+    settings, null, null, null, capabilities);
+  if (resolved.effective.network.streamEncryption === 'required') {
+    addAdjustment(resolved.adjustments, 'network.streamEncryption', 'required', 'auto',
+      'required_encryption_proof_unavailable');
+    resolved.effective.network.streamEncryption = 'auto';
+  }
+  // The single product controller mapper currently owns Sunshine slot 0. Keep
+  // Auto and explicit slot choices as durable intent, but never advertise a
+  // different slot in the launch bitmap until the mapper itself is multi-slot.
+  if (resolved.effective.input.controllerSlot !== 0) {
+    addAdjustment(resolved.adjustments, 'input.controllerSlot',
+      resolved.requested.input.controllerSlot, 0, 'product_controller_slot_zero');
+    resolved.effective.input.controllerSlot = 0;
+  }
+  return resolved;
+}
+
+function adjustmentIsValid(value: MoonlightSettingsAdjustment): boolean {
+  return value !== undefined && value !== null && typeof value === 'object' &&
+    typeof value.path === 'string' && value.path.length > 0 && value.path.length <= 128 &&
+    typeof value.requested === 'string' && value.requested.length <= 256 &&
+    typeof value.effective === 'string' && value.effective.length <= 256 &&
+    typeof value.reason === 'string' && value.reason.length > 0 && value.reason.length <= 128;
+}
+
+export function moonlightEffectiveSettingsAreValid(value: MoonlightEffectiveSettings): boolean {
+  if (value === undefined || value === null || typeof value !== 'object' ||
+      !moonlightSettingsAreValid(value.requested) ||
+      !moonlightSettingsAreValid(value.effective) ||
+      !Array.isArray(value.adjustments) || value.adjustments.length > 64) {
+    return false;
+  }
+  for (let index: number = 0; index < value.adjustments.length; index++) {
+    if (!adjustmentIsValid(value.adjustments[index])) { return false; }
+  }
+  return true;
+}
+
+export function encodeMoonlightEffectiveSettings(value: MoonlightEffectiveSettings): string {
+  if (!moonlightEffectiveSettingsAreValid(value)) { return ''; }
+  const encoded: string = JSON.stringify(value);
+  return encoded.length > 0 && encoded.length <= 32768 ? encoded : '';
+}
+
+export function decodeMoonlightEffectiveSettings(encoded: string): MoonlightEffectiveSettings | null {
+  if (typeof encoded !== 'string' || encoded.length === 0 || encoded.length > 32768) { return null; }
+  try {
+    const value: MoonlightEffectiveSettings = JSON.parse(encoded) as MoonlightEffectiveSettings;
+    return moonlightEffectiveSettingsAreValid(value) ? value : null;
+  } catch (_) {
+    return null;
+  }
+}

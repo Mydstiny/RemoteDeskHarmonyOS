@@ -11,6 +11,11 @@ import {
 } from '../main/ets/services/MoonlightSessionCoordinator';
 import { RemoteProtocol } from '../main/ets/services/RemoteSessionState';
 import { MoonlightSessionStateSnapshot } from '../main/ets/services/MoonlightSessionState';
+import { defaultMoonlightSettings } from '../main/ets/model/MoonlightModels';
+import {
+  encodeMoonlightEffectiveSettings,
+  resolveMoonlightProductSettings
+} from '../main/ets/services/MoonlightSettingsPolicy';
 
 class FakeMoonlightRuntime implements MoonlightRuntimePort {
   startCalls: number = 0;
@@ -54,6 +59,8 @@ function productRequest(includeSurface: boolean): MoonlightSessionStartRequest {
   value.launchKey = { requestId: 9, generation: 7, ownerToken: 11 };
   value.serverUuid = 'server-1';
   value.numericAppId = 42;
+  value.effectiveSettingsEncoded = encodeMoonlightEffectiveSettings(
+    resolveMoonlightProductSettings(defaultMoonlightSettings()));
   if (includeSurface) {
     value.rendererHandle = 101;
     value.surfaceWidth = 1920;

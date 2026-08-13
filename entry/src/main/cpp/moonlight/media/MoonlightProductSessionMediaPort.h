@@ -14,7 +14,7 @@ class MoonlightProductSessionMediaPort final : public MoonlightCommonCMediaPort 
 public:
     static std::shared_ptr<MoonlightProductSessionMediaPort> create(
         std::int64_t rendererHandle, std::int32_t width,
-        std::int32_t height) noexcept;
+        std::int32_t height, bool audioPlaybackEnabled = true) noexcept;
     ~MoonlightProductSessionMediaPort() override;
 
     bool bindSession(const MoonlightSessionKey& key) noexcept override;

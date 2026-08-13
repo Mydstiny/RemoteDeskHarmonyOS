@@ -110,6 +110,7 @@ export struct MoonlightHostAddFlow {
   @Prop discoveryRunning: boolean = false;
   @Prop discoveryResultOwnerToken: number = 0;
   @Prop discoveryResultGeneration: number = 0;
+  @Prop initialDiscoveryEnabled: boolean = true;
   onBackToProtocols: () => void = (): void => {};
   onStartDiscovery: (key: MoonlightHostAddDiscoveryKey) => void =
     (_key: MoonlightHostAddDiscoveryKey): void => {};
@@ -175,7 +176,13 @@ export struct MoonlightHostAddFlow {
 
   aboutToAppear(): void {
     this.flow = createMoonlightHostAddState(this.ownerToken);
-    this.startDiscovery();
+    if (this.initialDiscoveryEnabled) {
+      this.startDiscovery();
+    } else {
+      const next: MoonlightHostAddState = cloneMoonlightHostAddState(this.flow);
+      next.mode = 'manual';
+      this.flow = next;
+    }
   }
 
   aboutToDisappear(): void {
@@ -333,7 +340,7 @@ export struct MoonlightHostAddFlow {
         await this.onVerify(address, serverUuid, begin.key);
       if (!moonlightHostAddOperationIsCurrent(this.flow, begin.key)) { return; }
       if (result === null) {
-        this.withError('当前版本尚未开放 Moonlight 主机验证');
+        this.withError('无法验证主机，请检查 Sunshine、地址与网络后重试');
         return;
       }
       this.flow = applyMoonlightHostAddVerification(this.flow, begin.key, result);
@@ -575,15 +582,19 @@ export struct MoonlightHostAddFlow {
     }.width('100%').margin({ bottom: 18 })
   }
 
-  @Builder private modeButton(title: string, subtitle: string, automatic: boolean) {
+  @Builder private modeButton(title: string, subtitle: string, automatic: boolean,
+    enabled: boolean = true) {
     Column() {
       Text(title).fontSize(15).fontWeight(FontWeight.Medium)
-        .fontColor(this.modeIsSelected(automatic) ? Color.White : this.pal().text)
+        .fontColor(this.modeIsSelected(automatic) ? Color.White :
+          (enabled ? this.pal().text : this.pal().text3))
       Text(subtitle).fontSize(11)
         .fontColor(this.modeIsSelected(automatic) ? '#DDEEFF' : this.pal().text3).margin({ top: 4 })
     }.alignItems(HorizontalAlign.Start).layoutWeight(1).padding(14).borderRadius(12)
       .backgroundColor(this.modeIsSelected(automatic) ? this.accentColor : this.pal().surface)
+      .opacity(enabled ? 1 : 0.58)
       .onClick((): void => {
+        if (!enabled) { return; }
         if (!automatic) { this.pauseDiscovery(); }
         const next: MoonlightHostAddState = cloneMoonlightHostAddState(this.flow);
         next.mode = automatic ? 'automatic' : 'manual';
@@ -633,7 +644,8 @@ export struct MoonlightHostAddFlow {
     Text('主机需运行 Sunshine 或兼容 GameStream 服务，并与当前设备位于可访问网络。')
       .fontSize(12).fontColor(this.pal().text3).width('100%').margin({ bottom: 14 })
     Row() {
-      this.modeButton('自动发现', '搜索同一局域网主机', true)
+      this.modeButton('自动发现', this.initialDiscoveryEnabled ?
+        '搜索同一局域网主机' : '已在网络设置中关闭', true, this.initialDiscoveryEnabled)
       Blank().width(8)
       this.modeButton('手动输入', '使用域名或 IP 地址', false)
     }.width('100%').margin({ bottom: 14 })

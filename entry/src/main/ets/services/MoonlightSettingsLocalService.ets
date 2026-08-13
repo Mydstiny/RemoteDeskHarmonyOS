@@ -5,7 +5,11 @@ import {
   normalizeMoonlightSettingsForLocalStorage
 } from '../model/MoonlightModels';
 import { MoonlightRecord } from '../model/MoonlightRecord';
-import { AccountSessionLease, cloneAccountSessionLease } from './AccountScopePolicy';
+import {
+  AccountSessionLease,
+  accountSessionLeaseEquals,
+  cloneAccountSessionLease
+} from './AccountScopePolicy';
 import {
   MoonlightRecordMeta,
   moonlightMutableFieldPaths,
@@ -89,13 +93,17 @@ export class MoonlightSettingsLocalService {
       result(false, 'invalid_settings', defaultMoonlightSettings());
   }
 
-  save(settings: MoonlightSettings, nowMs: number): MoonlightLocalSettingsResult {
+  save(settings: MoonlightSettings, nowMs: number,
+    expectedLease: AccountSessionLease | null = null): MoonlightLocalSettingsResult {
     const normalized: MoonlightSettings = normalizeMoonlightSettingsForLocalStorage(settings);
     if (!moonlightSettingsAreValid(normalized) || !Number.isSafeInteger(nowMs) || nowMs <= 0) {
       return result(false, 'invalid_settings', normalized);
     }
     const lease: AccountSessionLease | null = this.port.currentAccountLease();
     if (lease === null) { return result(false, 'not_ready', normalized); }
+    if (expectedLease !== null && !accountSessionLeaseEquals(lease, expectedLease)) {
+      return result(false, 'stale_account', normalized);
+    }
     const captured: AccountSessionLease = cloneAccountSessionLease(lease);
     const records: MoonlightRecord[] | null = this.repository.loadAll(captured);
     if (records === null) { return result(false, 'read_failed', normalized); }

@@ -137,6 +137,8 @@ export default function moonlightUiPolicyTest(): void {
     it('keeps_disconnect_dangerous_and_controller_fail_closed', 0, (): void => {
       const phone = moonlightToolbarItems('sm', true, false, true);
       expect(phone.length).assertEqual(5);
+      expect(phone[1].action).assertEqual('keyboard');
+      expect(phone[1].enabled).assertFalse();
       expect(phone[2].action).assertEqual('controller');
       expect(phone[2].enabled).assertFalse();
       expect(phone[4].action).assertEqual('disconnect');
@@ -201,7 +203,7 @@ export default function moonlightUiPolicyTest(): void {
     });
 
     it('defines_complete_settings_taxonomy_and_unavailable_metrics', 0, (): void => {
-      expect(moonlightSettingsSections().length).assertEqual(9);
+      expect(moonlightSettingsSections().length).assertEqual(6);
       expect(moonlightMetric(-1, ' ms')).assertEqual('—');
       expect(moonlightMetric(8.25, ' ms', 1)).assertEqual('8.3 ms');
       expect(moonlightMetricPairUs(-1, -1)).assertEqual('—');

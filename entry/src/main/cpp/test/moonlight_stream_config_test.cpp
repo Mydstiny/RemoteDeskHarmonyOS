@@ -1,4 +1,5 @@
 #include "moonlight/media/MoonlightStreamConfig.h"
+#include "moonlight/runtime/MoonlightProductStreamingRuntime.h"
 #include "test_runner.h"
 
 #include <algorithm>
@@ -600,6 +601,24 @@ RDP_TEST_CASE(moonlight_stream_config_compatible_encryption_is_candidate_not_fac
     RDP_ASSERT_EQ(result.offer->candidateEncryptionStreams,
         static_cast<std::uint32_t>(MoonlightStreamEncryptVideo));
     RDP_ASSERT(result.offer->remoteInputEncryptionRequired);
+}
+
+RDP_TEST_CASE(moonlight_product_streaming_policy_rejects_unproven_modes) {
+    RDP_ASSERT(moonlightProductStreamingPolicyAllows(
+        MoonlightStreamLatencyMode::LowLatency,
+        MoonlightStreamEncryptionPolicy::Auto));
+    RDP_ASSERT(moonlightProductStreamingPolicyAllows(
+        MoonlightStreamLatencyMode::LowLatency,
+        MoonlightStreamEncryptionPolicy::Compatible));
+    RDP_ASSERT(!moonlightProductStreamingPolicyAllows(
+        MoonlightStreamLatencyMode::LowLatency,
+        MoonlightStreamEncryptionPolicy::Required));
+    RDP_ASSERT(!moonlightProductStreamingPolicyAllows(
+        MoonlightStreamLatencyMode::Balanced,
+        MoonlightStreamEncryptionPolicy::Auto));
+    RDP_ASSERT(!moonlightProductStreamingPolicyAllows(
+        MoonlightStreamLatencyMode::Smooth,
+        MoonlightStreamEncryptionPolicy::Compatible));
 }
 
 RDP_TEST_CASE(moonlight_stream_config_carries_prior_adjustments_without_rewriting_them) {

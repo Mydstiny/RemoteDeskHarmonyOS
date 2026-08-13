@@ -148,6 +148,15 @@ export interface MoonlightNativeStreamStartRequest {
   rendererHandle: number;
   surfaceWidth: number;
   surfaceHeight: number;
+  configuredBitrateKbps: number;
+  codecPreference: 'h264' | 'hevc' | 'av1';
+  hdr: boolean;
+  yuv444: boolean;
+  latencyMode: 'lowLatency' | 'balanced' | 'smooth';
+  audioEnabled: boolean;
+  audioChannels: 'stereo' | 'surround51' | 'surround71';
+  playAudioOnHost: boolean;
+  streamEncryption: 'auto' | 'required' | 'compatible';
 }
 
 export interface MoonlightNativeStreamSnapshot {

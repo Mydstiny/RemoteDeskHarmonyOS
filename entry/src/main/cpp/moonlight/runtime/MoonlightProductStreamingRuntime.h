@@ -38,7 +38,25 @@ struct MoonlightProductStreamStartRequest final {
     std::int32_t surfaceHeight = 0;
     // Native product policy, not a measured path-capability ceiling.
     std::int32_t configuredBitrateKbps = 20000;
+    MoonlightStreamCodec codec = MoonlightStreamCodec::H264;
+    bool hdr = false;
+    bool yuv444 = false;
+    MoonlightStreamLatencyMode latencyMode = MoonlightStreamLatencyMode::LowLatency;
+    bool audioEnabled = true;
+    MoonlightStreamAudioLayout audioLayout = MoonlightStreamAudioLayout::Stereo;
+    bool playAudioOnHost = false;
+    MoonlightStreamEncryptionPolicy encryptionPolicy =
+        MoonlightStreamEncryptionPolicy::Auto;
 };
+
+constexpr bool moonlightProductStreamingPolicyAllows(
+    MoonlightStreamLatencyMode latencyMode,
+    MoonlightStreamEncryptionPolicy encryptionPolicy) noexcept {
+    // The current product lane has one measured queueing profile and common-c
+    // does not expose proof that required A/V encryption was negotiated.
+    return latencyMode == MoonlightStreamLatencyMode::LowLatency &&
+        encryptionPolicy != MoonlightStreamEncryptionPolicy::Required;
+}
 
 struct MoonlightProductStreamStartResult final {
     bool accepted = false;

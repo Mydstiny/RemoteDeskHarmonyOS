@@ -51,7 +51,7 @@ export struct HostProtocolPicker {
         Text(title).fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
         Text(subtitle).fontSize(12).fontColor(this.pal().text3).margin({ top: 3 })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-      if (enabled && runtimeAvailable) {
+      if (enabled) {
         SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(18).fontColor([this.pal().text3])
       } else {
         Text(resolveHostProtocolPickerOption(protocol, runtimeAvailable, entryAvailable).statusLabel)

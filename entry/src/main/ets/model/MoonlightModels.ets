@@ -440,6 +440,7 @@ export function moonlightSettingsAreValid(settings: MoonlightSettings): boolean 
     isOneOf(settings.background.noSurfaceVideo, ['drop', 'pause']) &&
     settings.security.blockCertificateChanges &&
     isOneOf(settings.security.identityStorage, ['localSecure', 'cloudEncryptedPending']) &&
+    typeof settings.diagnostics.showPerformanceHud === 'boolean' &&
     isOneOf(settings.diagnostics.logLevel, ['error', 'info', 'debug']);
 }
 

@@ -1127,12 +1127,51 @@ napi_value pollEvents(napi_env env, napi_callback_info info) {
     return result;
 }
 
+bool parseProductCodec(const std::string& value,
+                       MoonlightStreamCodec& output) noexcept {
+    if (value == "h264") { output = MoonlightStreamCodec::H264; return true; }
+    if (value == "hevc") { output = MoonlightStreamCodec::Hevc; return true; }
+    if (value == "av1") { output = MoonlightStreamCodec::Av1; return true; }
+    return false;
+}
+
+bool parseProductLatency(const std::string& value,
+                         MoonlightStreamLatencyMode& output) noexcept {
+    if (value == "lowLatency") {
+        output = MoonlightStreamLatencyMode::LowLatency; return true;
+    }
+    return false;
+}
+
+bool parseProductAudioLayout(const std::string& value,
+                             MoonlightStreamAudioLayout& output) noexcept {
+    if (value == "stereo") { output = MoonlightStreamAudioLayout::Stereo; return true; }
+    if (value == "surround51") {
+        output = MoonlightStreamAudioLayout::Surround51; return true;
+    }
+    if (value == "surround71") {
+        output = MoonlightStreamAudioLayout::Surround71; return true;
+    }
+    return false;
+}
+
+bool parseProductEncryption(const std::string& value,
+                            MoonlightStreamEncryptionPolicy& output) noexcept {
+    if (value == "auto") { output = MoonlightStreamEncryptionPolicy::Auto; return true; }
+    if (value == "compatible") {
+        output = MoonlightStreamEncryptionPolicy::Compatible; return true;
+    }
+    return false;
+}
+
 bool parseStreamStartRequest(napi_env env, napi_value value,
                              MoonlightProductStreamStartRequest& request,
                              std::string& error) {
     static const std::unordered_set<std::string> allowed {
         "launchKey", "hostId", "serverUuid", "appId", "rendererHandle",
-        "surfaceWidth", "surfaceHeight", "configuredBitrateKbps"
+        "surfaceWidth", "surfaceHeight", "configuredBitrateKbps",
+        "codecPreference", "hdr", "yuv444", "latencyMode",
+        "audioEnabled", "audioChannels", "playAudioOnHost", "streamEncryption"
     };
     if (!readExactObject(env, value, allowed, error)) { return false; }
     bool present = false;
@@ -1142,6 +1181,10 @@ bool parseStreamStartRequest(napi_env env, napi_value value,
     std::uint64_t width = 0U;
     std::uint64_t height = 0U;
     std::uint64_t configuredBitrateKbps = 20000U;
+    std::string codec;
+    std::string latency;
+    std::string audioChannels;
+    std::string encryption;
     if (!hasProperty(env, value, "launchKey", present) || !present ||
         !getProperty(env, value, "launchKey", nested) ||
         !parseRequestKey(env, nested, request.launchKey, error) ||
@@ -1156,10 +1199,22 @@ bool parseStreamStartRequest(napi_env env, napi_value value,
         !readRequiredSafeInteger(env, value, "surfaceHeight", false, height, error) ||
         !readOptionalSafeInteger(env, value, "configuredBitrateKbps", false,
                                  configuredBitrateKbps, error) ||
+        !readRequiredString(env, value, "codecPreference", 16U, codec, error) ||
+        !readRequiredBoolean(env, value, "hdr", request.hdr, error) ||
+        !readRequiredBoolean(env, value, "yuv444", request.yuv444, error) ||
+        !readRequiredString(env, value, "latencyMode", 16U, latency, error) ||
+        !readRequiredBoolean(env, value, "audioEnabled", request.audioEnabled, error) ||
+        !readRequiredString(env, value, "audioChannels", 16U, audioChannels, error) ||
+        !readRequiredBoolean(env, value, "playAudioOnHost", request.playAudioOnHost, error) ||
+        !readRequiredString(env, value, "streamEncryption", 16U, encryption, error) ||
         appId > std::numeric_limits<std::uint32_t>::max() ||
         rendererHandle > static_cast<std::uint64_t>(kMaxSafeInteger) ||
         width > 16384U || height > 16384U ||
-        configuredBitrateKbps < 1000U || configuredBitrateKbps > 200000U) {
+        configuredBitrateKbps < 1000U || configuredBitrateKbps > 200000U ||
+        !parseProductCodec(codec, request.codec) ||
+        !parseProductLatency(latency, request.latencyMode) ||
+        !parseProductAudioLayout(audioChannels, request.audioLayout) ||
+        !parseProductEncryption(encryption, request.encryptionPolicy)) {
         return false;
     }
     request.appId = static_cast<std::uint32_t>(appId);

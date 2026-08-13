@@ -4,8 +4,11 @@ import {
   MoonlightEffectiveCapabilities
 } from '../main/ets/services/MoonlightCapabilityPolicy';
 import {
+  decodeMoonlightEffectiveSettings,
+  encodeMoonlightEffectiveSettings,
   MoonlightSettingsLayer,
-  resolveEffectiveMoonlightSettings
+  resolveEffectiveMoonlightSettings,
+  resolveMoonlightProductSettings
 } from '../main/ets/services/MoonlightSettingsPolicy';
 
 function mvpCapabilities(): MoonlightEffectiveCapabilities {
@@ -97,6 +100,32 @@ export default function moonlightSettingsPolicyTest(): void {
       expect(result.requested.audio.enabled).assertFalse();
       expect(global.audio.enabled).assertTrue();
       expect(session.audio.enabled).assertFalse();
+    });
+
+    it('creates_one_bounded_product_snapshot_and_fences_controller_slot_zero', 0, (): void => {
+      const requested = defaultMoonlightSettings();
+      requested.video.codecPreference = 'av1';
+      requested.video.hdr = true;
+      requested.video.yuv444 = true;
+      requested.audio.channels = 'surround71';
+      requested.input.controllerSlot = 3;
+      requested.video.resolutionMode = '2160p';
+      requested.video.fps = 120;
+      requested.network.streamEncryption = 'required';
+      const resolved = resolveMoonlightProductSettings(requested);
+      expect(resolved.requested.video.codecPreference).assertEqual('av1');
+      expect(resolved.effective.video.codecPreference).assertEqual('h264');
+      expect(resolved.effective.video.hdr).assertFalse();
+      expect(resolved.effective.video.yuv444).assertFalse();
+      expect(resolved.effective.audio.channels).assertEqual('stereo');
+      expect(resolved.effective.input.controllerSlot).assertEqual(0);
+      expect(resolved.effective.video.resolutionMode).assertEqual('1080p');
+      expect(resolved.effective.video.fps).assertEqual(60);
+      expect(resolved.effective.network.streamEncryption).assertEqual('auto');
+      const encoded: string = encodeMoonlightEffectiveSettings(resolved);
+      expect(encoded.length > 0).assertTrue();
+      expect((decodeMoonlightEffectiveSettings(encoded) as Object) !== null).assertTrue();
+      expect(decodeMoonlightEffectiveSettings(encoded + 'x')).assertNull();
     });
   });
 }

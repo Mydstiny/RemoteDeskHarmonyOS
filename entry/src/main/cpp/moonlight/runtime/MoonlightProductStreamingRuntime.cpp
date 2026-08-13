@@ -46,7 +46,15 @@ std::optional<MoonlightStreamConfigResult> conservativeOffer(
         fps < kMinimumFps || fps > kMaximumFps ||
         request.configuredBitrateKbps < kMinimumBitrateKbps ||
         request.configuredBitrateKbps > kMaximumBitrateKbps ||
-        stage.configuration.hdr || !stage.serverInfo.paired ||
+        !moonlightProductStreamingPolicyAllows(
+            request.latencyMode, request.encryptionPolicy) ||
+        request.codec != MoonlightStreamCodec::H264 || request.hdr || request.yuv444 ||
+        (request.audioLayout != MoonlightStreamAudioLayout::Stereo &&
+         request.audioLayout != MoonlightStreamAudioLayout::Surround51 &&
+         request.audioLayout != MoonlightStreamAudioLayout::Surround71) ||
+        stage.configuration.hdr != request.hdr ||
+        stage.configuration.playAudioOnHost != request.playAudioOnHost ||
+        !stage.serverInfo.paired ||
         stage.serverInfo.currentGame != stage.appId ||
         stage.serverInfo.uniqueId != stage.serverUuid ||
         !stage.serverInfo.codecModeSupport.has_value() ||
@@ -85,7 +93,7 @@ std::optional<MoonlightStreamConfigResult> conservativeOffer(
         // Limelight.h explicitly prescribes 1024 when path MTU is unknown.
         offer.packetSizeBytes = 1024;
         offer.networkPath = MoonlightStreamNetworkPath::Unknown;
-        offer.latencyMode = MoonlightStreamLatencyMode::LowLatency;
+        offer.latencyMode = request.latencyMode;
         offer.offeredCodecs = {{MoonlightStreamCodec::H264,
             MoonlightStreamBitDepth::Bit8, MoonlightStreamChroma::Yuv420,
             true, true, true}};
@@ -93,12 +101,16 @@ std::optional<MoonlightStreamConfigResult> conservativeOffer(
         offer.yuv444 = false;
         offer.colorSpace = MoonlightStreamColorSpace::Rec709;
         offer.colorRange = MoonlightStreamColorRange::Limited;
-        offer.audioLayout = MoonlightStreamAudioLayout::Stereo;
-        offer.playAudioOnHost = stage.configuration.playAudioOnHost;
+        offer.audioLayout = request.audioEnabled ? request.audioLayout :
+            MoonlightStreamAudioLayout::Disabled;
+        offer.playAudioOnHost = request.playAudioOnHost;
         offer.highQualityAudioCandidate = false;
-        offer.encryptionPolicy = MoonlightStreamEncryptionPolicy::Auto;
+        offer.encryptionPolicy = request.encryptionPolicy;
         offer.requiredEncryptionStreams = MoonlightStreamEncryptNone;
-        offer.candidateEncryptionStreams = MoonlightStreamEncryptNone;
+        offer.candidateEncryptionStreams = request.encryptionPolicy ==
+                MoonlightStreamEncryptionPolicy::Compatible ?
+            MoonlightStreamEncryptNone :
+            MoonlightStreamEncryptAudio | MoonlightStreamEncryptVideo;
         offer.remoteInputEncryptionRequired = true;
         result.offer = offer;
 
@@ -214,7 +226,8 @@ MoonlightProductStreamStartResult MoonlightProductStreamingRuntime::start(
     auto media = MoonlightProductSessionMediaPort::create(
         request.rendererHandle,
         static_cast<std::int32_t>(stage.configuration.width),
-        static_cast<std::int32_t>(stage.configuration.height));
+        static_cast<std::int32_t>(stage.configuration.height),
+        request.audioEnabled);
     if (media == nullptr) {
         std::fill(stage.remoteInputKey.begin(), stage.remoteInputKey.end(), 0U);
         return {false, "media_unavailable", {}};

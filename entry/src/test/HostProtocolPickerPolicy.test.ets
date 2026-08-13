@@ -54,16 +54,16 @@ export default function hostProtocolPickerPolicyTest(): void {
       expect(selectedProtocol).assertEqual('moonlight');
     });
 
-    it('allows_the_reviewable_add_shell_without_opening_runtime_capability', 0, (): void => {
+    it('keeps_the_route_disabled_when_only_the_visual_shell_is_available', 0, (): void => {
       const state: HostProtocolPickerOptionState =
         resolveHostProtocolPickerOption('moonlight', false, true);
-      expect(state.enabled).assertTrue();
-      expect(state.routeEnabled).assertTrue();
+      expect(state.enabled).assertFalse();
+      expect(state.routeEnabled).assertFalse();
       expect(state.runtimeAvailable).assertFalse();
-      expect(state.shellOnly).assertTrue();
-      expect(state.statusLabel).assertEqual('仅添加');
-      expect(state.opacity).assertEqual(1);
-      expect(selectedHostProtocolRoute(state)).assertEqual('moonlight');
+      expect(state.shellOnly).assertFalse();
+      expect(state.statusLabel).assertEqual(HOST_PROTOCOL_COMING_SOON_LABEL);
+      expect(state.opacity).assertEqual(0.58);
+      expect(selectedHostProtocolRoute(state)).assertEqual('');
     });
 
     it('uses_a_tintable_official_geometry_asset_with_a_system_fallback', 0, (): void => {

@@ -463,9 +463,10 @@ export function moonlightToolbarItems(
   maxVisibleItems: number = 0
 ): MoonlightToolbarItem[] {
   const normalized: string = breakpoint.trim().toLowerCase();
-  const items: MoonlightToolbarItem[] = [
-    toolbarItem('control', '控制'), toolbarItem('keyboard', '键盘')
-  ];
+  const keyboard: MoonlightToolbarItem = toolbarItem('keyboard', '键盘');
+  keyboard.enabled = false;
+  keyboard.disabledReason = '当前版本请使用实体键盘';
+  const items: MoonlightToolbarItem[] = [toolbarItem('control', '控制'), keyboard];
   const limit: number = maxVisibleItems > 0 ? maxVisibleItems :
     (normalized === 'sm' ? 5 : 7);
   if (limit <= 5) {
@@ -475,7 +476,10 @@ export function moonlightToolbarItems(
       controller.disabledReason = controllerAvailable ? '' : '当前设备尚未验证手柄输入能力';
       items.push(controller);
     } else {
-      items.push(toolbarItem('display', pipAvailable ? '画面/PIP' : '画面'));
+      const display: MoonlightToolbarItem = toolbarItem('display', pipAvailable ? '画中画' : '画面');
+      display.enabled = pipAvailable;
+      display.disabledReason = pipAvailable ? '' : '当前窗口或系统能力不支持画中画';
+      items.push(display);
     }
     items.push(toolbarItem('more', '更多'));
     items.push(toolbarItem('disconnect', '断开', true));
@@ -487,10 +491,12 @@ export function moonlightToolbarItems(
   items.push(controller);
   if (normalized !== 'sm') {
     const audio: MoonlightToolbarItem = toolbarItem('audio', '音频');
-    audio.enabled = audioAvailable;
-    audio.disabledReason = audioAvailable ? '' : '音频能力不可用';
+    audio.enabled = false;
+    audio.disabledReason = audioAvailable ? '音量请使用系统媒体音量调节' : '音频能力不可用';
     items.push(audio);
-    const display: MoonlightToolbarItem = toolbarItem('display', pipAvailable ? '画面/PIP' : '画面');
+    const display: MoonlightToolbarItem = toolbarItem('display', pipAvailable ? '画中画' : '画面');
+    display.enabled = pipAvailable;
+    display.disabledReason = pipAvailable ? '' : '当前窗口或系统能力不支持画中画';
     items.push(display);
   }
   items.push(toolbarItem('more', '更多'));
@@ -511,8 +517,7 @@ export function moonlightQualityLabel(quality: MoonlightConnectionQuality): stri
 
 export function moonlightSettingsSections(): MoonlightSettingsSection[] {
   return [
-    'quick', 'video', 'audio', 'input', 'networkSecurity',
-    'background', 'diagnostics', 'cloud', 'trust'
+    'quick', 'video', 'audio', 'input', 'networkSecurity', 'trust'
   ];
 }
 

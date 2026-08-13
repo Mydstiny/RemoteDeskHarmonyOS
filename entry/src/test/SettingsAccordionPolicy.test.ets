@@ -60,8 +60,8 @@ export default function settingsAccordionPolicyTest() {
 
     it('moonlight_accordion_is_independent_and_contains_all_leaf_routes', 0, (): void => {
       expect(SETTINGS_SECTION_MOONLIGHT).assertEqual('moonlight');
-      expect(SETTINGS_MOONLIGHT_ACTION_ROW_COUNT).assertEqual(9);
-      expect(settingsMoonlightExpandedMaxHeight()).assertEqual(635);
+      expect(SETTINGS_MOONLIGHT_ACTION_ROW_COUNT).assertEqual(6);
+      expect(settingsMoonlightExpandedMaxHeight()).assertEqual(448);
       expect(settingsMoonlightExpandedMaxHeight(10) > settingsMoonlightExpandedMaxHeight()).assertTrue();
       expect(settingsNextExpandedSection(SETTINGS_SECTION_VNC, SETTINGS_SECTION_MOONLIGHT))
         .assertEqual(SETTINGS_SECTION_MOONLIGHT);

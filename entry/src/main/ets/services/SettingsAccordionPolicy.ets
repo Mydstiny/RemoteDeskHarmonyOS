@@ -16,7 +16,7 @@ export const SETTINGS_SECTION_FEEDBACK: string = 'feedback';
 export const SETTINGS_SECTION_RATING: string = 'rating';
 
 export const SETTINGS_VNC_ACTION_ROW_COUNT: number = 11;
-export const SETTINGS_MOONLIGHT_ACTION_ROW_COUNT: number = 9;
+export const SETTINGS_MOONLIGHT_ACTION_ROW_COUNT: number = 6;
 const SETTINGS_VNC_ACTION_ROW_HEIGHT_VP: number = 62;
 const SETTINGS_VNC_ACTION_DIVIDER_HEIGHT_VP: number = 0.5;
 const SETTINGS_VNC_SECTION_CHROME_HEIGHT_VP: number = 73;

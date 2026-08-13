@@ -7,10 +7,14 @@ import {
   MoonlightControllerOverlay,
   MoonlightControllerSemanticEvent
 } from '../components/moonlight/MoonlightControllerOverlay';
-import { MoonlightDiagnosticsHud } from '../components/moonlight/MoonlightDiagnosticsHud';
 import { MoonlightSessionToolbar } from '../components/moonlight/MoonlightSessionToolbar';
 import { RemoteModifierHandle } from '../components/RemoteModifierHandle';
 import { RemoteModifierPanel } from '../components/RemoteModifierPanel';
+import {
+  MoonlightEffectiveSettings,
+  MoonlightSettings,
+  defaultMoonlightSettings
+} from '../model/MoonlightModels';
 import { AccountScopeToken, AccountSessionLease } from '../services/AccountScopePolicy';
 import { AccountSessionCoordinator } from '../services/AccountSessionCoordinator';
 import { CloudStore } from '../services/CloudStore';
@@ -24,7 +28,6 @@ import {
   MoonlightSessionStateSnapshot
 } from '../services/MoonlightSessionState';
 import {
-  MoonlightDiagnosticsSnapshot,
   MoonlightRouteIdentity,
   MoonlightToolbarLayout,
   MoonlightToolbarAction,
@@ -40,6 +43,7 @@ import {
   moonlightInstallationId,
   moonlightOwnerScopeFingerprint
 } from '../services/MoonlightRuntimeSupport';
+import { decodeMoonlightEffectiveSettings } from '../services/MoonlightSettingsPolicy';
 
 class MoonlightStreamXComponentController extends XComponentController {
   onSurface: (surfaceId: string) => void = (_surfaceId: string): void => {};
@@ -78,13 +82,6 @@ interface MoonlightTouchPoint {
   y: number;
 }
 
-const EMPTY_SNAPSHOT: MoonlightDiagnosticsSnapshot = {
-  available: false, fps: -1, latencyMs: -1, bitrateKbps: -1,
-  packetLossPercent: -1, codec: '', width: 0, height: 0,
-  decodeP50Us: -1, decodeP95Us: -1, renderP50Us: -1, renderP95Us: -1,
-  audioUnderruns: -1, inputDrops: -1
-};
-
 @Entry
 @Component
 struct MoonlightStreamPage {
@@ -95,7 +92,6 @@ struct MoonlightStreamPage {
   @StorageProp('isPadDevice') isPadDevice: boolean = false;
   @StorageProp('liveViewEnabled') liveViewEnabled: boolean = true;
   @StorageProp('liveViewMode') liveViewMode: number = 1;
-  @StorageProp('remoteDisplayScaleMode') commonDisplayScaleMode: string = 'fit';
   @State hostId: string = '';
   @State appId: string = '';
   @State phase: MoonlightSessionPhase = 'failed';
@@ -111,15 +107,7 @@ struct MoonlightStreamPage {
   @State sheetMode: MoonlightSessionSheetMode = 'none';
   @State pendingSheetMode: MoonlightSessionSheetMode = 'none';
   @State controlMode: MoonlightControlMode = 'touch';
-  @State muted: boolean = false;
-  @State volume: number = 100;
-  @State scaleMode: string = 'fit';
-  @State latencyMode: string = 'lowLatency';
   @State sessionChanges: number = 0;
-  @State showDiagnostics: boolean = false;
-  @State diagnosticsExpanded: boolean = false;
-  @State diagnosticsX: number = 18;
-  @State diagnosticsY: number = 90;
   @State showController: boolean = false;
   @State controllerEditing: boolean = false;
   @State showModifierPanel: boolean = false;
@@ -129,9 +117,6 @@ struct MoonlightStreamPage {
   @State shiftLatch: string = 'off';
   @State winLatch: string = 'off';
   @State fnLayer: boolean = false;
-  @State showReconnectMask: boolean = false;
-  @State showAudioBanner: boolean = false;
-  @State showNetworkBanner: boolean = false;
   @State inputFlushCount: number = 0;
   private readonly pipRuntimeAvailable: boolean = false;
   private readonly sessionCoordinator: MoonlightSessionCoordinator =
@@ -141,6 +126,7 @@ struct MoonlightStreamPage {
   private snapshotUnsubscribe: (() => void) | null = null;
   private pageActive: boolean = false;
   private sessionGeneration: number = 0;
+  private appliedTouchModeSessionGeneration: number = 0;
   private sessionStartedAtMs: number = 0;
   private elapsedTimer: number = -1;
   private sheetReopenGeneration: number = 0;
@@ -160,6 +146,8 @@ struct MoonlightStreamPage {
   private streamWidth: number = 1920;
   private streamHeight: number = 1080;
   private configuredBitrateKbps: number = 20000;
+  private effectiveSettingsEncoded: string = '';
+  private effectiveSettings: MoonlightSettings = defaultMoonlightSettings();
   private routeOwnerScopeFingerprint: string = '';
   private routeAccountGeneration: number = 0;
   private routeInstallationId: string = '';
@@ -205,15 +193,24 @@ struct MoonlightStreamPage {
     this.serverUuid = typeof params['serverUuid'] === 'string' ? params['serverUuid'] as string : '';
     this.numericAppId = typeof params['numericAppId'] === 'number' ? params['numericAppId'] as number : 0;
     this.hostAddress = typeof params['hostAddress'] === 'string' ? params['hostAddress'] as string : '';
+    this.effectiveSettingsEncoded = typeof params['moonlightEffectiveSettings'] === 'string' ?
+      params['moonlightEffectiveSettings'] as string : '';
+    const settingsSnapshot: MoonlightEffectiveSettings | null =
+      decodeMoonlightEffectiveSettings(this.effectiveSettingsEncoded);
+    if (settingsSnapshot !== null) {
+      this.effectiveSettings = settingsSnapshot.effective;
+      this.controlMode = settingsSnapshot.effective.input.touchMode;
+    } else {
+      this.effectiveSettingsEncoded = '';
+      this.effectiveSettings = defaultMoonlightSettings();
+    }
     const routeStreamWidth: number = params['streamWidth'] as number;
     const routeStreamHeight: number = params['streamHeight'] as number;
     this.streamWidth = Number.isSafeInteger(routeStreamWidth) && routeStreamWidth >= 2 &&
       routeStreamWidth <= 32767 ? routeStreamWidth : 1920;
     this.streamHeight = Number.isSafeInteger(routeStreamHeight) && routeStreamHeight >= 2 &&
       routeStreamHeight <= 32767 ? routeStreamHeight : 1080;
-    const routeBitrateKbps: number = params['streamBitrateKbps'] as number;
-    this.configuredBitrateKbps = Number.isSafeInteger(routeBitrateKbps) &&
-      routeBitrateKbps >= 1000 && routeBitrateKbps <= 200000 ? routeBitrateKbps : 20000;
+    this.configuredBitrateKbps = this.effectiveSettings.video.bitrateKbps;
     this.routeOwnerScopeFingerprint = typeof params['launchOwnerScopeFingerprint'] === 'string'
       ? params['launchOwnerScopeFingerprint'] as string : '';
     this.routeAccountGeneration = params['launchAccountGeneration'] as number;
@@ -226,7 +223,6 @@ struct MoonlightStreamPage {
     this.xComponentController.onSurfaceDetached = (surfaceId: string): void => {
       this.onMoonlightSurfaceDestroyed(surfaceId);
     };
-    this.scaleMode = this.commonDisplayScaleMode;
     this.phase = 'failed';
     this.errorCode = 'internal';
     this.degradationReasons = [];
@@ -235,6 +231,7 @@ struct MoonlightStreamPage {
     this.inputReady = false;
     this.controllerReady = false;
     this.audioReady = false;
+    this.appliedTouchModeSessionGeneration = 0;
     this.inputSuspended = false;
     this.activeTouches.clear();
     this.sessionGeneration = 0;
@@ -430,7 +427,8 @@ struct MoonlightStreamPage {
       launchKey: this.launchKey,
       serverUuid: this.serverUuid,
       numericAppId: this.numericAppId,
-      configuredBitrateKbps: this.configuredBitrateKbps
+      configuredBitrateKbps: this.configuredBitrateKbps,
+      effectiveSettingsEncoded: this.effectiveSettingsEncoded
     };
     if (includeSurface) {
       request.rendererHandle = this.rendererHandle;
@@ -732,7 +730,7 @@ struct MoonlightStreamPage {
   }
 
   private handleMoonlightKey = (event: KeyEvent): boolean => {
-    if (!this.nativeInputAvailable()) { return false; }
+    if (!this.nativeInputAvailable() || !this.effectiveSettings.input.captureKeyboard) { return false; }
     const pressed: boolean = event.type === KeyType.Down;
     if (!pressed && event.type !== KeyType.Up) { return false; }
     event.stopPropagation();
@@ -805,6 +803,7 @@ struct MoonlightStreamPage {
       this.audioReady = false;
       this.inputSuspended = false;
       this.sessionGeneration = 0;
+      this.appliedTouchModeSessionGeneration = 0;
       this.sessionStartedAtMs = 0;
       this.showConnectStage = true;
       this.clearElapsedTimer();
@@ -820,7 +819,14 @@ struct MoonlightStreamPage {
     this.degradationReasons = snapshot.degradationReasons.slice();
     this.firstFrameSeen = snapshot.firstFrameSeen;
     this.audioReady = snapshot.audioReady;
-    if (snapshot.inputReady) { this.refreshNativeInputReadiness(); }
+    if (snapshot.inputReady) {
+      this.refreshNativeInputReadiness();
+      if (this.inputReady && this.sessionGeneration > 0 &&
+          this.appliedTouchModeSessionGeneration !== this.sessionGeneration &&
+          this.setNativeTouchMode(this.effectiveSettings.input.touchMode)) {
+        this.appliedTouchModeSessionGeneration = this.sessionGeneration;
+      }
+    }
     else { this.inputReady = false; this.controllerReady = false; }
     this.showConnectStage = !snapshot.firstFrameSeen && snapshot.phase !== 'streaming';
     if (this.sessionStartedAtMs > 0) {
@@ -959,7 +965,6 @@ struct MoonlightStreamPage {
       }
       return;
     }
-    if (action === 'audio') { this.muted = !this.muted; this.sessionChanges += 1; return; }
     if (action === 'display') {
       promptAction.showToast({ message: '首帧与系统 PIP 能力通过后可用', duration: 1800 });
     }
@@ -1001,18 +1006,14 @@ struct MoonlightStreamPage {
       durationLabel: Math.floor(this.elapsedMs / 1000).toString() + ' 秒',
       negotiatedSummary: this.firstFrameSeen ?
         this.streamWidth.toString() + '×' + this.streamHeight.toString() : '正在协商串流',
-      controlMode: this.controlMode, muted: this.muted, volume: this.volume,
-      scaleMode: this.scaleMode, latencyMode: this.latencyMode,
-      diagnosticsEnabled: this.showDiagnostics, sessionChangeCount: this.sessionChanges,
-      pipAvailable: this.pipAvailable(), controllerAvailable: this.controllerReady,
+      controlMode: this.controlMode, sessionChangeCount: this.sessionChanges,
+      audioAvailable: this.effectiveSettings.audio.enabled && this.audioReady,
+      pipAvailable: this.pipAvailable(),
+      controllerAvailable: this.controllerReady,
       onClose: (): void => { this.closeSheet(); },
       onOpenKeyboard: (): void => { this.closeSheet(); this.toolbarAction('keyboard'); },
       onOpenModifiers: (): void => {
         this.closeSheet(); this.flushInput('open_modifier_panel'); this.showModifierPanel = true;
-      },
-      onCopyDiagnostics: (): void => {
-        this.closeSheet();
-        promptAction.showToast({ message: '暂无真实会话指标，未复制任何敏感信息', duration: 1600 });
       },
       onOpenController: (): void => { this.closeSheet(); this.toolbarAction('controller'); },
       onControlMode: (mode: MoonlightControlMode): void => {
@@ -1020,34 +1021,19 @@ struct MoonlightStreamPage {
           this.controlMode = mode; this.sessionChanges += 1;
         }
       },
-      onToggleMute: (): void => { this.muted = !this.muted; this.sessionChanges += 1; },
-      onVolume: (value: number): void => { this.volume = value; this.sessionChanges += 1; },
-      onScaleMode: (mode: string): void => { this.scaleMode = mode; this.sessionChanges += 1; },
-      onLatencyMode: (mode: string): void => { this.latencyMode = mode; this.sessionChanges += 1; },
-      onToggleDiagnostics: (): void => { this.showDiagnostics = !this.showDiagnostics; },
-      onReconnect: (): void => { this.closeSheet(); this.flushInput('reconnect'); this.showReconnectMask = true; },
-      onDisconnect: (): void => { this.openSheet('stop'); },
-      onQuitHostApp: (): void => { this.openSheet('stop'); },
-      onSaveProfile: (): void => {
-        promptAction.showToast({ message: '真实会话 profile owner 就绪后可保存', duration: 1800 });
-      }
+      onDisconnect: (): void => { this.openSheet('stop'); }
     })
   }
 
   @Builder private stopSheet() {
     Column() {
       Text('结束 Moonlight 串流？').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
-      Text('默认只断开本地串流并保留主机应用。主机退出结果不阻塞本地资源清理。')
+      Text('本次操作只断开本地串流，主机端应用会继续运行。')
         .fontSize(12).fontColor(this.pal().text3).lineHeight(18).margin({ top: 8 })
       Button('仅断开并保留主机应用').height(46).width('100%').borderRadius(13).fontSize(13)
         .backgroundColor(this.accentColor).fontColor(Color.White).margin({ top: 20 })
         .onClick((): void => {
           this.flushInput('disconnect_local'); this.closeSheet(); router.back();
-        })
-      Button('同时退出主机应用').height(46).width('100%').borderRadius(13).fontSize(13)
-        .backgroundColor(this.pal().danger + '16').fontColor(this.pal().danger).margin({ top: 9 })
-        .onClick((): void => {
-          this.flushInput('quit_host_app'); this.closeSheet(); router.back();
         })
       Button('取消').height(42).width('100%').borderRadius(12).fontSize(13)
         .backgroundColor(this.pal().surface).fontColor(this.pal().text2).margin({ top: 9 })
@@ -1087,35 +1073,13 @@ struct MoonlightStreamPage {
           }
         })
 
-      if (this.showAudioBanner) {
-        Row() {
-          SymbolGlyph($r('sys.symbol.speaker_slash_fill')).fontSize(16).fontColor(['#FFFFFF'])
-          Text('音频已暂停：其他应用正在播放').fontSize(11).fontColor('#FFFFFF').margin({ left: 8 })
-          Button('恢复').height(30).fontSize(10).borderRadius(9).margin({ left: 10 })
-            .backgroundColor('rgba(255,255,255,0.14)').fontColor('#FFFFFF')
-            .onClick((): void => { this.showAudioBanner = false; })
-        }.padding({ left: 12, right: 8, top: 7, bottom: 7 })
-          .backgroundColor('rgba(14,18,28,0.86)').borderRadius(13).position({ x: 20, y: 22 })
-      }
-
-      if (this.showNetworkBanner) {
-        Row() {
-          Column() {
-            Text('网络持续波动').fontSize(12).fontWeight(FontWeight.Medium).fontColor('#FFFFFF')
-            Text('可降低码率或打开诊断').fontSize(10).fontColor('rgba(255,255,255,0.62)').margin({ top: 3 })
-          }.alignItems(HorizontalAlign.Start)
-          Button('降低码率').height(32).fontSize(10).borderRadius(9).margin({ left: 12 })
-            .backgroundColor(this.accentColor).fontColor('#FFFFFF')
-            .onClick((): void => { this.sessionChanges += 1; this.showNetworkBanner = false; })
-        }.padding(10).backgroundColor('rgba(14,18,28,0.88)').borderRadius(13).position({ x: 20, y: 70 })
-      }
-
       MoonlightSessionToolbar({
-        audioAvailable: this.audioReady, controllerAvailable: this.controllerReady,
+        audioAvailable: this.effectiveSettings.audio.enabled && this.audioReady,
+        controllerAvailable: this.controllerReady,
         pipAvailable: this.pipAvailable(),
         menuOpen: this.showSessionSheet,
-        qualityColor: this.showReconnectMask ? '#FFCF70' : '#66DD7A',
-        qualityLabel: this.showReconnectMask ? '正在重连' : '良好',
+        qualityColor: this.firstFrameSeen ? '#66DD7A' : '#FFCF70',
+        qualityLabel: this.firstFrameSeen ? '串流中' : '连接中',
         onAction: (action: MoonlightToolbarAction): void => { this.toolbarAction(action); },
         onUnavailable: (reason: string): void => {
           promptAction.showToast({ message: reason, duration: 1800 });
@@ -1159,20 +1123,6 @@ struct MoonlightStreamPage {
         }
       })
 
-      if (this.showDiagnostics) {
-        MoonlightDiagnosticsHud({
-          snapshot: EMPTY_SNAPSHOT, expanded: this.diagnosticsExpanded,
-          x: this.diagnosticsX, y: this.diagnosticsY,
-          onToggle: (): void => { this.diagnosticsExpanded = !this.diagnosticsExpanded; },
-          onPositionChange: (x: number, y: number): void => {
-            this.diagnosticsX = Math.max(0, x); this.diagnosticsY = Math.max(0, y);
-          },
-          onCopySanitized: (): void => {
-            promptAction.showToast({ message: '暂无真实会话指标', duration: 1600 });
-          }
-        })
-      }
-
       if (this.showController) {
         MoonlightControllerOverlay({
           inputCapabilityReady: this.inputReady && this.controllerReady,
@@ -1194,24 +1144,6 @@ struct MoonlightStreamPage {
         })
       }
 
-      if (this.showReconnectMask) {
-        Column() {
-          Text('画面已暂停').fontSize(18).fontWeight(FontWeight.Bold).fontColor('#FFFFFF')
-          Text('正在停止旧 generation，输入已冻结').fontSize(11)
-            .fontColor('rgba(255,255,255,0.68)').margin({ top: 6 })
-          Row({ space: 10 }) {
-            Button('立即重试').height(40).fontSize(12).borderRadius(11)
-              .backgroundColor(this.accentColor).fontColor('#FFFFFF')
-              .onClick((): void => { this.showReconnectMask = false; })
-            Button('退出').height(40).fontSize(12).borderRadius(11)
-              .backgroundColor('rgba(255,255,255,0.12)').fontColor('#FFFFFF')
-              .onClick((): void => { this.openSheet('stop'); })
-          }.margin({ top: 14 })
-        }.width('82%').constraintSize({ maxWidth: 440 }).padding(20)
-          .backgroundColor('rgba(14,18,28,0.92)').borderRadius(20)
-          .border({ width: 1, color: 'rgba(255,255,255,0.16)' })
-      }
-
       if (this.showConnectStage) {
         MoonlightConnectStageOverlay({
           phase: this.phase, elapsedMs: this.elapsedMs, firstFrameSeen: this.firstFrameSeen,
@@ -1219,7 +1151,9 @@ struct MoonlightStreamPage {
           onCancel: (): void => { this.cancelConnection(); },
           onRetry: (): void => { this.retryConnection(); },
           onDowngradeRetry: (): void => { this.retryConnection(); },
-          onOpenDiagnostics: (): void => { this.showDiagnostics = true; },
+          onOpenDiagnostics: (): void => {
+            promptAction.showToast({ message: '可展开技术详情查看当前连接阶段', duration: 1600 });
+          },
           onBackToCatalog: (): void => { this.flushInput('back_to_catalog'); router.back(); }
         })
       }

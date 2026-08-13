@@ -18,30 +18,17 @@ export struct MoonlightControlCenter {
   @Prop durationLabel: string = '00:00';
   @Prop negotiatedSummary: string = '等待协商';
   @Prop controlMode: MoonlightControlMode = 'touch';
-  @Prop muted: boolean = false;
-  @Prop volume: number = 100;
-  @Prop scaleMode: string = 'fit';
-  @Prop latencyMode: string = 'lowLatency';
-  @Prop diagnosticsEnabled: boolean = false;
+  @Prop audioAvailable: boolean = false;
   @Prop sessionChangeCount: number = 0;
   @Prop pipAvailable: boolean = false;
   @Prop controllerAvailable: boolean = false;
   onClose: () => void = (): void => {};
   onOpenKeyboard: () => void = (): void => {};
   onOpenModifiers: () => void = (): void => {};
-  onCopyDiagnostics: () => void = (): void => {};
   onOpenController: () => void = (): void => {};
   onControlMode: (mode: MoonlightControlMode) => void = (_mode: MoonlightControlMode): void => {};
-  onToggleMute: () => void = (): void => {};
-  onVolume: (value: number) => void = (_value: number): void => {};
-  onScaleMode: (mode: string) => void = (_mode: string): void => {};
-  onLatencyMode: (mode: string) => void = (_mode: string): void => {};
-  onToggleDiagnostics: () => void = (): void => {};
-  onReconnect: () => void = (): void => {};
   onEnterPip: () => void = (): void => {};
   onDisconnect: () => void = (): void => {};
-  onQuitHostApp: () => void = (): void => {};
-  onSaveProfile: () => void = (): void => {};
 
   private pal(): Palette {
     return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor);
@@ -116,9 +103,6 @@ export struct MoonlightControlCenter {
             this.actionRow($r('sys.symbol.rectangle_on_rectangle'), '画中画',
               this.pipAvailable ? '保持串流并进入系统 PIP' : '当前窗口或系统能力不支持',
               (): void => { this.onEnterPip(); }, this.pipAvailable)
-            Divider().color(this.pal().divider).margin({ left: 58 })
-            this.actionRow($r('sys.symbol.arrow_clockwise'), '立即重连',
-              '冻结输入，停止旧 generation 后重新协商', (): void => { this.onReconnect(); })
           }.width('100%').backgroundColor(this.pal().card).borderRadius(16)
             .border({ width: 0.5, color: this.pal().cardBorder })
 
@@ -126,14 +110,10 @@ export struct MoonlightControlCenter {
           Row({ space: 7 }) {
             this.choice('触控', this.controlMode === 'touch', (): void => { this.onControlMode('touch'); })
             this.choice('触控板', this.controlMode === 'trackpad', (): void => { this.onControlMode('trackpad'); })
-            this.choice('绝对鼠标', this.controlMode === 'absoluteMouse',
-              (): void => { this.onControlMode('absoluteMouse'); })
-            this.choice('相对鼠标', this.controlMode === 'relativeMouse',
-              (): void => { this.onControlMode('relativeMouse'); })
           }.width('100%')
           Column() {
-            this.actionRow($r('sys.symbol.keyboard'), '虚拟键盘', 'Esc、Tab、修饰键、方向与文本输入',
-              (): void => { this.onOpenKeyboard(); })
+            this.actionRow($r('sys.symbol.keyboard'), '虚拟键盘', '当前版本请使用实体键盘；后续接入系统输入法',
+              (): void => { this.onOpenKeyboard(); }, false)
             Divider().color(this.pal().divider).margin({ left: 58 })
             this.actionRow($r('sys.symbol.keyboard'), '修饰键与快捷键', '直接复用会话通用状态机',
               (): void => { this.onOpenModifiers(); })
@@ -144,58 +124,17 @@ export struct MoonlightControlCenter {
           }.width('100%').backgroundColor(this.pal().card).borderRadius(16).margin({ top: 8 })
             .border({ width: 0.5, color: this.pal().cardBorder })
 
-          this.sectionTitle('画面', '仅本次')
-          Row({ space: 8 }) {
-            this.choice('适应', this.scaleMode === 'fit', (): void => { this.onScaleMode('fit'); })
-            this.choice('填充', this.scaleMode === 'fill', (): void => { this.onScaleMode('fill'); })
-            this.choice('1:1', this.scaleMode === 'oneToOne', (): void => { this.onScaleMode('oneToOne'); })
-            Blank().layoutWeight(1)
-            this.choice('低延迟', this.latencyMode === 'lowLatency',
-              (): void => { this.onLatencyMode('lowLatency'); })
-            this.choice('平滑', this.latencyMode === 'smooth',
-              (): void => { this.onLatencyMode('smooth'); })
-          }.width('100%')
-          Text('编码、分辨率与帧率变更需要重新连接，将写入“下次连接”草稿。')
-            .fontSize(10).fontColor(this.pal().text3).width('100%').margin({ top: 7 })
-
           this.sectionTitle('音频', '仅本次')
           Row() {
-            Button(this.muted ? '恢复声音' : '静音').height(38).fontSize(12).borderRadius(10)
-              .backgroundColor(this.muted ? this.accentColor : this.pal().surface)
-              .fontColor(this.muted ? Color.White : this.pal().text)
-              .onClick((): void => { this.onToggleMute(); })
-            Slider({ value: this.volume, min: 0, max: 100, step: 1 })
-              .layoutWeight(1).selectedColor(this.accentColor).trackColor(this.pal().surface)
-              .margin({ left: 12, right: 10 }).onChange((value: number, mode: SliderChangeMode): void => {
-                if (mode === SliderChangeMode.End) { this.onVolume(Math.round(value)); }
-              })
-            Text(this.volume.toString() + '%').fontSize(11).fontColor(this.pal().text2).width(42)
+            Text(this.audioAvailable ? '音量请使用系统媒体音量调节' : '当前会话未启用音频')
+              .fontSize(10).fontColor(this.pal().text3)
+              .layoutWeight(1)
           }.width('100%').height(48)
-
-          this.sectionTitle('网络与诊断')
-          Column() {
-            this.actionRow($r('sys.symbol.info_circle'), '性能 HUD',
-              this.diagnosticsEnabled ? '简洁/详细诊断已打开' : '默认关闭，按需采样',
-              (): void => { this.onToggleDiagnostics(); })
-            Divider().color(this.pal().divider).margin({ left: 58 })
-            this.actionRow($r('sys.symbol.text_clipboard'), '复制脱敏诊断',
-              '不包含地址、PIN、证书指纹和会话密钥', (): void => { this.onCopyDiagnostics(); })
-          }.width('100%').backgroundColor(this.pal().card).borderRadius(16)
-            .border({ width: 0.5, color: this.pal().cardBorder })
-
-          if (this.sessionChangeCount > 0) {
-            Button('保存为此应用默认').height(44).width('100%').fontSize(13).borderRadius(12)
-              .backgroundColor(this.accentColor).fontColor(Color.White).margin({ top: 18 })
-              .onClick((): void => { this.onSaveProfile(); })
-          }
 
           this.sectionTitle('危险操作')
           Column() {
             this.actionRow($r('sys.symbol.xmark_circle_fill'), '仅断开本地串流',
               '保留主机端应用运行；这是默认停止动作', (): void => { this.onDisconnect(); }, true, true)
-            Divider().color(this.pal().divider).margin({ left: 58 })
-            this.actionRow($r('sys.symbol.power'), '同时退出主机应用',
-              '主机响应失败或未知也不会阻塞本地清理', (): void => { this.onQuitHostApp(); }, true, true)
           }.width('100%').backgroundColor(this.pal().card).borderRadius(16)
             .border({ width: 0.5, color: this.pal().cardBorder })
             .margin({ bottom: 22 })

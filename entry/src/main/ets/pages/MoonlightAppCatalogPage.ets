@@ -3,7 +3,13 @@ import { AppTheme, Palette, buildDark, buildLight } from '../common/Theme';
 import { MoonlightBrandIcon } from '../components/moonlight/MoonlightBrandIcon';
 import { MoonlightLaunchSheet } from '../components/moonlight/MoonlightLaunchSheet';
 import { MoonlightCatalogDataSource } from '../datasources/MoonlightCatalogDataSource';
-import { MoonlightAddress, MoonlightHost, moonlightAddressKey } from '../model/MoonlightModels';
+import {
+  MoonlightAddress,
+  MoonlightEffectiveSettings,
+  MoonlightHost,
+  MoonlightSettings,
+  moonlightAddressKey
+} from '../model/MoonlightModels';
 import { AccountSessionCoordinator } from '../services/AccountSessionCoordinator';
 import { CloudStore } from '../services/CloudStore';
 import { AccountSessionLease } from '../services/AccountScopePolicy';
@@ -15,6 +21,11 @@ import {
   MoonlightNativeLaunchConfiguration
 } from '../services/MoonlightHostService';
 import { MoonlightSettingsLocalService } from '../services/MoonlightSettingsLocalService';
+import {
+  decodeMoonlightEffectiveSettings,
+  encodeMoonlightEffectiveSettings,
+  resolveMoonlightProductSettings
+} from '../services/MoonlightSettingsPolicy';
 import {
   moonlightInstallationId,
   moonlightOwnerScopeFingerprint
@@ -140,6 +151,7 @@ struct MoonlightAppCatalogPage {
   @State selectedItem: MoonlightCatalogItem | null = null;
   @State showLaunchSheet: boolean = false;
   @State launching: boolean = false;
+  @State launchSettingsEncoded: string = '';
   private readonly dataSource: MoonlightCatalogDataSource = new MoonlightCatalogDataSource();
   private readonly viewService: MoonlightLocalViewService =
     new MoonlightLocalViewService(CloudStore.getInstance());
@@ -257,8 +269,9 @@ struct MoonlightAppCatalogPage {
     if (key === null) { return; }
     const ownerToken: number = Math.min(9007199254740991,
       Math.max(1, Date.now() * 100 + generation % 100));
+    const settings: MoonlightSettings = this.settingsService.load().settings;
     const context: MoonlightHostContext | null = this.runtimeContext(
-      hostValue, lease, ownerToken, generation, this.serverCertificateSha256);
+      hostValue, lease, ownerToken, generation, this.serverCertificateSha256, settings);
     if (context === null) {
       promptAction.showToast({ message: '主机信任已变化，请重新验证主机', duration: 2200 });
       return;
@@ -307,36 +320,50 @@ struct MoonlightAppCatalogPage {
   }
 
   private openItem(item: MoonlightCatalogItem): void {
+    const resolved: MoonlightEffectiveSettings = resolveMoonlightProductSettings(
+      this.settingsService.load().settings);
+    const encoded: string = encodeMoonlightEffectiveSettings(resolved);
+    if (encoded === '') {
+      promptAction.showToast({ message: 'Moonlight 设置无效，请先恢复安全默认值', duration: 2200 });
+      return;
+    }
+    this.launchSettingsEncoded = encoded;
     this.selectedItem = item;
     this.showLaunchSheet = true;
   }
 
-  private selectedHostAddress(hostValue: MoonlightHost): string {
-    if (hostValue.addresses.length === 0) { return ''; }
+  private selectedAddress(hostValue: MoonlightHost, settings: MoonlightSettings): MoonlightAddress {
     let selected: MoonlightAddress = hostValue.addresses[0];
-    for (let i = 0; i < hostValue.addresses.length; i++) {
-      if (moonlightAddressKey(hostValue.addresses[i]) === hostValue.preferredAddressKey) {
-        selected = hostValue.addresses[i];
-        break;
+    const wantedFamily: string = settings.network.preferredAddressFamily;
+    if (wantedFamily === 'ipv4' || wantedFamily === 'ipv6') {
+      for (let index: number = 0; index < hostValue.addresses.length; index++) {
+        if (hostValue.addresses[index].family === wantedFamily) { return hostValue.addresses[index]; }
       }
     }
+    for (let index: number = 0; index < hostValue.addresses.length; index++) {
+      if (moonlightAddressKey(hostValue.addresses[index]) === hostValue.preferredAddressKey) {
+        selected = hostValue.addresses[index]; break;
+      }
+    }
+    return selected;
+  }
+
+  private selectedHostAddress(hostValue: MoonlightHost, settings: MoonlightSettings): string {
+    if (hostValue.addresses.length === 0) { return ''; }
+    const selected: MoonlightAddress = this.selectedAddress(hostValue, settings);
     const host: string = selected.family === 'ipv6' ? '[' + selected.host + ']' : selected.host;
     return host + ':' + selected.port.toString();
   }
 
   private runtimeContext(hostValue: MoonlightHost, lease: AccountSessionLease,
-    ownerToken: number, generation: number, certificateSha256: string): MoonlightHostContext | null {
+    ownerToken: number, generation: number, certificateSha256: string,
+    settings: MoonlightSettings): MoonlightHostContext | null {
     if (!this.paired || !/^[0-9a-f]{64}$/.test(certificateSha256) ||
         lease.ownerScopeId.trim() === '' || this.ownerScopeId !== lease.ownerScopeId ||
         !CloudStore.getInstance().isLeaseCurrent(lease) || hostValue.addresses.length === 0) {
       return null;
     }
-    let selected: MoonlightAddress = hostValue.addresses[0];
-    for (let index = 0; index < hostValue.addresses.length; index++) {
-      if (moonlightAddressKey(hostValue.addresses[index]) === hostValue.preferredAddressKey) {
-        selected = hostValue.addresses[index]; break;
-      }
-    }
+    const selected: MoonlightAddress = this.selectedAddress(hostValue, settings);
     return {
       lease: lease,
       ownerScopeFingerprint: moonlightOwnerScopeFingerprint(lease.ownerScopeId),
@@ -359,10 +386,9 @@ struct MoonlightAppCatalogPage {
     };
   }
 
-  private launchConfiguration(): MoonlightNativeLaunchConfiguration {
-    const loaded = this.settingsService.load();
-    const video = loaded.settings.video;
-    const audio = loaded.settings.audio;
+  private launchConfiguration(settings: MoonlightSettings): MoonlightNativeLaunchConfiguration {
+    const video = settings.video;
+    const audio = settings.audio;
     let width: number = 1920;
     let height: number = 1080;
     if (video.resolutionMode === '720p') { width = 1280; height = 720; }
@@ -371,14 +397,63 @@ struct MoonlightAppCatalogPage {
     else if (video.resolutionMode === 'custom') {
       width = video.customWidth; height = video.customHeight;
     }
+    let surroundAudioInfo: number = 196610;
+    if (audio.channels === 'surround51') { surroundAudioInfo = 393279; }
+    else if (audio.channels === 'surround71') { surroundAudioInfo = 525887; }
+    const slot: number = Math.max(0, Math.min(3, settings.input.controllerSlot));
+    const controllerBitmap: number = 1 << slot;
     return {
       width: width, height: height, refreshRate: video.fps,
-      additionalStates: true, sops: true, hdr: false,
-      playAudioOnHost: audio.playOnHost, surroundAudioInfo: 196610,
-      remoteControllersBitmap: loaded.settings.input.controllerSlot >= 0 ? 1 : 0,
-      gamepadMask: loaded.settings.input.controllerSlot >= 0 ? 1 : 0,
+      additionalStates: true, sops: true, hdr: video.hdr,
+      playAudioOnHost: audio.playOnHost, surroundAudioInfo: surroundAudioInfo,
+      remoteControllersBitmap: controllerBitmap,
+      gamepadMask: controllerBitmap,
       persistGamepads: false
     };
+  }
+
+  private launchSettings(): MoonlightEffectiveSettings | null {
+    return decodeMoonlightEffectiveSettings(this.launchSettingsEncoded);
+  }
+
+  private resolutionLabel(settings: MoonlightSettings): string {
+    if (settings.video.resolutionMode === 'host') { return '设备默认 1080p'; }
+    if (settings.video.resolutionMode === 'custom') {
+      return settings.video.customWidth.toString() + '×' + settings.video.customHeight.toString();
+    }
+    return settings.video.resolutionMode;
+  }
+
+  private codecLabel(settings: MoonlightSettings): string {
+    if (settings.video.codecPreference === 'h264') { return 'H.264'; }
+    if (settings.video.codecPreference === 'hevc') { return 'HEVC'; }
+    if (settings.video.codecPreference === 'av1') { return 'AV1'; }
+    return '自动';
+  }
+
+  private audioLabel(settings: MoonlightSettings): string {
+    if (!settings.audio.enabled) { return '不在本机播放'; }
+    if (settings.audio.channels === 'surround51') { return '5.1 声道'; }
+    if (settings.audio.channels === 'surround71') { return '7.1 声道'; }
+    return '立体声';
+  }
+
+  private inputLabel(settings: MoonlightSettings): string {
+    if (settings.input.touchMode === 'absoluteMouse') { return '绝对鼠标'; }
+    if (settings.input.touchMode === 'relativeMouse') { return '相对鼠标'; }
+    return '直接触控';
+  }
+
+  private launchEffectiveSettings(): MoonlightSettings {
+    const snapshot: MoonlightEffectiveSettings | null = this.launchSettings();
+    return snapshot === null ?
+      resolveMoonlightProductSettings(this.settingsService.load().settings).effective :
+      snapshot.effective;
+  }
+
+  private launchAdjustmentCount(): number {
+    const snapshot: MoonlightEffectiveSettings | null = this.launchSettings();
+    return snapshot === null ? 0 : snapshot.adjustments.length;
   }
 
   private launchFenceCurrent(fence: MoonlightLaunchFence): boolean {
@@ -408,6 +483,11 @@ struct MoonlightAppCatalogPage {
   private async startSelected(): Promise<void> {
     if (!this.pageActive || this.host === null || this.selectedItem === null) { return; }
     if (this.launching) { return; }
+    const settingsSnapshot: MoonlightEffectiveSettings | null = this.launchSettings();
+    if (settingsSnapshot === null) {
+      promptAction.showToast({ message: '串流设置快照已失效，请重新确认', duration: 2200 });
+      return;
+    }
     const hostValue: MoonlightHost = this.host;
     const selectedAppId: string = this.selectedItem.appId;
     const numericAppId: number = Number.parseInt(selectedAppId, 10);
@@ -422,8 +502,9 @@ struct MoonlightAppCatalogPage {
       Math.max(1, Date.now() * 100 + generation % 100));
     const certificateSha256: string = this.serverCertificateSha256;
     const context: MoonlightHostContext | null =
-      this.runtimeContext(hostValue, lease, ownerToken, generation, certificateSha256);
-    const hostAddress: string = this.selectedHostAddress(hostValue);
+      this.runtimeContext(hostValue, lease, ownerToken, generation, certificateSha256,
+        settingsSnapshot.effective);
+    const hostAddress: string = this.selectedHostAddress(hostValue, settingsSnapshot.effective);
     if (context === null || hostAddress === '' ||
         !Number.isSafeInteger(numericAppId) || numericAppId <= 0) {
       promptAction.showToast({ message: '主机信任或应用信息无效，请重新验证主机', duration: 2200 });
@@ -443,7 +524,8 @@ struct MoonlightAppCatalogPage {
     fence.ownerToken = ownerToken;
     this.activeLaunchFence = fence;
     this.launching = true;
-    const launchConfiguration: MoonlightNativeLaunchConfiguration = this.launchConfiguration();
+    const launchConfiguration: MoonlightNativeLaunchConfiguration =
+      this.launchConfiguration(settingsSnapshot.effective);
     let result: MoonlightHostServiceResult = await this.hostService.launch(
       context, numericAppId, launchConfiguration);
     if (result.code === 'resume_required') {
@@ -476,7 +558,7 @@ struct MoonlightAppCatalogPage {
       params['hostAddress'] = fence.hostAddress;
       params['streamWidth'] = launchConfiguration.width as number;
       params['streamHeight'] = launchConfiguration.height as number;
-      params['streamBitrateKbps'] = this.settingsService.load().settings.video.bitrateKbps;
+      params['moonlightEffectiveSettings'] = this.launchSettingsEncoded;
       params['launchOwnerScopeFingerprint'] = moonlightOwnerScopeFingerprint(fence.ownerScopeId);
       params['launchAccountGeneration'] = fence.accountGeneration;
       params['launchInstallationId'] = moonlightInstallationId(fence.storeIdentity);
@@ -514,12 +596,18 @@ struct MoonlightAppCatalogPage {
     MoonlightLaunchSheet({
       hostName: this.host?.displayName || '',
       appName: this.selectedItem?.title || '',
+      resolutionLabel: this.resolutionLabel(this.launchEffectiveSettings()),
+      fps: this.launchEffectiveSettings().video.fps,
+      codecLabel: this.codecLabel(this.launchEffectiveSettings()),
+      audioLabel: this.audioLabel(this.launchEffectiveSettings()),
+      inputLabel: this.inputLabel(this.launchEffectiveSettings()),
       routeValid: this.host !== null && this.selectedItem !== null,
       hostAvailable: this.paired,
       certificateChanged: false,
       identityAvailable: this.paired,
       appAvailable: this.selectedItem !== null && this.selectedItem.available && !this.selectedItem.stale,
       runtimeAvailable: this.hostService.capabilities().hostControlReady,
+      adjustmentCount: this.launchAdjustmentCount(),
       onCancel: (): void => { this.showLaunchSheet = false; },
       onOpenSettings: (): void => { this.showLaunchSheet = false; this.openSettings(); },
       onRetry: (): void => { this.showLaunchSheet = false; this.requestRefresh(); },
@@ -639,7 +727,7 @@ struct MoonlightAppCatalogPage {
         preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
         dragBar: false,
         showClose: false,
-        onDisappear: (): void => { this.selectedItem = null; }
+        onDisappear: (): void => { this.selectedItem = null; this.launchSettingsEncoded = ''; }
       })
   }
 }

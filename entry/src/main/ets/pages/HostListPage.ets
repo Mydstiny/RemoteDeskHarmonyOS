@@ -99,6 +99,7 @@ import {
   parseMoonlightHostAddAddress
 } from '../services/MoonlightHostAddFlowPolicy';
 import { MoonlightLocalHostService } from '../services/MoonlightLocalHostService';
+import { MoonlightSettingsLocalService } from '../services/MoonlightSettingsLocalService';
 import {
   MoonlightHostDirectoryView,
   MoonlightHostLocalView,
@@ -117,6 +118,7 @@ import {
   moonlightVerificationMatchesFence
 } from '../services/MoonlightLanProbeService';
 import {
+  MoonlightBridgeCapabilities,
   MoonlightHostContext,
   MoonlightHostService,
   MoonlightHostServiceResult
@@ -313,9 +315,6 @@ import {
   SETTINGS_SHEET_MOONLIGHT_AUDIO,
   SETTINGS_SHEET_MOONLIGHT_INPUT,
   SETTINGS_SHEET_MOONLIGHT_NETWORK_SECURITY,
-  SETTINGS_SHEET_MOONLIGHT_BACKGROUND,
-  SETTINGS_SHEET_MOONLIGHT_DIAGNOSTICS,
-  SETTINGS_SHEET_MOONLIGHT_CLOUD,
   SETTINGS_SHEET_MOONLIGHT_TRUST,
   SETTINGS_SHEET_VNC_CLIPBOARD,
   SETTINGS_SHEET_VNC_CONNECTION,
@@ -588,6 +587,8 @@ struct HostListPage {
   @State moonlightProtocolAvailable: boolean = false;
   @State moonlightHosts: MoonlightHostLocalView[] = [];
   @State moonlightDirectoryCode: string = 'loading';
+  private readonly moonlightSettingsService: MoonlightSettingsLocalService =
+    new MoonlightSettingsLocalService(CloudStore.getInstance());
   private moonlightDirectoryOwnerScopeId: string = '';
   private moonlightDirectoryAccountGeneration: number = 0;
   private moonlightDirectoryStoreInstanceId: number = 0;
@@ -1808,10 +1809,13 @@ struct HostListPage {
 
   private probeMoonlightCapabilityForPicker(): void {
     // Called only after an explicit FAB action. Homepage rendering remains
-    // side-effect free, while the picker still reflects the real native
-    // identity/Host Control capability instead of a compile-time guess.
+    // side-effect free. The add route requires the compiled HTTP transport,
+    // which is sufficient for LAN discovery and host verification. Pairing
+    // remains separately gated on the stronger secure-identity capability.
+    const capabilities: MoonlightBridgeCapabilities =
+      this.moonlightHostService.capabilities();
     this.moonlightProtocolAvailable =
-      this.moonlightHostService.capabilities().hostControlReady;
+      capabilities.bridgeCompiled && capabilities.transportReady;
   }
 
   private moonlightDiscoveryCandidate(
@@ -2010,6 +2014,17 @@ struct HostListPage {
   private moonlightPairingPreparation(
     key: MoonlightHostAddOperationKey
   ): Promise<MoonlightPairingPreparation> {
+    const capabilities: MoonlightBridgeCapabilities =
+      this.moonlightHostService.capabilities();
+    if (!capabilities.hostControlReady) {
+      const unavailable: MoonlightPairingPreparation = {
+        ok: false,
+        pin: '',
+        expiresAt: 0,
+        errorText: '当前设备的本地安全身份能力不可用，暂时无法完成主机配对'
+      };
+      return Promise.resolve(unavailable);
+    }
     const fence: MoonlightHostOperationFence | null = key.operation === 'pair' ?
       this.adoptMoonlightVerificationFence(key) : null;
     if (fence === null) {
@@ -2052,7 +2067,8 @@ struct HostListPage {
     let result: MoonlightHostServiceResult | null = null;
     try {
       result = await this.moonlightHostService.pair(
-        context, installationId, pinBytes, false);
+        context, installationId, pinBytes,
+        this.moonlightSettingsService.load().settings.network.allowLegacySha1);
     } finally {
       pinBytes.fill(0);
     }
@@ -10836,15 +10852,15 @@ struct HostListPage {
                 .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
               Column() {
               this.protocolActionRow($r('sys.symbol.bolt_fill'), '快速设置',
-                '低延迟、平衡与画质优先预设',
+                '省流、平衡与画质优先预设',
                 (): void => { this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_QUICK); })
               this.cardDivider()
               this.protocolActionRow($r('sys.symbol.display'), '画面',
-                '编码、分辨率、帧率、码率、HDR 与缩放',
+                'H.264、分辨率、帧率与码率',
                 (): void => { this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_VIDEO); })
               this.cardDivider()
               this.protocolActionRow($r('sys.symbol.circle'), '音频',
-                '音量、声道、焦点与主机同时播放',
+                '接收音频、系统音量与主机同时播放',
                 (): void => { this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_AUDIO); })
               this.cardDivider()
               this.protocolActionRow($r('sys.symbol.mouse'), '控制与手柄',
@@ -10852,22 +10868,10 @@ struct HostListPage {
                 (): void => { this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_INPUT); })
               this.cardDivider()
               this.protocolActionRow($r('sys.symbol.link'), '网络与安全',
-                '地址偏好、计费网络、重连预算和加密',
+                '局域网发现、地址偏好、加密与旧主机兼容',
                 (): void => {
                   this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_NETWORK_SECURITY);
                 })
-              this.cardDivider()
-              this.protocolActionRow($r('sys.symbol.moon_fill'), '后台串流',
-                '后台音频和无 Surface 视频策略',
-                (): void => { this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_BACKGROUND); })
-              this.cardDivider()
-              this.protocolActionRow($r('sys.symbol.performance'), '诊断',
-                '性能 HUD、日志级别和脱敏诊断导出',
-                (): void => { this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_DIAGNOSTICS); })
-              this.cardDivider()
-              this.protocolActionRow($r('sys.symbol.cloud_fill'), '云同步范围',
-                '当前仅本地，不注册或上传 Moonlight 云表',
-                (): void => { this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_CLOUD); })
               this.cardDivider()
               this.protocolActionRow($r('sys.symbol.lock_shield'), '配对与信任',
                 '证书变化、本地安全身份与重新配对边界',
@@ -13316,7 +13320,7 @@ struct HostListPage {
   @Builder hostAddSheetContent() {
     if (this.addSheetShowsModernPicker) {
       HostAddWizardSheet({
-        moonlightFabEntryAvailable: true,
+        moonlightFabEntryAvailable: false,
         moonlightProtocolAvailable: this.moonlightProtocolAvailable,
         onSelectProtocol: (protocol: string): void => {
           this.modernAddProtocol = protocol;
@@ -13391,6 +13395,8 @@ struct HostListPage {
         discoveryRunning: this.moonlightDiscoveryRunning,
         discoveryResultOwnerToken: this.moonlightDiscoveryResultOwnerToken,
         discoveryResultGeneration: this.moonlightDiscoveryResultGeneration,
+        initialDiscoveryEnabled:
+          this.moonlightSettingsService.load().settings.network.discovery !== 'manualOnly',
         onStartDiscovery: (key: MoonlightHostAddDiscoveryKey): void => {
           this.startMoonlightLanDiscovery(key);
         },

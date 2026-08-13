@@ -23,6 +23,8 @@ import {
   MoonlightNativeRequestKey,
   MoonlightNativeStreamSnapshot
 } from './MoonlightHostService';
+import { MoonlightEffectiveSettings } from '../model/MoonlightModels';
+import { decodeMoonlightEffectiveSettings } from './MoonlightSettingsPolicy';
 
 class MoonlightSessionReservationIdentity {
   ownerScopeId: string = '';
@@ -37,6 +39,7 @@ class MoonlightSessionReservationIdentity {
   serverUuid: string = '';
   numericAppId: number = 0;
   configuredBitrateKbps: number = 20000;
+  effectiveSettingsEncoded: string = '';
 }
 
 export interface MoonlightSessionStartRequest {
@@ -54,6 +57,7 @@ export interface MoonlightSessionStartRequest {
   serverUuid?: string;
   numericAppId?: number;
   configuredBitrateKbps?: number;
+  effectiveSettingsEncoded?: string;
   rendererHandle?: number;
   surfaceWidth?: number;
   surfaceHeight?: number;
@@ -79,6 +83,10 @@ class MoonlightNapiRuntimePort implements MoonlightRuntimePort {
         request.surfaceWidth === undefined || request.surfaceHeight === undefined) {
       return false;
     }
+    const snapshot: MoonlightEffectiveSettings | null = decodeMoonlightEffectiveSettings(
+      request.effectiveSettingsEncoded === undefined ? '' : request.effectiveSettingsEncoded);
+    if (snapshot === null) { return false; }
+    const settings = snapshot.effective;
     try {
       const result = rdpnapi.moonlightStartStream({
         launchKey: {
@@ -90,7 +98,16 @@ class MoonlightNapiRuntimePort implements MoonlightRuntimePort {
         rendererHandle: request.rendererHandle, surfaceWidth: request.surfaceWidth,
         surfaceHeight: request.surfaceHeight,
         configuredBitrateKbps: request.configuredBitrateKbps === undefined
-          ? 20000 : request.configuredBitrateKbps
+          ? 20000 : request.configuredBitrateKbps,
+        codecPreference: settings.video.codecPreference === 'hevc' ? 'hevc' :
+          settings.video.codecPreference === 'av1' ? 'av1' : 'h264',
+        hdr: settings.video.hdr,
+        yuv444: settings.video.yuv444,
+        latencyMode: settings.video.latencyMode,
+        audioEnabled: settings.audio.enabled,
+        audioChannels: settings.audio.channels,
+        playAudioOnHost: settings.audio.playOnHost,
+        streamEncryption: settings.network.streamEncryption
       });
       if (!result.accepted || result.sessionId <= 0) { return false; }
       this.operationGeneration = operationGeneration;
@@ -666,6 +683,8 @@ export class MoonlightSessionCoordinator {
       validSessionId(request.launchKey.generation) && validSessionId(request.launchKey.ownerToken) &&
       request.serverUuid !== undefined && boundedText(request.serverUuid, 256) &&
       request.numericAppId !== undefined && validSessionId(request.numericAppId) &&
+      request.effectiveSettingsEncoded !== undefined &&
+      decodeMoonlightEffectiveSettings(request.effectiveSettingsEncoded) !== null &&
       (request.configuredBitrateKbps === undefined ||
         (Number.isSafeInteger(request.configuredBitrateKbps) &&
           request.configuredBitrateKbps >= 1000 && request.configuredBitrateKbps <= 200000));
@@ -690,6 +709,8 @@ export class MoonlightSessionCoordinator {
     identity.numericAppId = request.numericAppId === undefined ? 0 : request.numericAppId;
     identity.configuredBitrateKbps = request.configuredBitrateKbps === undefined
       ? 20000 : request.configuredBitrateKbps;
+    identity.effectiveSettingsEncoded = request.effectiveSettingsEncoded === undefined ?
+      '' : request.effectiveSettingsEncoded;
     return identity;
   }
 
@@ -710,7 +731,9 @@ export class MoonlightSessionCoordinator {
       identity.serverUuid === (request.serverUuid === undefined ? '' : request.serverUuid) &&
       identity.numericAppId === (request.numericAppId === undefined ? 0 : request.numericAppId) &&
       identity.configuredBitrateKbps === (request.configuredBitrateKbps === undefined
-        ? 20000 : request.configuredBitrateKbps);
+        ? 20000 : request.configuredBitrateKbps) &&
+      identity.effectiveSettingsEncoded === (request.effectiveSettingsEncoded === undefined ?
+        '' : request.effectiveSettingsEncoded);
   }
 
   private scheduleRuntimePoll(surfaceId: string): void {
