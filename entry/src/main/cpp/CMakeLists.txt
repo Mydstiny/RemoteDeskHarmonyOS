@@ -69,6 +69,7 @@ set(RENDER_SOURCES
     video/video_activity_state.cpp
     render/video_backpressure_controller.cpp
     render/video_perf_counters.cpp
+    render/shared_session_context.cpp
 )
 
 # -- 音频管线 --
@@ -136,6 +137,7 @@ set(MOONLIGHT_NAPI_SOURCE
 )
 set(MOONLIGHT_PRODUCT_RUNTIME_SOURCE
     moonlight/runtime/MoonlightProductRuntime.cpp
+    moonlight/runtime/MoonlightProductStreamingRuntime.cpp
 )
 set(MOONLIGHT_STREAM_CONFIG_SOURCE
     moonlight/media/MoonlightStreamConfig.cpp
@@ -169,6 +171,7 @@ set(MOONLIGHT_AUDIO_PLAYER_SINK_PLATFORM_SOURCE
 )
 set(MOONLIGHT_PRODUCT_MEDIA_PORT_SOURCE
     moonlight/media/MoonlightProductMediaPort.cpp
+    moonlight/media/MoonlightProductSessionMediaPort.cpp
 )
 set(MOONLIGHT_MEDIA_CLOCK_STATS_SOURCE
     moonlight/media/MoonlightMediaClockStats.cpp

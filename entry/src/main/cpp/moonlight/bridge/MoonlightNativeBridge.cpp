@@ -14,7 +14,6 @@
 namespace remotedesk::moonlight {
 namespace {
 
-constexpr std::size_t kRiKeyBytes = 16U;
 constexpr std::size_t kPinBytes = 4U;
 constexpr std::size_t kMaxIdentityBytes = 256U;
 constexpr std::size_t kMaxAddressBytes = 512U;
@@ -169,7 +168,7 @@ bool requestValid(const MoonlightBridgeRequest& request) noexcept {
                request.pin.empty() &&
                request.appId != 0U &&
                request.catalogGeneration == request.key.generation &&
-               request.riKey.size() == kRiKeyBytes &&
+               request.riKey.empty() && request.riKeyId == 0 &&
                launchConfigurationValid(request.launchConfiguration) &&
                request.expectedCurrentAppId == 0U &&
                !request.userConfirmedTermination && !request.allowLegacySha1;
@@ -584,6 +583,7 @@ MoonlightBridgeResult MoonlightNativeBridge::execute(
         active->key = key;
         active->lane = laneFor(request);
         std::optional<MoonlightBridgeCode> admissionFailure;
+        std::vector<MoonlightBridgeRequestKey> supersededKeys;
         {
             std::lock_guard<std::mutex> lock(impl->mutex);
             if (impl->shuttingDown) {
@@ -601,16 +601,57 @@ MoonlightBridgeResult MoonlightNativeBridge::execute(
                            lane.seenKeys.size() >= kMaxSeenKeysPerLaneGeneration) {
                     admissionFailure = MoonlightBridgeCode::Busy;
                 } else {
-                    if (key.generation > lane.generationWatermark) {
-                        lane.generationWatermark = key.generation;
-                        lane.seenKeys.clear();
+                    const bool advancesGeneration =
+                        key.generation > lane.generationWatermark;
+                    if (advancesGeneration) {
+                        supersededKeys.reserve(impl->active.size());
                     }
+                    bool seenInserted = false;
+                    bool activeInserted = false;
                     try {
-                        impl->active.emplace(key, active);
-                        lane.seenKeys.insert(key);
+                        seenInserted = lane.seenKeys.insert(key).second;
+                        if (seenInserted) {
+                            activeInserted = impl->active.emplace(key, active).second;
+                        }
                     } catch (...) {
-                        impl->active.erase(key);
+                        if (activeInserted) {
+                            impl->active.erase(key);
+                        }
+                        if (seenInserted) {
+                            lane.seenKeys.erase(key);
+                        }
                         throw;
+                    }
+                    if (!seenInserted || !activeInserted) {
+                        if (seenInserted) {
+                            lane.seenKeys.erase(key);
+                        }
+                        admissionFailure = MoonlightBridgeCode::Busy;
+                    } else if (advancesGeneration) {
+                        // Publish the generation only after both admission
+                        // indexes own the new request. From this point onward,
+                        // retiring the old generation is allocation-free.
+                        lane.generationWatermark = key.generation;
+                        for (auto iterator = lane.seenKeys.begin();
+                             iterator != lane.seenKeys.end();) {
+                            if (*iterator == key) {
+                                ++iterator;
+                            } else {
+                                iterator = lane.seenKeys.erase(iterator);
+                            }
+                        }
+                        for (const auto& item : impl->active) {
+                            if (item.second == active ||
+                                item.second->lane != active->lane ||
+                                item.first.generation >= key.generation) {
+                                continue;
+                            }
+                            bool expected = false;
+                            if (item.second->cancelled.compare_exchange_strong(
+                                    expected, true, std::memory_order_acq_rel)) {
+                                supersededKeys.push_back(item.first);
+                            }
+                        }
                     }
                 }
             }
@@ -620,6 +661,11 @@ MoonlightBridgeResult MoonlightNativeBridge::execute(
                 impl, terminalResult(operation, key, *admissionFailure));
         }
         ActiveLease lease(impl, active);
+        if (impl->runtimePort != nullptr) {
+            for (const auto& supersededKey : supersededKeys) {
+                impl->runtimePort->cancel(supersededKey);
+            }
+        }
         auto cancelled = [impl, active, externalCancellation]() {
             return active->cancelled.load(std::memory_order_acquire) ||
                    cancellationRequested(externalCancellation) || stale(impl, active);

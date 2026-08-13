@@ -89,6 +89,15 @@ struct REMOTEDESK_DECODER_INTERNAL DecoderPresentationTelemetrySnapshot {
     uint64_t rendererPresentedFrames = 0;
 };
 
+struct REMOTEDESK_DECODER_INTERNAL OwnedDecoderCreationResult {
+    bool ok = false;
+    int64_t decoderHandle = 0;
+    uint64_t decoderGeneration = 0;
+    uint64_t displayGeneration = 0;
+    int display = -1;
+    uint64_t rendererGeneration = 0;
+};
+
 struct HardwareTelemetrySnapshot {
     size_t queueDepth = 0;
     uint64_t inputDroppedFrames = 0;
@@ -449,6 +458,11 @@ namespace DecoderNapi {
     DecoderTelemetrySnapshot GetActiveTelemetry(const DecoderSessionIdentity& expectedOwner);
     REMOTEDESK_DECODER_INTERNAL DecoderPresentationTelemetrySnapshot
     GetActivePresentationTelemetry(const DecoderSessionIdentity& expectedOwner);
+    /** Create and bind the existing hardware decoder for one exact native owner. */
+    REMOTEDESK_DECODER_INTERNAL OwnedDecoderCreationResult
+    CreateOwnedHardwareDecoder(int width, int height, int codec,
+                               int64_t rendererHandle,
+                               const DecoderSessionIdentity& owner);
     void SetActiveSessionId(const DecoderSessionIdentity& owner);
     void ClearActiveSessionId(const DecoderSessionIdentity& owner);
     bool SetActiveDisplay(const DecoderSessionIdentity& owner, int display);

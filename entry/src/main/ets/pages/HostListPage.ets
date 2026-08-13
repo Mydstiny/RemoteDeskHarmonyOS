@@ -102,7 +102,14 @@ import {
   MoonlightLanDiscoveryCandidate,
   MoonlightLanDiscoveryService
 } from '../services/MoonlightLanDiscoveryService';
-import { MoonlightLanProbeService } from '../services/MoonlightLanProbeService';
+import {
+  MoonlightHostOperationFence,
+  MoonlightLanProbeService,
+  cloneMoonlightHostOperationFence,
+  createMoonlightHostOperationFence,
+  moonlightHostOperationFenceEquals,
+  moonlightVerificationMatchesFence
+} from '../services/MoonlightLanProbeService';
 import {
   MoonlightHostContext,
   MoonlightHostService,
@@ -909,6 +916,9 @@ struct HostListPage {
     new MoonlightLanProbeService();
   private moonlightDiscovery: MoonlightLanDiscoveryService | null = null;
   private moonlightActiveVerification: MoonlightHostAddVerification | null = null;
+  private moonlightPendingVerificationFence: MoonlightHostOperationFence | null = null;
+  private moonlightActiveVerificationFence: MoonlightHostOperationFence | null = null;
+  private moonlightPairingExpiresAt: number = 0;
   private loader: ExtensionLoader = ExtensionLoader.getInstance();
   private sshKeyImporter: SshKeyImportService = new SshKeyImportService();
   private readonly sshSettings: SshSettingsService = SshSettingsService.getInstance();
@@ -1773,26 +1783,96 @@ struct HostListPage {
     this.moonlightDiscoveryRunning = false;
   }
 
+  private clearMoonlightVerificationState(): void {
+    this.moonlightActiveVerification = null;
+    this.moonlightPendingVerificationFence = null;
+    this.moonlightActiveVerificationFence = null;
+    this.moonlightPairingExpiresAt = 0;
+  }
+
+  private invalidateMoonlightOwnerFence(ownerToken: number): void {
+    if (ownerToken !== this.moonlightAddOwnerToken) { return; }
+    this.moonlightPendingVerificationFence = null;
+    this.moonlightPairingExpiresAt = 0;
+    const verification: MoonlightHostAddVerification | null =
+      this.moonlightActiveVerification;
+    const current: MoonlightHostOperationFence | null =
+      this.moonlightActiveVerificationFence;
+    if (verification === null || current === null ||
+        current.generation >= Number.MAX_SAFE_INTEGER ||
+        !moonlightVerificationMatchesFence(verification, current)) {
+      this.moonlightActiveVerificationFence = null;
+      return;
+    }
+    this.moonlightActiveVerificationFence = createMoonlightHostOperationFence(
+      current.ownerToken, current.generation + 1,
+      verification.serverUuid, verification.address);
+  }
+
+  private adoptMoonlightVerificationFence(
+    key: MoonlightHostAddOperationKey
+  ): MoonlightHostOperationFence | null {
+    const verification: MoonlightHostAddVerification | null =
+      this.moonlightActiveVerification;
+    const current: MoonlightHostOperationFence | null =
+      this.moonlightActiveVerificationFence;
+    if (verification === null || current === null ||
+        key.ownerToken !== this.moonlightAddOwnerToken ||
+        current.ownerToken !== key.ownerToken || key.generation < current.generation ||
+        !moonlightVerificationMatchesFence(verification, current)) {
+      return null;
+    }
+    if (key.generation === current.generation) {
+      return cloneMoonlightHostOperationFence(current);
+    }
+    const next: MoonlightHostOperationFence | null = createMoonlightHostOperationFence(
+      key.ownerToken, key.generation, verification.serverUuid, verification.address);
+    if (next === null) { return null; }
+    this.moonlightPendingVerificationFence = null;
+    this.moonlightPairingExpiresAt = 0;
+    this.moonlightActiveVerificationFence = next;
+    return cloneMoonlightHostOperationFence(next);
+  }
+
+  private currentMoonlightVerificationFence(
+    key: MoonlightHostAddOperationKey
+  ): MoonlightHostOperationFence | null {
+    const verification: MoonlightHostAddVerification | null =
+      this.moonlightActiveVerification;
+    const current: MoonlightHostOperationFence | null =
+      this.moonlightActiveVerificationFence;
+    if (verification === null || current === null ||
+        key.ownerToken !== this.moonlightAddOwnerToken ||
+        key.ownerToken !== current.ownerToken || key.generation !== current.generation ||
+        !moonlightVerificationMatchesFence(verification, current)) {
+      return null;
+    }
+    return cloneMoonlightHostOperationFence(current);
+  }
+
   private moonlightRuntimeContext(
     key: MoonlightHostAddOperationKey,
     verification: MoonlightHostAddVerification,
     pinnedTrustAvailable: boolean
   ): MoonlightHostContext | null {
     const lease = CloudStore.getInstance().currentAccountLease();
+    const fingerprint: string = verification.fingerprintSha256.trim().toLowerCase();
     if (lease === null || key.ownerToken <= 0 || key.generation <= 0 ||
-        verification.serverUuid.trim() === '' || verification.address.host.trim() === '') {
+        verification.serverUuid.trim() === '' || verification.address.host.trim() === '' ||
+        pinnedTrustAvailable && !/^[0-9a-f]{64}$/.test(fingerprint)) {
       return null;
     }
     const scope = CloudStore.getInstance().currentScope();
     const family: 'unspecified' | 'ipv4' | 'ipv6' = verification.address.family === 'ipv4' ?
       'ipv4' : verification.address.family === 'ipv6' ? 'ipv6' : 'unspecified';
-    return {
+    const context: MoonlightHostContext = {
       lease: lease,
       ownerScopeFingerprint: moonlightOwnerScopeFingerprint(scope.ownerScopeId),
       ownerToken: key.ownerToken,
       generation: key.generation,
       hostId: verification.serverUuid,
       serverUuid: verification.serverUuid,
+      installationId: moonlightInstallationId(scope.storeIdentity),
       endpoint: {
         serverName: verification.serverName.trim() || verification.address.host,
         addresses: [{ value: verification.address.host, family: family }],
@@ -1803,21 +1883,28 @@ struct HostListPage {
       },
       timeoutMs: 120000
     };
+    if (pinnedTrustAvailable) {
+      context.pinnedCertificateSha256 = fingerprint;
+    }
+    return context;
   }
 
   private moonlightPairingPreparation(
     key: MoonlightHostAddOperationKey
   ): Promise<MoonlightPairingPreparation> {
-    if (key.ownerToken !== this.moonlightAddOwnerToken ||
-        this.moonlightActiveVerification === null) {
+    const fence: MoonlightHostOperationFence | null = key.operation === 'pair' ?
+      this.adoptMoonlightVerificationFence(key) : null;
+    if (fence === null) {
       const rejected: MoonlightPairingPreparation = {
         ok: false, pin: '', expiresAt: 0, errorText: '请先完成主机验证'
       };
       return Promise.resolve(rejected);
     }
     const pin: string = moonlightPairingPin();
+    const expiresAt: number = Math.min(Number.MAX_SAFE_INTEGER, Date.now() + 120000);
+    this.moonlightPairingExpiresAt = expiresAt;
     const prepared: MoonlightPairingPreparation = {
-      ok: true, pin: pin, expiresAt: Date.now() + 120000, errorText: ''
+      ok: true, pin: pin, expiresAt: expiresAt, errorText: ''
     };
     return Promise.resolve(prepared);
   }
@@ -1826,43 +1913,75 @@ struct HostListPage {
     pin: string,
     key: MoonlightHostAddOperationKey
   ): Promise<MoonlightPairingCompletion> {
+    if (key.operation !== 'pair') {
+      return { paired: false, errorText: '当前主机连接上下文已失效' };
+    }
+    const capturedFence: MoonlightHostOperationFence | null =
+      this.currentMoonlightVerificationFence(key);
     const verification: MoonlightHostAddVerification | null = this.moonlightActiveVerification;
     const context: MoonlightHostContext | null = verification === null ? null :
       this.moonlightRuntimeContext(key, verification, false);
-    if (context === null || !/^[0-9]{4}$/.test(pin)) {
+    const expiresAt: number = this.moonlightPairingExpiresAt;
+    const installationId: string = context === null || context.installationId === undefined ?
+      '' : context.installationId;
+    if (capturedFence === null || context === null || installationId === '' ||
+        !/^[0-9]{4}$/.test(pin) || expiresAt <= Date.now()) {
       return { paired: false, errorText: '当前主机连接上下文已失效' };
     }
-    const scope = CloudStore.getInstance().currentScope();
     const pinBytes: Uint8Array = new Uint8Array([
       pin.charCodeAt(0), pin.charCodeAt(1), pin.charCodeAt(2), pin.charCodeAt(3)
     ]);
-    const result: MoonlightHostServiceResult = await this.moonlightHostService.pair(
-      context, moonlightInstallationId(scope.storeIdentity), pinBytes, false);
+    let result: MoonlightHostServiceResult | null = null;
+    try {
+      result = await this.moonlightHostService.pair(
+        context, installationId, pinBytes, false);
+    } finally {
+      pinBytes.fill(0);
+    }
+    if (result === null) {
+      return { paired: false, errorText: '主机配对请求未完成' };
+    }
     const nativeResult = result.nativeResult;
     const fingerprint: string = nativeResult === null ||
-      nativeResult.certificateSha256 === undefined ? '' : nativeResult.certificateSha256;
-    if (/^[0-9a-fA-F]{64}$/.test(fingerprint) && verification !== null) {
-      this.moonlightActiveVerification = {
-        serverUuid: verification.serverUuid,
-        serverName: verification.serverName,
-        hostType: verification.hostType,
-        version: verification.version,
-        address: {
-          host: verification.address.host,
-          family: verification.address.family,
-          port: verification.address.port
-        },
-        paired: true,
-        fingerprintSha256: fingerprint,
-        certificateChanged: false,
-        udpVerified: verification.udpVerified,
-        duplicateHostId: verification.duplicateHostId
+      nativeResult.certificateSha256 === undefined ? '' :
+      nativeResult.certificateSha256.toLowerCase();
+    const currentFence: MoonlightHostOperationFence | null =
+      this.currentMoonlightVerificationFence(key);
+    const stillCurrent: boolean = currentFence !== null &&
+      moonlightHostOperationFenceEquals(currentFence, capturedFence) &&
+      Date.now() < expiresAt;
+    const succeeded: boolean = result.ok && nativeResult !== null &&
+      nativeResult.code === 'ok' && /^[0-9a-f]{64}$/.test(fingerprint);
+    if (!stillCurrent) {
+      return { paired: false, errorText: '当前主机连接上下文已失效' };
+    }
+    this.moonlightPairingExpiresAt = 0;
+    if (!succeeded || verification === null) {
+      return {
+        paired: false,
+        errorText: '主机未完成配对（' + result.code + '）'
       };
     }
+    this.moonlightActiveVerification = {
+      serverUuid: verification.serverUuid,
+      serverName: verification.serverName,
+      hostType: verification.hostType,
+      version: verification.version,
+      address: {
+        host: verification.address.host,
+        family: verification.address.family,
+        port: verification.address.port
+      },
+      paired: true,
+      fingerprintSha256: fingerprint,
+      certificateChanged: false,
+      udpVerified: verification.udpVerified,
+      duplicateHostId: verification.duplicateHostId
+    };
     return {
-      paired: result.ok && nativeResult !== null && nativeResult.code === 'ok',
+      paired: true,
       certificateSha256: fingerprint,
-      errorText: result.ok ? '' : '主机未完成配对（' + result.code + '）'
+      errorText: ''
     };
   }
 
@@ -1871,26 +1990,60 @@ struct HostListPage {
     selectedServerUuid: string,
     key: MoonlightHostAddOperationKey
   ): Promise<MoonlightHostAddVerification | null> {
-    if (key.ownerToken !== this.moonlightAddOwnerToken) { return null; }
+    if (key.ownerToken !== this.moonlightAddOwnerToken || key.operation !== 'verify') {
+      return null;
+    }
+    const requestedFence: MoonlightHostOperationFence | null =
+      createMoonlightHostOperationFence(
+        key.ownerToken, key.generation, selectedServerUuid, address);
+    if (requestedFence === null) { return null; }
+    this.clearMoonlightVerificationState();
+    this.moonlightPendingVerificationFence = requestedFence;
     const verification: MoonlightHostAddVerification | null =
       await this.moonlightLanProbeService.verify(address, selectedServerUuid);
-    if (verification !== null && key.ownerToken === this.moonlightAddOwnerToken) {
-      this.moonlightActiveVerification = verification;
+    if (verification === null || key.ownerToken !== this.moonlightAddOwnerToken ||
+        !moonlightHostOperationFenceEquals(
+          this.moonlightPendingVerificationFence, requestedFence) ||
+        !moonlightVerificationMatchesFence(verification, requestedFence)) {
+      if (moonlightHostOperationFenceEquals(
+        this.moonlightPendingVerificationFence, requestedFence)) {
+        this.moonlightPendingVerificationFence = null;
+      }
+      return null;
     }
+    const activeFence: MoonlightHostOperationFence | null =
+      createMoonlightHostOperationFence(
+        key.ownerToken, key.generation, verification.serverUuid, verification.address);
+    if (activeFence === null) {
+      this.moonlightPendingVerificationFence = null;
+      return null;
+    }
+    this.moonlightActiveVerification = verification;
+    this.moonlightActiveVerificationFence = activeFence;
+    this.moonlightPendingVerificationFence = null;
     return verification;
   }
 
   private async moonlightLoadCatalog(
     key: MoonlightHostAddOperationKey
   ): Promise<MoonlightHostAddCatalogSummary> {
+    const adoptedFence: MoonlightHostOperationFence | null = key.operation === 'catalog' ?
+      this.adoptMoonlightVerificationFence(key) : null;
     const verification: MoonlightHostAddVerification | null = this.moonlightActiveVerification;
-    const context: MoonlightHostContext | null = verification === null ? null :
+    const context: MoonlightHostContext | null = adoptedFence === null || verification === null ? null :
       this.moonlightRuntimeContext(key, verification, true);
     if (context === null) {
       return { appCount: 0, titles: [], stale: false, errorText: '主机连接上下文已失效' };
     }
     const result: MoonlightHostServiceResult =
       await this.moonlightHostService.catalogRuntime(context);
+    const currentFence: MoonlightHostOperationFence | null =
+      this.currentMoonlightVerificationFence(key);
+    if (currentFence === null ||
+        !moonlightHostOperationFenceEquals(currentFence, adoptedFence)) {
+      return { appCount: 0, titles: [], stale: true,
+        errorText: '主机连接上下文已失效' };
+    }
     if (!result.ok || result.nativeResult === null) {
       return { appCount: 0, titles: [], stale: result.stale,
         errorText: '应用目录加载失败（' + result.code + '）' };
@@ -1902,11 +2055,19 @@ struct HostListPage {
     return { appCount: titles.length, titles: titles, stale: false, errorText: '' };
   }
 
-  private moonlightCommitTrust(accepted: boolean): Promise<boolean> {
-    if (!accepted) { return Promise.resolve(true); }
+  private moonlightCommitTrust(
+    accepted: boolean,
+    key: MoonlightHostAddOperationKey
+  ): Promise<boolean> {
+    const fence: MoonlightHostOperationFence | null = key.operation === 'trust' ?
+      this.adoptMoonlightVerificationFence(key) : null;
+    if (!accepted) {
+      if (fence !== null) { this.clearMoonlightVerificationState(); }
+      return Promise.resolve(true);
+    }
     const verification: MoonlightHostAddVerification | null = this.moonlightActiveVerification;
-    return Promise.resolve(verification !== null &&
-      /^[0-9a-fA-F]{64}$/.test(verification.fingerprintSha256));
+    return Promise.resolve(fence !== null && verification !== null && verification.paired &&
+      /^[0-9a-f]{64}$/.test(verification.fingerprintSha256));
   }
 
   private saveMoonlightHostLocally(
@@ -12924,7 +13085,7 @@ struct HostListPage {
           this.addSheetShowsModernPicker = false;
           if (protocol === 'moonlight') {
             this.invalidateMoonlightCatalogHandoff();
-            this.moonlightActiveVerification = null;
+            this.clearMoonlightVerificationState();
             this.moonlightAddOwnerToken += 1;
           }
           if (protocol === 'vnc') {
@@ -12999,6 +13160,7 @@ struct HostListPage {
           this.stopMoonlightLanDiscovery();
         },
         onCancelOwner: (ownerToken: number): void => {
+          this.invalidateMoonlightOwnerFence(ownerToken);
           this.moonlightHostService.cancelOwner(ownerToken);
         },
         onVerify: (
@@ -13013,8 +13175,8 @@ struct HostListPage {
           pin: string,
           key: MoonlightHostAddOperationKey
         ): Promise<MoonlightPairingCompletion> => this.moonlightAwaitPairing(pin, key),
-        onCommitTrust: (accepted: boolean, _key: MoonlightHostAddOperationKey): Promise<boolean> =>
-          this.moonlightCommitTrust(accepted),
+        onCommitTrust: (accepted: boolean, key: MoonlightHostAddOperationKey): Promise<boolean> =>
+          this.moonlightCommitTrust(accepted, key),
         onLoadCatalog: (key: MoonlightHostAddOperationKey):
           Promise<MoonlightHostAddCatalogSummary> => this.moonlightLoadCatalog(key),
         onSaveLocal: (
@@ -13029,7 +13191,7 @@ struct HostListPage {
         onBackToProtocols: (): void => {
           this.stopMoonlightLanDiscovery();
           this.moonlightHostService.disposeOwner(this.moonlightAddOwnerToken);
-          this.moonlightActiveVerification = null;
+          this.clearMoonlightVerificationState();
           this.invalidateMoonlightCatalogHandoff();
           this.moonlightAddOwnerToken += 1;
           this.modernAddProtocol = '';

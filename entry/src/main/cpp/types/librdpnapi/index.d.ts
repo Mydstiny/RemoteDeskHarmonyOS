@@ -44,6 +44,36 @@ export interface MoonlightNativeLaunchConfiguration {
   persistGamepads?: boolean;
 }
 
+export interface MoonlightNativeStreamStartRequest {
+  launchKey: MoonlightNativeRequestKey;
+  hostId: string;
+  serverUuid: string;
+  appId: number;
+  rendererHandle: number;
+  surfaceWidth: number;
+  surfaceHeight: number;
+}
+
+export interface MoonlightNativeStreamStartResult {
+  accepted: boolean;
+  code: string;
+  sessionId: number;
+  generation: number;
+  ownerToken: number;
+}
+
+export interface MoonlightNativeStreamSnapshot {
+  matched: boolean;
+  code: string;
+  sessionId: number;
+  generation: number;
+  ownerToken: number;
+  transportReady: boolean;
+  firstFrameReady: boolean;
+  terminal: boolean;
+  lastSequence: number;
+}
+
 export interface MoonlightNativeRequest {
   operation: MoonlightNativeOperation;
   key: MoonlightNativeRequestKey;
@@ -60,8 +90,6 @@ export interface MoonlightNativeRequest {
   userConfirmedTermination?: boolean;
   allowLegacySha1?: boolean;
   pin?: ArrayBuffer | Uint8Array;
-  riKey?: ArrayBuffer | Uint8Array;
-  riKeyId?: number;
   launchConfiguration?: MoonlightNativeLaunchConfiguration;
 }
 
@@ -127,6 +155,11 @@ export function moonlightCancelRequest(key: MoonlightNativeRequestKey): boolean;
 export function moonlightCancelOwner(ownerToken: number): number;
 export function moonlightPollEvents(ownerToken: number, afterSequence?: number,
   limit?: number): MoonlightNativeEvent[];
+export function moonlightStartStream(request: MoonlightNativeStreamStartRequest):
+  MoonlightNativeStreamStartResult;
+export function moonlightGetStreamSnapshot(key: MoonlightNativeRequestKey):
+  MoonlightNativeStreamSnapshot;
+export function moonlightStopStream(key: MoonlightNativeRequestKey): boolean;
 
 export const VERSION: SessionVersionInfo;
 

@@ -73,8 +73,6 @@ export interface MoonlightNativeRequest {
   userConfirmedTermination?: boolean;
   allowLegacySha1?: boolean;
   pin?: Uint8Array;
-  riKey?: Uint8Array;
-  riKeyId?: number;
   launchConfiguration?: MoonlightNativeLaunchConfiguration;
 }
 
@@ -133,6 +131,36 @@ export interface MoonlightNativeEvent {
   terminalStage: MoonlightNativeTerminalStage;
 }
 
+export interface MoonlightNativeStreamStartResult {
+  accepted: boolean;
+  code: string;
+  sessionId: number;
+  generation: number;
+  ownerToken: number;
+}
+
+export interface MoonlightNativeStreamStartRequest {
+  launchKey: MoonlightNativeRequestKey;
+  hostId: string;
+  serverUuid: string;
+  appId: number;
+  rendererHandle: number;
+  surfaceWidth: number;
+  surfaceHeight: number;
+}
+
+export interface MoonlightNativeStreamSnapshot {
+  matched: boolean;
+  code: string;
+  sessionId: number;
+  generation: number;
+  ownerToken: number;
+  transportReady: boolean;
+  firstFrameReady: boolean;
+  terminal: boolean;
+  lastSequence: number;
+}
+
 export interface MoonlightNativePort {
   getCapabilities(): MoonlightBridgeCapabilities;
   requestAsync(request: MoonlightNativeRequest): Promise<MoonlightNativeResult>;
@@ -157,17 +185,6 @@ export interface MoonlightHostContext {
   pinnedCertificateSha256?: string;
   endpoint: MoonlightNativeEndpoint;
   timeoutMs: number;
-}
-
-export interface MoonlightLaunchMaterialLease {
-  riKey: Uint8Array;
-  riKeyId: number;
-  configuration: MoonlightNativeLaunchConfiguration;
-  release(): void;
-}
-
-export interface MoonlightLaunchMaterialProvider {
-  acquire(): MoonlightLaunchMaterialLease | null;
 }
 
 export type MoonlightHostServiceCode =
@@ -342,13 +359,13 @@ export class MoonlightHostService {
   }
 
   async launch(context: MoonlightHostContext, appId: number,
-    provider: MoonlightLaunchMaterialProvider): Promise<MoonlightHostServiceResult> {
-    return this.launchOrResume('launch', context, appId, provider);
+    configuration: MoonlightNativeLaunchConfiguration): Promise<MoonlightHostServiceResult> {
+    return this.launchOrResume('launch', context, appId, configuration);
   }
 
   async resume(context: MoonlightHostContext, appId: number,
-    provider: MoonlightLaunchMaterialProvider): Promise<MoonlightHostServiceResult> {
-    return this.launchOrResume('resume', context, appId, provider);
+    configuration: MoonlightNativeLaunchConfiguration): Promise<MoonlightHostServiceResult> {
+    return this.launchOrResume('resume', context, appId, configuration);
   }
 
   async quit(context: MoonlightHostContext, expectedCurrentAppId: number,
@@ -430,36 +447,15 @@ export class MoonlightHostService {
 
   private async launchOrResume(operation: 'launch' | 'resume',
     context: MoonlightHostContext, appId: number,
-    provider: MoonlightLaunchMaterialProvider): Promise<MoonlightHostServiceResult> {
-    let material: MoonlightLaunchMaterialLease | null;
-    try {
-      material = provider.acquire();
-    } catch (_) {
+    configuration: MoonlightNativeLaunchConfiguration): Promise<MoonlightHostServiceResult> {
+    if (configuration === undefined || configuration === null) {
       return serviceResult('invalid_context');
     }
-    if (material === null || material.riKey.length !== 16 ||
-        !Number.isSafeInteger(material.riKeyId) ||
-        material.riKeyId < -2147483648 || material.riKeyId > 2147483647) {
-      if (material !== null) {
-        material.riKey.fill(0);
-        try { material.release(); } catch (_) {}
-      }
-      return serviceResult('invalid_context');
-    }
-    const acquired: MoonlightLaunchMaterialLease = material;
     const request: MoonlightNativeRequest = this.baseRequest(operation, context);
     request.appId = appId;
     request.catalogGeneration = context.generation;
-    request.riKey = acquired.riKey;
-    request.riKeyId = acquired.riKeyId;
-    request.launchConfiguration = acquired.configuration;
-    return this.execute(context, request, (): void => {
-      try {
-        acquired.riKey.fill(0);
-      } finally {
-        acquired.release();
-      }
-    });
+    request.launchConfiguration = configuration;
+    return this.execute(context, request);
   }
 
   private baseRequest(operation: MoonlightNativeOperation,

@@ -3,6 +3,7 @@
 #include "moonlight/control/MoonlightHostControl.h"
 #include "moonlight/pairing/MoonlightPairingManager.h"
 #include "moonlight/security/MoonlightSecureIdentity.h"
+#include "moonlight/runtime/MoonlightProductStreamingRuntime.h"
 
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
@@ -73,6 +74,18 @@ struct RequestKeyHash final {
     }
 };
 
+struct PairingKeyHash final {
+    std::size_t operator()(
+        const MoonlightPairingOperationKey& value) const noexcept {
+        std::size_t hash = static_cast<std::size_t>(value.requestId);
+        hash ^= static_cast<std::size_t>(value.generation) + 0x9e3779b9U +
+                (hash << 6U) + (hash >> 2U);
+        hash ^= static_cast<std::size_t>(value.ownerToken) + 0x9e3779b9U +
+                (hash << 6U) + (hash >> 2U);
+        return hash;
+    }
+};
+
 struct Binding final {
     std::vector<std::uint8_t> serverCertificateDer;
     std::string certificateSha256;
@@ -111,6 +124,12 @@ public:
         active_.erase(key);
     }
 
+    void clearTransient(const MoonlightHostRequestKey& key) noexcept {
+        std::lock_guard<std::mutex> lock(mutex_);
+        active_.erase(key);
+        last_.erase(key);
+    }
+
     bool promoteLast(const MoonlightHostRequestKey& key,
                      const std::string& owner,
                      const std::string& host) {
@@ -143,6 +162,12 @@ public:
         const auto iterator = hosts_.find(HostKey{owner, host});
         return iterator == hosts_.end() ? std::nullopt :
             std::optional<Binding>(iterator->second);
+    }
+
+    void forgetHost(const std::string& owner,
+                    const std::string& host) noexcept {
+        std::lock_guard<std::mutex> lock(mutex_);
+        hosts_.erase(HostKey{owner, host});
     }
 
 private:
@@ -634,6 +659,21 @@ class ProductTrustPort final : public MoonlightPairingTrustPort {
 public:
     bool available() const noexcept override { return true; }
 
+    bool begin(const MoonlightPairingOperationKey& key,
+               const std::string& owner,
+               const std::string& host) noexcept {
+        if (!key.valid() || owner.empty() || host.empty()) {
+            return false;
+        }
+        try {
+            std::lock_guard<std::mutex> lock(mutex_);
+            operations_[key] = HostKey{owner, host};
+            return true;
+        } catch (...) {
+            return false;
+        }
+    }
+
     MoonlightTrustReview review(
         const MoonlightPairingOperationKey& key,
         const MoonlightTrustCandidate& candidate,
@@ -649,9 +689,15 @@ public:
             return result;
         }
         std::lock_guard<std::mutex> lock(mutex_);
-        const auto iterator = fingerprints_.find(candidate.hostLabel);
+        const auto operation = operations_.find(key);
+        if (operation == operations_.end() ||
+            operation->second.host != candidate.hostLabel) {
+            result.decision = MoonlightTrustDecision::Stale;
+            return result;
+        }
+        const auto iterator = fingerprints_.find(operation->second);
         if (iterator == fingerprints_.end()) {
-            fingerprints_[candidate.hostLabel] = candidate.certificateSha256;
+            fingerprints_[operation->second] = candidate.certificateSha256;
             result.decision = MoonlightTrustDecision::Accept;
             result.change = MoonlightTrustChange::FirstUse;
         } else if (iterator->second == candidate.certificateSha256) {
@@ -661,29 +707,46 @@ public:
             result.decision = MoonlightTrustDecision::Reject;
             result.change = MoonlightTrustChange::Changed;
         }
-        static_cast<void>(key);
         return result;
     }
 
-    void cancel(const MoonlightPairingOperationKey& /*key*/) noexcept override {}
+    void cancel(const MoonlightPairingOperationKey& key) noexcept override {
+        end(key);
+    }
 
-    void restore(const std::string& hostLabel,
-                 const std::string& fingerprint) noexcept {
-        if (hostLabel.empty() || fingerprint.size() != 64U) { return; }
+    void end(const MoonlightPairingOperationKey& key) noexcept {
         try {
             std::lock_guard<std::mutex> lock(mutex_);
-            fingerprints_[hostLabel] = fingerprint;
+            operations_.erase(key);
+        } catch (...) {
+        }
+    }
+
+    void restore(const std::string& owner,
+                 const std::string& host,
+                 const std::string& fingerprint) noexcept {
+        if (owner.empty() || host.empty() || fingerprint.size() != 64U) {
+            return;
+        }
+        try {
+            std::lock_guard<std::mutex> lock(mutex_);
+            fingerprints_[HostKey{owner, host}] = fingerprint;
         } catch (...) {
         }
     }
 
 private:
     mutable std::mutex mutex_;
-    std::unordered_map<std::string, std::string> fingerprints_;
+    std::unordered_map<HostKey, std::string, HostKeyHash> fingerprints_;
+    std::unordered_map<MoonlightPairingOperationKey, HostKey, PairingKeyHash>
+        operations_;
 };
 
 class ProductCommitPort final : public MoonlightPairingCommitPort {
 public:
+    explicit ProductCommitPort(std::shared_ptr<BindingRegistry> bindings)
+        : bindings_(std::move(bindings)) {}
+
     bool available() const noexcept override { return true; }
 
     bool repairRequired(const std::string& owner,
@@ -693,15 +756,30 @@ public:
     }
 
     MoonlightPairingPortCode commit(const MoonlightPairingCommitRecord& record) override {
-        std::lock_guard<std::mutex> lock(mutex_);
-        paired_[HostKey{record.ownerScopeFingerprint, record.hostId}] = record;
-        repairs_.erase(HostKey{record.ownerScopeFingerprint, record.hostId});
-        return MoonlightPairingPortCode::Ok;
+        const HostKey hostKey{record.ownerScopeFingerprint, record.hostId};
+        if (bindings_ == nullptr || !bindings_->promoteLast(
+                toHostKey(record.key), hostKey.owner, hostKey.host)) {
+            return MoonlightPairingPortCode::Unavailable;
+        }
+        try {
+            std::lock_guard<std::mutex> lock(mutex_);
+            paired_[hostKey] = record;
+            repairs_.erase(hostKey);
+            return MoonlightPairingPortCode::Ok;
+        } catch (...) {
+            bindings_->forgetHost(hostKey.owner, hostKey.host);
+            throw;
+        }
     }
 
     MoonlightPairingPortCode rollback(const MoonlightPairingCommitRecord& record) noexcept override {
-        std::lock_guard<std::mutex> lock(mutex_);
-        paired_.erase(HostKey{record.ownerScopeFingerprint, record.hostId});
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            paired_.erase(HostKey{record.ownerScopeFingerprint, record.hostId});
+        }
+        if (bindings_ != nullptr) {
+            bindings_->forgetHost(record.ownerScopeFingerprint, record.hostId);
+        }
         return MoonlightPairingPortCode::Ok;
     }
 
@@ -728,6 +806,12 @@ public:
     }
 
 private:
+    static MoonlightHostRequestKey toHostKey(
+        const MoonlightPairingOperationKey& key) noexcept {
+        return {key.requestId, key.generation, key.ownerToken};
+    }
+
+    std::shared_ptr<BindingRegistry> bindings_;
     mutable std::mutex mutex_;
     std::unordered_map<HostKey, MoonlightPairingCommitRecord, HostKeyHash> paired_;
     std::unordered_map<HostKey, MoonlightPairingCommitRecord, HostKeyHash> repairs_;
@@ -764,11 +848,11 @@ public:
     }
 
     void cancel(const MoonlightPairingOperationKey& key) noexcept override {
-        bindings_->clearActive(toHostKey(key));
+        bindings_->clearTransient(toHostKey(key));
     }
 
     void unbind(const MoonlightPairingOperationKey& key) noexcept override {
-        bindings_->clearActive(toHostKey(key));
+        bindings_->clearTransient(toHostKey(key));
     }
 
 private:
@@ -952,58 +1036,52 @@ void appendControlResult(MoonlightBridgeResult& target,
     }
 }
 
-class ProductRuntime final : public MoonlightNativeRuntimePort {
-public:
-    ProductRuntime()
-        : bindings_(std::make_shared<BindingRegistry>()),
-          installations_(std::make_shared<std::unordered_map<std::string, std::string>>()),
-          installationMutex_(std::make_shared<std::mutex>()),
-          identity_(std::shared_ptr<MoonlightSecureIdentity>(
-              new MoonlightSecureIdentity(createMoonlightPlatformIdentityBackend()))),
-          transport_(std::make_shared<ProductHttpTransport>(bindings_)),
-          trust_(std::make_shared<ProductTrustPort>()),
-          commit_(std::make_shared<ProductCommitPort>()),
-          tlsBinding_(std::make_shared<ProductTlsBindingPort>(bindings_)),
-          access_(std::make_shared<ProductAccessPort>(
-              bindings_, commit_, identity_, installations_, installationMutex_)),
-          hostApi_(std::make_shared<MoonlightHostApi>(transport_, []() {
+struct ProductRuntimeComponents final {
+    ProductRuntimeComponents()
+        : bindings(std::make_shared<BindingRegistry>()),
+          installations(
+              std::make_shared<std::unordered_map<std::string, std::string>>()),
+          installationMutex(std::make_shared<std::mutex>()),
+          identity(std::shared_ptr<MoonlightSecureIdentity>(
+              new MoonlightSecureIdentity(
+                  createMoonlightPlatformIdentityBackend()))),
+          transport(std::make_shared<ProductHttpTransport>(bindings)),
+          trust(std::make_shared<ProductTrustPort>()),
+          commit(std::make_shared<ProductCommitPort>(bindings)),
+          tlsBinding(std::make_shared<ProductTlsBindingPort>(bindings)),
+          access(std::make_shared<ProductAccessPort>(
+              bindings, commit, identity, installations, installationMutex)),
+          hostApi(std::make_shared<MoonlightHostApi>(transport, []() {
               return std::to_string(monotonicMilliseconds());
           })),
-          pairing_(std::make_shared<MoonlightPairingManager>(
-              hostApi_, identity_, trust_, tlsBinding_, commit_,
+          pairing(std::make_shared<MoonlightPairingManager>(
+              hostApi, identity, trust, tlsBinding, commit,
               [](std::uint8_t* data, std::size_t size) {
-                  return data != nullptr && size > 0U && RAND_bytes(data,
-                      static_cast<int>(size)) == 1;
+                  return data != nullptr && size > 0U && RAND_bytes(
+                      data, static_cast<int>(size)) == 1;
               })),
-          control_(std::make_shared<MoonlightHostControl>(hostApi_, access_)) {}
+          control(std::make_shared<MoonlightHostControl>(hostApi, access)) {}
+
+    std::shared_ptr<BindingRegistry> bindings;
+    std::shared_ptr<std::unordered_map<std::string, std::string>> installations;
+    std::shared_ptr<std::mutex> installationMutex;
+    std::shared_ptr<MoonlightSecureIdentity> identity;
+    std::shared_ptr<ProductHttpTransport> transport;
+    std::shared_ptr<ProductTrustPort> trust;
+    std::shared_ptr<ProductCommitPort> commit;
+    std::shared_ptr<ProductTlsBindingPort> tlsBinding;
+    std::shared_ptr<ProductAccessPort> access;
+    std::shared_ptr<MoonlightHostApi> hostApi;
+    std::shared_ptr<MoonlightPairingManager> pairing;
+    std::shared_ptr<MoonlightHostControl> control;
+};
+
+class ProductRuntime final : public MoonlightNativeRuntimePort {
+public:
+    ProductRuntime() = default;
 
     MoonlightBridgeCapabilities capabilities() const noexcept override {
-        MoonlightBridgeCapabilities result;
-        result.bridgeCompiled = true;
-        result.transportReady = transport_ != nullptr;
-        result.trustReady = trust_ != nullptr && trust_->available();
-        result.commitReady = commit_ != nullptr && commit_->available();
-        if (identity_ != nullptr) {
-            const auto capability = identity_->capability();
-            result.identityReady = capability.status ==
-                MoonlightIdentityCapabilityStatus::RuntimeReady &&
-                capability.encryptedBlobAtomic &&
-                (capability.directRsaTlsSignerReady || capability.wrappedPkcs8Ready);
-        }
-        result.pairingReady = result.identityReady && result.transportReady &&
-            result.trustReady && result.commitReady && pairing_ != nullptr;
-        result.hostControlReady = result.pairingReady && access_ != nullptr &&
-            access_->available() && control_ != nullptr;
-        if (result.hostControlReady) {
-            result.blocker = "";
-        } else if (!result.identityReady) {
-            result.blocker = "identity_runtime_proof_required";
-        } else if (!result.transportReady) {
-            result.blocker = "transport_unavailable";
-        } else {
-            result.blocker = "host_control_unavailable";
-        }
-        return result;
+        return capabilitiesFor(ensureComponents());
     }
 
     MoonlightBridgeResult execute(MoonlightBridgeRequest request,
@@ -1017,41 +1095,143 @@ public:
             result.terminalStage = MoonlightBridgeTerminalStage::Cancelled;
             return result;
         }
-        restoreLocalRuntimeState(request);
-        const auto capability = capabilities();
-        if ((request.operation == MoonlightBridgeOperation::Pair && !capability.pairingReady) ||
+
+        // ProductRuntime construction is intentionally side-effect free. The
+        // first Moonlight capability/request call reaches this seam and only
+        // then creates the secure identity backend, whose constructor performs
+        // the Asset Store runtime contract probe.
+        const auto components = ensureComponents();
+        const auto capability = capabilitiesFor(components);
+        if (components == nullptr ||
+            (request.operation == MoonlightBridgeOperation::Pair &&
+             !capability.pairingReady) ||
             (request.operation != MoonlightBridgeOperation::Pair &&
              !capability.hostControlReady)) {
             result.code = MoonlightBridgeCode::RuntimeProofRequired;
             result.terminalStage = MoonlightBridgeTerminalStage::Failed;
-            result.diagnostics.push_back({"preflight", capability.blocker, 0, 0, 0, 0, 0});
+            result.diagnostics.push_back(
+                {"preflight", capability.blocker, 0, 0, 0, 0, 0});
+            return result;
+        }
+        restoreLocalRuntimeState(request, *components);
+        if (cancelled(cancellationProbe)) {
+            result.code = MoonlightBridgeCode::Cancelled;
+            result.terminalStage = MoonlightBridgeTerminalStage::Cancelled;
             return result;
         }
         if (request.operation == MoonlightBridgeOperation::Pair) {
-            return executePair(std::move(request), cancellationProbe);
+            return executePair(
+                std::move(request), cancellationProbe, *components);
         }
-        return executeControl(std::move(request), cancellationProbe);
+        return executeControl(
+            std::move(request), cancellationProbe, *components);
     }
 
     void cancel(const MoonlightBridgeRequestKey& key) noexcept override {
-        if (hostApi_ != nullptr) { (void)hostApi_->cancel(hostKey(key)); }
-        if (pairing_ != nullptr) { (void)pairing_->cancel(pairingKey(key)); }
-        if (control_ != nullptr) { (void)control_->cancel(controlKey(key)); }
-        bindings_->clearActive(hostKey(key));
+        const auto components = currentComponents();
+        if (components == nullptr) {
+            return;
+        }
+        if (components->hostApi != nullptr) {
+            (void)components->hostApi->cancel(hostKey(key));
+        }
+        if (components->pairing != nullptr) {
+            (void)components->pairing->cancel(pairingKey(key));
+        }
+        if (components->control != nullptr) {
+            (void)components->control->cancel(controlKey(key));
+        }
+        components->bindings->clearTransient(hostKey(key));
     }
 
 private:
-    void restoreLocalRuntimeState(const MoonlightBridgeRequest& request) noexcept {
+    std::shared_ptr<ProductRuntimeComponents> ensureComponents() const noexcept {
+        try {
+            std::lock_guard<std::mutex> lock(initializationMutex_);
+            if (components_ == nullptr) {
+                components_ = std::make_shared<ProductRuntimeComponents>();
+            }
+            return components_;
+        } catch (...) {
+            return nullptr;
+        }
+    }
+
+    std::shared_ptr<ProductRuntimeComponents> currentComponents() const noexcept {
+        try {
+            std::lock_guard<std::mutex> lock(initializationMutex_);
+            return components_;
+        } catch (...) {
+            return nullptr;
+        }
+    }
+
+    static MoonlightBridgeCapabilities capabilitiesFor(
+        const std::shared_ptr<ProductRuntimeComponents>& components) noexcept {
+        MoonlightBridgeCapabilities result;
+        result.bridgeCompiled = true;
+        if (components == nullptr) {
+            result.blocker = "identity_runtime_proof_required";
+            return result;
+        }
+        try {
+            result.transportReady = components->transport != nullptr;
+            result.trustReady = components->trust != nullptr &&
+                components->trust->available();
+            result.commitReady = components->commit != nullptr &&
+                components->commit->available();
+            if (components->identity != nullptr) {
+                const auto capability = components->identity->capability();
+                result.identityReady = capability.status ==
+                    MoonlightIdentityCapabilityStatus::RuntimeReady &&
+                    capability.encryptedBlobAtomic &&
+                    (capability.directRsaTlsSignerReady ||
+                     capability.wrappedPkcs8Ready);
+            }
+            result.pairingReady = result.identityReady && result.transportReady &&
+                result.trustReady && result.commitReady &&
+                components->pairing != nullptr;
+            result.hostControlReady = result.pairingReady &&
+                components->access != nullptr && components->access->available() &&
+                components->control != nullptr;
+            if (result.hostControlReady) {
+                result.blocker = "";
+            } else if (!result.identityReady) {
+                result.blocker = "identity_runtime_proof_required";
+            } else if (!result.transportReady) {
+                result.blocker = "transport_unavailable";
+            } else {
+                result.blocker = "host_control_unavailable";
+            }
+        } catch (...) {
+            result.identityReady = false;
+            result.pairingReady = false;
+            result.hostControlReady = false;
+            result.blocker = "identity_runtime_proof_required";
+        }
+        return result;
+    }
+
+    static void restoreLocalRuntimeState(
+        const MoonlightBridgeRequest& request,
+        ProductRuntimeComponents& components) noexcept {
         try {
             if (!request.installationId.empty()) {
-                std::lock_guard<std::mutex> lock(*installationMutex_);
-                (*installations_)[request.ownerScopeFingerprint] = request.installationId;
+                std::lock_guard<std::mutex> lock(*components.installationMutex);
+                (*components.installations)[request.ownerScopeFingerprint] =
+                    request.installationId;
             }
-            if (request.pinnedCertificateSha256.size() != 64U) { return; }
-            trust_->restore(request.hostId, request.pinnedCertificateSha256);
-            commit_->restorePaired(request.ownerScopeFingerprint, request.hostId);
-            (void)bindings_->restoreHost(request.ownerScopeFingerprint, request.hostId,
-                                         request.pinnedCertificateSha256);
+            if (request.pinnedCertificateSha256.size() != 64U) {
+                return;
+            }
+            components.trust->restore(
+                request.ownerScopeFingerprint, request.hostId,
+                request.pinnedCertificateSha256);
+            components.commit->restorePaired(
+                request.ownerScopeFingerprint, request.hostId);
+            (void)components.bindings->restoreHost(
+                request.ownerScopeFingerprint, request.hostId,
+                request.pinnedCertificateSha256);
         } catch (...) {
             // Rehydration is an optimization around durable local state. The
             // operation remains fail-closed in authorize() if any projection
@@ -1059,38 +1239,57 @@ private:
         }
     }
 
-    MoonlightBridgeResult executePair(MoonlightBridgeRequest request,
-                                      const CancellationProbe& cancellationProbe) {
+    static MoonlightBridgeResult executePair(
+        MoonlightBridgeRequest request,
+        const CancellationProbe& cancellationProbe,
+        ProductRuntimeComponents& components) {
         MoonlightBridgeResult result;
         result.operation = request.operation;
         result.key = request.key;
         result.observedAtMs = monotonicMilliseconds();
         {
-            std::lock_guard<std::mutex> lock(*installationMutex_);
-            (*installations_)[request.ownerScopeFingerprint] = request.installationId;
+            std::lock_guard<std::mutex> lock(*components.installationMutex);
+            (*components.installations)[request.ownerScopeFingerprint] =
+                request.installationId;
         }
-        MoonlightPairingRequest pairingRequest;
-        pairingRequest.key = pairingKey(request.key);
-        pairingRequest.identityScope.ownerScopeFingerprint = request.ownerScopeFingerprint;
-        pairingRequest.identityScope.installationId = request.installationId;
-        pairingRequest.endpoint = request.endpoint;
-        pairingRequest.hostId = request.hostId;
-        pairingRequest.serverUuid = request.serverUuid;
-        pairingRequest.hostLabel = request.hostId.empty() ? request.serverUuid : request.hostId;
-        pairingRequest.serverMajorVersion = 7;
-        pairingRequest.timeout = request.timeout;
-        pairingRequest.allowLegacySha1 = request.allowLegacySha1;
-        pairingRequest.pin = MoonlightSecureBuffer(std::move(request.pin));
+        const MoonlightPairingOperationKey exactPairingKey =
+            pairingKey(request.key);
         MoonlightPairingResult source;
-        try {
-            source = pairing_->execute(std::move(pairingRequest));
-        } catch (...) {
-            source.code = MoonlightPairingCode::ProtocolFailure;
+        if (!components.trust->begin(
+                exactPairingKey, request.ownerScopeFingerprint,
+                request.hostId)) {
+            source.code = MoonlightPairingCode::Unavailable;
+        } else if (cancelled(cancellationProbe)) {
+            source.code = MoonlightPairingCode::Cancelled;
+        } else {
+            MoonlightPairingRequest pairingRequest;
+            pairingRequest.key = exactPairingKey;
+            pairingRequest.identityScope.ownerScopeFingerprint =
+                request.ownerScopeFingerprint;
+            pairingRequest.identityScope.installationId = request.installationId;
+            pairingRequest.endpoint = request.endpoint;
+            pairingRequest.hostId = request.hostId;
+            pairingRequest.serverUuid = request.serverUuid;
+            pairingRequest.hostLabel = request.hostId;
+            pairingRequest.serverMajorVersion = 7;
+            pairingRequest.timeout = request.timeout;
+            pairingRequest.allowLegacySha1 = request.allowLegacySha1;
+            pairingRequest.pin = MoonlightSecureBuffer(std::move(request.pin));
+            try {
+                source = components.pairing->execute(std::move(pairingRequest));
+            } catch (...) {
+                source.code = MoonlightPairingCode::ProtocolFailure;
+            }
+        }
+        components.trust->end(exactPairingKey);
+        if (!source.ok()) {
+            components.bindings->clearTransient(hostKey(request.key));
         }
         result.code = mapPairCode(source.code);
         result.terminalStage = source.code == MoonlightPairingCode::Cancelled ?
             MoonlightBridgeTerminalStage::Cancelled : source.ok() ?
-            MoonlightBridgeTerminalStage::Complete : MoonlightBridgeTerminalStage::Failed;
+            MoonlightBridgeTerminalStage::Complete :
+            MoonlightBridgeTerminalStage::Failed;
         result.preflightTruth = source.ok() ? MoonlightBridgeTruth::Confirmed :
             MoonlightBridgeTruth::Failed;
         result.actionTruth = source.ok() ? MoonlightBridgeTruth::Confirmed :
@@ -1098,25 +1297,29 @@ private:
             MoonlightBridgeTruth::Unknown : MoonlightBridgeTruth::Failed;
         result.postconditionTruth = source.ok() ? MoonlightBridgeTruth::Confirmed :
             MoonlightBridgeTruth::Unknown;
-        result.mutationMayHaveBeenSent = source.remoteCleanup != MoonlightRemoteCleanup::NotNeeded;
+        result.mutationMayHaveBeenSent =
+            source.remoteCleanup != MoonlightRemoteCleanup::NotNeeded;
         result.certificateSha256 = std::move(source.certificateSha256);
-        result.diagnostics.push_back({"pairing", source.ok() ? "ok" : "pairing_failed",
-                                      source.lastHttpStatus, source.lastXmlStatus,
-                                      source.transportAttempts, 0, 0});
-        if (source.ok()) {
-            (void)bindings_->promoteLast(hostKey(request.key), request.ownerScopeFingerprint,
-                                         request.hostId);
-        }
-        static_cast<void>(cancellationProbe);
+        result.diagnostics.push_back(
+            {"pairing", source.ok() ? "ok" : "pairing_failed",
+             source.lastHttpStatus, source.lastXmlStatus,
+             source.transportAttempts, 0, 0});
         return result;
     }
 
-    MoonlightBridgeResult executeControl(MoonlightBridgeRequest request,
-                                         const CancellationProbe& cancellationProbe) {
+    static MoonlightBridgeResult executeControl(
+        MoonlightBridgeRequest request,
+        const CancellationProbe& cancellationProbe,
+        ProductRuntimeComponents& components) {
         MoonlightBridgeResult result;
         result.operation = request.operation;
         result.key = request.key;
         result.observedAtMs = monotonicMilliseconds();
+        if (cancelled(cancellationProbe)) {
+            result.code = MoonlightBridgeCode::Cancelled;
+            result.terminalStage = MoonlightBridgeTerminalStage::Cancelled;
+            return result;
+        }
         MoonlightHostControlContext context;
         context.key = controlKey(request.key);
         context.ownerScopeFingerprint = request.ownerScopeFingerprint;
@@ -1125,12 +1328,15 @@ private:
         context.endpoint = request.endpoint;
         context.timeout = request.timeout;
         MoonlightHostControlResult source;
+        std::array<std::uint8_t, 16U> nativeRiKey {};
+        std::int32_t nativeRiKeyId = 0;
+        bool launchMaterialReady = false;
         try {
             switch (request.operation) {
             case MoonlightBridgeOperation::Catalog: {
                 MoonlightCatalogRequest call;
                 call.context = std::move(context);
-                source = control_->catalog(std::move(call));
+                source = components.control->catalog(std::move(call));
                 break;
             }
             case MoonlightBridgeOperation::Asset: {
@@ -1138,38 +1344,57 @@ private:
                 call.context = std::move(context);
                 call.appId = request.appId;
                 call.catalogGeneration = request.catalogGeneration;
-                source = control_->asset(std::move(call));
+                source = components.control->asset(std::move(call));
                 break;
             }
             case MoonlightBridgeOperation::Launch:
             case MoonlightBridgeOperation::Resume: {
+                std::array<std::uint8_t, sizeof(nativeRiKeyId)> idBytes {};
+                launchMaterialReady = RAND_bytes(
+                    nativeRiKey.data(), static_cast<int>(nativeRiKey.size())) == 1 &&
+                    RAND_bytes(idBytes.data(), static_cast<int>(idBytes.size())) == 1;
+                if (!launchMaterialReady) {
+                    source.code = MoonlightHostControlCode::Unavailable;
+                    break;
+                }
+                std::memcpy(&nativeRiKeyId, idBytes.data(), idBytes.size());
+                OPENSSL_cleanse(idBytes.data(), idBytes.size());
                 MoonlightLaunchConfiguration configuration;
                 configuration.width = request.launchConfiguration.width;
                 configuration.height = request.launchConfiguration.height;
                 configuration.refreshRate = request.launchConfiguration.refreshRate;
-                configuration.additionalStates = request.launchConfiguration.additionalStates;
+                configuration.additionalStates =
+                    request.launchConfiguration.additionalStates;
                 configuration.sops = request.launchConfiguration.sops;
                 configuration.hdr = request.launchConfiguration.hdr;
-                configuration.playAudioOnHost = request.launchConfiguration.playAudioOnHost;
-                configuration.surroundAudioInfo = request.launchConfiguration.surroundAudioInfo;
-                configuration.remoteControllersBitmap = request.launchConfiguration.remoteControllersBitmap;
+                configuration.playAudioOnHost =
+                    request.launchConfiguration.playAudioOnHost;
+                configuration.surroundAudioInfo =
+                    request.launchConfiguration.surroundAudioInfo;
+                configuration.remoteControllersBitmap =
+                    request.launchConfiguration.remoteControllersBitmap;
                 configuration.gamepadMask = request.launchConfiguration.gamepadMask;
-                configuration.persistGamepads = request.launchConfiguration.persistGamepads;
+                configuration.persistGamepads =
+                    request.launchConfiguration.persistGamepads;
                 MoonlightLaunchRequest call;
                 call.context = std::move(context);
                 call.appId = request.appId;
-                call.material = MoonlightLaunchMaterial(std::move(request.riKey),
-                                                        request.riKeyId, configuration);
+                std::vector<std::uint8_t> material(
+                    nativeRiKey.begin(), nativeRiKey.end());
+                call.material = MoonlightLaunchMaterial(
+                    std::move(material), nativeRiKeyId, configuration);
                 source = request.operation == MoonlightBridgeOperation::Launch ?
-                    control_->launch(std::move(call)) : control_->resume(std::move(call));
+                    components.control->launch(std::move(call)) :
+                    components.control->resume(std::move(call));
                 break;
             }
             case MoonlightBridgeOperation::Quit: {
                 MoonlightQuitRequest call;
                 call.context = std::move(context);
                 call.expectedCurrentAppId = request.expectedCurrentAppId;
-                call.userConfirmedTermination = request.userConfirmedTermination;
-                source = control_->quit(std::move(call));
+                call.userConfirmedTermination =
+                    request.userConfirmedTermination;
+                source = components.control->quit(std::move(call));
                 break;
             }
             case MoonlightBridgeOperation::Pair:
@@ -1178,24 +1403,39 @@ private:
         } catch (...) {
             source.code = MoonlightHostControlCode::ProtocolFailure;
         }
+        if (launchMaterialReady && source.ok() &&
+            source.rtspSessionUrl.has_value() &&
+            source.sessionServerInfo.has_value() &&
+            !request.endpoint.addresses.empty()) {
+            MoonlightProductLaunchStage stage;
+            stage.key = request.key;
+            stage.hostId = request.hostId;
+            stage.serverUuid = request.serverUuid;
+            stage.address = request.endpoint.addresses.front().value;
+            stage.appId = request.appId;
+            stage.configuration = request.launchConfiguration;
+            stage.serverInfo = std::move(*source.sessionServerInfo);
+            stage.remoteInputKey = nativeRiKey;
+            stage.remoteInputKeyId = nativeRiKeyId;
+            stage.rtspSessionUrl = *source.rtspSessionUrl;
+            stage.expiresAtMonotonicMs = monotonicMilliseconds() + 30000U;
+            if (!MoonlightProductStreamingRuntime::process().stageLaunch(
+                    std::move(stage))) {
+                source.code = MoonlightHostControlCode::OutcomeUnknown;
+                source.postconditionTruth = MoonlightHostControlTruth::Unknown;
+                source.mutationMayHaveBeenSent = true;
+                source.rtspSessionUrl.reset();
+            }
+        }
+        OPENSSL_cleanse(nativeRiKey.data(), nativeRiKey.size());
+        nativeRiKeyId = 0;
         appendControlResult(result, std::move(source));
-        bindings_->clearActive(hostKey(request.key));
-        static_cast<void>(cancellationProbe);
+        components.bindings->clearActive(hostKey(request.key));
         return result;
     }
 
-    std::shared_ptr<BindingRegistry> bindings_;
-    std::shared_ptr<std::unordered_map<std::string, std::string>> installations_;
-    std::shared_ptr<std::mutex> installationMutex_;
-    std::shared_ptr<MoonlightSecureIdentity> identity_;
-    std::shared_ptr<ProductHttpTransport> transport_;
-    std::shared_ptr<ProductTrustPort> trust_;
-    std::shared_ptr<ProductCommitPort> commit_;
-    std::shared_ptr<ProductTlsBindingPort> tlsBinding_;
-    std::shared_ptr<ProductAccessPort> access_;
-    std::shared_ptr<MoonlightHostApi> hostApi_;
-    std::shared_ptr<MoonlightPairingManager> pairing_;
-    std::shared_ptr<MoonlightHostControl> control_;
+    mutable std::mutex initializationMutex_;
+    mutable std::shared_ptr<ProductRuntimeComponents> components_;
 };
 
 } // namespace

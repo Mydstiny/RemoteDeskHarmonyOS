@@ -23,6 +23,7 @@
 #include "render/hw_decoder.h"
 #include "render/gl_renderer.h"
 #include "render/video_perf_counters.h"
+#include "render/shared_session_context.h"
 #include "video/video_activity_state.h"
 #include "rustdesk/rustdesk_bridge.h"
 #include "vnc/vnc_adapter.h"
@@ -153,28 +154,8 @@ static std::mutex g_activeConnectionMutex;
 static bool ActivateSessionContext(
     const std::shared_ptr<ProtocolAdapter>& adapter,
     const DecoderSessionIdentity& owner) {
-    auto activationTransaction = Render::SharedSessionActivationTransaction().acquire();
-    if (!activationTransaction) {
+    if (!Render::ActivateSharedSessionSinks(owner)) {
         return false;
-    }
-    {
-        auto ownerTransition = Render::SharedSessionSinkOwnerLease().acquireExclusive();
-        if (!ownerTransition.beginActivate(owner)) {
-            return false;
-        }
-    }
-    // Owner publication is a two-phase transition. No callback can pass the
-    // shared owner gate until every component has observed the new identity;
-    // importantly, the exclusive owner lock is not held while component
-    // mutexes or external callbacks are touched.
-    DecoderNapi::SetActiveSessionId(owner);
-    RendererNapi::SetActiveSessionOwner(owner);
-    AudioPlayerNapi::SetActiveSessionOwner(owner);
-    {
-        auto ownerTransition = Render::SharedSessionSinkOwnerLease().acquireExclusive();
-        if (!ownerTransition.commit(owner)) {
-            return false;
-        }
     }
     std::lock_guard<std::mutex> lock(g_activeConnectionMutex);
     g_activeConnection = adapter;
@@ -185,23 +166,9 @@ static bool ActivateSessionContext(
 static bool DeactivateSessionContextIfActive(
     const std::shared_ptr<ProtocolAdapter>& adapter,
     const DecoderSessionIdentity& owner) {
-    auto activationTransaction = Render::SharedSessionActivationTransaction().acquire();
-    if (!activationTransaction) {
+    if (!Render::DeactivateSharedSessionSinks(owner)) {
         return false;
     }
-    {
-        auto ownerTransition = Render::SharedSessionSinkOwnerLease().acquireExclusive();
-        if (!ownerTransition.beginDeactivate(owner)) {
-            return false;
-        }
-    }
-    // The owner gate is already closed. Cleanup now follows the same
-    // owner->component order without holding the exclusive owner lock. Each
-    // component rechecks the exact owner, so a previously-cleared component
-    // is harmless and an S1 teardown cannot touch an S2 sink.
-    DecoderNapi::ClearActiveSessionId(owner);
-    RendererNapi::ClearActiveSessionOwner(owner);
-    AudioPlayerNapi::ClearActiveSessionOwner(owner);
     {
         std::lock_guard<std::mutex> lock(g_activeConnectionMutex);
         InputHandler::instance().setActiveAdapter(nullptr);
@@ -213,23 +180,7 @@ static bool DeactivateSessionContextIfActive(
 }
 
 static void DeactivateAllSessionContexts() {
-    auto activationTransaction = Render::SharedSessionActivationTransaction().acquire();
-    if (!activationTransaction) {
-        return;
-    }
-    DecoderSessionIdentity owner;
-    {
-        auto ownerTransition = Render::SharedSessionSinkOwnerLease().acquireExclusive();
-        owner = ownerTransition.activeSnapshot();
-        if (owner.valid()) {
-            ownerTransition.beginDeactivate(owner);
-        }
-    }
-    if (owner.valid()) {
-        DecoderNapi::ClearActiveSessionId(owner);
-        RendererNapi::ClearActiveSessionOwner(owner);
-        AudioPlayerNapi::ClearActiveSessionOwner(owner);
-    }
+    Render::DeactivateAllSharedSessionSinks();
     {
         std::lock_guard<std::mutex> lock(g_activeConnectionMutex);
         g_activeConnection = nullptr;

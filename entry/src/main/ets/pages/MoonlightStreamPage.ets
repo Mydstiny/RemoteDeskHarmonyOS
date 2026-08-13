@@ -24,6 +24,13 @@ import {
   moonlightRouteIdentity,
   moonlightToolbarLayout
 } from '../services/MoonlightUiPolicy';
+import rdpnapi from 'librdpnapi.so';
+import { MoonlightNativeRequestKey } from '../services/MoonlightHostService';
+
+class MoonlightStreamXComponentController extends XComponentController {
+  onSurface: (surfaceId: string) => void = (_surfaceId: string): void => {};
+  onSurfaceCreated(surfaceId: string): void { this.onSurface(surfaceId); }
+}
 
 type MoonlightSessionSheetMode = 'none' | 'control' | 'stop';
 
@@ -90,6 +97,19 @@ struct MoonlightStreamPage {
   private elapsedTimer: number = -1;
   private sheetReopenGeneration: number = 0;
   private sheetReopenTimer: number = -1;
+  private readonly xcId: string = 'MoonlightStreamSurface';
+  private readonly xComponentController: MoonlightStreamXComponentController =
+    new MoonlightStreamXComponentController();
+  private launchKey: MoonlightNativeRequestKey = { requestId: 0, generation: 0, ownerToken: 0 };
+  private serverUuid: string = '';
+  private numericAppId: number = 0;
+  private hostAddress: string = '';
+  private surfaceId: string = '';
+  private surfaceWidthPx: number = 1920;
+  private surfaceHeightPx: number = 1080;
+  private rendererHandle: number = -1;
+  private streamStartAttempted: boolean = false;
+  private surfacePollTimer: number = -1;
 
   private pal(): Palette {
     return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor);
@@ -106,6 +126,17 @@ struct MoonlightStreamPage {
     const route: MoonlightRouteIdentity = moonlightRouteIdentity(params, true);
     this.hostId = route.valid ? route.hostId : '';
     this.appId = route.valid ? route.appId : '';
+    this.launchKey = {
+      requestId: params['launchRequestId'] as number,
+      generation: params['launchGeneration'] as number,
+      ownerToken: params['launchOwnerToken'] as number
+    };
+    this.serverUuid = typeof params['serverUuid'] === 'string' ? params['serverUuid'] as string : '';
+    this.numericAppId = typeof params['numericAppId'] === 'number' ? params['numericAppId'] as number : 0;
+    this.hostAddress = typeof params['hostAddress'] === 'string' ? params['hostAddress'] as string : '';
+    this.xComponentController.onSurface = (surfaceId: string): void => {
+      this.onMoonlightSurface(surfaceId);
+    };
     this.scaleMode = this.commonDisplayScaleMode;
     this.phase = 'failed';
     this.errorCode = 'internal';
@@ -116,6 +147,8 @@ struct MoonlightStreamPage {
     this.sessionStartedAtMs = 0;
     this.clearElapsedTimer();
     this.showConnectStage = true;
+    this.phase = 'discovering';
+    this.streamStartAttempted = false;
     const scope: AccountScopeToken = AccountSessionCoordinator.getInstance().currentScope();
     this.sessionCoordinator.bindScope(scope.ownerScopeId, scope.generation);
     this.bindSessionSnapshot(scope);
@@ -134,6 +167,8 @@ struct MoonlightStreamPage {
     this.showSessionSheet = false;
     this.flushInput('page_disappear');
     this.sessionCoordinator.cancelForRoute(this.hostId, this.appId, 'stream-page-disappear');
+    this.stopSurfacePoll();
+    this.destroyMoonlightRenderer();
     this.clearElapsedTimer();
     if (this.snapshotUnsubscribe !== null) {
       this.snapshotUnsubscribe();
@@ -142,6 +177,80 @@ struct MoonlightStreamPage {
     if (this.accountScopeUnsubscribe !== null) {
       this.accountScopeUnsubscribe();
       this.accountScopeUnsubscribe = null;
+    }
+  }
+
+  private routeLeaseValid(): boolean {
+    return Number.isSafeInteger(this.launchKey.requestId) && this.launchKey.requestId > 0 &&
+      Number.isSafeInteger(this.launchKey.generation) && this.launchKey.generation > 0 &&
+      Number.isSafeInteger(this.launchKey.ownerToken) && this.launchKey.ownerToken > 0 &&
+      this.serverUuid.trim() !== '' && Number.isSafeInteger(this.numericAppId) &&
+      this.numericAppId > 0 && this.hostAddress.trim() !== '';
+  }
+
+  private onMoonlightXComponentLoad = (): void => {
+    try { rdpnapi.registerNativeXComponent(); } catch (_) {}
+    this.pollMoonlightSurface(0);
+  }
+
+  private pollMoonlightSurface(attempt: number): void {
+    this.stopSurfacePoll();
+    if (!this.pageActive || this.streamStartAttempted || attempt >= 80) { return; }
+    try {
+      const surface: string = this.xComponentController.getXComponentSurfaceId();
+      if (surface.trim() !== '') { this.onMoonlightSurface(surface); return; }
+    } catch (_) {}
+    this.surfacePollTimer = setTimeout((): void => {
+      this.surfacePollTimer = -1;
+      this.pollMoonlightSurface(attempt + 1);
+    }, 50);
+  }
+
+  private stopSurfacePoll(): void {
+    if (this.surfacePollTimer >= 0) {
+      clearTimeout(this.surfacePollTimer);
+      this.surfacePollTimer = -1;
+    }
+  }
+
+  private onMoonlightSurface(surfaceId: string): void {
+    if (!this.pageActive || this.streamStartAttempted || !this.routeLeaseValid() ||
+        surfaceId.trim() === '') { return; }
+    this.surfaceId = surfaceId;
+    try {
+      if (!rdpnapi.setXComponentSurfaceId(
+          surfaceId, this.surfaceWidthPx, this.surfaceHeightPx)) { return; }
+      this.rendererHandle = rdpnapi.initRenderer(
+        this.xcId, this.surfaceWidthPx, this.surfaceHeightPx);
+    } catch (_) {
+      this.rendererHandle = -1;
+    }
+    if (this.rendererHandle <= 0) {
+      this.phase = 'failed'; this.errorCode = 'decoder_failed'; return;
+    }
+    this.streamStartAttempted = true;
+    const scope: AccountScopeToken = AccountSessionCoordinator.getInstance().currentScope();
+    const result = this.sessionCoordinator.start({
+      ownerScopeId: scope.ownerScopeId, accountGeneration: scope.generation,
+      hostId: this.hostId, appId: this.appId, hostAddress: this.hostAddress,
+      runtimeAvailable: true, hostControlReady: true, streamingTransportReady: true,
+      hostControlAlreadyLaunched: true, launchKey: this.launchKey,
+      serverUuid: this.serverUuid, numericAppId: this.numericAppId,
+      rendererHandle: this.rendererHandle, surfaceWidth: this.surfaceWidthPx,
+      surfaceHeight: this.surfaceHeightPx, surfaceId: this.surfaceId
+    });
+    if (!result.accepted) {
+      this.phase = 'failed'; this.errorCode = 'internal';
+      promptAction.showToast({ message: '串流启动失败（' + result.code + '）', duration: 2200 });
+      this.destroyMoonlightRenderer();
+    }
+  }
+
+  private destroyMoonlightRenderer(): void {
+    const handle: number = this.rendererHandle;
+    this.rendererHandle = -1;
+    if (handle > 0) {
+      try { rdpnapi.destroyRenderer(handle); } catch (_) {}
     }
   }
 
@@ -226,9 +335,7 @@ struct MoonlightStreamPage {
   }
 
   private retryConnection(): void {
-    promptAction.showToast({
-      message: 'Moonlight 运行时尚未开放，当前不能重试真实连接', duration: 2000
-    });
+    promptAction.showToast({ message: '请返回应用目录重新建立安全启动租约', duration: 2000 });
   }
 
   private flushInput(reason: string): void {
@@ -390,13 +497,19 @@ struct MoonlightStreamPage {
 
   build() {
     Stack({ alignContent: Alignment.Center }) {
-      Column() {
-        Text('Moonlight 串流画面').fontSize(18).fontWeight(FontWeight.Bold).fontColor('#FFFFFF')
-        Text('媒体 Surface 与 Host Control 尚未启用').fontSize(11)
-          .fontColor('rgba(255,255,255,0.50)').margin({ top: 7 })
-        Text('此页面只装配 UI 与生命周期交互，不创建网络、解码器或输入连接。')
-          .fontSize(10).fontColor('rgba(255,255,255,0.36)').margin({ top: 5 })
-      }.alignItems(HorizontalAlign.Center)
+      XComponent({ id: this.xcId, type: XComponentType.SURFACE,
+        libraryname: 'rdpnapi', controller: this.xComponentController })
+        .width('100%').height('100%').backgroundColor('#000000')
+        .focusable(false).focusOnTouch(false)
+        .onLoad(this.onMoonlightXComponentLoad)
+        .onAreaChange((_oldArea: Area, newArea: Area): void => {
+          const width: number = Math.max(1, Math.round(vp2px(newArea.width as number)));
+          const height: number = Math.max(1, Math.round(vp2px(newArea.height as number)));
+          this.surfaceWidthPx = width; this.surfaceHeightPx = height;
+          if (this.rendererHandle > 0) {
+            try { rdpnapi.resizeRenderer(this.rendererHandle, width, height); } catch (_) {}
+          }
+        })
 
       if (this.showAudioBanner) {
         Row() {

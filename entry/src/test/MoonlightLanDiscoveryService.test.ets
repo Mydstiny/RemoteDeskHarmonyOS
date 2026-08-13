@@ -3,6 +3,7 @@
 import { common } from '@kit.AbilityKit';
 import { mdns } from '@kit.NetworkKit';
 import { describe, it, expect } from '@ohos/hypium';
+import { MoonlightAddress } from '../main/ets/model/MoonlightModels';
 import {
   MOONLIGHT_MDNS_SERVICE_TYPE,
   MoonlightLanDiscoveryCandidate,
@@ -15,6 +16,13 @@ import {
   moonlightLanDiscoveryFenceEquals,
   resolveMoonlightLanCandidate
 } from '../main/ets/services/MoonlightLanDiscoveryService';
+import {
+  MoonlightHostOperationFence,
+  createMoonlightHostOperationFence,
+  moonlightHostOperationFenceEquals,
+  moonlightVerificationMatchesFence,
+  parseMoonlightServerInfo
+} from '../main/ets/services/MoonlightLanProbeService';
 
 class FakeMoonlightMdnsDiscovery implements MoonlightMdnsDiscovery {
   private discoveryStartCallback: MoonlightMdnsDiscoveryStartCallback | null = null;
@@ -288,6 +296,77 @@ export default function moonlightLanDiscoveryServiceTest(): void {
       if (candidate !== null) {
         expect(candidate.family).assertEqual('ipv6');
         expect(candidate.generation).assertEqual(1);
+      }
+    });
+
+    it('requires_mdns_and_serverinfo_uuid_to_match_without_truncation', 0, (): void => {
+      const address: MoonlightAddress = {
+        host: '192.168.1.20', family: 'ipv4', port: 47989
+      };
+      const matching: string = '<root status_code="200"><uniqueid>sunshine-1</uniqueid>' +
+        '<hostname>Gaming PC</hostname><appversion>1.0</appversion></root>';
+      const accepted = parseMoonlightServerInfo(matching, address, 'sunshine-1');
+      expect(accepted === null).assertFalse();
+      if (accepted !== null) {
+        expect(accepted.serverUuid).assertEqual('sunshine-1');
+        expect(accepted.serverName).assertEqual('Gaming PC');
+      }
+      expect(parseMoonlightServerInfo(matching, address, 'another-host') === null).assertTrue();
+
+      const prefix: string = 'a'.repeat(255);
+      const collisionA: string = prefix + 'a';
+      const collisionB: string = prefix + 'b';
+      const boundedBody: string = '<root status_code="200"><uniqueid>' + collisionA +
+        '</uniqueid></root>';
+      expect(parseMoonlightServerInfo(boundedBody, address, collisionB) === null).assertTrue();
+      const oversizedBody: string = '<root status_code="200"><uniqueid>' +
+        'u'.repeat(257) + '</uniqueid></root>';
+      expect(parseMoonlightServerInfo(oversizedBody, address, '') === null).assertTrue();
+      expect(parseMoonlightServerInfo(
+        '<root status_code="200"></root>', address, 'u'.repeat(257)) === null).assertTrue();
+    });
+
+    it('rejects_control_characters_and_accepts_only_exact_operation_fences', 0, (): void => {
+      const address: MoonlightAddress = {
+        host: 'sunshine.local', family: 'hostname', port: 47989
+      };
+      const controlUuid: string = '<root status_code="200"><uniqueid>host\u0001</uniqueid></root>';
+      const encodedControl: string =
+        '<root status_code="200"><uniqueid>host&#10;</uniqueid></root>';
+      expect(parseMoonlightServerInfo(controlUuid, address, '') === null).assertTrue();
+      expect(parseMoonlightServerInfo(encodedControl, address, '') === null).assertTrue();
+      expect(parseMoonlightServerInfo(
+        '<root status_code="200"><uniqueid>host</uniqueid></root>',
+        address, 'host\u0001') === null).assertTrue();
+
+      const verification = parseMoonlightServerInfo(
+        '<root status_code="200"><uniqueid>host</uniqueid></root>', address, 'host');
+      const current: MoonlightHostOperationFence | null =
+        createMoonlightHostOperationFence(11, 7, 'host', address);
+      expect(verification === null).assertFalse();
+      expect(current === null).assertFalse();
+      if (verification !== null && current !== null) {
+        expect(moonlightVerificationMatchesFence(verification, current)).assertTrue();
+        const ownerChanged: MoonlightHostOperationFence | null =
+          createMoonlightHostOperationFence(12, 7, 'host', address);
+        const generationChanged: MoonlightHostOperationFence | null =
+          createMoonlightHostOperationFence(11, 8, 'host', address);
+        const uuidChanged: MoonlightHostOperationFence | null =
+          createMoonlightHostOperationFence(11, 7, 'other-host', address);
+        const addressChanged: MoonlightHostOperationFence | null =
+          createMoonlightHostOperationFence(11, 7, 'host', {
+            host: address.host, family: address.family, port: 47990
+          });
+        expect(moonlightHostOperationFenceEquals(current, ownerChanged)).assertFalse();
+        expect(moonlightHostOperationFenceEquals(current, generationChanged)).assertFalse();
+        expect(moonlightHostOperationFenceEquals(current, uuidChanged)).assertFalse();
+        expect(moonlightHostOperationFenceEquals(current, addressChanged)).assertFalse();
+        if (uuidChanged !== null) {
+          expect(moonlightVerificationMatchesFence(verification, uuidChanged)).assertFalse();
+        }
+        if (addressChanged !== null) {
+          expect(moonlightVerificationMatchesFence(verification, addressChanged)).assertFalse();
+        }
       }
     });
   });

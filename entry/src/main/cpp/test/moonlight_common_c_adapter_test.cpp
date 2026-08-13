@@ -52,6 +52,24 @@ private:
 
 class FakeMediaPort final : public MoonlightCommonCMediaPort {
 public:
+    bool bindSession(const MoonlightSessionKey& key) noexcept override {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            boundKey_ = key;
+        }
+        ++binds_;
+        return acceptBind_.load();
+    }
+    void releaseSession(const MoonlightSessionKey& key) noexcept override {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            releasedKey_ = key;
+        }
+        ++releases_;
+    }
+    bool firstFrameReady() const noexcept override {
+        return firstFrameReady_.load();
+    }
     bool videoReady() const noexcept override { return videoReady_.load(); }
     bool audioReady(MoonlightStreamAudioLayout) const noexcept override {
         return audioReady_.load();
@@ -109,6 +127,8 @@ public:
         videoReady_.store(video);
         audioReady_.store(audio);
     }
+    void rejectBind() noexcept { acceptBind_.store(false); }
+    void setFirstFrameReady(bool ready) noexcept { firstFrameReady_.store(ready); }
     void rejectVideo() noexcept { acceptVideo_.store(false); }
     void rejectAudio() noexcept { acceptAudio_.store(false); }
     void blockVideoSetup(AdapterGate& gate) noexcept { videoSetupGate_ = &gate; }
@@ -140,6 +160,16 @@ public:
     std::size_t audioPayloads() const noexcept { return audioPayloads_.load(); }
     std::size_t audioPayloadBytes() const noexcept { return audioPayloadBytes_.load(); }
     std::size_t audioPlcPayloads() const noexcept { return audioPlcPayloads_.load(); }
+    std::size_t binds() const noexcept { return binds_.load(); }
+    std::size_t releases() const noexcept { return releases_.load(); }
+    MoonlightSessionKey boundKey() const noexcept {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return boundKey_;
+    }
+    MoonlightSessionKey releasedKey() const noexcept {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return releasedKey_;
+    }
 
 private:
     mutable std::mutex mutex_;
@@ -147,6 +177,10 @@ private:
     std::atomic<bool> audioReady_ {true};
     std::atomic<bool> acceptVideo_ {true};
     std::atomic<bool> acceptAudio_ {true};
+    std::atomic<bool> acceptBind_ {true};
+    std::atomic<bool> firstFrameReady_ {false};
+    std::atomic<std::size_t> binds_ {0U};
+    std::atomic<std::size_t> releases_ {0U};
     std::atomic<std::size_t> videoSetups_ {0U};
     std::atomic<std::size_t> audioSetups_ {0U};
     std::atomic<std::size_t> videoStarts_ {0U};
@@ -162,6 +196,8 @@ private:
     std::optional<MoonlightCommonCVideoSelection> videoSelection_;
     std::optional<MoonlightCommonCAudioSelection> audioSelection_;
     MoonlightSessionKey videoPayloadKey_ {};
+    MoonlightSessionKey boundKey_ {};
+    MoonlightSessionKey releasedKey_ {};
     MoonlightStreamCodecProfile videoPayloadProfile_ {};
     std::int32_t videoPayloadFrameNumber_ = -1;
     MoonlightVideoSubmitStatus videoSubmitStatus_ =
@@ -384,10 +420,44 @@ RDP_TEST_CASE(moonlight_common_c_adapter_rejects_invalid_and_unproven_runtime) {
                   MoonlightCommonCStartStatus::InvalidRequest);
     media->setReady(false, false);
     const auto unproven = adapter->start(makeRequest(clock->load()));
-    RDP_ASSERT_EQ(unproven.status,
-                  MoonlightCommonCStartStatus::RuntimeProofRequired);
-    RDP_ASSERT_EQ(unproven.code, MoonlightCommonCCode::RuntimeProofRequired);
+    RDP_ASSERT_EQ(unproven.status, MoonlightCommonCStartStatus::Accepted);
+    RDP_ASSERT(owner->waitForPhase(
+        unproven.key, MoonlightSessionPhase::Failed, 1s));
+    const auto snapshot = adapter->snapshot(unproven.key);
+    RDP_ASSERT_EQ(snapshot.terminalCode,
+                  MoonlightCommonCCode::RuntimeProofRequired);
+    RDP_ASSERT_EQ(media->binds(), 1U);
+    RDP_ASSERT_EQ(media->releases(), 1U);
+    RDP_ASSERT(media->boundKey() == unproven.key);
+    RDP_ASSERT(media->releasedKey() == unproven.key);
     RDP_ASSERT_EQ(starts.load(), 0);
+}
+
+RDP_TEST_CASE(moonlight_common_c_adapter_binds_exact_owner_and_projects_first_frame_truth) {
+    auto owner = MoonlightSessionOwner::createForTesting();
+    auto media = std::make_shared<FakeMediaPort>();
+    auto clock = std::make_shared<std::atomic<std::uint64_t>>(1250U);
+    AdapterGate runningGate;
+    MoonlightCommonCTestDriver driver {
+        [&]() {
+            if (!driveStagesWithNegotiation()) { return -1; }
+            runningGate.enterAndWait();
+            return 0;
+        },
+        [&]() { runningGate.release(); },
+        []() {}};
+    auto adapter = makeAdapter(*owner, std::move(driver), media, clock);
+    const auto accepted = adapter->start(makeRequest(clock->load()));
+    RDP_ASSERT_EQ(accepted.status, MoonlightCommonCStartStatus::Accepted);
+    RDP_ASSERT(runningGate.waitEntered());
+    RDP_ASSERT_EQ(media->binds(), 1U);
+    RDP_ASSERT(media->boundKey() == accepted.key);
+    RDP_ASSERT(!adapter->snapshot(accepted.key).firstFrameReady);
+    media->setFirstFrameReady(true);
+    RDP_ASSERT(adapter->snapshot(accepted.key).firstFrameReady);
+    RDP_ASSERT_EQ(adapter->stop(accepted.key, 1s), MoonlightStopStatus::Stopped);
+    RDP_ASSERT_EQ(media->releases(), 1U);
+    RDP_ASSERT(media->releasedKey() == accepted.key);
 }
 
 RDP_TEST_CASE(moonlight_common_c_adapter_rejects_zero_return_without_negotiation_proof) {

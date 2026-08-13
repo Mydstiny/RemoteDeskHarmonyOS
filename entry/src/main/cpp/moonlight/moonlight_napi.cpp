@@ -2,6 +2,7 @@
 
 #include "moonlight/bridge/MoonlightNativeBridge.h"
 #include "moonlight/runtime/MoonlightProductRuntime.h"
+#include "moonlight/runtime/MoonlightProductStreamingRuntime.h"
 
 #include <algorithm>
 #include <atomic>
@@ -109,6 +110,7 @@ void cleanupEnvironment(void* rawData) noexcept {
         if (state->bridge != nullptr) {
             state->bridge->shutdown();
         }
+        MoonlightProductStreamingRuntime::process().shutdown();
     } catch (...) {
         // The environment is already closing; no exception may cross NAPI.
     }
@@ -284,32 +286,6 @@ bool readOptionalSafeInteger(napi_env env, napi_value object, const char* name,
     napi_value value = nullptr;
     return getProperty(env, object, name, value) &&
            readSafeIntegerValue(env, value, allowZero, output, error);
-}
-
-bool readOptionalInt32(napi_env env, napi_value object, const char* name,
-                       std::int32_t& output, std::string& error) {
-    bool present = false;
-    if (!hasProperty(env, object, name, present)) {
-        error = "optional signed integer field is not readable";
-        return false;
-    }
-    if (!present) {
-        return true;
-    }
-    napi_value value = nullptr;
-    napi_valuetype type = napi_undefined;
-    double number = 0.0;
-    if (!getProperty(env, object, name, value) ||
-        napi_typeof(env, value, &type) != napi_ok || type != napi_number ||
-        napi_get_value_double(env, value, &number) != napi_ok ||
-        !std::isfinite(number) || std::floor(number) != number ||
-        number < static_cast<double>(std::numeric_limits<std::int32_t>::min()) ||
-        number > static_cast<double>(std::numeric_limits<std::int32_t>::max())) {
-        error = "field must be a signed 32-bit integer";
-        return false;
-    }
-    output = static_cast<std::int32_t>(number);
-    return true;
 }
 
 bool readBooleanValue(napi_env env, napi_value value, bool& output,
@@ -558,7 +534,7 @@ bool parseRequest(napi_env env, napi_value value, MoonlightBridgeRequest& reques
         "operation", "key", "ownerScopeFingerprint", "installationId", "hostId",
         "serverUuid", "pinnedCertificateSha256", "endpoint", "timeoutMs", "appId", "catalogGeneration",
         "expectedCurrentAppId", "userConfirmedTermination", "allowLegacySha1",
-        "pin", "riKey", "riKeyId", "launchConfiguration"
+        "pin", "launchConfiguration"
     };
     if (!readExactObject(env, value, allowed, error)) {
         return false;
@@ -628,9 +604,7 @@ bool parseRequest(napi_env env, napi_value value, MoonlightBridgeRequest& reques
                              request.userConfirmedTermination, error) ||
         !readOptionalBoolean(env, value, "allowLegacySha1",
                              request.allowLegacySha1, error) ||
-        !readOptionalBytes(env, value, "pin", 4U, request.pin, error) ||
-        !readOptionalBytes(env, value, "riKey", 16U, request.riKey, error) ||
-        !readOptionalInt32(env, value, "riKeyId", request.riKeyId, error)) {
+        !readOptionalBytes(env, value, "pin", 4U, request.pin, error)) {
         error = error.empty() ? "request integer is invalid" : error;
         return false;
     }
@@ -1123,6 +1097,94 @@ napi_value pollEvents(napi_env env, napi_callback_info info) {
     return result;
 }
 
+bool parseStreamStartRequest(napi_env env, napi_value value,
+                             MoonlightProductStreamStartRequest& request,
+                             std::string& error) {
+    static const std::unordered_set<std::string> allowed {
+        "launchKey", "hostId", "serverUuid", "appId", "rendererHandle",
+        "surfaceWidth", "surfaceHeight"
+    };
+    if (!readExactObject(env, value, allowed, error)) { return false; }
+    bool present = false;
+    napi_value nested = nullptr;
+    std::uint64_t appId = 0U;
+    std::uint64_t rendererHandle = 0U;
+    std::uint64_t width = 0U;
+    std::uint64_t height = 0U;
+    if (!hasProperty(env, value, "launchKey", present) || !present ||
+        !getProperty(env, value, "launchKey", nested) ||
+        !parseRequestKey(env, nested, request.launchKey, error) ||
+        !readRequiredString(env, value, "hostId", kMaxIdentityBytes,
+                            request.hostId, error) ||
+        !readRequiredString(env, value, "serverUuid", kMaxIdentityBytes,
+                            request.serverUuid, error) ||
+        !readRequiredSafeInteger(env, value, "appId", false, appId, error) ||
+        !readRequiredSafeInteger(env, value, "rendererHandle", false,
+                                 rendererHandle, error) ||
+        !readRequiredSafeInteger(env, value, "surfaceWidth", false, width, error) ||
+        !readRequiredSafeInteger(env, value, "surfaceHeight", false, height, error) ||
+        appId > std::numeric_limits<std::uint32_t>::max() ||
+        rendererHandle > static_cast<std::uint64_t>(kMaxSafeInteger) ||
+        width > 16384U || height > 16384U) {
+        return false;
+    }
+    request.appId = static_cast<std::uint32_t>(appId);
+    request.rendererHandle = static_cast<std::int64_t>(rendererHandle);
+    request.surfaceWidth = static_cast<std::int32_t>(width);
+    request.surfaceHeight = static_cast<std::int32_t>(height);
+    return true;
+}
+
+napi_value startStream(napi_env env, napi_callback_info info) {
+    std::size_t argc = 1U;
+    napi_value args[1] = {nullptr};
+    MoonlightProductStreamStartRequest request;
+    std::string error;
+    if (napi_get_cb_info(env, info, &argc, args, nullptr, nullptr) != napi_ok ||
+        argc != 1U || !parseStreamStartRequest(env, args[0], request, error)) {
+        napi_throw_type_error(env, "E-MOONLIGHT-STREAM-START",
+                              error.empty() ? "invalid stream start request" : error.c_str());
+        return nullptr;
+    }
+    const auto result = MoonlightProductStreamingRuntime::process().start(
+        std::move(request));
+    napi_value value = nullptr;
+    (void)napi_create_object(env, &value);
+    setBoolean(env, value, "accepted", result.accepted);
+    setString(env, value, "code", result.code);
+    setSafeInteger(env, value, "sessionId", result.key.sessionId);
+    setSafeInteger(env, value, "generation", result.key.generation);
+    setSafeInteger(env, value, "ownerToken", result.key.ownerToken);
+    return value;
+}
+
+napi_value streamSnapshot(napi_env env, napi_callback_info info) {
+    MoonlightBridgeRequestKey key;
+    if (!readKeyArgument(env, info, key)) { return nullptr; }
+    const auto result = MoonlightProductStreamingRuntime::process().snapshot(key);
+    napi_value value = nullptr;
+    (void)napi_create_object(env, &value);
+    setBoolean(env, value, "matched", result.matched);
+    setString(env, value, "code", result.code);
+    setSafeInteger(env, value, "sessionId", result.key.sessionId);
+    setSafeInteger(env, value, "generation", result.key.generation);
+    setSafeInteger(env, value, "ownerToken", result.key.ownerToken);
+    setBoolean(env, value, "transportReady", result.transportReady);
+    setBoolean(env, value, "firstFrameReady", result.firstFrameReady);
+    setBoolean(env, value, "terminal", result.terminal);
+    setSafeInteger(env, value, "lastSequence", result.lastSequence);
+    return value;
+}
+
+napi_value stopStream(napi_env env, napi_callback_info info) {
+    MoonlightBridgeRequestKey key;
+    if (!readKeyArgument(env, info, key)) { return nullptr; }
+    const bool stopped = MoonlightProductStreamingRuntime::process().stop(key);
+    napi_value value = nullptr;
+    (void)napi_get_boolean(env, stopped, &value);
+    return value;
+}
+
 } // namespace
 
 namespace MoonlightNapi {
@@ -1167,6 +1229,12 @@ napi_value Init(napi_env env, napi_value exports) {
         {"moonlightCancelOwner", nullptr, cancelOwner, nullptr, nullptr, nullptr,
          napi_default, nullptr},
         {"moonlightPollEvents", nullptr, pollEvents, nullptr, nullptr, nullptr,
+         napi_default, nullptr},
+        {"moonlightStartStream", nullptr, startStream, nullptr, nullptr, nullptr,
+         napi_default, nullptr},
+        {"moonlightGetStreamSnapshot", nullptr, streamSnapshot, nullptr, nullptr,
+         nullptr, napi_default, nullptr},
+        {"moonlightStopStream", nullptr, stopStream, nullptr, nullptr, nullptr,
          napi_default, nullptr},
     };
     (void)napi_define_properties(env, exports,

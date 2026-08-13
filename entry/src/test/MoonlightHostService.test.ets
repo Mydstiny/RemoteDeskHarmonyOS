@@ -18,8 +18,6 @@ import {
   MoonlightHostContext,
   MoonlightHostService,
   MoonlightHostServiceResult,
-  MoonlightLaunchMaterialLease,
-  MoonlightLaunchMaterialProvider,
   MoonlightNativeEvent,
   MoonlightNativePort,
   MoonlightNativeRequest,
@@ -110,7 +108,6 @@ class FakeNativePort implements MoonlightNativePort {
   cancelOwnerCount: number = 0;
   lastCancelledOwner: number = 0;
   capturedPin: number[] = [];
-  capturedRiKey: number[] = [];
   resultFactory: (request: MoonlightNativeRequest) => MoonlightNativeResult = nativeSuccess;
   capabilitiesValue: MoonlightBridgeCapabilities = {
     bridgeCompiled: true,
@@ -129,7 +126,6 @@ class FakeNativePort implements MoonlightNativePort {
     if (this.throwOnRequest) { throw new Error('native failure'); }
     this.requests.push(request);
     if (request.pin !== undefined) { this.capturedPin = copyBytes(request.pin); }
-    if (request.riKey !== undefined) { this.capturedRiKey = copyBytes(request.riKey); }
     if (this.deferred !== null) { return this.deferred.promise; }
     return Promise.resolve(this.resultFactory(request));
   }
@@ -336,31 +332,15 @@ export default function moonlightHostServiceTest(): void {
         expect(thrownResult.nativeCode).assertEqual('ok');
       });
 
-    it('launch_material_is_copied_synchronously_then_zeroized_and_released', 0,
+    it('launch_forwards_only_non_secret_configuration', 0,
       async (): Promise<void> => {
         const value = fixture();
-        let released: boolean = false;
-        const keyBytes: Uint8Array = new Uint8Array(16);
-        for (let i = 0; i < keyBytes.length; i++) { keyBytes[i] = 160 + i; }
-        const material: MoonlightLaunchMaterialLease = {
-          riKey: keyBytes,
-          riKeyId: -7,
-          configuration: { width: 1920, height: 1080, refreshRate: 60 },
-          release: (): void => {
-            released = true;
-            throw new Error('release failure after cleanup');
-          }
-        };
-        const provider: MoonlightLaunchMaterialProvider = {
-          acquire: (): MoonlightLaunchMaterialLease => material
-        };
-        const result = await value.service.launch(context(), 42, provider);
+        const result = await value.service.launch(
+          context(), 42, { width: 1920, height: 1080, refreshRate: 60 });
         expect(result.ok).assertTrue();
-        expect(released).assertTrue();
-        expect(value.native.capturedRiKey[0]).assertEqual(160);
-        expect(keyBytes[0]).assertEqual(0);
         expect(value.native.requests[0].operation).assertEqual('launch');
         expect(value.native.requests[0].catalogGeneration).assertEqual(1);
+        expect(value.native.requests[0].launchConfiguration?.width).assertEqual(1920);
       });
 
     it('pair_uses_an_ephemeral_pin_copy', 0, async (): Promise<void> => {

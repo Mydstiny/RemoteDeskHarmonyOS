@@ -110,6 +110,16 @@ class REMOTEDESK_MOONLIGHT_COMMON_C_HIDDEN MoonlightCommonCMediaPort {
 public:
     virtual ~MoonlightCommonCMediaPort() = default;
 
+    // Product media resources are bound only after MoonlightSessionOwner has
+    // admitted the exact native session key. Test/dormant ports can keep the
+    // defaults; production ports use this seam to activate the shared sink
+    // owner and create their decoder binding without publishing a second
+    // renderer/audio owner.
+    virtual bool bindSession(const MoonlightSessionKey& key) noexcept {
+        return key.valid();
+    }
+    virtual void releaseSession(const MoonlightSessionKey& /*key*/) noexcept {}
+    virtual bool firstFrameReady() const noexcept { return false; }
     virtual bool videoReady() const noexcept = 0;
     virtual bool audioReady(MoonlightStreamAudioLayout layout) const noexcept = 0;
     virtual bool setupVideo(const MoonlightCommonCVideoSelection& selection) noexcept = 0;

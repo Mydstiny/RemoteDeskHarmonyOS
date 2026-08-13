@@ -1,6 +1,7 @@
 #include "moonlight/bridge/MoonlightNativeBridge.h"
 #include "test_runner.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -77,6 +78,7 @@ public:
         MoonlightBridgeRequest&, const CancellationProbe&)>;
 
     MoonlightBridgeCapabilities capabilities() const noexcept override {
+        capabilityCount_.fetch_add(1U, std::memory_order_relaxed);
         return capabilities_;
     }
 
@@ -122,9 +124,16 @@ public:
         return cancelled_.size();
     }
 
+    bool wasCancelled(const MoonlightBridgeRequestKey& key) const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return std::find(cancelled_.begin(), cancelled_.end(), key) !=
+            cancelled_.end();
+    }
+
     MoonlightBridgeCapabilities capabilities_ {
         true, true, true, true, true, true, true, ""
     };
+    mutable std::atomic<std::size_t> capabilityCount_ {0U};
     std::atomic<std::size_t> executeCount_ {0U};
     bool sawPin_ = false;
     bool sawRiKey_ = false;
@@ -172,15 +181,21 @@ MoonlightBridgeRequest launchRequest(std::uint64_t requestId = 1U,
     request.operation = MoonlightBridgeOperation::Launch;
     request.appId = 42U;
     request.catalogGeneration = generation;
-    request.riKey.resize(16U);
-    for (std::size_t index = 0; index < request.riKey.size(); ++index) {
-        request.riKey[index] = static_cast<std::uint8_t>(0xa0U + index);
-    }
-    request.riKeyId = -7;
     return request;
 }
 
 } // namespace
+
+RDP_TEST_CASE(moonlight_native_bridge_construction_does_not_initialize_runtime) {
+    auto runtime = std::make_shared<FakeRuntime>();
+    {
+        MoonlightNativeBridge bridge(runtime);
+        RDP_ASSERT_EQ(runtime->capabilityCount_.load(),
+                      static_cast<std::size_t>(0));
+    }
+    RDP_ASSERT_EQ(runtime->capabilityCount_.load(),
+                  static_cast<std::size_t>(0));
+}
 
 RDP_TEST_CASE(moonlight_native_bridge_product_runtime_is_packet_free_unavailable) {
     auto runtime = std::make_shared<MoonlightUnavailableRuntimePort>();
@@ -343,17 +358,44 @@ RDP_TEST_CASE(moonlight_native_bridge_new_generation_discards_late_result) {
         }
         return successFor(request);
     });
+    runtime->setCancelCallback([barrier]() { barrier->release(); });
     MoonlightNativeBridge bridge(runtime);
     MoonlightBridgeResult oldResult;
     std::thread worker([&]() { oldResult = bridge.execute(requestFor(1U, 1U)); });
     RDP_ASSERT(barrier->waitEntered());
     const auto newResult = bridge.execute(requestFor(2U, 2U));
     RDP_ASSERT(newResult.ok());
-    barrier->release();
     worker.join();
-    RDP_ASSERT_EQ(oldResult.code, MoonlightBridgeCode::Stale);
+    RDP_ASSERT_EQ(oldResult.code, MoonlightBridgeCode::Cancelled);
+    RDP_ASSERT_EQ(runtime->cancelCount(), static_cast<std::size_t>(1));
+    RDP_ASSERT(runtime->wasCancelled({1U, 1U, 1001U}));
     RDP_ASSERT_EQ(bridge.execute(requestFor(3U, 1U)).code,
                   MoonlightBridgeCode::Stale);
+}
+
+RDP_TEST_CASE(moonlight_native_bridge_generation_cancel_is_lane_isolated) {
+    auto runtime = std::make_shared<FakeRuntime>();
+    auto barrier = std::make_shared<Barrier>();
+    std::atomic<unsigned> calls {0U};
+    runtime->setHandler([barrier, &calls](MoonlightBridgeRequest& request,
+                                          const auto&) {
+        if (calls.fetch_add(1U) == 0U) {
+            barrier->enter();
+            barrier->waitReleased();
+        }
+        return successFor(request);
+    });
+    MoonlightNativeBridge bridge(runtime);
+    MoonlightBridgeResult first;
+    std::thread worker([&]() { first = bridge.execute(requestFor()); });
+    RDP_ASSERT(barrier->waitEntered());
+    const auto otherLane = bridge.execute(
+        requestFor(2U, 2U, 1001U, OWNER_A, "host-b", "SERVER-B"));
+    RDP_ASSERT(otherLane.ok());
+    RDP_ASSERT_EQ(runtime->cancelCount(), static_cast<std::size_t>(0));
+    barrier->release();
+    worker.join();
+    RDP_ASSERT(first.ok());
 }
 
 RDP_TEST_CASE(moonlight_native_bridge_exact_cancel_is_idempotent_and_drains) {
@@ -410,7 +452,7 @@ RDP_TEST_CASE(moonlight_native_bridge_cancel_owner_does_not_cross_owner) {
     RDP_ASSERT(second.ok());
 }
 
-RDP_TEST_CASE(moonlight_native_bridge_pair_and_launch_material_are_ephemeral) {
+RDP_TEST_CASE(moonlight_native_bridge_pair_is_ephemeral_and_launch_has_no_ri_key) {
     MoonlightNativeBridge::resetSecureCleanseCountForTesting();
     auto runtime = std::make_shared<FakeRuntime>();
     MoonlightNativeBridge bridge(runtime);
@@ -418,8 +460,8 @@ RDP_TEST_CASE(moonlight_native_bridge_pair_and_launch_material_are_ephemeral) {
     auto launch = launchRequest(2U, 2U);
     RDP_ASSERT(bridge.execute(std::move(launch)).ok());
     RDP_ASSERT(runtime->sawPin_);
-    RDP_ASSERT(runtime->sawRiKey_);
-    RDP_ASSERT(MoonlightNativeBridge::secureCleanseCountForTesting() >= 2U);
+    RDP_ASSERT(!runtime->sawRiKey_);
+    RDP_ASSERT(MoonlightNativeBridge::secureCleanseCountForTesting() >= 1U);
     RDP_ASSERT(std::string(moonlightBridgeOperationName(
                    MoonlightBridgeOperation::Resume)) == "resume");
     RDP_ASSERT(std::string(moonlightBridgeCodeName(

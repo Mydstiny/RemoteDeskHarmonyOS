@@ -599,7 +599,9 @@ MoonlightHostControlResult::MoonlightHostControlResult(
       generation(other.generation), observedAtMs(other.observedAtMs),
       idempotent(other.idempotent), mutationMayHaveBeenSent(other.mutationMayHaveBeenSent),
       apps(std::move(other.apps)), asset(std::move(other.asset)),
-      rtspSessionUrl(std::move(other.rtspSessionUrl)), stageTrace(std::move(other.stageTrace)),
+      rtspSessionUrl(std::move(other.rtspSessionUrl)),
+      sessionServerInfo(std::move(other.sessionServerInfo)),
+      stageTrace(std::move(other.stageTrace)),
       diagnostics(std::move(other.diagnostics)) {
     secureWipeOptionalString(other.rtspSessionUrl);
 }
@@ -625,6 +627,7 @@ MoonlightHostControlResult& MoonlightHostControlResult::operator=(
         apps = std::move(other.apps);
         asset = std::move(other.asset);
         rtspSessionUrl = std::move(other.rtspSessionUrl);
+        sessionServerInfo = std::move(other.sessionServerInfo);
         stageTrace = std::move(other.stageTrace);
         diagnostics = std::move(other.diagnostics);
         secureWipeOptionalString(other.rtspSessionUrl);
@@ -1014,6 +1017,7 @@ MoonlightHostControlResult MoonlightHostControl::runLaunch(
             return finish(std::move(result), MoonlightHostControlCode::OutcomeUnknown);
         }
         result.postconditionTruth = MoonlightHostControlTruth::Confirmed;
+        result.sessionServerInfo = std::move(postcondition.serverInfo);
         result.observedAtMs = impl->wallClock();
         return finish(std::move(result), MoonlightHostControlCode::Ok);
     } catch (...) {

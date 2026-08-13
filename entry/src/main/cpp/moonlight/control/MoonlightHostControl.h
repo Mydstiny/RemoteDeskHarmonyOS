@@ -206,6 +206,9 @@ struct REMOTEDESK_MOONLIGHT_CONTROL_HIDDEN MoonlightHostControlResult final {
     std::vector<MoonlightAppEntry> apps;
     std::vector<std::uint8_t> asset;
     std::optional<std::string> rtspSessionUrl;
+    // Native-only authenticated postcondition used to build the subsequent
+    // common-c lease. It is intentionally not projected through ArkTS.
+    std::optional<MoonlightServerInfo> sessionServerInfo;
     std::vector<MoonlightHostControlStage> stageTrace;
     std::vector<MoonlightHostControlDiagnostic> diagnostics;
 

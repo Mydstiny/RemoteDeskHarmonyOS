@@ -7,7 +7,17 @@ import { MoonlightAddress, MoonlightHost, moonlightAddressKey } from '../model/M
 import { AccountSessionCoordinator } from '../services/AccountSessionCoordinator';
 import { CloudStore } from '../services/CloudStore';
 import { MoonlightHostLocalView, MoonlightLocalViewService } from '../services/MoonlightLocalViewService';
-import { MoonlightSessionCoordinator } from '../services/MoonlightSessionCoordinator';
+import {
+  MoonlightHostContext,
+  MoonlightHostService,
+  MoonlightHostServiceResult,
+  MoonlightNativeLaunchConfiguration
+} from '../services/MoonlightHostService';
+import { MoonlightSettingsLocalService } from '../services/MoonlightSettingsLocalService';
+import {
+  moonlightInstallationId,
+  moonlightOwnerScopeFingerprint
+} from '../services/MoonlightRuntimeSupport';
 import {
   MoonlightCatalogFilter,
   MoonlightCatalogItem,
@@ -114,16 +124,20 @@ struct MoonlightAppCatalogPage {
   @State refreshing: boolean = false;
   @State selectedItem: MoonlightCatalogItem | null = null;
   @State showLaunchSheet: boolean = false;
+  @State launching: boolean = false;
   private readonly dataSource: MoonlightCatalogDataSource = new MoonlightCatalogDataSource();
   private readonly viewService: MoonlightLocalViewService =
     new MoonlightLocalViewService(CloudStore.getInstance());
-  private readonly sessionCoordinator: MoonlightSessionCoordinator =
-    MoonlightSessionCoordinator.getInstance();
+  private readonly hostService: MoonlightHostService = new MoonlightHostService();
+  private readonly settingsService: MoonlightSettingsLocalService =
+    new MoonlightSettingsLocalService(CloudStore.getInstance());
   private pageActive: boolean = false;
   private ownerScopeId: string = '';
   private refreshGeneration: number = 0;
   private refreshTimer: number = -1;
   private currentRefresh: MoonlightCatalogOperationKey | null = null;
+  private serverCertificateSha256: string = '';
+  private launchGeneration: number = 0;
 
   private pal(): Palette {
     return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor);
@@ -162,6 +176,7 @@ struct MoonlightAppCatalogPage {
       this.statusCode = view.code;
       this.host = null;
       this.ownerScopeId = '';
+      this.serverCertificateSha256 = '';
       this.allItems = [];
       this.applyFilter();
       return;
@@ -169,6 +184,7 @@ struct MoonlightAppCatalogPage {
     this.host = view.host;
     this.ownerScopeId = view.lease === null ? '' : view.lease.ownerScopeId;
     this.paired = view.paired;
+    this.serverCertificateSha256 = view.serverCertificateSha256;
     this.allItems = view.catalogItems;
     this.statusCode = view.code;
     this.applyFilter();
@@ -240,24 +256,87 @@ struct MoonlightAppCatalogPage {
     return host + ':' + selected.port.toString();
   }
 
-  private startSelected(): void {
+  private runtimeContext(): MoonlightHostContext | null {
+    if (this.host === null || !this.paired ||
+        !/^[0-9a-f]{64}$/.test(this.serverCertificateSha256)) { return null; }
+    const lease = CloudStore.getInstance().currentAccountLease();
+    const scope = CloudStore.getInstance().currentScope();
+    if (lease === null || scope.ownerScopeId.trim() === '' || this.host.addresses.length === 0) {
+      return null;
+    }
+    let selected: MoonlightAddress = this.host.addresses[0];
+    for (let index = 0; index < this.host.addresses.length; index++) {
+      if (moonlightAddressKey(this.host.addresses[index]) === this.host.preferredAddressKey) {
+        selected = this.host.addresses[index]; break;
+      }
+    }
+    this.launchGeneration += 1;
+    const generation: number = Math.max(1, this.launchGeneration);
+    const ownerToken: number = Math.min(9007199254740991,
+      Math.max(1, Date.now() * 100 + generation % 100));
+    return {
+      lease: lease,
+      ownerScopeFingerprint: moonlightOwnerScopeFingerprint(scope.ownerScopeId),
+      ownerToken: ownerToken,
+      generation: generation,
+      hostId: this.host.serverUuid,
+      serverUuid: this.host.serverUuid,
+      installationId: moonlightInstallationId(scope.storeIdentity),
+      pinnedCertificateSha256: this.serverCertificateSha256,
+      endpoint: {
+        serverName: selected.family === 'hostname' ? selected.host : this.host.displayName,
+        addresses: [{ value: selected.host,
+          family: selected.family === 'ipv4' ? 'ipv4' : selected.family === 'ipv6' ? 'ipv6' : 'unspecified' }],
+        httpPort: selected.port,
+        httpsPort: 47984,
+        pinnedTrustAvailable: true,
+        allowHttpPairingCandidate: false
+      },
+      timeoutMs: 30000
+    };
+  }
+
+  private launchConfiguration(): MoonlightNativeLaunchConfiguration {
+    const loaded = this.settingsService.load();
+    const video = loaded.settings.video;
+    const audio = loaded.settings.audio;
+    let width: number = 1920;
+    let height: number = 1080;
+    if (video.resolutionMode === '720p') { width = 1280; height = 720; }
+    else if (video.resolutionMode === '1440p') { width = 2560; height = 1440; }
+    else if (video.resolutionMode === '2160p') { width = 3840; height = 2160; }
+    else if (video.resolutionMode === 'custom') {
+      width = video.customWidth; height = video.customHeight;
+    }
+    return {
+      width: width, height: height, refreshRate: video.fps,
+      additionalStates: true, sops: true, hdr: false,
+      playAudioOnHost: audio.playOnHost, surroundAudioInfo: 196610,
+      remoteControllersBitmap: loaded.settings.input.controllerSlot >= 0 ? 1 : 0,
+      gamepadMask: loaded.settings.input.controllerSlot >= 0 ? 1 : 0,
+      persistGamepads: false
+    };
+  }
+
+  private async startSelected(): Promise<void> {
     if (this.host === null || this.selectedItem === null) { return; }
-    const scope = AccountSessionCoordinator.getInstance().currentScope();
-    const result = this.sessionCoordinator.start({
-      ownerScopeId: scope.ownerScopeId,
-      accountGeneration: scope.generation,
-      hostId: this.host.id,
-      appId: this.selectedItem.appId,
-      hostAddress: this.selectedHostAddress(),
-      runtimeAvailable: false,
-      hostControlReady: false,
-      streamingTransportReady: false
-    });
-    if (!result.accepted) {
+    if (this.launching) { return; }
+    const context: MoonlightHostContext | null = this.runtimeContext();
+    const numericAppId: number = Number.parseInt(this.selectedItem.appId, 10);
+    if (context === null || !Number.isSafeInteger(numericAppId) || numericAppId <= 0) {
+      promptAction.showToast({ message: '主机信任或应用信息无效，请重新验证主机', duration: 2200 });
+      return;
+    }
+    this.launching = true;
+    let result: MoonlightHostServiceResult = await this.hostService.launch(
+      context, numericAppId, this.launchConfiguration());
+    if (result.code === 'resume_required') {
+      result = await this.hostService.resume(context, numericAppId, this.launchConfiguration());
+    }
+    this.launching = false;
+    if (!this.pageActive || !result.ok || result.nativeResult === null) {
       promptAction.showToast({
-        message: result.code === 'runtime_unavailable'
-          ? 'Moonlight Host Control 尚未开放'
-          : 'Moonlight 会话暂不可启动（' + result.code + '）',
+        message: 'Moonlight 启动失败（' + result.code + '）',
         duration: 2200
       });
       return;
@@ -265,6 +344,12 @@ struct MoonlightAppCatalogPage {
     const params: Record<string, Object> | null =
       moonlightAppRouteParams(this.host.id, this.selectedItem.appId);
     if (params !== null) {
+      params['launchRequestId'] = result.key.requestId;
+      params['launchGeneration'] = result.key.generation;
+      params['launchOwnerToken'] = result.key.ownerToken;
+      params['serverUuid'] = this.host.serverUuid;
+      params['numericAppId'] = numericAppId;
+      params['hostAddress'] = this.selectedHostAddress();
       this.showLaunchSheet = false;
       router.pushUrl({ url: 'pages/MoonlightStreamPage', params: params });
     }
@@ -285,15 +370,15 @@ struct MoonlightAppCatalogPage {
       hostName: this.host?.displayName || '',
       appName: this.selectedItem?.title || '',
       routeValid: this.host !== null && this.selectedItem !== null,
-      hostAvailable: false,
+      hostAvailable: this.paired,
       certificateChanged: false,
       identityAvailable: this.paired,
       appAvailable: this.selectedItem !== null && this.selectedItem.available && !this.selectedItem.stale,
-      runtimeAvailable: false,
+      runtimeAvailable: this.hostService.capabilities().hostControlReady,
       onCancel: (): void => { this.showLaunchSheet = false; },
       onOpenSettings: (): void => { this.showLaunchSheet = false; this.openSettings(); },
       onRetry: (): void => { this.showLaunchSheet = false; this.requestRefresh(); },
-      onStart: (): void => { this.startSelected(); }
+      onStart: (): void => { this.startSelected().catch((): void => { this.launching = false; }); }
     })
   }
 

@@ -301,6 +301,17 @@ bool MoonlightProductMediaPort::audioReady(
     return impl_->audioState == LaneState::Idle;
 }
 
+bool MoonlightProductMediaPort::firstFrameReady() const noexcept {
+    if (impl_ == nullptr) {
+        return false;
+    }
+    try {
+        return impl_->videoSink->snapshot(impl_->key).firstFrameReady;
+    } catch (...) {
+        return false;
+    }
+}
+
 bool MoonlightProductMediaPort::setupVideo(
     const MoonlightCommonCVideoSelection& selection) noexcept {
     if (impl_ == nullptr ||

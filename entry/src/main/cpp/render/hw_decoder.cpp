@@ -3681,6 +3681,57 @@ DecoderPresentationTelemetrySnapshot DecoderNapi::GetActivePresentationTelemetry
     return snapshot;
 }
 
+OwnedDecoderCreationResult DecoderNapi::CreateOwnedHardwareDecoder(
+    int width, int height, int codec, int64_t rendererHandle,
+    const DecoderSessionIdentity& owner) {
+    OwnedDecoderCreationResult result;
+    if (width <= 0 || height <= 0 || rendererHandle <= 0 || !owner.valid() ||
+        !Render::SharedSessionSinkOwnerLease().accepts(owner)) {
+        return result;
+    }
+    {
+        std::lock_guard<std::mutex> ownerLock(g_activeDecoderOwnerMutex);
+        if (!Render::SessionOwnerMatches(g_activeDecoderOwner, owner)) {
+            return result;
+        }
+    }
+
+    auto ctx = std::make_shared<DecoderContext>();
+    ctx->useSoftware = false;
+    ctx->desktopSurfaceCompatibility = false;
+    ctx->width = width;
+    ctx->height = height;
+    const int64_t handle = RegisterDecoderContext(ctx);
+    if (handle <= 0) {
+        return result;
+    }
+    auto decoder = std::shared_ptr<HardwareDecoder>(new HardwareDecoder());
+    ctx->decoder = decoder;
+    const CodecType exactCodec = static_cast<CodecType>(codec);
+    if (!decoder->SetCallbackIdentity(handle, ctx->owner,
+                                      ctx->decoderGeneration) ||
+        decoder->Init(width, height, exactCodec, rendererHandle, false) != 0 ||
+        !BindVideoPipeline(handle, rendererHandle, owner)) {
+        DestroyDecoderHandle(handle, owner);
+        return result;
+    }
+    const auto proof = GetActivePresentationTelemetry(owner);
+    if (!proof.valid || !proof.ready || !proof.hardware ||
+        proof.owner != owner || proof.decoderHandle != handle ||
+        proof.rendererHandle != rendererHandle || proof.decoderGeneration == 0U ||
+        proof.rendererGeneration == 0U) {
+        DestroyDecoderHandle(handle, owner);
+        return result;
+    }
+    result.ok = true;
+    result.decoderHandle = handle;
+    result.decoderGeneration = proof.decoderGeneration;
+    result.displayGeneration = proof.displayGeneration;
+    result.display = proof.display;
+    result.rendererGeneration = proof.rendererGeneration;
+    return result;
+}
+
 void DecoderNapi::SetActiveSessionId(const DecoderSessionIdentity& owner) {
     std::lock_guard<std::mutex> lock(g_activeDecoderOwnerMutex);
     if (Render::SessionOwnerMatches(g_activeDecoderOwner, owner)) {

@@ -18,6 +18,12 @@ import {
   applyMoonlightSessionEvent,
   createMoonlightSessionState
 } from './MoonlightSessionState';
+import rdpnapi from 'librdpnapi.so';
+import {
+  MoonlightNativeRequestKey,
+  MoonlightNativeStreamSnapshot,
+  MoonlightNativeStreamStartRequest
+} from './MoonlightHostService';
 
 export interface MoonlightSessionStartRequest {
   ownerScopeId: string;
@@ -29,12 +35,92 @@ export interface MoonlightSessionStartRequest {
   runtimeAvailable: boolean;
   hostControlReady: boolean;
   streamingTransportReady: boolean;
+  hostControlAlreadyLaunched?: boolean;
+  launchKey?: MoonlightNativeRequestKey;
+  serverUuid?: string;
+  numericAppId?: number;
+  rendererHandle?: number;
+  surfaceWidth?: number;
+  surfaceHeight?: number;
+  surfaceId?: string;
 }
 
 export interface MoonlightRuntimePort {
   start(request: MoonlightSessionStartRequest, operationGeneration: number): boolean;
   cancel(operationGeneration: number, reason: string): boolean;
   stop(nativeSessionId: number, reason: string): boolean;
+  nativeSessionId?(operationGeneration: number): number;
+  snapshot?(operationGeneration: number): MoonlightNativeStreamSnapshot | null;
+}
+
+class MoonlightNapiRuntimePort implements MoonlightRuntimePort {
+  private operationGeneration: number = 0;
+  private launchKey: MoonlightNativeRequestKey | null = null;
+  private sessionId: number = -1;
+
+  start(request: MoonlightSessionStartRequest, operationGeneration: number): boolean {
+    if (request.launchKey === undefined || request.serverUuid === undefined ||
+        request.numericAppId === undefined || request.rendererHandle === undefined ||
+        request.surfaceWidth === undefined || request.surfaceHeight === undefined) {
+      return false;
+    }
+    try {
+      const nativeRequest: MoonlightNativeStreamStartRequest = {
+        launchKey: request.launchKey, hostId: request.serverUuid,
+        serverUuid: request.serverUuid, appId: request.numericAppId,
+        rendererHandle: request.rendererHandle, surfaceWidth: request.surfaceWidth,
+        surfaceHeight: request.surfaceHeight
+      };
+      const result = rdpnapi.moonlightStartStream(nativeRequest);
+      if (!result.accepted || result.sessionId <= 0) { return false; }
+      this.operationGeneration = operationGeneration;
+      this.launchKey = request.launchKey;
+      this.sessionId = result.sessionId;
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  cancel(operationGeneration: number, _reason: string): boolean {
+    return this.stopForGeneration(operationGeneration);
+  }
+
+  stop(_nativeSessionId: number, _reason: string): boolean {
+    return this.stopForGeneration(this.operationGeneration);
+  }
+
+  nativeSessionId(operationGeneration: number): number {
+    return operationGeneration === this.operationGeneration ? this.sessionId : -1;
+  }
+
+  snapshot(operationGeneration: number): MoonlightNativeStreamSnapshot | null {
+    if (operationGeneration !== this.operationGeneration || this.launchKey === null) { return null; }
+    try {
+      const source = rdpnapi.moonlightGetStreamSnapshot(this.launchKey);
+      const snapshot: MoonlightNativeStreamSnapshot = {
+        matched: source.matched,
+        code: source.code,
+        sessionId: source.sessionId,
+        generation: source.generation,
+        ownerToken: source.ownerToken,
+        transportReady: source.transportReady,
+        firstFrameReady: source.firstFrameReady,
+        terminal: source.terminal,
+        lastSequence: source.lastSequence
+      };
+      return snapshot;
+    } catch (_) { return null; }
+  }
+
+  private stopForGeneration(operationGeneration: number): boolean {
+    if (operationGeneration !== this.operationGeneration || this.launchKey === null) { return false; }
+    try {
+      const stopped: boolean = rdpnapi.moonlightStopStream(this.launchKey);
+      if (stopped) { this.launchKey = null; this.sessionId = -1; }
+      return stopped;
+    } catch (_) { return false; }
+  }
 }
 
 export interface MoonlightCoordinatorEvent {
@@ -135,6 +221,10 @@ export class MoonlightSessionCoordinator {
   private boundAccountGeneration: number = 0;
   private stopDeadlineAtMs: number = 0;
   private stopTimer: number = -1;
+  private runtimePollTimer: number = -1;
+  private runtimeVideoReady: boolean = false;
+  private runtimeAudioReady: boolean = false;
+  private runtimeInputReady: boolean = false;
   private readonly snapshotSubscriptions: MoonlightSessionSnapshotSubscription[] = [];
 
   constructor(runtime: MoonlightRuntimePort | null = null,
@@ -145,7 +235,8 @@ export class MoonlightSessionCoordinator {
 
   static getInstance(): MoonlightSessionCoordinator {
     if (MoonlightSessionCoordinator.instance === null) {
-      MoonlightSessionCoordinator.instance = new MoonlightSessionCoordinator();
+      MoonlightSessionCoordinator.instance = new MoonlightSessionCoordinator(
+        new MoonlightNapiRuntimePort());
     }
     return MoonlightSessionCoordinator.instance;
   }
@@ -212,6 +303,26 @@ export class MoonlightSessionCoordinator {
     }
     this.reservationSessionId = reservationSessionId;
     this.state = firstTransition.state;
+    if (request.hostControlAlreadyLaunched === true) {
+      const stagedEvents: MoonlightSessionEvent[] = [
+        { type: 'beginVerification', generation: this.operationGeneration, sequence: 2,
+          nativeError: '', detailCode: '' },
+        { type: 'catalogReady', generation: this.operationGeneration, sequence: 3,
+          nativeError: '', detailCode: '' },
+        { type: 'launchRequested', generation: this.operationGeneration, sequence: 4,
+          nativeError: '', detailCode: '' }
+      ];
+      for (let index = 0; index < stagedEvents.length; index++) {
+        const staged = applyMoonlightSessionEvent(this.state, stagedEvents[index]);
+        if (!staged.applied) {
+          this.clearOwnedRegistry();
+          this.state = null;
+          this.reservationSessionId = -1;
+          return this.result(false, 'invalid_transition');
+        }
+        this.state = staged.state;
+      }
+    }
     this.notifySnapshotSubscribers();
     const started: boolean = this.runtime.start(request, this.operationGeneration);
     if (!started) {
@@ -225,6 +336,20 @@ export class MoonlightSessionCoordinator {
       this.reservationSessionId = -1;
       this.notifySnapshotSubscribers();
       return this.result(false, 'runtime_start_failed');
+    }
+    if (request.hostControlAlreadyLaunched === true) {
+      const runtimeSessionId: number = this.runtime.nativeSessionId === undefined
+        ? -1 : this.runtime.nativeSessionId(this.operationGeneration);
+      const accepted = this.handleRuntimeEvent({
+        type: 'launchAccepted', generation: this.operationGeneration,
+        sequence: this.state.lastEventSequence + 1, nativeError: '', detailCode: '',
+        nativeSessionId: runtimeSessionId, surfaceId: ''
+      });
+      if (!accepted.accepted) { return accepted; }
+      this.runtimeVideoReady = false;
+      this.runtimeAudioReady = false;
+      this.runtimeInputReady = false;
+      this.scheduleRuntimePoll(request.surfaceId === undefined ? '' : request.surfaceId);
     }
     return this.result(true, 'started');
   }
@@ -410,6 +535,7 @@ export class MoonlightSessionCoordinator {
     this.nativeSessionId = -1;
     this.reservationSessionId = -1;
     this.stopDeadlineAtMs = 0;
+    this.clearRuntimePoll();
     this.snapshotSubscriptions.splice(0, this.snapshotSubscriptions.length);
   }
 
@@ -421,9 +547,84 @@ export class MoonlightSessionCoordinator {
   }
 
   private validRequest(request: MoonlightSessionStartRequest): boolean {
-    return boundedText(request.ownerScopeId, 128) && validGeneration(request.accountGeneration) &&
+    const baseValid: boolean = boundedText(request.ownerScopeId, 128) && validGeneration(request.accountGeneration) &&
       boundedText(request.hostId, 128) && boundedText(request.appId, 128) &&
       boundedText(request.hostAddress, 255);
+    if (!baseValid || request.hostControlAlreadyLaunched !== true) { return baseValid; }
+    return request.launchKey !== undefined && validSessionId(request.launchKey.requestId) &&
+      validSessionId(request.launchKey.generation) && validSessionId(request.launchKey.ownerToken) &&
+      request.serverUuid !== undefined && boundedText(request.serverUuid, 256) &&
+      request.numericAppId !== undefined && validSessionId(request.numericAppId) &&
+      request.rendererHandle !== undefined && validSessionId(request.rendererHandle) &&
+      request.surfaceWidth !== undefined && validSessionId(request.surfaceWidth) &&
+      request.surfaceHeight !== undefined && validSessionId(request.surfaceHeight) &&
+      request.surfaceId !== undefined && boundedText(request.surfaceId, 256);
+  }
+
+  private scheduleRuntimePoll(surfaceId: string): void {
+    this.clearRuntimePoll();
+    const generation: number = this.operationGeneration;
+    this.runtimePollTimer = setTimeout((): void => {
+      this.runtimePollTimer = -1;
+      if (this.state === null || this.state.generation !== generation ||
+          this.runtime === null || this.runtime.snapshot === undefined) { return; }
+      const source: MoonlightNativeStreamSnapshot | null = this.runtime.snapshot(generation);
+      if (source === null || !source.matched) {
+        this.scheduleRuntimePoll(surfaceId); return;
+      }
+      if (source.terminal) {
+        this.handleRuntimeEvent({ type: this.state.phase === 'stopping' ? 'stopped' : 'failed',
+          generation: generation, sequence: this.state.lastEventSequence + 1,
+          nativeError: this.state.phase === 'stopping' ? '' : 'STREAM_TIMEOUT',
+          detailCode: source.code, nativeSessionId: this.nativeSessionId, surfaceId: '' });
+        return;
+      }
+      if (source.transportReady && !this.runtimeVideoReady) {
+        this.runtimeVideoReady = true;
+        if (!this.emitRuntimeEvent('videoReady', generation, '', '', '')) { return; }
+      }
+      if (source.transportReady && !this.runtimeAudioReady) {
+        this.runtimeAudioReady = true;
+        if (!this.emitRuntimeEvent('audioReady', generation, '', '', '')) { return; }
+      }
+      if (source.transportReady && !this.runtimeInputReady) {
+        this.runtimeInputReady = true;
+        if (!this.emitRuntimeEvent('inputReady', generation, '', '', '')) { return; }
+      }
+      const current: MoonlightSessionStateSnapshot | null = this.state;
+      if (source.firstFrameReady && current !== null && !current.firstFrameSeen) {
+        if (!this.emitRuntimeEvent('firstFrameRendered', generation, '', '', surfaceId)) { return; }
+        if (this.state !== null && this.state.firstFrameSeen) {
+          if (!this.emitRuntimeEvent('streamStable', generation, '', '', surfaceId)) { return; }
+        }
+      }
+      if (this.state !== null && this.state.generation === generation) {
+        this.scheduleRuntimePoll(surfaceId);
+      }
+    }, 100);
+  }
+
+  private emitRuntimeEvent(type: MoonlightSessionEventType, generation: number,
+    nativeError: string, detailCode: string, surfaceId: string): boolean {
+    const current: MoonlightSessionStateSnapshot | null = this.state;
+    if (current === null || current.generation !== generation) { return false; }
+    const result: MoonlightCoordinatorResult = this.handleRuntimeEvent({
+      type: type,
+      generation: generation,
+      sequence: current.lastEventSequence + 1,
+      nativeError: nativeError,
+      detailCode: detailCode,
+      nativeSessionId: this.nativeSessionId,
+      surfaceId: surfaceId
+    });
+    return result.accepted && this.state !== null && this.state.generation === generation;
+  }
+
+  private clearRuntimePoll(): void {
+    if (this.runtimePollTimer >= 0) {
+      clearTimeout(this.runtimePollTimer);
+      this.runtimePollTimer = -1;
+    }
   }
 
   private clearOwnedRegistry(): void {
@@ -461,6 +662,7 @@ export class MoonlightSessionCoordinator {
   }
 
   private invalidate(reason: string): void {
+    this.clearRuntimePoll();
     if (this.nativeSessionId > 0) {
       if (this.runtime !== null) {
         this.runtime.stop(this.nativeSessionId, reason);
@@ -491,6 +693,7 @@ export class MoonlightSessionCoordinator {
   }
 
   private forceLocalTerminal(nativeError: string): void {
+    this.clearRuntimePoll();
     if (this.state !== null && this.state.phase === 'stopping') {
       const terminalEvent: MoonlightSessionEvent = {
         type: 'failed', generation: this.state.generation,

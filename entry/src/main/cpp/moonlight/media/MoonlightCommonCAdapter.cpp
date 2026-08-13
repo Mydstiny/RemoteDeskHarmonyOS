@@ -837,6 +837,8 @@ private:
     bool audioStarted_ = false;
     bool audioStopped_ = false;
     bool audioCleaned_ = false;
+    bool mediaBound_ = false;
+    bool mediaReleased_ = false;
     std::uint64_t nextSequence_ = 1U;
     std::size_t droppedEvents_ = 0U;
     std::size_t staleBaseline_ = 0U;
@@ -1402,6 +1404,26 @@ int Invocation::runStart(MoonlightSessionOwner::StartContext& context) {
             std::lock_guard<std::mutex> lock(mutex_);
             pendingCode_ = MoonlightCommonCCode::Busy;
         }
+        finalize();
+        return -1;
+    }
+    bool mediaBound = false;
+    bool mediaReady = false;
+    try {
+        mediaBound = media_ != nullptr && media_->bindSession(startKey);
+        mediaReady = mediaBound && media_->videoReady() &&
+            media_->audioReady(request_.streamConfig.offer->audioLayout);
+    } catch (...) {
+        mediaReady = false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        mediaBound_ = mediaBound;
+        if (!mediaReady) {
+            pendingCode_ = MoonlightCommonCCode::RuntimeProofRequired;
+        }
+    }
+    if (!mediaReady) {
         finalize();
         return -1;
     }
@@ -2158,6 +2180,24 @@ void Invocation::finalize(bool driverException) noexcept {
         callbackCv_.wait(lock, [&]() { return inFlightCallbacks_ == 0U; });
     }
     retireRouter();
+    bool releaseMedia = false;
+    MoonlightSessionKey releaseKey;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        releaseMedia = mediaBound_ && !mediaReleased_;
+        if (releaseMedia) {
+            mediaReleased_ = true;
+            releaseKey = key_;
+        }
+    }
+    if (releaseMedia) {
+        try {
+            media_->releaseSession(releaseKey);
+        } catch (...) {
+            // Teardown remains fail-closed; no exception may cross the native
+            // owner completion boundary.
+        }
+    }
     {
         std::lock_guard<std::mutex> lock(mutex_);
         terminal_ = true;
@@ -2202,7 +2242,8 @@ MoonlightCommonCSnapshot Invocation::snapshot() const noexcept {
     result.lastCompletedStage = lastCompletedStage_;
     result.protocolViolation = protocolViolation_;
     result.transportReady = transportReady_;
-    result.firstFrameReady = false;
+    result.firstFrameReady = mediaBound_ && !mediaReleased_ &&
+        media_ != nullptr && media_->firstFrameReady();
     result.terminal = terminal_;
     result.secretsCleared = secretsCleared_;
     result.lastSequence = nextSequence_ == 0U ? 0U : nextSequence_ - 1U;
@@ -2331,12 +2372,6 @@ MoonlightCommonCStartResult AdapterRuntime::start(
             return {MoonlightCommonCStartStatus::InvalidRequest,
                     MoonlightCommonCCode::InvalidRequest, {}};
         }
-        if (!media->videoReady() ||
-            !media->audioReady(request.streamConfig.offer->audioLayout)) {
-            return {MoonlightCommonCStartStatus::RuntimeProofRequired,
-                    MoonlightCommonCCode::RuntimeProofRequired, {}};
-        }
-
         const auto sessionId = request.sessionId;
         const auto generation = request.generation;
         auto invocation = std::make_shared<Invocation>(
