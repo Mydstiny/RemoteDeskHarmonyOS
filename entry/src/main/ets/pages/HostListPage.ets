@@ -310,11 +310,11 @@ import {
   SETTINGS_SHEET_TERMINAL_FG_COLOR,
   SETTINGS_SHEET_TERMINAL_FONT_SIZE,
   SETTINGS_SHEET_TERMINAL_LINE_SPACING,
-  SETTINGS_SHEET_MOONLIGHT_QUICK,
   SETTINGS_SHEET_MOONLIGHT_VIDEO,
   SETTINGS_SHEET_MOONLIGHT_AUDIO,
   SETTINGS_SHEET_MOONLIGHT_INPUT,
   SETTINGS_SHEET_MOONLIGHT_NETWORK_SECURITY,
+  SETTINGS_SHEET_MOONLIGHT_DIAGNOSTICS,
   SETTINGS_SHEET_MOONLIGHT_TRUST,
   SETTINGS_SHEET_VNC_CLIPBOARD,
   SETTINGS_SHEET_VNC_CONNECTION,
@@ -9903,14 +9903,13 @@ struct HostListPage {
   }
 
   private isMoonlightSettingsLeafSheet(): boolean {
-    return this.settingsLeafSheetMode >= SETTINGS_SHEET_MOONLIGHT_QUICK &&
-      this.settingsLeafSheetMode <= SETTINGS_SHEET_MOONLIGHT_TRUST;
+    return moonlightSettingsRouteSpec(this.settingsLeafSheetMode) !== null;
   }
 
   private moonlightSettingsSectionForLeaf(): MoonlightSettingsSection {
     const spec: MoonlightSettingsRouteSpec | null =
       moonlightSettingsRouteSpec(this.settingsLeafSheetMode);
-    if (spec === null) { return 'quick'; }
+    if (spec === null) { return 'video'; }
     return spec.section as MoonlightSettingsSection;
   }
 
@@ -10863,16 +10862,12 @@ struct HostListPage {
               Text('Moonlight').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
                 .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
               Column() {
-              this.protocolActionRow($r('sys.symbol.bolt_fill'), '快速设置',
-                '省流、平衡与画质优先预设',
-                (): void => { this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_QUICK); })
-              this.cardDivider()
               this.protocolActionRow($r('sys.symbol.display'), '画面',
-                'H.264、分辨率、帧率与码率',
+                '预设、H.264、分辨率、帧率、码率与无画面策略',
                 (): void => { this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_VIDEO); })
               this.cardDivider()
               this.protocolActionRow($r('sys.symbol.circle'), '音频',
-                '接收音频、系统音量与主机同时播放',
+                '接收音频、后台音频、系统音量与主机播放',
                 (): void => { this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_AUDIO); })
               this.cardDivider()
               this.protocolActionRow($r('sys.symbol.mouse'), '控制与手柄',
@@ -10880,10 +10875,14 @@ struct HostListPage {
                 (): void => { this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_INPUT); })
               this.cardDivider()
               this.protocolActionRow($r('sys.symbol.link'), '网络与安全',
-                '局域网发现、地址偏好、加密与旧主机兼容',
+                '局域网发现、计费网络、重连、加密与兼容',
                 (): void => {
                   this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_NETWORK_SECURITY);
                 })
+              this.cardDivider()
+              this.protocolActionRow($r('sys.symbol.performance'), '诊断',
+                '性能浮窗、脱敏日志与会话指标',
+                (): void => { this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_DIAGNOSTICS); })
               this.cardDivider()
               this.protocolActionRow($r('sys.symbol.lock_shield'), '配对与信任',
                 '证书变化、本地安全身份与重新配对边界',

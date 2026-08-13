@@ -714,7 +714,10 @@ export function moonlightValidateRecord(record: MoonlightRecord): MoonlightRecor
   if (payloadBytes > MOONLIGHT_PAYLOAD_MAX_BYTES) {
     return { valid: false, reason: 'payload_too_large' };
   }
-  if (utf8(record.ciphertext).length > MOONLIGHT_CIPHERTEXT_MAX_BYTES * 2) {
+  // Ciphertext is canonical Base64URL ASCII. Public records deliberately keep
+  // it empty, and some device TextEncoder implementations return undefined for
+  // an empty input, so its string length is the exact and safer byte bound.
+  if (record.ciphertext.length > MOONLIGHT_CIPHERTEXT_MAX_BYTES * 2) {
     return { valid: false, reason: 'ciphertext_too_large' };
   }
   if (record.deletedAt > 0) {

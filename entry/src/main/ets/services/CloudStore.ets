@@ -11042,6 +11042,7 @@ export class CloudStore implements CryptoCloudStore {
         (operation !== 'upsert' && operation !== 'tombstone')) {
       return false;
     }
+    let committed: boolean = false;
     try {
       this.store.beginTransaction();
       const inserted: boolean = rdbInsertSucceeded(this.store.insertSync(
@@ -11052,17 +11053,26 @@ export class CloudStore implements CryptoCloudStore {
         MOONLIGHT_LOCAL_TABLE, record.id, operation)) {
         throw new Error('Moonlight local row or journal write failed');
       }
+      this.store.commit();
+      committed = true;
+      if (!this.isLeaseCurrent(lease)) { return false; }
+      // On current HarmonyOS RDB builds querySync may use the pre-transaction
+      // snapshot until commit returns. Verify durability immediately after the
+      // record and its mutation journal have committed atomically.
       const readback: MoonlightRecord | null =
         this.findMoonlightLocalRecordRaw(lease, record.id);
       if (readback === null ||
           !this.moonlightRecordsEqual(readback, record) ||
           !this.isLeaseCurrent(lease)) {
-        throw new Error('Moonlight local row readback mismatch');
+        hilog.warn(0x0001, 'CloudSync',
+          '[CloudStore] Moonlight committed row failed durable readback');
+        return false;
       }
-      this.store.commit();
-      return this.isLeaseCurrent(lease);
+      return true;
     } catch (error) {
-      try { this.store.rollBack(); } catch (_ignored) {}
+      if (!committed) {
+        try { this.store.rollBack(); } catch (_ignored) {}
+      }
       hilog.warn(0x0001, 'CloudSync',
         '[CloudStore] Moonlight local commit failed: ' + safeError(error));
       return false;
@@ -11440,10 +11450,11 @@ export class CloudStore implements CryptoCloudStore {
     const predicates = new relationalStore.RdbPredicates(
       MOONLIGHT_LOCAL_TABLE);
     predicates.equalTo('id', id);
-    predicates.equalTo('userid', lease.ownerScopeId);
     const rows: relationalStore.ResultSet = this.store.querySync(predicates);
     try {
-      return rows.goToFirstRow() ? this.moonlightRecordFromResult(rows) : null;
+      if (!rows.goToFirstRow()) { return null; }
+      const record: MoonlightRecord = this.moonlightRecordFromResult(rows);
+      return record.userId === lease.ownerScopeId ? record : null;
     } finally {
       rows.close();
     }
@@ -11456,10 +11467,12 @@ export class CloudStore implements CryptoCloudStore {
     const predicates = new relationalStore.RdbPredicates(
       MOONLIGHT_LOCAL_TABLE);
     predicates.equalTo('id', id);
-    predicates.equalTo('userid', lease.ownerScopeId);
     const rows: relationalStore.ResultSet = this.store.querySync(predicates);
     try {
       if (!rows.goToFirstRow()) { return -1; }
+      const userIdIndex: number = rows.getColumnIndex('userid');
+      if (userIdIndex < 0 || rows.isColumnNull(userIdIndex) ||
+          rows.getString(userIdIndex) !== lease.ownerScopeId) { return -1; }
       const index: number = rows.getColumnIndex('localonly');
       return index < 0 || rows.isColumnNull(index) ? -1 : rows.getLong(index);
     } finally {
@@ -11503,7 +11516,15 @@ export class CloudStore implements CryptoCloudStore {
     const rightRow: Record<string, string> = moonlightRecordToCloudRow(right);
     for (let i = 0; i < MOONLIGHT_RECORD_COLUMNS.length; i++) {
       const key: string = MOONLIGHT_RECORD_COLUMNS[i];
-      if (leftRow[key] !== rightRow[key]) { return false; }
+      if (leftRow[key] !== rightRow[key]) {
+        hilog.warn(0x0001, 'CloudSync',
+          '[CloudStore] Moonlight local readback differs key=' + key +
+          ' readLen=' + leftRow[key].length.toString() +
+          ' expectedLen=' + rightRow[key].length.toString() +
+          ' readHash=' + hashForLog(leftRow[key]) +
+          ' expectedHash=' + hashForLog(rightRow[key]));
+        return false;
+      }
     }
     return true;
   }

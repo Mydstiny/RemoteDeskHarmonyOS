@@ -118,6 +118,7 @@ export default function moonlightRecordPolicyTest(): void {
 
     it('validates_a_canonical_live_host_and_rejects_tampering', 0, (): void => {
       const record = validHostRecord();
+      expect(record.ciphertext).assertEqual('');
       expect(moonlightValidateRecord(record).valid).assertTrue();
       record.payload = record.payload.replace('Living Room PC', 'Other PC');
       expect(moonlightValidateRecord(record).reason).assertEqual('hash_mismatch');

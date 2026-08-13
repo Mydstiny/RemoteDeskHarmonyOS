@@ -18,8 +18,7 @@ export type MoonlightConnectionQuality = 'good' | 'unstable' | 'poor' | 'reconne
 export type MoonlightToolbarAction =
   'control' | 'keyboard' | 'controller' | 'audio' | 'display' | 'more' | 'disconnect';
 export type MoonlightSettingsSection =
-  'quick' | 'video' | 'audio' | 'input' | 'networkSecurity' |
-  'background' | 'diagnostics' | 'cloud' | 'trust';
+  'video' | 'audio' | 'input' | 'networkSecurity' | 'diagnostics' | 'trust';
 
 export interface MoonlightRouteIdentity {
   hostId: string;
@@ -517,19 +516,16 @@ export function moonlightQualityLabel(quality: MoonlightConnectionQuality): stri
 
 export function moonlightSettingsSections(): MoonlightSettingsSection[] {
   return [
-    'quick', 'video', 'audio', 'input', 'networkSecurity', 'trust'
+    'video', 'audio', 'input', 'networkSecurity', 'diagnostics', 'trust'
   ];
 }
 
 export function moonlightSettingsSectionLabel(section: MoonlightSettingsSection): string {
-  if (section === 'quick') { return '快速设置'; }
   if (section === 'video') { return '画面'; }
   if (section === 'audio') { return '音频'; }
   if (section === 'input') { return '控制与手柄'; }
   if (section === 'networkSecurity') { return '网络与安全'; }
-  if (section === 'background') { return '后台串流'; }
   if (section === 'diagnostics') { return '诊断'; }
-  if (section === 'cloud') { return '云同步范围'; }
   return '配对与信任';
 }
 

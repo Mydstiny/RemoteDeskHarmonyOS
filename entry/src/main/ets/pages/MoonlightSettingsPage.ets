@@ -31,10 +31,10 @@ export struct MoonlightSettingsSurface {
   @StorageProp('topRectHeight') topRectHeight: number = 0;
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
   @Prop embedded: boolean = false;
-  @Prop requestedSection: MoonlightSettingsSection = 'quick';
+  @Prop requestedSection: MoonlightSettingsSection = 'video';
   @Prop requestedHostId: string = '';
   @State hostId: string = '';
-  @State section: MoonlightSettingsSection = 'quick';
+  @State section: MoonlightSettingsSection = 'video';
   @State settings: MoonlightSettings = defaultMoonlightSettings();
   @State dirty: boolean = false;
   @State saveCode: string = '';
@@ -57,7 +57,7 @@ export struct MoonlightSettingsSurface {
     if (this.embedded) {
       this.hostId = this.requestedHostId.trim();
       this.section = moonlightSettingsSections().indexOf(this.requestedSection) >= 0 ?
-        this.requestedSection : 'quick';
+        this.requestedSection : 'video';
     } else {
       const params: Record<string, Object> = router.getParams() as Record<string, Object>;
       const route: MoonlightRouteIdentity = moonlightRouteIdentity(params);
@@ -114,8 +114,14 @@ export struct MoonlightSettingsSurface {
       promptAction.showToast({ message: '账号状态已变化，请重新确认设置后再保存', duration: 2400 });
       return;
     }
-    const saved: MoonlightLocalSettingsResult =
-      this.service.save(this.settings, Date.now(), editingLease);
+    let saved: MoonlightLocalSettingsResult;
+    try {
+      saved = this.service.save(this.settings, Date.now(), editingLease);
+    } catch (_error) {
+      this.saveCode = 'local_save_exception';
+      promptAction.showToast({ message: 'Moonlight 本地设置保存失败，请稍后重试', duration: 2200 });
+      return;
+    }
     if (saved.code === 'stale_account') {
       this.loadCurrentSettings();
       promptAction.showToast({ message: '账号已切换，旧账号的设置草稿已丢弃', duration: 2400 });
@@ -194,9 +200,6 @@ export struct MoonlightSettingsSurface {
           .fontWeight(this.section === section ? FontWeight.Bold : FontWeight.Medium)
           .fontColor(this.section === section ? this.accentColor : this.pal().text2)
           .layoutWeight(1).textAlign(TextAlign.Start)
-        if (section === 'cloud') {
-          Text('停用').fontSize(9).fontColor(this.pal().text3)
-        }
       }.width('100%')
     }.width(this.embedded && this.breakpoint !== 'sm' ? '100%' :
       (this.breakpoint === 'xl' ? '100%' : 118)).height(42).borderRadius(12)
@@ -241,21 +244,23 @@ export struct MoonlightSettingsSurface {
 
   @Builder private sliderRow(title: string, detail: string, value: number,
     minimum: number, maximum: number, step: number, suffix: string,
-    onCommit: (value: number) => void) {
+    onCommit: (value: number) => void, enabled: boolean = true) {
     Column() {
       Row() {
         Column() {
           Text(title).fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
           Text(detail).fontSize(10).fontColor(this.pal().text3).margin({ top: 3 })
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-        Text(Math.round(value).toString() + suffix).fontSize(12).fontColor(this.pal().text2)
+        Text((Number.isInteger(value) ? value.toString() : value.toFixed(1)) + suffix)
+          .fontSize(12).fontColor(this.pal().text2)
       }.width('100%')
       Slider({ value: value, min: minimum, max: maximum, step: step })
         .width('100%').selectedColor(this.accentColor).trackColor(this.pal().surface)
+        .enabled(enabled)
         .onChange((next: number, mode: SliderChangeMode): void => {
-          if (mode === SliderChangeMode.End) { onCommit(next); }
+          if (enabled && mode === SliderChangeMode.End) { onCommit(next); }
         }).margin({ top: 7 })
-    }.width('100%').padding({ top: 7, bottom: 7 })
+    }.width('100%').padding({ top: 7, bottom: 7 }).opacity(enabled ? 1 : 0.55)
   }
 
   @Builder private statusRow(title: string, detail: string, value: string) {
@@ -305,10 +310,10 @@ export struct MoonlightSettingsSurface {
     }.width('100%')
   }
 
-  @Builder private quickContent() {
-    this.sectionHeader('快速设置', '先选常用码率预设，再到画面页精调。实际设置会按设备能力安全降级。')
+  @Builder private videoContent() {
+    this.sectionHeader('画面', '预设、编码、分辨率、帧率与码率都在这里管理；重连要求会明确标出。')
     Column() {
-      this.cardTitle('体验预设', '预设只改本地草稿，点击保存后原子写入 Moonlight 本地记录')
+      this.cardTitle('画面预设', '预设只改本地草稿，保存后用于下一次 Moonlight 连接')
       Row({ space: 8 }) {
         Button('省流').layoutWeight(1).height(42).borderRadius(12).fontSize(12)
           .backgroundColor(this.settings.video.bitrateKbps <= 20000 ? this.accentColor : this.pal().surface)
@@ -334,15 +339,6 @@ export struct MoonlightSettingsSurface {
     }.width('100%').padding(16).backgroundColor(this.pal().card).borderRadius(20)
       .border({ width: 0.5, color: this.pal().cardBorder }).margin({ bottom: 12 })
     Column() {
-      this.cardTitle('当前默认')
-      this.statusRow('当前媒体能力', '发布版使用已验证的保守协商组合', 'H.264 · 立体声')
-    }.width('100%').padding(16).backgroundColor(this.pal().card).borderRadius(20)
-      .border({ width: 0.5, color: this.pal().cardBorder }).margin({ bottom: 12 })
-  }
-
-  @Builder private videoContent() {
-    this.sectionHeader('画面', '编码、分辨率、帧率与码率。需要重新协商的变更不会伪装为会话内即时生效。')
-    Column() {
       this.cardTitle('编码与显示')
       this.statusRow('视频编码', '当前 HarmonyOS 解码链路只协商已完成验收的编码', 'H.264')
       Text('分辨率').fontSize(11).fontColor(this.pal().text3).margin({ top: 14, bottom: 7 })
@@ -365,6 +361,16 @@ export struct MoonlightSettingsSurface {
         (_value: boolean): void => {}, false)
     }.width('100%').padding(16).backgroundColor(this.pal().card).borderRadius(20)
       .border({ width: 0.5, color: this.pal().cardBorder }).margin({ bottom: 12 })
+    Column() {
+      this.cardTitle('画面暂时不可用', 'Surface 重建期间保持会话边界，不改变公共显示与画中画设置')
+      this.choice2('丢帧保连接', '暂停视频', this.settings.background.noSurfaceVideo,
+        'drop', 'pause', (value: string): void => {
+          this.update((next: MoonlightSettings): void => {
+            next.background.noSurfaceVideo = value as 'drop';
+          });
+        })
+    }.width('100%').padding(16).backgroundColor(this.pal().card).borderRadius(20)
+      .border({ width: 0.5, color: this.pal().cardBorder }).margin({ bottom: 12 })
   }
 
   @Builder private audioContent() {
@@ -376,14 +382,20 @@ export struct MoonlightSettingsSurface {
       this.statusRow('音量', '与其他远程协议一致，统一使用系统媒体音量', '跟随系统')
       Divider().color(this.pal().divider)
       this.statusRow('声道', '当前 Opus 输出链路已完成双声道验收', '立体声')
+      Divider().color(this.pal().divider)
       this.toggleRow('主机同时播放', '由 Sunshine 能力与主机设置共同决定', this.settings.audio.playOnHost,
         (value: boolean): void => { this.update((next: MoonlightSettings): void => { next.audio.playOnHost = value; }); })
+      Divider().color(this.pal().divider)
+      this.toggleRow('后台继续音频', '仅控制 Moonlight 会话；仍服从系统音频焦点与后台任务限制',
+        this.settings.background.allowAudioInBackground, (value: boolean): void => {
+          this.update((next: MoonlightSettings): void => { next.background.allowAudioInBackground = value; });
+        })
     }.width('100%').padding(16).backgroundColor(this.pal().card).borderRadius(20)
       .border({ width: 0.5, color: this.pal().cardBorder }).margin({ bottom: 12 })
   }
 
   @Builder private inputContent() {
-    this.sectionHeader('控制与手柄', '触摸、鼠标、键盘、虚拟控制器和实体手柄共享唯一 native input owner。')
+    this.sectionHeader('控制与手柄', '触摸、鼠标、键盘、虚拟控制器与实体手柄统一进入会话控制通道。')
     Column() {
       this.cardTitle('控制模式')
       this.choice3('直接触控', '触控板', '相对鼠标', this.settings.input.touchMode,
@@ -398,13 +410,13 @@ export struct MoonlightSettingsSurface {
     }.width('100%').padding(16).backgroundColor(this.pal().card).borderRadius(20)
       .border({ width: 0.5, color: this.pal().cardBorder }).margin({ bottom: 12 })
     Column() {
-      this.cardTitle('控制器', '实体与虚拟事件都只提交语义状态，由 native 聚合并发送 full-state')
-      this.statusRow('控制器槽位', '实体与虚拟手柄统一进入 native full-state 聚合器', '槽位 1')
+      this.cardTitle('控制器', '实体和虚拟控制器由同一状态聚合器处理，避免重复或冲突输入')
+      this.statusRow('控制器槽位', '实体与虚拟手柄统一进入会话控制器槽位', '槽位 1')
       this.toggleRow('手柄震动', '当前未接入主机到手柄的反馈输出，保持不可用',
         this.settings.input.enableRumble, (_value: boolean): void => {}, false)
       Row() {
         SymbolGlyph($r('sys.symbol.lock_shield_fill')).fontSize(17).fontColor([this.pal().editColor])
-        Text('ArkTS 不编码或直发手柄协议；source 切换、编辑态、后台与退出先发送 neutral。')
+        Text('切换输入源、编辑配置、进入后台或退出时，都会先释放按键并将手柄复位。')
           .fontSize(10).fontColor(this.pal().text3).layoutWeight(1).lineHeight(15).margin({ left: 8 })
       }.width('100%').padding(10).backgroundColor(this.pal().surface).borderRadius(12).margin({ top: 8 })
     }.width('100%').padding(16).backgroundColor(this.pal().card).borderRadius(20)
@@ -412,7 +424,7 @@ export struct MoonlightSettingsSurface {
   }
 
   @Builder private networkContent() {
-    this.sectionHeader('网络与安全', '局域网发现、地址族、串流加密与证书变化策略。')
+    this.sectionHeader('网络与安全', '局域网发现、计费网络、断线恢复、地址族与串流加密。')
     Column() {
       this.cardTitle('网络')
       Text('发现方式').fontSize(11).fontColor(this.pal().text3).margin({ bottom: 7 })
@@ -425,6 +437,25 @@ export struct MoonlightSettingsSurface {
         'auto', 'ipv4', 'ipv6', (value: string): void => {
           this.update((next: MoonlightSettings): void => { next.network.preferredAddressFamily = value as 'auto'; });
         })
+      Text('计费网络').fontSize(11).fontColor(this.pal().text3).margin({ top: 14, bottom: 7 })
+      this.choice3('每次询问', '始终允许', '禁止串流', this.settings.network.meteredNetwork,
+        'ask', 'allow', 'deny', (value: string): void => {
+          this.update((next: MoonlightSettings): void => { next.network.meteredNetwork = value as 'ask'; });
+        })
+    }.width('100%').padding(16).backgroundColor(this.pal().card).borderRadius(20)
+      .border({ width: 0.5, color: this.pal().cardBorder }).margin({ bottom: 12 })
+    Column() {
+      this.cardTitle('断线恢复', '只恢复当前 Moonlight 会话，不创建第二套网络连接管理')
+      this.toggleRow('自动重连', '网络短暂中断时，在设定窗口内尝试恢复同一会话',
+        this.settings.network.autoReconnect, (value: boolean): void => {
+          this.update((next: MoonlightSettings): void => { next.network.autoReconnect = value; });
+        })
+      this.sliderRow('重连窗口', '超过时停止当前会话并回到应用目录',
+        this.settings.network.reconnectBudgetMs / 1000, 5, 120, 0.5, ' 秒', (value: number): void => {
+          this.update((next: MoonlightSettings): void => {
+            next.network.reconnectBudgetMs = Math.round(value * 1000);
+          });
+        }, this.settings.network.autoReconnect)
     }.width('100%').padding(16).backgroundColor(this.pal().card).borderRadius(20)
       .border({ width: 0.5, color: this.pal().cardBorder }).margin({ bottom: 12 })
     Column() {
@@ -442,24 +473,8 @@ export struct MoonlightSettingsSurface {
       .border({ width: 0.5, color: this.pal().cardBorder }).margin({ bottom: 12 })
   }
 
-  @Builder private backgroundContent() {
-    this.sectionHeader('后台串流', '这里仅保留 Moonlight 协议独有的后台音频与无 Surface 视频策略。')
-    Column() {
-      this.toggleRow('后台继续音频', '仍服从系统音频焦点与后台任务限制',
-        this.settings.background.allowAudioInBackground, (value: boolean): void => {
-          this.update((next: MoonlightSettings): void => { next.background.allowAudioInBackground = value; });
-        })
-      Text('无 Surface 视频策略').fontSize(11).fontColor(this.pal().text3).margin({ top: 12, bottom: 7 })
-      this.choice3('丢帧保连接', '暂停视频', '—', this.settings.background.noSurfaceVideo,
-        'drop', 'pause', 'none', (value: string): void => {
-          this.update((next: MoonlightSettings): void => { next.background.noSurfaceVideo = value as 'drop'; });
-        }, false)
-    }.width('100%').padding(16).backgroundColor(this.pal().card).borderRadius(20)
-      .border({ width: 0.5, color: this.pal().cardBorder }).margin({ bottom: 12 })
-  }
-
   @Builder private diagnosticsContent() {
-    this.sectionHeader('诊断', '默认只显示可行动摘要；专业指标按需、低频采样，不让 ArkUI 每帧重排。')
+    this.sectionHeader('诊断', '只保留 Moonlight 会话指标与脱敏日志；默认关闭，避免无意义采样。')
     Column() {
       this.toggleRow('默认显示性能 HUD', '简洁 chip 可点击展开并拖动吸附',
         this.settings.diagnostics.showPerformanceHud, (value: boolean): void => {
@@ -470,32 +485,15 @@ export struct MoonlightSettingsSurface {
         'error', 'info', 'debug', (value: string): void => {
           this.update((next: MoonlightSettings): void => { next.diagnostics.logLevel = value as 'error'; });
         })
+      Divider().color(this.pal().divider).margin({ top: 12 })
       Row() {
         SymbolGlyph($r('sys.symbol.text_clipboard')).fontSize(19).fontColor([this.accentColor])
         Column() {
           Text('脱敏诊断导出').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
           Text('不包含地址、PIN、证书、身份材料或会话密钥').fontSize(10).fontColor(this.pal().text3).margin({ top: 3 })
         }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
-        Text('连接后可用').fontSize(10).fontColor(this.pal().text3)
+        Text('会话内提供').fontSize(10).fontColor(this.pal().text3)
       }.width('100%').padding({ top: 12, bottom: 6 })
-    }.width('100%').padding(16).backgroundColor(this.pal().card).borderRadius(20)
-      .border({ width: 0.5, color: this.pal().cardBorder }).margin({ bottom: 12 })
-  }
-
-  @Builder private cloudContent() {
-    this.sectionHeader('云同步范围', '按当前产品决定，Moonlight 暂时只使用本地主机存储；云表、选择器与上传全部停用。')
-    Column() {
-      this.cardTitle('当前状态', '不会注册、创建或上传 moonlightrecordv1')
-      ForEach(['设置', '主机', '应用配置', '信任', '身份'], (label: string): void => {
-        Row() {
-          Text(label).fontSize(14).fontColor(this.pal().text3).layoutWeight(1)
-          Text('仅本地').fontSize(10).fontColor(this.pal().text3)
-          Toggle({ type: ToggleType.Switch, isOn: false }).enabled(false).opacity(0.5).scale({ x: 0.82, y: 0.82 })
-            .margin({ left: 8 })
-        }.width('100%').height(48)
-      })
-      Text('现有云同步仍精确使用原 8 张表；Moonlight 不进入 CloudSyncCoordinator。')
-        .fontSize(10).fontColor(this.pal().editColor).lineHeight(16).width('100%').margin({ top: 8 })
     }.width('100%').padding(16).backgroundColor(this.pal().card).borderRadius(20)
       .border({ width: 0.5, color: this.pal().cardBorder }).margin({ bottom: 12 })
   }
@@ -521,21 +519,18 @@ export struct MoonlightSettingsSurface {
   }
 
   @Builder private activeContent() {
-    if (this.section === 'quick') { this.quickContent() }
-    else if (this.section === 'video') { this.videoContent() }
+    if (this.section === 'video') { this.videoContent() }
     else if (this.section === 'audio') { this.audioContent() }
     else if (this.section === 'input') { this.inputContent() }
     else if (this.section === 'networkSecurity') { this.networkContent() }
-    else if (this.section === 'background') { this.backgroundContent() }
     else if (this.section === 'diagnostics') { this.diagnosticsContent() }
-    else if (this.section === 'cloud') { this.cloudContent() }
     else { this.trustContent() }
   }
 
   build() {
     Column() {
       this.header()
-      if (this.saveCode !== '' && this.saveCode !== 'default') {
+      if (this.saveCode !== '' && this.saveCode !== 'default' && this.saveCode !== 'ok') {
         Text('本地设置状态：' + this.saveCode).fontSize(10).fontColor(this.pal().editColor)
           .width('100%').padding({ left: 22, right: 22, bottom: 6 })
       }
