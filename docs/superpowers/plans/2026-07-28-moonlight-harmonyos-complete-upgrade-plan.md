@@ -4901,4 +4901,69 @@ GameControllerKit→typed NAPI→common-c、网络/温控/长稳和 device Hypiu
 - host `rdp_native_tests` 从当前工作树重新配置/编译/运行，结果 `701 passed, 16 failed, 717 total`；失败仍为既有本地 TLS fixture 启动失败，Moonlight listener/controller 用例通过；API 23 arm64 listener syntax check 通过。
 - 本次提交继续只收口 Moonlight UI/隔离 foundation；`CloudStore.ets` 不暂存、不修改、不接入 Moonlight 云同步。产品不含 listener、GameControllerKit link、公共 controller NAPI 或 common-c controller port，因此不改变其他协议的性能/功能路径。真实 session-owned 手柄传输仍属于后续 S1-05A。
 
+### 15.23 S1-05A 与 N2-09 产品可行性接线交接单（2026-08-13）
+
+本节是当前实施事实的最高优先级补丁，并取代此前“FAB 仅添加/即将支持、产品无 Host Control/media/input
+caller、GameController listener 仅测试”的旧当前态描述。历史 checkpoint 不删除，但后续模型必须从本节继续。
+
+#### A. 当前完成范围
+
+- UI/用户流：RustDesk 风格 FAB→添加 Sheet、本地主机目录/详情/重命名/删除、按主机应用目录、launch Sheet、
+  connection/stream page、toolbar/control center、虚拟手柄、手机与 PC 独立 Moonlight tab 均已产品接线。首页
+  仍是唯一主机管理入口；Moonlight 设置不重复公共 display/PIP/主机管理。
+- 数据：只使用 owner-scoped local repository、host/trust/profile/settings 和 local app cache；Moonlight 云表、
+  CloudSync 注册/selection/transfer/secret recovery 继续 PARKED。用户-owned `CloudStore.ets` 增量不属于本任务。
+- Host Control：LAN discovery/verify、pair、catalog、launch 使用现有 `MoonlightHostService` typed NAPI；所有请求
+  绑定 owner token、operation generation、current account lease、installation ID、store identity/instance，离页、
+  换账号、导航或 reservation 失败会取消 owner，迟到 completion 不得改 UI/缓存/路由。
+- Media：官方 common-c transport→HarmonyOS Surface H.264 decoder、Opus→OHAudio 已进入产品。当前唯一可声明
+  offer 是 H.264/8-bit/YUV420/stereo/low-latency；bitrate live。video/audio readiness 读取真实 sink live receipt；
+  streaming truth 仍要求 first frame；stop 使用 worker terminal teardown 和可轮询 terminal receipt。
+- Input：keyboard/pointer/touch/virtual/physical controller 共用一个 native session owner 和 common-c ingress；
+  ArkTS 只发送语义事件。backpressure 只保留一个 exact pending；source handoff remove-first；终态 neutral/release
+  不在 UI 线程执行。实体 GameControllerKit 只在 Moonlight 会话激活时动态解析，失败只降级实体手柄。
+- Isolation：主页渲染保持 capability=false 且不查询 Moonlight runtime；只在用户明确点击 FAB 后执行真实 capability
+  探测，因此普通首页/其他协议不初始化 Moonlight identity/Asset。双 ABI `librdpnapi.so` 无 GameControllerKit `DT_NEEDED` 和 unresolved GameController symbol；
+  相邻协议业务文件、公共 input owner、云注册和 feature flags 未被复用为 Moonlight 实现。
+
+#### B. 当前门禁事实
+
+| 门禁 | 2026-08-13 结果 |
+|---|---|
+| exact ArkTS test compile | PASS |
+| exact signed assembleHap | PASS，SHA-256 `8301133af6083c992e2a93f7bd504ef351491bbca3c1103faf12b80cf2150a2b` |
+| arm64-v8a / x86_64 native product | PASS / PASS |
+| 双 ABI GameController ELF 隔离 | PASS，无 mandatory dependency / unresolved symbol |
+| host native | 710/726 PASS；Moonlight 全 PASS，16 个既有 local TLS fixture start failure |
+| diff/isolation | PASS；CloudStore 用户 diff 排除 |
+| 双 reviewer | PASS，ArkTS/UI 与 native/media 均 P0/P1/P2=0；最终 checkpoint `75c69ca1b` |
+| 当前包设备部署/UI | BLOCKED：5555/5557 HDC Offline，沙箱外 `tconn` 失败；不得引用旧截图代替 |
+
+#### C. 后续模型一步一验收执行顺序
+
+1. **N2-09A 设备恢复**：HDC 在线后先记录 target、系统版本、ABI；安装本节 SHA 对应 HAP；启动后只抓当前包
+   PC/手机首页、FAB、Moonlight tab、添加 Sheet、目录/详情/设置/连接页截图。任何旧截图不得进入验收。
+2. **N2-09B Sunshine 最小闭环**：同一 LAN 搜索 Sunshine；verify UUID/证书；PIN pair；保存 local host/trust；
+   online catalog；launch 一个已知应用；要求 common-c transport ready、真实 videoReady/audioReady/inputReady、
+   firstFrame；发送键鼠、触摸、虚拟控制器；stop 必须在 5 秒内收到 native terminal receipt且 registry 清空。
+3. **N2-09C 实体手柄**：连接一个物理手柄，证明 dynamic library 在 Moonlight 激活前不加载；激活后记录 arrival、
+   full-state、neutral/remove；virtual↔physical 两向 handoff 均 remove-first；拔出/后台/stop 无卡键。再在缺库或
+   listener start failure 注入下证明视频、音频、键鼠、触摸和虚拟手柄继续可用。
+4. **S1-06 settings live wiring**：把 codec/HDR/YUV444、audio layout/volume、reconnect/background/diagnostics 等
+   Moonlight 专属设置逐项映射到 launch/native request/snapshot；每个 bindSheet 要有默认值、合法范围、保存读回、
+   运行中生效或明确“下次连接生效”、不可用原因。bitrate 已 live，不重复实现。公共 display/PIP/主机管理继续去重。
+5. **S1-07 lifecycle**：逐项验证 rotation/surface recreate、foreground/background、network loss/recovery、owner/account
+   switch、host app exit、stop during startup、late callback、PIP 公共路由；每项必须证明 neutral、media release、owner
+   cleanup、无旧 generation 写回。
+6. **S1-08 / R1 acceptance**：720p/1080p、30/60fps，弱网/切网、热状态、内存、两小时长稳、ARM64 真机、PC/phone
+   UI fresh screenshots、许可证/SBOM 和回滚。只有全部 PASS 后才能把“产品可行性框架”升级为“发布可用”。
+7. **Cloud remains parked**：上述任何步骤不得新增 `moonlightrecordv1`、云表注册、云同步 selection/transfer 或 secret
+   recovery；云恢复必须由用户另行显式解除。
+
+#### D. 当前不可宣称
+
+在真实 Sunshine、当前 HAP 设备部署、首帧/音频/输入/实体手柄和长稳回执完成前，不得宣称完整 Moonlight 模组、
+发布级串流、全设置 live、物理手柄实机支持或 PC/手机 UI 最终验收。当前准确说法是：本地-only discovery、Host
+Control、catalog/launch、保守 H.264/Opus stream 和统一 input/controller 的可测试产品框架已完成编译与隔离门禁。
+
 <!-- PLAN_BODY_END -->

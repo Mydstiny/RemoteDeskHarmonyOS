@@ -1279,3 +1279,55 @@ ArkTS 直接编码或发送控制器线协议。
   尚未实现，因此实体手柄信号链路仍是 S1-05A，不得写成已支持。
 - 本次文档收尾的隔离结论：没有新增或修改 RDP/RustDesk/SSH/SFTP 业务路径、公共输入 owner、既有 native
   runtime caller、云表注册或 CloudStore；现有 reviewer receipt 继续覆盖 S1-04 代码范围并为 PASS。
+
+## 12.31 S1-05A / N2-09 本地串流可行性产品接线（2026-08-13）
+
+本节取代 12.25、12.29、12.30 中“仅添加、产品无 listener/common-c input caller、FAB
+禁用”的旧当前态描述；旧节只保留历史 checkpoint 证据。
+
+### 已落地产品链路
+
+1. `HostListPage` 的 FAB、手机目录和 PC 独立 Moonlight tab 均进入 RustDesk 风格的本地添加/主机
+   管理流程；主页绘制保持 capability=false 且不查询 native。只有用户明确点击 FAB 打开 modern picker 后才
+   探测真实 capability，因此其他协议用户不会因首页渲染初始化 Moonlight identity/Asset/transport。
+2. LAN discovery/verify、PIN pairing、本地 host/trust 保存、应用目录在线刷新与 local app cache、launch
+   和 Catalog→Stream handoff 已使用同一 owner token、operation generation、exact account lease、installation
+   ID 与 store instance fence。账号变化、离页、导航失败、reservation 失败都会取消 owner 并拒绝迟到回调。
+3. 串流使用 pinned official common-c；当前产品 offer 保守限定 H.264、8-bit YUV420、stereo Opus、低延迟，
+   bitrate 已接 launch。Surface/HarmonyOS H.264 decoder、Opus/OHAudio、video/audio live readiness、首帧和
+   terminal receipt 均进入 typed NAPI/ArkTS state，不再以 transport setup 伪装媒体就绪。
+4. keyboard、pointer、touch、virtual controller 与 HarmonyOS physical controller 共用一个 session-owned
+   `MoonlightProductInputRuntime`。终态输入释放由 common-c terminal worker 执行；backpressure 保留一个 exact
+   pending operation；virtual/physical handoff 必须 remove-first；end/cancel 发送失败时 ArkTS 尝试 native neutral，
+   neutral 也失败则冻结整个输入而不隐藏控制器。
+5. GameControllerKit 只在 Moonlight 会话激活实体手柄时 `dlopen`/`dlsym`。库/符号不可用只使实体 listener
+   启动失败，虚拟控制器及其他输入仍可用；两个产品 ABI 的 `librdpnapi.so` 均无
+   `libohgame_controller.z.so` `DT_NEEDED`，也无 unresolved `OH_Game*`/`GameController` symbol。
+6. 本地主机支持稳定 ID 重命名和删除；删除覆盖 host-owned local records 与 app cache，部分失败前向回滚；
+   删除确认捕获并复核 page、host、owner、account generation、store identity/instance。没有 Moonlight 云注册、
+   云 selection/transfer 或 secret recovery。
+
+### 2026-08-13 当前门禁
+
+- exact `default@OhosTestCompileArkTS`: PASS。
+- exact `assembleHap`: PASS；signed HAP SHA-256
+  `8301133af6083c992e2a93f7bd504ef351491bbca3c1103faf12b80cf2150a2b`。
+- DevEco `arm64-v8a` / `x86_64` `rdpnapi`: PASS；双 ABI ELF GameControllerKit 隔离：PASS。
+- host native suite：710/726 PASS，Moonlight media/input/controller 用例全部 PASS；16 个既有 local TLS
+  fixture `start()` 失败未被本增量改变。
+- HDC 沙箱外重新连接：`127.0.0.1:5555` 与 `127.0.0.1:5557` 仍为 Offline，`tconn` 均失败；因此当前
+  signed HAP 尚未部署，本节不引用旧截图，也不声明当前 UI/真机 PASS。
+- 用户-owned `entry/src/main/ets/services/CloudStore.ets` 未暂存、未纳入本 checkpoint；相邻协议业务源码未改。
+- 最终代码 checkpoint：`75c69ca1b`。复用 ArkTS/UI 与 native/media reviewer 完成终审，P0/P1/P2=0；
+  native 终审发现并推动修复 virtual connect backpressure 与 physical ONLINE/OFFLINE 的互斥等待和离线事件保留，
+  修复后再次双 ABI 编译、双 exact Hvigor、ELF 隔离和 `git diff --check`，最终 reviewer 返回 PASS。
+
+### 尚未完成与唯一继续顺序
+
+1. N2-09 使用真实 Sunshine 完成 discovery→pair→catalog→launch→H.264/Opus first frame→input/controller→stop
+   回执，分别在 PC/手机当前包抓取全新截图和日志。
+2. 接入当前设置页仍未进入 native request 的 Moonlight 专属设置：codec/HDR/YUV444、audio channel/volume、
+   reconnect/background/diagnostics；公共 display、PIP 和主机管理继续只保留一份，不在 Moonlight 重复。
+3. 验收网络切换、旋转、前后台、热状态、两小时长稳、ARM64 实机与实体手柄；完成前只能称“可测试的产品
+   可行性框架”，不能称完整 Moonlight 发布能力。
+4. Moonlight 云同步继续 PARKED，不得把后续设备收口扩大为云表工作。
