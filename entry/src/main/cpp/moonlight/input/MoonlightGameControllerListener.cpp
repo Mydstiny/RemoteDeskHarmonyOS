@@ -16,6 +16,7 @@
 #include <utility>
 
 #if defined(__OHOS__)
+#include <dlfcn.h>
 #include <GameControllerKit/game_device.h>
 #include <GameControllerKit/game_pad.h>
 #include <GameControllerKit/game_pad_event.h>
@@ -44,6 +45,129 @@ std::uint64_t stableDeviceId(const char* value) noexcept {
 }
 
 #if defined(__OHOS__)
+
+#define REMOTEDESK_GAME_CONTROLLER_SYMBOLS(X) \
+    X(OH_GameDevice_AllDeviceInfos_GetCount) \
+    X(OH_GameDevice_AllDeviceInfos_GetDeviceInfo) \
+    X(OH_GameDevice_DestroyAllDeviceInfos) \
+    X(OH_GameDevice_DestroyDeviceInfo) \
+    X(OH_GameDevice_DeviceEvent_GetChangedType) \
+    X(OH_GameDevice_DeviceEvent_GetDeviceInfo) \
+    X(OH_GameDevice_DeviceInfo_GetDeviceId) \
+    X(OH_GameDevice_DeviceInfo_GetDeviceType) \
+    X(OH_GameDevice_GetAllDeviceInfos) \
+    X(OH_GameDevice_RegisterDeviceMonitor) \
+    X(OH_GameDevice_UnregisterDeviceMonitor) \
+    X(OH_GamePad_AxisEvent_GetAxisSourceType) \
+    X(OH_GamePad_AxisEvent_GetBrakeAxisValue) \
+    X(OH_GamePad_AxisEvent_GetDeviceId) \
+    X(OH_GamePad_AxisEvent_GetGasAxisValue) \
+    X(OH_GamePad_AxisEvent_GetHatXAxisValue) \
+    X(OH_GamePad_AxisEvent_GetHatYAxisValue) \
+    X(OH_GamePad_AxisEvent_GetRZAxisValue) \
+    X(OH_GamePad_AxisEvent_GetXAxisValue) \
+    X(OH_GamePad_AxisEvent_GetYAxisValue) \
+    X(OH_GamePad_AxisEvent_GetZAxisValue) \
+    X(OH_GamePad_ButtonEvent_GetButtonAction) \
+    X(OH_GamePad_ButtonEvent_GetButtonCodeName) \
+    X(OH_GamePad_ButtonEvent_GetDeviceId) \
+    X(OH_GamePad_LeftShoulder_RegisterButtonInputMonitor) \
+    X(OH_GamePad_LeftShoulder_UnregisterButtonInputMonitor) \
+    X(OH_GamePad_RightShoulder_RegisterButtonInputMonitor) \
+    X(OH_GamePad_RightShoulder_UnregisterButtonInputMonitor) \
+    X(OH_GamePad_LeftTrigger_RegisterButtonInputMonitor) \
+    X(OH_GamePad_LeftTrigger_UnregisterButtonInputMonitor) \
+    X(OH_GamePad_RightTrigger_RegisterButtonInputMonitor) \
+    X(OH_GamePad_RightTrigger_UnregisterButtonInputMonitor) \
+    X(OH_GamePad_ButtonMenu_RegisterButtonInputMonitor) \
+    X(OH_GamePad_ButtonMenu_UnregisterButtonInputMonitor) \
+    X(OH_GamePad_ButtonHome_RegisterButtonInputMonitor) \
+    X(OH_GamePad_ButtonHome_UnregisterButtonInputMonitor) \
+    X(OH_GamePad_ButtonA_RegisterButtonInputMonitor) \
+    X(OH_GamePad_ButtonA_UnregisterButtonInputMonitor) \
+    X(OH_GamePad_ButtonB_RegisterButtonInputMonitor) \
+    X(OH_GamePad_ButtonB_UnregisterButtonInputMonitor) \
+    X(OH_GamePad_ButtonX_RegisterButtonInputMonitor) \
+    X(OH_GamePad_ButtonX_UnregisterButtonInputMonitor) \
+    X(OH_GamePad_ButtonY_RegisterButtonInputMonitor) \
+    X(OH_GamePad_ButtonY_UnregisterButtonInputMonitor) \
+    X(OH_GamePad_ButtonC_RegisterButtonInputMonitor) \
+    X(OH_GamePad_ButtonC_UnregisterButtonInputMonitor) \
+    X(OH_GamePad_Dpad_LeftButton_RegisterButtonInputMonitor) \
+    X(OH_GamePad_Dpad_LeftButton_UnregisterButtonInputMonitor) \
+    X(OH_GamePad_Dpad_RightButton_RegisterButtonInputMonitor) \
+    X(OH_GamePad_Dpad_RightButton_UnregisterButtonInputMonitor) \
+    X(OH_GamePad_Dpad_UpButton_RegisterButtonInputMonitor) \
+    X(OH_GamePad_Dpad_UpButton_UnregisterButtonInputMonitor) \
+    X(OH_GamePad_Dpad_DownButton_RegisterButtonInputMonitor) \
+    X(OH_GamePad_Dpad_DownButton_UnregisterButtonInputMonitor) \
+    X(OH_GamePad_LeftThumbstick_RegisterButtonInputMonitor) \
+    X(OH_GamePad_LeftThumbstick_UnregisterButtonInputMonitor) \
+    X(OH_GamePad_RightThumbstick_RegisterButtonInputMonitor) \
+    X(OH_GamePad_RightThumbstick_UnregisterButtonInputMonitor) \
+    X(OH_GamePad_LeftTrigger_RegisterAxisInputMonitor) \
+    X(OH_GamePad_LeftTrigger_UnregisterAxisInputMonitor) \
+    X(OH_GamePad_RightTrigger_RegisterAxisInputMonitor) \
+    X(OH_GamePad_RightTrigger_UnregisterAxisInputMonitor) \
+    X(OH_GamePad_Dpad_RegisterAxisInputMonitor) \
+    X(OH_GamePad_Dpad_UnregisterAxisInputMonitor) \
+    X(OH_GamePad_LeftThumbstick_RegisterAxisInputMonitor) \
+    X(OH_GamePad_LeftThumbstick_UnregisterAxisInputMonitor) \
+    X(OH_GamePad_RightThumbstick_RegisterAxisInputMonitor) \
+    X(OH_GamePad_RightThumbstick_UnregisterAxisInputMonitor)
+
+struct GameControllerApi final {
+    void* handle = nullptr;
+
+#define REMOTEDESK_DECLARE_GAME_CONTROLLER_SYMBOL(name) \
+    decltype(&::name) name = nullptr;
+    REMOTEDESK_GAME_CONTROLLER_SYMBOLS(
+        REMOTEDESK_DECLARE_GAME_CONTROLLER_SYMBOL)
+#undef REMOTEDESK_DECLARE_GAME_CONTROLLER_SYMBOL
+
+    template <typename Function>
+    static bool resolve(void* library, const char* name,
+                        Function& output) noexcept {
+        void* symbol = dlsym(library, name);
+        static_assert(sizeof(symbol) == sizeof(output),
+                      "function and data pointers must share the OHOS ABI size");
+        std::memcpy(&output, &symbol, sizeof(output));
+        return output != nullptr;
+    }
+
+    bool load() noexcept {
+        if (handle != nullptr) {
+            return true;
+        }
+        handle = dlopen("libohgame_controller.z.so", RTLD_NOW | RTLD_LOCAL);
+        if (handle == nullptr) {
+            return false;
+        }
+        bool complete = true;
+#define REMOTEDESK_RESOLVE_GAME_CONTROLLER_SYMBOL(name) \
+        complete = resolve(handle, #name, name) && complete;
+        REMOTEDESK_GAME_CONTROLLER_SYMBOLS(
+            REMOTEDESK_RESOLVE_GAME_CONTROLLER_SYMBOL)
+#undef REMOTEDESK_RESOLVE_GAME_CONTROLLER_SYMBOL
+        if (!complete) {
+            unload();
+        }
+        return complete;
+    }
+
+    void unload() noexcept {
+#define REMOTEDESK_CLEAR_GAME_CONTROLLER_SYMBOL(name) name = nullptr;
+        REMOTEDESK_GAME_CONTROLLER_SYMBOLS(
+            REMOTEDESK_CLEAR_GAME_CONTROLLER_SYMBOL)
+#undef REMOTEDESK_CLEAR_GAME_CONTROLLER_SYMBOL
+        if (handle != nullptr) {
+            (void)dlclose(handle);
+            handle = nullptr;
+        }
+    }
+
+    ~GameControllerApi() { unload(); }
+};
 
 std::uint64_t saturatingIncrement(std::uint64_t value) noexcept {
     return value == std::numeric_limits<std::uint64_t>::max() ? value : value + 1U;
@@ -169,16 +293,17 @@ struct DeviceInfoCopy final {
     std::string sdkId;
 };
 
-bool copyDeviceInfo(const GameDevice_DeviceInfo* info,
+bool copyDeviceInfo(GameControllerApi& api,
+                    const GameDevice_DeviceInfo* info,
                     DeviceInfoCopy& output) noexcept {
     if (info == nullptr) {
         return false;
     }
     char* sdkId = nullptr;
     GameDevice_DeviceType type = UNKNOWN;
-    if (OH_GameDevice_DeviceInfo_GetDeviceId(info, &sdkId) != GAME_CONTROLLER_SUCCESS ||
+    if (api.OH_GameDevice_DeviceInfo_GetDeviceId(info, &sdkId) != GAME_CONTROLLER_SUCCESS ||
         sdkId == nullptr ||
-        OH_GameDevice_DeviceInfo_GetDeviceType(info, &type) != GAME_CONTROLLER_SUCCESS) {
+        api.OH_GameDevice_DeviceInfo_GetDeviceType(info, &type) != GAME_CONTROLLER_SUCCESS) {
         return false;
     }
     output.sdkId = boundedText(sdkId);
@@ -195,6 +320,9 @@ struct MoonlightGameControllerListener::Impl final {
     explicit Impl(Sink& valueSink) noexcept : sink(&valueSink) {}
 
     Sink* sink = nullptr;
+#if defined(__OHOS__)
+    GameControllerApi api;
+#endif
     // Serializes SDK registration/unregistration. GameControllerKit has a
     // process-global callback table, so start/stop must not interleave.
     mutable std::mutex lifecycleMutex;
@@ -408,6 +536,8 @@ void emitConnected(MoonlightGameControllerListener::Impl& impl,
     profile.supportedButtonFlags = kMoonlightControllerApi23ButtonMask;
     profile.analogTriggers = true;
     std::uint64_t generation = 0U;
+    std::uint64_t sequence = 0U;
+    std::uint64_t timestamp = 0U;
     {
         std::lock_guard<std::mutex> lock(impl.mutex);
         const auto found = impl.generations.find(id);
@@ -418,12 +548,15 @@ void emitConnected(MoonlightGameControllerListener::Impl& impl,
         if (impl.sequences[id] != 0U) {
             return;
         }
-        impl.sequences[id] = 1U;
-        impl.timestamps[id] = monotonicNowUs();
+        sequence = 1U;
+        timestamp = monotonicNowUs();
+        impl.sequences[id] = sequence;
+        impl.timestamps[id] = timestamp;
     }
     if (impl.sink != nullptr) {
         SinkDispatchScope dispatch(impl);
-        impl.sink->onPhysicalControllerConnected(id, generation, profile);
+        impl.sink->onPhysicalControllerConnected(
+            id, generation, sequence, timestamp, profile);
     }
 }
 
@@ -490,9 +623,10 @@ void buttonCallback(const GamePad_ButtonEvent* event) {
     char* sdkId = nullptr;
     char* codeName = nullptr;
     GamePad_Button_ActionType action = UP;
-    if (OH_GamePad_ButtonEvent_GetDeviceId(event, &sdkId) != GAME_CONTROLLER_SUCCESS ||
-        OH_GamePad_ButtonEvent_GetButtonAction(event, &action) != GAME_CONTROLLER_SUCCESS ||
-        OH_GamePad_ButtonEvent_GetButtonCodeName(event, &codeName) != GAME_CONTROLLER_SUCCESS) {
+    auto& api = lease.impl->api;
+    if (api.OH_GamePad_ButtonEvent_GetDeviceId(event, &sdkId) != GAME_CONTROLLER_SUCCESS ||
+        api.OH_GamePad_ButtonEvent_GetButtonAction(event, &action) != GAME_CONTROLLER_SUCCESS ||
+        api.OH_GamePad_ButtonEvent_GetButtonCodeName(event, &codeName) != GAME_CONTROLLER_SUCCESS) {
         return;
     }
     const auto id = findOnlineDevice(*lease.impl, sdkId);
@@ -544,16 +678,17 @@ void axisCallback(const GamePad_AxisEvent* event) {
     double hatY = 0.0;
     double brake = 0.0;
     double gas = 0.0;
-    if (OH_GamePad_AxisEvent_GetDeviceId(event, &sdkId) != GAME_CONTROLLER_SUCCESS ||
-        OH_GamePad_AxisEvent_GetAxisSourceType(event, &source) != GAME_CONTROLLER_SUCCESS ||
-        OH_GamePad_AxisEvent_GetXAxisValue(event, &x) != GAME_CONTROLLER_SUCCESS ||
-        OH_GamePad_AxisEvent_GetYAxisValue(event, &y) != GAME_CONTROLLER_SUCCESS ||
-        OH_GamePad_AxisEvent_GetZAxisValue(event, &z) != GAME_CONTROLLER_SUCCESS ||
-        OH_GamePad_AxisEvent_GetRZAxisValue(event, &rz) != GAME_CONTROLLER_SUCCESS ||
-        OH_GamePad_AxisEvent_GetHatXAxisValue(event, &hatX) != GAME_CONTROLLER_SUCCESS ||
-        OH_GamePad_AxisEvent_GetHatYAxisValue(event, &hatY) != GAME_CONTROLLER_SUCCESS ||
-        OH_GamePad_AxisEvent_GetBrakeAxisValue(event, &brake) != GAME_CONTROLLER_SUCCESS ||
-        OH_GamePad_AxisEvent_GetGasAxisValue(event, &gas) != GAME_CONTROLLER_SUCCESS) {
+    auto& api = lease.impl->api;
+    if (api.OH_GamePad_AxisEvent_GetDeviceId(event, &sdkId) != GAME_CONTROLLER_SUCCESS ||
+        api.OH_GamePad_AxisEvent_GetAxisSourceType(event, &source) != GAME_CONTROLLER_SUCCESS ||
+        api.OH_GamePad_AxisEvent_GetXAxisValue(event, &x) != GAME_CONTROLLER_SUCCESS ||
+        api.OH_GamePad_AxisEvent_GetYAxisValue(event, &y) != GAME_CONTROLLER_SUCCESS ||
+        api.OH_GamePad_AxisEvent_GetZAxisValue(event, &z) != GAME_CONTROLLER_SUCCESS ||
+        api.OH_GamePad_AxisEvent_GetRZAxisValue(event, &rz) != GAME_CONTROLLER_SUCCESS ||
+        api.OH_GamePad_AxisEvent_GetHatXAxisValue(event, &hatX) != GAME_CONTROLLER_SUCCESS ||
+        api.OH_GamePad_AxisEvent_GetHatYAxisValue(event, &hatY) != GAME_CONTROLLER_SUCCESS ||
+        api.OH_GamePad_AxisEvent_GetBrakeAxisValue(event, &brake) != GAME_CONTROLLER_SUCCESS ||
+        api.OH_GamePad_AxisEvent_GetGasAxisValue(event, &gas) != GAME_CONTROLLER_SUCCESS) {
         return;
     }
     const auto id = findOnlineDevice(*lease.impl, sdkId);
@@ -599,14 +734,15 @@ void deviceCallback(const GameDevice_DeviceEvent* event) {
     std::lock_guard<std::mutex> dispatchLock(lease.impl->dispatchMutex);
     GameDevice_StatusChangedType status = OFFLINE;
     GameDevice_DeviceInfo* info = nullptr;
-    if (OH_GameDevice_DeviceEvent_GetChangedType(event, &status) != GAME_CONTROLLER_SUCCESS ||
-        OH_GameDevice_DeviceEvent_GetDeviceInfo(event, &info) != GAME_CONTROLLER_SUCCESS ||
+    auto& api = lease.impl->api;
+    if (api.OH_GameDevice_DeviceEvent_GetChangedType(event, &status) != GAME_CONTROLLER_SUCCESS ||
+        api.OH_GameDevice_DeviceEvent_GetDeviceInfo(event, &info) != GAME_CONTROLLER_SUCCESS ||
         info == nullptr) {
         return;
     }
     DeviceInfoCopy copy;
-    const bool valid = copyDeviceInfo(info, copy);
-    (void)OH_GameDevice_DestroyDeviceInfo(&info);
+    const bool valid = copyDeviceInfo(api, info, copy);
+    (void)api.OH_GameDevice_DestroyDeviceInfo(&info);
     if (!valid) {
         return;
     }
@@ -630,66 +766,64 @@ struct AxisMonitorRegistration final {
     GameController_ErrorCode (*unregisterMonitor)();
 };
 
-const std::array<ButtonMonitorRegistration, 15U>& buttonMonitors() {
-    static const std::array<ButtonMonitorRegistration, 15U> value = {{
-        {OH_GamePad_LeftShoulder_RegisterButtonInputMonitor,
-         OH_GamePad_LeftShoulder_UnregisterButtonInputMonitor},
-        {OH_GamePad_RightShoulder_RegisterButtonInputMonitor,
-         OH_GamePad_RightShoulder_UnregisterButtonInputMonitor},
-        {OH_GamePad_LeftTrigger_RegisterButtonInputMonitor,
-         OH_GamePad_LeftTrigger_UnregisterButtonInputMonitor},
-        {OH_GamePad_RightTrigger_RegisterButtonInputMonitor,
-         OH_GamePad_RightTrigger_UnregisterButtonInputMonitor},
-        {OH_GamePad_ButtonMenu_RegisterButtonInputMonitor,
-         OH_GamePad_ButtonMenu_UnregisterButtonInputMonitor},
-        {OH_GamePad_ButtonHome_RegisterButtonInputMonitor,
-         OH_GamePad_ButtonHome_UnregisterButtonInputMonitor},
-        {OH_GamePad_ButtonA_RegisterButtonInputMonitor,
-         OH_GamePad_ButtonA_UnregisterButtonInputMonitor},
-        {OH_GamePad_ButtonB_RegisterButtonInputMonitor,
-         OH_GamePad_ButtonB_UnregisterButtonInputMonitor},
-        {OH_GamePad_ButtonX_RegisterButtonInputMonitor,
-         OH_GamePad_ButtonX_UnregisterButtonInputMonitor},
-        {OH_GamePad_ButtonY_RegisterButtonInputMonitor,
-         OH_GamePad_ButtonY_UnregisterButtonInputMonitor},
-        {OH_GamePad_ButtonC_RegisterButtonInputMonitor,
-         OH_GamePad_ButtonC_UnregisterButtonInputMonitor},
-        {OH_GamePad_Dpad_LeftButton_RegisterButtonInputMonitor,
-         OH_GamePad_Dpad_LeftButton_UnregisterButtonInputMonitor},
-        {OH_GamePad_Dpad_RightButton_RegisterButtonInputMonitor,
-         OH_GamePad_Dpad_RightButton_UnregisterButtonInputMonitor},
-        {OH_GamePad_Dpad_UpButton_RegisterButtonInputMonitor,
-         OH_GamePad_Dpad_UpButton_UnregisterButtonInputMonitor},
-        {OH_GamePad_Dpad_DownButton_RegisterButtonInputMonitor,
-         OH_GamePad_Dpad_DownButton_UnregisterButtonInputMonitor},
+std::array<ButtonMonitorRegistration, 15U> buttonMonitors(GameControllerApi& api) {
+    return {{
+        {api.OH_GamePad_LeftShoulder_RegisterButtonInputMonitor,
+         api.OH_GamePad_LeftShoulder_UnregisterButtonInputMonitor},
+        {api.OH_GamePad_RightShoulder_RegisterButtonInputMonitor,
+         api.OH_GamePad_RightShoulder_UnregisterButtonInputMonitor},
+        {api.OH_GamePad_LeftTrigger_RegisterButtonInputMonitor,
+         api.OH_GamePad_LeftTrigger_UnregisterButtonInputMonitor},
+        {api.OH_GamePad_RightTrigger_RegisterButtonInputMonitor,
+         api.OH_GamePad_RightTrigger_UnregisterButtonInputMonitor},
+        {api.OH_GamePad_ButtonMenu_RegisterButtonInputMonitor,
+         api.OH_GamePad_ButtonMenu_UnregisterButtonInputMonitor},
+        {api.OH_GamePad_ButtonHome_RegisterButtonInputMonitor,
+         api.OH_GamePad_ButtonHome_UnregisterButtonInputMonitor},
+        {api.OH_GamePad_ButtonA_RegisterButtonInputMonitor,
+         api.OH_GamePad_ButtonA_UnregisterButtonInputMonitor},
+        {api.OH_GamePad_ButtonB_RegisterButtonInputMonitor,
+         api.OH_GamePad_ButtonB_UnregisterButtonInputMonitor},
+        {api.OH_GamePad_ButtonX_RegisterButtonInputMonitor,
+         api.OH_GamePad_ButtonX_UnregisterButtonInputMonitor},
+        {api.OH_GamePad_ButtonY_RegisterButtonInputMonitor,
+         api.OH_GamePad_ButtonY_UnregisterButtonInputMonitor},
+        {api.OH_GamePad_ButtonC_RegisterButtonInputMonitor,
+         api.OH_GamePad_ButtonC_UnregisterButtonInputMonitor},
+        {api.OH_GamePad_Dpad_LeftButton_RegisterButtonInputMonitor,
+         api.OH_GamePad_Dpad_LeftButton_UnregisterButtonInputMonitor},
+        {api.OH_GamePad_Dpad_RightButton_RegisterButtonInputMonitor,
+         api.OH_GamePad_Dpad_RightButton_UnregisterButtonInputMonitor},
+        {api.OH_GamePad_Dpad_UpButton_RegisterButtonInputMonitor,
+         api.OH_GamePad_Dpad_UpButton_UnregisterButtonInputMonitor},
+        {api.OH_GamePad_Dpad_DownButton_RegisterButtonInputMonitor,
+         api.OH_GamePad_Dpad_DownButton_UnregisterButtonInputMonitor},
     }};
-    return value;
 }
 
-const std::array<ButtonMonitorRegistration, 2U>& thumbstickButtonMonitors() {
-    static const std::array<ButtonMonitorRegistration, 2U> value = {{
-        {OH_GamePad_LeftThumbstick_RegisterButtonInputMonitor,
-         OH_GamePad_LeftThumbstick_UnregisterButtonInputMonitor},
-        {OH_GamePad_RightThumbstick_RegisterButtonInputMonitor,
-         OH_GamePad_RightThumbstick_UnregisterButtonInputMonitor},
+std::array<ButtonMonitorRegistration, 2U> thumbstickButtonMonitors(
+    GameControllerApi& api) {
+    return {{
+        {api.OH_GamePad_LeftThumbstick_RegisterButtonInputMonitor,
+         api.OH_GamePad_LeftThumbstick_UnregisterButtonInputMonitor},
+        {api.OH_GamePad_RightThumbstick_RegisterButtonInputMonitor,
+         api.OH_GamePad_RightThumbstick_UnregisterButtonInputMonitor},
     }};
-    return value;
 }
 
-const std::array<AxisMonitorRegistration, 5U>& axisMonitors() {
-    static const std::array<AxisMonitorRegistration, 5U> value = {{
-        {OH_GamePad_LeftTrigger_RegisterAxisInputMonitor,
-         OH_GamePad_LeftTrigger_UnregisterAxisInputMonitor},
-        {OH_GamePad_RightTrigger_RegisterAxisInputMonitor,
-         OH_GamePad_RightTrigger_UnregisterAxisInputMonitor},
-        {OH_GamePad_Dpad_RegisterAxisInputMonitor,
-         OH_GamePad_Dpad_UnregisterAxisInputMonitor},
-        {OH_GamePad_LeftThumbstick_RegisterAxisInputMonitor,
-         OH_GamePad_LeftThumbstick_UnregisterAxisInputMonitor},
-        {OH_GamePad_RightThumbstick_RegisterAxisInputMonitor,
-         OH_GamePad_RightThumbstick_UnregisterAxisInputMonitor},
+std::array<AxisMonitorRegistration, 5U> axisMonitors(GameControllerApi& api) {
+    return {{
+        {api.OH_GamePad_LeftTrigger_RegisterAxisInputMonitor,
+         api.OH_GamePad_LeftTrigger_UnregisterAxisInputMonitor},
+        {api.OH_GamePad_RightTrigger_RegisterAxisInputMonitor,
+         api.OH_GamePad_RightTrigger_UnregisterAxisInputMonitor},
+        {api.OH_GamePad_Dpad_RegisterAxisInputMonitor,
+         api.OH_GamePad_Dpad_UnregisterAxisInputMonitor},
+        {api.OH_GamePad_LeftThumbstick_RegisterAxisInputMonitor,
+         api.OH_GamePad_LeftThumbstick_UnregisterAxisInputMonitor},
+        {api.OH_GamePad_RightThumbstick_RegisterAxisInputMonitor,
+         api.OH_GamePad_RightThumbstick_UnregisterAxisInputMonitor},
     }};
-    return value;
 }
 
 template <typename Registration, typename Callback, std::size_t N>
@@ -722,10 +856,13 @@ void stopRegisteredListener(MoonlightGameControllerListener::Impl& impl) noexcep
         registry.cv.wait(lock, [&]() { return registry.inFlight == 0U; });
     }
     if (impl.registrationActive.exchange(false, std::memory_order_acq_rel)) {
-        unregisterMonitors(axisMonitors(), axisMonitors().size());
-        unregisterMonitors(thumbstickButtonMonitors(), thumbstickButtonMonitors().size());
-        unregisterMonitors(buttonMonitors(), buttonMonitors().size());
-        (void)OH_GameDevice_UnregisterDeviceMonitor();
+        const auto axes = axisMonitors(impl.api);
+        const auto thumbButtons = thumbstickButtonMonitors(impl.api);
+        const auto buttons = buttonMonitors(impl.api);
+        unregisterMonitors(axes, axes.size());
+        unregisterMonitors(thumbButtons, thumbButtons.size());
+        unregisterMonitors(buttons, buttons.size());
+        (void)impl.api.OH_GameDevice_UnregisterDeviceMonitor();
     }
     {
         std::lock_guard<std::mutex> lock(registry.mutex);
@@ -741,6 +878,7 @@ void stopRegisteredListener(MoonlightGameControllerListener::Impl& impl) noexcep
     impl.sequences.clear();
     impl.timestamps.clear();
     impl.stopDeferred.store(false, std::memory_order_release);
+    impl.api.unload();
 }
 
 void finishDeferredStop(MoonlightGameControllerListener::Impl& impl) noexcept {
@@ -779,10 +917,14 @@ bool MoonlightGameControllerListener::start() noexcept {
         return !impl_->stopDeferred.load(std::memory_order_acquire);
     }
     std::lock_guard<std::mutex> lifecycleLock(impl_->lifecycleMutex);
+    if (!impl_->api.load()) {
+        return false;
+    }
     auto& registry = callbackRegistry();
     {
         std::lock_guard<std::mutex> lock(registry.mutex);
         if (registry.active != nullptr && registry.active != impl_.get()) {
+            impl_->api.unload();
             return false;
         }
         if (impl_->started.load(std::memory_order_acquire)) {
@@ -811,19 +953,23 @@ bool MoonlightGameControllerListener::start() noexcept {
     std::size_t registeredThumbButtons = 0U;
     std::size_t registeredAxes = 0U;
     bool deviceRegistered = false;
-    if (OH_GameDevice_RegisterDeviceMonitor(deviceCallback) == GAME_CONTROLLER_SUCCESS) {
+    const auto buttons = buttonMonitors(impl_->api);
+    const auto thumbButtons = thumbstickButtonMonitors(impl_->api);
+    const auto axes = axisMonitors(impl_->api);
+    if (impl_->api.OH_GameDevice_RegisterDeviceMonitor(deviceCallback) ==
+        GAME_CONTROLLER_SUCCESS) {
         deviceRegistered = true;
     }
     const bool ok = deviceRegistered &&
-        registerMonitors(buttonMonitors(), buttonCallback, registeredButtons) &&
-        registerMonitors(thumbstickButtonMonitors(), buttonCallback, registeredThumbButtons) &&
-        registerMonitors(axisMonitors(), axisCallback, registeredAxes);
+        registerMonitors(buttons, buttonCallback, registeredButtons) &&
+        registerMonitors(thumbButtons, buttonCallback, registeredThumbButtons) &&
+        registerMonitors(axes, axisCallback, registeredAxes);
     if (!ok) {
-        unregisterMonitors(axisMonitors(), registeredAxes);
-        unregisterMonitors(thumbstickButtonMonitors(), registeredThumbButtons);
-        unregisterMonitors(buttonMonitors(), registeredButtons);
+        unregisterMonitors(axes, registeredAxes);
+        unregisterMonitors(thumbButtons, registeredThumbButtons);
+        unregisterMonitors(buttons, registeredButtons);
         if (deviceRegistered) {
-            (void)OH_GameDevice_UnregisterDeviceMonitor();
+            (void)impl_->api.OH_GameDevice_UnregisterDeviceMonitor();
         }
         impl_->registrationActive.store(false, std::memory_order_release);
         std::unique_lock<std::mutex> lock(registry.mutex);
@@ -839,6 +985,7 @@ bool MoonlightGameControllerListener::start() noexcept {
             registry.active = nullptr;
             registry.activeOwner.reset();
         }
+        impl_->api.unload();
         return false;
     }
     impl_->registrationActive.store(true, std::memory_order_release);
@@ -886,20 +1033,23 @@ void MoonlightGameControllerListener::replayOnlineDevices() noexcept {
         return;
     }
     std::lock_guard<std::mutex> dispatchLock(impl_->dispatchMutex);
+    auto& api = impl_->api;
     GameDevice_AllDeviceInfos* all = nullptr;
-    if (OH_GameDevice_GetAllDeviceInfos(&all) != GAME_CONTROLLER_SUCCESS || all == nullptr) {
+    if (api.OH_GameDevice_GetAllDeviceInfos(&all) != GAME_CONTROLLER_SUCCESS || all == nullptr) {
         return;
     }
     int32_t count = 0;
-    if (OH_GameDevice_AllDeviceInfos_GetCount(all, &count) == GAME_CONTROLLER_SUCCESS) {
+    if (api.OH_GameDevice_AllDeviceInfos_GetCount(all, &count) == GAME_CONTROLLER_SUCCESS) {
         for (int32_t index = 0; index < count; ++index) {
             GameDevice_DeviceInfo* info = nullptr;
-            if (OH_GameDevice_AllDeviceInfos_GetDeviceInfo(all, index, &info) !=
+            if (api.OH_GameDevice_AllDeviceInfos_GetDeviceInfo(all, index, &info) !=
                     GAME_CONTROLLER_SUCCESS || info == nullptr) {
                 continue;
             }
             DeviceInfoCopy copy;
-            if (copyDeviceInfo(info, copy)) {
+            const bool valid = copyDeviceInfo(api, info, copy);
+            (void)api.OH_GameDevice_DestroyDeviceInfo(&info);
+            if (valid) {
                 const auto id = ensureDevice(*impl_, copy.sdkId.c_str());
                 if (id != 0U) {
                     emitConnected(*impl_, id);
@@ -907,7 +1057,7 @@ void MoonlightGameControllerListener::replayOnlineDevices() noexcept {
             }
         }
     }
-    (void)OH_GameDevice_DestroyAllDeviceInfos(&all);
+    (void)api.OH_GameDevice_DestroyAllDeviceInfos(&all);
 #endif
 }
 

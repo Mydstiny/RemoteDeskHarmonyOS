@@ -8,6 +8,8 @@ import {
   moonlightHostIsValid
 } from '../model/MoonlightModels';
 import { MoonlightRecord } from '../model/MoonlightRecord';
+import { MoonlightAppCacheEntry } from '../model/MoonlightAppCache';
+import { MoonlightAppCachePort } from './MoonlightAppCacheService';
 import { AccountSessionLease, cloneAccountSessionLease } from './AccountScopePolicy';
 import {
   MoonlightHostAddOperationKey,
@@ -38,6 +40,27 @@ export interface MoonlightLocalHostSaveResult {
   hostId: string;
   trustRecordId: string;
   errorText: string;
+}
+
+export type MoonlightLocalHostMutationCode =
+  'ok' | 'invalid_request' | 'not_ready' | 'stale_lease' | 'not_found' |
+  'local_write_failed' | 'cache_cleanup_failed' | 'rollback_failed';
+
+export interface MoonlightLocalHostMutationResult {
+  ok: boolean;
+  code: MoonlightLocalHostMutationCode;
+  hostId: string;
+  localCommitted: boolean;
+  errorText: string;
+}
+
+function mutationResult(ok: boolean, code: MoonlightLocalHostMutationCode,
+  hostId: string, localCommitted: boolean, errorText: string = ''):
+  MoonlightLocalHostMutationResult {
+  return {
+    ok: ok, code: code, hostId: hostId,
+    localCommitted: localCommitted, errorText: errorText
+  };
 }
 
 function saveResult(
@@ -242,18 +265,143 @@ function safeRollbackRecord(
 }
 
 /**
- * The final add-flow adapter. It is deliberately repository-only: no cloud
- * service, native transport, decoder, input bridge, or app-cache mutation is
- * reachable from this class. A host and its trust row are compensated if the
- * second local write cannot be confirmed.
+ * Owner-scoped local host and catalog-data adapter. It never enters Moonlight
+ * cloud selection or transfer. Host/trust mutations are compensated on a
+ * partial failure, and deleting a host also clears its local app cache when a
+ * cache port is supplied.
  */
 export class MoonlightLocalHostService {
   private readonly port: MoonlightRepositoryPort;
   private readonly repository: MoonlightRepository;
+  private readonly cachePort: MoonlightAppCachePort | null;
 
-  constructor(port: MoonlightRepositoryPort) {
+  constructor(port: MoonlightRepositoryPort,
+    cachePort: MoonlightAppCachePort | null = null) {
     this.port = port;
     this.repository = new MoonlightRepository(port);
+    this.cachePort = cachePort;
+  }
+
+  updateDisplayName(hostId: string, displayName: string,
+    nowMs: number): MoonlightLocalHostMutationResult {
+    const normalizedId: string = hostId.trim();
+    const normalizedName: string = displayName.trim();
+    if (!validNow(nowMs) || normalizedId === '' || normalizedName === '' ||
+        normalizedName.length > 128) {
+      return mutationResult(false, 'invalid_request', normalizedId, false, '主机名称无效');
+    }
+    const lease: AccountSessionLease | null = this.port.currentAccountLease();
+    if (lease === null) {
+      return mutationResult(false, 'not_ready', normalizedId, false, '当前本地数据域不可用');
+    }
+    const captured: AccountSessionLease = cloneAccountSessionLease(lease);
+    const records: MoonlightRecord[] | null = this.repository.loadAll(captured);
+    if (records === null) {
+      return mutationResult(false, 'stale_lease', normalizedId, false, '本地数据域已变化');
+    }
+    const current: MoonlightRecord | null = recordWithId(records, normalizedId);
+    if (current === null || current.recordType !== 'host') {
+      return mutationResult(false, 'not_found', normalizedId, false, '主机不存在');
+    }
+    const business: Record<string, Object> | null = moonlightRecordBusinessPayload(current);
+    if (business === null) {
+      return mutationResult(false, 'local_write_failed', normalizedId, false, '主机记录损坏');
+    }
+    const nextBusiness: Record<string, Object> = {};
+    nextBusiness['schemaVersion'] = business['schemaVersion'];
+    nextBusiness['serverUuid'] = business['serverUuid'];
+    nextBusiness['displayName'] = normalizedName;
+    nextBusiness['addresses'] = business['addresses'];
+    nextBusiness['preferredAddressKey'] = business['preferredAddressKey'];
+    nextBusiness['hostType'] = business['hostType'];
+    nextBusiness['wakeOnLan'] = business['wakeOnLan'];
+    nextBusiness['userOrder'] = business['userOrder'];
+    const candidate: MoonlightRecord | null = buildRecord(
+      'host', normalizedId, captured.ownerScopeId, captured, nowMs, current, nextBusiness);
+    if (candidate === null) {
+      return mutationResult(false, 'local_write_failed', normalizedId, false, '无法生成主机记录');
+    }
+    const written: MoonlightRepositoryResult = this.repository.upsert(captured, candidate, 1);
+    return written.ok
+      ? mutationResult(true, 'ok', normalizedId, true)
+      : mutationResult(false, written.code === 'stale_lease' ? 'stale_lease' :
+        'local_write_failed', normalizedId, written.localCommitted, '主机名称保存失败');
+  }
+
+  deleteHost(hostId: string, nowMs: number): MoonlightLocalHostMutationResult {
+    const normalizedId: string = hostId.trim();
+    if (!validNow(nowMs) || normalizedId === '') {
+      return mutationResult(false, 'invalid_request', normalizedId, false, '主机标识无效');
+    }
+    const lease: AccountSessionLease | null = this.port.currentAccountLease();
+    if (lease === null) {
+      return mutationResult(false, 'not_ready', normalizedId, false, '当前本地数据域不可用');
+    }
+    const captured: AccountSessionLease = cloneAccountSessionLease(lease);
+    const records: MoonlightRecord[] | null = this.repository.loadAll(captured);
+    if (records === null) {
+      return mutationResult(false, 'stale_lease', normalizedId, false, '本地数据域已变化');
+    }
+    const owned: MoonlightRecord[] = [];
+    let hostFound: boolean = false;
+    for (let index: number = 0; index < records.length; index++) {
+      const record: MoonlightRecord = records[index];
+      if (record.id === normalizedId && record.recordType === 'host' ||
+          record.ownerId === normalizedId) {
+        owned.push(MoonlightRecord.fromJSON(record.toJSON()));
+        if (record.id === normalizedId && record.recordType === 'host') { hostFound = true; }
+      }
+    }
+    if (!hostFound) {
+      return mutationResult(false, 'not_found', normalizedId, false, '主机不存在');
+    }
+    const tombstones: MoonlightRecord[] = [];
+    for (let index: number = 0; index < owned.length; index++) {
+      const deleteAt: number = Math.max(nowMs + index, owned[index].updatedAt,
+        owned[index].createdAt);
+      const removed: MoonlightRepositoryResult =
+        this.repository.tombstone(captured, owned[index].id, deleteAt, 1);
+      if (!removed.ok || removed.record === null) {
+        const recovered: boolean = this.rollbackDeletedRecords(
+          captured, owned, tombstones, nowMs + owned.length + 1);
+        return mutationResult(false, recovered ? 'local_write_failed' : 'rollback_failed',
+          normalizedId, tombstones.length > 0, recovered ? '删除本地记录失败' : '删除回滚失败');
+      }
+      tombstones.push(removed.record);
+    }
+    if (!this.clearHostCache(captured, normalizedId)) {
+      const recovered: boolean = this.rollbackDeletedRecords(
+        captured, owned, tombstones, nowMs + owned.length + 1);
+      return mutationResult(false, recovered ? 'cache_cleanup_failed' : 'rollback_failed',
+        normalizedId, true, recovered ? '应用缓存清理失败' : '缓存失败且记录回滚失败');
+    }
+    return mutationResult(true, 'ok', normalizedId, true);
+  }
+
+  private clearHostCache(lease: AccountSessionLease, hostId: string): boolean {
+    if (this.cachePort === null) { return true; }
+    const rows: MoonlightAppCacheEntry[] | null =
+      this.cachePort.loadMoonlightAppCacheEntries(lease, hostId);
+    if (rows === null || !this.port.isLeaseCurrent(lease)) { return false; }
+    const ids: string[] = [];
+    for (let index: number = 0; index < rows.length; index++) {
+      if (rows[index].userId !== lease.ownerScopeId || rows[index].hostId !== hostId) {
+        return false;
+      }
+      ids.push(rows[index].id);
+    }
+    return this.cachePort.commitMoonlightAppCacheRefresh(lease, hostId, [], ids) &&
+      this.port.isLeaseCurrent(lease);
+  }
+
+  private rollbackDeletedRecords(lease: AccountSessionLease,
+    previous: MoonlightRecord[], current: MoonlightRecord[], nowMs: number): boolean {
+    let recovered: boolean = true;
+    for (let index: number = current.length - 1; index >= 0; index--) {
+      recovered = safeRollbackRecord(this.repository, lease, current[index].id,
+        previous[index], current[index], nowMs + current.length - index) && recovered;
+    }
+    return recovered;
   }
 
   save(

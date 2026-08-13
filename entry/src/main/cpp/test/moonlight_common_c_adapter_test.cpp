@@ -1,6 +1,7 @@
 #include "moonlight/media/MoonlightCommonCAdapter.h"
 #include "test/test_runner.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -61,6 +62,8 @@ public:
         return acceptBind_.load();
     }
     void releaseSession(const MoonlightSessionKey& key) noexcept override {
+        videoLive_.store(false);
+        audioLive_.store(false);
         {
             std::lock_guard<std::mutex> lock(mutex_);
             releasedKey_ = key;
@@ -70,6 +73,8 @@ public:
     bool firstFrameReady() const noexcept override {
         return firstFrameReady_.load();
     }
+    bool videoLive() const noexcept override { return videoLive_.load(); }
+    bool audioLive() const noexcept override { return audioLive_.load(); }
     bool videoReady() const noexcept override { return videoReady_.load(); }
     bool audioReady(MoonlightStreamAudioLayout) const noexcept override {
         return audioReady_.load();
@@ -83,9 +88,18 @@ public:
         ++videoSetups_;
         return acceptVideo_.load();
     }
-    void startVideo() noexcept override { ++videoStarts_; }
-    void stopVideo() noexcept override { ++videoStops_; }
-    void cleanupVideo() noexcept override { ++videoCleanups_; }
+    void startVideo() noexcept override {
+        videoLive_.store(true);
+        ++videoStarts_;
+    }
+    void stopVideo() noexcept override {
+        videoLive_.store(false);
+        ++videoStops_;
+    }
+    void cleanupVideo() noexcept override {
+        videoLive_.store(false);
+        ++videoCleanups_;
+    }
     MoonlightVideoSubmitResult submitVideoPayload(
         const MoonlightVideoDecodeUnitView& decodeUnit) noexcept override {
         {
@@ -111,9 +125,18 @@ public:
         ++audioSetups_;
         return acceptAudio_.load();
     }
-    void startAudio() noexcept override { ++audioStarts_; }
-    void stopAudio() noexcept override { ++audioStops_; }
-    void cleanupAudio() noexcept override { ++audioCleanups_; }
+    void startAudio() noexcept override {
+        audioLive_.store(true);
+        ++audioStarts_;
+    }
+    void stopAudio() noexcept override {
+        audioLive_.store(false);
+        ++audioStops_;
+    }
+    void cleanupAudio() noexcept override {
+        audioLive_.store(false);
+        ++audioCleanups_;
+    }
     void submitAudioPayload(const std::uint8_t* bytes,
                             std::size_t byteCount) noexcept override {
         ++audioPayloads_;
@@ -179,6 +202,8 @@ private:
     std::atomic<bool> acceptAudio_ {true};
     std::atomic<bool> acceptBind_ {true};
     std::atomic<bool> firstFrameReady_ {false};
+    std::atomic<bool> videoLive_ {false};
+    std::atomic<bool> audioLive_ {false};
     std::atomic<std::size_t> binds_ {0U};
     std::atomic<std::size_t> releases_ {0U};
     std::atomic<std::size_t> videoSetups_ {0U};
@@ -551,6 +576,64 @@ RDP_TEST_CASE(moonlight_common_c_adapter_maps_all_wire_fields_and_big_endian_iv)
     RDP_ASSERT(adapter->snapshot(accepted.key).secretsCleared);
 }
 
+RDP_TEST_CASE(moonlight_common_c_adapter_deferred_runtime_proof_uses_auto_path) {
+    auto owner = MoonlightSessionOwner::createForTesting();
+    auto media = std::make_shared<FakeMediaPort>();
+    auto clock = std::make_shared<std::atomic<std::uint64_t>>(2500U);
+    AdapterGate startGate;
+    std::mutex wireMutex;
+    std::optional<MoonlightCommonCTestWireSnapshot> captured;
+    MoonlightCommonCTestDriver driver {
+        [&]() {
+            {
+                std::lock_guard<std::mutex> lock(wireMutex);
+                captured = MoonlightCommonCTestHarness::wireSnapshot();
+            }
+            startGate.enterAndWait();
+            return driveStagesWithNegotiation() ? 0 : -1;
+        },
+        [&]() { startGate.release(); },
+        []() {}};
+    auto adapter = makeAdapter(*owner, std::move(driver), media, clock);
+    auto request = makeRequest(
+        clock->load(), 700U, 9U, 101U,
+        MoonlightStreamAudioLayout::Stereo,
+        MoonlightStreamNetworkPath::Unknown);
+    request.deferRuntimeCapabilityProof = true;
+    request.streamConfig.identity.platformProbeGeneration = 0U;
+    request.streamConfig.identity.networkCapabilityGeneration = 0U;
+    request.streamConfig.identity.displayCapabilityGeneration = 0U;
+    request.streamConfig.offer->clientRefreshRateX100 = 0;
+
+    const auto accepted = adapter->start(std::move(request));
+    RDP_ASSERT_EQ(accepted.status, MoonlightCommonCStartStatus::Accepted);
+    RDP_ASSERT(startGate.waitEntered());
+    {
+        std::lock_guard<std::mutex> lock(wireMutex);
+        RDP_ASSERT(captured.has_value() && captured->valid);
+        RDP_ASSERT_EQ(captured->streamingRemotely, 2);
+        RDP_ASSERT_EQ(captured->packetSize, 1024);
+        RDP_ASSERT_EQ(captured->clientRefreshRateX100, 0);
+    }
+    startGate.release();
+    RDP_ASSERT(owner->waitForPhase(accepted.key, MoonlightSessionPhase::Running, 1s));
+    RDP_ASSERT_EQ(adapter->stop(accepted.key, 1s), MoonlightStopStatus::Stopped);
+}
+
+RDP_TEST_CASE(moonlight_common_c_adapter_remote_input_secret_wipe_seam) {
+    std::array<std::uint8_t, 16U> key {};
+    std::array<std::uint8_t, 16U> iv {};
+    key.fill(0xa5U);
+    iv.fill(0x5aU);
+    MoonlightCommonCTestHarness::clearRemoteInputSecrets(key, iv);
+    RDP_ASSERT(std::all_of(key.begin(), key.end(), [](std::uint8_t byte) {
+        return byte == 0U;
+    }));
+    RDP_ASSERT(std::all_of(iv.begin(), iv.end(), [](std::uint8_t byte) {
+        return byte == 0U;
+    }));
+}
+
 RDP_TEST_CASE(moonlight_common_c_adapter_validates_server_generation_url_and_profiles) {
     auto owner = MoonlightSessionOwner::createForTesting();
     auto media = std::make_shared<FakeMediaPort>();
@@ -649,6 +732,11 @@ RDP_TEST_CASE(moonlight_common_c_adapter_malformed_boundary_corpus_fails_before_
     };
 
     reject([](auto& request) { request.streamConfig.identity.platformProbeGeneration = 0U; });
+    reject([](auto& request) {
+        request.deferRuntimeCapabilityProof = true;
+        request.streamConfig.offer->networkPath = MoonlightStreamNetworkPath::Unknown;
+        request.streamConfig.offer->clientRefreshRateX100 = 0;
+    });
     reject([](auto& request) { request.streamConfig.offer->dimensions.width = 1919; });
     reject([](auto& request) { request.streamConfig.offer->dimensions.height = 9000; });
     reject([](auto& request) { request.streamConfig.offer->fps = 241; });

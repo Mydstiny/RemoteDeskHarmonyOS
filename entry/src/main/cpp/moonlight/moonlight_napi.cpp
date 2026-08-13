@@ -314,6 +314,36 @@ bool readOptionalBoolean(napi_env env, napi_value object, const char* name,
            readBooleanValue(env, value, output, error);
 }
 
+bool readRequiredBoolean(napi_env env, napi_value object, const char* name,
+                         bool& output, std::string& error) {
+    bool present = false;
+    napi_value value = nullptr;
+    if (!hasProperty(env, object, name, present) || !present ||
+        !getProperty(env, object, name, value)) {
+        error = "required boolean field is missing";
+        return false;
+    }
+    return readBooleanValue(env, value, output, error);
+}
+
+bool readRequiredNumber(napi_env env, napi_value object, const char* name,
+                        double minimum, double maximum, double& output,
+                        std::string& error, bool integer = false) {
+    bool present = false;
+    napi_value value = nullptr;
+    napi_valuetype type = napi_undefined;
+    if (!hasProperty(env, object, name, present) || !present ||
+        !getProperty(env, object, name, value) ||
+        napi_typeof(env, value, &type) != napi_ok || type != napi_number ||
+        napi_get_value_double(env, value, &output) != napi_ok ||
+        !std::isfinite(output) || output < minimum || output > maximum ||
+        (integer && std::floor(output) != output)) {
+        error = "required numeric field is invalid";
+        return false;
+    }
+    return true;
+}
+
 bool readBytesValue(napi_env env, napi_value value, std::size_t exactSize,
                     std::vector<std::uint8_t>& output, std::string& error) {
     bool isArrayBuffer = false;
@@ -1102,7 +1132,7 @@ bool parseStreamStartRequest(napi_env env, napi_value value,
                              std::string& error) {
     static const std::unordered_set<std::string> allowed {
         "launchKey", "hostId", "serverUuid", "appId", "rendererHandle",
-        "surfaceWidth", "surfaceHeight"
+        "surfaceWidth", "surfaceHeight", "configuredBitrateKbps"
     };
     if (!readExactObject(env, value, allowed, error)) { return false; }
     bool present = false;
@@ -1111,6 +1141,7 @@ bool parseStreamStartRequest(napi_env env, napi_value value,
     std::uint64_t rendererHandle = 0U;
     std::uint64_t width = 0U;
     std::uint64_t height = 0U;
+    std::uint64_t configuredBitrateKbps = 20000U;
     if (!hasProperty(env, value, "launchKey", present) || !present ||
         !getProperty(env, value, "launchKey", nested) ||
         !parseRequestKey(env, nested, request.launchKey, error) ||
@@ -1123,15 +1154,20 @@ bool parseStreamStartRequest(napi_env env, napi_value value,
                                  rendererHandle, error) ||
         !readRequiredSafeInteger(env, value, "surfaceWidth", false, width, error) ||
         !readRequiredSafeInteger(env, value, "surfaceHeight", false, height, error) ||
+        !readOptionalSafeInteger(env, value, "configuredBitrateKbps", false,
+                                 configuredBitrateKbps, error) ||
         appId > std::numeric_limits<std::uint32_t>::max() ||
         rendererHandle > static_cast<std::uint64_t>(kMaxSafeInteger) ||
-        width > 16384U || height > 16384U) {
+        width > 16384U || height > 16384U ||
+        configuredBitrateKbps < 1000U || configuredBitrateKbps > 200000U) {
         return false;
     }
     request.appId = static_cast<std::uint32_t>(appId);
     request.rendererHandle = static_cast<std::int64_t>(rendererHandle);
     request.surfaceWidth = static_cast<std::int32_t>(width);
     request.surfaceHeight = static_cast<std::int32_t>(height);
+    request.configuredBitrateKbps =
+        static_cast<std::int32_t>(configuredBitrateKbps);
     return true;
 }
 
@@ -1170,6 +1206,10 @@ napi_value streamSnapshot(napi_env env, napi_callback_info info) {
     setSafeInteger(env, value, "generation", result.key.generation);
     setSafeInteger(env, value, "ownerToken", result.key.ownerToken);
     setBoolean(env, value, "transportReady", result.transportReady);
+    setBoolean(env, value, "videoReady", result.videoReady);
+    setBoolean(env, value, "audioReady", result.audioReady);
+    setBoolean(env, value, "inputReady", result.inputReady);
+    setBoolean(env, value, "controllerReady", result.controllerReady);
     setBoolean(env, value, "firstFrameReady", result.firstFrameReady);
     setBoolean(env, value, "terminal", result.terminal);
     setSafeInteger(env, value, "lastSequence", result.lastSequence);
@@ -1179,10 +1219,421 @@ napi_value streamSnapshot(napi_env env, napi_callback_info info) {
 napi_value stopStream(napi_env env, napi_callback_info info) {
     MoonlightBridgeRequestKey key;
     if (!readKeyArgument(env, info, key)) { return nullptr; }
-    const bool stopped = MoonlightProductStreamingRuntime::process().stop(key);
+    // N-API callbacks run on the ArkTS event thread. Request cancellation only;
+    // the session owner's terminal path retains responsibility for joins,
+    // media release, secret cleanup, and final state publication.
+    const bool stopRequested =
+        MoonlightProductStreamingRuntime::process().requestStop(key);
     napi_value value = nullptr;
-    (void)napi_get_boolean(env, stopped, &value);
+    (void)napi_get_boolean(env, stopRequested, &value);
     return value;
+}
+
+bool readInputLaunchKey(napi_env env, napi_value request,
+                        MoonlightBridgeRequestKey& key,
+                        std::string& error) {
+    bool present = false;
+    napi_value nested = nullptr;
+    return hasProperty(env, request, "launchKey", present) && present &&
+        getProperty(env, request, "launchKey", nested) &&
+        parseRequestKey(env, nested, key, error);
+}
+
+napi_value sendKey(napi_env env, napi_callback_info info) {
+    std::size_t argc = 1U;
+    napi_value args[1] = {nullptr};
+    static const std::unordered_set<std::string> allowed {
+        "launchKey", "keyCode", "pressed", "normalizedToUsLayout"
+    };
+    MoonlightBridgeRequestKey key;
+    std::uint64_t keyCode = 0U;
+    bool pressed = false;
+    bool normalized = true;
+    std::string error;
+    if (napi_get_cb_info(env, info, &argc, args, nullptr, nullptr) != napi_ok ||
+        argc != 1U || !readExactObject(env, args[0], allowed, error) ||
+        !readInputLaunchKey(env, args[0], key, error) ||
+        !readRequiredSafeInteger(env, args[0], "keyCode", true, keyCode, error) ||
+        keyCode > std::numeric_limits<std::uint32_t>::max() ||
+        !readRequiredBoolean(env, args[0], "pressed", pressed, error) ||
+        !readRequiredBoolean(env, args[0], "normalizedToUsLayout", normalized, error)) {
+        napi_throw_type_error(env, "E-MOONLIGHT-INPUT-KEY",
+                              error.empty() ? "invalid key input" : error.c_str());
+        return nullptr;
+    }
+    const bool accepted = MoonlightProductStreamingRuntime::process().sendKey(
+        key, static_cast<std::uint32_t>(keyCode), pressed, normalized);
+    napi_value result = nullptr;
+    (void)napi_get_boolean(env, accepted, &result);
+    return result;
+}
+
+napi_value sendText(napi_env env, napi_callback_info info) {
+    std::size_t argc = 1U;
+    napi_value args[1] = {nullptr};
+    static const std::unordered_set<std::string> allowed {"launchKey", "text"};
+    MoonlightBridgeRequestKey key;
+    std::string text;
+    std::string error;
+    if (napi_get_cb_info(env, info, &argc, args, nullptr, nullptr) != napi_ok ||
+        argc != 1U || !readExactObject(env, args[0], allowed, error) ||
+        !readInputLaunchKey(env, args[0], key, error) ||
+        !readRequiredString(env, args[0], "text", kMoonlightMaximumInputPayloadBytes,
+                            text, error) || text.empty()) {
+        napi_throw_type_error(env, "E-MOONLIGHT-INPUT-TEXT",
+                              error.empty() ? "invalid text input" : error.c_str());
+        return nullptr;
+    }
+    const bool accepted = MoonlightProductStreamingRuntime::process().sendText(
+        key, reinterpret_cast<const std::uint8_t*>(text.data()), text.size());
+    std::fill(text.begin(), text.end(), '\0');
+    napi_value result = nullptr;
+    (void)napi_get_boolean(env, accepted, &result);
+    return result;
+}
+
+napi_value sendPointer(napi_env env, napi_callback_info info) {
+    std::size_t argc = 1U;
+    napi_value args[1] = {nullptr};
+    static const std::unordered_set<std::string> allowed {
+        "launchKey", "action", "x", "y", "contentLeft", "contentTop",
+        "contentWidth", "contentHeight", "referenceWidth", "referenceHeight",
+        "geometryGeneration", "button", "pressed", "horizontal", "scrollAmount"
+    };
+    MoonlightBridgeRequestKey key;
+    MoonlightProductPointerRequest request;
+    std::string action;
+    std::string error;
+    bool valid = napi_get_cb_info(env, info, &argc, args, nullptr, nullptr) == napi_ok &&
+        argc == 1U && readExactObject(env, args[0], allowed, error) &&
+        readInputLaunchKey(env, args[0], key, error) &&
+        readRequiredString(env, args[0], "action", 16U, action, error);
+    if (valid && action == "relative") {
+        request.action = MoonlightProductPointerAction::Relative;
+        valid = readRequiredNumber(env, args[0], "x", -1000000.0, 1000000.0,
+                                   request.x, error) &&
+            readRequiredNumber(env, args[0], "y", -1000000.0, 1000000.0,
+                               request.y, error);
+    } else if (valid && action == "button") {
+        request.action = MoonlightProductPointerAction::Button;
+        double button = 0.0;
+        valid = readRequiredNumber(env, args[0], "button", 1.0, 5.0,
+                                   button, error, true) &&
+            readRequiredBoolean(env, args[0], "pressed", request.pressed, error);
+        request.button = static_cast<MoonlightPointerButton>(
+            static_cast<std::uint8_t>(button));
+    } else if (valid && action == "scroll") {
+        request.action = MoonlightProductPointerAction::Scroll;
+        double amount = 0.0;
+        valid = readRequiredNumber(env, args[0], "scrollAmount", -32768.0,
+                                   32767.0, amount, error, true) &&
+            readRequiredBoolean(env, args[0], "horizontal", request.horizontal, error);
+        request.scrollAmount = static_cast<std::int32_t>(amount);
+    } else if (valid && action == "absolute") {
+        request.action = MoonlightProductPointerAction::Absolute;
+        double referenceWidth = 0.0;
+        double referenceHeight = 0.0;
+        double generation = 0.0;
+        valid = readRequiredNumber(env, args[0], "x", -1000000.0, 1000000.0,
+                                   request.x, error) &&
+            readRequiredNumber(env, args[0], "y", -1000000.0, 1000000.0,
+                               request.y, error) &&
+            readRequiredNumber(env, args[0], "contentLeft", -1000000.0,
+                               1000000.0, request.contentLeft, error) &&
+            readRequiredNumber(env, args[0], "contentTop", -1000000.0,
+                               1000000.0, request.contentTop, error) &&
+            readRequiredNumber(env, args[0], "contentWidth", 0.001, 1000000.0,
+                               request.contentWidth, error) &&
+            readRequiredNumber(env, args[0], "contentHeight", 0.001, 1000000.0,
+                               request.contentHeight, error) &&
+            readRequiredNumber(env, args[0], "referenceWidth", 2.0, 32767.0,
+                               referenceWidth, error, true) &&
+            readRequiredNumber(env, args[0], "referenceHeight", 2.0, 32767.0,
+                               referenceHeight, error, true) &&
+            readRequiredNumber(env, args[0], "geometryGeneration", 1.0,
+                               kMaxSafeInteger, generation, error, true);
+        request.referenceWidth = static_cast<std::uint16_t>(referenceWidth);
+        request.referenceHeight = static_cast<std::uint16_t>(referenceHeight);
+        request.geometryGeneration = static_cast<std::uint64_t>(generation);
+    } else if (valid) {
+        valid = false;
+        error = "unknown pointer action";
+    }
+    if (!valid) {
+        napi_throw_type_error(env, "E-MOONLIGHT-INPUT-POINTER",
+                              error.empty() ? "invalid pointer input" : error.c_str());
+        return nullptr;
+    }
+    const bool accepted = MoonlightProductStreamingRuntime::process().sendPointer(
+        key, request);
+    napi_value result = nullptr;
+    (void)napi_get_boolean(env, accepted, &result);
+    return result;
+}
+
+napi_value sendTouch(napi_env env, napi_callback_info info) {
+    std::size_t argc = 1U;
+    napi_value args[1] = {nullptr};
+    static const std::unordered_set<std::string> allowed {
+        "launchKey", "contactId", "phase", "pointX", "pointY", "pressure",
+        "contactAreaMajor", "contactAreaMinor", "rotation", "contentLeft",
+        "contentTop", "contentWidth", "contentHeight", "referenceWidth",
+        "referenceHeight", "geometryGeneration", "hitMapGeneration"
+    };
+    MoonlightBridgeRequestKey key;
+    MoonlightProductTouchRequest request;
+    std::string phase;
+    std::string error;
+    double contactId = 0.0;
+    double rotation = 0.0;
+    double referenceWidth = 0.0;
+    double referenceHeight = 0.0;
+    double geometryGeneration = 0.0;
+    double hitMapGeneration = 0.0;
+    double pressure = 0.0;
+    double major = 0.0;
+    double minor = 0.0;
+    bool valid = napi_get_cb_info(env, info, &argc, args, nullptr, nullptr) == napi_ok &&
+        argc == 1U && readExactObject(env, args[0], allowed, error) &&
+        readInputLaunchKey(env, args[0], key, error) &&
+        readRequiredNumber(env, args[0], "contactId", 1.0,
+                           static_cast<double>(std::numeric_limits<std::uint32_t>::max()),
+                           contactId, error, true) &&
+        readRequiredString(env, args[0], "phase", 8U, phase, error) &&
+        readRequiredNumber(env, args[0], "pointX", -1000000.0, 1000000.0,
+                           request.sample.pointX, error) &&
+        readRequiredNumber(env, args[0], "pointY", -1000000.0, 1000000.0,
+                           request.sample.pointY, error) &&
+        readRequiredNumber(env, args[0], "pressure", 0.0, 1.0, pressure, error) &&
+        readRequiredNumber(env, args[0], "contactAreaMajor", 0.0, 1.0,
+                           major, error) &&
+        readRequiredNumber(env, args[0], "contactAreaMinor", 0.0, 1.0,
+                           minor, error) &&
+        readRequiredNumber(env, args[0], "rotation", 0.0, 65535.0,
+                           rotation, error, true) &&
+        readRequiredNumber(env, args[0], "contentLeft", -1000000.0, 1000000.0,
+                           request.surface.content.left, error) &&
+        readRequiredNumber(env, args[0], "contentTop", -1000000.0, 1000000.0,
+                           request.surface.content.top, error) &&
+        readRequiredNumber(env, args[0], "contentWidth", 0.001, 1000000.0,
+                           request.surface.content.width, error) &&
+        readRequiredNumber(env, args[0], "contentHeight", 0.001, 1000000.0,
+                           request.surface.content.height, error) &&
+        readRequiredNumber(env, args[0], "referenceWidth", 2.0, 32767.0,
+                           referenceWidth, error, true) &&
+        readRequiredNumber(env, args[0], "referenceHeight", 2.0, 32767.0,
+                           referenceHeight, error, true) &&
+        readRequiredNumber(env, args[0], "geometryGeneration", 1.0,
+                           kMaxSafeInteger, geometryGeneration, error, true) &&
+        readRequiredNumber(env, args[0], "hitMapGeneration", 1.0,
+                           kMaxSafeInteger, hitMapGeneration, error, true);
+    if (valid) {
+        if (phase == "down") { request.phase = MoonlightTouchPhase::Down; }
+        else if (phase == "move") { request.phase = MoonlightTouchPhase::Move; }
+        else if (phase == "up") { request.phase = MoonlightTouchPhase::Up; }
+        else if (phase == "cancel") { request.phase = MoonlightTouchPhase::Cancel; }
+        else { valid = false; error = "unknown touch phase"; }
+    }
+    if (!valid || major < minor) {
+        napi_throw_type_error(env, "E-MOONLIGHT-INPUT-TOUCH",
+                              error.empty() ? "invalid touch input" : error.c_str());
+        return nullptr;
+    }
+    request.contactId = static_cast<std::uint64_t>(contactId);
+    request.sample.pressure = static_cast<float>(pressure);
+    request.sample.contactAreaMajor = static_cast<float>(major);
+    request.sample.contactAreaMinor = static_cast<float>(minor);
+    request.sample.rotation = static_cast<std::uint16_t>(rotation);
+    request.surface.content.referenceWidth =
+        static_cast<std::uint16_t>(referenceWidth);
+    request.surface.content.referenceHeight =
+        static_cast<std::uint16_t>(referenceHeight);
+    request.surface.content.geometryGeneration =
+        static_cast<std::uint64_t>(geometryGeneration);
+    request.surface.hitMapGeneration = static_cast<std::uint64_t>(hitMapGeneration);
+    const bool accepted = MoonlightProductStreamingRuntime::process().sendTouch(
+        key, request);
+    napi_value result = nullptr;
+    (void)napi_get_boolean(env, accepted, &result);
+    return result;
+}
+
+bool inputFlushTrigger(const std::string& reason,
+                       MoonlightInputFlushTrigger& output) noexcept {
+    if (reason == "overlay_opened") {
+        output = MoonlightInputFlushTrigger::OverlayOpened;
+    } else if (reason == "control_mode_changed") {
+        output = MoonlightInputFlushTrigger::ControlModeChanged;
+    } else if (reason == "display_rotated") {
+        output = MoonlightInputFlushTrigger::DisplayRotated;
+    } else if (reason == "focus_lost") {
+        output = MoonlightInputFlushTrigger::FocusLost;
+    } else if (reason == "pip_entered") {
+        output = MoonlightInputFlushTrigger::PipEntered;
+    } else if (reason == "backgrounded") {
+        output = MoonlightInputFlushTrigger::Backgrounded;
+    } else if (reason == "surface_detached") {
+        output = MoonlightInputFlushTrigger::SurfaceDetached;
+    } else if (reason == "reconnect_started") {
+        output = MoonlightInputFlushTrigger::ReconnectStarted;
+    } else {
+        return false;
+    }
+    return true;
+}
+
+napi_value setInputSuspended(napi_env env, napi_callback_info info) {
+    std::size_t argc = 1U;
+    napi_value args[1] = {nullptr};
+    static const std::unordered_set<std::string> allowed {
+        "launchKey", "reason", "suspended"
+    };
+    MoonlightBridgeRequestKey key;
+    MoonlightInputFlushTrigger trigger = MoonlightInputFlushTrigger::Invalid;
+    std::string reason;
+    std::string error;
+    bool suspended = false;
+    if (napi_get_cb_info(env, info, &argc, args, nullptr, nullptr) != napi_ok ||
+        argc != 1U || !readExactObject(env, args[0], allowed, error) ||
+        !readInputLaunchKey(env, args[0], key, error) ||
+        !readRequiredString(env, args[0], "reason", 32U, reason, error) ||
+        !readRequiredBoolean(env, args[0], "suspended", suspended, error) ||
+        !inputFlushTrigger(reason, trigger)) {
+        napi_throw_type_error(env, "E-MOONLIGHT-INPUT-LIFECYCLE",
+                              error.empty() ? "invalid input lifecycle request" : error.c_str());
+        return nullptr;
+    }
+    const bool accepted = MoonlightProductStreamingRuntime::process().setInputSuspended(
+        key, trigger, suspended);
+    napi_value result = nullptr;
+    (void)napi_get_boolean(env, accepted, &result);
+    return result;
+}
+
+napi_value setTouchMode(napi_env env, napi_callback_info info) {
+    std::size_t argc = 1U;
+    napi_value args[1] = {nullptr};
+    static const std::unordered_set<std::string> allowed {"launchKey", "direct"};
+    MoonlightBridgeRequestKey key;
+    std::string error;
+    bool direct = false;
+    if (napi_get_cb_info(env, info, &argc, args, nullptr, nullptr) != napi_ok ||
+        argc != 1U || !readExactObject(env, args[0], allowed, error) ||
+        !readInputLaunchKey(env, args[0], key, error) ||
+        !readRequiredBoolean(env, args[0], "direct", direct, error)) {
+        napi_throw_type_error(env, "E-MOONLIGHT-TOUCH-MODE",
+                              error.empty() ? "invalid touch mode request" : error.c_str());
+        return nullptr;
+    }
+    const bool accepted = MoonlightProductStreamingRuntime::process().setTouchMode(
+        key, direct);
+    napi_value result = nullptr;
+    (void)napi_get_boolean(env, accepted, &result);
+    return result;
+}
+
+bool virtualControllerElement(
+    const std::string& value,
+    MoonlightProductVirtualControllerElement& output) noexcept {
+    if (value == "faceA") { output = MoonlightProductVirtualControllerElement::FaceA; }
+    else if (value == "faceB") { output = MoonlightProductVirtualControllerElement::FaceB; }
+    else if (value == "faceX") { output = MoonlightProductVirtualControllerElement::FaceX; }
+    else if (value == "faceY") { output = MoonlightProductVirtualControllerElement::FaceY; }
+    else if (value == "dpad") { output = MoonlightProductVirtualControllerElement::Dpad; }
+    else if (value == "leftStick") { output = MoonlightProductVirtualControllerElement::LeftStick; }
+    else if (value == "rightStick") { output = MoonlightProductVirtualControllerElement::RightStick; }
+    else if (value == "leftTrigger") { output = MoonlightProductVirtualControllerElement::LeftTrigger; }
+    else if (value == "rightTrigger") { output = MoonlightProductVirtualControllerElement::RightTrigger; }
+    else if (value == "leftShoulder") { output = MoonlightProductVirtualControllerElement::LeftShoulder; }
+    else if (value == "rightShoulder") { output = MoonlightProductVirtualControllerElement::RightShoulder; }
+    else if (value == "leftStickClick") { output = MoonlightProductVirtualControllerElement::LeftStickClick; }
+    else if (value == "rightStickClick") { output = MoonlightProductVirtualControllerElement::RightStickClick; }
+    else if (value == "menu") { output = MoonlightProductVirtualControllerElement::Menu; }
+    else { return false; }
+    return true;
+}
+
+bool virtualControllerPhase(
+    const std::string& value,
+    MoonlightProductVirtualControllerPhase& output) noexcept {
+    if (value == "begin") { output = MoonlightProductVirtualControllerPhase::Begin; }
+    else if (value == "change") { output = MoonlightProductVirtualControllerPhase::Change; }
+    else if (value == "end") { output = MoonlightProductVirtualControllerPhase::End; }
+    else if (value == "cancel") { output = MoonlightProductVirtualControllerPhase::Cancel; }
+    else { return false; }
+    return true;
+}
+
+napi_value setVirtualControllerMode(napi_env env, napi_callback_info info) {
+    std::size_t argc = 1U;
+    napi_value args[1] = {nullptr};
+    static const std::unordered_set<std::string> allowed {
+        "launchKey", "enabled", "editing"
+    };
+    MoonlightBridgeRequestKey key;
+    bool enabled = false;
+    bool editing = false;
+    std::string error;
+    if (napi_get_cb_info(env, info, &argc, args, nullptr, nullptr) != napi_ok ||
+        argc != 1U || !readExactObject(env, args[0], allowed, error) ||
+        !readInputLaunchKey(env, args[0], key, error) ||
+        !readRequiredBoolean(env, args[0], "enabled", enabled, error) ||
+        !readRequiredBoolean(env, args[0], "editing", editing, error)) {
+        napi_throw_type_error(env, "E-MOONLIGHT-CONTROLLER-MODE",
+                              error.empty() ? "invalid controller mode" : error.c_str());
+        return nullptr;
+    }
+    const bool accepted =
+        MoonlightProductStreamingRuntime::process().setVirtualControllerMode(
+            key, enabled, editing);
+    napi_value result = nullptr;
+    (void)napi_get_boolean(env, accepted, &result);
+    return result;
+}
+
+napi_value sendVirtualController(napi_env env, napi_callback_info info) {
+    std::size_t argc = 1U;
+    napi_value args[1] = {nullptr};
+    static const std::unordered_set<std::string> allowed {
+        "launchKey", "element", "phase", "pointerId", "primary", "secondary"
+    };
+    MoonlightBridgeRequestKey key;
+    MoonlightProductVirtualControllerRequest request;
+    std::string element;
+    std::string phase;
+    std::string error;
+    std::uint64_t pointerId = 0U;
+    bool valid = napi_get_cb_info(env, info, &argc, args, nullptr, nullptr) == napi_ok &&
+        argc == 1U && readExactObject(env, args[0], allowed, error) &&
+        readInputLaunchKey(env, args[0], key, error) &&
+        readRequiredString(env, args[0], "element", 24U, element, error) &&
+        readRequiredString(env, args[0], "phase", 8U, phase, error) &&
+        readRequiredSafeInteger(env, args[0], "pointerId", true, pointerId, error) &&
+        pointerId > 0U &&
+        readRequiredNumber(env, args[0], "primary", -1.0, 1.0,
+                           request.primary, error) &&
+        readRequiredNumber(env, args[0], "secondary", -1.0, 1.0,
+                           request.secondary, error) &&
+        virtualControllerElement(element, request.element) &&
+        virtualControllerPhase(phase, request.phase);
+    const bool trigger = request.element ==
+            MoonlightProductVirtualControllerElement::LeftTrigger ||
+        request.element == MoonlightProductVirtualControllerElement::RightTrigger;
+    if (valid && trigger && (request.primary < 0.0 || request.secondary != 0.0)) {
+        valid = false;
+    }
+    if (!valid) {
+        napi_throw_type_error(env, "E-MOONLIGHT-CONTROLLER-EVENT",
+                              error.empty() ? "invalid controller event" : error.c_str());
+        return nullptr;
+    }
+    request.pointerId = pointerId;
+    const bool accepted =
+        MoonlightProductStreamingRuntime::process().sendVirtualController(
+            key, request);
+    napi_value result = nullptr;
+    (void)napi_get_boolean(env, accepted, &result);
+    return result;
 }
 
 } // namespace
@@ -1236,6 +1687,22 @@ napi_value Init(napi_env env, napi_value exports) {
          nullptr, napi_default, nullptr},
         {"moonlightStopStream", nullptr, stopStream, nullptr, nullptr, nullptr,
          napi_default, nullptr},
+        {"moonlightSendKey", nullptr, sendKey, nullptr, nullptr, nullptr,
+         napi_default, nullptr},
+        {"moonlightSendText", nullptr, sendText, nullptr, nullptr, nullptr,
+         napi_default, nullptr},
+        {"moonlightSendPointer", nullptr, sendPointer, nullptr, nullptr, nullptr,
+         napi_default, nullptr},
+        {"moonlightSendTouch", nullptr, sendTouch, nullptr, nullptr, nullptr,
+         napi_default, nullptr},
+        {"moonlightSetInputSuspended", nullptr, setInputSuspended, nullptr, nullptr,
+         nullptr, napi_default, nullptr},
+        {"moonlightSetTouchMode", nullptr, setTouchMode, nullptr, nullptr, nullptr,
+         napi_default, nullptr},
+        {"moonlightSetVirtualControllerMode", nullptr, setVirtualControllerMode,
+         nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"moonlightSendVirtualController", nullptr, sendVirtualController,
+         nullptr, nullptr, nullptr, napi_default, nullptr},
     };
     (void)napi_define_properties(env, exports,
                                  sizeof(descriptors) / sizeof(descriptors[0]),

@@ -4,6 +4,12 @@
 // structs, callback signatures, numeric masks, and Li* entry points.
 #include "moonlight/upstream/moonlight-common-c/src/Limelight.h"
 
+#if !defined(RDP_TESTS_ONLY)
+extern "C" {
+extern STREAM_CONFIGURATION StreamConfig;
+}
+#endif
+
 #include <algorithm>
 #include <atomic>
 #include <condition_variable>
@@ -182,6 +188,22 @@ void secureWipe(void* pointer, std::size_t length) noexcept {
         --length;
     }
 }
+
+void clearRemoteInputSecrets(void* key, std::size_t keySize,
+                             void* iv, std::size_t ivSize) noexcept {
+    secureWipe(key, keySize);
+    secureWipe(iv, ivSize);
+}
+
+#if !defined(RDP_TESTS_ONLY)
+void clearCommonCGlobalRemoteInputSecrets() noexcept {
+    clearRemoteInputSecrets(
+        ::StreamConfig.remoteInputAesKey,
+        sizeof(::StreamConfig.remoteInputAesKey),
+        ::StreamConfig.remoteInputAesIv,
+        sizeof(::StreamConfig.remoteInputAesIv));
+}
+#endif
 
 void secureWipeString(std::string& value) noexcept {
     if (!value.empty()) {
@@ -439,7 +461,8 @@ bool validProfile(const MoonlightStreamCodecProfile& profile) noexcept {
     return videoFormatForProfile(profile) != 0;
 }
 
-bool validCanonicalOffer(const MoonlightStreamConfigResult& result) noexcept {
+bool validCanonicalOffer(const MoonlightStreamConfigResult& result,
+                         bool deferredRuntimeProof) noexcept {
     if (!result.ready()) {
         return false;
     }
@@ -449,9 +472,14 @@ bool validCanonicalOffer(const MoonlightStreamConfigResult& result) noexcept {
     if (identity.ownerToken == 0U || identity.sessionGeneration == 0U ||
         identity.settingsRevision == 0U ||
         identity.hostCapabilityGeneration == 0U ||
-        identity.platformProbeGeneration == 0U ||
-        identity.networkCapabilityGeneration == 0U ||
-        identity.displayCapabilityGeneration == 0U ||
+        (!deferredRuntimeProof &&
+         (identity.platformProbeGeneration == 0U ||
+          identity.networkCapabilityGeneration == 0U ||
+          identity.displayCapabilityGeneration == 0U)) ||
+        (deferredRuntimeProof &&
+         (identity.platformProbeGeneration != 0U ||
+          identity.networkCapabilityGeneration != 0U ||
+          identity.displayCapabilityGeneration != 0U)) ||
         !boundedPrintable(identity.hostId, 1U, 128U) ||
         !boundedPrintable(identity.serverUuid, 1U, 128U) ||
         offer.dimensions.width < kMinimumWidth ||
@@ -464,6 +492,7 @@ bool validCanonicalOffer(const MoonlightStreamConfigResult& result) noexcept {
         offer.launchRefreshRate != offer.fps ||
         offer.clientRefreshRateX100 < 0 ||
         offer.clientRefreshRateX100 > kMaximumFps * 100 ||
+        (deferredRuntimeProof && offer.clientRefreshRateX100 != 0) ||
         offer.configuredBitrateKbps < kMinimumBitrateKbps ||
         offer.configuredBitrateKbps > kMaximumBitrateKbps ||
         offer.estimatedEncoderBitrateKbps <= 0 ||
@@ -471,7 +500,9 @@ bool validCanonicalOffer(const MoonlightStreamConfigResult& result) noexcept {
         offer.packetSizeBytes <= 0 ||
         offer.packetSizeBytes > kMaximumPacketSizeBytes ||
         (offer.packetSizeBytes % 16) != 0 ||
-        !validNetworkPath(offer.networkPath) ||
+        (deferredRuntimeProof
+             ? offer.networkPath != MoonlightStreamNetworkPath::Unknown
+             : !validNetworkPath(offer.networkPath)) ||
         !validLatencyMode(offer.latencyMode) ||
         offer.offeredCodecs.empty() ||
         offer.offeredCodecs.size() > kMaximumCodecProfiles ||
@@ -795,6 +826,8 @@ private:
     void maybeEmitNegotiatedLocked() noexcept;
     void pushEventLocked(MoonlightCommonCEvent event) noexcept;
     void finalize(bool driverException = false) noexcept;
+    void runTerminalInputTeardown() noexcept;
+    void notifyTerminalComplete() noexcept;
     void cleanseLocked() noexcept;
     bool lifecycleCallbackAllowedLocked() const noexcept;
     bool bindVideoIdentityLocked(MoonlightVideoDecodeUnitView& decodeUnit) noexcept;
@@ -829,16 +862,20 @@ private:
     bool nativeCallActive_ = false;
     bool negotiatedEmitted_ = false;
     bool videoSetupActive_ = false;
+    bool videoStartActive_ = false;
     bool videoStarted_ = false;
     bool videoStopped_ = false;
     bool videoCleaned_ = false;
     bool videoIdrRequestPending_ = false;
     bool audioSetupActive_ = false;
+    bool audioStartActive_ = false;
     bool audioStarted_ = false;
     bool audioStopped_ = false;
     bool audioCleaned_ = false;
     bool mediaBound_ = false;
     bool mediaReleased_ = false;
+    bool terminalInputTeardownDone_ = false;
+    bool terminalCompletionNotified_ = false;
     std::uint64_t nextSequence_ = 1U;
     std::size_t droppedEvents_ = 0U;
     std::size_t staleBaseline_ = 0U;
@@ -1066,6 +1103,12 @@ public:
         const int result = LiStartConnection(
             &server, &stream, &connectionCallbacks, &videoCallbacks,
             &audioCallbacks, nullptr, 0, nullptr, 0);
+        if (result != 0) {
+            // A failed LiStartConnection() has already completed its internal
+            // LiStopConnection() unwind, so no common-c worker can still read
+            // the process-global remote input material.
+            clearCommonCGlobalRemoteInputSecrets();
+        }
         secureWipe(&stream, sizeof(stream));
         secureWipe(&server, sizeof(server));
         secureWipe(&connectionCallbacks, sizeof(connectionCallbacks));
@@ -1074,7 +1117,11 @@ public:
         return result;
     }
     void interrupt() override { LiInterruptConnection(); }
-    void stop() override { LiStopConnection(); }
+    void stop() override {
+        LiStopConnection();
+        // LiStopConnection() joins/stops every stream before returning.
+        clearCommonCGlobalRemoteInputSecrets();
+    }
 };
 #endif
 
@@ -1440,9 +1487,17 @@ int Invocation::runStart(MoonlightSessionOwner::StartContext& context) {
         wire_.fps = offer.fps;
         wire_.bitrate = offer.configuredBitrateKbps;
         wire_.packetSize = offer.packetSizeBytes;
-        wire_.streamingRemotely = offer.networkPath == MoonlightStreamNetworkPath::Local
-                                      ? STREAM_CFG_LOCAL
-                                      : STREAM_CFG_REMOTE;
+        switch (offer.networkPath) {
+            case MoonlightStreamNetworkPath::Local:
+                wire_.streamingRemotely = STREAM_CFG_LOCAL;
+                break;
+            case MoonlightStreamNetworkPath::Remote:
+                wire_.streamingRemotely = STREAM_CFG_REMOTE;
+                break;
+            case MoonlightStreamNetworkPath::Unknown:
+                wire_.streamingRemotely = STREAM_CFG_AUTO;
+                break;
+        }
         wire_.audioConfiguration = audioConfigurationForLayout(offer.audioLayout);
         for (const auto& offered : offer.offeredCodecs) {
             const MoonlightStreamCodecProfile profile {
@@ -1545,6 +1600,7 @@ void Invocation::runInterrupt() {
 }
 
 void Invocation::runStop() {
+    runTerminalInputTeardown();
     {
         std::lock_guard<std::mutex> lock(mutex_);
         nativeCallActive_ = true;
@@ -1565,6 +1621,48 @@ void Invocation::runStop() {
         nativeCallActive_ = false;
     }
     finalize();
+}
+
+void Invocation::runTerminalInputTeardown() noexcept {
+    std::function<void(const MoonlightSessionKey&)> callback;
+    MoonlightSessionKey callbackKey;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (terminalInputTeardownDone_) {
+            return;
+        }
+        terminalInputTeardownDone_ = true;
+        callback = std::move(request_.terminalInputTeardown);
+        callbackKey = key_;
+    }
+    if (callback && callbackKey.valid()) {
+        try {
+            callback(callbackKey);
+        } catch (...) {
+            // Teardown is best effort but must never abort owner completion.
+        }
+    }
+}
+
+void Invocation::notifyTerminalComplete() noexcept {
+    std::function<void(const MoonlightSessionKey&)> callback;
+    MoonlightSessionKey callbackKey;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (terminalCompletionNotified_) {
+            return;
+        }
+        terminalCompletionNotified_ = true;
+        callback = std::move(request_.terminalComplete);
+        callbackKey = key_;
+    }
+    if (callback && callbackKey.valid()) {
+        try {
+            callback(callbackKey);
+        } catch (...) {
+            // Product state cleanup cannot be allowed to escape this worker.
+        }
+    }
 }
 
 void Invocation::noteUserCancel() noexcept {
@@ -1902,10 +2000,10 @@ bool Invocation::onVideoStart() noexcept {
     {
         std::lock_guard<std::mutex> lock(mutex_);
         valid = activeStage_ == MoonlightCommonCStage::VideoStreamStart &&
-            video_.has_value() && !videoStarted_ && !videoCleaned_;
+            video_.has_value() && !videoStartActive_ && !videoStarted_ &&
+            !videoStopped_ && !videoCleaned_;
         if (valid) {
-            videoStarted_ = true;
-            videoIdrRequestPending_ = false;
+            videoStartActive_ = true;
         }
     }
     if (!valid) {
@@ -1914,7 +2012,23 @@ bool Invocation::onVideoStart() noexcept {
         return false;
     }
     media_->startVideo();
-    return true;
+    const bool live = media_->videoLive();
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        videoStartActive_ = false;
+        valid = live && !finalizing_ && !terminal_ && !videoStopped_ &&
+            !videoCleaned_;
+        if (valid) {
+            videoStarted_ = true;
+            videoIdrRequestPending_ = false;
+        }
+        callbackCv_.notify_all();
+    }
+    if (!valid) {
+        lease.reset();
+        protocolFailure(MoonlightCommonCCode::MediaPortRejected);
+    }
+    return valid;
 }
 
 bool Invocation::lifecycleCallbackAllowedLocked() const noexcept {
@@ -1926,10 +2040,14 @@ bool Invocation::onVideoStop() noexcept {
     if (!lease.valid()) { return false; }
     bool valid = false;
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::unique_lock<std::mutex> lock(mutex_);
+        callbackCv_.wait(lock, [&]() {
+            return !videoStartActive_ || finalizing_ || terminal_;
+        });
         valid = videoStarted_ && !videoStopped_ && !videoCleaned_;
         if (valid) {
             videoStopped_ = true;
+            videoStarted_ = false;
         }
     }
     if (!valid) { return false; }
@@ -1942,10 +2060,14 @@ bool Invocation::onVideoCleanup() noexcept {
     if (!lease.valid()) { return false; }
     bool valid = false;
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::unique_lock<std::mutex> lock(mutex_);
+        callbackCv_.wait(lock, [&]() {
+            return !videoStartActive_ || finalizing_ || terminal_;
+        });
         valid = video_.has_value() && !videoCleaned_;
         if (valid) {
             videoCleaned_ = true;
+            videoStarted_ = false;
         }
     }
     if (!valid) { return false; }
@@ -2086,9 +2208,10 @@ bool Invocation::onAudioStart() noexcept {
     {
         std::lock_guard<std::mutex> lock(mutex_);
         valid = activeStage_ == MoonlightCommonCStage::AudioStreamStart &&
-            audio_.has_value() && !audioStarted_ && !audioCleaned_;
+            audio_.has_value() && !audioStartActive_ && !audioStarted_ &&
+            !audioStopped_ && !audioCleaned_;
         if (valid) {
-            audioStarted_ = true;
+            audioStartActive_ = true;
         }
     }
     if (!valid) {
@@ -2097,7 +2220,22 @@ bool Invocation::onAudioStart() noexcept {
         return false;
     }
     media_->startAudio();
-    return true;
+    const bool live = media_->audioLive();
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        audioStartActive_ = false;
+        valid = live && !finalizing_ && !terminal_ && !audioStopped_ &&
+            !audioCleaned_;
+        if (valid) {
+            audioStarted_ = true;
+        }
+        callbackCv_.notify_all();
+    }
+    if (!valid) {
+        lease.reset();
+        protocolFailure(MoonlightCommonCCode::MediaPortRejected);
+    }
+    return valid;
 }
 
 bool Invocation::onAudioStop() noexcept {
@@ -2105,10 +2243,14 @@ bool Invocation::onAudioStop() noexcept {
     if (!lease.valid()) { return false; }
     bool valid = false;
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::unique_lock<std::mutex> lock(mutex_);
+        callbackCv_.wait(lock, [&]() {
+            return !audioStartActive_ || finalizing_ || terminal_;
+        });
         valid = audioStarted_ && !audioStopped_ && !audioCleaned_;
         if (valid) {
             audioStopped_ = true;
+            audioStarted_ = false;
         }
     }
     if (!valid) { return false; }
@@ -2121,10 +2263,14 @@ bool Invocation::onAudioCleanup() noexcept {
     if (!lease.valid()) { return false; }
     bool valid = false;
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::unique_lock<std::mutex> lock(mutex_);
+        callbackCv_.wait(lock, [&]() {
+            return !audioStartActive_ || finalizing_ || terminal_;
+        });
         valid = audio_.has_value() && !audioCleaned_;
         if (valid) {
             audioCleaned_ = true;
+            audioStarted_ = false;
         }
     }
     if (!valid) { return false; }
@@ -2166,6 +2312,7 @@ void Invocation::cleanseLocked() noexcept {
 
 void Invocation::finalize(bool driverException) noexcept {
     runtime_->clearDeadline(key());
+    runTerminalInputTeardown();
     {
         std::unique_lock<std::mutex> lock(mutex_);
         if (terminalEmitted_) {
@@ -2200,6 +2347,8 @@ void Invocation::finalize(bool driverException) noexcept {
     }
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        videoStarted_ = false;
+        audioStarted_ = false;
         terminal_ = true;
         terminalEmitted_ = true;
         MoonlightCommonCCode code = pendingCode_;
@@ -2229,6 +2378,7 @@ void Invocation::finalize(bool driverException) noexcept {
         finalizing_ = false;
         callbackCv_.notify_all();
     }
+    notifyTerminalComplete();
     runtime_->complete(shared_from_this());
 }
 
@@ -2242,6 +2392,10 @@ MoonlightCommonCSnapshot Invocation::snapshot() const noexcept {
     result.lastCompletedStage = lastCompletedStage_;
     result.protocolViolation = protocolViolation_;
     result.transportReady = transportReady_;
+    result.videoReady = !terminal_ && mediaBound_ && !mediaReleased_ &&
+        videoStarted_ && media_ != nullptr && media_->videoLive();
+    result.audioReady = !terminal_ && mediaBound_ && !mediaReleased_ &&
+        audioStarted_ && media_ != nullptr && media_->audioLive();
     result.firstFrameReady = mediaBound_ && !mediaReleased_ &&
         media_ != nullptr && media_->firstFrameReady();
     result.terminal = terminal_;
@@ -2323,7 +2477,8 @@ MoonlightCommonCStartResult AdapterRuntime::start(
         const auto& identity = request.streamConfig.identity;
         if (request.sessionId == 0U || request.generation == 0U ||
             request.accountOwnerToken == 0U ||
-            !validCanonicalOffer(request.streamConfig) ||
+            !validCanonicalOffer(request.streamConfig,
+                                 request.deferRuntimeCapabilityProof) ||
             identity.ownerToken != request.accountOwnerToken ||
             identity.sessionGeneration != request.generation ||
             !request.server.authenticated ||
@@ -2786,6 +2941,12 @@ std::int32_t MoonlightCommonCTestHarness::videoFormatForProfile(
 std::array<std::uint8_t, 16U> MoonlightCommonCTestHarness::remoteInputIv(
     std::int32_t keyId) noexcept {
     return remotedesk::moonlight::remoteInputIv(keyId);
+}
+void MoonlightCommonCTestHarness::clearRemoteInputSecrets(
+    std::array<std::uint8_t, 16U>& key,
+    std::array<std::uint8_t, 16U>& iv) noexcept {
+    remotedesk::moonlight::clearRemoteInputSecrets(
+        key.data(), key.size(), iv.data(), iv.size());
 }
 std::size_t MoonlightCommonCTestHarness::staleCallbackCount() noexcept {
     return routerSlot().staleCallbacks.load(std::memory_order_relaxed);

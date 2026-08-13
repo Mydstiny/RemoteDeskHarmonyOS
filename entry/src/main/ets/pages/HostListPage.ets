@@ -20,6 +20,7 @@ import {
 } from '../services/AccountSessionCoordinator';
 import { DataCrypto } from '../services/DataCrypto';
 import { CloudStore } from '../services/CloudStore';
+import { AccountSessionLease } from '../services/AccountScopePolicy';
 import { cloudUserSettingIsSyncable } from '../services/CloudSyncSettingsPolicy';
 import {
   VncTrustService,
@@ -60,7 +61,7 @@ import {
 import { RustDeskRelayConfig } from '../model/RustDeskRelayConfig';
 import { RustDeskAccount } from '../model/RustDeskAccount';
 import { TotpEntry } from '../model/TotpEntry';
-import { MoonlightAddress } from '../model/MoonlightModels';
+import { MoonlightAddress, MoonlightHost } from '../model/MoonlightModels';
 import { RdpCredential } from '../model/RdpCredential';
 import { RustDeskRelayPage } from './RustDeskRelayPage';
 import { RustDeskProSyncService } from '../services/RustDeskProSyncService';
@@ -98,6 +99,11 @@ import {
   parseMoonlightHostAddAddress
 } from '../services/MoonlightHostAddFlowPolicy';
 import { MoonlightLocalHostService } from '../services/MoonlightLocalHostService';
+import {
+  MoonlightHostDirectoryView,
+  MoonlightHostLocalView,
+  MoonlightLocalViewService
+} from '../services/MoonlightLocalViewService';
 import {
   MoonlightLanDiscoveryCandidate,
   MoonlightLanDiscoveryService
@@ -508,6 +514,7 @@ const REMOTE_HOST_SHEET_PASSPHRASE = 4;
 const REMOTE_HOST_SHEET_PUBLIC_KEY = 5;
 const REMOTE_HOST_SHEET_RUSTDESK_TOTP_BINDING = 6;
 const REMOTE_HOST_SHEET_VNC_CERTIFICATE = 7;
+const DESKTOP_MOONLIGHT_TAB = 7;
 
 @Entry
 @Component
@@ -578,6 +585,12 @@ struct HostListPage {
   @State moonlightDiscoveryRunning: boolean = false;
   @State moonlightDiscoveryResultOwnerToken: number = 0;
   @State moonlightDiscoveryResultGeneration: number = 0;
+  @State moonlightProtocolAvailable: boolean = false;
+  @State moonlightHosts: MoonlightHostLocalView[] = [];
+  @State moonlightDirectoryCode: string = 'loading';
+  private moonlightDirectoryOwnerScopeId: string = '';
+  private moonlightDirectoryAccountGeneration: number = 0;
+  private moonlightDirectoryStoreInstanceId: number = 0;
   @State vncAddFromModernPicker: boolean = false;
   @State addSheetClosing: boolean = false;
   // Keep the released storage/cloud key while exposing the broader FAB-style semantics in UI code.
@@ -910,7 +923,9 @@ struct HostListPage {
   private readonly vncTrust: VncTrustService = VncTrustService.getInstance();
   private readonly vncSettings: VncSettingsService = VncSettingsService.getInstance();
   private readonly moonlightLocalHostService: MoonlightLocalHostService =
-    new MoonlightLocalHostService(CloudStore.getInstance());
+    new MoonlightLocalHostService(CloudStore.getInstance(), CloudStore.getInstance());
+  private readonly moonlightLocalViewService: MoonlightLocalViewService =
+    new MoonlightLocalViewService(CloudStore.getInstance());
   private readonly moonlightHostService: MoonlightHostService = new MoonlightHostService();
   private readonly moonlightLanProbeService: MoonlightLanProbeService =
     new MoonlightLanProbeService();
@@ -1327,6 +1342,7 @@ struct HostListPage {
     // The home page is a core path.  Loading it must not await an optional
     // permission dialog or sensor service.
     await this.load(true, true);
+    this.refreshMoonlightDirectory();
     this.registerDataRefreshListeners();
     this.loadAfterServiceReady();
     this.registerInputDeviceWatcher();
@@ -1340,6 +1356,7 @@ struct HostListPage {
     this.pageActive = true;
     this.cloudConnectionAvailable =
       CloudStore.getInstance().isCloudAvailable();
+    this.refreshMoonlightDirectory();
     this.refreshCloudRegistration();
     CloudSyncCoordinator.getInstance().flushDeferredAutomaticPushes();
     this.updateWindowMetrics();
@@ -1714,11 +1731,94 @@ struct HostListPage {
     this.pendingMoonlightCatalogHandoff = emptyHostAddPostSaveHandoff();
   }
 
+  private refreshMoonlightDirectory(): void {
+    const lease: AccountSessionLease | null = CloudStore.getInstance().currentAccountLease();
+    if (lease === null || !CloudStore.getInstance().isLeaseCurrent(lease)) {
+      this.moonlightDirectoryOwnerScopeId = '';
+      this.moonlightDirectoryAccountGeneration = 0;
+      this.moonlightDirectoryStoreInstanceId = 0;
+      this.moonlightDirectoryCode = 'account_scope_unavailable';
+      this.moonlightHosts = [];
+      return;
+    }
+    this.moonlightDirectoryOwnerScopeId = lease.ownerScopeId;
+    this.moonlightDirectoryAccountGeneration = lease.generation;
+    this.moonlightDirectoryStoreInstanceId = lease.storeInstanceId;
+    const directory: MoonlightHostDirectoryView =
+      this.moonlightLocalViewService.loadHosts(Date.now());
+    this.moonlightDirectoryCode = directory.code;
+    this.moonlightHosts = directory.ok ? directory.hosts.slice() : [];
+  }
+
+  private refreshMoonlightDirectoryIfScopeChanged(): void {
+    const lease: AccountSessionLease | null = CloudStore.getInstance().currentAccountLease();
+    if (lease === null || lease.ownerScopeId !== this.moonlightDirectoryOwnerScopeId ||
+        lease.generation !== this.moonlightDirectoryAccountGeneration ||
+        lease.storeInstanceId !== this.moonlightDirectoryStoreInstanceId) {
+      this.refreshMoonlightDirectory();
+    }
+  }
+
+  private visibleMoonlightHosts(): MoonlightHostLocalView[] {
+    const query: string = this.searchText.trim().toLowerCase();
+    if (query === '') { return this.moonlightHosts.slice(); }
+    return this.moonlightHosts.filter((view: MoonlightHostLocalView): boolean => {
+      const host: MoonlightHost | null = view.host;
+      if (host === null) { return false; }
+      if (host.displayName.toLowerCase().indexOf(query) >= 0 ||
+          host.serverUuid.toLowerCase().indexOf(query) >= 0) { return true; }
+      for (let index: number = 0; index < host.addresses.length; index++) {
+        if (host.addresses[index].host.toLowerCase().indexOf(query) >= 0) { return true; }
+      }
+      return false;
+    });
+  }
+
+  private moonlightAddressLabel(host: MoonlightHost): string {
+    if (host.addresses.length === 0) { return '未保存地址'; }
+    let selected = host.addresses[0];
+    for (let index: number = 0; index < host.addresses.length; index++) {
+      const address = host.addresses[index];
+      if ((address.host + ':' + address.port.toString()) === host.preferredAddressKey) {
+        selected = address;
+        break;
+      }
+    }
+    return selected.host + ':' + selected.port.toString();
+  }
+
+  private openMoonlightHost(hostId: string, catalog: boolean = false): void {
+    const params: Record<string, Object> | null = moonlightHostRouteParams(hostId);
+    if (params === null) { return; }
+    router.pushUrl({
+      url: catalog ? 'pages/MoonlightAppCatalogPage' : 'pages/MoonlightHostDetailPage',
+      params: params
+    });
+  }
+
+  private openMoonlightAddFlow(): void {
+    this.resetForm();
+    this.invalidateMoonlightCatalogHandoff();
+    this.clearMoonlightVerificationState();
+    this.moonlightAddOwnerToken += 1;
+    this.addSheetShowsModernPicker = false;
+    this.modernAddProtocol = 'moonlight';
+    this.openSheetSafely((): void => { this.showAddSheet = true; });
+  }
+
+  private probeMoonlightCapabilityForPicker(): void {
+    // Called only after an explicit FAB action. Homepage rendering remains
+    // side-effect free, while the picker still reflects the real native
+    // identity/Host Control capability instead of a compile-time guess.
+    this.moonlightProtocolAvailable =
+      this.moonlightHostService.capabilities().hostControlReady;
+  }
+
   private moonlightDiscoveryCandidate(
     key: MoonlightHostAddDiscoveryKey,
     candidate: MoonlightLanDiscoveryCandidate
   ): void {
-    if (key.ownerToken !== this.moonlightAddOwnerToken ||
+    if (!this.pageActive || key.ownerToken !== this.moonlightAddOwnerToken ||
         key.generation !== this.moonlightDiscoveryResultGeneration ||
         !this.moonlightDiscoveryRunning) {
       return;
@@ -1800,13 +1900,23 @@ struct HostListPage {
       this.moonlightActiveVerificationFence;
     if (verification === null || current === null ||
         current.generation >= Number.MAX_SAFE_INTEGER ||
+        !this.moonlightFenceLeaseCurrent(current) ||
         !moonlightVerificationMatchesFence(verification, current)) {
       this.moonlightActiveVerificationFence = null;
       return;
     }
     this.moonlightActiveVerificationFence = createMoonlightHostOperationFence(
       current.ownerToken, current.generation + 1,
+      current.ownerScopeId, current.accountGeneration,
       verification.serverUuid, verification.address);
+  }
+
+  private moonlightFenceLeaseCurrent(fence: MoonlightHostOperationFence): boolean {
+    const store: CloudStore = CloudStore.getInstance();
+    const lease: AccountSessionLease | null = store.currentAccountLease();
+    return lease !== null && store.isLeaseCurrent(lease) &&
+      lease.ownerScopeId === fence.ownerScopeId &&
+      lease.generation === fence.accountGeneration;
   }
 
   private adoptMoonlightVerificationFence(
@@ -1819,6 +1929,7 @@ struct HostListPage {
     if (verification === null || current === null ||
         key.ownerToken !== this.moonlightAddOwnerToken ||
         current.ownerToken !== key.ownerToken || key.generation < current.generation ||
+        !this.moonlightFenceLeaseCurrent(current) ||
         !moonlightVerificationMatchesFence(verification, current)) {
       return null;
     }
@@ -1826,7 +1937,8 @@ struct HostListPage {
       return cloneMoonlightHostOperationFence(current);
     }
     const next: MoonlightHostOperationFence | null = createMoonlightHostOperationFence(
-      key.ownerToken, key.generation, verification.serverUuid, verification.address);
+      key.ownerToken, key.generation, current.ownerScopeId, current.accountGeneration,
+      verification.serverUuid, verification.address);
     if (next === null) { return null; }
     this.moonlightPendingVerificationFence = null;
     this.moonlightPairingExpiresAt = 0;
@@ -1844,6 +1956,7 @@ struct HostListPage {
     if (verification === null || current === null ||
         key.ownerToken !== this.moonlightAddOwnerToken ||
         key.ownerToken !== current.ownerToken || key.generation !== current.generation ||
+        !this.moonlightFenceLeaseCurrent(current) ||
         !moonlightVerificationMatchesFence(verification, current)) {
       return null;
     }
@@ -1853,26 +1966,31 @@ struct HostListPage {
   private moonlightRuntimeContext(
     key: MoonlightHostAddOperationKey,
     verification: MoonlightHostAddVerification,
-    pinnedTrustAvailable: boolean
+    pinnedTrustAvailable: boolean,
+    fence: MoonlightHostOperationFence
   ): MoonlightHostContext | null {
-    const lease = CloudStore.getInstance().currentAccountLease();
+    const store: CloudStore = CloudStore.getInstance();
+    const lease: AccountSessionLease | null = store.currentAccountLease();
     const fingerprint: string = verification.fingerprintSha256.trim().toLowerCase();
-    if (lease === null || key.ownerToken <= 0 || key.generation <= 0 ||
+    if (lease === null || !store.isLeaseCurrent(lease) ||
+        lease.ownerScopeId !== fence.ownerScopeId ||
+        lease.generation !== fence.accountGeneration ||
+        key.ownerToken !== fence.ownerToken || key.generation !== fence.generation ||
+        key.ownerToken <= 0 || key.generation <= 0 ||
         verification.serverUuid.trim() === '' || verification.address.host.trim() === '' ||
         pinnedTrustAvailable && !/^[0-9a-f]{64}$/.test(fingerprint)) {
       return null;
     }
-    const scope = CloudStore.getInstance().currentScope();
     const family: 'unspecified' | 'ipv4' | 'ipv6' = verification.address.family === 'ipv4' ?
       'ipv4' : verification.address.family === 'ipv6' ? 'ipv6' : 'unspecified';
     const context: MoonlightHostContext = {
       lease: lease,
-      ownerScopeFingerprint: moonlightOwnerScopeFingerprint(scope.ownerScopeId),
+      ownerScopeFingerprint: moonlightOwnerScopeFingerprint(lease.ownerScopeId),
       ownerToken: key.ownerToken,
       generation: key.generation,
       hostId: verification.serverUuid,
       serverUuid: verification.serverUuid,
-      installationId: moonlightInstallationId(scope.storeIdentity),
+      installationId: moonlightInstallationId(lease.storeIdentity),
       endpoint: {
         serverName: verification.serverName.trim() || verification.address.host,
         addresses: [{ value: verification.address.host, family: family }],
@@ -1919,12 +2037,12 @@ struct HostListPage {
     const capturedFence: MoonlightHostOperationFence | null =
       this.currentMoonlightVerificationFence(key);
     const verification: MoonlightHostAddVerification | null = this.moonlightActiveVerification;
-    const context: MoonlightHostContext | null = verification === null ? null :
-      this.moonlightRuntimeContext(key, verification, false);
+    const context: MoonlightHostContext | null = verification === null || capturedFence === null ? null :
+      this.moonlightRuntimeContext(key, verification, false, capturedFence);
     const expiresAt: number = this.moonlightPairingExpiresAt;
     const installationId: string = context === null || context.installationId === undefined ?
       '' : context.installationId;
-    if (capturedFence === null || context === null || installationId === '' ||
+    if (context === null || installationId === '' ||
         !/^[0-9]{4}$/.test(pin) || expiresAt <= Date.now()) {
       return { paired: false, errorText: '当前主机连接上下文已失效' };
     }
@@ -1990,18 +2108,26 @@ struct HostListPage {
     selectedServerUuid: string,
     key: MoonlightHostAddOperationKey
   ): Promise<MoonlightHostAddVerification | null> {
-    if (key.ownerToken !== this.moonlightAddOwnerToken || key.operation !== 'verify') {
+    if (!this.pageActive || key.ownerToken !== this.moonlightAddOwnerToken ||
+        key.operation !== 'verify') {
       return null;
     }
+    const store: CloudStore = CloudStore.getInstance();
+    const capturedLease: AccountSessionLease | null = store.currentAccountLease();
+    if (capturedLease === null || !store.isLeaseCurrent(capturedLease)) { return null; }
     const requestedFence: MoonlightHostOperationFence | null =
       createMoonlightHostOperationFence(
-        key.ownerToken, key.generation, selectedServerUuid, address);
+        key.ownerToken, key.generation,
+        capturedLease.ownerScopeId, capturedLease.generation,
+        selectedServerUuid, address);
     if (requestedFence === null) { return null; }
     this.clearMoonlightVerificationState();
     this.moonlightPendingVerificationFence = requestedFence;
     const verification: MoonlightHostAddVerification | null =
       await this.moonlightLanProbeService.verify(address, selectedServerUuid);
-    if (verification === null || key.ownerToken !== this.moonlightAddOwnerToken ||
+    if (verification === null || !this.pageActive ||
+        !store.isLeaseCurrent(capturedLease) ||
+        key.ownerToken !== this.moonlightAddOwnerToken ||
         !moonlightHostOperationFenceEquals(
           this.moonlightPendingVerificationFence, requestedFence) ||
         !moonlightVerificationMatchesFence(verification, requestedFence)) {
@@ -2013,7 +2139,9 @@ struct HostListPage {
     }
     const activeFence: MoonlightHostOperationFence | null =
       createMoonlightHostOperationFence(
-        key.ownerToken, key.generation, verification.serverUuid, verification.address);
+        key.ownerToken, key.generation,
+        capturedLease.ownerScopeId, capturedLease.generation,
+        verification.serverUuid, verification.address);
     if (activeFence === null) {
       this.moonlightPendingVerificationFence = null;
       return null;
@@ -2031,7 +2159,7 @@ struct HostListPage {
       this.adoptMoonlightVerificationFence(key) : null;
     const verification: MoonlightHostAddVerification | null = this.moonlightActiveVerification;
     const context: MoonlightHostContext | null = adoptedFence === null || verification === null ? null :
-      this.moonlightRuntimeContext(key, verification, true);
+      this.moonlightRuntimeContext(key, verification, true, adoptedFence);
     if (context === null) {
       return { appCount: 0, titles: [], stale: false, errorText: '主机连接上下文已失效' };
     }
@@ -2150,6 +2278,7 @@ struct HostListPage {
       this.pendingMoonlightCatalogHandoff = createHostAddPostSaveHandoff(
         'moonlight_catalog', hostId, ownerToken, generation);
     }
+    this.refreshMoonlightDirectory();
     this.requestAddSheetClose();
   }
 
@@ -3220,6 +3349,13 @@ struct HostListPage {
 
   aboutToDisappear(): void {
     this.pageActive = false;
+    this.stopMoonlightLanDiscovery();
+    this.moonlightHostService.disposeOwner(this.moonlightAddOwnerToken);
+    this.clearMoonlightVerificationState();
+    this.moonlightDiscoveryResultOwnerToken = 0;
+    this.moonlightDiscoveryResultGeneration = 0;
+    this.moonlightLanCandidates = [];
+    this.moonlightAddOwnerToken += 1;
     this.invalidateMoonlightCatalogHandoff();
     this.hostPresencePageGeneration += 1;
     this.hostLoadRefreshPresence = false;
@@ -3467,6 +3603,7 @@ struct HostListPage {
     if (showLoading) { this.isLoading = true; }
     try {
       this.refreshCryptoStatus();
+      this.refreshMoonlightDirectoryIfScopeChanged();
       this.refreshHostListView();
       this.rdpCredentials = this.srv.getAllRdpCredentials();
       this.rdpCount = this.srv.getRdpCount();
@@ -7249,6 +7386,7 @@ struct HostListPage {
       this.accountAvatarUrl = avatarUri;
       this.loginRefreshKey++;
       this.applyCloudUserSettings();
+      this.refreshMoonlightDirectory();
       this.scheduleHostListLoad(false);
       promptAction.showToast({ message: '登录成功', duration: 1500 });
     } catch (_err) {
@@ -8055,8 +8193,6 @@ struct HostListPage {
                   this.sidebarTab('SSH 终端', protocolIcon('ssh'), 2)
                   this.sidebarTab('VNC 主机', protocolIcon('vnc'), 3)
                 }
-                // Moonlight remains separate even when other host cards are
-                // grouped; it has no tab index until its gates are released.
                 this.sidebarMoonlightTab()
                 this.sidebarTab('密钥保险库', protocolIcon('key_vault'), 4)
                 this.sidebarTab('2FA 验证器', protocolIcon('totp'), 5)
@@ -8073,6 +8209,7 @@ struct HostListPage {
             Column() {
               if (this.curTab <= 3) { this.hostContent() }
               else if (this.curTab === 6) { this.relayContent() }
+              else if (this.curTab === DESKTOP_MOONLIGHT_TAB) { this.moonlightDirectoryContent() }
               else { this.keyVaultContent() }
             }.layoutWeight(1).height('100%')
           }
@@ -8155,6 +8292,7 @@ struct HostListPage {
               const modernPicker: boolean =
                 resolveFabAddStyle(this.fabAddStyle, this.isDesktopDevice) === 'modern';
               this.addSheetShowsModernPicker = modernPicker;
+              if (modernPicker) { this.probeMoonlightCapabilityForPicker(); }
               this.modernAddProtocol = '';
               if (shouldPrepareClassicVncEditor(nextProto, modernPicker)) {
                 this.prepareClassicVncEditor(null);
@@ -8167,6 +8305,8 @@ struct HostListPage {
               this.kvAddTrigger++;
             } else if (this.curTab === 6) {
               this.relayAddTrigger++;
+            } else if (this.curTab === DESKTOP_MOONLIGHT_TAB) {
+              this.openMoonlightAddFlow();
             }
           } else {
             // 手机/平板/PC小窗: 主机/密钥/中继/设置
@@ -8174,6 +8314,7 @@ struct HostListPage {
               this.resetForm();
               this.addSheetShowsModernPicker =
                 resolveFabAddStyle(this.fabAddStyle, this.isDesktopDevice) === 'modern';
+              if (this.addSheetShowsModernPicker) { this.probeMoonlightCapabilityForPicker(); }
               this.modernAddProtocol = '';
               this.openSheetSafely((): void => { this.showAddSheet = true; });
             }
@@ -8313,31 +8454,27 @@ struct HostListPage {
     })
   }
 
-  /**
-   * Moonlight keeps a visible desktop slot so the protocol taxonomy is stable,
-   * but remains fail-closed until Host Control, media and input gates are real.
-   * It deliberately has no tab index and therefore cannot alter another
-   * protocol's selected state or host filter.
-   */
   @Builder sidebarMoonlightTab() {
     Row() {
       MoonlightBrandIcon({
         iconSize: 28,
-        tint: this.pal().text3,
-        accessibilityLabel: 'Moonlight，即将支持'
+        tint: this.curTab === DESKTOP_MOONLIGHT_TAB ? this.accentColor : this.pal().text3,
+        accessibilityLabel: 'Moonlight 主机'
       })
-      Column() {
-        Text('Moonlight').fontSize(16).fontWeight(FontWeight.Medium)
-          .fontColor(this.pal().text3).fontFamily(this.font())
-        Text('即将支持').fontSize(10).fontColor(this.pal().text3)
-          .fontFamily(this.font()).margin({ top: 2 })
-      }.alignItems(HorizontalAlign.Start).margin({ left: 14 })
+      Text('Moonlight').fontSize(16).fontWeight(FontWeight.Medium)
+        .fontColor(this.curTab === DESKTOP_MOONLIGHT_TAB ? this.accentColor : this.pal().text3)
+        .fontFamily(this.font()).margin({ left: 14 })
     }
     .width('100%').height(56).padding({ left: 24, right: 24 })
     .borderRadius(12).margin({ left: 12, right: 12, bottom: 4 })
-    .opacity(0.58)
-    .accessibilityText('Moonlight，即将支持')
-    .onClick((): void => {})
+    .backgroundColor(this.curTab === DESKTOP_MOONLIGHT_TAB ? this.pal().surface : Color.Transparent)
+    .accessibilityText('Moonlight 主机')
+    .onClick((): void => {
+      this.curTab = DESKTOP_MOONLIGHT_TAB;
+      this.hostPageTitle = 'Moonlight 主机';
+      this.searchText = '';
+      this.refreshMoonlightDirectory();
+    })
   }
 
   @Builder sidebarSettingsBtn() {
@@ -8929,6 +9066,102 @@ struct HostListPage {
     .width('100%').padding({ top: 8, bottom: 140 })
   }
 
+  @Builder moonlightHostCard(view: MoonlightHostLocalView) {
+    if (view.host !== null) {
+      Row() {
+        Stack({ alignContent: Alignment.Center }) {
+          MoonlightBrandIcon({ iconSize: 28, tint: this.accentColor })
+        }.width(50).height(50).borderRadius(16).backgroundColor(this.pal().surface)
+          .margin({ right: 12 })
+        Column() {
+          Row() {
+            Text(view.host.displayName).fontSize(16).fontWeight(FontWeight.Medium)
+              .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1)
+              .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+            Text(view.paired ? '已配对' : '未配对').fontSize(10)
+              .fontColor(view.paired ? this.pal().success : this.pal().editColor)
+              .padding({ left: 7, right: 7, top: 3, bottom: 3 })
+              .backgroundColor((view.paired ? this.pal().success : this.pal().editColor) + '14')
+              .borderRadius(8).margin({ left: 8 })
+          }.width('100%')
+          Text(this.moonlightAddressLabel(view.host)).fontSize(12).fontColor(this.pal().text2)
+            .fontFamily('monospace').margin({ top: 4 }).maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+          Text('仅本地 · ' + view.catalogItems.length.toString() + ' 个应用')
+            .fontSize(10).fontColor(this.pal().text3).margin({ top: 4 })
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+        SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(16).fontColor([this.pal().text3])
+          .margin({ left: 10 })
+      }
+      .width('100%').constraintSize({ minHeight: 78 }).padding(14)
+      .borderRadius(16).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
+      .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+      .onClick((): void => { this.openMoonlightHost(view.host?.id || ''); })
+    }
+  }
+
+  @Builder moonlightDirectorySection() {
+    Column() {
+      Row() {
+        Column() {
+          Text('Moonlight 主机').fontSize(16).fontWeight(FontWeight.Bold)
+            .fontColor(this.pal().text).fontFamily(this.font())
+          Text('本地保存 · 按主机进入应用目录').fontSize(11).fontColor(this.pal().text3)
+            .fontFamily(this.font()).margin({ top: 3 })
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+        Text(this.visibleMoonlightHosts().length.toString() + ' 台').fontSize(11)
+          .fontColor(this.accentColor).padding({ left: 9, right: 9, top: 4, bottom: 4 })
+          .backgroundColor(this.accentColor + '12').borderRadius(10)
+      }.width('100%').margin({ bottom: 10 })
+      ForEach(this.visibleMoonlightHosts(), (view: MoonlightHostLocalView): void => {
+        this.moonlightHostCard(view)
+        Blank().height(8)
+      }, (view: MoonlightHostLocalView): string => view.host?.id || 'invalid-moonlight-host')
+    }.width('100%').padding({ top: 8, bottom: 8 })
+  }
+
+  @Builder moonlightDirectoryContent() {
+    Column() {
+      Row() {
+        Column() {
+          Text('Moonlight 主机').fontSize(27).fontWeight(FontWeight.Bold)
+            .fontColor(this.pal().text).fontFamily(this.font())
+          Text('局域网发现、配对与低延迟串流').fontSize(12).fontColor(this.pal().text3)
+            .fontFamily(this.font()).margin({ top: 4 })
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+        Button('添加主机').height(40).borderRadius(13).fontSize(13)
+          .backgroundColor(this.accentColor).fontColor(Color.White)
+          .onClick((): void => { this.openMoonlightAddFlow(); })
+      }.width('100%').padding({ left: 28, right: 28,
+        top: this.topSafeHeightVp() + this.titleOffsetY() + 14, bottom: 16 })
+      List({ space: 8 }) {
+        if (this.moonlightDirectoryCode === 'loading') {
+          ListItem() {
+            Column() { LoadingProgress().width(32).height(32).color(this.accentColor) }
+              .width('100%').height(280).justifyContent(FlexAlign.Center)
+          }
+        } else if (this.visibleMoonlightHosts().length === 0) {
+          ListItem() {
+            Column() {
+              MoonlightBrandIcon({ iconSize: 48, tint: this.pal().text3 })
+              Text(this.moonlightDirectoryCode === 'ok' || this.moonlightDirectoryCode === 'cache_read_failed'
+                ? '还没有 Moonlight 主机' : '本地主机数据暂不可用')
+                .fontSize(17).fontWeight(FontWeight.Medium).fontColor(this.pal().text).margin({ top: 16 })
+              Text('点击添加主机，自动发现局域网中的 Sunshine / GameStream')
+                .fontSize(12).fontColor(this.pal().text3).margin({ top: 7 }).textAlign(TextAlign.Center)
+            }.width('100%').height(360).justifyContent(FlexAlign.Center)
+          }
+        } else {
+          ForEach(this.visibleMoonlightHosts(), (view: MoonlightHostLocalView): void => {
+            ListItem() { this.moonlightHostCard(view) }
+          }, (view: MoonlightHostLocalView): string => view.host?.id || 'invalid-moonlight-host')
+        }
+        ListItem() { Column().height(110) }
+      }.layoutWeight(1).width('100%').padding({ left: 28, right: 28 })
+        .scrollBar(BarState.Off).edgeEffect(EdgeEffect.Spring)
+    }.width('100%').height('100%')
+  }
+
   @Builder hostContent() {
     Column() {
       Stack() {
@@ -9018,6 +9251,11 @@ struct HostListPage {
           }
         }
 
+        if (!(this.isDesktopDevice && this.breakpoint === 'xl') &&
+          !this.isLoading && this.visibleMoonlightHosts().length > 0) {
+          ListItem() { this.moonlightDirectorySection() }
+        }
+
         if (this.isLoading) {
           ListItem() {
             Column() { LoadingProgress().width(32).height(32).color(this.accentColor) }
@@ -9030,7 +9268,9 @@ struct HostListPage {
           ForEach([this.hostViewRevision], (_revision: number): void => {
             ListItem() { this.hostGroupedContent() }
           }, (revision: number): string => 'host-grouped-item-' + revision.toString())
-        } else if (this.filteredHosts.length === 0) {
+        } else if (this.filteredHosts.length === 0 &&
+          ((this.isDesktopDevice && this.breakpoint === 'xl') ||
+            this.visibleMoonlightHosts().length === 0)) {
           ListItem() {
             Column() {
               SymbolGlyph($r('sys.symbol.desktop_fill'))
@@ -13076,10 +13316,8 @@ struct HostListPage {
   @Builder hostAddSheetContent() {
     if (this.addSheetShowsModernPicker) {
       HostAddWizardSheet({
-        // Expose the reviewable add-shell route like RustDesk, while keeping
-        // the actual pairing/streaming capability gate closed.
         moonlightFabEntryAvailable: true,
-        moonlightProtocolAvailable: false,
+        moonlightProtocolAvailable: this.moonlightProtocolAvailable,
         onSelectProtocol: (protocol: string): void => {
           this.modernAddProtocol = protocol;
           this.addSheetShowsModernPicker = false;

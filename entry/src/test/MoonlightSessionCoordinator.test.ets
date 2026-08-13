@@ -36,6 +36,8 @@ class FakeMoonlightRuntime implements MoonlightRuntimePort {
     this.stopCalls += 1;
     return this.stopResult;
   }
+
+  nativeSessionId(_operationGeneration: number): number { return 42; }
 }
 
 function request(): MoonlightSessionStartRequest {
@@ -44,6 +46,21 @@ function request(): MoonlightSessionStartRequest {
     hostAddress: '192.168.1.20', runtimeAvailable: true,
     hostControlReady: true, streamingTransportReady: true
   };
+}
+
+function productRequest(includeSurface: boolean): MoonlightSessionStartRequest {
+  const value: MoonlightSessionStartRequest = request();
+  value.hostControlAlreadyLaunched = true;
+  value.launchKey = { requestId: 9, generation: 7, ownerToken: 11 };
+  value.serverUuid = 'server-1';
+  value.numericAppId = 42;
+  if (includeSurface) {
+    value.rendererHandle = 101;
+    value.surfaceWidth = 1920;
+    value.surfaceHeight = 1080;
+    value.surfaceId = 'surface-1';
+  }
+  return value;
 }
 
 function event(type: MoonlightCoordinatorEvent['type'], generation: number,
@@ -174,6 +191,56 @@ export default function moonlightSessionCoordinatorTest(): void {
         renderAttached: false, restoreNeeded: false, latestSurfaceId: '', createdAtMs: 1, updatedAtMs: 1
       });
       expect(competing).assertFalse();
+      coordinator.resetForTest();
+      registry.resetForTest();
+    });
+
+    it('reserves_before_surface_and_reuses_the_exact_reservation_on_start', 0, (): void => {
+      const runtime: FakeMoonlightRuntime = new FakeMoonlightRuntime();
+      const registry: ActiveRemoteSessionRegistry = ActiveRemoteSessionRegistry.getInstance();
+      registry.resetForTest();
+      registry.bindScope('owner-1', 1);
+      const coordinator: MoonlightSessionCoordinator = new MoonlightSessionCoordinator(runtime, registry);
+      const reserved = coordinator.reserve(productRequest(false));
+      expect(reserved.accepted).assertTrue();
+      expect(reserved.code).assertEqual('reserved');
+      expect(runtime.startCalls).assertEqual(0);
+      expect(activeMoonlightRecord(registry) !== null).assertTrue();
+      const started = coordinator.start(productRequest(true));
+      expect(started.accepted).assertTrue();
+      expect(runtime.startCalls).assertEqual(1);
+      expect((activeMoonlightRecord(registry) as ActiveRemoteSessionRecord).sessionId).assertEqual(42);
+      coordinator.resetForTest();
+      registry.resetForTest();
+    });
+
+    it('releases_an_unstarted_route_reservation_without_calling_native', 0, (): void => {
+      const runtime: FakeMoonlightRuntime = new FakeMoonlightRuntime();
+      const registry: ActiveRemoteSessionRegistry = ActiveRemoteSessionRegistry.getInstance();
+      registry.resetForTest();
+      registry.bindScope('owner-1', 1);
+      const coordinator: MoonlightSessionCoordinator = new MoonlightSessionCoordinator(runtime, registry);
+      expect(coordinator.reserve(productRequest(false)).accepted).assertTrue();
+      expect(coordinator.cancelForRoute('host-1', 'app-1', 'surface-destroyed').code)
+        .assertEqual('stopped');
+      expect(runtime.cancelCalls).assertEqual(0);
+      expect(activeMoonlightRecord(registry)).assertNull();
+      coordinator.resetForTest();
+      registry.resetForTest();
+    });
+
+    it('uses_the_next_sequence_for_staged_runtime_start_failure', 0, (): void => {
+      const runtime: FakeMoonlightRuntime = new FakeMoonlightRuntime();
+      runtime.startResult = false;
+      const registry: ActiveRemoteSessionRegistry = ActiveRemoteSessionRegistry.getInstance();
+      registry.resetForTest();
+      registry.bindScope('owner-1', 1);
+      const coordinator: MoonlightSessionCoordinator = new MoonlightSessionCoordinator(runtime, registry);
+      const failed = coordinator.start(productRequest(true));
+      expect(failed.code).assertEqual('runtime_start_failed');
+      expect((failed.state as MoonlightSessionStateSnapshot).phase).assertEqual('failed');
+      expect((failed.state as MoonlightSessionStateSnapshot).lastEventSequence).assertEqual(5);
+      expect(activeMoonlightRecord(registry)).assertNull();
       coordinator.resetForTest();
       registry.resetForTest();
     });

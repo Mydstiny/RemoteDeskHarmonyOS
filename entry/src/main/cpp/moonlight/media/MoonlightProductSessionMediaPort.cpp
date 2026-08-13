@@ -30,6 +30,10 @@ struct MoonlightProductSessionMediaPort::Impl final {
     const std::int64_t rendererHandle;
     const std::int32_t width;
     const std::int32_t height;
+    // Serializes the complete activate/create/publish transaction with release.
+    // The state mutex alone cannot cover platform calls, but allowing two binds
+    // to pass its initial empty-state check would publish competing sink owners.
+    std::mutex bindLane;
     mutable std::mutex mutex;
     MoonlightSessionKey key {};
     bool ownerActive = false;
@@ -72,8 +76,12 @@ bool MoonlightProductSessionMediaPort::bindSession(
     if (impl_ == nullptr || !key.valid()) {
         return false;
     }
+    std::lock_guard<std::mutex> bind(impl_->bindLane);
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
+        if (impl_->key == key && impl_->ownerActive && impl_->delegate != nullptr) {
+            return true;
+        }
         if (impl_->ownerActive || impl_->delegate != nullptr || impl_->key.valid()) {
             return false;
         }
@@ -122,6 +130,7 @@ void MoonlightProductSessionMediaPort::releaseSession(
     if (impl_ == nullptr || !key.valid()) {
         return;
     }
+    std::lock_guard<std::mutex> bind(impl_->bindLane);
     std::shared_ptr<MoonlightProductMediaPort> delegate;
     bool ownerActive = false;
     {
@@ -161,6 +170,12 @@ bool MoonlightProductSessionMediaPort::firstFrameReady() const noexcept {
 
 bool MoonlightProductSessionMediaPort::videoReady() const noexcept {
     MOONLIGHT_DELEGATE_BOOL(videoReady, false);
+}
+bool MoonlightProductSessionMediaPort::videoLive() const noexcept {
+    MOONLIGHT_DELEGATE_BOOL(videoLive, false);
+}
+bool MoonlightProductSessionMediaPort::audioLive() const noexcept {
+    MOONLIGHT_DELEGATE_BOOL(audioLive, false);
 }
 bool MoonlightProductSessionMediaPort::audioReady(
     MoonlightStreamAudioLayout layout) const noexcept {

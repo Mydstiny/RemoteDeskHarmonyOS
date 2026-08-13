@@ -46,6 +46,8 @@ public:
     bool videoReady() const noexcept override;
     bool audioReady(MoonlightStreamAudioLayout layout) const noexcept override;
     bool firstFrameReady() const noexcept override;
+    bool videoLive() const noexcept override;
+    bool audioLive() const noexcept override;
     bool setupVideo(
         const MoonlightCommonCVideoSelection& selection) noexcept override;
     void startVideo() noexcept override;

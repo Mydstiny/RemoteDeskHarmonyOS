@@ -10,7 +10,7 @@ using namespace remotedesk::moonlight;
 class NoopSink final : public MoonlightGameControllerListener::Sink {
   public:
     void onPhysicalControllerConnected(
-        std::uint64_t, std::uint64_t,
+        std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t,
         const MoonlightControllerProfile&) noexcept override {}
     void onPhysicalControllerSample(
         std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t,

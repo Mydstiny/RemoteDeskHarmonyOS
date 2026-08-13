@@ -24,6 +24,8 @@ const MAX_VERSION_LENGTH: number = 128;
 export class MoonlightHostOperationFence {
   ownerToken: number = 0;
   generation: number = 0;
+  ownerScopeId: string = '';
+  accountGeneration: number = 0;
   serverUuid: string = '';
   addressHost: string = '';
   addressFamily: MoonlightAddressFamily = 'hostname';
@@ -105,19 +107,27 @@ function validAddress(address: MoonlightAddress): boolean {
 export function createMoonlightHostOperationFence(
   ownerToken: number,
   generation: number,
+  ownerScopeId: string,
+  accountGeneration: number,
   serverUuid: string,
   address: MoonlightAddress
 ): MoonlightHostOperationFence | null {
   const normalizedUuid: string | null = strictBoundedText(
     serverUuid, MAX_SERVER_UUID_LENGTH);
+  const normalizedOwnerScopeId: string | null = strictBoundedText(
+    ownerScopeId, MAX_SERVER_NAME_LENGTH, false);
   if (!Number.isSafeInteger(ownerToken) || ownerToken <= 0 ||
       !Number.isSafeInteger(generation) || generation <= 0 ||
+      normalizedOwnerScopeId === null ||
+      !Number.isSafeInteger(accountGeneration) || accountGeneration <= 0 ||
       normalizedUuid === null || !validAddress(address)) {
     return null;
   }
   const fence: MoonlightHostOperationFence = new MoonlightHostOperationFence();
   fence.ownerToken = ownerToken;
   fence.generation = generation;
+  fence.ownerScopeId = normalizedOwnerScopeId;
+  fence.accountGeneration = accountGeneration;
   fence.serverUuid = normalizedUuid;
   fence.addressHost = address.host;
   fence.addressFamily = address.family;
@@ -131,6 +141,8 @@ export function cloneMoonlightHostOperationFence(
   const clone: MoonlightHostOperationFence = new MoonlightHostOperationFence();
   clone.ownerToken = source.ownerToken;
   clone.generation = source.generation;
+  clone.ownerScopeId = source.ownerScopeId;
+  clone.accountGeneration = source.accountGeneration;
   clone.serverUuid = source.serverUuid;
   clone.addressHost = source.addressHost;
   clone.addressFamily = source.addressFamily;
@@ -145,6 +157,8 @@ export function moonlightHostOperationFenceEquals(
   return first !== null && second !== null &&
     first.ownerToken === second.ownerToken &&
     first.generation === second.generation &&
+    first.ownerScopeId === second.ownerScopeId &&
+    first.accountGeneration === second.accountGeneration &&
     first.serverUuid === second.serverUuid &&
     first.addressHost === second.addressHost &&
     first.addressFamily === second.addressFamily &&

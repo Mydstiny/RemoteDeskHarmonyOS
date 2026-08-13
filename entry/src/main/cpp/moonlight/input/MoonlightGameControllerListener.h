@@ -29,6 +29,7 @@ MoonlightGameControllerListener final {
         virtual ~Sink() = default;
         virtual void onPhysicalControllerConnected(
             std::uint64_t deviceId, std::uint64_t sourceGeneration,
+            std::uint64_t sourceSequence, std::uint64_t monotonicTimestampUs,
             const MoonlightControllerProfile& profile) noexcept = 0;
         virtual void onPhysicalControllerSample(
             std::uint64_t deviceId, std::uint64_t sourceGeneration,

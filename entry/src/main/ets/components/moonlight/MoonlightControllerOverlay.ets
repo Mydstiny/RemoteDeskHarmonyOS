@@ -1,21 +1,15 @@
-export interface MoonlightControllerSemanticState {
-  sourceGeneration: number;
-  buttons: number;
-  leftStickX: number;
-  leftStickY: number;
-  rightStickX: number;
-  rightStickY: number;
-  leftTrigger: number;
-  rightTrigger: number;
-  neutral: boolean;
-}
+export type MoonlightControllerSemanticElement =
+  'faceA' | 'faceB' | 'faceX' | 'faceY' | 'dpad' | 'leftStick' |
+  'rightStick' | 'leftTrigger' | 'rightTrigger' | 'leftShoulder' |
+  'rightShoulder' | 'menu';
+export type MoonlightControllerSemanticPhase = 'begin' | 'change' | 'end' | 'cancel';
 
-function neutralState(generation: number): MoonlightControllerSemanticState {
-  return {
-    sourceGeneration: generation, buttons: 0,
-    leftStickX: 0, leftStickY: 0, rightStickX: 0, rightStickY: 0,
-    leftTrigger: 0, rightTrigger: 0, neutral: true
-  };
+export interface MoonlightControllerSemanticEvent {
+  element: MoonlightControllerSemanticElement;
+  phase: MoonlightControllerSemanticPhase;
+  pointerId: number;
+  primary: number;
+  secondary: number;
 }
 
 @Component
@@ -25,55 +19,114 @@ export struct MoonlightControllerOverlay {
   @Prop editing: boolean = false;
   @Prop physicalControllerName: string = '';
   @Prop physicalControllerSlot: number = -1;
-  @Prop sourceGeneration: number = 0;
-  @State private activeButton: string = '';
-  onSemanticState: (state: MoonlightControllerSemanticState) => void =
-    (_state: MoonlightControllerSemanticState): void => {};
+  @State private activeButtons: string[] = [];
+  @State private leftStickX: number = 0;
+  @State private leftStickY: number = 0;
+  @State private rightStickX: number = 0;
+  @State private rightStickY: number = 0;
+  private readonly activePointers: Map<string, number> = new Map<string, number>();
+  onSemanticEvent: (event: MoonlightControllerSemanticEvent) => void =
+    (_event: MoonlightControllerSemanticEvent): void => {};
   onClose: () => void = (): void => {};
   onEditToggle: () => void = (): void => {};
 
-  private buttonMask(label: string): number {
-    if (label === 'A') { return 1; }
-    if (label === 'B') { return 2; }
-    if (label === 'X') { return 4; }
-    if (label === 'Y') { return 8; }
-    if (label === 'LB') { return 16; }
-    if (label === 'RB') { return 32; }
-    if (label === '菜单') { return 64; }
-    if (label === '上') { return 128; }
-    if (label === '下') { return 256; }
-    if (label === '左') { return 512; }
-    if (label === '右') { return 1024; }
-    return 0;
+  private element(label: string): MoonlightControllerSemanticElement {
+    if (label === 'A') { return 'faceA'; }
+    if (label === 'B') { return 'faceB'; }
+    if (label === 'X') { return 'faceX'; }
+    if (label === 'Y') { return 'faceY'; }
+    if (label === 'LT') { return 'leftTrigger'; }
+    if (label === 'RT') { return 'rightTrigger'; }
+    if (label === 'LB') { return 'leftShoulder'; }
+    if (label === 'RB') { return 'rightShoulder'; }
+    if (label === '菜单') { return 'menu'; }
+    return 'dpad';
   }
 
-  private press(label: string): void {
+  private pointerId(event: TouchEvent, fallback: number): number {
+    const points = event.changedTouches.length > 0 ? event.changedTouches : event.touches;
+    return points.length > 0 ? Math.max(1, Math.floor(points[0].id) + 1) : fallback;
+  }
+
+  private emit(label: string, phase: MoonlightControllerSemanticPhase,
+    pointerId: number, primary: number = 0, secondary: number = 0): void {
+    this.onSemanticEvent({
+      element: this.element(label), phase: phase, pointerId: pointerId,
+      primary: primary, secondary: secondary
+    });
+  }
+
+  private press(label: string, event: TouchEvent): void {
     if (!this.inputCapabilityReady || this.editing) { return; }
-    this.activeButton = label;
-    const state: MoonlightControllerSemanticState = neutralState(this.sourceGeneration);
-    if (label === 'LT') { state.leftTrigger = 1; }
-    else if (label === 'RT') { state.rightTrigger = 1; }
-    else { state.buttons = this.buttonMask(label); }
-    state.neutral = false;
-    this.onSemanticState(state);
+    const id: number = this.pointerId(event, 100 + label.length);
+    this.activePointers.set(label, id);
+    if (this.activeButtons.indexOf(label) < 0) {
+      this.activeButtons = this.activeButtons.concat([label]);
+    }
+    let primary: number = label === 'LT' || label === 'RT' ? 1 : 0;
+    let secondary: number = 0;
+    if (label === '上') { secondary = -1; }
+    else if (label === '下') { secondary = 1; }
+    else if (label === '左') { primary = -1; }
+    else if (label === '右') { primary = 1; }
+    this.emit(label, 'begin', id, primary, secondary);
   }
 
-  private release(): void {
-    this.activeButton = '';
+  private release(label: string, event: TouchEvent, cancelled: boolean): void {
+    const pointer: number = this.activePointers.get(label) || this.pointerId(event, 100 + label.length);
+    this.activePointers.delete(label);
+    this.activeButtons = this.activeButtons.filter((value: string): boolean => value !== label);
     if (this.inputCapabilityReady && !this.editing) {
-      this.onSemanticState(neutralState(this.sourceGeneration));
+      this.emit(label, cancelled ? 'cancel' : 'end', pointer);
     }
+  }
+
+  private releaseAll(): void {
+    this.activePointers.forEach((pointer: number, label: string): void => {
+      if (this.inputCapabilityReady && !this.editing) {
+        this.emit(label, 'cancel', pointer);
+      }
+    });
+    this.activePointers.clear();
+    this.activeButtons = [];
+    this.leftStickX = 0; this.leftStickY = 0;
+    this.rightStickX = 0; this.rightStickY = 0;
   }
 
   @Builder private faceButton(label: string, color: string) {
     Button(label).width(48).height(48).borderRadius(24).fontSize(14).fontWeight(FontWeight.Bold)
-      .backgroundColor(this.activeButton === label ? color : 'rgba(255,255,255,0.12)')
+      .backgroundColor(this.activeButtons.indexOf(label) >= 0 ? color : 'rgba(255,255,255,0.12)')
       .fontColor('#FFFFFF').enabled(this.inputCapabilityReady && !this.editing)
       .onTouch((event: TouchEvent): void => {
-        if (event.type === TouchType.Down) { this.press(label); }
-        else if (event.type === TouchType.Up || event.type === TouchType.Cancel) { this.release(); }
+        if (event.type === TouchType.Down) { this.press(label, event); }
+        else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+          this.release(label, event, event.type === TouchType.Cancel);
+        }
       })
       .accessibilityText(label + ' 键')
+  }
+
+  private stickTouch(label: string, event: TouchEvent): void {
+    if (!this.inputCapabilityReady || this.editing) { return; }
+    const points = event.changedTouches.length > 0 ? event.changedTouches : event.touches;
+    const pointer: number = this.pointerId(event, label === '左摇杆' ? 201 : 202);
+    const element: MoonlightControllerSemanticElement =
+      label === '左摇杆' ? 'leftStick' : 'rightStick';
+    let phase: MoonlightControllerSemanticPhase = 'change';
+    if (event.type === TouchType.Down) { phase = 'begin'; }
+    else if (event.type === TouchType.Up) { phase = 'end'; }
+    else if (event.type === TouchType.Cancel) { phase = 'cancel'; }
+    let x: number = 0;
+    let y: number = 0;
+    if (phase === 'begin' || phase === 'change') {
+      if (points.length === 0) { return; }
+      x = Math.max(-1, Math.min(1, (points[0].x - 56) / 44));
+      y = Math.max(-1, Math.min(1, (points[0].y - 56) / 44));
+    }
+    if (label === '左摇杆') { this.leftStickX = x; this.leftStickY = y; }
+    else { this.rightStickX = x; this.rightStickY = y; }
+    this.onSemanticEvent({ element: element, phase: phase, pointerId: pointer,
+      primary: x, secondary: y });
   }
 
   @Builder private stick(label: string) {
@@ -83,17 +136,24 @@ export struct MoonlightControllerOverlay {
         .border({ width: 1, color: 'rgba(255,255,255,0.16)' })
       Column().width(54).height(54).borderRadius(27)
         .backgroundColor('rgba(255,255,255,0.22)')
+        .translate({
+          x: (label === '左摇杆' ? this.leftStickX : this.rightStickX) * 24,
+          y: (label === '左摇杆' ? this.leftStickY : this.rightStickY) * 24
+        })
       Text(label).fontSize(10).fontColor('rgba(255,255,255,0.64)')
     }.width(112).height(112).opacity(this.inputCapabilityReady && !this.editing ? 1 : 0.55)
+      .onTouch((event: TouchEvent): void => { this.stickTouch(label, event); })
   }
 
   @Builder private dpadButton(label: string) {
     Button(label).width(34).height(34).borderRadius(9).fontSize(12).fontWeight(FontWeight.Bold)
-      .backgroundColor(this.activeButton === label ? this.accentColor : 'rgba(255,255,255,0.12)')
+      .backgroundColor(this.activeButtons.indexOf(label) >= 0 ? this.accentColor : 'rgba(255,255,255,0.12)')
       .fontColor('#FFFFFF').enabled(this.inputCapabilityReady && !this.editing)
       .onTouch((event: TouchEvent): void => {
-        if (event.type === TouchType.Down) { this.press(label); }
-        else if (event.type === TouchType.Up || event.type === TouchType.Cancel) { this.release(); }
+        if (event.type === TouchType.Down) { this.press(label, event); }
+        else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+          this.release(label, event, event.type === TouchType.Cancel);
+        }
       }).accessibilityText('方向键' + label)
   }
 
@@ -120,10 +180,10 @@ export struct MoonlightControllerOverlay {
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
         Button(this.editing ? '完成布局' : '编辑布局').height(34).fontSize(11).borderRadius(10)
           .backgroundColor('rgba(255,255,255,0.10)').fontColor('#FFFFFF')
-          .onClick((): void => { this.release(); this.onEditToggle(); })
+          .onClick((): void => { this.releaseAll(); this.onEditToggle(); })
         Button() { SymbolGlyph($r('sys.symbol.xmark')).fontSize(15).fontColor(['#FFFFFF']) }
           .width(34).height(34).borderRadius(17).backgroundColor('rgba(255,255,255,0.10)')
-          .margin({ left: 8 }).onClick((): void => { this.release(); this.onClose(); })
+          .margin({ left: 8 }).onClick((): void => { this.releaseAll(); this.onClose(); })
       }.width('100%')
 
       if (!this.inputCapabilityReady) {
@@ -164,8 +224,10 @@ export struct MoonlightControllerOverlay {
         .backgroundColor('rgba(255,255,255,0.12)').fontColor('#FFFFFF')
         .enabled(this.inputCapabilityReady && !this.editing)
         .onTouch((event: TouchEvent): void => {
-          if (event.type === TouchType.Down) { this.press('菜单'); }
-          else if (event.type === TouchType.Up || event.type === TouchType.Cancel) { this.release(); }
+          if (event.type === TouchType.Down) { this.press('菜单', event); }
+          else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+            this.release('菜单', event, event.type === TouchType.Cancel);
+          }
         }).margin({ top: 8 })
     }
     .width('92%').constraintSize({ maxWidth: 760 })

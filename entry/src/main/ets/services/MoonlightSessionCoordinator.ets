@@ -1,10 +1,10 @@
 /**
- * MoonlightSessionCoordinator.ets — the single dormant Moonlight session seam.
+ * MoonlightSessionCoordinator.ets — the single Moonlight product-session seam.
  *
- * This coordinator owns no sockets, native handles, media queues, secrets or
- * cloud state. A real common-c/native implementation must be injected through
- * MoonlightRuntimePort later. With no port, start is rejected before the
- * shared ActiveRemoteSessionRegistry is touched.
+ * The coordinator owns the shared remote-session reservation and delegates
+ * transport/media/input work through the typed native runtime. It retains no
+ * cloud state and rejects a start before registry admission when native
+ * capability or the exact owner/account launch fence is unavailable.
  */
 import {
   ActiveRemoteSessionRecord,
@@ -21,9 +21,23 @@ import {
 import rdpnapi from 'librdpnapi.so';
 import {
   MoonlightNativeRequestKey,
-  MoonlightNativeStreamSnapshot,
-  MoonlightNativeStreamStartRequest
+  MoonlightNativeStreamSnapshot
 } from './MoonlightHostService';
+
+class MoonlightSessionReservationIdentity {
+  ownerScopeId: string = '';
+  accountGeneration: number = 0;
+  hostId: string = '';
+  appId: string = '';
+  hostAddress: string = '';
+  hostControlAlreadyLaunched: boolean = false;
+  launchRequestId: number = 0;
+  launchGeneration: number = 0;
+  launchOwnerToken: number = 0;
+  serverUuid: string = '';
+  numericAppId: number = 0;
+  configuredBitrateKbps: number = 20000;
+}
 
 export interface MoonlightSessionStartRequest {
   ownerScopeId: string;
@@ -39,6 +53,7 @@ export interface MoonlightSessionStartRequest {
   launchKey?: MoonlightNativeRequestKey;
   serverUuid?: string;
   numericAppId?: number;
+  configuredBitrateKbps?: number;
   rendererHandle?: number;
   surfaceWidth?: number;
   surfaceHeight?: number;
@@ -65,13 +80,18 @@ class MoonlightNapiRuntimePort implements MoonlightRuntimePort {
       return false;
     }
     try {
-      const nativeRequest: MoonlightNativeStreamStartRequest = {
-        launchKey: request.launchKey, hostId: request.serverUuid,
+      const result = rdpnapi.moonlightStartStream({
+        launchKey: {
+          requestId: request.launchKey.requestId,
+          generation: request.launchKey.generation,
+          ownerToken: request.launchKey.ownerToken
+        }, hostId: request.serverUuid,
         serverUuid: request.serverUuid, appId: request.numericAppId,
         rendererHandle: request.rendererHandle, surfaceWidth: request.surfaceWidth,
-        surfaceHeight: request.surfaceHeight
-      };
-      const result = rdpnapi.moonlightStartStream(nativeRequest);
+        surfaceHeight: request.surfaceHeight,
+        configuredBitrateKbps: request.configuredBitrateKbps === undefined
+          ? 20000 : request.configuredBitrateKbps
+      });
       if (!result.accepted || result.sessionId <= 0) { return false; }
       this.operationGeneration = operationGeneration;
       this.launchKey = request.launchKey;
@@ -97,7 +117,11 @@ class MoonlightNapiRuntimePort implements MoonlightRuntimePort {
   snapshot(operationGeneration: number): MoonlightNativeStreamSnapshot | null {
     if (operationGeneration !== this.operationGeneration || this.launchKey === null) { return null; }
     try {
-      const source = rdpnapi.moonlightGetStreamSnapshot(this.launchKey);
+      const source = rdpnapi.moonlightGetStreamSnapshot({
+        requestId: this.launchKey.requestId,
+        generation: this.launchKey.generation,
+        ownerToken: this.launchKey.ownerToken
+      });
       const snapshot: MoonlightNativeStreamSnapshot = {
         matched: source.matched,
         code: source.code,
@@ -105,10 +129,21 @@ class MoonlightNapiRuntimePort implements MoonlightRuntimePort {
         generation: source.generation,
         ownerToken: source.ownerToken,
         transportReady: source.transportReady,
+        videoReady: source.videoReady,
+        audioReady: source.audioReady,
+        inputReady: source.inputReady,
+        controllerReady: source.controllerReady,
         firstFrameReady: source.firstFrameReady,
         terminal: source.terminal,
         lastSequence: source.lastSequence
       };
+      // moonlightStopStream() only acknowledges the cancellation request. Keep
+      // the launch key alive so polling can observe the native terminal receipt;
+      // release the local identity only after that receipt has been copied.
+      if (source.terminal) {
+        this.launchKey = null;
+        this.sessionId = -1;
+      }
       return snapshot;
     } catch (_) { return null; }
   }
@@ -116,9 +151,11 @@ class MoonlightNapiRuntimePort implements MoonlightRuntimePort {
   private stopForGeneration(operationGeneration: number): boolean {
     if (operationGeneration !== this.operationGeneration || this.launchKey === null) { return false; }
     try {
-      const stopped: boolean = rdpnapi.moonlightStopStream(this.launchKey);
-      if (stopped) { this.launchKey = null; this.sessionId = -1; }
-      return stopped;
+      return rdpnapi.moonlightStopStream({
+        requestId: this.launchKey.requestId,
+        generation: this.launchKey.generation,
+        ownerToken: this.launchKey.ownerToken
+      });
     } catch (_) { return false; }
   }
 }
@@ -147,7 +184,7 @@ interface MoonlightSessionSnapshotSubscription {
 }
 
 export type MoonlightCoordinatorResultCode =
-  'started' | 'runtime_unavailable' | 'invalid_request' | 'active_session_busy' |
+  'reserved' | 'started' | 'runtime_unavailable' | 'invalid_request' | 'active_session_busy' |
   'duplicate_start' | 'runtime_start_failed' | 'applied' | 'stale_generation' |
   'stale_sequence' | 'invalid_transition' | 'native_session_missing' |
   'native_session_mismatch' | 'stop_failed' | 'stop_timeout' |
@@ -216,6 +253,8 @@ export class MoonlightSessionCoordinator {
   private state: MoonlightSessionStateSnapshot | null = null;
   private nativeSessionId: number = -1;
   private reservationSessionId: number = -1;
+  private reservationIdentity: MoonlightSessionReservationIdentity | null = null;
+  private runtimeStartIssued: boolean = false;
   private operationGeneration: number = 0;
   private boundOwnerScopeId: string = '';
   private boundAccountGeneration: number = 0;
@@ -252,9 +291,9 @@ export class MoonlightSessionCoordinator {
     this.boundAccountGeneration = validGeneration(accountGeneration) ? accountGeneration : 0;
   }
 
-  start(request: MoonlightSessionStartRequest): MoonlightCoordinatorResult {
+  reserve(request: MoonlightSessionStartRequest): MoonlightCoordinatorResult {
     this.expireStopIfNeeded(Date.now());
-    if (!this.validRequest(request)) {
+    if (!this.validReservationRequest(request)) {
       return this.result(false, 'invalid_request');
     }
     if (!request.runtimeAvailable || !request.hostControlReady ||
@@ -262,6 +301,9 @@ export class MoonlightSessionCoordinator {
       return this.result(false, 'runtime_unavailable');
     }
     if (!terminal(this.state)) {
+      if (this.reservationMatches(request) && !this.runtimeStartIssued) {
+        return this.result(true, 'reserved');
+      }
       return this.result(false, 'duplicate_start');
     }
     if (this.boundOwnerScopeId !== request.ownerScopeId ||
@@ -302,7 +344,29 @@ export class MoonlightSessionCoordinator {
       return this.result(false, 'active_session_busy');
     }
     this.reservationSessionId = reservationSessionId;
+    this.reservationIdentity = this.createReservationIdentity(request);
+    this.runtimeStartIssued = false;
     this.state = firstTransition.state;
+    this.notifySnapshotSubscribers();
+    return this.result(true, 'reserved');
+  }
+
+  start(request: MoonlightSessionStartRequest): MoonlightCoordinatorResult {
+    this.expireStopIfNeeded(Date.now());
+    if (!this.validRequest(request)) {
+      return this.result(false, 'invalid_request');
+    }
+    if (!request.runtimeAvailable || !request.hostControlReady ||
+      !request.streamingTransportReady || this.runtime === null) {
+      return this.result(false, 'runtime_unavailable');
+    }
+    if (!this.reservationMatches(request)) {
+      const reservation: MoonlightCoordinatorResult = this.reserve(request);
+      if (!reservation.accepted) { return reservation; }
+    }
+    if (this.runtimeStartIssued || this.state === null || this.reservationSessionId <= 0) {
+      return this.result(false, 'duplicate_start');
+    }
     if (request.hostControlAlreadyLaunched === true) {
       const stagedEvents: MoonlightSessionEvent[] = [
         { type: 'beginVerification', generation: this.operationGeneration, sequence: 2,
@@ -318,22 +382,27 @@ export class MoonlightSessionCoordinator {
           this.clearOwnedRegistry();
           this.state = null;
           this.reservationSessionId = -1;
+          this.reservationIdentity = null;
           return this.result(false, 'invalid_transition');
         }
         this.state = staged.state;
       }
     }
     this.notifySnapshotSubscribers();
+    this.runtimeStartIssued = true;
     const started: boolean = this.runtime.start(request, this.operationGeneration);
     if (!started) {
       const failedEvent: MoonlightSessionEvent = {
-        type: 'failed', generation: this.operationGeneration, sequence: 2,
+        type: 'failed', generation: this.operationGeneration,
+        sequence: this.state.lastEventSequence + 1,
         nativeError: 'RUNTIME_START_FAILED', detailCode: ''
       };
       const failed = applyMoonlightSessionEvent(this.state, failedEvent);
       this.state = failed.applied ? failed.state : this.state;
       this.clearOwnedRegistry();
       this.reservationSessionId = -1;
+      this.reservationIdentity = null;
+      this.runtimeStartIssued = false;
       this.notifySnapshotSubscribers();
       return this.result(false, 'runtime_start_failed');
     }
@@ -416,6 +485,7 @@ export class MoonlightSessionCoordinator {
       }
       this.nativeSessionId = event.nativeSessionId;
       this.reservationSessionId = -1;
+      this.reservationIdentity = null;
     }
 
     if (event.type === 'firstFrameRendered') {
@@ -433,6 +503,8 @@ export class MoonlightSessionCoordinator {
       this.clearOwnedRegistry();
       this.nativeSessionId = -1;
       this.reservationSessionId = -1;
+      this.reservationIdentity = null;
+      this.runtimeStartIssued = false;
       this.stopDeadlineAtMs = 0;
     }
     this.notifySnapshotSubscribers();
@@ -457,6 +529,19 @@ export class MoonlightSessionCoordinator {
       return this.result(false, 'invalid_transition');
     }
     this.state = transition.state;
+    if (this.reservationSessionId > 0 && !this.runtimeStartIssued) {
+      const stopped = applyMoonlightSessionEvent(this.state, {
+        type: 'stopped', generation: this.state.generation,
+        sequence: this.state.lastEventSequence + 1, nativeError: '', detailCode: reason
+      });
+      if (stopped.applied) { this.state = stopped.state; }
+      this.clearOwnedRegistry();
+      this.reservationSessionId = -1;
+      this.reservationIdentity = null;
+      this.runtimeStartIssued = false;
+      this.notifySnapshotSubscribers();
+      return this.result(true, 'stopped');
+    }
     if (!this.requestRuntimeStop(reason)) {
       this.forceLocalTerminal('STOP_FAILED');
       return this.result(false, 'stop_failed');
@@ -485,6 +570,19 @@ export class MoonlightSessionCoordinator {
       return this.result(false, 'invalid_transition');
     }
     this.state = transition.state;
+    if (this.reservationSessionId > 0 && !this.runtimeStartIssued) {
+      const stopped = applyMoonlightSessionEvent(this.state, {
+        type: 'stopped', generation: this.state.generation,
+        sequence: this.state.lastEventSequence + 1, nativeError: '', detailCode: reason
+      });
+      if (stopped.applied) { this.state = stopped.state; }
+      this.clearOwnedRegistry();
+      this.reservationSessionId = -1;
+      this.reservationIdentity = null;
+      this.runtimeStartIssued = false;
+      this.notifySnapshotSubscribers();
+      return this.result(true, 'stopped');
+    }
     if (!this.requestRuntimeStop(reason)) {
       this.forceLocalTerminal('STOP_FAILED');
       return this.result(false, 'stop_failed');
@@ -534,6 +632,8 @@ export class MoonlightSessionCoordinator {
     this.state = null;
     this.nativeSessionId = -1;
     this.reservationSessionId = -1;
+    this.reservationIdentity = null;
+    this.runtimeStartIssued = false;
     this.stopDeadlineAtMs = 0;
     this.clearRuntimePoll();
     this.snapshotSubscriptions.splice(0, this.snapshotSubscriptions.length);
@@ -547,7 +647,18 @@ export class MoonlightSessionCoordinator {
   }
 
   private validRequest(request: MoonlightSessionStartRequest): boolean {
-    const baseValid: boolean = boundedText(request.ownerScopeId, 128) && validGeneration(request.accountGeneration) &&
+    if (!this.validReservationRequest(request) || request.hostControlAlreadyLaunched !== true) {
+      return this.validReservationRequest(request);
+    }
+    return request.rendererHandle !== undefined && validSessionId(request.rendererHandle) &&
+      request.surfaceWidth !== undefined && validSessionId(request.surfaceWidth) &&
+      request.surfaceHeight !== undefined && validSessionId(request.surfaceHeight) &&
+      request.surfaceId !== undefined && boundedText(request.surfaceId, 256);
+  }
+
+  private validReservationRequest(request: MoonlightSessionStartRequest): boolean {
+    const baseValid: boolean = boundedText(request.ownerScopeId, 128) &&
+      validGeneration(request.accountGeneration) &&
       boundedText(request.hostId, 128) && boundedText(request.appId, 128) &&
       boundedText(request.hostAddress, 255);
     if (!baseValid || request.hostControlAlreadyLaunched !== true) { return baseValid; }
@@ -555,10 +666,51 @@ export class MoonlightSessionCoordinator {
       validSessionId(request.launchKey.generation) && validSessionId(request.launchKey.ownerToken) &&
       request.serverUuid !== undefined && boundedText(request.serverUuid, 256) &&
       request.numericAppId !== undefined && validSessionId(request.numericAppId) &&
-      request.rendererHandle !== undefined && validSessionId(request.rendererHandle) &&
-      request.surfaceWidth !== undefined && validSessionId(request.surfaceWidth) &&
-      request.surfaceHeight !== undefined && validSessionId(request.surfaceHeight) &&
-      request.surfaceId !== undefined && boundedText(request.surfaceId, 256);
+      (request.configuredBitrateKbps === undefined ||
+        (Number.isSafeInteger(request.configuredBitrateKbps) &&
+          request.configuredBitrateKbps >= 1000 && request.configuredBitrateKbps <= 200000));
+  }
+
+  private createReservationIdentity(
+    request: MoonlightSessionStartRequest
+  ): MoonlightSessionReservationIdentity {
+    const identity: MoonlightSessionReservationIdentity = new MoonlightSessionReservationIdentity();
+    identity.ownerScopeId = request.ownerScopeId;
+    identity.accountGeneration = request.accountGeneration;
+    identity.hostId = request.hostId;
+    identity.appId = request.appId;
+    identity.hostAddress = request.hostAddress;
+    identity.hostControlAlreadyLaunched = request.hostControlAlreadyLaunched === true;
+    if (request.launchKey !== undefined) {
+      identity.launchRequestId = request.launchKey.requestId;
+      identity.launchGeneration = request.launchKey.generation;
+      identity.launchOwnerToken = request.launchKey.ownerToken;
+    }
+    identity.serverUuid = request.serverUuid === undefined ? '' : request.serverUuid;
+    identity.numericAppId = request.numericAppId === undefined ? 0 : request.numericAppId;
+    identity.configuredBitrateKbps = request.configuredBitrateKbps === undefined
+      ? 20000 : request.configuredBitrateKbps;
+    return identity;
+  }
+
+  private reservationMatches(request: MoonlightSessionStartRequest): boolean {
+    const identity: MoonlightSessionReservationIdentity | null = this.reservationIdentity;
+    if (identity === null || this.state === null || this.reservationSessionId <= 0) {
+      return false;
+    }
+    const launchKey: MoonlightNativeRequestKey | undefined = request.launchKey;
+    return identity.ownerScopeId === request.ownerScopeId &&
+      identity.accountGeneration === request.accountGeneration &&
+      identity.hostId === request.hostId && identity.appId === request.appId &&
+      identity.hostAddress === request.hostAddress &&
+      identity.hostControlAlreadyLaunched === (request.hostControlAlreadyLaunched === true) &&
+      identity.launchRequestId === (launchKey === undefined ? 0 : launchKey.requestId) &&
+      identity.launchGeneration === (launchKey === undefined ? 0 : launchKey.generation) &&
+      identity.launchOwnerToken === (launchKey === undefined ? 0 : launchKey.ownerToken) &&
+      identity.serverUuid === (request.serverUuid === undefined ? '' : request.serverUuid) &&
+      identity.numericAppId === (request.numericAppId === undefined ? 0 : request.numericAppId) &&
+      identity.configuredBitrateKbps === (request.configuredBitrateKbps === undefined
+        ? 20000 : request.configuredBitrateKbps);
   }
 
   private scheduleRuntimePoll(surfaceId: string): void {
@@ -579,22 +731,23 @@ export class MoonlightSessionCoordinator {
           detailCode: source.code, nativeSessionId: this.nativeSessionId, surfaceId: '' });
         return;
       }
-      if (source.transportReady && !this.runtimeVideoReady) {
+      if (source.videoReady && !this.runtimeVideoReady) {
         this.runtimeVideoReady = true;
         if (!this.emitRuntimeEvent('videoReady', generation, '', '', '')) { return; }
       }
-      if (source.transportReady && !this.runtimeAudioReady) {
+      if (source.audioReady && !this.runtimeAudioReady) {
         this.runtimeAudioReady = true;
         if (!this.emitRuntimeEvent('audioReady', generation, '', '', '')) { return; }
       }
-      if (source.transportReady && !this.runtimeInputReady) {
+      if (source.inputReady && !this.runtimeInputReady) {
         this.runtimeInputReady = true;
         if (!this.emitRuntimeEvent('inputReady', generation, '', '', '')) { return; }
       }
       const current: MoonlightSessionStateSnapshot | null = this.state;
       if (source.firstFrameReady && current !== null && !current.firstFrameSeen) {
         if (!this.emitRuntimeEvent('firstFrameRendered', generation, '', '', surfaceId)) { return; }
-        if (this.state !== null && this.state.firstFrameSeen) {
+        if (this.state !== null && this.state.firstFrameSeen &&
+            this.state.videoReady && this.state.audioReady && this.state.inputReady) {
           if (!this.emitRuntimeEvent('streamStable', generation, '', '', surfaceId)) { return; }
         }
       }
@@ -667,13 +820,16 @@ export class MoonlightSessionCoordinator {
       if (this.runtime !== null) {
         this.runtime.stop(this.nativeSessionId, reason);
       }
-    } else if (this.reservationSessionId > 0 && this.runtime !== null) {
+    } else if (this.reservationSessionId > 0 && this.runtime !== null &&
+      this.runtimeStartIssued) {
       this.runtime.cancel(this.operationGeneration, reason);
     }
     this.clearOwnedRegistry();
     this.state = null;
     this.nativeSessionId = -1;
     this.reservationSessionId = -1;
+    this.reservationIdentity = null;
+    this.runtimeStartIssued = false;
     this.stopDeadlineAtMs = 0;
     this.clearStopTimer();
     this.notifySnapshotSubscribers();
@@ -686,7 +842,7 @@ export class MoonlightSessionCoordinator {
     if (this.nativeSessionId > 0) {
       return this.runtime.stop(this.nativeSessionId, reason);
     }
-    if (this.reservationSessionId > 0) {
+    if (this.reservationSessionId > 0 && this.runtimeStartIssued) {
       return this.runtime.cancel(this.operationGeneration, reason);
     }
     return true;
@@ -709,6 +865,8 @@ export class MoonlightSessionCoordinator {
     this.state = null;
     this.nativeSessionId = -1;
     this.reservationSessionId = -1;
+    this.reservationIdentity = null;
+    this.runtimeStartIssued = false;
     this.stopDeadlineAtMs = 0;
     this.clearStopTimer();
     this.notifySnapshotSubscribers();

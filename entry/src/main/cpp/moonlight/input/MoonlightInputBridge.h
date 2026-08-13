@@ -179,6 +179,7 @@ struct REMOTEDESK_MOONLIGHT_INPUT_HIDDEN MoonlightInputSnapshot final {
 class REMOTEDESK_MOONLIGHT_INPUT_HIDDEN MoonlightInputOwnedOperation {
   public:
     virtual ~MoonlightInputOwnedOperation() = default;
+    virtual bool terminalRelease() const noexcept { return false; }
     virtual void execute() noexcept = 0;
 };
 

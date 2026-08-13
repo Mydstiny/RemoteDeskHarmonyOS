@@ -6,6 +6,7 @@ import { MoonlightCatalogDataSource } from '../datasources/MoonlightCatalogDataS
 import { MoonlightAddress, MoonlightHost, moonlightAddressKey } from '../model/MoonlightModels';
 import { AccountSessionCoordinator } from '../services/AccountSessionCoordinator';
 import { CloudStore } from '../services/CloudStore';
+import { AccountSessionLease } from '../services/AccountScopePolicy';
 import { MoonlightHostLocalView, MoonlightLocalViewService } from '../services/MoonlightLocalViewService';
 import {
   MoonlightHostContext,
@@ -32,6 +33,20 @@ import {
   moonlightHostRouteParams,
   moonlightRouteIdentity
 } from '../services/MoonlightUiPolicy';
+
+class MoonlightLaunchFence {
+  pageGeneration: number = 0;
+  ownerScopeId: string = '';
+  accountGeneration: number = 0;
+  storeIdentity: string = '';
+  storeInstanceId: number = 0;
+  hostRecordId: string = '';
+  serverUuid: string = '';
+  appId: string = '';
+  numericAppId: number = 0;
+  hostAddress: string = '';
+  ownerToken: number = 0;
+}
 
 @Component
 struct MoonlightAppCard {
@@ -136,8 +151,10 @@ struct MoonlightAppCatalogPage {
   private refreshGeneration: number = 0;
   private refreshTimer: number = -1;
   private currentRefresh: MoonlightCatalogOperationKey | null = null;
+  private activeRefreshOwnerToken: number = 0;
   private serverCertificateSha256: string = '';
   private launchGeneration: number = 0;
+  private activeLaunchFence: MoonlightLaunchFence | null = null;
 
   private pal(): Palette {
     return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor);
@@ -165,6 +182,12 @@ struct MoonlightAppCatalogPage {
   aboutToDisappear(): void {
     this.pageActive = false;
     this.invalidateRefresh();
+    this.launchGeneration += 1;
+    const ownerToken: number = this.activeLaunchFence === null ? 0 :
+      this.activeLaunchFence.ownerToken;
+    this.activeLaunchFence = null;
+    this.launching = false;
+    if (ownerToken > 0) { this.hostService.disposeOwner(ownerToken); }
   }
 
   onPageShow(): void { if (this.hostId !== '') { this.loadLocal(); } }
@@ -209,29 +232,74 @@ struct MoonlightAppCatalogPage {
   }
 
   private requestRefresh(): void {
+    this.performCatalogRefresh().catch((): void => {
+      if (this.pageActive) {
+        this.refreshing = false;
+        this.currentRefresh = null;
+        promptAction.showToast({ message: '应用目录刷新失败，已保留本地缓存', duration: 2200 });
+      }
+    });
+  }
+
+  private async performCatalogRefresh(): Promise<void> {
     if (this.refreshing || !this.pageActive || this.ownerScopeId === '') { return; }
+    const hostValue: MoonlightHost | null = this.host;
+    const lease: AccountSessionLease | null = CloudStore.getInstance().currentAccountLease();
+    if (hostValue === null || lease === null ||
+        !CloudStore.getInstance().isLeaseCurrent(lease)) {
+      promptAction.showToast({ message: '当前账号数据域已变化，请重新进入页面', duration: 2200 });
+      return;
+    }
     this.refreshGeneration += 1;
+    const generation: number = Math.max(1, this.refreshGeneration);
     const key: MoonlightCatalogOperationKey | null = createMoonlightCatalogOperationKey(
       this.ownerScopeId, this.hostId, this.refreshGeneration);
     if (key === null) { return; }
+    const ownerToken: number = Math.min(9007199254740991,
+      Math.max(1, Date.now() * 100 + generation % 100));
+    const context: MoonlightHostContext | null = this.runtimeContext(
+      hostValue, lease, ownerToken, generation, this.serverCertificateSha256);
+    if (context === null) {
+      promptAction.showToast({ message: '主机信任已变化，请重新验证主机', duration: 2200 });
+      return;
+    }
     this.currentRefresh = key;
+    this.activeRefreshOwnerToken = ownerToken;
     this.refreshing = true;
-    this.refreshTimer = setTimeout((): void => {
-      this.refreshTimer = -1;
-      if (!this.pageActive || !moonlightCatalogOperationIsCurrent(this.currentRefresh, key)) { return; }
-      this.refreshing = false;
-      this.currentRefresh = null;
-      this.loadLocal();
-      promptAction.showToast({
-        message: 'Host Control 尚未开放，已重新读取本地目录缓存', duration: 2200
-      });
-    }, 250);
+    let result: MoonlightHostServiceResult | null = null;
+    try {
+      result = await this.hostService.catalog(context);
+    } finally {
+      this.hostService.disposeOwner(ownerToken);
+      if (this.activeRefreshOwnerToken === ownerToken) {
+        this.activeRefreshOwnerToken = 0;
+      }
+    }
+    if (!this.pageActive || !moonlightCatalogOperationIsCurrent(this.currentRefresh, key) ||
+        !CloudStore.getInstance().isLeaseCurrent(lease)) {
+      if (this.pageActive && moonlightCatalogOperationIsCurrent(this.currentRefresh, key)) {
+        this.refreshing = false;
+        this.currentRefresh = null;
+      }
+      return;
+    }
+    this.refreshing = false;
+    this.currentRefresh = null;
+    this.loadLocal();
+    promptAction.showToast({
+      message: result !== null && result.ok ? '应用目录已刷新' :
+        '刷新失败（' + (result === null ? 'runtime_error' : result.code) + '），已保留本地缓存',
+      duration: 2200
+    });
   }
 
   private invalidateRefresh(): void {
     this.refreshGeneration += 1;
     this.currentRefresh = null;
     this.refreshing = false;
+    const ownerToken: number = this.activeRefreshOwnerToken;
+    this.activeRefreshOwnerToken = 0;
+    if (ownerToken > 0) { this.hostService.disposeOwner(ownerToken); }
     if (this.refreshTimer >= 0) {
       clearTimeout(this.refreshTimer);
       this.refreshTimer = -1;
@@ -243,12 +311,12 @@ struct MoonlightAppCatalogPage {
     this.showLaunchSheet = true;
   }
 
-  private selectedHostAddress(): string {
-    if (this.host === null || this.host.addresses.length === 0) { return ''; }
-    let selected: MoonlightAddress = this.host.addresses[0];
-    for (let i = 0; i < this.host.addresses.length; i++) {
-      if (moonlightAddressKey(this.host.addresses[i]) === this.host.preferredAddressKey) {
-        selected = this.host.addresses[i];
+  private selectedHostAddress(hostValue: MoonlightHost): string {
+    if (hostValue.addresses.length === 0) { return ''; }
+    let selected: MoonlightAddress = hostValue.addresses[0];
+    for (let i = 0; i < hostValue.addresses.length; i++) {
+      if (moonlightAddressKey(hostValue.addresses[i]) === hostValue.preferredAddressKey) {
+        selected = hostValue.addresses[i];
         break;
       }
     }
@@ -256,35 +324,30 @@ struct MoonlightAppCatalogPage {
     return host + ':' + selected.port.toString();
   }
 
-  private runtimeContext(): MoonlightHostContext | null {
-    if (this.host === null || !this.paired ||
-        !/^[0-9a-f]{64}$/.test(this.serverCertificateSha256)) { return null; }
-    const lease = CloudStore.getInstance().currentAccountLease();
-    const scope = CloudStore.getInstance().currentScope();
-    if (lease === null || scope.ownerScopeId.trim() === '' || this.host.addresses.length === 0) {
+  private runtimeContext(hostValue: MoonlightHost, lease: AccountSessionLease,
+    ownerToken: number, generation: number, certificateSha256: string): MoonlightHostContext | null {
+    if (!this.paired || !/^[0-9a-f]{64}$/.test(certificateSha256) ||
+        lease.ownerScopeId.trim() === '' || this.ownerScopeId !== lease.ownerScopeId ||
+        !CloudStore.getInstance().isLeaseCurrent(lease) || hostValue.addresses.length === 0) {
       return null;
     }
-    let selected: MoonlightAddress = this.host.addresses[0];
-    for (let index = 0; index < this.host.addresses.length; index++) {
-      if (moonlightAddressKey(this.host.addresses[index]) === this.host.preferredAddressKey) {
-        selected = this.host.addresses[index]; break;
+    let selected: MoonlightAddress = hostValue.addresses[0];
+    for (let index = 0; index < hostValue.addresses.length; index++) {
+      if (moonlightAddressKey(hostValue.addresses[index]) === hostValue.preferredAddressKey) {
+        selected = hostValue.addresses[index]; break;
       }
     }
-    this.launchGeneration += 1;
-    const generation: number = Math.max(1, this.launchGeneration);
-    const ownerToken: number = Math.min(9007199254740991,
-      Math.max(1, Date.now() * 100 + generation % 100));
     return {
       lease: lease,
-      ownerScopeFingerprint: moonlightOwnerScopeFingerprint(scope.ownerScopeId),
+      ownerScopeFingerprint: moonlightOwnerScopeFingerprint(lease.ownerScopeId),
       ownerToken: ownerToken,
       generation: generation,
-      hostId: this.host.serverUuid,
-      serverUuid: this.host.serverUuid,
-      installationId: moonlightInstallationId(scope.storeIdentity),
-      pinnedCertificateSha256: this.serverCertificateSha256,
+      hostId: hostValue.serverUuid,
+      serverUuid: hostValue.serverUuid,
+      installationId: moonlightInstallationId(lease.storeIdentity),
+      pinnedCertificateSha256: certificateSha256,
       endpoint: {
-        serverName: selected.family === 'hostname' ? selected.host : this.host.displayName,
+        serverName: selected.family === 'hostname' ? selected.host : hostValue.displayName,
         addresses: [{ value: selected.host,
           family: selected.family === 'ipv4' ? 'ipv4' : selected.family === 'ipv6' ? 'ipv6' : 'unspecified' }],
         httpPort: selected.port,
@@ -318,23 +381,84 @@ struct MoonlightAppCatalogPage {
     };
   }
 
+  private launchFenceCurrent(fence: MoonlightLaunchFence): boolean {
+    if (!this.pageActive || this.activeLaunchFence !== fence ||
+        this.launchGeneration !== fence.pageGeneration ||
+        this.ownerScopeId !== fence.ownerScopeId || this.hostId !== fence.hostRecordId ||
+        this.host === null || this.host.id !== fence.hostRecordId ||
+        this.host.serverUuid !== fence.serverUuid || this.selectedItem === null ||
+        this.selectedItem.appId !== fence.appId) {
+      return false;
+    }
+    const lease: AccountSessionLease | null = CloudStore.getInstance().currentAccountLease();
+    return lease !== null && CloudStore.getInstance().isLeaseCurrent(lease) &&
+      lease.ownerScopeId === fence.ownerScopeId &&
+      lease.generation === fence.accountGeneration &&
+      lease.storeIdentity === fence.storeIdentity &&
+      lease.storeInstanceId === fence.storeInstanceId;
+  }
+
+  private finishLaunch(fence: MoonlightLaunchFence, disposeOwner: boolean): void {
+    if (disposeOwner) { this.hostService.disposeOwner(fence.ownerToken); }
+    if (this.activeLaunchFence !== fence) { return; }
+    this.activeLaunchFence = null;
+    this.launching = false;
+  }
+
   private async startSelected(): Promise<void> {
-    if (this.host === null || this.selectedItem === null) { return; }
+    if (!this.pageActive || this.host === null || this.selectedItem === null) { return; }
     if (this.launching) { return; }
-    const context: MoonlightHostContext | null = this.runtimeContext();
-    const numericAppId: number = Number.parseInt(this.selectedItem.appId, 10);
-    if (context === null || !Number.isSafeInteger(numericAppId) || numericAppId <= 0) {
+    const hostValue: MoonlightHost = this.host;
+    const selectedAppId: string = this.selectedItem.appId;
+    const numericAppId: number = Number.parseInt(selectedAppId, 10);
+    const lease: AccountSessionLease | null = CloudStore.getInstance().currentAccountLease();
+    if (lease === null) {
+      promptAction.showToast({ message: '当前账号数据域不可用，请重新进入页面', duration: 2200 });
+      return;
+    }
+    this.launchGeneration += 1;
+    const generation: number = Math.max(1, this.launchGeneration);
+    const ownerToken: number = Math.min(9007199254740991,
+      Math.max(1, Date.now() * 100 + generation % 100));
+    const certificateSha256: string = this.serverCertificateSha256;
+    const context: MoonlightHostContext | null =
+      this.runtimeContext(hostValue, lease, ownerToken, generation, certificateSha256);
+    const hostAddress: string = this.selectedHostAddress(hostValue);
+    if (context === null || hostAddress === '' ||
+        !Number.isSafeInteger(numericAppId) || numericAppId <= 0) {
       promptAction.showToast({ message: '主机信任或应用信息无效，请重新验证主机', duration: 2200 });
       return;
     }
+    const fence: MoonlightLaunchFence = new MoonlightLaunchFence();
+    fence.pageGeneration = generation;
+    fence.ownerScopeId = lease.ownerScopeId;
+    fence.accountGeneration = lease.generation;
+    fence.storeIdentity = lease.storeIdentity;
+    fence.storeInstanceId = lease.storeInstanceId;
+    fence.hostRecordId = hostValue.id;
+    fence.serverUuid = hostValue.serverUuid;
+    fence.appId = selectedAppId;
+    fence.numericAppId = numericAppId;
+    fence.hostAddress = hostAddress;
+    fence.ownerToken = ownerToken;
+    this.activeLaunchFence = fence;
     this.launching = true;
+    const launchConfiguration: MoonlightNativeLaunchConfiguration = this.launchConfiguration();
     let result: MoonlightHostServiceResult = await this.hostService.launch(
-      context, numericAppId, this.launchConfiguration());
+      context, numericAppId, launchConfiguration);
     if (result.code === 'resume_required') {
-      result = await this.hostService.resume(context, numericAppId, this.launchConfiguration());
+      if (!this.launchFenceCurrent(fence)) {
+        this.finishLaunch(fence, true);
+        return;
+      }
+      result = await this.hostService.resume(context, numericAppId, launchConfiguration);
     }
-    this.launching = false;
-    if (!this.pageActive || !result.ok || result.nativeResult === null) {
+    if (!this.launchFenceCurrent(fence)) {
+      this.finishLaunch(fence, true);
+      return;
+    }
+    if (!result.ok || result.nativeResult === null) {
+      this.finishLaunch(fence, true);
       promptAction.showToast({
         message: 'Moonlight 启动失败（' + result.code + '）',
         duration: 2200
@@ -342,17 +466,38 @@ struct MoonlightAppCatalogPage {
       return;
     }
     const params: Record<string, Object> | null =
-      moonlightAppRouteParams(this.host.id, this.selectedItem.appId);
+      moonlightAppRouteParams(fence.hostRecordId, fence.appId);
     if (params !== null) {
       params['launchRequestId'] = result.key.requestId;
       params['launchGeneration'] = result.key.generation;
       params['launchOwnerToken'] = result.key.ownerToken;
-      params['serverUuid'] = this.host.serverUuid;
-      params['numericAppId'] = numericAppId;
-      params['hostAddress'] = this.selectedHostAddress();
+      params['serverUuid'] = fence.serverUuid;
+      params['numericAppId'] = fence.numericAppId;
+      params['hostAddress'] = fence.hostAddress;
+      params['streamWidth'] = launchConfiguration.width as number;
+      params['streamHeight'] = launchConfiguration.height as number;
+      params['streamBitrateKbps'] = this.settingsService.load().settings.video.bitrateKbps;
+      params['launchOwnerScopeFingerprint'] = moonlightOwnerScopeFingerprint(fence.ownerScopeId);
+      params['launchAccountGeneration'] = fence.accountGeneration;
+      params['launchInstallationId'] = moonlightInstallationId(fence.storeIdentity);
+      params['launchStoreInstanceId'] = fence.storeInstanceId;
+      if (!this.launchFenceCurrent(fence)) {
+        this.finishLaunch(fence, true);
+        return;
+      }
       this.showLaunchSheet = false;
-      router.pushUrl({ url: 'pages/MoonlightStreamPage', params: params });
+      this.finishLaunch(fence, false);
+      try {
+        await router.pushUrl({ url: 'pages/MoonlightStreamPage', params: params });
+      } catch (_) {
+        this.hostService.disposeOwner(fence.ownerToken);
+        if (this.pageActive) {
+          promptAction.showToast({ message: '无法打开串流页面，启动租约已安全释放', duration: 2200 });
+        }
+      }
+      return;
     }
+    this.finishLaunch(fence, true);
   }
 
   private openSettings(): void {
@@ -378,7 +523,14 @@ struct MoonlightAppCatalogPage {
       onCancel: (): void => { this.showLaunchSheet = false; },
       onOpenSettings: (): void => { this.showLaunchSheet = false; this.openSettings(); },
       onRetry: (): void => { this.showLaunchSheet = false; this.requestRefresh(); },
-      onStart: (): void => { this.startSelected().catch((): void => { this.launching = false; }); }
+      onStart: (): void => {
+        this.startSelected().catch((): void => {
+          if (this.pageActive) {
+            const fence: MoonlightLaunchFence | null = this.activeLaunchFence;
+            if (fence !== null) { this.finishLaunch(fence, true); }
+          }
+        });
+      }
     })
   }
 

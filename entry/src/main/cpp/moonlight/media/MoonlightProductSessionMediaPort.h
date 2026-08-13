@@ -20,6 +20,8 @@ public:
     bool bindSession(const MoonlightSessionKey& key) noexcept override;
     void releaseSession(const MoonlightSessionKey& key) noexcept override;
     bool firstFrameReady() const noexcept override;
+    bool videoLive() const noexcept override;
+    bool audioLive() const noexcept override;
     bool videoReady() const noexcept override;
     bool audioReady(MoonlightStreamAudioLayout layout) const noexcept override;
     bool setupVideo(const MoonlightCommonCVideoSelection& selection) noexcept override;

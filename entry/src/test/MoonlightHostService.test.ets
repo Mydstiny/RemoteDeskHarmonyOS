@@ -24,8 +24,9 @@ import {
   MoonlightNativeRequestKey,
   MoonlightNativeResult
 } from '../main/ets/services/MoonlightHostService';
+import { moonlightOwnerScopeFingerprint } from '../main/ets/services/MoonlightRuntimeSupport';
 
-const OWNER_A_FP: string = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+const OWNER_A_FP: string = moonlightOwnerScopeFingerprint('owner-a');
 
 function copyBytes(value: Uint8Array): number[] {
   const result: number[] = [];
@@ -228,6 +229,16 @@ export default function moonlightHostServiceTest(): void {
       expect(value.native.requests.length).assertEqual(0);
       expect(value.port.commitCount).assertEqual(0);
     });
+
+    it('rejects_owner_fingerprint_not_derived_from_the_captured_lease', 0,
+      async (): Promise<void> => {
+        const value = fixture();
+        const wrong: MoonlightHostContext = context();
+        wrong.ownerScopeFingerprint = moonlightOwnerScopeFingerprint('owner-b');
+        const result = await value.service.catalog(wrong);
+        expect(result.code).assertEqual('invalid_context');
+        expect(value.native.requests.length).assertEqual(0);
+      });
 
     it('commits_only_complete_confirmed_catalog_to_existing_cache', 0,
       async (): Promise<void> => {

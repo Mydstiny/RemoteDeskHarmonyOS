@@ -4,8 +4,10 @@
 #include "moonlight/bridge/MoonlightNativeBridge.h"
 #include "moonlight/core/MoonlightHostApi.h"
 #include "moonlight/media/MoonlightCommonCAdapter.h"
+#include "moonlight/input/MoonlightProductInputRuntime.h"
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -34,6 +36,8 @@ struct MoonlightProductStreamStartRequest final {
     std::int64_t rendererHandle = 0;
     std::int32_t surfaceWidth = 0;
     std::int32_t surfaceHeight = 0;
+    // Native product policy, not a measured path-capability ceiling.
+    std::int32_t configuredBitrateKbps = 20000;
 };
 
 struct MoonlightProductStreamStartResult final {
@@ -47,6 +51,10 @@ struct MoonlightProductStreamSnapshot final {
     MoonlightSessionKey key {};
     std::string code = "not_active";
     bool transportReady = false;
+    bool videoReady = false;
+    bool audioReady = false;
+    bool inputReady = false;
+    bool controllerReady = false;
     bool firstFrameReady = false;
     bool terminal = false;
     std::uint64_t lastSequence = 0U;
@@ -63,12 +71,33 @@ public:
         const MoonlightBridgeRequestKey& launchKey) noexcept;
     bool requestStop(const MoonlightBridgeRequestKey& launchKey) noexcept;
     bool stop(const MoonlightBridgeRequestKey& launchKey) noexcept;
+    bool sendKey(const MoonlightBridgeRequestKey& launchKey,
+                 std::uint32_t harmonyKeyCode, bool pressed,
+                 bool normalizedToUsLayout) noexcept;
+    bool sendText(const MoonlightBridgeRequestKey& launchKey,
+                  const std::uint8_t* text, std::size_t size) noexcept;
+    bool sendPointer(const MoonlightBridgeRequestKey& launchKey,
+                     const MoonlightProductPointerRequest& request) noexcept;
+    bool sendTouch(const MoonlightBridgeRequestKey& launchKey,
+                   const MoonlightProductTouchRequest& request) noexcept;
+    bool setInputSuspended(const MoonlightBridgeRequestKey& launchKey,
+                           MoonlightInputFlushTrigger trigger,
+                           bool suspended) noexcept;
+    bool setTouchMode(const MoonlightBridgeRequestKey& launchKey,
+                      bool direct) noexcept;
+    bool setVirtualControllerMode(const MoonlightBridgeRequestKey& launchKey,
+                                  bool enabled, bool editing) noexcept;
+    bool sendVirtualController(
+        const MoonlightBridgeRequestKey& launchKey,
+        const MoonlightProductVirtualControllerRequest& request) noexcept;
     void shutdown() noexcept;
 
 private:
     MoonlightProductStreamingRuntime() = default;
     struct State;
     State& state() noexcept;
+    void completeTerminal(const MoonlightBridgeRequestKey& launchKey,
+                          const MoonlightSessionKey& sessionKey) noexcept;
 };
 
 } // namespace remotedesk::moonlight

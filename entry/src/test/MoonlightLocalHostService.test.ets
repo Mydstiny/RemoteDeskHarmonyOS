@@ -1,5 +1,6 @@
 import { describe, it, expect } from '@ohos/hypium';
 import { MoonlightRecord } from '../main/ets/model/MoonlightRecord';
+import { MoonlightAppCacheEntry } from '../main/ets/model/MoonlightAppCache';
 import { AccountSessionLease, accountSessionLeaseEquals, cloneAccountSessionLease } from
   '../main/ets/services/AccountScopePolicy';
 import {
@@ -10,7 +11,10 @@ import {
   MoonlightRepositoryPort,
   MoonlightRepositoryReadResult
 } from '../main/ets/services/MoonlightRepository';
-import { MoonlightLocalHostService } from '../main/ets/services/MoonlightLocalHostService';
+import {
+  MoonlightLocalHostService
+} from '../main/ets/services/MoonlightLocalHostService';
+import { MoonlightAppCachePort } from '../main/ets/services/MoonlightAppCacheService';
 
 function testLease(): AccountSessionLease {
   return {
@@ -21,7 +25,7 @@ function testLease(): AccountSessionLease {
   };
 }
 
-class MemoryMoonlightHostPort implements MoonlightRepositoryPort {
+class MemoryMoonlightHostPort implements MoonlightRepositoryPort, MoonlightAppCachePort {
   active: AccountSessionLease = testLease();
   rows: Map<string, MoonlightRecord> = new Map<string, MoonlightRecord>();
   localOnly: Map<string, number> = new Map<string, number>();
@@ -98,6 +102,16 @@ class MemoryMoonlightHostPort implements MoonlightRepositoryPort {
 
   recordMoonlightQuarantine(candidate: AccountSessionLease,
     _recordId: string, _reason: string, _hash: string): boolean {
+    return this.isLeaseCurrent(candidate);
+  }
+
+  loadMoonlightAppCacheEntries(candidate: AccountSessionLease,
+    _hostId?: string): MoonlightAppCacheEntry[] | null {
+    return this.isLeaseCurrent(candidate) ? [] : null;
+  }
+
+  commitMoonlightAppCacheRefresh(candidate: AccountSessionLease,
+    _hostId: string, _rows: MoonlightAppCacheEntry[], _evictedIds: string[]): boolean {
     return this.isLeaseCurrent(candidate);
   }
 }
@@ -274,6 +288,37 @@ export default function moonlightLocalHostServiceTest(): void {
       const allRows: MoonlightRecord[] = port.loadMoonlightLocalRecords(
         port.active, true) as MoonlightRecord[];
       expect(allRows.length).assertEqual(1);
+    });
+
+    it('renames_an_existing_host_inside_the_current_local_lease', 0, (): void => {
+      const port = new MemoryMoonlightHostPort();
+      const state: MoonlightHostAddState = readyAddState();
+      state.activeOperation = 'save';
+      const service = new MoonlightLocalHostService(port, port);
+      const saved = service.save(state, saveKey(state), 1000);
+      expect(saved.ok).assertTrue();
+      const renamed = service.updateDisplayName(saved.hostId, '客厅游戏主机', 2000);
+      expect(renamed.ok).assertTrue();
+      const stored = port.readMoonlightLocalRecord(port.active, saved.hostId).record as MoonlightRecord;
+      const payload: Record<string, Object> = JSON.parse(stored.payload) as Record<string, Object>;
+      expect(payload['displayName']).assertEqual('客厅游戏主机');
+    });
+
+    it('tombstones_host_and_owned_records_when_deleting_locally', 0, (): void => {
+      const port = new MemoryMoonlightHostPort();
+      const state: MoonlightHostAddState = readyAddState();
+      state.activeOperation = 'save';
+      const service = new MoonlightLocalHostService(port, port);
+      const saved = service.save(state, saveKey(state), 1000);
+      expect(saved.ok).assertTrue();
+      const removed = service.deleteHost(saved.hostId, 2000);
+      expect(removed.ok).assertTrue();
+      const live = port.loadMoonlightLocalRecords(port.active) as MoonlightRecord[];
+      const all = port.loadMoonlightLocalRecords(port.active, true) as MoonlightRecord[];
+      expect(live.length).assertEqual(0);
+      expect(all.length).assertEqual(2);
+      expect(all[0].deletedAt > 0).assertTrue();
+      expect(all[1].deletedAt > 0).assertTrue();
     });
   });
 }

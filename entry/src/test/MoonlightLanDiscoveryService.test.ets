@@ -342,23 +342,29 @@ export default function moonlightLanDiscoveryServiceTest(): void {
       const verification = parseMoonlightServerInfo(
         '<root status_code="200"><uniqueid>host</uniqueid></root>', address, 'host');
       const current: MoonlightHostOperationFence | null =
-        createMoonlightHostOperationFence(11, 7, 'host', address);
+        createMoonlightHostOperationFence(11, 7, 'owner-a', 3, 'host', address);
       expect(verification === null).assertFalse();
       expect(current === null).assertFalse();
       if (verification !== null && current !== null) {
         expect(moonlightVerificationMatchesFence(verification, current)).assertTrue();
         const ownerChanged: MoonlightHostOperationFence | null =
-          createMoonlightHostOperationFence(12, 7, 'host', address);
+          createMoonlightHostOperationFence(12, 7, 'owner-a', 3, 'host', address);
         const generationChanged: MoonlightHostOperationFence | null =
-          createMoonlightHostOperationFence(11, 8, 'host', address);
+          createMoonlightHostOperationFence(11, 8, 'owner-a', 3, 'host', address);
+        const scopeChanged: MoonlightHostOperationFence | null =
+          createMoonlightHostOperationFence(11, 7, 'owner-b', 3, 'host', address);
+        const accountGenerationChanged: MoonlightHostOperationFence | null =
+          createMoonlightHostOperationFence(11, 7, 'owner-a', 4, 'host', address);
         const uuidChanged: MoonlightHostOperationFence | null =
-          createMoonlightHostOperationFence(11, 7, 'other-host', address);
+          createMoonlightHostOperationFence(11, 7, 'owner-a', 3, 'other-host', address);
         const addressChanged: MoonlightHostOperationFence | null =
-          createMoonlightHostOperationFence(11, 7, 'host', {
+          createMoonlightHostOperationFence(11, 7, 'owner-a', 3, 'host', {
             host: address.host, family: address.family, port: 47990
           });
         expect(moonlightHostOperationFenceEquals(current, ownerChanged)).assertFalse();
         expect(moonlightHostOperationFenceEquals(current, generationChanged)).assertFalse();
+        expect(moonlightHostOperationFenceEquals(current, scopeChanged)).assertFalse();
+        expect(moonlightHostOperationFenceEquals(current, accountGenerationChanged)).assertFalse();
         expect(moonlightHostOperationFenceEquals(current, uuidChanged)).assertFalse();
         expect(moonlightHostOperationFenceEquals(current, addressChanged)).assertFalse();
         if (uuidChanged !== null) {

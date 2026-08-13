@@ -120,6 +120,8 @@ public:
     }
     virtual void releaseSession(const MoonlightSessionKey& /*key*/) noexcept {}
     virtual bool firstFrameReady() const noexcept { return false; }
+    virtual bool videoLive() const noexcept { return false; }
+    virtual bool audioLive() const noexcept { return false; }
     virtual bool videoReady() const noexcept = 0;
     virtual bool audioReady(MoonlightStreamAudioLayout layout) const noexcept = 0;
     virtual bool setupVideo(const MoonlightCommonCVideoSelection& selection) noexcept = 0;
@@ -202,10 +204,19 @@ struct REMOTEDESK_MOONLIGHT_COMMON_C_HIDDEN MoonlightCommonCRequest final {
     std::uint64_t sessionId = 0U;
     std::uint64_t generation = 0U;
     std::uint64_t accountOwnerToken = 0U;
+    // Product sessions may defer platform/display proof to bindSession() and
+    // network classification to common-c's resolved-address STREAM_CFG_AUTO
+    // path. In this mode the corresponding capability generations must remain
+    // zero and the offer must not claim a known network path or refresh rate.
+    bool deferRuntimeCapabilityProof = false;
     MoonlightStreamConfigResult streamConfig;
     MoonlightCommonCServerEvidence server;
     MoonlightRtspLaunchLease launchLease;
     MoonlightCommonCDeadlineSet deadlines;
+    // Executed by the invocation's terminal worker before common-c stop and
+    // media release. Hooks must be noexcept in behavior and identity-fenced.
+    std::function<void(const MoonlightSessionKey&)> terminalInputTeardown;
+    std::function<void(const MoonlightSessionKey&)> terminalComplete;
 };
 
 struct REMOTEDESK_MOONLIGHT_COMMON_C_HIDDEN MoonlightCommonCStartResult final {
@@ -236,6 +247,8 @@ struct REMOTEDESK_MOONLIGHT_COMMON_C_HIDDEN MoonlightCommonCSnapshot final {
     MoonlightCommonCStage lastCompletedStage = MoonlightCommonCStage::None;
     bool protocolViolation = false;
     bool transportReady = false;
+    bool videoReady = false;
+    bool audioReady = false;
     bool firstFrameReady = false;
     bool terminal = false;
     bool secretsCleared = false;
@@ -312,6 +325,9 @@ public:
         const MoonlightStreamCodecProfile& profile) noexcept;
     static std::array<std::uint8_t, 16U> remoteInputIv(
         std::int32_t remoteInputKeyId) noexcept;
+    static void clearRemoteInputSecrets(
+        std::array<std::uint8_t, 16U>& key,
+        std::array<std::uint8_t, 16U>& iv) noexcept;
     static std::size_t staleCallbackCount() noexcept;
 };
 #endif

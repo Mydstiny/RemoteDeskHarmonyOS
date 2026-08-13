@@ -179,6 +179,11 @@ set(MOONLIGHT_MEDIA_CLOCK_STATS_SOURCE
 set(MOONLIGHT_INPUT_BRIDGE_SOURCE
     moonlight/input/MoonlightInputBridge.cpp
 )
+set(MOONLIGHT_PRODUCT_INPUT_SOURCES
+    moonlight/input/MoonlightCommonCInputPort.cpp
+    moonlight/input/MoonlightProductInputRuntime.cpp
+    moonlight/input/MoonlightGameControllerListener.cpp
+)
 set(MOONLIGHT_KEYBOARD_MAPPER_SOURCE
     moonlight/input/MoonlightKeyboardMapper.cpp
 )
@@ -966,6 +971,44 @@ target_link_libraries(remotedesk_moonlight_controller_aggregator PRIVATE
     remotedesk_moonlight_controller_mapper
 )
 
+# S1-05A sole product input assembly. Semantic platform input is mapped by the
+# existing N3-02..N3-08 layers and projected to official LiSend* calls by one
+# synchronous port. GameControllerKit is registered only while an exact
+# Moonlight session owns this runtime; other protocols never initialize it.
+add_library(remotedesk_moonlight_product_input STATIC
+    ${MOONLIGHT_PRODUCT_INPUT_SOURCES}
+)
+target_compile_features(remotedesk_moonlight_product_input PRIVATE cxx_std_17)
+target_include_directories(remotedesk_moonlight_product_input PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_compile_options(remotedesk_moonlight_product_input PRIVATE
+    -fvisibility=hidden
+    -fvisibility-inlines-hidden
+)
+set_target_properties(remotedesk_moonlight_product_input PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+)
+target_link_libraries(remotedesk_moonlight_product_input PRIVATE
+    remotedesk_moonlight_controller_aggregator
+    remotedesk_moonlight_input_flush_policy
+    remotedesk_moonlight_controller_mapper
+    remotedesk_moonlight_touch_mapper
+    remotedesk_moonlight_pointer_mapper
+    remotedesk_moonlight_keyboard_mapper
+    remotedesk_moonlight_input_bridge
+    remotedesk_moonlight_common_c_adapter
+)
+if(CMAKE_SYSTEM_NAME STREQUAL "OHOS")
+    # Keep GameControllerKit outside librdpnapi's mandatory dependency graph.
+    # The Moonlight-only listener resolves it when an exact stream session
+    # activates physical-controller input; libdl is a static SDK shim.
+    target_link_libraries(remotedesk_moonlight_product_input PRIVATE dl)
+endif()
+target_link_libraries(remotedesk_moonlight_bridge PRIVATE
+    remotedesk_moonlight_product_input
+)
+
 # 定义共享库目标
 add_library(rdpnapi SHARED ${ALL_SOURCES})
 target_compile_definitions(rdpnapi PRIVATE
@@ -974,6 +1017,7 @@ target_compile_definitions(rdpnapi PRIVATE
 )
 target_link_libraries(rdpnapi PRIVATE
     remotedesk_moonlight_product_media
+    remotedesk_moonlight_product_input
     remotedesk_moonlight_controller_aggregator
     remotedesk_moonlight_input_flush_policy
     remotedesk_moonlight_controller_feedback
@@ -1007,6 +1051,7 @@ target_link_options(rdpnapi PRIVATE
     "-Wl,--exclude-libs,libremotedesk_moonlight_video_decoder_sink.a"
     "-Wl,--exclude-libs,libremotedesk_moonlight_audio_bridge.a"
     "-Wl,--exclude-libs,libremotedesk_moonlight_product_media.a"
+    "-Wl,--exclude-libs,libremotedesk_moonlight_product_input.a"
     "-Wl,--exclude-libs,libremotedesk_moonlight_media_clock_stats.a"
     "-Wl,--exclude-libs,libremotedesk_moonlight_input_bridge.a"
     "-Wl,--exclude-libs,libremotedesk_moonlight_keyboard_mapper.a"

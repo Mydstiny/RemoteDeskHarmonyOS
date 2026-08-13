@@ -2,6 +2,7 @@
 
 #include "moonlight/media/MoonlightProductSessionMediaPort.h"
 #include "moonlight/media/MoonlightStreamConfig.h"
+#include "moonlight/input/MoonlightProductInputRuntime.h"
 
 #include <algorithm>
 #include <chrono>
@@ -22,96 +23,96 @@ bool sameLaunchKey(const MoonlightBridgeRequestKey& left,
     return left == right;
 }
 
-MoonlightStreamCapabilityEvidence evidence(
-    MoonlightStreamCapabilitySource source, std::uint64_t generation,
-    std::uint64_t now) {
-    return {MoonlightStreamCapabilityStatus::Supported, source, "api23-product",
-            generation, now + 60000U};
-}
+constexpr std::uint64_t kServerCodecH264 = 0x00000001U;
+constexpr std::uint32_t kMinimumWidth = 320U;
+constexpr std::uint32_t kMaximumWidth = 7680U;
+constexpr std::uint32_t kMinimumHeight = 240U;
+constexpr std::uint32_t kMaximumHeight = 4320U;
+constexpr std::uint32_t kMinimumFps = 30U;
+constexpr std::uint32_t kMaximumFps = 240U;
+constexpr std::int32_t kMinimumBitrateKbps = 1000;
+constexpr std::int32_t kMaximumBitrateKbps = 200000;
 
-MoonlightStreamConfigResult resolveOffer(
-    const MoonlightProductLaunchStage& stage, std::uint64_t now) noexcept {
-    MoonlightRequestedStreamConfig requested;
-    requested.requested.codecPreference = MoonlightStreamCodecPreference::H264;
-    requested.requested.resolutionMode = MoonlightStreamResolutionMode::Custom;
-    requested.requested.customWidth = static_cast<std::int32_t>(stage.configuration.width);
-    requested.requested.customHeight = static_cast<std::int32_t>(stage.configuration.height);
-    requested.requested.fps = static_cast<std::int32_t>(stage.configuration.refreshRate);
-    requested.requested.bitrateKbps = 20000;
-    requested.requested.hdr = false;
-    requested.requested.yuv444 = false;
-    requested.requested.latencyMode = MoonlightStreamLatencyMode::LowLatency;
-    requested.requested.audioEnabled = true;
-    requested.requested.audioLayout = MoonlightStreamAudioLayout::Stereo;
-    requested.requested.playAudioOnHost = stage.configuration.playAudioOnHost;
-    requested.requested.encryptionPolicy = MoonlightStreamEncryptionPolicy::Auto;
-    requested.requested.meteredPolicy = MoonlightStreamMeteredPolicy::Allow;
-    requested.d1Effective = requested.requested;
+std::optional<MoonlightStreamConfigResult> conservativeOffer(
+    const MoonlightProductLaunchStage& stage,
+    const MoonlightProductStreamStartRequest& request) noexcept {
+    const auto width = stage.configuration.width;
+    const auto height = stage.configuration.height;
+    const auto fps = stage.configuration.refreshRate;
+    const auto pixels = static_cast<std::uint64_t>(width) * height;
+    if (width < kMinimumWidth || width > kMaximumWidth ||
+        height < kMinimumHeight || height > kMaximumHeight ||
+        (width % 2U) != 0U || (height % 2U) != 0U ||
+        fps < kMinimumFps || fps > kMaximumFps ||
+        request.configuredBitrateKbps < kMinimumBitrateKbps ||
+        request.configuredBitrateKbps > kMaximumBitrateKbps ||
+        stage.configuration.hdr || !stage.serverInfo.paired ||
+        stage.serverInfo.currentGame != stage.appId ||
+        stage.serverInfo.uniqueId != stage.serverUuid ||
+        !stage.serverInfo.codecModeSupport.has_value() ||
+        ((*stage.serverInfo.codecModeSupport & kServerCodecH264) == 0U) ||
+        (stage.serverInfo.maxLumaPixelsH264.has_value() &&
+         pixels > *stage.serverInfo.maxLumaPixelsH264)) {
+        return std::nullopt;
+    }
 
-    const std::int32_t width = requested.requested.customWidth;
-    const std::int32_t height = requested.requested.customHeight;
-    const std::int32_t fps = requested.requested.fps;
-    const MoonlightStreamCodecProfile h264 {
-        MoonlightStreamCodec::H264, MoonlightStreamBitDepth::Bit8,
-        MoonlightStreamChroma::Yuv420};
-    MoonlightStreamCapabilitySnapshot capabilities;
-    capabilities.host.evidence = evidence(
-        MoonlightStreamCapabilitySource::Host, stage.key.generation, now);
-    capabilities.host.recommendedMode = MoonlightStreamDimensions {width, height};
-    capabilities.host.maxWidth = width;
-    capabilities.host.maxHeight = height;
-    capabilities.host.maxFps = std::max(1, fps);
-    capabilities.host.maxEncoderBitrateKbps = 100000;
-    capabilities.host.codecProfiles = {h264};
-    capabilities.host.rec709Limited = true;
-    capabilities.host.opusStereo = true;
-    capabilities.host.encryptionStreams =
-        MoonlightStreamEncryptAudio | MoonlightStreamEncryptVideo;
+    try {
+        MoonlightStreamConfigResult result;
+        result.status = MoonlightStreamResultStatus::OfferReady;
+        result.code = MoonlightStreamResultCode::None;
+        result.identity.ownerToken = stage.key.ownerToken;
+        result.identity.sessionGeneration = stage.key.generation;
+        result.identity.hostId = stage.hostId;
+        result.identity.serverUuid = stage.serverUuid;
+        result.identity.settingsRevision = stage.key.generation;
+        result.identity.hostCapabilityGeneration = stage.key.generation;
+        // These remain zero until the admitted owner binds real media. Network
+        // path classification is likewise deferred to common-c after address
+        // resolution rather than inferred from address spelling.
+        result.identity.platformProbeGeneration = 0U;
+        result.identity.networkCapabilityGeneration = 0U;
+        result.identity.displayCapabilityGeneration = 0U;
 
-    capabilities.platform.evidence = evidence(
-        MoonlightStreamCapabilitySource::PlatformProbe, stage.key.generation, now);
-    capabilities.platform.maxWidth = width;
-    capabilities.platform.maxHeight = height;
-    capabilities.platform.maxFps = std::max(1, fps);
-    capabilities.platform.maxDecodeBitrateKbps = 100000;
-    capabilities.platform.maxThermalBitrateKbps = 100000;
-    capabilities.platform.decoderProfiles = {h264};
-    capabilities.platform.opusStereoOutput = true;
-    capabilities.platform.commonCOpusMultistream = true;
-    capabilities.platform.commonCEncryptionStreams =
-        MoonlightStreamEncryptAudio | MoonlightStreamEncryptVideo;
+        MoonlightEffectiveStreamOffer offer;
+        offer.dimensions = {static_cast<std::int32_t>(width),
+                            static_cast<std::int32_t>(height)};
+        offer.fps = static_cast<std::int32_t>(fps);
+        offer.launchRefreshRate = offer.fps;
+        offer.clientRefreshRateX100 = 0;
+        offer.configuredBitrateKbps = request.configuredBitrateKbps;
+        offer.estimatedEncoderBitrateKbps =
+            request.configuredBitrateKbps * 4 / 5;
+        // Limelight.h explicitly prescribes 1024 when path MTU is unknown.
+        offer.packetSizeBytes = 1024;
+        offer.networkPath = MoonlightStreamNetworkPath::Unknown;
+        offer.latencyMode = MoonlightStreamLatencyMode::LowLatency;
+        offer.offeredCodecs = {{MoonlightStreamCodec::H264,
+            MoonlightStreamBitDepth::Bit8, MoonlightStreamChroma::Yuv420,
+            true, true, true}};
+        offer.hdr = false;
+        offer.yuv444 = false;
+        offer.colorSpace = MoonlightStreamColorSpace::Rec709;
+        offer.colorRange = MoonlightStreamColorRange::Limited;
+        offer.audioLayout = MoonlightStreamAudioLayout::Stereo;
+        offer.playAudioOnHost = stage.configuration.playAudioOnHost;
+        offer.highQualityAudioCandidate = false;
+        offer.encryptionPolicy = MoonlightStreamEncryptionPolicy::Auto;
+        offer.requiredEncryptionStreams = MoonlightStreamEncryptNone;
+        offer.candidateEncryptionStreams = MoonlightStreamEncryptNone;
+        offer.remoteInputEncryptionRequired = true;
+        result.offer = offer;
 
-    capabilities.network.evidence = evidence(
-        MoonlightStreamCapabilitySource::NetworkProbe, stage.key.generation, now);
-    capabilities.network.path = MoonlightStreamNetworkPath::Local;
-    capabilities.network.addressFamily = stage.address.find(':') == std::string::npos
-        ? MoonlightStreamAddressFamily::Ipv4 : MoonlightStreamAddressFamily::Ipv6;
-    capabilities.network.vpnClassificationKnown = true;
-    capabilities.network.nat64ClassificationKnown = true;
-    capabilities.network.mtuReceiptAvailable = true;
-    capabilities.network.safeVideoPacketSizeBytes = 1024;
-    capabilities.network.metered = MoonlightStreamMeteredState::Unmetered;
-    capabilities.network.maxBitrateKbps = 100000;
-
-    capabilities.display.evidence = evidence(
-        MoonlightStreamCapabilitySource::DisplayProbe, stage.key.generation, now);
-    capabilities.display.maxWidth = width;
-    capabilities.display.maxHeight = height;
-    capabilities.display.maxFps = std::max(1, fps);
-    capabilities.display.refreshRateX100 = std::max(1, fps) * 100;
-    capabilities.display.rec709Limited = true;
-
-    MoonlightStreamConfigIdentity identity;
-    identity.ownerToken = stage.key.ownerToken;
-    identity.sessionGeneration = stage.key.generation;
-    identity.hostId = stage.hostId;
-    identity.serverUuid = stage.serverUuid;
-    identity.settingsRevision = stage.key.generation;
-    identity.hostCapabilityGeneration = stage.key.generation;
-    identity.platformProbeGeneration = stage.key.generation;
-    identity.networkCapabilityGeneration = stage.key.generation;
-    identity.displayCapabilityGeneration = stage.key.generation;
-    return resolveMoonlightStreamConfig(requested, capabilities, identity, now);
+        MoonlightLaunchProjection launch;
+        launch.dimensions = offer.dimensions;
+        launch.fps = offer.fps;
+        launch.hdr = false;
+        launch.audioLayout = offer.audioLayout;
+        launch.playAudioOnHost = offer.playAudioOnHost;
+        result.launchProjection = launch;
+        return result;
+    } catch (...) {
+        return std::nullopt;
+    }
 }
 
 const char* startCode(MoonlightCommonCStartStatus status) noexcept {
@@ -132,6 +133,11 @@ struct MoonlightProductStreamingRuntime::State final {
     std::optional<MoonlightProductLaunchStage> staged;
     MoonlightBridgeRequestKey activeLaunchKey {};
     MoonlightSessionKey activeSessionKey {};
+    MoonlightBridgeRequestKey startingLaunchKey {};
+    MoonlightSessionKey terminalDuringStart {};
+    MoonlightBridgeRequestKey terminalLaunchKey {};
+    MoonlightProductStreamSnapshot terminalReceipt {};
+    bool inputActivationAttempted = false;
 };
 
 MoonlightProductStreamingRuntime& MoonlightProductStreamingRuntime::process() noexcept {
@@ -160,6 +166,8 @@ bool MoonlightProductStreamingRuntime::stageLaunch(
             std::fill(stage.remoteInputKey.begin(), stage.remoteInputKey.end(), 0U);
             return false;
         }
+        value.terminalLaunchKey = {};
+        value.terminalReceipt = {};
         if (value.staged.has_value()) {
             std::fill(value.staged->remoteInputKey.begin(),
                       value.staged->remoteInputKey.end(), 0U);
@@ -198,8 +206,8 @@ MoonlightProductStreamStartResult MoonlightProductStreamingRuntime::start(
         return {false, "invalid_surface", {}};
     }
     const auto now = monotonicMs();
-    auto streamConfig = resolveOffer(stage, now);
-    if (!streamConfig.ready()) {
+    auto streamConfig = conservativeOffer(stage, request);
+    if (!streamConfig.has_value()) {
         std::fill(stage.remoteInputKey.begin(), stage.remoteInputKey.end(), 0U);
         return {false, "stream_config_rejected", {}};
     }
@@ -215,12 +223,15 @@ MoonlightProductStreamStartResult MoonlightProductStreamingRuntime::start(
     common.sessionId = stage.key.requestId;
     common.generation = stage.key.generation;
     common.accountOwnerToken = stage.key.ownerToken;
-    common.streamConfig = std::move(streamConfig);
+    common.deferRuntimeCapabilityProof = true;
+    common.streamConfig = std::move(*streamConfig);
     common.server.address = stage.address;
     common.server.appVersion = stage.serverInfo.appVersion;
     common.server.gfeVersion = stage.serverInfo.gfeVersion;
     common.server.authenticated = true;
     common.server.hostCapabilityGeneration = stage.key.generation;
+    // The profile is admitted only because conservativeOffer() verified the
+    // authenticated server launch receipt's SCM_H264 bit.
     common.server.codecProfiles = {{MoonlightStreamCodec::H264,
         MoonlightStreamBitDepth::Bit8, MoonlightStreamChroma::Yuv420}};
     common.launchLease = MoonlightRtspLaunchLease(
@@ -231,16 +242,43 @@ MoonlightProductStreamStartResult MoonlightProductStreamingRuntime::start(
     std::fill(stage.remoteInputKey.begin(), stage.remoteInputKey.end(), 0U);
     common.deadlines.overallMonotonicMs = now + 30000U;
     common.deadlines.stageMonotonicMs.fill(now + 15000U);
+    const auto launchKey = request.launchKey;
+    common.terminalInputTeardown = [](const MoonlightSessionKey& key) noexcept {
+        (void)MoonlightProductInputRuntime::process().stop(key);
+    };
+    common.terminalComplete = [launchKey](const MoonlightSessionKey& key) noexcept {
+        MoonlightProductStreamingRuntime::process().completeTerminal(launchKey, key);
+    };
+    {
+        auto& value = state();
+        std::lock_guard<std::mutex> lock(value.mutex);
+        value.startingLaunchKey = launchKey;
+        value.terminalDuringStart = {};
+    }
     const auto started = MoonlightCommonCAdapter::process().startWithMedia(
         std::move(common), std::move(media));
     if (started.status != MoonlightCommonCStartStatus::Accepted) {
+        auto& value = state();
+        std::lock_guard<std::mutex> lock(value.mutex);
+        if (value.startingLaunchKey == launchKey) {
+            value.startingLaunchKey = {};
+            value.terminalDuringStart = {};
+        }
         return {false, startCode(started.status), {}};
     }
     {
         auto& value = state();
         std::lock_guard<std::mutex> lock(value.mutex);
-        value.activeLaunchKey = request.launchKey;
+        const bool alreadyTerminal = value.startingLaunchKey == launchKey &&
+            value.terminalDuringStart == started.key;
+        value.startingLaunchKey = {};
+        value.terminalDuringStart = {};
+        if (alreadyTerminal) {
+            return {false, "terminal", started.key};
+        }
+        value.activeLaunchKey = launchKey;
         value.activeSessionKey = started.key;
+        value.inputActivationAttempted = false;
     }
     return {true, "accepted", started.key};
 }
@@ -252,17 +290,39 @@ MoonlightProductStreamSnapshot MoonlightProductStreamingRuntime::snapshot(
         auto& value = state();
         std::lock_guard<std::mutex> lock(value.mutex);
         if (value.activeLaunchKey != launchKey || !value.activeSessionKey.valid()) {
+            if (value.terminalLaunchKey == launchKey &&
+                value.terminalReceipt.matched) {
+                return value.terminalReceipt;
+            }
             return {};
         }
         key = value.activeSessionKey;
     }
     const auto source = MoonlightCommonCAdapter::process().snapshot(key);
+    bool activateInput = false;
+    if (source.transportReady && !source.terminal) {
+        auto& value = state();
+        std::lock_guard<std::mutex> lock(value.mutex);
+        if (value.activeLaunchKey == launchKey && value.activeSessionKey == key &&
+            !value.inputActivationAttempted) {
+            value.inputActivationAttempted = true;
+            activateInput = true;
+        }
+    }
+    if (activateInput) {
+        (void)MoonlightProductInputRuntime::process().activate(key);
+    }
+    const auto input = MoonlightProductInputRuntime::process().snapshot(key);
     MoonlightProductStreamSnapshot result;
     result.matched = source.matched;
     result.key = source.key;
     result.code = source.terminal ? "terminal" : source.firstFrameReady
         ? "first_frame" : source.transportReady ? "transport_ready" : "starting";
     result.transportReady = source.transportReady;
+    result.videoReady = source.videoReady;
+    result.audioReady = source.audioReady;
+    result.inputReady = input.inputReady;
+    result.controllerReady = input.controllerReady;
     result.firstFrameReady = source.firstFrameReady;
     result.terminal = source.terminal;
     result.lastSequence = source.lastSequence;
@@ -270,8 +330,11 @@ MoonlightProductStreamSnapshot MoonlightProductStreamingRuntime::snapshot(
         auto& value = state();
         std::lock_guard<std::mutex> lock(value.mutex);
         if (value.activeLaunchKey == launchKey && value.activeSessionKey == key) {
+            value.terminalLaunchKey = launchKey;
+            value.terminalReceipt = result;
             value.activeLaunchKey = {};
             value.activeSessionKey = {};
+            value.inputActivationAttempted = false;
         }
     }
     return result;
@@ -308,11 +371,161 @@ bool MoonlightProductStreamingRuntime::stop(
         auto& value = state();
         std::lock_guard<std::mutex> lock(value.mutex);
         if (value.activeLaunchKey == launchKey && value.activeSessionKey == key) {
+            value.terminalLaunchKey = launchKey;
+            value.terminalReceipt = {};
+            value.terminalReceipt.matched = true;
+            value.terminalReceipt.key = key;
+            value.terminalReceipt.code = "terminal";
+            value.terminalReceipt.terminal = true;
             value.activeLaunchKey = {};
             value.activeSessionKey = {};
+            value.inputActivationAttempted = false;
         }
     }
     return stopped;
+}
+
+void MoonlightProductStreamingRuntime::completeTerminal(
+    const MoonlightBridgeRequestKey& launchKey,
+    const MoonlightSessionKey& sessionKey) noexcept {
+    const auto source = MoonlightCommonCAdapter::process().snapshot(sessionKey);
+    MoonlightProductStreamSnapshot receipt;
+    receipt.matched = source.matched;
+    receipt.key = source.key;
+    receipt.code = "terminal";
+    receipt.transportReady = source.transportReady;
+    receipt.videoReady = source.videoReady;
+    receipt.audioReady = source.audioReady;
+    receipt.firstFrameReady = source.firstFrameReady;
+    receipt.terminal = source.terminal;
+    receipt.lastSequence = source.lastSequence;
+    auto& value = state();
+    std::lock_guard<std::mutex> lock(value.mutex);
+    if (value.activeLaunchKey == launchKey &&
+        value.activeSessionKey == sessionKey) {
+        value.terminalLaunchKey = launchKey;
+        if (receipt.matched && receipt.terminal) {
+            value.terminalReceipt = std::move(receipt);
+        } else {
+            value.terminalReceipt = {};
+            value.terminalReceipt.matched = true;
+            value.terminalReceipt.key = sessionKey;
+            value.terminalReceipt.code = "terminal";
+            value.terminalReceipt.terminal = true;
+        }
+        value.activeLaunchKey = {};
+        value.activeSessionKey = {};
+        value.inputActivationAttempted = false;
+    } else if (value.startingLaunchKey == launchKey) {
+        value.terminalDuringStart = sessionKey;
+    }
+}
+
+bool MoonlightProductStreamingRuntime::sendKey(
+    const MoonlightBridgeRequestKey& launchKey, std::uint32_t harmonyKeyCode,
+    bool pressed, bool normalizedToUsLayout) noexcept {
+    MoonlightSessionKey key;
+    {
+        auto& value = state();
+        std::lock_guard<std::mutex> lock(value.mutex);
+        if (value.activeLaunchKey != launchKey) { return false; }
+        key = value.activeSessionKey;
+    }
+    return MoonlightProductInputRuntime::process().sendKey(
+        key, harmonyKeyCode, pressed, normalizedToUsLayout);
+}
+
+bool MoonlightProductStreamingRuntime::sendText(
+    const MoonlightBridgeRequestKey& launchKey, const std::uint8_t* text,
+    std::size_t size) noexcept {
+    MoonlightSessionKey key;
+    {
+        auto& value = state();
+        std::lock_guard<std::mutex> lock(value.mutex);
+        if (value.activeLaunchKey != launchKey) { return false; }
+        key = value.activeSessionKey;
+    }
+    return MoonlightProductInputRuntime::process().sendText(key, text, size);
+}
+
+bool MoonlightProductStreamingRuntime::sendPointer(
+    const MoonlightBridgeRequestKey& launchKey,
+    const MoonlightProductPointerRequest& request) noexcept {
+    MoonlightSessionKey key;
+    {
+        auto& value = state();
+        std::lock_guard<std::mutex> lock(value.mutex);
+        if (value.activeLaunchKey != launchKey) { return false; }
+        key = value.activeSessionKey;
+    }
+    return MoonlightProductInputRuntime::process().sendPointer(key, request);
+}
+
+bool MoonlightProductStreamingRuntime::sendTouch(
+    const MoonlightBridgeRequestKey& launchKey,
+    const MoonlightProductTouchRequest& request) noexcept {
+    MoonlightSessionKey key;
+    {
+        auto& value = state();
+        std::lock_guard<std::mutex> lock(value.mutex);
+        if (value.activeLaunchKey != launchKey) { return false; }
+        key = value.activeSessionKey;
+    }
+    return MoonlightProductInputRuntime::process().sendTouch(key, request);
+}
+
+bool MoonlightProductStreamingRuntime::setInputSuspended(
+    const MoonlightBridgeRequestKey& launchKey,
+    MoonlightInputFlushTrigger trigger, bool suspended) noexcept {
+    MoonlightSessionKey key;
+    {
+        auto& value = state();
+        std::lock_guard<std::mutex> lock(value.mutex);
+        if (value.activeLaunchKey != launchKey) { return false; }
+        key = value.activeSessionKey;
+    }
+    return MoonlightProductInputRuntime::process().setSuspended(
+        key, trigger, suspended);
+}
+
+bool MoonlightProductStreamingRuntime::setTouchMode(
+    const MoonlightBridgeRequestKey& launchKey, bool direct) noexcept {
+    MoonlightSessionKey key;
+    {
+        auto& value = state();
+        std::lock_guard<std::mutex> lock(value.mutex);
+        if (value.activeLaunchKey != launchKey) { return false; }
+        key = value.activeSessionKey;
+    }
+    return MoonlightProductInputRuntime::process().setTouchMode(key, direct);
+}
+
+bool MoonlightProductStreamingRuntime::setVirtualControllerMode(
+    const MoonlightBridgeRequestKey& launchKey, bool enabled,
+    bool editing) noexcept {
+    MoonlightSessionKey key;
+    {
+        auto& value = state();
+        std::lock_guard<std::mutex> lock(value.mutex);
+        if (value.activeLaunchKey != launchKey) { return false; }
+        key = value.activeSessionKey;
+    }
+    return MoonlightProductInputRuntime::process().setVirtualControllerMode(
+        key, enabled, editing);
+}
+
+bool MoonlightProductStreamingRuntime::sendVirtualController(
+    const MoonlightBridgeRequestKey& launchKey,
+    const MoonlightProductVirtualControllerRequest& request) noexcept {
+    MoonlightSessionKey key;
+    {
+        auto& value = state();
+        std::lock_guard<std::mutex> lock(value.mutex);
+        if (value.activeLaunchKey != launchKey) { return false; }
+        key = value.activeSessionKey;
+    }
+    return MoonlightProductInputRuntime::process().sendVirtualController(
+        key, request);
 }
 
 void MoonlightProductStreamingRuntime::shutdown() noexcept {

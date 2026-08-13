@@ -52,6 +52,7 @@ export interface MoonlightNativeStreamStartRequest {
   rendererHandle: number;
   surfaceWidth: number;
   surfaceHeight: number;
+  configuredBitrateKbps: number;
 }
 
 export interface MoonlightNativeStreamStartResult {
@@ -69,9 +70,96 @@ export interface MoonlightNativeStreamSnapshot {
   generation: number;
   ownerToken: number;
   transportReady: boolean;
+  videoReady: boolean;
+  audioReady: boolean;
+  inputReady: boolean;
+  controllerReady: boolean;
   firstFrameReady: boolean;
   terminal: boolean;
   lastSequence: number;
+}
+
+export interface MoonlightKeyInputRequest {
+  launchKey: MoonlightNativeRequestKey;
+  keyCode: number;
+  pressed: boolean;
+  normalizedToUsLayout: boolean;
+}
+
+export interface MoonlightTextInputRequest {
+  launchKey: MoonlightNativeRequestKey;
+  text: string;
+}
+
+export interface MoonlightPointerInputRequest {
+  launchKey: MoonlightNativeRequestKey;
+  action: 'relative' | 'absolute' | 'button' | 'scroll';
+  x?: number;
+  y?: number;
+  contentLeft?: number;
+  contentTop?: number;
+  contentWidth?: number;
+  contentHeight?: number;
+  referenceWidth?: number;
+  referenceHeight?: number;
+  geometryGeneration?: number;
+  button?: number;
+  pressed?: boolean;
+  horizontal?: boolean;
+  scrollAmount?: number;
+}
+
+export interface MoonlightTouchInputRequest {
+  launchKey: MoonlightNativeRequestKey;
+  contactId: number;
+  phase: 'down' | 'move' | 'up' | 'cancel';
+  pointX: number;
+  pointY: number;
+  pressure: number;
+  contactAreaMajor: number;
+  contactAreaMinor: number;
+  rotation: number;
+  contentLeft: number;
+  contentTop: number;
+  contentWidth: number;
+  contentHeight: number;
+  referenceWidth: number;
+  referenceHeight: number;
+  geometryGeneration: number;
+  hitMapGeneration: number;
+}
+
+export interface MoonlightInputLifecycleRequest {
+  launchKey: MoonlightNativeRequestKey;
+  reason: 'overlay_opened' | 'control_mode_changed' | 'display_rotated' |
+    'focus_lost' | 'pip_entered' | 'backgrounded' | 'surface_detached' |
+    'reconnect_started';
+  suspended: boolean;
+}
+
+export interface MoonlightTouchModeRequest {
+  launchKey: MoonlightNativeRequestKey;
+  direct: boolean;
+}
+
+export type MoonlightVirtualControllerElement =
+  'faceA' | 'faceB' | 'faceX' | 'faceY' | 'dpad' | 'leftStick' |
+  'rightStick' | 'leftTrigger' | 'rightTrigger' | 'leftShoulder' |
+  'rightShoulder' | 'leftStickClick' | 'rightStickClick' | 'menu';
+
+export interface MoonlightVirtualControllerModeRequest {
+  launchKey: MoonlightNativeRequestKey;
+  enabled: boolean;
+  editing: boolean;
+}
+
+export interface MoonlightVirtualControllerRequest {
+  launchKey: MoonlightNativeRequestKey;
+  element: MoonlightVirtualControllerElement;
+  phase: 'begin' | 'change' | 'end' | 'cancel';
+  pointerId: number;
+  primary: number;
+  secondary: number;
 }
 
 export interface MoonlightNativeRequest {
@@ -160,6 +248,16 @@ export function moonlightStartStream(request: MoonlightNativeStreamStartRequest)
 export function moonlightGetStreamSnapshot(key: MoonlightNativeRequestKey):
   MoonlightNativeStreamSnapshot;
 export function moonlightStopStream(key: MoonlightNativeRequestKey): boolean;
+export function moonlightSendKey(request: MoonlightKeyInputRequest): boolean;
+export function moonlightSendText(request: MoonlightTextInputRequest): boolean;
+export function moonlightSendPointer(request: MoonlightPointerInputRequest): boolean;
+export function moonlightSendTouch(request: MoonlightTouchInputRequest): boolean;
+export function moonlightSetInputSuspended(request: MoonlightInputLifecycleRequest): boolean;
+export function moonlightSetTouchMode(request: MoonlightTouchModeRequest): boolean;
+export function moonlightSetVirtualControllerMode(
+  request: MoonlightVirtualControllerModeRequest): boolean;
+export function moonlightSendVirtualController(
+  request: MoonlightVirtualControllerRequest): boolean;
 
 export const VERSION: SessionVersionInfo;
 

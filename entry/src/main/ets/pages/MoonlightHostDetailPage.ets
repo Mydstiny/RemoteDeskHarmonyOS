@@ -3,6 +3,11 @@ import { AppTheme, Palette, buildDark, buildLight } from '../common/Theme';
 import { MoonlightBrandIcon } from '../components/moonlight/MoonlightBrandIcon';
 import { MoonlightHost } from '../model/MoonlightModels';
 import { CloudStore } from '../services/CloudStore';
+import { AccountSessionLease } from '../services/AccountScopePolicy';
+import {
+  MoonlightLocalHostMutationResult,
+  MoonlightLocalHostService
+} from '../services/MoonlightLocalHostService';
 import {
   MoonlightHostLocalView,
   MoonlightLocalViewService
@@ -27,8 +32,13 @@ struct MoonlightHostDetailPage {
   @State items: MoonlightCatalogItem[] = [];
   @State loadCode: string = 'loading';
   @State updatedAt: number = 0;
+  @State showRenameEditor: boolean = false;
+  @State renameValue: string = '';
   private readonly viewService: MoonlightLocalViewService =
     new MoonlightLocalViewService(CloudStore.getInstance());
+  private readonly hostService: MoonlightLocalHostService =
+    new MoonlightLocalHostService(CloudStore.getInstance(), CloudStore.getInstance());
+  private pageActive: boolean = false;
 
   private pal(): Palette {
     return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor);
@@ -39,11 +49,14 @@ struct MoonlightHostDetailPage {
   }
 
   aboutToAppear(): void {
+    this.pageActive = true;
     const params: Record<string, Object> = router.getParams() as Record<string, Object>;
     const route: MoonlightRouteIdentity = moonlightRouteIdentity(params);
     this.hostId = route.valid ? route.hostId : '';
     this.load();
   }
+
+  aboutToDisappear(): void { this.pageActive = false; }
 
   onPageShow(): void { if (this.hostId !== '') { this.load(); } }
 
@@ -86,6 +99,67 @@ struct MoonlightHostDetailPage {
     if (params !== null) {
       router.pushUrl({ url: 'pages/MoonlightSettingsPage', params: params });
     }
+  }
+
+  private beginRename(): void {
+    if (this.host === null) { return; }
+    this.renameValue = this.host.displayName;
+    this.showRenameEditor = true;
+  }
+
+  private saveRename(): void {
+    const result: MoonlightLocalHostMutationResult =
+      this.hostService.updateDisplayName(this.hostId, this.renameValue, Date.now());
+    if (!result.ok) {
+      promptAction.showToast({ message: result.errorText || '主机名称保存失败', duration: 2200 });
+      return;
+    }
+    this.showRenameEditor = false;
+    this.load();
+    promptAction.showToast({ message: '主机名称已保存到本地', duration: 1600 });
+  }
+
+  private requestDelete(): void {
+    if (this.host === null) { return; }
+    const store: CloudStore = CloudStore.getInstance();
+    const lease: AccountSessionLease | null = store.currentAccountLease();
+    const capturedHostId: string = this.hostId;
+    if (lease === null || !store.isLeaseCurrent(lease) || capturedHostId === '') {
+      promptAction.showToast({ message: '当前账号数据域已变化，请重新进入页面', duration: 2200 });
+      return;
+    }
+    const hostName: string = this.host.displayName;
+    promptAction.showDialog({
+      title: '删除 Moonlight 主机？',
+      message: '将删除“' + hostName + '”的本地主机、信任、配置与应用缓存。此操作不影响 Sunshine 主机。',
+      buttons: [
+        { text: '取消', color: this.pal().text2 },
+        { text: '删除', color: this.pal().danger }
+      ]
+    }).then((value: Object): void => {
+      const selected: Record<string, number> = value as Record<string, number>;
+      if (selected['index'] !== 1) { return; }
+      const currentLease: AccountSessionLease | null = store.currentAccountLease();
+      if (!this.pageActive || this.hostId !== capturedHostId || currentLease === null ||
+          !store.isLeaseCurrent(lease) || !store.isLeaseCurrent(currentLease) ||
+          currentLease.ownerScopeId !== lease.ownerScopeId ||
+          currentLease.generation !== lease.generation ||
+          currentLease.storeIdentity !== lease.storeIdentity ||
+          currentLease.storeInstanceId !== lease.storeInstanceId) {
+        if (this.pageActive) {
+          promptAction.showToast({ message: '账号或页面状态已变化，未执行删除', duration: 2200 });
+        }
+        return;
+      }
+      const result: MoonlightLocalHostMutationResult =
+        this.hostService.deleteHost(capturedHostId, Date.now());
+      if (!result.ok) {
+        promptAction.showToast({ message: result.errorText || '本地主机删除失败', duration: 2200 });
+        return;
+      }
+      promptAction.showToast({ message: 'Moonlight 本地主机已删除', duration: 1600 });
+      router.back();
+    });
   }
 
   @Builder private header() {
@@ -153,7 +227,7 @@ struct MoonlightHostDetailPage {
         this.chip('仅本地', this.accentColor)
         this.chip(this.paired ? '已配对' : '未配对', this.paired ? this.pal().success : this.pal().editColor)
         this.chip(this.items.length.toString() + ' 个缓存应用', this.pal().text2)
-        this.chip('Host Control 未启用', this.pal().text3)
+        this.chip('Host Control 已接入', this.pal().success)
       }.width('100%').margin({ top: 16 })
 
       Text('最近更新：' + this.lastUpdateLabel()).fontSize(10).fontColor(this.pal().text3)
@@ -169,15 +243,46 @@ struct MoonlightHostDetailPage {
         this.hostSummary()
         Text('快捷操作').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
           .width('100%').margin({ top: 20, bottom: 8, left: 6 })
-        Row({ space: 9 }) {
-          this.quickAction($r('sys.symbol.power'), '唤醒', 'Host Control 开放后可用', false, (): void => {})
-          this.quickAction($r('sys.symbol.arrow_clockwise'), '刷新', '打开本地目录', true,
-            (): void => { this.openCatalog(); })
-          this.quickAction($r('sys.symbol.info_circle'), '诊断', '网络探测尚未开放', false,
-            (): void => {})
-          this.quickAction($r('sys.symbol.gearshape_fill'), '设置', '主机与全局设置', true,
-            (): void => { this.openSettings(); })
-        }.width('100%')
+        Grid() {
+          GridItem() {
+            this.quickAction($r('sys.symbol.list_bullet'), '应用', '刷新与启动应用', true,
+              (): void => { this.openCatalog(); })
+          }
+          GridItem() {
+            this.quickAction($r('sys.symbol.square_and_pencil'), '重命名', '修改本地显示名称', true,
+              (): void => { this.beginRename(); })
+          }
+          GridItem() {
+            this.quickAction($r('sys.symbol.gearshape_fill'), '设置', 'Moonlight 专属设置', true,
+              (): void => { this.openSettings(); })
+          }
+          GridItem() {
+            this.quickAction($r('sys.symbol.ohos_trash'), '删除', '删除本地主机数据', true,
+              (): void => { this.requestDelete(); })
+          }
+        }.columnsTemplate(this.breakpoint === 'sm' ? '1fr 1fr' : '1fr 1fr 1fr 1fr')
+          .columnsGap(9).rowsGap(9).width('100%')
+
+        if (this.showRenameEditor) {
+          Column() {
+            Text('本地显示名称').fontSize(12).fontWeight(FontWeight.Medium)
+              .fontColor(this.pal().text).width('100%')
+            TextInput({ text: this.renameValue, placeholder: '输入主机名称' })
+              .height(44).fontSize(14).fontColor(this.pal().text)
+              .backgroundColor(this.pal().surface).borderRadius(12).margin({ top: 9 })
+              .onChange((value: string): void => { this.renameValue = value; })
+            Row({ space: 12 }) {
+              Button('取消').layoutWeight(1).height(42).borderRadius(12)
+                .backgroundColor(this.pal().surface).fontColor(this.pal().text2)
+                .onClick((): void => { this.showRenameEditor = false; })
+              Button('保存').layoutWeight(1).height(42).borderRadius(12)
+                .backgroundColor(this.accentColor).fontColor(Color.White)
+                .enabled(this.renameValue.trim().length > 0 && this.renameValue.trim().length <= 128)
+                .onClick((): void => { this.saveRename(); })
+            }.width('100%').margin({ top: 12 })
+          }.width('100%').padding(16).backgroundColor(this.pal().card).borderRadius(18)
+            .border({ width: 0.5, color: this.pal().cardBorder }).margin({ top: 12 })
+        }
 
         Row() {
           Column() {

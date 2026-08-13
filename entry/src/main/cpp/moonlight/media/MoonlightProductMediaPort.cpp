@@ -312,6 +312,24 @@ bool MoonlightProductMediaPort::firstFrameReady() const noexcept {
     }
 }
 
+bool MoonlightProductMediaPort::videoLive() const noexcept {
+    if (impl_ == nullptr) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(impl_->videoMutex);
+    return impl_->videoState == LaneState::Started &&
+        impl_->videoSinkActive && impl_->videoBridgeActive;
+}
+
+bool MoonlightProductMediaPort::audioLive() const noexcept {
+    if (impl_ == nullptr) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(impl_->audioMutex);
+    return impl_->audioState == LaneState::Started &&
+        impl_->audioSinkActive && impl_->audioBridgeActive;
+}
+
 bool MoonlightProductMediaPort::setupVideo(
     const MoonlightCommonCVideoSelection& selection) noexcept {
     if (impl_ == nullptr ||

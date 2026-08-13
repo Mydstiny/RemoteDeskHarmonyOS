@@ -539,6 +539,28 @@ RDP_TEST_CASE(video_shared_owner_lease_two_phase_transition_has_no_partial_sink)
     RDP_ASSERT(registry.deactivateIfActive(second));
 }
 
+RDP_TEST_CASE(video_shared_owner_begin_activate_rejects_second_live_owner) {
+    Render::SessionSinkOwnerLease registry;
+    const Render::DecoderSessionIdentity first {63, 603, 6003};
+    const Render::DecoderSessionIdentity second {64, 604, 6004};
+
+    {
+        auto exclusive = registry.acquireExclusive();
+        RDP_ASSERT(exclusive.beginActivate(first));
+        RDP_ASSERT(exclusive.commit(first));
+    }
+    {
+        auto exclusive = registry.acquireExclusive();
+        RDP_ASSERT(!exclusive.beginActivate(second));
+        RDP_ASSERT(exclusive.accepts(first));
+        RDP_ASSERT(!exclusive.accepts(second));
+        RDP_ASSERT(exclusive.activeSnapshot() == first);
+    }
+    RDP_ASSERT(registry.snapshot() == first);
+    RDP_ASSERT(registry.acquire(first));
+    RDP_ASSERT(!registry.acquire(second));
+}
+
 RDP_TEST_CASE(rdp_callback_owner_lease_covers_source_damage_and_queue_submit) {
     Render::SessionSinkOwnerLease& registry = Render::SharedSessionSinkOwnerLease();
     const Render::DecoderSessionIdentity existing = registry.snapshot();

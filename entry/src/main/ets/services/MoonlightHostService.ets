@@ -11,6 +11,7 @@ import {
   MoonlightAppCacheService
 } from './MoonlightAppCacheService';
 import { CloudStore } from './CloudStore';
+import { moonlightOwnerScopeFingerprint } from './MoonlightRuntimeSupport';
 
 export type MoonlightNativeOperation =
   'pair' | 'catalog' | 'asset' | 'launch' | 'resume' | 'quit';
@@ -156,6 +157,10 @@ export interface MoonlightNativeStreamSnapshot {
   generation: number;
   ownerToken: number;
   transportReady: boolean;
+  videoReady: boolean;
+  audioReady: boolean;
+  inputReady: boolean;
+  controllerReady: boolean;
   firstFrameReady: boolean;
   terminal: boolean;
   lastSequence: number;
@@ -504,6 +509,8 @@ export class MoonlightHostService {
     captured: AccountSessionLease): boolean {
     try {
       return hostContextShapeValid(context) &&
+        context.ownerScopeFingerprint ===
+          moonlightOwnerScopeFingerprint(captured.ownerScopeId) &&
         accountSessionLeaseEquals(context.lease, captured) &&
         accountSessionLeaseEquals(this.leases.currentAccountLease(), captured) &&
         this.leases.isLeaseCurrent(captured);

@@ -265,7 +265,7 @@ export struct MoonlightSettingsSurface {
       .border({ width: 0.5, color: this.pal().cardBorder }).margin({ bottom: 12 })
     Column() {
       this.cardTitle('当前默认')
-      this.toggleRow('接收音频', 'Opus 解码与音频焦点通过后生效', this.settings.audio.enabled,
+      this.toggleRow('接收音频', '使用已接入的 Opus 解码与系统音频输出链路', this.settings.audio.enabled,
         (value: boolean): void => { this.update((next: MoonlightSettings): void => { next.audio.enabled = value; }); })
       Divider().color(this.pal().divider)
       this.toggleRow('自动重连', '有限预算，不并行创建第二连接', this.settings.network.autoReconnect,
@@ -359,7 +359,7 @@ export struct MoonlightSettingsSurface {
         '-1', '0', '1', (value: string): void => {
           this.update((next: MoonlightSettings): void => { next.input.controllerSlot = Number(value); });
         })
-      this.toggleRow('手柄震动', '真实 GameController listener 与 typed NAPI 真机验证前保持不可用',
+      this.toggleRow('手柄震动', '当前未接入主机到手柄的反馈输出，保持不可用',
         this.settings.input.enableRumble, (_value: boolean): void => {}, false)
       Row() {
         SymbolGlyph($r('sys.symbol.lock_shield_fill')).fontSize(17).fontColor([this.pal().editColor])

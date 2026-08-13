@@ -116,6 +116,10 @@ class SendOperation final : public MoonlightInputOwnedOperation {
         result = port.send(event);
     }
 
+    bool terminalRelease() const noexcept override {
+        return event.lifecycleRelease;
+    }
+
     MoonlightInputPort& port;
     const MoonlightInputEvent& event;
     MoonlightInputPortStatus result = MoonlightInputPortStatus::Failed;
@@ -136,6 +140,10 @@ class FlushOperation final : public MoonlightInputOwnedOperation {
         result = port.flushNeutral(request);
     }
 
+    bool terminalRelease() const noexcept override {
+        return request.reason == MoonlightInputSuspendReason::Stop;
+    }
+
     MoonlightInputPort& port;
     const MoonlightInputFlushRequest& request;
     bool result = false;
@@ -154,8 +162,15 @@ class ExactInputOwnerGate final : public MoonlightInputOwnerGate {
             return false;
         }
         const auto snapshot = sessionOwner_.snapshot(identity.key);
-        if (!snapshot.matched || snapshot.phase != MoonlightSessionPhase::Running ||
-            snapshot.cancellationRequested || !snapshot.admissionOpen) {
+        const bool normalOwner = snapshot.matched &&
+            (snapshot.phase == MoonlightSessionPhase::Starting ||
+             snapshot.phase == MoonlightSessionPhase::Running) &&
+            !snapshot.cancellationRequested && snapshot.admissionOpen;
+        const bool terminalOwner = snapshot.matched &&
+            snapshot.phase == MoonlightSessionPhase::Stopping &&
+            snapshot.cancellationRequested && !snapshot.admissionOpen &&
+            operation.terminalRelease();
+        if (!normalOwner && !terminalOwner) {
             return false;
         }
         // Cross-protocol lease comes first. A renderer/session transition can
@@ -164,6 +179,10 @@ class ExactInputOwnerGate final : public MoonlightInputOwnerGate {
         auto sharedLease = sharedOwner_.acquire(decoderOwner(identity));
         if (!sharedLease) {
             return false;
+        }
+        if (terminalOwner) {
+            operation.execute();
+            return true;
         }
         auto callbackLease = sessionOwner_.acquireCallback(identity.key);
         if (!callbackLease.valid()) {
