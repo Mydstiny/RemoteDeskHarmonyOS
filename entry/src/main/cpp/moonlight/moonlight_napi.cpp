@@ -799,8 +799,10 @@ napi_value createCapabilities(napi_env env,
     setBoolean(env, object, "commitReady", capabilities.commitReady);
     setBoolean(env, object, "pairingReady", capabilities.pairingReady);
     setBoolean(env, object, "hostControlReady", capabilities.hostControlReady);
-    setString(env, object, "blocker",
-              safeDiagnosticToken(capabilities.blocker, "runtime_proof_required"));
+    setString(env, object, "blocker", capabilities.hostControlReady
+        ? "none"
+        : safeDiagnosticToken(capabilities.blocker,
+                              "runtime_proof_required"));
     return object;
 }
 

@@ -1816,6 +1816,13 @@ struct HostListPage {
       this.moonlightHostService.capabilities();
     this.moonlightProtocolAvailable =
       capabilities.bridgeCompiled && capabilities.transportReady;
+    hilog.info(0x0001, 'Moonlight',
+      'FAB capability bridge=' + (capabilities.bridgeCompiled ? '1' : '0') +
+      ' identity=' + (capabilities.identityReady ? '1' : '0') +
+      ' transport=' + (capabilities.transportReady ? '1' : '0') +
+      ' pairing=' + (capabilities.pairingReady ? '1' : '0') +
+      ' hostControl=' + (capabilities.hostControlReady ? '1' : '0') +
+      ' blocker=' + capabilities.blocker);
   }
 
   private moonlightDiscoveryCandidate(
@@ -2017,6 +2024,11 @@ struct HostListPage {
     const capabilities: MoonlightBridgeCapabilities =
       this.moonlightHostService.capabilities();
     if (!capabilities.hostControlReady) {
+      hilog.warn(0x0001, 'Moonlight',
+        'pairing blocked identity=' + (capabilities.identityReady ? '1' : '0') +
+        ' transport=' + (capabilities.transportReady ? '1' : '0') +
+        ' pairing=' + (capabilities.pairingReady ? '1' : '0') +
+        ' blocker=' + capabilities.blocker);
       const unavailable: MoonlightPairingPreparation = {
         ok: false,
         pin: '',

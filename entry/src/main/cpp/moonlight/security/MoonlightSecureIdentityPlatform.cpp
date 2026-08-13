@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <limits>
@@ -28,6 +29,8 @@ constexpr char ASSET_KIND_MANIFEST[] = "manifest";
 constexpr char ASSET_KIND_CHUNK[] = "chunk";
 constexpr char ASSET_KIND_PROBE[] = "probe";
 constexpr char ASSET_ALIAS_PREFIX[] = "rdml1:";
+constexpr char PROBE_OWNER_LEGACY[] = "runtime-contract";
+constexpr char PROBE_OWNER_PREFIX[] = "runtime-contract:v2:";
 constexpr std::array<std::uint8_t, 8> MANIFEST_MAGIC {
     'R', 'D', 'M', 'L', 'A', 'S', '2', 0,
 };
@@ -42,6 +45,7 @@ constexpr std::size_t CERTIFICATE_PEM_MAX = 12U * 1024U;
 constexpr std::size_t PRIVATE_KEY_PKCS8_MAX = 16U * 1024U;
 constexpr std::size_t INVENTORY_MAX = 256;
 constexpr std::size_t ASSET_ALIAS_MAX = 192;
+constexpr std::uint64_t PROBE_STALE_AFTER_MS = 5U * 60U * 1000U;
 
 enum class ChunkKind : std::uint8_t {
     CertificateDer = 1,
@@ -329,6 +333,36 @@ std::string fixedHex(std::uint64_t value, std::size_t digits) {
     return output;
 }
 
+bool parseFixedHex(const std::string& value,
+                   std::size_t offset,
+                   std::size_t digits,
+                   std::uint64_t& output) noexcept {
+    if (digits == 0U || digits > 16U || offset > value.size() ||
+        digits > value.size() - offset) {
+        return false;
+    }
+    output = 0U;
+    for (std::size_t index = 0; index < digits; ++index) {
+        const char current = value[offset + index];
+        std::uint8_t nibble = 0U;
+        if (current >= '0' && current <= '9') {
+            nibble = static_cast<std::uint8_t>(current - '0');
+        } else if (current >= 'a' && current <= 'f') {
+            nibble = static_cast<std::uint8_t>(current - 'a' + 10);
+        } else {
+            return false;
+        }
+        output = (output << 4U) | nibble;
+    }
+    return true;
+}
+
+std::uint64_t wallClockMilliseconds() noexcept {
+    const auto count = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    return count > 0 ? static_cast<std::uint64_t>(count) : 0U;
+}
+
 std::string manifestAlias(const std::string& identityAlias) {
     return std::string(ASSET_ALIAS_PREFIX) + "m:" + identityAlias;
 }
@@ -490,8 +524,12 @@ MoonlightIdentityBackendCode queryExactAsset(
     const char* kind,
     const std::string* owner,
     std::vector<std::uint8_t>& secret) {
-    std::array<Asset_Attr, 7> query {};
+    // Asset Store selects the credential-encrypted (CE) database from this
+    // query flag. addAsset() always writes there, so every later operation
+    // must select the same database rather than silently querying DE.
+    std::array<Asset_Attr, 8> query {};
     std::size_t count = 0;
+    query[count++] = boolAttr(ASSET_TAG_REQUIRE_ATTR_ENCRYPTED, true);
     query[count++] = textAttr(ASSET_TAG_ALIAS, assetAlias);
     query[count++] = literalAttr(ASSET_TAG_DATA_LABEL_CRITICAL_1,
                                  ASSET_DOMAIN);
@@ -535,7 +573,8 @@ MoonlightIdentityBackendCode queryExactAsset(
 MoonlightIdentityBackendCode removeExactAsset(
     const std::string& assetAlias,
     const std::string& identityAlias) noexcept {
-    const std::array<Asset_Attr, 3> query {
+    const std::array<Asset_Attr, 4> query {
+        boolAttr(ASSET_TAG_REQUIRE_ATTR_ENCRYPTED, true),
         textAttr(ASSET_TAG_ALIAS, assetAlias),
         literalAttr(ASSET_TAG_DATA_LABEL_CRITICAL_1, ASSET_DOMAIN),
         textAttr(ASSET_TAG_DATA_LABEL_CRITICAL_2, identityAlias),
@@ -548,7 +587,8 @@ MoonlightIdentityBackendCode removeExactAsset(
 
 MoonlightIdentityBackendCode removeIdentityAssets(
     const std::string& identityAlias) noexcept {
-    const std::array<Asset_Attr, 2> query {
+    const std::array<Asset_Attr, 3> query {
+        boolAttr(ASSET_TAG_REQUIRE_ATTR_ENCRYPTED, true),
         literalAttr(ASSET_TAG_DATA_LABEL_CRITICAL_1, ASSET_DOMAIN),
         textAttr(ASSET_TAG_DATA_LABEL_CRITICAL_2, identityAlias),
     };
@@ -556,6 +596,126 @@ MoonlightIdentityBackendCode removeIdentityAssets(
         OH_Asset_Remove(query.data(),
                         static_cast<std::uint32_t>(query.size())),
         true);
+}
+
+MoonlightIdentityBackendCode removeLegacyRuntimeProbeAssets() noexcept {
+    const std::array<Asset_Attr, 4> query {
+        boolAttr(ASSET_TAG_REQUIRE_ATTR_ENCRYPTED, true),
+        literalAttr(ASSET_TAG_DATA_LABEL_CRITICAL_1, ASSET_DOMAIN),
+        literalAttr(ASSET_TAG_DATA_LABEL_CRITICAL_3, ASSET_KIND_PROBE),
+        literalAttr(ASSET_TAG_DATA_LABEL_CRITICAL_4, PROBE_OWNER_LEGACY),
+    };
+    return mapAssetCode(
+        OH_Asset_Remove(query.data(),
+                        static_cast<std::uint32_t>(query.size())),
+        true);
+}
+
+MoonlightIdentityBackendCode removeStaleRuntimeProbeAssets(
+    std::uint64_t nowMs) {
+    if (nowMs == 0U) {
+        return MoonlightIdentityBackendCode::IoFailure;
+    }
+    const MoonlightIdentityBackendCode legacy =
+        removeLegacyRuntimeProbeAssets();
+    if (legacy != MoonlightIdentityBackendCode::Ok &&
+        legacy != MoonlightIdentityBackendCode::NotFound) {
+        return legacy;
+    }
+
+    for (;;) {
+        std::vector<std::pair<std::string, std::string>> stale;
+        const std::array<Asset_Attr, 5> query {
+            boolAttr(ASSET_TAG_REQUIRE_ATTR_ENCRYPTED, true),
+            literalAttr(ASSET_TAG_DATA_LABEL_CRITICAL_1, ASSET_DOMAIN),
+            literalAttr(ASSET_TAG_DATA_LABEL_CRITICAL_3, ASSET_KIND_PROBE),
+            // Asset Store rejects plaintext-return queries without an exact
+            // alias. Cleanup only needs labels, so enumerate attributes and
+            // keep secret access confined to exact-alias queries.
+            numberAttr(ASSET_TAG_RETURN_TYPE, ASSET_RETURN_ATTRIBUTES),
+            numberAttr(ASSET_TAG_RETURN_LIMIT,
+                       static_cast<std::uint32_t>(INVENTORY_MAX + 1U)),
+        };
+        AssetResults results;
+        const MoonlightIdentityBackendCode queried = mapAssetCode(
+            OH_Asset_Query(query.data(),
+                           static_cast<std::uint32_t>(query.size()),
+                           results.get()),
+            false);
+        if (queried == MoonlightIdentityBackendCode::NotFound) {
+            return MoonlightIdentityBackendCode::Ok;
+        }
+        if (queried != MoonlightIdentityBackendCode::Ok) {
+            return queried;
+        }
+        if (results.value().count > INVENTORY_MAX + 1U ||
+            (results.value().count != 0U &&
+             results.value().results == nullptr)) {
+            return MoonlightIdentityBackendCode::Corrupt;
+        }
+
+        const std::string ownerPrefix(PROBE_OWNER_PREFIX);
+        for (std::uint32_t index = 0U; index < results.value().count;
+             ++index) {
+            const Asset_Result& result = results.value().results[index];
+            const Asset_Attr* aliasAttr =
+                OH_Asset_ParseAttr(&result, ASSET_TAG_ALIAS);
+            const Asset_Attr* identityAttr = OH_Asset_ParseAttr(
+                &result, ASSET_TAG_DATA_LABEL_CRITICAL_2);
+            const Asset_Attr* ownerAttr = OH_Asset_ParseAttr(
+                &result, ASSET_TAG_DATA_LABEL_CRITICAL_4);
+            if (aliasAttr == nullptr || identityAttr == nullptr ||
+                ownerAttr == nullptr || aliasAttr->value.blob.data == nullptr ||
+                identityAttr->value.blob.data == nullptr ||
+                ownerAttr->value.blob.data == nullptr ||
+                aliasAttr->value.blob.size == 0U ||
+                aliasAttr->value.blob.size > ASSET_ALIAS_MAX ||
+                identityAttr->value.blob.size == 0U ||
+                identityAttr->value.blob.size > ASSET_ALIAS_MAX ||
+                ownerAttr->value.blob.size <= ownerPrefix.size()) {
+                return MoonlightIdentityBackendCode::Corrupt;
+            }
+            const std::string assetAlias(
+                reinterpret_cast<const char*>(aliasAttr->value.blob.data),
+                aliasAttr->value.blob.size);
+            const std::string identityAlias(
+                reinterpret_cast<const char*>(identityAttr->value.blob.data),
+                identityAttr->value.blob.size);
+            const std::string owner(
+                reinterpret_cast<const char*>(ownerAttr->value.blob.data),
+                ownerAttr->value.blob.size);
+            const std::size_t timestampOffset = ownerPrefix.size();
+            std::uint64_t createdAtMs = 0U;
+            const bool currentFormat =
+                owner.size() == ownerPrefix.size() + 16U + 1U + 16U &&
+                owner.compare(0U, ownerPrefix.size(), ownerPrefix) == 0 &&
+                owner[timestampOffset + 16U] == ':' &&
+                parseFixedHex(owner, timestampOffset, 16U, createdAtMs);
+            if (!currentFormat ||
+                !resultLabelsValid(result, assetAlias, identityAlias,
+                                   ASSET_KIND_PROBE, &owner)) {
+                return MoonlightIdentityBackendCode::Corrupt;
+            }
+            if (nowMs >= createdAtMs &&
+                nowMs - createdAtMs >= PROBE_STALE_AFTER_MS) {
+                stale.emplace_back(assetAlias, identityAlias);
+            }
+        }
+        if (stale.empty()) {
+            return MoonlightIdentityBackendCode::Ok;
+        }
+        // Deleting at least one record guarantees progress. Requery from the
+        // beginning so an arbitrarily large crashed-probe backlog is drained
+        // in bounded Asset Store batches instead of becoming unrecoverable.
+        for (const auto& item : stale) {
+            const MoonlightIdentityBackendCode removed =
+                removeExactAsset(item.first, item.second);
+            if (removed != MoonlightIdentityBackendCode::Ok &&
+                removed != MoonlightIdentityBackendCode::NotFound) {
+                return removed;
+            }
+        }
+    }
 }
 
 bool randomGeneration(std::uint64_t& generation) noexcept {
@@ -930,26 +1090,37 @@ bool runtimeContractProbe() noexcept {
     std::array<std::uint8_t, 32> second {};
     std::string base;
     std::string assetAlias;
-    bool attemptedAdd = false;
+    bool cleanupRequired = false;
     bool added = false;
     bool ready = false;
     try {
+        const std::uint64_t nowMs = wallClockMilliseconds();
+        // Current owners carry creation time and randomness. Cleanup removes
+        // only expired owners, never another live environment/process probe.
+        if (removeStaleRuntimeProbeAssets(nowMs) !=
+            MoonlightIdentityBackendCode::Ok) {
+            throw 0;
+        }
         std::uint64_t random = 0;
         if (!randomGeneration(random)) {
             throw 0;
         }
-        base = std::string(ASSET_ALIAS_PREFIX) + "p:" +
-               fixedHex(random, 16U);
+        const std::string timestamp = fixedHex(nowMs, 16U);
+        const std::string randomText = fixedHex(random, 16U);
+        base = std::string(ASSET_ALIAS_PREFIX) + "p:" + timestamp + ":" +
+               randomText;
         assetAlias = base + ":record";
-        const std::string owner = "runtime-contract";
+        const std::string owner = std::string(PROBE_OWNER_PREFIX) + timestamp +
+                                  ":" + randomText;
         if (RAND_bytes(first.data(), static_cast<int>(first.size())) != 1 ||
             RAND_bytes(second.data(), static_cast<int>(second.size())) != 1) {
             throw 0;
         }
-        attemptedAdd = true;
         MoonlightIdentityBackendCode code = addAsset(
             assetAlias, first.data(), first.size(), base, ASSET_KIND_PROBE,
             owner, ASSET_CONFLICT_THROW_ERROR);
+        cleanupRequired = code == MoonlightIdentityBackendCode::Ok ||
+                          code == MoonlightIdentityBackendCode::OutcomeUnknown;
         added = code == MoonlightIdentityBackendCode::Ok;
         SecureBytes loaded;
         if (added) {
@@ -978,7 +1149,7 @@ bool runtimeContractProbe() noexcept {
     } catch (...) {
         ready = false;
     }
-    if (attemptedAdd && !assetAlias.empty()) {
+    if (cleanupRequired && !assetAlias.empty()) {
         const MoonlightIdentityBackendCode removed =
             removeExactAsset(assetAlias, base);
         ready = ready && added &&
@@ -1221,92 +1392,132 @@ public:
                 output.code = MoonlightIdentityBackendCode::Corrupt;
                 return output;
             }
-            const std::array<Asset_Attr, 5> query {
-                literalAttr(ASSET_TAG_DATA_LABEL_CRITICAL_1, ASSET_DOMAIN),
-                literalAttr(ASSET_TAG_DATA_LABEL_CRITICAL_3,
-                            ASSET_KIND_MANIFEST),
-                textAttr(ASSET_TAG_DATA_LABEL_CRITICAL_4,
-                         ownerScopeFingerprint),
-                numberAttr(ASSET_TAG_RETURN_TYPE, ASSET_RETURN_ALL),
-                numberAttr(ASSET_TAG_RETURN_LIMIT,
-                           static_cast<std::uint32_t>(INVENTORY_MAX + 1U)),
-            };
-            AssetResults results;
-            output.code = mapAssetCode(
-                OH_Asset_Query(query.data(),
-                               static_cast<std::uint32_t>(query.size()),
-                               results.get()),
-                false);
-            if (output.code == MoonlightIdentityBackendCode::NotFound) {
+            constexpr std::uint32_t SNAPSHOT_ATTEMPTS = 2U;
+            for (std::uint32_t attempt = 0U; attempt < SNAPSHOT_ATTEMPTS;
+                 ++attempt) {
+                output.records.clear();
+                const std::array<Asset_Attr, 6> query {
+                    boolAttr(ASSET_TAG_REQUIRE_ATTR_ENCRYPTED, true),
+                    literalAttr(ASSET_TAG_DATA_LABEL_CRITICAL_1,
+                                ASSET_DOMAIN),
+                    literalAttr(ASSET_TAG_DATA_LABEL_CRITICAL_3,
+                                ASSET_KIND_MANIFEST),
+                    textAttr(ASSET_TAG_DATA_LABEL_CRITICAL_4,
+                             ownerScopeFingerprint),
+                    // Inventory is a two-step operation: enumerate
+                    // attributes, then read each manifest by exact alias.
+                    numberAttr(ASSET_TAG_RETURN_TYPE,
+                               ASSET_RETURN_ATTRIBUTES),
+                    numberAttr(
+                        ASSET_TAG_RETURN_LIMIT,
+                        static_cast<std::uint32_t>(INVENTORY_MAX + 1U)),
+                };
+                AssetResults results;
+                output.code = mapAssetCode(
+                    OH_Asset_Query(query.data(),
+                                   static_cast<std::uint32_t>(query.size()),
+                                   results.get()),
+                    false);
+                if (output.code == MoonlightIdentityBackendCode::NotFound) {
+                    output.code = MoonlightIdentityBackendCode::Ok;
+                    return output;
+                }
+                if (output.code != MoonlightIdentityBackendCode::Ok) {
+                    return output;
+                }
+                if (results.value().count > INVENTORY_MAX ||
+                    (results.value().count != 0U &&
+                     results.value().results == nullptr)) {
+                    output.code = MoonlightIdentityBackendCode::Corrupt;
+                    return output;
+                }
+
+                bool snapshotInvalidated = false;
+                std::set<std::string> aliases;
+                output.records.reserve(results.value().count);
+                for (std::uint32_t index = 0U;
+                     index < results.value().count; ++index) {
+                    const Asset_Result& result =
+                        results.value().results[index];
+                    const Asset_Attr* aliasAttr =
+                        OH_Asset_ParseAttr(&result, ASSET_TAG_ALIAS);
+                    const Asset_Attr* identityAttr = OH_Asset_ParseAttr(
+                        &result, ASSET_TAG_DATA_LABEL_CRITICAL_2);
+                    if (aliasAttr == nullptr || identityAttr == nullptr ||
+                        aliasAttr->value.blob.data == nullptr ||
+                        identityAttr->value.blob.data == nullptr ||
+                        aliasAttr->value.blob.size > ASSET_ALIAS_MAX ||
+                        identityAttr->value.blob.size !=
+                            MOONLIGHT_HUKS_ALIAS_LIMIT) {
+                        output.code = MoonlightIdentityBackendCode::Corrupt;
+                        output.records.clear();
+                        return output;
+                    }
+                    const std::string identityAlias(
+                        reinterpret_cast<const char*>(
+                            identityAttr->value.blob.data),
+                        identityAttr->value.blob.size);
+                    const std::string storedAlias(
+                        reinterpret_cast<const char*>(
+                            aliasAttr->value.blob.data),
+                        aliasAttr->value.blob.size);
+                    if (!resultLabelsValid(result, storedAlias,
+                                           identityAlias,
+                                           ASSET_KIND_MANIFEST,
+                                           &ownerScopeFingerprint) ||
+                        storedAlias != manifestAlias(identityAlias)) {
+                        output.code = MoonlightIdentityBackendCode::Corrupt;
+                        output.records.clear();
+                        return output;
+                    }
+
+                    SecureBytes secret;
+                    const MoonlightIdentityBackendCode exact =
+                        queryExactAsset(storedAlias, identityAlias,
+                                        ASSET_KIND_MANIFEST,
+                                        &ownerScopeFingerprint,
+                                        secret.bytes);
+                    if (exact == MoonlightIdentityBackendCode::NotFound) {
+                        snapshotInvalidated = true;
+                        break;
+                    }
+                    if (exact != MoonlightIdentityBackendCode::Ok) {
+                        output.code = exact;
+                        output.records.clear();
+                        return output;
+                    }
+                    Manifest manifest;
+                    if (!parseManifest(secret.bytes.data(),
+                                       secret.bytes.size(), manifest) ||
+                        manifest.metadata.localSecureStoreRef !=
+                            identityAlias ||
+                        manifest.metadata.ownerScopeFingerprint !=
+                            ownerScopeFingerprint ||
+                        !aliases.insert(identityAlias).second) {
+                        output.code = MoonlightIdentityBackendCode::Corrupt;
+                        output.records.clear();
+                        return output;
+                    }
+                    output.records.push_back(std::move(manifest.metadata));
+                }
+                if (snapshotInvalidated) {
+                    output.records.clear();
+                    if (attempt + 1U < SNAPSHOT_ATTEMPTS) {
+                        continue;
+                    }
+                    output.code = MoonlightIdentityBackendCode::Busy;
+                    return output;
+                }
+                std::sort(output.records.begin(), output.records.end(),
+                          [](const MoonlightIdentityMetadata& left,
+                             const MoonlightIdentityMetadata& right) {
+                              return left.localSecureStoreRef <
+                                     right.localSecureStoreRef;
+                          });
                 output.code = MoonlightIdentityBackendCode::Ok;
                 return output;
             }
-            if (output.code != MoonlightIdentityBackendCode::Ok) {
-                return output;
-            }
-            if (results.value().count > INVENTORY_MAX ||
-                (results.value().count != 0U &&
-                 results.value().results == nullptr)) {
-                output.code = MoonlightIdentityBackendCode::Corrupt;
-                return output;
-            }
-
-            std::set<std::string> aliases;
-            output.records.reserve(results.value().count);
-            for (std::uint32_t index = 0; index < results.value().count;
-                 ++index) {
-                const Asset_Result& result = results.value().results[index];
-                const Asset_Attr* aliasAttr =
-                    OH_Asset_ParseAttr(&result, ASSET_TAG_ALIAS);
-                const Asset_Attr* identityAttr = OH_Asset_ParseAttr(
-                    &result, ASSET_TAG_DATA_LABEL_CRITICAL_2);
-                const Asset_Attr* secret =
-                    OH_Asset_ParseAttr(&result, ASSET_TAG_SECRET);
-                if (aliasAttr == nullptr || identityAttr == nullptr ||
-                    secret == nullptr || aliasAttr->value.blob.data == nullptr ||
-                    identityAttr->value.blob.data == nullptr ||
-                    secret->value.blob.data == nullptr ||
-                    aliasAttr->value.blob.size > ASSET_ALIAS_MAX ||
-                    identityAttr->value.blob.size !=
-                        MOONLIGHT_HUKS_ALIAS_LIMIT ||
-                    secret->value.blob.size == 0U ||
-                    secret->value.blob.size >
-                        MOONLIGHT_ASSET_SECRET_LIMIT) {
-                    output.code = MoonlightIdentityBackendCode::Corrupt;
-                    output.records.clear();
-                    return output;
-                }
-                const std::string identityAlias(
-                    reinterpret_cast<const char*>(
-                        identityAttr->value.blob.data),
-                    identityAttr->value.blob.size);
-                const std::string storedAlias(
-                    reinterpret_cast<const char*>(aliasAttr->value.blob.data),
-                    aliasAttr->value.blob.size);
-                Manifest manifest;
-                if (!resultLabelsValid(result, storedAlias, identityAlias,
-                                       ASSET_KIND_MANIFEST,
-                                       &ownerScopeFingerprint) ||
-                    storedAlias != manifestAlias(identityAlias) ||
-                    !parseManifest(secret->value.blob.data,
-                                   secret->value.blob.size, manifest) ||
-                    manifest.metadata.localSecureStoreRef != identityAlias ||
-                    manifest.metadata.ownerScopeFingerprint !=
-                        ownerScopeFingerprint ||
-                    !aliases.insert(identityAlias).second) {
-                    output.code = MoonlightIdentityBackendCode::Corrupt;
-                    output.records.clear();
-                    return output;
-                }
-                output.records.push_back(std::move(manifest.metadata));
-            }
-            std::sort(output.records.begin(), output.records.end(),
-                      [](const MoonlightIdentityMetadata& left,
-                         const MoonlightIdentityMetadata& right) {
-                          return left.localSecureStoreRef <
-                                 right.localSecureStoreRef;
-                      });
-            output.code = MoonlightIdentityBackendCode::Ok;
+            output.code = MoonlightIdentityBackendCode::Busy;
             return output;
         } catch (...) {
             output.records.clear();
