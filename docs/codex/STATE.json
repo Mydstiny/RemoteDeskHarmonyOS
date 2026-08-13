@@ -3,14 +3,14 @@
   "task": "moonlight-complete-upgrade",
   "branch": "codex/moonlight-complete-upgrade",
   "base": "aeb0cdac589caeac8b75dec5958f4e07ee62faf5",
-  "head": "75c69ca1be31be56ae2fe7164d165e8be651e19d",
+  "head": "bc630af34e8599986efa5568c5c4292f789e9e64",
   "phase": "s1-05a-n2-09-local-streaming-feasibility",
   "status": "active",
-  "next": "N2-09: restore an online PC/phone HDC target and use a real Sunshine host to prove discovery, pairing, catalog, launch, H.264/Opus first frame, keyboard/touch/virtual and physical controller input, terminal cleanup and fresh adaptive UI screenshots. Then wire the remaining Moonlight-only settings. Cloud sync remains parked.",
+  "next": "N2-09: prove or repair secure-identity Host Control on the target, then use a real Sunshine host to prove HTTP verification, pairing, catalog, launch, H.264/Opus first frame, keyboard/touch/virtual and physical controller input, terminal cleanup and real-host UI. Cloud sync remains parked.",
   "blockers": [
-    "HDC targets 127.0.0.1:5555 and 127.0.0.1:5557 are Offline; sandbox-external tconn failed, so the current signed HAP was not deployed and no current-package screenshot PASS is claimed",
-    "Real Sunshine, current-device first-frame/audio/input, physical-controller and ARM64 receipts remain external N2-09 evidence",
-    "Codec/HDR/YUV444, audio layout/volume, reconnect/background/diagnostics settings are not all wired to the native launch request; bitrate is wired",
+    "The current simulators prove LAN discovery/HTTP-verification admission but report hostControlReady=false because secure-identity runtime proof is unavailable; PIN pairing fails closed before mutation",
+    "Real Sunshine, secure-identity-capable target, first-frame/audio/input, physical-controller and ARM64 receipts remain external N2-09 evidence",
+    "Hidden legacy background/diagnostics/cloud settings routes/builders remain unreachable technical debt; the visible product taxonomy is six Moonlight-only sections",
     "Rotation, foreground/background, network recovery, thermal, two-hour and release acceptance remain pending",
     "ohosTest task 00306054 remains unregistered; focused ArkTS cases compile but are not claimed as device Hypium PASS",
     "The user-owned CloudStore.ets diff remains unstaged and outside Moonlight work; Moonlight cloud synchronization remains parked"
@@ -25,33 +25,33 @@
       "019ff5ed-f663-7112-9a43-af5060d28105",
       "019ff5f3-c5cc-73d2-ae75-cc9aa313c442"
     ],
-    "reviewedHead": "75c69ca1be31be56ae2fe7164d165e8be651e19d",
+    "reviewedHead": "bc630af34e8599986efa5568c5c4292f789e9e64",
     "scope": [
-      "7005c2218..75c69ca1b",
+      "81c8fdd06..bc630af34",
       "Moonlight local discovery/Host Control/catalog/launch/media/input/UI/runtime and focused tests",
       "entry/src/main/ets/services/CloudStore.ets explicitly excluded"
     ],
-    "lastReceiptId": "moonlight-s1-05a-local-streaming-feasibility-75c69ca1b-2026-08-13",
+    "lastReceiptId": "moonlight-s1-05a-local-streaming-feasibility-bc630af34-2026-08-13",
     "findings": [
       {
         "severity": "P3",
         "status": "accepted",
-        "summary": "The product input assembly is compiled and linked on both OHOS ABIs and its mapper/aggregator/common-c layers have focused coverage, but the product runtime scheduler has no direct host-test seam; real-device N2-09 remains required."
+        "summary": "NAPI exact-object rejection and the audio-disabled discard lifecycle lack direct focused seams, and hidden legacy nine-route settings builders remain unreachable technical debt; runtime/device gates and real N2-09 evidence remain required."
       }
     ],
-    "reason": "Reused the existing Luna Max ArkTS/UI and native/media reviewers. Both final reviews returned PASS with P0/P1/P2 zero after owner/account/route, terminal receipt, homepage capability, GameController dynamic loading and virtual/physical backpressure/OFFLINE remediation."
+    "reason": "Reused the existing Luna Max ArkTS/UI and native/media reviewers. Both final reviews returned PASS with P0/P1/P2 zero after account-save fencing, two-layer FAB/Host Control admission, truthful verification errors, encryption/latency fail-closed policy and isolation checks."
   },
   "lastVerification": {
-    "diffCheck": "pass after final review fixes; CloudStore.ets excluded",
-    "testCompile": "pass: exact default@OhosTestCompileArkTS with --analyze=normal --parallel --incremental --no-daemon after 75c69ca1b code",
-    "assembleHap": "pass: exact assembleHap with --analyze=normal --parallel --incremental --no-daemon; signed HAP SHA-256 8301133af6083c992e2a93f7bd504ef351491bbca3c1103faf12b80cf2150a2b",
+    "diffCheck": "pass after final review fixes; CloudStore.ets excluded and unstaged",
+    "testCompile": "pass: exact default@OhosTestCompileArkTS with --analyze=normal --parallel --incremental --no-daemon after bc630af34 code",
+    "assembleHap": "pass: exact assembleHap with --analyze=normal --parallel --incremental --no-daemon; signed HAP SHA-256 3ec6e5abb4c685d83097ce49793c408301679d8aed19f8376f611456b8a26d85",
     "hapPath": "entry/build/default/outputs/default/entry-default-signed.hap",
     "dualAbi": "pass: arm64-v8a and x86_64 rdpnapi rebuilt after the final controller backpressure fix",
     "elfIsolation": "pass: neither ABI has libohgame_controller.z.so DT_NEEDED or unresolved OH_Game/GameController symbol",
-    "nativeTests": "710 passed, 16 failed, 726 total; every Moonlight case passed; the 16 unchanged failures are local TLS fixture start failures outside Moonlight",
-    "hdcRuntime": "blocked: both 127.0.0.1:5555 and 127.0.0.1:5557 reported TCP Offline and rejected sandbox-external tconn",
-    "uiAcceptance": "blocked for the current package; no old screenshots reused",
-    "isolation": "pass: commit 75c69ca1b changes Moonlight-owned product paths and shared video counters/CMake linkage only; no RDP, RustDesk, SSH/SFTP, VNC business implementation or cloud registration was changed",
+    "nativeTests": "711 passed, 16 failed, 727 total; every Moonlight case passed; the 16 unchanged failures are unrelated local TLS fixture start failures",
+    "hdcRuntime": "pass: exact final signed HAP installed and started on phone 127.0.0.1:5555 and PC 127.0.0.1:5557 outside the sandbox",
+    "uiAcceptance": "pass: fresh exact-package phone enabled FAB with official tintable icon and PC independent Moonlight category; add discovery starts with zero hosts because no Sunshine host is present; full six-sheet phone/PC matrix inspected in this increment",
+    "isolation": "pass: bc630af34 changes Moonlight-owned and shared picker/settings surfaces only; no RDP, RustDesk, SSH/SFTP or VNC business implementation, global audio mute or cloud registration was changed; GameControllerKit remains activation-time dynamic",
     "cloudBoundary": "pass: Moonlight remains local-only; user CloudStore.ets diff is unstaged and excluded",
     "ohosTest": "blocked by unregistered task 00306054; no device-test PASS claimed"
   },

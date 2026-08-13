@@ -3,7 +3,7 @@
 > 文档状态：第四次深度审计完成；已于 2026-08-09 从 G0 开始实施
 > 首次评估日期：2026-07-28；二次完成性审计日期：2026-07-29；第三次 HarmonyOS 人因/UI 审计日期：2026-08-01；第四次源码对齐日期：2026-08-08
 > 当前实施基线：任务 `moonlight-complete-upgrade`；分支 `codex/moonlight-complete-upgrade`；基线 `main@aeb0cdac5`，与 `origin/main` 一致
-> 当前实施进度：G0、D1、D2 本地/休眠策略、D3 本地生命周期、N1-01～N1-08、dormant N2-01～N2-08、N3-01～N3-08、U1-01～U1-14 以及 S1-01～S1-04 已形成 checkpoint；当前代码 checkpoint 为 `1b0b5087c`，S1-04 与 U1-13 增量复核已通过既有 reviewer task，U1-14 的最终 reviewer 复核在用户要求停止前未返回新回执，N2-09 等待真实 Sunshine/ARM64 实机外部回执，S1-05A 为下一实现边界。Moonlight UI 的唯一视觉/交互基线是现有 RustDesk FAB、协议卡片、添加流程与通用 Theme token。2026-08-10 产品决定：Moonlight 暂不接入云同步，当前只推进 owner-scoped 本地主机存储；`moonlightrecordv1`、Moonlight CloudSync/selection/transfer 仅保留为未来停靠设计，不进入当前实施路径。HarmonyOS 虚拟设备已验证 owner-store v5、19/20/16 列三表和幂等 schema receipt；首页承担主机管理，当前已落地本地详情/应用目录、九段设置、launch/连接/串流 UI shell；所有真实 Host Control、secure identity、transport/media/input runtime 仍 fail closed，故 picker、保存、首帧和六个发布 truth 仍全 false
+> 当前实施进度：G0、D1、D2 本地/休眠策略、D3 本地生命周期、N1-01～N1-08、dormant N2-01～N2-08、N3-01～N3-08、U1-01～U1-14、S1-01～S1-04 与 S1-05A 本地串流可行性框架已形成 checkpoint；当前代码 checkpoint 为 `bc630af34`。RustDesk 风格 FAB、LAN discovery/HTTP verify、本地 host/trust、目录/launch、保守 H.264/Opus runtime 与统一输入/手柄链路已经产品接线，并通过双 reviewer P0/P1/P2=0、双 ABI、双 Hvigor 与隔离门禁。当前模拟器可启动发现，但安全身份运行时证明不可用，PIN 配对前 fail closed；N2-09 仍需真实 Sunshine、可用安全身份、首帧/音频/输入/实体手柄和长稳回执。Moonlight UI 的唯一视觉/交互基线是现有 RustDesk FAB、协议卡片、添加流程与通用 Theme token。2026-08-10 产品决定：Moonlight 暂不接入云同步，当前只推进 owner-scoped 本地主机存储；`moonlightrecordv1`、Moonlight CloudSync/selection/transfer 仅保留为未来停靠设计，不进入当前实施路径
 > 适用仓库：/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS
 > 上游实施锁定：2026-08-09 已只读复核并固定 moonlight-common-c `e41355ea01670fd4c830b384009d31dd0339a705`（ENet `aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1`、nanors `b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a`）、Moonlight Android `f10085f552b367cf7203007693d91c322a0a2936`、Moonlight Qt `2e13ed9977bc31c73caf8428f08f58d793313ece`、Sunshine 测试 pin `v2026.808.164219` / `25c06d79b54f3d092d3fedd5f5ba44989f394692`；完整哈希、许可证和能力证据见 `docs/codex/plans/2026-08-09-moonlight-implementation-ledger.md`
 > 原评估轮次仅更新计划文件；2026-08-09 起的实施变更严格按第 15 节任务 ID、仓库门禁和 fail-closed feature policy 推进。
@@ -4931,27 +4931,27 @@ caller、GameController listener 仅测试”的旧当前态描述。历史 chec
 | 门禁 | 2026-08-13 结果 |
 |---|---|
 | exact ArkTS test compile | PASS |
-| exact signed assembleHap | PASS，SHA-256 `8301133af6083c992e2a93f7bd504ef351491bbca3c1103faf12b80cf2150a2b` |
+| exact signed assembleHap | PASS，SHA-256 `3ec6e5abb4c685d83097ce49793c408301679d8aed19f8376f611456b8a26d85` |
 | arm64-v8a / x86_64 native product | PASS / PASS |
 | 双 ABI GameController ELF 隔离 | PASS，无 mandatory dependency / unresolved symbol |
-| host native | 710/726 PASS；Moonlight 全 PASS，16 个既有 local TLS fixture start failure |
+| host native | 711/727 PASS；Moonlight 全 PASS，16 个无关的既有 local TLS fixture start failure |
 | diff/isolation | PASS；CloudStore 用户 diff 排除 |
-| 双 reviewer | PASS，ArkTS/UI 与 native/media 均 P0/P1/P2=0；最终 checkpoint `75c69ca1b` |
-| 当前包设备部署/UI | BLOCKED：5555/5557 HDC Offline，沙箱外 `tconn` 失败；不得引用旧截图代替 |
+| 双 reviewer | PASS，ArkTS/UI 与 native/media 均 P0/P1/P2=0；最终 checkpoint `bc630af34` |
+| 当前包设备部署/UI | PASS：精确 HAP 已安装/启动于手机 5555 与 PC 5557；当前包新截图通过 FAB、添加/发现页、PC 分类和六个可见设置 Sheet 验收 |
 
 #### C. 后续模型一步一验收执行顺序
 
-1. **N2-09A 设备恢复**：HDC 在线后先记录 target、系统版本、ABI；安装本节 SHA 对应 HAP；启动后只抓当前包
-   PC/手机首页、FAB、Moonlight tab、添加 Sheet、目录/详情/设置/连接页截图。任何旧截图不得进入验收。
+1. **N2-09A 安全身份门禁**：当前包已完成 PC/手机部署与基础 UI 验收；下一步在目标设备证明或修复 Asset Store
+   安全身份。FAB 只以 `bridgeCompiled && transportReady` 开放 LAN discovery/HTTP verify；PIN pairing 必须重新检查
+   `hostControlReady`，不可用时在 PIN 和任何 trust/save mutation 前 fail closed。
 2. **N2-09B Sunshine 最小闭环**：同一 LAN 搜索 Sunshine；verify UUID/证书；PIN pair；保存 local host/trust；
    online catalog；launch 一个已知应用；要求 common-c transport ready、真实 videoReady/audioReady/inputReady、
    firstFrame；发送键鼠、触摸、虚拟控制器；stop 必须在 5 秒内收到 native terminal receipt且 registry 清空。
 3. **N2-09C 实体手柄**：连接一个物理手柄，证明 dynamic library 在 Moonlight 激活前不加载；激活后记录 arrival、
    full-state、neutral/remove；virtual↔physical 两向 handoff 均 remove-first；拔出/后台/stop 无卡键。再在缺库或
    listener start failure 注入下证明视频、音频、键鼠、触摸和虚拟手柄继续可用。
-4. **S1-06 settings live wiring**：把 codec/HDR/YUV444、audio layout/volume、reconnect/background/diagnostics 等
-   Moonlight 专属设置逐项映射到 launch/native request/snapshot；每个 bindSheet 要有默认值、合法范围、保存读回、
-   运行中生效或明确“下次连接生效”、不可用原因。bitrate 已 live，不重复实现。公共 display/PIP/主机管理继续去重。
+4. **S1-06 settings closeout**：六个可见 Moonlight 专属 bindSheet 已接 effective settings snapshot；后续删除无可见入口的
+   旧九路 background/diagnostics/cloud builder/route 技术债。公共 display/PIP/主机管理继续去重。
 5. **S1-07 lifecycle**：逐项验证 rotation/surface recreate、foreground/background、network loss/recovery、owner/account
    switch、host app exit、stop during startup、late callback、PIP 公共路由；每项必须证明 neutral、media release、owner
    cleanup、无旧 generation 写回。
@@ -4962,7 +4962,7 @@ caller、GameController listener 仅测试”的旧当前态描述。历史 chec
 
 #### D. 当前不可宣称
 
-在真实 Sunshine、当前 HAP 设备部署、首帧/音频/输入/实体手柄和长稳回执完成前，不得宣称完整 Moonlight 模组、
+在真实 Sunshine、安全身份、首帧/音频/输入/实体手柄和长稳回执完成前，不得宣称完整 Moonlight 模组、
 发布级串流、全设置 live、物理手柄实机支持或 PC/手机 UI 最终验收。当前准确说法是：本地-only discovery、Host
 Control、catalog/launch、保守 H.264/Opus stream 和统一 input/controller 的可测试产品框架已完成编译与隔离门禁。
 

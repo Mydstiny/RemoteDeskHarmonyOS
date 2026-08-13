@@ -4,7 +4,7 @@
 > 分支：`codex/moonlight-complete-upgrade`
 > 初始基线：`main@aeb0cdac5`，与 `origin/main` 一致
 > 总计划：`docs/superpowers/plans/2026-07-28-moonlight-harmonyos-complete-upgrade-plan.md`
-> 台账状态：G0、D1、D2 本地/休眠策略、D3 本地生命周期、N1-01～N1-08、N2-01～N2-08、N3-01～N3-08、U1-01～U1-14 与 S1-01～S1-04 已形成 checkpoint；当前代码 checkpoint 为 `1b0b5087c`，S1-04 与 U1-13 增量审查已通过既有 reviewer task，U1-14 的最终 reviewer 复核在用户要求停止前未返回新回执，N2-09 等待真实 Sunshine/ARM64 实机外部回执，S1-05A 为下一实现边界。Moonlight UI 唯一基线为现有 RustDesk FAB/协议选择/添加流程与通用 Theme token。2026-08-10 产品决定 Moonlight 暂不接入云同步，当前只开发本地主机存储；`moonlightrecordv1`、Moonlight cloud selection/transfer/secret recovery 全部 parked，不进入当前执行序列。D3 在线/多设备和产品运行时仍等待外部回执，只把有可复现证据的项目标记为通过
+> 台账状态：G0、D1、D2 本地/休眠策略、D3 本地生命周期、N1-01～N1-08、N2-01～N2-08、N3-01～N3-08、U1-01～U1-14、S1-01～S1-04 与 S1-05A 本地串流可行性框架已形成 checkpoint；当前代码 checkpoint 为 `bc630af34`。FAB、LAN discovery/HTTP verify、本地 host/trust、目录/launch、保守 H.264/Opus runtime 与统一输入/手柄链路已经接入产品并通过双 reviewer P0/P1/P2=0、双 ABI、双 Hvigor 与隔离门禁；当前模拟器因安全身份运行时不可用而在 PIN 配对前 fail closed。N2-09 下一步只针对真实 Sunshine、可用安全身份、首帧/音频/输入/实体手柄和长稳回执。Moonlight UI 唯一基线为现有 RustDesk FAB/协议选择/添加流程与通用 Theme token。2026-08-10 产品决定 Moonlight 暂不接入云同步，当前只开发本地主机存储；`moonlightrecordv1`、Moonlight cloud selection/transfer/secret recovery 全部 parked，不进入当前执行序列
 
 ## 1. 执行约束
 
@@ -14,7 +14,7 @@
 4. Moonlight 当前为 local-only：`moonlightlocalrecords`/`moonlightappcache` 是唯一业务持久化路径；
    `moonlightrecordv1` 不创建、不注册、不上传，CloudSync/selection/transfer 不实例化。
 5. 每个代码任务将测试与实现同提交；阶段末执行 native/ArkTS 定向测试、双 Hvigor、assembleHap、Light 和一次有界复核；当前本地数据任务必须覆盖 owner lease、备份、恢复、删除和零云调用。
-6. 本任务最多保留两个审查智能体实例，模型只允许 `sol low`；后续 checkpoint 复核必须复用既有 task ID，不得因上下文压缩新建第三个实例。
+6. 本任务最多保留两个审查智能体实例，模型只允许 Luna Max 1.5 倍速；后续 checkpoint 复核必须复用既有 task ID，不得因上下文压缩新建第三个实例。
 7. 虚拟机用于开发期 UI 和基础能力验证；最终媒体、输入、功耗、后台和网络结论以用户 ARM64 实机验收为准。
 
 ## 2. G0 执行状态
@@ -1311,23 +1311,25 @@ ArkTS 直接编码或发送控制器线协议。
 
 - exact `default@OhosTestCompileArkTS`: PASS。
 - exact `assembleHap`: PASS；signed HAP SHA-256
-  `8301133af6083c992e2a93f7bd504ef351491bbca3c1103faf12b80cf2150a2b`。
+  `3ec6e5abb4c685d83097ce49793c408301679d8aed19f8376f611456b8a26d85`。
 - DevEco `arm64-v8a` / `x86_64` `rdpnapi`: PASS；双 ABI ELF GameControllerKit 隔离：PASS。
-- host native suite：710/726 PASS，Moonlight media/input/controller 用例全部 PASS；16 个既有 local TLS
+- host native suite：711/727 PASS，Moonlight media/input/controller 用例全部 PASS；16 个无关的既有 local TLS
   fixture `start()` 失败未被本增量改变。
-- HDC 沙箱外重新连接：`127.0.0.1:5555` 与 `127.0.0.1:5557` 仍为 Offline，`tconn` 均失败；因此当前
-  signed HAP 尚未部署，本节不引用旧截图，也不声明当前 UI/真机 PASS。
+- HDC 沙箱外已把该精确 signed HAP 安装并启动到手机 `127.0.0.1:5555` 和 PC `127.0.0.1:5557`。本轮只验收
+  当前包的新截图：手机 FAB 的 Moonlight 已启用并使用官方几何可着色图标，添加页会启动真实 LAN discovery；
+  PC 有独立自适应 Moonlight 分类，六个可见专属设置 bindSheet 已在手机/PC 检查。当前网络没有 Sunshine，发现
+  结果为 0；两个模拟器的安全身份证明不可用，故 `hostControlReady=false`，PIN 配对前即 fail closed。
 - 用户-owned `entry/src/main/ets/services/CloudStore.ets` 未暂存、未纳入本 checkpoint；相邻协议业务源码未改。
-- 最终代码 checkpoint：`75c69ca1b`。复用 ArkTS/UI 与 native/media reviewer 完成终审，P0/P1/P2=0；
-  native 终审发现并推动修复 virtual connect backpressure 与 physical ONLINE/OFFLINE 的互斥等待和离线事件保留，
-  修复后再次双 ABI 编译、双 exact Hvigor、ELF 隔离和 `git diff --check`，最终 reviewer 返回 PASS。
+- 最终代码 checkpoint：`bc630af34`。复用 ArkTS/UI 与 native/media reviewer 完成终审，P0/P1/P2=0；
+  账号租约保存 fence、FAB/配对两层能力、真实错误文案、加密/延迟 fail-closed 策略和相邻协议隔离均已复核。
 
 ### 尚未完成与唯一继续顺序
 
-1. N2-09 使用真实 Sunshine 完成 discovery→pair→catalog→launch→H.264/Opus first frame→input/controller→stop
-   回执，分别在 PC/手机当前包抓取全新截图和日志。
-2. 接入当前设置页仍未进入 native request 的 Moonlight 专属设置：codec/HDR/YUV444、audio channel/volume、
-   reconnect/background/diagnostics；公共 display、PIP 和主机管理继续只保留一份，不在 Moonlight 重复。
+1. N2-09 先在目标设备证明或修复 Asset Store 安全身份，再使用真实 Sunshine 完成
+   discovery→HTTP verify→pair→catalog→launch→H.264/Opus first frame→input/controller→stop 回执，分别在 PC/手机
+   当前包抓取全新截图和日志。
+2. 清理无可见入口的旧九路设置 builder/route 技术债；公共 display、PIP 和主机管理继续只保留一份，不在
+   Moonlight 重复。
 3. 验收网络切换、旋转、前后台、热状态、两小时长稳、ARM64 实机与实体手柄；完成前只能称“可测试的产品
    可行性框架”，不能称完整 Moonlight 发布能力。
 4. Moonlight 云同步继续 PARKED，不得把后续设备收口扩大为云表工作。
