@@ -3,7 +3,7 @@
 > 文档状态：第四次深度审计完成；已于 2026-08-09 从 G0 开始实施
 > 首次评估日期：2026-07-28；二次完成性审计日期：2026-07-29；第三次 HarmonyOS 人因/UI 审计日期：2026-08-01；第四次源码对齐日期：2026-08-08
 > 当前实施基线：任务 `moonlight-complete-upgrade`；分支 `codex/moonlight-complete-upgrade`；基线 `main@aeb0cdac5`，与 `origin/main` 一致
-> 当前实施进度：G0、D1、D2 本地/休眠策略、D3 本地生命周期、N1-01～N1-08、dormant N2-01～N2-08、N3-01～N3-08、U1-01～U1-14、S1-01～S1-04 与 S1-05A 本地串流可行性框架已形成 checkpoint；当前代码 checkpoint 为 `bc630af34`。RustDesk 风格 FAB、LAN discovery/HTTP verify、本地 host/trust、目录/launch、保守 H.264/Opus runtime 与统一输入/手柄链路已经产品接线，并通过双 reviewer P0/P1/P2=0、双 ABI、双 Hvigor 与隔离门禁。当前模拟器可启动发现，但安全身份运行时证明不可用，PIN 配对前 fail closed；N2-09 仍需真实 Sunshine、可用安全身份、首帧/音频/输入/实体手柄和长稳回执。Moonlight UI 的唯一视觉/交互基线是现有 RustDesk FAB、协议卡片、添加流程与通用 Theme token。2026-08-10 产品决定：Moonlight 暂不接入云同步，当前只推进 owner-scoped 本地主机存储；`moonlightrecordv1`、Moonlight CloudSync/selection/transfer 仅保留为未来停靠设计，不进入当前实施路径
+> 当前实施进度：G0、D1、D2 本地/休眠策略、D3 本地生命周期、N1-01～N1-08、dormant N2-01～N2-08、N3-01～N3-08、U1-01～U1-14、S1-01～S1-05A 与 N2-09A 已形成 checkpoint；当前代码 checkpoint 为 `ef13ca19`。RustDesk 风格 FAB、LAN discovery/HTTP verify、本地 host/trust、目录/launch、保守 H.264/Opus runtime、统一输入/手柄链路和 API-23 CE 安全身份已经产品接线，并通过 reviewer P0/P1/P2/P3=0、双 ABI、双 Hvigor、双模拟器 `hostControlReady=true` 与隔离门禁。N2-09B/C 仍需真实 Sunshine、首帧/音频/输入/实体手柄和长稳回执；当前本地唯一下一步为 S1-06 设置收口。Moonlight UI 的唯一视觉/交互基线是现有 RustDesk FAB、协议卡片、添加流程与通用 Theme token。2026-08-10 产品决定：Moonlight 暂不接入云同步，当前只推进 owner-scoped 本地主机存储；`moonlightrecordv1`、Moonlight CloudSync/selection/transfer 仅保留为未来停靠设计，不进入当前实施路径
 > 适用仓库：/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS
 > 上游实施锁定：2026-08-09 已只读复核并固定 moonlight-common-c `e41355ea01670fd4c830b384009d31dd0339a705`（ENet `aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1`、nanors `b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a`）、Moonlight Android `f10085f552b367cf7203007693d91c322a0a2936`、Moonlight Qt `2e13ed9977bc31c73caf8428f08f58d793313ece`、Sunshine 测试 pin `v2026.808.164219` / `25c06d79b54f3d092d3fedd5f5ba44989f394692`；完整哈希、许可证和能力证据见 `docs/codex/plans/2026-08-09-moonlight-implementation-ledger.md`
 > 原评估轮次仅更新计划文件；2026-08-09 起的实施变更严格按第 15 节任务 ID、仓库门禁和 fail-closed feature policy 推进。
@@ -4965,5 +4965,26 @@ caller、GameController listener 仅测试”的旧当前态描述。历史 chec
 在真实 Sunshine、安全身份、首帧/音频/输入/实体手柄和长稳回执完成前，不得宣称完整 Moonlight 模组、
 发布级串流、全设置 live、物理手柄实机支持或 PC/手机 UI 最终验收。当前准确说法是：本地-only discovery、Host
 Control、catalog/launch、保守 H.264/Opus stream 和统一 input/controller 的可测试产品框架已完成编译与隔离门禁。
+
+### 15.24 N2-09A 安全身份与 Host Control 运行时关闭（2026-08-13）
+
+本节取代 15.23 中“N2-09A 待证明或修复安全身份”的当前态；历史描述保留作 checkpoint 证据。
+
+1. API-23 Asset Store identity/probe 的 add、exact query、remove、inventory 统一选择 credential-encrypted 数据库。
+   无 alias 的批量操作只返回 attributes；manifest 明文仅通过精确 alias/identity/kind/owner 查询。
+2. runtime probe 使用时间戳+随机 owner。live probe 不互删；崩溃孤儿在五分钟后以持续取得进展的批次回收；
+   identity list 对跨进程 erase 使用两次有界快照尝试，无法稳定时返回 Busy 而不是 Corrupt。
+3. capability probe 仍只由显式 FAB 动作触发，不进入首页 render/startup。手机与 PC 模拟器均实测
+   `bridge=identity=transport=pairing=hostControl=1 blocker=none`；这只关闭 Host Control 本机运行时门禁，不等于
+   已有真实 Sunshine pairing/stream receipt。
+4. 最终 checkpoint `ef13ca19`；签名 HAP SHA-256
+   `7e84303d06b33926fa702a2384584010612a2517b88aa38aad8d7e4c23096318`。双 Hvigor、双 ABI probe、vendor
+   117 files、Light、GameControllerKit ELF 隔离和 diff 均 PASS；复用 Luna Max reviewer 后 P0/P1/P2/P3=0。
+5. 本步只修改 Moonlight secure identity、Moonlight capability truth 和显式 FAB 诊断；用户 `CloudStore.ets`、
+   云注册、相邻协议业务实现、公共输入 owner 和首页性能路径均未改变。
+
+后续唯一顺序更新为：先执行可本地完成的 S1-06，删除隐藏 legacy settings route/builder 并接通剩余
+Moonlight-only reconnect/background/diagnostics；同时保持公共 display/PIP/volume/host management 去重。真实
+Sunshine 可用后继续 N2-09B/C，再进入 S1-07/S1-08。云同步仍 PARKED。
 
 <!-- PLAN_BODY_END -->

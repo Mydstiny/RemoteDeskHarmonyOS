@@ -1333,3 +1333,35 @@ ArkTS 直接编码或发送控制器线协议。
 3. 验收网络切换、旋转、前后台、热状态、两小时长稳、ARM64 实机与实体手柄；完成前只能称“可测试的产品
    可行性框架”，不能称完整 Moonlight 发布能力。
 4. Moonlight 云同步继续 PARKED，不得把后续设备收口扩大为云表工作。
+
+## 12.32 N2-09A API-23 安全身份运行时闭环（2026-08-13）
+
+本节覆盖 12.31 中“模拟器 `hostControlReady=false`、需先修复 Asset Store”的旧当前态。代码
+checkpoint 为 `ef13ca19`；用户 `CloudStore.ets` 增量仍未暂存、未纳入本轮。
+
+- 根因来自 API-23 Asset Store 的 CE/DE 选择契约：identity/probe 添加时使用
+  `ASSET_TAG_REQUIRE_ATTR_ENCRYPTED=true` 写入 credential-encrypted 数据库，但旧 query/remove/list 未携带同一
+  selector，因而读取了另一数据库。现 add/query/remove/list 全部一致使用 CE。
+- Asset Store 不允许无精确 alias 的 `RETURN_ALL`。probe 清理与 identity inventory 先以
+  `RETURN_ATTRIBUTES` 枚举；需要明文 manifest 时再通过 alias、identity、kind、owner 全匹配的 exact query 获取。
+- runtime probe owner 为 `runtime-contract:v2:<wall-clock-ms>:<random>`。当前 probe 只清理自身；其他 fresh probe
+  不被删除。进程崩溃遗留项达到 5 分钟后按最多 257 条的批次精确删除，每轮至少取得删除进展并重查，因此超过
+  单批上限也不会永久占满配额。旧固定 owner 只用于一次兼容清理。
+- identity inventory 在属性枚举与 exact manifest 查询之间遇到跨进程删除时执行两次有界快照尝试；第二次仍失效
+  返回 `Busy`，不把正常并发删除误报为 `Corrupt`。
+- capability truth 只在用户显式打开 FAB picker 后计算和记录；成功时 blocker 为 `none`。首页绘制仍不初始化
+  Moonlight native/security，日志只含布尔 capability 与有界 blocker，不记录 PIN、host、certificate 或 secret。
+
+最终门禁：双 ABI platform link probe PASS；精确 `default@OhosTestCompileArkTS` 与 `assembleHap` PASS；签名 HAP
+SHA-256 为 `7e84303d06b33926fa702a2384584010612a2517b88aa38aad8d7e4c23096318`。该精确包已通过沙箱外
+HDC 安装/启动于手机 `127.0.0.1:5555` 与 PC `127.0.0.1:5557`，两端均记录
+`bridge=identity=transport=pairing=hostControl=1 blocker=none`。仅使用并实际查看本包新截图
+`/private/tmp/moonlight-phone-picker-7e84303d.jpeg` 与
+`/private/tmp/moonlight-pc-picker-7e84303d.jpeg`；入口启用、官方可着色图标和自适应 Sheet 均通过。
+
+复用既有 Luna Max native/media reviewer 完成两轮定点复核；最终 P0/P1/P2/P3=0，并明确关闭“并发误删”和
+“崩溃孤儿配额耗尽”。117-file vendor、Light 合规、双 ABI GameControllerKit ELF 隔离与 `git diff --check`
+全部 PASS。相邻协议业务实现、公共输入 owner、云表和云同步路径未改变。
+
+N2-09A 至此关闭。当前唯一可本地继续任务为 S1-06 settings closeout；N2-09B/C 仍需真实 Sunshine 与实体手柄，
+不得由模拟器 capability/UI 证据替代真实配对、首帧、音频、输入和 stop receipt。
