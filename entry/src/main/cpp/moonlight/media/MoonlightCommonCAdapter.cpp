@@ -1089,7 +1089,9 @@ public:
 
     ~AdapterRuntime() { shutdown(); }
 
-    MoonlightCommonCStartResult start(MoonlightCommonCRequest request) noexcept;
+    MoonlightCommonCStartResult start(
+        MoonlightCommonCRequest request,
+        std::shared_ptr<MoonlightCommonCMediaPort> mediaOverride = nullptr) noexcept;
     MoonlightStopStatus requestStop(const MoonlightSessionKey& key) noexcept;
     MoonlightStopStatus stop(const MoonlightSessionKey& key,
                              std::chrono::milliseconds timeout) noexcept;
@@ -2267,8 +2269,15 @@ std::shared_ptr<Invocation> AdapterRuntime::findInvocationLocked(
 }
 
 MoonlightCommonCStartResult AdapterRuntime::start(
-    MoonlightCommonCRequest request) noexcept {
+    MoonlightCommonCRequest request,
+    std::shared_ptr<MoonlightCommonCMediaPort> mediaOverride) noexcept {
     try {
+        const std::shared_ptr<MoonlightCommonCMediaPort> media =
+            mediaOverride != nullptr ? std::move(mediaOverride) : media_;
+        if (media == nullptr) {
+            return {MoonlightCommonCStartStatus::RuntimeProofRequired,
+                    MoonlightCommonCCode::RuntimeProofRequired, {}};
+        }
         const auto now = clock_();
         const auto& identity = request.streamConfig.identity;
         if (request.sessionId == 0U || request.generation == 0U ||
@@ -2322,8 +2331,8 @@ MoonlightCommonCStartResult AdapterRuntime::start(
             return {MoonlightCommonCStartStatus::InvalidRequest,
                     MoonlightCommonCCode::InvalidRequest, {}};
         }
-        if (!media_->videoReady() ||
-            !media_->audioReady(request.streamConfig.offer->audioLayout)) {
+        if (!media->videoReady() ||
+            !media->audioReady(request.streamConfig.offer->audioLayout)) {
             return {MoonlightCommonCStartStatus::RuntimeProofRequired,
                     MoonlightCommonCCode::RuntimeProofRequired, {}};
         }
@@ -2331,7 +2340,7 @@ MoonlightCommonCStartResult AdapterRuntime::start(
         const auto sessionId = request.sessionId;
         const auto generation = request.generation;
         auto invocation = std::make_shared<Invocation>(
-            this, owner_, driver_, media_, std::move(request));
+            this, owner_, driver_, std::move(media), std::move(request));
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (shuttingDown_ || active_ != nullptr) {
@@ -2625,6 +2634,16 @@ void MoonlightCommonCAdapter::notifyClockForTesting() noexcept {
 MoonlightCommonCStartResult MoonlightCommonCAdapter::start(
     MoonlightCommonCRequest request) noexcept {
     return impl_->runtime->start(std::move(request));
+}
+
+MoonlightCommonCStartResult MoonlightCommonCAdapter::startWithMedia(
+    MoonlightCommonCRequest request,
+    std::shared_ptr<MoonlightCommonCMediaPort> mediaPort) noexcept {
+    if (mediaPort == nullptr) {
+        return {MoonlightCommonCStartStatus::RuntimeProofRequired,
+                MoonlightCommonCCode::RuntimeProofRequired, {}};
+    }
+    return impl_->runtime->start(std::move(request), std::move(mediaPort));
 }
 
 MoonlightStopStatus MoonlightCommonCAdapter::requestStop(

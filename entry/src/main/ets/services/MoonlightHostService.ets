@@ -64,6 +64,7 @@ export interface MoonlightNativeRequest {
   installationId?: string;
   hostId: string;
   serverUuid: string;
+  pinnedCertificateSha256?: string;
   endpoint: MoonlightNativeEndpoint;
   timeoutMs?: number;
   appId?: number;
@@ -107,6 +108,7 @@ export interface MoonlightNativeResult {
   mutationMayHaveBeenSent: boolean;
   apps: MoonlightNativeApp[];
   asset: ArrayBuffer;
+  certificateSha256?: string;
   rtspSessionUrl?: string;
   diagnostics: MoonlightNativeDiagnostic[];
 }
@@ -151,6 +153,8 @@ export interface MoonlightHostContext {
   generation: number;
   hostId: string;
   serverUuid: string;
+  installationId?: string;
+  pinnedCertificateSha256?: string;
   endpoint: MoonlightNativeEndpoint;
   timeoutMs: number;
 }
@@ -236,6 +240,10 @@ function hostContextShapeValid(context: MoonlightHostContext): boolean {
     safePositiveInteger(context.generation) &&
     context.hostId.trim().length > 0 && context.hostId.length <= 256 &&
     context.serverUuid.trim().length > 0 && context.serverUuid.length <= 256 &&
+    (context.installationId === undefined ||
+      (context.installationId.trim().length > 0 && context.installationId.length <= 256)) &&
+    (context.pinnedCertificateSha256 === undefined ||
+      /^[0-9a-f]{64}$/.test(context.pinnedCertificateSha256)) &&
     Number.isSafeInteger(context.timeoutMs) && context.timeoutMs >= 100 &&
     context.timeoutMs <= 120000 && context.endpoint !== undefined &&
     context.endpoint !== null;
@@ -318,6 +326,13 @@ export class MoonlightHostService {
     return this.execute(context, this.baseRequest('catalog', context), undefined, true);
   }
 
+  /** Runtime probe variant: returns the native catalog without touching any
+   * app-cache or synchronization table. The local-only Moonlight add flow
+   * uses this until catalog persistence is explicitly enabled. */
+  async catalogRuntime(context: MoonlightHostContext): Promise<MoonlightHostServiceResult> {
+    return this.execute(context, this.baseRequest('catalog', context));
+  }
+
   async asset(context: MoonlightHostContext, appId: number,
     catalogGeneration: number): Promise<MoonlightHostServiceResult> {
     const request: MoonlightNativeRequest = this.baseRequest('asset', context);
@@ -359,6 +374,15 @@ export class MoonlightHostService {
   disposeOwner(ownerToken: number): number {
     if (!safePositiveInteger(ownerToken)) { return 0; }
     this.disposedOwners.add(ownerToken);
+    try {
+      return this.native.cancelOwner(ownerToken);
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  cancelOwner(ownerToken: number): number {
+    if (!safePositiveInteger(ownerToken)) { return 0; }
     try {
       return this.native.cancelOwner(ownerToken);
     } catch (_) {
@@ -422,24 +446,25 @@ export class MoonlightHostService {
       }
       return serviceResult('invalid_context');
     }
+    const acquired: MoonlightLaunchMaterialLease = material;
     const request: MoonlightNativeRequest = this.baseRequest(operation, context);
     request.appId = appId;
     request.catalogGeneration = context.generation;
-    request.riKey = material.riKey;
-    request.riKeyId = material.riKeyId;
-    request.launchConfiguration = material.configuration;
+    request.riKey = acquired.riKey;
+    request.riKeyId = acquired.riKeyId;
+    request.launchConfiguration = acquired.configuration;
     return this.execute(context, request, (): void => {
       try {
-        material.riKey.fill(0);
+        acquired.riKey.fill(0);
       } finally {
-        material.release();
+        acquired.release();
       }
     });
   }
 
   private baseRequest(operation: MoonlightNativeOperation,
     context: MoonlightHostContext): MoonlightNativeRequest {
-    return {
+    const request: MoonlightNativeRequest = {
       operation: operation,
       key: {
         requestId: this.allocateRequestId(),
@@ -452,6 +477,13 @@ export class MoonlightHostService {
       endpoint: context.endpoint,
       timeoutMs: context.timeoutMs
     };
+    if (context.installationId !== undefined) {
+      request.installationId = context.installationId;
+    }
+    if (context.pinnedCertificateSha256 !== undefined) {
+      request.pinnedCertificateSha256 = context.pinnedCertificateSha256;
+    }
+    return request;
   }
 
   private allocateRequestId(): number {

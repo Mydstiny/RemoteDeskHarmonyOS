@@ -297,6 +297,41 @@ RDP_TEST_CASE(moonlight_native_bridge_rejects_unbounded_runtime_result) {
     RDP_ASSERT(result.asset.empty());
 }
 
+RDP_TEST_CASE(moonlight_native_bridge_rejects_malformed_local_certificate_pin) {
+    auto runtime = std::make_shared<FakeRuntime>();
+    MoonlightNativeBridge bridge(runtime);
+    auto request = requestFor();
+    request.installationId = "install-a";
+    request.pinnedCertificateSha256 = std::string(64U, 'A');
+    const auto result = bridge.execute(std::move(request));
+    RDP_ASSERT_EQ(result.code, MoonlightBridgeCode::InvalidArgument);
+    RDP_ASSERT_EQ(runtime->executeCount_.load(), static_cast<std::size_t>(0));
+}
+
+RDP_TEST_CASE(moonlight_native_bridge_accepts_bounded_local_certificate_pin) {
+    auto runtime = std::make_shared<FakeRuntime>();
+    MoonlightNativeBridge bridge(runtime);
+    auto request = requestFor();
+    request.installationId = "install-a";
+    request.pinnedCertificateSha256 = std::string(64U, 'a');
+    const auto result = bridge.execute(std::move(request));
+    RDP_ASSERT(result.ok());
+    RDP_ASSERT_EQ(runtime->executeCount_.load(), static_cast<std::size_t>(1));
+}
+
+RDP_TEST_CASE(moonlight_native_bridge_rejects_malformed_pair_fingerprint_result) {
+    auto runtime = std::make_shared<FakeRuntime>();
+    runtime->setHandler([](MoonlightBridgeRequest& request, const auto&) {
+        auto result = successFor(request);
+        result.certificateSha256 = std::string(64U, 'G');
+        return result;
+    });
+    MoonlightNativeBridge bridge(runtime);
+    const auto result = bridge.execute(pairRequest());
+    RDP_ASSERT_EQ(result.code, MoonlightBridgeCode::ProtocolFailure);
+    RDP_ASSERT(result.certificateSha256.empty());
+}
+
 RDP_TEST_CASE(moonlight_native_bridge_new_generation_discards_late_result) {
     auto runtime = std::make_shared<FakeRuntime>();
     auto barrier = std::make_shared<Barrier>();

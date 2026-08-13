@@ -115,6 +115,15 @@ public:
 
 } // namespace
 
+std::shared_ptr<MoonlightAudioDecoderPort>
+createMoonlightOpusDecoderPort() {
+    try {
+        return std::make_shared<MoonlightOpusDecoderPort>();
+    } catch (...) {
+        return nullptr;
+    }
+}
+
 #if defined(RDP_NATIVE_CALLBACK_TESTING)
 std::unique_ptr<MoonlightAudioBridge>
 MoonlightAudioBridge::createWithPlatformDecoderForTesting(

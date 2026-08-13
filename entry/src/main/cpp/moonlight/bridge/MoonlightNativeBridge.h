@@ -117,6 +117,11 @@ struct REMOTEDESK_MOONLIGHT_BRIDGE_HIDDEN MoonlightBridgeRequest final {
     std::string installationId;
     std::string hostId;
     std::string serverUuid;
+    // Optional durable local trust projection. It is the lowercase SHA-256
+    // of the paired server leaf certificate, never certificate/private-key
+    // material. Product Host Control uses it to rehydrate exact pinning after
+    // an app restart; an in-process pairing may leave it empty.
+    std::string pinnedCertificateSha256;
     MoonlightHostEndpoint endpoint {};
     std::chrono::milliseconds timeout {MoonlightHostLimits::kDefaultTimeout};
     std::uint32_t appId = 0;
@@ -167,6 +172,8 @@ struct REMOTEDESK_MOONLIGHT_BRIDGE_HIDDEN MoonlightBridgeResult final {
     bool mutationMayHaveBeenSent = false;
     std::vector<MoonlightBridgeApp> apps;
     std::vector<std::uint8_t> asset;
+    // Public trust metadata returned by a successful pair operation.
+    std::string certificateSha256;
     std::optional<std::string> rtspSessionUrl;
     std::vector<MoonlightBridgeDiagnostic> diagnostics;
 

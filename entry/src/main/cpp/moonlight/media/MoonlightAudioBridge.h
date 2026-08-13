@@ -235,6 +235,11 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
+// Product Opus decoder port. It reuses the single pinned libopus artifact and
+// owns only the decoder state for one Moonlight audio configuration.
+REMOTEDESK_MOONLIGHT_AUDIO_HIDDEN
+std::shared_ptr<MoonlightAudioDecoderPort> createMoonlightOpusDecoderPort();
+
 } // namespace remotedesk::moonlight
 
 #endif // REMOTEDESK_MOONLIGHT_AUDIO_BRIDGE_H

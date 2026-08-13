@@ -60,6 +60,7 @@ import {
 import { RustDeskRelayConfig } from '../model/RustDeskRelayConfig';
 import { RustDeskAccount } from '../model/RustDeskAccount';
 import { TotpEntry } from '../model/TotpEntry';
+import { MoonlightAddress } from '../model/MoonlightModels';
 import { RdpCredential } from '../model/RdpCredential';
 import { RustDeskRelayPage } from './RustDeskRelayPage';
 import { RustDeskProSyncService } from '../services/RustDeskProSyncService';
@@ -77,7 +78,9 @@ import { RdpAddFlow } from '../components/hostadd/RdpAddFlow';
 import { RustDeskAddFlow } from '../components/hostadd/RustDeskAddFlow';
 import {
   MoonlightHostAddFlow,
-  MoonlightLocalSaveResult
+  MoonlightLocalSaveResult,
+  MoonlightPairingPreparation,
+  MoonlightPairingCompletion
 } from '../components/hostadd/MoonlightHostAddFlow';
 import { MoonlightBrandIcon } from '../components/moonlight/MoonlightBrandIcon';
 import { MoonlightSettingsSurface } from './MoonlightSettingsPage';
@@ -87,9 +90,29 @@ import {
 } from '../services/MoonlightUiPolicy';
 import {
   MoonlightHostAddOperationKey,
-  MoonlightHostAddState
+  MoonlightHostAddState,
+  MoonlightHostAddCandidate,
+  MoonlightHostAddDiscoveryKey,
+  MoonlightHostAddVerification,
+  MoonlightHostAddCatalogSummary,
+  parseMoonlightHostAddAddress
 } from '../services/MoonlightHostAddFlowPolicy';
 import { MoonlightLocalHostService } from '../services/MoonlightLocalHostService';
+import {
+  MoonlightLanDiscoveryCandidate,
+  MoonlightLanDiscoveryService
+} from '../services/MoonlightLanDiscoveryService';
+import { MoonlightLanProbeService } from '../services/MoonlightLanProbeService';
+import {
+  MoonlightHostContext,
+  MoonlightHostService,
+  MoonlightHostServiceResult
+} from '../services/MoonlightHostService';
+import {
+  moonlightInstallationId,
+  moonlightOwnerScopeFingerprint,
+  moonlightPairingPin
+} from '../services/MoonlightRuntimeSupport';
 import { SshAddFlow } from '../components/hostadd/SshAddFlow';
 import { VncAddFlow } from '../components/hostadd/VncAddFlow';
 import {
@@ -544,6 +567,10 @@ struct HostListPage {
   @State addSheetShowsModernPicker: boolean = false;
   @State modernAddProtocol: string = '';
   @State moonlightAddOwnerToken: number = 1;
+  @State moonlightLanCandidates: MoonlightHostAddCandidate[] = [];
+  @State moonlightDiscoveryRunning: boolean = false;
+  @State moonlightDiscoveryResultOwnerToken: number = 0;
+  @State moonlightDiscoveryResultGeneration: number = 0;
   @State vncAddFromModernPicker: boolean = false;
   @State addSheetClosing: boolean = false;
   // Keep the released storage/cloud key while exposing the broader FAB-style semantics in UI code.
@@ -877,6 +904,11 @@ struct HostListPage {
   private readonly vncSettings: VncSettingsService = VncSettingsService.getInstance();
   private readonly moonlightLocalHostService: MoonlightLocalHostService =
     new MoonlightLocalHostService(CloudStore.getInstance());
+  private readonly moonlightHostService: MoonlightHostService = new MoonlightHostService();
+  private readonly moonlightLanProbeService: MoonlightLanProbeService =
+    new MoonlightLanProbeService();
+  private moonlightDiscovery: MoonlightLanDiscoveryService | null = null;
+  private moonlightActiveVerification: MoonlightHostAddVerification | null = null;
   private loader: ExtensionLoader = ExtensionLoader.getInstance();
   private sshKeyImporter: SshKeyImportService = new SshKeyImportService();
   private readonly sshSettings: SshSettingsService = SshSettingsService.getInstance();
@@ -1670,6 +1702,211 @@ struct HostListPage {
   private invalidateMoonlightCatalogHandoff(): void {
     this.moonlightCatalogHandoffGeneration += 1;
     this.pendingMoonlightCatalogHandoff = emptyHostAddPostSaveHandoff();
+  }
+
+  private moonlightDiscoveryCandidate(
+    key: MoonlightHostAddDiscoveryKey,
+    candidate: MoonlightLanDiscoveryCandidate
+  ): void {
+    if (key.ownerToken !== this.moonlightAddOwnerToken ||
+        key.generation !== this.moonlightDiscoveryResultGeneration ||
+        !this.moonlightDiscoveryRunning) {
+      return;
+    }
+    const hostText: string = candidate.family === 'ipv6' ?
+      '[' + candidate.host + ']' : candidate.host;
+    const parsed = parseMoonlightHostAddAddress(hostText, candidate.port.toString());
+    if (!parsed.ok) { return; }
+    const serverUuid: string = candidate.serverUuid.trim() !== '' ?
+      candidate.serverUuid.trim() : parsed.canonical;
+    const nextCandidate: MoonlightHostAddCandidate = {
+      serverUuid: serverUuid,
+      displayName: candidate.serviceName.trim() || parsed.address.host,
+      address: parsed.address,
+      paired: false,
+      reachable: true,
+      lastSeenAt: Date.now()
+    };
+    const next: MoonlightHostAddCandidate[] = this.moonlightLanCandidates.slice();
+    let replaceIndex: number = -1;
+    for (let index = 0; index < next.length; index++) {
+      if (next[index].serverUuid === serverUuid ||
+          next[index].address.host === parsed.address.host &&
+          next[index].address.port === parsed.address.port) {
+        replaceIndex = index;
+        break;
+      }
+    }
+    if (replaceIndex >= 0) {
+      next[replaceIndex] = nextCandidate;
+    } else if (next.length < 32) {
+      next.push(nextCandidate);
+    }
+    this.moonlightLanCandidates = next;
+  }
+
+  private startMoonlightLanDiscovery(key: MoonlightHostAddDiscoveryKey): void {
+    this.stopMoonlightLanDiscovery();
+    this.moonlightLanCandidates = [];
+    this.moonlightDiscoveryResultOwnerToken = key.ownerToken;
+    this.moonlightDiscoveryResultGeneration = key.generation;
+    try {
+      this.moonlightDiscovery = new MoonlightLanDiscoveryService(
+        getContext(this) as common.Context);
+      const started: boolean = this.moonlightDiscovery.start(
+        key.ownerToken.toString(), key.generation,
+        (candidate: MoonlightLanDiscoveryCandidate): void => {
+          this.moonlightDiscoveryCandidate(key, candidate);
+        });
+      this.moonlightDiscoveryRunning = started;
+    } catch (_error) {
+      this.moonlightDiscovery = null;
+      this.moonlightDiscoveryRunning = false;
+    }
+  }
+
+  private stopMoonlightLanDiscovery(): void {
+    if (this.moonlightDiscovery !== null) {
+      this.moonlightDiscovery.stop();
+    }
+    this.moonlightDiscovery = null;
+    this.moonlightDiscoveryRunning = false;
+  }
+
+  private moonlightRuntimeContext(
+    key: MoonlightHostAddOperationKey,
+    verification: MoonlightHostAddVerification,
+    pinnedTrustAvailable: boolean
+  ): MoonlightHostContext | null {
+    const lease = CloudStore.getInstance().currentAccountLease();
+    if (lease === null || key.ownerToken <= 0 || key.generation <= 0 ||
+        verification.serverUuid.trim() === '' || verification.address.host.trim() === '') {
+      return null;
+    }
+    const scope = CloudStore.getInstance().currentScope();
+    const family: 'unspecified' | 'ipv4' | 'ipv6' = verification.address.family === 'ipv4' ?
+      'ipv4' : verification.address.family === 'ipv6' ? 'ipv6' : 'unspecified';
+    return {
+      lease: lease,
+      ownerScopeFingerprint: moonlightOwnerScopeFingerprint(scope.ownerScopeId),
+      ownerToken: key.ownerToken,
+      generation: key.generation,
+      hostId: verification.serverUuid,
+      serverUuid: verification.serverUuid,
+      endpoint: {
+        serverName: verification.serverName.trim() || verification.address.host,
+        addresses: [{ value: verification.address.host, family: family }],
+        httpPort: verification.address.port,
+        httpsPort: 47984,
+        pinnedTrustAvailable: pinnedTrustAvailable,
+        allowHttpPairingCandidate: !pinnedTrustAvailable
+      },
+      timeoutMs: 120000
+    };
+  }
+
+  private moonlightPairingPreparation(
+    key: MoonlightHostAddOperationKey
+  ): Promise<MoonlightPairingPreparation> {
+    if (key.ownerToken !== this.moonlightAddOwnerToken ||
+        this.moonlightActiveVerification === null) {
+      const rejected: MoonlightPairingPreparation = {
+        ok: false, pin: '', expiresAt: 0, errorText: '请先完成主机验证'
+      };
+      return Promise.resolve(rejected);
+    }
+    const pin: string = moonlightPairingPin();
+    const prepared: MoonlightPairingPreparation = {
+      ok: true, pin: pin, expiresAt: Date.now() + 120000, errorText: ''
+    };
+    return Promise.resolve(prepared);
+  }
+
+  private async moonlightAwaitPairing(
+    pin: string,
+    key: MoonlightHostAddOperationKey
+  ): Promise<MoonlightPairingCompletion> {
+    const verification: MoonlightHostAddVerification | null = this.moonlightActiveVerification;
+    const context: MoonlightHostContext | null = verification === null ? null :
+      this.moonlightRuntimeContext(key, verification, false);
+    if (context === null || !/^[0-9]{4}$/.test(pin)) {
+      return { paired: false, errorText: '当前主机连接上下文已失效' };
+    }
+    const scope = CloudStore.getInstance().currentScope();
+    const pinBytes: Uint8Array = new Uint8Array([
+      pin.charCodeAt(0), pin.charCodeAt(1), pin.charCodeAt(2), pin.charCodeAt(3)
+    ]);
+    const result: MoonlightHostServiceResult = await this.moonlightHostService.pair(
+      context, moonlightInstallationId(scope.storeIdentity), pinBytes, false);
+    const nativeResult = result.nativeResult;
+    const fingerprint: string = nativeResult === null ||
+      nativeResult.certificateSha256 === undefined ? '' : nativeResult.certificateSha256;
+    if (/^[0-9a-fA-F]{64}$/.test(fingerprint) && verification !== null) {
+      this.moonlightActiveVerification = {
+        serverUuid: verification.serverUuid,
+        serverName: verification.serverName,
+        hostType: verification.hostType,
+        version: verification.version,
+        address: {
+          host: verification.address.host,
+          family: verification.address.family,
+          port: verification.address.port
+        },
+        paired: true,
+        fingerprintSha256: fingerprint,
+        certificateChanged: false,
+        udpVerified: verification.udpVerified,
+        duplicateHostId: verification.duplicateHostId
+      };
+    }
+    return {
+      paired: result.ok && nativeResult !== null && nativeResult.code === 'ok',
+      certificateSha256: fingerprint,
+      errorText: result.ok ? '' : '主机未完成配对（' + result.code + '）'
+    };
+  }
+
+  private async moonlightVerifyHost(
+    address: MoonlightAddress,
+    selectedServerUuid: string,
+    key: MoonlightHostAddOperationKey
+  ): Promise<MoonlightHostAddVerification | null> {
+    if (key.ownerToken !== this.moonlightAddOwnerToken) { return null; }
+    const verification: MoonlightHostAddVerification | null =
+      await this.moonlightLanProbeService.verify(address, selectedServerUuid);
+    if (verification !== null && key.ownerToken === this.moonlightAddOwnerToken) {
+      this.moonlightActiveVerification = verification;
+    }
+    return verification;
+  }
+
+  private async moonlightLoadCatalog(
+    key: MoonlightHostAddOperationKey
+  ): Promise<MoonlightHostAddCatalogSummary> {
+    const verification: MoonlightHostAddVerification | null = this.moonlightActiveVerification;
+    const context: MoonlightHostContext | null = verification === null ? null :
+      this.moonlightRuntimeContext(key, verification, true);
+    if (context === null) {
+      return { appCount: 0, titles: [], stale: false, errorText: '主机连接上下文已失效' };
+    }
+    const result: MoonlightHostServiceResult =
+      await this.moonlightHostService.catalogRuntime(context);
+    if (!result.ok || result.nativeResult === null) {
+      return { appCount: 0, titles: [], stale: result.stale,
+        errorText: '应用目录加载失败（' + result.code + '）' };
+    }
+    const titles: string[] = [];
+    for (let index = 0; index < result.nativeResult.apps.length && index < 128; index++) {
+      titles.push(result.nativeResult.apps[index].title);
+    }
+    return { appCount: titles.length, titles: titles, stale: false, errorText: '' };
+  }
+
+  private moonlightCommitTrust(accepted: boolean): Promise<boolean> {
+    if (!accepted) { return Promise.resolve(true); }
+    const verification: MoonlightHostAddVerification | null = this.moonlightActiveVerification;
+    return Promise.resolve(verification !== null &&
+      /^[0-9a-fA-F]{64}$/.test(verification.fingerprintSha256));
   }
 
   private saveMoonlightHostLocally(
@@ -12687,6 +12924,7 @@ struct HostListPage {
           this.addSheetShowsModernPicker = false;
           if (protocol === 'moonlight') {
             this.invalidateMoonlightCatalogHandoff();
+            this.moonlightActiveVerification = null;
             this.moonlightAddOwnerToken += 1;
           }
           if (protocol === 'vnc') {
@@ -12750,6 +12988,35 @@ struct HostListPage {
     } else if (this.modernAddProtocol === 'moonlight') {
       MoonlightHostAddFlow({
         ownerToken: this.moonlightAddOwnerToken,
+        candidates: this.moonlightLanCandidates,
+        discoveryRunning: this.moonlightDiscoveryRunning,
+        discoveryResultOwnerToken: this.moonlightDiscoveryResultOwnerToken,
+        discoveryResultGeneration: this.moonlightDiscoveryResultGeneration,
+        onStartDiscovery: (key: MoonlightHostAddDiscoveryKey): void => {
+          this.startMoonlightLanDiscovery(key);
+        },
+        onPauseDiscovery: (_key: MoonlightHostAddDiscoveryKey): void => {
+          this.stopMoonlightLanDiscovery();
+        },
+        onCancelOwner: (ownerToken: number): void => {
+          this.moonlightHostService.cancelOwner(ownerToken);
+        },
+        onVerify: (
+          address: MoonlightAddress,
+          selectedServerUuid: string,
+          key: MoonlightHostAddOperationKey
+        ): Promise<MoonlightHostAddVerification | null> =>
+          this.moonlightVerifyHost(address, selectedServerUuid, key),
+        onPreparePairing: (key: MoonlightHostAddOperationKey):
+          Promise<MoonlightPairingPreparation> => this.moonlightPairingPreparation(key),
+        onAwaitPairing: (
+          pin: string,
+          key: MoonlightHostAddOperationKey
+        ): Promise<MoonlightPairingCompletion> => this.moonlightAwaitPairing(pin, key),
+        onCommitTrust: (accepted: boolean, _key: MoonlightHostAddOperationKey): Promise<boolean> =>
+          this.moonlightCommitTrust(accepted),
+        onLoadCatalog: (key: MoonlightHostAddOperationKey):
+          Promise<MoonlightHostAddCatalogSummary> => this.moonlightLoadCatalog(key),
         onSaveLocal: (
           state: MoonlightHostAddState,
           openCatalog: boolean,
@@ -12760,6 +13027,9 @@ struct HostListPage {
           this.openExistingMoonlightHost(hostId, ownerToken);
         },
         onBackToProtocols: (): void => {
+          this.stopMoonlightLanDiscovery();
+          this.moonlightHostService.disposeOwner(this.moonlightAddOwnerToken);
+          this.moonlightActiveVerification = null;
           this.invalidateMoonlightCatalogHandoff();
           this.moonlightAddOwnerToken += 1;
           this.modernAddProtocol = '';

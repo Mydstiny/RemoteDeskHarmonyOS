@@ -1,6 +1,7 @@
 #include "moonlight/moonlight_napi.h"
 
 #include "moonlight/bridge/MoonlightNativeBridge.h"
+#include "moonlight/runtime/MoonlightProductRuntime.h"
 
 #include <algorithm>
 #include <atomic>
@@ -56,7 +57,7 @@ struct AsyncRequestControl final {
 struct MoonlightEnvState final {
     explicit MoonlightEnvState(napi_env valueEnv)
         : env(valueEnv), bridge(std::make_shared<MoonlightNativeBridge>(
-                             std::make_shared<MoonlightUnavailableRuntimePort>())) {}
+                             createMoonlightProductRuntimePort())) {}
 
     napi_env env = nullptr;
     std::atomic<bool> closing {false};
@@ -555,7 +556,7 @@ bool parseRequest(napi_env env, napi_value value, MoonlightBridgeRequest& reques
                   std::string& error) {
     static const std::unordered_set<std::string> allowed {
         "operation", "key", "ownerScopeFingerprint", "installationId", "hostId",
-        "serverUuid", "endpoint", "timeoutMs", "appId", "catalogGeneration",
+        "serverUuid", "pinnedCertificateSha256", "endpoint", "timeoutMs", "appId", "catalogGeneration",
         "expectedCurrentAppId", "userConfirmedTermination", "allowLegacySha1",
         "pin", "riKey", "riKeyId", "launchConfiguration"
     };
@@ -580,7 +581,9 @@ bool parseRequest(napi_env env, napi_value value, MoonlightBridgeRequest& reques
         !readRequiredString(env, value, "hostId", kMaxIdentityBytes,
                             request.hostId, error) ||
         !readRequiredString(env, value, "serverUuid", kMaxIdentityBytes,
-                            request.serverUuid, error)) {
+                            request.serverUuid, error) ||
+        !readOptionalString(env, value, "pinnedCertificateSha256", 64U,
+                            request.pinnedCertificateSha256, error)) {
         return false;
     }
     if (request.ownerScopeFingerprint.size() != 64U ||
@@ -590,6 +593,16 @@ bool parseRequest(napi_env env, napi_value value, MoonlightBridgeRequest& reques
                                  (character >= 'a' && character <= 'f'));
                     })) {
         error = "owner scope fingerprint must be 64 lowercase hex characters";
+        return false;
+    }
+    if (!request.pinnedCertificateSha256.empty() &&
+        (request.pinnedCertificateSha256.size() != 64U ||
+         std::any_of(request.pinnedCertificateSha256.begin(),
+                     request.pinnedCertificateSha256.end(), [](char character) {
+                         return !((character >= '0' && character <= '9') ||
+                                  (character >= 'a' && character <= 'f'));
+                     }))) {
+        error = "pinned certificate fingerprint must be 64 lowercase hex characters";
         return false;
     }
     if (!hasProperty(env, value, "endpoint", present) || !present ||
@@ -740,6 +753,9 @@ napi_value createResult(napi_env env, const MoonlightBridgeResult& result) {
             std::memcpy(assetData, result.asset.data(), result.asset.size());
         }
         (void)napi_set_named_property(env, object, "asset", asset);
+    }
+    if (!result.certificateSha256.empty()) {
+        setString(env, object, "certificateSha256", result.certificateSha256);
     }
     if (result.rtspSessionUrl.has_value()) {
         setString(env, object, "rtspSessionUrl", *result.rtspSessionUrl);

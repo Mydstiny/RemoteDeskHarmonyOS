@@ -49,6 +49,7 @@ export interface MoonlightPairingPreparation {
 export interface MoonlightPairingCompletion {
   paired: boolean;
   errorText: string;
+  certificateSha256?: string;
 }
 
 export interface MoonlightLocalSaveResult {
@@ -384,6 +385,28 @@ export struct MoonlightHostAddFlow {
         return;
       }
       this.stopPairingCountdown();
+      if (completion.paired && completion.certificateSha256 !== undefined &&
+          /^[0-9a-fA-F]{64}$/.test(completion.certificateSha256) &&
+          this.flow.verification !== null) {
+        const withFingerprint: MoonlightHostAddState = cloneMoonlightHostAddState(this.flow);
+        withFingerprint.verification = {
+          serverUuid: this.flow.verification.serverUuid,
+          serverName: this.flow.verification.serverName,
+          hostType: this.flow.verification.hostType,
+          version: this.flow.verification.version,
+          address: {
+            host: this.flow.verification.address.host,
+            family: this.flow.verification.address.family,
+            port: this.flow.verification.address.port
+          },
+          paired: this.flow.verification.paired,
+          fingerprintSha256: completion.certificateSha256,
+          certificateChanged: this.flow.verification.certificateChanged,
+          udpVerified: this.flow.verification.udpVerified,
+          duplicateHostId: this.flow.verification.duplicateHostId
+        };
+        this.flow = withFingerprint;
+      }
       this.flow = completeMoonlightHostAddPairing(
         this.flow, begin.key, completion.paired, nowMs, completion.errorText);
     } catch (_error) {

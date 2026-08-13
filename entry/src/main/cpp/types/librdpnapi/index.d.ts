@@ -51,6 +51,7 @@ export interface MoonlightNativeRequest {
   installationId?: string;
   hostId: string;
   serverUuid: string;
+  pinnedCertificateSha256?: string;
   endpoint: MoonlightNativeEndpoint;
   timeoutMs?: number;
   appId?: number;
@@ -94,6 +95,7 @@ export interface MoonlightNativeResult {
   mutationMayHaveBeenSent: boolean;
   apps: MoonlightNativeApp[];
   asset: ArrayBuffer;
+  certificateSha256?: string;
   rtspSessionUrl?: string;
   diagnostics: MoonlightNativeDiagnostic[];
 }

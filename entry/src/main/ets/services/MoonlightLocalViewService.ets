@@ -26,6 +26,7 @@ export interface MoonlightHostLocalView {
   lease: AccountSessionLease | null;
   host: MoonlightHost | null;
   paired: boolean;
+  serverCertificateSha256: string;
   profiles: MoonlightProfile[];
   cacheEntries: MoonlightAppCacheEntry[];
   catalogItems: MoonlightCatalogItem[];
@@ -42,6 +43,7 @@ function emptyView(code: string,
   lease: AccountSessionLease | null = null): MoonlightHostLocalView {
   return {
     ok: false, code: code, lease: lease, host: null, paired: false,
+    serverCertificateSha256: '',
     profiles: [], cacheEntries: [], catalogItems: [], updatedAt: 0
   };
 }
@@ -88,6 +90,19 @@ function profileFromRecord(record: MoonlightRecord): MoonlightProfile | null {
   return moonlightProfileIsValid(profile) ? profile : null;
 }
 
+function trustFingerprintFromRecord(record: MoonlightRecord,
+  hostId: string, serverUuid: string): string {
+  if (record.recordType !== 'trust' || record.ownerId !== hostId) { return ''; }
+  const payload: Record<string, Object> | null = moonlightRecordBusinessPayload(record);
+  if (payload === null || payload['hostId'] !== hostId ||
+      payload['serverUuid'] !== serverUuid ||
+      typeof payload['serverCertificateSha256'] !== 'string') {
+    return '';
+  }
+  const fingerprint: string = payload['serverCertificateSha256'] as string;
+  return /^[0-9a-f]{64}$/.test(fingerprint) ? fingerprint : '';
+}
+
 export class MoonlightLocalViewService {
   private readonly port: CloudStore;
   private readonly repository: MoonlightRepository;
@@ -108,6 +123,7 @@ export class MoonlightLocalViewService {
     let host: MoonlightHost | null = null;
     let updatedAt: number = 0;
     let paired: boolean = false;
+    let serverCertificateSha256: string = '';
     const profiles: MoonlightProfile[] = [];
     for (let i = 0; i < records.length; i++) {
       const record: MoonlightRecord = records[i];
@@ -117,21 +133,30 @@ export class MoonlightLocalViewService {
       } else if (record.recordType === 'profile' && record.ownerId === hostId) {
         const profile: MoonlightProfile | null = profileFromRecord(record);
         if (profile !== null) { profiles.push(profile); }
-      } else if (record.recordType === 'trust' && record.ownerId === hostId) {
-        paired = true;
       }
     }
     if (host === null) { return emptyView('host_not_found', captured); }
+    for (let i = 0; i < records.length; i++) {
+      const fingerprint: string = trustFingerprintFromRecord(
+        records[i], hostId, host.serverUuid);
+      if (fingerprint !== '') {
+        paired = true;
+        serverCertificateSha256 = fingerprint;
+        break;
+      }
+    }
     const cacheResult: MoonlightAppCacheResult = this.cache.loadSnapshot(captured, hostId);
     if (!cacheResult.ok) {
       return {
         ok: true, code: 'cache_read_failed', lease: captured, host: host,
-        paired: paired, profiles: profiles, cacheEntries: [], catalogItems: [],
+        paired: paired, serverCertificateSha256: serverCertificateSha256,
+        profiles: profiles, cacheEntries: [], catalogItems: [],
         updatedAt: updatedAt
       };
     }
     return {
       ok: true, code: 'ok', lease: captured, host: host, paired: paired,
+      serverCertificateSha256: serverCertificateSha256,
       profiles: profiles, cacheEntries: cacheResult.visibleEntries,
       catalogItems: moonlightCatalogItems(cacheResult.visibleEntries, profiles, nowMs),
       updatedAt: updatedAt
@@ -165,12 +190,18 @@ export class MoonlightLocalViewService {
       const profiles: MoonlightProfile[] = [];
       const hostCache: MoonlightAppCacheEntry[] = [];
       let paired: boolean = false;
+      let serverCertificateSha256: string = '';
       for (let j = 0; j < records.length; j++) {
         if (records[j].recordType === 'profile' && records[j].ownerId === host.id) {
           const profile: MoonlightProfile | null = profileFromRecord(records[j]);
           if (profile !== null) { profiles.push(profile); }
         } else if (records[j].recordType === 'trust' && records[j].ownerId === host.id) {
-          paired = true;
+          const fingerprint: string = trustFingerprintFromRecord(
+            records[j], host.id, host.serverUuid);
+          if (fingerprint !== '') {
+            paired = true;
+            serverCertificateSha256 = fingerprint;
+          }
         }
       }
       for (let j = 0; j < cacheEntries.length; j++) {
@@ -178,7 +209,8 @@ export class MoonlightLocalViewService {
       }
       hosts.push({
         ok: true, code: cacheValid ? 'ok' : 'cache_read_failed', lease: captured,
-        host: host, paired: paired, profiles: profiles, cacheEntries: hostCache,
+        host: host, paired: paired, serverCertificateSha256: serverCertificateSha256,
+        profiles: profiles, cacheEntries: hostCache,
         catalogItems: moonlightCatalogItems(hostCache, profiles, nowMs), updatedAt: record.updatedAt
       });
     }

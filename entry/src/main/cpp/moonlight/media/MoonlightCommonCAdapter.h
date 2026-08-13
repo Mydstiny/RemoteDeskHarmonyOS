@@ -327,6 +327,9 @@ public:
     MoonlightCommonCAdapter& operator=(const MoonlightCommonCAdapter&) = delete;
 
     MoonlightCommonCStartResult start(MoonlightCommonCRequest request) noexcept;
+    MoonlightCommonCStartResult startWithMedia(
+        MoonlightCommonCRequest request,
+        std::shared_ptr<MoonlightCommonCMediaPort> mediaPort) noexcept;
     MoonlightStopStatus requestStop(const MoonlightSessionKey& key) noexcept;
     MoonlightStopStatus stop(
         const MoonlightSessionKey& key,

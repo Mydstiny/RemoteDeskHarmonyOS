@@ -113,11 +113,21 @@ bool digitsOnly(const std::vector<std::uint8_t>& value) noexcept {
            });
 }
 
+bool sha256HexOrEmpty(const std::string& value) noexcept {
+    return value.empty() ||
+        (value.size() == 64U &&
+         std::all_of(value.begin(), value.end(), [](char character) {
+             return (character >= '0' && character <= '9') ||
+                    (character >= 'a' && character <= 'f');
+         }));
+}
+
 bool requestValid(const MoonlightBridgeRequest& request) noexcept {
     if (!request.key.valid() ||
         !ownerFingerprintValid(request.ownerScopeFingerprint) ||
         !boundedText(request.hostId, kMaxIdentityBytes) ||
         !boundedText(request.serverUuid, kMaxIdentityBytes) ||
+        !sha256HexOrEmpty(request.pinnedCertificateSha256) ||
         !endpointValid(request)) {
         return false;
     }
@@ -137,20 +147,26 @@ bool requestValid(const MoonlightBridgeRequest& request) noexcept {
                request.expectedCurrentAppId == 0U &&
                !request.userConfirmedTermination;
     case MoonlightBridgeOperation::Catalog:
-        return request.installationId.empty() && request.pin.empty() &&
+        return (request.installationId.empty() ||
+                boundedText(request.installationId, kMaxIdentityBytes)) &&
+               request.pin.empty() &&
                request.riKey.empty() && request.appId == 0U &&
                request.catalogGeneration == 0U &&
                request.expectedCurrentAppId == 0U &&
                !request.userConfirmedTermination && !request.allowLegacySha1;
     case MoonlightBridgeOperation::Asset:
-        return request.installationId.empty() && request.pin.empty() &&
+        return (request.installationId.empty() ||
+                boundedText(request.installationId, kMaxIdentityBytes)) &&
+               request.pin.empty() &&
                request.riKey.empty() && request.appId != 0U &&
                request.catalogGeneration == request.key.generation &&
                request.expectedCurrentAppId == 0U &&
                !request.userConfirmedTermination && !request.allowLegacySha1;
     case MoonlightBridgeOperation::Launch:
     case MoonlightBridgeOperation::Resume:
-        return request.installationId.empty() && request.pin.empty() &&
+        return (request.installationId.empty() ||
+                boundedText(request.installationId, kMaxIdentityBytes)) &&
+               request.pin.empty() &&
                request.appId != 0U &&
                request.catalogGeneration == request.key.generation &&
                request.riKey.size() == kRiKeyBytes &&
@@ -158,7 +174,9 @@ bool requestValid(const MoonlightBridgeRequest& request) noexcept {
                request.expectedCurrentAppId == 0U &&
                !request.userConfirmedTermination && !request.allowLegacySha1;
     case MoonlightBridgeOperation::Quit:
-        return request.installationId.empty() && request.pin.empty() &&
+        return (request.installationId.empty() ||
+                boundedText(request.installationId, kMaxIdentityBytes)) &&
+               request.pin.empty() &&
                request.riKey.empty() && request.appId == 0U &&
                request.catalogGeneration == 0U && !request.allowLegacySha1;
     default:
@@ -253,6 +271,7 @@ bool resultValid(const MoonlightBridgeResult& result,
         result.apps.size() > MoonlightHostLimits::kMaxApps ||
         result.asset.size() > MoonlightHostLimits::kMaxBodyBytes ||
         result.diagnostics.size() > kMaxDiagnostics ||
+        !sha256HexOrEmpty(result.certificateSha256) ||
         (result.rtspSessionUrl.has_value() &&
          !boundedText(*result.rtspSessionUrl, kMaxRtspSessionUrlBytes))) {
         return false;
@@ -390,7 +409,9 @@ MoonlightBridgeRequest::MoonlightBridgeRequest(MoonlightBridgeRequest&& other) n
     : operation(other.operation), key(other.key),
       ownerScopeFingerprint(std::move(other.ownerScopeFingerprint)),
       installationId(std::move(other.installationId)), hostId(std::move(other.hostId)),
-      serverUuid(std::move(other.serverUuid)), endpoint(std::move(other.endpoint)),
+      serverUuid(std::move(other.serverUuid)),
+      pinnedCertificateSha256(std::move(other.pinnedCertificateSha256)),
+      endpoint(std::move(other.endpoint)),
       timeout(other.timeout), appId(other.appId),
       catalogGeneration(other.catalogGeneration),
       expectedCurrentAppId(other.expectedCurrentAppId),
@@ -420,6 +441,7 @@ MoonlightBridgeRequest& MoonlightBridgeRequest::operator=(
         installationId = std::move(other.installationId);
         hostId = std::move(other.hostId);
         serverUuid = std::move(other.serverUuid);
+        pinnedCertificateSha256 = std::move(other.pinnedCertificateSha256);
         endpoint = std::move(other.endpoint);
         timeout = other.timeout;
         appId = other.appId;
@@ -444,6 +466,7 @@ MoonlightBridgeRequest& MoonlightBridgeRequest::operator=(
 }
 
 MoonlightBridgeResult::~MoonlightBridgeResult() {
+    secureWipeString(certificateSha256);
     secureWipeOptionalString(rtspSessionUrl);
 }
 
@@ -455,14 +478,17 @@ MoonlightBridgeResult::MoonlightBridgeResult(MoonlightBridgeResult&& other) noex
       idempotent(other.idempotent),
       mutationMayHaveBeenSent(other.mutationMayHaveBeenSent),
       apps(std::move(other.apps)), asset(std::move(other.asset)),
+      certificateSha256(std::move(other.certificateSha256)),
       rtspSessionUrl(std::move(other.rtspSessionUrl)),
       diagnostics(std::move(other.diagnostics)) {
+    secureWipeString(other.certificateSha256);
     secureWipeOptionalString(other.rtspSessionUrl);
 }
 
 MoonlightBridgeResult& MoonlightBridgeResult::operator=(
     MoonlightBridgeResult&& other) noexcept {
     if (this != &other) {
+        secureWipeString(certificateSha256);
         secureWipeOptionalString(rtspSessionUrl);
         operation = other.operation;
         key = other.key;
@@ -477,8 +503,10 @@ MoonlightBridgeResult& MoonlightBridgeResult::operator=(
         mutationMayHaveBeenSent = other.mutationMayHaveBeenSent;
         apps = std::move(other.apps);
         asset = std::move(other.asset);
+        certificateSha256 = std::move(other.certificateSha256);
         rtspSessionUrl = std::move(other.rtspSessionUrl);
         diagnostics = std::move(other.diagnostics);
+        secureWipeString(other.certificateSha256);
         secureWipeOptionalString(other.rtspSessionUrl);
     }
     return *this;

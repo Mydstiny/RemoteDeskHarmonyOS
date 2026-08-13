@@ -134,6 +134,9 @@ set(MOONLIGHT_BRIDGE_SOURCE
 set(MOONLIGHT_NAPI_SOURCE
     moonlight/moonlight_napi.cpp
 )
+set(MOONLIGHT_PRODUCT_RUNTIME_SOURCE
+    moonlight/runtime/MoonlightProductRuntime.cpp
+)
 set(MOONLIGHT_STREAM_CONFIG_SOURCE
     moonlight/media/MoonlightStreamConfig.cpp
 )
@@ -163,6 +166,9 @@ set(MOONLIGHT_AUDIO_PLAYER_SINK_SOURCE
 )
 set(MOONLIGHT_AUDIO_PLAYER_SINK_PLATFORM_SOURCE
     moonlight/media/MoonlightAudioPlayerSinkPlatform.cpp
+)
+set(MOONLIGHT_PRODUCT_MEDIA_PORT_SOURCE
+    moonlight/media/MoonlightProductMediaPort.cpp
 )
 set(MOONLIGHT_MEDIA_CLOCK_STATS_SOURCE
     moonlight/media/MoonlightMediaClockStats.cpp
@@ -623,10 +629,18 @@ set_target_properties(remotedesk_moonlight_host_control PROPERTIES
 add_library(remotedesk_moonlight_bridge STATIC
     ${MOONLIGHT_BRIDGE_SOURCE}
     ${MOONLIGHT_NAPI_SOURCE}
+    ${MOONLIGHT_PRODUCT_RUNTIME_SOURCE}
 )
 target_compile_features(remotedesk_moonlight_bridge PRIVATE cxx_std_17)
 target_include_directories(remotedesk_moonlight_bridge PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
+    ${OPENSSL_DIR}/include
+)
+target_link_libraries(remotedesk_moonlight_bridge PRIVATE
+    remotedesk_moonlight_host_control
+    remotedesk_moonlight_pairing
+    remotedesk_moonlight_host_api
+    remotedesk_moonlight_secure_identity
 )
 set_target_properties(remotedesk_moonlight_bridge PROPERTIES
     POSITION_INDEPENDENT_CODE ON
@@ -737,6 +751,30 @@ target_compile_options(remotedesk_moonlight_audio_bridge PRIVATE
     -fvisibility-inlines-hidden
 )
 set_target_properties(remotedesk_moonlight_audio_bridge PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+)
+
+# Product-only composition of the existing exact-owner video, Opus and shared
+# OHAudio seams. Construction is per Moonlight session; it creates no global
+# renderer, decoder, queue or worker.
+add_library(remotedesk_moonlight_product_media STATIC
+    ${MOONLIGHT_PRODUCT_MEDIA_PORT_SOURCE}
+)
+target_compile_features(remotedesk_moonlight_product_media PRIVATE cxx_std_17)
+target_include_directories(remotedesk_moonlight_product_media PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_compile_options(remotedesk_moonlight_product_media PRIVATE
+    -fvisibility=hidden
+    -fvisibility-inlines-hidden
+)
+target_link_libraries(remotedesk_moonlight_product_media PRIVATE
+    remotedesk_moonlight_audio_bridge
+    remotedesk_moonlight_video_decoder_sink
+    remotedesk_moonlight_video_bridge
+    remotedesk_moonlight_common_c_adapter
+)
+set_target_properties(remotedesk_moonlight_product_media PROPERTIES
     POSITION_INDEPENDENT_CODE ON
 )
 
@@ -932,6 +970,7 @@ target_compile_definitions(rdpnapi PRIVATE
     REMOTEDESK_BUILD_TIME_UTC="${REMOTEDESK_BUILD_TIME_UTC}"
 )
 target_link_libraries(rdpnapi PRIVATE
+    remotedesk_moonlight_product_media
     remotedesk_moonlight_controller_aggregator
     remotedesk_moonlight_input_flush_policy
     remotedesk_moonlight_controller_feedback
@@ -950,6 +989,8 @@ target_link_libraries(rdpnapi PRIVATE
     remotedesk_moonlight_pairing
     remotedesk_moonlight_host_api
     remotedesk_moonlight_secure_identity
+    libhuks_ndk.z.so
+    libasset_ndk.z.so
 )
 target_link_options(rdpnapi PRIVATE
     "-Wl,--exclude-libs,libremotedesk_moonlight_host_control.a"
@@ -962,6 +1003,7 @@ target_link_options(rdpnapi PRIVATE
     "-Wl,--exclude-libs,libremotedesk_moonlight_video_bridge.a"
     "-Wl,--exclude-libs,libremotedesk_moonlight_video_decoder_sink.a"
     "-Wl,--exclude-libs,libremotedesk_moonlight_audio_bridge.a"
+    "-Wl,--exclude-libs,libremotedesk_moonlight_product_media.a"
     "-Wl,--exclude-libs,libremotedesk_moonlight_media_clock_stats.a"
     "-Wl,--exclude-libs,libremotedesk_moonlight_input_bridge.a"
     "-Wl,--exclude-libs,libremotedesk_moonlight_keyboard_mapper.a"
