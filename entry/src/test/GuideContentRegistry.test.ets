@@ -55,7 +55,7 @@ export default function guideContentRegistryTest(): void {
 
     it('provides_a_real_session_operation_guide', 0, (): void => {
       const pages: GuideContentPage[] = handsOnUsageGuidePages();
-      expect(pages.length >= 12).assertTrue();
+      expect(pages.length).assertEqual(13);
       expect(containsPage(pages, 'hands-on-keyboard')).assertTrue();
       expect(containsPage(pages, 'hands-on-zoom')).assertTrue();
       expect(containsPage(pages, 'hands-on-pan-canvas')).assertTrue();
@@ -66,6 +66,7 @@ export default function guideContentRegistryTest(): void {
         expect(page.id.length > 0).assertTrue();
         expect(page.title.length > 0).assertTrue();
         expect(page.desc.length >= 20).assertTrue();
+        expect(page.symbol !== null).assertTrue();
         expect(ids.has(page.id)).assertFalse();
         ids.add(page.id);
       });
