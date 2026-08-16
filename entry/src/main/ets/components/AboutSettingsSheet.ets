@@ -1,5 +1,5 @@
 /**
- * AboutSettingsSheet.ets — 关于应用/使用教程/隐私政策/前置操作 (T-200 Step 2)
+ * AboutSettingsSheet.ets — 关于应用/使用教程/实操教程/隐私政策/前置操作 (T-200 Step 2)
  *
  * 从 HostListPage.ets 提取。接收 aboutSheetMode 和关闭回调，
  * 通过 @StorageLink/@StorageProp 接入主题系统。
@@ -8,6 +8,7 @@ import { common, Want } from '@kit.AbilityKit';
 import { AppConfig, AppTheme, Palette, buildLight, buildDark } from '../common/Theme';
 import {
   GuideContentPage,
+  handsOnUsageGuidePages,
   settingsUsageGuidePages
 } from '../services/GuideContentRegistry';
 import {
@@ -27,6 +28,9 @@ export struct AboutSettingsSheet {
   @State usageGuideIndex: number = 0;
   private usageGuideController: SwiperController = new SwiperController();
   private readonly usageGuideItems: GuideContentPage[] = settingsUsageGuidePages();
+  @State handsOnGuideIndex: number = 0;
+  private handsOnGuideController: SwiperController = new SwiperController();
+  private readonly handsOnGuideItems: GuideContentPage[] = handsOnUsageGuidePages();
   @State releaseNotesIndex: number = 0;
   private releaseNotesController: SwiperController = new SwiperController();
   private readonly releaseNotesItems: ReleaseNotePage[] =
@@ -47,6 +51,13 @@ export struct AboutSettingsSheet {
     return this.breakpoint === 'sm' ? 300 : 340;
   }
 
+  private handsOnGuideHeight(): number {
+    // The operation cards contain executable steps rather than short feature
+    // summaries. Give their descriptions enough room on phones and freeform
+    // windows while keeping the sheet below the existing maximum height.
+    return this.breakpoint === 'sm' ? 360 : 380;
+  }
+
   private openUrl(url: string): void {
     try {
       const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
@@ -64,6 +75,8 @@ export struct AboutSettingsSheet {
   build() {
     if (this.aboutSheetMode === 0) {
       this.usageGuideSheet();
+    } else if (this.aboutSheetMode === 5) {
+      this.handsOnGuideSheet();
     } else if (this.aboutSheetMode === 1) {
       this.aboutAppSheet();
     } else if (this.aboutSheetMode === 2) {
@@ -223,6 +236,96 @@ export struct AboutSettingsSheet {
           .onClick((): void => {
             if (this.usageGuideIndex < this.usageGuideItems.length - 1) {
               this.usageGuideController.showNext();
+            } else {
+              this.onClose();
+            }
+          })
+      }.width('100%').padding({ left: 28, right: 28, bottom: 28, top: 8 })
+    }
+    .width('100%')
+    .constraintSize({ maxWidth: 620, maxHeight: this.breakpoint === 'sm' ? 500 : 560 })
+    .clip(true)
+    .backgroundColor(this.pal().bg)
+    .backgroundBlurStyle(BlurStyle.Regular)
+    .borderRadius(this.breakpoint === 'sm' ?
+      { topLeft: 22, topRight: 22, bottomLeft: 0, bottomRight: 0 } : 24)
+  }
+
+  @Builder handsOnGuideSheet() {
+    Column() {
+      Row() {
+        Text('实际操作教程').fontSize(20).fontWeight(FontWeight.Bold)
+          .fontColor(this.pal().text).fontFamily(this.font())
+        Blank()
+        SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
+          .width(36).height(36).onClick((): void => { this.onClose(); })
+      }.width('100%').padding({ left: 24, right: 20, top: 20 }).margin({ bottom: 4 })
+
+      Swiper(this.handsOnGuideController) {
+        ForEach(this.handsOnGuideItems, (item: GuideContentPage, index: number) => {
+          Column() {
+            Column() {
+              Image(item.symbol).width(48).height(48).fillColor(this.accentColor)
+            }
+            .width(96).height(96).borderRadius(26)
+            .justifyContent(FlexAlign.Center)
+            .backgroundColor(this.pal().surface)
+            .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+            .margin({ bottom: 18 })
+            .scale({
+              x: this.handsOnGuideIndex === index ? 1 : 0.86,
+              y: this.handsOnGuideIndex === index ? 1 : 0.86
+            })
+            .animation({ duration: 240, curve: Curve.EaseOut })
+
+            Text(item.title)
+              .fontSize(22).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+              .textAlign(TextAlign.Center).fontFamily(this.font()).margin({ bottom: 10 })
+
+            Text(item.desc)
+              .fontSize(14).fontColor(this.pal().text2).textAlign(TextAlign.Center)
+              .lineHeight(21).width('88%').fontFamily(this.font())
+          }
+          .width('100%').justifyContent(FlexAlign.Center)
+          .padding({ bottom: 40 })
+        }, (item: GuideContentPage) => item.id)
+      }
+      .loop(false).indicator(false).duration(250).curve(Curve.EaseOut)
+      .onChange((i: number): void => { this.handsOnGuideIndex = i; })
+      .height(this.handsOnGuideHeight())
+
+      Row() {
+        Text(this.handsOnGuideIndex > 0 ? '上一步' : '关闭')
+          .fontSize(14).fontColor(this.pal().text2).width(72).textAlign(TextAlign.Start)
+          .onClick((): void => {
+            if (this.handsOnGuideIndex > 0) {
+              this.handsOnGuideController.showPrevious();
+            } else {
+              this.onClose();
+            }
+          })
+        Blank()
+        if (this.handsOnGuideItems.length <= 10) {
+          Row({ space: 7 }) {
+            ForEach(this.handsOnGuideItems, (_dot: GuideContentPage, i: number) => {
+              Column()
+                .width(this.handsOnGuideIndex === i ? 22 : 7).height(7).borderRadius(4)
+                .backgroundColor(this.handsOnGuideIndex === i ? this.accentColor : this.pal().divider)
+                .animation({ duration: 200, curve: Curve.EaseOut })
+            }, (_dot: GuideContentPage) => _dot.id)
+          }
+        } else {
+          Text((this.handsOnGuideIndex + 1).toString() + ' / ' +
+            this.handsOnGuideItems.length.toString())
+            .fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
+        }
+        Blank()
+        Text(this.handsOnGuideIndex < this.handsOnGuideItems.length - 1 ? '下一步' : '完成')
+          .fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.accentColor)
+          .width(72).textAlign(TextAlign.End)
+          .onClick((): void => {
+            if (this.handsOnGuideIndex < this.handsOnGuideItems.length - 1) {
+              this.handsOnGuideController.showNext();
             } else {
               this.onClose();
             }

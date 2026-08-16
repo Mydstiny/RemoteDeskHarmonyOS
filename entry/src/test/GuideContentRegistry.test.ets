@@ -2,6 +2,7 @@ import { describe, it, expect } from '@ohos/hypium';
 import {
   firstInstallGuidePages,
   GuideContentPage,
+  handsOnUsageGuidePages,
   settingsUsageGuidePages
 } from '../main/ets/services/GuideContentRegistry';
 
@@ -49,6 +50,19 @@ export default function guideContentRegistryTest(): void {
         expect(page.desc.length > 0).assertTrue();
         expect(ids.has(page.id)).assertFalse();
         ids.add(page.id);
+      });
+    });
+
+    it('provides_a_real_session_operation_guide', 0, (): void => {
+      const pages: GuideContentPage[] = handsOnUsageGuidePages();
+      expect(pages.length >= 12).assertTrue();
+      expect(containsPage(pages, 'hands-on-keyboard')).assertTrue();
+      expect(containsPage(pages, 'hands-on-zoom')).assertTrue();
+      expect(containsPage(pages, 'hands-on-pan-canvas')).assertTrue();
+      expect(containsPage(pages, 'hands-on-desktop-file-transfer')).assertTrue();
+      expect(containsPage(pages, 'hands-on-sftp-file-transfer')).assertTrue();
+      pages.forEach((page: GuideContentPage): void => {
+        expect(page.desc.length >= 20).assertTrue();
       });
     });
   });
