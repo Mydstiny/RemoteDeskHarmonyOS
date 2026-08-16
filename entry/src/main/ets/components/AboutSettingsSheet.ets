@@ -119,9 +119,12 @@ export struct AboutSettingsSheet {
               .fontSize(22).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
               .textAlign(TextAlign.Center).fontFamily(this.font()).margin({ bottom: 10 })
 
-            Text(item.desc)
-              .fontSize(14).fontColor(this.pal().text2).textAlign(TextAlign.Center)
-              .lineHeight(21).width('88%').fontFamily(this.font())
+            Scroll() {
+              Text(item.desc)
+                .fontSize(14).fontColor(this.pal().text2).textAlign(TextAlign.Center)
+                .lineHeight(21).width('100%').fontFamily(this.font())
+            }
+            .width('88%').layoutWeight(1).scrollBar(BarState.Off)
           }
           .width('100%').justifyContent(FlexAlign.Center)
           .padding({ bottom: 40 })

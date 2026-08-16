@@ -61,8 +61,13 @@ export default function guideContentRegistryTest(): void {
       expect(containsPage(pages, 'hands-on-pan-canvas')).assertTrue();
       expect(containsPage(pages, 'hands-on-desktop-file-transfer')).assertTrue();
       expect(containsPage(pages, 'hands-on-sftp-file-transfer')).assertTrue();
+      const ids = new Set<string>();
       pages.forEach((page: GuideContentPage): void => {
+        expect(page.id.length > 0).assertTrue();
+        expect(page.title.length > 0).assertTrue();
         expect(page.desc.length >= 20).assertTrue();
+        expect(ids.has(page.id)).assertFalse();
+        ids.add(page.id);
       });
     });
   });

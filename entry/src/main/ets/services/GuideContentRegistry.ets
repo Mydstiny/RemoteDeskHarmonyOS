@@ -90,13 +90,13 @@ const HANDS_ON_GUIDE_PAGES: GuideContentPage[] = [
     id: 'hands-on-keyboard',
     symbol: $rawfile('icons/key.svg'),
     title: '这样唤起和收起键盘',
-    desc: 'RDP、RustDesk、VNC：展开工具栏后点击“键盘”；SSH：点击终端输入区，系统软键盘会跟随焦点出现，虚拟键栏也会显示。再次点“收键盘”或系统返回即可收起；接入实体键盘时直接输入。'
+    desc: 'RDP：在画面上三指轻点打开“控制面板”，再点“虚拟键盘”；RustDesk：手机或 Pad 可用同一控制面板，PC/Pad 也可点顶部或贴边工具栏的键盘图标，再选“打开虚拟键盘”；VNC：展开 VNC 工具栏后点“键盘”。SSH 点击终端输入区唤起系统软键盘；点“关闭键盘/收键盘”或系统返回即可收起，VNC 只读会话不能发送键盘。'
   },
   {
     id: 'hands-on-shortcuts',
     symbol: $rawfile('icons/key.svg'),
     title: '组合键和修饰键怎么用',
-    desc: '需要 Ctrl、Alt、Shift、Fn 或 Windows 等组合键时，打开“组合键”或虚拟键栏，先点修饰键再点目标键；锁定态会保持到再次点击。RDP/RustDesk 的控制菜单可直接发送 Ctrl + Alt + Del。'
+    desc: 'RDP/RustDesk：三指轻点打开“控制面板”后点“组合键”；VNC：展开会话工具栏后点“组合键”。先点 Ctrl、Alt、Shift、Fn 或 Windows 等修饰键，再点目标键；锁定态会保持到再次点击。Ctrl + Alt + Del 可在组合键面板选择，RustDesk 也可从“控制”菜单直接发送。'
   },
   {
     id: 'hands-on-touchpad',
@@ -108,13 +108,13 @@ const HANDS_ON_GUIDE_PAGES: GuideContentPage[] = [
     id: 'hands-on-control-mode',
     symbol: $rawfile('icons/cog-6-tooth.svg'),
     title: '触控、触控板和键鼠可切换',
-    desc: '点击工具栏上的操控模式按钮，在“触控板、触控、键鼠”之间切换：桌面应用优先用触控板，触控设备优先用触控，接入鼠标和键盘时用键鼠。VNC 只读会话不会发送输入。'
+    desc: 'VNC：展开会话工具栏，点击当前“触控板/触控/键鼠”按钮循环切换；RDP 和 RustDesk：在设置中打开对应协议的“操控模式”选择。桌面应用优先用触控板，触控设备优先用触控，接入实体鼠标键盘时用键鼠；VNC 只读会话不会发送输入。'
   },
   {
     id: 'hands-on-zoom',
     symbol: $rawfile('icons/computer-desktop.svg'),
     title: '双指分开或捏合来缩放',
-    desc: '在支持画布缩放的远程桌面画面上，两指分开可放大、捏合可缩小，缩放中心会跟随两指之间的焦点。缩放只改变本地查看比例，不会修改远端分辨率。'
+    desc: '手机或 Pad 先到“设置 → 显示与交互”打开“双指画布缩放”，再在远程画面上两指分开即可放大、捏合即可缩小，缩放中心会跟随两指之间的焦点。RustDesk 若打开“远端应用双指缩放”，手势会发送给被控端应用而不是改变本地画布；本地缩放不会修改远端分辨率。'
   },
   {
     id: 'hands-on-pan-canvas',
@@ -126,13 +126,13 @@ const HANDS_ON_GUIDE_PAGES: GuideContentPage[] = [
     id: 'hands-on-display-reset',
     symbol: $rawfile('icons/computer-desktop.svg'),
     title: '画面偏了，如何恢复',
-    desc: '打开“显示/画面”菜单可选择“适应窗口、100%—200%或自定义缩放”，点击“重新居中画面”恢复中心位置；窗口旋转或切换显示器后，也建议先重新居中再继续操作。'
+    desc: 'RustDesk：打开工具栏“显示”菜单，选择“适应窗口、100%—200%或自定义缩放”，再点“重新居中画面”；VNC：展开工具栏点击当前显示比例，切换比例会重新居中；RDP：到“设置 → 显示与交互 → 本地显示缩放”重新选择比例。它们都只改变本地查看比例，不改变远端分辨率。'
   },
   {
     id: 'hands-on-desktop-file-transfer',
     symbol: $rawfile('icons/folder-open.svg'),
     title: 'RDP / RustDesk 发送文件',
-    desc: '连接后打开会话控制面板，选择“发送文件到桌面”；RustDesk 也可在顶部工具栏的“控制”菜单选择“传输文件”，再从系统文件选择器挑选文件。PC 端还可直接把文件拖到远程画面。VNC 目前不提供远程桌面文件传输。'
+    desc: '连接后用三指轻点打开会话控制面板，选择“发送文件到桌面”；RustDesk 也可从顶部/贴边工具栏的“控制”菜单选择“传输文件”。RDP 会通过远端剪贴板文件通道并向当前远端位置发送 Ctrl+V，先打开目标桌面或文件夹；RustDesk 需要打开“允许复制粘贴文件”，并等待被控端确认。PC 端可把文件拖到远程画面；VNC 不提供远程桌面文件传输。'
   },
   {
     id: 'hands-on-sftp-file-transfer',
@@ -144,7 +144,7 @@ const HANDS_ON_GUIDE_PAGES: GuideContentPage[] = [
     id: 'hands-on-clipboard',
     symbol: $rawfile('icons/folder-open.svg'),
     title: '文字剪贴板和文件传输要分开',
-    desc: '文字复制粘贴需要在对应协议设置或会话菜单中开启；RustDesk 会话可打开“发送剪贴板按键”。文件发送走独立的文件传输入口，若按钮不可用，先检查连接状态、剪贴板/文件粘贴开关和协议能力。'
+    desc: 'RDP：在“Windows RDP → 剪贴板同步”开启文本通道；RustDesk：在“控制”菜单开启“发送剪贴板按键”，并保持剪贴板允许；VNC：在 VNC 主机设置打开“剪贴板”，只读连接仍不能发送。SSH 当前不提供远程剪贴板同步，可使用终端自己的本地复制/粘贴。文件发送是独立入口，但 RDP 文件发送仍依赖文件剪贴板通道；按钮不可用时先检查连接、开关、权限和协议能力。'
   },
   {
     id: 'hands-on-recover-and-exit',
