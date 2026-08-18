@@ -14,7 +14,7 @@ import { CloudStore } from './CloudStore';
 import { moonlightOwnerScopeFingerprint } from './MoonlightRuntimeSupport';
 
 export type MoonlightNativeOperation =
-  'pair' | 'catalog' | 'asset' | 'launch' | 'resume' | 'quit';
+  'pair' | 'catalog' | 'asset' | 'launch' | 'resume' | 'quit' | 'unpair';
 export type MoonlightNativeCode =
   'ok' | 'invalid_argument' | 'busy' | 'runtime_proof_required' | 'unavailable' |
   'unpaired' | 'app_not_found' | 'invalid_catalog' | 'resume_required' |
@@ -219,6 +219,7 @@ export interface MoonlightHostServiceResult {
 
 const MAX_SAFE_INTEGER: number = 9007199254740991;
 const APP_CACHE_TTL_MS: number = 24 * 60 * 60 * 1000;
+const MAX_STANDARD_OPERATION_TIMEOUT_MS: number = 30000;
 
 function emptyCapabilities(): MoonlightBridgeCapabilities {
   return {
@@ -354,6 +355,10 @@ export class MoonlightHostService {
     return this.execute(context, request, (): void => { pinCopy.fill(0); });
   }
 
+  async unpair(context: MoonlightHostContext): Promise<MoonlightHostServiceResult> {
+    return this.execute(context, this.baseRequest('unpair', context));
+  }
+
   async catalog(context: MoonlightHostContext): Promise<MoonlightHostServiceResult> {
     return this.execute(context, this.baseRequest('catalog', context), undefined, true);
   }
@@ -466,6 +471,14 @@ export class MoonlightHostService {
     if (configuration === undefined || configuration === null) {
       return serviceResult('invalid_context');
     }
+    // Native Host Control deliberately launches only from an authenticated
+    // catalog snapshot owned by this exact lifecycle fence. Refresh it here so
+    // a valid locally cached catalog remains launchable after process/page
+    // recreation and cannot authorize an app removed from the host.
+    const catalogRequest: MoonlightNativeRequest = this.baseRequest('catalog', context);
+    const catalogResult: MoonlightHostServiceResult =
+      await this.execute(context, catalogRequest);
+    if (!catalogResult.ok) { return catalogResult; }
     const request: MoonlightNativeRequest = this.baseRequest(operation, context);
     request.appId = appId;
     request.catalogGeneration = context.generation;
@@ -486,7 +499,8 @@ export class MoonlightHostService {
       hostId: context.hostId,
       serverUuid: context.serverUuid,
       endpoint: context.endpoint,
-      timeoutMs: context.timeoutMs
+      timeoutMs: operation === 'pair' ? context.timeoutMs :
+        Math.min(context.timeoutMs, MAX_STANDARD_OPERATION_TIMEOUT_MS)
     };
     if (context.installationId !== undefined) {
       request.installationId = context.installationId;

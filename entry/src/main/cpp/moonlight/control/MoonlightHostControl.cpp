@@ -117,12 +117,14 @@ struct ActiveControl final {
 };
 
 struct CatalogSnapshot final {
+    std::uint64_t ownerToken = 0;
     std::uint64_t generation = 0;
     std::string serverUuid;
     std::unordered_set<std::uint32_t> appIds;
 };
 
 struct LaneState final {
+    std::uint64_t generationOwnerToken = 0;
     std::uint64_t generationWatermark = 0;
     std::size_t readers = 0;
     bool mutation = false;
@@ -384,8 +386,14 @@ Admission admit(const std::shared_ptr<MoonlightHostControl::Impl>& impl,
         return admission;
     }
     auto& laneState = impl->lanes[lane];
-    if (context.key.generation < laneState.generationWatermark) {
+    if (laneState.generationOwnerToken == context.key.ownerToken &&
+        context.key.generation < laneState.generationWatermark) {
         admission.code = MoonlightHostControlCode::Stale;
+        return admission;
+    }
+    if ((laneState.mutation || laneState.readers != 0U) &&
+        laneState.generationOwnerToken != context.key.ownerToken) {
+        admission.code = MoonlightHostControlCode::Busy;
         return admission;
     }
     if ((mutation && (laneState.mutation || laneState.readers != 0U)) ||
@@ -395,7 +403,15 @@ Admission admit(const std::shared_ptr<MoonlightHostControl::Impl>& impl,
         return admission;
     }
 
+    const auto previousOwnerToken = laneState.generationOwnerToken;
     const auto previousWatermark = laneState.generationWatermark;
+    if (laneState.generationOwnerToken != context.key.ownerToken) {
+        // Generations are monotonic within an ArkTS owner, not process-global.
+        // A newly admitted owner starts its own watermark after the prior
+        // owner has fully drained this host lane.
+        laneState.generationOwnerToken = context.key.ownerToken;
+        laneState.generationWatermark = 0U;
+    }
     laneState.generationWatermark =
         std::max(laneState.generationWatermark, context.key.generation);
     if (mutation) {
@@ -410,6 +426,7 @@ Admission admit(const std::shared_ptr<MoonlightHostControl::Impl>& impl,
     try {
         impl->active.emplace(context.key, active);
     } catch (...) {
+        laneState.generationOwnerToken = previousOwnerToken;
         laneState.generationWatermark = previousWatermark;
         if (mutation) {
             laneState.mutation = false;
@@ -433,6 +450,7 @@ bool generationStale(const std::shared_ptr<MoonlightHostControl::Impl>& impl,
         std::lock_guard<std::mutex> lock(impl->mutex);
         const auto iterator = impl->lanes.find(active->lane);
         return iterator == impl->lanes.end() ||
+               iterator->second.generationOwnerToken != active->key.ownerToken ||
                iterator->second.generationWatermark > active->key.generation;
     } catch (...) {
         return true;
@@ -544,7 +562,8 @@ bool appPresent(const std::shared_ptr<MoonlightHostControl::Impl>& impl,
         return false;
     }
     const auto& catalog = *iterator->second.catalog;
-    return catalog.generation == catalogGeneration &&
+    return catalog.ownerToken == context.key.ownerToken &&
+           catalog.generation == catalogGeneration &&
            catalogGeneration == context.key.generation &&
            catalog.serverUuid == context.serverUuid &&
            catalog.appIds.find(appId) != catalog.appIds.end();
@@ -744,6 +763,7 @@ MoonlightHostControlResult MoonlightHostControl::catalog(
             return finish(std::move(result), *stop);
         }
         CatalogSnapshot snapshot;
+        snapshot.ownerToken = request.context.key.ownerToken;
         snapshot.generation = request.context.key.generation;
         snapshot.serverUuid = request.context.serverUuid;
         for (const auto& app : hostResult.apps) {
@@ -756,7 +776,8 @@ MoonlightHostControlResult MoonlightHostControl::catalog(
         {
             std::lock_guard<std::mutex> lock(impl->mutex);
             auto& lane = impl->lanes[admission.active->lane];
-            if (lane.generationWatermark != request.context.key.generation) {
+            if (lane.generationOwnerToken != request.context.key.ownerToken ||
+                lane.generationWatermark != request.context.key.generation) {
                 return finish(std::move(result), MoonlightHostControlCode::Stale);
             }
             lane.catalog = std::move(snapshot);

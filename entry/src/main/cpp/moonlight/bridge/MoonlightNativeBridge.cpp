@@ -145,6 +145,14 @@ bool requestValid(const MoonlightBridgeRequest& request) noexcept {
                request.appId == 0U && request.catalogGeneration == 0U &&
                request.expectedCurrentAppId == 0U &&
                !request.userConfirmedTermination;
+    case MoonlightBridgeOperation::Unpair:
+        return (request.installationId.empty() ||
+                boundedText(request.installationId, kMaxIdentityBytes)) &&
+               request.pinnedCertificateSha256.size() == 64U &&
+               request.pin.empty() && request.riKey.empty() &&
+               request.appId == 0U && request.catalogGeneration == 0U &&
+               request.expectedCurrentAppId == 0U &&
+               !request.userConfirmedTermination && !request.allowLegacySha1;
     case MoonlightBridgeOperation::Catalog:
         return (request.installationId.empty() ||
                 boundedText(request.installationId, kMaxIdentityBytes)) &&
@@ -185,9 +193,16 @@ bool requestValid(const MoonlightBridgeRequest& request) noexcept {
 
 bool runtimeReadyFor(const MoonlightBridgeCapabilities& capabilities,
                      MoonlightBridgeOperation operation) noexcept {
-    return operation == MoonlightBridgeOperation::Pair
-               ? capabilities.pairingReady
-               : capabilities.hostControlReady;
+    if (operation == MoonlightBridgeOperation::Pair) {
+        return capabilities.pairingReady;
+    }
+    if (operation == MoonlightBridgeOperation::Unpair) {
+        // Sunshine exposes /unpair over HTTP. Local trust revocation must not
+        // become unavailable just because the client identity backend is not
+        // currently usable.
+        return capabilities.transportReady;
+    }
+    return capabilities.hostControlReady;
 }
 
 bool cancellationRequested(
@@ -670,7 +685,7 @@ MoonlightBridgeResult MoonlightNativeBridge::execute(
             return active->cancelled.load(std::memory_order_acquire) ||
                    cancellationRequested(externalCancellation) || stale(impl, active);
         };
-        if (cancelled()) {
+        if (cancelled() && operation != MoonlightBridgeOperation::Unpair) {
             return publishAndReturn(
                 impl, terminalResult(operation, key, MoonlightBridgeCode::Cancelled));
         }
@@ -851,6 +866,8 @@ const char* moonlightBridgeOperationName(MoonlightBridgeOperation operation) noe
         return "resume";
     case MoonlightBridgeOperation::Quit:
         return "quit";
+    case MoonlightBridgeOperation::Unpair:
+        return "unpair";
     default:
         return "unknown";
     }

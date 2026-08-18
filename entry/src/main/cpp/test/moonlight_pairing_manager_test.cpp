@@ -265,6 +265,7 @@ struct TestCertificate final {
     std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)> key{nullptr, EVP_PKEY_free};
     std::unique_ptr<X509, decltype(&X509_free)> certificate{nullptr, X509_free};
     std::vector<std::uint8_t> der;
+    std::vector<std::uint8_t> pem;
     std::vector<std::uint8_t> signature;
 };
 
@@ -305,6 +306,20 @@ TestCertificate makeCertificate() {
     if (i2d_X509(output.certificate.get(), &cursor) != derSize) {
         return {};
     }
+    BIO* rawBio = BIO_new(BIO_s_mem());
+    if (rawBio == nullptr ||
+        PEM_write_bio_X509(rawBio, output.certificate.get()) != 1) {
+        BIO_free(rawBio);
+        return {};
+    }
+    const std::unique_ptr<BIO, decltype(&BIO_free)> bio(rawBio, BIO_free);
+    char* pemData = nullptr;
+    const long pemSize = BIO_get_mem_data(bio.get(), &pemData);
+    if (pemSize <= 0 || pemData == nullptr) {
+        return {};
+    }
+    output.pem.assign(reinterpret_cast<std::uint8_t*>(pemData),
+                      reinterpret_cast<std::uint8_t*>(pemData) + pemSize);
     const ASN1_BIT_STRING* signature = nullptr;
     const X509_ALGOR* algorithm = nullptr;
     X509_get0_signature(&signature, &algorithm, output.certificate.get());
@@ -370,7 +385,13 @@ public:
             return MoonlightPairingPortCode::Cancelled;
         }
         SSL_CTX* context = SSL_CTX_new(TLS_client_method());
-        const bool configured = context != nullptr && !certificateDer.empty() &&
+        const unsigned char* cursor = certificateDer.data();
+        const std::unique_ptr<X509, decltype(&X509_free)> canonical(
+            certificateDer.empty() ? nullptr : d2i_X509(
+                nullptr, &cursor, static_cast<long>(certificateDer.size())), X509_free);
+        canonicalDerReceived_ = canonical != nullptr &&
+            cursor == certificateDer.data() + certificateDer.size();
+        const bool configured = context != nullptr && canonicalDerReceived_ &&
                                 identityLease.configureTlsContext(context) ==
                                     MoonlightIdentityCode::Ok;
         SSL_CTX_free(context);
@@ -396,11 +417,13 @@ public:
     void setAvailable(bool value) noexcept { available_ = value; }
     std::size_t unbindCount() const noexcept { return unbindCount_; }
     std::size_t cancelCount() const noexcept { return cancelCount_; }
+    bool canonicalDerReceived() const noexcept { return canonicalDerReceived_; }
     Barrier* barrier_ = nullptr;
 
 private:
     std::shared_ptr<BindingState> state_;
     bool available_ = true;
+    bool canonicalDerReceived_ = false;
     std::atomic<std::size_t> unbindCount_{0U};
     std::atomic<std::size_t> cancelCount_{0U};
 };
@@ -568,6 +591,7 @@ public:
 
     void setFault(ServerFault fault) noexcept { fault_ = fault; }
     void setLegacySha1(bool value) noexcept { legacySha1_ = value; }
+    void setPemCertificate(bool value) noexcept { pemCertificate_ = value; }
     const std::vector<CapturedPairStep>& captures() const noexcept { return captures_; }
     std::size_t unpairCount() const noexcept { return unpairCount_; }
     bool transcriptVerified() const noexcept { return transcriptVerified_; }
@@ -640,7 +664,8 @@ private:
         } else if (fault_ == ServerFault::OversizedCertificate) {
             certHex.assign((64U * 1024U + 1U) * 2U, 'A');
         } else {
-            certHex = hexEncode(certificate_.der.data(), certificate_.der.size());
+            const auto& encoded = pemCertificate_ ? certificate_.pem : certificate_.der;
+            certHex = hexEncode(encoded.data(), encoded.size());
         }
         return response("<root status_code=\"200\"><paired>1</paired><plaincert>" + certHex +
                         "</plaincert></root>");
@@ -734,6 +759,7 @@ private:
     std::size_t unpairCount_ = 0U;
     bool transcriptVerified_ = false;
     bool legacySha1_ = false;
+    bool pemCertificate_ = true;
 };
 
 MoonlightPairingRequest requestFor(std::uint64_t id, const std::string& pin = "1234") {
@@ -799,6 +825,7 @@ RDP_TEST_CASE(moonlight_pairing_executes_official_sha256_transcript_and_commits_
     RDP_ASSERT(result.ok());
     RDP_ASSERT_EQ(result.terminalStage, MoonlightPairingStage::Paired);
     RDP_ASSERT(fixture.transport->transcriptVerified());
+    RDP_ASSERT(fixture.tls->canonicalDerReceived());
     RDP_ASSERT_EQ(fixture.commit->commitCount_.load(), static_cast<std::size_t>(1));
     RDP_ASSERT(fixture.commit->record_.ownerScopeFingerprint == OWNER);
     RDP_ASSERT(fixture.commit->record_.hostId == "host-fixture-01");
@@ -824,6 +851,15 @@ RDP_TEST_CASE(moonlight_pairing_executes_official_sha256_transcript_and_commits_
     RDP_ASSERT(MoonlightPairingManager::secureCleanseCountForTesting() >= 10U);
     RDP_ASSERT(MoonlightSecureIdentity::secureCleanseCountForTesting() >= 10U);
     RDP_ASSERT_EQ(fixture.tls->unbindCount(), static_cast<std::size_t>(1));
+}
+
+RDP_TEST_CASE(moonlight_pairing_keeps_strict_der_compatibility_after_sunshine_pem_normalization) {
+    PairingFixture fixture;
+    fixture.transport->setPemCertificate(false);
+    const auto result = fixture.manager->execute(requestFor(2U));
+    RDP_ASSERT(result.ok());
+    RDP_ASSERT(fixture.transport->transcriptVerified());
+    RDP_ASSERT(fixture.tls->canonicalDerReceived());
 }
 
 RDP_TEST_CASE(moonlight_pairing_fails_closed_before_network_for_legacy_ports_identity_and_entropy) {

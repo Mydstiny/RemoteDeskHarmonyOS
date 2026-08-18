@@ -93,7 +93,7 @@ function nativeSuccess(request: MoonlightNativeRequest): MoonlightNativeResult {
     observedAtMs: 1000,
     idempotent: false,
     mutationMayHaveBeenSent: request.operation === 'launch' || request.operation === 'resume' ||
-      request.operation === 'quit',
+      request.operation === 'quit' || request.operation === 'unpair',
     apps: [],
     asset: new ArrayBuffer(0),
     diagnostics: []
@@ -349,9 +349,34 @@ export default function moonlightHostServiceTest(): void {
         const result = await value.service.launch(
           context(), 42, { width: 1920, height: 1080, refreshRate: 60 });
         expect(result.ok).assertTrue();
-        expect(value.native.requests[0].operation).assertEqual('launch');
-        expect(value.native.requests[0].catalogGeneration).assertEqual(1);
-        expect(value.native.requests[0].launchConfiguration?.width).assertEqual(1920);
+        expect(value.native.requests.length).assertEqual(2);
+        expect(value.native.requests[0].operation).assertEqual('catalog');
+        expect(value.native.requests[1].operation).assertEqual('launch');
+        expect(value.native.requests[0].key.generation)
+          .assertEqual(value.native.requests[1].key.generation);
+        expect(value.native.requests[0].key.ownerToken)
+          .assertEqual(value.native.requests[1].key.ownerToken);
+        expect(value.native.requests[1].catalogGeneration).assertEqual(1);
+        expect(value.native.requests[1].launchConfiguration?.width).assertEqual(1920);
+      });
+
+    it('launch_never_mutates_host_when_authenticated_catalog_refresh_fails', 0,
+      async (): Promise<void> => {
+        const value = fixture();
+        value.native.resultFactory = (request: MoonlightNativeRequest): MoonlightNativeResult => {
+          const result: MoonlightNativeResult = nativeSuccess(request);
+          if (request.operation === 'catalog') {
+            result.code = 'transport_failure';
+            result.terminalStage = 'failed';
+            result.preflightTruth = 'failed';
+          }
+          return result;
+        };
+        const result = await value.service.launch(
+          context(), 42, { width: 1920, height: 1080, refreshRate: 60 });
+        expect(result.code).assertEqual('transport_failure');
+        expect(value.native.requests.length).assertEqual(1);
+        expect(value.native.requests[0].operation).assertEqual('catalog');
       });
 
     it('pair_uses_an_ephemeral_pin_copy', 0, async (): Promise<void> => {
@@ -374,6 +399,40 @@ export default function moonlightHostServiceTest(): void {
         expect(forwardedPin[0]).assertEqual(0);
       }
     });
+
+    it('unpair_forwards_exact_trust_and_clamps_standard_timeout', 0,
+      async (): Promise<void> => {
+        const value = fixture();
+        const unpairContext: MoonlightHostContext = context();
+        unpairContext.installationId = 'install-a';
+        unpairContext.pinnedCertificateSha256 = 'c'.repeat(64);
+        unpairContext.timeoutMs = 120000;
+        const result = await value.service.unpair(unpairContext);
+        expect(result.ok).assertTrue();
+        expect(value.native.requests.length).assertEqual(1);
+        expect(value.native.requests[0].operation).assertEqual('unpair');
+        expect(value.native.requests[0].timeoutMs).assertEqual(30000);
+        expect(value.native.requests[0].pinnedCertificateSha256)
+          .assertEqual('c'.repeat(64));
+      });
+
+    it('pair_keeps_extended_timeout_while_catalog_is_bounded', 0,
+      async (): Promise<void> => {
+        const pairFixture = fixture();
+        const pairContext: MoonlightHostContext = context();
+        pairContext.timeoutMs = 120000;
+        pairContext.endpoint.pinnedTrustAvailable = false;
+        pairContext.endpoint.allowHttpPairingCandidate = true;
+        const pin: Uint8Array = new Uint8Array([49, 50, 51, 52]);
+        await pairFixture.service.pair(pairContext, 'install-a', pin);
+        expect(pairFixture.native.requests[0].timeoutMs).assertEqual(120000);
+
+        const catalogFixture = fixture();
+        const catalogContext: MoonlightHostContext = context();
+        catalogContext.timeoutMs = 120000;
+        await catalogFixture.service.catalogRuntime(catalogContext);
+        expect(catalogFixture.native.requests[0].timeoutMs).assertEqual(30000);
+      });
 
     it('dispose_owner_cancels_and_late_completion_stays_disposed', 0,
       async (): Promise<void> => {

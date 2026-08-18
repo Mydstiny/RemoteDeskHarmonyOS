@@ -1,5 +1,5 @@
 export type MoonlightNativeOperation =
-  'pair' | 'catalog' | 'asset' | 'launch' | 'resume' | 'quit';
+  'pair' | 'catalog' | 'asset' | 'launch' | 'resume' | 'quit' | 'unpair';
 export type MoonlightNativeCode =
   'ok' | 'invalid_argument' | 'busy' | 'runtime_proof_required' | 'unavailable' |
   'unpaired' | 'app_not_found' | 'invalid_catalog' | 'resume_required' |

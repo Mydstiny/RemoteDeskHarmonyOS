@@ -236,7 +236,7 @@ MoonlightTransportOutcome transportFailure(
 std::string serverInfoXml(std::uint32_t currentGame = 0U, bool paired = true,
                           std::string uuid = "SERVER-UUID") {
     return "<root status_code=\"200\"><uniqueid>" + uuid +
-           "</uniqueid><appversion>7.1.431.0</appversion><state>" +
+           "</uniqueid><appversion>7.1.431.-1</appversion><state>" +
            (currentGame == 0U ? "SUNSHINE_SERVER_READY" : "SUNSHINE_SERVER_BUSY") +
            "</state><PairStatus>" + (paired ? "1" : "0") +
            "</PairStatus><currentgame>" + std::to_string(currentGame) +
@@ -374,6 +374,18 @@ RDP_TEST_CASE(moonlight_host_control_catalog_rejects_partial_and_duplicate_batch
     const auto duplicate = duplicateFixture.control->catalog({contextFor(1U)});
     RDP_ASSERT_EQ(duplicate.code, MoonlightHostControlCode::InvalidCatalog);
     RDP_ASSERT(duplicate.apps.empty());
+}
+
+RDP_TEST_CASE(moonlight_host_control_catalog_retains_sunshine_nameless_app) {
+    Fixture fixture;
+    fixture.transport->push(xmlResponse(
+        "<root status_code=\"200\"><App><AppTitle/><ID>42</ID></App></root>"));
+    const auto catalog = fixture.control->catalog({contextFor(1U)});
+    RDP_ASSERT(catalog.ok());
+    RDP_ASSERT_EQ(catalog.partialAppCount, static_cast<std::size_t>(0));
+    RDP_ASSERT_EQ(catalog.apps.size(), static_cast<std::size_t>(1));
+    RDP_ASSERT_EQ(catalog.apps[0].id, static_cast<std::uint32_t>(42));
+    RDP_ASSERT(catalog.apps[0].title == "Application 42");
 }
 
 RDP_TEST_CASE(moonlight_host_control_asset_requires_matching_catalog_and_known_app) {
@@ -779,6 +791,23 @@ RDP_TEST_CASE(moonlight_host_control_new_generation_discards_late_catalog) {
     fixture.transport->push(assetResponse("new-cover"));
     MoonlightAssetRequest asset {contextFor(3U, 2U), 42U, 2U};
     RDP_ASSERT(fixture.control->asset(asset).ok());
+}
+
+RDP_TEST_CASE(moonlight_host_control_generation_watermark_is_scoped_to_owner_lifecycle) {
+    Fixture fixture;
+    RDP_ASSERT(fixture.primeCatalog(1U, 9U).ok());
+
+    auto nextOwner = contextFor(2U, 1U);
+    nextOwner.key.ownerToken = 2002U;
+    fixture.transport->push(xmlResponse(catalogXml({{42U, "New owner"}})));
+    const auto refreshed = fixture.control->catalog({nextOwner});
+    RDP_ASSERT(refreshed.ok());
+
+    fixture.transport->push(assetResponse("new-owner-cover"));
+    MoonlightAssetRequest asset {nextOwner, 42U, 1U};
+    asset.context.key.requestId = 3U;
+    const auto loaded = fixture.control->asset(asset);
+    RDP_ASSERT(loaded.ok());
 }
 
 RDP_TEST_CASE(moonlight_host_control_access_outcomes_are_stable_and_packet_free) {

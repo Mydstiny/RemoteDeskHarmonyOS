@@ -240,13 +240,22 @@ bool validVersion(const std::string& value, std::size_t minimumComponents,
     }
     std::size_t componentCount = 0U;
     std::size_t componentLength = 0U;
+    bool componentHasSign = false;
     for (const unsigned char character : value) {
         if (character == '.') {
-            if (componentLength == 0U) {
+            if (componentLength == 0U || componentHasSign) {
                 return false;
             }
             ++componentCount;
             componentLength = 0U;
+            componentHasSign = false;
+        } else if (character == '-' && componentLength == 0U &&
+                   !componentHasSign) {
+            // Sunshine identifies itself to common-c with the canonical
+            // appversion value "7.1.431.-1". common-c parses this quad as
+            // signed integers, so preserve that interoperable shape while
+            // retaining strict component and digit bounds.
+            componentHasSign = true;
         } else if (character >= '0' && character <= '9') {
             ++componentLength;
             if (componentLength > 6U) {
@@ -278,10 +287,18 @@ bool decimalPort(const std::string& value) noexcept {
 }
 
 bool validRtspUrl(const std::string& value) noexcept {
-    constexpr const char* prefix = "rtsp://";
-    constexpr std::size_t prefixLength = 7U;
-    if (value.size() <= prefixLength || value.size() > kMaximumRtspUrlLength ||
-        value.compare(0U, prefixLength, prefix) != 0 ||
+    constexpr const char* plainPrefix = "rtsp://";
+    constexpr const char* encryptedPrefix = "rtspenc://";
+    constexpr std::size_t plainPrefixLength = 7U;
+    constexpr std::size_t encryptedPrefixLength = 10U;
+    const std::size_t prefixLength =
+        value.compare(0U, encryptedPrefixLength, encryptedPrefix) == 0
+            ? encryptedPrefixLength
+            : value.compare(0U, plainPrefixLength, plainPrefix) == 0
+                  ? plainPrefixLength
+                  : 0U;
+    if (prefixLength == 0U || value.size() <= prefixLength ||
+        value.size() > kMaximumRtspUrlLength ||
         !boundedPrintable(value, prefixLength + 1U, kMaximumRtspUrlLength) ||
         value.find('\\') != std::string::npos ||
         value.find('#') != std::string::npos) {
@@ -1667,7 +1684,14 @@ void Invocation::notifyTerminalComplete() noexcept {
 
 void Invocation::noteUserCancel() noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (pendingCode_ == MoonlightCommonCCode::None) {
+    if (!terminalEmitted_ &&
+        (pendingCode_ == MoonlightCommonCCode::None ||
+         pendingCode_ == MoonlightCommonCCode::CommonCStartFailed)) {
+        // LiStartConnection() can return its generic failure concurrently with
+        // an accepted owner stop while finalization is still draining media
+        // callbacks. Make that race order-independent: an explicit stop owns
+        // the generic start-failure terminal reason, while specific protocol,
+        // negotiation, media, deadline, and driver failures remain intact.
         pendingCode_ = MoonlightCommonCCode::Cancelled;
     }
 }
@@ -1835,7 +1859,11 @@ bool Invocation::onConnectionStarted() noexcept {
         protocolFailure(MoonlightCommonCCode::ProtocolViolation);
         return false;
     }
-    runtime_->armDeadline(key(), request_.deadlines.overallMonotonicMs, 0U);
+    // The configured deadlines bound connection establishment only. Once
+    // common-c proves the full transport is running, retaining the overall
+    // startup deadline would terminate every healthy long-lived stream when
+    // that deadline expires.
+    runtime_->clearDeadline(key());
     return true;
 }
 

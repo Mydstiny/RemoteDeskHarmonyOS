@@ -4,6 +4,7 @@
  * as certificate trust; pairing is the native mTLS boundary that follows it.
  */
 import { http } from '@kit.NetworkKit';
+import { util } from '@kit.ArkTS';
 import {
   MoonlightAddress,
   MoonlightAddressFamily,
@@ -19,6 +20,7 @@ const MAX_RESPONSE_BYTES: number = 128 * 1024;
 const MAX_SERVER_UUID_LENGTH: number = 256;
 const MAX_SERVER_NAME_LENGTH: number = 256;
 const MAX_VERSION_LENGTH: number = 128;
+const MOONLIGHT_PROTOCOL_UNIQUE_ID: string = '0123456789ABCDEF';
 
 /** Exact owner/operation-generation/candidate identity used by HostList writes. */
 export class MoonlightHostOperationFence {
@@ -32,10 +34,22 @@ export class MoonlightHostOperationFence {
   addressPort: number = 0;
 }
 
-function endpoint(address: MoonlightAddress): string {
+function validRequestUuid(value: string): boolean {
+  return /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(
+    value);
+}
+
+export function moonlightServerInfoProbeEndpoint(
+  address: MoonlightAddress,
+  requestUuid: string
+): string {
+  if (!validAddress(address) || !validRequestUuid(requestUuid)) {
+    return '';
+  }
   const host: string = address.family === 'ipv6' ? '[' + address.host + ']' : address.host;
   const port: number = address.port > 0 ? address.port : MOONLIGHT_DEFAULT_CONTROL_PORT;
-  return 'http://' + host + ':' + port.toString() + '/serverinfo';
+  return 'http://' + host + ':' + port.toString() + '/serverinfo?uniqueid=' +
+    MOONLIGHT_PROTOCOL_UNIQUE_ID + '&uuid=' + encodeURIComponent(requestUuid);
 }
 
 function xmlAttribute(xml: string, name: string): string {
@@ -211,7 +225,12 @@ export function parseMoonlightServerInfo(
     serverInfoValue(body, 'GfeVersion'), MAX_VERSION_LENGTH);
   const state: string | null = strictBoundedText(
     serverInfoValue(body, 'state'), MAX_VERSION_LENGTH);
-  const pairedText: string | null = strictBoundedText(serverInfoValue(body, 'paired'), 16);
+  // GameStream serverinfo exposes PairStatus. The lowercase "paired" field
+  // belongs to pairing-stage responses, but is retained as a compatibility
+  // fallback for older/non-standard hosts.
+  const pairStatusValue: string = serverInfoValue(body, 'PairStatus');
+  const pairedText: string | null = strictBoundedText(
+    pairStatusValue !== '' ? pairStatusValue : serverInfoValue(body, 'paired'), 16);
   if (hostname === null || appVersion === null || gfeVersion === null ||
       state === null || pairedText === null) {
     return null;
@@ -240,10 +259,18 @@ export class MoonlightLanProbeService {
     }
     const client: http.HttpRequest = http.createHttp();
     try {
-      const response = await client.request(endpoint(address), {
+      const requestEndpoint: string = moonlightServerInfoProbeEndpoint(
+        address, util.generateRandomUUID());
+      if (requestEndpoint === '') {
+        return null;
+      }
+      const response = await client.request(requestEndpoint, {
         method: http.RequestMethod.GET,
         expectDataType: http.HttpDataType.STRING,
         usingCache: false,
+        usingProxy: false,
+        maxRedirects: 0,
+        maxLimit: MAX_RESPONSE_BYTES,
         connectTimeout: REQUEST_TIMEOUT_MS,
         readTimeout: REQUEST_TIMEOUT_MS,
         header: { 'Accept': 'application/xml,text/xml' }

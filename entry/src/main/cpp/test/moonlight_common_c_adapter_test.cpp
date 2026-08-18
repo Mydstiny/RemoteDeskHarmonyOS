@@ -345,7 +345,7 @@ MoonlightCommonCRequest makeRequest(
     launch.audioLayout = audioLayout;
     request.streamConfig.launchProjection = launch;
     request.server.address = "192.0.2.44";
-    request.server.appVersion = "7.1.431.0";
+    request.server.appVersion = "7.1.431.-1";
     request.server.gfeVersion = "3.26.0.131";
     request.server.authenticated = true;
     request.server.hostCapabilityGeneration = 31U;
@@ -529,16 +529,25 @@ RDP_TEST_CASE(moonlight_common_c_adapter_maps_all_wire_fields_and_big_endian_iv)
         [&]() { startGate.release(); },
         []() {}};
     auto adapter = makeAdapter(*owner, std::move(driver), media, clock);
-    const auto accepted = adapter->start(makeRequest(clock->load()));
+    auto request = makeRequest(clock->load());
+    std::array<std::uint8_t, 16U> remoteInputKey {};
+    for (std::size_t index = 0U; index < remoteInputKey.size(); ++index) {
+        remoteInputKey[index] = static_cast<std::uint8_t>(index + 1U);
+    }
+    request.launchLease = MoonlightRtspLaunchLease(
+        remoteInputKey, 0x01020304,
+        "rtspenc://192.0.2.44:48010/session/700", 101U, 9U,
+        "host-700", "server-uuid-700", 31U, 17U);
+    const auto accepted = adapter->start(std::move(request));
     RDP_ASSERT_EQ(accepted.status, MoonlightCommonCStartStatus::Accepted);
     RDP_ASSERT(startGate.waitEntered());
     {
         std::lock_guard<std::mutex> lock(wireMutex);
         RDP_ASSERT(captured.has_value() && captured->valid);
         RDP_ASSERT(captured->address == "192.0.2.44");
-        RDP_ASSERT(captured->appVersion == "7.1.431.0");
+        RDP_ASSERT(captured->appVersion == "7.1.431.-1");
         RDP_ASSERT(captured->rtspSessionUrl ==
-                   "rtsp://192.0.2.44:48010/session/700");
+                   "rtspenc://192.0.2.44:48010/session/700");
         RDP_ASSERT_EQ(captured->width, 1920);
         RDP_ASSERT_EQ(captured->height, 1080);
         RDP_ASSERT_EQ(captured->fps, 60);
@@ -795,6 +804,8 @@ RDP_TEST_CASE(moonlight_common_c_adapter_malformed_boundary_corpus_fails_before_
     });
     reject([](auto& request) { request.server.address = "host\\alias"; });
     reject([](auto& request) { request.server.gfeVersion = "3.bad.0"; });
+    reject([](auto& request) { request.server.appVersion = "7.1.431.-"; });
+    reject([](auto& request) { request.server.appVersion = "7.1.431.--1"; });
     RDP_ASSERT_EQ(starts.load(), 0);
 }
 
@@ -1262,6 +1273,44 @@ RDP_TEST_CASE(moonlight_common_c_adapter_fake_clock_stage_deadline_only_requests
     RDP_ASSERT_EQ(interrupts.load(), 1);
     RDP_ASSERT_EQ(adapter->snapshot(accepted.key).terminalCode,
                   MoonlightCommonCCode::DeadlineExceeded);
+}
+
+RDP_TEST_CASE(moonlight_common_c_adapter_startup_deadline_is_disarmed_after_connection) {
+    auto owner = MoonlightSessionOwner::createForTesting();
+    auto media = std::make_shared<FakeMediaPort>();
+    auto clock = std::make_shared<std::atomic<std::uint64_t>>(14000U);
+    std::atomic<bool> driven {false};
+    std::atomic<int> interrupts {0};
+    std::atomic<int> stops {0};
+    MoonlightCommonCTestDriver driver {
+        [&]() {
+            driven.store(driveStagesWithNegotiation());
+            return driven.load() ? 0 : -1;
+        },
+        [&]() { ++interrupts; },
+        [&]() {
+            ++stops;
+            (void)MoonlightCommonCTestHarness::videoStop();
+            (void)MoonlightCommonCTestHarness::audioStop();
+            (void)MoonlightCommonCTestHarness::videoCleanup();
+            (void)MoonlightCommonCTestHarness::audioCleanup();
+        }};
+    auto adapter = makeAdapter(*owner, std::move(driver), media, clock);
+    auto request = makeRequest(clock->load());
+    request.deadlines.overallMonotonicMs = 16000U;
+    request.deadlines.stageMonotonicMs.fill(15000U);
+    const auto accepted = adapter->start(std::move(request));
+    RDP_ASSERT(owner->waitForPhase(accepted.key, MoonlightSessionPhase::Running, 1s));
+    RDP_ASSERT(driven.load());
+
+    clock->store(17000U);
+    adapter->notifyClockForTesting();
+    RDP_ASSERT(!owner->waitForPhase(
+        accepted.key, MoonlightSessionPhase::Stopped, 100ms));
+    RDP_ASSERT_EQ(interrupts.load(), 0);
+    RDP_ASSERT_EQ(stops.load(), 0);
+    RDP_ASSERT_EQ(adapter->stop(accepted.key, 1s), MoonlightStopStatus::Stopped);
+    RDP_ASSERT_EQ(stops.load(), 1);
 }
 
 RDP_TEST_CASE(moonlight_common_c_adapter_finalization_waits_inflight_media_callback) {

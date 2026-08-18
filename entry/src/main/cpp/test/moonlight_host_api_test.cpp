@@ -198,7 +198,7 @@ std::string serverInfoXml(const std::string& extra = {}) {
            "<root status_code=\"200\" status_message=\"OK\">"
            "<hostname>Gaming PC</hostname>"
            "<uniqueid>host-001</uniqueid>"
-           "<appversion>7.1.431.0</appversion>"
+           "<appversion>7.1.431.-1</appversion>"
            "<state>SUNSHINE_SERVER_BUSY</state>"
            "<PairStatus>1</PairStatus>"
            "<currentgame>42</currentgame>"
@@ -341,14 +341,23 @@ RDP_TEST_CASE(moonlight_host_api_parses_bounded_serverinfo_and_official_status_c
     const auto result = executeOnce(call, xmlResponse(serverInfoXml("<Unknown>x</Unknown>")));
     RDP_ASSERT(result.ok());
     RDP_ASSERT(result.serverInfo.has_value());
-    RDP_ASSERT_EQ(result.serverInfo->appVersionParts[0], static_cast<std::uint16_t>(7));
-    RDP_ASSERT_EQ(result.serverInfo->appVersionParts[3], static_cast<std::uint16_t>(0));
+    RDP_ASSERT_EQ(result.serverInfo->appVersionParts[0], static_cast<std::int32_t>(7));
+    RDP_ASSERT_EQ(result.serverInfo->appVersionParts[3], static_cast<std::int32_t>(-1));
     RDP_ASSERT(result.serverInfo->paired);
     RDP_ASSERT_EQ(result.serverInfo->currentGame, static_cast<std::uint32_t>(42));
     RDP_ASSERT(result.serverInfo->hostName.has_value());
     RDP_ASSERT_EQ(*result.serverInfo->httpsPort, static_cast<std::uint16_t>(47984));
     RDP_ASSERT_EQ(*result.serverInfo->codecModeSupport, static_cast<std::uint64_t>(769));
     RDP_ASSERT_EQ(result.xmlStatus.value_or(0), 200);
+
+    auto idleWithStaleGame = serverInfoXml();
+    const auto idleState = idleWithStaleGame.find("SUNSHINE_SERVER_BUSY");
+    idleWithStaleGame.replace(idleState, std::string("SUNSHINE_SERVER_BUSY").size(),
+                              "SUNSHINE_SERVER_READY");
+    const auto idle = executeOnce(call, xmlResponse(idleWithStaleGame));
+    RDP_ASSERT(idle.ok());
+    RDP_ASSERT(idle.serverInfo.has_value());
+    RDP_ASSERT_EQ(idle.serverInfo->currentGame, static_cast<std::uint32_t>(0));
 
     const auto rejected = executeOnce(
         call, xmlResponse("<root status_code=\"4294967295\" status_message=\"Invalid\"/>"));
@@ -364,6 +373,14 @@ RDP_TEST_CASE(moonlight_host_api_parses_bounded_serverinfo_and_official_status_c
     invalidPortXml.replace(port, std::string("<HttpsPort>47984</HttpsPort>").size(),
                            "<HttpsPort>0</HttpsPort>");
     RDP_ASSERT_EQ(executeOnce(call, xmlResponse(invalidPortXml)).error,
+                  MoonlightHostError::InvalidField);
+
+    auto invalidVersionXml = serverInfoXml();
+    const auto version = invalidVersionXml.find("<appversion>7.1.431.-1</appversion>");
+    invalidVersionXml.replace(
+        version, std::string("<appversion>7.1.431.-1</appversion>").size(),
+        "<appversion>7.1.431.--1</appversion>");
+    RDP_ASSERT_EQ(executeOnce(call, xmlResponse(invalidVersionXml)).error,
                   MoonlightHostError::InvalidField);
 }
 
@@ -434,14 +451,16 @@ RDP_TEST_CASE(moonlight_host_api_parses_apps_partial_entries_entities_and_reject
         "<App><AppTitle>Missing id</AppTitle></App>"
         "<Unknown><Nested>ignored</Nested></Unknown>"
         "<App><AppTitle>&#x6E38;&#25103;</AppTitle><ID>2</ID></App>"
+        "<App><AppTitle/><ID>3</ID></App>"
         "</root>";
     const auto result = executeOnce(call, xmlResponse(body));
     RDP_ASSERT(result.ok());
-    RDP_ASSERT_EQ(result.apps.size(), static_cast<std::size_t>(2));
+    RDP_ASSERT_EQ(result.apps.size(), static_cast<std::size_t>(3));
     RDP_ASSERT_EQ(result.partialAppCount, static_cast<std::size_t>(1));
     RDP_ASSERT(result.apps[0].title == "Game & One");
     RDP_ASSERT(result.apps[0].hdrSupported.value_or(false));
     RDP_ASSERT(result.apps[1].title == "游戏");
+    RDP_ASSERT(result.apps[2].title == "Application 3");
 
     const auto duplicate =
         executeOnce(call, xmlResponse("<root status_code=\"200\">"
@@ -811,6 +830,48 @@ RDP_TEST_CASE(moonlight_host_api_preserves_trust_conflict_and_only_exposes_http_
     RDP_ASSERT_EQ(captures[1].scheme, MoonlightHostScheme::Http);
     RDP_ASSERT(!captures[1].requiresClientIdentity);
     RDP_ASSERT(!captures[1].requiresServerPin);
+}
+
+RDP_TEST_CASE(moonlight_host_api_pairing_lane_recovers_from_remote_unpair_via_http_candidate) {
+    auto transport = std::make_shared<ScriptedTransport>();
+    transport->push(xmlResponse("not used", 401));
+    auto unpaired = serverInfoXml();
+    const auto pairStatus = unpaired.find("<PairStatus>1</PairStatus>");
+    unpaired.replace(pairStatus, std::string("<PairStatus>1</PairStatus>").size(),
+                     "<PairStatus>0</PairStatus>");
+    transport->push(xmlResponse(unpaired));
+
+    MoonlightHostApi api(transport, uuidGenerator());
+    auto call = callFor(MoonlightHostOperation::ServerInfo, true);
+    call.endpoint.allowHttpPairingCandidate = true;
+    const auto result = api.execute(call);
+
+    RDP_ASSERT(result.ok());
+    RDP_ASSERT(result.candidateOnly);
+    RDP_ASSERT(result.serverInfo.has_value());
+    RDP_ASSERT(!result.serverInfo->paired);
+    const auto captures = transport->captures();
+    RDP_ASSERT_EQ(captures.size(), static_cast<std::size_t>(2));
+    RDP_ASSERT_EQ(captures[0].scheme, MoonlightHostScheme::Https);
+    RDP_ASSERT(captures[0].requiresClientIdentity);
+    RDP_ASSERT(captures[0].requiresServerPin);
+    RDP_ASSERT_EQ(captures[1].scheme, MoonlightHostScheme::Http);
+    RDP_ASSERT(!captures[1].requiresClientIdentity);
+    RDP_ASSERT(!captures[1].requiresServerPin);
+}
+
+RDP_TEST_CASE(moonlight_host_api_never_downgrades_unauthorized_control_serverinfo) {
+    auto transport = std::make_shared<ScriptedTransport>();
+    transport->push(xmlResponse("not used", 401));
+    MoonlightHostApi api(transport, uuidGenerator());
+    auto call = callFor(MoonlightHostOperation::ServerInfo, true);
+
+    const auto result = api.execute(call);
+
+    RDP_ASSERT_EQ(result.error, MoonlightHostError::HttpUnauthorized);
+    const auto captures = transport->captures();
+    RDP_ASSERT_EQ(captures.size(), static_cast<std::size_t>(1));
+    RDP_ASSERT_EQ(captures[0].scheme, MoonlightHostScheme::Https);
 }
 
 RDP_TEST_CASE(moonlight_host_api_exact_cancel_stale_and_duplicate_request_fences) {

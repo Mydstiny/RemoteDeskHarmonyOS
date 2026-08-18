@@ -184,6 +184,15 @@ MoonlightBridgeRequest launchRequest(std::uint64_t requestId = 1U,
     return request;
 }
 
+MoonlightBridgeRequest unpairRequest(std::uint64_t requestId = 1U,
+                                     std::uint64_t generation = 1U) {
+    auto request = requestFor(requestId, generation);
+    request.operation = MoonlightBridgeOperation::Unpair;
+    request.installationId = "install-a";
+    request.pinnedCertificateSha256 = std::string(64U, 'c');
+    return request;
+}
+
 } // namespace
 
 RDP_TEST_CASE(moonlight_native_bridge_construction_does_not_initialize_runtime) {
@@ -229,7 +238,31 @@ RDP_TEST_CASE(moonlight_native_bridge_rejects_invalid_exact_dto_before_runtime) 
     invalidPin.pin = {'1', '2', 'x', '4'};
     RDP_ASSERT_EQ(bridge.execute(std::move(invalidPin)).code,
                   MoonlightBridgeCode::InvalidArgument);
+    auto unpairWithoutTrust = unpairRequest(3U);
+    unpairWithoutTrust.pinnedCertificateSha256.clear();
+    RDP_ASSERT_EQ(bridge.execute(std::move(unpairWithoutTrust)).code,
+                  MoonlightBridgeCode::InvalidArgument);
     RDP_ASSERT_EQ(runtime->executeCount_.load(), static_cast<std::size_t>(0));
+}
+
+RDP_TEST_CASE(moonlight_native_bridge_unpair_needs_transport_not_host_control) {
+    auto runtime = std::make_shared<FakeRuntime>();
+    runtime->capabilities_.identityReady = false;
+    runtime->capabilities_.pairingReady = false;
+    runtime->capabilities_.hostControlReady = false;
+    runtime->capabilities_.transportReady = true;
+    MoonlightNativeBridge bridge(runtime);
+    const auto result = bridge.execute(unpairRequest());
+    RDP_ASSERT(result.ok());
+    RDP_ASSERT_EQ(runtime->executeCount_.load(), static_cast<std::size_t>(1));
+}
+
+RDP_TEST_CASE(moonlight_native_bridge_cancelled_unpair_still_reaches_local_revoke_lane) {
+    auto runtime = std::make_shared<FakeRuntime>();
+    MoonlightNativeBridge bridge(runtime);
+    const auto result = bridge.execute(unpairRequest(), []() { return true; });
+    RDP_ASSERT_EQ(result.code, MoonlightBridgeCode::Cancelled);
+    RDP_ASSERT_EQ(runtime->executeCount_.load(), static_cast<std::size_t>(1));
 }
 
 RDP_TEST_CASE(moonlight_native_bridge_returns_typed_result_and_owner_event) {
@@ -464,6 +497,8 @@ RDP_TEST_CASE(moonlight_native_bridge_pair_is_ephemeral_and_launch_has_no_ri_key
     RDP_ASSERT(MoonlightNativeBridge::secureCleanseCountForTesting() >= 1U);
     RDP_ASSERT(std::string(moonlightBridgeOperationName(
                    MoonlightBridgeOperation::Resume)) == "resume");
+    RDP_ASSERT(std::string(moonlightBridgeOperationName(
+                   MoonlightBridgeOperation::Unpair)) == "unpair");
     RDP_ASSERT(std::string(moonlightBridgeCodeName(
                    MoonlightBridgeCode::OutcomeUnknown)) == "outcome_unknown");
 }

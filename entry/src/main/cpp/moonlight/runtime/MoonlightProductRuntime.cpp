@@ -4,8 +4,10 @@
 #include "moonlight/input/MoonlightControllerMapper.h"
 #include "moonlight/pairing/MoonlightPairingManager.h"
 #include "moonlight/security/MoonlightSecureIdentity.h"
+#include "moonlight/runtime/MoonlightHttpRequestFormatting.h"
 #include "moonlight/runtime/MoonlightHttpResponseFraming.h"
 #include "moonlight/runtime/MoonlightProductStreamingRuntime.h"
+#include "moonlight/runtime/MoonlightRequestUuid.h"
 
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
@@ -15,8 +17,10 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -28,8 +32,10 @@
 #include <netdb.h>
 #include <optional>
 #include <poll.h>
+#include <signal.h>
 #include <string>
 #include <sys/socket.h>
+#include <thread>
 #include <unistd.h>
 #include <unordered_map>
 #include <unordered_set>
@@ -41,6 +47,7 @@ namespace {
 
 constexpr std::size_t kMaxHeaderBytes = 64U * 1024U;
 constexpr std::chrono::milliseconds kPollSlice{100};
+constexpr int kMaxConcurrentResolvers = 4;
 
 std::uint64_t monotonicMilliseconds() noexcept {
     return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -228,6 +235,206 @@ bool setNonBlocking(int descriptor) noexcept {
     return flags >= 0 && ::fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) == 0;
 }
 
+class ScopedSigpipeBlocker final {
+public:
+    ScopedSigpipeBlocker() noexcept {
+        if (::sigemptyset(&signalSet_) != 0 ||
+            ::sigaddset(&signalSet_, SIGPIPE) != 0 ||
+            ::pthread_sigmask(SIG_BLOCK, &signalSet_, &previousMask_) != 0) {
+            return;
+        }
+        active_ = true;
+        sigset_t pending{};
+        if (::sigpending(&pending) == 0) {
+            signalWasPending_ = ::sigismember(&pending, SIGPIPE) == 1;
+        }
+    }
+
+    ~ScopedSigpipeBlocker() {
+        if (!active_) {
+            return;
+        }
+        if (!signalWasPending_) {
+            sigset_t pending{};
+            if (::sigpending(&pending) == 0 &&
+                ::sigismember(&pending, SIGPIPE) == 1) {
+                int consumedSignal = 0;
+                (void)::sigwait(&signalSet_, &consumedSignal);
+            }
+        }
+        (void)::pthread_sigmask(SIG_SETMASK, &previousMask_, nullptr);
+    }
+
+    ScopedSigpipeBlocker(const ScopedSigpipeBlocker&) = delete;
+    ScopedSigpipeBlocker& operator=(const ScopedSigpipeBlocker&) = delete;
+
+private:
+    sigset_t signalSet_{};
+    sigset_t previousMask_{};
+    bool active_ = false;
+    bool signalWasPending_ = false;
+};
+
+struct ResolvedAddress final {
+    sockaddr_storage storage{};
+    socklen_t length = 0;
+    int family = AF_UNSPEC;
+    int socktype = SOCK_STREAM;
+    int protocol = 0;
+};
+
+struct ResolveState final {
+    std::mutex mutex;
+    std::condition_variable condition;
+    std::vector<ResolvedAddress> addresses;
+    int lookupResult = EAI_FAIL;
+    bool done = false;
+    bool abandoned = false;
+};
+
+std::atomic<int> gActiveResolvers{0};
+
+void copyResolvedAddresses(addrinfo* source,
+                           std::vector<ResolvedAddress>& destination) {
+    for (addrinfo* item = source;
+         item != nullptr && destination.size() < MoonlightHostLimits::kMaxAddresses;
+         item = item->ai_next) {
+        if (item->ai_addr == nullptr || item->ai_addrlen <= 0 ||
+            static_cast<std::size_t>(item->ai_addrlen) > sizeof(sockaddr_storage)) {
+            continue;
+        }
+        ResolvedAddress address;
+        std::memcpy(&address.storage, item->ai_addr,
+                    static_cast<std::size_t>(item->ai_addrlen));
+        address.length = static_cast<socklen_t>(item->ai_addrlen);
+        address.family = item->ai_family;
+        address.socktype = item->ai_socktype;
+        address.protocol = item->ai_protocol;
+        destination.push_back(address);
+    }
+}
+
+WaitResult resolveAddresses(
+    const std::string& host, const std::string& port,
+    MoonlightHostAddressFamily family,
+    std::chrono::steady_clock::time_point deadline,
+    const MoonlightHostTransport::CancellationProbe& cancellationProbe,
+    std::vector<ResolvedAddress>& addresses) {
+    if (cancelled(cancellationProbe)) {
+        return WaitResult::Cancelled;
+    }
+    if (deadlineExpired(deadline)) {
+        return WaitResult::Timeout;
+    }
+
+    addrinfo hints{};
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_family = family == MoonlightHostAddressFamily::Ipv4 ? AF_INET :
+        family == MoonlightHostAddressFamily::Ipv6 ? AF_INET6 : AF_UNSPEC;
+
+    // Numeric discovery results are the overwhelmingly common path and can
+    // be parsed synchronously without consulting DNS or exceeding a deadline.
+    hints.ai_flags = AI_NUMERICHOST | AI_NUMERICSERV;
+    addrinfo* numeric = nullptr;
+    const int numericResult = ::getaddrinfo(host.c_str(), port.c_str(), &hints, &numeric);
+    if (numericResult == 0 && numeric != nullptr) {
+        std::unique_ptr<addrinfo, decltype(&freeaddrinfo)> guard(numeric, freeaddrinfo);
+        copyResolvedAddresses(guard.get(), addresses);
+        return addresses.empty() ? WaitResult::Error : WaitResult::Ready;
+    }
+    if (numeric != nullptr) {
+        ::freeaddrinfo(numeric);
+    }
+
+    const int previousResolvers = gActiveResolvers.fetch_add(1, std::memory_order_acq_rel);
+    if (previousResolvers >= kMaxConcurrentResolvers) {
+        gActiveResolvers.fetch_sub(1, std::memory_order_acq_rel);
+        return WaitResult::Error;
+    }
+
+    auto state = std::make_shared<ResolveState>();
+    std::thread resolver;
+    try {
+        resolver = std::thread([state, host, port, family]() {
+            struct ResolverCounter final {
+                ~ResolverCounter() {
+                    gActiveResolvers.fetch_sub(1, std::memory_order_acq_rel);
+                }
+            } counter;
+            addrinfo workerHints{};
+            workerHints.ai_socktype = SOCK_STREAM;
+            workerHints.ai_family = family == MoonlightHostAddressFamily::Ipv4 ? AF_INET :
+                family == MoonlightHostAddressFamily::Ipv6 ? AF_INET6 : AF_UNSPEC;
+            addrinfo* raw = nullptr;
+            int result = EAI_FAIL;
+            std::vector<ResolvedAddress> copied;
+            try {
+                result = ::getaddrinfo(host.c_str(), port.c_str(), &workerHints, &raw);
+                if (result == 0 && raw != nullptr) {
+                    copyResolvedAddresses(raw, copied);
+                }
+            } catch (...) {
+                result = EAI_MEMORY;
+                copied.clear();
+            }
+            if (raw != nullptr) {
+                ::freeaddrinfo(raw);
+            }
+            {
+                std::lock_guard<std::mutex> lock(state->mutex);
+                state->lookupResult = result;
+                if (!state->abandoned) {
+                    state->addresses = std::move(copied);
+                }
+                state->done = true;
+            }
+            state->condition.notify_one();
+        });
+    } catch (...) {
+        gActiveResolvers.fetch_sub(1, std::memory_order_acq_rel);
+        return WaitResult::Error;
+    }
+
+    WaitResult result = WaitResult::Ready;
+    bool resolverDone = false;
+    {
+        std::unique_lock<std::mutex> lock(state->mutex);
+        while (!state->done) {
+            if (cancelled(cancellationProbe)) {
+                state->abandoned = true;
+                result = WaitResult::Cancelled;
+                break;
+            }
+            if (deadlineExpired(deadline)) {
+                state->abandoned = true;
+                result = WaitResult::Timeout;
+                break;
+            }
+            const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+                deadline - std::chrono::steady_clock::now());
+            state->condition.wait_for(lock, std::max(
+                std::chrono::milliseconds(1), std::min(remaining, kPollSlice)));
+        }
+        resolverDone = state->done;
+        if (result == WaitResult::Ready) {
+            if (state->lookupResult != 0 || state->addresses.empty()) {
+                result = WaitResult::Error;
+            } else {
+                addresses = std::move(state->addresses);
+            }
+        }
+    }
+    if (resolverDone) {
+        resolver.join();
+    } else {
+        // libc does not expose portable resolver cancellation. The detached
+        // worker owns its copied state and the bounded gate prevents runaway
+        // threads when a resolver remains stuck after the caller's deadline.
+        resolver.detach();
+    }
+    return result;
+}
+
 class SocketGuard final {
 public:
     explicit SocketGuard(int descriptor = -1) noexcept : descriptor_(descriptor) {}
@@ -275,15 +482,6 @@ std::string hexDigest(X509* certificate) {
     return result;
 }
 
-std::string hostHeader(const MoonlightTransportRequest& request) {
-    std::string value = request.serverName().empty() ? request.connectAddress() :
-        request.serverName();
-    if (value.find(':') != std::string::npos && value.front() != '[') {
-        value = '[' + value + ']';
-    }
-    return value;
-}
-
 std::string requestTarget(const MoonlightTransportRequest& request) {
     const std::string& url = request.url();
     const std::size_t scheme = url.find("://");
@@ -316,6 +514,7 @@ public:
         std::chrono::steady_clock::time_point deadline,
         const CancellationProbe& cancellationProbe) override {
         MoonlightTransportOutcome outcome;
+        ScopedSigpipeBlocker sigpipeBlocker;
         outcome.stage = MoonlightTransportStage::Dns;
         if (cancelled(cancellationProbe)) {
             outcome.error = MoonlightTransportError::Cancelled;
@@ -326,26 +525,32 @@ public:
             return outcome;
         }
 
-        addrinfo hints{};
-        hints.ai_socktype = SOCK_STREAM;
-        hints.ai_family = request.family() == MoonlightHostAddressFamily::Ipv4 ? AF_INET :
-            request.family() == MoonlightHostAddressFamily::Ipv6 ? AF_INET6 : AF_UNSPEC;
         const std::string port = std::to_string(request.port());
-        addrinfo* rawAddresses = nullptr;
-        if (::getaddrinfo(request.connectAddress().c_str(), port.c_str(), &hints,
-                          &rawAddresses) != 0 || rawAddresses == nullptr) {
+        std::vector<ResolvedAddress> addresses;
+        const WaitResult resolve = resolveAddresses(
+            request.connectAddress(), port, request.family(), deadline,
+            cancellationProbe, addresses);
+        if (resolve == WaitResult::Cancelled) {
+            outcome.error = MoonlightTransportError::Cancelled;
+            return outcome;
+        }
+        if (resolve == WaitResult::Timeout) {
+            outcome.error = MoonlightTransportError::Timeout;
+            return outcome;
+        }
+        if (resolve != WaitResult::Ready) {
             outcome.error = MoonlightTransportError::DnsFailure;
             return outcome;
         }
-        std::unique_ptr<addrinfo, decltype(&freeaddrinfo)> addresses(rawAddresses, freeaddrinfo);
         SocketGuard socket;
         outcome.stage = MoonlightTransportStage::Connect;
-        for (addrinfo* address = addresses.get(); address != nullptr; address = address->ai_next) {
-            SocketGuard candidate(::socket(address->ai_family, address->ai_socktype,
-                                            address->ai_protocol));
+        for (const ResolvedAddress& address : addresses) {
+            SocketGuard candidate(::socket(address.family, address.socktype,
+                                            address.protocol));
             if (candidate.get() < 0 || !setNonBlocking(candidate.get())) { continue; }
-            const int connectResult = ::connect(candidate.get(), address->ai_addr,
-                                                address->ai_addrlen);
+            const int connectResult = ::connect(
+                candidate.get(), reinterpret_cast<const sockaddr*>(&address.storage),
+                address.length);
             if (connectResult == 0) {
                 socket = std::move(candidate);
                 break;
@@ -421,7 +626,14 @@ public:
                 outcome.error = MoonlightTransportError::TlsVersionFailure;
                 return outcome;
             }
-            (void)SSL_set_tlsext_host_name(ssl.get(), request.serverName().c_str());
+            const auto tlsServerName =
+                moonlightTlsServerName(request.connectAddress());
+            if (tlsServerName.has_value() &&
+                SSL_set_tlsext_host_name(
+                    ssl.get(), tlsServerName->c_str()) != 1) {
+                outcome.error = MoonlightTransportError::TlsVersionFailure;
+                return outcome;
+            }
             for (;;) {
                 const int result = SSL_connect(ssl.get());
                 if (result == 1) { break; }
@@ -457,8 +669,12 @@ public:
         }
 
         outcome.stage = MoonlightTransportStage::Http;
-        std::string requestText = "GET " + requestTarget(request) + " HTTP/1.1\r\nHost: " +
-            hostHeader(request) + "\r\nAccept: application/xml, */*\r\nConnection: close\r\n\r\n";
+        std::string requestText;
+        if (!buildMoonlightHttp11GetRequest(request.connectAddress(), request.port(),
+                                            requestTarget(request), requestText)) {
+            outcome.error = MoonlightTransportError::ProtocolFailure;
+            return outcome;
+        }
         StringCleanser requestTextCleanser(requestText);
         std::size_t sent = 0;
         while (sent < requestText.size()) {
@@ -491,9 +707,13 @@ public:
                     return outcome;
                 }
             } else {
+                int sendFlags = 0;
+#if defined(MSG_NOSIGNAL)
+                sendFlags |= MSG_NOSIGNAL;
+#endif
                 count = static_cast<int>(::send(socket.get(), requestText.data() + sent,
                                                 std::min<std::size_t>(requestText.size() - sent,
-                                                                      16384U), 0));
+                                                                      16384U), sendFlags));
                 if (count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
                     const WaitResult wait = waitForSocket(socket.get(), POLLOUT, deadline,
                                                            cancellationProbe);
@@ -665,12 +885,26 @@ public:
         }
         const auto iterator = fingerprints_.find(operation->second);
         if (iterator == fingerprints_.end()) {
-            fingerprints_[operation->second] = candidate.certificateSha256;
+            try {
+                FingerprintEntry entry;
+                entry.value = candidate.certificateSha256;
+                entry.provisionalKey = key;
+                fingerprints_.emplace(operation->second, std::move(entry));
+            } catch (...) {
+                result.decision = MoonlightTrustDecision::Unavailable;
+                return result;
+            }
             result.decision = MoonlightTrustDecision::Accept;
             result.change = MoonlightTrustChange::FirstUse;
-        } else if (iterator->second == candidate.certificateSha256) {
+        } else if (iterator->second.value == candidate.certificateSha256 &&
+                   (!iterator->second.provisionalKey.has_value() ||
+                    *iterator->second.provisionalKey == key)) {
             result.decision = MoonlightTrustDecision::Accept;
-            result.change = MoonlightTrustChange::Matched;
+            result.change = iterator->second.provisionalKey.has_value() ?
+                MoonlightTrustChange::FirstUse : MoonlightTrustChange::Matched;
+        } else if (iterator->second.provisionalKey.has_value()) {
+            result.decision = MoonlightTrustDecision::Stale;
+            result.change = MoonlightTrustChange::Unknown;
         } else {
             result.decision = MoonlightTrustDecision::Reject;
             result.change = MoonlightTrustChange::Changed;
@@ -685,8 +919,41 @@ public:
     void end(const MoonlightPairingOperationKey& key) noexcept {
         try {
             std::lock_guard<std::mutex> lock(mutex_);
-            operations_.erase(key);
+            const auto operation = operations_.find(key);
+            if (operation != operations_.end()) {
+                const auto fingerprint = fingerprints_.find(operation->second);
+                if (fingerprint != fingerprints_.end() &&
+                    fingerprint->second.provisionalKey.has_value() &&
+                    *fingerprint->second.provisionalKey == key) {
+                    fingerprints_.erase(fingerprint);
+                }
+                operations_.erase(operation);
+            }
         } catch (...) {
+        }
+    }
+
+    bool commit(const MoonlightPairingOperationKey& key) noexcept {
+        try {
+            std::lock_guard<std::mutex> lock(mutex_);
+            const auto operation = operations_.find(key);
+            if (operation == operations_.end()) {
+                return false;
+            }
+            const auto fingerprint = fingerprints_.find(operation->second);
+            if (fingerprint == fingerprints_.end()) {
+                return false;
+            }
+            if (!fingerprint->second.provisionalKey.has_value()) {
+                return true;
+            }
+            if (!(*fingerprint->second.provisionalKey == key)) {
+                return false;
+            }
+            fingerprint->second.provisionalKey.reset();
+            return true;
+        } catch (...) {
+            return false;
         }
     }
 
@@ -698,14 +965,40 @@ public:
         }
         try {
             std::lock_guard<std::mutex> lock(mutex_);
-            fingerprints_[HostKey{owner, host}] = fingerprint;
+            fingerprints_[HostKey{owner, host}] =
+                FingerprintEntry{fingerprint, std::nullopt};
+        } catch (...) {
+        }
+    }
+
+    void forget(const std::string& owner, const std::string& host) noexcept {
+        if (owner.empty() || host.empty()) {
+            return;
+        }
+        try {
+            const HostKey key{owner, host};
+            std::lock_guard<std::mutex> lock(mutex_);
+            fingerprints_.erase(key);
+            for (auto iterator = operations_.begin();
+                 iterator != operations_.end();) {
+                if (iterator->second == key) {
+                    iterator = operations_.erase(iterator);
+                } else {
+                    ++iterator;
+                }
+            }
         } catch (...) {
         }
     }
 
 private:
+    struct FingerprintEntry final {
+        std::string value;
+        std::optional<MoonlightPairingOperationKey> provisionalKey;
+    };
+
     mutable std::mutex mutex_;
-    std::unordered_map<HostKey, std::string, HostKeyHash> fingerprints_;
+    std::unordered_map<HostKey, FingerprintEntry, HostKeyHash> fingerprints_;
     std::unordered_map<MoonlightPairingOperationKey, HostKey, PairingKeyHash>
         operations_;
 };
@@ -770,6 +1063,28 @@ public:
             std::lock_guard<std::mutex> lock(mutex_);
             restored_.insert(HostKey{owner, host});
         } catch (...) {
+        }
+    }
+
+    void forget(const std::string& owner, const std::string& host) noexcept {
+        if (owner.empty() || host.empty()) {
+            return;
+        }
+        try {
+            const HostKey key{owner, host};
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                paired_.erase(key);
+                repairs_.erase(key);
+                restored_.erase(key);
+            }
+            if (bindings_ != nullptr) {
+                bindings_->forgetHost(owner, host);
+            }
+        } catch (...) {
+            if (bindings_ != nullptr) {
+                bindings_->forgetHost(owner, host);
+            }
         }
     }
 
@@ -941,6 +1256,43 @@ MoonlightBridgeCode mapPairCode(MoonlightPairingCode code) noexcept {
     return MoonlightBridgeCode::ProtocolFailure;
 }
 
+MoonlightBridgeCode mapHostCode(MoonlightHostError code) noexcept {
+    switch (code) {
+    case MoonlightHostError::None: return MoonlightBridgeCode::Ok;
+    case MoonlightHostError::InvalidRequest:
+    case MoonlightHostError::InvalidEndpoint:
+    case MoonlightHostError::InvalidPort:
+    case MoonlightHostError::InvalidQuery:
+    case MoonlightHostError::UrlTooLong: return MoonlightBridgeCode::InvalidArgument;
+    case MoonlightHostError::RequestBusy: return MoonlightBridgeCode::Busy;
+    case MoonlightHostError::ShuttingDown: return MoonlightBridgeCode::ShuttingDown;
+    case MoonlightHostError::Cancelled: return MoonlightBridgeCode::Cancelled;
+    case MoonlightHostError::StaleRequest: return MoonlightBridgeCode::Stale;
+    case MoonlightHostError::DeadlineExceeded: return MoonlightBridgeCode::DeadlineExceeded;
+    case MoonlightHostError::DnsFailure:
+    case MoonlightHostError::ConnectFailure:
+    case MoonlightHostError::TlsVersionFailure:
+    case MoonlightHostError::TlsChainFailure:
+    case MoonlightHostError::TransportFailure: return MoonlightBridgeCode::TransportFailure;
+    case MoonlightHostError::HostBusy: return MoonlightBridgeCode::HostBusy;
+    case MoonlightHostError::ActionUnknown: return MoonlightBridgeCode::OutcomeUnknown;
+    case MoonlightHostError::HttpUnauthorized:
+    case MoonlightHostError::HttpNotFound:
+    case MoonlightHostError::HttpFailure:
+    case MoonlightHostError::TrustConflict:
+    case MoonlightHostError::BodyTooLarge:
+    case MoonlightHostError::MalformedXml:
+    case MoonlightHostError::XmlBudgetExceeded:
+    case MoonlightHostError::XmlStatusRejected:
+    case MoonlightHostError::MissingRequiredField:
+    case MoonlightHostError::InvalidField:
+    case MoonlightHostError::DuplicateApp:
+    case MoonlightHostError::InternalFailure:
+        return MoonlightBridgeCode::ProtocolFailure;
+    }
+    return MoonlightBridgeCode::ProtocolFailure;
+}
+
 MoonlightBridgeCode mapControlCode(MoonlightHostControlCode code) noexcept {
     switch (code) {
     case MoonlightHostControlCode::Ok: return MoonlightBridgeCode::Ok;
@@ -1019,9 +1371,8 @@ struct ProductRuntimeComponents final {
           tlsBinding(std::make_shared<ProductTlsBindingPort>(bindings)),
           access(std::make_shared<ProductAccessPort>(
               bindings, commit, identity, installations, installationMutex)),
-          hostApi(std::make_shared<MoonlightHostApi>(transport, []() {
-              return std::to_string(monotonicMilliseconds());
-          })),
+          hostApi(std::make_shared<MoonlightHostApi>(
+              transport, generateMoonlightRequestUuid)),
           pairing(std::make_shared<MoonlightPairingManager>(
               hostApi, identity, trust, tlsBinding, commit,
               [](std::uint8_t* data, std::size_t size) {
@@ -1044,6 +1395,31 @@ struct ProductRuntimeComponents final {
     std::shared_ptr<MoonlightHostControl> control;
 };
 
+class ProductLaunchReservation final {
+public:
+    ProductLaunchReservation(const MoonlightBridgeRequestKey& key,
+                             bool requested) noexcept
+        : key_(key), held_(requested &&
+            MoonlightProductStreamingRuntime::process().reserveLaunch(key)) {}
+
+    ~ProductLaunchReservation() {
+        if (held_) {
+            (void)MoonlightProductStreamingRuntime::process()
+                .releaseLaunchReservation(key_);
+        }
+    }
+
+    ProductLaunchReservation(const ProductLaunchReservation&) = delete;
+    ProductLaunchReservation& operator=(const ProductLaunchReservation&) = delete;
+
+    bool held() const noexcept { return held_; }
+    void consume() noexcept { held_ = false; }
+
+private:
+    MoonlightBridgeRequestKey key_ {};
+    bool held_ = false;
+};
+
 class ProductRuntime final : public MoonlightNativeRuntimePort {
 public:
     ProductRuntime() = default;
@@ -1058,7 +1434,8 @@ public:
         result.operation = request.operation;
         result.key = request.key;
         result.observedAtMs = monotonicMilliseconds();
-        if (cancelled(cancellationProbe)) {
+        const bool isUnpair = request.operation == MoonlightBridgeOperation::Unpair;
+        if (!isUnpair && cancelled(cancellationProbe)) {
             result.code = MoonlightBridgeCode::Cancelled;
             result.terminalStage = MoonlightBridgeTerminalStage::Cancelled;
             return result;
@@ -1073,7 +1450,8 @@ public:
         if (components == nullptr ||
             (request.operation == MoonlightBridgeOperation::Pair &&
              !capability.pairingReady) ||
-            (request.operation != MoonlightBridgeOperation::Pair &&
+            (isUnpair && !capability.transportReady) ||
+            (!isUnpair && request.operation != MoonlightBridgeOperation::Pair &&
              !capability.hostControlReady)) {
             result.code = MoonlightBridgeCode::RuntimeProofRequired;
             result.terminalStage = MoonlightBridgeTerminalStage::Failed;
@@ -1082,6 +1460,10 @@ public:
             return result;
         }
         restoreLocalRuntimeState(request, *components);
+        if (isUnpair) {
+            return executeUnpair(
+                std::move(request), cancellationProbe, *components);
+        }
         if (cancelled(cancellationProbe)) {
             result.code = MoonlightBridgeCode::Cancelled;
             result.terminalStage = MoonlightBridgeTerminalStage::Cancelled;
@@ -1215,6 +1597,47 @@ private:
         result.operation = request.operation;
         result.key = request.key;
         result.observedAtMs = monotonicMilliseconds();
+        const auto pairingStarted = std::chrono::steady_clock::now();
+        MoonlightHostCall serverInfoCall;
+        serverInfoCall.key = hostKey(request.key);
+        serverInfoCall.operation = MoonlightHostOperation::ServerInfo;
+        serverInfoCall.endpoint = request.endpoint;
+        serverInfoCall.timeout = std::min(
+            request.timeout, MoonlightHostLimits::kMaxStandardTimeout);
+        const MoonlightHostResult serverInfo =
+            components.hostApi->execute(serverInfoCall);
+        const MoonlightHostDiagnostic* serverInfoDiagnostic =
+            serverInfo.diagnostics.empty() ? nullptr : &serverInfo.diagnostics.back();
+        result.diagnostics.push_back({
+            "serverinfo", serverInfo.ok() ? "ok" : "serverinfo_failed",
+            serverInfo.httpStatus, serverInfo.xmlStatus.value_or(0),
+            serverInfo.diagnostics.size(),
+            serverInfoDiagnostic == nullptr ? 0U : serverInfoDiagnostic->byteCount, 0U});
+        const bool serverIdentityMatches = serverInfo.ok() &&
+            serverInfo.serverInfo.has_value() &&
+            serverInfo.serverInfo->uniqueId == request.serverUuid &&
+            serverInfo.serverInfo->appVersionParts[0] > 0;
+        if (!serverIdentityMatches) {
+            result.code = serverInfo.ok() ? MoonlightBridgeCode::ProtocolFailure :
+                mapHostCode(serverInfo.error);
+            result.terminalStage = result.code == MoonlightBridgeCode::Cancelled ?
+                MoonlightBridgeTerminalStage::Cancelled :
+                MoonlightBridgeTerminalStage::Failed;
+            result.preflightTruth = MoonlightBridgeTruth::Failed;
+            return result;
+        }
+        const auto preflightElapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - pairingStarted);
+        if (preflightElapsed >= request.timeout ||
+            request.timeout - preflightElapsed < MoonlightHostLimits::kMinTimeout) {
+            result.code = MoonlightBridgeCode::DeadlineExceeded;
+            result.terminalStage = MoonlightBridgeTerminalStage::Failed;
+            result.preflightTruth = MoonlightBridgeTruth::Failed;
+            return result;
+        }
+        request.timeout -= preflightElapsed;
+        const std::uint32_t serverMajorVersion =
+            serverInfo.serverInfo->appVersionParts[0];
         {
             std::lock_guard<std::mutex> lock(*components.installationMutex);
             (*components.installations)[request.ownerScopeFingerprint] =
@@ -1239,7 +1662,7 @@ private:
             pairingRequest.hostId = request.hostId;
             pairingRequest.serverUuid = request.serverUuid;
             pairingRequest.hostLabel = request.hostId;
-            pairingRequest.serverMajorVersion = 7;
+            pairingRequest.serverMajorVersion = serverMajorVersion;
             pairingRequest.timeout = request.timeout;
             pairingRequest.allowLegacySha1 = request.allowLegacySha1;
             pairingRequest.pin = MoonlightSecureBuffer(std::move(request.pin));
@@ -1248,6 +1671,25 @@ private:
             } catch (...) {
                 source.code = MoonlightPairingCode::ProtocolFailure;
             }
+        }
+        if (source.ok() && !components.trust->commit(exactPairingKey)) {
+            components.commit->forget(
+                request.ownerScopeFingerprint, request.hostId);
+            components.bindings->clearTransient(hostKey(request.key));
+            MoonlightHostCall cleanup;
+            cleanup.key = hostKey(request.key);
+            cleanup.operation = MoonlightHostOperation::Unpair;
+            cleanup.endpoint = request.endpoint;
+            cleanup.timeout = std::min(
+                request.timeout, MoonlightHostLimits::kDefaultTimeout);
+            const MoonlightHostResult cleanupResult =
+                components.hostApi->execute(cleanup);
+            source.remoteCleanup = cleanupResult.ok() ?
+                MoonlightRemoteCleanup::Confirmed :
+                cleanupResult.mutationOutcomeUnknown ?
+                    MoonlightRemoteCleanup::OutcomeUnknown :
+                    MoonlightRemoteCleanup::Failed;
+            source.code = MoonlightPairingCode::CommitFailed;
         }
         components.trust->end(exactPairingKey);
         if (!source.ok()) {
@@ -1275,6 +1717,84 @@ private:
         return result;
     }
 
+    static void revokeLocalPairingState(
+        const MoonlightBridgeRequest& request,
+        ProductRuntimeComponents& components) noexcept {
+        components.bindings->clearTransient(hostKey(request.key));
+        components.trust->forget(
+            request.ownerScopeFingerprint, request.hostId);
+        components.commit->forget(
+            request.ownerScopeFingerprint, request.hostId);
+    }
+
+    static MoonlightBridgeResult executeUnpair(
+        MoonlightBridgeRequest request,
+        const CancellationProbe& cancellationProbe,
+        ProductRuntimeComponents& components) {
+        MoonlightBridgeResult result;
+        result.operation = request.operation;
+        result.key = request.key;
+        result.observedAtMs = monotonicMilliseconds();
+
+        // A user trust rejection is authoritative locally. Revoke every
+        // in-process projection before the best-effort Sunshine request so a
+        // timeout, cancellation, or malformed response cannot leave this host
+        // authorized for catalog/launch in the current process.
+        revokeLocalPairingState(request, components);
+        result.preflightTruth = MoonlightBridgeTruth::Confirmed;
+        result.postconditionTruth = MoonlightBridgeTruth::Confirmed;
+
+        if (cancelled(cancellationProbe)) {
+            result.code = MoonlightBridgeCode::Cancelled;
+            result.terminalStage = MoonlightBridgeTerminalStage::Cancelled;
+            result.actionTruth = MoonlightBridgeTruth::NotAttempted;
+            result.diagnostics.push_back(
+                {"unpair", "cancelled", 0, 0, 0, 0, 0});
+            return result;
+        }
+
+        MoonlightHostCall call;
+        call.key = hostKey(request.key);
+        call.operation = MoonlightHostOperation::Unpair;
+        call.endpoint = request.endpoint;
+        call.timeout = request.timeout;
+        const MoonlightHostResult source = components.hostApi->execute(call);
+        result.mutationMayHaveBeenSent = source.mutationOutcomeUnknown ||
+            std::any_of(source.diagnostics.begin(), source.diagnostics.end(),
+                [](const MoonlightHostDiagnostic& diagnostic) {
+                    return diagnostic.sendState !=
+                        MoonlightTransportSendState::NotSent;
+                });
+        const bool confirmed = source.ok() && source.action.has_value() &&
+            source.action->accepted;
+        if (confirmed) {
+            result.code = MoonlightBridgeCode::Ok;
+            result.terminalStage = MoonlightBridgeTerminalStage::Complete;
+            result.actionTruth = MoonlightBridgeTruth::Confirmed;
+        } else {
+            result.code = source.mutationOutcomeUnknown ?
+                MoonlightBridgeCode::OutcomeUnknown : mapHostCode(source.error);
+            if (source.ok()) {
+                result.code = MoonlightBridgeCode::ProtocolFailure;
+            }
+            result.terminalStage = result.code == MoonlightBridgeCode::Cancelled ?
+                MoonlightBridgeTerminalStage::Cancelled :
+                MoonlightBridgeTerminalStage::Failed;
+            result.actionTruth = source.mutationOutcomeUnknown ?
+                MoonlightBridgeTruth::Unknown : MoonlightBridgeTruth::Failed;
+        }
+        const MoonlightHostDiagnostic* diagnostic =
+            source.diagnostics.empty() ? nullptr : &source.diagnostics.back();
+        result.diagnostics.push_back({
+            "unpair",
+            confirmed ? "ok" : source.mutationOutcomeUnknown ?
+                "outcome_unknown" : "unpair_failed",
+            source.httpStatus, source.xmlStatus.value_or(0),
+            source.diagnostics.size(),
+            diagnostic == nullptr ? 0U : diagnostic->byteCount, 0U});
+        return result;
+    }
+
     static MoonlightBridgeResult executeControl(
         MoonlightBridgeRequest request,
         const CancellationProbe& cancellationProbe,
@@ -1299,10 +1819,13 @@ private:
         std::array<std::uint8_t, 16U> nativeRiKey {};
         std::int32_t nativeRiKeyId = 0;
         bool launchMaterialReady = false;
+        const bool launchOperation =
+            request.operation == MoonlightBridgeOperation::Launch ||
+            request.operation == MoonlightBridgeOperation::Resume;
+        ProductLaunchReservation launchReservation(request.key, launchOperation);
         MoonlightBridgeLaunchConfiguration effectiveLaunchConfiguration =
             request.launchConfiguration;
-        if (request.operation == MoonlightBridgeOperation::Launch ||
-            request.operation == MoonlightBridgeOperation::Resume) {
+        if (launchOperation) {
             // The product mapper owns one stable slot and supports physical /
             // virtual hot handoff. Match Moonlight's non-multi-controller mode:
             // reserve slot 0 at launch and keep it persistent across handoff.
@@ -1312,6 +1835,9 @@ private:
                 kMoonlightProductControllerBitmap;
             effectiveLaunchConfiguration.persistGamepads =
                 kMoonlightProductPersistGamepad;
+            if (!launchReservation.held()) {
+                source.code = MoonlightHostControlCode::Busy;
+            }
         }
         try {
             switch (request.operation) {
@@ -1331,6 +1857,9 @@ private:
             }
             case MoonlightBridgeOperation::Launch:
             case MoonlightBridgeOperation::Resume: {
+                if (!launchReservation.held()) {
+                    break;
+                }
                 std::array<std::uint8_t, sizeof(nativeRiKeyId)> idBytes {};
                 launchMaterialReady = RAND_bytes(
                     nativeRiKey.data(), static_cast<int>(nativeRiKey.size())) == 1 &&
@@ -1380,12 +1909,18 @@ private:
                 break;
             }
             case MoonlightBridgeOperation::Pair:
+            case MoonlightBridgeOperation::Unpair:
                 break;
             }
         } catch (...) {
             source.code = MoonlightHostControlCode::ProtocolFailure;
         }
-        if (launchMaterialReady && source.ok() &&
+        // The reservation exists before Host Control can mutate the remote
+        // host. Owner cancellation may remove it while the action is in flight;
+        // stageLaunch() then fails closed instead of overwriting another staged
+        // or active session.
+        const bool cancelledBeforeStage = cancelled(cancellationProbe);
+        if (launchMaterialReady && source.ok() && !cancelledBeforeStage &&
             source.rtspSessionUrl.has_value() &&
             source.sessionServerInfo.has_value() &&
             source.sessionAddress.has_value() &&
@@ -1408,7 +1943,21 @@ private:
                 source.postconditionTruth = MoonlightHostControlTruth::Unknown;
                 source.mutationMayHaveBeenSent = true;
                 source.rtspSessionUrl.reset();
+            } else {
+                launchReservation.consume();
             }
+        }
+        if (launchMaterialReady && cancelled(cancellationProbe)) {
+            const bool remoteMayBeRunning =
+                source.ok() || source.mutationMayHaveBeenSent;
+            (void)MoonlightProductStreamingRuntime::process().cancelOwner(
+                request.key.ownerToken);
+            source.code = MoonlightHostControlCode::Cancelled;
+            source.postconditionTruth = remoteMayBeRunning ?
+                MoonlightHostControlTruth::Unknown :
+                MoonlightHostControlTruth::Failed;
+            source.mutationMayHaveBeenSent = remoteMayBeRunning;
+            source.rtspSessionUrl.reset();
         }
         OPENSSL_cleanse(nativeRiKey.data(), nativeRiKey.size());
         nativeRiKeyId = 0;

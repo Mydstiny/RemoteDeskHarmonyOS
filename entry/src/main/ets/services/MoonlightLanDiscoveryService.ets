@@ -17,6 +17,7 @@ const MAX_OWNER_ID_LENGTH: number = 128;
 const MAX_TXT_ATTRIBUTES: number = 32;
 const MAX_TXT_KEY_LENGTH: number = 128;
 const MAX_TXT_VALUE_LENGTH: number = 1024;
+const MAX_RESOLVE_ATTEMPTS_PER_SERVICE: number = 2;
 
 export type MoonlightLanAddressFamily = 'ipv4' | 'ipv6' | 'hostname';
 
@@ -479,10 +480,23 @@ export class MoonlightLanDiscoveryService {
       return;
     }
     this.acceptedKeys.add(serviceKey);
+    this.resolveService(serviceInfo, fence, runToken, candidateCallback, 1);
+  }
+
+  private resolveService(serviceInfo: mdns.LocalServiceInfo,
+    fence: MoonlightLanDiscoveryFence, runToken: number,
+    candidateCallback: (candidate: MoonlightLanDiscoveryCandidate) => void,
+    attempt: number): void {
+    if (!this.isCurrent(fence, runToken)) {
+      return;
+    }
     let resolvePromise: Promise<mdns.LocalServiceInfo>;
     try {
       resolvePromise = this.mdnsPort.resolveLocalService(this.context, serviceInfo);
     } catch (_error) {
+      if (attempt < MAX_RESOLVE_ATTEMPTS_PER_SERVICE) {
+        this.resolveService(serviceInfo, fence, runToken, candidateCallback, attempt + 1);
+      }
       return;
     }
     resolvePromise.then((resolved: mdns.LocalServiceInfo): void => {
@@ -506,8 +520,10 @@ export class MoonlightLanDiscoveryService {
         // A consumer callback cannot break mDNS cleanup or the active scan.
       }
     }).catch((_error: Error): void => {
-      // Discovery is best effort.  A failed resolve consumes its bounded slot
-      // but never publishes an incomplete host.
+      if (this.isCurrent(fence, runToken) &&
+          attempt < MAX_RESOLVE_ATTEMPTS_PER_SERVICE) {
+        this.resolveService(serviceInfo, fence, runToken, candidateCallback, attempt + 1);
+      }
     });
   }
 }

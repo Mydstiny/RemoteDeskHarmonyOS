@@ -412,6 +412,8 @@ bool parseOperation(const std::string& value, MoonlightBridgeOperation& operatio
         operation = MoonlightBridgeOperation::Resume;
     } else if (value == "quit") {
         operation = MoonlightBridgeOperation::Quit;
+    } else if (value == "unpair") {
+        operation = MoonlightBridgeOperation::Unpair;
     } else {
         return false;
     }
@@ -1094,6 +1096,7 @@ napi_value cancelOwner(napi_env env, napi_callback_info info) {
         }
         (void)state->bridge->cancelOwner(ownerToken);
     }
+    count += MoonlightProductStreamingRuntime::process().cancelOwner(ownerToken);
     napi_value result = nullptr;
     (void)napi_create_double(env, static_cast<double>(count), &result);
     return result;

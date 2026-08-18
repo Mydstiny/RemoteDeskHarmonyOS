@@ -94,11 +94,19 @@ class MoonlightProductStreamingRuntime final {
 public:
     static MoonlightProductStreamingRuntime& process() noexcept;
 
+    // Reserve the process-wide Moonlight streaming slot before dispatching a
+    // remote launch/resume mutation. This prevents a second host mutation from
+    // succeeding only to discover afterwards that its local launch lease
+    // cannot be represented.
+    bool reserveLaunch(const MoonlightBridgeRequestKey& launchKey) noexcept;
+    bool releaseLaunchReservation(
+        const MoonlightBridgeRequestKey& launchKey) noexcept;
     bool stageLaunch(MoonlightProductLaunchStage stage) noexcept;
     MoonlightProductStreamStartResult start(
         MoonlightProductStreamStartRequest request) noexcept;
     MoonlightProductStreamSnapshot snapshot(
         const MoonlightBridgeRequestKey& launchKey) noexcept;
+    std::size_t cancelOwner(std::uint64_t ownerToken) noexcept;
     bool requestStop(const MoonlightBridgeRequestKey& launchKey) noexcept;
     bool stop(const MoonlightBridgeRequestKey& launchKey) noexcept;
     bool sendKey(const MoonlightBridgeRequestKey& launchKey,

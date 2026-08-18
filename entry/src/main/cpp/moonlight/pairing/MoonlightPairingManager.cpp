@@ -4,6 +4,7 @@
 #include <openssl/bio.h>
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
+#include <openssl/pem.h>
 #include <openssl/x509.h>
 
 #include <algorithm>
@@ -383,34 +384,95 @@ std::string asn1TimeText(const ASN1_TIME* time) {
 }
 
 struct ParsedCertificate final {
-    ~ParsedCertificate() { secureWipe(signature.data(), signature.size()); }
+    ~ParsedCertificate() {
+        secureWipe(signature.data(), signature.size());
+        secureWipe(canonicalDer.data(), canonicalDer.size());
+    }
 
     std::unique_ptr<X509, decltype(&X509_free)> certificate{nullptr, X509_free};
+    // Sunshine's plaincert field contains a hex-encoded PEM certificate while
+    // some compatible hosts return DER. Normalize either strict wire shape to
+    // one exact DER leaf before TLS pinning and fingerprinting.
+    std::vector<std::uint8_t> canonicalDer;
     std::vector<std::uint8_t> signature;
     MoonlightTrustCandidate candidate;
 };
 
-bool parseCertificate(const std::vector<std::uint8_t>& der, const std::string& hostId,
-                      const std::string& hostLabel, std::uint64_t wallClockMs,
-                      ParsedCertificate& output) {
-    if (der.empty() || der.size() > kMaxCertificateBytes ||
-        der.size() > static_cast<std::size_t>(std::numeric_limits<long>::max())) {
+bool isCertificateTrailingWhitespace(unsigned char value) noexcept {
+    return value == static_cast<unsigned char>(' ') ||
+        value == static_cast<unsigned char>('\t') ||
+        value == static_cast<unsigned char>('\r') ||
+        value == static_cast<unsigned char>('\n');
+}
+
+bool decodeCertificate(const std::vector<std::uint8_t>& encoded,
+                       std::unique_ptr<X509, decltype(&X509_free)>& output,
+                       bool& sourceWasDer) {
+    sourceWasDer = false;
+    if (encoded.empty() || encoded.size() > kMaxCertificateBytes ||
+        encoded.size() > static_cast<std::size_t>(std::numeric_limits<long>::max()) ||
+        encoded.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
         return false;
     }
-    const unsigned char* cursor = der.data();
-    X509* rawCertificate = d2i_X509(nullptr, &cursor, static_cast<long>(der.size()));
-    if (rawCertificate == nullptr || cursor != der.data() + der.size()) {
-        X509_free(rawCertificate);
+
+    const unsigned char* derCursor = encoded.data();
+    X509* rawCertificate = d2i_X509(
+        nullptr, &derCursor, static_cast<long>(encoded.size()));
+    if (rawCertificate != nullptr && derCursor == encoded.data() + encoded.size()) {
+        output.reset(rawCertificate);
+        sourceWasDer = true;
+        return true;
+    }
+    X509_free(rawCertificate);
+
+    BIO* rawBio = BIO_new_mem_buf(encoded.data(), static_cast<int>(encoded.size()));
+    if (rawBio == nullptr) {
+        return false;
+    }
+    const std::unique_ptr<BIO, decltype(&BIO_free)> bio(rawBio, BIO_free);
+    rawCertificate = PEM_read_bio_X509(bio.get(), nullptr, nullptr, nullptr);
+    if (rawCertificate == nullptr) {
         return false;
     }
     std::unique_ptr<X509, decltype(&X509_free)> certificate(rawCertificate, X509_free);
-    const int canonicalSize = i2d_X509(certificate.get(), nullptr);
-    if (canonicalSize <= 0 || static_cast<std::size_t>(canonicalSize) != der.size()) {
+
+    // PEM_read_bio_X509() may leave line endings after the END marker. Permit
+    // only ASCII whitespace so appended certificates or arbitrary bytes can
+    // never be silently accepted as part of the pin.
+    std::array<unsigned char, 256U> trailing{};
+    for (;;) {
+        const int count = BIO_read(bio.get(), trailing.data(),
+                                   static_cast<int>(trailing.size()));
+        if (count <= 0) {
+            break;
+        }
+        if (!std::all_of(trailing.begin(), trailing.begin() + count,
+                         isCertificateTrailingWhitespace)) {
+            return false;
+        }
+    }
+    output = std::move(certificate);
+    return true;
+}
+
+bool parseCertificate(const std::vector<std::uint8_t>& encoded, const std::string& hostId,
+                      const std::string& hostLabel, std::uint64_t wallClockMs,
+                      ParsedCertificate& output) {
+    std::unique_ptr<X509, decltype(&X509_free)> certificate(nullptr, X509_free);
+    bool sourceWasDer = false;
+    if (!decodeCertificate(encoded, certificate, sourceWasDer)) {
         return false;
     }
-    std::vector<std::uint8_t> canonical(der.size(), 0U);
+    const int canonicalSize = i2d_X509(certificate.get(), nullptr);
+    if (canonicalSize <= 0 ||
+        static_cast<std::size_t>(canonicalSize) > kMaxCertificateBytes) {
+        return false;
+    }
+    std::vector<std::uint8_t> canonical(
+        static_cast<std::size_t>(canonicalSize), 0U);
     unsigned char* canonicalCursor = canonical.data();
-    if (i2d_X509(certificate.get(), &canonicalCursor) != canonicalSize || canonical != der) {
+    if (i2d_X509(certificate.get(), &canonicalCursor) != canonicalSize ||
+        (sourceWasDer && canonical != encoded)) {
         return false;
     }
 
@@ -427,15 +489,12 @@ bool parseCertificate(const std::vector<std::uint8_t>& der, const std::string& h
         (keyType != EVP_PKEY_RSA && keyType != EVP_PKEY_EC) || keyBits <= 0) {
         return false;
     }
-    std::time_t now = static_cast<std::time_t>(wallClockMs / 1000U);
-    const int notBefore = X509_cmp_time(X509_get0_notBefore(certificate.get()), &now);
-    const int notAfter = X509_cmp_time(X509_get0_notAfter(certificate.get()), &now);
-    if (notBefore == 0 || notAfter == 0 || notBefore > 0 || notAfter < 0) {
-        return false;
-    }
-    if (X509_verify(certificate.get(), publicKey.get()) != 1) {
-        return false;
-    }
+    // The pairing transcript proves possession of the leaf private key and
+    // the transport subsequently pins that exact leaf. Do not require the
+    // leaf to be self-signed or currently within its Web-PKI validity window;
+    // official Moonlight clients also permit Sunshine custom/expired pinned
+    // certificates here rather than treating them as public-CA identities.
+    static_cast<void>(wallClockMs);
 
     std::array<unsigned char, EVP_MAX_MD_SIZE> fingerprint {};
     unsigned int fingerprintSize = 0;
@@ -470,6 +529,7 @@ bool parseCertificate(const std::vector<std::uint8_t>& der, const std::string& h
 
     output.signature.assign(certificateSignature->data,
                             certificateSignature->data + certificateSignature->length);
+    output.canonicalDer = std::move(canonical);
     output.candidate.maskedHost = maskedHost(hostId);
     output.candidate.hostLabel = hostLabel;
     output.candidate.certificateSha256 = std::move(fingerprintText);
@@ -1040,11 +1100,11 @@ MoonlightPairingResult MoonlightPairingManager::execute(MoonlightPairingRequest 
         if (!certificateHexValid) {
             return finish(MoonlightPairingCode::CertificateInvalid, true);
         }
-        std::vector<std::uint8_t> serverCertificateDer(
+        std::vector<std::uint8_t> serverCertificateEncoded(
             serverCertificateBytes.data(),
             serverCertificateBytes.data() + serverCertificateBytes.size());
         ParsedCertificate serverCertificate;
-        if (!parseCertificate(serverCertificateDer, request.hostId, request.hostLabel,
+        if (!parseCertificate(serverCertificateEncoded, request.hostId, request.hostLabel,
                               impl->wallClock(),
                               serverCertificate)) {
             return finish(MoonlightPairingCode::CertificateInvalid, true);
@@ -1079,7 +1139,7 @@ MoonlightPairingResult MoonlightPairingManager::execute(MoonlightPairingRequest 
         MoonlightPairingPortCode bindCode = MoonlightPairingPortCode::Unavailable;
         try {
             bindCode = impl->tlsBindingPort->bind(
-                request.key, request.endpoint, serverCertificateDer,
+                request.key, request.endpoint, serverCertificate.canonicalDer,
                 serverCertificate.candidate.certificateSha256, deadline,
                 [active]() { return active->cancelled.load(std::memory_order_acquire); },
                 acquired.lease);

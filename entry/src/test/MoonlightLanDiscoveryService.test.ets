@@ -20,6 +20,7 @@ import {
   MoonlightHostOperationFence,
   createMoonlightHostOperationFence,
   moonlightHostOperationFenceEquals,
+  moonlightServerInfoProbeEndpoint,
   moonlightVerificationMatchesFence,
   parseMoonlightServerInfo
 } from '../main/ets/services/MoonlightLanProbeService';
@@ -100,6 +101,7 @@ class FakeMoonlightMdnsDiscovery implements MoonlightMdnsDiscovery {
 
 interface PendingResolve {
   resolve: (serviceInfo: mdns.LocalServiceInfo) => void;
+  reject: (reason: Error) => void;
 }
 
 class FakeMoonlightMdnsPort implements MoonlightLanMdnsPort {
@@ -120,13 +122,18 @@ class FakeMoonlightMdnsPort implements MoonlightLanMdnsPort {
   resolveLocalService(_context: common.Context,
     serviceInfo: mdns.LocalServiceInfo): Promise<mdns.LocalServiceInfo> {
     this.requests.push(serviceInfo);
-    return new Promise<mdns.LocalServiceInfo>((resolve: (value: mdns.LocalServiceInfo) => void): void => {
-      this.pending.push({ resolve: resolve });
+    return new Promise<mdns.LocalServiceInfo>((resolve: (value: mdns.LocalServiceInfo) => void,
+      reject: (reason: Error) => void): void => {
+      this.pending.push({ resolve: resolve, reject: reject });
     });
   }
 
   resolveAt(index: number, serviceInfo: mdns.LocalServiceInfo): void {
     this.pending[index].resolve(serviceInfo);
+  }
+
+  rejectAt(index: number): void {
+    this.pending[index].reject(new Error('transient resolve failure'));
   }
 }
 
@@ -196,6 +203,28 @@ export default function moonlightLanDiscoveryServiceTest(): void {
         expect(results[0].host).assertEqual('192.168.1.20');
         expect(results[0].family).assertEqual('ipv4');
         expect(results[0].port).assertEqual(47989);
+        service.stop();
+      });
+
+    it('retries_one_transient_mdns_resolve_failure_within_the_same_scan', 0,
+      async (): Promise<void> => {
+        const port: FakeMoonlightMdnsPort = new FakeMoonlightMdnsPort();
+        const results: Array<MoonlightLanDiscoveryCandidate> = [];
+        const service: MoonlightLanDiscoveryService = new MoonlightLanDiscoveryService(
+          undefined as common.Context, port);
+        service.start('owner-a', 5, (candidate: MoonlightLanDiscoveryCandidate): void => {
+          results.push(candidate);
+        });
+
+        port.discoveries[0].emitFound(serviceInfo('Gaming PC'));
+        port.rejectAt(0);
+        await settleMicrotasks();
+        expect(port.requests.length).assertEqual(2);
+        port.resolveAt(1, resolvedInfo('Gaming PC', '192.168.1.20', 47989, 'sunshine-1'));
+        await settleMicrotasks();
+
+        expect(results.length).assertEqual(1);
+        expect(results[0].serverUuid).assertEqual('sunshine-1');
         service.stop();
       });
 
@@ -324,6 +353,50 @@ export default function moonlightLanDiscoveryServiceTest(): void {
       expect(parseMoonlightServerInfo(oversizedBody, address, '') === null).assertTrue();
       expect(parseMoonlightServerInfo(
         '<root status_code="200"></root>', address, 'u'.repeat(257)) === null).assertTrue();
+    });
+
+    it('reads_official_serverinfo_pair_status_before_pairing_response_fallback', 0, (): void => {
+      const address: MoonlightAddress = {
+        host: '192.168.1.20', family: 'ipv4', port: 47989
+      };
+      const official = parseMoonlightServerInfo(
+        '<root status_code="200"><uniqueid>sunshine-1</uniqueid>' +
+        '<PairStatus>1</PairStatus></root>', address, 'sunshine-1');
+      expect(official === null).assertFalse();
+      if (official !== null) {
+        expect(official.paired).assertTrue();
+      }
+
+      const compatibility = parseMoonlightServerInfo(
+        '<root status_code="200"><uniqueid>sunshine-1</uniqueid>' +
+        '<paired>true</paired></root>', address, 'sunshine-1');
+      expect(compatibility === null).assertFalse();
+      if (compatibility !== null) {
+        expect(compatibility.paired).assertTrue();
+      }
+
+      const officialWins = parseMoonlightServerInfo(
+        '<root status_code="200"><uniqueid>sunshine-1</uniqueid>' +
+        '<PairStatus>0</PairStatus><paired>1</paired></root>', address, 'sunshine-1');
+      expect(officialWins === null).assertFalse();
+      if (officialWins !== null) {
+        expect(officialWins.paired).assertFalse();
+      }
+    });
+
+    it('builds_the_official_serverinfo_query_for_ipv4_and_ipv6', 0, (): void => {
+      const requestUuid: string = '12345678-1234-4abc-8def-1234567890ab';
+      expect(moonlightServerInfoProbeEndpoint({
+        host: '192.168.1.20', family: 'ipv4', port: 47989
+      }, requestUuid)).assertEqual(
+        'http://192.168.1.20:47989/serverinfo?uniqueid=0123456789ABCDEF&uuid=' + requestUuid);
+      expect(moonlightServerInfoProbeEndpoint({
+        host: '2001:db8::20', family: 'ipv6', port: 48089
+      }, requestUuid)).assertEqual(
+        'http://[2001:db8::20]:48089/serverinfo?uniqueid=0123456789ABCDEF&uuid=' + requestUuid);
+      expect(moonlightServerInfoProbeEndpoint({
+        host: 'sunshine.local', family: 'hostname', port: 47989
+      }, 'invalid')).assertEqual('');
     });
 
     it('rejects_control_characters_and_accepts_only_exact_operation_fences', 0, (): void => {

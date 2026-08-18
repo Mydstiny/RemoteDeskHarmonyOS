@@ -252,7 +252,9 @@ public:
 struct REMOTEDESK_MOONLIGHT_HOST_HIDDEN MoonlightServerInfo final {
     std::string uniqueId;
     std::string appVersion;
-    std::array<std::uint16_t, 4> appVersionParts{};
+    // Sunshine's canonical compatibility quad is 7.1.431.-1. Keep the parsed
+    // components signed, matching moonlight-common-c's AppVersionQuad.
+    std::array<std::int32_t, 4> appVersionParts{};
     std::string state;
     bool paired = false;
     std::uint32_t currentGame = 0;

@@ -28,6 +28,7 @@ enum class MoonlightBridgeOperation : std::uint8_t {
     Launch,
     Resume,
     Quit,
+    Unpair,
 };
 
 enum class MoonlightBridgeCode : std::uint8_t {

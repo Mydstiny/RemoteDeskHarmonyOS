@@ -1155,18 +1155,32 @@ MoonlightHostError optionalUnsigned(const XmlNode& root, const std::string& name
     return MoonlightHostError::None;
 }
 
-MoonlightHostError parseVersion(const std::string& value, std::array<std::uint16_t, 4>& parts) {
+MoonlightHostError parseVersion(const std::string& value,
+                                std::array<std::int32_t, 4>& parts) {
     std::size_t begin = 0;
     for (std::size_t index = 0; index < parts.size(); ++index) {
         const auto end = index + 1U == parts.size() ? value.size() : value.find('.', begin);
         if (end == std::string::npos || end == begin) {
             return MoonlightHostError::InvalidField;
         }
-        std::uint16_t part = 0;
-        if (!parseUnsigned(value.substr(begin, end - begin), part)) {
+        const bool negative = value[begin] == '-';
+        if (negative && index + 1U != parts.size()) {
             return MoonlightHostError::InvalidField;
         }
-        parts[index] = part;
+        const std::size_t digitsBegin = negative ? begin + 1U : begin;
+        if (digitsBegin == end || end - digitsBegin > 6U) {
+            return MoonlightHostError::InvalidField;
+        }
+        std::int32_t magnitude = 0;
+        for (std::size_t cursor = digitsBegin; cursor < end; ++cursor) {
+            const unsigned char character =
+                static_cast<unsigned char>(value[cursor]);
+            if (character < '0' || character > '9') {
+                return MoonlightHostError::InvalidField;
+            }
+            magnitude = magnitude * 10 + static_cast<std::int32_t>(character - '0');
+        }
+        parts[index] = negative ? -magnitude : magnitude;
         begin = end + 1U;
     }
     return begin == value.size() + 1U ? MoonlightHostError::None : MoonlightHostError::InvalidField;
@@ -1199,6 +1213,16 @@ MoonlightHostError parseServerInfo(const XmlNode& root, MoonlightServerInfo& inf
     error = requiredText(root, "currentgame", currentGame, 16U);
     if (error != MoonlightHostError::None || !parseUnsigned(currentGame, info.currentGame)) {
         return error == MoonlightHostError::None ? MoonlightHostError::InvalidField : error;
+    }
+    // Since GFE 2.8, currentgame may retain the last launched app while the
+    // server is idle. Match official Moonlight semantics and only treat it as
+    // authoritative while the server state explicitly reports BUSY.
+    constexpr const char* kBusySuffix = "_SERVER_BUSY";
+    constexpr std::size_t kBusySuffixLength = 12U;
+    if (info.state.size() < kBusySuffixLength ||
+        info.state.compare(info.state.size() - kBusySuffixLength,
+                           kBusySuffixLength, kBusySuffix) != 0) {
+        info.currentGame = 0U;
     }
 
     if ((error = optionalText(root, "hostname", info.hostName)) != MoonlightHostError::None ||
@@ -1256,7 +1280,15 @@ MoonlightHostError parseApps(const XmlNode& root, std::vector<MoonlightAppEntry>
             return MoonlightHostError::XmlBudgetExceeded;
         }
         const bool validTitle =
-            scalarText(titleNode, title, MoonlightHostLimits::kMaxAppTitleBytes) && !title.empty();
+            scalarText(titleNode, title, MoonlightHostLimits::kMaxAppTitleBytes);
+        // Sunshine may intentionally publish a nameless application as
+        // <AppTitle/>. Official Moonlight clients retain that entry because
+        // the numeric ID remains launchable. Keep our non-empty model
+        // invariant with a deterministic, local-only display fallback rather
+        // than invalidating the complete authenticated catalog.
+        if (validId && validTitle && title.empty()) {
+            title = "Application " + std::to_string(id);
+        }
         if (!validId || !validTitle) {
             ++partialCount;
             continue;
@@ -1811,6 +1843,17 @@ MoonlightHostResult executeRegistered(const std::shared_ptr<HostApiState>& impl,
                 secure.diagnostics.insert(secure.diagnostics.begin(),
                                           candidate.diagnostics.begin(),
                                           candidate.diagnostics.end());
+                if (secure.error == MoonlightHostError::HttpUnauthorized &&
+                    call.endpoint.allowHttpPairingCandidate) {
+                    // The host still presents the pinned certificate but no
+                    // longer accepts this client identity. Reuse the already
+                    // parsed HTTP serverinfo only for the explicit pairing
+                    // lane so repair can restart without treating plaintext
+                    // metadata as authenticated Host Control state.
+                    candidate.candidateOnly = true;
+                    candidate.diagnostics = std::move(secure.diagnostics);
+                    return candidate;
+                }
                 if (secure.error == MoonlightHostError::TrustConflict &&
                     call.endpoint.allowHttpPairingCandidate) {
                     secure.serverInfo = std::move(candidate.serverInfo);
@@ -1824,6 +1867,19 @@ MoonlightHostResult executeRegistered(const std::shared_ptr<HostApiState>& impl,
         }
         auto secure = runScheme(MoonlightHostScheme::Https, call.operation, initialShape,
                                 std::nullopt);
+        if (secure.error == MoonlightHostError::HttpUnauthorized &&
+            call.endpoint.allowHttpPairingCandidate) {
+            auto candidate = runScheme(MoonlightHostScheme::Http, call.operation,
+                                       initialShape, std::nullopt);
+            candidate.diagnostics.insert(candidate.diagnostics.begin(),
+                                         secure.diagnostics.begin(),
+                                         secure.diagnostics.end());
+            if (candidate.ok() && candidate.serverInfo.has_value()) {
+                candidate.candidateOnly = true;
+                return candidate;
+            }
+            return candidate;
+        }
         if (secure.error != MoonlightHostError::TrustConflict ||
             !call.endpoint.allowHttpPairingCandidate) {
             return secure;

@@ -7,7 +7,9 @@ import {
   MoonlightCoordinatorEvent,
   MoonlightRuntimePort,
   MoonlightSessionCoordinator,
-  MoonlightSessionStartRequest
+  MoonlightSessionStartRequest,
+  moonlightRuntimeNativeError,
+  moonlightRuntimeReadinessEvents
 } from '../main/ets/services/MoonlightSessionCoordinator';
 import { RemoteProtocol } from '../main/ets/services/RemoteSessionState';
 import { MoonlightSessionStateSnapshot } from '../main/ets/services/MoonlightSessionState';
@@ -16,6 +18,7 @@ import {
   encodeMoonlightEffectiveSettings,
   resolveMoonlightProductSettings
 } from '../main/ets/services/MoonlightSettingsPolicy';
+import { MoonlightNativeStreamSnapshot } from '../main/ets/services/MoonlightHostService';
 
 class FakeMoonlightRuntime implements MoonlightRuntimePort {
   startCalls: number = 0;
@@ -81,6 +84,15 @@ function event(type: MoonlightCoordinatorEvent['type'], generation: number,
 
 function activeMoonlightRecord(registry: ActiveRemoteSessionRegistry): ActiveRemoteSessionRecord | null {
   return registry.getActive();
+}
+
+function runtimeSnapshot(): MoonlightNativeStreamSnapshot {
+  return {
+    matched: true, code: 'first_frame', sessionId: 42, generation: 7, ownerToken: 11,
+    transportReady: true, videoReady: true, audioReady: true, inputReady: true,
+    controllerReady: true, physicalControllerReady: false, firstFrameReady: true,
+    terminal: false, lastSequence: 9
+  };
 }
 
 function reachNegotiating(coordinator: MoonlightSessionCoordinator): number {
@@ -162,6 +174,49 @@ export default function moonlightSessionCoordinatorTest(): void {
       expect(streaming.accepted).assertTrue();
       expect((streaming.state as MoonlightSessionStateSnapshot).phase).assertEqual('streaming');
       expect((activeMoonlightRecord(registry) as ActiveRemoteSessionRecord).renderAttached).assertTrue();
+      coordinator.resetForTest();
+      registry.resetForTest();
+    });
+
+    it('enters_stable_streaming_when_input_becomes_ready_after_the_first_frame', 0, (): void => {
+      const state: MoonlightSessionStateSnapshot = {
+        sessionId: 'moonlight-1', ownerScopeId: 'owner-1', hostId: 'host-1', appId: 'app-1',
+        generation: 1, phase: 'firstFrame', lastEventSequence: 8,
+        videoReady: true, audioReady: true, inputReady: false, firstFrameSeen: true,
+        reconnectAttempt: 0, errorCode: 'none', degradationReasons: []
+      };
+      const planned = moonlightRuntimeReadinessEvents(state, runtimeSnapshot());
+      expect(planned.length).assertEqual(2);
+      expect(planned[0]).assertEqual('inputReady');
+      expect(planned[1]).assertEqual('streamStable');
+
+      const beforeVideo: MoonlightSessionStateSnapshot = {
+        sessionId: 'moonlight-2', ownerScopeId: 'owner-1', hostId: 'host-1', appId: 'app-1',
+        generation: 2, phase: 'negotiating', lastEventSequence: 5,
+        videoReady: false, audioReady: false, inputReady: false, firstFrameSeen: false,
+        reconnectAttempt: 0, errorCode: 'none', degradationReasons: []
+      };
+      const earlyFrame: MoonlightNativeStreamSnapshot = runtimeSnapshot();
+      earlyFrame.videoReady = false;
+      earlyFrame.audioReady = false;
+      earlyFrame.inputReady = false;
+      expect(moonlightRuntimeReadinessEvents(beforeVideo, earlyFrame).length).assertEqual(0);
+    });
+
+    it('stops_a_session_that_never_renders_its_first_frame', 0, (): void => {
+      const runtime: FakeMoonlightRuntime = new FakeMoonlightRuntime();
+      const registry: ActiveRemoteSessionRegistry = ActiveRemoteSessionRegistry.getInstance();
+      registry.resetForTest();
+      registry.bindScope('owner-1', 1);
+      const coordinator: MoonlightSessionCoordinator = new MoonlightSessionCoordinator(runtime, registry);
+      reachNegotiating(coordinator);
+      const expired = coordinator.expireFirstFrame(Date.now() + 31000);
+      expect(expired.code).assertEqual('first_frame_timeout');
+      expect(runtime.stopCalls).assertEqual(1);
+      expect((expired.state as MoonlightSessionStateSnapshot).phase).assertEqual('failed');
+      expect((expired.state as MoonlightSessionStateSnapshot).errorCode).assertEqual('stream_timeout');
+      expect(activeMoonlightRecord(registry)).assertNull();
+      expect(moonlightRuntimeNativeError('input_failed')).assertEqual('INPUT_FAILED');
       coordinator.resetForTest();
       registry.resetForTest();
     });
