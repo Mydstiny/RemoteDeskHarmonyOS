@@ -422,7 +422,8 @@ import {
 } from '../services/RemotePhysicalKeyboardPolicy';
 import {
   normalizeVncPhysicalKeyCode,
-  normalizeVncPhysicalKeyEventCode
+  normalizeVncPhysicalKeyEventCode,
+  VncPhysicalKeyBindingTracker
 } from '../services/VncPhysicalKeyboardPolicy';
 import {
   accumulateContinuousRemoteWheel,
@@ -8041,9 +8042,19 @@ struct RemoteDesktop {
       physicalKeyboardLayoutForProtocol(protocol, this.physicalKeyboardLayout), normalizedKeyCode);
   }
 
-  private normalizeVncKeyEventCode(event: KeyEvent): number {
+  private normalizeVncKeyEventCode(event: KeyEvent, commit: boolean = false): number {
     const keyText: string = event.keyText === undefined || event.keyText === null ? '' : event.keyText;
-    return normalizeVncPhysicalKeyEventCode(event.keyCode, keyText);
+    const candidate: number = normalizeVncPhysicalKeyEventCode(event.keyCode, keyText, {
+      unicode: event.unicode === undefined ? 0 : event.unicode,
+      ctrl: this.modifierStateFromEvent(event, 'ctrl', this.physicalCtrlDown),
+      alt: this.modifierStateFromEvent(event, 'alt', this.physicalAltDown),
+      shift: this.modifierStateFromEvent(event, 'shift', this.physicalShiftDown),
+      meta: event.metaKey === 1
+    });
+    const action: 'down' | 'up' = event.type === KeyType.Up ? 'up' : 'down';
+    const deviceId: number = event.deviceId === undefined ? -1 : event.deviceId;
+    return this.vncPhysicalKeyBindingTracker.resolve(
+      deviceId, event.keyCode, action, candidate, commit);
   }
 
   private clearRemoteInputFocusSchedule(): void {
@@ -14165,6 +14176,8 @@ struct RemoteDesktop {
   private physicalWinDown: boolean = false;
   private physicalModifierKeyCodesDown: Array<number> = [];
   private physicalRemoteKeyCodesDown: Array<number> = [];
+  private vncPhysicalKeyBindingTracker: VncPhysicalKeyBindingTracker =
+    new VncPhysicalKeyBindingTracker();
   private rdpFilePasteKeyIntercepted: boolean = false;
 
   private isPhysicalModifierKey(keyCode: number): boolean {
@@ -14230,6 +14243,7 @@ struct RemoteDesktop {
     this.physicalWinDown = false;
     this.physicalModifierKeyCodesDown = [];
     this.physicalRemoteKeyCodesDown = [];
+    this.vncPhysicalKeyBindingTracker.clear();
   }
 
   private modifierStateFromEvent(event: KeyEvent, name: string, fallback: boolean): boolean {
@@ -14262,11 +14276,11 @@ struct RemoteDesktop {
   }
 
   private reconcilePhysicalModifiersFromEvent(event: KeyEvent): void {
-    this.reconcilePhysicalModifierGroup(event, 'Ctrl',
+    this.reconcilePhysicalModifierGroup(event, 'ctrl',
       [KEYCODE_CTRL_LEFT, KEYCODE_CTRL_RIGHT], this.physicalCtrlDown);
-    this.reconcilePhysicalModifierGroup(event, 'Alt',
+    this.reconcilePhysicalModifierGroup(event, 'alt',
       [KEYCODE_ALT_LEFT, KEYCODE_ALT_RIGHT], this.physicalAltDown);
-    this.reconcilePhysicalModifierGroup(event, 'Shift',
+    this.reconcilePhysicalModifierGroup(event, 'shift',
       [KEYCODE_SHIFT_LEFT, KEYCODE_SHIFT_RIGHT], this.physicalShiftDown);
     const metaDown: boolean = event.metaKey === 1;
     if (metaDown !== this.physicalWinDown) {
@@ -14525,7 +14539,7 @@ struct RemoteDesktop {
       }
       const rawKeyCode: number = event.keyCode;
       const kc: number = this.isVncSession() ?
-        this.normalizeVncKeyEventCode(event) : rawKeyCode;
+        this.normalizeVncKeyEventCode(event, true) : rawKeyCode;
       if (!this.isPhysicalModifierKey(kc)) {
         this.reconcilePhysicalModifiersFromEvent(event);
       }

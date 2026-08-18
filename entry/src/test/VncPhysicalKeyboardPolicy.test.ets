@@ -1,7 +1,8 @@
 import { describe, it, expect } from '@ohos/hypium';
 import {
   normalizeVncPhysicalKeyCode,
-  normalizeVncPhysicalKeyEventCode
+  normalizeVncPhysicalKeyEventCode,
+  VncPhysicalKeyBindingTracker
 } from '../main/ets/services/VncPhysicalKeyboardPolicy';
 
 export default function vncPhysicalKeyboardPolicyTest(): void {
@@ -48,6 +49,36 @@ export default function vncPhysicalKeyboardPolicyTest(): void {
       expect(normalizeVncPhysicalKeyEventCode(17, 'KEYCODE_CTRL_LEFT')).assertEqual(2072);
       expect(normalizeVncPhysicalKeyEventCode(32, 'KEYCODE_SPACE')).assertEqual(2050);
       expect(normalizeVncPhysicalKeyEventCode(16, 'KEYCODE_9')).assertEqual(2009);
+    });
+
+    it('uses_named_function_keys_before_overlapping_android_codes', 0, (): void => {
+      expect(normalizeVncPhysicalKeyEventCode(112, 'F1')).assertEqual(2090);
+      expect(normalizeVncPhysicalKeyEventCode(113, 'KEYCODE_F2')).assertEqual(2091);
+      expect(normalizeVncPhysicalKeyEventCode(123, 'F12')).assertEqual(2101);
+      expect(normalizeVncPhysicalKeyEventCode(124, 'F13')).assertEqual(2816);
+      expect(normalizeVncPhysicalKeyEventCode(135, 'F24')).assertEqual(2827);
+      expect(normalizeVncPhysicalKeyEventCode(46, 'ForwardDelete')).assertEqual(2071);
+    });
+
+    it('recovers_unnamed_dom_modifiers_without_reclassifying_printable_keys', 0, (): void => {
+      expect(normalizeVncPhysicalKeyEventCode(16, '', {
+        unicode: 0, ctrl: false, alt: false, shift: true, meta: false
+      })).assertEqual(2047);
+      expect(normalizeVncPhysicalKeyEventCode(16, '', {
+        unicode: 57, ctrl: false, alt: false, shift: true, meta: false
+      })).assertEqual(2009);
+      expect(normalizeVncPhysicalKeyEventCode(17, '', {
+        unicode: 0, ctrl: true, alt: false, shift: false, meta: false
+      })).assertEqual(2072);
+    });
+
+    it('keeps_down_up_mapping_stable_across_previews_and_missing_release_text', 0, (): void => {
+      const tracker = new VncPhysicalKeyBindingTracker();
+      expect(tracker.resolve(7, 112, 'down', 2090, false)).assertEqual(2090);
+      expect(tracker.resolve(7, 112, 'down', 2090, true)).assertEqual(2090);
+      expect(tracker.resolve(7, 112, 'up', 2071, false)).assertEqual(2090);
+      expect(tracker.resolve(7, 112, 'up', 2071, true)).assertEqual(2090);
+      expect(tracker.resolve(7, 112, 'down', 2071, false)).assertEqual(2071);
     });
   });
 }

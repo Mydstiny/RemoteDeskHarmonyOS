@@ -31,6 +31,9 @@ const VNC_KEYCODE_CAPS_LOCK: number = 2074;
 const VNC_KEYCODE_SCROLL_LOCK: number = 2075;
 const VNC_KEYCODE_META_LEFT: number = 2076;
 const VNC_KEYCODE_META_RIGHT: number = 2077;
+const VNC_KEYCODE_FN: number = 2078;
+const VNC_KEYCODE_PRINT_SCREEN: number = 2079;
+const VNC_KEYCODE_PAUSE: number = 2080;
 const VNC_KEYCODE_MENU: number = 2067;
 const VNC_KEYCODE_HOME: number = 2081;
 const VNC_KEYCODE_END: number = 2082;
@@ -62,6 +65,63 @@ const VNC_KEYCODE_NUMPAD_ENTER: number = 2119;
 const VNC_KEYCODE_NUMPAD_EQUALS: number = 2120;
 const VNC_KEYCODE_NUMPAD_LEFT_PAREN: number = 2121;
 const VNC_KEYCODE_NUMPAD_RIGHT_PAREN: number = 2122;
+
+export interface VncPhysicalKeyEventHint {
+  unicode: number;
+  ctrl: boolean;
+  alt: boolean;
+  shift: boolean;
+  meta: boolean;
+}
+
+interface VncPhysicalKeyBinding {
+  deviceId: number;
+  rawKeyCode: number;
+  canonicalKeyCode: number;
+}
+
+/**
+ * Keeps a physical key's down/up mapping stable even when ArkUI omits or
+ * changes keyText on the release event. Preview calls never mutate state, so
+ * onKeyPreIme can inspect an event before the forwarding handler consumes it.
+ */
+export class VncPhysicalKeyBindingTracker {
+  private bindings: Array<VncPhysicalKeyBinding> = [];
+
+  resolve(deviceId: number, rawKeyCode: number, action: 'down' | 'up',
+    candidateKeyCode: number, commit: boolean): number {
+    const index: number = this.bindingIndex(deviceId, rawKeyCode);
+    if (index >= 0) {
+      const canonicalKeyCode: number = this.bindings[index].canonicalKeyCode;
+      if (commit && action === 'up') {
+        this.bindings.splice(index, 1);
+      }
+      return canonicalKeyCode;
+    }
+    if (commit && action === 'down') {
+      this.bindings.push({
+        deviceId: deviceId,
+        rawKeyCode: rawKeyCode,
+        canonicalKeyCode: candidateKeyCode
+      });
+    }
+    return candidateKeyCode;
+  }
+
+  clear(): void {
+    this.bindings = [];
+  }
+
+  private bindingIndex(deviceId: number, rawKeyCode: number): number {
+    for (let index = 0; index < this.bindings.length; index++) {
+      const binding: VncPhysicalKeyBinding = this.bindings[index];
+      if (binding.deviceId === deviceId && binding.rawKeyCode === rawKeyCode) {
+        return index;
+      }
+    }
+    return -1;
+  }
+}
 
 function normalizeAndroidKeyCode(keyCode: number): number {
   if (keyCode >= 29 && keyCode <= 54) {
@@ -180,6 +240,77 @@ export function normalizeVncPhysicalKeyCode(keyCode: number): number {
   }
 }
 
+function namedVncPhysicalKeyCode(keyText: string): number {
+  const upper: string = keyText === undefined || keyText === null ? '' : keyText.toUpperCase();
+  const withoutPrefix: string = upper.indexOf('KEYCODE_') === 0 ? upper.substring(8) : upper;
+  const compact: string = withoutPrefix.split('_').join('').split('-').join('').split(' ').join('');
+  for (let functionNumber = 1; functionNumber <= 24; functionNumber++) {
+    if (compact === 'F' + functionNumber.toString()) {
+      return functionNumber <= 12 ?
+        VNC_KEYCODE_F1 + functionNumber - 1 : 2816 + functionNumber - 13;
+    }
+  }
+  switch (compact) {
+    case 'SHIFTRIGHT': return VNC_KEYCODE_SHIFT_RIGHT;
+    case 'SHIFT':
+    case 'SHIFTLEFT': return VNC_KEYCODE_SHIFT_LEFT;
+    case 'CTRLRIGHT':
+    case 'CONTROLRIGHT': return VNC_KEYCODE_CTRL_RIGHT;
+    case 'CTRL':
+    case 'CONTROL':
+    case 'CTRLLEFT':
+    case 'CONTROLLEFT': return VNC_KEYCODE_CTRL_LEFT;
+    case 'ALTRIGHT': return VNC_KEYCODE_ALT_RIGHT;
+    case 'ALT':
+    case 'ALTLEFT': return VNC_KEYCODE_ALT_LEFT;
+    case 'METARIGHT':
+    case 'WINRIGHT':
+    case 'COMMANDRIGHT': return VNC_KEYCODE_META_RIGHT;
+    case 'META':
+    case 'WIN':
+    case 'COMMAND':
+    case 'METALEFT':
+    case 'WINLEFT':
+    case 'COMMANDLEFT': return VNC_KEYCODE_META_LEFT;
+    case 'FN': return VNC_KEYCODE_FN;
+    case 'PRINTSCREEN':
+    case 'SYSRQ': return VNC_KEYCODE_PRINT_SCREEN;
+    case 'PAUSE':
+    case 'BREAK': return VNC_KEYCODE_PAUSE;
+    case 'SPACE': return VNC_KEYCODE_SPACE;
+    case 'TAB': return VNC_KEYCODE_TAB;
+    case 'ENTER':
+    case 'RETURN': return VNC_KEYCODE_ENTER;
+    case 'BACKSPACE':
+    case 'DEL': return VNC_KEYCODE_BACKSPACE;
+    case 'DELETE':
+    case 'FORWARDDEL':
+    case 'FORWARDDELETE': return VNC_KEYCODE_DELETE;
+    case 'CAPSLOCK': return VNC_KEYCODE_CAPS_LOCK;
+    case 'SCROLLLOCK': return VNC_KEYCODE_SCROLL_LOCK;
+    case 'ESC':
+    case 'ESCAPE': return VNC_KEYCODE_ESCAPE;
+    case 'PAGEUP': return VNC_KEYCODE_PAGE_UP;
+    case 'PAGEDOWN': return VNC_KEYCODE_PAGE_DOWN;
+    case 'HOME':
+    case 'MOVEHOME': return VNC_KEYCODE_HOME;
+    case 'END':
+    case 'MOVEEND': return VNC_KEYCODE_END;
+    case 'INSERT': return VNC_KEYCODE_INSERT;
+    case 'MENU':
+    case 'CONTEXTMENU': return VNC_KEYCODE_MENU;
+    case 'DPADUP':
+    case 'ARROWUP': return VNC_KEYCODE_DPAD_UP;
+    case 'DPADDOWN':
+    case 'ARROWDOWN': return VNC_KEYCODE_DPAD_DOWN;
+    case 'DPADLEFT':
+    case 'ARROWLEFT': return VNC_KEYCODE_DPAD_LEFT;
+    case 'DPADRIGHT':
+    case 'ARROWRIGHT': return VNC_KEYCODE_DPAD_RIGHT;
+    default: return -1;
+  }
+}
+
 /**
  * Normalizes an ArkUI key event when the platform also supplies a key name.
  *
@@ -189,55 +320,22 @@ export function normalizeVncPhysicalKeyCode(keyCode: number): number {
  * so prefer the named modifier/control key and fall back to the numeric
  * normalizer for all other VNC input.
  */
-export function normalizeVncPhysicalKeyEventCode(keyCode: number, keyText: string): number {
-  const name: string = keyText === undefined || keyText === null ? '' : keyText.toUpperCase();
-  if (name.indexOf('SHIFT_RIGHT') >= 0 ||
-    (name.indexOf('SHIFT') >= 0 && name.indexOf('RIGHT') >= 0)) {
-    return VNC_KEYCODE_SHIFT_RIGHT;
+export function normalizeVncPhysicalKeyEventCode(keyCode: number, keyText: string,
+  hint?: VncPhysicalKeyEventHint): number {
+  const namedKeyCode: number = namedVncPhysicalKeyCode(keyText);
+  if (namedKeyCode >= 0) {
+    return namedKeyCode;
   }
-  if (name.indexOf('SHIFT') >= 0) {
-    return VNC_KEYCODE_SHIFT_LEFT;
-  }
-  if (name.indexOf('CTRL_RIGHT') >= 0 || name.indexOf('CONTROL_RIGHT') >= 0) {
-    return VNC_KEYCODE_CTRL_RIGHT;
-  }
-  if (name.indexOf('CTRL') >= 0 || name.indexOf('CONTROL') >= 0) {
-    return VNC_KEYCODE_CTRL_LEFT;
-  }
-  if (name.indexOf('ALT_RIGHT') >= 0) {
-    return VNC_KEYCODE_ALT_RIGHT;
-  }
-  if (name.indexOf('ALT') >= 0) {
-    return VNC_KEYCODE_ALT_LEFT;
-  }
-  if (name.indexOf('META_RIGHT') >= 0 || name.indexOf('WIN_RIGHT') >= 0 ||
-    name.indexOf('COMMAND_RIGHT') >= 0) {
-    return VNC_KEYCODE_META_RIGHT;
-  }
-  if (name.indexOf('META') >= 0 || name.indexOf('WIN') >= 0 ||
-    name.indexOf('COMMAND') >= 0) {
-    return VNC_KEYCODE_META_LEFT;
-  }
-  if (name.indexOf('SPACE') >= 0) {
-    return VNC_KEYCODE_SPACE;
-  }
-  if (name.indexOf('TAB') >= 0) {
-    return VNC_KEYCODE_TAB;
-  }
-  if (name.indexOf('ENTER') >= 0 || name.indexOf('RETURN') >= 0) {
-    return VNC_KEYCODE_ENTER;
-  }
-  if (name.indexOf('BACKSPACE') >= 0 || name.indexOf('DEL') >= 0) {
-    return VNC_KEYCODE_BACKSPACE;
-  }
-  if (name.indexOf('CAPS') >= 0) {
-    return VNC_KEYCODE_CAPS_LOCK;
-  }
-  if (name.indexOf('SCROLL') >= 0) {
-    return VNC_KEYCODE_SCROLL_LOCK;
-  }
-  if (name.indexOf('ESC') >= 0) {
-    return VNC_KEYCODE_ESCAPE;
+  // Desktop compatibility codes overlap Android digits and controls. When a
+  // modifier event has no keyText, ArkUI's documented modifier state plus a
+  // zero Unicode value is the only safe way to recover that modifier.
+  if (hint !== undefined && hint.unicode <= 0) {
+    if (keyCode === 16 && hint.shift) { return VNC_KEYCODE_SHIFT_LEFT; }
+    if (keyCode === 17 && hint.ctrl) { return VNC_KEYCODE_CTRL_LEFT; }
+    if (keyCode === 18 && hint.alt) { return VNC_KEYCODE_ALT_LEFT; }
+    if ((keyCode === 91 || keyCode === 92) && hint.meta) {
+      return keyCode === 92 ? VNC_KEYCODE_META_RIGHT : VNC_KEYCODE_META_LEFT;
+    }
   }
   return normalizeVncPhysicalKeyCode(keyCode);
 }
