@@ -1768,6 +1768,7 @@ struct SshTerminal {
     }
 
     this.hostId = targetHostId;
+    this.sshSessionLocale = this.sshSettings.getSshSessionLocale(targetHostId);
     this.forwardingProfiles = [];
     this.forwardingRuntimes = [];
     this.forwardingStatus = '';
@@ -5078,7 +5079,6 @@ struct SshTerminal {
       this.sshForwardingProfilesReady = this.sshForwardingProfiles.init(sshContext);
       this.fontSize = appearance.fontSize;
       this.lineSpacing = appearance.lineSpacing;
-      this.sshSessionLocale = this.sshSettings.getSshSessionLocale();
       hilog.info(0x0000, 'SshTerminal', '[appearance] restored font=' +
         appearance.fontSize.toString() + ' lineSpacing=' + appearance.lineSpacing.toString());
     } catch (err) {
@@ -5268,6 +5268,7 @@ struct SshTerminal {
       ? this.srv.getHost(initialHostId) : undefined;
     if (initialHost !== undefined) {
       this.hostId = initialHostId;
+      this.sshSessionLocale = this.sshSettings.getSshSessionLocale(initialHostId);
       this.refreshForwardingProfiles();
       this.visibleSshHostId = initialHostId;
       this.hostLabel = initialHost.label;
@@ -5304,6 +5305,7 @@ struct SshTerminal {
       const id: string = p['hostId'] as string;
       if (id) {
         this.hostId = id;
+        this.sshSessionLocale = this.sshSettings.getSshSessionLocale(this.hostId);
         this.refreshForwardingProfiles();
         this.visibleSshHostId = id.trim();
         const transcript: string = this.sshTranscriptStore.snapshot(this.hostId);
@@ -6432,7 +6434,7 @@ struct SshTerminal {
     const options: SshSessionLocaleOption[] = sshSessionLocaleOptions();
     promptAction.showDialog({
       title: 'SSH 会话地区语言',
-      message: '连接时通过 SSH 环境请求发送 LANG。通用 UTF-8 适合没有中文 locale、但需要显示中文的服务器；中文选项需要服务器已安装对应 locale。服务器拒绝环境请求时仍会继续连接。',
+      message: '仅对此主机保存。连接时通过 SSH 环境请求发送 LANG。通用 UTF-8 适合没有中文 locale、但需要显示中文的服务器；中文选项需要服务器已安装对应 locale。服务器拒绝环境请求时仍会继续连接。',
       buttons: [
         { text: options[0].label, color: this.pal().text2 },
         { text: options[1].label, color: this.pal().text },
@@ -6444,7 +6446,7 @@ struct SshTerminal {
       if (result.index < 0 || result.index >= options.length) { return; }
       const previous: string = normalizeSshSessionLocale(this.sshSessionLocale);
       const selected: SshSessionLocaleOption = options[result.index];
-      this.sshSessionLocale = this.sshSettings.saveSshSessionLocale(selected.value);
+      this.sshSessionLocale = this.sshSettings.saveSshSessionLocale(selected.value, this.hostId);
       if (this.sshSessionLocale === previous) { return; }
       if (!this.sshConnectionIsConnected()) {
         promptAction.showToast({ message: selected.label + '将在下次连接时应用', duration: 1800 });

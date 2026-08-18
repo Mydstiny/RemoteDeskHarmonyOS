@@ -12,7 +12,8 @@ import {
   resolveSshTerminalAppearanceFromCloudSettings,
   sshTerminalFontSizeForPinch,
   sshSessionLocaleLabel,
-  sshSessionLocaleOptions
+  sshSessionLocaleOptions,
+  sshSessionLocalePreferenceKey
 } from '../main/ets/services/SshSettingsPolicy';
 
 export default function sshSettingsPolicyTest(): void {
@@ -58,6 +59,9 @@ export default function sshSettingsPolicyTest(): void {
       expect(sshSessionLocaleOptions().length).assertEqual(5);
       expect(sshSessionLocaleLabel('zh_TW.UTF-8')).assertEqual('繁体中文');
       expect(sshSessionLocaleLabel('not-installed', true)).assertEqual('默认');
+      expect(sshSessionLocalePreferenceKey('host A')).assertEqual('sshSessionLocale:host%20A');
+      expect(sshSessionLocalePreferenceKey('host B') === sshSessionLocalePreferenceKey('host A'))
+        .assertFalse();
     });
   });
 }

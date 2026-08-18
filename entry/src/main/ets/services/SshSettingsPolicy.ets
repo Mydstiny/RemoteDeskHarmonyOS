@@ -81,6 +81,13 @@ export function normalizeSshSessionLocale(value: string): string {
   return '';
 }
 
+/** Locale support belongs to the remote host, so never reuse one host's choice for another. */
+export function sshSessionLocalePreferenceKey(hostId: string): string {
+  const normalizedHostId: string = hostId.trim();
+  return normalizedHostId.length === 0 ? SSH_SESSION_LOCALE_KEY :
+    SSH_SESSION_LOCALE_KEY + ':' + encodeURIComponent(normalizedHostId);
+}
+
 export function sshSessionLocaleLabel(value: string, short: boolean = false): string {
   const normalized: string = normalizeSshSessionLocale(value);
   const options: SshSessionLocaleOption[] = sshSessionLocaleOptions();

@@ -19,6 +19,7 @@ import {
   defaultSshTerminalAppearance,
   hasSshTerminalAppearanceCloudSettings,
   normalizeSshSessionLocale,
+  sshSessionLocalePreferenceKey,
   normalizeSshTerminalLineSpacing,
   normalizeSshTerminalFontSize,
   normalizeSshTerminalForegroundColor,
@@ -91,19 +92,46 @@ export class SshSettingsService {
     return this.initialized;
   }
 
-  getSshSessionLocale(): string {
-    const runtimeLocale: Object = AppStorage.get<string>(SSH_SESSION_LOCALE_KEY) as Object;
+  getSshSessionLocale(hostId: string = ''): string {
+    const key: string = sshSessionLocalePreferenceKey(hostId);
+    const runtimeLocale: Object = AppStorage.get<string>(key) as Object;
     if (typeof runtimeLocale === 'string') {
-      this.sessionLocale = normalizeSshSessionLocale(runtimeLocale as string);
+      return normalizeSshSessionLocale(runtimeLocale as string);
     }
-    return this.sessionLocale;
+    if (hostId.trim().length === 0) { return this.sessionLocale; }
+    try {
+      const prefs = this.context === null ? null :
+        preferences.getPreferencesSync(this.context, { name: SSH_PREFERENCES_NAME });
+      if (prefs === null) { return ''; }
+      const storedLocale: Object = prefs.getSync(key, '') as Object;
+      const normalized: string = normalizeSshSessionLocale(
+        typeof storedLocale === 'string' ? storedLocale as string : '');
+      AppStorage.setOrCreate(key, normalized);
+      return normalized;
+    } catch (_e) {
+      return '';
+    }
   }
 
   /** Locale is device-local because available locales are a property of the target server. */
-  saveSshSessionLocale(value: string): string {
-    this.sessionLocale = normalizeSshSessionLocale(value);
-    this.writeRuntimeAndLocal(null);
-    return this.sessionLocale;
+  saveSshSessionLocale(value: string, hostId: string = ''): string {
+    const normalized: string = normalizeSshSessionLocale(value);
+    if (hostId.trim().length === 0) {
+      this.sessionLocale = normalized;
+      this.writeRuntimeAndLocal(null);
+      return this.sessionLocale;
+    }
+    const key: string = sshSessionLocalePreferenceKey(hostId);
+    AppStorage.setOrCreate(key, normalized);
+    try {
+      const prefs = this.context === null ? null :
+        preferences.getPreferencesSync(this.context, { name: SSH_PREFERENCES_NAME });
+      if (prefs !== null) {
+        prefs.putSync(key, normalized);
+        prefs.flushSync();
+      }
+    } catch (_e) { /* AppStorage remains authoritative for the active process. */ }
+    return normalized;
   }
 
   saveForegroundColor(value: string): string {
