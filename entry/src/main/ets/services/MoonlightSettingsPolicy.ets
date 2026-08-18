@@ -248,6 +248,11 @@ export function resolveMoonlightProductSettings(
       'required_encryption_proof_unavailable');
     resolved.effective.network.streamEncryption = 'auto';
   }
+  if (resolved.effective.video.latencyMode !== 'lowLatency') {
+    addAdjustment(resolved.adjustments, 'video.latencyMode',
+      resolved.requested.video.latencyMode, 'lowLatency', 'product_low_latency_only');
+    resolved.effective.video.latencyMode = 'lowLatency';
+  }
   // The single product controller mapper currently owns Sunshine slot 0. Keep
   // Auto and explicit slot choices as durable intent, but never advertise a
   // different slot in the launch bitmap until the mapper itself is multi-slot.

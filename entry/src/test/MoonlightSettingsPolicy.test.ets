@@ -111,6 +111,7 @@ export default function moonlightSettingsPolicyTest(): void {
       requested.input.controllerSlot = 3;
       requested.video.resolutionMode = '2160p';
       requested.video.fps = 120;
+      requested.video.latencyMode = 'smooth';
       requested.network.streamEncryption = 'required';
       const resolved = resolveMoonlightProductSettings(requested);
       expect(resolved.requested.video.codecPreference).assertEqual('av1');
@@ -121,6 +122,8 @@ export default function moonlightSettingsPolicyTest(): void {
       expect(resolved.effective.input.controllerSlot).assertEqual(0);
       expect(resolved.effective.video.resolutionMode).assertEqual('1080p');
       expect(resolved.effective.video.fps).assertEqual(60);
+      expect(resolved.requested.video.latencyMode).assertEqual('smooth');
+      expect(resolved.effective.video.latencyMode).assertEqual('lowLatency');
       expect(resolved.effective.network.streamEncryption).assertEqual('auto');
       const encoded: string = encodeMoonlightEffectiveSettings(resolved);
       expect(encoded.length > 0).assertTrue();

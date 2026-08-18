@@ -118,6 +118,25 @@ export default function moonlightUiPolicyTest(): void {
       expect(changed.blocker).assertEqual('certificate_changed');
     });
 
+    it('blocks_metered_launch_until_the_saved_policy_or_one_time_approval_allows_it', 0, (): void => {
+      const denied = moonlightLaunchPreflight({
+        routeValid: true, hostAvailable: true, certificateChanged: false,
+        identityAvailable: true, appAvailable: true, meteredNetwork: true,
+        meteredAllowed: false, hostBusy: false, activeSession: false,
+        runtimeAvailable: true, adjustmentCount: 0
+      });
+      expect(denied.allowed).assertFalse();
+      expect(denied.blocker).assertEqual('metered_denied');
+      const approved = moonlightLaunchPreflight({
+        routeValid: true, hostAvailable: true, certificateChanged: false,
+        identityAvailable: true, appAvailable: true, meteredNetwork: true,
+        meteredAllowed: true, hostBusy: false, activeSession: false,
+        runtimeAvailable: true, adjustmentCount: 0
+      });
+      expect(approved.allowed).assertTrue();
+      expect(approved.blocker).assertEqual('none');
+    });
+
     it('uses_400ms_3s_10s_connect_stage_thresholds_and_never_preclaims_connected', 0, (): void => {
       expect(moonlightConnectStagePresentation('negotiating',
         MOONLIGHT_CONNECT_STAGE_DELAY_MS - 1, false).visible).assertFalse();

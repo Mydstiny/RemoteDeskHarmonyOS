@@ -1,6 +1,10 @@
 import { describe, it, expect } from '@ohos/hypium';
 import {
   SETTINGS_SHEET_ACCOUNT,
+  SETTINGS_SHEET_MOONLIGHT_AUDIO,
+  SETTINGS_SHEET_MOONLIGHT_DIAGNOSTICS,
+  SETTINGS_SHEET_MOONLIGHT_INPUT,
+  SETTINGS_SHEET_MOONLIGHT_NETWORK_SECURITY,
   SETTINGS_SHEET_MOONLIGHT_VIDEO,
   SETTINGS_SHEET_MOONLIGHT_TRUST,
   SETTINGS_PANEL_DISMISS_TO_LEAF_OPEN_MS,
@@ -64,7 +68,27 @@ export default function settingsSheetRoutePolicyTest() {
         expect(specs[i].title.length > 0).assertTrue();
       }
       expect(moonlightSettingsRouteSpec(SETTINGS_SHEET_MOONLIGHT_VIDEO)?.section).assertEqual('video');
+      expect(moonlightSettingsRouteSpec(SETTINGS_SHEET_MOONLIGHT_VIDEO)?.title).assertEqual('画面');
       expect(moonlightSettingsLeafSheetHeight(SETTINGS_SHEET_MOONLIGHT_VIDEO)).assertEqual(820);
+      expect(moonlightSettingsRouteSpec(SETTINGS_SHEET_MOONLIGHT_AUDIO)?.section).assertEqual('audio');
+      expect(moonlightSettingsRouteSpec(SETTINGS_SHEET_MOONLIGHT_AUDIO)?.title).assertEqual('音频');
+      expect(moonlightSettingsLeafSheetHeight(SETTINGS_SHEET_MOONLIGHT_AUDIO)).assertEqual(620);
+      expect(moonlightSettingsRouteSpec(SETTINGS_SHEET_MOONLIGHT_INPUT)?.section).assertEqual('input');
+      expect(moonlightSettingsRouteSpec(SETTINGS_SHEET_MOONLIGHT_INPUT)?.title).assertEqual('控制与手柄');
+      expect(moonlightSettingsLeafSheetHeight(SETTINGS_SHEET_MOONLIGHT_INPUT)).assertEqual(680);
+      expect(moonlightSettingsRouteSpec(SETTINGS_SHEET_MOONLIGHT_NETWORK_SECURITY)?.section)
+        .assertEqual('networkSecurity');
+      expect(moonlightSettingsRouteSpec(SETTINGS_SHEET_MOONLIGHT_NETWORK_SECURITY)?.title)
+        .assertEqual('网络与安全');
+      expect(moonlightSettingsLeafSheetHeight(SETTINGS_SHEET_MOONLIGHT_NETWORK_SECURITY))
+        .assertEqual(820);
+      expect(moonlightSettingsRouteSpec(SETTINGS_SHEET_MOONLIGHT_DIAGNOSTICS)?.section)
+        .assertEqual('diagnostics');
+      expect(moonlightSettingsRouteSpec(SETTINGS_SHEET_MOONLIGHT_DIAGNOSTICS)?.title).assertEqual('诊断');
+      expect(moonlightSettingsLeafSheetHeight(SETTINGS_SHEET_MOONLIGHT_DIAGNOSTICS)).assertEqual(560);
+      expect(moonlightSettingsRouteSpec(SETTINGS_SHEET_MOONLIGHT_TRUST)?.section).assertEqual('trust');
+      expect(moonlightSettingsRouteSpec(SETTINGS_SHEET_MOONLIGHT_TRUST)?.title).assertEqual('配对与信任');
+      expect(moonlightSettingsLeafSheetHeight(SETTINGS_SHEET_MOONLIGHT_TRUST)).assertEqual(520);
       expect(SETTINGS_SHEET_MOONLIGHT_TRUST).assertEqual(29);
       expect(moonlightSettingsLeafSheetHeight(SETTINGS_SHEET_VNC_CONNECTION)).assertEqual(0);
       expect(moonlightSettingsRouteSpec(23)).assertNull();

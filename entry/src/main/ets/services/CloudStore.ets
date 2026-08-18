@@ -50,6 +50,8 @@ import {
   MoonlightAppCacheEntry,
   moonlightAppCacheEntryIsValid
 } from '../model/MoonlightAppCache';
+import { MoonlightAppCachePort } from './MoonlightAppCacheService';
+import { MoonlightRepositoryPort } from './MoonlightRepository';
 import { DataCrypto, CryptoCloudStore } from './DataCrypto';
 import { hashForLog, safeError } from '../utils/SafeLogger';
 import { cloudSyncTableNames, CloudSyncDirection } from './CloudSyncPolicy';
@@ -455,7 +457,8 @@ export interface CloudStoreWiringPorts {
   metadataQuery?: CloudStoreMetadataQueryPort;
 }
 
-export class CloudStore implements CryptoCloudStore {
+export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
+  MoonlightAppCachePort {
   private static instance: CloudStore;
   private store: relationalStore.RdbStore | null = null;
   private appContext: common.Context | null = null;
@@ -11042,7 +11045,6 @@ export class CloudStore implements CryptoCloudStore {
         (operation !== 'upsert' && operation !== 'tombstone')) {
       return false;
     }
-    let committed: boolean = false;
     try {
       this.store.beginTransaction();
       const inserted: boolean = rdbInsertSucceeded(this.store.insertSync(
@@ -11054,25 +11056,12 @@ export class CloudStore implements CryptoCloudStore {
         throw new Error('Moonlight local row or journal write failed');
       }
       this.store.commit();
-      committed = true;
-      if (!this.isLeaseCurrent(lease)) { return false; }
-      // On current HarmonyOS RDB builds querySync may use the pre-transaction
-      // snapshot until commit returns. Verify durability immediately after the
-      // record and its mutation journal have committed atomically.
-      const readback: MoonlightRecord | null =
-        this.findMoonlightLocalRecordRaw(lease, record.id);
-      if (readback === null ||
-          !this.moonlightRecordsEqual(readback, record) ||
-          !this.isLeaseCurrent(lease)) {
-        hilog.warn(0x0001, 'CloudSync',
-          '[CloudStore] Moonlight committed row failed durable readback');
-        return false;
-      }
+      // This boolean reports transaction commit truth only. Repository owns
+      // the post-commit lease/readback check so it can preserve
+      // localCommitted=true when verification fails after a durable write.
       return true;
     } catch (error) {
-      if (!committed) {
-        try { this.store.rollBack(); } catch (_ignored) {}
-      }
+      try { this.store.rollBack(); } catch (_ignored) {}
       hilog.warn(0x0001, 'CloudSync',
         '[CloudStore] Moonlight local commit failed: ' + safeError(error));
       return false;
@@ -11507,26 +11496,6 @@ export class CloudStore implements CryptoCloudStore {
       }
     }
     return moonlightRecordFromCloudRow(source);
-  }
-
-  private moonlightRecordsEqual(
-    left: MoonlightRecord, right: MoonlightRecord
-  ): boolean {
-    const leftRow: Record<string, string> = moonlightRecordToCloudRow(left);
-    const rightRow: Record<string, string> = moonlightRecordToCloudRow(right);
-    for (let i = 0; i < MOONLIGHT_RECORD_COLUMNS.length; i++) {
-      const key: string = MOONLIGHT_RECORD_COLUMNS[i];
-      if (leftRow[key] !== rightRow[key]) {
-        hilog.warn(0x0001, 'CloudSync',
-          '[CloudStore] Moonlight local readback differs key=' + key +
-          ' readLen=' + leftRow[key].length.toString() +
-          ' expectedLen=' + rightRow[key].length.toString() +
-          ' readHash=' + hashForLog(leftRow[key]) +
-          ' expectedHash=' + hashForLog(rightRow[key]));
-        return false;
-      }
-    }
-    return true;
   }
 
   private moonlightAppCacheEntryToBucket(

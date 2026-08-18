@@ -165,7 +165,7 @@ export struct MoonlightHostAddFlow {
     _openCatalog: boolean,
     _ownerToken: number
   ): void => {};
-  onDiscardTemporaryState: () => void = (): void => {};
+  onDiscardTemporaryState: () => Promise<void> = (): Promise<void> => Promise.resolve();
 
   @State flow: MoonlightHostAddState = createMoonlightHostAddState(0);
   @State moonlightIconFailed: boolean = false;
@@ -299,10 +299,15 @@ export struct MoonlightHostAddFlow {
     this.onBackToProtocols();
   }
 
-  private discardAndBack(): void {
+  private async discardAndBack(): Promise<void> {
     this.pauseDiscovery();
     this.cancelActiveOperation();
-    this.onDiscardTemporaryState();
+    try {
+      await this.onDiscardTemporaryState();
+    } catch (_error) {
+      // The native path revokes local trust before attempting remote cleanup.
+      // Navigation may continue even when Sunshine cannot confirm /unpair.
+    }
     this.showDiscardConfirmation = false;
     this.onBackToProtocols();
   }
@@ -315,6 +320,13 @@ export struct MoonlightHostAddFlow {
       }
     }
     return null;
+  }
+
+  private canVerifyHost(): boolean {
+    if (this.flow.activeOperation !== 'none') { return false; }
+    if (this.flow.mode === 'automatic') { return this.selectedCandidate() !== null; }
+    return parseMoonlightHostAddAddress(
+      this.flow.manualAddressText, this.flow.manualPortText).ok;
   }
 
   private async verifyHost(): Promise<void> {
@@ -462,7 +474,11 @@ export struct MoonlightHostAddFlow {
     }
     if (!moonlightHostAddOperationIsCurrent(this.flow, begin.key)) { return; }
     this.flow = completeMoonlightHostAddTrust(this.flow, begin.key, false);
-    this.onDiscardTemporaryState();
+    try {
+      await this.onDiscardTemporaryState();
+    } catch (_error) {
+      // Explicit rejection remains authoritative locally.
+    }
   }
 
   private async loadCatalog(): Promise<void> {
@@ -738,7 +754,7 @@ export struct MoonlightHostAddFlow {
           })
       }
       this.primaryButton(this.flow.activeOperation === 'verify' ? '正在验证…' : '验证主机',
-        (): void => { this.verifyHost(); }, this.flow.activeOperation === 'none')
+        (): void => { this.verifyHost(); }, this.canVerifyHost())
     }.width('100%').margin({ top: 4 })
   }
 
@@ -826,7 +842,7 @@ export struct MoonlightHostAddFlow {
             .backgroundColor(this.pal().surface).fontColor(this.pal().danger)
             .onClick((): void => {
               this.cancelActiveOperation();
-              this.onDiscardTemporaryState();
+              void this.onDiscardTemporaryState();
             })
           Button('重新生成').layoutWeight(1).height(40).borderRadius(10).margin({ left: 8 })
             .backgroundColor(this.accentColor).fontColor(Color.White)
@@ -942,7 +958,7 @@ export struct MoonlightHostAddFlow {
       Row() {
         Button('丢弃草稿').layoutWeight(1).height(40).borderRadius(10)
           .backgroundColor(this.pal().surface).fontColor(this.pal().danger)
-          .onClick((): void => { this.discardAndBack(); })
+          .onClick((): void => { void this.discardAndBack(); })
         Button('继续添加').layoutWeight(1).height(40).borderRadius(10).margin({ left: 12 })
           .backgroundColor(this.accentColor).fontColor(Color.White)
           .onClick((): void => { this.showDiscardConfirmation = false; })

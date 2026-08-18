@@ -5,6 +5,7 @@ import {
   normalizeMoonlightSettingsForLocalStorage
 } from '../main/ets/model/MoonlightModels';
 import {
+  MOONLIGHT_CIPHERTEXT_MAX_BYTES,
   moonlightCanonicalizeJson,
   MoonlightRecordMeta,
   moonlightMutableFieldPaths,
@@ -179,6 +180,14 @@ export default function moonlightRecordPolicyTest(): void {
       record.payload = unsafe.canonical;
       record.payloadHashSha256 = moonlightRecordPayloadHashSha256(record);
       expect(moonlightValidateRecord(record).reason).assertEqual('secret_plaintext_forbidden');
+    });
+
+    it('rejects_ciphertext_above_the_envelope_ascii_bound_before_hashing', 0, (): void => {
+      const record = validHostRecord();
+      record.ciphertext = 'A'.repeat(MOONLIGHT_CIPHERTEXT_MAX_BYTES * 2);
+      expect(moonlightValidateRecord(record).reason).assertEqual('invalid_envelope');
+      record.ciphertext += 'A';
+      expect(moonlightValidateRecord(record).reason).assertEqual('ciphertext_too_large');
     });
 
     it('rejects_nested_secret_material_and_invalid_business_shapes', 0, (): void => {

@@ -263,15 +263,18 @@ export struct MoonlightSettingsSurface {
     }.width('100%').padding({ top: 7, bottom: 7 }).opacity(enabled ? 1 : 0.55)
   }
 
-  @Builder private statusRow(title: string, detail: string, value: string) {
+  @Builder private statusRow(title: string, detail: string, value: string,
+    available: boolean = true) {
     Row() {
       Column() {
         Text(title).fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
         Text(detail).fontSize(10).fontColor(this.pal().text3).lineHeight(15).margin({ top: 3 })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-      Text(value).fontSize(11).fontWeight(FontWeight.Medium).fontColor(this.accentColor)
+      Text(value).fontSize(11).fontWeight(FontWeight.Medium)
+        .fontColor(available ? this.accentColor : this.pal().text3)
         .padding({ left: 9, right: 9, top: 5, bottom: 5 })
-        .backgroundColor(this.accentColor + '14').borderRadius(10).margin({ left: 12 })
+        .backgroundColor(available ? this.accentColor + '14' : this.pal().surface)
+        .borderRadius(10).margin({ left: 12 })
     }.width('100%').padding({ top: 9, bottom: 9 })
   }
 
@@ -354,21 +357,14 @@ export struct MoonlightSettingsSurface {
         1000, 200000, 1000, ' Kbps', (value: number): void => {
           this.update((next: MoonlightSettings): void => { next.video.bitrateKbps = Math.round(value); });
         })
-      this.toggleRow('HDR', '当前媒体管线尚未开放，避免保存后静默降级', false,
-        (_value: boolean): void => {}, false)
+      this.statusRow('HDR', '当前媒体管线尚未开放，避免保存后静默降级', '尚未开放', false)
       Divider().color(this.pal().divider)
-      this.toggleRow('YUV 4:4:4', '当前媒体管线尚未开放，保持不可用', false,
-        (_value: boolean): void => {}, false)
+      this.statusRow('YUV 4:4:4', '当前媒体管线尚未开放，保持 8-bit YUV420', '尚未开放', false)
     }.width('100%').padding(16).backgroundColor(this.pal().card).borderRadius(20)
       .border({ width: 0.5, color: this.pal().cardBorder }).margin({ bottom: 12 })
     Column() {
-      this.cardTitle('画面暂时不可用', 'Surface 重建期间保持会话边界，不改变公共显示与画中画设置')
-      this.choice2('丢帧保连接', '暂停视频', this.settings.background.noSurfaceVideo,
-        'drop', 'pause', (value: string): void => {
-          this.update((next: MoonlightSettings): void => {
-            next.background.noSurfaceVideo = value as 'drop';
-          });
-        })
+      this.cardTitle('画面暂时不可用', '不改变公共显示与画中画设置')
+      this.statusRow('Surface 销毁行为', '生命周期接线完成前保持安全边界，不提供假可用选项', '结束会话')
     }.width('100%').padding(16).backgroundColor(this.pal().card).borderRadius(20)
       .border({ width: 0.5, color: this.pal().cardBorder }).margin({ bottom: 12 })
   }
@@ -386,10 +382,7 @@ export struct MoonlightSettingsSurface {
       this.toggleRow('主机同时播放', '由 Sunshine 能力与主机设置共同决定', this.settings.audio.playOnHost,
         (value: boolean): void => { this.update((next: MoonlightSettings): void => { next.audio.playOnHost = value; }); })
       Divider().color(this.pal().divider)
-      this.toggleRow('后台继续音频', '仅控制 Moonlight 会话；仍服从系统音频焦点与后台任务限制',
-        this.settings.background.allowAudioInBackground, (value: boolean): void => {
-          this.update((next: MoonlightSettings): void => { next.background.allowAudioInBackground = value; });
-        })
+      this.statusRow('后台继续音频', '后台任务与音频焦点生命周期接线完成后开放', '尚未开放', false)
     }.width('100%').padding(16).backgroundColor(this.pal().card).borderRadius(20)
       .border({ width: 0.5, color: this.pal().cardBorder }).margin({ bottom: 12 })
   }
@@ -405,15 +398,13 @@ export struct MoonlightSettingsSurface {
       this.toggleRow('捕获键盘', '串流画面获得焦点时转发实体键盘；退出时补发全部 key-up', this.settings.input.captureKeyboard,
         (value: boolean): void => { this.update((next: MoonlightSettings): void => { next.input.captureKeyboard = value; }); })
       Divider().color(this.pal().divider)
-      this.toggleRow('转发系统快捷键', '系统保留组合键尚未开放，普通按键仍可发送', false,
-        (_value: boolean): void => {}, false)
+      this.statusRow('转发系统快捷键', '系统保留组合键尚未开放，普通按键仍可发送', '尚未开放', false)
     }.width('100%').padding(16).backgroundColor(this.pal().card).borderRadius(20)
       .border({ width: 0.5, color: this.pal().cardBorder }).margin({ bottom: 12 })
     Column() {
       this.cardTitle('控制器', '实体和虚拟控制器由同一状态聚合器处理，避免重复或冲突输入')
       this.statusRow('控制器槽位', '实体与虚拟手柄统一进入会话控制器槽位', '槽位 1')
-      this.toggleRow('手柄震动', '当前未接入主机到手柄的反馈输出，保持不可用',
-        this.settings.input.enableRumble, (_value: boolean): void => {}, false)
+      this.statusRow('手柄震动', '当前未接入主机到手柄的反馈输出，保持不可用', '尚未开放', false)
       Row() {
         SymbolGlyph($r('sys.symbol.lock_shield_fill')).fontSize(17).fontColor([this.pal().editColor])
         Text('切换输入源、编辑配置、进入后台或退出时，都会先释放按键并将手柄复位。')
@@ -446,16 +437,7 @@ export struct MoonlightSettingsSurface {
       .border({ width: 0.5, color: this.pal().cardBorder }).margin({ bottom: 12 })
     Column() {
       this.cardTitle('断线恢复', '只恢复当前 Moonlight 会话，不创建第二套网络连接管理')
-      this.toggleRow('自动重连', '网络短暂中断时，在设定窗口内尝试恢复同一会话',
-        this.settings.network.autoReconnect, (value: boolean): void => {
-          this.update((next: MoonlightSettings): void => { next.network.autoReconnect = value; });
-        })
-      this.sliderRow('重连窗口', '超过时停止当前会话并回到应用目录',
-        this.settings.network.reconnectBudgetMs / 1000, 5, 120, 0.5, ' 秒', (value: number): void => {
-          this.update((next: MoonlightSettings): void => {
-            next.network.reconnectBudgetMs = Math.round(value * 1000);
-          });
-        }, this.settings.network.autoReconnect)
+      this.statusRow('自动重连与预算', '网络恢复状态机接线完成前不提供假可用开关', '尚未开放', false)
     }.width('100%').padding(16).backgroundColor(this.pal().card).borderRadius(20)
       .border({ width: 0.5, color: this.pal().cardBorder }).margin({ bottom: 12 })
     Column() {
@@ -476,15 +458,7 @@ export struct MoonlightSettingsSurface {
   @Builder private diagnosticsContent() {
     this.sectionHeader('诊断', '只保留 Moonlight 会话指标与脱敏日志；默认关闭，避免无意义采样。')
     Column() {
-      this.toggleRow('默认显示性能 HUD', '简洁 chip 可点击展开并拖动吸附',
-        this.settings.diagnostics.showPerformanceHud, (value: boolean): void => {
-          this.update((next: MoonlightSettings): void => { next.diagnostics.showPerformanceHud = value; });
-        })
-      Text('日志级别').fontSize(11).fontColor(this.pal().text3).margin({ top: 12, bottom: 7 })
-      this.choice3('错误', '信息', '调试', this.settings.diagnostics.logLevel,
-        'error', 'info', 'debug', (value: string): void => {
-          this.update((next: MoonlightSettings): void => { next.diagnostics.logLevel = value as 'error'; });
-        })
+      this.statusRow('性能 HUD 与日志级别', '低频指标消费者接线完成后开放', '尚未开放', false)
       Divider().color(this.pal().divider).margin({ top: 12 })
       Row() {
         SymbolGlyph($r('sys.symbol.text_clipboard')).fontSize(19).fontColor([this.accentColor])
@@ -492,7 +466,7 @@ export struct MoonlightSettingsSurface {
           Text('脱敏诊断导出').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
           Text('不包含地址、PIN、证书、身份材料或会话密钥').fontSize(10).fontColor(this.pal().text3).margin({ top: 3 })
         }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
-        Text('会话内提供').fontSize(10).fontColor(this.pal().text3)
+        Text('会话内待开放').fontSize(10).fontColor(this.pal().text3)
       }.width('100%').padding({ top: 12, bottom: 6 })
     }.width('100%').padding(16).backgroundColor(this.pal().card).borderRadius(20)
       .border({ width: 0.5, color: this.pal().cardBorder }).margin({ bottom: 12 })

@@ -1,4 +1,5 @@
 import { promptAction, router } from '@kit.ArkUI';
+import { connection } from '@kit.NetworkKit';
 import { AppTheme, Palette, buildDark, buildLight } from '../common/Theme';
 import { MoonlightBrandIcon } from '../components/moonlight/MoonlightBrandIcon';
 import { MoonlightLaunchSheet } from '../components/moonlight/MoonlightLaunchSheet';
@@ -152,6 +153,9 @@ struct MoonlightAppCatalogPage {
   @State showLaunchSheet: boolean = false;
   @State launching: boolean = false;
   @State launchSettingsEncoded: string = '';
+  @State currentNetworkMetered: boolean = false;
+  @State networkMeteringUnknown: boolean = false;
+  @State meteredApprovedOnce: boolean = false;
   private readonly dataSource: MoonlightCatalogDataSource = new MoonlightCatalogDataSource();
   private readonly viewService: MoonlightLocalViewService =
     new MoonlightLocalViewService(CloudStore.getInstance());
@@ -328,8 +332,33 @@ struct MoonlightAppCatalogPage {
       return;
     }
     this.launchSettingsEncoded = encoded;
+    this.meteredApprovedOnce = false;
+    this.refreshNetworkMetering();
     this.selectedItem = item;
     this.showLaunchSheet = true;
+  }
+
+  private refreshNetworkMetering(): void {
+    try {
+      this.currentNetworkMetered = connection.isDefaultNetMeteredSync();
+      this.networkMeteringUnknown = false;
+    } catch (_error) {
+      // Unknown is treated as metered. The saved policy must explicitly allow
+      // it, or the user must approve this one launch from the preflight sheet.
+      this.currentNetworkMetered = true;
+      this.networkMeteringUnknown = true;
+    }
+  }
+
+  private meteredAllowed(settings: MoonlightSettings): boolean {
+    if (!this.currentNetworkMetered) { return true; }
+    if (settings.network.meteredNetwork === 'allow') { return true; }
+    return settings.network.meteredNetwork === 'ask' && this.meteredApprovedOnce;
+  }
+
+  private meteredApprovalAvailable(settings: MoonlightSettings): boolean {
+    return this.currentNetworkMetered && settings.network.meteredNetwork === 'ask' &&
+      !this.meteredApprovedOnce;
   }
 
   private selectedAddress(hostValue: MoonlightHost, settings: MoonlightSettings): MoonlightAddress {
@@ -483,6 +512,12 @@ struct MoonlightAppCatalogPage {
   private async startSelected(): Promise<void> {
     if (!this.pageActive || this.host === null || this.selectedItem === null) { return; }
     if (this.launching) { return; }
+    this.refreshNetworkMetering();
+    if (!this.meteredAllowed(this.launchEffectiveSettings())) {
+      this.showLaunchSheet = true;
+      promptAction.showToast({ message: '当前网络未获 Moonlight 串流授权', duration: 2200 });
+      return;
+    }
     const settingsSnapshot: MoonlightEffectiveSettings | null = this.launchSettings();
     if (settingsSnapshot === null) {
       promptAction.showToast({ message: '串流设置快照已失效，请重新确认', duration: 2200 });
@@ -606,11 +641,16 @@ struct MoonlightAppCatalogPage {
       certificateChanged: false,
       identityAvailable: this.paired,
       appAvailable: this.selectedItem !== null && this.selectedItem.available && !this.selectedItem.stale,
+      meteredNetwork: this.currentNetworkMetered,
+      meteredAllowed: this.meteredAllowed(this.launchEffectiveSettings()),
+      meteredStateUnknown: this.networkMeteringUnknown,
+      meteredApprovalAvailable: this.meteredApprovalAvailable(this.launchEffectiveSettings()),
       runtimeAvailable: this.hostService.capabilities().hostControlReady,
       adjustmentCount: this.launchAdjustmentCount(),
       onCancel: (): void => { this.showLaunchSheet = false; },
       onOpenSettings: (): void => { this.showLaunchSheet = false; this.openSettings(); },
       onRetry: (): void => { this.showLaunchSheet = false; this.requestRefresh(); },
+      onAllowMetered: (): void => { this.meteredApprovedOnce = true; },
       onStart: (): void => {
         this.startSelected().catch((): void => {
           if (this.pageActive) {

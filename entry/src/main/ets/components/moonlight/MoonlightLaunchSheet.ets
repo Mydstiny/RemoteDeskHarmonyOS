@@ -23,6 +23,8 @@ export struct MoonlightLaunchSheet {
   @Prop appAvailable: boolean = false;
   @Prop meteredNetwork: boolean = false;
   @Prop meteredAllowed: boolean = false;
+  @Prop meteredStateUnknown: boolean = false;
+  @Prop meteredApprovalAvailable: boolean = false;
   @Prop hostBusy: boolean = false;
   @Prop activeSession: boolean = false;
   @Prop runtimeAvailable: boolean = false;
@@ -31,6 +33,7 @@ export struct MoonlightLaunchSheet {
   onStart: () => void = (): void => {};
   onOpenSettings: () => void = (): void => {};
   onRetry: () => void = (): void => {};
+  onAllowMetered: () => void = (): void => {};
 
   private pal(): Palette {
     return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor);
@@ -89,7 +92,8 @@ export struct MoonlightLaunchSheet {
         this.summaryRow('音频', this.audioLabel)
         this.summaryRow('控制', this.inputLabel)
         if (this.meteredNetwork) {
-          this.summaryRow('网络', '当前为计费网络', !this.meteredAllowed)
+          this.summaryRow('网络', this.meteredStateUnknown ? '无法确认是否计费' : '当前为计费网络',
+            !this.meteredAllowed)
         }
         if (this.adjustmentCount > 0) {
           this.summaryRow('能力调整', this.adjustmentCount.toString() + ' 项', true)
@@ -111,16 +115,21 @@ export struct MoonlightLaunchSheet {
         .backgroundColor(this.pal().card).borderRadius(14)
         .border({ width: 0.5, color: this.pal().cardBorder })
 
-      Row() {
-        Button('串流设置').height(44).layoutWeight(1).fontSize(14)
+      Column({ space: 10 }) {
+        Button('串流设置').height(44).width('100%').fontSize(14)
           .backgroundColor(this.pal().surface).fontColor(this.pal().text).borderRadius(12)
           .onClick((): void => { this.onOpenSettings(); })
         if (this.result().canRetry) {
-          Button('重新检查').height(44).layoutWeight(1).fontSize(14).margin({ left: 10 })
+          Button('重新检查').height(44).width('100%').fontSize(14)
             .backgroundColor(this.pal().surface).fontColor(this.pal().text).borderRadius(12)
             .onClick((): void => { this.onRetry(); })
         }
-        Button('开始串流').height(44).layoutWeight(1).fontSize(14).margin({ left: 10 })
+        if (this.result().blocker === 'metered_denied' && this.meteredApprovalAvailable) {
+          Button('允许本次').height(44).width('100%').fontSize(14)
+            .backgroundColor(this.pal().surface).fontColor(this.accentColor).borderRadius(12)
+            .onClick((): void => { this.onAllowMetered(); })
+        }
+        Button('开始串流').height(44).width('100%').fontSize(14)
           .backgroundColor(this.result().allowed ? this.accentColor : this.pal().surface)
           .fontColor(this.result().allowed ? Color.White : this.pal().text3).borderRadius(12)
           .enabled(this.result().allowed)

@@ -772,6 +772,7 @@ struct HostListPage {
   private moonlightCatalogHandoffGeneration: number = 0;
   private pendingMoonlightCatalogHandoff: HostAddPostSaveHandoff =
     emptyHostAddPostSaveHandoff();
+  private moonlightAddCommitted: boolean = false;
   private pendingVncGatewayDirectoryOpen: boolean = false;
   private pendingRustDeskRelayDirectoryOpen: boolean = false;
   private connectionAttemptGeneration: number = 0;
@@ -1820,6 +1821,7 @@ struct HostListPage {
     this.resetForm();
     this.invalidateMoonlightCatalogHandoff();
     this.clearMoonlightVerificationState();
+    this.moonlightAddCommitted = false;
     this.moonlightAddOwnerToken += 1;
     this.addSheetShowsModernPicker = false;
     this.modernAddProtocol = 'moonlight';
@@ -1918,6 +1920,46 @@ struct HostListPage {
     this.moonlightPendingVerificationFence = null;
     this.moonlightActiveVerificationFence = null;
     this.moonlightPairingExpiresAt = 0;
+  }
+
+  private async revokeMoonlightTemporaryPairing(
+    capturedFence: MoonlightHostOperationFence | null = null
+  ): Promise<void> {
+    const verification: MoonlightHostAddVerification | null =
+      this.moonlightActiveVerification;
+    const fence: MoonlightHostOperationFence | null = capturedFence === null ?
+      this.moonlightActiveVerificationFence : capturedFence;
+    let context: MoonlightHostContext | null = null;
+    if (verification !== null && verification.paired && fence !== null &&
+        moonlightVerificationMatchesFence(verification, fence)) {
+      const key = new MoonlightHostAddOperationKey();
+      key.ownerToken = fence.ownerToken;
+      key.generation = fence.generation;
+      key.operation = 'trust';
+      context = this.moonlightRuntimeContext(key, verification, true, fence);
+      if (context !== null) { context.timeoutMs = 7000; }
+    }
+
+    // Invalidate the page projection immediately. ProductRuntime independently
+    // revokes its local trust before attempting the best-effort Sunshine call.
+    this.clearMoonlightVerificationState();
+    if (context === null) { return; }
+
+    try {
+      const result: MoonlightHostServiceResult =
+        await this.moonlightHostService.unpair(context);
+      if (result.nativeResult === null ||
+          result.nativeResult.postconditionTruth !== 'confirmed') {
+        hilog.warn(0x0001, 'Moonlight',
+          'temporary pairing local revoke was not confirmed code=' + result.code);
+      } else if (!result.ok) {
+        hilog.warn(0x0001, 'Moonlight',
+          'temporary pairing revoked locally; remote unpair warning code=' + result.code);
+      }
+    } catch (_error) {
+      hilog.warn(0x0001, 'Moonlight',
+        'temporary pairing native unpair bridge failed');
+    }
   }
 
   private invalidateMoonlightOwnerFence(ownerToken: number): void {
@@ -2162,6 +2204,21 @@ struct HostListPage {
     const store: CloudStore = CloudStore.getInstance();
     const capturedLease: AccountSessionLease | null = store.currentAccountLease();
     if (capturedLease === null || !store.isLeaseCurrent(capturedLease)) { return null; }
+    const previousVerification: MoonlightHostAddVerification | null =
+      this.moonlightActiveVerification;
+    const targetMatchesPrevious: boolean = previousVerification !== null &&
+      ((selectedServerUuid.trim() !== '' &&
+        selectedServerUuid.trim() === previousVerification.serverUuid) ||
+       (address.host === previousVerification.address.host &&
+        address.port === previousVerification.address.port));
+    if (previousVerification !== null && previousVerification.paired &&
+        !targetMatchesPrevious) {
+      await this.revokeMoonlightTemporaryPairing();
+      if (!this.pageActive || key.ownerToken !== this.moonlightAddOwnerToken ||
+          !store.isLeaseCurrent(capturedLease)) {
+        return null;
+      }
+    }
     const requestedFence: MoonlightHostOperationFence | null =
       createMoonlightHostOperationFence(
         key.ownerToken, key.generation,
@@ -2230,19 +2287,19 @@ struct HostListPage {
     return { appCount: titles.length, titles: titles, stale: false, errorText: '' };
   }
 
-  private moonlightCommitTrust(
+  private async moonlightCommitTrust(
     accepted: boolean,
     key: MoonlightHostAddOperationKey
   ): Promise<boolean> {
     const fence: MoonlightHostOperationFence | null = key.operation === 'trust' ?
       this.adoptMoonlightVerificationFence(key) : null;
     if (!accepted) {
-      if (fence !== null) { this.clearMoonlightVerificationState(); }
-      return Promise.resolve(true);
+      await this.revokeMoonlightTemporaryPairing(fence);
+      return true;
     }
     const verification: MoonlightHostAddVerification | null = this.moonlightActiveVerification;
-    return Promise.resolve(fence !== null && verification !== null && verification.paired &&
-      /^[0-9a-f]{64}$/.test(verification.fingerprintSha256));
+    return fence !== null && verification !== null && verification.paired &&
+      /^[0-9a-f]{64}$/.test(verification.fingerprintSha256);
   }
 
   private saveMoonlightHostLocally(
@@ -2294,6 +2351,7 @@ struct HostListPage {
     openCatalog: boolean,
     ownerToken: number
   ): void {
+    this.moonlightAddCommitted = true;
     if (hostId.trim() === '') {
       if (shouldCloseHostAddAfterCommittedSave(
         this.pageActive,
@@ -2330,6 +2388,16 @@ struct HostListPage {
   }
 
   private handleAddSheetDisappear(): void {
+    const moonlightDraftWasOpen: boolean = this.modernAddProtocol === 'moonlight';
+    const moonlightDraftWasCommitted: boolean = this.moonlightAddCommitted;
+    if (moonlightDraftWasOpen && !moonlightDraftWasCommitted) {
+      void this.revokeMoonlightTemporaryPairing();
+    } else if (moonlightDraftWasOpen) {
+      // The durable local host owns this pairing now. Drop only the add-flow
+      // projection; the host record will restore trust for later operations.
+      this.clearMoonlightVerificationState();
+    }
+    this.moonlightAddCommitted = false;
     this.noteSheetDismissed();
     this.addSheetClosing = false;
     this.addSheetShowsModernPicker = false;
@@ -3397,6 +3465,9 @@ struct HostListPage {
   aboutToDisappear(): void {
     this.pageActive = false;
     this.stopMoonlightLanDiscovery();
+    if (!this.moonlightAddCommitted) {
+      void this.revokeMoonlightTemporaryPairing();
+    }
     this.moonlightHostService.disposeOwner(this.moonlightAddOwnerToken);
     this.clearMoonlightVerificationState();
     this.moonlightDiscoveryResultOwnerToken = 0;
@@ -13441,6 +13512,7 @@ struct HostListPage {
           if (protocol === 'moonlight') {
             this.invalidateMoonlightCatalogHandoff();
             this.clearMoonlightVerificationState();
+            this.moonlightAddCommitted = false;
             this.moonlightAddOwnerToken += 1;
           }
           if (protocol === 'vnc') {
@@ -13554,6 +13626,8 @@ struct HostListPage {
           this.modernAddProtocol = '';
           this.addSheetShowsModernPicker = true;
         },
+        onDiscardTemporaryState: (): Promise<void> =>
+          this.revokeMoonlightTemporaryPairing(),
         onSaved: (hostId: string, openCatalog: boolean, ownerToken: number): void => {
           this.handleMoonlightHostSaved(hostId, openCatalog, ownerToken);
         }
