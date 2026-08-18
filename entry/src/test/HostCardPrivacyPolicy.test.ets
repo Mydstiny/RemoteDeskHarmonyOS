@@ -1,6 +1,7 @@
 import { describe, it, expect } from '@ohos/hypium';
 import {
   HOST_CARD_SENSITIVE_INFO_HIDDEN_TEXT,
+  hostCardDisplayLabel,
   hostCardSensitiveValue,
   shouldHideHostCardSensitiveInfo
 } from '../main/ets/services/HostCardPrivacyPolicy';
@@ -21,6 +22,15 @@ export default function hostCardPrivacyPolicyTest(): void {
       expect(shouldHideHostCardSensitiveInfo(false, false)).assertFalse();
       expect(hostCardSensitiveValue(false, '192.168.1.20:3389'))
         .assertEqual('192.168.1.20:3389');
+    });
+
+    it('replaces_only_rustdesk_ids_that_are_used_as_fallback_labels', 0, (): void => {
+      expect(hostCardDisplayLabel(true, 'rustdesk', '83920133', '83920133', ''))
+        .assertEqual('RustDesk 主机');
+      expect(hostCardDisplayLabel(true, 'rustdesk', 'Office PC', '83920133', '83920133'))
+        .assertEqual('Office PC');
+      expect(hostCardDisplayLabel(false, 'rustdesk', '83920133', '83920133', ''))
+        .assertEqual('83920133');
     });
   });
 }

@@ -391,6 +391,7 @@ import {
 } from '../services/PersonalizationDefaultsPolicy';
 import {
   HOST_CARD_SENSITIVE_INFO_HIDDEN_KEY,
+  hostCardDisplayLabel,
   hostCardSensitiveValue,
   shouldHideHostCardSensitiveInfo
 } from '../services/HostCardPrivacyPolicy';
@@ -8968,7 +8969,9 @@ struct HostListPage {
       .onClick((): void => { this.handleHostCardClick(host); })
       Column() {
         Row() {
-          Text(host.label === '' ? '未命名主机' : host.label)
+          Text(hostCardDisplayLabel(
+            shouldHideHostCardSensitiveInfo(this.hostCardSensitiveInfoHidden, host.locked),
+            host.protocol, host.label, host.rustdeskProPeerId, host.customHostname))
             .fontSize(this.breakpoint === 'sm' ? 15 : 16)
             .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
             .layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -9401,7 +9404,9 @@ struct HostListPage {
                 // 主机信息 (sm: old smaller, md+: new larger)
                 Column() {
                   Row() {
-                    Text(host.label)
+                    Text(hostCardDisplayLabel(
+                      shouldHideHostCardSensitiveInfo(this.hostCardSensitiveInfoHidden, host.locked),
+                      host.protocol, host.label, host.rustdeskProPeerId, host.customHostname))
                       .fontSize(this.breakpoint === 'sm' ? (AppTheme.fontSize.body as number) : 17)
                       .fontWeight(FontWeight.Medium)
                       .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1)
@@ -10325,7 +10330,7 @@ struct HostListPage {
                 Column() {
                   Text('隐藏主机卡片敏感信息').fontSize(AppTheme.fontSize.body)
                     .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
-                  Text('隐藏地址、端口、用户名和 RustDesk ID；主机名称仍显示')
+                  Text('隐藏地址、端口、用户名和 RustDesk ID；自定义主机名称仍显示')
                     .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
                 }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
                 Toggle({ type: ToggleType.Switch, isOn: this.hostCardSensitiveInfoHidden })
