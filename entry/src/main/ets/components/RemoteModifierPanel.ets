@@ -8,6 +8,13 @@
  * 动画: 180ms Curve.EaseOut, opacity + translateX 从吸附侧抽屉式展开
  */
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import {
+  RemoteCustomShortcut,
+  RemoteCustomShortcutKeyGroup,
+  RemoteCustomShortcutKeyOption,
+  remoteCustomShortcutKeyOptions,
+  remoteCustomShortcutLabel
+} from '../services/RemoteCustomShortcutPolicy';
 
 const TAG = 'ModifierPanel';
 const DOMAIN = 0x0014;
@@ -29,6 +36,8 @@ export struct RemoteModifierPanel {
   @Prop panelY: number = 70;
   @Prop shortcutX: number = 8;
   @Prop shortcutY: number = 200;
+  @Prop customizationEnabled: boolean = false;
+  @Prop customShortcuts: Array<RemoteCustomShortcut> = [];
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
 
@@ -51,6 +60,9 @@ export struct RemoteModifierPanel {
   /** 上报快捷键面板真实布局尺寸。 */
   onShortcutSizeChange: (width: number, height: number) => void =
     (_width: number, _height: number): void => {};
+  onSaveCustomShortcut: (id: string, keyCodes: Array<number>) => boolean =
+    (_id: string, _keyCodes: Array<number>): boolean => false;
+  onDeleteCustomShortcut: (id: string) => void = (_id: string): void => {};
 
   @State private panelDragOffsetX: number = 0;
   @State private panelDragOffsetY: number = 0;
@@ -59,6 +71,11 @@ export struct RemoteModifierPanel {
   @State private panelDragMoved: boolean = false;
   @State private shortcutDragMoved: boolean = false;
   @State private pressedKeyId: string = '';
+  @State private customEditorVisible: boolean = false;
+  @State private customEditingId: string = '';
+  @State private customModifierCodes: Array<number> = [];
+  @State private customKeyGroup: RemoteCustomShortcutKeyGroup = 'letters';
+  @State private customActionKeyCode: number = 2017;
   private suppressModTapName: string = '';
   private suppressModTapUntilMs: number = 0;
 
@@ -195,6 +212,71 @@ export struct RemoteModifierPanel {
 
   private shouldSuppressModTap(mod: string): boolean {
     return this.suppressModTapName === mod && Date.now() < this.suppressModTapUntilMs;
+  }
+
+  private customModifierActive(keyCode: number): boolean {
+    return this.customModifierCodes.indexOf(keyCode) >= 0;
+  }
+
+  private toggleCustomModifier(keyCode: number): void {
+    const next: Array<number> = this.customModifierCodes.slice(0);
+    const index: number = next.indexOf(keyCode);
+    if (index >= 0) {
+      next.splice(index, 1);
+    } else {
+      next.push(keyCode);
+    }
+    this.customModifierCodes = next;
+  }
+
+  private customDraftKeyCodes(): Array<number> {
+    const result: Array<number> = this.customModifierCodes.slice(0);
+    result.push(this.customActionKeyCode);
+    return result;
+  }
+
+  private beginCustomShortcutEditor(shortcut: RemoteCustomShortcut | null = null): void {
+    this.customEditorVisible = true;
+    this.customEditingId = shortcut === null ? '' : shortcut.id;
+    this.customModifierCodes = shortcut === null ? [] :
+      shortcut.keyCodes.slice(0, Math.max(0, shortcut.keyCodes.length - 1));
+    this.customActionKeyCode = shortcut === null || shortcut.keyCodes.length === 0 ?
+      2017 : shortcut.keyCodes[shortcut.keyCodes.length - 1];
+    this.customKeyGroup = this.customGroupForKeyCode(this.customActionKeyCode);
+  }
+
+  private closeCustomShortcutEditor(): void {
+    this.customEditorVisible = false;
+    this.customEditingId = '';
+    this.customModifierCodes = [];
+    this.customKeyGroup = 'letters';
+    this.customActionKeyCode = 2017;
+  }
+
+  private saveCustomShortcutEditor(): void {
+    const keyCodes: Array<number> = this.customDraftKeyCodes();
+    if (remoteCustomShortcutLabel(keyCodes).length === 0) { return; }
+    if (this.onSaveCustomShortcut(this.customEditingId, keyCodes)) {
+      this.closeCustomShortcutEditor();
+    }
+  }
+
+  private customGroupForKeyCode(keyCode: number): RemoteCustomShortcutKeyGroup {
+    if (keyCode >= 2017 && keyCode <= 2042) { return 'letters'; }
+    if (keyCode >= 2000 && keyCode <= 2009) { return 'digits'; }
+    if (keyCode >= 2090 && keyCode <= 2101) { return 'functions'; }
+    return 'navigation';
+  }
+
+  private customKeyOptions(): Array<RemoteCustomShortcutKeyOption> {
+    return remoteCustomShortcutKeyOptions(this.customKeyGroup);
+  }
+
+  private customGroupLabel(group: RemoteCustomShortcutKeyGroup): string {
+    if (group === 'letters') { return '字母'; }
+    if (group === 'digits') { return '数字'; }
+    if (group === 'functions') { return 'F 键'; }
+    return '导航';
   }
 
   // ============================================================
@@ -462,6 +544,161 @@ export struct RemoteModifierPanel {
   }
 
   @Builder
+  CustomModifierChoice(label: string, keyCode: number) {
+    Text(label)
+      .fontSize(11)
+      .fontColor(this.customModifierActive(keyCode) ? '#FFFFFF' : 'rgba(255,255,255,0.68)')
+      .fontWeight(this.customModifierActive(keyCode) ? FontWeight.Bold : FontWeight.Normal)
+      .height(32).layoutWeight(1)
+      .textAlign(TextAlign.Center)
+      .borderRadius(9)
+      .backgroundColor(this.customModifierActive(keyCode) ? this.accentColor + '88' : this.keyBg())
+      .border({ width: 1, color: this.customModifierActive(keyCode) ?
+        this.accentColor : this.keyBorder() })
+      .margin({ left: 2, right: 2 })
+      .onClick((): void => { this.toggleCustomModifier(keyCode); })
+  }
+
+  @Builder
+  CustomGroupChoice(group: RemoteCustomShortcutKeyGroup) {
+    Text(this.customGroupLabel(group))
+      .fontSize(10)
+      .fontColor(this.customKeyGroup === group ? '#FFFFFF' : 'rgba(255,255,255,0.55)')
+      .height(28).layoutWeight(1)
+      .textAlign(TextAlign.Center)
+      .borderRadius(8)
+      .backgroundColor(this.customKeyGroup === group ? this.accentColor + '66' : 'rgba(255,255,255,0.03)')
+      .margin({ left: 2, right: 2 })
+      .onClick((): void => {
+        this.customKeyGroup = group;
+        const options: Array<RemoteCustomShortcutKeyOption> = remoteCustomShortcutKeyOptions(group);
+        if (options.length > 0) { this.customActionKeyCode = options[0].keyCode; }
+      })
+  }
+
+  @Builder
+  CustomActionChoice(option: RemoteCustomShortcutKeyOption) {
+    Text(option.label)
+      .fontSize(10)
+      .fontColor(this.customActionKeyCode === option.keyCode ? '#FFFFFF' : 'rgba(255,255,255,0.72)')
+      .height(28).width('100%')
+      .textAlign(TextAlign.Center)
+      .borderRadius(8)
+      .backgroundColor(this.customActionKeyCode === option.keyCode ?
+        this.accentColor + '88' : this.keyBg())
+      .border({ width: 0.5, color: this.customActionKeyCode === option.keyCode ?
+        this.accentColor : this.keyBorder() })
+      .onClick((): void => { this.customActionKeyCode = option.keyCode; })
+  }
+
+  @Builder
+  CustomShortcutStrip() {
+    Column() {
+      Row() {
+        Text('自定义组合键')
+          .fontSize(10).fontColor('rgba(255,255,255,0.58)')
+        Blank()
+        Text('＋ 新建')
+          .fontSize(10).fontColor(this.accentColor)
+          .padding({ left: 8, right: 4, top: 4, bottom: 4 })
+          .onClick((): void => { this.beginCustomShortcutEditor(); })
+      }.width('100%').margin({ top: 8, bottom: 4 })
+      if (this.customShortcuts.length === 0) {
+        Text('可保存常用按键组合，所有远程桌面协议共用')
+          .fontSize(9).fontColor('rgba(255,255,255,0.35)')
+          .height(34).width('100%').textAlign(TextAlign.Center)
+          .backgroundColor('rgba(255,255,255,0.025)').borderRadius(8)
+      } else {
+        Scroll() {
+          Row({ space: 6 }) {
+            ForEach(this.customShortcuts, (shortcut: RemoteCustomShortcut): void => {
+              Row() {
+                Text(shortcut.label)
+                  .fontSize(10).fontColor('rgba(255,255,255,0.86)')
+                  .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                  .layoutWeight(1)
+                  .onClick((): void => {
+                    this.onShortcutTap(shortcut.keyCodes.slice(0), shortcut.label);
+                  })
+                Text('✎')
+                  .fontSize(10).fontColor(this.accentColor)
+                  .padding({ left: 6, right: 5, top: 7, bottom: 7 })
+                  .onClick((): void => { this.beginCustomShortcutEditor(shortcut); })
+                Text('×')
+                  .fontSize(12).fontColor('rgba(255,138,128,0.86)')
+                  .padding({ left: 4, right: 6, top: 6, bottom: 6 })
+                  .onClick((): void => { this.onDeleteCustomShortcut(shortcut.id); })
+              }
+              .width(150).height(36)
+              .padding({ left: 8 })
+              .borderRadius(9)
+              .backgroundColor('rgba(255,255,255,0.05)')
+              .border({ width: 0.5, color: this.keyBorder() })
+            }, (shortcut: RemoteCustomShortcut): string => shortcut.id)
+          }
+        }
+        .width('100%').height(40)
+        .scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off)
+      }
+    }.width('100%')
+  }
+
+  @Builder
+  CustomShortcutEditor() {
+    Column() {
+      Row() {
+        Text(this.customEditingId.length > 0 ? '编辑组合键' : '新建组合键')
+          .fontSize(11).fontWeight(FontWeight.Medium).fontColor('#FFFFFF')
+        Blank()
+        Text('取消').fontSize(10).fontColor('rgba(255,255,255,0.55)')
+          .padding({ left: 8, right: 4, top: 4, bottom: 4 })
+          .onClick((): void => { this.closeCustomShortcutEditor(); })
+      }.width('100%').margin({ bottom: 7 })
+      Text('1. 选择一个或多个修饰键')
+        .fontSize(9).fontColor('rgba(255,255,255,0.42)').width('100%')
+      Row() {
+        this.CustomModifierChoice('Ctrl', 2072)
+        this.CustomModifierChoice('Alt', 2045)
+        this.CustomModifierChoice('Shift', 2047)
+        this.CustomModifierChoice('Win', 2076)
+      }.width('100%').margin({ top: 4, bottom: 7 })
+      Text('2. 选择一个主键')
+        .fontSize(9).fontColor('rgba(255,255,255,0.42)').width('100%')
+      Row() {
+        this.CustomGroupChoice('letters')
+        this.CustomGroupChoice('digits')
+        this.CustomGroupChoice('functions')
+        this.CustomGroupChoice('navigation')
+      }.width('100%').margin({ top: 4, bottom: 5 })
+      Grid() {
+        ForEach(this.customKeyOptions(), (option: RemoteCustomShortcutKeyOption): void => {
+          GridItem() { this.CustomActionChoice(option) }
+        }, (option: RemoteCustomShortcutKeyOption): string => option.keyCode.toString())
+      }
+      .columnsTemplate('1fr 1fr 1fr 1fr 1fr')
+      .rowsGap(4).columnsGap(4).width('100%').height(108)
+      Row() {
+        Text(remoteCustomShortcutLabel(this.customDraftKeyCodes()) || '请至少选择一个修饰键')
+          .fontSize(10)
+          .fontColor(remoteCustomShortcutLabel(this.customDraftKeyCodes()).length > 0 ?
+            '#FFFFFF' : 'rgba(255,138,128,0.72)')
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          .layoutWeight(1)
+        Text('保存')
+          .fontSize(11).fontWeight(FontWeight.Bold)
+          .fontColor(remoteCustomShortcutLabel(this.customDraftKeyCodes()).length > 0 ?
+            '#FFFFFF' : 'rgba(255,255,255,0.28)')
+          .padding({ left: 14, right: 14, top: 8, bottom: 8 })
+          .borderRadius(9)
+          .backgroundColor(remoteCustomShortcutLabel(this.customDraftKeyCodes()).length > 0 ?
+            this.accentColor : 'rgba(255,255,255,0.05)')
+          .enabled(remoteCustomShortcutLabel(this.customDraftKeyCodes()).length > 0)
+          .onClick((): void => { this.saveCustomShortcutEditor(); })
+      }.width('100%').margin({ top: 7 })
+    }.width('100%')
+  }
+
+  @Builder
   PanelDragArea(label: string, shortcut: boolean) {
     Row() {
       Text(label)
@@ -476,6 +713,8 @@ export struct RemoteModifierPanel {
     .height(30)
     .layoutWeight(1)
     .padding({ left: 6, right: 8 })
+    .hitTestBehavior(HitTestMode.BLOCK_HIERARCHY)
+    .onTouch((event: TouchEvent): void => { event.stopPropagation(); })
     .gesture(
       PanGesture({ fingers: 1, distance: 5 })
         .onActionStart((_event: GestureEvent): void => {
@@ -655,7 +894,10 @@ export struct RemoteModifierPanel {
       )
       .position({ x: this.panelEffectiveX(), y: this.panelEffectiveY() })
       .opacity(this.prepareOnly ? 0 : 1)
-      .hitTestBehavior(this.prepareOnly ? HitTestMode.None : HitTestMode.Default)
+      .hitTestBehavior(this.prepareOnly ? HitTestMode.None : HitTestMode.BLOCK_HIERARCHY)
+      .onTouch((event: TouchEvent): void => {
+        if (!this.prepareOnly) { event.stopPropagation(); }
+      })
       .onAreaChange((_old: Area, next: Area): void => {
         const width: number = next.width as number;
         const height: number = next.height as number;
@@ -677,32 +919,40 @@ export struct RemoteModifierPanel {
             .padding({ left: 10, right: 2, top: 2, bottom: 2 })
             .gesture(TapGesture({ count: 1 })
               .onAction((): void => {
+                this.closeCustomShortcutEditor();
                 this.onCloseShortcut();
               }))
         }
         .width('100%')
         .padding({ right: 6, top: 2, bottom: 8 })
 
-        // 快捷键 2 列网格
-        Grid() {
-          GridItem() { this.ShortcutBtn('Ctrl + C', [2072, 2019]) }
-          GridItem() { this.ShortcutBtn('Ctrl + V', [2072, 2038]) }
-          GridItem() { this.ShortcutBtn('Alt + Tab', [2045, 2049]) }
-          GridItem() { this.ShortcutBtn('Alt + F4', [2045, 2093]) }
-          GridItem() { this.ShortcutBtn('Win + R', [2076, 2034]) }
-          GridItem() { this.ShortcutBtn('Win + D', [2076, 2020]) }
-          GridItem() { this.ShortcutBtn('Ctrl + Shift + Esc', [2072, 2047, 2070]) }
-          GridItem() { this.ShortcutBtn('Win + E', [2076, 2021]) }
+        if (this.customizationEnabled && this.customEditorVisible) {
+          this.CustomShortcutEditor()
+        } else {
+          // 快捷键 2 列网格
+          Grid() {
+            GridItem() { this.ShortcutBtn('Ctrl + C', [2072, 2019]) }
+            GridItem() { this.ShortcutBtn('Ctrl + V', [2072, 2038]) }
+            GridItem() { this.ShortcutBtn('Alt + Tab', [2045, 2049]) }
+            GridItem() { this.ShortcutBtn('Alt + F4', [2045, 2093]) }
+            GridItem() { this.ShortcutBtn('Win + R', [2076, 2034]) }
+            GridItem() { this.ShortcutBtn('Win + D', [2076, 2020]) }
+            GridItem() { this.ShortcutBtn('Ctrl + Shift + Esc', [2072, 2047, 2070]) }
+            GridItem() { this.ShortcutBtn('Win + E', [2076, 2021]) }
+          }
+          .columnsTemplate('1fr 1fr')
+          .rowsGap(6)
+          .columnsGap(6)
+          .width('100%')
+
+          Row().height(8)
+
+          // 危险动作
+          this.DangerShortcut()
+          if (this.customizationEnabled) {
+            this.CustomShortcutStrip()
+          }
         }
-        .columnsTemplate('1fr 1fr')
-        .rowsGap(6)
-        .columnsGap(6)
-        .width('100%')
-
-        Row().height(8)
-
-        // 危险动作
-        this.DangerShortcut()
       }
       .width(this.panelWidth())
       .padding(10)
@@ -720,7 +970,8 @@ export struct RemoteModifierPanel {
           .animation({ duration: 180, curve: Curve.EaseOut })
       )
       .position({ x: this.shortcutEffectiveX(), y: this.shortcutEffectiveY() })
-      .hitTestBehavior(HitTestMode.Default)
+      .hitTestBehavior(HitTestMode.BLOCK_HIERARCHY)
+      .onTouch((event: TouchEvent): void => { event.stopPropagation(); })
       .onAreaChange((_old: Area, next: Area): void => {
         const width: number = next.width as number;
         const height: number = next.height as number;

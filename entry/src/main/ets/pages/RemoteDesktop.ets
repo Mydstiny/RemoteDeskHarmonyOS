@@ -122,6 +122,15 @@ import {
 } from '../services/RustDeskPeerTwoFactorPolicy';
 import { RemoteModifierHandle } from '../components/RemoteModifierHandle';
 import { RemoteModifierPanel } from '../components/RemoteModifierPanel';
+import {
+  decodeRemoteCustomShortcuts,
+  encodeRemoteCustomShortcuts,
+  REMOTE_CUSTOM_SHORTCUT_STORAGE_KEY,
+  RemoteCustomShortcut,
+  RemoteCustomShortcutUpdate,
+  removeRemoteCustomShortcut,
+  upsertRemoteCustomShortcut
+} from '../services/RemoteCustomShortcutPolicy';
 import { RemoteCursorOverlay, RemoteCursorOverlayState } from '../components/RemoteCursorOverlay';
 import { RemoteSessionTopBar, RemoteSessionTopBarActions } from '../components/RemoteSessionTopBar';
 import { RustDeskDiagnosticsHud } from '../components/RustDeskDiagnosticsHud';
@@ -1121,6 +1130,7 @@ struct RemoteDesktop {
   @State modifierPanelMounted: boolean = false;
   @State modifierPanelVisible: boolean = false;
   @State shortcutPanelVisible: boolean = false;
+  @State remoteCustomShortcuts: Array<RemoteCustomShortcut> = [];
   @State modifierPanelX: number = 8;
   @State modifierPanelY: number = 70;
   @State shortcutPanelX: number = 8;
@@ -1131,6 +1141,7 @@ struct RemoteDesktop {
   private shortcutPanelMeasuredHeight: number = 238;
   private modifierPanelUserPositioned: boolean = false;
   private shortcutPanelUserPositioned: boolean = false;
+  private remoteCustomShortcutSequence: number = 0;
   // 修饰键虚拟状态 (Phase 2: once/locked 状态机)
   @State ctrlLatch: ModifierLatch = 'off';
   @State altLatch: ModifierLatch = 'off';
@@ -3978,6 +3989,61 @@ struct RemoteDesktop {
     }
   }
 
+  private restoreRemoteCustomShortcuts(): void {
+    try {
+      const prefs = preferences.getPreferencesSync(getContext(this), { name: 'RemoteDesktopAppPrefs' });
+      const raw: string = prefs.getSync(REMOTE_CUSTOM_SHORTCUT_STORAGE_KEY, '') as string;
+      this.remoteCustomShortcuts = decodeRemoteCustomShortcuts(raw);
+    } catch (err) {
+      this.remoteCustomShortcuts = [];
+      hilog.warn(RD_DOMAIN, RD_TAG,
+        'restoreRemoteCustomShortcuts fallback to empty: ' + JSON.stringify(err));
+    }
+  }
+
+  private persistRemoteCustomShortcuts(next: Array<RemoteCustomShortcut>): boolean {
+    try {
+      const prefs = preferences.getPreferencesSync(getContext(this), { name: 'RemoteDesktopAppPrefs' });
+      prefs.putSync(REMOTE_CUSTOM_SHORTCUT_STORAGE_KEY, encodeRemoteCustomShortcuts(next));
+      prefs.flushSync();
+      this.remoteCustomShortcuts = next.slice(0);
+      return true;
+    } catch (err) {
+      hilog.error(RD_DOMAIN, RD_TAG,
+        'persistRemoteCustomShortcuts failed: ' + JSON.stringify(err));
+      promptAction.showToast({ message: '组合键保存失败，请稍后重试', duration: 2200 });
+      return false;
+    }
+  }
+
+  private nextRemoteCustomShortcutId(): string {
+    this.remoteCustomShortcutSequence++;
+    return 'shortcut-' + Date.now().toString() + '-' +
+      this.remoteCustomShortcutSequence.toString();
+  }
+
+  private saveRemoteCustomShortcut(id: string, keyCodes: Array<number>): boolean {
+    const effectiveId: string = id.trim().length === 0 ? this.nextRemoteCustomShortcutId() : id;
+    const update: RemoteCustomShortcutUpdate =
+      upsertRemoteCustomShortcut(this.remoteCustomShortcuts, effectiveId, keyCodes);
+    if (!update.accepted) {
+      promptAction.showToast({ message: update.reason, duration: 2000 });
+      return false;
+    }
+    if (!this.persistRemoteCustomShortcuts(update.shortcuts)) { return false; }
+    promptAction.showToast({ message: id.trim().length === 0 ? '组合键已保存' : '组合键已更新', duration: 1400 });
+    return true;
+  }
+
+  private deleteRemoteCustomShortcut(id: string): void {
+    const next: Array<RemoteCustomShortcut> = removeRemoteCustomShortcut(
+      this.remoteCustomShortcuts, id);
+    if (next.length === this.remoteCustomShortcuts.length) { return; }
+    if (this.persistRemoteCustomShortcuts(next)) {
+      promptAction.showToast({ message: '组合键已删除', duration: 1400 });
+    }
+  }
+
   private setRustDeskPrivacyMode(on: boolean): void {
     this.rustdeskPrivacyMode = on;
     this.persistSessionPref('rustdeskPrivacyMode', on);
@@ -6327,6 +6393,7 @@ struct RemoteDesktop {
     this.physicalKeyboardLayoutPromptVisible = false;
     this.xComponentController.setListener(this);
     this.restoreRemoteDisplayScalePreference();
+    this.restoreRemoteCustomShortcuts();
     this.registerInputDeviceWatcher();
     this.registerKeyboardAvoidListener();
     const accountScopeReady: boolean = await AccountSessionCoordinator.getInstance().init(
@@ -15498,6 +15565,8 @@ struct RemoteDesktop {
           panelY: this.modifierPanelY,
           shortcutX: this.shortcutPanelX,
           shortcutY: this.shortcutPanelY,
+          customizationEnabled: true,
+          customShortcuts: this.remoteCustomShortcuts,
           onClose: (): void => {
             this.closeModifierPanel();
           },
@@ -15531,6 +15600,12 @@ struct RemoteDesktop {
             } else {
               this.sendShortcutSequence(keyCodes, label);
             }
+          },
+          onSaveCustomShortcut: (id: string, keyCodes: Array<number>): boolean => {
+            return this.saveRemoteCustomShortcut(id, keyCodes);
+          },
+          onDeleteCustomShortcut: (id: string): void => {
+            this.deleteRemoteCustomShortcut(id);
           },
           onPanelPositionChange: (x: number, y: number): void => {
             this.moveModifierPanel(x, y);

@@ -142,6 +142,7 @@ import remoteKeyDispatcherTest from './RemoteKeyDispatcher.test';
 import remoteCanvasInteractionPolicyTest from './RemoteCanvasInteractionPolicy.test';
 import remoteKeyboardLayoutSelectionPolicyTest from './RemoteKeyboardLayoutSelectionPolicy.test';
 import remoteModifierStateControllerTest from './RemoteModifierStateController.test';
+import remoteCustomShortcutPolicyTest from './RemoteCustomShortcutPolicy.test';
 import terminalInputBufferTest from './TerminalInputBuffer.test';
 import terminalRendererPolicyTest from './TerminalRendererPolicy.test';
 import sshTransportPolicyTest from './SshTransportPolicy.test';
@@ -329,6 +330,7 @@ export default function testsuite() {
   remoteCanvasInteractionPolicyTest();
   remoteKeyboardLayoutSelectionPolicyTest();
   remoteModifierStateControllerTest();
+  remoteCustomShortcutPolicyTest();
   terminalInputBufferTest();
   terminalRendererPolicyTest();
   sshTransportPolicyTest();
