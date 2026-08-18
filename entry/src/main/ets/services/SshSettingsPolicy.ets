@@ -1,8 +1,9 @@
-export const SSH_SETTINGS_SCHEMA_VERSION: number = 2;
+export const SSH_SETTINGS_SCHEMA_VERSION: number = 3;
 export const SSH_SETTINGS_SCHEMA_VERSION_KEY: string = 'sshSettingsSchemaVersion';
 export const SSH_TERMINAL_FOREGROUND_COLOR_KEY: string = 'sshTerminalForegroundColor';
 export const SSH_TERMINAL_FONT_SIZE_KEY: string = 'sshTerminalFontSize';
 export const SSH_TERMINAL_LINE_SPACING_KEY: string = 'sshTerminalLineSpacing';
+export const SSH_SESSION_LOCALE_KEY: string = 'sshSessionLocale';
 
 // Legacy aliases stay writable for one compatibility cycle so an older build
 // can still read a preference saved by the current build.
@@ -22,6 +23,73 @@ export interface SshTerminalAppearance {
   foregroundColor: string;
   fontSize: number;
   lineSpacing: number;
+}
+
+export interface SshSessionLocaleOption {
+  value: string;
+  label: string;
+  shortLabel: string;
+  description: string;
+}
+
+/**
+ * The SSH bridge only accepts this explicit list. Apart from preventing
+ * command/environment injection, the small list keeps the UI honest about
+ * locales that are commonly available on UTF-8 capable servers.
+ */
+export function sshSessionLocaleOptions(): SshSessionLocaleOption[] {
+  return [
+    {
+      value: '',
+      label: '服务器默认',
+      shortLabel: '默认',
+      description: '不发送 LANG，沿用服务器为该账户配置的地区语言'
+    },
+    {
+      value: 'C.UTF-8',
+      label: '通用 UTF-8',
+      shortLabel: 'UTF-8',
+      description: '发送 LANG=C.UTF-8；适合没有中文 locale、但需要正确显示中文的服务器'
+    },
+    {
+      value: 'zh_CN.UTF-8',
+      label: '简体中文',
+      shortLabel: '简中',
+      description: '发送 LANG=zh_CN.UTF-8；需要服务器已安装该 locale'
+    },
+    {
+      value: 'zh_TW.UTF-8',
+      label: '繁体中文',
+      shortLabel: '繁中',
+      description: '发送 LANG=zh_TW.UTF-8；需要服务器已安装该 locale'
+    },
+    {
+      value: 'en_US.UTF-8',
+      label: 'English (US)',
+      shortLabel: 'EN',
+      description: '发送 LANG=en_US.UTF-8；需要服务器已安装该 locale'
+    }
+  ];
+}
+
+export function normalizeSshSessionLocale(value: string): string {
+  const normalized: string = value.trim();
+  const options: SshSessionLocaleOption[] = sshSessionLocaleOptions();
+  for (let index = 0; index < options.length; index++) {
+    if (options[index].value === normalized) { return normalized; }
+  }
+  return '';
+}
+
+export function sshSessionLocaleLabel(value: string, short: boolean = false): string {
+  const normalized: string = normalizeSshSessionLocale(value);
+  const options: SshSessionLocaleOption[] = sshSessionLocaleOptions();
+  for (let index = 0; index < options.length; index++) {
+    if (options[index].value === normalized) {
+      return short ? options[index].shortLabel : options[index].label;
+    }
+  }
+  return short ? '默认' : '服务器默认';
 }
 
 function isHexDigit(value: string): boolean {

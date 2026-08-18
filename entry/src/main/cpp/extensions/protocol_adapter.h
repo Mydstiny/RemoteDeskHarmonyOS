@@ -99,6 +99,7 @@ struct ConnectionConfig {
     std::string privateKeyPem;    // 🆕 SSH 私钥 PEM (临时明文, 仅 publickey 认证)
     std::string privateKeyPassphrase; // 🆕 SSH 私钥口令 (可选)
     std::vector<std::string> sshKeyboardInteractiveResponses; // SSH keyboard-interactive/MFA responses
+    std::string sshLocale;             // optional bounded LANG request for the target shell
     std::string sshProxyType;          // direct | http_connect | socks5 | frp_* | ssh_jump
     std::string sshProxyHost;          // proxy, FRP mapped, or jump endpoint
     int         sshProxyPort;

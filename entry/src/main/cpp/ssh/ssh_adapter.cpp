@@ -2891,6 +2891,36 @@ int SshAdapter::requestPty(int cols, int rows) {
     return 0;
 }
 
+int SshAdapter::requestSessionLocale(const std::string& locale) {
+    if (locale.empty()) { return 0; }
+    if (!assertSessionOwner("request_session_locale") || !channel_) {
+        return LIBSSH2_ERROR_BAD_USE;
+    }
+
+    int rc;
+    while ((rc = libssh2_channel_setenv(channel_, "LANG", locale.c_str())) ==
+           LIBSSH2_ERROR_EAGAIN) {
+        const int waitResult = waitSocket(2, 15);
+        if (waitResult != 0) {
+            OH_LOG_WARN(LOG_APP,
+                        "[SSH] LANG 环境请求等待超时 locale=%{public}s",
+                        locale.c_str());
+            return LIBSSH2_ERROR_TIMEOUT;
+        }
+    }
+    if (rc != 0) {
+        // OpenSSH may reject this when AcceptEnv does not include LANG. The
+        // shell is still usable, so locale negotiation is intentionally
+        // best-effort and the caller proceeds to PTY allocation.
+        OH_LOG_WARN(LOG_APP,
+                    "[SSH] 服务器拒绝 LANG 环境请求 locale=%{public}s rc=%{public}d",
+                    locale.c_str(), rc);
+        return rc;
+    }
+    OH_LOG_INFO(LOG_APP, "[SSH] 已请求会话 LANG=%{public}s", locale.c_str());
+    return 0;
+}
+
 int SshAdapter::startShell() {
     if (!assertSessionOwner("start_shell")) {
         return ERR_SSH_SHELL_FAILED;
@@ -3037,7 +3067,12 @@ int SshAdapter::connectInternal(const ConnectionConfig& cfg, bool preserveOwner)
             return {ret, "SSH channel open failed [" + std::to_string(ret) + "]"};
         }
 
-        // Step 6: 请求 PTY (SSH 调用方将 cfg.width/height 传为终端 cols/rows)
+        // Step 6: LANG is a channel environment request, not terminal input.
+        // Refusal is non-fatal because many servers deliberately omit LANG
+        // from AcceptEnv while still providing a fully usable shell.
+        (void)requestSessionLocale(cfg.sshLocale);
+
+        // Step 7: 请求 PTY (SSH 调用方将 cfg.width/height 传为终端 cols/rows)
         int ptyCols = cfg.width > 0 ? cfg.width : 80;
         int ptyRows = cfg.height > 0 ? cfg.height : 24;
         ret = requestPty(ptyCols, ptyRows);
@@ -3047,7 +3082,7 @@ int SshAdapter::connectInternal(const ConnectionConfig& cfg, bool preserveOwner)
                 std::to_string(lastPtyLibssh2Error_) + "]"};
         }
 
-        // Step 7: 启动远程 Shell
+        // Step 8: 启动远程 Shell
         ret = startShell();
         if (ret < 0) {
             return {ret, "SSH shell start failed [" + std::to_string(ret) + "]"};

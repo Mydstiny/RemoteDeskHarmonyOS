@@ -445,6 +445,9 @@ private:
     /** 请求 PTY (终端类型 + 初始尺寸) */
     int requestPty(int cols, int rows);
 
+    /** Send the optional bounded LANG channel request before PTY/shell startup. */
+    int requestSessionLocale(const std::string& locale);
+
     /** 启动远程 Shell */
     int startShell();
 

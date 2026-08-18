@@ -112,7 +112,12 @@ import {
 } from '../services/SshXtermTabSurfacePolicy';
 import { VirtualKeyBar } from '../components/VirtualKeyBar';
 import {
+  SSH_SESSION_LOCALE_KEY,
   normalizeSshTerminalLineSpacing,
+  normalizeSshSessionLocale,
+  sshSessionLocaleLabel,
+  sshSessionLocaleOptions,
+  SshSessionLocaleOption,
   SshTerminalAppearance
 } from '../services/SshSettingsPolicy';
 import { SshSettingsService } from '../services/SshSettingsService';
@@ -328,6 +333,7 @@ struct SshTerminal {
   @StorageProp('isPadDevice') isPadDevice: boolean = false;
   @StorageLink('sshTerminalFontSize') @Watch('onFontSizeChange') fontSize: number = 18;
   @StorageLink('sshTerminalLineSpacing') @Watch('onLineSpacingChange') lineSpacing: number = 1.12;
+  @StorageLink(SSH_SESSION_LOCALE_KEY) sshSessionLocale: string = '';
   /** 0=自动, 1=虚拟键盘, 2=实体键鼠; persisted from the SSH settings card. */
   @StorageLink('sshInputMode') @Watch('onSshInputModeChange') sshInputMode: number = 0;
   @State termRows: number = 24;
@@ -5038,6 +5044,7 @@ struct SshTerminal {
       this.sshForwardingProfilesReady = this.sshForwardingProfiles.init(sshContext);
       this.fontSize = appearance.fontSize;
       this.lineSpacing = appearance.lineSpacing;
+      this.sshSessionLocale = this.sshSettings.getSshSessionLocale();
       hilog.info(0x0000, 'SshTerminal', '[appearance] restored font=' +
         appearance.fontSize.toString() + ' lineSpacing=' + appearance.lineSpacing.toString());
     } catch (err) {
@@ -6144,6 +6151,7 @@ struct SshTerminal {
         authMethod: useKey ? 'publickey' : 'password',
         privateKeyPem: useKey ? keyData : '',
         privateKeyPassphrase: keyPassphrase,
+        sshLocale: normalizeSshSessionLocale(this.sshSessionLocale),
         expectedHostKeyRawBase64: (preflightMatchesHost ? this.preflightExpectedHostKeyRaw : '') ||
           host.sshHostKeyRawBase64,
         expectedHostKeyFingerprintSha256: (preflightMatchesHost ? this.preflightExpectedHostKeyFp : '') ||
@@ -6378,6 +6386,49 @@ struct SshTerminal {
     this.connected = false;
     if (!this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId)) { return; }
     await this.connect(host, pageGeneration, bindingGeneration);
+  }
+
+  private selectSshSessionLocale(): void {
+    if (this.connecting) {
+      promptAction.showToast({ message: '当前正在连接，请连接完成后再切换地区语言', duration: 1800 });
+      return;
+    }
+    const options: SshSessionLocaleOption[] = sshSessionLocaleOptions();
+    promptAction.showDialog({
+      title: 'SSH 会话地区语言',
+      message: '连接时通过 SSH 环境请求发送 LANG。通用 UTF-8 适合没有中文 locale、但需要显示中文的服务器；中文选项需要服务器已安装对应 locale。服务器拒绝环境请求时仍会继续连接。',
+      buttons: [
+        { text: options[0].label, color: this.pal().text2 },
+        { text: options[1].label, color: this.pal().text },
+        { text: options[2].label, color: this.pal().text },
+        { text: options[3].label, color: this.pal().text },
+        { text: options[4].label, color: this.pal().text }
+      ]
+    }).then((result): void => {
+      if (result.index < 0 || result.index >= options.length) { return; }
+      const previous: string = normalizeSshSessionLocale(this.sshSessionLocale);
+      const selected: SshSessionLocaleOption = options[result.index];
+      this.sshSessionLocale = this.sshSettings.saveSshSessionLocale(selected.value);
+      if (this.sshSessionLocale === previous) { return; }
+      if (!this.sshConnectionIsConnected()) {
+        promptAction.showToast({ message: selected.label + '将在下次连接时应用', duration: 1800 });
+        return;
+      }
+      promptAction.showDialog({
+        title: '重新连接以应用',
+        message: '已选择“' + selected.label + '”。LANG 只能在 SSH Shell 启动前发送，是否现在重新连接？',
+        buttons: [
+          { text: '稍后', color: this.pal().text2 },
+          { text: '重新连接', color: this.accentColor }
+        ]
+      }).then((reconnectResult): void => {
+        if (reconnectResult.index === 1) { void this.retryConnection(); }
+      }).catch((_err: BusinessError): void => {
+        // Dismissing the reconnect prompt keeps the new preference for next time.
+      });
+    }).catch((_err: BusinessError): void => {
+      // Closing the locale picker leaves the current connection unchanged.
+    });
   }
 
   /** Explicit page exit owns the SSH session; ordinary page disposal only detaches the view. */
@@ -11030,6 +11081,21 @@ struct SshTerminal {
             .fontSize(11).fontColor('rgba(242,244,247,0.54)')
             .margin({ right: 12 })
         }
+        Row({ space: 4 }) {
+          Text('LANG').fontSize(10).fontWeight(FontWeight.Medium)
+            .fontColor('rgba(242,244,247,0.76)')
+          if (this.isDesktopDevice) {
+            Text(sshSessionLocaleLabel(this.sshSessionLocale, true))
+              .fontSize(10).fontColor('rgba(242,244,247,0.60)')
+          }
+        }
+        .height(34)
+        .padding({ left: 9, right: 9 })
+        .borderRadius(17)
+        .backgroundColor(this.chromeChipBg())
+        .opacity(this.connecting ? 0.48 : 1)
+        .margin({ right: 8 })
+        .onClick((): void => { this.selectSshSessionLocale(); })
         if (this.sshConnectionIsConnected()) {
           if (!this.isDesktopDevice) {
             Row() {

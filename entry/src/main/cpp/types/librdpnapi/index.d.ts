@@ -903,6 +903,8 @@ export interface SessionConfig {
   privateKeyPem: string;
   privateKeyPassphrase: string;
   keyboardInteractiveResponses?: string[];
+  /** Optional LANG sent as an SSH channel environment request before PTY/shell startup. */
+  sshLocale?: string;
   sshProxyType?: 'direct' | 'http_connect' | 'socks5' | 'frp_tcp' | 'frp_visitor' |
     'frp_stcp' | 'frp_sudp' | 'frp_xtcp' | 'ssh_jump' | 'legacy_gateway';
   sshProxyHost?: string;

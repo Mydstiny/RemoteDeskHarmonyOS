@@ -980,6 +980,11 @@ static bool ReadOptionalNapiInt(napi_env env, napi_value object, const char* key
     return napi_get_value_int32(env, value, &output) == napi_ok;
 }
 
+static bool SshSessionLocaleIsSupported(const std::string& locale) {
+    return locale.empty() || locale == "C.UTF-8" || locale == "zh_CN.UTF-8" ||
+        locale == "zh_TW.UTF-8" || locale == "en_US.UTF-8";
+}
+
 static bool ParseSshJumpHopHandoffs(napi_env env, napi_value object,
                                     ConnectionConfig& config) {
     napi_value value;
@@ -3638,6 +3643,13 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     getString("sshJumpHostKeyRawBase64", cfg.sshJumpHostKeyRawBase64);
     getString("sshJumpHostKeyFingerprintSha256", cfg.sshJumpHostKeyFingerprintSha256);
     if (protocolName == "ssh") {
+        getString("sshLocale", cfg.sshLocale);
+        if (!SshSessionLocaleIsSupported(cfg.sshLocale)) {
+            OH_LOG_ERROR(LOG_APP, "[ExtLoader] unsupported SSH session locale");
+            napi_value errVal;
+            napi_create_int32(env, ERR_SSH_PROXY_INVALID, &errVal);
+            return errVal;
+        }
         getString("sshProxyType", cfg.sshProxyType);
         getString("sshProxyHost", cfg.sshProxyHost);
         getInt("sshProxyPort", cfg.sshProxyPort);
@@ -4563,6 +4575,8 @@ static bool ParseSshConnectionConfig(napi_env env, napi_value value,
     getString("authMethod", config.authMethod);
     getString("privateKeyPem", config.privateKeyPem);
     getString("privateKeyPassphrase", config.privateKeyPassphrase);
+    getString("sshLocale", config.sshLocale);
+    if (!SshSessionLocaleIsSupported(config.sshLocale)) { return false; }
     getString("expectedHostKeyRawBase64", config.expectedHostKeyRawBase64);
     getString("expectedHostKeyFingerprintSha256", config.expectedHostKeyFingerprintSha256);
     getString("sshJumpHostKeyRawBase64", config.sshJumpHostKeyRawBase64);

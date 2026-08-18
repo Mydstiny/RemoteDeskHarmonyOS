@@ -6,9 +6,12 @@ import {
   SSH_TERMINAL_LINE_SPACING_KEY,
   defaultSshTerminalAppearance,
   isSshTerminalAppearanceKey,
+  normalizeSshSessionLocale,
   normalizeSshTerminalLineSpacing,
   resolveSshTerminalAppearance,
-  resolveSshTerminalAppearanceFromCloudSettings
+  resolveSshTerminalAppearanceFromCloudSettings,
+  sshSessionLocaleLabel,
+  sshSessionLocaleOptions
 } from '../main/ets/services/SshSettingsPolicy';
 
 export default function sshSettingsPolicyTest(): void {
@@ -35,6 +38,16 @@ export default function sshSettingsPolicyTest(): void {
       expect(next.fontSize).assertEqual(fallback.fontSize);
       expect(next.lineSpacing).assertEqual(1.5);
       expect(isSshTerminalAppearanceKey(SSH_TERMINAL_LINE_SPACING_KEY)).assertTrue();
+    });
+
+    it('accepts_only_bounded_ssh_session_locales', 0, (): void => {
+      expect(normalizeSshSessionLocale('C.UTF-8')).assertEqual('C.UTF-8');
+      expect(normalizeSshSessionLocale(' zh_CN.UTF-8 ')).assertEqual('zh_CN.UTF-8');
+      expect(normalizeSshSessionLocale('zh_CN.UTF-8; touch /tmp/pwned')).assertEqual('');
+      expect(normalizeSshSessionLocale('LC_ALL=zh_CN.UTF-8')).assertEqual('');
+      expect(sshSessionLocaleOptions().length).assertEqual(5);
+      expect(sshSessionLocaleLabel('zh_TW.UTF-8')).assertEqual('繁体中文');
+      expect(sshSessionLocaleLabel('not-installed', true)).assertEqual('默认');
     });
   });
 }
