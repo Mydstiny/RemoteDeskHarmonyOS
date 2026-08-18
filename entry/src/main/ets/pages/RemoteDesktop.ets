@@ -131,6 +131,11 @@ import {
   removeRemoteCustomShortcut,
   upsertRemoteCustomShortcut
 } from '../services/RemoteCustomShortcutPolicy';
+import {
+  remoteVirtualTouchpadKeyboardGuide,
+  RemoteVirtualTouchpadKeyboardGuide,
+  shouldShowRemoteVirtualTouchpadKeyboardGuide
+} from '../services/RemoteVirtualTouchpadGuidePolicy';
 import { RemoteCursorOverlay, RemoteCursorOverlayState } from '../components/RemoteCursorOverlay';
 import { RemoteSessionTopBar, RemoteSessionTopBarActions } from '../components/RemoteSessionTopBar';
 import { RustDeskDiagnosticsHud } from '../components/RustDeskDiagnosticsHud';
@@ -1187,6 +1192,9 @@ struct RemoteDesktop {
   private physicalKeyboardLayout: RemoteKeyboardLayout = RemoteKeyboardLayout.WINDOWS;
   private physicalKeyboardLayoutConfirmed: boolean = false;
   private physicalKeyboardLayoutPromptVisible: boolean = false;
+  private virtualTouchpadKeyboardGuideShownThisSession: boolean = false;
+  private virtualTouchpadKeyboardGuidePromptVisible: boolean = false;
+  private virtualTouchpadKeyboardGuideTimer: number = -1;
   private physicalKeyboardConnected: boolean = false;
   @State private externalKeyboardMouseConnected: boolean = false;
   private vncExternalInputAutoSwitchSessionId: number = -1;
@@ -3921,7 +3929,12 @@ struct RemoteDesktop {
         this.startRustDeskDiagnosticsPolling();
       }
       void this.refreshPhysicalKeyboardPresence('connection-state');
+      this.scheduleVirtualTouchpadKeyboardGuide();
     } else {
+      if (this.virtualTouchpadKeyboardGuideTimer >= 0) {
+        clearTimeout(this.virtualTouchpadKeyboardGuideTimer);
+        this.virtualTouchpadKeyboardGuideTimer = -1;
+      }
       this.vncExternalInputAutoSwitchSessionId = -1;
       this.resetRustDeskPhysicalTouchpadState();
       this.restoreRemoteSystemPointer('connection-state');
@@ -8063,6 +8076,54 @@ struct RemoteDesktop {
     const host: RemoteHost | null = this.pendingHost;
     return this.isKeyboardMouseControlMode() && this.physicalKeyboardConnected && host !== null &&
       shouldChoosePhysicalKeyboardLayout(host.protocol, this.isDesktopDevice, this.breakpoint);
+  }
+
+  private scheduleVirtualTouchpadKeyboardGuide(): void {
+    if (this.virtualTouchpadKeyboardGuideTimer >= 0) {
+      clearTimeout(this.virtualTouchpadKeyboardGuideTimer);
+    }
+    this.virtualTouchpadKeyboardGuideTimer = setTimeout((): void => {
+      this.virtualTouchpadKeyboardGuideTimer = -1;
+      if (this.inputDevicePromptVisible || this.physicalKeyboardLayoutPromptVisible) {
+        this.scheduleVirtualTouchpadKeyboardGuide();
+        return;
+      }
+      this.promptVirtualTouchpadKeyboardGuide();
+    }, 650);
+  }
+
+  private promptVirtualTouchpadKeyboardGuide(): void {
+    const protocol: string = this.currentProtocolName();
+    if (!shouldShowRemoteVirtualTouchpadKeyboardGuide(
+      protocol, this.connected, this.currentControlMode(),
+      this.virtualTouchpadKeyboardGuideShownThisSession,
+      this.virtualTouchpadKeyboardGuidePromptVisible,
+      this.isVncViewOnlySession())) {
+      return;
+    }
+    const guide: RemoteVirtualTouchpadKeyboardGuide =
+      remoteVirtualTouchpadKeyboardGuide(protocol);
+    this.virtualTouchpadKeyboardGuideShownThisSession = true;
+    this.virtualTouchpadKeyboardGuidePromptVisible = true;
+    promptAction.showDialog({
+      title: guide.title,
+      message: guide.message,
+      isModal: true,
+      buttons: [
+        { text: '知道了', color: 'rgba(255,255,255,0.7)' },
+        { text: '打开控制面板', color: this.accentColor }
+      ]
+    }).then((result: Object): void => {
+      this.virtualTouchpadKeyboardGuidePromptVisible = false;
+      const response: Record<string, number> = result as Record<string, number>;
+      if (response['index'] === 1 && this.connected && this.isTouchpadControlMode()) {
+        this.showControlPanel = true;
+      }
+    }).catch((err: Error): void => {
+      this.virtualTouchpadKeyboardGuidePromptVisible = false;
+      hilog.warn(RD_DOMAIN, RD_TAG,
+        'virtual-touchpad-keyboard-guide dismissed error=' + JSON.stringify(err));
+    });
   }
 
   /** Each RustDesk session confirms its cross-platform remote keyboard type. */
