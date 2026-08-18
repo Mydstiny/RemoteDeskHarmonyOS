@@ -1105,6 +1105,9 @@ export struct SshXtermSurface {
       // needs local file access enabled to resolve the relative vendor URLs.
       .fileAccess(true)
       .domStorageAccess(false)
+      // The page converts two-finger pinch into terminal font size so xterm,
+      // its measured grid and the remote PTY resize as one unit.
+      .zoomAccess(false)
       // API 23 exposes the controller before navigation begins. Registering
       // here lets the first rawfile document see the proxy and avoids the old
       // mandatory activation reload after onPageBegin.

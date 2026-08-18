@@ -125,6 +125,19 @@ export function normalizeSshTerminalFontSize(value: number): number {
   return Math.floor(value);
 }
 
+/**
+ * Convert one ArkUI pinch scale into the integer terminal font size used by
+ * every SSH renderer. Clamping here keeps a long gesture at the nearest limit
+ * instead of making the generic invalid-value fallback jump back to 18 vp.
+ */
+export function sshTerminalFontSizeForPinch(startFontSize: number, scale: number): number {
+  const start: number = isValidSshTerminalFontSize(startFontSize)
+    ? normalizeSshTerminalFontSize(startFontSize) : SSH_DEFAULT_TERMINAL_FONT_SIZE;
+  if (!Number.isFinite(scale) || scale <= 0) { return start; }
+  return Math.max(SSH_TERMINAL_FONT_SIZE_MIN,
+    Math.min(SSH_TERMINAL_FONT_SIZE_MAX, Math.round(start * scale)));
+}
+
 export function isValidSshTerminalLineSpacing(value: number): boolean {
   return Number.isFinite(value) && value >= SSH_TERMINAL_LINE_SPACING_MIN &&
     value <= SSH_TERMINAL_LINE_SPACING_MAX;

@@ -10,6 +10,7 @@ import {
   normalizeSshTerminalLineSpacing,
   resolveSshTerminalAppearance,
   resolveSshTerminalAppearanceFromCloudSettings,
+  sshTerminalFontSizeForPinch,
   sshSessionLocaleLabel,
   sshSessionLocaleOptions
 } from '../main/ets/services/SshSettingsPolicy';
@@ -26,6 +27,15 @@ export default function sshSettingsPolicyTest(): void {
       const appearance = resolveSshTerminalAppearance('#00FF00', '', 24, 0, 1.4, 0);
       expect(appearance.fontSize).assertEqual(24);
       expect(appearance.lineSpacing).assertEqual(1.4);
+    });
+
+    it('maps_pinch_scale_to_a_bounded_integer_terminal_font_size', 0, (): void => {
+      expect(sshTerminalFontSizeForPinch(18, 1.5)).assertEqual(27);
+      expect(sshTerminalFontSizeForPinch(18, 0.8)).assertEqual(14);
+      expect(sshTerminalFontSizeForPinch(18, 4)).assertEqual(32);
+      expect(sshTerminalFontSizeForPinch(18, 0.1)).assertEqual(12);
+      expect(sshTerminalFontSizeForPinch(18, Number.NaN)).assertEqual(18);
+      expect(sshTerminalFontSizeForPinch(99, 1)).assertEqual(18);
     });
 
     it('applies_a_partial_cloud_line_spacing_update_without_resetting_other_fields', 0, (): void => {

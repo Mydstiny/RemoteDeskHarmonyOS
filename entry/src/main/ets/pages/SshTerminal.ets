@@ -115,6 +115,7 @@ import {
   SSH_SESSION_LOCALE_KEY,
   normalizeSshTerminalLineSpacing,
   normalizeSshSessionLocale,
+  sshTerminalFontSizeForPinch,
   sshSessionLocaleLabel,
   sshSessionLocaleOptions,
   SshSessionLocaleOption,
@@ -558,6 +559,10 @@ struct SshTerminal {
   @State cellHvp: number = 20;
   @State cellWvp: number = 9;
   @State renderFontVp: number = 18;
+  /** Live pinch feedback; durable persistence happens only when the gesture ends. */
+  @State terminalZoomIndicatorVisible: boolean = false;
+  private terminalPinchStartFontSize: number = 18;
+  private terminalZoomIndicatorTimer: number = -1;
   private kbCtrl: TextAreaController = new TextAreaController();
   private srv: HostSyncService = HostSyncService.getInstance();
   private sshSettings: SshSettingsService = SshSettingsService.getInstance();
@@ -2389,6 +2394,35 @@ struct SshTerminal {
   private onLineSpacingChange(): void {
     this.updateCellSize();
     this.recalcGrid();
+  }
+
+  private clearTerminalZoomIndicatorTimer(): void {
+    if (this.terminalZoomIndicatorTimer === -1) { return; }
+    clearTimeout(this.terminalZoomIndicatorTimer);
+    this.terminalZoomIndicatorTimer = -1;
+  }
+
+  private startTerminalPinchZoom(): void {
+    this.clearTerminalZoomIndicatorTimer();
+    this.terminalPinchStartFontSize = sshTerminalFontSizeForPinch(this.fontSize, 1);
+    this.terminalZoomIndicatorVisible = true;
+  }
+
+  private updateTerminalPinchZoom(event: GestureEvent): void {
+    const nextFontSize: number = sshTerminalFontSizeForPinch(
+      this.terminalPinchStartFontSize, event.scale);
+    if (nextFontSize !== this.fontSize) {
+      this.fontSize = nextFontSize;
+    }
+  }
+
+  private finishTerminalPinchZoom(): void {
+    this.fontSize = this.sshSettings.saveFontSize(this.fontSize);
+    this.clearTerminalZoomIndicatorTimer();
+    this.terminalZoomIndicatorTimer = setTimeout((): void => {
+      this.terminalZoomIndicatorTimer = -1;
+      this.terminalZoomIndicatorVisible = false;
+    }, 700);
   }
 
   /** 根据 termAreaW/H + 字号反推 cols/rows, 同步到 PTY */
@@ -5355,6 +5389,8 @@ struct SshTerminal {
     this.stopSshAuthPromptPolling(true);
     this.clearSshTabPickerExitRecovery();
     this.clearTerminalInputFocusRetry();
+    this.clearTerminalZoomIndicatorTimer();
+    this.terminalZoomIndicatorVisible = false;
     ++this.pageGeneration;
     ++this.sshBindingGeneration;
     this.terminalClosing = true;
@@ -11355,6 +11391,20 @@ struct SshTerminal {
                   this.onTerminalEditorExit('editing');
                 }
               })
+
+            if (this.terminalZoomIndicatorVisible) {
+              Text('字号 ' + this.fontSize.toString() + ' vp')
+                .fontSize(13)
+                .fontColor('#FFFFFF')
+                .fontWeight(FontWeight.Medium)
+                .padding({ left: 14, right: 14, top: 8, bottom: 8 })
+                .borderRadius(18)
+                .backgroundColor('rgba(14,18,24,0.88)')
+                .shadow({ radius: 12, color: 'rgba(0,0,0,0.38)', offsetY: 4 })
+                .align(Alignment.Center)
+                .zIndex(40)
+                .hitTestBehavior(HitTestMode.None)
+            }
           }
           .width('100%')
           .height('100%')
@@ -11363,6 +11413,22 @@ struct SshTerminal {
             // 点击终端显式进入终端焦点；移动端同时请求软键盘。
             this.focusKeyboard(this.virtualKeyBarVisible());
           })
+          .parallelGesture(
+            PinchGesture({ fingers: 2, distance: 5 })
+              .allowedTypes([SourceTool.Finger])
+              .onActionStart((_event: GestureEvent): void => {
+                this.startTerminalPinchZoom();
+              })
+              .onActionUpdate((event: GestureEvent): void => {
+                this.updateTerminalPinchZoom(event);
+              })
+              .onActionEnd((_event: GestureEvent): void => {
+                this.finishTerminalPinchZoom();
+              })
+              .onActionCancel((): void => {
+                this.finishTerminalPinchZoom();
+              })
+          )
           .onAreaChange((_o: Area, n: Area): void => {
             const h: number = n.height as number;
             const w: number = n.width as number;
