@@ -389,6 +389,11 @@ import {
   personalizationDefaults
 } from '../services/PersonalizationDefaultsPolicy';
 import {
+  HOST_CARD_SENSITIVE_INFO_HIDDEN_KEY,
+  hostCardSensitiveValue,
+  shouldHideHostCardSensitiveInfo
+} from '../services/HostCardPrivacyPolicy';
+import {
   CLOUD_SYNC_SHEET_ACTIONS,
   CLOUD_SYNC_SHEET_DOWNLOADING,
   CLOUD_SYNC_SHEET_DOWNLOAD_CONFIRM,
@@ -549,6 +554,7 @@ struct HostListPage {
   @State hostPageTitle: string = '远程主机';
   @State loginRefreshKey: number = 0;
   @StorageLink('groupedHostCards') groupedHostCards: boolean = false;
+  @StorageLink(HOST_CARD_SENSITIVE_INFO_HIDDEN_KEY) hostCardSensitiveInfoHidden: boolean = false;
   @StorageLink('rustdeskPresenceDetectionEnabled') rustdeskPresenceDetectionEnabled: boolean = false;
   @State expandedHostGroup: string = '';
   @State activeRemoteHostId: string = '';
@@ -1130,6 +1136,8 @@ struct HostListPage {
       const savedTotpLogoMode: string = prefs.getSync('totpLogoMode', defaults.totpLogoMode) as string;
       const savedGroupedHostCards: boolean =
         prefs.getSync('groupedHostCards', defaults.groupedHostCards) as boolean;
+      const savedHostCardSensitiveInfoHidden: boolean =
+        prefs.getSync(HOST_CARD_SENSITIVE_INFO_HIDDEN_KEY, false) as boolean;
       const savedRustDeskPresenceDetection: boolean =
         prefs.getSync('rustdeskPresenceDetectionEnabled',
           defaults.rustdeskPresenceDetectionEnabled) as boolean;
@@ -1169,6 +1177,9 @@ struct HostListPage {
       AppStorage.setOrCreate('totpLogoMode', this.totpLogoMode);
       this.groupedHostCards = savedGroupedHostCards;
       AppStorage.setOrCreate('groupedHostCards', this.groupedHostCards);
+      this.hostCardSensitiveInfoHidden = savedHostCardSensitiveInfoHidden;
+      AppStorage.setOrCreate(HOST_CARD_SENSITIVE_INFO_HIDDEN_KEY,
+        this.hostCardSensitiveInfoHidden);
       this.rustdeskPresenceDetectionEnabled = savedRustDeskPresenceDetection;
       AppStorage.setOrCreate('rustdeskPresenceDetectionEnabled', this.rustdeskPresenceDetectionEnabled);
       if (savedWallpaper !== '') { AppStorage.setOrCreate('wallpaperColor', savedWallpaper); }
@@ -7573,6 +7584,14 @@ struct HostListPage {
     this.updateHostFilter();
   }
 
+  private saveHostCardSensitiveInfoHidden(on: boolean): void {
+    this.hostCardSensitiveInfoHidden = on;
+    this.persistLocalBooleanPref(HOST_CARD_SENSITIVE_INFO_HIDDEN_KEY, on);
+    // LazyForEach keys include this revision so every visible card immediately
+    // drops or restores its connection summary without reloading host data.
+    this.hostViewRevision += 1;
+  }
+
   private saveRustDeskPresenceDetection(on: boolean): void {
     this.rustdeskPresenceDetectionEnabled = on;
     this.persistLocalBooleanPref('rustdeskPresenceDetectionEnabled', on);
@@ -8857,30 +8876,40 @@ struct HostListPage {
     return host.gatewayHost.trim() === '' ? '直连屏幕' : '网关屏幕';
   }
 
+  private protectedHostCardValue(host: RemoteHost, visibleValue: string): string {
+    return hostCardSensitiveValue(shouldHideHostCardSensitiveInfo(
+      this.hostCardSensitiveInfoHidden, host.locked), visibleValue);
+  }
+
   @Builder hostGroupedProtocolDetails(host: RemoteHost) {
     Row() {
       if (host.protocol === 'rustdesk') {
         Text('ID').fontSize(this.breakpoint === 'sm' ? 12 : 13).fontColor(this.pal().text3).width(30)
-        Text(hostIdentifier(host)).fontSize(this.breakpoint === 'sm' ? 15 : 16)
+        Text(this.protectedHostCardValue(host, hostIdentifier(host)))
+          .fontSize(this.breakpoint === 'sm' ? 15 : 16)
           .fontWeight(FontWeight.Medium).fontColor(this.pal().text2).fontFamily(this.font()).layoutWeight(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis }).maxLines(1)
-          .accessibilityText(hostIdentifier(host))
+          .accessibilityText(this.protectedHostCardValue(host, hostIdentifier(host)))
       } else if (host.protocol === 'ssh') {
         Text('SSH').fontSize(11).fontColor(this.pal().text3).width(30)
-        Text((host.username.trim() === '' ? '' : host.username + '@') + host.host + ':' + host.port.toString())
+        Text(this.protectedHostCardValue(host,
+          (host.username.trim() === '' ? '' : host.username + '@') +
+            host.host + ':' + host.port.toString()))
           .fontSize(this.breakpoint === 'sm' ? 12 : 13).fontColor(this.pal().text2)
           .fontFamily(this.font()).layoutWeight(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis }).maxLines(1)
       } else if (host.protocol === 'vnc') {
         Text('VNC').fontSize(11).fontColor(this.pal().text3).width(30)
-        Text(host.gatewayHost.trim() === '' ? host.host + ':' + host.port.toString() :
-          host.host + ':' + host.port.toString() + ' · 网关 ' + host.gatewayHost)
+        Text(this.protectedHostCardValue(host, host.gatewayHost.trim() === '' ?
+          host.host + ':' + host.port.toString() :
+          host.host + ':' + host.port.toString() + ' · 网关 ' + host.gatewayHost))
           .fontSize(this.breakpoint === 'sm' ? 12 : 13).fontColor(this.pal().text2)
           .fontFamily(this.font()).layoutWeight(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis }).maxLines(1)
       } else {
         Text('RDP').fontSize(11).fontColor(this.pal().text3).width(30)
-        Text(host.host + ':' + host.port.toString()).fontSize(this.breakpoint === 'sm' ? 12 : 13)
+        Text(this.protectedHostCardValue(host, host.host + ':' + host.port.toString()))
+          .fontSize(this.breakpoint === 'sm' ? 12 : 13)
           .fontColor(this.pal().text2).fontFamily(this.font()).layoutWeight(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis }).maxLines(1)
       }
@@ -9362,9 +9391,10 @@ struct HostListPage {
                   }
                   if (!host.locked) {
                     Text(this.hostPlatformText(host) + '  ·  ' +
-                      (host.protocol === 'rustdesk' ? rustDeskCardEndpoint(host.rustdeskDirectEnabled,
-                        host.rustdeskDirectHost, host.rustdeskDirectPort, host.host, host.port) :
-                        host.host + ':' + host.port))
+                      this.protectedHostCardValue(host,
+                        host.protocol === 'rustdesk' ? rustDeskCardEndpoint(host.rustdeskDirectEnabled,
+                          host.rustdeskDirectHost, host.rustdeskDirectPort, host.host, host.port) :
+                          host.host + ':' + host.port))
                       .fontSize(this.breakpoint === 'sm' ? 12 : 14)
                       .fontColor(this.pal().text2).margin({ top: this.breakpoint === 'sm' ? 3 : 4 })
                       .fontFamily(this.font())
@@ -10258,6 +10288,20 @@ struct HostListPage {
                   .scale({ x: 0.88, y: 0.88 })
                   .onChange((on: boolean): void => { this.saveAmbientLightEffectEnabled(on); })
               }.width('100%').height(62).padding({ left: 16, right: 16 })
+              this.cardDivider()
+              Row() {
+                Row() { SymbolGlyph($r('sys.symbol.eye_slash')).fontSize(22).fontColor([this.pal().text]) }
+                  .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+                Column() {
+                  Text('隐藏主机卡片敏感信息').fontSize(AppTheme.fontSize.body)
+                    .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
+                  Text('隐藏地址、端口、用户名和 RustDesk ID；主机名称仍显示')
+                    .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+                }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+                Toggle({ type: ToggleType.Switch, isOn: this.hostCardSensitiveInfoHidden })
+                  .selectedColor(this.accentColor).scale({ x: 0.88, y: 0.88 })
+                  .onChange((on: boolean): void => { this.saveHostCardSensitiveInfoHidden(on); })
+              }.width('100%').height(66).padding({ left: 16, right: 16 })
             }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
             .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
             .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })

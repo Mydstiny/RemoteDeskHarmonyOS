@@ -109,6 +109,7 @@ import remoteCanvasPinchInputPolicyTest from './RemoteCanvasPinchInputPolicy.tes
 import remoteCanvasTouchPointPolicyTest from './RemoteCanvasTouchPointPolicy.test';
 import remoteCanvasZoomPreferencePolicyTest from './RemoteCanvasZoomPreferencePolicy.test';
 import personalizationDefaultsPolicyTest from './PersonalizationDefaultsPolicy.test';
+import hostCardPrivacyPolicyTest from './HostCardPrivacyPolicy.test';
 import remoteOrientationPolicyTest from './RemoteOrientationPolicy.test';
 import remoteResolutionPresetPolicyTest from './RemoteResolutionPresetPolicy.test';
 import dataSnapshotRevisionPolicyTest from './DataSnapshotRevisionPolicy.test';
@@ -298,6 +299,7 @@ export default function testsuite() {
   remoteCanvasTouchPointPolicyTest();
   remoteCanvasZoomPreferencePolicyTest();
   personalizationDefaultsPolicyTest();
+  hostCardPrivacyPolicyTest();
   remoteOrientationPolicyTest();
   remoteResolutionPresetPolicyTest();
   dataSnapshotRevisionPolicyTest();
