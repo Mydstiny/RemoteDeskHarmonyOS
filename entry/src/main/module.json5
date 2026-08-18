@@ -22,6 +22,10 @@
         "startWindowIcon": "$media:layered_image",
         "startWindowBackground": "$color:start_window_background",
         "exported": true,
+        "supportWindowMode": [
+          "fullscreen",
+          "floating"
+        ],
         "backgroundModes": [
           "dataTransfer",
           "multiDeviceConnection",

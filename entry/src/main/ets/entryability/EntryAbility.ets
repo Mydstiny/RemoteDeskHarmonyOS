@@ -4,7 +4,15 @@
  * HarmonyOS 6 沉浸式窗口 + 主题初始化。
  * 网络权限由系统授予；移动端握姿权限由主机页首屏渲染后异步申请。
  */
-import { AbilityConstant, common, ConfigurationConstant, UIAbility, Want, Configuration } from '@kit.AbilityKit';
+import {
+  AbilityConstant,
+  bundleManager,
+  common,
+  ConfigurationConstant,
+  UIAbility,
+  Want,
+  Configuration
+} from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
 import { buffer } from '@kit.ArkTS';
@@ -447,6 +455,41 @@ export default class EntryAbility extends UIAbility {
   /**
    * 沉浸式窗口：全屏布局 + 透明系统栏
    */
+  private async configureDesktopWindowModes(mainWindow: window.Window): Promise<void> {
+    // Do not cap maxWidth/maxHeight: a fixed 2560x1600 ceiling prevented the
+    // system maximize action from filling larger PC/2-in-1 displays.
+    try {
+      await mainWindow.setWindowLimits({ minWidth: 360, minHeight: 480 });
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, '窗口最小尺寸配置失败: %{public}s', JSON.stringify(err));
+    }
+    try {
+      if (this.windowStage !== null) {
+        await this.windowStage.setSupportedWindowModes([
+          bundleManager.SupportWindowMode.FULL_SCREEN,
+          bundleManager.SupportWindowMode.FLOATING
+        ], false);
+      }
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, '窗口模式配置失败: %{public}s', JSON.stringify(err));
+    }
+    try {
+      // recover() restores the pre-maximize floating rectangle; auto-save
+      // also preserves that independent window rectangle across launches.
+      if (this.windowStage !== null) {
+        await this.windowStage.setWindowRectAutoSave(true);
+      }
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, '窗口位置自动保存配置失败: %{public}s', JSON.stringify(err));
+    }
+    try {
+      mainWindow.setWindowTitleMoveEnabled(true);
+      await mainWindow.setResizeByDragEnabled(true);
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, '浮动窗口拖拽配置失败: %{public}s', JSON.stringify(err));
+    }
+  }
+
   private async initImmersiveWindow(): Promise<void> {
     try {
       if (!this.windowStage) {
@@ -459,8 +502,7 @@ export default class EntryAbility extends UIAbility {
       // 初始化响应式断点系统 (PC 自由窗口适配)
       BreakpointUtil.init(mainWindow);
       this.syncAvoidAreas(mainWindow);
-      // PC 自由窗口尺寸限制 (防止缩到不可用)
-      mainWindow.setWindowLimits({ minWidth: 360, minHeight: 480, maxWidth: 2560, maxHeight: 1600 });
+      await this.configureDesktopWindowModes(mainWindow);
       const follow: boolean = AppStorage.get<boolean>('followSystem') ?? true;
       const isDark: boolean = follow ? this.resolveSystemColorMode() === ConfigurationConstant.ColorMode.COLOR_MODE_DARK
         : (AppStorage.get<string>('currentTheme') ?? 'light') === 'dark';
