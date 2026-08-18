@@ -619,6 +619,15 @@ RDP_TEST_CASE(moonlight_product_streaming_policy_rejects_unproven_modes) {
     RDP_ASSERT(!moonlightProductStreamingPolicyAllows(
         MoonlightStreamLatencyMode::Smooth,
         MoonlightStreamEncryptionPolicy::Compatible));
+
+    RDP_ASSERT(moonlightProductAudioContractAllows(
+        true, MoonlightStreamAudioLayout::Stereo));
+    RDP_ASSERT(moonlightProductAudioContractAllows(
+        false, MoonlightStreamAudioLayout::Surround71));
+    RDP_ASSERT(!moonlightProductAudioContractAllows(
+        true, MoonlightStreamAudioLayout::Surround51));
+    RDP_ASSERT(!moonlightProductAudioContractAllows(
+        true, MoonlightStreamAudioLayout::Stereo, 393279U));
 }
 
 RDP_TEST_CASE(moonlight_stream_config_carries_prior_adjustments_without_rewriting_them) {

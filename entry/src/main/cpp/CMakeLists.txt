@@ -135,7 +135,11 @@ set(MOONLIGHT_BRIDGE_SOURCE
 set(MOONLIGHT_NAPI_SOURCE
     moonlight/moonlight_napi.cpp
 )
+set(MOONLIGHT_HTTP_RESPONSE_FRAMING_SOURCE
+    moonlight/runtime/MoonlightHttpResponseFraming.cpp
+)
 set(MOONLIGHT_PRODUCT_RUNTIME_SOURCE
+    ${MOONLIGHT_HTTP_RESPONSE_FRAMING_SOURCE}
     moonlight/runtime/MoonlightProductRuntime.cpp
     moonlight/runtime/MoonlightProductStreamingRuntime.cpp
 )
@@ -330,6 +334,7 @@ if(RDP_BUILD_TESTS)
         test/decoder_pipeline_lifecycle_policy_test.cpp
         test/safe_log_test.cpp
         test/moonlight_host_api_test.cpp
+        test/moonlight_http_response_framing_test.cpp
         test/moonlight_secure_identity_test.cpp
         test/moonlight_pairing_manager_test.cpp
         test/moonlight_host_control_test.cpp
@@ -376,6 +381,7 @@ if(RDP_BUILD_TESTS)
         render/video_perf_counters.cpp
         extensions/session_teardown_executor.cpp
         moonlight/core/MoonlightHostApi.cpp
+        ${MOONLIGHT_HTTP_RESPONSE_FRAMING_SOURCE}
         moonlight/core/MoonlightSessionOwner.cpp
         moonlight/security/MoonlightSecureIdentity.cpp
         moonlight/pairing/MoonlightPairingManager.cpp

@@ -549,6 +549,10 @@ bool parseLaunchConfiguration(napi_env env, napi_value value,
         error = error.empty() ? "launch configuration integer is invalid" : error;
         return false;
     }
+    if (surround != kMoonlightProductStereoAudioInfo) {
+        error = "surround audio is unsupported by the product runtime";
+        return false;
+    }
     configuration.width = static_cast<std::uint32_t>(width);
     configuration.height = static_cast<std::uint32_t>(height);
     configuration.refreshRate = static_cast<std::uint32_t>(refreshRate);
@@ -1223,6 +1227,11 @@ bool parseStreamStartRequest(napi_env env, napi_value value,
         !parseProductLatency(latency, request.latencyMode) ||
         !parseProductAudioLayout(audioChannels, request.audioLayout) ||
         !parseProductEncryption(encryption, request.encryptionPolicy)) {
+        return false;
+    }
+    if (!moonlightProductAudioContractAllows(
+            request.audioEnabled, request.audioLayout)) {
+        error = "audio layout is unsupported by the product runtime";
         return false;
     }
     request.appId = static_cast<std::uint32_t>(appId);

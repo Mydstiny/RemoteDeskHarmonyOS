@@ -3,6 +3,7 @@
 #include "moonlight/control/MoonlightHostControl.h"
 #include "moonlight/pairing/MoonlightPairingManager.h"
 #include "moonlight/security/MoonlightSecureIdentity.h"
+#include "moonlight/runtime/MoonlightHttpResponseFraming.h"
 #include "moonlight/runtime/MoonlightProductStreamingRuntime.h"
 
 #include <openssl/crypto.h>
@@ -203,10 +204,17 @@ WaitResult waitForSocket(int descriptor, short events,
         struct pollfd descriptorState { descriptor, events, 0 };
         const int result = ::poll(&descriptorState, 1, timeout);
         if (result > 0) {
+            if ((descriptorState.revents & events) != 0) { return WaitResult::Ready; }
+            // A peer that writes its response and immediately closes may
+            // report POLLIN | POLLHUP, or only POLLHUP once all bytes have
+            // been drained. Let the read path consume data or observe EOF.
+            if ((events & POLLIN) != 0 &&
+                (descriptorState.revents & POLLHUP) != 0) {
+                return WaitResult::Ready;
+            }
             if ((descriptorState.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0) {
                 return WaitResult::Error;
             }
-            if ((descriptorState.revents & events) != 0) { return WaitResult::Ready; }
         } else if (result < 0 && errno != EINTR) {
             return WaitResult::Error;
         }
@@ -296,14 +304,6 @@ public:
 private:
     std::string& value_;
 };
-
-std::string lowerAscii(std::string value) {
-    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char character) {
-        return static_cast<char>(character >= 'A' && character <= 'Z' ?
-            character - 'A' + 'a' : character);
-    });
-    return value;
-}
 
 class ProductHttpTransport final : public MoonlightHostTransport {
 public:
@@ -396,6 +396,11 @@ public:
                 outcome.error = MoonlightTransportError::TlsVersionFailure;
                 return outcome;
             }
+#if defined(SSL_OP_IGNORE_UNEXPECTED_EOF)
+            // HTTP close-delimited responses use EOF as framing. Content-
+            // Length and chunked truncation are still rejected by the parser.
+            (void)SSL_CTX_set_options(context.get(), SSL_OP_IGNORE_UNEXPECTED_EOF);
+#endif
             // Sunshine certificates are self-signed. Exact leaf pinning below
             // is the trust decision; the public CA chain is intentionally not
             // consulted for this Moonlight-only transport.
@@ -517,9 +522,6 @@ public:
         std::string response;
         StringCleanser responseCleanser(response);
         response.reserve(4096U);
-        std::size_t headerEnd = std::string::npos;
-        std::size_t expectedBody = 0;
-        bool hasExpectedBody = false;
         while (!deadlineExpired(deadline)) {
             if (cancelled(cancellationProbe)) {
                 outcome.error = MoonlightTransportError::Cancelled;
@@ -527,11 +529,14 @@ public:
             }
             char buffer[16384];
             int count = 0;
+            bool endOfStream = false;
             if (ssl) {
                 count = SSL_read(ssl.get(), buffer, sizeof(buffer));
                 if (count <= 0) {
                     const int sslError = SSL_get_error(ssl.get(), count);
-                    if (sslError == SSL_ERROR_ZERO_RETURN) { break; }
+                    if (sslError == SSL_ERROR_ZERO_RETURN) {
+                        endOfStream = true;
+                    }
                     if (sslError == SSL_ERROR_WANT_READ || sslError == SSL_ERROR_WANT_WRITE) {
                         const WaitResult wait = waitForSocket(
                             socket.get(), sslError == SSL_ERROR_WANT_READ ? POLLIN : POLLOUT,
@@ -550,12 +555,14 @@ public:
                         }
                         continue;
                     }
-                    outcome.error = MoonlightTransportError::ProtocolFailure;
-                    return outcome;
+                    if (!endOfStream) {
+                        outcome.error = MoonlightTransportError::ProtocolFailure;
+                        return outcome;
+                    }
                 }
             } else {
                 count = static_cast<int>(::recv(socket.get(), buffer, sizeof(buffer), 0));
-                if (count == 0) { break; }
+                if (count == 0) { endOfStream = true; }
                 if (count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
                     const WaitResult wait = waitForSocket(socket.get(), POLLIN, deadline,
                                                            cancellationProbe);
@@ -578,76 +585,36 @@ public:
                     return outcome;
                 }
             }
-            response.append(buffer, static_cast<std::size_t>(count));
-            if (headerEnd == std::string::npos) {
-                headerEnd = response.find("\r\n\r\n");
-                if (response.size() > kMaxHeaderBytes && headerEnd == std::string::npos) {
+            if (count > 0) {
+                response.append(buffer, static_cast<std::size_t>(count));
+            }
+            auto framing = inspectMoonlightHttpResponse(
+                response, endOfStream, kMaxHeaderBytes, request.responseBudget());
+            if (framing.headersComplete) {
+                outcome.httpStatus = framing.httpStatus;
+                outcome.sendState = MoonlightTransportSendState::ConfirmedResponse;
+            }
+            switch (framing.state) {
+                case MoonlightHttpFramingState::NeedMore:
+                    if (endOfStream) {
+                        outcome.error = MoonlightTransportError::ProtocolFailure;
+                        return outcome;
+                    }
+                    break;
+                case MoonlightHttpFramingState::Complete:
+                    outcome.body = std::move(framing.body);
+                    outcome.receivedBodyBytes = outcome.body.size();
+                    outcome.stage = MoonlightTransportStage::Complete;
+                    return outcome;
+                case MoonlightHttpFramingState::ProtocolError:
+                    outcome.error = MoonlightTransportError::ProtocolFailure;
+                    return outcome;
+                case MoonlightHttpFramingState::BodyTooLarge:
                     outcome.error = MoonlightTransportError::BodyTooLarge;
                     return outcome;
-                }
-                if (headerEnd != std::string::npos) {
-                    const std::size_t statusEnd = response.find("\r\n");
-                    if (statusEnd == std::string::npos || response.compare(0, 5, "HTTP/") != 0) {
-                        outcome.error = MoonlightTransportError::ProtocolFailure;
-                        return outcome;
-                    }
-                    const std::size_t firstSpace = response.find(' ', 5);
-                    if (firstSpace == std::string::npos) {
-                        outcome.error = MoonlightTransportError::ProtocolFailure;
-                        return outcome;
-                    }
-                    outcome.httpStatus = std::atoi(response.substr(firstSpace + 1, 3).c_str());
-                    outcome.sendState = MoonlightTransportSendState::ConfirmedResponse;
-                    const std::string header = response.substr(0, headerEnd);
-                    const std::string lowerHeader = lowerAscii(header);
-                    const std::string marker = "\r\ncontent-length:";
-                    const std::size_t contentLengthStart = lowerHeader.find(marker);
-                    if (contentLengthStart != std::string::npos) {
-                        const std::size_t valueStart = contentLengthStart + marker.size();
-                        const std::size_t valueEnd = header.find("\r\n", valueStart);
-                        const std::string value = header.substr(valueStart,
-                            valueEnd == std::string::npos ? std::string::npos : valueEnd - valueStart);
-                        try {
-                            expectedBody = static_cast<std::size_t>(std::stoull(value));
-                            hasExpectedBody = true;
-                        } catch (...) {
-                            outcome.error = MoonlightTransportError::ProtocolFailure;
-                            return outcome;
-                        }
-                        if (expectedBody > request.responseBudget()) {
-                            outcome.error = MoonlightTransportError::BodyTooLarge;
-                            return outcome;
-                        }
-                    }
-                }
-            }
-            if (headerEnd != std::string::npos && hasExpectedBody &&
-                response.size() - (headerEnd + 4U) >= expectedBody) {
-                break;
-            }
-            if (response.size() > kMaxHeaderBytes + request.responseBudget()) {
-                outcome.error = MoonlightTransportError::BodyTooLarge;
-                return outcome;
             }
         }
-        if (deadlineExpired(deadline)) {
-            outcome.error = MoonlightTransportError::Timeout;
-            return outcome;
-        }
-        if (headerEnd == std::string::npos) {
-            outcome.error = MoonlightTransportError::ProtocolFailure;
-            return outcome;
-        }
-        outcome.body = response.substr(headerEnd + 4U);
-        if (hasExpectedBody && outcome.body.size() > expectedBody) {
-            outcome.body.resize(expectedBody);
-        }
-        outcome.receivedBodyBytes = outcome.body.size();
-        if (outcome.body.size() > request.responseBudget()) {
-            outcome.error = MoonlightTransportError::BodyTooLarge;
-            return outcome;
-        }
-        outcome.stage = MoonlightTransportStage::Complete;
+        outcome.error = MoonlightTransportError::Timeout;
         return outcome;
     }
 

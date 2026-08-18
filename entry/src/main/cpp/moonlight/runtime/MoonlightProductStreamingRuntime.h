@@ -49,6 +49,17 @@ struct MoonlightProductStreamStartRequest final {
         MoonlightStreamEncryptionPolicy::Auto;
 };
 
+constexpr std::uint32_t kMoonlightProductStereoAudioInfo = 196610U;
+
+constexpr bool moonlightProductAudioContractAllows(
+    bool audioEnabled, MoonlightStreamAudioLayout layout,
+    std::uint32_t surroundAudioInfo = kMoonlightProductStereoAudioInfo) noexcept {
+    // Product decode/playback and the disabled-audio discard lane currently
+    // negotiate the common-c stereo shape only.
+    return surroundAudioInfo == kMoonlightProductStereoAudioInfo &&
+        (!audioEnabled || layout == MoonlightStreamAudioLayout::Stereo);
+}
+
 constexpr bool moonlightProductStreamingPolicyAllows(
     MoonlightStreamLatencyMode latencyMode,
     MoonlightStreamEncryptionPolicy encryptionPolicy) noexcept {

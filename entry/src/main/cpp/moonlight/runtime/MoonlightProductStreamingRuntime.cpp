@@ -49,9 +49,9 @@ std::optional<MoonlightStreamConfigResult> conservativeOffer(
         !moonlightProductStreamingPolicyAllows(
             request.latencyMode, request.encryptionPolicy) ||
         request.codec != MoonlightStreamCodec::H264 || request.hdr || request.yuv444 ||
-        (request.audioLayout != MoonlightStreamAudioLayout::Stereo &&
-         request.audioLayout != MoonlightStreamAudioLayout::Surround51 &&
-         request.audioLayout != MoonlightStreamAudioLayout::Surround71) ||
+        !moonlightProductAudioContractAllows(
+            request.audioEnabled, request.audioLayout,
+            stage.configuration.surroundAudioInfo) ||
         stage.configuration.hdr != request.hdr ||
         stage.configuration.playAudioOnHost != request.playAudioOnHost ||
         !stage.serverInfo.paired ||
