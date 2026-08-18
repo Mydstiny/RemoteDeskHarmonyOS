@@ -19,6 +19,8 @@ namespace {
 constexpr const char* kProtocolUniqueId = "0123456789ABCDEF";
 constexpr std::size_t kMaxServerFieldBytes = 1024U;
 constexpr std::size_t kMaxPairingFieldBytes = 256U * 1024U;
+constexpr std::uint16_t kDefaultHttpPort = 47989U;
+constexpr std::size_t kMaxLearnedHttpsPorts = 64U;
 
 #if defined(RDP_NATIVE_CALLBACK_TESTING)
 std::atomic<std::uint64_t> gSecureCleanseCount{0};
@@ -1372,6 +1374,18 @@ MoonlightHostError dispositionError(const std::shared_ptr<ActiveRequest>& state)
     return MoonlightHostError::StaleRequest;
 }
 
+std::string endpointPortCacheKey(const MoonlightHostEndpoint& endpoint) {
+    std::string key = lowerAscii(endpoint.serverName) + ":" +
+        std::to_string(endpoint.httpPort);
+    for (const auto& address : endpoint.addresses) {
+        key.push_back('|');
+        key += std::to_string(static_cast<unsigned>(address.family));
+        key.push_back(':');
+        key += lowerAscii(address.value);
+    }
+    return key;
+}
+
 struct HostApiState {
     HostApiState(std::shared_ptr<MoonlightHostTransport> valueTransport,
                  MoonlightHostApi::UuidGenerator valueUuidGenerator)
@@ -1381,9 +1395,32 @@ struct HostApiState {
     std::condition_variable cv;
     std::unordered_map<MoonlightHostRequestKey, std::shared_ptr<ActiveRequest>, RequestKeyHash>
         active;
+    std::unordered_map<std::string, std::uint16_t> learnedHttpsPorts;
     std::shared_ptr<MoonlightHostTransport> transport;
     MoonlightHostApi::UuidGenerator uuidGenerator;
     bool shuttingDown = false;
+
+    std::optional<std::uint16_t> learnedHttpsPort(
+        const MoonlightHostEndpoint& endpoint) {
+        std::lock_guard<std::mutex> lock(mutex);
+        const auto iterator = learnedHttpsPorts.find(endpointPortCacheKey(endpoint));
+        return iterator == learnedHttpsPorts.end() ? std::nullopt :
+            std::optional<std::uint16_t>(iterator->second);
+    }
+
+    void rememberHttpsPort(const MoonlightHostEndpoint& endpoint,
+                           std::uint16_t port) {
+        if (port == 0U) {
+            return;
+        }
+        std::lock_guard<std::mutex> lock(mutex);
+        const auto key = endpointPortCacheKey(endpoint);
+        if (learnedHttpsPorts.size() >= kMaxLearnedHttpsPorts &&
+            learnedHttpsPorts.find(key) == learnedHttpsPorts.end()) {
+            learnedHttpsPorts.erase(learnedHttpsPorts.begin());
+        }
+        learnedHttpsPorts[key] = port;
+    }
 };
 
 } // namespace
@@ -1507,13 +1544,16 @@ MoonlightHostResult executeRegistered(const std::shared_ptr<HostApiState>& impl,
     const auto started = std::chrono::steady_clock::now();
     const auto deadline = started + call.timeout;
     const auto runScheme = [&](MoonlightHostScheme scheme, MoonlightHostOperation requestOperation,
-                               QueryShape shape) {
+                               QueryShape shape,
+                               std::optional<std::uint16_t> candidateHttpsPort) {
         MoonlightHostResult result;
         result.key = call.key;
         result.error = MoonlightHostError::TransportFailure;
         shape.scheme = scheme;
-        const std::uint16_t port =
-            scheme == MoonlightHostScheme::Https ? call.endpoint.httpsPort : call.endpoint.httpPort;
+        const std::uint16_t port = scheme == MoonlightHostScheme::Https ?
+            candidateHttpsPort.value_or(
+                impl->learnedHttpsPort(call.endpoint).value_or(call.endpoint.httpsPort)) :
+            call.endpoint.httpPort;
         if (requestOperation == MoonlightHostOperation::ServerInfo) {
             shape.requiresClientIdentity = scheme == MoonlightHostScheme::Https;
             shape.requiresServerPin = scheme == MoonlightHostScheme::Https;
@@ -1654,6 +1694,7 @@ MoonlightHostResult executeRegistered(const std::shared_ptr<HostApiState>& impl,
                     return result;
                 }
                 result.asset.assign(outcome.body.begin(), outcome.body.end());
+                result.resolvedAddress = call.endpoint.addresses[attempt].value;
                 diagnostic.code = MoonlightHostError::None;
                 diagnostic.stage = MoonlightTransportStage::Complete;
                 result.diagnostics.push_back(std::move(diagnostic));
@@ -1739,8 +1780,15 @@ MoonlightHostResult executeRegistered(const std::shared_ptr<HostApiState>& impl,
 
             diagnostic.code = MoonlightHostError::None;
             diagnostic.stage = MoonlightTransportStage::Complete;
+            result.resolvedAddress = call.endpoint.addresses[attempt].value;
             result.diagnostics.push_back(std::move(diagnostic));
             result.error = MoonlightHostError::None;
+            if (requestOperation == MoonlightHostOperation::ServerInfo &&
+                result.serverInfo.has_value() && result.serverInfo->httpsPort.has_value() &&
+                (scheme == MoonlightHostScheme::Https ||
+                 !call.endpoint.pinnedTrustAvailable)) {
+                impl->rememberHttpsPort(call.endpoint, *result.serverInfo->httpsPort);
+            }
             return result;
         }
         return result;
@@ -1748,26 +1796,53 @@ MoonlightHostResult executeRegistered(const std::shared_ptr<HostApiState>& impl,
 
     if (call.operation == MoonlightHostOperation::ServerInfo) {
         if (!call.endpoint.pinnedTrustAvailable) {
-            return runScheme(MoonlightHostScheme::Http, call.operation, initialShape);
+            return runScheme(MoonlightHostScheme::Http, call.operation, initialShape,
+                             std::nullopt);
         }
-        auto secure = runScheme(MoonlightHostScheme::Https, call.operation, initialShape);
+        if (call.endpoint.httpPort != kDefaultHttpPort &&
+            !impl->learnedHttpsPort(call.endpoint).has_value()) {
+            auto candidate = runScheme(MoonlightHostScheme::Http, call.operation, initialShape,
+                                       std::nullopt);
+            if (candidate.ok() && candidate.serverInfo.has_value()) {
+                const auto candidatePort = candidate.serverInfo->httpsPort.value_or(
+                    call.endpoint.httpsPort);
+                auto secure = runScheme(MoonlightHostScheme::Https, call.operation, initialShape,
+                                        candidatePort);
+                secure.diagnostics.insert(secure.diagnostics.begin(),
+                                          candidate.diagnostics.begin(),
+                                          candidate.diagnostics.end());
+                if (secure.error == MoonlightHostError::TrustConflict &&
+                    call.endpoint.allowHttpPairingCandidate) {
+                    secure.serverInfo = std::move(candidate.serverInfo);
+                    secure.httpStatus = candidate.httpStatus;
+                    secure.xmlStatus = candidate.xmlStatus;
+                    secure.resolvedAddress = std::move(candidate.resolvedAddress);
+                    secure.candidateOnly = true;
+                }
+                return secure;
+            }
+        }
+        auto secure = runScheme(MoonlightHostScheme::Https, call.operation, initialShape,
+                                std::nullopt);
         if (secure.error != MoonlightHostError::TrustConflict ||
             !call.endpoint.allowHttpPairingCandidate) {
             return secure;
         }
-        auto candidate = runScheme(MoonlightHostScheme::Http, call.operation, initialShape);
+        auto candidate = runScheme(MoonlightHostScheme::Http, call.operation, initialShape,
+                                   std::nullopt);
         secure.diagnostics.insert(secure.diagnostics.end(), candidate.diagnostics.begin(),
                                   candidate.diagnostics.end());
         if (candidate.ok() && candidate.serverInfo.has_value()) {
             secure.serverInfo = std::move(candidate.serverInfo);
             secure.httpStatus = candidate.httpStatus;
             secure.xmlStatus = candidate.xmlStatus;
+            secure.resolvedAddress = std::move(candidate.resolvedAddress);
             secure.candidateOnly = true;
         }
         secure.error = MoonlightHostError::TrustConflict;
         return secure;
     }
-    auto primary = runScheme(initialShape.scheme, call.operation, initialShape);
+    auto primary = runScheme(initialShape.scheme, call.operation, initialShape, std::nullopt);
     if (call.operation != MoonlightHostOperation::Cancel || !primary.ok() ||
         !primary.action.has_value() || !primary.action->accepted) {
         return primary;
@@ -1783,7 +1858,7 @@ MoonlightHostResult executeRegistered(const std::shared_ptr<HostApiState>& impl,
     verificationShape.requiresServerPin = true;
     verificationShape.readOnly = true;
     auto verification = runScheme(MoonlightHostScheme::Https, MoonlightHostOperation::ServerInfo,
-                                  verificationShape);
+                                  verificationShape, std::nullopt);
     primary.diagnostics.insert(primary.diagnostics.end(), verification.diagnostics.begin(),
                                verification.diagnostics.end());
     if (!verification.ok() || !verification.serverInfo.has_value()) {

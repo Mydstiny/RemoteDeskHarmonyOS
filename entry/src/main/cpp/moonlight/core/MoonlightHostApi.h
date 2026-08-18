@@ -316,6 +316,10 @@ struct REMOTEDESK_MOONLIGHT_HOST_HIDDEN MoonlightHostResult final {
     std::size_t partialAppCount = 0;
     std::optional<MoonlightPairingPayload> pairing;
     std::optional<MoonlightActionResult> action;
+    // The ordered endpoint candidate that produced this response. Product
+    // streaming must reuse the successful control-plane address instead of
+    // silently falling back to endpoint.addresses.front().
+    std::optional<std::string> resolvedAddress;
     std::vector<std::uint8_t> asset;
     std::vector<MoonlightHostDiagnostic> diagnostics;
 

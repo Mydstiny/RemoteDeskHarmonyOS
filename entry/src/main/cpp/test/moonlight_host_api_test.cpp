@@ -367,6 +367,65 @@ RDP_TEST_CASE(moonlight_host_api_parses_bounded_serverinfo_and_official_status_c
                   MoonlightHostError::InvalidField);
 }
 
+RDP_TEST_CASE(moonlight_host_api_learns_custom_https_port_from_serverinfo) {
+    auto transport = std::make_shared<ScriptedTransport>();
+    auto customPortInfo = serverInfoXml();
+    const auto port = customPortInfo.find("<HttpsPort>47984</HttpsPort>");
+    customPortInfo.replace(port, std::string("<HttpsPort>47984</HttpsPort>").size(),
+                           "<HttpsPort>48984</HttpsPort>");
+    transport->push(xmlResponse(customPortInfo));
+    transport->push(xmlResponse(customPortInfo));
+    transport->push(xmlResponse("<root status_code=\"200\"></root>"));
+
+    MoonlightHostApi api(transport, uuidGenerator());
+    auto serverInfoCall = callFor(MoonlightHostOperation::ServerInfo, true, {1, 1, 1});
+    serverInfoCall.endpoint.httpPort = 48989;
+    const auto serverInfo = api.execute(serverInfoCall);
+    RDP_ASSERT(serverInfo.ok());
+
+    auto appListCall = callFor(MoonlightHostOperation::AppList, true, {2, 1, 1});
+    appListCall.endpoint.httpPort = 48989;
+    const auto appList = api.execute(appListCall);
+    RDP_ASSERT(appList.ok());
+
+    const auto captures = transport->captures();
+    RDP_ASSERT_EQ(captures.size(), static_cast<std::size_t>(3));
+    RDP_ASSERT_EQ(captures[0].scheme, MoonlightHostScheme::Http);
+    RDP_ASSERT_EQ(captures[0].port, static_cast<std::uint16_t>(48989));
+    RDP_ASSERT_EQ(captures[1].scheme, MoonlightHostScheme::Https);
+    RDP_ASSERT_EQ(captures[1].port, static_cast<std::uint16_t>(48984));
+    RDP_ASSERT_EQ(captures[2].scheme, MoonlightHostScheme::Https);
+    RDP_ASSERT_EQ(captures[2].port, static_cast<std::uint16_t>(48984));
+}
+
+RDP_TEST_CASE(moonlight_host_api_does_not_cache_untrusted_custom_https_port) {
+    auto transport = std::make_shared<ScriptedTransport>();
+    auto customPortInfo = serverInfoXml();
+    const auto port = customPortInfo.find("<HttpsPort>47984</HttpsPort>");
+    customPortInfo.replace(port, std::string("<HttpsPort>47984</HttpsPort>").size(),
+                           "<HttpsPort>48984</HttpsPort>");
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        transport->push(xmlResponse(customPortInfo));
+        transport->push(transportFailure(
+            MoonlightTransportError::TrustConflict, MoonlightTransportStage::Tls));
+    }
+
+    MoonlightHostApi api(transport, uuidGenerator());
+    for (std::uint64_t requestId = 1; requestId <= 2; ++requestId) {
+        auto call = callFor(MoonlightHostOperation::ServerInfo, true,
+                            {requestId, 1, 1});
+        call.endpoint.httpPort = 48989;
+        RDP_ASSERT_EQ(api.execute(call).error, MoonlightHostError::TrustConflict);
+    }
+
+    const auto captures = transport->captures();
+    RDP_ASSERT_EQ(captures.size(), static_cast<std::size_t>(4));
+    RDP_ASSERT_EQ(captures[0].scheme, MoonlightHostScheme::Http);
+    RDP_ASSERT_EQ(captures[1].scheme, MoonlightHostScheme::Https);
+    RDP_ASSERT_EQ(captures[2].scheme, MoonlightHostScheme::Http);
+    RDP_ASSERT_EQ(captures[3].scheme, MoonlightHostScheme::Https);
+}
+
 RDP_TEST_CASE(moonlight_host_api_parses_apps_partial_entries_entities_and_rejects_duplicates) {
     auto call = callFor(MoonlightHostOperation::AppList, true);
     const std::string body =
@@ -690,6 +749,8 @@ RDP_TEST_CASE(moonlight_host_api_allows_read_only_fallback_but_never_replays_unk
         const auto result = api.execute(call);
         RDP_ASSERT(result.ok());
         RDP_ASSERT_EQ(transport->captures().size(), static_cast<std::size_t>(2));
+        RDP_ASSERT(result.resolvedAddress.has_value());
+        RDP_ASSERT(*result.resolvedAddress == "192.0.2.11");
     }
     {
         auto transport = std::make_shared<ScriptedTransport>();

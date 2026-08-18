@@ -436,6 +436,8 @@ RDP_TEST_CASE(moonlight_host_control_launch_requires_idle_and_confirms_postcondi
     RDP_ASSERT_EQ(result.postconditionTruth, MoonlightHostControlTruth::Confirmed);
     RDP_ASSERT(result.rtspSessionUrl.has_value());
     RDP_ASSERT(*result.rtspSessionUrl == "rtspenc://session-token");
+    RDP_ASSERT(result.sessionAddress.has_value());
+    RDP_ASSERT(*result.sessionAddress == "192.0.2.10");
     RDP_ASSERT(fixture.transport->sawLaunchCanary());
     RDP_ASSERT(!fixture.transport->redactedContainsCanary());
     RDP_ASSERT(MoonlightHostControl::secureCleanseCountForTesting() >= 12U);

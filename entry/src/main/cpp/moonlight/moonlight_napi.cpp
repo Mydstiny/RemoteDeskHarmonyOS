@@ -1142,6 +1142,12 @@ bool parseProductLatency(const std::string& value,
     if (value == "lowLatency") {
         output = MoonlightStreamLatencyMode::LowLatency; return true;
     }
+    if (value == "balanced") {
+        output = MoonlightStreamLatencyMode::Balanced; return true;
+    }
+    if (value == "smooth") {
+        output = MoonlightStreamLatencyMode::Smooth; return true;
+    }
     return false;
 }
 

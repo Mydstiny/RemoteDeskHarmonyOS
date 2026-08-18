@@ -600,6 +600,7 @@ MoonlightHostControlResult::MoonlightHostControlResult(
       idempotent(other.idempotent), mutationMayHaveBeenSent(other.mutationMayHaveBeenSent),
       apps(std::move(other.apps)), asset(std::move(other.asset)),
       rtspSessionUrl(std::move(other.rtspSessionUrl)),
+      sessionAddress(std::move(other.sessionAddress)),
       sessionServerInfo(std::move(other.sessionServerInfo)),
       stageTrace(std::move(other.stageTrace)),
       diagnostics(std::move(other.diagnostics)) {
@@ -627,6 +628,7 @@ MoonlightHostControlResult& MoonlightHostControlResult::operator=(
         apps = std::move(other.apps);
         asset = std::move(other.asset);
         rtspSessionUrl = std::move(other.rtspSessionUrl);
+        sessionAddress = std::move(other.sessionAddress);
         sessionServerInfo = std::move(other.sessionServerInfo);
         stageTrace = std::move(other.stageTrace);
         diagnostics = std::move(other.diagnostics);
@@ -1000,6 +1002,12 @@ MoonlightHostControlResult MoonlightHostControl::runLaunch(
             return finish(std::move(result), MoonlightHostControlCode::OutcomeUnknown);
         }
         result.rtspSessionUrl = std::move(action.action->rtspSessionUrl);
+        result.sessionAddress = std::move(action.resolvedAddress);
+        if (!result.sessionAddress.has_value() || result.sessionAddress->empty()) {
+            result.postconditionTruth = MoonlightHostControlTruth::Unknown;
+            secureWipeOptionalString(result.rtspSessionUrl);
+            return finish(std::move(result), MoonlightHostControlCode::OutcomeUnknown);
+        }
 
         transition(result, MoonlightHostControlStage::VerifyingPostcondition);
         MoonlightHostCall postconditionCall;

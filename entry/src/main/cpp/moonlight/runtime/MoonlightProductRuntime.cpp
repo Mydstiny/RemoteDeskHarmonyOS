@@ -1406,12 +1406,13 @@ private:
         if (launchMaterialReady && source.ok() &&
             source.rtspSessionUrl.has_value() &&
             source.sessionServerInfo.has_value() &&
-            !request.endpoint.addresses.empty()) {
+            source.sessionAddress.has_value() &&
+            !source.sessionAddress->empty()) {
             MoonlightProductLaunchStage stage;
             stage.key = request.key;
             stage.hostId = request.hostId;
             stage.serverUuid = request.serverUuid;
-            stage.address = request.endpoint.addresses.front().value;
+            stage.address = *source.sessionAddress;
             stage.appId = request.appId;
             stage.configuration = request.launchConfiguration;
             stage.serverInfo = std::move(*source.sessionServerInfo);
