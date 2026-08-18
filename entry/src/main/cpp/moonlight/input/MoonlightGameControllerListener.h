@@ -16,6 +16,30 @@
 
 namespace remotedesk::moonlight {
 
+// GameControllerKit registers one callback per physical control. Preserve that
+// semantic identity instead of inferring it from an SDK-provided display name.
+enum class REMOTEDESK_MOONLIGHT_GAME_CONTROLLER_HIDDEN
+MoonlightGameControllerButtonInput : std::uint8_t {
+    FaceA = 0,
+    FaceB,
+    FaceX,
+    FaceY,
+    DpadUp,
+    DpadDown,
+    DpadLeft,
+    DpadRight,
+    LeftShoulder,
+    RightShoulder,
+    LeftStick,
+    RightStick,
+    Menu,
+};
+
+REMOTEDESK_MOONLIGHT_GAME_CONTROLLER_HIDDEN bool
+applyMoonlightGameControllerButtonInput(
+    MoonlightGameControllerButtonInput input, bool pressed,
+    MoonlightControllerSample& sample) noexcept;
+
 // The GameControllerKit callbacks are process-global and carry no user
 // context. This listener is therefore deliberately single-owner and
 // synchronous: it copies the SDK event into a bounded full-state sample and
@@ -50,7 +74,6 @@ MoonlightGameControllerListener final {
 
     bool start() noexcept;
     void stop() noexcept;
-    void replayOnlineDevices() noexcept;
 
     bool started() const noexcept;
     std::size_t onlineDeviceCount() const noexcept;
@@ -66,6 +89,9 @@ MoonlightGameControllerListener final {
     struct Impl;
 
   private:
+    // Called only by start() while lifecycleMutex owns the dynamic API.
+    void replayOnlineDevices() noexcept;
+
     // A callback lease keeps Impl alive while a process-global SDK callback
     // unwinds, including when a sink destroys the listener from inside that
     // callback.

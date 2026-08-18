@@ -4,7 +4,6 @@
 #include <array>
 #include <atomic>
 #include <chrono>
-#include <cctype>
 #include <condition_variable>
 #include <cmath>
 #include <cstring>
@@ -13,6 +12,7 @@
 #include <new>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 #if defined(__OHOS__)
@@ -69,20 +69,13 @@ std::uint64_t stableDeviceId(const char* value) noexcept {
     X(OH_GamePad_AxisEvent_GetYAxisValue) \
     X(OH_GamePad_AxisEvent_GetZAxisValue) \
     X(OH_GamePad_ButtonEvent_GetButtonAction) \
-    X(OH_GamePad_ButtonEvent_GetButtonCodeName) \
     X(OH_GamePad_ButtonEvent_GetDeviceId) \
     X(OH_GamePad_LeftShoulder_RegisterButtonInputMonitor) \
     X(OH_GamePad_LeftShoulder_UnregisterButtonInputMonitor) \
     X(OH_GamePad_RightShoulder_RegisterButtonInputMonitor) \
     X(OH_GamePad_RightShoulder_UnregisterButtonInputMonitor) \
-    X(OH_GamePad_LeftTrigger_RegisterButtonInputMonitor) \
-    X(OH_GamePad_LeftTrigger_UnregisterButtonInputMonitor) \
-    X(OH_GamePad_RightTrigger_RegisterButtonInputMonitor) \
-    X(OH_GamePad_RightTrigger_UnregisterButtonInputMonitor) \
     X(OH_GamePad_ButtonMenu_RegisterButtonInputMonitor) \
     X(OH_GamePad_ButtonMenu_UnregisterButtonInputMonitor) \
-    X(OH_GamePad_ButtonHome_RegisterButtonInputMonitor) \
-    X(OH_GamePad_ButtonHome_UnregisterButtonInputMonitor) \
     X(OH_GamePad_ButtonA_RegisterButtonInputMonitor) \
     X(OH_GamePad_ButtonA_UnregisterButtonInputMonitor) \
     X(OH_GamePad_ButtonB_RegisterButtonInputMonitor) \
@@ -91,8 +84,6 @@ std::uint64_t stableDeviceId(const char* value) noexcept {
     X(OH_GamePad_ButtonX_UnregisterButtonInputMonitor) \
     X(OH_GamePad_ButtonY_RegisterButtonInputMonitor) \
     X(OH_GamePad_ButtonY_UnregisterButtonInputMonitor) \
-    X(OH_GamePad_ButtonC_RegisterButtonInputMonitor) \
-    X(OH_GamePad_ButtonC_UnregisterButtonInputMonitor) \
     X(OH_GamePad_Dpad_LeftButton_RegisterButtonInputMonitor) \
     X(OH_GamePad_Dpad_LeftButton_UnregisterButtonInputMonitor) \
     X(OH_GamePad_Dpad_RightButton_RegisterButtonInputMonitor) \
@@ -190,85 +181,6 @@ std::string boundedText(const char* value) {
     return std::string(value, length);
 }
 
-std::string lowercase(std::string value) {
-    for (char& character : value) {
-        character = static_cast<char>(std::tolower(
-            static_cast<unsigned char>(character)));
-    }
-    return value;
-}
-
-bool contains(const std::string& value, const char* token) noexcept {
-    return value.find(token) != std::string::npos;
-}
-
-std::uint32_t buttonBit(const std::string& rawName) noexcept {
-    const std::string name = lowercase(rawName);
-    if (contains(name, "dpad") || contains(name, "direction")) {
-        if (contains(name, "up")) {
-            return kMoonlightControllerButtonUp;
-        }
-        if (contains(name, "down")) {
-            return kMoonlightControllerButtonDown;
-        }
-        if (contains(name, "left")) {
-            return kMoonlightControllerButtonLeft;
-        }
-        if (contains(name, "right")) {
-            return kMoonlightControllerButtonRight;
-        }
-    }
-    if (name == "a" || contains(name, "button_a") || contains(name, "buttona")) {
-        return kMoonlightControllerButtonA;
-    }
-    if (name == "b" || contains(name, "button_b") || contains(name, "buttonb")) {
-        return kMoonlightControllerButtonB;
-    }
-    if (name == "x" || contains(name, "button_x") || contains(name, "buttonx")) {
-        return kMoonlightControllerButtonX;
-    }
-    if (name == "y" || contains(name, "button_y") || contains(name, "buttony")) {
-        return kMoonlightControllerButtonY;
-    }
-    if (contains(name, "leftshoulder") || contains(name, "left_shoulder") ||
-        contains(name, "leftbumper") || contains(name, "left_bumper") ||
-        contains(name, "button_l1") || contains(name, "button_lb")) {
-        return kMoonlightControllerButtonLeftShoulder;
-    }
-    if (contains(name, "rightshoulder") || contains(name, "right_shoulder") ||
-        contains(name, "rightbumper") || contains(name, "right_bumper") ||
-        contains(name, "button_r1") || contains(name, "button_rb")) {
-        return kMoonlightControllerButtonRightShoulder;
-    }
-    if (contains(name, "leftthumb") || contains(name, "left_thumb") ||
-        contains(name, "leftstick") || contains(name, "left_stick")) {
-        return kMoonlightControllerButtonLeftStick;
-    }
-    if (contains(name, "rightthumb") || contains(name, "right_thumb") ||
-        contains(name, "rightstick") || contains(name, "right_stick")) {
-        return kMoonlightControllerButtonRightStick;
-    }
-    if (contains(name, "menu") || contains(name, "start")) {
-        return kMoonlightControllerButtonPlay;
-    }
-    return 0U;
-}
-
-enum class TriggerButton : std::uint8_t { None, Left, Right };
-
-TriggerButton triggerButton(const std::string& rawName) noexcept {
-    const std::string name = lowercase(rawName);
-    if ((contains(name, "left") || contains(name, "l2") || contains(name, "lt")) &&
-        contains(name, "trigger")) {
-        return TriggerButton::Left;
-    }
-    if ((contains(name, "right") || contains(name, "r2") || contains(name, "rt")) &&
-        contains(name, "trigger")) {
-        return TriggerButton::Right;
-    }
-    return TriggerButton::None;
-}
-
 double clampUnit(double value) noexcept {
     if (!std::isfinite(value)) {
         return 0.0;
@@ -281,10 +193,6 @@ double clampTrigger(double value) noexcept {
         return 0.0;
     }
     return std::clamp(value, 0.0, 1.0);
-}
-
-void updateHatFromButtons(MoonlightControllerSample& sample) noexcept {
-    sample.hasHatAxes = false;
 }
 
 struct DeviceInfoCopy final {
@@ -316,6 +224,67 @@ bool copyDeviceInfo(GameControllerApi& api,
 
 } // namespace
 
+bool applyMoonlightGameControllerButtonInput(
+    MoonlightGameControllerButtonInput input, bool pressed,
+    MoonlightControllerSample& sample) noexcept {
+    std::uint32_t bit = 0U;
+    bool dpadButton = false;
+    switch (input) {
+        case MoonlightGameControllerButtonInput::FaceA:
+            bit = kMoonlightControllerButtonA;
+            break;
+        case MoonlightGameControllerButtonInput::FaceB:
+            bit = kMoonlightControllerButtonB;
+            break;
+        case MoonlightGameControllerButtonInput::FaceX:
+            bit = kMoonlightControllerButtonX;
+            break;
+        case MoonlightGameControllerButtonInput::FaceY:
+            bit = kMoonlightControllerButtonY;
+            break;
+        case MoonlightGameControllerButtonInput::DpadUp:
+            bit = kMoonlightControllerButtonUp;
+            dpadButton = true;
+            break;
+        case MoonlightGameControllerButtonInput::DpadDown:
+            bit = kMoonlightControllerButtonDown;
+            dpadButton = true;
+            break;
+        case MoonlightGameControllerButtonInput::DpadLeft:
+            bit = kMoonlightControllerButtonLeft;
+            dpadButton = true;
+            break;
+        case MoonlightGameControllerButtonInput::DpadRight:
+            bit = kMoonlightControllerButtonRight;
+            dpadButton = true;
+            break;
+        case MoonlightGameControllerButtonInput::LeftShoulder:
+            bit = kMoonlightControllerButtonLeftShoulder;
+            break;
+        case MoonlightGameControllerButtonInput::RightShoulder:
+            bit = kMoonlightControllerButtonRightShoulder;
+            break;
+        case MoonlightGameControllerButtonInput::LeftStick:
+            bit = kMoonlightControllerButtonLeftStick;
+            break;
+        case MoonlightGameControllerButtonInput::RightStick:
+            bit = kMoonlightControllerButtonRightStick;
+            break;
+        case MoonlightGameControllerButtonInput::Menu:
+            bit = kMoonlightControllerButtonPlay;
+            break;
+    }
+    if (pressed) {
+        sample.buttonFlags |= bit;
+    } else {
+        sample.buttonFlags &= ~bit;
+    }
+    if (dpadButton) {
+        sample.hasHatAxes = false;
+    }
+    return true;
+}
+
 struct MoonlightGameControllerListener::Impl final {
     explicit Impl(Sink& valueSink) noexcept : sink(&valueSink) {}
 
@@ -343,6 +312,8 @@ struct MoonlightGameControllerListener::Impl final {
     std::unordered_map<std::uint64_t, MoonlightControllerSample> samples;
     std::unordered_map<std::uint64_t, std::uint64_t> sequences;
     std::unordered_map<std::uint64_t, std::uint64_t> timestamps;
+    std::unordered_set<std::uint64_t> onlineDevices;
+    std::uint64_t activeDeviceId = 0U;
 };
 
 #if defined(__OHOS__)
@@ -483,23 +454,19 @@ std::uint64_t ensureDevice(MoonlightGameControllerListener::Impl& impl,
             return 0U;
         }
         if (existing == impl.sdkIds.end()) {
-            const auto generation = impl.nextGeneration == 0U ? 1U : impl.nextGeneration;
-            impl.nextGeneration = saturatingIncrement(generation);
             impl.sdkIds.emplace(id, boundedId);
-            impl.generations[id] = generation;
-            impl.samples[id] = {};
-            impl.sequences[id] = 0U;
-            impl.timestamps[id] = 0U;
-        } else if (impl.sequences[id] == 0U) {
-            // A reconnect must receive a new source generation. The previous
-            // generation may already be retired by the mapper/tombstone
-            // layer and must never be reused for a new physical source.
-            const auto generation = impl.nextGeneration == 0U ? 1U : impl.nextGeneration;
-            impl.nextGeneration = saturatingIncrement(generation);
-            impl.generations[id] = generation;
-            impl.samples[id] = {};
-            impl.timestamps[id] = 0U;
         }
+        if (!impl.onlineDevices.insert(id).second) {
+            return id;
+        }
+        // A reconnect receives a fresh source generation. Secondary devices
+        // remain online candidates without consuming Sunshine's single slot.
+        const auto generation = impl.nextGeneration == 0U ? 1U : impl.nextGeneration;
+        impl.nextGeneration = saturatingIncrement(generation);
+        impl.generations[id] = generation;
+        impl.samples[id] = {};
+        impl.sequences[id] = 0U;
+        impl.timestamps[id] = 0U;
         return id;
     } catch (...) {
         return 0U;
@@ -517,7 +484,8 @@ std::uint64_t findOnlineDevice(MoonlightGameControllerListener::Impl& impl,
         std::lock_guard<std::mutex> lock(impl.mutex);
         const auto existing = impl.sdkIds.find(id);
         if (existing == impl.sdkIds.end() || existing->second != boundedId ||
-            impl.sequences[id] == 0U) {
+            impl.onlineDevices.count(id) == 0U ||
+            impl.activeDeviceId != id || impl.sequences[id] == 0U) {
             // Button/axis callbacks cannot establish a device or a new
             // generation. A late event after OFFLINE must be dropped until a
             // fresh ONLINE event is observed.
@@ -541,9 +509,14 @@ void emitConnected(MoonlightGameControllerListener::Impl& impl,
     {
         std::lock_guard<std::mutex> lock(impl.mutex);
         const auto found = impl.generations.find(id);
-        if (found == impl.generations.end()) {
+        if (found == impl.generations.end() ||
+            impl.onlineDevices.count(id) == 0U) {
             return;
         }
+        if (impl.activeDeviceId != 0U && impl.activeDeviceId != id) {
+            return;
+        }
+        impl.activeDeviceId = id;
         generation = found->second;
         if (impl.sequences[id] != 0U) {
             return;
@@ -592,41 +565,61 @@ void emitDisconnected(MoonlightGameControllerListener::Impl& impl,
     std::uint64_t generation = 0U;
     std::uint64_t sequence = 0U;
     std::uint64_t timestamp = 0U;
+    bool notify = false;
     {
         std::lock_guard<std::mutex> lock(impl.mutex);
         const auto found = impl.generations.find(id);
-        if (found == impl.generations.end() || impl.sequences[id] == 0U) {
+        if (found == impl.generations.end() ||
+            impl.onlineDevices.erase(id) == 0U) {
             return;
         }
+        if (impl.activeDeviceId != id || impl.sequences[id] == 0U) {
+            impl.samples[id] = {};
+            impl.sequences[id] = 0U;
+            impl.timestamps[id] = 0U;
+            return;
+        }
+        impl.activeDeviceId = 0U;
         generation = found->second;
         sequence = saturatingIncrement(impl.sequences[id]);
         impl.sequences[id] = sequence;
         timestamp = std::max(saturatingIncrement(impl.timestamps[id]), monotonicNowUs());
         impl.timestamps[id] = timestamp;
         impl.samples[id] = {};
+        notify = true;
     }
-    if (impl.sink != nullptr) {
+    if (notify && impl.sink != nullptr) {
         SinkDispatchScope dispatch(impl);
         impl.sink->onPhysicalControllerDisconnected(id, generation, sequence, timestamp);
     }
-    std::lock_guard<std::mutex> lock(impl.mutex);
-    impl.sequences[id] = 0U;
-    impl.timestamps[id] = 0U;
+    std::uint64_t candidate = 0U;
+    {
+        std::lock_guard<std::mutex> lock(impl.mutex);
+        impl.sequences[id] = 0U;
+        impl.timestamps[id] = 0U;
+        if (!impl.onlineDevices.empty()) {
+            candidate = *std::min_element(
+                impl.onlineDevices.begin(), impl.onlineDevices.end());
+        }
+    }
+    if (candidate != 0U &&
+        impl.started.load(std::memory_order_acquire)) {
+        emitConnected(impl, candidate);
+    }
 }
 
-void buttonCallback(const GamePad_ButtonEvent* event) {
+void buttonCallback(const GamePad_ButtonEvent* event,
+                    MoonlightGameControllerButtonInput input) {
     CallbackLease lease(acquireCallback());
     if (lease.impl == nullptr || event == nullptr) {
         return;
     }
     std::lock_guard<std::mutex> dispatchLock(lease.impl->dispatchMutex);
     char* sdkId = nullptr;
-    char* codeName = nullptr;
     GamePad_Button_ActionType action = UP;
     auto& api = lease.impl->api;
     if (api.OH_GamePad_ButtonEvent_GetDeviceId(event, &sdkId) != GAME_CONTROLLER_SUCCESS ||
-        api.OH_GamePad_ButtonEvent_GetButtonAction(event, &action) != GAME_CONTROLLER_SUCCESS ||
-        api.OH_GamePad_ButtonEvent_GetButtonCodeName(event, &codeName) != GAME_CONTROLLER_SUCCESS) {
+        api.OH_GamePad_ButtonEvent_GetButtonAction(event, &action) != GAME_CONTROLLER_SUCCESS) {
         return;
     }
     const auto id = findOnlineDevice(*lease.impl, sdkId);
@@ -638,29 +631,33 @@ void buttonCallback(const GamePad_ButtonEvent* event) {
     {
         std::lock_guard<std::mutex> lock(lease.impl->mutex);
         auto& sample = lease.impl->samples[id];
-        const std::string name = boundedText(codeName);
-        const auto bit = buttonBit(name);
-        if (bit != 0U) {
-            if (action == DOWN) {
-                sample.buttonFlags |= bit;
-            } else {
-                sample.buttonFlags &= ~bit;
-            }
-            updateHatFromButtons(sample);
-        } else {
-            const auto trigger = triggerButton(name);
-            if (trigger == TriggerButton::Left) {
-                sample.leftTrigger = action == DOWN ? 1.0 : 0.0;
-            } else if (trigger == TriggerButton::Right) {
-                sample.rightTrigger = action == DOWN ? 1.0 : 0.0;
-            } else {
-                return;
-            }
-        }
+        (void)applyMoonlightGameControllerButtonInput(
+            input, action == DOWN, sample);
         copy = sample;
     }
     emitSample(*lease.impl, id, copy);
 }
+
+#define REMOTEDESK_GAMEPAD_BUTTON_CALLBACK(name, input) \
+    void name(const GamePad_ButtonEvent* event) { \
+        buttonCallback(event, MoonlightGameControllerButtonInput::input); \
+    }
+
+REMOTEDESK_GAMEPAD_BUTTON_CALLBACK(leftShoulderCallback, LeftShoulder)
+REMOTEDESK_GAMEPAD_BUTTON_CALLBACK(rightShoulderCallback, RightShoulder)
+REMOTEDESK_GAMEPAD_BUTTON_CALLBACK(menuCallback, Menu)
+REMOTEDESK_GAMEPAD_BUTTON_CALLBACK(faceACallback, FaceA)
+REMOTEDESK_GAMEPAD_BUTTON_CALLBACK(faceBCallback, FaceB)
+REMOTEDESK_GAMEPAD_BUTTON_CALLBACK(faceXCallback, FaceX)
+REMOTEDESK_GAMEPAD_BUTTON_CALLBACK(faceYCallback, FaceY)
+REMOTEDESK_GAMEPAD_BUTTON_CALLBACK(dpadLeftCallback, DpadLeft)
+REMOTEDESK_GAMEPAD_BUTTON_CALLBACK(dpadRightCallback, DpadRight)
+REMOTEDESK_GAMEPAD_BUTTON_CALLBACK(dpadUpCallback, DpadUp)
+REMOTEDESK_GAMEPAD_BUTTON_CALLBACK(dpadDownCallback, DpadDown)
+REMOTEDESK_GAMEPAD_BUTTON_CALLBACK(leftStickCallback, LeftStick)
+REMOTEDESK_GAMEPAD_BUTTON_CALLBACK(rightStickCallback, RightStick)
+
+#undef REMOTEDESK_GAMEPAD_BUTTON_CALLBACK
 
 void axisCallback(const GamePad_AxisEvent* event) {
     CallbackLease lease(acquireCallback());
@@ -759,6 +756,7 @@ void deviceCallback(const GameDevice_DeviceEvent* event) {
 struct ButtonMonitorRegistration final {
     GameController_ErrorCode (*registerMonitor)(GamePad_ButtonInputMonitorCallback);
     GameController_ErrorCode (*unregisterMonitor)();
+    GamePad_ButtonInputMonitorCallback callback;
 };
 
 struct AxisMonitorRegistration final {
@@ -766,38 +764,41 @@ struct AxisMonitorRegistration final {
     GameController_ErrorCode (*unregisterMonitor)();
 };
 
-std::array<ButtonMonitorRegistration, 15U> buttonMonitors(GameControllerApi& api) {
+std::array<ButtonMonitorRegistration, 11U> buttonMonitors(GameControllerApi& api) {
     return {{
         {api.OH_GamePad_LeftShoulder_RegisterButtonInputMonitor,
-         api.OH_GamePad_LeftShoulder_UnregisterButtonInputMonitor},
+         api.OH_GamePad_LeftShoulder_UnregisterButtonInputMonitor,
+         leftShoulderCallback},
         {api.OH_GamePad_RightShoulder_RegisterButtonInputMonitor,
-         api.OH_GamePad_RightShoulder_UnregisterButtonInputMonitor},
-        {api.OH_GamePad_LeftTrigger_RegisterButtonInputMonitor,
-         api.OH_GamePad_LeftTrigger_UnregisterButtonInputMonitor},
-        {api.OH_GamePad_RightTrigger_RegisterButtonInputMonitor,
-         api.OH_GamePad_RightTrigger_UnregisterButtonInputMonitor},
+         api.OH_GamePad_RightShoulder_UnregisterButtonInputMonitor,
+         rightShoulderCallback},
         {api.OH_GamePad_ButtonMenu_RegisterButtonInputMonitor,
-         api.OH_GamePad_ButtonMenu_UnregisterButtonInputMonitor},
-        {api.OH_GamePad_ButtonHome_RegisterButtonInputMonitor,
-         api.OH_GamePad_ButtonHome_UnregisterButtonInputMonitor},
+         api.OH_GamePad_ButtonMenu_UnregisterButtonInputMonitor,
+         menuCallback},
         {api.OH_GamePad_ButtonA_RegisterButtonInputMonitor,
-         api.OH_GamePad_ButtonA_UnregisterButtonInputMonitor},
+         api.OH_GamePad_ButtonA_UnregisterButtonInputMonitor,
+         faceACallback},
         {api.OH_GamePad_ButtonB_RegisterButtonInputMonitor,
-         api.OH_GamePad_ButtonB_UnregisterButtonInputMonitor},
+         api.OH_GamePad_ButtonB_UnregisterButtonInputMonitor,
+         faceBCallback},
         {api.OH_GamePad_ButtonX_RegisterButtonInputMonitor,
-         api.OH_GamePad_ButtonX_UnregisterButtonInputMonitor},
+         api.OH_GamePad_ButtonX_UnregisterButtonInputMonitor,
+         faceXCallback},
         {api.OH_GamePad_ButtonY_RegisterButtonInputMonitor,
-         api.OH_GamePad_ButtonY_UnregisterButtonInputMonitor},
-        {api.OH_GamePad_ButtonC_RegisterButtonInputMonitor,
-         api.OH_GamePad_ButtonC_UnregisterButtonInputMonitor},
+         api.OH_GamePad_ButtonY_UnregisterButtonInputMonitor,
+         faceYCallback},
         {api.OH_GamePad_Dpad_LeftButton_RegisterButtonInputMonitor,
-         api.OH_GamePad_Dpad_LeftButton_UnregisterButtonInputMonitor},
+         api.OH_GamePad_Dpad_LeftButton_UnregisterButtonInputMonitor,
+         dpadLeftCallback},
         {api.OH_GamePad_Dpad_RightButton_RegisterButtonInputMonitor,
-         api.OH_GamePad_Dpad_RightButton_UnregisterButtonInputMonitor},
+         api.OH_GamePad_Dpad_RightButton_UnregisterButtonInputMonitor,
+         dpadRightCallback},
         {api.OH_GamePad_Dpad_UpButton_RegisterButtonInputMonitor,
-         api.OH_GamePad_Dpad_UpButton_UnregisterButtonInputMonitor},
+         api.OH_GamePad_Dpad_UpButton_UnregisterButtonInputMonitor,
+         dpadUpCallback},
         {api.OH_GamePad_Dpad_DownButton_RegisterButtonInputMonitor,
-         api.OH_GamePad_Dpad_DownButton_UnregisterButtonInputMonitor},
+         api.OH_GamePad_Dpad_DownButton_UnregisterButtonInputMonitor,
+         dpadDownCallback},
     }};
 }
 
@@ -805,9 +806,11 @@ std::array<ButtonMonitorRegistration, 2U> thumbstickButtonMonitors(
     GameControllerApi& api) {
     return {{
         {api.OH_GamePad_LeftThumbstick_RegisterButtonInputMonitor,
-         api.OH_GamePad_LeftThumbstick_UnregisterButtonInputMonitor},
+         api.OH_GamePad_LeftThumbstick_UnregisterButtonInputMonitor,
+         leftStickCallback},
         {api.OH_GamePad_RightThumbstick_RegisterButtonInputMonitor,
-         api.OH_GamePad_RightThumbstick_UnregisterButtonInputMonitor},
+         api.OH_GamePad_RightThumbstick_UnregisterButtonInputMonitor,
+         rightStickCallback},
     }};
 }
 
@@ -826,11 +829,25 @@ std::array<AxisMonitorRegistration, 5U> axisMonitors(GameControllerApi& api) {
     }};
 }
 
-template <typename Registration, typename Callback, std::size_t N>
-bool registerMonitors(const std::array<Registration, N>& monitors, Callback callback,
-                      std::size_t& registered) noexcept {
+template <std::size_t N>
+bool registerButtonMonitors(
+    const std::array<ButtonMonitorRegistration, N>& monitors,
+    std::size_t& registered) noexcept {
     for (const auto& monitor : monitors) {
-        if (monitor.registerMonitor(callback) != GAME_CONTROLLER_SUCCESS) {
+        if (monitor.registerMonitor(monitor.callback) != GAME_CONTROLLER_SUCCESS) {
+            return false;
+        }
+        ++registered;
+    }
+    return true;
+}
+
+template <std::size_t N>
+bool registerAxisMonitors(
+    const std::array<AxisMonitorRegistration, N>& monitors,
+    std::size_t& registered) noexcept {
+    for (const auto& monitor : monitors) {
+        if (monitor.registerMonitor(axisCallback) != GAME_CONTROLLER_SUCCESS) {
             return false;
         }
         ++registered;
@@ -877,6 +894,8 @@ void stopRegisteredListener(MoonlightGameControllerListener::Impl& impl) noexcep
     impl.samples.clear();
     impl.sequences.clear();
     impl.timestamps.clear();
+    impl.onlineDevices.clear();
+    impl.activeDeviceId = 0U;
     impl.stopDeferred.store(false, std::memory_order_release);
     impl.api.unload();
 }
@@ -947,7 +966,6 @@ bool MoonlightGameControllerListener::start() noexcept {
         impl_->registrationActive.store(false, std::memory_order_release);
         registry.active = impl_.get();
         registry.activeOwner = impl_;
-        impl_->started.store(true, std::memory_order_release);
     }
     std::size_t registeredButtons = 0U;
     std::size_t registeredThumbButtons = 0U;
@@ -961,9 +979,9 @@ bool MoonlightGameControllerListener::start() noexcept {
         deviceRegistered = true;
     }
     const bool ok = deviceRegistered &&
-        registerMonitors(buttons, buttonCallback, registeredButtons) &&
-        registerMonitors(thumbButtons, buttonCallback, registeredThumbButtons) &&
-        registerMonitors(axes, axisCallback, registeredAxes);
+        registerButtonMonitors(buttons, registeredButtons) &&
+        registerButtonMonitors(thumbButtons, registeredThumbButtons) &&
+        registerAxisMonitors(axes, registeredAxes);
     if (!ok) {
         unregisterMonitors(axes, registeredAxes);
         unregisterMonitors(thumbButtons, registeredThumbButtons);
@@ -989,6 +1007,20 @@ bool MoonlightGameControllerListener::start() noexcept {
         return false;
     }
     impl_->registrationActive.store(true, std::memory_order_release);
+    bool ownsRegistry = false;
+    {
+        std::lock_guard<std::mutex> lock(registry.mutex);
+        ownsRegistry = registry.active == impl_.get() &&
+            registry.activeOwner == impl_;
+        if (ownsRegistry) {
+            // Open callback admission only after every monitor is registered.
+            impl_->started.store(true, std::memory_order_release);
+        }
+    }
+    if (!ownsRegistry) {
+        stopRegisteredListener(*impl_);
+        return false;
+    }
     if (impl_->stopDeferred.load(std::memory_order_acquire)) {
         // If this is executing inside the callback that requested stop, the
         // lease will call finishDeferredStop after the callback returns. A
@@ -1073,11 +1105,7 @@ std::size_t MoonlightGameControllerListener::onlineDeviceCount() const noexcept 
         return 0U;
     }
     std::lock_guard<std::mutex> lock(impl_->mutex);
-    std::size_t count = 0U;
-    for (const auto& item : impl_->sequences) {
-        count += item.second != 0U ? 1U : 0U;
-    }
-    return count;
+    return impl_->onlineDevices.size();
 }
 
 std::uint64_t MoonlightGameControllerListener::stableDeviceIdForTesting(

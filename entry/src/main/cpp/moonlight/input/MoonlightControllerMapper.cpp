@@ -337,7 +337,7 @@ MoonlightControllerWireCommand arrivalCommand(
     MoonlightControllerWireCommand command;
     command.operation = MoonlightControllerCommandOperation::Arrival;
     command.controllerNumber = 0U;
-    command.activeGamepadMask = 0x0001U;
+    command.activeGamepadMask = kMoonlightProductControllerBitmap;
     command.type = profile.type;
     command.capabilities = profile.analogTriggers
         ? kMoonlightControllerCapabilityAnalogTriggers
@@ -352,7 +352,7 @@ MoonlightControllerWireCommand stateCommand(
     MoonlightControllerWireCommand command;
     command.operation = MoonlightControllerCommandOperation::State;
     command.controllerNumber = 0U;
-    command.activeGamepadMask = active ? 0x0001U : 0U;
+    command.activeGamepadMask = active ? kMoonlightProductControllerBitmap : 0U;
     command.state = state;
     return command;
 }
@@ -452,7 +452,7 @@ bool decodeMoonlightControllerCommand(
 
     if (command.controllerNumber != 0U ||
         (command.activeGamepadMask != 0U &&
-         command.activeGamepadMask != 0x0001U) ||
+         command.activeGamepadMask != kMoonlightProductControllerBitmap) ||
         (command.state.buttonFlags & ~kMoonlightControllerApi23ButtonMask) != 0U) {
         command = {};
         return false;
@@ -464,7 +464,7 @@ bool decodeMoonlightControllerCommand(
                 command.type, command.supportedButtonFlags,
                 (command.capabilities &
                  kMoonlightControllerCapabilityAnalogTriggers) != 0U};
-            if (command.activeGamepadMask != 0x0001U ||
+            if (command.activeGamepadMask != kMoonlightProductControllerBitmap ||
                 !neutralState(command.state) || !validProfile(profile) ||
                 (command.capabilities &
                  ~kMoonlightControllerCapabilityAnalogTriggers) != 0U) {

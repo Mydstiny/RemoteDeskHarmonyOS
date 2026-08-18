@@ -84,6 +84,7 @@ struct MoonlightProductStreamSnapshot final {
     bool audioReady = false;
     bool inputReady = false;
     bool controllerReady = false;
+    bool physicalControllerReady = false;
     bool firstFrameReady = false;
     bool terminal = false;
     std::uint64_t lastSequence = 0U;

@@ -170,6 +170,7 @@ export interface MoonlightNativeStreamSnapshot {
   audioReady: boolean;
   inputReady: boolean;
   controllerReady: boolean;
+  physicalControllerReady: boolean;
   firstFrameReady: boolean;
   terminal: boolean;
   lastSequence: number;

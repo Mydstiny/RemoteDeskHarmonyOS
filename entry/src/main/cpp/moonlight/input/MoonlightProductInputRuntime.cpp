@@ -159,6 +159,17 @@ struct MoonlightProductInputRuntime::State final
         MoonlightControllerSample sample{};
         std::uint64_t listenerGeneration = 0U;
     };
+    struct PendingPhysicalStandby final {
+        std::uint64_t deviceId = 0U;
+        std::uint64_t listenerGeneration = 0U;
+        std::uint64_t arrivalSequence = 0U;
+        std::uint64_t arrivalTimestampUs = 0U;
+        std::uint64_t latestSampleSequence = 0U;
+        std::uint64_t latestSampleTimestampUs = 0U;
+        MoonlightControllerProfile profile{};
+        MoonlightControllerSample sample{};
+        bool samplePresent = false;
+    };
     enum class LifecycleClear : std::uint8_t { None, Physical, Virtual };
     struct PendingLifecycle final {
         MoonlightInputFlushTrigger trigger = MoonlightInputFlushTrigger::Invalid;
@@ -176,6 +187,7 @@ struct MoonlightProductInputRuntime::State final
     bool activating = false;
     bool stopping = false;
     bool controllerReady = false;
+    bool physicalControllerReady = false;
     bool directTouch = false;
     MoonlightSessionKey key{};
     MoonlightInputIdentity identity{};
@@ -198,6 +210,7 @@ struct MoonlightProductInputRuntime::State final
     std::optional<PendingPhysicalConnect> pendingPhysicalConnect;
     std::optional<PendingPhysicalDisconnect> pendingPhysicalDisconnect;
     std::optional<PendingPhysicalFrame> pendingPhysicalFrame;
+    std::optional<PendingPhysicalStandby> pendingPhysicalStandby;
     std::optional<MoonlightControllerSourceContext> pendingVirtualConnect;
     std::optional<MoonlightVirtualControllerEvent> pendingVirtual;
     std::optional<PendingLifecycle> pendingLifecycle;
@@ -264,6 +277,24 @@ struct MoonlightProductInputRuntime::State final
         } else {
             (void)next(rejectedEvents);
         }
+    }
+
+    // mutex must be held. The listener exposes one active physical device and
+    // may promote one already-online standby while the old source is still
+    // draining through common-c backpressure.
+    void retainPhysicalStandby(
+        std::uint64_t deviceId, std::uint64_t listenerGeneration,
+        std::uint64_t sourceSequence, std::uint64_t timestamp,
+        const MoonlightControllerProfile& profile) noexcept {
+        if (!pendingPhysicalStandby.has_value() ||
+            pendingPhysicalStandby->deviceId != deviceId ||
+            pendingPhysicalStandby->listenerGeneration != listenerGeneration) {
+            pendingPhysicalStandby = PendingPhysicalStandby{
+                deviceId, listenerGeneration, sourceSequence, timestamp,
+                0U, 0U, profile, {}, false};
+            return;
+        }
+        pendingPhysicalStandby->profile = profile;
     }
 
     // controllerLane must be held. Every retry uses the exact object retained
@@ -373,6 +404,7 @@ struct MoonlightProductInputRuntime::State final
                 return false;
             }
             bool releaseImmediately = false;
+            bool drainRetainedFrame = false;
             {
                 std::lock_guard<std::mutex> lock(mutex);
                 if (!active || identity != physicalConnect->context.identity) {
@@ -404,8 +436,10 @@ struct MoonlightProductInputRuntime::State final
                     pendingPhysicalDisconnect.reset();
                     releaseImmediately = true;
                 }
+                drainRetainedFrame = pendingPhysicalFrame.has_value();
             }
-            return releaseImmediately ? retryControllerOperation() : true;
+            return releaseImmediately || drainRetainedFrame
+                ? retryControllerOperation() : true;
         }
 
         if (lifecycle.has_value()) {
@@ -436,26 +470,58 @@ struct MoonlightProductInputRuntime::State final
                     return false;
                 }
             }
-            std::lock_guard<std::mutex> lock(mutex);
-            if (!active || identity != lifecycle->identity) {
-                return false;
+            bool promoteStandby = false;
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                if (!active || identity != lifecycle->identity) {
+                    return false;
+                }
+                if (lifecycle->clear == LifecycleClear::Physical) {
+                    physicalDeviceId = 0U;
+                    physicalListenerGeneration = 0U;
+                    physicalSourceGeneration = 0U;
+                    controllerContext = {};
+                    pendingPhysicalDisconnect.reset();
+                    pendingPhysicalFrame.reset();
+                    if (pendingPhysicalStandby.has_value()) {
+                        const auto standby = *pendingPhysicalStandby;
+                        const std::uint64_t mappedGeneration =
+                            next(controllerSourceGeneration);
+                        const std::uint64_t timestamp = std::max(
+                            standby.arrivalTimestampUs, monotonicUs());
+                        const MoonlightControllerSourceContext context = {
+                            identity, MoonlightControllerSourceKind::Physical,
+                            standby.deviceId, mappedGeneration,
+                            standby.arrivalSequence, timestamp, 0U};
+                        pendingPhysicalConnect = PendingPhysicalConnect{
+                            context, standby.profile,
+                            standby.listenerGeneration, std::nullopt};
+                        if (standby.samplePresent &&
+                            standby.latestSampleSequence >
+                                standby.arrivalSequence) {
+                            MoonlightControllerSourceContext frameContext =
+                                context;
+                            frameContext.sourceSequence =
+                                standby.latestSampleSequence;
+                            frameContext.monotonicTimestampUs = std::max(
+                                timestamp, standby.latestSampleTimestampUs);
+                            pendingPhysicalFrame = PendingPhysicalFrame{
+                                frameContext, standby.sample,
+                                standby.listenerGeneration};
+                        }
+                        pendingPhysicalStandby.reset();
+                        promoteStandby = true;
+                    }
+                } else if (lifecycle->clear == LifecycleClear::Virtual) {
+                    virtualSourceGeneration = 0U;
+                    virtualSourceSequence = 0U;
+                    controllerContext = {};
+                    pendingVirtualConnect.reset();
+                    pendingVirtual.reset();
+                }
+                pendingLifecycle.reset();
             }
-            if (lifecycle->clear == LifecycleClear::Physical) {
-                physicalDeviceId = 0U;
-                physicalListenerGeneration = 0U;
-                physicalSourceGeneration = 0U;
-                controllerContext = {};
-                pendingPhysicalDisconnect.reset();
-                pendingPhysicalFrame.reset();
-            } else if (lifecycle->clear == LifecycleClear::Virtual) {
-                virtualSourceGeneration = 0U;
-                virtualSourceSequence = 0U;
-                controllerContext = {};
-                pendingVirtualConnect.reset();
-                pendingVirtual.reset();
-            }
-            pendingLifecycle.reset();
-            return true;
+            return promoteStandby ? retryControllerOperation() : true;
         }
 
         if (physicalFrame.has_value()) {
@@ -509,36 +575,63 @@ struct MoonlightProductInputRuntime::State final
             // A listener ONLINE edge is one-shot. Retain its exact target
             // before retrying older virtual backpressure so it cannot vanish
             // after the listener has advanced the device sequence.
-            if (pendingPhysicalConnect.has_value()) { return; }
-            const auto snapshot = aggregator->snapshot(identity);
-            if (!snapshot.matched ||
-                snapshot.activeSource == MoonlightControllerSourceKind::Physical) {
-                return;
+            if (pendingPhysicalConnect.has_value()) {
+                if (pendingPhysicalConnect->context.deviceId == deviceId &&
+                    pendingPhysicalConnect->listenerGeneration ==
+                        sourceGeneration) {
+                    return;
+                }
+                retainPhysicalStandby(
+                    deviceId, sourceGeneration, sourceSequence,
+                    monotonicTimestampUs, profile);
+            } else if (physicalDeviceId != 0U ||
+                       (pendingLifecycle.has_value() &&
+                        pendingLifecycle->clear == LifecycleClear::Physical)) {
+                retainPhysicalStandby(
+                    deviceId, sourceGeneration, sourceSequence,
+                    monotonicTimestampUs, profile);
+            } else {
+                const auto snapshot = aggregator->snapshot(identity);
+                if (!snapshot.matched) {
+                    return;
+                }
+                if (snapshot.activeSource ==
+                    MoonlightControllerSourceKind::Physical) {
+                    retainPhysicalStandby(
+                        deviceId, sourceGeneration, sourceSequence,
+                        monotonicTimestampUs, profile);
+                } else {
+                    const std::uint64_t mappedGeneration =
+                        next(controllerSourceGeneration);
+                    const std::uint64_t timestamp = std::max(
+                        monotonicTimestampUs, monotonicUs());
+                    const MoonlightControllerSourceContext context = {
+                        identity, MoonlightControllerSourceKind::Physical,
+                        deviceId, mappedGeneration, sourceSequence,
+                        timestamp, 0U};
+                    std::optional<MoonlightControllerHandoffRequest> handoff;
+                    if (snapshot.activeSource ==
+                            MoonlightControllerSourceKind::Virtual &&
+                        controllerContext.valid()) {
+                        MoonlightControllerHandoffRequest request;
+                        request.target = context;
+                        request.targetPhysicalProfile = profile;
+                        request.disconnectFlush = flushContext(true, timestamp);
+                        request.boundaryRetryOperationGeneration =
+                            next(operationGeneration);
+                        request.boundaryRetryTimestampUs = timestamp;
+                        request.resumeOperationGeneration =
+                            next(operationGeneration);
+                        request.terminalFlush = flushContext(true, timestamp);
+                        handoff = request;
+                    } else if (snapshot.activeSource !=
+                               MoonlightControllerSourceKind::Invalid) {
+                        return;
+                    }
+                    pendingPhysicalConnect = PendingPhysicalConnect{
+                        context, profile, sourceGeneration, handoff};
+                }
             }
-            const std::uint64_t mappedGeneration = next(controllerSourceGeneration);
-            const std::uint64_t timestamp = std::max(
-                monotonicTimestampUs, monotonicUs());
-            const MoonlightControllerSourceContext context = {
-                identity, MoonlightControllerSourceKind::Physical,
-                deviceId, mappedGeneration, sourceSequence, timestamp, 0U};
-            std::optional<MoonlightControllerHandoffRequest> handoff;
-            if (snapshot.activeSource == MoonlightControllerSourceKind::Virtual &&
-                controllerContext.valid()) {
-                MoonlightControllerHandoffRequest request;
-                request.target = context;
-                request.targetPhysicalProfile = profile;
-                request.disconnectFlush = flushContext(true, timestamp);
-                request.boundaryRetryOperationGeneration = next(operationGeneration);
-                request.boundaryRetryTimestampUs = timestamp;
-                request.resumeOperationGeneration = next(operationGeneration);
-                request.terminalFlush = flushContext(true, timestamp);
-                handoff = request;
-            } else if (snapshot.activeSource !=
-                       MoonlightControllerSourceKind::Invalid) {
-                return;
-            }
-            pendingPhysicalConnect = PendingPhysicalConnect{
-                context, profile, sourceGeneration, handoff};
         }
         const bool accepted = retryControllerOperation();
         record(accepted);
@@ -549,7 +642,29 @@ struct MoonlightProductInputRuntime::State final
         std::uint64_t sourceSequence, std::uint64_t monotonicTimestampUs,
         const MoonlightControllerSample& sample) noexcept override {
         std::lock_guard<std::mutex> lane(controllerLane);
-        if (!retryControllerOperation()) {
+        const bool drained = retryControllerOperation();
+        bool retainedStandby = false;
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            if (active && !stopping && pendingPhysicalStandby.has_value() &&
+                pendingPhysicalStandby->deviceId == deviceId &&
+                pendingPhysicalStandby->listenerGeneration == sourceGeneration) {
+                pendingPhysicalStandby->latestSampleSequence = std::max(
+                    pendingPhysicalStandby->latestSampleSequence,
+                    sourceSequence);
+                pendingPhysicalStandby->latestSampleTimestampUs = std::max(
+                    pendingPhysicalStandby->latestSampleTimestampUs,
+                    monotonicTimestampUs);
+                pendingPhysicalStandby->sample = sample;
+                pendingPhysicalStandby->samplePresent = true;
+                retainedStandby = true;
+            }
+        }
+        if (retainedStandby) {
+            record(true);
+            return;
+        }
+        if (!drained) {
             record(false);
             return;
         }
@@ -593,10 +708,16 @@ struct MoonlightProductInputRuntime::State final
         std::uint64_t monotonicTimestampUs) noexcept override {
         std::lock_guard<std::mutex> lane(controllerLane);
         bool cancelledBeforeSubmission = false;
+        bool cancelledStandby = false;
         {
             std::lock_guard<std::mutex> lock(mutex);
             if (!active || stopping || aggregator == nullptr) { return; }
-            if (pendingPhysicalConnect.has_value() &&
+            if (pendingPhysicalStandby.has_value() &&
+                pendingPhysicalStandby->deviceId == deviceId &&
+                pendingPhysicalStandby->listenerGeneration == sourceGeneration) {
+                pendingPhysicalStandby.reset();
+                cancelledStandby = true;
+            } else if (pendingPhysicalConnect.has_value() &&
                 pendingPhysicalConnect->context.deviceId == deviceId &&
                 pendingPhysicalConnect->listenerGeneration == sourceGeneration) {
                 if (!pendingPhysicalConnect->submitted) {
@@ -628,6 +749,10 @@ struct MoonlightProductInputRuntime::State final
                     identity, resumeGeneration, LifecycleClear::Physical,
                     false, true};
             }
+        }
+        if (cancelledStandby) {
+            record(true);
+            return;
         }
         if (cancelledBeforeSubmission) {
             record(true);
@@ -749,6 +874,7 @@ bool MoonlightProductInputRuntime::activate(const MoonlightSessionKey& key) noex
             value.pendingPhysicalConnect.reset();
             value.pendingPhysicalDisconnect.reset();
             value.pendingPhysicalFrame.reset();
+            value.pendingPhysicalStandby.reset();
             value.pendingVirtualConnect.reset();
             value.pendingLifecycle.reset();
             value.controllerContext = {};
@@ -762,6 +888,7 @@ bool MoonlightProductInputRuntime::activate(const MoonlightSessionKey& key) noex
             value.aggregator = std::move(aggregator);
             value.listener = listener;
             value.controllerReady = true;
+            value.physicalControllerReady = false;
             value.stopping = false;
             value.active = true;
         }
@@ -779,10 +906,11 @@ bool MoonlightProductInputRuntime::activate(const MoonlightSessionKey& key) noex
             // The virtual semantic ingress remains available even on devices
             // without GameControllerKit hardware. This flag means at least one
             // native controller path is ready, not that a device is connected.
-            value.controllerReady = value.virtualLayout.generation != 0U;
+            value.physicalControllerReady = physicalListenerReady;
+            value.controllerReady = value.virtualLayout.generation != 0U ||
+                value.physicalControllerReady;
         }
     }
-    (void)physicalListenerReady;
     return true;
 }
 
@@ -799,6 +927,7 @@ bool MoonlightProductInputRuntime::stop(const MoonlightSessionKey& key) noexcept
         if (!value.active || value.key != key) { return false; }
         value.stopping = true;
         value.controllerReady = false;
+        value.physicalControllerReady = false;
         listener = value.listener;
     }
     // Do not hold controllerLane while draining listener callbacks: an
@@ -874,9 +1003,11 @@ bool MoonlightProductInputRuntime::stop(const MoonlightSessionKey& key) noexcept
             value.virtualSourceGeneration = 0U;
             value.virtualSourceSequence = 0U;
             value.virtualLayout = {};
+            value.physicalControllerReady = false;
             value.pendingPhysicalConnect.reset();
             value.pendingPhysicalDisconnect.reset();
             value.pendingPhysicalFrame.reset();
+            value.pendingPhysicalStandby.reset();
             value.pendingVirtualConnect.reset();
             value.pendingVirtual.reset();
             value.pendingLifecycle.reset();
@@ -905,6 +1036,7 @@ MoonlightProductInputSnapshot MoonlightProductInputRuntime::snapshot(
     if (!result.matched) { return result; }
     result.inputReady = value.bridge != nullptr;
     result.controllerReady = value.controllerReady;
+    result.physicalControllerReady = value.physicalControllerReady;
     result.inputGeneration = value.identity.inputGeneration;
     result.acceptedEvents = value.acceptedEvents;
     result.rejectedEvents = value.rejectedEvents;

@@ -150,6 +150,7 @@ class MoonlightNapiRuntimePort implements MoonlightRuntimePort {
         audioReady: source.audioReady,
         inputReady: source.inputReady,
         controllerReady: source.controllerReady,
+        physicalControllerReady: source.physicalControllerReady,
         firstFrameReady: source.firstFrameReady,
         terminal: source.terminal,
         lastSequence: source.lastSequence

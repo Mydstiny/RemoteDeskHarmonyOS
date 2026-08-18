@@ -52,9 +52,50 @@ RDP_TEST_CASE(moonlight_game_controller_listener_host_is_fail_closed) {
     RDP_ASSERT(!listener.start());
     RDP_ASSERT(!listener.started());
     RDP_ASSERT_EQ(listener.onlineDeviceCount(), 0U);
-    listener.replayOnlineDevices();
     listener.stop();
     listener.stop();
+}
+
+RDP_TEST_CASE(moonlight_game_controller_listener_maps_registered_controls_without_names) {
+    MoonlightControllerSample sample;
+    sample.hasHatAxes = true;
+    sample.hatX = 1.0;
+    sample.hatY = -1.0;
+
+    RDP_ASSERT(applyMoonlightGameControllerButtonInput(
+        MoonlightGameControllerButtonInput::FaceA, true, sample));
+    RDP_ASSERT((sample.buttonFlags & kMoonlightControllerButtonA) != 0U);
+    RDP_ASSERT(sample.hasHatAxes);
+
+    RDP_ASSERT(applyMoonlightGameControllerButtonInput(
+        MoonlightGameControllerButtonInput::DpadLeft, true, sample));
+    RDP_ASSERT((sample.buttonFlags & kMoonlightControllerButtonLeft) != 0U);
+    RDP_ASSERT(!sample.hasHatAxes);
+
+    RDP_ASSERT(applyMoonlightGameControllerButtonInput(
+        MoonlightGameControllerButtonInput::Menu, true, sample));
+    RDP_ASSERT((sample.buttonFlags & kMoonlightControllerButtonPlay) != 0U);
+    RDP_ASSERT(applyMoonlightGameControllerButtonInput(
+        MoonlightGameControllerButtonInput::LeftShoulder, true, sample));
+    RDP_ASSERT((sample.buttonFlags &
+                kMoonlightControllerButtonLeftShoulder) != 0U);
+    RDP_ASSERT(applyMoonlightGameControllerButtonInput(
+        MoonlightGameControllerButtonInput::LeftStick, true, sample));
+    RDP_ASSERT((sample.buttonFlags & kMoonlightControllerButtonLeftStick) != 0U);
+
+    RDP_ASSERT(applyMoonlightGameControllerButtonInput(
+        MoonlightGameControllerButtonInput::FaceA, false, sample));
+    RDP_ASSERT((sample.buttonFlags & kMoonlightControllerButtonA) == 0U);
+}
+
+RDP_TEST_CASE(moonlight_game_controller_listener_button_mapping_preserves_axis_triggers) {
+    MoonlightControllerSample sample;
+    sample.leftTrigger = 0.4;
+    sample.rightTrigger = 0.7;
+    RDP_ASSERT(applyMoonlightGameControllerButtonInput(
+        MoonlightGameControllerButtonInput::FaceB, true, sample));
+    RDP_ASSERT_EQ(sample.leftTrigger, 0.4);
+    RDP_ASSERT_EQ(sample.rightTrigger, 0.7);
 }
 
 } // namespace

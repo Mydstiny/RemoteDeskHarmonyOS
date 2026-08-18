@@ -150,6 +150,9 @@ RDP_TEST_CASE(moonlight_controller_official_flags_and_arrival_projection_are_exa
                   static_cast<std::uint32_t>(0x0400));
     RDP_ASSERT_EQ(kMoonlightMaximumPhysicalControllerSlots,
                   static_cast<std::size_t>(1));
+    RDP_ASSERT_EQ(kMoonlightProductControllerBitmap,
+                  static_cast<std::uint32_t>(1));
+    RDP_ASSERT(kMoonlightProductPersistGamepad);
 
     ControllerFixture fixture;
     const auto profile = xboxProfile();

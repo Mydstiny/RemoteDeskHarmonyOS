@@ -1,6 +1,7 @@
 #include "moonlight/runtime/MoonlightProductRuntime.h"
 
 #include "moonlight/control/MoonlightHostControl.h"
+#include "moonlight/input/MoonlightControllerMapper.h"
 #include "moonlight/pairing/MoonlightPairingManager.h"
 #include "moonlight/security/MoonlightSecureIdentity.h"
 #include "moonlight/runtime/MoonlightHttpResponseFraming.h"
@@ -1298,6 +1299,20 @@ private:
         std::array<std::uint8_t, 16U> nativeRiKey {};
         std::int32_t nativeRiKeyId = 0;
         bool launchMaterialReady = false;
+        MoonlightBridgeLaunchConfiguration effectiveLaunchConfiguration =
+            request.launchConfiguration;
+        if (request.operation == MoonlightBridgeOperation::Launch ||
+            request.operation == MoonlightBridgeOperation::Resume) {
+            // The product mapper owns one stable slot and supports physical /
+            // virtual hot handoff. Match Moonlight's non-multi-controller mode:
+            // reserve slot 0 at launch and keep it persistent across handoff.
+            effectiveLaunchConfiguration.remoteControllersBitmap =
+                kMoonlightProductControllerBitmap;
+            effectiveLaunchConfiguration.gamepadMask =
+                kMoonlightProductControllerBitmap;
+            effectiveLaunchConfiguration.persistGamepads =
+                kMoonlightProductPersistGamepad;
+        }
         try {
             switch (request.operation) {
             case MoonlightBridgeOperation::Catalog: {
@@ -1327,22 +1342,22 @@ private:
                 std::memcpy(&nativeRiKeyId, idBytes.data(), idBytes.size());
                 OPENSSL_cleanse(idBytes.data(), idBytes.size());
                 MoonlightLaunchConfiguration configuration;
-                configuration.width = request.launchConfiguration.width;
-                configuration.height = request.launchConfiguration.height;
-                configuration.refreshRate = request.launchConfiguration.refreshRate;
+                configuration.width = effectiveLaunchConfiguration.width;
+                configuration.height = effectiveLaunchConfiguration.height;
+                configuration.refreshRate = effectiveLaunchConfiguration.refreshRate;
                 configuration.additionalStates =
-                    request.launchConfiguration.additionalStates;
-                configuration.sops = request.launchConfiguration.sops;
-                configuration.hdr = request.launchConfiguration.hdr;
+                    effectiveLaunchConfiguration.additionalStates;
+                configuration.sops = effectiveLaunchConfiguration.sops;
+                configuration.hdr = effectiveLaunchConfiguration.hdr;
                 configuration.playAudioOnHost =
-                    request.launchConfiguration.playAudioOnHost;
+                    effectiveLaunchConfiguration.playAudioOnHost;
                 configuration.surroundAudioInfo =
-                    request.launchConfiguration.surroundAudioInfo;
+                    effectiveLaunchConfiguration.surroundAudioInfo;
                 configuration.remoteControllersBitmap =
-                    request.launchConfiguration.remoteControllersBitmap;
-                configuration.gamepadMask = request.launchConfiguration.gamepadMask;
+                    effectiveLaunchConfiguration.remoteControllersBitmap;
+                configuration.gamepadMask = effectiveLaunchConfiguration.gamepadMask;
                 configuration.persistGamepads =
-                    request.launchConfiguration.persistGamepads;
+                    effectiveLaunchConfiguration.persistGamepads;
                 MoonlightLaunchRequest call;
                 call.context = std::move(context);
                 call.appId = request.appId;
@@ -1381,7 +1396,7 @@ private:
             stage.serverUuid = request.serverUuid;
             stage.address = *source.sessionAddress;
             stage.appId = request.appId;
-            stage.configuration = request.launchConfiguration;
+            stage.configuration = effectiveLaunchConfiguration;
             stage.serverInfo = std::move(*source.sessionServerInfo);
             stage.remoteInputKey = nativeRiKey;
             stage.remoteInputKeyId = nativeRiKeyId;

@@ -82,6 +82,7 @@ struct MoonlightProductInputSnapshot final {
     bool matched = false;
     bool inputReady = false;
     bool controllerReady = false;
+    bool physicalControllerReady = false;
     std::uint64_t inputGeneration = 0U;
     std::uint64_t acceptedEvents = 0U;
     std::uint64_t rejectedEvents = 0U;

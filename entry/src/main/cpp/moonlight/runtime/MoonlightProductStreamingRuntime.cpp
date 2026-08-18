@@ -336,6 +336,7 @@ MoonlightProductStreamSnapshot MoonlightProductStreamingRuntime::snapshot(
     result.audioReady = source.audioReady;
     result.inputReady = input.inputReady;
     result.controllerReady = input.controllerReady;
+    result.physicalControllerReady = input.physicalControllerReady;
     result.firstFrameReady = source.firstFrameReady;
     result.terminal = source.terminal;
     result.lastSequence = source.lastSequence;

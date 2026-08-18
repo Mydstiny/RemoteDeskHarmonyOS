@@ -61,6 +61,8 @@ constexpr std::uint32_t kMoonlightControllerApi23ButtonMask =
 
 constexpr std::size_t kMoonlightControllerCommandBytes = 28U;
 constexpr std::size_t kMoonlightMaximumPhysicalControllerSlots = 1U;
+constexpr std::uint32_t kMoonlightProductControllerBitmap = 0x00000001U;
+constexpr bool kMoonlightProductPersistGamepad = true;
 constexpr std::size_t kMoonlightMaximumObservedControllerLanes = 8U;
 constexpr double kMoonlightDefaultControllerStickDeadzone = 0.07;
 constexpr double kMoonlightDefaultControllerTriggerDeadzone = 0.13;

@@ -1282,6 +1282,8 @@ napi_value streamSnapshot(napi_env env, napi_callback_info info) {
     setBoolean(env, value, "audioReady", result.audioReady);
     setBoolean(env, value, "inputReady", result.inputReady);
     setBoolean(env, value, "controllerReady", result.controllerReady);
+    setBoolean(env, value, "physicalControllerReady",
+               result.physicalControllerReady);
     setBoolean(env, value, "firstFrameReady", result.firstFrameReady);
     setBoolean(env, value, "terminal", result.terminal);
     setSafeInteger(env, value, "lastSequence", result.lastSequence);
