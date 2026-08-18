@@ -10766,6 +10766,10 @@ struct RemoteDesktop {
         throw new Error(errMsg);
       }
       this.sessionId = sid;
+      // A newly allocated native session gets its own one-shot touchpad guide.
+      // Foreground/PiP restoration adopts the existing session and does not
+      // pass this connect boundary, so it will not repeat the prompt.
+      this.virtualTouchpadKeyboardGuideShownThisSession = false;
       this.inputForwardReady = false;
       // NapiConnect publishes the exact session owner synchronously. Decoder
       // registration must happen after that transaction; cold-start calls
