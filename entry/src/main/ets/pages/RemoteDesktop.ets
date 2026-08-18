@@ -5829,10 +5829,13 @@ struct RemoteDesktop {
   private closeModifierPanel(): void {
     this.modifierPanelPrepareOnly = false;
     this.modifierPanelVisible = false;
-    this.shortcutPanelVisible = false;
     if (this.isVncSession()) {
       this.recomputeVncToolbarPlacement('modifier-panel-close');
     }
+    this.scheduleModifierPanelUnmount();
+  }
+
+  private scheduleModifierPanelUnmount(): void {
     setTimeout((): void => {
       if (!this.modifierPanelVisible && !this.shortcutPanelVisible) {
         this.modifierPanelMounted = false;
@@ -5855,12 +5858,12 @@ struct RemoteDesktop {
     if (this.isVncSession()) {
       this.recomputeVncToolbarPlacement('shortcut-panel-close');
     }
+    this.scheduleModifierPanelUnmount();
   }
 
   private toggleShortcutPanel(): void {
     this.ensureModifierPanelPositions();
     this.modifierPanelMounted = true;
-    this.modifierPanelVisible = true;
     const opening: boolean = !this.shortcutPanelVisible;
     if (opening && !this.shortcutPanelUserPositioned) {
       const shortcut: FloatingPanelRect = this.defaultShortcutPanelPosition();
@@ -5870,6 +5873,9 @@ struct RemoteDesktop {
     this.shortcutPanelVisible = opening;
     if (this.isVncSession()) {
       this.recomputeVncToolbarPlacement(opening ? 'shortcut-panel-open' : 'shortcut-panel-close');
+    }
+    if (!opening) {
+      this.scheduleModifierPanelUnmount();
     }
   }
 

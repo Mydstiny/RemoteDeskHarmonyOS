@@ -203,7 +203,17 @@ export function decodeRemoteCustomShortcuts(raw: string): Array<RemoteCustomShor
     for (let index = 0; index < envelope.items.length &&
       result.length < REMOTE_CUSTOM_SHORTCUT_MAX_COUNT; index++) {
       const source: RemoteCustomShortcut = envelope.items[index];
-      if (source === null || source === undefined || !Array.isArray(source.keyCodes)) { continue; }
+      if (source === null || source === undefined || typeof source.id !== 'string' ||
+        !Array.isArray(source.keyCodes)) { continue; }
+      let keyCodesValid: boolean = true;
+      for (let keyIndex = 0; keyIndex < source.keyCodes.length; keyIndex++) {
+        if (typeof source.keyCodes[keyIndex] !== 'number' ||
+          !Number.isFinite(source.keyCodes[keyIndex])) {
+          keyCodesValid = false;
+          break;
+        }
+      }
+      if (!keyCodesValid) { continue; }
       const update: RemoteCustomShortcutUpdate =
         upsertRemoteCustomShortcut(result, source.id, source.keyCodes);
       if (update.accepted) { result = update.shortcuts; }

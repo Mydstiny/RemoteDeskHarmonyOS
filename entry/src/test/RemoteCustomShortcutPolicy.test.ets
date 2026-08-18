@@ -39,6 +39,13 @@ export default function remoteCustomShortcutPolicyTest(): void {
       expect(decoded.length).assertEqual(2);
       expect(decoded[1].label).assertEqual('Alt + F4');
       expect(decodeRemoteCustomShortcuts('{bad json').length).assertEqual(0);
+      const mixed: string = '{"version":1,"items":[' +
+        '{"keyCodes":[2072,2019]},' +
+        '{"id":"bad-codes","keyCodes":[2072,"A"]},' +
+        '{"id":"custom-good","keyCodes":[2045,2093]}]}';
+      const recovered = decodeRemoteCustomShortcuts(mixed);
+      expect(recovered.length).assertEqual(1);
+      expect(recovered[0].id).assertEqual('custom-good');
       expect(removeRemoteCustomShortcut(decoded, 'custom-1').length).assertEqual(1);
     });
 
