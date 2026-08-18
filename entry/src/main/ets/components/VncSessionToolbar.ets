@@ -9,6 +9,7 @@ export interface VncSessionToolbarActions {
   onCycleDisplayScale: () => void;
   onToggleDiagnostics: () => void;
   onOpenConsole: () => void;
+  onHideTopBar: () => void;
   onDisconnect: () => void;
 }
 
@@ -39,6 +40,7 @@ export struct VncSessionToolbar {
     onCycleDisplayScale: (): void => {},
     onToggleDiagnostics: (): void => {},
     onOpenConsole: (): void => {},
+    onHideTopBar: (): void => {},
     onDisconnect: (): void => {}
   };
 
@@ -191,6 +193,8 @@ export struct VncSessionToolbar {
         if (this.deviceClass === 'pc') {
           this.actionButton($r('sys.symbol.gearshape_fill'), '控制台', false,
             (): void => { this.actions.onOpenConsole(); })
+          this.actionButton($r('sys.symbol.eye_slash'), '隐藏栏', false,
+            (): void => { this.actions.onHideTopBar(); })
         }
         this.actionButton($r('sys.symbol.xmark'), '断开', false,
           (): void => { this.actions.onDisconnect(); }, true)

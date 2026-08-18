@@ -56,6 +56,12 @@ export default function vncSessionUiPolicyTest(): void {
       expect(shouldShowVncSessionToolbar('rdp', true, 4)).assertFalse();
     });
 
+    it('fully_hides_only_the_pc_toolbar_when_requested', 0, (): void => {
+      expect(shouldShowVncSessionToolbar('vnc', true, 4, true, true)).assertFalse();
+      expect(shouldShowVncSessionToolbar('vnc', true, 4, false, true)).assertTrue();
+      expect(shouldShowVncSessionToolbar('vnc', true, 4, true, false)).assertTrue();
+    });
+
     it('cycles_control_modes_without_bypassing_view_only', 0, (): void => {
       expect(nextVncControlMode(0, false)).assertEqual(1);
       expect(nextVncControlMode(1, false)).assertEqual(2);

@@ -43,6 +43,7 @@ const EMPTY_RUSTDESK_DISPLAY_RESOLUTION: RustDeskDisplayResolution = {
 
 export interface RemoteSessionTopBarActions {
   onDisconnect: () => void;
+  onHideTopBar: () => void;
   onRefreshFrame: () => void;
   onOpenKeyboard: () => void;
   onOpenFileTransfer: () => void;
@@ -76,7 +77,7 @@ export struct RemoteSessionTopBar {
     iconSize: 44,
     itemGap: 8,
     topOffset: 8,
-    maxVisibleButtons: 7,
+    maxVisibleButtons: 8,
     menuWidth: 360
   };
   @Prop @Watch('onEdgeRailChanged') edgeRail: boolean = false;
@@ -114,6 +115,7 @@ export struct RemoteSessionTopBar {
 
   actions: RemoteSessionTopBarActions = {
     onDisconnect: (): void => {},
+    onHideTopBar: (): void => {},
     onRefreshFrame: (): void => {},
     onOpenKeyboard: (): void => {},
     onOpenFileTransfer: (): void => {},
@@ -363,7 +365,8 @@ export struct RemoteSessionTopBar {
   }
 
   @Builder
-  private iconButton(icon: Resource, bgColor: string, action: () => void, fontSize?: number) {
+  private iconButton(icon: Resource, bgColor: string, action: () => void, fontSize?: number,
+    accessibilityLabel: string = 'RustDesk 会话工具栏操作') {
     Button() {
       SymbolGlyph(icon)
         .fontSize(fontSize ?? 20)
@@ -374,6 +377,7 @@ export struct RemoteSessionTopBar {
       .backgroundColor(bgColor)
       .borderRadius(10)
       .padding(0)
+      .accessibilityText(accessibilityLabel)
       .onClick((): void => {
         this.noteUserActivity();
         action();
@@ -668,6 +672,10 @@ export struct RemoteSessionTopBar {
           this.iconButton($r('sys.symbol.record_circle'), this.accentColor, (): void => {
             this.runAction('recordSession', (): void => {});
           }, 18)
+          Blank().width(this.layout.itemGap)
+          this.iconButton($r('sys.symbol.eye_slash'), '#5C6370', (): void => {
+            this.actions.onHideTopBar();
+          }, 18, '完全隐藏 RustDesk 会话顶栏')
           Blank().width(this.layout.itemGap)
         }
         this.iconButton($r('sys.symbol.xmark'), '#FF5353', (): void => { this.actions.onDisconnect(); }, 18)

@@ -25,6 +25,11 @@ export default function remoteSessionTopBarPolicyTest(): void {
       expect(shouldShowRustDeskTopBar('rustdesk', true, 'xl', 0, false, false)).assertTrue();
     });
 
+    it('pc_rustdesk_should_honor_fully_hidden_preference', 0, (): void => {
+      expect(shouldShowRustDeskTopBar('rustdesk', true, 'xl', 0, false, false, true)).assertFalse();
+      expect(shouldShowRustDeskTopBar('rustdesk', false, 'lg', 0, false, true, true)).assertTrue();
+    });
+
     it('phone_rustdesk_should_only_show_for_physical_keyboard_mouse', 0, (): void => {
       expect(shouldShowRustDeskTopBar('rustdesk', false, 'sm', 2, true, false)).assertTrue();
       expect(shouldShowRustDeskTopBar('rustdesk', false, 'sm', 2, false, false)).assertFalse();
@@ -58,7 +63,7 @@ export default function remoteSessionTopBarPolicyTest(): void {
       const layout = remoteTopBarLayout(true, 'md', false);
       expect(layout.deviceClass).assertEqual('pc');
       expect(layout.iconSize).assertEqual(44);
-      expect(layout.maxVisibleButtons).assertEqual(7);
+      expect(layout.maxVisibleButtons).assertEqual(8);
     });
 
     it('phone_layout_should_limit_visible_buttons', 0, (): void => {

@@ -5,8 +5,10 @@ export type VncToolbarOrientation = 'portrait' | 'landscape';
 export type VncToolbarSide = 'left' | 'right';
 
 export function shouldShowVncSessionToolbar(protocol: string, connected: boolean,
-  sessionId: number): boolean {
-  return protocol === 'vnc' && connected && sessionId > 0;
+  sessionId: number, isDesktopDevice: boolean = false,
+  pcSessionTopBarHidden: boolean = false): boolean {
+  return protocol === 'vnc' && connected && sessionId > 0 &&
+    (!isDesktopDevice || !pcSessionTopBarHidden);
 }
 
 export function vncToolbarAutoCollapseDelayMs(connected: boolean,

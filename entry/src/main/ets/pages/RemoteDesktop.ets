@@ -361,6 +361,7 @@ import {
 import { createTransferSnapshot, TransferProtocol, TransferState } from '../services/FileTransferProgressModel';
 import { isRemoteCompletionConfirmed } from '../services/TransferSessionPolicy';
 import {
+  PC_SESSION_TOP_BAR_HIDDEN_KEY,
   remoteTopBarLayout,
   shouldShowRustDeskTopBar,
   shouldUseRustDeskEdgeRail
@@ -752,6 +753,7 @@ struct RemoteDesktop {
   @StorageLink('rustdeskViewScaleMode') rustdeskViewScaleMode: string = 'fit';
   @StorageLink('remoteDisplayScaleMode') remoteDisplayScaleMode: string = 'fit';
   @StorageLink('remoteDisplayCustomScalePercent') remoteDisplayCustomScalePercent: number = 100;
+  @StorageLink(PC_SESSION_TOP_BAR_HIDDEN_KEY) pcSessionTopBarHidden: boolean = false;
   @StorageLink('canvasGestureZoomEnabled') @Watch('onCanvasGestureZoomSettingChange')
   canvasGestureZoomEnabled: boolean = false;
   @StorageLink('rustdeskShowLocalCursor') rustdeskShowLocalCursor: boolean = true;
@@ -1438,7 +1440,8 @@ struct RemoteDesktop {
     const host: RemoteHost | null = this.pendingHost;
     if (!host) { return false; }
     return shouldShowRustDeskTopBar(host.protocol, this.isDesktopDevice, this.breakpoint,
-      this.rustdeskControlMode, this.externalKeyboardMouseConnected, this.isPadDevice);
+      this.rustdeskControlMode, this.externalKeyboardMouseConnected, this.isPadDevice,
+      this.pcSessionTopBarHidden);
   }
 
   private shouldUseRustDeskSessionEdgeRail(): boolean {
@@ -1449,7 +1452,8 @@ struct RemoteDesktop {
   }
 
   private shouldShowVncSessionToolbar(): boolean {
-    if (!shouldShowVncSessionToolbar(this.currentProtocolName(), this.connected, this.sessionId)) {
+    if (!shouldShowVncSessionToolbar(this.currentProtocolName(), this.connected, this.sessionId,
+      this.isDesktopDevice, this.pcSessionTopBarHidden)) {
       return false;
     }
     if (this.vncToolbarDeviceClass() === 'pc') {
@@ -1836,6 +1840,10 @@ struct RemoteDesktop {
       onOpenConsole: (): void => {
         this.markVncToolbarInteraction();
         this.showControlPanel = true;
+      },
+      onHideTopBar: (): void => {
+        this.clearVncToolbarAutoCollapse();
+        this.requestHidePcSessionTopBar('VNC 会话');
       },
       onDisconnect: (): void => {
         this.clearVncToolbarAutoCollapse();
@@ -3978,6 +3986,47 @@ struct RemoteDesktop {
     }
   }
 
+  /** Keep direct-to-session routes in sync with the device-local restore switch. */
+  private restorePcSessionTopBarPreference(): void {
+    try {
+      const prefs = preferences.getPreferencesSync(getContext(this), { name: 'RemoteDesktopAppPrefs' });
+      this.pcSessionTopBarHidden = prefs.getSync(PC_SESSION_TOP_BAR_HIDDEN_KEY, false) as boolean;
+    } catch (err) {
+      this.pcSessionTopBarHidden = false;
+      hilog.warn(RD_DOMAIN, RD_TAG,
+        'restorePcSessionTopBarPreference fallback to visible: ' + JSON.stringify(err));
+    }
+    AppStorage.setOrCreate(PC_SESSION_TOP_BAR_HIDDEN_KEY, this.pcSessionTopBarHidden);
+  }
+
+  private requestHidePcSessionTopBar(protocolLabel: string): void {
+    if (!this.isDesktopDevice || this.pcSessionTopBarHidden) {
+      return;
+    }
+    promptAction.showDialog({
+      title: '完全隐藏 ' + protocolLabel + ' 顶栏？',
+      message: '隐藏后，本次及后续 PC 会话内不再保留展开入口。仍可使用系统返回或关闭窗口退出；退出后可在“设置 > 显示与交互”关闭隐藏开关来恢复。',
+      isModal: true,
+      buttons: [
+        { text: '取消', color: 'rgba(255,255,255,0.7)' },
+        { text: '完全隐藏', color: '#FF5353' }
+      ]
+    }).then((result: Object): void => {
+      const response: Record<string, number> = result as Record<string, number>;
+      if (response['index'] !== 1) {
+        return;
+      }
+      this.pcSessionTopBarHidden = true;
+      this.persistSessionPref(PC_SESSION_TOP_BAR_HIDDEN_KEY, true);
+      promptAction.showToast({
+        message: '顶栏已隐藏；可在“设置 > 显示与交互”恢复',
+        duration: 2200
+      });
+    }).catch((err: Error): void => {
+      hilog.warn(RD_DOMAIN, RD_TAG, 'hide PC session top bar dialog failed: ' + JSON.stringify(err));
+    });
+  }
+
   /** Keep direct-to-session navigation on the same safe Fit migration as the settings page. */
   private restoreRemoteDisplayScalePreference(): void {
     try {
@@ -5204,6 +5253,9 @@ struct RemoteDesktop {
         this.disconnectAndCleanup('rustdesk-topbar-close');
         this.goBack();
       },
+      onHideTopBar: (): void => {
+        this.requestHidePcSessionTopBar('RustDesk 会话');
+      },
       onRefreshFrame: (): void => {
         this.loader.requestFrameRefresh();
         promptAction.showToast({ message: '已请求刷新远端画面', duration: 1200 });
@@ -6405,6 +6457,7 @@ struct RemoteDesktop {
     this.physicalKeyboardLayoutConfirmed = false;
     this.physicalKeyboardLayoutPromptVisible = false;
     this.xComponentController.setListener(this);
+    this.restorePcSessionTopBarPreference();
     this.restoreRemoteDisplayScalePreference();
     this.restoreRemoteCustomShortcuts();
     this.registerInputDeviceWatcher();

@@ -380,6 +380,7 @@ import {
   REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION_KEY,
   resolveInitialRemoteDisplayScaleMode
 } from '../services/RemoteCanvasTransformPolicy';
+import { PC_SESSION_TOP_BAR_HIDDEN_KEY } from '../services/RemoteSessionTopBarPolicy';
 import {
   resolveCanvasGestureZoomPreference
 } from '../services/RemoteCanvasZoomPreferencePolicy';
@@ -797,6 +798,7 @@ struct HostListPage {
   @StorageLink('rdpDesktopResolutionId') rdpDesktopResolutionId: string = '1920x1080';
   @StorageLink('remoteDisplayScaleMode') remoteDisplayScaleMode: string = 'fit';
   @StorageLink('remoteDisplayCustomScalePercent') remoteDisplayCustomScalePercent: number = 100;
+  @StorageLink(PC_SESSION_TOP_BAR_HIDDEN_KEY) pcSessionTopBarHidden: boolean = false;
   @StorageLink('canvasGestureZoomEnabled') canvasGestureZoomEnabled: boolean = false;
   @StorageLink('rdpColorDepth') rdpColorDepth: number = 32;
   @StorageLink('rdpAudioEnabled') rdpAudioEnabled: boolean = true;
@@ -1138,6 +1140,8 @@ struct HostListPage {
         prefs.getSync('groupedHostCards', defaults.groupedHostCards) as boolean;
       const savedHostCardSensitiveInfoHidden: boolean =
         prefs.getSync(HOST_CARD_SENSITIVE_INFO_HIDDEN_KEY, false) as boolean;
+      const savedPcSessionTopBarHidden: boolean =
+        prefs.getSync(PC_SESSION_TOP_BAR_HIDDEN_KEY, false) as boolean;
       const savedRustDeskPresenceDetection: boolean =
         prefs.getSync('rustdeskPresenceDetectionEnabled',
           defaults.rustdeskPresenceDetectionEnabled) as boolean;
@@ -1180,6 +1184,8 @@ struct HostListPage {
       this.hostCardSensitiveInfoHidden = savedHostCardSensitiveInfoHidden;
       AppStorage.setOrCreate(HOST_CARD_SENSITIVE_INFO_HIDDEN_KEY,
         this.hostCardSensitiveInfoHidden);
+      this.pcSessionTopBarHidden = savedPcSessionTopBarHidden;
+      AppStorage.setOrCreate(PC_SESSION_TOP_BAR_HIDDEN_KEY, this.pcSessionTopBarHidden);
       this.rustdeskPresenceDetectionEnabled = savedRustDeskPresenceDetection;
       AppStorage.setOrCreate('rustdeskPresenceDetectionEnabled', this.rustdeskPresenceDetectionEnabled);
       if (savedWallpaper !== '') { AppStorage.setOrCreate('wallpaperColor', savedWallpaper); }
@@ -7592,6 +7598,30 @@ struct HostListPage {
     this.hostViewRevision += 1;
   }
 
+  private savePcSessionTopBarHidden(on: boolean): void {
+    if (!on) {
+      this.pcSessionTopBarHidden = false;
+      this.persistLocalBooleanPref(PC_SESSION_TOP_BAR_HIDDEN_KEY, false);
+      promptAction.showToast({ message: 'PC 会话顶栏已恢复', duration: 1400 });
+      return;
+    }
+    promptAction.showDialog({
+      title: '完全隐藏 PC 会话顶栏？',
+      message: 'RustDesk 和 VNC 的 PC 会话将不再显示顶栏或展开入口。进入会话后仍可使用系统返回或关闭窗口退出，并可随时回到此处关闭开关恢复。',
+      buttons: [
+        { text: '取消', color: this.pal().text2 },
+        { text: '完全隐藏', color: this.pal().danger }
+      ]
+    }).then((result: Object): void => {
+      const response: Record<string, number> = result as Record<string, number>;
+      if (response['index'] !== 1) {
+        return;
+      }
+      this.pcSessionTopBarHidden = true;
+      this.persistLocalBooleanPref(PC_SESSION_TOP_BAR_HIDDEN_KEY, true);
+    }).catch((_err: Error): void => { /* keep the top bar visible */ });
+  }
+
   private saveRustDeskPresenceDetection(on: boolean): void {
     this.rustdeskPresenceDetectionEnabled = on;
     this.persistLocalBooleanPref('rustdeskPresenceDetectionEnabled', on);
@@ -10533,6 +10563,13 @@ struct HostListPage {
               this.remoteDisplayScaleRow()
               this.cardDivider()
               this.remoteWheelDirectionRow()
+              if (this.isDesktopDevice) {
+                this.cardDivider()
+                this.rustdeskSwitchRow($r('app.media.icon_desktop'), '完全隐藏 PC 会话顶栏',
+                  '仅 RustDesk/VNC；关闭此开关即可恢复会话顶栏',
+                  this.pcSessionTopBarHidden,
+                  (on: boolean): void => { this.savePcSessionTopBarHidden(on); }, true)
+              }
               if (!this.isDesktopDevice) {
                 this.cardDivider()
                 this.canvasGestureZoomRow()

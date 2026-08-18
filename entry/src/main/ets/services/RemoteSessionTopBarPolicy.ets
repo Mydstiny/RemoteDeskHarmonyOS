@@ -2,6 +2,9 @@ import { RemoteSessionCapabilities, resolveSessionCapabilities } from './RemoteS
 
 export type RemoteTopBarDeviceClass = 'pc' | 'pad' | 'phone';
 
+/** Device-local preference shared by the RustDesk and VNC PC session bars. */
+export const PC_SESSION_TOP_BAR_HIDDEN_KEY: string = 'pcSessionTopBarHidden';
+
 export type RemoteTopBarMenuId = 'control' | 'display' | 'keyboardMouse' | 'chat' | 'voice' | 'record';
 
 export interface RemoteTopBarContext {
@@ -60,13 +63,14 @@ export function shouldShowRustDeskTopBar(
   breakpoint: string,
   rustdeskControlMode: number,
   physicalKeyboardMouseConnected: boolean,
-  isPadDevice: boolean
+  isPadDevice: boolean,
+  pcSessionTopBarHidden: boolean = false
 ): boolean {
   if (protocol !== 'rustdesk') {
     return false;
   }
   if (isDesktopDevice) {
-    return true;
+    return !pcSessionTopBarHidden;
   }
   const deviceClass: RemoteTopBarDeviceClass = remoteTopBarDeviceClass(isDesktopDevice, breakpoint, isPadDevice);
   if (deviceClass === 'pad') {
@@ -100,7 +104,7 @@ export function remoteTopBarLayout(isDesktopDevice: boolean, breakpoint: string,
   isPadDevice: boolean): RemoteTopBarLayout {
   const deviceClass: RemoteTopBarDeviceClass = remoteTopBarDeviceClass(isDesktopDevice, breakpoint, isPadDevice);
   if (deviceClass === 'pc') {
-    return { deviceClass, iconSize: 44, itemGap: 8, topOffset: 8, maxVisibleButtons: 7, menuWidth: 360 };
+    return { deviceClass, iconSize: 44, itemGap: 8, topOffset: 8, maxVisibleButtons: 8, menuWidth: 360 };
   }
   if (deviceClass === 'pad') {
     return { deviceClass, iconSize: 44, itemGap: 8, topOffset: 8, maxVisibleButtons: 6, menuWidth: 340 };
