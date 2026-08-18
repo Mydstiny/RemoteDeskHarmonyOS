@@ -62,8 +62,11 @@ export default function remoteSessionTopBarPolicyTest(): void {
     it('pc_small_window_layout_should_be_compact_but_not_mobile', 0, (): void => {
       const layout = remoteTopBarLayout(true, 'md', false);
       expect(layout.deviceClass).assertEqual('pc');
-      expect(layout.iconSize).assertEqual(44);
+      expect(layout.iconSize).assertEqual(36);
       expect(layout.maxVisibleButtons).assertEqual(8);
+      expect(layout.maxVisibleButtons * layout.iconSize +
+        (layout.maxVisibleButtons + 1) * layout.itemGap <= 360).assertTrue();
+      expect(remoteTopBarLayout(true, 'xl', false).iconSize).assertEqual(44);
     });
 
     it('phone_layout_should_limit_visible_buttons', 0, (): void => {

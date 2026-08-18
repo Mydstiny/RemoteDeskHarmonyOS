@@ -104,6 +104,9 @@ export function remoteTopBarLayout(isDesktopDevice: boolean, breakpoint: string,
   isPadDevice: boolean): RemoteTopBarLayout {
   const deviceClass: RemoteTopBarDeviceClass = remoteTopBarDeviceClass(isDesktopDevice, breakpoint, isPadDevice);
   if (deviceClass === 'pc') {
+    if (breakpoint !== 'xl') {
+      return { deviceClass, iconSize: 36, itemGap: 4, topOffset: 6, maxVisibleButtons: 8, menuWidth: 320 };
+    }
     return { deviceClass, iconSize: 44, itemGap: 8, topOffset: 8, maxVisibleButtons: 8, menuWidth: 360 };
   }
   if (deviceClass === 'pad') {
