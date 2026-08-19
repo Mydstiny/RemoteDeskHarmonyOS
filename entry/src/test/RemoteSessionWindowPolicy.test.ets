@@ -6,7 +6,9 @@ import {
 import {
   REMOTE_SESSION_WINDOW_MIN_HEIGHT_VP,
   REMOTE_SESSION_WINDOW_MIN_WIDTH_VP,
+  RemoteSessionWindowProtocol,
   RemoteSessionWindowRequest,
+  RemoteSessionWindowTarget,
   remoteSessionWindowPlacement,
   remoteSessionWindowRequestIsValid
 } from '../main/ets/services/RemoteSessionWindowPolicy';
@@ -42,6 +44,19 @@ function validRdpRequest(token: string): RemoteSessionWindowRequest {
     protocol: 'rdp',
     hostId: 'rdp-host-1',
     title: 'RDP',
+    authorizationToken: token,
+    routeParams: {}
+  };
+}
+
+function validWindowRequest(target: RemoteSessionWindowTarget,
+  protocol: RemoteSessionWindowProtocol, hostId: string,
+  token: string): RemoteSessionWindowRequest {
+  return {
+    target,
+    protocol,
+    hostId,
+    title: protocol.toUpperCase(),
     authorizationToken: token,
     routeParams: {}
   };
@@ -91,6 +106,26 @@ export default function remoteSessionWindowPolicyTest(): void {
       mismatch.target = 'ssh_terminal';
       expect(remoteSessionWindowRequestIsValid(mismatch)).assertFalse();
     });
+
+    it('accepts_every_supported_protocol_window_target_and_rejects_cross_protocol_routes',
+      0, (): void => {
+        const supported: Array<RemoteSessionWindowRequest> = [
+          validWindowRequest('remote_desktop', 'rdp', 'rdp-host', 'rdp-ticket'),
+          validWindowRequest('remote_desktop', 'rustdesk', 'rustdesk-host', 'rustdesk-ticket'),
+          validWindowRequest('remote_desktop', 'vnc', 'vnc-host', 'vnc-ticket'),
+          validWindowRequest('ssh_terminal', 'ssh', 'ssh-host', 'ssh-ticket'),
+          validWindowRequest('moonlight_stream', 'moonlight', 'moonlight-host', 'moonlight-ticket')
+        ];
+        for (let index: number = 0; index < supported.length; index++) {
+          expect(remoteSessionWindowRequestIsValid(supported[index])).assertTrue();
+        }
+        expect(remoteSessionWindowRequestIsValid(
+          validWindowRequest('ssh_terminal', 'rdp', 'ssh-host', 'wrong-target'))).assertFalse();
+        expect(remoteSessionWindowRequestIsValid(
+          validWindowRequest('moonlight_stream', 'ssh', 'moonlight-host', 'wrong-target'))).assertFalse();
+        expect(remoteSessionWindowRequestIsValid(
+          validWindowRequest('remote_desktop', 'moonlight', 'rdp-host', 'wrong-target'))).assertFalse();
+      });
 
     it('keeps_settings_connection_intents_credential_free_one_shot_and_expiring', 0, (): void => {
       const intents: RemoteSessionConnectionIntent = RemoteSessionConnectionIntent.getInstance();
