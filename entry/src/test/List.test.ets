@@ -171,6 +171,7 @@ import sshProductivityPolicyTest from './SshProductivityPolicy.test';
 import sshSessionLogPolicyTest from './SshSessionLogPolicy.test';
 import sshSessionLogStoreTest from './SshSessionLogStore.test';
 import sshNotificationServiceTest from './SshNotificationService.test';
+import sshBroadcastPolicyTest from './SshBroadcastPolicy.test';
 import hostLocalPersonalizationPolicyTest from './HostLocalPersonalizationPolicy.test';
 import moonlightModelsTest from './MoonlightModels.test';
 import moonlightRecordTest from './MoonlightRecord.test';
@@ -387,6 +388,7 @@ export default function testsuite() {
   sshSessionLogPolicyTest();
   sshSessionLogStoreTest();
   sshNotificationServiceTest();
+  sshBroadcastPolicyTest();
   hostLocalPersonalizationPolicyTest();
   moonlightModelsTest();
   moonlightRecordTest();

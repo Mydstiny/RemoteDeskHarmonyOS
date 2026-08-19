@@ -77,6 +77,7 @@ import { SshTerminalProfileSheet } from
 import { SshCommandPalette } from '../components/ssh/command/SshCommandPalette';
 import { SshProductivitySheet } from '../components/ssh/productivity/SshProductivitySheet';
 import { SshSessionLogSheet } from '../components/ssh/log/SshSessionLogSheet';
+import { SshBroadcastSheet } from '../components/ssh/broadcast/SshBroadcastSheet';
 import { SshBrowserTabStrip } from '../components/ssh/workspace/SshBrowserTabStrip';
 import { SshTransferCenter } from '../components/ssh/workspace/SshTransferCenter';
 import { SshWorkspacePaneChrome } from
@@ -217,6 +218,13 @@ import {
   SSH_WORKBENCH_V2_DEFAULT_ENABLED,
   SSH_WORKBENCH_V2_FLAG_KEY
 } from '../services/ssh/workspace/SshWorkspaceCapabilityPolicy';
+import {
+  buildSshBroadcastPlan,
+  sshBroadcastTargetEligible,
+  SSH_BROADCAST_MAX_TARGETS,
+  SshBroadcastMode,
+  SshBroadcastTargetV1
+} from '../services/ssh/broadcast/SshBroadcastPolicy';
 import { SshWorkspaceCapabilityStore } from
   '../services/ssh/workspace/SshWorkspaceCapabilityStore';
 import {
@@ -496,6 +504,12 @@ struct SshTerminal {
   @State sshSessionLogQuery: string = '';
   @State sshSessionLogDocument: SshSessionLogDocumentV1 = emptySshSessionLogDocument();
   @State sshSessionLogResults: Array<SshSessionLogSearchHitV1> = [];
+  @State showSshBroadcastSheet: boolean = false;
+  @State sshBroadcastTargets: Array<SshBroadcastTargetV1> = [];
+  @State sshBroadcastSelectedHostIds: Array<string> = [];
+  @State sshBroadcastText: string = '';
+  @State sshBroadcastMode: SshBroadcastMode = 'insert';
+  @State sshBroadcastActive: boolean = false;
   @State showSftpTransferCenter: boolean = false;
   @State sftpTransferCenterRevision: number = 0;
   @State sftpWorkspaceTabState: SshSftpWorkspaceTabState =
@@ -520,6 +534,9 @@ struct SshTerminal {
     new Map<string, SshSessionLogRecordV1>();
   private sshSessionLogFlushTimer: number = -1;
   private sshSessionLogCommandStarts: Map<string, number> = new Map<string, number>();
+  /** Hosts whose current terminal state is unsafe for broadcast input. */
+  private sshBroadcastUnsafeHostIds: Set<string> = new Set<string>();
+  private sshBroadcastLastEscapeAt: number = 0;
   private sshNotificationService: SshNotificationService =
     SshNotificationService.getInstance();
   private sshProductivityParsers: Map<string, SshShellIntegrationParser> =
@@ -3140,6 +3157,234 @@ struct SshTerminal {
       if (!this.terminalClosing && !this.showSshSessionLogSheet &&
         !this.sshModalOwnsKeyboard()) { this.focusKeyboard(false); }
     }, 32);
+  }
+
+  private sshBroadcastTargetForTab(tab: SshTerminalTabView): SshBroadcastTargetV1 | null {
+    const hostId: string = tab.hostId.trim();
+    if (hostId.length === 0 || !this.sshWorkspaceModeEnabled() ||
+      this.sshWorkspaceFrameForTab(tab.tabId) === null) { return null; }
+    const current: boolean = hostId === this.hostId.trim();
+    const sessionId: number = current && this.sessionId > 0 ? this.sessionId : tab.sessionId;
+    const generation: number = current && this.sshSessionGeneration > 0
+      ? this.sshSessionGeneration : tab.generation;
+    const authenticationPrompt: boolean = current &&
+      (this.sshAuthPrompt !== null || this.showSshAuthPromptSheet || this.showPassphraseSheet);
+    const rawMode: boolean = current && (this.terminalMouseTracking !== 0 ||
+      this.terminalApplicationKeypad || this.terminalApplicationCursorKeys);
+    const fullscreenMode: boolean = current && this.sessionWindowFullscreen;
+    const currentUnsafe: boolean = authenticationPrompt || rawMode || fullscreenMode;
+    if (current) {
+      if (currentUnsafe) {
+        this.sshBroadcastUnsafeHostIds.add(hostId);
+      } else {
+        this.sshBroadcastUnsafeHostIds.delete(hostId);
+      }
+    }
+    const connected: boolean = current
+      ? this.connected && sessionId > 0 && generation > 0
+      : tab.state === 'connected' && sessionId > 0 && generation > 0;
+    // Native raw/fullscreen/auth state is page-owned. A detached host that was
+    // last observed unsafe remains blocked until it is re-bound and observed
+    // safe; this is intentionally fail-closed instead of guessing.
+    const detachedUnsafe: boolean = !current && this.sshBroadcastUnsafeHostIds.has(hostId);
+    return {
+      hostId,
+      label: tab.label.trim().slice(0, 96),
+      sessionId,
+      generation,
+      visible: true,
+      connected,
+      authenticationPrompt,
+      rawMode,
+      fullscreenMode: fullscreenMode || detachedUnsafe
+    };
+  }
+
+  private refreshSshBroadcastTargets(): void {
+    if (!this.sshWorkspaceModeEnabled()) {
+      this.sshBroadcastTargets = [];
+      this.sshBroadcastSelectedHostIds = [];
+      return;
+    }
+    const nextTargets: Array<SshBroadcastTargetV1> = [];
+    const tabs: Array<SshTerminalTabView> = this.sshWorkspaceTabViews();
+    for (let index: number = 0; index < tabs.length &&
+      nextTargets.length < SSH_BROADCAST_MAX_TARGETS; index++) {
+      const tab: SshTerminalTabView = tabs[index];
+      const target: SshBroadcastTargetV1 | null = this.sshBroadcastTargetForTab(tab);
+      if (target !== null) { nextTargets.push(target); }
+    }
+    const nextSelected: Array<string> = [];
+    for (let index: number = 0; index < this.sshBroadcastSelectedHostIds.length; index++) {
+      const hostId: string = this.sshBroadcastSelectedHostIds[index].trim();
+      for (let targetIndex: number = 0; targetIndex < nextTargets.length; targetIndex++) {
+        if (nextTargets[targetIndex].hostId === hostId &&
+          sshBroadcastTargetEligible(nextTargets[targetIndex])) {
+          nextSelected.push(hostId);
+          break;
+        }
+      }
+      if (nextSelected.length >= SSH_BROADCAST_MAX_TARGETS) { break; }
+    }
+    // Only the currently visible/active host is preselected. Every additional
+    // session requires an explicit user gesture in the red broadcast surface.
+    if (nextSelected.length === 0) {
+      const currentHostId: string = this.hostId.trim();
+      for (let index: number = 0; index < nextTargets.length; index++) {
+        if (nextTargets[index].hostId === currentHostId &&
+          sshBroadcastTargetEligible(nextTargets[index])) {
+          nextSelected.push(currentHostId);
+          break;
+        }
+      }
+    }
+    this.sshBroadcastTargets = nextTargets;
+    this.sshBroadcastSelectedHostIds = nextSelected;
+  }
+
+  private openSshBroadcast(): void {
+    if (!this.sshWorkspaceModeEnabled() || this.terminalClosing ||
+      this.showSshBroadcastSheet || this.sshModalOwnsKeyboard()) { return; }
+    this.closeTerminalSearch(false, true);
+    this.refreshSshBroadcastTargets();
+    if (this.sshBroadcastTargets.length === 0) {
+      promptAction.showToast({ message: '没有可见的 SSH 工作台会话', duration: 1600 });
+      return;
+    }
+    this.sshBroadcastText = '';
+    this.sshBroadcastMode = 'insert';
+    this.sshBroadcastLastEscapeAt = 0;
+    this.sshBroadcastActive = true;
+    this.terminalFocusMode = false;
+    this.showSshBroadcastSheet = true;
+  }
+
+  private closeSshBroadcast(): void {
+    this.showSshBroadcastSheet = false;
+    this.sshBroadcastActive = false;
+    this.sshBroadcastLastEscapeAt = 0;
+    this.sshBroadcastText = '';
+    this.sshBroadcastSelectedHostIds = [];
+    setTimeout((): void => {
+      if (!this.terminalClosing && !this.sshModalOwnsKeyboard()) {
+        this.focusKeyboard(false);
+      }
+    }, 32);
+  }
+
+  private stopSshBroadcast(): void {
+    this.closeSshBroadcast();
+  }
+
+  private toggleSshBroadcastTarget(hostId: string, selected: boolean): void {
+    if (!this.showSshBroadcastSheet || hostId.trim().length === 0) { return; }
+    this.refreshSshBroadcastTargets();
+    let target: SshBroadcastTargetV1 | null = null;
+    for (let index: number = 0; index < this.sshBroadcastTargets.length; index++) {
+      if (this.sshBroadcastTargets[index].hostId === hostId.trim()) {
+        target = this.sshBroadcastTargets[index];
+        break;
+      }
+    }
+    if (target === null || !sshBroadcastTargetEligible(target)) { return; }
+    const next: Array<string> = this.sshBroadcastSelectedHostIds.slice();
+    const existingIndex: number = next.indexOf(target.hostId);
+    if (selected && existingIndex < 0) {
+      if (next.length >= SSH_BROADCAST_MAX_TARGETS) {
+        promptAction.showToast({ message: '最多选择 16 个会话', duration: 1500 });
+        return;
+      }
+      next.push(target.hostId);
+    } else if (!selected && existingIndex >= 0) {
+      next.splice(existingIndex, 1);
+    }
+    this.sshBroadcastSelectedHostIds = next;
+  }
+
+  private sshBroadcastPlanErrorMessage(code: string): string {
+    if (code === 'empty_text') { return '请输入要广播的内容'; }
+    if (code === 'invalid_text') { return '广播内容超过 4096 个字符'; }
+    if (code === 'no_targets') { return '没有可用的广播目标'; }
+    if (code === 'no_eligible_targets') { return '所选会话已断开或处于受保护模式'; }
+    return '广播目标超过上限';
+  }
+
+  private async sendSshBroadcast(): Promise<void> {
+    if (!this.showSshBroadcastSheet || !this.sshBroadcastActive ||
+      !this.sshWorkspaceModeEnabled() || this.terminalClosing) { return; }
+    this.refreshSshBroadcastTargets();
+    const selected: Array<string> = this.sshBroadcastSelectedHostIds.slice();
+    let plan = buildSshBroadcastPlan(
+      this.sshBroadcastTargets, selected, this.sshBroadcastText, this.sshBroadcastMode);
+    if (!plan.ok) {
+      promptAction.showToast({ message: this.sshBroadcastPlanErrorMessage(plan.code), duration: 1800 });
+      return;
+    }
+    let confirmed: boolean = false;
+    if (plan.requiresConfirmation) {
+      try {
+        const decision = await promptAction.showDialog({
+          title: '确认安全广播？',
+          message: plan.confirmationReason + '。仅向当前精确 sessionId/generation 写入，认证/密码提示不会接收。',
+          buttons: [
+            { text: '取消', color: this.pal().text2 },
+            { text: '确认发送', color: this.pal().danger }
+          ]
+        });
+        confirmed = decision.index === 1;
+      } catch (_err) {
+        confirmed = false;
+      }
+    }
+    if (plan.requiresConfirmation && !confirmed) { return; }
+    if (!this.showSshBroadcastSheet || !this.sshBroadcastActive ||
+      this.terminalClosing || !this.sshWorkspaceModeEnabled()) { return; }
+    // Rebuild after the dialog: a reconnect or auth prompt during confirmation
+    // must remove that target rather than replaying the captured plan.
+    this.refreshSshBroadcastTargets();
+    plan = buildSshBroadcastPlan(
+      this.sshBroadcastTargets, selected, this.sshBroadcastText, this.sshBroadcastMode);
+    if (!plan.ok || (plan.requiresConfirmation && !confirmed)) {
+      promptAction.showToast({ message: this.sshBroadcastPlanErrorMessage(plan.code), duration: 1800 });
+      return;
+    }
+    const liveViews: Array<SshTerminalTabView> = this.sshTabStore.views();
+    let accepted: number = 0;
+    let rejected: number = 0;
+    const payload: string = plan.mode === 'execute' &&
+      !plan.text.endsWith('\r') && !plan.text.endsWith('\n') ? plan.text + '\r' : plan.text;
+    for (let index: number = 0; index < plan.targets.length; index++) {
+      const target: SshBroadcastTargetV1 = plan.targets[index];
+      let live: SshTerminalTabView | null = null;
+      for (let liveIndex: number = 0; liveIndex < liveViews.length; liveIndex++) {
+        if (liveViews[liveIndex].hostId === target.hostId) {
+          live = liveViews[liveIndex];
+          break;
+        }
+      }
+      if (live === null || live.state !== 'connected' || live.sessionId !== target.sessionId ||
+        live.generation !== target.generation) {
+        rejected++;
+        continue;
+      }
+      const freshTarget: SshBroadcastTargetV1 | null = this.sshBroadcastTargetForTab(live);
+      if (freshTarget === null || !sshBroadcastTargetEligible(freshTarget) ||
+        freshTarget.sessionId !== target.sessionId || freshTarget.generation !== target.generation) {
+        rejected++;
+        continue;
+      }
+      const result: SshTerminalInputEnqueueResult = this.loader.enqueueTerminalInput(
+        target.sessionId, payload, target.generation, false, false, false);
+      if (result.accepted) { accepted++; } else { rejected++; }
+    }
+    this.closeSshBroadcast();
+    promptAction.showToast({
+      message: accepted > 0
+        ? '已广播到 ' + accepted.toString() + ' 个会话' +
+          (rejected > 0 ? '，' + rejected.toString() + ' 个目标已拒绝' : '')
+        : '没有目标通过实时身份校验',
+      duration: 2000
+    });
   }
 
   private setSshSessionLogEnabled(enabled: boolean): void {
@@ -7984,6 +8229,13 @@ struct SshTerminal {
     this.showSshCommandPalette = false;
     this.showSshProductivitySheet = false;
     this.showSshSessionLogSheet = false;
+    this.showSshBroadcastSheet = false;
+    this.sshBroadcastActive = false;
+    this.sshBroadcastTargets = [];
+    this.sshBroadcastSelectedHostIds = [];
+    this.sshBroadcastText = '';
+    this.sshBroadcastMode = 'insert';
+    this.sshBroadcastUnsafeHostIds.clear();
     this.sshProductivityQuery = '';
     this.resetSshProductivityRuntime();
     this.showSftpTransferCenter = false;
@@ -8369,6 +8621,13 @@ struct SshTerminal {
     this.showTerminalProfileSheet = false;
     this.showSshCommandPalette = false;
     this.showSshProductivitySheet = false;
+    this.showSshBroadcastSheet = false;
+    this.sshBroadcastActive = false;
+    this.sshBroadcastTargets = [];
+    this.sshBroadcastSelectedHostIds = [];
+    this.sshBroadcastText = '';
+    this.sshBroadcastMode = 'insert';
+    this.sshBroadcastUnsafeHostIds.clear();
     this.sshProductivityQuery = '';
     this.sshProductivityReady = false;
     this.sshProductivityDocument = emptySshProductivityDocument();
@@ -10066,6 +10325,12 @@ struct SshTerminal {
         // the log Sheet; API23 otherwise briefly stacks both surfaces.
         this.showSshProductivitySheet = false;
         setTimeout((): void => { this.openSshSessionLog(); }, 64);
+      },
+      onOpenBroadcast: (): void => {
+        // Broadcast has its own red Sheet and must not stack with the
+        // productivity surface during the native exit transition.
+        this.showSshProductivitySheet = false;
+        setTimeout((): void => { this.openSshBroadcast(); }, 64);
       }
     })
   }
@@ -10089,6 +10354,29 @@ struct SshTerminal {
     })
   }
 
+  @Builder
+  private SshBroadcastSheetContent() {
+    SshBroadcastSheet({
+      targets: this.sshBroadcastTargets,
+      selectedHostIds: this.sshBroadcastSelectedHostIds,
+      text: this.sshBroadcastText,
+      mode: this.sshBroadcastMode,
+      active: this.sshBroadcastActive,
+      onClose: (): void => { this.closeSshBroadcast(); },
+      onStop: (): void => { this.stopSshBroadcast(); },
+      onToggleTarget: (hostId: string, selected: boolean): void => {
+        this.toggleSshBroadcastTarget(hostId, selected);
+      },
+      onTextChange: (value: string): void => {
+        this.sshBroadcastText = value.slice(0, 4096);
+      },
+      onModeChange: (mode: SshBroadcastMode): void => {
+        this.sshBroadcastMode = mode;
+      },
+      onSend: (): void => { void this.sendSshBroadcast(); }
+    })
+  }
+
   private terminalSearchAvailable(): boolean {
     return this.sshWorkbenchEnabled && !this.terminalClosing &&
       this.hostId.trim().length > 0 && this.sshTabViews.length > 0;
@@ -10101,7 +10389,8 @@ struct SshTerminal {
       this.showSftpPanel || this.showSftpSheet || this.sftpPeerHostPicker ||
       this.showSshTabPicker || this.sshTabPickerClosing || this.showTerminalProfileSheet ||
       this.showSshCommandPalette || this.showSshProductivitySheet ||
-      this.showSshSessionLogSheet || this.showSshTabRenameSheet || this.showSftpTransferCenter;
+      this.showSshSessionLogSheet || this.showSshBroadcastSheet ||
+      this.showSshTabRenameSheet || this.showSftpTransferCenter;
   }
 
   private clearTerminalSearchDebounce(): void {
@@ -10294,6 +10583,13 @@ struct SshTerminal {
       this.showSshCommandPalette = false;
       this.showSshProductivitySheet = false;
       this.showSshSessionLogSheet = false;
+      this.showSshBroadcastSheet = false;
+      this.sshBroadcastActive = false;
+      this.sshBroadcastTargets = [];
+      this.sshBroadcastSelectedHostIds = [];
+      this.sshBroadcastText = '';
+      this.sshBroadcastMode = 'insert';
+      this.sshBroadcastUnsafeHostIds.clear();
       this.sshSessionLogInputBuffers.clear();
       this.sshSessionLogPendingOutput.clear();
       this.resetSshProductivityRuntime();
@@ -10409,6 +10705,18 @@ struct SshTerminal {
    * the IME is closed; onKeyEvent is the required fallback for that path.
    */
   private handleSshKeyEvent(event: KeyEvent): boolean {
+    if (event.type === KeyType.Down && this.showSshBroadcastSheet &&
+      event.keyCode === KeyCode.KEYCODE_ESCAPE) {
+      const now: number = Date.now();
+      if (now - this.sshBroadcastLastEscapeAt <= 500) {
+        this.sshBroadcastLastEscapeAt = 0;
+        this.stopSshBroadcast();
+      } else {
+        this.sshBroadcastLastEscapeAt = now;
+      }
+      try { event.stopPropagation(); } catch (_err) {}
+      return true;
+    }
     if (this.sessionWindowId.length > 0 && event.keyCode === KeyCode.KEYCODE_F11) {
       try { event.stopPropagation(); } catch (_err) {}
       if (event.type === KeyType.Down) { this.toggleIndependentWindowFullscreen(); }
@@ -15675,6 +15983,23 @@ struct SshTerminal {
         if (!this.terminalClosing && !this.sshModalOwnsKeyboard()) {
           this.focusKeyboard(false);
         }
+      }
+    })
+    .bindSheet($$this.showSshBroadcastSheet, this.SshBroadcastSheetContent(), {
+      height: this.breakpoint === 'sm' ? SheetSize.LARGE : '640vp',
+      preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
+      width: this.breakpoint === 'sm' ? '100%' : '760vp',
+      dragBar: this.breakpoint === 'sm',
+      backgroundColor: '#341A1A',
+      blurStyle: BlurStyle.NONE,
+      showClose: false,
+      maskColor: 'rgba(42,0,0,0.56)',
+      onWillDismiss: (action: DismissSheetAction): void => {
+        this.closeSshBroadcast();
+        action.dismiss();
+      },
+      onDisappear: (): void => {
+        if (this.showSshBroadcastSheet) { this.closeSshBroadcast(); }
       }
     })
     .bindSheet($$this.showSshTabRenameSheet, this.sshTabRenameSheet(), {

@@ -33,6 +33,7 @@ export struct SshProductivitySheet {
   onSetStartup: (snippetId: string, enabled: boolean) => boolean =
     (_snippetId: string, _enabled: boolean): boolean => true;
   onOpenSessionLog: () => void = (): void => {};
+  onOpenBroadcast: () => void = (): void => {};
 
   @State selectedSnippetId: string = '';
   @State variableValues: Array<SshSnippetValue> = [];
@@ -282,6 +283,9 @@ export struct SshProductivitySheet {
           Button('打开会话日志').height(40).fontSize(11).width('100%')
             .backgroundColor('rgba(255,255,255,0.08)')
             .onClick((): void => { this.onOpenSessionLog(); })
+          Button('安全广播输入').height(40).fontSize(11).width('100%')
+            .fontColor('#FFF3F0').backgroundColor('#7D2E2E')
+            .onClick((): void => { this.onOpenBroadcast(); })
           this.SettingsRow('命令历史', '默认关闭；敏感模式和禁用主机始终不记录',
             this.document.settings.historyEnabled, this.onToggleHistory)
           this.SettingsRow('本地补全', '只使用本地 Snippet/历史，不猜测密码边界',
