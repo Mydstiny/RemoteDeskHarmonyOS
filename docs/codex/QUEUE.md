@@ -8,6 +8,7 @@ Updated: 2026-08-19 Asia/Shanghai
 - `326f329f5`: Sunshine discovery, Host API/pairing/catalog/launch, common-c RTSP/media/input runtime and clean lifecycle hardening.
 - `348b28083`: local launch/settings/FAB/data-flow closeout.
 - `aff7fdf03`: lifecycle/recovery, PC session-window integration, compatibility-first optional cloud path, exact teardown and final PC Moonlight FAB unification.
+- `2d9ce0024`: enable the explicitly confirmed deployed `moonlightrecordv1` schema at revision 1 and prepare the cloud-enabled acceptance package.
 - RustDesk-style FAB/add flow, adaptive phone/PC Moonlight host surfaces, six owned settings sheets, metered launch admission, local repository/cache and all input classes are wired.
 
 ## Non-cloud closeout

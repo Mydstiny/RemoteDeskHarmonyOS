@@ -3,7 +3,7 @@
   "task": "moonlight-complete-upgrade",
   "branch": "codex/moonlight-complete-upgrade",
   "base": "aeb0cdac589caeac8b75dec5958f4e07ee62faf5",
-  "head": "aff7fdf032bce89ac7bb9cb58470e5c6f36f35fb",
+  "head": "2d9ce00241c2f62f7ac98489026b4ead9a91ff52",
   "phase": "moonlight-cloud-enabled-ready-for-device-acceptance",
   "status": "active",
   "next": "Build and deploy the revision-1 cloud-enabled package, then complete compatibility-first cloud, Sunshine, controller, lifecycle and fresh PC/phone UI acceptance.",
@@ -47,11 +47,11 @@
         "summary": "Foreground startup ordering, account switch during registration, optional-table failure fallback and rejection retry require real cloud/device integration receipts after provisioning."
       }
     ],
-    "reason": "Reused Terra reviewer closed the foreground recovery P2 and returned P0/P1/P2 zero for the reviewed cloud scope. The implementation is now committed at aff7fdf03; final review remains required after enabling the deployed optional table and collecting provisioning-dependent P3 integration evidence."
+    "reason": "Reused Terra reviewer closed the foreground recovery P2 and returned P0/P1/P2 zero for the reviewed cloud scope. The implementation is committed at aff7fdf03 and the confirmed deployment fuse is enabled at 2d9ce0024; final review remains required after collecting provisioning-dependent P3 integration evidence."
   },
   "lastVerification": {
     "diffCheck": "pass on the isolated commit index on 2026-08-19",
-    "testCompile": "pass: exact default@OhosTestCompileArkTS on a clean export of the staged aff7fdf03 tree with --analyze=normal --parallel --incremental --no-daemon",
+    "testCompile": "pass: exact default@OhosTestCompileArkTS on a clean export of the staged revision-1 tree with --analyze=normal --parallel --incremental --no-daemon",
     "assembleHap": "pass: exact revision-1 assembleHap on the same clean staged-index tree; signed HAP SHA-256 4b239974cd8c46377ff17b7dfa0a85dab571e6667df7cccb8686e16428dc657c",
     "hapPath": "entry/build/default/outputs/default/entry-default-signed.hap",
     "nativeTests": "pass outside the socket-restricted sandbox: 780 passed, 0 failed; Moonlight and adjacent-protocol fixtures all passed",
