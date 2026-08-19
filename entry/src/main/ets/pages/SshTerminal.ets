@@ -213,7 +213,7 @@ import {
 } from '../services/ssh/workspace/SshWorkspaceCapabilityPolicy';
 import { SshWorkspaceCapabilityStore } from
   '../services/ssh/workspace/SshWorkspaceCapabilityStore';
-import { resolveSshTabChromeLayout } from
+import { sshCompactChromeEnabled } from
   '../services/ssh/workspace/SshTabChromePolicy';
 import {
   defaultSshTerminalResolvedProfile,
@@ -227,8 +227,10 @@ import {
   buildSshCommandRegistry,
   canExecuteSshCommand,
   findSshCommand,
+  matchesSshCommandExecutionFence,
   SshCommandCapabilities,
   SshCommandDescriptor,
+  SshCommandExecutionFence,
   SshCommandHostRef,
   SshCommandSessionRef
 } from '../services/ssh/command/SshCommandPolicy';
@@ -390,6 +392,7 @@ struct SshTerminal {
   @State sshTabRenameDraft: string = '';
   private sshTabRenameHostId: string = '';
   private pendingSshCommandId: string = '';
+  private pendingSshCommandFence: SshCommandExecutionFence | null = null;
   /** A tab switch waits for the picker Sheet's native exit transition. */
   private sshTabPickerClosing: boolean = false;
   private sshTabPickerPendingHostId: string = '';
@@ -2350,8 +2353,20 @@ struct SshTerminal {
       this.sshModalOwnsKeyboard()) { return; }
     if (this.terminalSearchVisible) { this.closeTerminalSearch(false, true); }
     this.pendingSshCommandId = '';
+    this.pendingSshCommandFence = null;
     this.rebuildSshCommandRegistry();
     this.showSshCommandPalette = true;
+  }
+
+  private currentSshCommandExecutionFence(): SshCommandExecutionFence {
+    return {
+      pageGeneration: this.pageGeneration,
+      bindingGeneration: this.sshBindingGeneration,
+      hostId: this.hostId.trim(),
+      sessionGeneration: this.sshSessionGeneration,
+      workbenchEnabled: this.sshWorkbenchEnabled,
+      modalActive: this.sshModalOwnsKeyboard()
+    };
   }
 
   private queueSshCommand(commandId: string): void {
@@ -2362,6 +2377,7 @@ struct SshTerminal {
       return;
     }
     this.pendingSshCommandId = commandId;
+    this.pendingSshCommandFence = this.currentSshCommandExecutionFence();
     this.showSshCommandPalette = false;
   }
 
@@ -2404,17 +2420,25 @@ struct SshTerminal {
 
   private onSshCommandPaletteDisappear(): void {
     const commandId: string = this.pendingSshCommandId;
+    const expectedFence: SshCommandExecutionFence | null = this.pendingSshCommandFence;
     this.pendingSshCommandId = '';
+    this.pendingSshCommandFence = null;
     this.showSshCommandPalette = false;
-    if (commandId.length === 0 || this.terminalClosing) {
+    if (commandId.length === 0 || expectedFence === null || this.terminalClosing) {
       if (!this.terminalClosing) { this.focusKeyboard(false); }
       return;
     }
-    const command: SshCommandDescriptor | null =
-      findSshCommand(this.sshCommandRegistry, commandId);
-    if (!canExecuteSshCommand(command)) { return; }
     setTimeout((): void => {
-      if (!this.terminalClosing && command !== null) { this.performSshCommand(command); }
+      if (this.terminalClosing || !matchesSshCommandExecutionFence(
+        expectedFence, this.currentSshCommandExecutionFence())) { return; }
+      // The native Sheet releases asynchronously. Rebuild against current
+      // connection and tab capabilities instead of executing its stale row.
+      this.rebuildSshCommandRegistry();
+      const currentCommand: SshCommandDescriptor | null =
+        findSshCommand(this.sshCommandRegistry, commandId);
+      if (canExecuteSshCommand(currentCommand) && currentCommand !== null) {
+        this.performSshCommand(currentCommand);
+      }
     }, 32);
   }
 
@@ -3164,6 +3188,11 @@ struct SshTerminal {
   }
 
   private sshTabsInline(): boolean {
+    if (!this.sshWorkbenchEnabled) {
+      // Exact pre-M2 behavior while the rollout flag is disabled.
+      return this.sshTabViews.length > 0 &&
+        (this.isDesktopDevice || this.breakpoint !== 'sm');
+    }
     // Narrow free-form PC windows use the same full-width strip as phones so
     // the fixed close/palette/new actions cannot be clipped by the toolbar.
     return this.sshTabViews.length > 0 && !this.sshCompactChrome() &&
@@ -3171,7 +3200,8 @@ struct SshTerminal {
   }
 
   private sshCompactChrome(): boolean {
-    return resolveSshTabChromeLayout(this.shellAreaW, this.breakpoint).compact;
+    return sshCompactChromeEnabled(
+      this.sshWorkbenchEnabled, this.shellAreaW, this.breakpoint);
   }
 
   private sshInlineHostWidth(): number {

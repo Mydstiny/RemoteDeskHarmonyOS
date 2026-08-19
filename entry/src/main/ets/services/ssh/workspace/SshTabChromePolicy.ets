@@ -35,3 +35,9 @@ export function sshTabWidthVp(compact: boolean, pinned: boolean): number {
   if (pinned) { return compact ? 104 : 118; }
   return compact ? 124 : 154;
 }
+
+/** Compact chrome is an M2 feature and must disappear with its rollout flag. */
+export function sshCompactChromeEnabled(workbenchEnabled: boolean,
+  viewportWidthVp: number, breakpoint: string): boolean {
+  return workbenchEnabled && resolveSshTabChromeLayout(viewportWidthVp, breakpoint).compact;
+}

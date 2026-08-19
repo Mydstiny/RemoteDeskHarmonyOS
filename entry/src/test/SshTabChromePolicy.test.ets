@@ -2,6 +2,7 @@ import { describe, it, expect } from '@ohos/hypium';
 import {
   resolveSshTabChromeLayout,
   SSH_TAB_INLINE_MIN_VIEWPORT_VP,
+  sshCompactChromeEnabled,
   sshTabWidthVp
 } from '../main/ets/services/ssh/workspace/SshTabChromePolicy';
 
@@ -32,5 +33,11 @@ export default function sshTabChromePolicyTest(): void {
         expect(contentWidth > layout.scrollViewportWidthVp).assertTrue();
         expect(sshTabWidthVp(true, true)).assertEqual(104);
       });
+
+    it('never_enables_compact_chrome_while_the_workbench_flag_is_off', 0, (): void => {
+      expect(sshCompactChromeEnabled(false, 360, 'md')).assertFalse();
+      expect(sshCompactChromeEnabled(false, 360, 'sm')).assertFalse();
+      expect(sshCompactChromeEnabled(true, 360, 'md')).assertTrue();
+    });
   });
 }

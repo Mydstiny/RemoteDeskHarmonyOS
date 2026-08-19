@@ -54,6 +54,15 @@ export interface SshCommandCapabilities {
   activePinned: boolean;
 }
 
+export interface SshCommandExecutionFence {
+  pageGeneration: number;
+  bindingGeneration: number;
+  hostId: string;
+  sessionGeneration: number;
+  workbenchEnabled: boolean;
+  modalActive: boolean;
+}
+
 interface RankedSshCommand {
   command: SshCommandDescriptor;
   score: number;
@@ -240,4 +249,14 @@ export function findSshCommand(commands: Array<SshCommandDescriptor>,
 
 export function canExecuteSshCommand(command: SshCommandDescriptor | null): boolean {
   return command !== null && command.id.trim().length > 0 && command.enabled;
+}
+
+/** A queued Sheet action may execute only against the exact owner that selected it. */
+export function matchesSshCommandExecutionFence(expected: SshCommandExecutionFence,
+  current: SshCommandExecutionFence): boolean {
+  return expected.workbenchEnabled && current.workbenchEnabled && !current.modalActive &&
+    expected.pageGeneration === current.pageGeneration &&
+    expected.bindingGeneration === current.bindingGeneration &&
+    expected.hostId.trim().length > 0 && expected.hostId === current.hostId &&
+    expected.sessionGeneration === current.sessionGeneration;
 }
