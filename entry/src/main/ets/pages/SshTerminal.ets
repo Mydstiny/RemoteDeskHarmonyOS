@@ -27,6 +27,7 @@
 import { KeyboardAvoidMode, promptAction, router, window } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
 import { util } from '@kit.ArkTS';
+import { unifiedDataChannel, uniformTypeDescriptor } from '@kit.ArkData';
 import { pasteboard, BusinessError } from '@kit.BasicServicesKit';
 import { fileIo } from '@kit.CoreFileKit';
 import { inputDevice, KeyCode } from '@kit.InputKit';
@@ -75,6 +76,7 @@ import { SshTerminalProfileSheet } from
   '../components/ssh/profile/SshTerminalProfileSheet';
 import { SshCommandPalette } from '../components/ssh/command/SshCommandPalette';
 import { SshBrowserTabStrip } from '../components/ssh/workspace/SshBrowserTabStrip';
+import { SshTransferCenter } from '../components/ssh/workspace/SshTransferCenter';
 import { GpuTerminalRenderer } from '../components/GpuTerminalRenderer';
 import { TerminalInputBuffer } from '../components/SshTerminalSurface';
 import { TerminalCoreBridge } from '../napi/TerminalCoreBridge';
@@ -216,6 +218,28 @@ import { SshWorkspaceCapabilityStore } from
 import { sshCompactChromeEnabled } from
   '../services/ssh/workspace/SshTabChromePolicy';
 import {
+  activateSshSftpSurface,
+  activateSshTerminalSurface,
+  closeSshSftpWorkspaceTab,
+  createSshSftpWorkspaceTabState,
+  openSshSftpWorkspaceTab,
+  resolveSshSftpPaneLayout,
+  SshSftpDropLimits,
+  SshSftpWorkspaceTabState
+} from '../services/ssh/sftp/SshSftpWorkspacePolicy';
+import {
+  SshSftpDropAdapter,
+  SshSftpStagedDropResult
+} from '../services/ssh/sftp/SshSftpDropAdapter';
+import {
+  buildSshTransferCenterViews,
+  summarizeSshTransferCenter,
+  SshTransferCenterAction,
+  SshTransferCenterSummary,
+  SshTransferCenterTaskView,
+  SshTransferHostAlias
+} from '../services/ssh/sftp/SshTransferCenterPolicy';
+import {
   defaultSshTerminalResolvedProfile,
   sshTerminalSessionProfileScopeKey,
   SshTerminalProfileV1,
@@ -308,6 +332,12 @@ const SFTP_BATCH_LIMITS: SshSftpBatchLimits = {
   allowSymbolicLinks: false,
   allowSpecialFiles: false
 };
+const SFTP_DROP_LIMITS: SshSftpDropLimits = {
+  maxItems: Math.min(64, DEFAULT_SSH_SFTP_BATCH_LIMITS.maxFiles),
+  maxSingleFileBytes: SFTP_MAX_TRANSFER_BYTES,
+  maxTotalBytes: Math.min(DEFAULT_SSH_SFTP_BATCH_LIMITS.maxTotalBytes,
+    SFTP_MAX_TRANSFER_BYTES * 4)
+};
 const SFTP_DURABILITY_UNSUPPORTED: number = -56;
 const SFTP_CONFLICT: number = -409;
 const SSH_STATE_CONNECTING: number = 1;
@@ -387,6 +417,10 @@ struct SshTerminal {
   @State sshTabViews: SshTerminalTabView[] = [];
   @State showSshTabPicker: boolean = false;
   @State showSshCommandPalette: boolean = false;
+  @State showSftpTransferCenter: boolean = false;
+  @State sftpTransferCenterRevision: number = 0;
+  @State sftpWorkspaceTabState: SshSftpWorkspaceTabState =
+    createSshSftpWorkspaceTabState();
   @State sshCommandRegistry: Array<SshCommandDescriptor> = [];
   @State showSshTabRenameSheet: boolean = false;
   @State sshTabRenameDraft: string = '';
@@ -586,6 +620,7 @@ struct SshTerminal {
   @State sftpPeerBusy: boolean = false;
   @State sftpPeerStatus: string = '选择 SSH 主机后浏览远端目录';
   @State sftpRecoveredTasks: SshSftpTaskRecord[] = [];
+  @State sftpDropHoverActive: boolean = false;
   @State isLandscape: boolean = false;
   // Kept only in-memory to retry the current picker grant; never logged or placed in diagnostics.
   private sftpTransferUri: string = '';
@@ -611,7 +646,9 @@ struct SshTerminal {
   private sftpTaskEngine: SshSftpTaskEngine = SshSftpTaskEngine.getInstance();
   private sftpSessionOwners: Map<string, SshSftpTrackedSession> =
     new Map<string, SshSftpTrackedSession>();
-  private sftpLocalProvider: SshLocalFileProvider = new SshLocalFileProvider();
+  private sftpLocalProvider: SshLocalFileProvider = SshLocalFileProvider.getInstance();
+  private sftpDropAdapter: SshSftpDropAdapter = new SshSftpDropAdapter();
+  private sftpDropBatches: Set<string> = new Set<string>();
   private sftpBatchLocalRoots: Map<string, string> = new Map<string, string>();
   private sftpBatchRemoteRoots: Map<string, string> = new Map<string, string>();
   private sftpBatchConflictPolicies: Map<string, SshSftpConflictPolicy> =
@@ -1763,9 +1800,14 @@ struct SshTerminal {
     if (targetHostId === this.hostId) {
       return;
     }
+    if (this.sshWorkbenchEnabled && this.sftpWorkspaceTabState.open) {
+      this.closeSftpWorkbenchTab();
+    }
     this.closeTerminalSearch(false, true);
     this.showTerminalProfileSheet = false;
     this.showSshCommandPalette = false;
+    this.showSftpTransferCenter = false;
+    this.sftpWorkspaceTabState = createSshSftpWorkspaceTabState();
     this.sshCommandRegistry = [];
     this.pendingSshCommandId = '';
     this.showSshTabRenameSheet = false;
@@ -1975,6 +2017,8 @@ struct SshTerminal {
     this.sftpPeerHostPickerNativeDismissInFlight = false;
     this.showSftpPanel = false;
     this.showSftpSheet = false;
+    this.sftpDropHoverActive = false;
+    this.sftpDropBatches.clear();
     this.sftpRootSheetSurfaceReady = false;
     this.sftpPath = '.';
     this.sftpEntries = [];
@@ -2341,6 +2385,7 @@ struct SshTerminal {
       searchAvailable: this.terminalSearchAvailable(),
       profileAvailable: this.terminalProfileEnabled(),
       sftpAvailable: this.sshConnectionIsConnected(),
+      transferCenterAvailable: true,
       forwardingAvailable: this.sshConnectionIsConnected(),
       closeAvailable: active !== null,
       activePinned: active !== null && active.pinned
@@ -2398,6 +2443,10 @@ struct SshTerminal {
       this.openSftpPanel();
       return;
     }
+    if (command.action === 'open_transfer_center') {
+      this.openSftpTransferCenter();
+      return;
+    }
     if (command.action === 'open_forwarding') {
       this.openForwardingSheet();
       return;
@@ -2446,6 +2495,7 @@ struct SshTerminal {
     // SFTP host selection is rendered inside the existing SFTP surface. Do
     // not stack another native sheet while that surface is visible.
     if (this.showSftpPanel || this.showSftpSheet || this.sftpPeerHostPicker ||
+      this.showSftpTransferCenter ||
       this.showForwardingSheet || this.showSshCommandPalette ||
       this.sshTabPickerClosing) { return; }
     this.showSshTabPicker = true;
@@ -2453,6 +2503,171 @@ struct SshTerminal {
 
   private sshTabStripHeight(): number {
     return this.sshWorkbenchEnabled ? 44 : 40;
+  }
+
+  private sftpWorkspaceTabTitle(): string {
+    if (!this.sftpWorkspaceTabState.open) { return 'SFTP'; }
+    const owner: RemoteHost | undefined =
+      this.srv.getHost(this.sftpWorkspaceTabState.ownerHostId);
+    const label: string = owner?.label.trim() || '';
+    return label.length > 0 ? 'SFTP · ' + label : 'SFTP';
+  }
+
+  private activateSshTerminalWorkspace(): void {
+    this.sftpWorkspaceTabState = activateSshTerminalSurface(this.sftpWorkspaceTabState);
+  }
+
+  private activateSftpWorkbenchTab(): void {
+    if (!this.sshWorkbenchEnabled || !this.sftpWorkspaceTabState.open) { return; }
+    const owner: string = this.sftpWorkspaceTabState.ownerHostId;
+    if (owner !== this.hostId.trim()) {
+      const host: RemoteHost | undefined = this.srv.getHost(owner);
+      if (host !== undefined) {
+        this.closeSftpWorkbenchTab();
+        this.navigateToSshTab(host);
+      }
+      return;
+    }
+    this.sftpWorkspaceTabState = activateSshSftpSurface(
+      this.sftpWorkspaceTabState, this.hostId);
+    this.showSftpPanel = this.sftpWorkspaceTabState.activeSurface === 'sftp';
+    this.sftpRootSheetSurfaceReady = this.showSftpPanel;
+  }
+
+  private closeSftpWorkbenchTab(): void {
+    this.sftpWorkspaceTabState = closeSshSftpWorkspaceTab(this.sftpWorkspaceTabState);
+    this.sftpRootSheetReopenRequested = false;
+    this.sftpPeerHostPickerReopenRequested = false;
+    this.sftpCloseRootAfterPeerPicker = false;
+    this.requestSftpPeerHostPickerClose();
+    this.showSftpPanel = false;
+    this.showSftpSheet = false;
+    this.sftpRootSheetSurfaceReady = false;
+  }
+
+  private sftpTransferRecords(): Array<SshSftpTaskRecord> {
+    // Read the observable revision so store events invalidate this projection.
+    if (this.sftpTransferCenterRevision < 0) { return []; }
+    return this.sftpTaskStore.list();
+  }
+
+  private sftpTransferHostAliases(): Array<SshTransferHostAlias> {
+    const aliases: Array<SshTransferHostAlias> = [];
+    const hosts: Array<RemoteHost> = this.sshTabHosts();
+    for (let index: number = 0; index < hosts.length; index++) {
+      aliases.push({ hostId: hosts[index].id, alias: hosts[index].label });
+    }
+    return aliases;
+  }
+
+  private sftpTransferCenterTasks(): Array<SshTransferCenterTaskView> {
+    return buildSshTransferCenterViews(
+      this.sftpTransferRecords(), this.sftpTransferHostAliases());
+  }
+
+  private sftpTransferCenterSummary(): SshTransferCenterSummary {
+    return summarizeSshTransferCenter(this.sftpTransferRecords());
+  }
+
+  private sftpTransferAttentionCount(): number {
+    const summary: SshTransferCenterSummary = this.sftpTransferCenterSummary();
+    return summary.active + summary.attention;
+  }
+
+  private openSftpTransferCenter(): void {
+    if (!this.sshWorkbenchEnabled || this.terminalClosing || this.showSftpTransferCenter ||
+      this.sftpPeerHostPicker || this.showForwardingSheet || this.showForwardingConfirmSheet ||
+      this.showSshCommandPalette || this.showSshTabPicker || this.showTerminalProfileSheet ||
+      this.showSshAuthPromptSheet || this.showPassphraseSheet) {
+      return;
+    }
+    this.closeTerminalSearch(false, true);
+    this.sftpTransferCenterRevision++;
+    this.showSftpTransferCenter = true;
+  }
+
+  private closeSftpTransferCenter(): void {
+    this.showSftpTransferCenter = false;
+  }
+
+  private cancelSftpTransferCenterBatch(task: SshSftpTaskRecord): void {
+    const batchId: string = task.batchId.trim();
+    if (batchId.length === 0) { return; }
+    this.sftpTaskEngine.cancelBatch(batchId);
+    const records: Array<SshSftpTaskRecord> = this.sftpTaskStore.list();
+    for (let index: number = 0; index < records.length; index++) {
+      if (records[index].batchId === batchId && records[index].stage !== 'completed' &&
+        records[index].stage !== 'cancelled') {
+        this.sftpTaskStore.command(records[index].taskId, { kind: 'cancel' });
+      }
+    }
+  }
+
+  private runSftpTransferCenterAction(taskId: string, action: SshTransferCenterAction): void {
+    const task: SshSftpTaskRecord | null = this.sftpTaskStore.get(taskId);
+    if (task === null) { return; }
+    if (action === 'clear') {
+      if (task.stage === 'completed' || task.stage === 'cancelled') {
+        const batchId: string = task.batchId.trim();
+        this.sftpTaskStore.remove(task.taskId);
+        if (batchId.length > 0 && this.sftpTaskStore.list().every(
+          (record: SshSftpTaskRecord): boolean => record.batchId !== batchId)) {
+          this.sftpDropBatches.delete(batchId);
+          this.sftpTaskEngine.discardBatch(batchId);
+        }
+      }
+      return;
+    }
+    if (action === 'cancel') {
+      if (task.batchId.trim().length > 0) { this.cancelSftpTransferCenterBatch(task); }
+      else if (this.sftpTransferSession?.id === task.taskId) { this.cancelSftpTransfer(); }
+      else { this.sftpTaskStore.command(task.taskId, { kind: 'cancel' }); }
+      return;
+    }
+    if (action === 'pause') {
+      if (task.batchId.trim().length > 0) {
+        this.sftpTaskEngine.pauseBatch(task.batchId);
+        const latest: SshSftpTaskRecord | null = this.sftpTaskStore.get(task.taskId);
+        if (latest !== null && latest.stage === 'transferring') {
+          this.sftpTaskStore.command(task.taskId, { kind: 'pause' });
+        }
+      } else if (this.sftpTransferSession?.id === task.taskId) {
+        this.pauseSftpTransfer();
+      } else {
+        this.sftpTaskStore.command(task.taskId, { kind: 'pause' });
+      }
+      return;
+    }
+    this.closeSftpTransferCenter();
+    if (task.sourceEndpoint?.kind === 'ssh' && task.targetEndpoint?.kind === 'ssh' &&
+      task.batchId.trim().length > 0) {
+      void this.recoverSftpRemoteBatch(task.batchId);
+      return;
+    }
+    if (task.hostId !== this.hostId.trim()) {
+      const host: RemoteHost | undefined = this.srv.getHost(task.hostId);
+      if (host !== undefined) { this.navigateToSshTab(host); }
+      promptAction.showToast({ message: '已切换到任务所属主机，请在连接完成后重试', duration: 2200 });
+      return;
+    }
+    if (task.batchId.trim().length > 0) {
+      void this.recoverSftpBatch(task.batchId);
+    } else {
+      void this.recoverSftpTask(task);
+    }
+  }
+
+  @Builder
+  private SftpTransferCenterContent() {
+    SshTransferCenter({
+      tasks: this.sftpTransferCenterTasks(),
+      summary: this.sftpTransferCenterSummary(),
+      compact: this.sshCompactChrome(),
+      onClose: (): void => { this.closeSftpTransferCenter(); },
+      onAction: (taskId: string, action: SshTransferCenterAction): void => {
+        this.runSftpTransferCenterAction(taskId, action);
+      }
+    })
   }
 
   @Builder
@@ -2505,7 +2720,14 @@ struct SshTerminal {
       SshBrowserTabStrip({
         tabs: this.sshTabViews,
         compact: this.sshCompactChrome(),
+        terminalTabsActive: this.sftpWorkspaceTabState.activeSurface === 'terminal',
+        sftpTabVisible: this.sftpWorkspaceTabState.open,
+        sftpTabActive: this.sftpWorkspaceTabState.open &&
+          this.sftpWorkspaceTabState.activeSurface === 'sftp',
+        sftpTabTitle: this.sftpWorkspaceTabTitle(),
+        transferAttentionCount: this.sftpTransferAttentionCount(),
         onActivate: (hostId: string): void => {
+          this.activateSshTerminalWorkspace();
           const host: RemoteHost | undefined = this.srv.getHost(hostId);
           if (host !== undefined) { this.navigateToSshTab(host); }
         },
@@ -2520,7 +2742,10 @@ struct SshTerminal {
         onCloseRight: (hostId: string): void => { this.requestSshBulkClose(hostId, true); },
         onNewSession: (): void => { this.openSshTabPicker(); },
         onShowAllTabs: (): void => { this.openSshTabPicker(); },
-        onOpenPalette: (): void => { this.openSshCommandPalette(); }
+        onOpenPalette: (): void => { this.openSshCommandPalette(); },
+        onActivateSftp: (): void => { this.activateSftpWorkbenchTab(); },
+        onCloseSftp: (): void => { this.closeSftpWorkbenchTab(); },
+        onOpenTransferCenter: (): void => { this.openSftpTransferCenter(); }
       })
     } else {
       Scroll() {
@@ -3584,7 +3809,8 @@ struct SshTerminal {
     this.logSftpRemoteDiagnostic('event kind=' + event.kind + ' batch=' + event.batchId +
       ' reason=' + event.reason + (record === null ? '' :
         ' task=' + record.taskId + ' stage=' + record.stage + ' owner=' + record.hostId +
-        ' source=' + (record.sourcePath || '') + ' target=' + (record.targetPath || '')),
+        ' sourceKind=' + (record.sourceEndpoint?.kind || 'unknown') +
+        ' targetKind=' + (record.targetEndpoint?.kind || 'unknown')),
       event.kind === 'batchBlocked' || (record !== null && record.stage === 'failed'));
     if (record !== null && record.hostId !== this.hostId &&
       record.hostId !== this.sftpEngineBatchTargetHostId) { return; }
@@ -3597,6 +3823,7 @@ struct SshTerminal {
       return;
     }
     if (event.kind === 'batchCompleted') {
+      this.sftpDropBatches.delete(event.batchId);
       this.sftpBusy = false;
       this.sftpProgress = -1;
       this.sftpTransferSession = null;
@@ -3686,7 +3913,7 @@ struct SshTerminal {
       return;
     }
     if (!this.sftpTaskEngine.bindBatch(id, this.hostId, localRoot, remoteRoot,
-      this.sftpConflictPolicyForBatch(id))) {
+      this.sftpConflictPolicyForBatch(id), this.sftpDropBatches.has(id))) {
       this.sftpStatus = '[SFTP-BATCH] 批次引擎绑定失败';
       return;
     }
@@ -4679,6 +4906,92 @@ struct SshTerminal {
     this.sftpLocalSelectedSize = entry.size;
     this.sftpStatus = entry.isDirectory ? '已选择本机目录 ' + entry.name :
       '已选择本机文件 ' + entry.name + ' (' + this.formatFileSize(entry.size) + ')';
+  }
+
+  private async handleSftpExternalDrop(event: DragEvent): Promise<void> {
+    this.sftpDropHoverActive = false;
+    if (!this.sftpWorkbenchSurfaceActive() || this.sftpBusy ||
+      !this.sftpLocalProvider.snapshot().plan.supportsExternalDrag ||
+      !this.isSftpRequestActive(this.pageGeneration, this.sessionId, this.sshSessionGeneration)) {
+      event.setResult(DragResult.DRAG_FAILED);
+      return;
+    }
+    const requestPageGeneration: number = this.pageGeneration;
+    const requestSessionId: number = this.sessionId;
+    const requestSessionGeneration: number = this.sshSessionGeneration;
+    const providerRoot: string = await this.sftpLocalProvider.currentRoot();
+    if (providerRoot.length === 0) {
+      this.sftpStatus = '[SFTP-DROP] 请先授权本机文件目录';
+      event.setResult(DragResult.DRAG_FAILED);
+      return;
+    }
+    const stagingName: string = 'drop-' + Date.now().toString(36) + '-' +
+      (++this.sftpTaskSequence).toString(36);
+    if (!await this.sftpLocalProvider.createDirectory(providerRoot, stagingName)) {
+      this.sftpStatus = '[SFTP-DROP] 无法创建受控暂存目录';
+      event.setResult(DragResult.DRAG_FAILED);
+      return;
+    }
+    const stagingRoot: string | null =
+      await this.sftpLocalProvider.resolveRelative(providerRoot, stagingName);
+    if (stagingRoot === null) {
+      this.sftpStatus = '[SFTP-DROP] 暂存目录校验失败';
+      event.setResult(DragResult.DRAG_FAILED);
+      return;
+    }
+    let queuedBatchId: string = '';
+    this.sftpBusy = true;
+    this.sftpStatus = '正在安全读取拖入文件...';
+    try {
+      const data: unifiedDataChannel.UnifiedData = event.getData();
+      const staged: SshSftpStagedDropResult = await this.sftpDropAdapter.stage(
+        data, stagingRoot, SFTP_DROP_LIMITS);
+      if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+        requestSessionGeneration)) {
+        await this.sftpLocalProvider.remove(stagingRoot, true);
+        event.setResult(DragResult.DRAG_FAILED);
+        return;
+      }
+      if (!staged.accepted) {
+        await this.sftpLocalProvider.remove(stagingRoot, true);
+        this.sftpStatus = '[SFTP-DROP] 拒绝拖入: ' + staged.reason;
+        event.setResult(DragResult.DRAG_FAILED);
+        return;
+      }
+      const plan = planSshSftpBatch(staged.stagedFiles, SFTP_BATCH_LIMITS);
+      if (!plan.accepted) {
+        await this.sftpLocalProvider.remove(stagingRoot, true);
+        this.sftpStatus = '[SFTP-DROP] 批量计划拒绝: ' + plan.reason;
+        event.setResult(DragResult.DRAG_FAILED);
+        return;
+      }
+      const result: SshSftpBatchTaskEnqueueResult = this.sftpTaskStore.enqueueBatch(
+        this.hostId, 'upload', this.sftpPath, plan);
+      if (!result.accepted) {
+        await this.sftpLocalProvider.remove(stagingRoot, true);
+        this.sftpStatus = '[SFTP-DROP] 创建任务失败: ' + result.reason;
+        event.setResult(DragResult.DRAG_FAILED);
+        return;
+      }
+      queuedBatchId = result.batchId;
+      this.sftpBatchLocalRoots.set(result.batchId, stagingRoot);
+      this.sftpBatchRemoteRoots.set(result.batchId, this.sftpPath);
+      this.sftpDropBatches.add(result.batchId);
+      this.sftpStatus = '已安全暂存 ' + staged.stagedFiles.length.toString() +
+        ' 个文件并加入上传队列';
+      this.refreshRecoveredSftpTasks();
+      event.setResult(DragResult.DRAG_SUCCESSFUL);
+    } catch (_err) {
+      await this.sftpLocalProvider.remove(stagingRoot, true);
+      this.sftpStatus = '[SFTP-DROP] UDMF 文件读取失败';
+      event.setResult(DragResult.DRAG_FAILED);
+    } finally {
+      if (this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+        requestSessionGeneration)) {
+        this.sftpBusy = false;
+        if (queuedBatchId.length > 0) { this.startSftpEngineBatch(queuedBatchId); }
+      }
+    }
   }
 
   /** Scan one selected local directory and durably enqueue its file tasks. */
@@ -6074,6 +6387,10 @@ struct SshTerminal {
     this.closeTerminalSearch(false, true);
     this.showTerminalProfileSheet = false;
     this.showSshCommandPalette = false;
+    this.showSftpTransferCenter = false;
+    this.sftpWorkspaceTabState = createSshSftpWorkspaceTabState();
+    this.sftpDropHoverActive = false;
+    this.sftpDropBatches.clear();
     this.sshCommandRegistry = [];
     this.pendingSshCommandId = '';
     this.sshTabClosePromptInFlight = false;
@@ -6347,6 +6664,7 @@ struct SshTerminal {
           this.replayNativeOutputToXterm(this.hostId);
         }
         this.sftpTaskUnsubscribe = this.sftpTaskStore.subscribe((event): void => {
+          this.sftpTransferCenterRevision++;
           if (event.record.hostId !== this.hostId || this.sftpBusy) { return; }
           this.refreshRecoveredSftpTasks();
           if (event.record.stage === 'needsAuthorization') {
@@ -6434,6 +6752,10 @@ struct SshTerminal {
     this.closeTerminalSearch(false, true);
     this.showTerminalProfileSheet = false;
     this.showSshCommandPalette = false;
+    this.showSftpTransferCenter = false;
+    this.sftpWorkspaceTabState = createSshSftpWorkspaceTabState();
+    this.sftpDropHoverActive = false;
+    this.sftpDropBatches.clear();
     this.pendingSshCommandId = '';
     this.showSshTabRenameSheet = false;
     this.sshTabRenameHostId = '';
@@ -7546,6 +7868,10 @@ struct SshTerminal {
       this.closeTerminalSearch();
       return;
     }
+    if (this.showSftpTransferCenter) {
+      this.closeSftpTransferCenter();
+      return;
+    }
     if (this.showForwardingSheet ||
       this.forwardingModalCoordinator.currentPhase() === 'closing') {
       this.closeForwardingSheet();
@@ -8002,7 +8328,7 @@ struct SshTerminal {
       this.forwardingModalCoordinator.currentPhase() === 'closing' ||
       this.showSftpPanel || this.showSftpSheet || this.sftpPeerHostPicker ||
       this.showSshTabPicker || this.sshTabPickerClosing || this.showTerminalProfileSheet ||
-      this.showSshCommandPalette || this.showSshTabRenameSheet;
+      this.showSshCommandPalette || this.showSshTabRenameSheet || this.showSftpTransferCenter;
   }
 
   private clearTerminalSearchDebounce(): void {
@@ -8190,6 +8516,8 @@ struct SshTerminal {
       this.showSshTabRenameSheet = false;
       this.sshTabRenameHostId = '';
       this.sshTabRenameDraft = '';
+      this.showSftpTransferCenter = false;
+      if (this.sftpWorkspaceTabState.open) { this.closeSftpWorkbenchTab(); }
     }
     this.refreshTerminalProfileForHost();
   }
@@ -8686,6 +9014,7 @@ struct SshTerminal {
   private openForwardingSheet(): void {
     if (this.terminalClosing) { return; }
     if (this.showSftpPanel || this.showSftpSheet || this.sftpPeerHostPicker ||
+      this.showSftpTransferCenter ||
       this.showSshTabPicker || this.showSshAuthPromptSheet || this.showPassphraseSheet) {
       promptAction.showToast({ message: '请先关闭当前弹窗' });
       return;
@@ -8977,6 +9306,27 @@ struct SshTerminal {
 
   private openSftpPanel(): void {
     if (this.terminalClosing) { return; }
+    if (this.sshWorkbenchEnabled) {
+      if (!this.sshConnectionIsConnected() || this.hostId.trim().length === 0) {
+        promptAction.showToast({ message: 'SSH 连接成功后才能打开 SFTP', duration: 1800 });
+        return;
+      }
+      this.showSshTabPicker = false;
+      this.showSftpTransferCenter = false;
+      const surfaceAlreadyVisible: boolean = this.sftpWorkspaceTabState.open;
+      if (!surfaceAlreadyVisible) { this.prepareSftpRightEndpointForNewSurface(); }
+      this.sftpWorkspaceTabState = openSshSftpWorkspaceTab(
+        this.sftpWorkspaceTabState, this.hostId);
+      this.showSftpPanel = true;
+      this.showSftpSheet = false;
+      this.sftpRootSheetClosing = false;
+      this.sftpRootSheetSurfaceReady = true;
+      if (this.sftpEntries.length === 0) {
+        this.scheduleSftpRefresh(this.sftpPath, 120);
+      }
+      this.refreshRecoveredSftpTasks();
+      return;
+    }
     // Once the native exit is no longer in flight, stale latches from an old
     // Sheet instance are safe to clear before mounting a new surface.
     if (!this.showSftpSheet && !this.showSftpPanel &&
@@ -9471,6 +9821,10 @@ struct SshTerminal {
   }
 
   private closeSftpPanel(): void {
+    if (this.sshWorkbenchEnabled) {
+      this.closeSftpWorkbenchTab();
+      return;
+    }
     // Explicit close owns the whole SFTP surface. Clear queued reopens before
     // driving the native exit, so a late picker callback cannot reopen either
     // Sheet after the user has already closed the workspace.
@@ -9563,13 +9917,33 @@ struct SshTerminal {
     // thresholds vary with display density and previously collapsed both into
     // the stacked phone-like workspace. Only Phone keeps the 1.0.8 single-pane
     // flow; Pad/PC retain two panes and let the native Sheet size its surface.
-    return this.sftpPadPcLayout();
+    if (!this.sshWorkbenchEnabled) { return this.sftpPadPcLayout(); }
+    const deviceClass: 'phone' | 'pad' | 'pc' = this.isDesktopDevice
+      ? 'pc' : (this.isPadDevice ? 'pad' : 'phone');
+    return resolveSshSftpPaneLayout(this.shellAreaW, deviceClass).mode === 'dual';
   }
 
   private sftpUsesRootBindSheet(): boolean {
-    // All device classes use a native Sheet. Phone keeps the 1.0.8 bottom
-    // sheet, while Pad/PC share the redesigned wide centered workspace.
-    return true;
+    // Workbench mode owns a first-class inline tab. Flag-off preserves the
+    // accepted phone bottom Sheet and Pad/PC centered Sheet exactly.
+    return !this.sshWorkbenchEnabled;
+  }
+
+  private sftpWorkbenchSurfaceActive(): boolean {
+    return this.sshWorkbenchEnabled && this.sftpWorkspaceTabState.open &&
+      this.sftpWorkspaceTabState.activeSurface === 'sftp' && this.showSftpPanel;
+  }
+
+  private sftpWorkbenchTopOffset(): number {
+    const standaloneTabs: number = this.sshTabViews.length > 0 && !this.sshTabsInline()
+      ? this.sshTabStripHeight() + this.topChromeOffset() : 0;
+    return standaloneTabs + this.headerHeight();
+  }
+
+  private sftpWorkbenchHeight(): number {
+    // shellAreaH is the measured body below the tab/header chrome. It follows
+    // free-form resize and rotation without relying on a parsed calc string.
+    return this.shellAreaH > 0 ? this.shellAreaH : 600;
   }
 
   private sftpHeaderTopPadding(): number {
@@ -12631,6 +13005,36 @@ struct SshTerminal {
     })
   }
 
+  @Builder
+  SftpWorkbenchSurface() {
+    Stack() {
+      this.SftpTransferSheet(0)
+      if (this.sftpDropHoverActive) {
+        Column({ space: 8 }) {
+          SymbolGlyph($r('sys.symbol.doc'))
+            .fontSize(30).fontColor([this.accentColor])
+          Text('释放以上传到当前远端目录')
+            .fontSize(14).fontWeight(FontWeight.Medium).fontColor('#F4F7FA')
+          Text('先复制到受控暂存区，再由现有 SFTP 引擎传输')
+            .fontSize(10).fontColor('rgba(242,244,247,0.58)')
+        }
+        .width('calc(100% - 32vp)').height('calc(100% - 32vp)')
+        .margin(16).justifyContent(FlexAlign.Center)
+        .borderRadius(14).backgroundColor('rgba(0,125,255,0.16)')
+        .border({ width: 2, color: this.accentColor })
+        .hitTestBehavior(HitTestMode.None)
+        .zIndex(20)
+      }
+    }
+    .width('100%').height('100%')
+    .backgroundColor(this.sshPal().bg)
+    .allowDrop(this.sftpLocalProvider.snapshot().plan.supportsExternalDrag
+      ? [uniformTypeDescriptor.UniformDataType.FILE] : [])
+    .onDragEnter((_event: DragEvent): void => { this.sftpDropHoverActive = true; })
+    .onDragLeave((_event: DragEvent): void => { this.sftpDropHoverActive = false; })
+    .onDrop((event: DragEvent): void => { void this.handleSftpExternalDrop(event); })
+  }
+
   @Builder PcWindowAuthenticationCarrier() {
     Stack({ alignContent: Alignment.TopStart }) {
       Column()
@@ -13275,6 +13679,16 @@ struct SshTerminal {
       .backgroundColor('#0D0D0D')
       .id('ssh-terminal-pane')
       }
+      if (this.sftpWorkbenchSurfaceActive()) {
+        Column() {
+          this.SftpWorkbenchSurface()
+        }
+        .width('100%')
+        .height(this.sftpWorkbenchHeight())
+        .position({ x: 0, y: this.sftpWorkbenchTopOffset() })
+        .zIndex(70)
+        .backgroundColor(this.sshPal().bg)
+      }
       // Keep one stable native Sheet host for the complete SFTP workspace.
       // Phone renders the 1.0.8 single-pane layout; Pad/PC render the wide
       // two-endpoint workspace without changing the native root surface.
@@ -13381,6 +13795,26 @@ struct SshTerminal {
         })
     }
     .width('100%').height('100%')
+    .bindSheet($$this.showSftpTransferCenter, this.SftpTransferCenterContent(), {
+      height: this.breakpoint === 'sm' ? SheetSize.LARGE : '720vp',
+      preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
+      width: this.breakpoint === 'sm' ? '100%' : '760vp',
+      dragBar: this.breakpoint === 'sm',
+      backgroundColor: '#111820',
+      blurStyle: BlurStyle.NONE,
+      showClose: false,
+      maskColor: 'rgba(0,0,0,0.42)',
+      onWillDismiss: (action: DismissSheetAction): void => {
+        this.showSftpTransferCenter = false;
+        action.dismiss();
+      },
+      onDisappear: (): void => {
+        this.showSftpTransferCenter = false;
+        if (!this.terminalClosing && !this.sftpWorkbenchSurfaceActive()) {
+          this.focusKeyboard(false);
+        }
+      }
+    })
     .bindSheet($$this.showPassphraseSheet, this.passphraseSheet(), {
       height: SheetSize.FIT_CONTENT,
       preferType: this.isDesktopDevice ? SheetType.CENTER : SheetType.BOTTOM,

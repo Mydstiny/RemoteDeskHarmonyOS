@@ -13,7 +13,7 @@ export default function sshTabChromePolicyTest(): void {
       expect(layout.compact).assertTrue();
       expect(layout.inlineAllowed).assertFalse();
       expect(layout.edgeActionsWidthVp < 360).assertTrue();
-      expect(layout.scrollViewportWidthVp >= 200).assertTrue();
+      expect(layout.scrollViewportWidthVp >= 160).assertTrue();
       expect(layout.tabWidthVp).assertEqual(124);
     });
 

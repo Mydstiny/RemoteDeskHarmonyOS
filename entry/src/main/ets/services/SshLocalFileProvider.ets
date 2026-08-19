@@ -94,8 +94,9 @@ export function probeSshLocalProviderCapabilities(): SshLocalProviderCapabilityP
     pickerImport: pickerAvailable,
     pickerExport: pickerAvailable,
     share: false,
-    // Drag/drop is enabled only after the UDMF token coordinator is wired.
-    externalDrag: false
+    // PC/2in1 can provide stable UDMF FILE_URI grants to the bounded staging
+    // adapter. Other device classes keep the fail-closed transfer-box path.
+    externalDrag: supportsAuthorizedFolder
   };
   const plan: SshLocalProviderPlan = resolveSshLocalProviderPlan(capabilities);
   hilog.info(LOCAL_PROVIDER_LOG_DOMAIN, LOCAL_PROVIDER_LOG_TAG,
@@ -113,6 +114,7 @@ export function probeSshLocalProviderCapabilities(): SshLocalProviderCapabilityP
  * asynchronous so callers can keep them outside ArkUI event callbacks.
  */
 export class SshLocalFileProvider {
+  private static instance: SshLocalFileProvider | null = null;
   private context: common.UIAbilityContext | null = null;
   private plan: SshLocalProviderPlan = resolveSshLocalProviderPlan({
     folderSelection: false,
@@ -130,7 +132,16 @@ export class SshLocalFileProvider {
   private rootLabel: string = '';
   private generation: number = 0;
 
+  /** Page and process-wide transfer engine must observe one authorization owner. */
+  static getInstance(): SshLocalFileProvider {
+    if (SshLocalFileProvider.instance === null) {
+      SshLocalFileProvider.instance = new SshLocalFileProvider();
+    }
+    return SshLocalFileProvider.instance;
+  }
+
   init(context: common.UIAbilityContext): void {
+    if (this.context === context) { return; }
     this.context = context;
     const probe: SshLocalProviderCapabilityProbe = probeSshLocalProviderCapabilities();
     this.plan = probe.plan;

@@ -7,6 +7,11 @@ export struct SshBrowserTabStrip {
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   @Prop tabs: Array<SshTerminalTabView> = [];
   @Prop compact: boolean = false;
+  @Prop terminalTabsActive: boolean = true;
+  @Prop sftpTabVisible: boolean = false;
+  @Prop sftpTabActive: boolean = false;
+  @Prop sftpTabTitle: string = 'SFTP';
+  @Prop transferAttentionCount: number = 0;
   onActivate: (hostId: string) => void = (_hostId: string): void => {};
   onClose: (hostId: string) => void = (_hostId: string): void => {};
   onTogglePin: (hostId: string) => void = (_hostId: string): void => {};
@@ -19,6 +24,9 @@ export struct SshBrowserTabStrip {
   onNewSession: () => void = (): void => {};
   onShowAllTabs: () => void = (): void => {};
   onOpenPalette: () => void = (): void => {};
+  onActivateSftp: () => void = (): void => {};
+  onCloseSftp: () => void = (): void => {};
+  onOpenTransferCenter: () => void = (): void => {};
 
   @State hoveredTabId: string = '';
   @State draggingTabId: string = '';
@@ -35,9 +43,13 @@ export struct SshBrowserTabStrip {
   }
 
   private tabBackground(tab: SshTerminalTabView): string {
-    if (tab.active) { return this.accentColor + '42'; }
+    if (this.terminalTabsActive && tab.active) { return this.accentColor + '42'; }
     if (this.hoveredTabId === tab.tabId) { return 'rgba(255,255,255,0.13)'; }
     return 'rgba(255,255,255,0.065)';
+  }
+
+  private terminalTabActive(tab: SshTerminalTabView): boolean {
+    return this.terminalTabsActive && tab.active;
   }
 
   private statusColor(tab: SshTerminalTabView): string {
@@ -75,8 +87,9 @@ export struct SshBrowserTabStrip {
       }
       Column({ space: 1 }) {
         Text(this.tabTitle(tab))
-          .fontSize(11).fontWeight(tab.active ? FontWeight.Medium : FontWeight.Regular)
-          .fontColor(tab.active ? '#F4F7FA' : 'rgba(242,244,247,0.76)')
+          .fontSize(11).fontWeight(this.terminalTabActive(tab) ?
+            FontWeight.Medium : FontWeight.Regular)
+          .fontColor(this.terminalTabActive(tab) ? '#F4F7FA' : 'rgba(242,244,247,0.76)')
           .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
         Row({ space: 4 }) {
           Column().width(5).height(5).borderRadius(3).backgroundColor(this.statusColor(tab))
@@ -107,8 +120,9 @@ export struct SshBrowserTabStrip {
     .height(38)
     .borderRadius(9)
     .backgroundColor(this.tabBackground(tab))
-    .border({ width: tab.active ? 1 : 0.5,
-      color: tab.active ? this.accentColor + '99' : 'rgba(255,255,255,0.08)' })
+    .border({ width: this.terminalTabActive(tab) ? 1 : 0.5,
+      color: this.terminalTabActive(tab) ?
+        this.accentColor + '99' : 'rgba(255,255,255,0.08)' })
     .onHover((hover: boolean): void => { this.hoveredTabId = hover ? tab.tabId : ''; })
     .onDragStart((_event: DragEvent): DragItemInfo => {
       this.draggingTabId = tab.hostId;
@@ -124,7 +138,40 @@ export struct SshBrowserTabStrip {
     .onDragEnd((_event: DragEvent): void => { this.draggingTabId = ''; })
     .bindContextMenu(this.TabMenu(tab), ResponseType.RightClick)
     .accessibilityText(this.tabTitle(tab) + '，' + this.stateLabel(tab) +
-      (tab.active ? '，当前标签' : '') + (tab.pinned ? '，已固定' : ''))
+      (this.terminalTabActive(tab) ? '，当前标签' : '') + (tab.pinned ? '，已固定' : ''))
+  }
+
+  @Builder
+  private SftpTab() {
+    Row({ space: 6 }) {
+      SymbolGlyph($r('sys.symbol.folder_fill'))
+        .fontSize(16)
+        .fontColor([this.sftpTabActive ? this.accentColor : 'rgba(242,244,247,0.70)'])
+      Column({ space: 1 }) {
+        Text(this.sftpTabTitle)
+          .fontSize(11)
+          .fontWeight(this.sftpTabActive ? FontWeight.Medium : FontWeight.Regular)
+          .fontColor(this.sftpTabActive ? '#F4F7FA' : 'rgba(242,244,247,0.76)')
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+        Text('文件工作台').fontSize(8).fontColor('rgba(242,244,247,0.46)').maxLines(1)
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+      Button('×')
+        .width(30).height(30).padding(0).fontSize(16)
+        .fontColor('rgba(242,244,247,0.76)')
+        .borderRadius(8).backgroundColor('rgba(255,255,255,0.035)')
+        .onClick((): void => { this.onCloseSftp(); })
+        .accessibilityText('关闭 SFTP 工作台标签')
+    }
+    .width(sshTabWidthVp(this.compact, false))
+    .height(38)
+    .padding({ left: 9, right: 4 })
+    .borderRadius(9)
+    .backgroundColor(this.sftpTabActive ? this.accentColor + '42' : 'rgba(255,255,255,0.065)')
+    .border({ width: this.sftpTabActive ? 1 : 0.5,
+      color: this.sftpTabActive ? this.accentColor + '99' : 'rgba(255,255,255,0.08)' })
+    .onClick((): void => { this.onActivateSftp(); })
+    .accessibilityText('SFTP 文件工作台' + (this.sftpTabActive ? '，当前标签' : ''))
   }
 
   @Builder
@@ -144,6 +191,9 @@ export struct SshBrowserTabStrip {
           ForEach(this.tabs, (tab: SshTerminalTabView): void => {
             this.Tab(tab)
           }, (tab: SshTerminalTabView): string => tab.tabId)
+          if (this.sftpTabVisible) {
+            this.SftpTab()
+          }
         }.height(40).padding({ left: 2, right: 2 })
       }
       .scrollable(ScrollDirection.Horizontal)
@@ -151,6 +201,16 @@ export struct SshBrowserTabStrip {
       .layoutWeight(1).height(40)
 
       this.EdgeAction('☰', '显示所有 SSH 标签', (): void => { this.onShowAllTabs(); })
+      Stack({ alignContent: Alignment.TopEnd }) {
+        this.EdgeAction('⇅', '打开 SSH 传输中心', (): void => { this.onOpenTransferCenter(); })
+        if (this.transferAttentionCount > 0) {
+          Text(this.transferAttentionCount > 99 ? '99+' : this.transferAttentionCount.toString())
+            .fontSize(8).fontColor(Color.White).fontWeight(FontWeight.Medium)
+            .height(15).constraintSize({ minWidth: 15 }).padding({ left: 3, right: 3 })
+            .textAlign(TextAlign.Center).borderRadius(8).backgroundColor('#E5484D')
+            .hitTestBehavior(HitTestMode.None)
+        }
+      }.width(34).height(34)
       this.EdgeAction('⌕', '打开 SSH 命令面板', (): void => { this.onOpenPalette(); })
       this.EdgeAction('＋', '新建 SSH 会话', (): void => { this.onNewSession(); })
     }

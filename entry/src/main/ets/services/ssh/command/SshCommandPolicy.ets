@@ -11,6 +11,7 @@ export type SshCommandActionKind =
   | 'open_terminal_search'
   | 'open_terminal_profile'
   | 'open_sftp'
+  | 'open_transfer_center'
   | 'open_forwarding'
   | 'close_active_tab'
   | 'toggle_active_tab_pin'
@@ -49,6 +50,7 @@ export interface SshCommandCapabilities {
   searchAvailable: boolean;
   profileAvailable: boolean;
   sftpAvailable: boolean;
+  transferCenterAvailable: boolean;
   forwardingAvailable: boolean;
   closeAvailable: boolean;
   activePinned: boolean;
@@ -151,6 +153,10 @@ export function buildSshCommandRegistry(hosts: Array<SshCommandHostRef>,
   commands.push(actionCommand('ssh.action.sftp', '打开 SFTP',
     '在当前 SSH 会话中浏览和传输文件', ['file', 'transfer', 'sftp', '文件', '传输'],
     'open_sftp', capabilities.sftpAvailable));
+  commands.push(actionCommand('ssh.action.transfer-center', 'SSH 传输中心',
+    '查看所有主机的上传、下载和待处理任务',
+    ['transfer', 'tasks', 'queue', '传输', '任务', '队列'],
+    'open_transfer_center', capabilities.transferCenterAvailable));
   commands.push(actionCommand('ssh.action.forwarding', '端口转发',
     '管理本地、远端和动态隧道', ['forward', 'tunnel', 'proxy', '转发', '隧道'],
     'open_forwarding', capabilities.forwardingAvailable));

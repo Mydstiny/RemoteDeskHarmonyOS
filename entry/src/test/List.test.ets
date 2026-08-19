@@ -164,6 +164,9 @@ import sshTerminalSearchShortcutPolicyTest from './SshTerminalSearchShortcutPoli
 import sshTerminalProfilePolicyTest from './SshTerminalProfilePolicy.test';
 import sshCommandPolicyTest from './SshCommandPolicy.test';
 import sshTabChromePolicyTest from './SshTabChromePolicy.test';
+import sshSftpWorkspacePolicyTest from './SshSftpWorkspacePolicy.test';
+import sshTransferCenterPolicyTest from './SshTransferCenterPolicy.test';
+import sshSftpTaskEnginePolicyTest from './SshSftpTaskEnginePolicy.test';
 import hostLocalPersonalizationPolicyTest from './HostLocalPersonalizationPolicy.test';
 import moonlightModelsTest from './MoonlightModels.test';
 import moonlightRecordTest from './MoonlightRecord.test';
@@ -373,6 +376,9 @@ export default function testsuite() {
   sshTerminalProfilePolicyTest();
   sshCommandPolicyTest();
   sshTabChromePolicyTest();
+  sshSftpWorkspacePolicyTest();
+  sshTransferCenterPolicyTest();
+  sshSftpTaskEnginePolicyTest();
   hostLocalPersonalizationPolicyTest();
   moonlightModelsTest();
   moonlightRecordTest();

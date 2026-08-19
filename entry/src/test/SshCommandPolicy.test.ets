@@ -17,6 +17,7 @@ function capabilities(): SshCommandCapabilities {
     searchAvailable: true,
     profileAvailable: true,
     sftpAvailable: true,
+    transferCenterAvailable: true,
     forwardingAvailable: false,
     closeAvailable: true,
     activePinned: false
@@ -56,6 +57,8 @@ export default function sshCommandPolicyTest(): void {
         .assertEqual('host');
       expect(findSshCommand(registry, 'ssh.action.close-tab')?.danger)
         .assertEqual('confirm');
+      expect(findSshCommand(registry, 'ssh.action.transfer-center')?.action)
+        .assertEqual('open_transfer_center');
     });
 
     it('ranks_exact_title_before_prefix_keyword_and_subtitle_deterministically', 0, (): void => {

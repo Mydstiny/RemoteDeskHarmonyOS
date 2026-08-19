@@ -5,6 +5,7 @@ import {
   resolveSshLocalProviderState,
   SshLocalProviderCapabilities
 } from '../main/ets/services/SshLocalProviderPolicy';
+import { SshLocalFileProvider } from '../main/ets/services/SshLocalFileProvider';
 
 function capabilities(overrides: Object = {}): SshLocalProviderCapabilities {
   const base: SshLocalProviderCapabilities = {
@@ -63,6 +64,12 @@ export default function sshLocalProviderPolicyTest(): void {
       expect(plan.kind).assertEqual('none');
       expect(resolveSshLocalProviderState(plan, 'granted')).assertEqual('unavailable');
       expect(canUseSshLocalProviderAction(plan, 'ready', 'browse')).assertFalse();
+    });
+
+    it('shares_one_authorization_owner_between_page_and_transfer_engine', 0, (): void => {
+      const pageProvider: SshLocalFileProvider = SshLocalFileProvider.getInstance();
+      const engineProvider: SshLocalFileProvider = SshLocalFileProvider.getInstance();
+      expect(pageProvider === engineProvider).assertTrue();
     });
   });
 }

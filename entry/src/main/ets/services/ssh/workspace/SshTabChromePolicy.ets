@@ -7,7 +7,7 @@ export interface SshTabChromeLayout {
   scrollViewportWidthVp: number;
 }
 
-export const SSH_TAB_EDGE_ACTION_COUNT: number = 3;
+export const SSH_TAB_EDGE_ACTION_COUNT: number = 4;
 export const SSH_TAB_EDGE_ACTION_SIZE_VP: number = 34;
 export const SSH_TAB_EDGE_ACTION_GAP_VP: number = 6;
 export const SSH_TAB_CHROME_HORIZONTAL_PADDING_VP: number = 12;
