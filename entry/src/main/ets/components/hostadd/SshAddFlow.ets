@@ -17,7 +17,6 @@ import {
 export struct SshAddFlow {
   @StorageProp('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
-  @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
   @Prop @Watch('onKeysChanged') keys: SshKey[] = [];
   onBackToProtocols: () => void = (): void => {};
   onClose: () => void = (): void => {};
@@ -214,7 +213,11 @@ export struct SshAddFlow {
             }
           }.width('100%')
       }
-      .width(this.breakpoint === 'xl' ? 900 : '100%')
+      // The host-add sheet owns the responsive width on PC. A fixed 900vp
+      // child overflows the centered system sheet (roughly 500vp on the
+      // current PC profile), clipping the proxy choices and action buttons.
+      // Keep the SSH flow inside its parent just like the other host flows.
+      .width('100%')
       .height('auto')
         .padding({ left: 20, right: 20, top: 20, bottom: 22 }).backgroundColor(this.pal().card)
     }
