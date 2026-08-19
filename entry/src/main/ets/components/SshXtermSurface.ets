@@ -16,6 +16,11 @@ import {
   SshTerminalSearchRequest,
   SshTerminalSearchResult
 } from '../services/ssh/search/SshTerminalSearchPolicy';
+import {
+  SshWebMessagePortChannel,
+  SshWebMessagePortLike
+} from '../services/ssh/web/SshWebMessagePortChannel';
+import { SshWebMessageEnvelopeV1 } from '../services/ssh/web/SshWebMessagePortPolicy';
 
 const XTERM_DOMAIN: number = 0x0000;
 const XTERM_TAG: string = 'SshXtermSurface';
@@ -87,6 +92,27 @@ class SshXtermBridgeProxy {
   }
 }
 
+/** Explicit ArkWeb adapter; ArkTS does not permit structural assignment. */
+class SshArkWebMessagePortAdapter implements SshWebMessagePortLike {
+  private readonly delegate: webview.WebMessagePort;
+
+  constructor(delegate: webview.WebMessagePort) {
+    this.delegate = delegate;
+  }
+
+  postMessageEvent(message: string | ArrayBuffer): void {
+    this.delegate.postMessageEvent(message);
+  }
+
+  onMessageEvent(callback: (message: string | ArrayBuffer) => void): void {
+    this.delegate.onMessageEvent(callback);
+  }
+
+  close(): void {
+    this.delegate.close();
+  }
+}
+
 @Component
 export struct SshXtermSurface {
   @Prop @Watch('onCoreKeyChange') coreKey: string = '';
@@ -120,6 +146,12 @@ export struct SshXtermSurface {
   @Prop profileCopyOnSelect: boolean = false;
   @StorageProp('sshTerminalForegroundColor') @Watch('onAppearanceChange') terminalFgColor: string = '#33FF33';
   @Prop @Watch('onOutputSequenceChange') outputSequence: number = 0;
+  /**
+   * API 23+ WebMessagePort transport. It is deliberately capability-gated
+   * and defaults off so existing xterm proxy traffic remains the safe path
+   * until the device/runtime acceptance matrix enables it.
+   */
+  @Prop @Watch('onWebMessageBridgeEnabledChange') webMessageBridgeEnabled: boolean = false;
   /** Replace the current document with one host transcript after a revision handoff. */
   @Prop transcriptResetIdentity: string = '';
   @Prop @Watch('onTranscriptResetRequestChange') transcriptResetRequest: number = 0;
@@ -144,6 +176,11 @@ export struct SshXtermSurface {
 
   private controller: webview.WebviewController = new webview.WebviewController();
   private bridge: SshXtermBridgeProxy = new SshXtermBridgeProxy();
+  private webMessageChannel: SshWebMessagePortChannel = new SshWebMessagePortChannel();
+  private webMessagePortConnected: boolean = false;
+  private webMessagePortReady: boolean = false;
+  private webMessagePortInstallAttempted: boolean = false;
+  private webMessagePortToken: number = 0;
   private bridgeRegistered: boolean = false;
   private bridgeRetryTimer: number = -1;
   private bridgeRetryCount: number = 0;
@@ -194,8 +231,157 @@ export struct SshXtermSurface {
     return key + ':render:' + revision.toString();
   }
 
+  private webMessageGeneration(): number {
+    const requested: number = Number(this.renderRevision);
+    if (!Number.isFinite(requested)) { return 0; }
+    return Math.max(1, Math.floor(requested));
+  }
+
+  private webMessagePortEligible(): boolean {
+    return this.webMessageBridgeEnabled && !this.disposed && this.pageFinished &&
+      this.coreKey.trim().length > 0 && this.webMessageGeneration() > 0;
+  }
+
+  private detachWebMessagePort(resetAttempted: boolean = true): void {
+    this.webMessagePortToken++;
+    this.webMessagePortConnected = false;
+    this.webMessagePortReady = false;
+    if (resetAttempted) { this.webMessagePortInstallAttempted = false; }
+    if (this.outputPumpRunning) { this.restoreQueuedWrites(); }
+    this.webMessageChannel.detach();
+  }
+
+  private disableWebMessagePort(code: string): void {
+    this.webMessagePortConnected = false;
+    this.webMessagePortReady = false;
+    hilog.warn(XTERM_DOMAIN, XTERM_TAG, 'web message port disabled code=' + code);
+    this.webMessageChannel.detach();
+    if (this.outputPumpRunning) {
+      this.restoreQueuedWrites();
+    }
+    if (!this.disposed && this.active && this.pageReady) {
+      this.scheduleOutputPumpRetry(this.lifecycleToken);
+    }
+  }
+
+  private handleWebMessageEnvelope(envelope: SshWebMessageEnvelopeV1,
+    lifecycleToken: number): void {
+    if (lifecycleToken !== this.lifecycleToken || this.disposed ||
+      !this.webMessagePortConnected || envelope.sessionKey !== this.surfaceIdentity() ||
+      envelope.generation !== this.webMessageGeneration()) {
+      return;
+    }
+    if (envelope.kind === 'ack') {
+      try {
+        const source: Record<string, Object> = JSON.parse(envelope.payload) as Record<string, Object>;
+        if (source['ready'] === true) {
+          this.webMessagePortReady = true;
+          this.flushOutputBuffer();
+          return;
+        }
+        const batchSequence: number = Number(source['batchSequence']);
+        if (Number.isFinite(batchSequence) && Math.floor(batchSequence) > 0) {
+          this.handleOutputFrame(Math.floor(batchSequence));
+        }
+      } catch (_err) {
+        // Transport ACKs without an application batch are valid; ignore them.
+      }
+      return;
+    }
+    if (envelope.kind === 'error') {
+      this.disableWebMessagePort('page_error');
+      return;
+    }
+    if (envelope.kind === 'input') {
+      if (this.onData && envelope.payload.length > 0 && this.active) {
+        this.onData(envelope.payload, this.surfaceIdentity());
+      }
+      return;
+    }
+    if (envelope.kind === 'resize') {
+      try {
+        const source: Record<string, Object> = JSON.parse(envelope.payload) as Record<string, Object>;
+        const cols: number = Number(source['cols']);
+        const rows: number = Number(source['rows']);
+        if (this.onResize && Number.isFinite(cols) && Number.isFinite(rows) &&
+          cols > 0 && rows > 0 && this.active) {
+          this.onResize(Math.floor(cols), Math.floor(rows), this.surfaceIdentity());
+        }
+      } catch (_err) {
+        // Invalid resize payloads are rejected at the owner boundary.
+      }
+    }
+  }
+
+  private installWebMessagePort(lifecycleToken: number = this.lifecycleToken): void {
+    if (!this.webMessagePortEligible() || lifecycleToken !== this.lifecycleToken ||
+      this.webMessagePortInstallAttempted) {
+      return;
+    }
+    this.webMessagePortInstallAttempted = true;
+    const sessionKey: string = this.surfaceIdentity();
+    const generation: number = this.webMessageGeneration();
+    const portToken: number = ++this.webMessagePortToken;
+    try {
+      const ports: Array<webview.WebMessagePort> = this.controller.createWebMessagePorts(false);
+      if (ports.length < 2) {
+        this.disableWebMessagePort('ports_unavailable');
+        return;
+      }
+      const nativePort: SshWebMessagePortLike = new SshArkWebMessagePortAdapter(ports[0]);
+      const pagePort: webview.WebMessagePort = ports[1];
+      const attached: boolean = this.webMessageChannel.attach(nativePort, sessionKey, generation, {
+        onReady: (): void => {
+          if (portToken !== this.webMessagePortToken || lifecycleToken !== this.lifecycleToken ||
+            this.disposed) { return; }
+          this.webMessagePortConnected = true;
+          this.logLifecycle('web message port ready key=' + this.coreKey);
+        },
+        onEnvelope: (envelope: SshWebMessageEnvelopeV1): void => {
+          this.handleWebMessageEnvelope(envelope, lifecycleToken);
+        },
+        onError: (code: string): void => {
+          if (portToken !== this.webMessagePortToken || lifecycleToken !== this.lifecycleToken) {
+            return;
+          }
+          this.disableWebMessagePort(code);
+        }
+      });
+      if (!attached) {
+        this.disableWebMessagePort('attach_rejected');
+        return;
+      }
+      // The page receives the transferred endpoint through the standard
+      // message event. Prefer ArkWeb's current rawfile URI; the wildcard is
+      // only a compatibility fallback for runtimes that report it as empty.
+      let targetUri: string = '*';
+      try {
+        const currentUri: string = this.controller.getUrl();
+        if (currentUri.trim().length > 0) { targetUri = currentUri; }
+      } catch (_err) {
+        // The controller can briefly report no URL during a keyed load.
+      }
+      this.controller.postMessage('sshTerminalWebMessagePort', [pagePort], targetUri);
+    } catch (err) {
+      hilog.debug(XTERM_DOMAIN, XTERM_TAG,
+        'web message port unavailable: ' + JSON.stringify(err));
+      this.disableWebMessagePort('install_failed');
+    }
+  }
+
+  private onWebMessageBridgeEnabledChange(): void {
+    if (!this.webMessageBridgeEnabled) {
+      this.detachWebMessagePort();
+      return;
+    }
+    if (this.webMessagePortEligible()) {
+      this.installWebMessagePort();
+    }
+  }
+
   aboutToAppear(): void {
     this.restoreQueuedWrites();
+    this.detachWebMessagePort();
     const lifecycleToken: number = ++this.lifecycleToken;
     this.disposed = false;
     if (this.readyReportTimer !== -1) {
@@ -247,6 +433,7 @@ export struct SshXtermSurface {
 
   aboutToDisappear(): void {
     this.restoreQueuedWrites();
+    this.detachWebMessagePort();
     const lifecycleToken: number = ++this.lifecycleToken;
     this.disposed = true;
     this.clearBridgeRetry();
@@ -567,6 +754,7 @@ export struct SshXtermSurface {
       return;
     }
     const lifecycleToken: number = ++this.lifecycleToken;
+    this.detachWebMessagePort();
     this.clearBridgeRetry();
     if (this.readyReportTimer !== -1) {
       clearTimeout(this.readyReportTimer);
@@ -812,6 +1000,7 @@ export struct SshXtermSurface {
     this.pageFinished = true;
     this.logLifecycle('page end ready=' + (this.pageReady ? '1' : '0') + ' key=' + this.coreKey);
     this.registerBridge();
+    this.installWebMessagePort();
     // A late registration normally needs one reload to expose the proxy to
     // the document. If the document already delivered pageReady, the proxy
     // is active and reloading would only add cold-start latency.
@@ -848,6 +1037,7 @@ export struct SshXtermSurface {
     if (this.documentReloadPending && this.reloadRequestedDocumentKey === requestedDocumentKey) {
       return;
     }
+    this.detachWebMessagePort();
     const lifecycleToken: number = ++this.lifecycleToken;
     this.clearBridgeRetry();
     if (this.outputPumpRetryTimer !== -1) {
@@ -973,6 +1163,26 @@ export struct SshXtermSurface {
     }
     this.inFlightWrites = batch;
     this.inFlightOutputBuffer = this.pendingOutputBuffer ?? this.outputBuffer;
+    if (this.webMessagePortReady && this.webMessageChannel.isReady()) {
+      const payload: string = JSON.stringify({ batchSequence: batchSequence, values: batch });
+      this.scheduleOutputBatchAckTimeout(lifecycleToken, batchSequence);
+      const accepted: boolean = this.webMessageChannel.send('output', payload);
+      if (accepted) { return; }
+      // A bounded transport queue may reject a burst. Preserve the same
+      // xterm FIFO and let the mature proxy path retry without dropping the
+      // frame or changing the session identity.
+      if (!this.outputPumpRunning || this.awaitingOutputBatch !== batchSequence) { return; }
+      this.clearOutputBatchAckTimer();
+      this.inFlightWrites = [];
+      this.inFlightOutputBuffer = null;
+      this.awaitingOutputBatch = 0;
+      for (let index: number = batch.length - 1; index >= 0; index--) {
+        this.pendingWrites.unshift(batch[index]);
+      }
+      this.outputPumpRunning = false;
+      this.scheduleOutputPumpRetry(lifecycleToken);
+      return;
+    }
     const script: string = 'window.__sshXtermWriteBatch(' + JSON.stringify(batch) + ', ' +
       batchSequence.toString() + ');';
     try {
@@ -1022,6 +1232,9 @@ export struct SshXtermSurface {
 
   private onCoreKeyChange(): void {
     if (this.disposed) { return; }
+    if (this.webMessagePortConnected || this.webMessagePortInstallAttempted) {
+      this.detachWebMessagePort();
+    }
     if (!this.active) {
       this.pendingCoreKeyReload = true;
       return;
@@ -1039,6 +1252,9 @@ export struct SshXtermSurface {
 
   private onRenderRevisionChange(): void {
     if (this.disposed) { return; }
+    if (this.webMessagePortConnected || this.webMessagePortInstallAttempted) {
+      this.detachWebMessagePort();
+    }
     if (!this.active) {
       this.pendingCoreKeyReload = true;
       return;

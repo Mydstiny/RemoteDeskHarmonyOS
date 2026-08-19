@@ -36,9 +36,10 @@ export default function sshWebMessagePortChannelTest(): void {
       const port = new MockWebMessagePort();
       const channel = new SshWebMessagePortChannel();
       let ready: boolean = false;
+      let envelopes: number = 0;
       expect(channel.attach(port, 'host:session', 2, {
         onReady: (): void => { ready = true; },
-        onEnvelope: (_envelope: SshWebMessageEnvelopeV1): void => {},
+        onEnvelope: (_envelope: SshWebMessageEnvelopeV1): void => { envelopes++; },
         onError: (_code: string): void => {}
       })).assertTrue();
       expect(port.sent.length).assertEqual(1);
@@ -52,6 +53,11 @@ export default function sshWebMessagePortChannelTest(): void {
       expect(channel.isReady()).assertTrue();
       expect(channel.send('output', 'hello')).assertTrue();
       expect(port.sent.length >= 3).assertTrue();
+      port.deliver({
+        version: 1, kind: 'ack', sessionKey: 'host:session', generation: 2,
+        sequence: 2, ackSequence: 3, payload: '{"batchSequence":1}'
+      });
+      expect(envelopes).assertEqual(1);
     });
 
     it('should_close_and_fail_closed_on_stale_generation', 0, (): void => {

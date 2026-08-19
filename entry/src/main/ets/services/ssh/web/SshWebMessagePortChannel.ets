@@ -136,9 +136,15 @@ export class SshWebMessagePortChannel {
     } else if (envelope.kind === 'close') {
       this.detach();
       return;
-    } else if (envelope.kind !== 'ack') {
+    } else {
+      // ACK envelopes carry the application-level batch identity in their
+      // payload. They still need to reach the owner after the policy has
+      // applied the transport ackSequence, otherwise a native output pump
+      // cannot release its xterm frame fence.
       this.callbacks.onEnvelope(envelope);
-      this.send('ack', '');
+      if (envelope.kind !== 'ack') {
+        this.send('ack', '');
+      }
     }
     this.pump();
   }

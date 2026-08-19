@@ -127,7 +127,7 @@ function validAckSequence(sequence: number): boolean {
   return Number.isFinite(sequence) && Math.floor(sequence) >= 0;
 }
 
-function allowedKind(kind: string): kind is SshWebMessageKind {
+function allowedKind(kind: string): boolean {
   switch (kind) {
     case 'hello':
     case 'hello_ack':
@@ -349,7 +349,7 @@ export function decodeSshWebMessage(encoded: string): SshWebMessageEnvelopeV1 | 
       !validAckSequence(ackSequence) || payload.length > SSH_WEB_MESSAGE_MAX_FRAME_CHARS) {
       return null;
     }
-    return { version, kind, sessionKey, generation, sequence, ackSequence, payload };
+    return { version, kind: kind as SshWebMessageKind, sessionKey, generation, sequence, ackSequence, payload };
   } catch (_err) {
     return null;
   }

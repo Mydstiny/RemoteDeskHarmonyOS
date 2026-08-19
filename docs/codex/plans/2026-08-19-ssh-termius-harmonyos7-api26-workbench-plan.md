@@ -6,7 +6,7 @@
 > 编制基线：`348b28083`（`codex/moonlight-complete-upgrade`）
 > 当前系统：HarmonyOS 6.1 / API 23；本机另有 DevEco 内置 API 24 SDK
 
-> 执行指针（2026-08-20）：M0–M6 已在 SSH 范围内落地并通过双 Hvigor 门禁；M7 首个可运行增量已提交为 `66ded2ce6`（目标策略、红色广播 Sheet、16 会话上限、session/generation 重验、认证/raw/fullscreen 排除、危险/多行二次确认、Esc×2 停止及策略测试）；M8 已提交为 `7bb90ab6d`（版本化 WebMessagePort 信封、握手/generation/序列 ACK、优先级队列/背压策略）与 `9d630d1a2`（结构化端口通道适配器及测试）。当前 xterm 仍保持既有 runJavaScript 双栈，通道默认不接入，等待 API 26 SDK/真机证据后再迁移。API 26 SDK 仍未安装，因此 API 26-only UI Design Kit/Material 只能保持候选与兼容降级，不能宣称 API 26 完成。
+> 执行指针（2026-08-20）：M0–M6 已在 SSH 范围内落地并通过双 Hvigor 门禁；M7 首个可运行增量已提交为 `66ded2ce6`（目标策略、红色广播 Sheet、16 会话上限、session/generation 重验、认证/raw/fullscreen 排除、危险/多行二次确认、Esc×2 停止及策略测试）；M8 已提交为 `7bb90ab6d`（版本化 WebMessagePort 信封、握手/generation/序列 ACK、优先级队列/背压策略）、`9d630d1a2`（结构化端口通道适配器及测试）及当前增量（SshXtermSurface/rawfile 的 API 23+ WebMessagePort 双栈接线、输出批次 ACK、输入/resize、生命周期与 generation 退回 JS proxy）。端口仍由 `webMessageBridgeEnabled=false` 默认关闭；当前使用白名单 JSON 字符串帧，ArrayBuffer 批量和默认放量等待 API 26 SDK/真机证据。API 26 SDK 仍未安装，因此 API 26-only UI Design Kit/Material 只能保持候选与兼容降级，不能宣称 API 26 完成。
 > 目标系统：HarmonyOS 7 / API 26；官方当前公开资料为 26.0.0 Beta2，本机尚未安装 API 26 SDK
 > 实施分支：`codex/moonlight-complete-upgrade`（SSH 变更按独立路径和提交隔离；不触碰现有 Moonlight/VNC 脏改）
 > 范围：独立推进 SSH 终端工作台、SFTP 工作流、会话生产力与 HarmonyOS 7 / API 26 原生体验
@@ -1122,7 +1122,8 @@ entry/src/main/ets/services/ssh/workspace/
 交付：
 
 - versioned envelope、握手、sequence、ack/backpressure。
-- output ArrayBuffer batching；控制消息优先队列。
+- 已接入 xterm 的 output JSON batching、应用层 ACK、输入/resize 与 native/page generation fence；控制消息继续沿用优先队列。
+- output ArrayBuffer batching 保留为 API 26 设备矩阵通过后的优化，不在当前 API 23 默认路径启用。
 - reload/dispose/generation fencing。
 - 当前 JS proxy/runJavaScript 双栈与按设备回退。
 

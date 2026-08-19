@@ -70,6 +70,12 @@
         pendingWrites: [],
         readyNotified: false,
         readyRetryCount: 0,
+        webMessagePort: null,
+        webMessageSessionKey: '',
+        webMessageGeneration: 0,
+        webMessageNextSequence: 1,
+        webMessageLastReceivedSequence: 0,
+        webMessageReady: false,
         fitTimer: 0,
         fitGeneration: 0,
         config: {
@@ -106,6 +112,157 @@
           try { console.warn('ssh bridge ' + method + ' failed', error); } catch (_) {}
         }
         return false;
+      }
+
+      // API 23+ ArkWeb exposes a transferable WebMessagePort. Keep the page
+      // endpoint deliberately small and string-only: the native policy owns
+      // identity, sequence, queue and generation validation while this side
+      // only accepts the port transferred by the current document.
+      function allowedWebMessageKind(kind) {
+        return ['hello', 'hello_ack', 'ready', 'output', 'input', 'resize',
+          'search', 'ack', 'error', 'close'].indexOf(kind) >= 0;
+      }
+
+      function validWebMessageIdentity(sessionKey, generation) {
+        return typeof sessionKey === 'string' && sessionKey.length > 0 &&
+          isFinite(Number(generation)) && Math.floor(Number(generation)) > 0;
+      }
+
+      function decodeWebMessage(raw) {
+        if (typeof raw !== 'string' || raw.length === 0 || raw.length > 131072) return null;
+        try {
+          var parsed = JSON.parse(raw);
+          if (!parsed || Number(parsed.version) !== 1 || !allowedWebMessageKind(parsed.kind) ||
+              !validWebMessageIdentity(String(parsed.sessionKey || ''), parsed.generation) ||
+              !isFinite(Number(parsed.sequence)) || Math.floor(Number(parsed.sequence)) <= 0 ||
+              !isFinite(Number(parsed.ackSequence)) || Math.floor(Number(parsed.ackSequence)) < 0) {
+            return null;
+          }
+          var payload = parsed.payload === undefined || parsed.payload === null ? '' : String(parsed.payload);
+          if (payload.length > 65536) return null;
+          return {
+            version: 1,
+            kind: String(parsed.kind),
+            sessionKey: String(parsed.sessionKey),
+            generation: Math.floor(Number(parsed.generation)),
+            sequence: Math.floor(Number(parsed.sequence)),
+            ackSequence: Math.floor(Number(parsed.ackSequence)),
+            payload: payload
+          };
+        } catch (_) {
+          return null;
+        }
+      }
+
+      function sendWebMessage(kind, payload, allowOpening) {
+        var port = state.webMessagePort;
+        if (!port || !validWebMessageIdentity(state.webMessageSessionKey,
+            state.webMessageGeneration) || (!state.webMessageReady && !allowOpening)) {
+          return false;
+        }
+        var text = payload === undefined || payload === null ? '' : String(payload);
+        if (text.length > 65536 || !allowedWebMessageKind(kind)) return false;
+        var envelope = {
+          version: 1,
+          kind: kind,
+          sessionKey: state.webMessageSessionKey,
+          generation: state.webMessageGeneration,
+          sequence: state.webMessageNextSequence++,
+          ackSequence: state.webMessageLastReceivedSequence,
+          payload: text
+        };
+        try {
+          port.postMessage(JSON.stringify(envelope));
+          return true;
+        } catch (error) {
+          try { console.warn('ssh web message post failed', error); } catch (_) {}
+          state.webMessageReady = false;
+          try { port.close(); } catch (_) {}
+          state.webMessagePort = null;
+          return false;
+        }
+      }
+
+      function acceptWebMessage(envelope) {
+        if (!envelope || !state.webMessagePort ||
+            envelope.sessionKey !== state.webMessageSessionKey ||
+            envelope.generation !== state.webMessageGeneration ||
+            envelope.sequence <= state.webMessageLastReceivedSequence) {
+          return false;
+        }
+        state.webMessageLastReceivedSequence = envelope.sequence;
+        return true;
+      }
+
+      function handleWebMessage(raw) {
+        var envelope = decodeWebMessage(raw);
+        if (!envelope) return;
+        if (envelope.kind === 'hello') {
+          if (state.webMessagePort && state.webMessageSessionKey &&
+              (envelope.sessionKey !== state.webMessageSessionKey ||
+               envelope.generation !== state.webMessageGeneration)) return;
+          state.webMessageSessionKey = envelope.sessionKey;
+          state.webMessageGeneration = envelope.generation;
+          state.webMessageNextSequence = 1;
+          state.webMessageLastReceivedSequence = envelope.sequence;
+          state.webMessageReady = false;
+          sendWebMessage('hello_ack', '', true);
+          return;
+        }
+        if (!acceptWebMessage(envelope)) return;
+        if (envelope.kind === 'ready') {
+          state.webMessageReady = true;
+          sendWebMessage('ack', JSON.stringify({ ready: true }), false);
+          return;
+        }
+        if (envelope.kind === 'close' || envelope.kind === 'error') {
+          state.webMessageReady = false;
+          try { state.webMessagePort.close(); } catch (_) {}
+          state.webMessagePort = null;
+          return;
+        }
+        if (!state.webMessageReady) return;
+        if (envelope.kind === 'output') {
+          try {
+            var output = JSON.parse(envelope.payload);
+            var batchSequence = Math.floor(Number(output && output.batchSequence));
+            var values = output && output.values;
+            if (!Array.isArray(values) || !isFinite(batchSequence) || batchSequence <= 0 ||
+                typeof window.__sshXtermWriteBatch !== 'function') return;
+            window.__sshXtermWriteBatch(values, batchSequence, true);
+          } catch (_) {}
+          return;
+        }
+      }
+
+      window.addEventListener('message', function (event) {
+        var ports = event && event.ports;
+        if (!ports || !ports.length || state.webMessagePort) return;
+        var port = ports[0];
+        if (!port || typeof port.postMessage !== 'function') return;
+        state.webMessagePort = port;
+        state.webMessageReady = false;
+        try {
+          port.onmessage = function (messageEvent) {
+            handleWebMessage(messageEvent && messageEvent.data);
+          };
+          if (typeof port.start === 'function') port.start();
+        } catch (_) {
+          state.webMessagePort = null;
+        }
+      });
+
+      function terminalInput(data) {
+        if (!sendWebMessage('input', data, false)) {
+          bridgeCall('onInput', [data]);
+        }
+      }
+
+      function terminalResize(cols, rows) {
+        var payload = JSON.stringify({ cols: Number(cols), rows: Number(rows) });
+        if (!sendWebMessage('resize', payload, false)) {
+          bridgeCall('onResize', [Number(cols), Number(rows)]);
+        }
       }
 
       function notifyReady() {
@@ -428,10 +585,10 @@
           // Keep xterm's DOM renderer as the stable device path. CanvasAddon
           // can leave ArkWeb with only a cursor after a GPU surface loss.
           terminal.onData(function (data) {
-            bridgeCall('onInput', [data]);
+            terminalInput(data);
           });
           terminal.onResize(function (size) {
-            bridgeCall('onResize', [Number(size.cols), Number(size.rows)]);
+            terminalResize(Number(size.cols), Number(size.rows));
           });
           terminal.onRender(function () {
             alignSparseContent();
@@ -501,10 +658,15 @@
         try { state.terminal.write(text); } catch (_) {}
       };
 
-      window.__sshXtermWriteBatch = function (values, batchSequence) {
+      window.__sshXtermWriteBatch = function (values, batchSequence, portMode) {
         var sequence = Number(batchSequence) || 0;
         if (!Array.isArray(values)) {
-          bridgeCall('onFrameError', [sequence, 0]);
+          if (portMode === true) {
+            sendWebMessage('error', JSON.stringify({ batchSequence: sequence,
+              consumedCount: 0 }), false);
+          } else {
+            bridgeCall('onFrameError', [sequence, 0]);
+          }
           return;
         }
         var texts = [];
@@ -516,11 +678,20 @@
           // The parent still owns this batch. Queueing it in an untracked
           // document and ACKing here would lose it if the document reloads
           // before xterm boots.
-          bridgeCall('onFrameError', [sequence, 0]);
+          if (portMode === true) {
+            sendWebMessage('error', JSON.stringify({ batchSequence: sequence,
+              consumedCount: 0 }), false);
+          } else {
+            bridgeCall('onFrameError', [sequence, 0]);
+          }
           return;
         }
         if (texts.length === 0) {
-          bridgeCall('onFrame', [sequence]);
+          if (portMode === true) {
+            sendWebMessage('ack', JSON.stringify({ batchSequence: sequence }), false);
+          } else {
+            bridgeCall('onFrame', [sequence]);
+          }
           return;
         }
         var completed = false;
@@ -529,7 +700,11 @@
           completed = true;
           refreshTerminal();
           alignSparseContent();
-          bridgeCall('onFrame', [sequence]);
+          if (portMode === true) {
+            sendWebMessage('ack', JSON.stringify({ batchSequence: sequence }), false);
+          } else {
+            bridgeCall('onFrame', [sequence]);
+          }
         }
         var nextIndex = 0;
         function failBatch() {
@@ -540,7 +715,12 @@
           // document, preserving the global SSH FIFO without reordering it.
           refreshTerminal();
           alignSparseContent();
-          bridgeCall('onFrameError', [sequence, nextIndex]);
+          if (portMode === true) {
+            sendWebMessage('error', JSON.stringify({ batchSequence: sequence,
+              consumedCount: nextIndex }), false);
+          } else {
+            bridgeCall('onFrameError', [sequence, nextIndex]);
+          }
         }
         function writeNext() {
           if (completed) return;
