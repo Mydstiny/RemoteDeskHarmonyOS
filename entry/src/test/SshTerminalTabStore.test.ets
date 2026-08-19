@@ -69,6 +69,21 @@ export default function sshTerminalTabStoreTest(): void {
       expect(store.views()[0].state).assertEqual('error');
     });
 
+    it('should_clear_startup_fence_when_update_publishes_new_generation', 0, (): void => {
+      const store: SshTerminalTabStore = new SshTerminalTabStore();
+      store.open('host-a', 'A', 'root@a:22');
+      store.update('host-a', 'connected', 101, '', 9);
+      const oldKey: string = 'host-a:101:9';
+      store.markStartupExecutionKey(oldKey);
+      expect(store.hasStartupExecutionKey(oldKey)).assertTrue();
+
+      store.update('host-a', 'connected', 101, '', 10);
+
+      expect(store.sessionId('host-a')).assertEqual(101);
+      expect(store.sessionGeneration('host-a')).assertEqual(10);
+      expect(store.hasStartupExecutionKey(oldKey)).assertFalse();
+    });
+
     it('should_keep_startup_fence_across_page_rebind_until_session_replacement', 0, (): void => {
       const store: SshTerminalTabStore = new SshTerminalTabStore();
       store.open('host-a', 'A', 'root@a:22');

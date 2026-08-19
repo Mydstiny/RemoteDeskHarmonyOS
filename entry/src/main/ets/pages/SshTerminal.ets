@@ -964,6 +964,11 @@ struct SshTerminal {
   private terminalInputOrderedPendingBytes: number = 0;
   private terminalInputOrder: number = 0;
   private sshSessionGeneration: number = 0;
+  /** Generation currently captured by the page-owned native data callback. */
+  private sshDataCallbackGeneration: number = 0;
+  /** Coalesces callback-observed native recovery into one ArkTS rebind turn. */
+  private sshGenerationRebindTimer: number = -1;
+  private sshGenerationRebindEpoch: number = 0;
   /** Invalidates connect/dialog/callback continuations when the page is rebuilt. */
   private pageGeneration: number = 0;
   /** Invalidates async SSH work when the visible host changes in-place. */
@@ -2478,6 +2483,8 @@ struct SshTerminal {
     const previousSessionGeneration: number = this.sshSessionGeneration;
     const bindingGeneration: number = previousBindingGeneration + 1;
     this.sshBindingGeneration = bindingGeneration;
+    this.clearSshGenerationRebind();
+    this.sshDataCallbackGeneration = 0;
 
     // Preflight credentials are page-local, but their trust is host-specific.
     // Clear the previous host's binding before opening a different tab so its
@@ -4944,6 +4951,7 @@ struct SshTerminal {
         this.clearTerminalOutputQueue();
         if (requestSessionId > 0) {
           try { this.loader.setOnDataCallback(requestSessionId, null); } catch (_e) { /* best effort */ }
+          if (requestSessionId === this.sessionId) { this.sshDataCallbackGeneration = 0; }
         }
         this.loader.disconnect();
         this.stopLatencyProbe();
@@ -8685,6 +8693,8 @@ struct SshTerminal {
     this.clearTerminalInputFocusRetry();
     this.clearTerminalZoomIndicatorTimer();
     this.terminalZoomIndicatorVisible = false;
+    this.clearSshGenerationRebind();
+    this.sshDataCallbackGeneration = 0;
     ++this.pageGeneration;
     ++this.sshBindingGeneration;
     this.terminalClosing = true;
@@ -9199,6 +9209,45 @@ struct SshTerminal {
     return '断开';
   }
 
+  private clearSshGenerationRebind(): void {
+    ++this.sshGenerationRebindEpoch;
+    if (this.sshGenerationRebindTimer !== -1) {
+      clearTimeout(this.sshGenerationRebindTimer);
+      this.sshGenerationRebindTimer = -1;
+    }
+  }
+
+  /**
+   * A native transport recovery can advance its generation before the next
+   * five-second latency probe. The old callback must not silently discard all
+   * output until that probe runs; schedule one guarded state-sync turn so the
+   * tab identity and callback are rebound at the same boundary.
+   */
+  private scheduleSshGenerationRebind(pageGeneration: number, bindingGeneration: number,
+    bindingHostId: string, connectedSessionId: number, observedGeneration: number): void {
+    if (this.sshGenerationRebindTimer !== -1 || observedGeneration <= 0) { return; }
+    const epoch: number = this.sshGenerationRebindEpoch;
+    this.sshGenerationRebindTimer = setTimeout((): void => {
+      this.sshGenerationRebindTimer = -1;
+      if (epoch !== this.sshGenerationRebindEpoch || this.terminalClosing ||
+        !this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId) ||
+        this.sessionId !== connectedSessionId) {
+        return;
+      }
+      const liveGeneration: number = this.loader.getSshTerminalDiagnostics(
+        connectedSessionId).sessionGeneration;
+      if (liveGeneration <= 0) { return; }
+      if (this.sshSessionGeneration !== liveGeneration ||
+        this.sshDataCallbackGeneration !== liveGeneration ||
+        this.sshTabStore.sessionId(bindingHostId) !== connectedSessionId ||
+        this.sshTabStore.sessionGeneration(bindingHostId) !== liveGeneration) {
+        hilog.info(0x0001, 'SshTerminal', '[ssh] callback observed recovery generation=' +
+          liveGeneration.toString() + ' rebinding');
+        this.syncNativeConnectionState();
+      }
+    }, 0);
+  }
+
   private syncNativeConnectionState(): boolean {
     if (this.sessionId <= 0) { return false; }
     const state: number = this.loader.getConnectionState(this.sessionId);
@@ -9223,17 +9272,21 @@ struct SshTerminal {
         const previousGeneration: number = this.sshSessionGeneration;
         const generationRebound: boolean = previousGeneration > 0 &&
           previousGeneration !== generation;
+        const callbackNeedsRebind: boolean = this.sshDataCallbackGeneration !== generation;
         if (generationRebound) {
           // Treat same-session transport recovery as a new callback owner.
           // Clear the old callback before publishing the new tab identity so
           // no late native chunk can cross the generation fence.
-          this.loader.setOnDataCallback(this.sessionId, null);
           this.discardSshProductivityHostRuntime(this.hostId);
           this.sshTabStore.clearStartupExecutionKeysForHost(this.hostId);
         }
+        if (generationRebound || callbackNeedsRebind) {
+          this.loader.setOnDataCallback(this.sessionId, null);
+          this.sshDataCallbackGeneration = 0;
+        }
         this.sshSessionGeneration = generation;
         this.sshTabStore.update(this.hostId, 'connected', this.sessionId, '', generation);
-        if (generationRebound && this.isSshBindingActive(
+        if ((generationRebound || callbackNeedsRebind) && this.isSshBindingActive(
           this.pageGeneration, this.sshBindingGeneration, this.hostId)) {
           this.bindSshDataCallback(this.pageGeneration, this.sshBindingGeneration,
             this.hostId, this.sessionId, generation);
@@ -9586,6 +9639,8 @@ struct SshTerminal {
       this.sessionId = -1;
       return false;
     }
+    this.clearSshGenerationRebind();
+    this.sshDataCallbackGeneration = 0;
     this.bindSshDataCallback(pageGeneration, bindingGeneration, bindingHostId,
       connectedSessionId, sessionGeneration);
     if (!this.loader.resumeSshSession(connectedSessionId)) {
@@ -9681,6 +9736,7 @@ struct SshTerminal {
   private bindSshDataCallback(pageGeneration: number, bindingGeneration: number,
     bindingHostId: string, connectedSessionId: number, sessionGeneration: number): void {
     let dataChunkCount: number = 0;
+    this.sshDataCallbackGeneration = sessionGeneration;
     this.loader.setOnDataCallback(connectedSessionId, (data: ArrayBuffer): void => {
       if (!data || data.byteLength === 0 || !this.isPageGenerationActive(pageGeneration) ||
         this.terminalClosing) { return; }
@@ -9691,6 +9747,8 @@ struct SshTerminal {
       // commit the new generation; never route a late old callback through a
       // newly published tab identity.
       if (nativeCallbackGeneration > 0 && nativeCallbackGeneration !== sessionGeneration) {
+        this.scheduleSshGenerationRebind(pageGeneration, bindingGeneration, bindingHostId,
+          connectedSessionId, nativeCallbackGeneration);
         return;
       }
       const currentBinding: boolean = this.isSshBindingActive(
@@ -9753,6 +9811,8 @@ struct SshTerminal {
     const pageGeneration: number = this.pageGeneration;
     const bindingHostId: string = this.hostId;
     const bindingGeneration: number = ++this.sshBindingGeneration;
+    this.clearSshGenerationRebind();
+    this.sshDataCallbackGeneration = 0;
     const host: RemoteHost | undefined = this.srv.getHost(this.hostId);
     if (!host) {
       this.connectionError = '主机记录不存在';
