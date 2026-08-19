@@ -76,8 +76,15 @@ export default function sshWebMessagePortPolicyTest(): void {
       const next = dequeueSshWebMessage(second.state);
       expect(next.envelope === null).assertFalse();
       expect((next.envelope as SshWebMessageEnvelopeV1).kind).assertEqual('resize');
+      expect((next.envelope as SshWebMessageEnvelopeV1).sequence).assertEqual(2);
       state = next.state;
       expect(state.inFlight.length).assertEqual(1);
+      state = acknowledgeSshWebMessage(state, 2);
+      expect(state.queue.length).assertEqual(1);
+      const output = dequeueSshWebMessage(state);
+      expect(output.envelope === null).assertFalse();
+      expect((output.envelope as SshWebMessageEnvelopeV1).kind).assertEqual('output');
+      expect((output.envelope as SshWebMessageEnvelopeV1).sequence).assertEqual(3);
     });
 
     it('should_ack_bytes_and_reject_duplicate_sequences', 0, (): void => {

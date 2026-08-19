@@ -185,13 +185,13 @@ function utf8ByteLength(value: string): number {
 }
 
 function makeEnvelope(state: SshWebMessageStateV1, kind: SshWebMessageKind,
-  payload: string): SshWebMessageEnvelopeV1 {
+  payload: string, sequence: number): SshWebMessageEnvelopeV1 {
   return {
     version: SSH_WEB_MESSAGE_VERSION,
     kind,
     sessionKey: state.sessionKey,
     generation: state.generation,
-    sequence: state.nextSequence,
+    sequence,
     ackSequence: state.lastReceivedSequence,
     payload
   };
@@ -225,7 +225,7 @@ export function startSshWebMessageHandshake(state: SshWebMessageStateV1):
   }
   if (next.phase !== 'closed') { return result(next, 'not_ready'); }
   next.phase = 'opening';
-  const envelope: SshWebMessageEnvelopeV1 = makeEnvelope(next, 'hello', '');
+  const envelope: SshWebMessageEnvelopeV1 = makeEnvelope(next, 'hello', '', next.nextSequence);
   next.nextSequence++;
   next.queue.push({ envelope, bytes: envelopeBytes(envelope) });
   next.bufferedBytes += envelopeBytes(envelope);
@@ -262,8 +262,9 @@ export function enqueueSshWebMessage(state: SshWebMessageStateV1,
     next.bufferedBytes + payloadBytes > SSH_WEB_MESSAGE_MAX_QUEUE_BYTES) {
     return result(next, 'queue_full');
   }
-  const envelope: SshWebMessageEnvelopeV1 = makeEnvelope(next, kind, payload);
-  next.nextSequence++;
+  // Allocate the wire sequence when dequeued. This preserves monotonic wire
+  // order while allowing control frames to jump ahead of queued output.
+  const envelope: SshWebMessageEnvelopeV1 = makeEnvelope(next, kind, payload, 0);
   next.queue.push({ envelope, bytes: payloadBytes });
   next.bufferedBytes += payloadBytes;
   return result(next, 'ok', envelope);
@@ -285,8 +286,25 @@ export function dequeueSshWebMessage(state: SshWebMessageStateV1): SshWebMessage
   }
   if (selectedIndex < 0) { return { state: next, envelope: null }; }
   const item: SshWebMessageQueueItemV1 = next.queue[selectedIndex];
-  next.inFlight.push(item.envelope.sequence);
-  return { state: next, envelope: item.envelope };
+  let envelope: SshWebMessageEnvelopeV1 = item.envelope;
+  if (envelope.sequence === 0) {
+    if (!validSequence(next.nextSequence)) {
+      return { state: next, envelope: null };
+    }
+    envelope = {
+      version: envelope.version,
+      kind: envelope.kind,
+      sessionKey: envelope.sessionKey,
+      generation: envelope.generation,
+      sequence: next.nextSequence,
+      ackSequence: next.lastReceivedSequence,
+      payload: envelope.payload
+    };
+    next.nextSequence++;
+    next.queue[selectedIndex] = { envelope, bytes: item.bytes };
+  }
+  next.inFlight.push(envelope.sequence);
+  return { state: next, envelope };
 }
 
 export function acknowledgeSshWebMessage(state: SshWebMessageStateV1,
@@ -299,7 +317,7 @@ export function acknowledgeSshWebMessage(state: SshWebMessageStateV1,
   let removedBytes: number = 0;
   for (let index: number = 0; index < next.queue.length; index++) {
     const item: SshWebMessageQueueItemV1 = next.queue[index];
-    if (item.envelope.sequence <= sequence) {
+    if (item.envelope.sequence > 0 && item.envelope.sequence <= sequence) {
       removedBytes += item.bytes;
     } else {
       retained.push(item);

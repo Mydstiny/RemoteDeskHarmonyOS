@@ -8,6 +8,7 @@ import {
   markSshWebMessageClosed,
   startSshWebMessageHandshake,
   SSH_WEB_MESSAGE_MAX_IN_FLIGHT,
+  SshWebMessageDequeueResultV1,
   SshWebMessageEnvelopeV1,
   SshWebMessageKind,
   SshWebMessageStateV1
@@ -55,7 +56,14 @@ export class SshWebMessagePortChannel {
       this.port.onMessageEvent((message: string | ArrayBuffer): void => {
         this.receive(message, port, attachmentToken);
       });
-      this.postEnvelope(handshake.envelope);
+      const first: SshWebMessageDequeueResultV1 = dequeueSshWebMessage(this.state);
+      this.state = first.state;
+      if (first.envelope === null) {
+        this.callbacks.onError('port_attach_failed');
+        this.detach();
+        return false;
+      }
+      this.postEnvelope(first.envelope);
       return true;
     } catch (_err) {
       this.callbacks.onError('port_attach_failed');
