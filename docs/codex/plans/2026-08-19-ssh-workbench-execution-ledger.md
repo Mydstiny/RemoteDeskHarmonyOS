@@ -32,6 +32,7 @@
 - 同一回归还验证了窗口生命周期：鉴权前仍停留在 HostList，鉴权成功后才出现独立窗口；终端 `echo SSH_WINDOW_OK` 回显正常；系统标题栏最大化、F11 进入/退出沉浸全屏均恢复稳定；标题栏拖到左边缘由 HarmonyOS WMS 进入左右分屏。此前 HDC 任务栏/WMS 证据已证明主窗口与两个独立 SSH 窗口可并存并可切换焦点。
 - 2026-08-20 追加 API23 PC 回环复验：Host Key 已验证后继续原有 ED25519 公钥鉴权，sshd 日志再次确认 `Accepted publickey`；HDC 键盘输入 `echo SSH_API23_E2E_OK` 回显成功；启用标准 `internal-sftp` 后 SFTP 目录读取成功（47 项）；独立窗口最小化时主窗口仍在前台，系统最近任务同时展示 SSH 窗口与 HostList，恢复 SSH 窗口后 `RemoteSessionAbility` 回到前台且终端提示符和连接仍在。临时 sshd、密钥和 HDC 映射均已清理。
 - 2026-08-20 追加 API23 PC 密码鉴权失败回归：故意使用错误密码，保留既有 Host Key 确认和原生认证顺序；sshd 记录 `Failed password`，应用日志记录 `sessionId=-31` 与 `independent SSH carrier released after authentication failure`。HDC 层级和截图确认主页面回到 `连接失败 (code=-31)`，提供“重试/返回”，没有创建 `RemoteSessionAbility`，系统任务仅保留主 `EntryAbility`；临时 sshd、密钥目录和 HDC 映射已清理。
+- 2026-08-20 追加 API23 Phone SSH 入口回归：主机列表打开“添加远程主机”后，协议选择包含 SSH，进入 SSH 表单可见名称、地址、端口、用户名和路由入口；未提交临时数据，系统返回后回到主机列表。当前证据为 `/private/tmp/ssh-phone-current-api23.json`（`44a37cf179ac72d3fea1c7dc1ffc10ac60b39f6c2e3deab6cdca8b39bad5af2c`）、`/private/tmp/ssh-phone-current-api23.png`（`1c2fdcff59ec30c0da9c954fac3d987015d76ba123d608735e6b6cc527b82664`）以及返回后的 `/private/tmp/ssh-phone-after-back-api23.json`（`5c0eb16f4e0d1d62de1c683ea8d14619e73ce448257750aa5a1087c8e607e086`）、`/private/tmp/ssh-phone-after-back-api23.png`（`1ba42c8347068d9b2288f1f6df401791baf4c6bb1f194581cb4d2ddf25a78c37`）。
 - 仍未宣称完成：API 26 SDK/目标设备、物理设备验收、SFTP 暂停/恢复/取消/重试全矩阵、后台/PiP、API26 下的沉浸/分屏差异、密码/KBI/MFA 成功/取消/失败全矩阵以及多主机/全协议并行矩阵。
 
 ## 2. 当前工作树隔离
@@ -268,3 +269,5 @@ M0 action 只修改纯快照：创建/重命名工作区、打开占位 tab、�
 hvigorw --mode module -p module=entry -p product=default default@OhosTestCompileArkTS --analyze=normal --parallel --incremental --no-daemon
 hvigorw --mode module -p module=entry -p product=default assembleHap --analyze=normal --parallel --incremental --no-daemon
 ```
+
+手机入口证据补录后的同一双门禁于 2026-08-20 重新执行：`default@OhosTestCompileArkTS` exit 0（`BUILD SUCCESSFUL in 6 s 49 ms`），`assembleHap` exit 0（`BUILD SUCCESSFUL in 7 s 504 ms`）；仅有既有 ArkTS 弃用/依赖资源告警，无编译错误。
