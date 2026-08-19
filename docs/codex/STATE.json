@@ -12,7 +12,7 @@
     "A reachable real Sunshine host is required for pair/catalog/launch/first-frame/stop receipts",
     "Physical-controller and user ARM64 device receipts remain external acceptance evidence",
     "ohosTest task 00306054 remains unregistered; focused ArkTS cases compile but are not claimed as device Hypium PASS",
-    "Final HDC/UI acceptance must use the new revision-1 cloud-enabled package"
+    "Fresh UI and full-function acceptance must use the installed revision-1 cloud-enabled package"
   ],
   "planPaths": [
     "docs/superpowers/plans/2026-07-28-moonlight-harmonyos-complete-upgrade-plan.md",
@@ -55,7 +55,7 @@
     "assembleHap": "pass: exact revision-1 assembleHap on the same clean staged-index tree; signed HAP SHA-256 4b239974cd8c46377ff17b7dfa0a85dab571e6667df7cccb8686e16428dc657c",
     "hapPath": "entry/build/default/outputs/default/entry-default-signed.hap",
     "nativeTests": "pass outside the socket-restricted sandbox: 780 passed, 0 failed; Moonlight and adjacent-protocol fixtures all passed",
-    "hdcRuntime": "exact checkpoint package prepared for user-led comprehensive testing; final cloud-enabled runtime acceptance remains pending",
+    "hdcRuntime": "revision-1 HAP installed and EntryAbility started successfully on phone simulator 127.0.0.1:5555 and PC simulator 127.0.0.1:5557; full acceptance remains pending",
     "uiAcceptance": "PC Moonlight duplicate add button removed in favor of the shared bottom FAB; final acceptance must use fresh screenshots from the cloud-enabled package",
     "cloudBoundary": "compatibility-first: core eight registered first; optional ninth table gated by deployment receipt; per-record Moonlight quarantine cannot block old tables",
     "isolation": "dual-ABI ELF pass: GameControllerKit remains Moonlight-session dynamic only with no DT_NEEDED or unresolved OH_Game symbols; optional cloud table remains additive and outside the core-eight baseline",

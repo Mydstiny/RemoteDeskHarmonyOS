@@ -18,7 +18,7 @@ Updated: 2026-08-19 Asia/Shanghai
 - Exact compile and assemble pass on a clean staged-index export; signed HAP SHA-256 is `4b239974cd8c46377ff17b7dfa0a85dab571e6667df7cccb8686e16428dc657c`. Host native outside the restricted sandbox is `780/780` PASS; dual-ABI GameControllerKit isolation and pinned-vendor reconstruction pass.
 - PC big-screen Moonlight now uses the same shared bottom `+` FAB as the other host categories; the duplicate top text button has been removed.
 - Shared native teardown now uses exact session/generation/owner-token/facade ownership and explicit synchronous Complete/Failed receipts. HostList preflight/2FA cancellation, timeout, error and NAPI retry retain the original immutable identity; the A→B delayed-callback regression is compile-registered and final focused review is P0/P1/P2/P3 all zero.
-- Final HDC deployment, screenshots and Sunshine/physical-controller/long-run acceptance remain deliberately deferred until cloud integration is also complete.
+- The revision-1 package is installed and started on phone simulator `127.0.0.1:5555` and PC simulator `127.0.0.1:5557`; fresh screenshots and Sunshine/physical-controller/long-run acceptance remain pending.
 
 ## Current cloud/data increment
 
@@ -35,8 +35,7 @@ Updated: 2026-08-19 Asia/Shanghai
 
 1. Deployment is confirmed and revision 1 is enabled. Test optional-nine registration while proving core-eight continuity and old-version startup/pull behavior.
 2. Complete compatibility-first cloud upload/download/delete/conflict/account-switch/crypto-reset and upgrade tests; bad Moonlight rows must be isolated rather than blocking pulls.
-3. Deploy the final cloud-enabled package for fresh PC/phone UI, Sunshine, controller and lifecycle acceptance.
-4. Run fresh PC/phone screenshots and full Sunshine/controller/lifecycle acceptance only from that package.
+3. Run fresh PC/phone screenshots and full Sunshine/controller/lifecycle acceptance only from the installed revision-1 package.
 
 ## External gates
 

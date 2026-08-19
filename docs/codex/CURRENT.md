@@ -32,7 +32,7 @@
 - Committed checkpoints: `9eadb35be`, `326f329f5`, `348b28083`, `aff7fdf03`, `2d9ce0024`.
 - The reused reviewer closed the final native receipt, immutable facade identity, HostList preflight/2FA retry and A→B anti-misdisconnect findings with P0/P1/P2/P3 all zero. Final cloud/device integration evidence remains pending after AGC deployment.
 - Device `ohosTest` remains blocked by unregistered task `00306054`; no device Hypium pass is claimed.
-- No old screenshots are reused. User-led comprehensive testing may begin with the exact checkpoint HAP; final acceptance still requires fresh PC/phone evidence after cloud enablement.
+- The exact revision-1 HAP was installed and `EntryAbility` started successfully on phone simulator `127.0.0.1:5555` and PC simulator `127.0.0.1:5557`. No old screenshots are reused; final acceptance still requires fresh PC/phone evidence from this package.
 
 ## Next and blockers
 
