@@ -167,6 +167,7 @@ import sshTabChromePolicyTest from './SshTabChromePolicy.test';
 import sshSftpWorkspacePolicyTest from './SshSftpWorkspacePolicy.test';
 import sshTransferCenterPolicyTest from './SshTransferCenterPolicy.test';
 import sshSftpTaskEnginePolicyTest from './SshSftpTaskEnginePolicy.test';
+import sshProductivityPolicyTest from './SshProductivityPolicy.test';
 import hostLocalPersonalizationPolicyTest from './HostLocalPersonalizationPolicy.test';
 import moonlightModelsTest from './MoonlightModels.test';
 import moonlightRecordTest from './MoonlightRecord.test';
@@ -379,6 +380,7 @@ export default function testsuite() {
   sshSftpWorkspacePolicyTest();
   sshTransferCenterPolicyTest();
   sshSftpTaskEnginePolicyTest();
+  sshProductivityPolicyTest();
   hostLocalPersonalizationPolicyTest();
   moonlightModelsTest();
   moonlightRecordTest();
