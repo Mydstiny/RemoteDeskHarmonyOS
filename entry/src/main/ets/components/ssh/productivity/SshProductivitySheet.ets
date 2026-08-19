@@ -32,6 +32,7 @@ export struct SshProductivitySheet {
   onToggleShellIntegration: (enabled: boolean) => void = (_enabled: boolean): void => {};
   onSetStartup: (snippetId: string, enabled: boolean) => boolean =
     (_snippetId: string, _enabled: boolean): boolean => true;
+  onOpenSessionLog: () => void = (): void => {};
 
   @State selectedSnippetId: string = '';
   @State variableValues: Array<SshSnippetValue> = [];
@@ -278,6 +279,9 @@ export struct SshProductivitySheet {
           this.HistoryList()
           Text('设置').fontSize(12).fontWeight(FontWeight.Medium).fontColor('#F2F4F7')
             .width('100%')
+          Button('打开会话日志').height(40).fontSize(11).width('100%')
+            .backgroundColor('rgba(255,255,255,0.08)')
+            .onClick((): void => { this.onOpenSessionLog(); })
           this.SettingsRow('命令历史', '默认关闭；敏感模式和禁用主机始终不记录',
             this.document.settings.historyEnabled, this.onToggleHistory)
           this.SettingsRow('本地补全', '只使用本地 Snippet/历史，不猜测密码边界',

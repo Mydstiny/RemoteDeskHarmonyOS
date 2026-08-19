@@ -1,0 +1,103 @@
+import { describe, it, expect } from '@ohos/hypium';
+import { common } from '@kit.AbilityKit';
+import {
+  SshSessionLogCryptoPort,
+  SshSessionLogPersistencePort,
+  SshSessionLogStore
+} from '../main/ets/services/ssh/log/SshSessionLogStore';
+import {
+  SshSessionLogRecordV1,
+  SshSessionLogSettingsV1
+} from '../main/ets/services/ssh/log/SshSessionLogPolicy';
+
+class MemoryLogPersistence implements SshSessionLogPersistencePort {
+  index: string | null = null;
+  chunks: Map<string, string> = new Map<string, string>();
+  failIndexWrite: boolean = false;
+  failChunkWrite: boolean = false;
+  readIndex(_context: common.Context): string | null { return this.index; }
+  writeIndex(_context: common.Context, value: string): boolean {
+    if (this.failIndexWrite) { return false; }
+    this.index = value;
+    return true;
+  }
+  readChunk(_context: common.Context, chunkId: string): string | null {
+    return this.chunks.get(chunkId) ?? null;
+  }
+  writeChunk(_context: common.Context, chunkId: string, value: string): boolean {
+    if (this.failChunkWrite) { return false; }
+    this.chunks.set(chunkId, value);
+    return true;
+  }
+  removeChunk(_context: common.Context, chunkId: string): boolean {
+    this.chunks.delete(chunkId);
+    return true;
+  }
+}
+
+class FakeLogCrypto implements SshSessionLogCryptoPort {
+  available: boolean = true;
+  failEncrypt: boolean = false;
+  ready(): boolean { return this.available; }
+  encrypt(value: string): string {
+    if (this.failEncrypt) { throw new Error('encrypt failed'); }
+    return 'cipher<' + value.split('').reverse().join('') + '>';
+  }
+  decrypt(value: string): string {
+    if (!value.startsWith('cipher<') || !value.endsWith('>')) { throw new Error('bad cipher'); }
+    return value.slice(7, -1).split('').reverse().join('');
+  }
+}
+
+function logRecord(id: string, text: string): SshSessionLogRecordV1 {
+  return {
+    id, hostId: 'host-one', sessionId: 9, generation: 1, timestamp: 100,
+    direction: 'output', kind: 'data', text, searchText: '', byteSize: text.length
+  };
+}
+
+export default function sshSessionLogStoreTest(): void {
+  describe('SshSessionLogStore', (): void => {
+    it('should_initialize_an_encrypted_empty_index_and_restore_chunks', 0, (): void => {
+      const persistence = new MemoryLogPersistence();
+      const crypto = new FakeLogCrypto();
+      const store = new SshSessionLogStore(persistence, crypto);
+      const context: common.Context = undefined as common.Context;
+      expect(store.init(context)).assertTrue();
+      const settings: SshSessionLogSettingsV1 = store.snapshot().settings;
+      settings.enabled = true;
+      expect(store.setSettings(settings)).assertTrue();
+      expect(store.append(logRecord('one', 'safe output'))).assertTrue();
+      expect(persistence.index?.indexOf('safe output') ?? -1).assertEqual(-1);
+      expect(persistence.chunks.size).assertEqual(1);
+      const restored = new SshSessionLogStore(persistence, crypto);
+      expect(restored.init(context)).assertTrue();
+      expect(restored.search('safe', 'host-one').length).assertEqual(1);
+    });
+
+    it('should_keep_previous_snapshot_when_index_write_fails', 0, (): void => {
+      const persistence = new MemoryLogPersistence();
+      const crypto = new FakeLogCrypto();
+      const store = new SshSessionLogStore(persistence, crypto);
+      const context: common.Context = undefined as common.Context;
+      expect(store.init(context)).assertTrue();
+      const settings = store.snapshot().settings;
+      settings.enabled = true;
+      expect(store.setSettings(settings)).assertTrue();
+      expect(store.append(logRecord('one', 'before'))).assertTrue();
+      persistence.failIndexWrite = true;
+      expect(store.append(logRecord('two', 'after'))).assertFalse();
+      expect(store.search('before', 'host-one').length).assertEqual(1);
+      expect(store.search('after', 'host-one').length).assertEqual(0);
+    });
+
+    it('should_fail_closed_when_crypto_is_unavailable', 0, (): void => {
+      const persistence = new MemoryLogPersistence();
+      const crypto = new FakeLogCrypto();
+      crypto.available = false;
+      const store = new SshSessionLogStore(persistence, crypto);
+      expect(store.init(undefined as common.Context)).assertFalse();
+      expect(store.append(logRecord('one', 'never'))).assertFalse();
+    });
+  });
+}

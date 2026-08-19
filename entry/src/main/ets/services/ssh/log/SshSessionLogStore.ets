@@ -1,0 +1,373 @@
+import { common } from '@kit.AbilityKit';
+import { preferences } from '@kit.ArkData';
+import { DataCrypto } from '../../DataCrypto';
+import {
+  addSshSessionLogBookmark,
+  appendSshSessionLogRecord,
+  decodeSshSessionLogDocument,
+  defaultSshSessionLogSettings,
+  emptySshSessionLogDocument,
+  encodeSshSessionLogDocument,
+  exportSshSessionLog,
+  pruneSshSessionLogDocument,
+  removeSshSessionLogBookmark,
+  searchSshSessionLog,
+  SshSessionLogBookmarkV1,
+  SshSessionLogChunkV1,
+  SshSessionLogDocumentV1,
+  SshSessionLogExportResultV1,
+  SshSessionLogIdentityV1,
+  SshSessionLogRecordV1,
+  SshSessionLogSearchHitV1,
+  SshSessionLogSettingsV1
+} from './SshSessionLogPolicy';
+
+/**
+ * The index contains only chunk metadata/bookmarks/settings. Each chunk is a
+ * separately encrypted value, so appending a line does not rewrite a 10 MiB
+ * document on the ArkUI thread. Implementations are local-only by contract.
+ */
+export interface SshSessionLogChunkIndexV1 {
+  id: string;
+  hostId: string;
+  sessionId: number;
+  generation: number;
+  createdAt: number;
+  updatedAt: number;
+  byteSize: number;
+}
+
+export interface SshSessionLogIndexV1 {
+  schemaVersion: number;
+  settings: SshSessionLogSettingsV1;
+  chunks: Array<SshSessionLogChunkIndexV1>;
+  bookmarks: Array<SshSessionLogBookmarkV1>;
+}
+
+interface SshSessionLogPendingWriteV1 {
+  id: string;
+  serialized: string;
+  ciphertext: string;
+}
+
+export interface SshSessionLogPersistencePort {
+  readIndex(context: common.Context): string | null;
+  writeIndex(context: common.Context, value: string): boolean;
+  readChunk(context: common.Context, chunkId: string): string | null;
+  writeChunk(context: common.Context, chunkId: string, value: string): boolean;
+  removeChunk(context: common.Context, chunkId: string): boolean;
+}
+
+export interface SshSessionLogCryptoPort {
+  ready(): boolean;
+  encrypt(value: string): string;
+  decrypt(value: string): string;
+}
+
+export const SSH_SESSION_LOG_PREFERENCES_NAME: string = 'RemoteDesktopSshSessionLogPrefs';
+export const SSH_SESSION_LOG_INDEX_KEY: string = 'ssh.session.log.index.v1';
+const SSH_SESSION_LOG_CHUNK_KEY_PREFIX: string = 'ssh.session.log.chunk.v1.';
+
+class HarmonySshSessionLogPersistence implements SshSessionLogPersistencePort {
+  private prefs(context: common.Context) {
+    return preferences.getPreferencesSync(context, { name: SSH_SESSION_LOG_PREFERENCES_NAME });
+  }
+
+  readIndex(context: common.Context): string | null {
+    try {
+      const value: Object = this.prefs(context).getSync(SSH_SESSION_LOG_INDEX_KEY, '') as Object;
+      return typeof value === 'string' ? value as string : null;
+    } catch (_err) { return null; }
+  }
+
+  writeIndex(context: common.Context, value: string): boolean {
+    try {
+      const store = this.prefs(context);
+      store.putSync(SSH_SESSION_LOG_INDEX_KEY, value);
+      store.flushSync();
+      return true;
+    } catch (_err) { return false; }
+  }
+
+  readChunk(context: common.Context, chunkId: string): string | null {
+    try {
+      const value: Object = this.prefs(context).getSync(
+        SSH_SESSION_LOG_CHUNK_KEY_PREFIX + chunkId, '') as Object;
+      return typeof value === 'string' ? value as string : null;
+    } catch (_err) { return null; }
+  }
+
+  writeChunk(context: common.Context, chunkId: string, value: string): boolean {
+    try {
+      const store = this.prefs(context);
+      store.putSync(SSH_SESSION_LOG_CHUNK_KEY_PREFIX + chunkId, value);
+      store.flushSync();
+      return true;
+    } catch (_err) { return false; }
+  }
+
+  removeChunk(context: common.Context, chunkId: string): boolean {
+    try {
+      const store = this.prefs(context);
+      store.deleteSync(SSH_SESSION_LOG_CHUNK_KEY_PREFIX + chunkId);
+      store.flushSync();
+      return true;
+    } catch (_err) { return false; }
+  }
+}
+
+class DataCryptoSshSessionLogPort implements SshSessionLogCryptoPort {
+  ready(): boolean { return DataCrypto.getInstance().isReady(); }
+  encrypt(value: string): string { return DataCrypto.getInstance().encrypt(value); }
+  decrypt(value: string): string { return DataCrypto.getInstance().decrypt(value); }
+}
+
+function cloneDocument(document: SshSessionLogDocumentV1): SshSessionLogDocumentV1 {
+  return decodeSshSessionLogDocument(encodeSshSessionLogDocument(document)) ??
+    emptySshSessionLogDocument();
+}
+
+function encodeChunk(chunk: Object): string {
+  return JSON.stringify(chunk);
+}
+
+function decodeChunk(raw: string): Object | null {
+  try {
+    const value: Object = JSON.parse(raw) as Object;
+    if (value === null || typeof value !== 'object') { return null; }
+    return value;
+  } catch (_err) { return null; }
+}
+
+function indexFromDocument(document: SshSessionLogDocumentV1): SshSessionLogIndexV1 {
+  return {
+    schemaVersion: 1,
+    settings: document.settings,
+    chunks: document.chunks.map((chunk): SshSessionLogChunkIndexV1 => ({
+      id: chunk.id,
+      hostId: chunk.hostId,
+      sessionId: chunk.sessionId,
+      generation: chunk.generation,
+      createdAt: chunk.createdAt,
+      updatedAt: chunk.updatedAt,
+      byteSize: chunk.byteSize
+    })),
+    bookmarks: document.bookmarks
+  };
+}
+
+function encodeIndex(index: SshSessionLogIndexV1): string {
+  return JSON.stringify(index);
+}
+
+function decodeIndex(raw: string): SshSessionLogIndexV1 | null {
+  try {
+    const source: Object = JSON.parse(raw) as Object;
+    if (source === null || typeof source !== 'object') { return null; }
+    const item = source as SshSessionLogIndexV1;
+    if (item.schemaVersion !== 1 || !Array.isArray(item.chunks) ||
+      !Array.isArray(item.bookmarks) || item.settings === null ||
+      typeof item.settings !== 'object') { return null; }
+    return {
+      schemaVersion: 1,
+      settings: {
+        enabled: item.settings.enabled === true,
+        paused: item.settings.paused === true,
+        redactSensitive: item.settings.redactSensitive !== false,
+        retentionDays: item.settings.retentionDays,
+        quotaBytes: item.settings.quotaBytes
+      },
+      chunks: item.chunks.slice(0, 2048).filter(
+        (chunk: SshSessionLogChunkIndexV1): boolean => typeof chunk.id === 'string' &&
+          chunk.id.length > 0 && typeof chunk.hostId === 'string' && chunk.hostId.length > 0 &&
+          chunk.sessionId > 0 && chunk.generation > 0).map(
+        (chunk: SshSessionLogChunkIndexV1): SshSessionLogChunkIndexV1 => ({
+          id: chunk.id.slice(0, 160), hostId: chunk.hostId.slice(0, 96),
+          sessionId: Math.floor(chunk.sessionId), generation: Math.floor(chunk.generation),
+          createdAt: Math.max(0, Math.floor(chunk.createdAt)),
+          updatedAt: Math.max(0, Math.floor(chunk.updatedAt)),
+          byteSize: Math.max(0, Math.floor(chunk.byteSize))
+        })),
+      bookmarks: item.bookmarks.slice(0, 500) as Array<SshSessionLogBookmarkV1>
+    };
+  } catch (_err) {
+    return null;
+  }
+}
+
+export class SshSessionLogStore {
+  private context: common.Context | null = null;
+  private persistence: SshSessionLogPersistencePort;
+  private crypto: SshSessionLogCryptoPort;
+  private document: SshSessionLogDocumentV1 = emptySshSessionLogDocument();
+  private initialized: boolean = false;
+  private chunkSerialized: Map<string, string> = new Map<string, string>();
+  private chunkCiphertext: Map<string, string> = new Map<string, string>();
+
+  constructor(
+    persistence: SshSessionLogPersistencePort = new HarmonySshSessionLogPersistence(),
+    crypto: SshSessionLogCryptoPort = new DataCryptoSshSessionLogPort()
+  ) {
+    this.persistence = persistence;
+    this.crypto = crypto;
+  }
+
+  init(context: common.Context): boolean {
+    this.context = context;
+    this.document = emptySshSessionLogDocument();
+    this.chunkSerialized.clear();
+    this.chunkCiphertext.clear();
+    this.initialized = false;
+    if (!this.crypto.ready()) { return false; }
+    const stored: string | null = this.persistence.readIndex(context);
+    if (stored === null) {
+      // First use after the crypto store is unlocked: create an empty
+      // encrypted index so opt-in logging is immediately available.
+      return this.commit(this.document);
+    }
+    if (stored.length === 0) {
+      return this.commit(this.document);
+    }
+    try {
+      const index: SshSessionLogIndexV1 | null = decodeIndex(this.crypto.decrypt(stored));
+      if (index === null) { return false; }
+      const restored = emptySshSessionLogDocument();
+      restored.settings = index.settings;
+      restored.bookmarks = index.bookmarks;
+      for (let indexPosition: number = 0; indexPosition < index.chunks.length; indexPosition++) {
+        const metadata: SshSessionLogChunkIndexV1 = index.chunks[indexPosition];
+        const ciphertext: string | null = this.persistence.readChunk(context, metadata.id);
+        if (ciphertext === null || ciphertext.length === 0) { continue; }
+        try {
+          const chunkObject: Object | null = decodeChunk(this.crypto.decrypt(ciphertext));
+          if (chunkObject === null) { continue; }
+          const chunk = chunkObject as SshSessionLogChunkV1;
+          if (chunk.id !== metadata.id || !Array.isArray(chunk.records)) { continue; }
+          restored.chunks.push(chunk);
+          this.chunkSerialized.set(chunk.id, encodeChunk(chunk));
+          this.chunkCiphertext.set(chunk.id, ciphertext);
+        } catch (_chunkError) {
+          // One corrupt chunk must not hide the remaining sessions.
+        }
+      }
+      this.document = pruneSshSessionLogDocument(restored, Date.now());
+      this.initialized = true;
+      // Repair an index that referenced a missing/corrupt/expired chunk.
+      if (encodeIndex(indexFromDocument(this.document)) !== this.crypto.decrypt(stored)) {
+        this.commit(this.document);
+      }
+      return true;
+    } catch (_err) { return false; }
+  }
+
+  isReady(): boolean {
+    return this.initialized && this.context !== null && this.crypto.ready();
+  }
+
+  snapshot(): SshSessionLogDocumentV1 {
+    return cloneDocument(this.document);
+  }
+
+  setSettings(settings: SshSessionLogSettingsV1): boolean {
+    if (!this.isReady()) { return false; }
+    const next: SshSessionLogDocumentV1 = cloneDocument(this.document);
+    next.settings = settings;
+    if (!settings.enabled) { next.settings.paused = false; }
+    return this.commit(next);
+  }
+
+  append(record: SshSessionLogRecordV1, nowMs: number = Date.now()): boolean {
+    if (!this.isReady() || !this.document.settings.enabled || this.document.settings.paused) {
+      return false;
+    }
+    const next: SshSessionLogDocumentV1 = appendSshSessionLogRecord(
+      this.document, record, nowMs);
+    if (encodeSshSessionLogDocument(next) === encodeSshSessionLogDocument(this.document)) {
+      return false;
+    }
+    return this.commit(next);
+  }
+
+  addBookmark(identity: SshSessionLogIdentityV1, recordId: string, note: string,
+    pinned: boolean = true, nowMs: number = Date.now()): boolean {
+    if (!this.isReady()) { return false; }
+    const next: SshSessionLogDocumentV1 | null = addSshSessionLogBookmark(
+      this.document, identity, recordId, note, pinned, nowMs);
+    return next !== null && this.commit(next);
+  }
+
+  removeBookmark(bookmarkId: string): boolean {
+    if (!this.isReady()) { return false; }
+    return this.commit(removeSshSessionLogBookmark(this.document, bookmarkId));
+  }
+
+  search(query: string, hostId: string = '', identity?: SshSessionLogIdentityV1):
+    Array<SshSessionLogSearchHitV1> {
+    if (!this.isReady()) { return []; }
+    return searchSshSessionLog(this.document, query, hostId, identity);
+  }
+
+  export(hostId: string, identity?: SshSessionLogIdentityV1, redact: boolean = true):
+    SshSessionLogExportResultV1 {
+    if (!this.isReady()) {
+      return { ok: false, text: '', recordCount: 0, redactedCount: 0, truncated: false };
+    }
+    return exportSshSessionLog(this.document, hostId, identity, redact);
+  }
+
+  clearHost(hostId: string): boolean {
+    if (!this.isReady()) { return false; }
+    const normalized: string = hostId.trim();
+    const next: SshSessionLogDocumentV1 = cloneDocument(this.document);
+    next.chunks = next.chunks.filter((chunk): boolean => chunk.hostId !== normalized);
+    next.bookmarks = next.bookmarks.filter((bookmark): boolean => bookmark.hostId !== normalized);
+    return this.commit(next);
+  }
+
+  clearAll(): boolean {
+    if (!this.isReady()) { return false; }
+    return this.commit(emptySshSessionLogDocument());
+  }
+
+  private commit(nextDocument: SshSessionLogDocumentV1): boolean {
+    if (this.context === null || !this.crypto.ready()) { return false; }
+    const normalized: SshSessionLogDocumentV1 = decodeSshSessionLogDocument(
+      encodeSshSessionLogDocument(nextDocument)) ?? emptySshSessionLogDocument();
+    const context: common.Context = this.context;
+    const nextIds: Set<string> = new Set<string>();
+    const writes: Array<SshSessionLogPendingWriteV1> = [];
+    try {
+      for (let index: number = 0; index < normalized.chunks.length; index++) {
+        const chunk = normalized.chunks[index];
+        nextIds.add(chunk.id);
+        const serialized: string = encodeChunk(chunk);
+        if (this.chunkSerialized.get(chunk.id) === serialized) { continue; }
+        const ciphertext: string = this.crypto.encrypt(serialized);
+        if (ciphertext.length === 0 || ciphertext === serialized) { return false; }
+        writes.push({ id: chunk.id, serialized, ciphertext });
+      }
+      // Write data first. If the index update fails, the old index remains
+      // authoritative and the next init can safely garbage-collect orphans.
+      for (let index: number = 0; index < writes.length; index++) {
+        const item = writes[index];
+        if (!this.persistence.writeChunk(context, item.id, item.ciphertext)) { return false; }
+      }
+      const indexPlain: string = encodeIndex(indexFromDocument(normalized));
+      const indexCiphertext: string = this.crypto.encrypt(indexPlain);
+      if (indexCiphertext.length === 0 || indexCiphertext === indexPlain ||
+        !this.persistence.writeIndex(context, indexCiphertext)) { return false; }
+      const oldIds: string[] = [];
+      this.document.chunks.forEach((chunk): void => { oldIds.push(chunk.id); });
+      oldIds.forEach((id: string): void => {
+        if (!nextIds.has(id)) { this.persistence.removeChunk(context, id); }
+      });
+      writes.forEach((item): void => {
+        this.chunkSerialized.set(item.id, item.serialized);
+        this.chunkCiphertext.set(item.id, item.ciphertext);
+      });
+      this.document = normalized;
+      this.initialized = true;
+      return true;
+    } catch (_err) { return false; }
+  }
+}
