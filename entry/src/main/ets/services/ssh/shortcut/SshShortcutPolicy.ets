@@ -1,5 +1,9 @@
 export type SshShortcutKey =
   | 'F'
+  | 'J'
+  | 'T'
+  | 'W'
+  | 'DIGIT'
   | 'ENTER'
   | 'ESCAPE'
   | 'TAB'
@@ -12,6 +16,10 @@ export type SshShortcutAction =
   | 'search_next'
   | 'search_previous'
   | 'close_terminal_search'
+  | 'open_command_palette'
+  | 'open_new_session_picker'
+  | 'close_active_tab'
+  | 'activate_tab_index'
   | 'escape_terminal_focus'
   | 'send_to_terminal'
   | 'let_text_editor_handle'
@@ -23,6 +31,7 @@ export interface SshShortcutChord {
   meta: boolean;
   alt: boolean;
   shift: boolean;
+  digit?: number;
 }
 
 export interface SshShortcutContext {
@@ -31,12 +40,16 @@ export interface SshShortcutContext {
   textEditorFocused: boolean;
   terminalFocused: boolean;
   terminalSearchEnabled: boolean;
+  workspaceShortcutsEnabled?: boolean;
+  captureGlobalShortcuts?: boolean;
+  tabCount?: number;
 }
 
 export interface SshShortcutDecision {
   action: SshShortcutAction;
   consume: boolean;
   reason: string;
+  tabIndex: number;
 }
 
 export interface SshShortcutBinding {
@@ -52,8 +65,8 @@ export interface SshShortcutConflict {
 }
 
 function decision(action: SshShortcutAction, consume: boolean,
-  reason: string): SshShortcutDecision {
-  return { action, consume, reason };
+  reason: string, tabIndex: number = -1): SshShortcutDecision {
+  return { action, consume, reason, tabIndex };
 }
 
 function primaryModifier(chord: SshShortcutChord): boolean {
@@ -91,6 +104,26 @@ export function routeSshShortcut(chord: SshShortcutChord,
   if (context.textEditorFocused) {
     return decision('let_text_editor_handle', false, '文本编辑控件优先');
   }
+  const workspaceShortcutsEnabled: boolean = context.workspaceShortcutsEnabled === true;
+  const workspaceOwnsChord: boolean = workspaceShortcutsEnabled &&
+    (!context.terminalFocused || context.captureGlobalShortcuts === true);
+  if (workspaceOwnsChord) {
+    if (chord.key === 'J' && primaryModifier(chord) && !chord.shift) {
+      return decision('open_command_palette', true, '打开 SSH 命令面板');
+    }
+    if (chord.key === 'T' && primaryModifier(chord) && !chord.shift) {
+      return decision('open_new_session_picker', true, '新建 SSH 会话');
+    }
+    if (chord.key === 'W' && primaryModifier(chord) && !chord.shift) {
+      return decision('close_active_tab', true, '请求关闭当前 SSH 标签');
+    }
+    const digit: number = chord.digit ?? -1;
+    const tabCount: number = context.tabCount ?? 0;
+    if (chord.key === 'DIGIT' && chord.alt && !chord.ctrl && !chord.meta && !chord.shift &&
+      digit >= 1 && digit <= 9 && digit <= tabCount) {
+      return decision('activate_tab_index', true, '切换到 SSH 标签 ' + digit.toString(), digit - 1);
+    }
+  }
   if (context.terminalFocused) {
     if (context.terminalSearchEnabled && chord.key === 'F' &&
       primaryModifier(chord) && !chord.shift) {
@@ -113,7 +146,11 @@ export function normalizeSshShortcutChord(chord: SshShortcutChord): string {
   if (chord.meta) { parts.push('meta'); }
   if (chord.alt) { parts.push('alt'); }
   if (chord.shift) { parts.push('shift'); }
-  parts.push(chord.key.toLowerCase());
+  if (chord.key === 'DIGIT' && chord.digit !== undefined && chord.digit >= 1 && chord.digit <= 9) {
+    parts.push(chord.digit.toString());
+  } else {
+    parts.push(chord.key.toLowerCase());
+  }
   return parts.join('+');
 }
 

@@ -18,9 +18,10 @@ import {
   SshShortcutContext
 } from '../main/ets/services/ssh/shortcut/SshShortcutPolicy';
 
-function chord(key: 'F' | 'ENTER' | 'ESCAPE' | 'TAB' | 'OTHER',
-  ctrl: boolean = false, shift: boolean = false): SshShortcutChord {
-  return { key, ctrl, meta: false, alt: false, shift };
+function chord(key: 'F' | 'J' | 'T' | 'W' | 'DIGIT' | 'ENTER' | 'ESCAPE' | 'TAB' | 'OTHER',
+  ctrl: boolean = false, shift: boolean = false, alt: boolean = false,
+  digit: number = -1): SshShortcutChord {
+  return { key, ctrl, meta: false, alt, shift, digit };
 }
 
 function context(searchOpen: boolean = false): SshShortcutContext {
@@ -131,5 +132,46 @@ export default function sshTerminalSearchShortcutPolicyTest(): void {
       expect(findSshShortcutConflict([existing], conflict).conflict).assertTrue();
       expect(findSshShortcutConflict([existing], otherScope).conflict).assertFalse();
     });
+
+    it('captures_workspace_shortcuts_only_when_the_profile_allows_terminal_takeover', 0,
+      (): void => {
+        const safeTerminal: SshShortcutContext = context();
+        safeTerminal.workspaceShortcutsEnabled = true;
+        safeTerminal.captureGlobalShortcuts = false;
+        safeTerminal.tabCount = 3;
+        expect(routeSshShortcut(chord('J', true), safeTerminal).action)
+          .assertEqual('send_to_terminal');
+        expect(routeSshShortcut(chord('W', true), safeTerminal).action)
+          .assertEqual('send_to_terminal');
+
+        const captured: SshShortcutContext = context();
+        captured.workspaceShortcutsEnabled = true;
+        captured.captureGlobalShortcuts = true;
+        captured.tabCount = 3;
+        expect(routeSshShortcut(chord('J', true), captured).action)
+          .assertEqual('open_command_palette');
+        expect(routeSshShortcut(chord('T', true), captured).action)
+          .assertEqual('open_new_session_picker');
+        expect(routeSshShortcut(chord('W', true), captured).action)
+          .assertEqual('close_active_tab');
+        const third = routeSshShortcut(chord('DIGIT', false, false, true, 3), captured);
+        expect(third.action).assertEqual('activate_tab_index');
+        expect(third.tabIndex).assertEqual(2);
+      });
+
+    it('lets_the_workspace_use_navigation_shortcuts_after_terminal_focus_exits', 0,
+      (): void => {
+        const workspace: SshShortcutContext = context();
+        workspace.terminalFocused = false;
+        workspace.workspaceShortcutsEnabled = true;
+        workspace.captureGlobalShortcuts = false;
+        workspace.tabCount = 2;
+        expect(routeSshShortcut(chord('J', true), workspace).action)
+          .assertEqual('open_command_palette');
+        expect(routeSshShortcut(chord('DIGIT', false, false, true, 2), workspace).tabIndex)
+          .assertEqual(1);
+        expect(routeSshShortcut(chord('DIGIT', false, false, true, 3), workspace).action)
+          .assertEqual('none');
+      });
   });
 }

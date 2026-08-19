@@ -73,6 +73,8 @@ import { SshXtermSurface, XtermOutputBuffer } from '../components/SshXtermSurfac
 import { SshTerminalSearchBar } from '../components/ssh/search/SshTerminalSearchBar';
 import { SshTerminalProfileSheet } from
   '../components/ssh/profile/SshTerminalProfileSheet';
+import { SshCommandPalette } from '../components/ssh/command/SshCommandPalette';
+import { SshBrowserTabStrip } from '../components/ssh/workspace/SshBrowserTabStrip';
 import { GpuTerminalRenderer } from '../components/GpuTerminalRenderer';
 import { TerminalInputBuffer } from '../components/SshTerminalSurface';
 import { TerminalCoreBridge } from '../napi/TerminalCoreBridge';
@@ -132,6 +134,7 @@ import {
 } from '../services/SshTerminalOrientationPolicy';
 import {
   SshTerminalTabStore,
+  SshTerminalTabCloseResult,
   SshTerminalTabView,
   SshTerminalTabState
 } from '../services/SshTerminalTabStore';
@@ -210,6 +213,8 @@ import {
 } from '../services/ssh/workspace/SshWorkspaceCapabilityPolicy';
 import { SshWorkspaceCapabilityStore } from
   '../services/ssh/workspace/SshWorkspaceCapabilityStore';
+import { resolveSshTabChromeLayout } from
+  '../services/ssh/workspace/SshTabChromePolicy';
 import {
   defaultSshTerminalResolvedProfile,
   sshTerminalSessionProfileScopeKey,
@@ -218,6 +223,15 @@ import {
 } from '../services/ssh/profile/SshTerminalProfilePolicy';
 import { SshTerminalProfileStore } from
   '../services/ssh/profile/SshTerminalProfileStore';
+import {
+  buildSshCommandRegistry,
+  canExecuteSshCommand,
+  findSshCommand,
+  SshCommandCapabilities,
+  SshCommandDescriptor,
+  SshCommandHostRef,
+  SshCommandSessionRef
+} from '../services/ssh/command/SshCommandPolicy';
 import {
   TransferSession,
   TransferStage,
@@ -370,11 +384,18 @@ struct SshTerminal {
   @State visibleSshHostId: string = '';
   @State sshTabViews: SshTerminalTabView[] = [];
   @State showSshTabPicker: boolean = false;
+  @State showSshCommandPalette: boolean = false;
+  @State sshCommandRegistry: Array<SshCommandDescriptor> = [];
+  @State showSshTabRenameSheet: boolean = false;
+  @State sshTabRenameDraft: string = '';
+  private sshTabRenameHostId: string = '';
+  private pendingSshCommandId: string = '';
   /** A tab switch waits for the picker Sheet's native exit transition. */
   private sshTabPickerClosing: boolean = false;
   private sshTabPickerPendingHostId: string = '';
   /** API 23 can omit the picker onDisappear callback during a fast Sheet exit. */
   private sshTabPickerExitRecoveryTimer: number = -1;
+  private sshTabClosePromptInFlight: boolean = false;
   /** 当前 SSH 输出 chunk；终端核心拥有 scrollback，不在页面累计完整历史。 */
   @State termOutput: string = '';
   /**
@@ -1390,6 +1411,7 @@ struct SshTerminal {
     // Always publish a fresh array. The store can notify several times during
     // one attach, and ArkUI must observe each state transition independently.
     this.sshTabViews = this.sshTabStore.views().slice();
+    if (this.showSshCommandPalette) { this.rebuildSshCommandRegistry(); }
     if (this.hostId.trim().length > 0) {
       this.xtermReady = this.xtermSurfaceReadyForHost(this.hostId);
     }
@@ -1740,6 +1762,13 @@ struct SshTerminal {
     }
     this.closeTerminalSearch(false, true);
     this.showTerminalProfileSheet = false;
+    this.showSshCommandPalette = false;
+    this.sshCommandRegistry = [];
+    this.pendingSshCommandId = '';
+    this.showSshTabRenameSheet = false;
+    this.sshTabRenameHostId = '';
+    this.sshTabRenameDraft = '';
+    this.sshTabClosePromptInFlight = false;
     // Keep one page alive for the whole SSH workspace. The switch operation
     // detaches only the old session callback, adopts the target session and
     // rebinds the visible renderer; it must never route-replace the page.
@@ -2018,17 +2047,392 @@ struct SshTerminal {
     this.loader.disconnect();
   }
 
+  private activeSshTab(): SshTerminalTabView | null {
+    for (let index: number = 0; index < this.sshTabViews.length; index++) {
+      if (this.sshTabViews[index].active) { return this.sshTabViews[index]; }
+    }
+    return null;
+  }
+
+  private cleanupClosedSshTab(result: SshTerminalTabCloseResult): void {
+    if (!result.closed || result.hostId.length === 0) { return; }
+    if (result.sessionId > 0) {
+      this.detachSftpSessionOwner(result.hostId, result.sessionId);
+      this.releaseForwardingSession(result.hostId, result.sessionId, result.generation);
+      this.loader.disconnectSshSession(result.sessionId);
+    }
+    const outputBuffer: XtermOutputBuffer | undefined = this.xtermOutputBuffers.get(result.hostId);
+    if (outputBuffer !== undefined) { outputBuffer.clear(); }
+    this.xtermOutputBuffers.delete(result.hostId);
+    this.xtermReadyGenerations.delete(result.hostId);
+    const nativeBuffer: TerminalInputBuffer | undefined = this.nativeTerminalInputBuffers.get(result.hostId);
+    if (nativeBuffer !== undefined) { nativeBuffer.clear(); }
+    this.nativeTerminalInputBuffers.delete(result.hostId);
+    this.terminalTranscriptDecodeRemainders.delete(result.hostId);
+    this.terminalFallbackDecodeRemainders.delete(result.hostId);
+    this.sshTranscriptStore.clear(result.hostId);
+    this.terminalSessionProfileIds.delete(
+      sshTerminalSessionProfileScopeKey(result.hostId, result.generation));
+    this.terminalCoreRegistry.destroy(this.xtermSurfaceCoreKey(result.hostId), new TerminalCoreBridge());
+    this.refreshSshTabViews();
+  }
+
+  private finalizeSshTabClose(hostId: string): void {
+    const result: SshTerminalTabCloseResult = this.sshTabStore.close(hostId);
+    this.cleanupClosedSshTab(result);
+  }
+
+  private activeCloseNeighbor(hostId: string): RemoteHost | null {
+    let currentIndex: number = -1;
+    for (let index: number = 0; index < this.sshTabViews.length; index++) {
+      if (this.sshTabViews[index].hostId === hostId) {
+        currentIndex = index;
+        break;
+      }
+    }
+    if (currentIndex < 0) { return null; }
+    const candidateIndexes: Array<number> = [currentIndex + 1, currentIndex - 1];
+    for (let index: number = 0; index < candidateIndexes.length; index++) {
+      const candidateIndex: number = candidateIndexes[index];
+      if (candidateIndex < 0 || candidateIndex >= this.sshTabViews.length) { continue; }
+      const host: RemoteHost | undefined = this.srv.getHost(this.sshTabViews[candidateIndex].hostId);
+      if (host !== undefined) { return host; }
+    }
+    return null;
+  }
+
+  private beginSshTabClose(hostId: string): void {
+    const normalizedHostId: string = hostId.trim();
+    if (normalizedHostId.length === 0 || this.terminalClosing || this.tabSwitchInFlight ||
+      !this.sshTabStore.has(normalizedHostId)) { return; }
+    let target: SshTerminalTabView | null = null;
+    for (let index: number = 0; index < this.sshTabViews.length; index++) {
+      if (this.sshTabViews[index].hostId === normalizedHostId) {
+        target = this.sshTabViews[index];
+        break;
+      }
+    }
+    if (target === null) { return; }
+    if (!target.active) {
+      this.finalizeSshTabClose(normalizedHostId);
+      return;
+    }
+    if (this.sshTabViews.length <= 1) {
+      this.closeTerminalSearch(false, true);
+      this.explicitSessionClose = true;
+      this.closeSessionAndBack();
+      return;
+    }
+    const neighbor: RemoteHost | null = this.activeCloseNeighbor(normalizedHostId);
+    if (neighbor === null) {
+      promptAction.showToast({ message: '无法切换到相邻标签，当前连接保持不变', duration: 1800 });
+      return;
+    }
+    this.tabSwitchInFlight = true;
+    void this.switchSshTab(neighbor).then((): void => {
+      if (this.terminalClosing || this.hostId.trim() !== neighbor.id.trim()) { return; }
+      this.finalizeSshTabClose(normalizedHostId);
+    }).catch((err: Error): void => {
+      if (this.terminalClosing) { return; }
+      const message: string = err?.message || '关闭标签前切换失败';
+      this.connectionError = message;
+      promptAction.showToast({ message, duration: 1800 });
+    }).finally((): void => { this.tabSwitchInFlight = false; });
+  }
+
+  private preserveForegroundSftpBeforeTabClose(): void {
+    if (this.sftpTransferSession === null || !this.sftpBusy) { return; }
+    this.sftpWaitingForConnection = true;
+    this.sftpCancelRequested = true;
+    this.sftpTaskStore.command(this.sftpTransferSession.id, { kind: 'detach' });
+    this.persistSftpTaskMetadata('waitingForConnection');
+  }
+
+  private requestSshTabClose(hostId: string): void {
+    const normalizedHostId: string = hostId.trim();
+    if (normalizedHostId.length === 0 || this.terminalClosing || this.tabSwitchInFlight ||
+      this.sshModalOwnsKeyboard() || this.sshTabClosePromptInFlight) { return; }
+    this.sshTabClosePromptInFlight = true;
+    const foregroundTransfer: boolean = normalizedHostId === this.hostId.trim() &&
+      this.sftpTransferSession !== null && this.sftpBusy;
+    if (foregroundTransfer) {
+      promptAction.showDialog({
+        title: '关闭 SSH 标签？',
+        message: '当前标签有前台传输。可保留任务记录并等待下次连接继续，或取消传输后断开连接。',
+        buttons: [
+          { text: '取消', color: this.pal().text2 },
+          { text: '保留任务并关闭', color: this.accentColor },
+          { text: '取消传输并关闭', color: this.pal().danger }
+        ]
+      }).then((result): void => {
+        this.sshTabClosePromptInFlight = false;
+        if (result.index === 1) {
+          this.preserveForegroundSftpBeforeTabClose();
+          this.beginSshTabClose(normalizedHostId);
+        } else if (result.index === 2) {
+          this.cancelSftpTransfer();
+          this.beginSshTabClose(normalizedHostId);
+        }
+      }).catch((_err: BusinessError): void => { this.sshTabClosePromptInFlight = false; });
+      return;
+    }
+    promptAction.showDialog({
+      title: '断开并关闭标签？',
+      message: '“' + (this.srv.getHost(normalizedHostId)?.label || 'SSH 会话') +
+        '”的连接将断开，其他标签不受影响。',
+      buttons: [
+        { text: '取消', color: this.pal().text2 },
+        { text: '断开并关闭', color: this.pal().danger }
+      ]
+    }).then((result): void => {
+      this.sshTabClosePromptInFlight = false;
+      if (result.index === 1) { this.beginSshTabClose(normalizedHostId); }
+    }).catch((_err: BusinessError): void => { this.sshTabClosePromptInFlight = false; });
+  }
+
+  private toggleSshTabPinned(hostId: string): void {
+    for (let index: number = 0; index < this.sshTabViews.length; index++) {
+      const tab: SshTerminalTabView = this.sshTabViews[index];
+      if (tab.hostId === hostId) {
+        this.sshTabStore.setPinned(hostId, !tab.pinned);
+        this.refreshSshTabViews();
+        return;
+      }
+    }
+  }
+
+  private moveSshTab(hostId: string, delta: number): void {
+    if (this.sshTabStore.move(hostId, delta)) { this.refreshSshTabViews(); }
+  }
+
+  private moveSshTabBefore(hostId: string, beforeHostId: string): void {
+    if (this.sshTabStore.moveBefore(hostId, beforeHostId)) { this.refreshSshTabViews(); }
+  }
+
+  private openSshTabRename(hostId: string): void {
+    if (this.terminalClosing || this.sshModalOwnsKeyboard()) { return; }
+    for (let index: number = 0; index < this.sshTabViews.length; index++) {
+      const tab: SshTerminalTabView = this.sshTabViews[index];
+      if (tab.hostId === hostId) {
+        this.sshTabRenameHostId = hostId;
+        this.sshTabRenameDraft = tab.label;
+        this.showSshTabRenameSheet = true;
+        return;
+      }
+    }
+  }
+
+  private saveSshTabRename(): void {
+    const title: string = this.sshTabRenameDraft.trim();
+    if (title.length === 0 || this.sshTabRenameHostId.length === 0) { return; }
+    this.sshTabStore.renameDisplayTitle(this.sshTabRenameHostId, title);
+    this.showSshTabRenameSheet = false;
+    this.sshTabRenameHostId = '';
+    this.sshTabRenameDraft = '';
+    this.refreshSshTabViews();
+  }
+
+  private sshTabsForBulkClose(targetHostId: string, rightOnly: boolean): Array<string> {
+    const result: Array<string> = [];
+    let targetIndex: number = -1;
+    for (let index: number = 0; index < this.sshTabViews.length; index++) {
+      if (this.sshTabViews[index].hostId === targetHostId) {
+        targetIndex = index;
+        break;
+      }
+    }
+    if (targetIndex < 0) { return result; }
+    for (let index: number = 0; index < this.sshTabViews.length; index++) {
+      const tab: SshTerminalTabView = this.sshTabViews[index];
+      if (tab.hostId === targetHostId || tab.pinned || (rightOnly && index <= targetIndex)) {
+        continue;
+      }
+      result.push(tab.hostId);
+    }
+    return result;
+  }
+
+  private finishSshBulkClose(hostIds: Array<string>): void {
+    for (let index: number = 0; index < hostIds.length; index++) {
+      this.finalizeSshTabClose(hostIds[index]);
+    }
+  }
+
+  private beginSshBulkClose(targetHostId: string, hostIds: Array<string>): void {
+    if (hostIds.length === 0 || this.terminalClosing || this.tabSwitchInFlight) { return; }
+    const active: SshTerminalTabView | null = this.activeSshTab();
+    if (active !== null && active.hostId === targetHostId) {
+      this.finishSshBulkClose(hostIds);
+      return;
+    }
+    const target: RemoteHost | undefined = this.srv.getHost(targetHostId);
+    if (target === undefined) {
+      promptAction.showToast({ message: '目标主机已不存在，未关闭任何标签', duration: 1800 });
+      return;
+    }
+    this.tabSwitchInFlight = true;
+    void this.switchSshTab(target).then((): void => {
+      if (!this.terminalClosing && this.hostId.trim() === targetHostId.trim()) {
+        this.finishSshBulkClose(hostIds);
+      }
+    }).catch((err: Error): void => {
+      if (!this.terminalClosing) {
+        promptAction.showToast({ message: err?.message || '批量关闭前切换失败', duration: 1800 });
+      }
+    }).finally((): void => { this.tabSwitchInFlight = false; });
+  }
+
+  private requestSshBulkClose(targetHostId: string, rightOnly: boolean): void {
+    if (this.terminalClosing || this.tabSwitchInFlight || this.sshModalOwnsKeyboard() ||
+      this.sshTabClosePromptInFlight) { return; }
+    const hostIds: Array<string> = this.sshTabsForBulkClose(targetHostId, rightOnly);
+    if (hostIds.length === 0) {
+      promptAction.showToast({ message: rightOnly ? '右侧没有可关闭标签' : '没有可关闭的其他标签',
+        duration: 1500 });
+      return;
+    }
+    if (this.sftpBusy && hostIds.indexOf(this.hostId.trim()) >= 0) {
+      promptAction.showToast({ message: '当前标签有前台传输，请先单独处理该标签', duration: 1800 });
+      return;
+    }
+    this.sshTabClosePromptInFlight = true;
+    promptAction.showDialog({
+      title: rightOnly ? '关闭右侧标签？' : '关闭其他标签？',
+      message: '将断开并关闭 ' + hostIds.length.toString() + ' 个标签；固定标签会保留。',
+      buttons: [
+        { text: '取消', color: this.pal().text2 },
+        { text: '断开并关闭', color: this.pal().danger }
+      ]
+    }).then((result): void => {
+      this.sshTabClosePromptInFlight = false;
+      if (result.index === 1) { this.beginSshBulkClose(targetHostId, hostIds); }
+    }).catch((_err: BusinessError): void => { this.sshTabClosePromptInFlight = false; });
+  }
+
+  private rebuildSshCommandRegistry(): void {
+    const hostRefs: Array<SshCommandHostRef> = [];
+    const hosts: Array<RemoteHost> = this.sshTabHosts();
+    for (let index: number = 0; index < hosts.length; index++) {
+      const host: RemoteHost = hosts[index];
+      hostRefs.push({
+        hostId: host.id,
+        label: host.label,
+        opened: this.sshTabStore.has(host.id),
+        available: host.id.trim().length > 0
+      });
+    }
+    const sessionRefs: Array<SshCommandSessionRef> = [];
+    for (let index: number = 0; index < this.sshTabViews.length; index++) {
+      const tab: SshTerminalTabView = this.sshTabViews[index];
+      sessionRefs.push({
+        tabId: tab.tabId,
+        hostId: tab.hostId,
+        label: tab.label,
+        stateLabel: this.sshTabDisplayState(tab),
+        active: tab.active,
+        pinned: tab.pinned
+      });
+    }
+    const active: SshTerminalTabView | null = this.activeSshTab();
+    const capabilities: SshCommandCapabilities = {
+      searchAvailable: this.terminalSearchAvailable(),
+      profileAvailable: this.terminalProfileEnabled(),
+      sftpAvailable: this.sshConnectionIsConnected(),
+      forwardingAvailable: this.sshConnectionIsConnected(),
+      closeAvailable: active !== null,
+      activePinned: active !== null && active.pinned
+    };
+    this.sshCommandRegistry = buildSshCommandRegistry(hostRefs, sessionRefs, capabilities);
+  }
+
+  private openSshCommandPalette(): void {
+    if (!this.sshWorkbenchEnabled || this.terminalClosing || this.showSshCommandPalette ||
+      this.sshModalOwnsKeyboard()) { return; }
+    if (this.terminalSearchVisible) { this.closeTerminalSearch(false, true); }
+    this.pendingSshCommandId = '';
+    this.rebuildSshCommandRegistry();
+    this.showSshCommandPalette = true;
+  }
+
+  private queueSshCommand(commandId: string): void {
+    const command: SshCommandDescriptor | null =
+      findSshCommand(this.sshCommandRegistry, commandId);
+    if (!canExecuteSshCommand(command)) {
+      promptAction.showToast({ message: '该动作当前不可用', duration: 1500 });
+      return;
+    }
+    this.pendingSshCommandId = commandId;
+    this.showSshCommandPalette = false;
+  }
+
+  private performSshCommand(command: SshCommandDescriptor): void {
+    if (command.action === 'new_session' || command.action === 'show_all_tabs') {
+      this.openSshTabPicker();
+      return;
+    }
+    if (command.action === 'open_terminal_search') {
+      this.openTerminalSearch();
+      return;
+    }
+    if (command.action === 'open_terminal_profile') {
+      this.openTerminalProfileSheet();
+      return;
+    }
+    if (command.action === 'open_sftp') {
+      this.openSftpPanel();
+      return;
+    }
+    if (command.action === 'open_forwarding') {
+      this.openForwardingSheet();
+      return;
+    }
+    if (command.action === 'close_active_tab') {
+      const active: SshTerminalTabView | null = this.activeSshTab();
+      if (active !== null) { this.requestSshTabClose(active.hostId); }
+      return;
+    }
+    if (command.action === 'toggle_active_tab_pin') {
+      const active: SshTerminalTabView | null = this.activeSshTab();
+      if (active !== null) { this.toggleSshTabPinned(active.hostId); }
+      return;
+    }
+    if (command.action === 'activate_session' || command.action === 'open_host') {
+      const host: RemoteHost | undefined = this.srv.getHost(command.targetId);
+      if (host !== undefined) { this.navigateToSshTab(host); }
+    }
+  }
+
+  private onSshCommandPaletteDisappear(): void {
+    const commandId: string = this.pendingSshCommandId;
+    this.pendingSshCommandId = '';
+    this.showSshCommandPalette = false;
+    if (commandId.length === 0 || this.terminalClosing) {
+      if (!this.terminalClosing) { this.focusKeyboard(false); }
+      return;
+    }
+    const command: SshCommandDescriptor | null =
+      findSshCommand(this.sshCommandRegistry, commandId);
+    if (!canExecuteSshCommand(command)) { return; }
+    setTimeout((): void => {
+      if (!this.terminalClosing && command !== null) { this.performSshCommand(command); }
+    }, 32);
+  }
+
   private openSshTabPicker(): void {
     // SFTP host selection is rendered inside the existing SFTP surface. Do
     // not stack another native sheet while that surface is visible.
     if (this.showSftpPanel || this.showSftpSheet || this.sftpPeerHostPicker ||
-      this.showForwardingSheet ||
+      this.showForwardingSheet || this.showSshCommandPalette ||
       this.sshTabPickerClosing) { return; }
     this.showSshTabPicker = true;
   }
 
+  private sshTabStripHeight(): number {
+    return this.sshWorkbenchEnabled ? 44 : 40;
+  }
+
   @Builder
-  private sshTabButton(tab: SshTerminalTabView) {
+  private legacySshTabButton(tab: SshTerminalTabView) {
     Row() {
       Column() {
         Text(tab.label.length > 0 ? tab.label : tab.address)
@@ -2054,10 +2458,10 @@ struct SshTerminal {
   }
 
   @Builder
-  private sshTabStripItems() {
+  private legacySshTabStripItems() {
     Row({ space: 6 }) {
       ForEach(this.sshTabViews, (tab: SshTerminalTabView): void => {
-        this.sshTabButton(tab);
+        this.legacySshTabButton(tab);
       }, (tab: SshTerminalTabView): string => tab.tabId)
       Row() {
         SymbolGlyph($r('sys.symbol.plus')).fontSize(17).fontColor(['rgba(242,244,247,0.86)'])
@@ -2072,16 +2476,44 @@ struct SshTerminal {
   }
 
   @Builder
-  private sshTabStrip() {
-    Column() {
+  private sshTabStripItems() {
+    if (this.sshWorkbenchEnabled) {
+      SshBrowserTabStrip({
+        tabs: this.sshTabViews,
+        compact: this.sshCompactChrome(),
+        onActivate: (hostId: string): void => {
+          const host: RemoteHost | undefined = this.srv.getHost(hostId);
+          if (host !== undefined) { this.navigateToSshTab(host); }
+        },
+        onClose: (hostId: string): void => { this.requestSshTabClose(hostId); },
+        onTogglePin: (hostId: string): void => { this.toggleSshTabPinned(hostId); },
+        onMove: (hostId: string, delta: number): void => { this.moveSshTab(hostId, delta); },
+        onMoveBefore: (hostId: string, beforeHostId: string): void => {
+          this.moveSshTabBefore(hostId, beforeHostId);
+        },
+        onRename: (hostId: string): void => { this.openSshTabRename(hostId); },
+        onCloseOthers: (hostId: string): void => { this.requestSshBulkClose(hostId, false); },
+        onCloseRight: (hostId: string): void => { this.requestSshBulkClose(hostId, true); },
+        onNewSession: (): void => { this.openSshTabPicker(); },
+        onShowAllTabs: (): void => { this.openSshTabPicker(); },
+        onOpenPalette: (): void => { this.openSshCommandPalette(); }
+      })
+    } else {
       Scroll() {
-        this.sshTabStripItems()
+        this.legacySshTabStripItems()
       }
       .scrollable(ScrollDirection.Horizontal)
       .scrollBar(BarState.Off)
       .width('100%').height(40)
     }
-    .width('100%').height(40 + this.topChromeOffset())
+  }
+
+  @Builder
+  private sshTabStrip() {
+    Column() {
+      this.sshTabStripItems()
+    }
+    .width('100%').height(this.sshTabStripHeight() + this.topChromeOffset())
     .padding({ top: this.topChromeOffset() })
     .backgroundColor(this.chromeBg())
     .border({ width: { bottom: 0.5 }, color: 'rgba(255,255,255,0.08)' })
@@ -2090,15 +2522,10 @@ struct SshTerminal {
   @Builder
   private sshTabStripInline() {
     Row() {
-      Scroll() {
-        this.sshTabStripItems()
-      }
-      .scrollable(ScrollDirection.Horizontal)
-      .scrollBar(BarState.Off)
-      .width('100%').height(40)
+      this.sshTabStripItems()
     }
     .layoutWeight(1)
-    .height(40)
+    .height(this.sshTabStripHeight())
     .borderRadius(10)
     .backgroundColor(this.chromeBg())
     .border({ width: { bottom: 0.5 }, color: 'rgba(255,255,255,0.08)' })
@@ -2144,6 +2571,61 @@ struct SshTerminal {
     .borderRadius(this.breakpoint === 'sm'
       ? { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
     .constraintSize({ maxWidth: 620 })
+  }
+
+  @Builder
+  private sshCommandPaletteSheet() {
+    SshCommandPalette({
+      commands: this.sshCommandRegistry,
+      compact: this.breakpoint === 'sm',
+      onExecute: (commandId: string): void => { this.queueSshCommand(commandId); },
+      onClose: (): void => {
+        this.pendingSshCommandId = '';
+        this.showSshCommandPalette = false;
+      }
+    })
+      .width('100%').height('100%')
+  }
+
+  @Builder
+  private sshTabRenameSheet() {
+    Column({ space: 14 }) {
+      Text('重命名标签显示标题')
+        .fontSize(17).fontWeight(FontWeight.Medium).fontColor('#F4F7FA').width('100%')
+      Text('只改变当前工作台中的标签标题，不修改主机名称或连接配置。')
+        .fontSize(11).fontColor('rgba(242,244,247,0.56)').width('100%')
+      TextInput({ text: this.sshTabRenameDraft, placeholder: '标签标题' })
+        .id('sshTabRenameInput')
+        .width('100%').height(42).fontSize(13).fontColor('#F4F7FA')
+        .placeholderColor('rgba(242,244,247,0.42)').caretColor(this.accentColor)
+        .backgroundColor('rgba(255,255,255,0.07)').borderRadius(9)
+        .enableAutoFill(false)
+        .onChange((value: string): void => { this.sshTabRenameDraft = value.slice(0, 96); })
+        .onSubmit((_key: EnterKeyType, event: SubmitEvent): void => {
+          this.saveSshTabRename();
+          event.keepEditableState();
+        })
+      Row({ space: 10 }) {
+        Button('取消').height(38).layoutWeight(1).fontSize(12)
+          .backgroundColor('rgba(255,255,255,0.08)').fontColor('#F4F7FA')
+          .onClick((): void => {
+            this.showSshTabRenameSheet = false;
+            this.sshTabRenameHostId = '';
+            this.sshTabRenameDraft = '';
+          })
+        Button('保存').height(38).layoutWeight(1).fontSize(12)
+          .backgroundColor(this.accentColor).fontColor('#FFFFFF')
+          .enabled(this.sshTabRenameDraft.trim().length > 0)
+          .onClick((): void => { this.saveSshTabRename(); })
+      }.width('100%')
+    }
+    .width('100%').padding({ left: 20, right: 20, top: 20, bottom: 18 })
+    .backgroundColor('#171D25')
+    .onAppear((): void => {
+      setTimeout((): void => {
+        try { focusControl.requestFocus('sshTabRenameInput'); } catch (_err) {}
+      }, 32);
+    })
   }
 
   private isSftpRequestActive(pageGeneration: number, sessionId: number,
@@ -2682,11 +3164,18 @@ struct SshTerminal {
   }
 
   private sshTabsInline(): boolean {
-    // 手机继续使用原始独立标签条; Pad/PC 将标签嵌入连接顶栏。
-    return this.sshTabViews.length > 0 && (this.isDesktopDevice || this.breakpoint !== 'sm');
+    // Narrow free-form PC windows use the same full-width strip as phones so
+    // the fixed close/palette/new actions cannot be clipped by the toolbar.
+    return this.sshTabViews.length > 0 && !this.sshCompactChrome() &&
+      (this.isDesktopDevice || this.breakpoint !== 'sm');
+  }
+
+  private sshCompactChrome(): boolean {
+    return resolveSshTabChromeLayout(this.shellAreaW, this.breakpoint).compact;
   }
 
   private sshInlineHostWidth(): number {
+    if (this.sshCompactChrome()) { return 120; }
     if (this.isDesktopDevice) { return 220; }
     return this.breakpoint === 'md' ? 160 : 200;
   }
@@ -5554,6 +6043,13 @@ struct SshTerminal {
     this.terminalClosing = false;
     this.closeTerminalSearch(false, true);
     this.showTerminalProfileSheet = false;
+    this.showSshCommandPalette = false;
+    this.sshCommandRegistry = [];
+    this.pendingSshCommandId = '';
+    this.sshTabClosePromptInFlight = false;
+    this.showSshTabRenameSheet = false;
+    this.sshTabRenameHostId = '';
+    this.sshTabRenameDraft = '';
     this.terminalSessionProfileIds.clear();
     this.resolvedTerminalProfileSessionKey = '';
     this.sshProxyProfilesReady = false;
@@ -5907,6 +6403,12 @@ struct SshTerminal {
     this.stopSshAuthPromptPolling(true);
     this.closeTerminalSearch(false, true);
     this.showTerminalProfileSheet = false;
+    this.showSshCommandPalette = false;
+    this.pendingSshCommandId = '';
+    this.showSshTabRenameSheet = false;
+    this.sshTabRenameHostId = '';
+    this.sshTabRenameDraft = '';
+    this.sshTabClosePromptInFlight = false;
     this.clearSshTabPickerExitRecovery();
     this.clearTerminalInputFocusRetry();
     this.clearTerminalZoomIndicatorTimer();
@@ -7469,7 +7971,8 @@ struct SshTerminal {
       this.showForwardingSheet || this.showForwardingConfirmSheet ||
       this.forwardingModalCoordinator.currentPhase() === 'closing' ||
       this.showSftpPanel || this.showSftpSheet || this.sftpPeerHostPicker ||
-      this.showSshTabPicker || this.sshTabPickerClosing || this.showTerminalProfileSheet;
+      this.showSshTabPicker || this.sshTabPickerClosing || this.showTerminalProfileSheet ||
+      this.showSshCommandPalette || this.showSshTabRenameSheet;
   }
 
   private clearTerminalSearchDebounce(): void {
@@ -7652,6 +8155,11 @@ struct SshTerminal {
     if (!this.sshWorkbenchEnabled) {
       this.closeTerminalSearch(true, true);
       this.showTerminalProfileSheet = false;
+      this.showSshCommandPalette = false;
+      this.pendingSshCommandId = '';
+      this.showSshTabRenameSheet = false;
+      this.sshTabRenameHostId = '';
+      this.sshTabRenameDraft = '';
     }
     this.refreshTerminalProfileForHost();
   }
@@ -7666,12 +8174,21 @@ struct SshTerminal {
 
   private sshShortcutKey(keyCode: number): SshShortcutKey {
     if (keyCode === KeyCode.KEYCODE_F) { return 'F'; }
+    if (keyCode === KeyCode.KEYCODE_J) { return 'J'; }
+    if (keyCode === KeyCode.KEYCODE_T) { return 'T'; }
+    if (keyCode === KeyCode.KEYCODE_W) { return 'W'; }
+    if (keyCode >= KeyCode.KEYCODE_1 && keyCode <= KeyCode.KEYCODE_9) { return 'DIGIT'; }
     if (keyCode === KeyCode.KEYCODE_ENTER || keyCode === KeyCode.KEYCODE_NUMPAD_ENTER) {
       return 'ENTER';
     }
     if (keyCode === KeyCode.KEYCODE_ESCAPE) { return 'ESCAPE'; }
     if (keyCode === KeyCode.KEYCODE_TAB) { return 'TAB'; }
     return 'OTHER';
+  }
+
+  private sshShortcutDigit(keyCode: number): number {
+    if (keyCode < KeyCode.KEYCODE_1 || keyCode > KeyCode.KEYCODE_9) { return -1; }
+    return keyCode - KeyCode.KEYCODE_1 + 1;
   }
 
   private applySshShortcutDecision(event: KeyEvent, decision: SshShortcutDecision): boolean | null {
@@ -7697,6 +8214,31 @@ struct SshTerminal {
     if (decision.action === 'close_terminal_search') {
       try { event.stopPropagation(); } catch (_err) {}
       this.closeTerminalSearch();
+      return true;
+    }
+    if (decision.action === 'open_command_palette') {
+      try { event.stopPropagation(); } catch (_err) {}
+      this.openSshCommandPalette();
+      return true;
+    }
+    if (decision.action === 'open_new_session_picker') {
+      try { event.stopPropagation(); } catch (_err) {}
+      this.openSshTabPicker();
+      return true;
+    }
+    if (decision.action === 'close_active_tab') {
+      try { event.stopPropagation(); } catch (_err) {}
+      const active: SshTerminalTabView | null = this.activeSshTab();
+      if (active !== null) { this.requestSshTabClose(active.hostId); }
+      return true;
+    }
+    if (decision.action === 'activate_tab_index') {
+      try { event.stopPropagation(); } catch (_err) {}
+      if (decision.tabIndex >= 0 && decision.tabIndex < this.sshTabViews.length) {
+        const host: RemoteHost | undefined =
+          this.srv.getHost(this.sshTabViews[decision.tabIndex].hostId);
+        if (host !== undefined) { this.navigateToSshTab(host); }
+      }
       return true;
     }
     if (decision.action === 'escape_terminal_focus') {
@@ -7739,14 +8281,18 @@ struct SshTerminal {
       ' known=' + (knownPhysicalKeyboard ? '1' : '0') +
       ' likely=' + (likelyHardware ? '1' : '0'));
     const shortcutChord: SshShortcutChord = {
-      key: this.sshShortcutKey(code), ctrl, meta, alt, shift
+      key: this.sshShortcutKey(code), ctrl, meta, alt, shift,
+      digit: this.sshShortcutDigit(code)
     };
     const shortcutContext: SshShortcutContext = {
       modalOpen: this.sshModalOwnsKeyboard(),
       searchOpen: this.terminalSearchVisible,
       textEditorFocused: false,
       terminalFocused: this.terminalFocusMode,
-      terminalSearchEnabled: this.sshWorkbenchEnabled
+      terminalSearchEnabled: this.sshWorkbenchEnabled,
+      workspaceShortcutsEnabled: this.sshWorkbenchEnabled,
+      captureGlobalShortcuts: this.resolvedTerminalProfile.captureGlobalShortcuts,
+      tabCount: this.sshTabViews.length
     };
     const routed: boolean | null = this.applySshShortcutDecision(
       event, routeSshShortcut(shortcutChord, shortcutContext));
@@ -12155,12 +12701,12 @@ struct SshTerminal {
         if (this.sshTabsInline()) {
           this.sshTabStripInline()
         }
-        if (this.isDesktopDevice) {
+        if (this.isDesktopDevice && !this.sshCompactChrome()) {
           Text('Ctrl+Shift+Q 退出')
             .fontSize(11).fontColor('rgba(242,244,247,0.54)')
             .margin({ right: 12 })
         }
-        if (this.isDesktopDevice && this.terminalProfileEnabled()) {
+        if (this.isDesktopDevice && !this.sshCompactChrome() && this.terminalProfileEnabled()) {
           Row() {
             SymbolGlyph($r('sys.symbol.gearshape_fill'))
               .fontSize(17)
@@ -12174,7 +12720,7 @@ struct SshTerminal {
           .onClick((): void => { this.openTerminalProfileSheet(); })
           .accessibilityText('打开终端 Profile')
         }
-        if (this.isDesktopDevice && this.terminalSearchAvailable()) {
+        if (this.isDesktopDevice && !this.sshCompactChrome() && this.terminalSearchAvailable()) {
           Row() {
             SymbolGlyph($r('sys.symbol.magnifyingglass'))
               .fontSize(17)
@@ -12192,9 +12738,9 @@ struct SshTerminal {
           .accessibilityText(this.terminalSearchVisible ? '聚焦终端搜索' : '打开终端搜索')
         }
         Row({ space: 4 }) {
-          Text('LANG').fontSize(10).fontWeight(FontWeight.Medium)
+          Text(this.sshCompactChrome() ? '语' : 'LANG').fontSize(10).fontWeight(FontWeight.Medium)
             .fontColor('rgba(242,244,247,0.76)')
-          if (this.isDesktopDevice) {
+          if (this.isDesktopDevice && !this.sshCompactChrome()) {
             Text(sshSessionLocaleLabel(this.sshSessionLocale, true))
               .fontSize(10).fontColor('rgba(242,244,247,0.60)')
           }
@@ -12231,6 +12777,7 @@ struct SshTerminal {
           .backgroundColor(this.chromeChipBg())
           .margin({ right: 8 })
           .onClick((): void => { this.openSftpPanel(); })
+          if (!this.sshCompactChrome()) {
           Stack({ alignContent: Alignment.TopEnd }) {
             Row({ space: 4 }) {
               Text('⇄').fontSize(18).fontColor('rgba(242,244,247,0.88)')
@@ -12255,13 +12802,16 @@ struct SshTerminal {
           .backgroundColor(this.chromeChipBg())
           .margin({ right: 8 })
           .onClick((): void => { this.openForwardingSheet(); })
+          }
         }
         Row() {
           Column().width(8).height(8).borderRadius(4)
             .backgroundColor(this.connectionDotColor())
             .shadow({ radius: 8, color: this.connectionDotColor() + '66', offsetY: 0 })
-          Text(this.connectionLabel())
-            .fontSize(11).fontColor('rgba(242,244,247,0.70)').margin({ left: 6 })
+          if (!this.sshCompactChrome()) {
+            Text(this.connectionLabel())
+              .fontSize(11).fontColor('rgba(242,244,247,0.70)').margin({ left: 6 })
+          }
         }
         .height(34)
         .padding({ left: 10, right: 12 })
@@ -12859,6 +13409,37 @@ struct SshTerminal {
       onDisappear: (): void => {
         if (this.showTerminalProfileSheet) { this.showTerminalProfileSheet = false; }
         if (!this.terminalClosing) { this.focusKeyboard(false); }
+      }
+    })
+    .bindSheet($$this.showSshCommandPalette, this.sshCommandPaletteSheet(), {
+      height: this.breakpoint === 'sm' ? SheetSize.LARGE : '620vp',
+      preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
+      width: this.breakpoint === 'sm' ? '100%' : '700vp',
+      dragBar: this.breakpoint === 'sm',
+      backgroundColor: '#171D25',
+      blurStyle: BlurStyle.NONE,
+      showClose: false,
+      maskColor: 'rgba(0,0,0,0.48)',
+      onWillDismiss: (action: DismissSheetAction): void => {
+        if (this.pendingSshCommandId.length === 0) { this.showSshCommandPalette = false; }
+        action.dismiss();
+      },
+      onDisappear: (): void => { this.onSshCommandPaletteDisappear(); }
+    })
+    .bindSheet($$this.showSshTabRenameSheet, this.sshTabRenameSheet(), {
+      height: SheetSize.FIT_CONTENT,
+      preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
+      width: this.breakpoint === 'sm' ? '100%' : '480vp',
+      dragBar: this.breakpoint === 'sm',
+      backgroundColor: '#171D25',
+      blurStyle: BlurStyle.NONE,
+      showClose: false,
+      maskColor: 'rgba(0,0,0,0.44)',
+      onWillDismiss: (action: DismissSheetAction): void => {
+        this.showSshTabRenameSheet = false;
+        this.sshTabRenameHostId = '';
+        this.sshTabRenameDraft = '';
+        action.dismiss();
       }
     })
     .bindSheet($$this.showSshTabPicker, this.sshTabPickerSheet(), {
