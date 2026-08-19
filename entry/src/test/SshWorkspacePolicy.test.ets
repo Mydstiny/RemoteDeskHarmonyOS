@@ -1,4 +1,5 @@
 import { describe, it, expect } from '@ohos/hypium';
+import { common } from '@kit.AbilityKit';
 import {
   createEmptySshWorkspace,
   decodeSshWorkspaceSnapshots,
@@ -18,6 +19,14 @@ import {
   SshWorkspacePlatformFacts,
   SSH_WORKBENCH_V2_DEFAULT_ENABLED
 } from '../main/ets/services/ssh/workspace/SshWorkspaceCapabilityPolicy';
+import { sshTerminalSessionProfileScopeKey } from
+  '../main/ets/services/ssh/profile/SshTerminalProfilePolicy';
+import {
+  setSshWorkspaceCapabilityPreferenceAdapterForTest,
+  SshWorkspaceCapabilityPreferenceAdapter,
+  SshWorkspaceCapabilityPreferenceRead,
+  SshWorkspaceCapabilityStore
+} from '../main/ets/services/ssh/workspace/SshWorkspaceCapabilityStore';
 import {
   resolveSshLayout,
   sameSshLayoutSemantics,
@@ -31,6 +40,24 @@ import {
 import {
   SshWorkspaceRuntimeAdapter
 } from '../main/ets/services/ssh/workspace/SshWorkspaceRuntimeAdapter';
+
+class MemorySshWorkspaceCapabilityPreferences
+  implements SshWorkspaceCapabilityPreferenceAdapter {
+  exists: boolean = false;
+  value: Object = false;
+  writeSucceeded: boolean = true;
+
+  read(_context: common.Context): SshWorkspaceCapabilityPreferenceRead {
+    return { ok: true, exists: this.exists, value: this.value };
+  }
+
+  write(_context: common.Context, enabled: boolean): boolean {
+    if (!this.writeSucceeded) { return false; }
+    this.exists = true;
+    this.value = enabled;
+    return true;
+  }
+}
 
 function tab(id: string, hostId: string, kind: 'terminal' | 'sftp' = 'terminal'): SshWorkspaceTabV1 {
   return {
@@ -78,6 +105,31 @@ export default function sshWorkspacePolicyTest(): void {
       expect(capabilities.workbenchEnabled).assertFalse();
       expect(capabilities.layoutEngine).assertEqual('static');
       expect(capabilities.chromeTreatment).assertEqual('solid');
+    });
+
+    it('cold_direct_ssh_should_restore_durable_workbench_flag', 0, (): void => {
+      const adapter: MemorySshWorkspaceCapabilityPreferences =
+        new MemorySshWorkspaceCapabilityPreferences();
+      adapter.exists = true;
+      adapter.value = true;
+      setSshWorkspaceCapabilityPreferenceAdapterForTest(adapter);
+      const store: SshWorkspaceCapabilityStore = new SshWorkspaceCapabilityStore();
+      const context: common.Context = undefined as common.Context;
+      expect(store.load(context)).assertTrue();
+      adapter.value = 'not-a-boolean';
+      expect(store.load(context)).assertFalse();
+      expect(store.save(context, true)).assertTrue();
+      expect(adapter.value as boolean).assertTrue();
+      setSshWorkspaceCapabilityPreferenceAdapterForTest(null);
+    });
+
+    it('session_profile_scope_should_change_with_session_generation', 0, (): void => {
+      const first: string = sshTerminalSessionProfileScopeKey('host-a', 7);
+      const reconnected: string = sshTerminalSessionProfileScopeKey('host-a', 8);
+      expect(first).assertEqual('host-a:generation:7');
+      expect(reconnected).assertEqual('host-a:generation:8');
+      expect(first === reconnected).assertFalse();
+      expect(sshTerminalSessionProfileScopeKey('host-a', 0)).assertEqual('');
     });
 
     it('unverified_api26_capabilities_should_fail_to_static_semantics', 0, (): void => {

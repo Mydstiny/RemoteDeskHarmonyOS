@@ -40,6 +40,7 @@ export interface SshTerminalSearchResult {
 export const SSH_TERMINAL_SEARCH_MAX_QUERY_LENGTH: number = 512;
 export const SSH_TERMINAL_SEARCH_RESULT_WARN_MS: number = 16;
 export const SSH_TERMINAL_SEARCH_HIGHLIGHT_LIMIT: number = 500;
+export const SSH_TERMINAL_SEARCH_DEBOUNCE_MS: number = 120;
 
 export function defaultSshTerminalSearchOptions(): SshTerminalSearchOptions {
   return { caseSensitive: false, wholeWord: false, regex: false };
@@ -91,6 +92,28 @@ export function encodeSshTerminalSearchRequest(request: SshTerminalSearchRequest
   const clean: SshTerminalSearchRequest | null = createSshTerminalSearchRequest(
     request.requestId, request.query, request.direction, request.options);
   return clean === null ? '' : JSON.stringify(clean);
+}
+
+/** Decode only the page-bridge schema; unknown properties never reach ArkWeb. */
+export function decodeSshTerminalSearchRequest(raw: string): SshTerminalSearchRequest | null {
+  try {
+    const source: SshTerminalSearchRequest = JSON.parse(raw) as SshTerminalSearchRequest;
+    if (source === null || source === undefined || typeof source !== 'object' ||
+      typeof source.requestId !== 'number' || !Number.isInteger(source.requestId) ||
+      typeof source.query !== 'string' ||
+      (source.direction !== 'next' && source.direction !== 'previous') ||
+      source.options === null || source.options === undefined ||
+      typeof source.options !== 'object' ||
+      typeof source.options.caseSensitive !== 'boolean' ||
+      typeof source.options.wholeWord !== 'boolean' ||
+      typeof source.options.regex !== 'boolean') {
+      return null;
+    }
+    return createSshTerminalSearchRequest(
+      source.requestId, source.query, source.direction, source.options);
+  } catch (_err) {
+    return null;
+  }
 }
 
 function unwrapJsonString(raw: string): string {

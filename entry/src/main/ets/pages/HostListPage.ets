@@ -202,6 +202,12 @@ import { SshKeyImportService, SshKeyImportResult } from '../services/SshKeyImpor
 import { SshXtermPrewarmSurface } from '../components/SshXtermSurface';
 import { SshProxyEditor } from '../components/ssh/SshProxyEditor';
 import { SshSettingsService } from '../services/SshSettingsService';
+import {
+  SSH_WORKBENCH_V2_DEFAULT_ENABLED,
+  SSH_WORKBENCH_V2_FLAG_KEY
+} from '../services/ssh/workspace/SshWorkspaceCapabilityPolicy';
+import { SshWorkspaceCapabilityStore } from
+  '../services/ssh/workspace/SshWorkspaceCapabilityStore';
 import { SshProxyProfileV1 } from '../services/SshProxyProfilePolicy';
 import { SshProxyProfileStore } from '../services/SshProxyProfileStore';
 import {
@@ -905,6 +911,8 @@ struct HostListPage {
   @StorageLink('sshTerminalFontSize') terminalFontSize: number = 18;
   @StorageLink('sshTerminalLineSpacing') terminalLineSpacing: number = 1.12;
   @StorageLink('sshInputMode') sshInputMode: number = 1; // 0=自动, 1=虚拟键盘, 2=实体键鼠
+  @StorageLink(SSH_WORKBENCH_V2_FLAG_KEY)
+  sshWorkbenchEnabled: boolean = SSH_WORKBENCH_V2_DEFAULT_ENABLED;
   @State showTerminalFontSize: boolean = false;
   @State showRdpCredentialSheet: boolean = false;
   @State showRdpCredentialEditorSheet: boolean = false;
@@ -1001,6 +1009,8 @@ struct HostListPage {
   private loader: ExtensionLoader = ExtensionLoader.getInstance();
   private sshKeyImporter: SshKeyImportService = new SshKeyImportService();
   private readonly sshSettings: SshSettingsService = SshSettingsService.getInstance();
+  private readonly sshWorkspaceCapabilityStore: SshWorkspaceCapabilityStore =
+    new SshWorkspaceCapabilityStore();
   private readonly sshProxyProfiles: SshProxyProfileStore = new SshProxyProfileStore();
   private lightSensing: LightSensingService = LightSensingService.getInstance();
   @State showPassphraseSheet: boolean = false;
@@ -1170,6 +1180,8 @@ struct HostListPage {
     this.updateWindowMetrics();
     this.refreshHaloPresets();
     this.sshSettings.init(getContext(this) as common.Context);
+    this.sshWorkbenchEnabled = this.sshWorkspaceCapabilityStore.load(
+      getContext(this) as common.Context);
     this.sshProxyProfiles.init(getContext(this) as common.Context);
     this.proSync.init(getContext(this) as common.Context);
     // 恢复 TOTP 隐私保护状态 (Preferences 持久化)
@@ -8331,6 +8343,11 @@ struct HostListPage {
     this.persistPref('sshInputMode', this.sshInputMode);
   }
 
+  private saveSshWorkbenchEnabled(enabled: boolean): void {
+    this.sshWorkbenchEnabled = enabled;
+    this.sshWorkspaceCapabilityStore.save(getContext(this) as common.Context, enabled);
+  }
+
   private saveSshLineSpacing(value: number): void {
     this.terminalLineSpacing = this.sshSettings.saveLineSpacing(value);
   }
@@ -11456,6 +11473,21 @@ struct HostListPage {
                 Text(' >').fontSize(14).fontColor(this.pal().text3).margin({ left: 6 })
               }.width('100%').height(60).padding({ left: 16, right: 16 })
                 .onClick(() => { this.openSettingsLeafSheet(SETTINGS_SHEET_TERMINAL_LINE_SPACING); })
+              this.cardDivider()
+              Row() {
+                Column() {
+                  Text('新 SSH 工作台').fontSize(AppTheme.fontSize.body)
+                    .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
+                  Text('启用终端搜索、命名 Profile 与后续分屏能力；关闭时沿用现有终端')
+                    .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+                    .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+                }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 16 })
+                Toggle({ type: ToggleType.Switch, isOn: this.sshWorkbenchEnabled })
+                  .selectedColor(this.accentColor)
+                  .onChange((enabled: boolean): void => {
+                    this.saveSshWorkbenchEnabled(enabled);
+                  })
+              }.width('100%').height(66).padding({ right: 16 })
               this.cardDivider()
               this.sshInputModeRow()
               this.cardDivider()

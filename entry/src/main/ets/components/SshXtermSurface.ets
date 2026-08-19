@@ -8,6 +8,14 @@
  */
 import { webview } from '@kit.ArkWeb';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import {
+  decodeSshTerminalSearchRequest,
+  decodeSshTerminalSearchResult,
+  encodeSshTerminalSearchRequest,
+  invalidSshTerminalSearchResult,
+  SshTerminalSearchRequest,
+  SshTerminalSearchResult
+} from '../services/ssh/search/SshTerminalSearchPolicy';
 
 const XTERM_DOMAIN: number = 0x0000;
 const XTERM_TAG: string = 'SshXtermSurface';
@@ -99,6 +107,17 @@ export struct SshXtermSurface {
   @Prop @Watch('onAppearanceChange') bottomAlignSparseContent: boolean = false;
   @Prop @Watch('onAppearanceChange') bottomAlignSafeRows: number = 0;
   @Prop @Watch('onAppearanceChange') bottomInsetPx: number = 10;
+  @Prop @Watch('onAppearanceChange') profileEnabled: boolean = false;
+  @Prop @Watch('onAppearanceChange') profileForegroundColor: string = '#33FF33';
+  @Prop @Watch('onAppearanceChange') profileBackgroundColor: string = '#0D0D0D';
+  @Prop @Watch('onAppearanceChange') profilePalette: string[] = [];
+  @Prop @Watch('onAppearanceChange') profileFontFamily: string = 'monospace';
+  @Prop @Watch('onAppearanceChange') profileFontWeight: string = 'normal';
+  @Prop @Watch('onAppearanceChange') profileCursorStyle: string = 'bar';
+  @Prop @Watch('onAppearanceChange') profileCursorBlink: boolean = true;
+  @Prop @Watch('onAppearanceChange') profileScrollback: number = 10000;
+  @Prop @Watch('onAppearanceChange') profileBellStyle: string = 'none';
+  @Prop profileCopyOnSelect: boolean = false;
   @StorageProp('sshTerminalForegroundColor') @Watch('onAppearanceChange') terminalFgColor: string = '#33FF33';
   @Prop @Watch('onOutputSequenceChange') outputSequence: number = 0;
   /** Replace the current document with one host transcript after a revision handoff. */
@@ -110,6 +129,10 @@ export struct SshXtermSurface {
   @Prop @Watch('onForceScrollToBottomRequest') forceScrollToBottomRequest: number = 0;
   @Prop @Watch('onExternalScrollRequest') externalScrollRequest: number = 0;
   @Prop externalScrollLines: number = 0;
+  /** JSON-whitelisted request; only the active host receives a non-empty value. */
+  @Prop @Watch('onSearchRequestChange') searchRequest: string = '';
+  /** Monotonic clear fence, replayed when a previously hidden tab becomes active. */
+  @Prop @Watch('onSearchClearRequestChange') searchClearRequest: number = 0;
   /** Ordinary reference: it is deliberately outside ArkUI observation. */
   outputBuffer: XtermOutputBuffer = new XtermOutputBuffer();
   @Link copiedText: string;
@@ -117,6 +140,7 @@ export struct SshXtermSurface {
   onResize?: (cols: number, rows: number, surfaceKey: string) => void;
   onReady?: (surfaceKey: string) => void;
   onTerminalFocus?: (focused: boolean, surfaceKey: string) => void;
+  onSearchResult?: (result: SshTerminalSearchResult, surfaceKey: string) => void;
 
   private controller: webview.WebviewController = new webview.WebviewController();
   private bridge: SshXtermBridgeProxy = new SshXtermBridgeProxy();
@@ -155,6 +179,8 @@ export struct SshXtermSurface {
   private pendingOutputBuffer: XtermOutputBuffer | null = null;
   private disposed: boolean = false;
   private lifecycleToken: number = 0;
+  private lastSearchExecutionKey: string = '';
+  private appliedSearchClearRequest: number = -1;
 
   private logLifecycle(message: string): void {
     hilog.info(XTERM_DOMAIN, XTERM_TAG, message);
@@ -208,6 +234,8 @@ export struct SshXtermSurface {
     this.reloadRequestedDocumentKey = '';
     this.documentReloadPending = false;
     this.awaitingOutputBatch = 0;
+    this.lastSearchExecutionKey = '';
+    this.appliedSearchClearRequest = this.normalizedSearchClearRequest();
     // Give every document its own proxy. A late callback from the previous
     // document must not satisfy the readiness gate of the new host.
     this.bridge = new SshXtermBridgeProxy();
@@ -234,6 +262,8 @@ export struct SshXtermSurface {
     this.pendingWrites = [];
     this.outputPumpRunning = false;
     this.awaitingOutputBatch = 0;
+    this.lastSearchExecutionKey = '';
+    this.appliedSearchClearRequest = this.normalizedSearchClearRequest();
     if (this.outputPumpRetryTimer !== -1) {
       clearTimeout(this.outputPumpRetryTimer);
       this.outputPumpRetryTimer = -1;
@@ -291,7 +321,12 @@ export struct SshXtermSurface {
         this.onResize(cols, rows, this.surfaceIdentity());
       }
     };
-    this.bridge.onSelectionCallback = (_text: string): void => {};
+    this.bridge.onSelectionCallback = (text: string): void => {
+      if (lifecycleToken === this.lifecycleToken && !this.disposed &&
+        this.active && this.profileEnabled && this.profileCopyOnSelect && text.length > 0) {
+        this.copiedText = text;
+      }
+    };
     this.bridge.onFocusCallback = (focused: boolean): void => {
       if (lifecycleToken === this.lifecycleToken && this.onTerminalFocus && !this.disposed) {
         this.onTerminalFocus(focused, this.surfaceIdentity());
@@ -365,9 +400,16 @@ export struct SshXtermSurface {
       rows: Math.max(3, Math.floor(this.rows)),
       fontSize: normalizedFontSize,
       lineHeight: normalizedLineSpacing,
-      fontFamily: 'monospace',
-      foreground: this.terminalFgColor,
-      background: '#0D0D0D',
+      fontFamily: this.profileEnabled && this.profileFontFamily !== 'monospace' ?
+        this.profileFontFamily + ', monospace' : 'monospace',
+      fontWeight: this.profileEnabled ? this.profileFontWeight : 'normal',
+      foreground: this.profileEnabled ? this.profileForegroundColor : this.terminalFgColor,
+      background: this.profileEnabled ? this.profileBackgroundColor : '#0D0D0D',
+      palette: this.profileEnabled ? this.profilePalette : [],
+      cursorStyle: this.profileEnabled ? this.profileCursorStyle : 'bar',
+      cursorBlink: this.profileEnabled ? this.profileCursorBlink : true,
+      scrollback: this.profileEnabled ? this.profileScrollback : 10000,
+      bellStyle: this.profileEnabled ? this.profileBellStyle : 'none',
       bottomAlignSparseContent: this.bottomAlignSparseContent,
       bottomAlignSafeRows: Math.max(0, Math.min(6, Math.floor(this.bottomAlignSafeRows))),
       bottomInsetPx: Math.max(0, Math.min(20, Math.floor(this.bottomInsetPx)))
@@ -400,6 +442,84 @@ export struct SshXtermSurface {
       });
     } catch (_err) {
       if (onFailure) { onFailure(); }
+    }
+  }
+
+  private normalizedSearchClearRequest(): number {
+    const requested: number = Number(this.searchClearRequest);
+    return Number.isFinite(requested) ? Math.max(0, Math.floor(requested)) : 0;
+  }
+
+  private searchExecutionCurrent(lifecycleToken: number, surfaceIdentity: string,
+    payload: string): boolean {
+    return lifecycleToken === this.lifecycleToken && !this.disposed && this.active &&
+      this.pageReady && surfaceIdentity === this.surfaceIdentity() &&
+      payload === this.searchRequest.trim();
+  }
+
+  private reportSearchResult(result: SshTerminalSearchResult, lifecycleToken: number,
+    surfaceIdentity: string, payload: string): void {
+    if (!this.searchExecutionCurrent(lifecycleToken, surfaceIdentity, payload)) { return; }
+    if (this.onSearchResult) { this.onSearchResult(result, surfaceIdentity); }
+  }
+
+  private executeSearchRequest(): void {
+    if (!this.active || !this.pageReady || this.documentReloadPending || this.disposed) { return; }
+    const requestedPayload: string = this.searchRequest.trim();
+    if (requestedPayload.length === 0) { return; }
+    const request: SshTerminalSearchRequest | null =
+      decodeSshTerminalSearchRequest(requestedPayload);
+    if (request === null) { return; }
+    const payload: string = encodeSshTerminalSearchRequest(request);
+    if (payload.length === 0) { return; }
+    const lifecycleToken: number = this.lifecycleToken;
+    const surfaceIdentity: string = this.surfaceIdentity();
+    const executionKey: string = lifecycleToken.toString() + ':' + surfaceIdentity + ':' + payload;
+    if (executionKey === this.lastSearchExecutionKey) { return; }
+    this.lastSearchExecutionKey = executionKey;
+    const script: string = '(function(request){' +
+      'if(typeof window.__sshXtermSearch!=="function"){' +
+      'return JSON.stringify({requestId:request.requestId,found:false,resultIndex:-1,' +
+      'resultCount:0,elapsedMs:0,errorCode:"search_unavailable"});}' +
+      'return window.__sshXtermSearch(request);' +
+      '})(' + payload + ');';
+    try {
+      this.controller.runJavaScript(script).then((rawResult: string): void => {
+        if (!this.searchExecutionCurrent(lifecycleToken, surfaceIdentity, payload)) { return; }
+        const result: SshTerminalSearchResult =
+          decodeSshTerminalSearchResult(rawResult ?? '', request.requestId);
+        this.reportSearchResult(result, lifecycleToken, surfaceIdentity, payload);
+      }).catch((_err: Error): void => {
+        if (!this.searchExecutionCurrent(lifecycleToken, surfaceIdentity, payload)) { return; }
+        this.lastSearchExecutionKey = '';
+        this.reportSearchResult(
+          invalidSshTerminalSearchResult(request.requestId, 'execution_failed'),
+          lifecycleToken, surfaceIdentity, payload);
+      });
+    } catch (_err) {
+      if (!this.searchExecutionCurrent(lifecycleToken, surfaceIdentity, payload)) { return; }
+      this.lastSearchExecutionKey = '';
+      this.reportSearchResult(
+        invalidSshTerminalSearchResult(request.requestId, 'execution_failed'),
+        lifecycleToken, surfaceIdentity, payload);
+    }
+  }
+
+  private executeSearchClear(): void {
+    if (!this.active || !this.pageReady || this.documentReloadPending || this.disposed) { return; }
+    const request: number = this.normalizedSearchClearRequest();
+    if (request === this.appliedSearchClearRequest) { return; }
+    this.appliedSearchClearRequest = request;
+    this.lastSearchExecutionKey = '';
+    this.runPageScript(
+      'if(typeof window.__sshXtermClearSearch==="function"){window.__sshXtermClearSearch();}');
+  }
+
+  private reconcileSearchState(): void {
+    if (this.searchRequest.trim().length > 0) {
+      this.executeSearchRequest();
+    } else {
+      this.executeSearchClear();
     }
   }
 
@@ -592,6 +712,7 @@ export struct SshXtermSurface {
     if (!this.active) { return; }
     this.applyPageConfigAfterLoad();
     this.flushOutputBuffer();
+    this.reconcileSearchState();
     if (this.onResize && cols > 0 && rows > 0) {
       this.onResize(cols, rows, this.surfaceIdentity());
     }
@@ -756,6 +877,8 @@ export struct SshXtermSurface {
     this.pageReady = false;
     this.readyReported = false;
     this.pendingCoreReset = false;
+    this.lastSearchExecutionKey = '';
+    this.appliedSearchClearRequest = this.normalizedSearchClearRequest();
     this.documentReloadPending = true;
     this.reloadRequestedDocumentKey = requestedDocumentKey;
     try { this.controller.deleteJavaScriptRegister('sshTerminalBridge'); } catch (_err) {
@@ -972,6 +1095,7 @@ export struct SshXtermSurface {
     this.flushOutputBuffer();
     this.pumpOutput();
     this.scheduleFit();
+    this.reconcileSearchState();
   }
 
   private onSurfaceRefreshRequestChange(): void {
@@ -983,6 +1107,7 @@ export struct SshXtermSurface {
     this.flushOutputBuffer();
     this.pumpOutput();
     this.scheduleFit();
+    this.reconcileSearchState();
   }
 
   private onReadyProbeRequestChange(): void {
@@ -1050,7 +1175,22 @@ export struct SshXtermSurface {
       // a retained DOM cannot show both its old rows and the restored rows.
       this.flushOutputBuffer();
       this.scheduleFit();
+      this.lastSearchExecutionKey = '';
+      this.executeSearchRequest();
     });
+  }
+
+  private onSearchRequestChange(): void {
+    if (this.searchRequest.trim().length === 0) {
+      this.lastSearchExecutionKey = '';
+      this.executeSearchClear();
+      return;
+    }
+    this.executeSearchRequest();
+  }
+
+  private onSearchClearRequestChange(): void {
+    if (this.searchRequest.trim().length === 0) { this.executeSearchClear(); }
   }
 
   private onFocusRequest(): void {

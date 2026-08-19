@@ -70,6 +70,9 @@ import { RemoteHost } from '../model/RemoteHost';
 import { Palette, buildDark, buildLight } from '../common/Theme';
 import { showLockGate, lockGateErrorMessage } from '../components/LockGate';
 import { SshXtermSurface, XtermOutputBuffer } from '../components/SshXtermSurface';
+import { SshTerminalSearchBar } from '../components/ssh/search/SshTerminalSearchBar';
+import { SshTerminalProfileSheet } from
+  '../components/ssh/profile/SshTerminalProfileSheet';
 import { GpuTerminalRenderer } from '../components/GpuTerminalRenderer';
 import { TerminalInputBuffer } from '../components/SshTerminalSurface';
 import { TerminalCoreBridge } from '../napi/TerminalCoreBridge';
@@ -181,6 +184,40 @@ import {
   sameSshSessionHandle
 } from '../services/SshSessionStore';
 import { SshModalCoordinator, SshModalDecision } from '../services/SshModalCoordinator';
+import {
+  createSshTerminalSearchRequest,
+  defaultSshTerminalSearchOptions,
+  encodeSshTerminalSearchRequest,
+  SSH_TERMINAL_SEARCH_DEBOUNCE_MS,
+  SSH_TERMINAL_SEARCH_RESULT_WARN_MS,
+  sshTerminalSearchResultLabel,
+  SshTerminalSearchDirection,
+  SshTerminalSearchOptions,
+  SshTerminalSearchResult,
+  SshTerminalSearchValidation,
+  validateSshTerminalSearchQuery
+} from '../services/ssh/search/SshTerminalSearchPolicy';
+import {
+  routeSshShortcut,
+  SshShortcutChord,
+  SshShortcutContext,
+  SshShortcutDecision,
+  SshShortcutKey
+} from '../services/ssh/shortcut/SshShortcutPolicy';
+import {
+  SSH_WORKBENCH_V2_DEFAULT_ENABLED,
+  SSH_WORKBENCH_V2_FLAG_KEY
+} from '../services/ssh/workspace/SshWorkspaceCapabilityPolicy';
+import { SshWorkspaceCapabilityStore } from
+  '../services/ssh/workspace/SshWorkspaceCapabilityStore';
+import {
+  defaultSshTerminalResolvedProfile,
+  sshTerminalSessionProfileScopeKey,
+  SshTerminalProfileV1,
+  SshTerminalResolvedProfile
+} from '../services/ssh/profile/SshTerminalProfilePolicy';
+import { SshTerminalProfileStore } from
+  '../services/ssh/profile/SshTerminalProfileStore';
 import {
   TransferSession,
   TransferStage,
@@ -397,6 +434,25 @@ struct SshTerminal {
   @State externalKeyboardMouseConnected: boolean = false;
   /** 终端焦点模式：Tab 发送给远端；Shift+Tab 退出并交回应用焦点链。 */
   @State terminalFocusMode: boolean = true;
+  @StorageProp(SSH_WORKBENCH_V2_FLAG_KEY) @Watch('onSshWorkbenchFlagChange')
+  sshWorkbenchEnabled: boolean = SSH_WORKBENCH_V2_DEFAULT_ENABLED;
+  @State terminalSearchVisible: boolean = false;
+  @State terminalSearchQuery: string = '';
+  @State terminalSearchCaseSensitive: boolean = false;
+  @State terminalSearchWholeWord: boolean = false;
+  @State terminalSearchRegex: boolean = false;
+  @State terminalSearchResultLabel: string = '';
+  @State terminalSearchValidationMessage: string = '';
+  @State terminalSearchRequestPayload: string = '';
+  @State terminalSearchClearRequest: number = 0;
+  @State terminalSearchFocusRequest: number = 0;
+  @State showTerminalProfileSheet: boolean = false;
+  @State terminalProfiles: SshTerminalProfileV1[] = [];
+  @State resolvedTerminalProfile: SshTerminalResolvedProfile =
+    defaultSshTerminalResolvedProfile();
+  @State terminalGlobalProfileId: string = '';
+  @State terminalHostProfileId: string = '';
+  @State terminalSessionProfileId: string = '';
   @State softKeyboardRequested: boolean = false;
   @State terminalFocusRequest: number = 0;
   @State xtermReady: boolean = false;
@@ -436,6 +492,15 @@ struct SshTerminal {
   @State forceScrollToBottomRequest: number = 0;
   @State terminalExternalScrollLines: number = 0;
   @State terminalExternalScrollRequest: number = 0;
+  private terminalSearchTargetHostId: string = '';
+  private terminalSearchRequestSequence: number = 0;
+  private terminalSearchPendingRequestId: number = 0;
+  private terminalSearchDebounceTimer: number = -1;
+  private terminalProfileStore: SshTerminalProfileStore = new SshTerminalProfileStore();
+  private sshWorkspaceCapabilityStore: SshWorkspaceCapabilityStore =
+    new SshWorkspaceCapabilityStore();
+  private terminalSessionProfileIds: Map<string, string> = new Map<string, string>();
+  private resolvedTerminalProfileSessionKey: string = '';
   /** SSH 协议级 keepalive 延迟 */
   @State latencyMs: number = -1;
   /** One-shot keyboard-interactive/MFA prompt currently owned by this page. */
@@ -1673,6 +1738,8 @@ struct SshTerminal {
     if (targetHostId === this.hostId) {
       return;
     }
+    this.closeTerminalSearch(false, true);
+    this.showTerminalProfileSheet = false;
     // Keep one page alive for the whole SSH workspace. The switch operation
     // detaches only the old session callback, adopts the target session and
     // rebinds the visible renderer; it must never route-replace the page.
@@ -1813,6 +1880,7 @@ struct SshTerminal {
     }
 
     this.hostId = targetHostId;
+    this.refreshTerminalProfileForHost(targetHostId);
     this.sshSessionLocale = this.sshSettings.getSshSessionLocale(targetHostId);
     this.forwardingProfiles = [];
     this.forwardingRuntimes = [];
@@ -2463,7 +2531,14 @@ struct SshTerminal {
   }
 
   private finishTerminalPinchZoom(): void {
-    this.fontSize = this.sshSettings.saveFontSize(this.fontSize);
+    if (this.terminalProfileEnabled()) {
+      // Profile mode treats pinch as a live session zoom. Mutating the named
+      // profile or legacy cloud appearance would make a viewport gesture
+      // silently affect other hosts and future sessions.
+      this.fontSize = sshTerminalFontSizeForPinch(this.fontSize, 1);
+    } else {
+      this.fontSize = this.sshSettings.saveFontSize(this.fontSize);
+    }
     this.clearTerminalZoomIndicatorTimer();
     this.terminalZoomIndicatorTimer = setTimeout((): void => {
       this.terminalZoomIndicatorTimer = -1;
@@ -5477,6 +5552,10 @@ struct SshTerminal {
     const pageGeneration: number = ++this.pageGeneration;
     const bindingGeneration: number = ++this.sshBindingGeneration;
     this.terminalClosing = false;
+    this.closeTerminalSearch(false, true);
+    this.showTerminalProfileSheet = false;
+    this.terminalSessionProfileIds.clear();
+    this.resolvedTerminalProfileSessionKey = '';
     this.sshProxyProfilesReady = false;
     this.sshForwardingProfilesReady = false;
     this.clearForwardingRefreshTimer();
@@ -5492,11 +5571,14 @@ struct SshTerminal {
       // AppStorage. Read the durable appearance here as well so mobile xterm
       // never boots with a default font that masks the user's saved choice.
       const sshContext: common.Context = getContext(this) as common.Context;
+      this.sshWorkbenchEnabled = this.sshWorkspaceCapabilityStore.load(sshContext);
       const appearance: SshTerminalAppearance = this.sshSettings.init(sshContext);
+      this.terminalProfileStore.init(sshContext, appearance);
       this.sshProxyProfilesReady = this.sshProxyProfiles.init(sshContext);
       this.sshForwardingProfilesReady = this.sshForwardingProfiles.init(sshContext);
       this.fontSize = appearance.fontSize;
       this.lineSpacing = appearance.lineSpacing;
+      this.refreshTerminalProfileForHost('');
       hilog.info(0x0000, 'SshTerminal', '[appearance] restored font=' +
         appearance.fontSize.toString() + ' lineSpacing=' + appearance.lineSpacing.toString());
     } catch (err) {
@@ -5516,6 +5598,7 @@ struct SshTerminal {
     this.sshTabStoreUnsubscribe = this.sshTabStore.subscribe((): void => {
       if (this.isPageGenerationActive(pageGeneration)) {
         this.refreshSshTabViews();
+        this.reconcileTerminalProfileSessionScope();
       }
     });
     this.refreshSshTabViews();
@@ -5685,6 +5768,7 @@ struct SshTerminal {
       ? this.srv.getHost(initialHostId) : undefined;
     if (initialHost !== undefined) {
       this.hostId = initialHostId;
+      this.refreshTerminalProfileForHost(initialHostId);
       this.sshSessionLocale = this.sshSettings.getSshSessionLocale(initialHostId);
       this.refreshForwardingProfiles();
       this.visibleSshHostId = initialHostId;
@@ -5722,6 +5806,7 @@ struct SshTerminal {
       const id: string = p['hostId'] as string;
       if (id) {
         this.hostId = id;
+        this.refreshTerminalProfileForHost(this.hostId);
         const windowPreauthenticated: boolean = this.sessionWindowId.length > 0 &&
           p['sshWindowPreauthenticated'] === true;
         this.seedIndependentWindowTranscript(p, this.hostId);
@@ -5820,6 +5905,8 @@ struct SshTerminal {
 
   aboutToDisappear(): void {
     this.stopSshAuthPromptPolling(true);
+    this.closeTerminalSearch(false, true);
+    this.showTerminalProfileSheet = false;
     this.clearSshTabPickerExitRecovery();
     this.clearTerminalInputFocusRetry();
     this.clearTerminalZoomIndicatorTimer();
@@ -6923,6 +7010,10 @@ struct SshTerminal {
   /** Explicit page exit owns the SSH session; ordinary page disposal only detaches the view. */
   private closeSessionAndBack(): void {
     if (this.terminalClosing) { return; }
+    if (this.terminalSearchVisible) {
+      this.closeTerminalSearch();
+      return;
+    }
     if (this.showForwardingSheet ||
       this.forwardingModalCoordinator.currentPhase() === 'closing') {
       this.closeForwardingSheet();
@@ -7202,6 +7293,421 @@ struct SshTerminal {
     else if (modifier === 'shift') { this.shiftActive = active; }
   }
 
+  private terminalProfileEnabled(): boolean {
+    return this.sshWorkbenchEnabled && this.terminalProfileStore.isReady();
+  }
+
+  private restoreLegacyTerminalAppearance(): void {
+    const appearance: SshTerminalAppearance = this.sshSettings.get();
+    this.fontSize = appearance.fontSize;
+    this.lineSpacing = appearance.lineSpacing;
+  }
+
+  private refreshTerminalProfileForHost(hostId: string = this.hostId): void {
+    if (!this.terminalProfileStore.isReady()) {
+      this.terminalProfiles = [];
+      this.terminalGlobalProfileId = '';
+      this.terminalHostProfileId = '';
+      this.terminalSessionProfileId = '';
+      this.resolvedTerminalProfileSessionKey = '';
+      this.resolvedTerminalProfile = defaultSshTerminalResolvedProfile();
+      if (!this.sshWorkbenchEnabled) { this.restoreLegacyTerminalAppearance(); }
+      return;
+    }
+    const normalizedHostId: string = hostId.trim();
+    const sessionScopeKey: string = sshTerminalSessionProfileScopeKey(
+      normalizedHostId, this.sshTabStore.sessionGeneration(normalizedHostId));
+    const sessionProfileId: string = sessionScopeKey.length > 0 ?
+      (this.terminalSessionProfileIds.get(sessionScopeKey) ?? '') : '';
+    const sessionProfile: SshTerminalProfileV1 | null =
+      sessionProfileId.length > 0 ? this.terminalProfileStore.profile(sessionProfileId) : null;
+    this.terminalProfiles = this.terminalProfileStore.listProfiles();
+    this.terminalGlobalProfileId = this.terminalProfileStore.globalProfileId();
+    this.terminalHostProfileId = this.terminalProfileStore.hostProfileId(normalizedHostId);
+    this.terminalSessionProfileId = sessionProfile === null ? '' : sessionProfile.id;
+    this.resolvedTerminalProfileSessionKey = sessionScopeKey;
+    this.resolvedTerminalProfile = this.terminalProfileStore.resolve(
+      normalizedHostId, sessionProfile);
+    if (this.sshWorkbenchEnabled) {
+      this.fontSize = this.resolvedTerminalProfile.fontSize;
+      this.lineSpacing = this.resolvedTerminalProfile.lineSpacing;
+    } else {
+      this.restoreLegacyTerminalAppearance();
+    }
+  }
+
+  private reconcileTerminalProfileSessionScope(): void {
+    const normalizedHostId: string = this.hostId.trim();
+    const currentScopeKey: string = sshTerminalSessionProfileScopeKey(
+      normalizedHostId, this.sshTabStore.sessionGeneration(normalizedHostId));
+    if (currentScopeKey === this.resolvedTerminalProfileSessionKey) { return; }
+    if (normalizedHostId.length > 0) {
+      const prefix: string = normalizedHostId + ':generation:';
+      this.terminalSessionProfileIds.forEach((_value: string, key: string): void => {
+        if (key.startsWith(prefix) && key !== currentScopeKey) {
+          this.terminalSessionProfileIds.delete(key);
+        }
+      });
+    }
+    this.refreshTerminalProfileForHost(normalizedHostId);
+  }
+
+  private publishGlobalProfileCompatibility(): void {
+    if (!this.terminalProfileStore.isReady()) { return; }
+    const global: SshTerminalResolvedProfile = this.terminalProfileStore.resolve('', null);
+    this.sshSettings.saveForegroundColor(global.foregroundColor);
+    this.sshSettings.saveFontSize(global.fontSize);
+    this.sshSettings.saveLineSpacing(global.lineSpacing);
+  }
+
+  private openTerminalProfileSheet(): void {
+    if (!this.terminalProfileEnabled() || this.sshModalOwnsKeyboard()) { return; }
+    this.closeTerminalSearch(false);
+    this.refreshTerminalProfileForHost();
+    this.terminalFocusMode = false;
+    this.showTerminalProfileSheet = true;
+  }
+
+  private closeTerminalProfileSheet(): void {
+    this.showTerminalProfileSheet = false;
+    setTimeout((): void => {
+      if (!this.terminalClosing && !this.showTerminalProfileSheet) { this.focusKeyboard(false); }
+    }, 32);
+  }
+
+  private saveTerminalProfile(profile: SshTerminalProfileV1): void {
+    if (!this.terminalProfileStore.upsertProfile(profile)) {
+      promptAction.showToast({ message: 'Profile 保存失败', duration: 1800 });
+      return;
+    }
+    if (profile.id === this.terminalProfileStore.globalProfileId()) {
+      this.publishGlobalProfileCompatibility();
+    }
+    this.refreshTerminalProfileForHost();
+  }
+
+  private removeTerminalProfile(profileId: string): void {
+    const removedGlobalProfile: boolean =
+      profileId === this.terminalProfileStore.globalProfileId();
+    if (!this.terminalProfileStore.removeProfile(profileId)) {
+      promptAction.showToast({ message: 'Profile 删除失败', duration: 1800 });
+      return;
+    }
+    this.terminalSessionProfileIds.forEach((value: string, hostId: string): void => {
+      if (value === profileId) { this.terminalSessionProfileIds.delete(hostId); }
+    });
+    if (removedGlobalProfile) { this.publishGlobalProfileCompatibility(); }
+    this.refreshTerminalProfileForHost();
+  }
+
+  private setGlobalTerminalProfile(profileId: string): void {
+    if (!this.terminalProfileStore.setGlobalProfile(profileId)) {
+      promptAction.showToast({ message: '无法应用全局 Profile', duration: 1800 });
+      return;
+    }
+    this.publishGlobalProfileCompatibility();
+    this.refreshTerminalProfileForHost();
+  }
+
+  private setHostTerminalProfile(profileId: string): void {
+    if (!this.terminalProfileStore.assignHost(this.hostId, profileId)) {
+      promptAction.showToast({ message: '无法应用主机 Profile', duration: 1800 });
+      return;
+    }
+    this.refreshTerminalProfileForHost();
+  }
+
+  private setSessionTerminalProfile(profileId: string): void {
+    const normalizedHostId: string = this.hostId.trim();
+    const sessionScopeKey: string = sshTerminalSessionProfileScopeKey(
+      normalizedHostId, this.sshTabStore.sessionGeneration(normalizedHostId));
+    if (sessionScopeKey.length === 0) {
+      promptAction.showToast({ message: 'SSH 会话就绪后才能应用会话 Profile', duration: 1800 });
+      return;
+    }
+    if (profileId.length > 0 && this.terminalProfileStore.profile(profileId) === null) { return; }
+    if (profileId.length === 0) { this.terminalSessionProfileIds.delete(sessionScopeKey); }
+    else { this.terminalSessionProfileIds.set(sessionScopeKey, profileId); }
+    this.refreshTerminalProfileForHost();
+  }
+
+  @Builder
+  private TerminalProfileSheetContent() {
+    SshTerminalProfileSheet({
+      profiles: this.terminalProfiles,
+      resolvedProfile: this.resolvedTerminalProfile,
+      globalProfileId: this.terminalGlobalProfileId,
+      hostProfileId: this.terminalHostProfileId,
+      sessionProfileId: this.terminalSessionProfileId,
+      hostLabel: this.hostLabel,
+      onClose: (): void => { this.closeTerminalProfileSheet(); },
+      onSaveProfile: (profile: SshTerminalProfileV1): void => {
+        this.saveTerminalProfile(profile);
+      },
+      onRemoveProfile: (profileId: string): void => {
+        this.removeTerminalProfile(profileId);
+      },
+      onSetGlobalProfile: (profileId: string): void => {
+        this.setGlobalTerminalProfile(profileId);
+      },
+      onSetHostProfile: (profileId: string): void => {
+        this.setHostTerminalProfile(profileId);
+      },
+      onSetSessionProfile: (profileId: string): void => {
+        this.setSessionTerminalProfile(profileId);
+      }
+    })
+  }
+
+  private terminalSearchAvailable(): boolean {
+    return this.sshWorkbenchEnabled && !this.terminalClosing &&
+      this.hostId.trim().length > 0 && this.sshTabViews.length > 0;
+  }
+
+  private sshModalOwnsKeyboard(): boolean {
+    return this.showSshAuthPromptSheet || this.showPassphraseSheet ||
+      this.showForwardingSheet || this.showForwardingConfirmSheet ||
+      this.forwardingModalCoordinator.currentPhase() === 'closing' ||
+      this.showSftpPanel || this.showSftpSheet || this.sftpPeerHostPicker ||
+      this.showSshTabPicker || this.sshTabPickerClosing || this.showTerminalProfileSheet;
+  }
+
+  private clearTerminalSearchDebounce(): void {
+    if (this.terminalSearchDebounceTimer !== -1) {
+      clearTimeout(this.terminalSearchDebounceTimer);
+      this.terminalSearchDebounceTimer = -1;
+    }
+  }
+
+  private terminalSearchOptions(): SshTerminalSearchOptions {
+    const options: SshTerminalSearchOptions = defaultSshTerminalSearchOptions();
+    options.caseSensitive = this.terminalSearchCaseSensitive;
+    options.wholeWord = this.terminalSearchWholeWord;
+    options.regex = this.terminalSearchRegex;
+    return options;
+  }
+
+  private clearTerminalSearchDecorations(): void {
+    this.terminalSearchRequestPayload = '';
+    this.terminalSearchPendingRequestId = 0;
+    this.terminalSearchResultLabel = '';
+    this.terminalSearchClearRequest = this.terminalSearchClearRequest + 1;
+  }
+
+  private requestTerminalSearch(direction: SshTerminalSearchDirection): void {
+    this.clearTerminalSearchDebounce();
+    if (!this.terminalSearchVisible || !this.terminalSearchAvailable()) { return; }
+    const options: SshTerminalSearchOptions = this.terminalSearchOptions();
+    const validation: SshTerminalSearchValidation =
+      validateSshTerminalSearchQuery(this.terminalSearchQuery, options);
+    if (!validation.valid) {
+      this.terminalSearchValidationMessage = validation.message;
+      this.clearTerminalSearchDecorations();
+      return;
+    }
+    const requestId: number = ++this.terminalSearchRequestSequence;
+    const request = createSshTerminalSearchRequest(
+      requestId, this.terminalSearchQuery, direction, options);
+    if (request === null) {
+      this.terminalSearchValidationMessage = '无法创建搜索请求';
+      this.clearTerminalSearchDecorations();
+      return;
+    }
+    const payload: string = encodeSshTerminalSearchRequest(request);
+    if (payload.length === 0) {
+      this.terminalSearchValidationMessage = '无法创建搜索请求';
+      this.clearTerminalSearchDecorations();
+      return;
+    }
+    this.terminalSearchTargetHostId = this.hostId.trim();
+    this.terminalSearchPendingRequestId = requestId;
+    this.terminalSearchValidationMessage = '';
+    this.terminalSearchRequestPayload = payload;
+  }
+
+  private scheduleTerminalSearch(): void {
+    this.clearTerminalSearchDebounce();
+    if (!this.terminalSearchVisible || this.terminalSearchQuery.length === 0) {
+      this.clearTerminalSearchDecorations();
+      return;
+    }
+    const pageGeneration: number = this.pageGeneration;
+    const bindingGeneration: number = this.sshBindingGeneration;
+    const targetHostId: string = this.hostId.trim();
+    this.terminalSearchDebounceTimer = setTimeout((): void => {
+      this.terminalSearchDebounceTimer = -1;
+      if (!this.isSshBindingActive(pageGeneration, bindingGeneration, targetHostId) ||
+        !this.terminalSearchVisible || this.terminalSearchTargetHostId !== targetHostId) {
+        return;
+      }
+      this.requestTerminalSearch('next');
+    }, SSH_TERMINAL_SEARCH_DEBOUNCE_MS);
+  }
+
+  private openTerminalSearch(): void {
+    if (!this.terminalSearchAvailable() || this.sshModalOwnsKeyboard()) { return; }
+    this.clearTerminalSearchDebounce();
+    this.terminalSearchTargetHostId = this.hostId.trim();
+    this.terminalSearchVisible = true;
+    this.terminalFocusMode = false;
+    this.softKeyboardRequested = false;
+    this.terminalSearchValidationMessage = '';
+    this.terminalSearchFocusRequest = this.terminalSearchFocusRequest + 1;
+    if (this.terminalSearchQuery.length > 0) { this.requestTerminalSearch('next'); }
+  }
+
+  private focusTerminalSearch(): void {
+    if (!this.terminalSearchVisible) {
+      this.openTerminalSearch();
+      return;
+    }
+    this.terminalSearchFocusRequest = this.terminalSearchFocusRequest + 1;
+  }
+
+  private closeTerminalSearch(restoreTerminalFocus: boolean = true,
+    clearQuery: boolean = false): void {
+    this.clearTerminalSearchDebounce();
+    const hadSearchState: boolean = this.terminalSearchVisible ||
+      this.terminalSearchRequestPayload.length > 0 || this.terminalSearchTargetHostId.length > 0;
+    this.terminalSearchVisible = false;
+    this.terminalSearchTargetHostId = '';
+    this.terminalSearchPendingRequestId = 0;
+    this.terminalSearchRequestPayload = '';
+    this.terminalSearchResultLabel = '';
+    this.terminalSearchValidationMessage = '';
+    if (clearQuery) { this.terminalSearchQuery = ''; }
+    if (hadSearchState) {
+      this.terminalSearchClearRequest = this.terminalSearchClearRequest + 1;
+    }
+    if (!restoreTerminalFocus || this.terminalClosing) { return; }
+    setTimeout((): void => {
+      if (!this.terminalClosing && !this.terminalSearchVisible) { this.focusKeyboard(false); }
+    }, 32);
+  }
+
+  private onTerminalSearchQueryChange(value: string): void {
+    this.terminalSearchQuery = value;
+    this.terminalSearchValidationMessage = '';
+    this.terminalSearchResultLabel = '';
+    if (value.length === 0) {
+      this.clearTerminalSearchDebounce();
+      this.clearTerminalSearchDecorations();
+      return;
+    }
+    this.scheduleTerminalSearch();
+  }
+
+  private toggleTerminalSearchOption(option: string): void {
+    if (option === 'case') {
+      this.terminalSearchCaseSensitive = !this.terminalSearchCaseSensitive;
+    } else if (option === 'word') {
+      this.terminalSearchWholeWord = !this.terminalSearchWholeWord;
+    } else if (option === 'regex') {
+      this.terminalSearchRegex = !this.terminalSearchRegex;
+    }
+    this.terminalSearchValidationMessage = '';
+    if (this.terminalSearchQuery.length > 0) { this.requestTerminalSearch('next'); }
+  }
+
+  private terminalSearchErrorMessage(result: SshTerminalSearchResult): string {
+    if (result.errorCode === '' || result.errorCode === 'empty_query') { return ''; }
+    if (result.errorCode === 'invalid_regex') { return '正则表达式无效'; }
+    if (result.errorCode === 'query_too_long') { return '搜索内容过长'; }
+    if (result.errorCode === 'search_unavailable') { return '当前终端搜索不可用'; }
+    if (result.errorCode === 'stale_result') { return ''; }
+    return '搜索执行失败';
+  }
+
+  private onXtermSearchResultForHost(hostId: string, sessionGeneration: number,
+    result: SshTerminalSearchResult, surfaceIdentity: string): void {
+    const normalizedHostId: string = hostId.trim();
+    const reportedRevision: number = sshXtermTabRenderRevision(sessionGeneration);
+    if (!this.terminalSearchVisible || normalizedHostId.length === 0 ||
+      normalizedHostId !== this.hostId.trim() ||
+      normalizedHostId !== this.terminalSearchTargetHostId ||
+      result.requestId !== this.terminalSearchPendingRequestId ||
+      this.xtermSurfaceIdentityForHost(normalizedHostId, reportedRevision) !==
+        surfaceIdentity.trim() ||
+      reportedRevision !== this.xtermSurfaceGenerationForHost(normalizedHostId)) {
+      return;
+    }
+    this.terminalSearchResultLabel = sshTerminalSearchResultLabel(result);
+    this.terminalSearchValidationMessage = this.terminalSearchErrorMessage(result);
+    if (result.elapsedMs > SSH_TERMINAL_SEARCH_RESULT_WARN_MS) {
+      hilog.warn(0x0000, 'SshTerminal', '[search] slow request=' +
+        result.requestId.toString() + ' elapsedMs=' + result.elapsedMs.toString());
+    }
+  }
+
+  private xtermSearchRequestForTab(tab: SshTerminalTabView): string {
+    if (!this.terminalSearchVisible || !this.sshWorkbenchEnabled ||
+      !this.sshTabSurfaceActive(tab) ||
+      tab.hostId.trim() !== this.terminalSearchTargetHostId) {
+      return '';
+    }
+    return this.terminalSearchRequestPayload;
+  }
+
+  private onSshWorkbenchFlagChange(): void {
+    if (!this.sshWorkbenchEnabled) {
+      this.closeTerminalSearch(true, true);
+      this.showTerminalProfileSheet = false;
+    }
+    this.refreshTerminalProfileForHost();
+  }
+
+  private keyModifier(event: KeyEvent, name: string): boolean {
+    try {
+      return event.getModifierKeyState ? event.getModifierKeyState([name]) : false;
+    } catch (_err) {
+      return false;
+    }
+  }
+
+  private sshShortcutKey(keyCode: number): SshShortcutKey {
+    if (keyCode === KeyCode.KEYCODE_F) { return 'F'; }
+    if (keyCode === KeyCode.KEYCODE_ENTER || keyCode === KeyCode.KEYCODE_NUMPAD_ENTER) {
+      return 'ENTER';
+    }
+    if (keyCode === KeyCode.KEYCODE_ESCAPE) { return 'ESCAPE'; }
+    if (keyCode === KeyCode.KEYCODE_TAB) { return 'TAB'; }
+    return 'OTHER';
+  }
+
+  private applySshShortcutDecision(event: KeyEvent, decision: SshShortcutDecision): boolean | null {
+    if (decision.action === 'let_modal_handle' ||
+      decision.action === 'let_text_editor_handle' || decision.action === 'none') {
+      return false;
+    }
+    if (decision.action === 'open_terminal_search') {
+      try { event.stopPropagation(); } catch (_err) {}
+      this.openTerminalSearch();
+      return true;
+    }
+    if (decision.action === 'focus_terminal_search') {
+      try { event.stopPropagation(); } catch (_err) {}
+      this.focusTerminalSearch();
+      return true;
+    }
+    if (decision.action === 'search_next' || decision.action === 'search_previous') {
+      try { event.stopPropagation(); } catch (_err) {}
+      this.requestTerminalSearch(decision.action === 'search_previous' ? 'previous' : 'next');
+      return true;
+    }
+    if (decision.action === 'close_terminal_search') {
+      try { event.stopPropagation(); } catch (_err) {}
+      this.closeTerminalSearch();
+      return true;
+    }
+    if (decision.action === 'escape_terminal_focus') {
+      this.terminalFocusMode = false;
+      return false;
+    }
+    // send_to_terminal deliberately falls through to the existing lossless
+    // encoder; Ctrl/Cmd+C/V/A/X/Z/Y are never repurposed here.
+    return null;
+  }
+
   /**
    * Handle hardware key events at both ArkUI keyboard stages. API 23 devices
    * do not consistently deliver external-keyboard events to onKeyPreIme when
@@ -7219,9 +7725,10 @@ struct SshTerminal {
     const knownPhysicalKeyboard: boolean = this.isKnownPhysicalKeyboardEvent(event);
     const rawCode: number = event.keyCode;
     const code: number = normalizeSshKeyCode(rawCode);
-    const ctrl: boolean = event.getModifierKeyState ? event.getModifierKeyState(['Ctrl']) : false;
-    const alt: boolean = event.getModifierKeyState ? event.getModifierKeyState(['Alt']) : false;
-    const shift: boolean = event.getModifierKeyState ? event.getModifierKeyState(['Shift']) : false;
+    const ctrl: boolean = this.keyModifier(event, 'Ctrl');
+    const meta: boolean = this.keyModifier(event, 'Meta');
+    const alt: boolean = this.keyModifier(event, 'Alt');
+    const shift: boolean = this.keyModifier(event, 'Shift');
     const unicodePresent: boolean = event.unicode !== undefined && event.unicode !== null;
     const devicePresent: boolean = event.deviceId !== undefined && event.deviceId !== null;
     hilog.debug(0x0000, 'SshTerminal', '[input] key code=' + code.toString() +
@@ -7231,14 +7738,19 @@ struct SshTerminal {
       ' physical=' + (physicalKeyboard ? '1' : '0') +
       ' known=' + (knownPhysicalKeyboard ? '1' : '0') +
       ' likely=' + (likelyHardware ? '1' : '0'));
-    // Shift+Tab is the explicit escape hatch from terminal focus.
-    // Returning false lets ArkUI continue its normal application focus
-    // traversal; no timer reclaims the focus afterwards.
-    if (physicalKeyboard && code === KeyCode.KEYCODE_TAB && shift &&
-      !ctrl && !alt && this.terminalFocusMode) {
-      this.terminalFocusMode = false;
-      return false;
-    }
+    const shortcutChord: SshShortcutChord = {
+      key: this.sshShortcutKey(code), ctrl, meta, alt, shift
+    };
+    const shortcutContext: SshShortcutContext = {
+      modalOpen: this.sshModalOwnsKeyboard(),
+      searchOpen: this.terminalSearchVisible,
+      textEditorFocused: false,
+      terminalFocused: this.terminalFocusMode,
+      terminalSearchEnabled: this.sshWorkbenchEnabled
+    };
+    const routed: boolean | null = this.applySshShortcutDecision(
+      event, routeSshShortcut(shortcutChord, shortcutContext));
+    if (routed !== null) { return routed; }
     // PC 退出快捷键: Ctrl+Shift+Q
     if (this.isDesktopDevice && code === KeyCode.KEYCODE_Q && ctrl && shift) {
       this.closeSessionAndBack();
@@ -11648,6 +12160,37 @@ struct SshTerminal {
             .fontSize(11).fontColor('rgba(242,244,247,0.54)')
             .margin({ right: 12 })
         }
+        if (this.isDesktopDevice && this.terminalProfileEnabled()) {
+          Row() {
+            SymbolGlyph($r('sys.symbol.gearshape_fill'))
+              .fontSize(17)
+              .fontColor(['rgba(242,244,247,0.86)'])
+          }
+          .width(34).height(34)
+          .justifyContent(FlexAlign.Center)
+          .borderRadius(17)
+          .backgroundColor(this.chromeChipBg())
+          .margin({ right: 8 })
+          .onClick((): void => { this.openTerminalProfileSheet(); })
+          .accessibilityText('打开终端 Profile')
+        }
+        if (this.isDesktopDevice && this.terminalSearchAvailable()) {
+          Row() {
+            SymbolGlyph($r('sys.symbol.magnifyingglass'))
+              .fontSize(17)
+              .fontColor(['rgba(242,244,247,0.86)'])
+          }
+          .width(34).height(34)
+          .justifyContent(FlexAlign.Center)
+          .borderRadius(17)
+          .backgroundColor(this.chromeChipBg())
+          .margin({ right: 8 })
+          .onClick((): void => {
+            if (this.terminalSearchVisible) { this.focusTerminalSearch(); }
+            else { this.openTerminalSearch(); }
+          })
+          .accessibilityText(this.terminalSearchVisible ? '聚焦终端搜索' : '打开终端搜索')
+        }
         Row({ space: 4 }) {
           Text('LANG').fontSize(10).fontWeight(FontWeight.Medium)
             .fontColor('rgba(242,244,247,0.76)')
@@ -11797,6 +12340,17 @@ struct SshTerminal {
                 bottomAlignSparseContent: !this.isDesktopDevice,
                 bottomAlignSafeRows: this.terminalBottomSafeRows(),
                 bottomInsetPx: this.terminalXtermBottomInsetPx(),
+                profileEnabled: this.terminalProfileEnabled(),
+                profileForegroundColor: this.resolvedTerminalProfile.foregroundColor,
+                profileBackgroundColor: this.resolvedTerminalProfile.backgroundColor,
+                profilePalette: this.resolvedTerminalProfile.palette,
+                profileFontFamily: this.resolvedTerminalProfile.fontFamily,
+                profileFontWeight: this.resolvedTerminalProfile.fontWeight,
+                profileCursorStyle: this.resolvedTerminalProfile.cursorStyle,
+                profileCursorBlink: this.resolvedTerminalProfile.cursorBlink,
+                profileScrollback: this.resolvedTerminalProfile.scrollback,
+                profileBellStyle: this.resolvedTerminalProfile.bellStyle,
+                profileCopyOnSelect: this.resolvedTerminalProfile.copyOnSelect,
                 viewportHeight: this.termAreaH,
                 outputBuffer: this.xtermOutputBufferForHost(tab.hostId),
                 outputSequence: this.termOutputSequence,
@@ -11809,6 +12363,8 @@ struct SshTerminal {
                 forceScrollToBottomRequest: this.forceScrollToBottomRequest,
                 externalScrollLines: this.terminalExternalScrollLines,
                 externalScrollRequest: this.terminalExternalScrollRequest,
+                searchRequest: this.xtermSearchRequestForTab(tab),
+                searchClearRequest: this.terminalSearchClearRequest,
                 onData: (data: string, surfaceIdentity: string): void => {
                   this.onXtermDataForHost(tab.hostId,
                     this.sshTabStore.sessionGeneration(tab.hostId),
@@ -11828,6 +12384,12 @@ struct SshTerminal {
                   this.onXtermFocusForHost(tab.hostId,
                     this.sshTabStore.sessionGeneration(tab.hostId),
                     focused, surfaceIdentity);
+                },
+                onSearchResult: (result: SshTerminalSearchResult,
+                  surfaceIdentity: string): void => {
+                  this.onXtermSearchResultForHost(tab.hostId,
+                    this.sshTabStore.sessionGeneration(tab.hostId),
+                    result, surfaceIdentity);
                 }
               })
                 .width('100%')
@@ -11923,6 +12485,72 @@ struct SshTerminal {
                 }
               })
 
+            if (this.terminalProfileEnabled() && !this.isDesktopDevice &&
+              !this.terminalSearchVisible) {
+              Button() {
+                SymbolGlyph($r('sys.symbol.gearshape_fill'))
+                  .fontSize(18)
+                  .fontColor(['#F2F4F7'])
+              }
+              .width(40).height(40)
+              .borderRadius(20)
+              .backgroundColor('rgba(20,25,33,0.90)')
+              .shadow({ radius: 12, color: 'rgba(0,0,0,0.36)', offsetY: 4 })
+              .align(Alignment.TopEnd)
+              .margin({ top: 10, right: 10 })
+              .zIndex(45)
+              .onClick((): void => { this.openTerminalProfileSheet(); })
+              .accessibilityText('打开终端 Profile')
+            }
+
+            if (this.sshWorkbenchEnabled && !this.isDesktopDevice &&
+              !this.terminalSearchVisible && this.terminalSearchAvailable()) {
+              Button() {
+                SymbolGlyph($r('sys.symbol.magnifyingglass'))
+                  .fontSize(18)
+                  .fontColor(['#F2F4F7'])
+              }
+              .width(40).height(40)
+              .borderRadius(20)
+              .backgroundColor('rgba(20,25,33,0.90)')
+              .shadow({ radius: 12, color: 'rgba(0,0,0,0.36)', offsetY: 4 })
+              .align(Alignment.TopEnd)
+              .margin({ top: 10, right: this.terminalProfileEnabled() ? 58 : 10 })
+              .zIndex(45)
+              .onClick((): void => { this.openTerminalSearch(); })
+              .accessibilityText('打开终端搜索')
+            }
+
+            if (this.terminalSearchVisible) {
+              SshTerminalSearchBar({
+                query: this.terminalSearchQuery,
+                resultLabel: this.terminalSearchResultLabel,
+                validationMessage: this.terminalSearchValidationMessage,
+                caseSensitive: this.terminalSearchCaseSensitive,
+                wholeWord: this.terminalSearchWholeWord,
+                regex: this.terminalSearchRegex,
+                focusRequest: this.terminalSearchFocusRequest,
+                onQueryChange: (value: string): void => {
+                  this.onTerminalSearchQueryChange(value);
+                },
+                onNext: (): void => { this.requestTerminalSearch('next'); },
+                onPrevious: (): void => { this.requestTerminalSearch('previous'); },
+                onToggleCaseSensitive: (): void => {
+                  this.toggleTerminalSearchOption('case');
+                },
+                onToggleWholeWord: (): void => {
+                  this.toggleTerminalSearchOption('word');
+                },
+                onToggleRegex: (): void => { this.toggleTerminalSearchOption('regex'); },
+                onClose: (): void => { this.closeTerminalSearch(); }
+              })
+                .width('calc(100% - 20vp)')
+                .constraintSize({ maxWidth: 560 })
+                .align(Alignment.TopEnd)
+                .margin({ top: 10, right: 10, left: 10 })
+                .zIndex(50)
+            }
+
             if (this.terminalZoomIndicatorVisible) {
               Text('字号 ' + this.fontSize.toString() + ' vp')
                 .fontSize(13)
@@ -11942,7 +12570,8 @@ struct SshTerminal {
           .position({ x: 0, y: 0 })
           .onClick(() => {
             // 点击终端显式进入终端焦点；移动端同时请求软键盘。
-            this.focusKeyboard(this.virtualKeyBarVisible());
+            if (this.terminalSearchVisible) { this.focusTerminalSearch(); }
+            else { this.focusKeyboard(this.virtualKeyBarVisible()); }
           })
           .parallelGesture(
             PinchGesture({ fingers: 2, distance: 5 })
@@ -12212,6 +12841,24 @@ struct SshTerminal {
         } else {
           this.clearSshAuthPromptState();
         }
+      }
+    })
+    .bindSheet($$this.showTerminalProfileSheet, this.TerminalProfileSheetContent(), {
+      height: this.breakpoint === 'sm' ? SheetSize.LARGE : '680vp',
+      preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
+      width: this.breakpoint === 'sm' ? '100%' : '620vp',
+      dragBar: this.breakpoint === 'sm',
+      backgroundColor: '#171D25',
+      blurStyle: BlurStyle.NONE,
+      showClose: false,
+      maskColor: 'rgba(0,0,0,0.42)',
+      onWillDismiss: (action: DismissSheetAction): void => {
+        this.showTerminalProfileSheet = false;
+        action.dismiss();
+      },
+      onDisappear: (): void => {
+        if (this.showTerminalProfileSheet) { this.showTerminalProfileSheet = false; }
+        if (!this.terminalClosing) { this.focusKeyboard(false); }
       }
     })
     .bindSheet($$this.showSshTabPicker, this.sshTabPickerSheet(), {

@@ -1,6 +1,7 @@
 import { describe, it, expect } from '@ohos/hypium';
 import {
   createSshTerminalSearchRequest,
+  decodeSshTerminalSearchRequest,
   decodeSshTerminalSearchResult,
   defaultSshTerminalSearchOptions,
   encodeSshTerminalSearchRequest,
@@ -51,6 +52,24 @@ export default function sshTerminalSearchShortcutPolicyTest(): void {
       expect(request !== null).assertTrue();
       expect(encodeSshTerminalSearchRequest(request!).indexOf('Error') > 0).assertTrue();
       expect(createSshTerminalSearchRequest(0, 'x', 'next', options)).assertNull();
+    });
+
+    it('decodes_only_whitelisted_search_bridge_requests', 0, (): void => {
+      const decoded = decodeSshTerminalSearchRequest(JSON.stringify({
+        requestId: 3,
+        query: 'fatal',
+        direction: 'next',
+        options: { caseSensitive: false, wholeWord: true, regex: false },
+        password: 'must-not-cross-bridge'
+      }));
+      expect(decoded !== null).assertTrue();
+      expect(JSON.stringify(decoded).indexOf('password')).assertEqual(-1);
+      expect(decodeSshTerminalSearchRequest(JSON.stringify({
+        requestId: 3,
+        query: 'fatal',
+        direction: 'sideways',
+        options: { caseSensitive: false, wholeWord: true, regex: false }
+      }))).assertNull();
     });
 
     it('decodes_double_encoded_results_and_rejects_stale_ids', 0, (): void => {

@@ -78,8 +78,14 @@
           fontSize: 18,
           lineHeight: 1.12,
           fontFamily: 'monospace',
+          fontWeight: 'normal',
           foreground: '#33ff33',
           background: '#0d0d0d',
+          palette: [],
+          cursorStyle: 'bar',
+          cursorBlink: true,
+          scrollback: 10000,
+          bellStyle: 'none',
           bottomAlignSparseContent: false,
           bottomAlignSafeRows: 0,
           bottomInsetPx: 10
@@ -204,17 +210,37 @@
         try {
           document.documentElement.style.setProperty(
             '--ssh-terminal-bottom-inset', bottomInsetPx + 'px');
+          document.documentElement.style.backgroundColor = state.config.background || '#0d0d0d';
+          document.body.style.backgroundColor = state.config.background || '#0d0d0d';
+          var terminalRoot = document.getElementById('terminal');
+          if (terminalRoot) terminalRoot.style.backgroundColor = state.config.background || '#0d0d0d';
         } catch (_) {}
         try {
-          terminal.options.fontSize = fontSize;
-          terminal.options.lineHeight = lineHeight;
-          terminal.options.fontFamily = state.config.fontFamily || 'monospace';
-          terminal.options.theme = {
+          var palette = Array.isArray(state.config.palette) && state.config.palette.length === 16
+            ? state.config.palette : [];
+          var terminalTheme = {
             foreground: state.config.foreground || '#33ff33',
             background: state.config.background || '#0d0d0d',
             cursor: state.config.foreground || '#33ff33',
             selectionBackground: 'rgba(90, 140, 255, 0.42)'
           };
+          var paletteNames = ['black', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'white',
+            'brightBlack', 'brightRed', 'brightGreen', 'brightYellow', 'brightBlue', 'brightMagenta',
+            'brightCyan', 'brightWhite'];
+          paletteNames.forEach(function (name, index) {
+            if (palette[index]) terminalTheme[name] = palette[index];
+          });
+          terminal.options.fontSize = fontSize;
+          terminal.options.lineHeight = lineHeight;
+          terminal.options.fontFamily = state.config.fontFamily || 'monospace';
+          terminal.options.fontWeight = state.config.fontWeight === 'bold' ? 'bold' : 'normal';
+          terminal.options.cursorStyle = state.config.cursorStyle || 'bar';
+          terminal.options.cursorInactiveStyle = state.config.cursorStyle || 'bar';
+          terminal.options.cursorBlink = state.config.cursorBlink !== false;
+          terminal.options.scrollback = Math.max(1000, Math.min(100000,
+            Math.floor(Number(state.config.scrollback) || 10000)));
+          terminal.options.bellStyle = state.config.bellStyle || 'none';
+          terminal.options.theme = terminalTheme;
         } catch (_) {}
         applyBottomSafeInset();
         var fitted = fitTerminal();
@@ -293,14 +319,17 @@
           var terminal = new window.Terminal({
             cols: Number(state.config.cols) || 80,
             rows: Number(state.config.rows) || 24,
-            scrollback: 10000,
+            scrollback: Math.max(1000, Math.min(100000,
+              Math.floor(Number(state.config.scrollback) || 10000))),
             fontSize: Number(state.config.fontSize) || 18,
             fontFamily: state.config.fontFamily || 'monospace',
+            fontWeight: state.config.fontWeight === 'bold' ? 'bold' : 'normal',
             lineHeight: Number(state.config.lineHeight) || 1.12,
-            cursorBlink: true,
-            cursorStyle: 'bar',
-            cursorInactiveStyle: 'bar',
+            cursorBlink: state.config.cursorBlink !== false,
+            cursorStyle: state.config.cursorStyle || 'bar',
+            cursorInactiveStyle: state.config.cursorStyle || 'bar',
             cursorWidth: 2,
+            bellStyle: state.config.bellStyle || 'none',
             convertEol: false,
             // Keep xterm's mature helper input enabled as a fallback when the
             // ArkUI IME anchor cannot acquire focus during a page handoff.
