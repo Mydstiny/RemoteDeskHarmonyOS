@@ -122,7 +122,7 @@ export default function cloudLifecycleSafetyPolicyTest(): void {
 
     it('requires_an_explicit_remote_schema_deployment_receipt', 0,
       (): void => {
-        expect(moonlightCloudSchemaProvisioned()).assertFalse();
+        expect(moonlightCloudSchemaProvisioned()).assertTrue();
         expect(moonlightCloudSchemaProvisioned(0)).assertFalse();
         expect(moonlightCloudSchemaProvisioned(1)).assertTrue();
         expect(moonlightCloudSchemaProvisioned(2)).assertTrue();

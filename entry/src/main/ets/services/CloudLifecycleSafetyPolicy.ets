@@ -23,13 +23,14 @@ export const CLOUD_REGISTRATION_RETRY_INTERVAL_MS: number = 15000;
 /**
  * Build-time deployment receipt for the optional Moonlight AGC table.
  *
- * Keep this at zero until the exact `moonlightrecordv1` schema has been
- * created and verified in the production cloud environment. Local RDB schema
- * readiness is deliberately not enough: attempting an unknown cloud table can
- * disturb the already-deployed eight-table registration on upgraded devices.
+ * Revision 1 is enabled only after the exact `moonlightrecordv1` schema was
+ * created, inspected and explicitly confirmed deployed in the target cloud
+ * environment. Local RDB readiness alone is deliberately insufficient:
+ * attempting an unknown cloud table could disturb the already-deployed
+ * eight-table registration on upgraded devices.
  */
 export const MOONLIGHT_CLOUD_SCHEMA_REQUIRED_REVISION: number = 1;
-export const MOONLIGHT_CLOUD_SCHEMA_DEPLOYED_REVISION: number = 0;
+export const MOONLIGHT_CLOUD_SCHEMA_DEPLOYED_REVISION: number = 1;
 
 export const CLOUD_LIFECYCLE_BLOCKED_REASON: string =
   'cloud_lifecycle_v2_account_binding_required';

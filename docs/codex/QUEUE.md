@@ -1,32 +1,45 @@
 # Moonlight Complete Upgrade Queue
 
-Updated: 2026-08-13 Asia/Shanghai
+Updated: 2026-08-19 Asia/Shanghai
 
-## Closed in the current working increment
+## Closed in committed checkpoints
 
-- Product LAN discovery, verification, pairing, local host/trust persistence, local app cache, catalog refresh, launch and exact Catalog-to-Stream handoff.
-- RustDesk-style FAB/add flow, phone host directory/detail/catalog/settings/stream pages and dedicated adaptive PC Moonlight tab.
-- Official common-c session transport, conservative H.264 Surface video, Opus/OHAudio stereo, first-frame readiness and asynchronous stop terminal receipt.
-- Session-owned keyboard, pointer, touch, virtual controller and physical GameControllerKit input; exact backpressure retry, remove-first source handoff and terminal neutral/cleanup.
-- GameControllerKit activation-time dynamic loading. Both production ABIs are free of a mandatory GameControllerKit ELF dependency, preserving startup and unrelated-protocol isolation.
-- Local rename/delete and app-cache cleanup with account/page/store fencing and partial-failure rollback.
-- Two-layer release admission: FAB enables real LAN discovery/HTTP verification with compiled transport; PIN pairing separately requires secure identity/Host Control and fails closed before mutation when unavailable.
-- API-23 credential-encrypted Asset Store add/query/remove/list and runtime probe lifecycle are proven on both simulators; concurrent environments cannot delete each other's live probe and crashed probes are reclaimed in progressing batches.
-- Both mandatory Hvigor gates, both native ABIs, ELF isolation and all Moonlight host-native cases pass. Signed HAP SHA-256: `7e84303d06b33926fa702a2384584010612a2517b88aa38aad8d7e4c23096318`.
-- Exact current HAP installed and started on phone `127.0.0.1:5555` and PC `127.0.0.1:5557`; both report all five Moonlight capability bits true and `blocker=none`. Fresh `7e84303d` FAB screenshots pass.
+- `9eadb35be`: physical-controller runtime hardening, independent arrival/state sequencing, slot-0 controller launch contract and ArkTS/native readiness truth.
+- `326f329f5`: Sunshine discovery, Host API/pairing/catalog/launch, common-c RTSP/media/input runtime and clean lifecycle hardening.
+- `348b28083`: local launch/settings/FAB/data-flow closeout.
+- `aff7fdf03`: lifecycle/recovery, PC session-window integration, compatibility-first optional cloud path, exact teardown and final PC Moonlight FAB unification.
+- RustDesk-style FAB/add flow, adaptive phone/PC Moonlight host surfaces, six owned settings sheets, metered launch admission, local repository/cache and all input classes are wired.
+
+## Non-cloud closeout
+
+- Product wiring is complete for discovery/verify/pair/trust/save, host detail/catalog/launch, H.264/Opus, keyboard/pointer/touch, virtual and physical-controller ingress, reconnect, Surface/PIP/background audio and explicit stop/quit.
+- Local lifecycle is complete for settings readback, host rename/forget/unpair, cache cleanup, crash-recovery choices, local-data deletion and secure-identity deletion with owner/account/generation fences.
+- Exact compile and assemble pass on a clean staged-index export; signed HAP SHA-256 is `4b239974cd8c46377ff17b7dfa0a85dab571e6667df7cccb8686e16428dc657c`. Host native outside the restricted sandbox is `780/780` PASS; dual-ABI GameControllerKit isolation and pinned-vendor reconstruction pass.
+- PC big-screen Moonlight now uses the same shared bottom `+` FAB as the other host categories; the duplicate top text button has been removed.
+- Shared native teardown now uses exact session/generation/owner-token/facade ownership and explicit synchronous Complete/Failed receipts. HostList preflight/2FA cancellation, timeout, error and NAPI retry retain the original immutable identity; the A→B delayed-callback regression is compile-registered and final focused review is P0/P1/P2/P3 all zero.
+- Final HDC deployment, screenshots and Sunshine/physical-controller/long-run acceptance remain deliberately deferred until cloud integration is also complete.
+
+## Current cloud/data increment
+
+- Additive owner-store v5 migration verifies all three Moonlight tables by ordered name/type/primary-key contract and writes a complete schema fingerprint receipt before advancing the version.
+- Existing eight cloud tables are an immutable registration baseline. The optional Moonlight table is registered only as a post-baseline superset and is removed from runtime selection whenever unavailable.
+- Durable physical and logical selections default empty and survive temporary registration/account interruptions without being rewritten.
+- `reconcile_pending` and `pending_pull` resume deterministically after the same account is activated or the cloud registration is refreshed.
+- Automatic Moonlight pulls commit valid rows and redacted quarantines atomically; later promotion/reconcile failures remain restart-repairable and do not falsely claim the committed download was rolled back.
+- Manual partial snapshots use non-destructive merge rather than rolling back the whole cloud database. Only a fully valid snapshot can delete selected local rows missing from cloud.
+- Native-first remains strict and journal-proven, including scope reduction and deselected clean mirror handling.
+- Exact `default@OhosTestCompileArkTS` and `git diff --check` pass on 2026-08-19.
 
 ## Immediate next
 
-1. S1-06: remove hidden legacy settings routes/builders and wire the remaining Moonlight-only reconnect/background/diagnostics controls without duplicating public display/PIP/volume/host-management settings.
-2. Run N2-09B against a real Sunshine host: discovery → HTTP verify → pairing → catalog → launch → H.264/Opus first frame → input/controller → clean stop/reconnect.
-3. Capture fresh real-host detail, catalog, connection, stream controls and virtual/physical-controller receipts on phone and PC layouts.
-4. Record physical-controller arrival/state/remove receipts and confirm missing GameControllerKit degrades physical input only.
-5. Complete network-change, rotation, foreground/background, thermal, two-hour and ARM64 acceptance before a release-ready Moonlight claim.
+1. Deployment is confirmed and revision 1 is enabled. Test optional-nine registration while proving core-eight continuity and old-version startup/pull behavior.
+2. Complete compatibility-first cloud upload/download/delete/conflict/account-switch/crypto-reset and upgrade tests; bad Moonlight rows must be isolated rather than blocking pulls.
+3. Deploy the final cloud-enabled package for fresh PC/phone UI, Sunshine, controller and lifecycle acceptance.
+4. Run fresh PC/phone screenshots and full Sunshine/controller/lifecycle acceptance only from that package.
 
-## Parked or externally blocked
+## External gates
 
-- Moonlight cloud table and cloud synchronization remain parked by product decision.
-- Current HDC targets are online and have the exact package; deployment/UI smoke is no longer blocked.
-- Secure identity/Host Control is proven on both current simulators. A real Sunshine host, physical controller and user ARM64 receipts are prerequisites for the remaining N2-09B/C path.
-- `ohosTest` remains unavailable while task `00306054` is unregistered; compile success is not device-test execution.
-- The user-owned `entry/src/main/ets/services/CloudStore.ets` diff remains unstaged and outside this queue.
+- The user explicitly confirmed deployment of the inspected AGC table; revision 1 is enabled. Real registration and transfer receipts remain part of device acceptance.
+- Real Sunshine pair/catalog/launch/first-frame/stop, physical-controller, ARM64, network transition and long-run receipts remain pending.
+- `ohosTest` task `00306054` is still unregistered.
+- HDC/UI screenshots are deferred by user instruction until backend, cloud and UI are complete; old screenshots cannot be reused.
