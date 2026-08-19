@@ -150,7 +150,38 @@ function isControlKind(kind: SshWebMessageKind): boolean {
 }
 
 function envelopeBytes(envelope: SshWebMessageEnvelopeV1): number {
-  return envelope.payload.length;
+  return utf8ByteLength(envelope.payload);
+}
+
+/**
+ * Queue limits are byte budgets, not UTF-16 code-unit budgets.  ArkTS API 23
+ * does not expose TextEncoder in the application runtime, so keep this small
+ * deterministic counter local to the transport policy.  A surrogate pair is
+ * counted as one UTF-8 scalar (four bytes); an unpaired surrogate is encoded
+ * as the replacement-width three bytes, matching JSON/WebView replacement
+ * behavior rather than allowing a cheap queue-budget bypass.
+ */
+function utf8ByteLength(value: string): number {
+  let bytes: number = 0;
+  for (let index: number = 0; index < value.length; index++) {
+    const code: number = value.charCodeAt(index);
+    if (code <= 0x7f) {
+      bytes += 1;
+    } else if (code <= 0x7ff) {
+      bytes += 2;
+    } else if (code >= 0xd800 && code <= 0xdbff && index + 1 < value.length) {
+      const next: number = value.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        bytes += 4;
+        index++;
+      } else {
+        bytes += 3;
+      }
+    } else {
+      bytes += 3;
+    }
+  }
+  return bytes;
 }
 
 function makeEnvelope(state: SshWebMessageStateV1, kind: SshWebMessageKind,
@@ -216,6 +247,9 @@ export function enqueueSshWebMessage(state: SshWebMessageStateV1,
   if (!validIdentity(next.sessionKey, next.generation)) {
     return result(next, 'invalid_identity');
   }
+  if (!allowedKind(kind) || typeof payload !== 'string') {
+    return result(next, 'invalid_message');
+  }
   if (next.phase !== 'ready' && kind !== 'hello' && kind !== 'hello_ack') {
     return result(next, 'not_ready');
   }
@@ -223,14 +257,15 @@ export function enqueueSshWebMessage(state: SshWebMessageStateV1,
   if (payload.length > SSH_WEB_MESSAGE_MAX_FRAME_CHARS) {
     return result(next, 'frame_too_large');
   }
+  const payloadBytes: number = utf8ByteLength(payload);
   if (next.queue.length >= SSH_WEB_MESSAGE_MAX_QUEUE_ITEMS ||
-    next.bufferedBytes + payload.length > SSH_WEB_MESSAGE_MAX_QUEUE_BYTES) {
+    next.bufferedBytes + payloadBytes > SSH_WEB_MESSAGE_MAX_QUEUE_BYTES) {
     return result(next, 'queue_full');
   }
   const envelope: SshWebMessageEnvelopeV1 = makeEnvelope(next, kind, payload);
   next.nextSequence++;
-  next.queue.push({ envelope, bytes: envelopeBytes(envelope) });
-  next.bufferedBytes += envelopeBytes(envelope);
+  next.queue.push({ envelope, bytes: payloadBytes });
+  next.bufferedBytes += payloadBytes;
   return result(next, 'ok', envelope);
 }
 
@@ -257,7 +292,8 @@ export function dequeueSshWebMessage(state: SshWebMessageStateV1): SshWebMessage
 export function acknowledgeSshWebMessage(state: SshWebMessageStateV1,
   sequence: number): SshWebMessageStateV1 {
   const next: SshWebMessageStateV1 = cloneState(state);
-  if (!validSequence(sequence) || sequence <= next.lastAckedSequence) { return next; }
+  if (!validSequence(sequence) || sequence <= next.lastAckedSequence ||
+    sequence >= next.nextSequence) { return next; }
   next.lastAckedSequence = sequence;
   const retained: Array<SshWebMessageQueueItemV1> = [];
   let removedBytes: number = 0;
@@ -282,6 +318,12 @@ export function acknowledgeSshWebMessage(state: SshWebMessageStateV1,
 export function acceptSshWebMessage(state: SshWebMessageStateV1,
   envelope: SshWebMessageEnvelopeV1): SshWebMessageReceiveResultV1 {
   const next: SshWebMessageStateV1 = cloneState(state);
+  if (typeof envelope.sessionKey !== 'string' || typeof envelope.generation !== 'number' ||
+    typeof envelope.sequence !== 'number' || typeof envelope.ackSequence !== 'number' ||
+    typeof envelope.payload !== 'string' || typeof envelope.kind !== 'string' ||
+    typeof envelope.version !== 'number') {
+    return { accepted: false, code: 'invalid_message', state: next, envelope: null };
+  }
   if (!validIdentity(next.sessionKey, next.generation) ||
     envelope.sessionKey.trim() !== next.sessionKey || envelope.generation !== next.generation) {
     return { accepted: false, code: 'stale_generation', state: next, envelope: null };
@@ -291,6 +333,9 @@ export function acceptSshWebMessage(state: SshWebMessageStateV1,
   }
   if (!allowedKind(envelope.kind) || !validSequence(envelope.sequence) ||
     !validAckSequence(envelope.ackSequence) || envelope.payload.length > SSH_WEB_MESSAGE_MAX_FRAME_CHARS) {
+    return { accepted: false, code: 'invalid_message', state: next, envelope: null };
+  }
+  if (envelope.ackSequence >= next.nextSequence) {
     return { accepted: false, code: 'invalid_message', state: next, envelope: null };
   }
   if (envelope.sequence <= next.lastReceivedSequence) {
@@ -337,14 +382,20 @@ export function decodeSshWebMessage(encoded: string): SshWebMessageEnvelopeV1 | 
   try {
     const parsed: Object = JSON.parse(encoded) as Object;
     const source: Record<string, Object> = parsed as Record<string, Object>;
-    const version: number = Number(source['version']);
-    const kind: string = String(source['kind'] ?? '');
-    const sessionKey: string = String(source['sessionKey'] ?? '').trim();
-    const generation: number = Number(source['generation']);
-    const sequence: number = Number(source['sequence']);
-    const ackSequence: number = Number(source['ackSequence']);
-    const payload: string = String(source['payload'] ?? '');
-    if (version !== SSH_WEB_MESSAGE_VERSION || !allowedKind(kind) ||
+    if (typeof source['version'] !== 'number' || typeof source['kind'] !== 'string' ||
+      typeof source['sessionKey'] !== 'string' || typeof source['generation'] !== 'number' ||
+      typeof source['sequence'] !== 'number' || typeof source['ackSequence'] !== 'number' ||
+      typeof source['payload'] !== 'string') {
+      return null;
+    }
+    const version: number = source['version'] as number;
+    const kind: string = source['kind'] as string;
+    const sessionKey: string = (source['sessionKey'] as string).trim();
+    const generation: number = source['generation'] as number;
+    const sequence: number = source['sequence'] as number;
+    const ackSequence: number = source['ackSequence'] as number;
+    const payload: string = source['payload'] as string;
+    if (version !== SSH_WEB_MESSAGE_VERSION || !Number.isFinite(version) || !allowedKind(kind) ||
       !validIdentity(sessionKey, generation) || !validSequence(sequence) ||
       !validAckSequence(ackSequence) || payload.length > SSH_WEB_MESSAGE_MAX_FRAME_CHARS) {
       return null;

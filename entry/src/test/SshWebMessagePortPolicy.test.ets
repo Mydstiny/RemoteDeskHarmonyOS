@@ -44,12 +44,27 @@ export default function sshWebMessagePortPolicyTest(): void {
     it('should_round_trip_whitelisted_envelope_only', 0, (): void => {
       const envelope: SshWebMessageEnvelopeV1 = {
         version: 1, kind: 'output', sessionKey: 'host:session', generation: 4,
-        sequence: 9, ackSequence: 3, payload: 'safe output'
+        sequence: 9, ackSequence: 3, payload: 'safe output · 终端🛰️'
       };
       const decoded = decodeSshWebMessage(encodeSshWebMessage(envelope));
       expect(decoded === null).assertFalse();
-      expect((decoded as SshWebMessageEnvelopeV1).payload).assertEqual('safe output');
+      expect((decoded as SshWebMessageEnvelopeV1).payload).assertEqual('safe output · 终端🛰️');
       expect(decodeSshWebMessage('{"version":1,"kind":"secret","sessionKey":"x","generation":1,"sequence":1,"ackSequence":0,"payload":"x"}') === null).assertTrue();
+    });
+
+    it('should_reject_coerced_fields_and_ack_future_sequences', 0, (): void => {
+      expect(decodeSshWebMessage('{"version":"1","kind":"output","sessionKey":"host:session","generation":4,"sequence":1,"ackSequence":0,"payload":"x"}') === null).assertTrue();
+      expect(decodeSshWebMessage('{"version":1,"kind":"output","sessionKey":"host:session","generation":4,"sequence":1,"ackSequence":0,"payload":7}') === null).assertTrue();
+      expect(decodeSshWebMessage('{"version":1,"kind":"output","sessionKey":"host:session","generation":"4","sequence":1,"ackSequence":0,"payload":"x"}') === null).assertTrue();
+
+      const state = readyState();
+      const futureAck = acceptSshWebMessage(state, {
+        version: 1, kind: 'ack', sessionKey: 'host:session', generation: 4,
+        sequence: 2, ackSequence: 99, payload: ''
+      });
+      expect(futureAck.accepted).assertFalse();
+      expect(futureAck.code).assertEqual('invalid_message');
+      expect(futureAck.state.lastReceivedSequence).assertEqual(1);
     });
 
     it('should_prioritize_control_and_bound_in_flight', 0, (): void => {
@@ -79,6 +94,27 @@ export default function sshWebMessagePortPolicyTest(): void {
       });
       expect(duplicate.accepted).assertFalse();
       expect(duplicate.code).assertEqual('duplicate_sequence');
+    });
+
+    it('should_count_utf8_bytes_when_bounding_burst_queue', 0, (): void => {
+      let state = readyState();
+      const unicodeChunk: string = '🙂'.repeat(16384);
+      expect(unicodeChunk.length).assertEqual(32768);
+      for (let index: number = 0; index < 16; index++) {
+        const queued = enqueueSshWebMessage(state, 'output', unicodeChunk);
+        expect(queued.accepted).assertTrue();
+        state = queued.state;
+      }
+      const overflow = enqueueSshWebMessage(state, 'output', unicodeChunk);
+      expect(overflow.accepted).assertFalse();
+      expect(overflow.code).assertEqual('queue_full');
+    });
+
+    it('should_reject_single_frame_above_character_limit', 0, (): void => {
+      const state = readyState();
+      const oversized = enqueueSshWebMessage(state, 'output', 'x'.repeat(65537));
+      expect(oversized.accepted).assertFalse();
+      expect(oversized.code).assertEqual('frame_too_large');
     });
 
     it('should_cap_queue_items', 0, (): void => {

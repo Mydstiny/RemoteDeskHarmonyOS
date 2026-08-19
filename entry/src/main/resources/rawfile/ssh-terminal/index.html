@@ -124,29 +124,36 @@
       }
 
       function validWebMessageIdentity(sessionKey, generation) {
-        return typeof sessionKey === 'string' && sessionKey.length > 0 &&
-          isFinite(Number(generation)) && Math.floor(Number(generation)) > 0;
+        return typeof sessionKey === 'string' && sessionKey.trim().length > 0 &&
+          typeof generation === 'number' && isFinite(generation) &&
+          Math.floor(generation) === generation && generation > 0;
       }
 
       function decodeWebMessage(raw) {
         if (typeof raw !== 'string' || raw.length === 0 || raw.length > 131072) return null;
         try {
           var parsed = JSON.parse(raw);
-          if (!parsed || Number(parsed.version) !== 1 || !allowedWebMessageKind(parsed.kind) ||
-              !validWebMessageIdentity(String(parsed.sessionKey || ''), parsed.generation) ||
-              !isFinite(Number(parsed.sequence)) || Math.floor(Number(parsed.sequence)) <= 0 ||
-              !isFinite(Number(parsed.ackSequence)) || Math.floor(Number(parsed.ackSequence)) < 0) {
+          if (!parsed || typeof parsed !== 'object' ||
+              typeof parsed.version !== 'number' || parsed.version !== 1 ||
+              typeof parsed.kind !== 'string' || !allowedWebMessageKind(parsed.kind) ||
+              typeof parsed.sessionKey !== 'string' ||
+              !validWebMessageIdentity(parsed.sessionKey, parsed.generation) ||
+              typeof parsed.sequence !== 'number' || !isFinite(parsed.sequence) ||
+              Math.floor(parsed.sequence) !== parsed.sequence || parsed.sequence <= 0 ||
+              typeof parsed.ackSequence !== 'number' || !isFinite(parsed.ackSequence) ||
+              Math.floor(parsed.ackSequence) !== parsed.ackSequence || parsed.ackSequence < 0 ||
+              typeof parsed.payload !== 'string') {
             return null;
           }
-          var payload = parsed.payload === undefined || parsed.payload === null ? '' : String(parsed.payload);
+          var payload = parsed.payload;
           if (payload.length > 65536) return null;
           return {
             version: 1,
-            kind: String(parsed.kind),
-            sessionKey: String(parsed.sessionKey),
-            generation: Math.floor(Number(parsed.generation)),
-            sequence: Math.floor(Number(parsed.sequence)),
-            ackSequence: Math.floor(Number(parsed.ackSequence)),
+            kind: parsed.kind,
+            sessionKey: parsed.sessionKey.trim(),
+            generation: parsed.generation,
+            sequence: parsed.sequence,
+            ackSequence: parsed.ackSequence,
             payload: payload
           };
         } catch (_) {
@@ -187,7 +194,8 @@
         if (!envelope || !state.webMessagePort ||
             envelope.sessionKey !== state.webMessageSessionKey ||
             envelope.generation !== state.webMessageGeneration ||
-            envelope.sequence <= state.webMessageLastReceivedSequence) {
+            envelope.sequence <= state.webMessageLastReceivedSequence ||
+            envelope.ackSequence >= state.webMessageNextSequence) {
           return false;
         }
         state.webMessageLastReceivedSequence = envelope.sequence;
