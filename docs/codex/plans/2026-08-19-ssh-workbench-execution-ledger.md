@@ -3,7 +3,7 @@
 > 状态：`ACTIVE_M8_M9` / `NOT_COMPLETE`
 > 权威计划：`docs/codex/plans/2026-08-19-ssh-termius-harmonyos7-api26-workbench-plan.md`
 > 建立日期：2026-08-19
-> 当前工作树：`codex/moonlight-complete-upgrade` / `2d1f06d6`（M9 SSH 多窗口交接与 PC 主机添加表单响应式修复）
+> 当前工作树：`codex/moonlight-complete-upgrade` / `9d0a29497`（M9 SSH 多窗口交接、PC 表单响应式与独立窗口前台恢复修复）
 > 当前产品基线：HarmonyOS 6.1 / API 23
 > API 26 状态：本机未安装；任何 API 26-only import 均禁止进入产品代码
 
@@ -25,8 +25,9 @@
 - M8 WebMessagePort 已完成 API 23 兼容双栈的生产边界：版本/会话/generation/端口实例 fence、严格 JSON 类型、超前 ACK 拒绝、UTF-8 字节预算、控制帧优先且线上序号单调；生产 flag 仍默认关闭，ArrayBuffer 批量等待 API 26 SDK/真机证据。
 - M9 SSH 认证后窗口 handoff 已补齐多标签语义：交接只移除已经转移的 host，源页保留其他 SSH 标签并切换到下一个会话；没有剩余标签才返回源页。目标窗口仍复用现有 `RemoteSessionWindowCoordinator`，不改变密码/Key/KBI/MFA/Host Key 流程。
 - M9 PC 响应式复验已修复 SSH 主机添加流固定 900vp 导致的 Sheet 溢出：`2d1f06d6` 改为跟随父 Sheet 宽度，PC 模拟器布局树确认代理选项和“下一步”均在可视区域内。
-- 最近 SSH-only 提交：`493601b10`（有序端口投递）、`05fab8f48`（计划指针）、`41483b417`（多标签窗口交接）、`2d1f06d6`（主机添加流响应式宽度）。精确 `default@OhosTestCompileArkTS` 与 `assembleHap` 均已通过；`ohosTest@OhosTestCompileArkTS` 仍受环境中未注册的 `00306054` 任务阻塞。
-- 仍未宣称完成：API 26 SDK/目标设备、真实可达 SSH endpoint 的成功鉴权与 SFTP/转发/后台/多窗口 E2E、PC 窗口吸附/沉浸状态的实机验收。
+- `9d0a29497` 补齐独立 SSH 窗口的系统前台恢复：目标 Ability `onForeground` 通过现有窗口协调器提升目标窗口，避免回到桌面/任务栏后焦点落回主窗口。精确 `default@OhosTestCompileArkTS` 与 `assembleHap` 均已通过；`ohosTest@OhosTestCompileArkTS` 仍受环境中未注册的 `00306054` 任务阻塞。
+- 2026-08-20 在 PC/API23 模拟器完成一次真实回环互操作：产品 ED25519 key + Host Key 指纹确认后才创建 `RemoteSessionAbility`；终端输入/输出、SFTP 47 项列表、双端点 SFTP 面板、关闭 SFTP 后终端继续输入、SSH 转发面板打开/关闭均已采集。HDC 任务栏/WMS 证据显示主窗口与两个独立 SSH 窗口可并存，目标窗口获得焦点并能被任务栏切回；测试 sshd 与 HDC 映射已清理。
+- 仍未宣称完成：API 26 SDK/目标设备、物理设备验收、真实 SFTP 文件传输/取消/重试、实际转发规则建立后的数据流、后台/PiP、窗口吸附/沉浸状态以及多主机/全协议矩阵。
 
 ## 2. 当前工作树隔离
 
@@ -194,14 +195,21 @@ M0 action 只修改纯快照：创建/重命名工作区、打开占位 tab、�
 | `/private/tmp/ssh-card-click-layout.json` | `193c04cb7bf49545729815d31009b67adc729958551423e65543b1d9f2539354` | 预检失败页面 hierarchy；`aa dump -l` 仅有 EntryAbility，无独立 SSH Ability |
 | `/private/tmp/ssh-ui-fixed-form.png` | `9a9823ac5142d9002fc32c47201ef78fc732e0e6a518e4865335d8a12cdbb49e` | `2d1f06d6` 后 PC SSH 新主机表单：直连、HTTP CONNECT、SOCKS5、SSH 跳板、FRP TCP 和下一步均可见 |
 | `/private/tmp/ssh-ui-fixed-form-layout.json` | `f89a1381ffe701b24882ba8079d7d39fdab3d0a926c16b6b7a532a095e48a81d` | 修复后布局树；表单右边界约 1980，未再越过系统 Sheet |
+| `/private/tmp/ssh-new-window.jpeg` | `e7d843950014a6772d6fbe99d46a898b223311290071489741d795cb7b2e3bb6` | API23 PC 模拟器：Host Key/Key 鉴权完成后独立 SSH 窗口与 shell 提示符 |
+| `/private/tmp/ssh-sftp-surface.jpeg` | `7df18ddf5f045680cbafa687b0c12fa0b63ee7a7f411a8e6289a3de7d2b32d12` | SFTP 面板打开，显示当前 SSH 会话已连接 |
+| `/private/tmp/ssh-sftp-remote-right.jpeg` | `1f014347c902a657e6a7ed3b7709bb8bc378bed9fb1a9d03c152df786d24384f` | 双端点 SFTP 视图：两侧均加载 47 项远程目录 |
+| `/private/tmp/ssh-sftp-close-terminal.jpeg` | `a45d9d07c0613600458bd14d3da7ffc89bdf41b1f8b48b576b53c510738457a1` | 关闭 SFTP 后独立窗口中的终端仍保持连接 |
+| `/private/tmp/ssh-sftp-session.jpeg` | `15fe42298d977bf1012d161e54aa23adc1bf9cecb141936e0cd05910bf8b0a10` | 关闭 SFTP 后输入 `echo SSH_SFTP_SESSION_OK` 并收到回显，证明会话保活 |
+| `/private/tmp/ssh-forward-surface.jpeg` | `97ed1fa4a86a454d4d98bdf4acebea4ec878b54a9ca4df5ddb44669404f84e4f` | SSH 转发面板可打开/关闭；本轮未创建转发规则，未宣称数据流成功 |
+| `/private/tmp/ssh-sftp-remote-right-layout.json` | `2ed54b8eda8b2fc20562921630901867ba3f486dbf5a0b530f73672dcf442e9a` | 双端点 SFTP 布局树，记录左右 pane、当前 host 和 47 项状态 |
 
 这些文件位于临时目录，不作为仓库制品。账本保留命令、hash 和观察结果；阶段验收前重新采集最终 SSH 页面证据。
 
 ### 7.3 已证明与未证明
 
-已证明：两个目标可通过 HDC 连接；当前 HAP 在 API 23 Phone/PC 环境可启动；PC 使用系统自由窗口，当前窗口初始区域为 2090×1394 px；PC 可以进入现有 SSH 主机列表。关闭残留的诊断日志 Sheet 后，点击 SSH 主机正确进入既有 Host Key 预检；TCP 不可达时保留在 HostList 的错误 Sheet，不会进入 Terminal，也不会创建独立会话窗口。`2d1f06d6` 后，PC SSH 新主机 Sheet 的布局树边界与截图均证明代理选项和下一步操作不再被固定宽度截断。
+已证明：两个目标可通过 HDC 连接；当前 HAP 在 API 23 Phone/PC 环境可启动；PC 使用系统自由窗口。关闭残留的诊断日志 Sheet 后，点击 SSH 主机正确进入既有 Host Key 预检；TCP 不可达时保留在 HostList 的错误 Sheet，不会进入 Terminal，也不会创建独立会话窗口。`2d1f06d6` 后，PC SSH 新主机 Sheet 的布局树边界与截图均证明代理选项和下一步操作不再被固定宽度截断。2026-08-20 的回环 endpoint 进一步证明：产品 ED25519 key/指纹确认后才创建 SSH 独立窗口；终端命令可输入并回显；SFTP 可加载单端点和双端点目录（各 47 项）；关闭 SFTP 后终端仍能继续执行命令；转发面板可打开/关闭；WMS/任务栏可在主窗口与独立 SSH 窗口间切换焦点。
 
-尚未证明：成功 Host Key 校验后的密码/Key/KBI/MFA 认证、终端焦点、软/硬键盘、SFTP、转发、后台/PiP、SSH 独立窗口和多主机并行。当前唯一测试 endpoint 离线，因此本轮只证明了预检错误路径；不得把主机卡片的延迟探测文案当成 SSH 端口可达证据。没有成功路径证据前，S0 不能标为完成。
+尚未证明：密码/KBI/MFA 的成功/取消/失败全矩阵、软/硬键盘、真实 SFTP 文件上传/下载/暂停/恢复/重试、转发规则建立后的数据流、后台/PiP、窗口吸附/沉浸状态、API26 设备和多主机/全协议并行。回环 sshd 仅监听 127.0.0.1 且已在采证后关闭；不得把本轮“面板打开”写成转发数据流已完成。没有物理/API26 与上述数据流证据前，M7–M9 仍保持 DEVICE_PENDING，整个 SSH 计划不能标为完成。
 
 ## 8. 工具链事实
 
@@ -220,15 +228,15 @@ M0 action 只修改纯快照：创建/重命名工作区、打开占位 tab、�
 | M1–M6 | M0 契约 | 已落地 | 已注册 | PASS | PASS | API23 smoke | 已复核 | CHECKPOINT |
 | M7 | M6 工作台 | 已落地 | 已注册 | PASS | PASS | 真实主机待接入 | 已复核 | DEVICE_PENDING |
 | M8 | M7 工作台 | 已落地 | 已注册 | PASS | PASS | API26/高负载设备待验 | 已复核 | DEVICE_PENDING |
-| M9 | M8 前置 | SSH handoff 已落地；PC 多窗口/系统窗口状态待验收 | 策略覆盖 | PASS | PASS | PC 真机/多主机待验 | 待最终实机复核 | DEVICE_PENDING |
+| M9 | M8 前置 | SSH handoff 与独立窗口前台恢复已落地 | 策略覆盖 | PASS | PASS | PC/API23 模拟器已证明鉴权后开窗、SFTP/终端保活、任务栏/WMS 多窗口；物理/API26/多主机待验 | 待最终实机复核 | DEVICE_PENDING |
 
 ## 10. S0 下一步
 
-1. 为成功认证、终端、SFTP、转发和独立窗口准备可达 SSH endpoint；当前离线 endpoint 只保留错误态证据。
+1. 为真实 SFTP 文件传输、转发规则数据流、后台/PiP 和多主机并行准备可达 SSH endpoint；本轮回环服务只证明鉴权、终端、SFTP 浏览和窗口保活。
 2. 精确提交 M0 SSH-only 增量；不得暂存本账本列出的并行脏文件。
 3. 进入 M1 搜索桥和 Profile/快捷能力前，继续复用既有 SearchAddon、`SshSessionStore` 与 `SshTerminalTabStore`。
 
-本轮最终构建命令均于 2026-08-19 在 `0c6be42e5` 加 M0 未提交增量上执行，使用 `source scripts/macos_env.sh` 后的 DevEco Hvigor 环境：
+最近一次窗口修复后的精确构建命令于 2026-08-20 在 `9d0a29497` 上执行，使用 `source scripts/macos_env.sh` 后的 DevEco Hvigor 环境；两项均退出 0（assembleHap：`BUILD SUCCESSFUL in 8 s 827 ms`）：
 
 ```sh
 hvigorw --mode module -p module=entry -p product=default default@OhosTestCompileArkTS --analyze=normal --parallel --incremental --no-daemon
