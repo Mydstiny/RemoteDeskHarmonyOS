@@ -5930,19 +5930,41 @@ void FreeRdpAdapter::connectThreadFunc(uint64_t expectedGeneration) {
                                 static_cast<UINT32>(cfg.colorDepth > 0 ? cfg.colorDepth : 32));
     freerdp_settings_set_bool(s, FreeRDP_SoftwareGdi, TRUE);
 
-    // 认证与安全: 对照实验禁用 HYBRID_EX, 只请求 TLS/NLA(HYBRID)。
-    const bool allowStandardSecurityOnce = cfg.rdpAllowStandardSecurityOnce;
+    // Authentication and transport security are independent. The default is
+    // unchanged TLS/NLA. An explicit direct-password compatibility request can
+    // select certificate-validated TLS without NLA, but never Gateway,
+    // Restricted Admin, blank-password, or Standard RDP Security.
+    const bool gatewayRoute = route.endpointMode == RdpEndpointMode::MicrosoftRdGateway;
+    const RdpTransportSecurityPolicy transportSecurity = ResolveRdpTransportSecurityPolicy(
+        cfg.rdpTlsWithoutNla, route.endpointMode != RdpEndpointMode::DirectRdp, authPolicy.mode);
+    if (!transportSecurity.valid) {
+        const std::string code = transportSecurity.errorCode && transportSecurity.errorCode[0] != '\0'
+            ? transportSecurity.errorCode : "E-RDP-TLS-COMPAT";
+        impl_->setState(ConnectionState::ERROR,
+                        "RDP TLS 兼容模式不支持当前路由或认证方式 [" + code + "]");
+        cleanupInstance();
+        impl_->connecting = false;
+        return;
+    }
+    const bool tlsWithoutNla =
+        transportSecurity.mode == RdpTransportSecurityMode::TlsWithoutNla;
+    const bool allowStandardSecurityOnce =
+        !tlsWithoutNla && cfg.rdpAllowStandardSecurityOnce;
     freerdp_settings_set_bool(s, FreeRDP_NegotiateSecurityLayer, TRUE);
     freerdp_settings_set_bool(s, FreeRDP_UseRdpSecurityLayer, FALSE);
     // Standard RDP Security is enabled only by the route-bound Continue Once
     // handoff. The preflight never enables this fallback itself.
     freerdp_settings_set_bool(s, FreeRDP_RdpSecurity,
-                              allowStandardSecurityOnce ? TRUE : FALSE);
-    freerdp_settings_set_bool(s, FreeRDP_TlsSecurity, TRUE);
+                              (transportSecurity.rdpSecurity || allowStandardSecurityOnce)
+                                  ? TRUE : FALSE);
+    freerdp_settings_set_bool(s, FreeRDP_TlsSecurity,
+                              transportSecurity.tlsSecurity ? TRUE : FALSE);
     freerdp_settings_set_bool(s, FreeRDP_ExtSecurity, FALSE);
     freerdp_settings_set_bool(s, FreeRDP_AadSecurity, FALSE);
-    freerdp_settings_set_bool(s, FreeRDP_NlaSecurity, TRUE);
-    freerdp_settings_set_uint32(s, FreeRDP_RequestedProtocols, 0x00000003); // SSL|HYBRID, /sec:nla,tls
+    freerdp_settings_set_bool(s, FreeRDP_NlaSecurity,
+                              transportSecurity.nlaSecurity ? TRUE : FALSE);
+    freerdp_settings_set_uint32(s, FreeRDP_RequestedProtocols,
+                                transportSecurity.requestedProtocols);
     freerdp_settings_set_bool(s, FreeRDP_Authentication, TRUE);
     freerdp_settings_set_bool(s, FreeRDP_AutoLogonEnabled, TRUE);
     // Certificate decisions are made by the stage-aware callbacks below.
@@ -6014,7 +6036,6 @@ void FreeRdpAdapter::connectThreadFunc(uint64_t expectedGeneration) {
 
     // RD Gateway transport. A Gateway route is never allowed to fall through
     // to the target socket, and a direct route is explicitly kept disabled.
-    const bool gatewayRoute = route.endpointMode == RdpEndpointMode::MicrosoftRdGateway;
     const RdpGatewayTransportFlags gatewayTransportFlags =
         RdpGatewayPolicy::transportFlags(route.gatewayTransport);
     freerdp_settings_set_bool(s, FreeRDP_GatewayEnabled, gatewayRoute ? TRUE : FALSE);
@@ -6072,7 +6093,7 @@ void FreeRdpAdapter::connectThreadFunc(uint64_t expectedGeneration) {
     OH_LOG_INFO(LOG_APP, "[RDP] security: negotiate=%{public}s nla=%{public}s tls=%{public}s rdp=%{public}s"
                 " ext=%{public}s aad=%{public}s auth=%{public}s autologon=%{public}s admin=%{public}s"
                 " rcg=%{public}s restrictedRequired=%{public}s restrictedSupported=%{public}s"
-                " requested=0x%{public}08X authPkg=%{public}s",
+                " requested=0x%{public}08X authPkg=%{public}s transportSecurity=%{public}s",
                 freerdp_settings_get_bool(s, FreeRDP_NegotiateSecurityLayer) ? "true" : "false",
                 freerdp_settings_get_bool(s, FreeRDP_NlaSecurity) ? "true" : "false",
                 freerdp_settings_get_bool(s, FreeRDP_TlsSecurity) ? "true" : "false",
@@ -6086,7 +6107,8 @@ void FreeRdpAdapter::connectThreadFunc(uint64_t expectedGeneration) {
                 freerdp_settings_get_bool(s, FreeRDP_RestrictedAdminModeRequired) ? "true" : "false",
                 freerdp_settings_get_bool(s, FreeRDP_RestrictedAdminModeSupported) ? "true" : "false",
                 freerdp_settings_get_uint32(s, FreeRDP_RequestedProtocols),
-                authPackageList ? authPackageList : "无");
+                authPackageList ? authPackageList : "无",
+                tlsWithoutNla ? "tls_without_nla" : "nla");
 
     // 证书验证回调: 只接受 ArkTS 预检确认并传入的阶段对应指纹。
     instance_->VerifyCertificate = cbVerifyCertificate;

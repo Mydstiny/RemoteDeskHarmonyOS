@@ -811,6 +811,7 @@ struct HostListPage {
   @StorageLink('rdpDriveName') rdpDriveName: string = 'RemoteDesktop';
   @StorageLink('rdpControlMode') rdpControlMode: number = 0; // 0=触控板, 1=直接触控, 2=键鼠
   @StorageLink('rdpAuthIdentityMode') rdpAuthIdentityMode: number = 1; // 0=MicrosoftAccount\\邮箱, 1=域+邮箱, 2=裸邮箱, 3=.\\AzureAD\\邮箱, 4=AzureAD域
+  @StorageLink('rdpTlsWithoutNla') rdpTlsWithoutNla: boolean = false;
   @State sheetPwdMode: number = 0; // 0=一次性密码, 1=永久密码
   @State sheetRustdeskAuthMode: string = 'password'; // password | request_approval
   @State sheetRustdeskDirectEnabled: boolean = false; // per-host 直连开关
@@ -1242,6 +1243,7 @@ struct HostListPage {
       const savedRdpAudioEnabled: boolean = prefs.getSync('rdpAudioEnabled', true) as boolean;
       const savedRdpClipboardEnabled: boolean = prefs.getSync('rdpClipboardEnabled', true) as boolean;
       const savedRdpShowDiagnostics: boolean = prefs.getSync('rdpShowDiagnostics', false) as boolean;
+      const savedRdpTlsWithoutNla: boolean = prefs.getSync('rdpTlsWithoutNla', false) as boolean;
       const rdpDriveDefaultVersion: number = prefs.getSync('rdpDriveDefaultVersion', 0) as number;
       const hasSavedRdpDriveEnabled: boolean = prefs.hasSync('rdpDriveEnabled');
       let savedRdpDriveEnabled: boolean = prefs.getSync('rdpDriveEnabled', true) as boolean;
@@ -1326,6 +1328,7 @@ struct HostListPage {
       this.rdpDriveName = this.normalizeRdpDriveName(savedRdpDriveName);
       this.rdpControlMode = this.clampRdpControlMode(savedRdpControlMode);
       this.rdpAuthIdentityMode = this.clampRdpAuthIdentityMode(savedRdpAuthIdentityMode);
+      this.rdpTlsWithoutNla = savedRdpTlsWithoutNla;
       AppStorage.setOrCreate('totpLocked', savedLock);
       AppStorage.setOrCreate('rustdeskImageQuality', this.rustdeskImageQuality);
       AppStorage.setOrCreate('rustdeskCodec', this.rustdeskCodec);
@@ -1359,6 +1362,7 @@ struct HostListPage {
       AppStorage.setOrCreate('rdpDriveName', this.rdpDriveName);
       AppStorage.setOrCreate('rdpControlMode', this.rdpControlMode);
       AppStorage.setOrCreate('rdpAuthIdentityMode', this.rdpAuthIdentityMode);
+      AppStorage.setOrCreate('rdpTlsWithoutNla', this.rdpTlsWithoutNla);
     } catch (_err) { /* ignore */ }
     // The home page is a core path.  Loading it must not await an optional
     // permission dialog or sensor service.
@@ -7957,6 +7961,27 @@ struct HostListPage {
     this.persistPref('rdpShowDiagnostics', this.rdpShowDiagnostics);
   }
 
+  private saveRdpTlsWithoutNla(on: boolean): void {
+    if (!on) {
+      this.rdpTlsWithoutNla = false;
+      this.persistPref('rdpTlsWithoutNla', false);
+      return;
+    }
+    promptAction.showDialog({
+      title: '启用 TLS 兼容登录？',
+      message: '仅当被控 Windows 已取消“需要使用网络级别身份验证”时使用。此模式仍验证 TLS 证书，但登录保护弱于 NLA，并且只支持直连和普通密码。',
+      buttons: [
+        { text: '取消', color: this.pal().text2 },
+        { text: '仍然启用', color: this.accentColor }
+      ]
+    }).then((result: Object): void => {
+      const value: Record<string, number> = result as Record<string, number>;
+      if (value['index'] !== 1) { return; }
+      this.rdpTlsWithoutNla = true;
+      this.persistPref('rdpTlsWithoutNla', true);
+    }).catch((_err: Error): void => { });
+  }
+
   private saveRdpDriveEnabled(on: boolean): void {
     if (on && !RDP_DRIVE_REDIRECTION_ENABLED) {
       this.rdpDriveEnabled = false;
@@ -10724,6 +10749,11 @@ struct HostListPage {
               this.rdpControlModeRow()
               this.cardDivider()
               this.rdpAuthIdentityModeRow()
+              this.cardDivider()
+              this.rustdeskSwitchRow($r('app.media.icon_info'), 'TLS 兼容登录',
+                '仅用于已取消强制 NLA 的 Windows；直连密码登录，安全性低于 NLA',
+                this.rdpTlsWithoutNla,
+                (on: boolean): void => { this.saveRdpTlsWithoutNla(on); }, true)
               this.cardDivider()
               this.rustdeskSwitchRow($r('app.media.icon_audio'), '远端音频',
                 '播放 Windows 远端会话声音', this.rdpAudioEnabled,

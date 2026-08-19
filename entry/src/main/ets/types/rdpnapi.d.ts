@@ -670,6 +670,8 @@ export interface SessionConfig {
   rdpAllowHostMismatch?: boolean;
   rdpCertificateAllowUnpinnedOnce?: boolean;
   rdpAllowStandardSecurityOnce?: boolean;
+  /** Explicit direct TLS compatibility mode. Default false; never enables Standard RDP Security. */
+  rdpTlsWithoutNla?: boolean;
   rdpCertificateAllowTimeAnomalyOnce?: boolean;
   rdpGatewayAllowUntrustedRoot?: boolean;
   rdpGatewayAllowHostMismatch?: boolean;

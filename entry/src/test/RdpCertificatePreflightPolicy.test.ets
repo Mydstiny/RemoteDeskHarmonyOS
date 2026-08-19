@@ -25,6 +25,7 @@ import {
   shouldRouteRdpCertificateAfterSheetDisappear,
   shouldShowRdpCertificateProbeSheetBeforeProbe,
   shouldEnableStandardRdpSecurityOnce,
+  shouldUseRdpTlsWithoutNla,
   shouldPersistRdpCertificateTrust,
   shouldRequireRdpCertificateConfirmation,
   shouldFallbackToNativeRdpConnectionAfterResolverFailure
@@ -340,6 +341,14 @@ export default function rdpCertificatePreflightPolicyTest() {
         true, [])).assertFalse();
       expect(shouldEnableStandardRdpSecurityOnce(
         true, ['STANDARD_RDP_SECURITY'])).assertTrue();
+    });
+
+    it('tls_without_nla_is_opt_in_direct_password_only', 0, (): void => {
+      expect(shouldUseRdpTlsWithoutNla(false, 'direct_rdp', 'password')).assertFalse();
+      expect(shouldUseRdpTlsWithoutNla(true, 'direct_rdp', 'password')).assertTrue();
+      expect(shouldUseRdpTlsWithoutNla(true, 'microsoft_rd_gateway', 'password')).assertFalse();
+      expect(shouldUseRdpTlsWithoutNla(true, 'direct_rdp', 'restricted_admin')).assertFalse();
+      expect(shouldUseRdpTlsWithoutNla(true, 'direct_rdp', 'blank_password')).assertFalse();
     });
 
     it('gateway_transport_summary_should_not_infer_negotiated_mode', 0, (): void => {

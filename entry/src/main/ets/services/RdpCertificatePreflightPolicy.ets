@@ -174,6 +174,16 @@ export function shouldEnableStandardRdpSecurityOnce(
   return userApprovedAdvisory && riskFlags.indexOf('STANDARD_RDP_SECURITY') >= 0;
 }
 
+/**
+ * Keeps the opt-in TLS-without-NLA escape hatch isolated from every existing
+ * RDP path. Gateway, blank-password, and Restricted Admin always retain NLA.
+ */
+export function shouldUseRdpTlsWithoutNla(
+  requested: boolean, endpointMode: string, authenticationMode: string
+): boolean {
+  return requested && endpointMode === 'direct_rdp' && authenticationMode === 'password';
+}
+
 export interface RdpCertificateProbeView {
   ok: boolean;
   fingerprintSha256: string;

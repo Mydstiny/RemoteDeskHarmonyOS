@@ -137,6 +137,7 @@ struct ConnectionConfig {
     bool        rdpAllowHostMismatch;  // RDP: 当前连接允许证书名称不匹配
     bool        rdpCertificateAllowUnpinnedOnce; // RDP: 用户已明确允许本次未知证书
     bool        rdpAllowStandardSecurityOnce; // RDP: 用户已明确允许本次 Standard Security
+    bool        rdpTlsWithoutNla; // RDP: explicit direct TLS compatibility mode; not a host field
     bool        rdpCertificateAllowTimeAnomalyOnce; // RDP: 用户已明确允许本次时间异常
     bool        rdpGatewayAllowUntrustedRoot;
     bool        rdpGatewayAllowHostMismatch;
@@ -192,6 +193,7 @@ struct ConnectionConfig {
           rdLanDiscovery(true), rdPrivacyMode(false), rdAudioEnabled(true), rdClipboardEnabled(true),
           rdDriveName("RemoteDesktop"), rdpAllowUntrustedRoot(false), rdpAllowHostMismatch(false),
           rdpCertificateAllowUnpinnedOnce(false), rdpAllowStandardSecurityOnce(false),
+          rdpTlsWithoutNla(false),
           rdpCertificateAllowTimeAnomalyOnce(false),
           rdpGatewayAllowUntrustedRoot(false), rdpGatewayAllowHostMismatch(false),
           rdpGatewayCertificateAllowUnpinnedOnce(false),

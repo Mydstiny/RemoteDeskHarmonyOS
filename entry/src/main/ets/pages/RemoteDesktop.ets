@@ -79,7 +79,10 @@ import {
   VncLocalCursorMode,
   VncTrustCertificateMetadata
 } from '../services/VncModelPolicy';
-import { rdpCertificateRouteIsCurrent } from '../services/RdpCertificatePreflightPolicy';
+import {
+  rdpCertificateRouteIsCurrent,
+  shouldUseRdpTlsWithoutNla
+} from '../services/RdpCertificatePreflightPolicy';
 import { vncGatewayAvailability } from '../services/VncGatewayProtocolPolicy';
 import { shouldTreatVncConnectionStateAsTerminal } from '../services/VncConnectionStatePolicy';
 import { diagnoseVncConnectionError } from '../services/VncConnectionErrorPolicy';
@@ -10247,6 +10250,7 @@ struct RemoteDesktop {
       let rdpTargetAllowHostMismatch: boolean = false;
       let rdpTargetAllowUnpinnedOnce: boolean = false;
       let rdpAllowStandardSecurityOnce: boolean = false;
+      let rdpTlsWithoutNla: boolean = false;
       let rdpTargetAllowTimeAnomalyOnce: boolean = false;
       let rdpGatewayAllowUntrustedRoot: boolean = false;
       let rdpGatewayAllowHostMismatch: boolean = false;
@@ -10254,6 +10258,10 @@ struct RemoteDesktop {
       let rdpGatewayAllowTimeAnomalyOnce: boolean = false;
       if (host.protocol === 'rdp') {
         const routeMode: string = normalizeRdpEndpointMode(host.rdpEndpointMode, host.gatewayHost);
+        rdpTlsWithoutNla = shouldUseRdpTlsWithoutNla(
+          AppStorage.get<boolean>('rdpTlsWithoutNla') ?? false,
+          routeMode,
+          normalizeRdpAuthMode(host.rdpAuthMode));
         const routeIdentity: string = rdpRouteIdentity(host);
         const transientRouteMatches: boolean = rdpCertificateRouteIsCurrent(
           this.rdpCertificateTransientRouteIdentity, routeIdentity);
@@ -10642,6 +10650,7 @@ struct RemoteDesktop {
         rdpAllowHostMismatch: rdpTargetAllowHostMismatch,
         rdpCertificateAllowUnpinnedOnce: rdpTargetAllowUnpinnedOnce,
         rdpAllowStandardSecurityOnce: rdpAllowStandardSecurityOnce,
+        rdpTlsWithoutNla: rdpTlsWithoutNla,
         rdpCertificateAllowTimeAnomalyOnce: rdpTargetAllowTimeAnomalyOnce,
         rdpGatewayAllowUntrustedRoot: rdpGatewayAllowUntrustedRoot,
         rdpGatewayAllowHostMismatch: rdpGatewayAllowHostMismatch,

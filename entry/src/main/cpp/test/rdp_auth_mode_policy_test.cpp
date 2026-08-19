@@ -43,3 +43,46 @@ RDP_TEST_CASE(rdp_auth_mode_rejects_hash_in_password_mode) {
         "password", "ntlm_hash", "0123456789abcdef0123456789abcdef");
     RDP_ASSERT(!policy.valid);
 }
+
+RDP_TEST_CASE(rdp_transport_security_preserves_nla_by_default) {
+    const RdpTransportSecurityPolicy policy = ResolveRdpTransportSecurityPolicy(
+        false, false, RdpAuthenticationPolicyMode::Password);
+    RDP_ASSERT(policy.valid);
+    RDP_ASSERT(policy.mode == RdpTransportSecurityMode::Nla);
+    RDP_ASSERT(policy.nlaSecurity);
+    RDP_ASSERT(policy.tlsSecurity);
+    RDP_ASSERT(!policy.rdpSecurity);
+    RDP_ASSERT(policy.requestedProtocols == 0x00000003);
+}
+
+RDP_TEST_CASE(rdp_transport_security_allows_explicit_direct_tls_password_mode) {
+    const RdpTransportSecurityPolicy policy = ResolveRdpTransportSecurityPolicy(
+        true, false, RdpAuthenticationPolicyMode::Password);
+    RDP_ASSERT(policy.valid);
+    RDP_ASSERT(policy.mode == RdpTransportSecurityMode::TlsWithoutNla);
+    RDP_ASSERT(!policy.nlaSecurity);
+    RDP_ASSERT(policy.tlsSecurity);
+    RDP_ASSERT(!policy.rdpSecurity);
+    RDP_ASSERT(policy.requestedProtocols == 0x00000001);
+}
+
+RDP_TEST_CASE(rdp_transport_security_rejects_tls_compatibility_for_gateway) {
+    const RdpTransportSecurityPolicy policy = ResolveRdpTransportSecurityPolicy(
+        true, true, RdpAuthenticationPolicyMode::Password);
+    RDP_ASSERT(!policy.valid);
+    RDP_ASSERT(std::string(policy.errorCode) == "E-RDP-TLS-COMPAT-GATEWAY");
+}
+
+RDP_TEST_CASE(rdp_transport_security_rejects_tls_compatibility_for_restricted_admin) {
+    const RdpTransportSecurityPolicy policy = ResolveRdpTransportSecurityPolicy(
+        true, false, RdpAuthenticationPolicyMode::RestrictedAdmin);
+    RDP_ASSERT(!policy.valid);
+    RDP_ASSERT(std::string(policy.errorCode) == "E-RDP-TLS-COMPAT-AUTH-MODE");
+}
+
+RDP_TEST_CASE(rdp_transport_security_rejects_tls_compatibility_for_blank_password) {
+    const RdpTransportSecurityPolicy policy = ResolveRdpTransportSecurityPolicy(
+        true, false, RdpAuthenticationPolicyMode::BlankPassword);
+    RDP_ASSERT(!policy.valid);
+    RDP_ASSERT(std::string(policy.errorCode) == "E-RDP-TLS-COMPAT-AUTH-MODE");
+}
