@@ -158,6 +158,7 @@ export function normalizeSshSnippet(source: SshSnippetV1): SshSnippetV1 | null {
   const template: string = typeof source.template === 'string' ?
     source.template.slice(0, MAX_TEXT) : '';
   if (!validId(id) || title.length === 0 || template.length === 0 ||
+    /[\u0000-\u001F\u007F]/.test(template) ||
     (source.scope !== 'global' && source.scope !== 'group' && source.scope !== 'host')) {
     return null;
   }
@@ -213,7 +214,9 @@ export function renderSshSnippet(snippet: SshSnippetV1,
     const resolved: string = supplied === undefined ? variable.defaultValue : supplied.value;
     const secret: boolean = variable.secretRef.length > 0 ||
       (supplied !== undefined && supplied.secret);
-    if (resolved.length === 0) { missingVariables.push(variable.name); }
+    if (resolved.length === 0 || /[\u0000-\u001F\u007F]/.test(resolved)) {
+      missingVariables.push(variable.name);
+    }
     const token: string = '${' + variable.name + '}';
     insertion = insertion.split(token).join(resolved);
     preview = preview.split(token).join(secret && resolved.length > 0 ? '••••••' : resolved);

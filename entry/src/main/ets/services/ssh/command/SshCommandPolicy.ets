@@ -10,6 +10,7 @@ export type SshCommandActionKind =
   | 'new_session'
   | 'open_terminal_search'
   | 'open_terminal_profile'
+  | 'open_productivity'
   | 'open_sftp'
   | 'open_transfer_center'
   | 'open_forwarding'
@@ -52,6 +53,7 @@ export interface SshCommandCapabilities {
   sftpAvailable: boolean;
   transferCenterAvailable: boolean;
   forwardingAvailable: boolean;
+  productivityAvailable?: boolean;
   closeAvailable: boolean;
   activePinned: boolean;
 }
@@ -150,6 +152,10 @@ export function buildSshCommandRegistry(hosts: Array<SshCommandHostRef>,
   commands.push(actionCommand('ssh.action.profile', '终端 Profile',
     '选择配色、字体和终端行为', ['profile', 'theme', 'font', '外观', '字体'],
     'open_terminal_profile', capabilities.profileAvailable));
+  commands.push(actionCommand('ssh.action.productivity', 'Snippet 与命令历史',
+    '打开本地加密的 Snippet、历史和 Shell integration 设置',
+    ['snippet', 'history', 'completion', 'productivity', '片段', '历史', '补全'],
+    'open_productivity', capabilities.productivityAvailable === true));
   commands.push(actionCommand('ssh.action.sftp', '打开 SFTP',
     '在当前 SSH 会话中浏览和传输文件', ['file', 'transfer', 'sftp', '文件', '传输'],
     'open_sftp', capabilities.sftpAvailable));

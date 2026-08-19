@@ -69,6 +69,26 @@ export default function sshTerminalTabStoreTest(): void {
       expect(store.views()[0].state).assertEqual('error');
     });
 
+    it('should_keep_startup_fence_across_page_rebind_until_session_replacement', 0, (): void => {
+      const store: SshTerminalTabStore = new SshTerminalTabStore();
+      store.open('host-a', 'A', 'root@a:22');
+      store.update('host-a', 'connected', 101, '', 9);
+      const firstKey: string = 'host-a:101:9';
+      store.markStartupExecutionKey(firstKey);
+      expect(store.hasStartupExecutionKey(firstKey)).assertTrue();
+
+      // A page detach/recreate keeps the same native session identity.
+      store.clearStartupExecutionKeysForHost('host-a', firstKey);
+      expect(store.hasStartupExecutionKey(firstKey)).assertTrue();
+
+      // A new generation replaces the native session and drops the old fence.
+      store.clearStartupExecutionKeysForHost('host-a', 'host-a:202:10');
+      expect(store.hasStartupExecutionKey(firstKey)).assertFalse();
+      store.update('host-a', 'connected', 202, '', 10);
+      store.beginConnection('host-a');
+      expect(store.hasStartupExecutionKey('host-a:202:10')).assertFalse();
+    });
+
     it('should_close_background_and_disconnected_tabs_without_moving_focus', 0, (): void => {
       const store: SshTerminalTabStore = new SshTerminalTabStore();
       store.openAndActivate('host-a', 'A', 'root@a:22');

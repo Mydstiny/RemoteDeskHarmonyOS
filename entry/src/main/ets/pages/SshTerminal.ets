@@ -75,6 +75,7 @@ import { SshTerminalSearchBar } from '../components/ssh/search/SshTerminalSearch
 import { SshTerminalProfileSheet } from
   '../components/ssh/profile/SshTerminalProfileSheet';
 import { SshCommandPalette } from '../components/ssh/command/SshCommandPalette';
+import { SshProductivitySheet } from '../components/ssh/productivity/SshProductivitySheet';
 import { SshBrowserTabStrip } from '../components/ssh/workspace/SshBrowserTabStrip';
 import { SshTransferCenter } from '../components/ssh/workspace/SshTransferCenter';
 import { SshWorkspacePaneChrome } from
@@ -284,6 +285,24 @@ import {
 import { SshTerminalProfileStore } from
   '../services/ssh/profile/SshTerminalProfileStore';
 import {
+  captureSshHistory,
+  emptySshProductivityDocument,
+  renderSshSnippet,
+  SshCommandHistoryV1,
+  SshLocalCommandSubmit,
+  SshLocalCommandTracker,
+  SshProductivityDocumentV1,
+  SshProductivitySettingsV1,
+  SshShellEvent,
+  SshShellIntegrationParser,
+  SshSnippetV1,
+  SshSnippetValue,
+  SshStartupFence,
+  startupCommandMayRun,
+  sshStartupExecutionKey
+} from '../services/ssh/productivity/SshProductivityPolicy';
+import { SshProductivityStore } from '../services/ssh/productivity/SshProductivityStore';
+import {
   buildSshCommandRegistry,
   canExecuteSshCommand,
   findSshCommand,
@@ -438,6 +457,8 @@ interface TerminalDecodedChunk {
   remainder: Uint8Array;
 }
 
+type SshProductivityShellPhase = 'idle' | 'prompt' | 'command' | 'executed';
+
 @Entry
 @Component
 struct SshTerminal {
@@ -453,6 +474,11 @@ struct SshTerminal {
   @State sshTabViews: SshTerminalTabView[] = [];
   @State showSshTabPicker: boolean = false;
   @State showSshCommandPalette: boolean = false;
+  @State showSshProductivitySheet: boolean = false;
+  @State sshProductivityQuery: string = '';
+  @State sshProductivityReady: boolean = false;
+  @State sshProductivityDocument: SshProductivityDocumentV1 =
+    emptySshProductivityDocument();
   @State showSftpTransferCenter: boolean = false;
   @State sftpTransferCenterRevision: number = 0;
   @State sftpWorkspaceTabState: SshSftpWorkspaceTabState =
@@ -469,6 +495,20 @@ struct SshTerminal {
   /** API 23 can omit the picker onDisappear callback during a fast Sheet exit. */
   private sshTabPickerExitRecoveryTimer: number = -1;
   private sshTabClosePromptInFlight: boolean = false;
+  private sshProductivityStore: SshProductivityStore = new SshProductivityStore();
+  private sshProductivityParsers: Map<string, SshShellIntegrationParser> =
+    new Map<string, SshShellIntegrationParser>();
+  private sshProductivityTrackers: Map<string, SshLocalCommandTracker> =
+    new Map<string, SshLocalCommandTracker>();
+  private sshProductivityPendingHistory: Map<string, Array<SshCommandHistoryV1>> =
+    new Map<string, Array<SshCommandHistoryV1>>();
+  private sshProductivityCommittedHistoryIds: Map<string, Array<string>> =
+    new Map<string, Array<string>>();
+  private sshProductivityShellPhases: Map<string, SshProductivityShellPhase> =
+    new Map<string, SshProductivityShellPhase>();
+  private sshProductivityHistorySequence: number = 0;
+  private sshProductivitySecretExpansionPending: boolean = false;
+  private sshProductivityTrackerSuppressed: boolean = false;
   /** 当前 SSH 输出 chunk；终端核心拥有 scrollback，不在页面累计完整历史。 */
   @State termOutput: string = '';
   /**
@@ -868,6 +908,9 @@ struct SshTerminal {
   private terminalDecodeRemainder: Uint8Array = new Uint8Array(0);
   private terminalOutputQueue: ArrayBuffer[] = [];
   private terminalOutputQueueBytes: number = 0;
+  private terminalOutputQueueHostId: string = '';
+  private terminalOutputQueueSessionId: number = -1;
+  private terminalOutputQueueSessionGeneration: number = 0;
   private terminalOutputFlushTimer: number = -1;
   private terminalInputFlushTimer: number = -1;
   private terminalInputControlPending: PendingTerminalInput[] = [];
@@ -2265,6 +2308,14 @@ struct SshTerminal {
     this.closeTerminalSearch(false, true);
     this.showTerminalProfileSheet = false;
     this.showSshCommandPalette = false;
+    this.showSshProductivitySheet = false;
+    this.sshProductivityQuery = '';
+    this.sshProductivitySecretExpansionPending = false;
+    this.sshProductivityTrackerSuppressed = false;
+    this.discardSshProductivityHostRuntime(this.hostId);
+    this.sshProductivityTrackers.forEach((tracker: SshLocalCommandTracker): void => {
+      tracker.reset();
+    });
     this.showSftpTransferCenter = false;
     this.sftpWorkspaceTabState = createSshSftpWorkspaceTabState();
     this.sshCommandRegistry = [];
@@ -2381,6 +2432,7 @@ struct SshTerminal {
     // is open. Capture the session only after that await so it is detached
     // before the new binding is committed.
     const previousSessionId: number = this.sessionId;
+    const previousSessionGeneration: number = this.sshSessionGeneration;
     const bindingGeneration: number = previousBindingGeneration + 1;
     this.sshBindingGeneration = bindingGeneration;
 
@@ -2435,7 +2487,7 @@ struct SshTerminal {
     this.connectionError = '';
     this.latencyMs = -1;
     this.stopLatencyProbe();
-    this.preserveTerminalOutputQueue(previousHostId);
+    this.preserveTerminalOutputQueue(previousHostId, previousSessionId, previousSessionGeneration);
     this.clearTerminalOutputQueue();
     this.clearTerminalInputQueue();
     this.terminalDecodeRemainder = new Uint8Array(0);
@@ -2551,6 +2603,7 @@ struct SshTerminal {
     // This also cancels a connect whose native session id is still pending and
     // is intentionally scoped to the SSH facade's current pending request.
     this.loader.disconnect();
+    this.resetSshProductivityRuntime();
   }
 
   private activeSshTab(): SshTerminalTabView | null {
@@ -2562,6 +2615,8 @@ struct SshTerminal {
 
   private cleanupClosedSshTab(result: SshTerminalTabCloseResult): void {
     if (!result.closed || result.hostId.length === 0) { return; }
+    this.discardSshProductivityHostRuntime(result.hostId);
+    this.sshTabStore.clearStartupExecutionKeysForHost(result.hostId);
     if (result.sessionId > 0) {
       this.detachSftpSessionOwner(result.hostId, result.sessionId);
       this.releaseForwardingSession(result.hostId, result.sessionId, result.generation);
@@ -2934,6 +2989,7 @@ struct SshTerminal {
       sftpAvailable: this.sshConnectionIsConnected(),
       transferCenterAvailable: true,
       forwardingAvailable: this.sshConnectionIsConnected(),
+      productivityAvailable: this.sshWorkbenchEnabled && this.sshProductivityReady,
       closeAvailable: active !== null,
       activePinned: active !== null && active.pinned
     };
@@ -2974,6 +3030,10 @@ struct SshTerminal {
   }
 
   private performSshCommand(command: SshCommandDescriptor): void {
+    if (command.action === 'open_productivity') {
+      this.openSshProductivity();
+      return;
+    }
     if (command.action === 'new_session' || command.action === 'show_all_tabs') {
       this.openSshTabPicker();
       return;
@@ -3011,6 +3071,432 @@ struct SshTerminal {
     if (command.action === 'activate_session' || command.action === 'open_host') {
       const host: RemoteHost | undefined = this.srv.getHost(command.targetId);
       if (host !== undefined) { this.navigateToSshTab(host); }
+    }
+  }
+
+  private refreshSshProductivityDocument(): void {
+    if (!this.sshProductivityStore.isReady()) {
+      this.sshProductivityReady = false;
+      this.sshProductivityDocument = emptySshProductivityDocument();
+      return;
+    }
+    this.sshProductivityReady = true;
+    this.sshProductivityDocument = this.sshProductivityStore.snapshot();
+  }
+
+  private sshProductivityGroupId(): string {
+    const host: RemoteHost | undefined = this.srv.getHost(this.hostId.trim());
+    return host === undefined ? '' : host.groupId.trim();
+  }
+
+  private openSshProductivity(): void {
+    if (!this.sshWorkbenchEnabled || !this.sshProductivityReady || this.terminalClosing ||
+      this.showSshProductivitySheet || this.sshModalOwnsKeyboard()) { return; }
+    this.closeTerminalSearch(false, true);
+    this.sshProductivityQuery = '';
+    this.refreshSshProductivityDocument();
+    this.terminalFocusMode = false;
+    this.showSshProductivitySheet = true;
+  }
+
+  private closeSshProductivity(): void {
+    this.showSshProductivitySheet = false;
+    setTimeout((): void => {
+      if (!this.terminalClosing && !this.showSshProductivitySheet &&
+        !this.sshModalOwnsKeyboard()) {
+        this.focusKeyboard(false);
+      }
+    }, 32);
+  }
+
+  private insertSshProductivitySnippet(snippet: SshSnippetV1,
+    values: Array<SshSnippetValue>): void {
+    if (!this.sshWorkbenchEnabled || !this.sshProductivityReady || !this.connected || this.sessionId <= 0 ||
+      this.terminalClosing || this.hostId.trim().length === 0) { return; }
+    const rendered = renderSshSnippet(snippet, values);
+    if (!rendered.ok || rendered.insertion.length === 0) {
+      promptAction.showToast({ message: 'Snippet 变量尚未填写完整', duration: 1500 });
+      return;
+    }
+    const tracker: SshLocalCommandTracker = this.sshProductivityTrackerForHost(this.hostId);
+    tracker.reset();
+    this.sshProductivitySecretExpansionPending = rendered.containsSecret;
+    this.sendTerminalBytes(rendered.insertion, false);
+    this.closeSshProductivity();
+  }
+
+  private insertSshProductivityHistory(command: string): void {
+    if (!this.sshWorkbenchEnabled || !this.sshProductivityReady || !this.connected || this.sessionId <= 0 ||
+      this.terminalClosing || command.trim().length === 0) { return; }
+    this.sshProductivitySecretExpansionPending = false;
+    this.sshProductivityTrackerForHost(this.hostId).reset();
+    this.sendTerminalBytes(command.slice(0, 4096), false);
+    this.closeSshProductivity();
+  }
+
+  private setSshProductivitySetting(kind: 'history' | 'completion' | 'shell',
+    enabled: boolean): void {
+    if (!this.sshWorkbenchEnabled || !this.sshProductivityReady) { return; }
+    const current = this.sshProductivityStore.snapshot().settings;
+    const next: SshProductivitySettingsV1 = {
+      historyEnabled: kind === 'history' ? enabled : current.historyEnabled,
+      completionEnabled: kind === 'completion' ? enabled : current.completionEnabled,
+      shellIntegrationEnabled: kind === 'shell' ? enabled : current.shellIntegrationEnabled,
+      disabledHistoryHostIds: current.disabledHistoryHostIds.slice()
+    };
+    if (!this.sshProductivityStore.setSettings(next)) {
+      promptAction.showToast({ message: 'SSH 生产力设置保存失败', duration: 1800 });
+      return;
+    }
+    if (kind === 'history' && !enabled) {
+      this.sshProductivityTrackers.forEach((tracker: SshLocalCommandTracker): void => {
+        tracker.reset();
+      });
+      this.sshProductivityPendingHistory.clear();
+      this.sshProductivityCommittedHistoryIds.clear();
+      this.sshProductivityShellPhases.clear();
+    }
+    if (kind === 'shell' && !enabled) {
+      this.sshProductivityParsers.forEach((parser: SshShellIntegrationParser): void => {
+        parser.reset();
+      });
+      this.sshProductivityParsers.clear();
+      this.sshProductivityPendingHistory.clear();
+      this.sshProductivityCommittedHistoryIds.clear();
+      this.sshProductivityShellPhases.clear();
+      this.sshProductivityTrackers.forEach((tracker: SshLocalCommandTracker): void => {
+        tracker.reset();
+      });
+    }
+    this.refreshSshProductivityDocument();
+  }
+
+  private setSshProductivityStartup(snippetId: string, enabled: boolean): boolean {
+    if (!this.sshWorkbenchEnabled || !this.sshProductivityReady) { return false; }
+    const saved: boolean = this.sshProductivityStore.setStartupCommand({
+      hostId: this.hostId.trim(), snippetId: snippetId.trim(), enabled
+    });
+    if (!saved) {
+      promptAction.showToast({ message: '启动命令不能包含 secretRef 或未找到片段', duration: 1900 });
+      this.refreshSshProductivityDocument();
+      return false;
+    }
+    this.refreshSshProductivityDocument();
+    return true;
+  }
+
+  private sshProductivitySessionKey(hostId: string, sessionId: number = -1,
+    generation: number = -1): string {
+    const normalizedHostId: string = hostId.trim();
+    if (normalizedHostId.length === 0) { return ''; }
+    let resolvedSessionId: number = sessionId;
+    let resolvedGeneration: number = generation;
+    if (resolvedSessionId <= 0 || resolvedGeneration <= 0) {
+      if (normalizedHostId === this.hostId.trim() && this.sessionId > 0 &&
+        this.sshSessionGeneration > 0) {
+        resolvedSessionId = this.sessionId;
+        resolvedGeneration = this.sshSessionGeneration;
+      } else {
+        resolvedSessionId = this.sshTabStore.sessionId(normalizedHostId);
+        resolvedGeneration = this.sshTabStore.sessionGeneration(normalizedHostId);
+      }
+    }
+    if (resolvedSessionId <= 0 || resolvedGeneration <= 0) { return ''; }
+    return normalizedHostId + ':' + resolvedSessionId.toString() + ':' +
+      resolvedGeneration.toString();
+  }
+
+  private discardSshProductivityHostRuntime(hostId: string, keepKey: string = ''): void {
+    const normalizedHostId: string = hostId.trim();
+    if (normalizedHostId.length === 0) { return; }
+    const prefix: string = normalizedHostId + ':';
+    const parserKeys: Array<string> = [];
+    this.sshProductivityParsers.forEach((_parser: SshShellIntegrationParser, key: string): void => {
+      if ((key === normalizedHostId || key.startsWith(prefix)) && key !== keepKey) {
+        parserKeys.push(key);
+      }
+    });
+    for (let index: number = 0; index < parserKeys.length; index++) {
+      const parser: SshShellIntegrationParser | undefined =
+        this.sshProductivityParsers.get(parserKeys[index]);
+      if (parser !== undefined) { parser.reset(); }
+      this.sshProductivityParsers.delete(parserKeys[index]);
+    }
+    const trackerKeys: Array<string> = [];
+    this.sshProductivityTrackers.forEach((_tracker: SshLocalCommandTracker, key: string): void => {
+      if ((key === normalizedHostId || key.startsWith(prefix)) && key !== keepKey) {
+        trackerKeys.push(key);
+      }
+    });
+    for (let index: number = 0; index < trackerKeys.length; index++) {
+      const tracker: SshLocalCommandTracker | undefined =
+        this.sshProductivityTrackers.get(trackerKeys[index]);
+      if (tracker !== undefined) { tracker.reset(); }
+      this.sshProductivityTrackers.delete(trackerKeys[index]);
+    }
+    const pendingKeys: Array<string> = [];
+    this.sshProductivityPendingHistory.forEach((_items: Array<SshCommandHistoryV1>, key: string): void => {
+      if ((key === normalizedHostId || key.startsWith(prefix)) && key !== keepKey) {
+        pendingKeys.push(key);
+      }
+    });
+    for (let index: number = 0; index < pendingKeys.length; index++) {
+      this.sshProductivityPendingHistory.delete(pendingKeys[index]);
+    }
+    const committedKeys: Array<string> = [];
+    this.sshProductivityCommittedHistoryIds.forEach((_items: Array<string>, key: string): void => {
+      if ((key === normalizedHostId || key.startsWith(prefix)) && key !== keepKey) {
+        committedKeys.push(key);
+      }
+    });
+    for (let index: number = 0; index < committedKeys.length; index++) {
+      this.sshProductivityCommittedHistoryIds.delete(committedKeys[index]);
+    }
+    const phaseKeys: Array<string> = [];
+    this.sshProductivityShellPhases.forEach((_phase: SshProductivityShellPhase, key: string): void => {
+      if ((key === normalizedHostId || key.startsWith(prefix)) && key !== keepKey) {
+        phaseKeys.push(key);
+      }
+    });
+    for (let index: number = 0; index < phaseKeys.length; index++) {
+      this.sshProductivityShellPhases.delete(phaseKeys[index]);
+    }
+  }
+
+  private resetSshProductivityRuntime(): void {
+    this.sshProductivityParsers.forEach((parser: SshShellIntegrationParser): void => {
+      parser.reset();
+    });
+    this.sshProductivityParsers.clear();
+    this.sshProductivityTrackers.forEach((tracker: SshLocalCommandTracker): void => {
+      tracker.reset();
+    });
+    this.sshProductivityTrackers.clear();
+    this.sshProductivityPendingHistory.clear();
+    this.sshProductivityCommittedHistoryIds.clear();
+    this.sshProductivityShellPhases.clear();
+    this.sshProductivitySecretExpansionPending = false;
+    this.sshProductivityTrackerSuppressed = false;
+  }
+
+  private sshProductivityTrackerForHost(hostId: string): SshLocalCommandTracker {
+    const normalizedHostId: string = hostId.trim();
+    const sessionKey: string = this.sshProductivitySessionKey(normalizedHostId);
+    const trackerKey: string = sessionKey.length > 0 ? sessionKey : normalizedHostId;
+    const existing: SshLocalCommandTracker | undefined =
+      this.sshProductivityTrackers.get(trackerKey);
+    if (existing !== undefined) { return existing; }
+    const created: SshLocalCommandTracker = new SshLocalCommandTracker();
+    this.sshProductivityTrackers.set(trackerKey, created);
+    return created;
+  }
+
+  private sshProductivityInputSafe(hostId: string): boolean {
+    const normalizedHostId: string = hostId.trim();
+    if (!this.sshWorkbenchEnabled || !this.sshProductivityReady || !this.connected || this.sessionId <= 0 ||
+      this.terminalClosing || normalizedHostId.length === 0 ||
+      normalizedHostId !== this.hostId.trim() || this.sshAuthPrompt !== null ||
+      this.showSshAuthPromptSheet || this.showPassphraseSheet ||
+      this.terminalMouseTracking !== 0 || this.terminalApplicationKeypad ||
+      this.terminalApplicationCursorKeys || this.sessionWindowFullscreen ||
+      this.sshProductivityTrackerSuppressed) { return false; }
+    const settings = this.sshProductivityStore.snapshot().settings;
+    if (!settings.historyEnabled || !settings.shellIntegrationEnabled ||
+      this.sshProductivitySessionKey(normalizedHostId).length === 0) { return false; }
+    return settings.disabledHistoryHostIds.indexOf(normalizedHostId) < 0;
+  }
+
+  private trackSshProductivityInput(data: string, control: boolean): void {
+    if (data.length === 0 || this.sshProductivityTrackerSuppressed ||
+      !this.sshWorkbenchEnabled || !this.sshProductivityReady) { return; }
+    const normalizedHostId: string = this.hostId.trim();
+    const sessionKey: string = this.sshProductivitySessionKey(normalizedHostId);
+    if (sessionKey.length === 0) { return; }
+    const phase: SshProductivityShellPhase =
+      this.sshProductivityShellPhases.get(sessionKey) ?? 'idle';
+    if (phase !== 'prompt' && phase !== 'command') {
+      const staleTracker: SshLocalCommandTracker | undefined =
+        this.sshProductivityTrackers.get(sessionKey);
+      if (staleTracker !== undefined) { staleTracker.reset(); }
+      return;
+    }
+    const settings = this.sshProductivityStore.snapshot().settings;
+    if (!settings.historyEnabled || !settings.shellIntegrationEnabled ||
+      settings.disabledHistoryHostIds.indexOf(normalizedHostId) >= 0) { return; }
+    const tracker: SshLocalCommandTracker = this.sshProductivityTrackerForHost(normalizedHostId);
+    if (this.sshProductivitySecretExpansionPending) {
+      tracker.reset();
+      if (data.indexOf('\r') >= 0 || data.indexOf('\n') >= 0) {
+        this.sshProductivitySecretExpansionPending = false;
+      }
+      return;
+    }
+    const safe: boolean = this.sshProductivityInputSafe(normalizedHostId) &&
+      (!control || data === '\r' || data === '\n');
+    const submissions: Array<SshLocalCommandSubmit> = tracker.push(data, safe);
+    for (let index: number = 0; index < submissions.length; index++) {
+      const submission: SshLocalCommandSubmit = submissions[index];
+      if (submission.rejectedSensitiveControl) { continue; }
+      const record: SshCommandHistoryV1 | null = captureSshHistory({
+        hostId: normalizedHostId,
+        command: submission.command,
+        nowMs: Date.now(),
+        enabled: true,
+        hostDisabled: false,
+        passwordPrompt: this.sshAuthPrompt !== null || this.showPassphraseSheet,
+        rawMode: this.terminalMouseTracking !== 0 || this.terminalApplicationKeypad ||
+          this.terminalApplicationCursorKeys,
+        fullscreenMode: this.sessionWindowFullscreen,
+        secretExpansion: false
+      }, ++this.sshProductivityHistorySequence);
+      if (record !== null) {
+        let pending: Array<SshCommandHistoryV1> | undefined =
+          this.sshProductivityPendingHistory.get(sessionKey);
+        if (pending === undefined) {
+          pending = [];
+          this.sshProductivityPendingHistory.set(sessionKey, pending);
+        }
+        pending.push(record);
+        while (pending.length > 32) { pending.shift(); }
+      }
+    }
+  }
+
+  private observeSshShellOutput(hostId: string, text: string, sessionId: number,
+    sessionGeneration: number): void {
+    const normalizedHostId: string = hostId.trim();
+    if (!this.sshWorkbenchEnabled || !this.sshProductivityReady || text.length === 0 ||
+      normalizedHostId.length === 0 || sessionId <= 0 || sessionGeneration <= 0) {
+      return;
+    }
+    if (this.sshTabStore.sessionId(normalizedHostId) !== sessionId ||
+      this.sshTabStore.sessionGeneration(normalizedHostId) !== sessionGeneration) {
+      return;
+    }
+    if (normalizedHostId === this.hostId.trim() && this.sessionId > 0 &&
+      (this.sessionId !== sessionId || this.sshSessionGeneration !== sessionGeneration)) {
+      return;
+    }
+    const settings = this.sshProductivityStore.snapshot().settings;
+    if (!settings.shellIntegrationEnabled) { return; }
+    const sessionKey: string = this.sshProductivitySessionKey(
+      normalizedHostId, sessionId, sessionGeneration);
+    if (sessionKey.length === 0) { return; }
+    let parser: SshShellIntegrationParser | undefined =
+      this.sshProductivityParsers.get(sessionKey);
+    if (parser === undefined) {
+      parser = new SshShellIntegrationParser();
+      this.sshProductivityParsers.set(sessionKey, parser);
+    }
+    const parsed = parser.push(text);
+    for (let index: number = 0; index < parsed.events.length; index++) {
+      const event: SshShellEvent = parsed.events[index];
+      if (event.kind === 'prompt_start') {
+        const tracker: SshLocalCommandTracker | undefined =
+          this.sshProductivityTrackers.get(sessionKey);
+        if (tracker !== undefined) { tracker.reset(); }
+        this.sshProductivityPendingHistory.delete(sessionKey);
+        this.sshProductivityCommittedHistoryIds.delete(sessionKey);
+        this.sshProductivityShellPhases.set(sessionKey, 'prompt');
+        continue;
+      }
+      if (event.kind === 'command_start') {
+        const phase: SshProductivityShellPhase =
+          this.sshProductivityShellPhases.get(sessionKey) ?? 'idle';
+        if (phase === 'prompt') {
+          this.sshProductivityShellPhases.set(sessionKey, 'command');
+        } else {
+          this.sshProductivityPendingHistory.delete(sessionKey);
+          const tracker: SshLocalCommandTracker | undefined =
+            this.sshProductivityTrackers.get(sessionKey);
+          if (tracker !== undefined) { tracker.reset(); }
+          this.sshProductivityShellPhases.set(sessionKey, 'idle');
+        }
+        continue;
+      }
+      if (event.kind === 'command_executed') {
+        const phase: SshProductivityShellPhase =
+          this.sshProductivityShellPhases.get(sessionKey) ?? 'idle';
+        const pending: Array<SshCommandHistoryV1> | undefined =
+          this.sshProductivityPendingHistory.get(sessionKey);
+        if (phase !== 'command') {
+          this.sshProductivityPendingHistory.delete(sessionKey);
+          this.sshProductivityShellPhases.set(sessionKey, 'idle');
+          continue;
+        }
+        const record: SshCommandHistoryV1 | undefined =
+          pending === undefined ? undefined : pending.shift();
+        // Only one local submission is associated with one shell C marker.
+        // Anything after it may be an interactive secret and must be dropped.
+        this.sshProductivityPendingHistory.delete(sessionKey);
+        if (record !== undefined && this.sshProductivityStore.appendHistory(record)) {
+          let committed: Array<string> | undefined =
+            this.sshProductivityCommittedHistoryIds.get(sessionKey);
+          if (committed === undefined) {
+            committed = [];
+            this.sshProductivityCommittedHistoryIds.set(sessionKey, committed);
+          }
+          committed.push(record.id);
+          while (committed.length > 32) { committed.shift(); }
+          this.refreshSshProductivityDocument();
+        }
+        this.sshProductivityShellPhases.set(sessionKey, 'executed');
+        continue;
+      }
+      if (event.kind === 'command_finished') {
+        const phase: SshProductivityShellPhase =
+          this.sshProductivityShellPhases.get(sessionKey) ?? 'idle';
+        if (phase !== 'executed') {
+          this.sshProductivityPendingHistory.delete(sessionKey);
+          this.sshProductivityShellPhases.set(sessionKey, 'idle');
+          continue;
+        }
+        const committed: Array<string> | undefined =
+          this.sshProductivityCommittedHistoryIds.get(sessionKey);
+        const historyId: string | undefined =
+          committed === undefined ? undefined : committed.shift();
+        if (committed !== undefined && committed.length === 0) {
+          this.sshProductivityCommittedHistoryIds.delete(sessionKey);
+        }
+        if (historyId !== undefined && this.sshProductivityStore.updateHistoryExitCode(
+          historyId, event.exitCode)) {
+          this.refreshSshProductivityDocument();
+        }
+        this.sshProductivityShellPhases.set(sessionKey, 'idle');
+      }
+    }
+  }
+
+  private maybeRunSshStartupCommand(pageGeneration: number, bindingGeneration: number,
+    bindingHostId: string, connectedSessionId: number, sessionGeneration: number): void {
+    if (!this.sshWorkbenchEnabled || !this.sshProductivityReady || this.terminalClosing || !this.connected ||
+      !this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId) ||
+      this.sessionId !== connectedSessionId) { return; }
+    const fence: SshStartupFence = {
+      hostId: bindingHostId,
+      sessionId: connectedSessionId,
+      generation: sessionGeneration,
+      authenticated: this.connected,
+      hostKeyVerified: true
+    };
+    const executionKey: string = sshStartupExecutionKey(fence);
+    if (!startupCommandMayRun(fence, '') ||
+      this.sshTabStore.hasStartupExecutionKey(executionKey)) { return; }
+    const document: SshProductivityDocumentV1 = this.sshProductivityStore.snapshot();
+    const startup = document.startupCommands.find(
+      (item): boolean => item.hostId === bindingHostId.trim() && item.enabled);
+    if (startup === undefined) { return; }
+    const snippet: SshSnippetV1 | undefined = document.snippets.find(
+      (item): boolean => item.id === startup.snippetId);
+    if (snippet === undefined) { return; }
+    const rendered = renderSshSnippet(snippet, []);
+    if (!rendered.ok || rendered.containsSecret || rendered.insertion.length === 0) { return; }
+    this.sshTabStore.markStartupExecutionKey(executionKey);
+    this.sshProductivityTrackerSuppressed = true;
+    try {
+      this.sendTerminalBytes(rendered.insertion + '\r', true);
+    } finally {
+      this.sshProductivityTrackerSuppressed = false;
     }
   }
 
@@ -3814,10 +4300,14 @@ struct SshTerminal {
     }
     this.terminalOutputQueue = [];
     this.terminalOutputQueueBytes = 0;
+    this.terminalOutputQueueHostId = '';
+    this.terminalOutputQueueSessionId = -1;
+    this.terminalOutputQueueSessionGeneration = 0;
   }
 
   /** Preserve bytes admitted for the old host before its visible binding moves. */
-  private preserveTerminalOutputQueue(hostId: string): void {
+  private preserveTerminalOutputQueue(hostId: string, sessionId: number,
+    sessionGeneration: number): void {
     const normalizedHostId: string = hostId.trim();
     if (normalizedHostId.length === 0 || this.terminalOutputQueue.length === 0) { return; }
     if (this.terminalOutputFlushTimer !== -1) {
@@ -3835,6 +4325,7 @@ struct SshTerminal {
       const transcript: string = this.decodeTranscriptChunk(normalizedHostId, chunk);
       if (transcript.length > 0) {
         this.sshTranscriptStore.append(normalizedHostId, transcript);
+        this.observeSshShellOutput(normalizedHostId, transcript, sessionId, sessionGeneration);
       }
       const decoded: string = this.decodeTerminalChunk(chunk, normalizedHostId);
       if (decoded.length > 0) {
@@ -3844,14 +4335,22 @@ struct SshTerminal {
   }
 
   /** A callback can finish after detach; route that final chunk to its host. */
-  private enqueueDetachedTerminalOutput(hostId: string, data: ArrayBuffer): void {
+  private enqueueDetachedTerminalOutput(hostId: string, sessionId: number,
+    sessionGeneration: number, data: ArrayBuffer): void {
     const normalizedHostId: string = hostId.trim();
     if (this.terminalClosing || normalizedHostId.length === 0 || data.byteLength === 0 ||
-      !this.sshTabStore.has(normalizedHostId)) { return; }
+      !this.sshTabStore.has(normalizedHostId) ||
+      this.sshTabStore.sessionId(normalizedHostId) !== sessionId ||
+      this.sshTabStore.sessionGeneration(normalizedHostId) !== sessionGeneration ||
+      (normalizedHostId === this.hostId.trim() && this.sessionId > 0 &&
+        (this.sessionId !== sessionId || this.sshSessionGeneration !== sessionGeneration))) {
+      return;
+    }
     this.nativeTerminalInputBuffer(normalizedHostId).enqueue(data);
     const transcript: string = this.decodeTranscriptChunk(normalizedHostId, data);
     if (transcript.length > 0) {
       this.sshTranscriptStore.append(normalizedHostId, transcript);
+      this.observeSshShellOutput(normalizedHostId, transcript, sessionId, sessionGeneration);
     }
     const decoded: string = this.decodeTerminalChunk(data, normalizedHostId);
     if (decoded.length > 0) {
@@ -3870,8 +4369,22 @@ struct SshTerminal {
     }, 0);
   }
 
-  private enqueueTerminalOutput(data: ArrayBuffer): void {
+  private enqueueTerminalOutput(hostId: string, sessionId: number,
+    sessionGeneration: number, data: ArrayBuffer): void {
     if (this.terminalClosing || data.byteLength === 0) { return; }
+    const normalizedHostId: string = hostId.trim();
+    if (normalizedHostId.length === 0 || sessionId <= 0 || sessionGeneration <= 0 ||
+      this.sshTabStore.sessionId(normalizedHostId) !== sessionId ||
+      this.sshTabStore.sessionGeneration(normalizedHostId) !== sessionGeneration) { return; }
+    if (this.terminalOutputQueue.length === 0) {
+      this.terminalOutputQueueHostId = normalizedHostId;
+      this.terminalOutputQueueSessionId = sessionId;
+      this.terminalOutputQueueSessionGeneration = sessionGeneration;
+    } else if (this.terminalOutputQueueHostId !== normalizedHostId ||
+      this.terminalOutputQueueSessionId !== sessionId ||
+      this.terminalOutputQueueSessionGeneration !== sessionGeneration) {
+      return;
+    }
     if (this.terminalOutputQueue.length >= SSH_OUTPUT_QUEUE_MAX_CHUNKS ||
       this.terminalOutputQueueBytes + data.byteLength > SSH_OUTPUT_QUEUE_MAX_BYTES) {
       if (!this.terminalOutputQueueOverflowed) {
@@ -3948,10 +4461,20 @@ struct SshTerminal {
       this.terminalOutputQueue.splice(0, queuedChunksConsumed);
     }
     this.terminalOutputQueueBytes -= batchBytes;
-    const outputHostId: string = this.hostId.trim();
+    const outputHostId: string = this.terminalOutputQueueHostId;
+    const outputSessionId: number = this.terminalOutputQueueSessionId;
+    const outputSessionGeneration: number = this.terminalOutputQueueSessionGeneration;
+    if (outputHostId.length === 0 || outputSessionId <= 0 || outputSessionGeneration <= 0 ||
+      this.sshTabStore.sessionId(outputHostId) !== outputSessionId ||
+      this.sshTabStore.sessionGeneration(outputHostId) !== outputSessionGeneration) {
+      this.clearTerminalOutputQueue();
+      return;
+    }
     const transcriptOutput: string = this.decodeTranscriptChunk(outputHostId, merged);
     if (transcriptOutput.length > 0) {
       this.sshTranscriptStore.append(outputHostId, transcriptOutput);
+      this.observeSshShellOutput(outputHostId, transcriptOutput,
+        outputSessionId, outputSessionGeneration);
     }
     if (this.shouldUseNativeTerminal()) {
       this.nativeTerminalInputBuffer(outputHostId).enqueue(merged);
@@ -7140,9 +7663,15 @@ struct SshTerminal {
     this.sshWorkspacePersistenceError = '';
     this.sshWorkspaceManualReconnectRunning = false;
     this.sshWorkspacePtySizes.clear();
+    this.sshProductivityReady = false;
+    this.sshProductivityDocument = emptySshProductivityDocument();
+    this.sshProductivityHistorySequence = 0;
     this.closeTerminalSearch(false, true);
     this.showTerminalProfileSheet = false;
     this.showSshCommandPalette = false;
+    this.showSshProductivitySheet = false;
+    this.sshProductivityQuery = '';
+    this.resetSshProductivityRuntime();
     this.showSftpTransferCenter = false;
     this.sftpWorkspaceTabState = createSshSftpWorkspaceTabState();
     this.sftpDropHoverActive = false;
@@ -7171,6 +7700,8 @@ struct SshTerminal {
       // never boots with a default font that masks the user's saved choice.
       const sshContext: common.Context = getContext(this) as common.Context;
       this.sshWorkbenchEnabled = this.sshWorkspaceCapabilityStore.load(sshContext);
+      this.sshProductivityReady = this.sshProductivityStore.init(sshContext);
+      this.refreshSshProductivityDocument();
       const appearance: SshTerminalAppearance = this.sshSettings.init(sshContext);
       this.terminalProfileStore.init(sshContext, appearance);
       this.sshProxyProfilesReady = this.sshProxyProfiles.init(sshContext);
@@ -7520,6 +8051,12 @@ struct SshTerminal {
     this.closeTerminalSearch(false, true);
     this.showTerminalProfileSheet = false;
     this.showSshCommandPalette = false;
+    this.showSshProductivitySheet = false;
+    this.sshProductivityQuery = '';
+    this.sshProductivityReady = false;
+    this.sshProductivityDocument = emptySshProductivityDocument();
+    this.sshProductivityHistorySequence = 0;
+    this.resetSshProductivityRuntime();
     this.showSftpTransferCenter = false;
     this.sftpWorkspaceTabState = createSshSftpWorkspaceTabState();
     this.sftpDropHoverActive = false;
@@ -8065,17 +8602,27 @@ struct SshTerminal {
         // the transport becomes usable, not only when the page first appears.
         void this.refreshPhysicalKeyboardPresence('connection-state');
       }
-      this.sshTabStore.update(this.hostId, 'connected', this.sessionId);
       const generation: number = this.loader.getSshTerminalDiagnostics(
         this.sessionId).sessionGeneration;
       if (generation > 0) {
+        const recoveryKey: string = this.sshProductivitySessionKey(
+          this.hostId, this.sessionId, generation);
+        if (generation !== this.sshSessionGeneration) {
+          this.discardSshProductivityHostRuntime(this.hostId, recoveryKey);
+          this.sshTabStore.clearStartupExecutionKeysForHost(this.hostId, recoveryKey);
+        }
         this.sshSessionGeneration = generation;
+        this.sshTabStore.update(this.hostId, 'connected', this.sessionId, '', generation);
         this.bindForwardingSession(this.hostId, this.sessionId, generation);
         this.attachSftpSessionOwner({
           hostId: this.hostId,
           sessionId: this.sessionId,
           generation
         });
+        this.maybeRunSshStartupCommand(this.pageGeneration, this.sshBindingGeneration,
+          this.hostId, this.sessionId, generation);
+      } else {
+        this.sshTabStore.update(this.hostId, 'connected', this.sessionId);
       }
       return !this.terminalClosing;
     }
@@ -8399,6 +8946,10 @@ struct SshTerminal {
       return false;
     }
     this.sshSessionGeneration = sessionGeneration;
+    const productivitySessionKey: string = this.sshProductivitySessionKey(
+      bindingHostId, connectedSessionId, sessionGeneration);
+    this.discardSshProductivityHostRuntime(bindingHostId, productivitySessionKey);
+    this.sshTabStore.clearStartupExecutionKeysForHost(bindingHostId, productivitySessionKey);
     // Reassert the active owner at the attach boundary. A picker exit and a
     // tab-store notification can be delivered on adjacent ArkUI turns; the
     // target session must win both the input owner and the toolbar snapshot.
@@ -8415,10 +8966,16 @@ struct SshTerminal {
     this.loader.setOnDataCallback(connectedSessionId, (data: ArrayBuffer): void => {
       if (!data || data.byteLength === 0 || !this.isPageGenerationActive(pageGeneration) ||
         this.terminalClosing) { return; }
+      const nativeCallbackGeneration: number = this.loader.getSshTerminalDiagnostics(
+        connectedSessionId).sessionGeneration;
+      const effectiveSessionGeneration: number = nativeCallbackGeneration > 0
+        ? nativeCallbackGeneration : sessionGeneration;
       const currentBinding: boolean = this.isSshBindingActive(
         pageGeneration, bindingGeneration, bindingHostId) &&
         this.sessionId === connectedSessionId &&
-        this.sshSessionGeneration === sessionGeneration;
+        this.sshSessionGeneration === effectiveSessionGeneration &&
+        this.sshTabStore.sessionId(bindingHostId) === connectedSessionId &&
+        this.sshTabStore.sessionGeneration(bindingHostId) === effectiveSessionGeneration;
       dataChunkCount++;
       if (dataChunkCount <= 5 || dataChunkCount % 100 === 0) {
         hilog.info(0x0000, 'SshTerminal',
@@ -8427,9 +8984,11 @@ struct SshTerminal {
           ' seq=' + (this.termOutputSequence + 1).toString());
       }
       if (currentBinding) {
-        this.enqueueTerminalOutput(data);
+        this.enqueueTerminalOutput(bindingHostId, connectedSessionId,
+          effectiveSessionGeneration, data);
       } else {
-        this.enqueueDetachedTerminalOutput(bindingHostId, data);
+        this.enqueueDetachedTerminalOutput(bindingHostId, connectedSessionId,
+          effectiveSessionGeneration, data);
       }
     });
     if (!this.loader.resumeSshSession(connectedSessionId)) {
@@ -8479,6 +9038,8 @@ struct SshTerminal {
       connectedSessionId, bindingHostId, sessionGeneration)) {
       return true;
     }
+    this.maybeRunSshStartupCommand(pageGeneration, bindingGeneration, bindingHostId,
+      connectedSessionId, sessionGeneration);
     // A keyboard can be attached while SSH is negotiating. Re-enumerate at
     // the same connection boundary used by RDP/RustDesk before routing input.
     void this.refreshPhysicalKeyboardPresence('connection-state');
@@ -8738,6 +9299,7 @@ struct SshTerminal {
       hilog.debug(0x0000, 'SshTerminal', '[input] admit chars=' + data.length.toString() +
         ' control=' + (control ? '1' : '0'));
     }
+    this.trackSshProductivityInput(data, control);
     this.queueTerminalInput(data, control);
   }
 
@@ -9114,6 +9676,40 @@ struct SshTerminal {
     })
   }
 
+  @Builder
+  private SshProductivitySheetContent() {
+    SshProductivitySheet({
+      document: this.sshProductivityDocument,
+      ready: this.sshProductivityReady,
+      hostId: this.hostId,
+      hostLabel: this.hostLabel,
+      groupId: this.sshProductivityGroupId(),
+      query: this.sshProductivityQuery,
+      onClose: (): void => { this.closeSshProductivity(); },
+      onSearchChange: (value: string): void => {
+        this.sshProductivityQuery = value;
+      },
+      onInsertSnippet: (snippet: SshSnippetV1, values: Array<SshSnippetValue>): void => {
+        this.insertSshProductivitySnippet(snippet, values);
+      },
+      onInsertHistory: (command: string): void => {
+        this.insertSshProductivityHistory(command);
+      },
+      onToggleHistory: (enabled: boolean): void => {
+        this.setSshProductivitySetting('history', enabled);
+      },
+      onToggleCompletion: (enabled: boolean): void => {
+        this.setSshProductivitySetting('completion', enabled);
+      },
+      onToggleShellIntegration: (enabled: boolean): void => {
+        this.setSshProductivitySetting('shell', enabled);
+      },
+      onSetStartup: (snippetId: string, enabled: boolean): boolean => {
+        return this.setSshProductivityStartup(snippetId, enabled);
+      }
+    })
+  }
+
   private terminalSearchAvailable(): boolean {
     return this.sshWorkbenchEnabled && !this.terminalClosing &&
       this.hostId.trim().length > 0 && this.sshTabViews.length > 0;
@@ -9125,7 +9721,8 @@ struct SshTerminal {
       this.forwardingModalCoordinator.currentPhase() === 'closing' ||
       this.showSftpPanel || this.showSftpSheet || this.sftpPeerHostPicker ||
       this.showSshTabPicker || this.sshTabPickerClosing || this.showTerminalProfileSheet ||
-      this.showSshCommandPalette || this.showSshTabRenameSheet || this.showSftpTransferCenter;
+      this.showSshCommandPalette || this.showSshProductivitySheet ||
+      this.showSshTabRenameSheet || this.showSftpTransferCenter;
   }
 
   private clearTerminalSearchDebounce(): void {
@@ -9316,6 +9913,8 @@ struct SshTerminal {
       this.closeTerminalSearch(true, true);
       this.showTerminalProfileSheet = false;
       this.showSshCommandPalette = false;
+      this.showSshProductivitySheet = false;
+      this.resetSshProductivityRuntime();
       this.pendingSshCommandId = '';
       this.showSshTabRenameSheet = false;
       this.sshTabRenameHostId = '';
@@ -9323,6 +9922,7 @@ struct SshTerminal {
       this.showSftpTransferCenter = false;
       if (this.sftpWorkspaceTabState.open) { this.closeSftpWorkbenchTab(); }
     } else if (!this.terminalClosing && this.pageGeneration > 0) {
+      this.refreshSshProductivityDocument();
       try {
         void this.initializeSshWorkspace(
           this.getUIContext().getHostContext() as common.Context, this.pageGeneration);
@@ -9332,6 +9932,7 @@ struct SshTerminal {
       }
     }
     this.refreshTerminalProfileForHost();
+    this.rebuildSshCommandRegistry();
   }
 
   private keyModifier(event: KeyEvent, name: string): boolean {
@@ -12629,6 +13230,7 @@ struct SshTerminal {
 
   private sendPastedText(content: string): void {
     if (this.bracketedPasteEnabled) {
+      this.trackSshProductivityInput(content, false);
       // Mark every part of the bracketed paste as one ordered transaction.
       // The native reactor will not let a later control byte split it.
       this.queueTerminalInput('\u001b[200~', false, true, false);
@@ -14652,6 +15254,26 @@ struct SshTerminal {
         action.dismiss();
       },
       onDisappear: (): void => { this.onSshCommandPaletteDisappear(); }
+    })
+    .bindSheet($$this.showSshProductivitySheet, this.SshProductivitySheetContent(), {
+      height: this.breakpoint === 'sm' ? SheetSize.LARGE : '720vp',
+      preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
+      width: this.breakpoint === 'sm' ? '100%' : '760vp',
+      dragBar: this.breakpoint === 'sm',
+      backgroundColor: '#171D25',
+      blurStyle: BlurStyle.NONE,
+      showClose: false,
+      maskColor: 'rgba(0,0,0,0.48)',
+      onWillDismiss: (action: DismissSheetAction): void => {
+        this.showSshProductivitySheet = false;
+        action.dismiss();
+      },
+      onDisappear: (): void => {
+        if (this.showSshProductivitySheet) { this.showSshProductivitySheet = false; }
+        if (!this.terminalClosing && !this.sshModalOwnsKeyboard()) {
+          this.focusKeyboard(false);
+        }
+      }
     })
     .bindSheet($$this.showSshTabRenameSheet, this.sshTabRenameSheet(), {
       height: SheetSize.FIT_CONTENT,

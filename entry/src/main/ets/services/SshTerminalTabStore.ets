@@ -39,6 +39,8 @@ interface SshTerminalTabRecord extends SshTerminalTabView {
 export class SshTerminalTabStore {
   private static instance: SshTerminalTabStore;
   private records: Map<string, SshTerminalTabRecord> = new Map<string, SshTerminalTabRecord>();
+  /** Session-scoped one-shot markers survive page recreation but never leave the tab store. */
+  private startupExecutionKeys: Set<string> = new Set<string>();
   /** UI order only. Native session ownership remains in the records/session facade. */
   private order: Array<string> = [];
   private activeHostId: string = '';
@@ -166,6 +168,13 @@ export class SshTerminalTabStore {
     error: string = '', generation: number = -1): void {
     const record: SshTerminalTabRecord | undefined = this.records.get(hostId.trim());
     if (record === undefined) { return; }
+    const sessionReplaced: boolean = sessionId >= 0 && record.sessionId > 0 &&
+      record.sessionId !== sessionId;
+    const generationReplaced: boolean = generation >= 0 && record.generation > 0 &&
+      record.generation !== generation;
+    if (sessionReplaced || generationReplaced) {
+      this.clearStartupExecutionKeysForHost(hostId);
+    }
     record.state = state;
     if (sessionId >= 0) { record.sessionId = sessionId; }
     if (generation >= 0) { record.generation = generation; }
@@ -177,6 +186,7 @@ export class SshTerminalTabStore {
   beginConnection(hostId: string): void {
     const record: SshTerminalTabRecord | undefined = this.records.get(hostId.trim());
     if (record === undefined) { return; }
+    this.clearStartupExecutionKeysForHost(hostId);
     record.state = 'connecting';
     record.sessionId = -1;
     record.generation = 0;
@@ -189,6 +199,7 @@ export class SshTerminalTabStore {
     error: string = ''): void {
     const record: SshTerminalTabRecord | undefined = this.records.get(hostId.trim());
     if (record === undefined) { return; }
+    this.clearStartupExecutionKeysForHost(hostId);
     record.state = state;
     record.sessionId = -1;
     record.generation = 0;
@@ -202,6 +213,28 @@ export class SshTerminalTabStore {
 
   sessionGeneration(hostId: string): number {
     return this.records.get(hostId.trim())?.generation ?? 0;
+  }
+
+  hasStartupExecutionKey(key: string): boolean {
+    return key.trim().length > 0 && this.startupExecutionKeys.has(key);
+  }
+
+  markStartupExecutionKey(key: string): void {
+    const normalizedKey: string = key.trim();
+    if (normalizedKey.length > 0) { this.startupExecutionKeys.add(normalizedKey); }
+  }
+
+  clearStartupExecutionKeysForHost(hostId: string, keepKey: string = ''): void {
+    const normalizedHostId: string = hostId.trim();
+    if (normalizedHostId.length === 0) { return; }
+    const prefix: string = normalizedHostId + ':';
+    const keys: Array<string> = [];
+    this.startupExecutionKeys.forEach((key: string): void => {
+      if (key.startsWith(prefix) && key !== keepKey) { keys.push(key); }
+    });
+    for (let index: number = 0; index < keys.length; index++) {
+      this.startupExecutionKeys.delete(keys[index]);
+    }
   }
 
   has(hostId: string): boolean {
@@ -285,6 +318,7 @@ export class SshTerminalTabStore {
         wasActive: false, nextActiveHostId: this.activeHostId
       };
     }
+    this.clearStartupExecutionKeysForHost(normalizedHostId);
     this.ensureOrdered(normalizedHostId);
     const removedIndex: number = this.removeFromOrder(normalizedHostId);
     const wasActive: boolean = normalizedHostId === this.activeHostId;
@@ -343,6 +377,7 @@ export class SshTerminalTabStore {
   closeAll(): number[] {
     const sessionIds: number[] = this.sessionIds();
     this.records.clear();
+    this.startupExecutionKeys.clear();
     this.order = [];
     this.activeHostId = '';
     this.notify();
