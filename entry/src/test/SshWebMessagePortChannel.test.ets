@@ -79,5 +79,43 @@ export default function sshWebMessagePortChannelTest(): void {
       expect(port.closed).assertTrue();
       expect(channel.send('input', 'late')).assertFalse();
     });
+
+    it('should_ignore_late_callbacks_from_replaced_or_detached_port', 0, (): void => {
+      const first = new MockWebMessagePort();
+      const replacement = new MockWebMessagePort();
+      const errors: Array<string> = [];
+      const channel = new SshWebMessagePortChannel();
+      let ready: number = 0;
+      const callbacks = {
+        onReady: (): void => { ready++; },
+        onEnvelope: (_envelope: SshWebMessageEnvelopeV1): void => {},
+        onError: (code: string): void => { errors.push(code); }
+      };
+
+      expect(channel.attach(first, 'host:session', 2, callbacks)).assertTrue();
+      expect(channel.attach(replacement, 'host:session', 3, callbacks)).assertTrue();
+      // The old port can still invoke its listener after close().  Its frame
+      // must not be evaluated against the replacement binding.
+      first.deliver({
+        version: 1, kind: 'hello_ack', sessionKey: 'host:session', generation: 3,
+        sequence: 1, ackSequence: 1, payload: ''
+      });
+      expect(channel.isReady()).assertFalse();
+      expect(ready).assertEqual(0);
+      expect(errors.length).assertEqual(0);
+
+      replacement.deliver({
+        version: 1, kind: 'hello_ack', sessionKey: 'host:session', generation: 3,
+        sequence: 1, ackSequence: 1, payload: ''
+      });
+      expect(channel.isReady()).assertTrue();
+      expect(ready).assertEqual(1);
+      channel.detach();
+      replacement.deliver({
+        version: 1, kind: 'ack', sessionKey: 'host:session', generation: 3,
+        sequence: 3, ackSequence: 2, payload: ''
+      });
+      expect(errors.length).assertEqual(0);
+    });
   });
 }

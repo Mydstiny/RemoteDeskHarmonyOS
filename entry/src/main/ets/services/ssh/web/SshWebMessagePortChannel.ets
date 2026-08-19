@@ -28,6 +28,8 @@ export interface SshWebMessagePortChannelCallbacks {
 
 export class SshWebMessagePortChannel {
   private port: SshWebMessagePortLike | null = null;
+  /** Monotonic bind fence; stale WebView callbacks become no-ops. */
+  private attachmentToken: number = 0;
   private state: SshWebMessageStateV1 = createSshWebMessageState('', 0);
   private callbacks: SshWebMessagePortChannelCallbacks = {
     onReady: (): void => {},
@@ -38,6 +40,7 @@ export class SshWebMessagePortChannel {
   attach(port: SshWebMessagePortLike, sessionKey: string, generation: number,
     callbacks?: SshWebMessagePortChannelCallbacks): boolean {
     this.detach();
+    const attachmentToken: number = this.attachmentToken;
     this.callbacks = callbacks ?? this.callbacks;
     this.state = createSshWebMessageState(sessionKey, generation);
     const handshake = startSshWebMessageHandshake(this.state);
@@ -50,7 +53,7 @@ export class SshWebMessagePortChannel {
     this.port = port;
     try {
       this.port.onMessageEvent((message: string | ArrayBuffer): void => {
-        this.receive(message);
+        this.receive(message, port, attachmentToken);
       });
       this.postEnvelope(handshake.envelope);
       return true;
@@ -62,6 +65,7 @@ export class SshWebMessagePortChannel {
   }
 
   detach(): void {
+    this.attachmentToken++;
     const existing: SshWebMessagePortLike | null = this.port;
     this.port = null;
     this.state = markSshWebMessageClosed(this.state);
@@ -114,8 +118,15 @@ export class SshWebMessagePortChannel {
     }
   }
 
-  private receive(message: string | ArrayBuffer): void {
-    if (this.port === null || typeof message !== 'string') {
+  private receive(message: string | ArrayBuffer, expectedPort: SshWebMessagePortLike,
+    expectedToken: number): void {
+    // A WebView may deliver a queued callback after close(), or after a new
+    // page has installed a replacement port.  Do not surface that callback to
+    // the new owner and do not let a same-identity stale frame pass policy.
+    if (this.port !== expectedPort || this.attachmentToken !== expectedToken) {
+      return;
+    }
+    if (typeof message !== 'string') {
       this.callbacks.onError('unsupported_message');
       return;
     }
