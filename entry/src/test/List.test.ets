@@ -160,6 +160,7 @@ import sshForwardingEditorPolicyTest from './SshForwardingEditorPolicy.test';
 import sshModalCoordinatorTest from './SshModalCoordinator.test';
 import sshSessionStoreTest from './SshSessionStore.test';
 import sshWorkspacePolicyTest from './SshWorkspacePolicy.test';
+import sshTerminalSearchShortcutPolicyTest from './SshTerminalSearchShortcutPolicy.test';
 import hostLocalPersonalizationPolicyTest from './HostLocalPersonalizationPolicy.test';
 import moonlightModelsTest from './MoonlightModels.test';
 import moonlightRecordTest from './MoonlightRecord.test';
@@ -365,6 +366,7 @@ export default function testsuite() {
   sshModalCoordinatorTest();
   sshSessionStoreTest();
   sshWorkspacePolicyTest();
+  sshTerminalSearchShortcutPolicyTest();
   hostLocalPersonalizationPolicyTest();
   moonlightModelsTest();
   moonlightRecordTest();

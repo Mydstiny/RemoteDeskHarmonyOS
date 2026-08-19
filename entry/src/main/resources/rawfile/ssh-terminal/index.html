@@ -66,6 +66,7 @@
         terminal: null,
         fitAddon: null,
         searchAddon: null,
+        searchResults: { resultIndex: -1, resultCount: 0 },
         pendingWrites: [],
         readyNotified: false,
         readyRetryCount: 0,
@@ -380,8 +381,19 @@
             loadAddonSafely(state.fitAddon, 'fit');
           }
           if (window.SearchAddon && typeof window.SearchAddon.SearchAddon === 'function') {
-            state.searchAddon = new window.SearchAddon.SearchAddon();
-            loadAddonSafely(state.searchAddon, 'search');
+            state.searchAddon = new window.SearchAddon.SearchAddon({ highlightLimit: 500 });
+            if (loadAddonSafely(state.searchAddon, 'search') &&
+                typeof state.searchAddon.onDidChangeResults === 'function') {
+              state.searchAddon.onDidChangeResults(function (results) {
+                state.searchResults = {
+                  resultIndex: Number(results && results.resultIndex) || 0,
+                  resultCount: Math.max(0, Number(results && results.resultCount) || 0)
+                };
+                if (state.searchResults.resultCount === 0) {
+                  state.searchResults.resultIndex = -1;
+                }
+              });
+            }
           }
 
           // Keep xterm's DOM renderer as the stable device path. CanvasAddon
@@ -565,14 +577,77 @@
         return state.terminal ? (state.terminal.getSelection() || '') : '';
       };
 
-      window.__sshXtermSearch = function (query, forward) {
-        if (!state.searchAddon || !query) return false;
-        try {
-          return forward === false ? state.searchAddon.findPrevious(String(query)) :
-            state.searchAddon.findNext(String(query));
-        } catch (_) {
-          return false;
+      window.__sshXtermSearch = function (request, legacyForward) {
+        // Preserve the old two-argument boolean API for any retained caller.
+        if (typeof request !== 'object' || request === null) {
+          if (!state.searchAddon || !request) return false;
+          try {
+            return legacyForward === false ? state.searchAddon.findPrevious(String(request)) :
+              state.searchAddon.findNext(String(request));
+          } catch (_) {
+            return false;
+          }
         }
+        var requestId = Math.max(0, Math.floor(Number(request.requestId) || 0));
+        var startedAt = window.performance && typeof window.performance.now === 'function' ?
+          window.performance.now() : Date.now();
+        function result(found, errorCode) {
+          var endedAt = window.performance && typeof window.performance.now === 'function' ?
+            window.performance.now() : Date.now();
+          return JSON.stringify({
+            requestId: requestId,
+            found: found === true,
+            resultIndex: Number(state.searchResults.resultIndex) ||
+              (state.searchResults.resultIndex === 0 ? 0 : -1),
+            resultCount: Math.max(0, Number(state.searchResults.resultCount) || 0),
+            elapsedMs: Math.max(0, endedAt - startedAt),
+            errorCode: errorCode || ''
+          });
+        }
+        if (!state.searchAddon) return result(false, 'search_unavailable');
+        var query = request.query === undefined || request.query === null ? '' :
+          String(request.query);
+        if (!query) return result(false, 'empty_query');
+        if (query.length > 512) return result(false, 'query_too_long');
+        var options = request.options || {};
+        if (options.regex === true) {
+          try { new RegExp(query, options.caseSensitive === true ? '' : 'i'); } catch (_) {
+            return result(false, 'invalid_regex');
+          }
+        }
+        state.searchResults = { resultIndex: -1, resultCount: 0 };
+        var searchOptions = {
+          caseSensitive: options.caseSensitive === true,
+          wholeWord: options.wholeWord === true,
+          regex: options.regex === true,
+          decorations: {
+            matchBackground: 'rgba(255, 193, 7, 0.34)',
+            matchBorder: 'rgba(255, 213, 79, 0.72)',
+            matchOverviewRuler: 'rgba(255, 193, 7, 0.82)',
+            activeMatchBackground: 'rgba(88, 166, 255, 0.62)',
+            activeMatchBorder: '#C7E2FF',
+            activeMatchColorOverviewRuler: '#58A6FF'
+          }
+        };
+        try {
+          var found = request.direction === 'previous' ?
+            state.searchAddon.findPrevious(query, searchOptions) :
+            state.searchAddon.findNext(query, searchOptions);
+          return result(found === true, '');
+        } catch (error) {
+          return result(false, options.regex === true ? 'invalid_regex' : 'execution_failed');
+        }
+      };
+
+      window.__sshXtermClearSearch = function () {
+        state.searchResults = { resultIndex: -1, resultCount: 0 };
+        if (state.searchAddon && typeof state.searchAddon.clearDecorations === 'function') {
+          try { state.searchAddon.clearDecorations(); } catch (_) {}
+        }
+        if (state.terminal) {
+          try { state.terminal.clearSelection(); } catch (_) {}
+        }
+        return true;
       };
 
       window.addEventListener('resize', function () {
