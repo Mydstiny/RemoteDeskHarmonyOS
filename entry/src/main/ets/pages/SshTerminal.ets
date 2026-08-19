@@ -2656,11 +2656,17 @@ struct SshTerminal {
     return null;
   }
 
-  private cleanupClosedSshTab(result: SshTerminalTabCloseResult): void {
+  private cleanupClosedSshTab(result: SshTerminalTabCloseResult,
+    disconnectNative: boolean = true): void {
     if (!result.closed || result.hostId.length === 0) { return; }
     this.discardSshProductivityHostRuntime(result.hostId);
     this.sshTabStore.clearStartupExecutionKeysForHost(result.hostId);
-    if (result.sessionId > 0) {
+    // A successful independent-window handoff has already moved the native
+    // session into the target runtime. In that case only discard the source
+    // page's view metadata; calling disconnect/detach here would target a
+    // session that no longer belongs to this loader and could race the new
+    // window's first resume.
+    if (disconnectNative && result.sessionId > 0) {
       this.detachSftpSessionOwner(result.hostId, result.sessionId);
       this.releaseForwardingSession(result.hostId, result.sessionId, result.generation);
       this.loader.disconnectSshSession(result.sessionId);
@@ -8001,10 +8007,13 @@ struct SshTerminal {
       if (!opened) { throw new Error('independent SSH ability launch rejected'); }
 
       this.pcWindowHandoffComplete = true;
-      // Remove only source-page metadata. The target uses window-local stores
-      // and owns the same native session through its transferred loader.
-      this.sshTabStore.closeAll();
-      this.sshTranscriptStore.clearAll();
+      // Remove only the transferred source tab. Other SSH tabs remain owned by
+      // this page and can continue running while the new window owns the
+      // authenticated session. The target uses window-local stores and owns
+      // the same native session through its transferred loader.
+      const transferredTab: SshTerminalTabCloseResult =
+        this.sshTabStore.close(bindingHostId);
+      this.cleanupClosedSshTab(transferredTab, false);
       this.sessionId = -1;
       this.sshSessionGeneration = 0;
       this.connected = false;
@@ -8013,11 +8022,29 @@ struct SshTerminal {
       this.stopSshAuthPromptPolling(true);
       hilog.info(0x0016, 'SshTerminal',
         'authenticated SSH session handed to independent window');
-      try {
-        sourcePageRouter.back();
-      } catch (err) {
-        hilog.warn(0x0016, 'SshTerminal',
-          'source SSH page did not close after handoff: ' + JSON.stringify(err));
+      const nextHostId: string = transferredTab.nextActiveHostId.trim();
+      const nextHost: RemoteHost | undefined = nextHostId.length > 0
+        ? this.srv.getHost(nextHostId) : undefined;
+      if (nextHost !== undefined) {
+        // The route was explicitly requested to move only the authenticated
+        // host. Do not recursively move the next retained tab as a side
+        // effect of rebinding the source page.
+        this.pcWindowAfterAuthentication = false;
+        this.pcWindowHandoffStarted = false;
+        try {
+          await this.switchSshTab(nextHost);
+        } catch (err) {
+          hilog.warn(0x0016, 'SshTerminal',
+            'source SSH page retained tabs but could not activate next host: ' +
+            JSON.stringify(err));
+        }
+      } else {
+        try {
+          sourcePageRouter.back();
+        } catch (err) {
+          hilog.warn(0x0016, 'SshTerminal',
+            'source SSH page did not close after handoff: ' + JSON.stringify(err));
+        }
       }
       return true;
     } catch (err) {
