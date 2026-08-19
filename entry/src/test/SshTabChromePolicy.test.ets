@@ -1,7 +1,10 @@
 import { describe, it, expect } from '@ohos/hypium';
 import {
   resolveSshTabChromeLayout,
+  SSH_TAB_EDGE_ACTION_SIZE_VP,
   SSH_TAB_INLINE_MIN_VIEWPORT_VP,
+  SSH_TAB_STRIP_HEIGHT_VP,
+  SSH_WORKSPACE_CONTROL_HIT_SIZE_VP,
   sshCompactChromeEnabled,
   sshTabWidthVp
 } from '../main/ets/services/ssh/workspace/SshTabChromePolicy';
@@ -15,6 +18,9 @@ export default function sshTabChromePolicyTest(): void {
       expect(layout.edgeActionsWidthVp < 360).assertTrue();
       expect(layout.scrollViewportWidthVp >= 160).assertTrue();
       expect(layout.tabWidthVp).assertEqual(124);
+      expect(SSH_TAB_EDGE_ACTION_SIZE_VP).assertEqual(48);
+      expect(SSH_TAB_STRIP_HEIGHT_VP).assertEqual(56);
+      expect(SSH_WORKSPACE_CONTROL_HIT_SIZE_VP).assertEqual(48);
     });
 
     it('uses_inline_normal_tabs_only_after_the_safe_width_threshold', 0, (): void => {

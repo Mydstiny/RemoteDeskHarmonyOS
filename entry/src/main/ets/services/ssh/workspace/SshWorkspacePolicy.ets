@@ -45,6 +45,7 @@ export type SshWorkspaceActionKind =
   | 'close_tab'
   | 'reorder_tab'
   | 'set_tab_pinned'
+  | 'rename_tab'
   | 'split_pane'
   | 'merge_pane'
   | 'move_tab'
@@ -58,6 +59,7 @@ export interface SshWorkspaceAction {
   kind: SshWorkspaceActionKind;
   nowMs?: number;
   name?: string;
+  title?: string;
   tab?: SshWorkspaceTabV1;
   tabId?: string;
   beforeTabId?: string;
@@ -491,6 +493,18 @@ export function reduceSshWorkspace(snapshot: SshWorkspaceSnapshotV1,
     }
     if (next.tabs[index].pinned === action.pinned) { return { changed: false, snapshot, error: null }; }
     next.tabs[index].pinned = action.pinned;
+    return successResult(snapshot, action, next);
+  }
+  if (action.kind === 'rename_tab') {
+    const index: number = tabIndex(snapshot, tabId);
+    if (index < 0 || action.title === undefined) {
+      return errorResult(snapshot, action, 'invalid_action', '标签标题参数无效');
+    }
+    const title: string = normalizedText(action.title, 160);
+    if (next.tabs[index].titleOverride === title) {
+      return { changed: false, snapshot, error: null };
+    }
+    next.tabs[index].titleOverride = title;
     return successResult(snapshot, action, next);
   }
   const paneId: string = normalizedText(action.paneId === undefined ? '' : action.paneId, 96);

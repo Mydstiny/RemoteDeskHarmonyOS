@@ -77,6 +77,8 @@ import { SshTerminalProfileSheet } from
 import { SshCommandPalette } from '../components/ssh/command/SshCommandPalette';
 import { SshBrowserTabStrip } from '../components/ssh/workspace/SshBrowserTabStrip';
 import { SshTransferCenter } from '../components/ssh/workspace/SshTransferCenter';
+import { SshWorkspacePaneChrome } from
+  '../components/ssh/workspace/SshWorkspacePaneChrome';
 import { GpuTerminalRenderer } from '../components/GpuTerminalRenderer';
 import { TerminalInputBuffer } from '../components/SshTerminalSurface';
 import { TerminalCoreBridge } from '../napi/TerminalCoreBridge';
@@ -215,8 +217,42 @@ import {
 } from '../services/ssh/workspace/SshWorkspaceCapabilityPolicy';
 import { SshWorkspaceCapabilityStore } from
   '../services/ssh/workspace/SshWorkspaceCapabilityStore';
-import { sshCompactChromeEnabled } from
+import {
+  SSH_TAB_STRIP_HEIGHT_VP,
+  SSH_WORKSPACE_CONTROL_HIT_SIZE_VP,
+  sshCompactChromeEnabled
+} from
   '../services/ssh/workspace/SshTabChromePolicy';
+import {
+  createEmptySshWorkspace,
+  reduceSshWorkspace,
+  SshPaneDirection,
+  SshWorkspaceAction,
+  SshWorkspaceReduceResult,
+  SshWorkspaceSnapshotV1,
+  SshWorkspaceTabV1,
+  sshWorkspaceVisiblePaneCount
+} from '../services/ssh/workspace/SshWorkspacePolicy';
+import {
+  reconcileSshWorkspaceRuntimeTabs,
+  sshWorkspaceRuntimeProjection,
+  SshWorkspaceRuntimeTabProjection
+} from '../services/ssh/workspace/SshWorkspaceProjectionPolicy';
+import {
+  resolveSshWorkspacePaneLayout,
+  sshWorkspaceHiddenTabIds,
+  sshWorkspaceParentSplit,
+  SshWorkspacePaneFrame,
+  SshWorkspacePaneLayoutResult,
+  SshWorkspaceParentSplit
+} from '../services/ssh/workspace/SshWorkspacePaneLayoutPolicy';
+import {
+  SshWorkspaceRestoreResult,
+  SshWorkspaceSaveResult,
+  SshWorkspaceStore
+} from '../services/ssh/workspace/SshWorkspaceStore';
+import { resolveSshLayout, SshLayoutResult } from
+  '../services/ssh/workspace/SshLayoutPolicy';
 import {
   activateSshSftpSurface,
   activateSshTerminalSurface,
@@ -494,6 +530,13 @@ struct SshTerminal {
   @State terminalFocusMode: boolean = true;
   @StorageProp(SSH_WORKBENCH_V2_FLAG_KEY) @Watch('onSshWorkbenchFlagChange')
   sshWorkbenchEnabled: boolean = SSH_WORKBENCH_V2_DEFAULT_ENABLED;
+  /** Durable M4 shell state. Runtime/native ownership remains in SshTerminalTabStore. */
+  @State sshWorkspaceReady: boolean = false;
+  @State sshWorkspaceSnapshot: SshWorkspaceSnapshotV1 =
+    createEmptySshWorkspace('ssh-default', 'SSH 工作区', 0);
+  @State sshWorkspaceFocusedPaneId: string = '';
+  @State sshWorkspacePersistenceError: string = '';
+  @State sshWorkspaceManualReconnectRunning: boolean = false;
   @State terminalSearchVisible: boolean = false;
   @State terminalSearchQuery: string = '';
   @State terminalSearchCaseSensitive: boolean = false;
@@ -557,6 +600,11 @@ struct SshTerminal {
   private terminalProfileStore: SshTerminalProfileStore = new SshTerminalProfileStore();
   private sshWorkspaceCapabilityStore: SshWorkspaceCapabilityStore =
     new SshWorkspaceCapabilityStore();
+  private sshWorkspaceStore: SshWorkspaceStore = SshWorkspaceStore.getInstance();
+  private sshWorkspaceSaveTimer: number = -1;
+  private sshWorkspaceNodeSequence: number = 0;
+  private sshWorkspaceInitSequence: number = 0;
+  private sshWorkspacePtySizes: Map<string, string> = new Map<string, string>();
   private terminalSessionProfileIds: Map<string, string> = new Map<string, string>();
   private resolvedTerminalProfileSessionKey: string = '';
   /** SSH 协议级 keepalive 延迟 */
@@ -1447,6 +1495,415 @@ struct SshTerminal {
     this.terminalFallbackDecodeRemainders.clear();
   }
 
+  private sshWorkspaceModeEnabled(): boolean {
+    return this.sshWorkbenchEnabled && this.sshWorkspaceReady;
+  }
+
+  private sshWorkspaceRuntimeTabs(): Array<SshWorkspaceRuntimeTabProjection> {
+    const result: Array<SshWorkspaceRuntimeTabProjection> = [];
+    for (let index: number = 0; index < this.sshTabViews.length; index++) {
+      const tab: SshTerminalTabView = this.sshTabViews[index];
+      result.push(sshWorkspaceRuntimeProjection(
+        tab.tabId, tab.hostId, '', this.terminalProfileStore.hostProfileId(tab.hostId),
+        tab.pinned, tab.active));
+    }
+    return result;
+  }
+
+  private async initializeSshWorkspace(context: common.Context,
+    pageGeneration: number): Promise<void> {
+    if (!this.sshWorkbenchEnabled) { return; }
+    const initSequence: number = ++this.sshWorkspaceInitSequence;
+    const ready: boolean = await this.sshWorkspaceStore.init(context);
+    if (!this.isPageGenerationActive(pageGeneration) || !this.sshWorkbenchEnabled ||
+      initSequence !== this.sshWorkspaceInitSequence) { return; }
+    if (!ready) {
+      this.sshWorkspaceReady = false;
+      this.sshWorkspacePersistenceError = '工作区数据库不可用，已保留原有单页模式';
+      hilog.error(0x0017, 'SshTerminal', '[workspace] local RDB unavailable; legacy shell retained');
+      return;
+    }
+    const restored: SshWorkspaceRestoreResult = this.sshWorkspaceStore.restore();
+    if (!restored.readable) {
+      this.sshWorkspaceReady = false;
+      this.sshWorkspacePersistenceError = '工作区读取失败，已保留原有单页模式';
+      hilog.error(0x0017, 'SshTerminal', '[workspace] local RDB read failed; legacy shell retained');
+      return;
+    }
+    let active: SshWorkspaceSnapshotV1 | null = null;
+    for (let index: number = 0; index < restored.snapshots.length; index++) {
+      if (restored.snapshots[index].workspaceId === restored.activeWorkspaceId) {
+        active = restored.snapshots[index];
+        break;
+      }
+    }
+    const restoredRevision: number = active === null ? -1 : active.revision;
+    const reconciled: SshWorkspaceSnapshotV1 = reconcileSshWorkspaceRuntimeTabs(
+      active, this.sshWorkspaceRuntimeTabs(), this.hostId, Date.now());
+    if (!this.isPageGenerationActive(pageGeneration) || !this.sshWorkbenchEnabled ||
+      initSequence !== this.sshWorkspaceInitSequence) { return; }
+    this.sshWorkspaceSnapshot = reconciled;
+    this.sshWorkspaceFocusedPaneId = '';
+    this.sshWorkspacePersistenceError = restored.rejected > 0 || restored.unsupported > 0 ?
+      '已隔离 ' + (restored.rejected + restored.unsupported).toString() + ' 个异常工作区记录' : '';
+    this.sshWorkspaceReady = true;
+    if (active === null || reconciled.revision !== restoredRevision) {
+      this.scheduleSshWorkspaceSave();
+    }
+    hilog.info(0x0017, 'SshTerminal', '[workspace] restored tabs=' +
+      reconciled.tabs.length.toString() + ' panes=' +
+      sshWorkspaceVisiblePaneCount(reconciled.paneRoot).toString() +
+      ' rejected=' + restored.rejected.toString() +
+      ' unsupported=' + restored.unsupported.toString());
+  }
+
+  private syncSshWorkspaceFromRuntime(): void {
+    if (!this.sshWorkspaceModeEnabled()) { return; }
+    const next: SshWorkspaceSnapshotV1 = reconcileSshWorkspaceRuntimeTabs(
+      this.sshWorkspaceSnapshot, this.sshWorkspaceRuntimeTabs(), this.hostId, Date.now());
+    if (next.revision === this.sshWorkspaceSnapshot.revision) { return; }
+    this.sshWorkspaceSnapshot = next;
+    this.scheduleSshWorkspaceSave();
+  }
+
+  private clearSshWorkspaceSaveTimer(): void {
+    if (this.sshWorkspaceSaveTimer === -1) { return; }
+    clearTimeout(this.sshWorkspaceSaveTimer);
+    this.sshWorkspaceSaveTimer = -1;
+  }
+
+  private scheduleSshWorkspaceSave(): void {
+    if (!this.sshWorkspaceModeEnabled()) { return; }
+    this.clearSshWorkspaceSaveTimer();
+    this.sshWorkspaceSaveTimer = setTimeout((): void => {
+      this.sshWorkspaceSaveTimer = -1;
+      this.flushSshWorkspaceSave();
+    }, 120);
+  }
+
+  private flushSshWorkspaceSave(): void {
+    this.clearSshWorkspaceSaveTimer();
+    if (!this.sshWorkspaceModeEnabled()) { return; }
+    const result: SshWorkspaceSaveResult = this.sshWorkspaceStore.save(
+      this.sshWorkspaceSnapshot, true);
+    if (result.ok) {
+      if (this.sshWorkspacePersistenceError.startsWith('工作区保存失败')) {
+        this.sshWorkspacePersistenceError = '';
+      }
+      return;
+    }
+    this.sshWorkspacePersistenceError = '工作区保存失败：' + result.code;
+    hilog.error(0x0017, 'SshTerminal', '[workspace] save failed code=' + result.code +
+      ' revision=' + this.sshWorkspaceSnapshot.revision.toString());
+  }
+
+  private applySshWorkspaceAction(action: SshWorkspaceAction,
+    failureMessage: string = '工作区操作失败'): boolean {
+    if (!this.sshWorkspaceModeEnabled()) { return false; }
+    const result: SshWorkspaceReduceResult = reduceSshWorkspace(this.sshWorkspaceSnapshot, action);
+    if (!result.changed) {
+      if (result.error !== null) {
+        promptAction.showToast({ message: failureMessage + '：' + result.error.message, duration: 1800 });
+      }
+      return result.error === null;
+    }
+    this.sshWorkspaceSnapshot = result.snapshot;
+    if (this.sshWorkspaceFocusedPaneId.length > 0 &&
+      this.sshWorkspaceFrameForPane(this.sshWorkspaceFocusedPaneId) === null) {
+      this.sshWorkspaceFocusedPaneId = '';
+    }
+    this.scheduleSshWorkspaceSave();
+    return true;
+  }
+
+  private sshWorkspaceTab(tabId: string): SshWorkspaceTabV1 | null {
+    for (let index: number = 0; index < this.sshWorkspaceSnapshot.tabs.length; index++) {
+      if (this.sshWorkspaceSnapshot.tabs[index].tabId === tabId) {
+        return this.sshWorkspaceSnapshot.tabs[index];
+      }
+    }
+    return null;
+  }
+
+  private sshWorkspaceRuntimeView(hostId: string): SshTerminalTabView | null {
+    for (let index: number = 0; index < this.sshTabViews.length; index++) {
+      if (this.sshTabViews[index].hostId === hostId) { return this.sshTabViews[index]; }
+    }
+    return null;
+  }
+
+  private sshWorkspaceTabTitle(tab: SshWorkspaceTabV1): string {
+    if (tab.titleOverride.length > 0) { return tab.titleOverride; }
+    const host: RemoteHost | undefined = this.srv.getHost(tab.hostId);
+    if (host !== undefined && host.label.trim().length > 0) { return host.label; }
+    const runtime: SshTerminalTabView | null = this.sshWorkspaceRuntimeView(tab.hostId);
+    if (runtime !== null && runtime.label.trim().length > 0) { return runtime.label; }
+    return '已移除的 SSH 主机';
+  }
+
+  private sshWorkspaceTabView(tab: SshWorkspaceTabV1): SshTerminalTabView {
+    const runtime: SshTerminalTabView | null = this.sshWorkspaceRuntimeView(tab.hostId);
+    const active: boolean = tab.tabId === this.sshWorkspaceSnapshot.activeTabId;
+    if (runtime !== null) {
+      return {
+        tabId: tab.tabId,
+        hostId: tab.hostId,
+        label: this.sshWorkspaceTabTitle(tab),
+        address: runtime.address,
+        state: runtime.state,
+        sessionId: runtime.sessionId,
+        generation: runtime.generation,
+        pinned: tab.pinned,
+        active
+      };
+    }
+    const host: RemoteHost | undefined = this.srv.getHost(tab.hostId);
+    return {
+      tabId: tab.tabId,
+      hostId: tab.hostId,
+      label: this.sshWorkspaceTabTitle(tab),
+      address: host === undefined ? '' : host.username + '@' + host.host + ':' + host.port.toString(),
+      state: 'disconnected',
+      sessionId: -1,
+      generation: 0,
+      pinned: tab.pinned,
+      active
+    };
+  }
+
+  private sshWorkspaceTabViews(): Array<SshTerminalTabView> {
+    if (!this.sshWorkspaceModeEnabled()) { return this.sshTabViews; }
+    const result: Array<SshTerminalTabView> = [];
+    for (let orderIndex: number = 0; orderIndex < this.sshWorkspaceSnapshot.tabOrder.length;
+      orderIndex++) {
+      const tab: SshWorkspaceTabV1 | null =
+        this.sshWorkspaceTab(this.sshWorkspaceSnapshot.tabOrder[orderIndex]);
+      if (tab !== null) { result.push(this.sshWorkspaceTabView(tab)); }
+    }
+    return result;
+  }
+
+  private sshWorkspaceDisconnectedCount(): number {
+    if (!this.sshWorkspaceModeEnabled()) { return 0; }
+    const tabs: Array<SshTerminalTabView> = this.sshWorkspaceTabViews();
+    let count: number = 0;
+    for (let index: number = 0; index < tabs.length; index++) {
+      if (tabs[index].state === 'disconnected' || tabs[index].sessionId <= 0) { count++; }
+    }
+    return count;
+  }
+
+  private sshWorkspaceLayoutResult(): SshLayoutResult {
+    const width: number = this.termAreaW > 0 ? this.termAreaW :
+      (this.shellAreaW > 0 ? this.shellAreaW : 360);
+    const height: number = this.termAreaH > 0 ? this.termAreaH :
+      (this.shellAreaH > 0 ? this.shellAreaH : 640);
+    return resolveSshLayout({
+      widthVp: width,
+      heightVp: height,
+      containerWidthVp: width,
+      desktop: this.isDesktopDevice,
+      pad: this.isPadDevice,
+      sidebarRequested: false,
+      inspectorRequested: false,
+      requestedPaneCount: sshWorkspaceVisiblePaneCount(this.sshWorkspaceSnapshot.paneRoot),
+      minimumTerminalPaneWidthVp: 360,
+      engine: 'static'
+    });
+  }
+
+  private sshWorkspacePaneLayout(): SshWorkspacePaneLayoutResult {
+    const layout: SshLayoutResult = this.sshWorkspaceLayoutResult();
+    const width: number = this.termAreaW > 0 ? this.termAreaW : layout.mainWidthVp;
+    const height: number = this.termAreaH > 0 ? this.termAreaH :
+      (this.shellAreaH > 0 ? this.shellAreaH : 640);
+    return resolveSshWorkspacePaneLayout(this.sshWorkspaceSnapshot,
+      this.sshWorkspaceFocusedPaneId, layout.maxPaneCount, width, height);
+  }
+
+  private sshWorkspaceFrameForPane(paneId: string): SshWorkspacePaneFrame | null {
+    const frames: Array<SshWorkspacePaneFrame> = this.sshWorkspacePaneLayout().frames;
+    for (let index: number = 0; index < frames.length; index++) {
+      if (frames[index].paneId === paneId) { return frames[index]; }
+    }
+    return null;
+  }
+
+  private sshWorkspaceFrameForTab(tabId: string): SshWorkspacePaneFrame | null {
+    const frames: Array<SshWorkspacePaneFrame> = this.sshWorkspacePaneLayout().frames;
+    for (let index: number = 0; index < frames.length; index++) {
+      if (frames[index].tabId === tabId) { return frames[index]; }
+    }
+    return null;
+  }
+
+  private sshWorkspaceTabTitleById(tabId: string): string {
+    const tab: SshWorkspaceTabV1 | null = this.sshWorkspaceTab(tabId);
+    return tab === null ? 'SSH' : this.sshWorkspaceTabTitle(tab);
+  }
+
+  private sshWorkspaceRuntimeHasTab(tabId: string): boolean {
+    for (let index: number = 0; index < this.sshTabViews.length; index++) {
+      if (this.sshTabViews[index].tabId === tabId) { return true; }
+    }
+    return false;
+  }
+
+  private sshWorkspaceHostVisible(hostId: string): boolean {
+    const runtime: SshTerminalTabView | null = this.sshWorkspaceRuntimeView(hostId);
+    return runtime !== null && this.sshWorkspaceFrameForTab(runtime.tabId) !== null;
+  }
+
+  private sshWorkspaceNodeId(prefix: string): string {
+    this.sshWorkspaceNodeSequence++;
+    return 'ssh-' + prefix + '-' + Date.now().toString(36) + '-' +
+      this.sshWorkspaceNodeSequence.toString(36);
+  }
+
+  private activateSshWorkspaceTab(tabId: string): void {
+    const tab: SshWorkspaceTabV1 | null = this.sshWorkspaceTab(tabId);
+    if (tab === null) { return; }
+    if (tab.tabId !== this.sshWorkspaceSnapshot.activeTabId) {
+      if (!this.applySshWorkspaceAction({ kind: 'activate_tab', tabId: tab.tabId,
+        nowMs: Date.now() })) { return; }
+    }
+    const host: RemoteHost | undefined = this.srv.getHost(tab.hostId);
+    if (host === undefined) {
+      promptAction.showToast({ message: '主机记录已不存在，可关闭该恢复占位', duration: 1800 });
+      return;
+    }
+    this.activateSshTerminalWorkspace();
+    if (tab.hostId === this.hostId.trim()) {
+      this.sshTabStore.activate(tab.hostId);
+      this.refreshSshTabViews();
+      if (!this.connected && !this.connecting) { void this.retryConnection(); }
+      return;
+    }
+    this.navigateToSshTab(host);
+  }
+
+  private focusSshWorkspacePane(frame: SshWorkspacePaneFrame): void {
+    if (frame.paneId !== this.sshWorkspaceSnapshot.activePaneId) {
+      if (!this.applySshWorkspaceAction({ kind: 'focus_pane', paneId: frame.paneId,
+        nowMs: Date.now() })) { return; }
+    }
+    this.activateSshWorkspaceTab(frame.tabId);
+  }
+
+  private splitSshWorkspacePane(paneId: string, direction: SshPaneDirection): void {
+    const hiddenTabs: Array<string> = sshWorkspaceHiddenTabIds(this.sshWorkspaceSnapshot);
+    if (hiddenTabs.length === 0) {
+      promptAction.showToast({ message: '请先新建或恢复另一个 SSH 标签再分屏', duration: 1800 });
+      return;
+    }
+    const newPaneId: string = this.sshWorkspaceNodeId('pane');
+    const changed: boolean = this.applySshWorkspaceAction({
+      kind: 'split_pane', paneId, splitNodeId: this.sshWorkspaceNodeId('split'),
+      newLeafId: newPaneId, tabId: hiddenTabs[0], direction, ratio: 0.5,
+      nowMs: Date.now()
+    }, '无法创建分屏');
+    if (changed) { this.activateSshWorkspaceTab(hiddenTabs[0]); }
+  }
+
+  private mergeSshWorkspacePane(paneId: string): void {
+    this.applySshWorkspaceAction({ kind: 'merge_pane', paneId, nowMs: Date.now() },
+      '无法合并 Pane');
+    if (this.sshWorkspaceFocusedPaneId === paneId) { this.sshWorkspaceFocusedPaneId = ''; }
+    this.activateSshWorkspaceTab(this.sshWorkspaceSnapshot.activeTabId);
+  }
+
+  private cycleSshWorkspacePane(paneId: string): void {
+    const frame: SshWorkspacePaneFrame | null = this.sshWorkspaceFrameForPane(paneId);
+    if (frame === null || this.sshWorkspaceSnapshot.tabOrder.length < 2) { return; }
+    const currentIndex: number = this.sshWorkspaceSnapshot.tabOrder.indexOf(frame.tabId);
+    const nextIndex: number = currentIndex < 0 ? 0 :
+      (currentIndex + 1) % this.sshWorkspaceSnapshot.tabOrder.length;
+    const nextTabId: string = this.sshWorkspaceSnapshot.tabOrder[nextIndex];
+    if (this.applySshWorkspaceAction({ kind: 'move_tab', paneId, tabId: nextTabId,
+      nowMs: Date.now() }, '无法切换 Pane 标签')) {
+      this.activateSshWorkspaceTab(nextTabId);
+    }
+  }
+
+  private toggleSshWorkspaceFocus(paneId: string): void {
+    this.sshWorkspaceFocusedPaneId = this.sshWorkspaceFocusedPaneId === paneId ? '' : paneId;
+  }
+
+  private adjustSshWorkspacePaneRatio(paneId: string, delta: number): void {
+    const parent: SshWorkspaceParentSplit | null = sshWorkspaceParentSplit(
+      this.sshWorkspaceSnapshot.paneRoot, paneId);
+    if (parent === null) { return; }
+    const signedDelta: number = parent.paneIsSecond ? -delta : delta;
+    this.applySshWorkspaceAction({ kind: 'set_split_ratio', paneId: parent.splitNodeId,
+      ratio: parent.ratio + signedDelta, nowMs: Date.now() }, '无法调整 Pane 比例');
+  }
+
+  private removeSshWorkspaceTab(tabId: string): void {
+    if (!this.sshWorkspaceModeEnabled() || this.sshWorkspaceTab(tabId) === null) { return; }
+    this.applySshWorkspaceAction({ kind: 'close_tab', tabId, nowMs: Date.now() },
+      '无法关闭工作区标签');
+  }
+
+  private requestSshWorkspaceTabClose(hostId: string): void {
+    const runtime: SshTerminalTabView | null = this.sshWorkspaceRuntimeView(hostId);
+    if (runtime !== null) {
+      this.requestSshTabClose(hostId);
+      return;
+    }
+    for (let index: number = 0; index < this.sshWorkspaceSnapshot.tabs.length; index++) {
+      if (this.sshWorkspaceSnapshot.tabs[index].hostId === hostId) {
+        this.removeSshWorkspaceTab(this.sshWorkspaceSnapshot.tabs[index].tabId);
+        return;
+      }
+    }
+  }
+
+  private async reconnectSshWorkspacePlaceholders(): Promise<void> {
+    if (!this.sshWorkspaceModeEnabled() || this.sshWorkspaceManualReconnectRunning ||
+      this.terminalClosing) { return; }
+    const targets: Array<RemoteHost> = [];
+    for (let index: number = 0; index < this.sshWorkspaceSnapshot.tabOrder.length; index++) {
+      const tab: SshWorkspaceTabV1 | null =
+        this.sshWorkspaceTab(this.sshWorkspaceSnapshot.tabOrder[index]);
+      if (tab === null || tab.kind !== 'terminal') { continue; }
+      const runtime: SshTerminalTabView | null = this.sshWorkspaceRuntimeView(tab.hostId);
+      if (runtime !== null && runtime.sessionId > 0 && runtime.state === 'connected') { continue; }
+      const host: RemoteHost | undefined = this.srv.getHost(tab.hostId);
+      if (host !== undefined) { targets.push(host); }
+    }
+    if (targets.length === 0) {
+      promptAction.showToast({ message: '没有需要手动重连的工作区标签', duration: 1500 });
+      return;
+    }
+    const decision = await promptAction.showDialog({
+      title: '手动恢复 SSH 工作区？',
+      message: '将依次启动 ' + targets.length.toString() +
+        ' 个连接；每个主机仍执行原有锁定、Host Key、密码和 MFA 鉴权流程。',
+      buttons: [
+        { text: '取消', color: this.pal().text2 },
+        { text: '开始恢复', color: this.accentColor }
+      ]
+    });
+    if (decision.index !== 1 || this.terminalClosing) { return; }
+    this.sshWorkspaceManualReconnectRunning = true;
+    try {
+      for (let index: number = 0; index < targets.length; index++) {
+        if (this.terminalClosing || !this.sshWorkspaceModeEnabled()) { break; }
+        const host: RemoteHost = targets[index];
+        if (host.id.trim() === this.hostId.trim()) {
+          if (!this.connected && !this.connecting) { await this.retryConnection(); }
+        } else {
+          await this.switchSshTab(host);
+        }
+      }
+    } catch (err) {
+      promptAction.showToast({ message: (err as Error).message || '工作区恢复中断', duration: 1800 });
+    } finally {
+      this.sshWorkspaceManualReconnectRunning = false;
+      this.refreshSshTabViews();
+    }
+  }
+
   private refreshSshTabViews(): void {
     // Always publish a fresh array. The store can notify several times during
     // one attach, and ArkUI must observe each state transition independently.
@@ -1455,6 +1912,7 @@ struct SshTerminal {
     if (this.hostId.trim().length > 0) {
       this.xtermReady = this.xtermSurfaceReadyForHost(this.hostId);
     }
+    this.syncSshWorkspaceFromRuntime();
   }
 
   /**
@@ -1721,6 +2179,7 @@ struct SshTerminal {
   }
 
   private tabStateLabel(state: SshTerminalTabState): string {
+    if (state === 'disconnected') { return '未连接'; }
     if (state === 'connecting') { return '连接中'; }
     if (state === 'reconnecting') { return '恢复中'; }
     if (state === 'error') { return '错误'; }
@@ -2125,8 +2584,16 @@ struct SshTerminal {
   }
 
   private finalizeSshTabClose(hostId: string): void {
+    let workspaceTabId: string = '';
+    if (this.sshWorkspaceModeEnabled()) {
+      for (let index: number = 0; index < this.sshWorkspaceSnapshot.tabs.length; index++) {
+        const tab: SshWorkspaceTabV1 = this.sshWorkspaceSnapshot.tabs[index];
+        if (tab.hostId === hostId && tab.kind === 'terminal') { workspaceTabId = tab.tabId; break; }
+      }
+    }
     const result: SshTerminalTabCloseResult = this.sshTabStore.close(hostId);
     this.cleanupClosedSshTab(result);
+    if (result.closed && workspaceTabId.length > 0) { this.removeSshWorkspaceTab(workspaceTabId); }
   }
 
   private activeCloseNeighbor(hostId: string): RemoteHost | null {
@@ -2166,6 +2633,14 @@ struct SshTerminal {
     }
     if (this.sshTabViews.length <= 1) {
       this.closeTerminalSearch(false, true);
+      if (this.sshWorkspaceModeEnabled()) {
+        for (let index: number = 0; index < this.sshWorkspaceSnapshot.tabs.length; index++) {
+          if (this.sshWorkspaceSnapshot.tabs[index].hostId === normalizedHostId) {
+            this.removeSshWorkspaceTab(this.sshWorkspaceSnapshot.tabs[index].tabId);
+            break;
+          }
+        }
+      }
       this.explicitSessionClose = true;
       this.closeSessionAndBack();
       return;
@@ -2238,26 +2713,86 @@ struct SshTerminal {
   }
 
   private toggleSshTabPinned(hostId: string): void {
-    for (let index: number = 0; index < this.sshTabViews.length; index++) {
-      const tab: SshTerminalTabView = this.sshTabViews[index];
-      if (tab.hostId === hostId) {
-        this.sshTabStore.setPinned(hostId, !tab.pinned);
+    if (this.sshWorkspaceModeEnabled()) {
+      for (let index: number = 0; index < this.sshWorkspaceSnapshot.tabs.length; index++) {
+        const tab: SshWorkspaceTabV1 = this.sshWorkspaceSnapshot.tabs[index];
+        if (tab.hostId !== hostId) { continue; }
+        const pinned: boolean = !tab.pinned;
+        if (this.sshTabStore.has(hostId)) { this.sshTabStore.setPinned(hostId, pinned); }
+        this.applySshWorkspaceAction({ kind: 'set_tab_pinned', tabId: tab.tabId,
+          pinned, nowMs: Date.now() });
         this.refreshSshTabViews();
         return;
       }
     }
+    for (let index: number = 0; index < this.sshTabViews.length; index++) {
+      const tab: SshTerminalTabView = this.sshTabViews[index];
+      if (tab.hostId !== hostId) { continue; }
+      this.sshTabStore.setPinned(hostId, !tab.pinned);
+      this.refreshSshTabViews();
+      return;
+    }
   }
 
   private moveSshTab(hostId: string, delta: number): void {
+    if (this.sshWorkspaceModeEnabled()) {
+      let tabId: string = '';
+      for (let index: number = 0; index < this.sshWorkspaceSnapshot.tabs.length; index++) {
+        if (this.sshWorkspaceSnapshot.tabs[index].hostId === hostId) {
+          tabId = this.sshWorkspaceSnapshot.tabs[index].tabId;
+          break;
+        }
+      }
+      const currentIndex: number = this.sshWorkspaceSnapshot.tabOrder.indexOf(tabId);
+      const targetIndex: number = currentIndex + (delta < 0 ? -1 : 1);
+      if (currentIndex < 0 || targetIndex < 0 ||
+        targetIndex >= this.sshWorkspaceSnapshot.tabOrder.length) { return; }
+      const beforeTabId: string = delta < 0 ? this.sshWorkspaceSnapshot.tabOrder[targetIndex] :
+        (targetIndex + 1 < this.sshWorkspaceSnapshot.tabOrder.length ?
+          this.sshWorkspaceSnapshot.tabOrder[targetIndex + 1] : '');
+      if (this.sshTabStore.has(hostId)) { this.sshTabStore.move(hostId, delta); }
+      this.applySshWorkspaceAction({ kind: 'reorder_tab', tabId, beforeTabId,
+        nowMs: Date.now() });
+      this.refreshSshTabViews();
+      return;
+    }
     if (this.sshTabStore.move(hostId, delta)) { this.refreshSshTabViews(); }
   }
 
   private moveSshTabBefore(hostId: string, beforeHostId: string): void {
+    if (this.sshWorkspaceModeEnabled()) {
+      let tabId: string = '';
+      let beforeTabId: string = '';
+      for (let index: number = 0; index < this.sshWorkspaceSnapshot.tabs.length; index++) {
+        const tab: SshWorkspaceTabV1 = this.sshWorkspaceSnapshot.tabs[index];
+        if (tab.hostId === hostId) { tabId = tab.tabId; }
+        if (tab.hostId === beforeHostId) { beforeTabId = tab.tabId; }
+      }
+      if (tabId.length === 0 || beforeTabId.length === 0) { return; }
+      if (this.sshTabStore.has(hostId) && this.sshTabStore.has(beforeHostId)) {
+        this.sshTabStore.moveBefore(hostId, beforeHostId);
+      }
+      this.applySshWorkspaceAction({ kind: 'reorder_tab', tabId, beforeTabId,
+        nowMs: Date.now() });
+      this.refreshSshTabViews();
+      return;
+    }
     if (this.sshTabStore.moveBefore(hostId, beforeHostId)) { this.refreshSshTabViews(); }
   }
 
   private openSshTabRename(hostId: string): void {
     if (this.terminalClosing || this.sshModalOwnsKeyboard()) { return; }
+    if (this.sshWorkspaceModeEnabled()) {
+      for (let index: number = 0; index < this.sshWorkspaceSnapshot.tabs.length; index++) {
+        const tab: SshWorkspaceTabV1 = this.sshWorkspaceSnapshot.tabs[index];
+        if (tab.hostId === hostId) {
+          this.sshTabRenameHostId = hostId;
+          this.sshTabRenameDraft = this.sshWorkspaceTabTitle(tab);
+          this.showSshTabRenameSheet = true;
+          return;
+        }
+      }
+    }
     for (let index: number = 0; index < this.sshTabViews.length; index++) {
       const tab: SshTerminalTabView = this.sshTabViews[index];
       if (tab.hostId === hostId) {
@@ -2272,7 +2807,19 @@ struct SshTerminal {
   private saveSshTabRename(): void {
     const title: string = this.sshTabRenameDraft.trim();
     if (title.length === 0 || this.sshTabRenameHostId.length === 0) { return; }
-    this.sshTabStore.renameDisplayTitle(this.sshTabRenameHostId, title);
+    if (this.sshTabStore.has(this.sshTabRenameHostId)) {
+      this.sshTabStore.renameDisplayTitle(this.sshTabRenameHostId, title);
+    }
+    if (this.sshWorkspaceModeEnabled()) {
+      for (let index: number = 0; index < this.sshWorkspaceSnapshot.tabs.length; index++) {
+        const tab: SshWorkspaceTabV1 = this.sshWorkspaceSnapshot.tabs[index];
+        if (tab.hostId === this.sshTabRenameHostId) {
+          this.applySshWorkspaceAction({ kind: 'rename_tab', tabId: tab.tabId,
+            title, nowMs: Date.now() });
+          break;
+        }
+      }
+    }
     this.showSshTabRenameSheet = false;
     this.sshTabRenameHostId = '';
     this.sshTabRenameDraft = '';
@@ -2502,7 +3049,7 @@ struct SshTerminal {
   }
 
   private sshTabStripHeight(): number {
-    return this.sshWorkbenchEnabled ? 44 : 40;
+    return this.sshWorkbenchEnabled ? SSH_TAB_STRIP_HEIGHT_VP : 40;
   }
 
   private sftpWorkspaceTabTitle(): string {
@@ -2671,6 +3218,193 @@ struct SshTerminal {
   }
 
   @Builder
+  private sshXtermTabSurface(tab: SshTerminalTabView, visible: boolean,
+    rendererActive: boolean, interactive: boolean, viewportWidth: number,
+    viewportHeight: number, profile: SshTerminalResolvedProfile) {
+    SshXtermSurface({
+      coreKey: this.xtermSurfaceCoreKey(tab.hostId),
+      renderRevision: sshXtermTabRenderRevision(
+        this.sshTabStore.sessionGeneration(tab.hostId)),
+      surfaceRefreshRequest: this.terminalSurfaceRefreshRequest,
+      readyProbeRequest: this.xtermReadyProbeRequest,
+      active: rendererActive,
+      cols: this.termCols,
+      rows: this.termRows,
+      viewportWidth,
+      fontSize: profile.fontSize,
+      lineSpacing: normalizeSshTerminalLineSpacing(profile.lineSpacing),
+      bottomAlignSparseContent: !this.isDesktopDevice,
+      bottomAlignSafeRows: this.terminalBottomSafeRows(),
+      bottomInsetPx: this.terminalXtermBottomInsetPx(),
+      profileEnabled: this.terminalProfileEnabled(),
+      profileForegroundColor: profile.foregroundColor,
+      profileBackgroundColor: profile.backgroundColor,
+      profilePalette: profile.palette,
+      profileFontFamily: profile.fontFamily,
+      profileFontWeight: profile.fontWeight,
+      profileCursorStyle: profile.cursorStyle,
+      profileCursorBlink: profile.cursorBlink,
+      profileScrollback: profile.scrollback,
+      profileBellStyle: profile.bellStyle,
+      profileCopyOnSelect: profile.copyOnSelect,
+      viewportHeight,
+      outputBuffer: this.xtermOutputBufferForHost(tab.hostId),
+      outputSequence: this.termOutputSequence,
+      transcriptResetIdentity: this.xtermTranscriptResetIdentity,
+      transcriptResetRequest: this.xtermTranscriptResetRequest,
+      focusRequest: interactive ? this.terminalFocusRequest : 0,
+      copyRequest: interactive ? this.copyRequest : 0,
+      copiedText: this.copiedText,
+      scrollToBottomRequest: interactive ? this.scrollToBottomRequest : 0,
+      forceScrollToBottomRequest: interactive ? this.forceScrollToBottomRequest : 0,
+      externalScrollLines: interactive ? this.terminalExternalScrollLines : 0,
+      externalScrollRequest: interactive ? this.terminalExternalScrollRequest : 0,
+      searchRequest: interactive ? this.xtermSearchRequestForTab(tab) : '',
+      searchClearRequest: interactive ? this.terminalSearchClearRequest : 0,
+      onData: (data: string, surfaceIdentity: string): void => {
+        this.onXtermDataForHost(tab.hostId,
+          this.sshTabStore.sessionGeneration(tab.hostId), data, surfaceIdentity);
+      },
+      onResize: (cols: number, rows: number, surfaceIdentity: string): void => {
+        this.onXtermResizeForHost(tab.hostId,
+          this.sshTabStore.sessionGeneration(tab.hostId), cols, rows, surfaceIdentity);
+      },
+      onReady: (surfaceIdentity: string): void => {
+        this.onXtermReadyForHost(tab.hostId,
+          this.sshTabStore.sessionGeneration(tab.hostId), surfaceIdentity);
+      },
+      onTerminalFocus: (focused: boolean, surfaceIdentity: string): void => {
+        this.onXtermFocusForHost(tab.hostId,
+          this.sshTabStore.sessionGeneration(tab.hostId), focused, surfaceIdentity);
+      },
+      onSearchResult: (result: SshTerminalSearchResult, surfaceIdentity: string): void => {
+        this.onXtermSearchResultForHost(tab.hostId,
+          this.sshTabStore.sessionGeneration(tab.hostId), result, surfaceIdentity);
+      }
+    })
+      .width('100%')
+      .height('100%')
+      .visibility(visible ? Visibility.Visible : Visibility.Hidden)
+      .opacity(visible ? 1 : 0)
+      .zIndex(visible ? 1 : 0)
+      .hitTestBehavior(visible ? HitTestMode.Default : HitTestMode.None)
+  }
+
+  @Builder
+  private sshWorkspaceLivePane(tab: SshTerminalTabView, frame: SshWorkspacePaneFrame) {
+    Column() {
+      SshWorkspacePaneChrome({
+        title: tab.label,
+        status: this.sshTabDisplayState(tab),
+        active: frame.active,
+        focused: this.sshWorkspaceFocusedPaneId === frame.paneId,
+        compact: frame.widthVp < 520,
+        canSplit: sshWorkspaceHiddenTabIds(this.sshWorkspaceSnapshot).length > 0 &&
+          sshWorkspaceVisiblePaneCount(this.sshWorkspaceSnapshot.paneRoot) < 4,
+        canMerge: sshWorkspaceVisiblePaneCount(this.sshWorkspaceSnapshot.paneRoot) > 1,
+        canCycle: this.sshWorkspaceSnapshot.tabOrder.length > 1,
+        canAdjustRatio: sshWorkspaceParentSplit(
+          this.sshWorkspaceSnapshot.paneRoot, frame.paneId) !== null,
+        onActivate: (): void => { this.focusSshWorkspacePane(frame); },
+        onSplitHorizontal: (): void => {
+          this.splitSshWorkspacePane(frame.paneId, 'horizontal');
+        },
+        onSplitVertical: (): void => {
+          this.splitSshWorkspacePane(frame.paneId, 'vertical');
+        },
+        onCycleTab: (): void => { this.cycleSshWorkspacePane(frame.paneId); },
+        onToggleFocus: (): void => { this.toggleSshWorkspaceFocus(frame.paneId); },
+        onMerge: (): void => { this.mergeSshWorkspacePane(frame.paneId); },
+        onAdjustRatio: (delta: number): void => {
+          this.adjustSshWorkspacePaneRatio(frame.paneId, delta);
+        }
+      })
+      Stack() {
+        this.sshXtermTabSurface(tab, true, true, frame.active,
+          frame.widthVp, Math.max(1, frame.heightVp - 48),
+          this.resolvedTerminalProfileForHost(tab.hostId))
+        if (frame.active && !this.sshVisibleSurfaceReady()) {
+          Row({ space: 6 }) {
+            LoadingProgress().width(15).height(15).color(this.accentColor)
+            Text(this.connecting ? '正在鉴权/连接' : '正在准备终端')
+              .fontSize(10).fontColor('rgba(244,247,250,0.66)')
+          }
+          .padding({ left: 10, right: 10, top: 6, bottom: 6 })
+          .borderRadius(13)
+          .backgroundColor('rgba(15,19,25,0.86)')
+          .align(Alignment.TopStart)
+          .margin({ top: 8, left: 8 })
+          .zIndex(6)
+          .hitTestBehavior(HitTestMode.None)
+        }
+      }
+      .width('100%')
+      .height(Math.max(1, frame.heightVp - 48))
+    }
+    .width(frame.widthVp)
+    .height(frame.heightVp)
+    .position({ x: frame.xVp, y: frame.yVp })
+    .backgroundColor('#0D0D0D')
+    .border({ width: frame.active ? 1 : 0.5,
+      color: frame.active ? this.accentColor + 'AA' : 'rgba(255,255,255,0.12)' })
+    .clip(true)
+    .zIndex(frame.active ? 3 : 2)
+  }
+
+  @Builder
+  private sshWorkspacePlaceholderPane(frame: SshWorkspacePaneFrame) {
+    Column() {
+      SshWorkspacePaneChrome({
+        title: this.sshWorkspaceTabTitleById(frame.tabId),
+        status: '未连接 · 恢复占位',
+        active: frame.active,
+        focused: this.sshWorkspaceFocusedPaneId === frame.paneId,
+        compact: frame.widthVp < 520,
+        canSplit: sshWorkspaceHiddenTabIds(this.sshWorkspaceSnapshot).length > 0 &&
+          sshWorkspaceVisiblePaneCount(this.sshWorkspaceSnapshot.paneRoot) < 4,
+        canMerge: sshWorkspaceVisiblePaneCount(this.sshWorkspaceSnapshot.paneRoot) > 1,
+        canCycle: this.sshWorkspaceSnapshot.tabOrder.length > 1,
+        canAdjustRatio: sshWorkspaceParentSplit(
+          this.sshWorkspaceSnapshot.paneRoot, frame.paneId) !== null,
+        onActivate: (): void => { this.focusSshWorkspacePane(frame); },
+        onSplitHorizontal: (): void => {
+          this.splitSshWorkspacePane(frame.paneId, 'horizontal');
+        },
+        onSplitVertical: (): void => {
+          this.splitSshWorkspacePane(frame.paneId, 'vertical');
+        },
+        onCycleTab: (): void => { this.cycleSshWorkspacePane(frame.paneId); },
+        onToggleFocus: (): void => { this.toggleSshWorkspaceFocus(frame.paneId); },
+        onMerge: (): void => { this.mergeSshWorkspacePane(frame.paneId); },
+        onAdjustRatio: (delta: number): void => {
+          this.adjustSshWorkspacePaneRatio(frame.paneId, delta);
+        }
+      })
+      Column({ space: 10 }) {
+        SymbolGlyph($r('sys.symbol.doc'))
+          .fontSize(30).fontColor(['rgba(244,247,250,0.42)'])
+        Text('该 Pane 已从本地工作区恢复，但不会自动连接')
+          .fontSize(12).fontColor('rgba(244,247,250,0.62)').textAlign(TextAlign.Center)
+        Button('按原鉴权流程连接')
+          .height(SSH_WORKSPACE_CONTROL_HIT_SIZE_VP).fontSize(12).fontColor(Color.White)
+          .backgroundColor(this.accentColor).borderRadius(9)
+          .onClick((): void => { this.activateSshWorkspaceTab(frame.tabId); })
+      }
+      .width('100%').height(0).layoutWeight(1)
+      .justifyContent(FlexAlign.Center)
+      .padding({ left: 20, right: 20 })
+    }
+    .width(frame.widthVp)
+    .height(frame.heightVp)
+    .position({ x: frame.xVp, y: frame.yVp })
+    .backgroundColor('#10141A')
+    .border({ width: frame.active ? 1 : 0.5,
+      color: frame.active ? this.accentColor + 'AA' : 'rgba(255,255,255,0.12)' })
+    .clip(true)
+    .zIndex(frame.active ? 3 : 2)
+  }
+
+  @Builder
   private legacySshTabButton(tab: SshTerminalTabView) {
     Row() {
       Column() {
@@ -2718,7 +3452,7 @@ struct SshTerminal {
   private sshTabStripItems() {
     if (this.sshWorkbenchEnabled) {
       SshBrowserTabStrip({
-        tabs: this.sshTabViews,
+        tabs: this.sshWorkspaceModeEnabled() ? this.sshWorkspaceTabViews() : this.sshTabViews,
         compact: this.sshCompactChrome(),
         terminalTabsActive: this.sftpWorkspaceTabState.activeSurface === 'terminal',
         sftpTabVisible: this.sftpWorkspaceTabState.open,
@@ -2726,12 +3460,25 @@ struct SshTerminal {
           this.sftpWorkspaceTabState.activeSurface === 'sftp',
         sftpTabTitle: this.sftpWorkspaceTabTitle(),
         transferAttentionCount: this.sftpTransferAttentionCount(),
+        restoredCount: this.sshWorkspaceDisconnectedCount(),
         onActivate: (hostId: string): void => {
           this.activateSshTerminalWorkspace();
-          const host: RemoteHost | undefined = this.srv.getHost(hostId);
-          if (host !== undefined) { this.navigateToSshTab(host); }
+          if (this.sshWorkspaceModeEnabled()) {
+            for (let index: number = 0; index < this.sshWorkspaceSnapshot.tabs.length; index++) {
+              if (this.sshWorkspaceSnapshot.tabs[index].hostId === hostId) {
+                this.activateSshWorkspaceTab(this.sshWorkspaceSnapshot.tabs[index].tabId);
+                return;
+              }
+            }
+          } else {
+            const host: RemoteHost | undefined = this.srv.getHost(hostId);
+            if (host !== undefined) { this.navigateToSshTab(host); }
+          }
         },
-        onClose: (hostId: string): void => { this.requestSshTabClose(hostId); },
+        onClose: (hostId: string): void => {
+          if (this.sshWorkspaceModeEnabled()) { this.requestSshWorkspaceTabClose(hostId); }
+          else { this.requestSshTabClose(hostId); }
+        },
         onTogglePin: (hostId: string): void => { this.toggleSshTabPinned(hostId); },
         onMove: (hostId: string, delta: number): void => { this.moveSshTab(hostId, delta); },
         onMoveBefore: (hostId: string, beforeHostId: string): void => {
@@ -2745,7 +3492,8 @@ struct SshTerminal {
         onOpenPalette: (): void => { this.openSshCommandPalette(); },
         onActivateSftp: (): void => { this.activateSftpWorkbenchTab(); },
         onCloseSftp: (): void => { this.closeSftpWorkbenchTab(); },
-        onOpenTransferCenter: (): void => { this.openSftpTransferCenter(); }
+        onOpenTransferCenter: (): void => { this.openSftpTransferCenter(); },
+        onReconnectRestored: (): void => { void this.reconnectSshWorkspacePlaceholders(); }
       })
     } else {
       Scroll() {
@@ -6384,6 +7132,14 @@ struct SshTerminal {
     const pageGeneration: number = ++this.pageGeneration;
     const bindingGeneration: number = ++this.sshBindingGeneration;
     this.terminalClosing = false;
+    this.clearSshWorkspaceSaveTimer();
+    this.sshWorkspaceInitSequence++;
+    this.sshWorkspaceReady = false;
+    this.sshWorkspaceSnapshot = createEmptySshWorkspace('ssh-default', 'SSH 工作区', 0);
+    this.sshWorkspaceFocusedPaneId = '';
+    this.sshWorkspacePersistenceError = '';
+    this.sshWorkspaceManualReconnectRunning = false;
+    this.sshWorkspacePtySizes.clear();
     this.closeTerminalSearch(false, true);
     this.showTerminalProfileSheet = false;
     this.showSshCommandPalette = false;
@@ -6621,6 +7377,14 @@ struct SshTerminal {
       this.reconcileRetainedSshTabStates();
       this.refreshSshTabViews();
     }
+    if (this.sshWorkbenchEnabled) {
+      try {
+        void this.initializeSshWorkspace(getContext(this) as common.Context, pageGeneration);
+      } catch (err) {
+        hilog.warn(0x0017, 'SshTerminal', '[workspace] init scheduling failed: ' +
+          JSON.stringify(err));
+      }
+    }
 
     // 进入 SSH 终端跟随设备当前朝向（不锁定窗口方向）；用户仍可手动切换横竖屏。
     const defaultOrientation: SshTerminalOrientation = defaultSshTerminalOrientation(this.isDesktopDevice);
@@ -6748,6 +7512,10 @@ struct SshTerminal {
   }
 
   aboutToDisappear(): void {
+    this.flushSshWorkspaceSave();
+    this.sshWorkspaceInitSequence++;
+    this.sshWorkspaceReady = false;
+    this.sshWorkspacePtySizes.clear();
     this.stopSshAuthPromptPolling(true);
     this.closeTerminalSearch(false, true);
     this.showTerminalProfileSheet = false;
@@ -8067,11 +8835,18 @@ struct SshTerminal {
     if (!focused) { return; }
     const normalizedHostId: string = hostId.trim();
     const reportedRevision: number = sshXtermTabRenderRevision(sessionGeneration);
-    if (this.terminalClosing || normalizedHostId !== this.hostId.trim() ||
+    if (this.terminalClosing ||
       this.xtermSurfaceIdentityForHost(normalizedHostId, reportedRevision) !== surfaceIdentity.trim() ||
       reportedRevision !== this.xtermSurfaceGenerationForHost(normalizedHostId)) {
       hilog.debug(0x0000, 'SshTerminal', '[input] xterm focus rejected host=' + normalizedHostId +
         ' active=' + this.hostId.trim() + ' revision=' + reportedRevision.toString());
+      return;
+    }
+    if (normalizedHostId !== this.hostId.trim()) {
+      if (this.sshWorkspaceModeEnabled() && this.sshWorkspaceHostVisible(normalizedHostId)) {
+        const host: RemoteHost | undefined = this.srv.getHost(normalizedHostId);
+        if (host !== undefined) { this.navigateToSshTab(host); }
+      }
       return;
     }
     hilog.debug(0x0000, 'SshTerminal', '[input] xterm focus accepted host=' + normalizedHostId);
@@ -8133,12 +8908,22 @@ struct SshTerminal {
     rows: number, surfaceIdentity: string): void {
     const normalizedHostId: string = hostId.trim();
     const reportedRevision: number = sshXtermTabRenderRevision(sessionGeneration);
-    if (this.terminalClosing || normalizedHostId !== this.hostId.trim() ||
+    if (this.terminalClosing ||
       this.xtermSurfaceIdentityForHost(normalizedHostId, reportedRevision) !== surfaceIdentity.trim() ||
       reportedRevision !==
         this.xtermSurfaceGenerationForHost(normalizedHostId)) { return; }
     const nextCols: number = Math.max(20, Math.min(300, Math.floor(cols)));
     const nextRows: number = Math.max(3, Math.min(80, Math.floor(rows)));
+    if (normalizedHostId !== this.hostId.trim()) {
+      if (!this.sshWorkspaceModeEnabled() || !this.sshWorkspaceHostVisible(normalizedHostId)) { return; }
+      const runtime: SshTerminalTabView | null = this.sshWorkspaceRuntimeView(normalizedHostId);
+      if (runtime === null || runtime.sessionId <= 0 || runtime.generation !== sessionGeneration) { return; }
+      const sizeKey: string = nextCols.toString() + 'x' + nextRows.toString();
+      if (this.sshWorkspacePtySizes.get(normalizedHostId) === sizeKey) { return; }
+      this.sshWorkspacePtySizes.set(normalizedHostId, sizeKey);
+      this.loader.resizePty(runtime.sessionId, nextCols, nextRows);
+      return;
+    }
     if (nextCols === this.termCols && nextRows === this.termRows) { return; }
     this.termCols = nextCols;
     this.termRows = nextRows;
@@ -8153,6 +8938,18 @@ struct SshTerminal {
 
   private terminalProfileEnabled(): boolean {
     return this.sshWorkbenchEnabled && this.terminalProfileStore.isReady();
+  }
+
+  private resolvedTerminalProfileForHost(hostId: string): SshTerminalResolvedProfile {
+    if (!this.terminalProfileStore.isReady()) { return defaultSshTerminalResolvedProfile(); }
+    const normalizedHostId: string = hostId.trim();
+    const sessionScopeKey: string = sshTerminalSessionProfileScopeKey(
+      normalizedHostId, this.sshTabStore.sessionGeneration(normalizedHostId));
+    const sessionProfileId: string = sessionScopeKey.length > 0 ?
+      (this.terminalSessionProfileIds.get(sessionScopeKey) ?? '') : '';
+    const sessionProfile: SshTerminalProfileV1 | null = sessionProfileId.length > 0 ?
+      this.terminalProfileStore.profile(sessionProfileId) : null;
+    return this.terminalProfileStore.resolve(normalizedHostId, sessionProfile);
   }
 
   private restoreLegacyTerminalAppearance(): void {
@@ -8509,6 +9306,13 @@ struct SshTerminal {
 
   private onSshWorkbenchFlagChange(): void {
     if (!this.sshWorkbenchEnabled) {
+      this.clearSshWorkspaceSaveTimer();
+      if (this.sshWorkspaceReady) {
+        this.sshWorkspaceStore.save(this.sshWorkspaceSnapshot, true);
+      }
+      this.sshWorkspaceInitSequence++;
+      this.sshWorkspaceReady = false;
+      this.sshWorkspaceFocusedPaneId = '';
       this.closeTerminalSearch(true, true);
       this.showTerminalProfileSheet = false;
       this.showSshCommandPalette = false;
@@ -8518,6 +9322,14 @@ struct SshTerminal {
       this.sshTabRenameDraft = '';
       this.showSftpTransferCenter = false;
       if (this.sftpWorkspaceTabState.open) { this.closeSftpWorkbenchTab(); }
+    } else if (!this.terminalClosing && this.pageGeneration > 0) {
+      try {
+        void this.initializeSshWorkspace(
+          this.getUIContext().getHostContext() as common.Context, this.pageGeneration);
+      } catch (err) {
+        hilog.warn(0x0017, 'SshTerminal', '[workspace] flag-on init failed: ' +
+          JSON.stringify(err));
+      }
     }
     this.refreshTerminalProfileForHost();
   }
@@ -13100,7 +13912,9 @@ struct SshTerminal {
       } else {
       Column() {
       // 手机保留原始独立标签条; Pad/PC 的标签条嵌入连接顶栏。
-      if (this.sshTabViews.length > 0 && !this.sshTabsInline()) {
+      if ((this.sshTabViews.length > 0 ||
+        (this.sshWorkspaceModeEnabled() && this.sshWorkspaceSnapshot.tabs.length > 0)) &&
+        !this.sshTabsInline()) {
         this.sshTabStrip()
       }
 
@@ -13266,7 +14080,8 @@ struct SshTerminal {
       // Keep one keyed surface slot per committed SSH binding. During the
       // handoff the old document is masked; the new document is mounted only
       // after the host/binding commit has become observable.
-      if (this.sshTabViews.length === 0) {
+      if (this.sshTabViews.length === 0 &&
+        (!this.sshWorkspaceModeEnabled() || this.sshWorkspaceSnapshot.tabs.length === 0)) {
         Column() {
           if (this.connecting || (this.sshConnectionIsConnected() &&
             !this.sshVisibleSurfaceReady())) {
@@ -13287,7 +14102,7 @@ struct SshTerminal {
           // late ArkWeb ready callback is still being retried. Otherwise a
           // missed proxy callback turns a real terminal into a permanent full
           // screen "Preparing terminal..." mask.
-          if (!this.sshVisibleSurfaceReady()) {
+          if (!this.sshWorkspaceModeEnabled() && !this.sshVisibleSurfaceReady()) {
             Column() {
               if (this.connecting || this.sshConnectionIsConnected()) {
                 LoadingProgress().width(32).height(32).color(this.accentColor)
@@ -13308,87 +14123,35 @@ struct SshTerminal {
           }
 
           Stack({ alignContent: Alignment.TopStart }) {
-            ForEach(this.sshTabViews, (tab: SshTerminalTabView): void => {
-              SshXtermSurface({
-                coreKey: this.xtermSurfaceCoreKey(tab.hostId),
-                renderRevision: sshXtermTabRenderRevision(
-                  this.sshTabStore.sessionGeneration(tab.hostId)),
-                surfaceRefreshRequest: this.terminalSurfaceRefreshRequest,
-                readyProbeRequest: this.xtermReadyProbeRequest,
-                active: this.sshTabSurfaceActive(tab),
-                cols: this.termCols,
-                rows: this.termRows,
-                viewportWidth: this.termAreaW,
-                fontSize: this.fontSize,
-                lineSpacing: normalizeSshTerminalLineSpacing(this.lineSpacing),
-                bottomAlignSparseContent: !this.isDesktopDevice,
-                bottomAlignSafeRows: this.terminalBottomSafeRows(),
-                bottomInsetPx: this.terminalXtermBottomInsetPx(),
-                profileEnabled: this.terminalProfileEnabled(),
-                profileForegroundColor: this.resolvedTerminalProfile.foregroundColor,
-                profileBackgroundColor: this.resolvedTerminalProfile.backgroundColor,
-                profilePalette: this.resolvedTerminalProfile.palette,
-                profileFontFamily: this.resolvedTerminalProfile.fontFamily,
-                profileFontWeight: this.resolvedTerminalProfile.fontWeight,
-                profileCursorStyle: this.resolvedTerminalProfile.cursorStyle,
-                profileCursorBlink: this.resolvedTerminalProfile.cursorBlink,
-                profileScrollback: this.resolvedTerminalProfile.scrollback,
-                profileBellStyle: this.resolvedTerminalProfile.bellStyle,
-                profileCopyOnSelect: this.resolvedTerminalProfile.copyOnSelect,
-                viewportHeight: this.termAreaH,
-                outputBuffer: this.xtermOutputBufferForHost(tab.hostId),
-                outputSequence: this.termOutputSequence,
-                transcriptResetIdentity: this.xtermTranscriptResetIdentity,
-                transcriptResetRequest: this.xtermTranscriptResetRequest,
-                focusRequest: this.terminalFocusRequest,
-                copyRequest: this.copyRequest,
-                copiedText: this.copiedText,
-                scrollToBottomRequest: this.scrollToBottomRequest,
-                forceScrollToBottomRequest: this.forceScrollToBottomRequest,
-                externalScrollLines: this.terminalExternalScrollLines,
-                externalScrollRequest: this.terminalExternalScrollRequest,
-                searchRequest: this.xtermSearchRequestForTab(tab),
-                searchClearRequest: this.terminalSearchClearRequest,
-                onData: (data: string, surfaceIdentity: string): void => {
-                  this.onXtermDataForHost(tab.hostId,
-                    this.sshTabStore.sessionGeneration(tab.hostId),
-                    data, surfaceIdentity);
-                },
-                onResize: (cols: number, rows: number, surfaceIdentity: string): void => {
-                  this.onXtermResizeForHost(tab.hostId,
-                    this.sshTabStore.sessionGeneration(tab.hostId),
-                    cols, rows, surfaceIdentity);
-                },
-                onReady: (surfaceIdentity: string): void => {
-                  this.onXtermReadyForHost(tab.hostId,
-                    this.sshTabStore.sessionGeneration(tab.hostId),
-                    surfaceIdentity);
-                },
-                onTerminalFocus: (focused: boolean, surfaceIdentity: string): void => {
-                  this.onXtermFocusForHost(tab.hostId,
-                    this.sshTabStore.sessionGeneration(tab.hostId),
-                    focused, surfaceIdentity);
-                },
-                onSearchResult: (result: SshTerminalSearchResult,
-                  surfaceIdentity: string): void => {
-                  this.onXtermSearchResultForHost(tab.hostId,
-                    this.sshTabStore.sessionGeneration(tab.hostId),
-                    result, surfaceIdentity);
+            if (this.sshWorkspaceModeEnabled()) {
+              ForEach(this.sshTabViews, (tab: SshTerminalTabView): void => {
+                if (this.sshWorkspaceFrameForTab(tab.tabId) !== null) {
+                  this.sshWorkspaceLivePane(tab,
+                    this.sshWorkspaceFrameForTab(tab.tabId) as SshWorkspacePaneFrame)
+                } else {
+                  Stack() {
+                    this.sshXtermTabSurface(tab, false, false, false, 1, 1,
+                      this.resolvedTerminalProfileForHost(tab.hostId))
+                  }
+                  .width(1).height(1)
+                  .position({ x: -10, y: -10 })
+                  .visibility(Visibility.Hidden)
+                  .hitTestBehavior(HitTestMode.None)
                 }
-              })
-                .width('100%')
-                .height('100%')
-                // ArkWeb owns a native composition surface. Opacity/zIndex
-                // alone can leave the newest host surface above an older tab.
-                // Hidden preserves the WebView/JS heap and its scrollback but
-                // removes the inactive native surface from composition.
-                .visibility(this.sshTabSurfaceActive(tab) ?
-                  Visibility.Visible : Visibility.Hidden)
-                .opacity(this.sshTabSurfaceActive(tab) ? 1 : 0)
-                .zIndex(this.sshTabSurfaceActive(tab) ? 1 : 0)
-                .hitTestBehavior(this.sshTabSurfaceActive(tab) ?
-                  HitTestMode.Default : HitTestMode.None)
-            }, (tab: SshTerminalTabView): string => tab.tabId)
+              }, (tab: SshTerminalTabView): string => tab.tabId)
+              ForEach(this.sshWorkspacePaneLayout().frames,
+                (frame: SshWorkspacePaneFrame): void => {
+                  if (!this.sshWorkspaceRuntimeHasTab(frame.tabId)) {
+                    this.sshWorkspacePlaceholderPane(frame)
+                  }
+                }, (frame: SshWorkspacePaneFrame): string => frame.paneId)
+            } else {
+              ForEach(this.sshTabViews, (tab: SshTerminalTabView): void => {
+                this.sshXtermTabSurface(tab, this.sshTabSurfaceActive(tab),
+                  this.sshTabSurfaceActive(tab), this.sshTabSurfaceActive(tab),
+                  this.termAreaW, this.termAreaH, this.resolvedTerminalProfile)
+              }, (tab: SshTerminalTabView): string => tab.tabId)
+            }
 
             // Keep a persistent TextArea as the sole ArkUI IME anchor. TextArea
             // preserves composition/edit callbacks across API 23 keyboard

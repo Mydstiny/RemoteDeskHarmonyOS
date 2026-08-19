@@ -40,6 +40,22 @@ import {
 import {
   SshWorkspaceRuntimeAdapter
 } from '../main/ets/services/ssh/workspace/SshWorkspaceRuntimeAdapter';
+import {
+  SshWorkspacePersistencePort,
+  SshWorkspaceRepository,
+  SshWorkspaceStoredRow,
+  SshWorkspaceStoredRowsResult
+} from '../main/ets/services/ssh/workspace/SshWorkspaceStore';
+import {
+  reconcileSshWorkspaceRuntimeTabs,
+  SshWorkspaceRuntimeTabProjection
+} from '../main/ets/services/ssh/workspace/SshWorkspaceProjectionPolicy';
+import {
+  resolveSshWorkspacePaneLayout,
+  sshWorkspaceHiddenTabIds,
+  sshWorkspaceParentSplit,
+  SshWorkspacePaneLayoutResult
+} from '../main/ets/services/ssh/workspace/SshWorkspacePaneLayoutPolicy';
 
 class MemorySshWorkspaceCapabilityPreferences
   implements SshWorkspaceCapabilityPreferenceAdapter {
@@ -57,6 +73,71 @@ class MemorySshWorkspaceCapabilityPreferences
     this.value = enabled;
     return true;
   }
+}
+
+class MemorySshWorkspacePersistence implements SshWorkspacePersistencePort {
+  rows: Array<SshWorkspaceStoredRow> = [];
+  failReplace: boolean = false;
+  failRemove: boolean = false;
+  failRead: boolean = false;
+
+  readRows(): SshWorkspaceStoredRowsResult {
+    if (this.failRead) { return { ok: false, rows: [] }; }
+    return { ok: true, rows: this.rows.map((row: SshWorkspaceStoredRow): SshWorkspaceStoredRow => ({
+      workspaceId: row.workspaceId,
+      schemaVersion: row.schemaVersion,
+      revision: row.revision,
+      payload: row.payload,
+      active: row.active,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt
+    })) };
+  }
+
+  replace(row: SshWorkspaceStoredRow, expectedRevision: number): boolean {
+    if (this.failReplace) { return false; }
+    const index: number = this.rows.findIndex(
+      (item: SshWorkspaceStoredRow): boolean => item.workspaceId === row.workspaceId);
+    const currentRevision: number = index < 0 ? -1 : this.rows[index].revision;
+    if (currentRevision !== expectedRevision) { return false; }
+    if (row.active) {
+      this.rows = this.rows.map((item: SshWorkspaceStoredRow): SshWorkspaceStoredRow => ({
+        workspaceId: item.workspaceId,
+        schemaVersion: item.schemaVersion,
+        revision: item.revision,
+        payload: item.payload,
+        active: false,
+        createdAt: item.createdAt,
+        updatedAt: item.updatedAt
+      }));
+    }
+    if (index < 0) { this.rows.push(row); }
+    else { this.rows[index] = row; }
+    return true;
+  }
+
+  remove(workspaceId: string, expectedRevision: number): boolean {
+    if (this.failRemove) { return false; }
+    const index: number = this.rows.findIndex(
+      (item: SshWorkspaceStoredRow): boolean => item.workspaceId === workspaceId &&
+        item.revision === expectedRevision);
+    if (index < 0) { return false; }
+    this.rows.splice(index, 1);
+    return true;
+  }
+}
+
+function storedWorkspaceRow(snapshot: SshWorkspaceSnapshotV1,
+  active: boolean = false): SshWorkspaceStoredRow {
+  return {
+    workspaceId: snapshot.workspaceId,
+    schemaVersion: snapshot.schemaVersion,
+    revision: snapshot.revision,
+    payload: encodeSshWorkspaceSnapshots([snapshot]),
+    active,
+    createdAt: snapshot.createdAt,
+    updatedAt: snapshot.updatedAt
+  };
 }
 
 function tab(id: string, hostId: string, kind: 'terminal' | 'sftp' = 'terminal'): SshWorkspaceTabV1 {
@@ -233,14 +314,33 @@ export default function sshWorkspacePolicyTest(): void {
       workspace = reduceSshWorkspace(workspace, {
         kind: 'set_tab_pinned', tabId: 'tab-two', pinned: true, nowMs: 104
       }).snapshot;
+      workspace = reduceSshWorkspace(workspace, {
+        kind: 'rename_tab', tabId: 'tab-two', title: '  Production shell  ', nowMs: 105
+      }).snapshot;
       expect(before.tabs.length).assertEqual(1);
       expect(workspace.tabOrder[0]).assertEqual('tab-two');
       expect(workspace.tabs[1].pinned).assertTrue();
+      expect(workspace.tabs[1].titleOverride).assertEqual('Production shell');
       workspace = reduceSshWorkspace(workspace, {
-        kind: 'close_tab', tabId: 'tab-two', nowMs: 105
+        kind: 'close_tab', tabId: 'tab-two', nowMs: 106
       }).snapshot;
       expect(workspace.tabs.length).assertEqual(1);
       expect(workspace.activeTabId).assertEqual('tab-one');
+      expect(validateSshWorkspaceSnapshot(workspace).length).assertEqual(0);
+    });
+
+    it('twenty_tabs_should_remain_valid_and_ordered', 0, (): void => {
+      let workspace: SshWorkspaceSnapshotV1 = openedWorkspace();
+      for (let index: number = 2; index <= 20; index++) {
+        workspace = reduceSshWorkspace(workspace, {
+          kind: 'open_tab',
+          tab: tab('tab-' + index.toString(), 'host-' + index.toString()),
+          nowMs: 100 + index
+        }).snapshot;
+      }
+      expect(workspace.tabs.length).assertEqual(20);
+      expect(workspace.tabOrder.length).assertEqual(20);
+      expect(workspace.tabOrder[19]).assertEqual('tab-20');
       expect(validateSshWorkspaceSnapshot(workspace).length).assertEqual(0);
     });
 
@@ -438,6 +538,136 @@ export default function sshWorkspacePolicyTest(): void {
         sessionId: 8, channelId: 'shell', generation: 3
       })?.sessionId).assertEqual(8);
       expect(adapter.size()).assertEqual(0);
+    });
+
+    it('workspace_repository_should_isolate_corrupt_and_future_rdb_rows', 0, (): void => {
+      const valid: SshWorkspaceSnapshotV1 = openedWorkspace();
+      const future: SshWorkspaceStoredRow = storedWorkspaceRow(valid);
+      future.workspaceId = 'ws-future';
+      future.schemaVersion = 2;
+      const corrupt: SshWorkspaceStoredRow = storedWorkspaceRow(valid);
+      corrupt.workspaceId = 'ws-corrupt';
+      corrupt.payload = '{broken';
+      const persistence: MemorySshWorkspacePersistence = new MemorySshWorkspacePersistence();
+      persistence.rows = [storedWorkspaceRow(valid, true), future, corrupt];
+      const repository: SshWorkspaceRepository = new SshWorkspaceRepository(persistence);
+      const restored = repository.restore();
+      expect(restored.snapshots.length).assertEqual(1);
+      expect(restored.readable).assertTrue();
+      expect(restored.activeWorkspaceId).assertEqual(valid.workspaceId);
+      expect(restored.rejected).assertEqual(1);
+      expect(restored.unsupported).assertEqual(1);
+      expect(restored.snapshots[0].reconnectPolicy).assertEqual('never');
+      expect(repository.durableRevision(valid.workspaceId)).assertEqual(valid.revision);
+    });
+
+    it('workspace_repository_should_fail_closed_when_rdb_read_fails', 0, (): void => {
+      const persistence: MemorySshWorkspacePersistence = new MemorySshWorkspacePersistence();
+      persistence.rows = [storedWorkspaceRow(openedWorkspace(), true)];
+      persistence.failRead = true;
+      const repository: SshWorkspaceRepository = new SshWorkspaceRepository(persistence);
+      const restored = repository.restore();
+      expect(restored.readable).assertFalse();
+      expect(restored.snapshots.length).assertEqual(0);
+      expect(restored.activeWorkspaceId).assertEqual('');
+    });
+
+    it('workspace_repository_should_keep_last_durable_snapshot_on_write_failure', 0, (): void => {
+      const first: SshWorkspaceSnapshotV1 = openedWorkspace();
+      const persistence: MemorySshWorkspacePersistence = new MemorySshWorkspacePersistence();
+      persistence.rows = [storedWorkspaceRow(first, true)];
+      const repository: SshWorkspaceRepository = new SshWorkspaceRepository(persistence);
+      repository.restore();
+      const renamed: SshWorkspaceReduceResult = reduceSshWorkspace(first, {
+        kind: 'rename_workspace', name: 'Durable after retry', nowMs: 200
+      });
+      persistence.failReplace = true;
+      const failed = repository.save(renamed.snapshot, true);
+      expect(failed.ok).assertFalse();
+      expect(failed.code).assertEqual('write_failed');
+      expect(repository.durableRevision(first.workspaceId)).assertEqual(first.revision);
+      expect(persistence.rows[0].payload).assertEqual(encodeSshWorkspaceSnapshots([first]));
+      persistence.failReplace = false;
+      const retried = repository.save(renamed.snapshot, true);
+      expect(retried.ok).assertTrue();
+      expect(retried.durableRevision).assertEqual(renamed.snapshot.revision);
+      const stale = repository.save(first, true);
+      expect(stale.ok).assertFalse();
+      expect(stale.code).assertEqual('stale_revision');
+    });
+
+    it('workspace_repository_should_reject_divergent_payload_at_same_revision', 0,
+      (): void => {
+        const first: SshWorkspaceSnapshotV1 = openedWorkspace();
+        const persistence: MemorySshWorkspacePersistence = new MemorySshWorkspacePersistence();
+        persistence.rows = [storedWorkspaceRow(first, true)];
+        const repository: SshWorkspaceRepository = new SshWorkspaceRepository(persistence);
+        repository.restore();
+        const editorA: SshWorkspaceSnapshotV1 = reduceSshWorkspace(first, {
+          kind: 'rename_workspace', name: 'Editor A', nowMs: 200
+        }).snapshot;
+        const editorB: SshWorkspaceSnapshotV1 = reduceSshWorkspace(first, {
+          kind: 'rename_workspace', name: 'Editor B', nowMs: 201
+        }).snapshot;
+        expect(editorA.revision).assertEqual(editorB.revision);
+        expect(repository.save(editorA, true).ok).assertTrue();
+        const conflict = repository.save(editorB, true);
+        expect(conflict.ok).assertFalse();
+        expect(conflict.code).assertEqual('stale_revision');
+        expect(persistence.rows[0].payload).assertEqual(encodeSshWorkspaceSnapshots([editorA]));
+      });
+
+    it('runtime_projection_should_preserve_restored_placeholders_without_auto_connect', 0,
+      (): void => {
+        let restored: SshWorkspaceSnapshotV1 = openedWorkspace();
+        restored = reduceSshWorkspace(restored, {
+          kind: 'open_tab', tab: tab('tab-restored', 'host-restored'), nowMs: 102
+        }).snapshot;
+        const runtimeTabs: Array<SshWorkspaceRuntimeTabProjection> = [{
+          tabId: 'tab-live', hostId: 'host-live', title: 'Live', profileId: '',
+          pinned: false, active: true
+        }];
+        const reconciled: SshWorkspaceSnapshotV1 = reconcileSshWorkspaceRuntimeTabs(
+          restored, runtimeTabs, 'host-live', 200);
+        expect(reconciled.tabs.length).assertEqual(3);
+        expect(reconciled.tabs.find((item: SshWorkspaceTabV1): boolean =>
+          item.tabId === 'tab-restored') !== undefined).assertTrue();
+        expect(reconciled.activeTabId).assertEqual('tab-live');
+        expect(reconciled.reconnectPolicy).assertEqual('never');
+        expect(validateSshWorkspaceSnapshot(reconciled).length).assertEqual(0);
+      });
+
+    it('pane_projection_should_keep_four_pane_tree_stable_across_breakpoints', 0, (): void => {
+      let workspace: SshWorkspaceSnapshotV1 = openedWorkspace();
+      for (let index: number = 2; index <= 4; index++) {
+        workspace = reduceSshWorkspace(workspace, {
+          kind: 'open_tab', tab: tab('tab-' + index.toString(), 'host-' + index.toString()),
+          nowMs: 100 + index
+        }).snapshot;
+        workspace = reduceSshWorkspace(workspace, {
+          kind: 'split_pane', paneId: index === 2 ? 'pane-one' : 'pane-' + (index - 1).toString(),
+          splitNodeId: 'split-' + index.toString(),
+          newLeafId: 'pane-' + index.toString(), tabId: 'tab-one',
+          direction: index % 2 === 0 ? 'horizontal' : 'vertical', ratio: 0.5,
+          nowMs: 110 + index
+        }).snapshot;
+      }
+      const treeBefore: string = JSON.stringify(workspace.paneRoot);
+      const wide: SshWorkspacePaneLayoutResult = resolveSshWorkspacePaneLayout(
+        workspace, '', 4, 1600, 900);
+      const narrow: SshWorkspacePaneLayoutResult = resolveSshWorkspacePaneLayout(
+        workspace, '', 1, 360, 700);
+      const focused: SshWorkspacePaneLayoutResult = resolveSshWorkspacePaneLayout(
+        workspace, workspace.activePaneId, 4, 1600, 900);
+      expect(wide.frames.length).assertEqual(4);
+      expect(narrow.frames.length).assertEqual(1);
+      expect(narrow.frames[0].paneId).assertEqual(workspace.activePaneId);
+      expect(focused.frames.length).assertEqual(1);
+      expect(focused.focused).assertTrue();
+      expect(JSON.stringify(workspace.paneRoot)).assertEqual(treeBefore);
+      expect(sshWorkspaceHiddenTabIds(workspace).length).assertEqual(0);
+      expect(sshWorkspaceParentSplit(workspace.paneRoot, workspace.activePaneId) !== null)
+        .assertTrue();
     });
   });
 }

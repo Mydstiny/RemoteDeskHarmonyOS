@@ -7,7 +7,8 @@
  * It deliberately stores no credentials or terminal payload.
  */
 
-export type SshTerminalTabState = 'connecting' | 'connected' | 'reconnecting' | 'error';
+export type SshTerminalTabState =
+  'disconnected' | 'connecting' | 'connected' | 'reconnecting' | 'error';
 
 export interface SshTerminalTabView {
   tabId: string;

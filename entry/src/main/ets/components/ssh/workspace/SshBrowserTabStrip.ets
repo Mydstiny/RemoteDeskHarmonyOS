@@ -1,5 +1,12 @@
 import { SshTerminalTabView } from '../../../services/SshTerminalTabStore';
-import { sshTabWidthVp } from '../../../services/ssh/workspace/SshTabChromePolicy';
+import {
+  SSH_TAB_EDGE_ACTION_GAP_VP,
+  SSH_TAB_EDGE_ACTION_SIZE_VP,
+  SSH_TAB_EDGE_COMPACT_VISIBLE_COUNT,
+  SSH_TAB_EDGE_EXPANDED_VISIBLE_COUNT,
+  SSH_TAB_STRIP_HEIGHT_VP,
+  sshTabWidthVp
+} from '../../../services/ssh/workspace/SshTabChromePolicy';
 
 /** Browser-style SSH tab chrome with fixed, always reachable edge actions. */
 @Component
@@ -12,6 +19,7 @@ export struct SshBrowserTabStrip {
   @Prop sftpTabActive: boolean = false;
   @Prop sftpTabTitle: string = 'SFTP';
   @Prop transferAttentionCount: number = 0;
+  @Prop restoredCount: number = 0;
   onActivate: (hostId: string) => void = (_hostId: string): void => {};
   onClose: (hostId: string) => void = (_hostId: string): void => {};
   onTogglePin: (hostId: string) => void = (_hostId: string): void => {};
@@ -27,6 +35,7 @@ export struct SshBrowserTabStrip {
   onActivateSftp: () => void = (): void => {};
   onCloseSftp: () => void = (): void => {};
   onOpenTransferCenter: () => void = (): void => {};
+  onReconnectRestored: () => void = (): void => {};
 
   @State hoveredTabId: string = '';
   @State draggingTabId: string = '';
@@ -36,6 +45,7 @@ export struct SshBrowserTabStrip {
   }
 
   private stateLabel(tab: SshTerminalTabView): string {
+    if (tab.state === 'disconnected') { return '未连接'; }
     if (tab.state === 'connecting') { return '连接中'; }
     if (tab.state === 'reconnecting') { return '恢复中'; }
     if (tab.state === 'error') { return '错误'; }
@@ -53,6 +63,7 @@ export struct SshBrowserTabStrip {
   }
 
   private statusColor(tab: SshTerminalTabView): string {
+    if (tab.state === 'disconnected') { return 'rgba(242,244,247,0.34)'; }
     if (tab.state === 'error') { return '#FF7777'; }
     if (tab.state === 'connecting' || tab.state === 'reconnecting') { return '#F5B942'; }
     return '#34C759';
@@ -99,7 +110,7 @@ export struct SshBrowserTabStrip {
         }
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
       Button('×')
-        .width(30).height(30).padding(0).fontSize(16)
+        .width(48).height(48).padding(0).fontSize(16)
         .fontColor('rgba(242,244,247,0.76)')
         .borderRadius(8).backgroundColor('rgba(255,255,255,0.035)')
         .onClick((): void => { this.onClose(tab.hostId); })
@@ -117,7 +128,7 @@ export struct SshBrowserTabStrip {
       this.TabBody(tab)
     }
     .width(sshTabWidthVp(this.compact, tab.pinned))
-    .height(38)
+    .height(48)
     .borderRadius(9)
     .backgroundColor(this.tabBackground(tab))
     .border({ width: this.terminalTabActive(tab) ? 1 : 0.5,
@@ -157,14 +168,14 @@ export struct SshBrowserTabStrip {
         Text('文件工作台').fontSize(8).fontColor('rgba(242,244,247,0.46)').maxLines(1)
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
       Button('×')
-        .width(30).height(30).padding(0).fontSize(16)
+        .width(48).height(48).padding(0).fontSize(16)
         .fontColor('rgba(242,244,247,0.76)')
         .borderRadius(8).backgroundColor('rgba(255,255,255,0.035)')
         .onClick((): void => { this.onCloseSftp(); })
         .accessibilityText('关闭 SFTP 工作台标签')
     }
     .width(sshTabWidthVp(this.compact, false))
-    .height(38)
+    .height(48)
     .padding({ left: 9, right: 4 })
     .borderRadius(9)
     .backgroundColor(this.sftpTabActive ? this.accentColor + '42' : 'rgba(255,255,255,0.065)')
@@ -177,7 +188,8 @@ export struct SshBrowserTabStrip {
   @Builder
   private EdgeAction(label: string, description: string, action: () => void) {
     Button(label)
-      .width(34).height(34).padding(0).fontSize(label === '＋' ? 18 : 14)
+      .width(SSH_TAB_EDGE_ACTION_SIZE_VP).height(SSH_TAB_EDGE_ACTION_SIZE_VP)
+      .padding(0).fontSize(label === '＋' ? 18 : 14)
       .fontColor('rgba(242,244,247,0.86)')
       .borderRadius(9).backgroundColor('rgba(255,255,255,0.08)')
       .onClick(action)
@@ -194,27 +206,49 @@ export struct SshBrowserTabStrip {
           if (this.sftpTabVisible) {
             this.SftpTab()
           }
-        }.height(40).padding({ left: 2, right: 2 })
+        }.height(50).padding({ left: 2, right: 2 })
       }
       .scrollable(ScrollDirection.Horizontal)
       .scrollBar(BarState.Off)
-      .layoutWeight(1).height(40)
+      .layoutWeight(1).height(50)
 
-      this.EdgeAction('☰', '显示所有 SSH 标签', (): void => { this.onShowAllTabs(); })
-      Stack({ alignContent: Alignment.TopEnd }) {
-        this.EdgeAction('⇅', '打开 SSH 传输中心', (): void => { this.onOpenTransferCenter(); })
-        if (this.transferAttentionCount > 0) {
-          Text(this.transferAttentionCount > 99 ? '99+' : this.transferAttentionCount.toString())
-            .fontSize(8).fontColor(Color.White).fontWeight(FontWeight.Medium)
-            .height(15).constraintSize({ minWidth: 15 }).padding({ left: 3, right: 3 })
-            .textAlign(TextAlign.Center).borderRadius(8).backgroundColor('#E5484D')
-            .hitTestBehavior(HitTestMode.None)
-        }
-      }.width(34).height(34)
-      this.EdgeAction('⌕', '打开 SSH 命令面板', (): void => { this.onOpenPalette(); })
-      this.EdgeAction('＋', '新建 SSH 会话', (): void => { this.onNewSession(); })
+      Scroll() {
+        Row({ space: SSH_TAB_EDGE_ACTION_GAP_VP }) {
+          this.EdgeAction('☰', '显示所有 SSH 标签', (): void => { this.onShowAllTabs(); })
+          Stack({ alignContent: Alignment.TopEnd }) {
+            this.EdgeAction('⇅', '打开 SSH 传输中心', (): void => { this.onOpenTransferCenter(); })
+            if (this.transferAttentionCount > 0) {
+              Text(this.transferAttentionCount > 99 ? '99+' : this.transferAttentionCount.toString())
+                .fontSize(8).fontColor(Color.White).fontWeight(FontWeight.Medium)
+                .height(15).constraintSize({ minWidth: 15 }).padding({ left: 3, right: 3 })
+                .textAlign(TextAlign.Center).borderRadius(8).backgroundColor('#E5484D')
+                .hitTestBehavior(HitTestMode.None)
+            }
+          }.width(SSH_TAB_EDGE_ACTION_SIZE_VP).height(SSH_TAB_EDGE_ACTION_SIZE_VP)
+          this.EdgeAction('⌕', '打开 SSH 命令面板', (): void => { this.onOpenPalette(); })
+          if (this.restoredCount > 0) {
+            Stack({ alignContent: Alignment.TopEnd }) {
+              this.EdgeAction('↻', '手动恢复未连接的工作区标签',
+                (): void => { this.onReconnectRestored(); })
+              Text(this.restoredCount > 99 ? '99+' : this.restoredCount.toString())
+                .fontSize(8).fontColor(Color.White).fontWeight(FontWeight.Medium)
+                .height(15).constraintSize({ minWidth: 15 }).padding({ left: 3, right: 3 })
+                .textAlign(TextAlign.Center).borderRadius(8).backgroundColor('#5E6C84')
+                .hitTestBehavior(HitTestMode.None)
+            }.width(SSH_TAB_EDGE_ACTION_SIZE_VP).height(SSH_TAB_EDGE_ACTION_SIZE_VP)
+          }
+          this.EdgeAction('＋', '新建 SSH 会话', (): void => { this.onNewSession(); })
+        }.height(SSH_TAB_EDGE_ACTION_SIZE_VP)
+      }
+      .scrollable(ScrollDirection.Horizontal)
+      .scrollBar(BarState.Off)
+      .width((this.compact ? SSH_TAB_EDGE_COMPACT_VISIBLE_COUNT :
+        SSH_TAB_EDGE_EXPANDED_VISIBLE_COUNT) * SSH_TAB_EDGE_ACTION_SIZE_VP +
+        (this.compact ? SSH_TAB_EDGE_COMPACT_VISIBLE_COUNT - 1 :
+          SSH_TAB_EDGE_EXPANDED_VISIBLE_COUNT - 1) * SSH_TAB_EDGE_ACTION_GAP_VP)
+      .height(SSH_TAB_EDGE_ACTION_SIZE_VP)
     }
-    .width('100%').height(42)
+    .width('100%').height(SSH_TAB_STRIP_HEIGHT_VP)
     .padding({ left: 6, right: 6 })
   }
 }
