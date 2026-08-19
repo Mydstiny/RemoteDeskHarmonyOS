@@ -3,7 +3,7 @@
 > 状态：`ACTIVE_M8_M9` / `NOT_COMPLETE`
 > 权威计划：`docs/codex/plans/2026-08-19-ssh-termius-harmonyos7-api26-workbench-plan.md`
 > 建立日期：2026-08-19
-> 当前工作树：`codex/moonlight-complete-upgrade` / `41483b417`（M8 通道边界与 M9 SSH 多窗口交接增量）
+> 当前工作树：`codex/moonlight-complete-upgrade` / `2d1f06d6`（M9 SSH 多窗口交接与 PC 主机添加表单响应式修复）
 > 当前产品基线：HarmonyOS 6.1 / API 23
 > API 26 状态：本机未安装；任何 API 26-only import 均禁止进入产品代码
 
@@ -24,7 +24,8 @@
 
 - M8 WebMessagePort 已完成 API 23 兼容双栈的生产边界：版本/会话/generation/端口实例 fence、严格 JSON 类型、超前 ACK 拒绝、UTF-8 字节预算、控制帧优先且线上序号单调；生产 flag 仍默认关闭，ArrayBuffer 批量等待 API 26 SDK/真机证据。
 - M9 SSH 认证后窗口 handoff 已补齐多标签语义：交接只移除已经转移的 host，源页保留其他 SSH 标签并切换到下一个会话；没有剩余标签才返回源页。目标窗口仍复用现有 `RemoteSessionWindowCoordinator`，不改变密码/Key/KBI/MFA/Host Key 流程。
-- 最近 SSH-only 提交：`493601b10`（有序端口投递）、`05fab8f48`（计划指针）、`41483b417`（多标签窗口交接）。精确 `default@OhosTestCompileArkTS` 与 `assembleHap` 均已通过；`ohosTest@OhosTestCompileArkTS` 仍受环境中未注册的 `00306054` 任务阻塞。
+- M9 PC 响应式复验已修复 SSH 主机添加流固定 900vp 导致的 Sheet 溢出：`2d1f06d6` 改为跟随父 Sheet 宽度，PC 模拟器布局树确认代理选项和“下一步”均在可视区域内。
+- 最近 SSH-only 提交：`493601b10`（有序端口投递）、`05fab8f48`（计划指针）、`41483b417`（多标签窗口交接）、`2d1f06d6`（主机添加流响应式宽度）。精确 `default@OhosTestCompileArkTS` 与 `assembleHap` 均已通过；`ohosTest@OhosTestCompileArkTS` 仍受环境中未注册的 `00306054` 任务阻塞。
 - 仍未宣称完成：API 26 SDK/目标设备、真实可达 SSH endpoint 的成功鉴权与 SFTP/转发/后台/多窗口 E2E、PC 窗口吸附/沉浸状态的实机验收。
 
 ## 2. 当前工作树隔离
@@ -189,12 +190,16 @@ M0 action 只修改纯快照：创建/重命名工作区、打开占位 tab、�
 | `/private/tmp/ssh-current-sheet.png` | `186d9344564b4596ba23bf3e0c6d77d60b55ae4ee1606f2c65a02631634256e7` | 复核确认此前拦截输入的是残留“日志”诊断 Sheet，不是 SSH 鉴权页 |
 | `/private/tmp/ssh-clean-before-click.png` | `c2dc29957281553d124d27c3f576eed8065bbe62f21b5556caa3e63f19e95268` | 关闭残留 Sheet 后的 SSH 主机列表点击前基线 |
 | `/private/tmp/ssh-preflight-visible.png` | `3a6ae29166196285c50f766e0113eba61b436e1046b30c534f0404df51eb4103` | 干净基线点击后的既有 Host Key 预检错误态；测试 endpoint TCP 不可达，未进入 Terminal、未创建会话窗口 |
+| `/private/tmp/ssh-card-click.png` | `32059a94e1570508505d764cb595ce1e252fd1543e1bda2c7eeca0c574c00daf` | 当前签名 HAP 点击 SSH 主机后的预检失败 Sheet；鉴权未成功时仍停留在源页 |
+| `/private/tmp/ssh-card-click-layout.json` | `193c04cb7bf49545729815d31009b67adc729958551423e65543b1d9f2539354` | 预检失败页面 hierarchy；`aa dump -l` 仅有 EntryAbility，无独立 SSH Ability |
+| `/private/tmp/ssh-ui-fixed-form.png` | `9a9823ac5142d9002fc32c47201ef78fc732e0e6a518e4865335d8a12cdbb49e` | `2d1f06d6` 后 PC SSH 新主机表单：直连、HTTP CONNECT、SOCKS5、SSH 跳板、FRP TCP 和下一步均可见 |
+| `/private/tmp/ssh-ui-fixed-form-layout.json` | `f89a1381ffe701b24882ba8079d7d39fdab3d0a926c16b6b7a532a095e48a81d` | 修复后布局树；表单右边界约 1980，未再越过系统 Sheet |
 
 这些文件位于临时目录，不作为仓库制品。账本保留命令、hash 和观察结果；阶段验收前重新采集最终 SSH 页面证据。
 
 ### 7.3 已证明与未证明
 
-已证明：两个目标可通过 HDC 连接；当前 HAP 在 API 23 Phone/PC 环境可启动；PC 使用系统自由窗口，当前窗口初始区域为 2090×1394 px；PC 可以进入现有 SSH 主机列表。关闭残留的诊断日志 Sheet 后，点击 SSH 主机正确进入既有 Host Key 预检；TCP 不可达时保留在 HostList 的错误 Sheet，不会进入 Terminal，也不会创建独立会话窗口。
+已证明：两个目标可通过 HDC 连接；当前 HAP 在 API 23 Phone/PC 环境可启动；PC 使用系统自由窗口，当前窗口初始区域为 2090×1394 px；PC 可以进入现有 SSH 主机列表。关闭残留的诊断日志 Sheet 后，点击 SSH 主机正确进入既有 Host Key 预检；TCP 不可达时保留在 HostList 的错误 Sheet，不会进入 Terminal，也不会创建独立会话窗口。`2d1f06d6` 后，PC SSH 新主机 Sheet 的布局树边界与截图均证明代理选项和下一步操作不再被固定宽度截断。
 
 尚未证明：成功 Host Key 校验后的密码/Key/KBI/MFA 认证、终端焦点、软/硬键盘、SFTP、转发、后台/PiP、SSH 独立窗口和多主机并行。当前唯一测试 endpoint 离线，因此本轮只证明了预检错误路径；不得把主机卡片的延迟探测文案当成 SSH 端口可达证据。没有成功路径证据前，S0 不能标为完成。
 
