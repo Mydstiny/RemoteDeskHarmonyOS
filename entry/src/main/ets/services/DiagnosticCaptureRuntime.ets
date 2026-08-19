@@ -10,7 +10,6 @@ import {
   DiagnosticModuleId,
   DiagnosticOutcome,
   DiagnosticStopReason,
-  diagnosticAllModules,
   diagnosticDurationIsAllowed,
   diagnosticEventIsAllowed,
   diagnosticLevelForOutcome,

@@ -329,6 +329,7 @@ import {
 import {
   SETTINGS_SHEET_ACCOUNT,
   SETTINGS_SHEET_ACCENT_COLOR,
+  SETTINGS_SHEET_DIAGNOSTIC_LOG,
   SETTINGS_SHEET_FEEDBACK,
   SETTINGS_SHEET_HALO_COLOR,
   SETTINGS_SHEET_KEY_VAULT,
@@ -359,6 +360,7 @@ import {
   SETTINGS_SHEET_WALLPAPER,
   SETTINGS_PANEL_DISMISS_TO_LEAF_OPEN_MS,
   MoonlightSettingsRouteSpec,
+  diagnosticLogSettingsLeafSheetHeight,
   moonlightSettingsLeafSheetHeight,
   moonlightSettingsRouteSpec,
   settingsLeafSheetUsesSystemCloseButton,
@@ -450,6 +452,7 @@ import {
 } from '../services/HaloColorPolicy';
 import { CURRENT_RELEASE_VERSION } from '../services/ReleaseNotesRegistry';
 import { AboutSettingsSheet } from '../components/AboutSettingsSheet';
+import { DiagnosticCaptureSettingsSheet } from '../components/DiagnosticCaptureSettingsSheet';
 import { FeedbackSettingsSheet } from '../components/FeedbackSettingsSheet';
 import {
   VncCertificateInfo,
@@ -10605,6 +10608,8 @@ struct HostListPage {
   }
 
   private settingsLeafSheetHeight(): SheetSize | number {
+    const diagnosticHeight: number = diagnosticLogSettingsLeafSheetHeight(this.settingsLeafSheetMode);
+    if (diagnosticHeight > 0) { return diagnosticHeight; }
     const moonlightHeight: number = moonlightSettingsLeafSheetHeight(this.settingsLeafSheetMode);
     if (moonlightHeight > 0) { return moonlightHeight; }
     const vncHeight: number = vncSettingsLeafSheetHeight(this.settingsLeafSheetMode);
@@ -10640,6 +10645,10 @@ struct HostListPage {
       this.rdpCredentialEditorSheet()
     } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_KEY_VAULT) {
       this.keyVaultSheet()
+    } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_DIAGNOSTIC_LOG) {
+      DiagnosticCaptureSettingsSheet({
+        onClose: (): void => { this.closeSettingsLeafSheet(); }
+      })
     } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_FEEDBACK) {
       FeedbackSettingsSheet({
         onClose: (): void => { this.closeSettingsLeafSheet(); },
@@ -11895,6 +11904,12 @@ struct HostListPage {
         .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_ABOUT) ? 0 : -8 })
         .clip(true)
         .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
+
+        ListItem() {
+          this.settingsActionHeader($r('sys.symbol.doc_plaintext'), '日志',
+            '抓取连接、同步与数据模组的脱敏诊断事件',
+            (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_DIAGNOSTIC_LOG); })
+        }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
 
         ListItem() {
           this.settingsActionHeader($r('sys.symbol.message'), '反馈',
