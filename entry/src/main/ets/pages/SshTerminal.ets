@@ -3181,7 +3181,7 @@ struct SshTerminal {
       this.sshSessionLogQuery, this.hostId.trim());
   }
 
-  private toggleSshSessionLogBookmark(hit: SshSessionLogSearchHitV1): void {
+  private toggleSshSessionLogBookmark(hit: SshSessionLogSearchHitV1, note: string = ''): void {
     if (!this.sshSessionLogReady) { return; }
     const identity: SshSessionLogIdentityV1 = {
       hostId: hit.record.hostId, sessionId: hit.record.sessionId,
@@ -3189,7 +3189,7 @@ struct SshTerminal {
     };
     const ok: boolean = hit.bookmarked
       ? this.sshSessionLogStore.removeBookmark(hit.bookmarkId)
-      : this.sshSessionLogStore.addBookmark(identity, hit.record.id, '', true);
+      : this.sshSessionLogStore.addBookmark(identity, hit.record.id, note.slice(0, 256), true);
     if (!ok) {
       promptAction.showToast({ message: '书签保存失败', duration: 1500 });
       return;
@@ -10082,8 +10082,8 @@ struct SshTerminal {
       onSearchChange: (value: string): void => { this.searchSshSessionLog(value); },
       onToggleEnabled: (enabled: boolean): void => { this.setSshSessionLogEnabled(enabled); },
       onTogglePaused: (paused: boolean): void => { this.setSshSessionLogPaused(paused); },
-      onToggleBookmark: (hit: SshSessionLogSearchHitV1): void => {
-        this.toggleSshSessionLogBookmark(hit);
+      onToggleBookmark: (hit: SshSessionLogSearchHitV1, note: string): void => {
+        this.toggleSshSessionLogBookmark(hit, note);
       },
       onExport: (): void => { void this.exportSshSessionLogToFile(); }
     })

@@ -15,12 +15,13 @@ export struct SshSessionLogSheet {
   @Prop ready: boolean = false;
   @Prop hostLabel: string = '';
   @Prop query: string = '';
+  @State bookmarkNote: string = '';
   onClose: () => void = (): void => {};
   onSearchChange: (value: string) => void = (_value: string): void => {};
   onToggleEnabled: (value: boolean) => void = (_value: boolean): void => {};
   onTogglePaused: (value: boolean) => void = (_value: boolean): void => {};
-  onToggleBookmark: (hit: SshSessionLogSearchHitV1) => void =
-    (_hit: SshSessionLogSearchHitV1): void => {};
+  onToggleBookmark: (hit: SshSessionLogSearchHitV1, note: string) => void =
+    (_hit: SshSessionLogSearchHitV1, _note: string): void => {};
   onExport: () => void = (): void => {};
 
   @Builder
@@ -53,7 +54,10 @@ export struct SshSessionLogSheet {
           }.alignItems(HorizontalAlign.Start).layoutWeight(1)
           Button(hit.bookmarked ? '取消书签' : '书签').height(32).fontSize(10)
             .padding({ left: 8, right: 8 }).backgroundColor('rgba(255,255,255,0.08)')
-            .onClick((): void => { this.onToggleBookmark(hit); })
+            .onClick((): void => {
+              this.onToggleBookmark(hit, this.bookmarkNote.slice(0, 256));
+              this.bookmarkNote = '';
+            })
         }.width('100%').constraintSize({ minHeight: 52 }).padding({ left: 10, right: 7 })
           .borderRadius(8).backgroundColor('rgba(255,255,255,0.035)')
       }, (hit: SshSessionLogSearchHitV1): string => hit.record.id)
@@ -89,6 +93,11 @@ export struct SshSessionLogSheet {
             Text(this.document.chunks.length.toString() + ' 个分块')
               .fontSize(10).fontColor('rgba(242,244,247,0.48)')
           }.width('100%')
+          TextInput({ text: this.bookmarkNote, placeholder: '书签备注（可选）' })
+            .height(38).fontSize(11).fontColor('#F2F4F7')
+            .placeholderColor('rgba(242,244,247,0.40)')
+            .backgroundColor('rgba(255,255,255,0.07)').borderRadius(9)
+            .onChange((value: string): void => { this.bookmarkNote = value.slice(0, 256); })
           this.SettingRow('记录会话日志', '仅本机加密保存；认证、密码和 raw/fullscreen 会自动暂停',
             this.document.settings.enabled, this.onToggleEnabled)
           this.SettingRow('暂停记录', '暂停期间不写入新内容，已有日志仍可搜索',
