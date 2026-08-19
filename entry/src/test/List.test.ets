@@ -159,6 +159,7 @@ import sshProxyRuntimePolicyTest from './SshProxyRuntimePolicy.test';
 import sshForwardingEditorPolicyTest from './SshForwardingEditorPolicy.test';
 import sshModalCoordinatorTest from './SshModalCoordinator.test';
 import sshSessionStoreTest from './SshSessionStore.test';
+import sshWorkspacePolicyTest from './SshWorkspacePolicy.test';
 import hostLocalPersonalizationPolicyTest from './HostLocalPersonalizationPolicy.test';
 import moonlightModelsTest from './MoonlightModels.test';
 import moonlightRecordTest from './MoonlightRecord.test';
@@ -363,6 +364,7 @@ export default function testsuite() {
   sshForwardingEditorPolicyTest();
   sshModalCoordinatorTest();
   sshSessionStoreTest();
+  sshWorkspacePolicyTest();
   hostLocalPersonalizationPolicyTest();
   moonlightModelsTest();
   moonlightRecordTest();

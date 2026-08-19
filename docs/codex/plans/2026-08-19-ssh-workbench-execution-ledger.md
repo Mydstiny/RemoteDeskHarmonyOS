@@ -3,7 +3,7 @@
 > 状态：`ACTIVE_S0` / `NOT_COMPLETE`
 > 权威计划：`docs/codex/plans/2026-08-19-ssh-termius-harmonyos7-api26-workbench-plan.md`
 > 建立日期：2026-08-19
-> 当前工作树：`codex/moonlight-complete-upgrade` / `c07795fc5`
+> 当前工作树：`codex/moonlight-complete-upgrade` / `0c6be42e5`（M0 输入基线）
 > 当前产品基线：HarmonyOS 6.1 / API 23
 > API 26 状态：本机未安装；任何 API 26-only import 均禁止进入产品代码
 
@@ -179,14 +179,17 @@ M0 action 只修改纯快照：创建/重命名工作区、打开占位 tab、�
 | `/private/tmp/ssh-s0-pc-hosts-clear-layout.json` | `0a814ec9a349bddbcbc52d2ed13beb0e078514c17bb21028bc48546d6e524ca2` | PC SSH 主机列表 UI hierarchy |
 | `/private/tmp/ssh-s0-pc-connect.png` | `41ad1b9a765e5b5c99714d56002a233b036e540d8383349a2672797393a7aa51` | 点击现有 SSH 主机后的即时画面；采集过早，仍为主机列表，不能证明会话已建立 |
 | `/private/tmp/ssh-s0-pc-session.png` | `973b0e96470eac04407cf2ea6b1f7a011c05284c00d4f7ac9dab3f042e417422` | 延后画面回到 HostListPage 设置 Sheet，并非 SSH Terminal；当前连接/鉴权结果仍未证明 |
+| `/private/tmp/ssh-current-sheet.png` | `186d9344564b4596ba23bf3e0c6d77d60b55ae4ee1606f2c65a02631634256e7` | 复核确认此前拦截输入的是残留“日志”诊断 Sheet，不是 SSH 鉴权页 |
+| `/private/tmp/ssh-clean-before-click.png` | `c2dc29957281553d124d27c3f576eed8065bbe62f21b5556caa3e63f19e95268` | 关闭残留 Sheet 后的 SSH 主机列表点击前基线 |
+| `/private/tmp/ssh-preflight-visible.png` | `3a6ae29166196285c50f766e0113eba61b436e1046b30c534f0404df51eb4103` | 干净基线点击后的既有 Host Key 预检错误态；测试 endpoint TCP 不可达，未进入 Terminal、未创建会话窗口 |
 
 这些文件位于临时目录，不作为仓库制品。账本保留命令、hash 和观察结果；阶段验收前重新采集最终 SSH 页面证据。
 
 ### 7.3 已证明与未证明
 
-已证明：两个目标可通过 HDC 连接；当前 HAP 在 API 23 Phone/PC 环境可启动；PC 使用系统自由窗口，当前窗口初始区域为 2090×1394 px；PC 可以进入现有 SSH 主机列表。
+已证明：两个目标可通过 HDC 连接；当前 HAP 在 API 23 Phone/PC 环境可启动；PC 使用系统自由窗口，当前窗口初始区域为 2090×1394 px；PC 可以进入现有 SSH 主机列表。关闭残留的诊断日志 Sheet 后，点击 SSH 主机正确进入既有 Host Key 预检；TCP 不可达时保留在 HostList 的错误 Sheet，不会进入 Terminal，也不会创建独立会话窗口。
 
-尚未证明：现有 SSH 主机点击后的认证结果、终端焦点、软/硬键盘、SFTP、转发、错误态、后台/PiP、SSH 独立窗口和多主机并行。一次无凭据点击采集最终回到 HostListPage 设置 Sheet，不能据此推断连接成功或失败；后续必须结合窗口、页面根节点和日志重新采证。没有这些证据前，S0 不能标为完成。
+尚未证明：成功 Host Key 校验后的密码/Key/KBI/MFA 认证、终端焦点、软/硬键盘、SFTP、转发、后台/PiP、SSH 独立窗口和多主机并行。当前唯一测试 endpoint 离线，因此本轮只证明了预检错误路径；不得把主机卡片的延迟探测文案当成 SSH 端口可达证据。没有成功路径证据前，S0 不能标为完成。
 
 ## 8. 工具链事实
 
@@ -201,16 +204,16 @@ M0 action 只修改纯快照：创建/重命名工作区、打开占位 tab、�
 |---|---|---|---|---|---|---|---|---|
 | S0 | 当前 API 23 产品 / `c07795fc5` | 本账本、复用/契约矩阵 | 未单独运行 suite；两项构建门禁覆盖编译 | PASS，exit 0，26.188s | PASS，exit 0，3m 6.999s | 壳与主机列表基线已有；认证后流程待补 | 待一次主审 | ACTIVE |
 | SSH-U0 | API 26 SDK | capability allowlist | 待 SDK | 待 SDK | 待 SDK | 待 API 26 设备 | 待 | BLOCKED_BY_SDK |
-| M0 | S0 契约 | 未开始 | 未开始 | 未开始 | 未开始 | flag-off smoke 未开始 | 未开始 | PENDING |
+| M0 | S0 契约 | 纯 snapshot/reducer、非 owning runtime adapter、capability/layout/style policy、flag-off Shell | 16 个纯策略用例已注册；设备执行未声明 | PASS，exit 0（最终复跑） | PASS，exit 0，7.122s | flag 默认关闭；旧页面未接线，既有 HDC 错误路径不变 | 一次主审 + 一次定向复核完成；5 个生产问题与 2 个测试问题均已修复 | READY_FOR_CHECKPOINT |
 | M1–M9 | 前序阶段 | 未开始 | 未开始 | 未开始 | 未开始 | 未开始 | 未开始 | PENDING |
 
 ## 10. S0 下一步
 
-1. 用 HDC 进入现有 SSH 主机路径，采集认证前、认证成功后、终端焦点、键盘、SFTP 和可控错误态。
-2. 只审本账本和 S0 证据一次；修复后最多复核一次。
-3. S0 通过后，在新 SSH-only 文件中实现 M0 reducer/capability/layout/style policy；默认 flag 关闭。
+1. 为成功认证、终端、SFTP、转发和独立窗口准备可达 SSH endpoint；当前离线 endpoint 只保留错误态证据。
+2. 精确提交 M0 SSH-only 增量；不得暂存本账本列出的并行脏文件。
+3. 进入 M1 搜索桥和 Profile/快捷能力前，继续复用既有 SearchAddon、`SshSessionStore` 与 `SshTerminalTabStore`。
 
-本轮构建命令均于 2026-08-19 在 `c07795fc5` 执行，使用 `source scripts/macos_env.sh` 后的 DevEco Hvigor 环境：
+本轮最终构建命令均于 2026-08-19 在 `0c6be42e5` 加 M0 未提交增量上执行，使用 `source scripts/macos_env.sh` 后的 DevEco Hvigor 环境：
 
 ```sh
 hvigorw --mode module -p module=entry -p product=default default@OhosTestCompileArkTS --analyze=normal --parallel --incremental --no-daemon
