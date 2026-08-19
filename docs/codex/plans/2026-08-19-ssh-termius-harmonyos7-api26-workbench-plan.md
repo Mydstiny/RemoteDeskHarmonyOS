@@ -1,10 +1,12 @@
 # SSH Termius 化：HarmonyOS 7 / API 26 原生工作台完整实施计划
 
-> 状态：`ACTIVE_S0` / `INDEPENDENT_TRACK` / `API26_SDK_PENDING`
+> 状态：`ACTIVE_M7` / `INDEPENDENT_TRACK` / `API26_SDK_PENDING`
 > 类型：SSH 工作台独立实施计划 / 不从属于全应用 UI 计划
 > 编制日期：2026-08-19
 > 编制基线：`348b28083`（`codex/moonlight-complete-upgrade`）
 > 当前系统：HarmonyOS 6.1 / API 23；本机另有 DevEco 内置 API 24 SDK
+
+> 执行指针（2026-08-20）：M0–M6 已在 SSH 范围内落地并通过双 Hvigor 门禁；M7 首个可运行增量已提交为 `66ded2ce6`（目标策略、红色广播 Sheet、16 会话上限、session/generation 重验、认证/raw/fullscreen 排除、危险/多行二次确认、Esc×2 停止及策略测试）。API 26 SDK 仍未安装，因此 API 26-only UI Design Kit/Material 只能保持候选与兼容降级，不能宣称 API 26 完成。
 > 目标系统：HarmonyOS 7 / API 26；官方当前公开资料为 26.0.0 Beta2，本机尚未安装 API 26 SDK
 > 实施分支：尚未创建；必须等当前未闭环任务完成后，按工作区门禁从最新 `main` 创建新的 `codex/<task>` 分支
 > 范围：独立推进 SSH 终端工作台、SFTP 工作流、会话生产力与 HarmonyOS 7 / API 26 原生体验
