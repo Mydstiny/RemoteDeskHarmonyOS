@@ -1,9 +1,9 @@
 # SSH 工作台升级执行账本
 
-> 状态：`ACTIVE_S0` / `NOT_COMPLETE`
+> 状态：`ACTIVE_M8_M9` / `NOT_COMPLETE`
 > 权威计划：`docs/codex/plans/2026-08-19-ssh-termius-harmonyos7-api26-workbench-plan.md`
 > 建立日期：2026-08-19
-> 当前工作树：`codex/moonlight-complete-upgrade` / `0c6be42e5`（M0 输入基线）
+> 当前工作树：`codex/moonlight-complete-upgrade` / `41483b417`（M8 通道边界与 M9 SSH 多窗口交接增量）
 > 当前产品基线：HarmonyOS 6.1 / API 23
 > API 26 状态：本机未安装；任何 API 26-only import 均禁止进入产品代码
 
@@ -19,6 +19,13 @@
 4. 每个阶段最多一次主审和一次针对修复的复核；不因上下文压缩重复派发审查。
 5. 全计划最多创建两个审查智能体；只允许 `gpt-5.6-sol`、`medium`，后续阶段复用相同 reviewer。
 6. HDC 只在沙箱外运行。模拟器用于日常 UI 回归，最终完成仍以用户实机验收为准。
+
+## 2A. 最新执行指针（2026-08-20）
+
+- M8 WebMessagePort 已完成 API 23 兼容双栈的生产边界：版本/会话/generation/端口实例 fence、严格 JSON 类型、超前 ACK 拒绝、UTF-8 字节预算、控制帧优先且线上序号单调；生产 flag 仍默认关闭，ArrayBuffer 批量等待 API 26 SDK/真机证据。
+- M9 SSH 认证后窗口 handoff 已补齐多标签语义：交接只移除已经转移的 host，源页保留其他 SSH 标签并切换到下一个会话；没有剩余标签才返回源页。目标窗口仍复用现有 `RemoteSessionWindowCoordinator`，不改变密码/Key/KBI/MFA/Host Key 流程。
+- 最近 SSH-only 提交：`493601b10`（有序端口投递）、`05fab8f48`（计划指针）、`41483b417`（多标签窗口交接）。精确 `default@OhosTestCompileArkTS` 与 `assembleHap` 均已通过；`ohosTest@OhosTestCompileArkTS` 仍受环境中未注册的 `00306054` 任务阻塞。
+- 仍未宣称完成：API 26 SDK/目标设备、真实可达 SSH endpoint 的成功鉴权与 SFTP/转发/后台/多窗口 E2E、PC 窗口吸附/沉浸状态的实机验收。
 
 ## 2. 当前工作树隔离
 
@@ -205,7 +212,10 @@ M0 action 只修改纯快照：创建/重命名工作区、打开占位 tab、�
 | S0 | 当前 API 23 产品 / `c07795fc5` | 本账本、复用/契约矩阵 | 未单独运行 suite；两项构建门禁覆盖编译 | PASS，exit 0，26.188s | PASS，exit 0，3m 6.999s | 壳与主机列表基线已有；认证后流程待补 | 待一次主审 | ACTIVE |
 | SSH-U0 | API 26 SDK | capability allowlist | 待 SDK | 待 SDK | 待 SDK | 待 API 26 设备 | 待 | BLOCKED_BY_SDK |
 | M0 | S0 契约 | 纯 snapshot/reducer、非 owning runtime adapter、capability/layout/style policy、flag-off Shell | 16 个纯策略用例已注册；设备执行未声明 | PASS，exit 0（最终复跑） | PASS，exit 0，7.122s | flag 默认关闭；旧页面未接线，既有 HDC 错误路径不变 | 一次主审 + 一次定向复核完成；5 个生产问题与 2 个测试问题均已修复 | READY_FOR_CHECKPOINT |
-| M1–M9 | 前序阶段 | 未开始 | 未开始 | 未开始 | 未开始 | 未开始 | 未开始 | PENDING |
+| M1–M6 | M0 契约 | 已落地 | 已注册 | PASS | PASS | API23 smoke | 已复核 | CHECKPOINT |
+| M7 | M6 工作台 | 已落地 | 已注册 | PASS | PASS | 真实主机待接入 | 已复核 | DEVICE_PENDING |
+| M8 | M7 工作台 | 已落地 | 已注册 | PASS | PASS | API26/高负载设备待验 | 已复核 | DEVICE_PENDING |
+| M9 | M8 前置 | SSH handoff 已落地；PC 多窗口/系统窗口状态待验收 | 策略覆盖 | PASS | PASS | PC 真机/多主机待验 | 待最终实机复核 | DEVICE_PENDING |
 
 ## 10. S0 下一步
 
