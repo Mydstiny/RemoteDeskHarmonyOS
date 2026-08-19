@@ -15,6 +15,7 @@ class MemoryLogPersistence implements SshSessionLogPersistencePort {
   chunks: Map<string, string> = new Map<string, string>();
   failIndexWrite: boolean = false;
   failChunkWrite: boolean = false;
+  async prepare(_context: common.Context): Promise<boolean> { return true; }
   readIndex(_context: common.Context): string | null { return this.index; }
   writeIndex(_context: common.Context, value: string): boolean {
     if (this.failIndexWrite) { return false; }

@@ -1,11 +1,10 @@
 import { common } from '@kit.AbilityKit';
-import { preferences } from '@kit.ArkData';
+import { relationalStore } from '@kit.ArkData';
 import { DataCrypto } from '../../DataCrypto';
 import {
   addSshSessionLogBookmark,
   appendSshSessionLogRecord,
   decodeSshSessionLogDocument,
-  defaultSshSessionLogSettings,
   emptySshSessionLogDocument,
   encodeSshSessionLogDocument,
   exportSshSessionLog,
@@ -51,6 +50,8 @@ interface SshSessionLogPendingWriteV1 {
 }
 
 export interface SshSessionLogPersistencePort {
+  /** Open/migrate the local-only persistence before synchronous reads/writes. */
+  prepare(context: common.Context): Promise<boolean>;
   readIndex(context: common.Context): string | null;
   writeIndex(context: common.Context, value: string): boolean;
   readChunk(context: common.Context, chunkId: string): string | null;
@@ -64,55 +65,127 @@ export interface SshSessionLogCryptoPort {
   decrypt(value: string): string;
 }
 
-export const SSH_SESSION_LOG_PREFERENCES_NAME: string = 'RemoteDesktopSshSessionLogPrefs';
-export const SSH_SESSION_LOG_INDEX_KEY: string = 'ssh.session.log.index.v1';
-const SSH_SESSION_LOG_CHUNK_KEY_PREFIX: string = 'ssh.session.log.chunk.v1.';
+export const SSH_SESSION_LOG_DATABASE_NAME: string = 'remotedesktop_ssh_session_log.db';
+export const SSH_SESSION_LOG_DATABASE_VERSION: number = 1;
+export const SSH_SESSION_LOG_INDEX_TABLE: string = 'sshlogindex';
+export const SSH_SESSION_LOG_CHUNK_TABLE: string = 'sshlogchunks';
+const SSH_SESSION_LOG_INDEX_ROW_ID: string = 'root';
 
+/**
+ * Local-only RDB adapter. The index and every log chunk contain ciphertext
+ * only; no distributed table or cloud subscription is registered here.
+ */
 class HarmonySshSessionLogPersistence implements SshSessionLogPersistencePort {
-  private prefs(context: common.Context) {
-    return preferences.getPreferencesSync(context, { name: SSH_SESSION_LOG_PREFERENCES_NAME });
+  private store: relationalStore.RdbStore | null = null;
+  private initialized: boolean = false;
+  private initPromise: Promise<boolean> | null = null;
+
+  async prepare(context: common.Context): Promise<boolean> {
+    if (this.initialized && this.store !== null) { return true; }
+    if (this.initPromise !== null) { return await this.initPromise; }
+    this.initPromise = this.open(context);
+    try {
+      return await this.initPromise;
+    } finally {
+      this.initPromise = null;
+    }
   }
 
-  readIndex(context: common.Context): string | null {
+  private async open(context: common.Context): Promise<boolean> {
     try {
-      const value: Object = this.prefs(context).getSync(SSH_SESSION_LOG_INDEX_KEY, '') as Object;
-      return typeof value === 'string' ? value as string : null;
-    } catch (_err) { return null; }
-  }
-
-  writeIndex(context: common.Context, value: string): boolean {
-    try {
-      const store = this.prefs(context);
-      store.putSync(SSH_SESSION_LOG_INDEX_KEY, value);
-      store.flushSync();
+      const config: relationalStore.StoreConfig = {
+        name: SSH_SESSION_LOG_DATABASE_NAME,
+        securityLevel: relationalStore.SecurityLevel.S1
+      };
+      const store: relationalStore.RdbStore = await relationalStore.getRdbStore(context, config);
+      if (store.version > SSH_SESSION_LOG_DATABASE_VERSION) {
+        try { await store.close(); } catch (_closeError) {}
+        return false;
+      }
+      await store.executeSql(
+        'CREATE TABLE IF NOT EXISTS ' + SSH_SESSION_LOG_INDEX_TABLE + ' (' +
+        'id TEXT PRIMARY KEY, ciphertext TEXT NOT NULL, updatedat INTEGER NOT NULL)');
+      await store.executeSql(
+        'CREATE TABLE IF NOT EXISTS ' + SSH_SESSION_LOG_CHUNK_TABLE + ' (' +
+        'id TEXT PRIMARY KEY, ciphertext TEXT NOT NULL, updatedat INTEGER NOT NULL)');
+      await store.executeSql('CREATE INDEX IF NOT EXISTS idx_sshlogchunks_updated ' +
+        'ON ' + SSH_SESSION_LOG_CHUNK_TABLE + ' (updatedat)');
+      store.version = SSH_SESSION_LOG_DATABASE_VERSION;
+      this.store = store;
+      this.initialized = true;
       return true;
-    } catch (_err) { return false; }
+    } catch (_err) {
+      this.store = null;
+      this.initialized = false;
+      return false;
+    }
   }
 
-  readChunk(context: common.Context, chunkId: string): string | null {
-    try {
-      const value: Object = this.prefs(context).getSync(
-        SSH_SESSION_LOG_CHUNK_KEY_PREFIX + chunkId, '') as Object;
-      return typeof value === 'string' ? value as string : null;
-    } catch (_err) { return null; }
+  readIndex(_context: common.Context): string | null {
+    return this.readValue(SSH_SESSION_LOG_INDEX_TABLE, SSH_SESSION_LOG_INDEX_ROW_ID);
   }
 
-  writeChunk(context: common.Context, chunkId: string, value: string): boolean {
-    try {
-      const store = this.prefs(context);
-      store.putSync(SSH_SESSION_LOG_CHUNK_KEY_PREFIX + chunkId, value);
-      store.flushSync();
-      return true;
-    } catch (_err) { return false; }
+  writeIndex(_context: common.Context, value: string): boolean {
+    return this.writeValue(SSH_SESSION_LOG_INDEX_TABLE, SSH_SESSION_LOG_INDEX_ROW_ID, value);
   }
 
-  removeChunk(context: common.Context, chunkId: string): boolean {
+  readChunk(_context: common.Context, chunkId: string): string | null {
+    return this.readValue(SSH_SESSION_LOG_CHUNK_TABLE, chunkId);
+  }
+
+  writeChunk(_context: common.Context, chunkId: string, value: string): boolean {
+    return this.writeValue(SSH_SESSION_LOG_CHUNK_TABLE, chunkId, value);
+  }
+
+  removeChunk(_context: common.Context, chunkId: string): boolean {
+    return this.removeValue(SSH_SESSION_LOG_CHUNK_TABLE, chunkId);
+  }
+
+  private readValue(table: string, id: string): string | null {
+    if (!this.initialized || this.store === null || id.length === 0) { return null; }
+    let rows: relationalStore.ResultSet | null = null;
     try {
-      const store = this.prefs(context);
-      store.deleteSync(SSH_SESSION_LOG_CHUNK_KEY_PREFIX + chunkId);
-      store.flushSync();
-      return true;
-    } catch (_err) { return false; }
+      const predicates: relationalStore.RdbPredicates = new relationalStore.RdbPredicates(table);
+      predicates.equalTo('id', id);
+      rows = this.store.querySync(predicates, ['ciphertext']);
+      if (!rows.goToFirstRow()) { return null; }
+      const value: string = rows.getString(rows.getColumnIndex('ciphertext'));
+      return value.length > 0 ? value : null;
+    } catch (_err) {
+      return null;
+    } finally {
+      if (rows !== null) {
+        try { rows.close(); } catch (_closeError) {}
+      }
+    }
+  }
+
+  private writeValue(table: string, id: string, value: string): boolean {
+    if (!this.initialized || this.store === null || id.length === 0 || value.length === 0) {
+      return false;
+    }
+    try {
+      const bucket: relationalStore.ValuesBucket = {
+        id,
+        ciphertext: value,
+        updatedat: Date.now()
+      };
+      return this.store.insertSync(table, bucket,
+        relationalStore.ConflictResolution.ON_CONFLICT_REPLACE) !== -1;
+    } catch (_err) {
+      return false;
+    }
+  }
+
+  private removeValue(table: string, id: string): boolean {
+    if (!this.initialized || this.store === null || id.length === 0) { return false; }
+    try {
+      const predicates: relationalStore.RdbPredicates = new relationalStore.RdbPredicates(table);
+      predicates.equalTo('id', id);
+      return this.store.deleteSync(predicates) !== -1;
+    } catch (_err) {
+      return false;
+    }
   }
 }
 
@@ -210,6 +283,10 @@ export class SshSessionLogStore {
   ) {
     this.persistence = persistence;
     this.crypto = crypto;
+  }
+
+  async prepare(context: common.Context): Promise<boolean> {
+    return await this.persistence.prepare(context);
   }
 
   init(context: common.Context): boolean {

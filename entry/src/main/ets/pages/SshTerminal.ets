@@ -8001,6 +8001,7 @@ struct SshTerminal {
       this.sshWorkbenchEnabled = this.sshWorkspaceCapabilityStore.load(sshContext);
       this.sshProductivityReady = this.sshProductivityStore.init(sshContext);
       this.refreshSshProductivityDocument();
+      await this.sshSessionLogStore.prepare(sshContext);
       this.sshSessionLogReady = this.sshSessionLogStore.init(sshContext);
       this.refreshSshSessionLogDocument();
       const appearance: SshTerminalAppearance = this.sshSettings.init(sshContext);
