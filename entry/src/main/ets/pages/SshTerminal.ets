@@ -11243,6 +11243,13 @@ struct SshTerminal {
     this.updateForwardingSnapshot();
     const decision: SshModalDecision = this.forwardingModalCoordinator.requestOpen();
     if (!decision.mount) { return; }
+    // The terminal owns a hidden ArkUI input anchor for xterm/IME delivery.
+    // Suspend that focus loop while the forwarding editor is mounted; on
+    // desktop/API 23-26 it otherwise steals focus back from nested TextInput
+    // fields immediately after a pointer click.
+    this.terminalFocusMode = false;
+    this.softKeyboardRequested = false;
+    this.clearTerminalInputFocusRetry();
     this.forwardingSheetMountToken = decision.token;
     this.showForwardingSheet = true;
   }
@@ -11252,6 +11259,11 @@ struct SshTerminal {
     if (!decision.dismiss) { return; }
     this.clearForwardingRefreshTimer();
     this.showForwardingSheet = false;
+    setTimeout((): void => {
+      if (!this.terminalClosing && !this.sshModalOwnsKeyboard()) {
+        this.focusKeyboard(false);
+      }
+    }, 32);
   }
 
   private onForwardingSheetAppear(token: number): void {

@@ -71,6 +71,15 @@ export struct SshForwardingSheet {
     };
   }
 
+  private fieldFocusId(title: string): string {
+    if (title === '监听地址') { return 'sshForwardingBindHost'; }
+    if (title === '监听端口') { return 'sshForwardingBindPort'; }
+    if (title === '目标地址') { return 'sshForwardingTargetHost'; }
+    if (title === '目标端口') { return 'sshForwardingTargetPort'; }
+    if (title === '最大连接数') { return 'sshForwardingMaxConnections'; }
+    return 'sshForwardingMaxBytes';
+  }
+
   private mutateDraft(update: (draft: SshForwardingDraft) => void): void {
     const next: SshForwardingDraft = this.cloneDraft(this.draft);
     update(next);
@@ -256,10 +265,23 @@ export struct SshForwardingSheet {
     Column({ space: 5 }) {
       Text(title).fontSize(12).fontColor(this.pal().text2)
       TextInput({ text: value, placeholder: hint })
+        .id(this.fieldFocusId(title))
         .width('100%').height(44).fontSize(14).fontColor(this.pal().text)
         .placeholderColor(this.pal().text3).backgroundColor(this.pal().surface)
         .borderRadius(10).padding({ left: 12, right: 12 }).enabled(!disabled)
-        .opacity(disabled ? 0.58 : 1).onChange(change)
+        // Desktop sheets do not implicitly grant touch focus to TextInput on
+        // API 23/26. Keep every forwarding field keyboard-focusable so a
+        // pointer click cannot fall through to the terminal surface.
+        .focusable(!disabled).focusOnTouch(!disabled).enableKeyboardOnFocus(!disabled)
+        .opacity(disabled ? 0.58 : 1)
+        .onClick((): void => {
+          if (disabled) { return; }
+          const focusId: string = this.fieldFocusId(title);
+          setTimeout((): void => {
+            try { focusControl.requestFocus(focusId); } catch (_err) {}
+          }, 32);
+        })
+        .onChange(change)
     }.width('100%').alignItems(HorizontalAlign.Start)
   }
 
