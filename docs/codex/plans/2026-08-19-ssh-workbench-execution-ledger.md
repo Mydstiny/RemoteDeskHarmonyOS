@@ -27,8 +27,10 @@
 - M9 PC 响应式复验已修复 SSH 主机添加流固定 900vp 导致的 Sheet 溢出：`2d1f06d6` 改为跟随父 Sheet 宽度，PC 模拟器布局树确认代理选项和“下一步”均在可视区域内。
 - `9d0a29497` 补齐独立 SSH 窗口的系统前台恢复：目标 Ability `onForeground` 通过现有窗口协调器提升目标窗口，避免回到桌面/任务栏后焦点落回主窗口。精确 `default@OhosTestCompileArkTS` 与 `assembleHap` 均已通过；`ohosTest@OhosTestCompileArkTS` 仍受环境中未注册的 `00306054` 任务阻塞。
 - `139a97d3` 将 native recovery 的 generation 变化即时传递到 page/tab/callback fence：旧 callback 只触发受保护的下一轮同步，不再把新 generation 的输出永久丢入旧 detached 路径；TabStore generation 替换的 startup fence 也有回归测试。双构建通过，API23 PC 模拟器重新安装后 EntryAbility 启动 smoke 通过。
-- 2026-08-20 在 PC/API23 模拟器完成一次真实回环互操作：产品 ED25519 key + Host Key 指纹确认后才创建 `RemoteSessionAbility`；终端输入/输出、SFTP 47 项列表、双端点 SFTP 面板、关闭 SFTP 后终端继续输入、SSH 转发面板打开/关闭均已采集。HDC 任务栏/WMS 证据显示主窗口与两个独立 SSH 窗口可并存，目标窗口获得焦点并能被任务栏切回；测试 sshd 与 HDC 映射已清理。
-- 仍未宣称完成：API 26 SDK/目标设备、物理设备验收、真实 SFTP 文件传输/取消/重试、实际转发规则建立后的数据流、后台/PiP、窗口吸附/沉浸状态以及多主机/全协议矩阵。
+- `d00511e55` 修复 PC/API23 独立窗口内转发 Sheet 的输入焦点竞争：窗口出现后终端隐藏焦点锚点不再抢占监听地址/端口输入框；SSH-only 双构建与 HDC 安装 smoke 已通过。
+- 2026-08-20 在 PC/API23 模拟器完成一次真实回环互操作：产品 ED25519 key + Host Key 指纹确认后才创建 `RemoteSessionAbility`；sshd 日志确认两次 `Accepted publickey`；终端输入/输出、SFTP 47 项列表、远程复制、本地授权后上传、本地下载到系统文件选择器、既有目标文件拒绝、关闭 SFTP 后终端继续输入均已采集。SSH 转发规则实际启动后，通过 HDC `rport` 将主机 payload 送入监听器，UI 流量从 `0 B` 增长到 `29/35 B`，停止后状态回到已停止；测试 sshd 与 HDC 映射已清理。
+- 同一回归还验证了窗口生命周期：鉴权前仍停留在 HostList，鉴权成功后才出现独立窗口；终端 `echo SSH_WINDOW_OK` 回显正常；系统标题栏最大化、F11 进入/退出沉浸全屏均恢复稳定；标题栏拖到左边缘由 HarmonyOS WMS 进入左右分屏。此前 HDC 任务栏/WMS 证据已证明主窗口与两个独立 SSH 窗口可并存并可切换焦点。
+- 仍未宣称完成：API 26 SDK/目标设备、物理设备验收、SFTP 暂停/恢复/取消/重试全矩阵、后台/PiP、API26 下的沉浸/分屏差异、密码/KBI/MFA 成功/取消/失败全矩阵以及多主机/全协议并行矩阵。
 
 ## 2. 当前工作树隔离
 
@@ -201,17 +203,29 @@ M0 action 只修改纯快照：创建/重命名工作区、打开占位 tab、�
 | `/private/tmp/ssh-sftp-remote-right.jpeg` | `1f014347c902a657e6a7ed3b7709bb8bc378bed9fb1a9d03c152df786d24384f` | 双端点 SFTP 视图：两侧均加载 47 项远程目录 |
 | `/private/tmp/ssh-sftp-close-terminal.jpeg` | `a45d9d07c0613600458bd14d3da7ffc89bdf41b1f8b48b576b53c510738457a1` | 关闭 SFTP 后独立窗口中的终端仍保持连接 |
 | `/private/tmp/ssh-sftp-session.jpeg` | `15fe42298d977bf1012d161e54aa23adc1bf9cecb141936e0cd05910bf8b0a10` | 关闭 SFTP 后输入 `echo SSH_SFTP_SESSION_OK` 并收到回显，证明会话保活 |
-| `/private/tmp/ssh-forward-surface.jpeg` | `97ed1fa4a86a454d4d98bdf4acebea4ec878b54a9ca4df5ddb44669404f84e4f` | SSH 转发面板可打开/关闭；本轮未创建转发规则，未宣称数据流成功 |
+| `/private/tmp/ssh-forward-surface.jpeg` | `97ed1fa4a86a454d4d98bdf4acebea4ec878b54a9ca4df5ddb44669404f84e4f` | SSH 转发面板可打开/关闭的早期基线；后续 `ssh-forward-data.XXXXXX.json` 已补实际规则数据流 |
 | `/private/tmp/ssh-sftp-remote-right-layout.json` | `2ed54b8eda8b2fc20562921630901867ba3f486dbf5a0b530f73672dcf442e9a` | 双端点 SFTP 布局树，记录左右 pane、当前 host 和 47 项状态 |
 | `/private/tmp/ssh-recovery-smoke.jpeg` | `5b8a0f6aa7e7466c3cb4c16d70193543c6ad7f0a72f2af1f165c843d90e7878a` | `139a97d3` 安装后 PC/API23 EntryAbility 启动 smoke，主机列表正常显示 |
+| `/private/tmp/ssh-pc-auth-window.jpeg` | `d18b97e1cd896402fe89b9cc7124c02fbf455c7ac8a8d3e8f6542d193e56502d` | `rport` 回环后 Host Key 更新确认 + ED25519 公钥鉴权成功；独立窗口前台显示，源 HostList 仍在后方 |
+| `/private/tmp/ssh-pc-window-command.jpeg` | `e7bdcb76f1c544f2602cd0ada8dbadf8ba9e3a561c68fe43eeaa89375eb68609` | 独立窗口终端输入 `echo SSH_WINDOW_OK` 并收到回显 |
+| `/private/tmp/ssh-pc-window-max.jpeg` | `33a9f2c16f2a69811226b0b27db3ff9d0c770f05c9930466e8eb9fc61b33e5c5` | 标题栏最大化后的 PC/API23 窗口：终端铺满显示区，系统标题栏仍可见 |
+| `/private/tmp/ssh-pc-window-f11.json` | `c37c09eddceff4b06c6d89207e1b80226c92608bb7c6d85aecb9c187edb2b7ff` | F11 进入沉浸全屏后 `ssh-terminal-pane=[0,17][3120,2080]`，标题栏/停靠区隐藏 |
+| `/private/tmp/ssh-pc-window-f11-exit.json` | `a9b3664e5b923fe85dc3430cdf759fa93fcbb0bb4daeaac1429c66f9fdaf3383` | 第二次 F11 退出沉浸全屏并恢复原自由窗口 `[76,131][1368,1049]` |
+| `/private/tmp/ssh-pc-window-drag-left.jpeg` | `a39e49f2bb9e05677752521e2484e69ef0912a416c8ca0ce115ae8b2676fccdb` | 标题栏拖至左边缘后由 HarmonyOS WMS 进入左右分屏，右侧为系统“没有可用窗口”占位 |
+| `/private/tmp/ssh-forward-data.XXXXXX.json` | `a2bb3754ad1139f59314015a8e668264ea92a0179000e0888391631189c00d35` | 转发规则实际监听，UI 显示 `监听中`、`流量 29 B`；主机侧 payload 与监听器字节数一致 |
+| `/private/tmp/ssh-forward-listening.XXXXXX.json` | `8d96927f55688a5293c36b4d74cbeb053f545c2523be71984cd229bcf6955202` | 转发启动后的零流量基线，UI 显示 `监听中`、`流量 0 B` |
+| `/private/tmp/ssh-sftp-remote-copy-downloads.jpeg` | `bf37904ece7e3a2c0462b4696ee5954aa074e9a4ed9eac2f73e323f0a9f9f121` | 远程端点复制到 `Downloads` 后的 SFTP 面板 |
+| `/private/tmp/ssh-sftp-upload-local-done.json` | `e244e2816d4bd70c29efd8dba3849ae8e71ad1157a33859ae3650d2ef8149a04` | 本机授权后选择 `Loopback-SSH-Key.pub` 上传，UI 显示 `SFTP 批次已完成` |
+| `/private/tmp/ssh-sftp-download-local-saved.json` | `bd901edd13ba6b7dc8e33bdf1c22ad89f94d2dcf243fb2423d822a8483a72a75` | 远程文件下载到系统文件选择器并完成批次（文件存在性另由 picker verify JSON 检查） |
+| `/private/tmp/ssh-sftp-download-verified-final2.json` | `bfea09c61acf09a28403bddb7137d43196e7723733c3b8c21a21084e4aa36386` | 重复下载到非空目标的拒绝态，UI 显示 `失败 · 26 B / 26 B`，用于覆盖冲突保护 |
 
 这些文件位于临时目录，不作为仓库制品。账本保留命令、hash 和观察结果；阶段验收前重新采集最终 SSH 页面证据。
 
 ### 7.3 已证明与未证明
 
-已证明：两个目标可通过 HDC 连接；当前 HAP 在 API 23 Phone/PC 环境可启动；PC 使用系统自由窗口。关闭残留的诊断日志 Sheet 后，点击 SSH 主机正确进入既有 Host Key 预检；TCP 不可达时保留在 HostList 的错误 Sheet，不会进入 Terminal，也不会创建独立会话窗口。`2d1f06d6` 后，PC SSH 新主机 Sheet 的布局树边界与截图均证明代理选项和下一步操作不再被固定宽度截断。2026-08-20 的回环 endpoint 进一步证明：产品 ED25519 key/指纹确认后才创建 SSH 独立窗口；终端命令可输入并回显；SFTP 可加载单端点和双端点目录（各 47 项）；关闭 SFTP 后终端仍能继续执行命令；转发面板可打开/关闭；WMS/任务栏可在主窗口与独立 SSH 窗口间切换焦点。
+已证明：两个目标可通过 HDC 连接；当前 HAP 在 API 23 Phone/PC 环境可启动；PC 使用系统自由窗口。关闭残留的诊断日志 Sheet 后，点击 SSH 主机正确进入既有 Host Key 预检；TCP 不可达时保留在 HostList 的错误 Sheet，不会进入 Terminal，也不会创建独立会话窗口。`2d1f06d6` 后，PC SSH 新主机 Sheet 的布局树边界与截图均证明代理选项和下一步操作不再被固定宽度截断。2026-08-20 的回环 endpoint 进一步证明：产品 ED25519 key/指纹确认后才创建 SSH 独立窗口；sshd 日志确认公钥鉴权成功；终端命令可输入并回显；SFTP 可加载单端点和双端点目录、远程复制、本地授权上传、本地下载及非空目标拒绝；关闭 SFTP 后终端仍能继续执行命令；转发规则实际建立后可接收主机 payload 并更新流量；WMS/任务栏可在主窗口与独立 SSH 窗口间切换焦点；标题栏最大化、F11 沉浸全屏进出、左边缘系统分屏均已采证。
 
-尚未证明：密码/KBI/MFA 的成功/取消/失败全矩阵、软/硬键盘、真实 SFTP 文件上传/下载/暂停/恢复/重试、转发规则建立后的数据流、后台/PiP、窗口吸附/沉浸状态、API26 设备和多主机/全协议并行。回环 sshd 仅监听 127.0.0.1 且已在采证后关闭；不得把本轮“面板打开”写成转发数据流已完成。没有物理/API26 与上述数据流证据前，M7–M9 仍保持 DEVICE_PENDING，整个 SSH 计划不能标为完成。
+尚未证明：密码/KBI/MFA 的成功/取消/失败全矩阵、软/硬键盘、SFTP 暂停/恢复/取消/重试全矩阵、后台/PiP、API26 设备和多主机/全协议并行。回环 sshd 仅监听 127.0.0.1 且已在采证后关闭；HDC `rport` 已移除。没有物理/API26 与上述剩余矩阵证据前，M7–M9 仍保持 DEVICE_PENDING，整个 SSH 计划不能标为完成。
 
 ## 8. 工具链事实
 
@@ -230,11 +244,11 @@ M0 action 只修改纯快照：创建/重命名工作区、打开占位 tab、�
 | M1–M6 | M0 契约 | 已落地 | 已注册 | PASS | PASS | API23 smoke | 已复核 | CHECKPOINT |
 | M7 | M6 工作台 | 已落地 | 已注册 | PASS | PASS | 真实主机待接入 | 已复核 | DEVICE_PENDING |
 | M8 | M7 工作台 | 已落地 | 已注册 | PASS | PASS | API26/高负载设备待验 | 已复核 | DEVICE_PENDING |
-| M9 | M8 前置 | SSH handoff 与独立窗口前台恢复已落地 | 策略覆盖 | PASS | PASS | PC/API23 模拟器已证明鉴权后开窗、SFTP/终端保活、任务栏/WMS 多窗口；物理/API26/多主机待验 | 待最终实机复核 | DEVICE_PENDING |
+| M9 | M8 前置 | SSH handoff、独立窗口前台恢复、沉浸/分屏回归已落地 | 策略覆盖 | PASS | PASS | PC/API23 模拟器已证明鉴权后开窗、SFTP/终端保活、转发 payload、F11 沉浸进出、左边缘 WMS 分屏、任务栏/WMS 多窗口；物理/API26/剩余协议矩阵待验 | 待最终实机复核 | DEVICE_PENDING |
 
 ## 10. S0 下一步
 
-1. 为真实 SFTP 文件传输、转发规则数据流、后台/PiP 和多主机并行准备可达 SSH endpoint；本轮回环服务只证明鉴权、终端、SFTP 浏览和窗口保活。
+1. 在 API26 SDK/目标设备可用后，复跑同一回环账本并补密码/KBI/MFA、SFTP 暂停/恢复/取消/重试、后台/PiP 和多主机/全协议并行矩阵。
 2. 精确提交 M0 SSH-only 增量；不得暂存本账本列出的并行脏文件。
 3. 进入 M1 搜索桥和 Profile/快捷能力前，继续复用既有 SearchAddon、`SshSessionStore` 与 `SshTerminalTabStore`。
 
