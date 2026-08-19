@@ -9193,14 +9193,24 @@ struct SshTerminal {
       const generation: number = this.loader.getSshTerminalDiagnostics(
         this.sessionId).sessionGeneration;
       if (generation > 0) {
-        const recoveryKey: string = this.sshProductivitySessionKey(
-          this.hostId, this.sessionId, generation);
-        if (generation !== this.sshSessionGeneration) {
-          this.discardSshProductivityHostRuntime(this.hostId, recoveryKey);
-          this.sshTabStore.clearStartupExecutionKeysForHost(this.hostId, recoveryKey);
+        const previousGeneration: number = this.sshSessionGeneration;
+        const generationRebound: boolean = previousGeneration > 0 &&
+          previousGeneration !== generation;
+        if (generationRebound) {
+          // Treat same-session transport recovery as a new callback owner.
+          // Clear the old callback before publishing the new tab identity so
+          // no late native chunk can cross the generation fence.
+          this.loader.setOnDataCallback(this.sessionId, null);
+          this.discardSshProductivityHostRuntime(this.hostId);
+          this.sshTabStore.clearStartupExecutionKeysForHost(this.hostId);
         }
         this.sshSessionGeneration = generation;
         this.sshTabStore.update(this.hostId, 'connected', this.sessionId, '', generation);
+        if (generationRebound && this.isSshBindingActive(
+          this.pageGeneration, this.sshBindingGeneration, this.hostId)) {
+          this.bindSshDataCallback(this.pageGeneration, this.sshBindingGeneration,
+            this.hostId, this.sessionId, generation);
+        }
         this.bindForwardingSession(this.hostId, this.sessionId, generation);
         this.attachSftpSessionOwner({
           hostId: this.hostId,
@@ -9549,36 +9559,8 @@ struct SshTerminal {
       this.sessionId = -1;
       return false;
     }
-    // 推送式数据接收: C++ reader 线程读到数据 → TSFN → 这里
-    let dataChunkCount: number = 0;
-    this.loader.setOnDataCallback(connectedSessionId, (data: ArrayBuffer): void => {
-      if (!data || data.byteLength === 0 || !this.isPageGenerationActive(pageGeneration) ||
-        this.terminalClosing) { return; }
-      const nativeCallbackGeneration: number = this.loader.getSshTerminalDiagnostics(
-        connectedSessionId).sessionGeneration;
-      const effectiveSessionGeneration: number = nativeCallbackGeneration > 0
-        ? nativeCallbackGeneration : sessionGeneration;
-      const currentBinding: boolean = this.isSshBindingActive(
-        pageGeneration, bindingGeneration, bindingHostId) &&
-        this.sessionId === connectedSessionId &&
-        this.sshSessionGeneration === effectiveSessionGeneration &&
-        this.sshTabStore.sessionId(bindingHostId) === connectedSessionId &&
-        this.sshTabStore.sessionGeneration(bindingHostId) === effectiveSessionGeneration;
-      dataChunkCount++;
-      if (dataChunkCount <= 5 || dataChunkCount % 100 === 0) {
-        hilog.info(0x0000, 'SshTerminal',
-          'SSH data #' + dataChunkCount.toString() + ' len=' + data.byteLength.toString() +
-          ' host=' + bindingHostId + ' active=' + (currentBinding ? '1' : '0') +
-          ' seq=' + (this.termOutputSequence + 1).toString());
-      }
-      if (currentBinding) {
-        this.enqueueTerminalOutput(bindingHostId, connectedSessionId,
-          effectiveSessionGeneration, data);
-      } else {
-        this.enqueueDetachedTerminalOutput(bindingHostId, connectedSessionId,
-          effectiveSessionGeneration, data);
-      }
-    });
+    this.bindSshDataCallback(pageGeneration, bindingGeneration, bindingHostId,
+      connectedSessionId, sessionGeneration);
     if (!this.loader.resumeSshSession(connectedSessionId)) {
       this.loader.disconnectSshSession(connectedSessionId);
       this.sessionId = -1;
@@ -9661,6 +9643,50 @@ struct SshTerminal {
       }, 100);
     }
     return true;
+  }
+
+  /**
+   * Install a generation-bound data callback. Native recovery can advance the
+   * generation while keeping the session id; an old callback must never
+   * reinterpret that output as the new session. The recovery path clears the
+   * old callback and invokes this method again with the new identity.
+   */
+  private bindSshDataCallback(pageGeneration: number, bindingGeneration: number,
+    bindingHostId: string, connectedSessionId: number, sessionGeneration: number): void {
+    let dataChunkCount: number = 0;
+    this.loader.setOnDataCallback(connectedSessionId, (data: ArrayBuffer): void => {
+      if (!data || data.byteLength === 0 || !this.isPageGenerationActive(pageGeneration) ||
+        this.terminalClosing) { return; }
+      const nativeCallbackGeneration: number = this.loader.getSshTerminalDiagnostics(
+        connectedSessionId).sessionGeneration;
+      // The callback is fenced to the generation captured at installation. A
+      // recovery callback is installed explicitly after the page/tab records
+      // commit the new generation; never route a late old callback through a
+      // newly published tab identity.
+      if (nativeCallbackGeneration > 0 && nativeCallbackGeneration !== sessionGeneration) {
+        return;
+      }
+      const currentBinding: boolean = this.isSshBindingActive(
+        pageGeneration, bindingGeneration, bindingHostId) &&
+        this.sessionId === connectedSessionId &&
+        this.sshSessionGeneration === sessionGeneration &&
+        this.sshTabStore.sessionId(bindingHostId) === connectedSessionId &&
+        this.sshTabStore.sessionGeneration(bindingHostId) === sessionGeneration;
+      dataChunkCount++;
+      if (dataChunkCount <= 5 || dataChunkCount % 100 === 0) {
+        hilog.info(0x0000, 'SshTerminal',
+          'SSH data #' + dataChunkCount.toString() + ' len=' + data.byteLength.toString() +
+          ' host=' + bindingHostId + ' active=' + (currentBinding ? '1' : '0') +
+          ' seq=' + (this.termOutputSequence + 1).toString());
+      }
+      if (currentBinding) {
+        this.enqueueTerminalOutput(bindingHostId, connectedSessionId,
+          sessionGeneration, data);
+      } else {
+        this.enqueueDetachedTerminalOutput(bindingHostId, connectedSessionId,
+          sessionGeneration, data);
+      }
+    });
   }
 
   private makeSshPipInfo(status: string = '已连接'): SshTerminalPipInfo {
