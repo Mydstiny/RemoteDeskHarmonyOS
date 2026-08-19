@@ -20,8 +20,12 @@ import { preferences } from '@kit.ArkData';
 import { KeyVaultService } from '../services/KeyVaultService';
 import { HostSyncService } from '../services/HostSyncService';
 import { DataCrypto } from '../services/DataCrypto';
-import { CloudSyncCoordinator } from '../services/CloudSyncCoordinator';
+import {
+  CloudSyncCoordinator,
+  CloudSyncOperationResult
+} from '../services/CloudSyncCoordinator';
 import { CloudStore } from '../services/CloudStore';
+import { AccountSessionLease } from '../services/AccountScopePolicy';
 import { AccountSessionCoordinator } from '../services/AccountSessionCoordinator';
 import { BreakpointUtil } from '../utils/BreakpointUtil';
 import { ExtensionLoader } from '../services/ExtensionLoader';
@@ -29,6 +33,7 @@ import { RemoteSessionBackgroundTaskService } from '../services/RemoteSessionBac
 import { RemoteSessionPipService } from '../services/RemoteSessionPipService';
 import { SshTerminalBackgroundTaskService } from '../services/SshTerminalBackgroundTaskService';
 import { SshTerminalPipService } from '../services/SshTerminalPipService';
+import { RemoteSessionWindowCoordinator } from '../services/RemoteSessionWindowCoordinator';
 import {
   DEFAULT_DARK_HALO_COLOR,
   DEFAULT_LIGHT_HALO_COLOR,
@@ -59,6 +64,49 @@ export default class EntryAbility extends UIAbility {
   private windowStage: window.WindowStage | null = null;
   private avoidAreaCallback: ((data: window.AvoidAreaOptions) => void) | null = null;
   private shutdownPromise: Promise<void> | null = null;
+  private foregroundCloudResumePromise: Promise<void> | null = null;
+
+  /**
+   * Foreground recovery is Ability-owned so a pending account/cloud barrier
+   * cannot depend on the user revisiting HostListPage. Re-register the fenced
+   * core baseline first; CloudStore may then recover an explicitly selected
+   * optional Moonlight table. A failed optional registration leaves
+   * cloudAvailable true only when the legacy eight-table baseline was safely
+   * re-asserted, so the following pull remains backward compatible.
+   */
+  private resumeCloudAfterForeground(): void {
+    if (this.foregroundCloudResumePromise !== null) { return; }
+    const cloud: CloudStore = CloudStore.getInstance();
+    const lease: AccountSessionLease | null = cloud.currentAccountLease();
+    if (lease === null || !cloud.isLeaseCurrent(lease)) { return; }
+    const operation: Promise<void> = (async (): Promise<void> => {
+      const coreReady: boolean = await cloud.retryCloudRegistration();
+      if (!coreReady || !cloud.isCloudAvailable() ||
+          !cloud.isLeaseCurrent(lease)) {
+        return;
+      }
+      const result: CloudSyncOperationResult =
+        await CloudSyncCoordinator.getInstance().requestForegroundPull();
+      if (!cloud.isLeaseCurrent(lease)) { return; }
+      hilog.info(DOMAIN, TAG,
+        'foreground cloud recovery ok=%{public}s tables=%{public}s failed=%{public}s',
+        result.ok.toString(), result.tables.join(','),
+        result.failedTables.join(','));
+    })();
+    this.foregroundCloudResumePromise = operation;
+    void operation.then((): void => {
+      if (this.foregroundCloudResumePromise === operation) {
+        this.foregroundCloudResumePromise = null;
+      }
+    }, (error: Error): void => {
+      if (this.foregroundCloudResumePromise === operation) {
+        this.foregroundCloudResumePromise = null;
+      }
+      hilog.warn(DOMAIN, TAG,
+        'foreground cloud recovery failed: %{public}s',
+        JSON.stringify(error));
+    });
+  }
 
   private disconnectRemoteSessions(source: string): void {
     try {
@@ -78,6 +126,17 @@ export default class EntryAbility extends UIAbility {
    * two native teardown requests for the same renderer.
    */
   private requestShutdown(source: string): void {
+    const sessionWindows: RemoteSessionWindowCoordinator =
+      RemoteSessionWindowCoordinator.getInstance();
+    if (sessionWindows.hasOpenOrPendingWindows()) {
+      // EntryAbility owns the host library only. Independent multiton session
+      // abilities own their native connections and must survive closing the
+      // library window.
+      hilog.info(DOMAIN, TAG,
+        'main-window shutdown skipped; independent sessions=%{public}d source=%{public}s',
+        sessionWindows.activeWindowCount(), source);
+      return;
+    }
     AppStorage.setOrCreate<boolean>(BG_FLAG_KEY, false);
     if (this.shutdownPromise !== null) {
       hilog.info(DOMAIN, TAG, 'shutdown already in progress source=%{public}s', source);
@@ -322,6 +381,7 @@ export default class EntryAbility extends UIAbility {
       hilog.warn(DOMAIN, TAG, 'SSH background task stop on foreground failed: %{public}s',
         JSON.stringify(err));
     }
+    this.resumeCloudAfterForeground();
     hilog.info(DOMAIN, TAG, 'Ability onForeground');
   }
 

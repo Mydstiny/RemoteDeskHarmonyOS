@@ -57,14 +57,16 @@ export default function cloudSensitiveTransferPolicyTest(): void {
     it('pauses_remote_secret_paths_for_disable_and_all_vnc_for_reset',
       0, (): void => {
         const selected: string[] = [
-          'usersettings', 'remotehosts', 'sshkeys', 'vncrecordv2'
+          'usersettings', 'remotehosts', 'sshkeys', 'vncrecordv2',
+          'moonlightrecordv1'
         ];
         expect(cloudSelectionAfterLocalCryptoTransition(
           selected, false).join(','))
-          .assertEqual('usersettings,vncrecord');
+          .assertEqual(
+            'usersettings,vncrecordv2,moonlightrecordv1');
         expect(cloudSelectionAfterLocalCryptoTransition(
           selected, true).join(','))
-          .assertEqual('usersettings');
+          .assertEqual('usersettings,moonlightrecordv1');
         expect(vncSelectionAfterLocalCryptoTransition(
           ['hosts', 'secrets', 'trust'], false).join(','))
           .assertEqual('hosts,trust');

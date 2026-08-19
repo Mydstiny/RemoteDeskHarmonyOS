@@ -267,6 +267,17 @@ export default function cloudSyncLifecyclePolicyTest(): void {
       expect(cloudSyncAutomaticUploadAllowed(recovered)).assertFalse();
     });
 
+    it('accepts_the_no_selection_failure_kind_from_a_previous_process',
+      0, (): void => {
+        const persisted: CloudSyncDurableState =
+          newCloudSyncDurableState(binding(), true, true, 1);
+        persisted.lastFailureKind = 'no_selection';
+        const recovered: CloudSyncDurableState = recoverCloudSyncDurableState(
+          persisted, binding(), true, true, 2);
+        expect(recovered.phase).assertEqual('ready');
+        expect(recovered.lastFailureKind).assertEqual('no_selection');
+      });
+
     it('keeps_a_json_corruption_sentinel_in_recovery_across_restart', 0, (): void => {
       const corrupted: CloudSyncDurableState =
         corruptedCloudSyncDurableState(binding(), true, 1);

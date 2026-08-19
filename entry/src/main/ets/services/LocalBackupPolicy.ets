@@ -1038,18 +1038,75 @@ export function validateLocalBackupSnapshot(
   extensions: Array<Record<string, string>> = [],
   localTables?: Record<string, Array<Record<string, string>>>
 ): boolean {
+  return validateSnapshotTables(tables, CLOUD_SYNC_TABLES) &&
+    validateLocalExtensions(extensions, tables) &&
+    (localTables === undefined ||
+      validateCompleteSnapshotLocalTables(localTables));
+}
+
+/**
+ * A persisted cloud-download before-image is not a portable backup. Current
+ * builds capture the optional Moonlight physical table as well as the eight
+ * long-lived cloud tables, while an in-flight checkpoint written by an older
+ * build contains only those original eight. Both inventories are valid during
+ * an upgrade; every other partial/superset shape fails closed.
+ */
+export function validateCloudDownloadRollbackSnapshot(
+  tables: Record<string, Array<Record<string, string>>>,
+  extensions: Array<Record<string, string>> = [],
+  localTables?: Record<string, Array<Record<string, string>>>
+): boolean {
   const names: string[] = Object.keys(tables);
-  if (names.length !== CLOUD_SYNC_TABLES.length) { return false; }
-  for (let i = 0; i < CLOUD_SYNC_TABLES.length; i++) {
-    const table: string = CLOUD_SYNC_TABLES[i];
+  const inventory: string[] = names.length ===
+    LOCAL_BACKUP_PORTABLE_TABLES.length
+    ? LOCAL_BACKUP_PORTABLE_TABLES : CLOUD_SYNC_TABLES;
+  if (!validateSnapshotTables(tables, inventory) ||
+    !validateLocalExtensions(extensions, tables)) {
+    return false;
+  }
+  return localTables === undefined ||
+    validateCompleteSnapshotLocalTables(localTables);
+}
+
+function validateSnapshotTables(
+  tables: Record<string, Array<Record<string, string>>>,
+  inventory: string[]
+): boolean {
+  const names: string[] = Object.keys(tables);
+  if (names.length !== inventory.length) { return false; }
+  for (let i = 0; i < inventory.length; i++) {
+    const table: string = inventory[i];
     const rows: Array<Record<string, string>> = tables[table];
     if (!Array.isArray(rows) || names.indexOf(table) < 0 ||
       !backupRowsContainOnlyKnownColumns(table, rows) || !validateLocalBackupRows(table, rows)) {
       return false;
     }
   }
-  return validateLocalExtensions(extensions, tables) &&
-    (localTables === undefined || validateLocalTables(localTables));
+  return true;
+}
+
+function exactInventory(
+  names: string[], expected: string[]
+): boolean {
+  if (names.length !== expected.length) { return false; }
+  for (let i = 0; i < expected.length; i++) {
+    if (names.indexOf(expected[i]) < 0) { return false; }
+  }
+  return true;
+}
+
+function validateCompleteSnapshotLocalTables(
+  localTables: Record<string, Array<Record<string, string>>>
+): boolean {
+  const names: string[] = Object.keys(localTables);
+  // A durable rollback image written before Moonlight existed legitimately
+  // contains only vnclocalrecords. Do not reject that checkpoint after an app
+  // upgrade, and do not accept arbitrary partial combinations either.
+  if (!exactInventory(names, LEGACY_LOCAL_BACKUP_LOCAL_TABLES) &&
+    !exactInventory(names, LOCAL_BACKUP_LOCAL_TABLES)) {
+    return false;
+  }
+  return validateLocalTables(localTables, true);
 }
 
 function validateLocalTables(

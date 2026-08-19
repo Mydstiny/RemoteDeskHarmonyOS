@@ -1228,6 +1228,41 @@ MoonlightHostControlOperationKey controlKey(const MoonlightBridgeRequestKey& key
     return {key.requestId, key.generation, key.ownerToken};
 }
 
+MoonlightIdentityOperationKey identityKey(
+    const MoonlightBridgeRequestKey& key) noexcept {
+    return {key.requestId, key.generation, key.ownerToken};
+}
+
+MoonlightBridgeCode mapIdentityCode(MoonlightIdentityCode code) noexcept {
+    switch (code) {
+    case MoonlightIdentityCode::Ok:
+    case MoonlightIdentityCode::NotFound:
+        return MoonlightBridgeCode::Ok;
+    case MoonlightIdentityCode::InvalidArgument:
+        return MoonlightBridgeCode::InvalidArgument;
+    case MoonlightIdentityCode::Busy:
+        return MoonlightBridgeCode::Busy;
+    case MoonlightIdentityCode::Unavailable:
+        return MoonlightBridgeCode::Unavailable;
+    case MoonlightIdentityCode::Cancelled:
+        return MoonlightBridgeCode::Cancelled;
+    case MoonlightIdentityCode::Stale:
+        return MoonlightBridgeCode::Stale;
+    case MoonlightIdentityCode::StorageOutcomeUnknown:
+        return MoonlightBridgeCode::OutcomeUnknown;
+    case MoonlightIdentityCode::DrainTimeout:
+        return MoonlightBridgeCode::DeadlineExceeded;
+    case MoonlightIdentityCode::ShuttingDown:
+        return MoonlightBridgeCode::ShuttingDown;
+    case MoonlightIdentityCode::Corrupt:
+    case MoonlightIdentityCode::CryptoFailure:
+    case MoonlightIdentityCode::StorageFailure:
+    case MoonlightIdentityCode::Conflict:
+        return MoonlightBridgeCode::RepairRequired;
+    }
+    return MoonlightBridgeCode::RepairRequired;
+}
+
 MoonlightBridgeCode mapPairCode(MoonlightPairingCode code) noexcept {
     switch (code) {
     case MoonlightPairingCode::Ok: return MoonlightBridgeCode::Ok;
@@ -1435,6 +1470,8 @@ public:
         result.key = request.key;
         result.observedAtMs = monotonicMilliseconds();
         const bool isUnpair = request.operation == MoonlightBridgeOperation::Unpair;
+        const bool isIdentityDelete =
+            request.operation == MoonlightBridgeOperation::DeleteIdentity;
         if (!isUnpair && cancelled(cancellationProbe)) {
             result.code = MoonlightBridgeCode::Cancelled;
             result.terminalStage = MoonlightBridgeTerminalStage::Cancelled;
@@ -1451,13 +1488,19 @@ public:
             (request.operation == MoonlightBridgeOperation::Pair &&
              !capability.pairingReady) ||
             (isUnpair && !capability.transportReady) ||
-            (!isUnpair && request.operation != MoonlightBridgeOperation::Pair &&
+            (isIdentityDelete && !capability.identityDeletionReady) ||
+            (!isUnpair && !isIdentityDelete &&
+             request.operation != MoonlightBridgeOperation::Pair &&
              !capability.hostControlReady)) {
             result.code = MoonlightBridgeCode::RuntimeProofRequired;
             result.terminalStage = MoonlightBridgeTerminalStage::Failed;
             result.diagnostics.push_back(
                 {"preflight", capability.blocker, 0, 0, 0, 0, 0});
             return result;
+        }
+        if (isIdentityDelete) {
+            return executeIdentityDelete(
+                std::move(request), cancellationProbe, *components);
         }
         restoreLocalRuntimeState(request, *components);
         if (isUnpair) {
@@ -1490,6 +1533,9 @@ public:
         }
         if (components->control != nullptr) {
             (void)components->control->cancel(controlKey(key));
+        }
+        if (components->identity != nullptr) {
+            (void)components->identity->cancel(identityKey(key));
         }
         components->bindings->clearTransient(hostKey(key));
     }
@@ -1537,6 +1583,12 @@ private:
                     capability.encryptedBlobAtomic &&
                     (capability.directRsaTlsSignerReady ||
                      capability.wrappedPkcs8Ready);
+                result.identityDeletionReady = capability.status ==
+                    MoonlightIdentityCapabilityStatus::RuntimeReady &&
+                    capability.storageMode ==
+                        MoonlightIdentityStorageMode::HuksWrappedPkcs8 &&
+                    capability.encryptedBlobAtomic &&
+                    capability.wrappedPkcs8Ready;
             }
             result.pairingReady = result.identityReady && result.transportReady &&
                 result.trustReady && result.commitReady &&
@@ -1555,10 +1607,103 @@ private:
             }
         } catch (...) {
             result.identityReady = false;
+            result.identityDeletionReady = false;
             result.pairingReady = false;
             result.hostControlReady = false;
             result.blocker = "identity_runtime_proof_required";
         }
+        return result;
+    }
+
+    static MoonlightBridgeResult executeIdentityDelete(
+        MoonlightBridgeRequest request,
+        const CancellationProbe& cancellationProbe,
+        ProductRuntimeComponents& components) {
+        MoonlightBridgeResult result;
+        result.operation = request.operation;
+        result.key = request.key;
+        result.observedAtMs = monotonicMilliseconds();
+        if (components.identity == nullptr) {
+            result.code = MoonlightBridgeCode::Unavailable;
+            result.terminalStage = MoonlightBridgeTerminalStage::Failed;
+            result.preflightTruth = MoonlightBridgeTruth::Failed;
+            result.postconditionTruth = MoonlightBridgeTruth::Unknown;
+            return result;
+        }
+
+        MoonlightIdentityInventoryResult inventory =
+            components.identity->inventory(request.ownerScopeFingerprint);
+        if (inventory.code != MoonlightIdentityCode::Ok) {
+            result.code = mapIdentityCode(inventory.code);
+            result.terminalStage =
+                result.code == MoonlightBridgeCode::Cancelled ?
+                    MoonlightBridgeTerminalStage::Cancelled :
+                    MoonlightBridgeTerminalStage::Failed;
+            result.preflightTruth = MoonlightBridgeTruth::Failed;
+            result.postconditionTruth = MoonlightBridgeTruth::Unknown;
+            return result;
+        }
+        result.preflightTruth = MoonlightBridgeTruth::Confirmed;
+        result.identityExistingCount = inventory.records.size();
+        result.identityRemainingCount = inventory.records.size();
+        result.idempotent = inventory.records.empty();
+
+        MoonlightBridgeCode actionCode = MoonlightBridgeCode::Ok;
+        const auto deadline = std::chrono::steady_clock::now() + request.timeout;
+        for (const auto& metadata : inventory.records) {
+            if (cancelled(cancellationProbe)) {
+                actionCode = MoonlightBridgeCode::Cancelled;
+                break;
+            }
+            const auto now = std::chrono::steady_clock::now();
+            if (now >= deadline) {
+                actionCode = MoonlightBridgeCode::DeadlineExceeded;
+                break;
+            }
+            auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+                deadline - now);
+            if (remaining.count() <= 0) {
+                actionCode = MoonlightBridgeCode::DeadlineExceeded;
+                break;
+            }
+            remaining = std::min(remaining, std::chrono::milliseconds(30000));
+            const MoonlightIdentityResult erased = components.identity->eraseAlias(
+                request.ownerScopeFingerprint, metadata.localSecureStoreRef,
+                identityKey(request.key), remaining);
+            if (erased.code != MoonlightIdentityCode::Ok || !erased.deleted) {
+                actionCode = mapIdentityCode(erased.code);
+                break;
+            }
+            ++result.identityDeletedCount;
+        }
+
+        MoonlightIdentityInventoryResult remaining =
+            components.identity->inventory(request.ownerScopeFingerprint);
+        const bool remainingKnown = remaining.code == MoonlightIdentityCode::Ok;
+        if (remainingKnown) {
+            result.identityRemainingCount = remaining.records.size();
+        }
+        if (actionCode == MoonlightBridgeCode::Ok &&
+            (!remainingKnown || result.identityRemainingCount != 0U)) {
+            actionCode = remainingKnown ? MoonlightBridgeCode::RepairRequired :
+                mapIdentityCode(remaining.code);
+        }
+        result.code = actionCode;
+        result.terminalStage = actionCode == MoonlightBridgeCode::Ok ?
+            MoonlightBridgeTerminalStage::Complete :
+            actionCode == MoonlightBridgeCode::Cancelled ?
+                MoonlightBridgeTerminalStage::Cancelled :
+                MoonlightBridgeTerminalStage::Failed;
+        result.actionTruth = actionCode == MoonlightBridgeCode::Ok ?
+            MoonlightBridgeTruth::Confirmed :
+            actionCode == MoonlightBridgeCode::OutcomeUnknown ?
+                MoonlightBridgeTruth::Unknown :
+                result.identityDeletedCount == 0U ?
+                    MoonlightBridgeTruth::Failed : MoonlightBridgeTruth::Unknown;
+        result.postconditionTruth = !remainingKnown ?
+            MoonlightBridgeTruth::Unknown :
+            result.identityRemainingCount == 0U ?
+                MoonlightBridgeTruth::Confirmed : MoonlightBridgeTruth::Failed;
         return result;
     }
 
@@ -1910,6 +2055,7 @@ private:
             }
             case MoonlightBridgeOperation::Pair:
             case MoonlightBridgeOperation::Unpair:
+            case MoonlightBridgeOperation::DeleteIdentity:
                 break;
             }
         } catch (...) {

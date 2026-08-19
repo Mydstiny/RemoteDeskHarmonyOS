@@ -53,6 +53,7 @@ function verification(
     hostType: 'sunshine',
     version: '2026.1',
     address: { host: '192.168.1.20', family: 'ipv4', port: 47989 },
+    httpsPort: 48084,
     paired: false,
     fingerprintSha256: 'a'.repeat(64),
     certificateChanged: certificateChanged,
@@ -122,6 +123,8 @@ export default function moonlightHostAddFlowPolicyTest(): void {
         begin.state, begin.key, verification('existing-host'));
       expect(state.step).assertEqual(2);
       expect(state.displayName).assertEqual('My Living Room');
+      expect((state.verification as MoonlightHostAddVerification).httpsPort)
+        .assertEqual(48084);
       const transition: MoonlightHostAddTransitionResult = advanceMoonlightHostAddStep(state);
       expect(transition.ok).assertFalse();
       expect(transition.errorText.indexOf('已存在') >= 0).assertTrue();

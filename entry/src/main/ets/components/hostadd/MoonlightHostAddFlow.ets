@@ -418,6 +418,7 @@ export struct MoonlightHostAddFlow {
             family: this.flow.verification.address.family,
             port: this.flow.verification.address.port
           },
+          httpsPort: this.flow.verification.httpsPort,
           paired: this.flow.verification.paired,
           fingerprintSha256: completion.certificateSha256,
           certificateChanged: this.flow.verification.certificateChanged,

@@ -23,6 +23,23 @@ inline bool shouldResumeInput(ConnectionState state) {
     return state == ConnectionState::CONNECTED;
 }
 
+/**
+ * A normal in-app terminal still owns the legacy process-wide input/sink
+ * target. An independent PC window uses only the explicit SSH session id for
+ * callback, input, PTY and SFTP operations, so it must not contend for that
+ * singleton owner with another already-open window.
+ */
+inline bool acceptsSharedSinkActivation(bool foreground,
+                                        bool sharedSinkActivationSucceeded) {
+    return !foreground || sharedSinkActivationSucceeded;
+}
+
+/** A queued callback owned by a detached page must return its bytes to the session. */
+inline bool shouldRedeliverCallback(bool registrationAccepting,
+                                    bool redeliverOnStop) {
+    return !registrationAccepting && redeliverOnStop;
+}
+
 } // namespace SshTerminalResumePolicy
 
 #endif // SSH_TERMINAL_RESUME_POLICY_H

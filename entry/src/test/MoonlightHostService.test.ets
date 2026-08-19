@@ -25,6 +25,9 @@ import {
   MoonlightNativeResult
 } from '../main/ets/services/MoonlightHostService';
 import { moonlightOwnerScopeFingerprint } from '../main/ets/services/MoonlightRuntimeSupport';
+import {
+  MoonlightRuntimeOwnerRegistry
+} from '../main/ets/services/MoonlightRuntimeOwnerRegistry';
 
 const OWNER_A_FP: string = moonlightOwnerScopeFingerprint('owner-a');
 
@@ -94,6 +97,9 @@ function nativeSuccess(request: MoonlightNativeRequest): MoonlightNativeResult {
     idempotent: false,
     mutationMayHaveBeenSent: request.operation === 'launch' || request.operation === 'resume' ||
       request.operation === 'quit' || request.operation === 'unpair',
+    identityExistingCount: 0,
+    identityDeletedCount: 0,
+    identityRemainingCount: 0,
     apps: [],
     asset: new ArrayBuffer(0),
     diagnostics: []
@@ -113,6 +119,7 @@ class FakeNativePort implements MoonlightNativePort {
   capabilitiesValue: MoonlightBridgeCapabilities = {
     bridgeCompiled: true,
     identityReady: false,
+    identityDeletionReady: false,
     transportReady: false,
     trustReady: false,
     commitReady: false,
@@ -205,7 +212,7 @@ function fixture(): {
   const native = new FakeNativePort();
   const port = new MemoryLeaseAndCachePort();
   const service = new MoonlightHostService(
-    native, port, new MoonlightAppCacheService(port));
+    native, port, new MoonlightAppCacheService(port), null);
   return { native: native, port: port, service: service };
 }
 
@@ -229,6 +236,23 @@ export default function moonlightHostServiceTest(): void {
       expect(value.native.requests.length).assertEqual(0);
       expect(value.port.commitCount).assertEqual(0);
     });
+
+    it('rejects_host_control_while_the_moonlight_lifecycle_gate_is_closed', 0,
+      async (): Promise<void> => {
+        const native = new FakeNativePort();
+        const port = new MemoryLeaseAndCachePort();
+        const owners = new MoonlightRuntimeOwnerRegistry();
+        const service = new MoonlightHostService(
+          native, port, new MoonlightAppCacheService(port), owners);
+        const blocked = await service.catalog(context());
+        expect(blocked.code).assertEqual('lifecycle_closed');
+        expect(native.requests.length).assertEqual(0);
+        owners.bindScope(lease());
+        expect((await service.catalog(context())).code).assertEqual('ok');
+        owners.closeGate();
+        expect((await service.catalog(context())).code).assertEqual('lifecycle_closed');
+        expect(native.requests.length).assertEqual(1);
+      });
 
     it('rejects_owner_fingerprint_not_derived_from_the_captured_lease', 0,
       async (): Promise<void> => {

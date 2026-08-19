@@ -10,6 +10,12 @@ import {
   MoonlightRepositoryPort,
   MoonlightRepositoryReadResult
 } from '../main/ets/services/MoonlightRepository';
+import {
+  MoonlightRecordMeta,
+  moonlightMutableFieldPaths,
+  moonlightPayloadWithMeta,
+  moonlightRecordPayloadHashSha256
+} from '../main/ets/services/MoonlightRecordPolicy';
 import { MoonlightSettingsLocalService } from '../main/ets/services/MoonlightSettingsLocalService';
 
 function settingsLease(owner: string, generation: number = 1): AccountSessionLease {
@@ -86,6 +92,37 @@ class MemorySettingsPort implements MoonlightRepositoryPort {
   }
 }
 
+function legacySettingsRecord(owner: string): MoonlightRecord {
+  const settings: MoonlightSettings = defaultMoonlightSettings();
+  settings.video.scalingMode = 'fill';
+  settings.background.allowPip = false;
+  settings.video.fps = 120;
+  settings.audio.enabled = false;
+  const fieldVersions: Record<string, number> = {};
+  const paths: string[] = moonlightMutableFieldPaths('settings');
+  for (let index: number = 0; index < paths.length; index++) {
+    fieldVersions[paths[index]] = 1;
+  }
+  const meta: MoonlightRecordMeta = {
+    mutationId: 'legacy-settings-1', originId: 'legacy-local-store',
+    baseSyncVersion: 0, fieldVersions: fieldVersions
+  };
+  const payload = moonlightPayloadWithMeta(
+    JSON.parse(JSON.stringify(settings)) as Record<string, Object>, meta, 'settings');
+  const record: MoonlightRecord = new MoonlightRecord();
+  record.id = 'moonlight-settings|' + owner;
+  record.userId = owner;
+  record.recordType = 'settings';
+  record.ownerId = owner;
+  record.ownerType = 'account';
+  record.payload = payload.canonical;
+  record.syncVersion = 1;
+  record.createdAt = 100;
+  record.updatedAt = 100;
+  record.payloadHashSha256 = moonlightRecordPayloadHashSha256(record);
+  return record;
+}
+
 export default function moonlightSettingsLocalServiceTest(): void {
   describe('MoonlightSettingsLocalService', (): void => {
     it('loads_defaults_without_writing_when_no_local_settings_exist', 0, (): void => {
@@ -108,6 +145,26 @@ export default function moonlightSettingsLocalServiceTest(): void {
       expect(port.lastLocalOnly).assertEqual(1);
       expect(service.load().settings.video.fps).assertEqual(120);
     });
+
+    it('loads_legacy_display_fields_without_rewriting_and_strips_them_on_next_save', 0,
+      (): void => {
+        const port = new MemorySettingsPort();
+        port.rows.push(legacySettingsRecord('owner-a'));
+        const service = new MoonlightSettingsLocalService(port);
+        const loaded = service.load();
+        expect(loaded.ok).assertTrue();
+        expect(loaded.code).assertEqual('ok');
+        expect(loaded.settings.video.fps).assertEqual(120);
+        expect(loaded.settings.audio.enabled).assertFalse();
+        expect(loaded.settings.video.scalingMode === undefined).assertTrue();
+        expect(loaded.settings.background.allowPip === undefined).assertTrue();
+        expect(port.commitCount).assertEqual(0);
+
+        const saved = service.save(loaded.settings, 1000);
+        expect(saved.ok).assertTrue();
+        expect(port.rows[0].payload.indexOf('scalingMode')).assertEqual(-1);
+        expect(port.rows[0].payload.indexOf('allowPip')).assertEqual(-1);
+      });
 
     it('does_not_leak_settings_across_account_leases', 0, (): void => {
       const port = new MemorySettingsPort();

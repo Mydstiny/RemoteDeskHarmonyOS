@@ -29,6 +29,8 @@ export interface MoonlightHostAddVerification {
   hostType: MoonlightHostType;
   version: string;
   address: MoonlightAddress;
+  /** serverinfo/HttpsPort; absent only for legacy in-memory test/state data. */
+  httpsPort?: number;
   paired: boolean;
   fingerprintSha256: string;
   certificateChanged: boolean;
@@ -121,6 +123,7 @@ function cloneVerification(
     hostType: value.hostType,
     version: value.version,
     address: cloneAddress(value.address),
+    httpsPort: value.httpsPort,
     paired: value.paired,
     fingerprintSha256: value.fingerprintSha256,
     certificateChanged: value.certificateChanged,

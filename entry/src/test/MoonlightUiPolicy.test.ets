@@ -162,6 +162,10 @@ export default function moonlightUiPolicyTest(): void {
       expect(phone[2].enabled).assertFalse();
       expect(phone[4].action).assertEqual('disconnect');
       expect(phone[4].dangerous).assertTrue();
+      const keyboardReady = moonlightToolbarItems('sm', true, false, true, 5, true);
+      expect(keyboardReady[1].action).assertEqual('keyboard');
+      expect(keyboardReady[1].enabled).assertTrue();
+      expect(keyboardReady[1].disabledReason).assertEqual('');
       expect(moonlightToolbarItems('xl', true, true, true).length).assertEqual(7);
     });
 
@@ -222,7 +226,8 @@ export default function moonlightUiPolicyTest(): void {
     });
 
     it('defines_complete_settings_taxonomy_and_unavailable_metrics', 0, (): void => {
-      expect(moonlightSettingsSections().length).assertEqual(6);
+      expect(moonlightSettingsSections().length).assertEqual(7);
+      expect(moonlightSettingsSections()[6]).assertEqual('data');
       expect(moonlightMetric(-1, ' ms')).assertEqual('—');
       expect(moonlightMetric(8.25, ' ms', 1)).assertEqual('8.3 ms');
       expect(moonlightMetricPairUs(-1, -1)).assertEqual('—');

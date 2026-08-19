@@ -1,4 +1,8 @@
-import { describe, expect, it } from '@ohos/hypium';
+import { expect } from '@ohos/hypium';
+import {
+  auditedDescribe as describe,
+  auditedIt as it
+} from '../main/ets/services/FocusedTestRegistrationAudit';
 import {
   MoonlightCloudStatusInput,
   resolveMoonlightCloudStatus
@@ -53,15 +57,15 @@ export default function moonlightCloudStatusPolicyTest(): void {
       expect(resolveMoonlightCloudStatus(input).state).assertEqual('partial_failure');
     });
 
-    it('reports_identity_crypto_lock_without_enabling_upload', 0, (): void => {
+    it('ignores_legacy_identity_scope_because_private_identity_is_local_only', 0, (): void => {
       const input: MoonlightCloudStatusInput = ready();
       input.selectedScopes = ['identity'];
       input.identityCapabilityReady = true;
       input.cryptoConfigured = true;
       input.cryptoUnlocked = false;
       const state = resolveMoonlightCloudStatus(input);
-      expect(state.state).assertEqual('crypto_locked');
-      expect(state.identityScopeLocked).assertTrue();
+      expect(state.state).assertEqual('off');
+      expect(state.identityScopeLocked).assertFalse();
       expect(state.canUpload).assertFalse();
     });
 

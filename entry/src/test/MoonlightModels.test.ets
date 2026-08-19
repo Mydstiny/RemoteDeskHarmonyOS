@@ -1,4 +1,8 @@
-import { describe, it, expect } from '@ohos/hypium';
+import { expect } from '@ohos/hypium';
+import {
+  auditedDescribe as describe,
+  auditedIt as it
+} from '../main/ets/services/FocusedTestRegistrationAudit';
 import {
   defaultMoonlightSettings,
   MoonlightAddress,
@@ -65,6 +69,17 @@ export default function moonlightModelsTest(): void {
       host.addresses.push({ host: '192.0.2.10', family: 'ipv4', port: 47989 });
       expect(moonlightHostIsValid(host)).assertFalse();
       host.addresses = [];
+      expect(moonlightHostIsValid(host)).assertFalse();
+    });
+
+    it('accepts_legacy_or_custom_https_ports_and_rejects_invalid_values', 0, (): void => {
+      const host = validHost();
+      expect(moonlightHostIsValid(host)).assertTrue();
+      host.httpsPort = 48084;
+      expect(moonlightHostIsValid(host)).assertTrue();
+      host.httpsPort = 0;
+      expect(moonlightHostIsValid(host)).assertFalse();
+      host.httpsPort = 65536;
       expect(moonlightHostIsValid(host)).assertFalse();
     });
 

@@ -23,6 +23,8 @@ constexpr std::uint64_t kVirtualKeyboardDevice = 0x4d4c4b02U;
 constexpr std::uint64_t kPointerDevice = 0x4d4c5001U;
 constexpr std::uint64_t kTouchDevice = 0x4d4c5401U;
 constexpr std::uint64_t kVirtualControllerDevice = 0x4d4c4701U;
+constexpr std::size_t kRecoveryResetMaximumAttempts = 64U;
+constexpr std::size_t kOrdinaryInputMaximumAttempts = 8U;
 
 std::uint64_t monotonicUs() noexcept {
     const auto value = std::chrono::duration_cast<std::chrono::microseconds>(
@@ -65,11 +67,24 @@ bool controllerApplied(MoonlightControllerAggregatorStatus status) noexcept {
         status == MoonlightControllerAggregatorStatus::AlreadyApplied;
 }
 
+bool inputControlApplied(MoonlightInputControlStatus status) noexcept {
+    return status == MoonlightInputControlStatus::Applied ||
+        status == MoonlightInputControlStatus::AlreadyApplied;
+}
+
 bool controllerRetryable(
     const MoonlightControllerAggregatorResult& result) noexcept {
     return result.retryable ||
         result.status == MoonlightControllerAggregatorStatus::Pending ||
         result.status == MoonlightControllerAggregatorStatus::Backpressure;
+}
+
+bool controllerStateMayBeHeld(
+    const MoonlightControllerMappedState& state) noexcept {
+    return state.buttonFlags != 0U || state.leftTrigger != 0U ||
+        state.rightTrigger != 0U || state.leftStickX != 0 ||
+        state.leftStickY != 0 || state.rightStickX != 0 ||
+        state.rightStickY != 0;
 }
 
 MoonlightVirtualControllerElementKind virtualElementKind(
@@ -141,6 +156,11 @@ std::uint16_t virtualElementId(
 
 struct MoonlightProductInputRuntime::State final
     : public MoonlightGameControllerListener::Sink {
+    enum class OrdinaryInputLane : std::uint8_t {
+        Keyboard = 0,
+        Pointer,
+        Touch,
+    };
     struct PendingPhysicalConnect final {
         MoonlightControllerSourceContext context{};
         MoonlightControllerProfile profile{};
@@ -182,6 +202,10 @@ struct MoonlightProductInputRuntime::State final
     };
 
     std::mutex mutex;
+    // Serializes process-level input activation and terminal teardown. Without
+    // this lane, common-c can finish a session while activate() is still
+    // constructing mappers and leave a newly installed orphan input runtime.
+    std::mutex lifecycleLane;
     std::mutex controllerLane;
     bool active = false;
     bool activating = false;
@@ -189,13 +213,26 @@ struct MoonlightProductInputRuntime::State final
     bool controllerReady = false;
     bool physicalControllerReady = false;
     bool directTouch = false;
+    bool recoveryResetRequired = false;
+    bool recoveryResetComplete = true;
+    bool recoveryResetFailed = false;
+    std::size_t recoveryResetAttempts = 0U;
+    std::uint64_t recoveryResetOperationGeneration = 0U;
+    std::uint64_t recoveryResetTimestampUs = 0U;
     MoonlightSessionKey key{};
+    // A failed activation can have already opened the remote input bridge. Keep
+    // that uncertainty after local objects are released so terminal recovery
+    // cannot incorrectly claim the host is neutral.
+    MoonlightSessionKey failedActivationMayBeStuckKey{};
     MoonlightInputIdentity identity{};
     std::uint64_t operationGeneration = 0U;
     std::uint64_t keyboardSequence = 0U;
     std::uint64_t textSequence = 0U;
     std::uint64_t pointerSequence = 0U;
     std::uint64_t touchSequence = 0U;
+    std::size_t keyboardRetryAttempts = 0U;
+    std::size_t pointerRetryAttempts = 0U;
+    std::size_t touchRetryAttempts = 0U;
     std::uint64_t acceptedEvents = 0U;
     std::uint64_t rejectedEvents = 0U;
     std::uint64_t controllerSourceGeneration = 0U;
@@ -223,6 +260,12 @@ struct MoonlightProductInputRuntime::State final
     std::shared_ptr<MoonlightInputFlushPolicy> flushPolicy;
     std::shared_ptr<MoonlightControllerAggregator> aggregator;
     std::shared_ptr<MoonlightGameControllerListener> listener;
+
+    // mutex must be held by the caller.
+    bool inputAdmissionReady() const noexcept {
+        return active && !stopping && recoveryResetComplete &&
+            !recoveryResetFailed;
+    }
 
     MoonlightKeyboardEventContext keyboardContext(
         bool text, std::uint64_t timestamp = 0U) noexcept {
@@ -277,6 +320,62 @@ struct MoonlightProductInputRuntime::State final
         } else {
             (void)next(rejectedEvents);
         }
+    }
+
+    // A mapper owns the exact command that encountered common-c
+    // backpressure. It is safe to replay only that command. If another event
+    // reaches the same mapper while it is pending, that newer event was not
+    // retained and input must fail closed so a release can never be silently
+    // lost or overtake the old command.
+    bool observeOrdinaryInputResult(
+        const MoonlightSessionKey& observedKey, OrdinaryInputLane lane,
+        bool applied, bool pendingCollision, std::size_t pendingCommands,
+        MoonlightInputDispatchStatus dispatch) noexcept {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (!active || stopping || key != observedKey) {
+            return false;
+        }
+        std::size_t* attempts = nullptr;
+        switch (lane) {
+            case OrdinaryInputLane::Keyboard:
+                attempts = &keyboardRetryAttempts;
+                break;
+            case OrdinaryInputLane::Pointer:
+                attempts = &pointerRetryAttempts;
+                break;
+            case OrdinaryInputLane::Touch:
+                attempts = &touchRetryAttempts;
+                break;
+        }
+        if (attempts == nullptr) {
+            return false;
+        }
+        if (applied) {
+            *attempts = 0U;
+            return false;
+        }
+        if (pendingCommands == 0U) {
+            return false;
+        }
+        bool terminalFailure = pendingCollision ||
+            dispatch != MoonlightInputDispatchStatus::Backpressure;
+        if (!terminalFailure) {
+            if (*attempts < kOrdinaryInputMaximumAttempts) {
+                ++(*attempts);
+            }
+            terminalFailure = *attempts >= kOrdinaryInputMaximumAttempts;
+        }
+        if (!terminalFailure) {
+            return false;
+        }
+        // ProductStreamingRuntime treats this truth as a mandatory terminal
+        // stop. Keeping the mapper pending until that stop lets the existing
+        // lifecycle policy retry the exact release before its neutral
+        // boundary and report remote-neutral truth conservatively.
+        recoveryResetFailed = true;
+        controllerReady = false;
+        physicalControllerReady = false;
+        return true;
     }
 
     // mutex must be held. The listener exposes one active physical device and
@@ -773,12 +872,27 @@ MoonlightProductInputRuntime::State& MoonlightProductInputRuntime::state() noexc
     return value;
 }
 
-bool MoonlightProductInputRuntime::activate(const MoonlightSessionKey& key) noexcept {
+bool MoonlightProductInputRuntime::activate(
+    const MoonlightSessionKey& key,
+    bool resetRemoteInputBeforeAdmission) noexcept {
     if (!key.valid()) { return false; }
     auto& value = state();
+    std::lock_guard<std::mutex> lifecycle(value.lifecycleLane);
+    auto finishActivation = [&](bool inputMayBeStuck) noexcept {
+        std::lock_guard<std::mutex> lock(value.mutex);
+        value.activating = false;
+        if (inputMayBeStuck) {
+            value.failedActivationMayBeStuckKey = key;
+        } else if (value.failedActivationMayBeStuckKey == key) {
+            value.failedActivationMayBeStuckKey = {};
+        }
+    };
     {
         std::lock_guard<std::mutex> lock(value.mutex);
-        if (value.active && value.key == key) { return true; }
+        if (value.active && value.key == key) {
+            return value.recoveryResetRequired ==
+                resetRemoteInputBeforeAdmission;
+        }
         if (value.active || value.activating) { return false; }
         value.activating = true;
     }
@@ -789,8 +903,8 @@ bool MoonlightProductInputRuntime::activate(const MoonlightSessionKey& key) noex
         createProcessMoonlightInputOwnerGate(), port);
     if (bridge == nullptr ||
         bridge->activate(identity, 1U).status != MoonlightInputControlStatus::Applied) {
-        std::lock_guard<std::mutex> lock(value.mutex);
-        value.activating = false;
+        // No remote event was admitted before bridge activation succeeded.
+        finishActivation(false);
         return false;
     }
     auto keyboard = MoonlightKeyboardMapper::create(bridge, identity);
@@ -812,10 +926,10 @@ bool MoonlightProductInputRuntime::activate(const MoonlightSessionKey& key) noex
         controller, flushPolicy, identity);
     if (keyboard == nullptr || pointer == nullptr || touch == nullptr ||
         controller == nullptr || flushPolicy == nullptr || aggregator == nullptr) {
-        (void)bridge->stopLocally(identity, 2U, monotonicUs());
+        const bool neutral = inputControlApplied(
+            bridge->stopLocally(identity, 2U, monotonicUs()).status);
         (void)bridge->cleanup(identity, 3U);
-        std::lock_guard<std::mutex> lock(value.mutex);
-        value.activating = false;
+        finishActivation(!neutral);
         return false;
     }
 
@@ -834,10 +948,10 @@ bool MoonlightProductInputRuntime::activate(const MoonlightSessionKey& key) noex
          fallback.status != MoonlightVirtualControllerLayoutStatus::Accepted &&
          fallback.status != MoonlightVirtualControllerLayoutStatus::Clamped) ||
         !controllerApplied(editingStopped.status)) {
-        (void)bridge->stopLocally(identity, 2U, monotonicUs());
+        const bool neutral = inputControlApplied(
+            bridge->stopLocally(identity, 2U, monotonicUs()).status);
         (void)bridge->cleanup(identity, 3U);
-        std::lock_guard<std::mutex> lock(value.mutex);
-        value.activating = false;
+        finishActivation(!neutral);
         return false;
     }
 
@@ -859,6 +973,9 @@ bool MoonlightProductInputRuntime::activate(const MoonlightSessionKey& key) noex
             value.textSequence = 0U;
             value.pointerSequence = 0U;
             value.touchSequence = 0U;
+            value.keyboardRetryAttempts = 0U;
+            value.pointerRetryAttempts = 0U;
+            value.touchRetryAttempts = 0U;
             value.acceptedEvents = 0U;
             value.rejectedEvents = 0U;
             value.controllerSourceGeneration = 0U;
@@ -879,6 +996,12 @@ bool MoonlightProductInputRuntime::activate(const MoonlightSessionKey& key) noex
             value.pendingLifecycle.reset();
             value.controllerContext = {};
             value.directTouch = directTouch;
+            value.recoveryResetRequired = resetRemoteInputBeforeAdmission;
+            value.recoveryResetComplete = !resetRemoteInputBeforeAdmission;
+            value.recoveryResetFailed = false;
+            value.recoveryResetAttempts = 0U;
+            value.recoveryResetOperationGeneration = 2U;
+            value.recoveryResetTimestampUs = monotonicUs();
             value.bridge = bridge;
             value.keyboard = std::move(keyboard);
             value.pointer = std::move(pointer);
@@ -887,17 +1010,26 @@ bool MoonlightProductInputRuntime::activate(const MoonlightSessionKey& key) noex
             value.flushPolicy = std::move(flushPolicy);
             value.aggregator = std::move(aggregator);
             value.listener = listener;
-            value.controllerReady = true;
+            value.controllerReady = !resetRemoteInputBeforeAdmission &&
+                fallback.layout.generation != 0U;
             value.physicalControllerReady = false;
             value.stopping = false;
             value.active = true;
         }
-        value.activating = false;
     }
     if (!installAccepted) {
-        (void)bridge->stopLocally(identity, 2U, monotonicUs());
+        const bool neutral = inputControlApplied(
+            bridge->stopLocally(identity, 2U, monotonicUs()).status);
         (void)bridge->cleanup(identity, 3U);
+        finishActivation(!neutral);
         return false;
+    }
+    finishActivation(false);
+    if (resetRemoteInputBeforeAdmission) {
+        // snapshot() owns the bounded, exact retry loop. Keeping the listener
+        // stopped here prevents a physical device replay from racing the
+        // all-up/cancel/neutral recovery sweep.
+        return true;
     }
     const bool physicalListenerReady = listener != nullptr && listener->start();
     {
@@ -914,8 +1046,10 @@ bool MoonlightProductInputRuntime::activate(const MoonlightSessionKey& key) noex
     return true;
 }
 
-bool MoonlightProductInputRuntime::stop(const MoonlightSessionKey& key) noexcept {
+MoonlightProductInputStopResult MoonlightProductInputRuntime::stop(
+    const MoonlightSessionKey& key) noexcept {
     auto& value = state();
+    std::lock_guard<std::mutex> lifecycle(value.lifecycleLane);
     std::shared_ptr<MoonlightGameControllerListener> listener;
     std::shared_ptr<MoonlightControllerAggregator> aggregator;
     std::shared_ptr<MoonlightInputBridge> bridge;
@@ -924,7 +1058,12 @@ bool MoonlightProductInputRuntime::stop(const MoonlightSessionKey& key) noexcept
     std::uint64_t cleanupGeneration = 0U;
     {
         std::lock_guard<std::mutex> lock(value.mutex);
-        if (!value.active || value.key != key) { return false; }
+        if (!value.active) {
+            // No admitted runtime is already neutral unless activation cleanup
+            // for this exact session explicitly failed.
+            return {true, value.failedActivationMayBeStuckKey != key};
+        }
+        if (value.key != key) { return {}; }
         value.stopping = true;
         value.controllerReady = false;
         value.physicalControllerReady = false;
@@ -942,7 +1081,7 @@ bool MoonlightProductInputRuntime::stop(const MoonlightSessionKey& key) noexcept
     }
     {
         std::lock_guard<std::mutex> lock(value.mutex);
-        if (!value.active || value.key != key) { return false; }
+        if (!value.active || value.key != key) { return {}; }
         aggregator = value.aggregator;
         bridge = value.bridge;
         identity = value.identity;
@@ -955,12 +1094,22 @@ bool MoonlightProductInputRuntime::stop(const MoonlightSessionKey& key) noexcept
         value.pendingVirtual.reset();
         value.pendingLifecycle.reset();
     }
-    bool stopped = false;
+    bool localCleanupComplete = false;
+    bool remoteNeutral = false;
     if (aggregator != nullptr) {
-        for (std::size_t attempt = 0U; attempt < 32U && !stopped; ++attempt) {
+        for (std::size_t attempt = 0U;
+             attempt < 32U && !localCleanupComplete; ++attempt) {
             const auto result = aggregator->handleLifecycle(
                 MoonlightInputFlushTrigger::SessionStop, flush);
-            stopped = controllerApplied(result.status) ||
+            // Applied is the only flush status that proves the remote port
+            // accepted the terminal neutral boundary, and every exact mapper
+            // release must also have reached the port. AppliedLocally, an
+            // ambiguous AlreadyApplied result, or a local discard followed by
+            // a successful boundary retire local state only.
+            remoteNeutral = moonlightProductRemoteInputReleaseProven(
+                result.flushStatus, result.remoteReleaseComplete,
+                result.boundaryApplied);
+            localCleanupComplete = controllerApplied(result.status) ||
                 result.status ==
                     MoonlightControllerAggregatorStatus::SessionTerminated;
             if (!result.retryable &&
@@ -970,11 +1119,10 @@ bool MoonlightProductInputRuntime::stop(const MoonlightSessionKey& key) noexcept
             }
         }
     }
-    if (!stopped && bridge != nullptr) {
+    if (!localCleanupComplete && bridge != nullptr) {
         const auto status = bridge->stopLocally(
             identity, flush.operationGeneration, flush.monotonicTimestampUs).status;
-        stopped = status == MoonlightInputControlStatus::Applied ||
-            status == MoonlightInputControlStatus::AlreadyApplied;
+        localCleanupComplete = inputControlApplied(status);
     }
     if (bridge != nullptr) {
         (void)bridge->cleanup(identity, cleanupGeneration);
@@ -982,6 +1130,13 @@ bool MoonlightProductInputRuntime::stop(const MoonlightSessionKey& key) noexcept
     {
         std::lock_guard<std::mutex> lock(value.mutex);
         if (value.key == key) {
+            if (remoteNeutral) {
+                if (value.failedActivationMayBeStuckKey == key) {
+                    value.failedActivationMayBeStuckKey = {};
+                }
+            } else {
+                value.failedActivationMayBeStuckKey = key;
+            }
             value.active = false;
             value.key = {};
             value.identity = {};
@@ -1004,6 +1159,15 @@ bool MoonlightProductInputRuntime::stop(const MoonlightSessionKey& key) noexcept
             value.virtualSourceSequence = 0U;
             value.virtualLayout = {};
             value.physicalControllerReady = false;
+            value.recoveryResetRequired = false;
+            value.recoveryResetComplete = true;
+            value.recoveryResetFailed = false;
+            value.recoveryResetAttempts = 0U;
+            value.recoveryResetOperationGeneration = 0U;
+            value.recoveryResetTimestampUs = 0U;
+            value.keyboardRetryAttempts = 0U;
+            value.pointerRetryAttempts = 0U;
+            value.touchRetryAttempts = 0U;
             value.pendingPhysicalConnect.reset();
             value.pendingPhysicalDisconnect.reset();
             value.pendingPhysicalFrame.reset();
@@ -1014,32 +1178,184 @@ bool MoonlightProductInputRuntime::stop(const MoonlightSessionKey& key) noexcept
             value.stopping = false;
         }
     }
-    return stopped;
+    return {localCleanupComplete, remoteNeutral};
 }
 
 MoonlightProductInputSnapshot MoonlightProductInputRuntime::snapshot(
     const MoonlightSessionKey& key) noexcept {
     auto& value = state();
-    std::lock_guard<std::mutex> lane(value.controllerLane);
+    std::shared_ptr<MoonlightKeyboardMapper> keyboard;
+    std::shared_ptr<MoonlightPointerMapper> pointer;
+    std::shared_ptr<MoonlightTouchMapper> touch;
+    std::shared_ptr<MoonlightControllerMapper> controller;
+    std::shared_ptr<MoonlightGameControllerListener> listenerToStart;
+    MoonlightInputIdentity identity;
+    MoonlightProductInputSnapshot result;
     {
-        std::lock_guard<std::mutex> lock(value.mutex);
-        if (value.active && !value.stopping && value.key == key) {
-            // Drop the state lock before the exact common-c retry below.
-        } else {
-            return {};
+        std::lock_guard<std::mutex> lane(value.controllerLane);
+        std::shared_ptr<MoonlightInputBridge> resetBridge;
+        MoonlightInputRecoveryResetRequest resetRequest;
+        bool attemptReset = false;
+        {
+            std::lock_guard<std::mutex> lock(value.mutex);
+            if (!value.active || value.stopping || value.key != key) {
+                return {};
+            }
+            if (value.recoveryResetRequired &&
+                !value.recoveryResetComplete && !value.recoveryResetFailed &&
+                value.bridge != nullptr &&
+                value.recoveryResetAttempts < kRecoveryResetMaximumAttempts) {
+                resetBridge = value.bridge;
+                resetRequest.identity = value.identity;
+                resetRequest.operationGeneration =
+                    value.recoveryResetOperationGeneration;
+                resetRequest.monotonicTimestampUs =
+                    value.recoveryResetTimestampUs;
+                // Product launch currently exposes exactly one controller at
+                // slot zero (gcmap=1, gcpersist=1).
+                resetRequest.activeGamepadMask = 1U;
+                resetRequest.controllerSlots = 1U;
+                ++value.recoveryResetAttempts;
+                attemptReset = true;
+            }
+        }
+        if (attemptReset) {
+            const auto reset = resetBridge->resetRemoteState(resetRequest);
+            std::lock_guard<std::mutex> lock(value.mutex);
+            if (value.active && !value.stopping && value.key == key &&
+                value.bridge == resetBridge && value.identity == resetRequest.identity &&
+                value.recoveryResetOperationGeneration ==
+                    resetRequest.operationGeneration) {
+                if (reset.status == MoonlightInputControlStatus::Applied ||
+                    reset.status == MoonlightInputControlStatus::AlreadyApplied) {
+                    value.recoveryResetComplete = true;
+                    value.controllerReady = value.virtualLayout.generation != 0U;
+                    listenerToStart = value.listener;
+                } else if (value.recoveryResetAttempts >=
+                           kRecoveryResetMaximumAttempts) {
+                    value.recoveryResetFailed = true;
+                    value.controllerReady = false;
+                }
+            }
+        }
+        bool retryController = false;
+        {
+            std::lock_guard<std::mutex> lock(value.mutex);
+            if (!value.active || value.stopping || value.key != key) {
+                return {};
+            }
+            retryController = value.inputAdmissionReady();
+        }
+        if (retryController) {
+            (void)value.retryControllerOperation();
+        }
+        {
+            std::lock_guard<std::mutex> lock(value.mutex);
+            if (!value.active || value.stopping || value.key != key) {
+                return {};
+            }
+            result.matched = true;
+            result.inputReady = value.bridge != nullptr &&
+                value.inputAdmissionReady();
+            result.controllerReady = result.inputReady && value.controllerReady;
+            result.physicalControllerReady = result.inputReady &&
+                value.physicalControllerReady;
+            result.inputMayBeStuck = value.recoveryResetRequired &&
+                !value.recoveryResetComplete;
+            result.recoveryResetFailed = value.recoveryResetFailed;
+            result.inputGeneration = value.identity.inputGeneration;
+            result.acceptedEvents = value.acceptedEvents;
+            result.rejectedEvents = value.rejectedEvents;
+            identity = value.identity;
+            keyboard = value.keyboard;
+            pointer = value.pointer;
+            touch = value.touch;
+            controller = value.controller;
         }
     }
-    (void)value.retryControllerOperation();
-    std::lock_guard<std::mutex> lock(value.mutex);
-    MoonlightProductInputSnapshot result;
-    result.matched = value.active && value.key == key;
-    if (!result.matched) { return result; }
-    result.inputReady = value.bridge != nullptr;
-    result.controllerReady = value.controllerReady;
-    result.physicalControllerReady = value.physicalControllerReady;
-    result.inputGeneration = value.identity.inputGeneration;
-    result.acceptedEvents = value.acceptedEvents;
-    result.rejectedEvents = value.rejectedEvents;
+    if (listenerToStart != nullptr) {
+        const bool physicalListenerReady = listenerToStart->start();
+        bool listenerStillOwned = false;
+        {
+            std::lock_guard<std::mutex> lock(value.mutex);
+            listenerStillOwned = value.active && !value.stopping &&
+                value.key == key && value.listener == listenerToStart &&
+                value.recoveryResetComplete && !value.recoveryResetFailed;
+            if (listenerStillOwned) {
+                value.physicalControllerReady = physicalListenerReady;
+                value.controllerReady = value.virtualLayout.generation != 0U ||
+                    value.physicalControllerReady;
+                result.controllerReady = value.controllerReady;
+                result.physicalControllerReady = value.physicalControllerReady;
+            }
+        }
+        if (!listenerStillOwned && physicalListenerReady) {
+            listenerToStart->stop();
+        }
+    }
+    bool ordinaryInputFailed = false;
+    if (keyboard != nullptr) {
+        const auto before = keyboard->snapshot(identity);
+        if (before.matched && before.pending) {
+            const auto resumed = keyboard->resumePending();
+            ordinaryInputFailed = value.observeOrdinaryInputResult(
+                key, State::OrdinaryInputLane::Keyboard,
+                keyboardApplied(resumed.status), false,
+                resumed.pendingCommands, resumed.dispatchStatus);
+        }
+    }
+    if (!ordinaryInputFailed && pointer != nullptr) {
+        const auto before = pointer->snapshot(identity);
+        if (before.matched && before.pending) {
+            const auto resumed = pointer->resumePending();
+            ordinaryInputFailed = value.observeOrdinaryInputResult(
+                key, State::OrdinaryInputLane::Pointer,
+                pointerApplied(resumed.status), false,
+                resumed.pendingCommands, resumed.dispatchStatus);
+        }
+    }
+    if (!ordinaryInputFailed && touch != nullptr) {
+        const auto before = touch->snapshot(identity);
+        if (before.matched && before.pending) {
+            const auto resumed = touch->resumePending();
+            ordinaryInputFailed = value.observeOrdinaryInputResult(
+                key, State::OrdinaryInputLane::Touch,
+                touchApplied(resumed.status), false,
+                resumed.pendingCommands, resumed.dispatchStatus);
+        }
+    }
+    if (ordinaryInputFailed) {
+        result.inputReady = false;
+        result.controllerReady = false;
+        result.physicalControllerReady = false;
+        result.inputMayBeStuck = true;
+        result.recoveryResetFailed = true;
+    }
+    if (keyboard != nullptr) {
+        const auto snapshot = keyboard->snapshot(identity);
+        result.inputMayBeStuck = result.inputMayBeStuck ||
+            (snapshot.matched && (snapshot.pressedNonModifierKeys != 0U ||
+                snapshot.remoteModifierMask != 0U || snapshot.pending));
+    }
+    if (pointer != nullptr) {
+        const auto snapshot = pointer->snapshot(identity);
+        result.inputMayBeStuck = result.inputMayBeStuck ||
+            (snapshot.matched && (snapshot.pressedButtons != 0U ||
+                snapshot.pending));
+    }
+    if (touch != nullptr) {
+        const auto snapshot = touch->snapshot(identity);
+        result.inputMayBeStuck = result.inputMayBeStuck ||
+            (snapshot.matched && (snapshot.activeDirectContacts != 0U ||
+                snapshot.activeTouchpadContacts != 0U ||
+                snapshot.touchpadDragButtonDown || snapshot.pending));
+    }
+    if (controller != nullptr) {
+        const auto snapshot = controller->snapshot(identity);
+        result.inputMayBeStuck = result.inputMayBeStuck ||
+            (snapshot.matched && snapshot.active &&
+                controllerStateMayBeHeld(snapshot.state));
+    }
     return result;
 }
 
@@ -1051,14 +1367,19 @@ bool MoonlightProductInputRuntime::sendKey(
     MoonlightKeyboardEventContext context;
     {
         std::lock_guard<std::mutex> lock(value.mutex);
-        if (!value.active || value.key != key || value.keyboard == nullptr) { return false; }
+        if (!value.inputAdmissionReady() || value.key != key ||
+            value.keyboard == nullptr) { return false; }
         mapper = value.keyboard;
         context = value.keyboardContext(false);
     }
-    const bool accepted = keyboardApplied(
-        mapper->physicalKey(context, harmonyKeyCode, pressed,
-                            normalizedToUsLayout).status);
+    const auto result = mapper->physicalKey(
+        context, harmonyKeyCode, pressed, normalizedToUsLayout);
+    const bool accepted = keyboardApplied(result.status);
     value.record(accepted);
+    (void)value.observeOrdinaryInputResult(
+        key, State::OrdinaryInputLane::Keyboard, accepted,
+        result.status == MoonlightKeyboardStatus::Pending,
+        result.pendingCommands, result.dispatchStatus);
     return accepted;
 }
 
@@ -1070,12 +1391,18 @@ bool MoonlightProductInputRuntime::sendText(
     MoonlightKeyboardEventContext context;
     {
         std::lock_guard<std::mutex> lock(value.mutex);
-        if (!value.active || value.key != key || value.keyboard == nullptr) { return false; }
+        if (!value.inputAdmissionReady() || value.key != key ||
+            value.keyboard == nullptr) { return false; }
         mapper = value.keyboard;
         context = value.keyboardContext(true);
     }
-    const bool accepted = keyboardApplied(mapper->commitText(context, text, size).status);
+    const auto result = mapper->commitText(context, text, size);
+    const bool accepted = keyboardApplied(result.status);
     value.record(accepted);
+    (void)value.observeOrdinaryInputResult(
+        key, State::OrdinaryInputLane::Keyboard, accepted,
+        result.status == MoonlightKeyboardStatus::Pending,
+        result.pendingCommands, result.dispatchStatus);
     return accepted;
 }
 
@@ -1087,7 +1414,8 @@ bool MoonlightProductInputRuntime::sendPointer(
     MoonlightPointerEventContext context;
     {
         std::lock_guard<std::mutex> lock(value.mutex);
-        if (!value.active || value.key != key || value.pointer == nullptr) { return false; }
+        if (!value.inputAdmissionReady() || value.key != key ||
+            value.pointer == nullptr) { return false; }
         mapper = value.pointer;
         context = value.pointerContext();
     }
@@ -1113,6 +1441,10 @@ bool MoonlightProductInputRuntime::sendPointer(
     }
     const bool accepted = pointerApplied(result.status);
     value.record(accepted);
+    (void)value.observeOrdinaryInputResult(
+        key, State::OrdinaryInputLane::Pointer, accepted,
+        result.status == MoonlightPointerStatus::Pending,
+        result.pendingCommands, result.dispatchStatus);
     return accepted;
 }
 
@@ -1124,14 +1456,20 @@ bool MoonlightProductInputRuntime::sendTouch(
     MoonlightTouchEventContext context;
     {
         std::lock_guard<std::mutex> lock(value.mutex);
-        if (!value.active || value.key != key || value.touch == nullptr) { return false; }
+        if (!value.inputAdmissionReady() || value.key != key ||
+            value.touch == nullptr) { return false; }
         mapper = value.touch;
         context = value.touchContext();
     }
-    const bool accepted = touchApplied(mapper->process(
+    const auto result = mapper->process(
         context, request.surface, request.contactId,
-        request.phase, request.sample).status);
+        request.phase, request.sample);
+    const bool accepted = touchApplied(result.status);
     value.record(accepted);
+    (void)value.observeOrdinaryInputResult(
+        key, State::OrdinaryInputLane::Touch, accepted,
+        result.status == MoonlightTouchStatus::Pending,
+        result.pendingCommands, result.dispatchStatus);
     return accepted;
 }
 
@@ -1143,6 +1481,12 @@ bool MoonlightProductInputRuntime::setSuspended(
         return false;
     }
     auto& value = state();
+    {
+        std::lock_guard<std::mutex> lock(value.mutex);
+        if (!value.inputAdmissionReady() || value.key != key) {
+            return false;
+        }
+    }
     std::lock_guard<std::mutex> lane(value.controllerLane);
     if (!value.retryControllerOperation()) {
         value.record(false);
@@ -1154,7 +1498,7 @@ bool MoonlightProductInputRuntime::setSuspended(
     std::uint64_t resumeGeneration = 0U;
     {
         std::lock_guard<std::mutex> lock(value.mutex);
-        if (!value.active || value.stopping || value.key != key ||
+        if (!value.inputAdmissionReady() || value.key != key ||
             value.aggregator == nullptr) {
             return false;
         }
@@ -1185,7 +1529,8 @@ bool MoonlightProductInputRuntime::setTouchMode(
     MoonlightTouchEventContext context;
     {
         std::lock_guard<std::mutex> lock(value.mutex);
-        if (!value.active || value.key != key || value.touch == nullptr) {
+        if (!value.inputAdmissionReady() || value.key != key ||
+            value.touch == nullptr) {
             return false;
         }
         target = value.touch;
@@ -1207,6 +1552,12 @@ bool MoonlightProductInputRuntime::setTouchMode(
 bool MoonlightProductInputRuntime::setVirtualControllerMode(
     const MoonlightSessionKey& key, bool enabled, bool editing) noexcept {
     auto& value = state();
+    {
+        std::lock_guard<std::mutex> lock(value.mutex);
+        if (!value.inputAdmissionReady() || value.key != key) {
+            return false;
+        }
+    }
     std::lock_guard<std::mutex> lane(value.controllerLane);
     if (!value.retryControllerOperation()) {
         value.record(false);
@@ -1219,7 +1570,7 @@ bool MoonlightProductInputRuntime::setVirtualControllerMode(
     bool currentEditing = false;
     {
         std::lock_guard<std::mutex> lock(value.mutex);
-        if (!value.active || value.stopping || value.key != key ||
+        if (!value.inputAdmissionReady() || value.key != key ||
             value.aggregator == nullptr ||
             value.virtualLayout.generation == 0U) {
             return false;
@@ -1283,6 +1634,12 @@ bool MoonlightProductInputRuntime::sendVirtualController(
         return false;
     }
     auto& value = state();
+    {
+        std::lock_guard<std::mutex> lock(value.mutex);
+        if (!value.inputAdmissionReady() || value.key != key) {
+            return false;
+        }
+    }
     std::lock_guard<std::mutex> lane(value.controllerLane);
     if (!value.retryControllerOperation()) {
         value.record(false);
@@ -1293,7 +1650,7 @@ bool MoonlightProductInputRuntime::sendVirtualController(
     MoonlightVirtualControllerLayout layout;
     {
         std::lock_guard<std::mutex> lock(value.mutex);
-        if (!value.active || value.stopping || value.key != key ||
+        if (!value.inputAdmissionReady() || value.key != key ||
             !value.virtualEnabled || value.virtualEditing ||
             value.aggregator == nullptr ||
             value.virtualLayout.generation == 0U) {

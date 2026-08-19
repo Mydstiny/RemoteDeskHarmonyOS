@@ -29,6 +29,7 @@ enum class MoonlightBridgeOperation : std::uint8_t {
     Resume,
     Quit,
     Unpair,
+    DeleteIdentity,
 };
 
 enum class MoonlightBridgeCode : std::uint8_t {
@@ -171,6 +172,11 @@ struct REMOTEDESK_MOONLIGHT_BRIDGE_HIDDEN MoonlightBridgeResult final {
     std::uint64_t observedAtMs = 0;
     bool idempotent = false;
     bool mutationMayHaveBeenSent = false;
+    // DeleteIdentity exposes counts only. Native aliases, certificates and
+    // secure-store references never cross the bridge boundary.
+    std::size_t identityExistingCount = 0;
+    std::size_t identityDeletedCount = 0;
+    std::size_t identityRemainingCount = 0;
     std::vector<MoonlightBridgeApp> apps;
     std::vector<std::uint8_t> asset;
     // Public trust metadata returned by a successful pair operation.
@@ -193,6 +199,7 @@ struct REMOTEDESK_MOONLIGHT_BRIDGE_HIDDEN MoonlightBridgeEvent final {
 struct REMOTEDESK_MOONLIGHT_BRIDGE_HIDDEN MoonlightBridgeCapabilities final {
     bool bridgeCompiled = true;
     bool identityReady = false;
+    bool identityDeletionReady = false;
     bool transportReady = false;
     bool trustReady = false;
     bool commitReady = false;

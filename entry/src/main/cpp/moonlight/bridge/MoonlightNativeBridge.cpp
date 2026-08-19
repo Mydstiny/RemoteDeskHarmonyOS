@@ -23,6 +23,7 @@ constexpr std::size_t kMaxSeenKeysPerLaneGeneration = 4096U;
 constexpr std::size_t kMaxDiagnostics = 64U;
 constexpr std::size_t kMaxDiagnosticTokenBytes = 64U;
 constexpr std::size_t kMaxRtspSessionUrlBytes = 4096U;
+constexpr std::size_t kMaxIdentityInventoryCount = 256U;
 constexpr std::uint64_t kMaxSafeInteger = 9007199254740991ULL;
 
 #if defined(RDP_NATIVE_CALLBACK_TESTING)
@@ -123,8 +124,27 @@ bool sha256HexOrEmpty(const std::string& value) noexcept {
 
 bool requestValid(const MoonlightBridgeRequest& request) noexcept {
     if (!request.key.valid() ||
-        !ownerFingerprintValid(request.ownerScopeFingerprint) ||
-        !boundedText(request.hostId, kMaxIdentityBytes) ||
+        !ownerFingerprintValid(request.ownerScopeFingerprint)) {
+        return false;
+    }
+    if (request.operation == MoonlightBridgeOperation::DeleteIdentity) {
+        return request.timeout >= MoonlightHostLimits::kMinTimeout &&
+               request.timeout <= MoonlightHostLimits::kMaxStandardTimeout &&
+               request.installationId.empty() && request.hostId.empty() &&
+               request.serverUuid.empty() &&
+               request.pinnedCertificateSha256.empty() &&
+               request.endpoint.serverName.empty() &&
+               request.endpoint.addresses.empty() &&
+               !request.endpoint.pinnedTrustAvailable &&
+               !request.endpoint.allowHttpPairingCandidate &&
+               request.pin.empty() && request.riKey.empty() &&
+               request.riKeyId == 0 && request.appId == 0U &&
+               request.catalogGeneration == 0U &&
+               request.expectedCurrentAppId == 0U &&
+               !request.userConfirmedTermination &&
+               !request.allowLegacySha1;
+    }
+    if (!boundedText(request.hostId, kMaxIdentityBytes) ||
         !boundedText(request.serverUuid, kMaxIdentityBytes) ||
         !sha256HexOrEmpty(request.pinnedCertificateSha256) ||
         !endpointValid(request)) {
@@ -186,6 +206,8 @@ bool requestValid(const MoonlightBridgeRequest& request) noexcept {
                request.pin.empty() &&
                request.riKey.empty() && request.appId == 0U &&
                request.catalogGeneration == 0U && !request.allowLegacySha1;
+    case MoonlightBridgeOperation::DeleteIdentity:
+        return false;
     default:
         return false;
     }
@@ -201,6 +223,9 @@ bool runtimeReadyFor(const MoonlightBridgeCapabilities& capabilities,
         // become unavailable just because the client identity backend is not
         // currently usable.
         return capabilities.transportReady;
+    }
+    if (operation == MoonlightBridgeOperation::DeleteIdentity) {
+        return capabilities.identityDeletionReady;
     }
     return capabilities.hostControlReady;
 }
@@ -247,12 +272,18 @@ struct ActiveRequest final {
 };
 
 struct LaneState final {
+    std::uint64_t ownerToken = 0U;
     std::uint64_t generationWatermark = 0U;
     std::unordered_set<MoonlightBridgeRequestKey, KeyHash> seenKeys;
 };
 
 std::string laneFor(const MoonlightBridgeRequest& request) {
-    return request.ownerScopeFingerprint + ":" + request.hostId;
+    const std::string ownerLane = request.ownerScopeFingerprint + ":" +
+                                  std::to_string(request.key.ownerToken);
+    if (request.operation == MoonlightBridgeOperation::DeleteIdentity) {
+        return ownerLane + ":identity-admin";
+    }
+    return ownerLane + ":" + request.hostId;
 }
 
 MoonlightBridgeResult terminalResult(MoonlightBridgeOperation operation,
@@ -281,6 +312,9 @@ bool resultValid(const MoonlightBridgeResult& result,
         !truthValid(result.preflightTruth) || !truthValid(result.actionTruth) ||
         !truthValid(result.postconditionTruth) ||
         result.partialAppCount > MoonlightHostLimits::kMaxApps ||
+        result.identityExistingCount > kMaxIdentityInventoryCount ||
+        result.identityDeletedCount > result.identityExistingCount ||
+        result.identityRemainingCount > kMaxIdentityInventoryCount ||
         result.observedAtMs > kMaxSafeInteger ||
         result.apps.size() > MoonlightHostLimits::kMaxApps ||
         result.asset.size() > MoonlightHostLimits::kMaxBodyBytes ||
@@ -288,6 +322,23 @@ bool resultValid(const MoonlightBridgeResult& result,
         !sha256HexOrEmpty(result.certificateSha256) ||
         (result.rtspSessionUrl.has_value() &&
          !boundedText(*result.rtspSessionUrl, kMaxRtspSessionUrlBytes))) {
+        return false;
+    }
+    if (operation == MoonlightBridgeOperation::DeleteIdentity) {
+        if (!result.apps.empty() || !result.asset.empty() ||
+            !result.certificateSha256.empty() ||
+            result.rtspSessionUrl.has_value() ||
+            result.partialAppCount != 0U ||
+            result.mutationMayHaveBeenSent) {
+            return false;
+        }
+        if (result.code == MoonlightBridgeCode::Ok &&
+            result.identityRemainingCount != 0U) {
+            return false;
+        }
+    } else if (result.identityExistingCount != 0U ||
+               result.identityDeletedCount != 0U ||
+               result.identityRemainingCount != 0U) {
         return false;
     }
     if ((result.code == MoonlightBridgeCode::Ok &&
@@ -491,10 +542,16 @@ MoonlightBridgeResult::MoonlightBridgeResult(MoonlightBridgeResult&& other) noex
       partialAppCount(other.partialAppCount), observedAtMs(other.observedAtMs),
       idempotent(other.idempotent),
       mutationMayHaveBeenSent(other.mutationMayHaveBeenSent),
+      identityExistingCount(other.identityExistingCount),
+      identityDeletedCount(other.identityDeletedCount),
+      identityRemainingCount(other.identityRemainingCount),
       apps(std::move(other.apps)), asset(std::move(other.asset)),
       certificateSha256(std::move(other.certificateSha256)),
       rtspSessionUrl(std::move(other.rtspSessionUrl)),
       diagnostics(std::move(other.diagnostics)) {
+    other.identityExistingCount = 0U;
+    other.identityDeletedCount = 0U;
+    other.identityRemainingCount = 0U;
     secureWipeString(other.certificateSha256);
     secureWipeOptionalString(other.rtspSessionUrl);
 }
@@ -515,11 +572,17 @@ MoonlightBridgeResult& MoonlightBridgeResult::operator=(
         observedAtMs = other.observedAtMs;
         idempotent = other.idempotent;
         mutationMayHaveBeenSent = other.mutationMayHaveBeenSent;
+        identityExistingCount = other.identityExistingCount;
+        identityDeletedCount = other.identityDeletedCount;
+        identityRemainingCount = other.identityRemainingCount;
         apps = std::move(other.apps);
         asset = std::move(other.asset);
         certificateSha256 = std::move(other.certificateSha256);
         rtspSessionUrl = std::move(other.rtspSessionUrl);
         diagnostics = std::move(other.diagnostics);
+        other.identityExistingCount = 0U;
+        other.identityDeletedCount = 0U;
+        other.identityRemainingCount = 0U;
         secureWipeString(other.certificateSha256);
         secureWipeOptionalString(other.rtspSessionUrl);
     }
@@ -607,7 +670,12 @@ MoonlightBridgeResult MoonlightNativeBridge::execute(
                 admissionFailure = MoonlightBridgeCode::Busy;
             } else {
                 auto& lane = impl->lanes[active->lane];
-                if (key.generation < lane.generationWatermark) {
+                if (lane.ownerToken == 0U) {
+                    lane.ownerToken = key.ownerToken;
+                }
+                if (lane.ownerToken != key.ownerToken) {
+                    admissionFailure = MoonlightBridgeCode::ProtocolFailure;
+                } else if (key.generation < lane.generationWatermark) {
                     admissionFailure = MoonlightBridgeCode::Stale;
                 } else if (key.generation == lane.generationWatermark &&
                            lane.seenKeys.find(key) != lane.seenKeys.end()) {
@@ -770,6 +838,14 @@ std::size_t MoonlightNativeBridge::cancelOwner(std::uint64_t ownerToken) noexcep
                     keys.push_back(item.first);
                 }
             }
+            for (auto iterator = impl->lanes.begin();
+                 iterator != impl->lanes.end();) {
+                if (iterator->second.ownerToken == ownerToken) {
+                    iterator = impl->lanes.erase(iterator);
+                } else {
+                    ++iterator;
+                }
+            }
         }
         if (impl->runtimePort != nullptr) {
             for (const auto& key : keys) {
@@ -868,6 +944,8 @@ const char* moonlightBridgeOperationName(MoonlightBridgeOperation operation) noe
         return "quit";
     case MoonlightBridgeOperation::Unpair:
         return "unpair";
+    case MoonlightBridgeOperation::DeleteIdentity:
+        return "delete_identity";
     default:
         return "unknown";
     }

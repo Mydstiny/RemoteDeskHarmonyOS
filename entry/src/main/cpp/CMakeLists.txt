@@ -367,6 +367,7 @@ if(RDP_BUILD_TESTS)
         test/moonlight_input_flush_policy_test.cpp
         test/moonlight_controller_aggregator_test.cpp
         test/moonlight_game_controller_listener_test.cpp
+        test/moonlight_product_input_runtime_test.cpp
         test/vnc_des_test.cpp
         test/vnc_cursor_protocol_test.cpp
         test/vnc_transport_policy_test.cpp
@@ -417,6 +418,8 @@ if(RDP_BUILD_TESTS)
         ${MOONLIGHT_INPUT_FLUSH_POLICY_SOURCE}
         ${MOONLIGHT_CONTROLLER_AGGREGATOR_SOURCE}
         ${MOONLIGHT_GAME_CONTROLLER_LISTENER_SOURCE}
+        moonlight/input/MoonlightCommonCInputPort.cpp
+        moonlight/input/MoonlightProductInputRuntime.cpp
         vnc/vnc_des.cpp
         vnc/vnc_cursor_protocol.cpp
         vnc/vnc_rfb_protocol.cpp

@@ -18,6 +18,18 @@
 
 namespace remotedesk::moonlight {
 
+struct REMOTEDESK_MOONLIGHT_PRODUCT_MEDIA_HIDDEN
+MoonlightProductMediaDiagnostics final {
+    bool matched = false;
+    std::uint64_t acceptedVideoFrames = 0U;
+    std::uint64_t droppedVideoFrames = 0U;
+    std::uint64_t acceptedVideoBytes = 0U;
+    std::uint64_t rendererPresentedFrames = 0U;
+    std::uint64_t acceptedAudioPackets = 0U;
+    std::uint64_t rejectedAudioPackets = 0U;
+    std::uint64_t acceptedAudioBytes = 0U;
+};
+
 // Single-session common-c media composition. The caller supplies the exact
 // decoder/renderer binding and the already-owned platform ports; this class
 // never creates a second decoder owner, audio renderer, queue, or worker.
@@ -48,6 +60,16 @@ public:
     bool firstFrameReady() const noexcept override;
     bool videoLive() const noexcept override;
     bool audioLive() const noexcept override;
+    // Temporary local lifecycle controls. They preserve the one common-c
+    // connection and exact decoder/audio owners; no second media lane is
+    // created while ArkUI replaces a Surface or background policy mutes audio.
+    bool suspendVideo() noexcept;
+    bool rebindVideo(
+        const MoonlightVideoDecoderBinding& binding) noexcept;
+    MoonlightVideoDecoderBinding videoBindingSnapshot() const noexcept;
+    bool pauseAudio(MoonlightAudioPauseReason reason) noexcept;
+    bool resumeAudio() noexcept;
+    MoonlightProductMediaDiagnostics diagnostics() const noexcept;
     bool setupVideo(
         const MoonlightCommonCVideoSelection& selection) noexcept override;
     void startVideo() noexcept override;

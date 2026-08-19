@@ -18,6 +18,7 @@ export struct MoonlightSessionToolbar {
   @Prop audioAvailable: boolean = false;
   @Prop controllerAvailable: boolean = false;
   @Prop pipAvailable: boolean = false;
+  @Prop keyboardAvailable: boolean = false;
   @Prop @Watch('onMenuOpenChange') menuOpen: boolean = false;
   @Prop qualityColor: string = '#66DD7A';
   @Prop qualityLabel: string = '良好';
@@ -41,7 +42,7 @@ export struct MoonlightSessionToolbar {
     const layout: MoonlightToolbarLayout = this.layout();
     return moonlightToolbarItems(
       this.breakpoint, this.audioAvailable, this.controllerAvailable, this.pipAvailable,
-      layout.maxVisibleItems);
+      layout.maxVisibleItems, this.keyboardAvailable);
   }
 
   private icon(action: MoonlightToolbarAction): Resource {

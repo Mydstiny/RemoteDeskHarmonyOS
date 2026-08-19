@@ -22,12 +22,16 @@ export struct MoonlightControlCenter {
   @Prop sessionChangeCount: number = 0;
   @Prop pipAvailable: boolean = false;
   @Prop controllerAvailable: boolean = false;
+  @Prop physicalControllerPathReady: boolean = false;
+  @Prop keyboardAvailable: boolean = false;
+  @Prop diagnosticsVisible: boolean = false;
   onClose: () => void = (): void => {};
   onOpenKeyboard: () => void = (): void => {};
   onOpenModifiers: () => void = (): void => {};
   onOpenController: () => void = (): void => {};
   onControlMode: (mode: MoonlightControlMode) => void = (_mode: MoonlightControlMode): void => {};
   onEnterPip: () => void = (): void => {};
+  onToggleDiagnostics: () => void = (): void => {};
   onDisconnect: () => void = (): void => {};
 
   private pal(): Palette {
@@ -112,14 +116,18 @@ export struct MoonlightControlCenter {
             this.choice('触控板', this.controlMode === 'trackpad', (): void => { this.onControlMode('trackpad'); })
           }.width('100%')
           Column() {
-            this.actionRow($r('sys.symbol.keyboard'), '虚拟键盘', '当前版本请使用实体键盘；后续接入系统输入法',
-              (): void => { this.onOpenKeyboard(); }, false)
+            this.actionRow($r('sys.symbol.keyboard'), '虚拟键盘',
+              this.keyboardAvailable ? '系统输入法、功能键与修饰键' : '输入通道尚未就绪',
+              (): void => { this.onOpenKeyboard(); }, this.keyboardAvailable)
             Divider().color(this.pal().divider).margin({ left: 58 })
             this.actionRow($r('sys.symbol.keyboard'), '修饰键与快捷键', '直接复用会话通用状态机',
               (): void => { this.onOpenModifiers(); })
             Divider().color(this.pal().divider).margin({ left: 58 })
             this.actionRow($r('sys.symbol.gamecontroller_fill'), '控制器',
-              this.controllerAvailable ? '虚拟与实体手柄状态' : 'native listener 真机验收前保持关闭',
+              this.controllerAvailable ?
+                (this.physicalControllerPathReady ? '虚拟控制器与实体手柄监听均已就绪' :
+                  '虚拟控制器可用；当前设备实体手柄监听不可用') :
+                '控制器输入通道尚未就绪',
               (): void => { this.onOpenController(); }, this.controllerAvailable)
           }.width('100%').backgroundColor(this.pal().card).borderRadius(16).margin({ top: 8 })
             .border({ width: 0.5, color: this.pal().cardBorder })
@@ -130,6 +138,15 @@ export struct MoonlightControlCenter {
               .fontSize(10).fontColor(this.pal().text3)
               .layoutWeight(1)
           }.width('100%').height(48)
+
+          this.sectionTitle('诊断', '仅本次')
+          Column() {
+            this.actionRow($r('sys.symbol.info_circle'), '性能悬浮窗',
+              this.diagnosticsVisible ? '已显示，可拖动、展开或复制脱敏数据' :
+                '显示实测帧率、码率与输入丢弃计数',
+              (): void => { this.onToggleDiagnostics(); })
+          }.width('100%').backgroundColor(this.pal().card).borderRadius(16)
+            .border({ width: 0.5, color: this.pal().cardBorder })
 
           this.sectionTitle('危险操作')
           Column() {

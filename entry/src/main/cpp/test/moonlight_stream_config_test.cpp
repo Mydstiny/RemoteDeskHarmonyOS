@@ -1,4 +1,5 @@
 #include "moonlight/media/MoonlightStreamConfig.h"
+#include "moonlight/input/MoonlightProductInputRuntime.h"
 #include "moonlight/runtime/MoonlightProductStreamingRuntime.h"
 #include "test_runner.h"
 
@@ -187,6 +188,35 @@ RDP_TEST_CASE(moonlight_stream_config_builds_deterministic_host_offer) {
     RDP_ASSERT_EQ(result.launchProjection->audioLayout, result.offer->audioLayout);
     RDP_ASSERT_EQ(result.launchProjection->controllerBitmap, 0U);
     RDP_ASSERT(!result.launchProjection->persistGamepadsAfterDisconnect);
+}
+
+RDP_TEST_CASE(moonlight_product_terminal_input_requires_positive_teardown_proof) {
+    RDP_ASSERT(moonlightProductRemoteInputReleaseProven(
+        MoonlightInputFlushStatus::Applied, true, true));
+    RDP_ASSERT(!moonlightProductRemoteInputReleaseProven(
+        MoonlightInputFlushStatus::Applied, false, true));
+    RDP_ASSERT(!moonlightProductRemoteInputReleaseProven(
+        MoonlightInputFlushStatus::Applied, true, false));
+    RDP_ASSERT(!moonlightProductRemoteInputReleaseProven(
+        MoonlightInputFlushStatus::AppliedLocally, true, false));
+    RDP_ASSERT(!moonlightProductRemoteInputReleaseProven(
+        MoonlightInputFlushStatus::AlreadyApplied, true, true));
+    RDP_ASSERT(!moonlightProductRemoteInputReleaseProven(
+        MoonlightInputFlushStatus::BoundaryFailure, true, false));
+    RDP_ASSERT(!moonlightProductTerminalInputMayBeStuck(
+        false, false, false, false));
+    RDP_ASSERT(!moonlightProductTerminalInputMayBeStuck(
+        false, true, true, false));
+    RDP_ASSERT(!moonlightProductTerminalInputMayBeStuck(
+        true, true, true, true));
+    RDP_ASSERT(moonlightProductTerminalInputMayBeStuck(
+        true, false, false, false));
+    // A successful stopLocally() retires process state but does not prove the
+    // Sunshine input state was neutralized after permanent port failure.
+    RDP_ASSERT(moonlightProductTerminalInputMayBeStuck(
+        true, true, true, false));
+    RDP_ASSERT(moonlightProductTerminalInputMayBeStuck(
+        true, true, false, true));
 }
 
 RDP_TEST_CASE(moonlight_stream_config_maps_all_fixed_resolution_presets) {

@@ -6,13 +6,24 @@ import {
   createLocalBackupDocument,
   createLocalBackupRestorePreview,
   localBackupExtensionOwnerTable,
+  localBackupLocalTableNames,
   localBackupCanonicalPayload,
   localBackupSha256,
-  validateLocalBackupDocument
+  LOCAL_BACKUP_PORTABLE_TABLES,
+  validateCloudDownloadRollbackSnapshot,
+  validateLocalBackupDocument,
+  validateLocalBackupSnapshot
 } from '../main/ets/services/LocalBackupPolicy';
+import {
+  MOONLIGHT_CLOUD_TABLE,
+  MOONLIGHT_LOCAL_TABLE
+} from '../main/ets/model/MoonlightRecord';
 import {
   vncPayloadHashSha256
 } from '../main/ets/services/VncRecordPolicy';
+import {
+  MOONLIGHT_SESSION_RECOVERY_PREFERENCES_NAME
+} from '../main/ets/services/MoonlightSessionRecoveryStore';
 
 function emptyTables(): Record<string, Array<Record<string, string>>> {
   const tables: Record<string, Array<Record<string, string>>> = {};
@@ -84,6 +95,18 @@ function portableVncHostRow(
 
 export default function localBackupPolicyTest(): void {
   describe('LocalBackupPolicy', (): void => {
+    it('never_exports_the_device_local_moonlight_recovery_marker', 0,
+      (): void => {
+        expect(LOCAL_BACKUP_PORTABLE_TABLES.indexOf(
+          MOONLIGHT_SESSION_RECOVERY_PREFERENCES_NAME)).assertEqual(-1);
+        expect(localBackupLocalTableNames().indexOf(
+          MOONLIGHT_SESSION_RECOVERY_PREFERENCES_NAME)).assertEqual(-1);
+        const document: LocalBackupDocument = createLocalBackupDocument(
+          emptyTables(), 100, '1.0.10', [], {}, 'owner-test');
+        expect(JSON.stringify(document).indexOf(
+          MOONLIGHT_SESSION_RECOVERY_PREFERENCES_NAME)).assertEqual(-1);
+      });
+
     it('maps_restricted_admin_extensions_to_remote_host_owners', 0, (): void => {
       expect(localBackupExtensionOwnerTable('rdprestrictedadminsecrets'))
         .assertEqual('remotehosts');
@@ -442,6 +465,94 @@ export default function localBackupPolicyTest(): void {
       expect(plan?.presentLocalTables.length).assertEqual(0);
       expect(plan?.extensionsPresent).assertFalse();
     });
+
+    it('keeps_legacy_and_current_cloud_download_before_images_upgrade_safe',
+      0, (): void => {
+        const coreTables:
+          Record<string, Array<Record<string, string>>> =
+          emptyTables();
+        const currentTables:
+          Record<string, Array<Record<string, string>>> = {};
+        for (let i = 0;
+          i < LOCAL_BACKUP_PORTABLE_TABLES.length; i++) {
+          currentTables[LOCAL_BACKUP_PORTABLE_TABLES[i]] = [];
+        }
+        const legacyLocal:
+          Record<string, Array<Record<string, string>>> = {
+          'vnclocalrecords': []
+        };
+        const currentLocal:
+          Record<string, Array<Record<string, string>>> = {
+          'vnclocalrecords': []
+        };
+        currentLocal[MOONLIGHT_LOCAL_TABLE] = [];
+
+        expect(validateCloudDownloadRollbackSnapshot(
+          coreTables, [], legacyLocal)).assertTrue();
+        expect(validateCloudDownloadRollbackSnapshot(
+          coreTables, [], currentLocal)).assertTrue();
+        expect(validateCloudDownloadRollbackSnapshot(
+          currentTables, [], currentLocal)).assertTrue();
+        // Portable full-replacement input remains the original eight-table
+        // contract; the Moonlight physical projection is restored only via
+        // its local overlay adapter.
+        expect(validateLocalBackupSnapshot(
+          coreTables, [], legacyLocal)).assertTrue();
+        expect(validateLocalBackupSnapshot(
+          currentTables, [], currentLocal)).assertFalse();
+
+        const partialTables:
+          Record<string, Array<Record<string, string>>> = {};
+        for (let i = 0; i < CLOUD_SYNC_TABLES.length; i++) {
+          if (CLOUD_SYNC_TABLES[i] !== 'sshkeys') {
+            partialTables[CLOUD_SYNC_TABLES[i]] = [];
+          }
+        }
+        expect(validateCloudDownloadRollbackSnapshot(
+          partialTables, [], legacyLocal)).assertFalse();
+        const invalidLocal:
+          Record<string, Array<Record<string, string>>> = {};
+        invalidLocal[MOONLIGHT_LOCAL_TABLE] = [];
+        expect(validateCloudDownloadRollbackSnapshot(
+          currentTables, [], invalidLocal)).assertFalse();
+        expect(Object.keys(currentTables).indexOf(
+          MOONLIGHT_CLOUD_TABLE) >= 0).assertTrue();
+      });
+
+    it('accepts_a_pre_moonlight_v3_backup_without_new_manifest_sections',
+      0, (): void => {
+        const document: LocalBackupDocument = createLocalBackupDocument(
+          emptyTables(), 100, '1.0.10', [], {}, 'owner-a');
+        const manifest = document.manifest!;
+        manifest.moonlight = undefined;
+        manifest.sections = manifest.sections.filter((section): boolean =>
+          section.id !== 'cloud:' + MOONLIGHT_CLOUD_TABLE &&
+          section.id !== 'local:' + MOONLIGHT_LOCAL_TABLE);
+        if (document.localTables !== undefined) {
+          const legacyLocal:
+            Record<string, Array<Record<string, string>>> = {};
+          if (document.localTables['vnclocalrecords'] !== undefined) {
+            legacyLocal['vnclocalrecords'] =
+              document.localTables['vnclocalrecords'];
+          }
+          document.localTables = legacyLocal;
+        }
+        document.sha256 = localBackupSha256(localBackupCanonicalPayload(
+          document.createdAt, document.appVersion, document.tables,
+          document.extensions, document.version, document.localTables,
+          document.manifest, CLOUD_SYNC_TABLES));
+
+        const parsed: LocalBackupDocument | null =
+          validateLocalBackupDocument(JSON.stringify(document));
+        expect(parsed !== null).assertTrue();
+        const plan = adaptLocalBackupDocumentForRestore(
+          parsed!, 'owner-a', false);
+        expect(plan !== null).assertTrue();
+        expect(plan?.presentTables.indexOf(
+          MOONLIGHT_CLOUD_TABLE)).assertEqual(-1);
+        expect(plan?.presentLocalTables.indexOf(
+          MOONLIGHT_LOCAL_TABLE)).assertEqual(-1);
+      });
 
     it('excludes_vnc_secret_trust_and_tombstone_rows_from_v3', 0, (): void => {
       const owner: string = 'owner-a';

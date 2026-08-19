@@ -1,4 +1,8 @@
-import { describe, it, expect } from '@ohos/hypium';
+import { expect } from '@ohos/hypium';
+import {
+  auditedDescribe as describe,
+  auditedIt as it
+} from '../main/ets/services/FocusedTestRegistrationAudit';
 import { MoonlightRecord } from '../main/ets/model/MoonlightRecord';
 import {
   defaultMoonlightSettings,
@@ -81,6 +85,7 @@ export default function moonlightRecordPolicyTest(): void {
       expect(paths.indexOf('video.scalingMode') < 0).assertTrue();
       expect(paths.indexOf('background.allowPip') < 0).assertTrue();
       expect(paths.indexOf('background.noSurfaceVideo') >= 0).assertTrue();
+      expect(moonlightMutableFieldPaths('host').indexOf('httpsPort') >= 0).assertTrue();
     });
 
     it('reads_legacy_settings_meta_and_normalizes_before_new_writes', 0, (): void => {
@@ -120,9 +125,43 @@ export default function moonlightRecordPolicyTest(): void {
     it('validates_a_canonical_live_host_and_rejects_tampering', 0, (): void => {
       const record = validHostRecord();
       expect(record.ciphertext).assertEqual('');
+      // Rows written before custom Sunshine control ports were persisted stay valid.
       expect(moonlightValidateRecord(record).valid).assertTrue();
       record.payload = record.payload.replace('Living Room PC', 'Other PC');
       expect(moonlightValidateRecord(record).reason).assertEqual('hash_mismatch');
+    });
+
+    it('accepts_a_custom_https_port_and_rejects_invalid_port_semantics', 0, (): void => {
+      const record = validHostRecord();
+      const customPort = moonlightPayloadWithMeta({
+        schemaVersion: 1,
+        serverUuid: 'server-uuid-1',
+        displayName: 'Living Room PC',
+        addresses: [{ host: '192.0.2.10', family: 'ipv4', port: 47989 }],
+        preferredAddressKey: 'ipv4|192.0.2.10|47989',
+        httpsPort: 48084,
+        hostType: 'sunshine',
+        wakeOnLan: { enabled: false, mac: '', broadcast: '' },
+        userOrder: 0
+      }, baseMeta(), 'host');
+      record.payload = customPort.canonical;
+      record.payloadHashSha256 = moonlightRecordPayloadHashSha256(record);
+      expect(moonlightValidateRecord(record).valid).assertTrue();
+
+      const invalidPort = moonlightPayloadWithMeta({
+        schemaVersion: 1,
+        serverUuid: 'server-uuid-1',
+        displayName: 'Living Room PC',
+        addresses: [{ host: '192.0.2.10', family: 'ipv4', port: 47989 }],
+        preferredAddressKey: 'ipv4|192.0.2.10|47989',
+        httpsPort: 0,
+        hostType: 'sunshine',
+        wakeOnLan: { enabled: false, mac: '', broadcast: '' },
+        userOrder: 0
+      }, baseMeta(), 'host');
+      record.payload = invalidPort.canonical;
+      record.payloadHashSha256 = moonlightRecordPayloadHashSha256(record);
+      expect(moonlightValidateRecord(record).reason).assertEqual('invalid_payload_semantics');
     });
 
     it('fails_closed_on_owner_reference_and_newer_schema', 0, (): void => {

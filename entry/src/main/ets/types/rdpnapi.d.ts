@@ -15,6 +15,10 @@ declare module 'librdpnapi.so' {
     decoderHandle?: number, audioHandle?: number): number;
   export function beginDisconnect(sessionId: number, rendererHandle: number,
     decoderHandle: number, audioHandle: number): number;
+  export function getSessionOwnerIdentity(sessionId: number): NativeSessionOwnerIdentity | null;
+  export function beginDisconnectWithReceipt(sessionId: number, generation: number,
+    ownerToken: number, rendererHandle: number, decoderHandle: number,
+    audioHandle: number): NativeDisconnectReceipt;
   export function disconnectAll(rendererHandle?: number, decoderHandle?: number,
     audioHandle?: number): number;
   export function getDisconnectState(requestId: number): number;
@@ -297,6 +301,18 @@ export interface RdpPreflightRoute {
   gatewayPort?: number;
   gatewayServerName?: string;
   gatewayTransport?: RdpGatewayTransport;
+}
+
+export interface NativeSessionOwnerIdentity {
+  sessionId: number;
+  generation: number;
+  ownerToken: number;
+}
+
+export interface NativeDisconnectReceipt {
+  accepted: boolean;
+  requestId: number;
+  terminalState: number;
 }
 
 export interface RdpPreflightRequest {

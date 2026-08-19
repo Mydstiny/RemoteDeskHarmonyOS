@@ -32,7 +32,39 @@ import { fileIo } from '@kit.CoreFileKit';
 import { inputDevice, KeyCode } from '@kit.InputKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { HostSyncService } from '../services/HostSyncService';
-import { ExtensionLoader } from '../services/ExtensionLoader';
+import {
+  ExtensionLoader,
+  NativeDisconnectIdentity,
+  NativeDisconnectSubmission
+} from '../services/ExtensionLoader';
+import {
+  RemoteSessionWindowCoordinator,
+  RemoteSessionWindowNativeHandoff,
+  RemoteSessionWindowRecord
+} from '../services/RemoteSessionWindowCoordinator';
+import {
+  RemoteSessionWindowRequest,
+  remoteSessionWindowIdFromParams
+} from '../services/RemoteSessionWindowPolicy';
+import { RemoteSessionWindowLauncher } from '../services/RemoteSessionWindowLauncher';
+import { RemoteSessionWindowAuthorizationService } from
+  '../services/RemoteSessionWindowAuthorization';
+import { remoteSessionWindowReadySnapshotIsUsable } from
+  '../services/RemoteSessionWindowReadiness';
+import {
+  ActiveRemoteSessionRecord,
+  ActiveRemoteSessionRegistry,
+  ActiveRemoteSessionTermination
+} from '../services/ActiveRemoteSessionRegistry';
+import {
+  nativeDisconnectStateIsFailed,
+  nextRemoteSessionHandoffGeneration,
+  RemoteSessionLocalHandoffIdentity,
+  remoteSessionHandoffFailureOwnsSession,
+  remoteSessionLocalHandoffFailureOwnsSession
+} from '../services/RemoteSessionTerminationPolicy';
+import { AccountSessionCoordinator } from '../services/AccountSessionCoordinator';
+import { RemoteProtocol } from '../services/RemoteSessionState';
 import { KeyVaultService } from '../services/KeyVaultService';
 import { RemoteHost } from '../model/RemoteHost';
 import { Palette, buildDark, buildLight } from '../common/Theme';
@@ -332,6 +364,8 @@ struct SshTerminal {
   @StorageLink('currentBreakpoint') @Watch('onFontSizeChange') breakpoint: string = 'sm';
   @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
   @StorageProp('isPadDevice') isPadDevice: boolean = false;
+  @LocalStorageLink('sessionWindowBackground') sessionWindowBackground: boolean = false;
+  @LocalStorageLink('sessionWindowFullscreen') sessionWindowFullscreen: boolean = false;
   @StorageLink('sshTerminalFontSize') @Watch('onFontSizeChange') fontSize: number = 18;
   @StorageLink('sshTerminalLineSpacing') @Watch('onLineSpacingChange') lineSpacing: number = 1.12;
   @StorageLink(SSH_SESSION_LOCALE_KEY) sshSessionLocale: string = '';
@@ -576,6 +610,17 @@ struct SshTerminal {
   private forwardingRefreshTimer: number = -1;
   private forwardingReconciledHandles: Set<string> = new Set<string>();
   private loader: ExtensionLoader = ExtensionLoader.getInstance();
+  private sessionWindowId: string = '';
+  // PC authentication stays in this original page. The flag is accepted only
+  // from HostList's SSH preflight route, and a new ability is created only
+  // after attachSshSession has committed a native CONNECTED session.
+  private pcWindowAfterAuthentication: boolean = false;
+  private pcWindowHandoffStarted: boolean = false;
+  private pcWindowHandoffComplete: boolean = false;
+  /** Invalidates delayed independent-window failure callbacks. */
+  private pcWindowHandoffGeneration: number = 0;
+  private sessionWindowReadyCommitted: boolean = false;
+  private sshWindowTranscriptSeeded: boolean = false;
   private hostId: string = '';
   private sessionId: number = -1;
   private win: window.Window | null = null;
@@ -5054,7 +5099,380 @@ struct SshTerminal {
     await this.refreshSftpLocalAt(parent.length >= root.length ? parent : root);
   }
 
+  private bindIndependentSessionWindow(params: Object): void {
+    const id: string = remoteSessionWindowIdFromParams(params);
+    if (id.length === 0 || id === this.sessionWindowId) { return; }
+    const record: RemoteSessionWindowRecord | null =
+      RemoteSessionWindowCoordinator.getInstance().resolve(id);
+    if (record === null || record.request.target !== 'ssh_terminal') { return; }
+    this.sessionWindowId = id;
+    this.loader = record.runtime.loader;
+    this.sshTabStore = record.runtime.sshTabStore;
+    this.sshTranscriptStore = record.runtime.sshTranscriptStore;
+    this.terminalCoreRegistry = record.runtime.terminalCoreRegistry;
+    this.sshTerminalRendererRegistry = record.runtime.sshTerminalRendererRegistry;
+    this.sshNativeFacade = record.runtime.sshNativeFacade;
+    this.sshForwardingController = record.runtime.sshForwardingController;
+    hilog.info(0x0016, 'SshTerminal',
+      'bound independent SSH window runtime');
+  }
+
+  private publishIndependentWindowReady(reason: string): void {
+    if (this.sessionWindowId.length === 0 || this.sessionWindowReadyCommitted ||
+      !remoteSessionWindowReadySnapshotIsUsable({
+        protocolConnected: this.connected && this.sessionId > 0,
+        visualOwnerAttached: this.terminalSurfaceMounted && this.xtermReady,
+        viewportWidth: this.termAreaW,
+        viewportHeight: this.termAreaH,
+        inputReady: this.xtermReady
+      })) {
+      return;
+    }
+    if (RemoteSessionWindowCoordinator.getInstance().markContentReady(this.sessionWindowId)) {
+      this.sessionWindowReadyCommitted = true;
+      hilog.info(0x0016, 'SshTerminal',
+        'independent SSH window interactive reason=' + reason +
+        ' viewport=' + this.termAreaW.toString() + 'x' + this.termAreaH.toString());
+    }
+  }
+
+  private stageIndependentWindowAfterAuthentication(params: Object): void {
+    if (this.sessionWindowId.length > 0 || !this.isDesktopDevice) { return; }
+    const values: Record<string, Object> = params as Record<string, Object>;
+    if (values['pcWindowAfterAuthentication'] !== true) { return; }
+    const preflightKind: string = typeof values['pcWindowPreflightKind'] === 'string' ?
+      values['pcWindowPreflightKind'] as string : '';
+    if (preflightKind !== 'ssh_preflight_complete' &&
+      preflightKind !== 'ssh_broker_handoff') {
+      hilog.warn(0x0016, 'SshTerminal',
+        'independent SSH window staging rejected kind=' + preflightKind);
+      return;
+    }
+    this.pcWindowAfterAuthentication = true;
+    hilog.info(0x0016, 'SshTerminal',
+      'independent SSH window staged after native authentication kind=' + preflightKind);
+  }
+
+  private seedIndependentWindowTranscript(params: Record<string, Object>, hostId: string): void {
+    if (this.sshWindowTranscriptSeeded || this.sessionWindowId.length === 0 ||
+      params['sshWindowPreauthenticated'] !== true) {
+      return;
+    }
+    this.sshWindowTranscriptSeeded = true;
+    const initial: Object | undefined = params['sshInitialTranscript'];
+    if (typeof initial === 'string' && initial.length > 0) {
+      this.sshTranscriptStore.append(hostId, initial);
+    }
+  }
+
+  /**
+   * Pause terminal consumption and move the already-authenticated SSH socket
+   * into a window-local runtime. Password/private-key/ProxyJump/MFA handling
+   * has completed before this method is reachable, so the target never
+   * reconnects and never repeats or bypasses an authentication prompt.
+   */
+  private async handoffAuthenticatedSshToIndependentWindow(
+    connectedSessionId: number, bindingHostId: string,
+    sessionGeneration: number): Promise<boolean> {
+    if (!this.pcWindowAfterAuthentication || this.pcWindowHandoffStarted ||
+      this.sessionWindowId.length > 0 || connectedSessionId <= 0 ||
+      bindingHostId.trim().length === 0) {
+      return false;
+    }
+    this.pcWindowHandoffStarted = true;
+    const operationGeneration: number = nextRemoteSessionHandoffGeneration(
+      this.pcWindowHandoffGeneration);
+    this.pcWindowHandoffGeneration = operationGeneration;
+    const operationPageGeneration: number = this.pageGeneration;
+    const operationBindingGeneration: number = this.sshBindingGeneration;
+    // Router is UIContent-local. Capture the source page router before the
+    // new UIAbility becomes foreground; the process-global router can resolve
+    // to the target window after startAbility() and would minimize that newly
+    // created mission instead of removing this source carrier page.
+    const sourcePageRouter = this.getUIContext().getRouter();
+    let authorizationToken: string = '';
+    let expectedActive: ActiveRemoteSessionRecord | null = null;
+    let disconnectIdentity: NativeDisconnectIdentity | null =
+      this.loader.captureExplicitDisconnectIdentity(
+        connectedSessionId, sessionGeneration);
+    const sourceRegistry: ActiveRemoteSessionRegistry =
+      ActiveRemoteSessionRegistry.getInstance();
+    try {
+      const host: RemoteHost | undefined = this.srv.getHost(bindingHostId);
+      if (host === undefined || host.protocol !== 'ssh') {
+        throw new Error('authenticated SSH host is unavailable');
+      }
+      const scopeReady: boolean = await AccountSessionCoordinator.getInstance().init(
+        getContext(this) as common.Context);
+      if (!scopeReady) { throw new Error('account scope is unavailable'); }
+      const scope = AccountSessionCoordinator.getInstance().currentScope();
+      const now: number = Date.now();
+      const active: ActiveRemoteSessionRecord = {
+        ownerScopeId: scope.ownerScopeId,
+        accountGeneration: scope.generation,
+        sessionId: connectedSessionId,
+        hostId: bindingHostId,
+        protocol: RemoteProtocol.ssh,
+        hostAddress: host.host,
+        protocolConnected: true,
+        renderAttached: false,
+        restoreNeeded: true,
+        latestSurfaceId: '',
+        createdAtMs: now,
+        updatedAtMs: now
+      };
+      expectedActive = active;
+      sourceRegistry.bindScope(scope.ownerScopeId, scope.generation);
+      if (!sourceRegistry.setActive(active)) {
+        throw new Error('authenticated SSH registry update rejected');
+      }
+
+      const transcript: string = this.sshTranscriptStore.snapshot(bindingHostId);
+      // Stop view delivery only after the existing callback/auth state has
+      // committed. adoptDetachedSshSession restores facade ownership without
+      // resuming reads; the target installs its callback before resume().
+      this.detachSftpSessionOwner(bindingHostId, connectedSessionId);
+      this.releaseForwardingSession(bindingHostId, connectedSessionId, sessionGeneration);
+      const detachedForTransfer: boolean =
+        this.loader.detachSshSession(connectedSessionId, bindingHostId);
+      if (!detachedForTransfer) {
+        throw new Error('authenticated SSH session could not be paused for transfer');
+      }
+      const adoptedForTransfer: number =
+        this.loader.adoptDetachedSshSession(bindingHostId);
+      if (adoptedForTransfer !== connectedSessionId) {
+        disconnectIdentity = this.loader.captureExplicitDisconnectIdentity(
+          connectedSessionId, sessionGeneration);
+        throw new Error('authenticated SSH session could not be adopted for transfer');
+      }
+      disconnectIdentity = this.loader.captureExplicitDisconnectIdentity(
+        connectedSessionId, sessionGeneration);
+      if (disconnectIdentity === null || disconnectIdentity.facadeGeneration <= 0) {
+        throw new Error('authenticated SSH owner receipt is unavailable');
+      }
+
+      authorizationToken = RemoteSessionWindowAuthorizationService.getInstance().issue(
+        'ssh', bindingHostId, 'ssh_authenticated');
+      if (authorizationToken.length === 0) {
+        throw new Error('authenticated SSH window authorization failed');
+      }
+      const routeParams: Record<string, Object> = {};
+      routeParams['hostId'] = bindingHostId;
+      routeParams['authenticated'] = true;
+      routeParams['sshWindowPreauthenticated'] = true;
+      routeParams['sshInitialTranscript'] = transcript;
+      const request: RemoteSessionWindowRequest = {
+        target: 'ssh_terminal',
+        protocol: 'ssh',
+        hostId: bindingHostId,
+        title: host.label + ' — SSH',
+        authorizationToken,
+        routeParams
+      };
+      const context: common.UIAbilityContext =
+        this.getUIContext().getHostContext() as common.UIAbilityContext;
+      const opened: boolean = await RemoteSessionWindowLauncher.open(
+        context, request,
+        new RemoteSessionWindowNativeHandoff(this.loader, sourceRegistry, active));
+      if (!opened) { throw new Error('independent SSH ability launch rejected'); }
+
+      this.pcWindowHandoffComplete = true;
+      // Remove only source-page metadata. The target uses window-local stores
+      // and owns the same native session through its transferred loader.
+      this.sshTabStore.closeAll();
+      this.sshTranscriptStore.clearAll();
+      this.sessionId = -1;
+      this.sshSessionGeneration = 0;
+      this.connected = false;
+      this.connecting = false;
+      this.stopLatencyProbe();
+      this.stopSshAuthPromptPolling(true);
+      hilog.info(0x0016, 'SshTerminal',
+        'authenticated SSH session handed to independent window');
+      try {
+        sourcePageRouter.back();
+      } catch (err) {
+        hilog.warn(0x0016, 'SshTerminal',
+          'source SSH page did not close after handoff: ' + JSON.stringify(err));
+      }
+      return true;
+    } catch (err) {
+      if (authorizationToken.length > 0) {
+        RemoteSessionWindowAuthorizationService.getInstance().revoke(authorizationToken);
+      }
+      const teardownOwned: boolean = this.discardFailedSshWindowHandoff(
+        sourceRegistry, expectedActive, connectedSessionId, bindingHostId,
+        sessionGeneration, operationGeneration, operationPageGeneration,
+        operationBindingGeneration, disconnectIdentity);
+      if (!teardownOwned) {
+        hilog.warn(0x0016, 'SshTerminal',
+          'ignored stale SSH window handoff failure session=' +
+          connectedSessionId.toString());
+        return true;
+      }
+      this.pcWindowAfterAuthentication = false;
+      this.pcWindowHandoffStarted = false;
+      hilog.error(0x0016, 'SshTerminal',
+        'authenticated SSH window handoff failed: ' + JSON.stringify(err));
+      promptAction.showToast({
+        message: 'SSH 独立窗口创建失败，已安全断开会话',
+        duration: 2400
+      });
+      this.sshTabStore.invalidateSession(bindingHostId, 'error', 'windowLaunchFailed');
+      this.sessionId = -1;
+      this.sshSessionGeneration = 0;
+      this.connected = false;
+      this.connecting = false;
+      try { sourcePageRouter.back(); } catch (_err) {}
+      return true;
+    }
+  }
+
+  /**
+   * Fence a failed window transfer before touching native state. A delayed
+   * callback may own only the exact page binding, native session and registry
+   * record that initiated it; a newer connection to the same host is ignored.
+   */
+  private discardFailedSshWindowHandoff(
+    registry: ActiveRemoteSessionRegistry,
+    expected: ActiveRemoteSessionRecord | null,
+    connectedSessionId: number,
+    bindingHostId: string,
+    sessionGeneration: number,
+    operationGeneration: number,
+    pageGeneration: number,
+    bindingGeneration: number,
+    disconnectIdentity: NativeDisconnectIdentity | null
+  ): boolean {
+    const expectedLocal: RemoteSessionLocalHandoffIdentity = {
+      pageGeneration,
+      bindingGeneration,
+      sessionId: connectedSessionId,
+      sessionGeneration,
+      hostId: bindingHostId,
+      operationGeneration
+    };
+    const currentLocal: RemoteSessionLocalHandoffIdentity = {
+      pageGeneration: this.pageGeneration,
+      bindingGeneration: this.sshBindingGeneration,
+      sessionId: this.sessionId,
+      sessionGeneration: this.sshSessionGeneration,
+      hostId: this.hostId,
+      operationGeneration: this.pcWindowHandoffGeneration
+    };
+    const loaderIdentitySessionId: number = disconnectIdentity !== null &&
+      disconnectIdentity.facadeGeneration === 0 ? connectedSessionId :
+      this.loader.getSessionId();
+    const localOwnerCurrent: boolean = !this.terminalClosing &&
+      remoteSessionLocalHandoffFailureOwnsSession(
+        expectedLocal, currentLocal, loaderIdentitySessionId);
+    if (!localOwnerCurrent || disconnectIdentity === null) { return false; }
+
+    const active: ActiveRemoteSessionRecord | null = registry.getActive();
+    let termination: ActiveRemoteSessionTermination | null = null;
+    if (expected !== null && remoteSessionHandoffFailureOwnsSession(
+      expected, active, loaderIdentitySessionId, operationGeneration,
+      this.pcWindowHandoffGeneration)) {
+      termination = registry.beginTermination(active as ActiveRemoteSessionRecord, null);
+      if (termination === null) { return false; }
+    }
+
+    // Invalidate the operation before teardown submission. A retry closure now
+    // owns this exact session even if the NAPI boundary temporarily rejects it.
+    this.pcWindowHandoffGeneration = nextRemoteSessionHandoffGeneration(
+      this.pcWindowHandoffGeneration);
+    this.submitFailedSshWindowHandoffTeardown(
+      registry, termination, connectedSessionId, disconnectIdentity);
+    return true;
+  }
+
+  private submitFailedSshWindowHandoffTeardown(
+    registry: ActiveRemoteSessionRegistry,
+    termination: ActiveRemoteSessionTermination | null,
+    sessionId: number,
+    disconnectIdentity: NativeDisconnectIdentity
+  ): void {
+    if (termination !== null && !registry.isTerminationCurrent(termination)) { return; }
+    const submission: NativeDisconnectSubmission =
+      this.loader.disconnectSshSessionWithReceipt(sessionId, disconnectIdentity);
+    if (!submission.accepted) {
+      if (!submission.retryable) {
+        hilog.error(0x0016, 'SshTerminal',
+          'SSH failed-window teardown owner changed before submission');
+        return;
+      }
+      setTimeout((): void => {
+        this.submitFailedSshWindowHandoffTeardown(
+          registry, termination, sessionId, disconnectIdentity);
+      }, 250);
+      return;
+    }
+    if (submission.terminal) {
+      if (submission.successful) {
+        if (termination !== null) { registry.completeTermination(termination); }
+      } else {
+        hilog.error(0x0016, 'SshTerminal',
+          'SSH failed-window synchronous teardown failed');
+      }
+      return;
+    }
+    this.waitForFailedSshWindowHandoffTeardown(
+      registry, termination, submission.requestId);
+  }
+
+  private waitForFailedSshWindowHandoffTeardown(
+    registry: ActiveRemoteSessionRegistry,
+    termination: ActiveRemoteSessionTermination | null,
+    requestId: number
+  ): void {
+    void this.loader.waitForTeardownRequest(requestId).then((completed: boolean): void => {
+      if (termination !== null && !registry.isTerminationCurrent(termination)) { return; }
+      if (completed) {
+        if (termination !== null) { registry.completeTermination(termination); }
+        return;
+      }
+      const state: number = this.loader.getDisconnectState(requestId);
+      if (nativeDisconnectStateIsFailed(state) || state === 0) {
+        // Failed/evicted requests are never proof of successful teardown. A
+        // tracked registry termination deliberately remains fail closed.
+        hilog.error(0x0016, 'SshTerminal',
+          'SSH failed-window teardown not successful request=' +
+          requestId.toString() + ' state=' + state.toString());
+        return;
+      }
+      setTimeout((): void => {
+        this.waitForFailedSshWindowHandoffTeardown(
+          registry, termination, requestId);
+      }, 250);
+    }).catch((err: Error): void => {
+      if (termination !== null && !registry.isTerminationCurrent(termination)) { return; }
+      hilog.warn(0x0016, 'SshTerminal',
+        'SSH failed-window teardown wait unavailable request=' +
+        requestId.toString() + ' err=' +
+        (err.message ? err.message : JSON.stringify(err)));
+      setTimeout((): void => {
+        this.waitForFailedSshWindowHandoffTeardown(
+          registry, termination, requestId);
+      }, 250);
+    });
+  }
+
+  private toggleIndependentWindowFullscreen(): void {
+    if (this.sessionWindowId.length === 0) { return; }
+    void RemoteSessionWindowCoordinator.getInstance().toggleFullscreen(
+      this.sessionWindowId).then((changed: boolean): void => {
+      if (!changed) {
+        promptAction.showToast({ message: '窗口全屏切换暂不可用', duration: 1800 });
+      }
+    }).catch((_err: Error): void => {
+      promptAction.showToast({ message: '窗口全屏切换失败', duration: 1800 });
+    });
+  }
+
   async aboutToAppear(): Promise<void> {
+    const routeParams: Object = router.getParams();
+    this.bindIndependentSessionWindow(routeParams);
+    this.stageIndependentWindowAfterAuthentication(routeParams);
     this.stopSshAuthPromptPolling(true);
     const pageGeneration: number = ++this.pageGeneration;
     const bindingGeneration: number = ++this.sshBindingGeneration;
@@ -5260,7 +5678,6 @@ struct SshTerminal {
     // setup awaits complete. This lets ArkWeb start the xterm document while
     // SSH authentication is still in flight instead of beginning after the
     // session has already reached CONNECTED.
-    const routeParams: Object = router.getParams();
     const routeValues: Record<string, Object> = routeParams
       ? routeParams as Record<string, Object> : {};
     const initialHostId: string = ((routeValues['hostId'] as string) || '').trim();
@@ -5305,6 +5722,9 @@ struct SshTerminal {
       const id: string = p['hostId'] as string;
       if (id) {
         this.hostId = id;
+        const windowPreauthenticated: boolean = this.sessionWindowId.length > 0 &&
+          p['sshWindowPreauthenticated'] === true;
+        this.seedIndependentWindowTranscript(p, this.hostId);
         this.sshSessionLocale = this.sshSettings.getSshSessionLocale(this.hostId);
         this.refreshForwardingProfiles();
         this.visibleSshHostId = id.trim();
@@ -5372,15 +5792,26 @@ struct SshTerminal {
             if (!r.ok) { this.connecting = false; this.connectionError = lockGateErrorMessage(r) || '验证未通过'; return; }
           }
           if (!this.isSshBindingActive(pageGeneration, bindingGeneration, this.hostId)) { return; }
-          const detachedSessionId: number = this.loader.adoptDetachedSshSession(this.hostId);
-          if (detachedSessionId > 0) {
-            const attached: boolean = await this.attachSshSession(
-              pageGeneration, bindingGeneration, detachedSessionId, this.hostId);
-            if (!attached && this.isSshBindingActive(pageGeneration, bindingGeneration, this.hostId)) {
-              await this.connect(host, pageGeneration, bindingGeneration);
+          if (windowPreauthenticated) {
+            const handedSessionId: number = this.loader.getSessionId();
+            if (handedSessionId <= 0 || !await this.attachSshSession(
+              pageGeneration, bindingGeneration, handedSessionId, this.hostId)) {
+              this.connecting = false;
+              this.connectionError = '已鉴权 SSH 会话交接失败，未重新发起登录';
+              hilog.error(0x0016, 'SshTerminal',
+                'window runtime missing authenticated SSH handoff');
             }
           } else {
-            await this.connect(host, pageGeneration, bindingGeneration);
+            const detachedSessionId: number = this.loader.adoptDetachedSshSession(this.hostId);
+            if (detachedSessionId > 0) {
+              const attached: boolean = await this.attachSshSession(
+                pageGeneration, bindingGeneration, detachedSessionId, this.hostId);
+              if (!attached && this.isSshBindingActive(pageGeneration, bindingGeneration, this.hostId)) {
+                await this.connect(host, pageGeneration, bindingGeneration);
+              }
+            } else {
+              await this.connect(host, pageGeneration, bindingGeneration);
+            }
           }
         }
       }
@@ -5425,8 +5856,9 @@ struct SshTerminal {
     // flash above the next SSH page during router replacement.
     this.resetTerminalSurfaceBinding();
     const backgroundInfos: SshTerminalBackgroundInfo[] = this.backgroundSshInfos();
-    let preserveSshInBackground: boolean =
-      (AppStorage.get<boolean>('remoteDesktopBgFlag') ?? false) &&
+    const abilityBackground: boolean = this.sessionWindowId.length > 0 ?
+      this.sessionWindowBackground : (AppStorage.get<boolean>('remoteDesktopBgFlag') ?? false);
+    let preserveSshInBackground: boolean = abilityBackground &&
       !this.explicitSessionClose && backgroundInfos.length > 0;
     let backgroundContext: common.UIAbilityContext | null = null;
     try {
@@ -5439,7 +5871,7 @@ struct SshTerminal {
     }
     if (preserveSshInBackground) {
       if (backgroundContext !== null) {
-        if (this.sshPipService.isPreparedOrPreparing()) {
+        if (this.sessionWindowId.length === 0 && this.sshPipService.isPreparedOrPreparing()) {
           this.sshPipService.update(this.makeSshPipInfo('后台保留'));
           void this.sshPipService.start().then((started: boolean): void => {
             hilog.info(0x0017, 'SshTerminal', 'SSH PiP auto-start=' + started.toString());
@@ -5479,9 +5911,17 @@ struct SshTerminal {
         hilog.warn(0x0016, 'SshTerminal', 'SSH session detached without background task context');
       }
     } else {
-      void this.sshPipService.stop();
+      if (this.sessionWindowId.length === 0) { void this.sshPipService.stop(); }
       if (backgroundContext !== null) {
-        void this.sshBackgroundTaskService.stop(backgroundContext);
+        if (this.sessionWindowId.length === 0) {
+          void this.sshBackgroundTaskService.stop(backgroundContext);
+        } else {
+          for (let index: number = 0; index < backgroundInfos.length; index++) {
+            const info: SshTerminalBackgroundInfo = backgroundInfos[index];
+            void this.sshBackgroundTaskService.stopSession(
+              backgroundContext, info.sessionId, info.hostId);
+          }
+        }
       }
     }
     this.invalidateSftpRefreshRequest();
@@ -6199,7 +6639,12 @@ struct SshTerminal {
         sshJumpHostKeyFingerprintSha256: (preflightMatchesHost ? this.preflightExpectedJumpHostKeyFp : '') ||
           host.sshJumpHostKeyFingerprintSha256
       };
-      const connectedSessionId: number = await this.loader.connectSshAsync(cfg);
+      // An authenticated PC-window session uses only explicit session-id
+      // callback/input APIs. Keeping it detached from the legacy process-wide
+      // sink owner allows multiple independent SSH windows to stay live at
+      // once without changing the existing authentication flow.
+      const connectedSessionId: number = await this.loader.connectSshAsync(
+        cfg, !this.pcWindowAfterAuthentication);
       if (!this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId)) {
         // ExtensionLoader cancels an in-flight connect during page teardown;
         // only disconnect a resolved session if it is still the current one.
@@ -6321,6 +6766,10 @@ struct SshTerminal {
     // prevents the toolbar from oscillating between stale connecting/connected.
     this.sshTabStore.activate(bindingHostId);
     this.sshTabStore.update(bindingHostId, 'connected', connectedSessionId, '', sessionGeneration);
+    if (await this.handoffAuthenticatedSshToIndependentWindow(
+      connectedSessionId, bindingHostId, sessionGeneration)) {
+      return true;
+    }
     // A keyboard can be attached while SSH is negotiating. Re-enumerate at
     // the same connection boundary used by RDP/RustDesk before routing input.
     void this.refreshPhysicalKeyboardPresence('connection-state');
@@ -6334,6 +6783,7 @@ struct SshTerminal {
     this.refreshSshTabViews();
     this.scheduleTerminalSurfaceMount(pageGeneration, bindingGeneration, bindingHostId,
       connectedSessionId);
+    this.publishIndependentWindowReady('ssh-session-attached');
     this.startLatencyProbe();
     void this.prepareSshPip(pageGeneration, bindingGeneration, bindingHostId);
 
@@ -6367,6 +6817,7 @@ struct SshTerminal {
 
   private async prepareSshPip(pageGeneration: number, bindingGeneration: number,
     bindingHostId: string): Promise<void> {
+    if (this.sessionWindowId.length > 0) { return; }
     if (!this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId) ||
       this.sessionId <= 0) {
       return;
@@ -6482,6 +6933,16 @@ struct SshTerminal {
       this.sftpPeerHostPicker;
     if (sftpVisible) {
       this.closeSftpPanel();
+      return;
+    }
+    if (this.sessionWindowId.length > 0) {
+      try {
+        const context: common.UIAbilityContext =
+          this.getUIContext().getHostContext() as common.UIAbilityContext;
+        void context.terminateSelf();
+      } catch (_err) {
+        router.back();
+      }
       return;
     }
     router.back();
@@ -6601,6 +7062,7 @@ struct SshTerminal {
     this.xtermReady = true;
     this.focusKeyboard(false);
     this.requestTerminalScrollToBottomSettled();
+    this.publishIndependentWindowReady('native-renderer-ready');
   }
 
   private onNativeRendererUnavailable(hostId: string, surfaceIdentity: string): void {
@@ -6714,6 +7176,7 @@ struct SshTerminal {
       this.xtermReady = true;
       this.focusKeyboard(false);
       this.requestTerminalScrollToBottomSettled();
+      this.publishIndependentWindowReady('xterm-ready');
     }
   }
 
@@ -6745,6 +7208,11 @@ struct SshTerminal {
    * the IME is closed; onKeyEvent is the required fallback for that path.
    */
   private handleSshKeyEvent(event: KeyEvent): boolean {
+    if (this.sessionWindowId.length > 0 && event.keyCode === KeyCode.KEYCODE_F11) {
+      try { event.stopPropagation(); } catch (_err) {}
+      if (event.type === KeyType.Down) { this.toggleIndependentWindowFullscreen(); }
+      return true;
+    }
     if (event.type !== KeyType.Down) { return false; }
     const physicalKeyboard: boolean = this.isPhysicalKeyboardEvent(event);
     const likelyHardware: boolean = this.isLikelyHardwareKeyEvent(event);
@@ -11075,8 +11543,69 @@ struct SshTerminal {
     })
   }
 
+  @Builder PcWindowAuthenticationCarrier() {
+    Stack({ alignContent: Alignment.TopStart }) {
+      Column()
+        .width('100%')
+        .height('100%')
+        .backgroundColor(this.pal().bg)
+
+      Row() {
+        Row() {
+          Text('←').fontSize(18).fontColor(this.pal().text).margin({ right: 6 })
+          Text('取消').fontSize(14).fontColor(this.pal().text)
+        }
+        .height(36)
+        .padding({ left: 12, right: 14 })
+        .borderRadius(18)
+        .backgroundColor(this.pal().surface)
+        .onClick((): void => { this.closeSessionAndBack(); })
+      }
+      .width('100%')
+      .padding({ left: 18, top: 14 })
+
+      Column({ space: 12 }) {
+        SymbolGlyph($r('sys.symbol.lock_shield_fill'))
+          .fontSize(38)
+          .fontColor([this.accentColor])
+        Text('正在完成 SSH 鉴权')
+          .fontSize(18)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(this.pal().text)
+        if (this.hostLabel.length > 0) {
+          Text(this.hostLabel)
+            .fontSize(13)
+            .fontColor(this.pal().text2)
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+        }
+        LoadingProgress().width(28).height(28).color(this.accentColor).margin({ top: 6 })
+        Text('鉴权成功后将在独立窗口中打开，不会在主窗口创建终端画面')
+          .fontSize(12)
+          .fontColor(this.pal().text3)
+          .textAlign(TextAlign.Center)
+          .maxLines(2)
+      }
+      .width('100%')
+      .height('100%')
+      .padding({ left: 28, right: 28 })
+      .justifyContent(FlexAlign.Center)
+      .hitTestBehavior(HitTestMode.Transparent)
+    }
+    .width('100%')
+    .height('100%')
+  }
+
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
+      if (this.pcWindowAfterAuthentication && this.sessionWindowId.length === 0 &&
+        !this.pcWindowHandoffComplete) {
+        // Keep the unchanged SSH credential/host-key/MFA sheets on this page,
+        // but never mount its xterm surface in the app's primary window. The
+        // already-authenticated native session is transferred to the new
+        // ability before that window creates the only visible terminal.
+        this.PcWindowAuthenticationCarrier()
+      } else {
       Column() {
       // 手机保留原始独立标签条; Pad/PC 的标签条嵌入连接顶栏。
       if (this.sshTabViews.length > 0 && !this.sshTabsInline()) {
@@ -11454,6 +11983,7 @@ struct SshTerminal {
             } else if (!this.isDesktopDevice && this.connected) {
               this.requestTerminalScrollToBottomSettled();
             }
+            this.publishIndependentWindowReady('terminal-area-change');
           })
           .bindContextMenu(this.TermMenu(), ResponseType.LongPress)
           }
@@ -11535,6 +12065,7 @@ struct SshTerminal {
       .constraintSize({ minHeight: 0 })
       .backgroundColor('#0D0D0D')
       .id('ssh-terminal-pane')
+      }
       // Keep one stable native Sheet host for the complete SFTP workspace.
       // Phone renders the 1.0.8 single-pane layout; Pad/PC render the wide
       // two-endpoint workspace without changing the native root surface.
@@ -11692,5 +12223,15 @@ struct SshTerminal {
       showClose: false,
       onDisappear: (): void => { this.onSshTabPickerDisappear(); }
     })
+  }
+
+  pageTransition() {
+    if (this.pcWindowAfterAuthentication && this.sessionWindowId.length === 0) {
+      // The carrier is plumbing for the existing authentication flow, not a
+      // user destination. A zero-motion transition prevents the terminal route
+      // from visibly sliding through the primary app before the window opens.
+      PageTransitionEnter({ duration: 0 }).opacity(1)
+      PageTransitionExit({ duration: 0 }).opacity(1)
+    }
   }
 }

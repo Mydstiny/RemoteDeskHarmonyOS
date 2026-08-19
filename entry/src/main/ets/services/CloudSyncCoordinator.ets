@@ -44,6 +44,7 @@ import {
   CloudSyncSource,
   CloudSyncFailureKind,
   automaticRetryKey,
+  cloudFirstCompatibleTablesAfterOptionalFailure,
   coalesceAutomaticPush,
   exclusiveCloudOperationLeaseValid,
   exclusiveVncSelectionAdmissionAllowed,
@@ -59,9 +60,48 @@ import {
   upsertAutomaticRetryRecord,
   CloudSyncBootstrapState
 } from './CloudSyncCoordinatorPolicy';
+import { recordDiagnosticEvent } from './DiagnosticCaptureRuntime';
 
 const DOMAIN = 0x0001;
 const TAG = 'CloudSyncCoordinator';
+
+function diagnosticCloudSourceCode(source: CloudSyncSource): number {
+  switch (source) {
+    case 'startup': return 1;
+    case 'foreground': return 2;
+    case 'cloudEvent': return 3;
+    case 'automaticPush': return 4;
+    case 'manualUpload': return 5;
+    case 'manualDownload': return 6;
+    case 'selectionReenable': return 7;
+    case 'localRestore': return 8;
+  }
+}
+
+function diagnosticCloudDirectionCode(direction: CloudSyncDirection): number {
+  return direction === 'nativeFirst' ? 1 : 2;
+}
+
+function diagnosticCloudFailureCode(failure: CloudSyncFailureKind): number {
+  switch (failure) {
+    case 'none': return 0;
+    case 'version_conflict': return 1;
+    case 'empty_snapshot': return 2;
+    case 'tombstone_cleanup': return 3;
+    case 'unsafe_payload': return 4;
+    case 'cloud_service': return 5;
+    case 'network': return 6;
+    case 'indeterminate': return 7;
+    case 'restore_pending': return 8;
+    case 'no_selection': return 9;
+    case 'unknown': return 10;
+  }
+}
+
+function diagnosticCloudRequestCode(request: CloudSyncRequest): number {
+  return diagnosticCloudSourceCode(request.source) * 10 +
+    diagnosticCloudDirectionCode(request.direction);
+}
 
 export interface CloudSyncOperationResult {
   ok: boolean;
@@ -92,6 +132,38 @@ export function restoreQuarantinedStartupResult(
     failedTables: snapshotCloudSyncTables(tables),
     rollbackFailed: false,
     failureKind: 'restore_pending'
+  };
+}
+
+function mergeCloudSyncTableLists(
+  first: string[], second: string[]
+): string[] {
+  const merged: string[] = [];
+  const values: string[] = first.concat(second);
+  for (let i = 0; i < values.length; i++) {
+    if (values[i] !== '' && merged.indexOf(values[i]) < 0) {
+      merged.push(values[i]);
+    }
+  }
+  return merged;
+}
+
+function combineCloudSyncOperationResults(
+  source: CloudSyncSource,
+  first: CloudSyncOperationResult,
+  second: CloudSyncOperationResult
+): CloudSyncOperationResult {
+  const failedTables: string[] = mergeCloudSyncTableLists(
+    first.failedTables, second.failedTables);
+  return {
+    ok: first.ok && second.ok && failedTables.length === 0 &&
+      !first.rollbackFailed && !second.rollbackFailed,
+    source,
+    tables: mergeCloudSyncTableLists(first.tables, second.tables),
+    failedTables,
+    rollbackFailed: first.rollbackFailed || second.rollbackFailed,
+    failureKind: first.failureKind !== 'none'
+      ? first.failureKind : second.failureKind
   };
 }
 
@@ -150,13 +222,25 @@ export interface CloudSyncCoordinatorHooks {
   /** Return false to roll the just-applied cloud download back to its snapshot. */
   completeManualDownload: (tables: string[]) => boolean | void;
   /** Complete only successful tables without clearing unrelated restore quarantine. */
-  completeManualDownloadPartial?: (tables: string[]) => boolean | void;
+  completeManualDownloadPartial?: (
+    tables: string[], failedTables: string[]
+  ) => Promise<boolean>;
   beginSelectionReenableDownload?: () => boolean;
   rollbackSelectionReenableDownload?: () => Promise<boolean>;
   completeSelectionReenableDownload?: (tables: string[]) => boolean;
   beginStartupDownload?: () => boolean;
   rollbackStartupDownload?: () => Promise<boolean>;
-  completeStartupDownload?: (dirtyTables: string[]) => boolean;
+  completeStartupDownload?: (
+    dirtyTables: string[], completedTables: string[]
+  ) => boolean;
+  /**
+   * Commit completed legacy tables while restoring failed optional-table
+   * state from the same before-image. Failed optional barriers stay pending.
+   */
+  completeStartupDownloadPartial?: (
+    dirtyTables: string[], completedTables: string[],
+    failedTables: string[]
+  ) => Promise<boolean>;
   setRestorePending: (pending: boolean) => void;
   pendingMutationTableRevisions?: () => Record<string, number>;
   acknowledgeMutationJournal?: (table: string, coveredRevision: number) => boolean;
@@ -193,6 +277,7 @@ export async function executeCloudSyncRequest(
   onCloudFirstApplied: (tables: string[]) => void
 ): Promise<CloudSyncOperationResult> {
   const failedTables: string[] = [];
+  let appliedCloudFirstTables: string[] = [];
   let failureKind: CloudSyncFailureKind = 'none';
   // A VNC-only request may carry cryptoparams only as an optional dependency
   // for encrypted VNC secrets. Its failure must not prevent the independent
@@ -299,22 +384,47 @@ export async function executeCloudSyncRequest(
           if (failureKind === 'none') { failureKind = 'unknown'; }
           rollbackFailed = !(await hooks.rollbackManualDownload());
         }
-      } else if (vncOnlyRequest && failedTables.length === 1 &&
-        failedTables[0] === 'cryptoparams') {
+      } else {
+        let completedTables: string[] = [];
+        if (vncOnlyRequest && failedTables.length === 1 &&
+            failedTables[0] === 'cryptoparams') {
+          completedTables = request.tables.filter(
+            (table: string): boolean => table !== 'cryptoparams');
+        } else {
+          completedTables =
+            cloudFirstCompatibleTablesAfterOptionalFailure(
+              request.direction, request.tables, failedTables);
+        }
+        if (completedTables.length > 0) {
         // `cryptoparams` is optional for a VNC transfer: metadata and opaque
         // encrypted rows may still be pulled safely. Commit the successful
-        // VNC table and retain the crypto failure for the caller; rolling the
-        // whole snapshot back would turn an independent VNC sync failure into
-        // the very data loss this boundary is meant to prevent.
-        const completedTables: string[] = request.tables.filter(
-          (table: string): boolean => table !== 'cryptoparams');
-        const completed: boolean | void = hooks.completeManualDownloadPartial
-          ? hooks.completeManualDownloadPartial(completedTables)
-          : hooks.completeManualDownload(completedTables);
-        if (completed === false) { rollbackFailed = !(await hooks.rollbackManualDownload()); }
-      } else { rollbackFailed = !(await hooks.rollbackManualDownload()); }
+          // VNC table and retain the crypto failure for the caller. The same
+          // compatibility rule applies to the optional Moonlight table: a
+          // failed ninth table must not roll successful legacy pulls back.
+          const completed: boolean | void =
+            hooks.completeManualDownloadPartial
+              ? await hooks.completeManualDownloadPartial(
+                completedTables, failedTables.slice())
+              : hooks.completeManualDownload(completedTables);
+          if (completed === false) {
+            rollbackFailed = !(await hooks.rollbackManualDownload());
+            failedTables.splice(
+              0, failedTables.length, ...request.tables);
+          } else {
+            appliedCloudFirstTables = completedTables.slice();
+          }
+        } else {
+          rollbackFailed = !(await hooks.rollbackManualDownload());
+        }
+      }
     } catch (_e) {
-      rollbackFailed = true;
+      try {
+        rollbackFailed = !(await hooks.rollbackManualDownload());
+      } catch (_rollbackError) {
+        rollbackFailed = true;
+      }
+      failedTables.splice(
+        0, failedTables.length, ...request.tables);
     }
   }
   const result: CloudSyncOperationResult = {
@@ -325,8 +435,18 @@ export async function executeCloudSyncRequest(
     rollbackFailed,
     failureKind
   };
-  if (result.ok && request.direction === 'cloudFirst') {
-    try { onCloudFirstApplied(request.tables.slice()); } catch (_e) { /* listener failures do not stall sync */ }
+  if (request.direction === 'cloudFirst') {
+    if (result.ok) {
+      appliedCloudFirstTables = request.tables.slice();
+    } else if (appliedCloudFirstTables.length === 0 &&
+        request.source !== 'manualDownload') {
+      appliedCloudFirstTables =
+        cloudFirstCompatibleTablesAfterOptionalFailure(
+          request.direction, request.tables, failedTables);
+    }
+  }
+  if (appliedCloudFirstTables.length > 0) {
+    try { onCloudFirstApplied(appliedCloudFirstTables); } catch (_e) { /* listener failures do not stall sync */ }
   }
   return result;
 }
@@ -607,6 +727,14 @@ export class CloudSyncCoordinator {
       return Promise.resolve(this.rejectedResult(
         this.makeRequest('startup', 'cloudFirst'), 'cloud_service'));
     }
+    if (!this.runtimeTransferSelectionAvailable() &&
+        !this.restoreResolutionPending() && !this.restoreUploadBlocked()) {
+      // A dormant optional-table preference is not a runtime transfer set.
+      // Do not create a startup checkpoint or mark bootstrap complete when no
+      // deployed business table has actually been selected.
+      return Promise.resolve(this.rejectedResult(
+        this.makeRequest('startup', 'cloudFirst'), 'no_selection'));
+    }
     const restoreBlocked: boolean = this.restoreUploadBlocked();
     const initialDirty: string[] = this.dirtyAutomaticTables.slice();
     const initialJournalRevisions: Record<string, number> =
@@ -733,26 +861,52 @@ export class CloudSyncCoordinator {
     startupCheckpointStarted: boolean
   ): Promise<CloudSyncOperationResult> {
     let finalResult: CloudSyncOperationResult = result;
+    const compatibleTables: string[] =
+      cloudFirstCompatibleTablesAfterOptionalFailure(
+        'cloudFirst', result.tables, result.failedTables);
+    let compatibilityCommitted: boolean =
+      !initialBootstrap && compatibleTables.length > 0;
     if (initialBootstrap && !restoreBlocked &&
       startupCheckpointStarted) {
       if (!result.ok) {
-        const restored: boolean =
-          this.hooks !== null &&
-          this.hooks.rollbackStartupDownload !==
-            undefined &&
-          (await this.hooks.rollbackStartupDownload());
-        finalResult = {
-          ok: false,
-          source: result.source,
-          tables: result.tables.slice(),
-          failedTables: result.failedTables.slice(),
-          rollbackFailed: !restored,
-          failureKind: result.failureKind
-        };
+        let partialCompleted: boolean = false;
+        if (compatibleTables.length > 0 && this.hooks !== null &&
+            this.hooks.completeStartupDownloadPartial !== undefined) {
+          const compatibleDirty: string[] = initialDirty.filter(
+            (table: string): boolean =>
+              compatibleTables.indexOf(table) >= 0);
+          try {
+            partialCompleted = await this.hooks
+              .completeStartupDownloadPartial(
+                compatibleDirty,
+                compatibleTables.slice(),
+                result.failedTables.slice());
+          } catch (_partialError) {
+            partialCompleted = false;
+          }
+        }
+        if (partialCompleted) {
+          compatibilityCommitted = true;
+        } else {
+          const restored: boolean =
+            this.hooks !== null &&
+            this.hooks.rollbackStartupDownload !==
+              undefined &&
+            (await this.hooks.rollbackStartupDownload());
+          finalResult = {
+            ok: false,
+            source: result.source,
+            tables: result.tables.slice(),
+            failedTables: mergeCloudSyncTableLists(
+              result.tables, result.failedTables),
+            rollbackFailed: !restored,
+            failureKind: result.failureKind
+          };
+        }
       } else if (this.hooks === null ||
         this.hooks.completeStartupDownload === undefined ||
         !this.hooks.completeStartupDownload(
-          initialDirty.slice())) {
+          initialDirty.slice(), result.tables.slice())) {
         const restored: boolean =
           this.hooks !== null &&
           this.hooks.rollbackStartupDownload !==
@@ -767,12 +921,18 @@ export class CloudSyncCoordinator {
         };
       }
     }
-    if (finalResult.ok && initialBootstrap &&
+    const bootstrapAccepted: boolean =
+      finalResult.ok || compatibilityCommitted;
+    if (bootstrapAccepted && initialBootstrap &&
       !restoreBlocked) {
       // The record-level reconcile above retains every genuine pre-bootstrap
       // journal entry. Queue those intents only after the authoritative pull
       // has committed, never before.
       for (let i = 0; i < initialDirty.length; i++) {
+        if (compatibilityCommitted &&
+            compatibleTables.indexOf(initialDirty[i]) < 0) {
+          continue;
+        }
         if (this.deferredAutomaticTables.indexOf(
           initialDirty[i]) < 0) {
           this.deferredAutomaticTables.push(
@@ -787,6 +947,7 @@ export class CloudSyncCoordinator {
           failedTables: result.tables.slice(),
           rollbackFailed: false, failureKind: 'unknown'
         };
+        compatibilityCommitted = false;
       } else {
         this.bootstrapCompleted = true;
         if (!this.persistBootstrapCompletion()) {
@@ -796,10 +957,13 @@ export class CloudSyncCoordinator {
             failedTables: result.tables.slice(),
             rollbackFailed: false, failureKind: 'unknown'
           };
+          compatibilityCommitted = false;
         }
       }
     }
-    if (finalResult.ok) {
+    const startupReady: boolean =
+      finalResult.ok || compatibilityCommitted;
+    if (startupReady) {
       this.startupState = 'ready';
       this.bootstrapCompleted = this.bootstrapCompleted || initialBootstrap;
     } else {
@@ -808,7 +972,7 @@ export class CloudSyncCoordinator {
     if (this.hooks && this.hooks.setStartupSyncPending) {
       try { this.hooks.setStartupSyncPending(false); } catch (_e) { /* best effort */ }
     }
-    if (finalResult.ok) { this.flushDeferredAutomaticPushes(); }
+    if (startupReady) { this.flushDeferredAutomaticPushes(); }
     return finalResult;
   }
 
@@ -896,6 +1060,9 @@ export class CloudSyncCoordinator {
     }
     const resolvingRestore: boolean =
       this.restoreResolutionPending();
+    if (!resolvingRestore && !this.runtimeTransferSelectionAvailable()) {
+      return Promise.resolve(this.rejectedResult(base, 'no_selection'));
+    }
     const restoredTables: string[] | null =
       resolvingRestore
         ? this.restoreTablesForExplicitDecision()
@@ -999,6 +1166,9 @@ export class CloudSyncCoordinator {
     }
     const resolvingRestore: boolean =
       this.restoreResolutionPending();
+    if (!resolvingRestore && !this.runtimeTransferSelectionAvailable()) {
+      return Promise.resolve(this.rejectedResult(request, 'no_selection'));
+    }
     const restoredTables: string[] | null =
       resolvingRestore
         ? this.restoreTablesForExplicitDecision()
@@ -1021,33 +1191,69 @@ export class CloudSyncCoordinator {
       versions[request.tables[i]] = this.automaticMutationVersions[request.tables[i]] || 0;
     }
     return this.enqueue(request).then((result: CloudSyncOperationResult): Promise<CloudSyncOperationResult> => {
-      if (!result.ok) { return Promise.resolve(result); }
-      for (let i = 0; i < request.tables.length; i++) {
-        const table: string = request.tables[i];
+      const compatibleTables: string[] =
+        cloudFirstCompatibleTablesAfterOptionalFailure(
+          'cloudFirst', result.tables, result.failedTables);
+      if (!result.ok && compatibleTables.length === 0) {
+        return Promise.resolve(result);
+      }
+      const completedOrdinary: string[] = result.ok
+        ? request.tables.slice() : compatibleTables;
+      for (let i = 0; i < completedOrdinary.length; i++) {
+        const table: string = completedOrdinary[i];
         this.clearAutomaticSyncBlock(table);
         if ((this.automaticMutationVersions[table] || 0) === versions[table]) { this.clearDirtyTable(table); }
       }
       if (includeVnc) {
         return this.requestVncManualDownload(false).then((vncResult: CloudSyncOperationResult): CloudSyncOperationResult => {
-          if (!vncResult.ok) { return vncResult; }
-          const tables: string[] = snapshotCloudSyncTables(
-            result.tables.concat(vncResult.tables));
-          const combined: CloudSyncOperationResult = {
-            ok: true,
-            source: 'manualDownload',
-            tables,
-            failedTables: [],
-            rollbackFailed: false,
-            failureKind: 'none'
-          };
-          return this.completeExplicitBootstrap(
-            combined, resolvingRestore
-              ? restoredTables : tables);
+          if (!vncResult.ok) {
+            return result.ok ? vncResult :
+              combineCloudSyncOperationResults(
+                'manualDownload', result, vncResult);
+          }
+          const combined: CloudSyncOperationResult =
+            combineCloudSyncOperationResults(
+              'manualDownload', result, vncResult);
+          const completedTables: string[] = mergeCloudSyncTableLists(
+            completedOrdinary, vncResult.tables);
+          if (combined.ok) {
+            return this.completeExplicitBootstrap(
+              combined, resolvingRestore
+                ? restoredTables : completedTables);
+          }
+          const compatibleBootstrap: CloudSyncOperationResult =
+            this.completeExplicitBootstrap({
+              ok: true,
+              source: 'manualDownload',
+              tables: completedTables.slice(),
+              failedTables: [],
+              rollbackFailed: false,
+              failureKind: 'none'
+            }, completedTables);
+          return compatibleBootstrap.ok ? combined :
+            combineCloudSyncOperationResults(
+              'manualDownload', combined,
+              compatibleBootstrap);
         });
       }
-      return Promise.resolve(this.completeExplicitBootstrap(
-        result, resolvingRestore
-          ? restoredTables : result.tables));
+      if (result.ok) {
+        return Promise.resolve(this.completeExplicitBootstrap(
+          result, resolvingRestore
+            ? restoredTables : result.tables));
+      }
+      const compatibleBootstrap: CloudSyncOperationResult =
+        this.completeExplicitBootstrap({
+          ok: true,
+          source: 'manualDownload',
+          tables: completedOrdinary.slice(),
+          failedTables: [],
+          rollbackFailed: false,
+          failureKind: 'none'
+        }, completedOrdinary);
+      return Promise.resolve(compatibleBootstrap.ok ? result :
+        combineCloudSyncOperationResults(
+          'manualDownload', result,
+          compatibleBootstrap));
     });
   }
 
@@ -1700,6 +1906,11 @@ export class CloudSyncCoordinator {
     if (source !== 'manualDownload' && this.restoreUploadBlocked()) {
       return Promise.resolve(this.skippedResult(source));
     }
+    if (!this.runtimeTransferSelectionAvailable() &&
+        !this.restoreResolutionPending()) {
+      return Promise.resolve(this.rejectedResult(
+        this.makeRequest(source, 'cloudFirst'), 'no_selection'));
+    }
     if (this.pendingPull) { return this.pendingPull; }
     const request: CloudSyncRequest = this.makeRequest(source, 'cloudFirst');
     this.pendingPull = this.enqueue(request).then((result: CloudSyncOperationResult): CloudSyncOperationResult => {
@@ -1736,6 +1947,11 @@ export class CloudSyncCoordinator {
 
   private vncPhysicalTableSelected(): boolean {
     return this.selection.selectedBusinessTables().indexOf(VNC_CLOUD_TABLE) >= 0;
+  }
+
+  private runtimeTransferSelectionAvailable(): boolean {
+    return this.selectedTables().length > 0 ||
+      this.vncPhysicalTableSelected();
   }
 
   private vncSyncTables(): string[] {
@@ -1785,10 +2001,17 @@ export class CloudSyncCoordinator {
 
   private requestVncCloudFirst(source: 'startup' | 'foreground' | 'cloudEvent',
     previous: CloudSyncOperationResult): Promise<CloudSyncOperationResult> {
-    if (!previous.ok) { return Promise.resolve(previous); }
+    const compatibleTables: string[] =
+      cloudFirstCompatibleTablesAfterOptionalFailure(
+        'cloudFirst', previous.tables, previous.failedTables);
+    if (!previous.ok && compatibleTables.length === 0) {
+      return Promise.resolve(previous);
+    }
     const tables: string[] = this.vncSyncTables();
     if (tables.length === 0) { return Promise.resolve(previous); }
-    return this.enqueue({ source, direction: 'cloudFirst', tables });
+    return this.enqueue({ source, direction: 'cloudFirst', tables })
+      .then((vnc: CloudSyncOperationResult): CloudSyncOperationResult =>
+        combineCloudSyncOperationResults(source, previous, vnc));
   }
 
   private selectionReenableBlocked(
@@ -1810,6 +2033,8 @@ export class CloudSyncCoordinator {
   }
 
   private enqueue(request: CloudSyncRequest): Promise<CloudSyncOperationResult> {
+    recordDiagnosticEvent('data.cloud_sync', 'cloud_sync_requested', 'started',
+      0, 0, diagnosticCloudRequestCode(request), 0, request.tables.length);
     if (!this.acceptingRequests || this.currentLease === null ||
       !this.transfersEnabled) {
       return Promise.resolve(this.rejectedResult(request));
@@ -1860,6 +2085,9 @@ export class CloudSyncCoordinator {
 
   private rejectedResult(request: CloudSyncRequest,
     failureKind: CloudSyncFailureKind = 'unknown'): CloudSyncOperationResult {
+    recordDiagnosticEvent('data.cloud_sync', 'cloud_sync_skipped',
+      failureKind === 'no_selection' || failureKind === 'restore_pending' ? 'skipped' : 'failed',
+      0, 0, diagnosticCloudFailureCode(failureKind), 0, request.tables.length);
     return {
       ok: false,
       source: request.source,
@@ -1876,8 +2104,10 @@ export class CloudSyncCoordinator {
     if (tracksCloudDownload && this.hooks && this.hooks.setCloudDownloadPending) {
       this.hooks.setCloudDownloadPending(true);
     }
+    recordDiagnosticEvent('data.cloud_sync', 'cloud_sync_started', 'started',
+      0, 0, diagnosticCloudRequestCode(request), 0, request.tables.length);
     try {
-      return await executeCloudSyncRequest(
+      const result: CloudSyncOperationResult = await executeCloudSyncRequest(
         request,
         this.executor,
         this.hooks,
@@ -1885,6 +2115,11 @@ export class CloudSyncCoordinator {
           if (this.onCloudFirstApplied) { this.onCloudFirstApplied(tables); }
         }
       );
+      recordDiagnosticEvent('data.cloud_sync', 'cloud_sync_completed',
+        result.ok ? 'succeeded' : 'failed', 0, 0,
+        diagnosticCloudFailureCode(result.failureKind), 0,
+        result.failedTables.length);
+      return result;
     } finally {
       if (tracksCloudDownload && this.hooks && this.hooks.setCloudDownloadPending) {
         this.hooks.setCloudDownloadPending(false);
@@ -2122,6 +2357,9 @@ export class CloudSyncCoordinator {
     }
     const delay: number = nextCloudSyncRetryDelayMs(attempt);
     if (delay < 0) { return; }
+    recordDiagnosticEvent('data.cloud_sync', 'cloud_sync_retry', 'retry',
+      0, 0, diagnosticCloudRequestCode(request), delay,
+      failedTables.length);
     const record: CloudSyncRetryRecord = {
       source: request.source,
       direction: request.direction,

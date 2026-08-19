@@ -75,6 +75,7 @@ import rustDeskProAddressBookSyncServiceTest from '../../../test/RustDeskProAddr
 import rustDeskProAddressBookUiPolicyTest from '../../../test/RustDeskProAddressBookUiPolicy.test';
 import totpBrandResourceIntegrationTest from './TotpBrandResourceIntegration.test';
 import nativeCallbackEntryIntegrationTest from './NativeCallbackEntryIntegration.test';
+import moonlightSunshineInteropIntegrationTest from './MoonlightSunshineInteropIntegration.test';
 import moonlightModelsTest from '../../../test/MoonlightModels.test';
 import moonlightRecordTest from '../../../test/MoonlightRecord.test';
 import moonlightRecordPolicyTest from '../../../test/MoonlightRecordPolicy.test';
@@ -91,9 +92,15 @@ import moonlightCloudSyncSelectionPolicyTest from '../../../test/MoonlightCloudS
 import moonlightCloudSyncServiceTest from '../../../test/MoonlightCloudSyncService.test';
 import moonlightDataLifecycleBarrierTest from '../../../test/MoonlightDataLifecycleBarrier.test';
 import moonlightDeletionPolicyTest from '../../../test/MoonlightDeletionPolicy.test';
+import moonlightCloudDeletionPolicyTest from '../../../test/MoonlightCloudDeletionPolicy.test';
 import moonlightDeletionCommandServiceTest from '../../../test/MoonlightDeletionCommandService.test';
 import moonlightCloudStatusPolicyTest from '../../../test/MoonlightCloudStatusPolicy.test';
 import moonlightBackupPolicyTest from '../../../test/MoonlightBackupPolicy.test';
+import moonlightReconnectPolicyTest from '../../../test/MoonlightReconnectPolicy.test';
+import moonlightRuntimeContextFactoryTest from '../../../test/MoonlightRuntimeContextFactory.test';
+import remoteSessionWindowPolicyTest from '../../../test/RemoteSessionWindowPolicy.test';
+import remoteSessionServiceLeasePolicyTest from '../../../test/RemoteSessionServiceLeasePolicy.test';
+import moonlightNetworkHandlePolicyTest from '../../../test/MoonlightNetworkHandlePolicy.test';
 import { FOCUSED_TEST_REGISTRATION_AUDIT } from '../../../main/ets/services/FocusedTestRegistrationAudit';
 
 function requestedClassScope(): string {
@@ -117,6 +124,8 @@ function registerFocusedRepairSuite(scope: string): number {
     totpBrandResourceIntegrationTest();
   } else if (scope === 'NativeCallbackEntryIntegration') {
     nativeCallbackEntryIntegrationTest();
+  } else if (scope === 'MoonlightSunshineInteropIntegration') {
+    moonlightSunshineInteropIntegrationTest();
   } else if (scope === 'RustDeskProAddressBookPolicy') {
     rustDeskProAddressBookTest();
   } else if (scope === 'RustDeskProAddressBookApiService') {
@@ -158,9 +167,14 @@ function registerFocusedRepairSuite(scope: string): number {
     moonlightCloudSyncServiceTest();
     moonlightDataLifecycleBarrierTest();
     moonlightDeletionPolicyTest();
+    moonlightCloudDeletionPolicyTest();
     moonlightDeletionCommandServiceTest();
     moonlightCloudStatusPolicyTest();
     moonlightBackupPolicyTest();
+    moonlightReconnectPolicyTest();
+    moonlightRuntimeContextFactoryTest();
+    remoteSessionServiceLeasePolicyTest();
+    moonlightNetworkHandlePolicyTest();
   } else {
     return 0;
   }
@@ -186,9 +200,12 @@ function focusedDescribeNames(scope: string): string[] {
       'MoonlightRepository', 'MoonlightAppCacheService',
       'MoonlightSensitiveTransferPolicy', 'MoonlightCloudSyncSelectionPolicy',
       'MoonlightCloudSyncService', 'MoonlightDataLifecycleBarrier',
-      'MoonlightDeletionPolicy', 'MoonlightDeletionCommandService',
+      'MoonlightDeletionPolicy', 'MoonlightCloudDeletionPolicy',
+      'MoonlightDeletionCommandService',
       'MoonlightCloudStatusPolicy',
-      'MoonlightBackupPolicy'];
+      'MoonlightBackupPolicy', 'MoonlightReconnectPolicy',
+      'MoonlightRuntimeContextFactory', 'RemoteSessionServiceLeasePolicy',
+      'MoonlightNetworkHandlePolicy'];
   }
   if (scope === 'RustDeskProAddressBookPolicy') {
     return ['RustDeskProAddressBookPolicy'];
@@ -207,6 +224,9 @@ function focusedDescribeNames(scope: string): string[] {
   }
   if (scope === 'NativeCallbackEntryIntegration') {
     return ['NativeCallbackEntryIntegration'];
+  }
+  if (scope === 'MoonlightSunshineInteropIntegration') {
+    return ['MoonlightSunshineInteropIntegration'];
   }
   if (scope === 'RemoteOverlayRegistry_generation_and_cleanup') {
     return ['RemoteOverlayRegistry_generation_and_cleanup'];
@@ -251,13 +271,14 @@ function focusedDescribeNames(scope: string): string[] {
 }
 
 function expectedFocusedCount(scope: string): number {
-  if (scope === 'MoonlightDomainPolicy') { return 138; }
+  if (scope === 'MoonlightDomainPolicy') { return 200; }
   if (scope === 'RustDeskProAddressBookPolicy') { return 8; }
   if (scope === 'RustDeskProAddressBookApiService') { return 4; }
   if (scope === 'RustDeskProAddressBookSyncService') { return 7; }
   if (scope === 'RustDeskProAddressBookUiPolicy') { return 3; }
   if (scope === 'TotpBrandResourceIntegration') { return 2; }
   if (scope === 'NativeCallbackEntryIntegration') { return 1; }
+  if (scope === 'MoonlightSunshineInteropIntegration') { return 1; }
   if (scope === 'RemoteOverlayViewportPolicy_contract') { return 7; }
   if (scope === 'RemoteOverlayRegistry_generation_and_cleanup') { return 4; }
   if (scope === 'RemoteShortcutCatalog_protocol_matrix') { return 12; }
@@ -387,5 +408,13 @@ export default function testsuite() {
   moonlightCloudSyncServiceTest();
   moonlightDataLifecycleBarrierTest();
   moonlightDeletionPolicyTest();
+  moonlightCloudDeletionPolicyTest();
+  moonlightDeletionCommandServiceTest();
   moonlightCloudStatusPolicyTest();
+  moonlightBackupPolicyTest();
+  moonlightReconnectPolicyTest();
+  moonlightRuntimeContextFactoryTest();
+  remoteSessionWindowPolicyTest();
+  remoteSessionServiceLeasePolicyTest();
+  moonlightNetworkHandlePolicyTest();
 }

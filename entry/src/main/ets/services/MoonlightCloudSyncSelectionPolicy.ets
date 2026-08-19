@@ -10,8 +10,16 @@ const MOONLIGHT_CLOUD_SYNC_SCOPES: MoonlightCloudSyncScope[] = [
   'settings', 'hosts', 'profiles', 'trust', 'identity'
 ];
 
+// Trust proves a pairing made by one device identity and therefore cannot be
+// activated on another device. Client private identity material is kept in
+// Asset Store and is never exported. V1 cloud sync deliberately supports only
+// public, re-pairable records.
+const MOONLIGHT_CLOUD_SYNC_SELECTABLE_SCOPES: MoonlightCloudSyncScope[] = [
+  'settings', 'hosts', 'profiles'
+];
+
 // A new owner starts with no Moonlight logical records selected. Physical
-// table registration is a separate D2-07 gate and is also disabled by default.
+// table registration is a separate optional gate and is also disabled by default.
 export const MOONLIGHT_CLOUD_SYNC_SELECTION_DEFAULT:
   MoonlightCloudSyncScope[] = [];
 
@@ -19,14 +27,23 @@ export function moonlightCloudSyncScopes(): MoonlightCloudSyncScope[] {
   return MOONLIGHT_CLOUD_SYNC_SCOPES.slice();
 }
 
+export function moonlightCloudSyncSelectableScopes(): MoonlightCloudSyncScope[] {
+  return MOONLIGHT_CLOUD_SYNC_SELECTABLE_SCOPES.slice();
+}
+
 export function normalizeMoonlightCloudSyncSelection(
   selected: string[],
-  identityCapabilityReady: boolean = false
+  _identityCapabilityReady: boolean = false
 ): MoonlightCloudSyncScope[] {
   const result: MoonlightCloudSyncScope[] = [];
-  for (let i = 0; i < MOONLIGHT_CLOUD_SYNC_SCOPES.length; i++) {
-    const scope: MoonlightCloudSyncScope = MOONLIGHT_CLOUD_SYNC_SCOPES[i];
-    if (scope === 'identity' && !identityCapabilityReady) { continue; }
+  for (let i = 0; i < MOONLIGHT_CLOUD_SYNC_SELECTABLE_SCOPES.length; i++) {
+    const scope: MoonlightCloudSyncScope = MOONLIGHT_CLOUD_SYNC_SELECTABLE_SCOPES[i];
+    // Profiles are host-owned and cannot be interpreted on a device that did
+    // not also select the host directory. Drop an orphaned persisted profile
+    // scope instead of silently broadening consent by auto-selecting hosts.
+    if (scope === 'profiles' && selected.indexOf('hosts') < 0) {
+      continue;
+    }
     if (selected.indexOf(scope) >= 0) { result.push(scope); }
   }
   return result;
@@ -62,6 +79,27 @@ export function hasMoonlightCloudSyncBusinessSelection(
     selected, identityCapabilityReady).length > 0;
 }
 
+/**
+ * Consent expansion needs a registered physical table and a cloud-first
+ * barrier. Consent reduction is always local-only and must remain available
+ * while the optional table, account service or network is unavailable.
+ */
+export function moonlightCloudSyncSelectionExpands(
+  previous: string[], next: string[],
+  identityCapabilityReady: boolean = false
+): boolean {
+  const normalizedPrevious: MoonlightCloudSyncScope[] =
+    normalizeMoonlightCloudSyncSelection(
+      previous, identityCapabilityReady);
+  const normalizedNext: MoonlightCloudSyncScope[] =
+    normalizeMoonlightCloudSyncSelection(
+      next, identityCapabilityReady);
+  for (let i = 0; i < normalizedNext.length; i++) {
+    if (normalizedPrevious.indexOf(normalizedNext[i]) < 0) { return true; }
+  }
+  return false;
+}
+
 export function moonlightIdentitySyncAllowed(
   selected: string[],
   identityCapabilityReady: boolean,
@@ -85,4 +123,19 @@ export function moonlightCloudSyncSelectionEquals(
     if (normalizedLeft[i] !== normalizedRight[i]) { return false; }
   }
   return true;
+}
+
+/**
+ * `localOnly` is durable mutation provenance, not a cache-difference bit.
+ * Reconciliation may clear a pending local bit after proving an exact cloud
+ * mirror, but absence/difference must never manufacture a new local mutation:
+ * doing so could resurrect a deletion received from another device.
+ */
+export function moonlightProjectionLocalOnlyAfterReconcile(
+  currentLocalOnly: number,
+  selected: boolean,
+  cloudRecordMatches: boolean
+): number {
+  if (currentLocalOnly !== 0 && currentLocalOnly !== 1) { return -1; }
+  return selected && cloudRecordMatches ? 0 : currentLocalOnly;
 }

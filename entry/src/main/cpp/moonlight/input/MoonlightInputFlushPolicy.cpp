@@ -73,8 +73,10 @@ MoonlightInputFlushResult makeResult(
     MoonlightInputDispatchStatus dispatchStatus,
     bool localReleased,
     bool boundaryApplied,
-    bool retryable = false) noexcept {
-    return {status, stage, dispatchStatus, localReleased, boundaryApplied, retryable};
+    bool retryable = false,
+    bool remoteReleaseComplete = false) noexcept {
+    return {status, stage, dispatchStatus, localReleased, boundaryApplied,
+            retryable, remoteReleaseComplete};
 }
 
 bool keyboardSuccess(MoonlightKeyboardStatus status) noexcept {
@@ -215,7 +217,8 @@ struct MoonlightInputFlushPolicy::Impl final {
         state.rejectedRequests = saturatingIncrement(state.rejectedRequests);
         return makeResult(status, state.stage,
                           MoonlightInputDispatchStatus::InvalidRequest,
-                          state.localReleased, state.boundaryApplied);
+                          state.localReleased, state.boundaryApplied, false,
+                          state.remoteReleaseComplete);
     }
 
     MoonlightInputFlushResult pending(
@@ -223,17 +226,23 @@ struct MoonlightInputFlushPolicy::Impl final {
         state.pendingRetries = saturatingIncrement(state.pendingRetries);
         return makeResult(MoonlightInputFlushStatus::Pending, state.stage,
                           dispatchStatus, state.localReleased,
-                          state.boundaryApplied, true);
+                          state.boundaryApplied, true,
+                          state.remoteReleaseComplete);
     }
 
     MoonlightInputFlushResult componentFailure(
         MoonlightInputDispatchStatus dispatchStatus) noexcept {
         return makeResult(MoonlightInputFlushStatus::ComponentFailure, state.stage,
                           dispatchStatus, state.localReleased,
-                          state.boundaryApplied, retryableDispatch(dispatchStatus));
+                          state.boundaryApplied, retryableDispatch(dispatchStatus),
+                          state.remoteReleaseComplete);
     }
 
     bool discardLocalState(const MoonlightInputIdentity& identity) noexcept {
+        // Once any mapper state is discarded without its exact release being
+        // accepted, the final bridge boundary cannot prove the remote state
+        // neutral. Preserve this independently from local cleanup success.
+        state.remoteReleaseComplete = false;
         bool discarded = touch->discardLocalState(identity);
         discarded = pointer->discardLocalState(identity) && discarded;
         discarded = keyboard->discardLocalState(identity) && discarded;
@@ -373,7 +382,8 @@ struct MoonlightInputFlushPolicy::Impl final {
                         return makeResult(MoonlightInputFlushStatus::Applied,
                                           state.stage,
                                           MoonlightInputDispatchStatus::Accepted,
-                                          true, true);
+                                          true, true, false,
+                                          state.remoteReleaseComplete);
                     }
                     state.boundaryFailures =
                         saturatingIncrement(state.boundaryFailures);
@@ -386,7 +396,8 @@ struct MoonlightInputFlushPolicy::Impl final {
                             return makeResult(
                                 MoonlightInputFlushStatus::BoundaryFailure,
                                 state.stage, controlDispatch(localStop.status),
-                                state.localReleased, false, false);
+                                state.localReleased, false, false,
+                                state.remoteReleaseComplete);
                         }
                         state.boundaryApplied = false;
                         state.stage = MoonlightInputFlushStage::Complete;
@@ -402,13 +413,15 @@ struct MoonlightInputFlushPolicy::Impl final {
                         return makeResult(MoonlightInputFlushStatus::AppliedLocally,
                                           state.stage,
                                           controlDispatch(control.status),
-                                          true, false);
+                                          true, false, false,
+                                          state.remoteReleaseComplete);
                     }
                     state.state = MoonlightInputFlushState::BoundaryPending;
                     return makeResult(MoonlightInputFlushStatus::BoundaryFailure,
                                       state.stage,
                                       controlDispatch(control.status),
-                                      true, false, true);
+                                      true, false, true,
+                                      state.remoteReleaseComplete);
                 }
                 case MoonlightInputFlushStage::None:
                 case MoonlightInputFlushStage::Complete:
@@ -488,7 +501,8 @@ MoonlightInputFlushResult MoonlightInputFlushPolicy::flush(
                                   impl_->state.stage,
                                   controlDispatch(begin.status),
                                   impl_->state.localReleased,
-                                  impl_->state.boundaryApplied, false);
+                                  impl_->state.boundaryApplied, false,
+                                  impl_->state.remoteReleaseComplete);
             }
             impl_->state.state = MoonlightInputFlushState::Flushing;
             impl_->state.lastTrigger = trigger;
@@ -506,7 +520,8 @@ MoonlightInputFlushResult MoonlightInputFlushPolicy::flush(
             return makeResult(MoonlightInputFlushStatus::BoundaryFailure,
                               impl_->state.stage,
                               MoonlightInputDispatchStatus::PortFailure,
-                              true, false, true);
+                              true, false, true,
+                              impl_->state.remoteReleaseComplete);
         }
         return impl_->drive();
     }
@@ -517,7 +532,8 @@ MoonlightInputFlushResult MoonlightInputFlushPolicy::flush(
                           MoonlightInputFlushStage::Complete,
                           MoonlightInputDispatchStatus::Accepted,
                           impl_->state.localReleased,
-                          impl_->state.boundaryApplied);
+                          impl_->state.boundaryApplied, false,
+                          impl_->state.remoteReleaseComplete);
     }
     if (impl_->state.state == MoonlightInputFlushState::Stopped) {
         return impl_->rejected(MoonlightInputFlushStatus::InvalidState);
@@ -559,13 +575,15 @@ MoonlightInputFlushResult MoonlightInputFlushPolicy::flush(
                 impl_->lastCompletedRequest = context;
                 return makeResult(MoonlightInputFlushStatus::AppliedLocally,
                                   impl_->state.stage,
-                                  controlDispatch(begin.status), true, false);
+                                  controlDispatch(begin.status), true, false,
+                                  false, impl_->state.remoteReleaseComplete);
             }
         }
         return makeResult(MoonlightInputFlushStatus::BoundaryFailure,
                           impl_->state.stage, controlDispatch(begin.status),
                           impl_->state.localReleased,
-                          impl_->state.boundaryApplied, false);
+                          impl_->state.boundaryApplied, false,
+                          impl_->state.remoteReleaseComplete);
     }
     impl_->state.matched = true;
     impl_->state.identity = context.identity;
@@ -578,6 +596,7 @@ MoonlightInputFlushResult MoonlightInputFlushPolicy::flush(
     impl_->state.admissionOpen = false;
     impl_->state.localReleased = false;
     impl_->state.boundaryApplied = false;
+    impl_->state.remoteReleaseComplete = true;
     impl_->completionRequest.reset();
     impl_->request = context;
     return impl_->drive();
@@ -636,7 +655,8 @@ MoonlightInputFlushResult MoonlightInputFlushPolicy::resume(
         return makeResult(MoonlightInputFlushStatus::BoundaryFailure,
                           MoonlightInputFlushStage::Boundary,
                           controlDispatch(control.status),
-                          true, true, true);
+                          true, true, true,
+                          impl_->state.remoteReleaseComplete);
     }
     impl_->state.state = MoonlightInputFlushState::Active;
     impl_->state.stage = MoonlightInputFlushStage::None;
@@ -646,7 +666,8 @@ MoonlightInputFlushResult MoonlightInputFlushPolicy::resume(
     return makeResult(MoonlightInputFlushStatus::Applied,
                       MoonlightInputFlushStage::Complete,
                       MoonlightInputDispatchStatus::Accepted,
-                      true, true);
+                      true, true, false,
+                      impl_->state.remoteReleaseComplete);
 }
 
 MoonlightInputFlushSnapshot MoonlightInputFlushPolicy::snapshot(

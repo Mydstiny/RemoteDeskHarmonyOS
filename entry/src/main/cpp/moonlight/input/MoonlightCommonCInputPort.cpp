@@ -49,6 +49,74 @@ class CommonCInputPort final : public MoonlightInputPort {
         return result == 0 || result == LI_ERR_UNSUPPORTED;
     }
 
+    MoonlightInputPortStatus resetRemoteState(
+        const MoonlightInputRecoveryResetRequest& request) noexcept override {
+        if (!request.valid()) { return MoonlightInputPortStatus::Failed; }
+        if (!recoveryResetBound_) {
+            recoveryResetBound_ = true;
+            recoveryResetIdentity_ = request.identity;
+            recoveryResetOperationGeneration_ = request.operationGeneration;
+            recoveryResetActiveGamepadMask_ = request.activeGamepadMask;
+            recoveryResetControllerSlots_ = request.controllerSlots;
+        } else if (recoveryResetIdentity_ != request.identity ||
+                   recoveryResetOperationGeneration_ != request.operationGeneration ||
+                   recoveryResetActiveGamepadMask_ != request.activeGamepadMask ||
+                   recoveryResetControllerSlots_ != request.controllerSlots) {
+            return MoonlightInputPortStatus::Failed;
+        }
+
+        constexpr std::size_t kTouchStep = 0U;
+        constexpr std::size_t kKeyboardFirstStep = 1U;
+        constexpr std::size_t kKeyboardSteps = 255U;
+        constexpr std::size_t kPointerFirstStep =
+            kKeyboardFirstStep + kKeyboardSteps;
+        constexpr std::size_t kPointerSteps = 5U;
+        constexpr std::size_t kControllerFirstStep =
+            kPointerFirstStep + kPointerSteps;
+        const std::size_t terminalStep = kControllerFirstStep +
+            static_cast<std::size_t>(recoveryResetControllerSlots_);
+
+        while (recoveryResetStep_ < terminalStep) {
+            int result = 0;
+            if (recoveryResetStep_ == kTouchStep) {
+                result = LiSendTouchEvent(
+                    LI_TOUCH_EVENT_CANCEL_ALL, 0U, 0.0F, 0.0F, 0.0F,
+                    0.0F, 0.0F, LI_ROT_UNKNOWN);
+                if (result == LI_ERR_UNSUPPORTED) {
+                    ++recoveryResetStep_;
+                    continue;
+                }
+            } else if (recoveryResetStep_ < kPointerFirstStep) {
+                const auto virtualKey = static_cast<std::uint16_t>(
+                    recoveryResetStep_ - kKeyboardFirstStep + 1U);
+                result = LiSendKeyboardEvent2(
+                    static_cast<short>(kMoonlightKeyboardKeyPrefix | virtualKey),
+                    static_cast<char>(kMoonlightKeyboardActionUp), 0, 0);
+            } else if (recoveryResetStep_ < kControllerFirstStep) {
+                const auto button = static_cast<int>(
+                    recoveryResetStep_ - kPointerFirstStep + 1U);
+                result = LiSendMouseButtonEvent(
+                    static_cast<char>(kMoonlightPointerActionRelease), button);
+            } else {
+                const auto controller = static_cast<std::uint8_t>(
+                    recoveryResetStep_ - kControllerFirstStep);
+                const auto bit = static_cast<std::uint16_t>(1U << controller);
+                if ((recoveryResetActiveGamepadMask_ & bit) == 0U) {
+                    ++recoveryResetStep_;
+                    continue;
+                }
+                result = LiSendMultiControllerEvent(
+                    static_cast<short>(controller),
+                    static_cast<short>(recoveryResetActiveGamepadMask_),
+                    0, 0U, 0U, 0, 0, 0, 0);
+            }
+            const auto status = moonlightCommonCInputResult(result);
+            if (status != MoonlightInputPortStatus::Accepted) { return status; }
+            ++recoveryResetStep_;
+        }
+        return MoonlightInputPortStatus::Accepted;
+    }
+
   private:
     static MoonlightInputPortStatus sendKeyboard(
         const MoonlightInputEvent& event) noexcept {
@@ -150,6 +218,13 @@ class CommonCInputPort final : public MoonlightInputPort {
             command.state.leftStickX, command.state.leftStickY,
             command.state.rightStickX, command.state.rightStickY));
     }
+
+    bool recoveryResetBound_ = false;
+    MoonlightInputIdentity recoveryResetIdentity_{};
+    std::uint64_t recoveryResetOperationGeneration_ = 0U;
+    std::uint16_t recoveryResetActiveGamepadMask_ = 0U;
+    std::uint8_t recoveryResetControllerSlots_ = 0U;
+    std::size_t recoveryResetStep_ = 0U;
 };
 
 } // namespace

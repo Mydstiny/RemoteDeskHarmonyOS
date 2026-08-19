@@ -146,6 +146,25 @@ struct REMOTEDESK_MOONLIGHT_INPUT_HIDDEN MoonlightInputFlushRequest final {
     std::uint64_t monotonicTimestampUs = 0U;
 };
 
+// Fresh-session crash recovery reset. It contains no prior input values: the
+// product port emits a fixed all-up/cancel/neutral sweep while ordinary input
+// admission is still closed by the product runtime.
+struct REMOTEDESK_MOONLIGHT_INPUT_HIDDEN MoonlightInputRecoveryResetRequest final {
+    MoonlightInputIdentity identity{};
+    std::uint64_t operationGeneration = 0U;
+    std::uint64_t monotonicTimestampUs = 0U;
+    std::uint16_t activeGamepadMask = 0U;
+    std::uint8_t controllerSlots = 0U;
+
+    constexpr bool valid() const noexcept {
+        return identity.valid() && operationGeneration != 0U &&
+            monotonicTimestampUs != 0U && controllerSlots <= 16U &&
+            (controllerSlots != 0U || activeGamepadMask == 0U) &&
+            (controllerSlots == 16U ||
+             activeGamepadMask < (static_cast<std::uint32_t>(1U) << controllerSlots));
+    }
+};
+
 struct REMOTEDESK_MOONLIGHT_INPUT_HIDDEN MoonlightInputControlResult final {
     MoonlightInputControlStatus status = MoonlightInputControlStatus::InvalidRequest;
     MoonlightInputIdentity identity{};
@@ -170,6 +189,9 @@ struct REMOTEDESK_MOONLIGHT_INPUT_HIDDEN MoonlightInputSnapshot final {
     std::uint64_t portFailures = 0U;
     std::uint64_t neutralFlushes = 0U;
     std::uint64_t neutralFlushFailures = 0U;
+    std::uint64_t recoveryResets = 0U;
+    std::uint64_t recoveryResetBackpressure = 0U;
+    std::uint64_t recoveryResetFailures = 0U;
 };
 
 // The gate executes a stack-owned operation synchronously while both the
@@ -195,6 +217,10 @@ class REMOTEDESK_MOONLIGHT_INPUT_HIDDEN MoonlightInputPort {
     virtual ~MoonlightInputPort() = default;
     virtual MoonlightInputPortStatus send(const MoonlightInputEvent& event) noexcept = 0;
     virtual bool flushNeutral(const MoonlightInputFlushRequest& request) noexcept = 0;
+    virtual MoonlightInputPortStatus resetRemoteState(
+        const MoonlightInputRecoveryResetRequest&) noexcept {
+        return MoonlightInputPortStatus::Unsupported;
+    }
 };
 
 REMOTEDESK_MOONLIGHT_INPUT_HIDDEN std::shared_ptr<MoonlightInputOwnerGate>
@@ -221,6 +247,10 @@ class REMOTEDESK_MOONLIGHT_INPUT_HIDDEN MoonlightInputBridge final {
 
     MoonlightInputControlResult activate(const MoonlightInputIdentity& identity,
                                           std::uint64_t operationGeneration) noexcept;
+    // Retries are admitted with the same operation generation. The port owns
+    // exact progress, so already-enqueued reliable releases are never replayed.
+    MoonlightInputControlResult resetRemoteState(
+        const MoonlightInputRecoveryResetRequest& request) noexcept;
     MoonlightInputDispatchStatus dispatch(const MoonlightInputEvent& event) noexcept;
     // Atomically closes ordinary input admission before mapper release starts.
     // ReleasePending accepts only lifecycleRelease events at or before the

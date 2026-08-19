@@ -107,6 +107,9 @@ export interface MoonlightDeletionCommandPort {
     includeOwnerMarker: boolean
   ): number;
   moonlightCloudDeletionReady(lease: AccountSessionLease): boolean;
+  prepareMoonlightCloudDeletion(
+    lease: AccountSessionLease
+  ): Promise<boolean>;
   commitMoonlightDeletion(
     lease: AccountSessionLease,
     request: MoonlightDeletionMutationRequest
@@ -454,7 +457,16 @@ export class MoonlightDeletionCommandService {
       return previewValue('invalid_request', command, context,
         recordIds, identityRecordIds, cacheIds, artworkPaths);
     }
-    const unchanged: boolean = !impact.selectionChanged &&
+    // The native identity store is intentionally not enumerable from ArkTS.
+    // Even when its last verified count is zero, a later interrupted pairing
+    // can leave an owner-scoped identity without a matching RDB metadata row.
+    // Keep the explicit owner-wide local wipe actionable whenever the native
+    // cleanup capability is present; execute() will perform the real inventory
+    // and deletion behind the lifecycle gate.
+    const nativeIdentitySweepRequired: boolean =
+      command === 'delete_local_data' && this.identityPort !== null;
+    const unchanged: boolean = !nativeIdentitySweepRequired &&
+      !impact.selectionChanged &&
       impact.localRowsRemoved === 0 && impact.cacheRowsRemoved === 0 &&
       impact.localRuntimeStatesRemoved === 0 &&
       impact.secureIdentitiesRemoved === 0 &&
@@ -474,7 +486,7 @@ export class MoonlightDeletionCommandService {
       return commandResult(false, this.leaseIsCurrent(captured) ?
         'invalid_request' : 'stale_lease', preview.impact);
     }
-    const current: MoonlightDeletionPreview = this.preview(
+    let current: MoonlightDeletionPreview = this.preview(
       captured, preview.command, preview.hostId, preview.profileId);
     if (current.code === 'unchanged' && previewsEqual(current, preview)) {
       return commandResult(true, 'unchanged', current.impact);
@@ -508,7 +520,37 @@ export class MoonlightDeletionCommandService {
         false, false, false, true);
     }
     const cloudRequired: boolean =
+      current.command === 'delete_cloud_data' ||
       current.impact.cloudTombstonesRequired > 0;
+    if (cloudRequired) {
+      // Every distributed delete starts from an authoritative pull. Otherwise
+      // a targeted host/profile absent from this device's stale physical
+      // projection could be deleted locally and later reappear from cloud.
+      let prepared: boolean = false;
+      try {
+        prepared = await this.port.prepareMoonlightCloudDeletion(captured);
+      } catch (_error) {
+        prepared = false;
+      }
+      if (!prepared || !this.leaseIsCurrent(captured)) {
+        return commandResult(false, this.leaseIsCurrent(captured) ?
+          'cloud_unavailable' : 'stale_lease', current.impact);
+      }
+      current = this.preview(
+        captured, preview.command, preview.hostId, preview.profileId);
+      if (current.code !== 'ok') {
+        return commandResult(false,
+          current.code === 'stale_lease' ? 'stale_lease' :
+          current.code === 'cloud_unavailable' ? 'cloud_unavailable' :
+          current.code === 'read_failed' ? 'read_failed' :
+          current.code === 'invalid_data' ? 'invalid_data' :
+          current.code === 'not_found' ? 'not_found' : 'invalid_request',
+          current.impact);
+      }
+      if (!previewsEqual(current, preview)) {
+        return commandResult(false, 'stale_preview', current.impact);
+      }
+    }
     if (cloudRequired &&
         !this.port.moonlightCloudDeletionReady(captured)) {
       return commandResult(false, 'cloud_unavailable', current.impact);
@@ -520,7 +562,8 @@ export class MoonlightDeletionCommandService {
     }
     const identitiesRequireDeletion: boolean =
       current.command === 'delete_local_data' &&
-      (current.identityRecordIds.length > 0 ||
+      (this.identityPort !== null ||
+       current.identityRecordIds.length > 0 ||
        current.context.secureIdentityCount > 0);
     if (identitiesRequireDeletion &&
         (this.identityPort === null ||
@@ -528,24 +571,31 @@ export class MoonlightDeletionCommandService {
            captured, current.identityRecordIds))) {
       return commandResult(false, 'identity_unavailable', current.impact);
     }
+    let selectionChanged: boolean = false;
+    if (current.command === 'delete_local_data' &&
+        current.impact.selectionChanged) {
+      // Stop future upload/download before removing local rows. This prevents
+      // an already-selected cloud projection from immediately rehydrating a
+      // local-only wipe. All destructive mutations remain untouched if the
+      // durable physical+logical selection cannot be read back as disabled.
+      if (this.selectionPort === null) {
+        return commandResult(false, 'selection_unavailable', current.impact);
+      }
+      const cancelled: boolean =
+        this.selectionPort.cancelAllMoonlightSync(captured);
+      if (!cancelled || !this.leaseIsCurrent(captured)) {
+        return commandResult(false, this.leaseIsCurrent(captured) ?
+          'selection_failed' : 'stale_lease', current.impact,
+          false, false, false, cancelled);
+      }
+      selectionChanged = true;
+    }
     let identityAttempted: boolean = false;
     let identitySucceeded: boolean = false;
-    if (identitiesRequireDeletion && this.identityPort !== null) {
-      identityAttempted = true;
-      try {
-        identitySucceeded = await this.identityPort.deleteLocalIdentities(
-          captured, current.identityRecordIds.slice(), true);
-      } catch (_error) {
-        identitySucceeded = false;
-      }
-      if (!identitySucceeded || !this.leaseIsCurrent(captured)) {
-        return commandResult(false,
-          this.leaseIsCurrent(captured) ?
-            'identity_delete_failed' : 'stale_lease',
-          current.impact, false, false, false, false,
-          false, false, true, identitySucceeded);
-      }
-    }
+    // Commit the owner-scoped RDB/cache mutation first. If that atomic write
+    // fails, no secure identity is removed. A later identity failure is
+    // retryable even when every metadata row has already gone because the
+    // production identity port always performs a native owner inventory.
     const mutation: MoonlightDeletionMutationResult =
       this.port.commitMoonlightDeletion(captured, {
         command: current.command,
@@ -568,9 +618,27 @@ export class MoonlightDeletionCommandService {
           ? 'invalid_request' : 'local_write_failed';
       return commandResult(false, code, current.impact,
         mutation.localCommitted, mutation.cloudAttempted,
-        mutation.cloudTerminal, false, false, false,
+        mutation.cloudTerminal, selectionChanged, false, false,
         identityAttempted, identitySucceeded,
         mutation.localCommitted ? current.artworkPaths : []);
+    }
+    if (identitiesRequireDeletion && this.identityPort !== null) {
+      identityAttempted = true;
+      try {
+        identitySucceeded = await this.identityPort.deleteLocalIdentities(
+          captured, current.identityRecordIds.slice(), true);
+      } catch (_error) {
+        identitySucceeded = false;
+      }
+      if (!identitySucceeded || !this.leaseIsCurrent(captured)) {
+        return commandResult(false,
+          this.leaseIsCurrent(captured) ?
+            'identity_delete_failed' : 'stale_lease',
+          current.impact, mutation.localCommitted,
+          mutation.cloudAttempted, mutation.cloudTerminal,
+          selectionChanged, false, false, true, identitySucceeded,
+          mutation.localCommitted ? current.artworkPaths : []);
+      }
     }
     let hostAttempted: boolean = false;
     let hostSucceeded: boolean = false;
@@ -599,7 +667,11 @@ export class MoonlightDeletionCommandService {
     }
     return commandResult(true, 'ok', current.impact,
       mutation.localCommitted, mutation.cloudAttempted,
-      mutation.cloudTerminal, false, hostAttempted, hostSucceeded,
+      mutation.cloudTerminal,
+      selectionChanged ||
+        (current.command === 'delete_cloud_data' &&
+          mutation.cloudTerminal),
+      hostAttempted, hostSucceeded,
       identityAttempted, identitySucceeded,
       current.artworkPaths);
   }

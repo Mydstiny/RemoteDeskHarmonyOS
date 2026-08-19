@@ -1,4 +1,8 @@
-import { describe, it, expect } from '@ohos/hypium';
+import { expect } from '@ohos/hypium';
+import {
+  auditedDescribe as describe,
+  auditedIt as it
+} from '../main/ets/services/FocusedTestRegistrationAudit';
 import {
   MOONLIGHT_APP_CACHE_TABLE,
   MOONLIGHT_CLOUD_TABLE,

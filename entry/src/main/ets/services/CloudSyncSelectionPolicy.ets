@@ -1,4 +1,6 @@
-import { CLOUD_SYNC_TABLES } from './CloudSyncPolicy';
+import { MOONLIGHT_CLOUD_TABLE } from '../model/MoonlightRecord';
+import { moonlightCloudSchemaProvisioned } from './CloudLifecycleSafetyPolicy';
+import { cloudSyncTableNames } from './CloudSyncPolicy';
 
 export const CLOUD_SYNC_SELECTION_PREFERENCE_KEY: string = 'cloudSyncSelectedTables';
 
@@ -12,7 +14,10 @@ const CLOUD_SYNC_SELECTABLE_TABLES: string[] = [
   // The ordinary selector controls whether the single VNC physical table
   // participates at all. VNC record-type/sensitive selection remains in the
   // VNC settings owner and is enforced by CloudSyncCoordinator.
-  'vncrecordv2'
+  'vncrecordv2',
+  // Moonlight owns one optional physical envelope table. Its logical
+  // settings/host/profile selection is enforced by the Moonlight selector.
+  MOONLIGHT_CLOUD_TABLE
 ];
 
 const CLOUD_SYNC_ENCRYPTED_TABLES: string[] = [
@@ -28,8 +33,16 @@ const CLOUD_SYNC_ENCRYPTED_TABLES: string[] = [
 // physical store has been validated.
 export const CLOUD_SYNC_SELECTION_DEFAULT: string[] = [];
 
-export function cloudSyncSelectableTables(): string[] {
-  return CLOUD_SYNC_SELECTABLE_TABLES.slice();
+export function cloudSyncSelectableTables(
+  remoteSchemaProvisioned: boolean = moonlightCloudSchemaProvisioned()
+): string[] {
+  if (remoteSchemaProvisioned) {
+    return CLOUD_SYNC_SELECTABLE_TABLES.slice();
+  }
+  // Preserve a prerelease Moonlight choice in normalizeCloudSyncSelection(),
+  // but do not expose a control which cannot safely reach the cloud yet.
+  return CLOUD_SYNC_SELECTABLE_TABLES.filter((table: string): boolean =>
+    table !== MOONLIGHT_CLOUD_TABLE);
 }
 
 export function normalizeCloudSyncSelection(selected: string[]): string[] {
@@ -45,6 +58,15 @@ export function hasCloudSyncBusinessSelection(selected: string[]): boolean {
   return normalizeCloudSyncSelection(selected).length > 0;
 }
 
+/** Runtime admission never rewrites the durable user selection. */
+export function runtimeAdmittedCloudSyncSelection(
+  selected: string[], unavailable: string[]
+): string[] {
+  const normalized: string[] = normalizeCloudSyncSelection(selected);
+  return normalized.filter((table: string): boolean =>
+    unavailable.indexOf(table) < 0);
+}
+
 export function effectiveCloudSyncTables(selected: string[]): string[] {
   const normalized: string[] = normalizeCloudSyncSelection(selected);
   let needsCrypto: boolean = false;
@@ -55,8 +77,9 @@ export function effectiveCloudSyncTables(selected: string[]): string[] {
     }
   }
   const effective: string[] = needsCrypto ? ['cryptoparams'] : [];
-  for (let i = 0; i < CLOUD_SYNC_TABLES.length; i++) {
-    const table: string = CLOUD_SYNC_TABLES[i];
+  const registered: string[] = cloudSyncTableNames();
+  for (let i = 0; i < registered.length; i++) {
+    const table: string = registered[i];
     if (normalized.indexOf(table) >= 0) { effective.push(table); }
   }
   return effective;

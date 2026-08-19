@@ -92,6 +92,11 @@ struct REMOTEDESK_MOONLIGHT_FLUSH_HIDDEN MoonlightInputFlushResult final {
     bool localReleased = false;
     bool boundaryApplied = false;
     bool retryable = false;
+    // True only when every stateful component either had no remote state to
+    // release or its exact release command was accepted. A terminal fallback
+    // may discard local mapper state and still apply the final boundary; that
+    // must never be reported as proof that Sunshine is neutral.
+    bool remoteReleaseComplete = false;
 };
 
 struct REMOTEDESK_MOONLIGHT_FLUSH_HIDDEN MoonlightInputFlushSnapshot final {
@@ -112,6 +117,7 @@ struct REMOTEDESK_MOONLIGHT_FLUSH_HIDDEN MoonlightInputFlushSnapshot final {
     bool admissionOpen = true;
     bool localReleased = false;
     bool boundaryApplied = false;
+    bool remoteReleaseComplete = false;
 };
 
 REMOTEDESK_MOONLIGHT_FLUSH_HIDDEN MoonlightInputFlushDisposition

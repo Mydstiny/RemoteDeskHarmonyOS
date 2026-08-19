@@ -12,9 +12,16 @@ import {
 } from './MoonlightAppCacheService';
 import { CloudStore } from './CloudStore';
 import { moonlightOwnerScopeFingerprint } from './MoonlightRuntimeSupport';
+import {
+  MoonlightRuntimeOwnerAdmissionPort,
+  MoonlightRuntimeOwnerRegistry
+} from './MoonlightRuntimeOwnerRegistry';
+import { DiagnosticOutcome } from './DiagnosticCapturePolicy';
+import { recordDiagnosticEvent } from './DiagnosticCaptureRuntime';
 
 export type MoonlightNativeOperation =
-  'pair' | 'catalog' | 'asset' | 'launch' | 'resume' | 'quit' | 'unpair';
+  'pair' | 'catalog' | 'asset' | 'launch' | 'resume' | 'quit' | 'unpair' |
+  'delete_identity';
 export type MoonlightNativeCode =
   'ok' | 'invalid_argument' | 'busy' | 'runtime_proof_required' | 'unavailable' |
   'unpaired' | 'app_not_found' | 'invalid_catalog' | 'resume_required' |
@@ -105,6 +112,9 @@ export interface MoonlightNativeResult {
   observedAtMs: number;
   idempotent: boolean;
   mutationMayHaveBeenSent: boolean;
+  identityExistingCount: number;
+  identityDeletedCount: number;
+  identityRemainingCount: number;
   apps: MoonlightNativeApp[];
   asset: ArrayBuffer;
   certificateSha256?: string;
@@ -115,6 +125,7 @@ export interface MoonlightNativeResult {
 export interface MoonlightBridgeCapabilities {
   bridgeCompiled: boolean;
   identityReady: boolean;
+  identityDeletionReady: boolean;
   transportReady: boolean;
   trustReady: boolean;
   commitReady: boolean;
@@ -156,6 +167,7 @@ export interface MoonlightNativeStreamStartRequest {
   audioEnabled: boolean;
   audioChannels: 'stereo' | 'surround51' | 'surround71';
   playAudioOnHost: boolean;
+  resetRemoteInputBeforeAdmission: boolean;
   streamEncryption: 'auto' | 'required' | 'compatible';
 }
 
@@ -171,9 +183,23 @@ export interface MoonlightNativeStreamSnapshot {
   inputReady: boolean;
   controllerReady: boolean;
   physicalControllerReady: boolean;
+  inputMayBeStuck: boolean;
   firstFrameReady: boolean;
   terminal: boolean;
   lastSequence: number;
+  sampledAtMonotonicMs?: number;
+  acceptedVideoFrames?: number;
+  droppedVideoFrames?: number;
+  acceptedVideoBytes?: number;
+  rendererPresentedFrames?: number;
+  acceptedAudioPackets?: number;
+  rejectedAudioPackets?: number;
+  acceptedAudioBytes?: number;
+  rejectedInputEvents?: number;
+  streamWidth?: number;
+  streamHeight?: number;
+  targetFps?: number;
+  configuredBitrateKbps?: number;
 }
 
 export interface MoonlightNativePort {
@@ -204,7 +230,7 @@ export interface MoonlightHostContext {
 
 export type MoonlightHostServiceCode =
   MoonlightNativeCode | 'stale_lease' | 'invalid_context' | 'native_exception' |
-  'cache_failed' | 'disposed';
+  'cache_failed' | 'disposed' | 'lifecycle_closed';
 
 export interface MoonlightHostServiceResult {
   ok: boolean;
@@ -225,6 +251,7 @@ function emptyCapabilities(): MoonlightBridgeCapabilities {
   return {
     bridgeCompiled: false,
     identityReady: false,
+    identityDeletionReady: false,
     transportReady: false,
     trustReady: false,
     commitReady: false,
@@ -245,11 +272,66 @@ function keysEqual(left: MoonlightNativeRequestKey,
     left.ownerToken === right.ownerToken;
 }
 
+function diagnosticMoonlightHostEvent(operation: MoonlightNativeOperation): string {
+  if (operation === 'pair' || operation === 'unpair' || operation === 'delete_identity') {
+    return 'moonlight_pair';
+  }
+  if (operation === 'catalog' || operation === 'asset') { return 'moonlight_catalog'; }
+  return 'moonlight_launch';
+}
+
+function diagnosticMoonlightHostOutcome(code: MoonlightHostServiceCode): DiagnosticOutcome {
+  if (code === 'ok') { return 'succeeded'; }
+  if (code === 'cancelled') { return 'cancelled'; }
+  if (code === 'deadline_exceeded') { return 'timeout'; }
+  if (code === 'stale' || code === 'stale_lease' || code === 'disposed' ||
+      code === 'lifecycle_closed') { return 'skipped'; }
+  return 'failed';
+}
+
+function diagnosticMoonlightHostCode(code: MoonlightHostServiceCode): number {
+  switch (code) {
+    case 'ok': return 0;
+    case 'invalid_argument':
+    case 'invalid_context': return 1;
+    case 'busy': return 2;
+    case 'runtime_proof_required': return 3;
+    case 'unavailable': return 4;
+    case 'unpaired': return 5;
+    case 'app_not_found': return 6;
+    case 'invalid_catalog': return 7;
+    case 'resume_required': return 8;
+    case 'host_busy': return 9;
+    case 'confirmation_required': return 10;
+    case 'action_rejected': return 11;
+    case 'outcome_unknown': return 12;
+    case 'cancelled': return 13;
+    case 'stale':
+    case 'stale_lease': return 14;
+    case 'deadline_exceeded': return 15;
+    case 'transport_failure': return 16;
+    case 'protocol_failure': return 17;
+    case 'repair_required': return 18;
+    case 'shutting_down': return 19;
+    case 'native_exception': return 20;
+    case 'cache_failed': return 21;
+    case 'disposed': return 22;
+    case 'lifecycle_closed': return 23;
+  }
+}
+
 function serviceResult(code: MoonlightHostServiceCode,
   key: MoonlightNativeRequestKey = emptyKey(),
   nativeResult: MoonlightNativeResult | null = null,
   cacheCode: MoonlightAppCacheCode | '' = '',
   visibleApps: MoonlightAppCacheEntry[] = []): MoonlightHostServiceResult {
+  if (nativeResult !== null) {
+    recordDiagnosticEvent('connection.moonlight',
+      diagnosticMoonlightHostEvent(nativeResult.operation),
+      diagnosticMoonlightHostOutcome(code), key.requestId, key.generation,
+      diagnosticMoonlightHostCode(code), 0,
+      nativeResult.partialAppCount > 0 ? nativeResult.partialAppCount : 0);
+  }
   return {
     ok: code === 'ok',
     code: code,
@@ -288,7 +370,10 @@ function nativeResultShapeMatches(result: MoonlightNativeResult,
     result.key !== undefined && result.key !== null &&
     result.operation === request.operation && keysEqual(result.key, request.key) &&
     Number.isSafeInteger(result.partialAppCount) && result.partialAppCount >= 0 &&
-    Number.isSafeInteger(result.observedAtMs) && result.observedAtMs >= 0;
+    Number.isSafeInteger(result.observedAtMs) && result.observedAtMs >= 0 &&
+    result.identityExistingCount === 0 &&
+    result.identityDeletedCount === 0 &&
+    result.identityRemainingCount === 0;
 }
 
 class MoonlightNapiPort implements MoonlightNativePort {
@@ -323,6 +408,7 @@ export class MoonlightHostService {
   private readonly native: MoonlightNativePort;
   private readonly leases: MoonlightAccountLeasePort;
   private readonly cache: MoonlightAppCacheService;
+  private readonly ownerAdmission: MoonlightRuntimeOwnerAdmissionPort | null;
   private readonly pending: Map<string, PendingRequest> = new Map<string, PendingRequest>();
   private readonly disposedOwners: Set<number> = new Set<number>();
   private nextRequestId: number = 1;
@@ -331,10 +417,13 @@ export class MoonlightHostService {
 
   constructor(native: MoonlightNativePort = new MoonlightNapiPort(),
     leases: MoonlightAccountLeasePort = CloudStore.getInstance(),
-    cache: MoonlightAppCacheService = new MoonlightAppCacheService(CloudStore.getInstance())) {
+    cache: MoonlightAppCacheService = new MoonlightAppCacheService(CloudStore.getInstance()),
+    ownerAdmission: MoonlightRuntimeOwnerAdmissionPort | null =
+      MoonlightRuntimeOwnerRegistry.getInstance()) {
     this.native = native;
     this.leases = leases;
     this.cache = cache;
+    this.ownerAdmission = ownerAdmission;
   }
 
   capabilities(): MoonlightBridgeCapabilities {
@@ -411,6 +500,9 @@ export class MoonlightHostService {
   disposeOwner(ownerToken: number): number {
     if (!safePositiveInteger(ownerToken)) { return 0; }
     this.disposedOwners.add(ownerToken);
+    if (this.ownerAdmission !== null) {
+      this.ownerAdmission.retireOwner(ownerToken);
+    }
     try {
       return this.native.cancelOwner(ownerToken);
     } catch (_) {
@@ -566,6 +658,11 @@ export class MoonlightHostService {
       this.releaseSafely(release);
       return serviceResult('disposed', request.key);
     }
+    if (this.ownerAdmission !== null &&
+        !this.ownerAdmission.beginOwnerRequest(context.ownerToken, captured)) {
+      this.releaseSafely(release);
+      return serviceResult('lifecycle_closed', request.key);
+    }
     const identity: string = this.requestIdentity(request.key);
     this.pending.set(identity, { key: request.key, lease: captured });
     let nativePromise: Promise<MoonlightNativeResult>;
@@ -573,6 +670,7 @@ export class MoonlightHostService {
       nativePromise = this.native.requestAsync(request);
     } catch (_) {
       this.pending.delete(identity);
+      this.finishOwnerRequest(context.ownerToken, captured);
       this.releaseSafely(release);
       return serviceResult('native_exception', request.key);
     }
@@ -583,9 +681,11 @@ export class MoonlightHostService {
       nativeResult = await nativePromise;
     } catch (_) {
       this.pending.delete(identity);
+      this.finishOwnerRequest(context.ownerToken, captured);
       return serviceResult('native_exception', request.key);
     }
     this.pending.delete(identity);
+    this.finishOwnerRequest(context.ownerToken, captured);
     if (!nativeResultShapeMatches(nativeResult, request)) {
       return serviceResult('protocol_failure', request.key, nativeResult);
     }
@@ -599,6 +699,11 @@ export class MoonlightHostService {
       return this.commitCatalog(context, captured, nativeResult);
     }
     return serviceResult(nativeResult.code, request.key, nativeResult);
+  }
+
+  private finishOwnerRequest(ownerToken: number, lease: AccountSessionLease): void {
+    if (this.ownerAdmission === null) { return; }
+    this.ownerAdmission.finishOwnerRequest(ownerToken, lease);
   }
 
   private commitCatalog(context: MoonlightHostContext, captured: AccountSessionLease,

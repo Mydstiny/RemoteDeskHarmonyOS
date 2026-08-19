@@ -15,6 +15,14 @@ import {
   MoonlightLocalHostService
 } from '../main/ets/services/MoonlightLocalHostService';
 import { MoonlightAppCachePort } from '../main/ets/services/MoonlightAppCacheService';
+import {
+  MoonlightHost,
+  defaultMoonlightSettings
+} from '../main/ets/model/MoonlightModels';
+import { MoonlightHostContext } from '../main/ets/services/MoonlightHostService';
+import { moonlightHostFromRecord } from '../main/ets/services/MoonlightLocalViewService';
+import { moonlightRuntimeContext } from
+  '../main/ets/services/MoonlightRuntimeContextFactory';
 
 function testLease(): AccountSessionLease {
   return {
@@ -130,6 +138,7 @@ function readyAddState(): MoonlightHostAddState {
     hostType: 'sunshine',
     version: '1.0',
     address: { host: '192.0.2.20', family: 'ipv4', port: 47989 },
+    httpsPort: 48084,
     paired: false,
     fingerprintSha256: 'a'.repeat(64),
     certificateChanged: false,
@@ -162,6 +171,38 @@ export default function moonlightLocalHostServiceTest(): void {
       expect(result.trustRecordId.length > 0).assertTrue();
       expect(port.rows.size).assertEqual(2);
       port.localOnly.forEach((value: number): void => { expect(value).assertEqual(1); });
+      let hostRecord: MoonlightRecord | null = null;
+      port.rows.forEach((value: MoonlightRecord): void => {
+        if (value.recordType === 'host') { hostRecord = value; }
+      });
+      expect(hostRecord !== null).assertTrue();
+      const payload: Record<string, Object> = JSON.parse(
+        (hostRecord as MoonlightRecord).payload) as Record<string, Object>;
+      expect(payload['httpsPort']).assertEqual(48084);
+    });
+
+    it('reloads_a_custom_sunshine_https_port_into_the_runtime_endpoint', 0, (): void => {
+      const port = new MemoryMoonlightHostPort();
+      const state: MoonlightHostAddState = readyAddState();
+      state.activeOperation = 'save';
+      const saved = new MoonlightLocalHostService(port).save(
+        state, saveKey(state), 1000);
+      expect(saved.ok).assertTrue();
+      const rows: MoonlightRecord[] = port.loadMoonlightLocalRecords(
+        port.active) as MoonlightRecord[];
+      let storedHost: MoonlightRecord | null = null;
+      for (let index: number = 0; index < rows.length; index++) {
+        if (rows[index].recordType === 'host') { storedHost = rows[index]; }
+      }
+      expect(storedHost !== null).assertTrue();
+      const reloaded: MoonlightHost | null =
+        moonlightHostFromRecord(storedHost as MoonlightRecord);
+      expect(reloaded !== null).assertTrue();
+      const runtime = moonlightRuntimeContext(
+        reloaded as MoonlightHost, port.active, 101, 7,
+        'a'.repeat(64), defaultMoonlightSettings(), 5000);
+      expect(runtime !== null).assertTrue();
+      expect((runtime as MoonlightHostContext).endpoint.httpsPort).assertEqual(48084);
     });
 
     it('compensates_the_host_when_trust_write_fails', 0, (): void => {

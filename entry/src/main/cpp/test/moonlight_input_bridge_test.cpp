@@ -90,6 +90,14 @@ class FakeInputPort final : public MoonlightInputPort {
         return flushResult_;
     }
 
+    MoonlightInputPortStatus resetRemoteState(
+        const MoonlightInputRecoveryResetRequest& request) noexcept override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        ++resetCalls_;
+        resets_.push_back(request);
+        return resetStatus_;
+    }
+
     void blockSend() {
         std::lock_guard<std::mutex> lock(mutex_);
         blockSend_ = true;
@@ -110,11 +118,14 @@ class FakeInputPort final : public MoonlightInputPort {
     }
 
     MoonlightInputPortStatus sendStatus_ = MoonlightInputPortStatus::Accepted;
+    MoonlightInputPortStatus resetStatus_ = MoonlightInputPortStatus::Accepted;
     bool flushResult_ = true;
     std::size_t sendCalls_ = 0U;
     std::size_t flushCalls_ = 0U;
+    std::size_t resetCalls_ = 0U;
     std::vector<MoonlightInputEvent> events_;
     std::vector<MoonlightInputFlushRequest> flushes_;
+    std::vector<MoonlightInputRecoveryResetRequest> resets_;
 
   private:
     std::mutex mutex_;
@@ -258,6 +269,43 @@ RDP_TEST_CASE(moonlight_input_bridge_retries_uncommitted_backpressure_and_port_r
     RDP_ASSERT_EQ(snapshot.unsupportedEvents, static_cast<std::uint64_t>(1U));
     RDP_ASSERT_EQ(snapshot.portFailures, static_cast<std::uint64_t>(1U));
     RDP_ASSERT_EQ(snapshot.duplicateEvents, static_cast<std::uint64_t>(1U));
+}
+
+RDP_TEST_CASE(moonlight_input_bridge_recovery_reset_is_exact_retryable_and_owner_scoped) {
+    InputFixture fixture;
+    MoonlightInputRecoveryResetRequest request;
+    request.identity = fixture.identity;
+    request.operationGeneration = 2U;
+    request.monotonicTimestampUs = 100U;
+    request.activeGamepadMask = 1U;
+    request.controllerSlots = 1U;
+
+    fixture.port->resetStatus_ = MoonlightInputPortStatus::Backpressure;
+    RDP_ASSERT_EQ(fixture.bridge->resetRemoteState(request).status,
+                  MoonlightInputControlStatus::PortFailure);
+    auto snapshot = fixture.bridge->snapshot(fixture.identity);
+    RDP_ASSERT_EQ(snapshot.recoveryResetBackpressure,
+                  static_cast<std::uint64_t>(1U));
+    RDP_ASSERT_EQ(snapshot.recoveryResets, static_cast<std::uint64_t>(0U));
+
+    fixture.port->resetStatus_ = MoonlightInputPortStatus::Accepted;
+    RDP_ASSERT_EQ(fixture.bridge->resetRemoteState(request).status,
+                  MoonlightInputControlStatus::Applied);
+    RDP_ASSERT_EQ(fixture.bridge->resetRemoteState(request).status,
+                  MoonlightInputControlStatus::AlreadyApplied);
+    snapshot = fixture.bridge->snapshot(fixture.identity);
+    RDP_ASSERT_EQ(snapshot.recoveryResets, static_cast<std::uint64_t>(1U));
+    RDP_ASSERT_EQ(fixture.port->resetCalls_, static_cast<std::size_t>(2U));
+    RDP_ASSERT(fixture.port->resets_[0].identity == fixture.identity);
+    RDP_ASSERT_EQ(fixture.port->resets_[0].activeGamepadMask,
+                  static_cast<std::uint16_t>(1U));
+
+    auto stale = request;
+    ++stale.identity.inputGeneration;
+    stale.operationGeneration = 3U;
+    RDP_ASSERT_EQ(fixture.bridge->resetRemoteState(stale).status,
+                  MoonlightInputControlStatus::Stale);
+    RDP_ASSERT_EQ(fixture.port->resetCalls_, static_cast<std::size_t>(2U));
 }
 
 RDP_TEST_CASE(moonlight_input_bridge_tracks_independent_lanes_and_source_generation) {

@@ -21,6 +21,7 @@
 #if defined(RDP_NATIVE_CALLBACK_TESTING)
 extern "C" bool RdpTestProductionDisconnectRegistryRoundTrip(
     int sessionId, uint64_t requestId);
+extern "C" int RdpTestSynchronousDisconnectReceiptState(bool fail);
 #endif
 
 namespace {
@@ -795,6 +796,8 @@ RDP_TEST_CASE(rustdesk_production_ffi_callback_rejects_stale_generation) {
     // g_disconnectRequests object used by NapiDisconnect, rather than testing
     // a second registry implementation in isolation.
     RDP_ASSERT(RdpTestProductionDisconnectRegistryRoundTrip(8108, 810801));
+    RDP_ASSERT_EQ(RdpTestSynchronousDisconnectReceiptState(false), 3);
+    RDP_ASSERT_EQ(RdpTestSynchronousDisconnectReceiptState(true), 4);
 #endif
     Render::DecoderSessionIdentity first {8108, 0, 810801};
     Render::DecoderSessionIdentity second {8108, 0, 810802};

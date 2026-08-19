@@ -1,6 +1,7 @@
 {
   "src": [
     "pages/GuidePage",
+    "pages/RemoteSessionWindowBootstrap",
     "pages/LoginPage",
     "pages/HostListPage",
     "pages/MoonlightHostDetailPage",

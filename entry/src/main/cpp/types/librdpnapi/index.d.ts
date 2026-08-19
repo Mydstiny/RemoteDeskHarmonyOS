@@ -1,5 +1,6 @@
 export type MoonlightNativeOperation =
-  'pair' | 'catalog' | 'asset' | 'launch' | 'resume' | 'quit' | 'unpair';
+  'pair' | 'catalog' | 'asset' | 'launch' | 'resume' | 'quit' | 'unpair' |
+  'delete_identity';
 export type MoonlightNativeCode =
   'ok' | 'invalid_argument' | 'busy' | 'runtime_proof_required' | 'unavailable' |
   'unpaired' | 'app_not_found' | 'invalid_catalog' | 'resume_required' |
@@ -9,6 +10,18 @@ export type MoonlightNativeCode =
 export type MoonlightNativeTruth =
   'not_attempted' | 'confirmed' | 'failed' | 'unknown';
 export type MoonlightNativeTerminalStage = 'complete' | 'failed' | 'cancelled';
+
+export interface NativeSessionOwnerIdentity {
+  sessionId: number;
+  generation: number;
+  ownerToken: number;
+}
+
+export interface NativeDisconnectReceipt {
+  accepted: boolean;
+  requestId: number;
+  terminalState: number;
+}
 
 export interface MoonlightNativeRequestKey {
   requestId: number;
@@ -60,6 +73,7 @@ export interface MoonlightNativeStreamStartRequest {
   audioEnabled: boolean;
   audioChannels: 'stereo' | 'surround51' | 'surround71';
   playAudioOnHost: boolean;
+  resetRemoteInputBeforeAdmission: boolean;
   streamEncryption: 'auto' | 'required' | 'compatible';
 }
 
@@ -83,9 +97,33 @@ export interface MoonlightNativeStreamSnapshot {
   inputReady: boolean;
   controllerReady: boolean;
   physicalControllerReady: boolean;
+  inputMayBeStuck: boolean;
   firstFrameReady: boolean;
   terminal: boolean;
   lastSequence: number;
+  sampledAtMonotonicMs?: number;
+  acceptedVideoFrames?: number;
+  droppedVideoFrames?: number;
+  acceptedVideoBytes?: number;
+  rendererPresentedFrames?: number;
+  acceptedAudioPackets?: number;
+  rejectedAudioPackets?: number;
+  acceptedAudioBytes?: number;
+  rejectedInputEvents?: number;
+  streamWidth?: number;
+  streamHeight?: number;
+  targetFps?: number;
+  configuredBitrateKbps?: number;
+}
+
+export interface MoonlightSurfaceRebindRequest {
+  launchKey: MoonlightNativeRequestKey;
+  rendererHandle: number;
+}
+
+export interface MoonlightAudioLifecycleRequest {
+  launchKey: MoonlightNativeRequestKey;
+  paused: boolean;
 }
 
 export interface MoonlightKeyInputRequest {
@@ -176,10 +214,10 @@ export interface MoonlightNativeRequest {
   key: MoonlightNativeRequestKey;
   ownerScopeFingerprint: string;
   installationId?: string;
-  hostId: string;
-  serverUuid: string;
+  hostId?: string;
+  serverUuid?: string;
   pinnedCertificateSha256?: string;
-  endpoint: MoonlightNativeEndpoint;
+  endpoint?: MoonlightNativeEndpoint;
   timeoutMs?: number;
   appId?: number;
   catalogGeneration?: number;
@@ -218,6 +256,9 @@ export interface MoonlightNativeResult {
   observedAtMs: number;
   idempotent: boolean;
   mutationMayHaveBeenSent: boolean;
+  identityExistingCount: number;
+  identityDeletedCount: number;
+  identityRemainingCount: number;
   apps: MoonlightNativeApp[];
   asset: ArrayBuffer;
   certificateSha256?: string;
@@ -228,6 +269,7 @@ export interface MoonlightNativeResult {
 export interface MoonlightBridgeCapabilities {
   bridgeCompiled: boolean;
   identityReady: boolean;
+  identityDeletionReady: boolean;
   transportReady: boolean;
   trustReady: boolean;
   commitReady: boolean;
@@ -257,6 +299,9 @@ export function moonlightStartStream(request: MoonlightNativeStreamStartRequest)
 export function moonlightGetStreamSnapshot(key: MoonlightNativeRequestKey):
   MoonlightNativeStreamSnapshot;
 export function moonlightStopStream(key: MoonlightNativeRequestKey): boolean;
+export function moonlightSuspendSurface(key: MoonlightNativeRequestKey): boolean;
+export function moonlightRebindSurface(request: MoonlightSurfaceRebindRequest): boolean;
+export function moonlightSetAudioPaused(request: MoonlightAudioLifecycleRequest): boolean;
 export function moonlightSendKey(request: MoonlightKeyInputRequest): boolean;
 export function moonlightSendText(request: MoonlightTextInputRequest): boolean;
 export function moonlightSendPointer(request: MoonlightPointerInputRequest): boolean;
@@ -284,6 +329,10 @@ export const VERSION: SessionVersionInfo;
     decoderHandle?: number, audioHandle?: number): number;
   export function beginDisconnect(sessionId: number, rendererHandle: number,
     decoderHandle: number, audioHandle: number): number;
+  export function getSessionOwnerIdentity(sessionId: number): NativeSessionOwnerIdentity | null;
+  export function beginDisconnectWithReceipt(sessionId: number, generation: number,
+    ownerToken: number, rendererHandle: number, decoderHandle: number,
+    audioHandle: number): NativeDisconnectReceipt;
   export function disconnectAll(rendererHandle?: number, decoderHandle?: number,
     audioHandle?: number): number;
   export function getDisconnectState(requestId: number): number;

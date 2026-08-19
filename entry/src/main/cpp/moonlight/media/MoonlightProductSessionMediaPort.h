@@ -1,7 +1,7 @@
 #ifndef REMOTEDESK_MOONLIGHT_PRODUCT_SESSION_MEDIA_PORT_H
 #define REMOTEDESK_MOONLIGHT_PRODUCT_SESSION_MEDIA_PORT_H
 
-#include "moonlight/media/MoonlightCommonCAdapter.h"
+#include "moonlight/media/MoonlightProductMediaPort.h"
 
 #include <cstdint>
 #include <memory>
@@ -22,6 +22,11 @@ public:
     bool firstFrameReady() const noexcept override;
     bool videoLive() const noexcept override;
     bool audioLive() const noexcept override;
+    bool suspendSurface() noexcept;
+    bool rebindSurface(std::int64_t rendererHandle) noexcept;
+    bool pauseAudio() noexcept;
+    bool resumeAudio() noexcept;
+    MoonlightProductMediaDiagnostics diagnostics() const noexcept;
     bool videoReady() const noexcept override;
     bool audioReady(MoonlightStreamAudioLayout layout) const noexcept override;
     bool setupVideo(const MoonlightCommonCVideoSelection& selection) noexcept override;

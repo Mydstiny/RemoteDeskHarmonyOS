@@ -24,6 +24,7 @@
         "exported": true,
         "supportWindowMode": [
           "fullscreen",
+          "split",
           "floating"
         ],
         "backgroundModes": [
@@ -47,6 +48,28 @@
             ]
           }
         ]
+      },
+      {
+        "name": "RemoteSessionAbility",
+        "srcEntry": "./ets/entryability/RemoteSessionAbility.ets",
+        "description": "$string:EntryAbility_desc",
+        "icon": "$media:layered_image",
+        "label": "$string:EntryAbility_label",
+        "startWindowIcon": "$media:layered_image",
+        "startWindowBackground": "$color:start_window_background",
+        "exported": false,
+        "launchType": "multiton",
+        "removeMissionAfterTerminate": true,
+        "supportWindowMode": [
+          "fullscreen",
+          "split",
+          "floating"
+        ],
+        "backgroundModes": [
+          "dataTransfer",
+          "multiDeviceConnection",
+          "audioPlayback"
+        ]
       }
     ],
     "requestPermissions": [
@@ -66,7 +89,7 @@
         "name": "ohos.permission.DISTRIBUTED_DATASYNC",
         "reason": "$string:datasync_reason",
         "usedScene": {
-          "abilities": ["EntryAbility"],
+          "abilities": ["EntryAbility", "RemoteSessionAbility"],
           "when": "inuse"
         }
       },
@@ -85,7 +108,7 @@
         "name": "ohos.permission.CAMERA",
         "reason": "$string:camera_permission_reason",
         "usedScene": {
-          "abilities": ["EntryAbility"],
+          "abilities": ["EntryAbility", "RemoteSessionAbility"],
           "when": "inuse"
         }
       },
@@ -93,7 +116,7 @@
         "name": "ohos.permission.ACCESS_BIOMETRIC",
         "reason": "$string:biometric_permission_reason",
         "usedScene": {
-          "abilities": ["EntryAbility"],
+          "abilities": ["EntryAbility", "RemoteSessionAbility"],
           "when": "inuse"
         }
       },

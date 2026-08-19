@@ -67,8 +67,8 @@ function result(ok: boolean, code: MoonlightRepositoryCode,
     code: code,
     record: record,
     localCommitted: localCommitted,
-    // D2 local repository never invokes the cloud adapter. D2-10 owns
-    // promotion after every physical/logical/bootstrap gate is satisfied.
+    // The local repository never invokes cloud I/O. CloudStore owns promotion
+    // after every physical/logical/bootstrap gate is satisfied.
     cloudAttempted: false,
     reason: reason
   };
@@ -164,7 +164,7 @@ export class MoonlightRepository {
         }
         // A projection decision may change while the logical row remains an
         // exact retry. Persist only the local eligibility bit; cloud I/O still
-        // belongs to D2-10.
+        // belongs to the gated projection service.
         toWrite = MoonlightRecord.fromJSON(currentRead.record.toJSON());
       }
       if (decision.action === 'quarantine_candidate' ||

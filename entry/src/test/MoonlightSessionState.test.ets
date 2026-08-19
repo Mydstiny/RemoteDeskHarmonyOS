@@ -1,11 +1,16 @@
-import { describe, it, expect } from '@ohos/hypium';
+import { expect } from '@ohos/hypium';
+import {
+  auditedDescribe as describe,
+  auditedIt as it
+} from '../main/ets/services/FocusedTestRegistrationAudit';
 import {
   MoonlightSessionEvent,
   MoonlightSessionStateSnapshot,
   applyMoonlightSessionEvent,
   createMoonlightSessionState,
   moonlightSessionErrorFromNative,
-  moonlightSessionTransitionIsAllowed
+  moonlightSessionTransitionIsAllowed,
+  rebaseMoonlightSessionForReconnect
 } from '../main/ets/services/MoonlightSessionState';
 
 function initial(): MoonlightSessionStateSnapshot {
@@ -49,7 +54,32 @@ export default function moonlightSessionStateTest(): void {
       expect(applyMoonlightSessionEvent(state, event('launchRequested', 1)).reason)
         .assertEqual('invalid_transition');
       expect(moonlightSessionTransitionIsAllowed('verifying', 'catalog')).assertTrue();
+      expect(moonlightSessionTransitionIsAllowed('negotiating', 'reconnecting')).assertTrue();
       expect(negotiating().phase).assertEqual('negotiating');
+    });
+
+    it('rebases_reconnect_into_a_fresh_callback_generation', 0, (): void => {
+      const source = createMoonlightSessionState('session-1', 'owner-1', 'host-1', 'app-1', 4);
+      const discovering = applyMoonlightSessionEvent(source as MoonlightSessionStateSnapshot,
+        event('beginDiscovery', 1, 4));
+      const verifying = applyMoonlightSessionEvent(discovering.state,
+        event('beginVerification', 2, 4));
+      const catalog = applyMoonlightSessionEvent(verifying.state,
+        event('catalogReady', 3, 4));
+      const launching = applyMoonlightSessionEvent(catalog.state,
+        event('launchRequested', 4, 4));
+      const negotiating = applyMoonlightSessionEvent(launching.state,
+        event('launchAccepted', 5, 4));
+      const lost = applyMoonlightSessionEvent(negotiating.state,
+        event('transportLost', 6, 4));
+      const rebound = rebaseMoonlightSessionForReconnect(lost.state, 'session-2', 5);
+      expect(rebound !== null).assertTrue();
+      expect((rebound as MoonlightSessionStateSnapshot).generation).assertEqual(5);
+      expect((rebound as MoonlightSessionStateSnapshot).lastEventSequence).assertEqual(0);
+      expect((rebound as MoonlightSessionStateSnapshot).phase).assertEqual('reconnecting');
+      expect((rebound as MoonlightSessionStateSnapshot).firstFrameSeen).assertFalse();
+      expect(rebaseMoonlightSessionForReconnect(lost.state, 'session-2', 4) === null)
+        .assertTrue();
     });
 
     it('requires_video_before_first_frame_and_all_gates_before_streaming', 0, (): void => {

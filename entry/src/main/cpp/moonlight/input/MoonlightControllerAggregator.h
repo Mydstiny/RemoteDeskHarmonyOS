@@ -216,6 +216,8 @@ MoonlightControllerAggregatorResult final {
     MoonlightInputFlushStatus flushStatus =
         MoonlightInputFlushStatus::InvalidRequest;
     bool retryable = false;
+    bool remoteReleaseComplete = false;
+    bool boundaryApplied = false;
 };
 
 struct REMOTEDESK_MOONLIGHT_CONTROLLER_AGGREGATOR_HIDDEN

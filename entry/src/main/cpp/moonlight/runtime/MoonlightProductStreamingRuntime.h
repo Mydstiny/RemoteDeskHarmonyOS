@@ -45,6 +45,10 @@ struct MoonlightProductStreamStartRequest final {
     bool audioEnabled = true;
     MoonlightStreamAudioLayout audioLayout = MoonlightStreamAudioLayout::Stereo;
     bool playAudioOnHost = false;
+    // Crash-recovery launches must neutralize the previous host input state
+    // before any fresh physical, virtual, keyboard, pointer, or touch input is
+    // admitted. Normal launches leave this false and pay no reset cost.
+    bool resetRemoteInputBeforeAdmission = false;
     MoonlightStreamEncryptionPolicy encryptionPolicy =
         MoonlightStreamEncryptionPolicy::Auto;
 };
@@ -69,6 +73,16 @@ constexpr bool moonlightProductStreamingPolicyAllows(
         encryptionPolicy != MoonlightStreamEncryptionPolicy::Required;
 }
 
+constexpr bool moonlightProductTerminalInputMayBeStuck(
+    bool activationAttempted, bool teardownObserved,
+    bool localCleanupComplete, bool remoteNeutral) noexcept {
+    // Once input activation was attempted, missing teardown proof is itself
+    // uncertainty. Local-only cleanup must never masquerade as a Sunshine-side
+    // neutral receipt, and an inconsistent remote-only result also fails safe.
+    return activationAttempted &&
+        (!teardownObserved || !localCleanupComplete || !remoteNeutral);
+}
+
 struct MoonlightProductStreamStartResult final {
     bool accepted = false;
     std::string code = "invalid_request";
@@ -85,9 +99,23 @@ struct MoonlightProductStreamSnapshot final {
     bool inputReady = false;
     bool controllerReady = false;
     bool physicalControllerReady = false;
+    bool inputMayBeStuck = false;
     bool firstFrameReady = false;
     bool terminal = false;
     std::uint64_t lastSequence = 0U;
+    std::uint64_t sampledAtMonotonicMs = 0U;
+    std::uint64_t acceptedVideoFrames = 0U;
+    std::uint64_t droppedVideoFrames = 0U;
+    std::uint64_t acceptedVideoBytes = 0U;
+    std::uint64_t rendererPresentedFrames = 0U;
+    std::uint64_t acceptedAudioPackets = 0U;
+    std::uint64_t rejectedAudioPackets = 0U;
+    std::uint64_t acceptedAudioBytes = 0U;
+    std::uint64_t rejectedInputEvents = 0U;
+    std::int32_t streamWidth = 0;
+    std::int32_t streamHeight = 0;
+    std::int32_t targetFps = 0;
+    std::int32_t configuredBitrateKbps = 0;
 };
 
 class MoonlightProductStreamingRuntime final {
@@ -109,6 +137,11 @@ public:
     std::size_t cancelOwner(std::uint64_t ownerToken) noexcept;
     bool requestStop(const MoonlightBridgeRequestKey& launchKey) noexcept;
     bool stop(const MoonlightBridgeRequestKey& launchKey) noexcept;
+    bool suspendSurface(const MoonlightBridgeRequestKey& launchKey) noexcept;
+    bool rebindSurface(const MoonlightBridgeRequestKey& launchKey,
+                       std::int64_t rendererHandle) noexcept;
+    bool setAudioPaused(const MoonlightBridgeRequestKey& launchKey,
+                        bool paused) noexcept;
     bool sendKey(const MoonlightBridgeRequestKey& launchKey,
                  std::uint32_t harmonyKeyCode, bool pressed,
                  bool normalizedToUsLayout) noexcept;
@@ -136,6 +169,10 @@ private:
     State& state() noexcept;
     void completeTerminal(const MoonlightBridgeRequestKey& launchKey,
                           const MoonlightSessionKey& sessionKey) noexcept;
+    void recordTerminalInputTeardown(
+        const MoonlightBridgeRequestKey& launchKey,
+        const MoonlightSessionKey& sessionKey,
+        bool localCleanupComplete, bool remoteNeutral) noexcept;
 };
 
 } // namespace remotedesk::moonlight

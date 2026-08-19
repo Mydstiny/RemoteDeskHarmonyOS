@@ -84,12 +84,18 @@ export function resolveMoonlightDeletionImpact(
     return base;
   }
   if (command === 'delete_cloud_data') {
+    // Only public, re-pairable records are cloud eligible in Moonlight V1.
+    // Pairing trust and client identity are device-bound local state, so they
+    // must never be counted as cloud work or used to gate a cloud deletion.
     base.cloudTombstonesRequired = context.settingsRecordCount +
       context.hostRecordCount +
-      context.profileRecordCount + context.trustRecordCount +
-      context.identityRecordCount;
+      context.profileRecordCount;
     base.cloudDataPreserved = base.cloudTombstonesRequired === 0;
     base.waitForCloudTerminal = base.cloudTombstonesRequired > 0;
+    // Completing a cloud-wide deletion disables both the physical table and
+    // all logical scopes so preserved local rows cannot be republished.
+    base.selectionChanged = context.physicalCloudSelected ||
+      context.selectedLogicalScopeCount > 0;
     base.confirmationLevel = 'danger';
     return base;
   }
@@ -107,6 +113,11 @@ export function resolveMoonlightDeletionImpact(
       base.secureIdentitiesRemoved === 0;
     base.identityPreserved = context.identityRecordCount === 0 &&
       context.secureIdentityCount === 0;
+    // A local-only wipe must also stop this device's Moonlight selection.
+    // Leaving it enabled would allow the next cloud pull to recreate the
+    // rows the user just deleted, which is both surprising and unsafe.
+    base.selectionChanged = context.physicalCloudSelected ||
+      context.selectedLogicalScopeCount > 0;
     base.confirmationLevel = 'danger';
     return base;
   }
@@ -117,7 +128,7 @@ export function resolveMoonlightDeletionImpact(
     base.cacheRowsRemoved = context.appCacheCount;
     base.localRuntimeStatesRemoved = context.localRuntimeStateCount;
     base.cloudTombstonesRequired = context.physicalCloudSelected ?
-      base.localRowsRemoved : 0;
+      context.hostRecordCount + context.profileRecordCount : 0;
     base.localDataPreserved = false;
     base.cloudDataPreserved = base.cloudTombstonesRequired === 0;
     base.waitForCloudTerminal = base.cloudTombstonesRequired > 0;
@@ -130,8 +141,9 @@ export function resolveMoonlightDeletionImpact(
     base.localRuntimeStatesRemoved = context.localRuntimeStateCount;
     base.localDataPreserved = base.localRowsRemoved === 0 &&
       base.localRuntimeStatesRemoved === 0;
-    base.cloudTombstonesRequired = context.physicalCloudSelected ?
-      context.trustRecordCount : 0;
+    // Unpair removes only device-local trust. It must never mutate the cloud
+    // table, even when public host/profile synchronization is enabled.
+    base.cloudTombstonesRequired = 0;
     base.hostRequestBestEffort = true;
     base.cloudDataPreserved = base.cloudTombstonesRequired === 0;
     base.waitForCloudTerminal = base.cloudTombstonesRequired > 0;

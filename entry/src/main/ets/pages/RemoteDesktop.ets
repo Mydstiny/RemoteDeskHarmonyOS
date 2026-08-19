@@ -2,14 +2,18 @@
  * RemoteDesktop.ets v4 — 全屏远程桌面 + XComponent 生命周期 + 输入转发 + 错误诊断
  */
 import { display, promptAction, router, window } from '@kit.ArkUI';
-import { inputDevice, pointer } from '@kit.InputKit';
+import { inputDevice, pointer, KeyCode } from '@kit.InputKit';
 import { abilityAccessCtrl, common } from '@kit.AbilityKit';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { image } from '@kit.ImageKit';
 import { HostSyncService } from '../services/HostSyncService';
 import { CloudStore } from '../services/CloudStore';
 import { DataCrypto } from '../services/DataCrypto';
-import { ExtensionLoader } from '../services/ExtensionLoader';
+import {
+  ExtensionLoader,
+  NativeDisconnectIdentity,
+  NativeDisconnectSubmission
+} from '../services/ExtensionLoader';
 import { RustDeskProSyncService } from '../services/RustDeskProSyncService';
 import { KeyVaultService } from '../services/KeyVaultService';
 import {
@@ -168,6 +172,14 @@ import {
   type RemoteSessionPipSurface
 } from '../services/RemoteSessionPipService';
 import {
+  RemoteSessionServiceLease,
+  RemoteSessionServiceOwnerTokenAllocator,
+  RemoteSessionServiceProtocol,
+  cloneRemoteSessionServiceLease,
+  remoteSessionServiceLeaseEquals,
+  remoteSessionServiceRestoreGeneration
+} from '../services/RemoteSessionServiceLeasePolicy';
+import {
   RemoteSessionPipContentSize,
   RemoteSessionPipLifecycleAction,
   hasRemoteSessionPipVideo,
@@ -180,7 +192,31 @@ import {
   resolveRemoteSessionPipContentSize,
   resolveRemoteSessionPipLifecycle
 } from '../services/RemoteSessionPipLifecyclePolicy';
-import { ActiveRemoteSessionRegistry, ActiveRemoteSessionRecord } from '../services/ActiveRemoteSessionRegistry';
+import {
+  ActiveRemoteSessionRegistry,
+  ActiveRemoteSessionRecord,
+  ActiveRemoteSessionRestoreAdoption,
+  ActiveRemoteSessionTermination
+} from '../services/ActiveRemoteSessionRegistry';
+import {
+  nativeDisconnectStateIsFailed,
+  nativeDisconnectStateIsSuccessful
+} from '../services/RemoteSessionTerminationPolicy';
+import {
+  RemoteSessionRecordRegistry,
+  RemoteSessionWindowCoordinator,
+  RemoteSessionWindowNativeHandoff,
+  RemoteSessionWindowRecord
+} from '../services/RemoteSessionWindowCoordinator';
+import {
+  RemoteSessionWindowRequest,
+  remoteSessionWindowIdFromParams
+} from '../services/RemoteSessionWindowPolicy';
+import { RemoteSessionWindowLauncher } from '../services/RemoteSessionWindowLauncher';
+import { RemoteSessionWindowAuthorizationService } from
+  '../services/RemoteSessionWindowAuthorization';
+import { remoteSessionWindowReadySnapshotIsUsable } from
+  '../services/RemoteSessionWindowReadiness';
 import { AccountSessionCoordinator } from '../services/AccountSessionCoordinator';
 import { NativeSessionHandles, ProductionNativeHandleAdapter } from '../services/NativeSessionHandles';
 import {
@@ -790,6 +826,9 @@ struct RemoteDesktop {
   @StorageLink('rdpDriveEnabled') rdpDriveEnabled: boolean = true;
   @StorageLink('rdpDriveName') rdpDriveName: string = 'RemoteDesktop';
   @StorageLink('remoteDesktopBgFlag') @Watch('onRemoteDesktopBgFlagChange') remoteDesktopBgFlag: boolean = false;
+  @LocalStorageLink('sessionWindowBackground') @Watch('onSessionWindowBackgroundChange')
+  sessionWindowBackground: boolean = false;
+  @LocalStorageLink('sessionWindowFullscreen') sessionWindowFullscreen: boolean = false;
   @State @Watch('onRemoteConnectionStateChange') connected: boolean = false;
   @State connecting: boolean = true;
   @State connectionProgressMessage: string = '';
@@ -866,7 +905,16 @@ struct RemoteDesktop {
   private connectStarted: boolean = false;
   private cleanupStarted: boolean = false;
   private bgRestorePending: boolean = false; // T-252: 后台保活恢复待处理 (替代 AppStorage 时序问题)
-  private activeSessionRegistry: ActiveRemoteSessionRegistry = ActiveRemoteSessionRegistry.getInstance();
+  private activeSessionRegistry: RemoteSessionRecordRegistry = ActiveRemoteSessionRegistry.getInstance();
+  private sessionWindowId: string = '';
+  // Desktop RDP/VNC keeps the existing page and all of its authentication
+  // sheets as the connection owner. Only a fully connected native session is
+  // moved into a new UIAbility; preflight alone must never create a window.
+  private pcWindowAfterAuthentication: boolean = false;
+  private pcWindowHandoffStarted: boolean = false;
+  private pcWindowHandoffComplete: boolean = false;
+  private sessionWindowReadyCommitted: boolean = false;
+  private pcWindowRouteParams: Record<string, Object> = {};
   private latestSurfaceId: string = '';
   private keepScreenOnActive: boolean = false;
   private orientationApplied: boolean = false;
@@ -938,6 +986,15 @@ struct RemoteDesktop {
   private backgroundHasAudio: boolean = false;
   private backgroundHasVideo: boolean = false;
   private renderPreservedInPip: boolean = false;
+  /** Exact owner of the process-wide PIP/LiveView singletons. */
+  private presentationLease: RemoteSessionServiceLease | null = null;
+  private registryPresentationRestorePending: boolean = false;
+  private registryRestoreAdoption: ActiveRemoteSessionRestoreAdoption | null = null;
+  private registryTermination: ActiveRemoteSessionTermination | null = null;
+  private nativeDisconnectIdentity: NativeDisconnectIdentity | null = null;
+  private cleanupDisconnectIdentity: NativeDisconnectIdentity | null = null;
+  private registryPipPredecessorLease: RemoteSessionServiceLease | null = null;
+  private registryLiveViewPredecessorLease: RemoteSessionServiceLease | null = null;
   // The current renderer handle can change during a failed/stale transfer.
   // Keep the PIP owner separately so foreground recovery can release exactly
   // the free-node renderer before installing the page renderer.
@@ -953,6 +1010,7 @@ struct RemoteDesktop {
   private backgroundRenderRetryTimer: number = -1;
   private nativeDisconnectPending: boolean = false;
   private nativeDisconnectRetryTimer: number = -1;
+  private nativeDisconnectRequestId: number = 0;
   // Explicit page teardown detaches RustDesk's decoder before the asynchronous
   // PIP/native disconnect barrier. Background preservation does not set this.
   private decoderPipelineDetachedForTeardown: boolean = false;
@@ -2350,7 +2408,21 @@ struct RemoteDesktop {
     this.rustDeskTwoFactorSheetClosing = true;
     if (disconnect && !this.rustDeskTwoFactorDisconnectIssued) {
       this.rustDeskTwoFactorDisconnectIssued = true;
-      this.loader.disconnect();
+      const sheetSessionId: number = this.rustDeskTwoFactorSessionId;
+      const disconnectIdentity: NativeDisconnectIdentity | null =
+        this.nativeDisconnectIdentity !== null &&
+        this.nativeDisconnectIdentity.sessionId === sheetSessionId ?
+          this.nativeDisconnectIdentity :
+          this.loader.captureDisconnectIdentity(sheetSessionId);
+      if (disconnectIdentity !== null) {
+        this.submitRustDeskTwoFactorDisconnect(disconnectIdentity);
+      } else {
+        // A late Sheet callback must not fall back to the facade's current
+        // session. The original owner is already gone or has been replaced.
+        hilog.warn(RD_DOMAIN, RD_TAG,
+          'ignored stale RustDesk 2FA disconnect callback session=' +
+          sheetSessionId.toString());
+      }
     }
     if (invalidateSession) {
       this.connectAttemptId += 1;
@@ -2370,6 +2442,44 @@ struct RemoteDesktop {
         this.connectionErrorDetail = '未建立 RustDesk 会话';
       }
       this.sessionId = -1;
+    }
+  }
+
+  /** Retry only a transient NAPI boundary failure for this exact 2FA owner. */
+  private submitRustDeskTwoFactorDisconnect(
+    identity: NativeDisconnectIdentity, attemptsRemaining: number = 40
+  ): void {
+    const submission: NativeDisconnectSubmission =
+      this.loader.disconnectWithReceipt(identity);
+    if (!submission.accepted) {
+      if (submission.retryable && attemptsRemaining > 0) {
+        setTimeout((): void => {
+          this.submitRustDeskTwoFactorDisconnect(identity, attemptsRemaining - 1);
+        }, 250);
+      }
+      return;
+    }
+    if (this.nativeDisconnectIdentity !== null &&
+        this.nativeDisconnectIdentity.sessionId === identity.sessionId &&
+        this.nativeDisconnectIdentity.generation === identity.generation &&
+        this.nativeDisconnectIdentity.ownerToken === identity.ownerToken &&
+        this.nativeDisconnectIdentity.facadeGeneration === identity.facadeGeneration) {
+      this.nativeDisconnectIdentity = null;
+    }
+    if (!submission.terminal && submission.requestId > 0) {
+      void this.loader.waitForTeardownRequest(submission.requestId).then(
+        (completed: boolean): void => {
+          if (!completed) {
+            hilog.error(RD_DOMAIN, RD_TAG,
+              'RustDesk 2FA disconnect did not complete request=' +
+              submission.requestId.toString());
+          }
+        });
+      return;
+    }
+    if (!submission.successful) {
+      hilog.error(RD_DOMAIN, RD_TAG,
+        'RustDesk 2FA synchronous disconnect failed');
     }
   }
 
@@ -4288,7 +4398,7 @@ struct RemoteDesktop {
       multiMonitor: false,
       monitorCount: 1
     });
-    RemoteSessionPipService.getInstance().updateContentSize(width, height);
+    this.updateOwnedRemoteSessionPipContentSize(width, height);
     if (!this.canvasTransformGestureModified) {
       this.resetCanvasToDisplayDefault(true);
     }
@@ -6234,11 +6344,11 @@ struct RemoteDesktop {
         return;
       }
 
-      const isBg: boolean = AppStorage.get<boolean>('remoteDesktopBgFlag') ?? false;
+      const isBg: boolean = this.currentAbilityBackgroundState();
       if (isBg) {
         hilog.info(RD_DOMAIN, RD_TAG,
           'deferred page disappear: background signal arrived, preserving session');
-        this.onRemoteDesktopBgFlagChange();
+        this.applyAbilityBackgroundState(true);
         return;
       }
 
@@ -6251,8 +6361,31 @@ struct RemoteDesktop {
   }
 
   private onRemoteDesktopBgFlagChange(): void {
+    if (this.sessionWindowId.length > 0) { return; }
     const isBackground: boolean = AppStorage.get<boolean>('remoteDesktopBgFlag') ??
       this.remoteDesktopBgFlag;
+    this.applyAbilityBackgroundState(isBackground);
+  }
+
+  private onSessionWindowBackgroundChange(): void {
+    if (this.sessionWindowId.length === 0) { return; }
+    this.applyAbilityBackgroundState(this.sessionWindowBackground);
+  }
+
+  private currentAbilityBackgroundState(): boolean {
+    return this.sessionWindowId.length > 0 ? this.sessionWindowBackground :
+      (AppStorage.get<boolean>('remoteDesktopBgFlag') ?? this.remoteDesktopBgFlag);
+  }
+
+  private clearCurrentAbilityBackgroundState(): void {
+    if (this.sessionWindowId.length > 0) {
+      this.sessionWindowBackground = false;
+      return;
+    }
+    AppStorage.setOrCreate<boolean>('remoteDesktopBgFlag', false);
+  }
+
+  private applyAbilityBackgroundState(isBackground: boolean): void {
     if (isBackground) {
       this.cancelPendingDisappearDecision();
     }
@@ -6431,7 +6564,7 @@ struct RemoteDesktop {
     }
     this.pipLastContentWidth = size.width;
     this.pipLastContentHeight = size.height;
-    RemoteSessionPipService.getInstance().updateContentSize(size.width, size.height);
+    this.updateOwnedRemoteSessionPipContentSize(size.width, size.height);
     hilog.info(RD_DOMAIN, RD_TAG, 'refreshActivePipContentSize: remote=' +
       size.width.toString() + 'x' + size.height.toString());
   }
@@ -6450,7 +6583,216 @@ struct RemoteDesktop {
     }
   }
 
+  private bindIndependentSessionWindow(params: Object): void {
+    const id: string = remoteSessionWindowIdFromParams(params);
+    if (id.length === 0 || id === this.sessionWindowId) { return; }
+    const record: RemoteSessionWindowRecord | null =
+      RemoteSessionWindowCoordinator.getInstance().resolve(id);
+    if (record === null || record.request.target !== 'remote_desktop') { return; }
+    this.sessionWindowId = id;
+    this.loader = record.runtime.loader;
+    this.activeSessionRegistry = record.runtime.activeSessionRegistry;
+    hilog.info(RD_DOMAIN, RD_TAG,
+      'bound independent window runtime protocol=' + record.request.protocol);
+  }
+
+  private publishIndependentWindowReady(reason: string): void {
+    if (this.sessionWindowId.length === 0 || this.sessionWindowReadyCommitted ||
+      !remoteSessionWindowReadySnapshotIsUsable({
+        protocolConnected: this.connected && this.sessionId > 0,
+        visualOwnerAttached: this.surfaceReady && this.rendererHandle > 0,
+        viewportWidth: this.renderWidthPx,
+        viewportHeight: this.renderHeightPx,
+        inputReady: this.inputForwardReady
+      })) {
+      return;
+    }
+    if (RemoteSessionWindowCoordinator.getInstance().markContentReady(this.sessionWindowId)) {
+      this.sessionWindowReadyCommitted = true;
+      hilog.info(RD_DOMAIN, RD_TAG,
+        'independent window interactive reason=' + reason +
+        ' surface=' + this.renderWidthPx.toString() + 'x' + this.renderHeightPx.toString());
+    }
+  }
+
+  private toggleIndependentWindowFullscreen(): void {
+    if (this.sessionWindowId.length === 0) { return; }
+    void RemoteSessionWindowCoordinator.getInstance().toggleFullscreen(
+      this.sessionWindowId).then((changed: boolean): void => {
+      if (!changed) {
+        promptAction.showToast({ message: '窗口全屏切换暂不可用', duration: 1800 });
+      }
+    }).catch((_err: Error): void => {
+      promptAction.showToast({ message: '窗口全屏切换失败', duration: 1800 });
+    });
+  }
+
+  private bindIndependentSessionRegistryScope(): void {
+    if (this.sessionWindowId.length === 0) { return; }
+    const scope = AccountSessionCoordinator.getInstance().currentScope();
+    this.activeSessionRegistry.bindScope(scope.ownerScopeId, scope.generation);
+  }
+
+  private stageIndependentWindowAfterAuthentication(params: Object): void {
+    if (this.sessionWindowId.length > 0 || !this.isDesktopDevice) { return; }
+    const values: Record<string, Object> = params as Record<string, Object>;
+    if (values['pcWindowAfterAuthentication'] !== true) { return; }
+    const preflightKind: string = typeof values['pcWindowPreflightKind'] === 'string' ?
+      values['pcWindowPreflightKind'] as string : '';
+    if (preflightKind !== 'rdp_preflight_complete' &&
+      preflightKind !== 'vnc_preflight_complete') {
+      hilog.warn(RD_DOMAIN, RD_TAG,
+        'independent window staging rejected: invalid preflight kind=' + preflightKind);
+      return;
+    }
+    const copied: Record<string, Object> = {};
+    Object.keys(values).forEach((key: string): void => {
+      copied[key] = values[key];
+    });
+    this.pcWindowRouteParams = copied;
+    this.pcWindowAfterAuthentication = true;
+    hilog.info(RD_DOMAIN, RD_TAG,
+      'independent window staged after native authentication kind=' + preflightKind);
+  }
+
+  private independentWindowRouteParams(): Record<string, Object> {
+    const routeParams: Record<string, Object> = {};
+    Object.keys(this.pcWindowRouteParams).forEach((key: string): void => {
+      if (key !== 'pcWindowAfterAuthentication' && key !== 'pcWindowPreflightKind' &&
+        key !== 'sessionWindowId') {
+        routeParams[key] = this.pcWindowRouteParams[key];
+      }
+    });
+    routeParams['authenticated'] = true;
+    routeParams['nativeSessionPreauthenticated'] = true;
+    return routeParams;
+  }
+
+  /**
+   * Move a live RDP/VNC session into its own PC ability after the unchanged
+   * native authentication flow has committed. The move is transactional at
+   * the loader/registry boundary; any launch failure disconnects locally and
+   * returns to the host list without exposing an in-app video fallback.
+   */
+  private async handoffAuthenticatedSessionToIndependentWindow(
+    host: RemoteHost, sessionId: number): Promise<boolean> {
+    if (!this.pcWindowAfterAuthentication || this.pcWindowHandoffStarted ||
+      this.sessionWindowId.length > 0 ||
+      (host.protocol !== 'rdp' && host.protocol !== 'vnc') || sessionId <= 0) {
+      return false;
+    }
+    this.pcWindowHandoffStarted = true;
+    this.inputForwardReady = false;
+    this.clearRemoteInputFocusSchedule();
+    this.clearRemoteInputFocusAcknowledgement();
+    // Keep a handle to the originating UIContent's router. Once the target
+    // UIAbility is foreground, the process-global router may point at its page
+    // stack; using it here can minimize the independent session we just made.
+    const sourcePageRouter = this.getUIContext().getRouter();
+    let authorizationToken: string = '';
+    try {
+      // A renderer belongs to one XComponent surface. Release the source
+      // renderer before the target ability binds its own surface, while
+      // preserving the authenticated protocol session and decoder/audio.
+      if (this.nativeHandles.isRenderAttached()) {
+        this.nativeHandles.detachRenderForBackground();
+      } else if (this.loader.getRendererHandle() > 0) {
+        this.loader.destroyRenderer();
+      }
+      this.rendererHandle = -1;
+      this.surfaceReady = false;
+      this.latestSurfaceId = '';
+      if (!this.recordActiveSession(host, sessionId, false)) {
+        throw new Error('authenticated session registry update rejected');
+      }
+      this.activeSessionRegistry.markRenderDetached(this.registryRestoreAdoption);
+
+      const sourceRegistry: ActiveRemoteSessionRegistry =
+        ActiveRemoteSessionRegistry.getInstance();
+      const active: ActiveRemoteSessionRecord | null = sourceRegistry.getActive();
+      const protocol: 'rdp' | 'vnc' = host.protocol === 'vnc' ? 'vnc' : 'rdp';
+      const expectedProtocol: RemoteProtocol = protocol === 'vnc' ?
+        RemoteProtocol.vnc : RemoteProtocol.rdp;
+      if (active === null || active.sessionId !== sessionId ||
+        active.hostId !== host.id || active.protocol !== expectedProtocol ||
+        !active.protocolConnected || !active.restoreNeeded) {
+        throw new Error('authenticated session is not transferable');
+      }
+      authorizationToken = RemoteSessionWindowAuthorizationService.getInstance().issue(
+        protocol, host.id,
+        protocol === 'vnc' ? 'vnc_authenticated' : 'rdp_authenticated');
+      if (authorizationToken.length === 0) {
+        throw new Error('authenticated window authorization failed');
+      }
+      const request: RemoteSessionWindowRequest = {
+        target: 'remote_desktop',
+        protocol,
+        hostId: host.id,
+        title: this.hostLabel + (protocol === 'vnc' ? ' — VNC' : ' — RDP'),
+        authorizationToken,
+        routeParams: this.independentWindowRouteParams()
+      };
+      const context: common.UIAbilityContext =
+        this.getUIContext().getHostContext() as common.UIAbilityContext;
+      const opened: boolean = await RemoteSessionWindowLauncher.open(
+        context, request,
+        new RemoteSessionWindowNativeHandoff(this.loader, sourceRegistry, active));
+      if (!opened) {
+        throw new Error('independent session ability launch rejected');
+      }
+
+      // The window-local runtime is now the sole native owner. Prevent every
+      // late source-page lifecycle callback from disconnecting it or clearing
+      // the target surface after the new page has attached.
+      this.pcWindowHandoffComplete = true;
+      this.nativeHandles.markAsyncTeardownTransferred();
+      this.nativeDisconnectIdentity = null;
+      this.cleanupDisconnectIdentity = null;
+      this.sessionId = -1;
+      this.rendererHandle = -1;
+      this.decoderHandle = -1;
+      this.connected = false;
+      this.connecting = false;
+      this.connectStarted = false;
+      this.bgRestorePending = false;
+      this.cleanupStarted = true;
+      this.clearRemoteCursorPolling(false, 'pc-window-handoff');
+      hilog.info(RD_DOMAIN, RD_TAG,
+        'authenticated session handed to independent window protocol=' + protocol);
+      try {
+        sourcePageRouter.back();
+      } catch (err) {
+        hilog.warn(RD_DOMAIN, RD_TAG,
+          'source page did not close after window handoff: ' + JSON.stringify(err));
+      }
+      return true;
+    } catch (err) {
+      if (authorizationToken.length > 0) {
+        RemoteSessionWindowAuthorizationService.getInstance().revoke(authorizationToken);
+      }
+      this.pcWindowAfterAuthentication = false;
+      this.pcWindowHandoffStarted = false;
+      hilog.error(RD_DOMAIN, RD_TAG,
+        'authenticated independent window handoff failed: ' + JSON.stringify(err));
+      promptAction.showToast({
+        message: '独立窗口创建失败，已安全断开会话',
+        duration: 2400
+      });
+      this.disconnectAndCleanup('pc-window-handoff-failed');
+      sourcePageRouter.back();
+      return true;
+    }
+  }
+
   async aboutToAppear(): Promise<void> {
+    const routeParams: Object = router.getParams();
+    this.registryPresentationRestorePending = false;
+    this.registryRestoreAdoption = null;
+    this.registryTermination = null;
+    this.registryPipPredecessorLease = null;
+    this.registryLiveViewPredecessorLease = null;
+    this.bindIndependentSessionWindow(routeParams);
+    this.stageIndependentWindowAfterAuthentication(routeParams);
     this.cancelPendingDisappearDecision();
     if (this.connected && this.isVncSession()) {
       if (this.kbWin !== null) {
@@ -6481,7 +6823,8 @@ struct RemoteDesktop {
         'aboutToAppear: account scope is not ready; remote session startup blocked');
       return;
     }
-    const params: Object = router.getParams();
+    this.bindIndependentSessionRegistryScope();
+    const params: Object = routeParams;
     if (params) {
       const p: Record<string, Object> = params as Record<string, Object>;
       const vncHostId: string = (p['vncHostId'] as string) || '';
@@ -6809,11 +7152,22 @@ struct RemoteDesktop {
       }
     } catch (_err) { /* ignore */ }
 
+    if (this.pcWindowHandoffComplete) {
+      // Ownership has moved to RemoteSessionAbility. In particular, do not
+      // clear the window-local registry, submit a native disconnect, or mark
+      // the process-global XComponent surface as destroyed from this page.
+      this.cancelPendingDisappearDecision();
+      this.unbindVncAccountScopeListener();
+      hilog.info(RD_DOMAIN, RD_TAG,
+        'aboutToDisappear: source teardown skipped after independent-window handoff');
+      return;
+    }
+
     // 路由感知策略 (T-252):
     // - 后台标志=true (EntryAbility.onWillBackground/onBackground 已触发) → 保活
     // - 页面先消失时，等待 Ability 生命周期信号再决定，避免误判成显式退出
     // - 确认不是后台切换后 → 完全断连
-    const isBg: boolean = AppStorage.get<boolean>('remoteDesktopBgFlag') ?? false;
+    const isBg: boolean = this.currentAbilityBackgroundState();
     if (isBg) {
       if (this.isVncSession()) {
         // VNC has no background session contract. Clear pending probe, pin and
@@ -6974,6 +7328,73 @@ struct RemoteDesktop {
     return RemoteProtocol.rdp;
   }
 
+  private presentationProtocolOf(host: RemoteHost): RemoteSessionServiceProtocol | null {
+    if (host.protocol === 'rdp' || host.protocol === 'rustdesk' || host.protocol === 'vnc') {
+      return host.protocol;
+    }
+    return null;
+  }
+
+  private ensureRemoteSessionPresentationLease(host: RemoteHost,
+    sessionId: number): RemoteSessionServiceLease | null {
+    const protocol: RemoteSessionServiceProtocol | null = this.presentationProtocolOf(host);
+    if (protocol === null || host.id.trim() === '' || sessionId <= 0 ||
+        this.sessionId !== sessionId || this.connectAttemptId <= 0) {
+      return null;
+    }
+    if (this.presentationLease !== null) {
+      if (this.presentationLease.protocol === protocol &&
+          this.presentationLease.hostId === host.id &&
+          this.presentationLease.sessionId === sessionId &&
+          this.presentationLease.generation === this.connectAttemptId) {
+        return cloneRemoteSessionServiceLease(this.presentationLease);
+      }
+      hilog.warn(RD_DOMAIN, RD_TAG,
+        '[PRESENTATION-LEASE] refused to replace an owned session lease');
+      return null;
+    }
+    const ownerToken: number =
+      RemoteSessionServiceOwnerTokenAllocator.getInstance().next();
+    if (ownerToken <= 0) { return null; }
+    const lease: RemoteSessionServiceLease = {
+      protocol: protocol,
+      hostId: host.id,
+      sessionId: sessionId,
+      generation: this.connectAttemptId,
+      ownerToken: ownerToken
+    };
+    this.presentationLease = cloneRemoteSessionServiceLease(lease);
+    return cloneRemoteSessionServiceLease(lease);
+  }
+
+  private currentRemoteSessionPresentationLease(): RemoteSessionServiceLease | null {
+    return this.presentationLease === null ? null :
+      cloneRemoteSessionServiceLease(this.presentationLease);
+  }
+
+  private remoteSessionPresentationLeaseCurrent(
+    lease: RemoteSessionServiceLease): boolean {
+    const host: RemoteHost | null = this.pendingHost;
+    return remoteSessionServiceLeaseEquals(this.presentationLease, lease) &&
+      host !== null && this.presentationProtocolOf(host) === lease.protocol &&
+      host.id === lease.hostId && this.sessionId === lease.sessionId &&
+      this.connectAttemptId === lease.generation;
+  }
+
+  private clearRemoteSessionPresentationLease(
+    lease: RemoteSessionServiceLease | null): void {
+    if (lease !== null && remoteSessionServiceLeaseEquals(this.presentationLease, lease)) {
+      this.presentationLease = null;
+    }
+  }
+
+  private updateOwnedRemoteSessionPipContentSize(width: number, height: number): void {
+    const lease: RemoteSessionServiceLease | null =
+      this.currentRemoteSessionPresentationLease();
+    if (lease === null || !this.remoteSessionPresentationLeaseCurrent(lease)) { return; }
+    RemoteSessionPipService.getInstance().updateContentSize(width, height, lease);
+  }
+
   private recordActiveSession(host: RemoteHost, sessionId: number, renderAttached: boolean): boolean {
     const now: number = Date.now();
     const activeScope = AccountSessionCoordinator.getInstance().currentScope();
@@ -6991,7 +7412,8 @@ struct RemoteDesktop {
       createdAtMs: now,
       updatedAtMs: now
     };
-    const registered: boolean = this.activeSessionRegistry.setActive(record);
+    const registered: boolean = this.activeSessionRegistry.setActive(
+      record, this.registryRestoreAdoption);
     if (!registered) {
       hilog.error(RD_DOMAIN, RD_TAG,
         'recordActiveSession: registry scope rejected session=' + sessionId.toString() +
@@ -7006,6 +7428,20 @@ struct RemoteDesktop {
    */
   private async prepareRemoteSessionPipForForeground(host: RemoteHost,
     sessionId: number): Promise<void> {
+    if (this.sessionWindowId.length > 0) {
+      // System-level PC windows already remain independently visible and own
+      // isolated native facades. The app-wide singleton PiP controller cannot
+      // safely represent more than one such window.
+      return;
+    }
+    const presentationLease: RemoteSessionServiceLease | null =
+      this.ensureRemoteSessionPresentationLease(host, sessionId);
+    if (presentationLease === null) {
+      hilog.warn(RD_DOMAIN, RD_TAG,
+        'prepareRemoteSessionPipForForeground: exact session lease unavailable');
+      return;
+    }
+    const pipService: RemoteSessionPipService = RemoteSessionPipService.getInstance();
     const liveViewEnabled: boolean = AppStorage.get<boolean>('liveViewEnabled') ?? true;
     const liveViewMode: number = AppStorage.get<number>('liveViewMode') ?? LiveViewMode.AVSESSION;
     const activeSession: ActiveRemoteSessionRecord | null = this.activeSessionRegistry.getActive();
@@ -7024,11 +7460,11 @@ struct RemoteDesktop {
         ' activeSession=' + sessionActive.toString() +
         ' renderer=' + this.rendererHandle.toString() +
         ' surfaceReady=' + this.surfaceReady.toString() +
-        ' prepared=' + RemoteSessionPipService.getInstance().isPreparedOrPreparing().toString());
+        ' prepared=' + pipService.isPreparedOrPreparing(presentationLease).toString());
       // A transient frame gap during connection must not revoke a controller
       // that the next background transition still needs.
       if (!sessionActive || !liveViewEnabled || liveViewMode !== LiveViewMode.AVSESSION) {
-        await RemoteSessionPipService.getInstance().stop();
+        await pipService.stop(presentationLease);
       }
       return;
     }
@@ -7036,10 +7472,16 @@ struct RemoteDesktop {
       const uiContext = this.getUIContext();
       const context: common.UIAbilityContext = uiContext.getHostContext() as common.UIAbilityContext;
       const pipSize: RemoteSessionPipContentSize = this.currentPipContentSize();
-      const prepared: boolean = await RemoteSessionPipService.getInstance().prepare(
-        context, uiContext, pipSize.width, pipSize.height,
-        (reason: string): void => this.handleRemoteSessionPipStopped(reason),
-        (surface: RemoteSessionPipSurface): void => this.handlePipSurfaceChanged(surface));
+      const prepared: boolean = await pipService.prepare(
+        context, uiContext, pipSize.width, pipSize.height, presentationLease,
+        (reason: string): void =>
+          this.handleRemoteSessionPipStopped(reason, presentationLease),
+        (surface: RemoteSessionPipSurface): void =>
+          this.handlePipSurfaceChanged(surface, presentationLease));
+      if (!this.remoteSessionPresentationLeaseCurrent(presentationLease)) {
+        if (prepared) { await pipService.stop(presentationLease); }
+        return;
+      }
       hilog.info(RD_DOMAIN, RD_TAG, 'prepareRemoteSessionPipForForeground: prepared=' +
         prepared.toString() + ' sessionId=' + sessionId.toString());
     } catch (err) {
@@ -7066,7 +7508,11 @@ struct RemoteDesktop {
    * 降级到普通后台通知。实际视频帧由 PIP free-node surface 承载。
    */
   private async startSessionLiveView(ctx: common.UIAbilityContext,
-    info: RemoteSessionBgInfo): Promise<void> {
+    info: RemoteSessionBgInfo,
+    presentationLease: RemoteSessionServiceLease): Promise<void> {
+    if (!this.remoteSessionPresentationLeaseCurrent(presentationLease) ||
+        info.hostId !== presentationLease.hostId ||
+        info.sessionId !== presentationLease.sessionId) { return; }
     try {
       const liveViewInfo: LiveViewConnectionInfo = {
         hostId: info.hostId,
@@ -7083,8 +7529,13 @@ struct RemoteDesktop {
       };
 
       const service: RemoteSessionLiveViewService = RemoteSessionLiveViewService.getInstance();
-      const started: boolean = await service.reconcile(ctx, liveViewInfo);
-      if (!started || !service.isActive()) {
+      const started: boolean = await service.reconcile(
+        ctx, liveViewInfo, presentationLease);
+      if (!this.remoteSessionPresentationLeaseCurrent(presentationLease)) {
+        if (started) { await service.stop(ctx, presentationLease); }
+        return;
+      }
+      if (!started || !service.isActive(presentationLease)) {
         hilog.warn(RD_DOMAIN, RD_TAG, 'startSessionLiveView: strategy did not start; suppress success log' +
           ' protocol=' + info.protocolLabel);
         return;
@@ -7093,8 +7544,9 @@ struct RemoteDesktop {
       // 如果有音频, AVSession 策略启动后注入静音回调
       if (info.hasAudio) {
         service.setMuteCommandCallback((mute: boolean): void => {
+          if (!this.remoteSessionPresentationLeaseCurrent(presentationLease)) { return; }
           this.setRemoteAudioMute(mute);
-        });
+        }, presentationLease);
       }
 
       hilog.info(RD_DOMAIN, RD_TAG, 'startSessionLiveView: background media active protocol=' +
@@ -7127,9 +7579,11 @@ struct RemoteDesktop {
   /**
    * 停止后台媒体身份和 PIP (前台恢复或断连时调用)。
    */
-  private async stopSessionLiveView(ctx: common.UIAbilityContext): Promise<void> {
+  private async stopSessionLiveView(ctx: common.UIAbilityContext,
+    presentationLease: RemoteSessionServiceLease | null): Promise<void> {
+    if (presentationLease === null) { return; }
     try {
-      await RemoteSessionLiveViewService.getInstance().stop(ctx);
+      await RemoteSessionLiveViewService.getInstance().stop(ctx, presentationLease);
       hilog.info(RD_DOMAIN, RD_TAG, 'stopSessionLiveView: background media stopped');
     } catch (err) {
       hilog.warn(RD_DOMAIN, RD_TAG, 'stopSessionLiveView: failed: ' + JSON.stringify(err));
@@ -7137,10 +7591,83 @@ struct RemoteDesktop {
     // PIP teardown is part of the same foreground handoff as AVSession stop.
     // Do not release the native renderer until WMS has emitted a terminal PIP
     // state; otherwise the late surface callback can tear down the session.
-    const stopped: boolean = await RemoteSessionPipService.getInstance().stop();
+    const stopped: boolean =
+      await RemoteSessionPipService.getInstance().stop(presentationLease);
     if (!stopped) {
       throw new Error('PIP controller stop failed [E-PIP-STOP]');
     }
+  }
+
+  private async stopSessionPresentationForForegroundRestore(
+    ctx: common.UIAbilityContext | null,
+    presentationLease: RemoteSessionServiceLease | null): Promise<void> {
+    if (presentationLease !== null) {
+      const liveViewService: RemoteSessionLiveViewService =
+        RemoteSessionLiveViewService.getInstance();
+      if (ctx !== null) {
+        await liveViewService.stop(ctx, presentationLease);
+      } else {
+        await liveViewService.stopOwned(presentationLease);
+      }
+      const stopped: boolean =
+        await RemoteSessionPipService.getInstance().stop(presentationLease);
+      if (!stopped) {
+        throw new Error('PIP controller stop failed [E-PIP-STOP]');
+      }
+      this.registryPresentationRestorePending = false;
+      return;
+    }
+    if (!this.registryPresentationRestorePending || this.pendingHost === null ||
+        this.sessionId <= 0) {
+      return;
+    }
+    const restoreHostId: string = this.pendingHost.id;
+    const restoreSessionId: number = this.sessionId;
+    const protocol: RemoteSessionServiceProtocol | null =
+      this.presentationProtocolOf(this.pendingHost);
+    if (protocol === null) { return; }
+    const adoption: ActiveRemoteSessionRestoreAdoption | null =
+      this.registryRestoreAdoption;
+    if (!this.activeSessionRegistry.isRestoreAdoptionCurrent(adoption)) {
+      throw new Error('registered session restore superseded [E-RESTORE-OWNER]');
+    }
+    const liveViewService: RemoteSessionLiveViewService =
+      RemoteSessionLiveViewService.getInstance();
+    const expectedLiveView: RemoteSessionServiceLease | null =
+      this.registryLiveViewPredecessorLease;
+    if (expectedLiveView !== null) {
+      if (ctx !== null) {
+        await liveViewService.stop(ctx, expectedLiveView);
+      } else {
+        await liveViewService.stopOwned(expectedLiveView);
+      }
+    }
+    const pipService: RemoteSessionPipService = RemoteSessionPipService.getInstance();
+    const expectedPip: RemoteSessionServiceLease | null =
+      this.registryPipPredecessorLease;
+    const stopped: boolean = expectedPip === null ? true :
+      await pipService.stop(expectedPip);
+    if (!stopped) {
+      throw new Error('registered session PIP controller stop failed [E-PIP-RESTORE-STOP]');
+    }
+    if (!this.activeSessionRegistry.isRestoreAdoptionCurrent(adoption)) {
+      throw new Error('registered session restore superseded [E-RESTORE-OWNER]');
+    }
+    const nextLiveView: RemoteSessionServiceLease | null =
+      liveViewService.leaseForMatchingSession(protocol, restoreHostId, restoreSessionId);
+    const nextPip: RemoteSessionServiceLease | null =
+      pipService.leaseForMatchingSession(protocol, restoreHostId, restoreSessionId);
+    if (nextLiveView !== null || nextPip !== null) {
+      // A predecessor page raced this CAS and published a different owner.
+      // Capture that exact owner and retry only while our adoption epoch is
+      // still current; a newer restoring page can never be stopped here.
+      this.registryLiveViewPredecessorLease = nextLiveView;
+      this.registryPipPredecessorLease = nextPip;
+      throw new Error('registered session presentation owner changed [E-RESTORE-PREDECESSOR]');
+    }
+    this.registryLiveViewPredecessorLease = null;
+    this.registryPipPredecessorLease = null;
+    this.registryPresentationRestorePending = false;
   }
 
   private startBackgroundAudioPolling(ctx: common.UIAbilityContext, info: RemoteSessionBgInfo): void {
@@ -7241,12 +7768,14 @@ struct RemoteDesktop {
   }
 
   private async waitForPipFrameReady(operationGeneration: number,
+    presentationLease: RemoteSessionServiceLease,
     timeoutMs: number = 5000): Promise<boolean> {
     const startedAtMs: number = Date.now();
     const pipService: RemoteSessionPipService = RemoteSessionPipService.getInstance();
     while (Date.now() - startedAtMs < timeoutMs) {
       if (this.restoreInProgress || !this.cleanupStarted ||
-        !pipService.isOperationCurrent(operationGeneration)) {
+        !this.remoteSessionPresentationLeaseCurrent(presentationLease) ||
+        !pipService.isOperationCurrent(operationGeneration, presentationLease)) {
         return false;
       }
       if (this.isPipFrameReady()) {
@@ -7257,7 +7786,9 @@ struct RemoteDesktop {
       });
     }
     return !this.restoreInProgress && this.cleanupStarted &&
-      pipService.isOperationCurrent(operationGeneration) && this.isPipFrameReady();
+      this.remoteSessionPresentationLeaseCurrent(presentationLease) &&
+      pipService.isOperationCurrent(operationGeneration, presentationLease) &&
+      this.isPipFrameReady();
   }
 
   private isRustDeskPresentedFrameReady(): boolean {
@@ -7279,6 +7810,7 @@ struct RemoteDesktop {
     previousPresentedFrames: number,
     attemptId: number,
     operationGeneration: number = -1,
+    presentationLease: RemoteSessionServiceLease | null = null,
     timeoutMs: number = 5000): Promise<boolean> {
     const startedAtMs: number = Date.now();
     const pipService: RemoteSessionPipService = RemoteSessionPipService.getInstance();
@@ -7286,7 +7818,9 @@ struct RemoteDesktop {
       if (this.sessionId !== sessionId || this.connectAttemptId !== attemptId) {
         return false;
       }
-      if (operationGeneration > 0 && !pipService.isOperationCurrent(operationGeneration)) {
+      if (operationGeneration > 0 && (presentationLease === null ||
+          !this.remoteSessionPresentationLeaseCurrent(presentationLease) ||
+          !pipService.isOperationCurrent(operationGeneration, presentationLease))) {
         return false;
       }
       try {
@@ -7305,7 +7839,9 @@ struct RemoteDesktop {
     if (this.sessionId !== sessionId || this.connectAttemptId !== attemptId) {
       return false;
     }
-    if (operationGeneration > 0 && !pipService.isOperationCurrent(operationGeneration)) {
+    if (operationGeneration > 0 && (presentationLease === null ||
+        !this.remoteSessionPresentationLeaseCurrent(presentationLease) ||
+        !pipService.isOperationCurrent(operationGeneration, presentationLease))) {
       return false;
     }
     return this.vncPresentedFrameCount() > previousPresentedFrames &&
@@ -7411,7 +7947,8 @@ struct RemoteDesktop {
           hilog.info(RD_DOMAIN, RD_TAG, 'runRestoreFrameRefresh: decoder recovery armed=' +
             (recoveryArmed ? 'true' : 'false') + ' delay=' + delayMs.toString());
         }
-        this.activeSessionRegistry.markRenderAttached(surfaceId);
+        this.activeSessionRegistry.markRenderAttached(
+          surfaceId, this.registryRestoreAdoption);
         hilog.info(RD_DOMAIN, RD_TAG, 'runRestoreFrameRefresh: surface rebound delay=' +
           delayMs.toString() + ' renderer=' + this.rendererHandle.toString());
       } else {
@@ -7469,10 +8006,14 @@ struct RemoteDesktop {
         hilog.warn(RD_DOMAIN, RD_TAG, 'refreshBackgroundAudioState: background mode update failed: ' +
           (err.message ? err.message : JSON.stringify(err)));
       });
-    this.startSessionLiveView(ctx, nextInfo).catch((err: Error): void => {
-      hilog.warn(RD_DOMAIN, RD_TAG, 'refreshBackgroundAudioState: live view update failed: ' +
-        (err.message ? err.message : JSON.stringify(err)));
-    });
+    const presentationLease: RemoteSessionServiceLease | null =
+      this.currentRemoteSessionPresentationLease();
+    if (presentationLease !== null) {
+      this.startSessionLiveView(ctx, nextInfo, presentationLease).catch((err: Error): void => {
+        hilog.warn(RD_DOMAIN, RD_TAG, 'refreshBackgroundAudioState: live view update failed: ' +
+          (err.message ? err.message : JSON.stringify(err)));
+      });
+    }
     hilog.info(RD_DOMAIN, RD_TAG, 'refreshBackgroundAudioState: hasAudio=' +
       (media.hasAudio ? 'true' : 'false') + ' hasVideo=' +
       (media.hasVideo ? 'true' : 'false'));
@@ -7480,14 +8021,46 @@ struct RemoteDesktop {
 
   private prepareRegistryRestore(host: RemoteHost): boolean {
     const active: ActiveRemoteSessionRecord | null = this.activeSessionRegistry.getActive();
-    if (active === null || active.hostId !== host.id || !active.protocolConnected || !active.restoreNeeded) {
+    if (active === null || active.hostId !== host.id ||
+        active.protocol !== this.remoteProtocolOf(host) ||
+        !active.protocolConnected || !active.restoreNeeded) {
       return false;
     }
+    const presentationProtocol: RemoteSessionServiceProtocol | null =
+      this.presentationProtocolOf(host);
+    if (presentationProtocol === null) { return false; }
+    const restoreGeneration: number = remoteSessionServiceRestoreGeneration(
+      this.connectAttemptId, this.sessionId, active.sessionId);
+    if (restoreGeneration <= 0) { return false; }
+    const adoption: ActiveRemoteSessionRestoreAdoption | null =
+      this.activeSessionRegistry.beginRestoreAdoption(active);
+    if (adoption === null) { return false; }
+    this.registryRestoreAdoption = adoption;
+    this.registryPipPredecessorLease = RemoteSessionPipService.getInstance()
+      .leaseForMatchingSession(presentationProtocol, host.id, active.sessionId);
+    this.registryLiveViewPredecessorLease = RemoteSessionLiveViewService.getInstance()
+      .leaseForMatchingSession(presentationProtocol, host.id, active.sessionId);
+    this.connectAttemptId = restoreGeneration;
     this.sessionId = active.sessionId;
+    this.nativeDisconnectIdentity =
+      this.loader.captureDisconnectIdentity(active.sessionId);
+    if (this.nativeDisconnectIdentity === null) {
+      this.registryRestoreAdoption = null;
+      this.registryPipPredecessorLease = null;
+      this.registryLiveViewPredecessorLease = null;
+      this.sessionId = -1;
+      return false;
+    }
+    this.registryPresentationRestorePending = true;
     this.bgRestorePending = true;
     this.cleanupStarted = false;
     this.connectStarted = false;
     this.connected = false;
+    // A live session moved between ability-local ExtensionLoader facades keeps
+    // its native decoder/audio handles. Mirror them into the target page so
+    // the standard background-restore path can rebind the new XComponent.
+    this.rendererHandle = this.loader.getRendererHandle();
+    this.decoderHandle = this.loader.getDecoderHandle();
     this.latestSurfaceId = active.latestSurfaceId;
     hilog.info(RD_DOMAIN, RD_TAG, 'prepareRegistryRestore: sessionId=' +
       active.sessionId.toString() + ' hostId=' + active.hostId);
@@ -7832,7 +8405,7 @@ struct RemoteDesktop {
     const previousWidth: number = this.remoteWidth;
     const previousHeight: number = this.remoteHeight;
     this.resetRustDeskInputAfterGeometryChange('rustdesk-renderer-geometry');
-    RemoteSessionPipService.getInstance().updateContentSize(
+    this.updateOwnedRemoteSessionPipContentSize(
       viewport.sourceWidth, viewport.sourceHeight);
     this.updateRemoteSize({
       width: viewport.sourceWidth,
@@ -7910,7 +8483,7 @@ struct RemoteDesktop {
     const previousHeight: number = this.remoteHeight;
     this.resetVncInputAfterGeometryChange('vnc-framebuffer-geometry');
     this.vncGeometryEpoch += 1;
-    RemoteSessionPipService.getInstance().updateContentSize(geometry.width, geometry.height);
+    this.updateOwnedRemoteSessionPipContentSize(geometry.width, geometry.height);
     this.updateRemoteSize({
       width: geometry.width,
       height: geometry.height,
@@ -8670,7 +9243,8 @@ struct RemoteDesktop {
     sessionId: number,
     timeoutMs: number,
     attemptId: number,
-    operationGeneration: number = -1
+    operationGeneration: number = -1,
+    presentationLease: RemoteSessionServiceLease | null = null
   ): Promise<boolean> {
     const startedAtMs: number = Date.now();
     let lastRefreshAtMs: number = 0;
@@ -8679,8 +9253,10 @@ struct RemoteDesktop {
         hilog.info(RD_DOMAIN, RD_TAG, 'RustDesk first-frame wait canceled');
         return false;
       }
-      if (operationGeneration > 0 &&
-        !RemoteSessionPipService.getInstance().isOperationCurrent(operationGeneration)) {
+      if (operationGeneration > 0 && (presentationLease === null ||
+        !this.remoteSessionPresentationLeaseCurrent(presentationLease) ||
+        !RemoteSessionPipService.getInstance().isOperationCurrent(
+          operationGeneration, presentationLease))) {
         hilog.info(RD_DOMAIN, RD_TAG, 'RustDesk first-frame wait canceled by PIP operation');
         return false;
       }
@@ -8721,8 +9297,10 @@ struct RemoteDesktop {
     if (attemptId !== this.connectAttemptId || this.sessionId !== sessionId) {
       return false;
     }
-    if (operationGeneration > 0 &&
-      !RemoteSessionPipService.getInstance().isOperationCurrent(operationGeneration)) {
+    if (operationGeneration > 0 && (presentationLease === null ||
+      !this.remoteSessionPresentationLeaseCurrent(presentationLease) ||
+      !RemoteSessionPipService.getInstance().isOperationCurrent(
+        operationGeneration, presentationLease))) {
       return false;
     }
     throw new Error('RustDesk 首帧显示超时，请检查远端画面编码或网络 [E-RUSTDESK-FIRST-FRAME-TIMEOUT]');
@@ -10179,6 +10757,7 @@ struct RemoteDesktop {
     let rdAccountId: string = '';
     let rustDeskRelay: RustDeskRelayConfig | undefined;
     let rustDeskConnection: RustDeskConnectionContext | null = null;
+    let attemptedSessionId: number = -1;
     this.connectionProgressMessage = host.protocol === 'rustdesk'
       ? 'RustDesk: 正在准备连接' : '';
     try {
@@ -10774,7 +11353,13 @@ struct RemoteDesktop {
         else if (sid === -31 && host.protocol === 'rustdesk') { errMsg = 'RustDesk 握手失败，请查看 FFI 日志 [E-CONNECT-31]'; }
         throw new Error(errMsg);
       }
+      attemptedSessionId = sid;
       this.sessionId = sid;
+      this.nativeDisconnectIdentity =
+        this.loader.captureDisconnectIdentity(sid);
+      if (this.nativeDisconnectIdentity === null) {
+        throw new Error('原生会话所有权回执不可用 [E-SESSION-OWNER-RECEIPT]');
+      }
       // A newly allocated native session gets its own one-shot touchpad guide.
       // Foreground/PiP restoration adopts the existing session and does not
       // pass this connect boundary, so it will not repeat the prompt.
@@ -10854,6 +11439,10 @@ struct RemoteDesktop {
       if (!this.recordActiveSession(host, sid, true)) {
         throw new Error('远程会话账号作用域未登记，已拒绝启动后台接续 [E-SESSION-REGISTRY]');
       }
+      if (this.pcWindowAfterAuthentication) {
+        await this.handoffAuthenticatedSessionToIndependentWindow(host, sid);
+        return;
+      }
       await this.prepareRemoteSessionPipForForeground(host, sid);
       this.persistRustDeskSessionAuth(host);
       // T-171: 连接成功后显示悬浮胶囊
@@ -10917,6 +11506,16 @@ struct RemoteDesktop {
         this.clipboardBridgeEnabledForSession());
     } catch (err) {
       rdpRestrictedAdminHash = '';
+      if (attemptId !== this.connectAttemptId ||
+          (attemptedSessionId > 0 && this.sessionId !== attemptedSessionId) ||
+          (attemptedSessionId <= 0 && this.sessionId > 0)) {
+        hilog.info(RD_DOMAIN, RD_TAG,
+          'doConnect: stale failure ignored attempt=' + attemptId.toString() +
+          ' currentAttempt=' + this.connectAttemptId.toString() +
+          ' attemptedSession=' + attemptedSessionId.toString() +
+          ' currentSession=' + this.sessionId.toString());
+        return;
+      }
       const failureScope = AccountSessionCoordinator.getInstance().currentScope();
       const vncCertificateIdentity: VncCertificateProbeIdentity | null =
         this.vncCertificateProbeIdentity;
@@ -10942,23 +11541,17 @@ struct RemoteDesktop {
       }
       this.setRemoteKeepScreenOn(false);
       this.setRemoteNavigationHidden(false, 'connect-failed');
-      if (this.sessionId > 0) {
-        this.loader.disconnect();
-        this.sessionId = -1;
-        this.rustDeskDisplaySwitchState = idleRustDeskDisplaySwitchState();
-        this.rustDeskDisplayPendingResolution = EMPTY_RUSTDESK_DISPLAY_RESOLUTION;
-        this.rustDeskDisplayResolutionPendingSinceMs = 0;
-      } else if (this.rendererHandle > 0) {
-        // initRenderer() intentionally precedes connect() so the first frame
-        // has a target. If connect() fails before publishing a session, the
-        // owner-aware native teardown has no session identity; release this
-        // orphan renderer explicitly so the next attempt starts clean.
-        this.loader.destroyRenderer();
-        this.rendererHandle = -1;
+      if (this.sessionId > 0 || this.rendererHandle > 0 || this.decoderHandle > 0) {
+        // Use the same exact registry/native terminal barrier as every normal
+        // disconnect. A failed setActive() may leave another page's session in
+        // the registry, so this path must never clear by host or submit native
+        // teardown before ownership has been resolved.
+        this.disconnectAndCleanup('connect-failed');
       }
+      this.rustDeskDisplaySwitchState = idleRustDeskDisplaySwitchState();
+      this.rustDeskDisplayPendingResolution = EMPTY_RUSTDESK_DISPLAY_RESOLUTION;
+      this.rustDeskDisplayResolutionPendingSinceMs = 0;
       this.resetRustDeskTwoFactorAfterConnectionFailure();
-      this.nativeHandles.markProtocolDisconnected();
-      this.activeSessionRegistry.clear('connect-failed');
       this.clearRemoteInputFocusSchedule();
       this.clearRemoteInputFocusAcknowledgement();
       this.remotePointerFocusRecoveryArmed = false;
@@ -11212,6 +11805,43 @@ struct RemoteDesktop {
     if (this.cleanupStarted && !this.renderPreservedInPip && !this.bgRestorePending) {
       return;
     }
+    let terminatingRecord: ActiveRemoteSessionRecord | null = null;
+    const activeRecord: ActiveRemoteSessionRecord | null =
+      this.activeSessionRegistry.getActive();
+    const activeRecordMatchesPage: boolean = activeRecord !== null &&
+      this.pendingHost !== null && this.sessionId > 0 &&
+      activeRecord.sessionId === this.sessionId &&
+      activeRecord.hostId === this.pendingHost.id &&
+      activeRecord.protocol === this.remoteProtocolOf(this.pendingHost);
+    if (activeRecord !== null && !activeRecordMatchesPage) {
+      this.abandonSupersededRegistryRestore();
+      return;
+    }
+    let disconnectIdentity: NativeDisconnectIdentity | null =
+      this.nativeDisconnectIdentity;
+    if (disconnectIdentity === null) {
+      disconnectIdentity = this.loader.captureDisconnectIdentity(this.sessionId);
+    }
+    const hasLocalNativeResources: boolean = this.sessionId > 0 ||
+      this.rendererHandle > 0 || this.decoderHandle > 0;
+    if (hasLocalNativeResources &&
+        !this.loader.ownsDisconnectIdentity(disconnectIdentity)) {
+      this.abandonSupersededRegistryRestore();
+      return;
+    }
+    this.cleanupDisconnectIdentity = disconnectIdentity;
+    if (activeRecordMatchesPage) {
+      const termination: ActiveRemoteSessionTermination | null =
+        this.activeSessionRegistry.beginTermination(
+          activeRecord as ActiveRemoteSessionRecord, this.registryRestoreAdoption);
+      if (termination === null) {
+        this.abandonSupersededRegistryRestore();
+        return;
+      }
+      terminatingRecord = activeRecord as ActiveRemoteSessionRecord;
+      this.registryTermination = termination;
+      this.registryRestoreAdoption = null;
+    }
     this.stopRustDeskDiagnosticsPolling(true);
     this.stopRdpDiagnosticsPolling(true);
     this.cleanupStarted = true;
@@ -11253,7 +11883,6 @@ struct RemoteDesktop {
     this.invalidateRemoteCursorViewIfChanged(previousCursorX, previousCursorY,
       previousCursorReady);
     this.bgRestorePending = false; // 清除任何待恢复状态
-    this.activeSessionRegistry.clear(reason);
     this.preAuthenticatedSessionPending = false;
     this.clearRdpRenderWatchdog();
     this.clearRdpNativeStateMonitor();
@@ -11283,10 +11912,14 @@ struct RemoteDesktop {
     }
     this.unregisterKeyboardAvoidListener();
     try {
+      const presentationLease: RemoteSessionServiceLease | null =
+        this.currentRemoteSessionPresentationLease();
       this.connectAttemptId++;
       this.inputForwardReady = false;
       const shouldRestoreOrientation: boolean = this.orientationApplied;
-      this.scheduleNativeDisconnectAfterPip(reason, shouldRestoreOrientation, cleanupStartedAtMs);
+      this.scheduleNativeDisconnectAfterPip(
+        reason, shouldRestoreOrientation, cleanupStartedAtMs,
+        presentationLease, terminatingRecord);
     } catch (err) {
       hilog.error(RD_DOMAIN, RD_TAG, '[RDP-SHUTDOWN] phase=arkts-error elapsedMs=' +
         (Date.now() - cleanupStartedAtMs).toString() + ' err=' + JSON.stringify(err));
@@ -11299,8 +11932,55 @@ struct RemoteDesktop {
    * STOPPED or ERROR; otherwise a late PIP callback can render into freed GL
    * state or surface an exit animation after an explicit disconnect.
    */
+  private async stopPresentationForTermination(
+    presentationLease: RemoteSessionServiceLease | null,
+    terminatingRecord: ActiveRemoteSessionRecord | null
+  ): Promise<boolean> {
+    const termination: ActiveRemoteSessionTermination | null = this.registryTermination;
+    if (termination !== null &&
+        !this.activeSessionRegistry.isTerminationCurrent(termination)) {
+      return false;
+    }
+    const liveViewService: RemoteSessionLiveViewService =
+      RemoteSessionLiveViewService.getInstance();
+    const pipService: RemoteSessionPipService = RemoteSessionPipService.getInstance();
+    const expectedLiveView: RemoteSessionServiceLease | null =
+      this.registryLiveViewPredecessorLease ?? presentationLease;
+    const expectedPip: RemoteSessionServiceLease | null =
+      this.registryPipPredecessorLease ?? presentationLease;
+    if (expectedLiveView !== null) {
+      await liveViewService.stopOwned(expectedLiveView);
+    }
+    const stopped: boolean = expectedPip === null ? true :
+      await pipService.stop(expectedPip);
+    if (!stopped) { return false; }
+    if (termination !== null &&
+        !this.activeSessionRegistry.isTerminationCurrent(termination)) {
+      return false;
+    }
+    if (terminatingRecord === null || terminatingRecord.protocol === RemoteProtocol.ssh) {
+      return true;
+    }
+    const protocol: RemoteSessionServiceProtocol =
+      terminatingRecord.protocol as RemoteSessionServiceProtocol;
+    const nextLiveView: RemoteSessionServiceLease | null =
+      liveViewService.leaseForMatchingSession(
+        protocol, terminatingRecord.hostId, terminatingRecord.sessionId);
+    const nextPip: RemoteSessionServiceLease | null =
+      pipService.leaseForMatchingSession(
+        protocol, terminatingRecord.hostId, terminatingRecord.sessionId);
+    if (nextLiveView !== null || nextPip !== null) {
+      this.registryLiveViewPredecessorLease = nextLiveView;
+      this.registryPipPredecessorLease = nextPip;
+      return false;
+    }
+    return true;
+  }
+
   private scheduleNativeDisconnectAfterPip(reason: string,
-    shouldRestoreOrientation: boolean, cleanupStartedAtMs: number): void {
+    shouldRestoreOrientation: boolean, cleanupStartedAtMs: number,
+    presentationLease: RemoteSessionServiceLease | null,
+    terminatingRecord: ActiveRemoteSessionRecord | null): void {
     if (this.nativeDisconnectPending) {
       return;
     }
@@ -11309,21 +11989,145 @@ struct RemoteDesktop {
       this.nativeDisconnectPending = false;
       return;
     }
-    RemoteSessionPipService.getInstance().stop().then((): void => {
+    const pipStop: Promise<boolean> = this.stopPresentationForTermination(
+      presentationLease, terminatingRecord);
+    pipStop.then((stopped: boolean): void => {
       this.nativeDisconnectPending = false;
-      this.finishNativeDisconnect(reason, shouldRestoreOrientation, cleanupStartedAtMs);
+      if (!stopped && this.cleanupStarted) {
+        if (this.registryTermination !== null &&
+            !this.activeSessionRegistry.isTerminationCurrent(this.registryTermination)) {
+          this.abandonSupersededRegistryRestore();
+          return;
+        }
+        this.scheduleNativeDisconnectRetry(
+          reason, shouldRestoreOrientation, cleanupStartedAtMs,
+          presentationLease, terminatingRecord);
+        return;
+      }
+      this.finishNativeDisconnect(
+        reason, shouldRestoreOrientation, cleanupStartedAtMs,
+        presentationLease, terminatingRecord);
     }).catch((err: Error): void => {
       this.nativeDisconnectPending = false;
       hilog.warn(RD_DOMAIN, RD_TAG, 'disconnectAndCleanup: PIP stop failed: ' +
         (err.message ? err.message : JSON.stringify(err)));
-      this.finishNativeDisconnect(reason, shouldRestoreOrientation, cleanupStartedAtMs);
+      if (this.registryTermination !== null &&
+          !this.activeSessionRegistry.isTerminationCurrent(this.registryTermination)) {
+        this.abandonSupersededRegistryRestore();
+        return;
+      }
+      this.scheduleNativeDisconnectRetry(
+        reason, shouldRestoreOrientation, cleanupStartedAtMs,
+        presentationLease, terminatingRecord);
+    });
+  }
+
+  private scheduleNativeDisconnectRetry(reason: string,
+    shouldRestoreOrientation: boolean, cleanupStartedAtMs: number,
+    presentationLease: RemoteSessionServiceLease | null,
+    terminatingRecord: ActiveRemoteSessionRecord | null): void {
+    if (!this.cleanupStarted || this.nativeDisconnectRetryTimer >= 0) {
+      return;
+    }
+    if (this.registryTermination !== null &&
+        !this.activeSessionRegistry.isTerminationCurrent(this.registryTermination)) {
+      this.abandonSupersededRegistryRestore();
+      return;
+    }
+    this.nativeDisconnectRetryTimer = setTimeout((): void => {
+      this.nativeDisconnectRetryTimer = -1;
+      this.scheduleNativeDisconnectAfterPip(
+        reason, shouldRestoreOrientation, cleanupStartedAtMs,
+        presentationLease, terminatingRecord);
+    }, 250);
+  }
+
+  /**
+   * Keep the process-wide session termination marker until the exact native
+   * teardown request reaches a terminal state. A later request, a bridge
+   * query failure, or a timeout must never release the slot early.
+   */
+  private waitForNativeDisconnectTerminal(reason: string,
+    shouldRestoreOrientation: boolean, cleanupStartedAtMs: number,
+    presentationLease: RemoteSessionServiceLease | null,
+    terminatingRecord: ActiveRemoteSessionRecord | null): void {
+    const requestId: number = this.nativeDisconnectRequestId;
+    if (requestId <= 0 || this.nativeDisconnectPending || !this.cleanupStarted) {
+      return;
+    }
+    this.nativeDisconnectPending = true;
+    this.loader.waitForTeardownRequest(requestId).then((completed: boolean): void => {
+      this.nativeDisconnectPending = false;
+      if (requestId !== this.nativeDisconnectRequestId || !this.cleanupStarted) {
+        return;
+      }
+      if (this.registryTermination !== null &&
+          !this.activeSessionRegistry.isTerminationCurrent(this.registryTermination)) {
+        this.abandonSupersededRegistryRestore();
+        return;
+      }
+      const state: number = completed ? 3 : this.loader.getDisconnectState(requestId);
+      if (completed || nativeDisconnectStateIsSuccessful(state)) {
+        this.nativeDisconnectRequestId = 0;
+        hilog.info(RD_DOMAIN, RD_TAG,
+          '[RDP-SHUTDOWN] phase=native-disconnect-terminal requestId=' +
+          requestId.toString() + ' state=' + state.toString());
+        this.finishNativeDisconnect(
+          reason, shouldRestoreOrientation, cleanupStartedAtMs,
+          presentationLease, terminatingRecord);
+        return;
+      }
+      if (nativeDisconnectStateIsFailed(state)) {
+        // Failed is terminal but not successful. Preserve the registry
+        // termination marker so another protocol cannot acquire native state
+        // that may only have been partially released.
+        hilog.error(RD_DOMAIN, RD_TAG,
+          '[RDP-SHUTDOWN] phase=native-disconnect-failed requestId=' +
+          requestId.toString());
+        return;
+      }
+      hilog.warn(RD_DOMAIN, RD_TAG,
+        '[RDP-SHUTDOWN] phase=native-disconnect-wait-timeout requestId=' +
+        requestId.toString() + ' state=' + state.toString());
+      this.scheduleNativeDisconnectRetry(
+        reason, shouldRestoreOrientation, cleanupStartedAtMs,
+        presentationLease, terminatingRecord);
+    }).catch((err: Error): void => {
+      this.nativeDisconnectPending = false;
+      if (requestId !== this.nativeDisconnectRequestId || !this.cleanupStarted) {
+        return;
+      }
+      hilog.warn(RD_DOMAIN, RD_TAG,
+        '[RDP-SHUTDOWN] phase=native-disconnect-wait-error requestId=' +
+        requestId.toString() + ' err=' +
+        (err.message ? err.message : JSON.stringify(err)));
+      this.scheduleNativeDisconnectRetry(
+        reason, shouldRestoreOrientation, cleanupStartedAtMs,
+        presentationLease, terminatingRecord);
     });
   }
 
   private finishNativeDisconnect(reason: string,
-    shouldRestoreOrientation: boolean, cleanupStartedAtMs: number): void {
+    shouldRestoreOrientation: boolean, cleanupStartedAtMs: number,
+    presentationLease: RemoteSessionServiceLease | null,
+    terminatingRecord: ActiveRemoteSessionRecord | null): void {
     try {
-      if (this.sessionId > 0 || this.rendererHandle > 0 || this.decoderHandle > 0) {
+      if (this.nativeDisconnectRetryTimer >= 0) {
+        clearTimeout(this.nativeDisconnectRetryTimer);
+        this.nativeDisconnectRetryTimer = -1;
+      }
+      if (this.registryTermination !== null &&
+          !this.activeSessionRegistry.isTerminationCurrent(this.registryTermination)) {
+        this.abandonSupersededRegistryRestore();
+        return;
+      }
+      if (this.nativeDisconnectRequestId > 0) {
+        this.waitForNativeDisconnectTerminal(
+          reason, shouldRestoreOrientation, cleanupStartedAtMs,
+          presentationLease, terminatingRecord);
+        return;
+      }
+      if (this.cleanupDisconnectIdentity !== null) {
         if (this.sessionId > 0) {
           this.disableRdpBackgroundVideoPrewarm('disconnect-cleanup');
         }
@@ -11340,10 +12144,24 @@ struct RemoteDesktop {
         const nativeDisconnectStartedAtMs: number = Date.now();
         hilog.info(RD_DOMAIN, RD_TAG, '[RDP-SHUTDOWN] phase=native-disconnect-begin sessionId=' +
           this.sessionId.toString());
-        const disconnectRequestId: number = this.loader.disconnect();
+        const submission: NativeDisconnectSubmission =
+          this.loader.disconnectWithReceipt(this.cleanupDisconnectIdentity);
         hilog.info(RD_DOMAIN, RD_TAG, '[RDP-SHUTDOWN] phase=native-disconnect-return requestId=' +
-          disconnectRequestId.toString() + ' elapsedMs=' +
+          submission.requestId.toString() + ' accepted=' +
+          submission.accepted.toString() + ' terminal=' +
+          submission.terminal.toString() + ' elapsedMs=' +
           (Date.now() - nativeDisconnectStartedAtMs).toString());
+        if (!submission.accepted) {
+          if (!submission.retryable) {
+            hilog.error(RD_DOMAIN, RD_TAG,
+              '[RDP-SHUTDOWN] phase=native-disconnect-owner-mismatch');
+            return;
+          }
+          this.scheduleNativeDisconnectRetry(
+            reason, shouldRestoreOrientation, cleanupStartedAtMs,
+            presentationLease, terminatingRecord);
+          return;
+        }
         this.sessionId = -1;
         this.rustDeskDisplaySwitchState = idleRustDeskDisplaySwitchState();
         this.rustDeskDisplayPendingResolution = EMPTY_RUSTDESK_DISPLAY_RESOLUTION;
@@ -11352,7 +12170,31 @@ struct RemoteDesktop {
         this.decoderHandle = -1;
         this.pipRendererHandle = -1;
         this.nativeHandles.markAsyncTeardownTransferred();
+        this.nativeDisconnectIdentity = null;
+        if (!submission.terminal) {
+          this.nativeDisconnectRequestId = submission.requestId;
+          this.waitForNativeDisconnectTerminal(
+            reason, shouldRestoreOrientation, cleanupStartedAtMs,
+            presentationLease, terminatingRecord);
+          return;
+        }
+        if (!submission.successful) {
+          hilog.error(RD_DOMAIN, RD_TAG,
+            '[RDP-SHUTDOWN] phase=native-disconnect-synchronous-failed');
+          return;
+        }
       }
+      if (terminatingRecord !== null) {
+        const completed: boolean =
+          this.activeSessionRegistry.completeTermination(this.registryTermination);
+        if (!completed) {
+          this.abandonSupersededRegistryRestore();
+          return;
+        }
+      }
+      this.registryTermination = null;
+      this.cleanupDisconnectIdentity = null;
+      this.nativeDisconnectRequestId = 0;
       this.clearFileTransferAutoHide();
       this.fileTransferBusy = false;
       this.fileTransferProgress = -1;
@@ -11366,11 +12208,18 @@ struct RemoteDesktop {
       try {
         const ctx: common.UIAbilityContext = this.getUIContext().getHostContext() as common.UIAbilityContext;
         if (ctx) {
-          this.stopSessionLiveView(ctx).catch((_e: Error): void => {
+          this.stopSessionLiveView(ctx, presentationLease).catch((_e: Error): void => {
             // Media cleanup is best effort after the PIP barrier is complete.
           });
         }
-      } catch (_e) { /* ignore */ }
+      } catch (_e) {
+        if (presentationLease !== null) {
+          RemoteSessionLiveViewService.getInstance().stopOwned(presentationLease)
+            .catch((_error: Error): void => {});
+        }
+      }
+      this.clearRemoteSessionPresentationLease(presentationLease);
+      this.registryPresentationRestorePending = false;
       try {
         const ctx: common.UIAbilityContext = this.getUIContext().getHostContext() as common.UIAbilityContext;
         if (ctx) {
@@ -11391,6 +12240,9 @@ struct RemoteDesktop {
     } catch (err) {
       hilog.error(RD_DOMAIN, RD_TAG, '[RDP-SHUTDOWN] phase=arkts-error elapsedMs=' +
         (Date.now() - cleanupStartedAtMs).toString() + ' err=' + JSON.stringify(err));
+      this.scheduleNativeDisconnectRetry(
+        reason, shouldRestoreOrientation, cleanupStartedAtMs,
+        presentationLease, terminatingRecord);
     }
   }
 
@@ -11433,7 +12285,8 @@ struct RemoteDesktop {
   }
 
   private async attachRendererToPipSurface(surface: RemoteSessionPipSurface,
-    operationGeneration: number): Promise<boolean> {
+    operationGeneration: number,
+    presentationLease: RemoteSessionServiceLease): Promise<boolean> {
     this.releaseCanvasPinchInput('pip-surface-transfer');
     const activeSession: ActiveRemoteSessionRecord | null = this.activeSessionRegistry.getActive();
     const pipService: RemoteSessionPipService = RemoteSessionPipService.getInstance();
@@ -11442,7 +12295,9 @@ struct RemoteDesktop {
     const isVnc: boolean = protocol === 'vnc';
     const isRdp: boolean = protocol === 'rdp';
     if (!this.cleanupStarted || !this.connected || this.sessionId <= 0 || this.pendingHost === null ||
-      this.restoreInProgress || !pipService.isOperationCurrent(operationGeneration) ||
+      this.restoreInProgress ||
+      !this.remoteSessionPresentationLeaseCurrent(presentationLease) ||
+      !pipService.isOperationCurrent(operationGeneration, presentationLease) ||
       this.rendererHandle <= 0 || (requiresDecoder && this.decoderHandle <= 0) ||
       activeSession === null ||
       activeSession.sessionId !== this.sessionId || activeSession.hostId !== this.pendingHost.id ||
@@ -11452,7 +12307,7 @@ struct RemoteDesktop {
     }
 
     try {
-      if (!(await this.waitForPipFrameReady(operationGeneration))) {
+      if (!(await this.waitForPipFrameReady(operationGeneration, presentationLease))) {
         hilog.warn(RD_DOMAIN, RD_TAG, 'attachRendererToPipSurface: no real remote frame before timeout');
         return false;
       }
@@ -11522,7 +12377,7 @@ struct RemoteDesktop {
           vncPresentedBeforeTransfer.toString());
         if (!refresh.ok || !(await this.waitForVncPresentedFrame(
           this.sessionId, vncPresentedBeforeTransfer, this.connectAttemptId,
-          operationGeneration))) {
+          operationGeneration, presentationLease))) {
           hilog.warn(RD_DOMAIN, RD_TAG,
             'attachRendererToPipSurface: VNC did not present a frame on the PIP surface');
           this.releasePipRenderer('attach-vnc-frame-timeout');
@@ -11538,7 +12393,7 @@ struct RemoteDesktop {
         this.releasePipRenderer('attach-unsupported-protocol');
         return false;
       }
-      this.activeSessionRegistry.markRenderDetached();
+      this.activeSessionRegistry.markRenderDetached(this.registryRestoreAdoption);
       hilog.info(RD_DOMAIN, RD_TAG, 'attachRendererToPipSurface: renderer=' +
         this.rendererHandle.toString() + ' media=' + pipSize.width.toString() + 'x' +
         pipSize.height.toString() + ' surface=' + surface.surfaceId);
@@ -11552,8 +12407,10 @@ struct RemoteDesktop {
     }
   }
 
-  private handlePipSurfaceChanged(surface: RemoteSessionPipSurface): void {
-    if (this.pipRendererHandle <= 0 || this.rendererHandle !== this.pipRendererHandle ||
+  private handlePipSurfaceChanged(surface: RemoteSessionPipSurface,
+    presentationLease: RemoteSessionServiceLease): void {
+    if (!this.remoteSessionPresentationLeaseCurrent(presentationLease) ||
+      this.pipRendererHandle <= 0 || this.rendererHandle !== this.pipRendererHandle ||
       this.restoreInProgress ||
       surface.surfaceId.length === 0 || surface.surfaceWidth <= 0 || surface.surfaceHeight <= 0) {
       return;
@@ -11611,6 +12468,12 @@ struct RemoteDesktop {
       hilog.info(RD_DOMAIN, RD_TAG, 'detachForBackground: skip without active connected session connected=' +
         (this.connected ? 'true' : 'false') + ' sessionId=' + this.sessionId.toString());
       return;
+    }
+    const presentationLease: RemoteSessionServiceLease | null =
+      this.ensureRemoteSessionPresentationLease(this.pendingHost, this.sessionId);
+    if (presentationLease === null) {
+      hilog.warn(RD_DOMAIN, RD_TAG,
+        'detachForBackground: exact session presentation lease unavailable; skipping PIP/LiveView');
     }
     this.restoreRemoteSystemPointer('background-detach');
     this.stopRustDeskDiagnosticsPolling(true);
@@ -11675,26 +12538,37 @@ struct RemoteDesktop {
         // barrier below still waits for a presented frame before moving it.
         liveViewEnabled, liveViewMode, true,
         this.connected && this.sessionId > 0, true, false);
-      if (pipContext !== null && this.pendingHost !== null &&
-        pipService.isPreparedOrPreparing() &&
+      if (pipContext !== null && this.pendingHost !== null && presentationLease !== null &&
+        pipService.isPreparedOrPreparing(presentationLease) &&
         pipLifecycleAction === RemoteSessionPipLifecycleAction.WAIT_FOR_AUTO_START) {
         const pipSize: RemoteSessionPipContentSize = this.currentPipContentSize();
         pipPreserved = await pipService.start(
-          pipContext, this.getUIContext(), pipSize.width, pipSize.height,
+          pipContext, this.getUIContext(), pipSize.width, pipSize.height, presentationLease,
           (surface: RemoteSessionPipSurface, operationGeneration: number): Promise<boolean> =>
-            this.attachRendererToPipSurface(surface, operationGeneration),
-          (reason: string): void => this.handleRemoteSessionPipStopped(reason),
-          (surface: RemoteSessionPipSurface): void => this.handlePipSurfaceChanged(surface));
-      } else {
-        await pipService.stop();
+            this.attachRendererToPipSurface(
+              surface, operationGeneration, presentationLease),
+          (reason: string): void =>
+            this.handleRemoteSessionPipStopped(reason, presentationLease),
+          (surface: RemoteSessionPipSurface): void =>
+            this.handlePipSurfaceChanged(surface, presentationLease));
+      } else if (presentationLease !== null) {
+        await pipService.stop(presentationLease);
       }
     } catch (err) {
       hilog.warn(RD_DOMAIN, RD_TAG, 'detachForBackground: PIP start failed, falling back to detached renderer: ' +
         JSON.stringify(err));
       pipPreserved = false;
     }
-    if (!pipPreserved) {
-      const stopped: boolean = await pipService.stop();
+    if (presentationLease !== null &&
+        !this.remoteSessionPresentationLeaseCurrent(presentationLease)) {
+      await pipService.stop(presentationLease);
+      if (remoteSessionServiceLeaseEquals(this.presentationLease, presentationLease)) {
+        this.pipSurfaceTransferInProgress = false;
+      }
+      return;
+    }
+    if (!pipPreserved && presentationLease !== null) {
+      const stopped: boolean = await pipService.stop(presentationLease);
       if (!stopped) {
         this.pipSurfaceTransferInProgress = false;
         throw new Error('PIP controller did not reach terminal state before renderer fallback');
@@ -11729,7 +12603,7 @@ struct RemoteDesktop {
       }
       if (this.pendingHost !== null && this.sessionId > 0) {
         this.recordActiveSession(this.pendingHost, this.sessionId, false);
-        this.activeSessionRegistry.markRenderDetached();
+        this.activeSessionRegistry.markRenderDetached(this.registryRestoreAdoption);
       }
     }
 
@@ -11762,10 +12636,12 @@ struct RemoteDesktop {
         });
 
         // 注册后台媒体身份；实际视频帧由上面的 PIP XComponent 承载。
-        this.startSessionLiveView(ctx, info).catch((err: Error): void => {
-          hilog.warn(RD_DOMAIN, RD_TAG, 'detachForBackground: background media async failed: ' +
-            (err.message ? err.message : JSON.stringify(err)));
-        });
+        if (presentationLease !== null) {
+          this.startSessionLiveView(ctx, info, presentationLease).catch((err: Error): void => {
+            hilog.warn(RD_DOMAIN, RD_TAG, 'detachForBackground: background media async failed: ' +
+              (err.message ? err.message : JSON.stringify(err)));
+          });
+        }
         this.startBackgroundAudioPolling(ctx, info);
       }
     } catch (err) {
@@ -11782,7 +12658,9 @@ struct RemoteDesktop {
     hilog.info(RD_DOMAIN, RD_TAG, 'detachForBackground: bgRestorePending=true, awaiting foreground');
   }
 
-  private handleRemoteSessionPipStopped(reason: string): void {
+  private handleRemoteSessionPipStopped(reason: string,
+    presentationLease: RemoteSessionServiceLease): void {
+    if (!this.remoteSessionPresentationLeaseCurrent(presentationLease)) { return; }
     if (this.pipRendererHandle <= 0) {
       this.renderPreservedInPip = false;
       return;
@@ -11815,7 +12693,7 @@ struct RemoteDesktop {
     }
     if (this.pendingHost !== null && this.sessionId > 0) {
       this.recordActiveSession(this.pendingHost, this.sessionId, false);
-      this.activeSessionRegistry.markRenderDetached();
+      this.activeSessionRegistry.markRenderDetached(this.registryRestoreAdoption);
     }
     // Closing PIP only releases its renderer. The native protocol session is
     // still owned by the background task and must remain reconnectable.
@@ -11861,7 +12739,7 @@ struct RemoteDesktop {
     }
     this.invalidateRendererViewportCache();
     if (this.pendingHost !== null && this.sessionId > 0) {
-      this.activeSessionRegistry.markRenderDetached();
+      this.activeSessionRegistry.markRenderDetached(this.registryRestoreAdoption);
     }
   }
 
@@ -11883,7 +12761,7 @@ struct RemoteDesktop {
       'VNC: 正在重新绑定远程画面' : 'RustDesk: 正在重新绑定远程画面';
     this.surfaceReady = false;
     this.latestSurfaceId = '';
-    AppStorage.setOrCreate<boolean>('remoteDesktopBgFlag', false);
+    this.clearCurrentAbilityBackgroundState();
     if (this.backgroundRenderRetryTimer >= 0) {
       return;
     }
@@ -11918,6 +12796,63 @@ struct RemoteDesktop {
     }, 250);
   }
 
+  private registryRestoreAdoptionIsCurrent(): boolean {
+    const active: ActiveRemoteSessionRecord | null =
+      this.activeSessionRegistry.getActive();
+    const host: RemoteHost | null = this.pendingHost;
+    if (active === null || host === null || this.sessionId <= 0 ||
+        active.sessionId !== this.sessionId || active.hostId !== host.id ||
+        active.protocol !== this.remoteProtocolOf(host)) {
+      return false;
+    }
+    return this.activeSessionRegistry.isRestoreOwnerCurrent(
+      this.registryRestoreAdoption);
+  }
+
+  private completeRegistryRestoreAdoption(): boolean {
+    const adoption: ActiveRemoteSessionRestoreAdoption | null =
+      this.registryRestoreAdoption;
+    if (adoption === null) { return true; }
+    const completed: boolean =
+      this.activeSessionRegistry.completeRestoreAdoption(adoption);
+    if (completed) {
+      this.registryPipPredecessorLease = null;
+      this.registryLiveViewPredecessorLease = null;
+    }
+    return completed;
+  }
+
+  /**
+   * The latest reconstructed page owns the preserved native transport. A
+   * superseded page relinquishes only its local mirrors and must never submit
+   * a disconnect against the shared session.
+   */
+  private abandonSupersededRegistryRestore(): void {
+    this.restoreInProgress = false;
+    this.bgRestorePending = false;
+    this.registryPresentationRestorePending = false;
+    this.registryRestoreAdoption = null;
+    this.registryTermination = null;
+    this.registryPipPredecessorLease = null;
+    this.registryLiveViewPredecessorLease = null;
+    this.nativeDisconnectIdentity = null;
+    this.cleanupDisconnectIdentity = null;
+    this.clearPipRestoreRetry();
+    this.clearBackgroundRenderRetry();
+    this.inputForwardReady = false;
+    this.connected = false;
+    this.connecting = false;
+    this.connectStarted = false;
+    this.sessionId = -1;
+    this.rendererHandle = -1;
+    this.decoderHandle = -1;
+    this.pipRendererHandle = -1;
+    this.nativeHandles.markAsyncTeardownTransferred();
+    this.pcWindowHandoffComplete = true;
+    hilog.warn(RD_DOMAIN, RD_TAG,
+      'registry restore superseded; local page relinquished without native disconnect');
+  }
+
   private restoreFromBackground(): void {
     this.releaseCanvasPinchInput('background-restore');
     if (this.restoreInProgress) {
@@ -11928,6 +12863,8 @@ struct RemoteDesktop {
     this.clearBackgroundRenderRetry();
     this.restoreInProgress = true;
     const operationId: number = ++this.restoreOperationId;
+    const presentationLease: RemoteSessionServiceLease | null =
+      this.currentRemoteSessionPresentationLease();
     this.cleanupStarted = false; // 允许重新 attach
     // The free-node PIP surface replaced the page surface while the app was
     // backgrounded. Reacquire the current page SurfaceId after the terminal
@@ -11939,6 +12876,10 @@ struct RemoteDesktop {
     this.clearRestoreFrameRefreshPump();
     this.clearPipContentSizeRefresh();
     const continueRestore = (): void => {
+      if (!this.registryRestoreAdoptionIsCurrent()) {
+        this.abandonSupersededRegistryRestore();
+        return;
+      }
       if (operationId !== this.restoreOperationId || !this.restoreInProgress ||
         this.cleanupStarted || !this.bgRestorePending || this.sessionId <= 0) {
         hilog.info(RD_DOMAIN, RD_TAG, 'restoreFromBackground: continuation cancelled id=' +
@@ -11971,29 +12912,35 @@ struct RemoteDesktop {
       // 渲染重建由 onSurfaceCreated → tryStartConnect → doBackgroundRestoreRender 触发
       hilog.info(RD_DOMAIN, RD_TAG, 'restoreFromBackground: waiting for surface');
     };
+    let ctx: common.UIAbilityContext | null = null;
     try {
-      const ctx: common.UIAbilityContext = this.getUIContext().getHostContext() as common.UIAbilityContext;
-      if (ctx) {
-        // 移除实况窗
-        this.stopSessionLiveView(ctx).then((): void => {
-          continueRestore();
-        }).catch((err: Error): void => {
-          hilog.error(RD_DOMAIN, RD_TAG, 'restoreFromBackground: PIP terminal barrier pending; retrying: ' +
-            (err.message ? err.message : JSON.stringify(err)));
-          this.restoreInProgress = false;
-          this.schedulePipRestoreRetry(operationId);
-        });
-        RemoteSessionBackgroundTaskService.getInstance().stopSessionTask(ctx);
+      ctx = this.getUIContext().getHostContext() as common.UIAbilityContext;
+    } catch (_e) { /* the retained exact service owner remains usable */ }
+    this.stopSessionPresentationForForegroundRestore(ctx, presentationLease).then((): void => {
+      continueRestore();
+    }).catch((err: Error): void => {
+      hilog.error(RD_DOMAIN, RD_TAG, 'restoreFromBackground: PIP terminal barrier pending: ' +
+        (err.message ? err.message : JSON.stringify(err)));
+      this.restoreInProgress = false;
+      if (!this.registryRestoreAdoptionIsCurrent()) {
+        this.abandonSupersededRegistryRestore();
         return;
       }
-    } catch (_e) { /* ignore */ }
-    continueRestore();
+      this.schedulePipRestoreRetry(operationId);
+    });
+    if (ctx !== null) {
+      RemoteSessionBackgroundTaskService.getInstance().stopSessionTask(ctx);
+    }
   }
 
   /**
    * 后台恢复 — 仅重建渲染器, 不新建协议连接。
    */
   private async doBackgroundRestoreRender(): Promise<void> {
+    if (!this.registryRestoreAdoptionIsCurrent()) {
+      this.abandonSupersededRegistryRestore();
+      return;
+    }
     if (this.restoreInProgress) {
       hilog.warn(RD_DOMAIN, RD_TAG, 'doBackgroundRestoreRender: restore teardown is still in progress');
       return;
@@ -12079,8 +13026,16 @@ struct RemoteDesktop {
           }
           return;
         }
-        if (!this.activeSessionRegistry.markRenderAttached(surfaceId)) {
+        if (!this.registryRestoreAdoptionIsCurrent()) {
+          this.abandonSupersededRegistryRestore();
+          return;
+        }
+        if (!this.activeSessionRegistry.markRenderAttached(
+          surfaceId, this.registryRestoreAdoption)) {
           throw new Error('后台恢复会话账号作用域未登记 [E-SESSION-REGISTRY-RESTORE]');
+        }
+        if (!this.completeRegistryRestoreAdoption()) {
+          throw new Error('后台恢复所有权已失效 [E-SESSION-RESTORE-OWNER]');
         }
         this.nativeHandles.attachConnectedSession(this.sessionId, RemoteProtocol.rustdesk);
         this.connected = true;
@@ -12098,6 +13053,7 @@ struct RemoteDesktop {
         this.inputForwardReady = true;
         this.reclaimRemoteSystemPointerAfterForeground('background-preauthenticated');
         this.scheduleRemoteInputFocus('background-preauthenticated');
+        this.publishIndependentWindowReady('background-preauthenticated');
         this.setRemoteKeepScreenOn(true);
         this.setRemoteNavigationHidden(true, 'preauthenticated-session-handoff');
         this.loader.requestFrameRefresh();
@@ -12117,7 +13073,7 @@ struct RemoteDesktop {
         }
         this.startClipboardBridgeBestEffort(this.sessionId, this.connectAttemptId,
           this.clipboardBridgeEnabledForSession());
-        AppStorage.setOrCreate<boolean>('remoteDesktopBgFlag', false);
+        this.clearCurrentAbilityBackgroundState();
         hilog.info(RD_DOMAIN, RD_TAG, 'doBackgroundRestoreRender: preauthenticated session attached');
         return;
       }
@@ -12182,8 +13138,16 @@ struct RemoteDesktop {
             return;
           }
         }
-        if (!this.activeSessionRegistry.markRenderAttached(surfaceId)) {
+        if (!this.registryRestoreAdoptionIsCurrent()) {
+          this.abandonSupersededRegistryRestore();
+          return;
+        }
+        if (!this.activeSessionRegistry.markRenderAttached(
+          surfaceId, this.registryRestoreAdoption)) {
           throw new Error('前台恢复会话账号作用域未登记 [E-SESSION-REGISTRY-RESTORE]');
+        }
+        if (!this.completeRegistryRestoreAdoption()) {
+          throw new Error('前台恢复所有权已失效 [E-SESSION-RESTORE-OWNER]');
         }
 
         // 恢复状态
@@ -12202,6 +13166,7 @@ struct RemoteDesktop {
         this.startRemoteCursorPolling(this.sessionId);
         this.reclaimRemoteSystemPointerAfterForeground('background-restore');
         this.scheduleRemoteInputFocus('background-restore');
+        this.publishIndependentWindowReady('background-restore');
         this.setRemoteKeepScreenOn(true);
         if (shouldReapplyRemoteNavigation(this.currentProtocolName(), this.connected, true)) {
           this.setRemoteNavigationHidden(true, 'foreground-restore');
@@ -12230,7 +13195,7 @@ struct RemoteDesktop {
       this.scheduleBackgroundRenderRetry(restoreSessionId, restoreAttemptId, 'restore-exception');
     }
     // 清除后台标志
-    AppStorage.setOrCreate<boolean>('remoteDesktopBgFlag', false);
+    this.clearCurrentAbilityBackgroundState();
   }
 
   private startClipboardBridgeBestEffort(sessionId: number, attemptId: number, enabled: boolean): void {
@@ -12282,6 +13247,18 @@ struct RemoteDesktop {
   }
 
   private goBack(): void {
+    if (this.sessionWindowId.length > 0) {
+      try {
+        const context: common.UIAbilityContext =
+          this.getUIContext().getHostContext() as common.UIAbilityContext;
+        void context.terminateSelf();
+      } catch (_err) {
+        // The page router remains a safe fallback if the window context is
+        // already being destroyed by the system close affordance.
+        router.back();
+      }
+      return;
+    }
     router.back();
   }
 
@@ -12289,6 +13266,11 @@ struct RemoteDesktop {
 
   onSurfaceCreated(surfaceId: string): void {
     try {
+      if (this.pcWindowHandoffComplete) {
+        hilog.info(RD_DOMAIN, RD_TAG,
+          'onSurfaceCreated: ignored by transferred source page');
+        return;
+      }
       hilog.info(RD_DOMAIN, RD_TAG, 'XComponentController.onSurfaceCreated: surfaceId=' + surfaceId);
       this.latestSurfaceId = surfaceId;
       if (this.restoreInProgress) {
@@ -12333,7 +13315,10 @@ struct RemoteDesktop {
     if (_surfaceId === this.latestSurfaceId) {
       this.latestSurfaceId = '';
     }
-    if (this.restoreInProgress || this.renderPreservedInPip || this.pipSurfaceTransferInProgress) {
+    if (this.pcWindowHandoffComplete) {
+      hilog.info(RD_DOMAIN, RD_TAG,
+        'onSurfaceDestroyed: transferred source cannot detach target surface');
+    } else if (this.restoreInProgress || this.renderPreservedInPip || this.pipSurfaceTransferInProgress) {
       hilog.info(RD_DOMAIN, RD_TAG,
         'onSurfaceDestroyed: PIP owns native surface, skip global detach source=' + _surfaceId);
     } else {
@@ -12381,7 +13366,10 @@ struct RemoteDesktop {
   private onXComponentDestroy = (): void => {
     this.releaseCanvasPinchInput('xcomponent-destroy');
     this.restoreRemoteSystemPointer('xcomponent-destroy');
-    if (this.renderPreservedInPip || this.pipSurfaceTransferInProgress) {
+    if (this.pcWindowHandoffComplete) {
+      hilog.info(RD_DOMAIN, RD_TAG,
+        'onXComponentDestroy: transferred source cannot detach target surface');
+    } else if (this.renderPreservedInPip || this.pipSurfaceTransferInProgress) {
       hilog.info(RD_DOMAIN, RD_TAG, 'onXComponentDestroy: PIP owns native surface, skip global detach');
     } else {
       this.markXComponentSurfaceDetached('xcomponentDestroy');
@@ -14716,7 +15704,96 @@ struct RemoteDesktop {
     return true;
   }
 
+  private pcWindowAuthenticationCarrierActive(): boolean {
+    return this.pcWindowAfterAuthentication && this.sessionWindowId.length === 0 &&
+      !this.pcWindowHandoffComplete;
+  }
+
+  private pcWindowAuthenticationProtocolLabel(): string {
+    return this.pendingHost !== null && this.pendingHost.protocol === 'vnc' ? 'VNC' : 'RDP';
+  }
+
+  private cancelPcWindowAuthenticationCarrier(): void {
+    this.disconnectAndCleanup('pc-window-auth-cancel');
+    this.goBack();
+  }
+
+  @Builder PcWindowAuthenticationCarrier() {
+    Stack({ alignContent: Alignment.TopStart }) {
+      Column()
+        .width('100%')
+        .height('100%')
+        .backgroundColor(this.pal().bg)
+
+      Row() {
+        Text('←').fontSize(18).fontColor(this.pal().text).margin({ right: 6 })
+        Text('取消').fontSize(14).fontColor(this.pal().text)
+      }
+      .height(36)
+      .padding({ left: 12, right: 14 })
+      .borderRadius(18)
+      .backgroundColor(this.pal().card)
+      .margin({ left: 18, top: 14 })
+      .onClick((): void => { this.cancelPcWindowAuthenticationCarrier(); })
+
+      Column({ space: 12 }) {
+        SymbolGlyph($r('sys.symbol.lock_shield_fill'))
+          .fontSize(38)
+          .fontColor([this.accentColor])
+        if (this.connecting || this.connectionError.length === 0) {
+          Text('正在完成 ' + this.pcWindowAuthenticationProtocolLabel() + ' 鉴权')
+            .fontSize(18)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(this.pal().text)
+          if (this.hostLabel.length > 0) {
+            Text(this.hostLabel)
+              .fontSize(13)
+              .fontColor(this.pal().text2)
+              .maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+          }
+          LoadingProgress().width(28).height(28).color(this.accentColor).margin({ top: 6 })
+          Text('鉴权成功后将在独立窗口中显示画面')
+            .fontSize(12)
+            .fontColor(this.pal().text3)
+            .textAlign(TextAlign.Center)
+        } else {
+          Text(this.connectionError)
+            .fontSize(18)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(this.pal().danger)
+          Text(this.connectionErrorDetail)
+            .fontSize(12)
+            .fontColor(this.pal().text2)
+            .textAlign(TextAlign.Center)
+            .maxLines(3)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+          Button('返回主机列表')
+            .height(40)
+            .fontSize(14)
+            .backgroundColor(this.accentColor)
+            .fontColor('#FFFFFF')
+            .borderRadius(12)
+            .margin({ top: 8 })
+            .onClick((): void => { this.cancelPcWindowAuthenticationCarrier(); })
+        }
+      }
+      .width('100%')
+      .height('100%')
+      .padding({ left: 28, right: 28 })
+      .justifyContent(FlexAlign.Center)
+      .hitTestBehavior(HitTestMode.Transparent)
+    }
+    .width('100%')
+    .height('100%')
+  }
+
   private handleXComponentKey = (event: KeyEvent): boolean => {
+    if (this.sessionWindowId.length > 0 && event.keyCode === KeyCode.KEYCODE_F11) {
+      try { event.stopPropagation(); } catch (_err) {}
+      if (event.type === KeyType.Down) { this.toggleIndependentWindowFullscreen(); }
+      return true;
+    }
     // The hidden IME TextArea shares this handler. Its software-keyboard
     // Backspace/Enter events must not be mistaken for an external keyboard.
     if (!this.keyboardOpen || this.physicalKeyboardConnected) {
@@ -15430,6 +16507,7 @@ struct RemoteDesktop {
         // not diverge after a long-running session.
         this.syncRemoteSystemPointer('surface-area-change',
           this.remoteSurfaceHovered !== false, true);
+        this.publishIndependentWindowReady('surface-area-change');
       })
 
       // Loading / 错误覆盖层
@@ -16027,6 +17105,14 @@ struct RemoteDesktop {
             this.keyboardSubmitRefocusPending = false;
           }, 30);
         })
+
+      if (this.pcWindowAuthenticationCarrierActive()) {
+        // Keep the native surface mounted so the unchanged RDP/VNC login
+        // pipeline can complete, but make the source UIContent an opaque
+        // authentication carrier. Only the target ability can ever reveal
+        // the authenticated video surface.
+        this.PcWindowAuthenticationCarrier()
+      }
     }
     .width('100%').height('100%')
     .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
@@ -16036,6 +17122,15 @@ struct RemoteDesktop {
       backgroundColor: this.pal().sheetBg,
       onDisappear: (): void => { this.handleControlPanelDisappear(); }
     })
+  }
+
+  pageTransition() {
+    if (this.pcWindowAuthenticationCarrierActive()) {
+      // This carrier is an implementation boundary for the existing auth
+      // flow, not a user-visible navigation destination.
+      PageTransitionEnter({ duration: 0 }).opacity(1)
+      PageTransitionExit({ duration: 0 }).opacity(1)
+    }
   }
 
   @Builder rdpSessionErrorSheet() {

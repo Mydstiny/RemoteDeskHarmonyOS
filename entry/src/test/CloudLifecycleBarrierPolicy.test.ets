@@ -2,6 +2,7 @@ import { describe, expect, it } from '@ohos/hypium';
 import {
   VncSelectionFinalizeResult,
   cloudSelectionAfterAuthoritativePull,
+  cloudSelectionBarriersAfterAuthoritativePull,
   cloudSelectionAfterLocalPromotion,
   cloudSelectionBarrierAfterRollback,
   cloudSelectionLocalPromotionAllowed,
@@ -43,6 +44,26 @@ export default function cloudLifecycleBarrierPolicyTest():
           false, false)).assertFalse();
         expect(normalizeCloudSelectionReenablePhase(
           'corrupt') === null).assertTrue();
+      });
+
+    it('advances_only_barriers_in_the_successful_pull_inventory',
+      0, (): void => {
+        const original: Record<string, string> = {
+          usersettings: 'pending_pull',
+          remotehosts: 'pull_complete',
+          moonlightrecordv1: 'pending_pull'
+        };
+        const advanced: Record<string, string> =
+          cloudSelectionBarriersAfterAuthoritativePull(
+            original, ['usersettings', 'remotehosts']);
+        expect(advanced['usersettings'])
+          .assertEqual('pull_complete');
+        expect(advanced['remotehosts'])
+          .assertEqual('pull_complete');
+        expect(advanced['moonlightrecordv1'])
+          .assertEqual('pending_pull');
+        expect(original['usersettings'])
+          .assertEqual('pending_pull');
       });
 
     it('reconciles_only_records_proven_by_the_pre_bootstrap_journal',

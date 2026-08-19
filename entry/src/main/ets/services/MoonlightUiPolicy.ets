@@ -18,7 +18,8 @@ export type MoonlightConnectionQuality = 'good' | 'unstable' | 'poor' | 'reconne
 export type MoonlightToolbarAction =
   'control' | 'keyboard' | 'controller' | 'audio' | 'display' | 'more' | 'disconnect';
 export type MoonlightSettingsSection =
-  'video' | 'audio' | 'input' | 'networkSecurity' | 'diagnostics' | 'trust';
+  'video' | 'audio' | 'input' | 'networkSecurity' | 'diagnostics' | 'trust' |
+  'data';
 
 export interface MoonlightRouteIdentity {
   hostId: string;
@@ -459,12 +460,12 @@ function toolbarItem(action: MoonlightToolbarAction, label: string,
 export function moonlightToolbarItems(
   breakpoint: string, audioAvailable: boolean,
   controllerAvailable: boolean, pipAvailable: boolean,
-  maxVisibleItems: number = 0
+  maxVisibleItems: number = 0, keyboardAvailable: boolean = false
 ): MoonlightToolbarItem[] {
   const normalized: string = breakpoint.trim().toLowerCase();
   const keyboard: MoonlightToolbarItem = toolbarItem('keyboard', '键盘');
-  keyboard.enabled = false;
-  keyboard.disabledReason = '当前版本请使用实体键盘';
+  keyboard.enabled = keyboardAvailable;
+  keyboard.disabledReason = keyboardAvailable ? '' : '键盘输入通道尚未就绪';
   const items: MoonlightToolbarItem[] = [toolbarItem('control', '控制'), keyboard];
   const limit: number = maxVisibleItems > 0 ? maxVisibleItems :
     (normalized === 'sm' ? 5 : 7);
@@ -516,7 +517,7 @@ export function moonlightQualityLabel(quality: MoonlightConnectionQuality): stri
 
 export function moonlightSettingsSections(): MoonlightSettingsSection[] {
   return [
-    'video', 'audio', 'input', 'networkSecurity', 'diagnostics', 'trust'
+    'video', 'audio', 'input', 'networkSecurity', 'diagnostics', 'trust', 'data'
   ];
 }
 
@@ -526,7 +527,8 @@ export function moonlightSettingsSectionLabel(section: MoonlightSettingsSection)
   if (section === 'input') { return '控制与手柄'; }
   if (section === 'networkSecurity') { return '网络与安全'; }
   if (section === 'diagnostics') { return '诊断'; }
-  return '配对与信任';
+  if (section === 'trust') { return '配对与信任'; }
+  return '数据管理';
 }
 
 export function moonlightMetric(value: number, suffix: string,

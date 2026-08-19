@@ -1,4 +1,8 @@
-import { describe, expect, it } from '@ohos/hypium';
+import { expect } from '@ohos/hypium';
+import {
+  auditedDescribe as describe,
+  auditedIt as it
+} from '../main/ets/services/FocusedTestRegistrationAudit';
 import { AccountSessionLease } from '../main/ets/services/AccountScopePolicy';
 import {
   MoonlightBarrierResult,

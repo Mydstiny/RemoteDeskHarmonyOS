@@ -11,6 +11,7 @@ import {
   cloudLocalMutationAllowed,
   cloudSyncBlockedByLocalRestore,
   cloudSyncCallbackIdentityMatches,
+  cloudFirstCompatibleTablesAfterOptionalFailure,
   cloudDistributedTableAutoSync,
   cloudSyncProgressFinished,
   cloudSyncProgressSucceeded,
@@ -29,6 +30,7 @@ import {
   snapshotCloudSyncTables,
   shouldReplayAutomaticPush,
   shouldBlockAutomaticRetry,
+  shouldProtectMoonlightBeforeEmptyCloudMaterialization,
   shouldRejectAutomaticEmptyCloudSnapshot,
   shouldDeferAutomaticPushDuringBootstrap,
   shouldUseCloudFirstForInitialBootstrap,
@@ -192,11 +194,54 @@ export default function cloudSyncCoordinatorPolicyTest(): void {
         .assertFalse();
     });
 
+    it('protects_moonlight_before_local_overlay_materialization_on_automatic_empty_results',
+      0, (): void => {
+        expect(shouldProtectMoonlightBeforeEmptyCloudMaterialization(
+          'startup', 'cloudFirst', 5, 0)).assertTrue();
+        expect(shouldProtectMoonlightBeforeEmptyCloudMaterialization(
+          'foreground', 'cloudFirst', 1, 0)).assertTrue();
+        expect(shouldProtectMoonlightBeforeEmptyCloudMaterialization(
+          'cloudEvent', 'cloudFirst', 7, 0)).assertTrue();
+        expect(shouldProtectMoonlightBeforeEmptyCloudMaterialization(
+          'manualDownload', 'cloudFirst', 5, 0)).assertFalse();
+        expect(shouldProtectMoonlightBeforeEmptyCloudMaterialization(
+          'startup', 'nativeFirst', 5, 0)).assertFalse();
+        expect(shouldProtectMoonlightBeforeEmptyCloudMaterialization(
+          'startup', 'cloudFirst', 0, 0)).assertFalse();
+      });
+
+    it('commits_legacy_cloud_first_tables_only_when_every_failure_is_optional',
+      0, (): void => {
+        expect(cloudFirstCompatibleTablesAfterOptionalFailure(
+          'cloudFirst',
+          ['usersettings', 'remotehosts', 'moonlightrecordv1'],
+          ['moonlightrecordv1']).join(','))
+          .assertEqual('usersettings,remotehosts');
+        expect(cloudFirstCompatibleTablesAfterOptionalFailure(
+          'cloudFirst', ['moonlightrecordv1'],
+          ['moonlightrecordv1']).length).assertEqual(0);
+        expect(cloudFirstCompatibleTablesAfterOptionalFailure(
+          'nativeFirst',
+          ['remotehosts', 'moonlightrecordv1'],
+          ['moonlightrecordv1']).length).assertEqual(0);
+        expect(cloudFirstCompatibleTablesAfterOptionalFailure(
+          'cloudFirst',
+          ['remotehosts', 'moonlightrecordv1'],
+          ['remotehosts', 'moonlightrecordv1']).length)
+          .assertEqual(0);
+        expect(cloudFirstCompatibleTablesAfterOptionalFailure(
+          'cloudFirst',
+          ['remotehosts', 'moonlightrecordv1'],
+          ['unknown']).length).assertEqual(0);
+      });
+
     it('classifies_version_conflict_and_pauses_automatic_retries', 0, (): void => {
       expect(classifyCloudSyncFailure('code=0 msg=VERSION_CONFLICT')).assertEqual('version_conflict');
       expect(shouldBlockAutomaticRetry('version_conflict')).assertTrue();
       expect(shouldBlockAutomaticRetry('network')).assertFalse();
+      expect(shouldBlockAutomaticRetry('no_selection')).assertFalse();
       expect(cloudSyncFailureMessage('version_conflict')).assertContain('版本冲突');
+      expect(cloudSyncFailureMessage('no_selection')).assertContain('未启动云端传输');
     });
 
     it('keeps_unsafe_cloud_payloads_blocked_until_user_or_data_repair',
@@ -396,7 +441,9 @@ export default function cloudSyncCoordinatorPolicyTest(): void {
             completeManualDownload: (tables: string[]): boolean => {
               return false;
             },
-            completeManualDownloadPartial: (tables: string[]): boolean => {
+            completeManualDownloadPartial: async (
+              tables: string[], _failedTables: string[]
+            ): Promise<boolean> => {
               tables.forEach((table: string): void => { completedTables.push(table); });
               return true;
             },
@@ -410,6 +457,110 @@ export default function cloudSyncCoordinatorPolicyTest(): void {
         expect(rolledBack).assertFalse();
         expect(completedTables.length).assertEqual(1);
         expect(completedTables[0]).assertEqual('vncrecordv2');
+      });
+
+    it('keeps_successful_legacy_manual_download_when_optional_moonlight_fails',
+      0, async (): Promise<void> => {
+        let rolledBack: boolean = false;
+        const completedTables: string[] = [];
+        const appliedTables: string[] = [];
+        const result = await executeCloudSyncRequest(
+          {
+            source: 'manualDownload', direction: 'cloudFirst',
+            tables: ['usersettings', 'moonlightrecordv1']
+          },
+          async (table: string): Promise<boolean> =>
+            table !== 'moonlightrecordv1',
+          {
+            beginManualDownload: (): boolean => true,
+            rollbackManualDownload: async (): Promise<boolean> => {
+              rolledBack = true;
+              return true;
+            },
+            completeManualDownload: (): boolean => false,
+            completeManualDownloadPartial: async (
+              tables: string[], failedTables: string[]
+            ): Promise<boolean> => {
+              tables.forEach((table: string): void =>
+                completedTables.push(table));
+              expect(failedTables.join(','))
+                .assertEqual('moonlightrecordv1');
+              return true;
+            },
+            setRestorePending: (_pending: boolean): void => {}
+          },
+          (tables: string[]): void => {
+            tables.forEach((table: string): void =>
+              appliedTables.push(table));
+          }
+        );
+        expect(result.ok).assertFalse();
+        expect(result.failedTables.join(','))
+          .assertEqual('moonlightrecordv1');
+        expect(rolledBack).assertFalse();
+        expect(completedTables.join(','))
+          .assertEqual('usersettings');
+        expect(appliedTables.join(','))
+          .assertEqual('usersettings');
+      });
+
+    it('keeps_moonlight_only_failure_on_the_full_rollback_path', 0,
+      async (): Promise<void> => {
+        let rolledBack: boolean = false;
+        let partialCompleted: boolean = false;
+        const result = await executeCloudSyncRequest(
+          {
+            source: 'manualDownload', direction: 'cloudFirst',
+            tables: ['moonlightrecordv1']
+          },
+          async (): Promise<boolean> => false,
+          {
+            beginManualDownload: (): boolean => true,
+            rollbackManualDownload: async (): Promise<boolean> => {
+              rolledBack = true;
+              return true;
+            },
+            completeManualDownload: (): boolean => false,
+            completeManualDownloadPartial: async (): Promise<boolean> => {
+              partialCompleted = true;
+              return true;
+            },
+            setRestorePending: (_pending: boolean): void => {}
+          },
+          (_tables: string[]): void => {}
+        );
+        expect(result.ok).assertFalse();
+        expect(rolledBack).assertTrue();
+        expect(partialCompleted).assertFalse();
+      });
+
+    it('rolls_every_table_back_when_optional_partial_finalization_fails', 0,
+      async (): Promise<void> => {
+        let rolledBack: boolean = false;
+        const result = await executeCloudSyncRequest(
+          {
+            source: 'manualDownload', direction: 'cloudFirst',
+            tables: ['usersettings', 'moonlightrecordv1']
+          },
+          async (table: string): Promise<boolean> =>
+            table !== 'moonlightrecordv1',
+          {
+            beginManualDownload: (): boolean => true,
+            rollbackManualDownload: async (): Promise<boolean> => {
+              rolledBack = true;
+              return true;
+            },
+            completeManualDownload: (): boolean => false,
+            completeManualDownloadPartial: async (): Promise<boolean> =>
+              false,
+            setRestorePending: (_pending: boolean): void => {}
+          },
+          (_tables: string[]): void => {}
+        );
+        expect(result.ok).assertFalse();
+        expect(rolledBack).assertTrue();
+        expect(result.failedTables.join(','))
+          .assertEqual('usersettings,moonlightrecordv1');
       });
 
     it('reports_when_a_failed_download_cannot_restore_its_snapshot', 0, async (): Promise<void> => {

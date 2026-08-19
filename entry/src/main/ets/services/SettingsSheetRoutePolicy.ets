@@ -27,6 +27,8 @@ export const SETTINGS_SHEET_MOONLIGHT_INPUT: number = 26;
 export const SETTINGS_SHEET_MOONLIGHT_NETWORK_SECURITY: number = 27;
 export const SETTINGS_SHEET_MOONLIGHT_DIAGNOSTICS: number = 28;
 export const SETTINGS_SHEET_MOONLIGHT_TRUST: number = 29;
+export const SETTINGS_SHEET_MOONLIGHT_DATA: number = 30;
+export const SETTINGS_SHEET_DIAGNOSTIC_LOG: number = 31;
 
 export const SETTINGS_PANEL_DISMISS_TO_LEAF_OPEN_MS: number = 360;
 
@@ -45,7 +47,8 @@ export function moonlightSettingsRouteSpecs(): MoonlightSettingsRouteSpec[] {
     { mode: SETTINGS_SHEET_MOONLIGHT_INPUT, section: 'input', title: '控制与手柄', height: 680, owner: 'moonlight' },
     { mode: SETTINGS_SHEET_MOONLIGHT_NETWORK_SECURITY, section: 'networkSecurity', title: '网络与安全', height: 820, owner: 'moonlight' },
     { mode: SETTINGS_SHEET_MOONLIGHT_DIAGNOSTICS, section: 'diagnostics', title: '诊断', height: 560, owner: 'moonlight' },
-    { mode: SETTINGS_SHEET_MOONLIGHT_TRUST, section: 'trust', title: '配对与信任', height: 520, owner: 'moonlight' }
+    { mode: SETTINGS_SHEET_MOONLIGHT_TRUST, section: 'trust', title: '配对与信任', height: 520, owner: 'moonlight' },
+    { mode: SETTINGS_SHEET_MOONLIGHT_DATA, section: 'data', title: '数据管理', height: 720, owner: 'moonlight' }
   ];
 }
 
@@ -81,6 +84,10 @@ export function vncSettingsLeafSheetHeight(mode: number): number {
   if (mode === SETTINGS_SHEET_VNC_TRUST) { return 280; }
   if (mode === SETTINGS_SHEET_VNC_HOSTS || mode === SETTINGS_SHEET_VNC_GATEWAY) { return 260; }
   return 0;
+}
+
+export function diagnosticLogSettingsLeafSheetHeight(mode: number): number {
+  return mode === SETTINGS_SHEET_DIAGNOSTIC_LOG ? 740 : 0;
 }
 
 export function settingsLeafOpenDelayMs(settingsPanelOpen: boolean): number {

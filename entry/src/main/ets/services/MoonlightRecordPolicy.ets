@@ -9,6 +9,7 @@ import {
   MoonlightStreamOverrides,
   MoonlightTrustCandidate,
   MoonlightWakeOnLan,
+  MOONLIGHT_DEFAULT_HTTPS_PORT,
   moonlightHostIsValid,
   moonlightProfileIsValid,
   moonlightSettingsAreValid,
@@ -81,7 +82,7 @@ const LEGACY_SETTINGS_FIELD_PATHS: string[] = [
   'video.scalingMode', 'background.allowPip'
 ];
 const HOST_FIELD_PATHS: string[] = [
-  'displayName', 'addresses', 'preferredAddressKey', 'wakeOnLan', 'userOrder'
+  'displayName', 'addresses', 'preferredAddressKey', 'httpsPort', 'wakeOnLan', 'userOrder'
 ];
 const PROFILE_FIELD_PATHS: string[] = [
   'titleSnapshot', 'streamOverrides.codecPreference', 'streamOverrides.resolutionMode',
@@ -572,15 +573,21 @@ function settingsPayloadIsValid(values: Record<string, Object>): boolean {
 function hostPayloadIsValid(record: MoonlightRecord, values: Record<string, Object>): boolean {
   if (!keysAreAllowed(values, [
     'schemaVersion', 'serverUuid', 'displayName', 'addresses', 'preferredAddressKey',
-    'hostType', 'wakeOnLan', 'userOrder', '_meta'
+    'httpsPort', 'hostType', 'wakeOnLan', 'userOrder', '_meta'
   ]) || values['schemaVersion'] !== 1 || !Array.isArray(values['addresses']) ||
-      !isPlainObject(values['wakeOnLan'])) { return false; }
+      !isPlainObject(values['wakeOnLan']) ||
+      (values['httpsPort'] !== undefined &&
+        (!Number.isSafeInteger(values['httpsPort'] as number) ||
+          (values['httpsPort'] as number) < 1 ||
+          (values['httpsPort'] as number) > 65535))) { return false; }
   const host: MoonlightHost = {
     id: record.id,
     serverUuid: values['serverUuid'] as string,
     displayName: values['displayName'] as string,
     addresses: values['addresses'] as MoonlightAddress[],
     preferredAddressKey: values['preferredAddressKey'] as string,
+    httpsPort: values['httpsPort'] === undefined ? MOONLIGHT_DEFAULT_HTTPS_PORT :
+      values['httpsPort'] as number,
     hostType: values['hostType'] as 'sunshine',
     wakeOnLan: values['wakeOnLan'] as MoonlightWakeOnLan,
     userOrder: values['userOrder'] as number

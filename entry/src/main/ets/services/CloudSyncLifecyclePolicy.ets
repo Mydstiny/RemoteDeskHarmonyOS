@@ -65,6 +65,7 @@ function isFailureKind(value: string): boolean {
     value === 'network' ||
     value === 'indeterminate' ||
     value === 'restore_pending' ||
+    value === 'no_selection' ||
     value === 'unknown';
 }
 

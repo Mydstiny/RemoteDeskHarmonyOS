@@ -10,12 +10,67 @@ import {
   MoonlightConflictDecision,
   resolveMoonlightRecordConflict
 } from './MoonlightRecordConflictPolicy';
+import { CloudMetadataReadResult } from './CloudMetadataSafetyPolicy';
 import { moonlightValidateRecord } from './MoonlightRecordPolicy';
 
 export type MoonlightBackupMode = 'redacted' | 'full';
 
 export const MOONLIGHT_RESTORE_QUARANTINE_KEY: string =
   'moonlight_restored_not_activated_v1';
+
+export type MoonlightRestoreActivationState =
+  'clear' | 'pending' | 'blocked';
+
+/**
+ * A portable restore is never cloud-eligible merely because its rows are
+ * valid. Only an absent marker means transfer is allowed. The known `1`
+ * marker is actionable explicit-consent work; malformed/unreadable metadata
+ * remains blocked and cannot be reinterpreted as absence.
+ */
+export function moonlightRestoreActivationState(
+  marker: CloudMetadataReadResult
+): MoonlightRestoreActivationState {
+  if (marker.state === 'absent') { return 'clear'; }
+  if (marker.state === 'present' && marker.value === '1') {
+    return 'pending';
+  }
+  return 'blocked';
+}
+
+export function moonlightRestoreTransferBlocked(
+  marker: CloudMetadataReadResult
+): boolean {
+  return moonlightRestoreActivationState(marker) !== 'clear';
+}
+
+/**
+ * Runtime admission may bypass the known pending marker only inside the
+ * explicit, current-account activation workflow. An unreadable or malformed
+ * marker is never bypassed, even if a stale in-memory authorization survives
+ * long enough to call this policy.
+ */
+export function moonlightRestoreRuntimeAdmissionAllowed(
+  marker: CloudMetadataReadResult,
+  explicitActivationAuthorized: boolean
+): boolean {
+  const state: MoonlightRestoreActivationState =
+    moonlightRestoreActivationState(marker);
+  return state === 'clear' ||
+    (state === 'pending' && explicitActivationAuthorized);
+}
+
+export function moonlightBackupRowsRequireCloudActivation(
+  rows: Array<Record<string, string>>
+): boolean {
+  for (let i = 0; i < rows.length; i++) {
+    const type: string = rows[i]['recordtype'] || '';
+    if (type === 'settings' || type === 'host' ||
+        type === 'profile') {
+      return true;
+    }
+  }
+  return false;
+}
 
 export interface MoonlightBackupFilterResult {
   rows: Array<Record<string, string>>;
@@ -165,8 +220,8 @@ function localRestoreRow(
     const key: string = MOONLIGHT_RECORD_COLUMNS[i];
     row[key] = source[key];
   }
-  // Portable restore is intentionally local-first. D2-07 may later promote
-  // selected rows only after cloud-first bootstrap and explicit user consent.
+  // Portable restore is intentionally local-first. Selected rows may be
+  // promoted only after cloud-first bootstrap and explicit user consent.
   row['localonly'] = '1';
   return row;
 }

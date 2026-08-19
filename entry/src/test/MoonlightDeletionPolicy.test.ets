@@ -1,4 +1,8 @@
-import { describe, expect, it } from '@ohos/hypium';
+import { expect } from '@ohos/hypium';
+import {
+  auditedDescribe as describe,
+  auditedIt as it
+} from '../main/ets/services/FocusedTestRegistrationAudit';
 import {
   MoonlightDeletionCommandType,
   MoonlightDeletionContext,
@@ -30,7 +34,7 @@ export default function moonlightDeletionPolicyTest(): void {
       (): void => {
         const impact = resolveMoonlightDeletionImpact(
           'delete_cloud_data', context());
-        expect(impact.cloudTombstonesRequired).assertEqual(6);
+        expect(impact.cloudTombstonesRequired).assertEqual(4);
         expect(impact.waitForCloudTerminal).assertTrue();
         expect(impact.localDataPreserved).assertTrue();
         expect(impact.confirmationLevel).assertEqual('danger');
@@ -46,6 +50,7 @@ export default function moonlightDeletionPolicyTest(): void {
         expect(impact.secureIdentitiesRemoved).assertEqual(1);
         expect(impact.cloudTombstonesRequired).assertEqual(0);
         expect(impact.identityPreserved).assertFalse();
+        expect(impact.selectionChanged).assertTrue();
       });
 
     it('treats_cancel_sync_as_unchanged_when_no_physical_or_logical_scope_exists',
@@ -61,7 +66,7 @@ export default function moonlightDeletionPolicyTest(): void {
       0, (): void => {
         const impact = resolveMoonlightDeletionImpact('forget_host', context());
         expect(impact.localRowsRemoved).assertEqual(4);
-        expect(impact.cloudTombstonesRequired).assertEqual(4);
+        expect(impact.cloudTombstonesRequired).assertEqual(3);
         expect(impact.identityPreserved).assertTrue();
         expect(impact.cacheRowsRemoved).assertEqual(10);
       });
@@ -71,8 +76,24 @@ export default function moonlightDeletionPolicyTest(): void {
         const impact = resolveMoonlightDeletionImpact('unpair_host', context());
         expect(impact.hostRequestBestEffort).assertTrue();
         expect(impact.localRowsRemoved).assertEqual(1);
-        expect(impact.cloudTombstonesRequired).assertEqual(1);
+        expect(impact.cloudTombstonesRequired).assertEqual(0);
         expect(impact.identityPreserved).assertTrue();
+      });
+
+    it('never_counts_device_bound_trust_or_identity_as_cloud_rows', 0,
+      (): void => {
+        const value: MoonlightDeletionContext = context();
+        value.settingsRecordCount = 0;
+        value.hostRecordCount = 0;
+        value.profileRecordCount = 0;
+        value.trustRecordCount = 8;
+        value.identityRecordCount = 3;
+        const impact = resolveMoonlightDeletionImpact(
+          'delete_cloud_data', value);
+        expect(impact.cloudTombstonesRequired).assertEqual(0);
+        expect(impact.waitForCloudTerminal).assertFalse();
+        expect(impact.cloudDataPreserved).assertTrue();
+        expect(impact.selectionChanged).assertTrue();
       });
 
     it('delete_profile_is_scoped_and_rejects_a_missing_profile_identity', 0,

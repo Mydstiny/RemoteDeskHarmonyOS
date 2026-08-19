@@ -261,6 +261,28 @@ export function resolveMoonlightProductSettings(
       resolved.requested.input.controllerSlot, 0, 'product_controller_slot_zero');
     resolved.effective.input.controllerSlot = 0;
   }
+  if (resolved.effective.input.forwardSystemShortcuts) {
+    addAdjustment(resolved.adjustments, 'input.forwardSystemShortcuts', true, false,
+      'product_system_shortcuts_unavailable');
+    resolved.effective.input.forwardSystemShortcuts = false;
+  }
+  // The current Surface lifecycle keeps the one common-c connection alive,
+  // drops video while no render target exists, then requests a fresh frame on
+  // rebind. A persisted legacy `pause` value must not imply a second behavior.
+  if (resolved.effective.background.noSurfaceVideo !== 'drop') {
+    addAdjustment(resolved.adjustments, 'background.noSurfaceVideo',
+      resolved.requested.background.noSurfaceVideo, 'drop',
+      'product_no_surface_drop_only');
+    resolved.effective.background.noSurfaceVideo = 'drop';
+  }
+  // Session diagnostics currently expose a bounded low-frequency snapshot and
+  // sanitized copy action. Verbose native logging is not a product capability.
+  if (resolved.effective.diagnostics.logLevel !== 'error') {
+    addAdjustment(resolved.adjustments, 'diagnostics.logLevel',
+      resolved.requested.diagnostics.logLevel, 'error',
+      'product_verbose_logging_unavailable');
+    resolved.effective.diagnostics.logLevel = 'error';
+  }
   return resolved;
 }
 

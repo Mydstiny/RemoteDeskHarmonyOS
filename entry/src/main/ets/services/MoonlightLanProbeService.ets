@@ -8,7 +8,8 @@ import { util } from '@kit.ArkTS';
 import {
   MoonlightAddress,
   MoonlightAddressFamily,
-  MoonlightHostType
+  MoonlightHostType,
+  MOONLIGHT_DEFAULT_HTTPS_PORT
 } from '../model/MoonlightModels';
 import {
   MoonlightHostAddVerification,
@@ -79,6 +80,15 @@ function serverInfoValue(xml: string, name: string): string {
 
 function boolAttribute(value: string): boolean {
   return value === '1' || value.toLowerCase() === 'true' || value.toLowerCase() === 'yes';
+}
+
+function advertisedHttpsPort(xml: string): number | null {
+  const raw: string = serverInfoValue(xml, 'HttpsPort').trim();
+  if (raw === '') { return MOONLIGHT_DEFAULT_HTTPS_PORT; }
+  if (!/^[0-9]{1,5}$/.test(raw)) { return null; }
+  const value: number = Number(raw);
+  return Number.isSafeInteger(value) && value >= 1 && value <= 65535
+    ? value : null;
 }
 
 function hasControlCharacter(value: string): boolean {
@@ -231,8 +241,9 @@ export function parseMoonlightServerInfo(
   const pairStatusValue: string = serverInfoValue(body, 'PairStatus');
   const pairedText: string | null = strictBoundedText(
     pairStatusValue !== '' ? pairStatusValue : serverInfoValue(body, 'paired'), 16);
+  const httpsPort: number | null = advertisedHttpsPort(body);
   if (hostname === null || appVersion === null || gfeVersion === null ||
-      state === null || pairedText === null) {
+      state === null || pairedText === null || httpsPort === null) {
     return null;
   }
   return {
@@ -241,6 +252,7 @@ export function parseMoonlightServerInfo(
     hostType: hostTypeFromServerInfo(gfeVersion),
     version: appVersion || gfeVersion || state || 'unknown',
     address: { host: address.host, family: address.family, port: address.port },
+    httpsPort: httpsPort,
     paired: boolAttribute(pairedText),
     // The native pairing result fills this with the exact leaf SHA-256.
     fingerprintSha256: '',

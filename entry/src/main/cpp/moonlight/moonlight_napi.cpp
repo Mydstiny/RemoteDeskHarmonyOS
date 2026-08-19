@@ -414,6 +414,8 @@ bool parseOperation(const std::string& value, MoonlightBridgeOperation& operatio
         operation = MoonlightBridgeOperation::Quit;
     } else if (value == "unpair") {
         operation = MoonlightBridgeOperation::Unpair;
+    } else if (value == "delete_identity") {
+        operation = MoonlightBridgeOperation::DeleteIdentity;
     } else {
         return false;
     }
@@ -581,6 +583,41 @@ bool parseRequest(napi_env env, napi_value value, MoonlightBridgeRequest& reques
         error = "operation is not supported";
         return false;
     }
+    if (request.operation == MoonlightBridgeOperation::DeleteIdentity) {
+        static const std::unordered_set<std::string> identityDeleteAllowed {
+            "operation", "key", "ownerScopeFingerprint", "timeoutMs"
+        };
+        bool identityPresent = false;
+        napi_value identityKeyValue = nullptr;
+        std::uint64_t timeoutMs = request.timeout.count();
+        if (!readExactObject(env, value, identityDeleteAllowed, error) ||
+            !hasProperty(env, value, "key", identityPresent) ||
+            !identityPresent ||
+            !getProperty(env, value, "key", identityKeyValue) ||
+            !parseRequestKey(env, identityKeyValue, request.key, error) ||
+            !readRequiredString(env, value, "ownerScopeFingerprint", 64U,
+                                request.ownerScopeFingerprint, error) ||
+            !readOptionalSafeInteger(env, value, "timeoutMs", false,
+                                     timeoutMs, error) ||
+            timeoutMs < static_cast<std::uint64_t>(
+                MoonlightHostLimits::kMinTimeout.count()) ||
+            timeoutMs > static_cast<std::uint64_t>(
+                MoonlightHostLimits::kMaxStandardTimeout.count())) {
+            error = error.empty() ? "identity deletion request is invalid" : error;
+            return false;
+        }
+        if (request.ownerScopeFingerprint.size() != 64U ||
+            std::any_of(request.ownerScopeFingerprint.begin(),
+                        request.ownerScopeFingerprint.end(), [](char character) {
+                            return !((character >= '0' && character <= '9') ||
+                                     (character >= 'a' && character <= 'f'));
+                        })) {
+            error = "owner scope fingerprint must be 64 lowercase hex characters";
+            return false;
+        }
+        request.timeout = std::chrono::milliseconds(timeoutMs);
+        return true;
+    }
     bool present = false;
     napi_value nested = nullptr;
     if (!hasProperty(env, value, "key", present) || !present ||
@@ -741,6 +778,12 @@ napi_value createResult(napi_env env, const MoonlightBridgeResult& result) {
     setBoolean(env, object, "idempotent", result.idempotent);
     setBoolean(env, object, "mutationMayHaveBeenSent",
                result.mutationMayHaveBeenSent);
+    setSize(env, object, "identityExistingCount",
+            result.identityExistingCount);
+    setSize(env, object, "identityDeletedCount",
+            result.identityDeletedCount);
+    setSize(env, object, "identityRemainingCount",
+            result.identityRemainingCount);
 
     napi_value apps = nullptr;
     (void)napi_create_array_with_length(env, result.apps.size(), &apps);
@@ -800,6 +843,8 @@ napi_value createCapabilities(napi_env env,
     (void)napi_create_object(env, &object);
     setBoolean(env, object, "bridgeCompiled", capabilities.bridgeCompiled);
     setBoolean(env, object, "identityReady", capabilities.identityReady);
+    setBoolean(env, object, "identityDeletionReady",
+               capabilities.identityDeletionReady);
     setBoolean(env, object, "transportReady", capabilities.transportReady);
     setBoolean(env, object, "trustReady", capabilities.trustReady);
     setBoolean(env, object, "commitReady", capabilities.commitReady);
@@ -1186,7 +1231,8 @@ bool parseStreamStartRequest(napi_env env, napi_value value,
         "launchKey", "hostId", "serverUuid", "appId", "rendererHandle",
         "surfaceWidth", "surfaceHeight", "configuredBitrateKbps",
         "codecPreference", "hdr", "yuv444", "latencyMode",
-        "audioEnabled", "audioChannels", "playAudioOnHost", "streamEncryption"
+        "audioEnabled", "audioChannels", "playAudioOnHost",
+        "resetRemoteInputBeforeAdmission", "streamEncryption"
     };
     if (!readExactObject(env, value, allowed, error)) { return false; }
     bool present = false;
@@ -1221,6 +1267,8 @@ bool parseStreamStartRequest(napi_env env, napi_value value,
         !readRequiredBoolean(env, value, "audioEnabled", request.audioEnabled, error) ||
         !readRequiredString(env, value, "audioChannels", 16U, audioChannels, error) ||
         !readRequiredBoolean(env, value, "playAudioOnHost", request.playAudioOnHost, error) ||
+        !readRequiredBoolean(env, value, "resetRemoteInputBeforeAdmission",
+                             request.resetRemoteInputBeforeAdmission, error) ||
         !readRequiredString(env, value, "streamEncryption", 16U, encryption, error) ||
         appId > std::numeric_limits<std::uint32_t>::max() ||
         rendererHandle > static_cast<std::uint64_t>(kMaxSafeInteger) ||
@@ -1287,11 +1335,39 @@ napi_value streamSnapshot(napi_env env, napi_callback_info info) {
     setBoolean(env, value, "controllerReady", result.controllerReady);
     setBoolean(env, value, "physicalControllerReady",
                result.physicalControllerReady);
+    setBoolean(env, value, "inputMayBeStuck", result.inputMayBeStuck);
     setBoolean(env, value, "firstFrameReady", result.firstFrameReady);
     setBoolean(env, value, "terminal", result.terminal);
     setSafeInteger(env, value, "lastSequence", result.lastSequence);
+    setSafeInteger(env, value, "sampledAtMonotonicMs",
+                   result.sampledAtMonotonicMs);
+    setSafeInteger(env, value, "acceptedVideoFrames",
+                   result.acceptedVideoFrames);
+    setSafeInteger(env, value, "droppedVideoFrames",
+                   result.droppedVideoFrames);
+    setSafeInteger(env, value, "acceptedVideoBytes",
+                   result.acceptedVideoBytes);
+    setSafeInteger(env, value, "rendererPresentedFrames",
+                   result.rendererPresentedFrames);
+    setSafeInteger(env, value, "acceptedAudioPackets",
+                   result.acceptedAudioPackets);
+    setSafeInteger(env, value, "rejectedAudioPackets",
+                   result.rejectedAudioPackets);
+    setSafeInteger(env, value, "acceptedAudioBytes",
+                   result.acceptedAudioBytes);
+    setSafeInteger(env, value, "rejectedInputEvents",
+                   result.rejectedInputEvents);
+    setInt32(env, value, "streamWidth", result.streamWidth);
+    setInt32(env, value, "streamHeight", result.streamHeight);
+    setInt32(env, value, "targetFps", result.targetFps);
+    setInt32(env, value, "configuredBitrateKbps",
+             result.configuredBitrateKbps);
     return value;
 }
+
+bool readInputLaunchKey(napi_env env, napi_value request,
+                        MoonlightBridgeRequestKey& key,
+                        std::string& error);
 
 napi_value stopStream(napi_env env, napi_callback_info info) {
     MoonlightBridgeRequestKey key;
@@ -1303,6 +1379,68 @@ napi_value stopStream(napi_env env, napi_callback_info info) {
         MoonlightProductStreamingRuntime::process().requestStop(key);
     napi_value value = nullptr;
     (void)napi_get_boolean(env, stopRequested, &value);
+    return value;
+}
+
+napi_value suspendSurface(napi_env env, napi_callback_info info) {
+    MoonlightBridgeRequestKey key;
+    if (!readKeyArgument(env, info, key)) { return nullptr; }
+    const bool suspended =
+        MoonlightProductStreamingRuntime::process().suspendSurface(key);
+    napi_value value = nullptr;
+    (void)napi_get_boolean(env, suspended, &value);
+    return value;
+}
+
+napi_value rebindSurface(napi_env env, napi_callback_info info) {
+    std::size_t argc = 1U;
+    napi_value args[1] = {nullptr};
+    static const std::unordered_set<std::string> allowed {
+        "launchKey", "rendererHandle"
+    };
+    MoonlightBridgeRequestKey key;
+    std::uint64_t rendererHandle = 0U;
+    std::string error;
+    if (napi_get_cb_info(env, info, &argc, args, nullptr, nullptr) != napi_ok ||
+        argc != 1U || !readExactObject(env, args[0], allowed, error) ||
+        !readInputLaunchKey(env, args[0], key, error) ||
+        !readRequiredSafeInteger(env, args[0], "rendererHandle", false,
+                                 rendererHandle, error) ||
+        rendererHandle > static_cast<std::uint64_t>(kMaxSafeInteger)) {
+        napi_throw_type_error(env, "E-MOONLIGHT-SURFACE-REBIND",
+                              error.empty() ? "invalid surface rebind request" :
+                                              error.c_str());
+        return nullptr;
+    }
+    const bool rebound = MoonlightProductStreamingRuntime::process().rebindSurface(
+        key, static_cast<std::int64_t>(rendererHandle));
+    napi_value value = nullptr;
+    (void)napi_get_boolean(env, rebound, &value);
+    return value;
+}
+
+napi_value setAudioPaused(napi_env env, napi_callback_info info) {
+    std::size_t argc = 1U;
+    napi_value args[1] = {nullptr};
+    static const std::unordered_set<std::string> allowed {
+        "launchKey", "paused"
+    };
+    MoonlightBridgeRequestKey key;
+    bool paused = false;
+    std::string error;
+    if (napi_get_cb_info(env, info, &argc, args, nullptr, nullptr) != napi_ok ||
+        argc != 1U || !readExactObject(env, args[0], allowed, error) ||
+        !readInputLaunchKey(env, args[0], key, error) ||
+        !readRequiredBoolean(env, args[0], "paused", paused, error)) {
+        napi_throw_type_error(env, "E-MOONLIGHT-AUDIO-LIFECYCLE",
+                              error.empty() ? "invalid audio lifecycle request" :
+                                              error.c_str());
+        return nullptr;
+    }
+    const bool accepted =
+        MoonlightProductStreamingRuntime::process().setAudioPaused(key, paused);
+    napi_value value = nullptr;
+    (void)napi_get_boolean(env, accepted, &value);
     return value;
 }
 
@@ -1764,6 +1902,12 @@ napi_value Init(napi_env env, napi_value exports) {
          nullptr, napi_default, nullptr},
         {"moonlightStopStream", nullptr, stopStream, nullptr, nullptr, nullptr,
          napi_default, nullptr},
+        {"moonlightSuspendSurface", nullptr, suspendSurface, nullptr, nullptr,
+         nullptr, napi_default, nullptr},
+        {"moonlightRebindSurface", nullptr, rebindSurface, nullptr, nullptr,
+         nullptr, napi_default, nullptr},
+        {"moonlightSetAudioPaused", nullptr, setAudioPaused, nullptr, nullptr,
+         nullptr, napi_default, nullptr},
         {"moonlightSendKey", nullptr, sendKey, nullptr, nullptr, nullptr,
          napi_default, nullptr},
         {"moonlightSendText", nullptr, sendText, nullptr, nullptr, nullptr,

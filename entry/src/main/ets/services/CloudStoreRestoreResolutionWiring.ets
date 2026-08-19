@@ -72,7 +72,8 @@ function distinctKnownTables(
 export function pendingRestoreResolutionTables(
   cloudTables: string[],
   readMetadata: (key: string) =>
-    CloudMetadataReadResult
+    CloudMetadataReadResult,
+  legacyGlobalTables: string[] = cloudTables
 ): string[] | null {
   const globalMarker: CloudMetadataReadResult =
     readMetadata(RESTORED_NOT_UPLOADED_KEY);
@@ -99,9 +100,12 @@ export function pendingRestoreResolutionTables(
   if (globalMarker.state === 'present' &&
     pending.length === 0) {
     // Legacy/full replacement restores wrote only the global marker. They
-    // replaced every cloud table, so the safe upgrade interpretation is the
-    // full table set rather than an unresolvable corrupt boundary.
-    return cloudTables.slice();
+    // replaced every table that existed in that release. Optional tables added
+    // by a later app version must not be inferred from that old marker: doing
+    // so would make a missing AGC schema block the original cloud tables.
+    const fallback: string[] =
+      distinctKnownTables(legacyGlobalTables, cloudTables);
+    return fallback.length > 0 ? fallback : cloudTables.slice();
   }
   // A 1.0.x crash could remove the global row before finishing the sequential
   // per-table cleanup. Remaining table rows are still authoritative barriers.
@@ -167,7 +171,8 @@ export function completeCloudRestoreResolution(
   stateEncoded: string,
   resolvedTables: string[],
   cloudTables: string[],
-  port: CloudRestoreResolutionPort
+  port: CloudRestoreResolutionPort,
+  legacyGlobalTables: string[] = cloudTables
 ): CloudRestoreResolutionResult {
   const covered: string[] =
     distinctKnownTables(
@@ -185,7 +190,8 @@ export function completeCloudRestoreResolution(
         cloudTables,
         (key: string):
           CloudMetadataReadResult =>
-          port.readMetadata(key));
+          port.readMetadata(key),
+        legacyGlobalTables);
     if (pending === null) {
       throw new Error(
         'restore marker set is unreadable');

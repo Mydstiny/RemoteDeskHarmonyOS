@@ -1,12 +1,14 @@
 import { describe, it, expect } from '@ohos/hypium';
 import {
   SETTINGS_SHEET_ACCOUNT,
+  SETTINGS_SHEET_DIAGNOSTIC_LOG,
   SETTINGS_SHEET_MOONLIGHT_AUDIO,
   SETTINGS_SHEET_MOONLIGHT_DIAGNOSTICS,
   SETTINGS_SHEET_MOONLIGHT_INPUT,
   SETTINGS_SHEET_MOONLIGHT_NETWORK_SECURITY,
   SETTINGS_SHEET_MOONLIGHT_VIDEO,
   SETTINGS_SHEET_MOONLIGHT_TRUST,
+  SETTINGS_SHEET_MOONLIGHT_DATA,
   SETTINGS_PANEL_DISMISS_TO_LEAF_OPEN_MS,
   SETTINGS_SHEET_VNC_CLIPBOARD,
   SETTINGS_SHEET_VNC_CONNECTION,
@@ -21,6 +23,7 @@ import {
   settingsLeafSheetUsesSystemCloseButton,
   shouldDelaySettingsLeafOpenForPanel,
   settingsLeafOpenDelayMs,
+  diagnosticLogSettingsLeafSheetHeight,
   moonlightSettingsLeafSheetHeight,
   moonlightSettingsRouteSpec,
   moonlightSettingsRouteSpecs,
@@ -43,6 +46,14 @@ export default function settingsSheetRoutePolicyTest() {
       expect(settingsLeafSheetUsesSystemCloseButton()).assertFalse();
     });
 
+    it('allocates_one_independent_global_diagnostic_log_leaf', 0, (): void => {
+      expect(SETTINGS_SHEET_DIAGNOSTIC_LOG).assertEqual(31);
+      expect(diagnosticLogSettingsLeafSheetHeight(SETTINGS_SHEET_DIAGNOSTIC_LOG))
+        .assertEqual(740);
+      expect(diagnosticLogSettingsLeafSheetHeight(SETTINGS_SHEET_ACCOUNT)).assertEqual(0);
+      expect(moonlightSettingsRouteSpec(SETTINGS_SHEET_DIAGNOSTIC_LOG)).assertNull();
+    });
+
     it('sizes_vnc_settings_leaves_to_their_content_density', 0, (): void => {
       expect(vncSettingsLeafSheetHeight(SETTINGS_SHEET_VNC_DISPLAY)).assertEqual(700);
       expect(vncSettingsLeafSheetHeight(SETTINGS_SHEET_VNC_INPUT)).assertEqual(560);
@@ -59,7 +70,7 @@ export default function settingsSheetRoutePolicyTest() {
 
     it('allocates_contiguous_owned_moonlight_routes_after_existing_modes', 0, (): void => {
       const specs = moonlightSettingsRouteSpecs();
-      expect(specs.length).assertEqual(6);
+      expect(specs.length).assertEqual(7);
       expect(specs[0].mode).assertEqual(SETTINGS_SHEET_MOONLIGHT_VIDEO);
       for (let i = 0; i < specs.length; i++) {
         expect(specs[i].mode).assertEqual(24 + i);
@@ -90,9 +101,15 @@ export default function settingsSheetRoutePolicyTest() {
       expect(moonlightSettingsRouteSpec(SETTINGS_SHEET_MOONLIGHT_TRUST)?.title).assertEqual('配对与信任');
       expect(moonlightSettingsLeafSheetHeight(SETTINGS_SHEET_MOONLIGHT_TRUST)).assertEqual(520);
       expect(SETTINGS_SHEET_MOONLIGHT_TRUST).assertEqual(29);
+      expect(moonlightSettingsRouteSpec(SETTINGS_SHEET_MOONLIGHT_DATA)?.section)
+        .assertEqual('data');
+      expect(moonlightSettingsRouteSpec(SETTINGS_SHEET_MOONLIGHT_DATA)?.title)
+        .assertEqual('数据管理');
+      expect(moonlightSettingsLeafSheetHeight(SETTINGS_SHEET_MOONLIGHT_DATA))
+        .assertEqual(720);
       expect(moonlightSettingsLeafSheetHeight(SETTINGS_SHEET_VNC_CONNECTION)).assertEqual(0);
       expect(moonlightSettingsRouteSpec(23)).assertNull();
-      expect(moonlightSettingsRouteSpec(30)).assertNull();
+      expect(moonlightSettingsRouteSpec(31)).assertNull();
     });
   });
 }

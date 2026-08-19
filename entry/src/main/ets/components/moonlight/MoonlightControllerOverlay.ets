@@ -17,6 +17,7 @@ export struct MoonlightControllerOverlay {
   @StorageLink('accentColor') accentColor: string = '#007DFF';
   @Prop inputCapabilityReady: boolean = false;
   @Prop editing: boolean = false;
+  @Prop physicalControllerPathReady: boolean = false;
   @Prop physicalControllerName: string = '';
   @Prop physicalControllerSlot: number = -1;
   @State private activeButtons: string[] = [];
@@ -174,8 +175,11 @@ export struct MoonlightControllerOverlay {
       Row() {
         Column() {
           Text('虚拟控制器').fontSize(15).fontWeight(FontWeight.Bold).fontColor('#FFFFFF')
-          Text(this.physicalControllerName === '' ? '未检测到实体手柄' :
-            this.physicalControllerName + ' · 槽位 ' + (this.physicalControllerSlot + 1).toString())
+          Text(this.physicalControllerName !== '' ?
+            this.physicalControllerName + ' · 槽位 ' + (this.physicalControllerSlot + 1).toString() :
+            (this.physicalControllerPathReady ?
+              '实体手柄监听已就绪，接入后自动使用槽位 1' :
+              '当前设备实体手柄监听不可用，虚拟控制器不受影响'))
             .fontSize(10).fontColor('rgba(255,255,255,0.60)').margin({ top: 3 })
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
         Button(this.editing ? '完成布局' : '编辑布局').height(34).fontSize(11).borderRadius(10)
@@ -189,7 +193,7 @@ export struct MoonlightControllerOverlay {
       if (!this.inputCapabilityReady) {
         Row() {
           SymbolGlyph($r('sys.symbol.exclamationmark_triangle_fill')).fontSize(16).fontColor(['#FFCF70'])
-          Text('真实 HarmonyOS GameController native listener 与 typed NAPI 验证完成前不发送手柄信号。')
+          Text('控制器输入通道尚未就绪；在 native 接收能力可用前不会发送任何手柄信号。')
             .fontSize(10).fontColor('rgba(255,255,255,0.72)').layoutWeight(1).margin({ left: 8 })
         }.width('100%').padding(10).margin({ top: 12 })
           .backgroundColor('rgba(255,190,80,0.10)').borderRadius(10)

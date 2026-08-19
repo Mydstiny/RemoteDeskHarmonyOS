@@ -11,12 +11,19 @@
 import {
   MOONLIGHT_CLOUD_TABLE,
   MoonlightRecord,
+  MoonlightRecordType,
   moonlightRecordFromCloudRow
 } from '../model/MoonlightRecord';
 import { normalizeMoonlightCloudRowExact } from './CloudTableAdapter';
+import {
+  isMoonlightRecordTypeSelected,
+  normalizeMoonlightCloudSyncSelection
+} from './MoonlightCloudSyncSelectionPolicy';
 import { moonlightValidateRecord } from './MoonlightRecordPolicy';
 
 export type CloudCiphertextProbe = (value: string) => boolean;
+export type CloudDownloadValidationMode =
+  'whole_snapshot' | 'record_isolation';
 
 const SENSITIVE_BUSINESS_TABLES: string[] = [
   'remotehosts',
@@ -132,25 +139,83 @@ export function moonlightCloudRowsCarryLiveIdentity(
 }
 
 /**
- * Moonlight is row-sensitive. Ordinary settings/host/profile/trust rows may
- * transfer without remote identity crypto, but every live identity row must
- * be a valid envelope whose ciphertext passes the authenticated-ciphertext
- * probe. Tombstones contain no key material and remain portable.
+ * Moonlight v1 cloud sync carries only re-pairable public configuration.
+ * Pairing trust and the client identity are device-bound local state; reject
+ * both live rows and tombstones so an old experimental projection can never
+ * be republished by a later whole-table native-first operation.
  */
 export function moonlightCloudRowsAreUploadSafe(
   rows: Array<Record<string, string>>,
-  cryptoConfigured: boolean,
-  ciphertextProbe: CloudCiphertextProbe
+  _cryptoConfigured: boolean,
+  _ciphertextProbe: CloudCiphertextProbe
 ): boolean {
   for (let i = 0; i < rows.length; i++) {
     const record: MoonlightRecord | null = exactMoonlightRecord(rows[i]);
     if (record === null) { return false; }
-    if (record.recordType === 'secret' && record.deletedAt === 0 &&
-        (!cryptoConfigured || !ciphertextProbe(record.ciphertext))) {
+    if (record.recordType !== 'settings' && record.recordType !== 'host' &&
+        record.recordType !== 'profile') {
       return false;
     }
   }
   return true;
+}
+
+/**
+ * HarmonyOS synchronizes a physical table rather than a SQL-filtered owner
+ * view. Moonlight native-first is therefore admitted only when every physical
+ * row belongs to the active owner and every row is part of the public v1
+ * contract. An empty table is safe only for a bound, non-empty owner.
+ */
+export function moonlightPhysicalCloudRowsAreUploadSafe(
+  rows: Array<Record<string, string>>,
+  ownerScopeId: string,
+  cryptoConfigured: boolean,
+  ciphertextProbe: CloudCiphertextProbe,
+  selectedScopes: string[] = ['settings', 'hosts', 'profiles'],
+  pendingPhysicalMutationRecordIds?: string[]
+): boolean {
+  const owner: string = ownerScopeId.trim();
+  if (owner.length === 0 || owner !== ownerScopeId) { return false; }
+  const selected: string[] = normalizeMoonlightCloudSyncSelection(
+    selectedScopes, false);
+  for (let i = 0; i < rows.length; i++) {
+    if (rows[i]['userid'] !== owner) { return false; }
+    const record: MoonlightRecord | null = exactMoonlightRecord(rows[i]);
+    if (record === null) { return false; }
+    // HarmonyOS synchronizes the physical table. A live row outside current
+    // consent is admissible only when the durable mutation journal proves it
+    // is a clean pre-existing cloud mirror. This lets a single physical table
+    // retain deselected cloud data without either deleting it or re-uploading
+    // a pending local edit. Callers that cannot read the journal omit the
+    // proof and fail closed. Tombstones remain uploadable so an explicit
+    // cross-device deletion can converge.
+    if (record.deletedAt === 0 &&
+        !isMoonlightRecordTypeSelected(
+          record.recordType, selected, false) &&
+        (pendingPhysicalMutationRecordIds === undefined ||
+          pendingPhysicalMutationRecordIds.indexOf('__table__') >= 0 ||
+          pendingPhysicalMutationRecordIds.indexOf(record.id) >= 0)) {
+        return false;
+    }
+  }
+  return moonlightCloudRowsAreUploadSafe(
+    rows, cryptoConfigured, ciphertextProbe);
+}
+
+/**
+ * Scope reduction cancels only a pending live upload outside the new consent.
+ * Explicit tombstones still converge across devices, and malformed deletion
+ * metadata remains pending so the caller fails closed during validation.
+ */
+export function moonlightPhysicalMutationShouldRemainPending(
+  recordType: MoonlightRecordType,
+  deletedAt: number,
+  selectedScopes: string[]
+): boolean {
+  if (!Number.isSafeInteger(deletedAt) || deletedAt < 0) { return true; }
+  return deletedAt > 0 || isMoonlightRecordTypeSelected(
+    recordType,
+    normalizeMoonlightCloudSyncSelection(selectedScopes, false), false);
 }
 
 /**
@@ -217,6 +282,20 @@ export function cloudTableRowsAreDownloadCompatible(
     return true;
   }
   return encryptedRowsAreSafe(table, rows, ciphertextProbe);
+}
+
+/**
+ * Moonlight owns a transactional per-record materializer: valid rows are
+ * applied while malformed, foreign-owner, or unsupported future rows are
+ * quarantined. Running the ordinary whole-snapshot rejection gate as well
+ * would let one bad optional row block an otherwise usable cloud pull.
+ * Existing cloud tables retain their historical whole-snapshot behavior.
+ */
+export function cloudDownloadValidationMode(
+  table: string
+): CloudDownloadValidationMode {
+  return table === MOONLIGHT_CLOUD_TABLE ?
+    'record_isolation' : 'whole_snapshot';
 }
 
 /**

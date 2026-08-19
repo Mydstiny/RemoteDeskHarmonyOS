@@ -1,9 +1,12 @@
 #include "moonlight/media/MoonlightProductSessionMediaPort.h"
 
 #include "moonlight/media/MoonlightProductMediaPort.h"
+#include "render/gl_renderer.h"
 #include "render/hw_decoder.h"
 #include "render/shared_session_context.h"
 
+#include <algorithm>
+#include <limits>
 #include <mutex>
 #include <utility>
 
@@ -213,6 +216,83 @@ bool MoonlightProductSessionMediaPort::audioLive() const noexcept {
         delegate = impl_->delegate;
     }
     return delegate != nullptr && delegate->audioLive();
+}
+
+bool MoonlightProductSessionMediaPort::suspendSurface() noexcept {
+    std::shared_ptr<MoonlightProductMediaPort> delegate;
+    {
+        if (impl_ == nullptr) { return false; }
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        delegate = impl_->delegate;
+    }
+    return delegate != nullptr && delegate->suspendVideo();
+}
+
+bool MoonlightProductSessionMediaPort::rebindSurface(
+    std::int64_t rendererHandle) noexcept {
+    std::shared_ptr<MoonlightProductMediaPort> delegate;
+    MoonlightSessionKey key;
+    {
+        if (impl_ == nullptr || rendererHandle <= 0) { return false; }
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        delegate = impl_->delegate;
+        key = impl_->key;
+    }
+    if (delegate == nullptr || !key.valid()) { return false; }
+    const auto current = delegate->videoBindingSnapshot();
+    if (current.key != key || !current.runtimeProof.valid() ||
+        current.runtimeProof.generation ==
+            std::numeric_limits<std::uint64_t>::max()) {
+        return false;
+    }
+    const auto owner = sinkOwner(key);
+    const auto rendererGeneration =
+        RendererNapi::GetActiveRendererGeneration(rendererHandle, owner);
+    if (rendererGeneration <= current.rendererGeneration ||
+        RendererNapi::GetActiveRendererHandle(owner) != rendererHandle) {
+        return false;
+    }
+    auto next = current;
+    next.rendererHandle = rendererHandle;
+    next.rendererGeneration = rendererGeneration;
+    next.runtimeProof.generation = std::max(
+        current.runtimeProof.generation + 1U, rendererGeneration);
+    return delegate->rebindVideo(next);
+}
+
+bool MoonlightProductSessionMediaPort::pauseAudio() noexcept {
+    std::shared_ptr<MoonlightProductMediaPort> delegate;
+    {
+        if (impl_ == nullptr) { return false; }
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        if (!impl_->audioPlaybackEnabled) { return true; }
+        delegate = impl_->delegate;
+    }
+    return delegate != nullptr &&
+        delegate->pauseAudio(MoonlightAudioPauseReason::Background);
+}
+
+bool MoonlightProductSessionMediaPort::resumeAudio() noexcept {
+    std::shared_ptr<MoonlightProductMediaPort> delegate;
+    {
+        if (impl_ == nullptr) { return false; }
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        if (!impl_->audioPlaybackEnabled) { return true; }
+        delegate = impl_->delegate;
+    }
+    return delegate != nullptr && delegate->resumeAudio();
+}
+
+MoonlightProductMediaDiagnostics
+MoonlightProductSessionMediaPort::diagnostics() const noexcept {
+    std::shared_ptr<MoonlightProductMediaPort> delegate;
+    {
+        if (impl_ == nullptr) { return {}; }
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        delegate = impl_->delegate;
+    }
+    return delegate == nullptr ? MoonlightProductMediaDiagnostics {}
+                               : delegate->diagnostics();
 }
 
 bool MoonlightProductSessionMediaPort::setupAudio(

@@ -18,6 +18,8 @@ enum class LaneState : std::uint8_t {
     Idle,
     Configured,
     Started,
+    Suspended,
+    Paused,
     Stopping,
     Stopped,
     Cleaned,
@@ -77,6 +79,13 @@ MoonlightVideoSubmitResult staleVideoResult() noexcept {
     MoonlightVideoSubmitResult result;
     result.status = MoonlightVideoSubmitStatus::Stale;
     return result;
+}
+
+std::uint64_t saturatingAdd(std::uint64_t left,
+                            std::uint64_t right) noexcept {
+    return right > std::numeric_limits<std::uint64_t>::max() - left
+        ? std::numeric_limits<std::uint64_t>::max()
+        : left + right;
 }
 
 } // namespace
@@ -199,7 +208,7 @@ struct MoonlightProductMediaPort::Impl final {
     }
 
     const MoonlightSessionKey key;
-    const MoonlightVideoDecoderBinding videoBinding;
+    MoonlightVideoDecoderBinding videoBinding;
     const std::shared_ptr<MoonlightOwnedVideoDecoderSink> videoSink;
     const std::unique_ptr<MoonlightVideoBridge> videoBridge;
     const std::shared_ptr<MoonlightAudioPlayerSink> audioSink;
@@ -208,8 +217,10 @@ struct MoonlightProductMediaPort::Impl final {
     mutable std::mutex videoMutex;
     std::mutex videoLifecycleLane;
     LaneState videoState = LaneState::Idle;
+    LaneState videoStateBeforeSuspend = LaneState::Idle;
     bool videoSinkActive = false;
     bool videoBridgeActive = false;
+    std::uint64_t acceptedVideoBytes = 0U;
 
     mutable std::mutex audioMutex;
     std::mutex audioLifecycleLane;
@@ -219,6 +230,7 @@ struct MoonlightProductMediaPort::Impl final {
     std::uint64_t audioOperationGeneration = 0U;
     bool audioSinkActive = false;
     bool audioBridgeActive = false;
+    std::uint64_t acceptedAudioBytes = 0U;
 };
 
 MoonlightProductMediaPort::MoonlightProductMediaPort(
@@ -330,6 +342,189 @@ bool MoonlightProductMediaPort::audioLive() const noexcept {
         impl_->audioSinkActive && impl_->audioBridgeActive;
 }
 
+MoonlightProductMediaDiagnostics
+MoonlightProductMediaPort::diagnostics() const noexcept {
+    MoonlightProductMediaDiagnostics result;
+    if (impl_ == nullptr) {
+        return result;
+    }
+    try {
+        const auto video = impl_->videoBridge->snapshot(impl_->key);
+        const auto decoder = impl_->videoSink->snapshot(impl_->key);
+        MoonlightAudioStreamIdentity audioIdentity;
+        {
+            std::lock_guard<std::mutex> lock(impl_->videoMutex);
+            result.acceptedVideoBytes = impl_->acceptedVideoBytes;
+        }
+        {
+            std::lock_guard<std::mutex> lock(impl_->audioMutex);
+            audioIdentity = impl_->audioIdentity;
+            result.acceptedAudioBytes = impl_->acceptedAudioBytes;
+        }
+        result.matched = video.matched && decoder.matched;
+        result.acceptedVideoFrames = video.acceptedFrames;
+        result.droppedVideoFrames = saturatingAdd(
+            saturatingAdd(video.droppedFrames, video.malformedFrames),
+            saturatingAdd(video.staleFrames, video.backpressureFrames));
+        result.rendererPresentedFrames = decoder.rendererPresentedFrames;
+        if (audioIdentity.valid()) {
+            const auto audio = impl_->audioBridge->snapshot(audioIdentity);
+            result.acceptedAudioPackets = saturatingAdd(
+                audio.acceptedPackets, audio.acceptedPlcFrames);
+            result.rejectedAudioPackets = audio.rejectedPackets;
+        }
+        return result;
+    } catch (...) {
+        return {};
+    }
+}
+
+bool MoonlightProductMediaPort::suspendVideo() noexcept {
+    if (impl_ == nullptr) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lane(impl_->videoLifecycleLane);
+    LaneState previous = LaneState::Idle;
+    {
+        std::lock_guard<std::mutex> lock(impl_->videoMutex);
+        if (impl_->videoState == LaneState::Suspended) {
+            return true;
+        }
+        if ((impl_->videoState != LaneState::Configured &&
+             impl_->videoState != LaneState::Started) ||
+            !impl_->videoSinkActive || !impl_->videoBridgeActive) {
+            return false;
+        }
+        previous = impl_->videoState;
+    }
+    const auto suspended = impl_->videoSink->suspend(
+        impl_->key, kMediaStopTimeout);
+    if (suspended != MoonlightVideoDecoderSuspendStatus::Suspended &&
+        suspended != MoonlightVideoDecoderSuspendStatus::AlreadySuspended) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(impl_->videoMutex);
+    if ((impl_->videoState != previous &&
+         impl_->videoState != LaneState::Suspended) ||
+        !impl_->videoSinkActive || !impl_->videoBridgeActive) {
+        return false;
+    }
+    impl_->videoStateBeforeSuspend = previous;
+    impl_->videoState = LaneState::Suspended;
+    return true;
+}
+
+bool MoonlightProductMediaPort::rebindVideo(
+    const MoonlightVideoDecoderBinding& binding) noexcept {
+    if (impl_ == nullptr) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lane(impl_->videoLifecycleLane);
+    LaneState restored = LaneState::Idle;
+    {
+        std::lock_guard<std::mutex> lock(impl_->videoMutex);
+        if (impl_->videoState != LaneState::Suspended ||
+            !impl_->videoSinkActive || !impl_->videoBridgeActive) {
+            return false;
+        }
+        restored = impl_->videoStateBeforeSuspend;
+        if (restored != LaneState::Configured &&
+            restored != LaneState::Started) {
+            return false;
+        }
+    }
+    const auto rebound = impl_->videoSink->rebind(binding);
+    if (rebound != MoonlightVideoDecoderRebindStatus::Rebound) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(impl_->videoMutex);
+    if (impl_->videoState != LaneState::Suspended ||
+        !impl_->videoSinkActive || !impl_->videoBridgeActive) {
+        return false;
+    }
+    impl_->videoBinding = binding;
+    impl_->videoState = restored;
+    return true;
+}
+
+MoonlightVideoDecoderBinding
+MoonlightProductMediaPort::videoBindingSnapshot() const noexcept {
+    if (impl_ == nullptr) {
+        return {};
+    }
+    // Decoder recovery can advance decoderGeneration without rebuilding the
+    // product composition. The sink snapshot is therefore authoritative.
+    const auto source = impl_->videoSink->snapshot(impl_->key);
+    if (source.matched) {
+        return source.binding;
+    }
+    std::lock_guard<std::mutex> lock(impl_->videoMutex);
+    return impl_->videoBinding;
+}
+
+bool MoonlightProductMediaPort::pauseAudio(
+    MoonlightAudioPauseReason reason) noexcept {
+    if (impl_ == nullptr || reason == MoonlightAudioPauseReason::None) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lane(impl_->audioLifecycleLane);
+    MoonlightAudioStreamIdentity identity;
+    std::uint64_t operation = 0U;
+    {
+        std::lock_guard<std::mutex> lock(impl_->audioMutex);
+        if (impl_->audioState == LaneState::Paused) {
+            return true;
+        }
+        if (impl_->audioState != LaneState::Started ||
+            !impl_->audioSinkActive ||
+            !impl_->nextAudioOperationLocked(operation)) {
+            return false;
+        }
+        identity = impl_->audioIdentity;
+    }
+    const auto paused = impl_->audioSink->pause(identity, operation, reason);
+    if (!playerControlAccepted(paused.status)) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(impl_->audioMutex);
+    if (impl_->audioState != LaneState::Started) {
+        return false;
+    }
+    impl_->audioState = LaneState::Paused;
+    return true;
+}
+
+bool MoonlightProductMediaPort::resumeAudio() noexcept {
+    if (impl_ == nullptr) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lane(impl_->audioLifecycleLane);
+    MoonlightAudioStreamIdentity identity;
+    std::uint64_t operation = 0U;
+    {
+        std::lock_guard<std::mutex> lock(impl_->audioMutex);
+        if (impl_->audioState == LaneState::Started) {
+            return true;
+        }
+        if (impl_->audioState != LaneState::Paused ||
+            !impl_->audioSinkActive ||
+            !impl_->nextAudioOperationLocked(operation)) {
+            return false;
+        }
+        identity = impl_->audioIdentity;
+    }
+    const auto resumed = impl_->audioSink->resume(identity, operation);
+    if (!playerControlAccepted(resumed.status)) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(impl_->audioMutex);
+    if (impl_->audioState != LaneState::Paused) {
+        return false;
+    }
+    impl_->audioState = LaneState::Started;
+    return true;
+}
+
 bool MoonlightProductMediaPort::setupVideo(
     const MoonlightCommonCVideoSelection& selection) noexcept {
     if (impl_ == nullptr ||
@@ -421,13 +616,28 @@ MoonlightVideoSubmitResult MoonlightProductMediaPort::submitVideoPayload(
     }
     {
         std::lock_guard<std::mutex> lock(impl_->videoMutex);
+        if (impl_->videoState == LaneState::Suspended &&
+            decodeUnit.key == impl_->key &&
+            sameProfile(decodeUnit.profile, impl_->videoBinding.profile)) {
+            MoonlightVideoSubmitResult result;
+            result.status = MoonlightVideoSubmitStatus::NoSurface;
+            result.dropReason = MoonlightVideoDropReason::NoSurface;
+            return result;
+        }
         if (impl_->videoState != LaneState::Started ||
             decodeUnit.key != impl_->key ||
             !sameProfile(decodeUnit.profile, impl_->videoBinding.profile)) {
             return staleVideoResult();
         }
     }
-    return impl_->videoBridge->submit(decodeUnit);
+    const auto submitted = impl_->videoBridge->submit(decodeUnit);
+    if (submitted.status == MoonlightVideoSubmitStatus::Accepted) {
+        std::lock_guard<std::mutex> lock(impl_->videoMutex);
+        impl_->acceptedVideoBytes = saturatingAdd(
+            impl_->acceptedVideoBytes,
+            static_cast<std::uint64_t>(submitted.ownedBytes));
+    }
+    return submitted;
 }
 
 bool MoonlightProductMediaPort::setupAudio(
@@ -575,6 +785,13 @@ void MoonlightProductMediaPort::submitAudioPayload(
     }
     const auto submitted = impl_->audioBridge->submit(
         identity, operation, bytes, byteCount);
+    if (submitted.status == MoonlightAudioSubmitStatus::Accepted ||
+        submitted.status == MoonlightAudioSubmitStatus::PlcAccepted) {
+        std::lock_guard<std::mutex> lock(impl_->audioMutex);
+        impl_->acceptedAudioBytes = saturatingAdd(
+            impl_->acceptedAudioBytes,
+            static_cast<std::uint64_t>(submitted.inputBytes));
+    }
     if (submitted.status == MoonlightAudioSubmitStatus::Terminal) {
         std::lock_guard<std::mutex> lock(impl_->audioMutex);
         if (impl_->audioState == LaneState::Started) {

@@ -15,6 +15,7 @@ import {
 } from './SshForwardingRuntimeStore';
 import { SshNativeFacade } from './SshNativeFacade';
 import { SshSessionHandle, SshSessionLifecycleState } from './SshSessionStore';
+import { recordDiagnosticEvent } from './DiagnosticCaptureRuntime';
 
 export type SshForwardingOperation = 'configure' | 'start' | 'stop' | 'remove' |
   'acquire' | 'release' | 'reconcile' | 'snapshot';
@@ -91,8 +92,17 @@ function nativeState(value: number): SshForwardingRuntimeState {
 function operationResult(operation: SshForwardingOperation, profileId: string, code: number,
   state: SshForwardingRuntimeState, message: string = ''): SshForwardingOperationResult {
   const stale: boolean = code === SSH_FORWARDING_STALE;
-  return { operation, profileId, code, accepted: code === SSH_FORWARDING_OK,
+  const result: SshForwardingOperationResult = {
+    operation, profileId, code, accepted: code === SSH_FORWARDING_OK,
     stale, state, message };
+  const operationCode: number = operation === 'configure' ? 1 :
+    (operation === 'start' ? 2 : (operation === 'stop' ? 3 :
+      (operation === 'remove' ? 4 : (operation === 'acquire' ? 5 :
+        (operation === 'release' ? 6 : (operation === 'reconcile' ? 7 : 8))))));
+  recordDiagnosticEvent('network.routing', 'routing_ssh_forwarding',
+    result.accepted ? 'succeeded' : (result.stale ? 'skipped' : 'failed'),
+    0, 0, code === SSH_FORWARDING_OK ? operationCode : code);
+  return result;
 }
 
 export class SshForwardingController {

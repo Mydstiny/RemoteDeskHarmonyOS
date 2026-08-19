@@ -83,17 +83,36 @@ struct MoonlightProductInputSnapshot final {
     bool inputReady = false;
     bool controllerReady = false;
     bool physicalControllerReady = false;
+    bool inputMayBeStuck = false;
+    bool recoveryResetFailed = false;
     std::uint64_t inputGeneration = 0U;
     std::uint64_t acceptedEvents = 0U;
     std::uint64_t rejectedEvents = 0U;
 };
 
+// Terminal input teardown has two independent truths. Local cleanup is enough
+// to retire process-owned mapper/listener state, but only remoteNeutral proves
+// that the corresponding Sunshine input state was released successfully.
+struct MoonlightProductInputStopResult final {
+    bool localCleanupComplete = false;
+    bool remoteNeutral = false;
+};
+
+constexpr bool moonlightProductRemoteInputReleaseProven(
+    MoonlightInputFlushStatus status, bool remoteReleaseComplete,
+    bool boundaryApplied) noexcept {
+    return status == MoonlightInputFlushStatus::Applied &&
+        remoteReleaseComplete && boundaryApplied;
+}
+
 class MoonlightProductInputRuntime final {
   public:
     static MoonlightProductInputRuntime& process() noexcept;
 
-    bool activate(const MoonlightSessionKey& key) noexcept;
-    bool stop(const MoonlightSessionKey& key) noexcept;
+    bool activate(const MoonlightSessionKey& key,
+                  bool resetRemoteInputBeforeAdmission = false) noexcept;
+    MoonlightProductInputStopResult stop(
+        const MoonlightSessionKey& key) noexcept;
     MoonlightProductInputSnapshot snapshot(const MoonlightSessionKey& key) noexcept;
 
     bool sendKey(const MoonlightSessionKey& key, std::uint32_t harmonyKeyCode,

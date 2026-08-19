@@ -382,6 +382,32 @@ export default function moonlightLanDiscoveryServiceTest(): void {
       if (officialWins !== null) {
         expect(officialWins.paired).assertFalse();
       }
+
+      const customHttpsPort = parseMoonlightServerInfo(
+        '<root status_code="200"><uniqueid>sunshine-1</uniqueid>' +
+        '<HttpsPort>48084</HttpsPort></root>', address, 'sunshine-1');
+      expect(customHttpsPort === null).assertFalse();
+      if (customHttpsPort !== null) {
+        expect(customHttpsPort.httpsPort).assertEqual(48084);
+      }
+
+      const legacyDefault = parseMoonlightServerInfo(
+        '<root status_code="200"><uniqueid>sunshine-1</uniqueid></root>',
+        address, 'sunshine-1');
+      expect(legacyDefault === null).assertFalse();
+      if (legacyDefault !== null) {
+        expect(legacyDefault.httpsPort).assertEqual(47984);
+      }
+
+      expect(parseMoonlightServerInfo(
+        '<root status_code="200"><uniqueid>sunshine-1</uniqueid>' +
+        '<HttpsPort>abc</HttpsPort></root>', address, 'sunshine-1') === null).assertTrue();
+      expect(parseMoonlightServerInfo(
+        '<root status_code="200"><uniqueid>sunshine-1</uniqueid>' +
+        '<HttpsPort>0</HttpsPort></root>', address, 'sunshine-1') === null).assertTrue();
+      expect(parseMoonlightServerInfo(
+        '<root status_code="200"><uniqueid>sunshine-1</uniqueid>' +
+        '<HttpsPort>65536</HttpsPort></root>', address, 'sunshine-1') === null).assertTrue();
     });
 
     it('builds_the_official_serverinfo_query_for_ipv4_and_ipv6', 0, (): void => {

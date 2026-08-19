@@ -33,6 +33,7 @@ import {
 import { cloudTransferAllowed } from './CloudLifecycleSafetyPolicy';
 import { safeError } from '../utils/SafeLogger';
 import { MoonlightDataLifecycleBarrier } from './MoonlightDataLifecycleBarrier';
+import { MoonlightDataLifecycleRuntime } from './MoonlightDataLifecycleRuntime';
 
 export interface AccountLoginIdentity extends CredentialParams {
   avatarUrl: string;
@@ -88,6 +89,8 @@ export class AccountSessionCoordinator {
     if (this.initPromise !== null) { return await this.initPromise; }
     this.context = context;
     SensitiveDataBarrier.getInstance().init(context as common.UIAbilityContext);
+    MoonlightDataLifecycleBarrier.getInstance().registerPort(
+      MoonlightDataLifecycleRuntime.getInstance());
     const operation: Promise<boolean> = this.initialize(context);
     this.initPromise = operation;
     let ready: boolean = false;
@@ -134,6 +137,7 @@ export class AccountSessionCoordinator {
     RustDeskProCredentialStore.getInstance().bindScope(context, this.current.ownerScopeId);
     ActiveRemoteSessionRegistry.getInstance()
       .bindScope(this.current.ownerScopeId, this.current.generation);
+    this.bindMoonlightScope();
     this.publish();
     return true;
   }
@@ -361,7 +365,8 @@ export class AccountSessionCoordinator {
           '，保持账号作用域，云同步暂停，本地数据可用');
       }
       if (bootstrap.ok) {
-        if (!store.markStartupSelectionReenablePulled() ||
+        if (!store.markStartupSelectionReenablePulled(
+          bootstrap.tables) ||
           !store.prepareSelectionReenablePromotions()) {
           return await this.restorePreviousScope(
             previousScope, previousCredential, previousAuth,
@@ -451,7 +456,8 @@ export class AccountSessionCoordinator {
             bootstrap.failureKind + '，云同步继续保持安全暂停');
           return;
         }
-        if (!store.markStartupSelectionReenablePulled() ||
+        if (!store.markStartupSelectionReenablePulled(
+          bootstrap.tables) ||
           !store.prepareSelectionReenablePromotions() ||
           !store.releaseSelectionReenableBarriers()) {
           hilog.error(0x0001, 'AccountSession',
@@ -625,9 +631,13 @@ export class AccountSessionCoordinator {
       .bindScope(this.context, this.current.ownerScopeId);
     ActiveRemoteSessionRegistry.getInstance()
       .bindScope(this.current.ownerScopeId, this.current.generation);
+    this.bindMoonlightScope();
+  }
+
+  private bindMoonlightScope(): void {
     const lease = CloudStore.getInstance().currentAccountLease();
-    if (lease !== null &&
-      !MoonlightDataLifecycleBarrier.getInstance().bindScope(lease)) {
+    if (lease === null ||
+        !MoonlightDataLifecycleBarrier.getInstance().bindScope(lease)) {
       hilog.error(0x0001, 'AccountSession',
         'Moonlight scope binding failed; feature remains closed');
     }

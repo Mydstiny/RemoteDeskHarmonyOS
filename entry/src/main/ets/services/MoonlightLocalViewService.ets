@@ -9,6 +9,7 @@ import {
   MoonlightProfile,
   MoonlightStreamOverrides,
   MoonlightWakeOnLan,
+  MOONLIGHT_DEFAULT_HTTPS_PORT,
   moonlightHostIsValid,
   moonlightProfileIsValid
 } from '../model/MoonlightModels';
@@ -48,7 +49,7 @@ function emptyView(code: string,
   };
 }
 
-function hostFromRecord(record: MoonlightRecord): MoonlightHost | null {
+export function moonlightHostFromRecord(record: MoonlightRecord): MoonlightHost | null {
   const payload: Record<string, Object> | null =
     moonlightRecordBusinessPayload(record);
   if (payload === null || !Array.isArray(payload['addresses']) ||
@@ -61,6 +62,8 @@ function hostFromRecord(record: MoonlightRecord): MoonlightHost | null {
     displayName: payload['displayName'] as string,
     addresses: payload['addresses'] as MoonlightAddress[],
     preferredAddressKey: payload['preferredAddressKey'] as string,
+    httpsPort: payload['httpsPort'] === undefined ? MOONLIGHT_DEFAULT_HTTPS_PORT :
+      payload['httpsPort'] as number,
     hostType: payload['hostType'] as 'sunshine' | 'gamestream',
     wakeOnLan: payload['wakeOnLan'] as MoonlightWakeOnLan,
     userOrder: payload['userOrder'] as number
@@ -128,7 +131,7 @@ export class MoonlightLocalViewService {
     for (let i = 0; i < records.length; i++) {
       const record: MoonlightRecord = records[i];
       if (record.recordType === 'host' && record.id === hostId) {
-        host = hostFromRecord(record);
+        host = moonlightHostFromRecord(record);
         updatedAt = record.updatedAt;
       } else if (record.recordType === 'profile' && record.ownerId === hostId) {
         const profile: MoonlightProfile | null = profileFromRecord(record);
@@ -185,7 +188,7 @@ export class MoonlightLocalViewService {
     for (let i = 0; i < records.length; i++) {
       const record: MoonlightRecord = records[i];
       if (record.recordType !== 'host') { continue; }
-      const host: MoonlightHost | null = hostFromRecord(record);
+      const host: MoonlightHost | null = moonlightHostFromRecord(record);
       if (host === null) { continue; }
       const profiles: MoonlightProfile[] = [];
       const hostCache: MoonlightAppCacheEntry[] = [];

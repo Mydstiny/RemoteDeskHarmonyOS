@@ -150,6 +150,25 @@ class FlushOperation final : public MoonlightInputOwnedOperation {
     bool executed = false;
 };
 
+class RecoveryResetOperation final : public MoonlightInputOwnedOperation {
+  public:
+    RecoveryResetOperation(
+        MoonlightInputPort& valuePort,
+        const MoonlightInputRecoveryResetRequest& valueRequest) noexcept
+        : port(valuePort), request(valueRequest) {}
+
+    void execute() noexcept override {
+        if (executed) { return; }
+        executed = true;
+        result = port.resetRemoteState(request);
+    }
+
+    MoonlightInputPort& port;
+    const MoonlightInputRecoveryResetRequest& request;
+    MoonlightInputPortStatus result = MoonlightInputPortStatus::Failed;
+    bool executed = false;
+};
+
 class ExactInputOwnerGate final : public MoonlightInputOwnerGate {
   public:
     ExactInputOwnerGate(MoonlightSessionOwner& valueSessionOwner,
@@ -263,6 +282,10 @@ struct MoonlightInputBridge::Impl final {
         portFailures = 0U;
         neutralFlushes = 0U;
         neutralFlushFailures = 0U;
+        lastRecoveryResetGeneration = 0U;
+        recoveryResets = 0U;
+        recoveryResetBackpressure = 0U;
+        recoveryResetFailures = 0U;
     }
 
     bool identityIsNewer(const MoonlightInputIdentity& requested) const noexcept {
@@ -301,6 +324,10 @@ struct MoonlightInputBridge::Impl final {
     std::uint64_t portFailures = 0U;
     std::uint64_t neutralFlushes = 0U;
     std::uint64_t neutralFlushFailures = 0U;
+    std::uint64_t lastRecoveryResetGeneration = 0U;
+    std::uint64_t recoveryResets = 0U;
+    std::uint64_t recoveryResetBackpressure = 0U;
+    std::uint64_t recoveryResetFailures = 0U;
 };
 
 MoonlightInputBridge::MoonlightInputBridge(std::unique_ptr<Impl> impl) noexcept
@@ -389,6 +416,59 @@ MoonlightInputControlResult MoonlightInputBridge::activate(
     impl_->resetSessionCounters();
     return controlResult(MoonlightInputControlStatus::Applied, requested,
                          operationGeneration);
+}
+
+MoonlightInputControlResult MoonlightInputBridge::resetRemoteState(
+    const MoonlightInputRecoveryResetRequest& request) noexcept {
+    if (impl_ == nullptr || !request.valid()) {
+        return controlResult(MoonlightInputControlStatus::InvalidRequest,
+                             request.identity, request.operationGeneration);
+    }
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    if (impl_->identity != request.identity) {
+        return controlResult(MoonlightInputControlStatus::Stale,
+                             request.identity, request.operationGeneration);
+    }
+    if (impl_->state != MoonlightInputState::Active) {
+        return controlResult(MoonlightInputControlStatus::InvalidState,
+                             request.identity, request.operationGeneration);
+    }
+    if (request.operationGeneration < impl_->lastOperationGeneration) {
+        return controlResult(MoonlightInputControlStatus::Stale,
+                             request.identity, request.operationGeneration);
+    }
+    if (impl_->lastRecoveryResetGeneration == request.operationGeneration) {
+        return controlResult(MoonlightInputControlStatus::AlreadyApplied,
+                             request.identity, request.operationGeneration);
+    }
+    if (impl_->ownerGate == nullptr || impl_->port == nullptr) {
+        impl_->recoveryResetFailures =
+            saturatingIncrement(impl_->recoveryResetFailures);
+        return controlResult(MoonlightInputControlStatus::PortFailure,
+                             request.identity, request.operationGeneration);
+    }
+    RecoveryResetOperation operation(*impl_->port, request);
+    const bool owned = impl_->ownerGate->withOwner(request.identity, operation);
+    if (!owned || !operation.executed) {
+        return controlResult(MoonlightInputControlStatus::OwnerUnavailable,
+                             request.identity, request.operationGeneration);
+    }
+    if (operation.result == MoonlightInputPortStatus::Accepted) {
+        impl_->lastOperationGeneration = request.operationGeneration;
+        impl_->lastRecoveryResetGeneration = request.operationGeneration;
+        impl_->recoveryResets = saturatingIncrement(impl_->recoveryResets);
+        return controlResult(MoonlightInputControlStatus::Applied,
+                             request.identity, request.operationGeneration);
+    }
+    if (operation.result == MoonlightInputPortStatus::Backpressure) {
+        impl_->recoveryResetBackpressure =
+            saturatingIncrement(impl_->recoveryResetBackpressure);
+    } else {
+        impl_->recoveryResetFailures =
+            saturatingIncrement(impl_->recoveryResetFailures);
+    }
+    return controlResult(MoonlightInputControlStatus::PortFailure,
+                         request.identity, request.operationGeneration);
 }
 
 MoonlightInputDispatchStatus MoonlightInputBridge::dispatch(
@@ -816,6 +896,9 @@ MoonlightInputSnapshot MoonlightInputBridge::snapshot(
     result.portFailures = impl_->portFailures;
     result.neutralFlushes = impl_->neutralFlushes;
     result.neutralFlushFailures = impl_->neutralFlushFailures;
+    result.recoveryResets = impl_->recoveryResets;
+    result.recoveryResetBackpressure = impl_->recoveryResetBackpressure;
+    result.recoveryResetFailures = impl_->recoveryResetFailures;
     return result;
 }
 

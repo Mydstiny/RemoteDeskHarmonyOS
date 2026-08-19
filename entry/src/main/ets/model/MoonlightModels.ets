@@ -22,6 +22,9 @@ export type MoonlightBackgroundVideoPolicy = 'drop' | 'pause';
 export type MoonlightLogLevel = 'error' | 'info' | 'debug';
 export type MoonlightIdentityStorageMode = 'localSecure' | 'cloudEncryptedPending';
 
+/** Official GameStream/Sunshine HTTPS Host Control default. */
+export const MOONLIGHT_DEFAULT_HTTPS_PORT: number = 47984;
+
 export interface MoonlightAddress {
   host: string;
   family: MoonlightAddressFamily;
@@ -40,6 +43,11 @@ export interface MoonlightHost {
   displayName: string;
   addresses: MoonlightAddress[];
   preferredAddressKey: string;
+  /**
+   * HTTPS Host Control port advertised by serverinfo. Optional only for
+   * records written before this field was persisted; those use 47984.
+   */
+  httpsPort?: number;
   hostType: MoonlightHostType;
   wakeOnLan: MoonlightWakeOnLan;
   userOrder: number;
@@ -304,6 +312,8 @@ export function moonlightHostIsValid(host: MoonlightHost): boolean {
       !Array.isArray(host.addresses) || !isBoundedText(host.id, 1, ID_MAX_LENGTH) ||
       !isBoundedText(host.serverUuid, 1, ID_MAX_LENGTH) ||
       !isBoundedText(host.displayName, 1, NAME_MAX_LENGTH) ||
+      (host.httpsPort !== undefined &&
+        !isIntegerInRange(host.httpsPort, 1, 65535)) ||
       !isOneOf(host.hostType, ['sunshine', 'gamestream']) ||
       !isIntegerInRange(host.userOrder, 0, 1000000) ||
       host.addresses.length < 1 || host.addresses.length > MAX_ADDRESSES) {

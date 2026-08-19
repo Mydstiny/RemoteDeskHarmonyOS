@@ -69,6 +69,11 @@ MoonlightBridgeResult successFor(const MoonlightBridgeRequest& request) {
                              : MoonlightBridgeTruth::Confirmed;
     result.postconditionTruth = result.actionTruth;
     result.observedAtMs = 1780000000000ULL;
+    if (request.operation == MoonlightBridgeOperation::DeleteIdentity) {
+        result.identityExistingCount = 2U;
+        result.identityDeletedCount = 2U;
+        result.identityRemainingCount = 0U;
+    }
     return result;
 }
 
@@ -131,7 +136,7 @@ public:
     }
 
     MoonlightBridgeCapabilities capabilities_ {
-        true, true, true, true, true, true, true, ""
+        true, true, true, true, true, true, true, true, ""
     };
     mutable std::atomic<std::size_t> capabilityCount_ {0U};
     std::atomic<std::size_t> executeCount_ {0U};
@@ -193,6 +198,17 @@ MoonlightBridgeRequest unpairRequest(std::uint64_t requestId = 1U,
     return request;
 }
 
+MoonlightBridgeRequest identityDeleteRequest(
+    std::uint64_t requestId = 1U, std::uint64_t generation = 1U,
+    std::uint64_t ownerToken = 1001U, std::string owner = OWNER_A) {
+    MoonlightBridgeRequest request;
+    request.operation = MoonlightBridgeOperation::DeleteIdentity;
+    request.key = {requestId, generation, ownerToken};
+    request.ownerScopeFingerprint = std::move(owner);
+    request.timeout = 30s;
+    return request;
+}
+
 } // namespace
 
 RDP_TEST_CASE(moonlight_native_bridge_construction_does_not_initialize_runtime) {
@@ -212,6 +228,7 @@ RDP_TEST_CASE(moonlight_native_bridge_product_runtime_is_packet_free_unavailable
     const auto capabilities = bridge.capabilities();
     RDP_ASSERT(capabilities.bridgeCompiled);
     RDP_ASSERT(!capabilities.identityReady);
+    RDP_ASSERT(!capabilities.identityDeletionReady);
     RDP_ASSERT(!capabilities.transportReady);
     RDP_ASSERT(!capabilities.pairingReady);
     RDP_ASSERT(!capabilities.hostControlReady);
@@ -219,6 +236,48 @@ RDP_TEST_CASE(moonlight_native_bridge_product_runtime_is_packet_free_unavailable
     const auto result = bridge.execute(requestFor());
     RDP_ASSERT_EQ(result.code, MoonlightBridgeCode::RuntimeProofRequired);
     RDP_ASSERT_EQ(result.preflightTruth, MoonlightBridgeTruth::Failed);
+}
+
+RDP_TEST_CASE(moonlight_native_bridge_identity_delete_is_owner_only_and_count_only) {
+    auto runtime = std::make_shared<FakeRuntime>();
+    MoonlightNativeBridge bridge(runtime);
+    const auto result = bridge.execute(identityDeleteRequest());
+    RDP_ASSERT(result.ok());
+    RDP_ASSERT_EQ(result.identityExistingCount, static_cast<std::size_t>(2));
+    RDP_ASSERT_EQ(result.identityDeletedCount, static_cast<std::size_t>(2));
+    RDP_ASSERT_EQ(result.identityRemainingCount, static_cast<std::size_t>(0));
+    RDP_ASSERT(result.apps.empty());
+    RDP_ASSERT(result.asset.empty());
+    RDP_ASSERT(result.certificateSha256.empty());
+    RDP_ASSERT(!result.rtspSessionUrl.has_value());
+
+    auto injectedHost = identityDeleteRequest(2U);
+    injectedHost.hostId = "must-not-be-accepted";
+    RDP_ASSERT_EQ(bridge.execute(std::move(injectedHost)).code,
+                  MoonlightBridgeCode::InvalidArgument);
+    RDP_ASSERT_EQ(runtime->executeCount_.load(), static_cast<std::size_t>(1));
+}
+
+RDP_TEST_CASE(moonlight_native_bridge_identity_delete_has_distinct_capability) {
+    auto runtime = std::make_shared<FakeRuntime>();
+    runtime->capabilities_.identityReady = true;
+    runtime->capabilities_.identityDeletionReady = false;
+    MoonlightNativeBridge bridge(runtime);
+    const auto result = bridge.execute(identityDeleteRequest());
+    RDP_ASSERT_EQ(result.code, MoonlightBridgeCode::RuntimeProofRequired);
+    RDP_ASSERT_EQ(runtime->executeCount_.load(), static_cast<std::size_t>(0));
+}
+
+RDP_TEST_CASE(moonlight_native_bridge_rejects_identity_count_leakage) {
+    auto runtime = std::make_shared<FakeRuntime>();
+    runtime->setHandler([](MoonlightBridgeRequest& request, const auto&) {
+        auto result = successFor(request);
+        result.identityExistingCount = 1U;
+        return result;
+    });
+    MoonlightNativeBridge bridge(runtime);
+    RDP_ASSERT_EQ(bridge.execute(requestFor()).code,
+                  MoonlightBridgeCode::ProtocolFailure);
 }
 
 RDP_TEST_CASE(moonlight_native_bridge_rejects_invalid_exact_dto_before_runtime) {
@@ -431,6 +490,31 @@ RDP_TEST_CASE(moonlight_native_bridge_generation_cancel_is_lane_isolated) {
     RDP_ASSERT(first.ok());
 }
 
+RDP_TEST_CASE(moonlight_native_bridge_generation_is_owner_scoped_on_same_host) {
+    auto runtime = std::make_shared<FakeRuntime>();
+    MoonlightNativeBridge bridge(runtime);
+
+    const auto catalogOwner = bridge.execute(
+        requestFor(1U, 2U, 1001U, OWNER_A, "host-a", "SERVER-A"));
+    const auto launchOwner = bridge.execute(
+        requestFor(2U, 1U, 2002U, OWNER_A, "host-a", "SERVER-A"));
+
+    RDP_ASSERT(catalogOwner.ok());
+    RDP_ASSERT(launchOwner.ok());
+    RDP_ASSERT_EQ(runtime->cancelCount(), static_cast<std::size_t>(0));
+}
+
+RDP_TEST_CASE(moonlight_native_bridge_owner_cancel_releases_generation_lane) {
+    auto runtime = std::make_shared<FakeRuntime>();
+    MoonlightNativeBridge bridge(runtime);
+
+    RDP_ASSERT(bridge.execute(
+        requestFor(1U, 2U, 1001U, OWNER_A, "host-a", "SERVER-A")).ok());
+    RDP_ASSERT_EQ(bridge.cancelOwner(1001U), static_cast<std::size_t>(0));
+    RDP_ASSERT(bridge.execute(
+        requestFor(2U, 1U, 1001U, OWNER_A, "host-a", "SERVER-A")).ok());
+}
+
 RDP_TEST_CASE(moonlight_native_bridge_exact_cancel_is_idempotent_and_drains) {
     auto runtime = std::make_shared<FakeRuntime>();
     auto barrier = std::make_shared<Barrier>();
@@ -499,6 +583,9 @@ RDP_TEST_CASE(moonlight_native_bridge_pair_is_ephemeral_and_launch_has_no_ri_key
                    MoonlightBridgeOperation::Resume)) == "resume");
     RDP_ASSERT(std::string(moonlightBridgeOperationName(
                    MoonlightBridgeOperation::Unpair)) == "unpair");
+    RDP_ASSERT(std::string(moonlightBridgeOperationName(
+                   MoonlightBridgeOperation::DeleteIdentity)) ==
+               "delete_identity");
     RDP_ASSERT(std::string(moonlightBridgeCodeName(
                    MoonlightBridgeCode::OutcomeUnknown)) == "outcome_unknown");
 }

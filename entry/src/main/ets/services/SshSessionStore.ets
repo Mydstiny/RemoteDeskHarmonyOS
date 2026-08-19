@@ -8,6 +8,8 @@
  */
 
 import { SshSessionSnapshot } from '../types/rdpnapi';
+import { DiagnosticOutcome } from './DiagnosticCapturePolicy';
+import { recordDiagnosticEvent } from './DiagnosticCaptureRuntime';
 
 export type SshSessionLifecycleState =
   | 'Created'
@@ -73,6 +75,32 @@ export const SSH_SESSION_DEFAULT_CHANNEL: string = 'shell';
 export const SSH_SESSION_MAX_SESSIONS: number = 32;
 export const SSH_SESSION_MAX_EVENTS: number = 128;
 const SSH_SESSION_MAX_EVENT_PAYLOAD: number = 2048;
+
+function diagnosticSshLifecycleCode(state: SshSessionLifecycleState): number {
+  switch (state) {
+    case 'Created': return 1;
+    case 'Connecting': return 2;
+    case 'Authenticating': return 3;
+    case 'Ready': return 4;
+    case 'NetworkLost': return 5;
+    case 'ReconnectScheduled': return 6;
+    case 'Reconnecting': return 7;
+    case 'NeedsAuthentication': return 8;
+    case 'Failed': return 9;
+    case 'Closing': return 10;
+    case 'Closed': return 11;
+  }
+}
+
+function diagnosticSshLifecycleOutcome(state: SshSessionLifecycleState): DiagnosticOutcome {
+  if (state === 'Failed') { return 'failed'; }
+  if (state === 'NetworkLost' || state === 'ReconnectScheduled' || state === 'Reconnecting') {
+    return 'retry';
+  }
+  if (state === 'Created' || state === 'Connecting') { return 'started'; }
+  if (state === 'Closed') { return 'succeeded'; }
+  return 'state';
+}
 
 export function isValidSshSessionHandle(handle: SshSessionHandle): boolean {
   return Number.isFinite(handle.sessionId) && handle.sessionId > 0 &&
@@ -234,7 +262,8 @@ export class SshSessionStore {
   }
 
   private appendEvent(record: SshSessionRecord, type: string, payloadJson: string = '',
-    priority: number = 0): SshSessionStoreEvent {
+    priority: number = 0,
+    diagnosticState: SshSessionLifecycleState | null = null): SshSessionStoreEvent {
     const boundedPayload: string = payloadJson.substring(0, SSH_SESSION_MAX_EVENT_PAYLOAD);
     const context: SshSessionContext = record.context;
     context.eventSequence++;
@@ -252,6 +281,12 @@ export class SshSessionStore {
     };
     record.events.push(event);
     while (record.events.length > this.maxEvents) { record.events.shift(); }
+    if (!type.startsWith('terminal.output.')) {
+      const stateForDiagnostics: SshSessionLifecycleState = diagnosticState ?? context.state;
+      recordDiagnosticEvent('connection.ssh_sftp', 'ssh_session_event',
+        diagnosticSshLifecycleOutcome(stateForDiagnostics), context.sessionId,
+        context.generation, diagnosticSshLifecycleCode(stateForDiagnostics));
+    }
     return event;
   }
 
@@ -332,7 +367,8 @@ export class SshSessionStore {
         this.removeRecord(handle.sessionId);
         return false;
       }
-      const event: SshSessionStoreEvent = this.appendEvent(record, 'session.adopted');
+      const event: SshSessionStoreEvent = this.appendEvent(
+        record, 'session.adopted', '', 0, state);
       record.context.state = state;
       this.notify({ kind: 'changed', context: cloneContext(record.context), event: cloneEvent(event) });
     }

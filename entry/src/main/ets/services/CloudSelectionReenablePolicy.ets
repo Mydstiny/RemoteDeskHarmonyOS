@@ -20,6 +20,30 @@ export function cloudSelectionAfterAuthoritativePull(
     ? 'pull_complete' : phase;
 }
 
+/**
+ * Advance only tables that were part of the authoritative transfer result.
+ * An unavailable additive table may retain a durable pending barrier while
+ * the legacy table set completes startup; treating every stored barrier as
+ * pulled would let one missing optional schema disable unrelated cloud data.
+ */
+export function cloudSelectionBarriersAfterAuthoritativePull(
+  barriers: Record<string, string>,
+  pulledTables: string[]
+): Record<string, string> {
+  const result: Record<string, string> = {};
+  const keys: string[] = Object.keys(barriers);
+  for (let i = 0; i < keys.length; i++) {
+    const key: string = keys[i];
+    result[key] = barriers[key];
+    if (pulledTables.indexOf(key) >= 0 &&
+        barriers[key] === 'pending_pull') {
+      result[key] = cloudSelectionAfterAuthoritativePull(
+        'pending_pull');
+    }
+  }
+  return result;
+}
+
 export function cloudSelectionAfterLocalPromotion(
   phase: CloudSelectionReenablePhase
 ): CloudSelectionReenablePhase {

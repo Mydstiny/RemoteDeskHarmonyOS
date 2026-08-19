@@ -185,6 +185,19 @@ class CoordinatorHooks
   restoreResolutionCount: number = 0;
   restoreResolutionTables: string[] = [];
   pendingRestoredTables: string[] | null = [];
+  bootstrapCompleted: boolean = true;
+  manualRollbackCount: number = 0;
+  manualPartialCount: number = 0;
+  manualPartialTables: string[] = [];
+  manualPartialFailedTables: string[] = [];
+  startupBeginCount: number = 0;
+  startupRollbackCount: number = 0;
+  startupCompleteCount: number = 0;
+  startupPartialCount: number = 0;
+  startupPartialAllowed: boolean = true;
+  startupPartialDirtyTables: string[] = [];
+  startupPartialCompletedTables: string[] = [];
+  startupPartialFailedTables: string[] = [];
 
   beginManualDownload(): boolean {
     return true;
@@ -192,6 +205,7 @@ class CoordinatorHooks
 
   async rollbackManualDownload():
     Promise<boolean> {
+    this.manualRollbackCount++;
     return true;
   }
 
@@ -199,6 +213,43 @@ class CoordinatorHooks
     _tables: string[]
   ): boolean {
     return true;
+  }
+
+  async completeManualDownloadPartial(
+    tables: string[], failedTables: string[]
+  ): Promise<boolean> {
+    this.manualPartialCount++;
+    this.manualPartialTables = tables.slice();
+    this.manualPartialFailedTables = failedTables.slice();
+    return true;
+  }
+
+  beginStartupDownload(): boolean {
+    this.startupBeginCount++;
+    return true;
+  }
+
+  async rollbackStartupDownload(): Promise<boolean> {
+    this.startupRollbackCount++;
+    return true;
+  }
+
+  completeStartupDownload(
+    _dirtyTables: string[], _completedTables: string[]
+  ): boolean {
+    this.startupCompleteCount++;
+    return true;
+  }
+
+  async completeStartupDownloadPartial(
+    dirtyTables: string[], completedTables: string[],
+    failedTables: string[]
+  ): Promise<boolean> {
+    this.startupPartialCount++;
+    this.startupPartialDirtyTables = dirtyTables.slice();
+    this.startupPartialCompletedTables = completedTables.slice();
+    this.startupPartialFailedTables = failedTables.slice();
+    return this.startupPartialAllowed;
   }
 
   setRestorePending(_pending: boolean): void {
@@ -222,6 +273,11 @@ class CoordinatorHooks
   }
 
   hasCloudBootstrapCompleted(): boolean {
+    return this.bootstrapCompleted;
+  }
+
+  markCloudBootstrapCompleted(): boolean {
+    this.bootstrapCompleted = true;
     return true;
   }
 
@@ -1041,6 +1097,193 @@ class FakeVncStartupRecoveryIo
 export default function cloudDataWiringTest():
   void {
   describe('CloudDataWiring', (): void => {
+    it('does_not_execute_or_bootstrap_when_no_runtime_table_is_selected',
+      0, async (): Promise<void> => {
+        const coordinator = new CloudSyncCoordinator(
+          new FixedSelectionSource([]),
+          new ControlledRetryClock(),
+          new FixedVncSelectionSource(false));
+        const hooks = new CoordinatorHooks();
+        let executions: number = 0;
+        expect(coordinator.bind(
+          accountLease(), accountBinding(),
+          async (): Promise<boolean> => {
+            executions++;
+            return true;
+          },
+          (_tables: string[]): void => {},
+          hooks)).assertTrue();
+
+        const startup: CloudSyncOperationResult =
+          await coordinator.requestStartupPull();
+        expect(startup.ok).assertFalse();
+        expect(startup.failureKind).assertEqual('no_selection');
+        const upload: CloudSyncOperationResult =
+          await coordinator.requestManualUpload();
+        expect(upload.ok).assertFalse();
+        expect(upload.failureKind).assertEqual('no_selection');
+        const download: CloudSyncOperationResult =
+          await coordinator.requestManualDownload();
+        expect(download.ok).assertFalse();
+        expect(download.failureKind).assertEqual('no_selection');
+        expect(executions).assertEqual(0);
+        expect(await coordinator.dispose(
+          accountLease(), 1000)).assertTrue();
+      });
+
+    it('commits_core_startup_and_vnc_when_optional_moonlight_transfer_fails',
+      0, async (): Promise<void> => {
+        const coordinator = new CloudSyncCoordinator(
+          new FixedSelectionSource([
+            'usersettings', 'vncrecordv2',
+            'moonlightrecordv1'
+          ]),
+          new ControlledRetryClock(),
+          new FixedVncSelectionSource(true));
+        const hooks = new CoordinatorHooks();
+        hooks.bootstrapCompleted = false;
+        hooks.selectionBlocked =
+          (table: string): boolean =>
+            table === 'moonlightrecordv1';
+        const executions: string[] = [];
+        const applied: string[] = [];
+        expect(coordinator.bind(
+          accountLease(), accountBinding(),
+          async (table: string, _direction: CloudSyncDirection,
+            label: string): Promise<boolean> => {
+            executions.push(label + ':' + table);
+            return table !== 'moonlightrecordv1';
+          },
+          (tables: string[]): void => {
+            tables.forEach((table: string): void => {
+              if (applied.indexOf(table) < 0) { applied.push(table); }
+            });
+          }, hooks)).assertTrue();
+
+        const startup: CloudSyncOperationResult =
+          await coordinator.requestStartupPull();
+        expect(startup.ok).assertFalse();
+        expect(startup.failedTables.join(','))
+          .assertEqual('moonlightrecordv1');
+        expect(hooks.startupBeginCount).assertEqual(1);
+        expect(hooks.startupPartialCount).assertEqual(1);
+        expect(hooks.startupRollbackCount).assertEqual(0);
+        expect(hooks.startupPartialCompletedTables.join(','))
+          .assertEqual('usersettings,vncrecordv2');
+        expect(hooks.startupPartialFailedTables.join(','))
+          .assertEqual('moonlightrecordv1');
+        expect(hooks.bootstrapCompleted).assertTrue();
+        expect(executions.join(','))
+          .assertEqual(
+            'startup:usersettings,startup:moonlightrecordv1,' +
+            'startup:vncrecordv2');
+        expect(applied.join(','))
+          .assertEqual('usersettings,vncrecordv2');
+
+        const beforeEvent: number = executions.length;
+        const event: CloudSyncOperationResult =
+          await coordinator.requestCloudEventPull();
+        expect(event.ok).assertFalse();
+        expect(event.failedTables.join(','))
+          .assertEqual('moonlightrecordv1');
+        expect(executions.length - beforeEvent).assertEqual(3);
+        expect(executions[executions.length - 1])
+          .assertEqual('cloudEvent:vncrecordv2');
+        expect(await coordinator.dispose(
+          accountLease(), 1000)).assertTrue();
+      });
+
+    it('rolls_initial_bootstrap_back_when_core_or_partial_finalization_fails',
+      0, async (): Promise<void> => {
+        const coreHooks = new CoordinatorHooks();
+        coreHooks.bootstrapCompleted = false;
+        const core = new CloudSyncCoordinator(
+          new FixedSelectionSource([
+            'usersettings', 'moonlightrecordv1'
+          ]), new ControlledRetryClock());
+        expect(core.bind(
+          accountLease(), accountBinding(),
+          async (table: string): Promise<boolean> =>
+            table !== 'usersettings',
+          (_tables: string[]): void => {}, coreHooks)).assertTrue();
+        const coreFailure: CloudSyncOperationResult =
+          await core.requestStartupPull();
+        expect(coreFailure.ok).assertFalse();
+        expect(coreFailure.failedTables.join(','))
+          .assertEqual('usersettings,moonlightrecordv1');
+        expect(coreHooks.startupPartialCount).assertEqual(0);
+        expect(coreHooks.startupRollbackCount).assertEqual(1);
+        expect(coreHooks.bootstrapCompleted).assertFalse();
+        expect(await core.dispose(
+          accountLease(), 1000)).assertTrue();
+
+        const partialHooks = new CoordinatorHooks();
+        partialHooks.bootstrapCompleted = false;
+        partialHooks.startupPartialAllowed = false;
+        const partial = new CloudSyncCoordinator(
+          new FixedSelectionSource([
+            'usersettings', 'moonlightrecordv1'
+          ]), new ControlledRetryClock());
+        expect(partial.bind(
+          accountLease(), accountBinding(),
+          async (table: string): Promise<boolean> =>
+            table !== 'moonlightrecordv1',
+          (_tables: string[]): void => {}, partialHooks)).assertTrue();
+        const finalizationFailure: CloudSyncOperationResult =
+          await partial.requestStartupPull();
+        expect(finalizationFailure.ok).assertFalse();
+        expect(finalizationFailure.failedTables.join(','))
+          .assertEqual('usersettings,moonlightrecordv1');
+        expect(partialHooks.startupPartialCount).assertEqual(1);
+        expect(partialHooks.startupRollbackCount).assertEqual(1);
+        expect(partialHooks.bootstrapCompleted).assertFalse();
+        expect(await partial.dispose(
+          accountLease(), 1000)).assertTrue();
+      });
+
+    it('keeps_core_manual_download_and_continues_vnc_after_optional_failure',
+      0, async (): Promise<void> => {
+        const coordinator = new CloudSyncCoordinator(
+          new FixedSelectionSource([
+            'usersettings', 'vncrecordv2',
+            'moonlightrecordv1'
+          ]),
+          new ControlledRetryClock(),
+          new FixedVncSelectionSource(true));
+        const hooks = new CoordinatorHooks();
+        hooks.selectionBlocked =
+          (table: string): boolean =>
+            table === 'moonlightrecordv1';
+        const executions: string[] = [];
+        expect(coordinator.bind(
+          accountLease(), accountBinding(),
+          async (table: string, _direction: CloudSyncDirection,
+            label: string): Promise<boolean> => {
+            executions.push(label + ':' + table);
+            return table !== 'moonlightrecordv1';
+          },
+          (_tables: string[]): void => {}, hooks)).assertTrue();
+
+        const result: CloudSyncOperationResult =
+          await coordinator.requestManualDownload();
+        expect(result.ok).assertFalse();
+        expect(result.failedTables.join(','))
+          .assertEqual('moonlightrecordv1');
+        expect(hooks.manualPartialCount).assertEqual(1);
+        expect(hooks.manualPartialTables.join(','))
+          .assertEqual('usersettings');
+        expect(hooks.manualPartialFailedTables.join(','))
+          .assertEqual('moonlightrecordv1');
+        expect(hooks.manualRollbackCount).assertEqual(0);
+        expect(executions.join(','))
+          .assertEqual(
+            'manualDownload:usersettings,' +
+            'manualDownload:moonlightrecordv1,' +
+            'manualDownload:vncrecordv2');
+        expect(await coordinator.dispose(
+          accountLease(), 1000)).assertTrue();
+      });
+
     it('continues_vnc_manual_upload_after_an_ordinary_table_fails',
       0, async (): Promise<void> => {
         const coordinator = new CloudSyncCoordinator(
@@ -1899,6 +2142,42 @@ export default function cloudDataWiringTest():
             CloudMetadataReadResult =>
             tableOnly.readMetadata(key)) || [])
           .join(',')).assertEqual('sshkeys');
+      });
+
+    it('does_not_infer_a_new_optional_table_from_an_old_global_restore_marker',
+      0, (): void => {
+        const coreTables: string[] = [
+          'remotehosts', 'sshkeys',
+          'vncrecordv2'
+        ];
+        const allTables: string[] =
+          coreTables.concat(['moonlightrecordv1']);
+        const globalOnly:
+          FakeRestoreResolutionPort =
+          new FakeRestoreResolutionPort();
+        globalOnly.seed(
+          RESTORED_NOT_UPLOADED_KEY, '1');
+        expect((pendingRestoreResolutionTables(
+          allTables,
+          (key: string):
+            CloudMetadataReadResult =>
+            globalOnly.readMetadata(key),
+          coreTables) || []).join(','))
+          .assertEqual(coreTables.join(','));
+
+        const explicitOptional:
+          FakeRestoreResolutionPort =
+          new FakeRestoreResolutionPort();
+        explicitOptional.seed(
+          RESTORED_NOT_UPLOADED_TABLE_PREFIX +
+            'moonlightrecordv1', '1');
+        expect((pendingRestoreResolutionTables(
+          allTables,
+          (key: string):
+            CloudMetadataReadResult =>
+            explicitOptional.readMetadata(key),
+          coreTables) || []).join(','))
+          .assertEqual('moonlightrecordv1');
       });
 
     it('rolls_back_every_restore_resolution_precommit_fault',

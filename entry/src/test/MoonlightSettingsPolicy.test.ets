@@ -1,4 +1,8 @@
-import { describe, it, expect } from '@ohos/hypium';
+import { expect } from '@ohos/hypium';
+import {
+  auditedDescribe as describe,
+  auditedIt as it
+} from '../main/ets/services/FocusedTestRegistrationAudit';
 import { defaultMoonlightSettings, MoonlightSettings } from '../main/ets/model/MoonlightModels';
 import {
   MoonlightEffectiveCapabilities
@@ -72,6 +76,7 @@ export default function moonlightSettingsPolicyTest(): void {
       expect(result.effective.video.hdr).assertFalse();
       expect(result.effective.video.yuv444).assertFalse();
       expect(result.effective.audio.channels).assertEqual('stereo');
+      expect(result.requested.input.touchMode).assertEqual('relativeMouse');
       expect(result.effective.input.touchMode).assertEqual('absoluteMouse');
       expect(result.effective.input.enableRumble).assertFalse();
       expect(result.adjustments.length >= 7).assertTrue();
@@ -113,6 +118,9 @@ export default function moonlightSettingsPolicyTest(): void {
       requested.video.fps = 120;
       requested.video.latencyMode = 'smooth';
       requested.network.streamEncryption = 'required';
+      requested.input.forwardSystemShortcuts = true;
+      requested.background.noSurfaceVideo = 'pause';
+      requested.diagnostics.logLevel = 'debug';
       const resolved = resolveMoonlightProductSettings(requested);
       expect(resolved.requested.video.codecPreference).assertEqual('av1');
       expect(resolved.effective.video.codecPreference).assertEqual('h264');
@@ -125,6 +133,12 @@ export default function moonlightSettingsPolicyTest(): void {
       expect(resolved.requested.video.latencyMode).assertEqual('smooth');
       expect(resolved.effective.video.latencyMode).assertEqual('lowLatency');
       expect(resolved.effective.network.streamEncryption).assertEqual('auto');
+      expect(resolved.requested.input.forwardSystemShortcuts).assertTrue();
+      expect(resolved.effective.input.forwardSystemShortcuts).assertFalse();
+      expect(resolved.requested.background.noSurfaceVideo).assertEqual('pause');
+      expect(resolved.effective.background.noSurfaceVideo).assertEqual('drop');
+      expect(resolved.requested.diagnostics.logLevel).assertEqual('debug');
+      expect(resolved.effective.diagnostics.logLevel).assertEqual('error');
       const encoded: string = encodeMoonlightEffectiveSettings(resolved);
       expect(encoded.length > 0).assertTrue();
       expect((decodeMoonlightEffectiveSettings(encoded) as Object) !== null).assertTrue();

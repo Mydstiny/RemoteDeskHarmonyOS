@@ -1,4 +1,8 @@
-import { describe, expect, it } from '@ohos/hypium';
+import { expect } from '@ohos/hypium';
+import {
+  auditedDescribe as describe,
+  auditedIt as it
+} from '../main/ets/services/FocusedTestRegistrationAudit';
 import {
   MOONLIGHT_APP_CACHE_TABLE,
   MOONLIGHT_CLOUD_TABLE,
@@ -17,6 +21,10 @@ import {
   moonlightRecordPayloadHashSha256
 } from '../main/ets/services/MoonlightRecordPolicy';
 import {
+  moonlightBackupRowsRequireCloudActivation,
+  moonlightRestoreActivationState,
+  moonlightRestoreRuntimeAdmissionAllowed,
+  moonlightRestoreTransferBlocked,
   resolveMoonlightBackupForRestore
 } from '../main/ets/services/MoonlightBackupPolicy';
 import { CLOUD_SYNC_TABLES } from '../main/ets/services/CloudSyncPolicy';
@@ -144,6 +152,59 @@ function sign(document: LocalBackupDocument): string {
 
 export default function moonlightBackupPolicyTest(): void {
   describe('MoonlightBackupPolicy', (): void => {
+    it('keeps_restored_rows_blocked_until_the_exact_marker_is_resolved',
+      0, (): void => {
+        expect(moonlightRestoreActivationState({
+          state: 'absent', value: ''
+        })).assertEqual('clear');
+        expect(moonlightRestoreTransferBlocked({
+          state: 'absent', value: ''
+        })).assertFalse();
+        expect(moonlightRestoreActivationState({
+          state: 'present', value: '1'
+        })).assertEqual('pending');
+        expect(moonlightRestoreTransferBlocked({
+          state: 'present', value: '1'
+        })).assertTrue();
+        expect(moonlightRestoreActivationState({
+          state: 'present', value: 'corrupt'
+        })).assertEqual('blocked');
+        expect(moonlightRestoreTransferBlocked({
+          state: 'error', value: ''
+        })).assertTrue();
+        expect(moonlightRestoreRuntimeAdmissionAllowed({
+          state: 'absent', value: ''
+        }, false)).assertTrue();
+        expect(moonlightRestoreRuntimeAdmissionAllowed({
+          state: 'present', value: '1'
+        }, false)).assertFalse();
+        expect(moonlightRestoreRuntimeAdmissionAllowed({
+          state: 'present', value: '1'
+        }, true)).assertTrue();
+        expect(moonlightRestoreRuntimeAdmissionAllowed({
+          state: 'present', value: 'corrupt'
+        }, true)).assertFalse();
+        expect(moonlightRestoreRuntimeAdmissionAllowed({
+          state: 'error', value: ''
+        }, true)).assertFalse();
+      });
+
+    it('requires_explicit_activation_only_for_cloud_eligible_restore_rows',
+      0, (): void => {
+        expect(moonlightBackupRowsRequireCloudActivation([
+          { recordtype: 'trust' }
+        ])).assertFalse();
+        expect(moonlightBackupRowsRequireCloudActivation([
+          { recordtype: 'secret' }, { recordtype: 'trust' }
+        ])).assertFalse();
+        expect(moonlightBackupRowsRequireCloudActivation([
+          { recordtype: 'host' }
+        ])).assertTrue();
+        expect(moonlightBackupRowsRequireCloudActivation([
+          { recordtype: 'profile' }, { recordtype: 'trust' }
+        ])).assertTrue();
+      });
+
     it('redacted_backup_keeps_config_but_omits_trust_and_identity', 0,
       (): void => {
         const tables = portableTables();

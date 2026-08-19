@@ -9,6 +9,17 @@ import {
 } from '../services/AccountScopePolicy';
 import { CloudStore } from '../services/CloudStore';
 import {
+  MoonlightDeletionCommandResult,
+  MoonlightDeletionPreview,
+  MoonlightDeletionSelectionSnapshot
+} from '../services/MoonlightDeletionCommandService';
+import {
+  MoonlightDeletionCommandType
+} from '../services/MoonlightDeletionPolicy';
+import {
+  MoonlightDeletionRuntime
+} from '../services/MoonlightDeletionRuntime';
+import {
   MoonlightLocalSettingsResult,
   MoonlightSettingsLocalService
 } from '../services/MoonlightSettingsLocalService';
@@ -38,10 +49,21 @@ export struct MoonlightSettingsSurface {
   @State settings: MoonlightSettings = defaultMoonlightSettings();
   @State dirty: boolean = false;
   @State saveCode: string = '';
+  @State dataBusy: boolean = false;
+  @State dataStatusCode: string = '';
+  @State dataSyncSelected: boolean = false;
+  @State dataCloudSchemaReady: boolean = false;
+  @State dataLocalRows: number = 0;
+  @State dataCacheRows: number = 0;
+  @State dataRuntimeStates: number = 0;
+  @State dataSecureIdentities: number = 0;
   private readonly service: MoonlightSettingsLocalService =
     new MoonlightSettingsLocalService(CloudStore.getInstance());
+  private readonly deletionRuntime: MoonlightDeletionRuntime =
+    MoonlightDeletionRuntime.getInstance();
   private savedSettingsCanonical: string = '';
   private editingLease: AccountSessionLease | null = null;
+  private surfaceActive: boolean = false;
   onClose: () => void = (): void => {};
   onDirtyChanged: (dirty: boolean) => void = (_dirty: boolean): void => {};
 
@@ -54,6 +76,7 @@ export struct MoonlightSettingsSurface {
   }
 
   aboutToAppear(): void {
+    this.surfaceActive = true;
     if (this.embedded) {
       this.hostId = this.requestedHostId.trim();
       this.section = moonlightSettingsSections().indexOf(this.requestedSection) >= 0 ?
@@ -69,7 +92,10 @@ export struct MoonlightSettingsSurface {
       }
     }
     this.loadCurrentSettings();
+    this.refreshDataStatus();
   }
+
+  aboutToDisappear(): void { this.surfaceActive = false; }
 
   private loadCurrentSettings(): void {
     const store: CloudStore = CloudStore.getInstance();
@@ -142,6 +168,167 @@ export struct MoonlightSettingsSurface {
     }
   }
 
+  private refreshDataStatus(): void {
+    const store: CloudStore = CloudStore.getInstance();
+    const lease: AccountSessionLease | null = this.deletionRuntime.currentLease();
+    this.dataCloudSchemaReady = store.moonlightCloudSchemaReady();
+    if (lease === null || !this.deletionRuntime.isLeaseCurrent(lease)) {
+      this.dataStatusCode = 'account_changed';
+      this.dataSyncSelected = false;
+      this.dataLocalRows = 0;
+      this.dataCacheRows = 0;
+      this.dataRuntimeStates = 0;
+      this.dataSecureIdentities = 0;
+      return;
+    }
+    const selection: MoonlightDeletionSelectionSnapshot | null =
+      store.selectionSnapshot(lease);
+    this.dataSyncSelected = selection !== null &&
+      (selection.physicalSelected || selection.selectedScopes.length > 0);
+    const preview: MoonlightDeletionPreview = this.deletionRuntime.preview(
+      lease, 'delete_local_data');
+    this.dataStatusCode = preview.code === 'ok' || preview.code === 'unchanged' ?
+      '' : preview.code;
+    if (this.dataStatusCode === '') {
+      this.dataLocalRows = preview.impact.localRowsRemoved;
+      this.dataCacheRows = preview.impact.cacheRowsRemoved;
+      this.dataRuntimeStates = preview.impact.localRuntimeStatesRemoved;
+      this.dataSecureIdentities = preview.impact.secureIdentitiesRemoved;
+    } else {
+      this.dataLocalRows = 0;
+      this.dataCacheRows = 0;
+      this.dataRuntimeStates = 0;
+      this.dataSecureIdentities = 0;
+    }
+  }
+
+  private dataCommandTitle(command: MoonlightDeletionCommandType): string {
+    if (command === 'cancel_sync') { return '停止此设备的 Moonlight 云同步？'; }
+    if (command === 'delete_cloud_data') { return '删除 Moonlight 云端数据？'; }
+    return '删除此设备的 Moonlight 本地数据？';
+  }
+
+  private dataCommandMessage(command: MoonlightDeletionCommandType,
+    preview: MoonlightDeletionPreview): string {
+    if (command === 'cancel_sync') {
+      return '只停止此设备未来对 Moonlight 单表和逻辑范围的上传、下载。' +
+        '本机与云端现有数据都不会删除，其他协议的云同步不受影响。';
+    }
+    if (command === 'delete_cloud_data') {
+      return '将先下载并核对当前账号的 Moonlight 云端投影，再为可跨设备的设置、主机与配置写入删除标记。' +
+        '本机数据、配对信任、证书和客户端私钥全部保留；删除完成后会自动停止 Moonlight 同步。';
+    }
+    const stopSync: string = preview.impact.selectionChanged ?
+      '为防止云端副本立即回灌，将先停止此设备的 Moonlight 云同步。' : '';
+    return stopSync + '将删除当前账号在此设备上的 ' +
+      preview.impact.localRowsRemoved.toString() + ' 条记录、' +
+      preview.impact.cacheRowsRemoved.toString() + ' 条目录缓存和 ' +
+      preview.impact.localRuntimeStatesRemoved.toString() + ' 条恢复状态，并清理本机安全身份。' +
+      '云端公开数据会保留；再次启用同步前请确认希望从云端恢复还是重新建立本机数据。';
+  }
+
+  private requestDataCommand(command: MoonlightDeletionCommandType): void {
+    if (this.dataBusy) { return; }
+    if (this.dirty) {
+      promptAction.showToast({ message: '请先保存或放弃当前设置草稿，再管理数据', duration: 2400 });
+      return;
+    }
+    const lease: AccountSessionLease | null = this.deletionRuntime.currentLease();
+    if (lease === null || !this.deletionRuntime.isLeaseCurrent(lease)) {
+      this.refreshDataStatus();
+      promptAction.showToast({ message: '当前账号数据域已变化，请重试', duration: 2200 });
+      return;
+    }
+    const preview: MoonlightDeletionPreview =
+      this.deletionRuntime.preview(lease, command);
+    if (preview.code === 'unchanged') {
+      promptAction.showToast({
+        message: command === 'cancel_sync' ? '此设备尚未启用 Moonlight 云同步' : '没有可删除的数据',
+        duration: 1800
+      });
+      this.refreshDataStatus();
+      return;
+    }
+    if (preview.code !== 'ok') {
+      promptAction.showToast({
+        message: preview.code === 'cloud_unavailable' ?
+          'Moonlight 云表尚未就绪，不能安全执行云端删除' :
+          '无法生成安全的数据影响预览：' + preview.code,
+        duration: 2600
+      });
+      this.refreshDataStatus();
+      return;
+    }
+    promptAction.showDialog({
+      title: this.dataCommandTitle(command),
+      message: this.dataCommandMessage(command, preview),
+      buttons: [
+        { text: '取消', color: this.pal().text2 },
+        { text: command === 'cancel_sync' ? '停止同步' : '确认删除',
+          color: command === 'cancel_sync' ? this.accentColor : this.pal().danger }
+      ]
+    }).then((value: Object): void => {
+      const selected: Record<string, number> = value as Record<string, number>;
+      if (selected['index'] === 1) {
+        void this.executeDataCommand(lease, preview);
+      }
+    });
+  }
+
+  private async executeDataCommand(lease: AccountSessionLease,
+    preview: MoonlightDeletionPreview): Promise<void> {
+    if (this.dataBusy || !this.surfaceActive) { return; }
+    this.dataBusy = true;
+    let result: MoonlightDeletionCommandResult;
+    try {
+      result = await this.deletionRuntime.execute(lease, preview);
+    } catch (_error) {
+      if (this.surfaceActive) {
+        this.refreshDataStatus();
+        promptAction.showToast({
+          message: 'Moonlight 数据操作异常中止，未确认的数据保持不变',
+          duration: 3000
+        });
+      }
+      return;
+    } finally {
+      this.dataBusy = false;
+    }
+    if (!this.surfaceActive) { return; }
+    if (preview.command === 'delete_local_data' && result.localCommitted) {
+      // Never retain a stale in-memory settings draft after its backing row
+      // has been removed. A secure-identity retry still starts from defaults.
+      this.loadCurrentSettings();
+    }
+    this.refreshDataStatus();
+    if (!result.ok) {
+      let message: string = '操作失败，未确认的数据保持不变：' + result.code;
+      if (result.code === 'stale_preview') {
+        message = '数据在确认期间发生变化，已停止操作，请重新确认';
+      } else if (result.code === 'selection_failed') {
+        message = '未能完整停止 Moonlight 同步，因此没有删除本地数据';
+      } else if (result.code === 'identity_delete_failed' &&
+          result.localCommitted) {
+        message = '本地记录已删除，但安全身份清理未完成；请再次执行“删除本地数据”重试';
+      } else if (result.code === 'cloud_unavailable') {
+        message = '云端状态无法核对，未执行不确定的删除';
+      }
+      promptAction.showToast({ message, duration: 3000 });
+      return;
+    }
+    let message: string = 'Moonlight 数据操作已完成';
+    if (preview.command === 'cancel_sync') {
+      message = '已停止此设备的 Moonlight 云同步，现有数据均保留';
+    } else if (preview.command === 'delete_cloud_data') {
+      message = result.code === 'pending_cloud' ?
+        '云端删除标记正在上传；本机数据保留，完成前不会重新启用同步' :
+        'Moonlight 云端数据已删除，本机数据保留';
+    } else {
+      message = '此设备的 Moonlight 本地数据和安全身份已删除；云端副本保留';
+    }
+    promptAction.showToast({ message, duration: 2800 });
+  }
+
   private close(): void {
     if (this.embedded) {
       this.onClose();
@@ -171,8 +358,8 @@ export struct MoonlightSettingsSurface {
         Text(this.embedded ? moonlightSettingsSectionLabel(this.section) : 'Moonlight 设置')
           .fontSize(this.embedded ? 20 : 24).fontWeight(FontWeight.Bold)
           .fontColor(this.pal().text).fontFamily(AppTheme.fontFamily)
-        Text(this.embedded ? 'Moonlight · 当前账号本地' :
-          '当前账号全局默认 · 当前仅本地').fontSize(10)
+        Text(this.embedded ? 'Moonlight · 当前账号' :
+          '当前账号全局默认 · 安全身份始终仅限本机').fontSize(10)
           .fontColor(this.pal().text3).margin({ top: 2 })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
       if (this.dirty) {
@@ -180,11 +367,17 @@ export struct MoonlightSettingsSurface {
           .padding({ left: 8, right: 8, top: 4, bottom: 4 })
           .backgroundColor(this.pal().editColor + '16').borderRadius(10).margin({ right: 8 })
       }
-      Button('保存').height(40).fontSize(13).borderRadius(12)
-        .backgroundColor(this.dirty && this.editingLease !== null ? this.accentColor : this.pal().surface)
-        .fontColor(this.dirty && this.editingLease !== null ? Color.White : this.pal().text3)
-        .enabled(this.dirty && this.editingLease !== null)
-        .onClick((): void => { this.save(); })
+      if (this.section !== 'data') {
+        Button('保存').height(40).fontSize(13).borderRadius(12)
+          .backgroundColor(this.dirty && this.editingLease !== null ? this.accentColor : this.pal().surface)
+          .fontColor(this.dirty && this.editingLease !== null ? Color.White : this.pal().text3)
+          .enabled(this.dirty && this.editingLease !== null)
+          .onClick((): void => { this.save(); })
+      } else if (this.dataBusy) {
+        Text('处理中').fontSize(11).fontColor(this.accentColor)
+          .padding({ left: 10, right: 10, top: 6, bottom: 6 })
+          .backgroundColor(this.accentColor + '14').borderRadius(10)
+      }
     }.width('100%').padding({
       left: this.embedded ? 16 : 18,
       right: this.embedded ? 16 : 18,
@@ -206,6 +399,7 @@ export struct MoonlightSettingsSurface {
       .backgroundColor(this.section === section ? this.accentColor + '16' : this.pal().surface)
       .onClick((): void => {
         this.section = section;
+        if (section === 'data') { this.refreshDataStatus(); }
       })
   }
 
@@ -363,8 +557,9 @@ export struct MoonlightSettingsSurface {
     }.width('100%').padding(16).backgroundColor(this.pal().card).borderRadius(20)
       .border({ width: 0.5, color: this.pal().cardBorder }).margin({ bottom: 12 })
     Column() {
-      this.cardTitle('画面暂时不可用', '不改变公共显示与画中画设置')
-      this.statusRow('Surface 销毁行为', '生命周期接线完成前保持安全边界，不提供假可用选项', '结束会话')
+      this.cardTitle('画面生命周期', '公共显示与画中画仍由应用级设置统一管理')
+      this.statusRow('无可见 Surface',
+        '丢弃视频帧并保留唯一连接；恢复画面后重新绑定 Surface 并等待新帧', '保活并丢帧')
     }.width('100%').padding(16).backgroundColor(this.pal().card).borderRadius(20)
       .border({ width: 0.5, color: this.pal().cardBorder }).margin({ bottom: 12 })
   }
@@ -382,7 +577,14 @@ export struct MoonlightSettingsSurface {
       this.toggleRow('主机同时播放', '由 Sunshine 能力与主机设置共同决定', this.settings.audio.playOnHost,
         (value: boolean): void => { this.update((next: MoonlightSettings): void => { next.audio.playOnHost = value; }); })
       Divider().color(this.pal().divider)
-      this.statusRow('后台继续音频', '后台任务与音频焦点生命周期接线完成后开放', '尚未开放', false)
+      this.toggleRow('后台继续音频',
+        '进入后台或画中画时保持主机音频；关闭后会暂停并在回前台恢复',
+        this.settings.background.allowAudioInBackground,
+        (value: boolean): void => {
+          this.update((next: MoonlightSettings): void => {
+            next.background.allowAudioInBackground = value;
+          });
+        })
     }.width('100%').padding(16).backgroundColor(this.pal().card).borderRadius(20)
       .border({ width: 0.5, color: this.pal().cardBorder }).margin({ bottom: 12 })
   }
@@ -391,10 +593,17 @@ export struct MoonlightSettingsSurface {
     this.sectionHeader('控制与手柄', '触摸、鼠标、键盘、虚拟控制器与实体手柄统一进入会话控制通道。')
     Column() {
       this.cardTitle('控制模式')
-      this.choice3('直接触控', '触控板', '相对鼠标', this.settings.input.touchMode,
-        'touch', 'absoluteMouse', 'relativeMouse', (value: string): void => {
+      this.choice2('直接触控', '触控板',
+        this.settings.input.touchMode === 'touch' ? 'touch' : 'absoluteMouse',
+        'touch', 'absoluteMouse', (value: string): void => {
           this.update((next: MoonlightSettings): void => { next.input.touchMode = value as 'touch'; });
-        }, false)
+        })
+      this.statusRow('相对鼠标',
+        this.settings.input.touchMode === 'relativeMouse' ?
+          '旧版本保存的相对鼠标请求会继续保留，但本机连接时已安全降级为触控板' :
+          'HarmonyOS 相对指针捕获尚未通过产品能力门禁',
+        this.settings.input.touchMode === 'relativeMouse' ? '已降级' : '尚未开放', false)
+      Divider().color(this.pal().divider)
       this.toggleRow('捕获键盘', '串流画面获得焦点时转发实体键盘；退出时补发全部 key-up', this.settings.input.captureKeyboard,
         (value: boolean): void => { this.update((next: MoonlightSettings): void => { next.input.captureKeyboard = value; }); })
       Divider().color(this.pal().divider)
@@ -437,7 +646,18 @@ export struct MoonlightSettingsSurface {
       .border({ width: 0.5, color: this.pal().cardBorder }).margin({ bottom: 12 })
     Column() {
       this.cardTitle('断线恢复', '只恢复当前 Moonlight 会话，不创建第二套网络连接管理')
-      this.statusRow('自动重连与预算', '网络恢复状态机接线完成前不提供假可用开关', '尚未开放', false)
+      this.toggleRow('自动重连', '传输意外中断后，在限定时间内恢复当前应用与输入会话',
+        this.settings.network.autoReconnect, (value: boolean): void => {
+          this.update((next: MoonlightSettings): void => { next.network.autoReconnect = value; });
+        })
+      Divider().color(this.pal().divider)
+      this.sliderRow('重连预算', '最多尝试 6 次；0 秒等同于不自动重连',
+        this.settings.network.reconnectBudgetMs / 1000, 0, 120, 0.5, ' 秒',
+        (value: number): void => {
+          this.update((next: MoonlightSettings): void => {
+            next.network.reconnectBudgetMs = Math.round(value * 1000);
+          });
+        }, this.settings.network.autoReconnect)
     }.width('100%').padding(16).backgroundColor(this.pal().card).borderRadius(20)
       .border({ width: 0.5, color: this.pal().cardBorder }).margin({ bottom: 12 })
     Column() {
@@ -458,7 +678,16 @@ export struct MoonlightSettingsSurface {
   @Builder private diagnosticsContent() {
     this.sectionHeader('诊断', '只保留 Moonlight 会话指标与脱敏日志；默认关闭，避免无意义采样。')
     Column() {
-      this.statusRow('性能 HUD 与日志级别', '低频指标消费者接线完成后开放', '尚未开放', false)
+      this.toggleRow('性能 HUD',
+        '串流中每秒读取一次有界原生快照；关闭后立即停止采样',
+        this.settings.diagnostics.showPerformanceHud,
+        (value: boolean): void => {
+          this.update((next: MoonlightSettings): void => {
+            next.diagnostics.showPerformanceHud = value;
+          });
+        })
+      Divider().color(this.pal().divider)
+      this.statusRow('日志级别', '发布版只保留错误级别，不开放包含更多运行细节的调试日志', '错误')
       Divider().color(this.pal().divider).margin({ top: 12 })
       Row() {
         SymbolGlyph($r('sys.symbol.text_clipboard')).fontSize(19).fontColor([this.accentColor])
@@ -466,7 +695,7 @@ export struct MoonlightSettingsSurface {
           Text('脱敏诊断导出').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
           Text('不包含地址、PIN、证书、身份材料或会话密钥').fontSize(10).fontColor(this.pal().text3).margin({ top: 3 })
         }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
-        Text('会话内待开放').fontSize(10).fontColor(this.pal().text3)
+        Text('会话内可用').fontSize(10).fontColor(this.pal().success)
       }.width('100%').padding({ top: 12, bottom: 6 })
     }.width('100%').padding(16).backgroundColor(this.pal().card).borderRadius(20)
       .border({ width: 0.5, color: this.pal().cardBorder }).margin({ bottom: 12 })
@@ -492,13 +721,108 @@ export struct MoonlightSettingsSurface {
       .border({ width: 0.5, color: this.pal().cardBorder }).margin({ bottom: 12 })
   }
 
+  @Builder private dataActionRow(icon: Resource, title: string,
+    detail: string, label: string, dangerous: boolean,
+    enabled: boolean, action: () => void) {
+    Row() {
+      Row() {
+        SymbolGlyph(icon).fontSize(20)
+          .fontColor([dangerous ? this.pal().danger : this.accentColor])
+      }.width(42).height(42).borderRadius(13)
+        .backgroundColor(dangerous ? this.pal().danger + '12' : this.accentColor + '12')
+        .justifyContent(FlexAlign.Center)
+      Column() {
+        Text(title).fontSize(14).fontWeight(FontWeight.Medium)
+          .fontColor(enabled ? this.pal().text : this.pal().text3)
+        Text(detail).fontSize(10).fontColor(this.pal().text3)
+          .lineHeight(15).margin({ top: 3 }).maxLines(2)
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 11, right: 10 })
+      Button(label).height(36).fontSize(11).borderRadius(11)
+        .backgroundColor(enabled ?
+          (dangerous ? this.pal().danger : this.accentColor) : this.pal().surface)
+        .fontColor(enabled ? Color.White : this.pal().text3)
+        .enabled(enabled).onClick(action)
+    }.width('100%').padding({ top: 10, bottom: 10 })
+  }
+
+  @Builder private dataContent() {
+    this.sectionHeader('数据管理',
+      '本机、云端与配对安全身份分别管理；每个删除动作都先计算影响范围并再次确认。')
+    Column() {
+      this.cardTitle('当前设备', '只描述 Moonlight，不改变其他协议的云同步选择')
+      this.statusRow('Moonlight 云同步',
+        '单独的物理云表与设置/主机/配置三个逻辑范围',
+        this.dataSyncSelected ? '此设备已选择' : '此设备未选择',
+        this.dataSyncSelected)
+      Divider().color(this.pal().divider)
+      this.statusRow('云表运行状态',
+        this.dataCloudSchemaReady ?
+          '本机已通过可选云表注册与列合同检查' :
+          '旧版 8 张云表继续独立工作；Moonlight 云操作保持关闭',
+        this.dataCloudSchemaReady ? '已就绪' : '尚未就绪',
+        this.dataCloudSchemaReady)
+    }.width('100%').padding(16).backgroundColor(this.pal().card).borderRadius(20)
+      .border({ width: 0.5, color: this.pal().cardBorder }).margin({ bottom: 12 })
+
+    Column() {
+      this.cardTitle('此设备上的 Moonlight 数据',
+        this.dataStatusCode === '' ? '影响数量来自当前账号的实时预览' :
+          '当前无法生成完整预览：' + this.dataStatusCode)
+      Row({ space: 8 }) {
+        Column() {
+          Text(this.dataLocalRows.toString()).fontSize(22).fontWeight(FontWeight.Bold)
+            .fontColor(this.pal().text)
+          Text('本地记录').fontSize(10).fontColor(this.pal().text3).margin({ top: 3 })
+        }.layoutWeight(1).height(66).justifyContent(FlexAlign.Center)
+          .backgroundColor(this.pal().surface).borderRadius(14)
+        Column() {
+          Text(this.dataCacheRows.toString()).fontSize(22).fontWeight(FontWeight.Bold)
+            .fontColor(this.pal().text)
+          Text('目录缓存').fontSize(10).fontColor(this.pal().text3).margin({ top: 3 })
+        }.layoutWeight(1).height(66).justifyContent(FlexAlign.Center)
+          .backgroundColor(this.pal().surface).borderRadius(14)
+        Column() {
+          Text((this.dataRuntimeStates + this.dataSecureIdentities).toString())
+            .fontSize(22).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+          Text('运行/安全状态').fontSize(10).fontColor(this.pal().text3).margin({ top: 3 })
+        }.layoutWeight(1).height(66).justifyContent(FlexAlign.Center)
+          .backgroundColor(this.pal().surface).borderRadius(14)
+      }.width('100%')
+      Text('配对 trust、主机证书和客户端私钥永远不会作为 Moonlight 云数据上传。')
+        .fontSize(10).fontColor(this.pal().text3).lineHeight(16)
+        .width('100%').margin({ top: 10 })
+    }.width('100%').padding(16).backgroundColor(this.pal().card).borderRadius(20)
+      .border({ width: 0.5, color: this.pal().cardBorder }).margin({ bottom: 12 })
+
+    Column() {
+      this.cardTitle('分别处理', '三个入口互不代替，也不会跳转到其他设置')
+      this.dataActionRow($r('sys.symbol.link'), '停止 Moonlight 云同步',
+        '保留本机和云端数据，仅停止此设备未来上传与下载', '停止', false,
+        this.dataSyncSelected && !this.dataBusy,
+        (): void => { this.requestDataCommand('cancel_sync'); })
+      Divider().color(this.pal().divider)
+      this.dataActionRow($r('sys.symbol.cloud_fill'), '删除 Moonlight 云端数据',
+        '保留本机数据与安全身份；云端完成后自动停止同步',
+        this.dataCloudSchemaReady ? '删除云端' : '未就绪', true,
+        this.dataCloudSchemaReady && !this.dataBusy,
+        (): void => { this.requestDataCommand('delete_cloud_data'); })
+      Divider().color(this.pal().divider)
+      this.dataActionRow($r('sys.symbol.ohos_trash'), '删除 Moonlight 本地数据',
+        '先停止此设备同步，再删除本地记录、缓存、恢复状态与安全身份；云端副本保留',
+        '删除本机', true, !this.dataBusy && this.dataStatusCode === '',
+        (): void => { this.requestDataCommand('delete_local_data'); })
+    }.width('100%').padding(16).backgroundColor(this.pal().card).borderRadius(20)
+      .border({ width: 0.5, color: this.pal().cardBorder }).margin({ bottom: 12 })
+  }
+
   @Builder private activeContent() {
     if (this.section === 'video') { this.videoContent() }
     else if (this.section === 'audio') { this.audioContent() }
     else if (this.section === 'input') { this.inputContent() }
     else if (this.section === 'networkSecurity') { this.networkContent() }
     else if (this.section === 'diagnostics') { this.diagnosticsContent() }
-    else { this.trustContent() }
+    else if (this.section === 'trust') { this.trustContent() }
+    else { this.dataContent() }
   }
 
   build() {

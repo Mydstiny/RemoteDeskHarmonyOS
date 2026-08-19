@@ -167,6 +167,7 @@ import moonlightCapabilityPolicyTest from './MoonlightCapabilityPolicy.test';
 import moonlightSettingsPolicyTest from './MoonlightSettingsPolicy.test';
 import moonlightRecordConflictPolicyTest from './MoonlightRecordConflictPolicy.test';
 import moonlightSessionStateTest from './MoonlightSessionState.test';
+import moonlightSessionRecoveryPolicyTest from './MoonlightSessionRecoveryPolicy.test';
 import moonlightStoragePolicyTest from './MoonlightStoragePolicy.test';
 import moonlightCloudTableAdapterTest from './MoonlightCloudTableAdapter.test';
 import moonlightRepositoryTest from './MoonlightRepository.test';
@@ -176,7 +177,9 @@ import moonlightSensitiveTransferPolicyTest from './MoonlightSensitiveTransferPo
 import moonlightCloudSyncSelectionPolicyTest from './MoonlightCloudSyncSelectionPolicy.test';
 import moonlightCloudSyncServiceTest from './MoonlightCloudSyncService.test';
 import moonlightDataLifecycleBarrierTest from './MoonlightDataLifecycleBarrier.test';
+import moonlightDataLifecycleRuntimeTest from './MoonlightDataLifecycleRuntime.test';
 import moonlightDeletionPolicyTest from './MoonlightDeletionPolicy.test';
+import moonlightCloudDeletionPolicyTest from './MoonlightCloudDeletionPolicy.test';
 import moonlightDeletionCommandServiceTest from './MoonlightDeletionCommandService.test';
 import moonlightCloudStatusPolicyTest from './MoonlightCloudStatusPolicy.test';
 import moonlightBackupPolicyTest from './MoonlightBackupPolicy.test';
@@ -186,6 +189,17 @@ import moonlightUiPolicyTest from './MoonlightUiPolicy.test';
 import moonlightSettingsLocalServiceTest from './MoonlightSettingsLocalService.test';
 import moonlightLocalHostServiceTest from './MoonlightLocalHostService.test';
 import moonlightSessionCoordinatorTest from './MoonlightSessionCoordinator.test';
+import moonlightReconnectPolicyTest from './MoonlightReconnectPolicy.test';
+import moonlightRuntimeContextFactoryTest from './MoonlightRuntimeContextFactory.test';
+import moonlightRuntimeOwnerRegistryTest from './MoonlightRuntimeOwnerRegistry.test';
+import moonlightIdentityDeletionRuntimeTest from './MoonlightIdentityDeletionRuntime.test';
+import moonlightHostUnpairRuntimeTest from './MoonlightHostUnpairRuntime.test';
+import remoteSessionWindowPolicyTest from './RemoteSessionWindowPolicy.test';
+import remoteSessionServiceLeasePolicyTest from './RemoteSessionServiceLeasePolicy.test';
+import moonlightNetworkHandlePolicyTest from './MoonlightNetworkHandlePolicy.test';
+import diagnosticCapturePolicyTest from './DiagnosticCapturePolicy.test';
+import diagnosticCaptureRuntimeTest from './DiagnosticCaptureRuntime.test';
+import diagnosticCaptureExportServiceTest from './DiagnosticCaptureExportService.test';
 
 export default function testsuite() {
   localUnitTest();
@@ -357,6 +371,7 @@ export default function testsuite() {
   moonlightSettingsPolicyTest();
   moonlightRecordConflictPolicyTest();
   moonlightSessionStateTest();
+  moonlightSessionRecoveryPolicyTest();
   moonlightStoragePolicyTest();
   moonlightCloudTableAdapterTest();
   moonlightRepositoryTest();
@@ -366,7 +381,9 @@ export default function testsuite() {
   moonlightCloudSyncSelectionPolicyTest();
   moonlightCloudSyncServiceTest();
   moonlightDataLifecycleBarrierTest();
+  moonlightDataLifecycleRuntimeTest();
   moonlightDeletionPolicyTest();
+  moonlightCloudDeletionPolicyTest();
   moonlightDeletionCommandServiceTest();
   moonlightCloudStatusPolicyTest();
   moonlightBackupPolicyTest();
@@ -376,4 +393,15 @@ export default function testsuite() {
   moonlightSettingsLocalServiceTest();
   moonlightLocalHostServiceTest();
   moonlightSessionCoordinatorTest();
+  moonlightReconnectPolicyTest();
+  moonlightRuntimeContextFactoryTest();
+  moonlightRuntimeOwnerRegistryTest();
+  moonlightIdentityDeletionRuntimeTest();
+  moonlightHostUnpairRuntimeTest();
+  remoteSessionWindowPolicyTest();
+  remoteSessionServiceLeasePolicyTest();
+  moonlightNetworkHandlePolicyTest();
+  diagnosticCapturePolicyTest();
+  diagnosticCaptureRuntimeTest();
+  diagnosticCaptureExportServiceTest();
 }

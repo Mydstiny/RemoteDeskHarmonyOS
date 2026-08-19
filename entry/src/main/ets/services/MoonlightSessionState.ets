@@ -86,6 +86,40 @@ export function createMoonlightSessionState(sessionId: string, ownerScopeId: str
   };
 }
 
+/**
+ * Starts a new callback generation after the previous native connection has
+ * reached a terminal receipt.  Reconnect deliberately keeps the logical route
+ * and degradation history while clearing every media/input readiness bit.  A
+ * late event from the retired common-c invocation therefore fails the normal
+ * generation fence instead of being compared only by sequence number.
+ */
+export function rebaseMoonlightSessionForReconnect(
+  source: MoonlightSessionStateSnapshot,
+  sessionId: string,
+  generation: number
+): MoonlightSessionStateSnapshot | null {
+  if (source.phase !== 'reconnecting' || !boundedText(sessionId, 128) ||
+      !validCounter(generation) || generation <= source.generation) {
+    return null;
+  }
+  return {
+    sessionId: sessionId,
+    ownerScopeId: source.ownerScopeId,
+    hostId: source.hostId,
+    appId: source.appId,
+    generation: generation,
+    phase: 'reconnecting',
+    lastEventSequence: 0,
+    videoReady: false,
+    audioReady: false,
+    inputReady: false,
+    firstFrameSeen: false,
+    reconnectAttempt: source.reconnectAttempt,
+    errorCode: 'none',
+    degradationReasons: source.degradationReasons.slice()
+  };
+}
+
 function cloneState(source: MoonlightSessionStateSnapshot): MoonlightSessionStateSnapshot {
   return {
     sessionId: source.sessionId,
@@ -124,7 +158,9 @@ export function moonlightSessionTransitionIsAllowed(
   if (from === 'pairing') { return to === 'verifying' || to === 'catalog'; }
   if (from === 'catalog') { return to === 'launching'; }
   if (from === 'launching') { return to === 'negotiating'; }
-  if (from === 'negotiating') { return to === 'video' || to === 'audio' || to === 'input'; }
+  if (from === 'negotiating') {
+    return to === 'video' || to === 'audio' || to === 'input' || to === 'reconnecting';
+  }
   if (from === 'video' || from === 'audio' || from === 'input') {
     return to === 'video' || to === 'audio' || to === 'input' || to === 'firstFrame' ||
       to === 'streaming' || to === 'reconnecting';

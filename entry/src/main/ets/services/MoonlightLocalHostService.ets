@@ -4,6 +4,7 @@ import {
   MoonlightAddress,
   MoonlightHost,
   MoonlightHostType,
+  MOONLIGHT_DEFAULT_HTTPS_PORT,
   moonlightAddressKey,
   moonlightHostIsValid
 } from '../model/MoonlightModels';
@@ -313,6 +314,8 @@ export class MoonlightLocalHostService {
     nextBusiness['displayName'] = normalizedName;
     nextBusiness['addresses'] = business['addresses'];
     nextBusiness['preferredAddressKey'] = business['preferredAddressKey'];
+    nextBusiness['httpsPort'] = typeof business['httpsPort'] === 'number'
+      ? business['httpsPort'] : MOONLIGHT_DEFAULT_HTTPS_PORT;
     nextBusiness['hostType'] = business['hostType'];
     nextBusiness['wakeOnLan'] = business['wakeOnLan'];
     nextBusiness['userOrder'] = business['userOrder'];
@@ -434,6 +437,8 @@ export class MoonlightLocalHostService {
       displayName: displayName,
       addresses: [address],
       preferredAddressKey: moonlightAddressKey(address),
+      httpsPort: verification.httpsPort === undefined ? MOONLIGHT_DEFAULT_HTTPS_PORT :
+        verification.httpsPort,
       hostType: verification.hostType,
       wakeOnLan: { enabled: false, mac: '', broadcast: '' },
       userOrder: 0
@@ -465,6 +470,8 @@ export class MoonlightLocalHostService {
       displayName: displayName,
       addresses: [address],
       preferredAddressKey: moonlightAddressKey(address),
+      httpsPort: verification.httpsPort === undefined ? MOONLIGHT_DEFAULT_HTTPS_PORT :
+        verification.httpsPort,
       hostType: hostType,
       wakeOnLan: { enabled: false, mac: '', broadcast: '' },
       userOrder: userOrder
@@ -478,6 +485,7 @@ export class MoonlightLocalHostService {
     hostBusiness['displayName'] = host.displayName;
     hostBusiness['addresses'] = host.addresses;
     hostBusiness['preferredAddressKey'] = host.preferredAddressKey;
+    hostBusiness['httpsPort'] = host.httpsPort as number;
     hostBusiness['hostType'] = host.hostType;
     hostBusiness['wakeOnLan'] = host.wakeOnLan;
     hostBusiness['userOrder'] = host.userOrder;

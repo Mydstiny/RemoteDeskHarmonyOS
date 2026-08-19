@@ -8,6 +8,7 @@ import { util } from '@kit.ArkTS';
 import { SshKey, SshKeyType } from '../model/SshKey';
 import { ExtensionLoader } from './ExtensionLoader';
 import { SshPrivateKeyInfo } from '../types/rdpnapi';
+import { recordDiagnosticEvent } from './DiagnosticCaptureRuntime';
 
 export interface SshKeyImportResult {
   ok: boolean;
@@ -63,7 +64,10 @@ export class SshKeyImportService {
       const options: picker.DocumentSelectOptions = new picker.DocumentSelectOptions();
       const viewPicker: picker.DocumentViewPicker = new picker.DocumentViewPicker();
       const uris: string[] = await viewPicker.select(options);
-      if (uris.length === 0) { return null; }
+      if (uris.length === 0) {
+        recordDiagnosticEvent('security.ssh_key', 'ssh_key_import', 'cancelled');
+        return null;
+      }
 
       const uri: string = uris[0];
       file = fileIo.openSync(uri, fileIo.OpenMode.READ_ONLY);
@@ -71,11 +75,13 @@ export class SshKeyImportService {
       if (size <= 0) {
         fileIo.closeSync(file);
         file = null;
+        recordDiagnosticEvent('security.ssh_key', 'ssh_key_import', 'failed', 0, 0, 1);
         return { ok: false, key: null, fileName: sshKeyFileName(uri), error: '[CC-SSHKEY-01] 私钥文件为空' };
       }
       if (size > SshKeyImportService.MAX_FILE_SIZE) {
         fileIo.closeSync(file);
         file = null;
+        recordDiagnosticEvent('security.ssh_key', 'ssh_key_import', 'failed', 0, 0, 2);
         return { ok: false, key: null, fileName: sshKeyFileName(uri), error: '[CC-SSHKEY-01] 私钥文件超过 2 MB 限制' };
       }
 
@@ -84,6 +90,7 @@ export class SshKeyImportService {
       fileIo.closeSync(file);
       file = null;
       if (readSize !== size) {
+        recordDiagnosticEvent('security.ssh_key', 'ssh_key_import', 'failed', 0, 0, 3);
         return { ok: false, key: null, fileName: sshKeyFileName(uri), error: '[CC-SSHKEY-01] 私钥文件读取不完整' };
       }
       const text: string = new util.TextDecoder().decodeToString(new Uint8Array(buffer));
@@ -92,6 +99,7 @@ export class SshKeyImportService {
       if (file !== null) {
         try { fileIo.closeSync(file); } catch (_closeErr) { /* ignore */ }
       }
+      recordDiagnosticEvent('security.ssh_key', 'ssh_key_import', 'failed', 0, 0, 4);
       return {
         ok: false,
         key: null,
@@ -102,12 +110,15 @@ export class SshKeyImportService {
   }
 
   inspectText(label: string, text: string): SshKeyImportResult {
+    recordDiagnosticEvent('security.ssh_key', 'ssh_key_import', 'started');
     const normalized: string = normalizeSshPrivateKeyText(text);
     if (normalized === '') {
+      recordDiagnosticEvent('security.ssh_key', 'ssh_key_import', 'failed', 0, 0, 5);
       return { ok: false, key: null, fileName: label, error: '[CC-SSHKEY-02] 私钥内容为空' };
     }
     const info: SshPrivateKeyInfo = this.loader.inspectSshPrivateKey(normalized, '');
     if (!info.ok && !info.encrypted) {
+      recordDiagnosticEvent('security.ssh_key', 'ssh_key_import', 'failed', 0, 0, 6);
       return {
         ok: false,
         key: null,
@@ -115,6 +126,8 @@ export class SshKeyImportService {
         error: '[CC-SSHKEY-02] 私钥解析失败: ' + (info.error || '未知错误')
       };
     }
+    recordDiagnosticEvent('security.ssh_key', 'ssh_key_import', 'succeeded',
+      0, 0, info.encrypted ? 1 : 0);
     return {
       ok: true,
       key: buildSshKeyFromInspection(label, normalized, info),

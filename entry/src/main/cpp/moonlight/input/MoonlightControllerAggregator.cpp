@@ -547,7 +547,8 @@ MoonlightControllerAggregatorResult flushResult(
     }
     return {status, MoonlightControllerStatus::InvalidRequest,
             result.status, result.retryable ||
-                result.status == MoonlightInputFlushStatus::Pending};
+                result.status == MoonlightInputFlushStatus::Pending,
+            result.remoteReleaseComplete, result.boundaryApplied};
 }
 
 bool validUnit(double value) noexcept {
@@ -1225,8 +1226,19 @@ MoonlightControllerAggregatorResult MoonlightControllerAggregator::handleLifecyc
     if (context.identity != impl_->identity) {
         return impl_->reject(MoonlightControllerAggregatorStatus::StaleOwner);
     }
-    if (impl_->handoff.has_value() ||
-        impl_->snapshotState.state == MoonlightControllerAggregatorState::Stopped) {
+    if (impl_->handoff.has_value()) {
+        return impl_->reject(MoonlightControllerAggregatorStatus::InvalidState);
+    }
+    if (impl_->snapshotState.state == MoonlightControllerAggregatorState::Stopped) {
+        if (moonlightInputFlushDisposition(trigger) ==
+            MoonlightInputFlushDisposition::Stop) {
+            // Keep terminal teardown idempotent. Product stop still treats
+            // this as an ambiguous replay rather than fresh remote proof.
+            return {MoonlightControllerAggregatorStatus::AlreadyApplied,
+                    MoonlightControllerStatus::AlreadyApplied,
+                    MoonlightInputFlushStatus::AlreadyApplied, false, false,
+                    false};
+        }
         return impl_->reject(MoonlightControllerAggregatorStatus::InvalidState);
     }
     if (impl_->active.valid &&

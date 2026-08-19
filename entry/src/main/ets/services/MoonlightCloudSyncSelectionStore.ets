@@ -16,7 +16,8 @@ export const MOONLIGHT_CLOUD_SYNC_PREFERENCES_NAME: string =
 
 export type MoonlightSelectionStoreCode =
   'ok' | 'unchanged' | 'stale_lease' | 'invalid_owner' |
-  'projection_failed' | 'persist_failed' | 'rollback_failed';
+  'projection_failed' | 'persist_failed' | 'rollback_failed' |
+  'reconcile_pending';
 
 export interface MoonlightSelectionStoreResult {
   ok: boolean;
@@ -27,9 +28,9 @@ export interface MoonlightSelectionStoreResult {
 }
 
 /**
- * D2 keeps Preferences and RDB behind a port so tests can prove transaction
- * ordering without opening global singletons. D3 supplies the owner-scoped
- * Preferences and CloudStore adapter after account lifecycle wiring exists.
+ * Preferences and RDB stay behind a port so tests can prove transaction
+ * ordering without opening global singletons. The live CloudStore adapter
+ * binds both surfaces to the same account lease.
  */
 export interface MoonlightCloudSyncSelectionStorePort {
   currentAccountLease(): AccountSessionLease | null;
@@ -109,6 +110,22 @@ export class MoonlightCloudSyncSelectionStore {
     return this.selected.slice();
   }
 
+  /**
+   * Preferences are the durable user intent. Re-apply that intent after an
+   * authoritative cloud-first operation so a process/account switch between
+   * projection and preference persistence cannot leave stale localonly bits.
+   */
+  reconcileProjection(lease: AccountSessionLease): boolean {
+    const captured: AccountSessionLease = cloneAccountSessionLease(lease);
+    if (!this.leaseIsCurrent(captured) ||
+        captured.ownerScopeId !== this.ownerScopeId) {
+      return false;
+    }
+    const selected: MoonlightCloudSyncScope[] = this.selected.slice();
+    return this.port.replaceMoonlightProjection(
+      captured, selected, selected) && this.leaseIsCurrent(captured);
+  }
+
   stageSelectedScopes(lease: AccountSessionLease, scopes: string[],
     identityCapabilityReady: boolean = false): boolean {
     const captured: AccountSessionLease = cloneAccountSessionLease(lease);
@@ -148,15 +165,21 @@ export class MoonlightCloudSyncSelectionStore {
     }
     if (!this.leaseIsCurrent(captured)) {
       this.selected = previous;
-      return result(false, 'stale_lease', previous, true, false);
+      // Projection belongs to the captured owner, but Preferences still hold
+      // the previous intent. The next activation always reloads Preferences
+      // and reconciles that owner's projection before reopening mutations.
+      return result(false, 'reconcile_pending', previous, true, false);
     }
     const key: string =
       moonlightCloudSyncSelectionPreferenceKey(captured.ownerScopeId);
     if (this.port.writeSelectionPreference(
       captured, key, JSON.stringify(next))) {
       if (!this.leaseIsCurrent(captured)) {
-        this.selected = previous;
-        return result(false, 'stale_lease', previous, true, true);
+        // Both durable surfaces accepted `next`; only the lease changed before
+        // the caller could observe completion. Keep the committed truth in the
+        // result and let the next activation verify/reconcile it.
+        this.selected = next;
+        return result(false, 'reconcile_pending', next, true, true);
       }
       return result(true, 'ok', next, true, true);
     }

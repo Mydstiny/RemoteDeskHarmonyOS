@@ -360,6 +360,10 @@ struct SessionContext {
     uint64_t sessionId = 0;
     std::atomic<uint64_t> generation {0};
     uint64_t ownerToken = 0;
+    // Immutable after registry publication. Independent SSH windows use
+    // explicit session-id APIs and therefore do not acquire the process-wide
+    // decoder/input sink owner when their page callback is rebound.
+    bool sharedSinkForeground = true;
     std::string lastStateMessage;
     std::mutex messageMutex;
     std::atomic<Lifecycle> lifecycle {Lifecycle::Active};
@@ -789,6 +793,10 @@ struct SshDataTsfnRegistration {
     napi_threadsafe_function tsfn = nullptr;
     int32_t sessionId = 0;
     std::atomic<bool> accepting {true};
+    // Only an authenticated independent-window handoff preserves output that
+    // was already queued for the source page. Explicit callback removal and
+    // session teardown intentionally discard it.
+    std::atomic<bool> redeliverOnStop {false};
     std::mutex pendingMutex;
     std::condition_variable pendingCondition;
     std::deque<std::vector<uint8_t>*> pending;
@@ -817,11 +825,21 @@ struct SshDataTsfnRegistration {
         pendingBytes = 0;
     }
 };
+
+// The TSFN owns this holder until every already-queued JS callback has
+// finished. Keeping the registration alive lets a callback that loses its
+// page during an independent-window handoff return the exact bytes to the
+// adapter instead of invoking a stale ArkTS closure or dropping the prompt.
+struct SshDataTsfnContext {
+    std::shared_ptr<SshDataTsfnRegistration> registration;
+};
+
 static std::map<int, std::shared_ptr<SshDataTsfnRegistration>> g_dataTsfnMap;
 static std::mutex g_dataTsfnMutex;
 
 static void StopSshDataRegistrationInstance(
-    const std::shared_ptr<SshDataTsfnRegistration>& registration);
+    const std::shared_ptr<SshDataTsfnRegistration>& registration,
+    bool redeliverOnStop = false);
 
 // Used by the TSFN pump when N-API is closing and the normal page disconnect
 // path is no longer available. Detach the adapter first so the callback lambda
@@ -880,15 +898,19 @@ static void DetachSshDataRegistration(
     int32_t sessionId, const std::shared_ptr<SshAdapter>& adapter) {
     std::shared_ptr<SshDataTsfnRegistration> registration =
         TakeSshDataRegistration(sessionId);
-    if (registration) {
-        StopSshDataRegistrationInstance(registration);
-    }
     std::shared_ptr<SshAdapter> effectiveAdapter = adapter;
     if (!effectiveAdapter && registration) {
         effectiveAdapter = registration->adapter;
     }
+    // First sever the native producer under the adapter's delivery lock.
+    // Bytes already accepted by the old registration remain in its pending
+    // or TSFN queues; StopSshDataRegistrationInstance returns those bytes to
+    // the adapter FIFO while no stale callback can consume them.
     if (effectiveAdapter) {
         effectiveAdapter->detachOnDataCallback();
+    }
+    if (registration) {
+        StopSshDataRegistrationInstance(registration, true);
     }
     if (registration && registration->tsfn != nullptr) {
         napi_release_threadsafe_function(registration->tsfn, napi_tsfn_release);
@@ -4714,6 +4736,7 @@ static bool RegisterSshConnectSession(SshConnectAsyncData& data) {
     data.session->generation = g_nextSessionGeneration.fetch_add(1, std::memory_order_acq_rel);
     data.generation = data.session->generation.load(std::memory_order_acquire);
     data.session->ownerToken = g_nextSessionOwnerToken.fetch_add(1, std::memory_order_acq_rel);
+    data.session->sharedSinkForeground = data.foreground;
     data.adapter->setSessionIdentity(static_cast<uint64_t>(data.sessionId));
     data.adapter->setSessionGeneration(data.session->generation.load(std::memory_order_acquire));
     g_sessionRegistry.insertOrAssign(data.sessionId, data.session);
@@ -5043,19 +5066,54 @@ static bool HasNativeResources(const TeardownNativeResources& resources) {
         resources.audioHandle > 0;
 }
 
-static uint64_t BeginSessionTeardown(
-    int32_t sessionId, TeardownNativeResources resources) {
-    if (sessionId > 0) {
-        const uint64_t existing = g_disconnectRequests.find(sessionId);
-        if (existing != 0) {
-            return existing;
-        }
+struct NativeDisconnectCoreResult {
+    bool accepted = false;
+    uint64_t requestId = 0;
+    SessionTeardown::State immediateState = SessionTeardown::State::Unknown;
+};
+
+template <typename Task>
+static SessionTeardown::State RunSynchronousTeardownTask(Task& task) noexcept {
+    try {
+        task();
+        return SessionTeardown::State::Complete;
+    } catch (...) {
+        return SessionTeardown::State::Failed;
     }
+}
+
+static SessionTeardown::State TeardownStateForLifecycle(
+    SessionContext::Lifecycle lifecycle) {
+    if (lifecycle == SessionContext::Lifecycle::Complete) {
+        return SessionTeardown::State::Complete;
+    }
+    if (lifecycle == SessionContext::Lifecycle::Failed) {
+        return SessionTeardown::State::Failed;
+    }
+    return SessionTeardown::State::Unknown;
+}
+
+static NativeDisconnectCoreResult BeginSessionTeardown(
+    int32_t sessionId, TeardownNativeResources resources,
+    const DecoderSessionIdentity& expectedOwner = {}) {
 
     std::shared_ptr<SessionContext> session;
     const auto it = g_sessionRegistry.find(sessionId);
     if (it != g_sessionRegistry.end()) {
         session = it->second;
+    }
+    // Exact callers carry the native generation and owner token captured when
+    // their page/facade acquired the session.  Reject before touching TSFNs,
+    // resources or lifecycle state when a numeric id has since been recycled.
+    if (expectedOwner.valid() &&
+        (!session || session->identity() != expectedOwner)) {
+        return {};
+    }
+    if (sessionId > 0) {
+        const uint64_t existing = g_disconnectRequests.find(sessionId);
+        if (existing != 0) {
+            return {true, existing, SessionTeardown::State::Unknown};
+        }
     }
     if (!session) {
         // The registry may already have been erased by an earlier teardown.
@@ -5063,7 +5121,7 @@ static uint64_t BeginSessionTeardown(
         // any remaining TSFN before handling resource-only teardown.
         StopSshDataRegistration(sessionId, nullptr);
         if (!HasNativeResources(resources)) {
-            return 0;
+            return {true, 0, SessionTeardown::State::Complete};
         }
         DeactivateNativeResources(resources);
         auto resourceTask = [resources = std::move(resources)]() mutable {
@@ -5071,17 +5129,15 @@ static uint64_t BeginSessionTeardown(
         };
         const uint64_t resourceRequestId = g_teardownExecutor.enqueue(resourceTask);
         if (resourceRequestId == 0) {
-            try {
-                resourceTask();
-            } catch (...) {
-                // The executor normally contains task exceptions.  When it
-                // is already shutting down, this synchronous fallback must
-                // preserve the same no-throw NAPI boundary.
+            const SessionTeardown::State state =
+                RunSynchronousTeardownTask(resourceTask);
+            if (state == SessionTeardown::State::Failed) {
                 OH_LOG_ERROR(LOG_APP,
                     "[ExtLoader][SHUTDOWN] synchronous resource teardown failed");
             }
+            return {true, 0, state};
         }
-        return resourceRequestId;
+        return {true, resourceRequestId, SessionTeardown::State::Unknown};
     }
     std::shared_ptr<ProtocolAdapter> adapter;
     {
@@ -5097,12 +5153,19 @@ static uint64_t BeginSessionTeardown(
         if (expected == SessionContext::Lifecycle::Disconnecting) {
             std::unique_lock<std::mutex> lock(session->teardownPublicationMutex);
             session->teardownPublicationCv.wait(lock, [&]() {
-                return session->teardownRequestPublished ||
+                return (session->teardownRequestPublished &&
+                        session->teardownRequestId.load(std::memory_order_acquire) != 0) ||
                     session->lifecycle.load(std::memory_order_acquire) !=
                         SessionContext::Lifecycle::Disconnecting;
             });
         }
-        return session->teardownRequestId.load(std::memory_order_acquire);
+        const uint64_t requestId =
+            session->teardownRequestId.load(std::memory_order_acquire);
+        if (requestId != 0) {
+            return {true, requestId, SessionTeardown::State::Unknown};
+        }
+        return {true, 0, TeardownStateForLifecycle(
+            session->lifecycle.load(std::memory_order_acquire))};
     }
 
     // The lifecycle claim and TSFN removal share callbackRegistrationMutex.
@@ -5159,6 +5222,7 @@ static uint64_t BeginSessionTeardown(
         session->lifecycle.store(
             failed ? SessionContext::Lifecycle::Failed : SessionContext::Lifecycle::Complete,
             std::memory_order_release);
+        session->teardownPublicationCv.notify_all();
         const auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - startedAt).count();
         OH_LOG_INFO(LOG_APP,
@@ -5181,12 +5245,8 @@ static uint64_t BeginSessionTeardown(
             session->teardownRequestPublished = true;
         }
         session->teardownPublicationCv.notify_all();
-        try {
-            task();
-        } catch (...) {
-            // Executor fallback runs on the caller when shutdown has already
-            // begun; do not let a best-effort adapter/resource destructor
-            // escape into NAPI or terminate the process.
+        const SessionTeardown::State state = RunSynchronousTeardownTask(task);
+        if (state == SessionTeardown::State::Failed) {
             OH_LOG_ERROR(LOG_APP,
                 "[ExtLoader][SHUTDOWN] synchronous session teardown failed sessionId=%{public}d",
                 sessionId);
@@ -5199,7 +5259,7 @@ static uint64_t BeginSessionTeardown(
             ClearNativeNetworkObserver(
                 sessionId, session->generation.load(std::memory_order_acquire));
         }
-        return 0;
+        return {true, 0, state};
     }
     session->teardownRequestId.store(requestId, std::memory_order_release);
     g_disconnectRequests.insertOrAssign(sessionId, requestId);
@@ -5221,7 +5281,7 @@ static uint64_t BeginSessionTeardown(
         ClearNativeNetworkObserver(
             sessionId, session->generation.load(std::memory_order_acquire));
     }
-    return requestId;
+    return {true, requestId, SessionTeardown::State::Unknown};
 }
 
 // Shared production disconnect core.  NapiDisconnect supplies values parsed
@@ -5230,8 +5290,9 @@ static uint64_t BeginSessionTeardown(
 // producer shutdown, owner snapshot, registry lookup, adapter teardown and
 // idempotent request handling here prevents the carrier from becoming a
 // second teardown implementation.
-static uint64_t ExecuteNapiDisconnectCore(
-    int32_t sessionId, TeardownNativeResources resources) {
+static NativeDisconnectCoreResult ExecuteNapiDisconnectCore(
+    int32_t sessionId, TeardownNativeResources resources,
+    const DecoderSessionIdentity& expectedOwner = {}) {
     if (!resources.owner.valid()) {
         if (const auto it = g_sessionRegistry.find(sessionId);
             it != g_sessionRegistry.end() && it->second) {
@@ -5240,7 +5301,8 @@ static uint64_t ExecuteNapiDisconnectCore(
             resources.owner = Render::SharedSessionSinkOwnerLease().snapshot();
         }
     }
-    return BeginSessionTeardown(sessionId, std::move(resources));
+    return BeginSessionTeardown(
+        sessionId, std::move(resources), expectedOwner);
 }
 
 #if defined(RDP_NATIVE_CALLBACK_TESTING)
@@ -5257,7 +5319,7 @@ public:
         TeardownNativeResources resources;
         resources.owner = owner_;
         reentrantRequest_.store(
-            ExecuteNapiDisconnectCore(sessionId_, std::move(resources)),
+            ExecuteNapiDisconnectCore(sessionId_, std::move(resources)).requestId,
             std::memory_order_release);
     }
     ConnectionState getState() override { return ConnectionState::DISCONNECTED; }
@@ -5314,10 +5376,25 @@ extern "C" bool RdpTestProductionDisconnectRegistryRoundTrip(
         return false;
     }
 
+    TeardownNativeResources staleResources;
+    const DecoderSessionIdentity staleOwner {
+        owner.sessionId, owner.generation, owner.ownerToken + 1};
+    staleResources.owner = staleOwner;
+    const NativeDisconnectCoreResult stale = ExecuteNapiDisconnectCore(
+        sessionId, std::move(staleResources), staleOwner);
+    const auto retainedSession = g_sessionRegistry.find(sessionId);
+    const bool staleRejectedWithoutMutation = !stale.accepted &&
+        session->lifecycle.load(std::memory_order_acquire) ==
+            SessionContext::Lifecycle::Active &&
+        adapter->disconnectCount() == 0 &&
+        retainedSession != g_sessionRegistry.end() &&
+        retainedSession->second == session;
+
     TeardownNativeResources resources;
     resources.owner = owner;
-    const uint64_t teardownRequest = ExecuteNapiDisconnectCore(
-        sessionId, std::move(resources));
+    const NativeDisconnectCoreResult submission = ExecuteNapiDisconnectCore(
+        sessionId, std::move(resources), owner);
+    const uint64_t teardownRequest = submission.requestId;
     // The production helper, not the carrier, owns registry insertion.  A
     // pre-insert here would exercise only the duplicate-request fast path and
     // silently skip adapter->disconnect().
@@ -5339,11 +5416,22 @@ extern "C" bool RdpTestProductionDisconnectRegistryRoundTrip(
     // touching a newly registered session with the same numeric id.
     TeardownNativeResources repeatResources;
     repeatResources.owner = owner;
-    const uint64_t repeatedRequest = ExecuteNapiDisconnectCore(
-        sessionId, std::move(repeatResources));
-    return registryObserved && completed && reentrantIdempotent && terminal &&
+    const NativeDisconnectCoreResult repeated = ExecuteNapiDisconnectCore(
+        sessionId, std::move(repeatResources), owner);
+    return staleRejectedWithoutMutation && submission.accepted &&
+        registryObserved && completed &&
+        reentrantIdempotent && terminal &&
         requestCleared && sessionRegistryCleared &&
-        adapter->disconnectCount() == 1 && repeatedRequest == 0;
+        adapter->disconnectCount() == 1 && !repeated.accepted;
+}
+
+extern "C" int RdpTestSynchronousDisconnectReceiptState(bool fail) {
+    auto task = [fail]() {
+        if (fail) {
+            throw std::runtime_error("expected synchronous teardown failure");
+        }
+    };
+    return static_cast<int>(RunSynchronousTeardownTask(task));
 }
 #endif
 
@@ -5366,8 +5454,9 @@ napi_value NapiDisconnect(napi_env env, napi_callback_info info) {
     resources.rendererHandle = GetOptionalHandle(env, argc, args, 1);
     resources.decoderHandle = GetOptionalHandle(env, argc, args, 2);
     resources.audioHandle = GetOptionalHandle(env, argc, args, 3);
-    const uint64_t requestId = ExecuteNapiDisconnectCore(
+    const NativeDisconnectCoreResult submission = ExecuteNapiDisconnectCore(
         sessionId, std::move(resources));
+    const uint64_t requestId = submission.requestId;
 
     const auto shutdownElapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::steady_clock::now() - shutdownStartedAt).count();
@@ -5379,6 +5468,94 @@ napi_value NapiDisconnect(napi_env env, napi_callback_info info) {
     napi_value result;
     napi_create_int64(env, static_cast<int64_t>(requestId), &result);
     return result;
+}
+
+static napi_value CreateNativeDisconnectReceiptValue(
+    napi_env env, const NativeDisconnectCoreResult& submission) {
+    napi_value result;
+    napi_create_object(env, &result);
+    SetObjectBool(env, result, "accepted", submission.accepted);
+    SetObjectInt64(env, result, "requestId",
+                   static_cast<int64_t>(submission.requestId));
+    SetObjectInt32(env, result, "terminalState",
+                   static_cast<int32_t>(submission.immediateState));
+    return result;
+}
+
+/** Return the exact native owner needed for an atomic teardown CAS. */
+napi_value NapiGetSessionOwnerIdentity(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int32_t sessionId = -1;
+    if (argc < 1 ||
+        napi_get_value_int32(env, args[0], &sessionId) != napi_ok ||
+        sessionId <= 0) {
+        napi_value empty;
+        napi_get_null(env, &empty);
+        return empty;
+    }
+    const auto it = g_sessionRegistry.find(sessionId);
+    if (it == g_sessionRegistry.end() || !it->second ||
+        it->second->lifecycle.load(std::memory_order_acquire) !=
+            SessionContext::Lifecycle::Active) {
+        napi_value empty;
+        napi_get_null(env, &empty);
+        return empty;
+    }
+    const DecoderSessionIdentity owner = it->second->identity();
+    if (!owner.valid()) {
+        napi_value empty;
+        napi_get_null(env, &empty);
+        return empty;
+    }
+    napi_value result;
+    napi_create_object(env, &result);
+    SetObjectInt64(env, result, "sessionId",
+                   static_cast<int64_t>(owner.sessionId));
+    SetObjectInt64(env, result, "generation",
+                   static_cast<int64_t>(owner.generation));
+    SetObjectInt64(env, result, "ownerToken",
+                   static_cast<int64_t>(owner.ownerToken));
+    return result;
+}
+
+/**
+ * Exact disconnect entry.  A stale owner is rejected before any native
+ * lifecycle, callback, resource or registry mutation.  Synchronous fallback
+ * reports Complete(3) or Failed(4) instead of overloading requestId=0.
+ */
+napi_value NapiBeginDisconnectWithReceipt(napi_env env, napi_callback_info info) {
+    size_t argc = 6;
+    napi_value args[6];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int32_t sessionId = -1;
+    int64_t generation = 0;
+    int64_t ownerToken = 0;
+    if (argc < 6 ||
+        napi_get_value_int32(env, args[0], &sessionId) != napi_ok ||
+        napi_get_value_int64(env, args[1], &generation) != napi_ok ||
+        napi_get_value_int64(env, args[2], &ownerToken) != napi_ok ||
+        generation < 0 || ownerToken < 0 ||
+        ((generation == 0 || ownerToken == 0) && sessionId > 0) ||
+        ((generation != 0 || ownerToken != 0) && sessionId <= 0)) {
+        return CreateNativeDisconnectReceiptValue(env, {});
+    }
+    TeardownNativeResources resources;
+    resources.rendererHandle = GetOptionalHandle(env, argc, args, 3);
+    resources.decoderHandle = GetOptionalHandle(env, argc, args, 4);
+    resources.audioHandle = GetOptionalHandle(env, argc, args, 5);
+    DecoderSessionIdentity expectedOwner;
+    if (sessionId > 0) {
+        expectedOwner = DecoderSessionIdentity {
+            static_cast<uint64_t>(sessionId),
+            static_cast<uint64_t>(generation),
+            static_cast<uint64_t>(ownerToken)};
+        resources.owner = expectedOwner;
+    }
+    return CreateNativeDisconnectReceiptValue(
+        env, BeginSessionTeardown(
+            sessionId, std::move(resources), expectedOwner));
 }
 
 /**
@@ -5520,6 +5697,7 @@ napi_value NapiDisconnectAll(napi_env env, napi_callback_info info) {
             session->lifecycle.store(
                 sessionFailed ? SessionContext::Lifecycle::Failed : SessionContext::Lifecycle::Complete,
                 std::memory_order_release);
+            session->teardownPublicationCv.notify_all();
         }
         try {
             DestroyNativeResources(std::move(resources));
@@ -8518,10 +8696,28 @@ napi_value NapiMeasureSshLatencyAsync(napi_env env, napi_callback_info info) {
  * SSH 输出不是文本协议，ANSI 控制序列和 UTF-8 字符都可能跨 chunk；
  * 这里保持字节不变，把解码责任交给终端核心。
  */
+static void FinalizeSshDataTsfn(napi_env /*env*/, void* finalizeData,
+                                void* /*finalizeHint*/) {
+    delete static_cast<SshDataTsfnContext*>(finalizeData);
+}
+
 static void DataTsfnCallJs(napi_env env, napi_value jsCallback,
-                            void* /*context*/, void* data) {
+                            void* context, void* data) {
     auto* bytes = static_cast<std::vector<uint8_t>*>(data);
-    if (env != nullptr && jsCallback != nullptr && bytes != nullptr) {
+    auto* callbackContext = static_cast<SshDataTsfnContext*>(context);
+    const std::shared_ptr<SshDataTsfnRegistration> registration =
+        callbackContext == nullptr ? nullptr : callbackContext->registration;
+    const bool accepting = registration != nullptr &&
+        registration->accepting.load(std::memory_order_acquire);
+    const bool redeliverOnStop = registration != nullptr &&
+        registration->redeliverOnStop.load(std::memory_order_acquire);
+    if (bytes != nullptr && registration != nullptr &&
+        SshTerminalResumePolicy::shouldRedeliverCallback(
+            accepting, redeliverOnStop)) {
+        if (registration->adapter) {
+            registration->adapter->redeliverTerminalOutputAfterDetach(*bytes);
+        }
+    } else if (env != nullptr && jsCallback != nullptr && bytes != nullptr) {
         void* rawData = nullptr;
         napi_value arrayBuffer = nullptr;
         napi_status s = napi_create_arraybuffer(env, bytes->size(), &rawData, &arrayBuffer);
@@ -8598,7 +8794,15 @@ static void SshDataTsfnPump(
         }
 
         if (!delivered) {
-            if (!registration->accepting.load(std::memory_order_acquire) && !closing) {
+            const bool accepting =
+                registration->accepting.load(std::memory_order_acquire);
+            const bool redeliverOnStop =
+                registration->redeliverOnStop.load(std::memory_order_acquire);
+            if (!closing && registration->adapter &&
+                SshTerminalResumePolicy::shouldRedeliverCallback(
+                    accepting, redeliverOnStop)) {
+                registration->adapter->redeliverTerminalOutputAfterDetach(*heapBytes);
+            } else if (!accepting && !closing) {
                 if (registration->adapter) {
                     registration->adapter->recordTerminalCallbackDeliveryError(true);
                 }
@@ -8609,10 +8813,13 @@ static void SshDataTsfnPump(
 }
 
 static void StopSshDataRegistrationInstance(
-    const std::shared_ptr<SshDataTsfnRegistration>& registration) {
+    const std::shared_ptr<SshDataTsfnRegistration>& registration,
+    bool redeliverOnStop) {
     if (!registration) {
         return;
     }
+    registration->redeliverOnStop.store(redeliverOnStop,
+                                        std::memory_order_release);
     registration->accepting.store(false, std::memory_order_release);
     registration->pendingCondition.notify_all();
     if (registration->pumpThread.joinable()) {
@@ -8713,6 +8920,17 @@ napi_value NapiSetOnDataCallback(napi_env env, napi_callback_info info) {
         return undefined;
     }
 
+    auto registration = std::make_shared<SshDataTsfnRegistration>();
+    registration->sessionId = sessionId;
+    registration->adapter = sshAdapter;
+    auto* callbackContext = new (std::nothrow) SshDataTsfnContext { registration };
+    if (callbackContext == nullptr) {
+        OH_LOG_ERROR(LOG_APP, "[ExtLoader] setOnDataCallback: 创建回调上下文失败");
+        napi_value undefined;
+        napi_get_undefined(env, &undefined);
+        return undefined;
+    }
+
     // 创建 TSFN
     napi_value resourceName;
     napi_create_string_utf8(env, "SshDataPush", NAPI_AUTO_LENGTH, &resourceName);
@@ -8724,22 +8942,20 @@ napi_value NapiSetOnDataCallback(napi_env env, napi_callback_info info) {
         resourceName,
         64,               // bounded queue; producer waits with cancellation
         1,                // 1 initial thread
-        nullptr,          // thread_finalize_data
-        nullptr,          // thread_finalize_cb
-        nullptr,          // context
+        callbackContext,  // thread_finalize_data
+        FinalizeSshDataTsfn,
+        callbackContext,  // context
         DataTsfnCallJs,   // call_js_cb
         &tsfn);
     if (s != napi_ok || tsfn == nullptr) {
+        delete callbackContext;
         OH_LOG_ERROR(LOG_APP, "[ExtLoader] setOnDataCallback: 创建 TSFN 失败 status=%{public}d", s);
         napi_value undefined;
         napi_get_undefined(env, &undefined);
         return undefined;
     }
 
-    auto registration = std::make_shared<SshDataTsfnRegistration>();
     registration->tsfn = tsfn;
-    registration->sessionId = sessionId;
-    registration->adapter = sshAdapter;
     sshAdapter->markTerminalCallbackInstrumentation();
     {
         std::lock_guard<std::mutex> lk(g_dataTsfnMutex);
@@ -8888,18 +9104,27 @@ napi_value NapiResumeSshSession(napi_env env, napi_callback_info info) {
                     // A page callback can be rebound while the transport is
                     // still reconnecting. Keep that live session attached;
                     // the page's state probe will expose CONNECTED later.
-                    if (SshTerminalResumePolicy::acceptsPageBinding(state, hasRegistration) &&
-                        ActivateSessionContext(adapter, session->identity())) {
-                        // Re-publish the process-wide owner before allowing
-                        // input to flow. A detached session can otherwise
-                        // still point input at the host selected previously.
-                        if (SshTerminalResumePolicy::shouldResumeInput(state)) {
-                            sshAdapter->resumeTerminalInput();
+                    if (SshTerminalResumePolicy::acceptsPageBinding(state, hasRegistration)) {
+                        const bool sharedSinkActivated =
+                            !session->sharedSinkForeground ||
+                            ActivateSessionContext(adapter, session->identity());
+                        if (SshTerminalResumePolicy::acceptsSharedSinkActivation(
+                                session->sharedSinkForeground, sharedSinkActivated)) {
+                            // Foreground pages re-publish the process-wide owner.
+                            // Independent-window pages route all terminal traffic
+                            // by session id and deliberately keep owners isolated.
+                            if (SshTerminalResumePolicy::shouldResumeInput(state)) {
+                                sshAdapter->resumeTerminalInput();
+                            }
+                            resumed = true;
+                        } else {
+                            OH_LOG_WARN(LOG_APP,
+                                "[ExtLoader] SSH resume active-owner activation failed id=%{public}d",
+                                sessionId);
                         }
-                        resumed = true;
                     } else {
                         OH_LOG_WARN(LOG_APP,
-                            "[ExtLoader] SSH resume active-owner activation failed id=%{public}d",
+                            "[ExtLoader] SSH resume page-binding policy rejected id=%{public}d",
                             sessionId);
                     }
                 }
@@ -9604,6 +9829,14 @@ napi_value ExtensionLoaderNapi::Init(napi_env env, napi_value exports) {
     napi_create_function(env, "beginDisconnect", NAPI_AUTO_LENGTH,
                          NapiDisconnect, nullptr, &fn);
     napi_set_named_property(env, exports, "beginDisconnect", fn);
+
+    napi_create_function(env, "getSessionOwnerIdentity", NAPI_AUTO_LENGTH,
+                         NapiGetSessionOwnerIdentity, nullptr, &fn);
+    napi_set_named_property(env, exports, "getSessionOwnerIdentity", fn);
+
+    napi_create_function(env, "beginDisconnectWithReceipt", NAPI_AUTO_LENGTH,
+                         NapiBeginDisconnectWithReceipt, nullptr, &fn);
+    napi_set_named_property(env, exports, "beginDisconnectWithReceipt", fn);
 
     napi_create_function(env, "disconnectAll", NAPI_AUTO_LENGTH,
                          NapiDisconnectAll, nullptr, &fn);

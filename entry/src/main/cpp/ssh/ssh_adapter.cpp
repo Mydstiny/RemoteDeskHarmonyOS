@@ -5119,6 +5119,14 @@ void SshAdapter::detachOnDataCallback() {
     OH_LOG_INFO(LOG_APP, "[SSH] onDataCallback 已脱离, session reactor 保持");
 }
 
+void SshAdapter::redeliverTerminalOutputAfterDetach(
+    const std::vector<uint8_t>& data) {
+    // DataTsfnCallJs runs on the ArkTS thread. deliverTerminalOutput owns the
+    // callback/FIFO locks, so this is safe whether the target window has
+    // already installed its new consumer or is still mounting.
+    deliverTerminalOutput(data);
+}
+
 void SshAdapter::deliverTerminalOutput(const std::vector<uint8_t>& data) {
     if (data.empty()) {
         return;

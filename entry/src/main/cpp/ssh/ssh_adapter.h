@@ -267,6 +267,8 @@ public:
     void setOnDataCallback(DataCallback cb);
     /** Detach the consumer without stopping the session owner reactor. */
     void detachOnDataCallback();
+    /** Return a callback queued for a detached page to the live session FIFO. */
+    void redeliverTerminalOutputAfterDetach(const std::vector<uint8_t>& data);
     /** Suspend/resume terminal input while a page view is detached. */
     void suspendTerminalInput();
     void resumeTerminalInput();
