@@ -29,7 +29,7 @@ import { common } from '@kit.AbilityKit';
 import { util } from '@kit.ArkTS';
 import { unifiedDataChannel, uniformTypeDescriptor } from '@kit.ArkData';
 import { pasteboard, BusinessError } from '@kit.BasicServicesKit';
-import { fileIo } from '@kit.CoreFileKit';
+import { fileIo, picker } from '@kit.CoreFileKit';
 import { inputDevice, KeyCode } from '@kit.InputKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { HostSyncService } from '../services/HostSyncService';
@@ -3197,7 +3197,7 @@ struct SshTerminal {
     this.refreshSshSessionLogDocument();
   }
 
-  private exportSshSessionLogToClipboard(): void {
+  private async exportSshSessionLogToFile(): Promise<void> {
     if (!this.sshSessionLogReady || this.hostId.trim().length === 0) { return; }
     const result = this.sshSessionLogStore.export(this.hostId.trim(), undefined, true);
     if (!result.ok || result.text.length === 0) {
@@ -3205,11 +3205,26 @@ struct SshTerminal {
       return;
     }
     try {
-      const data: pasteboard.PasteData = pasteboard.createData(
-        pasteboard.MIMETYPE_TEXT_PLAIN, result.text);
-      pasteboard.getSystemPasteboard().setData(data);
+      const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+      const options: picker.DocumentSaveOptions = {
+        newFileNames: ['ssh-session-log.txt']
+      };
+      const uris: Array<string> = await new picker.DocumentViewPicker(context).save(options);
+      if (uris.length === 0 || uris[0].trim().length === 0) { return; }
+      const bytes: Uint8Array = new util.TextEncoder().encode(result.text);
+      const output: fileIo.File = fileIo.openSync(uris[0],
+        fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.CREATE | fileIo.OpenMode.TRUNC);
+      try {
+        const written: number = fileIo.writeSync(output.fd, bytes.buffer);
+        if (written !== bytes.byteLength) {
+          throw new Error('short log export write');
+        }
+        fileIo.fsyncSync(output.fd);
+      } finally {
+        fileIo.closeSync(output);
+      }
       promptAction.showToast({
-        message: result.truncated ? '日志已复制（已按导出上限截断）' : '脱敏日志已复制到剪贴板',
+        message: result.truncated ? '日志已保存（已按导出上限截断）' : '脱敏日志已保存',
         duration: 1800
       });
     } catch (_err) {
@@ -10070,7 +10085,7 @@ struct SshTerminal {
       onToggleBookmark: (hit: SshSessionLogSearchHitV1): void => {
         this.toggleSshSessionLogBookmark(hit);
       },
-      onExport: (): void => { this.exportSshSessionLogToClipboard(); }
+      onExport: (): void => { void this.exportSshSessionLogToFile(); }
     })
   }
 

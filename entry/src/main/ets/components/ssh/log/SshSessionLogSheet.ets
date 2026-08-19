@@ -84,7 +84,7 @@ export struct SshSessionLogSheet {
       Scroll() {
         Column({ space: 10 }) {
           Row({ space: 8 }) {
-            Button('导出脱敏日志').height(40).fontSize(11).layoutWeight(1)
+            Button('保存脱敏日志').height(40).fontSize(11).layoutWeight(1)
               .backgroundColor('rgba(255,255,255,0.08)').onClick(this.onExport)
             Text(this.document.chunks.length.toString() + ' 个分块')
               .fontSize(10).fontColor('rgba(242,244,247,0.48)')
