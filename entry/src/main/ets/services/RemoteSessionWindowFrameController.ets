@@ -90,12 +90,16 @@ export class RemoteSessionWindowFrameController {
     const mainWindow: window.Window | null = this.mainWindow;
     if (mainWindow === null) { return false; }
     try {
+      // `RemoteSessionAbility` owns an application main window, not a child
+      // window. On PC the source ability can finish its router transaction
+      // after the target reports content-ready, leaving both missions in the
+      // foreground while the source window remains above the new session.
+      // HarmonyOS documents showWindow() as the main-window API that moves an
+      // already displayed window to the top; raiseToAppTop() is intentionally
+      // limited to subwindows and returns 1300009 for this window type.
+      await mainWindow.showWindow();
       await mainWindow.setWindowFocusable(true);
       await mainWindow.setWindowTouchable(true);
-      // raiseToAppTop() is explicitly a *subwindow* API. A UIAbility main
-      // window has no parent and correctly returns 1300009. startAbility()
-      // already owns the system-level foreground transition; forcing the
-      // subwindow API here only adds a false failure during the handoff.
       hilog.info(DOMAIN, TAG, 'interactive flags applied focused=%{public}s',
         mainWindow.isFocused() ? 'true' : 'false');
       return true;

@@ -120,6 +120,16 @@ export default class RemoteSessionAbility extends UIAbility {
 
   onForeground(): void {
     this.uiStorage?.set<boolean>('sessionWindowBackground', false);
+    // A PC mission can be restored through the system task/window switcher
+    // after the primary EntryAbility has been brought to the front.  The
+    // mission callback alone does not guarantee that an application main
+    // window is the top WMS surface, so re-assert the same foreground
+    // promotion used at content-ready.  The coordinator keeps this fenced to
+    // a live, content-ready record and no-ops during early lifecycle turns.
+    if (this.sessionWindowId.length > 0) {
+      void RemoteSessionWindowCoordinator.getInstance().promoteTargetWindow(
+        this.sessionWindowId);
+    }
   }
 
   onWillBackground(): void {
