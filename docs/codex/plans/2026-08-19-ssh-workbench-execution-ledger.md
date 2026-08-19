@@ -271,3 +271,5 @@ hvigorw --mode module -p module=entry -p product=default assembleHap --analyze=n
 ```
 
 手机入口证据补录后的同一双门禁于 2026-08-20 重新执行：`default@OhosTestCompileArkTS` exit 0（`BUILD SUCCESSFUL in 6 s 49 ms`），`assembleHap` exit 0（`BUILD SUCCESSFUL in 7 s 504 ms`）；仅有既有 ArkTS 弃用/依赖资源告警，无编译错误。
+
+2026-08-20 native 轻量测试 receipt（主机环境）：使用 OpenHarmony SDK 23 的 CMake，以 `-DRDP_BUILD_TESTS=ON -DRDP_TESTS_ONLY=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo` 配置并构建 `rdp_native_tests`，配置、编译均 exit 0。运行 `/private/tmp/remotedesktop-ssh-native-tests/rdp_native_tests` 后共 `769 passed, 16 failed, 785 total`；45 个 SSH 用例（终端诊断、鉴权/Prompt、PTY recovery、重连、generation/session、路由、转发、SFTP）全部显示 `OK`，无 SSH failure。16 个失败全部是共享 runner 中既有 VNC TLS fixture 的 `fixture.start()`，未涉及 SSH，未修改 VNC/Moonlight；完整输出 SHA-256 为 `da54ead34c2507116e687111ec654299c3e6069164a4d46229e555b50517f722`。该结果作为 SSH native host smoke 记录，不冒充全协议 suite 通过。
