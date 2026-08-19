@@ -642,6 +642,22 @@ export class RemoteSessionWindowCoordinator {
 
   hasOpenOrPendingWindows(): boolean { return this.records.size > 0; }
 
+  /**
+   * Main-window lifecycle must not tear down a background task owned by an
+   * independent session Ability.  Keep the query protocol-scoped so bringing
+   * the host list foreground does not accidentally preserve an unrelated SSH
+   * task merely because an RDP/VNC/RustDesk window is still open.
+   */
+  hasOpenOrPendingWindowForProtocol(protocol: string): boolean {
+    const normalized: string = protocol.trim();
+    if (normalized.length === 0) { return false; }
+    let found: boolean = false;
+    this.records.forEach((record: RemoteSessionWindowRecord): void => {
+      if (record.request.protocol === normalized) { found = true; }
+    });
+    return found;
+  }
+
   activeWindowCount(): number { return this.records.size; }
 
   nextPlacementSequence(): number { return this.launchSequence; }

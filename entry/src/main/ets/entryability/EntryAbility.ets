@@ -373,13 +373,20 @@ export default class EntryAbility extends UIAbility {
     } catch (err) {
       hilog.warn(DOMAIN, TAG, 'stopSessionTask on foreground failed: %{public}s', JSON.stringify(err));
     }
-    try {
-      void SshTerminalPipService.getInstance().stop();
-      void SshTerminalBackgroundTaskService.getInstance().stop(
-        this.context as common.UIAbilityContext);
-    } catch (err) {
-      hilog.warn(DOMAIN, TAG, 'SSH background task stop on foreground failed: %{public}s',
-        JSON.stringify(err));
+    const hasIndependentSshWindow: boolean =
+      RemoteSessionWindowCoordinator.getInstance().hasOpenOrPendingWindowForProtocol('ssh');
+    if (!hasIndependentSshWindow) {
+      try {
+        void SshTerminalPipService.getInstance().stop();
+        void SshTerminalBackgroundTaskService.getInstance().stop(
+          this.context as common.UIAbilityContext);
+      } catch (err) {
+        hilog.warn(DOMAIN, TAG, 'SSH background task stop on foreground failed: %{public}s',
+          JSON.stringify(err));
+      }
+    } else {
+      hilog.info(DOMAIN, TAG,
+        'SSH background task stop skipped: independent SSH window remains owned');
     }
     this.resumeCloudAfterForeground();
     hilog.info(DOMAIN, TAG, 'Ability onForeground');
