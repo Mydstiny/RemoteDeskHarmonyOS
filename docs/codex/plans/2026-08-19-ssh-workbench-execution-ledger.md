@@ -3,7 +3,7 @@
 > 状态：`ACTIVE_M8_M9` / `NOT_COMPLETE`
 > 权威计划：`docs/codex/plans/2026-08-19-ssh-termius-harmonyos7-api26-workbench-plan.md`
 > 建立日期：2026-08-19
-> 当前工作树：`codex/moonlight-complete-upgrade` / `9d0a29497`（M9 SSH 多窗口交接、PC 表单响应式与独立窗口前台恢复修复）
+> 当前工作树：`codex/moonlight-complete-upgrade` / `139a97d3`（M9 SSH 多窗口交接、PC 表单响应式、独立窗口前台恢复与 recovery generation fence）
 > 当前产品基线：HarmonyOS 6.1 / API 23
 > API 26 状态：本机未安装；任何 API 26-only import 均禁止进入产品代码
 
@@ -26,6 +26,7 @@
 - M9 SSH 认证后窗口 handoff 已补齐多标签语义：交接只移除已经转移的 host，源页保留其他 SSH 标签并切换到下一个会话；没有剩余标签才返回源页。目标窗口仍复用现有 `RemoteSessionWindowCoordinator`，不改变密码/Key/KBI/MFA/Host Key 流程。
 - M9 PC 响应式复验已修复 SSH 主机添加流固定 900vp 导致的 Sheet 溢出：`2d1f06d6` 改为跟随父 Sheet 宽度，PC 模拟器布局树确认代理选项和“下一步”均在可视区域内。
 - `9d0a29497` 补齐独立 SSH 窗口的系统前台恢复：目标 Ability `onForeground` 通过现有窗口协调器提升目标窗口，避免回到桌面/任务栏后焦点落回主窗口。精确 `default@OhosTestCompileArkTS` 与 `assembleHap` 均已通过；`ohosTest@OhosTestCompileArkTS` 仍受环境中未注册的 `00306054` 任务阻塞。
+- `139a97d3` 将 native recovery 的 generation 变化即时传递到 page/tab/callback fence：旧 callback 只触发受保护的下一轮同步，不再把新 generation 的输出永久丢入旧 detached 路径；TabStore generation 替换的 startup fence 也有回归测试。双构建通过，API23 PC 模拟器重新安装后 EntryAbility 启动 smoke 通过。
 - 2026-08-20 在 PC/API23 模拟器完成一次真实回环互操作：产品 ED25519 key + Host Key 指纹确认后才创建 `RemoteSessionAbility`；终端输入/输出、SFTP 47 项列表、双端点 SFTP 面板、关闭 SFTP 后终端继续输入、SSH 转发面板打开/关闭均已采集。HDC 任务栏/WMS 证据显示主窗口与两个独立 SSH 窗口可并存，目标窗口获得焦点并能被任务栏切回；测试 sshd 与 HDC 映射已清理。
 - 仍未宣称完成：API 26 SDK/目标设备、物理设备验收、真实 SFTP 文件传输/取消/重试、实际转发规则建立后的数据流、后台/PiP、窗口吸附/沉浸状态以及多主机/全协议矩阵。
 
@@ -202,6 +203,7 @@ M0 action 只修改纯快照：创建/重命名工作区、打开占位 tab、�
 | `/private/tmp/ssh-sftp-session.jpeg` | `15fe42298d977bf1012d161e54aa23adc1bf9cecb141936e0cd05910bf8b0a10` | 关闭 SFTP 后输入 `echo SSH_SFTP_SESSION_OK` 并收到回显，证明会话保活 |
 | `/private/tmp/ssh-forward-surface.jpeg` | `97ed1fa4a86a454d4d98bdf4acebea4ec878b54a9ca4df5ddb44669404f84e4f` | SSH 转发面板可打开/关闭；本轮未创建转发规则，未宣称数据流成功 |
 | `/private/tmp/ssh-sftp-remote-right-layout.json` | `2ed54b8eda8b2fc20562921630901867ba3f486dbf5a0b530f73672dcf442e9a` | 双端点 SFTP 布局树，记录左右 pane、当前 host 和 47 项状态 |
+| `/private/tmp/ssh-recovery-smoke.jpeg` | `5b8a0f6aa7e7466c3cb4c16d70193543c6ad7f0a72f2af1f165c843d90e7878a` | `139a97d3` 安装后 PC/API23 EntryAbility 启动 smoke，主机列表正常显示 |
 
 这些文件位于临时目录，不作为仓库制品。账本保留命令、hash 和观察结果；阶段验收前重新采集最终 SSH 页面证据。
 
@@ -236,7 +238,7 @@ M0 action 只修改纯快照：创建/重命名工作区、打开占位 tab、�
 2. 精确提交 M0 SSH-only 增量；不得暂存本账本列出的并行脏文件。
 3. 进入 M1 搜索桥和 Profile/快捷能力前，继续复用既有 SearchAddon、`SshSessionStore` 与 `SshTerminalTabStore`。
 
-最近一次窗口修复后的精确构建命令于 2026-08-20 在 `9d0a29497` 上执行，使用 `source scripts/macos_env.sh` 后的 DevEco Hvigor 环境；两项均退出 0（assembleHap：`BUILD SUCCESSFUL in 8 s 827 ms`）：
+最近一次 recovery fence 修复后的精确构建命令于 2026-08-20 在 `139a97d3` 上执行，使用 `source scripts/macos_env.sh` 后的 DevEco Hvigor 环境；两项均退出 0（assembleHap：`BUILD SUCCESSFUL in 11 s 740 ms`）：
 
 ```sh
 hvigorw --mode module -p module=entry -p product=default default@OhosTestCompileArkTS --analyze=normal --parallel --incremental --no-daemon
