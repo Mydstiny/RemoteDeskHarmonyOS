@@ -871,7 +871,10 @@ struct SshTerminal {
   // PC authentication stays in this original page. The flag is accepted only
   // from HostList's SSH preflight route, and a new ability is created only
   // after attachSshSession has committed a native CONNECTED session.
-  private pcWindowAfterAuthentication: boolean = false;
+  // This flag gates the authentication carrier in build(). It must be
+  // observable because a rejected login releases the carrier asynchronously
+  // and the source page then has to redraw its normal error/retry surface.
+  @State pcWindowAfterAuthentication: boolean = false;
   private pcWindowHandoffStarted: boolean = false;
   private pcWindowHandoffComplete: boolean = false;
   /** Invalidates delayed independent-window failure callbacks. */
@@ -9601,6 +9604,18 @@ struct SshTerminal {
       const msg: string = (err as Error).message || 'SSH 连接失败';
       if (!this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId)) { return; }
       this.connecting = false;
+      // The PC carrier is only a pre-window authentication placeholder.  If
+      // the existing password/key/KBI flow fails, release that carrier so the
+      // normal SSH error/retry surface becomes visible in the source page.
+      // This keeps the established authentication order while preventing an
+      // indefinite "正在完成 SSH 鉴权" spinner after a rejected login.
+      if (this.sessionWindowId.length === 0 && this.pcWindowAfterAuthentication) {
+        this.pcWindowAfterAuthentication = false;
+        this.pcWindowHandoffStarted = false;
+        this.pcWindowHandoffComplete = false;
+        hilog.info(0x0016, 'SshTerminal',
+          'independent SSH carrier released after authentication failure');
+      }
       await this.srv.updateConnectionHealth(bindingHostId, -1, false);
       if (!this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId)) { return; }
       hilog.error(0x0001, 'SshTerminal', '[connect] 异常: ' + msg);
