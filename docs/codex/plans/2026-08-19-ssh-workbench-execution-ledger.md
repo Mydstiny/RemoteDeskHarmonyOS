@@ -3,7 +3,7 @@
 > 状态：`ACTIVE_M8_M9` / `NOT_COMPLETE`
 > 权威计划：`docs/codex/plans/2026-08-19-ssh-termius-harmonyos7-api26-workbench-plan.md`
 > 建立日期：2026-08-19
-> 当前工作树：`codex/moonlight-complete-upgrade` / `3c6a6b7c`（M9 SSH 多窗口交接、独立窗口前台恢复、recovery generation fence 与独立窗口后台所有权保护）
+> 当前工作树：`codex/moonlight-complete-upgrade` / `b158e03c`（M9 SSH 多窗口交接、独立窗口前台恢复、recovery generation fence、独立窗口后台所有权保护与鉴权失败回退）
 > 当前产品基线：HarmonyOS 6.1 / API 23
 > API 26 状态：本机未安装；任何 API 26-only import 均禁止进入产品代码
 
@@ -31,6 +31,7 @@
 - 2026-08-20 在 PC/API23 模拟器完成一次真实回环互操作：产品 ED25519 key + Host Key 指纹确认后才创建 `RemoteSessionAbility`；sshd 日志确认两次 `Accepted publickey`；终端输入/输出、SFTP 47 项列表、远程复制、本地授权后上传、本地下载到系统文件选择器、既有目标文件拒绝、关闭 SFTP 后终端继续输入均已采集。SSH 转发规则实际启动后，通过 HDC `rport` 将主机 payload 送入监听器，UI 流量从 `0 B` 增长到 `29/35 B`，停止后状态回到已停止；测试 sshd 与 HDC 映射已清理。
 - 同一回归还验证了窗口生命周期：鉴权前仍停留在 HostList，鉴权成功后才出现独立窗口；终端 `echo SSH_WINDOW_OK` 回显正常；系统标题栏最大化、F11 进入/退出沉浸全屏均恢复稳定；标题栏拖到左边缘由 HarmonyOS WMS 进入左右分屏。此前 HDC 任务栏/WMS 证据已证明主窗口与两个独立 SSH 窗口可并存并可切换焦点。
 - 2026-08-20 追加 API23 PC 回环复验：Host Key 已验证后继续原有 ED25519 公钥鉴权，sshd 日志再次确认 `Accepted publickey`；HDC 键盘输入 `echo SSH_API23_E2E_OK` 回显成功；启用标准 `internal-sftp` 后 SFTP 目录读取成功（47 项）；独立窗口最小化时主窗口仍在前台，系统最近任务同时展示 SSH 窗口与 HostList，恢复 SSH 窗口后 `RemoteSessionAbility` 回到前台且终端提示符和连接仍在。临时 sshd、密钥和 HDC 映射均已清理。
+- 2026-08-20 追加 API23 PC 密码鉴权失败回归：故意使用错误密码，保留既有 Host Key 确认和原生认证顺序；sshd 记录 `Failed password`，应用日志记录 `sessionId=-31` 与 `independent SSH carrier released after authentication failure`。HDC 层级和截图确认主页面回到 `连接失败 (code=-31)`，提供“重试/返回”，没有创建 `RemoteSessionAbility`，系统任务仅保留主 `EntryAbility`；临时 sshd、密钥目录和 HDC 映射已清理。
 - 仍未宣称完成：API 26 SDK/目标设备、物理设备验收、SFTP 暂停/恢复/取消/重试全矩阵、后台/PiP、API26 下的沉浸/分屏差异、密码/KBI/MFA 成功/取消/失败全矩阵以及多主机/全协议并行矩阵。
 
 ## 2. 当前工作树隔离
@@ -225,12 +226,14 @@ M0 action 只修改纯快照：创建/重命名工作区、打开占位 tab、�
 | `/private/tmp/ssh-recents.png` | `3f337bc3c4da50ce3fc75debe3d3f5946f2d479af1b7e40b4a887d2f6c0aa69b` | API23 PC：系统最近任务同时展示独立 SSH 窗口与主 HostList 窗口 |
 | `/private/tmp/ssh-minimized-api23.json` | `1c94ee23f065db9d4de13910fa612fd2c3dec261d7ba1d447dfe3cd01fea411a` | API23 PC：独立 `RemoteSessionAbility` 最小化后处于 BACKGROUND，EntryAbility 仍 FOREGROUND |
 | `/private/tmp/ssh-restored-api23.png` | `b10b24f386b187b47d7908c8840234d959c2da61e10139a8484b568ea4fc5a2d` | API23 PC：从最近任务恢复后独立窗口回到前台，终端提示符仍在 |
+| `/private/tmp/ssh-password-failure-fixed-final-api23.json` | `2ce475e668efc270369445ec648d8c57711d4689635e8a726b24c670051f42a9` | API23 PC：错误密码后回到 `连接失败 (code=-31)`，显示“重试/返回”，无独立 SSH Ability |
+| `/private/tmp/ssh-password-failure-fixed-final-api23.png` | `f199a7fca838e583b4e2a8f98751e2734d60c00baefa202ea7c8339c95fafe4d` | API23 PC：鉴权失败最终页面截图，独立窗口鉴权 carrier 已卸载 |
 
 这些文件位于临时目录，不作为仓库制品。账本保留命令、hash 和观察结果；阶段验收前重新采集最终 SSH 页面证据。
 
 ### 7.3 已证明与未证明
 
-已证明：两个目标可通过 HDC 连接；当前 HAP 在 API 23 Phone/PC 环境可启动；PC 使用系统自由窗口。关闭残留的诊断日志 Sheet 后，点击 SSH 主机正确进入既有 Host Key 预检；TCP 不可达时保留在 HostList 的错误 Sheet，不会进入 Terminal，也不会创建独立会话窗口。`2d1f06d6` 后，PC SSH 新主机 Sheet 的布局树边界与截图均证明代理选项和下一步操作不再被固定宽度截断。2026-08-20 的两次回环 endpoint 复验进一步证明：产品 ED25519 key/指纹确认后才创建 SSH 独立窗口；sshd 日志确认公钥鉴权成功；HDC 键盘输入及终端命令可回显；SFTP 标准子系统可加载 47 项目录；已有远程复制、本地授权上传、本地下载及非空目标拒绝证据仍有效；关闭 SFTP 后终端继续执行命令；转发规则实际建立后可接收主机 payload 并更新流量；独立窗口最小化/最近任务恢复不丢会话，主窗口与 SSH 窗口可同时展示；标题栏最大化、F11 沉浸全屏进出、左边缘系统分屏均已采证。
+已证明：两个目标可通过 HDC 连接；当前 HAP 在 API 23 Phone/PC 环境可启动；PC 使用系统自由窗口。关闭残留的诊断日志 Sheet 后，点击 SSH 主机正确进入既有 Host Key 预检；TCP 不可达时保留在 HostList 的错误 Sheet，不会进入 Terminal，也不会创建独立会话窗口。`2d1f06d6` 后，PC SSH 新主机 Sheet 的布局树边界与截图均证明代理选项和下一步操作不再被固定宽度截断。2026-08-20 的两次回环 endpoint 复验进一步证明：产品 ED25519 key/指纹确认后才创建 SSH 独立窗口；sshd 日志确认公钥鉴权成功；HDC 键盘输入及终端命令可回显；SFTP 标准子系统可加载 47 项目录；已有远程复制、本地授权上传、本地下载及非空目标拒绝证据仍有效；关闭 SFTP 后终端继续执行命令；转发规则实际建立后可接收主机 payload 并更新流量；独立窗口最小化/最近任务恢复不丢会话，主窗口与 SSH 窗口可同时展示；标题栏最大化、F11 沉浸全屏进出、左边缘系统分屏均已采证。错误密码路径也已证明：Host Key/认证顺序不变，原生失败码 `-31` 会回到源页错误/重试界面，不会创建独立窗口或留下鉴权 carrier。
 
 尚未证明：密码/KBI/MFA 的成功/取消/失败全矩阵、真实软/硬键盘设备矩阵、SFTP 暂停/恢复/取消/重试全矩阵、通知/连续任务与 PiP、API26 设备和多主机/全协议并行。回环 sshd 仅监听 127.0.0.1 且已在采证后关闭；HDC `rport` 已移除。没有物理/API26 与上述剩余矩阵证据前，M7–M9 仍保持 DEVICE_PENDING，整个 SSH 计划不能标为完成。
 
