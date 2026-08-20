@@ -160,7 +160,7 @@ private:
     // GL 资源 (外部 OES 纹理路径)
     GLuint shaderProgram_;   // NV12→RGB 着色器程序
     GLint  samplerLocation_; // uniform samplerExternalOES 位置
-    GLint  oesTransformLocation_; // NativeImage producer transform
+    GLint  oesTransformLocation_; // NativeImage presentation transform
     GLint  canvasRotationLocation_; // uniform uCanvasRotation 位置
 
     // GL 资源 (原始 BGRA 像素路径 — RDP GDI)

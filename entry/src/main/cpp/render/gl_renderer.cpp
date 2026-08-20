@@ -288,7 +288,7 @@ void main() {
 }
 )";
 
-/** NativeImage OES vertex shader — applies the producer's per-frame transform. */
+/** NativeImage OES vertex shader — applies an explicit presentation transform. */
 static const char* VERTEX_SHADER_OES = R"(#version 300 es
 precision mediump float;
 layout(location = 0) in vec2 aPosition;

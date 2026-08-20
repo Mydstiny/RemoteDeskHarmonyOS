@@ -1428,20 +1428,26 @@ void HardwareDecoder::handleOutputBuffer(uint32_t /*index*/) {
             float producerTransform[16] = {};
             const int32_t transformRet = OH_NativeImage_GetTransformMatrixV2(
                 nativeImage_, producerTransform);
+            // The producer matrix is surface metadata, not remote-desktop
+            // orientation. The decoded RustDesk frame already follows the
+            // renderer's top-left contract; applying a PC producer flip here
+            // would turn an upright Windows desktop upside down. Keep the
+            // read for diagnostics, but make the presentation decision
+            // explicit and reset to identity on every updated frame.
             textureTransform_ =
                 Render::ResolveNativeImagePresentationTransform(
                     true, transformRet, producerTransform, textureTransform_);
             if (!textureTransformLogged_) {
                 textureTransformLogged_ = true;
                 OH_LOG_INFO(LOG_APP,
-                            "[Decoder] desktop NativeImage transform ret=%{public}d row0=[%{public}f,%{public}f,%{public}f,%{public}f] row1=[%{public}f,%{public}f,%{public}f,%{public}f] row3=[%{public}f,%{public}f,%{public}f,%{public}f]",
+                            "[Decoder] desktop NativeImage producer transform ret=%{public}d row0=[%{public}f,%{public}f,%{public}f,%{public}f] row1=[%{public}f,%{public}f,%{public}f,%{public}f] row3=[%{public}f,%{public}f,%{public}f,%{public}f] presentation=identity",
                             transformRet,
-                            textureTransform_[0], textureTransform_[4],
-                            textureTransform_[8], textureTransform_[12],
-                            textureTransform_[1], textureTransform_[5],
-                            textureTransform_[9], textureTransform_[13],
-                            textureTransform_[3], textureTransform_[7],
-                            textureTransform_[11], textureTransform_[15]);
+                            producerTransform[0], producerTransform[4],
+                            producerTransform[8], producerTransform[12],
+                            producerTransform[1], producerTransform[5],
+                            producerTransform[9], producerTransform[13],
+                            producerTransform[3], producerTransform[7],
+                            producerTransform[11], producerTransform[15]);
             }
         }
     }

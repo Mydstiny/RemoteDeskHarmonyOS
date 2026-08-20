@@ -1,9 +1,7 @@
 #pragma once
 
 #include <array>
-#include <cstddef>
 #include <cstdint>
-#include <cmath>
 
 namespace Render {
 
@@ -19,31 +17,29 @@ inline NativeImageTransform IdentityNativeImageTransform() {
 }
 
 /**
- * Desktop NativeImage producers can publish a texture-origin transform that
- * differs from Phone/Pad AVCodec surfaces. Mobile presentation is already a
- * released contract, so only the explicit desktop compatibility path consumes
- * the producer matrix. Invalid reads retain the last complete matrix to avoid
- * one-frame orientation flicker.
+ * Return the texture transform for an encoded remote-desktop frame.
+ *
+ * OH_NativeImage_GetTransformMatrixV2 reports metadata set by the producer of
+ * the surface. It is not the orientation contract of the decoded desktop
+ * image. RustDesk frames are already produced in the renderer's top-left
+ * coordinate domain, while the PC surface may still report a producer flip.
+ * Applying that metadata to the OES sampling coordinates would therefore
+ * invert an otherwise upright desktop. Keep the API value diagnostic-only and
+ * never let a failed read retain a stale non-identity transform.
  */
 inline NativeImageTransform ResolveNativeImagePresentationTransform(
     bool desktopSurfaceCompatibility,
     int32_t readResult,
     const float matrix[16],
     const NativeImageTransform& previous) {
-    if (!desktopSurfaceCompatibility) {
-        return IdentityNativeImageTransform();
-    }
-    if (readResult != 0 || matrix == nullptr) {
-        return previous;
-    }
-    NativeImageTransform resolved {};
-    for (size_t index = 0; index < resolved.size(); ++index) {
-        if (!std::isfinite(matrix[index])) {
-            return previous;
-        }
-        resolved[index] = matrix[index];
-    }
-    return resolved;
+    // These inputs are deliberately diagnostic-only. The decoded remote
+    // desktop frame is already in the renderer's top-left domain, so neither
+    // a producer flip nor a previously observed transform may affect sampling.
+    (void)desktopSurfaceCompatibility;
+    (void)readResult;
+    (void)matrix;
+    (void)previous;
+    return IdentityNativeImageTransform();
 }
 
 inline bool ShouldRenderNativeImageImmediately(bool desktopSurfaceCompatibility) {
