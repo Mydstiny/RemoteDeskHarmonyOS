@@ -3,7 +3,7 @@
 > 状态：`ACTIVE_M8_M9` / `NOT_COMPLETE`
 > 权威计划：`docs/codex/plans/2026-08-19-ssh-termius-harmonyos7-api26-workbench-plan.md`
 > 建立日期：2026-08-19
-> 当前工作树：`codex/moonlight-complete-upgrade` / `b158e03c`（M9 SSH 多窗口交接、独立窗口前台恢复、recovery generation fence、独立窗口后台所有权保护与鉴权失败回退）
+> 当前工作树：`codex/moonlight-complete-upgrade` / `3f3fd4da`（M9 SSH 多窗口交接、独立窗口前台恢复、recovery generation fence、独立窗口后台所有权保护与鉴权失败回退）
 > 当前产品基线：HarmonyOS 6.1 / API 23
 > API 26 状态：本机未安装；任何 API 26-only import 均禁止进入产品代码
 
@@ -34,6 +34,8 @@
 - 2026-08-20 追加 API23 PC 密码鉴权失败回归：故意使用错误密码，保留既有 Host Key 确认和原生认证顺序；sshd 记录 `Failed password`，应用日志记录 `sessionId=-31` 与 `independent SSH carrier released after authentication failure`。HDC 层级和截图确认主页面回到 `连接失败 (code=-31)`，提供“重试/返回”，没有创建 `RemoteSessionAbility`，系统任务仅保留主 `EntryAbility`；临时 sshd、密钥目录和 HDC 映射已清理。
 - 2026-08-20 追加 API23 Phone SSH 入口回归：主机列表打开“添加远程主机”后，协议选择包含 SSH，进入 SSH 表单可见名称、地址、端口、用户名和路由入口；未提交临时数据，系统返回后回到主机列表。当前证据为 `/private/tmp/ssh-phone-current-api23.json`（`44a37cf179ac72d3fea1c7dc1ffc10ac60b39f6c2e3deab6cdca8b39bad5af2c`）、`/private/tmp/ssh-phone-current-api23.png`（`1c2fdcff59ec30c0da9c954fac3d987015d76ba123d608735e6b6cc527b82664`）以及返回后的 `/private/tmp/ssh-phone-after-back-api23.json`（`5c0eb16f4e0d1d62de1c683ea8d14619e73ce448257750aa5a1087c8e607e086`）、`/private/tmp/ssh-phone-after-back-api23.png`（`1ba42c8347068d9b2288f1f6df401791baf4c6bb1f194581cb4d2ddf25a78c37`）。
 - 仍未宣称完成：API 26 SDK/目标设备、物理设备验收、SFTP 暂停/恢复/取消/重试全矩阵、后台/PiP、API26 下的沉浸/分屏差异、密码/KBI/MFA 成功/取消/失败全矩阵以及多主机/全协议并行矩阵。
+- 2026-08-20 曾尝试把 SSH 源策略套件接入 `entry/ohosTest` 设备 runner；该跨目录接线使 `onDeviceTest` 编译错误从基线 260 增至 337，已由 `3f3fd4da` 精确回退。当前 runner 基线仍受既有非 SSH 测试源错误阻塞，因此不宣称任何 SSH Hypium 设备通过。
+- 同日 API23/24 本地 SDK 之外未发现可验证的 API26 SDK；两个 HDC 守护进程探测均无响应，设备 UI 复验保持 `DEVICE_PENDING`，不通过重启守护进程或未证实 API 名称绕过门禁。
 
 ## 2. 当前工作树隔离
 
