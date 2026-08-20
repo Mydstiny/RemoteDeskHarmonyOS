@@ -19,6 +19,10 @@ import {
   SshWorkspacePlatformFacts,
   SSH_WORKBENCH_V2_DEFAULT_ENABLED
 } from '../main/ets/services/ssh/workspace/SshWorkspaceCapabilityPolicy';
+import {
+  defaultSshWorkspacePlatformDeclarations,
+  probeSshWorkspacePlatformFacts
+} from '../main/ets/services/ssh/workspace/SshWorkspacePlatformProbe';
 import { sshTerminalSessionProfileScopeKey } from
   '../main/ets/services/ssh/profile/SshTerminalProfilePolicy';
 import {
@@ -185,6 +189,18 @@ export default function sshWorkspacePolicyTest(): void {
       expect(SSH_WORKBENCH_V2_DEFAULT_ENABLED).assertFalse();
       expect(capabilities.workbenchEnabled).assertFalse();
       expect(capabilities.layoutEngine).assertEqual('static');
+      expect(capabilities.chromeTreatment).assertEqual('solid');
+    });
+
+    it('runtime_probe_should_not_promote_api26_from_version_alone', 0, (): void => {
+      const facts: SshWorkspacePlatformFacts = probeSshWorkspacePlatformFacts(
+        true, defaultSshWorkspacePlatformDeclarations());
+      const capabilities: SshWorkspaceCapabilities = resolveSshWorkspaceCapabilities(facts);
+      expect(facts.featureFlagEnabled).assertTrue();
+      expect(facts.dynamicLayoutDeclared).assertFalse();
+      expect(facts.containerReaderDeclared).assertFalse();
+      expect(capabilities.layoutEngine).assertEqual('static');
+      expect(capabilities.containerEngine).assertEqual('window_breakpoint');
       expect(capabilities.chromeTreatment).assertEqual('solid');
     });
 

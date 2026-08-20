@@ -216,8 +216,13 @@ import {
 } from '../services/ssh/shortcut/SshShortcutPolicy';
 import {
   SSH_WORKBENCH_V2_DEFAULT_ENABLED,
-  SSH_WORKBENCH_V2_FLAG_KEY
+  SSH_WORKBENCH_V2_FLAG_KEY,
+  resolveSshWorkspaceCapabilities,
+  SshWorkspaceLayoutEngine
 } from '../services/ssh/workspace/SshWorkspaceCapabilityPolicy';
+import {
+  probeSshWorkspacePlatformFacts
+} from '../services/ssh/workspace/SshWorkspacePlatformProbe';
 import {
   buildSshBroadcastPlan,
   sshBroadcastTargetEligible,
@@ -613,6 +618,8 @@ struct SshTerminal {
   @State terminalFocusMode: boolean = true;
   @StorageProp(SSH_WORKBENCH_V2_FLAG_KEY) @Watch('onSshWorkbenchFlagChange')
   sshWorkbenchEnabled: boolean = SSH_WORKBENCH_V2_DEFAULT_ENABLED;
+  /** The policy-selected renderer; remains static until an SDK adapter proves a newer one. */
+  @State sshWorkspaceLayoutEngine: SshWorkspaceLayoutEngine = 'static';
   /** Durable M4 shell state. Runtime/native ownership remains in SshTerminalTabStore. */
   @State sshWorkspaceReady: boolean = false;
   @State sshWorkspaceSnapshot: SshWorkspaceSnapshotV1 =
@@ -1802,7 +1809,7 @@ struct SshTerminal {
       inspectorRequested: false,
       requestedPaneCount: sshWorkspaceVisiblePaneCount(this.sshWorkspaceSnapshot.paneRoot),
       minimumTerminalPaneWidthVp: 360,
-      engine: 'static'
+      engine: this.sshWorkspaceLayoutEngine
     });
   }
 
@@ -8304,6 +8311,7 @@ struct SshTerminal {
       // never boots with a default font that masks the user's saved choice.
       const sshContext: common.Context = getContext(this) as common.Context;
       this.sshWorkbenchEnabled = this.sshWorkspaceCapabilityStore.load(sshContext);
+      this.refreshSshWorkspaceCapabilitySelection();
       this.sshProductivityReady = this.sshProductivityStore.init(sshContext);
       this.refreshSshProductivityDocument();
       await this.sshSessionLogStore.prepare(sshContext);
@@ -10698,6 +10706,7 @@ struct SshTerminal {
   }
 
   private onSshWorkbenchFlagChange(): void {
+    this.refreshSshWorkspaceCapabilitySelection();
     if (!this.sshWorkbenchEnabled) {
       this.clearSshWorkspaceSaveTimer();
       if (this.sshWorkspaceReady) {
@@ -10739,6 +10748,20 @@ struct SshTerminal {
     }
     this.refreshTerminalProfileForHost();
     this.rebuildSshCommandRegistry();
+  }
+
+  /**
+   * Select the SSH renderer only from explicit capability facts.  API level
+   * alone never enables an unverified API26 component; the probe stays
+   * conservative until the matching SDK/device adapter is installed.
+   */
+  private refreshSshWorkspaceCapabilitySelection(): void {
+    const capabilities = resolveSshWorkspaceCapabilities(
+      probeSshWorkspacePlatformFacts(this.sshWorkbenchEnabled));
+    this.sshWorkspaceLayoutEngine = capabilities.layoutEngine;
+    hilog.info(0x0017, 'SshTerminal', '[workspace] capability layout=' +
+      capabilities.layoutEngine + ' chrome=' + capabilities.chromeTreatment +
+      ' reason=' + capabilities.reason);
   }
 
   private keyModifier(event: KeyEvent, name: string): boolean {
