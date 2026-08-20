@@ -494,6 +494,8 @@ struct SshTerminal {
   @State connectionError: string = '';
   @State hostLabel: string = '';
   @State userAtHost: string = '';
+  /** 手机顶栏的低频 SSH 操作统一收进官方 bindPopup 气泡菜单。 */
+  @State showSshPhoneActionPopup: boolean = false;
   /** Observable identity of the host currently rendered by this page. */
   @State visibleSshHostId: string = '';
   @State sshTabViews: SshTerminalTabView[] = [];
@@ -5270,6 +5272,108 @@ struct SshTerminal {
       this.sshWorkbenchEnabled, this.shellAreaW, this.breakpoint);
   }
 
+  /**
+   * 手机的顶栏宽度不足以同时容纳地区语言、SFTP 和隧道操作。
+   * Pad/PC 保持原有直达控件，避免改变大屏工作流。
+   */
+  private sshPhoneActionPopupEnabled(): boolean {
+    // A phone can rotate into a wider breakpoint without becoming a Pad. Keep
+    // the compact action surface tied to the device class, not orientation.
+    return !this.isDesktopDevice && !this.isPadDevice;
+  }
+
+  private openSshPhoneAction(action: 'locale' | 'sftp' | 'forwarding'): void {
+    const pageGeneration: number = this.pageGeneration;
+    const hostId: string = this.hostId.trim();
+    this.showSshPhoneActionPopup = false;
+    // Let the official popup finish its dismiss transition before mounting a
+    // Sheet/Dialog. This avoids two transient surfaces competing for focus on
+    // API 23 while preserving the existing action implementations.
+    setTimeout((): void => {
+      if (this.terminalClosing || pageGeneration !== this.pageGeneration ||
+        hostId !== this.hostId.trim()) {
+        return;
+      }
+      if (action === 'locale') {
+        this.selectSshSessionLocale();
+      } else if (!this.sshConnectionIsConnected()) {
+        promptAction.showToast({ message: 'SSH 连接完成后才能使用此操作', duration: 1600 });
+      } else if (action === 'sftp') {
+        this.openSftpPanel();
+      } else {
+        this.openForwardingSheet();
+      }
+    }, 32);
+  }
+
+  @Builder SshPhoneActionPopup() {
+    Column() {
+      Text('会话工具')
+        .fontSize(12).fontColor(this.pal().text3)
+        .margin({ left: 14, right: 14, top: 8, bottom: 6 })
+      Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
+
+      Row() {
+        Text('文').fontSize(16).fontWeight(FontWeight.Medium)
+          .fontColor(this.accentColor).width(24).textAlign(TextAlign.Center)
+        Column() {
+          Text('语言与地区').fontSize(14).fontColor(this.pal().text)
+          Text(sshSessionLocaleLabel(this.sshSessionLocale, true))
+            .fontSize(11).fontColor(this.pal().text3).margin({ top: 2 })
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
+        SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(14).fontColor([this.pal().text3])
+      }
+      .width('100%').height(52).padding({ left: 14, right: 12 })
+      .onClick((): void => { this.openSshPhoneAction('locale'); })
+      .accessibilityText('切换 SSH 会话语言与地区')
+
+      if (this.sshConnectionIsConnected()) {
+        Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
+        Row() {
+          SymbolGlyph($r('sys.symbol.doc')).fontSize(17).fontColor([this.accentColor])
+            .width(24)
+          Column() {
+            Text('SFTP 文件').fontSize(14).fontColor(this.pal().text)
+            Text('浏览与传输远端文件').fontSize(11).fontColor(this.pal().text3).margin({ top: 2 })
+          }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
+          SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(14).fontColor([this.pal().text3])
+        }
+        .width('100%').height(52).padding({ left: 14, right: 12 })
+        .onClick((): void => { this.openSshPhoneAction('sftp'); })
+        .accessibilityText('打开 SFTP 文件传输')
+
+        Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
+        Row() {
+          Text('⇄').fontSize(19).fontColor(this.accentColor)
+            .width(24).textAlign(TextAlign.Center)
+          Column() {
+            Text('隧道转发').fontSize(14).fontColor(this.pal().text)
+            Text(this.forwardingListeningCount() > 0
+              ? this.forwardingListeningCount().toString() + ' 条转发正在监听'
+              : (this.forwardingHasError() ? '有转发需要检查' : '管理端口转发'))
+              .fontSize(11)
+              .fontColor(this.forwardingHasError() ? this.pal().danger : this.pal().text3)
+              .margin({ top: 2 })
+          }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
+          SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(14).fontColor([this.pal().text3])
+        }
+        .width('100%').height(52).padding({ left: 14, right: 12 })
+        .onClick((): void => { this.openSshPhoneAction('forwarding'); })
+        .accessibilityText('打开 SSH 隧道转发')
+      }
+    }
+    .width(236).padding({ top: 2, bottom: 6 })
+    .borderRadius(14)
+    .backgroundColor(this.pal().card)
+    .shadow({ radius: 18, color: 'rgba(0,0,0,0.28)', offsetY: 6 })
+    .transition(TransitionEffect.asymmetric(
+      TransitionEffect.scale({ x: 0.88, y: 0.88 }).combine(TransitionEffect.OPACITY)
+        .animation({ duration: 180, curve: Curve.FastOutSlowIn }),
+      TransitionEffect.scale({ x: 0.88, y: 0.88 }).combine(TransitionEffect.OPACITY)
+        .animation({ duration: 120, curve: Curve.FastOutSlowIn })
+    ))
+  }
+
   private sshInlineHostWidth(): number {
     if (this.sshCompactChrome()) { return 120; }
     if (this.isDesktopDevice) { return 220; }
@@ -8254,6 +8358,7 @@ struct SshTerminal {
     this.sshWorkspacePersistenceError = '';
     this.sshWorkspaceManualReconnectRunning = false;
     this.sshWorkspacePtySizes.clear();
+    this.showSshPhoneActionPopup = false;
     this.sshProductivityReady = false;
     this.sshProductivityDocument = emptySshProductivityDocument();
     this.sshProductivityHistorySequence = 0;
@@ -8662,6 +8767,7 @@ struct SshTerminal {
     this.sshWorkspaceInitSequence++;
     this.sshWorkspaceReady = false;
     this.sshWorkspacePtySizes.clear();
+    this.showSshPhoneActionPopup = false;
     this.stopSshAuthPromptPolling(true);
     this.closeTerminalSearch(false, true);
     this.showTerminalProfileSheet = false;
@@ -15440,21 +15546,48 @@ struct SshTerminal {
           })
           .accessibilityText(this.terminalSearchVisible ? '聚焦终端搜索' : '打开终端搜索')
         }
-        Row({ space: 4 }) {
-          Text(this.sshCompactChrome() ? '语' : 'LANG').fontSize(10).fontWeight(FontWeight.Medium)
-            .fontColor('rgba(242,244,247,0.76)')
-          if (this.isDesktopDevice && !this.sshCompactChrome()) {
-            Text(sshSessionLocaleLabel(this.sshSessionLocale, true))
-              .fontSize(10).fontColor('rgba(242,244,247,0.60)')
+        if (this.sshPhoneActionPopupEnabled()) {
+          Button() {
+            SymbolGlyph($r('sys.symbol.ellipsis_bubble'))
+              .fontSize(19).fontColor(['rgba(242,244,247,0.88)'])
           }
+          .width(40).height(40).padding(0)
+          .borderRadius(20)
+          .backgroundColor(this.chromeChipBg())
+          .margin({ right: 8 })
+          .bindPopup(this.showSshPhoneActionPopup, {
+            builder: this.SshPhoneActionPopup(),
+            placement: Placement.BottomRight,
+            enableArrow: true,
+            popupColor: this.pal().card,
+            onStateChange: (e: Object) => {
+              const ev: Record<string, boolean> = e as Record<string, boolean>;
+              if (!ev['isVisible']) { this.showSshPhoneActionPopup = false; }
+            }
+          })
+          .onClick((): void => {
+            animateTo({ duration: 180, curve: Curve.FastOutSlowIn }, () => {
+              this.showSshPhoneActionPopup = !this.showSshPhoneActionPopup;
+            });
+          })
+          .accessibilityText('更多 SSH 操作')
+        } else {
+          Row({ space: 4 }) {
+            Text(this.sshCompactChrome() ? '语' : 'LANG').fontSize(10).fontWeight(FontWeight.Medium)
+              .fontColor('rgba(242,244,247,0.76)')
+            if (this.isDesktopDevice && !this.sshCompactChrome()) {
+              Text(sshSessionLocaleLabel(this.sshSessionLocale, true))
+                .fontSize(10).fontColor('rgba(242,244,247,0.60)')
+            }
+          }
+          .height(34)
+          .padding({ left: 9, right: 9 })
+          .borderRadius(17)
+          .backgroundColor(this.chromeChipBg())
+          .opacity(this.connecting ? 0.48 : 1)
+          .margin({ right: 8 })
+          .onClick((): void => { this.selectSshSessionLocale(); })
         }
-        .height(34)
-        .padding({ left: 9, right: 9 })
-        .borderRadius(17)
-        .backgroundColor(this.chromeChipBg())
-        .opacity(this.connecting ? 0.48 : 1)
-        .margin({ right: 8 })
-        .onClick((): void => { this.selectSshSessionLocale(); })
         if (this.sshConnectionIsConnected()) {
           if (!this.isDesktopDevice) {
             Row() {
@@ -15468,43 +15601,43 @@ struct SshTerminal {
             .margin({ right: 8 })
             .onClick((): void => { this.toggleSshOrientation(); })
           }
-          Row() {
-            SymbolGlyph($r('sys.symbol.doc'))
-              .fontSize(18)
-              .fontColor(['rgba(242,244,247,0.86)'])
-          }
-          .width(34)
-          .height(34)
-          .justifyContent(FlexAlign.Center)
-          .borderRadius(17)
-          .backgroundColor(this.chromeChipBg())
-          .margin({ right: 8 })
-          .onClick((): void => { this.openSftpPanel(); })
-          if (!this.sshCompactChrome()) {
-          Stack({ alignContent: Alignment.TopEnd }) {
-            Row({ space: 4 }) {
-              Text('⇄').fontSize(18).fontColor('rgba(242,244,247,0.88)')
-              if (this.isDesktopDevice) {
-                Text('隧道').fontSize(11).fontColor('rgba(242,244,247,0.78)')
+          if (!this.sshPhoneActionPopupEnabled()) {
+            Row() {
+              SymbolGlyph($r('sys.symbol.doc'))
+                .fontSize(18)
+                .fontColor(['rgba(242,244,247,0.86)'])
+            }
+            .width(34)
+            .height(34)
+            .justifyContent(FlexAlign.Center)
+            .borderRadius(17)
+            .backgroundColor(this.chromeChipBg())
+            .margin({ right: 8 })
+            .onClick((): void => { this.openSftpPanel(); })
+            Stack({ alignContent: Alignment.TopEnd }) {
+              Row({ space: 4 }) {
+                Text('⇄').fontSize(18).fontColor('rgba(242,244,247,0.88)')
+                if (this.isDesktopDevice) {
+                  Text('隧道').fontSize(11).fontColor('rgba(242,244,247,0.78)')
+                }
+              }
+              .width(this.isDesktopDevice ? 62 : 34)
+              .height(34)
+              .justifyContent(FlexAlign.Center)
+              if (this.forwardingListeningCount() > 0) {
+                Text(this.forwardingListeningCount().toString()).fontSize(8).fontColor(Color.White)
+                  .width(18).height(15).textAlign(TextAlign.Center).borderRadius(8)
+                  .backgroundColor(this.accentColor).padding({ left: 3, right: 3 })
+              } else if (this.forwardingHasError()) {
+                Column().width(9).height(9).borderRadius(5).backgroundColor(this.pal().danger)
               }
             }
             .width(this.isDesktopDevice ? 62 : 34)
             .height(34)
-            .justifyContent(FlexAlign.Center)
-            if (this.forwardingListeningCount() > 0) {
-              Text(this.forwardingListeningCount().toString()).fontSize(8).fontColor(Color.White)
-                .width(18).height(15).textAlign(TextAlign.Center).borderRadius(8)
-                .backgroundColor(this.accentColor).padding({ left: 3, right: 3 })
-            } else if (this.forwardingHasError()) {
-              Column().width(9).height(9).borderRadius(5).backgroundColor(this.pal().danger)
-            }
-          }
-          .width(this.isDesktopDevice ? 62 : 34)
-          .height(34)
-          .borderRadius(17)
-          .backgroundColor(this.chromeChipBg())
-          .margin({ right: 8 })
-          .onClick((): void => { this.openForwardingSheet(); })
+            .borderRadius(17)
+            .backgroundColor(this.chromeChipBg())
+            .margin({ right: 8 })
+            .onClick((): void => { this.openForwardingSheet(); })
           }
         }
         Row() {
