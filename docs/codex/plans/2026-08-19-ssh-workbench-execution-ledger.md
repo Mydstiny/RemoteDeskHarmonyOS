@@ -3,7 +3,7 @@
 > 状态：`ACTIVE_M8_M9` / `NOT_COMPLETE`
 > 权威计划：`docs/codex/plans/2026-08-19-ssh-termius-harmonyos7-api26-workbench-plan.md`
 > 建立日期：2026-08-19
-> 当前工作树：`codex/moonlight-complete-upgrade` / `e8bf366a`（M9 SSH 多窗口交接、独立窗口前台恢复、recovery generation fence、独立窗口后台所有权保护与鉴权失败回退；并记录设备 runner/API26 工具链阻塞）
+> 当前工作树：`codex/moonlight-complete-upgrade` / `0a7a9e5b`（M9 SSH 多窗口交接、独立窗口前台恢复、recovery generation fence、独立窗口后台所有权保护与鉴权失败回退；并记录设备 runner/API26 工具链阻塞）
 > 当前产品基线：HarmonyOS 6.1 / API 23
 > API 26 状态：本机未安装；任何 API 26-only import 均禁止进入产品代码
 
