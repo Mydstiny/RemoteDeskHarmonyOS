@@ -941,6 +941,12 @@ struct SshTerminal {
   /** Identifies the currently outstanding latency request across reconnects. */
   private latencyProbeToken: number = 0;
   private sshAuthPromptPollTimer: number = -1;
+  /** API 23 bindSheet needs one UI turn after prompt state is populated. */
+  private sshAuthPromptShowTimer: number = -1;
+  /** Do not mount overlays while the SSH route is still entering. */
+  private sshAuthPromptPageShown: boolean = false;
+  /** API 23 page enter animation can outlive onPageShow by several frames. */
+  private sshAuthPromptPageReadyAtMs: number = 0;
   private sshAuthPromptRequestId: number = 0;
   private sshAuthPromptSubmitting: boolean = false;
   // Native snapshot() can briefly outlive respond()/cancel() while the owner
@@ -1229,6 +1235,10 @@ struct SshTerminal {
   }
 
   private clearSshAuthPromptState(): void {
+    if (this.sshAuthPromptShowTimer !== -1) {
+      clearTimeout(this.sshAuthPromptShowTimer);
+      this.sshAuthPromptShowTimer = -1;
+    }
     this.showSshAuthPromptSheet = false;
     this.sshAuthPrompt = null;
     this.sshAuthPromptValues = [];
@@ -1288,7 +1298,32 @@ struct SshTerminal {
     this.sshAuthPromptValues = values;
     this.sshAuthPromptRequestId = prompt.requestId;
     this.sshAuthPromptSubmitting = false;
-    this.showSshAuthPromptSheet = true;
+    // Populate the request and its response fields before mounting the native
+    // Sheet. API 23 can evaluate a bindSheet builder against the previous
+    // state when `show=true` is assigned in the same turn; an empty builder is
+    // then dismissed immediately and cancels the native broker request. The
+    // request identity fence makes this deferred mount harmless on teardown,
+    // reconnect, or a newer challenge round.
+    if (this.sshAuthPromptShowTimer !== -1) {
+      clearTimeout(this.sshAuthPromptShowTimer);
+    }
+    const requestId: number = prompt.requestId;
+    if (!this.sshAuthPromptPageShown || Date.now() < this.sshAuthPromptPageReadyAtMs) {
+      // The prompt can arrive during the route's entrance animation. Keep the
+      // broker request pending and let the regular poll mount it after
+      // onPageShow, when API 23 no longer tears down child Sheets with the
+      // finishing page transition.
+      return;
+    }
+    this.sshAuthPromptShowTimer = setTimeout((): void => {
+      this.sshAuthPromptShowTimer = -1;
+      if (this.terminalClosing || this.sshAuthPrompt === null ||
+        this.sshAuthPrompt.requestId !== requestId ||
+        this.sshAuthPromptRequestId !== requestId) {
+        return;
+      }
+      this.showSshAuthPromptSheet = true;
+    }, 0);
   }
 
   private startSshAuthPromptPolling(): void {
@@ -1423,6 +1458,20 @@ struct SshTerminal {
             .enabled(!this.sshAuthPromptSubmitting)
             .onClick((): void => { this.submitSshAuthPrompt(); })
         }.width('100%').margin({ top: 16 })
+      } else {
+        // API 23 may construct the bindSheet builder one frame before the
+        // prompt snapshot reaches ArkUI. Keep a non-empty, measurable sheet
+        // alive during that handoff; an empty FIT_CONTENT builder is treated
+        // as an immediately dismissible surface and cancels the broker.
+        Column() {
+          Text('正在准备认证…')
+            .fontSize(16).fontColor(this.pal().text)
+          Text('请稍候')
+            .fontSize(12).fontColor(this.pal().text2).margin({ top: 8 })
+        }
+          .width('100%')
+          .height(96)
+          .justifyContent(FlexAlign.Center)
       }
     }
       .width('100%')
@@ -8343,6 +8392,8 @@ struct SshTerminal {
   }
 
   async aboutToAppear(): Promise<void> {
+    this.sshAuthPromptPageShown = false;
+    this.sshAuthPromptPageReadyAtMs = 0;
     const routeParams: Object = router.getParams();
     this.bindIndependentSessionWindow(routeParams);
     this.stageIndependentWindowAfterAuthentication(routeParams);
@@ -8763,6 +8814,8 @@ struct SshTerminal {
   }
 
   aboutToDisappear(): void {
+    this.sshAuthPromptPageShown = false;
+    this.sshAuthPromptPageReadyAtMs = 0;
     this.flushSshWorkspaceSave();
     this.sshWorkspaceInitSequence++;
     this.sshWorkspaceReady = false;
@@ -9012,6 +9065,11 @@ struct SshTerminal {
         this.setPreferredOrientation(window.Orientation.UNSPECIFIED, 'SSH-UNSPECIFIED');
       }, 250);
     }
+  }
+
+  onPageShow(): void {
+    this.sshAuthPromptPageShown = true;
+    this.sshAuthPromptPageReadyAtMs = Date.now() + 720;
   }
 
   private backgroundSshInfos(): SshTerminalBackgroundInfo[] {
@@ -16144,6 +16202,45 @@ struct SshTerminal {
             }
           }
         })
+
+      // Keep the interactive authentication Sheet on its own host. The
+      // terminal root also owns several independent Sheets; API 23 resolves
+      // chained bindSheet modifiers as one lifecycle and can immediately
+      // dismiss a middle binding when a later binding is false.
+      Column()
+        .width(1)
+        .height(1)
+        .hitTestBehavior(HitTestMode.None)
+        .bindSheet($$this.showSshAuthPromptSheet, this.SshAuthPromptSheet(), {
+          // API 23 can close a FIT_CONTENT sheet while its builder is still
+          // resolving dynamic prompt rows. A bounded height keeps the
+          // official Sheet measurable through the first render.
+          height: this.isDesktopDevice ? '560vp' : '520vp',
+          preferType: this.isDesktopDevice ? SheetType.CENTER : SheetType.BOTTOM,
+          width: this.isDesktopDevice ? '560vp' : '100%',
+          dragBar: !this.isDesktopDevice,
+          backgroundColor: this.pal().sheetBg,
+          blurStyle: BlurStyle.NONE,
+          showClose: false,
+          maskColor: 'rgba(0,0,0,0.46)',
+          // System back/swipe must cancel the native broker request;
+          // dismissing only the ArkUI surface would leave libssh2 waiting.
+          onWillDismiss: (action: DismissSheetAction): void => {
+            if (this.sshAuthPromptSubmitting) {
+              this.clearSshAuthPromptState();
+            } else {
+              this.cancelSshAuthPrompt();
+            }
+            action.dismiss();
+          },
+          onDisappear: (): void => {
+            if (this.sshAuthPrompt !== null) {
+              this.cancelSshAuthPrompt();
+            } else {
+              this.clearSshAuthPromptState();
+            }
+          }
+        })
     }
     .width('100%').height('100%')
     .bindSheet($$this.showSftpTransferCenter, this.SftpTransferCenterContent(), {
@@ -16178,33 +16275,6 @@ struct SshTerminal {
         if (this.passphraseResolve) {
           this.passphraseResolve('');
           this.passphraseResolve = null;
-        }
-      }
-    })
-    .bindSheet($$this.showSshAuthPromptSheet, this.SshAuthPromptSheet(), {
-      height: SheetSize.FIT_CONTENT,
-      preferType: this.isDesktopDevice ? SheetType.CENTER : SheetType.BOTTOM,
-      width: this.isDesktopDevice ? '560vp' : '100%',
-      dragBar: !this.isDesktopDevice,
-      backgroundColor: this.pal().sheetBg,
-      blurStyle: BlurStyle.NONE,
-      showClose: false,
-      maskColor: 'rgba(0,0,0,0.46)',
-      // System back/swipe must cancel the native broker request; dismissing
-      // only the ArkUI surface would leave libssh2 waiting for credentials.
-      onWillDismiss: (action: DismissSheetAction): void => {
-        if (this.sshAuthPromptSubmitting) {
-          this.clearSshAuthPromptState();
-        } else {
-          this.cancelSshAuthPrompt();
-        }
-        action.dismiss();
-      },
-      onDisappear: (): void => {
-        if (this.sshAuthPrompt !== null) {
-          this.cancelSshAuthPrompt();
-        } else {
-          this.clearSshAuthPromptState();
         }
       }
     })
