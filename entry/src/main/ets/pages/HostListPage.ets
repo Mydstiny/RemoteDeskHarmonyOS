@@ -617,6 +617,9 @@ struct HostListPage {
   @State accountAvatarUrl: string = '';
   @State hostSelectionMode: boolean = false;
   @State hostSelectedIds: Set<string> = new Set();
+  @State hostReorderEnabled: boolean = false;
+  private hostManualOrder: string[] = [];
+  private draggingHostId: string = '';
   @State hostPresenceProbeBusyIds: Set<string> = new Set();
   @State hostGroupProbeBusyType: string = '';
   // The service snapshot is persisted asynchronously and can be replaced by
@@ -1141,6 +1144,7 @@ struct HostListPage {
     this.closeLegacySettingsSheetFlags();
     if (this.hostSelectionMode) {
       this.hostSelectionMode = false;
+      this.hostReorderEnabled = false;
       this.hostSelectedIds = new Set();
     }
     if (this.groupedHostCardsActive()) {
@@ -1160,6 +1164,14 @@ struct HostListPage {
       this.hostPageTitle = titles[this.curTab] || '';
       this.updateHostFilter();
     }
+  }
+
+  onBackPress(): boolean {
+    if (this.hostSelectionMode) {
+      this.cancelHostEdit();
+      return true;
+    }
+    return false;
   }
 
   async aboutToAppear(): Promise<void> {
@@ -1248,6 +1260,13 @@ struct HostListPage {
       AppStorage.setOrCreate('totpLogoMode', this.totpLogoMode);
       this.groupedHostCards = savedGroupedHostCards;
       AppStorage.setOrCreate('groupedHostCards', this.groupedHostCards);
+      // 恢复主机手动排序顺序 (纯本地持久化)
+      const savedManualOrder: string = prefs.getSync('hostManualSortOrder', '') as string;
+      if (savedManualOrder.length > 0) {
+        try { this.hostManualOrder = JSON.parse(savedManualOrder) as string[]; } catch (_) {
+          this.hostManualOrder = [];
+        }
+      }
       this.hostCardSensitiveInfoHidden = savedHostCardSensitiveInfoHidden;
       AppStorage.setOrCreate(HOST_CARD_SENSITIVE_INFO_HIDDEN_KEY,
         this.hostCardSensitiveInfoHidden);
@@ -4107,8 +4126,29 @@ struct HostListPage {
   // their header and detail snapshots.
   private refreshFilteredHostView(): void {
     this.filteredHosts = this.visibleHostsForCurrentMode();
+    // 非分类模式下应用本地手动排序
+    if (!this.groupedHostCardsActive() && this.hostManualOrder.length > 0) {
+      this.filteredHosts = this.applyManualSortOrder(this.filteredHosts);
+    }
     this.hostDataSource.replaceAll(this.filteredHosts);
     this.hostViewRevision += 1;
+  }
+
+  /** 根据本地保存的手动排序顺序重排主机列表。已排序的主机按保存顺序排列，新主机追加到末尾。 */
+  private applyManualSortOrder(hosts: RemoteHost[]): RemoteHost[] {
+    if (this.hostManualOrder.length === 0) { return hosts; }
+    const orderMap: Map<string, number> = new Map<string, number>();
+    for (let i = 0; i < this.hostManualOrder.length; i++) {
+      orderMap.set(this.hostManualOrder[i], i);
+    }
+    const sorted: RemoteHost[] = hosts.slice();
+    sorted.sort((a: RemoteHost, b: RemoteHost): number => {
+      const oa: number = orderMap.has(a.id) ? (orderMap.get(a.id) as number) : Number.MAX_SAFE_INTEGER;
+      const ob: number = orderMap.has(b.id) ? (orderMap.get(b.id) as number) : Number.MAX_SAFE_INTEGER;
+      if (oa !== ob) { return oa - ob; }
+      return 0;
+    });
+    return sorted;
   }
 
   // CRUD handlers use the same immediate snapshot refresh as the classic list.
@@ -4426,6 +4466,71 @@ struct HostListPage {
     const next: Set<string> = new Set(this.hostSelectedIds);
     if (checked) { next.add(id); } else { next.delete(id); }
     this.hostSelectedIds = next;
+  }
+
+  /** 拖拽重排回调: 交换 LazyForEach 数据源中的位置 */
+  private handleHostMove(from: number, to: number): void {
+    this.hostDataSource.moveItem(from, to);
+    const item: RemoteHost = this.filteredHosts.splice(from, 1)[0];
+    this.filteredHosts.splice(to, 0, item);
+  }
+
+  /** 完成排序: 将当前显示顺序持久化到本地 Preferences 并退出编辑模式 */
+  private commitHostReorder(): void {
+    const snapshot: RemoteHost[] = this.hostDataSource.getDataSnapshot();
+    this.hostManualOrder = snapshot.map((h: RemoteHost): string => h.id);
+    this.persistHostManualOrder();
+    animateTo({ duration: 200, curve: Curve.FastOutSlowIn }, (): void => {
+      this.hostSelectionMode = false;
+      this.hostReorderEnabled = false;
+      this.hostSelectedIds = new Set();
+    });
+  }
+
+  /** 取消编辑: 丢弃拖拽变更, 从 Preferences 恢复原始排序 */
+  private cancelHostEdit(): void {
+    animateTo({ duration: 200, curve: Curve.FastOutSlowIn }, (): void => {
+      this.hostSelectionMode = false;
+      this.hostReorderEnabled = false;
+      this.hostSelectedIds = new Set();
+    });
+    // 从服务层重新加载原始排序
+    this.refreshHostSnapshotAfterMutation();
+  }
+
+  /** 将手动排序顺序写入本地 Preferences (不触发云同步) */
+  private persistHostManualOrder(): void {
+    try {
+      const prefs = preferences.getPreferencesSync(getContext(this), { name: 'RemoteDesktopAppPrefs' });
+      prefs.putSync('hostManualSortOrder', JSON.stringify(this.hostManualOrder));
+      prefs.flushSync();
+    } catch (_e) { /* best effort */ }
+  }
+
+  @Builder hostDragPreviewBuilder(host: RemoteHost) {
+    Row() {
+      Column() {
+        Image(host.protocol === 'ssh' ? $r('app.media.icon_terminal') :
+          (host.protocol === 'rdp' ? $r('app.media.icon_desktop') : $r('app.media.icon_laptop')))
+          .width(24).height(24).fillColor(Color.White)
+      }
+      .width(42).height(42).borderRadius(21)
+      .backgroundColor(host.protocol === 'ssh' ? this.pal().editColor :
+        (host.protocol === 'rdp' ? this.accentColor : this.pal().success))
+      .justifyContent(FlexAlign.Center)
+      .margin({ right: 10 })
+
+      Text(host.label || host.host)
+        .fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+        .layoutWeight(1)
+
+      SymbolGlyph($r('sys.symbol.line_3_horizontal'))
+        .fontSize(20).fontColor([this.pal().text3])
+    }
+    .width(this.windowW > 0 ? Math.min(this.windowW - 32, 600) : 320)
+    .height(66).padding(12)
+    .borderRadius(14).backgroundColor(this.pal().card)
+    .shadow({ radius: 16, color: '#33000000', offsetY: 4 })
   }
 
   private onSearchChange(value: string): void {
@@ -9923,6 +10028,12 @@ struct HostListPage {
                   })
                 Text('已选 ' + this.hostSelectedIds.size).fontSize(13).fontColor(this.pal().text2)
                   .margin({ left: 12, right: 12 })
+                if (this.hostReorderEnabled) {
+                  Text('拖拽排序中').fontSize(11).fontColor(this.accentColor)
+                    .padding({ left: 8, right: 8, top: 3, bottom: 3 })
+                    .borderRadius(6).backgroundColor(this.pal().surface)
+                    .margin({ right: 6 })
+                }
                 if (this.hostSelectedIds.size > 0) {
                   Button('删除(' + this.hostSelectedIds.size + ')').fontSize(12)
                     .height(32).borderRadius(8)
@@ -9930,14 +10041,16 @@ struct HostListPage {
                     .margin({ right: 6 })
                     .onClick(() => { this.doHostBatchDelete(); })
                 }
+                if (this.hostReorderEnabled) {
+                  Button('完成').fontSize(12).height(32).borderRadius(8)
+                    .backgroundColor(this.accentColor).fontColor('#FFFFFF')
+                    .margin({ right: 6 })
+                    .onClick(() => { this.commitHostReorder(); })
+                }
                 Button('取消').fontSize(12)
                   .height(32).borderRadius(8)
                   .backgroundColor(this.pal().surface).fontColor(this.pal().text2)
-                  .onClick(() => {
-                    animateTo({ duration: 200, curve: Curve.FastOutSlowIn }, () => {
-                      this.hostSelectionMode = false; this.hostSelectedIds = new Set();
-                    });
-                  })
+                  .onClick(() => { this.cancelHostEdit(); })
               }.width('100%').padding({ left: 20, right: 20, bottom: 6 })
                 .transition(
                   TransitionEffect.asymmetric(
@@ -9957,7 +10070,13 @@ struct HostListPage {
                     else { this.hostSelectedIds = new Set(this.filteredHosts.map((h: RemoteHost) => h.id)); }
                   })
                 Blank()
-                Text('已选 ' + this.hostSelectedIds.size).fontSize(13).fontColor(this.pal().text2)
+                if (this.hostReorderEnabled) {
+                  Text('拖拽排序中').fontSize(11).fontColor(this.accentColor)
+                    .padding({ left: 6, right: 6, top: 3, bottom: 3 })
+                    .borderRadius(6).backgroundColor(this.pal().surface)
+                } else {
+                  Text('已选 ' + this.hostSelectedIds.size).fontSize(13).fontColor(this.pal().text2)
+                }
                 Blank()
                 if (this.hostSelectedIds.size > 0) {
                   Button('删除(' + this.hostSelectedIds.size + ')').fontSize(12)
@@ -9966,14 +10085,16 @@ struct HostListPage {
                     .margin({ right: 6 })
                     .onClick(() => { this.doHostBatchDelete(); })
                 }
+                if (this.hostReorderEnabled) {
+                  Button('完成').fontSize(12).height(32).borderRadius(8)
+                    .backgroundColor(this.accentColor).fontColor('#FFFFFF')
+                    .margin({ right: 6 })
+                    .onClick(() => { this.commitHostReorder(); })
+                }
                 Button('取消').fontSize(12)
                   .height(32).borderRadius(8)
                   .backgroundColor(this.pal().surface).fontColor(this.pal().text2)
-                  .onClick(() => {
-                    animateTo({ duration: 200, curve: Curve.FastOutSlowIn }, () => {
-                      this.hostSelectionMode = false; this.hostSelectedIds = new Set();
-                    });
-                  })
+                  .onClick(() => { this.cancelHostEdit(); })
               }.width('100%').padding({ left: 20, right: 20, bottom: 6 })
                 .transition(
                   TransitionEffect.asymmetric(
@@ -10122,6 +10243,12 @@ struct HostListPage {
                         .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
                     }
                   }
+                  if (this.hostSelectionMode && this.hostReorderEnabled) {
+                    SymbolGlyph($r('sys.symbol.line_3_horizontal'))
+                      .fontSize(20)
+                      .fontColor([this.pal().text3])
+                      .margin({ left: 8 })
+                  }
                   if (!this.hostSelectionMode && this.isDesktopDevice) {
                     Row() {
                       if (host.protocol === 'rustdesk' && !host.rustdeskDirectEnabled &&
@@ -10176,7 +10303,10 @@ struct HostListPage {
               LongPressGesture().onAction(() => {
                 if (!this.hostSelectionMode) {
                   animateTo({ duration: 250, curve: Curve.FastOutSlowIn }, () => {
-                    this.hostSelectionMode = true; this.hostSelectedIds = new Set(); this.hostSelectedIds.add(host.id);
+                    this.hostSelectionMode = true;
+                    this.hostReorderEnabled = true;
+                    this.hostSelectedIds = new Set();
+                    this.hostSelectedIds.add(host.id);
                   });
                 }
               })
@@ -10199,6 +10329,30 @@ struct HostListPage {
                   .animation({ duration: 350, curve: curves.interpolatingSpring(0, 0.8, 300, 20) })
               )
             )
+            .onDragStart((_event: DragEvent): DragItemInfo => {
+              if (!this.hostSelectionMode || !this.hostReorderEnabled) {
+                return {};
+              }
+              this.draggingHostId = host.id;
+              return {
+                extraInfo: host.id
+              };
+            })
+            .onDrop((_event: DragEvent): void => {
+              const dragging: string = this.draggingHostId;
+              this.draggingHostId = '';
+              if (!this.hostSelectionMode || !this.hostReorderEnabled || dragging === '' || dragging === host.id) {
+                return;
+              }
+              const fromIdx: number = this.filteredHosts.findIndex((h: RemoteHost): boolean => h.id === dragging);
+              const toIdx: number = this.filteredHosts.findIndex((h: RemoteHost): boolean => h.id === host.id);
+              if (fromIdx >= 0 && toIdx >= 0 && fromIdx !== toIdx) {
+                this.handleHostMove(fromIdx, toIdx);
+              }
+            })
+            .onDragEnd((_event: DragEvent): void => {
+              this.draggingHostId = '';
+            })
           }, (host: RemoteHost, idx: number) => host.id + ':' + this.hostViewRevision.toString())
         }
 
@@ -10485,12 +10639,14 @@ struct HostListPage {
       Row() {
         SymbolGlyph($r('sys.symbol.list_bullet'))
           .fontSize(16).fontColor([this.pal().text])
-        Text('多选').fontSize(13).fontColor(this.pal().text).fontFamily(this.font()).margin({ left: 8 })
+        Text('多选 / 排序').fontSize(13).fontColor(this.pal().text).fontFamily(this.font()).margin({ left: 8 })
       }
       .width('100%').padding({ left: 12, right: 12, top: 8, bottom: 8 })
       .onClick(() => {
         animateTo({ duration: 150 }, () => { this.hostActionPopupId = ''; });
-        this.hostSelectionMode = true; this.hostSelectedIds = new Set();
+        this.hostSelectionMode = true;
+        this.hostReorderEnabled = true;
+        this.hostSelectedIds = new Set();
       })
 
       Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')

@@ -43,6 +43,22 @@ export class HostDataSource implements IDataSource {
 
   getItem(index: number): RemoteHost { return this.dataArray[index]; }
 
+  /** 拖拽重排: 将 from 位置的元素移动到 to 位置 */
+  moveItem(from: number, to: number): void {
+    if (from === to || from < 0 || to < 0 ||
+      from >= this.dataArray.length || to >= this.dataArray.length) {
+      return;
+    }
+    const item: RemoteHost = this.dataArray.splice(from, 1)[0];
+    this.dataArray.splice(to, 0, item);
+    this.listeners.forEach((listener: DataChangeListener): void => {
+      listener.onDataMove(from, to);
+    });
+  }
+
+  /** 获取当前数据数组快照 (用于排序持久化) */
+  getDataSnapshot(): RemoteHost[] { return this.dataArray.slice(); }
+
   private notifyDataReload(): void {
     this.listeners.forEach((listener: DataChangeListener) => { listener.onDataReloaded(); });
   }
