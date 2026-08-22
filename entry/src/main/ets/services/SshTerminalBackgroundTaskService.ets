@@ -10,6 +10,10 @@ import { backgroundTaskManager } from '@kit.BackgroundTasksKit';
 import { notificationManager } from '@kit.NotificationKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import {
+  buildSshBackgroundNotificationContent,
+  SshBackgroundNotificationContent
+} from './ssh/notification/SshNotificationService';
 
 const TAG = 'SshTerminalBgTask';
 const DOMAIN = 0x0016;
@@ -270,20 +274,14 @@ export class SshTerminalBackgroundTaskService {
     const runningCount: number = snapshots.filter(
       (snapshot: SshTerminalBackgroundSnapshot): boolean => snapshot.state === 'running').length;
     const limitedCount: number = snapshots.length - runningCount;
-    const hostSummary: string = snapshots.map(
-      (snapshot: SshTerminalBackgroundSnapshot): string =>
-        snapshot.hostLabel.length > 0 ? snapshot.hostLabel : snapshot.hostAddress).join('、');
-    const title: string = limitedCount > 0 && runningCount === 0
-      ? 'SSH 后台受限' : 'SSH 后台连接';
-    const text: string = runningCount > 0
-      ? '保持 ' + runningCount.toString() + ' 个连接 · ' + hostSummary
-      : '后台受限，未保持持续连接 · ' + hostSummary;
+    const content: SshBackgroundNotificationContent =
+      buildSshBackgroundNotificationContent(runningCount, limitedCount);
     const request: notificationManager.NotificationRequest = {
       content: {
         notificationContentType: notificationManager.ContentType.NOTIFICATION_CONTENT_BASIC_TEXT,
         normal: {
-          title,
-          text
+          title: content.title,
+          text: content.text
         }
       },
       id: SSH_NOTIFICATION_ID,

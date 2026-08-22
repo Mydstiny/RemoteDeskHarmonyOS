@@ -1,7 +1,9 @@
 import { describe, it, expect } from '@ohos/hypium';
 import {
+  buildSshBackgroundNotificationContent,
   buildSshCompletionNotificationText,
   nextSshCompletionNotificationId,
+  SshBackgroundNotificationContent,
   sshCompletionNotificationAllowed
 } from '../main/ets/services/ssh/notification/SshNotificationService';
 
@@ -38,6 +40,20 @@ export default function sshNotificationServiceTest(): void {
       expect(second).assertEqual(606102);
       expect(nextSshCompletionNotificationId(607124)).assertEqual(first);
       expect(nextSshCompletionNotificationId(Number.NaN)).assertEqual(first);
+    });
+
+    it('background_text_should_expose_counts_without_host_identity', 0, (): void => {
+      const content: SshBackgroundNotificationContent =
+        buildSshBackgroundNotificationContent(2, 1);
+      const visible: string = content.title + ' ' + content.text;
+      expect(content.text).assertEqual('保持 2 个 SSH 连接，1 个后台受限');
+      expect(visible.indexOf('root@10.0.0.8:22')).assertEqual(-1);
+      expect(visible.indexOf('/remote/private')).assertEqual(-1);
+
+      const limited: SshBackgroundNotificationContent =
+        buildSshBackgroundNotificationContent(0, 1);
+      expect(limited.title).assertEqual('SSH 后台受限');
+      expect(limited.text).assertEqual('后台受限，未保持持续连接');
     });
   });
 }

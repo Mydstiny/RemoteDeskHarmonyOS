@@ -15,6 +15,35 @@ export interface SshCommandCompletionInfoV1 {
   durationMs: number;
 }
 
+export interface SshBackgroundNotificationContent {
+  title: string;
+  text: string;
+}
+
+/**
+ * Continuous-task notifications are visible outside the application. Accept
+ * counts only so host aliases, addresses, user names and paths cannot cross
+ * this presentation boundary.
+ */
+export function buildSshBackgroundNotificationContent(runningCount: number,
+  limitedCount: number): SshBackgroundNotificationContent {
+  const running: number = Number.isFinite(runningCount)
+    ? Math.max(0, Math.floor(runningCount)) : 0;
+  const limited: number = Number.isFinite(limitedCount)
+    ? Math.max(0, Math.floor(limitedCount)) : 0;
+  const title: string = limited > 0 && running === 0
+    ? 'SSH 后台受限' : 'SSH 后台连接';
+  if (running === 0) {
+    return { title, text: '后台受限，未保持持续连接' };
+  }
+  const limitedText: string = limited > 0
+    ? '，' + limited.toString() + ' 个后台受限' : '';
+  return {
+    title,
+    text: '保持 ' + running.toString() + ' 个 SSH 连接' + limitedText
+  };
+}
+
 export function sshCompletionNotificationAllowed(info: SshCommandCompletionInfoV1): boolean {
   const label: string = info.hostLabel.trim();
   const duration: number = Number.isFinite(info.durationMs) ? Math.max(0, info.durationMs) : 0;
