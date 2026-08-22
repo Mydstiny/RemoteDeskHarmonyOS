@@ -3,7 +3,7 @@
 > 状态：`ACTIVE_M8_M9` / `NOT_COMPLETE`
 > 权威计划：`docs/codex/plans/2026-08-19-ssh-termius-harmonyos7-api26-workbench-plan.md`
 > 建立日期：2026-08-19
-> 当前工作树：`codex/moonlight-complete-upgrade` / `903eb5b1`（M0–M9 SSH 增量保留；workbench flag 已增加协议身份门禁，API23 PC 已补 SFTP 下载暂停/继续/取消/重试闭环和短窗口操作区修复，会话日志与广播输入均受默认关闭的独立高风险 flag 约束，日志导出补齐确认和异步身份 fence，大日志搜索改为可取消的分片调度，命令完成通知增加默认关闭的独立用户设置并保留并发会话通知，多窗格 xterm 安全模式按 host/session/generation 隔离且未知状态 fail closed，广播刷新不再静默替换显式目标或跨重连保留旧选择，WebMessagePort 双端序号严格连续；API26 工具链和最终实机矩阵仍待外部条件）
+> 当前工作树：`codex/moonlight-complete-upgrade` / `7246f498`（M0–M9 SSH 增量保留；workbench flag 已增加协议身份门禁，API23 PC 已补 SFTP 下载暂停/继续/取消/重试闭环和短窗口操作区修复，会话日志与广播输入均受默认关闭的独立高风险 flag 约束，日志追加采用重启安全的不可变 chunk 提交，日志导出补齐确认和异步身份 fence，大日志搜索改为可取消的分片调度，命令完成通知增加默认关闭的独立用户设置并保留并发会话通知，多窗格 xterm 安全模式按 host/session/generation 隔离且未知状态 fail closed，广播刷新不再静默替换显式目标或跨重连保留旧选择，WebMessagePort 双端序号严格连续；API26 工具链和最终实机矩阵仍待外部条件）
 > 当前产品基线：HarmonyOS 6.1 / API 23
 > API 26 状态：本机未安装；任何 API 26-only import 均禁止进入产品代码
 
@@ -22,6 +22,7 @@
 
 ## 2A. 最新执行指针（2026-08-22）
 
+- `7246f498` 修复 M6 日志 chunk 先覆盖旧行、后写索引导致失败提交在重启后复活的问题：逻辑尾 chunk 的每次更新都写入新 ID，旧索引继续指向旧密文；只有新索引提交成功才删除旧行及对应序列化/密文缓存。Store 测试增加索引写失败后的全新实例恢复，证明未提交记录不会被旧索引重新载入。
 - `903eb5b1` 修复 M6 多会话命令完成通知复用固定 ID 的问题：每个满足 opt-in 和时长/失败门禁的完成事件从 1024 个有界 ID 环中取得下一个值，避免正常并发完成时后一条通知覆盖前一条，同时不引入无界 ID。纯策略用例覆盖连续分配、边界回绕和非有限输入。
 - `490e11af` 修复 M6/M7 多窗格安全模式仍依赖当前页面全局状态的问题：每个 xterm 文档在完成 VT 写入后通过稀疏 JS proxy 上报 mouse/application cursor/application keypad/alternate-buffer 状态，ArkTS 侧同时校验 WebView 生命周期、surface identity、host、sessionId 与 generation；未知、过期或跨会话遥测一律不作为安全证据。广播目标增加 `safetyKnown` fail-closed 原因，会话日志和命令历史也只在精确身份的安全快照存在且非 raw/备用屏幕时采集。
 - `81180347` 修复 M6 命令完成通知缺少独立 opt-in 的问题：加密的生产力设置增加默认 `false` 的 `completionNotificationEnabled`，旧 schema 中字段缺失时确定降级为关闭；生产力 Sheet 提供独立“命令完成提醒”开关，页面与 `SshNotificationService` 两层均检查该值。仅开启 Shell integration 不再隐式发布长命令或失败命令通知，本地补全设置保持独立语义。
@@ -270,7 +271,7 @@ M0 action 只修改纯快照：创建/重命名工作区、打开占位 tab、�
 | S0 | 当前 API 23 产品 / `c07795fc5` | 本账本、复用/契约矩阵 | 未单独运行 suite；两项构建门禁覆盖编译 | PASS，exit 0，26.188s | PASS，exit 0，3m 6.999s | 壳与主机列表基线已有；认证后流程待补 | 待一次主审 | ACTIVE |
 | SSH-U0 | API 26 SDK | capability allowlist | 待 SDK | 待 SDK | 待 SDK | 待 API 26 设备 | 待 | BLOCKED_BY_SDK |
 | M0 | S0 契约 | 纯 snapshot/reducer、非 owning runtime adapter、capability/layout/style policy、flag-off Shell | 16 个纯策略用例已注册；设备执行未声明 | PASS，exit 0（最终复跑） | PASS，exit 0，7.122s | flag 默认关闭；旧页面未接线，既有 HDC 错误路径不变 | 一次主审 + 一次定向复核完成；5 个生产问题与 2 个测试问题均已修复 | READY_FOR_CHECKPOINT |
-| M1–M6 | M0 契约 | 已落地；M6 会话日志独立 flag 默认关闭并约束 capture/export；搜索使用可取消分片调度；完成通知独立 opt-in 且并发 ID 有界不互相覆盖；日志/历史仅接受精确会话的 xterm 安全快照 | 已注册；包含日志双 flag 合取、分片/同步等价、最小预算推进、通知默认关闭及 ID 回绕 | PASS | PASS | API23 smoke；10MiB+ 真实设备压力、后台/通知权限矩阵待验 | 已复核；日志/通知/多窗格模式修复待最终实机复核 | CHECKPOINT |
+| M1–M6 | M0 契约 | 已落地；M6 会话日志独立 flag 默认关闭并约束 capture/export，chunk 更新以不可变行保证索引失败后的重启一致性；搜索使用可取消分片调度；完成通知独立 opt-in 且并发 ID 有界不互相覆盖；日志/历史仅接受精确会话的 xterm 安全快照 | 已注册；包含日志双 flag 合取、失败索引写后的新实例恢复、分片/同步等价、最小预算推进、通知默认关闭及 ID 回绕 | PASS | PASS | API23 smoke；真实断电/10MiB+ 设备压力、后台/通知权限矩阵待验 | 已复核；日志/通知/多窗格模式修复待最终实机复核 | CHECKPOINT |
 | M7 | M6 工作台 | 已落地；广播刷新只保留显式且仍安全的目标；安全模式按 host/session/generation 隔离，未知状态 fail closed；独立高风险 flag 默认关闭 | 已注册；包含独立 flag、未知安全状态及失效目标不替换策略用例 | PASS | PASS | 真实主机及广播 UI 矩阵待接入 | 已复核；本次安全修复待最终实机复核 | DEVICE_PENDING |
 | M8 | M7 工作台 | 已落地；双端 generation/sequence/ACK 整数且严格连续 | 已注册；包含小数计数器与向前跳号拒绝 | PASS | PASS | API26/高负载设备待验 | 已复核；本次序号修复待最终实机复核 | DEVICE_PENDING |
 | M9 | M8 前置 | SSH handoff、独立窗口前台恢复、沉浸/分屏回归已落地 | 策略覆盖 | PASS | PASS | PC/API23 模拟器已证明鉴权后开窗、SFTP/终端保活、转发 payload、最小化/最近任务恢复、F11 沉浸进出、左边缘 WMS 分屏、任务栏/WMS 多窗口；物理/API26/剩余协议矩阵待验 | 待最终实机复核 | DEVICE_PENDING |
@@ -317,3 +318,5 @@ hvigorw --mode module -p module=entry -p product=default assembleHap --analyze=n
 2026-08-22 M6/M7 多窗格终端模式身份 fence receipt：`490e11af` 让 xterm 5.3 在 boot/reset 及每个已完成 VT 写批次后读取公开 `terminal.modes` 与 active buffer 类型，并通过现有生命周期隔离的 JavaScript proxy 稀疏上报；bulk output 即使切到 WebMessagePort，模式控制面仍不扩展 M8 数据信封。`SshXtermSurface` 和页面同时校验 lifecycle token、surface identity、host、sessionId 与 generation，旧文档、重连前会话及缺失 API 都不会产生“安全”结论。M7 广播策略增加 `safety_unknown` 并在连接后优先 fail closed；M6 会话日志和命令历史也要求同一精确会话的安全快照，mouse/application cursor/application keypad 或 alternate buffer 任一激活即停止采集。纯策略用例锁定未知状态不可广播。共享工作树精确 `default@OhosTestCompileArkTS` exit 0，`assembleHap` exit 0（`BUILD SUCCESSFUL in 23 s 448 ms`）；签名 HAP SHA-256 为 `e5df31edb409a01ac964fef18f34548e7418994439278cea114d26735ded4dd0`。构建时工作树同时存在未纳入本提交的局域网发现并行修改；本 receipt 只声明本次 SSH 代码通过同一完整产品门禁，不声明 HDC、真实多主机广播、API26 或物理设备矩阵已验收。
 
 2026-08-22 M6 并发完成通知 ID receipt：`903eb5b1` 将 SSH 完成通知的单一固定 ID 改为服务实例内的 1024 项有界 ID 环；只有实际满足用户 opt-in 及失败/长命令策略的事件才分配 ID，正常多会话并发不再因 `notificationManager.publish` 使用同一个 ID 而互相替换，达到边界后才确定回绕且不产生无界编号。纯策略用例覆盖首次分配、连续分配、上界回绕和 `NaN`。精确 `default@OhosTestCompileArkTS` exit 0（`BUILD SUCCESSFUL in 8 s 843 ms`），`assembleHap` exit 0（`BUILD SUCCESSFUL in 10 s 212 ms`）；签名 HAP SHA-256 为 `39f6a0e8293d43449f5a3f6f2c36580e70017c27bf37d4e5257cbd4a91880313`。本 receipt 不声明通知权限、后台/锁屏、API26 或物理设备多会话通知矩阵已验收。
+
+2026-08-22 M6 日志 chunk 重启一致性 receipt：`7246f498` 将逻辑尾 chunk 的更新从“覆盖同一 RDB 行”改为不可变候选行：新密文使用由记录身份、session/generation、时间、chunk 序号和记录数构成的新 ID，先写新行，再原子地以索引作为可见性边界；索引失败时旧索引仍只引用旧密文，成功后才删除旧行及其内存序列化/密文缓存。Store 回归用例不仅检查当前实例未前移，还在模拟索引写失败后创建全新 Store 并重新初始化，证明失败追加不会在进程重启后复活。第一次正式 `assembleHap` 因并行 `CloudStore.ets` 正在增加但尚未定义 `rdpRestrictedAdminSecretOwnedByCurrentScope` 而 exit 255，本次 3 个 SSH 文件无报错；并行修改稳定后，精确 `default@OhosTestCompileArkTS` 与 `assembleHap` 均重跑 exit 0，最终 assemble 为 `BUILD SUCCESSFUL in 1 s 509 ms`，签名 HAP SHA-256 为 `71c3d26627c2c9a74bddeab7ca27817d812d331f1911f6af636a3bcea1932123`。本 receipt 证明模拟失败恢复及产品构建，不冒充真实断电、API26 或物理设备恢复矩阵。
