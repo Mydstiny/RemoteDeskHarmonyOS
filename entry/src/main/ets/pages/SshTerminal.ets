@@ -38,8 +38,13 @@ import { HostSyncService } from '../services/HostSyncService';
 import {
   ExtensionLoader,
   NativeDisconnectIdentity,
-  NativeDisconnectSubmission
+  NativeDisconnectSubmission,
+  SshNativeConnectPromise
 } from '../services/ExtensionLoader';
+import {
+  resolveSshAuthPromptGeneration,
+  resolveSshAuthPromptSessionId
+} from '../services/ssh/auth/SshAuthPromptOwnerPolicy';
 import {
   RemoteSessionWindowCoordinator,
   RemoteSessionWindowNativeHandoff,
@@ -989,6 +994,9 @@ struct SshTerminal {
   private sshAuthPromptPageShown: boolean = false;
   /** API 23 page enter animation can outlive onPageShow by several frames. */
   private sshAuthPromptPageReadyAtMs: number = 0;
+  /** Page-owned identity for a detached desktop pre-authentication connect. */
+  private sshAuthPromptPendingSessionId: number = 0;
+  private sshAuthPromptPendingGeneration: number = 0;
   private sshAuthPromptRequestId: number = 0;
   private sshAuthPromptSubmitting: boolean = false;
   // Native snapshot() can briefly outlive respond()/cancel() while the owner
@@ -1261,20 +1269,36 @@ struct SshTerminal {
   }
 
   private sshAuthPromptSessionId(): number {
-    // connectSshAsync publishes its reserved native session id before KEX and
-    // authentication complete. Prefer that id so PAM/MFA prompts are visible
-    // while the promise is still pending; fall back to the attached tab after
-    // the pending connect is consumed or detached.
-    const pendingOrCurrent: number = this.loader.getSessionId();
-    return pendingOrCurrent > 0 ? pendingOrCurrent : this.sessionId;
+    // A foreground connect publishes its reserved id through the legacy
+    // facade. Desktop pre-authentication is intentionally detached, so retain
+    // the exact page-owned promise identity until that connect settles.
+    return resolveSshAuthPromptSessionId(
+      this.sshAuthPromptPendingSessionId,
+      this.loader.getSessionId(),
+      this.sessionId);
   }
 
   private sshAuthPromptGeneration(sessionId: number): number {
-    if (sessionId === this.sessionId && this.sshSessionGeneration > 0) {
-      return this.sshSessionGeneration;
+    const diagnosticGeneration: number = sessionId > 0 ?
+      this.loader.getSshTerminalDiagnostics(sessionId).sessionGeneration : 0;
+    return resolveSshAuthPromptGeneration(
+      sessionId,
+      this.sshAuthPromptPendingSessionId,
+      this.sshAuthPromptPendingGeneration,
+      this.sessionId,
+      this.sshSessionGeneration,
+      diagnosticGeneration);
+  }
+
+  private clearSshAuthPromptPendingIdentity(
+    expectedSessionId: number = this.sshAuthPromptPendingSessionId
+  ): void {
+    if (expectedSessionId > 0 &&
+      this.sshAuthPromptPendingSessionId !== expectedSessionId) {
+      return;
     }
-    if (sessionId <= 0) { return 0; }
-    return this.loader.getSshTerminalDiagnostics(sessionId).sessionGeneration;
+    this.sshAuthPromptPendingSessionId = 0;
+    this.sshAuthPromptPendingGeneration = 0;
   }
 
   private clearSshAuthPromptState(): void {
@@ -8561,6 +8585,7 @@ struct SshTerminal {
   async aboutToAppear(): Promise<void> {
     this.sshAuthPromptPageShown = false;
     this.sshAuthPromptPageReadyAtMs = 0;
+    this.clearSshAuthPromptPendingIdentity();
     const routeParams: Object = router.getParams();
     this.bindIndependentSessionWindow(routeParams);
     this.stageIndependentWindowAfterAuthentication(routeParams);
@@ -8990,6 +9015,7 @@ struct SshTerminal {
     this.sshAuthPromptPageShown = false;
     this.clearSshContextualGuideRetry();
     this.sshAuthPromptPageReadyAtMs = 0;
+    this.clearSshAuthPromptPendingIdentity();
     this.flushSshWorkspaceSave();
     this.sshWorkspaceInitSequence++;
     this.sshWorkspaceReady = false;
@@ -10005,8 +10031,14 @@ struct SshTerminal {
       // callback/input APIs. Keeping it detached from the legacy process-wide
       // sink owner allows multiple independent SSH windows to stay live at
       // once without changing the existing authentication flow.
-      const connectedSessionId: number = await this.loader.connectSshAsync(
+      const connectPromise: SshNativeConnectPromise = this.loader.connectSshAsync(
         cfg, !this.pcWindowAfterAuthentication);
+      this.sshAuthPromptPendingSessionId = connectPromise.sessionId > 0 ?
+        connectPromise.sessionId : 0;
+      this.sshAuthPromptPendingGeneration = connectPromise.generation > 0 ?
+        connectPromise.generation : 0;
+      const connectedSessionId: number = await connectPromise;
+      this.clearSshAuthPromptPendingIdentity(connectPromise.sessionId);
       if (!this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId)) {
         // ExtensionLoader cancels an in-flight connect during page teardown;
         // only disconnect a resolved session if it is still the current one.
