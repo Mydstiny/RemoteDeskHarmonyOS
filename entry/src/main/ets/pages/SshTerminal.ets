@@ -233,7 +233,10 @@ import {
 import {
   buildSshBroadcastPlan,
   reconcileSshBroadcastSelection,
+  resolveSshBroadcastInputEnabled,
   sshBroadcastTargetEligible,
+  SSH_BROADCAST_INPUT_DEFAULT_ENABLED,
+  SSH_BROADCAST_INPUT_FLAG_KEY,
   SSH_BROADCAST_MAX_TARGETS,
   SshBroadcastMode,
   SshBroadcastTargetV1
@@ -631,6 +634,8 @@ struct SshTerminal {
   @State terminalFocusMode: boolean = true;
   @StorageProp(SSH_WORKBENCH_V2_FLAG_KEY) @Watch('onSshWorkbenchFlagChange')
   sshWorkbenchEnabled: boolean = SSH_WORKBENCH_V2_DEFAULT_ENABLED;
+  @StorageProp(SSH_BROADCAST_INPUT_FLAG_KEY) @Watch('onSshBroadcastInputFlagChange')
+  sshBroadcastInputFlagEnabled: boolean = SSH_BROADCAST_INPUT_DEFAULT_ENABLED;
   /** The policy-selected renderer; remains static until an SDK adapter proves a newer one. */
   @State sshWorkspaceLayoutEngine: SshWorkspaceLayoutEngine = 'static';
   /** Durable M4 shell state. Runtime/native ownership remains in SshTerminalTabStore. */
@@ -1661,6 +1666,11 @@ struct SshTerminal {
 
   private sshWorkspaceModeEnabled(): boolean {
     return this.sshWorkbenchEnabled && this.sshWorkspaceReady;
+  }
+
+  private sshBroadcastInputEnabled(): boolean {
+    return resolveSshBroadcastInputEnabled(
+      this.sshWorkspaceModeEnabled(), this.sshBroadcastInputFlagEnabled);
   }
 
   private sshWorkspaceRuntimeTabs(): Array<SshWorkspaceRuntimeTabProjection> {
@@ -3287,7 +3297,7 @@ struct SshTerminal {
   }
 
   private refreshSshBroadcastTargets(preselectCurrentWhenEmpty: boolean = false): void {
-    if (!this.sshWorkspaceModeEnabled()) {
+    if (!this.sshBroadcastInputEnabled()) {
       this.sshBroadcastTargets = [];
       this.sshBroadcastSelectedHostIds = [];
       return;
@@ -3309,7 +3319,7 @@ struct SshTerminal {
   }
 
   private openSshBroadcast(): void {
-    if (!this.sshWorkspaceModeEnabled() || this.terminalClosing ||
+    if (!this.sshBroadcastInputEnabled() || this.terminalClosing ||
       this.showSshBroadcastSheet || this.sshModalOwnsKeyboard()) { return; }
     this.closeTerminalSearch(false, true);
     this.refreshSshBroadcastTargets(true);
@@ -3377,7 +3387,7 @@ struct SshTerminal {
 
   private async sendSshBroadcast(): Promise<void> {
     if (!this.showSshBroadcastSheet || !this.sshBroadcastActive ||
-      !this.sshWorkspaceModeEnabled() || this.terminalClosing) { return; }
+      !this.sshBroadcastInputEnabled() || this.terminalClosing) { return; }
     this.refreshSshBroadcastTargets();
     const selected: Array<string> = this.sshBroadcastSelectedHostIds.slice();
     let plan = buildSshBroadcastPlan(
@@ -3404,7 +3414,7 @@ struct SshTerminal {
     }
     if (plan.requiresConfirmation && !confirmed) { return; }
     if (!this.showSshBroadcastSheet || !this.sshBroadcastActive ||
-      this.terminalClosing || !this.sshWorkspaceModeEnabled()) { return; }
+      this.terminalClosing || !this.sshBroadcastInputEnabled()) { return; }
     // Rebuild after the dialog: a reconnect or auth prompt during confirmation
     // must remove that target rather than replaying the captured plan.
     this.refreshSshBroadcastTargets();
@@ -10679,6 +10689,7 @@ struct SshTerminal {
     SshProductivitySheet({
       document: this.sshProductivityDocument,
       ready: this.sshProductivityReady,
+      broadcastEnabled: this.sshBroadcastInputEnabled(),
       hostId: this.hostId,
       hostLabel: this.hostLabel,
       groupId: this.sshProductivityGroupId(),
@@ -10997,6 +11008,18 @@ struct SshTerminal {
     }
     this.refreshTerminalProfileForHost();
     this.rebuildSshCommandRegistry();
+  }
+
+  private onSshBroadcastInputFlagChange(): void {
+    if (this.sshBroadcastInputFlagEnabled) { return; }
+    this.showSshBroadcastSheet = false;
+    this.sshBroadcastActive = false;
+    this.sshBroadcastTargets = [];
+    this.sshBroadcastSelectedHostIds = [];
+    this.sshBroadcastText = '';
+    this.sshBroadcastMode = 'insert';
+    this.sshBroadcastLastEscapeAt = 0;
+    this.sshBroadcastUnsafeHostIds.clear();
   }
 
   /**

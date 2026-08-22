@@ -22,6 +22,7 @@ export struct SshProductivitySheet {
   @Prop hostLabel: string = '';
   @Prop groupId: string = '';
   @Prop query: string = '';
+  @Prop broadcastEnabled: boolean = false;
   onClose: () => void = (): void => {};
   onSearchChange: (value: string) => void = (_value: string): void => {};
   onInsertSnippet: (snippet: SshSnippetV1, values: Array<SshSnippetValue>) => void =
@@ -283,9 +284,11 @@ export struct SshProductivitySheet {
           Button('打开会话日志').height(40).fontSize(11).width('100%')
             .backgroundColor('rgba(255,255,255,0.08)')
             .onClick((): void => { this.onOpenSessionLog(); })
-          Button('安全广播输入').height(40).fontSize(11).width('100%')
-            .fontColor('#FFF3F0').backgroundColor('#7D2E2E')
-            .onClick((): void => { this.onOpenBroadcast(); })
+          if (this.broadcastEnabled) {
+            Button('安全广播输入').height(40).fontSize(11).width('100%')
+              .fontColor('#FFF3F0').backgroundColor('#7D2E2E')
+              .onClick((): void => { this.onOpenBroadcast(); })
+          }
           this.SettingsRow('命令历史', '默认关闭；敏感模式和禁用主机始终不记录',
             this.document.settings.historyEnabled, this.onToggleHistory)
           this.SettingsRow('本地补全', '只使用本地 Snippet/历史，不猜测密码边界',

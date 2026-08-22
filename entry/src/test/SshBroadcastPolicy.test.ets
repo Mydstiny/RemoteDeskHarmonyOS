@@ -2,8 +2,10 @@ import { describe, it, expect } from '@ohos/hypium';
 import {
   buildSshBroadcastPlan,
   reconcileSshBroadcastSelection,
+  resolveSshBroadcastInputEnabled,
   sshBroadcastTargetBlockReason,
   sshBroadcastTargetEligible,
+  SSH_BROADCAST_INPUT_DEFAULT_ENABLED,
   SSH_BROADCAST_MAX_TARGETS,
   SshBroadcastTargetV1
 } from '../main/ets/services/ssh/broadcast/SshBroadcastPolicy';
@@ -19,6 +21,13 @@ function target(hostId: string, connected: boolean = true,
 
 export default function sshBroadcastPolicyTest(): void {
   describe('SshBroadcastPolicy', (): void => {
+    it('should_keep_broadcast_independently_disabled_by_default', 0, (): void => {
+      expect(SSH_BROADCAST_INPUT_DEFAULT_ENABLED).assertFalse();
+      expect(resolveSshBroadcastInputEnabled(true, false)).assertFalse();
+      expect(resolveSshBroadcastInputEnabled(false, true)).assertFalse();
+      expect(resolveSshBroadcastInputEnabled(true, true)).assertTrue();
+    });
+
     it('should_block_disconnected_auth_raw_and_fullscreen_targets', 0, (): void => {
       expect(sshBroadcastTargetEligible(target('connected'))).assertTrue();
       expect(sshBroadcastTargetBlockReason(target('offline', false))).assertEqual('not_connected');

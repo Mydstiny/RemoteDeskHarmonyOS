@@ -53,6 +53,14 @@ export interface SshBroadcastPlanV1 {
 
 export const SSH_BROADCAST_MAX_TARGETS: number = 16;
 export const SSH_BROADCAST_MAX_TEXT_CHARS: number = 4096;
+export const SSH_BROADCAST_INPUT_FLAG_KEY: string = 'sshBroadcastInput';
+export const SSH_BROADCAST_INPUT_DEFAULT_ENABLED: boolean = false;
+
+/** High-risk broadcast never inherits the broader workbench rollout. */
+export function resolveSshBroadcastInputEnabled(
+  workbenchEnabled: boolean, broadcastFlagEnabled: boolean): boolean {
+  return workbenchEnabled === true && broadcastFlagEnabled === true;
+}
 
 function emptyPlan(code: SshBroadcastPlanCode, mode: SshBroadcastMode,
   text: string = ''): SshBroadcastPlanV1 {
