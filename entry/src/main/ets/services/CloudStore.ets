@@ -16,6 +16,7 @@ import { BusinessError, deviceInfo } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import {
   RemoteHost,
+  RemoteHostJSON,
   DisplayConfig,
   DisplayConfigJSON,
   normalizeRdpAuthMode,
@@ -25,6 +26,10 @@ import {
   RdpAuthMode,
   RdpRestrictedAdminSecretSource
 } from '../model/RemoteHost';
+import {
+  lanHostUsesLocalOnlyStorage,
+  normalizeLanDiscoveryIdentity
+} from './LanHostAddressPolicy';
 import {
   RustDeskRelayConfig,
   RustDeskRelayCloudJSON,
@@ -111,6 +116,7 @@ import {
   localBackupLocalExtensionColumns,
   localBackupLocalTableColumns,
   localBackupLocalTableNames,
+  portableBackupScopeLeaseAllowed,
   PortableBackupRestorePlan,
   validateCloudDownloadRollbackSnapshot,
   validateLocalBackupSnapshot
@@ -410,6 +416,9 @@ const CLOUD_REGISTRATION_PLAN: CloudDistributedRegistrationPlan =
 const TABLES: string[] = CLOUD_REGISTRATION_PLAN.optionalSuperset;
 const CORE_CLOUD_TABLES: string[] = CLOUD_REGISTRATION_PLAN.baseline;
 const RDP_RESTRICTED_ADMIN_SECRET_TABLE: string = 'rdprestrictedadminsecrets';
+/** Complete device-local host rows for LAN discoveries whose address may change. */
+const DYNAMIC_LAN_HOST_EXTENSION_TABLE: string = 'dynamiclanhosts';
+const DYNAMIC_LAN_HOST_AAD_TABLE: string = 'localextensions/dynamiclanhosts';
 const LOCAL_METADATA_TABLE: string = 'localmetadata';
 const VNC_HOST_LOCAL_PERSONALIZATION_PREFIX: string =
   'vnc_host_local_personalization_v1:';
@@ -4011,14 +4020,13 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
   }
 
   /**
-   * Capture one account-scoped, transaction-consistent portable snapshot.
+   * Capture one local-scope, transaction-consistent portable snapshot.
    * Any section failure aborts the artifact; an empty fallback is forbidden.
    */
   createPortableBackupSnapshot(): PortableBackupSnapshot {
-    if (!this.store || this.currentLease === null ||
-      this.currentScopeToken.kind !== 'huawei_account' ||
-      this.currentOwnerScopeId() === '') {
-      throw new Error('portable backup requires a bound account store');
+    if (!this.store || !portableBackupScopeLeaseAllowed(
+      this.currentScopeToken, this.currentLease)) {
+      throw new Error('portable backup requires an active local scope lease');
     }
     try {
       this.store.beginTransaction();
@@ -7521,9 +7529,13 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
   private rdpRestrictedAdminSecretBinding(host: RemoteHost): string {
     const authIdentityMode: number = AppStorage.get<number>('rdpAuthIdentityMode') ?? 1;
     const identity = normalizeRdpCredentialParts(host.username, authIdentityMode);
+    const endpointIdentity: string = lanHostUsesLocalOnlyStorage(host) &&
+      normalizeLanDiscoveryIdentity(host.lanDiscoveryIdentity) !== ''
+      ? 'lan-dynamic:' + normalizeLanDiscoveryIdentity(host.lanDiscoveryIdentity)
+      : 'endpoint:' + host.host.trim().toLowerCase();
     return [
       'rdp-binding-v2',
-      host.host.trim().toLowerCase(),
+      endpointIdentity,
       host.port.toString(),
       host.customHostname.trim().toLowerCase(),
       identity.username.trim().toLowerCase(),
@@ -7855,6 +7867,15 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
     host.rustdeskProManaged = get('rustdeskpromanaged', host.rustdeskProManaged ? '1' : '0') === '1';
     host.rustdeskProLastSeenAt = Number(get('rustdeskprolastseenat', host.rustdeskProLastSeenAt.toString()));
     host.rustdeskProSyncError = get('rustdeskprosyncerror', host.rustdeskProSyncError);
+    // A cloud row can only describe a manual or LAN-static host. Dynamic LAN
+    // rows are never serialized into this extension.
+    host.lanAddressMode = get('lanaddressmode', host.lanAddressMode) === 'static'
+      ? 'static' : 'manual';
+    host.lanDiscoveryIdentity = get('landiscoveryidentity', host.lanDiscoveryIdentity);
+    const lanLastResolvedAt: number = Number(
+      get('lanlastresolvedat', host.lanLastResolvedAt.toString()));
+    host.lanLastResolvedAt = Number.isFinite(lanLastResolvedAt) && lanLastResolvedAt >= 0
+      ? lanLastResolvedAt : 0;
     host.normalizeRdpAuthentication();
     return host;
   }
@@ -7976,6 +7997,9 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
     values['rustdeskpromanaged'] = host.rustdeskProManaged ? '1' : '0';
     values['rustdeskprolastseenat'] = host.rustdeskProLastSeenAt.toString();
     values['rustdeskprosyncerror'] = host.rustdeskProSyncError;
+    values['lanaddressmode'] = host.lanAddressMode === 'static' ? 'static' : 'manual';
+    values['landiscoveryidentity'] = host.lanDiscoveryIdentity;
+    values['lanlastresolvedat'] = host.lanLastResolvedAt.toString();
     return values;
   }
 
@@ -9129,12 +9153,16 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
         const payload: string =
           rows.getString(rows.getColumnIndex('payload'));
         if (id === '' || recordId === '' || payload === '') { continue; }
-        if (table !== 'remotehosts' &&
+        if (table !== 'remotehosts' && table !== DYNAMIC_LAN_HOST_EXTENSION_TABLE &&
           table !== RDP_RESTRICTED_ADMIN_SECRET_TABLE) {
           continue;
         }
         const source: Record<string, string> =
           JSON.parse(payload) as Record<string, string>;
+        if (table === DYNAMIC_LAN_HOST_EXTENSION_TABLE &&
+          source['ownerid'] !== this.currentOwnerScopeId()) {
+          continue;
+        }
         const next: Record<string, string> = {};
         const keys: string[] = Object.keys(source);
         let changed: boolean = false;
@@ -9148,15 +9176,18 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
           const sensitive: boolean =
             (table === 'remotehosts' && (key === 'sshkeypassphrase' ||
               key === 'sshproxypassword' || key === 'sshproxykeypassphrase')) ||
+            (table === DYNAMIC_LAN_HOST_EXTENSION_TABLE && key === 'password') ||
             (table === RDP_RESTRICTED_ADMIN_SECRET_TABLE &&
               (key === 'hash' || key === 'binding'));
           if (!sensitive || value === '') {
             next[key] = value;
             continue;
           }
-          const aadTable: string = table === 'remotehosts'
-            ? 'localextensions/remotehosts'
-            : RDP_RESTRICTED_ADMIN_SECRET_TABLE;
+          let aadTable: string = RDP_RESTRICTED_ADMIN_SECRET_TABLE;
+          if (table === 'remotehosts') { aadTable = 'localextensions/remotehosts'; }
+          if (table === DYNAMIC_LAN_HOST_EXTENSION_TABLE) {
+            aadTable = DYNAMIC_LAN_HOST_AAD_TABLE;
+          }
           next[key] = crypto.migrateValueToScopedV3(
             this.currentOwnerScopeId(), aadTable, recordId, key, value,
             this.readVncResetEpoch());
@@ -9694,11 +9725,17 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
           changedCount++;
           continue;
         }
-        if (table !== 'remotehosts') { continue; }
+        if (table !== 'remotehosts' && table !== DYNAMIC_LAN_HOST_EXTENSION_TABLE) { continue; }
         const payload: string = rows.getString(rows.getColumnIndex('payload'));
         const parsed: Object = JSON.parse(payload) as Object;
-        if (!parsed || Array.isArray(parsed)) { throw new Error('invalid host extension payload id=' + id); }
+        if (!parsed || Array.isArray(parsed)) {
+          throw new Error('invalid local extension payload id=' + id);
+        }
         const source: Record<string, string> = parsed as Record<string, string>;
+        if (table === DYNAMIC_LAN_HOST_EXTENSION_TABLE &&
+          source['ownerid'] !== this.currentOwnerScopeId()) {
+          continue;
+        }
         const next: Record<string, string> = {};
         const keys: string[] = Object.keys(source);
         let changed: boolean = false;
@@ -9706,11 +9743,17 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
           const key: string = keys[i];
           const value: string = source[key];
           // This retired shadow must never survive an encryption transition.
-          if (key === 'password') { changed = true; continue; }
-          if ((key === 'sshkeypassphrase' || key === 'sshproxypassword' ||
-            key === 'sshproxykeypassphrase') && crypto.isEncrypted(value)) {
+          if (table === 'remotehosts' && key === 'password') { changed = true; continue; }
+          const remoteHostSecret: boolean = table === 'remotehosts' &&
+            (key === 'sshkeypassphrase' || key === 'sshproxypassword' ||
+              key === 'sshproxykeypassphrase');
+          const dynamicHostSecret: boolean = table === DYNAMIC_LAN_HOST_EXTENSION_TABLE &&
+            key === 'password';
+          if ((remoteHostSecret || dynamicHostSecret) && crypto.isEncrypted(value)) {
+            const aadTable: string = dynamicHostSecret
+              ? DYNAMIC_LAN_HOST_AAD_TABLE : 'localextensions/remotehosts';
             next[key] = crypto.decryptScopedOrLegacy(
-              this.currentOwnerScopeId(), 'localextensions/remotehosts',
+              this.currentOwnerScopeId(), aadTable,
               recordId, key, value,
               this.readVncResetEpoch());
             changed = true;
@@ -10122,6 +10165,140 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
 
   loadAllHosts(): RemoteHost[] {
     return this.loadAllHostsInternal(true);
+  }
+
+  /**
+   * Load LAN-discovered dynamic hosts from the device-local extension table.
+   * These rows deliberately never enter `remotehosts`, its mutation journal,
+   * or any CloudDB push path.
+   */
+  loadAllDynamicLanHosts(): RemoteHost[] {
+    const result: RemoteHost[] = [];
+    if (!this.store) { return result; }
+    try {
+      const predicates = new relationalStore.RdbPredicates('localextensions');
+      predicates.equalTo('tablename', DYNAMIC_LAN_HOST_EXTENSION_TABLE);
+      const rows: relationalStore.ResultSet = this.store.querySync(predicates);
+      while (rows.goToNextRow()) {
+        const recordId: string = rows.getString(rows.getColumnIndex('recordid'));
+        const payload: string = rows.getString(rows.getColumnIndex('payload'));
+        if (recordId === '' || payload === '') { continue; }
+        try {
+          const values: Record<string, string> =
+            JSON.parse(payload) as Record<string, string>;
+          if (values['ownerid'] !== this.currentOwnerScopeId() ||
+            values['schemaversion'] !== '1' || values['hostjson'] === undefined) {
+            continue;
+          }
+          const json: RemoteHostJSON = JSON.parse(values['hostjson']) as RemoteHostJSON;
+          const host: RemoteHost = RemoteHost.fromJSON(json);
+          if (host.id !== recordId || host.userId !== this.currentOwnerScopeId() ||
+            !lanHostUsesLocalOnlyStorage(host) ||
+            (host.protocol !== 'rdp' && host.protocol !== 'rustdesk') ||
+            normalizeLanDiscoveryIdentity(host.lanDiscoveryIdentity) === '') {
+            continue;
+          }
+          host.password = this.decryptIfReady(
+            DataCrypto.getInstance(), DYNAMIC_LAN_HOST_AAD_TABLE, host.id,
+            'password', values['password'] ?? '');
+          result.push(host);
+        } catch (rowError) {
+          hilog.warn(0x0001, 'CloudSync',
+            '[CloudStore] invalid dynamic LAN host skipped: ' + safeError(rowError));
+        }
+      }
+      rows.close();
+    } catch (err) {
+      hilog.warn(0x0001, 'CloudSync',
+        '[CloudStore] load dynamic LAN hosts failed: ' + safeError(err));
+    }
+    return result;
+  }
+
+  insertDynamicLanHost(host: RemoteHost): boolean {
+    if (Object.keys(this.loadLocalExtension(DYNAMIC_LAN_HOST_EXTENSION_TABLE, host.id)).length > 0) {
+      return this.setLastMutation(DataMutationResult.failure(
+        host.id, 'invalid_data', '本机动态主机已存在'));
+    }
+    return this.saveDynamicLanHost(host, false);
+  }
+
+  updateDynamicLanHost(host: RemoteHost): boolean {
+    if (Object.keys(this.loadLocalExtension(DYNAMIC_LAN_HOST_EXTENSION_TABLE, host.id)).length === 0) {
+      return this.setLastMutation(DataMutationResult.failure(
+        host.id, 'not_found', '未找到本机动态主机'));
+    }
+    return this.saveDynamicLanHost(host, true);
+  }
+
+  deleteDynamicLanHost(id: string): boolean {
+    if (!this.store) {
+      return this.setLastMutation(DataMutationResult.failure(
+        id, 'not_ready', '本地数据库未就绪'));
+    }
+    if (!this.localMutationAllowed()) {
+      return this.setLastMutation(DataMutationResult.failure(
+        id, 'restore_in_progress', '恢复进行中，暂不能删除'));
+    }
+    if (!this.sensitiveWriteAllowed(id)) { return false; }
+    try {
+      this.store.beginTransaction();
+      if (!this.deleteLocalExtension(DYNAMIC_LAN_HOST_EXTENSION_TABLE, id) ||
+        !this.clearRdpRestrictedAdminHash(id)) {
+        throw new Error('dynamic LAN host extension delete failed');
+      }
+      this.store.commit();
+      return this.setLastMutation(DataMutationResult.success(id));
+    } catch (err) {
+      try { this.store.rollBack(); } catch (_ignored) {}
+      hilog.error(0x0001, 'CloudSync',
+        '[CloudStore] delete dynamic LAN host failed: ' + safeError(err));
+      return this.setLastMutation(DataMutationResult.failure(
+        id, 'extension_write_failed', '本机动态主机删除未完成'));
+    }
+  }
+
+  private saveDynamicLanHost(host: RemoteHost, _updating: boolean): boolean {
+    if (!this.store) {
+      return this.setLastMutation(DataMutationResult.failure(
+        host.id, 'not_ready', '本地数据库未就绪'));
+    }
+    if (!this.localMutationAllowed()) {
+      return this.setLastMutation(DataMutationResult.failure(
+        host.id, 'restore_in_progress', '恢复进行中，暂不能保存'));
+    }
+    if (!this.recordOwnerWriteAllowed(host.userId) ||
+      !lanHostUsesLocalOnlyStorage(host) ||
+      (host.protocol !== 'rdp' && host.protocol !== 'rustdesk') ||
+      normalizeLanDiscoveryIdentity(host.lanDiscoveryIdentity) === '') {
+      return this.setLastMutation(DataMutationResult.failure(
+        host.id, 'invalid_data', '动态主机缺少可信的局域网发现身份'));
+    }
+    host.userId = this.currentOwnerScopeId();
+    if (!this.sensitiveWriteAllowed(host.id)) { return false; }
+    try {
+      const json: RemoteHostJSON = host.toJSON();
+      json.password = '';
+      const values: Record<string, string> = {};
+      values['schemaversion'] = '1';
+      values['ownerid'] = this.currentOwnerScopeId();
+      values['hostjson'] = JSON.stringify(json);
+      values['password'] = this.encryptIfReady(
+        DataCrypto.getInstance(), DYNAMIC_LAN_HOST_AAD_TABLE, host.id,
+        'password', host.password);
+      this.store.beginTransaction();
+      if (!this.saveLocalExtension(DYNAMIC_LAN_HOST_EXTENSION_TABLE, host.id, values)) {
+        throw new Error('dynamic LAN host extension save failed');
+      }
+      this.store.commit();
+      return this.setLastMutation(DataMutationResult.success(host.id));
+    } catch (err) {
+      try { this.store.rollBack(); } catch (_ignored) {}
+      hilog.error(0x0001, 'CloudSync',
+        '[CloudStore] save dynamic LAN host failed: ' + safeError(err));
+      return this.setLastMutation(DataMutationResult.failure(
+        host.id, 'extension_write_failed', '本机动态主机保存未完成'));
+    }
   }
 
   insertHost(host: RemoteHost): boolean {

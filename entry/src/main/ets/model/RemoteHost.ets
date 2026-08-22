@@ -5,6 +5,11 @@
  * 支持 JSON 序列化/反序列化，用于本地 Preferences 存储和 CloudDB 云同步。
  */
 import { cryptoFramework } from '@kit.CryptoArchitectureKit';
+import {
+  LanHostAddressMode,
+  LanHostAddressView,
+  normalizeLanHostAddressMode
+} from '../services/LanHostAddressPolicy';
 
 export enum LockType {
   NONE = 0,
@@ -257,6 +262,9 @@ export interface RemoteHostJSON {
   rustdeskProManaged: boolean
   rustdeskProLastSeenAt: number
   rustdeskProSyncError: string
+  lanAddressMode?: string
+  lanDiscoveryIdentity?: string
+  lanLastResolvedAt?: number
 }
 
 /** 显示器配置 */
@@ -313,7 +321,7 @@ export enum ConnectionHealth {
   BAD = 5         // > 200ms
 }
 
-export class RemoteHost {
+export class RemoteHost implements LanHostAddressView {
   id: string = '';             // 主机唯一 ID (UUID)
   userId: string = '';         // 关联的华为账号 UnionID
   label: string = '';          // 主机显示名
@@ -400,6 +408,11 @@ export class RemoteHost {
   rustdeskProManaged: boolean = false; // 是否由 Server Pro 地址簿管理
   rustdeskProLastSeenAt: number = 0; // 最近一次地址簿同步看到该 peer 的时间
   rustdeskProSyncError: string = ''; // not_seen 或最近一次同步错误码
+  // LAN search provenance. Manual entry remains the legacy/static behavior.
+  // Dynamic rows are persisted only in the device-local host namespace.
+  lanAddressMode: LanHostAddressMode = 'manual';
+  lanDiscoveryIdentity: string = '';
+  lanLastResolvedAt: number = 0;
   syncVersion: number = 0;     // 同步版本号 (冲突检测)
   groupId: string = '';        // 工作区分组 ID
   sortOrder: number = 0;       // 手动排序序号
@@ -601,7 +614,10 @@ export class RemoteHost {
       rustdeskProPlatform: this.rustdeskProPlatform,
       rustdeskProManaged: this.rustdeskProManaged,
       rustdeskProLastSeenAt: this.rustdeskProLastSeenAt,
-      rustdeskProSyncError: this.rustdeskProSyncError
+      rustdeskProSyncError: this.rustdeskProSyncError,
+      lanAddressMode: this.lanAddressMode,
+      lanDiscoveryIdentity: this.lanDiscoveryIdentity,
+      lanLastResolvedAt: this.lanLastResolvedAt
     };
   }
 
@@ -763,6 +779,14 @@ export class RemoteHost {
     if (json.rustdeskProManaged !== undefined) { host.rustdeskProManaged = json.rustdeskProManaged; }
     if (json.rustdeskProLastSeenAt !== undefined) { host.rustdeskProLastSeenAt = json.rustdeskProLastSeenAt; }
     if (json.rustdeskProSyncError) { host.rustdeskProSyncError = json.rustdeskProSyncError; }
+    host.lanAddressMode = normalizeLanHostAddressMode(json.lanAddressMode);
+    if (json.lanDiscoveryIdentity !== undefined) {
+      host.lanDiscoveryIdentity = json.lanDiscoveryIdentity || '';
+    }
+    if (json.lanLastResolvedAt !== undefined && Number.isFinite(json.lanLastResolvedAt) &&
+      json.lanLastResolvedAt >= 0) {
+      host.lanLastResolvedAt = json.lanLastResolvedAt;
+    }
     host.normalizeRdpAuthentication();
     return host;
   }

@@ -90,6 +90,8 @@ import releaseNotesRegistryTest from './ReleaseNotesRegistry.test';
 import sshKeyImportServiceTest from './SshKeyImportService.test';
 import totpImportServiceTest from './TotpImportService.test';
 import rustDeskLanDiscoveryServiceTest from './RustDeskLanDiscoveryService.test';
+import lanHostAddressPolicyTest from './LanHostAddressPolicy.test';
+import rdpLanDiscoveryServiceTest from './RdpLanDiscoveryService.test';
 import rustDeskRelaySyncPolicyTest from './RustDeskRelaySyncPolicy.test';
 import hostSyncMergePolicyTest from './HostSyncMergePolicy.test';
 import sshTerminalOrientationPolicyTest from './SshTerminalOrientationPolicy.test';
@@ -310,6 +312,8 @@ export default function testsuite() {
   sshKeyImportServiceTest();
   totpImportServiceTest();
   rustDeskLanDiscoveryServiceTest();
+  lanHostAddressPolicyTest();
+  rdpLanDiscoveryServiceTest();
   rustDeskRelaySyncPolicyTest();
   hostSyncMergePolicyTest();
   sshTerminalOrientationPolicyTest();

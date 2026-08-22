@@ -60,6 +60,19 @@ export default function cloudStoreTest() {
       const cs = CloudStore.getInstance();
       expect(cs.deleteHost('any-id')).assertFalse();
     });
+
+    it('dynamic_lan_host_crud_should_fail_closed_without_init', 0, () => {
+      const cs = CloudStore.getInstance();
+      const host = new RemoteHost();
+      host.id = 'dynamic-host';
+      host.protocol = 'rdp';
+      host.lanAddressMode = 'dynamic';
+      host.lanDiscoveryIdentity = 'certificate-fingerprint';
+      expect(cs.loadAllDynamicLanHosts().length).assertEqual(0);
+      expect(cs.insertDynamicLanHost(host)).assertFalse();
+      expect(cs.updateDynamicLanHost(host)).assertFalse();
+      expect(cs.deleteDynamicLanHost(host.id)).assertFalse();
+    });
   });
 
   describe('CloudStore_Safe_Defaults_SshKey', () => {

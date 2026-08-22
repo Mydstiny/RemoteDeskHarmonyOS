@@ -10,10 +10,11 @@ export class RustDeskHostAddDraft {
   direct: boolean = false;
   useLan: boolean = false;
   selectedLanPeerId: string = '';
+  lanAddressMode: string = '';
   label: string = '';
   controlId: string = '';
   directHost: string = '';
-  directPortText: string = '21117';
+  directPortText: string = '21118';
   relayId: string = '';
   password: string = '';
   passwordMode: number = 0;
@@ -42,6 +43,8 @@ export function cloneRustDeskHostAddDraft(
   result.direct = source.direct;
   result.useLan = source.useLan;
   result.selectedLanPeerId = source.selectedLanPeerId;
+  result.lanAddressMode = source.lanAddressMode === 'static' || source.lanAddressMode === 'dynamic'
+    ? source.lanAddressMode : '';
   result.label = source.label;
   result.controlId = source.controlId;
   result.directHost = source.directHost;
@@ -114,6 +117,7 @@ export class RustDeskHostAddHandoff {
       this.pending.draft.relayId = normalizedRelayId;
       this.pending.draft.direct = false;
       this.pending.draft.useLan = false;
+      this.pending.draft.lanAddressMode = '';
     }
     return true;
   }

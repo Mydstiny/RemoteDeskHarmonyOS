@@ -37,6 +37,7 @@ import {
   rustDeskRelayCapabilityIdentityChanged
 } from './RustDeskControlPlaneCapabilityPolicy';
 import { remoteHostCloudBaseChanged } from './HostLocalPersonalizationPolicy';
+import { lanHostUsesLocalOnlyStorage } from './LanHostAddressPolicy';
 
 export class HostSyncService {
   private static instance: HostSyncService;
@@ -141,6 +142,20 @@ export class HostSyncService {
         }
         this.hosts.set(next.id, next);
       }
+      const dynamicLanHosts: RemoteHost[] = this.cloud.loadAllDynamicLanHosts();
+      for (let i = 0; i < dynamicLanHosts.length; i++) {
+        const dynamicHost: RemoteHost = dynamicLanHosts[i];
+        if (this.hosts.has(dynamicHost.id)) {
+          hilog.warn(0x0001, 'CloudSync',
+            '动态局域网主机 ID 与云主机冲突，已忽略本机副本 hostId=' +
+            rustDeskRelayIdFingerprint(dynamicHost.id));
+          continue;
+        }
+        const deletedAt: number = this.deletedHostAt.get(dynamicHost.id) ?? 0;
+        if (!shouldKeepDeletedHost(deletedAt, previousSnapshotAt)) {
+          this.hosts.set(dynamicHost.id, dynamicHost);
+        }
+      }
       // 本地新增后云快照可能暂时还没有该行；在没有更晚删除的情况下保留它。
       previousHosts.forEach((local: RemoteHost, hostId: string): void => {
         const configObservedAt: number = this.localHostConfigObservationAt.get(hostId) ?? 0;
@@ -161,14 +176,17 @@ export class HostSyncService {
         const next: RemoteHost = RemoteHost.fromJSON(host.toJSON());
         next.port = RUSTDESK_PEER_TCP_PORT;
         next.rustdeskDirectPort = RUSTDESK_PEER_TCP_PORT;
-        if (this.ready && !this.cloud.updateHost(next)) {
+        const localOnly: boolean = lanHostUsesLocalOnlyStorage(next);
+        const persisted: boolean = !this.ready || (localOnly
+          ? this.cloud.updateDynamicLanHost(next) : this.cloud.updateHost(next));
+        if (!persisted) {
           hilog.warn(0x0001, 'CloudSync',
             'RustDesk 直连端口迁移写入失败 hostId=' +
             rustDeskRelayIdFingerprint(hostId));
           return;
         }
         this.hosts.set(hostId, next);
-        migratedDirectHosts = true;
+        migratedDirectHosts = migratedDirectHosts || !localOnly;
       });
       if (migratedDirectHosts && this.ready) { this.cloud.pushTable('remotehosts'); }
     } catch (err) {
@@ -378,8 +396,10 @@ export class HostSyncService {
     const observedAt: number = Date.now();
     this.localHostConfigObservationAt.set(host.id, observedAt);
     this.deletedHostAt.delete(host.id);
+    const localOnly: boolean = lanHostUsesLocalOnlyStorage(host);
     if (this.ready) {
-      const ok: boolean = this.cloud.insertHost(host);
+      const ok: boolean = localOnly
+        ? this.cloud.insertDynamicLanHost(host) : this.cloud.insertHost(host);
       if (!ok) {
         this.localHostConfigObservationAt.delete(host.id);
         hilog.error(0x0001, 'CloudSync',
@@ -387,7 +407,7 @@ export class HostSyncService {
           rustDeskRelayIdFingerprint(host.id));
         return false;
       }
-      this.cloud.pushTable('remotehosts');
+      if (!localOnly) { this.cloud.pushTable('remotehosts'); }
     }
     this.hosts.set(host.id, host);
     hilog.info(0x0001, 'CloudSync',
@@ -400,6 +420,14 @@ export class HostSyncService {
   updateHost(host: RemoteHost): boolean {
     const current: RemoteHost | undefined = this.hosts.get(host.id);
     if (!current) { return false; }
+    const currentLocalOnly: boolean = lanHostUsesLocalOnlyStorage(current);
+    const nextLocalOnly: boolean = lanHostUsesLocalOnlyStorage(host);
+    if (currentLocalOnly !== nextLocalOnly) {
+      hilog.warn(0x0001, 'CloudSync',
+        'HostSyncService.updateHost: 已拒绝隐式切换云/本机存储策略 hostId=' +
+        rustDeskRelayIdFingerprint(host.id));
+      return false;
+    }
     if (!serializedSnapshotChanged(JSON.stringify(current.toJSON()), JSON.stringify(host.toJSON()))) {
       hilog.info(0x0001, 'CloudSync',
         'HostSyncService.updateHost: unchanged host skipped hostId=' +
@@ -411,8 +439,9 @@ export class HostSyncService {
     this.deletedHostAt.delete(host.id);
     const cloudBaseChanged: boolean = remoteHostCloudBaseChanged(current, host);
     if (this.ready) {
-      const ok: boolean = cloudBaseChanged ? this.cloud.updateHost(host) :
-        this.cloud.updateHostLocalPersonalization(host);
+      const ok: boolean = nextLocalOnly ? this.cloud.updateDynamicLanHost(host) :
+        (cloudBaseChanged ? this.cloud.updateHost(host) :
+          this.cloud.updateHostLocalPersonalization(host));
       if (!ok) {
         this.localHostConfigObservationAt.delete(host.id);
         hilog.error(0x0001, 'CloudSync',
@@ -420,7 +449,7 @@ export class HostSyncService {
           rustDeskRelayIdFingerprint(host.id));
         return false;
       }
-      if (cloudBaseChanged) { this.cloud.pushTable('remotehosts'); }
+      if (!nextLocalOnly && cloudBaseChanged) { this.cloud.pushTable('remotehosts'); }
     }
     this.hosts.set(host.id, host);
     this.emitDataChange();
@@ -444,11 +473,14 @@ export class HostSyncService {
   }
 
   removeHost(id: string): boolean {
-    if (!this.hosts.has(id)) { return false; }
+    const current: RemoteHost | undefined = this.hosts.get(id);
+    if (!current) { return false; }
+    const localOnly: boolean = lanHostUsesLocalOnlyStorage(current);
     const observedAt: number = Date.now();
     this.deletedHostAt.set(id, observedAt);
     this.localHostConfigObservationAt.delete(id);
-    if (this.ready && !this.cloud.deleteHost(id)) {
+    if (this.ready && !(localOnly
+      ? this.cloud.deleteDynamicLanHost(id) : this.cloud.deleteHost(id))) {
       this.deletedHostAt.delete(id);
       return false;
     }
@@ -456,7 +488,7 @@ export class HostSyncService {
     if (result) {
       this.localHostObservationAt.delete(id);
     }
-    if (result && this.ready) { this.cloud.pushTable('remotehosts'); }
+    if (result && this.ready && !localOnly) { this.cloud.pushTable('remotehosts'); }
     if (result) { this.emitDataChange(); }
     return result;
   }
@@ -533,7 +565,9 @@ export class HostSyncService {
   private persistLocalHostObservation(hostId: string, next: RemoteHost, _forceCloud: boolean): void {
     const now: number = Date.now();
     this.localHostObservationAt.set(hostId, now);
-    if (this.ready && !this.cloud.updateHostLocalPersonalization(next)) {
+    const localOnly: boolean = lanHostUsesLocalOnlyStorage(next);
+    if (this.ready && !(localOnly
+      ? this.cloud.updateDynamicLanHost(next) : this.cloud.updateHostLocalPersonalization(next))) {
       hilog.warn(0x0001, 'CloudSync',
         'HostSyncService.persistLocalHostObservation: 本机观测写入失败');
     }

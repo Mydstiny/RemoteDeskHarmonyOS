@@ -12,6 +12,9 @@ function populatedDraft(): RustDeskHostAddDraft {
   draft.relayId = 'relay-old';
   draft.password = 'plaintext-only-in-memory';
   draft.passwordMode = 1;
+  draft.useLan = true;
+  draft.selectedLanPeerId = 'peer-id';
+  draft.lanAddressMode = 'dynamic';
   draft.targetDevice = 'phone';
   draft.adaptiveOrientation = true;
   return draft;
@@ -43,6 +46,8 @@ export default function rustDeskHostAddHandoffTest(): void {
         .assertEqual('relay-new');
       expect((restored as RustDeskHostAddDraft).password)
         .assertEqual('plaintext-only-in-memory');
+      expect((restored as RustDeskHostAddDraft).lanAddressMode)
+        .assertEqual('');
       expect((restored as RustDeskHostAddDraft)
         .adaptiveOrientation).assertTrue();
       expect(handoff.take(

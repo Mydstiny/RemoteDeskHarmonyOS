@@ -253,6 +253,17 @@ import {
 import { VncCertificateDecisionHandoff } from '../services/VncCertificateDecisionHandoff';
 import { RustDeskLanDiscoveryService, DiscoveredRustDeskPeer } from '../services/RustDeskLanDiscoveryService';
 import {
+  DiscoveredRdpHost,
+  RdpLanDiscoveryService,
+  RdpLanIdentityProbeResult
+} from '../services/RdpLanDiscoveryService';
+import {
+  lanHostNeedsAddressRefresh,
+  lanHostRefreshCandidateMatches,
+  LanHostRefreshCandidate,
+  lanHostUsesLocalOnlyStorage
+} from '../services/LanHostAddressPolicy';
+import {
   hostListProtocolForTab,
   searchHosts,
   visibleHostsForHostListMode
@@ -555,6 +566,8 @@ interface RdpCertificateCredentialParts {
 const ENV_COLOR_MODE_UNKNOWN = -1;
 const ENV_COLOR_MODE_LIGHT = 0;
 const ENV_COLOR_MODE_DARK = 1;
+const DYNAMIC_LAN_ADDRESS_FRESHNESS_MS: number = 5 * 60 * 1000;
+const DYNAMIC_LAN_SWEEP_COOLDOWN_MS: number = 30 * 1000;
 const RDP_DRIVE_REDIRECTION_ENABLED = true;
 const SETTINGS_ACCORDION_ANIMATION_MS = 280;
 // The appearance card is taller than the original 620vp cap after the
@@ -665,6 +678,13 @@ struct HostListPage {
   @State lanScanning: boolean = false;
   @State lanScanResults: DiscoveredRustDeskPeer[] = [];
   private lanDiscovery: RustDeskLanDiscoveryService = new RustDeskLanDiscoveryService();
+  @State rdpLanScanning: boolean = false;
+  @State rdpLanScanResults: DiscoveredRdpHost[] = [];
+  private rdpLanDiscovery: RdpLanDiscoveryService = new RdpLanDiscoveryService();
+  private dynamicRustDeskDiscovery: RustDeskLanDiscoveryService = new RustDeskLanDiscoveryService();
+  private dynamicRdpDiscovery: RdpLanDiscoveryService = new RdpLanDiscoveryService();
+  private dynamicLanRefreshPromise: Promise<void> | null = null;
+  private dynamicLanLastSweepAt: number = 0;
   @State label: string = '';
   @State proto: string = 'rdp';
   @State hostAddr: string = '';
@@ -1126,6 +1146,7 @@ struct HostListPage {
     }
     this.syncAmbientLightMonitor();
     this.ensureGripMonitorOnPageShow();
+    void this.refreshDynamicLanHosts(false);
     hilog.info(0x0000, 'HostListPage', 'foreground sensors resumed source=' + source);
   }
 
@@ -1449,6 +1470,7 @@ struct HostListPage {
     // The home page is a core path.  Loading it must not await an optional
     // permission dialog or sensor service.
     await this.load(true, true);
+    void this.refreshDynamicLanHosts(false);
     this.consumeRemoteSessionConnectionIntent();
     this.refreshMoonlightDirectory();
     this.registerDataRefreshListeners();
@@ -1483,6 +1505,7 @@ struct HostListPage {
     this.refreshCryptoStatus();
     this.syncAmbientLightMonitor();
     this.ensureGripMonitorOnPageShow();
+    void this.refreshDynamicLanHosts(false);
     this.handleVncRelayRouteRequest();
     this.consumeRemoteSessionConnectionIntent();
   }
@@ -3734,6 +3757,12 @@ struct HostListPage {
 
   aboutToDisappear(): void {
     this.pageActive = false;
+    this.lanDiscovery.stopScan();
+    this.rdpLanDiscovery.stopScan();
+    this.dynamicRustDeskDiscovery.stopScan();
+    this.dynamicRdpDiscovery.stopScan();
+    this.lanScanning = false;
+    this.rdpLanScanning = false;
     this.stopMoonlightLanDiscovery();
     if (!this.moonlightAddCommitted) {
       void this.revokeMoonlightTemporaryPairing();
@@ -4031,7 +4060,10 @@ struct HostListPage {
     if (!this.srv.isReady()) {
       this.srv.whenReady().then((): void => {
         this.applyCloudUserSettings();
-        if (this.pageActive) { this.scheduleHostListLoad(true); }
+        if (this.pageActive) {
+          this.scheduleHostListLoad(true);
+          void this.refreshDynamicLanHosts(false);
+        }
       });
     }
     const keyVault: KeyVaultService = KeyVaultService.getInstance();
@@ -4797,6 +4829,18 @@ struct HostListPage {
     if (protocolNeedsArbitration && connectionGeneration === 0) {
       promptAction.showToast({ message: '已有连接请求正在处理，请等待当前弹窗结束', duration: 1800 });
       return;
+    }
+    if (lanHostUsesLocalOnlyStorage(host)) {
+      promptAction.showToast({ message: '正在刷新局域网动态地址…', duration: 1200 });
+      await this.refreshDynamicLanHosts(true, host.id);
+      const refreshed: RemoteHost | undefined = this.srv.getHost(host.id);
+      if (refreshed !== undefined && lanHostUsesLocalOnlyStorage(refreshed)) {
+        host = RemoteHost.fromJSON(refreshed.toJSON());
+      }
+      if (protocolNeedsArbitration &&
+        !this.isCurrentConnectionAttempt(host.id, connectionGeneration)) {
+        return;
+      }
     }
     if (host.locked) {
       const r = await showLockGate(host.label, 'biometric');
@@ -8383,23 +8427,162 @@ struct HostListPage {
     });
   }
 
+  private startRdpLanScan(port: number): void {
+    if (this.rdpLanScanning) { return; }
+    this.rdpLanScanResults = [];
+    this.rdpLanScanning = true;
+    void this.rdpLanDiscovery.startScan(port,
+      async (address: string, candidatePort: number): Promise<RdpLanIdentityProbeResult> => {
+        const info: RdpCertificateInfo = await this.loader.probeRdpCertificateAsync(
+          address, candidatePort, address);
+        return {
+          recognized: info.preflightStatus === 'completed' || info.preflightStatus === 'inconclusive',
+          fingerprintSha256: info.fingerprintSha256,
+          commonName: info.commonName
+        };
+      }, (host: DiscoveredRdpHost): void => {
+        this.rdpLanScanResults = this.rdpLanScanResults.concat([host]);
+      }).then((hosts: DiscoveredRdpHost[]): void => {
+        this.rdpLanScanResults = hosts;
+        this.rdpLanScanning = false;
+      }).catch((_err: Error): void => {
+        this.rdpLanScanning = false;
+      });
+  }
+
+  private async refreshDynamicLanHosts(force: boolean = false, targetHostId: string = ''): Promise<void> {
+    if (!this.srv.isReady()) { return; }
+    if (this.dynamicLanRefreshPromise !== null) {
+      await this.dynamicLanRefreshPromise;
+      return;
+    }
+    const now: number = Date.now();
+    if (targetHostId === '' && !force &&
+      now - this.dynamicLanLastSweepAt < DYNAMIC_LAN_SWEEP_COOLDOWN_MS) {
+      return;
+    }
+    const task: Promise<void> = this.performDynamicLanRefresh(force, targetHostId);
+    this.dynamicLanRefreshPromise = task;
+    try {
+      await task;
+    } finally {
+      if (this.dynamicLanRefreshPromise === task) { this.dynamicLanRefreshPromise = null; }
+    }
+  }
+
+  private async performDynamicLanRefresh(force: boolean, targetHostId: string): Promise<void> {
+    const scope = CloudStore.getInstance().currentScope();
+    const now: number = Date.now();
+    const targets: RemoteHost[] = this.srv.getAllHosts().filter((host: RemoteHost): boolean => {
+      if (!lanHostUsesLocalOnlyStorage(host)) { return false; }
+      if (targetHostId !== '' && host.id !== targetHostId) { return false; }
+      return force || lanHostNeedsAddressRefresh(
+        host, now, DYNAMIC_LAN_ADDRESS_FRESHNESS_MS);
+    });
+    if (targets.length === 0) {
+      if (targetHostId === '') { this.dynamicLanLastSweepAt = now; }
+      return;
+    }
+
+    const rustDeskTargets: RemoteHost[] = targets.filter((host: RemoteHost): boolean =>
+      host.protocol === 'rustdesk');
+    if (rustDeskTargets.length > 0) {
+      const peers: DiscoveredRustDeskPeer[] =
+        await this.dynamicRustDeskDiscovery.startScan(3000);
+      for (let i = 0; i < peers.length; i++) {
+        const peer: DiscoveredRustDeskPeer = peers[i];
+        const candidate: LanHostRefreshCandidate = {
+          protocol: 'rustdesk', identity: peer.peerId,
+          host: peer.host, port: peer.port, observedAt: Date.now()
+        };
+        this.applyDynamicLanCandidate(rustDeskTargets, candidate, scope.ownerScopeId,
+          scope.storeIdentity, scope.generation);
+      }
+    }
+
+    const rdpPorts: number[] = [];
+    for (let i = 0; i < targets.length; i++) {
+      if (targets[i].protocol === 'rdp' && rdpPorts.indexOf(targets[i].port) < 0) {
+        rdpPorts.push(targets[i].port);
+      }
+    }
+    for (let i = 0; i < rdpPorts.length; i++) {
+      const port: number = rdpPorts[i];
+      const rdpTargets: RemoteHost[] = targets.filter((host: RemoteHost): boolean =>
+        host.protocol === 'rdp' && host.port === port);
+      const found: DiscoveredRdpHost[] = await this.dynamicRdpDiscovery.startScan(port,
+        async (address: string, candidatePort: number): Promise<RdpLanIdentityProbeResult> => {
+          const info: RdpCertificateInfo = await this.loader.probeRdpCertificateAsync(
+            address, candidatePort, address);
+          return {
+            recognized: info.preflightStatus === 'completed' || info.preflightStatus === 'inconclusive',
+            fingerprintSha256: info.fingerprintSha256,
+            commonName: info.commonName
+          };
+        });
+      for (let j = 0; j < found.length; j++) {
+        if (!found[j].dynamicCapable) { continue; }
+        const candidate: LanHostRefreshCandidate = {
+          protocol: 'rdp', identity: found[j].fingerprintSha256,
+          host: found[j].host, port: found[j].port, observedAt: Date.now()
+        };
+        this.applyDynamicLanCandidate(rdpTargets, candidate, scope.ownerScopeId,
+          scope.storeIdentity, scope.generation);
+      }
+    }
+    if (targetHostId === '') { this.dynamicLanLastSweepAt = Date.now(); }
+  }
+
+  private applyDynamicLanCandidate(targets: RemoteHost[], candidate: LanHostRefreshCandidate,
+    ownerScopeId: string, storeIdentity: string, generation: number): void {
+    const currentScope = CloudStore.getInstance().currentScope();
+    if (currentScope.ownerScopeId !== ownerScopeId || currentScope.storeIdentity !== storeIdentity ||
+      currentScope.generation !== generation) {
+      return;
+    }
+    for (let i = 0; i < targets.length; i++) {
+      if (!lanHostRefreshCandidateMatches(targets[i], candidate)) { continue; }
+      const latest: RemoteHost | undefined = this.srv.getHost(targets[i].id);
+      if (latest === undefined || !lanHostRefreshCandidateMatches(latest, candidate)) { continue; }
+      const next: RemoteHost = RemoteHost.fromJSON(latest.toJSON());
+      next.host = candidate.host;
+      next.port = candidate.port;
+      next.lanLastResolvedAt = candidate.observedAt;
+      if (next.protocol === 'rustdesk') {
+        next.rustdeskDirectHost = candidate.host;
+        next.rustdeskDirectPort = candidate.port;
+      } else if (next.protocol === 'rdp' &&
+        next.rdpCertificateFingerprintSha256.trim().toLowerCase() ===
+          candidate.identity.trim().toLowerCase()) {
+        // Exact fingerprint discovery is the authority for this DHCP move;
+        // retain the prior explicit certificate decision for the new route.
+        next.rdpCertificateRouteIdentity = rdpRouteIdentity(next);
+      }
+      if (this.srv.updateHost(next)) {
+        hilog.info(0x0001, 'HostList',
+          'dynamic LAN address refreshed hostId=' + hashForLog(next.id));
+      }
+    }
+  }
+
   private addLanPeer(peer: DiscoveredRustDeskPeer): void {
-    // 从发现的设备创建 RustDesk Host: 预填直连配置
-    this.label = peer.deviceName;
-    this.proto = 'rustdesk';
-    this.chn = peer.peerId;
-    this.sheetPwdMode = 1;
-    this.sheetRustdeskDirectEnabled = true;
-    this.sheetRustdeskDirectHost = peer.host;
-    this.sheetRustdeskDirectPort = peer.port;
-    this.sheetRustdeskTargetDevice = 'computer';
-    this.sheetRustdeskAdaptiveOrientation = false;
-    this.sheetPwd = '';
-    this.sheetErr = '';
-    this.selectedRelayId = '';
-    this.selectedAccountId = '';
-    this.selectedRdpCredentialId = '';
-    this.editingHostId = '';
+    // Settings LAN discovery shares the same next-step strategy chooser as
+    // the modern add flow; it must not bypass static/dynamic selection.
+    const draft = new RustDeskHostAddDraft();
+    draft.step = 2;
+    draft.direct = true;
+    draft.useLan = true;
+    draft.selectedLanPeerId = peer.peerId;
+    draft.lanAddressMode = '';
+    draft.label = peer.deviceName;
+    draft.controlId = peer.peerId;
+    draft.directHost = peer.host;
+    draft.directPortText = peer.port.toString();
+    draft.passwordMode = 1;
+    this.rustDeskAddResumeDraft = draft;
+    this.rustDeskAddResumeRevision += 1;
+    this.modernAddProtocol = 'rustdesk';
+    this.addSheetShowsModernPicker = false;
     this.openSheetSafely((): void => { this.showAddSheet = true; });
   }
 
@@ -14392,8 +14575,11 @@ struct HostListPage {
     } else if (this.modernAddProtocol === 'rdp') {
       RdpAddFlow({
         credentials: this.rdpCredentials,
+        lanScanning: this.rdpLanScanning,
+        lanHosts: this.rdpLanScanResults,
         onBackToProtocols: (): void => { this.modernAddProtocol = ''; this.addSheetShowsModernPicker = true; },
         onAddCredential: (): void => { this.openRdpCredentialManager(); },
+        onStartLanScan: (port: number): void => { this.startRdpLanScan(port); },
         onSave: (host: RemoteHost, connectNow: boolean, restrictedAdminHash: string): void => {
           this.saveHostFromAddFlow(host, connectNow, restrictedAdminHash);
         }

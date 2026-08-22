@@ -90,7 +90,8 @@ const REMOTE_HOST_CLOUD_EXTENSION_COLUMNS: string[] = [
   'sshproxyauthmethod', 'sshproxykeyid',
   'rdpcredentialid', 'rdpauthmode', 'rdprestrictedadminsecretsource', 'sourcetype',
   'rdpendpointmode', 'rdpgatewaytransport', 'rdpgatewayservername',
-  'rustdesktargetdevice', 'rustdeskadaptiveorientation'
+  'rustdesktargetdevice', 'rustdeskadaptiveorientation',
+  'lanaddressmode', 'landiscoveryidentity', 'lanlastresolvedat'
 ];
 
 const REMOTE_HOST_EXTENSION_KEY: string = '_remoteDeskExtensionV1';
