@@ -1,8 +1,10 @@
 import { describe, it, expect } from '@ohos/hypium';
 import {
   planSshSftpStagingDiscard,
+  reconcileSshSftpStoppedUploadCheckpoint,
   SshSftpStagingDiscardPlan
 } from '../main/ets/services/SshSftpTaskEngine';
+import { SshSftpTaskRecord } from '../main/ets/services/SshSftpTaskPolicy';
 
 export default function sshSftpTaskEnginePolicyTest(): void {
   describe('SshSftpTaskEnginePolicy', (): void => {
@@ -26,6 +28,39 @@ export default function sshSftpTaskEnginePolicyTest(): void {
         .assertFalse();
       expect(planSshSftpStagingDiscard(false, false, true, 'local').accepted)
         .assertFalse();
+    });
+
+    it('preserves_cancelled_stage_while_reconciling_confirmed_upload_write', 0, (): void => {
+      const cancelled: SshSftpTaskRecord = {
+        taskId: 'upload-1', batchId: '', relativePath: 'source.bin', hostId: 'host-1',
+        direction: 'upload', isDirectory: false, remotePath: '/source.bin',
+        fileName: 'source.bin', totalBytes: 1024, verifiedOffset: 256,
+        sourceSize: 1024, sourceMtime: 20, partialSize: 256, partialMtime: 30,
+        sessionGeneration: 4, sequence: 8, stage: 'cancelled', updatedAt: 40
+      };
+      const reconciled: SshSftpTaskRecord | null = reconcileSshSftpStoppedUploadCheckpoint(
+        cancelled, 320, { size: 320, mtime: 31 }, 9, 41);
+
+      expect(reconciled === null).assertFalse();
+      expect((reconciled as SshSftpTaskRecord).stage).assertEqual('cancelled');
+      expect((reconciled as SshSftpTaskRecord).verifiedOffset).assertEqual(320);
+      expect((reconciled as SshSftpTaskRecord).partialSize).assertEqual(320);
+      expect((reconciled as SshSftpTaskRecord).partialMtime).assertEqual(31);
+    });
+
+    it('rejects_checkpoint_reconciliation_without_stopped_stage_or_matching_partial', 0, (): void => {
+      const active: SshSftpTaskRecord = {
+        taskId: 'upload-2', batchId: '', relativePath: 'source.bin', hostId: 'host-1',
+        direction: 'upload', isDirectory: false, remotePath: '/source.bin',
+        fileName: 'source.bin', totalBytes: 1024, verifiedOffset: 256,
+        sourceSize: 1024, sourceMtime: 20, partialSize: 256, partialMtime: 30,
+        sessionGeneration: 4, sequence: 8, stage: 'transferring', updatedAt: 40
+      };
+      expect(reconcileSshSftpStoppedUploadCheckpoint(
+        active, 320, { size: 320, mtime: 31 }, 9, 41) === null).assertTrue();
+      active.stage = 'paused';
+      expect(reconcileSshSftpStoppedUploadCheckpoint(
+        active, 320, { size: 319, mtime: 31 }, 9, 41) === null).assertTrue();
     });
   });
 }

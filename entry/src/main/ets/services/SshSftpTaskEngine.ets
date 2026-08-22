@@ -82,6 +82,44 @@ export function planSshSftpStagingDiscard(bindingFound: boolean, workerRunning: 
   };
 }
 
+export function reconcileSshSftpStoppedUploadCheckpoint(current: SshSftpTaskRecord,
+  offset: number, partialIdentity: SshSftpFileIdentity, sequence: number,
+  updatedAt: number): SshSftpTaskRecord | null {
+  if ((current.stage !== 'paused' && current.stage !== 'cancelled') ||
+    !sshSftpOffsetIsValid(offset, current.sourceSize >= 0 ? current.sourceSize : current.totalBytes) ||
+    partialIdentity.size !== offset || partialIdentity.mtime < 0) {
+    return null;
+  }
+  return {
+    taskId: current.taskId,
+    schemaVersion: current.schemaVersion,
+    batchId: current.batchId,
+    relativePath: current.relativePath,
+    hostId: current.hostId,
+    direction: current.direction,
+    isDirectory: current.isDirectory,
+    remotePath: current.remotePath,
+    fileName: current.fileName,
+    totalBytes: current.totalBytes,
+    verifiedOffset: offset,
+    sourceSize: current.sourceSize,
+    sourceMtime: current.sourceMtime,
+    partialSize: partialIdentity.size,
+    partialMtime: partialIdentity.mtime,
+    sessionGeneration: current.sessionGeneration,
+    sequence,
+    stage: current.stage,
+    updatedAt,
+    sourceEndpoint: current.sourceEndpoint,
+    targetEndpoint: current.targetEndpoint,
+    sourcePath: current.sourcePath,
+    targetPath: current.targetPath,
+    partialIdentity: { size: partialIdentity.size, mtime: partialIdentity.mtime },
+    checksumPolicy: current.checksumPolicy,
+    commitState: current.commitState
+  };
+}
+
 interface SshSftpBatchBinding {
   batchId: string;
   hostId: string;
@@ -1028,7 +1066,10 @@ export class SshSftpTaskEngine {
         if (identity === null || identity.size !== 0 || identity.mtime < 0) {
           return this.failTask(binding, effectiveTask, 'upload-empty-partial-unverified');
         }
-        effectiveTask = this.updateTask(effectiveTask, 'transferring', 0, identity.size, identity.mtime);
+        const checkpointed: SshSftpTaskRecord | null =
+          this.checkpointConfirmedUploadWrite(effectiveTask, 0, identity);
+        if (checkpointed === null) { return false; }
+        effectiveTask = checkpointed;
         if (this.taskIsStopped(effectiveTask.taskId)) { return false; }
       }
       while (uploaded < sourceIdentity.size) {
@@ -1061,8 +1102,10 @@ export class SshSftpTaskEngine {
         if (identity === null || identity.size !== uploaded || identity.mtime < 0) {
           return this.failTask(binding, effectiveTask, 'upload-partial-unverified');
         }
-        effectiveTask = this.updateTask(effectiveTask, 'transferring', uploaded,
-          identity.size, identity.mtime);
+        const checkpointed: SshSftpTaskRecord | null =
+          this.checkpointConfirmedUploadWrite(effectiveTask, uploaded, identity);
+        if (checkpointed === null) { return false; }
+        effectiveTask = checkpointed;
         if (this.taskIsStopped(effectiveTask.taskId)) { return false; }
       }
       if (this.taskIsStopped(effectiveTask.taskId)) { return false; }
@@ -1384,6 +1427,22 @@ export class SshSftpTaskEngine {
     this.store.upsert(next);
     const stored: SshSftpTaskRecord | null = this.store.get(task.taskId);
     return stored === null ? next : stored;
+  }
+
+  private checkpointConfirmedUploadWrite(task: SshSftpTaskRecord, offset: number,
+    partialIdentity: SshSftpFileIdentity): SshSftpTaskRecord | null {
+    const current: SshSftpTaskRecord | null = this.store.get(task.taskId);
+    if (current === null) { return null; }
+    if (current.stage !== 'paused' && current.stage !== 'cancelled') {
+      return this.updateTask(task, 'transferring', offset,
+        partialIdentity.size, partialIdentity.mtime);
+    }
+    this.sequence = Math.max(this.sequence + 1, Date.now(), current.sequence + 1);
+    const reconciled: SshSftpTaskRecord | null = reconcileSshSftpStoppedUploadCheckpoint(
+      current, offset, partialIdentity, this.sequence, Date.now());
+    if (reconciled === null || !this.store.upsert(reconciled)) { return current; }
+    const stored: SshSftpTaskRecord | null = this.store.get(task.taskId);
+    return stored === null ? reconciled : stored;
   }
 
   private taskIsStopped(taskId: string): boolean {

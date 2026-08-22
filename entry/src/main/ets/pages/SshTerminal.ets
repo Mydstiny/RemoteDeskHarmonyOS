@@ -13526,6 +13526,13 @@ struct SshTerminal {
       !this.sftpDetached && !this.sftpWaitingForConnection;
   }
 
+  private isSftpUserCheckpointStopRequested(session: TransferSession): boolean {
+    return this.sftpTransferSession !== null && this.sftpTransferSession.id === session.id &&
+      (this.sftpTransferSession.stage === 'paused' ||
+        this.sftpTransferSession.stage === 'cancelled' ||
+        this.sftpPauseRequested || this.sftpCancelRequested);
+  }
+
   private pauseSftpTransfer(): void {
     if (this.sftpEngineBatchId.length > 0) {
       this.sftpTaskEngine.pauseBatch(this.sftpEngineBatchId);
@@ -13860,7 +13867,11 @@ struct SshTerminal {
           uploaded,
           uploaded === 0,
           requestSessionGeneration);
-        if (this.shouldStopSftpTransfer(session)) {
+        // A pause/cancel can arrive while the durable remote write is in flight.
+        // Reconcile that confirmed write before stopping so the preserved
+        // checkpoint describes the actual partial and remains retryable.
+        if (this.shouldStopSftpTransfer(session) &&
+          !this.isSftpUserCheckpointStopRequested(session)) {
           await fileIo.close(file); file = null;
           this.stopSftpTransfer(session, 'upload-connection-unavailable');
           return;
@@ -13884,7 +13895,8 @@ struct SshTerminal {
         const partialIdentityAfterWrite: SshSftpFileIdentity | null =
           await this.readRemoteSftpIdentity(
             partialRemotePath, requestSessionId, requestSessionGeneration);
-        if (this.shouldStopSftpTransfer(session)) {
+        if (this.shouldStopSftpTransfer(session) &&
+          !this.isSftpUserCheckpointStopRequested(session)) {
           await fileIo.close(file); file = null;
           this.stopSftpTransfer(session, 'upload-connection-unavailable');
           return;
@@ -13898,6 +13910,11 @@ struct SshTerminal {
           return;
         }
         this.updateSftpCheckpointOffset(uploaded, partialIdentityAfterWrite);
+        if (this.shouldStopSftpTransfer(session)) {
+          await fileIo.close(file); file = null;
+          this.stopSftpTransfer(session, 'upload-connection-unavailable');
+          return;
+        }
         this.sftpStatus = '正在上传 ' + fileName + ' ' + Math.floor(this.sftpProgress * 100).toString() + '%';
         await this.yieldUi(16);
         if (this.shouldStopSftpTransfer(session)) {
