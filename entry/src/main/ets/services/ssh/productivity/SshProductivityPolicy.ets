@@ -39,6 +39,7 @@ export interface SshCommandHistoryV1 {
 export interface SshProductivitySettingsV1 {
   historyEnabled: boolean;
   completionEnabled: boolean;
+  completionNotificationEnabled: boolean;
   shellIntegrationEnabled: boolean;
   disabledHistoryHostIds: Array<string>;
 }
@@ -146,6 +147,7 @@ export function emptySshProductivityDocument(): SshProductivityDocumentV1 {
     settings: {
       historyEnabled: false,
       completionEnabled: false,
+      completionNotificationEnabled: false,
       shellIntegrationEnabled: false,
       disabledHistoryHostIds: []
     }
@@ -493,6 +495,7 @@ export function encodeSshProductivityDocument(document: SshProductivityDocumentV
   normalized.settings = {
     historyEnabled: document.settings.historyEnabled === true,
     completionEnabled: document.settings.completionEnabled === true,
+    completionNotificationEnabled: document.settings.completionNotificationEnabled === true,
     shellIntegrationEnabled: document.settings.shellIntegrationEnabled === true,
     disabledHistoryHostIds: uniqueStrings(document.settings.disabledHistoryHostIds, 500)
   };

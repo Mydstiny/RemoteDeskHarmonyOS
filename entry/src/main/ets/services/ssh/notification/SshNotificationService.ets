@@ -8,6 +8,7 @@ const SSH_COMPLETION_NOTIFICATION_ID: number = 606101;
 const MIN_COMPLETION_DURATION_MS: number = 5000;
 
 export interface SshCommandCompletionInfoV1 {
+  enabled: boolean;
   hostLabel: string;
   exitCode: number | null;
   durationMs: number;
@@ -18,7 +19,8 @@ export function sshCompletionNotificationAllowed(info: SshCommandCompletionInfoV
   const duration: number = Number.isFinite(info.durationMs) ? Math.max(0, info.durationMs) : 0;
   // A short successful command is not useful enough to interrupt the user.
   // Failures are always eligible, but neither branch includes command text.
-  return label.length > 0 && (info.exitCode !== 0 && info.exitCode !== null ||
+  return info.enabled === true && label.length > 0 &&
+    (info.exitCode !== 0 && info.exitCode !== null ||
     duration >= MIN_COMPLETION_DURATION_MS);
 }
 
@@ -49,6 +51,7 @@ export class SshNotificationService {
   async publishCommandCompletion(info: SshCommandCompletionInfoV1): Promise<boolean> {
     const label: string = info.hostLabel.trim().slice(0, 96);
     const safeInfo: SshCommandCompletionInfoV1 = {
+      enabled: info.enabled === true,
       hostLabel: label,
       exitCode: info.exitCode === null || !Number.isFinite(info.exitCode)
         ? null : Math.floor(info.exitCode),

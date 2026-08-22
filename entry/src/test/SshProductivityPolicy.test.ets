@@ -84,6 +84,8 @@ export default function sshProductivityPolicyTest(): void {
         '"schemaVersion":1,"password":"never","terminalOutput":"never"');
       const decoded: SshProductivityDocumentV1 | null =
         decodeSshProductivityDocument(contaminated);
+      expect((decoded as SshProductivityDocumentV1).settings
+        .completionNotificationEnabled).assertFalse();
       const encodedAgain: string = encodeSshProductivityDocument(
         decoded as SshProductivityDocumentV1);
       expect(encodedAgain.indexOf('password')).assertEqual(-1);

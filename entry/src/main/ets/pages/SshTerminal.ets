@@ -3817,13 +3817,15 @@ struct SshTerminal {
     this.closeSshProductivity();
   }
 
-  private setSshProductivitySetting(kind: 'history' | 'completion' | 'shell',
+  private setSshProductivitySetting(kind: 'history' | 'completion' | 'notification' | 'shell',
     enabled: boolean): void {
     if (!this.sshWorkbenchEnabled || !this.sshProductivityReady) { return; }
     const current = this.sshProductivityStore.snapshot().settings;
     const next: SshProductivitySettingsV1 = {
       historyEnabled: kind === 'history' ? enabled : current.historyEnabled,
       completionEnabled: kind === 'completion' ? enabled : current.completionEnabled,
+      completionNotificationEnabled: kind === 'notification' ? enabled :
+        current.completionNotificationEnabled,
       shellIntegrationEnabled: kind === 'shell' ? enabled : current.shellIntegrationEnabled,
       disabledHistoryHostIds: current.disabledHistoryHostIds.slice()
     };
@@ -4147,6 +4149,7 @@ struct SshTerminal {
         }, 'event', 'command_finished', event.exitCode === null
           ? '命令结束' : '命令结束 · 退出码 ' + event.exitCode.toString());
         void this.sshNotificationService.publishCommandCompletion({
+          enabled: settings.completionNotificationEnabled,
           hostLabel: completionLabel,
           exitCode: event.exitCode,
           durationMs
@@ -10811,6 +10814,9 @@ struct SshTerminal {
       },
       onToggleCompletion: (enabled: boolean): void => {
         this.setSshProductivitySetting('completion', enabled);
+      },
+      onToggleCompletionNotification: (enabled: boolean): void => {
+        this.setSshProductivitySetting('notification', enabled);
       },
       onToggleShellIntegration: (enabled: boolean): void => {
         this.setSshProductivitySetting('shell', enabled);

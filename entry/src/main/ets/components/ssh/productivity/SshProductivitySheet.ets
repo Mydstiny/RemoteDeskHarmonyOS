@@ -31,6 +31,8 @@ export struct SshProductivitySheet {
   onInsertHistory: (command: string) => void = (_command: string): void => {};
   onToggleHistory: (enabled: boolean) => void = (_enabled: boolean): void => {};
   onToggleCompletion: (enabled: boolean) => void = (_enabled: boolean): void => {};
+  onToggleCompletionNotification: (enabled: boolean) => void =
+    (_enabled: boolean): void => {};
   onToggleShellIntegration: (enabled: boolean) => void = (_enabled: boolean): void => {};
   onSetStartup: (snippetId: string, enabled: boolean) => boolean =
     (_snippetId: string, _enabled: boolean): boolean => true;
@@ -296,6 +298,9 @@ export struct SshProductivitySheet {
             this.document.settings.historyEnabled, this.onToggleHistory)
           this.SettingsRow('本地补全', '只使用本地 Snippet/历史，不猜测密码边界',
             this.document.settings.completionEnabled, this.onToggleCompletion)
+          this.SettingsRow('命令完成提醒', '默认关闭；只使用可信 Shell 标记，不显示命令或网络身份',
+            this.document.settings.completionNotificationEnabled,
+            this.onToggleCompletionNotification)
           this.SettingsRow('Shell integration', '仅观察 OSC 133/633，不改变远端输出',
             this.document.settings.shellIntegrationEnabled, this.onToggleShellIntegration)
         }.width('100%').padding({ left: 16, right: 16, bottom: 18 })
