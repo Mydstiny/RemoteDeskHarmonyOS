@@ -3,7 +3,7 @@
 > 状态：`ACTIVE_M8_M9` / `NOT_COMPLETE`
 > 权威计划：`docs/codex/plans/2026-08-19-ssh-termius-harmonyos7-api26-workbench-plan.md`
 > 建立日期：2026-08-19
-> 当前工作树：`codex/moonlight-complete-upgrade` / `1d50f847`（M0–M9 SSH 增量保留；workbench flag 已增加协议身份门禁，API23 PC 已补 SFTP 下载暂停/继续/取消/重试闭环和短窗口操作区修复，会话日志与广播输入均受默认关闭的独立高风险 flag 约束，日志追加采用重启安全的不可变 chunk 增量提交且不再深拷贝完整日志，页面日志投影不再携带持久记录正文，日志导出补齐确认和异步身份 fence，大日志搜索改为可取消的分片调度，命令完成通知增加默认关闭的独立用户设置并保留并发会话通知，多窗格 xterm 安全模式按 host/session/generation 隔离且未知状态 fail closed，广播刷新不再静默替换显式目标或跨重连保留旧选择，WebMessagePort 双端序号严格连续；API26 工具链和最终实机矩阵仍待外部条件）
+> 当前工作树：`codex/moonlight-complete-upgrade` / `0989af9d`（M0–M9 SSH 增量保留；workbench flag 已增加协议身份门禁，API23 PC 已补 SFTP 下载暂停/继续/取消/重试闭环和短窗口操作区修复，会话日志与广播输入均受默认关闭的独立高风险 flag 约束，日志追加采用重启安全的不可变 chunk 增量提交且不再深拷贝完整日志，页面日志投影不再携带持久记录正文，SSH/SFTP 诊断不再记录 host 标识和远端路径，日志导出补齐确认和异步身份 fence，大日志搜索改为可取消的分片调度，命令完成通知增加默认关闭的独立用户设置并保留并发会话通知，多窗格 xterm 安全模式按 host/session/generation 隔离且未知状态 fail closed，广播刷新不再静默替换显式目标或跨重连保留旧选择，WebMessagePort 双端序号严格连续；API26 工具链和最终实机矩阵仍待外部条件）
 > 当前产品基线：HarmonyOS 6.1 / API 23
 > API 26 状态：本机未安装；任何 API 26-only import 均禁止进入产品代码
 
@@ -22,6 +22,7 @@
 
 ## 2A. 最新执行指针（2026-08-22）
 
+- `0989af9d` 修复 SSH 终端、标签、xterm、转发及双 SSH SFTP 诊断直接写入 host 标识和远端源/目标路径的问题：hilog 只保留本地 batch/task、session/generation、阶段、结果类别、偏移和字节数；端点诊断只输出 `local/ssh` 类型，远程复制异常不再拼接可能带路径的原始异常字符串。连接、身份 fence、任务状态和传输路径本身未改动。
 - `1d50f847` 修复 M6 单行日志追加仍对整个持久文档做多轮 JSON 深拷贝和逐 chunk 正文序列化的问题：策略追加只复制顶层数组与逻辑尾 chunk，未变化 chunk/record 保持引用；Store 追加直接提交已归一化候选，并凭不可变 chunk ID 跳过缓存行的序列化。索引仍是先写候选数据、后切换可见性的提交边界，旧 ID 碰撞会 fail closed，原有索引失败后重启恢复用例继续覆盖一致性。
 - `cd22f921` 修复 M6 日志 Sheet 打开时每次缓冲输出刷新都把完整持久日志复制进 ArkUI `@State` 的问题：Store 新增只含设置与 chunk 元数据的页面快照，记录正文继续留在加密 Store 内；设置开关使用独立浅快照。完整 snapshot、分片搜索、书签、导出和持久化路径不变，回归用例证明页面快照无记录正文但 Store 搜索与完整快照仍可读取记录。
 - `7246f498` 修复 M6 日志 chunk 先覆盖旧行、后写索引导致失败提交在重启后复活的问题：逻辑尾 chunk 的每次更新都写入新 ID，旧索引继续指向旧密文；只有新索引提交成功才删除旧行及对应序列化/密文缓存。Store 测试增加索引写失败后的全新实例恢复，证明未提交记录不会被旧索引重新载入。
@@ -326,3 +327,5 @@ hvigorw --mode module -p module=entry -p product=default assembleHap --analyze=n
 2026-08-22 M6 日志页面轻量投影 receipt：`cd22f921` 保留 `SshSessionLogStore.snapshot()` 的完整深拷贝语义供既有非热路径使用，新增 `pageSnapshot()` 只复制设置及 chunk 身份、时间、大小等元数据，并让 `SshTerminal` 的可观察页面状态和设置开关不再读取记录正文。日志 Sheet 当前只消费设置和 chunk 数量，搜索结果继续由可取消分片搜索单独返回；测试锁定轻量投影的 `records` 为空，同时完整 snapshot 与搜索仍能读取原记录。精确 `default@OhosTestCompileArkTS` exit 0，`assembleHap` exit 0（`BUILD SUCCESSFUL in 12 s 234 ms`）；标准签名 HAP SHA-256 为 `fb4bacf3c0ae22fd01aa1fc351015326a9a21ede8130837d0b1c7f416c0f0d58`。本 receipt 证明源码、测试编译和打包门禁，不冒充 10MiB 真机压力、API26 或物理设备验收。
 
 2026-08-22 M6 日志增量追加 receipt：`1d50f847` 将 `appendSshSessionLogRecord` 从“完整文档 JSON encode/decode、修改、再次完整 prune clone”改为只复制设置、顶层数组和被更新的逻辑尾 chunk；保留的旧 chunk 与 record 引用不变。Store 不再用两次完整文档编码判断追加变化，也不再让通用 commit 重新归一化完整正文；追加专用提交先拒绝旧不可变 ID 对应新对象的碰撞，再只序列化/加密缓存中不存在的新 chunk，并以加密索引作为可见性提交点。回归用例锁定跨主机追加时旧 chunk 引用和旧文档内容均保持不变，原有索引写失败后的新实例恢复用例继续覆盖失败提交不可见。精确 `default@OhosTestCompileArkTS` exit 0，`assembleHap` exit 0（`BUILD SUCCESSFUL in 12 s 891 ms`）；标准签名 HAP SHA-256 为 `7469537b6ea56aedd99bfa80a80b610c1a8d00d55038eefd41edd2c79fec9094`。本 receipt 证明源码、测试编译与打包门禁，不冒充 10MiB 真机压力、断电、API26 或物理设备验收。
+
+2026-08-22 SSH/SFTP 诊断字段脱敏 receipt：`0989af9d` 移除终端 ready/recovery、标签切换、native renderer fallback、转发绑定、xterm input/focus/mode、双 SSH SFTP 建链/事件/复制等 hilog 中的 host 标识、active host、端点 host、远端 `sourcePath/targetPath/targetRoot` 和 surface identity。诊断仍保留本地 batch/task ID、session/generation、阶段、状态、错误类别、偏移和字节数，业务所需 host/path 变量仍在原控制流中使用，未改变连接、传输或身份校验。静态扫描确认相关敏感键不再进入两处诊断调用。精确 `default@OhosTestCompileArkTS` 与 `assembleHap` 均 exit 0（assemble：`BUILD SUCCESSFUL in 12 s 295 ms`）；标准签名 HAP SHA-256 为 `9a2daed54b67c2a8ba416c80e19034cb2c87bca0e84f6d25c7a450e783cf5e85`。本 receipt 不冒充 HDC、API26 或物理设备隐私验收。
