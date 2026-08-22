@@ -329,6 +329,7 @@ import {
 import { SshProductivityStore } from '../services/ssh/productivity/SshProductivityStore';
 import {
   emptySshSessionLogDocument,
+  matchesSshSessionLogExportFence,
   resolveSshSessionLogsEnabled,
   sanitizeSshSessionLogText,
   sshSessionLogCaptureAllowed,
@@ -3539,7 +3540,30 @@ struct SshTerminal {
   private async exportSshSessionLogToFile(): Promise<void> {
     if (!this.sshSessionLogsEnabled() || !this.sshSessionLogReady ||
       this.hostId.trim().length === 0) { return; }
-    const result = this.sshSessionLogStore.export(this.hostId.trim(), undefined, true);
+    const exportHostId: string = this.hostId.trim();
+    const exportPageGeneration: number = this.pageGeneration;
+    const exportBindingGeneration: number = this.sshBindingGeneration;
+    let confirmed: boolean = false;
+    try {
+      const decision = await promptAction.showDialog({
+        title: '导出会话日志？',
+        message: '只导出当前主机经过二次脱敏的日志。保存后的文件将离开应用加密存储，请确认目标位置可信。',
+        buttons: [
+          { text: '取消', color: this.pal().text2 },
+          { text: '确认导出', color: this.pal().danger }
+        ]
+      });
+      confirmed = decision.index === 1;
+    } catch (_err) {
+      confirmed = false;
+    }
+    if (!confirmed || !matchesSshSessionLogExportFence(
+      exportHostId, exportPageGeneration, exportBindingGeneration,
+      this.hostId, this.pageGeneration, this.sshBindingGeneration,
+      this.sshSessionLogsEnabled() && this.sshSessionLogReady && !this.terminalClosing)) {
+      return;
+    }
+    const result = this.sshSessionLogStore.export(exportHostId, undefined, true);
     if (!result.ok || result.text.length === 0) {
       promptAction.showToast({ message: '没有可导出的脱敏日志', duration: 1500 });
       return;
@@ -3550,8 +3574,11 @@ struct SshTerminal {
         newFileNames: ['ssh-session-log.txt']
       };
       const uris: Array<string> = await new picker.DocumentViewPicker(context).save(options);
-      if (!this.sshSessionLogsEnabled() || uris.length === 0 ||
-        uris[0].trim().length === 0) { return; }
+      if (!matchesSshSessionLogExportFence(
+        exportHostId, exportPageGeneration, exportBindingGeneration,
+        this.hostId, this.pageGeneration, this.sshBindingGeneration,
+        this.sshSessionLogsEnabled() && this.sshSessionLogReady && !this.terminalClosing) ||
+        uris.length === 0 || uris[0].trim().length === 0) { return; }
       const bytes: Uint8Array = new util.TextEncoder().encode(result.text);
       const output: fileIo.File = fileIo.openSync(uris[0],
         fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.CREATE | fileIo.OpenMode.TRUNC);

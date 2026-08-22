@@ -117,6 +117,18 @@ export function resolveSshSessionLogsEnabled(
   return workbenchEnabled === true && sessionLogsFlagEnabled === true;
 }
 
+/** Revalidate host/page ownership after every system UI await during export. */
+export function matchesSshSessionLogExportFence(expectedHostId: string,
+  expectedPageGeneration: number, expectedBindingGeneration: number,
+  currentHostId: string, currentPageGeneration: number, currentBindingGeneration: number,
+  exportEnabled: boolean): boolean {
+  const normalizedExpected: string = expectedHostId.trim();
+  return exportEnabled === true && normalizedExpected.length > 0 &&
+    normalizedExpected === currentHostId.trim() && expectedPageGeneration > 0 &&
+    expectedPageGeneration === currentPageGeneration && expectedBindingGeneration > 0 &&
+    expectedBindingGeneration === currentBindingGeneration;
+}
+
 function stringValue(value: Object, max: number): string {
   return typeof value === 'string' ? (value as string).slice(0, max) : '';
 }

@@ -6,6 +6,7 @@ import {
   emptySshSessionLogDocument,
   encodeSshSessionLogDocument,
   exportSshSessionLog,
+  matchesSshSessionLogExportFence,
   resolveSshSessionLogsEnabled,
   searchSshSessionLog,
   sanitizeSshSessionLogText,
@@ -29,6 +30,19 @@ export default function sshSessionLogPolicyTest(): void {
       expect(resolveSshSessionLogsEnabled(true, false)).assertFalse();
       expect(resolveSshSessionLogsEnabled(false, true)).assertFalse();
       expect(resolveSshSessionLogsEnabled(true, true)).assertTrue();
+    });
+
+    it('export_fence_should_reject_flag_page_binding_or_host_changes', 0, (): void => {
+      expect(matchesSshSessionLogExportFence(
+        'host-one', 7, 9, 'host-one', 7, 9, true)).assertTrue();
+      expect(matchesSshSessionLogExportFence(
+        'host-one', 7, 9, 'host-two', 7, 9, true)).assertFalse();
+      expect(matchesSshSessionLogExportFence(
+        'host-one', 7, 9, 'host-one', 8, 9, true)).assertFalse();
+      expect(matchesSshSessionLogExportFence(
+        'host-one', 7, 9, 'host-one', 7, 10, true)).assertFalse();
+      expect(matchesSshSessionLogExportFence(
+        'host-one', 7, 9, 'host-one', 7, 9, false)).assertFalse();
     });
 
     it('default_should_be_opt_in_and_sensitive_modes_should_fail_closed', 0, (): void => {
