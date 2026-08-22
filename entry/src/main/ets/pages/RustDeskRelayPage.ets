@@ -1585,6 +1585,7 @@ export struct RustDeskRelayPage {
         placement: Placement.BottomRight,
         enableArrow: true,
         popupColor: this.pal().card,
+        width: this.pcMenuWidth(),
         onStateChange: (e: Object) => {
           const ev: Record<string, boolean> = e as Record<string, boolean>;
           if (!ev['isVisible']) { this.menuVisibleRelayId = ''; }
@@ -1631,43 +1632,58 @@ export struct RustDeskRelayPage {
     })
   }
 
+  private pcMenuWidth(): number {
+    const labels: string[] = ['测试连接', '编辑', '删除'];
+    let longestTextVp: number = 0;
+    const uiContext = this.getUIContext();
+    labels.forEach((label: string): void => {
+      const measuredPx: number = uiContext.getMeasureUtils().measureText({
+        textContent: label,
+        fontSize: 13
+      });
+      longestTextVp = Math.max(longestTextVp, uiContext.px2vp(measuredPx));
+    });
+    // Popup shell padding + button padding + 16vp icon + 8vp text gap.
+    return Math.ceil(longestTextVp + 56);
+  }
+
   @Builder pcMenuBuilder(relay: RustDeskRelayConfig) {
     Column() {
       Button() {
         Row() {
           SymbolGlyph($r('sys.symbol.bolt_fill')).fontSize(16).fontColor([this.pal().text])
           Text('测试连接').fontSize(13).fontColor(this.pal().text).margin({ left: 8 })
-        }
+        }.width('100%')
       }
-      .constraintSize({ minHeight: 42 }).backgroundColor(Color.Transparent)
+      .width('100%').constraintSize({ minHeight: 42 }).backgroundColor(Color.Transparent)
       .borderRadius(8).padding({ left: 8, right: 8 })
       .onClick(() => { this.menuVisibleRelayId = ''; this.doTestRelay(relay); })
 
-      Divider().strokeWidth(0.5).color(this.pal().cardBorder)
+      Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
 
       Button() {
         Row() {
           SymbolGlyph($r('sys.symbol.square_and_pencil')).fontSize(16).fontColor([this.pal().text])
           Text('编辑').fontSize(13).fontColor(this.pal().text).margin({ left: 8 })
-        }
+        }.width('100%')
       }
-      .constraintSize({ minHeight: 42 }).backgroundColor(Color.Transparent)
+      .width('100%').constraintSize({ minHeight: 42 }).backgroundColor(Color.Transparent)
       .borderRadius(8).padding({ left: 8, right: 8 })
       .onClick(() => { this.menuVisibleRelayId = ''; this.openEditRelaySheet(relay); })
 
-      Divider().strokeWidth(0.5).color(this.pal().cardBorder)
+      Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
 
       Button() {
         Row() {
           SymbolGlyph($r('sys.symbol.ohos_trash')).fontSize(16).fontColor([this.pal().danger])
           Text('删除').fontSize(13).fontColor(this.pal().danger).margin({ left: 8 })
-        }
+        }.width('100%')
       }
-      .constraintSize({ minHeight: 42 }).backgroundColor(Color.Transparent)
+      .width('100%').constraintSize({ minHeight: 42 }).backgroundColor(Color.Transparent)
       .borderRadius(8).padding({ left: 8, right: 8 })
       .onClick(() => { this.menuVisibleRelayId = ''; this.doDeleteRelay(relay.id); })
     }
-    .padding(4).borderRadius(12)
+    .width('100%').padding(4).borderRadius(12)
   }
 
   @Builder vncGatewayDetailPanelContent() {
@@ -2070,6 +2086,7 @@ export struct RustDeskRelayPage {
             placement: Placement.BottomRight,
             enableArrow: true,
             popupColor: this.pal().card,
+            width: this.pcMenuWidth(),
             onStateChange: (e: Object) => {
               const ev: Record<string, boolean> = e as Record<string, boolean>;
               if (!ev['isVisible']) { this.menuVisibleRelayId = ''; }

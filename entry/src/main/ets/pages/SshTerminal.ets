@@ -5331,6 +5331,35 @@ struct SshTerminal {
     return !this.isDesktopDevice && !this.isPadDevice;
   }
 
+  private sshPhoneActionPopupWidth(): number {
+    const uiContext = this.getUIContext();
+    const measureTextVp = (text: string, fontSize: number): number => {
+      return uiContext.px2vp(uiContext.getMeasureUtils().measureText({
+        textContent: text,
+        fontSize
+      }));
+    };
+    let longestTextVp: number = Math.max(
+      measureTextVp('会话工具', 12),
+      measureTextVp('语言与地区', 14),
+      measureTextVp(sshSessionLocaleLabel(this.sshSessionLocale, true), 11)
+    );
+    if (this.sshConnectionIsConnected()) {
+      const forwardingStatus: string = this.forwardingListeningCount() > 0
+        ? this.forwardingListeningCount().toString() + ' 条转发正在监听'
+        : (this.forwardingHasError() ? '有转发需要检查' : '管理端口转发');
+      longestTextVp = Math.max(
+        longestTextVp,
+        measureTextVp('SFTP 文件', 14),
+        measureTextVp('浏览与传输远端文件', 11),
+        measureTextVp('隧道转发', 14),
+        measureTextVp(forwardingStatus, 11)
+      );
+    }
+    // Popup shell + row paddings + icon/gap + trailing chevron.
+    return Math.ceil(longestTextVp + 90);
+  }
+
   private openSshPhoneAction(action: 'locale' | 'sftp' | 'forwarding'): void {
     const pageGeneration: number = this.pageGeneration;
     const hostId: string = this.hostId.trim();
@@ -5360,7 +5389,7 @@ struct SshTerminal {
       Text('会话工具')
         .fontSize(12).fontColor(this.pal().text3)
         .margin({ left: 14, right: 14, top: 8, bottom: 6 })
-      Divider().strokeWidth(0.5).color(this.pal().cardBorder)
+      Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
 
       Row() {
         Text('文').fontSize(16).fontWeight(FontWeight.Medium)
@@ -5372,12 +5401,12 @@ struct SshTerminal {
         }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
         SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(14).fontColor([this.pal().text3])
       }
-      .constraintSize({ minHeight: 52 }).padding({ left: 14, right: 12 })
+      .width('100%').constraintSize({ minHeight: 52 }).padding({ left: 14, right: 12 })
       .onClick((): void => { this.openSshPhoneAction('locale'); })
       .accessibilityText('切换 SSH 会话语言与地区')
 
       if (this.sshConnectionIsConnected()) {
-        Divider().strokeWidth(0.5).color(this.pal().cardBorder)
+        Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
         Row() {
           SymbolGlyph($r('sys.symbol.doc')).fontSize(17).fontColor([this.accentColor])
             .width(24)
@@ -5387,11 +5416,11 @@ struct SshTerminal {
           }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
           SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(14).fontColor([this.pal().text3])
         }
-        .constraintSize({ minHeight: 52 }).padding({ left: 14, right: 12 })
+        .width('100%').constraintSize({ minHeight: 52 }).padding({ left: 14, right: 12 })
         .onClick((): void => { this.openSshPhoneAction('sftp'); })
         .accessibilityText('打开 SFTP 文件传输')
 
-        Divider().strokeWidth(0.5).color(this.pal().cardBorder)
+        Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
         Row() {
           Text('⇄').fontSize(19).fontColor(this.accentColor)
             .width(24).textAlign(TextAlign.Center)
@@ -5406,12 +5435,12 @@ struct SshTerminal {
           }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
           SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(14).fontColor([this.pal().text3])
         }
-        .constraintSize({ minHeight: 52 }).padding({ left: 14, right: 12 })
+        .width('100%').constraintSize({ minHeight: 52 }).padding({ left: 14, right: 12 })
         .onClick((): void => { this.openSshPhoneAction('forwarding'); })
         .accessibilityText('打开 SSH 隧道转发')
       }
     }
-    .padding({ top: 2, bottom: 6 })
+    .width('100%').padding({ top: 2, bottom: 6 })
     .borderRadius(14)
     .backgroundColor(this.pal().card)
     .shadow({ radius: 18, color: 'rgba(0,0,0,0.28)', offsetY: 6 })
@@ -15618,6 +15647,7 @@ struct SshTerminal {
             placement: Placement.BottomRight,
             enableArrow: true,
             popupColor: this.pal().card,
+            width: this.sshPhoneActionPopupWidth(),
             onStateChange: (e: Object) => {
               const ev: Record<string, boolean> = e as Record<string, boolean>;
               if (!ev['isVisible']) { this.showSshPhoneActionPopup = false; }

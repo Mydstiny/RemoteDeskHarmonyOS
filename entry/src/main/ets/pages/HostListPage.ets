@@ -10280,6 +10280,7 @@ struct HostListPage {
                         placement: Placement.BottomRight,
                         enableArrow: true,
                         popupColor: this.pal().card,
+                        width: this.hostActionPopupWidth(host),
                         onStateChange: (e: Object) => {
                           const ev: Record<string, boolean> = e as Record<string, boolean>;
                           if (!ev['isVisible']) { this.hostActionPopupId = ''; }
@@ -10600,6 +10601,26 @@ struct HostListPage {
   }
 
   // PC/2in1: 省略号弹出操作菜单 (小巧精致 + 过渡动画)
+  private hostActionPopupWidth(host: RemoteHost): number {
+    const labels: string[] = ['编辑', host.locked ? '解锁' : '上锁', '多选 / 排序', '删除'];
+    if (host.protocol === 'ssh') { labels.push('部署公钥'); }
+    if (!isVncHostProjection(host)) {
+      labels.push(host.groupId === 'ops' ? '移出工作组' : '加入 ops 工作组');
+    }
+    let longestTextVp: number = 0;
+    const uiContext = this.getUIContext();
+    labels.forEach((label: string): void => {
+      const measuredPx: number = uiContext.getMeasureUtils().measureText({
+        textContent: label,
+        fontSize: 13,
+        fontFamily: this.font()
+      });
+      longestTextVp = Math.max(longestTextVp, uiContext.px2vp(measuredPx));
+    });
+    // Popup shell padding + row padding + 16vp icon + 8vp text gap.
+    return Math.ceil(longestTextVp + 64);
+  }
+
   @Builder hostActionMenuBuilder(host: RemoteHost) {
     Column() {
       Row() {
@@ -10607,23 +10628,23 @@ struct HostListPage {
           .fontSize(16).fontColor([this.pal().text])
         Text('编辑').fontSize(13).fontColor(this.pal().text).fontFamily(this.font()).margin({ left: 8 })
       }
-      .padding({ left: 12, right: 12, top: 8, bottom: 8 })
+      .width('100%').padding({ left: 12, right: 12, top: 8, bottom: 8 })
       .onClick(() => { animateTo({ duration: 150 }, () => { this.hostActionPopupId = ''; }); this.editHost(host); })
 
-      Divider().strokeWidth(0.5).color(this.pal().cardBorder)
+      Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
 
       if (host.protocol === 'ssh') {
         Row() {
           SymbolGlyph($r('sys.symbol.key_fill')).fontSize(16).fontColor([this.pal().text])
           Text('部署公钥').fontSize(13).fontColor(this.pal().text).fontFamily(this.font()).margin({ left: 8 })
         }
-        .padding({ left: 12, right: 12, top: 8, bottom: 8 })
+        .width('100%').padding({ left: 12, right: 12, top: 8, bottom: 8 })
         .onClick(() => {
           animateTo({ duration: 150 }, () => { this.hostActionPopupId = ''; });
           void this.openSshPublicKeyInstall(host);
         })
 
-        Divider().strokeWidth(0.5).color(this.pal().cardBorder)
+        Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
       }
 
       Row() {
@@ -10631,17 +10652,17 @@ struct HostListPage {
           .fontSize(16).fontColor([this.pal().text])
         Text(host.locked ? '解锁' : '上锁').fontSize(13).fontColor(this.pal().text).fontFamily(this.font()).margin({ left: 8 })
       }
-      .padding({ left: 12, right: 12, top: 8, bottom: 8 })
+      .width('100%').padding({ left: 12, right: 12, top: 8, bottom: 8 })
       .onClick(() => { animateTo({ duration: 150 }, () => { this.hostActionPopupId = ''; }); this.toggleLock(host); })
 
-      Divider().strokeWidth(0.5).color(this.pal().cardBorder)
+      Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
 
       Row() {
         SymbolGlyph($r('sys.symbol.list_bullet'))
           .fontSize(16).fontColor([this.pal().text])
         Text('多选 / 排序').fontSize(13).fontColor(this.pal().text).fontFamily(this.font()).margin({ left: 8 })
       }
-      .padding({ left: 12, right: 12, top: 8, bottom: 8 })
+      .width('100%').padding({ left: 12, right: 12, top: 8, bottom: 8 })
       .onClick(() => {
         animateTo({ duration: 150 }, () => { this.hostActionPopupId = ''; });
         this.hostSelectionMode = true;
@@ -10658,7 +10679,7 @@ struct HostListPage {
           Text(host.groupId === 'ops' ? '移出工作组' : '加入 ops 工作组')
             .fontSize(13).fontColor(this.pal().text).fontFamily(this.font()).margin({ left: 8 })
         }
-        .padding({ left: 12, right: 12, top: 8, bottom: 8 })
+        .width('100%').padding({ left: 12, right: 12, top: 8, bottom: 8 })
         .onClick(() => {
           const nextGroup = host.groupId === 'ops' ? '' : 'ops';
           if (!this.srv.setGroup(host.id, nextGroup)) {
@@ -10667,7 +10688,7 @@ struct HostListPage {
           animateTo({ duration: 150 }, () => { this.hostActionPopupId = ''; });
         })
 
-        Divider().strokeWidth(0.5).color(this.pal().cardBorder)
+        Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
       }
 
       Row() {
@@ -10675,10 +10696,10 @@ struct HostListPage {
           .fontSize(16).fontColor([this.pal().danger])
         Text('删除').fontSize(13).fontColor(this.pal().danger).fontFamily(this.font()).margin({ left: 8 })
       }
-      .padding({ left: 12, right: 12, top: 8, bottom: 8 })
+      .width('100%').padding({ left: 12, right: 12, top: 8, bottom: 8 })
       .onClick(() => { animateTo({ duration: 150 }, () => { this.hostActionPopupId = ''; }); this.doDeleteHost(host); })
     }
-    .padding({ top: 2, bottom: 2 }).borderRadius(12)
+    .width('100%').padding({ top: 2, bottom: 2 }).borderRadius(12)
     .transition(TransitionEffect.asymmetric(
       TransitionEffect.scale({ x: 0.8, y: 0.8 }).combine(TransitionEffect.OPACITY)
         .animation({ duration: 200, curve: Curve.FastOutSlowIn }),
