@@ -3,7 +3,7 @@
 > 状态：`ACTIVE_M8_M9` / `NOT_COMPLETE`
 > 权威计划：`docs/codex/plans/2026-08-19-ssh-termius-harmonyos7-api26-workbench-plan.md`
 > 建立日期：2026-08-19
-> 当前工作树：`codex/moonlight-complete-upgrade` / 代码检查点 `411dd9a2`（M0–M9 SSH 增量保留；workbench flag 已增加协议身份门禁；API24 Phone/2in1 模拟器已补 KBI/MFA 成功、取消、失败矩阵；API23-targeted HAP 已在 API24 2in1 和 Phone 完成授权文件 SFTP 上传生命周期，并在 API24 Phone 补齐下载侧暂停/继续/取消/重试、最终完整下载及持久任务恢复入口；会话日志、广播输入、WebMessagePort 及生产力加密 Store 继续 fail closed，API26 工具链和最终物理设备矩阵仍待外部条件）
+> 当前工作树：`codex/moonlight-complete-upgrade` / 代码检查点 `e9d7cc6f`（M0–M9 SSH 增量保留；workbench flag 已增加协议身份门禁；API24 Phone/2in1 模拟器已补 KBI/MFA 成功、取消、失败矩阵、通知允许/拒绝矩阵；API23-targeted HAP 已在 API24 2in1 和 Phone 完成授权文件 SFTP 上传生命周期，并在 API24 Phone 补齐下载侧暂停/继续/取消/重试、最终完整下载及持久任务恢复入口；会话日志、广播输入、WebMessagePort 及生产力加密 Store 继续 fail closed，API26 工具链和最终物理设备矩阵仍待外部条件）
 > 当前产品基线：HarmonyOS 6.1 / API 23
 > API 26 状态：本机未安装；任何 API 26-only import 均禁止进入产品代码
 
@@ -22,6 +22,8 @@
 
 ## 2A. 最新执行指针（2026-08-23）
 
+- `680bb3b3` 修复 API24 Phone 自动回连后 native/data 已恢复、但工作台标签仍长期显示“连接中”的投影问题：浏览器与 legacy chrome 的 `ForEach` 改用只包含可见标签元数据的 render key，实际 xterm surface 继续保持稳定 `tabId`，因此不重建终端、native owner 或页面 generation。对应策略测试锁定连接状态、标题和脏标记变化会刷新 chrome，而稳定 surface identity 不变。
+- `e9d7cc6f` 补齐 SSH 通知授权闭环：Notification Kit 只在用户前台显式开启时请求权限，并在弹窗返回后再次查询系统状态；拒绝、dismiss 或查询异常均 fail closed，旧版已持久化但系统未授权的命令完成提醒会自动回落为关闭。SSH 设置卡增加不依赖加密保险库的授权入口；通知内容、后台任务、其他协议和生产力加密边界均未放宽。
 - `82d388210`、`451aa05d0`、`f0607de7b` 分别把命令面板、全局传输中心和终端 Profile 的 Sheet 从页面根宿主迁到各自 1vp、`HitTestMode.None` 的独立宿主。API24 2in1 上的 API23-targeted HAP 在修复前表现为入口状态已置真、但中间 Sheet 被后续 false 绑定立即 dismiss；作为原链末项的标签选择器一直可见。迁移后命令面板、传输中心和 Profile 均可显示及关闭，未改命令注册、SFTP 任务引擎、Profile 作用域或终端焦点语义。
 - `7187d847c`、`d88267e89`、`d87130a63` 预先隔离生产力、会话日志和广播 Sheet，避免它们各自的独立 rollout/加密门禁将来打开时再次暴露同一 API23 生命周期缺陷。生产力 Store 在本轮未解锁的 `DataCrypto` 环境保持 unavailable；会话日志与广播独立 flag 仍为默认 `false`，本轮只声明结构和构建证据，不冒充这些高风险功能的设备交互通过。
 - `8f7c4052e`、`ee76c54e6` 分别隔离标签重命名与私钥口令回退 Sheet，保留原草稿清理及 pending passphrase promise 的取消语义。当前页面根宿主只剩已经工作的标签选择器一个 `bindSheet`，不存在继续链式覆盖的条件；自动化框架不能可靠触发 tab 长按和 preflight 后口令 fallback，因此这两个入口只声明源码/构建证据。
@@ -488,3 +490,11 @@ UI hierarchy 证据及 SHA-256 依次为 `/private/tmp/ssh-phone-fix-upload-acti
 验收后 SFTP/SSH 已显式退出，`tcp:22222 -> tcp:22226` 映射删除并复查为 `[Empty]`，宿主 22225/22226 均无监听；A3/B3 与一次性脚本/pyc 已停止和删除，复用 venv、Host Key 与既有主机配置保留。系统文件管理器明确显示“已选择 5 项”，选择证据 `/private/tmp/ssh-phone-clean-five-selected.json` hash 为 `e5689571ead5cf91329b6a463355c5babf52cf919ba2eb13e63ab5c69c7de439`；两个完整 final 与三个 0 B picker 占位文件均移入“最近删除”且未清空，Download 只剩三条既有 RemoteDesktop 日志。设备侧逐项枚举的 42 个 `ssh-phone-fixed-*`、`ssh-phone-refresh-*`、`ssh-phone-route-*` 与 `ssh-phone-clean-*` 转储已精确删除并按四组复查为空，本地 `/private/tmp` 证据副本保留。
 
 本 receipt 补齐 API23-targeted 修复 HAP 在 API24 Phone 模拟器上的单文件下载路由切换、页面自动回连和最新断点卡即时可恢复；不冒充 API26、物理设备、通知权限或多主机并行矩阵。M7–M9 继续 `DEVICE_PENDING`，整个 SSH 计划继续 `NOT_COMPLETE`。
+
+2026-08-23 API24 Phone 工作台标签状态刷新 receipt：复用既有 `ssh-e2e`、固定 ED25519 Host Key、密码鉴权和 Phone `tcp:22222 -> tcp:22222` reverse 映射。修复前 native 已建立 shell、页面已收到 SSH data，但标签 chrome 因 `ForEach` 只使用稳定 `tabId` 作为 key 而保留旧 Item，持续显示“连接中”。`680bb3b3` 新增独立 chrome render key，只让可见元数据变化重建标签条；xterm surface、sessionId、generation 和 native owner 继续使用原稳定身份。精确 `default@OhosTestCompileArkTS`、`assembleHap`、`git diff --check` 与开源发布 Light 门禁均通过；对应签名 HAP SHA-256 为 `9fa527b6ad2bb5e3491a5a7f3ee9fdef51494923ce20c16977f5e8e70027fe20`。同一 HAP 覆盖安装后，Phone 自动连接 UI 只显示“已连接”、不再残留“连接中”，native 日志同时确认 shell started、`sessionId=1`、首个 SSH data 与 xterm ready；hierarchy `/private/tmp/ssh-tab-fix-pass.json` 的 SHA-256 为 `4bb9616e58d42f1f25e44be0a4ed76093824e8d45c184d647c8104ad0e0fc381`。本修复不重建终端或改变连接、认证、SFTP、转发及其他协议路径。
+
+2026-08-23 API24 Phone/2in1 SSH 通知授权矩阵 receipt：旧产品会直接持久化 `completionNotificationEnabled=true`，没有先请求或复核 Notification Kit 系统授权，发布失败也只写诊断。`e9d7cc6f` 增加可注入的授权策略及三组测试，锁定已授权不重复弹窗、接受后必须二次确认、拒绝后保持关闭；生产力 Sheet 与 SSH 设置入口共用同一 SSH-only service，系统授权不依赖当前 `DataCrypto` 是否解锁。通知仍默认关闭，标题/正文策略继续禁止命令、IP、用户名和远端路径。代码提交前精确 `default@OhosTestCompileArkTS` 与 `assembleHap` 均 exit 0，最终 assemble 为 `BUILD SUCCESSFUL in 13 s 510 ms`；`git diff --check` 和开源发布 Light 均通过，签名 HAP SHA-256 为 `b3ca1992a6884ba83b63024d49ba2d8252119fc25aea72a4ae124c579b1a8fe0`。
+
+Phone 未授权基线的 SSH 行显示可操作“开启”，hierarchy `/private/tmp/ssh-notify-settings-row.json` hash 为 `208479f374bb610697e094a2b49abd6ff092f5eb9221a7cccf7573885be19b99`；点击后真实系统弹窗明确提供“不允许/允许”，`ssh-notify-dialog.json` hash 为 `8f88c0bb8108f28c84397789662d98aa5727317e4f4c575c5006c4558ee87880`。选择“不允许”后产品仍显示“开启”，没有保存假授权，`ssh-notify-denied.json` hash 为 `d2cc6060c886a21fca4999566743365170cb9487b2a1a55aa5b329700d827acb`。独立 2in1 首次弹窗 `ssh-notify-2in1-dialog.json` hash 为 `1348c50bc4d6b472ef3dca5a2c26b332268a834480a93eda13305ed15b06a053`；选择“允许”后应用显示禁用的“已开启”，`ssh-notify-2in1-allowed.json` hash 为 `40556541f332efb385df60ee8415fc765644aa1ddb1337930cd45c4d14113a18`，退后台再前台复查仍为“已开启”，`ssh-notify-2in1-resumed.json` hash 为 `c3c31ea967f774174a935fdbf212d0473e1051b9c6b5a6364af1ab10db7afbf8`。模拟器 `bm dump` 的 `allowEnableNotification` 在允许前后都保持 false，故未把该非动态字段冒充授权结果；产品实际以 Notification Kit 二次查询和前后台复查为准。
+
+验收后 Phone 临时 `sshWorkbenchV2` 已恢复为 false，hierarchy `/private/tmp/ssh-notify-clean-workbench.json` hash 为 `5a72ce6252764031661f341821c2164434e855b7c74c3e085ac357accc29a38f`；2in1 原工作台 flag 保持 false。2in1 的系统通知管理中 RemoteDesktop Toggle 已恢复关闭，强停/重启应用后 SSH 行重新显示“开启”，最终 hierarchy `/private/tmp/ssh-cleanup-app-restarted.json` hash 为 `e260b76de19a6daefcedcfc3cc30d5414ea0b654f7ee8b34d402b64e00638531`。两端本轮 `ssh-notify*`、`ssh-notification*`、`ssh-tab-fix*` 设备转储已精确删除，Phone reverse 映射复查为 `[Empty]`，宿主 22222 无监听；复用 venv、Host Key、服务脚本、本地证据和用户主机配置保留。本 receipt 补齐 API23-targeted HAP 在 API24 Phone/2in1 模拟器上的通知拒绝/允许与系统撤销后重新同步，不冒充后台/锁屏发布、API26 或物理设备验收。M7–M9 继续 `DEVICE_PENDING`，整个 SSH 计划继续 `NOT_COMPLETE`。
