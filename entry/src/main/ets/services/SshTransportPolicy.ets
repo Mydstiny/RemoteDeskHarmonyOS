@@ -32,3 +32,14 @@ export function sshEditorTransportForStoredHost(proxyHost: string, storedType: s
   if (storedType === 'direct') { return 'legacy_gateway'; }
   return normalizeSshEndpointTransport(storedType);
 }
+
+/**
+ * A page-owned session must keep polling native state even while ArkUI still
+ * describes it as disconnected/connecting. Native transport recovery can
+ * finish without changing the session id, and the state poll is what restores
+ * the page/tab binding before a latency request is allowed to run.
+ */
+export function shouldPollSshNativeConnectionState(sessionId: number,
+  latencyProbeRunning: boolean): boolean {
+  return sessionId > 0 && !latencyProbeRunning;
+}

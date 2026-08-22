@@ -192,6 +192,7 @@ import {
   resolveSshProxyRuntimePlan,
   sshProxyRuntimeHasStrictJumpBindings
 } from '../services/SshProxyRuntimePolicy';
+import { shouldPollSshNativeConnectionState } from '../services/SshTransportPolicy';
 import { SshForwardingSheet } from '../components/ssh/SshForwardingSheet';
 import { SshForwardingProfile } from '../services/SshForwardingPolicy';
 import { SshForwardingProfileStore } from '../services/SshForwardingProfileStore';
@@ -9809,7 +9810,10 @@ struct SshTerminal {
 
   private probeLatencyOnce(): void {
     this.reconcileRetainedSshTabStates();
-    if (!this.connected || this.sessionId <= 0 || this.latencyProbeRunning) { return; }
+    // Native recovery may finish while the page still owns the stale
+    // disconnected/connecting projection. Always reconcile a retained
+    // session first; only the latency request itself requires CONNECTED.
+    if (!shouldPollSshNativeConnectionState(this.sessionId, this.latencyProbeRunning)) { return; }
     if (!this.syncNativeConnectionState()) { return; }
     const pageGeneration: number = this.pageGeneration;
     const requestSessionId: number = this.sessionId;
