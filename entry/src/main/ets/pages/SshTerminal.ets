@@ -585,6 +585,7 @@ struct SshTerminal {
   private sshBroadcastLastEscapeAt: number = 0;
   private sshNotificationService: SshNotificationService =
     SshNotificationService.getInstance();
+  private sshNotificationAuthorizationPending: boolean = false;
   private sshProductivityParsers: Map<string, SshShellIntegrationParser> =
     new Map<string, SshShellIntegrationParser>();
   private sshProductivityTrackers: Map<string, SshLocalCommandTracker> =
@@ -3875,6 +3876,48 @@ struct SshTerminal {
   private setSshProductivitySetting(kind: 'history' | 'completion' | 'notification' | 'shell',
     enabled: boolean): void {
     if (!this.sshWorkbenchEnabled || !this.sshProductivityReady) { return; }
+    if (kind === 'notification' && enabled) {
+      void this.enableSshCompletionNotifications();
+      return;
+    }
+    this.persistSshProductivitySetting(kind, enabled);
+  }
+
+  private async enableSshCompletionNotifications(): Promise<void> {
+    if (this.sshNotificationAuthorizationPending) { return; }
+    this.sshNotificationAuthorizationPending = true;
+    let enabled: boolean = false;
+    try {
+      const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+      enabled = await this.sshNotificationService.ensureEnabled(context);
+    } catch (err) {
+      hilog.warn(0x0016, 'SshTerminal', 'notification authorization failed code=' +
+        sshDiagnosticErrorCode(err));
+    }
+    this.sshNotificationAuthorizationPending = false;
+    if (!enabled) {
+      this.persistSshProductivitySetting('notification', false);
+      promptAction.showToast({ message: '系统通知未开启，命令完成提醒保持关闭', duration: 2200 });
+      return;
+    }
+    this.persistSshProductivitySetting('notification', true);
+  }
+
+  /** Migrate legacy true settings that were saved before OS authorization was verified. */
+  private async reconcileSshCompletionNotificationSetting(pageGeneration: number): Promise<void> {
+    if (!this.sshProductivityReady ||
+      !this.sshProductivityStore.snapshot().settings.completionNotificationEnabled) { return; }
+    const enabled: boolean = await this.sshNotificationService.isEnabled();
+    if (pageGeneration !== this.pageGeneration || enabled ||
+      this.sshNotificationAuthorizationPending || !this.sshProductivityReady ||
+      !this.sshProductivityStore.snapshot().settings.completionNotificationEnabled) { return; }
+    this.persistSshProductivitySetting('notification', false);
+    hilog.info(0x0016, 'SshTerminal', 'disabled stale completion notification opt-in');
+  }
+
+  private persistSshProductivitySetting(
+    kind: 'history' | 'completion' | 'notification' | 'shell', enabled: boolean
+  ): void {
     const current = this.sshProductivityStore.snapshot().settings;
     const next: SshProductivitySettingsV1 = {
       historyEnabled: kind === 'history' ? enabled : current.historyEnabled,
@@ -8667,6 +8710,7 @@ struct SshTerminal {
       this.refreshSshWorkspaceCapabilitySelection();
       this.sshProductivityReady = this.sshProductivityStore.init(sshContext);
       this.refreshSshProductivityDocument();
+      void this.reconcileSshCompletionNotificationSetting(pageGeneration);
       await this.sshSessionLogStore.prepare(sshContext);
       this.sshSessionLogReady = this.sshSessionLogStore.init(sshContext);
       this.refreshSshSessionLogDocument();

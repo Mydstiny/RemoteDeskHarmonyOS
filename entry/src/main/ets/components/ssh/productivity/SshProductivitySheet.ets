@@ -298,7 +298,7 @@ export struct SshProductivitySheet {
             this.document.settings.historyEnabled, this.onToggleHistory)
           this.SettingsRow('本地补全', '只使用本地 Snippet/历史，不猜测密码边界',
             this.document.settings.completionEnabled, this.onToggleCompletion)
-          this.SettingsRow('命令完成提醒', '默认关闭；只使用可信 Shell 标记，不显示命令或网络身份',
+          this.SettingsRow('命令完成提醒', '默认关闭；开启时请求系统通知权限，不显示命令或网络身份',
             this.document.settings.completionNotificationEnabled,
             this.onToggleCompletionNotification)
           this.SettingsRow('Shell integration', '仅观察 OSC 133/633，不改变远端输出',

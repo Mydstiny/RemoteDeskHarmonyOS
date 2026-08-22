@@ -1,3 +1,4 @@
+import { common } from '@kit.AbilityKit';
 import { notificationManager } from '@kit.NotificationKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { sshDiagnosticErrorCode } from '../observability/SshDiagnosticPolicy';
@@ -18,6 +19,33 @@ export interface SshCommandCompletionInfoV1 {
 export interface SshBackgroundNotificationContent {
   title: string;
   text: string;
+}
+
+/**
+ * Request notification access only after an explicit foreground opt-in, then
+ * verify the final OS state. A denied/dismissed dialog and any query failure
+ * both fail closed so the application never persists a misleading enabled
+ * switch.
+ */
+export async function ensureSshNotificationEnabled(
+  checkEnabled: () => Promise<boolean>,
+  requestEnable: () => Promise<void>
+): Promise<boolean> {
+  try {
+    if (await checkEnabled()) { return true; }
+  } catch (_err) {
+    return false;
+  }
+  try {
+    await requestEnable();
+  } catch (_err) {
+    // A user denial is reported as an exception on supported API levels.
+  }
+  try {
+    return await checkEnabled();
+  } catch (_err) {
+    return false;
+  }
 }
 
 /**
@@ -91,6 +119,26 @@ export class SshNotificationService {
       SshNotificationService.instance = new SshNotificationService();
     }
     return SshNotificationService.instance;
+  }
+
+  async isEnabled(): Promise<boolean> {
+    try {
+      return await notificationManager.isNotificationEnabled();
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, 'notification authorization query failed code=' +
+        sshDiagnosticErrorCode(err));
+      return false;
+    }
+  }
+
+  async ensureEnabled(context: common.UIAbilityContext): Promise<boolean> {
+    const enabled: boolean = await ensureSshNotificationEnabled(
+      (): Promise<boolean> => notificationManager.isNotificationEnabled(),
+      (): Promise<void> => notificationManager.requestEnableNotification(context));
+    if (!enabled) {
+      hilog.warn(DOMAIN, TAG, 'notification authorization unavailable or denied');
+    }
+    return enabled;
   }
 
   async publishCommandCompletion(info: SshCommandCompletionInfoV1): Promise<boolean> {

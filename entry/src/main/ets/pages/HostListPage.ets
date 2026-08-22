@@ -203,6 +203,7 @@ import { SshKeyImportService, SshKeyImportResult } from '../services/SshKeyImpor
 import { SshXtermPrewarmSurface } from '../components/SshXtermSurface';
 import { SshProxyEditor } from '../components/ssh/SshProxyEditor';
 import { SshSettingsService } from '../services/SshSettingsService';
+import { SshNotificationService } from '../services/ssh/notification/SshNotificationService';
 import {
   SSH_WORKBENCH_V2_DEFAULT_ENABLED,
   SSH_WORKBENCH_V2_FLAG_KEY
@@ -940,6 +941,8 @@ struct HostListPage {
   @StorageLink('sshInputMode') sshInputMode: number = 1; // 0=自动, 1=虚拟键盘, 2=实体键鼠
   @StorageLink(SSH_WORKBENCH_V2_FLAG_KEY)
   sshWorkbenchEnabled: boolean = SSH_WORKBENCH_V2_DEFAULT_ENABLED;
+  @State sshSystemNotificationsEnabled: boolean = false;
+  @State sshNotificationAuthorizationPending: boolean = false;
   @State showTerminalFontSize: boolean = false;
   @State showRdpCredentialSheet: boolean = false;
   @State showRdpCredentialEditorSheet: boolean = false;
@@ -1036,6 +1039,8 @@ struct HostListPage {
   private loader: ExtensionLoader = ExtensionLoader.getInstance();
   private sshKeyImporter: SshKeyImportService = new SshKeyImportService();
   private readonly sshSettings: SshSettingsService = SshSettingsService.getInstance();
+  private readonly sshNotificationService: SshNotificationService =
+    SshNotificationService.getInstance();
   private readonly sshWorkspaceCapabilityStore: SshWorkspaceCapabilityStore =
     new SshWorkspaceCapabilityStore();
   private readonly sshProxyProfiles: SshProxyProfileStore = new SshProxyProfileStore();
@@ -1219,6 +1224,7 @@ struct HostListPage {
     this.sshSettings.init(getContext(this) as common.Context);
     this.sshWorkbenchEnabled = this.sshWorkspaceCapabilityStore.load(
       getContext(this) as common.Context);
+    this.refreshSshNotificationAuthorization();
     this.sshProxyProfiles.init(getContext(this) as common.Context);
     this.proSync.init(getContext(this) as common.Context);
     // 恢复 TOTP 隐私保护状态 (Preferences 持久化)
@@ -1507,6 +1513,7 @@ struct HostListPage {
       });
     }
     this.refreshCryptoStatus();
+    this.refreshSshNotificationAuthorization();
     this.syncAmbientLightMonitor();
     this.ensureGripMonitorOnPageShow();
     void this.refreshDynamicLanHosts(false);
@@ -3523,7 +3530,7 @@ struct HostListPage {
       return 980;
     }
     if (section === SETTINGS_SECTION_SSH) {
-      return 760;
+      return 830;
     }
     if (section === SETTINGS_SECTION_VNC) {
       return settingsVncExpandedMaxHeight(SETTINGS_VNC_ACTION_ROW_COUNT);
@@ -8677,6 +8684,36 @@ struct HostListPage {
     this.sshWorkspaceCapabilityStore.save(getContext(this) as common.Context, enabled);
   }
 
+  private refreshSshNotificationAuthorization(): void {
+    void this.sshNotificationService.isEnabled().then((enabled: boolean): void => {
+      if (!this.pageActive) { return; }
+      this.sshSystemNotificationsEnabled = enabled;
+    });
+  }
+
+  private requestSshNotificationAuthorization(): void {
+    if (this.sshSystemNotificationsEnabled || this.sshNotificationAuthorizationPending) { return; }
+    this.sshNotificationAuthorizationPending = true;
+    void this.requestSshNotificationAuthorizationForeground();
+  }
+
+  private async requestSshNotificationAuthorizationForeground(): Promise<void> {
+    let enabled: boolean = false;
+    try {
+      const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+      enabled = await this.sshNotificationService.ensureEnabled(context);
+    } catch (_err) {
+      enabled = false;
+    }
+    this.sshNotificationAuthorizationPending = false;
+    if (!this.pageActive) { return; }
+    this.sshSystemNotificationsEnabled = enabled;
+    promptAction.showToast({
+      message: enabled ? 'SSH 系统通知已开启' : '系统通知未开启，SSH 提醒保持关闭',
+      duration: enabled ? 1500 : 2200
+    });
+  }
+
   private saveSshLineSpacing(value: number): void {
     this.terminalLineSpacing = this.sshSettings.saveLineSpacing(value);
   }
@@ -11893,6 +11930,23 @@ struct HostListPage {
                     this.saveSshWorkbenchEnabled(enabled);
                   })
               }.width('100%').height(66).padding({ right: 16 })
+              this.cardDivider()
+              Row() {
+                Column() {
+                  Text('SSH 系统通知').fontSize(AppTheme.fontSize.body)
+                    .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
+                  Text('用于后台连接与命令完成提醒；不显示命令、IP、用户名或路径')
+                    .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+                    .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+                }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 16 })
+                Button(this.sshSystemNotificationsEnabled ? '已开启' :
+                  (this.sshNotificationAuthorizationPending ? '请求中' : '开启'))
+                  .height(32).fontSize(12).borderRadius(8)
+                  .fontColor(this.sshSystemNotificationsEnabled ? this.pal().text3 : '#FFFFFF')
+                  .backgroundColor(this.sshSystemNotificationsEnabled ? this.pal().surface : this.accentColor)
+                  .enabled(!this.sshSystemNotificationsEnabled && !this.sshNotificationAuthorizationPending)
+                  .onClick((): void => { this.requestSshNotificationAuthorization(); })
+              }.width('100%').height(68).padding({ right: 16 })
               this.cardDivider()
               this.sshInputModeRow()
               this.cardDivider()

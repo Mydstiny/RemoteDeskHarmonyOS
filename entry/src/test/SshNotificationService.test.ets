@@ -2,6 +2,7 @@ import { describe, it, expect } from '@ohos/hypium';
 import {
   buildSshBackgroundNotificationContent,
   buildSshCompletionNotificationText,
+  ensureSshNotificationEnabled,
   nextSshCompletionNotificationId,
   SshBackgroundNotificationContent,
   sshCompletionNotificationAllowed
@@ -41,6 +42,43 @@ export default function sshNotificationServiceTest(): void {
       expect(nextSshCompletionNotificationId(607124)).assertEqual(first);
       expect(nextSshCompletionNotificationId(Number.NaN)).assertEqual(first);
     });
+
+    it('authorization_should_skip_prompt_when_already_enabled', 0,
+      async (): Promise<void> => {
+        let requests: number = 0;
+        const enabled: boolean = await ensureSshNotificationEnabled(
+          async (): Promise<boolean> => true,
+          async (): Promise<void> => { requests++; });
+        expect(enabled).assertTrue();
+        expect(requests).assertEqual(0);
+      });
+
+    it('authorization_should_verify_user_acceptance_before_enabling', 0,
+      async (): Promise<void> => {
+        let enabled: boolean = false;
+        let requests: number = 0;
+        const result: boolean = await ensureSshNotificationEnabled(
+          async (): Promise<boolean> => enabled,
+          async (): Promise<void> => {
+            requests++;
+            enabled = true;
+          });
+        expect(result).assertTrue();
+        expect(requests).assertEqual(1);
+      });
+
+    it('authorization_should_fail_closed_after_denial', 0,
+      async (): Promise<void> => {
+        let checks: number = 0;
+        const result: boolean = await ensureSshNotificationEnabled(
+          async (): Promise<boolean> => {
+            checks++;
+            return false;
+          },
+          async (): Promise<void> => { throw new Error('denied'); });
+        expect(result).assertFalse();
+        expect(checks).assertEqual(2);
+      });
 
     it('background_text_should_expose_counts_without_host_identity', 0, (): void => {
       const content: SshBackgroundNotificationContent =
