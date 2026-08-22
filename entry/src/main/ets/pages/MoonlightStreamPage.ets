@@ -5,6 +5,12 @@ import { KeyCode } from '@kit.InputKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { Palette, buildDark, buildLight } from '../common/Theme';
+import { guideDeviceFor, GuideDevice } from '../services/GuideContentRegistry';
+import {
+  SessionContextualGuide,
+  sessionContextualGuide,
+  shouldShowSessionContextualGuide
+} from '../services/SessionContextualGuidePolicy';
 import { MoonlightConnectStageOverlay } from '../components/moonlight/MoonlightConnectStageOverlay';
 import { MoonlightDiagnosticsHud } from '../components/moonlight/MoonlightDiagnosticsHud';
 import { MoonlightControlCenter, MoonlightControlMode } from '../components/moonlight/MoonlightControlCenter';
@@ -351,6 +357,27 @@ struct MoonlightStreamPage {
 
   private pal(): Palette {
     return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor);
+  }
+
+  private maybeShowMoonlightContextualGuide(): void {
+    const device: GuideDevice = guideDeviceFor(
+      this.isDesktopDevice, this.isPadDevice, this.breakpoint);
+    const guide: SessionContextualGuide = sessionContextualGuide('moonlight', device);
+    const alreadyShown: boolean = AppStorage.get<boolean>(guide.storageKey) ?? false;
+    const blockingOverlayVisible: boolean = this.showSessionSheet || this.showModifierPanel ||
+      this.showShortcutPanel || this.showController || this.keyboardOpen || this.surfaceRecovering;
+    if (!shouldShowSessionContextualGuide(
+      this.phase === 'streaming' && this.firstFrameSeen, alreadyShown,
+      blockingOverlayVisible)) {
+      return;
+    }
+    AppStorage.setOrCreate<boolean>(guide.storageKey, true);
+    try {
+      this.getUIContext().getPromptAction().showToast({
+        message: guide.message,
+        duration: guide.durationMs
+      });
+    } catch (_) {}
   }
 
   private toolbarLayout(): MoonlightToolbarLayout {
@@ -2619,6 +2646,7 @@ struct MoonlightStreamPage {
       this.physicalControllerPathReady = false;
     }
     this.showConnectStage = !snapshot.firstFrameSeen && snapshot.phase !== 'streaming';
+    this.maybeShowMoonlightContextualGuide();
     if (this.sessionStartedAtMs > 0) {
       this.elapsedMs = Math.max(0, Date.now() - this.sessionStartedAtMs);
     }

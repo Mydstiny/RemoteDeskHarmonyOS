@@ -13,7 +13,12 @@ import {
   StartupMode
 } from '../services/ReleaseNotesPolicy';
 import { CURRENT_RELEASE_VERSION, pagesForReleasedVersion, ReleaseNotePage } from '../services/ReleaseNotesRegistry';
-import { firstInstallGuidePages, GuideContentPage } from '../services/GuideContentRegistry';
+import {
+  firstInstallGuidePages,
+  guideDeviceFor,
+  GuideContentPage,
+  GuideDevice
+} from '../services/GuideContentRegistry';
 
 const GUIDE_KEY = 'guide_shown_v4';
 const LAST_SEEN_RELEASE_KEY = 'last_seen_release_version';
@@ -30,6 +35,8 @@ struct GuidePage {
   @StorageLink('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   @StorageLink('currentBreakpoint') @Watch('onBreakpointChange') breakpoint: string = 'sm';
+  @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
+  @StorageProp('isPadDevice') isPadDevice: boolean = false;
   @StorageLink('remoteDesktopBgFlag') @Watch('onBackgroundFlagChange') appInBackground: boolean = false;
   @State currentIndex: number = 0;
   @State showContent: boolean = false;
@@ -42,6 +49,7 @@ struct GuidePage {
   private guideSheetReopenTimer: number = -1;
 
   async aboutToAppear(): Promise<void> {
+    this.refreshTutorialPages();
     try {
       const ctx = getContext(this);
       const prefs = preferences.getPreferencesSync(ctx, { name: 'RemoteDesktopAppPrefs' });
@@ -71,7 +79,17 @@ struct GuidePage {
     return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor);
   }
 
+  private refreshTutorialPages(): void {
+    const device: GuideDevice = guideDeviceFor(
+      this.isDesktopDevice, this.isPadDevice, this.breakpoint);
+    this.tutorialPages = firstInstallGuidePages(device);
+    if (this.mode === StartupMode.FIRST_INSTALL_GUIDE) {
+      this.activePages = this.tutorialPages;
+    }
+  }
+
   private onBreakpointChange(): void {
+    this.refreshTutorialPages();
     if (!this.showContent || this.mode === StartupMode.LOGIN) { return; }
     if (!this.usesGuideSheet() || !this.showGuideSheet) { return; }
     // preferType 在 Sheet 已显示时不会可靠地从 BOTTOM 切换为 CENTER，

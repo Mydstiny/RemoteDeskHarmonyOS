@@ -69,6 +69,12 @@ import { RemoteProtocol } from '../services/RemoteSessionState';
 import { KeyVaultService } from '../services/KeyVaultService';
 import { RemoteHost } from '../model/RemoteHost';
 import { Palette, buildDark, buildLight } from '../common/Theme';
+import { guideDeviceFor, GuideDevice } from '../services/GuideContentRegistry';
+import {
+  SessionContextualGuide,
+  sessionContextualGuide,
+  shouldShowSessionContextualGuide
+} from '../services/SessionContextualGuidePolicy';
 import { showLockGate, lockGateErrorMessage } from '../components/LockGate';
 import { SshXtermSurface, XtermOutputBuffer } from '../components/SshXtermSurface';
 import { SshTerminalSearchBar } from '../components/ssh/search/SshTerminalSearchBar';
@@ -9386,6 +9392,26 @@ struct SshTerminal {
     return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor);
   }
 
+  private maybeShowSshContextualGuide(): void {
+    const device: GuideDevice = guideDeviceFor(
+      this.isDesktopDevice, this.isPadDevice, this.breakpoint);
+    const guide: SessionContextualGuide = sessionContextualGuide('ssh', device);
+    const alreadyShown: boolean = AppStorage.get<boolean>(guide.storageKey) ?? false;
+    const blockingOverlayVisible: boolean = this.showSshAuthPromptSheet ||
+      this.showPassphraseSheet || this.showSshTabPicker || this.showSshPhoneActionPopup;
+    if (!shouldShowSessionContextualGuide(
+      this.sshConnectionIsConnected(), alreadyShown, blockingOverlayVisible)) {
+      return;
+    }
+    AppStorage.setOrCreate<boolean>(guide.storageKey, true);
+    try {
+      this.getUIContext().getPromptAction().showToast({
+        message: guide.message,
+        duration: guide.durationMs
+      });
+    } catch (_) {}
+  }
+
   private sshPal(): Palette {
     return buildDark(this.accentColor);
   }
@@ -9506,6 +9532,7 @@ struct SshTerminal {
       } else {
         this.sshTabStore.update(this.hostId, 'connected', this.sessionId);
       }
+      this.maybeShowSshContextualGuide();
       return !this.terminalClosing;
     }
     if (state === SSH_STATE_RECONNECTING) {
@@ -9906,6 +9933,7 @@ struct SshTerminal {
       connectedSessionId, bindingHostId, sessionGeneration)) {
       return true;
     }
+    this.maybeShowSshContextualGuide();
     this.maybeRunSshStartupCommand(pageGeneration, bindingGeneration, bindingHostId,
       connectedSessionId, sessionGeneration);
     // A keyboard can be attached while SSH is negotiating. Re-enumerate at

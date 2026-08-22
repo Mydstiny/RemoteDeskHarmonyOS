@@ -87,6 +87,14 @@ export struct HostProtocolPicker {
       this.protocolOption('moonlight', 'Moonlight', '低延迟游戏与桌面串流',
         this.moonlightProtocolAvailable || this.moonlightFabEntryAvailable,
         this.moonlightProtocolAvailable, this.moonlightFabEntryAvailable)
+      Row() {
+        SymbolGlyph($r('sys.symbol.info_circle')).fontSize(16)
+          .fontColor([this.accentColor]).margin({ top: 1 })
+        Text('连接前需先在目标设备启用对应服务；完整准备步骤见“设置 → 教程 → 连接前准备”。')
+          .fontSize(11).fontColor(this.pal().text3).lineHeight(17)
+          .layoutWeight(1).margin({ left: 8 })
+      }
+      .width('100%').padding({ left: 12, right: 12, top: 8, bottom: 2 })
     }.width('100%').padding({ left: 20, right: 20, top: 20, bottom: 18 })
     .backgroundColor(this.pal().card)
   }

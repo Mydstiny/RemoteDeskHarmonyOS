@@ -685,7 +685,7 @@ struct HostListPage {
   @State vncSettingsLeafDirty: boolean = false;
   @State moonlightSettingsLeafDirty: boolean = false;
   @State expandedSettingsSection: string = SETTINGS_SECTION_NONE;
-  @State aboutSheetMode: number = 0; // 0=简单教程 1=关于应用 2=隐私政策 3=前置操作 4=更新日志 5=实际操作教程
+  @State aboutSheetMode: number = 0; // 0=简单教程 1=关于应用 2=隐私政策 3=连接前准备 4=更新日志 5=操作引导中心
   // 合并 Sheet: 单 bindSheet + mode 切换 (避免 $$ 多 bindSheet 错位)
   @State showPopupSheet: boolean = false;
   @State popupSheetMode: number = 0; // 0=crypto, 1=about(用 aboutSheetMode 子路由), 2=SSH host key, 4=RDP certificate
@@ -12018,7 +12018,7 @@ struct HostListPage {
 
         ListItem() {
           this.settingsAccordionHeader(SETTINGS_SECTION_TUTORIAL, $r('sys.symbol.doc_plaintext'),
-            '教程', '更新内容、简单使用和实际操作指南')
+            '教程', '快速认识、按设备操作和连接前准备')
         }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
 
         // --- 教程卡片 ---
@@ -12036,7 +12036,7 @@ struct HostListPage {
                   });
                 })
               this.cardDivider()
-              this.cardActionRow($r('app.media.icon_info'), '简单使用教程', '了解连接、传输、同步、安全与反馈',
+              this.cardActionRow($r('app.media.icon_info'), '快速认识应用', '用 7 页了解协议、设备、安全与数据',
                 (): void => {
                   this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
                     this.aboutSheetMode = 0;
@@ -12044,8 +12044,8 @@ struct HostListPage {
                   });
                 })
               this.cardDivider()
-              this.cardActionRow($r('app.media.icon_desktop'), '实际操作教程',
-                '键盘、触控板、双指缩放、画布和文件传输',
+              this.cardActionRow($r('app.media.icon_desktop'), '操作引导中心',
+                '按手机、Pad、PC 和五种协议查看具体步骤',
                 (): void => {
                   this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
                     this.aboutSheetMode = 5;
@@ -12053,7 +12053,7 @@ struct HostListPage {
                   });
                 })
               this.cardDivider()
-              this.cardActionRow($r('app.media.icon_info'), '如何进行前置操作', 'FreeRDP 与 RustDesk 部署指南',
+              this.cardActionRow($r('app.media.icon_info'), '连接前准备', 'RDP、RustDesk、SSH、VNC 与 Sunshine',
                 (): void => {
                   this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
                     this.aboutSheetMode = 3;

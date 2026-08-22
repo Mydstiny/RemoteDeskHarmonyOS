@@ -145,6 +145,7 @@ import remoteKeyboardLayoutSelectionPolicyTest from './RemoteKeyboardLayoutSelec
 import remoteModifierStateControllerTest from './RemoteModifierStateController.test';
 import remoteCustomShortcutPolicyTest from './RemoteCustomShortcutPolicy.test';
 import remoteVirtualTouchpadGuidePolicyTest from './RemoteVirtualTouchpadGuidePolicy.test';
+import sessionContextualGuidePolicyTest from './SessionContextualGuidePolicy.test';
 import terminalInputBufferTest from './TerminalInputBuffer.test';
 import terminalRendererPolicyTest from './TerminalRendererPolicy.test';
 import sshTransportPolicyTest from './SshTransportPolicy.test';
@@ -364,6 +365,7 @@ export default function testsuite() {
   remoteModifierStateControllerTest();
   remoteCustomShortcutPolicyTest();
   remoteVirtualTouchpadGuidePolicyTest();
+  sessionContextualGuidePolicyTest();
   terminalInputBufferTest();
   terminalRendererPolicyTest();
   sshTransportPolicyTest();
