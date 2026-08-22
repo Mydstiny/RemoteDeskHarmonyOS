@@ -16654,28 +16654,36 @@ struct SshTerminal {
           },
           onDisappear: (): void => { this.onSshCommandPaletteDisappear(); }
         })
+
+      // The transfer center is also a long-lived workbench modal. Keep it off
+      // the root bindSheet chain so a later closed binding cannot consume its
+      // show transition on API 23 multi-window devices.
+      Column()
+        .width(1)
+        .height(1)
+        .hitTestBehavior(HitTestMode.None)
+        .bindSheet($$this.showSftpTransferCenter, this.SftpTransferCenterContent(), {
+          height: this.breakpoint === 'sm' ? SheetSize.LARGE : '720vp',
+          preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
+          width: this.breakpoint === 'sm' ? '100%' : '760vp',
+          dragBar: this.breakpoint === 'sm',
+          backgroundColor: '#111820',
+          blurStyle: BlurStyle.NONE,
+          showClose: false,
+          maskColor: 'rgba(0,0,0,0.42)',
+          onWillDismiss: (action: DismissSheetAction): void => {
+            this.showSftpTransferCenter = false;
+            action.dismiss();
+          },
+          onDisappear: (): void => {
+            this.showSftpTransferCenter = false;
+            if (!this.terminalClosing && !this.sftpWorkbenchSurfaceActive()) {
+              this.focusKeyboard(false);
+            }
+          }
+        })
     }
     .width('100%').height('100%')
-    .bindSheet($$this.showSftpTransferCenter, this.SftpTransferCenterContent(), {
-      height: this.breakpoint === 'sm' ? SheetSize.LARGE : '720vp',
-      preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
-      width: this.breakpoint === 'sm' ? '100%' : '760vp',
-      dragBar: this.breakpoint === 'sm',
-      backgroundColor: '#111820',
-      blurStyle: BlurStyle.NONE,
-      showClose: false,
-      maskColor: 'rgba(0,0,0,0.42)',
-      onWillDismiss: (action: DismissSheetAction): void => {
-        this.showSftpTransferCenter = false;
-        action.dismiss();
-      },
-      onDisappear: (): void => {
-        this.showSftpTransferCenter = false;
-        if (!this.terminalClosing && !this.sftpWorkbenchSurfaceActive()) {
-          this.focusKeyboard(false);
-        }
-      }
-    })
     .bindSheet($$this.showPassphraseSheet, this.passphraseSheet(), {
       height: SheetSize.FIT_CONTENT,
       preferType: this.isDesktopDevice ? SheetType.CENTER : SheetType.BOTTOM,
