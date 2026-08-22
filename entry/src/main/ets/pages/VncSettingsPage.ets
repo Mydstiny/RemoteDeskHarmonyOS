@@ -31,6 +31,7 @@ import { VncCertificateTrustManagerSheet } from '../components/VncCertificateTru
 import { buildVncTrustDirectory, VncTrustDirectoryItem } from '../services/VncTrustEndpointDirectory';
 import { SETTINGS_PANEL_DISMISS_TO_LEAF_OPEN_MS } from '../services/SettingsSheetRoutePolicy';
 import { isSelectableVncDefaultGateway, VncSelectableGateway } from '../services/VncHostDefaultsPolicy';
+import { RemoteSessionConnectionIntent } from '../services/RemoteSessionConnectionIntent';
 
 @Entry
 @Component
@@ -39,6 +40,7 @@ export struct VncSettingsPage {
   @StorageLink('accentColor') accentColor: string = '#007DFF';
   @StorageProp('topRectHeight') topRectHeight: number = 0;
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
+  @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
 
   @State defaultTransport: VncTransport = 'direct_tcp';
   @State defaultPortText: string = '5900';
@@ -534,7 +536,24 @@ export struct VncSettingsPage {
   }
 
   private connectHost(host: VncHostView): void {
-    router.pushUrl({ url: 'pages/RemoteDesktop', params: { vncHostId: host.id } });
+    const params: Record<string, Object> = {};
+    params['vncHostId'] = host.id;
+    this.openVncSession(host, params);
+  }
+
+  private openVncSession(host: VncHostView, params: Record<string, Object>): void {
+    if (!this.isDesktopDevice) {
+      void router.pushUrl({ url: 'pages/RemoteDesktop', params });
+      return;
+    }
+    // The settings page is not an authentication owner. Return only a
+    // connection intent; HostList will run the unchanged lock/certificate
+    // flow and create the independent window after that flow commits.
+    if (!RemoteSessionConnectionIntent.getInstance().put('vnc', host.id)) {
+      promptAction.showToast({ message: 'VNC 连接请求无效', duration: 2200 });
+      return;
+    }
+    void router.back();
   }
 
   private openHostFlow(host: VncHostView | null = null): void {
@@ -583,9 +602,8 @@ export struct VncSettingsPage {
   }
 
   private connectHostById(id: string): void {
-    if (this.hostService.find(id) !== null) {
-      router.pushUrl({ url: 'pages/RemoteDesktop', params: { vncHostId: id } });
-    }
+    const host: VncHostView | null = this.hostService.find(id);
+    if (host !== null) { this.connectHost(host); }
   }
 
   private openGatewayDirectory(): void {
@@ -890,7 +908,7 @@ export struct VncSettingsPage {
     this.showTrustManagerSheet = false;
     setTimeout((): void => {
       if (this.pageActive) {
-        router.pushUrl({ url: 'pages/RemoteDesktop', params: { vncHostId: host.id } });
+        this.connectHost(host);
       }
     }, 360);
   }
