@@ -45,6 +45,31 @@ export interface SshTerminalBackgroundInfo {
   hostAddress: string;
 }
 
+export enum SshBackgroundSignalAction {
+  none = 0,
+  start = 1,
+  stop = 2
+}
+
+/**
+ * A normal Home/lock transition keeps the ArkUI page mounted, so
+ * aboutToDisappear cannot be the only continuous-task trigger. Page teardown
+ * remains the owner while terminalClosing is true; otherwise the live Ability
+ * background signal starts the current sessions and the matching foreground
+ * signal stops only tasks registered by that page.
+ */
+export function decideSshBackgroundSignalAction(isBackground: boolean,
+  terminalClosing: boolean, activeSessionCount: number,
+  pageTrackedTaskCount: number): SshBackgroundSignalAction {
+  if (terminalClosing) { return SshBackgroundSignalAction.none; }
+  if (isBackground) {
+    return activeSessionCount > 0 ? SshBackgroundSignalAction.start :
+      SshBackgroundSignalAction.none;
+  }
+  return pageTrackedTaskCount > 0 ? SshBackgroundSignalAction.stop :
+    SshBackgroundSignalAction.none;
+}
+
 export class SshTerminalBackgroundTaskService {
   private static instance: SshTerminalBackgroundTaskService | null = null;
   private readonly tasks: Map<string, ActiveSshTask> = new Map<string, ActiveSshTask>();

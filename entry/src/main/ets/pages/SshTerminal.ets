@@ -118,6 +118,8 @@ import {
 } from '../types/rdpnapi';
 import { SshPreflightService } from '../services/SshPreflightService';
 import {
+  decideSshBackgroundSignalAction,
+  SshBackgroundSignalAction,
   SshTerminalBackgroundInfo,
   SshTerminalBackgroundTaskService
 } from '../services/SshTerminalBackgroundTaskService';
@@ -625,9 +627,9 @@ struct SshTerminal {
   @StorageLink('currentBreakpoint') @Watch('onFontSizeChange') breakpoint: string = 'sm';
   @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
   @StorageProp('isPadDevice') isPadDevice: boolean = false;
-  @StorageProp('remoteDesktopBgFlag') @Watch('onSshContextualGuideBackgroundChange')
+  @StorageProp('remoteDesktopBgFlag') @Watch('onSshAbilityBackgroundChange')
   appBackgroundSignal: boolean = false;
-  @LocalStorageLink('sessionWindowBackground') @Watch('onSshContextualGuideBackgroundChange')
+  @LocalStorageLink('sessionWindowBackground') @Watch('onSshAbilityBackgroundChange')
   sessionWindowBackground: boolean = false;
   @LocalStorageLink('sessionWindowFullscreen') sessionWindowFullscreen: boolean = false;
   @StorageLink('sshTerminalFontSize') @Watch('onFontSizeChange') fontSize: number = 18;
@@ -867,6 +869,9 @@ struct SshTerminal {
   private sshPipExitNavigationTimer: number = -1;
   private sshBackgroundTaskService: SshTerminalBackgroundTaskService =
     SshTerminalBackgroundTaskService.getInstance();
+  /** Tasks requested from the live Ability background signal by this page only. */
+  private sshSignalBackgroundTasks: Map<string, SshTerminalBackgroundInfo> =
+    new Map<string, SshTerminalBackgroundInfo>();
   private sshPipService: SshTerminalPipService = SshTerminalPipService.getInstance();
   private sshTabStore: SshTerminalTabStore = SshTerminalTabStore.getInstance();
   private sshTranscriptStore: SshTerminalTranscriptStore =
@@ -9632,9 +9637,60 @@ struct SshTerminal {
       this.sessionWindowBackground : this.appBackgroundSignal;
   }
 
-  private onSshContextualGuideBackgroundChange(): void {
+  private onSshAbilityBackgroundChange(): void {
     if (!this.sshContextualGuideInBackground()) {
       this.scheduleSshContextualGuide();
+    }
+    this.syncSshBackgroundTasksForAbilitySignal();
+  }
+
+  private syncSshBackgroundTasksForAbilitySignal(): void {
+    const isBackground: boolean = this.sshContextualGuideInBackground();
+    const backgroundInfos: SshTerminalBackgroundInfo[] = this.backgroundSshInfos();
+    const action: SshBackgroundSignalAction = decideSshBackgroundSignalAction(
+      isBackground, this.terminalClosing, backgroundInfos.length,
+      this.sshSignalBackgroundTasks.size);
+    if (action === SshBackgroundSignalAction.none) { return; }
+
+    let context: common.UIAbilityContext;
+    try {
+      context = this.getUIContext().getHostContext() as common.UIAbilityContext;
+    } catch (err) {
+      hilog.warn(0x0016, 'SshTerminal', 'background signal context unavailable code=' +
+        sshDiagnosticErrorCode(err));
+      return;
+    }
+
+    if (action === SshBackgroundSignalAction.stop) {
+      const tracked: SshTerminalBackgroundInfo[] =
+        Array.from(this.sshSignalBackgroundTasks.values());
+      this.sshSignalBackgroundTasks.clear();
+      for (let index: number = 0; index < tracked.length; index++) {
+        const info: SshTerminalBackgroundInfo = tracked[index];
+        void this.sshBackgroundTaskService.stopSession(context, info.sessionId, info.hostId);
+      }
+      return;
+    }
+
+    for (let index: number = 0; index < backgroundInfos.length; index++) {
+      const info: SshTerminalBackgroundInfo = backgroundInfos[index];
+      const key: string = info.hostId + '#' + info.sessionId.toString();
+      this.sshSignalBackgroundTasks.set(key, info);
+      void this.sshBackgroundTaskService.start(context, info).then(
+        (started: boolean): void => {
+          hilog.info(0x0016, 'SshTerminal', 'background signal task started=' +
+            started.toString() + ' session=' + info.sessionId.toString());
+          if (started || this.terminalClosing || !this.sshContextualGuideInBackground() ||
+            this.sshTabStore.sessionId(info.hostId) !== info.sessionId) {
+            return;
+          }
+          // Match the existing teardown path: a session must not be presented
+          // as durably preserved when the OS rejects its continuous task.
+          this.sshTabStore.invalidateSession(info.hostId, 'error', 'backgroundLimited');
+          this.releaseForwardingSession(info.hostId, info.sessionId,
+            this.sshTabStore.sessionGeneration(info.hostId));
+          this.loader.disconnectSshSession(info.sessionId);
+        });
     }
   }
 
