@@ -90,6 +90,11 @@ export default function sshSessionLogStoreTest(): void {
       expect(store.append(logRecord('two', 'after'))).assertFalse();
       expect(store.search('before', 'host-one').length).assertEqual(1);
       expect(store.search('after', 'host-one').length).assertEqual(0);
+      persistence.failIndexWrite = false;
+      const restored = new SshSessionLogStore(persistence, crypto);
+      expect(restored.init(context)).assertTrue();
+      expect(restored.search('before', 'host-one').length).assertEqual(1);
+      expect(restored.search('after', 'host-one').length).assertEqual(0);
     });
 
     it('should_fail_closed_when_crypto_is_unavailable', 0, (): void => {

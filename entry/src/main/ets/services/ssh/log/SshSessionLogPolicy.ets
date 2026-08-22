@@ -301,6 +301,20 @@ function totalBytes(document: SshSessionLogDocumentV1): number {
     sum + Math.max(0, chunk.byteSize), 0);
 }
 
+/**
+ * Chunk rows are immutable commit candidates. Updating a logical tail chunk
+ * gets a new id, so an index-write failure cannot expose the uncommitted row
+ * through the previous index after process restart.
+ */
+function nextSshSessionLogChunkId(record: SshSessionLogRecordV1,
+  recordCount: number, chunkOrdinal: number): string {
+  const identitySuffix: string = record.id.slice(-72);
+  return (identitySuffix + ':chunk:' + record.sessionId.toString(36) + ':' +
+    record.generation.toString(36) + ':' + record.timestamp.toString(36) + ':' +
+    Math.max(0, chunkOrdinal).toString(36) + ':' + Math.max(1, recordCount).toString(36) + ':' +
+    record.hostId.slice(-48)).slice(0, MAX_CHUNK_ID);
+}
+
 /** Apply retention and quota without deleting a chunk that has a bookmark. */
 export function pruneSshSessionLogDocument(
   document: SshSessionLogDocumentV1,
@@ -344,11 +358,8 @@ export function appendSshSessionLogRecord(
     record.hostId, record.sessionId, record.generation) ||
     chunk.byteSize + record.byteSize > SSH_SESSION_LOG_CHUNK_MAX_BYTES ||
     chunk.records.length >= SSH_SESSION_LOG_CHUNK_MAX_RECORDS) {
-    const chunkId: string = record.hostId + ':' + record.sessionId.toString(36) + ':' +
-      record.generation.toString(36) + ':' + record.timestamp.toString(36) + ':' +
-      next.chunks.length.toString(36);
     chunk = {
-      id: chunkId.slice(0, MAX_CHUNK_ID),
+      id: nextSshSessionLogChunkId(record, 1, next.chunks.length),
       hostId: record.hostId,
       sessionId: record.sessionId,
       generation: record.generation,
@@ -358,6 +369,9 @@ export function appendSshSessionLogRecord(
       records: []
     };
     next.chunks.push(chunk);
+  } else {
+    chunk.id = nextSshSessionLogChunkId(
+      record, chunk.records.length + 1, Math.max(0, next.chunks.length - 1));
   }
   chunk.records.push(record);
   chunk.byteSize += record.byteSize;

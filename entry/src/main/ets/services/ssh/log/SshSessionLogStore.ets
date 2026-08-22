@@ -464,7 +464,11 @@ export class SshSessionLogStore {
       const oldIds: string[] = [];
       this.document.chunks.forEach((chunk): void => { oldIds.push(chunk.id); });
       oldIds.forEach((id: string): void => {
-        if (!nextIds.has(id)) { this.persistence.removeChunk(context, id); }
+        if (!nextIds.has(id)) {
+          this.persistence.removeChunk(context, id);
+          this.chunkSerialized.delete(id);
+          this.chunkCiphertext.delete(id);
+        }
       });
       writes.forEach((item): void => {
         this.chunkSerialized.set(item.id, item.serialized);
