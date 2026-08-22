@@ -1,6 +1,9 @@
 /** Address provenance and refresh rules shared by RDP and RustDesk LAN add flows. */
 export type LanHostAddressMode = 'manual' | 'static' | 'dynamic';
 
+/** Device-local namespace for complete dynamic LAN host records. */
+export const DYNAMIC_LAN_HOST_EXTENSION_TABLE: string = 'dynamiclanhosts';
+
 export interface LanHostAddressView {
   protocol: string;
   lanAddressMode: string;
@@ -25,13 +28,21 @@ export function normalizeLanDiscoveryIdentity(value: string): string {
   return value.trim().toLowerCase();
 }
 
+function lanDiscoveryIdentityKey(protocol: string, value: string): string {
+  const trimmed: string = value.trim();
+  // RDP SHA-256 fingerprints are hexadecimal and case-insensitive. RustDesk
+  // peer IDs are opaque identities and must remain an exact, case-sensitive
+  // match (custom IDs are not guaranteed to be numeric).
+  return protocol === 'rdp' ? trimmed.toLowerCase() : trimmed;
+}
+
 export function lanHostUsesLocalOnlyStorage(host: LanHostAddressView): boolean {
   return normalizeLanHostAddressMode(host.lanAddressMode) === 'dynamic';
 }
 
 export function lanHostCanSelectDynamic(protocol: string, identity: string): boolean {
   return (protocol === 'rdp' || protocol === 'rustdesk') &&
-    normalizeLanDiscoveryIdentity(identity) !== '';
+    identity.trim() !== '';
 }
 
 export function lanHostNeedsAddressRefresh(
@@ -58,8 +69,8 @@ export function lanHostRefreshCandidateMatches(
   return lanHostUsesLocalOnlyStorage(host) &&
     host.protocol === candidate.protocol &&
     lanHostCanSelectDynamic(candidate.protocol, candidate.identity) &&
-    normalizeLanDiscoveryIdentity(host.lanDiscoveryIdentity) ===
-      normalizeLanDiscoveryIdentity(candidate.identity) &&
+    lanDiscoveryIdentityKey(host.protocol, host.lanDiscoveryIdentity) ===
+      lanDiscoveryIdentityKey(candidate.protocol, candidate.identity) &&
     candidate.host.trim() !== '' && candidate.port > 0 && candidate.port <= 65535 &&
     Number.isFinite(candidate.observedAt) && candidate.observedAt > 0;
 }
@@ -67,4 +78,9 @@ export function lanHostRefreshCandidateMatches(
 /** Manual entry and LAN-static records remain ordinary cloud-eligible host rows. */
 export function lanHostMayUseRemoteHostsCloudTable(host: LanHostAddressView): boolean {
   return !lanHostUsesLocalOnlyStorage(host);
+}
+
+/** Dynamic LAN hosts are device-local and therefore excluded from portable backup too. */
+export function lanLocalExtensionMayEnterPortableBackup(table: string): boolean {
+  return table !== DYNAMIC_LAN_HOST_EXTENSION_TABLE;
 }

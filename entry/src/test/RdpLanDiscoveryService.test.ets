@@ -1,5 +1,9 @@
 import { describe, it, expect } from '@ohos/hypium';
-import { rdpLanCandidateAddresses } from '../main/ets/services/RdpLanDiscoveryService';
+import {
+  DiscoveredRdpHost,
+  rdpLanCandidateAddresses,
+  resolveRdpLanIdentityAmbiguity
+} from '../main/ets/services/RdpLanDiscoveryService';
 
 export default function rdpLanDiscoveryServiceTest() {
   describe('RdpLanDiscoveryService_Subnet', () => {
@@ -25,6 +29,31 @@ export default function rdpLanDiscoveryServiceTest() {
       expect(values[0]).assertEqual('192.168.1.129');
       expect(rdpLanCandidateAddresses('not-an-ip', 24).length).assertEqual(0);
       expect(rdpLanCandidateAddresses('203.0.113.8', 24).length).assertEqual(0);
+    });
+  });
+
+  describe('RdpLanDiscoveryService_Identity', () => {
+    it('allows dynamic refresh only for a fingerprint with one address', 0, () => {
+      const hosts: DiscoveredRdpHost[] = [
+        {
+          stableId: 'aa', deviceName: 'one', host: '192.168.1.10', port: 3389,
+          fingerprintSha256: 'AA', dynamicCapable: true
+        },
+        {
+          stableId: 'aa', deviceName: 'two', host: '192.168.1.11', port: 3389,
+          fingerprintSha256: 'aa', dynamicCapable: true
+        },
+        {
+          stableId: 'bb', deviceName: 'three', host: '192.168.1.12', port: 3389,
+          fingerprintSha256: 'BB', dynamicCapable: true
+        }
+      ];
+      const resolved: DiscoveredRdpHost[] = resolveRdpLanIdentityAmbiguity(hosts);
+      expect(resolved[0].dynamicCapable).assertFalse();
+      expect(resolved[1].dynamicCapable).assertFalse();
+      expect(resolved[0].stableId === resolved[1].stableId).assertFalse();
+      expect(resolved[2].dynamicCapable).assertTrue();
+      expect(resolved[2].stableId).assertEqual('bb');
     });
   });
 }

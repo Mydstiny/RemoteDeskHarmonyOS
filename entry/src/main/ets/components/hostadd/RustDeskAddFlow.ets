@@ -123,6 +123,10 @@ export struct RustDeskAddFlow {
       this.lanAddressMode !== 'dynamic') {
       this.errorText = '请选择静态 IP 或动态 IP 策略'; return null;
     }
+    if (this.direct && this.useLan &&
+      this.controlId.trim() !== this.selectedLanPeerId.trim()) {
+      this.errorText = '局域网设备身份已变化，请返回并重新选择'; return null;
+    }
     const relay: RustDeskRelayConfig | undefined = this.selectedRelay();
     if (!this.direct && relay === undefined) { this.errorText = '请选择中继服务器'; return null; }
     const host = new RemoteHost();
@@ -150,13 +154,14 @@ export struct RustDeskAddFlow {
   }
 
   @Builder private field(title: string, value: string, hint: string, change: (value: string) => void,
-    password: boolean = false) {
+    password: boolean = false, enabled: boolean = true) {
     Column() {
       Text(title).fontSize(12).fontColor(this.pal().text2).margin({ bottom: 5 })
       TextInput({ text: value, placeholder: hint }).height(44).fontSize(14)
         .type(password ? InputType.Password : InputType.Normal).fontColor(this.pal().text)
         .placeholderColor(this.pal().text3).backgroundColor(this.pal().surface).borderRadius(11)
-        .padding({ left: 12, right: 12 }).onChange(change)
+        .padding({ left: 12, right: 12 }).enabled(enabled).opacity(enabled ? 1 : 0.68)
+        .onChange(change)
     }.alignItems(HorizontalAlign.Start).width('100%').margin({ bottom: 12 })
   }
 
@@ -313,7 +318,12 @@ export struct RustDeskAddFlow {
       } else {
         if (this.direct && this.useLan) { this.addressPolicyChoice() }
         this.field('名称', this.label, '例如：办公室电脑', (v: string): void => { this.label = v; })
-        this.field('控制 ID', this.controlId, 'RustDesk 设备 ID', (v: string): void => { this.controlId = v; })
+        this.field('控制 ID', this.controlId, 'RustDesk 设备 ID',
+          (v: string): void => { this.controlId = v; }, false, !this.useLan)
+        if (this.direct && this.useLan) {
+          Text('控制 ID、直连 IP 和端口来自已选择的搜索结果；如需修改，请返回重新选择或改用手动配置。')
+            .fontSize(10).fontColor(this.pal().text3).width('100%').margin({ bottom: 10 })
+        }
         Text('控制目标').fontSize(12).fontColor(this.pal().text2).margin({ bottom: 5 })
         Row() {
           this.targetButton('控制电脑', 'Windows / macOS / Linux', 'computer')
@@ -335,9 +345,10 @@ export struct RustDeskAddFlow {
             })
         }.width('100%').margin({ bottom: 12 })
         if (this.direct) {
-          this.field('直连 IP', this.directHost, '例如：192.168.1.10', (v: string): void => { this.directHost = v; })
+          this.field('直连 IP', this.directHost, '例如：192.168.1.10',
+            (v: string): void => { this.directHost = v; }, false, !this.useLan)
           this.field('直连端口', this.directPortText, this.defaultDirectPort.toString(),
-            (v: string): void => { this.directPortText = v; })
+            (v: string): void => { this.directPortText = v; }, false, !this.useLan)
         }
         this.field(this.direct ? '设备密码' : '设备密码（可选）', this.password,
           this.direct ? '直连必须填写' : '留空时连接前选择密码或请求批准',

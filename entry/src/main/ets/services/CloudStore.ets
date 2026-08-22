@@ -27,6 +27,8 @@ import {
   RdpRestrictedAdminSecretSource
 } from '../model/RemoteHost';
 import {
+  DYNAMIC_LAN_HOST_EXTENSION_TABLE,
+  lanLocalExtensionMayEnterPortableBackup,
   lanHostUsesLocalOnlyStorage,
   normalizeLanDiscoveryIdentity
 } from './LanHostAddressPolicy';
@@ -416,8 +418,6 @@ const CLOUD_REGISTRATION_PLAN: CloudDistributedRegistrationPlan =
 const TABLES: string[] = CLOUD_REGISTRATION_PLAN.optionalSuperset;
 const CORE_CLOUD_TABLES: string[] = CLOUD_REGISTRATION_PLAN.baseline;
 const RDP_RESTRICTED_ADMIN_SECRET_TABLE: string = 'rdprestrictedadminsecrets';
-/** Complete device-local host rows for LAN discoveries whose address may change. */
-const DYNAMIC_LAN_HOST_EXTENSION_TABLE: string = 'dynamiclanhosts';
 const DYNAMIC_LAN_HOST_AAD_TABLE: string = 'localextensions/dynamiclanhosts';
 const LOCAL_METADATA_TABLE: string = 'localmetadata';
 const VNC_HOST_LOCAL_PERSONALIZATION_PREFIX: string =
@@ -3979,6 +3979,12 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
         }
         const extensionTable: string = row['tablename'] || '';
         const recordId: string = row['recordid'] || '';
+        if (!lanLocalExtensionMayEnterPortableBackup(extensionTable)) {
+          // Dynamic discovery records are deliberately bound to this device.
+          // They must neither query a non-existent owner table nor travel in
+          // a portable backup to another device.
+          continue;
+        }
         const ownerTable: string =
           localBackupExtensionOwnerTable(extensionTable);
         // Historical deletes could leave a non-distributed extension behind.
@@ -9712,8 +9718,13 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
           ownerPredicates.equalTo('id', recordId);
           this.addCurrentOwnerPredicate(ownerPredicates);
           const ownerRows: relationalStore.ResultSet = this.store.querySync(ownerPredicates);
-          const owned: boolean = ownerRows.goToFirstRow();
+          let owned: boolean = ownerRows.goToFirstRow();
           ownerRows.close();
+          if (!owned && table === RDP_RESTRICTED_ADMIN_SECRET_TABLE) {
+            const dynamicOwner: Record<string, string> =
+              this.loadLocalExtension(DYNAMIC_LAN_HOST_EXTENSION_TABLE, recordId);
+            owned = dynamicOwner['ownerid'] === this.currentOwnerScopeId();
+          }
           if (!owned) { continue; }
         }
         const predicates = new relationalStore.RdbPredicates('localextensions');
@@ -10231,6 +10242,65 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
     return this.saveDynamicLanHost(host, true);
   }
 
+  /**
+   * Persist only a discovery-authoritative DHCP address update.
+   *
+   * This path deliberately preserves the existing encrypted password and is
+   * safe while the crypto key is locked. All non-address configuration comes
+   * from the already persisted record rather than from the caller.
+   */
+  updateDynamicLanHostAddress(host: RemoteHost): boolean {
+    if (!this.store) {
+      return this.setLastMutation(DataMutationResult.failure(
+        host.id, 'not_ready', '本地数据库未就绪'));
+    }
+    if (!this.localMutationAllowed()) {
+      return this.setLastMutation(DataMutationResult.failure(
+        host.id, 'restore_in_progress', '恢复进行中，暂不能更新地址'));
+    }
+    const values: Record<string, string> =
+      this.loadLocalExtension(DYNAMIC_LAN_HOST_EXTENSION_TABLE, host.id);
+    if (values['ownerid'] !== this.currentOwnerScopeId() ||
+      values['schemaversion'] !== '1' || values['hostjson'] === undefined) {
+      return this.setLastMutation(DataMutationResult.failure(
+        host.id, 'not_found', '未找到本机动态主机'));
+    }
+    try {
+      const current: RemoteHost = RemoteHost.fromJSON(
+        JSON.parse(values['hostjson']) as RemoteHostJSON);
+      if (current.id !== host.id || current.userId !== this.currentOwnerScopeId() ||
+        !lanHostUsesLocalOnlyStorage(current) || current.protocol !== host.protocol ||
+        current.lanDiscoveryIdentity !== host.lanDiscoveryIdentity ||
+        host.host.trim() === '' || host.port <= 0 || host.port > 65535 ||
+        !Number.isFinite(host.lanLastResolvedAt) || host.lanLastResolvedAt <= 0) {
+        return this.setLastMutation(DataMutationResult.failure(
+          host.id, 'invalid_data', '动态地址更新与发现身份不匹配'));
+      }
+      current.host = host.host.trim();
+      current.port = host.port;
+      current.lanLastResolvedAt = host.lanLastResolvedAt;
+      if (current.protocol === 'rustdesk') {
+        current.rustdeskDirectHost = current.host;
+        current.rustdeskDirectPort = current.port;
+      } else {
+        current.rdpCertificateRouteIdentity = host.rdpCertificateRouteIdentity;
+      }
+      values['hostjson'] = JSON.stringify(this.dynamicLanHostJSON(current));
+      this.store.beginTransaction();
+      if (!this.saveLocalExtension(DYNAMIC_LAN_HOST_EXTENSION_TABLE, host.id, values)) {
+        throw new Error('dynamic LAN address extension update failed');
+      }
+      this.store.commit();
+      return this.setLastMutation(DataMutationResult.success(host.id));
+    } catch (err) {
+      try { this.store.rollBack(); } catch (_ignored) {}
+      hilog.error(0x0001, 'CloudSync',
+        '[CloudStore] update dynamic LAN address failed: ' + safeError(err));
+      return this.setLastMutation(DataMutationResult.failure(
+        host.id, 'extension_write_failed', '动态地址更新未完成'));
+    }
+  }
+
   deleteDynamicLanHost(id: string): boolean {
     if (!this.store) {
       return this.setLastMutation(DataMutationResult.failure(
@@ -10258,6 +10328,18 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
     }
   }
 
+  private dynamicLanHostJSON(host: RemoteHost): RemoteHostJSON {
+    const json: RemoteHostJSON = host.toJSON();
+    // Dynamic records are complete local rows, but secret material must still
+    // live only in its dedicated encrypted payload columns.
+    json.password = '';
+    json.sshKeyData = '';
+    json.sshKeyPassphrase = '';
+    json.sshProxyPassword = '';
+    json.sshProxyKeyPassphrase = '';
+    return json;
+  }
+
   private saveDynamicLanHost(host: RemoteHost, _updating: boolean): boolean {
     if (!this.store) {
       return this.setLastMutation(DataMutationResult.failure(
@@ -10277,17 +10359,18 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
     host.userId = this.currentOwnerScopeId();
     if (!this.sensitiveWriteAllowed(host.id)) { return false; }
     try {
-      const json: RemoteHostJSON = host.toJSON();
-      json.password = '';
       const values: Record<string, string> = {};
       values['schemaversion'] = '1';
       values['ownerid'] = this.currentOwnerScopeId();
-      values['hostjson'] = JSON.stringify(json);
+      values['hostjson'] = JSON.stringify(this.dynamicLanHostJSON(host));
       values['password'] = this.encryptIfReady(
         DataCrypto.getInstance(), DYNAMIC_LAN_HOST_AAD_TABLE, host.id,
         'password', host.password);
       this.store.beginTransaction();
-      if (!this.saveLocalExtension(DYNAMIC_LAN_HOST_EXTENSION_TABLE, host.id, values)) {
+      if (!this.saveLocalExtension(DYNAMIC_LAN_HOST_EXTENSION_TABLE, host.id, values) ||
+        ((host.protocol !== 'rdp' || normalizeRdpAuthMode(host.rdpAuthMode) !== 'restricted_admin' ||
+          normalizeRdpRestrictedAdminSecretSource(host.rdpRestrictedAdminSecretSource) !== 'ntlm_hash') &&
+          !this.clearRdpRestrictedAdminHash(host.id))) {
         throw new Error('dynamic LAN host extension save failed');
       }
       this.store.commit();

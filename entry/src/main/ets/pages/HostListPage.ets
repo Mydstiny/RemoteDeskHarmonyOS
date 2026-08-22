@@ -255,7 +255,8 @@ import { RustDeskLanDiscoveryService, DiscoveredRustDeskPeer } from '../services
 import {
   DiscoveredRdpHost,
   RdpLanDiscoveryService,
-  RdpLanIdentityProbeResult
+  RdpLanIdentityProbeResult,
+  RdpLanScanStatus
 } from '../services/RdpLanDiscoveryService';
 import {
   lanHostNeedsAddressRefresh,
@@ -680,6 +681,7 @@ struct HostListPage {
   private lanDiscovery: RustDeskLanDiscoveryService = new RustDeskLanDiscoveryService();
   @State rdpLanScanning: boolean = false;
   @State rdpLanScanResults: DiscoveredRdpHost[] = [];
+  @State rdpLanStatusText: string = '';
   private rdpLanDiscovery: RdpLanDiscoveryService = new RdpLanDiscoveryService();
   private dynamicRustDeskDiscovery: RustDeskLanDiscoveryService = new RustDeskLanDiscoveryService();
   private dynamicRdpDiscovery: RdpLanDiscoveryService = new RdpLanDiscoveryService();
@@ -8430,6 +8432,7 @@ struct HostListPage {
   private startRdpLanScan(port: number): void {
     if (this.rdpLanScanning) { return; }
     this.rdpLanScanResults = [];
+    this.rdpLanStatusText = '正在检查当前局域网和 RDP 端口…';
     this.rdpLanScanning = true;
     void this.rdpLanDiscovery.startScan(port,
       async (address: string, candidatePort: number): Promise<RdpLanIdentityProbeResult> => {
@@ -8445,15 +8448,34 @@ struct HostListPage {
       }).then((hosts: DiscoveredRdpHost[]): void => {
         this.rdpLanScanResults = hosts;
         this.rdpLanScanning = false;
+        this.rdpLanStatusText = this.rdpLanScanStatusMessage(
+          this.rdpLanDiscovery.getLastScanStatus(), hosts.length);
       }).catch((_err: Error): void => {
         this.rdpLanScanning = false;
+        this.rdpLanStatusText = '搜索失败，请检查网络权限后重试';
       });
+  }
+
+  private rdpLanScanStatusMessage(status: RdpLanScanStatus, count: number): string {
+    if (status === 'completed') { return '已发现 ' + count.toString() + ' 台可用 RDP 主机'; }
+    if (status === 'no_private_network') { return '当前网络没有可扫描的私有 IPv4 地址'; }
+    if (status === 'network_error') { return '无法读取当前网络信息，请检查网络权限'; }
+    if (status === 'no_open_port') { return '当前子网未发现开放此端口的主机'; }
+    if (status === 'preflight_rejected') { return '发现开放端口，但未通过 RDP 证书预检'; }
+    if (status === 'invalid_port') { return '扫描端口无效，请填写 1-65535'; }
+    return status === 'cancelled' ? '搜索已取消' : '';
   }
 
   private async refreshDynamicLanHosts(force: boolean = false, targetHostId: string = ''): Promise<void> {
     if (!this.srv.isReady()) { return; }
     if (this.dynamicLanRefreshPromise !== null) {
       await this.dynamicLanRefreshPromise;
+      // A background sweep may have excluded this still-fresh target before
+      // the user pressed Connect. Re-run the explicit target after the active
+      // work completes so connection never silently proceeds on that basis.
+      if (force && targetHostId !== '' && this.srv.isReady()) {
+        await this.performDynamicLanRefresh(true, targetHostId);
+      }
       return;
     }
     const now: number = Date.now();
@@ -8558,7 +8580,7 @@ struct HostListPage {
         // retain the prior explicit certificate decision for the new route.
         next.rdpCertificateRouteIdentity = rdpRouteIdentity(next);
       }
-      if (this.srv.updateHost(next)) {
+      if (this.srv.updateDynamicLanAddress(next)) {
         hilog.info(0x0001, 'HostList',
           'dynamic LAN address refreshed hostId=' + hashForLog(next.id));
       }
@@ -14577,6 +14599,7 @@ struct HostListPage {
         credentials: this.rdpCredentials,
         lanScanning: this.rdpLanScanning,
         lanHosts: this.rdpLanScanResults,
+        lanStatusText: this.rdpLanStatusText,
         onBackToProtocols: (): void => { this.modernAddProtocol = ''; this.addSheetShowsModernPicker = true; },
         onAddCredential: (): void => { this.openRdpCredentialManager(); },
         onStartLanScan: (port: number): void => { this.startRdpLanScan(port); },

@@ -16,6 +16,7 @@ export struct RdpAddFlow {
   @Prop @Watch('onCredentialsChanged') credentials: RdpCredential[] = [];
   @Prop lanScanning: boolean = false;
   @Prop lanHosts: DiscoveredRdpHost[] = [];
+  @Prop lanStatusText: string = '';
   onBackToProtocols: () => void = (): void => {};
   onAddCredential: () => void = (): void => {};
   onStartLanScan: (port: number) => void = (_port: number): void => {};
@@ -76,6 +77,12 @@ export struct RdpAddFlow {
     if (this.useLanSearch && this.selectedLanStableId === '') {
       this.errorText = '请先选择局域网搜索结果'; return null;
     }
+    const selectedLanHost: DiscoveredRdpHost | undefined = this.lanHosts.find(
+      (item: DiscoveredRdpHost): boolean => item.stableId === this.selectedLanStableId);
+    if (this.useLanSearch && (selectedLanHost === undefined ||
+      selectedLanHost.host !== this.hostAddress.trim() || selectedLanHost.port !== port)) {
+      this.errorText = '局域网搜索结果已变化，请返回并重新选择'; return null;
+    }
     if (this.useLanSearch && this.lanAddressMode !== 'static' && this.lanAddressMode !== 'dynamic') {
       this.errorText = '请选择静态 IP 或动态 IP 策略'; return null;
     }
@@ -124,13 +131,14 @@ export struct RdpAddFlow {
   }
 
   @Builder private inputField(title: string, value: string, hint: string,
-    onChange: (value: string) => void, password: boolean = false) {
+    onChange: (value: string) => void, password: boolean = false, enabled: boolean = true) {
     Column() {
       Text(title).fontSize(12).fontColor(this.pal().text2).margin({ bottom: 5 })
       TextInput({ text: value, placeholder: hint }).height(44).fontSize(14)
         .type(password ? InputType.Password : InputType.Normal)
         .fontColor(this.pal().text).placeholderColor(this.pal().text3)
         .backgroundColor(this.pal().surface).borderRadius(11).padding({ left: 12, right: 12 })
+        .enabled(enabled).opacity(enabled ? 1 : 0.68)
         .onChange(onChange)
     }.alignItems(HorizontalAlign.Start).width('100%').margin({ bottom: 12 })
   }
@@ -204,6 +212,10 @@ export struct RdpAddFlow {
         }
         this.onStartLanScan(port);
       })
+    if (this.lanStatusText !== '') {
+      Text(this.lanStatusText).fontSize(11).fontColor(this.pal().text3)
+        .width('100%').margin({ bottom: 8 })
+    }
     ForEach(this.lanHosts, (item: DiscoveredRdpHost) => {
       Row() {
         Column() {
@@ -318,8 +330,12 @@ export struct RdpAddFlow {
       if (this.step === 1) {
         this.endpointSourceChoice()
         this.inputField('名称', this.label, '例如：办公室电脑', (v: string): void => { this.label = v; })
-        this.inputField('地址', this.hostAddress, 'IP 地址或域名', (v: string): void => { this.hostAddress = v; })
-        this.inputField('端口', this.portText, '3389', (v: string): void => { this.portText = v; })
+        this.inputField('地址', this.hostAddress, 'IP 地址或域名',
+          (v: string): void => { this.hostAddress = v; }, false,
+          !this.useLanSearch || this.selectedLanStableId === '')
+        this.inputField('端口', this.portText, '3389',
+          (v: string): void => { this.portText = v; }, false,
+          !this.useLanSearch || this.selectedLanStableId === '')
         if (this.useLanSearch) { this.lanSearchResults() }
         Button('下一步').width('100%').height(44).borderRadius(12)
           .backgroundColor(this.accentColor).fontColor(Color.White)

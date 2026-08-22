@@ -456,6 +456,38 @@ export class HostSyncService {
     return true;
   }
 
+  /** Accept only the fields an exact LAN discovery match is allowed to refresh. */
+  updateDynamicLanAddress(host: RemoteHost): boolean {
+    const current: RemoteHost | undefined = this.hosts.get(host.id);
+    if (current === undefined || !lanHostUsesLocalOnlyStorage(current) ||
+      !lanHostUsesLocalOnlyStorage(host) || current.protocol !== host.protocol ||
+      current.lanDiscoveryIdentity !== host.lanDiscoveryIdentity) {
+      return false;
+    }
+    const expected: RemoteHost = RemoteHost.fromJSON(current.toJSON());
+    expected.host = host.host;
+    expected.port = host.port;
+    expected.lanLastResolvedAt = host.lanLastResolvedAt;
+    if (expected.protocol === 'rustdesk') {
+      expected.rustdeskDirectHost = host.rustdeskDirectHost;
+      expected.rustdeskDirectPort = host.rustdeskDirectPort;
+    } else {
+      expected.rdpCertificateRouteIdentity = host.rdpCertificateRouteIdentity;
+    }
+    if (JSON.stringify(expected.toJSON()) !== JSON.stringify(host.toJSON())) {
+      hilog.warn(0x0001, 'CloudSync',
+        'HostSyncService.updateDynamicLanAddress: non-address change rejected');
+      return false;
+    }
+    if (this.ready && !this.cloud.updateDynamicLanHostAddress(expected)) {
+      return false;
+    }
+    this.hosts.set(expected.id, expected);
+    this.localHostConfigObservationAt.set(expected.id, Date.now());
+    this.emitDataChange();
+    return true;
+  }
+
   setGroup(hostId: string, groupId: string): boolean {
     const host = this.hosts.get(hostId);
     if (!host) { return false; }
@@ -497,12 +529,16 @@ export class HostSyncService {
     const uniqueIds: Set<string> = new Set<string>();
     ids.forEach((id: string): void => { if (id !== '') { uniqueIds.add(id); } });
     let removed: number = 0;
+    let removedCloudHost: boolean = false;
     for (const id of uniqueIds) {
-      if (!this.hosts.has(id)) { continue; }
+      const current: RemoteHost | undefined = this.hosts.get(id);
+      if (current === undefined) { continue; }
+      const localOnly: boolean = lanHostUsesLocalOnlyStorage(current);
       const deletedAt: number = Date.now();
       this.deletedHostAt.set(id, deletedAt);
       this.localHostConfigObservationAt.delete(id);
-      if (this.ready && !this.cloud.deleteHost(id)) {
+      if (this.ready && !(localOnly
+        ? this.cloud.deleteDynamicLanHost(id) : this.cloud.deleteHost(id))) {
         this.deletedHostAt.delete(id);
         hilog.warn(0x0001, 'CloudSync', 'HostSyncService.removeHosts: cloud delete failed');
         continue;
@@ -510,9 +546,10 @@ export class HostSyncService {
       if (this.hosts.delete(id)) {
         this.localHostObservationAt.delete(id);
         removed++;
+        removedCloudHost = removedCloudHost || !localOnly;
       }
     }
-    if (removed > 0 && this.ready) { this.cloud.pushTable('remotehosts'); }
+    if (removedCloudHost && this.ready) { this.cloud.pushTable('remotehosts'); }
     if (removed > 0) { this.emitDataChange(); }
     return removed;
   }

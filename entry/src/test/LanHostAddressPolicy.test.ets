@@ -1,6 +1,7 @@
 import { describe, it, expect } from '@ohos/hypium';
 import {
   lanHostCanSelectDynamic,
+  lanLocalExtensionMayEnterPortableBackup,
   lanHostMayUseRemoteHostsCloudTable,
   lanHostNeedsAddressRefresh,
   lanHostRefreshCandidateMatches,
@@ -43,9 +44,13 @@ export default function lanHostAddressPolicyTest() {
         lanDiscoveryIdentity: 'PEER-1', lanLastResolvedAt: 1
       };
       expect(lanHostRefreshCandidateMatches(host, {
-        protocol: 'rustdesk', identity: 'peer-1', host: '192.168.1.20',
+        protocol: 'rustdesk', identity: 'PEER-1', host: '192.168.1.20',
         port: 21118, observedAt: 2
       })).assertTrue();
+      expect(lanHostRefreshCandidateMatches(host, {
+        protocol: 'rustdesk', identity: 'peer-1', host: '192.168.1.20',
+        port: 21118, observedAt: 2
+      })).assertFalse();
       expect(lanHostRefreshCandidateMatches(host, {
         protocol: 'rustdesk', identity: 'peer-2', host: '192.168.1.21',
         port: 21118, observedAt: 2
@@ -54,6 +59,11 @@ export default function lanHostAddressPolicyTest() {
         protocol: 'rdp', identity: 'peer-1', host: '192.168.1.20',
         port: 3389, observedAt: 2
       })).assertFalse();
+    });
+
+    it('keeps dynamic LAN rows out of cloud and portable backup', 0, () => {
+      expect(lanLocalExtensionMayEnterPortableBackup('dynamiclanhosts')).assertFalse();
+      expect(lanLocalExtensionMayEnterPortableBackup('remotehosts')).assertTrue();
     });
   });
 }

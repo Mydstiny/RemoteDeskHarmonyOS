@@ -28,8 +28,49 @@ export interface DiscoveredRdpHost {
   dynamicCapable: boolean;
 }
 
+/**
+ * A certificate identity may drive DHCP refresh only when it maps to exactly
+ * one address in the completed scan. Cloned certificates and multi-address
+ * endpoints remain available as static choices but cannot update an address
+ * non-deterministically.
+ */
+export function resolveRdpLanIdentityAmbiguity(
+  hosts: DiscoveredRdpHost[]
+): DiscoveredRdpHost[] {
+  const fingerprintHosts: Map<string, Set<string>> = new Map<string, Set<string>>();
+  for (let i = 0; i < hosts.length; i++) {
+    const fingerprint: string = hosts[i].fingerprintSha256.trim().toLowerCase();
+    if (fingerprint === '') { continue; }
+    let addresses: Set<string> | undefined = fingerprintHosts.get(fingerprint);
+    if (addresses === undefined) {
+      addresses = new Set<string>();
+      fingerprintHosts.set(fingerprint, addresses);
+    }
+    addresses.add(hosts[i].host.trim() + ':' + hosts[i].port.toString());
+  }
+  const result: DiscoveredRdpHost[] = [];
+  for (let i = 0; i < hosts.length; i++) {
+    const source: DiscoveredRdpHost = hosts[i];
+    const fingerprint: string = source.fingerprintSha256.trim().toLowerCase();
+    const addresses: Set<string> | undefined = fingerprintHosts.get(fingerprint);
+    const unique: boolean = fingerprint !== '' && addresses !== undefined && addresses.size === 1;
+    result.push({
+      stableId: unique ? fingerprint : source.host.trim() + ':' + source.port.toString(),
+      deviceName: source.deviceName,
+      host: source.host,
+      port: source.port,
+      fingerprintSha256: fingerprint,
+      dynamicCapable: unique
+    });
+  }
+  return result;
+}
+
 export type RdpLanIdentityProbe =
   (host: string, port: number) => Promise<RdpLanIdentityProbeResult>;
+
+export type RdpLanScanStatus = 'idle' | 'scanning' | 'completed' | 'invalid_port' |
+  'no_private_network' | 'network_error' | 'no_open_port' | 'preflight_rejected' | 'cancelled';
 
 function parseIpv4(address: string): number[] | null {
   const parts: string[] = address.trim().split('.');
@@ -86,8 +127,10 @@ export function rdpLanCandidateAddresses(localAddress: string, prefixLength: num
 export class RdpLanDiscoveryService {
   private generation: number = 0;
   private activeSockets: socket.TCPSocket[] = [];
+  private lastScanStatus: RdpLanScanStatus = 'idle';
 
   stopScan(): void {
+    if (this.lastScanStatus === 'scanning') { this.lastScanStatus = 'cancelled'; }
     this.generation++;
     const sockets: socket.TCPSocket[] = this.activeSockets.slice();
     this.activeSockets = [];
@@ -99,18 +142,31 @@ export class RdpLanDiscoveryService {
   async startScan(port: number, probeIdentity: RdpLanIdentityProbe,
     onHost: (host: DiscoveredRdpHost) => void = (_host: DiscoveredRdpHost): void => {}):
     Promise<DiscoveredRdpHost[]> {
-    if (!Number.isInteger(port) || port <= 0 || port > 65535) { return []; }
+    if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+      this.lastScanStatus = 'invalid_port';
+      return [];
+    }
     this.stopScan();
+    this.lastScanStatus = 'scanning';
     const generation: number = this.generation;
     const addresses: string[] = await this.defaultNetworkCandidates();
-    if (generation !== this.generation || addresses.length === 0) { return []; }
+    if (generation !== this.generation) {
+      this.lastScanStatus = 'cancelled';
+      return [];
+    }
+    if (addresses.length === 0) {
+      if (this.lastScanStatus === 'scanning') { this.lastScanStatus = 'no_private_network'; }
+      return [];
+    }
     const results: DiscoveredRdpHost[] = [];
+    let openPortCount: number = 0;
     let nextIndex: number = 0;
     const worker = async (): Promise<void> => {
       while (generation === this.generation && nextIndex < addresses.length) {
         const index: number = nextIndex++;
         const address: string = addresses[index];
         if (!(await this.portIsOpen(address, port, generation))) { continue; }
+        openPortCount++;
         if (generation !== this.generation) { return; }
         try {
           const identity: RdpLanIdentityProbeResult = await probeIdentity(address, port);
@@ -126,7 +182,6 @@ export class RdpLanDiscoveryService {
             dynamicCapable: fingerprint !== ''
           };
           results.push(found);
-          onHost(found);
         } catch (err) {
           hilog.warn(0x0001, TAG, 'identity probe failed: ' + safeError(err));
         }
@@ -136,7 +191,19 @@ export class RdpLanDiscoveryService {
     const count: number = Math.min(MAX_CONCURRENCY, addresses.length);
     for (let i = 0; i < count; i++) { workers.push(worker()); }
     await Promise.all(workers);
-    return generation === this.generation ? results : [];
+    if (generation !== this.generation) {
+      this.lastScanStatus = 'cancelled';
+      return [];
+    }
+    const resolved: DiscoveredRdpHost[] = resolveRdpLanIdentityAmbiguity(results);
+    for (let i = 0; i < resolved.length; i++) { onHost(resolved[i]); }
+    this.lastScanStatus = resolved.length > 0 ? 'completed' :
+      (openPortCount > 0 ? 'preflight_rejected' : 'no_open_port');
+    return resolved;
+  }
+
+  getLastScanStatus(): RdpLanScanStatus {
+    return this.lastScanStatus;
   }
 
   private async defaultNetworkCandidates(): Promise<string[]> {
@@ -153,6 +220,7 @@ export class RdpLanDiscoveryService {
         }
       }
     } catch (err) {
+      this.lastScanStatus = 'network_error';
       hilog.warn(0x0001, TAG, 'network properties unavailable: ' + safeError(err));
     }
     return [];
