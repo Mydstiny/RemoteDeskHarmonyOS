@@ -29,6 +29,8 @@ export struct MoonlightLaunchSheet {
   @Prop activeSession: boolean = false;
   @Prop runtimeAvailable: boolean = false;
   @Prop adjustmentCount: number = 0;
+  @Prop launching: boolean = false;
+  @Prop launchFeedback: string = '';
   onCancel: () => void = (): void => {};
   onStart: () => void = (): void => {};
   onOpenSettings: () => void = (): void => {};
@@ -115,9 +117,22 @@ export struct MoonlightLaunchSheet {
         .backgroundColor(this.pal().card).borderRadius(14)
         .border({ width: 0.5, color: this.pal().cardBorder })
 
+      if (this.launching || this.launchFeedback !== '') {
+        Row() {
+          SymbolGlyph(this.launching ? $r('sys.symbol.hourglass') :
+            $r('sys.symbol.exclamationmark_circle_fill'))
+            .fontSize(18).fontColor([this.launching ? this.accentColor : this.pal().editColor])
+          Text(this.launching ? '正在请求 Sunshine 启动应用，请稍候…' : this.launchFeedback)
+            .fontSize(11).fontColor(this.pal().text2).fontFamily(AppTheme.fontFamily)
+            .lineHeight(17).layoutWeight(1).margin({ left: 10 })
+        }.width('100%').padding(12).margin({ top: 10 })
+          .backgroundColor(this.pal().surface).borderRadius(12)
+      }
+
       Column({ space: 10 }) {
         Button('串流设置').height(44).width('100%').fontSize(14)
           .backgroundColor(this.pal().surface).fontColor(this.pal().text).borderRadius(12)
+          .enabled(!this.launching)
           .onClick((): void => { this.onOpenSettings(); })
         if (this.result().canRetry) {
           Button('重新检查').height(44).width('100%').fontSize(14)
@@ -129,11 +144,15 @@ export struct MoonlightLaunchSheet {
             .backgroundColor(this.pal().surface).fontColor(this.accentColor).borderRadius(12)
             .onClick((): void => { this.onAllowMetered(); })
         }
-        Button('开始串流').height(44).width('100%').fontSize(14)
-          .backgroundColor(this.result().allowed ? this.accentColor : this.pal().surface)
-          .fontColor(this.result().allowed ? Color.White : this.pal().text3).borderRadius(12)
-          .enabled(this.result().allowed)
-          .onClick((): void => { if (this.result().allowed) { this.onStart(); } })
+        Button(this.launching ? '正在启动…' : '开始串流').height(44).width('100%').fontSize(14)
+          .backgroundColor(this.result().allowed && !this.launching ?
+            this.accentColor : this.pal().surface)
+          .fontColor(this.result().allowed && !this.launching ?
+            Color.White : this.pal().text3).borderRadius(12)
+          .enabled(this.result().allowed && !this.launching)
+          .onClick((): void => {
+            if (this.result().allowed && !this.launching) { this.onStart(); }
+          })
       }.width('100%').margin({ top: 18 })
     }
     .width('100%')

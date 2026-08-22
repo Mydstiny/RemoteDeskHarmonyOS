@@ -88,14 +88,22 @@ struct MoonlightAppCard {
     sortOrder: 0, lastCatalogAt: 0
   };
   @State private artworkFailed: boolean = false;
-  onOpen: (item: MoonlightCatalogItem) => void = (_item: MoonlightCatalogItem): void => {};
+  @Prop hostOnline: boolean = false;
   onMore: (item: MoonlightCatalogItem) => void = (_item: MoonlightCatalogItem): void => {};
 
   private pal(): Palette {
     return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor);
   }
 
-  private usable(): boolean { return this.item.available && !this.item.stale; }
+  private usable(): boolean {
+    return this.hostOnline && this.item.available && !this.item.stale;
+  }
+
+  private availabilityLabel(): string {
+    if (!this.hostOnline) { return '主机离线'; }
+    if (this.item.stale) { return '目录已过期'; }
+    return this.item.available ? '可启动' : '主机未报告此应用';
+  }
 
   build() {
     Column() {
@@ -122,7 +130,8 @@ struct MoonlightAppCard {
             .onClick((): void => { this.onMore(this.item); }).accessibilityText('更多操作')
         }.width('100%').position({ x: 0, y: 0 }).padding(10)
         if (!this.usable()) {
-          Text(this.item.stale ? '缓存' : '不可用').fontSize(10).fontColor('#FFFFFF')
+          Text(!this.hostOnline ? '离线' : (this.item.stale ? '缓存' : '不可用'))
+            .fontSize(10).fontColor('#FFFFFF')
             .padding({ left: 8, right: 8, top: 4, bottom: 4 })
             .backgroundColor('rgba(14,18,28,0.72)').borderRadius(10)
             .position({ x: 10, y: 166 })
@@ -132,22 +141,27 @@ struct MoonlightAppCard {
       Column() {
         Text(this.item.title).fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
           .fontFamily(AppTheme.fontFamily).maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
-          .width('100%')
+          .width('100%').onClick((): void => { this.onMore(this.item); })
         Text(this.item.profileId === '' ? '使用主机默认设置' : '已保存应用配置')
           .fontSize(10).fontColor(this.pal().text3).width('100%').margin({ top: 5 })
         Row() {
-          Text(this.usable() ? '可启动' : (this.item.stale ? '目录已过期' : '主机未报告此应用'))
+          Text(this.availabilityLabel())
             .fontSize(10).fontColor(this.usable() ? this.pal().success : this.pal().text3)
           Blank().layoutWeight(1)
-          Text('启动').fontSize(11).fontWeight(FontWeight.Medium)
+          Button('启动').height(28).fontSize(11).fontWeight(FontWeight.Medium)
+            .borderRadius(9).backgroundColor(Color.Transparent)
             .fontColor(this.usable() ? this.accentColor : this.pal().text3)
+            .enabled(this.usable())
+            .onClick((): void => {
+              this.onMore(this.item);
+            })
         }.width('100%').margin({ top: 8 })
       }.width('100%').padding(13)
     }.width('100%').height(292).backgroundColor(this.pal().card).borderRadius(20)
       .clip(true).border({ width: 0.5, color: this.pal().cardBorder })
       .shadow({ radius: 14, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
       .opacity(this.usable() ? 1 : 0.78)
-      .onClick((): void => { this.onOpen(this.item); })
+      .onClick((): void => { this.onMore(this.item); })
       .accessibilityText(this.item.title + '，' + (this.usable() ? '可启动' : '当前不可用'))
   }
 }
@@ -168,9 +182,14 @@ struct MoonlightAppCatalogPage {
   @State filter: MoonlightCatalogFilter = 'all';
   @State statusCode: string = 'loading';
   @State refreshing: boolean = false;
+  @State hostOnline: boolean = false;
+  @State hostBusy: boolean = false;
+  @State catalogPartial: boolean = false;
+  @State visibleItemCount: number = 0;
   @State selectedItem: MoonlightCatalogItem | null = null;
   @State showLaunchSheet: boolean = false;
   @State launching: boolean = false;
+  @State launchFeedback: string = '';
   @State launchSettingsEncoded: string = '';
   @State currentNetworkMetered: boolean = false;
   @State networkMeteringUnknown: boolean = false;
@@ -539,8 +558,12 @@ struct MoonlightAppCatalogPage {
   }
 
   private applyFilter(): void {
-    this.dataSource.replaceAll(filterMoonlightCatalogItems(
-      this.allItems, this.query, this.filter));
+    const filtered: MoonlightCatalogItem[] = filterMoonlightCatalogItems(
+      this.allItems, this.query, this.filter);
+    // LazyForEach's IDataSource count is not an observed ArkUI property. Keep
+    // a state-owned count so the empty/grid branch changes after a refresh.
+    this.visibleItemCount = filtered.length;
+    this.dataSource.replaceAll(filtered);
   }
 
   private presentation(): MoonlightCatalogPresentation {
@@ -552,8 +575,8 @@ struct MoonlightAppCatalogPage {
     }
     return moonlightCatalogPresentation(
       this.allItems.length, staleCount, unavailableCount,
-      false, this.refreshing, false, this.statusCode === 'cache_read_failed',
-      unavailableCount > 0);
+      this.hostOnline || this.refreshing, this.refreshing, this.hostBusy,
+      this.statusCode === 'cache_read_failed', this.catalogPartial || unavailableCount > 0);
   }
 
   private requestRefresh(): void {
@@ -610,6 +633,10 @@ struct MoonlightAppCatalogPage {
     }
     this.refreshing = false;
     this.currentRefresh = null;
+    this.hostOnline = result !== null && result.ok;
+    this.hostBusy = result !== null && result.code === 'host_busy';
+    this.catalogPartial = result !== null && result.nativeResult !== null &&
+      result.nativeResult.partialAppCount > 0;
     this.loadLocal();
     promptAction.showToast({
       message: result !== null && result.ok ? '应用目录已刷新' :
@@ -646,6 +673,7 @@ struct MoonlightAppCatalogPage {
       return;
     }
     this.launchSettingsEncoded = encoded;
+    this.launchFeedback = '';
     this.meteredApprovedOnce = false;
     this.refreshNetworkMetering();
     this.selectedItem = item;
@@ -763,6 +791,32 @@ struct MoonlightAppCatalogPage {
     this.launching = false;
   }
 
+  private cancelLaunchSheet(): void {
+    const fence: MoonlightLaunchFence | null = this.activeLaunchFence;
+    if (fence !== null) {
+      this.markLaunchUncertain(fence.recoverySessionId);
+      this.finishLaunch(fence, true);
+    }
+    this.launchFeedback = '';
+    this.showLaunchSheet = false;
+  }
+
+  private launchFailureMessage(result: MoonlightHostServiceResult): string {
+    if (result.code === 'deadline_exceeded') {
+      return '启动请求已超时。主机可能仍在准备画面，请稍后重试；如主机应用已启动，可按恢复提示继续。';
+    }
+    if (result.code === 'outcome_unknown') {
+      return '主机是否已启动应用暂时无法确认，请先核对恢复提示，避免重复启动。';
+    }
+    if (result.code === 'host_busy') {
+      return '主机正在运行其他应用，请先结束主机上的现有会话。';
+    }
+    if (result.code === 'unpaired' || result.code === 'repair_required') {
+      return '配对或证书信任已失效，请返回主机详情重新验证。';
+    }
+    return '启动失败（' + result.code + '），请检查主机状态后重试。';
+  }
+
   private launchDefinitelyDidNotMutate(result: MoonlightHostServiceResult): boolean {
     if (result.code === 'invalid_context' || result.code === 'lifecycle_closed') {
       return true;
@@ -864,6 +918,7 @@ struct MoonlightAppCatalogPage {
     fence.ownerToken = ownerToken;
     fence.recoverySessionId = recoverySessionId;
     this.activeLaunchFence = fence;
+    this.launchFeedback = '';
     this.launching = true;
     const launchConfiguration: MoonlightNativeLaunchConfiguration =
       this.launchConfiguration(settingsSnapshot.effective);
@@ -892,6 +947,7 @@ struct MoonlightAppCatalogPage {
       return;
     }
     if (!result.ok || result.nativeResult === null) {
+      this.launchFeedback = this.launchFailureMessage(result);
       this.finishLaunch(fence, true);
       promptAction.showToast({
         message: 'Moonlight 启动失败（' + result.code + '）',
@@ -979,7 +1035,7 @@ struct MoonlightAppCatalogPage {
       audioLabel: this.audioLabel(this.launchEffectiveSettings()),
       inputLabel: this.inputLabel(this.launchEffectiveSettings()),
       routeValid: this.host !== null && this.selectedItem !== null,
-      hostAvailable: this.paired,
+      hostAvailable: this.hostOnline,
       certificateChanged: false,
       identityAvailable: this.paired,
       appAvailable: this.selectedItem !== null && this.selectedItem.available && !this.selectedItem.stale,
@@ -989,7 +1045,9 @@ struct MoonlightAppCatalogPage {
       meteredApprovalAvailable: this.meteredApprovalAvailable(this.launchEffectiveSettings()),
       runtimeAvailable: this.hostService.capabilities().hostControlReady,
       adjustmentCount: this.launchAdjustmentCount(),
-      onCancel: (): void => { this.showLaunchSheet = false; },
+      launching: this.launching,
+      launchFeedback: this.launchFeedback,
+      onCancel: (): void => { this.cancelLaunchSheet(); },
       onOpenSettings: (): void => { this.showLaunchSheet = false; this.openSettings(); },
       onRetry: (): void => { this.showLaunchSheet = false; this.requestRefresh(); },
       onAllowMetered: (): void => { this.meteredApprovedOnce = true; },
@@ -1129,7 +1187,7 @@ struct MoonlightAppCatalogPage {
             .constraintSize({ maxWidth: this.breakpoint === 'sm' ? 180 : 340 }).margin({ left: 10 })
         }.width('100%').margin({ top: 12, bottom: 12 })
 
-        if (this.dataSource.totalCount() === 0) {
+        if (this.visibleItemCount === 0) {
           Column() {
             MoonlightBrandIcon({ iconSize: 46, tint: this.pal().text3 })
             Text(this.query === '' ? '暂无本地应用目录' : '没有匹配的应用')
@@ -1143,13 +1201,8 @@ struct MoonlightAppCatalogPage {
               GridItem() {
                 MoonlightAppCard({
                   item: item,
-                  onOpen: (selected: MoonlightCatalogItem): void => { this.openItem(selected); },
-                  onMore: (selected: MoonlightCatalogItem): void => {
-                    promptAction.showToast({
-                      message: selected.profileId === '' ? '可为此应用创建独立配置' : '已保存此应用配置',
-                      duration: 1800
-                    });
-                  }
+                  hostOnline: this.hostOnline,
+                  onMore: (selected: MoonlightCatalogItem): void => { this.openItem(selected); }
                 })
               }
             }, (item: MoonlightCatalogItem): string => item.id)
@@ -1159,14 +1212,14 @@ struct MoonlightAppCatalogPage {
       }.width('100%').layoutWeight(1).constraintSize({ maxWidth: 1320 })
         .padding({ left: this.breakpoint === 'sm' ? 14 : 24, right: this.breakpoint === 'sm' ? 14 : 24,
           bottom: 24 })
+        .bindSheet($$this.showLaunchSheet, this.launchSheet(), {
+          height: SheetSize.FIT_CONTENT,
+          preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
+          dragBar: false,
+          showClose: false,
+          onDisappear: (): void => { this.selectedItem = null; this.launchSettingsEncoded = ''; }
+        })
     }.width('100%').height('100%').backgroundColor(this.pal().bg)
-      .bindSheet($$this.showLaunchSheet, this.launchSheet(), {
-        height: SheetSize.FIT_CONTENT,
-        preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
-        dragBar: false,
-        showClose: false,
-        onDisappear: (): void => { this.selectedItem = null; this.launchSettingsEncoded = ''; }
-      })
       .bindSheet($$this.showRecoverySheet, this.recoverySheet(), {
         height: SheetSize.FIT_CONTENT,
         preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,

@@ -295,12 +295,6 @@ struct MoonlightHostDetailPage {
     }.width('100%').padding({ left: 18, right: 18, top: this.topSafeHeight() + 8, bottom: 12 })
   }
 
-  @Builder private chip(text: string, color: string) {
-    Text(text).fontSize(10).fontColor(color).fontWeight(FontWeight.Medium)
-      .padding({ left: 9, right: 9, top: 5, bottom: 5 })
-      .backgroundColor(color + '16').borderRadius(11).margin({ right: 6, bottom: 6 })
-  }
-
   @Builder private quickAction(icon: Resource, title: string, detail: string,
     enabled: boolean, action: () => void) {
     Button() {
@@ -339,10 +333,30 @@ struct MoonlightHostDetailPage {
       }.width('100%')
 
       Flex({ wrap: FlexWrap.Wrap }) {
-        this.chip(this.cloudSelected ? '此设备已选云同步' : '保存在本机', this.accentColor)
-        this.chip(this.paired ? '已配对' : '未配对', this.paired ? this.pal().success : this.pal().editColor)
-        this.chip(this.items.length.toString() + ' 个缓存应用', this.pal().text2)
-        this.chip('Host Control 已接入', this.pal().success)
+        // These values change after returning from catalog refresh. ArkUI V1
+        // freezes primitive @Builder arguments at their first render, so keep
+        // the state-dependent chips in the owning builder.
+        Text(this.cloudSelected ? '此设备已选云同步' : '保存在本机')
+          .fontSize(10).fontColor(this.accentColor).fontWeight(FontWeight.Medium)
+          .padding({ left: 9, right: 9, top: 5, bottom: 5 })
+          .backgroundColor(this.accentColor + '16').borderRadius(11)
+          .margin({ right: 6, bottom: 6 })
+        Text(this.paired ? '已配对' : '未配对')
+          .fontSize(10).fontColor(this.paired ? this.pal().success : this.pal().editColor)
+          .fontWeight(FontWeight.Medium)
+          .padding({ left: 9, right: 9, top: 5, bottom: 5 })
+          .backgroundColor((this.paired ? this.pal().success : this.pal().editColor) + '16')
+          .borderRadius(11).margin({ right: 6, bottom: 6 })
+        Text(this.items.length.toString() + ' 个缓存应用')
+          .fontSize(10).fontColor(this.pal().text2).fontWeight(FontWeight.Medium)
+          .padding({ left: 9, right: 9, top: 5, bottom: 5 })
+          .backgroundColor(this.pal().text2 + '16').borderRadius(11)
+          .margin({ right: 6, bottom: 6 })
+        Text('Host Control 已接入')
+          .fontSize(10).fontColor(this.pal().success).fontWeight(FontWeight.Medium)
+          .padding({ left: 9, right: 9, top: 5, bottom: 5 })
+          .backgroundColor(this.pal().success + '16').borderRadius(11)
+          .margin({ right: 6, bottom: 6 })
       }.width('100%').margin({ top: 16 })
 
       Text('最近更新：' + this.lastUpdateLabel()).fontSize(10).fontColor(this.pal().text3)

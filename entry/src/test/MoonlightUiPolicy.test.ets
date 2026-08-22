@@ -116,6 +116,15 @@ export default function moonlightUiPolicyTest(): void {
         runtimeAvailable: true, adjustmentCount: 0
       });
       expect(changed.blocker).assertEqual('certificate_changed');
+      const offline = moonlightLaunchPreflight({
+        routeValid: true, hostAvailable: false, certificateChanged: false,
+        identityAvailable: true, appAvailable: true, meteredNetwork: true,
+        meteredAllowed: false, hostBusy: false, activeSession: false,
+        runtimeAvailable: true, adjustmentCount: 0
+      });
+      expect(offline.blocker).assertEqual('host_unavailable');
+      expect(offline.detail).assertEqual('主机当前不可用，请刷新目录后重试。');
+      expect(offline.canRetry).assertTrue();
     });
 
     it('blocks_metered_launch_until_the_saved_policy_or_one_time_approval_allows_it', 0, (): void => {

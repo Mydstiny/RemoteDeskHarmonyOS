@@ -49,6 +49,8 @@ export default function moonlightRuntimeContextFactoryTest(): void {
         'a'.repeat(64), settings, 5000);
       expect(context !== null).assertTrue();
       expect((context as MoonlightHostContext).timeoutMs).assertEqual(5000);
+      expect((context as MoonlightHostContext).hostId).assertEqual('server-1');
+      expect((context as MoonlightHostContext).localHostId).assertEqual('host-record-1');
       expect((context as MoonlightHostContext).endpoint.httpsPort).assertEqual(48084);
       const launch = moonlightLaunchConfiguration(settings);
       expect(launch.remoteControllersBitmap).assertEqual(1);

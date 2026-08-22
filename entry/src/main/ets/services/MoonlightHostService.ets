@@ -220,6 +220,9 @@ export interface MoonlightHostContext {
   ownerScopeFingerprint: string;
   ownerToken: number;
   generation: number;
+  /** Durable local record key used only for owner-scoped app-cache rows. */
+  localHostId?: string;
+  /** Native identity key. This must stay aligned with the pairing identity. */
   hostId: string;
   serverUuid: string;
   installationId?: string;
@@ -354,6 +357,8 @@ function hostContextShapeValid(context: MoonlightHostContext): boolean {
     safePositiveInteger(context.ownerToken) &&
     safePositiveInteger(context.generation) &&
     context.hostId.trim().length > 0 && context.hostId.length <= 256 &&
+    (context.localHostId === undefined ||
+      (context.localHostId.trim().length > 0 && context.localHostId.length <= 256)) &&
     context.serverUuid.trim().length > 0 && context.serverUuid.length <= 256 &&
     (context.installationId === undefined ||
       (context.installationId.trim().length > 0 && context.installationId.length <= 256)) &&
@@ -713,6 +718,8 @@ export class MoonlightHostService {
         nativeResult.partialAppCount !== 0) {
       return serviceResult('invalid_catalog', nativeResult.key, nativeResult);
     }
+    const cacheHostId: string = context.localHostId === undefined ?
+      context.hostId : context.localHostId.trim();
     const nowMs: number = nativeResult.observedAtMs > 0 ?
       nativeResult.observedAtMs : Date.now();
     const expiresAt: number = Math.min(MAX_SAFE_INTEGER, nowMs + APP_CACHE_TTL_MS);
@@ -727,9 +734,9 @@ export class MoonlightHostService {
       }
       appIds.push(appId);
       const row = new MoonlightAppCacheEntry();
-      row.id = moonlightAppCacheIdentity(captured.ownerScopeId, context.hostId, appId);
+      row.id = moonlightAppCacheIdentity(captured.ownerScopeId, cacheHostId, appId);
       row.userId = captured.ownerScopeId;
-      row.hostId = context.hostId;
+      row.hostId = cacheHostId;
       row.appId = appId;
       row.title = app.title;
       row.available = true;
@@ -746,7 +753,7 @@ export class MoonlightHostService {
     }
     let cacheResult: MoonlightAppCacheResult;
     try {
-      cacheResult = this.cache.refreshCatalog(captured, context.hostId, rows, true, nowMs);
+      cacheResult = this.cache.refreshCatalog(captured, cacheHostId, rows, true, nowMs);
     } catch (_) {
       return serviceResult('cache_failed', nativeResult.key, nativeResult);
     }

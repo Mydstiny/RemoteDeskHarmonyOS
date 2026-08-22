@@ -118,7 +118,13 @@ function strictBoundedText(
   return trimmed;
 }
 
-function hostTypeFromServerInfo(gfeVersion: string): MoonlightHostType {
+function hostTypeFromServerInfo(gfeVersion: string, state: string): MoonlightHostType {
+  // Sunshine advertises a compatibility GfeVersion too. Its state value is
+  // therefore the stronger discriminator and prevents persisting/UI-labeling
+  // a real Sunshine host as legacy GameStream.
+  if (state.trim().toUpperCase().startsWith('SUNSHINE_')) {
+    return 'sunshine';
+  }
   return gfeVersion.trim() !== '' ? 'gamestream' : 'sunshine';
 }
 
@@ -126,6 +132,25 @@ function validAddress(address: MoonlightAddress): boolean {
   const host: string | null = strictBoundedText(address.host, MAX_SERVER_NAME_LENGTH, false);
   return host !== null && host === address.host &&
     Number.isSafeInteger(address.port) && address.port >= 1 && address.port <= 65535;
+}
+
+/**
+ * mDNS hosts without a UUID use their canonical address as the scan-local
+ * candidate key. That key identifies the row, but it is not an authoritative
+ * server UUID and must not be compared with serverinfo's uniqueid.
+ */
+export function moonlightVerificationUuidHint(
+  address: MoonlightAddress,
+  candidateIdentity: string
+): string {
+  const normalizedIdentity: string | null = strictBoundedText(
+    candidateIdentity, MAX_SERVER_UUID_LENGTH);
+  if (normalizedIdentity === null || !validAddress(address)) {
+    return candidateIdentity;
+  }
+  const host: string = address.family === 'ipv6' ? '[' + address.host + ']' : address.host;
+  const addressFallback: string = host + ':' + address.port.toString();
+  return normalizedIdentity === addressFallback ? '' : normalizedIdentity;
 }
 
 export function createMoonlightHostOperationFence(
@@ -249,7 +274,7 @@ export function parseMoonlightServerInfo(
   return {
     serverUuid: uniqueId,
     serverName: hostname || address.host,
-    hostType: hostTypeFromServerInfo(gfeVersion),
+    hostType: hostTypeFromServerInfo(gfeVersion, state),
     version: appVersion || gfeVersion || state || 'unknown',
     address: { host: address.host, family: address.family, port: address.port },
     httpsPort: httpsPort,

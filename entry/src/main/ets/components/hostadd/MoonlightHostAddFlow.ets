@@ -754,8 +754,17 @@ export struct MoonlightHostAddFlow {
             this.flow = next;
           })
       }
-      this.primaryButton(this.flow.activeOperation === 'verify' ? '正在验证…' : '验证主机',
-        (): void => { this.verifyHost(); }, this.canVerifyHost())
+      // Keep the verification gate in this state-owning builder. Passing the
+      // computed boolean through primaryButton freezes its initial value on
+      // ArkUI V1, so discovery selection and manual-address edits could not
+      // enable the button even though the flow state had changed.
+      Button(this.flow.activeOperation === 'verify' ? '正在验证…' : '验证主机')
+        .width('100%').height(44).borderRadius(12)
+        .backgroundColor(this.canVerifyHost() ? this.accentColor : this.pal().surface)
+        .fontColor(this.canVerifyHost() ? Color.White : this.pal().text3)
+        .enabled(this.canVerifyHost())
+        .opacity(this.canVerifyHost() ? 1 : 0.72)
+        .onClick((): void => { this.verifyHost(); })
     }.width('100%').margin({ top: 4 })
   }
 

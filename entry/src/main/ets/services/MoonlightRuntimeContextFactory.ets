@@ -63,6 +63,7 @@ export function moonlightRuntimeContext(host: MoonlightHost, lease: AccountSessi
     ownerScopeFingerprint: moonlightOwnerScopeFingerprint(lease.ownerScopeId),
     ownerToken: ownerToken,
     generation: generation,
+    localHostId: host.id,
     hostId: host.serverUuid,
     serverUuid: host.serverUuid,
     installationId: moonlightInstallationId(lease.storeIdentity),

@@ -125,6 +125,7 @@ import {
   cloneMoonlightHostOperationFence,
   createMoonlightHostOperationFence,
   moonlightHostOperationFenceEquals,
+  moonlightVerificationUuidHint,
   moonlightVerificationMatchesFence
 } from '../services/MoonlightLanProbeService';
 import {
@@ -1926,6 +1927,21 @@ struct HostListPage {
     });
   }
 
+  private moonlightHostCardKey(view: MoonlightHostLocalView): string {
+    const hostId: string = view.host?.id || 'invalid-moonlight-host';
+    let newestCatalogAt: number = 0;
+    let availableCount: number = 0;
+    for (let index: number = 0; index < view.catalogItems.length; index++) {
+      newestCatalogAt = Math.max(newestCatalogAt, view.catalogItems[index].lastCatalogAt);
+      if (view.catalogItems[index].available && !view.catalogItems[index].stale) {
+        availableCount++;
+      }
+    }
+    return hostId + ':' + (view.paired ? 'paired' : 'unpaired') + ':' +
+      view.catalogItems.length.toString() + ':' + availableCount.toString() + ':' +
+      newestCatalogAt.toString();
+  }
+
   private moonlightAddressLabel(host: MoonlightHost): string {
     if (host.addresses.length === 0) { return '未保存地址'; }
     let selected = host.addresses[0];
@@ -2337,11 +2353,13 @@ struct HostListPage {
     const store: CloudStore = CloudStore.getInstance();
     const capturedLease: AccountSessionLease | null = store.currentAccountLease();
     if (capturedLease === null || !store.isLeaseCurrent(capturedLease)) { return null; }
+    const verificationUuidHint: string =
+      moonlightVerificationUuidHint(address, selectedServerUuid);
     const previousVerification: MoonlightHostAddVerification | null =
       this.moonlightActiveVerification;
     const targetMatchesPrevious: boolean = previousVerification !== null &&
-      ((selectedServerUuid.trim() !== '' &&
-        selectedServerUuid.trim() === previousVerification.serverUuid) ||
+      ((verificationUuidHint !== '' &&
+        verificationUuidHint === previousVerification.serverUuid) ||
        (address.host === previousVerification.address.host &&
         address.port === previousVerification.address.port));
     if (previousVerification !== null && previousVerification.paired &&
@@ -2356,12 +2374,12 @@ struct HostListPage {
       createMoonlightHostOperationFence(
         key.ownerToken, key.generation,
         capturedLease.ownerScopeId, capturedLease.generation,
-        selectedServerUuid, address);
+        verificationUuidHint, address);
     if (requestedFence === null) { return null; }
     this.clearMoonlightVerificationState();
     this.moonlightPendingVerificationFence = requestedFence;
     const verification: MoonlightHostAddVerification | null =
-      await this.moonlightLanProbeService.verify(address, selectedServerUuid);
+      await this.moonlightLanProbeService.verify(address, verificationUuidHint);
     if (verification === null || !this.pageActive ||
         !store.isLeaseCurrent(capturedLease) ||
         key.ownerToken !== this.moonlightAddOwnerToken ||
@@ -10166,7 +10184,7 @@ struct HostListPage {
       ForEach(this.visibleMoonlightHosts(), (view: MoonlightHostLocalView): void => {
         this.moonlightHostCard(view)
         Blank().height(8)
-      }, (view: MoonlightHostLocalView): string => view.host?.id || 'invalid-moonlight-host')
+      }, (view: MoonlightHostLocalView): string => this.moonlightHostCardKey(view))
     }.width('100%').padding({ top: 8, bottom: 8 })
   }
 
@@ -10201,7 +10219,7 @@ struct HostListPage {
         } else {
           ForEach(this.visibleMoonlightHosts(), (view: MoonlightHostLocalView): void => {
             ListItem() { this.moonlightHostCard(view) }
-          }, (view: MoonlightHostLocalView): string => view.host?.id || 'invalid-moonlight-host')
+          }, (view: MoonlightHostLocalView): string => this.moonlightHostCardKey(view))
         }
         ListItem() { Column().height(110) }
       }.layoutWeight(1).width('100%').padding({ left: 28, right: 28 })

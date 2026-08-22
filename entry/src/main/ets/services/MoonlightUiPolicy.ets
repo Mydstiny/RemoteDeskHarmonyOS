@@ -351,7 +351,10 @@ export function moonlightLaunchPreflight(
     title: blocker === 'session_active' ? '已有远程会话正在运行' : '启动前检查未通过',
     detail: blocker === 'metered_denied' ? '当前为计费网络，设置不允许自动串流。' :
       (blocker === 'identity_unavailable' ? '本地安全身份不可用，请重新配对。' :
-        '请按提示处理后再次检查。'),
+        (blocker === 'host_unavailable' ? '主机当前不可用，请刷新目录后重试。' :
+          (blocker === 'host_busy' ? '主机正在运行其他应用，请先结束现有会话。' :
+            (blocker === 'app_unavailable' ? '主机当前未报告此应用，请刷新目录。' :
+              '请按提示处理后再次检查。')))),
     canRetry: retryable, canDowngrade: false
   };
 }

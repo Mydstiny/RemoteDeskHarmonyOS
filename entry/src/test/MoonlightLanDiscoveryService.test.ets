@@ -21,6 +21,7 @@ import {
   createMoonlightHostOperationFence,
   moonlightHostOperationFenceEquals,
   moonlightServerInfoProbeEndpoint,
+  moonlightVerificationUuidHint,
   moonlightVerificationMatchesFence,
   parseMoonlightServerInfo
 } from '../main/ets/services/MoonlightLanProbeService';
@@ -355,6 +356,35 @@ export default function moonlightLanDiscoveryServiceTest(): void {
         '<root status_code="200"></root>', address, 'u'.repeat(257)) === null).assertTrue();
     });
 
+    it('treats_only_the_scan_address_fallback_as_a_non_authoritative_uuid_hint', 0,
+      (): void => {
+        const address: MoonlightAddress = {
+          host: '192.168.1.20', family: 'ipv4', port: 47989
+        };
+        expect(moonlightVerificationUuidHint(address, '192.168.1.20:47989'))
+          .assertEqual('');
+        expect(moonlightVerificationUuidHint(address, '192.168.1.20:48000'))
+          .assertEqual('192.168.1.20:48000');
+        expect(moonlightVerificationUuidHint(address, 'sunshine-1'))
+          .assertEqual('sunshine-1');
+        expect(moonlightVerificationUuidHint({
+          host: '2001:db8::20', family: 'ipv6', port: 47989
+        }, '[2001:db8::20]:47989')).assertEqual('');
+
+        const hint: string = moonlightVerificationUuidHint(
+          address, '192.168.1.20:47989');
+        const verification = parseMoonlightServerInfo(
+          '<root status_code="200"><uniqueid>sunshine-real-uuid</uniqueid></root>',
+          address, hint);
+        const fence: MoonlightHostOperationFence | null =
+          createMoonlightHostOperationFence(11, 7, 'owner-a', 3, hint, address);
+        expect(verification === null).assertFalse();
+        expect(fence === null).assertFalse();
+        if (verification !== null && fence !== null) {
+          expect(moonlightVerificationMatchesFence(verification, fence)).assertTrue();
+        }
+      });
+
     it('reads_official_serverinfo_pair_status_before_pairing_response_fallback', 0, (): void => {
       const address: MoonlightAddress = {
         host: '192.168.1.20', family: 'ipv4', port: 47989
@@ -381,6 +411,23 @@ export default function moonlightLanDiscoveryServiceTest(): void {
       expect(officialWins === null).assertFalse();
       if (officialWins !== null) {
         expect(officialWins.paired).assertFalse();
+      }
+
+      const sunshine = parseMoonlightServerInfo(
+        '<root status_code="200"><uniqueid>sunshine-1</uniqueid>' +
+        '<GfeVersion>3.23.0.74</GfeVersion><state>SUNSHINE_SERVER_FREE</state></root>',
+        address, 'sunshine-1');
+      expect(sunshine === null).assertFalse();
+      if (sunshine !== null) {
+        expect(sunshine.hostType).assertEqual('sunshine');
+      }
+      const legacyGameStream = parseMoonlightServerInfo(
+        '<root status_code="200"><uniqueid>gamestream-1</uniqueid>' +
+        '<GfeVersion>3.23.0.74</GfeVersion><state>SERVER_FREE</state></root>',
+        address, 'gamestream-1');
+      expect(legacyGameStream === null).assertFalse();
+      if (legacyGameStream !== null) {
+        expect(legacyGameStream.hostType).assertEqual('gamestream');
       }
 
       const customHttpsPort = parseMoonlightServerInfo(

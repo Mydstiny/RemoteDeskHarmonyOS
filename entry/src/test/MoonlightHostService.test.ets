@@ -285,6 +285,23 @@ export default function moonlightHostServiceTest(): void {
         expect(result.visibleApps[0].hostId).assertEqual('host-a');
       });
 
+    it('keeps_the_native_pairing_identity_separate_from_the_local_cache_owner', 0,
+      async (): Promise<void> => {
+        const value = fixture();
+        value.native.resultFactory = (request: MoonlightNativeRequest): MoonlightNativeResult => {
+          const result: MoonlightNativeResult = nativeSuccess(request);
+          result.apps = [{ id: 42, title: 'Desktop' }];
+          return result;
+        };
+        const separated: MoonlightHostContext = context();
+        separated.hostId = 'sunshine-server-uuid';
+        separated.localHostId = 'host-record-a';
+        const result = await value.service.catalog(separated);
+        expect(result.ok).assertTrue();
+        expect(value.native.requests[0].hostId).assertEqual('sunshine-server-uuid');
+        expect(result.visibleApps[0].hostId).assertEqual('host-record-a');
+      });
+
     it('partial_or_duplicate_catalog_never_mutates_cache', 0,
       async (): Promise<void> => {
         const value = fixture();
