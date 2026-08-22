@@ -16764,6 +16764,31 @@ struct SshTerminal {
             }
           }
         })
+
+      // Broadcast mode remains behind its independent rollout gate. Keep its
+      // confirmation surface on a dedicated host so API 23 cannot dismiss it
+      // through a later, unrelated Sheet binding.
+      Column()
+        .width(1)
+        .height(1)
+        .hitTestBehavior(HitTestMode.None)
+        .bindSheet($$this.showSshBroadcastSheet, this.SshBroadcastSheetContent(), {
+          height: this.breakpoint === 'sm' ? SheetSize.LARGE : '640vp',
+          preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
+          width: this.breakpoint === 'sm' ? '100%' : '760vp',
+          dragBar: this.breakpoint === 'sm',
+          backgroundColor: '#341A1A',
+          blurStyle: BlurStyle.NONE,
+          showClose: false,
+          maskColor: 'rgba(42,0,0,0.56)',
+          onWillDismiss: (action: DismissSheetAction): void => {
+            this.closeSshBroadcast();
+            action.dismiss();
+          },
+          onDisappear: (): void => {
+            if (this.showSshBroadcastSheet) { this.closeSshBroadcast(); }
+          }
+        })
     }
     .width('100%').height('100%')
     .bindSheet($$this.showPassphraseSheet, this.passphraseSheet(), {
@@ -16779,23 +16804,6 @@ struct SshTerminal {
           this.passphraseResolve('');
           this.passphraseResolve = null;
         }
-      }
-    })
-    .bindSheet($$this.showSshBroadcastSheet, this.SshBroadcastSheetContent(), {
-      height: this.breakpoint === 'sm' ? SheetSize.LARGE : '640vp',
-      preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
-      width: this.breakpoint === 'sm' ? '100%' : '760vp',
-      dragBar: this.breakpoint === 'sm',
-      backgroundColor: '#341A1A',
-      blurStyle: BlurStyle.NONE,
-      showClose: false,
-      maskColor: 'rgba(42,0,0,0.56)',
-      onWillDismiss: (action: DismissSheetAction): void => {
-        this.closeSshBroadcast();
-        action.dismiss();
-      },
-      onDisappear: (): void => {
-        if (this.showSshBroadcastSheet) { this.closeSshBroadcast(); }
       }
     })
     .bindSheet($$this.showSshTabRenameSheet, this.sshTabRenameSheet(), {
