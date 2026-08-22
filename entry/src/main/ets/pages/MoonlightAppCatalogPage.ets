@@ -53,6 +53,7 @@ import {
   MoonlightRouteIdentity,
   createMoonlightCatalogOperationKey,
   filterMoonlightCatalogItems,
+  moonlightCatalogHostReachable,
   moonlightCatalogOperationIsCurrent,
   moonlightCatalogPresentation,
   moonlightAppRouteParams,
@@ -584,6 +585,9 @@ struct MoonlightAppCatalogPage {
       if (this.pageActive) {
         this.refreshing = false;
         this.currentRefresh = null;
+        this.hostOnline = false;
+        this.hostBusy = false;
+        this.catalogPartial = false;
         promptAction.showToast({ message: '应用目录刷新失败，已保留本地缓存', duration: 2200 });
       }
     });
@@ -633,7 +637,10 @@ struct MoonlightAppCatalogPage {
     }
     this.refreshing = false;
     this.currentRefresh = null;
-    this.hostOnline = result !== null && result.ok;
+    this.hostOnline = result !== null && moonlightCatalogHostReachable(
+      result.ok,
+      result.nativeResult === null ? '' : result.nativeResult.operation,
+      result.nativeResult === null ? '' : result.nativeResult.preflightTruth);
     this.hostBusy = result !== null && result.code === 'host_busy';
     this.catalogPartial = result !== null && result.nativeResult !== null &&
       result.nativeResult.partialAppCount > 0;
@@ -1217,7 +1224,15 @@ struct MoonlightAppCatalogPage {
           preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
           dragBar: false,
           showClose: false,
-          onDisappear: (): void => { this.selectedItem = null; this.launchSettingsEncoded = ''; }
+          onWillDismiss: (action: DismissSheetAction): void => {
+            if (this.showLaunchSheet) { this.cancelLaunchSheet(); }
+            action.dismiss();
+          },
+          onDisappear: (): void => {
+            this.selectedItem = null;
+            this.launchSettingsEncoded = '';
+            this.launchFeedback = '';
+          }
         })
     }.width('100%').height('100%').backgroundColor(this.pal().bg)
       .bindSheet($$this.showRecoverySheet, this.recoverySheet(), {

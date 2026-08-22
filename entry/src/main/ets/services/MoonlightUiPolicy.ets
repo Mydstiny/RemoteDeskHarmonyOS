@@ -47,6 +47,13 @@ export interface MoonlightCatalogOperationKey {
   generation: number;
 }
 
+export function moonlightCatalogHostReachable(
+  serviceOk: boolean, operation: string, preflightTruth: string
+): boolean {
+  return serviceOk ||
+    (operation === 'catalog' && preflightTruth === 'confirmed');
+}
+
 export interface MoonlightCatalogPresentation {
   status: MoonlightCatalogStatus;
   title: string;

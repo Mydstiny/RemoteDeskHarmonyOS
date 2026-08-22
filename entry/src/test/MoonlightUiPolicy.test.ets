@@ -7,6 +7,7 @@ import {
   MOONLIGHT_CONNECT_STAGE_DELAY_MS,
   createMoonlightCatalogOperationKey,
   filterMoonlightCatalogItems,
+  moonlightCatalogHostReachable,
   moonlightAppRouteParams,
   moonlightCatalogItems,
   moonlightCatalogOperationIsCurrent,
@@ -99,6 +100,17 @@ export default function moonlightUiPolicyTest(): void {
       expect(moonlightCatalogPresentation(0, 0, 0, true, false, false, true, false)
         .status).assertEqual('error');
     });
+
+    it('keeps_host_online_when_catalog_reached_sunshine_but_cache_or_payload_failed', 0,
+      (): void => {
+        expect(moonlightCatalogHostReachable(false, 'catalog', 'confirmed')).assertTrue();
+        expect(moonlightCatalogHostReachable(false, 'catalog', 'failed')).assertFalse();
+        expect(moonlightCatalogHostReachable(false, 'launch', 'confirmed')).assertFalse();
+        expect(moonlightCatalogHostReachable(true, '', '')).assertTrue();
+        expect(moonlightCatalogPresentation(2, 0, 0,
+          moonlightCatalogHostReachable(false, 'catalog', 'confirmed'),
+          false, false, false, true).status).assertEqual('partial');
+      });
 
     it('fails_closed_before_runtime_and_prioritizes_security_blockers', 0, (): void => {
       const blocked = moonlightLaunchPreflight({

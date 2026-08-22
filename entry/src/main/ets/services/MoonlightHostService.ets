@@ -718,8 +718,10 @@ export class MoonlightHostService {
         nativeResult.partialAppCount !== 0) {
       return serviceResult('invalid_catalog', nativeResult.key, nativeResult);
     }
-    const cacheHostId: string = context.localHostId === undefined ?
-      context.hostId : context.localHostId.trim();
+    if (context.localHostId === undefined || context.localHostId.trim().length === 0) {
+      return serviceResult('invalid_context', nativeResult.key, nativeResult);
+    }
+    const cacheHostId: string = context.localHostId.trim();
     const nowMs: number = nativeResult.observedAtMs > 0 ?
       nativeResult.observedAtMs : Date.now();
     const expiresAt: number = Math.min(MAX_SAFE_INTEGER, nowMs + APP_CACHE_TTL_MS);

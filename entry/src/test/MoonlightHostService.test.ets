@@ -56,6 +56,7 @@ function context(activeLease: AccountSessionLease = lease(), generation: number 
     ownerScopeFingerprint: OWNER_A_FP,
     ownerToken: ownerToken,
     generation: generation,
+    localHostId: 'host-a',
     hostId: 'host-a',
     serverUuid: 'SERVER-A',
     endpoint: {
@@ -300,6 +301,22 @@ export default function moonlightHostServiceTest(): void {
         expect(result.ok).assertTrue();
         expect(value.native.requests[0].hostId).assertEqual('sunshine-server-uuid');
         expect(result.visibleApps[0].hostId).assertEqual('host-record-a');
+      });
+
+    it('rejects_catalog_cache_commit_without_a_durable_local_host_id', 0,
+      async (): Promise<void> => {
+        const value = fixture();
+        value.native.resultFactory = (request: MoonlightNativeRequest): MoonlightNativeResult => {
+          const result: MoonlightNativeResult = nativeSuccess(request);
+          result.apps = [{ id: 42, title: 'Desktop' }];
+          return result;
+        };
+        const missingLocalId: MoonlightHostContext = context();
+        missingLocalId.localHostId = undefined;
+        const result = await value.service.catalog(missingLocalId);
+        expect(result.code).assertEqual('invalid_context');
+        expect(value.native.requests.length).assertEqual(1);
+        expect(value.port.commitCount).assertEqual(0);
       });
 
     it('partial_or_duplicate_catalog_never_mutates_cache', 0,
