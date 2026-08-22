@@ -74,24 +74,37 @@ export default function sshBroadcastPolicyTest(): void {
     it('should_preselect_current_only_when_the_surface_first_opens', 0, (): void => {
       const targets: Array<SshBroadcastTargetV1> = [target('current'), target('other')];
       const opened: Array<string> = reconcileSshBroadcastSelection(
-        targets, [], 'current', true);
+        targets, [], [], 'current', true);
       expect(opened.length).assertEqual(1);
       expect(opened[0]).assertEqual('current');
 
       const explicitEmpty: Array<string> = reconcileSshBroadcastSelection(
-        targets, [], 'current', false);
+        targets, targets, [], 'current', false);
       expect(explicitEmpty.length).assertEqual(0);
     });
 
     it('should_not_replace_an_invalidated_explicit_target_during_send_refresh', 0, (): void => {
+      const previous: Array<SshBroadcastTargetV1> = [target('current'), target('selected')];
       const refreshed: Array<string> = reconcileSshBroadcastSelection(
-        [target('current'), target('selected', false)], ['selected'], 'current', false);
+        [target('current'), target('selected', false)], previous,
+        ['selected'], 'current', false);
       expect(refreshed.length).assertEqual(0);
 
       const preserved: Array<string> = reconcileSshBroadcastSelection(
-        [target('current'), target('selected')], ['selected', 'selected'], 'current', false);
+        [target('current'), target('selected')], previous,
+        ['selected', 'selected'], 'current', false);
       expect(preserved.length).assertEqual(1);
       expect(preserved[0]).assertEqual('selected');
+    });
+
+    it('should_drop_a_reconnected_target_with_a_new_generation', 0, (): void => {
+      const previousTarget: SshBroadcastTargetV1 = target('selected');
+      const reconnectedTarget: SshBroadcastTargetV1 = target('selected');
+      reconnectedTarget.generation = previousTarget.generation + 1;
+      const refreshed: Array<string> = reconcileSshBroadcastSelection(
+        [target('current'), reconnectedTarget], [target('current'), previousTarget],
+        ['selected'], 'current', false);
+      expect(refreshed.length).assertEqual(0);
     });
   });
 }

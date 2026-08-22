@@ -150,19 +150,34 @@ function normalizedTargets(targets: Array<SshBroadcastTargetV1>): Array<SshBroad
  * must never replace a disconnected/unsafe target with another session.
  */
 export function reconcileSshBroadcastSelection(
-  targets: Array<SshBroadcastTargetV1>, selectedHostIds: Array<string>,
+  targets: Array<SshBroadcastTargetV1>, previousTargets: Array<SshBroadcastTargetV1>,
+  selectedHostIds: Array<string>,
   currentHostId: string, preselectCurrentWhenEmpty: boolean): Array<string> {
   const normalizedTargetsValue: Array<SshBroadcastTargetV1> = normalizedTargets(targets);
-  const eligible: Set<string> = new Set<string>();
+  const eligible: Map<string, SshBroadcastTargetV1> = new Map<string, SshBroadcastTargetV1>();
   for (let index: number = 0; index < normalizedTargetsValue.length; index++) {
     const target: SshBroadcastTargetV1 = normalizedTargetsValue[index];
-    if (sshBroadcastTargetEligible(target)) { eligible.add(target.hostId); }
+    if (sshBroadcastTargetEligible(target)) { eligible.set(target.hostId, target); }
+  }
+  const priorEligible: Map<string, SshBroadcastTargetV1> =
+    new Map<string, SshBroadcastTargetV1>();
+  const normalizedPrevious: Array<SshBroadcastTargetV1> = normalizedTargets(previousTargets);
+  for (let index: number = 0; index < normalizedPrevious.length; index++) {
+    const target: SshBroadcastTargetV1 = normalizedPrevious[index];
+    if (sshBroadcastTargetEligible(target)) { priorEligible.set(target.hostId, target); }
   }
   const result: Array<string> = [];
   const seen: Set<string> = new Set<string>();
   for (let index: number = 0; index < selectedHostIds.length; index++) {
     const hostId: string = selectedHostIds[index].trim();
-    if (hostId.length === 0 || seen.has(hostId) || !eligible.has(hostId)) { continue; }
+    const currentTarget: SshBroadcastTargetV1 | undefined = eligible.get(hostId);
+    const previousTarget: SshBroadcastTargetV1 | undefined = priorEligible.get(hostId);
+    // A reconnect can become eligible again before this refresh runs. Keep
+    // the selection only when the exact session/generation fence is unchanged;
+    // a new native owner always requires another explicit user gesture.
+    if (hostId.length === 0 || seen.has(hostId) || currentTarget === undefined ||
+      previousTarget === undefined || currentTarget.sessionId !== previousTarget.sessionId ||
+      currentTarget.generation !== previousTarget.generation) { continue; }
     seen.add(hostId);
     result.push(hostId);
     if (result.length >= SSH_BROADCAST_MAX_TARGETS) { break; }

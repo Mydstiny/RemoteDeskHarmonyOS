@@ -3292,6 +3292,7 @@ struct SshTerminal {
       this.sshBroadcastSelectedHostIds = [];
       return;
     }
+    const previousTargets: Array<SshBroadcastTargetV1> = this.sshBroadcastTargets.slice();
     const nextTargets: Array<SshBroadcastTargetV1> = [];
     const tabs: Array<SshTerminalTabView> = this.sshWorkspaceTabViews();
     for (let index: number = 0; index < tabs.length &&
@@ -3301,7 +3302,7 @@ struct SshTerminal {
       if (target !== null) { nextTargets.push(target); }
     }
     const nextSelected: Array<string> = reconcileSshBroadcastSelection(
-      nextTargets, this.sshBroadcastSelectedHostIds, this.hostId,
+      nextTargets, previousTargets, this.sshBroadcastSelectedHostIds, this.hostId,
       preselectCurrentWhenEmpty);
     this.sshBroadcastTargets = nextTargets;
     this.sshBroadcastSelectedHostIds = nextSelected;
