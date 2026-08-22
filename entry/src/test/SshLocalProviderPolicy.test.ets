@@ -5,7 +5,11 @@ import {
   resolveSshLocalProviderState,
   SshLocalProviderCapabilities
 } from '../main/ets/services/SshLocalProviderPolicy';
-import { SshLocalFileProvider } from '../main/ets/services/SshLocalFileProvider';
+import {
+  resolveSshLocalFileKind,
+  SshLocalFileKind,
+  SshLocalFileProvider
+} from '../main/ets/services/SshLocalFileProvider';
 
 function capabilities(overrides: Object = {}): SshLocalProviderCapabilities {
   const base: SshLocalProviderCapabilities = {
@@ -70,6 +74,20 @@ export default function sshLocalProviderPolicyTest(): void {
       const pageProvider: SshLocalFileProvider = SshLocalFileProvider.getInstance();
       const engineProvider: SshLocalFileProvider = SshLocalFileProvider.getInstance();
       expect(pageProvider === engineProvider).assertTrue();
+    });
+
+    it('classifies_provider_directory_without_posix_mode_bits', 0, (): void => {
+      const kind: SshLocalFileKind = resolveSshLocalFileKind(0, true, false);
+      expect(kind.isDirectory).assertTrue();
+      expect(kind.isSymbolicLink).assertFalse();
+      expect(kind.isSpecialFile).assertFalse();
+    });
+
+    it('falls_back_to_posix_mode_bits_when_type_probes_are_unavailable', 0, (): void => {
+      const directory: SshLocalFileKind = resolveSshLocalFileKind(0x41ED, false, false);
+      const symbolicLink: SshLocalFileKind = resolveSshLocalFileKind(0xA1FF, false, false);
+      expect(directory.isDirectory).assertTrue();
+      expect(symbolicLink.isSymbolicLink).assertTrue();
     });
   });
 }
