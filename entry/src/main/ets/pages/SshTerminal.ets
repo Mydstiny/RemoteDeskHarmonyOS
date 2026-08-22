@@ -13764,7 +13764,13 @@ struct SshTerminal {
         this.stopSftpTransfer(session, 'upload-connection-unavailable');
         return;
       }
-      file = await fileIo.open(uri, fileIo.OpenMode.READ_ONLY);
+      // On API 24 resumed async I/O against a re-opened authorized docs URI
+      // can remain pending after pause closes the first descriptor. Resume
+      // must use deterministic local I/O around the durable checkpoint;
+      // initial uploads keep the non-blocking path.
+      file = recordedOffset > 0
+        ? fileIo.openSync(uri, fileIo.OpenMode.READ_ONLY)
+        : await fileIo.open(uri, fileIo.OpenMode.READ_ONLY);
       if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId, requestSessionGeneration)) {
         await fileIo.close(file);
         file = null;
@@ -13826,7 +13832,9 @@ struct SshTerminal {
         }
         const chunkSize: number = Math.min(SFTP_UPLOAD_CHUNK_BYTES, fileSize - uploaded);
         const chunk = new ArrayBuffer(chunkSize);
-        const readLen: number = await fileIo.read(file.fd, chunk);
+        const readLen: number = recordedOffset > 0
+          ? fileIo.readSync(file.fd, chunk)
+          : await fileIo.read(file.fd, chunk);
         if (this.shouldStopSftpTransfer(session)) {
           await fileIo.close(file); file = null;
           this.stopSftpTransfer(session, 'upload-connection-unavailable');

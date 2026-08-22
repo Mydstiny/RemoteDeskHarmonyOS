@@ -1000,7 +1000,12 @@ export class SshSftpTaskEngine {
       partialIdentity === null ? -1 : partialIdentity.mtime);
     let source: fileIo.File | null = null;
     try {
-      source = await fileIo.open(sourceUri, fileIo.OpenMode.READ_ONLY);
+      // Resumed async I/O against a re-opened authorized docs URI can remain
+      // pending on API 24 after pause closes the original descriptor. A task
+      // with a verified offset uses deterministic local I/O around its seek.
+      source = offset > 0
+        ? fileIo.openSync(sourceUri, fileIo.OpenMode.READ_ONLY)
+        : await fileIo.open(sourceUri, fileIo.OpenMode.READ_ONLY);
       if (fileIo.lseek(source.fd, offset) !== offset) {
         return this.failTask(binding, effectiveTask, 'upload-local-seek-failed');
       }
@@ -1033,7 +1038,9 @@ export class SshSftpTaskEngine {
         if (this.taskIsStopped(effectiveTask.taskId)) { return false; }
         const chunkSize: number = Math.min(UPLOAD_CHUNK_BYTES, sourceIdentity.size - uploaded);
         const chunk = new ArrayBuffer(chunkSize);
-        const readLength: number = await fileIo.read(source.fd, chunk);
+        const readLength: number = offset > 0
+          ? fileIo.readSync(source.fd, chunk)
+          : await fileIo.read(source.fd, chunk);
         if (readLength <= 0) { return this.failTask(binding, effectiveTask, 'upload-local-read-failed'); }
         const payload: ArrayBuffer = readLength === chunkSize ? chunk : chunk.slice(0, readLength);
         const written: SftpWriteAsyncResult = await this.loader.writeRemoteFileChunkAsync(
