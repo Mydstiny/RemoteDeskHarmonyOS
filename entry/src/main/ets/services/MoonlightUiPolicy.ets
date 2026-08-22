@@ -48,10 +48,12 @@ export interface MoonlightCatalogOperationKey {
 }
 
 export function moonlightCatalogHostReachable(
-  serviceOk: boolean, operation: string, preflightTruth: string
+  serviceCode: string, operation: string, preflightTruth: string,
+  partialAppCount: number
 ): boolean {
-  return serviceOk ||
-    (operation === 'catalog' && preflightTruth === 'confirmed');
+  if (operation !== 'catalog' || preflightTruth !== 'confirmed') { return false; }
+  return serviceCode === 'ok' || serviceCode === 'cache_failed' ||
+    (serviceCode === 'invalid_catalog' && partialAppCount > 0);
 }
 
 export interface MoonlightCatalogPresentation {

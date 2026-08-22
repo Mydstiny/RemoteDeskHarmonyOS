@@ -638,9 +638,10 @@ struct MoonlightAppCatalogPage {
     this.refreshing = false;
     this.currentRefresh = null;
     this.hostOnline = result !== null && moonlightCatalogHostReachable(
-      result.ok,
+      result.code,
       result.nativeResult === null ? '' : result.nativeResult.operation,
-      result.nativeResult === null ? '' : result.nativeResult.preflightTruth);
+      result.nativeResult === null ? '' : result.nativeResult.preflightTruth,
+      result.nativeResult === null ? 0 : result.nativeResult.partialAppCount);
     this.hostBusy = result !== null && result.code === 'host_busy';
     this.catalogPartial = result !== null && result.nativeResult !== null &&
       result.nativeResult.partialAppCount > 0;
@@ -1042,7 +1043,7 @@ struct MoonlightAppCatalogPage {
       audioLabel: this.audioLabel(this.launchEffectiveSettings()),
       inputLabel: this.inputLabel(this.launchEffectiveSettings()),
       routeValid: this.host !== null && this.selectedItem !== null,
-      hostAvailable: this.hostOnline,
+      hostAvailable: this.hostOnline || this.hostBusy,
       certificateChanged: false,
       identityAvailable: this.paired,
       appAvailable: this.selectedItem !== null && this.selectedItem.available && !this.selectedItem.stale,
@@ -1050,6 +1051,7 @@ struct MoonlightAppCatalogPage {
       meteredAllowed: this.meteredAllowed(this.launchEffectiveSettings()),
       meteredStateUnknown: this.networkMeteringUnknown,
       meteredApprovalAvailable: this.meteredApprovalAvailable(this.launchEffectiveSettings()),
+      hostBusy: this.hostBusy,
       runtimeAvailable: this.hostService.capabilities().hostControlReady,
       adjustmentCount: this.launchAdjustmentCount(),
       launching: this.launching,

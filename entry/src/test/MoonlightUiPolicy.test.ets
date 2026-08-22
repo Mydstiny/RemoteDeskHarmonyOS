@@ -103,12 +103,25 @@ export default function moonlightUiPolicyTest(): void {
 
     it('keeps_host_online_when_catalog_reached_sunshine_but_cache_or_payload_failed', 0,
       (): void => {
-        expect(moonlightCatalogHostReachable(false, 'catalog', 'confirmed')).assertTrue();
-        expect(moonlightCatalogHostReachable(false, 'catalog', 'failed')).assertFalse();
-        expect(moonlightCatalogHostReachable(false, 'launch', 'confirmed')).assertFalse();
-        expect(moonlightCatalogHostReachable(true, '', '')).assertTrue();
+        expect(moonlightCatalogHostReachable(
+          'cache_failed', 'catalog', 'confirmed', 0)).assertTrue();
+        expect(moonlightCatalogHostReachable(
+          'invalid_catalog', 'catalog', 'confirmed', 1)).assertTrue();
+        expect(moonlightCatalogHostReachable(
+          'invalid_catalog', 'catalog', 'confirmed', 0)).assertFalse();
+        expect(moonlightCatalogHostReachable(
+          'host_busy', 'catalog', 'confirmed', 0)).assertFalse();
+        expect(moonlightCatalogHostReachable(
+          'transport_failure', 'catalog', 'confirmed', 0)).assertFalse();
+        expect(moonlightCatalogHostReachable(
+          'deadline_exceeded', 'catalog', 'confirmed', 0)).assertFalse();
+        expect(moonlightCatalogHostReachable(
+          'ok', 'catalog', 'failed', 0)).assertFalse();
+        expect(moonlightCatalogHostReachable(
+          'ok', 'launch', 'confirmed', 0)).assertFalse();
         expect(moonlightCatalogPresentation(2, 0, 0,
-          moonlightCatalogHostReachable(false, 'catalog', 'confirmed'),
+          moonlightCatalogHostReachable(
+            'invalid_catalog', 'catalog', 'confirmed', 1),
           false, false, false, true).status).assertEqual('partial');
       });
 
@@ -156,6 +169,17 @@ export default function moonlightUiPolicyTest(): void {
       });
       expect(approved.allowed).assertTrue();
       expect(approved.blocker).assertEqual('none');
+    });
+
+    it('blocks_launch_while_sunshine_reports_an_active_host_session', 0, (): void => {
+      const busy = moonlightLaunchPreflight({
+        routeValid: true, hostAvailable: true, certificateChanged: false,
+        identityAvailable: true, appAvailable: true, meteredNetwork: false,
+        meteredAllowed: true, hostBusy: true, activeSession: false,
+        runtimeAvailable: true, adjustmentCount: 0
+      });
+      expect(busy.allowed).assertFalse();
+      expect(busy.blocker).assertEqual('host_busy');
     });
 
     it('uses_400ms_3s_10s_connect_stage_thresholds_and_never_preclaims_connected', 0, (): void => {
