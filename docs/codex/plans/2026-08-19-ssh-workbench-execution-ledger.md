@@ -3,7 +3,7 @@
 > 状态：`ACTIVE_M8_M9` / `NOT_COMPLETE`
 > 权威计划：`docs/codex/plans/2026-08-19-ssh-termius-harmonyos7-api26-workbench-plan.md`
 > 建立日期：2026-08-19
-> 当前工作树：`codex/moonlight-complete-upgrade` / `66db169f`（M0–M9 SSH 增量保留；workbench flag 已增加协议身份门禁，API23 PC 已补 SFTP 下载暂停/继续/取消/重试闭环和短窗口操作区修复，会话日志与广播输入均受默认关闭的独立高风险 flag 约束，日志追加采用重启安全的不可变 chunk 增量提交且不再深拷贝完整日志，页面日志投影不再携带持久记录正文，SSH/SFTP 诊断不再记录 host 标识、远端路径或原始异常消息，平台异常只记录有限数值错误码，后台常驻通知只展示连接/受限数量，日志导出补齐确认和异步身份 fence，大日志搜索改为可取消的分片调度，命令完成通知增加默认关闭的独立用户设置并保留并发会话通知，多窗格 xterm 安全模式按 host/session/generation 隔离且未知状态 fail closed，广播刷新不再静默替换显式目标或跨重连保留旧选择，WebMessagePort 双端序号严格连续；API26 工具链和最终实机矩阵仍待外部条件）
+> 当前工作树：`codex/moonlight-complete-upgrade` / `203ce02e`（M0–M9 SSH 增量保留；workbench flag 已增加协议身份门禁，API23 PC 已补 SFTP 下载暂停/继续/取消/重试闭环和短窗口操作区修复，会话日志与广播输入均受默认关闭的独立高风险 flag 约束，日志追加采用重启安全的不可变 chunk 增量提交且不再深拷贝完整日志，页面日志投影不再携带持久记录正文，SSH/SFTP 诊断不再记录 host 标识、远端路径或原始异常消息，平台异常只记录有限数值错误码，后台常驻通知只展示连接/受限数量，SSH PiP 只展示白名单状态且不再接收主机身份或终端输出，日志导出补齐确认和异步身份 fence，大日志搜索改为可取消的分片调度，命令完成通知增加默认关闭的独立用户设置并保留并发会话通知，多窗格 xterm 安全模式按 host/session/generation 隔离且未知状态 fail closed，广播刷新不再静默替换显式目标或跨重连保留旧选择，WebMessagePort 双端序号严格连续；API26 工具链和最终实机矩阵仍待外部条件）
 > 当前产品基线：HarmonyOS 6.1 / API 23
 > API 26 状态：本机未安装；任何 API 26-only import 均禁止进入产品代码
 
@@ -22,6 +22,7 @@
 
 ## 2A. 最新执行指针（2026-08-22）
 
+- `203ce02e` 修复 SSH PiP 把 `username@IP:port` 和末尾终端输出直接展示在应用外可见画中画的问题。PiP 信息类型不再接收主机标签、地址或 `termOutput`，UI 只展示通用会话说明和经白名单归一化的“已连接/后台保留”状态；PiP 控制器、自动启动、状态机、超时、销毁和 native 会话所有权均未改动。纯策略测试锁定任意包含主机、路径和 password 的状态文本不能穿过 PiP 边界。
 - `66db169f` 修复 SSH 持续后台任务通知把 host 标签、以及标签为空时的用户名/IP/端口地址直接显示在系统通知的问题。通知内容策略现在只接收运行数和受限数，展示连接/受限数量与通用状态；后台任务 Map、会话快照、WantAgent 恢复参数、持续任务申请/停止和多会话聚合均保持原逻辑。策略测试锁定运行/受限组合文案不含主机身份或远端路径。
 - `6c5126dc` 收敛 SSH 页面、工作区 RDB、本机文件选择、PiP 和后台任务的异常诊断边界：hilog 不再拼接原始异常对象或 message，只从对象读取有限数值 `code`，无有效数值时写入固定 `unknown`。用户可见的连接/文件错误信息保持既有行为，不改变连接、窗口、通知、文件或恢复控制流；策略用例使用带私有 host、远端路径和 password 字段的异常对象，锁定这些字段不会进入诊断输出。
 - `0989af9d` 修复 SSH 终端、标签、xterm、转发及双 SSH SFTP 诊断直接写入 host 标识和远端源/目标路径的问题：hilog 只保留本地 batch/task、session/generation、阶段、结果类别、偏移和字节数；端点诊断只输出 `local/ssh` 类型，远程复制异常不再拼接可能带路径的原始异常字符串。连接、身份 fence、任务状态和传输路径本身未改动。
@@ -335,3 +336,5 @@ hvigorw --mode module -p module=entry -p product=default assembleHap --analyze=n
 2026-08-22 SSH 平台异常诊断边界 receipt：`6c5126dc` 新增 `sshDiagnosticErrorCode`，只允许有限数值平台错误码进入 hilog；SSH 页面、工作区 RDB、本机文件选择器、PiP 与后台任务不再记录任意异常 message/对象字段。用户可见错误提示仍沿用原始业务路径，未改变连接、文件、窗口、后台任务或通知语义。纯策略用例证明异常对象中构造的私有 host、远端路径和 password 不会出现在诊断结果，`NaN` 与字符串 code 均降级为 `unknown`。精确 `default@OhosTestCompileArkTS` exit 0，`assembleHap` exit 0（`BUILD SUCCESSFUL in 12 s 614 ms`）；标准签名 HAP SHA-256 为 `7ce2c492162c80d90a5a293eb97c8188df04bee5e483121e390320142eee805f`。本 receipt 不冒充 HDC、API26 或物理设备隐私验收。
 
 2026-08-22 SSH 后台常驻通知隐私 receipt：`66db169f` 删除聚合通知中的 `hostLabel`/`hostAddress` 拼接，并把展示策略收敛为只接收运行连接数与后台受限数；通知现在只显示通用标题及“保持 N 个 SSH 连接，M 个后台受限”等数量状态。后台任务的会话集合、系统持续任务 ID、WantAgent、快照和停止条件未改动。既有通知策略测试增加运行/受限组合，锁定可见文案不含构造的用户名/IP/端口或远端路径。精确 `default@OhosTestCompileArkTS` exit 0，`assembleHap` exit 0（`BUILD SUCCESSFUL in 11 s 872 ms`）；标准签名 HAP SHA-256 为 `fe3dd2897c523d3c36b5bb4a88e831deb726467744ef7aad5c99cbcd67e354d3`。本 receipt 不冒充通知权限、锁屏、HDC、API26 或物理设备验收。
+
+2026-08-22 SSH PiP 隐私边界 receipt：`203ce02e` 从 `SshTerminalPipInfo` 删除主机标签、地址和终端输出字段，调用方不再把 `username@IP:port` 或 `termOutput` 送入 PiP 服务；自定义 PiP UI 只显示通用会话说明和白名单状态。自动准备/启动、控制器复用、WMS 状态变化、超时、停止清理及 SSH native session 所有权未修改。纯策略测试证明带主机、远端路径和 password 的任意状态字符串统一降级为“已连接”。精确 `default@OhosTestCompileArkTS` exit 0，`assembleHap` exit 0（`BUILD SUCCESSFUL in 12 s 574 ms`）；标准签名 HAP SHA-256 为 `46dd99fe0458d88c991f154c6aa0dd1cf12acbea670169fcb951f8e9e78945fe`。本 receipt 不冒充 PiP/锁屏 HDC、API26 或物理设备交互验收。
