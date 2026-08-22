@@ -12,10 +12,10 @@ import {
 
 function target(hostId: string, connected: boolean = true,
   authenticationPrompt: boolean = false, rawMode: boolean = false,
-  fullscreenMode: boolean = false): SshBroadcastTargetV1 {
+  fullscreenMode: boolean = false, safetyKnown: boolean = true): SshBroadcastTargetV1 {
   return {
     hostId, label: hostId, sessionId: 100 + hostId.length, generation: 1,
-    visible: true, connected, authenticationPrompt, rawMode, fullscreenMode
+    visible: true, connected, safetyKnown, authenticationPrompt, rawMode, fullscreenMode
   };
 }
 
@@ -34,6 +34,8 @@ export default function sshBroadcastPolicyTest(): void {
       expect(sshBroadcastTargetBlockReason(target('auth', true, true))).assertEqual('authentication');
       expect(sshBroadcastTargetBlockReason(target('raw', true, false, true))).assertEqual('raw_mode');
       expect(sshBroadcastTargetBlockReason(target('full', true, false, false, true))).assertEqual('fullscreen');
+      expect(sshBroadcastTargetBlockReason(
+        target('unknown', true, false, false, false, false))).assertEqual('safety_unknown');
     });
 
     it('should_dedupe_and_cap_targets_at_sixteen', 0, (): void => {

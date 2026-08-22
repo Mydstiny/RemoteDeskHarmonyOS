@@ -497,6 +497,13 @@ interface TerminalDecodedChunk {
   remainder: Uint8Array;
 }
 
+interface SshTerminalSafetyModeSnapshot {
+  sessionId: number;
+  generation: number;
+  rawMode: boolean;
+  alternateBuffer: boolean;
+}
+
 type SshProductivityShellPhase = 'idle' | 'prompt' | 'command' | 'executed';
 
 @Entry
@@ -558,8 +565,9 @@ struct SshTerminal {
   private sshSessionLogSearchTimer: number = -1;
   private sshSessionLogSearchSequence: number = 0;
   private sshSessionLogCommandStarts: Map<string, number> = new Map<string, number>();
-  /** Hosts whose current terminal state is unsafe for broadcast input. */
-  private sshBroadcastUnsafeHostIds: Set<string> = new Set<string>();
+  /** Exact xterm safety state, fenced by host plus native session identity. */
+  private sshTerminalSafetyModes: Map<string, SshTerminalSafetyModeSnapshot> =
+    new Map<string, SshTerminalSafetyModeSnapshot>();
   private sshBroadcastLastEscapeAt: number = 0;
   private sshNotificationService: SshNotificationService =
     SshNotificationService.getInstance();
@@ -1582,6 +1590,7 @@ struct SshTerminal {
     });
     this.xtermOutputBuffers.clear();
     this.xtermReadyGenerations.clear();
+    this.sshTerminalSafetyModes.clear();
   }
 
   private xtermSurfaceCoreKey(hostId: string): string {
@@ -1649,7 +1658,10 @@ struct SshTerminal {
 
   private markXtermSurfaceNotReady(hostId: string): void {
     const normalizedHostId: string = hostId.trim();
-    if (normalizedHostId.length > 0) { this.xtermReadyGenerations.delete(normalizedHostId); }
+    if (normalizedHostId.length > 0) {
+      this.xtermReadyGenerations.delete(normalizedHostId);
+      this.sshTerminalSafetyModes.delete(normalizedHostId);
+    }
     if (normalizedHostId === this.hostId.trim()) { this.xtermReady = false; }
   }
 
@@ -2778,6 +2790,7 @@ struct SshTerminal {
     if (outputBuffer !== undefined) { outputBuffer.clear(); }
     this.xtermOutputBuffers.delete(result.hostId);
     this.xtermReadyGenerations.delete(result.hostId);
+    this.sshTerminalSafetyModes.delete(result.hostId);
     const nativeBuffer: TerminalInputBuffer | undefined = this.nativeTerminalInputBuffers.get(result.hostId);
     if (nativeBuffer !== undefined) { nativeBuffer.clear(); }
     this.nativeTerminalInputBuffers.delete(result.hostId);
@@ -3323,6 +3336,17 @@ struct SshTerminal {
     }, 32);
   }
 
+  private sshTerminalSafetyModeForIdentity(hostId: string, sessionId: number,
+    generation: number): SshTerminalSafetyModeSnapshot | null {
+    const normalizedHostId: string = hostId.trim();
+    if (normalizedHostId.length === 0 || sessionId <= 0 || generation <= 0) { return null; }
+    const snapshot: SshTerminalSafetyModeSnapshot | undefined =
+      this.sshTerminalSafetyModes.get(normalizedHostId);
+    if (snapshot === undefined || snapshot.sessionId !== sessionId ||
+      snapshot.generation !== generation) { return null; }
+    return snapshot;
+  }
+
   private sshBroadcastTargetForTab(tab: SshTerminalTabView): SshBroadcastTargetV1 | null {
     const hostId: string = tab.hostId.trim();
     if (hostId.length === 0 || !this.sshWorkspaceModeEnabled() ||
@@ -3331,26 +3355,16 @@ struct SshTerminal {
     const sessionId: number = current && this.sessionId > 0 ? this.sessionId : tab.sessionId;
     const generation: number = current && this.sshSessionGeneration > 0
       ? this.sshSessionGeneration : tab.generation;
+    const safetyMode: SshTerminalSafetyModeSnapshot | null =
+      this.sshTerminalSafetyModeForIdentity(hostId, sessionId, generation);
     const authenticationPrompt: boolean = current &&
       (this.sshAuthPrompt !== null || this.showSshAuthPromptSheet || this.showPassphraseSheet);
-    const rawMode: boolean = current && (this.terminalMouseTracking !== 0 ||
-      this.terminalApplicationKeypad || this.terminalApplicationCursorKeys);
-    const fullscreenMode: boolean = current && this.sessionWindowFullscreen;
-    const currentUnsafe: boolean = authenticationPrompt || rawMode || fullscreenMode;
-    if (current) {
-      if (currentUnsafe) {
-        this.sshBroadcastUnsafeHostIds.add(hostId);
-      } else {
-        this.sshBroadcastUnsafeHostIds.delete(hostId);
-      }
-    }
+    const rawMode: boolean = safetyMode?.rawMode === true;
+    const fullscreenMode: boolean = safetyMode?.alternateBuffer === true ||
+      (current && this.sessionWindowFullscreen);
     const connected: boolean = current
       ? this.connected && sessionId > 0 && generation > 0
       : tab.state === 'connected' && sessionId > 0 && generation > 0;
-    // Native raw/fullscreen/auth state is page-owned. A detached host that was
-    // last observed unsafe remains blocked until it is re-bound and observed
-    // safe; this is intentionally fail-closed instead of guessing.
-    const detachedUnsafe: boolean = !current && this.sshBroadcastUnsafeHostIds.has(hostId);
     return {
       hostId,
       label: tab.label.trim().slice(0, 96),
@@ -3358,9 +3372,10 @@ struct SshTerminal {
       generation,
       visible: true,
       connected,
+      safetyKnown: safetyMode !== null,
       authenticationPrompt,
       rawMode,
-      fullscreenMode: fullscreenMode || detachedUnsafe
+      fullscreenMode
     };
   }
 
@@ -3672,6 +3687,10 @@ struct SshTerminal {
     }
     const current: boolean = identity.hostId === this.hostId.trim() &&
       identity.sessionId === this.sessionId && identity.generation === this.sshSessionGeneration;
+    const safetyMode: SshTerminalSafetyModeSnapshot | null =
+      this.sshTerminalSafetyModeForIdentity(
+        identity.hostId, identity.sessionId, identity.generation);
+    if (safetyMode === null) { return false; }
     return sshSessionLogCaptureAllowed({
       hostId: identity.hostId,
       sessionId: identity.sessionId,
@@ -3681,9 +3700,8 @@ struct SshTerminal {
       passwordPrompt: current && (this.sshAuthPrompt !== null || this.showSshAuthPromptSheet),
       mfaPrompt: current && this.sshAuthPrompt !== null,
       passphrasePrompt: current && this.showPassphraseSheet,
-      rawMode: current && (this.terminalMouseTracking !== 0 || this.terminalApplicationKeypad ||
-        this.terminalApplicationCursorKeys),
-      fullscreenMode: current && this.sessionWindowFullscreen,
+      rawMode: safetyMode.rawMode,
+      fullscreenMode: safetyMode.alternateBuffer || (current && this.sessionWindowFullscreen),
       secretExpansion: current && this.sshProductivitySecretExpansionPending
     }) && (!input || current);
   }
@@ -3978,12 +3996,15 @@ struct SshTerminal {
 
   private sshProductivityInputSafe(hostId: string): boolean {
     const normalizedHostId: string = hostId.trim();
+    const safetyMode: SshTerminalSafetyModeSnapshot | null =
+      this.sshTerminalSafetyModeForIdentity(
+        normalizedHostId, this.sessionId, this.sshSessionGeneration);
     if (!this.sshWorkbenchEnabled || !this.sshProductivityReady || !this.connected || this.sessionId <= 0 ||
       this.terminalClosing || normalizedHostId.length === 0 ||
       normalizedHostId !== this.hostId.trim() || this.sshAuthPrompt !== null ||
       this.showSshAuthPromptSheet || this.showPassphraseSheet ||
-      this.terminalMouseTracking !== 0 || this.terminalApplicationKeypad ||
-      this.terminalApplicationCursorKeys || this.sessionWindowFullscreen ||
+      safetyMode === null || safetyMode.rawMode || safetyMode.alternateBuffer ||
+      this.sessionWindowFullscreen ||
       this.sshProductivityTrackerSuppressed) { return false; }
     const settings = this.sshProductivityStore.snapshot().settings;
     if (!settings.historyEnabled || !settings.shellIntegrationEnabled ||
@@ -4022,6 +4043,9 @@ struct SshTerminal {
     for (let index: number = 0; index < submissions.length; index++) {
       const submission: SshLocalCommandSubmit = submissions[index];
       if (submission.rejectedSensitiveControl) { continue; }
+      const safetyMode: SshTerminalSafetyModeSnapshot | null =
+        this.sshTerminalSafetyModeForIdentity(
+          normalizedHostId, this.sessionId, this.sshSessionGeneration);
       const record: SshCommandHistoryV1 | null = captureSshHistory({
         hostId: normalizedHostId,
         command: submission.command,
@@ -4029,9 +4053,9 @@ struct SshTerminal {
         enabled: true,
         hostDisabled: false,
         passwordPrompt: this.sshAuthPrompt !== null || this.showPassphraseSheet,
-        rawMode: this.terminalMouseTracking !== 0 || this.terminalApplicationKeypad ||
-          this.terminalApplicationCursorKeys,
-        fullscreenMode: this.sessionWindowFullscreen,
+        rawMode: safetyMode === null || safetyMode.rawMode,
+        fullscreenMode: safetyMode === null || safetyMode.alternateBuffer ||
+          this.sessionWindowFullscreen,
         secretExpansion: false
       }, ++this.sshProductivityHistorySequence);
       if (record !== null) {
@@ -4475,6 +4499,12 @@ struct SshTerminal {
       onTerminalFocus: (focused: boolean, surfaceIdentity: string): void => {
         this.onXtermFocusForHost(tab.hostId,
           this.sshTabStore.sessionGeneration(tab.hostId), focused, surfaceIdentity);
+      },
+      onTerminalMode: (mouseTracking: boolean, applicationCursorKeys: boolean,
+        applicationKeypad: boolean, alternateBuffer: boolean, surfaceIdentity: string): void => {
+        this.onXtermTerminalModeForHost(tab.hostId,
+          this.sshTabStore.sessionGeneration(tab.hostId), mouseTracking,
+          applicationCursorKeys, applicationKeypad, alternateBuffer, surfaceIdentity);
       },
       onSearchResult: (result: SshTerminalSearchResult, surfaceIdentity: string): void => {
         this.onXtermSearchResultForHost(tab.hostId,
@@ -8570,7 +8600,7 @@ struct SshTerminal {
     this.sshBroadcastSelectedHostIds = [];
     this.sshBroadcastText = '';
     this.sshBroadcastMode = 'insert';
-    this.sshBroadcastUnsafeHostIds.clear();
+    this.sshTerminalSafetyModes.clear();
     this.sshProductivityQuery = '';
     this.resetSshProductivityRuntime();
     this.showSftpTransferCenter = false;
@@ -8967,7 +8997,7 @@ struct SshTerminal {
     this.sshBroadcastSelectedHostIds = [];
     this.sshBroadcastText = '';
     this.sshBroadcastMode = 'insert';
-    this.sshBroadcastUnsafeHostIds.clear();
+    this.sshTerminalSafetyModes.clear();
     this.sshProductivityQuery = '';
     this.sshProductivityReady = false;
     this.sshProductivityDocument = emptySshProductivityDocument();
@@ -10527,6 +10557,32 @@ struct SshTerminal {
     this.focusKeyboard(false);
   }
 
+  private onXtermTerminalModeForHost(hostId: string, sessionGeneration: number,
+    mouseTracking: boolean, applicationCursorKeys: boolean, applicationKeypad: boolean,
+    alternateBuffer: boolean, surfaceIdentity: string): void {
+    const normalizedHostId: string = hostId.trim();
+    const reportedRevision: number = sshXtermTabRenderRevision(sessionGeneration);
+    const sessionId: number = this.sshTabStore.sessionId(normalizedHostId);
+    if (this.terminalClosing || normalizedHostId.length === 0 || sessionId <= 0 ||
+      sessionGeneration <= 0 ||
+      this.sshTabStore.sessionGeneration(normalizedHostId) !== sessionGeneration ||
+      this.xtermSurfaceIdentityForHost(normalizedHostId, reportedRevision) !==
+        surfaceIdentity.trim() ||
+      reportedRevision !== this.xtermSurfaceGenerationForHost(normalizedHostId)) {
+      hilog.debug(0x0000, 'SshTerminal', '[xterm] mode rejected host=' + normalizedHostId +
+        ' revision=' + reportedRevision.toString());
+      return;
+    }
+    this.sshTerminalSafetyModes.set(normalizedHostId, {
+      sessionId,
+      generation: sessionGeneration,
+      rawMode: mouseTracking === true || applicationCursorKeys === true ||
+        applicationKeypad === true,
+      alternateBuffer: alternateBuffer === true
+    });
+    if (this.showSshBroadcastSheet) { this.refreshSshBroadcastTargets(false); }
+  }
+
   private onXtermReadyForHost(hostId: string, sessionGeneration: number,
     surfaceIdentity: string): void {
     const normalizedHostId: string = hostId.trim();
@@ -11095,7 +11151,7 @@ struct SshTerminal {
       this.sshBroadcastSelectedHostIds = [];
       this.sshBroadcastText = '';
       this.sshBroadcastMode = 'insert';
-      this.sshBroadcastUnsafeHostIds.clear();
+      this.sshTerminalSafetyModes.clear();
       this.sshSessionLogInputBuffers.clear();
       this.sshSessionLogPendingOutput.clear();
       this.resetSshProductivityRuntime();
@@ -11128,7 +11184,6 @@ struct SshTerminal {
     this.sshBroadcastText = '';
     this.sshBroadcastMode = 'insert';
     this.sshBroadcastLastEscapeAt = 0;
-    this.sshBroadcastUnsafeHostIds.clear();
   }
 
   private onSshSessionLogsFlagChange(): void {

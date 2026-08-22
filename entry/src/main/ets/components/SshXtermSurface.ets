@@ -62,6 +62,10 @@ class SshXtermBridgeProxy {
   onResizeCallback: (cols: number, rows: number) => void = (_cols: number, _rows: number): void => {};
   onSelectionCallback: (text: string) => void = (_text: string): void => {};
   onFocusCallback: (focused: boolean) => void = (_focused: boolean): void => {};
+  onModeCallback: (mouseTracking: boolean, applicationCursorKeys: boolean,
+    applicationKeypad: boolean, alternateBuffer: boolean) => void =
+    (_mouseTracking: boolean, _applicationCursorKeys: boolean,
+      _applicationKeypad: boolean, _alternateBuffer: boolean): void => {};
 
   onReady(cols: number, rows: number): void {
     this.onReadyCallback(cols, rows);
@@ -89,6 +93,12 @@ class SshXtermBridgeProxy {
 
   onFocus(focused: boolean): void {
     this.onFocusCallback(focused);
+  }
+
+  onMode(mouseTracking: boolean, applicationCursorKeys: boolean,
+    applicationKeypad: boolean, alternateBuffer: boolean): void {
+    this.onModeCallback(mouseTracking, applicationCursorKeys,
+      applicationKeypad, alternateBuffer);
   }
 }
 
@@ -172,6 +182,8 @@ export struct SshXtermSurface {
   onResize?: (cols: number, rows: number, surfaceKey: string) => void;
   onReady?: (surfaceKey: string) => void;
   onTerminalFocus?: (focused: boolean, surfaceKey: string) => void;
+  onTerminalMode?: (mouseTracking: boolean, applicationCursorKeys: boolean,
+    applicationKeypad: boolean, alternateBuffer: boolean, surfaceKey: string) => void;
   onSearchResult?: (result: SshTerminalSearchResult, surfaceKey: string) => void;
 
   private controller: webview.WebviewController = new webview.WebviewController();
@@ -519,6 +531,13 @@ export struct SshXtermSurface {
         this.onTerminalFocus(focused, this.surfaceIdentity());
       }
     };
+    this.bridge.onModeCallback = (mouseTracking: boolean, applicationCursorKeys: boolean,
+      applicationKeypad: boolean, alternateBuffer: boolean): void => {
+      if (lifecycleToken === this.lifecycleToken && this.onTerminalMode && !this.disposed) {
+        this.onTerminalMode(mouseTracking === true, applicationCursorKeys === true,
+          applicationKeypad === true, alternateBuffer === true, this.surfaceIdentity());
+      }
+    };
   }
 
   private clearBridgeRetry(): void {
@@ -550,7 +569,8 @@ export struct SshXtermSurface {
       this.controller.registerJavaScriptProxy(
         this.bridge,
         'sshTerminalBridge',
-        ['onReady', 'onFrame', 'onFrameError', 'onInput', 'onResize', 'onSelection', 'onFocus']
+        ['onReady', 'onFrame', 'onFrameError', 'onInput', 'onResize', 'onSelection', 'onFocus',
+          'onMode']
       );
       this.bridgeRegistered = true;
       this.bridgeRetryCount = 0;

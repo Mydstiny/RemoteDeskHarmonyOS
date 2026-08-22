@@ -68,6 +68,7 @@
         searchAddon: null,
         searchResults: { resultIndex: -1, resultCount: 0 },
         pendingWrites: [],
+        lastModeSignature: '',
         readyNotified: false,
         readyRetryCount: 0,
         webMessagePort: null,
@@ -274,11 +275,40 @@
         }
       }
 
+      // Mode changes are sparse control telemetry, so keep them on the
+      // identity-fenced JavaScript proxy even when bulk output uses a message
+      // port. Never publish a guessed safe state when the xterm API is absent.
+      function notifyTerminalMode(force) {
+        if (!state.terminal) return false;
+        try {
+          var modes = state.terminal.modes;
+          var active = state.terminal.buffer && state.terminal.buffer.active;
+          if (!modes || typeof modes.mouseTrackingMode !== 'string' ||
+              typeof modes.applicationCursorKeysMode !== 'boolean' ||
+              typeof modes.applicationKeypadMode !== 'boolean' || !active ||
+              (active.type !== 'normal' && active.type !== 'alternate')) return false;
+          var mouseTracking = modes.mouseTrackingMode !== 'none';
+          var applicationCursorKeys = modes.applicationCursorKeysMode === true;
+          var applicationKeypad = modes.applicationKeypadMode === true;
+          var alternateBuffer = active.type === 'alternate';
+          var signature = [mouseTracking, applicationCursorKeys,
+            applicationKeypad, alternateBuffer].join(':');
+          if (force !== true && signature === state.lastModeSignature) return true;
+          if (!bridgeCall('onMode', [mouseTracking, applicationCursorKeys,
+              applicationKeypad, alternateBuffer])) return false;
+          state.lastModeSignature = signature;
+          return true;
+        } catch (_) {
+          return false;
+        }
+      }
+
       function notifyReady() {
         if (state.readyNotified || !state.terminal) return;
         if (bridgeCall('onReady', [Number(state.terminal.cols), Number(state.terminal.rows)])) {
           state.readyRetryCount = 0;
           state.readyNotified = true;
+          notifyTerminalMode(true);
           return;
         }
         state.readyRetryCount += 1;
@@ -458,7 +488,7 @@
         var pending = state.pendingWrites;
         state.pendingWrites = [];
         pending.forEach(function (value) {
-          try { terminal.write(value); } catch (_) {}
+          try { terminal.write(value, function () { notifyTerminalMode(); }); } catch (_) {}
         });
       }
 
@@ -664,7 +694,9 @@
           state.pendingWrites.push(text);
           return;
         }
-        try { state.terminal.write(text); } catch (_) {}
+        try {
+          state.terminal.write(text, function () { notifyTerminalMode(); });
+        } catch (_) {}
       };
 
       window.__sshXtermWriteBatch = function (values, batchSequence, portMode) {
@@ -709,6 +741,7 @@
           completed = true;
           refreshTerminal();
           alignSparseContent();
+          notifyTerminalMode();
           if (portMode === true) {
             sendWebMessage('ack', JSON.stringify({ batchSequence: sequence }), false);
           } else {
@@ -764,6 +797,7 @@
         if (state.terminal) {
           try { state.terminal.reset(); } catch (_) {}
           alignSparseContent();
+          notifyTerminalMode(true);
         }
       };
 

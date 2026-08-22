@@ -8,6 +8,7 @@ export type SshBroadcastMode = 'insert' | 'execute';
 
 export type SshBroadcastTargetBlockReason =
   | 'not_connected'
+  | 'safety_unknown'
   | 'authentication'
   | 'raw_mode'
   | 'fullscreen'
@@ -20,6 +21,7 @@ export interface SshBroadcastTargetV1 {
   generation: number;
   visible: boolean;
   connected: boolean;
+  safetyKnown: boolean;
   authenticationPrompt: boolean;
   rawMode: boolean;
   fullscreenMode: boolean;
@@ -81,6 +83,7 @@ export function sshBroadcastTargetBlockReason(target: SshBroadcastTargetV1):
     return 'invalid_identity';
   }
   if (!target.connected) { return 'not_connected'; }
+  if (!target.safetyKnown) { return 'safety_unknown'; }
   if (target.authenticationPrompt) { return 'authentication'; }
   if (target.rawMode) { return 'raw_mode'; }
   if (target.fullscreenMode) { return 'fullscreen'; }
@@ -94,6 +97,7 @@ export function sshBroadcastTargetEligible(target: SshBroadcastTargetV1): boolea
 export function sshBroadcastTargetReasonText(reason: SshBroadcastTargetBlockReason | ''): string {
   switch (reason) {
     case 'not_connected': return '未连接';
+    case 'safety_unknown': return '终端安全状态确认中';
     case 'authentication': return '认证/密码提示中';
     case 'raw_mode': return '全屏 TUI/raw 模式';
     case 'fullscreen': return '沉浸全屏中';
@@ -143,6 +147,7 @@ function normalizedTargets(targets: Array<SshBroadcastTargetV1>): Array<SshBroad
       generation: Math.floor(target.generation),
       visible: target.visible === true,
       connected: target.connected === true,
+      safetyKnown: target.safetyKnown === true,
       authenticationPrompt: target.authenticationPrompt === true,
       rawMode: target.rawMode === true,
       fullscreenMode: target.fullscreenMode === true
