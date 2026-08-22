@@ -1,6 +1,7 @@
 import { describe, it, expect } from '@ohos/hypium';
 import {
   buildSshCompletionNotificationText,
+  nextSshCompletionNotificationId,
   sshCompletionNotificationAllowed
 } from '../main/ets/services/ssh/notification/SshNotificationService';
 
@@ -28,6 +29,15 @@ export default function sshNotificationServiceTest(): void {
       expect(text.indexOf('退出码 7') >= 0).assertTrue();
       expect(text.indexOf('ssh')).assertEqual(-1);
       expect(text.indexOf('/')).assertEqual(-1);
+    });
+
+    it('should_allocate_distinct_bounded_ids_for_concurrent_sessions', 0, (): void => {
+      const first: number = nextSshCompletionNotificationId(0);
+      const second: number = nextSshCompletionNotificationId(first);
+      expect(first).assertEqual(606101);
+      expect(second).assertEqual(606102);
+      expect(nextSshCompletionNotificationId(607124)).assertEqual(first);
+      expect(nextSshCompletionNotificationId(Number.NaN)).assertEqual(first);
     });
   });
 }

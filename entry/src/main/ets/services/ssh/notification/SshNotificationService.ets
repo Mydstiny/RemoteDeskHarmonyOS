@@ -4,7 +4,8 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 
 const TAG: string = 'SshNotification';
 const DOMAIN: number = 0x0016;
-const SSH_COMPLETION_NOTIFICATION_ID: number = 606101;
+const SSH_COMPLETION_NOTIFICATION_ID_MIN: number = 606101;
+const SSH_COMPLETION_NOTIFICATION_ID_MAX: number = 607124;
 const MIN_COMPLETION_DURATION_MS: number = 5000;
 
 export interface SshCommandCompletionInfoV1 {
@@ -34,12 +35,27 @@ export function buildSshCompletionNotificationText(info: SshCommandCompletionInf
 }
 
 /**
+ * Preserve concurrent completion alerts instead of replacing every session's
+ * notification under one fixed id. The bounded ring prevents unbounded ids;
+ * only a wrap after 1024 eligible alerts may replace an older entry.
+ */
+export function nextSshCompletionNotificationId(previous: number): number {
+  const normalized: number = Number.isFinite(previous) ? Math.floor(previous) : 0;
+  if (normalized < SSH_COMPLETION_NOTIFICATION_ID_MIN ||
+    normalized >= SSH_COMPLETION_NOTIFICATION_ID_MAX) {
+    return SSH_COMPLETION_NOTIFICATION_ID_MIN;
+  }
+  return normalized + 1;
+}
+
+/**
  * Thin SSH-only adapter over Notification Kit. It deliberately does not own
  * the shared RDP/RustDesk/VNC background notification or request host address,
  * user name, path, or command text from callers.
  */
 export class SshNotificationService {
   private static instance: SshNotificationService | null = null;
+  private completionNotificationId: number = SSH_COMPLETION_NOTIFICATION_ID_MIN - 1;
 
   static getInstance(): SshNotificationService {
     if (SshNotificationService.instance === null) {
@@ -58,6 +74,8 @@ export class SshNotificationService {
       durationMs: Number.isFinite(info.durationMs) ? Math.max(0, Math.floor(info.durationMs)) : 0
     };
     if (!sshCompletionNotificationAllowed(safeInfo)) { return false; }
+    this.completionNotificationId =
+      nextSshCompletionNotificationId(this.completionNotificationId);
     const request: notificationManager.NotificationRequest = {
       content: {
         notificationContentType: notificationManager.ContentType.NOTIFICATION_CONTENT_BASIC_TEXT,
@@ -66,7 +84,7 @@ export class SshNotificationService {
           text: buildSshCompletionNotificationText(safeInfo)
         }
       },
-      id: SSH_COMPLETION_NOTIFICATION_ID,
+      id: this.completionNotificationId,
       notificationSlotType: notificationManager.SlotType.SERVICE_INFORMATION,
       tapDismissed: true,
       isAlertOnce: true
