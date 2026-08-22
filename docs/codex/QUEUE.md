@@ -10,6 +10,7 @@ Updated: 2026-08-22 Asia/Shanghai
 - `aff7fdf03`: lifecycle/recovery, PC session-window integration, compatibility-first optional cloud path, exact teardown and final PC Moonlight FAB unification.
 - `2d9ce0024`: enable the explicitly confirmed deployed `moonlightrecordv1` schema at revision 1 and prepare the cloud-enabled acceptance package.
 - `2c9120e98` + `94fa21f8f`: adaptive phone/Pad/PC first-run and settings guidance, protocol-local operation lessons, five-protocol connection preparation, foreground-safe SSH/Moonlight hints and review remediation.
+- `6abd75469`: route PC/2in1 VNC settings connections back through HostList's lock, certificate, authentication and independent-window path while retaining Phone/Pad navigation.
 - RustDesk-style FAB/add flow, adaptive phone/PC Moonlight host surfaces, six owned settings sheets, metered launch admission, local repository/cache and all input classes are wired.
 
 ## Non-cloud closeout
@@ -21,6 +22,7 @@ Updated: 2026-08-22 Asia/Shanghai
 - Shared native teardown now uses exact session/generation/owner-token/facade ownership and explicit synchronous Complete/Failed receipts. HostList preflight/2FA cancellation, timeout, error and NAPI retry retain the original immutable identity; the A→B delayed-callback regression is compile-registered and final focused review is P0/P1/P2/P3 all zero.
 - The revision-1 package is installed and started on phone simulator `127.0.0.1:5555` and PC simulator `127.0.0.1:5557`; fresh screenshots and Sunshine/physical-controller/long-run acceptance remain pending.
 - The final guidance review is P0/P1/P2/P3 all zero after closing device-init timing, blocked-hint retry, 480vp Sheet reachability and protocol-localization findings. Exact test compile, assemble, diff check and Light compliance pass on 2026-08-22.
+- The VNC settings-handoff review is P0/P1/P2/P3 all zero; exact test compile, assemble, diff check and Light compliance pass for `6abd75469` before later unrelated Sheet-policy working-tree changes appeared.
 
 ## Current cloud/data increment
 

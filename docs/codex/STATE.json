@@ -3,7 +3,7 @@
   "task": "moonlight-complete-upgrade",
   "branch": "codex/moonlight-complete-upgrade",
   "base": "aeb0cdac589caeac8b75dec5958f4e07ee62faf5",
-  "head": "94fa21f8f44207ecd1ace2d9f675f1037ee39e90",
+  "head": "6abd7546935fa9613a98349581c696f957c7dd78",
   "phase": "moonlight-cloud-enabled-ready-for-device-acceptance",
   "status": "active",
   "next": "Deploy the current cloud-enabled package, then complete compatibility-first cloud, Sunshine, controller, lifecycle and fresh PC/phone/freeform-window guidance acceptance.",
@@ -47,16 +47,16 @@
         "summary": "Foreground startup ordering, account switch during registration, optional-table failure fallback and rejection retry require real cloud/device integration receipts after provisioning."
       }
     ],
-    "reason": "The cloud scope still requires provisioning-dependent P3 integration evidence. Separately, the adaptive-guidance increment at 94fa21f8f passed independent review with P0/P1/P2/P3 all zero after four P2 remediations."
+    "reason": "The cloud scope still requires provisioning-dependent P3 integration evidence. Separately, the adaptive-guidance increment at 94fa21f8f and VNC settings handoff at 6abd75469 passed independent review with P0/P1/P2/P3 all zero."
   },
   "lastVerification": {
-    "diffCheck": "pass after adaptive-guidance review fixes on 2026-08-22",
-    "testCompile": "pass: exact default@OhosTestCompileArkTS on the current worktree with --analyze=normal --parallel --incremental --no-daemon on 2026-08-22",
-    "assembleHap": "pass: exact assembleHap on the same current worktree; signed HAP SHA-256 d1ca028ecff7b188e8bf12a576eb329dcaf095604ebc0189bf01d7c5ccb7a2cb",
+    "diffCheck": "pass for VNC checkpoint 6abd75469 on 2026-08-22 before later unrelated Sheet-policy working-tree changes appeared",
+    "testCompile": "pass: exact default@OhosTestCompileArkTS for VNC checkpoint 6abd75469 with --analyze=normal --parallel --incremental --no-daemon on 2026-08-22",
+    "assembleHap": "pass: exact assembleHap on the same VNC checkpoint worktree; signed HAP SHA-256 b731cfb4c9e516965404aa638d05a539f55c3da3c0c4985b8039814422914ffe",
     "hapPath": "entry/build/default/outputs/default/entry-default-signed.hap",
     "nativeTests": "pass outside the socket-restricted sandbox: 780 passed, 0 failed; Moonlight and adjacent-protocol fixtures all passed",
     "hdcRuntime": "revision-1 HAP installed and EntryAbility started successfully on phone simulator 127.0.0.1:5555 and PC simulator 127.0.0.1:5557; full acceptance remains pending",
-    "uiAcceptance": "adaptive guidance final review P0/P1/P2/P3 zero; fresh phone/PC/freeform-window screenshots remain pending because no hdc target was online on 2026-08-22",
+    "uiAcceptance": "adaptive guidance and VNC settings-handoff final reviews P0/P1/P2/P3 zero; fresh phone/PC/freeform-window screenshots remain pending because no hdc target was online on 2026-08-22",
     "cloudBoundary": "compatibility-first: core eight registered first; optional ninth table gated by deployment receipt; per-record Moonlight quarantine cannot block old tables",
     "isolation": "dual-ABI ELF pass: GameControllerKit remains Moonlight-session dynamic only with no DT_NEEDED or unresolved OH_Game symbols; optional cloud table remains additive and outside the core-eight baseline",
     "ohosTest": "blocked by unregistered task 00306054; no device-test PASS claimed"
