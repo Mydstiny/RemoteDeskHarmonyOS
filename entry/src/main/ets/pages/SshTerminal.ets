@@ -15696,6 +15696,8 @@ struct SshTerminal {
           .onClick((): void => { this.closeSftpPanel(); })
       }.width('100%').margin({ bottom: 18 })
 
+      this.SftpRecoveredTasks()
+
       Row() {
         Button('上级').height(36).fontSize(12)
           .enabled(!this.sftpBusy)
