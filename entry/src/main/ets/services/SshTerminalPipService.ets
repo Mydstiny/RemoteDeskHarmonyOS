@@ -309,7 +309,7 @@ export class SshTerminalPipService {
       return true;
     }
     if (this.lastState === PiPWindow.PiPState.ABOUT_TO_START) {
-      const settled: boolean = await this.waitForStart(owner);
+      const settled: boolean = await this.reconcileStartedOwner(owner);
       if (!settled) {
         return false;
       }
@@ -328,17 +328,7 @@ export class SshTerminalPipService {
         }
         return true;
       }
-      try {
-        if (!await owner.isPiPActive()) {
-          if (this.controller === owner) {
-            this.cleanupController(owner, 'transitionReconciled', false);
-          }
-          return true;
-        }
-      } catch (err) {
-        hilog.warn(DOMAIN, TAG, 'SSH PiP transition probe failed code=' +
-          sshDiagnosticErrorCode(err));
-      }
+      if (await this.cleanupInactiveOwner(owner, 'transitionReconciled')) { return true; }
       hilog.warn(DOMAIN, TAG, 'SSH PiP previous transition did not finish');
       return false;
     }
@@ -350,12 +340,50 @@ export class SshTerminalPipService {
     }
     const terminal: boolean = await this.waitForTerminal(owner);
     if (!terminal) {
+      if (await this.cleanupInactiveOwner(owner, 'stopReconciled')) { return true; }
       return false;
     }
     if (this.controller === owner) {
       this.cleanupController(owner, 'requestDelete', false);
     }
     return true;
+  }
+
+  /**
+   * API 23 can expose an active custom PiP while its last callback is still
+   * ABOUT_TO_START. Probe WMS before waiting so an explicit exit can issue
+   * stopPiP() while the foreground page and controller are still alive.
+   */
+  private async reconcileStartedOwner(owner: PiPWindow.PiPController): Promise<boolean> {
+    try {
+      if (await owner.isPiPActive()) {
+        if (this.controller !== owner) { return true; }
+        this.active = true;
+        this.lastState = PiPWindow.PiPState.STARTED;
+        hilog.info(DOMAIN, TAG, 'SSH PiP start reconciled from active probe');
+        return true;
+      }
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, 'SSH PiP start probe failed code=' +
+        sshDiagnosticErrorCode(err));
+    }
+    return this.waitForStart(owner);
+  }
+
+  /** Reconcile API 23 transitions that complete without a terminal callback. */
+  private async cleanupInactiveOwner(owner: PiPWindow.PiPController,
+    reason: string): Promise<boolean> {
+    try {
+      if (await owner.isPiPActive()) { return false; }
+      if (this.controller === owner) {
+        this.cleanupController(owner, reason, false);
+      }
+      return true;
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, 'SSH PiP inactive probe failed code=' +
+        sshDiagnosticErrorCode(err));
+      return false;
+    }
   }
 
   private async waitForStart(owner: PiPWindow.PiPController): Promise<boolean> {

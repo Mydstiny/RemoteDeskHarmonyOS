@@ -121,6 +121,11 @@ import {
   SshTerminalPipService
 } from '../services/SshTerminalPipService';
 import {
+  SSH_PIP_EXIT_GRACE_MS,
+  matchesSshPipExitFence,
+  shouldCoordinateSshPipExit
+} from '../services/ssh/pip/SshPipLifecyclePolicy';
+import {
   terminalLogicalViewportHeight,
   terminalKeyboardBottomInsetPx,
   terminalTouchDragScrollLines,
@@ -850,6 +855,8 @@ struct SshTerminal {
   private sftpPendingPeerHostId: string = '';
   private sftpPendingPeerSelectionEpoch: number = 0;
   private explicitSessionClose: boolean = false;
+  private sshPipExitInFlight: boolean = false;
+  private sshPipExitNavigationTimer: number = -1;
   private sshBackgroundTaskService: SshTerminalBackgroundTaskService =
     SshTerminalBackgroundTaskService.getInstance();
   private sshPipService: SshTerminalPipService = SshTerminalPipService.getInstance();
@@ -8561,6 +8568,8 @@ struct SshTerminal {
     const pageGeneration: number = ++this.pageGeneration;
     const bindingGeneration: number = ++this.sshBindingGeneration;
     this.terminalClosing = false;
+    this.clearSshPipExitNavigationTimer();
+    this.sshPipExitInFlight = false;
     this.clearSshWorkspaceSaveTimer();
     this.sshWorkspaceInitSequence++;
     this.sshWorkspaceReady = false;
@@ -9034,6 +9043,7 @@ struct SshTerminal {
     ++this.pageGeneration;
     ++this.sshBindingGeneration;
     this.terminalClosing = true;
+    this.clearSshPipExitNavigationTimer();
     this.clearForwardingRefreshTimer();
     this.showForwardingSheet = false;
     this.forwardingModalCoordinator.invalidate();
@@ -9232,6 +9242,12 @@ struct SshTerminal {
         this.setPreferredOrientation(window.Orientation.UNSPECIFIED, 'SSH-UNSPECIFIED');
       }, 250);
     }
+  }
+
+  onBackPress(): boolean {
+    if (this.terminalClosing) { return true; }
+    this.closeSessionAndBack();
+    return true;
   }
 
   onPageShow(): void {
@@ -10347,7 +10363,50 @@ struct SshTerminal {
       }
       return;
     }
+    if (!shouldCoordinateSshPipExit(
+      this.sessionWindowId, this.sshPipService.isPreparedOrPreparing())) {
+      router.back();
+      return;
+    }
+    this.stopSshPipBeforeBack();
+  }
+
+  private stopSshPipBeforeBack(): void {
+    if (this.sshPipExitInFlight) { return; }
+    this.sshPipExitInFlight = true;
+    const pageGeneration: number = this.pageGeneration;
+    this.clearSshPipExitNavigationTimer();
+    this.sshPipExitNavigationTimer = setTimeout((): void => {
+      this.sshPipExitNavigationTimer = -1;
+      hilog.warn(0x0017, 'SshTerminal', 'SSH PiP exit grace elapsed');
+      this.completeSshPipExit(pageGeneration);
+    }, SSH_PIP_EXIT_GRACE_MS);
+    void this.sshPipService.stop().then((stopped: boolean): void => {
+      if (!stopped) {
+        hilog.warn(0x0017, 'SshTerminal', 'SSH PiP pre-navigation stop incomplete');
+      }
+      this.completeSshPipExit(pageGeneration);
+    }).catch((err: Error): void => {
+      hilog.warn(0x0017, 'SshTerminal', 'SSH PiP pre-navigation stop failed code=' +
+        sshDiagnosticErrorCode(err));
+      this.completeSshPipExit(pageGeneration);
+    });
+  }
+
+  private completeSshPipExit(pageGeneration: number): void {
+    if (!matchesSshPipExitFence(pageGeneration, this.pageGeneration,
+      this.explicitSessionClose, this.terminalClosing)) {
+      return;
+    }
+    this.clearSshPipExitNavigationTimer();
+    this.sshPipExitInFlight = false;
     router.back();
+  }
+
+  private clearSshPipExitNavigationTimer(): void {
+    if (this.sshPipExitNavigationTimer === -1) { return; }
+    clearTimeout(this.sshPipExitNavigationTimer);
+    this.sshPipExitNavigationTimer = -1;
   }
 
   /**
