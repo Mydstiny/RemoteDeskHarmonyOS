@@ -16631,6 +16631,29 @@ struct SshTerminal {
             }
           }
         })
+
+      // API 23 treats chained bindSheet modifiers as one native lifecycle.
+      // Give the command palette its own inert host so later closed Sheets
+      // cannot immediately dismiss it after the toolbar sets show=true.
+      Column()
+        .width(1)
+        .height(1)
+        .hitTestBehavior(HitTestMode.None)
+        .bindSheet($$this.showSshCommandPalette, this.sshCommandPaletteSheet(), {
+          height: this.breakpoint === 'sm' ? SheetSize.LARGE : '620vp',
+          preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
+          width: this.breakpoint === 'sm' ? '100%' : '700vp',
+          dragBar: this.breakpoint === 'sm',
+          backgroundColor: '#171D25',
+          blurStyle: BlurStyle.NONE,
+          showClose: false,
+          maskColor: 'rgba(0,0,0,0.48)',
+          onWillDismiss: (action: DismissSheetAction): void => {
+            if (this.pendingSshCommandId.length === 0) { this.showSshCommandPalette = false; }
+            action.dismiss();
+          },
+          onDisappear: (): void => { this.onSshCommandPaletteDisappear(); }
+        })
     }
     .width('100%').height('100%')
     .bindSheet($$this.showSftpTransferCenter, this.SftpTransferCenterContent(), {
@@ -16685,21 +16708,6 @@ struct SshTerminal {
         if (this.showTerminalProfileSheet) { this.showTerminalProfileSheet = false; }
         if (!this.terminalClosing) { this.focusKeyboard(false); }
       }
-    })
-    .bindSheet($$this.showSshCommandPalette, this.sshCommandPaletteSheet(), {
-      height: this.breakpoint === 'sm' ? SheetSize.LARGE : '620vp',
-      preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
-      width: this.breakpoint === 'sm' ? '100%' : '700vp',
-      dragBar: this.breakpoint === 'sm',
-      backgroundColor: '#171D25',
-      blurStyle: BlurStyle.NONE,
-      showClose: false,
-      maskColor: 'rgba(0,0,0,0.48)',
-      onWillDismiss: (action: DismissSheetAction): void => {
-        if (this.pendingSshCommandId.length === 0) { this.showSshCommandPalette = false; }
-        action.dismiss();
-      },
-      onDisappear: (): void => { this.onSshCommandPaletteDisappear(); }
     })
     .bindSheet($$this.showSshProductivitySheet, this.SshProductivitySheetContent(), {
       height: this.breakpoint === 'sm' ? SheetSize.LARGE : '720vp',
