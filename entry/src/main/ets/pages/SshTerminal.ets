@@ -16789,6 +16789,30 @@ struct SshTerminal {
             if (this.showSshBroadcastSheet) { this.closeSshBroadcast(); }
           }
         })
+
+      // The tab context menu can open this modal while the terminal keeps its
+      // own focus lifecycle. A dedicated host avoids API 23 dismissing the
+      // rename Sheet through the following tab-picker binding.
+      Column()
+        .width(1)
+        .height(1)
+        .hitTestBehavior(HitTestMode.None)
+        .bindSheet($$this.showSshTabRenameSheet, this.sshTabRenameSheet(), {
+          height: SheetSize.FIT_CONTENT,
+          preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
+          width: this.breakpoint === 'sm' ? '100%' : '480vp',
+          dragBar: this.breakpoint === 'sm',
+          backgroundColor: '#171D25',
+          blurStyle: BlurStyle.NONE,
+          showClose: false,
+          maskColor: 'rgba(0,0,0,0.44)',
+          onWillDismiss: (action: DismissSheetAction): void => {
+            this.showSshTabRenameSheet = false;
+            this.sshTabRenameHostId = '';
+            this.sshTabRenameDraft = '';
+            action.dismiss();
+          }
+        })
     }
     .width('100%').height('100%')
     .bindSheet($$this.showPassphraseSheet, this.passphraseSheet(), {
@@ -16804,22 +16828,6 @@ struct SshTerminal {
           this.passphraseResolve('');
           this.passphraseResolve = null;
         }
-      }
-    })
-    .bindSheet($$this.showSshTabRenameSheet, this.sshTabRenameSheet(), {
-      height: SheetSize.FIT_CONTENT,
-      preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
-      width: this.breakpoint === 'sm' ? '100%' : '480vp',
-      dragBar: this.breakpoint === 'sm',
-      backgroundColor: '#171D25',
-      blurStyle: BlurStyle.NONE,
-      showClose: false,
-      maskColor: 'rgba(0,0,0,0.44)',
-      onWillDismiss: (action: DismissSheetAction): void => {
-        this.showSshTabRenameSheet = false;
-        this.sshTabRenameHostId = '';
-        this.sshTabRenameDraft = '';
-        action.dismiss();
       }
     })
     .bindSheet($$this.showSshTabPicker, this.sshTabPickerSheet(), {
