@@ -115,6 +115,23 @@ export default function sshSessionLogPolicyTest(): void {
         .bookmarked).assertTrue();
     });
 
+    it('append_should_preserve_unchanged_chunk_references', 0, (): void => {
+      const document: SshSessionLogDocumentV1 = emptySshSessionLogDocument();
+      document.settings.enabled = true;
+      const first: SshSessionLogDocumentV1 = appendSshSessionLogRecord(
+        document, record('one', 'first host output'), 100);
+      const firstChunk = first.chunks[0];
+      const otherHost = record('two', 'second host output', 101);
+      otherHost.hostId = 'host-two';
+      const next: SshSessionLogDocumentV1 = appendSshSessionLogRecord(first, otherHost, 101);
+
+      expect(next.chunks.length).assertEqual(2);
+      expect(next.chunks[0] === firstChunk).assertTrue();
+      expect(first.chunks.length).assertEqual(1);
+      expect(first.chunks[0].records.length).assertEqual(1);
+      expect(next.chunks[1].records.length).assertEqual(1);
+    });
+
     it('quota_should_preserve_pinned_chunks_and_export_should_be_bounded', 0, (): void => {
       const document = emptySshSessionLogDocument();
       document.settings.enabled = true;

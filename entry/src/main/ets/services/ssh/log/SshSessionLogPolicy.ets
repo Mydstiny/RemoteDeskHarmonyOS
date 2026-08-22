@@ -343,21 +343,65 @@ export function pruneSshSessionLogDocument(
   return next;
 }
 
+/**
+ * Store-owned documents are already normalized. Preserve unchanged chunk and
+ * record references on the append hot path while copying the arrays that
+ * retention/quota pruning may replace or splice.
+ */
+function pruneSshSessionLogDocumentIncremental(
+  document: SshSessionLogDocumentV1,
+  nowMs: number
+): SshSessionLogDocumentV1 {
+  const next: SshSessionLogDocumentV1 = {
+    schemaVersion: SSH_SESSION_LOG_SCHEMA_VERSION,
+    chunks: document.chunks.slice(),
+    bookmarks: document.bookmarks.slice(),
+    settings: normalizeSshSessionLogSettings(document.settings)
+  };
+  const cutoff: number = Math.max(0, nowMs - next.settings.retentionDays * DAY_MS);
+  next.chunks = next.chunks.filter((chunk: SshSessionLogChunkV1): boolean =>
+    chunk.updatedAt >= cutoff || chunkPinned(next, chunk));
+  let bytes: number = totalBytes(next);
+  while (bytes > next.settings.quotaBytes) {
+    const removable: number = next.chunks.findIndex(
+      (chunk: SshSessionLogChunkV1): boolean => !chunkPinned(next, chunk));
+    if (removable < 0) { break; }
+    bytes -= next.chunks[removable].byteSize;
+    const removedId: string = next.chunks[removable].id;
+    next.chunks.splice(removable, 1);
+    next.bookmarks = next.bookmarks.filter((bookmark: SshSessionLogBookmarkV1): boolean => {
+      return bookmark.recordId.length > 0 && next.chunks.some(
+        (chunk: SshSessionLogChunkV1): boolean => chunk.id !== removedId && chunk.records.some(
+          (record: SshSessionLogRecordV1): boolean => record.id === bookmark.recordId));
+    });
+  }
+  return next;
+}
+
 export function appendSshSessionLogRecord(
   document: SshSessionLogDocumentV1,
   source: SshSessionLogRecordV1,
   nowMs: number
 ): SshSessionLogDocumentV1 {
-  const next: SshSessionLogDocumentV1 = cloneDocument(document);
-  if (!next.settings.enabled || next.settings.paused) { return next; }
+  const settings: SshSessionLogSettingsV1 = normalizeSshSessionLogSettings(document.settings);
+  if (!settings.enabled || settings.paused) { return document; }
   const record: SshSessionLogRecordV1 | null = normalizeSshSessionLogRecord(
-    source, next.settings.redactSensitive);
-  if (record === null) { return next; }
-  let chunk: SshSessionLogChunkV1 | undefined = next.chunks[next.chunks.length - 1];
-  if (chunk === undefined || !sameIdentityValues(chunk.hostId, chunk.sessionId, chunk.generation,
+    source, settings.redactSensitive);
+  if (record === null) { return document; }
+  const next: SshSessionLogDocumentV1 = {
+    schemaVersion: SSH_SESSION_LOG_SCHEMA_VERSION,
+    chunks: document.chunks.slice(),
+    bookmarks: document.bookmarks.slice(),
+    settings
+  };
+  const previousTail: SshSessionLogChunkV1 | undefined =
+    next.chunks[next.chunks.length - 1];
+  let chunk: SshSessionLogChunkV1;
+  if (previousTail === undefined || !sameIdentityValues(
+    previousTail.hostId, previousTail.sessionId, previousTail.generation,
     record.hostId, record.sessionId, record.generation) ||
-    chunk.byteSize + record.byteSize > SSH_SESSION_LOG_CHUNK_MAX_BYTES ||
-    chunk.records.length >= SSH_SESSION_LOG_CHUNK_MAX_RECORDS) {
+    previousTail.byteSize + record.byteSize > SSH_SESSION_LOG_CHUNK_MAX_BYTES ||
+    previousTail.records.length >= SSH_SESSION_LOG_CHUNK_MAX_RECORDS) {
     chunk = {
       id: nextSshSessionLogChunkId(record, 1, next.chunks.length),
       hostId: record.hostId,
@@ -370,13 +414,23 @@ export function appendSshSessionLogRecord(
     };
     next.chunks.push(chunk);
   } else {
-    chunk.id = nextSshSessionLogChunkId(
-      record, chunk.records.length + 1, Math.max(0, next.chunks.length - 1));
+    chunk = {
+      id: nextSshSessionLogChunkId(
+        record, previousTail.records.length + 1, Math.max(0, next.chunks.length - 1)),
+      hostId: previousTail.hostId,
+      sessionId: previousTail.sessionId,
+      generation: previousTail.generation,
+      createdAt: previousTail.createdAt,
+      updatedAt: record.timestamp,
+      byteSize: previousTail.byteSize,
+      records: previousTail.records.slice()
+    };
+    next.chunks[next.chunks.length - 1] = chunk;
   }
   chunk.records.push(record);
   chunk.byteSize += record.byteSize;
   chunk.updatedAt = record.timestamp;
-  return pruneSshSessionLogDocument(next, Math.max(nowMs, record.timestamp));
+  return pruneSshSessionLogDocumentIncremental(next, Math.max(nowMs, record.timestamp));
 }
 
 export function addSshSessionLogBookmark(

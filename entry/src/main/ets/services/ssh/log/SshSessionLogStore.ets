@@ -396,10 +396,8 @@ export class SshSessionLogStore {
     }
     const next: SshSessionLogDocumentV1 = appendSshSessionLogRecord(
       this.document, record, nowMs);
-    if (encodeSshSessionLogDocument(next) === encodeSshSessionLogDocument(this.document)) {
-      return false;
-    }
-    return this.commit(next);
+    if (next === this.document) { return false; }
+    return this.commitAppend(next);
   }
 
   addBookmark(identity: SshSessionLogIdentityV1, recordId: string, note: string,
@@ -469,9 +467,31 @@ export class SshSessionLogStore {
   }
 
   private commit(nextDocument: SshSessionLogDocumentV1): boolean {
-    if (this.context === null || !this.crypto.ready()) { return false; }
     const normalized: SshSessionLogDocumentV1 = decodeSshSessionLogDocument(
       encodeSshSessionLogDocument(nextDocument)) ?? emptySshSessionLogDocument();
+    return this.commitPrepared(normalized);
+  }
+
+  private commitAppend(nextDocument: SshSessionLogDocumentV1): boolean {
+    // Incremental append preserves old chunk references. A changed object with
+    // an old immutable id would overwrite data visible through the old index,
+    // so reject that collision instead of weakening restart consistency.
+    const oldChunks: Map<string, SshSessionLogChunkV1> =
+      new Map<string, SshSessionLogChunkV1>();
+    for (let index: number = 0; index < this.document.chunks.length; index++) {
+      const chunk: SshSessionLogChunkV1 = this.document.chunks[index];
+      oldChunks.set(chunk.id, chunk);
+    }
+    for (let index: number = 0; index < nextDocument.chunks.length; index++) {
+      const chunk: SshSessionLogChunkV1 = nextDocument.chunks[index];
+      const oldChunk: SshSessionLogChunkV1 | undefined = oldChunks.get(chunk.id);
+      if (oldChunk !== undefined && oldChunk !== chunk) { return false; }
+    }
+    return this.commitPrepared(nextDocument);
+  }
+
+  private commitPrepared(normalized: SshSessionLogDocumentV1): boolean {
+    if (this.context === null || !this.crypto.ready()) { return false; }
     const context: common.Context = this.context;
     const nextIds: Set<string> = new Set<string>();
     const writes: Array<SshSessionLogPendingWriteV1> = [];
@@ -479,8 +499,10 @@ export class SshSessionLogStore {
       for (let index: number = 0; index < normalized.chunks.length; index++) {
         const chunk = normalized.chunks[index];
         nextIds.add(chunk.id);
+        // Chunk ids are immutable. A cached id is therefore an unchanged row;
+        // do not stringify its records merely to rediscover that fact.
+        if (this.chunkSerialized.has(chunk.id)) { continue; }
         const serialized: string = encodeChunk(chunk);
-        if (this.chunkSerialized.get(chunk.id) === serialized) { continue; }
         const ciphertext: string = this.crypto.encrypt(serialized);
         if (ciphertext.length === 0 || ciphertext === serialized) { return false; }
         writes.push({ id: chunk.id, serialized, ciphertext });
