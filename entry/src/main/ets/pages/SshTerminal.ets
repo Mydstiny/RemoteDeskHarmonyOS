@@ -9700,6 +9700,16 @@ struct SshTerminal {
     }, 0);
   }
 
+  /** Freeze a page-owned transfer before the current SSH generation becomes unusable. */
+  private markForegroundSftpWaitingForConnection(): void {
+    const transfer: TransferSession | null = this.sftpTransferSession;
+    if (transfer === null || !this.sftpBusy) { return; }
+    this.sftpWaitingForConnection = true;
+    this.sftpCancelRequested = true;
+    this.sftpTaskStore.command(transfer.id, { kind: 'detach' });
+    this.persistSftpTaskMetadata('waitingForConnection');
+  }
+
   private syncNativeConnectionState(): boolean {
     if (this.sessionId <= 0) { return false; }
     const state: number = this.loader.getConnectionState(this.sessionId);
@@ -9762,6 +9772,7 @@ struct SshTerminal {
       // the latency timer can observe the eventual CONNECTED state. Do not
       // turn a transient reconnect into the page's terminal error screen.
       if (!this.connected) { this.connecting = true; }
+      this.markForegroundSftpWaitingForConnection();
       this.markForwardingSessionReconnecting();
       this.detachSftpSessionOwner(this.hostId, this.sessionId);
       this.sshTabStore.update(this.hostId, 'reconnecting', this.sessionId);
@@ -9787,6 +9798,7 @@ struct SshTerminal {
     }
     this.connected = false;
     this.connecting = false;
+    this.markForegroundSftpWaitingForConnection();
     const message: string = this.loader.getConnectionLastMessage(this.sessionId);
     this.connectionError = message.length > 0 ? message : 'SSH 会话已断开';
     this.releaseForwardingSession(this.hostId, this.sessionId, this.sshSessionGeneration);
@@ -13495,9 +13507,20 @@ struct SshTerminal {
     this.persistSftpTaskMetadata(this.sftpTaskStageForTransfer(stage));
   }
 
+  private isSftpTransportUnavailable(): boolean {
+    const transferSessionId: number = this.sftpTransferSessionId > 0
+      ? this.sftpTransferSessionId : this.sessionId;
+    if (transferSessionId <= 0 || transferSessionId !== this.sessionId ||
+      this.sftpTransferGeneration !== this.sshSessionGeneration) {
+      return true;
+    }
+    return this.loader.getConnectionState(transferSessionId) !== SSH_STATE_CONNECTED;
+  }
+
   private stopSftpTransfer(session: TransferSession, failureCode: string): void {
-    if (this.sftpDetached || this.sftpWaitingForConnection) {
+    if (this.sftpDetached || this.sftpWaitingForConnection || this.isSftpTransportUnavailable()) {
       this.finishSftpTransfer(session, 'waitingRemote', 'waiting-for-connection');
+      this.sftpStatus = 'SSH 连接已中断，任务已保留，可在重新连接后恢复';
       return;
     }
     if (this.sftpPauseRequested || this.sftpTransferSession !== null &&
@@ -14366,6 +14389,21 @@ struct SshTerminal {
     }
   }
 
+  /** Requeue only after fencing a persisted in-flight record with no page executor. */
+  private prepareRecoveredSftpTaskForRetry(taskId: string): boolean {
+    let current: SshSftpTaskRecord | null = this.sftpTaskStore.get(taskId);
+    if (current === null) { return false; }
+    if (current.stage === 'queued') { return true; }
+    if (current.stage === 'inspecting' || current.stage === 'transferring' ||
+      current.stage === 'verifying' || current.stage === 'committing') {
+      const detached = this.sftpTaskStore.command(taskId, { kind: 'detach' });
+      if (!detached.accepted) { return false; }
+      current = detached.record;
+    }
+    if (current === null || current.stage === 'queued') { return current !== null; }
+    return this.sftpTaskStore.command(taskId, { kind: 'retry' }).accepted;
+  }
+
   /** Rebind a persisted metadata record to fresh, user-authorized provider references. */
   private async recoverSftpTask(task: SshSftpTaskRecord): Promise<void> {
     if (this.sftpBusy || this.sessionId <= 0 || task.hostId !== this.hostId ||
@@ -14406,12 +14444,9 @@ struct SshTerminal {
             return;
           }
         }
-        if (task.stage !== 'queued') {
-          const command = this.sftpTaskStore.command(task.taskId, { kind: 'retry' });
-          if (!command.accepted) {
-            this.sftpStatus = '[SFTP-UPLOAD] 持久任务状态不可恢复';
-            return;
-          }
+        if (!this.prepareRecoveredSftpTaskForRetry(task.taskId)) {
+          this.sftpStatus = '[SFTP-UPLOAD] 持久任务状态不可恢复';
+          return;
         }
         this.sftpTransferCheckpoint = null;
         this.sftpTransferUri = sourceUri;
@@ -14454,12 +14489,9 @@ struct SshTerminal {
           this.sftpStatus = '[SFTP-DOWNLOAD] 新授权目标无效，拒绝续传';
           return;
         }
-        if (task.stage !== 'queued') {
-          const command = this.sftpTaskStore.command(task.taskId, { kind: 'retry' });
-          if (!command.accepted) {
-            this.sftpStatus = '[SFTP-DOWNLOAD] 持久任务状态不可恢复';
-            return;
-          }
+        if (!this.prepareRecoveredSftpTaskForRetry(task.taskId)) {
+          this.sftpStatus = '[SFTP-DOWNLOAD] 持久任务状态不可恢复';
+          return;
         }
         this.sftpTransferCheckpoint = null;
         this.sftpTransferUri = partialPath;
