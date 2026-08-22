@@ -16682,6 +16682,32 @@ struct SshTerminal {
             }
           }
         })
+
+      // Terminal appearance is opened from the command palette and must mount
+      // only after that palette's exit animation. A dedicated host prevents
+      // unrelated closed Sheets from cancelling the second mount on API 23.
+      Column()
+        .width(1)
+        .height(1)
+        .hitTestBehavior(HitTestMode.None)
+        .bindSheet($$this.showTerminalProfileSheet, this.TerminalProfileSheetContent(), {
+          height: this.breakpoint === 'sm' ? SheetSize.LARGE : '680vp',
+          preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
+          width: this.breakpoint === 'sm' ? '100%' : '620vp',
+          dragBar: this.breakpoint === 'sm',
+          backgroundColor: '#171D25',
+          blurStyle: BlurStyle.NONE,
+          showClose: false,
+          maskColor: 'rgba(0,0,0,0.42)',
+          onWillDismiss: (action: DismissSheetAction): void => {
+            this.showTerminalProfileSheet = false;
+            action.dismiss();
+          },
+          onDisappear: (): void => {
+            if (this.showTerminalProfileSheet) { this.showTerminalProfileSheet = false; }
+            if (!this.terminalClosing) { this.focusKeyboard(false); }
+          }
+        })
     }
     .width('100%').height('100%')
     .bindSheet($$this.showPassphraseSheet, this.passphraseSheet(), {
@@ -16697,24 +16723,6 @@ struct SshTerminal {
           this.passphraseResolve('');
           this.passphraseResolve = null;
         }
-      }
-    })
-    .bindSheet($$this.showTerminalProfileSheet, this.TerminalProfileSheetContent(), {
-      height: this.breakpoint === 'sm' ? SheetSize.LARGE : '680vp',
-      preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
-      width: this.breakpoint === 'sm' ? '100%' : '620vp',
-      dragBar: this.breakpoint === 'sm',
-      backgroundColor: '#171D25',
-      blurStyle: BlurStyle.NONE,
-      showClose: false,
-      maskColor: 'rgba(0,0,0,0.42)',
-      onWillDismiss: (action: DismissSheetAction): void => {
-        this.showTerminalProfileSheet = false;
-        action.dismiss();
-      },
-      onDisappear: (): void => {
-        if (this.showTerminalProfileSheet) { this.showTerminalProfileSheet = false; }
-        if (!this.terminalClosing) { this.focusKeyboard(false); }
       }
     })
     .bindSheet($$this.showSshProductivitySheet, this.SshProductivitySheetContent(), {
