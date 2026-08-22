@@ -214,7 +214,7 @@ export class SshSftpTaskEngine {
       conflictPolicy,
       cleanupLocalRootOnComplete
     });
-    this.logDiagnostic('bind batch=' + id + ' owner=' + owner +
+    this.logDiagnostic('bind batch=' + id +
       ' source=' + this.endpointDiagnostic(sourceEndpoint) +
       ' target=' + this.endpointDiagnostic(targetEndpoint) +
       ' records=' + records.length.toString());
@@ -246,8 +246,7 @@ export class SshSftpTaskEngine {
       const snapshot = this.loader.getSshSessionSnapshot(session.sessionId, session.generation);
       if (!sshSftpSessionSnapshotCanAttach(
         session.sessionId, session.generation, nativeState, snapshot)) {
-        this.logDiagnostic('stale session attach rejected host=' + hostId +
-          ' session=' + session.sessionId.toString() +
+        this.logDiagnostic('stale session attach rejected session=' + session.sessionId.toString() +
           ' generation=' + session.generation.toString() +
           ' snapshotError=' + snapshot.errorCode.toString(), true);
         return null;
@@ -256,7 +255,7 @@ export class SshSftpTaskEngine {
     } catch (_err) {
       return null;
     }
-    this.logDiagnostic('attach host=' + hostId + ' session=' + session.sessionId.toString() +
+    this.logDiagnostic('attach session=' + session.sessionId.toString() +
       ' generation=' + session.generation.toString() +
       ' recoveryEpoch=' + recoveryEpoch.toString() +
       ' initialized=' + this.initialized.toString());
@@ -320,7 +319,7 @@ export class SshSftpTaskEngine {
       this.logDiagnostic('start ignored batch=' + id + ' reason=binding-missing', true);
       return;
     }
-    this.logDiagnostic('start requested batch=' + id + ' owner=' + binding.hostId +
+    this.logDiagnostic('start requested batch=' + id +
       ' pending=' + this.pendingBatches.has(id).toString());
     const resolved: SshSftpResolvedSessions | null = this.resolveBindingSessions(binding);
     if (resolved === null) {
@@ -531,12 +530,12 @@ export class SshSftpTaskEngine {
   }
 
   private endpointDiagnostic(endpoint: SftpEndpoint): string {
-    return endpoint.kind === 'ssh' ? 'ssh/' + endpoint.hostId : endpoint.kind;
+    return endpoint.kind;
   }
 
   private sessionDiagnostic(session: SshSftpEngineSession | null): string {
-    return session === null ? 'none' : session.hostId + '/' + session.sessionId.toString() +
-      '/' + session.generation.toString();
+    return session === null ? 'none' : session.sessionId.toString() + '/' +
+      session.generation.toString();
   }
 
   private endpointSessionReady(endpoint: SftpEndpoint): boolean {
@@ -580,12 +579,11 @@ export class SshSftpTaskEngine {
     // A CONNECTED reattach publishes a new object/recovery epoch. A callback
     // captured by the old transport must not invalidate that recovered owner.
     if (!this.sessionOwners.markTransportLost(tracked)) {
-      this.logDiagnostic('stale transport loss ignored host=' + session.hostId +
-        ' session=' + session.sessionId.toString() + ' reason=' + reason, true);
+      this.logDiagnostic('stale transport loss ignored session=' + session.sessionId.toString() +
+        ' reason=' + reason, true);
       return;
     }
-    this.logDiagnostic('transport lost host=' + session.hostId +
-      ' session=' + session.sessionId.toString() +
+    this.logDiagnostic('transport lost session=' + session.sessionId.toString() +
       ' generation=' + session.generation.toString() + ' reason=' + reason, true);
   }
 
@@ -706,11 +704,9 @@ export class SshSftpTaskEngine {
     sourceSession: SshSftpEngineSession, targetSession: SshSftpEngineSession,
     task: SshSftpTaskRecord): Promise<boolean> {
     const diagnosticPrefix: string = '[sftp-remote] batch=' + binding.batchId +
-      ' task=' + task.taskId + ' source=' + sourceSession.hostId + '/' +
-      sourceSession.sessionId.toString() + '/' + sourceSession.generation.toString() +
-      ' target=' + targetSession.hostId + '/' + targetSession.sessionId.toString() + '/' +
-      targetSession.generation.toString() + ' sourcePath=' + (task.sourcePath || '') +
-      ' targetPath=' + (task.targetPath || task.remotePath);
+      ' task=' + task.taskId + ' sourceSession=' + sourceSession.sessionId.toString() + '/' +
+      sourceSession.generation.toString() + ' targetSession=' +
+      targetSession.sessionId.toString() + '/' + targetSession.generation.toString();
     hilog.info(0x0017, 'SshTerminal', diagnosticPrefix + ' remote-copy begin');
     if (this.taskIsStopped(task.taskId)) { return false; }
     if (!this.remoteSessionsActive(sourceSession, targetSession)) {
@@ -919,8 +915,7 @@ export class SshSftpTaskEngine {
         partialPath, targetPath, sourceIdentity.size, finalPartial,
         'remote-copy');
     } catch (_err) {
-      hilog.error(0x0017, 'SshTerminal', diagnosticPrefix +
-        ' remote-copy-exception ' + String(_err));
+      hilog.error(0x0017, 'SshTerminal', diagnosticPrefix + ' remote-copy-exception');
       return this.failRemoteOperationOrWait(binding, effectiveTask, sourceSession, targetSession,
         'remote-copy-exception');
     }

@@ -1649,8 +1649,8 @@ struct SshTerminal {
       }
       this.xtermReadyProbeRequest = this.xtermReadyProbeRequest + 1;
       this.terminalSurfaceRefreshRequest = this.terminalSurfaceRefreshRequest + 1;
-      hilog.info(0x0000, 'SshTerminal', '[xterm] ready recovery host=' + normalizedHostId +
-        ' revision=' + this.xtermSurfaceGenerationForHost(normalizedHostId).toString() +
+      hilog.info(0x0000, 'SshTerminal', '[xterm] ready recovery revision=' +
+        this.xtermSurfaceGenerationForHost(normalizedHostId).toString() +
         ' attempt=' + (attempt + 1).toString());
       this.scheduleXtermReadyRecovery(normalizedHostId, attempt + 1);
     }, SSH_XTERM_READY_RECOVERY_DELAYS_MS[attempt]);
@@ -2140,8 +2140,8 @@ struct SshTerminal {
       const generation: number = this.loader.getSshTerminalDiagnostics(
         retainedSessionId).sessionGeneration;
       this.sshTabStore.update(view.hostId, nextState, retainedSessionId, '', generation);
-      hilog.info(0x0001, 'SshTerminal', '[tab] retained state reconciled host=' + view.hostId +
-        ' session=' + retainedSessionId.toString() + ' state=' + nextState +
+      hilog.info(0x0001, 'SshTerminal', '[tab] retained state reconciled session=' +
+        retainedSessionId.toString() + ' state=' + nextState +
         ' generation=' + generation.toString());
     }
   }
@@ -2370,7 +2370,7 @@ struct SshTerminal {
           this.terminalSurfaceBindingKey === bindingKey && this.shouldUseNativeTerminal() &&
           !this.xtermReady) {
           hilog.warn(0x0000, 'SshTerminal',
-            '[terminal] native renderer ready timeout, fallback host=' + bindingHostId);
+            '[terminal] native renderer ready timeout; fallback requested');
           this.onNativeRendererUnavailable(bindingHostId, bindingKey);
         }
       }, SSH_NATIVE_RENDERER_READY_TIMEOUT_MS);
@@ -2604,8 +2604,8 @@ struct SshTerminal {
       const detached: boolean = this.loader.detachSshSession(previousSessionId, previousHostId);
       if (!detached) {
         hilog.warn(0x0001, 'SshTerminal',
-          '[tab] native detach fence unavailable; continuing logical handoff host=' +
-          previousHostId + ' session=' + previousSessionId.toString());
+          '[tab] native detach fence unavailable; continuing logical handoff session=' +
+          previousSessionId.toString());
       }
       // The binding generation above already invalidates callbacks owned by
       // the previous page. Keep the old native session alive when detach is
@@ -2731,8 +2731,8 @@ struct SshTerminal {
     this.sshTabStore.openAndActivate(targetHostId, this.hostLabel, this.userAtHost);
     this.xtermReady = this.xtermSurfaceReadyForHost(targetHostId);
     this.refreshSshTabViews();
-    hilog.info(0x0001, 'SshTerminal', '[tab] visible host committed previous=' + previousHostId +
-      ' target=' + targetHostId + ' retained=' + this.sshTabViews.length.toString());
+    hilog.info(0x0001, 'SshTerminal', '[tab] visible host committed retained=' +
+      this.sshTabViews.length.toString());
 
     const adoptedSessionId: number = this.loader.adoptDetachedSshSession(targetHostId);
     if (adoptedSessionId > 0) {
@@ -5945,7 +5945,7 @@ struct SshTerminal {
     }
   }
 
-  /** Remote-copy diagnostics contain identifiers and paths only, never credentials. */
+  /** Remote-copy diagnostics contain local task/session metadata, never host ids or paths. */
   private logSftpRemoteDiagnostic(message: string, warning: boolean = false): void {
     if (warning) {
       hilog.warn(0x0017, 'SshTerminal', '[sftp-remote] ' + message);
@@ -5965,7 +5965,7 @@ struct SshTerminal {
     }
     this.logSftpRemoteDiagnostic('event kind=' + event.kind + ' batch=' + event.batchId +
       ' reason=' + event.reason + (record === null ? '' :
-        ' task=' + record.taskId + ' stage=' + record.stage + ' owner=' + record.hostId +
+        ' task=' + record.taskId + ' stage=' + record.stage +
         ' sourceKind=' + (record.sourceEndpoint?.kind || 'unknown') +
         ' targetKind=' + (record.targetEndpoint?.kind || 'unknown')),
       event.kind === 'batchBlocked' || (record !== null && record.stage === 'failed'));
@@ -6086,7 +6086,7 @@ struct SshTerminal {
   private startSftpRemoteEngineBatch(batchId: string, targetHostId: string): void {
     const id: string = batchId.trim();
     const owner: string = targetHostId.trim();
-    this.logSftpRemoteDiagnostic('bind start batch=' + id + ' owner=' + owner);
+    this.logSftpRemoteDiagnostic('bind start batch=' + id);
     if (id.length === 0 || owner.length === 0) {
       this.sftpStatus = '[SFTP-REMOTE] 批次绑定信息无效';
       this.logSftpRemoteDiagnostic('bind rejected: empty batch or owner', true);
@@ -6107,7 +6107,7 @@ struct SshTerminal {
     this.sftpProgress = 0;
     this.sftpProgressLabel = '准备双 SSH 传输';
     this.sftpStatus = '双 SSH 传输开始执行';
-    this.logSftpRemoteDiagnostic('start requested batch=' + id + ' owner=' + owner);
+    this.logSftpRemoteDiagnostic('start requested batch=' + id);
     this.sftpTaskEngine.startBatch(id);
   }
 
@@ -6411,20 +6411,18 @@ struct SshTerminal {
     requestPageGeneration: number = this.pageGeneration,
     selectionEpoch: number = this.sftpPeerSelectionEpoch): Promise<SshSftpEngineSession | null> {
     const owner: string = hostId.trim();
-    this.logSftpRemoteDiagnostic('ensure session host=' + owner +
-      ' pageGeneration=' + requestPageGeneration.toString() +
+    this.logSftpRemoteDiagnostic('ensure session pageGeneration=' + requestPageGeneration.toString() +
       ' selectionEpoch=' + selectionEpoch.toString());
     if (!this.isPageGenerationActive(requestPageGeneration) ||
       selectionEpoch !== this.sftpPeerSelectionEpoch || owner.length === 0) {
-      this.logSftpRemoteDiagnostic('ensure rejected host=' + owner +
-        ' phase=preflight-stale pageActive=' +
+      this.logSftpRemoteDiagnostic('ensure rejected phase=preflight-stale pageActive=' +
         this.isPageGenerationActive(requestPageGeneration).toString() +
         ' currentSelectionEpoch=' + this.sftpPeerSelectionEpoch.toString(), true);
       return null;
     }
     const existing: SshSftpEngineSession | null = this.sftpSessionForHost(owner);
     if (existing !== null) {
-      this.logSftpRemoteDiagnostic('ensure reused host=' + owner + ' session=' +
+      this.logSftpRemoteDiagnostic('ensure reused session=' +
         existing.sessionId.toString() + '/' + existing.generation.toString());
       return existing;
     }
@@ -6433,7 +6431,7 @@ struct SshTerminal {
     if (trackedSessionId > 0) {
       const trackedState: number = this.loader.getConnectionState(trackedSessionId);
       if (trackedState === SSH_STATE_CONNECTING || trackedState === SSH_STATE_RECONNECTING) {
-        this.logSftpRemoteDiagnostic('ensure waiting host=' + owner + ' session=' +
+        this.logSftpRemoteDiagnostic('ensure waiting session=' +
           trackedSessionId.toString() + ' state=' + trackedState.toString(), true);
         if (selectionEpoch === this.sftpPeerSelectionEpoch && this.sftpPeerHostId === owner) {
           this.sftpPeerStatus = 'SSH 会话正在恢复，请稍后重试';
@@ -6443,7 +6441,7 @@ struct SshTerminal {
     }
     const host: RemoteHost | undefined = this.srv.getHost(owner);
     if (host === undefined || host.protocol !== 'ssh') {
-      this.logSftpRemoteDiagnostic('ensure rejected host=' + owner + ' reason=host-unavailable', true);
+      this.logSftpRemoteDiagnostic('ensure rejected reason=host-unavailable', true);
       return null;
     }
     if (host.locked) {
@@ -6462,16 +6460,15 @@ struct SshTerminal {
       const pendingId: number = await pending;
       if (!this.isPageGenerationActive(requestPageGeneration) ||
         selectionEpoch !== this.sftpPeerSelectionEpoch) {
-        this.logSftpRemoteDiagnostic('ensure rejected host=' + owner +
-          ' phase=wait-peer-connect-stale', true);
+        this.logSftpRemoteDiagnostic('ensure rejected phase=wait-peer-connect-stale', true);
         return null;
       }
       if (pendingHostId === owner) {
         const reused: SshSftpEngineSession | null = pendingId > 0
           ? this.sftpSessionForHost(owner) : null;
         if (reused === null) {
-          this.logSftpRemoteDiagnostic('ensure failed host=' + owner +
-            ' phase=wait-peer-connect-result session=' + pendingId.toString(), true);
+          this.logSftpRemoteDiagnostic('ensure failed phase=wait-peer-connect-result session=' +
+            pendingId.toString(), true);
         }
         return reused;
       }
@@ -6487,15 +6484,14 @@ struct SshTerminal {
         }
         phase = 'wait-pending-teardown';
         if (!(await this.loader.waitForPendingTeardown())) {
-          this.logSftpRemoteDiagnostic('ensure failed host=' + owner + ' phase=' + phase, true);
+          this.logSftpRemoteDiagnostic('ensure failed phase=' + phase, true);
           return -1;
         }
         phase = 'build-session-config';
         const config: SessionConfig = await this.buildSftpPeerSessionConfig(host);
         if (!this.isPageGenerationActive(requestPageGeneration) ||
           selectionEpoch !== this.sftpPeerSelectionEpoch) {
-          this.logSftpRemoteDiagnostic('ensure aborted host=' + owner +
-            ' phase=' + phase + ' reason=stale', true);
+          this.logSftpRemoteDiagnostic('ensure aborted phase=' + phase + ' reason=stale', true);
           return -1;
         }
         // This session belongs to the right SFTP endpoint. Do not replace the
@@ -6504,15 +6500,15 @@ struct SshTerminal {
         const connectedSessionId: number = await this.loader.connectSshAsync(config, false);
         if (!this.isPageGenerationActive(requestPageGeneration) ||
           selectionEpoch !== this.sftpPeerSelectionEpoch) {
-          this.logSftpRemoteDiagnostic('ensure aborted host=' + owner +
-            ' phase=' + phase + ' session=' + connectedSessionId.toString() +
+          this.logSftpRemoteDiagnostic('ensure aborted phase=' + phase +
+            ' session=' + connectedSessionId.toString() +
             ' reason=stale', true);
           if (connectedSessionId > 0) { this.loader.disconnectSshSession(connectedSessionId); }
           return -1;
         }
         if (connectedSessionId <= 0) {
-          this.logSftpRemoteDiagnostic('ensure connect failed host=' + owner +
-            ' ret=' + connectedSessionId.toString(), true);
+          this.logSftpRemoteDiagnostic('ensure connect failed ret=' +
+            connectedSessionId.toString(), true);
           return connectedSessionId;
         }
         phase = 'read-generation';
@@ -6520,8 +6516,8 @@ struct SshTerminal {
           connectedSessionId).sessionGeneration;
         phase = 'detach-session';
         if (generation <= 0 || !this.loader.detachSshSession(connectedSessionId, owner)) {
-          this.logSftpRemoteDiagnostic('ensure detach failed host=' + owner +
-            ' session=' + connectedSessionId.toString() + ' generation=' + generation.toString(), true);
+          this.logSftpRemoteDiagnostic('ensure detach failed session=' +
+            connectedSessionId.toString() + ' generation=' + generation.toString(), true);
           this.loader.disconnectSshSession(connectedSessionId);
           return -1;
         }
@@ -6533,12 +6529,11 @@ struct SshTerminal {
           this.sftpPeerSessionGeneration = generation;
         }
         this.attachSftpSessionOwner({ hostId: owner, sessionId: connectedSessionId, generation });
-        this.logSftpRemoteDiagnostic('ensure connected host=' + owner + ' session=' +
+        this.logSftpRemoteDiagnostic('ensure connected session=' +
           connectedSessionId.toString() + '/' + generation.toString());
         return connectedSessionId;
       } catch (_err) {
-        this.logSftpRemoteDiagnostic('ensure exception host=' + owner +
-          ' phase=' + phase, true);
+        this.logSftpRemoteDiagnostic('ensure exception phase=' + phase, true);
         return -1;
       }
     })();
@@ -6557,14 +6552,13 @@ struct SshTerminal {
       return null;
     }
     if (selectionEpoch !== this.sftpPeerSelectionEpoch) {
-      this.logSftpRemoteDiagnostic('ensure rejected host=' + owner +
-        ' phase=complete-stale', true);
+      this.logSftpRemoteDiagnostic('ensure rejected phase=complete-stale', true);
       return null;
     }
     const session: SshSftpEngineSession | null = this.sftpSessionForHost(owner);
     if (session === null) {
-      this.logSftpRemoteDiagnostic('ensure failed host=' + owner +
-        ' phase=complete-session-missing session=' + connectedSessionId.toString(), true);
+      this.logSftpRemoteDiagnostic('ensure failed phase=complete-session-missing session=' +
+        connectedSessionId.toString(), true);
     }
     return session;
   }
@@ -7478,7 +7472,7 @@ struct SshTerminal {
     this.logSftpRemoteDiagnostic('enqueue requested direction=' +
       (forward ? 'source-to-peer' : 'peer-to-current') +
       ' endpoint=' + endpoint + ' chosen=' + this.sftpRightEndpointChosen.toString() +
-      ' currentHost=' + this.hostId.trim() + ' peerHost=' + peerHostId +
+      ' peerPresent=' + (peerHostId.length > 0).toString() +
       ' pageGeneration=' + requestPageGeneration.toString() +
       ' selectionEpoch=' + requestSelectionEpoch.toString() +
       ' busy=' + this.sftpBusyDiagnostic());
@@ -7513,8 +7507,8 @@ struct SshTerminal {
     const sourceMtime: number = forward ? this.sftpSelectedMtime : this.sftpPeerSelectedMtime;
     const targetRoot: string = forward ? this.sftpPeerPath : this.sftpPath;
     this.logSftpRemoteDiagnostic('enqueue direction=' + (forward ? 'source-to-peer' : 'peer-to-current') +
-      ' sourceHost=' + sourceHostId + ' targetHost=' + targetHostId +
-      ' sourcePath=' + sourcePath + ' targetRoot=' + targetRoot +
+      ' sourceDirectory=' + sourceIsDir.toString() +
+      ' sourceBytes=' + sourceSize.toString() +
       ' pageGeneration=' + requestPageGeneration.toString() +
       ' selectionEpoch=' + requestSelectionEpoch.toString() +
       ' requestToken=' + requestToken.toString());
@@ -10071,8 +10065,8 @@ struct SshTerminal {
       // Forwarding is an optional SSH channel feature. Keep the terminal live,
       // but fail the workspace closed instead of issuing unowned native calls.
       this.forwardingStatus = '失败：隧道运行时无法绑定当前 SSH 会话';
-      hilog.error(0x0001, 'SshTerminal', '[forwarding] session bind rejected host=' +
-        bindingHostId + ' session=' + connectedSessionId.toString() + '/' +
+      hilog.error(0x0001, 'SshTerminal', '[forwarding] session bind rejected session=' +
+        connectedSessionId.toString() + '/' +
         sessionGeneration.toString());
     }
 
@@ -10177,7 +10171,7 @@ struct SshTerminal {
       if (dataChunkCount <= 5 || dataChunkCount % 100 === 0) {
         hilog.info(0x0000, 'SshTerminal',
           'SSH data #' + dataChunkCount.toString() + ' len=' + data.byteLength.toString() +
-          ' host=' + bindingHostId + ' active=' + (currentBinding ? '1' : '0') +
+          ' active=' + (currentBinding ? '1' : '0') +
           ' seq=' + (this.termOutputSequence + 1).toString());
       }
       if (currentBinding) {
@@ -10496,7 +10490,7 @@ struct SshTerminal {
     }
     if (this.nativeRendererUnavailable) { return; }
     hilog.warn(0x0000, 'SshTerminal',
-      '[terminal] native renderer unavailable, fallback host=' + hostId);
+      '[terminal] native renderer unavailable; fallback requested');
     this.nativeRendererUnavailable = true;
     this.xtermReady = false;
     this.terminalSurfaceCommitSequence = this.terminalSurfaceCommitSequence + 1;
@@ -10525,9 +10519,8 @@ struct SshTerminal {
       this.xtermSurfaceIdentityForHost(normalizedHostId, reportedRevision) !== surfaceIdentity.trim() ||
       reportedRevision !==
         this.xtermSurfaceGenerationForHost(normalizedHostId)) {
-      hilog.debug(0x0000, 'SshTerminal', '[input] xterm rejected host=' + normalizedHostId +
-        ' chars=' + data.length.toString() + ' active=' + this.hostId.trim() +
-        ' revision=' + reportedRevision.toString() + ' surface=' + surfaceIdentity);
+      hilog.debug(0x0000, 'SshTerminal', '[input] xterm rejected chars=' +
+        data.length.toString() + ' revision=' + reportedRevision.toString());
       return;
     }
     hilog.debug(0x0000, 'SshTerminal', '[input] xterm accepted chars=' + data.length.toString());
@@ -10542,8 +10535,8 @@ struct SshTerminal {
     if (this.terminalClosing ||
       this.xtermSurfaceIdentityForHost(normalizedHostId, reportedRevision) !== surfaceIdentity.trim() ||
       reportedRevision !== this.xtermSurfaceGenerationForHost(normalizedHostId)) {
-      hilog.debug(0x0000, 'SshTerminal', '[input] xterm focus rejected host=' + normalizedHostId +
-        ' active=' + this.hostId.trim() + ' revision=' + reportedRevision.toString());
+      hilog.debug(0x0000, 'SshTerminal', '[input] xterm focus rejected revision=' +
+        reportedRevision.toString());
       return;
     }
     if (normalizedHostId !== this.hostId.trim()) {
@@ -10553,7 +10546,7 @@ struct SshTerminal {
       }
       return;
     }
-    hilog.debug(0x0000, 'SshTerminal', '[input] xterm focus accepted host=' + normalizedHostId);
+    hilog.debug(0x0000, 'SshTerminal', '[input] xterm focus accepted');
     this.focusKeyboard(false);
   }
 
@@ -10569,8 +10562,8 @@ struct SshTerminal {
       this.xtermSurfaceIdentityForHost(normalizedHostId, reportedRevision) !==
         surfaceIdentity.trim() ||
       reportedRevision !== this.xtermSurfaceGenerationForHost(normalizedHostId)) {
-      hilog.debug(0x0000, 'SshTerminal', '[xterm] mode rejected host=' + normalizedHostId +
-        ' revision=' + reportedRevision.toString());
+      hilog.debug(0x0000, 'SshTerminal', '[xterm] mode rejected revision=' +
+        reportedRevision.toString());
       return;
     }
     this.sshTerminalSafetyModes.set(normalizedHostId, {
@@ -10591,13 +10584,13 @@ struct SshTerminal {
     if (this.terminalClosing || normalizedHostId.length === 0) { return; }
     if (this.xtermSurfaceIdentityForHost(normalizedHostId, reportedRevision) !==
       surfaceIdentity.trim()) {
-      hilog.warn(0x0000, 'SshTerminal', '[xterm] ready identity rejected host=' + normalizedHostId +
-        ' reported=' + reportedRevision.toString() + ' surface=' + surfaceIdentity);
+      hilog.warn(0x0000, 'SshTerminal', '[xterm] ready identity rejected reported=' +
+        reportedRevision.toString());
       return;
     }
     if (reportedRevision !== expectedRevision) {
-      hilog.warn(0x0000, 'SshTerminal', '[xterm] ready generation rejected host=' + normalizedHostId +
-        ' reported=' + reportedRevision.toString() + ' expected=' + expectedRevision.toString());
+      hilog.warn(0x0000, 'SshTerminal', '[xterm] ready generation rejected reported=' +
+        reportedRevision.toString() + ' expected=' + expectedRevision.toString());
       return;
     }
     // A session tab can rebuild its WebView after its transcript was already
@@ -10620,8 +10613,8 @@ struct SshTerminal {
       }
       this.xtermTranscriptResetIdentity = surfaceIdentity.trim();
       this.xtermTranscriptResetRequest = this.xtermTranscriptResetRequest + 1;
-      hilog.info(0x0000, 'SshTerminal', '[xterm] transcript replace host=' + normalizedHostId +
-        ' chars=' + transcript.length.toString() +
+      hilog.info(0x0000, 'SshTerminal', '[xterm] transcript replace chars=' +
+        transcript.length.toString() +
         ' revision=' + reportedRevision.toString());
     }
     this.xtermReadyGenerations.set(normalizedHostId, reportedRevision);
