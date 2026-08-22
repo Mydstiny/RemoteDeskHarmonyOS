@@ -3263,7 +3263,7 @@ struct SshTerminal {
       return;
     }
     this.sshSessionLogReady = true;
-    this.sshSessionLogDocument = this.sshSessionLogStore.snapshot();
+    this.sshSessionLogDocument = this.sshSessionLogStore.pageSnapshot();
     if (this.showSshSessionLogSheet) {
       this.scheduleSshSessionLogSearch(0);
     } else {
@@ -3548,7 +3548,7 @@ struct SshTerminal {
 
   private setSshSessionLogEnabled(enabled: boolean): void {
     if (!this.sshSessionLogsEnabled() || !this.sshSessionLogReady) { return; }
-    const settings = this.sshSessionLogStore.snapshot().settings;
+    const settings = this.sshSessionLogStore.settingsSnapshot();
     settings.enabled = enabled;
     settings.paused = enabled ? settings.paused : false;
     if (!this.sshSessionLogStore.setSettings(settings)) {
@@ -3565,7 +3565,7 @@ struct SshTerminal {
 
   private setSshSessionLogPaused(paused: boolean): void {
     if (!this.sshSessionLogsEnabled() || !this.sshSessionLogReady) { return; }
-    const settings = this.sshSessionLogStore.snapshot().settings;
+    const settings = this.sshSessionLogStore.settingsSnapshot();
     settings.paused = paused;
     if (!this.sshSessionLogStore.setSettings(settings)) {
       promptAction.showToast({ message: '会话日志设置保存失败', duration: 1800 });

@@ -97,6 +97,26 @@ export default function sshSessionLogStoreTest(): void {
       expect(restored.search('after', 'host-one').length).assertEqual(0);
     });
 
+    it('should_keep_record_payloads_out_of_page_snapshots', 0, (): void => {
+      const persistence = new MemoryLogPersistence();
+      const crypto = new FakeLogCrypto();
+      const store = new SshSessionLogStore(persistence, crypto);
+      const context: common.Context = undefined as common.Context;
+      expect(store.init(context)).assertTrue();
+      const settings: SshSessionLogSettingsV1 = store.settingsSnapshot();
+      settings.enabled = true;
+      expect(store.setSettings(settings)).assertTrue();
+      expect(store.append(logRecord('one', 'payload stays in the store'))).assertTrue();
+
+      const page = store.pageSnapshot();
+      expect(page.settings.enabled).assertTrue();
+      expect(page.chunks.length).assertEqual(1);
+      expect(page.chunks[0].byteSize > 0).assertTrue();
+      expect(page.chunks[0].records.length).assertEqual(0);
+      expect(store.snapshot().chunks[0].records.length).assertEqual(1);
+      expect(store.search('payload', 'host-one').length).assertEqual(1);
+    });
+
     it('should_fail_closed_when_crypto_is_unavailable', 0, (): void => {
       const persistence = new MemoryLogPersistence();
       const crypto = new FakeLogCrypto();

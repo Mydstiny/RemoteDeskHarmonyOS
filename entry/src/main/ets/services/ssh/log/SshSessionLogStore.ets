@@ -348,6 +348,40 @@ export class SshSessionLogStore {
     return cloneDocument(this.document);
   }
 
+  /**
+   * ArkUI only needs settings and chunk counts. Keep durable record payloads
+   * out of observable page state so an open log sheet cannot clone up to the
+   * full local quota after every buffered output flush.
+   */
+  pageSnapshot(): SshSessionLogDocumentV1 {
+    return {
+      schemaVersion: this.document.schemaVersion,
+      settings: this.settingsSnapshot(),
+      bookmarks: [],
+      chunks: this.document.chunks.map((chunk): SshSessionLogChunkV1 => ({
+        id: chunk.id,
+        hostId: chunk.hostId,
+        sessionId: chunk.sessionId,
+        generation: chunk.generation,
+        createdAt: chunk.createdAt,
+        updatedAt: chunk.updatedAt,
+        byteSize: chunk.byteSize,
+        records: []
+      }))
+    };
+  }
+
+  settingsSnapshot(): SshSessionLogSettingsV1 {
+    const settings: SshSessionLogSettingsV1 = this.document.settings;
+    return {
+      enabled: settings.enabled,
+      paused: settings.paused,
+      redactSensitive: settings.redactSensitive,
+      retentionDays: settings.retentionDays,
+      quotaBytes: settings.quotaBytes
+    };
+  }
+
   setSettings(settings: SshSessionLogSettingsV1): boolean {
     if (!this.isReady()) { return false; }
     const next: SshSessionLogDocumentV1 = cloneDocument(this.document);
