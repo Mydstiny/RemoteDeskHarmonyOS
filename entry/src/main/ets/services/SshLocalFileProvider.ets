@@ -1,6 +1,6 @@
 import { common } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
-import { BusinessError, deviceInfo } from '@kit.BasicServicesKit';
+import { deviceInfo } from '@kit.BasicServicesKit';
 import { Environment, fileIo, fileShare, fileUri, picker } from '@kit.CoreFileKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import {
@@ -16,6 +16,7 @@ import {
   SshSftpBatchLimits,
   SshSftpTreeItem
 } from './SshSftpBatchPolicy';
+import { sshDiagnosticErrorCode } from './ssh/observability/SshDiagnosticPolicy';
 
 const PROVIDER_PREFS: string = 'RemoteDesktopSshLocalProviderPrefs';
 const AUTHORIZED_ROOT_URI_KEY: string = 'authorized_root_uri';
@@ -62,13 +63,6 @@ function canUseSystemCapability(name: string): boolean {
   } catch (_err) {
     return false;
   }
-}
-
-function describeLocalProviderError(err: Object): string {
-  const error: BusinessError = err as BusinessError;
-  const code: string = typeof error.code === 'number' ? error.code.toString() : '-1';
-  const message: string = typeof error.message === 'string' ? error.message : JSON.stringify(err);
-  return 'code=' + code + ' message=' + message;
 }
 
 /**
@@ -206,7 +200,7 @@ export class SshLocalFileProvider {
       this.authorization = 'revoked';
       this.state = 'needsAuthorization';
       hilog.error(LOCAL_PROVIDER_LOG_DOMAIN, LOCAL_PROVIDER_LOG_TAG,
-        '[SFTP-LOCAL-RESTORE] failed ' + describeLocalProviderError(err));
+        '[SFTP-LOCAL-RESTORE] failed code=' + sshDiagnosticErrorCode(err));
     }
     return this.snapshot();
   }
@@ -261,7 +255,7 @@ export class SshLocalFileProvider {
       this.authorization = 'revoked';
       this.state = 'needsAuthorization';
       hilog.error(LOCAL_PROVIDER_LOG_DOMAIN, LOCAL_PROVIDER_LOG_TAG,
-        '[SFTP-LOCAL-CHOOSE] failed ' + describeLocalProviderError(err));
+        '[SFTP-LOCAL-CHOOSE] failed code=' + sshDiagnosticErrorCode(err));
     }
     return this.snapshot();
   }

@@ -32,6 +32,8 @@ import { pasteboard, BusinessError } from '@kit.BasicServicesKit';
 import { fileIo, picker } from '@kit.CoreFileKit';
 import { inputDevice, KeyCode } from '@kit.InputKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { sshDiagnosticErrorCode } from
+  '../services/ssh/observability/SshDiagnosticPolicy';
 import { HostSyncService } from '../services/HostSyncService';
 import {
   ExtensionLoader,
@@ -1074,12 +1076,13 @@ struct SshTerminal {
         } catch (deviceErr) {
           hilog.warn(0x0001, 'SshTerminal',
             '[inputDevice] inspect failed id=' + ids[index].toString() +
-            ' err=' + JSON.stringify(deviceErr));
+            ' code=' + sshDiagnosticErrorCode(deviceErr));
         }
       }
     } catch (err) {
       hilog.warn(0x0001, 'SshTerminal',
-        '[inputDevice] refresh failed reason=' + reason + ' err=' + JSON.stringify(err));
+        '[inputDevice] refresh failed reason=' + reason +
+        ' code=' + sshDiagnosticErrorCode(err));
       return;
     }
     if (epoch !== this.inputDeviceRefreshEpoch || this.terminalClosing) { return; }
@@ -1114,7 +1117,7 @@ struct SshTerminal {
       this.refreshPhysicalKeyboardPresence('watcher-registered');
     } catch (err) {
       hilog.warn(0x0001, 'SshTerminal',
-        '[inputDevice] watcher unavailable: ' + JSON.stringify(err));
+        '[inputDevice] watcher unavailable code=' + sshDiagnosticErrorCode(err));
     }
   }
 
@@ -1175,7 +1178,7 @@ struct SshTerminal {
         (focused ? '1' : '0'));
     } catch (err) {
       hilog.warn(0x0000, 'SshTerminal', '[input] focus request global failed=' +
-        JSON.stringify(err));
+        sshDiagnosticErrorCode(err));
     }
     if (focused) { return; }
     try {
@@ -1183,7 +1186,7 @@ struct SshTerminal {
       hilog.debug(0x0000, 'SshTerminal', '[input] focus request uiContext=called');
     } catch (err) {
       hilog.warn(0x0000, 'SshTerminal', '[input] focus request uiContext failed=' +
-        JSON.stringify(err));
+        sshDiagnosticErrorCode(err));
     }
   }
 
@@ -2492,7 +2495,8 @@ struct SshTerminal {
         this.connectionError = message;
         this.sshTabStore.invalidateSession(targetHostId, 'error', message);
         this.refreshSshTabViews();
-        hilog.error(0x0001, 'SshTerminal', '[tab] in-page switch failed: ' + message);
+        hilog.error(0x0001, 'SshTerminal', '[tab] in-page switch failed code=' +
+          sshDiagnosticErrorCode(err));
       })
       .finally((): void => { this.tabSwitchInFlight = false; });
   }
@@ -8363,15 +8367,15 @@ struct SshTerminal {
           await this.switchSshTab(nextHost);
         } catch (err) {
           hilog.warn(0x0016, 'SshTerminal',
-            'source SSH page retained tabs but could not activate next host: ' +
-            JSON.stringify(err));
+            'source SSH page retained tabs but could not activate next host code=' +
+            sshDiagnosticErrorCode(err));
         }
       } else {
         try {
           sourcePageRouter.back();
         } catch (err) {
           hilog.warn(0x0016, 'SshTerminal',
-            'source SSH page did not close after handoff: ' + JSON.stringify(err));
+            'source SSH page did not close after handoff code=' + sshDiagnosticErrorCode(err));
         }
       }
       return true;
@@ -8392,7 +8396,7 @@ struct SshTerminal {
       this.pcWindowAfterAuthentication = false;
       this.pcWindowHandoffStarted = false;
       hilog.error(0x0016, 'SshTerminal',
-        'authenticated SSH window handoff failed: ' + JSON.stringify(err));
+        'authenticated SSH window handoff failed code=' + sshDiagnosticErrorCode(err));
       promptAction.showToast({
         message: 'SSH 独立窗口创建失败，已安全断开会话',
         duration: 2400
@@ -8527,8 +8531,7 @@ struct SshTerminal {
       if (termination !== null && !registry.isTerminationCurrent(termination)) { return; }
       hilog.warn(0x0016, 'SshTerminal',
         'SSH failed-window teardown wait unavailable request=' +
-        requestId.toString() + ' err=' +
-        (err.message ? err.message : JSON.stringify(err)));
+        requestId.toString() + ' code=' + sshDiagnosticErrorCode(err));
       setTimeout((): void => {
         this.waitForFailedSshWindowHandoffTeardown(
           registry, termination, requestId);
@@ -8641,7 +8644,8 @@ struct SshTerminal {
       hilog.info(0x0000, 'SshTerminal', '[appearance] restored font=' +
         appearance.fontSize.toString() + ' lineSpacing=' + appearance.lineSpacing.toString());
     } catch (err) {
-      hilog.warn(0x0000, 'SshTerminal', '[appearance] restore deferred: ' + JSON.stringify(err));
+      hilog.warn(0x0000, 'SshTerminal', '[appearance] restore deferred code=' +
+        sshDiagnosticErrorCode(err));
     }
     this.clearTerminalInputFocusRetry();
     this.nativeRendererUnavailable = false;
@@ -8673,7 +8677,8 @@ struct SshTerminal {
       // the SSH surface. Starting them here lets the xterm document begin
       // loading while those services finish their own lifecycle work.
       void this.sshPipService.stop().catch((err: Error): void => {
-        hilog.warn(0x0017, 'SshTerminal', 'SSH PiP stop deferred: ' + JSON.stringify(err));
+        hilog.warn(0x0017, 'SshTerminal', 'SSH PiP stop deferred code=' +
+          sshDiagnosticErrorCode(err));
       });
       this.sftpTaskStore.init(taskContext);
       this.sftpLocalProvider.init(taskContext as common.UIAbilityContext);
@@ -8683,7 +8688,8 @@ struct SshTerminal {
       // completed, so SFTP retains its lifecycle guarantees without blocking
       // SSH connection and terminal first paint.
       void this.sftpTaskEngine.init(taskContext as common.UIAbilityContext).catch((err: Error): void => {
-        hilog.warn(0x0017, 'SshTerminal', 'SFTP engine init deferred: ' + JSON.stringify(err));
+        hilog.warn(0x0017, 'SshTerminal', 'SFTP engine init deferred code=' +
+          sshDiagnosticErrorCode(err));
       });
       void this.restoreSshLocalProvider(pageGeneration);
     } catch (_err) {
@@ -8842,7 +8848,7 @@ struct SshTerminal {
         void this.initializeSshWorkspace(getContext(this) as common.Context, pageGeneration);
       } catch (err) {
         hilog.warn(0x0017, 'SshTerminal', '[workspace] init scheduling failed: ' +
-          JSON.stringify(err));
+          sshDiagnosticErrorCode(err));
       }
     }
 
@@ -9065,7 +9071,8 @@ struct SshTerminal {
     try {
       backgroundContext = this.getUIContext().getHostContext() as common.UIAbilityContext;
     } catch (err) {
-      hilog.warn(0x0016, 'SshTerminal', 'background context unavailable: ' + JSON.stringify(err));
+      hilog.warn(0x0016, 'SshTerminal', 'background context unavailable code=' +
+        sshDiagnosticErrorCode(err));
     }
     if (backgroundContext === null) {
       preserveSshInBackground = false;
@@ -9274,7 +9281,8 @@ struct SshTerminal {
       const props: window.WindowProperties = win.getWindowProperties();
       return props.windowRect.width > props.windowRect.height;
     } catch (err) {
-      hilog.warn(0x0001, 'SshTerminal', 'readDeviceIsLandscape failed: ' + JSON.stringify(err));
+      hilog.warn(0x0001, 'SshTerminal', 'readDeviceIsLandscape failed code=' +
+        sshDiagnosticErrorCode(err));
       return false;
     }
   }
@@ -9293,7 +9301,8 @@ struct SshTerminal {
       }
       hilog.info(0x0000, 'SshTerminal', 'setPreferredOrientation(' + label + ') OK');
     } catch (err) {
-      hilog.warn(0x0001, 'SshTerminal', 'setPreferredOrientation(' + label + ') failed: ' + JSON.stringify(err));
+      hilog.warn(0x0001, 'SshTerminal', 'setPreferredOrientation(' + label + ') failed code=' +
+        sshDiagnosticErrorCode(err));
     }
   }
 
@@ -9359,7 +9368,8 @@ struct SshTerminal {
       ui.setKeyboardAvoidMode(KeyboardAvoidMode.NONE);
       this.keyboardAvoidModeChanged = true;
     } catch (err) {
-      hilog.warn(0x0001, 'SshTerminal', '[keyboardAvoid] 设置失败: ' + JSON.stringify(err));
+      hilog.warn(0x0001, 'SshTerminal', '[keyboardAvoid] 设置失败 code=' +
+        sshDiagnosticErrorCode(err));
     }
   }
 
@@ -9419,7 +9429,7 @@ struct SshTerminal {
       );
     } catch (err) {
       hilog.warn(0x0001, 'SshTerminal', '[avoidArea] keyboard geometry unavailable: ' +
-        JSON.stringify(err));
+        sshDiagnosticErrorCode(err));
       return 0;
     }
   }
@@ -9446,7 +9456,8 @@ struct SshTerminal {
       });
       hilog.info(0x0000, 'SshTerminal', '[statusBar] 强制深色模式, saved=' + this.savedStatusBarColor);
     } catch (err) {
-      hilog.warn(0x0001, 'SshTerminal', '[statusBar] forceStatusBarDark 失败: ' + JSON.stringify(err));
+      hilog.warn(0x0001, 'SshTerminal', '[statusBar] forceStatusBarDark 失败 code=' +
+        sshDiagnosticErrorCode(err));
     }
   }
 
@@ -9467,7 +9478,8 @@ struct SshTerminal {
       });
       hilog.info(0x0000, 'SshTerminal', '[statusBar] 恢复: ' + contentColor);
     } catch (err) {
-      hilog.warn(0x0001, 'SshTerminal', '[statusBar] restoreStatusBar 失败: ' + JSON.stringify(err));
+      hilog.warn(0x0001, 'SshTerminal', '[statusBar] restoreStatusBar 失败 code=' +
+        sshDiagnosticErrorCode(err));
     }
   }
 
@@ -9497,10 +9509,12 @@ struct SshTerminal {
         };
         w.on('avoidAreaChange', this.avoidCb);
       }).catch((err: Error): void => {
-        hilog.warn(0x0001, 'SshTerminal', '[avoidArea] getLastWindow 失败: ' + err.message);
+        hilog.warn(0x0001, 'SshTerminal', '[avoidArea] getLastWindow 失败 code=' +
+          sshDiagnosticErrorCode(err));
       });
     } catch (err) {
-      hilog.warn(0x0001, 'SshTerminal', '[avoidArea] 注册失败: ' + JSON.stringify(err));
+      hilog.warn(0x0001, 'SshTerminal', '[avoidArea] 注册失败 code=' +
+        sshDiagnosticErrorCode(err));
     }
   }
 
@@ -9766,7 +9780,8 @@ struct SshTerminal {
       this.latencyProbeRunning = false;
       this.syncNativeConnectionState();
       this.srv.updateConnectionHealth(this.hostId, -1, false);
-      hilog.warn(0x0001, 'SshTerminal', '[latency] TCP 检测失败: ' + err.message);
+      hilog.warn(0x0001, 'SshTerminal', '[latency] TCP 检测失败 code=' +
+        sshDiagnosticErrorCode(err));
     });
   }
 
@@ -10012,7 +10027,8 @@ struct SshTerminal {
       }
       await this.srv.updateConnectionHealth(bindingHostId, -1, false);
       if (!this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId)) { return; }
-      hilog.error(0x0001, 'SshTerminal', '[connect] 异常: ' + msg);
+      hilog.error(0x0001, 'SshTerminal', '[connect] failed code=' +
+        sshDiagnosticErrorCode(err));
       this.connectionError = msg;
       this.sshTabStore.invalidateSession(bindingHostId, 'error', msg);
       this.refreshSshTabViews();
@@ -10110,7 +10126,7 @@ struct SshTerminal {
     // in front of the visible binding or prevent the new tab from rendering.
     void this.srv.updateLastConnected(bindingHostId).catch((err: Error): void => {
       hilog.warn(0x0001, 'SshTerminal',
-        '[tab] last-connected persistence failed: ' + JSON.stringify(err));
+        '[tab] last-connected persistence failed code=' + sshDiagnosticErrorCode(err));
     });
     this.refreshSshTabViews();
     this.scheduleTerminalSurfaceMount(pageGeneration, bindingGeneration, bindingHostId,
@@ -10212,7 +10228,8 @@ struct SshTerminal {
         hilog.info(0x0017, 'SshTerminal', 'SSH PiP prepared session=' + this.sessionId.toString());
       }
     } catch (err) {
-      hilog.warn(0x0017, 'SshTerminal', 'SSH PiP prepare failed: ' + JSON.stringify(err));
+      hilog.warn(0x0017, 'SshTerminal', 'SSH PiP prepare failed code=' +
+        sshDiagnosticErrorCode(err));
     }
   }
 
@@ -11161,7 +11178,7 @@ struct SshTerminal {
           this.getUIContext().getHostContext() as common.Context, this.pageGeneration);
       } catch (err) {
         hilog.warn(0x0017, 'SshTerminal', '[workspace] flag-on init failed: ' +
-          JSON.stringify(err));
+          sshDiagnosticErrorCode(err));
       }
     }
     this.refreshTerminalProfileForHost();
@@ -11436,7 +11453,8 @@ struct SshTerminal {
       const pd: pasteboard.PasteData = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, text);
       pasteboard.getSystemPasteboard().setData(pd);
     } catch (err) {
-      hilog.warn(0x0001, 'SshTerminal', '[onCopiedTextChange] code=C001 ' + JSON.stringify(err));
+      hilog.warn(0x0001, 'SshTerminal', '[onCopiedTextChange] code=' +
+        sshDiagnosticErrorCode(err));
     }
   }
 

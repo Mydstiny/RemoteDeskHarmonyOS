@@ -226,8 +226,7 @@ export class SshTerminalPipService {
       return true;
     } catch (err) {
       const be: BusinessError = err as BusinessError;
-      hilog.warn(DOMAIN, TAG, 'SSH PiP prepare failed code=' + this.errorCode(be) +
-        ' message=' + this.errorMessage(be));
+      hilog.warn(DOMAIN, TAG, 'SSH PiP prepare failed code=' + this.errorCode(be));
       if (created !== null) {
         this.disposeCreatedController(created, customUi);
       } else {
@@ -362,7 +361,7 @@ export class SshTerminalPipService {
       } catch (err) {
         const be: BusinessError = err as BusinessError;
         hilog.warn(DOMAIN, TAG, 'SSH PiP transition probe failed code=' +
-          this.errorCode(be) + ' message=' + this.errorMessage(be));
+          this.errorCode(be));
       }
       hilog.warn(DOMAIN, TAG, 'SSH PiP previous transition did not finish');
       return false;
@@ -371,8 +370,7 @@ export class SshTerminalPipService {
       await owner.stopPiP();
     } catch (err) {
       const be: BusinessError = err as BusinessError;
-      hilog.warn(DOMAIN, TAG, 'SSH PiP stop failed code=' + this.errorCode(be) +
-        ' message=' + this.errorMessage(be));
+      hilog.warn(DOMAIN, TAG, 'SSH PiP stop failed code=' + this.errorCode(be));
       return false;
     }
     const terminal: boolean = await this.waitForTerminal(owner);
@@ -477,9 +475,5 @@ export class SshTerminalPipService {
 
   private errorCode(error: BusinessError): string {
     return error.code === undefined ? 'unknown' : error.code.toString();
-  }
-
-  private errorMessage(error: BusinessError): string {
-    return error.message === undefined ? JSON.stringify(error) : error.message;
   }
 }

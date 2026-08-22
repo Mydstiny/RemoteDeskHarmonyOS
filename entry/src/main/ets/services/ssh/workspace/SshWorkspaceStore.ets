@@ -2,6 +2,7 @@ import { common } from '@kit.AbilityKit';
 import { relationalStore } from '@kit.ArkData';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { rdbInsertSucceeded, rdbSingleRowAffected } from '../../CloudStoreMutationPolicy';
+import { sshDiagnosticErrorCode } from '../observability/SshDiagnosticPolicy';
 import {
   cloneSshWorkspaceSnapshot,
   decodeSshWorkspaceSnapshots,
@@ -239,7 +240,8 @@ export class HarmonySshWorkspacePersistenceAdapter implements SshWorkspacePersis
       this.initialized = true;
       return true;
     } catch (err) {
-      hilog.error(0x0017, 'SshWorkspaceStore', 'workspace RDB init failed: ' + JSON.stringify(err));
+      hilog.error(0x0017, 'SshWorkspaceStore', 'workspace RDB init failed code=' +
+        sshDiagnosticErrorCode(err));
       this.store = null;
       this.initialized = false;
       return false;
@@ -275,7 +277,8 @@ export class HarmonySshWorkspacePersistenceAdapter implements SshWorkspacePersis
         });
       }
     } catch (err) {
-      hilog.error(0x0017, 'SshWorkspaceStore', 'workspace RDB read failed: ' + JSON.stringify(err));
+      hilog.error(0x0017, 'SshWorkspaceStore', 'workspace RDB read failed code=' +
+        sshDiagnosticErrorCode(err));
       return { ok: false, rows: [] };
     } finally {
       if (rows !== null) {

@@ -152,7 +152,7 @@ export class SshTerminalBackgroundTaskService {
         });
         await this.publishAggregateNotification();
         hilog.warn(DOMAIN, TAG, 'SSH background task rejected code=' +
-          this.errorCode(be) + ' message=' + this.errorMessage(be));
+          this.errorCode(be));
         return false;
       }
     });
@@ -206,7 +206,7 @@ export class SshTerminalBackgroundTaskService {
       } catch (err) {
         const be: BusinessError = err as BusinessError;
         hilog.warn(DOMAIN, TAG, 'SSH background task stop failed code=' +
-          this.errorCode(be) + ' message=' + this.errorMessage(be));
+          this.errorCode(be));
       }
     }
     if (notificationId > 0 && notificationId !== SSH_NOTIFICATION_ID) {
@@ -296,7 +296,7 @@ export class SshTerminalBackgroundTaskService {
     } catch (err) {
       const be: BusinessError = err as BusinessError;
       hilog.warn(DOMAIN, TAG, 'SSH notification publish failed code=' +
-        this.errorCode(be) + ' message=' + this.errorMessage(be));
+        this.errorCode(be));
     }
   }
 
@@ -317,9 +317,5 @@ export class SshTerminalBackgroundTaskService {
 
   private errorCode(error: BusinessError): string {
     return error.code === undefined ? 'unknown' : error.code.toString();
-  }
-
-  private errorMessage(error: BusinessError): string {
-    return error.message === undefined ? JSON.stringify(error) : error.message;
   }
 }
