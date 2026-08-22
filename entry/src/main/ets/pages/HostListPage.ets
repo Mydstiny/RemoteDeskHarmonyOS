@@ -3235,7 +3235,7 @@ struct HostListPage {
       return '尚未选择备份文件';
     }
     const legacy: string = preview.legacyOwnerUnbound
-      ? '；旧版文件将在确认后绑定当前账号' : '';
+      ? '；旧版文件将在确认后绑定当前本地数据作用域' : '';
     const redacted: string = !preview.secretsIncluded
       ? '；该备份为脱敏配置，不含密码、SSH 私钥、2FA 与设备信任（SSH 公钥/RDP 证书），恢复后需重新导入/确认' : '';
     return '格式 v' + preview.formatVersion.toString() +

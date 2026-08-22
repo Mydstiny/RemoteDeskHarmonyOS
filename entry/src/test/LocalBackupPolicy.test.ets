@@ -10,6 +10,7 @@ import {
   localBackupCanonicalPayload,
   localBackupSha256,
   LOCAL_BACKUP_PORTABLE_TABLES,
+  portableBackupScopeLeaseAllowed,
   validateCloudDownloadRollbackSnapshot,
   validateLocalBackupDocument,
   validateLocalBackupSnapshot
@@ -24,6 +25,11 @@ import {
 import {
   MOONLIGHT_SESSION_RECOVERY_PREFERENCES_NAME
 } from '../main/ets/services/MoonlightSessionRecoveryStore';
+import {
+  accountScopeToken,
+  accountSessionLease,
+  deviceLocalScopeToken
+} from '../main/ets/services/AccountScopePolicy';
 
 function emptyTables(): Record<string, Array<Record<string, string>>> {
   const tables: Record<string, Array<Record<string, string>>> = {};
@@ -95,6 +101,33 @@ function portableVncHostRow(
 
 export default function localBackupPolicyTest(): void {
   describe('LocalBackupPolicy', (): void => {
+    it('allows_backup_for_active_local_stores_without_requiring_cloud_binding',
+      0, (): void => {
+        const local = deviceLocalScopeToken(1);
+        expect(portableBackupScopeLeaseAllowed(
+          local, accountSessionLease(local, 1))).assertTrue();
+
+        const account = accountScopeToken(
+          'union-a', 2, 'ready', 'validating');
+        expect(account === null).assertFalse();
+        if (account === null) { return; }
+        expect(portableBackupScopeLeaseAllowed(
+          account, accountSessionLease(account, 2))).assertTrue();
+
+        const switching = deviceLocalScopeToken(3);
+        switching.sessionState = 'switching';
+        expect(portableBackupScopeLeaseAllowed(
+          switching, accountSessionLease(switching, 3))).assertFalse();
+        expect(portableBackupScopeLeaseAllowed(local, null)).assertFalse();
+        expect(portableBackupScopeLeaseAllowed(
+          local, accountSessionLease(deviceLocalScopeToken(4), 4)))
+          .assertFalse();
+        const wrongStoreLease = accountSessionLease(local, 5);
+        wrongStoreLease.storeIdentity = 'other.db';
+        expect(portableBackupScopeLeaseAllowed(
+          local, wrongStoreLease)).assertFalse();
+      });
+
     it('never_exports_the_device_local_moonlight_recovery_marker', 0,
       (): void => {
         expect(LOCAL_BACKUP_PORTABLE_TABLES.indexOf(
@@ -415,6 +448,19 @@ export default function localBackupPolicyTest(): void {
       expect(adaptLocalBackupDocumentForRestore(
         document, 'owner-b', false) === null).assertTrue();
     });
+
+    it('restores_device_local_v3_only_into_the_device_local_scope',
+      0, (): void => {
+        const document = createLocalBackupDocument(
+          emptyTables(), 100, '1.0.10', [], {}, 'device-local');
+        const localPlan = adaptLocalBackupDocumentForRestore(
+          document, 'device-local', false);
+        expect(localPlan !== null).assertTrue();
+        expect(localPlan?.sourceAccountScope).assertEqual('device-local');
+        expect(localPlan?.targetAccountScope).assertEqual('device-local');
+        expect(adaptLocalBackupDocumentForRestore(
+          document, 'owner-account', false) === null).assertTrue();
+      });
 
     it('preserves_absent_and_empty_as_distinct_v3_sections', 0, (): void => {
       const document = createLocalBackupDocument(

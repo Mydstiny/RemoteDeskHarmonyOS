@@ -34,6 +34,10 @@ import {
   MoonlightBackupRestoreResolution,
   resolveMoonlightBackupForRestore
 } from './MoonlightBackupPolicy';
+import {
+  AccountScopeToken,
+  AccountSessionLease
+} from './AccountScopePolicy';
 
 export const LOCAL_BACKUP_FORMAT: string = 'remotedesktop-local-backup';
 export const LOCAL_BACKUP_VERSION: number = 3;
@@ -47,6 +51,30 @@ export const LOCAL_BACKUP_PORTABLE_TABLES: string[] =
 const LEGACY_LOCAL_BACKUP_LOCAL_TABLES: string[] = ['vnclocalrecords'];
 const LOCAL_BACKUP_LOCAL_TABLES: string[] =
   LEGACY_LOCAL_BACKUP_LOCAL_TABLES.concat([MOONLIGHT_LOCAL_TABLE]);
+
+/**
+ * Portable backup is a local-store capability, not a cloud-account
+ * capability. Both the anonymous device-local store and a Huawei-account
+ * store are eligible once the active scope and the opened RDB lease agree.
+ * Transitional/blocked scopes remain fail-closed.
+ */
+export function portableBackupScopeLeaseAllowed(
+  scope: AccountScopeToken,
+  lease: AccountSessionLease | null
+): boolean {
+  if (lease === null ||
+    (scope.kind !== 'device_local' && scope.kind !== 'huawei_account') ||
+    (scope.sessionState !== 'offline' && scope.sessionState !== 'ready' &&
+      scope.sessionState !== 'bound')) {
+    return false;
+  }
+  return scope.ownerScopeId.trim() !== '' &&
+    scope.storeIdentity.trim() !== '' && scope.generation > 0 &&
+    lease.storeInstanceId > 0 &&
+    lease.ownerScopeId === scope.ownerScopeId &&
+    lease.storeIdentity === scope.storeIdentity &&
+    lease.generation === scope.generation;
+}
 const REMOTE_HOST_EXTENSION_PAYLOAD_COLUMNS: string[] = [
   // `password` is a legacy shadow that migration may still need to recover.
   'password', 'sshkeypassphrase', 'sshproxypassword',
