@@ -3,7 +3,7 @@
 > 状态：`ACTIVE_M8_M9` / `NOT_COMPLETE`
 > 权威计划：`docs/codex/plans/2026-08-19-ssh-termius-harmonyos7-api26-workbench-plan.md`
 > 建立日期：2026-08-19
-> 当前工作树：`codex/moonlight-complete-upgrade` / `282492e0`（M0–M9 SSH 增量保留；workbench flag 已增加协议身份门禁，API23 PC 已补 SFTP 下载暂停/继续/取消/重试闭环和短窗口操作区修复，会话日志与广播输入均受默认关闭的独立高风险 flag 约束，广播刷新不再静默替换显式目标或跨重连保留旧选择，WebMessagePort 双端序号严格连续；API26 工具链和最终实机矩阵仍待外部条件）
+> 当前工作树：`codex/moonlight-complete-upgrade` / `5fbdc1ec`（M0–M9 SSH 增量保留；workbench flag 已增加协议身份门禁，API23 PC 已补 SFTP 下载暂停/继续/取消/重试闭环和短窗口操作区修复，会话日志与广播输入均受默认关闭的独立高风险 flag 约束，日志导出补齐确认和异步身份 fence，广播刷新不再静默替换显式目标或跨重连保留旧选择，WebMessagePort 双端序号严格连续；API26 工具链和最终实机矩阵仍待外部条件）
 > 当前产品基线：HarmonyOS 6.1 / API 23
 > API 26 状态：本机未安装；任何 API 26-only import 均禁止进入产品代码
 
@@ -22,6 +22,7 @@
 
 ## 2A. 最新执行指针（2026-08-22）
 
+- `5fbdc1ec` 补齐 M6 日志导出的高风险确认与异步 fence：导出前明确提示文件将离开应用加密存储并要求用户确认，确认弹窗和系统文件选择器返回后都重新校验 host、页面 generation、SSH binding generation、日志双 flag、store ready 与 closing 状态；任一条件变化即取消，避免把切换前主机或 rollout 回退前捕获的快照写到用户文件。
 - `282492e0` 为 M6 会话日志补齐独立 `sshSessionLogs` 发布门禁，默认关闭且不能被持久化的 `settings.enabled=true` 绕过；入口、启停/暂停、搜索、书签、导出与实际 input/output capture 均重新校验双 flag。运行中关闭 flag 会关闭 Sheet、取消 flush timer 并丢弃尚未落盘的输入/输出/命令缓冲，导出在系统 picker 返回后也再次校验，避免 rollout 回退期间继续写出先前捕获的内容。
 - `5fd45827` 为 M7 广播输入增加独立发布门禁 `sshBroadcastInput`，默认关闭且不能继承更宽泛的 `sshWorkbenchV2`；生产力 Sheet 默认隐藏入口，页面打开、目标刷新、确认前后发送均重新校验双 flag，运行中关闭独立 flag 会立即关闭广播面板并清空目标、文本与安全状态。纯策略测试锁定只有工作台已就绪且独立 flag 明确开启时才可用；未新增面向普通用户的开关，等待安全审查和设备矩阵后再决定放量。
 - `24377a51` 收紧 M8 WebMessagePort 双端序号完整性：ArkTS 状态机与 xterm 网页端现在都只接受正整数 generation/sequence、非负整数 ACK，并要求握手 `sequence=1/ack=0`、后续入站序号严格连续；向前跳号不再被当成合法新帧执行后续 input/resize。纯策略测试覆盖小数计数器和 forward gap，通道 flag 仍默认关闭。
@@ -302,3 +303,5 @@ hvigorw --mode module -p module=entry -p product=default assembleHap --analyze=n
 2026-08-22 M7 广播独立发布门禁 receipt：`5fd45827` 增加 `sshBroadcastInput` AppStorage flag 并明确默认 `false`；只有 `sshWorkbenchV2` 已启用、工作区已就绪且该独立 flag 明确为真时，生产力 Sheet 才展示广播入口，页面才允许打开、刷新目标或在确认前后发送。flag 在运行中关闭时立即 fail-closed：关闭 Sheet、停止 active 状态并清空目标、选择、文本、模式与 reconnect 安全记忆。新增纯策略用例锁定默认关闭和双 flag 合取；未增加普通用户设置入口，因 M7 仍需独立安全审查与实机矩阵。精确 `default@OhosTestCompileArkTS` exit 0，`assembleHap` exit 0（`BUILD SUCCESSFUL in 13 s 268 ms`）；签名 HAP SHA-256 为 `9dca7271635b4ba2841e65c237c0d0e1a3fa55eff59c6ecb269f78c2b69c00b7`。本 receipt 不声明 HDC/真机广播交互、API26 或物理设备验收通过。
 
 2026-08-22 M6 会话日志独立发布门禁 receipt：`282492e0` 增加默认 `false` 的 `sshSessionLogs` AppStorage flag；持久化日志设置保持不迁移、不降级，但入口、设置更新、搜索、书签、导出及捕获路径都要求工作台与独立 flag 同时开启，因此旧的 `settings.enabled=true` 不能在 rollout 关闭时继续记录。运行中关闭 flag 会关闭日志 Sheet、取消 flush timer，清空尚未落盘的输入/输出/命令缓冲并移除页面内日志投影；异步导出在 picker 返回后再次校验 flag。新增纯策略用例锁定默认关闭和双 flag 合取。精确 `default@OhosTestCompileArkTS` exit 0，`assembleHap` exit 0（`BUILD SUCCESSFUL in 18 s 335 ms`）；签名 HAP SHA-256 为 `91d16bad405e6474277ae66b81baed5226885ef04c78a527a34993306b4bc679`。本 receipt 不声明 10MiB 压力、后台/锁屏/通知权限、API26 或物理设备矩阵通过。
+
+2026-08-22 M6 会话日志导出确认与异步 fence receipt：`5fbdc1ec` 在生成导出快照前增加明确二次确认，告知只导出当前主机的二次脱敏内容且保存文件会离开应用加密存储；确认弹窗与系统 `DocumentViewPicker` 两个 await 之后均通过纯 `matchesSshSessionLogExportFence` 校验原始 host、page generation、binding generation、日志 rollout 可用性、store ready 和页面 closing 状态。任一 host/owner/页面/flag 变化即拒绝继续写出。策略测试覆盖合法 fence 以及 host、page、binding、flag 变化的 fail-closed 行为。精确 `default@OhosTestCompileArkTS` exit 0，`assembleHap` exit 0（`BUILD SUCCESSFUL in 12 s 274 ms`）；签名 HAP SHA-256 为 `42c87ed604e30d90024436050e31f898df72b4b816bf953f68968537e2daaaa1`。本 receipt 仅为源码/构建证据，未冒充系统 picker 真机、后台或物理设备验收。
