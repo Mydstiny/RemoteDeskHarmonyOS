@@ -1,6 +1,6 @@
 # Moonlight Complete Upgrade Queue
 
-Updated: 2026-08-19 Asia/Shanghai
+Updated: 2026-08-22 Asia/Shanghai
 
 ## Closed in committed checkpoints
 
@@ -9,6 +9,7 @@ Updated: 2026-08-19 Asia/Shanghai
 - `348b28083`: local launch/settings/FAB/data-flow closeout.
 - `aff7fdf03`: lifecycle/recovery, PC session-window integration, compatibility-first optional cloud path, exact teardown and final PC Moonlight FAB unification.
 - `2d9ce0024`: enable the explicitly confirmed deployed `moonlightrecordv1` schema at revision 1 and prepare the cloud-enabled acceptance package.
+- `2c9120e98` + `94fa21f8f`: adaptive phone/Pad/PC first-run and settings guidance, protocol-local operation lessons, five-protocol connection preparation, foreground-safe SSH/Moonlight hints and review remediation.
 - RustDesk-style FAB/add flow, adaptive phone/PC Moonlight host surfaces, six owned settings sheets, metered launch admission, local repository/cache and all input classes are wired.
 
 ## Non-cloud closeout
@@ -19,6 +20,7 @@ Updated: 2026-08-19 Asia/Shanghai
 - PC big-screen Moonlight now uses the same shared bottom `+` FAB as the other host categories; the duplicate top text button has been removed.
 - Shared native teardown now uses exact session/generation/owner-token/facade ownership and explicit synchronous Complete/Failed receipts. HostList preflight/2FA cancellation, timeout, error and NAPI retry retain the original immutable identity; the A→B delayed-callback regression is compile-registered and final focused review is P0/P1/P2/P3 all zero.
 - The revision-1 package is installed and started on phone simulator `127.0.0.1:5555` and PC simulator `127.0.0.1:5557`; fresh screenshots and Sunshine/physical-controller/long-run acceptance remain pending.
+- The final guidance review is P0/P1/P2/P3 all zero after closing device-init timing, blocked-hint retry, 480vp Sheet reachability and protocol-localization findings. Exact test compile, assemble, diff check and Light compliance pass on 2026-08-22.
 
 ## Current cloud/data increment
 
@@ -35,7 +37,7 @@ Updated: 2026-08-19 Asia/Shanghai
 
 1. Deployment is confirmed and revision 1 is enabled. Test optional-nine registration while proving core-eight continuity and old-version startup/pull behavior.
 2. Complete compatibility-first cloud upload/download/delete/conflict/account-switch/crypto-reset and upgrade tests; bad Moonlight rows must be isolated rather than blocking pulls.
-3. Run fresh PC/phone screenshots and full Sunshine/controller/lifecycle acceptance only from the installed revision-1 package.
+3. Run fresh PC/phone/freeform-window guide screenshots and full Sunshine/controller/lifecycle acceptance only from the current package; no target was online on 2026-08-22.
 
 ## External gates
 

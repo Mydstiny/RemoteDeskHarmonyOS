@@ -4,8 +4,8 @@
 
 - Task: `moonlight-complete-upgrade`
 - Base: `main@aeb0cdac5`; branch: `codex/moonlight-complete-upgrade`
-- Code checkpoint: `2d9ce0024`; branch is 147 commits ahead of `main`.
-- Phase: the complete Moonlight implementation checkpoint is committed, the deployed AGC schema receipt is enabled at revision 1, and the cloud-enabled package is being prepared for full device acceptance.
+- Code checkpoint: `94fa21f8f`; the following state-document commit does not change reviewed code.
+- Phase: the complete Moonlight implementation and adaptive multi-device guidance are committed; the deployed AGC schema receipt is enabled at revision 1 and the cloud-enabled package is being prepared for full device acceptance.
 - Authoritative plan: `docs/superpowers/plans/2026-07-28-moonlight-harmonyos-complete-upgrade-plan.md`
 - Live ledger: `docs/codex/plans/2026-08-09-moonlight-implementation-ledger.md`
 
@@ -22,14 +22,16 @@
 - The PC Moonlight directory no longer has a one-off top-right text button. It uses the same shared 64×64 bottom `+` FAB and routing logic as the existing PC host pages.
 - Reconnect, Surface/PIP/background audio lifecycle, crash-recovery choices, explicit disconnect-versus-quit, host rename/forget/unpair, local-data deletion and secure-identity deletion are wired through owner/account/generation-fenced production services. Real Sunshine, physical-controller and long-run receipts remain acceptance gates rather than implementation claims.
 - GameControllerKit remains activation-time dynamic loading for Moonlight sessions only; unrelated protocols do not gain a mandatory runtime dependency.
+- Guidance is layered instead of one long manual: first install stays at seven pages, Settings provides a device/protocol-filtered operation center and five-protocol connection preparation, and SSH/Moonlight add foreground-safe one-shot session hints. The design follows HarmonyOS multi-device consistency/differentiation and keeps detailed lessons on demand.
 
 ## Latest verification
 
-- Exact `default@OhosTestCompileArkTS`: PASS on 2026-08-19 both in the working tree and in a clean export of the staged commit index.
-- Exact `assembleHap`: PASS on the same clean staged-index tree. Signed HAP SHA-256: `4b239974cd8c46377ff17b7dfa0a85dab571e6667df7cccb8686e16428dc657c`.
+- Exact `default@OhosTestCompileArkTS`: PASS on 2026-08-22 after the adaptive-guidance review fixes.
+- Exact `assembleHap`: PASS on the same current worktree. Signed HAP SHA-256: `d1ca028ecff7b188e8bf12a576eb329dcaf095604ebc0189bf01d7c5ccb7a2cb`.
 - Host native suite outside the socket-restricted sandbox: `780 passed, 0 failed`; this includes the Moonlight product input/runtime tests and the existing adjacent-protocol fixtures.
-- `git diff --check`, pinned Moonlight vendor reconstruction (3 Git trees / 117 exact files) and dual-ABI GameControllerKit ELF isolation: PASS.
-- Committed checkpoints: `9eadb35be`, `326f329f5`, `348b28083`, `aff7fdf03`, `2d9ce0024`.
+- `git diff --check`, Light open-source compliance, pinned Moonlight vendor reconstruction (3 Git trees / 117 exact files) and dual-ABI GameControllerKit ELF isolation: PASS.
+- Committed checkpoints: `9eadb35be`, `326f329f5`, `348b28083`, `aff7fdf03`, `2d9ce0024`, `2c9120e98`, `94fa21f8f`.
+- The adaptive-guidance reviewer found four P2s in the first checkpoint (device-init timing, one-shot retry, 480vp reachability and protocol localization). `94fa21f8f` closes all four; final independent review is P0/P1/P2/P3 all zero.
 - The reused reviewer closed the final native receipt, immutable facade identity, HostList preflight/2FA retry and A→B anti-misdisconnect findings with P0/P1/P2/P3 all zero. Final cloud/device integration evidence remains pending after AGC deployment.
 - Device `ohosTest` remains blocked by unregistered task `00306054`; no device Hypium pass is claimed.
 - The exact revision-1 HAP was installed and `EntryAbility` started successfully on phone simulator `127.0.0.1:5555` and PC simulator `127.0.0.1:5557`. No old screenshots are reused; final acceptance still requires fresh PC/phone evidence from this package.
@@ -40,3 +42,4 @@
 - Compatibility remains the first release gate: Moonlight record-level rejection must never turn into a whole-table/core-eight pull failure, while uploads and destructive operations remain strict.
 - Verify real optional registration, core-eight coexistence, old-version upgrade, upload/download/delete/conflict/account-switch/crypto-reset lifecycles, then run one final UI/full-function acceptance pass.
 - External acceptance still needs a reachable Sunshine host, physical controller, ARM64 device and long-run/network/lifecycle scenarios.
+- Fresh guide-center phone/PC/freeform-window visual evidence is still pending because `hdc list targets` returned no online target on 2026-08-22. The pre-existing uncommitted `VncSettingsPage.ets` change remains preserved and excluded from the guide commits/review.
