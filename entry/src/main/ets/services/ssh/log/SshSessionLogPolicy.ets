@@ -91,6 +91,8 @@ export interface SshSessionLogExportResultV1 {
 }
 
 export const SSH_SESSION_LOG_SCHEMA_VERSION: number = 1;
+export const SSH_SESSION_LOGS_FLAG_KEY: string = 'sshSessionLogs';
+export const SSH_SESSION_LOGS_DEFAULT_ENABLED: boolean = false;
 export const SSH_SESSION_LOG_DEFAULT_QUOTA_BYTES: number = 10 * 1024 * 1024;
 export const SSH_SESSION_LOG_MIN_QUOTA_BYTES: number = 256 * 1024;
 export const SSH_SESSION_LOG_MAX_QUOTA_BYTES: number = 64 * 1024 * 1024;
@@ -108,6 +110,12 @@ const MAX_CHUNK_ID: number = 160;
 const MAX_TEXT: number = 8192;
 const MAX_NOTE: number = 512;
 const DAY_MS: number = 24 * 60 * 60 * 1000;
+
+/** Opt-in storage settings cannot bypass the independent rollout gate. */
+export function resolveSshSessionLogsEnabled(
+  workbenchEnabled: boolean, sessionLogsFlagEnabled: boolean): boolean {
+  return workbenchEnabled === true && sessionLogsFlagEnabled === true;
+}
 
 function stringValue(value: Object, max: number): string {
   return typeof value === 'string' ? (value as string).slice(0, max) : '';

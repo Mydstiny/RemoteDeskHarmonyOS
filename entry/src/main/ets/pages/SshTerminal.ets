@@ -329,8 +329,11 @@ import {
 import { SshProductivityStore } from '../services/ssh/productivity/SshProductivityStore';
 import {
   emptySshSessionLogDocument,
+  resolveSshSessionLogsEnabled,
   sanitizeSshSessionLogText,
   sshSessionLogCaptureAllowed,
+  SSH_SESSION_LOGS_DEFAULT_ENABLED,
+  SSH_SESSION_LOGS_FLAG_KEY,
   SshSessionLogDocumentV1,
   SshSessionLogIdentityV1,
   SshSessionLogRecordV1,
@@ -634,6 +637,8 @@ struct SshTerminal {
   @State terminalFocusMode: boolean = true;
   @StorageProp(SSH_WORKBENCH_V2_FLAG_KEY) @Watch('onSshWorkbenchFlagChange')
   sshWorkbenchEnabled: boolean = SSH_WORKBENCH_V2_DEFAULT_ENABLED;
+  @StorageProp(SSH_SESSION_LOGS_FLAG_KEY) @Watch('onSshSessionLogsFlagChange')
+  sshSessionLogsFlagEnabled: boolean = SSH_SESSION_LOGS_DEFAULT_ENABLED;
   @StorageProp(SSH_BROADCAST_INPUT_FLAG_KEY) @Watch('onSshBroadcastInputFlagChange')
   sshBroadcastInputFlagEnabled: boolean = SSH_BROADCAST_INPUT_DEFAULT_ENABLED;
   /** The policy-selected renderer; remains static until an SDK adapter proves a newer one. */
@@ -1671,6 +1676,11 @@ struct SshTerminal {
   private sshBroadcastInputEnabled(): boolean {
     return resolveSshBroadcastInputEnabled(
       this.sshWorkspaceModeEnabled(), this.sshBroadcastInputFlagEnabled);
+  }
+
+  private sshSessionLogsEnabled(): boolean {
+    return resolveSshSessionLogsEnabled(
+      this.sshWorkbenchEnabled, this.sshSessionLogsFlagEnabled);
   }
 
   private sshWorkspaceRuntimeTabs(): Array<SshWorkspaceRuntimeTabProjection> {
@@ -3224,6 +3234,11 @@ struct SshTerminal {
   }
 
   private refreshSshSessionLogDocument(): void {
+    if (!this.sshSessionLogsEnabled()) {
+      this.sshSessionLogDocument = emptySshSessionLogDocument();
+      this.sshSessionLogResults = [];
+      return;
+    }
     if (!this.sshSessionLogStore.isReady()) {
       this.sshSessionLogReady = false;
       this.sshSessionLogDocument = emptySshSessionLogDocument();
@@ -3237,7 +3252,7 @@ struct SshTerminal {
   }
 
   private openSshSessionLog(): void {
-    if (!this.sshWorkbenchEnabled || !this.sshSessionLogReady || this.terminalClosing ||
+    if (!this.sshSessionLogsEnabled() || !this.sshSessionLogReady || this.terminalClosing ||
       this.showSshSessionLogSheet ||
       (this.sshModalOwnsKeyboard() && !this.showSshProductivitySheet)) { return; }
     this.showSshProductivitySheet = false;
@@ -3464,7 +3479,7 @@ struct SshTerminal {
   }
 
   private setSshSessionLogEnabled(enabled: boolean): void {
-    if (!this.sshWorkbenchEnabled || !this.sshSessionLogReady) { return; }
+    if (!this.sshSessionLogsEnabled() || !this.sshSessionLogReady) { return; }
     const settings = this.sshSessionLogStore.snapshot().settings;
     settings.enabled = enabled;
     settings.paused = enabled ? settings.paused : false;
@@ -3481,7 +3496,7 @@ struct SshTerminal {
   }
 
   private setSshSessionLogPaused(paused: boolean): void {
-    if (!this.sshWorkbenchEnabled || !this.sshSessionLogReady) { return; }
+    if (!this.sshSessionLogsEnabled() || !this.sshSessionLogReady) { return; }
     const settings = this.sshSessionLogStore.snapshot().settings;
     settings.paused = paused;
     if (!this.sshSessionLogStore.setSettings(settings)) {
@@ -3497,13 +3512,16 @@ struct SshTerminal {
 
   private searchSshSessionLog(query: string): void {
     this.sshSessionLogQuery = query.slice(0, 256);
-    if (!this.sshSessionLogReady) { this.sshSessionLogResults = []; return; }
+    if (!this.sshSessionLogsEnabled() || !this.sshSessionLogReady) {
+      this.sshSessionLogResults = [];
+      return;
+    }
     this.sshSessionLogResults = this.sshSessionLogStore.search(
       this.sshSessionLogQuery, this.hostId.trim());
   }
 
   private toggleSshSessionLogBookmark(hit: SshSessionLogSearchHitV1, note: string = ''): void {
-    if (!this.sshSessionLogReady) { return; }
+    if (!this.sshSessionLogsEnabled() || !this.sshSessionLogReady) { return; }
     const identity: SshSessionLogIdentityV1 = {
       hostId: hit.record.hostId, sessionId: hit.record.sessionId,
       generation: hit.record.generation
@@ -3519,7 +3537,8 @@ struct SshTerminal {
   }
 
   private async exportSshSessionLogToFile(): Promise<void> {
-    if (!this.sshSessionLogReady || this.hostId.trim().length === 0) { return; }
+    if (!this.sshSessionLogsEnabled() || !this.sshSessionLogReady ||
+      this.hostId.trim().length === 0) { return; }
     const result = this.sshSessionLogStore.export(this.hostId.trim(), undefined, true);
     if (!result.ok || result.text.length === 0) {
       promptAction.showToast({ message: '没有可导出的脱敏日志', duration: 1500 });
@@ -3531,7 +3550,8 @@ struct SshTerminal {
         newFileNames: ['ssh-session-log.txt']
       };
       const uris: Array<string> = await new picker.DocumentViewPicker(context).save(options);
-      if (uris.length === 0 || uris[0].trim().length === 0) { return; }
+      if (!this.sshSessionLogsEnabled() || uris.length === 0 ||
+        uris[0].trim().length === 0) { return; }
       const bytes: Uint8Array = new util.TextEncoder().encode(result.text);
       const output: fileIo.File = fileIo.openSync(uris[0],
         fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.CREATE | fileIo.OpenMode.TRUNC);
@@ -3567,7 +3587,7 @@ struct SshTerminal {
 
   private sshSessionLogCaptureContext(identity: SshSessionLogIdentityV1,
     input: boolean): boolean {
-    if (!this.sshWorkbenchEnabled || !this.sshSessionLogReady ||
+    if (!this.sshSessionLogsEnabled() || !this.sshSessionLogReady ||
       !this.sshSessionLogDocument.settings.enabled || this.sshSessionLogDocument.settings.paused) {
       return false;
     }
@@ -10689,6 +10709,7 @@ struct SshTerminal {
     SshProductivitySheet({
       document: this.sshProductivityDocument,
       ready: this.sshProductivityReady,
+      sessionLogsEnabled: this.sshSessionLogsEnabled(),
       broadcastEnabled: this.sshBroadcastInputEnabled(),
       hostId: this.hostId,
       hostLabel: this.hostLabel,
@@ -11020,6 +11041,24 @@ struct SshTerminal {
     this.sshBroadcastMode = 'insert';
     this.sshBroadcastLastEscapeAt = 0;
     this.sshBroadcastUnsafeHostIds.clear();
+  }
+
+  private onSshSessionLogsFlagChange(): void {
+    if (this.sshSessionLogsFlagEnabled) {
+      this.refreshSshSessionLogDocument();
+      return;
+    }
+    this.showSshSessionLogSheet = false;
+    if (this.sshSessionLogFlushTimer !== -1) {
+      clearTimeout(this.sshSessionLogFlushTimer);
+      this.sshSessionLogFlushTimer = -1;
+    }
+    this.sshSessionLogInputBuffers.clear();
+    this.sshSessionLogPendingOutput.clear();
+    this.sshSessionLogCommandStarts.clear();
+    this.sshSessionLogDocument = emptySshSessionLogDocument();
+    this.sshSessionLogQuery = '';
+    this.sshSessionLogResults = [];
   }
 
   /**

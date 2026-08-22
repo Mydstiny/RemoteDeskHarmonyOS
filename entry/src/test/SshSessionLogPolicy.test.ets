@@ -6,9 +6,11 @@ import {
   emptySshSessionLogDocument,
   encodeSshSessionLogDocument,
   exportSshSessionLog,
+  resolveSshSessionLogsEnabled,
   searchSshSessionLog,
   sanitizeSshSessionLogText,
   sshSessionLogCaptureAllowed,
+  SSH_SESSION_LOGS_DEFAULT_ENABLED,
   SshSessionLogDocumentV1,
   SshSessionLogRecordV1
 } from '../main/ets/services/ssh/log/SshSessionLogPolicy';
@@ -22,6 +24,13 @@ function record(id: string, text: string, timestamp: number = 100): SshSessionLo
 
 export default function sshSessionLogPolicyTest(): void {
   describe('SshSessionLogPolicy', (): void => {
+    it('rollout_gate_should_be_independently_disabled_by_default', 0, (): void => {
+      expect(SSH_SESSION_LOGS_DEFAULT_ENABLED).assertFalse();
+      expect(resolveSshSessionLogsEnabled(true, false)).assertFalse();
+      expect(resolveSshSessionLogsEnabled(false, true)).assertFalse();
+      expect(resolveSshSessionLogsEnabled(true, true)).assertTrue();
+    });
+
     it('default_should_be_opt_in_and_sensitive_modes_should_fail_closed', 0, (): void => {
       const settings = defaultSshSessionLogSettings();
       expect(settings.enabled).assertFalse();

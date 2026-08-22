@@ -22,6 +22,7 @@ export struct SshProductivitySheet {
   @Prop hostLabel: string = '';
   @Prop groupId: string = '';
   @Prop query: string = '';
+  @Prop sessionLogsEnabled: boolean = false;
   @Prop broadcastEnabled: boolean = false;
   onClose: () => void = (): void => {};
   onSearchChange: (value: string) => void = (_value: string): void => {};
@@ -281,9 +282,11 @@ export struct SshProductivitySheet {
           this.HistoryList()
           Text('设置').fontSize(12).fontWeight(FontWeight.Medium).fontColor('#F2F4F7')
             .width('100%')
-          Button('打开会话日志').height(40).fontSize(11).width('100%')
-            .backgroundColor('rgba(255,255,255,0.08)')
-            .onClick((): void => { this.onOpenSessionLog(); })
+          if (this.sessionLogsEnabled) {
+            Button('打开会话日志').height(40).fontSize(11).width('100%')
+              .backgroundColor('rgba(255,255,255,0.08)')
+              .onClick((): void => { this.onOpenSessionLog(); })
+          }
           if (this.broadcastEnabled) {
             Button('安全广播输入').height(40).fontSize(11).width('100%')
               .fontColor('#FFF3F0').backgroundColor('#7D2E2E')
