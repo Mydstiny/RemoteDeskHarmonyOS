@@ -69,8 +69,9 @@ export struct AboutSettingsSheet {
     return settingsUsageGuidePages(this.guideDevice);
   }
 
-  private handsOnGuideHeight(): number {
-    return this.breakpoint === 'sm' ? 330 : 520;
+  private resetExpandedGuideLesson(): void {
+    const lessons: GuideLesson[] = guideLessonsFor(this.guideDevice, this.guideProtocol);
+    this.expandedGuideLessonId = lessons.length > 0 ? lessons[0].id : '';
   }
 
   private openUrl(url: string): void {
@@ -324,10 +325,11 @@ export struct AboutSettingsSheet {
             }, (lesson: GuideLesson): string => lesson.id)
         }.width('100%').padding({ left: 20, right: 20, top: 4, bottom: 22 })
       }
-      .width('100%').height(this.handsOnGuideHeight()).scrollBar(BarState.Auto)
+      .width('100%').layoutWeight(1).scrollBar(BarState.Auto)
     }
-    .width('100%')
-    .constraintSize({ maxWidth: 760, maxHeight: this.breakpoint === 'sm' ? 660 : 820 })
+    .width('100%').height('100%')
+    .constraintSize({ minHeight: 360, maxWidth: 760,
+      maxHeight: this.breakpoint === 'sm' ? 660 : 820 })
     .clip(true)
     .backgroundColor(this.pal().bg)
     .backgroundBlurStyle(BlurStyle.Regular)
@@ -345,7 +347,7 @@ export struct AboutSettingsSheet {
       .borderRadius(10)
       .onClick((): void => {
         this.guideDevice = device;
-        this.expandedGuideLessonId = 'common-first-host';
+        this.resetExpandedGuideLesson();
       })
   }
 
@@ -368,7 +370,7 @@ export struct AboutSettingsSheet {
       style: BorderStyle.Solid })
     .onClick((): void => {
       this.guideProtocol = option.id;
-      this.expandedGuideLessonId = option.id === 'all' ? 'common-first-host' : '';
+      this.resetExpandedGuideLesson();
     })
   }
 
@@ -627,15 +629,15 @@ export struct AboutSettingsSheet {
             '3. 添加主机时先校验身份，再把应用显示的 PIN 输入 Sunshine 完成配对。\n' +
             '4. 手柄、HDR、高分辨率和后台音频需同时满足当前设备、系统与 Sunshine 能力。')
         }.width('100%').padding({ left: 24, right: 24, bottom: 22 })
-      }.height(this.breakpoint === 'sm' ? 420 : 540)
+      }.layoutWeight(1).scrollBar(BarState.Auto)
 
       Button('我知道了').width('100%').height(44).fontSize(14)
         .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(12)
         .margin({ top: 18 })
         .onClick((): void => { this.onClose(); })
     }
-    .width('100%')
-    .constraintSize({ maxWidth: 680 })
+    .width('100%').height('100%')
+    .constraintSize({ minHeight: 360, maxWidth: 680, maxHeight: 820 })
     .padding({ left: 24, right: 24, top: 22, bottom: 30 })
     .backgroundColor(this.pal().bg)
     .backgroundBlurStyle(BlurStyle.Regular)

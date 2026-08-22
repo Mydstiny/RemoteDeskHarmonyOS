@@ -1,6 +1,7 @@
 import { describe, expect, it } from '@ohos/hypium';
 import {
   sessionContextualGuide,
+  shouldRetrySessionContextualGuide,
   shouldShowSessionContextualGuide
 } from '../main/ets/services/SessionContextualGuidePolicy';
 
@@ -11,6 +12,9 @@ export default function sessionContextualGuidePolicyTest(): void {
       expect(shouldShowSessionContextualGuide(false, false, false)).assertFalse();
       expect(shouldShowSessionContextualGuide(true, true, false)).assertFalse();
       expect(shouldShowSessionContextualGuide(true, false, true)).assertFalse();
+      expect(shouldRetrySessionContextualGuide(true, false)).assertTrue();
+      expect(shouldRetrySessionContextualGuide(false, false)).assertFalse();
+      expect(shouldRetrySessionContextualGuide(true, true)).assertFalse();
     });
 
     it('uses_short_device_specific_entries', 0, (): void => {

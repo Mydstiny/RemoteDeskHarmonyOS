@@ -73,6 +73,7 @@ import { guideDeviceFor, GuideDevice } from '../services/GuideContentRegistry';
 import {
   SessionContextualGuide,
   sessionContextualGuide,
+  shouldRetrySessionContextualGuide,
   shouldShowSessionContextualGuide
 } from '../services/SessionContextualGuidePolicy';
 import { showLockGate, lockGateErrorMessage } from '../components/LockGate';
@@ -591,7 +592,10 @@ struct SshTerminal {
   @StorageLink('currentBreakpoint') @Watch('onFontSizeChange') breakpoint: string = 'sm';
   @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
   @StorageProp('isPadDevice') isPadDevice: boolean = false;
-  @LocalStorageLink('sessionWindowBackground') sessionWindowBackground: boolean = false;
+  @StorageProp('remoteDesktopBgFlag') @Watch('onSshContextualGuideBackgroundChange')
+  appBackgroundSignal: boolean = false;
+  @LocalStorageLink('sessionWindowBackground') @Watch('onSshContextualGuideBackgroundChange')
+  sessionWindowBackground: boolean = false;
   @LocalStorageLink('sessionWindowFullscreen') sessionWindowFullscreen: boolean = false;
   @StorageLink('sshTerminalFontSize') @Watch('onFontSizeChange') fontSize: number = 18;
   @StorageLink('sshTerminalLineSpacing') @Watch('onLineSpacingChange') lineSpacing: number = 1.12;
@@ -883,6 +887,7 @@ struct SshTerminal {
   private forwardingReconciledHandles: Set<string> = new Set<string>();
   private loader: ExtensionLoader = ExtensionLoader.getInstance();
   private sessionWindowId: string = '';
+  private contextualGuideRetryTimer: number = -1;
   // PC authentication stays in this original page. The flag is accepted only
   // from HostList's SSH preflight route, and a new ability is created only
   // after attachSshSession has committed a native CONNECTED session.
@@ -8850,6 +8855,7 @@ struct SshTerminal {
 
   aboutToDisappear(): void {
     this.sshAuthPromptPageShown = false;
+    this.clearSshContextualGuideRetry();
     this.sshAuthPromptPageReadyAtMs = 0;
     this.flushSshWorkspaceSave();
     this.sshWorkspaceInitSequence++;
@@ -9105,6 +9111,7 @@ struct SshTerminal {
   onPageShow(): void {
     this.sshAuthPromptPageShown = true;
     this.sshAuthPromptPageReadyAtMs = Date.now() + 720;
+    this.scheduleSshContextualGuide(760);
   }
 
   private backgroundSshInfos(): SshTerminalBackgroundInfo[] {
@@ -9392,23 +9399,63 @@ struct SshTerminal {
     return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor);
   }
 
+  private clearSshContextualGuideRetry(): void {
+    if (this.contextualGuideRetryTimer >= 0) {
+      clearTimeout(this.contextualGuideRetryTimer);
+      this.contextualGuideRetryTimer = -1;
+    }
+  }
+
+  private sshContextualGuideInBackground(): boolean {
+    return this.sessionWindowId.length > 0 ?
+      this.sessionWindowBackground : this.appBackgroundSignal;
+  }
+
+  private onSshContextualGuideBackgroundChange(): void {
+    if (!this.sshContextualGuideInBackground()) {
+      this.scheduleSshContextualGuide();
+    }
+  }
+
+  private scheduleSshContextualGuide(delayMs: number = 240): void {
+    if (this.contextualGuideRetryTimer >= 0) { return; }
+    const pageGeneration: number = this.pageGeneration;
+    this.contextualGuideRetryTimer = setTimeout((): void => {
+      this.contextualGuideRetryTimer = -1;
+      if (pageGeneration !== this.pageGeneration || this.terminalClosing ||
+        !this.sshAuthPromptPageShown) { return; }
+      this.maybeShowSshContextualGuide();
+      const guide: SessionContextualGuide = sessionContextualGuide('ssh',
+        guideDeviceFor(this.isDesktopDevice, this.isPadDevice, this.breakpoint));
+      const alreadyShown: boolean = AppStorage.get<boolean>(guide.storageKey) ?? false;
+      if (shouldRetrySessionContextualGuide(this.sshConnectionIsConnected(), alreadyShown) &&
+        !this.sshContextualGuideInBackground()) {
+        // Authentication and workbench Sheets can outlive the connected
+        // callback. Keep one retry alive until the terminal is unobstructed.
+        this.scheduleSshContextualGuide(800);
+      }
+    }, delayMs);
+  }
+
   private maybeShowSshContextualGuide(): void {
     const device: GuideDevice = guideDeviceFor(
       this.isDesktopDevice, this.isPadDevice, this.breakpoint);
     const guide: SessionContextualGuide = sessionContextualGuide('ssh', device);
     const alreadyShown: boolean = AppStorage.get<boolean>(guide.storageKey) ?? false;
-    const blockingOverlayVisible: boolean = this.showSshAuthPromptSheet ||
-      this.showPassphraseSheet || this.showSshTabPicker || this.showSshPhoneActionPopup;
+    const blockingOverlayVisible: boolean = this.sshModalOwnsKeyboard() ||
+      this.showSshPhoneActionPopup;
     if (!shouldShowSessionContextualGuide(
-      this.sshConnectionIsConnected(), alreadyShown, blockingOverlayVisible)) {
+      this.sshConnectionIsConnected() && this.sshAuthPromptPageShown &&
+        !this.sshContextualGuideInBackground() && !this.terminalClosing,
+      alreadyShown, blockingOverlayVisible)) {
       return;
     }
-    AppStorage.setOrCreate<boolean>(guide.storageKey, true);
     try {
       this.getUIContext().getPromptAction().showToast({
         message: guide.message,
         duration: guide.durationMs
       });
+      AppStorage.setOrCreate<boolean>(guide.storageKey, true);
     } catch (_) {}
   }
 
@@ -9532,7 +9579,7 @@ struct SshTerminal {
       } else {
         this.sshTabStore.update(this.hostId, 'connected', this.sessionId);
       }
-      this.maybeShowSshContextualGuide();
+      this.scheduleSshContextualGuide();
       return !this.terminalClosing;
     }
     if (state === SSH_STATE_RECONNECTING) {
@@ -9933,7 +9980,7 @@ struct SshTerminal {
       connectedSessionId, bindingHostId, sessionGeneration)) {
       return true;
     }
-    this.maybeShowSshContextualGuide();
+    this.scheduleSshContextualGuide();
     this.maybeRunSshStartupCommand(pageGeneration, bindingGeneration, bindingHostId,
       connectedSessionId, sessionGeneration);
     // A keyboard can be attached while SSH is negotiating. Re-enumerate at

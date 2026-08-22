@@ -9,6 +9,7 @@ import { guideDeviceFor, GuideDevice } from '../services/GuideContentRegistry';
 import {
   SessionContextualGuide,
   sessionContextualGuide,
+  shouldRetrySessionContextualGuide,
   shouldShowSessionContextualGuide
 } from '../services/SessionContextualGuidePolicy';
 import { MoonlightConnectStageOverlay } from '../components/moonlight/MoonlightConnectStageOverlay';
@@ -342,6 +343,7 @@ struct MoonlightStreamPage {
   private presentationReleaseGeneration: number = 0;
   private presentationReleaseRetryTimer: number = -1;
   private presentationReleaseActive: boolean = false;
+  private contextualGuideRetryTimer: number = -1;
   private reconnectWindow: MoonlightReconnectWindow | null = null;
   private reconnectTimer: number = -1;
   private reconnectGeneration: number = 0;
@@ -359,6 +361,31 @@ struct MoonlightStreamPage {
     return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor);
   }
 
+  private clearMoonlightContextualGuideRetry(): void {
+    if (this.contextualGuideRetryTimer >= 0) {
+      clearTimeout(this.contextualGuideRetryTimer);
+      this.contextualGuideRetryTimer = -1;
+    }
+  }
+
+  private scheduleMoonlightContextualGuide(delayMs: number = 240): void {
+    if (this.contextualGuideRetryTimer >= 0 || !this.pageActive || this.routeTerminated) { return; }
+    this.contextualGuideRetryTimer = setTimeout((): void => {
+      this.contextualGuideRetryTimer = -1;
+      this.maybeShowMoonlightContextualGuide();
+      const guide: SessionContextualGuide = sessionContextualGuide('moonlight',
+        guideDeviceFor(this.isDesktopDevice, this.isPadDevice, this.breakpoint));
+      const alreadyShown: boolean = AppStorage.get<boolean>(guide.storageKey) ?? false;
+      const ready: boolean = this.pageActive && !this.routeTerminated &&
+        this.phase === 'streaming' && this.firstFrameSeen;
+      if (shouldRetrySessionContextualGuide(ready, alreadyShown) && !this.appInBackground) {
+        // Keep only one retry alive while a transient Sheet, keyboard or
+        // recovery overlay owns the visible session.
+        this.scheduleMoonlightContextualGuide(800);
+      }
+    }, delayMs);
+  }
+
   private maybeShowMoonlightContextualGuide(): void {
     const device: GuideDevice = guideDeviceFor(
       this.isDesktopDevice, this.isPadDevice, this.breakpoint);
@@ -367,16 +394,17 @@ struct MoonlightStreamPage {
     const blockingOverlayVisible: boolean = this.showSessionSheet || this.showModifierPanel ||
       this.showShortcutPanel || this.showController || this.keyboardOpen || this.surfaceRecovering;
     if (!shouldShowSessionContextualGuide(
-      this.phase === 'streaming' && this.firstFrameSeen, alreadyShown,
+      this.pageActive && !this.appInBackground && !this.routeTerminated &&
+        this.phase === 'streaming' && this.firstFrameSeen, alreadyShown,
       blockingOverlayVisible)) {
       return;
     }
-    AppStorage.setOrCreate<boolean>(guide.storageKey, true);
     try {
       this.getUIContext().getPromptAction().showToast({
         message: guide.message,
         duration: guide.durationMs
       });
+      AppStorage.setOrCreate<boolean>(guide.storageKey, true);
     } catch (_) {}
   }
 
@@ -560,6 +588,7 @@ struct MoonlightStreamPage {
 
   aboutToDisappear(): void {
     this.pageActive = false;
+    this.clearMoonlightContextualGuideRetry();
     this.pipLifecycleGeneration += 1;
     this.pipPrepareInFlight = false;
     this.pipTransferInProgress = false;
@@ -1143,6 +1172,7 @@ struct MoonlightStreamPage {
       void this.enterMoonlightBackground();
       return;
     }
+    this.scheduleMoonlightContextualGuide();
     void this.restoreMoonlightForeground();
   }
 
@@ -2646,7 +2676,7 @@ struct MoonlightStreamPage {
       this.physicalControllerPathReady = false;
     }
     this.showConnectStage = !snapshot.firstFrameSeen && snapshot.phase !== 'streaming';
-    this.maybeShowMoonlightContextualGuide();
+    this.scheduleMoonlightContextualGuide();
     if (this.sessionStartedAtMs > 0) {
       this.elapsedMs = Math.max(0, Date.now() - this.sessionStartedAtMs);
     }

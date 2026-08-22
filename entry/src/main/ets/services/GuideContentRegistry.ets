@@ -453,8 +453,10 @@ export function guideLessonsFor(device: GuideDevice, protocol: GuideProtocol): G
   const lessons: GuideLesson[] = [];
   GUIDE_LESSONS.forEach((lesson: GuideLesson): void => {
     const deviceMatches: boolean = lesson.devices.indexOf(device) >= 0;
-    const protocolMatches: boolean = protocol === 'all' ? lesson.protocol === 'all' :
-      (lesson.protocol === 'all' || lesson.protocol === protocol);
+    // “开始” owns the cross-protocol workflow. Once a protocol is selected,
+    // show that protocol immediately instead of placing five generic cards in
+    // front of the requested task.
+    const protocolMatches: boolean = lesson.protocol === protocol;
     if (deviceMatches && protocolMatches) { lessons.push(cloneLesson(lesson)); }
   });
   return lessons;

@@ -35,8 +35,10 @@ struct GuidePage {
   @StorageLink('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   @StorageLink('currentBreakpoint') @Watch('onBreakpointChange') breakpoint: string = 'sm';
-  @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
-  @StorageProp('isPadDevice') isPadDevice: boolean = false;
+  @StorageProp('isDesktopDevice') @Watch('onGuideDeviceChange')
+  isDesktopDevice: boolean = false;
+  @StorageProp('isPadDevice') @Watch('onGuideDeviceChange')
+  isPadDevice: boolean = false;
   @StorageLink('remoteDesktopBgFlag') @Watch('onBackgroundFlagChange') appInBackground: boolean = false;
   @State currentIndex: number = 0;
   @State showContent: boolean = false;
@@ -95,6 +97,12 @@ struct GuidePage {
     // preferType 在 Sheet 已显示时不会可靠地从 BOTTOM 切换为 CENTER，
     // 折叠/展开或跨窗口断点时先完成原生退出，再按新断点重新打开。
     this.showGuideSheet = false;
+  }
+
+  private onGuideDeviceChange(): void {
+    // EntryAbility publishes physical-device flags after the first breakpoint.
+    // Re-evaluate so PC/Pad do not keep that short-lived fallback selection.
+    this.refreshTutorialPages();
   }
 
   private usesGuideSheet(): boolean {

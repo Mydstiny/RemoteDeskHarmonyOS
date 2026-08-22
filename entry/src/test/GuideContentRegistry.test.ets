@@ -61,10 +61,12 @@ export default function guideContentRegistryTest(): void {
     it('filters_detailed_lessons_by_protocol_and_device', 0, (): void => {
       const phoneRdp: GuideLesson[] = guideLessonsFor('phone', 'rdp');
       const desktopMoonlight: GuideLesson[] = guideLessonsFor('desktop', 'moonlight');
-      expect(containsLesson(phoneRdp, 'common-phone-controls')).assertTrue();
+      expect(phoneRdp[0].id).assertEqual('rdp-prepare');
+      expect(containsLesson(phoneRdp, 'common-phone-controls')).assertFalse();
       expect(containsLesson(phoneRdp, 'rdp-prepare')).assertTrue();
       expect(containsLesson(phoneRdp, 'ssh-sftp')).assertFalse();
-      expect(containsLesson(desktopMoonlight, 'common-desktop-controls')).assertTrue();
+      expect(desktopMoonlight[0].id).assertEqual('moonlight-prepare');
+      expect(containsLesson(desktopMoonlight, 'common-desktop-controls')).assertFalse();
       expect(containsLesson(desktopMoonlight, 'moonlight-desktop-control')).assertTrue();
       expect(containsLesson(desktopMoonlight, 'moonlight-control')).assertFalse();
     });

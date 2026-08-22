@@ -10802,6 +10802,10 @@ struct HostListPage {
   }
 
   private settingsLeafSheetHeight(): SheetSize | number {
+    if (this.settingsLeafSheetMode === SETTINGS_SHEET_POPUP && this.popupSheetMode === 1 &&
+      (this.aboutSheetMode === 3 || this.aboutSheetMode === 5)) {
+      return SheetSize.LARGE;
+    }
     const diagnosticHeight: number = diagnosticLogSettingsLeafSheetHeight(this.settingsLeafSheetMode);
     if (diagnosticHeight > 0) { return diagnosticHeight; }
     const moonlightHeight: number = moonlightSettingsLeafSheetHeight(this.settingsLeafSheetMode);

@@ -13,6 +13,11 @@ export function shouldShowSessionContextualGuide(ready: boolean, alreadyShown: b
   return ready && !alreadyShown && !blockingOverlayVisible;
 }
 
+export function shouldRetrySessionContextualGuide(ready: boolean,
+  alreadyShown: boolean): boolean {
+  return ready && !alreadyShown;
+}
+
 export function sessionContextualGuide(surface: SessionContextualGuideSurface,
   device: GuideDevice): SessionContextualGuide {
   if (surface === 'ssh') {
