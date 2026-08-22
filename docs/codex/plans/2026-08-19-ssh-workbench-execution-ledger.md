@@ -3,7 +3,7 @@
 > 状态：`ACTIVE_M8_M9` / `NOT_COMPLETE`
 > 权威计划：`docs/codex/plans/2026-08-19-ssh-termius-harmonyos7-api26-workbench-plan.md`
 > 建立日期：2026-08-19
-> 当前工作树：`codex/moonlight-complete-upgrade` / `4a9b0923`（M0–M9 SSH 增量保留；workbench flag 已增加协议身份门禁，API23 PC 已补 SFTP 下载暂停/继续/取消/重试闭环和短窗口操作区修复；API26 工具链和最终实机矩阵仍待外部条件）
+> 当前工作树：`codex/moonlight-complete-upgrade` / `514be272`（M0–M9 SSH 增量保留；workbench flag 已增加协议身份门禁，API23 PC 已补 SFTP 下载暂停/继续/取消/重试闭环和短窗口操作区修复，广播输入刷新不再静默替换显式目标；API26 工具链和最终实机矩阵仍待外部条件）
 > 当前产品基线：HarmonyOS 6.1 / API 23
 > API 26 状态：本机未安装；任何 API 26-only import 均禁止进入产品代码
 
@@ -22,6 +22,7 @@
 
 ## 2A. 最新执行指针（2026-08-22）
 
+- `514be272` 修复 M7 广播输入的目标漂移：广播面板首次打开时仍只预选当前 SSH 会话；用户显式选择的目标若在确认前断开、进入鉴权/raw/全屏等不安全状态，发送前刷新只移除该目标，不会把当前会话静默补入并接收原本未发给它的输入。纯策略测试锁定首次预选、显式空选择、失效目标不替换及有效目标去重；本轮只声明源码策略和构建证据，未在 HDC/真机上冒充完成广播 UI 矩阵。
 - `4a9b0923` 修复 Pad/PC 短自由窗口 SFTP 双栏布局把底部传输操作挤出可视区的问题：宽裕窗口仍由现有 `layoutWeight` 自动扩展，只把工作区最小高度从空闲 300vp 收敛为统一 150vp。策略测试锁定空闲、传输中、待恢复三态均保留 footer；API23 PC 同一 SSH 窗口底边 y=1048 下，“传输方向”从修复前 y=957 移到 y=768，“选择文件并上传/下载到本机”完整位于 y=805–881。
 - API23 PC 回环 SFTP 下载完成真实生命周期闭环：256MB 文件从“下载中 1%”进入“已暂停 12% · 33.3MB/256.0MB”，继续后推进到 14%，取消后显示 partial 已保留和“重试传输”；重新授权并确认目标替换后从保留偏移恢复到 16%，最终显示“已保存 268435456 字节”，刷新本机端点后目标条目为 256.0MB。该证据覆盖 PC/API23 下载侧；上传侧、Phone、物理设备和 API26 仍不冒充已完成矩阵。
 - `2d23d9c7` 补齐 M0 非 SSH 隔离契约：`SshWorkspacePlatformFacts` 显式携带协议身份，只有规范化后的 `ssh` 才能消费 `sshWorkbenchV2`；即使 API26、DynamicLayout、ContainerReader、UI Design Kit、多窗口和键盘能力声明全部为真，RDP/VNC/RustDesk/Moonlight 仍强制返回 workbench 关闭、静态布局、纯色 chrome、无 detached window/SSH shortcut。既有 `SshWorkspacePolicy.test` 增加四协议 fail-closed 用例，无共享测试注册改动。
@@ -261,7 +262,7 @@ M0 action 只修改纯快照：创建/重命名工作区、打开占位 tab、�
 | SSH-U0 | API 26 SDK | capability allowlist | 待 SDK | 待 SDK | 待 SDK | 待 API 26 设备 | 待 | BLOCKED_BY_SDK |
 | M0 | S0 契约 | 纯 snapshot/reducer、非 owning runtime adapter、capability/layout/style policy、flag-off Shell | 16 个纯策略用例已注册；设备执行未声明 | PASS，exit 0（最终复跑） | PASS，exit 0，7.122s | flag 默认关闭；旧页面未接线，既有 HDC 错误路径不变 | 一次主审 + 一次定向复核完成；5 个生产问题与 2 个测试问题均已修复 | READY_FOR_CHECKPOINT |
 | M1–M6 | M0 契约 | 已落地 | 已注册 | PASS | PASS | API23 smoke | 已复核 | CHECKPOINT |
-| M7 | M6 工作台 | 已落地 | 已注册 | PASS | PASS | 真实主机待接入 | 已复核 | DEVICE_PENDING |
+| M7 | M6 工作台 | 已落地；广播刷新只保留显式且仍安全的目标 | 已注册；包含失效目标不替换策略用例 | PASS | PASS | 真实主机及广播 UI 矩阵待接入 | 已复核；本次安全修复待最终实机复核 | DEVICE_PENDING |
 | M8 | M7 工作台 | 已落地 | 已注册 | PASS | PASS | API26/高负载设备待验 | 已复核 | DEVICE_PENDING |
 | M9 | M8 前置 | SSH handoff、独立窗口前台恢复、沉浸/分屏回归已落地 | 策略覆盖 | PASS | PASS | PC/API23 模拟器已证明鉴权后开窗、SFTP/终端保活、转发 payload、最小化/最近任务恢复、F11 沉浸进出、左边缘 WMS 分屏、任务栏/WMS 多窗口；物理/API26/剩余协议矩阵待验 | 待最终实机复核 | DEVICE_PENDING |
 
@@ -287,3 +288,5 @@ hvigorw --mode module -p module=entry -p product=default assembleHap --analyze=n
 2026-08-22 M0 协议隔离 receipt：`2d23d9c7` 将协议身份加入现有 SSH capability policy，并新增 RDP/VNC/RustDesk/Moonlight 四种非 SSH 输入的 fail-closed 契约。精确 `default@OhosTestCompileArkTS` exit 0，`assembleHap` exit 0（`BUILD SUCCESSFUL in 13 s 673 ms`）；签名 HAP SHA-256 为 `07465028a9cdc1c8211becbe74a53b51fd4dd3d41a92a67eca306bd48eb6ba2e`。最新包安装到 API23 PC `127.0.0.1:5557` 并启动成功；模块偏好文件确认 `sshWorkbenchV2=false`，协议选择 Sheet 层级同时包含 RDP、RustDesk、SSH、VNC、Moonlight。证据为 `/private/tmp/ssh-flag-isolation-start.json`（`178ef6f900217aaac95ba1e95d6656ac2397ca9dc56bfeb0813bc6fa757dc6bc`）、`/private/tmp/ssh-flag-isolation-start.jpeg`（`7b7e7657f92af8cbe0e25bfa78a22b73de44d3dfe040fc07e7d04a5a3255b91a`）和 `/private/tmp/ssh-flag-isolation-picker.json`（`0ce6b0de1e955cde979d67eb55d6d612bdd4866ee7d45877b518efb6edc4fcdf`）。本次未执行受既有 runner 基线阻塞的设备 Hypium，未把源码用例编译冒充运行通过；用户并行的 `VncSettingsPage.ets` 仍未暂存。
 
 2026-08-22 SFTP 下载生命周期与短窗口 receipt：`4a9b0923` 只修改 `SheetTransitionPolicy.ets` 及既有策略测试，使双栏内容区在短窗口最低可压缩至 150vp；大窗口 `layoutWeight` 扩展、SSH/SFTP 引擎、任务 store、完整性 checkpoint 与其他协议均未改动。精确 `default@OhosTestCompileArkTS` 与 `assembleHap` 连续执行均 exit 0（assembleHap：`BUILD SUCCESSFUL in 14 s 175 ms`）；签名 HAP SHA-256 为 `c9ba42fdd0500b13f9867bd6083d8358126f2e8e24a9d3376d140c35a172d2f1`，安装到 API23 PC `127.0.0.1:5557` 成功。下载证据依次为 `/private/tmp/ssh-sftp-downloading.json`（`12294f433d13226308309e2a877d4c6dd52fc28ccddec4b22224922ed2d69017`）、`ssh-sftp-paused.json`（`1f781bc85f6238eb0b296ef65f37ce026ec2a3560500beede00a0b0ea7b444f4`）、`ssh-sftp-resumed.json`（`552b414432c1157d3ca5176e336a82a36b0e75c9a0ba61b645ff1c993eef4613`）、`ssh-sftp-cancelled.json`（`760930d88a6a98844264a9a06ce76297687ff4b3be348a7656eb8c85f2283853`）、`ssh-sftp-retry-active.json`（`978c3752d10e47fa14c0a4e2a20028d109a4b76dbe24f4d6800bf2617c882565`）、`ssh-sftp-completed.json`（`3acb59246abfc31310a3ba9a905382dcf18b858af6761c17b5b29897570f5a89`）和本机列表刷新 `ssh-sftp-local-refreshed.json`（`70aa895549d8923b265d26485f26dbb4dc9886966d85dd08c97455a933084e5a`）。短窗口布局证据为 `ssh-sftp-short-fixed.json`（`3ba89c61c6ed73d044a1bf602dbea75aa41e6b77ce4c26d2ae20be8005bb0257`）与选择本机端点后的 `ssh-sftp-short-local.json`（`24dc50c9089fb4b7ce6c9e822ea362370664f81312439de6894529e383ed8a48`）。本轮只宣称 API23 PC 下载侧闭环；清理 blocker 如 7.3 所列。
+
+2026-08-22 M7 广播目标失效保护 receipt：`514be272` 在既有 `SshBroadcastPolicy` 中增加纯选择协调函数，并让 `SshTerminal` 仅在广播面板首次打开时预选当前 host；切换目标、确认前刷新和实际发送前刷新均只保留用户显式选择且仍满足连接、鉴权、raw、全屏安全约束的 host。由此，唯一显式目标失效后结果为空并拒绝发送，不再把当前会话静默替换为接收方。新增策略用例覆盖首次预选、显式空选择、目标失效不替换及有效目标去重。精确 `default@OhosTestCompileArkTS` exit 0，`assembleHap` exit 0（`BUILD SUCCESSFUL in 12 s 976 ms`）；签名 HAP SHA-256 为 `2ebb812bdac9fdb3bcd93d83798939ac438b20ee4d7ef7279010786c5ba2b462`。本 receipt 不声明 HDC/真机广播交互通过；相关设备矩阵和 7.3 所列定点清理仍待外部审批/设备条件。
