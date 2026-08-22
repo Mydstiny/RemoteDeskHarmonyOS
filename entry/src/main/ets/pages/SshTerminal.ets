@@ -16708,6 +16708,34 @@ struct SshTerminal {
             if (!this.terminalClosing) { this.focusKeyboard(false); }
           }
         })
+
+      // This feature remains fail-closed until its encrypted store is ready,
+      // but once enabled its Sheet must not share a lifecycle with unrelated
+      // root bindings on API 23.
+      Column()
+        .width(1)
+        .height(1)
+        .hitTestBehavior(HitTestMode.None)
+        .bindSheet($$this.showSshProductivitySheet, this.SshProductivitySheetContent(), {
+          height: this.breakpoint === 'sm' ? SheetSize.LARGE : '720vp',
+          preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
+          width: this.breakpoint === 'sm' ? '100%' : '760vp',
+          dragBar: this.breakpoint === 'sm',
+          backgroundColor: '#171D25',
+          blurStyle: BlurStyle.NONE,
+          showClose: false,
+          maskColor: 'rgba(0,0,0,0.48)',
+          onWillDismiss: (action: DismissSheetAction): void => {
+            this.showSshProductivitySheet = false;
+            action.dismiss();
+          },
+          onDisappear: (): void => {
+            if (this.showSshProductivitySheet) { this.showSshProductivitySheet = false; }
+            if (!this.terminalClosing && !this.sshModalOwnsKeyboard()) {
+              this.focusKeyboard(false);
+            }
+          }
+        })
     }
     .width('100%').height('100%')
     .bindSheet($$this.showPassphraseSheet, this.passphraseSheet(), {
@@ -16722,26 +16750,6 @@ struct SshTerminal {
         if (this.passphraseResolve) {
           this.passphraseResolve('');
           this.passphraseResolve = null;
-        }
-      }
-    })
-    .bindSheet($$this.showSshProductivitySheet, this.SshProductivitySheetContent(), {
-      height: this.breakpoint === 'sm' ? SheetSize.LARGE : '720vp',
-      preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
-      width: this.breakpoint === 'sm' ? '100%' : '760vp',
-      dragBar: this.breakpoint === 'sm',
-      backgroundColor: '#171D25',
-      blurStyle: BlurStyle.NONE,
-      showClose: false,
-      maskColor: 'rgba(0,0,0,0.48)',
-      onWillDismiss: (action: DismissSheetAction): void => {
-        this.showSshProductivitySheet = false;
-        action.dismiss();
-      },
-      onDisappear: (): void => {
-        if (this.showSshProductivitySheet) { this.showSshProductivitySheet = false; }
-        if (!this.terminalClosing && !this.sshModalOwnsKeyboard()) {
-          this.focusKeyboard(false);
         }
       }
     })
