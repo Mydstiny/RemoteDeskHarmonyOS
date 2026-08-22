@@ -73,6 +73,7 @@ import {
   isDiagnosticModuleCapturing,
   recordDiagnosticEvent
 } from './DiagnosticCaptureRuntime';
+import { sshDiagnosticErrorCode } from './ssh/observability/SshDiagnosticPolicy';
 
 const TAG = 'ExtensionLoader';
 const DOMAIN = 0x0013;
@@ -2098,7 +2099,8 @@ export class ExtensionLoader {
     try {
       return rdpnapi.getSshAuthPrompt(sessionId, sessionGeneration) as SshAuthPromptRequest | null;
     } catch (err) {
-      hilog.warn(DOMAIN, TAG, '[ExtensionLoader] getSshAuthPrompt: ' + JSON.stringify(err));
+      hilog.warn(DOMAIN, TAG, '[ExtensionLoader] getSshAuthPrompt code=' +
+        sshDiagnosticErrorCode(err));
       return null;
     }
   }
@@ -2107,7 +2109,8 @@ export class ExtensionLoader {
     try {
       return rdpnapi.respondSshAuthPrompt(response) as boolean;
     } catch (err) {
-      hilog.warn(DOMAIN, TAG, '[ExtensionLoader] respondSshAuthPrompt: ' + JSON.stringify(err));
+      hilog.warn(DOMAIN, TAG, '[ExtensionLoader] respondSshAuthPrompt code=' +
+        sshDiagnosticErrorCode(err));
       return false;
     }
   }
@@ -2117,7 +2120,8 @@ export class ExtensionLoader {
       return rdpnapi.cancelSshAuthPrompt(
         sessionId, sessionGeneration, requestId) as boolean;
     } catch (err) {
-      hilog.warn(DOMAIN, TAG, '[ExtensionLoader] cancelSshAuthPrompt: ' + JSON.stringify(err));
+      hilog.warn(DOMAIN, TAG, '[ExtensionLoader] cancelSshAuthPrompt code=' +
+        sshDiagnosticErrorCode(err));
       return false;
     }
   }
