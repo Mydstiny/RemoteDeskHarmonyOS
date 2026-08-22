@@ -67,6 +67,24 @@ export default function sshWebMessagePortPolicyTest(): void {
       expect(futureAck.state.lastReceivedSequence).assertEqual(1);
     });
 
+    it('should_reject_fractional_and_forward_gap_counters', 0, (): void => {
+      expect(decodeSshWebMessage('{"version":1,"kind":"output","sessionKey":"host:session","generation":4,"sequence":1.5,"ackSequence":0,"payload":"x"}') === null).assertTrue();
+      expect(decodeSshWebMessage('{"version":1,"kind":"output","sessionKey":"host:session","generation":4,"sequence":2,"ackSequence":0.5,"payload":"x"}') === null).assertTrue();
+      expect(decodeSshWebMessage('{"version":1,"kind":"output","sessionKey":"host:session","generation":4.5,"sequence":2,"ackSequence":0,"payload":"x"}') === null).assertTrue();
+      const fractionalIdentity = startSshWebMessageHandshake(
+        createSshWebMessageState('host:session', 4.5));
+      expect(fractionalIdentity.accepted).assertFalse();
+      expect(fractionalIdentity.code).assertEqual('invalid_identity');
+
+      const gap = acceptSshWebMessage(readyState(), {
+        version: 1, kind: 'input', sessionKey: 'host:session', generation: 4,
+        sequence: 3, ackSequence: 1, payload: 'late-after-gap'
+      });
+      expect(gap.accepted).assertFalse();
+      expect(gap.code).assertEqual('out_of_order_sequence');
+      expect(gap.state.lastReceivedSequence).assertEqual(1);
+    });
+
     it('should_prioritize_control_and_bound_in_flight', 0, (): void => {
       let state = readyState();
       const first = enqueueSshWebMessage(state, 'output', 'out');

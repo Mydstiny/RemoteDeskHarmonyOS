@@ -28,6 +28,7 @@ export type SshWebMessageDecisionCode =
   | 'stale_generation'
   | 'stale_sequence'
   | 'duplicate_sequence'
+  | 'out_of_order_sequence'
   | 'queue_full'
   | 'frame_too_large'
   | 'in_flight_full';
@@ -116,15 +117,15 @@ function cloneState(state: SshWebMessageStateV1): SshWebMessageStateV1 {
 
 function validIdentity(sessionKey: string, generation: number): boolean {
   return sessionKey.trim().length > 0 && Number.isFinite(generation) &&
-    Math.floor(generation) > 0;
+    Math.floor(generation) === generation && generation > 0;
 }
 
 function validSequence(sequence: number): boolean {
-  return Number.isFinite(sequence) && Math.floor(sequence) > 0;
+  return Number.isFinite(sequence) && Math.floor(sequence) === sequence && sequence > 0;
 }
 
 function validAckSequence(sequence: number): boolean {
-  return Number.isFinite(sequence) && Math.floor(sequence) >= 0;
+  return Number.isFinite(sequence) && Math.floor(sequence) === sequence && sequence >= 0;
 }
 
 function allowedKind(kind: string): boolean {
@@ -207,7 +208,8 @@ export function createSshWebMessageState(sessionKey: string,
   return {
     phase: validIdentity(sessionKey, generation) ? 'closed' : 'closed',
     sessionKey: sessionKey.trim(),
-    generation: Number.isFinite(generation) ? Math.floor(generation) : 0,
+    generation: Number.isFinite(generation) && Math.floor(generation) === generation
+      ? generation : 0,
     nextSequence: 1,
     lastReceivedSequence: 0,
     lastAckedSequence: 0,
@@ -360,6 +362,9 @@ export function acceptSshWebMessage(state: SshWebMessageStateV1,
     const duplicateCode: SshWebMessageDecisionCode = envelope.sequence === next.lastReceivedSequence
       ? 'duplicate_sequence' : 'stale_sequence';
     return { accepted: false, code: duplicateCode, state: next, envelope: null };
+  }
+  if (envelope.sequence !== next.lastReceivedSequence + 1) {
+    return { accepted: false, code: 'out_of_order_sequence', state: next, envelope: null };
   }
   if (envelope.kind !== 'hello_ack' && envelope.kind !== 'hello' &&
     envelope.kind !== 'close' && next.phase !== 'ready') {

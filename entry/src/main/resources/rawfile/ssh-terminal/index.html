@@ -194,7 +194,7 @@
         if (!envelope || !state.webMessagePort ||
             envelope.sessionKey !== state.webMessageSessionKey ||
             envelope.generation !== state.webMessageGeneration ||
-            envelope.sequence <= state.webMessageLastReceivedSequence ||
+            envelope.sequence !== state.webMessageLastReceivedSequence + 1 ||
             envelope.ackSequence >= state.webMessageNextSequence) {
           return false;
         }
@@ -206,6 +206,7 @@
         var envelope = decodeWebMessage(raw);
         if (!envelope) return;
         if (envelope.kind === 'hello') {
+          if (envelope.sequence !== 1 || envelope.ackSequence !== 0) return;
           if (state.webMessagePort && state.webMessageSessionKey &&
               (envelope.sessionKey !== state.webMessageSessionKey ||
                envelope.generation !== state.webMessageGeneration)) return;
