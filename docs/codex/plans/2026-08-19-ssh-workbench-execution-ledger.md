@@ -3,7 +3,7 @@
 > 状态：`ACTIVE_M8_M9` / `NOT_COMPLETE`
 > 权威计划：`docs/codex/plans/2026-08-19-ssh-termius-harmonyos7-api26-workbench-plan.md`
 > 建立日期：2026-08-19
-> 当前工作树：`codex/moonlight-complete-upgrade` / `7246f498`（M0–M9 SSH 增量保留；workbench flag 已增加协议身份门禁，API23 PC 已补 SFTP 下载暂停/继续/取消/重试闭环和短窗口操作区修复，会话日志与广播输入均受默认关闭的独立高风险 flag 约束，日志追加采用重启安全的不可变 chunk 提交，日志导出补齐确认和异步身份 fence，大日志搜索改为可取消的分片调度，命令完成通知增加默认关闭的独立用户设置并保留并发会话通知，多窗格 xterm 安全模式按 host/session/generation 隔离且未知状态 fail closed，广播刷新不再静默替换显式目标或跨重连保留旧选择，WebMessagePort 双端序号严格连续；API26 工具链和最终实机矩阵仍待外部条件）
+> 当前工作树：`codex/moonlight-complete-upgrade` / `cd22f921`（M0–M9 SSH 增量保留；workbench flag 已增加协议身份门禁，API23 PC 已补 SFTP 下载暂停/继续/取消/重试闭环和短窗口操作区修复，会话日志与广播输入均受默认关闭的独立高风险 flag 约束，日志追加采用重启安全的不可变 chunk 提交，页面日志投影不再携带持久记录正文，日志导出补齐确认和异步身份 fence，大日志搜索改为可取消的分片调度，命令完成通知增加默认关闭的独立用户设置并保留并发会话通知，多窗格 xterm 安全模式按 host/session/generation 隔离且未知状态 fail closed，广播刷新不再静默替换显式目标或跨重连保留旧选择，WebMessagePort 双端序号严格连续；API26 工具链和最终实机矩阵仍待外部条件）
 > 当前产品基线：HarmonyOS 6.1 / API 23
 > API 26 状态：本机未安装；任何 API 26-only import 均禁止进入产品代码
 
@@ -22,6 +22,7 @@
 
 ## 2A. 最新执行指针（2026-08-22）
 
+- `cd22f921` 修复 M6 日志 Sheet 打开时每次缓冲输出刷新都把完整持久日志复制进 ArkUI `@State` 的问题：Store 新增只含设置与 chunk 元数据的页面快照，记录正文继续留在加密 Store 内；设置开关使用独立浅快照。完整 snapshot、分片搜索、书签、导出和持久化路径不变，回归用例证明页面快照无记录正文但 Store 搜索与完整快照仍可读取记录。
 - `7246f498` 修复 M6 日志 chunk 先覆盖旧行、后写索引导致失败提交在重启后复活的问题：逻辑尾 chunk 的每次更新都写入新 ID，旧索引继续指向旧密文；只有新索引提交成功才删除旧行及对应序列化/密文缓存。Store 测试增加索引写失败后的全新实例恢复，证明未提交记录不会被旧索引重新载入。
 - `903eb5b1` 修复 M6 多会话命令完成通知复用固定 ID 的问题：每个满足 opt-in 和时长/失败门禁的完成事件从 1024 个有界 ID 环中取得下一个值，避免正常并发完成时后一条通知覆盖前一条，同时不引入无界 ID。纯策略用例覆盖连续分配、边界回绕和非有限输入。
 - `490e11af` 修复 M6/M7 多窗格安全模式仍依赖当前页面全局状态的问题：每个 xterm 文档在完成 VT 写入后通过稀疏 JS proxy 上报 mouse/application cursor/application keypad/alternate-buffer 状态，ArkTS 侧同时校验 WebView 生命周期、surface identity、host、sessionId 与 generation；未知、过期或跨会话遥测一律不作为安全证据。广播目标增加 `safetyKnown` fail-closed 原因，会话日志和命令历史也只在精确身份的安全快照存在且非 raw/备用屏幕时采集。
@@ -320,3 +321,5 @@ hvigorw --mode module -p module=entry -p product=default assembleHap --analyze=n
 2026-08-22 M6 并发完成通知 ID receipt：`903eb5b1` 将 SSH 完成通知的单一固定 ID 改为服务实例内的 1024 项有界 ID 环；只有实际满足用户 opt-in 及失败/长命令策略的事件才分配 ID，正常多会话并发不再因 `notificationManager.publish` 使用同一个 ID 而互相替换，达到边界后才确定回绕且不产生无界编号。纯策略用例覆盖首次分配、连续分配、上界回绕和 `NaN`。精确 `default@OhosTestCompileArkTS` exit 0（`BUILD SUCCESSFUL in 8 s 843 ms`），`assembleHap` exit 0（`BUILD SUCCESSFUL in 10 s 212 ms`）；签名 HAP SHA-256 为 `39f6a0e8293d43449f5a3f6f2c36580e70017c27bf37d4e5257cbd4a91880313`。本 receipt 不声明通知权限、后台/锁屏、API26 或物理设备多会话通知矩阵已验收。
 
 2026-08-22 M6 日志 chunk 重启一致性 receipt：`7246f498` 将逻辑尾 chunk 的更新从“覆盖同一 RDB 行”改为不可变候选行：新密文使用由记录身份、session/generation、时间、chunk 序号和记录数构成的新 ID，先写新行，再原子地以索引作为可见性边界；索引失败时旧索引仍只引用旧密文，成功后才删除旧行及其内存序列化/密文缓存。Store 回归用例不仅检查当前实例未前移，还在模拟索引写失败后创建全新 Store 并重新初始化，证明失败追加不会在进程重启后复活。第一次正式 `assembleHap` 因并行 `CloudStore.ets` 正在增加但尚未定义 `rdpRestrictedAdminSecretOwnedByCurrentScope` 而 exit 255，本次 3 个 SSH 文件无报错；并行修改稳定后，精确 `default@OhosTestCompileArkTS` 与 `assembleHap` 均重跑 exit 0，最终 assemble 为 `BUILD SUCCESSFUL in 1 s 509 ms`，签名 HAP SHA-256 为 `71c3d26627c2c9a74bddeab7ca27817d812d331f1911f6af636a3bcea1932123`。本 receipt 证明模拟失败恢复及产品构建，不冒充真实断电、API26 或物理设备恢复矩阵。
+
+2026-08-22 M6 日志页面轻量投影 receipt：`cd22f921` 保留 `SshSessionLogStore.snapshot()` 的完整深拷贝语义供既有非热路径使用，新增 `pageSnapshot()` 只复制设置及 chunk 身份、时间、大小等元数据，并让 `SshTerminal` 的可观察页面状态和设置开关不再读取记录正文。日志 Sheet 当前只消费设置和 chunk 数量，搜索结果继续由可取消分片搜索单独返回；测试锁定轻量投影的 `records` 为空，同时完整 snapshot 与搜索仍能读取原记录。精确 `default@OhosTestCompileArkTS` exit 0，`assembleHap` exit 0（`BUILD SUCCESSFUL in 12 s 234 ms`）；标准签名 HAP SHA-256 为 `fb4bacf3c0ae22fd01aa1fc351015326a9a21ede8130837d0b1c7f416c0f0d58`。本 receipt 证明源码、测试编译和打包门禁，不冒充 10MiB 真机压力、API26 或物理设备验收。
