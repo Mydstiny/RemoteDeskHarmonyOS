@@ -16813,23 +16813,31 @@ struct SshTerminal {
             action.dismiss();
           }
         })
+
+      // This fallback prompt can appear after private-key preflight. Keep it
+      // independent from workbench Sheets so API 23 cannot dismiss it before
+      // the pending passphrase promise is resolved by the user.
+      Column()
+        .width(1)
+        .height(1)
+        .hitTestBehavior(HitTestMode.None)
+        .bindSheet($$this.showPassphraseSheet, this.passphraseSheet(), {
+          height: SheetSize.FIT_CONTENT,
+          preferType: this.isDesktopDevice ? SheetType.CENTER : SheetType.BOTTOM,
+          dragBar: !this.isDesktopDevice,
+          backgroundColor: this.pal().sheetBg,
+          blurStyle: BlurStyle.NONE,
+          showClose: false,
+          maskColor: 'rgba(0,0,0,0.4)',
+          onDisappear: (): void => {
+            if (this.passphraseResolve) {
+              this.passphraseResolve('');
+              this.passphraseResolve = null;
+            }
+          }
+        })
     }
     .width('100%').height('100%')
-    .bindSheet($$this.showPassphraseSheet, this.passphraseSheet(), {
-      height: SheetSize.FIT_CONTENT,
-      preferType: this.isDesktopDevice ? SheetType.CENTER : SheetType.BOTTOM,
-      dragBar: !this.isDesktopDevice,
-      backgroundColor: this.pal().sheetBg,
-      blurStyle: BlurStyle.NONE,
-      showClose: false,
-      maskColor: 'rgba(0,0,0,0.4)',
-      onDisappear: (): void => {
-        if (this.passphraseResolve) {
-          this.passphraseResolve('');
-          this.passphraseResolve = null;
-        }
-      }
-    })
     .bindSheet($$this.showSshTabPicker, this.sshTabPickerSheet(), {
       height: this.breakpoint === 'sm' ? SheetSize.LARGE : SheetSize.FIT_CONTENT,
       preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
