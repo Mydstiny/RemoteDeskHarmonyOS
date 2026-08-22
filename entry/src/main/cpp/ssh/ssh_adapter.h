@@ -238,7 +238,7 @@ public:
         const std::vector<std::string>* explicitResponses,
         const std::string* password, bool allowPasswordFallback,
         const std::string& targetHost, const std::string& hop,
-        size_t& presetIndex);
+        size_t& presetIndex, bool& passwordFallbackUsed);
     void recordAuthPromptFailure(int error) noexcept;
 
     /** Explicit SSH session identity used by background/UI facades. */
@@ -355,6 +355,7 @@ private:
     std::string authPromptHop_ = "target";
     bool authPromptAllowPasswordFallback_ = false;
     size_t authPromptPresetIndex_ = 0;
+    bool authPromptPasswordFallbackUsed_ = false;
 
     // ---- libssh2 会话和通道 ----
     LIBSSH2_SESSION* session_;

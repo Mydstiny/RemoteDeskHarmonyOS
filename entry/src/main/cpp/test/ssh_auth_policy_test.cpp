@@ -29,3 +29,10 @@ RDP_TEST_CASE(ssh_keyboard_interactive_password_fallback_requires_hidden_prompt)
     RDP_ASSERT(sshKeyboardInteractivePromptCanUsePassword(false));
     RDP_ASSERT(!sshKeyboardInteractivePromptCanUsePassword(true));
 }
+
+RDP_TEST_CASE(ssh_keyboard_interactive_password_fallback_is_single_use) {
+    RDP_ASSERT(sshKeyboardInteractivePasswordFallbackCanAutofill(1, false, false));
+    RDP_ASSERT(!sshKeyboardInteractivePasswordFallbackCanAutofill(1, true, false));
+    RDP_ASSERT(!sshKeyboardInteractivePasswordFallbackCanAutofill(2, false, false));
+    RDP_ASSERT(!sshKeyboardInteractivePasswordFallbackCanAutofill(1, false, true));
+}

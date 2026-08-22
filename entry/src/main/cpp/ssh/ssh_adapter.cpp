@@ -137,6 +137,7 @@ namespace {
         const std::string* password = nullptr;
         const std::vector<std::string>* explicitResponses = nullptr;
         size_t* presetIndex = nullptr;
+        bool* passwordFallbackUsed = nullptr;
         std::string targetHost;
         std::string hopLabel;
         bool allowPasswordFallback = false;
@@ -151,14 +152,15 @@ namespace {
             return;
         }
         auto* context = static_cast<SshJumpKeyboardContext*>(*abstract);
-        if (context->adapter == nullptr || context->presetIndex == nullptr) {
+        if (context->adapter == nullptr || context->presetIndex == nullptr ||
+            context->passwordFallbackUsed == nullptr) {
             return;
         }
         const int result = context->adapter->fillKeyboardInteractiveResponses(
             name, nameLen, instruction, instructionLen, numPrompts, prompts, responses,
             context->explicitResponses, context->password,
             context->allowPasswordFallback, context->targetHost, context->hopLabel,
-            *context->presetIndex);
+            *context->presetIndex, *context->passwordFallbackUsed);
         if (result != 0) {
             context->adapter->recordAuthPromptFailure(result);
         }
@@ -2119,9 +2121,10 @@ int SshAdapter::connectThroughSshJump(const ConnectionConfig& cfg) {
             authPromptHop_ = hopLabel;
             authPromptPresetIndex_ = 0;
             authPromptFailure_.store(0, std::memory_order_release);
+            bool passwordFallbackUsed = false;
             SshJumpKeyboardContext context {
-                this, &password, &responses, &authPromptPresetIndex_, hop.host,
-                hopLabel, allowPasswordFallback
+                this, &password, &responses, &authPromptPresetIndex_,
+                &passwordFallbackUsed, hop.host, hopLabel, allowPasswordFallback
             };
             *abstract = &context;
             int authResult = 0;
@@ -2617,7 +2620,7 @@ int SshAdapter::fillKeyboardInteractiveResponses(
     const std::vector<std::string>* explicitResponses,
     const std::string* password, bool allowPasswordFallback,
     const std::string& targetHost, const std::string& hop,
-    size_t& presetIndex) {
+    size_t& presetIndex, bool& passwordFallbackUsed) {
     if (numPrompts <= 0) {
         return 0;
     }
@@ -2653,18 +2656,13 @@ int SshAdapter::fillKeyboardInteractiveResponses(
                       explicitResponses->begin() + presetIndex + promptCount);
         presetIndex += promptCount;
     } else {
-        bool canUsePassword = allowPasswordFallback && password != nullptr &&
-            !password->empty();
+        const bool canUsePassword = allowPasswordFallback && password != nullptr &&
+            !password->empty() &&
+            sshKeyboardInteractivePasswordFallbackCanAutofill(
+                promptCount, promptList.front().echo, passwordFallbackUsed);
         if (canUsePassword) {
-            for (const SshAuthPrompt& prompt : promptList) {
-                if (!sshKeyboardInteractivePromptCanUsePassword(prompt.echo)) {
-                    canUsePassword = false;
-                    break;
-                }
-            }
-        }
-        if (canUsePassword) {
-            values.assign(promptCount, *password);
+            values.push_back(*password);
+            passwordFallbackUsed = true;
         } else {
             setSshLifecycleState(SshSessionLifecycleState::NeedsAuthentication);
             const SshAuthPromptWaitResult waitResult = authPromptBroker_.waitForResponse(
@@ -2715,7 +2713,7 @@ int SshAdapter::keyboardInteractiveResponseRound(
         name, nameLen, instruction, instructionLen, numPrompts, prompts, responses,
         &savedCfg_.sshKeyboardInteractiveResponses, &savedCfg_.password,
         authPromptAllowPasswordFallback_, savedCfg_.host, authPromptHop_,
-        authPromptPresetIndex_);
+        authPromptPresetIndex_, authPromptPasswordFallbackUsed_);
 }
 
 int SshAdapter::authenticateKeyboardInteractive(bool allowPasswordFallback) {
@@ -2748,6 +2746,7 @@ int SshAdapter::authenticateKeyboardInteractive(bool allowPasswordFallback) {
     authPromptAllowPasswordFallback_ = allowPasswordFallback;
     authPromptHop_ = "target";
     authPromptPresetIndex_ = 0;
+    authPromptPasswordFallbackUsed_ = false;
     authPromptFailure_.store(0, std::memory_order_release);
     int rc;
     while ((rc = libssh2_userauth_keyboard_interactive(
@@ -2985,6 +2984,7 @@ int SshAdapter::connectInternal(const ConnectionConfig& cfg, bool preserveOwner)
     authPromptHop_ = "target";
     authPromptAllowPasswordFallback_ = false;
     authPromptPresetIndex_ = 0;
+    authPromptPasswordFallbackUsed_ = false;
     if (connectCancelRequested_.load(std::memory_order_acquire)) {
         OH_LOG_INFO(LOG_APP, "[SSH] 连接在开始前已取消");
         if (preserveOwner) {
