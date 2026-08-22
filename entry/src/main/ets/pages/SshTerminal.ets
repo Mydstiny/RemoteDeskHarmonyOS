@@ -13509,6 +13509,9 @@ struct SshTerminal {
       this.resetSftpTransferState();
     }
     this.persistSftpTaskMetadata(this.sftpTaskStageForTransfer(stage));
+    // Recovered-task rows capture records by value. Reload after the durable
+    // finish upsert so another recovery uses the newest verified checkpoint.
+    this.refreshRecoveredSftpTasks();
   }
 
   private isSftpTransportUnavailable(): boolean {
