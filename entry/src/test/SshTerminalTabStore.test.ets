@@ -1,7 +1,10 @@
 /** SshTerminalTabStore.test.ets - SSH tab ownership and cleanup policy. */
 
 import { describe, it, expect } from '@ohos/hypium';
-import { SshTerminalTabStore } from '../main/ets/services/SshTerminalTabStore';
+import {
+  sshTerminalTabChromeRenderKey,
+  SshTerminalTabStore
+} from '../main/ets/services/SshTerminalTabStore';
 
 export default function sshTerminalTabStoreTest(): void {
   describe('SshTerminalTabStore', (): void => {
@@ -67,6 +70,24 @@ export default function sshTerminalTabStoreTest(): void {
       expect(store.sessionId('host-a')).assertEqual(-1);
       expect(store.sessionGeneration('host-a')).assertEqual(0);
       expect(store.views()[0].state).assertEqual('error');
+    });
+
+    it('should_rebuild_only_tab_chrome_when_visible_metadata_changes', 0, (): void => {
+      const store: SshTerminalTabStore = new SshTerminalTabStore();
+      store.openAndActivate('host-a', 'A', 'root@a:22');
+      const connectingKey: string = sshTerminalTabChromeRenderKey(store.views()[0]);
+
+      store.update('host-a', 'connected', 101, '', 9);
+      const connectedKey: string = sshTerminalTabChromeRenderKey(store.views()[0]);
+      expect(connectedKey === connectingKey).assertFalse();
+
+      store.renameDisplayTitle('host-a', 'Production shell');
+      const renamedKey: string = sshTerminalTabChromeRenderKey(store.views()[0]);
+      expect(renamedKey === connectedKey).assertFalse();
+
+      store.setPinned('host-a', true);
+      const pinnedKey: string = sshTerminalTabChromeRenderKey(store.views()[0]);
+      expect(pinnedKey === renamedKey).assertFalse();
     });
 
     it('should_clear_startup_fence_when_update_publishes_new_generation', 0, (): void => {

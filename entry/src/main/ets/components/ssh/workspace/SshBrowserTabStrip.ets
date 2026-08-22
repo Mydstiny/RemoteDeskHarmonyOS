@@ -1,4 +1,7 @@
-import { SshTerminalTabView } from '../../../services/SshTerminalTabStore';
+import {
+  sshTerminalTabChromeRenderKey,
+  SshTerminalTabView
+} from '../../../services/SshTerminalTabStore';
 import {
   SSH_TAB_EDGE_ACTION_GAP_VP,
   SSH_TAB_EDGE_ACTION_SIZE_VP,
@@ -202,7 +205,7 @@ export struct SshBrowserTabStrip {
         Row({ space: 6 }) {
           ForEach(this.tabs, (tab: SshTerminalTabView): void => {
             this.Tab(tab)
-          }, (tab: SshTerminalTabView): string => tab.tabId)
+          }, (tab: SshTerminalTabView): string => sshTerminalTabChromeRenderKey(tab))
           if (this.sftpTabVisible) {
             this.SftpTab()
           }

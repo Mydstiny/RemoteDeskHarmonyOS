@@ -22,6 +22,18 @@ export interface SshTerminalTabView {
   active: boolean;
 }
 
+/**
+ * ArkUI ForEach preserves an item while its key is stable. Tab chrome must be
+ * rebuilt when any visible tab metadata changes, while terminal surfaces keep
+ * using the stable tabId so a connection-state update cannot remount xterm.
+ */
+export function sshTerminalTabChromeRenderKey(tab: SshTerminalTabView): string {
+  return tab.tabId + '|' + tab.state + '|' + tab.sessionId.toString() + '|' +
+    tab.generation.toString() + '|' + (tab.active ? '1' : '0') + '|' +
+    (tab.pinned ? '1' : '0') + '|' + tab.label.length.toString() + ':' + tab.label + '|' +
+    tab.address.length.toString() + ':' + tab.address;
+}
+
 export interface SshTerminalTabCloseResult {
   closed: boolean;
   hostId: string;

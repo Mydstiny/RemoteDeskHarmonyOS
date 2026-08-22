@@ -159,6 +159,7 @@ import {
   toggleSshTerminalOrientation
 } from '../services/SshTerminalOrientationPolicy';
 import {
+  sshTerminalTabChromeRenderKey,
   SshTerminalTabStore,
   SshTerminalTabCloseResult,
   SshTerminalTabView,
@@ -4700,7 +4701,7 @@ struct SshTerminal {
     Row({ space: 6 }) {
       ForEach(this.sshTabViews, (tab: SshTerminalTabView): void => {
         this.legacySshTabButton(tab);
-      }, (tab: SshTerminalTabView): string => tab.tabId)
+      }, (tab: SshTerminalTabView): string => sshTerminalTabChromeRenderKey(tab))
       Row() {
         SymbolGlyph($r('sys.symbol.plus')).fontSize(17).fontColor(['rgba(242,244,247,0.86)'])
       }
