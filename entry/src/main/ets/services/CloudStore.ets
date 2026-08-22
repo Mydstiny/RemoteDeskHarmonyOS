@@ -29,6 +29,7 @@ import {
 import {
   DYNAMIC_LAN_HOST_EXTENSION_TABLE,
   lanLocalExtensionMayEnterPortableBackup,
+  lanRestrictedAdminSecretOwnedByScope,
   lanHostUsesLocalOnlyStorage,
   normalizeLanDiscoveryIdentity
 } from './LanHostAddressPolicy';
@@ -7551,6 +7552,20 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
     ].join('|');
   }
 
+  private rdpRestrictedAdminSecretOwnedByCurrentScope(recordId: string): boolean {
+    if (!this.store || recordId === '') { return false; }
+    const ownerPredicates = new relationalStore.RdbPredicates('remotehosts');
+    ownerPredicates.equalTo('id', recordId);
+    this.addCurrentOwnerPredicate(ownerPredicates);
+    const ownerRows: relationalStore.ResultSet = this.store.querySync(ownerPredicates);
+    const remoteHostOwned: boolean = ownerRows.goToFirstRow();
+    ownerRows.close();
+    const dynamicOwner: Record<string, string> = remoteHostOwned ? {} :
+      this.loadLocalExtension(DYNAMIC_LAN_HOST_EXTENSION_TABLE, recordId);
+    return lanRestrictedAdminSecretOwnedByScope(
+      remoteHostOwned, dynamicOwner['ownerid'] || '', this.currentOwnerScopeId());
+  }
+
   /** Stores a user-provided NTLM hash on this device only. */
   saveRdpRestrictedAdminHash(host: RemoteHost, rawHash: string): boolean {
     const mode: RdpAuthMode = normalizeRdpAuthMode(host.rdpAuthMode);
@@ -9169,6 +9184,10 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
           source['ownerid'] !== this.currentOwnerScopeId()) {
           continue;
         }
+        if (table === RDP_RESTRICTED_ADMIN_SECRET_TABLE &&
+          !this.rdpRestrictedAdminSecretOwnedByCurrentScope(recordId)) {
+          continue;
+        }
         const next: Record<string, string> = {};
         const keys: string[] = Object.keys(source);
         let changed: boolean = false;
@@ -9713,18 +9732,15 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
         const table: string = rows.getString(rows.getColumnIndex('tablename'));
         const recordId: string = rows.getString(rows.getColumnIndex('recordid'));
         if (id === '' || recordId === '') { throw new Error('invalid local extension identity'); }
-        if (table === RDP_RESTRICTED_ADMIN_SECRET_TABLE || table === 'remotehosts') {
+        if (table === RDP_RESTRICTED_ADMIN_SECRET_TABLE) {
+          if (!this.rdpRestrictedAdminSecretOwnedByCurrentScope(recordId)) { continue; }
+        } else if (table === 'remotehosts') {
           const ownerPredicates = new relationalStore.RdbPredicates('remotehosts');
           ownerPredicates.equalTo('id', recordId);
           this.addCurrentOwnerPredicate(ownerPredicates);
           const ownerRows: relationalStore.ResultSet = this.store.querySync(ownerPredicates);
-          let owned: boolean = ownerRows.goToFirstRow();
+          const owned: boolean = ownerRows.goToFirstRow();
           ownerRows.close();
-          if (!owned && table === RDP_RESTRICTED_ADMIN_SECRET_TABLE) {
-            const dynamicOwner: Record<string, string> =
-              this.loadLocalExtension(DYNAMIC_LAN_HOST_EXTENSION_TABLE, recordId);
-            owned = dynamicOwner['ownerid'] === this.currentOwnerScopeId();
-          }
           if (!owned) { continue; }
         }
         const predicates = new relationalStore.RdbPredicates('localextensions');

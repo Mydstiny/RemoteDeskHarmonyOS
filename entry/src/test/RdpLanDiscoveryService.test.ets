@@ -2,6 +2,7 @@ import { describe, it, expect } from '@ohos/hypium';
 import {
   DiscoveredRdpHost,
   rdpLanCandidateAddresses,
+  rdpLanProbeRecognized,
   resolveRdpLanIdentityAmbiguity
 } from '../main/ets/services/RdpLanDiscoveryService';
 
@@ -54,6 +55,16 @@ export default function rdpLanDiscoveryServiceTest() {
       expect(resolved[0].stableId === resolved[1].stableId).assertFalse();
       expect(resolved[2].dynamicCapable).assertTrue();
       expect(resolved[2].stableId).assertEqual('bb');
+    });
+
+    it('rejects open non-RDP ports and accepts Standard RDP Security', 0, () => {
+      expect(rdpLanProbeRecognized('completed', 0)).assertTrue();
+      expect(rdpLanProbeRecognized('inconclusive', -18)).assertTrue();
+      expect(rdpLanProbeRecognized('inconclusive', -19)).assertFalse();
+      expect(rdpLanProbeRecognized('inconclusive', -20)).assertFalse();
+      expect(rdpLanProbeRecognized('inconclusive', -21)).assertFalse();
+      expect(rdpLanProbeRecognized('inconclusive', -22)).assertFalse();
+      expect(rdpLanProbeRecognized('unavailable', -18)).assertFalse();
     });
   });
 }

@@ -84,3 +84,13 @@ export function lanHostMayUseRemoteHostsCloudTable(host: LanHostAddressView): bo
 export function lanLocalExtensionMayEnterPortableBackup(table: string): boolean {
   return table !== DYNAMIC_LAN_HOST_EXTENSION_TABLE;
 }
+
+/** Restricted Admin secrets may belong to either a cloud/static or local/dynamic host. */
+export function lanRestrictedAdminSecretOwnedByScope(
+  remoteHostOwned: boolean,
+  dynamicHostOwnerId: string,
+  currentOwnerId: string
+): boolean {
+  return remoteHostOwned ||
+    (currentOwnerId !== '' && dynamicHostOwnerId === currentOwnerId);
+}

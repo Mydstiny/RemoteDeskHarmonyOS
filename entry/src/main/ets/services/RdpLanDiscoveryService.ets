@@ -72,6 +72,12 @@ export type RdpLanIdentityProbe =
 export type RdpLanScanStatus = 'idle' | 'scanning' | 'completed' | 'invalid_port' |
   'no_private_network' | 'network_error' | 'no_open_port' | 'preflight_rejected' | 'cancelled';
 
+/** Admit only a completed TLS probe or a valid Standard RDP Security response. */
+export function rdpLanProbeRecognized(preflightStatus: string, errorCode: number): boolean {
+  return preflightStatus === 'completed' ||
+    (preflightStatus === 'inconclusive' && errorCode === -18);
+}
+
 function parseIpv4(address: string): number[] | null {
   const parts: string[] = address.trim().split('.');
   if (parts.length !== 4) { return null; }

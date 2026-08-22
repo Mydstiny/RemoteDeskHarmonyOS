@@ -2,6 +2,7 @@ import { describe, it, expect } from '@ohos/hypium';
 import {
   lanHostCanSelectDynamic,
   lanLocalExtensionMayEnterPortableBackup,
+  lanRestrictedAdminSecretOwnedByScope,
   lanHostMayUseRemoteHostsCloudTable,
   lanHostNeedsAddressRefresh,
   lanHostRefreshCandidateMatches,
@@ -64,6 +65,13 @@ export default function lanHostAddressPolicyTest() {
     it('keeps dynamic LAN rows out of cloud and portable backup', 0, () => {
       expect(lanLocalExtensionMayEnterPortableBackup('dynamiclanhosts')).assertFalse();
       expect(lanLocalExtensionMayEnterPortableBackup('remotehosts')).assertTrue();
+    });
+
+    it('keeps dynamic Restricted Admin secrets inside the active account', 0, () => {
+      expect(lanRestrictedAdminSecretOwnedByScope(true, '', 'owner-a')).assertTrue();
+      expect(lanRestrictedAdminSecretOwnedByScope(false, 'owner-a', 'owner-a')).assertTrue();
+      expect(lanRestrictedAdminSecretOwnedByScope(false, 'owner-b', 'owner-a')).assertFalse();
+      expect(lanRestrictedAdminSecretOwnedByScope(false, 'owner-a', '')).assertFalse();
     });
   });
 }

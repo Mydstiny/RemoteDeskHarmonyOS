@@ -254,6 +254,7 @@ import { VncCertificateDecisionHandoff } from '../services/VncCertificateDecisio
 import { RustDeskLanDiscoveryService, DiscoveredRustDeskPeer } from '../services/RustDeskLanDiscoveryService';
 import {
   DiscoveredRdpHost,
+  rdpLanProbeRecognized,
   RdpLanDiscoveryService,
   RdpLanIdentityProbeResult,
   RdpLanScanStatus
@@ -8439,7 +8440,7 @@ struct HostListPage {
         const info: RdpCertificateInfo = await this.loader.probeRdpCertificateAsync(
           address, candidatePort, address);
         return {
-          recognized: info.preflightStatus === 'completed' || info.preflightStatus === 'inconclusive',
+          recognized: rdpLanProbeRecognized(info.preflightStatus, info.errorCode),
           fingerprintSha256: info.fingerprintSha256,
           commonName: info.commonName
         };
@@ -8474,7 +8475,7 @@ struct HostListPage {
       // the user pressed Connect. Re-run the explicit target after the active
       // work completes so connection never silently proceeds on that basis.
       if (force && targetHostId !== '' && this.srv.isReady()) {
-        await this.performDynamicLanRefresh(true, targetHostId);
+        await this.refreshDynamicLanHosts(true, targetHostId);
       }
       return;
     }
@@ -8537,7 +8538,7 @@ struct HostListPage {
           const info: RdpCertificateInfo = await this.loader.probeRdpCertificateAsync(
             address, candidatePort, address);
           return {
-            recognized: info.preflightStatus === 'completed' || info.preflightStatus === 'inconclusive',
+            recognized: rdpLanProbeRecognized(info.preflightStatus, info.errorCode),
             fingerprintSha256: info.fingerprintSha256,
             commonName: info.commonName
           };
