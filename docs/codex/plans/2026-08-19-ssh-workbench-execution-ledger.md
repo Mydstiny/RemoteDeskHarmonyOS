@@ -3,7 +3,7 @@
 > 状态：`ACTIVE_M8_M9` / `NOT_COMPLETE`
 > 权威计划：`docs/codex/plans/2026-08-19-ssh-termius-harmonyos7-api26-workbench-plan.md`
 > 建立日期：2026-08-19
-> 当前工作树：`codex/moonlight-complete-upgrade` / `99d3b037`（M0–M9 SSH 增量保留；workbench flag 已增加协议身份门禁，API23 PC 已补 SFTP 下载暂停/继续/取消/重试闭环和短窗口操作区修复，会话日志与广播输入均受默认关闭的独立高风险 flag 约束，日志追加采用重启安全的不可变 chunk 增量提交且不再深拷贝完整日志，页面日志投影不再携带持久记录正文，SSH/SFTP 诊断不再记录 host 标识、远端路径或原始异常消息，全部平台异常出口统一只记录有限数值错误码，后台常驻通知只展示连接/受限数量，SSH PiP 只展示白名单状态且当前 Phone 模拟器的缺失 STARTED 回调可由 WMS 活跃探测补偿，显式退出会先停止 PiP；API26 工具链和最终实机矩阵仍待外部条件）
+> 当前工作树：`codex/moonlight-complete-upgrade` / `ccdbc9ba6`（M0–M9 SSH 增量保留；workbench flag 已增加协议身份门禁，API23 PC 已补 SFTP 下载暂停/继续/取消/重试闭环和短窗口操作区修复，会话日志与广播输入均受默认关闭的独立高风险 flag 约束，日志追加采用重启安全的不可变 chunk 增量提交且不再深拷贝完整日志，页面日志投影不再携带持久记录正文，SSH/SFTP 诊断不再记录 host 标识、远端路径或原始异常消息，全部平台异常出口统一只记录有限数值错误码，后台常驻通知只展示连接/受限数量，SSH PiP 只展示白名单状态且当前 Phone 模拟器的缺失 STARTED 回调可由 WMS 活跃探测补偿，显式退出会先停止 PiP；API24 Phone/2in1 模拟器已补 KBI/MFA 成功、取消、失败矩阵，API26 工具链和最终实机矩阵仍待外部条件）
 > 当前产品基线：HarmonyOS 6.1 / API 23
 > API 26 状态：本机未安装；任何 API 26-only import 均禁止进入产品代码
 
@@ -22,6 +22,8 @@
 
 ## 2A. 最新执行指针（2026-08-22）
 
+- `ccdbc9ba6` 修复 2in1 鉴权前 carrier 以 `foreground=false` 建链时，页面轮询只能读取 `ExtensionLoader.currentSessionId=-1`、导致 MFA prompt 无法展示的问题。页面只在本次连接 generation 内临时持有 pending sessionId；连接完成、失败、取消和页面销毁都会清空，纯策略门禁拒绝旧 generation 或非正 sessionId。未改变 facade 的前后台语义、native 会话所有权或其他协议。
+- `e05ebaac2` 让 KBI fallback 的结果成为该轮交互式鉴权的权威结果，保留用户取消、超时和认证失败错误，不再被更早的“服务端未声明 password”覆盖。`7879a996e` 进一步禁止把保存密码自动重放到后续 MFA prompt：只允许首轮、单个、隐藏输入的 KBI prompt 自动填充，后续或多 prompt 必须经过 broker/UI。`b48567412` 则把 ArkTS/native prompt bridge 的异常日志收敛为有限数值错误码，避免原始异常内容跨过诊断边界。
 - `99d3b037` 修复当前 API24 Phone 模拟器上 SSH 已断开但 PiP 仍长期显示“已连接”的孤儿窗口。系统 Back 统一进入显式会话关闭路径；主窗口若仍拥有/准备 PiP，会在路由返回前发出停止请求，并以 800ms 有界兜底和页面 generation fence 防止迟到回调导航复用页面。该自定义 PiP 运行时实测只回调 `ABOUT_TO_START`、未回调 `STARTED`，服务因此在停止时用 `isPiPActive()` 补偿 WMS 活跃状态，再调用 `stopPiP()`；缺失终态回调也会以 inactive probe 收敛控制器。独立 SSH 窗口和无 PiP 路径保持原返回逻辑。
 - `27c010c0` 补齐有限数值错误码策略的剩余 7 个异常出口：SSH 后台任务、PiP 与命令完成通知不再使用会对任意运行时 `code` 调用 `toString()` 的私有/内联实现，统一复用 `sshDiagnosticErrorCode`；非 number、`NaN` 与无限值固定降级为 `unknown`。只改变诊断元数据编码，不改变后台、PiP 或通知控制流。
 - `203ce02e` 修复 SSH PiP 把 `username@IP:port` 和末尾终端输出直接展示在应用外可见画中画的问题。PiP 信息类型不再接收主机标签、地址或 `termOutput`，UI 只展示通用会话说明和经白名单归一化的“已连接/后台保留”状态；PiP 控制器、自动启动、状态机、超时、销毁和 native 会话所有权均未改动。纯策略测试锁定任意包含主机、路径和 password 的状态文本不能穿过 PiP 边界。
@@ -58,7 +60,7 @@
 - 2026-08-20 追加 API23 PC 密码鉴权失败回归：故意使用错误密码，保留既有 Host Key 确认和原生认证顺序；sshd 记录 `Failed password`，应用日志记录 `sessionId=-31` 与 `independent SSH carrier released after authentication failure`。HDC 层级和截图确认主页面回到 `连接失败 (code=-31)`，提供“重试/返回”，没有创建 `RemoteSessionAbility`，系统任务仅保留主 `EntryAbility`；临时 sshd、密钥目录和 HDC 映射已清理。
 - 2026-08-20 追加 API23 Phone SSH 入口回归：主机列表打开“添加远程主机”后，协议选择包含 SSH，进入 SSH 表单可见名称、地址、端口、用户名和路由入口；未提交临时数据，系统返回后回到主机列表。当前证据为 `/private/tmp/ssh-phone-current-api23.json`（`44a37cf179ac72d3fea1c7dc1ffc10ac60b39f6c2e3deab6cdca8b39bad5af2c`）、`/private/tmp/ssh-phone-current-api23.png`（`1c2fdcff59ec30c0da9c954fac3d987015d76ba123d608735e6b6cc527b82664`）以及返回后的 `/private/tmp/ssh-phone-after-back-api23.json`（`5c0eb16f4e0d1d62de1c683ea8d14619e73ce448257750aa5a1087c8e607e086`）、`/private/tmp/ssh-phone-after-back-api23.png`（`1ba42c8347068d9b2288f1f6df401791baf4c6bb1f194581cb4d2ddf25a78c37`）。
 - 2026-08-20 追加 API24 Phone 密码鉴权成功回归：通过 HDC `rport` 将临时 Paramiko 密码服务映射到 `127.0.0.1:22222`，在“添加 SSH 主机”第二步选择“密码登录”并提交 `codex-test`，先显示原有“首次连接 SSH 主机”指纹确认，再由服务端记录 `AUTH username='codex-test' password='codex-window-e2e '`，随后进入已连接终端并显示 `RemoteDesktop authenticated-window E2E server`/`codex-test$`。终端布局证据为 `/private/tmp/ssh-password-terminal.json`（`dba1b1c9e0554b369bc8b3736691c0ba3374fd6d6964e05435c107689c256bef`），截图为 `/private/tmp/ssh-password-terminal.png`（`dc4ce048542b53a790bb8e5245b22ee6af28d4faf60bb2cd6fcb7a771f1637ff`）；临时服务与本轮新增 `rport` 已停止/移除。
-- 仍未宣称完成：API 26 SDK/目标设备、物理设备验收、SFTP 上传侧及 Phone/物理设备/API26 的暂停/恢复/取消/重试余下矩阵、后台/PiP、API26 下的沉浸/分屏差异、密码/KBI/MFA 成功/取消/失败全矩阵以及多主机/全协议并行矩阵。
+- 仍未宣称完成：API 26 SDK/目标设备、物理设备验收、SFTP 上传侧及 Phone/物理设备/API26 的暂停/恢复/取消/重试余下矩阵、后台/PiP、API26 下的沉浸/分屏差异、密码鉴权的取消/失败双端矩阵、KBI/MFA 的物理设备/API26 复验以及多主机/全协议并行矩阵。
 - 2026-08-20 曾尝试把 SSH 源策略套件接入 `entry/ohosTest` 设备 runner；该跨目录接线使 `onDeviceTest` 编译错误从基线 260 增至 337，已由 `3f3fd4da` 精确回退。当前 runner 基线仍受既有非 SSH 测试源错误阻塞，因此不宣称任何 SSH Hypium 设备通过。
 - 同日 API23/24 本地 SDK 之外未发现可验证的 API26 SDK；两个 HDC 守护进程探测均无响应，设备 UI 复验保持 `DEVICE_PENDING`，不通过重启守护进程或未证实 API 名称绕过门禁。
 
@@ -184,7 +186,7 @@ M0 action 只修改纯快照：创建/重命名工作区、打开占位 tab、�
 
 | 契约 | 自动化证据 | HDC/设备证据 | 阶段状态 |
 |---|---|---|---|
-| 密码、Key、KBI/MFA 鉴权顺序不变 | 现有 native auth/prompt tests | 成功/取消/失败各一条 | S0 待设备 |
+| 密码、Key、KBI/MFA 鉴权顺序不变 | 现有 native auth/prompt tests；首轮隐藏 prompt 自动填充与页面 pending-session generation 策略契约 | API24 Phone/2in1 模拟器均完成 KBI/MFA 成功、取消、失败；物理/API26 待验 | API24_EMULATOR_PASS |
 | Host Key 首次、接受、变化、逐跳失败 | preflight/native tests | Sheet、拒绝和错误态 | S0 待设备 |
 | Proxy/ProxyJump 与三跳路由 | proxy/route tests | 至少一条可用路径或明确环境 blocker | S0 待设备 |
 | locale 为 host-scoped | `SshSettingsPolicy.test` | 两主机切换不串值 | S0 待设备 |
@@ -270,16 +272,25 @@ M0 action 只修改纯快照：创建/重命名工作区、打开占位 tab、�
 | `/private/tmp/ssh-phone-pip-exit-fixed-v2.json` | `af3b77e04c2aedd31b7e0234d4a957e0ae63e4467dc8fba7112f464295011002` | API24 Phone 模拟器：WMS active probe 补偿后 PiP 收到 ABOUT_TO_STOP/STOPPED，系统 Back 最终位于 `HostListPage` 且 UI 树无 SSH PiP |
 | `/private/tmp/ssh-phone-pip-exit-fixed-v2.jpeg` | `0c9cd9429d218dd0f7781f34b770facdb78b7728fcc31f001a0323afb8f66566` | API24 Phone 模拟器：退出后主机列表完整可见、无孤儿 PiP 的最终截图 |
 | `/private/tmp/ssh-pip-exit-v2-pc-launch.jpeg` | `0a285c5c54d7906d9b87c6a97a6692d34a8bbc5ae934939a786572eedc73809b` | API24 2in1 模拟器：同一第二版签名 HAP 覆盖安装并启动，主机列表自由窗口正常显示 |
+| `/private/tmp/kbi-mfa-prompt.jpeg` | `83c362f17691bc7626abc433df7eca0d75976370c6b257205cd4234e5023ae1a` | API24 Phone 模拟器：首轮隐藏 KBI prompt 使用保存密码后，第二轮 MFA 验证码 Sheet 可见 |
+| `/private/tmp/kbi-phone-success.jpeg` | `6c0c7a463b3548224a1f381b914afedeebca4e785569a9547aa71d5c32c5f42d` | API24 Phone 模拟器：KBI/MFA 成功后进入终端并显示一次性回环服务 banner/prompt |
+| `/private/tmp/kbi-cancel-fixed.json` | `40612c667f79f438428de63150fc4cde0801063b73dd92eea13864c8d7a92a3b` | API24 Phone 模拟器：MFA Sheet 显式取消后返回 `连接失败 (code=-35)` |
+| `/private/tmp/kbi-wrong-otp.json` | `85904332119197cdc9ea0f3aa4552d3ca0be3ce0f27bcbfbc279155d7639a443` | API24 Phone 模拟器：错误验证码被服务端拒绝，页面保留交互式鉴权失败 `code=-34` |
+| `/private/tmp/kbi-2in1-fixed-prompt.json` | `2f0edee73594c89d92043249aeba5478cd564d5bdf9d460d8a442e3bc330c41c` | API24 2in1 模拟器：鉴权前主窗口 carrier 正确展示 MFA Sheet，不再因 foreground=false 丢失 sessionId |
+| `/private/tmp/kbi-2in1-fixed-cancel.json` | `facbd67e449963a72a702c2e5136d6d7adfc67d79d876a28ef9105b51cfa2dd4` | API24 2in1 模拟器：MFA Sheet 显式取消后返回 `连接失败 (code=-35)` |
+| `/private/tmp/kbi-2in1-fixed-wrong.json` | `2d2dc049a42c01486e74091d4d637c464045ad5a7415abb4750aae5b49b122a1` | API24 2in1 模拟器：错误验证码被服务端拒绝，页面显示 `连接失败 (code=-34)` |
+| `/private/tmp/kbi-2in1-success.json` | `87f25cdc5ed77a74f8a6c2fa9ad7141b4ee3b6652b46f7c0634793c2748b1324` | API24 2in1 模拟器：KBI/MFA 成功后独立 SSH 窗口 hierarchy 显示 terminal banner/prompt |
+| `/private/tmp/kbi-2in1-success.jpeg` | `7abc957af36005c39af193ca77db1e6bb3c8f1c18e2c2f8a0bb7c31c36b49f4b` | API24 2in1 模拟器：鉴权成功后独立窗口终端的最终截图 |
 
 这些文件位于临时目录，不作为仓库制品。账本保留命令、hash 和观察结果；阶段验收前重新采集最终 SSH 页面证据。
 
 ### 7.3 已证明与未证明
 
-已证明：两个目标可通过 HDC 连接；当前 API23-targeted HAP 在 API24 Phone/2in1 模拟器环境可启动；2in1 使用系统自由窗口。关闭残留的诊断日志 Sheet 后，点击 SSH 主机正确进入既有 Host Key 预检；TCP 不可达时保留在 HostList 的错误 Sheet，不会进入 Terminal，也不会创建独立会话窗口。`2d1f06d6` 后，PC SSH 新主机 Sheet 的布局树边界与截图均证明代理选项和下一步操作不再被固定宽度截断。2026-08-20 的两次回环 endpoint 复验进一步证明：产品 ED25519 key/指纹确认后才创建 SSH 独立窗口；sshd 日志确认公钥鉴权成功；HDC 键盘输入及终端命令可回显；SFTP 标准子系统可加载 47 项目录；已有远程复制、本地授权上传、本地下载及非空目标拒绝证据仍有效；关闭 SFTP 后终端继续执行命令；转发规则实际建立后可接收主机 payload 并更新流量；独立窗口最小化/最近任务恢复不丢会话，主窗口与 SSH 窗口可同时展示；标题栏最大化、F11 沉浸全屏进出、左边缘系统分屏均已采证。错误密码路径也已证明：Host Key/认证顺序不变，原生失败码 `-31` 会回到源页错误/重试界面，不会创建独立窗口或留下鉴权 carrier。2026-08-22 进一步完成下载侧暂停/继续/取消/重试/最终导出的同任务闭环，并证明短自由窗口可完整访问传输 footer；同日 API24 Phone 模拟器完成 Host Key 变更精确核对、密码鉴权、后台 PiP 隐私、后台会话保活、返回前台后终端回合，以及显式退出后 PiP 停止和 TCP 断开的闭环。PiP 可见内容不含用户名、IP、端口、终端标记或远端路径；该运行时缺失 `STARTED` 回调时，WMS active probe 后可收到 `ABOUT_TO_STOP(3)` 与 `STOPPED(4)`，最终 `HostListPage` UI 树和截图均无孤儿 PiP。
+已证明：两个目标可通过 HDC 连接；当前 API23-targeted HAP 在 API24 Phone/2in1 模拟器环境可启动；2in1 使用系统自由窗口。关闭残留的诊断日志 Sheet 后，点击 SSH 主机正确进入既有 Host Key 预检；TCP 不可达时保留在 HostList 的错误 Sheet，不会进入 Terminal，也不会创建独立会话窗口。`2d1f06d6` 后，PC SSH 新主机 Sheet 的布局树边界与截图均证明代理选项和下一步操作不再被固定宽度截断。2026-08-20 的两次回环 endpoint 复验进一步证明：产品 ED25519 key/指纹确认后才创建 SSH 独立窗口；sshd 日志确认公钥鉴权成功；HDC 键盘输入及终端命令可回显；SFTP 标准子系统可加载 47 项目录；已有远程复制、本地授权上传、本地下载及非空目标拒绝证据仍有效；关闭 SFTP 后终端继续执行命令；转发规则实际建立后可接收主机 payload 并更新流量；独立窗口最小化/最近任务恢复不丢会话，主窗口与 SSH 窗口可同时展示；标题栏最大化、F11 沉浸全屏进出、左边缘系统分屏均已采证。错误密码路径也已证明：Host Key/认证顺序不变，原生失败码 `-31` 会回到源页错误/重试界面，不会创建独立窗口或留下鉴权 carrier。2026-08-22 进一步完成下载侧暂停/继续/取消/重试/最终导出的同任务闭环，并证明短自由窗口可完整访问传输 footer；同日 API24 Phone 模拟器完成 Host Key 变更精确核对、密码鉴权、后台 PiP 隐私、后台会话保活、返回前台后终端回合，以及显式退出后 PiP 停止和 TCP 断开的闭环。PiP 可见内容不含用户名、IP、端口、终端标记或远端路径；该运行时缺失 `STARTED` 回调时，WMS active probe 后可收到 `ABOUT_TO_STOP(3)` 与 `STOPPED(4)`，最终 `HostListPage` UI 树和截图均无孤儿 PiP。API24 Phone/2in1 模拟器还完成同一一次性回环端点的 KBI/MFA 全矩阵：Host Key 精确匹配后，首轮单个隐藏 prompt 可使用保存密码，第二轮验证码必须显示 Sheet 并经 broker 响应；显式取消保留 `code=-35`，错误验证码保留 `code=-34`，正确验证码才进入已认证终端。2in1 鉴权前 carrier 即使不切前台也能以页面持有的 pending sessionId 展示 MFA Sheet，成功后才 handoff 到独立窗口。
 
-清理已完成：PC/Phone 两个本地回环服务均已停止；Phone `tcp:22222`、PC `tcp:22220` HDC 映射已精确删除且映射列表为 `[Empty]`；宿主机 22220/22222 均无监听；`/private/tmp/000-codex-sftp-lifecycle`、临时 sshd/Host Key 目录及本轮 PiP 复测目录已删除。PC 下载目录中仅选中的 268.44MB `codex-sftp-lifecycle.bin` 已移入回收站并永久删除，最终回收站为 0 个文件/0 个文件夹。
+清理已完成：PC/Phone 两个本地回环服务均已停止；Phone `tcp:22222`、PC `tcp:22220` HDC 映射已精确删除且映射列表为 `[Empty]`；宿主机 22220/22222 均无监听；`/private/tmp/000-codex-sftp-lifecycle`、临时 sshd/Host Key 目录及本轮 PiP 复测目录已删除。KBI/MFA 复验结束后，Phone 的 `ssh-kbi-e2e` 和 2in1 的两个 `ssh-kbi-e2e-2in1` 临时主机均经完整名称确认后删除，最终 UI hierarchy 匹配计数为 0；`tcp:22223` reverse 映射删除后两目标映射表均为 `[Empty]`，宿主机 22223 无监听，一次性服务脚本和两端显式枚举的 `kbi-*` 设备转储已删除。复用的 `/private/tmp/codex-ssh-e2e-venv` 与 `/private/tmp/codex_ssh_e2e_hostkey` 保留未动。PC 下载目录中仅选中的 268.44MB `codex-sftp-lifecycle.bin` 已移入回收站并永久删除，最终回收站为 0 个文件/0 个文件夹。
 
-尚未证明：KBI/MFA 的成功/取消/失败全矩阵、密码鉴权的取消/失败在 Phone/PC 双端矩阵、真实软/硬键盘设备矩阵、SFTP 上传侧及 Phone/物理设备/API26 的暂停/恢复/取消/重试余下矩阵、连续任务通知的权限允许/拒绝/锁屏路径、API26 设备和多主机/全协议并行。本次 API24 Phone 模拟器的 PiP 路径未触发持续任务通知，通知栏明确显示“没有通知”，因此只记录运行时未触发，不能冒充通知设备 PASS。没有物理/API26 与上述剩余矩阵证据前，M7–M9 仍保持 DEVICE_PENDING，整个 SSH 计划不能标为完成。
+尚未证明：KBI/MFA 在物理设备与 API26 上的同矩阵复验、密码鉴权的取消/失败在 Phone/PC 双端矩阵、真实软/硬键盘设备矩阵、SFTP 上传侧及 Phone/物理设备/API26 的暂停/恢复/取消/重试余下矩阵、连续任务通知的权限允许/拒绝/锁屏路径、API26 设备和多主机/全协议并行。本次 API24 Phone 模拟器的 PiP 路径未触发持续任务通知，通知栏明确显示“没有通知”，因此只记录运行时未触发，不能冒充通知设备 PASS。没有物理/API26 与上述剩余矩阵证据前，M7–M9 仍保持 DEVICE_PENDING，整个 SSH 计划不能标为完成。
 
 ## 8. 工具链事实
 
@@ -300,7 +311,7 @@ M0 action 只修改纯快照：创建/重命名工作区、打开占位 tab、�
 | M7 | M6 工作台 | 已落地；广播刷新只保留显式且仍安全的目标；安全模式按 host/session/generation 隔离，未知状态 fail closed；独立高风险 flag 默认关闭 | 已注册；包含独立 flag、未知安全状态及失效目标不替换策略用例 | PASS | PASS | 真实主机及广播 UI 矩阵待接入 | 已复核；本次安全修复待最终实机复核 | DEVICE_PENDING |
 | M8 | M7 工作台 | 已落地；双端 generation/sequence/ACK 整数且严格连续 | 已注册；包含小数计数器与向前跳号拒绝 | PASS | PASS | API26/高负载设备待验 | 已复核；本次序号修复待最终实机复核 | DEVICE_PENDING |
 | M9 | M8 前置 | SSH handoff、独立窗口前台恢复、沉浸/分屏回归已落地 | 策略覆盖 | PASS | PASS | PC/API23 模拟器已证明鉴权后开窗、SFTP/终端保活、转发 payload、最小化/最近任务恢复、F11 沉浸进出、左边缘 WMS 分屏、任务栏/WMS 多窗口；物理/API26/剩余协议矩阵待验 | 待最终实机复核 | DEVICE_PENDING |
-| API23-target/API24 emulator runtime | 当前 M0–M9 HAP / `99d3b037` | PiP 隐私边界、显式退出前停止、WMS active probe/终态补偿 | 生命周期策略用例已注册 | PASS，exit 0 | PASS，exit 0 | Phone 模拟器密码鉴权、PiP 隐私/保活/恢复/退出无残留 PASS；2in1 模拟器同包启动 PASS；持续任务通知未触发 | 待 API26/物理设备最终复核 | PARTIAL_PASS |
+| API23-target/API24 emulator runtime | 当前 M0–M9 HAP / `ccdbc9ba6` | PiP 隐私边界、显式退出前停止、WMS active probe/终态补偿；KBI prompt broker、交互式错误保留与 desktop pending-session fence | 生命周期与 KBI/MFA 页面策略用例已注册；native SSH 用例通过 | PASS，exit 0 | PASS，exit 0 | Phone/2in1 模拟器 KBI/MFA 成功、取消、失败均 PASS；Phone 密码鉴权、PiP 隐私/保活/恢复/退出无残留 PASS；持续任务通知未触发；物理/API26 待验 | 待 API26/物理设备最终复核 | PARTIAL_PASS |
 
 ## 10. S0 下一步
 
@@ -362,3 +373,7 @@ hvigorw --mode module -p module=entry -p product=default assembleHap --analyze=n
 2026-08-22 SSH 异常错误码策略全覆盖 receipt：`27c010c0` 删除后台任务与 PiP 的私有 `errorCode` 以及命令完成通知的内联 `business.code.toString()`，共 7 个异常诊断出口统一调用 `sshDiagnosticErrorCode`。既有策略测试已锁定数字 code 可输出、字符串 `code='secret'`、`NaN` 及其他非数值输入必须返回 `unknown`；本次未改变任何后台连接、PiP 生命周期或通知发布语义。精确 `default@OhosTestCompileArkTS` exit 0，`assembleHap` exit 0（`BUILD SUCCESSFUL in 11 s 945 ms`）；标准签名 HAP SHA-256 为 `ee14a86ff27fc59688057a2ce97197c625f32bab84651ee7314bcff3c131cf2f`。本 receipt 不冒充 HDC、API26 或物理设备验收。
 
 2026-08-22 SSH PiP 退出生命周期 receipt：`99d3b037` 将系统 Back 与顶栏返回统一到显式会话关闭入口；主窗口仍拥有/准备 PiP 时，先调用 `stop()`，再由完成回调或 800ms 有界兜底导航，并以页面 generation、explicit close、closing 状态联合 fence 拒绝迟到导航。首轮 HDC 复测发现当前 API24 Phone 模拟器的自定义 PiP 只留下 `ABOUT_TO_START(1)`，旧 `stopInternal()` 会等待 5 秒后返回 false、未实际调用 `stopPiP()`；该未通过版本没有提交。最终修复在 `ABOUT_TO_START` 时先用 `isPiPActive()` 查询 WMS，活跃则补偿为 STARTED 并立即停止，终态回调缺失时也用 inactive probe 收敛控制器。精确 `default@OhosTestCompileArkTS` exit 0（`BUILD SUCCESSFUL in 10 s 478 ms`），`assembleHap` exit 0（`BUILD SUCCESSFUL in 11 s 891 ms`）；签名 HAP SHA-256 为 `b15008ab96d4bc080a05f026b9a4cc116e0a69dec77268a5464019dd4cc49871`。同一 API23-targeted HAP 覆盖安装到 API24 Phone/2in1 模拟器；Phone 模拟器的真实密码 SSH 会话进入 PiP 后，日志确认 `start reconciled from active probe`、`ABOUT_TO_STOP(3)`、`STOPPED(4)`，退出后 TCP 断开且 `HostListPage` 无 PiP；2in1 模拟器主机列表自由窗口正常启动。最终证据为 `/private/tmp/ssh-pip-exit-v2-active.jpeg`（`1da9a66ad6acfba631432cbb6ef575b3aed7108ea01d83d9d7b635bccc5f69a4`）、`/private/tmp/ssh-phone-pip-exit-fixed-v2.json`（`af3b77e04c2aedd31b7e0234d4a957e0ae63e4467dc8fba7112f464295011002`）、`/private/tmp/ssh-phone-pip-exit-fixed-v2.jpeg`（`0c9cd9429d218dd0f7781f34b770facdb78b7728fcc31f001a0323afb8f66566`）与 `/private/tmp/ssh-pip-exit-v2-pc-launch.jpeg`（`0a285c5c54d7906d9b87c6a97a6692d34a8bbc5ae934939a786572eedc73809b`）。一次性服务、22222 监听、HDC reverse task 和临时 Host Key/脚本目录均已清理；API26、物理机及连续任务通知矩阵仍保持待验。
+
+2026-08-22 SSH KBI/MFA 交互鉴权 receipt：`b48567412` 先把 prompt bridge 的 ArkTS 异常诊断统一收敛为 `sshDiagnosticErrorCode`；`7879a996e` 将保存密码自动填充限定为首轮、单个、隐藏 KBI prompt，后续 MFA 或多 prompt 必须经过 broker/UI；`e05ebaac2` 让该轮交互式 fallback 的取消、超时和认证失败成为权威结果，不再被更早的 password-advertisement 结果覆盖；`ccdbc9ba6` 为 2in1 鉴权前、`foreground=false` carrier 增加页面 generation 隔离的 pending sessionId，使 MFA Sheet 在 handoff 前可见，并在完成/失败/取消/销毁时清空。四个提交各自均精确通过 `default@OhosTestCompileArkTS` 与 `assembleHap`，对应标准签名 HAP SHA-256 依次为 `887855e29f51bd1947915b110691cb7f3c1faedbb98809ee67d7b86b4bd9204a`、`e9deef39f454e5e70c3702a8db6b0e1034aa85b752a734bb5a7bb79991650b9b`、`c537f4cf6dd721be59ce3611ca8ed6f05918bef1a54a8ec8f72c18a7d69b120e`、`e0c51325024ba913ca631f88a0991a07420a0895a34d2ff245eee8d0f8fbf1f0`；后两次 assemble 分别为 `BUILD SUCCESSFUL in 15 s 156 ms` 与 `BUILD SUCCESSFUL in 12 s 965 ms`。`7879a996e` 的 host suite 为 `771 passed, 16 failed, 787 total`，`e05ebaac2` 增补错误优先级用例后为 `772 passed, 16 failed, 788 total`；全部 SSH 用例通过，16 个失败均为共享 runner 中受沙箱端口绑定影响的既有 VNC TLS fixture，不涉及本次 SSH 代码，也未修改 VNC/Moonlight。
+
+同一 `ccdbc9ba6` HAP 通过沙箱外 HDC 覆盖 API24 Phone `127.0.0.1:5555` 与 2in1 `127.0.0.1:5557`。两端均先精确核对一次性 ED25519 Host Key，再证明首轮隐藏 prompt 不展示、第二轮 MFA Sheet 可见；显式取消稳定返回 `code=-35`，错误验证码由服务端拒绝并返回 `code=-34`，正确验证码才产生 `SESSION_READY authenticated=true` 并进入带回环 banner/prompt 的终端，2in1 仅在鉴权成功后创建独立窗口。九项布局/截图证据及 hash 已列入 7.2。验收后逐项删除一个 Phone 和两个 2in1 临时主机、`tcp:22223` reverse 映射、一次性监听服务/脚本及设备侧 `kbi-*` 转储；主机名匹配计数、映射和监听均复查为空。该 receipt 只声明 API23-targeted HAP 在 API24 模拟器上的 KBI/MFA 成功/取消/失败矩阵，不冒充 API26 或物理设备验收。
