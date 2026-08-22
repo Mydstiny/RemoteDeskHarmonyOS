@@ -8,12 +8,12 @@
 import { common, wantAgent, WantAgent } from '@kit.AbilityKit';
 import { backgroundTaskManager } from '@kit.BackgroundTasksKit';
 import { notificationManager } from '@kit.NotificationKit';
-import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import {
   buildSshBackgroundNotificationContent,
   SshBackgroundNotificationContent
 } from './ssh/notification/SshNotificationService';
+import { sshDiagnosticErrorCode } from './ssh/observability/SshDiagnosticPolicy';
 
 const TAG = 'SshTerminalBgTask';
 const DOMAIN = 0x0016;
@@ -144,7 +144,6 @@ export class SshTerminalBackgroundTaskService {
         hilog.info(DOMAIN, TAG, 'SSH background task started id=' + taskId.toString());
         return true;
       } catch (err) {
-        const be: BusinessError = err as BusinessError;
         this.tasks.set(key, {
           sessionId: info.sessionId,
           continuousTaskId: -1,
@@ -156,7 +155,7 @@ export class SshTerminalBackgroundTaskService {
         });
         await this.publishAggregateNotification();
         hilog.warn(DOMAIN, TAG, 'SSH background task rejected code=' +
-          this.errorCode(be));
+          sshDiagnosticErrorCode(err));
         return false;
       }
     });
@@ -208,9 +207,8 @@ export class SshTerminalBackgroundTaskService {
         await backgroundTaskManager.stopBackgroundRunning(context, taskId);
         hilog.info(DOMAIN, TAG, 'SSH background task stopped id=' + taskId.toString());
       } catch (err) {
-        const be: BusinessError = err as BusinessError;
         hilog.warn(DOMAIN, TAG, 'SSH background task stop failed code=' +
-          this.errorCode(be));
+          sshDiagnosticErrorCode(err));
       }
     }
     if (notificationId > 0 && notificationId !== SSH_NOTIFICATION_ID) {
@@ -292,9 +290,8 @@ export class SshTerminalBackgroundTaskService {
     try {
       await notificationManager.publish(request);
     } catch (err) {
-      const be: BusinessError = err as BusinessError;
       hilog.warn(DOMAIN, TAG, 'SSH notification publish failed code=' +
-        this.errorCode(be));
+        sshDiagnosticErrorCode(err));
     }
   }
 
@@ -311,9 +308,5 @@ export class SshTerminalBackgroundTaskService {
     const queued: Promise<T> = this.operationTail.then(operation, operation);
     this.operationTail = queued.then((): void => undefined, (): void => undefined);
     return queued;
-  }
-
-  private errorCode(error: BusinessError): string {
-    return error.code === undefined ? 'unknown' : error.code.toString();
   }
 }

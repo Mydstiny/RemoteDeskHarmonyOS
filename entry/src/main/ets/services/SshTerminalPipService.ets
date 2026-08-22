@@ -8,8 +8,8 @@
  */
 import { PiPWindow, BuilderNode, FrameNode, NodeController, UIContext } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
-import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { sshDiagnosticErrorCode } from './ssh/observability/SshDiagnosticPolicy';
 import { sshPipPublicStatus } from './ssh/observability/SshPipPrivacyPolicy';
 
 const TAG = 'SshTerminalPip';
@@ -203,8 +203,7 @@ export class SshTerminalPipService {
       hilog.info(DOMAIN, TAG, 'SSH PiP prepared for background auto-start');
       return true;
     } catch (err) {
-      const be: BusinessError = err as BusinessError;
-      hilog.warn(DOMAIN, TAG, 'SSH PiP prepare failed code=' + this.errorCode(be));
+      hilog.warn(DOMAIN, TAG, 'SSH PiP prepare failed code=' + sshDiagnosticErrorCode(err));
       if (created !== null) {
         this.disposeCreatedController(created, customUi);
       } else {
@@ -337,9 +336,8 @@ export class SshTerminalPipService {
           return true;
         }
       } catch (err) {
-        const be: BusinessError = err as BusinessError;
         hilog.warn(DOMAIN, TAG, 'SSH PiP transition probe failed code=' +
-          this.errorCode(be));
+          sshDiagnosticErrorCode(err));
       }
       hilog.warn(DOMAIN, TAG, 'SSH PiP previous transition did not finish');
       return false;
@@ -347,8 +345,7 @@ export class SshTerminalPipService {
     try {
       await owner.stopPiP();
     } catch (err) {
-      const be: BusinessError = err as BusinessError;
-      hilog.warn(DOMAIN, TAG, 'SSH PiP stop failed code=' + this.errorCode(be));
+      hilog.warn(DOMAIN, TAG, 'SSH PiP stop failed code=' + sshDiagnosticErrorCode(err));
       return false;
     }
     const terminal: boolean = await this.waitForTerminal(owner);
@@ -446,9 +443,5 @@ export class SshTerminalPipService {
     const queued: Promise<T> = this.operationTail.then(operation, operation);
     this.operationTail = queued.then((): void => undefined, (): void => undefined);
     return queued;
-  }
-
-  private errorCode(error: BusinessError): string {
-    return error.code === undefined ? 'unknown' : error.code.toString();
   }
 }

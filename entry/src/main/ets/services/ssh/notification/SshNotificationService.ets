@@ -1,6 +1,6 @@
 import { notificationManager } from '@kit.NotificationKit';
-import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { sshDiagnosticErrorCode } from '../observability/SshDiagnosticPolicy';
 
 const TAG: string = 'SshNotification';
 const DOMAIN: number = 0x0016;
@@ -122,9 +122,8 @@ export class SshNotificationService {
       await notificationManager.publish(request);
       return true;
     } catch (err) {
-      const business: BusinessError = err as BusinessError;
       hilog.warn(DOMAIN, TAG, 'completion notification rejected code=' +
-        (business.code === undefined ? 'unknown' : business.code.toString()));
+        sshDiagnosticErrorCode(err));
       return false;
     }
   }
