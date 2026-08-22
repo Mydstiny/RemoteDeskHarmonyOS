@@ -2,36 +2,25 @@
  * SSH terminal PiP owner.
  *
  * SSH renders through ArkUI Canvas, so it cannot share the video PiP surface
- * owned by RemoteSessionPipService. This PiP deliberately exposes a compact
- * status/output summary through customUIController; the SSH socket remains
- * owned by the native detached session.
+ * owned by RemoteSessionPipService. This PiP exposes only a compact public
+ * status through customUIController; the SSH socket remains owned by the
+ * native detached session.
  */
 import { PiPWindow, BuilderNode, FrameNode, NodeController, UIContext } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { sshPipPublicStatus } from './ssh/observability/SshPipPrivacyPolicy';
 
 const TAG = 'SshTerminalPip';
 const DOMAIN = 0x0017;
 const PIP_STATE_TIMEOUT_MS = 5000;
 
 export interface SshTerminalPipInfo {
-  hostLabel: string;
-  hostAddress: string;
   status: string;
-  outputSummary: string;
 }
 
 type SshPipStoppedHandler = (reason: string) => void;
-
-function sanitizeOutputSummary(value: string): string {
-  let result: string = value.replace(/[\u0000-\u001F\u007F]/g, ' ')
-    .replace(/\s+/g, ' ').trim();
-  if (result.length > 96) {
-    result = result.substring(result.length - 96);
-  }
-  return result;
-}
 
 @Builder
 function SshTerminalPipContent(info: SshTerminalPipInfo): void {
@@ -50,29 +39,18 @@ function SshTerminalPipContent(info: SshTerminalPipInfo): void {
     .width('100%')
     .height(24)
 
-    Text(info.hostLabel.length > 0 ? info.hostLabel : info.hostAddress)
+    Text('SSH 会话已保留')
       .width('100%')
       .fontSize(16)
       .fontColor('#FFFFFF')
       .fontWeight(FontWeight.Medium)
       .maxLines(1)
 
-    Text(info.hostAddress)
+    Text('返回应用查看终端内容')
       .width('100%')
       .fontSize(11)
       .fontColor('#AAB4C0')
       .maxLines(1)
-
-    Divider()
-      .color('#34404D')
-      .width('100%')
-      .margin({ top: 8, bottom: 8 })
-
-    Text(info.outputSummary.length > 0 ? info.outputSummary : 'SSH 会话已保留')
-      .width('100%')
-      .fontSize(12)
-      .fontColor('#D7DEE8')
-      .maxLines(2)
   }
   .width('100%')
   .height('100%')
@@ -456,10 +434,7 @@ export class SshTerminalPipService {
 
   private normalizedInfo(info: SshTerminalPipInfo): SshTerminalPipInfo {
     return {
-      hostLabel: info.hostLabel.trim(),
-      hostAddress: info.hostAddress.trim(),
-      status: info.status.trim().length > 0 ? info.status.trim() : '已连接',
-      outputSummary: sanitizeOutputSummary(info.outputSummary)
+      status: sshPipPublicStatus(info.status)
     };
   }
 

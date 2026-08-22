@@ -10202,11 +10202,7 @@ struct SshTerminal {
 
   private makeSshPipInfo(status: string = '已连接'): SshTerminalPipInfo {
     return {
-      hostLabel: this.hostLabel,
-      hostAddress: this.userAtHost.length > 0 ? this.userAtHost :
-        (this.sshHost + ':' + this.sshPort.toString()),
-      status: status,
-      outputSummary: this.termOutput
+      status: status
     };
   }
 

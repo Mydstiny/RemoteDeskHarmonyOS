@@ -174,6 +174,7 @@ import sshProductivityPolicyTest from './SshProductivityPolicy.test';
 import sshSessionLogPolicyTest from './SshSessionLogPolicy.test';
 import sshSessionLogStoreTest from './SshSessionLogStore.test';
 import sshDiagnosticPolicyTest from './SshDiagnosticPolicy.test';
+import sshPipPrivacyPolicyTest from './SshPipPrivacyPolicy.test';
 import sshNotificationServiceTest from './SshNotificationService.test';
 import sshBroadcastPolicyTest from './SshBroadcastPolicy.test';
 import sshWebMessagePortPolicyTest from './SshWebMessagePortPolicy.test';
@@ -397,6 +398,7 @@ export default function testsuite() {
   sshSessionLogPolicyTest();
   sshSessionLogStoreTest();
   sshDiagnosticPolicyTest();
+  sshPipPrivacyPolicyTest();
   sshNotificationServiceTest();
   sshBroadcastPolicyTest();
   sshWebMessagePortPolicyTest();
