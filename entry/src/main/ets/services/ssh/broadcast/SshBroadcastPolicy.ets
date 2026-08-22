@@ -144,6 +144,36 @@ function normalizedTargets(targets: Array<SshBroadcastTargetV1>): Array<SshBroad
   return result;
 }
 
+/**
+ * Preserve only explicit, currently eligible selections. The current host may
+ * be preselected once when the broadcast surface opens, but a later refresh
+ * must never replace a disconnected/unsafe target with another session.
+ */
+export function reconcileSshBroadcastSelection(
+  targets: Array<SshBroadcastTargetV1>, selectedHostIds: Array<string>,
+  currentHostId: string, preselectCurrentWhenEmpty: boolean): Array<string> {
+  const normalizedTargetsValue: Array<SshBroadcastTargetV1> = normalizedTargets(targets);
+  const eligible: Set<string> = new Set<string>();
+  for (let index: number = 0; index < normalizedTargetsValue.length; index++) {
+    const target: SshBroadcastTargetV1 = normalizedTargetsValue[index];
+    if (sshBroadcastTargetEligible(target)) { eligible.add(target.hostId); }
+  }
+  const result: Array<string> = [];
+  const seen: Set<string> = new Set<string>();
+  for (let index: number = 0; index < selectedHostIds.length; index++) {
+    const hostId: string = selectedHostIds[index].trim();
+    if (hostId.length === 0 || seen.has(hostId) || !eligible.has(hostId)) { continue; }
+    seen.add(hostId);
+    result.push(hostId);
+    if (result.length >= SSH_BROADCAST_MAX_TARGETS) { break; }
+  }
+  const current: string = currentHostId.trim();
+  if (result.length === 0 && preselectCurrentWhenEmpty && eligible.has(current)) {
+    result.push(current);
+  }
+  return result;
+}
+
 export function buildSshBroadcastPlan(
   targets: Array<SshBroadcastTargetV1>, selectedHostIds: Array<string>,
   text: string, mode: SshBroadcastMode): SshBroadcastPlanV1 {

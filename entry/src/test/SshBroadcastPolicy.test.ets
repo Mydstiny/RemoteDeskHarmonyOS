@@ -1,6 +1,7 @@
 import { describe, it, expect } from '@ohos/hypium';
 import {
   buildSshBroadcastPlan,
+  reconcileSshBroadcastSelection,
   sshBroadcastTargetBlockReason,
   sshBroadcastTargetEligible,
   SSH_BROADCAST_MAX_TARGETS,
@@ -68,6 +69,29 @@ export default function sshBroadcastPolicyTest(): void {
       const plan = buildSshBroadcastPlan([target('host')], ['host'], oversized, 'insert');
       expect(plan.ok).assertFalse();
       expect(plan.code).assertEqual('invalid_text');
+    });
+
+    it('should_preselect_current_only_when_the_surface_first_opens', 0, (): void => {
+      const targets: Array<SshBroadcastTargetV1> = [target('current'), target('other')];
+      const opened: Array<string> = reconcileSshBroadcastSelection(
+        targets, [], 'current', true);
+      expect(opened.length).assertEqual(1);
+      expect(opened[0]).assertEqual('current');
+
+      const explicitEmpty: Array<string> = reconcileSshBroadcastSelection(
+        targets, [], 'current', false);
+      expect(explicitEmpty.length).assertEqual(0);
+    });
+
+    it('should_not_replace_an_invalidated_explicit_target_during_send_refresh', 0, (): void => {
+      const refreshed: Array<string> = reconcileSshBroadcastSelection(
+        [target('current'), target('selected', false)], ['selected'], 'current', false);
+      expect(refreshed.length).assertEqual(0);
+
+      const preserved: Array<string> = reconcileSshBroadcastSelection(
+        [target('current'), target('selected')], ['selected', 'selected'], 'current', false);
+      expect(preserved.length).assertEqual(1);
+      expect(preserved[0]).assertEqual('selected');
     });
   });
 }

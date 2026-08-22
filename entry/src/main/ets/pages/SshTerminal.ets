@@ -232,6 +232,7 @@ import {
 } from '../services/ssh/workspace/SshWorkspacePlatformProbe';
 import {
   buildSshBroadcastPlan,
+  reconcileSshBroadcastSelection,
   sshBroadcastTargetEligible,
   SSH_BROADCAST_MAX_TARGETS,
   SshBroadcastMode,
@@ -3285,7 +3286,7 @@ struct SshTerminal {
     };
   }
 
-  private refreshSshBroadcastTargets(): void {
+  private refreshSshBroadcastTargets(preselectCurrentWhenEmpty: boolean = false): void {
     if (!this.sshWorkspaceModeEnabled()) {
       this.sshBroadcastTargets = [];
       this.sshBroadcastSelectedHostIds = [];
@@ -3299,30 +3300,9 @@ struct SshTerminal {
       const target: SshBroadcastTargetV1 | null = this.sshBroadcastTargetForTab(tab);
       if (target !== null) { nextTargets.push(target); }
     }
-    const nextSelected: Array<string> = [];
-    for (let index: number = 0; index < this.sshBroadcastSelectedHostIds.length; index++) {
-      const hostId: string = this.sshBroadcastSelectedHostIds[index].trim();
-      for (let targetIndex: number = 0; targetIndex < nextTargets.length; targetIndex++) {
-        if (nextTargets[targetIndex].hostId === hostId &&
-          sshBroadcastTargetEligible(nextTargets[targetIndex])) {
-          nextSelected.push(hostId);
-          break;
-        }
-      }
-      if (nextSelected.length >= SSH_BROADCAST_MAX_TARGETS) { break; }
-    }
-    // Only the currently visible/active host is preselected. Every additional
-    // session requires an explicit user gesture in the red broadcast surface.
-    if (nextSelected.length === 0) {
-      const currentHostId: string = this.hostId.trim();
-      for (let index: number = 0; index < nextTargets.length; index++) {
-        if (nextTargets[index].hostId === currentHostId &&
-          sshBroadcastTargetEligible(nextTargets[index])) {
-          nextSelected.push(currentHostId);
-          break;
-        }
-      }
-    }
+    const nextSelected: Array<string> = reconcileSshBroadcastSelection(
+      nextTargets, this.sshBroadcastSelectedHostIds, this.hostId,
+      preselectCurrentWhenEmpty);
     this.sshBroadcastTargets = nextTargets;
     this.sshBroadcastSelectedHostIds = nextSelected;
   }
@@ -3331,7 +3311,7 @@ struct SshTerminal {
     if (!this.sshWorkspaceModeEnabled() || this.terminalClosing ||
       this.showSshBroadcastSheet || this.sshModalOwnsKeyboard()) { return; }
     this.closeTerminalSearch(false, true);
-    this.refreshSshBroadcastTargets();
+    this.refreshSshBroadcastTargets(true);
     if (this.sshBroadcastTargets.length === 0) {
       promptAction.showToast({ message: '没有可见的 SSH 工作台会话', duration: 1600 });
       return;
