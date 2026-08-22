@@ -195,7 +195,7 @@ M0 action 只修改纯快照：创建/重命名工作区、打开占位 tab、�
 
 | 契约 | 自动化证据 | HDC/设备证据 | 阶段状态 |
 |---|---|---|---|
-| 密码、Key、KBI/MFA 鉴权顺序不变 | 现有 native auth/prompt tests；首轮隐藏 prompt 自动填充与页面 pending-session generation 策略契约 | API24 Phone/2in1 模拟器均完成 KBI/MFA 成功、取消、失败；物理/API26 待验 | API24_EMULATOR_PASS |
+| 密码、Key、KBI/MFA 鉴权顺序不变 | 现有 native auth/prompt tests；首轮隐藏 prompt 自动填充与页面 pending-session generation 策略契约 | API24 Phone/2in1 模拟器均完成 KBI/MFA 成功、取消、失败；密码鉴权失败与连接中取消也已完成双端矩阵；物理/API26 待验 | API24_EMULATOR_PASS |
 | Host Key 首次、接受、变化、逐跳失败 | preflight/native tests | Sheet、拒绝和错误态 | S0 待设备 |
 | Proxy/ProxyJump 与三跳路由 | proxy/route tests | 至少一条可用路径或明确环境 blocker | S0 待设备 |
 | locale 为 host-scoped | `SshSettingsPolicy.test` | 两主机切换不串值 | S0 待设备 |
@@ -313,7 +313,7 @@ M0 action 只修改纯快照：创建/重命名工作区、打开占位 tab、�
 
 2026-08-23 补充清理：Phone 下载复验结束后显式断开 SFTP/SSH，删除 `tcp:22222 -> tcp:22225` 映射并复查为 `[Empty]`，宿主 22225 无监听；一次性下载服务、128MiB fixture、脚本/pyc 和设备端 `ssh-phone-download-*` 转储已精确清理。最终下载文件与两个 0 B picker 占位文件经三项选择核验后移入系统“最近删除”，既有三条 RemoteDesktop 日志仍留在 Download，回收站未清空；复用 venv、Host Key 和既有用户主机配置继续保留。
 
-尚未证明：KBI/MFA 在物理设备与 API26 上的同矩阵复验、密码鉴权的取消/失败在 Phone/PC 双端矩阵、真实软/硬键盘设备矩阵、SFTP 下载在物理设备/API26、SFTP 上传在物理设备/API26 的暂停/恢复/取消/重试，以及外部 HAP 替换后不确定 partial 的正向断点恢复、无权限、目标冲突、覆盖、批量与网络切换余下矩阵、连续任务通知的权限允许/拒绝/锁屏路径、API26 设备和多主机/全协议并行。本次 API24 Phone 模拟器的 PiP 路径未触发持续任务通知，通知栏明确显示“没有通知”，因此只记录运行时未触发，不能冒充通知设备 PASS。没有物理/API26 与上述剩余矩阵证据前，M7–M9 仍保持 DEVICE_PENDING，整个 SSH 计划不能标为完成。
+尚未证明：KBI/MFA 在物理设备与 API26 上的同矩阵复验、真实软/硬键盘设备矩阵、SFTP 下载在物理设备/API26、SFTP 上传在物理设备/API26 的暂停/恢复/取消/重试，以及外部 HAP 替换后不确定 partial 的正向断点恢复、无权限、目标冲突、覆盖、批量与网络切换余下矩阵、连续任务通知的权限允许/拒绝/锁屏路径、API26 设备和多主机/全协议并行。本次 API24 Phone 模拟器的 PiP 路径未触发持续任务通知，通知栏明确显示“没有通知”，因此只记录运行时未触发，不能冒充通知设备 PASS。没有物理/API26 与上述剩余矩阵证据前，M7–M9 仍保持 DEVICE_PENDING，整个 SSH 计划不能标为完成。
 
 ## 8. 工具链事实
 
@@ -335,7 +335,7 @@ M0 action 只修改纯快照：创建/重命名工作区、打开占位 tab、�
 | M7 | M6 工作台 | 已落地；广播刷新只保留显式且仍安全的目标；安全模式按 host/session/generation 隔离，未知状态 fail closed；独立高风险 flag 默认关闭 | 已注册；包含独立 flag、未知安全状态及失效目标不替换策略用例 | PASS | PASS | 真实主机及广播 UI 矩阵待接入 | 已复核；本次安全修复待最终实机复核 | DEVICE_PENDING |
 | M8 | M7 工作台 | 已落地；双端 generation/sequence/ACK 整数且严格连续 | 已注册；包含小数计数器与向前跳号拒绝 | PASS | PASS | API26/高负载设备待验 | 已复核；本次序号修复待最终实机复核 | DEVICE_PENDING |
 | M9 | M8 前置 | SSH handoff、独立窗口前台恢复、沉浸/分屏回归已落地 | 策略覆盖 | PASS | PASS | PC/API23 模拟器已证明鉴权后开窗、SFTP/终端保活、转发 payload、最小化/最近任务恢复、F11 沉浸进出、左边缘 WMS 分屏、任务栏/WMS 多窗口；物理/API26/剩余协议矩阵待验 | 待最终实机复核 | DEVICE_PENDING |
-| API23-target/API24 emulator runtime | 当前 M0–M9 HAP / `ccdbc9ba6` | PiP 隐私边界、显式退出前停止、WMS active probe/终态补偿；KBI prompt broker、交互式错误保留与 desktop pending-session fence | 生命周期与 KBI/MFA 页面策略用例已注册；native SSH 用例通过 | PASS，exit 0 | PASS，exit 0 | Phone/2in1 模拟器 KBI/MFA 成功、取消、失败均 PASS；Phone 密码鉴权、PiP 隐私/保活/恢复/退出无残留 PASS；持续任务通知未触发；物理/API26 待验 | 待 API26/物理设备最终复核 | PARTIAL_PASS |
+| API23-target/API24 emulator runtime | 当前 M0–M9 HAP / `ccdbc9ba6` | PiP 隐私边界、显式退出前停止、WMS active probe/终态补偿；KBI prompt broker、交互式错误保留与 desktop pending-session fence | 生命周期与 KBI/MFA 页面策略用例已注册；native SSH 用例通过 | PASS，exit 0 | PASS，exit 0 | Phone/2in1 模拟器 KBI/MFA 成功、取消、失败均 PASS；Phone/2in1 密码鉴权失败与连接中取消均 PASS，未创建孤立会话；Phone 密码成功、PiP 隐私/保活/恢复/退出无残留 PASS；持续任务通知未触发；物理/API26 待验 | 待 API26/物理设备最终复核 | PARTIAL_PASS |
 | API23 chained Sheet compatibility | `ccdbc9ba6` → `ee76c54e6` | 8 个独立提交隔离命令面板、传输中心、Profile、生产力、日志、广播、标签重命名和口令回退 Sheet；根宿主只保留标签选择器 | 每个提交均通过精确测试编译门禁；无新增测试注册 | 8/8 PASS，exit 0 | 8/8 PASS，exit 0 | API24 2in1：命令面板、传输中心、Profile、标签选择器 PASS；生产力/日志/广播仍受门禁；重命名/口令 fallback 无可靠自动化入口 | 最终物理/API26 审查待设备 | PARTIAL_PASS |
 
 2026-08-23 API24 Phone SFTP 下载与恢复入口 receipt：Phone 旧版 SFTP Sheet 已具备传输任务状态与核心动作，但持久任务 Builder 此前只渲染在 Pad/PC 分支，应用重启后 Phone 只能看到“有未完成任务”计数，无法进入“恢复/取消”。`411dd9a2` 只在 Phone Sheet 标题后挂载既有 `SftpRecoveredTasks()`，任务 Store、checkpoint、partial 身份、传输引擎、Pad/PC UI 和其他协议均未修改。精确 `default@OhosTestCompileArkTS` exit 0（`BUILD SUCCESSFUL in 6 s 191 ms`），`assembleHap` exit 0（`BUILD SUCCESSFUL in 7 s 928 ms`），`git diff --check` 与 Light 合规门禁通过；签名 HAP SHA-256 为 `6737aac1c7434b57391527de443ee39afd161242131c229e8919d96ad4c3f6ad`。构建期间保留了工作树中并行的 Moonlight 未提交修改，SSH 提交本身只有 `SshTerminal.ets` 两行。
@@ -428,3 +428,9 @@ hvigorw --mode module -p module=entry -p product=default assembleHap --analyze=n
 同一 HAP 覆盖安装到 API24 Phone `127.0.0.1:5555` 后，使用已核对的 ED25519 Host Key、密码鉴权和 128MiB 系统授权文件完成完整链路：活动 UI 同时显示暂停与取消；暂停后 partial 两次稳定为 `4,063,232`，点击继续后增长到 `5,341,184` 且两按钮恢复；取消后 partial 两次稳定为 `7,864,320`，页面显示“重试传输”；重试通过 checkpoint 校验并重新打开系统文件授权器，选择同一文件后增长到 `9,469,952`。最终远端仅保留 `codex-phone-sftp-upload-source.bin`，精确大小 `134,217,728`，当前任务 partial 不存在；final 与源文件 SHA-256 均为 `254bcc3fc4f27172636df4bf32de9f107f620d559b20d760197e452b97453917`。
 
 UI hierarchy 证据及 SHA-256 依次为 `/private/tmp/ssh-phone-fix-upload-active.json`（`7892eeaa7ccdfdefde2b7ac02ce0ccfdb1def448e9bd075e9b414e01feb63962`）、`ssh-phone-fix-upload-paused.json`（`656a091243d7cd2d2ce7049da4bea17a31708b5ba41939bd9d94b88af7bd38d5`）、`ssh-phone-fix-upload-paused-stable.json`（`e94b52c3e8017838b739e1d0d87fdb3a72eb9cc45fc81c385df8ff98ae129e95`）、`ssh-phone-fix-upload-resumed.json`（`5d6979d42fa368d38e46229d12245214131fbf2e9f7376d82899cc200b060570`）、`ssh-phone-fix-upload-cancelled.json`（`a61e2e1e57633d7283566b15c60363f514104b67fa0805271b3e2f41e7158aff`）、`ssh-phone-fix-upload-cancelled-stable.json`（`b4f19ed41ce2550f81fa6866f9cac7d8fe9856d6b9b8421e3c4276169e4b6547`）、`ssh-phone-fix-retry-picker.json`（`7904d6deb81146337a1d13f66f06a83b3e8ac3e34bc8146bc99172b13b66ad75`）、`ssh-phone-fix-upload-retried.json`（`03aae299085b6fa84e1630334dac394eb6c082d06ea24ca097d451941d7f64c9`）和 `ssh-phone-fix-upload-completed.json`（`2ae136a166b601bffecc79bbf94730d4fac129c2d9dca2429468dba9fa5a0014`）。验收后 SFTP/SSH 已断开，`tcp:22222 -> tcp:22225` reverse 映射、22225 临时监听、临时服务根、本地源、一次性脚本/pyc 和设备转储均已精确清理；模拟器授权源只移入系统“最近删除”，未清空回收站，复用 venv、Host Key 和既有服务脚本保留。本 receipt 不声明 Phone 下载侧、无权限/冲突/覆盖/批量/网络切换、API26 或物理设备验收，计划继续 `NOT_COMPLETE`。
+
+2026-08-23 API24 Phone/2in1 密码鉴权失败与取消矩阵 receipt：两端分别复用既有 `ssh-e2e` 与 `Loopback-SSH-22220` 测试主机、同一已核对的 ED25519 Host Key，以及只允许密码方法的一次性 Paramiko 端点。即时拒绝模式下，Phone 的 `codex-test` 与 2in1 的 `nobody` 均在服务端留下 password rejected，产品两端都稳定显示 `连接失败 (code=-31)` 与“重试/返回”；2in1 Ability 列表只有主 `EntryAbility`，没有 `RemoteSessionAbility`。失败 UI hierarchy 证据分别为 `/private/tmp/ssh-password-matrix-phone-reject.json`（`c059d5da9e9b2598870e8b647a944c031347bf40ad51f316df5a034a60b7f3c4`）与 `/private/tmp/ssh-password-matrix-pc-reject.json`（`bf5457f296a7295b38cd1498cc924260dd6a0da88e2ad8c03d0c9bf51f4579de`）。
+
+取消模式下服务端在 password callback 内延迟返回：Phone 在回调完成前点击终端顶栏返回，随后 RemoteDesktop 进程与 Ability 均不存在；服务端延迟结束后虽返回 password success，但客户端没有建立 channel 或终端会话。2in1 使用 60 秒延迟，在服务端已经记录 `AUTH mode=delay username='nobody'` 且尚未返回结果时点击页面内“取消”，立即回到 `HostListPage`，Ability 列表仍只有 `EntryAbility`。2in1 鉴权中与取消后证据分别为 `/private/tmp/ssh-password-matrix-pc-delayed.json`（`3c4d4104b8abca9aad863872306f09d3a18c401d950d3b845e6e0376922e717b`）和 `/private/tmp/ssh-password-matrix-pc-cancel60.json`（`173c89c2309e136eff5f1536ab325798431458d9165ca5f21c5680948105cf83`）。本轮未发现产品缺陷，因此没有修改连接、鉴权、窗口或其他协议代码。
+
+验收后临时 22225 服务与一次性包装脚本已停止/删除；Phone 的同名 forward/reverse `tcp:22222 tcp:22225` task 与 2in1 的 reverse `tcp:22220 tcp:22225` task 按完整 task string 精确删除，HDC 全局映射复查为 `[Empty]`，宿主 22225 无监听。两端设备侧 `ssh-password-matrix-*` 转储已按显式路径删除；本地证据、复用 venv、Host Key 与既有测试主机配置保留。本 receipt 只补齐 API23-targeted HAP 在 API24 模拟器上的密码失败/连接中取消双端矩阵，不冒充密码成功双端、API26 或物理设备验收，整个计划继续 `NOT_COMPLETE`。
