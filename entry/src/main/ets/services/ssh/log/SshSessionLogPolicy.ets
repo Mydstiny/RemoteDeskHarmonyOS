@@ -82,6 +82,19 @@ export interface SshSessionLogSearchHitV1 {
   bookmarkId: string;
 }
 
+export interface SshSessionLogSearchCursorV1 {
+  token: string;
+  hostId: string;
+  identityEnabled: boolean;
+  identityHostId: string;
+  identitySessionId: number;
+  identityGeneration: number;
+  chunkIndex: number;
+  recordIndex: number;
+  results: Array<SshSessionLogSearchHitV1>;
+  done: boolean;
+}
+
 export interface SshSessionLogExportResultV1 {
   ok: boolean;
   text: string;
@@ -404,25 +417,98 @@ export function searchSshSessionLog(
   hostId: string = '',
   identity?: SshSessionLogIdentityV1
 ): Array<SshSessionLogSearchHitV1> {
-  const token: string = stringValue(query, 256).trim().toLowerCase();
-  const host: string = normalizeHostId(hostId);
-  const results: Array<SshSessionLogSearchHitV1> = [];
-  for (let chunkIndex: number = document.chunks.length - 1;
-    chunkIndex >= 0 && results.length < SSH_SESSION_LOG_MAX_SEARCH_RESULTS; chunkIndex--) {
-    const chunk: SshSessionLogChunkV1 = document.chunks[chunkIndex];
-    if (host.length > 0 && chunk.hostId !== host) { continue; }
-    if (identity !== undefined && !sameIdentityValues(chunk.hostId, chunk.sessionId,
-      chunk.generation, identity.hostId, identity.sessionId, identity.generation)) { continue; }
-    for (let recordIndex: number = chunk.records.length - 1;
-      recordIndex >= 0 && results.length < SSH_SESSION_LOG_MAX_SEARCH_RESULTS; recordIndex--) {
-      const record: SshSessionLogRecordV1 = chunk.records[recordIndex];
-      if (token.length > 0 && record.searchText.indexOf(token) < 0) { continue; }
-      const bookmark: SshSessionLogBookmarkV1 | undefined = bookmarkForRecord(document, record.id);
-      results.push({ record, bookmarked: bookmark !== undefined,
-        bookmarkId: bookmark === undefined ? '' : bookmark.id });
+  let cursor: SshSessionLogSearchCursorV1 = createSshSessionLogSearchCursor(
+    document, query, hostId, identity);
+  while (!cursor.done) {
+    cursor = continueSshSessionLogSearch(document, cursor, 4096);
+  }
+  return cursor.results;
+}
+
+export function createSshSessionLogSearchCursor(document: SshSessionLogDocumentV1,
+  query: string, hostId: string = '', identity?: SshSessionLogIdentityV1):
+  SshSessionLogSearchCursorV1 {
+  const identityHostId: string = identity === undefined ? '' : normalizeHostId(identity.hostId);
+  const identitySessionId: number = identity === undefined ? 0 : Math.floor(identity.sessionId);
+  const identityGeneration: number = identity === undefined ? 0 : Math.floor(identity.generation);
+  return {
+    token: stringValue(query, 256).trim().toLowerCase(),
+    hostId: normalizeHostId(hostId),
+    identityEnabled: identity !== undefined,
+    identityHostId,
+    identitySessionId,
+    identityGeneration,
+    chunkIndex: document.chunks.length - 1,
+    recordIndex: -1,
+    results: [],
+    done: document.chunks.length === 0
+  };
+}
+
+/** Scan a bounded amount of work so callers can yield between large-log slices. */
+export function continueSshSessionLogSearch(document: SshSessionLogDocumentV1,
+  cursor: SshSessionLogSearchCursorV1, workBudget: number = 256):
+  SshSessionLogSearchCursorV1 {
+  if (cursor.done) { return cursor; }
+  const next: SshSessionLogSearchCursorV1 = {
+    token: cursor.token,
+    hostId: cursor.hostId,
+    identityEnabled: cursor.identityEnabled,
+    identityHostId: cursor.identityHostId,
+    identitySessionId: cursor.identitySessionId,
+    identityGeneration: cursor.identityGeneration,
+    chunkIndex: cursor.chunkIndex,
+    recordIndex: cursor.recordIndex,
+    results: cursor.results.slice(),
+    done: cursor.done
+  };
+  const normalizedBudget: number = Number.isFinite(workBudget) ? Math.floor(workBudget) : 256;
+  const budget: number = Math.max(1, Math.min(4096, normalizedBudget));
+  let work: number = 0;
+  while (next.chunkIndex >= 0 &&
+    next.results.length < SSH_SESSION_LOG_MAX_SEARCH_RESULTS && work < budget) {
+    const chunk: SshSessionLogChunkV1 | undefined = document.chunks[next.chunkIndex];
+    if (chunk === undefined) {
+      next.chunkIndex--;
+      next.recordIndex = -1;
+      work++;
+      continue;
+    }
+    if (next.recordIndex < 0) {
+      next.recordIndex = chunk.records.length - 1;
+      work++;
+    }
+    const hostRejected: boolean = next.hostId.length > 0 && chunk.hostId !== next.hostId;
+    const identityRejected: boolean = next.identityEnabled && !sameIdentityValues(
+      chunk.hostId, chunk.sessionId, chunk.generation, next.identityHostId,
+      next.identitySessionId, next.identityGeneration);
+    if (hostRejected || identityRejected || next.recordIndex < 0) {
+      next.chunkIndex--;
+      next.recordIndex = -1;
+      continue;
+    }
+    while (next.recordIndex >= 0 &&
+      next.results.length < SSH_SESSION_LOG_MAX_SEARCH_RESULTS && work < budget) {
+      const record: SshSessionLogRecordV1 = chunk.records[next.recordIndex];
+      next.recordIndex--;
+      work++;
+      if (next.token.length > 0 && record.searchText.indexOf(next.token) < 0) { continue; }
+      const bookmark: SshSessionLogBookmarkV1 | undefined =
+        bookmarkForRecord(document, record.id);
+      next.results.push({
+        record,
+        bookmarked: bookmark !== undefined,
+        bookmarkId: bookmark === undefined ? '' : bookmark.id
+      });
+    }
+    if (next.recordIndex < 0) {
+      next.chunkIndex--;
+      next.recordIndex = -1;
     }
   }
-  return results;
+  next.done = next.chunkIndex < 0 ||
+    next.results.length >= SSH_SESSION_LOG_MAX_SEARCH_RESULTS;
+  return next;
 }
 
 export function exportSshSessionLog(

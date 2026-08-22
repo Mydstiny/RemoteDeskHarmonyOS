@@ -555,6 +555,8 @@ struct SshTerminal {
   private sshSessionLogPendingOutput: Map<string, SshSessionLogRecordV1> =
     new Map<string, SshSessionLogRecordV1>();
   private sshSessionLogFlushTimer: number = -1;
+  private sshSessionLogSearchTimer: number = -1;
+  private sshSessionLogSearchSequence: number = 0;
   private sshSessionLogCommandStarts: Map<string, number> = new Map<string, number>();
   /** Hosts whose current terminal state is unsafe for broadcast input. */
   private sshBroadcastUnsafeHostIds: Set<string> = new Set<string>();
@@ -3236,6 +3238,7 @@ struct SshTerminal {
 
   private refreshSshSessionLogDocument(): void {
     if (!this.sshSessionLogsEnabled()) {
+      this.cancelSshSessionLogSearch();
       this.sshSessionLogDocument = emptySshSessionLogDocument();
       this.sshSessionLogResults = [];
       return;
@@ -3248,8 +3251,55 @@ struct SshTerminal {
     }
     this.sshSessionLogReady = true;
     this.sshSessionLogDocument = this.sshSessionLogStore.snapshot();
-    this.sshSessionLogResults = this.sshSessionLogStore.search(
-      this.sshSessionLogQuery, this.hostId.trim());
+    if (this.showSshSessionLogSheet) {
+      this.scheduleSshSessionLogSearch(0);
+    } else {
+      this.cancelSshSessionLogSearch();
+      this.sshSessionLogResults = [];
+    }
+  }
+
+  private cancelSshSessionLogSearch(): void {
+    this.sshSessionLogSearchSequence++;
+    if (this.sshSessionLogSearchTimer !== -1) {
+      clearTimeout(this.sshSessionLogSearchTimer);
+      this.sshSessionLogSearchTimer = -1;
+    }
+  }
+
+  private scheduleSshSessionLogSearch(delayMs: number): void {
+    this.cancelSshSessionLogSearch();
+    if (!this.sshSessionLogsEnabled() || !this.sshSessionLogReady || this.terminalClosing) {
+      this.sshSessionLogResults = [];
+      return;
+    }
+    const requestSequence: number = this.sshSessionLogSearchSequence;
+    const requestQuery: string = this.sshSessionLogQuery;
+    const requestHostId: string = this.hostId.trim();
+    const requestPageGeneration: number = this.pageGeneration;
+    const requestBindingGeneration: number = this.sshBindingGeneration;
+    this.sshSessionLogSearchTimer = setTimeout((): void => {
+      this.sshSessionLogSearchTimer = -1;
+      void this.sshSessionLogStore.searchAsync(requestQuery, requestHostId, undefined,
+        (): boolean => requestSequence === this.sshSessionLogSearchSequence &&
+          this.sshSessionLogsEnabled() && this.sshSessionLogReady &&
+          !this.terminalClosing && this.showSshSessionLogSheet).then(
+        (results: Array<SshSessionLogSearchHitV1>): void => {
+          if (requestSequence !== this.sshSessionLogSearchSequence ||
+            requestHostId !== this.hostId.trim() ||
+            requestPageGeneration !== this.pageGeneration ||
+            requestBindingGeneration !== this.sshBindingGeneration ||
+            !this.sshSessionLogsEnabled() || !this.sshSessionLogReady ||
+            this.terminalClosing || !this.showSshSessionLogSheet) {
+            return;
+          }
+          this.sshSessionLogResults = results;
+        }).catch((_err: Error): void => {
+          if (requestSequence === this.sshSessionLogSearchSequence) {
+            this.sshSessionLogResults = [];
+          }
+        });
+    }, Math.max(0, Math.min(300, Math.floor(delayMs))));
   }
 
   private openSshSessionLog(): void {
@@ -3261,10 +3311,12 @@ struct SshTerminal {
     this.refreshSshSessionLogDocument();
     this.terminalFocusMode = false;
     this.showSshSessionLogSheet = true;
+    this.scheduleSshSessionLogSearch(0);
   }
 
   private closeSshSessionLog(): void {
     this.showSshSessionLogSheet = false;
+    this.cancelSshSessionLogSearch();
     setTimeout((): void => {
       if (!this.terminalClosing && !this.showSshSessionLogSheet &&
         !this.sshModalOwnsKeyboard()) { this.focusKeyboard(false); }
@@ -3514,11 +3566,11 @@ struct SshTerminal {
   private searchSshSessionLog(query: string): void {
     this.sshSessionLogQuery = query.slice(0, 256);
     if (!this.sshSessionLogsEnabled() || !this.sshSessionLogReady) {
+      this.cancelSshSessionLogSearch();
       this.sshSessionLogResults = [];
       return;
     }
-    this.sshSessionLogResults = this.sshSessionLogStore.search(
-      this.sshSessionLogQuery, this.hostId.trim());
+    this.scheduleSshSessionLogSearch(120);
   }
 
   private toggleSshSessionLogBookmark(hit: SshSessionLogSearchHitV1, note: string = ''): void {
@@ -8494,6 +8546,7 @@ struct SshTerminal {
     this.sshSessionLogReady = false;
     this.sshSessionLogDocument = emptySshSessionLogDocument();
     this.sshSessionLogQuery = '';
+    this.cancelSshSessionLogSearch();
     this.sshSessionLogResults = [];
     this.sshSessionLogSequence = 0;
     this.sshSessionLogInputBuffers.clear();
@@ -8916,6 +8969,7 @@ struct SshTerminal {
     this.sshProductivityReady = false;
     this.sshProductivityDocument = emptySshProductivityDocument();
     this.sshProductivityHistorySequence = 0;
+    this.cancelSshSessionLogSearch();
     this.flushSshSessionLogOutput();
     if (this.sshSessionLogFlushTimer !== -1) {
       clearTimeout(this.sshSessionLogFlushTimer);
@@ -11028,6 +11082,7 @@ struct SshTerminal {
       this.showSshCommandPalette = false;
       this.showSshProductivitySheet = false;
       this.showSshSessionLogSheet = false;
+      this.cancelSshSessionLogSearch();
       this.showSshBroadcastSheet = false;
       this.sshBroadcastActive = false;
       this.sshBroadcastTargets = [];
@@ -11076,6 +11131,7 @@ struct SshTerminal {
       return;
     }
     this.showSshSessionLogSheet = false;
+    this.cancelSshSessionLogSearch();
     if (this.sshSessionLogFlushTimer !== -1) {
       clearTimeout(this.sshSessionLogFlushTimer);
       this.sshSessionLogFlushTimer = -1;

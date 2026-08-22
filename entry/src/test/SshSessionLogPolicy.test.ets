@@ -2,6 +2,8 @@ import { describe, it, expect } from '@ohos/hypium';
 import {
   addSshSessionLogBookmark,
   appendSshSessionLogRecord,
+  continueSshSessionLogSearch,
+  createSshSessionLogSearchCursor,
   defaultSshSessionLogSettings,
   emptySshSessionLogDocument,
   encodeSshSessionLogDocument,
@@ -13,7 +15,8 @@ import {
   sshSessionLogCaptureAllowed,
   SSH_SESSION_LOGS_DEFAULT_ENABLED,
   SshSessionLogDocumentV1,
-  SshSessionLogRecordV1
+  SshSessionLogRecordV1,
+  SshSessionLogSearchCursorV1
 } from '../main/ets/services/ssh/log/SshSessionLogPolicy';
 
 function record(id: string, text: string, timestamp: number = 100): SshSessionLogRecordV1 {
@@ -43,6 +46,36 @@ export default function sshSessionLogPolicyTest(): void {
         'host-one', 7, 9, 'host-one', 7, 10, true)).assertFalse();
       expect(matchesSshSessionLogExportFence(
         'host-one', 7, 9, 'host-one', 7, 9, false)).assertFalse();
+    });
+
+    it('chunked_search_should_match_sync_results_and_honor_small_budgets', 0, (): void => {
+      const document: SshSessionLogDocumentV1 = emptySshSessionLogDocument();
+      document.settings.enabled = true;
+      let populated: SshSessionLogDocumentV1 = appendSshSessionLogRecord(
+        document, record('one', 'alpha'), 100);
+      populated = appendSshSessionLogRecord(populated, record('two', 'needle'), 101);
+      populated = appendSshSessionLogRecord(populated, record('three', 'omega'), 102);
+      let cursor: SshSessionLogSearchCursorV1 = createSshSessionLogSearchCursor(
+        populated, 'needle', 'host-one');
+      cursor = continueSshSessionLogSearch(populated, cursor, 1);
+      expect(cursor.done).assertFalse();
+      expect(cursor.results.length).assertEqual(0);
+      let turns: number = 1;
+      while (!cursor.done && turns < 32) {
+        cursor = continueSshSessionLogSearch(populated, cursor, 1);
+        turns++;
+      }
+      const synchronous = searchSshSessionLog(populated, 'needle', 'host-one');
+      expect(cursor.done).assertTrue();
+      expect(cursor.results.length).assertEqual(synchronous.length);
+      expect(cursor.results[0].record.id).assertEqual(synchronous[0].record.id);
+
+      let invalidIdentity: SshSessionLogSearchCursorV1 = createSshSessionLogSearchCursor(
+        populated, '', '', { hostId: '', sessionId: 7, generation: 2 });
+      while (!invalidIdentity.done) {
+        invalidIdentity = continueSshSessionLogSearch(populated, invalidIdentity, 2);
+      }
+      expect(invalidIdentity.results.length).assertEqual(0);
     });
 
     it('default_should_be_opt_in_and_sensitive_modes_should_fail_closed', 0, (): void => {

@@ -4,6 +4,8 @@ import { DataCrypto } from '../../DataCrypto';
 import {
   addSshSessionLogBookmark,
   appendSshSessionLogRecord,
+  continueSshSessionLogSearch,
+  createSshSessionLogSearchCursor,
   decodeSshSessionLogDocument,
   emptySshSessionLogDocument,
   encodeSshSessionLogDocument,
@@ -17,6 +19,7 @@ import {
   SshSessionLogExportResultV1,
   SshSessionLogIdentityV1,
   SshSessionLogRecordV1,
+  SshSessionLogSearchCursorV1,
   SshSessionLogSearchHitV1,
   SshSessionLogSettingsV1
 } from './SshSessionLogPolicy';
@@ -382,6 +385,31 @@ export class SshSessionLogStore {
     Array<SshSessionLogSearchHitV1> {
     if (!this.isReady()) { return []; }
     return searchSshSessionLog(this.document, query, hostId, identity);
+  }
+
+  /** Yield after bounded scan slices so a 10 MiB miss cannot monopolize ArkUI. */
+  searchAsync(query: string, hostId: string = '', identity?: SshSessionLogIdentityV1,
+    shouldContinue?: () => boolean):
+    Promise<Array<SshSessionLogSearchHitV1>> {
+    if (!this.isReady()) { return Promise.resolve([]); }
+    const document: SshSessionLogDocumentV1 = this.document;
+    let cursor: SshSessionLogSearchCursorV1 = createSshSessionLogSearchCursor(
+      document, query, hostId, identity);
+    return new Promise<Array<SshSessionLogSearchHitV1>>((resolve): void => {
+      const advance = (): void => {
+        if (shouldContinue !== undefined && !shouldContinue()) {
+          resolve([]);
+          return;
+        }
+        cursor = continueSshSessionLogSearch(document, cursor, 256);
+        if (cursor.done) {
+          resolve(cursor.results);
+          return;
+        }
+        setTimeout(advance, 0);
+      };
+      advance();
+    });
   }
 
   export(hostId: string, identity?: SshSessionLogIdentityV1, redact: boolean = true):
