@@ -3,7 +3,7 @@
 > 状态：`ACTIVE_M8_M9` / `NOT_COMPLETE`
 > 权威计划：`docs/codex/plans/2026-08-19-ssh-termius-harmonyos7-api26-workbench-plan.md`
 > 建立日期：2026-08-19
-> 当前工作树：`codex/moonlight-complete-upgrade` / `27c010c0`（M0–M9 SSH 增量保留；workbench flag 已增加协议身份门禁，API23 PC 已补 SFTP 下载暂停/继续/取消/重试闭环和短窗口操作区修复，会话日志与广播输入均受默认关闭的独立高风险 flag 约束，日志追加采用重启安全的不可变 chunk 增量提交且不再深拷贝完整日志，页面日志投影不再携带持久记录正文，SSH/SFTP 诊断不再记录 host 标识、远端路径或原始异常消息，全部平台异常出口统一只记录有限数值错误码，后台常驻通知只展示连接/受限数量，SSH PiP 只展示白名单状态且不再接收主机身份或终端输出，日志导出补齐确认和异步身份 fence，大日志搜索改为可取消的分片调度，命令完成通知增加默认关闭的独立用户设置并保留并发会话通知，多窗格 xterm 安全模式按 host/session/generation 隔离且未知状态 fail closed，广播刷新不再静默替换显式目标或跨重连保留旧选择，WebMessagePort 双端序号严格连续；API26 工具链和最终实机矩阵仍待外部条件）
+> 当前工作树：`codex/moonlight-complete-upgrade` / `99d3b037`（M0–M9 SSH 增量保留；workbench flag 已增加协议身份门禁，API23 PC 已补 SFTP 下载暂停/继续/取消/重试闭环和短窗口操作区修复，会话日志与广播输入均受默认关闭的独立高风险 flag 约束，日志追加采用重启安全的不可变 chunk 增量提交且不再深拷贝完整日志，页面日志投影不再携带持久记录正文，SSH/SFTP 诊断不再记录 host 标识、远端路径或原始异常消息，全部平台异常出口统一只记录有限数值错误码，后台常驻通知只展示连接/受限数量，SSH PiP 只展示白名单状态且 API23 的缺失 STARTED 回调可由 WMS 活跃探测补偿，显式退出会先停止 PiP；API26 工具链和最终实机矩阵仍待外部条件）
 > 当前产品基线：HarmonyOS 6.1 / API 23
 > API 26 状态：本机未安装；任何 API 26-only import 均禁止进入产品代码
 
@@ -22,6 +22,7 @@
 
 ## 2A. 最新执行指针（2026-08-22）
 
+- `99d3b037` 修复 API23 Phone 上 SSH 已断开但 PiP 仍长期显示“已连接”的孤儿窗口。系统 Back 统一进入显式会话关闭路径；主窗口若仍拥有/准备 PiP，会在路由返回前发出停止请求，并以 800ms 有界兜底和页面 generation fence 防止迟到回调导航复用页面。API23 的自定义 PiP 实测只回调 `ABOUT_TO_START`、未回调 `STARTED`，服务因此在停止时用 `isPiPActive()` 补偿 WMS 活跃状态，再调用 `stopPiP()`；缺失终态回调也会以 inactive probe 收敛控制器。独立 SSH 窗口和无 PiP 路径保持原返回逻辑。
 - `27c010c0` 补齐有限数值错误码策略的剩余 7 个异常出口：SSH 后台任务、PiP 与命令完成通知不再使用会对任意运行时 `code` 调用 `toString()` 的私有/内联实现，统一复用 `sshDiagnosticErrorCode`；非 number、`NaN` 与无限值固定降级为 `unknown`。只改变诊断元数据编码，不改变后台、PiP 或通知控制流。
 - `203ce02e` 修复 SSH PiP 把 `username@IP:port` 和末尾终端输出直接展示在应用外可见画中画的问题。PiP 信息类型不再接收主机标签、地址或 `termOutput`，UI 只展示通用会话说明和经白名单归一化的“已连接/后台保留”状态；PiP 控制器、自动启动、状态机、超时、销毁和 native 会话所有权均未改动。纯策略测试锁定任意包含主机、路径和 password 的状态文本不能穿过 PiP 边界。
 - `66db169f` 修复 SSH 持续后台任务通知把 host 标签、以及标签为空时的用户名/IP/端口地址直接显示在系统通知的问题。通知内容策略现在只接收运行数和受限数，展示连接/受限数量与通用状态；后台任务 Map、会话快照、WantAgent 恢复参数、持续任务申请/停止和多会话聚合均保持原逻辑。策略测试锁定运行/受限组合文案不含主机身份或远端路径。
@@ -255,14 +256,30 @@ M0 action 只修改纯快照：创建/重命名工作区、打开占位 tab、�
 | `/private/tmp/ssh-restored-api23.png` | `b10b24f386b187b47d7908c8840234d959c2da61e10139a8484b568ea4fc5a2d` | API23 PC：从最近任务恢复后独立窗口回到前台，终端提示符仍在 |
 | `/private/tmp/ssh-password-failure-fixed-final-api23.json` | `2ce475e668efc270369445ec648d8c57711d4689635e8a726b24c670051f42a9` | API23 PC：错误密码后回到 `连接失败 (code=-31)`，显示“重试/返回”，无独立 SSH Ability |
 | `/private/tmp/ssh-password-failure-fixed-final-api23.png` | `f199a7fca838e583b4e2a8f98751e2734d60c00baefa202ea7c8339c95fafe4d` | API23 PC：鉴权失败最终页面截图，独立窗口鉴权 carrier 已卸载 |
+| `/private/tmp/ssh-loopback-authenticated.json` | `fbb6b0c7b7935d94adb40799c0f89bc02d800eab5c91bc3e3596b51a44f4e9b8` | API23 PC：最新签名 HAP 完成 ED25519 Host Key 验证、公钥鉴权并进入 `RemoteSessionAbility` |
+| `/private/tmp/ssh-latest-command.jpeg` | `9692c7c50a24cf064780c4ecd08ad391bc616fb1b14ca2f9123e0ae9a655dce3` | API23 PC：真实终端执行 `echo SSH_LATEST_SMOKE_OK` 并收到回显 |
+| `/private/tmp/ssh-phone-password-connected.json` | `74562bd0eb188486e060cde102eae9d3af8049ec4bb7a779297536c47edf6118` | API23 Phone：ED25519 Host Key 变更经精确指纹核对后，密码鉴权进入连接终端 |
+| `/private/tmp/ssh-phone-password-connected.jpeg` | `e7340caf453224f7c31470fc2e95db8ca236b0e173249d31d1d27d226944ebb4` | API23 Phone：密码鉴权成功后的 SSH 终端截图 |
+| `/private/tmp/ssh-phone-pip-private.json` | `16193c5bee05c59db284d5584cecb0209a4346f5ff420388fe7f404da7069f0a` | API23 Phone：PiP 仅显示 SSH 通用说明与白名单状态，不含用户名、地址、端口、终端标记或远端路径 |
+| `/private/tmp/ssh-phone-pip-private.jpeg` | `bf11d445ac6a628bf8d41c81b00355a07281be661fc0e9fada3cd19ce5f4a269` | API23 Phone：应用退到后台后的隐私化 SSH PiP 截图 |
+| `/private/tmp/ssh-phone-pip-restored-command.jpeg` | `11c45a7e5d5493bc769ca1091c4718e8fc7af9ceadb27757b4970cfdecac8788` | API23 Phone：从 PiP 返回 EntryAbility 后会话仍连接，`echo PIP_RESTORE_OK` 收到远端提示符 |
+| `/private/tmp/ssh-phone-notification-shade.jpeg` | `5416e8b67ddafaf299b53c2bd82bd188ab32225d9144fc9731276f75f688e154` | API23 Phone：本次 PiP 后台路径通知栏显示“没有通知”；连续任务通知未触发，不能据此声明通知设备验收通过 |
+| `/private/tmp/ssh-cleanup-selected.json` | `cf9e4fe547dbf005ca5ab9c7bf6775024e64958cf2d1c587a83da046cbab95ec` | API23 PC：文件管理器仅选中本轮 268.44MB `codex-sftp-lifecycle.bin`，未选择无关文件 |
+| `/private/tmp/ssh-cleanup-recycle-empty.json` | `6faf88bff936f72ad3d53b7936cdea3164f961eff50761ab1e24ac6da76f81a9` | API23 PC：目标文件移入回收站并精确永久删除后，回收站为 0 个文件/0 个文件夹 |
+| `/private/tmp/ssh-pip-exit-v2-active.jpeg` | `1da9a66ad6acfba631432cbb6ef575b3aed7108ea01d83d9d7b635bccc5f69a4` | API23 Phone：`99d3b037` 对应 HAP 重测时，真实 SSH 会话已进入 PiP 的退出前基线 |
+| `/private/tmp/ssh-phone-pip-exit-fixed-v2.json` | `af3b77e04c2aedd31b7e0234d4a957e0ae63e4467dc8fba7112f464295011002` | API23 Phone：WMS active probe 补偿后 PiP 收到 ABOUT_TO_STOP/STOPPED，系统 Back 最终位于 `HostListPage` 且 UI 树无 SSH PiP |
+| `/private/tmp/ssh-phone-pip-exit-fixed-v2.jpeg` | `0c9cd9429d218dd0f7781f34b770facdb78b7728fcc31f001a0323afb8f66566` | API23 Phone：退出后主机列表完整可见、无孤儿 PiP 的最终截图 |
+| `/private/tmp/ssh-pip-exit-v2-pc-launch.jpeg` | `0a285c5c54d7906d9b87c6a97a6692d34a8bbc5ae934939a786572eedc73809b` | API23 PC：同一第二版签名 HAP 覆盖安装并启动，主机列表自由窗口正常显示 |
 
 这些文件位于临时目录，不作为仓库制品。账本保留命令、hash 和观察结果；阶段验收前重新采集最终 SSH 页面证据。
 
 ### 7.3 已证明与未证明
 
-已证明：两个目标可通过 HDC 连接；当前 HAP 在 API 23 Phone/PC 环境可启动；PC 使用系统自由窗口。关闭残留的诊断日志 Sheet 后，点击 SSH 主机正确进入既有 Host Key 预检；TCP 不可达时保留在 HostList 的错误 Sheet，不会进入 Terminal，也不会创建独立会话窗口。`2d1f06d6` 后，PC SSH 新主机 Sheet 的布局树边界与截图均证明代理选项和下一步操作不再被固定宽度截断。2026-08-20 的两次回环 endpoint 复验进一步证明：产品 ED25519 key/指纹确认后才创建 SSH 独立窗口；sshd 日志确认公钥鉴权成功；HDC 键盘输入及终端命令可回显；SFTP 标准子系统可加载 47 项目录；已有远程复制、本地授权上传、本地下载及非空目标拒绝证据仍有效；关闭 SFTP 后终端继续执行命令；转发规则实际建立后可接收主机 payload 并更新流量；独立窗口最小化/最近任务恢复不丢会话，主窗口与 SSH 窗口可同时展示；标题栏最大化、F11 沉浸全屏进出、左边缘系统分屏均已采证。错误密码路径也已证明：Host Key/认证顺序不变，原生失败码 `-31` 会回到源页错误/重试界面，不会创建独立窗口或留下鉴权 carrier。2026-08-22 进一步完成 API23 PC 下载侧暂停/继续/取消/重试/最终导出的同任务闭环，并证明短自由窗口可完整访问传输 footer。
+已证明：两个目标可通过 HDC 连接；当前 HAP 在 API 23 Phone/PC 环境可启动；PC 使用系统自由窗口。关闭残留的诊断日志 Sheet 后，点击 SSH 主机正确进入既有 Host Key 预检；TCP 不可达时保留在 HostList 的错误 Sheet，不会进入 Terminal，也不会创建独立会话窗口。`2d1f06d6` 后，PC SSH 新主机 Sheet 的布局树边界与截图均证明代理选项和下一步操作不再被固定宽度截断。2026-08-20 的两次回环 endpoint 复验进一步证明：产品 ED25519 key/指纹确认后才创建 SSH 独立窗口；sshd 日志确认公钥鉴权成功；HDC 键盘输入及终端命令可回显；SFTP 标准子系统可加载 47 项目录；已有远程复制、本地授权上传、本地下载及非空目标拒绝证据仍有效；关闭 SFTP 后终端继续执行命令；转发规则实际建立后可接收主机 payload 并更新流量；独立窗口最小化/最近任务恢复不丢会话，主窗口与 SSH 窗口可同时展示；标题栏最大化、F11 沉浸全屏进出、左边缘系统分屏均已采证。错误密码路径也已证明：Host Key/认证顺序不变，原生失败码 `-31` 会回到源页错误/重试界面，不会创建独立窗口或留下鉴权 carrier。2026-08-22 进一步完成 API23 PC 下载侧暂停/继续/取消/重试/最终导出的同任务闭环，并证明短自由窗口可完整访问传输 footer；同日 API23 Phone 完成 Host Key 变更精确核对、密码鉴权、后台 PiP 隐私、后台会话保活、返回前台后终端回合，以及显式退出后 PiP 停止和 TCP 断开的闭环。PiP 可见内容不含用户名、IP、端口、终端标记或远端路径；API23 缺失 `STARTED` 回调时，WMS active probe 后可收到 `ABOUT_TO_STOP(3)` 与 `STOPPED(4)`，最终 `HostListPage` UI 树和截图均无孤儿 PiP。
 
-尚未证明：KBI/MFA 的成功/取消/失败全矩阵、密码鉴权的取消/失败在 Phone/PC 双端矩阵、真实软/硬键盘设备矩阵、SFTP 上传侧及 Phone/物理设备/API26 的暂停/恢复/取消/重试余下矩阵、通知/连续任务与 PiP、API26 设备和多主机/全协议并行。2026-08-22 回环 sshd 仅监听 127.0.0.1 且已在采证后关闭；但沙箱外 HDC/破坏性清理审批因会话额度限制被系统拒绝，PC `tcp:22220` 映射、模拟器下载目录中的 `codex-sftp-lifecycle.bin`，以及本机 `/private/tmp/000-codex-sftp-lifecycle`/临时 `sshd_config` 仍须在审批恢复后定点删除，不能写成已清理。没有物理/API26 与上述剩余矩阵证据前，M7–M9 仍保持 DEVICE_PENDING，整个 SSH 计划不能标为完成。
+清理已完成：PC/Phone 两个本地回环服务均已停止；Phone `tcp:22222`、PC `tcp:22220` HDC 映射已精确删除且映射列表为 `[Empty]`；宿主机 22220/22222 均无监听；`/private/tmp/000-codex-sftp-lifecycle`、临时 sshd/Host Key 目录及本轮 PiP 复测目录已删除。PC 下载目录中仅选中的 268.44MB `codex-sftp-lifecycle.bin` 已移入回收站并永久删除，最终回收站为 0 个文件/0 个文件夹。
+
+尚未证明：KBI/MFA 的成功/取消/失败全矩阵、密码鉴权的取消/失败在 Phone/PC 双端矩阵、真实软/硬键盘设备矩阵、SFTP 上传侧及 Phone/物理设备/API26 的暂停/恢复/取消/重试余下矩阵、连续任务通知的权限允许/拒绝/锁屏路径、API26 设备和多主机/全协议并行。本次 API23 Phone 的 PiP 路径未触发持续任务通知，通知栏明确显示“没有通知”，因此只记录运行时未触发，不能冒充通知设备 PASS。没有物理/API26 与上述剩余矩阵证据前，M7–M9 仍保持 DEVICE_PENDING，整个 SSH 计划不能标为完成。
 
 ## 8. 工具链事实
 
@@ -282,6 +299,7 @@ M0 action 只修改纯快照：创建/重命名工作区、打开占位 tab、�
 | M7 | M6 工作台 | 已落地；广播刷新只保留显式且仍安全的目标；安全模式按 host/session/generation 隔离，未知状态 fail closed；独立高风险 flag 默认关闭 | 已注册；包含独立 flag、未知安全状态及失效目标不替换策略用例 | PASS | PASS | 真实主机及广播 UI 矩阵待接入 | 已复核；本次安全修复待最终实机复核 | DEVICE_PENDING |
 | M8 | M7 工作台 | 已落地；双端 generation/sequence/ACK 整数且严格连续 | 已注册；包含小数计数器与向前跳号拒绝 | PASS | PASS | API26/高负载设备待验 | 已复核；本次序号修复待最终实机复核 | DEVICE_PENDING |
 | M9 | M8 前置 | SSH handoff、独立窗口前台恢复、沉浸/分屏回归已落地 | 策略覆盖 | PASS | PASS | PC/API23 模拟器已证明鉴权后开窗、SFTP/终端保活、转发 payload、最小化/最近任务恢复、F11 沉浸进出、左边缘 WMS 分屏、任务栏/WMS 多窗口；物理/API26/剩余协议矩阵待验 | 待最终实机复核 | DEVICE_PENDING |
+| API23 runtime | 当前 M0–M9 HAP / `99d3b037` | PiP 隐私边界、显式退出前停止、API23 active probe/终态补偿 | 生命周期策略用例已注册 | PASS，exit 0 | PASS，exit 0 | Phone 密码鉴权、PiP 隐私/保活/恢复/退出无残留 PASS；PC 同包启动 PASS；持续任务通知未触发 | 待最终实机复核 | PARTIAL_PASS |
 
 ## 10. S0 下一步
 
@@ -341,3 +359,5 @@ hvigorw --mode module -p module=entry -p product=default assembleHap --analyze=n
 2026-08-22 SSH PiP 隐私边界 receipt：`203ce02e` 从 `SshTerminalPipInfo` 删除主机标签、地址和终端输出字段，调用方不再把 `username@IP:port` 或 `termOutput` 送入 PiP 服务；自定义 PiP UI 只显示通用会话说明和白名单状态。自动准备/启动、控制器复用、WMS 状态变化、超时、停止清理及 SSH native session 所有权未修改。纯策略测试证明带主机、远端路径和 password 的任意状态字符串统一降级为“已连接”。精确 `default@OhosTestCompileArkTS` exit 0，`assembleHap` exit 0（`BUILD SUCCESSFUL in 12 s 574 ms`）；标准签名 HAP SHA-256 为 `46dd99fe0458d88c991f154c6aa0dd1cf12acbea670169fcb951f8e9e78945fe`。本 receipt 不冒充 PiP/锁屏 HDC、API26 或物理设备交互验收。
 
 2026-08-22 SSH 异常错误码策略全覆盖 receipt：`27c010c0` 删除后台任务与 PiP 的私有 `errorCode` 以及命令完成通知的内联 `business.code.toString()`，共 7 个异常诊断出口统一调用 `sshDiagnosticErrorCode`。既有策略测试已锁定数字 code 可输出、字符串 `code='secret'`、`NaN` 及其他非数值输入必须返回 `unknown`；本次未改变任何后台连接、PiP 生命周期或通知发布语义。精确 `default@OhosTestCompileArkTS` exit 0，`assembleHap` exit 0（`BUILD SUCCESSFUL in 11 s 945 ms`）；标准签名 HAP SHA-256 为 `ee14a86ff27fc59688057a2ce97197c625f32bab84651ee7314bcff3c131cf2f`。本 receipt 不冒充 HDC、API26 或物理设备验收。
+
+2026-08-22 SSH PiP 退出生命周期 receipt：`99d3b037` 将系统 Back 与顶栏返回统一到显式会话关闭入口；主窗口仍拥有/准备 PiP 时，先调用 `stop()`，再由完成回调或 800ms 有界兜底导航，并以页面 generation、explicit close、closing 状态联合 fence 拒绝迟到导航。首轮 HDC 复测发现 API23 自定义 PiP 只留下 `ABOUT_TO_START(1)`，旧 `stopInternal()` 会等待 5 秒后返回 false、未实际调用 `stopPiP()`；该未通过版本没有提交。最终修复在 `ABOUT_TO_START` 时先用 `isPiPActive()` 查询 WMS，活跃则补偿为 STARTED 并立即停止，终态回调缺失时也用 inactive probe 收敛控制器。精确 `default@OhosTestCompileArkTS` exit 0（`BUILD SUCCESSFUL in 10 s 478 ms`），`assembleHap` exit 0（`BUILD SUCCESSFUL in 11 s 891 ms`）；签名 HAP SHA-256 为 `b15008ab96d4bc080a05f026b9a4cc116e0a69dec77268a5464019dd4cc49871`。同一 HAP 覆盖安装到 API23 Phone/PC；Phone 真实密码 SSH 会话进入 PiP 后，日志确认 `start reconciled from active probe`、`ABOUT_TO_STOP(3)`、`STOPPED(4)`，退出后 TCP 断开且 `HostListPage` 无 PiP；PC 主机列表自由窗口正常启动。最终证据为 `/private/tmp/ssh-pip-exit-v2-active.jpeg`（`1da9a66ad6acfba631432cbb6ef575b3aed7108ea01d83d9d7b635bccc5f69a4`）、`/private/tmp/ssh-phone-pip-exit-fixed-v2.json`（`af3b77e04c2aedd31b7e0234d4a957e0ae63e4467dc8fba7112f464295011002`）、`/private/tmp/ssh-phone-pip-exit-fixed-v2.jpeg`（`0c9cd9429d218dd0f7781f34b770facdb78b7728fcc31f001a0323afb8f66566`）与 `/private/tmp/ssh-pip-exit-v2-pc-launch.jpeg`（`0a285c5c54d7906d9b87c6a97a6692d34a8bbc5ae934939a786572eedc73809b`）。一次性服务、22222 监听、HDC reverse task 和临时 Host Key/脚本目录均已清理；API26、物理机及连续任务通知矩阵仍保持待验。
