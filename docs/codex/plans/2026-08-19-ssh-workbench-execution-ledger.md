@@ -3,7 +3,7 @@
 > 状态：`ACTIVE_M8_M9` / `NOT_COMPLETE`
 > 权威计划：`docs/codex/plans/2026-08-19-ssh-termius-harmonyos7-api26-workbench-plan.md`
 > 建立日期：2026-08-19
-> 当前工作树：`codex/moonlight-complete-upgrade` / `60602d651`（M9 SSH 多窗口交接、独立窗口前台恢复、recovery generation fence、独立窗口后台所有权保护与鉴权失败回退；手机会话工具官方 Popup 已接入；并记录设备 runner/API26 工具链阻塞）
+> 当前工作树：`codex/moonlight-complete-upgrade` / `2d23d9c7`（M0–M9 SSH 增量保留；workbench flag 已增加协议身份门禁，非 SSH 协议强制保持基线能力；API26 工具链和最终实机矩阵仍待外部条件）
 > 当前产品基线：HarmonyOS 6.1 / API 23
 > API 26 状态：本机未安装；任何 API 26-only import 均禁止进入产品代码
 
@@ -22,6 +22,7 @@
 
 ## 2A. 最新执行指针（2026-08-20）
 
+- `2d23d9c7` 补齐 M0 非 SSH 隔离契约：`SshWorkspacePlatformFacts` 显式携带协议身份，只有规范化后的 `ssh` 才能消费 `sshWorkbenchV2`；即使 API26、DynamicLayout、ContainerReader、UI Design Kit、多窗口和键盘能力声明全部为真，RDP/VNC/RustDesk/Moonlight 仍强制返回 workbench 关闭、静态布局、纯色 chrome、无 detached window/SSH shortcut。既有 `SshWorkspacePolicy.test` 增加四协议 fail-closed 用例，无共享测试注册改动。
 - `60602d651` 将手机 SSH 顶栏的语言、SFTP 和隧道操作收敛为官方 ArkUI `bindPopup` 二级工具菜单：手机/手机横屏使用 40vp 更多按钮，Pad/PC 保留直接操作；未连接时隐藏依赖会话的 SFTP/隧道项。Popup 动作沿用既有 locale Dialog、SFTP Sheet 和 forwarding Sheet，并在延迟关闭后重新校验页面 generation、当前 host 和连接状态。API23 Phone HDC 已重新采证：Host Key 确认、公钥鉴权成功后进入终端，更多菜单显示三项且语言入口可打开既有“SSH 会话地区语言”弹层；临时端点与 reverse port 在采证后清理。
 - M8 WebMessagePort 已完成 API 23 兼容双栈的生产边界：版本/会话/generation/端口实例 fence、严格 JSON 类型、超前 ACK 拒绝、UTF-8 字节预算、控制帧优先且线上序号单调；生产 flag 仍默认关闭，ArrayBuffer 批量等待 API 26 SDK/真机证据。
 - M9 SSH 认证后窗口 handoff 已补齐多标签语义：交接只移除已经转移的 host，源页保留其他 SSH 标签并切换到下一个会话；没有剩余标签才返回源页。目标窗口仍复用现有 `RemoteSessionWindowCoordinator`，不改变密码/Key/KBI/MFA/Host Key 流程。
@@ -174,7 +175,7 @@ M0 action 只修改纯快照：创建/重命名工作区、打开占位 tab、�
 | 转发生命周期 | forwarding tests | 开启、关闭、断线 | S0 待设备 |
 | 后台、前台、PiP | lifecycle policy tests | 切后台/返回/PiP | S0 待设备 |
 | 独立窗口鉴权后创建、单 owner | RemoteSessionWindow tests | PC SSH 成功后开窗 | S0 待设备 |
-| 非 SSH 协议不受 SSH flag 影响 | flag-off policy test | RDP/VNC/RustDesk/Moonlight 入口 smoke | M0 待实现 |
+| 非 SSH 协议不受 SSH flag 影响 | `SshWorkspacePolicy.test` 四协议 fail-closed 用例已注册并编译 | API23 PC 在 `sshWorkbenchV2=false` 下显示 RDP/RustDesk/SSH/VNC/Moonlight 全部添加入口 | M0 SOURCE/HDC PASS；device runner 仍受基线阻塞 |
 
 ## 7. HDC 基线索引
 
@@ -280,3 +281,5 @@ hvigorw --mode module -p module=entry -p product=default assembleHap --analyze=n
 2026-08-20 native 轻量测试 receipt（主机环境）：使用 OpenHarmony SDK 23 的 CMake，以 `-DRDP_BUILD_TESTS=ON -DRDP_TESTS_ONLY=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo` 配置并构建 `rdp_native_tests`，配置、编译均 exit 0。运行 `/private/tmp/remotedesktop-ssh-native-tests/rdp_native_tests` 后共 `769 passed, 16 failed, 785 total`；45 个 SSH 用例（终端诊断、鉴权/Prompt、PTY recovery、重连、generation/session、路由、转发、SFTP）全部显示 `OK`，无 SSH failure。16 个失败全部是共享 runner 中既有 VNC TLS fixture 的 `fixture.start()`，未涉及 SSH，未修改 VNC/Moonlight；完整输出 SHA-256 为 `da54ead34c2507116e687111ec654299c3e6069164a4d46229e555b50517f722`。该结果作为 SSH native host smoke 记录，不冒充全协议 suite 通过。
 
 2026-08-22 KBI broker 取消后重连 receipt：新增 `ssh_auth_prompt_broker_accepts_new_session_after_cancellation`，证明同一 broker 在旧请求取消后拒绝 stale response、并可为新 sessionId/generation 建立独立等待与响应。OpenHarmony SDK 23 CMake 轻量 host suite 配置、构建均 exit 0；`rdp_native_tests` 完整运行 `786 passed, 0 failed, 786 total`。同工作树精确执行 `default@OhosTestCompileArkTS` exit 0，随后 `assembleHap` exit 0（`BUILD SUCCESSFUL in 2 min 5 s 957 ms`）。本 receipt 只覆盖 SSH 测试增量；用户并行编辑的 `VncSettingsPage.ets` 保持未暂存、不纳入本次验证声明。
+
+2026-08-22 M0 协议隔离 receipt：`2d23d9c7` 将协议身份加入现有 SSH capability policy，并新增 RDP/VNC/RustDesk/Moonlight 四种非 SSH 输入的 fail-closed 契约。精确 `default@OhosTestCompileArkTS` exit 0，`assembleHap` exit 0（`BUILD SUCCESSFUL in 13 s 673 ms`）；签名 HAP SHA-256 为 `07465028a9cdc1c8211becbe74a53b51fd4dd3d41a92a67eca306bd48eb6ba2e`。最新包安装到 API23 PC `127.0.0.1:5557` 并启动成功；模块偏好文件确认 `sshWorkbenchV2=false`，协议选择 Sheet 层级同时包含 RDP、RustDesk、SSH、VNC、Moonlight。证据为 `/private/tmp/ssh-flag-isolation-start.json`（`178ef6f900217aaac95ba1e95d6656ac2397ca9dc56bfeb0813bc6fa757dc6bc`）、`/private/tmp/ssh-flag-isolation-start.jpeg`（`7b7e7657f92af8cbe0e25bfa78a22b73de44d3dfe040fc07e7d04a5a3255b91a`）和 `/private/tmp/ssh-flag-isolation-picker.json`（`0ce6b0de1e955cde979d67eb55d6d612bdd4866ee7d45877b518efb6edc4fcdf`）。本次未执行受既有 runner 基线阻塞的设备 Hypium，未把源码用例编译冒充运行通过；用户并行的 `VncSettingsPage.ets` 仍未暂存。
