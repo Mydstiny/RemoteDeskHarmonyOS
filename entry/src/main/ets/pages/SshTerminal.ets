@@ -15787,9 +15787,22 @@ struct SshTerminal {
       .border({ width: 0.5, color: this.sshPal().divider })
 
       if (shouldShowTransferCancelAction(this.sftpTransferSession)) {
-        Button('取消传输').height(40).fontSize(13).width('100%').margin({ top: 10 })
-          .backgroundColor(this.sshPal().danger).fontColor('#FFFFFF').borderRadius(8)
-          .onClick((): void => { this.cancelSftpTransfer(); })
+        Row() {
+          if (this.sftpTransferSession !== null &&
+            this.sftpTransferSession.stage === 'transferring') {
+            Button('暂停传输').height(40).fontSize(13).layoutWeight(1)
+              .onClick((): void => { this.pauseSftpTransfer(); })
+          }
+          if (this.sftpTransferSession !== null &&
+            (this.sftpTransferSession.stage === 'paused' ||
+              this.sftpTransferSession.stage === 'waitingRemote') && !this.sftpBusy) {
+            Button('继续传输').height(40).fontSize(13).layoutWeight(1)
+              .onClick((): void => { void this.resumeSftpTransfer(); })
+          }
+          Button('取消传输').height(40).fontSize(13).layoutWeight(1).margin({ left: 8 })
+            .backgroundColor(this.sshPal().danger).fontColor('#FFFFFF').borderRadius(8)
+            .onClick((): void => { this.cancelSftpTransfer(); })
+        }.width('100%').margin({ top: 10 })
       }
       Text(this.sftpStatus).fontSize(11).fontColor(this.sshPal().text2).width('100%')
         .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 10 })
