@@ -10607,23 +10607,23 @@ struct HostListPage {
           .fontSize(16).fontColor([this.pal().text])
         Text('编辑').fontSize(13).fontColor(this.pal().text).fontFamily(this.font()).margin({ left: 8 })
       }
-      .width('100%').padding({ left: 12, right: 12, top: 8, bottom: 8 })
+      .padding({ left: 12, right: 12, top: 8, bottom: 8 })
       .onClick(() => { animateTo({ duration: 150 }, () => { this.hostActionPopupId = ''; }); this.editHost(host); })
 
-      Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
+      Divider().strokeWidth(0.5).color(this.pal().cardBorder)
 
       if (host.protocol === 'ssh') {
         Row() {
           SymbolGlyph($r('sys.symbol.key_fill')).fontSize(16).fontColor([this.pal().text])
           Text('部署公钥').fontSize(13).fontColor(this.pal().text).fontFamily(this.font()).margin({ left: 8 })
         }
-        .width('100%').padding({ left: 12, right: 12, top: 8, bottom: 8 })
+        .padding({ left: 12, right: 12, top: 8, bottom: 8 })
         .onClick(() => {
           animateTo({ duration: 150 }, () => { this.hostActionPopupId = ''; });
           void this.openSshPublicKeyInstall(host);
         })
 
-        Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
+        Divider().strokeWidth(0.5).color(this.pal().cardBorder)
       }
 
       Row() {
@@ -10631,17 +10631,17 @@ struct HostListPage {
           .fontSize(16).fontColor([this.pal().text])
         Text(host.locked ? '解锁' : '上锁').fontSize(13).fontColor(this.pal().text).fontFamily(this.font()).margin({ left: 8 })
       }
-      .width('100%').padding({ left: 12, right: 12, top: 8, bottom: 8 })
+      .padding({ left: 12, right: 12, top: 8, bottom: 8 })
       .onClick(() => { animateTo({ duration: 150 }, () => { this.hostActionPopupId = ''; }); this.toggleLock(host); })
 
-      Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
+      Divider().strokeWidth(0.5).color(this.pal().cardBorder)
 
       Row() {
         SymbolGlyph($r('sys.symbol.list_bullet'))
           .fontSize(16).fontColor([this.pal().text])
         Text('多选 / 排序').fontSize(13).fontColor(this.pal().text).fontFamily(this.font()).margin({ left: 8 })
       }
-      .width('100%').padding({ left: 12, right: 12, top: 8, bottom: 8 })
+      .padding({ left: 12, right: 12, top: 8, bottom: 8 })
       .onClick(() => {
         animateTo({ duration: 150 }, () => { this.hostActionPopupId = ''; });
         this.hostSelectionMode = true;
@@ -10658,7 +10658,7 @@ struct HostListPage {
           Text(host.groupId === 'ops' ? '移出工作组' : '加入 ops 工作组')
             .fontSize(13).fontColor(this.pal().text).fontFamily(this.font()).margin({ left: 8 })
         }
-        .width('100%').padding({ left: 12, right: 12, top: 8, bottom: 8 })
+        .padding({ left: 12, right: 12, top: 8, bottom: 8 })
         .onClick(() => {
           const nextGroup = host.groupId === 'ops' ? '' : 'ops';
           if (!this.srv.setGroup(host.id, nextGroup)) {
@@ -10667,7 +10667,7 @@ struct HostListPage {
           animateTo({ duration: 150 }, () => { this.hostActionPopupId = ''; });
         })
 
-        Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
+        Divider().strokeWidth(0.5).color(this.pal().cardBorder)
       }
 
       Row() {
@@ -10675,10 +10675,10 @@ struct HostListPage {
           .fontSize(16).fontColor([this.pal().danger])
         Text('删除').fontSize(13).fontColor(this.pal().danger).fontFamily(this.font()).margin({ left: 8 })
       }
-      .width('100%').padding({ left: 12, right: 12, top: 8, bottom: 8 })
+      .padding({ left: 12, right: 12, top: 8, bottom: 8 })
       .onClick(() => { animateTo({ duration: 150 }, () => { this.hostActionPopupId = ''; }); this.doDeleteHost(host); })
     }
-    .width(148).padding({ top: 2, bottom: 2 }).borderRadius(12)
+    .padding({ top: 2, bottom: 2 }).borderRadius(12)
     .transition(TransitionEffect.asymmetric(
       TransitionEffect.scale({ x: 0.8, y: 0.8 }).combine(TransitionEffect.OPACITY)
         .animation({ duration: 200, curve: Curve.FastOutSlowIn }),

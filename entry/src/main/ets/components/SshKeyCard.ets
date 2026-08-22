@@ -68,38 +68,38 @@ export struct SshKeyCard {
         SymbolGlyph($r('sys.symbol.square_and_pencil')).fontSize(16).fontColor([this.pal().text])
         Text('管理').fontSize(13).fontColor(this.pal().text).margin({ left: 8 })
       }
-      .width('100%').padding({ left: 12, right: 12, top: 8, bottom: 8 })
+      .padding({ left: 12, right: 12, top: 8, bottom: 8 })
       .onClick(() => { animateTo({ duration: 150 }, () => { this.menuVisible = false; }); if (this.onEdit) { this.onEdit(); } })
 
-      Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
+      Divider().strokeWidth(0.5).color(this.pal().cardBorder)
 
       Row() {
         SymbolGlyph(this.sshKey.locked ? $r('sys.symbol.lock_open') : $r('sys.symbol.ohos_lock'))
           .fontSize(16).fontColor([this.pal().text])
         Text(this.sshKey.locked ? '解锁' : '上锁').fontSize(13).fontColor(this.pal().text).margin({ left: 8 })
       }
-      .width('100%').padding({ left: 12, right: 12, top: 8, bottom: 8 })
+      .padding({ left: 12, right: 12, top: 8, bottom: 8 })
       .onClick(() => { animateTo({ duration: 150 }, () => { this.menuVisible = false; }); if (this.onToggleLock) { this.onToggleLock(); } })
 
-      Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
+      Divider().strokeWidth(0.5).color(this.pal().cardBorder)
 
       Row() {
         SymbolGlyph($r('sys.symbol.list_bullet')).fontSize(16).fontColor([this.pal().text])
         Text('多选').fontSize(13).fontColor(this.pal().text).margin({ left: 8 })
       }
-      .width('100%').padding({ left: 12, right: 12, top: 8, bottom: 8 })
+      .padding({ left: 12, right: 12, top: 8, bottom: 8 })
       .onClick(() => { animateTo({ duration: 150 }, () => { this.menuVisible = false; }); if (this.onSelect) { this.onSelect(); } })
 
-      Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
+      Divider().strokeWidth(0.5).color(this.pal().cardBorder)
 
       Row() {
         SymbolGlyph($r('sys.symbol.ohos_trash')).fontSize(16).fontColor([this.pal().danger])
         Text('删除').fontSize(13).fontColor(this.pal().danger).margin({ left: 8 })
       }
-      .width('100%').padding({ left: 12, right: 12, top: 8, bottom: 8 })
+      .padding({ left: 12, right: 12, top: 8, bottom: 8 })
       .onClick(() => { animateTo({ duration: 150 }, () => { this.menuVisible = false; }); if (this.onDelete) { this.onDelete(); } })
     }
-    .width(148).padding({ top: 2, bottom: 2 }).borderRadius(12)
+    .padding({ top: 2, bottom: 2 }).borderRadius(12)
     .transition(TransitionEffect.asymmetric(
       TransitionEffect.scale({ x: 0.85, y: 0.85 }).combine(TransitionEffect.OPACITY)
         .animation({ duration: 200, curve: Curve.FastOutSlowIn }),

@@ -5360,7 +5360,7 @@ struct SshTerminal {
       Text('会话工具')
         .fontSize(12).fontColor(this.pal().text3)
         .margin({ left: 14, right: 14, top: 8, bottom: 6 })
-      Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
+      Divider().strokeWidth(0.5).color(this.pal().cardBorder)
 
       Row() {
         Text('文').fontSize(16).fontWeight(FontWeight.Medium)
@@ -5372,12 +5372,12 @@ struct SshTerminal {
         }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
         SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(14).fontColor([this.pal().text3])
       }
-      .width('100%').height(52).padding({ left: 14, right: 12 })
+      .constraintSize({ minHeight: 52 }).padding({ left: 14, right: 12 })
       .onClick((): void => { this.openSshPhoneAction('locale'); })
       .accessibilityText('切换 SSH 会话语言与地区')
 
       if (this.sshConnectionIsConnected()) {
-        Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
+        Divider().strokeWidth(0.5).color(this.pal().cardBorder)
         Row() {
           SymbolGlyph($r('sys.symbol.doc')).fontSize(17).fontColor([this.accentColor])
             .width(24)
@@ -5387,11 +5387,11 @@ struct SshTerminal {
           }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
           SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(14).fontColor([this.pal().text3])
         }
-        .width('100%').height(52).padding({ left: 14, right: 12 })
+        .constraintSize({ minHeight: 52 }).padding({ left: 14, right: 12 })
         .onClick((): void => { this.openSshPhoneAction('sftp'); })
         .accessibilityText('打开 SFTP 文件传输')
 
-        Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
+        Divider().strokeWidth(0.5).color(this.pal().cardBorder)
         Row() {
           Text('⇄').fontSize(19).fontColor(this.accentColor)
             .width(24).textAlign(TextAlign.Center)
@@ -5406,12 +5406,12 @@ struct SshTerminal {
           }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
           SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(14).fontColor([this.pal().text3])
         }
-        .width('100%').height(52).padding({ left: 14, right: 12 })
+        .constraintSize({ minHeight: 52 }).padding({ left: 14, right: 12 })
         .onClick((): void => { this.openSshPhoneAction('forwarding'); })
         .accessibilityText('打开 SSH 隧道转发')
       }
     }
-    .width(236).padding({ top: 2, bottom: 6 })
+    .padding({ top: 2, bottom: 6 })
     .borderRadius(14)
     .backgroundColor(this.pal().card)
     .shadow({ radius: 18, color: 'rgba(0,0,0,0.28)', offsetY: 6 })

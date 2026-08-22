@@ -1637,37 +1637,37 @@ export struct RustDeskRelayPage {
         Row() {
           SymbolGlyph($r('sys.symbol.bolt_fill')).fontSize(16).fontColor([this.pal().text])
           Text('测试连接').fontSize(13).fontColor(this.pal().text).margin({ left: 8 })
-        }.width('100%')
+        }
       }
-      .width('100%').height(42).backgroundColor(Color.Transparent)
+      .constraintSize({ minHeight: 42 }).backgroundColor(Color.Transparent)
       .borderRadius(8).padding({ left: 8, right: 8 })
       .onClick(() => { this.menuVisibleRelayId = ''; this.doTestRelay(relay); })
 
-      Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
+      Divider().strokeWidth(0.5).color(this.pal().cardBorder)
 
       Button() {
         Row() {
           SymbolGlyph($r('sys.symbol.square_and_pencil')).fontSize(16).fontColor([this.pal().text])
           Text('编辑').fontSize(13).fontColor(this.pal().text).margin({ left: 8 })
-        }.width('100%')
+        }
       }
-      .width('100%').height(42).backgroundColor(Color.Transparent)
+      .constraintSize({ minHeight: 42 }).backgroundColor(Color.Transparent)
       .borderRadius(8).padding({ left: 8, right: 8 })
       .onClick(() => { this.menuVisibleRelayId = ''; this.openEditRelaySheet(relay); })
 
-      Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
+      Divider().strokeWidth(0.5).color(this.pal().cardBorder)
 
       Button() {
         Row() {
           SymbolGlyph($r('sys.symbol.ohos_trash')).fontSize(16).fontColor([this.pal().danger])
           Text('删除').fontSize(13).fontColor(this.pal().danger).margin({ left: 8 })
-        }.width('100%')
+        }
       }
-      .width('100%').height(42).backgroundColor(Color.Transparent)
+      .constraintSize({ minHeight: 42 }).backgroundColor(Color.Transparent)
       .borderRadius(8).padding({ left: 8, right: 8 })
       .onClick(() => { this.menuVisibleRelayId = ''; this.doDeleteRelay(relay.id); })
     }
-    .width(156).padding(4).borderRadius(12)
+    .padding(4).borderRadius(12)
   }
 
   @Builder vncGatewayDetailPanelContent() {
