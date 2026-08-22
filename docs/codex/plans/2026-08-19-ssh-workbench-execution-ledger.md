@@ -3,7 +3,7 @@
 > 状态：`ACTIVE_M8_M9` / `NOT_COMPLETE`
 > 权威计划：`docs/codex/plans/2026-08-19-ssh-termius-harmonyos7-api26-workbench-plan.md`
 > 建立日期：2026-08-19
-> 当前工作树：`codex/moonlight-complete-upgrade` / `2d23d9c7`（M0–M9 SSH 增量保留；workbench flag 已增加协议身份门禁，非 SSH 协议强制保持基线能力；API26 工具链和最终实机矩阵仍待外部条件）
+> 当前工作树：`codex/moonlight-complete-upgrade` / `4a9b0923`（M0–M9 SSH 增量保留；workbench flag 已增加协议身份门禁，API23 PC 已补 SFTP 下载暂停/继续/取消/重试闭环和短窗口操作区修复；API26 工具链和最终实机矩阵仍待外部条件）
 > 当前产品基线：HarmonyOS 6.1 / API 23
 > API 26 状态：本机未安装；任何 API 26-only import 均禁止进入产品代码
 
@@ -20,8 +20,10 @@
 5. 全计划最多创建两个审查智能体；只允许 `gpt-5.6-sol`、`medium`，后续阶段复用相同 reviewer。
 6. HDC 只在沙箱外运行。模拟器用于日常 UI 回归，最终完成仍以用户实机验收为准。
 
-## 2A. 最新执行指针（2026-08-20）
+## 2A. 最新执行指针（2026-08-22）
 
+- `4a9b0923` 修复 Pad/PC 短自由窗口 SFTP 双栏布局把底部传输操作挤出可视区的问题：宽裕窗口仍由现有 `layoutWeight` 自动扩展，只把工作区最小高度从空闲 300vp 收敛为统一 150vp。策略测试锁定空闲、传输中、待恢复三态均保留 footer；API23 PC 同一 SSH 窗口底边 y=1048 下，“传输方向”从修复前 y=957 移到 y=768，“选择文件并上传/下载到本机”完整位于 y=805–881。
+- API23 PC 回环 SFTP 下载完成真实生命周期闭环：256MB 文件从“下载中 1%”进入“已暂停 12% · 33.3MB/256.0MB”，继续后推进到 14%，取消后显示 partial 已保留和“重试传输”；重新授权并确认目标替换后从保留偏移恢复到 16%，最终显示“已保存 268435456 字节”，刷新本机端点后目标条目为 256.0MB。该证据覆盖 PC/API23 下载侧；上传侧、Phone、物理设备和 API26 仍不冒充已完成矩阵。
 - `2d23d9c7` 补齐 M0 非 SSH 隔离契约：`SshWorkspacePlatformFacts` 显式携带协议身份，只有规范化后的 `ssh` 才能消费 `sshWorkbenchV2`；即使 API26、DynamicLayout、ContainerReader、UI Design Kit、多窗口和键盘能力声明全部为真，RDP/VNC/RustDesk/Moonlight 仍强制返回 workbench 关闭、静态布局、纯色 chrome、无 detached window/SSH shortcut。既有 `SshWorkspacePolicy.test` 增加四协议 fail-closed 用例，无共享测试注册改动。
 - `60602d651` 将手机 SSH 顶栏的语言、SFTP 和隧道操作收敛为官方 ArkUI `bindPopup` 二级工具菜单：手机/手机横屏使用 40vp 更多按钮，Pad/PC 保留直接操作；未连接时隐藏依赖会话的 SFTP/隧道项。Popup 动作沿用既有 locale Dialog、SFTP Sheet 和 forwarding Sheet，并在延迟关闭后重新校验页面 generation、当前 host 和连接状态。API23 Phone HDC 已重新采证：Host Key 确认、公钥鉴权成功后进入终端，更多菜单显示三项且语言入口可打开既有“SSH 会话地区语言”弹层；临时端点与 reverse port 在采证后清理。
 - M8 WebMessagePort 已完成 API 23 兼容双栈的生产边界：版本/会话/generation/端口实例 fence、严格 JSON 类型、超前 ACK 拒绝、UTF-8 字节预算、控制帧优先且线上序号单调；生产 flag 仍默认关闭，ArrayBuffer 批量等待 API 26 SDK/真机证据。
@@ -37,7 +39,7 @@
 - 2026-08-20 追加 API23 PC 密码鉴权失败回归：故意使用错误密码，保留既有 Host Key 确认和原生认证顺序；sshd 记录 `Failed password`，应用日志记录 `sessionId=-31` 与 `independent SSH carrier released after authentication failure`。HDC 层级和截图确认主页面回到 `连接失败 (code=-31)`，提供“重试/返回”，没有创建 `RemoteSessionAbility`，系统任务仅保留主 `EntryAbility`；临时 sshd、密钥目录和 HDC 映射已清理。
 - 2026-08-20 追加 API23 Phone SSH 入口回归：主机列表打开“添加远程主机”后，协议选择包含 SSH，进入 SSH 表单可见名称、地址、端口、用户名和路由入口；未提交临时数据，系统返回后回到主机列表。当前证据为 `/private/tmp/ssh-phone-current-api23.json`（`44a37cf179ac72d3fea1c7dc1ffc10ac60b39f6c2e3deab6cdca8b39bad5af2c`）、`/private/tmp/ssh-phone-current-api23.png`（`1c2fdcff59ec30c0da9c954fac3d987015d76ba123d608735e6b6cc527b82664`）以及返回后的 `/private/tmp/ssh-phone-after-back-api23.json`（`5c0eb16f4e0d1d62de1c683ea8d14619e73ce448257750aa5a1087c8e607e086`）、`/private/tmp/ssh-phone-after-back-api23.png`（`1ba42c8347068d9b2288f1f6df401791baf4c6bb1f194581cb4d2ddf25a78c37`）。
 - 2026-08-20 追加 API24 Phone 密码鉴权成功回归：通过 HDC `rport` 将临时 Paramiko 密码服务映射到 `127.0.0.1:22222`，在“添加 SSH 主机”第二步选择“密码登录”并提交 `codex-test`，先显示原有“首次连接 SSH 主机”指纹确认，再由服务端记录 `AUTH username='codex-test' password='codex-window-e2e '`，随后进入已连接终端并显示 `RemoteDesktop authenticated-window E2E server`/`codex-test$`。终端布局证据为 `/private/tmp/ssh-password-terminal.json`（`dba1b1c9e0554b369bc8b3736691c0ba3374fd6d6964e05435c107689c256bef`），截图为 `/private/tmp/ssh-password-terminal.png`（`dc4ce048542b53a790bb8e5245b22ee6af28d4faf60bb2cd6fcb7a771f1637ff`）；临时服务与本轮新增 `rport` 已停止/移除。
-- 仍未宣称完成：API 26 SDK/目标设备、物理设备验收、SFTP 暂停/恢复/取消/重试全矩阵、后台/PiP、API26 下的沉浸/分屏差异、密码/KBI/MFA 成功/取消/失败全矩阵以及多主机/全协议并行矩阵。
+- 仍未宣称完成：API 26 SDK/目标设备、物理设备验收、SFTP 上传侧及 Phone/物理设备/API26 的暂停/恢复/取消/重试余下矩阵、后台/PiP、API26 下的沉浸/分屏差异、密码/KBI/MFA 成功/取消/失败全矩阵以及多主机/全协议并行矩阵。
 - 2026-08-20 曾尝试把 SSH 源策略套件接入 `entry/ohosTest` 设备 runner；该跨目录接线使 `onDeviceTest` 编译错误从基线 260 增至 337，已由 `3f3fd4da` 精确回退。当前 runner 基线仍受既有非 SSH 测试源错误阻塞，因此不宣称任何 SSH Hypium 设备通过。
 - 同日 API23/24 本地 SDK 之外未发现可验证的 API26 SDK；两个 HDC 守护进程探测均无响应，设备 UI 复验保持 `DEVICE_PENDING`，不通过重启守护进程或未证实 API 名称绕过门禁。
 
@@ -171,7 +173,7 @@ M0 action 只修改纯快照：创建/重命名工作区、打开占位 tab、�
 | generation 丢弃旧回调 | session store/native tests | 断网重连日志 | S0 待设备 |
 | xterm 输入、选择、复制、搜索 | input/surface tests；SearchAddon 已存在 | 软键盘和物理键盘 | S0 待设备 |
 | native renderer fallback | renderer/native tests | 能力开关 smoke | S0 待设备 |
-| SFTP 暂停/恢复/重试/完整性 | SFTP policy/native tests | 上传、下载、取消、错误 | S0 待设备 |
+| SFTP 暂停/恢复/重试/完整性 | SFTP policy/native tests；`SheetTransitionPolicy.test` 锁定短窗口 footer | API23 PC 下载：1% → 暂停 12%/33.3MB → 继续 14% → 取消保留 partial → 重试 16% → 完成 268435456 字节；短窗按钮 y=805–881 | M7 PC/API23 DOWNLOAD PASS；上传/Phone/物理/API26 待设备 |
 | 转发生命周期 | forwarding tests | 开启、关闭、断线 | S0 待设备 |
 | 后台、前台、PiP | lifecycle policy tests | 切后台/返回/PiP | S0 待设备 |
 | 独立窗口鉴权后创建、单 owner | RemoteSessionWindow tests | PC SSH 成功后开窗 | S0 待设备 |
@@ -240,9 +242,9 @@ M0 action 只修改纯快照：创建/重命名工作区、打开占位 tab、�
 
 ### 7.3 已证明与未证明
 
-已证明：两个目标可通过 HDC 连接；当前 HAP 在 API 23 Phone/PC 环境可启动；PC 使用系统自由窗口。关闭残留的诊断日志 Sheet 后，点击 SSH 主机正确进入既有 Host Key 预检；TCP 不可达时保留在 HostList 的错误 Sheet，不会进入 Terminal，也不会创建独立会话窗口。`2d1f06d6` 后，PC SSH 新主机 Sheet 的布局树边界与截图均证明代理选项和下一步操作不再被固定宽度截断。2026-08-20 的两次回环 endpoint 复验进一步证明：产品 ED25519 key/指纹确认后才创建 SSH 独立窗口；sshd 日志确认公钥鉴权成功；HDC 键盘输入及终端命令可回显；SFTP 标准子系统可加载 47 项目录；已有远程复制、本地授权上传、本地下载及非空目标拒绝证据仍有效；关闭 SFTP 后终端继续执行命令；转发规则实际建立后可接收主机 payload 并更新流量；独立窗口最小化/最近任务恢复不丢会话，主窗口与 SSH 窗口可同时展示；标题栏最大化、F11 沉浸全屏进出、左边缘系统分屏均已采证。错误密码路径也已证明：Host Key/认证顺序不变，原生失败码 `-31` 会回到源页错误/重试界面，不会创建独立窗口或留下鉴权 carrier。
+已证明：两个目标可通过 HDC 连接；当前 HAP 在 API 23 Phone/PC 环境可启动；PC 使用系统自由窗口。关闭残留的诊断日志 Sheet 后，点击 SSH 主机正确进入既有 Host Key 预检；TCP 不可达时保留在 HostList 的错误 Sheet，不会进入 Terminal，也不会创建独立会话窗口。`2d1f06d6` 后，PC SSH 新主机 Sheet 的布局树边界与截图均证明代理选项和下一步操作不再被固定宽度截断。2026-08-20 的两次回环 endpoint 复验进一步证明：产品 ED25519 key/指纹确认后才创建 SSH 独立窗口；sshd 日志确认公钥鉴权成功；HDC 键盘输入及终端命令可回显；SFTP 标准子系统可加载 47 项目录；已有远程复制、本地授权上传、本地下载及非空目标拒绝证据仍有效；关闭 SFTP 后终端继续执行命令；转发规则实际建立后可接收主机 payload 并更新流量；独立窗口最小化/最近任务恢复不丢会话，主窗口与 SSH 窗口可同时展示；标题栏最大化、F11 沉浸全屏进出、左边缘系统分屏均已采证。错误密码路径也已证明：Host Key/认证顺序不变，原生失败码 `-31` 会回到源页错误/重试界面，不会创建独立窗口或留下鉴权 carrier。2026-08-22 进一步完成 API23 PC 下载侧暂停/继续/取消/重试/最终导出的同任务闭环，并证明短自由窗口可完整访问传输 footer。
 
-尚未证明：KBI/MFA 的成功/取消/失败全矩阵、密码鉴权的取消/失败在 Phone/PC 双端矩阵、真实软/硬键盘设备矩阵、SFTP 暂停/恢复/取消/重试全矩阵、通知/连续任务与 PiP、API26 设备和多主机/全协议并行。回环 sshd 仅监听 127.0.0.1 且已在采证后关闭；HDC `rport` 已移除。没有物理/API26 与上述剩余矩阵证据前，M7–M9 仍保持 DEVICE_PENDING，整个 SSH 计划不能标为完成。
+尚未证明：KBI/MFA 的成功/取消/失败全矩阵、密码鉴权的取消/失败在 Phone/PC 双端矩阵、真实软/硬键盘设备矩阵、SFTP 上传侧及 Phone/物理设备/API26 的暂停/恢复/取消/重试余下矩阵、通知/连续任务与 PiP、API26 设备和多主机/全协议并行。2026-08-22 回环 sshd 仅监听 127.0.0.1 且已在采证后关闭；但沙箱外 HDC/破坏性清理审批因会话额度限制被系统拒绝，PC `tcp:22220` 映射、模拟器下载目录中的 `codex-sftp-lifecycle.bin`，以及本机 `/private/tmp/000-codex-sftp-lifecycle`/临时 `sshd_config` 仍须在审批恢复后定点删除，不能写成已清理。没有物理/API26 与上述剩余矩阵证据前，M7–M9 仍保持 DEVICE_PENDING，整个 SSH 计划不能标为完成。
 
 ## 8. 工具链事实
 
@@ -283,3 +285,5 @@ hvigorw --mode module -p module=entry -p product=default assembleHap --analyze=n
 2026-08-22 KBI broker 取消后重连 receipt：新增 `ssh_auth_prompt_broker_accepts_new_session_after_cancellation`，证明同一 broker 在旧请求取消后拒绝 stale response、并可为新 sessionId/generation 建立独立等待与响应。OpenHarmony SDK 23 CMake 轻量 host suite 配置、构建均 exit 0；`rdp_native_tests` 完整运行 `786 passed, 0 failed, 786 total`。同工作树精确执行 `default@OhosTestCompileArkTS` exit 0，随后 `assembleHap` exit 0（`BUILD SUCCESSFUL in 2 min 5 s 957 ms`）。本 receipt 只覆盖 SSH 测试增量；用户并行编辑的 `VncSettingsPage.ets` 保持未暂存、不纳入本次验证声明。
 
 2026-08-22 M0 协议隔离 receipt：`2d23d9c7` 将协议身份加入现有 SSH capability policy，并新增 RDP/VNC/RustDesk/Moonlight 四种非 SSH 输入的 fail-closed 契约。精确 `default@OhosTestCompileArkTS` exit 0，`assembleHap` exit 0（`BUILD SUCCESSFUL in 13 s 673 ms`）；签名 HAP SHA-256 为 `07465028a9cdc1c8211becbe74a53b51fd4dd3d41a92a67eca306bd48eb6ba2e`。最新包安装到 API23 PC `127.0.0.1:5557` 并启动成功；模块偏好文件确认 `sshWorkbenchV2=false`，协议选择 Sheet 层级同时包含 RDP、RustDesk、SSH、VNC、Moonlight。证据为 `/private/tmp/ssh-flag-isolation-start.json`（`178ef6f900217aaac95ba1e95d6656ac2397ca9dc56bfeb0813bc6fa757dc6bc`）、`/private/tmp/ssh-flag-isolation-start.jpeg`（`7b7e7657f92af8cbe0e25bfa78a22b73de44d3dfe040fc07e7d04a5a3255b91a`）和 `/private/tmp/ssh-flag-isolation-picker.json`（`0ce6b0de1e955cde979d67eb55d6d612bdd4866ee7d45877b518efb6edc4fcdf`）。本次未执行受既有 runner 基线阻塞的设备 Hypium，未把源码用例编译冒充运行通过；用户并行的 `VncSettingsPage.ets` 仍未暂存。
+
+2026-08-22 SFTP 下载生命周期与短窗口 receipt：`4a9b0923` 只修改 `SheetTransitionPolicy.ets` 及既有策略测试，使双栏内容区在短窗口最低可压缩至 150vp；大窗口 `layoutWeight` 扩展、SSH/SFTP 引擎、任务 store、完整性 checkpoint 与其他协议均未改动。精确 `default@OhosTestCompileArkTS` 与 `assembleHap` 连续执行均 exit 0（assembleHap：`BUILD SUCCESSFUL in 14 s 175 ms`）；签名 HAP SHA-256 为 `c9ba42fdd0500b13f9867bd6083d8358126f2e8e24a9d3376d140c35a172d2f1`，安装到 API23 PC `127.0.0.1:5557` 成功。下载证据依次为 `/private/tmp/ssh-sftp-downloading.json`（`12294f433d13226308309e2a877d4c6dd52fc28ccddec4b22224922ed2d69017`）、`ssh-sftp-paused.json`（`1f781bc85f6238eb0b296ef65f37ce026ec2a3560500beede00a0b0ea7b444f4`）、`ssh-sftp-resumed.json`（`552b414432c1157d3ca5176e336a82a36b0e75c9a0ba61b645ff1c993eef4613`）、`ssh-sftp-cancelled.json`（`760930d88a6a98844264a9a06ce76297687ff4b3be348a7656eb8c85f2283853`）、`ssh-sftp-retry-active.json`（`978c3752d10e47fa14c0a4e2a20028d109a4b76dbe24f4d6800bf2617c882565`）、`ssh-sftp-completed.json`（`3acb59246abfc31310a3ba9a905382dcf18b858af6761c17b5b29897570f5a89`）和本机列表刷新 `ssh-sftp-local-refreshed.json`（`70aa895549d8923b265d26485f26dbb4dc9886966d85dd08c97455a933084e5a`）。短窗口布局证据为 `ssh-sftp-short-fixed.json`（`3ba89c61c6ed73d044a1bf602dbea75aa41e6b77ce4c26d2ae20be8005bb0257`）与选择本机端点后的 `ssh-sftp-short-local.json`（`24dc50c9089fb4b7ce6c9e822ea362370664f81312439de6894529e383ed8a48`）。本轮只宣称 API23 PC 下载侧闭环；清理 blocker 如 7.3 所列。
