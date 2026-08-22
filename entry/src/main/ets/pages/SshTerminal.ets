@@ -16736,6 +16736,34 @@ struct SshTerminal {
             }
           }
         })
+
+      // Session logs remain behind their independent rollout gate. Isolate
+      // the modal now so enabling that gate cannot expose the API 23 chained
+      // Sheet dismissal defect.
+      Column()
+        .width(1)
+        .height(1)
+        .hitTestBehavior(HitTestMode.None)
+        .bindSheet($$this.showSshSessionLogSheet, this.SshSessionLogSheetContent(), {
+          height: this.breakpoint === 'sm' ? SheetSize.LARGE : '720vp',
+          preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
+          width: this.breakpoint === 'sm' ? '100%' : '760vp',
+          dragBar: this.breakpoint === 'sm',
+          backgroundColor: '#171D25',
+          blurStyle: BlurStyle.NONE,
+          showClose: false,
+          maskColor: 'rgba(0,0,0,0.48)',
+          onWillDismiss: (action: DismissSheetAction): void => {
+            this.showSshSessionLogSheet = false;
+            action.dismiss();
+          },
+          onDisappear: (): void => {
+            if (this.showSshSessionLogSheet) { this.showSshSessionLogSheet = false; }
+            if (!this.terminalClosing && !this.sshModalOwnsKeyboard()) {
+              this.focusKeyboard(false);
+            }
+          }
+        })
     }
     .width('100%').height('100%')
     .bindSheet($$this.showPassphraseSheet, this.passphraseSheet(), {
@@ -16750,26 +16778,6 @@ struct SshTerminal {
         if (this.passphraseResolve) {
           this.passphraseResolve('');
           this.passphraseResolve = null;
-        }
-      }
-    })
-    .bindSheet($$this.showSshSessionLogSheet, this.SshSessionLogSheetContent(), {
-      height: this.breakpoint === 'sm' ? SheetSize.LARGE : '720vp',
-      preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
-      width: this.breakpoint === 'sm' ? '100%' : '760vp',
-      dragBar: this.breakpoint === 'sm',
-      backgroundColor: '#171D25',
-      blurStyle: BlurStyle.NONE,
-      showClose: false,
-      maskColor: 'rgba(0,0,0,0.48)',
-      onWillDismiss: (action: DismissSheetAction): void => {
-        this.showSshSessionLogSheet = false;
-        action.dismiss();
-      },
-      onDisappear: (): void => {
-        if (this.showSshSessionLogSheet) { this.showSshSessionLogSheet = false; }
-        if (!this.terminalClosing && !this.sshModalOwnsKeyboard()) {
-          this.focusKeyboard(false);
         }
       }
     })
