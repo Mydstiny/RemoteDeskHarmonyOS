@@ -13342,16 +13342,13 @@ struct SshTerminal {
       return false;
     }
     if (this.shouldStopSftpTransfer(session)) { return false; }
-    // A provider URI has no portable atomic rename on API 23. Refuse a
-    // recognizable non-empty target before opening it, then roll back any
-    // newly-created target if the verified export does not reach commit.
+    // DocumentSavePicker resolves the name conflict before returning. A
+    // non-empty URI therefore represents an explicit system-level Replace
+    // decision and must be truncated before the verified partial is copied.
+    // Only a newly-created target can be removed safely on export failure;
+    // never unlink a pre-existing target after an unsuccessful overwrite.
     const existingFinalIdentity: SshSftpFileIdentity | null = await this.readLocalSftpIdentity(finalUri);
-    if (existingFinalIdentity !== null && existingFinalIdentity.size > 0) {
-      if (this.isSftpRequestActive(requestPageGeneration, requestSessionId, requestSessionGeneration)) {
-        this.sftpStatus = '[SFTP-DOWNLOAD] 目标文件已存在且非空，请另选保存位置';
-      }
-      return false;
-    }
+    const targetExistedBeforeExport: boolean = existingFinalIdentity !== null;
     let source: fileIo.File | null = null;
     let destination: fileIo.File | null = null;
     let destinationOpened: boolean = false;
@@ -13360,7 +13357,7 @@ struct SshTerminal {
       source = await fileIo.open(partialPath, fileIo.OpenMode.READ_ONLY);
       if (this.shouldStopSftpTransfer(session)) { return false; }
       destination = await fileIo.open(finalUri,
-        fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.CREATE);
+        fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.CREATE | fileIo.OpenMode.TRUNC);
       destinationOpened = true;
       if (this.shouldStopSftpTransfer(session)) { return false; }
       let copied: number = 0;
@@ -13404,7 +13401,7 @@ struct SshTerminal {
       if (destination !== null) {
         try { await fileIo.close(destination); } catch (_closeErr) { /* ignore */ }
       }
-      if (destinationOpened && !destinationCommitted) {
+      if (destinationOpened && !destinationCommitted && !targetExistedBeforeExport) {
         let rollbackVerified: boolean = false;
         try { await fileIo.unlink(finalUri); } catch (_rollbackErr) { /* provider may not support URI unlink */ }
         try {
