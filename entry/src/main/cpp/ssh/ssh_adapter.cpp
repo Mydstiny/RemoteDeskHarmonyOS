@@ -3044,7 +3044,11 @@ int SshAdapter::connectInternal(const ConnectionConfig& cfg, bool preserveOwner)
             OH_LOG_WARN(LOG_APP,
                         "[SSH] password method failed; trying advertised keyboard-interactive fallback");
             const int interactiveResult = authenticateKeyboardInteractive(true);
-            return interactiveResult == 0 ? 0 : passwordResult;
+            // Once the advertised keyboard-interactive method is attempted,
+            // its outcome is authoritative. Preserve cancellation, timeout,
+            // prompt expiry and authentication failure instead of masking
+            // them with the earlier "password not advertised" result.
+            return sshPasswordFallbackFinalResult(passwordResult, interactiveResult);
         };
         if (cfg.authMethod == "kbd-interactive" || cfg.authMethod == "keyboard-interactive") {
             ret = authenticateKeyboardInteractive(true);

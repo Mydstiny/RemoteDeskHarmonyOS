@@ -45,6 +45,14 @@ inline bool sshPasswordFallbackAllowsKeyboardInteractive(
         sshAuthMethodAdvertised(methods, "keyboard-interactive");
 }
 
+inline int sshPasswordFallbackFinalResult(
+    int passwordResult, int keyboardInteractiveResult) {
+    (void)passwordResult;
+    // The fallback method was actually attempted, so its cancellation,
+    // timeout or authentication result is the user-visible outcome.
+    return keyboardInteractiveResult;
+}
+
 /**
  * An advertised method list is authoritative when it is non-empty.  Calling
  * a method the server did not advertise can consume a PAM challenge or make
