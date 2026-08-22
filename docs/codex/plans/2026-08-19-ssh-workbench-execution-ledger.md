@@ -3,7 +3,7 @@
 > 状态：`ACTIVE_M8_M9` / `NOT_COMPLETE`
 > 权威计划：`docs/codex/plans/2026-08-19-ssh-termius-harmonyos7-api26-workbench-plan.md`
 > 建立日期：2026-08-19
-> 当前工作树：`codex/moonlight-complete-upgrade` / `a5c3dc9e`（M0–M9 SSH 增量保留；workbench flag 已增加协议身份门禁，API23 PC 已补 SFTP 下载暂停/继续/取消/重试闭环和短窗口操作区修复，会话日志与广播输入均受默认关闭的独立高风险 flag 约束，日志导出补齐确认和异步身份 fence，大日志搜索改为可取消的分片调度，广播刷新不再静默替换显式目标或跨重连保留旧选择，WebMessagePort 双端序号严格连续；API26 工具链和最终实机矩阵仍待外部条件）
+> 当前工作树：`codex/moonlight-complete-upgrade` / `81180347`（M0–M9 SSH 增量保留；workbench flag 已增加协议身份门禁，API23 PC 已补 SFTP 下载暂停/继续/取消/重试闭环和短窗口操作区修复，会话日志与广播输入均受默认关闭的独立高风险 flag 约束，日志导出补齐确认和异步身份 fence，大日志搜索改为可取消的分片调度，命令完成通知增加默认关闭的独立用户设置，广播刷新不再静默替换显式目标或跨重连保留旧选择，WebMessagePort 双端序号严格连续；API26 工具链和最终实机矩阵仍待外部条件）
 > 当前产品基线：HarmonyOS 6.1 / API 23
 > API 26 状态：本机未安装；任何 API 26-only import 均禁止进入产品代码
 
@@ -22,6 +22,7 @@
 
 ## 2A. 最新执行指针（2026-08-22）
 
+- `81180347` 修复 M6 命令完成通知缺少独立 opt-in 的问题：加密的生产力设置增加默认 `false` 的 `completionNotificationEnabled`，旧 schema 中字段缺失时确定降级为关闭；生产力 Sheet 提供独立“命令完成提醒”开关，页面与 `SshNotificationService` 两层均检查该值。仅开启 Shell integration 不再隐式发布长命令或失败命令通知，本地补全设置保持独立语义。
 - `a5c3dc9e` 修复 M6 大日志搜索在 ArkUI 线程同步线性扫描的问题：策略层新增有界游标，每次只扫描固定工作量；Store 通过零延迟调度在切片间让出事件循环；页面增加 120ms 输入防抖及 host/page/binding/flag/Sheet 可见性 fence，关闭 Sheet、切换 owner、页面退出或 rollout 关闭都会取消旧请求。同步搜索与分片搜索复用同一状态机，纯策略用例锁定预算为 1 时仍可推进、结果等价以及非法 identity 不会退化成无过滤搜索。
 - `5fbdc1ec` 补齐 M6 日志导出的高风险确认与异步 fence：导出前明确提示文件将离开应用加密存储并要求用户确认，确认弹窗和系统文件选择器返回后都重新校验 host、页面 generation、SSH binding generation、日志双 flag、store ready 与 closing 状态；任一条件变化即取消，避免把切换前主机或 rollout 回退前捕获的快照写到用户文件。
 - `282492e0` 为 M6 会话日志补齐独立 `sshSessionLogs` 发布门禁，默认关闭且不能被持久化的 `settings.enabled=true` 绕过；入口、启停/暂停、搜索、书签、导出与实际 input/output capture 均重新校验双 flag。运行中关闭 flag 会关闭 Sheet、取消 flush timer 并丢弃尚未落盘的输入/输出/命令缓冲，导出在系统 picker 返回后也再次校验，避免 rollout 回退期间继续写出先前捕获的内容。
@@ -267,7 +268,7 @@ M0 action 只修改纯快照：创建/重命名工作区、打开占位 tab、�
 | S0 | 当前 API 23 产品 / `c07795fc5` | 本账本、复用/契约矩阵 | 未单独运行 suite；两项构建门禁覆盖编译 | PASS，exit 0，26.188s | PASS，exit 0，3m 6.999s | 壳与主机列表基线已有；认证后流程待补 | 待一次主审 | ACTIVE |
 | SSH-U0 | API 26 SDK | capability allowlist | 待 SDK | 待 SDK | 待 SDK | 待 API 26 设备 | 待 | BLOCKED_BY_SDK |
 | M0 | S0 契约 | 纯 snapshot/reducer、非 owning runtime adapter、capability/layout/style policy、flag-off Shell | 16 个纯策略用例已注册；设备执行未声明 | PASS，exit 0（最终复跑） | PASS，exit 0，7.122s | flag 默认关闭；旧页面未接线，既有 HDC 错误路径不变 | 一次主审 + 一次定向复核完成；5 个生产问题与 2 个测试问题均已修复 | READY_FOR_CHECKPOINT |
-| M1–M6 | M0 契约 | 已落地；M6 会话日志独立 flag 默认关闭并约束 capture/export；搜索使用可取消分片调度 | 已注册；包含日志双 flag 合取、分片/同步等价与最小预算推进 | PASS | PASS | API23 smoke；10MiB+ 真实设备压力、后台/权限矩阵待验 | 已复核；日志 rollout/搜索修复待最终实机复核 | CHECKPOINT |
+| M1–M6 | M0 契约 | 已落地；M6 会话日志独立 flag 默认关闭并约束 capture/export；搜索使用可取消分片调度；完成通知独立 opt-in | 已注册；包含日志双 flag 合取、分片/同步等价、最小预算推进及通知默认关闭 | PASS | PASS | API23 smoke；10MiB+ 真实设备压力、后台/通知权限矩阵待验 | 已复核；日志/通知修复待最终实机复核 | CHECKPOINT |
 | M7 | M6 工作台 | 已落地；广播刷新只保留显式且仍安全的目标；独立高风险 flag 默认关闭 | 已注册；包含独立 flag、失效目标不替换策略用例 | PASS | PASS | 真实主机及广播 UI 矩阵待接入 | 已复核；本次安全修复待最终实机复核 | DEVICE_PENDING |
 | M8 | M7 工作台 | 已落地；双端 generation/sequence/ACK 整数且严格连续 | 已注册；包含小数计数器与向前跳号拒绝 | PASS | PASS | API26/高负载设备待验 | 已复核；本次序号修复待最终实机复核 | DEVICE_PENDING |
 | M9 | M8 前置 | SSH handoff、独立窗口前台恢复、沉浸/分屏回归已落地 | 策略覆盖 | PASS | PASS | PC/API23 模拟器已证明鉴权后开窗、SFTP/终端保活、转发 payload、最小化/最近任务恢复、F11 沉浸进出、左边缘 WMS 分屏、任务栏/WMS 多窗口；物理/API26/剩余协议矩阵待验 | 待最终实机复核 | DEVICE_PENDING |
@@ -308,3 +309,5 @@ hvigorw --mode module -p module=entry -p product=default assembleHap --analyze=n
 2026-08-22 M6 会话日志导出确认与异步 fence receipt：`5fbdc1ec` 在生成导出快照前增加明确二次确认，告知只导出当前主机的二次脱敏内容且保存文件会离开应用加密存储；确认弹窗与系统 `DocumentViewPicker` 两个 await 之后均通过纯 `matchesSshSessionLogExportFence` 校验原始 host、page generation、binding generation、日志 rollout 可用性、store ready 和页面 closing 状态。任一 host/owner/页面/flag 变化即拒绝继续写出。策略测试覆盖合法 fence 以及 host、page、binding、flag 变化的 fail-closed 行为。精确 `default@OhosTestCompileArkTS` exit 0，`assembleHap` exit 0（`BUILD SUCCESSFUL in 12 s 274 ms`）；签名 HAP SHA-256 为 `42c87ed604e30d90024436050e31f898df72b4b816bf953f68968537e2daaaa1`。本 receipt 仅为源码/构建证据，未冒充系统 picker 真机、后台或物理设备验收。
 
 2026-08-22 M6 大日志分片搜索 receipt：`a5c3dc9e` 将原先由 `TextInput.onChange` 触发、在 ArkUI 上同步遍历完整日志的搜索改为有界游标和 256 工作单元的异步切片，并增加 120ms 防抖与 request sequence、host、page generation、SSH binding generation、双 flag、store ready、closing、Sheet 可见性联合 fence；关闭/隐藏日志 Sheet、页面退出、owner 变化或 rollout 回退都会取消旧结果。纯策略用例证明预算为 1 时游标仍推进、分片结果与同步搜索一致，并保留非法 identity 的 fail-closed 语义。共享工作树第一次 `default@OhosTestCompileArkTS` 仅因并行的 `CloudStore.ets`/`HostSyncService.ets` 类型错误退出 255，本次 4 个 SSH 文件没有报错；只复制本次 4 文件的 `/private/tmp/remotedesk-ssh-log-search.6YD51t/repo` 隔离镜像随后 compile/assemble 均 exit 0（assemble：`BUILD SUCCESSFUL in 53 s 245 ms`）。并行修改稳定后，共享工作树正式 compile exit 0；第一次正式 assemble 在并发产物写入期间于 SignHap 报 `zip END header not found`，稳定后精确重跑 exit 0（`BUILD SUCCESSFUL in 8 s 909 ms`）。最终 `entry-default-signed.hap` SHA-256 为 `30e42f94b3d31e29950a645379123dd857a0ffacbd1b12a7a1dac868a4663c9f`。本 receipt 证明策略、编译和打包门禁，不冒充 API23/API26/物理设备上的 10MiB+ 交互压力验收。
+
+2026-08-22 M6 命令完成通知 opt-in receipt：`81180347` 为加密的 `SshProductivitySettingsV1` 增加默认关闭的 `completionNotificationEnabled`；旧版本文档缺少该字段时经白名单编码确定归一化为 `false`。生产力 Sheet 增加独立开关，页面把设置显式传入通知请求，`SshNotificationService` 在构造系统通知前再次 fail-closed 校验；由此单独启用 Shell integration 或本地补全都不会隐式发布通知。策略测试覆盖旧文档默认关闭以及失败命令在 `enabled=false` 时仍不允许通知。精确 `default@OhosTestCompileArkTS` exit 0，`assembleHap` exit 0（`BUILD SUCCESSFUL in 15 s 365 ms`）；签名 HAP SHA-256 为 `7ce73e0e2cd2afd5edbfa3588070b9d569672fb6d0bac15b827620b30c9cb7f2`。本 receipt 不声明通知权限拒绝、后台、锁屏或物理设备交互已验收。
