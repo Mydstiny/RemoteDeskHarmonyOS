@@ -4,6 +4,7 @@ export type SshWorkspaceChromeTreatment = 'solid' | 'system_material';
 export type SshWorkspaceMotionLevel = 'none' | 'structural' | 'expressive';
 
 export interface SshWorkspacePlatformFacts {
+  protocol: string;
   apiVersion: number;
   featureFlagEnabled: boolean;
   dynamicLayoutDeclared: boolean;
@@ -35,6 +36,7 @@ export const SSH_UI_DESIGN_TARGET_API: number = 26;
 
 export function defaultSshWorkspacePlatformFacts(): SshWorkspacePlatformFacts {
   return {
+    protocol: 'ssh',
     apiVersion: 23,
     featureFlagEnabled: SSH_WORKBENCH_V2_DEFAULT_ENABLED,
     dynamicLayoutDeclared: false,
@@ -58,7 +60,10 @@ export function resolveSshWorkspaceCapabilities(
 ): SshWorkspaceCapabilities {
   const apiVersion: number = Number.isFinite(facts.apiVersion) ?
     Math.max(1, Math.floor(facts.apiVersion)) : 1;
-  const enabled: boolean = facts.featureFlagEnabled === true;
+  const protocol: string = typeof facts.protocol === 'string' ?
+    facts.protocol.trim().toLowerCase() : '';
+  const protocolEligible: boolean = protocol === 'ssh';
+  const enabled: boolean = protocolEligible && facts.featureFlagEnabled === true;
   const dynamicLayout: boolean = enabled && apiVersion >= SSH_DYNAMIC_LAYOUT_MIN_API &&
     facts.dynamicLayoutDeclared === true;
   const containerReader: boolean = enabled && apiVersion >= SSH_UI_DESIGN_TARGET_API &&
@@ -72,7 +77,9 @@ export function resolveSshWorkspaceCapabilities(
     motionLevel = 'structural';
   }
   let reason: string = '';
-  if (!enabled) {
+  if (!protocolEligible) {
+    reason = 'SSH 工作台能力不适用于非 SSH 协议';
+  } else if (!enabled) {
     reason = 'sshWorkbenchV2 默认关闭，继续使用现有 SSH 页面';
   } else if (!dynamicLayout) {
     reason = 'DynamicLayout 未经当前 SDK 证明，使用静态语义布局';

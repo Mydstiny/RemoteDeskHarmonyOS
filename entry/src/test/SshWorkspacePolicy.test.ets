@@ -192,6 +192,29 @@ export default function sshWorkspacePolicyTest(): void {
       expect(capabilities.chromeTreatment).assertEqual('solid');
     });
 
+    it('ssh_feature_flag_should_not_enable_non_ssh_protocols', 0, (): void => {
+      const protocols: Array<string> = ['rdp', 'vnc', 'rustdesk', 'moonlight'];
+      for (let i: number = 0; i < protocols.length; i++) {
+        const facts: SshWorkspacePlatformFacts = defaultSshWorkspacePlatformFacts();
+        facts.protocol = protocols[i];
+        facts.apiVersion = 26;
+        facts.featureFlagEnabled = true;
+        facts.dynamicLayoutDeclared = true;
+        facts.containerReaderDeclared = true;
+        facts.uiDesignKitDeclared = true;
+        facts.multiWindowDeclared = true;
+        facts.keyboardShortcutDeclared = true;
+        const capabilities: SshWorkspaceCapabilities = resolveSshWorkspaceCapabilities(facts);
+        expect(capabilities.workbenchEnabled).assertFalse();
+        expect(capabilities.layoutEngine).assertEqual('static');
+        expect(capabilities.containerEngine).assertEqual('window_breakpoint');
+        expect(capabilities.chromeTreatment).assertEqual('solid');
+        expect(capabilities.detachedWindowEnabled).assertFalse();
+        expect(capabilities.keyboardShortcutEnabled).assertFalse();
+        expect(capabilities.motionLevel).assertEqual('none');
+      }
+    });
+
     it('runtime_probe_should_not_promote_api26_from_version_alone', 0, (): void => {
       const facts: SshWorkspacePlatformFacts = probeSshWorkspacePlatformFacts(
         true, defaultSshWorkspacePlatformDeclarations());
