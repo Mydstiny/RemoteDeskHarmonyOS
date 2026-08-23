@@ -3,7 +3,7 @@
 > 状态：`ACTIVE_M8_M9` / `NOT_COMPLETE`
 > 权威计划：`docs/codex/plans/2026-08-19-ssh-termius-harmonyos7-api26-workbench-plan.md`
 > 建立日期：2026-08-19
-> 当前工作树：`codex/moonlight-complete-upgrade` / 代码检查点 `4148649f`（M0–M9 SSH 增量保留；workbench flag 已增加协议身份门禁；API24 Phone/2in1 模拟器已补 KBI/MFA 成功、取消、失败矩阵和通知允许/拒绝矩阵；API24 Phone 已补 Home 后持续任务启动、隐私化通知中心展示、同会话前台恢复与任务/通知撤销闭环，默认锁屏页仍未展示通知卡片；M6 日志淘汰现仅保护固定书签并按最久未更新 chunk 淘汰，超过 10MiB 的搜索规模契约固定为 256 工作单元切片；API23-targeted HAP 已在 API24 2in1 和 Phone 完成授权文件 SFTP 上传生命周期，并在 API24 Phone 补齐下载侧暂停/继续/取消/重试、最终完整下载及持久任务恢复入口；会话日志、广播输入、WebMessagePort 及生产力加密 Store 继续 fail closed，API26 工具链和最终物理设备矩阵仍待外部条件）
+> 当前工作树：`codex/moonlight-complete-upgrade` / 代码检查点 `5a5baa1e`（M0–M9 SSH 增量保留；workbench flag 已增加协议身份门禁；API24 Phone/2in1 模拟器已补 KBI/MFA 成功、取消、失败矩阵和通知允许/拒绝矩阵；API24 Phone 已补 Home 后持续任务启动、隐私化通知中心展示、同会话前台恢复与任务/通知撤销闭环，默认锁屏页仍未展示通知卡片；M6 日志淘汰现仅保护固定书签并按最久未更新 chunk 淘汰，超过 10MiB 的搜索规模契约固定为 256 工作单元切片，受控失败会回滚候选 chunk 且重启会清理索引未引用的孤儿行；API23-targeted HAP 已在 API24 2in1 和 Phone 完成授权文件 SFTP 上传生命周期，并在 API24 Phone 补齐下载侧暂停/继续/取消/重试、最终完整下载及持久任务恢复入口；会话日志、广播输入、WebMessagePort 及生产力加密 Store 继续 fail closed，API26 工具链和最终物理设备矩阵仍待外部条件）
 > 当前产品基线：HarmonyOS 6.1 / API 23
 > API 26 状态：本机未安装；任何 API 26-only import 均禁止进入产品代码
 
@@ -51,6 +51,7 @@
 - `a5c3dc9e` 修复 M6 大日志搜索在 ArkUI 线程同步线性扫描的问题：策略层新增有界游标，每次只扫描固定工作量；Store 通过零延迟调度在切片间让出事件循环；页面增加 120ms 输入防抖及 host/page/binding/flag/Sheet 可见性 fence，关闭 Sheet、切换 owner、页面退出或 rollout 关闭都会取消旧请求。同步搜索与分片搜索复用同一状态机，纯策略用例锁定预算为 1 时仍可推进、结果等价以及非法 identity 不会退化成无过滤搜索。
 - `d6c9bcfa` 修复 M6 日志配额把任意普通书签都当成固定记录的问题：只有 `pinned=true` 的书签继续跨越保留期和配额保护其 chunk；普通书签随被淘汰记录一并清理。空间淘汰从数组首项改为按 `updatedAt/createdAt` 选择最久未更新的非固定 chunk，测试实际跨越 256KiB 最小配额并覆盖固定记录、普通书签、悬空书签清理和保留期。
 - `4148649f` 把日志搜索的 256 工作单元抽成策略常量并由 Store 复用；新增 11MiB/1408 条 8KiB 文本的 miss-dominant 搜索规模用例，证明必须跨多个受限切片才能完成且结果不丢失；Store 用例进一步证明下一切片前会经过事件循环调度，并可在该边界取消。
+- `5a5baa1e` 补齐 M6 加密日志 chunk 的失败回滚与重启清理：受控 chunk/索引写失败会立即删除本轮候选行，真实进程在索引切换前退出留下的未引用行会在下次初始化按权威索引清理；索引缺失但仍有 chunk 行时保留密文并 fail closed，缺失/损坏引用需要修复索引但修复提交失败时也不会把 Store 标记为 ready。
 - `5fbdc1ec` 补齐 M6 日志导出的高风险确认与异步 fence：导出前明确提示文件将离开应用加密存储并要求用户确认，确认弹窗和系统文件选择器返回后都重新校验 host、页面 generation、SSH binding generation、日志双 flag、store ready 与 closing 状态；任一条件变化即取消，避免把切换前主机或 rollout 回退前捕获的快照写到用户文件。
 - `282492e0` 为 M6 会话日志补齐独立 `sshSessionLogs` 发布门禁，默认关闭且不能被持久化的 `settings.enabled=true` 绕过；入口、启停/暂停、搜索、书签、导出与实际 input/output capture 均重新校验双 flag。运行中关闭 flag 会关闭 Sheet、取消 flush timer 并丢弃尚未落盘的输入/输出/命令缓冲，导出在系统 picker 返回后也再次校验，避免 rollout 回退期间继续写出先前捕获的内容。
 - `5fd45827` 为 M7 广播输入增加独立发布门禁 `sshBroadcastInput`，默认关闭且不能继承更宽泛的 `sshWorkbenchV2`；生产力 Sheet 默认隐藏入口，页面打开、目标刷新、确认前后发送均重新校验双 flag，运行中关闭独立 flag 会立即关闭广播面板并清空目标、文本与安全状态。纯策略测试锁定只有工作台已就绪且独立 flag 明确开启时才可用；未新增面向普通用户的开关，等待安全审查和设备矩阵后再决定放量。
@@ -345,7 +346,7 @@ M0 action 只修改纯快照：创建/重命名工作区、打开占位 tab、�
 | S0 | 当前 API 23 产品 / `c07795fc5` | 本账本、复用/契约矩阵 | 未单独运行 suite；两项构建门禁覆盖编译 | PASS，exit 0，26.188s | PASS，exit 0，3m 6.999s | 壳与主机列表基线已有；认证后流程待补 | 待一次主审 | ACTIVE |
 | SSH-U0 | API 26 SDK | capability allowlist | 待 SDK | 待 SDK | 待 SDK | 待 API 26 设备 | 待 | BLOCKED_BY_SDK |
 | M0 | S0 契约 | 纯 snapshot/reducer、非 owning runtime adapter、capability/layout/style policy、flag-off Shell | 16 个纯策略用例已注册；设备执行未声明 | PASS，exit 0（最终复跑） | PASS，exit 0，7.122s | flag 默认关闭；旧页面未接线，既有 HDC 错误路径不变 | 一次主审 + 一次定向复核完成；5 个生产问题与 2 个测试问题均已修复 | READY_FOR_CHECKPOINT |
-| M1–M6 | M0 契约 | 已落地；M6 会话日志独立 flag 默认关闭并约束 capture/export，chunk 更新以不可变行保证索引失败后的重启一致性；搜索使用可取消分片调度；完成通知独立 opt-in 且并发 ID 有界不互相覆盖；日志/历史仅接受精确会话的 xterm 安全快照 | 已注册；包含日志双 flag 合取、失败索引写后的新实例恢复、分片/同步等价、最小预算推进、通知默认关闭及 ID 回绕 | PASS | PASS | API23 smoke；真实断电/10MiB+ 设备压力、后台/通知权限矩阵待验 | 已复核；日志/通知/多窗格模式修复待最终实机复核 | CHECKPOINT |
+| M1–M6 | M0 契约 | 已落地；M6 会话日志独立 flag 默认关闭并约束 capture/export，chunk 更新以不可变行保证索引失败后的重启一致性并在初始化清理孤儿行；搜索使用可取消分片调度；完成通知独立 opt-in 且并发 ID 有界不互相覆盖；日志/历史仅接受精确会话的 xterm 安全快照 | 已注册；包含日志双 flag 合取、失败索引写后的新实例恢复、孤儿清理/缺失索引 fail closed、分片/同步等价、最小预算推进、通知默认关闭及 ID 回绕 | PASS | PASS | API23 smoke；真实断电/10MiB+ 设备压力、后台/通知权限矩阵待验 | 已复核；日志/通知/多窗格模式修复待最终实机复核 | CHECKPOINT |
 | M7 | M6 工作台 | 已落地；广播刷新只保留显式且仍安全的目标；安全模式按 host/session/generation 隔离，未知状态 fail closed；独立高风险 flag 默认关闭 | 已注册；包含独立 flag、未知安全状态及失效目标不替换策略用例 | PASS | PASS | 真实主机及广播 UI 矩阵待接入 | 已复核；本次安全修复待最终实机复核 | DEVICE_PENDING |
 | M8 | M7 工作台 | 已落地；双端 generation/sequence/ACK 整数且严格连续 | 已注册；包含小数计数器与向前跳号拒绝 | PASS | PASS | API26/高负载设备待验 | 已复核；本次序号修复待最终实机复核 | DEVICE_PENDING |
 | M9 | M8 前置 | SSH handoff、独立窗口前台恢复、沉浸/分屏回归已落地 | 策略覆盖 | PASS | PASS | PC/API23 模拟器已证明鉴权后开窗、SFTP/终端保活、转发 payload、最小化/最近任务恢复、F11 沉浸进出、左边缘 WMS 分屏、任务栏/WMS 多窗口；物理/API26/剩余协议矩阵待验 | 待最终实机复核 | DEVICE_PENDING |
@@ -528,3 +529,5 @@ Phone 未授权基线的 SSH 行显示可操作“开启”，hierarchy `/privat
 2026-08-23 M6 日志固定记录与 LRU/保留策略 receipt：策略模型原本有独立 `bookmark.pinned` 字段，但 `chunkPinned()` 只检查书签是否存在，导致普通书签也能永久绕过保留天数和空间上限；空间超额时又直接删除数组中首个非保护 chunk，没有按记录更新时间选择淘汰对象。`d6c9bcfa` 将保护条件收紧为 `pinned=true`，并按 `updatedAt`、再按 `createdAt` 确定最久未更新的非固定 chunk。新增用例实际写过 256KiB 最小配额，证明普通书签所在的最旧 chunk 被淘汰、悬空书签同步删除、固定记录仍保留；独立保留期用例证明过期普通书签会移除而固定记录跨期保留。精确 `default@OhosTestCompileArkTS` exit 0，`assembleHap` exit 0（`BUILD SUCCESSFUL in 12 s 213 ms`），`git diff --check` 与开源发布 Light 均通过；签名 HAP SHA-256 为 `ffa78ca141c8a801051cbe0f120f60fd516a3bb71d685df912e7267bd2790aef`。
 
 2026-08-23 M6 10MiB+ 分片搜索规模 receipt：`4148649f` 将生产 Store 与纯策略的搜索预算统一为 `SSH_SESSION_LOG_SEARCH_WORK_BUDGET=256`，避免两侧静默漂移。规模用例构造 11MiB、1408 条 8KiB 可搜索文本，仅一条命中并让其余文本完整走 miss 扫描，证明搜索必须跨多个受限切片完成且唯一结果不丢失；Store 异步用例填充超过两个切片的记录并在第二次 continuation fence 取消，证明首片后实际经 `setTimeout(0)` 让出且不会发布旧结果。精确 `default@OhosTestCompileArkTS` exit 0，`assembleHap` exit 0（`BUILD SUCCESSFUL in 12 s 325 ms`），`git diff --check` 与 Light 均通过；签名 HAP SHA-256 为 `129564351e73d1dd7fb15a28e05799199b94260523b593243a71554fd79dd567`。附加设备测试任务 `ohosTest@OhosTestCompileArkTS` 仍因当前工程未注册而返回既有 `00306054`，不记录为运行通过；API26/物理设备上的 UI 帧时延仍保留为最终设备验收项。
+
+2026-08-23 M6 加密日志 crash/power-loss 恢复 receipt：`5a5baa1e` 为 RDB persistence 增加只枚举 chunk ID 的接口，并把加密索引继续作为唯一权威提交边界。受控 chunk 或索引写失败会立即回滚本轮已写候选行；真实进程在 chunk 落盘、索引切换前退出留下的未引用行会在下次初始化加载并校验权威索引后清理。若索引缺失但仍有 chunk 行，Store 不猜测提交状态、不重建或删除密文，而是保留行并 fail closed；若缺失、损坏或过期 chunk 触发索引修复但新索引无法提交，也不会把 Store 标记为 ready。测试覆盖受控失败无孤儿、模拟进程重启清理孤儿、缺失索引保留密文，以及修复提交失败。提交前精确 `default@OhosTestCompileArkTS` exit 0，`assembleHap` exit 0（`BUILD SUCCESSFUL in 9 s 777 ms`），`git diff --check` 与 Light 均通过；签名 HAP SHA-256 为 `7a70468dc21ed44a5c218c8c6a02dc5d5c3fd385d4803c4ecd7c7d2eb90607c5`。该 receipt 为模拟故障和产品构建证据，不冒充真实断电、API26 或物理设备恢复矩阵。
