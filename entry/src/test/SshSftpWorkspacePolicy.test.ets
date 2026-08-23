@@ -6,6 +6,7 @@ import {
   createSshSftpWorkspaceTabState,
   openSshSftpWorkspaceTab,
   planSshSftpExternalDrop,
+  resolveSshSftpPresentation,
   resolveSshSftpPaneLayout,
   sshSftpDropRecordCountAllowed,
   SshSftpDropItem,
@@ -44,6 +45,13 @@ export default function sshSftpWorkspacePolicyTest(): void {
       expect(resolveSshSftpPaneLayout(900, 'pc').mode).assertEqual('dual');
       expect(resolveSshSftpPaneLayout(900, 'pad').mode).assertEqual('dual');
       expect(resolveSshSftpPaneLayout(1200, 'phone').mode).assertEqual('single');
+    });
+
+    it('keeps_pc_sftp_in_a_centered_sheet_with_workbench_enabled', 0, (): void => {
+      expect(resolveSshSftpPresentation(true, true)).assertEqual('sheet');
+      expect(resolveSshSftpPresentation(false, true)).assertEqual('sheet');
+      expect(resolveSshSftpPresentation(true, false)).assertEqual('workspace');
+      expect(resolveSshSftpPresentation(false, false)).assertEqual('sheet');
     });
 
     it('accepts_bounded_multi_file_drop_and_requires_explicit_conflict_confirmation', 0,

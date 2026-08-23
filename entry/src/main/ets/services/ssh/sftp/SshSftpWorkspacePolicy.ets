@@ -1,6 +1,7 @@
 /** Pure state and validation policy for the M3 SFTP workbench surface. */
 
 export type SshSftpPaneMode = 'single' | 'dual';
+export type SshSftpPresentation = 'sheet' | 'workspace';
 export type SshSftpWorkspaceSurface = 'terminal' | 'sftp';
 export type SshSftpDropTarget = 'local' | 'ssh';
 
@@ -113,6 +114,13 @@ export function activateSshSftpSurface(current: SshSftpWorkspaceTabState,
 export function closeSshSftpWorkspaceTab(_current: SshSftpWorkspaceTabState):
   SshSftpWorkspaceTabState {
   return createSshSftpWorkspaceTabState();
+}
+
+/** PC keeps SFTP as a modal tool window; workbench tabs remain for touch devices. */
+export function resolveSshSftpPresentation(workbenchEnabled: boolean,
+  desktop: boolean): SshSftpPresentation {
+  if (desktop) { return 'sheet'; }
+  return workbenchEnabled ? 'workspace' : 'sheet';
 }
 
 /** Container width wins over device class so a 360vp PC window degrades safely. */

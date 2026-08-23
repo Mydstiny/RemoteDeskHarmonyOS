@@ -329,6 +329,7 @@ import {
   closeSshSftpWorkspaceTab,
   createSshSftpWorkspaceTabState,
   openSshSftpWorkspaceTab,
+  resolveSshSftpPresentation,
   resolveSshSftpPaneLayout,
   SshSftpDropLimits,
   SshSftpWorkspaceTabState
@@ -13350,7 +13351,7 @@ struct SshTerminal {
 
   private openSftpPanel(): void {
     if (this.terminalClosing) { return; }
-    if (this.sshWorkbenchEnabled) {
+    if (this.sshWorkbenchEnabled && !this.sftpUsesRootBindSheet()) {
       if (!this.sshConnectionIsConnected() || this.hostId.trim().length === 0) {
         promptAction.showToast({ message: 'SSH 连接成功后才能打开 SFTP', duration: 1800 });
         return;
@@ -13405,7 +13406,8 @@ struct SshTerminal {
       this.prepareSftpRightEndpointForNewSurface();
     }
     this.showSftpPanel = true;
-    // Phone and Pad use the root bindSheet; only PC keeps the workspace inline.
+    // PC/2in1 uses the centered root Sheet; touch workbench layouts keep their
+    // existing first-class surface until their adaptive sizing pass.
     // The root bindSheet is already attached to the page, so opening it must
     // be a same-turn state transition. Delaying this transition lets an
     // unrelated page/window refresh invalidate the open token before
@@ -13968,9 +13970,8 @@ struct SshTerminal {
   }
 
   private sftpUsesRootBindSheet(): boolean {
-    // Workbench mode owns a first-class inline tab. Flag-off preserves the
-    // accepted phone bottom Sheet and Pad/PC centered Sheet exactly.
-    return !this.sshWorkbenchEnabled;
+    return resolveSshSftpPresentation(
+      this.sshWorkbenchEnabled, this.isDesktopDevice) === 'sheet';
   }
 
   private sftpWorkbenchSurfaceActive(): boolean {
