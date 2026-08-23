@@ -14984,8 +14984,11 @@ struct SshTerminal {
     let outFile: fileIo.File | null = null;
     let session: TransferSession | null = null;
     try {
-      if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId, requestSessionGeneration) ||
-        uri.length === 0 || finalUri.length === 0 || uri === finalUri) {
+      if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+        requestSessionGeneration)) {
+        return;
+      }
+      if (uri.length === 0 || finalUri.length === 0 || uri === finalUri) {
         this.sftpStatus = '[SFTP-DOWNLOAD] 本地 partial/final URI 无效，拒绝传输';
         return;
       }
