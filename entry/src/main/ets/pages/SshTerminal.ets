@@ -7985,9 +7985,9 @@ struct SshTerminal {
     if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId, requestSessionGeneration)) {
       return { action: 'failed', policy, targetPath: target };
     }
-    if (action === 'overwrite' && !await this.sftpLocalProvider.remove(target, false)) {
-      return { action: 'failed', policy, targetPath: target };
-    }
+    // Do not delete the old file while the download partial is incomplete.
+    // The verified export performs the explicit overwrite at its TRUNC commit
+    // boundary, after all remote bytes and identities have been checked.
     return { action, policy, targetPath: target };
   }
 

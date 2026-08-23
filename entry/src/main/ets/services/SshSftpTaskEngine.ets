@@ -1498,9 +1498,9 @@ export class SshSftpTaskEngine {
         ? { action: 'failed', targetPath: target, fileName: task.fileName }
         : { action: 'ready', targetPath: keepBoth, fileName: name };
     }
-    if (!await this.provider.remove(target, false)) {
-      return { action: 'failed', targetPath: target, fileName: task.fileName };
-    }
+    // Keep the existing target intact while the remote bytes are still being
+    // downloaded. The verified-partial export owns the destructive TRUNC
+    // boundary, so a cancel before export cannot delete the user's old file.
     return { action: 'ready', targetPath: target, fileName: task.fileName };
   }
 
