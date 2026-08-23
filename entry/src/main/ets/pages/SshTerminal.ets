@@ -14504,6 +14504,8 @@ struct SshTerminal {
         previous.transferredBytes, previous.id, requestPageGeneration, requestSessionId,
         requestSessionGeneration);
     }
+    if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+      requestSessionGeneration)) { return; }
     this.continueSftpBatchAfterTask(previous.id);
   }
 
@@ -14911,7 +14913,10 @@ struct SshTerminal {
       // partial first, then export the verified bytes to this final URI.
       const uris: string[] = await this.sftpLocalProvider.chooseSave(finalName);
       if (!uris || uris.length === 0) {
-        this.sftpStatus = '已取消保存';
+        if (this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+          requestSessionGeneration)) {
+          this.sftpStatus = '已取消保存';
+        }
         return;
       }
       if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId, requestSessionGeneration) ||
@@ -14920,6 +14925,8 @@ struct SshTerminal {
       }
       const finalUri: string = uris[0];
       const partialPath: string = await this.sftpSandboxPartialPath(transferId);
+      if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+        requestSessionGeneration)) { return; }
       if (finalUri.length === 0 || partialPath.length === 0) {
         this.sftpStatus = '[SFTP-DOWNLOAD] 无法建立本地临时文件，已取消';
         return;
@@ -15265,6 +15272,8 @@ struct SshTerminal {
           previous.transferredBytes, previous.id, requestPageGeneration, requestSessionId,
           requestSessionGeneration);
       }
+      if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+        requestSessionGeneration)) { return; }
       this.continueSftpBatchAfterTask(previous.id);
     } catch (_err) {
       if (this.isSftpRequestActive(requestPageGeneration, requestSessionId, requestSessionGeneration)) {
@@ -15318,6 +15327,8 @@ struct SshTerminal {
           requestPageGeneration, requestSessionId, requestSessionGeneration)) { return; }
         const sourceUri: string = uris[0];
         const sourceIdentity: SshSftpFileIdentity | null = await this.readLocalSftpIdentity(sourceUri);
+        if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+          requestSessionGeneration)) { return; }
         if (sourceIdentity === null || sourceIdentity.size > SFTP_MAX_TRANSFER_BYTES ||
           (offset > 0 && (task.sourceSize < 0 || task.sourceMtime < 0 ||
             !sshSftpIdentityMatches({ size: task.sourceSize, mtime: task.sourceMtime }, sourceIdentity)))) {
@@ -15333,6 +15344,8 @@ struct SshTerminal {
           const partialIdentity: SshSftpFileIdentity | null =
             await this.readRemoteSftpIdentity(
               partialRemotePath, requestSessionId, requestSessionGeneration);
+          if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+            requestSessionGeneration)) { return; }
           if (partialIdentity === null || partialIdentity.size !== offset || partialIdentity.mtime < 0 ||
             task.partialSize !== offset || (task.partialMtime >= 0 && task.partialMtime !== partialIdentity.mtime)) {
             this.sftpStatus = '[SFTP-UPLOAD] 远端 partial 身份不匹配，拒绝续传';
@@ -15353,10 +15366,14 @@ struct SshTerminal {
         this.sftpTransferRemoteMtime = -1;
         await this.uploadSftpToRemote(sourceUri, task.fileName, task.remotePath, offset, task.taskId,
           requestPageGeneration, requestSessionId, requestSessionGeneration);
+        if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+          requestSessionGeneration)) { return; }
       } else {
         const remoteIdentity: SshSftpFileIdentity | null =
           await this.readRemoteSftpIdentity(
             task.remotePath, requestSessionId, requestSessionGeneration);
+        if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+          requestSessionGeneration)) { return; }
         if (remoteIdentity === null || remoteIdentity.size > SFTP_MAX_TRANSFER_BYTES ||
           (task.sourceSize >= 0 && !sshSftpIdentityMatches(
             { size: task.sourceSize, mtime: task.sourceMtime }, remoteIdentity))) {
@@ -15368,8 +15385,12 @@ struct SshTerminal {
           return;
         }
         const partialPath: string = await this.sftpSandboxPartialPath(task.taskId);
+        if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+          requestSessionGeneration)) { return; }
         const partialIdentity: SshSftpFileIdentity | null =
           await this.readLocalSftpIdentity(partialPath);
+        if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+          requestSessionGeneration)) { return; }
         if (offset > 0 && (partialIdentity === null || partialIdentity.size !== offset ||
           partialIdentity.mtime < 0 || task.partialSize !== offset ||
           (task.partialMtime >= 0 && task.partialMtime !== partialIdentity.mtime))) {
@@ -15398,6 +15419,8 @@ struct SshTerminal {
           remoteIdentity.size, offset, task.taskId, requestPageGeneration, requestSessionId,
           requestSessionGeneration);
       }
+      if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+        requestSessionGeneration)) { return; }
       this.refreshRecoveredSftpTasks();
     } catch (_err) {
       if (this.isSftpRequestActive(requestPageGeneration, requestSessionId, requestSessionGeneration)) {
