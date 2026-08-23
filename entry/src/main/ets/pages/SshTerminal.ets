@@ -14205,6 +14205,14 @@ struct SshTerminal {
     // Only a newly-created target can be removed safely on export failure;
     // never unlink a pre-existing target after an unsuccessful overwrite.
     const existingFinalIdentity: SshSftpFileIdentity | null = await this.readLocalSftpIdentity(finalUri);
+    // The existence probe is asynchronous. A page/session change or a user
+    // cancel during that await must not let this stale request reach the
+    // provider open below, which deliberately uses TRUNC for an explicit
+    // overwrite decision.
+    if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+      requestSessionGeneration) || this.shouldStopSftpTransfer(session)) {
+      return false;
+    }
     const targetExistedBeforeExport: boolean = existingFinalIdentity !== null;
     let source: fileIo.File | null = null;
     let destination: fileIo.File | null = null;
