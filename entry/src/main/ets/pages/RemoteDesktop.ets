@@ -143,6 +143,12 @@ import {
   RemoteVirtualTouchpadKeyboardGuide,
   shouldShowRemoteVirtualTouchpadKeyboardGuide
 } from '../services/RemoteVirtualTouchpadGuidePolicy';
+import {
+  GUIDE_ALWAYS_VISIBLE_STORAGE_KEY,
+  remoteTouchpadGuideStorageKey,
+  RemoteTouchpadGuideProtocol
+} from '../services/GuideVisibilityPolicy';
+import { GuideVisibilityService } from '../services/GuideVisibilityService';
 import { RemoteCursorOverlay, RemoteCursorOverlayState } from '../components/RemoteCursorOverlay';
 import { RemoteSessionTopBar, RemoteSessionTopBarActions } from '../components/RemoteSessionTopBar';
 import { RustDeskDiagnosticsHud } from '../components/RustDeskDiagnosticsHud';
@@ -775,6 +781,7 @@ struct RemoteDesktop {
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
   @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
   @StorageProp('isPadDevice') isPadDevice: boolean = false;
+  @StorageProp(GUIDE_ALWAYS_VISIBLE_STORAGE_KEY) guideAlwaysVisible: boolean = false;
   @StorageLink('rustdeskControlMode') @Watch('onRemoteControlModeChange')
   rustdeskControlMode: number = 0; // 0=touchpad, 1=direct touch, 2=keyboard/mouse
   @StorageLink('rustdeskImageQuality') rustdeskImageQuality: number = 1;
@@ -8729,11 +8736,16 @@ struct RemoteDesktop {
 
   private promptVirtualTouchpadKeyboardGuide(): void {
     const protocol: string = this.currentProtocolName();
+    if (protocol !== 'rdp' && protocol !== 'rustdesk' && protocol !== 'vnc') { return; }
+    const markerKey: string = remoteTouchpadGuideStorageKey(
+      protocol as RemoteTouchpadGuideProtocol);
+    const alreadyShownEver: boolean = GuideVisibilityService.getInstance().wasShown(
+      getContext(this) as common.Context, markerKey);
     if (!shouldShowRemoteVirtualTouchpadKeyboardGuide(
       protocol, this.connected, this.currentControlMode(),
       this.virtualTouchpadKeyboardGuideShownThisSession,
       this.virtualTouchpadKeyboardGuidePromptVisible,
-      this.isVncViewOnlySession())) {
+      this.isVncViewOnlySession(), alreadyShownEver, this.guideAlwaysVisible)) {
       return;
     }
     const guide: RemoteVirtualTouchpadKeyboardGuide =
@@ -8759,6 +8771,8 @@ struct RemoteDesktop {
       hilog.warn(RD_DOMAIN, RD_TAG,
         'virtual-touchpad-keyboard-guide dismissed error=' + JSON.stringify(err));
     });
+    GuideVisibilityService.getInstance().markShown(
+      getContext(this) as common.Context, markerKey);
   }
 
   /** Each RustDesk session confirms its cross-platform remote keyboard type. */

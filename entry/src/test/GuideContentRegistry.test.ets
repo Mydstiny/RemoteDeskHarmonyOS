@@ -68,7 +68,11 @@ export default function guideContentRegistryTest(): void {
       expect(desktopMoonlight[0].id).assertEqual('moonlight-prepare');
       expect(containsLesson(desktopMoonlight, 'common-desktop-controls')).assertFalse();
       expect(containsLesson(desktopMoonlight, 'moonlight-desktop-control')).assertTrue();
+      expect(containsLesson(desktopMoonlight, 'moonlight-lifecycle')).assertTrue();
       expect(containsLesson(desktopMoonlight, 'moonlight-control')).assertFalse();
+      const desktopSsh: GuideLesson[] = guideLessonsFor('desktop', 'ssh');
+      expect(containsLesson(desktopSsh, 'ssh-workspace')).assertTrue();
+      expect(containsLesson(desktopSsh, 'ssh-productivity')).assertTrue();
     });
 
     it('provides_complete_non_empty_steps_for_every_path', 0, (): void => {

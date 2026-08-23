@@ -4,9 +4,11 @@ export interface RemoteVirtualTouchpadKeyboardGuide {
 }
 
 export function shouldShowRemoteVirtualTouchpadKeyboardGuide(protocol: string,
-  connected: boolean, controlMode: number, alreadyShown: boolean,
-  promptVisible: boolean, viewOnly: boolean): boolean {
-  if (!connected || alreadyShown || promptVisible || controlMode !== 0) { return false; }
+  connected: boolean, controlMode: number, shownThisSession: boolean,
+  promptVisible: boolean, viewOnly: boolean, alreadyShownEver: boolean = false,
+  alwaysVisible: boolean = false): boolean {
+  if (!connected || shownThisSession || promptVisible || controlMode !== 0) { return false; }
+  if (alreadyShownEver && !alwaysVisible) { return false; }
   if (protocol !== 'rdp' && protocol !== 'rustdesk' && protocol !== 'vnc') { return false; }
   return protocol !== 'vnc' || !viewOnly;
 }

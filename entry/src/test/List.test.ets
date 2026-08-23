@@ -148,6 +148,7 @@ import remoteModifierStateControllerTest from './RemoteModifierStateController.t
 import remoteCustomShortcutPolicyTest from './RemoteCustomShortcutPolicy.test';
 import remoteVirtualTouchpadGuidePolicyTest from './RemoteVirtualTouchpadGuidePolicy.test';
 import sessionContextualGuidePolicyTest from './SessionContextualGuidePolicy.test';
+import guideVisibilityPolicyTest from './GuideVisibilityPolicy.test';
 import terminalInputBufferTest from './TerminalInputBuffer.test';
 import xtermOutputBufferTest from './XtermOutputBuffer.test';
 import terminalRendererPolicyTest from './TerminalRendererPolicy.test';
@@ -377,6 +378,7 @@ export default function testsuite() {
   remoteCustomShortcutPolicyTest();
   remoteVirtualTouchpadGuidePolicyTest();
   sessionContextualGuidePolicyTest();
+  guideVisibilityPolicyTest();
   terminalInputBufferTest();
   xtermOutputBufferTest();
   terminalRendererPolicyTest();

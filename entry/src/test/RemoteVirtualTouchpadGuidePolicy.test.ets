@@ -26,6 +26,15 @@ export default function remoteVirtualTouchpadGuidePolicyTest(): void {
         'rdp', false, 0, false, false, false)).assertFalse();
     });
 
+    it('honors_the_durable_marker_and_session_override', 0, (): void => {
+      expect(shouldShowRemoteVirtualTouchpadKeyboardGuide(
+        'rdp', true, 0, false, false, false, true, false)).assertFalse();
+      expect(shouldShowRemoteVirtualTouchpadKeyboardGuide(
+        'rdp', true, 0, false, false, false, true, true)).assertTrue();
+      expect(shouldShowRemoteVirtualTouchpadKeyboardGuide(
+        'rdp', true, 0, true, false, false, true, true)).assertFalse();
+    });
+
     it('provides_protocol_specific_keyboard_entry_instructions', 0, (): void => {
       const rdp = remoteVirtualTouchpadKeyboardGuide('rdp');
       const vnc = remoteVirtualTouchpadKeyboardGuide('vnc');

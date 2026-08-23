@@ -6,6 +6,8 @@
  */
 import { common, Want } from '@kit.AbilityKit';
 import { AppConfig, AppTheme, Palette, buildLight, buildDark } from '../common/Theme';
+import { GUIDE_ALWAYS_VISIBLE_STORAGE_KEY } from '../services/GuideVisibilityPolicy';
+import { GuideVisibilityService } from '../services/GuideVisibilityService';
 import {
   guideDeviceFor,
   guideDeviceLabel,
@@ -33,6 +35,7 @@ export struct AboutSettingsSheet {
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
   @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
   @StorageProp('isPadDevice') isPadDevice: boolean = false;
+  @StorageLink(GUIDE_ALWAYS_VISIBLE_STORAGE_KEY) guideAlwaysVisible: boolean = false;
   onClose: () => void = (): void => {};
 
   @State usageGuideIndex: number = 0;
@@ -72,6 +75,21 @@ export struct AboutSettingsSheet {
   private resetExpandedGuideLesson(): void {
     const lessons: GuideLesson[] = guideLessonsFor(this.guideDevice, this.guideProtocol);
     this.expandedGuideLessonId = lessons.length > 0 ? lessons[0].id : '';
+  }
+
+  private toggleGuideAlwaysVisible(): void {
+    const next: boolean = !this.guideAlwaysVisible;
+    const saved: boolean = GuideVisibilityService.getInstance().setAlwaysVisible(
+      getContext(this) as common.Context, next);
+    if (saved) {
+      this.guideAlwaysVisible = next;
+      return;
+    }
+    try {
+      this.getUIContext().getPromptAction().showToast({
+        message: '引导显示设置保存失败，请稍后重试', duration: 2000
+      });
+    } catch (_error) {}
   }
 
   private openUrl(url: string): void {
@@ -304,6 +322,28 @@ export struct AboutSettingsSheet {
         }.width('100%').margin({ top: 12 })
       }
       .width('100%').padding(14).borderRadius(16)
+      .backgroundColor(this.pal().surface)
+      .margin({ left: 20, right: 20, bottom: 12 })
+
+      Row() {
+        Column() {
+          Text('自动引导显示方式')
+            .fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+            .fontFamily(this.font()).width('100%')
+          Text(this.guideAlwaysVisible ?
+            '每次进入适用会话时显示一次；同一会话不会反复弹出' :
+            '默认每类自动引导只显示一次，教程中心仍可随时打开')
+            .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+            .lineHeight(16).width('100%').margin({ top: 3 })
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+        Button(this.guideAlwaysVisible ? '始终显示：开' : '始终显示')
+          .height(34).fontSize(11).borderRadius(10).margin({ left: 12 })
+          .backgroundColor(this.guideAlwaysVisible ? this.accentColor : this.pal().card)
+          .fontColor(this.guideAlwaysVisible ? Color.White : this.accentColor)
+          .onClick((): void => { this.toggleGuideAlwaysVisible(); })
+          .accessibilityText(this.guideAlwaysVisible ? '关闭始终显示引导' : '开启始终显示引导')
+      }
+      .width('100%').padding(13).borderRadius(16)
       .backgroundColor(this.pal().surface)
       .margin({ left: 20, right: 20, bottom: 12 })
 

@@ -34,6 +34,7 @@ import { RemoteSessionPipService } from '../services/RemoteSessionPipService';
 import { SshTerminalBackgroundTaskService } from '../services/SshTerminalBackgroundTaskService';
 import { SshTerminalPipService } from '../services/SshTerminalPipService';
 import { RemoteSessionWindowCoordinator } from '../services/RemoteSessionWindowCoordinator';
+import { GuideVisibilityService } from '../services/GuideVisibilityService';
 import {
   DEFAULT_DARK_HALO_COLOR,
   DEFAULT_LIGHT_HALO_COLOR,
@@ -252,6 +253,7 @@ export default class EntryAbility extends UIAbility {
       // Preferences 中已有的值会由 HostListPage.aboutToAppear 加载覆盖
       AppStorage.setOrCreate<boolean>('liveViewEnabled', true);
       AppStorage.setOrCreate<number>('liveViewMode', 1);
+      GuideVisibilityService.getInstance().init(this.context);
       this.migrateTerminalFontUnit();
       // 初始化 AGC Auth SDK (读取 agconnect-services.json)
       try {

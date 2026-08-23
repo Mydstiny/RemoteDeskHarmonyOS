@@ -12,6 +12,8 @@ import {
   shouldRetrySessionContextualGuide,
   shouldShowSessionContextualGuide
 } from '../services/SessionContextualGuidePolicy';
+import { GUIDE_ALWAYS_VISIBLE_STORAGE_KEY } from '../services/GuideVisibilityPolicy';
+import { GuideVisibilityService } from '../services/GuideVisibilityService';
 import { MoonlightConnectStageOverlay } from '../components/moonlight/MoonlightConnectStageOverlay';
 import { MoonlightDiagnosticsHud } from '../components/moonlight/MoonlightDiagnosticsHud';
 import { MoonlightControlCenter, MoonlightControlMode } from '../components/moonlight/MoonlightControlCenter';
@@ -195,6 +197,7 @@ struct MoonlightStreamPage {
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
   @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
   @StorageProp('isPadDevice') isPadDevice: boolean = false;
+  @StorageProp(GUIDE_ALWAYS_VISIBLE_STORAGE_KEY) guideAlwaysVisible: boolean = false;
   @StorageProp('liveViewEnabled') liveViewEnabled: boolean = true;
   @StorageProp('liveViewMode') liveViewMode: number = 1;
   @StorageLink('remoteDesktopBgFlag') @Watch('onRemoteDesktopBgFlagChange')
@@ -346,6 +349,7 @@ struct MoonlightStreamPage {
   private presentationReleaseRetryTimer: number = -1;
   private presentationReleaseActive: boolean = false;
   private contextualGuideRetryTimer: number = -1;
+  private contextualGuideShownThisSession: boolean = false;
   private reconnectWindow: MoonlightReconnectWindow | null = null;
   private reconnectTimer: number = -1;
   private reconnectGeneration: number = 0;
@@ -419,10 +423,13 @@ struct MoonlightStreamPage {
       this.maybeShowMoonlightContextualGuide();
       const guide: SessionContextualGuide = sessionContextualGuide('moonlight',
         guideDeviceFor(this.isDesktopDevice, this.isPadDevice, this.breakpoint));
-      const alreadyShown: boolean = AppStorage.get<boolean>(guide.storageKey) ?? false;
+      const alreadyShown: boolean = GuideVisibilityService.getInstance().wasShown(
+        getContext(this) as common.Context, guide.storageKey);
       const ready: boolean = this.pageActive && !this.routeTerminated &&
         this.phase === 'streaming' && this.firstFrameSeen;
-      if (shouldRetrySessionContextualGuide(ready, alreadyShown) && !this.appInBackground) {
+      if (shouldRetrySessionContextualGuide(
+        ready, alreadyShown, this.guideAlwaysVisible,
+        this.contextualGuideShownThisSession) && !this.appInBackground) {
         // Keep only one retry alive while a transient Sheet, keyboard or
         // recovery overlay owns the visible session.
         this.scheduleMoonlightContextualGuide(800);
@@ -434,13 +441,15 @@ struct MoonlightStreamPage {
     const device: GuideDevice = guideDeviceFor(
       this.isDesktopDevice, this.isPadDevice, this.breakpoint);
     const guide: SessionContextualGuide = sessionContextualGuide('moonlight', device);
-    const alreadyShown: boolean = AppStorage.get<boolean>(guide.storageKey) ?? false;
+    const alreadyShown: boolean = GuideVisibilityService.getInstance().wasShown(
+      getContext(this) as common.Context, guide.storageKey);
     const blockingOverlayVisible: boolean = this.showSessionSheet || this.showModifierPanel ||
       this.showShortcutPanel || this.showController || this.keyboardOpen || this.surfaceRecovering;
     if (!shouldShowSessionContextualGuide(
       this.pageActive && !this.appInBackground && !this.routeTerminated &&
         this.phase === 'streaming' && this.firstFrameSeen, alreadyShown,
-      blockingOverlayVisible)) {
+      blockingOverlayVisible, this.guideAlwaysVisible,
+      this.contextualGuideShownThisSession)) {
       return;
     }
     try {
@@ -448,7 +457,9 @@ struct MoonlightStreamPage {
         message: guide.message,
         duration: guide.durationMs
       });
-      AppStorage.setOrCreate<boolean>(guide.storageKey, true);
+      this.contextualGuideShownThisSession = true;
+      GuideVisibilityService.getInstance().markShown(
+        getContext(this) as common.Context, guide.storageKey);
     } catch (_) {}
   }
 

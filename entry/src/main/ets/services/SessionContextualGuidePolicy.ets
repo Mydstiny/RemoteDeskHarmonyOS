@@ -1,4 +1,9 @@
 import { GuideDevice } from './GuideContentRegistry';
+import {
+  MOONLIGHT_CONTEXTUAL_GUIDE_STORAGE_KEY,
+  shouldPresentAutomaticGuide,
+  SSH_CONTEXTUAL_GUIDE_STORAGE_KEY
+} from './GuideVisibilityPolicy';
 
 export type SessionContextualGuideSurface = 'ssh' | 'moonlight';
 
@@ -9,13 +14,17 @@ export interface SessionContextualGuide {
 }
 
 export function shouldShowSessionContextualGuide(ready: boolean, alreadyShown: boolean,
-  blockingOverlayVisible: boolean): boolean {
-  return ready && !alreadyShown && !blockingOverlayVisible;
+  blockingOverlayVisible: boolean, alwaysVisible: boolean = false,
+  shownThisSession: boolean = false): boolean {
+  return ready && !blockingOverlayVisible &&
+    shouldPresentAutomaticGuide(alreadyShown, alwaysVisible, shownThisSession);
 }
 
 export function shouldRetrySessionContextualGuide(ready: boolean,
-  alreadyShown: boolean): boolean {
-  return ready && !alreadyShown;
+  alreadyShown: boolean, alwaysVisible: boolean = false,
+  shownThisSession: boolean = false): boolean {
+  return ready && shouldPresentAutomaticGuide(
+    alreadyShown, alwaysVisible, shownThisSession);
 }
 
 export function sessionContextualGuide(surface: SessionContextualGuideSurface,
@@ -23,27 +32,27 @@ export function sessionContextualGuide(surface: SessionContextualGuideSurface,
   if (surface === 'ssh') {
     if (device === 'phone') {
       return {
-        storageKey: 'sshSessionContextualGuideShownV1',
-        message: '已连接：点终端输入区唤起键盘；从“会话工具”打开语言、SFTP 和隧道。',
+        storageKey: SSH_CONTEXTUAL_GUIDE_STORAGE_KEY,
+        message: '已连接：点终端输入区唤起键盘；从“会话工具”打开 SFTP、隧道和更多功能。',
         durationMs: 3200
       };
     }
     return {
-      storageKey: 'sshSessionContextualGuideShownV1',
-      message: '已连接：顶部工具可打开 SFTP、隧道与会话设置；多主机会话可从标签切换。',
+      storageKey: SSH_CONTEXTUAL_GUIDE_STORAGE_KEY,
+      message: '已连接：顶部工具可打开分屏、SFTP、搜索、命令与日志；主机可从标签切换。',
       durationMs: 3200
     };
   }
   if (device === 'desktop') {
     return {
-      storageKey: 'moonlightSessionContextualGuideShownV1',
+      storageKey: MOONLIGHT_CONTEXTUAL_GUIDE_STORAGE_KEY,
       message: '串流已就绪：从顶部工具栏打开键盘、手柄、画面与断开；先在会话内安全退出。',
       durationMs: 3400
     };
   }
   return {
-    storageKey: 'moonlightSessionContextualGuideShownV1',
-    message: '串流已就绪：点顶部或贴边工具栏打开控制中心、键盘和虚拟手柄。',
+    storageKey: MOONLIGHT_CONTEXTUAL_GUIDE_STORAGE_KEY,
+    message: '串流已就绪：点顶部或贴边工具栏打开控制中心、键盘、虚拟手柄与画中画。',
     durationMs: 3400
   };
 }
