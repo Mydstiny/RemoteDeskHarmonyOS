@@ -7,6 +7,7 @@ const TAG: string = 'SessionWindowFrame';
 const PRESENTATION_POLL_MS: number = 50;
 const PRESENTATION_POLL_ATTEMPTS: number = 24;
 const FULLSCREEN_GEOMETRY_TOLERANCE_PX: number = 4;
+const SYSTEM_MAXIMIZE_PROMOTION_DELAY_MS: number = 700;
 
 function waitForPresentation(ms: number): Promise<void> {
   return new Promise<void>((resolve: () => void): void => {
@@ -18,28 +19,33 @@ export class RemoteSessionWindowFrameController {
   private mainWindow: window.Window | null = null;
   private fullscreen: boolean = false;
   private transitioning: boolean = false;
+  private systemMaximizePromotionTimer: number = -1;
   private onFullscreenChange: ((fullscreen: boolean) => void) | null = null;
   private readonly statusCallback = (status: window.WindowStatusType): void => {
     hilog.info(DOMAIN, TAG, 'window status=%{public}d transitioning=%{public}s',
       status, this.transitioning ? 'true' : 'false');
     if (status === window.WindowStatusType.FULL_SCREEN) {
+      this.cancelSystemMaximizePromotion();
       this.publishFullscreen(true);
       this.applyHoverPolicy(true, false);
     } else if (status === window.WindowStatusType.MAXIMIZE) {
-      // With the app immersive preference enabled, the system title-bar owns
-      // this maximize transaction. Never call maximize() again from its status
-      // callback: doing so races the system animation and produces a visible
-      // expand/shrink loop. API 20+ exposes the actual presentation separately
-      // from MAXIMIZE, whose status alone does not imply immersive layout.
-      const immersive: boolean = this.readImmersiveLayout(true);
+      // API24 PC can ignore the app immersive preference for the system title
+      // button and settle at work-area MAXIMIZE with ContainerModal still
+      // visible. Promote only after that animation has settled; calling
+      // maximize() from this callback synchronously causes an expand/shrink
+      // race. Repeated MAXIMIZE callbacks share one delayed transaction.
+      const immersive: boolean = this.readImmersiveLayout(false);
       this.publishFullscreen(immersive);
-      this.applyHoverPolicy(true, immersive ? false : true);
+      this.applyHoverPolicy(true, !immersive);
+      if (!immersive && !this.transitioning) { this.scheduleSystemMaximizePromotion(); }
     } else if (status === window.WindowStatusType.FLOATING) {
+      this.cancelSystemMaximizePromotion();
       const leavingFullscreen: boolean = this.fullscreen;
       this.publishFullscreen(false);
       this.applyHoverPolicy(true, true);
       if (leavingFullscreen && !this.transitioning) { this.restoreWindowedPresentation(); }
     } else if (status === window.WindowStatusType.SPLIT_SCREEN) {
+      this.cancelSystemMaximizePromotion();
       // Split geometry belongs to the system window manager. Restore only
       // decor/insets; never call recover() or apply floating geometry here.
       const leavingFullscreen: boolean = this.fullscreen;
@@ -82,6 +88,7 @@ export class RemoteSessionWindowFrameController {
     this.onFullscreenChange = null;
     this.fullscreen = false;
     this.transitioning = false;
+    this.cancelSystemMaximizePromotion();
   }
 
   isFullscreen(): boolean { return this.fullscreen; }
@@ -122,6 +129,7 @@ export class RemoteSessionWindowFrameController {
   private async enterFullscreenWithPresentation(source: string): Promise<boolean> {
     const mainWindow: window.Window | null = this.mainWindow;
     if (mainWindow === null || this.transitioning) { return false; }
+    this.cancelSystemMaximizePromotion();
     this.transitioning = true;
     try {
       mainWindow.setImmersiveModeEnabledState(true);
@@ -156,6 +164,7 @@ export class RemoteSessionWindowFrameController {
   async exitFullscreen(): Promise<boolean> {
     const mainWindow: window.Window | null = this.mainWindow;
     if (mainWindow === null || this.transitioning) { return false; }
+    this.cancelSystemMaximizePromotion();
     this.transitioning = true;
     try {
       await mainWindow.recover();
@@ -204,6 +213,22 @@ export class RemoteSessionWindowFrameController {
     const mainWindow: window.Window | null = this.mainWindow;
     if (mainWindow === null) { return fallback; }
     try { return mainWindow.isImmersiveLayout(); } catch (_err) { return fallback; }
+  }
+
+  private scheduleSystemMaximizePromotion(): void {
+    if (this.mainWindow === null || this.systemMaximizePromotionTimer >= 0) { return; }
+    this.systemMaximizePromotionTimer = setTimeout((): void => {
+      this.systemMaximizePromotionTimer = -1;
+      if (this.mainWindow === null || this.transitioning ||
+        this.readImmersiveLayout(false)) { return; }
+      void this.enterFullscreenWithPresentation('system-maximize');
+    }, SYSTEM_MAXIMIZE_PROMOTION_DELAY_MS);
+  }
+
+  private cancelSystemMaximizePromotion(): void {
+    if (this.systemMaximizePromotionTimer < 0) { return; }
+    clearTimeout(this.systemMaximizePromotionTimer);
+    this.systemMaximizePromotionTimer = -1;
   }
 
   private restoreWindowedPresentation(): void {
