@@ -2915,6 +2915,7 @@ struct SshTerminal {
     this.nativeTerminalInputBuffers.delete(result.hostId);
     this.terminalTranscriptDecodeRemainders.delete(result.hostId);
     this.terminalFallbackDecodeRemainders.delete(result.hostId);
+    this.clearSshWorkspacePtyHost(result.hostId);
     this.sshTranscriptStore.clear(result.hostId);
     this.terminalSessionProfileIds.delete(
       sshTerminalSessionProfileScopeKey(result.hostId, result.generation));
@@ -5644,7 +5645,10 @@ struct SshTerminal {
     sessionGeneration: number, cols: number, rows: number): void {
     const normalizedHostId: string = hostId.trim();
     if (normalizedHostId.length === 0 || sessionId <= 0 || sessionGeneration <= 0) { return; }
-    const sizeKey: string = cols.toString() + 'x' + rows.toString();
+    // Include the native session identity: a reconnect may reuse the same
+    // dimensions, but the new PTY still needs its first resize request.
+    const sizeKey: string = sessionId.toString() + ':' + sessionGeneration.toString() + ':' +
+      cols.toString() + 'x' + rows.toString();
     const existingTimer: number | undefined = this.sshWorkspacePtyResizeTimers.get(normalizedHostId);
     if (existingTimer !== undefined) {
       if (this.sshWorkspacePtyResizePendingSizes.get(normalizedHostId) === sizeKey) { return; }
@@ -5673,6 +5677,18 @@ struct SshTerminal {
     }, SSH_TERMINAL_PTY_RESIZE_COALESCE_MS);
     this.sshWorkspacePtyResizeTimers.set(normalizedHostId, timer);
     this.sshWorkspacePtyResizePendingSizes.set(normalizedHostId, sizeKey);
+  }
+
+  private clearSshWorkspacePtyHost(hostId: string): void {
+    const normalizedHostId: string = hostId.trim();
+    if (normalizedHostId.length === 0) { return; }
+    const timer: number | undefined = this.sshWorkspacePtyResizeTimers.get(normalizedHostId);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      this.sshWorkspacePtyResizeTimers.delete(normalizedHostId);
+    }
+    this.sshWorkspacePtyResizePendingSizes.delete(normalizedHostId);
+    this.sshWorkspacePtySizes.delete(normalizedHostId);
   }
 
   private clearSshWorkspacePtyResizeTimers(): void {
