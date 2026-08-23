@@ -8621,13 +8621,19 @@ struct SshTerminal {
   }
 
   private async openSftpLocalParent(): Promise<void> {
-    if (this.sftpLocalPath.length === 0) { return; }
+    const requestPageGeneration: number = this.pageGeneration;
+    const requestedPath: string = this.sftpLocalPath.trim();
+    if (!this.isPageGenerationActive(requestPageGeneration) || requestedPath.length === 0) { return; }
     const root: string = await this.sftpLocalProvider.currentRoot();
-    if (root.length === 0 || this.sftpLocalPath === root) { return; }
-    const normalized: string = this.sftpLocalPath.replace(/\\+$/g, '');
+    if (!this.isPageGenerationActive(requestPageGeneration) ||
+      root.length === 0 || requestedPath === root) { return; }
+    const normalized: string = requestedPath.replace(/\\+$/g, '');
     const slash: number = normalized.lastIndexOf('/');
     const parent: string = slash > 0 ? normalized.substring(0, slash) : root;
-    await this.refreshSftpLocalAt(parent.length >= root.length ? parent : root);
+    const target: string = parent.length >= root.length ? parent : root;
+    if (!this.isPageGenerationActive(requestPageGeneration)) { return; }
+    this.sftpLocalPath = target;
+    await this.refreshSftpLocal(requestPageGeneration);
   }
 
   private bindIndependentSessionWindow(params: Object): void {
