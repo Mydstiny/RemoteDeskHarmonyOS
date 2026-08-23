@@ -3669,6 +3669,8 @@ struct SshTerminal {
       promptAction.showToast({ message: this.sshBroadcastPlanErrorMessage(plan.code), duration: 1800 });
       return;
     }
+    const requestPageGeneration: number = this.pageGeneration;
+    const requestBindingGeneration: number = this.sshBindingGeneration;
     const confirmationPlan = plan;
     let confirmed: boolean = false;
     if (plan.requiresConfirmation) {
@@ -3687,8 +3689,9 @@ struct SshTerminal {
       }
     }
     if (plan.requiresConfirmation && !confirmed) { return; }
-    if (!this.showSshBroadcastSheet || !this.sshBroadcastActive ||
-      this.terminalClosing || !this.sshBroadcastInputEnabled()) { return; }
+    if (!this.isSshBindingGenerationActive(requestPageGeneration, requestBindingGeneration) ||
+      !this.showSshBroadcastSheet || !this.sshBroadcastActive ||
+      !this.sshBroadcastInputEnabled()) { return; }
     // Rebuild after the dialog: a reconnect or auth prompt during confirmation
     // must remove that target rather than replaying the captured plan.
     this.refreshSshBroadcastTargets();
