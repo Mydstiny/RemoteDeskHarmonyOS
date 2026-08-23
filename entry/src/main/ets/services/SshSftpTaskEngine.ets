@@ -64,6 +64,12 @@ export interface SshSftpTaskEngineEvent {
 
 export type SshSftpTaskEngineListener = (event: SshSftpTaskEngineEvent) => void;
 
+/** Keep provider bindings only when the SSH page explicitly survives in background. */
+export function shouldReleaseSshSftpRuntimeOnPageTeardown(
+  preserveSshInBackground: boolean): boolean {
+  return !preserveSshInBackground;
+}
+
 export interface SshSftpStagingDiscardPlan {
   accepted: boolean;
   deferUntilWorkerStops: boolean;
@@ -175,6 +181,8 @@ export class SshSftpTaskEngine {
   private readonly activeTasks: Map<string, string> = new Map<string, string>();
   /** Final user discard is deferred until an active file operation releases the staging root. */
   private readonly discardRequested: Set<string> = new Set<string>();
+  /** Page teardown releases provider grants without deleting durable task records. */
+  private readonly runtimeReleaseRequested: Set<string> = new Set<string>();
   private readonly listeners: SshSftpTaskEngineListener[] = [];
   /** Sessions can be adopted while local-provider authorization restores. */
   private readonly pendingSessions: Map<string, SshSftpEngineSession> =
@@ -241,6 +249,7 @@ export class SshSftpTaskEngine {
         ? { kind: 'ssh', hostId: owner } as SftpEndpoint
         : { kind: 'local' } as SftpEndpoint)
       : first.targetEndpoint;
+    this.runtimeReleaseRequested.delete(id);
     this.bindings.set(id, {
       batchId: id,
       hostId: owner,
@@ -262,6 +271,7 @@ export class SshSftpTaskEngine {
   unbindBatch(batchId: string): void {
     const id: string = batchId.trim();
     if (this.running.has(id)) { return; }
+    this.runtimeReleaseRequested.delete(id);
     const binding: SshSftpBatchBinding | undefined = this.bindings.get(id);
     this.bindings.delete(id);
     this.pendingBatches.delete(id);
@@ -271,6 +281,29 @@ export class SshSftpTaskEngine {
       for (let index = 0; index < tasks.length; index++) {
         this.conflictPolicies.delete(tasks[index].taskId);
       }
+    }
+  }
+
+  /**
+   * Release page-only provider bindings while retaining durable task records.
+   * An active worker finishes its current operation before the binding is
+   * dropped, so a later page must bind fresh local/remote roots explicitly.
+   */
+  releaseBatchRuntime(batchId: string): void {
+    const id: string = batchId.trim();
+    if (id.length === 0 || this.discardRequested.has(id)) { return; }
+    const binding: SshSftpBatchBinding | undefined = this.bindings.get(id);
+    if (binding === undefined) { return; }
+    this.pendingBatches.delete(id);
+    this.runtimeReleaseRequested.add(id);
+    if (!this.running.has(id)) { this.finalizeBatchRuntimeRelease(binding); }
+  }
+
+  /** Release every page-only provider binding that is not being discarded. */
+  releaseAllBatchRuntimes(): void {
+    const bindings: SshSftpBatchBinding[] = Array.from(this.bindings.values());
+    for (let index = 0; index < bindings.length; index++) {
+      this.releaseBatchRuntime(bindings[index].batchId);
     }
   }
 
@@ -419,6 +452,7 @@ export class SshSftpTaskEngine {
       binding !== undefined, this.running.has(id),
       binding?.cleanupLocalRootOnComplete === true, binding?.sourceEndpoint.kind || '');
     if (!plan.accepted || binding === undefined) { return; }
+    this.runtimeReleaseRequested.delete(id);
     this.discardRequested.add(id);
     this.pendingBatches.delete(id);
     if (!plan.deferUntilWorkerStops) { void this.finalizeBatchDiscard(binding); }
@@ -523,7 +557,9 @@ export class SshSftpTaskEngine {
       }
     } finally {
       const discardAfterCleanup: boolean = this.discardRequested.has(binding.batchId);
-      const restartAfterCleanup: boolean = !discardAfterCleanup &&
+      const releaseAfterCleanup: boolean = !discardAfterCleanup &&
+        this.runtimeReleaseRequested.has(binding.batchId);
+      const restartAfterCleanup: boolean = !discardAfterCleanup && !releaseAfterCleanup &&
         this.pendingBatches.has(binding.batchId) &&
         this.bindings.has(binding.batchId);
       this.activeTasks.delete(binding.batchId);
@@ -532,6 +568,8 @@ export class SshSftpTaskEngine {
         ' pending=' + this.pendingBatches.has(binding.batchId).toString());
       if (discardAfterCleanup) {
         void this.finalizeBatchDiscard(binding);
+      } else if (releaseAfterCleanup) {
+        this.finalizeBatchRuntimeRelease(binding);
       } else if (restartAfterCleanup) {
         this.logDiagnostic('pump restart batch=' + binding.batchId + ' after lifecycle change');
         this.startBatch(binding.batchId);
@@ -550,6 +588,13 @@ export class SshSftpTaskEngine {
         ' accepted=' + cleaned.toString(), !cleaned);
     }
     this.discardRequested.delete(binding.batchId);
+    this.unbindBatch(binding.batchId);
+  }
+
+  private finalizeBatchRuntimeRelease(binding: SshSftpBatchBinding): void {
+    const current: SshSftpBatchBinding | undefined = this.bindings.get(binding.batchId);
+    if (current !== binding || this.running.has(binding.batchId)) { return; }
+    this.logDiagnostic('runtime release batch=' + binding.batchId);
     this.unbindBatch(binding.batchId);
   }
 

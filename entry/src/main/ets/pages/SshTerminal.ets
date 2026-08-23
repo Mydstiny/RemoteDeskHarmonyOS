@@ -418,7 +418,8 @@ import {
   SshSftpTaskEngine,
   SshSftpTaskEngineEvent,
   SshSftpEngineSession,
-  SshSftpTrackedSession
+  SshSftpTrackedSession,
+  shouldReleaseSshSftpRuntimeOnPageTeardown
 } from '../services/SshSftpTaskEngine';
 import {
   SshLocalFileProvider,
@@ -4629,6 +4630,7 @@ struct SshTerminal {
     this.sftpBatchLocalRoots.delete(normalizedBatchId);
     this.sftpBatchRemoteRoots.delete(normalizedBatchId);
     this.sftpBatchConflictPolicies.delete(normalizedBatchId);
+    this.sftpTaskEngine.releaseBatchRuntime(normalizedBatchId);
   }
 
   private clearSftpBatchRuntimeForHost(hostId: string): void {
@@ -4651,10 +4653,11 @@ struct SshTerminal {
     });
   }
 
-  private clearSftpBatchRuntimeMaps(): void {
+  private clearSftpBatchRuntimeMaps(releaseEngineRuntime: boolean = true): void {
     this.sftpBatchLocalRoots.clear();
     this.sftpBatchRemoteRoots.clear();
     this.sftpBatchConflictPolicies.clear();
+    if (releaseEngineRuntime) { this.sftpTaskEngine.releaseAllBatchRuntimes(); }
   }
 
   private cancelSftpTransferCenterBatch(task: SshSftpTaskRecord): void {
@@ -9025,7 +9028,7 @@ struct SshTerminal {
     this.sftpWorkspaceTabState = createSshSftpWorkspaceTabState();
     this.sftpDropHoverActive = false;
     this.sftpDropBatches.clear();
-    this.clearSftpBatchRuntimeMaps();
+    this.clearSftpBatchRuntimeMaps(false);
     this.sshCommandRegistry = [];
     this.pendingSshCommandId = '';
     this.sshTabClosePromptInFlight = false;
@@ -9449,7 +9452,7 @@ struct SshTerminal {
     this.sftpWorkspaceTabState = createSshSftpWorkspaceTabState();
     this.sftpDropHoverActive = false;
     this.sftpDropBatches.clear();
-    this.clearSftpBatchRuntimeMaps();
+    this.clearSftpBatchRuntimeMaps(false);
     this.pendingSshCommandId = '';
     this.showSshTabRenameSheet = false;
     this.sshTabRenameHostId = '';
@@ -9507,6 +9510,9 @@ struct SshTerminal {
     }
     if (backgroundContext === null) {
       preserveSshInBackground = false;
+    }
+    if (shouldReleaseSshSftpRuntimeOnPageTeardown(preserveSshInBackground)) {
+      this.sftpTaskEngine.releaseAllBatchRuntimes();
     }
     if (preserveSshInBackground) {
       if (backgroundContext !== null) {

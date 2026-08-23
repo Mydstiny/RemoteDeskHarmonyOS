@@ -2,7 +2,8 @@ import { describe, it, expect } from '@ohos/hypium';
 import {
   planSshSftpStagingDiscard,
   reconcileSshSftpStoppedUploadCheckpoint,
-  SshSftpStagingDiscardPlan
+  SshSftpStagingDiscardPlan,
+  shouldReleaseSshSftpRuntimeOnPageTeardown
 } from '../main/ets/services/SshSftpTaskEngine';
 import { SshSftpTaskRecord } from '../main/ets/services/SshSftpTaskPolicy';
 
@@ -28,6 +29,11 @@ export default function sshSftpTaskEnginePolicyTest(): void {
         .assertFalse();
       expect(planSshSftpStagingDiscard(false, false, true, 'local').accepted)
         .assertFalse();
+    });
+
+    it('releases_page_bindings_only_when_background_survival_is_not_active', 0, (): void => {
+      expect(shouldReleaseSshSftpRuntimeOnPageTeardown(false)).assertTrue();
+      expect(shouldReleaseSshSftpRuntimeOnPageTeardown(true)).assertFalse();
     });
 
     it('preserves_cancelled_stage_while_reconciling_confirmed_upload_write', 0, (): void => {
