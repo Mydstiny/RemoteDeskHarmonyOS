@@ -3,6 +3,7 @@ import {
   addSshSessionLogBookmark,
   appendSshSessionLogRecord,
   continueSshSessionLogSearch,
+  createSshSessionLogStreamSanitizeState,
   createSshSessionLogSearchCursor,
   defaultSshSessionLogSettings,
   emptySshSessionLogDocument,
@@ -14,6 +15,7 @@ import {
   resolveSshSessionLogsEnabled,
   searchSshSessionLog,
   sanitizeSshSessionLogChunk,
+  sanitizeSshSessionLogStreamChunk,
   sanitizeSshSessionLogText,
   sshSessionLogCaptureAllowed,
   sshSessionLogInputPhaseAllowed,
@@ -204,6 +206,35 @@ export default function sshSessionLogPolicyTest(): void {
         'secret-tail\rtrusted prompt', 'resync', false);
       expect(resynced.text).assertEqual('trusted prompt');
       expect(resynced.mode).assertEqual('normal');
+    });
+
+    it('sanitizer_should_redact_secret_values_across_record_flush_boundaries', 0, (): void => {
+      let state = createSshSessionLogStreamSanitizeState();
+      const prefix = sanitizeSshSessionLogStreamChunk('pass', state, true);
+      expect(prefix.text).assertEqual('');
+      state = prefix.state;
+      const marker = sanitizeSshSessionLogStreamChunk('word=', state, true);
+      expect(marker.text).assertEqual('password=[redacted]');
+      state = marker.state;
+
+      const secret = sanitizeSshSessionLogStreamChunk('never-persist-this', state, true);
+      expect(secret.text).assertEqual('');
+      expect(JSON.stringify(secret.state).indexOf('never-persist-this')).assertEqual(-1);
+      state = secret.state;
+      const resumed = sanitizeSshSessionLogStreamChunk('\r\ntrusted prompt', state, true);
+      expect(resumed.text).assertEqual('\r\ntrusted prompt');
+
+      state = createSshSessionLogStreamSanitizeState();
+      const benignPrefix = sanitizeSshSessionLogStreamChunk('password', state, true);
+      const benignSuffix = sanitizeSshSessionLogStreamChunk('less auth', benignPrefix.state, true);
+      expect(benignPrefix.text + benignSuffix.text).assertEqual('passwordless auth');
+
+      state = createSshSessionLogStreamSanitizeState();
+      const sshpassMarker = sanitizeSshSessionLogStreamChunk('sshpass -p ', state, true);
+      const sshpassSecret = sanitizeSshSessionLogStreamChunk('hidden', sshpassMarker.state, true);
+      const sshpassEnd = sanitizeSshSessionLogStreamChunk(' echo', sshpassSecret.state, true);
+      expect(sshpassMarker.text + sshpassSecret.text + sshpassEnd.text)
+        .assertEqual('sshpass -p [redacted] echo');
     });
 
     it('quota_and_export_limits_should_count_utf8_bytes', 0, (): void => {

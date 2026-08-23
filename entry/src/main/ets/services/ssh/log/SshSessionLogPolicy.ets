@@ -118,6 +118,25 @@ export interface SshSessionLogSanitizeResultV1 {
   mode: SshSessionLogSanitizeModeV1;
 }
 
+export type SshSessionLogStreamRedactionPhaseV1 =
+  'normal' | 'separator' | 'value_pending' | 'value';
+
+export type SshSessionLogStreamMarkerKindV1 = 'assignment' | 'sshpass';
+
+/** Bounded streaming state; it never retains a secret value. */
+export interface SshSessionLogStreamSanitizeStateV1 {
+  mode: SshSessionLogSanitizeModeV1;
+  redactionPhase: SshSessionLogStreamRedactionPhaseV1;
+  redactionCarry: string;
+  redactionBoundary: boolean;
+  markerKind: SshSessionLogStreamMarkerKindV1;
+}
+
+export interface SshSessionLogStreamSanitizeResultV1 {
+  text: string;
+  state: SshSessionLogStreamSanitizeStateV1;
+}
+
 export const SSH_SESSION_LOG_SCHEMA_VERSION: number = 1;
 export const SSH_SESSION_LOGS_FLAG_KEY: string = 'sshSessionLogs';
 export const SSH_SESSION_LOGS_DEFAULT_ENABLED: boolean = false;
@@ -139,6 +158,10 @@ const MAX_CHUNK_ID: number = 160;
 const MAX_TEXT: number = 8192;
 const MAX_NOTE: number = 512;
 const DAY_MS: number = 24 * 60 * 60 * 1000;
+const STREAM_REDACTION_MARKERS: Array<string> = [
+  'password', 'passphrase', 'token', 'secret',
+  'private_key', 'private-key', 'private key', 'sshpass -p'
+];
 
 /** Opt-in storage settings cannot bypass the independent rollout gate. */
 export function resolveSshSessionLogsEnabled(
@@ -318,6 +341,157 @@ export function sanitizeSshSessionLogChunk(value: string,
 export function sanitizeSshSessionLogText(value: string, redactSensitive: boolean = true): string {
   if (typeof value !== 'string' || value.length === 0) { return ''; }
   return sanitizeSshSessionLogChunk(value, 'normal', redactSensitive).text;
+}
+
+export function createSshSessionLogStreamSanitizeState(
+  mode: SshSessionLogSanitizeModeV1 = 'normal'
+): SshSessionLogStreamSanitizeStateV1 {
+  return {
+    mode,
+    redactionPhase: 'normal',
+    redactionCarry: '',
+    redactionBoundary: true,
+    markerKind: 'assignment'
+  };
+}
+
+export function sshSessionLogStreamSanitizeStateIsDefault(
+  state: SshSessionLogStreamSanitizeStateV1): boolean {
+  return state.mode === 'normal' && state.redactionPhase === 'normal' &&
+    state.redactionCarry.length === 0 && state.redactionBoundary;
+}
+
+function streamMarkerPrefix(candidate: string): boolean {
+  const normalized: string = candidate.toLowerCase();
+  for (let index: number = 0; index < STREAM_REDACTION_MARKERS.length; index++) {
+    if (STREAM_REDACTION_MARKERS[index].startsWith(normalized)) { return true; }
+  }
+  return false;
+}
+
+function exactStreamMarker(candidate: string): string {
+  const normalized: string = candidate.toLowerCase();
+  for (let index: number = 0; index < STREAM_REDACTION_MARKERS.length; index++) {
+    if (STREAM_REDACTION_MARKERS[index] === normalized) {
+      return STREAM_REDACTION_MARKERS[index];
+    }
+  }
+  return '';
+}
+
+function streamRedactionBoundary(char: string): boolean {
+  if (char.length === 0) { return true; }
+  const code: number = char.charCodeAt(0);
+  return !((code >= 0x30 && code <= 0x39) || (code >= 0x41 && code <= 0x5a) ||
+    code === 0x5f || (code >= 0x61 && code <= 0x7a));
+}
+
+/**
+ * Redact assignment values before a timer can split them into separate
+ * records. The only carried text is a possible marker prefix (at most the
+ * longest marker); once a delimiter is seen, value characters are discarded.
+ */
+export function sanitizeSshSessionLogStreamChunk(value: string,
+  initialState: SshSessionLogStreamSanitizeStateV1,
+  redactSensitive: boolean = true): SshSessionLogStreamSanitizeResultV1 {
+  const stripped: SshSessionLogSanitizeResultV1 = sanitizeSshSessionLogChunk(
+    value, initialState.mode, false);
+  const state: SshSessionLogStreamSanitizeStateV1 = {
+    mode: stripped.mode,
+    redactionPhase: initialState.redactionPhase,
+    redactionCarry: initialState.redactionCarry.slice(-16),
+    redactionBoundary: initialState.redactionBoundary === true,
+    markerKind: initialState.markerKind === 'sshpass' ? 'sshpass' : 'assignment'
+  };
+  if (!redactSensitive) {
+    const plainState: SshSessionLogStreamSanitizeStateV1 =
+      createSshSessionLogStreamSanitizeState(stripped.mode);
+    return { text: stripped.text, state: plainState };
+  }
+  let output: string = '';
+  for (let index: number = 0; index < stripped.text.length; index++) {
+    const char: string = stripped.text.charAt(index);
+    let handled: boolean = false;
+    while (!handled) {
+      if (state.redactionPhase === 'value') {
+        if (/\s/.test(char)) {
+          output += char;
+          state.redactionPhase = 'normal';
+          state.redactionBoundary = true;
+        }
+        handled = true;
+        continue;
+      }
+      if (state.redactionPhase === 'value_pending') {
+        if (char === ' ' || char === '\t') {
+          output += char;
+        } else if (char === '\r' || char === '\n') {
+          output += char;
+          state.redactionPhase = 'normal';
+          state.redactionBoundary = true;
+        } else {
+          state.redactionPhase = 'value';
+          state.redactionBoundary = false;
+        }
+        handled = true;
+        continue;
+      }
+      if (state.redactionPhase === 'separator') {
+        if (state.markerKind === 'sshpass') {
+          if (char === ' ' || char === '\t') {
+            output += char + '[redacted]';
+            state.redactionPhase = 'value_pending';
+            handled = true;
+            continue;
+          }
+        } else if (char === ' ' || char === '\t') {
+          output += char;
+          handled = true;
+          continue;
+        } else if (char === ':' || char === '=') {
+          output += '=[redacted]';
+          state.redactionPhase = 'value_pending';
+          handled = true;
+          continue;
+        }
+        state.redactionPhase = 'normal';
+        state.markerKind = 'assignment';
+        // Re-evaluate this character with the non-boundary created by the
+        // already emitted marker, so `passwordless` remains ordinary text.
+        continue;
+      }
+
+      if (state.redactionCarry.length > 0) {
+        const candidate: string = state.redactionCarry + char;
+        const exact: string = exactStreamMarker(candidate);
+        if (exact.length > 0) {
+          output += candidate;
+          state.redactionCarry = '';
+          state.redactionPhase = 'separator';
+          state.markerKind = exact === 'sshpass -p' ? 'sshpass' : 'assignment';
+          state.redactionBoundary = false;
+          handled = true;
+        } else if (streamMarkerPrefix(candidate)) {
+          state.redactionCarry = candidate;
+          handled = true;
+        } else {
+          output += state.redactionCarry;
+          state.redactionBoundary = streamRedactionBoundary(
+            state.redactionCarry.charAt(state.redactionCarry.length - 1));
+          state.redactionCarry = '';
+        }
+        continue;
+      }
+      if (state.redactionBoundary && streamMarkerPrefix(char)) {
+        state.redactionCarry = char;
+      } else {
+        output += char;
+        state.redactionBoundary = streamRedactionBoundary(char);
+      }
+      handled = true;
+    }
+  }
+  return { text: output.slice(0, MAX_TEXT), state };
 }
 
 function searchableText(text: string): string {

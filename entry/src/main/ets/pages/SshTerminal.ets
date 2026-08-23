@@ -347,19 +347,21 @@ import {
 import { SshProductivityStore } from '../services/ssh/productivity/SshProductivityStore';
 import {
   emptySshSessionLogDocument,
+  createSshSessionLogStreamSanitizeState,
   matchesSshSessionLogExportFence,
   resolveSshSessionLogsEnabled,
-  sanitizeSshSessionLogChunk,
+  sanitizeSshSessionLogStreamChunk,
   sanitizeSshSessionLogText,
   sshSessionLogCaptureAllowed,
   sshSessionLogInputPhaseAllowed,
+  sshSessionLogStreamSanitizeStateIsDefault,
   shouldScrubFailedSshSessionLogExport,
   SSH_SESSION_LOGS_DEFAULT_ENABLED,
   SSH_SESSION_LOGS_FLAG_KEY,
   SshSessionLogDocumentV1,
   SshSessionLogIdentityV1,
   SshSessionLogRecordV1,
-  SshSessionLogSanitizeModeV1,
+  SshSessionLogStreamSanitizeStateV1,
   SshSessionLogSearchHitV1
 } from '../services/ssh/log/SshSessionLogPolicy';
 import { SshSessionLogStore } from '../services/ssh/log/SshSessionLogStore';
@@ -583,8 +585,8 @@ struct SshTerminal {
   private sshSessionLogInputBuffers: Map<string, string> = new Map<string, string>();
   private sshSessionLogPendingOutput: Map<string, SshSessionLogRecordV1> =
     new Map<string, SshSessionLogRecordV1>();
-  private sshSessionLogOutputSanitizeModes: Map<string, SshSessionLogSanitizeModeV1> =
-    new Map<string, SshSessionLogSanitizeModeV1>();
+  private sshSessionLogOutputSanitizeStates: Map<string, SshSessionLogStreamSanitizeStateV1> =
+    new Map<string, SshSessionLogStreamSanitizeStateV1>();
   private sshSessionLogFlushTimer: number = -1;
   private sshSessionLogSearchTimer: number = -1;
   private sshSessionLogSearchSequence: number = 0;
@@ -3616,7 +3618,7 @@ struct SshTerminal {
       this.flushSshSessionLogOutput();
       this.sshSessionLogInputBuffers.clear();
       this.sshSessionLogPendingOutput.clear();
-      this.sshSessionLogOutputSanitizeModes.clear();
+      this.sshSessionLogOutputSanitizeStates.clear();
     }
     this.refreshSshSessionLogDocument();
   }
@@ -3844,16 +3846,18 @@ struct SshTerminal {
     const key: string = identity.hostId + ':' + identity.sessionId.toString() + ':' +
       identity.generation.toString();
     if (!this.sshSessionLogCaptureContext(identity, false)) {
-      this.sshSessionLogOutputSanitizeModes.set(key, 'resync');
+      this.sshSessionLogOutputSanitizeStates.set(key,
+        createSshSessionLogStreamSanitizeState('resync'));
       return;
     }
-    const sanitizedResult = sanitizeSshSessionLogChunk(text,
-      this.sshSessionLogOutputSanitizeModes.get(key) ?? 'normal',
+    const sanitizedResult = sanitizeSshSessionLogStreamChunk(text,
+      this.sshSessionLogOutputSanitizeStates.get(key) ??
+        createSshSessionLogStreamSanitizeState(),
       this.sshSessionLogDocument.settings.redactSensitive);
-    if (sanitizedResult.mode === 'normal') {
-      this.sshSessionLogOutputSanitizeModes.delete(key);
+    if (sshSessionLogStreamSanitizeStateIsDefault(sanitizedResult.state)) {
+      this.sshSessionLogOutputSanitizeStates.delete(key);
     } else {
-      this.sshSessionLogOutputSanitizeModes.set(key, sanitizedResult.mode);
+      this.sshSessionLogOutputSanitizeStates.set(key, sanitizedResult.state);
     }
     const sanitized: string = sanitizedResult.text;
     if (sanitized.length === 0) { return; }
@@ -8717,7 +8721,7 @@ struct SshTerminal {
     this.sshSessionLogSequence = 0;
     this.sshSessionLogInputBuffers.clear();
     this.sshSessionLogPendingOutput.clear();
-    this.sshSessionLogOutputSanitizeModes.clear();
+    this.sshSessionLogOutputSanitizeStates.clear();
     this.sshSessionLogCommandStarts.clear();
     if (this.sshSessionLogFlushTimer !== -1) {
       clearTimeout(this.sshSessionLogFlushTimer);
@@ -9153,7 +9157,7 @@ struct SshTerminal {
     this.sshSessionLogQuery = '';
     this.sshSessionLogResults = [];
     this.sshSessionLogInputBuffers.clear();
-    this.sshSessionLogOutputSanitizeModes.clear();
+    this.sshSessionLogOutputSanitizeStates.clear();
     this.sshSessionLogCommandStarts.clear();
     this.resetSshProductivityRuntime();
     this.showSftpTransferCenter = false;
@@ -11433,7 +11437,7 @@ struct SshTerminal {
       this.sshTerminalSafetyModes.clear();
       this.sshSessionLogInputBuffers.clear();
       this.sshSessionLogPendingOutput.clear();
-      this.sshSessionLogOutputSanitizeModes.clear();
+      this.sshSessionLogOutputSanitizeStates.clear();
       this.resetSshProductivityRuntime();
       this.pendingSshCommandId = '';
       this.showSshTabRenameSheet = false;
@@ -11479,7 +11483,7 @@ struct SshTerminal {
     }
     this.sshSessionLogInputBuffers.clear();
     this.sshSessionLogPendingOutput.clear();
-    this.sshSessionLogOutputSanitizeModes.clear();
+    this.sshSessionLogOutputSanitizeStates.clear();
     this.sshSessionLogCommandStarts.clear();
     this.sshSessionLogDocument = emptySshSessionLogDocument();
     this.sshSessionLogQuery = '';
