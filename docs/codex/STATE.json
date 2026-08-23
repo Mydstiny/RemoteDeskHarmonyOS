@@ -3,7 +3,7 @@
   "task": "moonlight-complete-upgrade",
   "branch": "codex/moonlight-complete-upgrade",
   "base": "aeb0cdac589caeac8b75dec5958f4e07ee62faf5",
-  "head": "a8845458023d54501eaaeff8a18c455b113e9126",
+  "head": "232f18b947cdf1adf8f6079b8664e71f268e31f9",
   "phase": "moonlight-cloud-enabled-ready-for-device-acceptance",
   "status": "active",
   "next": "Deploy the current package, then complete compatibility-first cloud, Sunshine, controller, lifecycle, fresh multi-device UI, and real-DHCP LAN address-refresh acceptance.",
@@ -22,7 +22,8 @@
     "status": "REVIEW_REQUIRED",
     "taskIds": [
       "01a018c6-e83c-7ac3-a578-7330b528a3af",
-      "/root/lan_address_policy_review"
+      "/root/lan_address_policy_review",
+      "/root/review_guide_visibility"
     ],
     "reviewedHead": "348b28083c82e951410f0ab2863ecbdaf94d3115",
     "scope": [
@@ -48,20 +49,21 @@
         "summary": "Foreground startup ordering, account switch during registration, optional-table failure fallback and rejection retry require real cloud/device integration receipts after provisioning."
       }
     ],
-    "reason": "The cloud scope still requires provisioning-dependent P3 integration evidence. Separately, adaptive guidance at 94fa21f8f, VNC handoff at 6abd75469, and the RDP/RustDesk LAN address-policy increment at a8845458 passed independent review with P0/P1/P2/P3 all zero."
+    "reason": "The cloud scope still requires provisioning-dependent P3 integration evidence. Separately, adaptive guidance at 94fa21f8f, persistent visibility through 232f18b9, VNC handoff at 6abd75469, and the RDP/RustDesk LAN address-policy increment at a8845458 passed independent review with P0/P1/P2/P3 all zero."
   },
   "lastVerification": {
-    "diffCheck": "pass for LAN-policy checkpoint a8845458 on 2026-08-22",
-    "testCompile": "pass: exact default@OhosTestCompileArkTS for LAN-policy checkpoint a8845458 with --analyze=normal --parallel --incremental --no-daemon on 2026-08-22",
-    "assembleHap": "pass: exact assembleHap on the final code plus state-document tree; signed HAP SHA-256 8cb18ce53aba4f07d5e1ce01f3aa6cdda0ab811d0d76837dfe3b6a0b717a8500",
+    "diffCheck": "pass on 2026-08-23 for guidance visibility through 232f18b9 plus preserved concurrent worktree changes",
+    "testCompile": "pass: exact default@OhosTestCompileArkTS with --analyze=normal --parallel --incremental --no-daemon on 2026-08-23 for guidance visibility through 232f18b9 plus preserved concurrent worktree changes",
+    "assembleHap": "pass: exact assembleHap on the same tree plus final state-document updates; signed HAP SHA-256 fa8df1ca75129beca39852390c34b16f47628c1bbb0d761ee4e5673cf28d360b",
     "hapPath": "entry/build/default/outputs/default/entry-default-signed.hap",
     "nativeTests": "pass outside the socket-restricted sandbox: 780 passed, 0 failed; Moonlight and adjacent-protocol fixtures all passed",
     "hdcRuntime": "revision-1 HAP installed and EntryAbility started successfully on phone simulator 127.0.0.1:5555 and PC simulator 127.0.0.1:5557; full acceptance remains pending",
-    "uiAcceptance": "adaptive guidance and VNC settings-handoff final reviews P0/P1/P2/P3 zero; fresh phone/PC/freeform-window screenshots remain pending because no hdc target was online on 2026-08-22",
+    "uiAcceptance": "adaptive guidance, persistent visibility and VNC settings-handoff final reviews P0/P1/P2/P3 zero; fresh phone/PC/freeform-window screenshots remain pending because no hdc target was online on 2026-08-23",
+    "guideVisibility": "pass: automatic hints persist as once-ever by default; always-show mode is exact-session deduplicated across page rebuilds for SSH, Moonlight, RDP, RustDesk and VNC; RemoteDesktop marks only successful dialog presentation and retries failures at most twice; independent review P0/P1/P2/P3 zero through 232f18b9",
     "cloudBoundary": "compatibility-first: core eight registered first; optional ninth table gated by deployment receipt; per-record Moonlight quarantine cannot block old tables",
     "lanAddressPolicy": "pass: LAN-discovered RDP/RustDesk require explicit static/dynamic choice; static uses normal cloud sync without refresh, dynamic is owner-scoped local-only with identity-based refresh, and manual entries retain legacy behavior; independent review P0/P1/P2/P3 zero at a8845458",
     "isolation": "dual-ABI ELF pass: GameControllerKit remains Moonlight-session dynamic only with no DT_NEEDED or unresolved OH_Game symbols; optional cloud table remains additive and outside the core-eight baseline",
     "ohosTest": "blocked by unregistered task 00306054; no device-test PASS claimed"
   },
-  "updated": "2026-08-22 Asia/Shanghai"
+  "updated": "2026-08-23 Asia/Shanghai"
 }

@@ -1,6 +1,6 @@
 # Moonlight Complete Upgrade Queue
 
-Updated: 2026-08-22 Asia/Shanghai
+Updated: 2026-08-23 Asia/Shanghai
 
 ## Closed in committed checkpoints
 
@@ -10,6 +10,7 @@ Updated: 2026-08-22 Asia/Shanghai
 - `aff7fdf03`: lifecycle/recovery, PC session-window integration, compatibility-first optional cloud path, exact teardown and final PC Moonlight FAB unification.
 - `2d9ce0024`: enable the explicitly confirmed deployed `moonlightrecordv1` schema at revision 1 and prepare the cloud-enabled acceptance package.
 - `2c9120e98` + `94fa21f8f`: adaptive phone/Pad/PC first-run and settings guidance, protocol-local operation lessons, five-protocol connection preparation, foreground-safe SSH/Moonlight hints and review remediation.
+- `4739e67ac` + `ef836f38d` + `20bc9d60` + `232f18b9`: persist automatic guidance as once-ever by default, add the Tutorial “always show” control, expand SSH/Moonlight lessons, and fence SSH/Moonlight/RDP/RustDesk/VNC prompts by exact live session across page rebuilds. Final independent review is P0/P1/P2/P3 all zero.
 - `6abd75469`: route PC/2in1 VNC settings connections back through HostList's lock, certificate, authentication and independent-window path while retaining Phone/Pad navigation.
 - `2c1132385` + `c2478e484` + `a8845458`: add RDP LAN search and require LAN-discovered RDP/RustDesk hosts to choose static cloud-sync or dynamic local-only/auto-refresh policy, with owner fencing, strict RDP recognition and independent P0/P1/P2/P3-zero review.
 - RustDesk-style FAB/add flow, adaptive phone/PC Moonlight host surfaces, six owned settings sheets, metered launch admission, local repository/cache and all input classes are wired.
@@ -23,6 +24,7 @@ Updated: 2026-08-22 Asia/Shanghai
 - Shared native teardown now uses exact session/generation/owner-token/facade ownership and explicit synchronous Complete/Failed receipts. HostList preflight/2FA cancellation, timeout, error and NAPI retry retain the original immutable identity; the A→B delayed-callback regression is compile-registered and final focused review is P0/P1/P2/P3 all zero.
 - The revision-1 package is installed and started on phone simulator `127.0.0.1:5555` and PC simulator `127.0.0.1:5557`; fresh screenshots and Sunshine/physical-controller/long-run acceptance remain pending.
 - The final guidance review is P0/P1/P2/P3 all zero after closing device-init timing, blocked-hint retry, 480vp Sheet reachability and protocol-localization findings. Exact test compile, assemble, diff check and Light compliance pass on 2026-08-22.
+- The persistent visibility follow-up review is P0/P1/P2/P3 all zero after closing exact-session, page-rebuild, successful-presentation marker and unknown SSH generation findings. Exact test compile, assemble, diff check and Light compliance pass on 2026-08-23; device `ohosTest` remains blocked by unregistered task `00306054`.
 - The VNC settings-handoff review is P0/P1/P2/P3 all zero; exact test compile, assemble, diff check and Light compliance pass for `6abd75469` before later unrelated Sheet-policy working-tree changes appeared.
 - The LAN address-policy review is P0/P1/P2/P3 all zero. Exact ArkTS compile, signed HAP assembly, diff check and Light compliance pass for `a8845458`; device `ohosTest` remains blocked by the unregistered `00306054` task.
 
@@ -41,7 +43,7 @@ Updated: 2026-08-22 Asia/Shanghai
 
 1. Deployment is confirmed and revision 1 is enabled. Test optional-nine registration while proving core-eight continuity and old-version startup/pull behavior.
 2. Complete compatibility-first cloud upload/download/delete/conflict/account-switch/crypto-reset and upgrade tests; bad Moonlight rows must be isolated rather than blocking pulls.
-3. Run fresh PC/phone/freeform-window guide screenshots and full Sunshine/controller/lifecycle acceptance only from the current package; no target was online on 2026-08-22.
+3. Run fresh PC/phone/freeform-window guide screenshots and full Sunshine/controller/lifecycle acceptance only from the current package; no target was online on 2026-08-23.
 4. On a real DHCP LAN, verify RDP certificate-fingerprint and RustDesk Peer-ID refresh after address changes; manually entered and static-discovered hosts must remain unchanged.
 
 ## External gates
