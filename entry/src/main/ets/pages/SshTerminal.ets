@@ -4115,6 +4115,7 @@ struct SshTerminal {
 
   private async enableSshCompletionNotifications(): Promise<void> {
     if (this.sshNotificationAuthorizationPending) { return; }
+    const requestPageGeneration: number = this.pageGeneration;
     this.sshNotificationAuthorizationPending = true;
     let enabled: boolean = false;
     try {
@@ -4124,6 +4125,7 @@ struct SshTerminal {
       hilog.warn(0x0016, 'SshTerminal', 'notification authorization failed code=' +
         sshDiagnosticErrorCode(err));
     }
+    if (!this.isPageGenerationActive(requestPageGeneration)) { return; }
     this.sshNotificationAuthorizationPending = false;
     if (!enabled) {
       this.persistSshProductivitySetting('notification', false);
@@ -9117,6 +9119,7 @@ struct SshTerminal {
     const bindingGeneration: number = ++this.sshBindingGeneration;
     this.terminalClosing = false;
     this.tabSwitchInFlight = false;
+    this.sshNotificationAuthorizationPending = false;
     // A reused page instance must never carry task identities from the
     // previous route into a new session, even if native session ids recycle.
     this.sshSignalBackgroundTasks.clear();
@@ -9603,6 +9606,7 @@ struct SshTerminal {
     ++this.sshBindingGeneration;
     this.terminalClosing = true;
     this.tabSwitchInFlight = false;
+    this.sshNotificationAuthorizationPending = false;
     this.clearSshPipExitNavigationTimer();
     this.clearForwardingRefreshTimer();
     this.showForwardingSheet = false;
