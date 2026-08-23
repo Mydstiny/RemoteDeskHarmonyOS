@@ -15287,10 +15287,15 @@ struct SshTerminal {
         this.stopSftpTransfer(session, 'download-atomic-commit-failed');
         return;
       }
-      if (this.isSftpUserCancellationRequested(session)) {
-        this.finishSftpTransfer(session, 'cancelled', 'cancel-requested-at-export');
+      const exportDisposition: SshSftpCommittedDisposition = sshSftpCommittedDisposition(
+        !publishExportStatus,
+        this.isSftpUserCancellationRequested(session), this.isSftpUserPauseRequested(session));
+      if (exportDisposition !== 'normal') {
+        this.finishSftpTransfer(session, 'completed', exportDisposition);
         if (publishExportStatus) {
-          this.sftpStatus = '取消请求到达导出阶段，已保留已验证文件';
+          this.sftpStatus = exportDisposition === 'cancelled-after-commit'
+            ? '已保存 ' + downloaded.toString() + ' 字节（取消请求到达导出后，文件已完整保留）'
+            : '已保存 ' + downloaded.toString() + ' 字节（暂停请求到达导出后，文件已完整保留）';
         }
         return;
       }
