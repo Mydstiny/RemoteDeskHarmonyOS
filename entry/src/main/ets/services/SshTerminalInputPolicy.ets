@@ -89,6 +89,33 @@ export function splitSshTerminalInputText(value: string,
   return chunks;
 }
 
+/** Double the native 256/64/192 item budget for the ArkTS retry buffer. */
+export const SSH_TERMINAL_INPUT_PENDING_MAX_ITEMS: number = 512;
+export const SSH_TERMINAL_INPUT_PENDING_CONTROL_MAX_ITEMS: number = 128;
+export const SSH_TERMINAL_INPUT_PENDING_DATA_MAX_ITEMS: number = 384;
+
+/** Keep tiny input events from bypassing byte-only memory bounds. */
+export function admitsSshTerminalInputPendingItems(
+  controlItems: number,
+  dataItems: number,
+  incomingControlItems: number,
+  incomingDataItems: number
+): boolean {
+  const values: Array<number> = [
+    controlItems, dataItems, incomingControlItems, incomingDataItems
+  ];
+  for (let index: number = 0; index < values.length; index++) {
+    if (!Number.isFinite(values[index]) || values[index] < 0 ||
+      Math.floor(values[index]) !== values[index]) {
+      return false;
+    }
+  }
+  return controlItems + incomingControlItems <= SSH_TERMINAL_INPUT_PENDING_CONTROL_MAX_ITEMS &&
+    dataItems + incomingDataItems <= SSH_TERMINAL_INPUT_PENDING_DATA_MAX_ITEMS &&
+    controlItems + dataItems + incomingControlItems + incomingDataItems <=
+      SSH_TERMINAL_INPUT_PENDING_MAX_ITEMS;
+}
+
 interface SshImeTextChange {
   inserted: string;
   deleted: string;

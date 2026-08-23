@@ -19,7 +19,10 @@ import {
   inspectSshImeChange,
   resetSshImeShadow,
   sshTerminalInputByteLength,
-  splitSshTerminalInputText
+  splitSshTerminalInputText,
+  admitsSshTerminalInputPendingItems,
+  SSH_TERMINAL_INPUT_PENDING_CONTROL_MAX_ITEMS,
+  SSH_TERMINAL_INPUT_PENDING_DATA_MAX_ITEMS
 } from '../main/ets/services/SshTerminalInputPolicy';
 
 const NONE: TerminalModifierState = { ctrl: false, alt: false, shift: false };
@@ -50,6 +53,20 @@ export default function sshTerminalInputPolicyTest(): void {
       expect(oneUnitChunks.length).assertEqual(2);
       expect(oneUnitChunks[0]).assertEqual('🙂');
       expect(oneUnitChunks[1]).assertEqual('a');
+    });
+
+    it('should_bound_tiny_pending_input_items_and_reserve_control_capacity', 0, (): void => {
+      expect(admitsSshTerminalInputPendingItems(
+        0, SSH_TERMINAL_INPUT_PENDING_DATA_MAX_ITEMS, 1, 0)).assertTrue();
+      expect(admitsSshTerminalInputPendingItems(
+        0, SSH_TERMINAL_INPUT_PENDING_DATA_MAX_ITEMS, 0, 1)).assertFalse();
+      expect(admitsSshTerminalInputPendingItems(
+        SSH_TERMINAL_INPUT_PENDING_CONTROL_MAX_ITEMS - 1,
+        SSH_TERMINAL_INPUT_PENDING_DATA_MAX_ITEMS, 1, 0)).assertTrue();
+      expect(admitsSshTerminalInputPendingItems(
+        SSH_TERMINAL_INPUT_PENDING_CONTROL_MAX_ITEMS,
+        SSH_TERMINAL_INPUT_PENDING_DATA_MAX_ITEMS, 1, 0)).assertFalse();
+      expect(admitsSshTerminalInputPendingItems(-1, 0, 0, 1)).assertFalse();
     });
 
     it('should_pass_soft_keyboard_committed_text_through', 0, (): void => {

@@ -156,7 +156,8 @@ import {
   encodeSoftDelete,
   encodeTextInput,
   sshTerminalInputByteLength,
-  splitSshTerminalInputText
+  splitSshTerminalInputText,
+  admitsSshTerminalInputPendingItems
 } from '../services/SshTerminalInputPolicy';
 import {
   defaultSshTerminalOrientation,
@@ -5208,6 +5209,9 @@ struct SshTerminal {
     let orderedBytes: number = 0;
     let controlBytes: number = 0;
     let dataBytes: number = 0;
+    let orderedItems: number = 0;
+    let controlItems: number = 0;
+    let dataItems: number = 0;
     for (let index: number = 0; index < requests.length; index++) {
       const request: PendingTerminalInputRequest = requests[index];
       if (request.data.length === 0) { continue; }
@@ -5222,13 +5226,30 @@ struct SshTerminal {
       });
       if (request.ordered) {
         orderedBytes += bytes;
+        orderedItems++;
       } else if (request.control) {
         controlBytes += bytes;
+        controlItems++;
       } else {
         dataBytes += bytes;
+        dataItems++;
       }
     }
     if (items.length === 0) { return false; }
+    const pendingControlItems: number = this.terminalInputControlPending.length;
+    const pendingDataItems: number = this.terminalInputDataPending.length +
+      this.terminalInputOrderedPending.length;
+    if (!admitsSshTerminalInputPendingItems(
+      pendingControlItems,
+      pendingDataItems,
+      controlItems,
+      dataItems + orderedItems
+    )) {
+      const message: string = orderedItems > 0 ? '粘贴输入队列已满，请稍后继续' :
+        (controlItems > 0 ? '控制输入队列已满，请稍后继续' : '输入队列已满，请稍后继续');
+      promptAction.showToast({ message, duration: 1200 });
+      return false;
+    }
     if (this.terminalInputOrderedPendingBytes + orderedBytes >
         SSH_INPUT_PENDING_DATA_MAX_BYTES) {
       promptAction.showToast({ message: '粘贴输入队列已满，请稍后继续', duration: 1200 });
