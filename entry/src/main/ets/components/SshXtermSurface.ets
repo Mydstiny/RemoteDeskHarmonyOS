@@ -8,6 +8,8 @@
  */
 import { webview } from '@kit.ArkWeb';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { sshDiagnosticErrorCode } from
+  '../services/ssh/observability/SshDiagnosticPolicy';
 import {
   decodeSshTerminalSearchRequest,
   decodeSshTerminalSearchResult,
@@ -347,7 +349,7 @@ export struct SshXtermSurface {
           if (portToken !== this.webMessagePortToken || lifecycleToken !== this.lifecycleToken ||
             this.disposed) { return; }
           this.webMessagePortConnected = true;
-          this.logLifecycle('web message port ready key=' + this.coreKey);
+          this.logLifecycle('web message port ready');
         },
         onEnvelope: (envelope: SshWebMessageEnvelopeV1): void => {
           this.handleWebMessageEnvelope(envelope, lifecycleToken);
@@ -376,7 +378,7 @@ export struct SshXtermSurface {
       this.controller.postMessage('sshTerminalWebMessagePort', [pagePort], targetUri);
     } catch (err) {
       hilog.debug(XTERM_DOMAIN, XTERM_TAG,
-        'web message port unavailable: ' + JSON.stringify(err));
+        'web message port unavailable code=' + sshDiagnosticErrorCode(err));
       this.disableWebMessagePort('install_failed');
     }
   }
@@ -575,7 +577,7 @@ export struct SshXtermSurface {
       this.bridgeRegistered = true;
       this.bridgeRetryCount = 0;
       this.clearBridgeRetry();
-      this.logLifecycle('bridge registered key=' + this.coreKey);
+      this.logLifecycle('bridge registered');
       if (this.pageStarted) {
         // ArkWeb exposes a newly registered proxy only after the next page
         // load. The initial Web component load may already be in progress.
@@ -591,7 +593,7 @@ export struct SshXtermSurface {
     } catch (err) {
       this.scheduleBridgeRetry(lifecycleToken);
       hilog.debug(XTERM_DOMAIN, XTERM_TAG,
-        'register bridge deferred: ' + JSON.stringify(err));
+        'register bridge deferred code=' + sshDiagnosticErrorCode(err));
     }
   }
 
@@ -812,7 +814,7 @@ export struct SshXtermSurface {
       this.scheduleDocumentReloadWatchdog(lifecycleToken, requestedDocumentKey);
     } catch (err) {
       hilog.warn(XTERM_DOMAIN, XTERM_TAG,
-        'reload xterm document failed: ' + JSON.stringify(err));
+        'reload xterm document failed code=' + sshDiagnosticErrorCode(err));
       // Keep the old document fenced off. Replaying the timeout batch into it
       // can duplicate output that was rendered before the ACK was lost.
       this.scheduleDocumentReloadRetry(lifecycleToken, requestedDocumentKey);
@@ -912,7 +914,7 @@ export struct SshXtermSurface {
     if (this.disposed) { return; }
     this.pageReady = true;
     this.logLifecycle('page ready cols=' + cols.toString() + ' rows=' + rows.toString() +
-      ' finished=' + (this.pageFinished ? '1' : '0') + ' key=' + this.coreKey);
+      ' finished=' + (this.pageFinished ? '1' : '0'));
     this.documentReloadPending = false;
     this.reloadRequestedDocumentKey = '';
     this.clearDocumentReloadRetry();
@@ -1011,14 +1013,14 @@ export struct SshXtermSurface {
   private reportReadyOnce(): void {
     if (this.readyReported) { return; }
     this.readyReported = true;
-    this.logLifecycle('report ready key=' + this.coreKey);
+    this.logLifecycle('report ready');
     if (this.onReady) { this.onReady(this.surfaceIdentity()); }
   }
 
   private handlePageEnd(): void {
     if (this.disposed) { return; }
     this.pageFinished = true;
-    this.logLifecycle('page end ready=' + (this.pageReady ? '1' : '0') + ' key=' + this.coreKey);
+    this.logLifecycle('page end ready=' + (this.pageReady ? '1' : '0'));
     this.registerBridge();
     this.installWebMessagePort();
     // A late registration normally needs one reload to expose the proxy to
@@ -1375,13 +1377,13 @@ export struct SshXtermSurface {
 
   private onFontChange(): void {
     this.logLifecycle('appearance font=' + this.fontSize.toString() +
-      ' lineSpacing=' + this.lineSpacing.toString() + ' key=' + this.coreKey);
+      ' lineSpacing=' + this.lineSpacing.toString());
     this.runPageScript(this.pageConfigScript());
   }
 
   private onLineSpacingChange(): void {
     this.logLifecycle('appearance font=' + this.fontSize.toString() +
-      ' lineSpacing=' + this.lineSpacing.toString() + ' key=' + this.coreKey);
+      ' lineSpacing=' + this.lineSpacing.toString());
     this.runPageScript(this.pageConfigScript());
   }
 
@@ -1400,7 +1402,7 @@ export struct SshXtermSurface {
       return;
     }
     const lifecycleToken: number = this.lifecycleToken;
-    this.logLifecycle('reset document transcript key=' + this.coreKey);
+    this.logLifecycle('reset document transcript');
     this.runPageScript('window.__sshXtermReset();', (): void => {
       if (lifecycleToken !== this.lifecycleToken || this.disposed || !this.active ||
         this.transcriptResetIdentity.trim() !== this.surfaceIdentity()) {
@@ -1488,12 +1490,12 @@ export struct SshXtermSurface {
       // here lets the first rawfile document see the proxy and avoids the old
       // mandatory activation reload after onPageBegin.
       .onControllerAttached((): void => {
-        this.logLifecycle('controller attached key=' + this.coreKey);
+        this.logLifecycle('controller attached');
         this.registerBridge();
       })
       .onPageBegin((): void => {
         this.pageStarted = true;
-        this.logLifecycle('page begin key=' + this.coreKey);
+        this.logLifecycle('page begin');
         this.registerBridge();
       })
       .onPageEnd((): void => { this.handlePageEnd(); })
