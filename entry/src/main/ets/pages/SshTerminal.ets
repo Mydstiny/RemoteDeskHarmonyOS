@@ -101,6 +101,8 @@ import { SshWorkspacePaneChrome } from
   '../components/ssh/workspace/SshWorkspacePaneChrome';
 import { SshWorkspaceSideBar } from
   '../components/ssh/workspace/SshWorkspaceSideBar';
+import { SshSessionInspector } from
+  '../components/ssh/workspace/SshSessionInspector';
 import { GpuTerminalRenderer } from '../components/GpuTerminalRenderer';
 import { TerminalInputBuffer } from '../components/SshTerminalSurface';
 import { TerminalCoreBridge } from '../napi/TerminalCoreBridge';
@@ -563,7 +565,8 @@ interface SshTerminalSafetyModeSnapshot {
 type SshProductivityShellPhase = 'idle' | 'prompt' | 'command' | 'executed';
 
 type SshHeaderAction = 'new-session' | 'tabs' | 'palette' | 'transfers' | 'restore' |
-  'sidebar' | 'profile' | 'search' | 'locale' | 'sftp' | 'forwarding' | 'orientation';
+  'sidebar' | 'inspector' | 'profile' | 'search' | 'locale' | 'sftp' | 'forwarding' |
+  'orientation';
 
 @Entry
 @Component
@@ -2063,9 +2066,8 @@ struct SshTerminal {
       pad: this.isPadDevice,
       sidebarRequested: this.sshWorkspaceModeEnabled() &&
         this.sshWorkspaceSnapshot.sidebarVisible,
-      // Inspector has a durable model but no production surface yet. Do not
-      // reserve an empty column before that independent increment is wired.
-      inspectorRequested: false,
+      inspectorRequested: this.sshWorkspaceModeEnabled() &&
+        this.sshWorkspaceSnapshot.inspectorVisible,
       requestedPaneCount: sshWorkspaceVisiblePaneCount(this.sshWorkspaceSnapshot.paneRoot),
       minimumTerminalPaneWidthVp: 360,
       engine: this.sshWorkspaceLayoutEngine
@@ -2085,6 +2087,20 @@ struct SshTerminal {
       this.sshWorkspaceLayoutResult().sidebarWidthVp : 0;
   }
 
+  private sshWorkspaceInspectorSupported(): boolean {
+    const mode: string = this.sshWorkspaceLayoutResult().mode;
+    return this.sshWorkspaceModeEnabled() && (mode === 'lg' || mode === 'xl');
+  }
+
+  private sshWorkspaceInspectorVisible(): boolean {
+    return this.sshWorkspaceModeEnabled() && this.sshWorkspaceLayoutResult().inspectorVisible;
+  }
+
+  private sshWorkspaceInspectorWidth(): number {
+    return this.sshWorkspaceInspectorVisible() ?
+      this.sshWorkspaceLayoutResult().inspectorWidthVp : 0;
+  }
+
   private sshWorkspaceMainSurfaceWidth(): number {
     const layout: SshLayoutResult = this.sshWorkspaceLayoutResult();
     return Math.max(1, layout.mainWidthVp);
@@ -2095,6 +2111,18 @@ struct SshTerminal {
     this.applySshWorkspaceAction({
       kind: 'set_sidebar_visible', visible, nowMs: Date.now()
     }, visible ? '无法显示工作区侧栏' : '无法收起工作区侧栏');
+  }
+
+  private setSshWorkspaceInspectorVisible(visible: boolean): void {
+    if (!this.sshWorkspaceModeEnabled()) { return; }
+    const changed: boolean = this.applySshWorkspaceAction({
+      kind: 'set_inspector_visible', visible, nowMs: Date.now()
+    }, visible ? '无法显示会话详情' : '无法关闭会话详情');
+    if (changed && visible && !this.sshWorkspaceLayoutResult().inspectorVisible) {
+      promptAction.showToast({
+        message: '已保留显示偏好；请增大窗口或先收起工作区侧栏', duration: 2200
+      });
+    }
   }
 
   private sshWorkspacePaneLayout(): SshWorkspacePaneLayoutResult {
@@ -2120,6 +2148,77 @@ struct SshTerminal {
       onCollapse: (): void => { this.setSshWorkspaceSidebarVisible(false); }
     })
     .width(this.sshWorkspaceSidebarWidth())
+    .height('100%')
+  }
+
+  private sshWorkspaceInspectorTabView(): SshTerminalTabView {
+    const active: SshWorkspaceTabV1 | null =
+      this.sshWorkspaceTab(this.sshWorkspaceSnapshot.activeTabId);
+    if (active !== null) { return this.sshWorkspaceTabView(active); }
+    return {
+      tabId: '', hostId: '', label: '未选择会话', address: '', state: 'disconnected',
+      sessionId: -1, generation: 0, pinned: false, active: false
+    };
+  }
+
+  private sshWorkspaceInspectorPaneLabel(): string {
+    const tab: SshTerminalTabView = this.sshWorkspaceInspectorTabView();
+    const frames: Array<SshWorkspacePaneFrame> = this.sshWorkspacePaneLayout().frames;
+    for (let index: number = 0; index < frames.length; index++) {
+      if (frames[index].tabId === tab.tabId) {
+        return 'Pane ' + (index + 1).toString() + ' / ' + frames.length.toString();
+      }
+    }
+    return '未显示在 Pane';
+  }
+
+  private sshWorkspaceInspectorProfileLabel(): string {
+    const tab: SshTerminalTabView = this.sshWorkspaceInspectorTabView();
+    if (tab.hostId.length === 0) { return '默认终端配置'; }
+    const profile: SshTerminalResolvedProfile = this.resolvedTerminalProfileForHost(tab.hostId);
+    return profile.fontFamily + ' · ' + profile.fontSize.toString() + ' vp';
+  }
+
+  private sshWorkspaceInspectorGridLabel(): string {
+    const tab: SshTerminalTabView = this.sshWorkspaceInspectorTabView();
+    if (tab.hostId !== this.hostId.trim() || this.termCols <= 0 || this.termRows <= 0) {
+      return '等待终端尺寸';
+    }
+    return this.termCols.toString() + ' 列 × ' + this.termRows.toString() + ' 行';
+  }
+
+  private sshWorkspaceInspectorActionEnabled(): boolean {
+    const tab: SshTerminalTabView = this.sshWorkspaceInspectorTabView();
+    return tab.hostId.length > 0 && tab.hostId === this.hostId.trim() &&
+      tab.state === 'connected' && this.sshConnectionIsConnected();
+  }
+
+  @Builder
+  private sshWorkspaceInspectorSurface() {
+    SshSessionInspector({
+      title: this.sshWorkspaceInspectorTabView().label,
+      address: this.sshWorkspaceInspectorTabView().address,
+      state: this.sshWorkspaceInspectorTabView().state,
+      latencyMs: this.sshWorkspaceInspectorTabView().hostId === this.hostId.trim() ?
+        this.latencyMs : -1,
+      paneLabel: this.sshWorkspaceInspectorPaneLabel(),
+      profileLabel: this.sshWorkspaceInspectorProfileLabel(),
+      gridLabel: this.sshWorkspaceInspectorGridLabel(),
+      pinned: this.sshWorkspaceInspectorTabView().pinned,
+      actionEnabled: this.sshWorkspaceInspectorActionEnabled(),
+      profileEnabled: this.terminalProfileEnabled(),
+      transferAttentionCount: this.sftpTransferAttentionCount(),
+      forwardingCount: this.forwardingListeningCount(),
+      onClose: (): void => { this.setSshWorkspaceInspectorVisible(false); },
+      onTogglePin: (): void => {
+        const hostId: string = this.sshWorkspaceInspectorTabView().hostId;
+        if (hostId.length > 0) { this.toggleSshTabPinned(hostId); }
+      },
+      onOpenProfile: (): void => { this.openTerminalProfileSheet(); },
+      onOpenSftp: (): void => { this.openSftpPanel(); },
+      onOpenForwarding: (): void => { this.openForwardingSheet(); }
+    })
+    .width(this.sshWorkspaceInspectorWidth())
     .height('100%')
   }
 
@@ -6083,6 +6182,7 @@ struct SshTerminal {
     const labels: string[] = [
       '工作区与会话', '显示全部标签', '命令面板', '传输中心',
       '恢复未连接的工作区标签', '显示工作区侧栏', '收起工作区侧栏',
+      '显示会话详情', '隐藏会话详情', '取消显示会话详情',
       '终端搜索', '终端外观', '语言与地区',
       sshSessionLocaleLabel(this.sshSessionLocale, true), 'SFTP 文件',
       '浏览与传输远端文件', '隧道转发', '切换横竖屏'
@@ -6129,6 +6229,8 @@ struct SshTerminal {
         void this.reconnectSshWorkspacePlaceholders();
       } else if (action === 'sidebar') {
         this.setSshWorkspaceSidebarVisible(!this.sshWorkspaceSnapshot.sidebarVisible);
+      } else if (action === 'inspector') {
+        this.setSshWorkspaceInspectorVisible(!this.sshWorkspaceSnapshot.inspectorVisible);
       } else if (action === 'profile') {
         this.openTerminalProfileSheet();
       } else if (action === 'search') {
@@ -6192,6 +6294,14 @@ struct SshTerminal {
               '收起工作区侧栏' : '显示工作区侧栏',
             this.sshWorkspaceSnapshot.sidebarVisible ?
               '隐藏左侧工作区与会话导航' : '显示左侧工作区与会话导航', 'sidebar')
+          }
+          if (this.sshWorkspaceInspectorSupported()) {
+            this.SshHeaderActionRow(this.sshWorkspaceInspectorVisible() ?
+              '隐藏会话详情' : (this.sshWorkspaceSnapshot.inspectorVisible ?
+                '取消显示会话详情' : '显示会话详情'),
+            this.sshWorkspaceInspectorVisible() ? '隐藏右侧当前会话信息' :
+              (this.sshWorkspaceSnapshot.inspectorVisible ?
+                '当前空间不足，已保留显示偏好' : '显示右侧当前会话信息'), 'inspector')
           }
         }
 
@@ -17841,6 +17951,9 @@ struct SshTerminal {
       .height('100%')
       .layoutWeight(1)
       .constraintSize({ minWidth: 0, minHeight: 0 })
+      if (this.sshWorkspaceInspectorVisible()) {
+        this.sshWorkspaceInspectorSurface()
+      }
       }
       .width('100%')
       .height(0)

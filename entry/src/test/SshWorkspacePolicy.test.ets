@@ -313,6 +313,41 @@ export default function sshWorkspacePolicyTest(): void {
         expect(decoded.sidebarVisible).assertFalse();
       });
 
+    it('workspace_inspector_should_preserve_preference_and_yield_to_main_content', 0, (): void => {
+      const workspace: SshWorkspaceSnapshotV1 = openedWorkspace();
+      expect(workspace.inspectorVisible).assertFalse();
+      const requested: SshWorkspaceReduceResult = reduceSshWorkspace(workspace, {
+        kind: 'set_inspector_visible', visible: true, nowMs: 108
+      });
+      expect(requested.changed).assertTrue();
+      expect(requested.snapshot.inspectorVisible).assertTrue();
+      const decoded: SshWorkspaceSnapshotV1 = decodeSshWorkspaceSnapshots(
+        encodeSshWorkspaceSnapshots([requested.snapshot])).snapshots[0];
+      expect(decoded.inspectorVisible).assertTrue();
+
+      const tripleInput: SshLayoutInput = layoutInput('static', 1800);
+      tripleInput.requestedPaneCount = 1;
+      const triple: SshLayoutResult = resolveSshLayout(tripleInput);
+      expect(triple.sidebarVisible).assertTrue();
+      expect(triple.inspectorVisible).assertTrue();
+      expect(triple.inspectorWidthVp).assertEqual(320);
+      expect(triple.mainWidthVp).assertEqual(1160);
+      expect(triple.semanticRegions.join('|')).assertEqual(
+        'title_actions|sidebar|tab_strip|pane_host|inspector|status_bar');
+
+      const constrainedInput: SshLayoutInput = layoutInput('static', 1500);
+      constrainedInput.requestedPaneCount = 1;
+      const constrained: SshLayoutResult = resolveSshLayout(constrainedInput);
+      expect(constrained.sidebarVisible).assertTrue();
+      expect(constrained.inspectorVisible).assertFalse();
+      expect(constrained.mainWidthVp).assertEqual(1180);
+
+      constrainedInput.sidebarRequested = false;
+      const withoutSidebar: SshLayoutResult = resolveSshLayout(constrainedInput);
+      expect(withoutSidebar.inspectorVisible).assertTrue();
+      expect(withoutSidebar.mainWidthVp).assertEqual(1180);
+    });
+
     it('xl_workspace_should_keep_four_readable_panes_with_sidebar_visible', 0, (): void => {
       const wideInput: SshLayoutInput = layoutInput('static', 1500);
       wideInput.inspectorRequested = false;
