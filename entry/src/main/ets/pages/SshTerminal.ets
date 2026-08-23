@@ -6279,6 +6279,7 @@ struct SshTerminal {
 
   private async authorizeLocalProvider(): Promise<void> {
     if (this.sftpBusy || this.sftpPickerBusy) { return; }
+    const requestPageGeneration: number = this.pageGeneration;
     this.sftpPickerBusy = true;
     this.sftpStatus = '正在打开本机目录选择器...';
     try {
@@ -6290,6 +6291,7 @@ struct SshTerminal {
       this.softKeyboardRequested = false;
       const snapshot: SshLocalProviderSnapshot =
         await this.sftpLocalProvider.chooseAuthorizedFolder();
+      if (!this.isPageGenerationActive(requestPageGeneration)) { return; }
       if (snapshot.state === 'ready') {
         this.sftpLocalPath = snapshot.rootPath;
         this.sftpLocalSelectedUri = '';
@@ -6303,10 +6305,14 @@ struct SshTerminal {
         this.sftpStatus = '本机目录授权未完成，请重新选择目录';
       }
     } catch (err) {
-      this.sftpStatus = '本机目录授权失败: ' + JSON.stringify(err);
+      if (this.isPageGenerationActive(requestPageGeneration)) {
+        this.sftpStatus = '本机目录授权失败: ' + JSON.stringify(err);
+      }
     } finally {
-      this.sftpPickerBusy = false;
-      await this.refreshSftpLocal(this.pageGeneration);
+      if (this.isPageGenerationActive(requestPageGeneration)) {
+        this.sftpPickerBusy = false;
+        await this.refreshSftpLocal(requestPageGeneration);
+      }
     }
   }
 
