@@ -67,7 +67,6 @@
         fitAddon: null,
         searchAddon: null,
         searchResults: { resultIndex: -1, resultCount: 0 },
-        pendingWrites: [],
         lastModeSignature: '',
         readyNotified: false,
         readyRetryCount: 0,
@@ -507,16 +506,6 @@
         }
       }
 
-      function flushPendingWrites() {
-        if (!state.terminal) return;
-        var terminal = state.terminal;
-        var pending = state.pendingWrites;
-        state.pendingWrites = [];
-        pending.forEach(function (value) {
-          try { terminal.write(value, function () { notifyTerminalMode(); }); } catch (_) {}
-        });
-      }
-
       function loadAddonSafely(addon, name) {
         try {
           state.terminal.loadAddon(addon);
@@ -678,7 +667,6 @@
           }
 
           applyConfig(state.config);
-          flushPendingWrites();
           refreshTerminal();
           alignSparseContent();
           notifyReady();
@@ -710,18 +698,6 @@
         // is actually wired. Let the host-side nudge retry that first probe.
         state.readyNotified = false;
         notifyReady();
-      };
-
-      window.__sshXtermWrite = function (value) {
-        var text = value === undefined || value === null ? '' : String(value);
-        if (text.length === 0) return;
-        if (!state.terminal) {
-          state.pendingWrites.push(text);
-          return;
-        }
-        try {
-          state.terminal.write(text, function () { notifyTerminalMode(); });
-        } catch (_) {}
       };
 
       window.__sshXtermWriteBatch = function (values, batchSequence, portMode) {
@@ -818,7 +794,6 @@
       };
 
       window.__sshXtermReset = function () {
-        state.pendingWrites = [];
         if (state.terminal) {
           try { state.terminal.reset(); } catch (_) {}
           alignSparseContent();
