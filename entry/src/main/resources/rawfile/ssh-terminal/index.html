@@ -62,6 +62,11 @@
     (function () {
       'use strict';
 
+      // Keep page-side recovery bounded just like the ArkTS lifecycle fences.
+      // A document that never exposes xterm or the native bridge must stop
+      // scheduling work instead of keeping a dead WebView alive forever.
+      var PAGE_RETRY_MAX_ATTEMPTS = 240;
+
       var state = {
         terminal: null,
         fitAddon: null,
@@ -70,6 +75,9 @@
         lastModeSignature: '',
         readyNotified: false,
         readyRetryCount: 0,
+        readyRetryTimer: 0,
+        bootRetryCount: 0,
+        bootRetryTimer: 0,
         webMessagePort: null,
         webMessageSessionKey: '',
         webMessageGeneration: 0,
@@ -330,17 +338,25 @@
       function notifyReady() {
         if (state.readyNotified || !state.terminal) return;
         if (bridgeCall('onReady', [Number(state.terminal.cols), Number(state.terminal.rows)])) {
+          if (state.readyRetryTimer) {
+            window.clearTimeout(state.readyRetryTimer);
+            state.readyRetryTimer = 0;
+          }
           state.readyRetryCount = 0;
           state.readyNotified = true;
           notifyTerminalMode(true);
           return;
         }
+        if (state.readyRetryTimer || state.readyRetryCount >= PAGE_RETRY_MAX_ATTEMPTS) return;
         state.readyRetryCount += 1;
         // ArkTS can register the proxy after the document has booted during a
         // keyed host switch. Keep retrying at a low rate after the fast boot
-        // window instead of permanently leaving the parent behind its mask.
+        // window, but stop after one bounded document lifecycle.
         var retryDelay = state.readyRetryCount < 150 ? 32 : 250;
-        window.setTimeout(notifyReady, retryDelay);
+        state.readyRetryTimer = window.setTimeout(function () {
+          state.readyRetryTimer = 0;
+          notifyReady();
+        }, retryDelay);
       }
 
       function fitTerminal() {
@@ -522,7 +538,13 @@
       function boot() {
         if (state.terminal) return;
         if (!window.Terminal || !document.getElementById('terminal')) {
-          window.setTimeout(boot, 16);
+          if (!state.bootRetryTimer && state.bootRetryCount < PAGE_RETRY_MAX_ATTEMPTS) {
+            state.bootRetryCount += 1;
+            state.bootRetryTimer = window.setTimeout(function () {
+              state.bootRetryTimer = 0;
+              boot();
+            }, 16);
+          }
           return;
         }
         try {
@@ -557,6 +579,10 @@
             }
           });
           state.terminal = terminal;
+          if (state.bootRetryTimer) {
+            window.clearTimeout(state.bootRetryTimer);
+            state.bootRetryTimer = 0;
+          }
           var terminalElement = document.getElementById('terminal');
           terminal.open(terminalElement);
           var touchPointerId = -1;
@@ -670,6 +696,10 @@
           refreshTerminal();
           alignSparseContent();
           notifyReady();
+          // Only reset the boot budget after the complete xterm wiring has
+          // succeeded; constructor/open/listener failures must still count
+          // toward the same document-level bound.
+          state.bootRetryCount = 0;
         } catch (error) {
           // A transient ArkWeb DOM/renderer failure must be retryable. Leave
           // pending output intact and never report xterm ready in this state.
@@ -679,7 +709,13 @@
           var terminalRoot = document.getElementById('terminal');
           if (terminalRoot) terminalRoot.innerHTML = '';
           try { console.warn('ssh xterm boot failed', error); } catch (_) {}
-          window.setTimeout(boot, 80);
+          if (!state.bootRetryTimer && state.bootRetryCount < PAGE_RETRY_MAX_ATTEMPTS) {
+            state.bootRetryCount += 1;
+            state.bootRetryTimer = window.setTimeout(function () {
+              state.bootRetryTimer = 0;
+              boot();
+            }, 80);
+          }
         }
       }
 
