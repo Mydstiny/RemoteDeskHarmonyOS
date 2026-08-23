@@ -41,6 +41,12 @@ export function sshTabStripShowsStandaloneNewSessionAction(
   return !headerActionPopupEnabled;
 }
 
+/** Every device shape uses one header menu; rollout flags only change menu contents. */
+export function sshHeaderUsesSingleActionMenu(_workbenchEnabled: boolean,
+  _desktop: boolean, _pad: boolean): boolean {
+  return true;
+}
+
 /** Compact chrome is an M2 feature and must disappear with its rollout flag. */
 export function sshCompactChromeEnabled(workbenchEnabled: boolean,
   viewportWidthVp: number, breakpoint: string): boolean {

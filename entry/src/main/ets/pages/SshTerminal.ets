@@ -274,6 +274,7 @@ import {
   SSH_TAB_STRIP_HEIGHT_VP,
   SSH_WORKSPACE_CONTROL_HIT_SIZE_VP,
   sshCompactChromeEnabled,
+  sshHeaderUsesSingleActionMenu,
   sshTabStripShowsStandaloneNewSessionAction
 } from
   '../services/ssh/workspace/SshTabChromePolicy';
@@ -6012,9 +6013,8 @@ struct SshTerminal {
 
   /** Workbench chrome exposes one text menu instead of a row of icon-only actions. */
   private sshHeaderActionPopupEnabled(): boolean {
-    // Preserve the legacy large-screen chrome behind the rollout flag. Phones
-    // already depended on this popup before the workbench was enabled.
-    return this.sshWorkbenchEnabled || (!this.isDesktopDevice && !this.isPadDevice);
+    return sshHeaderUsesSingleActionMenu(
+      this.sshWorkbenchEnabled, this.isDesktopDevice, this.isPadDevice);
   }
 
   private sshHeaderActionPopupWidth(): number {
