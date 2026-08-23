@@ -7873,10 +7873,19 @@ struct SshTerminal {
   }
 
   private async prepareLocalSftpConflict(parentUri: string, fileName: string,
-    batchId: string): Promise<SftpLocalConflictPlan> {
+    batchId: string, requestPageGeneration: number = this.pageGeneration,
+    requestSessionId: number = this.sessionId,
+    requestSessionGeneration: number = this.sshSessionGeneration): Promise<SftpLocalConflictPlan> {
+    if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId, requestSessionGeneration)) {
+      return { action: 'failed', policy: 'ask', targetPath: '' };
+    }
     const target: string | null = await this.sftpLocalProvider.resolveRelative(parentUri, fileName);
-    if (target === null) { return { action: 'failed', policy: 'ask', targetPath: '' }; }
+    if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId, requestSessionGeneration) ||
+      target === null) { return { action: 'failed', policy: 'ask', targetPath: '' }; }
     const existing: SshLocalFileEntry | null = await this.sftpLocalProvider.stat(target);
+    if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId, requestSessionGeneration)) {
+      return { action: 'failed', policy: 'ask', targetPath: target };
+    }
     if (existing === null) { return { action: 'overwrite', policy: 'overwrite', targetPath: target }; }
     if (existing.isDirectory || existing.isSymbolicLink || existing.isSpecialFile) {
       return { action: 'failed', policy: 'ask', targetPath: target };
@@ -7889,6 +7898,10 @@ struct SshTerminal {
       action === 'keepBoth' ? 'keepBoth' : 'overwrite';
     if (resolution.requiresDecision) {
       const decision: SftpConflictDecision = await this.askSftpConflictAction(fileName, '本机');
+      if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+        requestSessionGeneration)) {
+        return { action: 'failed', policy: 'ask', targetPath: target };
+      }
       action = decision.action;
       if (decision.applyToBatch && batchId.trim().length > 0 && action !== 'cancel') {
         this.sftpBatchConflictPolicies.set(batchId.trim(), action);
@@ -7898,12 +7911,23 @@ struct SshTerminal {
     if (action === 'cancel') { return { action: 'failed', policy: 'ask', targetPath: target }; }
     if (action === 'keepBoth') {
       const siblings: SshLocalFileEntry[] = await this.sftpLocalProvider.list(parentUri);
+      if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+        requestSessionGeneration)) {
+        return { action: 'failed', policy, targetPath: target };
+      }
       const existingNames: string[] = siblings.map((entry: SshLocalFileEntry): string => entry.name);
       const keepBothName: string = nextSshSftpKeepBothName(fileName, existingNames);
       const keepBothPath: string | null = keepBothName.length === 0 ? null :
         await this.sftpLocalProvider.resolveRelative(parentUri, keepBothName);
+      if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+        requestSessionGeneration)) {
+        return { action: 'failed', policy, targetPath: target };
+      }
       if (keepBothPath === null) { return { action: 'failed', policy, targetPath: target }; }
       return { action: 'keepBoth', policy, targetPath: keepBothPath };
+    }
+    if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId, requestSessionGeneration)) {
+      return { action: 'failed', policy, targetPath: target };
     }
     if (action === 'overwrite' && !await this.sftpLocalProvider.remove(target, false)) {
       return { action: 'failed', policy, targetPath: target };
@@ -8388,7 +8412,8 @@ struct SshTerminal {
         let targetUri: string = finalUri;
         if (task.verifiedOffset <= 0) {
           const conflict: SftpLocalConflictPlan = await this.prepareLocalSftpConflict(
-            localParent, task.fileName, task.batchId);
+            localParent, task.fileName, task.batchId, requestPageGeneration,
+            requestSessionId, requestSessionGeneration);
           if (conflict.action === 'failed') {
             this.sftpStatus = '[SFTP-BATCH] 本机目标冲突未处理 ' + task.fileName;
             return;
@@ -13819,11 +13844,16 @@ struct SshTerminal {
 
   private async prepareRemoteSftpConflict(remotePath: string, fileName: string,
     batchId: string, requestSessionId: number,
-    requestSessionGeneration: number): Promise<SftpRemoteConflictPlan> {
+    requestSessionGeneration: number,
+    requestPageGeneration: number = this.pageGeneration): Promise<SftpRemoteConflictPlan> {
+    if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId, requestSessionGeneration)) {
+      return { action: 'failed', policy: 'ask', targetPath: remotePath, errorCode: -1 };
+    }
     const parent: string = this.parentRemotePath(remotePath);
     const listed = await this.loader.listRemoteDirAsync(
       requestSessionId, parent, requestSessionGeneration);
-    if (listed.errorCode < 0) {
+    if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId, requestSessionGeneration) ||
+      listed.errorCode < 0) {
       return { action: 'failed', policy: 'ask', targetPath: remotePath, errorCode: listed.errorCode };
     }
     let existingFinal: boolean = false;
@@ -13850,6 +13880,10 @@ struct SshTerminal {
       action === 'keepBoth' ? 'keepBoth' : 'overwrite';
     if (resolution.requiresDecision) {
       const decision: SftpConflictDecision = await this.askSftpConflictAction(fileName);
+      if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+        requestSessionGeneration)) {
+        return { action: 'failed', policy: 'ask', targetPath: remotePath, errorCode: -1 };
+      }
       action = decision.action;
       if (decision.applyToBatch && batchId.trim().length > 0 && action !== 'cancel') {
         this.sftpBatchConflictPolicies.set(batchId.trim(), action);
@@ -14490,7 +14524,8 @@ struct SshTerminal {
       // new uploads can decide the final target before creating any partial.
       if (recordedOffset === 0) {
         conflictPlan = await this.prepareRemoteSftpConflict(
-          remotePath, fileName, batchId, requestSessionId, requestSessionGeneration);
+          remotePath, fileName, batchId, requestSessionId, requestSessionGeneration,
+          requestPageGeneration);
         if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId,
           requestSessionGeneration)) { return; }
         if (conflictPlan.action === 'failed') {
