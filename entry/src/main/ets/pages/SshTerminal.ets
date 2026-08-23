@@ -14389,6 +14389,7 @@ struct SshTerminal {
       this.sftpTransferSession.id !== session.id || this.sftpTransferSession.stage === 'cancelled' ||
       this.sftpPauseRequested || this.sftpCancelRequested ||
       this.sftpTransferSession.stage === 'paused' ||
+      (this.sftpTransferSessionId > 0 && this.sftpTransferSessionId !== this.sessionId) ||
       this.sftpTransferPageGeneration !== this.pageGeneration ||
       this.sftpTransferGeneration !== this.sshSessionGeneration;
   }
