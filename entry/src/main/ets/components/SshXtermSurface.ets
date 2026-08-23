@@ -79,8 +79,8 @@ export class XtermOutputBuffer {
     return true;
   }
 
-  prepend(values: Array<string>): void {
-    if (values.length === 0) { return; }
+  prepend(values: Array<string>): boolean {
+    if (values.length === 0) { return true; }
     let entries: Array<XtermOutputEntry> = [];
     let restoredBytes: number = 0;
     for (let index: number = 0; index < values.length; index++) {
@@ -90,8 +90,19 @@ export class XtermOutputBuffer {
         restoredBytes += next[entryIndex].bytes;
       }
     }
+    if (entries.length === 0) { return true; }
+    // A renderer frame is temporarily outside this FIFO while awaiting its
+    // xterm ACK. New SSH output can fill the capacity released by drain();
+    // restoring a timed-out frame must re-run the same hard admission gate
+    // instead of growing beyond the documented byte/chunk ceiling.
+    if (this.pending.length + entries.length > this.maxChunks ||
+      this.pendingBytes + restoredBytes > this.maxBytes) {
+      this.notifyOverflow();
+      return false;
+    }
     this.pending = entries.concat(this.pending);
     this.pendingBytes += restoredBytes;
+    return true;
   }
 
   drain(maxChunks: number = -1, maxBytes: number = -1): Array<string> {

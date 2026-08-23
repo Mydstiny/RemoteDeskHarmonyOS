@@ -66,5 +66,27 @@ export default function xtermOutputBufferTest(): void {
       expect(scalar[0]).assertEqual('🙂');
       expect(buffer.byteLength()).assertEqual(1);
     });
+
+    it('rechecks_backlog_limits_when_restoring_an_unacked_frame', 0, (): void => {
+      let overflows: number = 0;
+      const buffer: XtermOutputBuffer = new XtermOutputBuffer((): void => {
+        overflows++;
+      }, 6, 3, 4);
+
+      expect(buffer.enqueue('abcd')).assertTrue();
+      const inFlight: Array<string> = buffer.drain();
+      expect(inFlight.length).assertEqual(1);
+      // Output received while the first frame is awaiting ACK consumes all
+      // capacity that drain() temporarily released.
+      expect(buffer.enqueue('密码')).assertTrue();
+      expect(buffer.byteLength()).assertEqual(6);
+      expect(buffer.size()).assertEqual(2);
+
+      expect(buffer.prepend(inFlight)).assertFalse();
+      expect(overflows).assertEqual(1);
+      expect(buffer.byteLength()).assertEqual(6);
+      expect(buffer.size()).assertEqual(2);
+      expect(buffer.drain().join('')).assertEqual('密码');
+    });
   });
 }
