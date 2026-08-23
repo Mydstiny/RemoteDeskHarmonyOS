@@ -1631,10 +1631,56 @@ struct SshTerminal {
     const key: string = hostId.trim();
     let buffer: XtermOutputBuffer | undefined = this.xtermOutputBuffers.get(key);
     if (buffer === undefined) {
-      buffer = new XtermOutputBuffer();
+      buffer = new XtermOutputBuffer((): void => {
+        this.failSshTerminalOutputOverflow(key);
+      });
       this.xtermOutputBuffers.set(key, buffer);
     }
     return buffer;
+  }
+
+  /** Fail closed instead of dropping output or allowing a renderer backlog to grow forever. */
+  private failSshTerminalOutputOverflow(hostId: string): void {
+    const normalizedHostId: string = hostId.trim();
+    const overflowSessionId: number = this.sshTabStore.sessionId(normalizedHostId);
+    const overflowGeneration: number = this.sshTabStore.sessionGeneration(normalizedHostId);
+    if (normalizedHostId.length === 0 || overflowSessionId <= 0 || overflowGeneration <= 0) {
+      return;
+    }
+    const currentBinding: boolean = normalizedHostId === this.hostId.trim() &&
+      overflowSessionId === this.sessionId && overflowGeneration === this.sshSessionGeneration;
+    const message: string = 'SSH 输出超过终端缓冲上限，已断开以避免内存持续增长';
+    hilog.error(0x0001, 'SshTerminal', '[output] renderer backlog overflow');
+    try { this.loader.setOnDataCallback(overflowSessionId, null); } catch (_err) { /* best effort */ }
+    this.detachSftpSessionOwner(normalizedHostId, overflowSessionId);
+    this.releaseForwardingSession(normalizedHostId, overflowSessionId, overflowGeneration);
+    this.loader.disconnectSshSession(overflowSessionId);
+    const outputBuffer: XtermOutputBuffer | undefined =
+      this.xtermOutputBuffers.get(normalizedHostId);
+    if (outputBuffer !== undefined) { outputBuffer.clear(); }
+    const nativeBuffer: TerminalInputBuffer | undefined =
+      this.nativeTerminalInputBuffers.get(normalizedHostId);
+    if (nativeBuffer !== undefined) { nativeBuffer.clear(); }
+    this.markXtermSurfaceNotReady(normalizedHostId);
+    this.sshTerminalSafetyModes.delete(normalizedHostId);
+    this.sshTabStore.invalidateSession(normalizedHostId, 'error', message);
+    if (currentBinding) {
+      this.terminalOutputQueueOverflowed = true;
+      this.connectionError = message;
+      this.clearTerminalOutputQueue();
+      this.clearTerminalInputQueue();
+      this.sshDataCallbackGeneration = 0;
+      this.stopLatencyProbe();
+      this.sessionId = -1;
+      this.sshSessionGeneration = 0;
+      this.resetTerminalSurfaceBinding();
+      this.connected = false;
+      this.connecting = false;
+      promptAction.showToast({
+        message: 'SSH 输出过快，已安全断开；可降低输出速率后重试', duration: 2400
+      });
+    }
+    this.refreshSshTabViews();
   }
 
   private clearXtermOutputBuffers(): void {
@@ -5219,7 +5265,10 @@ struct SshTerminal {
       }
       const decoded: string = this.decodeTerminalChunk(chunk, normalizedHostId);
       if (decoded.length > 0) {
-        this.xtermOutputBufferForHost(normalizedHostId).enqueue(decoded);
+        // Overflow invalidates this exact session synchronously. Stop the
+        // preserved batch so later chunks from the same callback turn cannot
+        // re-enter the queue after fail-closed cleanup.
+        if (!this.xtermOutputBufferForHost(normalizedHostId).enqueue(decoded)) { return; }
       }
     }
   }
@@ -5285,25 +5334,9 @@ struct SshTerminal {
     if (this.terminalOutputQueue.length >= SSH_OUTPUT_QUEUE_MAX_CHUNKS ||
       this.terminalOutputQueueBytes + data.byteLength > SSH_OUTPUT_QUEUE_MAX_BYTES) {
       if (!this.terminalOutputQueueOverflowed) {
-        this.terminalOutputQueueOverflowed = true;
         hilog.error(0x0001, 'SshTerminal',
           '[output] queue overflow bytes=' + this.terminalOutputQueueBytes.toString());
-        this.connectionError = 'SSH 输出过快，终端为避免静默丢字节已断开';
-        promptAction.showToast({ message: 'SSH 输出过快，已断开以避免丢失终端内容', duration: 2200 });
-        const requestSessionId: number = this.sessionId;
-        this.clearTerminalOutputQueue();
-        if (requestSessionId > 0) {
-          try { this.loader.setOnDataCallback(requestSessionId, null); } catch (_e) { /* best effort */ }
-          if (requestSessionId === this.sessionId) { this.sshDataCallbackGeneration = 0; }
-        }
-        this.loader.disconnect();
-        this.stopLatencyProbe();
-        this.sessionId = -1;
-        this.sshSessionGeneration = 0;
-        this.clearTerminalInputQueue();
-        this.resetTerminalSurfaceBinding();
-        this.connected = false;
-        this.connecting = false;
+        this.failSshTerminalOutputOverflow(normalizedHostId);
       }
       return;
     }

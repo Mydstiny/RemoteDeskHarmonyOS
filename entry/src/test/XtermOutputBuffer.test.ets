@@ -40,5 +40,31 @@ export default function xtermOutputBufferTest(): void {
       expect(secondNotifications).assertEqual(1);
       expect(buffer.drain()[0]).assertEqual('two');
     });
+
+    it('bounds_backlog_by_utf8_bytes_and_notifies_overflow_once', 0, (): void => {
+      let overflows: number = 0;
+      const buffer: XtermOutputBuffer = new XtermOutputBuffer((): void => {
+        overflows++;
+      }, 6, 4, 4);
+
+      expect(buffer.enqueue('密码')).assertTrue();
+      expect(buffer.byteLength()).assertEqual(6);
+      expect(buffer.size()).assertEqual(2);
+      expect(buffer.enqueue('a')).assertFalse();
+      expect(buffer.enqueue('b')).assertFalse();
+      expect(overflows).assertEqual(1);
+      const first: Array<string> = buffer.drain(1, 4);
+      expect(first.length).assertEqual(1);
+      expect(first[0]).assertEqual('密');
+      expect(buffer.byteLength()).assertEqual(3);
+
+      buffer.clear();
+      expect(buffer.byteLength()).assertEqual(0);
+      expect(buffer.enqueue('🙂a')).assertTrue();
+      expect(buffer.size()).assertEqual(2);
+      const scalar: Array<string> = buffer.drain(1, 4);
+      expect(scalar[0]).assertEqual('🙂');
+      expect(buffer.byteLength()).assertEqual(1);
+    });
   });
 }

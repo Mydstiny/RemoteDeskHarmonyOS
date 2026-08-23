@@ -151,7 +151,7 @@ function isControlKind(kind: SshWebMessageKind): boolean {
 }
 
 function envelopeBytes(envelope: SshWebMessageEnvelopeV1): number {
-  return utf8ByteLength(envelope.payload);
+  return sshUtf8ByteLength(envelope.payload);
 }
 
 /**
@@ -162,7 +162,7 @@ function envelopeBytes(envelope: SshWebMessageEnvelopeV1): number {
  * as the replacement-width three bytes, matching JSON/WebView replacement
  * behavior rather than allowing a cheap queue-budget bypass.
  */
-function utf8ByteLength(value: string): number {
+export function sshUtf8ByteLength(value: string): number {
   let bytes: number = 0;
   for (let index: number = 0; index < value.length; index++) {
     const code: number = value.charCodeAt(index);
@@ -259,7 +259,7 @@ export function enqueueSshWebMessage(state: SshWebMessageStateV1,
   if (payload.length > SSH_WEB_MESSAGE_MAX_FRAME_CHARS) {
     return result(next, 'frame_too_large');
   }
-  const payloadBytes: number = utf8ByteLength(payload);
+  const payloadBytes: number = sshUtf8ByteLength(payload);
   if (next.queue.length >= SSH_WEB_MESSAGE_MAX_QUEUE_ITEMS ||
     next.bufferedBytes + payloadBytes > SSH_WEB_MESSAGE_MAX_QUEUE_BYTES) {
     return result(next, 'queue_full');

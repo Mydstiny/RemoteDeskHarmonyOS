@@ -22,39 +22,114 @@ import {
   SshWebMessagePortChannel,
   SshWebMessagePortLike
 } from '../services/ssh/web/SshWebMessagePortChannel';
-import { SshWebMessageEnvelopeV1 } from '../services/ssh/web/SshWebMessagePortPolicy';
+import {
+  sshUtf8ByteLength,
+  SshWebMessageEnvelopeV1
+} from '../services/ssh/web/SshWebMessagePortPolicy';
 
 const XTERM_DOMAIN: number = 0x0000;
 const XTERM_TAG: string = 'SshXtermSurface';
 const XTERM_DOCUMENT_RELOAD_TIMEOUT_MS: number = 3000;
+export const SSH_XTERM_OUTPUT_BUFFER_MAX_BYTES: number = 8 * 1024 * 1024;
+export const SSH_XTERM_OUTPUT_BUFFER_MAX_CHUNKS: number = 512;
+export const SSH_XTERM_OUTPUT_CHUNK_MAX_BYTES: number = 64 * 1024;
+
+interface XtermOutputEntry {
+  value: string;
+  bytes: number;
+}
 
 /** Decoded SSH output waiting for the visible xterm page to consume it. */
 export class XtermOutputBuffer {
-  private pending: Array<string> = [];
+  private pending: Array<XtermOutputEntry> = [];
+  private pendingBytes: number = 0;
   private listeners: Array<() => void> = [];
+  private overflowed: boolean = false;
+  private readonly onOverflow: (() => void) | null;
+  private readonly maxBytes: number;
+  private readonly maxChunks: number;
+  private readonly maxChunkBytes: number;
 
-  enqueue(value: string): void {
-    if (value.length === 0) { return; }
-    this.pending.push(value);
+  constructor(onOverflow: (() => void) | null = null,
+    maxBytes: number = SSH_XTERM_OUTPUT_BUFFER_MAX_BYTES,
+    maxChunks: number = SSH_XTERM_OUTPUT_BUFFER_MAX_CHUNKS,
+    maxChunkBytes: number = SSH_XTERM_OUTPUT_CHUNK_MAX_BYTES) {
+    this.onOverflow = onOverflow;
+    this.maxBytes = Math.max(1, Math.floor(maxBytes));
+    this.maxChunks = Math.max(1, Math.floor(maxChunks));
+    this.maxChunkBytes = Math.max(1,
+      Math.min(this.maxBytes, Math.floor(maxChunkBytes)));
+  }
+
+  enqueue(value: string): boolean {
+    if (value.length === 0) { return true; }
+    const entries: Array<XtermOutputEntry> = this.splitEntries(value);
+    let admittedBytes: number = 0;
+    for (let index: number = 0; index < entries.length; index++) {
+      admittedBytes += entries[index].bytes;
+    }
+    if (entries.length === 0 || this.pending.length + entries.length > this.maxChunks ||
+      this.pendingBytes + admittedBytes > this.maxBytes) {
+      this.notifyOverflow();
+      return false;
+    }
+    this.pending = this.pending.concat(entries);
+    this.pendingBytes += admittedBytes;
     this.notifyReadable();
+    return true;
   }
 
   prepend(values: Array<string>): void {
-    if (values.length > 0) { this.pending = values.concat(this.pending); }
+    if (values.length === 0) { return; }
+    let entries: Array<XtermOutputEntry> = [];
+    let restoredBytes: number = 0;
+    for (let index: number = 0; index < values.length; index++) {
+      const next: Array<XtermOutputEntry> = this.splitEntries(values[index]);
+      entries = entries.concat(next);
+      for (let entryIndex: number = 0; entryIndex < next.length; entryIndex++) {
+        restoredBytes += next[entryIndex].bytes;
+      }
+    }
+    this.pending = entries.concat(this.pending);
+    this.pendingBytes += restoredBytes;
   }
 
-  drain(): Array<string> {
-    const values: Array<string> = this.pending;
-    this.pending = [];
+  drain(maxChunks: number = -1, maxBytes: number = -1): Array<string> {
+    if (this.pending.length === 0) { return []; }
+    const chunkLimit: number = Number.isFinite(maxChunks) && maxChunks > 0
+      ? Math.max(1, Math.floor(maxChunks)) : this.pending.length;
+    const byteLimit: number = Number.isFinite(maxBytes) && maxBytes > 0
+      ? Math.max(1, Math.floor(maxBytes)) : Number.MAX_SAFE_INTEGER;
+    let count: number = 0;
+    let drainedBytes: number = 0;
+    while (count < this.pending.length && count < chunkLimit) {
+      const next: XtermOutputEntry = this.pending[count];
+      if (count > 0 && drainedBytes + next.bytes > byteLimit) { break; }
+      drainedBytes += next.bytes;
+      count++;
+      if (drainedBytes >= byteLimit) { break; }
+    }
+    const drained: Array<XtermOutputEntry> = this.pending.splice(0, count);
+    this.pendingBytes = Math.max(0, this.pendingBytes - drainedBytes);
+    const values: Array<string> = [];
+    for (let index: number = 0; index < drained.length; index++) {
+      values.push(drained[index].value);
+    }
     return values;
   }
 
   clear(): void {
     this.pending = [];
+    this.pendingBytes = 0;
+    this.overflowed = false;
   }
 
   size(): number {
     return this.pending.length;
+  }
+
+  byteLength(): number {
+    return this.pendingBytes;
   }
 
   /** Wake the renderer without routing terminal payload through ArkUI state. */
@@ -73,6 +148,52 @@ export class XtermOutputBuffer {
         // A stale renderer must not break the SSH reader or later listeners.
       }
     }
+  }
+
+  private notifyOverflow(): void {
+    if (this.overflowed) { return; }
+    this.overflowed = true;
+    if (this.onOverflow !== null) {
+      try { this.onOverflow(); } catch (_err) {
+        // The bounded queue still rejects the chunk if page cleanup is stale.
+      }
+    }
+  }
+
+  /** Split by UTF-8 bytes without cutting a UTF-16 surrogate pair. */
+  private splitEntries(value: string): Array<XtermOutputEntry> {
+    const entries: Array<XtermOutputEntry> = [];
+    let start: number = 0;
+    let index: number = 0;
+    let bytes: number = 0;
+    while (index < value.length) {
+      const code: number = value.charCodeAt(index);
+      let scalarBytes: number = 3;
+      let nextIndex: number = index + 1;
+      if (code <= 0x7f) {
+        scalarBytes = 1;
+      } else if (code <= 0x7ff) {
+        scalarBytes = 2;
+      } else if (code >= 0xd800 && code <= 0xdbff && nextIndex < value.length) {
+        const next: number = value.charCodeAt(nextIndex);
+        if (next >= 0xdc00 && next <= 0xdfff) {
+          scalarBytes = 4;
+          nextIndex++;
+        }
+      }
+      if (bytes > 0 && bytes + scalarBytes > this.maxChunkBytes) {
+        entries.push({ value: value.slice(start, index), bytes });
+        start = index;
+        bytes = 0;
+      }
+      bytes += scalarBytes;
+      index = nextIndex;
+    }
+    if (start < value.length) {
+      const chunk: string = value.slice(start);
+      entries.push({ value: chunk, bytes: sshUtf8ByteLength(chunk) });
+    }
+    return entries;
   }
 }
 
@@ -1193,7 +1314,8 @@ export struct SshXtermSurface {
 
   private enqueueOutput(): void {
     if (!this.active || this.disposed) { return; }
-    const values: Array<string> = this.outputBuffer.drain();
+    const values: Array<string> = this.outputBuffer.drain(8,
+      SSH_XTERM_OUTPUT_CHUNK_MAX_BYTES);
     if (values.length === 0) { return; }
     if (this.pendingOutputBuffer === null) { this.pendingOutputBuffer = this.outputBuffer; }
     for (let index = 0; index < values.length; index++) {
@@ -1215,7 +1337,12 @@ export struct SshXtermSurface {
 
   private flushOutputBuffer(): void {
     if (!this.active || this.disposed) { return; }
-    this.enqueueOutput();
+    // Keep admitted output in the bounded parent-owned FIFO until the prior
+    // xterm frame is acknowledged; pendingWrites must never become a second
+    // unbounded queue while ArkWeb is slow.
+    if (!this.outputPumpRunning && this.pendingWrites.length === 0) {
+      this.enqueueOutput();
+    }
     this.pumpOutput();
   }
 
