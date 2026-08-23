@@ -23,8 +23,10 @@ import {
   SshWebMessagePortLike
 } from '../services/ssh/web/SshWebMessagePortChannel';
 import {
+  decodeSshWebMessageOutputFailure,
   sshUtf8ByteLength,
-  SshWebMessageEnvelopeV1
+  SshWebMessageEnvelopeV1,
+  SshWebMessageOutputFailureV1
 } from '../services/ssh/web/SshWebMessagePortPolicy';
 import { matchesSshXtermCopyFence } from '../services/SshXtermTabSurfacePolicy';
 
@@ -460,6 +462,16 @@ export struct SshXtermSurface {
       return;
     }
     if (envelope.kind === 'error') {
+      const failure: SshWebMessageOutputFailureV1 | null =
+        decodeSshWebMessageOutputFailure(envelope.payload);
+      if (failure !== null && this.outputPumpRunning &&
+        failure.batchSequence === this.awaitingOutputBatch) {
+        // Match the proxy callback path: a partially rendered document must
+        // be rebuilt before replaying the complete unconfirmed batch, or the
+        // prefix already accepted by xterm would appear twice.
+        this.handleOutputFrameError(failure.batchSequence, failure.consumedCount);
+        return;
+      }
       this.disableWebMessagePort('page_error');
       return;
     }

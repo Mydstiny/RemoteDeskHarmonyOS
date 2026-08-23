@@ -79,6 +79,11 @@ export interface SshWebMessageDequeueResultV1 {
   envelope: SshWebMessageEnvelopeV1 | null;
 }
 
+export interface SshWebMessageOutputFailureV1 {
+  batchSequence: number;
+  consumedCount: number;
+}
+
 export const SSH_WEB_MESSAGE_VERSION: number = 1;
 export const SSH_WEB_MESSAGE_MAX_FRAME_CHARS: number = 65536;
 export const SSH_WEB_MESSAGE_MAX_FRAME_BYTES: number = 64 * 1024;
@@ -431,6 +436,32 @@ export function decodeSshWebMessage(encoded: string): SshWebMessageEnvelopeV1 | 
       return null;
     }
     return { version, kind: kind as SshWebMessageKind, sessionKey, generation, sequence, ackSequence, payload };
+  } catch (_err) {
+    return null;
+  }
+}
+
+/** Decode the page-side xterm write receipt without coercing JSON fields. */
+export function decodeSshWebMessageOutputFailure(
+  payload: string): SshWebMessageOutputFailureV1 | null {
+  if (payload.length === 0 || payload.length > SSH_WEB_MESSAGE_MAX_FRAME_CHARS ||
+    sshUtf8ByteLength(payload) > SSH_WEB_MESSAGE_MAX_FRAME_BYTES) {
+    return null;
+  }
+  try {
+    const parsed: Object = JSON.parse(payload) as Object;
+    const source: Record<string, Object> = parsed as Record<string, Object>;
+    if (typeof source['batchSequence'] !== 'number' ||
+      typeof source['consumedCount'] !== 'number') {
+      return null;
+    }
+    const batchSequence: number = source['batchSequence'] as number;
+    const consumedCount: number = source['consumedCount'] as number;
+    if (!validSequence(batchSequence) || !Number.isFinite(consumedCount) ||
+      Math.floor(consumedCount) !== consumedCount || consumedCount < 0) {
+      return null;
+    }
+    return { batchSequence, consumedCount };
   } catch (_err) {
     return null;
   }

@@ -4,6 +4,7 @@ import {
   acknowledgeSshWebMessage,
   createSshWebMessageState,
   decodeSshWebMessage,
+  decodeSshWebMessageOutputFailure,
   dequeueSshWebMessage,
   encodeSshWebMessage,
   enqueueSshWebMessage,
@@ -174,6 +175,20 @@ export default function sshWebMessagePortPolicyTest(): void {
       const overflow = enqueueSshWebMessage(state, 'output', 'x');
       expect(overflow.accepted).assertFalse();
       expect(overflow.code).assertEqual('queue_full');
+    });
+
+    it('should_decode_output_failure_receipts_without_type_coercion', 0, (): void => {
+      const receipt = decodeSshWebMessageOutputFailure(
+        '{"batchSequence":17,"consumedCount":3}');
+      expect(receipt === null).assertFalse();
+      expect(receipt!.batchSequence).assertEqual(17);
+      expect(receipt!.consumedCount).assertEqual(3);
+      expect(decodeSshWebMessageOutputFailure(
+        '{"batchSequence":"17","consumedCount":3}') === null).assertTrue();
+      expect(decodeSshWebMessageOutputFailure(
+        '{"batchSequence":17,"consumedCount":1.5}') === null).assertTrue();
+      expect(decodeSshWebMessageOutputFailure(
+        '{"batchSequence":17,"consumedCount":-1}') === null).assertTrue();
     });
   });
 }
