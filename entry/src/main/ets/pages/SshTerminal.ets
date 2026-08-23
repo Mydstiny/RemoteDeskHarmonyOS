@@ -9419,7 +9419,8 @@ struct SshTerminal {
       this.isLandscape = defaultOrientation === 'landscape';
       await this.setPreferredOrientation(
         defaultOrientation === 'landscape' ? window.Orientation.LANDSCAPE : window.Orientation.PORTRAIT,
-        defaultOrientation === 'landscape' ? 'SSH-LANDSCAPE' : 'SSH-PORTRAIT'
+        defaultOrientation === 'landscape' ? 'SSH-LANDSCAPE' : 'SSH-PORTRAIT',
+        pageGeneration
       );
       if (!this.isPageGenerationActive(pageGeneration)) { return; }
     }
@@ -9875,12 +9876,22 @@ struct SshTerminal {
     }
   }
 
-  private async setPreferredOrientation(orientation: window.Orientation, label: string): Promise<void> {
+  private async setPreferredOrientation(orientation: window.Orientation, label: string,
+    requestPageGeneration: number = -1): Promise<void> {
     try {
+      if (requestPageGeneration >= 0 && !this.isPageGenerationActive(requestPageGeneration)) {
+        return;
+      }
       const ctx = this.getUIContext().getHostContext();
       if (!ctx) { return; }
       const win: window.Window = await window.getLastWindow(ctx);
+      if (requestPageGeneration >= 0 && !this.isPageGenerationActive(requestPageGeneration)) {
+        return;
+      }
       await win.setPreferredOrientation(orientation);
+      if (requestPageGeneration >= 0 && !this.isPageGenerationActive(requestPageGeneration)) {
+        return;
+      }
       this.orientationApplied = orientation !== window.Orientation.UNSPECIFIED;
       if (orientation === window.Orientation.LANDSCAPE) {
         this.isLandscape = true;
@@ -9911,18 +9922,21 @@ struct SshTerminal {
     this.resetKeyboardBuffer();
     const current: SshTerminalOrientation = this.isLandscape ? 'landscape' : 'portrait';
     const next: SshTerminalOrientation = toggleSshTerminalOrientation(current);
+    const requestPageGeneration: number = this.pageGeneration;
     this.isLandscape = next === 'landscape';
     await this.setPreferredOrientation(
       this.isLandscape ? window.Orientation.LANDSCAPE : window.Orientation.PORTRAIT,
-      this.isLandscape ? 'SSH-LANDSCAPE-MANUAL' : 'SSH-PORTRAIT-MANUAL'
+      this.isLandscape ? 'SSH-LANDSCAPE-MANUAL' : 'SSH-PORTRAIT-MANUAL',
+      requestPageGeneration
     );
-    this.scheduleOrientationSettle();
+    if (!this.isPageGenerationActive(requestPageGeneration)) { return; }
+    this.scheduleOrientationSettle(requestPageGeneration);
   }
 
-  private scheduleOrientationSettle(): void {
+  private scheduleOrientationSettle(requestPageGeneration: number = this.pageGeneration): void {
     if (this.orientationSettleTimer !== -1) { clearTimeout(this.orientationSettleTimer); }
     if (this.orientationFinalTimer !== -1) { clearTimeout(this.orientationFinalTimer); }
-    const generation: number = this.pageGeneration;
+    const generation: number = requestPageGeneration;
     this.orientationSettleTimer = setTimeout((): void => {
       this.orientationSettleTimer = -1;
       if (!this.isPageGenerationActive(generation) || this.terminalClosing) { return; }
