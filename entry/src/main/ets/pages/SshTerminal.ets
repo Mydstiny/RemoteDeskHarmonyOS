@@ -2868,6 +2868,7 @@ struct SshTerminal {
 
   private closeAllSshTabs(): void {
     this.releaseAllForwardingSessions();
+    this.detachAllSftpSessionOwners();
     const sessionIds: number[] = this.sshTabStore.closeAll();
     for (let index = 0; index < sessionIds.length; index++) {
       this.loader.disconnectSshSession(sessionIds[index]);
@@ -6650,6 +6651,15 @@ struct SshTerminal {
     this.detachCapturedSftpSessionOwner(ownerToken);
   }
 
+  /** Release every page-owned SFTP token before closing all native sessions. */
+  private detachAllSftpSessionOwners(): void {
+    const owners: Array<SshSftpTrackedSession> = Array.from(this.sftpSessionOwners.values());
+    this.sftpSessionOwners.clear();
+    for (let index = 0; index < owners.length; index++) {
+      this.sftpTaskEngine.detachSession(owners[index]);
+    }
+  }
+
   private sftpSessionForHost(hostId: string): SshSftpEngineSession | null {
     const owner: string = hostId.trim();
     if (owner.length === 0) { return null; }
@@ -9576,6 +9586,7 @@ struct SshTerminal {
     const shouldCloseAllSshSessions: boolean = !preserveSshInBackground;
     if (shouldCloseAllSshSessions) {
       this.releaseAllForwardingSessions();
+      this.detachAllSftpSessionOwners();
       const allSessionIds: number[] = this.sshTabStore.closeAll();
       this.sshTranscriptStore.clearAll();
       for (let index = 0; index < allSessionIds.length; index++) {
