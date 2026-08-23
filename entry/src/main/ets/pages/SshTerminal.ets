@@ -257,6 +257,7 @@ import {
   SSH_WORKBENCH_V2_DEFAULT_ENABLED,
   SSH_WORKBENCH_V2_FLAG_KEY,
   resolveSshWorkspaceCapabilities,
+  sshPersistentPaneWorkspaceEnabled,
   SshWorkspaceLayoutEngine
 } from '../services/ssh/workspace/SshWorkspaceCapabilityPolicy';
 import {
@@ -1849,7 +1850,8 @@ struct SshTerminal {
   }
 
   private sshWorkspaceModeEnabled(): boolean {
-    return this.sshWorkbenchEnabled && this.sshWorkspaceReady;
+    return sshPersistentPaneWorkspaceEnabled(
+      this.sshWorkbenchEnabled, this.sshWorkspaceReady, this.isDesktopDevice);
   }
 
   private sshBroadcastInputEnabled(): boolean {

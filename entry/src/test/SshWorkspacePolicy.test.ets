@@ -15,6 +15,7 @@ import {
 import {
   defaultSshWorkspacePlatformFacts,
   resolveSshWorkspaceCapabilities,
+  sshPersistentPaneWorkspaceEnabled,
   SshWorkspaceCapabilities,
   SshWorkspacePlatformFacts,
   SSH_WORKBENCH_V2_DEFAULT_ENABLED
@@ -196,6 +197,13 @@ export default function sshWorkspacePolicyTest(): void {
       expect(capabilities.workbenchEnabled).assertFalse();
       expect(capabilities.layoutEngine).assertEqual('static');
       expect(capabilities.chromeTreatment).assertEqual('solid');
+    });
+
+    it('phone_and_pad_should_keep_the_mature_single_surface_terminal_runtime', 0, (): void => {
+      expect(sshPersistentPaneWorkspaceEnabled(true, true, false)).assertFalse();
+      expect(sshPersistentPaneWorkspaceEnabled(true, false, true)).assertFalse();
+      expect(sshPersistentPaneWorkspaceEnabled(false, true, true)).assertFalse();
+      expect(sshPersistentPaneWorkspaceEnabled(true, true, true)).assertTrue();
     });
 
     it('ssh_feature_flag_should_not_enable_non_ssh_protocols', 0, (): void => {

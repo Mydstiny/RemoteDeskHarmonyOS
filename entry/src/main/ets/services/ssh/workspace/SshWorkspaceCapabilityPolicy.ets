@@ -34,6 +34,16 @@ export const SSH_WORKBENCH_V2_DEFAULT_ENABLED: boolean = false;
 export const SSH_DYNAMIC_LAYOUT_MIN_API: number = 24;
 export const SSH_UI_DESIGN_TARGET_API: number = 26;
 
+/**
+ * The retained multi-pane compositor is a desktop workspace capability.
+ * Phone and Pad keep the mature single-visible-surface xterm runtime so IME,
+ * caret animation and touch focus are not routed through desktop Pane chrome.
+ */
+export function sshPersistentPaneWorkspaceEnabled(workbenchEnabled: boolean,
+  workspaceReady: boolean, desktop: boolean): boolean {
+  return workbenchEnabled && workspaceReady && desktop;
+}
+
 export function defaultSshWorkspacePlatformFacts(): SshWorkspacePlatformFacts {
   return {
     protocol: 'ssh',
