@@ -25,6 +25,12 @@ export interface SshSftpCheckpoint {
   generation: number;
 }
 
+export interface SshSftpSkipRemovalDecision {
+  committedSkip: boolean;
+  clearCheckpoint: boolean;
+  publishError: boolean;
+}
+
 /** Resume is fail-closed when either the source or the partial identity changed. */
 export function sshSftpIdentityMatches(expected: SshSftpFileIdentity,
   observed: SshSftpFileIdentity): boolean {
@@ -43,6 +49,26 @@ export function sshSftpOffsetIsValid(offset: number, totalSize: number): boolean
 export function sshSftpCommitSizeMatches(actualSize: number, expectedSize: number): boolean {
   return Number.isFinite(actualSize) && Number.isFinite(expectedSize) &&
     actualSize >= 0 && expectedSize >= 0 && actualSize === expectedSize;
+}
+
+/**
+ * Removing the partial is the commit point for a conflict skip. Once it has
+ * succeeded, a later pause/cancel must not retain a checkpoint for the file
+ * that no longer exists. A replacement attempt never inherits that result.
+ */
+export function sshSftpSkipRemovalDecision(errorCode: number, attemptCurrent: boolean,
+  requestStopped: boolean): SshSftpSkipRemovalDecision {
+  if (errorCode < 0) {
+    return {
+      committedSkip: false,
+      clearCheckpoint: false,
+      publishError: attemptCurrent && !requestStopped
+    };
+  }
+  if (!attemptCurrent) {
+    return { committedSkip: false, clearCheckpoint: false, publishError: false };
+  }
+  return { committedSkip: true, clearCheckpoint: true, publishError: false };
 }
 
 export function sshSftpPartialSuffix(taskId: string): string {

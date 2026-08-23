@@ -401,10 +401,12 @@ import {
 import {
   SshSftpCheckpoint,
   SshSftpFileIdentity,
+  SshSftpSkipRemovalDecision,
   sshSftpCommitSizeMatches,
   sshSftpIdentityMatches,
   sshSftpOffsetIsValid,
-  sshSftpPartialSuffix
+  sshSftpPartialSuffix,
+  sshSftpSkipRemovalDecision
 } from '../services/SshSftpIntegrityPolicy';
 import {
   SshSftpTaskDirection,
@@ -14046,6 +14048,26 @@ struct SshTerminal {
     return { action, policy, targetPath: remotePath, errorCode: 0 };
   }
 
+  /**
+   * Removing an upload partial is the commit point for a conflict skip. A
+   * pause, cancel or page/session change observed after a successful remove
+   * cannot turn the now-missing partial back into a resumable checkpoint.
+   */
+  private completeSftpConflictSkipRemoval(session: TransferSession,
+    errorCode: number): SftpRemoteCommitResult {
+    const attemptCurrent: boolean = this.isSftpTransferAttemptCurrent(session);
+    const requestStopped: boolean = this.shouldStopSftpTransfer(session);
+    const decision: SshSftpSkipRemovalDecision = sshSftpSkipRemovalDecision(
+      errorCode, attemptCurrent, requestStopped);
+    if (decision.publishError) { this.sftpAtomicCommitErrorCode = errorCode; }
+    if (!decision.committedSkip) { return 'failed'; }
+    if (!decision.clearCheckpoint) { return 'failed'; }
+    this.sftpTransferCheckpoint = null;
+    this.sftpTransferPartialRemotePath = '';
+    this.sftpTransferPartialMtime = -1;
+    return 'skipped';
+  }
+
   private async commitRemoteSftpPartial(expectedSize: number,
     session: TransferSession): Promise<SftpRemoteCommitResult> {
     const commitSessionId: number = this.sftpTransferSessionId;
@@ -14110,29 +14132,13 @@ struct SshTerminal {
         if (conflictAction === 'skip') {
           const removed = await this.loader.removeRemoteFileAsync(
             commitSessionId, this.sftpTransferPartialRemotePath, commitGeneration);
-          if (this.shouldStopSftpTransfer(session)) { return 'failed'; }
-          if (removed.errorCode < 0) {
-            this.sftpAtomicCommitErrorCode = removed.errorCode;
-            return 'failed';
-          }
-          this.sftpTransferCheckpoint = null;
-          this.sftpTransferPartialRemotePath = '';
-          this.sftpTransferPartialMtime = -1;
-          return 'skipped';
+          return this.completeSftpConflictSkipRemoval(session, removed.errorCode);
         }
       }
       if (conflictAction === 'skip') {
         const removed = await this.loader.removeRemoteFileAsync(
           commitSessionId, this.sftpTransferPartialRemotePath, commitGeneration);
-        if (this.shouldStopSftpTransfer(session)) { return 'failed'; }
-        if (removed.errorCode < 0) {
-          this.sftpAtomicCommitErrorCode = removed.errorCode;
-          return 'failed';
-        }
-        this.sftpTransferCheckpoint = null;
-        this.sftpTransferPartialRemotePath = '';
-        this.sftpTransferPartialMtime = -1;
-        return 'skipped';
+        return this.completeSftpConflictSkipRemoval(session, removed.errorCode);
       }
       if (conflictAction === 'keepBoth') {
         const existingNames: string[] = [];
@@ -14953,8 +14959,10 @@ struct SshTerminal {
       }
       if (commitResult === 'skipped') {
         this.finishSftpTransfer(session, 'completed', 'conflict-skipped');
-        this.sftpStatus = '已跳过 ' + fileName + '（远端文件未修改）';
-        this.scheduleSftpRefresh(this.sftpPath, 180);
+        if (publishCommitStatus) {
+          this.sftpStatus = '已跳过 ' + fileName + '（远端文件未修改）';
+          this.scheduleSftpRefresh(this.sftpPath, 180);
+        }
         return;
       }
       if (this.isSftpUserCancellationRequested(session)) {
