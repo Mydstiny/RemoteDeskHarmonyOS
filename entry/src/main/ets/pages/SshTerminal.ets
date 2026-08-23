@@ -172,7 +172,8 @@ import { TerminalCoreRegistry } from '../services/TerminalCoreRegistry';
 import { SshTerminalRendererRegistry } from '../services/SshTerminalRendererRegistry';
 import {
   makeSshTerminalSurfaceBindingKey,
-  makeSshTerminalSurfaceRenderKey
+  makeSshTerminalSurfaceRenderKey,
+  SSH_TERMINAL_PTY_RESIZE_COALESCE_MS
 } from '../services/SshTerminalSurfaceBindingPolicy';
 import {
   makeSshXtermTabCoreKey,
@@ -756,6 +757,8 @@ struct SshTerminal {
   private sshWorkspaceNodeSequence: number = 0;
   private sshWorkspaceInitSequence: number = 0;
   private sshWorkspacePtySizes: Map<string, string> = new Map<string, string>();
+  private sshWorkspacePtyResizeTimers: Map<string, number> = new Map<string, number>();
+  private sshWorkspacePtyResizePendingSizes: Map<string, string> = new Map<string, string>();
   private terminalSessionProfileIds: Map<string, string> = new Map<string, string>();
   private resolvedTerminalProfileSessionKey: string = '';
   /** SSH 协议级 keepalive 延迟 */
@@ -5470,27 +5473,76 @@ struct SshTerminal {
   private schedulePtyResize(): void {
     if (this.sessionId <= 0) { return; }
     const requestPageGeneration: number = this.pageGeneration;
+    const requestBindingGeneration: number = this.sshBindingGeneration;
+    const requestHostId: string = this.hostId.trim();
     const requestSessionId: number = this.sessionId;
     const requestSessionGeneration: number = this.sshSessionGeneration;
+    const requestCols: number = this.termCols;
+    const requestRows: number = this.termRows;
     if (this.resizePtyTimer !== -1) {
       clearTimeout(this.resizePtyTimer);
       this.resizePtyTimer = -1;
     }
     this.resizePtyTimer = setTimeout((): void => {
       this.resizePtyTimer = -1;
-      if (!this.isPageGenerationActive(requestPageGeneration) ||
-        this.sessionId !== requestSessionId || this.sshSessionGeneration !== requestSessionGeneration) {
+      if (!this.isSshBindingActive(requestPageGeneration, requestBindingGeneration, requestHostId) ||
+        this.sessionId !== requestSessionId ||
+        this.sshSessionGeneration !== requestSessionGeneration) {
         return;
       }
-      this.loader.resizePty(requestSessionId, this.termCols, this.termRows);
+      this.loader.resizePty(requestSessionId, requestCols, requestRows);
       hilog.info(0x0000, 'SshTerminal',
-        `PTY resize cols=${this.termCols} rows=${this.termRows} ` +
+        `PTY resize cols=${requestCols} rows=${requestRows} ` +
         `termArea=${this.termAreaW}x${this.termAreaH} logicalH=${this.terminalRowsViewportHeight()} ` +
         `cell=${this.cellWvp}x${this.cellHvp} font=${this.renderFontVp}vp`);
       if (!this.isDesktopDevice) {
         this.requestTerminalScrollToBottomSettled();
       }
-    }, this.isDesktopDevice ? 32 : 140);
+    }, SSH_TERMINAL_PTY_RESIZE_COALESCE_MS);
+  }
+
+  /** Coalesce each retained pane independently without keeping stale native owners alive. */
+  private scheduleSshWorkspacePtyResize(hostId: string, sessionId: number,
+    sessionGeneration: number, cols: number, rows: number): void {
+    const normalizedHostId: string = hostId.trim();
+    if (normalizedHostId.length === 0 || sessionId <= 0 || sessionGeneration <= 0) { return; }
+    const sizeKey: string = cols.toString() + 'x' + rows.toString();
+    const existingTimer: number | undefined = this.sshWorkspacePtyResizeTimers.get(normalizedHostId);
+    if (existingTimer !== undefined) {
+      if (this.sshWorkspacePtyResizePendingSizes.get(normalizedHostId) === sizeKey) { return; }
+      clearTimeout(existingTimer);
+      this.sshWorkspacePtyResizeTimers.delete(normalizedHostId);
+      this.sshWorkspacePtyResizePendingSizes.delete(normalizedHostId);
+    }
+    // Returning to the last delivered size must cancel a different pending
+    // resize instead of allowing that stale target to fire later.
+    if (this.sshWorkspacePtySizes.get(normalizedHostId) === sizeKey) { return; }
+    const requestPageGeneration: number = this.pageGeneration;
+    let timer: number = -1;
+    timer = setTimeout((): void => {
+      if (this.sshWorkspacePtyResizeTimers.get(normalizedHostId) !== timer) { return; }
+      this.sshWorkspacePtyResizeTimers.delete(normalizedHostId);
+      this.sshWorkspacePtyResizePendingSizes.delete(normalizedHostId);
+      if (!this.isPageGenerationActive(requestPageGeneration) ||
+        normalizedHostId === this.hostId.trim() || !this.sshWorkspaceModeEnabled() ||
+        !this.sshWorkspaceHostVisible(normalizedHostId)) { return; }
+      const runtime: SshTerminalTabView | null = this.sshWorkspaceRuntimeView(normalizedHostId);
+      if (runtime === null || runtime.sessionId !== sessionId ||
+        runtime.generation !== sessionGeneration) { return; }
+      if (this.sshWorkspacePtySizes.get(normalizedHostId) === sizeKey) { return; }
+      this.sshWorkspacePtySizes.set(normalizedHostId, sizeKey);
+      this.loader.resizePty(sessionId, cols, rows);
+    }, SSH_TERMINAL_PTY_RESIZE_COALESCE_MS);
+    this.sshWorkspacePtyResizeTimers.set(normalizedHostId, timer);
+    this.sshWorkspacePtyResizePendingSizes.set(normalizedHostId, sizeKey);
+  }
+
+  private clearSshWorkspacePtyResizeTimers(): void {
+    this.sshWorkspacePtyResizeTimers.forEach((timer: number): void => {
+      clearTimeout(timer);
+    });
+    this.sshWorkspacePtyResizeTimers.clear();
+    this.sshWorkspacePtyResizePendingSizes.clear();
   }
 
   private calcRowsFallback(): number {
@@ -5939,7 +5991,7 @@ struct SshTerminal {
   private onKeyboardInsetChange(): void {
     if (this.terminalUsesDesktopInputLayout() || !this.connected) { return; }
     this.recalcGrid();
-    // 键盘收起 (kbHeight → 0) 时, terminalPaneHeight 会先增大再触发 onAreaChange→recalcGrid→PTY resize (140ms)。
+    // 键盘收起 (kbHeight → 0) 时, terminalPaneHeight 会先增大再触发 onAreaChange→recalcGrid→PTY resize (72ms)。
     // 标准 Settled (0/48/140/260ms) 的 0ms 可能跑在 resize 之前被 followBottom=false 覆盖。
     // 扩展延迟确保键盘收起后有足够时间让 PTY resize + 布局稳定, 最末一次 scrollToBottom 做最后兜底。
     const generation: number = this.pageGeneration;
@@ -8708,6 +8760,7 @@ struct SshTerminal {
     this.sshWorkspaceFocusedPaneId = '';
     this.sshWorkspacePersistenceError = '';
     this.sshWorkspaceManualReconnectRunning = false;
+    this.clearSshWorkspacePtyResizeTimers();
     this.sshWorkspacePtySizes.clear();
     this.showSshPhoneActionPopup = false;
     this.sshProductivityReady = false;
@@ -9127,6 +9180,7 @@ struct SshTerminal {
     this.flushSshWorkspaceSave();
     this.sshWorkspaceInitSequence++;
     this.sshWorkspaceReady = false;
+    this.clearSshWorkspacePtyResizeTimers();
     this.sshWorkspacePtySizes.clear();
     this.showSshPhoneActionPopup = false;
     this.stopSshAuthPromptPolling(true);
@@ -9302,6 +9356,7 @@ struct SshTerminal {
       clearTimeout(this.resizePtyTimer);
       this.resizePtyTimer = -1;
     }
+    this.clearSshWorkspacePtyResizeTimers();
     if (this.orientationSettleTimer !== -1) {
       clearTimeout(this.orientationSettleTimer);
       this.orientationSettleTimer = -1;
@@ -10931,10 +10986,8 @@ struct SshTerminal {
       if (!this.sshWorkspaceModeEnabled() || !this.sshWorkspaceHostVisible(normalizedHostId)) { return; }
       const runtime: SshTerminalTabView | null = this.sshWorkspaceRuntimeView(normalizedHostId);
       if (runtime === null || runtime.sessionId <= 0 || runtime.generation !== sessionGeneration) { return; }
-      const sizeKey: string = nextCols.toString() + 'x' + nextRows.toString();
-      if (this.sshWorkspacePtySizes.get(normalizedHostId) === sizeKey) { return; }
-      this.sshWorkspacePtySizes.set(normalizedHostId, sizeKey);
-      this.loader.resizePty(runtime.sessionId, nextCols, nextRows);
+      this.scheduleSshWorkspacePtyResize(normalizedHostId, runtime.sessionId,
+        runtime.generation, nextCols, nextRows);
       return;
     }
     if (nextCols === this.termCols && nextRows === this.termRows) { return; }
