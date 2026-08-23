@@ -13,6 +13,7 @@ Updated: 2026-08-23 Asia/Shanghai
 - `4739e67ac` + `ef836f38d` + `20bc9d60` + `232f18b9`: persist automatic guidance as once-ever by default, add the Tutorial “always show” control, expand SSH/Moonlight lessons, and fence SSH/Moonlight/RDP/RustDesk/VNC prompts by exact live session across page rebuilds. Final independent review is P0/P1/P2/P3 all zero.
 - `6abd75469`: route PC/2in1 VNC settings connections back through HostList's lock, certificate, authentication and independent-window path while retaining Phone/Pad navigation.
 - `2c1132385` + `c2478e484` + `a8845458`: add RDP LAN search and require LAN-discovered RDP/RustDesk hosts to choose static cloud-sync or dynamic local-only/auto-refresh policy, with owner fencing, strict RDP recognition and independent P0/P1/P2/P3-zero review.
+- `27c3b786` + `c8569d8f` + `10a0c25f`: replace the standalone modifier FAB with session-rail entry across RDP/RustDesk/VNC/Moonlight, add switchable Windows/macOS catalogs, function/navigation/custom shortcuts and official regular-app-safe HarmonyOS virtual-keyboard settings, then close touch-boundary, drag, landscape/IME reachability and VNC avoidance findings. Final independent review is P0/P1/P2/P3 all zero.
 - RustDesk-style FAB/add flow, adaptive phone/PC Moonlight host surfaces, six owned settings sheets, metered launch admission, local repository/cache and all input classes are wired.
 
 ## Non-cloud closeout
@@ -27,6 +28,7 @@ Updated: 2026-08-23 Asia/Shanghai
 - The persistent visibility follow-up review is P0/P1/P2/P3 all zero after closing exact-session, page-rebuild, successful-presentation marker and unknown SSH generation findings. Exact test compile, assemble, diff check and Light compliance pass on 2026-08-23; device `ohosTest` remains blocked by unregistered task `00306054`.
 - The VNC settings-handoff review is P0/P1/P2/P3 all zero; exact test compile, assemble, diff check and Light compliance pass for `6abd75469` before later unrelated Sheet-policy working-tree changes appeared.
 - The LAN address-policy review is P0/P1/P2/P3 all zero. Exact ArkTS compile, signed HAP assembly, diff check and Light compliance pass for `a8845458`; device `ohosTest` remains blocked by the unregistered `00306054` task.
+- The remote-keyboard review is P0/P1/P2/P3 all zero at `10a0c25f`. Exact ArkTS test compile and signed HAP assembly pass; the latest package installs and starts on `127.0.0.1:5555`, while live panel drag/touch-through evidence remains blocked behind the existing LoginPage gate.
 
 ## Current cloud/data increment
 
@@ -43,7 +45,7 @@ Updated: 2026-08-23 Asia/Shanghai
 
 1. Deployment is confirmed and revision 1 is enabled. Test optional-nine registration while proving core-eight continuity and old-version startup/pull behavior.
 2. Complete compatibility-first cloud upload/download/delete/conflict/account-switch/crypto-reset and upgrade tests; bad Moonlight rows must be isolated rather than blocking pulls.
-3. Run fresh PC/phone/freeform-window guide screenshots and full Sunshine/controller/lifecycle acceptance only from the current package; no target was online on 2026-08-23.
+3. After the login gate is cleared, run fresh PC/phone/freeform-window guide and remote-keyboard screenshots plus live panel drag/touch-through acceptance from the current package.
 4. On a real DHCP LAN, verify RDP certificate-fingerprint and RustDesk Peer-ID refresh after address changes; manually entered and static-discovered hosts must remain unchanged.
 
 ## External gates
@@ -51,4 +53,4 @@ Updated: 2026-08-23 Asia/Shanghai
 - The user explicitly confirmed deployment of the inspected AGC table; revision 1 is enabled. Real registration and transfer receipts remain part of device acceptance.
 - Real Sunshine pair/catalog/launch/first-frame/stop, physical-controller, ARM64, network transition and long-run receipts remain pending.
 - `ohosTest` task `00306054` is still unregistered.
-- HDC/UI screenshots are deferred by user instruction until backend, cloud and UI are complete; old screenshots cannot be reused.
+- The current phone simulator accepts and starts the latest HAP, but its LoginPage gate blocks live connection UI acceptance; old screenshots cannot be reused.

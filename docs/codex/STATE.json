@@ -3,16 +3,16 @@
   "task": "moonlight-complete-upgrade",
   "branch": "codex/moonlight-complete-upgrade",
   "base": "aeb0cdac589caeac8b75dec5958f4e07ee62faf5",
-  "head": "232f18b947cdf1adf8f6079b8664e71f268e31f9",
+  "head": "10a0c25f6106b0da9d7df14eb300413bbdca1b84",
   "phase": "moonlight-cloud-enabled-ready-for-device-acceptance",
   "status": "active",
-  "next": "Deploy the current package, then complete compatibility-first cloud, Sunshine, controller, lifecycle, fresh multi-device UI, and real-DHCP LAN address-refresh acceptance.",
+  "next": "Clear the login gate, then complete live remote-keyboard touch/drag, compatibility-first cloud, Sunshine, controller, lifecycle, fresh multi-device UI, and real-DHCP LAN address-refresh acceptance.",
   "blockers": [
     "Real optional-nine registration, core-eight fallback and Moonlight transfer receipts remain pending on the deployed environment",
     "A reachable real Sunshine host is required for pair/catalog/launch/first-frame/stop receipts",
     "Physical-controller and user ARM64 device receipts remain external acceptance evidence",
     "ohosTest task 00306054 remains unregistered; focused ArkTS cases compile but are not claimed as device Hypium PASS",
-    "Fresh UI and full-function acceptance must use the current cloud-enabled package; hdc reported no online target on 2026-08-22"
+    "The latest signed HAP installs and starts on phone simulator 127.0.0.1:5555, but the existing LoginPage gate blocks live remote-keyboard and connection UI acceptance"
   ],
   "planPaths": [
     "docs/superpowers/plans/2026-07-28-moonlight-harmonyos-complete-upgrade-plan.md",
@@ -23,7 +23,8 @@
     "taskIds": [
       "01a018c6-e83c-7ac3-a578-7330b528a3af",
       "/root/lan_address_policy_review",
-      "/root/review_guide_visibility"
+      "/root/review_guide_visibility",
+      "/root/keyboard_review"
     ],
     "reviewedHead": "348b28083c82e951410f0ab2863ecbdaf94d3115",
     "scope": [
@@ -49,16 +50,17 @@
         "summary": "Foreground startup ordering, account switch during registration, optional-table failure fallback and rejection retry require real cloud/device integration receipts after provisioning."
       }
     ],
-    "reason": "The cloud scope still requires provisioning-dependent P3 integration evidence. Separately, adaptive guidance at 94fa21f8f, persistent visibility through 232f18b9, VNC handoff at 6abd75469, and the RDP/RustDesk LAN address-policy increment at a8845458 passed independent review with P0/P1/P2/P3 all zero."
+    "reason": "The cloud scope still requires provisioning-dependent P3 integration evidence. Separately, adaptive guidance at 94fa21f8f, persistent visibility through 232f18b9, VNC handoff at 6abd75469, the RDP/RustDesk LAN address-policy increment at a8845458, and the remote keyboard redesign through 10a0c25f passed independent review with P0/P1/P2/P3 all zero."
   },
   "lastVerification": {
-    "diffCheck": "pass on 2026-08-23 for guidance visibility through 232f18b9 plus preserved concurrent worktree changes",
-    "testCompile": "pass: exact default@OhosTestCompileArkTS with --analyze=normal --parallel --incremental --no-daemon on 2026-08-23 for guidance visibility through 232f18b9 plus preserved concurrent worktree changes",
-    "assembleHap": "pass: exact assembleHap on the same tree plus final state-document updates; signed HAP SHA-256 fa8df1ca75129beca39852390c34b16f47628c1bbb0d761ee4e5673cf28d360b",
+    "diffCheck": "pass on 2026-08-23 for the remote-keyboard tree through 10a0c25f plus preserved concurrent worktree changes",
+    "testCompile": "pass: exact default@OhosTestCompileArkTS with --analyze=normal --parallel --incremental --no-daemon on 2026-08-23 for the remote-keyboard tree through 10a0c25f plus preserved concurrent worktree changes",
+    "assembleHap": "pass: exact assembleHap on the same tree; signed HAP SHA-256 39dc57ce3351c1834700fec72053d23475a4cebe45531fc961f46439f0db0ed9",
     "hapPath": "entry/build/default/outputs/default/entry-default-signed.hap",
     "nativeTests": "pass outside the socket-restricted sandbox: 780 passed, 0 failed; Moonlight and adjacent-protocol fixtures all passed",
-    "hdcRuntime": "revision-1 HAP installed and EntryAbility started successfully on phone simulator 127.0.0.1:5555 and PC simulator 127.0.0.1:5557; full acceptance remains pending",
-    "uiAcceptance": "adaptive guidance, persistent visibility and VNC settings-handoff final reviews P0/P1/P2/P3 zero; fresh phone/PC/freeform-window screenshots remain pending because no hdc target was online on 2026-08-23",
+    "hdcRuntime": "latest remote-keyboard HAP installed and EntryAbility started successfully on phone simulator 127.0.0.1:5555; the existing LoginPage gate blocks live connection UI acceptance; earlier revision-1 startup also passed on PC simulator 127.0.0.1:5557",
+    "uiAcceptance": "adaptive guidance, persistent visibility, VNC settings handoff and remote keyboard final reviews P0/P1/P2/P3 zero; fresh phone/PC/freeform-window keyboard drag/touch-through evidence remains pending behind the LoginPage gate",
+    "remoteKeyboard": "pass: session-rail entry for RDP/RustDesk/VNC/Moonlight; Windows/macOS catalogs, function/navigation/custom shortcuts, official regular-app-safe HarmonyOS IME settings, panel-only touch blocking, drag and safe/IME landscape reachability; independent review P0/P1/P2/P3 zero at 10a0c25f",
     "guideVisibility": "pass: automatic hints persist as once-ever by default; always-show mode is exact-session deduplicated across page rebuilds for SSH, Moonlight, RDP, RustDesk and VNC; RemoteDesktop marks only successful dialog presentation and retries failures at most twice; independent review P0/P1/P2/P3 zero through 232f18b9",
     "cloudBoundary": "compatibility-first: core eight registered first; optional ninth table gated by deployment receipt; per-record Moonlight quarantine cannot block old tables",
     "lanAddressPolicy": "pass: LAN-discovered RDP/RustDesk require explicit static/dynamic choice; static uses normal cloud sync without refresh, dynamic is owner-scoped local-only with identity-based refresh, and manual entries retain legacy behavior; independent review P0/P1/P2/P3 zero at a8845458",

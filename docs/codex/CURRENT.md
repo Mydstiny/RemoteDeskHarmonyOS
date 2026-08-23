@@ -4,8 +4,8 @@
 
 - Task: `moonlight-complete-upgrade`
 - Base: `main@aeb0cdac5`; branch: `codex/moonlight-complete-upgrade`
-- Code checkpoint: `232f18b9`; the following state-document commit does not change reviewed code.
-- Phase: the complete Moonlight implementation remains in device acceptance; the independently reviewed adaptive guidance, durable visibility policy and RDP/RustDesk LAN-discovery address-policy increments are committed.
+- Code checkpoint: `10a0c25f`; the following state-document commit does not change reviewed code.
+- Phase: the complete Moonlight implementation remains in device acceptance; the independently reviewed adaptive guidance, durable visibility policy, RDP/RustDesk LAN-discovery address policy and remote virtual-keyboard/shortcut redesign are committed.
 - Authoritative plan: `docs/superpowers/plans/2026-07-28-moonlight-harmonyos-complete-upgrade-plan.md`
 - Live ledger: `docs/codex/plans/2026-08-09-moonlight-implementation-ledger.md`
 
@@ -25,21 +25,24 @@
 - Guidance is layered instead of one long manual: first install stays at seven pages, Settings provides a device/protocol-filtered operation center and five-protocol connection preparation, and SSH/Moonlight add foreground-safe contextual hints. Automatic hints are durably shown once by default; Settings → Tutorial → Operation Guide Center exposes an “always show” switch that permits at most one hint per exact live SSH/Moonlight/RDP/RustDesk/VNC session, including across ArkUI page rebuilds. Security and functional decisions remain repeatable when the live connection requires them.
 - VNC connections started from the dedicated settings page now preserve the existing Phone/Pad in-page route, while PC/2in1 returns a credential-free one-shot intent to HostList so lock, certificate, authentication and independent-window ownership remain centralized.
 - RDP now exposes LAN search beside the existing address/port entry, and both RDP and RustDesk require LAN-discovered hosts to choose static or dynamic before continuing. Static uses normal cloud sync without address refresh; dynamic remains local-only and refreshes by RDP certificate identity or RustDesk Peer ID. Manually entered hosts retain their previous behavior.
+- Remote keyboard controls are now entered from the RDP/RustDesk/VNC/Moonlight session rail rather than a standalone modifier FAB. The translucent panel has an explicit close button, title-bar drag with safe-area/IME clamping, a full-screen transparent hit-test root and a blocking panel body, so only the connection pixels physically under the panel stop receiving touch.
+- The session panel supports switchable Windows/macOS shortcut catalogs, complete modifier/function/navigation keys and persisted custom shortcuts. Settings now includes virtual-keyboard controls plus the regular-app-safe HarmonyOS API 23 surface: simple-keyboard mode, current/all/enabled IME and subtype inspection, system IME settings and per-IME detail routing; privileged current-IME switching remains intentionally excluded.
 
 ## Latest verification
 
-- Exact `default@OhosTestCompileArkTS`: PASS on 2026-08-23 for the guidance visibility tree through `232f18b9` plus preserved concurrent worktree changes.
-- Exact `assembleHap`: PASS on the same tree plus final state-document updates. Signed HAP SHA-256: `fa8df1ca75129beca39852390c34b16f47628c1bbb0d761ee4e5673cf28d360b`.
+- Exact `default@OhosTestCompileArkTS`: PASS on 2026-08-23 for the remote-keyboard tree through `10a0c25f` plus preserved concurrent worktree changes.
+- Exact `assembleHap`: PASS on the same tree. Signed HAP SHA-256: `39dc57ce3351c1834700fec72053d23475a4cebe45531fc961f46439f0db0ed9`.
 - Host native suite outside the socket-restricted sandbox: `780 passed, 0 failed`; this includes the Moonlight product input/runtime tests and the existing adjacent-protocol fixtures.
 - `git diff --check` and Light open-source compliance: PASS on 2026-08-23. Pinned Moonlight vendor reconstruction (3 Git trees / 117 exact files) and dual-ABI GameControllerKit ELF isolation also remain PASS.
-- Committed checkpoints include `9eadb35be`, `326f329f5`, `348b28083`, `aff7fdf03`, `2d9ce0024`, `2c9120e98`, `94fa21f8f`, `6abd75469`, guidance visibility `4739e67ac`, `ef836f38d`, `20bc9d60`, `232f18b9`, plus LAN policy `2c1132385`, `c2478e484` and `a8845458`.
+- Committed checkpoints include `9eadb35be`, `326f329f5`, `348b28083`, `aff7fdf03`, `2d9ce0024`, `2c9120e98`, `94fa21f8f`, `6abd75469`, guidance visibility `4739e67ac`, `ef836f38d`, `20bc9d60`, `232f18b9`, LAN policy `2c1132385`, `c2478e484`, `a8845458`, and remote keyboard `27c3b786`, `c8569d8f`, `10a0c25f`.
 - The adaptive-guidance reviewer found four P2s in the first checkpoint (device-init timing, one-shot retry, 480vp reachability and protocol localization). `94fa21f8f` closes all four; final independent review is P0/P1/P2/P3 all zero.
 - The persistent-visibility reviewer found exact-session/page-rebuild and success-before-marker edge cases, then one unknown SSH generation edge. `20bc9d60` and `232f18b9` close them; final independent review is P0/P1/P2/P3 all zero for SSH, Moonlight, RDP, RustDesk and VNC.
 - The independent VNC settings-handoff review for `6abd75469` is P0/P1/P2/P3 all zero; it verified Phone/Pad routing, PC intent expiry/single consumption, account-scoped host reload and the unchanged HostList security/window path.
 - The independent LAN-policy review for `a8845458` is P0/P1/P2/P3 all zero. It verified mandatory post-discovery policy choice, manual-entry compatibility, local-only dynamic persistence/refresh, normal static cloud sync, owner-fenced secrets and strict RDP preflight recognition.
+- The reused remote-keyboard reviewer first found missing sidebar checkpoint coverage, landscape reachability, imprecise custom-key grouping and Win/Cmd latch semantics, then found safe-height and VNC rail placement regressions. `c8569d8f` and `10a0c25f` close every finding; final independent review is P0/P1/P2/P3 all zero.
 - The reused reviewer closed the final native receipt, immutable facade identity, HostList preflight/2FA retry and A→B anti-misdisconnect findings with P0/P1/P2/P3 all zero. Final cloud/device integration evidence remains pending after AGC deployment.
 - Device `ohosTest` remains blocked by unregistered task `00306054`; no device Hypium pass is claimed.
-- The exact revision-1 HAP was installed and `EntryAbility` started successfully on phone simulator `127.0.0.1:5555` and PC simulator `127.0.0.1:5557`. No old screenshots are reused; final acceptance still requires fresh PC/phone evidence from this package.
+- The exact keyboard HAP was installed and `EntryAbility` started successfully on phone simulator `127.0.0.1:5555`; earlier revision-1 startup also passed on PC simulator `127.0.0.1:5557`. The phone currently remains at the existing LoginPage gate, so no keyboard-panel drag/touch-through device PASS or reused screenshot is claimed.
 
 ## Next and blockers
 
@@ -47,5 +50,5 @@
 - Compatibility remains the first release gate: Moonlight record-level rejection must never turn into a whole-table/core-eight pull failure, while uploads and destructive operations remain strict.
 - Verify real optional registration, core-eight coexistence, old-version upgrade, upload/download/delete/conflict/account-switch/crypto-reset lifecycles, then run one final UI/full-function acceptance pass.
 - External acceptance still needs a reachable Sunshine host, physical controller, ARM64 device and long-run/network/lifecycle scenarios.
-- Fresh guide-center phone/PC/freeform-window visual evidence is still pending because no HDC target was online on 2026-08-23. Unrelated concurrent Moonlight and SSH worktree changes remain preserved and excluded from the guidance checkpoints/review.
+- Fresh guide-center and keyboard-panel phone/PC/freeform-window visual evidence is still pending. A phone HDC target is online and the latest package starts, but the existing LoginPage gate prevents reaching a live connection; unrelated concurrent Moonlight and SSH worktree changes remain preserved and excluded from these checkpoints/reviews.
 - Real-network acceptance should still exercise RDP certificate identity and RustDesk Peer ID across a DHCP address change; this is runtime evidence, not an implementation blocker.
