@@ -216,6 +216,7 @@ struct MoonlightStreamPage {
   @State audioReady: boolean = false;
   @State showConnectStage: boolean = true;
   @State showConnectStageSheet: boolean = false;
+  @State pendingConnectStageSheet: boolean = false;
   @State showSessionSheet: boolean = false;
   @State sheetMode: MoonlightSessionSheetMode = 'none';
   @State pendingSheetMode: MoonlightSessionSheetMode = 'none';
@@ -370,7 +371,28 @@ struct MoonlightStreamPage {
    * session underneath it.
    */
   private syncConnectStageSheet(): void {
-    this.showConnectStageSheet = this.showConnectStage || this.surfaceRecovering;
+    const gateNeeded: boolean = this.showConnectStage || this.surfaceRecovering;
+    if (!gateNeeded) {
+      this.pendingConnectStageSheet = false;
+      this.showConnectStageSheet = false;
+      return;
+    }
+    // The stream route has one native Sheet host for session controls and one
+    // for the connection gate. Never leave both requested at once: closing a
+    // control Sheet is asynchronous, so queue the gate and let
+    // onSheetDisappear() open it after the native Sheet has actually gone.
+    if (this.showSessionSheet || this.pendingSheetMode !== 'none' ||
+        this.sheetReopenTimer >= 0) {
+      this.pendingConnectStageSheet = true;
+      this.showConnectStageSheet = false;
+      this.pendingSheetMode = 'none';
+      this.sheetReopenGeneration += 1;
+      this.cancelSheetReopen();
+      if (this.showSessionSheet) { this.showSessionSheet = false; }
+      return;
+    }
+    this.pendingConnectStageSheet = false;
+    this.showConnectStageSheet = true;
   }
 
   private setConnectStageVisible(visible: boolean): void {
@@ -626,6 +648,7 @@ struct MoonlightStreamPage {
     this.cancelSheetReopen();
     this.pendingSheetMode = 'none';
     this.showSessionSheet = false;
+    this.pendingConnectStageSheet = false;
     this.showConnectStageSheet = false;
     this.closeMoonlightRoute('stream-page-disappear');
     void this.stopMoonlightBackgroundTask();
@@ -2918,6 +2941,9 @@ struct MoonlightStreamPage {
   }
 
   private openSheet(mode: MoonlightSessionSheetMode): void {
+    if (this.showConnectStage || this.surfaceRecovering || this.pendingConnectStageSheet) {
+      return;
+    }
     this.flushInput('open_l5_' + mode);
     this.setNativeInputSuspended(true, 'overlay_opened');
     if (this.showSessionSheet) {
@@ -2944,6 +2970,15 @@ struct MoonlightStreamPage {
   }
 
   private onSheetDisappear(): void {
+    if (this.pendingConnectStageSheet || this.showConnectStage || this.surfaceRecovering) {
+      this.pendingSheetMode = 'none';
+      this.sheetMode = 'none';
+      this.cancelSheetReopen();
+      this.pendingConnectStageSheet = false;
+      this.showConnectStageSheet = true;
+      this.setNativeInputSuspended(true, 'overlay_opened');
+      return;
+    }
     if (this.pendingSheetMode !== 'none') {
       const next: MoonlightSessionSheetMode = this.pendingSheetMode;
       this.pendingSheetMode = 'none';

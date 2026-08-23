@@ -10259,12 +10259,6 @@ struct HostListPage {
   @Builder moonlightFlatHostCard(view: MoonlightHostLocalView) {
     if (view.host !== null) {
       Row() {
-        if (this.hostSelectionMode) {
-          Checkbox()
-            .select(this.hostSelectedIds.has(view.host.id)).selectedColor(this.accentColor)
-            .margin({ right: 7 }).monopolizeEvents(true)
-            .onChange((checked: boolean): void => { this.toggleHostSelect(view.host?.id || '', checked); })
-        }
         Column() {
           MoonlightBrandIcon({ iconSize: this.breakpoint === 'sm' ? 24 : 26,
             tint: '#FFFFFF', accessibilityLabel: 'Moonlight 主机' })
@@ -10293,43 +10287,24 @@ struct HostListPage {
         }
         .alignItems(HorizontalAlign.Start).layoutWeight(1)
         .onClick((): void => {
-          if (this.hostSelectionMode) {
-            this.toggleHostSelect(view.host?.id || '', !this.hostSelectedIds.has(view.host?.id || ''));
-          } else {
-            this.openMoonlightHost(view.host?.id || '');
-          }
+          // Moonlight hosts are intentionally excluded from the generic
+          // RemoteHost batch-selection contract (delete/reorder/select-all
+          // operate on RemoteHost only). Keep the card inert while another
+          // protocol is selected instead of opening a detail route or
+          // creating a selection entry that cannot be acted on.
+          if (!this.hostSelectionMode) { this.openMoonlightHost(view.host?.id || ''); }
         })
-        Column() {
-          if (this.hostSelectionMode && this.hostReorderEnabled) {
-            SymbolGlyph($r('sys.symbol.line_3_horizontal')).fontSize(20)
-              .fontColor([this.pal().text3]).margin({ left: 8 })
-          }
-        }.alignItems(HorizontalAlign.End).margin({ left: 6 })
       }
       .width('100%').constraintSize({ minHeight: this.breakpoint === 'sm' ? 66 : 80 })
       .padding(this.breakpoint === 'sm' ? { left: 12, right: 14, top: 12, bottom: 12 } : 14)
       .borderRadius(14).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
       .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
-      .gesture(LongPressGesture().onAction((): void => {
-        if (!this.hostSelectionMode) {
-          this.hostSelectionMode = true;
-          this.hostReorderEnabled = true;
-          this.hostSelectedIds = new Set<string>();
-          this.hostSelectedIds.add(view.host?.id || '');
-        }
-      }))
     }
   }
 
   @Builder moonlightGroupedHostCard(view: MoonlightHostLocalView) {
     if (view.host !== null) {
       Row() {
-        if (this.hostSelectionMode) {
-          Checkbox()
-            .select(this.hostSelectedIds.has(view.host.id)).selectedColor(this.accentColor)
-            .margin({ right: 7 }).monopolizeEvents(true)
-            .onChange((checked: boolean): void => { this.toggleHostSelect(view.host?.id || '', checked); })
-        }
         Column() {
           MoonlightBrandIcon({ iconSize: this.breakpoint === 'sm' ? 21 : 23,
             tint: '#FFFFFF', accessibilityLabel: 'Moonlight 主机' })
@@ -10341,11 +10316,7 @@ struct HostListPage {
         .justifyContent(FlexAlign.Center)
         .margin({ right: this.breakpoint === 'sm' ? 9 : 10 })
         .onClick((): void => {
-          if (this.hostSelectionMode) {
-            this.toggleHostSelect(view.host?.id || '', !this.hostSelectedIds.has(view.host?.id || ''));
-          } else {
-            this.openMoonlightHost(view.host?.id || '');
-          }
+          if (!this.hostSelectionMode) { this.openMoonlightHost(view.host?.id || ''); }
         })
         Column() {
           Text(view.host.displayName).fontSize(this.breakpoint === 'sm' ? 15 : 16)
@@ -10362,7 +10333,9 @@ struct HostListPage {
               .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
           }.width('100%').margin({ top: 3 })
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-          .onClick((): void => { this.openMoonlightHost(view.host?.id || ''); })
+          .onClick((): void => {
+            if (!this.hostSelectionMode) { this.openMoonlightHost(view.host?.id || ''); }
+          })
         Column() {
           Row() {
             Text(view.paired ? '已配对' : '未配对').fontSize(10)
@@ -10377,7 +10350,9 @@ struct HostListPage {
             .height(this.breakpoint === 'sm' ? 38 : 40).borderRadius(19).padding(0)
             .backgroundColor(this.pal().surface).accessibilityText('检查 Moonlight 主机')
             .onClick((): void => {
-              promptAction.showToast({ message: 'Moonlight 主机将在打开目录时后台鉴权', duration: 1800 });
+              if (!this.hostSelectionMode) {
+                promptAction.showToast({ message: 'Moonlight 主机将在打开目录时后台鉴权', duration: 1800 });
+              }
             })
           }
           Row({ space: 8 }) {
@@ -10386,20 +10361,24 @@ struct HostListPage {
             }
             .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
             .accessibilityText('打开 Moonlight 主机详情')
-            .onClick((): void => { this.openMoonlightHost(view.host?.id || ''); })
+            .onClick((): void => {
+              if (!this.hostSelectionMode) { this.openMoonlightHost(view.host?.id || ''); }
+            })
             Button() {
               MoonlightBrandIcon({ iconSize: 16, tint: this.pal().text2, accessibilityLabel: '应用目录' })
             }
             .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
             .accessibilityText('打开 Moonlight 应用目录')
-            .onClick((): void => { this.openMoonlightHost(view.host?.id || '', true); })
+            .onClick((): void => {
+              if (!this.hostSelectionMode) { this.openMoonlightHost(view.host?.id || '', true); }
+            })
             Button() {
               SymbolGlyph($r('sys.symbol.gearshape_fill')).fontSize(16).fontColor([this.pal().text2])
             }
             .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
             .accessibilityText('Moonlight 设置')
             .onClick((): void => {
-              this.openMoonlightHostSettings(view.host?.id || '');
+              if (!this.hostSelectionMode) { this.openMoonlightHostSettings(view.host?.id || ''); }
             })
           }.margin({ top: 7 })
         }.alignItems(HorizontalAlign.End).margin({ left: 10 })
@@ -10407,13 +10386,6 @@ struct HostListPage {
       .width('100%').height(this.hostGroupHostCardHeight()).padding(6)
       .borderRadius(12).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
       .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
-      .gesture(LongPressGesture().onAction((): void => {
-        if (!this.hostSelectionMode) {
-          this.hostSelectionMode = true;
-          this.hostSelectedIds = new Set<string>();
-          this.hostSelectedIds.add(view.host?.id || '');
-        }
-      }))
     }
   }
 
