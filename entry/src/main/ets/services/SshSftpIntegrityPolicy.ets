@@ -82,6 +82,18 @@ export function sshSftpCommittedDisposition(commitReceiptStale: boolean,
   return commitReceiptStale ? 'request-stale' : 'normal';
 }
 
+/**
+ * Opening a local export target with TRUNC crosses its irreversible boundary.
+ * A stop before that open is honored; afterwards the current attempt must
+ * finish the verified local copy instead of deliberately leaving a truncated
+ * overwrite target. A replacement attempt always fences the old writer.
+ */
+export function sshSftpLocalExportShouldContinue(destinationOpened: boolean,
+  attemptCurrent: boolean, stopRequested: boolean): boolean {
+  if (!attemptCurrent) { return false; }
+  return destinationOpened || !stopRequested;
+}
+
 export function sshSftpPartialSuffix(taskId: string): string {
   let safe: string = '';
   for (let index = 0; index < taskId.length; index++) {

@@ -4,6 +4,7 @@ import {
   sshSftpCommitSizeMatches,
   sshSftpFinalUriFromPartial,
   sshSftpIdentityMatches,
+  sshSftpLocalExportShouldContinue,
   sshSftpOffsetIsValid,
   sshSftpPartialSuffix,
   sshSftpSkipRemovalDecision
@@ -65,6 +66,14 @@ export default function sshSftpIntegrityPolicyTest(): void {
         .assertEqual('paused-after-commit');
       expect(sshSftpCommittedDisposition(false, true, true))
         .assertEqual('cancelled-after-commit');
+    });
+
+    it('finishes only the current local export after its truncate boundary', 0, (): void => {
+      expect(sshSftpLocalExportShouldContinue(false, true, false)).assertTrue();
+      expect(sshSftpLocalExportShouldContinue(false, true, true)).assertFalse();
+      expect(sshSftpLocalExportShouldContinue(true, true, true)).assertTrue();
+      expect(sshSftpLocalExportShouldContinue(true, false, false)).assertFalse();
+      expect(sshSftpLocalExportShouldContinue(true, false, true)).assertFalse();
     });
   });
 }

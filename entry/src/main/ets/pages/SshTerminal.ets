@@ -406,6 +406,7 @@ import {
   sshSftpCommittedDisposition,
   sshSftpCommitSizeMatches,
   sshSftpIdentityMatches,
+  sshSftpLocalExportShouldContinue,
   sshSftpOffsetIsValid,
   sshSftpPartialSuffix,
   sshSftpSkipRemovalDecision
@@ -14260,34 +14261,59 @@ struct SshTerminal {
     let destinationCommitted: boolean = false;
     try {
       source = await fileIo.open(partialPath, fileIo.OpenMode.READ_ONLY);
-      if (this.shouldStopSftpTransfer(session)) { return false; }
+      if (!sshSftpLocalExportShouldContinue(false,
+        this.isSftpTransferAttemptCurrent(session), this.shouldStopSftpTransfer(session))) {
+        return false;
+      }
       destination = await fileIo.open(finalUri,
         fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.CREATE | fileIo.OpenMode.TRUNC);
       destinationOpened = true;
-      if (this.shouldStopSftpTransfer(session)) { return false; }
+      if (!sshSftpLocalExportShouldContinue(true,
+        this.isSftpTransferAttemptCurrent(session), this.shouldStopSftpTransfer(session))) {
+        return false;
+      }
       let copied: number = 0;
       while (copied < expectedSize) {
-        if (this.shouldStopSftpTransfer(session)) { return false; }
+        if (!sshSftpLocalExportShouldContinue(true,
+          this.isSftpTransferAttemptCurrent(session), this.shouldStopSftpTransfer(session))) {
+          return false;
+        }
         const chunkSize: number = Math.min(SFTP_DOWNLOAD_CHUNK_BYTES, expectedSize - copied);
         const chunk = new ArrayBuffer(chunkSize);
         const readLen: number = await fileIo.read(source.fd, chunk);
         if (readLen <= 0) { return false; }
-        if (this.shouldStopSftpTransfer(session)) { return false; }
+        if (!sshSftpLocalExportShouldContinue(true,
+          this.isSftpTransferAttemptCurrent(session), this.shouldStopSftpTransfer(session))) {
+          return false;
+        }
         const payload: ArrayBuffer = readLen === chunkSize ? chunk : chunk.slice(0, readLen);
         const written: number = await fileIo.write(destination.fd, payload);
         if (written !== readLen) { return false; }
         copied += readLen;
-        if (this.shouldStopSftpTransfer(session)) { return false; }
+        if (!sshSftpLocalExportShouldContinue(true,
+          this.isSftpTransferAttemptCurrent(session), this.shouldStopSftpTransfer(session))) {
+          return false;
+        }
         await this.yieldUi(0);
       }
+      if (!sshSftpLocalExportShouldContinue(true,
+        this.isSftpTransferAttemptCurrent(session), this.shouldStopSftpTransfer(session))) {
+        return false;
+      }
       await fileIo.fsync(destination.fd);
-      if (this.shouldStopSftpTransfer(session)) { return false; }
+      if (!sshSftpLocalExportShouldContinue(true,
+        this.isSftpTransferAttemptCurrent(session), this.shouldStopSftpTransfer(session))) {
+        return false;
+      }
       await fileIo.close(destination);
       destination = null;
-      if (this.shouldStopSftpTransfer(session)) { return false; }
+      if (!sshSftpLocalExportShouldContinue(true,
+        this.isSftpTransferAttemptCurrent(session), this.shouldStopSftpTransfer(session))) {
+        return false;
+      }
       const finalIdentity: SshSftpFileIdentity | null = await this.readLocalSftpIdentity(finalUri);
-      if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId,
-        requestSessionGeneration) || this.shouldStopSftpTransfer(session)) {
+      if (!sshSftpLocalExportShouldContinue(true,
+        this.isSftpTransferAttemptCurrent(session), this.shouldStopSftpTransfer(session))) {
         return false;
       }
       if (finalIdentity === null || !sshSftpCommitSizeMatches(finalIdentity.size, expectedSize)) {
@@ -14298,7 +14324,9 @@ struct SshTerminal {
       destinationCommitted = true;
       try { await fileIo.close(source); } catch (_closeErr) { /* source is already verified */ }
       source = null;
-      try { await fileIo.unlink(partialPath); } catch (_cleanupErr) { /* retain if cleanup is unavailable */ }
+      if (this.isSftpTransferAttemptCurrent(session)) {
+        try { await fileIo.unlink(partialPath); } catch (_cleanupErr) { /* retain if cleanup is unavailable */ }
+      }
       return true;
     } catch (_err) {
       return false;
