@@ -251,6 +251,7 @@ import {
   buildSshBroadcastPlan,
   reconcileSshBroadcastSelection,
   resolveSshBroadcastInputEnabled,
+  sshBroadcastConfirmationStillValid,
   sshBroadcastTargetEligible,
   SSH_BROADCAST_INPUT_DEFAULT_ENABLED,
   SSH_BROADCAST_INPUT_FLAG_KEY,
@@ -3529,6 +3530,7 @@ struct SshTerminal {
       promptAction.showToast({ message: this.sshBroadcastPlanErrorMessage(plan.code), duration: 1800 });
       return;
     }
+    const confirmationPlan = plan;
     let confirmed: boolean = false;
     if (plan.requiresConfirmation) {
       try {
@@ -3553,8 +3555,13 @@ struct SshTerminal {
     this.refreshSshBroadcastTargets();
     plan = buildSshBroadcastPlan(
       this.sshBroadcastTargets, selected, this.sshBroadcastText, this.sshBroadcastMode);
-    if (!plan.ok || (plan.requiresConfirmation && !confirmed)) {
+    if (!plan.ok) {
       promptAction.showToast({ message: this.sshBroadcastPlanErrorMessage(plan.code), duration: 1800 });
+      return;
+    }
+    if (confirmationPlan.requiresConfirmation &&
+      !sshBroadcastConfirmationStillValid(confirmationPlan, plan)) {
+      promptAction.showToast({ message: '广播内容或目标已变化，请重新确认', duration: 1800 });
       return;
     }
     const liveViews: Array<SshTerminalTabView> = this.sshTabStore.views();

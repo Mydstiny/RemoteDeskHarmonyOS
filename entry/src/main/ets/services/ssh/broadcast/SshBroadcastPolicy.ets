@@ -241,3 +241,32 @@ export function buildSshBroadcastPlan(
     confirmationReason
   };
 }
+
+/**
+ * A confirmation may be reused only for the same payload/mode and an exact
+ * identity subset of the targets shown before the system dialog. Targets may
+ * disappear while waiting, but a new/reconnected owner must be reconfirmed.
+ */
+export function sshBroadcastConfirmationStillValid(
+  confirmedPlan: SshBroadcastPlanV1, currentPlan: SshBroadcastPlanV1): boolean {
+  if (!confirmedPlan.ok || !confirmedPlan.requiresConfirmation || !currentPlan.ok ||
+    confirmedPlan.text !== currentPlan.text || confirmedPlan.mode !== currentPlan.mode ||
+    !currentPlan.requiresConfirmation || currentPlan.targets.length === 0) {
+    return false;
+  }
+  for (let currentIndex: number = 0; currentIndex < currentPlan.targets.length; currentIndex++) {
+    const current: SshBroadcastTargetV1 = currentPlan.targets[currentIndex];
+    let matched: boolean = false;
+    for (let confirmedIndex: number = 0;
+      confirmedIndex < confirmedPlan.targets.length; confirmedIndex++) {
+      const confirmed: SshBroadcastTargetV1 = confirmedPlan.targets[confirmedIndex];
+      if (current.hostId === confirmed.hostId && current.sessionId === confirmed.sessionId &&
+        current.generation === confirmed.generation) {
+        matched = true;
+        break;
+      }
+    }
+    if (!matched) { return false; }
+  }
+  return true;
+}

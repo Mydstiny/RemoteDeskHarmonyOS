@@ -3,6 +3,7 @@ import {
   buildSshBroadcastPlan,
   reconcileSshBroadcastSelection,
   resolveSshBroadcastInputEnabled,
+  sshBroadcastConfirmationStillValid,
   sshBroadcastTargetBlockReason,
   sshBroadcastTargetEligible,
   SSH_BROADCAST_INPUT_DEFAULT_ENABLED,
@@ -61,6 +62,32 @@ export default function sshBroadcastPolicyTest(): void {
       expect(multiline.requiresConfirmation).assertTrue();
       const risky = buildSshBroadcastPlan([target('host')], ['host'], 'sudo -S id', 'insert');
       expect(risky.requiresConfirmation).assertTrue();
+    });
+
+    it('should_bind_confirmation_to_payload_mode_and_exact_target_owners', 0, (): void => {
+      const firstTarget: SshBroadcastTargetV1 = target('first');
+      const secondTarget: SshBroadcastTargetV1 = target('second');
+      const confirmed = buildSshBroadcastPlan(
+        [firstTarget, secondTarget], ['first', 'second'], 'uptime', 'execute');
+      const subset = buildSshBroadcastPlan(
+        [firstTarget], ['first'], 'uptime', 'execute');
+      expect(sshBroadcastConfirmationStillValid(confirmed, subset)).assertTrue();
+
+      const changedText = buildSshBroadcastPlan(
+        [firstTarget], ['first'], 'reboot', 'execute');
+      expect(sshBroadcastConfirmationStillValid(confirmed, changedText)).assertFalse();
+      const changedMode = buildSshBroadcastPlan(
+        [firstTarget], ['first'], 'uptime\n', 'insert');
+      expect(sshBroadcastConfirmationStillValid(confirmed, changedMode)).assertFalse();
+
+      const reconnected: SshBroadcastTargetV1 = target('first');
+      reconnected.generation = firstTarget.generation + 1;
+      const changedOwner = buildSshBroadcastPlan(
+        [reconnected], ['first'], 'uptime', 'execute');
+      expect(sshBroadcastConfirmationStillValid(confirmed, changedOwner)).assertFalse();
+      const added = buildSshBroadcastPlan(
+        [firstTarget, target('new')], ['first', 'new'], 'uptime', 'execute');
+      expect(sshBroadcastConfirmationStillValid(confirmed, added)).assertFalse();
     });
 
     it('should_omit_selected_blocked_targets_and_reject_empty_text', 0, (): void => {
