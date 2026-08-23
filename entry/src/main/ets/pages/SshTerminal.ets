@@ -9567,8 +9567,7 @@ struct SshTerminal {
       this.sftpTaskStore.command(this.sftpTransferSession.id, { kind: 'detach' });
       this.persistSftpTaskMetadata('waitingForConnection');
     }
-    void this.sftpTaskStore.flushNow();
-    this.requestSftpTransferRuntimeRelease();
+    this.scheduleSftpTransferRuntimeReleaseAfterFlush();
     if (this.sftpTaskUnsubscribe !== null) {
       this.sftpTaskUnsubscribe();
       this.sftpTaskUnsubscribe = null;
@@ -13966,6 +13965,38 @@ struct SshTerminal {
   private requestSftpTransferRuntimeRelease(): void {
     this.sftpTransferRuntimeReleaseRequested = true;
     this.maybeReleaseSftpTransferRuntime();
+  }
+
+  /**
+   * A page teardown cannot await directly, so fence the asynchronous durable
+   * flush before dropping picker/checkpoint references. A reused page instance
+   * must not let the old flush callback clear a new transfer's runtime.
+   */
+  private scheduleSftpTransferRuntimeReleaseAfterFlush(): void {
+    const releasePageGeneration: number = this.pageGeneration;
+    const releaseBindingGeneration: number = this.sshBindingGeneration;
+    const release: (flushed: boolean) => void = (flushed: boolean): void => {
+      if (this.pageGeneration !== releasePageGeneration ||
+        this.sshBindingGeneration !== releaseBindingGeneration) {
+        return;
+      }
+      if (!flushed) {
+        hilog.warn(0x0017, 'SshTerminal',
+          'SFTP teardown metadata flush did not complete before runtime release');
+      }
+      this.requestSftpTransferRuntimeRelease();
+    };
+    void this.sftpTaskStore.flushNow().then((flushed: boolean): void => {
+      release(flushed);
+    }).catch((err: Error): void => {
+      if (this.pageGeneration !== releasePageGeneration ||
+        this.sshBindingGeneration !== releaseBindingGeneration) {
+        return;
+      }
+      hilog.warn(0x0017, 'SshTerminal',
+        'SFTP teardown metadata flush failed code=' + sshDiagnosticErrorCode(err));
+      release(false);
+    });
   }
 
   private maybeReleaseSftpTransferRuntime(): void {
