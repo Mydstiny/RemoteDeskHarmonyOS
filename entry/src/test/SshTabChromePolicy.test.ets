@@ -1,6 +1,8 @@
 import { describe, it, expect } from '@ohos/hypium';
 import {
   resolveSshTabChromeLayout,
+  resolveSshTopChromeLayout,
+  SSH_SESSION_HEADER_BASE_HEIGHT_VP,
   SSH_TAB_INLINE_MIN_VIEWPORT_VP,
   SSH_TAB_STRIP_HEIGHT_VP,
   SSH_WORKSPACE_CONTROL_HIT_SIZE_VP,
@@ -22,6 +24,19 @@ export default function sshTabChromePolicyTest(): void {
       expect(layout.tabWidthVp).assertEqual(136);
       expect(SSH_TAB_STRIP_HEIGHT_VP).assertEqual(56);
       expect(SSH_WORKSPACE_CONTROL_HIT_SIZE_VP).assertEqual(48);
+    });
+
+    it('places_standalone_tabs_below_the_safe_area_header', 0, (): void => {
+      const stacked = resolveSshTopChromeLayout(24, true);
+      expect(stacked.headerTopInsetVp).assertEqual(24);
+      expect(stacked.standaloneTabTopInsetVp).assertEqual(0);
+      expect(stacked.tabStripBelowHeader).assertTrue();
+      expect(stacked.totalHeightVp).assertEqual(
+        SSH_SESSION_HEADER_BASE_HEIGHT_VP + 24 + SSH_TAB_STRIP_HEIGHT_VP);
+
+      const inline = resolveSshTopChromeLayout(24, false);
+      expect(inline.tabStripBelowHeader).assertFalse();
+      expect(inline.totalHeightVp).assertEqual(SSH_SESSION_HEADER_BASE_HEIGHT_VP + 24);
     });
 
     it('uses_inline_normal_tabs_only_after_the_safe_width_threshold', 0, (): void => {

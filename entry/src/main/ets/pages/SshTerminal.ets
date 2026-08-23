@@ -279,10 +279,13 @@ import { SshWorkspaceCapabilityStore } from
   '../services/ssh/workspace/SshWorkspaceCapabilityStore';
 import {
   SSH_TAB_STRIP_HEIGHT_VP,
+  SSH_SESSION_HEADER_BASE_HEIGHT_VP,
   SSH_WORKSPACE_CONTROL_HIT_SIZE_VP,
+  resolveSshTopChromeLayout,
   sshCompactChromeEnabled,
   sshHeaderUsesSingleActionMenu,
-  sshTabStripShowsStandaloneNewSessionAction
+  sshTabStripShowsStandaloneNewSessionAction,
+  SshTopChromeLayout
 } from
   '../services/ssh/workspace/SshTabChromePolicy';
 import {
@@ -5377,8 +5380,7 @@ struct SshTerminal {
     Column() {
       this.sshTabStripItems()
     }
-    .width('100%').height(this.sshTabStripHeight() + this.topChromeOffset())
-    .padding({ top: this.topChromeOffset() })
+    .width('100%').height(this.sshTabStripHeight())
     .backgroundColor(this.chromeBg())
     .border({ width: { bottom: 0.5 }, color: 'rgba(255,255,255,0.08)' })
   }
@@ -6399,13 +6401,24 @@ struct SshTerminal {
   }
 
   private headerTopOffset(): number {
-    // The phone-only standalone strip owns the system top inset. Inline tabs
-    // stay inside the toolbar, so the toolbar keeps the inset on Pad/PC.
-    return this.sshTabViews.length > 0 && !this.sshTabsInline() ? 0 : this.topChromeOffset();
+    // The real session toolbar is always the first app-owned row. It owns the
+    // system top inset even when a compact tab strip follows underneath.
+    return this.sshTopChromeLayout().headerTopInsetVp;
   }
 
   private headerHeight(): number {
-    return 56 + this.headerTopOffset();
+    return SSH_SESSION_HEADER_BASE_HEIGHT_VP + this.headerTopOffset();
+  }
+
+  private sshStandaloneTabStripVisible(): boolean {
+    return (this.sshTabViews.length > 0 ||
+      (this.sshWorkspaceModeEnabled() && this.sshWorkspaceSnapshot.tabs.length > 0)) &&
+      !this.sshTabsInline();
+  }
+
+  private sshTopChromeLayout(): SshTopChromeLayout {
+    return resolveSshTopChromeLayout(
+      this.topChromeOffset(), this.sshStandaloneTabStripVisible());
   }
 
   private shellViewportHeight(): number {
@@ -13966,9 +13979,7 @@ struct SshTerminal {
   }
 
   private sftpWorkbenchTopOffset(): number {
-    const standaloneTabs: number = this.sshTabViews.length > 0 && !this.sshTabsInline()
-      ? this.sshTabStripHeight() + this.topChromeOffset() : 0;
-    return standaloneTabs + this.headerHeight();
+    return this.sshTopChromeLayout().totalHeightVp;
   }
 
   private sftpWorkbenchHeight(): number {
@@ -17430,13 +17441,6 @@ struct SshTerminal {
         this.PcWindowAuthenticationCarrier()
       } else {
       Column() {
-      // 手机保留原始独立标签条; Pad/PC 的标签条嵌入连接顶栏。
-      if ((this.sshTabViews.length > 0 ||
-        (this.sshWorkspaceModeEnabled() && this.sshWorkspaceSnapshot.tabs.length > 0)) &&
-        !this.sshTabsInline()) {
-        this.sshTabStrip()
-      }
-
       // 顶栏 — SSH 终端始终深色模式, 固定深色背景+亮色文字, 不跟随系统主题
       Row() {
         if (this.isDesktopDevice) {
@@ -17626,6 +17630,12 @@ struct SshTerminal {
         direction: GradientDirection.Bottom,
         colors: [['rgba(255,255,255,0.09)', 0], ['rgba(255,255,255,0.00)', 1]]
       })
+
+      // Phone and compact Pad/free-form windows keep a full-width tab strip,
+      // but it belongs below the real session toolbar and its safe-area inset.
+      if (this.sshTopChromeLayout().tabStripBelowHeader) {
+        this.sshTabStrip()
+      }
 
       Row() {
       if (this.sshWorkspaceSidebarVisible()) {

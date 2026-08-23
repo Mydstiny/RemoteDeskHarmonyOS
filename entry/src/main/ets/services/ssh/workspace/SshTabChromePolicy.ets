@@ -7,10 +7,31 @@ export interface SshTabChromeLayout {
   scrollViewportWidthVp: number;
 }
 
+export interface SshTopChromeLayout {
+  headerTopInsetVp: number;
+  standaloneTabTopInsetVp: number;
+  tabStripBelowHeader: boolean;
+  totalHeightVp: number;
+}
+
 export const SSH_TAB_CHROME_HORIZONTAL_PADDING_VP: number = 12;
 export const SSH_TAB_INLINE_MIN_VIEWPORT_VP: number = 980;
 export const SSH_TAB_STRIP_HEIGHT_VP: number = 56;
+export const SSH_SESSION_HEADER_BASE_HEIGHT_VP: number = 56;
 export const SSH_WORKSPACE_CONTROL_HIT_SIZE_VP: number = 48;
+
+/** The real header owns the safe inset; a standalone strip follows it. */
+export function resolveSshTopChromeLayout(topInsetVp: number,
+  standaloneTabsVisible: boolean): SshTopChromeLayout {
+  const topInset: number = Number.isFinite(topInsetVp) ? Math.max(0, topInsetVp) : 0;
+  return {
+    headerTopInsetVp: topInset,
+    standaloneTabTopInsetVp: 0,
+    tabStripBelowHeader: standaloneTabsVisible,
+    totalHeightVp: SSH_SESSION_HEADER_BASE_HEIGHT_VP + topInset +
+      (standaloneTabsVisible ? SSH_TAB_STRIP_HEIGHT_VP : 0)
+  };
+}
 
 export function resolveSshTabChromeLayout(viewportWidthVp: number,
   breakpoint: string): SshTabChromeLayout {
