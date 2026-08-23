@@ -283,7 +283,10 @@ export class SshForwardingController {
 
   releaseSession(handle: SshSessionHandle): SshForwardingOperationResult[] {
     const results: SshForwardingOperationResult[] = this.stopAll(handle);
-    this.runtimes.clear(handle);
+    // A reconnect can leave an old generation without a successful reconcile
+    // boundary. Teardown owns the whole session identity, not just its latest
+    // generation, so stale runtime records must not survive into later slots.
+    this.runtimes.clearSession(handle);
     return results;
   }
 
