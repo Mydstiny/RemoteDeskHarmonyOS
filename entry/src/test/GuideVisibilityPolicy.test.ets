@@ -1,5 +1,7 @@
 import { describe, expect, it } from '@ohos/hypium';
 import {
+  automaticGuideRuntimeSessionKey,
+  AutomaticGuideRuntimeSessionRegistry,
   isAutomaticGuideMarkerKey,
   MOONLIGHT_CONTEXTUAL_GUIDE_STORAGE_KEY,
   remoteTouchpadGuideStorageKey,
@@ -32,6 +34,21 @@ export default function guideVisibilityPolicyTest(): void {
       expect(isAutomaticGuideMarkerKey(SSH_CONTEXTUAL_GUIDE_STORAGE_KEY)).assertTrue();
       expect(isAutomaticGuideMarkerKey(MOONLIGHT_CONTEXTUAL_GUIDE_STORAGE_KEY)).assertTrue();
       expect(isAutomaticGuideMarkerKey('unknown-guide')).assertFalse();
+    });
+
+    it('deduplicates_exact_sessions_across_page_rebuilds', 0, (): void => {
+      const registry: AutomaticGuideRuntimeSessionRegistry =
+        new AutomaticGuideRuntimeSessionRegistry(4);
+      const firstSession: string = 'ssh|host-a|11|2';
+      const secondSession: string = 'ssh|host-b|12|1';
+      expect(registry.wasShown(SSH_CONTEXTUAL_GUIDE_STORAGE_KEY, firstSession)).assertFalse();
+      expect(registry.markShown(SSH_CONTEXTUAL_GUIDE_STORAGE_KEY, firstSession)).assertTrue();
+      expect(registry.wasShown(SSH_CONTEXTUAL_GUIDE_STORAGE_KEY, firstSession)).assertTrue();
+      expect(registry.wasShown(SSH_CONTEXTUAL_GUIDE_STORAGE_KEY, secondSession)).assertFalse();
+      expect(automaticGuideRuntimeSessionKey(
+        SSH_CONTEXTUAL_GUIDE_STORAGE_KEY, '')).assertEqual('');
+      expect(registry.markShown('unknown-guide', firstSession)).assertFalse();
+      expect(registry.wasShown('unknown-guide', firstSession)).assertTrue();
     });
   });
 }

@@ -349,7 +349,6 @@ struct MoonlightStreamPage {
   private presentationReleaseRetryTimer: number = -1;
   private presentationReleaseActive: boolean = false;
   private contextualGuideRetryTimer: number = -1;
-  private contextualGuideShownThisSession: boolean = false;
   private reconnectWindow: MoonlightReconnectWindow | null = null;
   private reconnectTimer: number = -1;
   private reconnectGeneration: number = 0;
@@ -416,6 +415,18 @@ struct MoonlightStreamPage {
     }
   }
 
+  private moonlightContextualGuideSessionIdentity(): string {
+    if (this.hostId.trim().length === 0 || this.appId.trim().length === 0 ||
+      !Number.isSafeInteger(this.launchKey.requestId) || this.launchKey.requestId <= 0 ||
+      !Number.isSafeInteger(this.launchKey.generation) || this.launchKey.generation <= 0 ||
+      !Number.isSafeInteger(this.launchKey.ownerToken) || this.launchKey.ownerToken <= 0) {
+      return '';
+    }
+    return 'moonlight|' + this.hostId.trim() + '|' + this.appId.trim() + '|' +
+      this.launchKey.requestId.toString() + '|' + this.launchKey.generation.toString() + '|' +
+      this.launchKey.ownerToken.toString();
+  }
+
   private scheduleMoonlightContextualGuide(delayMs: number = 240): void {
     if (this.contextualGuideRetryTimer >= 0 || !this.pageActive || this.routeTerminated) { return; }
     this.contextualGuideRetryTimer = setTimeout((): void => {
@@ -423,13 +434,16 @@ struct MoonlightStreamPage {
       this.maybeShowMoonlightContextualGuide();
       const guide: SessionContextualGuide = sessionContextualGuide('moonlight',
         guideDeviceFor(this.isDesktopDevice, this.isPadDevice, this.breakpoint));
-      const alreadyShown: boolean = GuideVisibilityService.getInstance().wasShown(
+      const guideVisibility: GuideVisibilityService = GuideVisibilityService.getInstance();
+      const alreadyShown: boolean = guideVisibility.wasShown(
         getContext(this) as common.Context, guide.storageKey);
+      const shownInRuntimeSession: boolean = guideVisibility.wasShownInRuntimeSession(
+        guide.storageKey, this.moonlightContextualGuideSessionIdentity());
       const ready: boolean = this.pageActive && !this.routeTerminated &&
         this.phase === 'streaming' && this.firstFrameSeen;
       if (shouldRetrySessionContextualGuide(
         ready, alreadyShown, this.guideAlwaysVisible,
-        this.contextualGuideShownThisSession) && !this.appInBackground) {
+        shownInRuntimeSession) && !this.appInBackground) {
         // Keep only one retry alive while a transient Sheet, keyboard or
         // recovery overlay owns the visible session.
         this.scheduleMoonlightContextualGuide(800);
@@ -441,15 +455,19 @@ struct MoonlightStreamPage {
     const device: GuideDevice = guideDeviceFor(
       this.isDesktopDevice, this.isPadDevice, this.breakpoint);
     const guide: SessionContextualGuide = sessionContextualGuide('moonlight', device);
-    const alreadyShown: boolean = GuideVisibilityService.getInstance().wasShown(
+    const guideVisibility: GuideVisibilityService = GuideVisibilityService.getInstance();
+    const sessionIdentity: string = this.moonlightContextualGuideSessionIdentity();
+    const alreadyShown: boolean = guideVisibility.wasShown(
       getContext(this) as common.Context, guide.storageKey);
+    const shownInRuntimeSession: boolean = guideVisibility.wasShownInRuntimeSession(
+      guide.storageKey, sessionIdentity);
     const blockingOverlayVisible: boolean = this.showSessionSheet || this.showModifierPanel ||
       this.showShortcutPanel || this.showController || this.keyboardOpen || this.surfaceRecovering;
     if (!shouldShowSessionContextualGuide(
       this.pageActive && !this.appInBackground && !this.routeTerminated &&
         this.phase === 'streaming' && this.firstFrameSeen, alreadyShown,
       blockingOverlayVisible, this.guideAlwaysVisible,
-      this.contextualGuideShownThisSession)) {
+      shownInRuntimeSession)) {
       return;
     }
     try {
@@ -457,9 +475,8 @@ struct MoonlightStreamPage {
         message: guide.message,
         duration: guide.durationMs
       });
-      this.contextualGuideShownThisSession = true;
-      GuideVisibilityService.getInstance().markShown(
-        getContext(this) as common.Context, guide.storageKey);
+      guideVisibility.markShownInRuntimeSession(guide.storageKey, sessionIdentity);
+      guideVisibility.markShown(getContext(this) as common.Context, guide.storageKey);
     } catch (_) {}
   }
 

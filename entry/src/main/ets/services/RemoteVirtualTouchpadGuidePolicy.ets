@@ -13,6 +13,11 @@ export function shouldShowRemoteVirtualTouchpadKeyboardGuide(protocol: string,
   return protocol !== 'vnc' || !viewOnly;
 }
 
+export function shouldRetryRemoteVirtualTouchpadKeyboardGuide(
+  connected: boolean, retryCount: number): boolean {
+  return connected && Number.isSafeInteger(retryCount) && retryCount >= 0 && retryCount < 2;
+}
+
 export function remoteVirtualTouchpadKeyboardGuide(
   protocol: string): RemoteVirtualTouchpadKeyboardGuide {
   if (protocol === 'vnc') {

@@ -28,6 +28,37 @@ export function isAutomaticGuideMarkerKey(key: string): boolean {
     key === remoteTouchpadGuideStorageKey('vnc');
 }
 
+export function automaticGuideRuntimeSessionKey(markerKey: string,
+  sessionIdentity: string): string {
+  const normalizedIdentity: string = sessionIdentity.trim();
+  if (!isAutomaticGuideMarkerKey(markerKey) || normalizedIdentity.length === 0) { return ''; }
+  return markerKey + '|' + normalizedIdentity;
+}
+
+/** Process-local exact-session registry shared across ArkUI page rebuilds. */
+export class AutomaticGuideRuntimeSessionRegistry {
+  private markers: string[] = [];
+  private maxMarkers: number;
+
+  constructor(maxMarkers: number = 128) {
+    this.maxMarkers = Number.isSafeInteger(maxMarkers) && maxMarkers > 0 ? maxMarkers : 128;
+  }
+
+  wasShown(markerKey: string, sessionIdentity: string): boolean {
+    const runtimeKey: string = automaticGuideRuntimeSessionKey(markerKey, sessionIdentity);
+    return runtimeKey.length === 0 || this.markers.indexOf(runtimeKey) >= 0;
+  }
+
+  markShown(markerKey: string, sessionIdentity: string): boolean {
+    const runtimeKey: string = automaticGuideRuntimeSessionKey(markerKey, sessionIdentity);
+    if (runtimeKey.length === 0) { return false; }
+    if (this.markers.indexOf(runtimeKey) >= 0) { return true; }
+    this.markers.push(runtimeKey);
+    if (this.markers.length > this.maxMarkers) { this.markers.shift(); }
+    return true;
+  }
+}
+
 export function shouldPresentAutomaticGuide(alreadyShownEver: boolean,
   alwaysVisible: boolean, shownThisSession: boolean): boolean {
   if (shownThisSession) { return false; }

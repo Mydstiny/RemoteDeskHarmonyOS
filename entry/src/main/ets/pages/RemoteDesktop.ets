@@ -141,6 +141,7 @@ import {
 import {
   remoteVirtualTouchpadKeyboardGuide,
   RemoteVirtualTouchpadKeyboardGuide,
+  shouldRetryRemoteVirtualTouchpadKeyboardGuide,
   shouldShowRemoteVirtualTouchpadKeyboardGuide
 } from '../services/RemoteVirtualTouchpadGuidePolicy';
 import {
@@ -1262,9 +1263,9 @@ struct RemoteDesktop {
   private physicalKeyboardLayout: RemoteKeyboardLayout = RemoteKeyboardLayout.WINDOWS;
   private physicalKeyboardLayoutConfirmed: boolean = false;
   private physicalKeyboardLayoutPromptVisible: boolean = false;
-  private virtualTouchpadKeyboardGuideShownThisSession: boolean = false;
   private virtualTouchpadKeyboardGuidePromptVisible: boolean = false;
   private virtualTouchpadKeyboardGuideTimer: number = -1;
+  private virtualTouchpadKeyboardGuideRetryCount: number = 0;
   private physicalKeyboardConnected: boolean = false;
   @State private externalKeyboardMouseConnected: boolean = false;
   private vncExternalInputAutoSwitchSessionId: number = -1;
@@ -8734,45 +8735,74 @@ struct RemoteDesktop {
     }, 650);
   }
 
+  private virtualTouchpadKeyboardGuideSessionIdentity(protocol: string): string {
+    const host: RemoteHost | null = this.pendingHost;
+    const identity: NativeDisconnectIdentity | null = this.nativeDisconnectIdentity;
+    if (host === null || host.id.trim().length === 0 || identity === null ||
+      !Number.isSafeInteger(identity.sessionId) || identity.sessionId <= 0 ||
+      !Number.isSafeInteger(identity.generation) || identity.generation <= 0 ||
+      !Number.isSafeInteger(identity.ownerToken) || identity.ownerToken <= 0) {
+      return '';
+    }
+    return protocol + '|' + host.id.trim() + '|' + identity.sessionId.toString() + '|' +
+      identity.generation.toString() + '|' + identity.ownerToken.toString();
+  }
+
+  private handleVirtualTouchpadKeyboardGuideFailure(err: Error): void {
+    this.virtualTouchpadKeyboardGuidePromptVisible = false;
+    hilog.warn(RD_DOMAIN, RD_TAG,
+      'virtual-touchpad-keyboard-guide dismissed error=' + JSON.stringify(err));
+    if (!shouldRetryRemoteVirtualTouchpadKeyboardGuide(
+      this.connected, this.virtualTouchpadKeyboardGuideRetryCount)) { return; }
+    this.virtualTouchpadKeyboardGuideRetryCount += 1;
+    this.scheduleVirtualTouchpadKeyboardGuide();
+  }
+
   private promptVirtualTouchpadKeyboardGuide(): void {
     const protocol: string = this.currentProtocolName();
     if (protocol !== 'rdp' && protocol !== 'rustdesk' && protocol !== 'vnc') { return; }
     const markerKey: string = remoteTouchpadGuideStorageKey(
       protocol as RemoteTouchpadGuideProtocol);
-    const alreadyShownEver: boolean = GuideVisibilityService.getInstance().wasShown(
+    const guideVisibility: GuideVisibilityService = GuideVisibilityService.getInstance();
+    const sessionIdentity: string = this.virtualTouchpadKeyboardGuideSessionIdentity(protocol);
+    const alreadyShownEver: boolean = guideVisibility.wasShown(
       getContext(this) as common.Context, markerKey);
+    const shownInRuntimeSession: boolean = guideVisibility.wasShownInRuntimeSession(
+      markerKey, sessionIdentity);
     if (!shouldShowRemoteVirtualTouchpadKeyboardGuide(
       protocol, this.connected, this.currentControlMode(),
-      this.virtualTouchpadKeyboardGuideShownThisSession,
+      shownInRuntimeSession,
       this.virtualTouchpadKeyboardGuidePromptVisible,
       this.isVncViewOnlySession(), alreadyShownEver, this.guideAlwaysVisible)) {
       return;
     }
     const guide: RemoteVirtualTouchpadKeyboardGuide =
       remoteVirtualTouchpadKeyboardGuide(protocol);
-    this.virtualTouchpadKeyboardGuideShownThisSession = true;
     this.virtualTouchpadKeyboardGuidePromptVisible = true;
-    promptAction.showDialog({
-      title: guide.title,
-      message: guide.message,
-      isModal: true,
-      buttons: [
-        { text: '知道了', color: 'rgba(255,255,255,0.7)' },
-        { text: '打开控制面板', color: this.accentColor }
-      ]
-    }).then((result: Object): void => {
-      this.virtualTouchpadKeyboardGuidePromptVisible = false;
-      const response: Record<string, number> = result as Record<string, number>;
-      if (response['index'] === 1 && this.connected && this.isTouchpadControlMode()) {
-        this.showControlPanel = true;
-      }
-    }).catch((err: Error): void => {
-      this.virtualTouchpadKeyboardGuidePromptVisible = false;
-      hilog.warn(RD_DOMAIN, RD_TAG,
-        'virtual-touchpad-keyboard-guide dismissed error=' + JSON.stringify(err));
-    });
-    GuideVisibilityService.getInstance().markShown(
-      getContext(this) as common.Context, markerKey);
+    try {
+      promptAction.showDialog({
+        title: guide.title,
+        message: guide.message,
+        isModal: true,
+        buttons: [
+          { text: '知道了', color: 'rgba(255,255,255,0.7)' },
+          { text: '打开控制面板', color: this.accentColor }
+        ]
+      }).then((result: Object): void => {
+        this.virtualTouchpadKeyboardGuidePromptVisible = false;
+        this.virtualTouchpadKeyboardGuideRetryCount = 0;
+        guideVisibility.markShownInRuntimeSession(markerKey, sessionIdentity);
+        guideVisibility.markShown(getContext(this) as common.Context, markerKey);
+        const response: Record<string, number> = result as Record<string, number>;
+        if (response['index'] === 1 && this.connected && this.isTouchpadControlMode()) {
+          this.showControlPanel = true;
+        }
+      }).catch((err: Error): void => {
+        this.handleVirtualTouchpadKeyboardGuideFailure(err);
+      });
+    } catch (err) {
+      this.handleVirtualTouchpadKeyboardGuideFailure(err as Error);
+    }
   }
 
   /** Each RustDesk session confirms its cross-platform remote keyboard type. */
@@ -11374,10 +11404,9 @@ struct RemoteDesktop {
       if (this.nativeDisconnectIdentity === null) {
         throw new Error('原生会话所有权回执不可用 [E-SESSION-OWNER-RECEIPT]');
       }
-      // A newly allocated native session gets its own one-shot touchpad guide.
-      // Foreground/PiP restoration adopts the existing session and does not
-      // pass this connect boundary, so it will not repeat the prompt.
-      this.virtualTouchpadKeyboardGuideShownThisSession = false;
+      // A new session receives its own bounded presentation attempt. Runtime
+      // identity fencing prevents foreground/PiP restoration from repeating it.
+      this.virtualTouchpadKeyboardGuideRetryCount = 0;
       this.inputForwardReady = false;
       // NapiConnect publishes the exact session owner synchronously. Decoder
       // registration must happen after that transaction; cold-start calls

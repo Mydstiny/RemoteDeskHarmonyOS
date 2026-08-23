@@ -1,6 +1,7 @@
 import { common } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
 import {
+  AutomaticGuideRuntimeSessionRegistry,
   GUIDE_ALWAYS_VISIBLE_STORAGE_KEY,
   isAutomaticGuideMarkerKey
 } from './GuideVisibilityPolicy';
@@ -10,6 +11,8 @@ const GUIDE_PREFERENCES_NAME: string = 'RemoteDesktopAppPrefs';
 /** Persists automatic-guide choices locally; guide state never enters cloud sync. */
 export class GuideVisibilityService {
   private static instance: GuideVisibilityService | null = null;
+  private runtimeSessionRegistry: AutomaticGuideRuntimeSessionRegistry =
+    new AutomaticGuideRuntimeSessionRegistry();
 
   static getInstance(): GuideVisibilityService {
     if (GuideVisibilityService.instance === null) {
@@ -74,5 +77,15 @@ export class GuideVisibilityService {
     } catch (_error) {
       return false;
     }
+  }
+
+  wasShownInRuntimeSession(markerKey: string, sessionIdentity: string): boolean {
+    // A connected surface without an exact identity must fail closed instead
+    // of creating an untracked guide that can repeat after a page rebuild.
+    return this.runtimeSessionRegistry.wasShown(markerKey, sessionIdentity);
+  }
+
+  markShownInRuntimeSession(markerKey: string, sessionIdentity: string): boolean {
+    return this.runtimeSessionRegistry.markShown(markerKey, sessionIdentity);
   }
 }

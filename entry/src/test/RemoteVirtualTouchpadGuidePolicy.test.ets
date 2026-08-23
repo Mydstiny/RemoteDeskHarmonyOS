@@ -1,6 +1,7 @@
 import { describe, expect, it } from '@ohos/hypium';
 import {
   remoteVirtualTouchpadKeyboardGuide,
+  shouldRetryRemoteVirtualTouchpadKeyboardGuide,
   shouldShowRemoteVirtualTouchpadKeyboardGuide
 } from '../main/ets/services/RemoteVirtualTouchpadGuidePolicy';
 
@@ -33,6 +34,13 @@ export default function remoteVirtualTouchpadGuidePolicyTest(): void {
         'rdp', true, 0, false, false, false, true, true)).assertTrue();
       expect(shouldShowRemoteVirtualTouchpadKeyboardGuide(
         'rdp', true, 0, true, false, false, true, true)).assertFalse();
+    });
+
+    it('bounds_dialog_presentation_retries', 0, (): void => {
+      expect(shouldRetryRemoteVirtualTouchpadKeyboardGuide(true, 0)).assertTrue();
+      expect(shouldRetryRemoteVirtualTouchpadKeyboardGuide(true, 1)).assertTrue();
+      expect(shouldRetryRemoteVirtualTouchpadKeyboardGuide(true, 2)).assertFalse();
+      expect(shouldRetryRemoteVirtualTouchpadKeyboardGuide(false, 0)).assertFalse();
     });
 
     it('provides_protocol_specific_keyboard_entry_instructions', 0, (): void => {
