@@ -6506,12 +6506,16 @@ struct SshTerminal {
     record: SshSftpTaskRecord): Promise<void> {
     if (this.terminalClosing ||
       (record.hostId !== this.hostId && record.hostId !== this.sftpEngineBatchTargetHostId)) { return; }
+    const requestPageGeneration: number = this.pageGeneration;
+    const requestBindingGeneration: number = this.sshBindingGeneration;
+    const requestBatchId: string = event.batchId.trim();
     const remoteToRemote: boolean = record.sourceEndpoint?.kind === 'ssh' &&
       record.targetEndpoint?.kind === 'ssh';
     const side: string = remoteToRemote ? '目标 SSH' :
       (record.direction === 'upload' ? '远端' : '本机');
     const decision: SftpConflictDecision = await this.askSftpConflictAction(record.fileName, side);
-    if (this.terminalClosing) { return; }
+    if (!this.isSshBindingGenerationActive(requestPageGeneration, requestBindingGeneration) ||
+      requestBatchId.length === 0 || this.sftpEngineBatchId.trim() !== requestBatchId) { return; }
     if (decision.action === 'cancel') {
       this.sftpTaskEngine.cancelBatch(event.batchId);
       this.sftpStatus = '已取消 SFTP 批次';
