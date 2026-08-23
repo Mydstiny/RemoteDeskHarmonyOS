@@ -216,6 +216,20 @@ function sameIdentityValues(leftHostId: string, leftSessionId: number, leftGener
     leftGeneration === rightGeneration;
 }
 
+/** Stable key used only for short-lived per-session capture state. */
+export function sshSessionLogRuntimeKey(identity: SshSessionLogIdentityV1): string {
+  return identity.hostId.trim() + ':' + identity.sessionId.toString() + ':' +
+    identity.generation.toString();
+}
+
+/** Match only one host's runtime keys, optionally retaining the live session. */
+export function shouldClearSshSessionLogRuntimeKey(key: string, hostId: string,
+  keepKey: string = ''): boolean {
+  const normalizedHostId: string = hostId.trim();
+  return normalizedHostId.length > 0 && key !== keepKey &&
+    (key === normalizedHostId || key.startsWith(normalizedHostId + ':'));
+}
+
 function clampQuota(value: Object): number {
   const candidate: number = finiteNumber(value, SSH_SESSION_LOG_DEFAULT_QUOTA_BYTES);
   return Math.max(SSH_SESSION_LOG_MIN_QUOTA_BYTES,

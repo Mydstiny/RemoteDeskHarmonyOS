@@ -359,6 +359,8 @@ import {
   sshSessionLogCaptureAllowed,
   sshSessionLogInputPhaseAllowed,
   sshSessionLogStreamSanitizeStateIsDefault,
+  sshSessionLogRuntimeKey,
+  shouldClearSshSessionLogRuntimeKey,
   shouldScrubFailedSshSessionLogExport,
   SSH_SESSION_LOGS_DEFAULT_ENABLED,
   SSH_SESSION_LOGS_FLAG_KEY,
@@ -2886,6 +2888,11 @@ struct SshTerminal {
   private cleanupClosedSshTab(result: SshTerminalTabCloseResult,
     disconnectNative: boolean = true): void {
     if (!result.closed || result.hostId.length === 0) { return; }
+    // Persist any final bounded output record before dropping the closed
+    // session's sanitizer/input state; an unfinished command remains
+    // intentionally uncommitted, but completed output must not be lost.
+    this.flushSshSessionLogOutput();
+    this.discardSshSessionLogHostRuntime(result.hostId);
     this.discardSshProductivityHostRuntime(result.hostId);
     this.sshTabStore.clearStartupExecutionKeysForHost(result.hostId);
     // A successful independent-window handoff has already moved the native
@@ -2913,6 +2920,39 @@ struct SshTerminal {
       sshTerminalSessionProfileScopeKey(result.hostId, result.generation));
     this.terminalCoreRegistry.destroy(this.xtermSurfaceCoreKey(result.hostId), new TerminalCoreBridge());
     this.refreshSshTabViews();
+  }
+
+  /** Drop transient log capture state for closed/stale generations only. */
+  private discardSshSessionLogHostRuntime(hostId: string, keepKey: string = ''): void {
+    const inputKeys: Array<string> = [];
+    this.sshSessionLogInputBuffers.forEach((_value: string, key: string): void => {
+      if (shouldClearSshSessionLogRuntimeKey(key, hostId, keepKey)) { inputKeys.push(key); }
+    });
+    for (let index = 0; index < inputKeys.length; index++) {
+      this.sshSessionLogInputBuffers.delete(inputKeys[index]);
+    }
+    const outputKeys: Array<string> = [];
+    this.sshSessionLogPendingOutput.forEach((_value: SshSessionLogRecordV1, key: string): void => {
+      if (shouldClearSshSessionLogRuntimeKey(key, hostId, keepKey)) { outputKeys.push(key); }
+    });
+    for (let index = 0; index < outputKeys.length; index++) {
+      this.sshSessionLogPendingOutput.delete(outputKeys[index]);
+    }
+    const sanitizeKeys: Array<string> = [];
+    this.sshSessionLogOutputSanitizeStates.forEach(
+      (_value: SshSessionLogStreamSanitizeStateV1, key: string): void => {
+        if (shouldClearSshSessionLogRuntimeKey(key, hostId, keepKey)) { sanitizeKeys.push(key); }
+      });
+    for (let index = 0; index < sanitizeKeys.length; index++) {
+      this.sshSessionLogOutputSanitizeStates.delete(sanitizeKeys[index]);
+    }
+    const commandKeys: Array<string> = [];
+    this.sshSessionLogCommandStarts.forEach((_value: number, key: string): void => {
+      if (shouldClearSshSessionLogRuntimeKey(key, hostId, keepKey)) { commandKeys.push(key); }
+    });
+    for (let index = 0; index < commandKeys.length; index++) {
+      this.sshSessionLogCommandStarts.delete(commandKeys[index]);
+    }
   }
 
   private finalizeSshTabClose(hostId: string): void {
@@ -3902,8 +3942,7 @@ struct SshTerminal {
   }
 
   private observeSshSessionLogOutput(identity: SshSessionLogIdentityV1, text: string): void {
-    const key: string = identity.hostId + ':' + identity.sessionId.toString() + ':' +
-      identity.generation.toString();
+    const key: string = sshSessionLogRuntimeKey(identity);
     if (!this.sshSessionLogCaptureContext(identity, false)) {
       this.sshSessionLogOutputSanitizeStates.set(key,
         createSshSessionLogStreamSanitizeState('resync'));
@@ -10051,6 +10090,11 @@ struct SshTerminal {
           // Treat same-session transport recovery as a new callback owner.
           // Clear the old callback before publishing the new tab identity so
           // no late native chunk can cross the generation fence.
+          this.flushSshSessionLogOutput();
+          this.discardSshSessionLogHostRuntime(this.hostId,
+            sshSessionLogRuntimeKey({
+              hostId: this.hostId, sessionId: this.sessionId, generation
+            }));
           this.discardSshProductivityHostRuntime(this.hostId);
           this.sshTabStore.clearStartupExecutionKeysForHost(this.hostId);
         }
@@ -10426,6 +10470,11 @@ struct SshTerminal {
     this.sshSessionGeneration = sessionGeneration;
     const productivitySessionKey: string = this.sshProductivitySessionKey(
       bindingHostId, connectedSessionId, sessionGeneration);
+    this.flushSshSessionLogOutput();
+    this.discardSshSessionLogHostRuntime(bindingHostId,
+      sshSessionLogRuntimeKey({
+        hostId: bindingHostId, sessionId: connectedSessionId, generation: sessionGeneration
+      }));
     this.discardSshProductivityHostRuntime(bindingHostId, productivitySessionKey);
     this.sshTabStore.clearStartupExecutionKeysForHost(bindingHostId, productivitySessionKey);
     // Reassert the active owner at the attach boundary. A picker exit and a
@@ -10851,8 +10900,7 @@ struct SshTerminal {
     const identity: SshSessionLogIdentityV1 | null = this.sshSessionLogIdentity(
       this.hostId, this.sessionId, this.sshSessionGeneration);
     if (identity === null) { return; }
-    const key: string = identity.hostId + ':' + identity.sessionId.toString() + ':' +
-      identity.generation.toString();
+    const key: string = sshSessionLogRuntimeKey(identity);
     const sessionKey: string = this.sshProductivitySessionKey(
       identity.hostId, identity.sessionId, identity.generation);
     const phase: SshProductivityShellPhase =

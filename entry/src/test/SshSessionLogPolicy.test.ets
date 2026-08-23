@@ -19,7 +19,9 @@ import {
   sanitizeSshSessionLogText,
   sshSessionLogCaptureAllowed,
   sshSessionLogInputPhaseAllowed,
+  sshSessionLogRuntimeKey,
   sshSessionLogUtf8ByteLength,
+  shouldClearSshSessionLogRuntimeKey,
   shouldScrubFailedSshSessionLogExport,
   SSH_SESSION_LOG_CHUNK_MAX_RECORDS,
   SSH_SESSION_LOGS_DEFAULT_ENABLED,
@@ -170,6 +172,19 @@ export default function sshSessionLogPolicyTest(): void {
       expect(sshSessionLogInputPhaseAllowed('executed')).assertFalse();
       expect(sshSessionLogInputPhaseAllowed('idle')).assertFalse();
       expect(sshSessionLogInputPhaseAllowed('password')).assertFalse();
+    });
+
+    it('runtime_cleanup_should_keep_only_the_live_generation', 0, (): void => {
+      const liveKey: string = sshSessionLogRuntimeKey({
+        hostId: 'host-one', sessionId: 9, generation: 4
+      });
+      expect(liveKey).assertEqual('host-one:9:4');
+      expect(shouldClearSshSessionLogRuntimeKey('host-one:7:2', 'host-one', liveKey)).assertTrue();
+      expect(shouldClearSshSessionLogRuntimeKey(liveKey, 'host-one', liveKey)).assertFalse();
+      expect(shouldClearSshSessionLogRuntimeKey('host-one-extra:7:2', 'host-one', liveKey))
+        .assertFalse();
+      expect(shouldClearSshSessionLogRuntimeKey('host-two:7:2', 'host-one', liveKey))
+        .assertFalse();
     });
 
     it('sanitizer_should_remove_vt_and_mask_common_secret_forms', 0, (): void => {
