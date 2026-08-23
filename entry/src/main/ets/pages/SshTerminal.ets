@@ -558,6 +558,9 @@ interface SshTerminalSafetyModeSnapshot {
 
 type SshProductivityShellPhase = 'idle' | 'prompt' | 'command' | 'executed';
 
+type SshHeaderAction = 'new-session' | 'tabs' | 'palette' | 'transfers' | 'restore' |
+  'profile' | 'search' | 'locale' | 'sftp' | 'forwarding' | 'orientation';
+
 @Entry
 @Component
 struct SshTerminal {
@@ -568,8 +571,8 @@ struct SshTerminal {
   @State connectionError: string = '';
   @State hostLabel: string = '';
   @State userAtHost: string = '';
-  /** 手机顶栏的低频 SSH 操作统一收进官方 bindPopup 气泡菜单。 */
-  @State showSshPhoneActionPopup: boolean = false;
+  /** 顶栏低频 SSH 操作统一收进官方 bindPopup 文字菜单。 */
+  @State showSshHeaderActionPopup: boolean = false;
   /** Observable identity of the host currently rendered by this page. */
   @State visibleSshHostId: string = '';
   @State sshTabViews: SshTerminalTabView[] = [];
@@ -5129,8 +5132,6 @@ struct SshTerminal {
         sftpTabActive: this.sftpWorkspaceTabState.open &&
           this.sftpWorkspaceTabState.activeSurface === 'sftp',
         sftpTabTitle: this.sftpWorkspaceTabTitle(),
-        transferAttentionCount: this.sftpTransferAttentionCount(),
-        restoredCount: this.sshWorkspaceDisconnectedCount(),
         onActivate: (hostId: string): void => {
           this.activateSshTerminalWorkspace();
           if (this.sshWorkspaceModeEnabled()) {
@@ -5157,13 +5158,8 @@ struct SshTerminal {
         onRename: (hostId: string): void => { this.openSshTabRename(hostId); },
         onCloseOthers: (hostId: string): void => { this.requestSshBulkClose(hostId, false); },
         onCloseRight: (hostId: string): void => { this.requestSshBulkClose(hostId, true); },
-        onNewSession: (): void => { this.openSshTabPicker(); },
-        onShowAllTabs: (): void => { this.openSshTabPicker(); },
-        onOpenPalette: (): void => { this.openSshCommandPalette(); },
         onActivateSftp: (): void => { this.activateSftpWorkbenchTab(); },
-        onCloseSftp: (): void => { this.closeSftpWorkbenchTab(); },
-        onOpenTransferCenter: (): void => { this.openSftpTransferCenter(); },
-        onReconnectRestored: (): void => { void this.reconnectSshWorkspacePlaceholders(); }
+        onCloseSftp: (): void => { this.closeSftpWorkbenchTab(); }
       })
     } else {
       Scroll() {
@@ -6001,7 +5997,7 @@ struct SshTerminal {
         (this.isDesktopDevice || this.breakpoint !== 'sm');
     }
     // Narrow free-form PC windows use the same full-width strip as phones so
-    // the fixed close/palette/new actions cannot be clipped by the toolbar.
+    // labels keep enough room without squeezing the page-level action menu.
     return this.sshTabViews.length > 0 && !this.sshCompactChrome() &&
       (this.isDesktopDevice || this.breakpoint !== 'sm');
   }
@@ -6011,17 +6007,14 @@ struct SshTerminal {
       this.sshWorkbenchEnabled, this.shellAreaW, this.breakpoint);
   }
 
-  /**
-   * 手机的顶栏宽度不足以同时容纳地区语言、SFTP 和隧道操作。
-   * Pad/PC 保持原有直达控件，避免改变大屏工作流。
-   */
-  private sshPhoneActionPopupEnabled(): boolean {
-    // A phone can rotate into a wider breakpoint without becoming a Pad. Keep
-    // the compact action surface tied to the device class, not orientation.
-    return !this.isDesktopDevice && !this.isPadDevice;
+  /** Workbench chrome exposes one text menu instead of a row of icon-only actions. */
+  private sshHeaderActionPopupEnabled(): boolean {
+    // Preserve the legacy large-screen chrome behind the rollout flag. Phones
+    // already depended on this popup before the workbench was enabled.
+    return this.sshWorkbenchEnabled || (!this.isDesktopDevice && !this.isPadDevice);
   }
 
-  private sshPhoneActionPopupWidth(): number {
+  private sshHeaderActionPopupWidth(): number {
     const uiContext = this.getUIContext();
     const measureTextVp = (text: string, fontSize: number): number => {
       return uiContext.px2vp(uiContext.getMeasureUtils().measureText({
@@ -6029,31 +6022,32 @@ struct SshTerminal {
         fontSize
       }));
     };
-    let longestTextVp: number = Math.max(
-      measureTextVp('会话工具', 12),
-      measureTextVp('语言与地区', 14),
-      measureTextVp(sshSessionLocaleLabel(this.sshSessionLocale, true), 11)
-    );
+    const labels: string[] = [
+      '工作区与会话', '显示全部标签', '命令面板', '传输中心',
+      '恢复未连接的工作区标签', '终端搜索', '终端外观', '语言与地区',
+      sshSessionLocaleLabel(this.sshSessionLocale, true), 'SFTP 文件',
+      '浏览与传输远端文件', '隧道转发', '切换横竖屏'
+    ];
+    let longestTextVp: number = 0;
+    labels.forEach((label: string): void => {
+      longestTextVp = Math.max(longestTextVp, measureTextVp(label, 14));
+    });
     if (this.sshConnectionIsConnected()) {
       const forwardingStatus: string = this.forwardingListeningCount() > 0
         ? this.forwardingListeningCount().toString() + ' 条转发正在监听'
         : (this.forwardingHasError() ? '有转发需要检查' : '管理端口转发');
-      longestTextVp = Math.max(
-        longestTextVp,
-        measureTextVp('SFTP 文件', 14),
-        measureTextVp('浏览与传输远端文件', 11),
-        measureTextVp('隧道转发', 14),
-        measureTextVp(forwardingStatus, 11)
-      );
+      longestTextVp = Math.max(longestTextVp, measureTextVp(forwardingStatus, 11));
     }
     // Popup shell + row paddings + icon/gap + trailing chevron.
-    return Math.ceil(longestTextVp + 90);
+    const measuredWidth: number = Math.max(248, Math.ceil(longestTextVp + 90));
+    if (this.shellAreaW <= 0) { return measuredWidth; }
+    return Math.min(measuredWidth, Math.max(220, this.shellAreaW - 24));
   }
 
-  private openSshPhoneAction(action: 'locale' | 'sftp' | 'forwarding'): void {
+  private openSshHeaderAction(action: SshHeaderAction): void {
     const pageGeneration: number = this.pageGeneration;
     const hostId: string = this.hostId.trim();
-    this.showSshPhoneActionPopup = false;
+    this.showSshHeaderActionPopup = false;
     // Let the official popup finish its dismiss transition before mounting a
     // Sheet/Dialog. This avoids two transient surfaces competing for focus on
     // API 23 while preserving the existing action implementations.
@@ -6062,8 +6056,25 @@ struct SshTerminal {
         hostId !== this.hostId.trim()) {
         return;
       }
-      if (action === 'locale') {
+      if (action === 'new-session') {
+        this.openSshTabPicker();
+      } else if (action === 'tabs') {
+        this.openSshTabPicker();
+      } else if (action === 'palette') {
+        this.openSshCommandPalette();
+      } else if (action === 'transfers') {
+        this.openSftpTransferCenter();
+      } else if (action === 'restore') {
+        void this.reconnectSshWorkspacePlaceholders();
+      } else if (action === 'profile') {
+        this.openTerminalProfileSheet();
+      } else if (action === 'search') {
+        if (this.terminalSearchVisible) { this.focusTerminalSearch(); }
+        else { this.openTerminalSearch(); }
+      } else if (action === 'locale') {
         this.selectSshSessionLocale();
+      } else if (action === 'orientation') {
+        this.toggleSshOrientation();
       } else if (!this.sshConnectionIsConnected()) {
         promptAction.showToast({ message: 'SSH 连接完成后才能使用此操作', duration: 1600 });
       } else if (action === 'sftp') {
@@ -6074,63 +6085,78 @@ struct SshTerminal {
     }, 32);
   }
 
-  @Builder SshPhoneActionPopup() {
-    Column() {
-      Text('会话工具')
-        .fontSize(12).fontColor(this.pal().text3)
-        .margin({ left: 14, right: 14, top: 8, bottom: 6 })
-      Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
-
-      Row() {
-        Text('文').fontSize(16).fontWeight(FontWeight.Medium)
-          .fontColor(this.accentColor).width(24).textAlign(TextAlign.Center)
-        Column() {
-          Text('语言与地区').fontSize(14).fontColor(this.pal().text)
-          Text(sshSessionLocaleLabel(this.sshSessionLocale, true))
-            .fontSize(11).fontColor(this.pal().text3).margin({ top: 2 })
-        }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
-        SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(14).fontColor([this.pal().text3])
-      }
-      .width('100%').constraintSize({ minHeight: 52 }).padding({ left: 14, right: 12 })
-      .onClick((): void => { this.openSshPhoneAction('locale'); })
-      .accessibilityText('切换 SSH 会话语言与地区')
-
-      if (this.sshConnectionIsConnected()) {
-        Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
-        Row() {
-          SymbolGlyph($r('sys.symbol.doc')).fontSize(17).fontColor([this.accentColor])
-            .width(24)
-          Column() {
-            Text('SFTP 文件').fontSize(14).fontColor(this.pal().text)
-            Text('浏览与传输远端文件').fontSize(11).fontColor(this.pal().text3).margin({ top: 2 })
-          }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
-          SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(14).fontColor([this.pal().text3])
+  @Builder
+  private SshHeaderActionRow(label: string, detail: string, action: SshHeaderAction) {
+    Row() {
+      Column({ space: 2 }) {
+        Text(label).fontSize(14).fontColor(this.pal().text).maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+        if (detail.length > 0) {
+          Text(detail).fontSize(11).fontColor(this.pal().text3).maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
         }
-        .width('100%').constraintSize({ minHeight: 52 }).padding({ left: 14, right: 12 })
-        .onClick((): void => { this.openSshPhoneAction('sftp'); })
-        .accessibilityText('打开 SFTP 文件传输')
-
-        Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
-        Row() {
-          Text('⇄').fontSize(19).fontColor(this.accentColor)
-            .width(24).textAlign(TextAlign.Center)
-          Column() {
-            Text('隧道转发').fontSize(14).fontColor(this.pal().text)
-            Text(this.forwardingListeningCount() > 0
-              ? this.forwardingListeningCount().toString() + ' 条转发正在监听'
-              : (this.forwardingHasError() ? '有转发需要检查' : '管理端口转发'))
-              .fontSize(11)
-              .fontColor(this.forwardingHasError() ? this.pal().danger : this.pal().text3)
-              .margin({ top: 2 })
-          }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
-          SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(14).fontColor([this.pal().text3])
-        }
-        .width('100%').constraintSize({ minHeight: 52 }).padding({ left: 14, right: 12 })
-        .onClick((): void => { this.openSshPhoneAction('forwarding'); })
-        .accessibilityText('打开 SSH 隧道转发')
-      }
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+      SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(14).fontColor([this.pal().text3])
     }
-    .width('100%').padding({ top: 2, bottom: 6 })
+    .width('100%').constraintSize({ minHeight: 52 }).padding({ left: 14, right: 12 })
+    .onClick((): void => { this.openSshHeaderAction(action); })
+    .accessibilityText(label + (detail.length > 0 ? '，' + detail : ''))
+  }
+
+  @Builder SshHeaderActionPopup() {
+    Scroll() {
+      Column() {
+        Text(this.isDesktopDevice ? '工作区与会话 · Ctrl+Shift+Q 退出' : '工作区与会话')
+          .fontSize(12).fontColor(this.pal().text3)
+          .margin({ left: 14, right: 14, top: 8, bottom: 6 })
+
+        if (this.sshWorkbenchEnabled) {
+          Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
+          this.SshHeaderActionRow('新建 SSH 会话', '选择主机并打开新标签', 'new-session')
+          this.SshHeaderActionRow('显示全部标签',
+            this.sshWorkspaceSnapshot.tabs.length.toString() + ' 个工作区标签', 'tabs')
+          this.SshHeaderActionRow('命令面板', '运行 SSH 工作台命令', 'palette')
+          this.SshHeaderActionRow('传输中心', this.sftpTransferAttentionCount() > 0
+            ? this.sftpTransferAttentionCount().toString() + ' 个任务需要处理'
+            : '查看上传、下载与任务状态', 'transfers')
+          if (this.sshWorkspaceDisconnectedCount() > 0) {
+            this.SshHeaderActionRow('恢复未连接的工作区标签',
+              this.sshWorkspaceDisconnectedCount().toString() + ' 个标签等待手动恢复', 'restore')
+          }
+        }
+
+        if (this.terminalSearchAvailable() || this.terminalProfileEnabled()) {
+          Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
+          if (this.terminalSearchAvailable()) {
+            this.SshHeaderActionRow('终端搜索', this.terminalSearchVisible
+              ? '搜索栏已打开' : '在当前终端输出中查找', 'search')
+          }
+          if (this.terminalProfileEnabled()) {
+            this.SshHeaderActionRow('终端外观', '字体、配色与光标', 'profile')
+          }
+        }
+
+        Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
+        this.SshHeaderActionRow('语言与地区',
+          sshSessionLocaleLabel(this.sshSessionLocale, true), 'locale')
+        if (!this.isDesktopDevice) {
+          this.SshHeaderActionRow('切换横竖屏', '旋转当前 SSH 会话', 'orientation')
+        }
+
+        if (this.sshConnectionIsConnected()) {
+          Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
+          this.SshHeaderActionRow('SFTP 文件', '浏览与传输远端文件', 'sftp')
+          this.SshHeaderActionRow('隧道转发', this.forwardingListeningCount() > 0
+            ? this.forwardingListeningCount().toString() + ' 条转发正在监听'
+            : (this.forwardingHasError() ? '有转发需要检查' : '管理端口转发'), 'forwarding')
+        }
+      }
+      .width('100%').padding({ top: 2, bottom: 6 })
+    }
+    .width('100%')
+    .constraintSize({ maxHeight: this.isDesktopDevice ? 560 : 460 })
+    .scrollable(ScrollDirection.Vertical)
+    .scrollBar(BarState.Auto)
     .borderRadius(14)
     .backgroundColor(this.pal().card)
     .shadow({ radius: 18, color: 'rgba(0,0,0,0.28)', offsetY: 6 })
@@ -9367,7 +9393,7 @@ struct SshTerminal {
     this.sshWorkspaceManualReconnectRunning = false;
     this.clearSshWorkspacePtyResizeTimers();
     this.sshWorkspacePtySizes.clear();
-    this.showSshPhoneActionPopup = false;
+    this.showSshHeaderActionPopup = false;
     this.sshProductivityReady = false;
     this.sshProductivityDocument = emptySshProductivityDocument();
     this.sshProductivityHistorySequence = 0;
@@ -9791,7 +9817,7 @@ struct SshTerminal {
     this.sshWorkspaceReady = false;
     this.clearSshWorkspacePtyResizeTimers();
     this.sshWorkspacePtySizes.clear();
-    this.showSshPhoneActionPopup = false;
+    this.showSshHeaderActionPopup = false;
     this.stopSshAuthPromptPolling(true);
     this.closeTerminalSearch(false, true);
     this.showTerminalProfileSheet = false;
@@ -10487,7 +10513,7 @@ struct SshTerminal {
     const shownInRuntimeSession: boolean = guideVisibility.wasShownInRuntimeSession(
       guide.storageKey, sessionIdentity);
     const blockingOverlayVisible: boolean = this.sshModalOwnsKeyboard() ||
-      this.showSshPhoneActionPopup;
+      this.showSshHeaderActionPopup;
     if (!shouldShowSessionContextualGuide(
       this.sshConnectionIsConnected() && this.sshAuthPromptPageShown &&
         !this.sshContextualGuideInBackground() && !this.terminalClosing,
@@ -17217,12 +17243,14 @@ struct SshTerminal {
         if (this.sshTabsInline()) {
           this.sshTabStripInline()
         }
-        if (this.isDesktopDevice && !this.sshCompactChrome()) {
+        if (!this.sshHeaderActionPopupEnabled() &&
+          this.isDesktopDevice && !this.sshCompactChrome()) {
           Text('Ctrl+Shift+Q 退出')
             .fontSize(11).fontColor('rgba(242,244,247,0.54)')
             .margin({ right: 12 })
         }
-        if (this.isDesktopDevice && !this.sshCompactChrome() && this.terminalProfileEnabled()) {
+        if (!this.sshHeaderActionPopupEnabled() && this.isDesktopDevice &&
+          !this.sshCompactChrome() && this.terminalProfileEnabled()) {
           Row() {
             SymbolGlyph($r('sys.symbol.gearshape_fill'))
               .fontSize(17)
@@ -17236,7 +17264,8 @@ struct SshTerminal {
           .onClick((): void => { this.openTerminalProfileSheet(); })
           .accessibilityText('打开终端 Profile')
         }
-        if (this.isDesktopDevice && !this.sshCompactChrome() && this.terminalSearchAvailable()) {
+        if (!this.sshHeaderActionPopupEnabled() && this.isDesktopDevice &&
+          !this.sshCompactChrome() && this.terminalSearchAvailable()) {
           Row() {
             SymbolGlyph($r('sys.symbol.magnifyingglass'))
               .fontSize(17)
@@ -17253,32 +17282,32 @@ struct SshTerminal {
           })
           .accessibilityText(this.terminalSearchVisible ? '聚焦终端搜索' : '打开终端搜索')
         }
-        if (this.sshPhoneActionPopupEnabled()) {
+        if (this.sshHeaderActionPopupEnabled()) {
           Button() {
-            SymbolGlyph($r('sys.symbol.ellipsis_bubble'))
-              .fontSize(19).fontColor(['rgba(242,244,247,0.88)'])
+            Text('更多').fontSize(11).fontWeight(FontWeight.Medium)
+              .fontColor('rgba(242,244,247,0.88)')
           }
-          .width(40).height(40).padding(0)
+          .width(60).height(40).padding(0)
           .borderRadius(20)
           .backgroundColor(this.chromeChipBg())
           .margin({ right: 8 })
-          .bindPopup(this.showSshPhoneActionPopup, {
-            builder: this.SshPhoneActionPopup(),
+          .bindPopup(this.showSshHeaderActionPopup, {
+            builder: this.SshHeaderActionPopup(),
             placement: Placement.BottomRight,
             enableArrow: true,
             popupColor: this.pal().card,
-            width: this.sshPhoneActionPopupWidth(),
+            width: this.sshHeaderActionPopupWidth(),
             onStateChange: (e: Object) => {
               const ev: Record<string, boolean> = e as Record<string, boolean>;
-              if (!ev['isVisible']) { this.showSshPhoneActionPopup = false; }
+              if (!ev['isVisible']) { this.showSshHeaderActionPopup = false; }
             }
           })
           .onClick((): void => {
             animateTo({ duration: 180, curve: Curve.FastOutSlowIn }, () => {
-              this.showSshPhoneActionPopup = !this.showSshPhoneActionPopup;
+              this.showSshHeaderActionPopup = !this.showSshHeaderActionPopup;
             });
           })
-          .accessibilityText('更多 SSH 操作')
+          .accessibilityText('打开 SSH 工作区与会话选项')
         } else {
           Row({ space: 4 }) {
             Text(this.sshCompactChrome() ? '语' : 'LANG').fontSize(10).fontWeight(FontWeight.Medium)
@@ -17297,7 +17326,7 @@ struct SshTerminal {
           .onClick((): void => { this.selectSshSessionLocale(); })
         }
         if (this.sshConnectionIsConnected()) {
-          if (!this.isDesktopDevice) {
+          if (!this.sshHeaderActionPopupEnabled() && !this.isDesktopDevice) {
             Row() {
               Text('↻').fontSize(19).fontColor('rgba(242,244,247,0.86)')
             }
@@ -17309,7 +17338,7 @@ struct SshTerminal {
             .margin({ right: 8 })
             .onClick((): void => { this.toggleSshOrientation(); })
           }
-          if (!this.sshPhoneActionPopupEnabled()) {
+          if (!this.sshHeaderActionPopupEnabled()) {
             Row() {
               SymbolGlyph($r('sys.symbol.doc'))
                 .fontSize(18)

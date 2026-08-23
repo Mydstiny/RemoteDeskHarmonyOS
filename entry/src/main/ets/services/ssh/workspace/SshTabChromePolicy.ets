@@ -7,10 +7,6 @@ export interface SshTabChromeLayout {
   scrollViewportWidthVp: number;
 }
 
-export const SSH_TAB_EDGE_COMPACT_VISIBLE_COUNT: number = 3;
-export const SSH_TAB_EDGE_EXPANDED_VISIBLE_COUNT: number = 5;
-export const SSH_TAB_EDGE_ACTION_SIZE_VP: number = 48;
-export const SSH_TAB_EDGE_ACTION_GAP_VP: number = 6;
 export const SSH_TAB_CHROME_HORIZONTAL_PADDING_VP: number = 12;
 export const SSH_TAB_INLINE_MIN_VIEWPORT_VP: number = 980;
 export const SSH_TAB_STRIP_HEIGHT_VP: number = 56;
@@ -21,11 +17,9 @@ export function resolveSshTabChromeLayout(viewportWidthVp: number,
   const width: number = Number.isFinite(viewportWidthVp) ? Math.max(0, viewportWidthVp) : 0;
   const compact: boolean = breakpoint.trim() === 'sm' ||
     (width > 0 && width < SSH_TAB_INLINE_MIN_VIEWPORT_VP);
-  const visibleActionCount: number = compact ? SSH_TAB_EDGE_COMPACT_VISIBLE_COUNT :
-    SSH_TAB_EDGE_EXPANDED_VISIBLE_COUNT;
-  const edgeActionsWidthVp: number = visibleActionCount * SSH_TAB_EDGE_ACTION_SIZE_VP +
-    (visibleActionCount - 1) * SSH_TAB_EDGE_ACTION_GAP_VP +
-    SSH_TAB_CHROME_HORIZONTAL_PADDING_VP;
+  // Global actions are consolidated in the page-level menu. Only the strip's
+  // horizontal insets remain outside the scrollable tab viewport.
+  const edgeActionsWidthVp: number = SSH_TAB_CHROME_HORIZONTAL_PADDING_VP;
   return {
     compact,
     inlineAllowed: !compact,
