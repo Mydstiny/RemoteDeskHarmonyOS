@@ -241,6 +241,30 @@ function searchableText(text: string): string {
   return text.replace(/\s+/g, ' ').trim().toLowerCase().slice(0, MAX_TEXT);
 }
 
+/** Count the bytes emitted by UTF-8 without relying on API 26-only globals. */
+export function sshSessionLogUtf8ByteLength(value: string): number {
+  let bytes: number = 0;
+  for (let index: number = 0; index < value.length; index++) {
+    const code: number = value.charCodeAt(index);
+    if (code <= 0x7f) {
+      bytes += 1;
+    } else if (code <= 0x7ff) {
+      bytes += 2;
+    } else if (code >= 0xd800 && code <= 0xdbff && index + 1 < value.length) {
+      const next: number = value.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        bytes += 4;
+        index++;
+      } else {
+        bytes += 3;
+      }
+    } else {
+      bytes += 3;
+    }
+  }
+  return bytes;
+}
+
 export function sshSessionLogCaptureAllowed(context: SshSessionLogCaptureContextV1): boolean {
   return context.enabled && !context.paused && !context.passwordPrompt && !context.mfaPrompt &&
     !context.passphrasePrompt && !context.rawMode && !context.fullscreenMode &&
@@ -284,7 +308,7 @@ export function normalizeSshSessionLogRecord(
     kind: source.kind,
     text,
     searchText: searchableText(text),
-    byteSize: Math.max(1, text.length)
+    byteSize: Math.max(1, sshSessionLogUtf8ByteLength(text))
   };
 }
 
@@ -622,6 +646,7 @@ export function exportSshSessionLog(
   let count: number = 0;
   let redactedCount: number = 0;
   let truncated: boolean = false;
+  let outputBytes: number = 0;
   for (let chunkIndex: number = 0; chunkIndex < document.chunks.length; chunkIndex++) {
     const chunk: SshSessionLogChunkV1 = document.chunks[chunkIndex];
     if (chunk.hostId !== host || (identity !== undefined && !sameIdentityValues(
@@ -635,11 +660,13 @@ export function exportSshSessionLog(
       if (text.length === 0) { redactedCount++; continue; }
       const line: string = new Date(record.timestamp).toISOString() + ' [' + record.direction + '] ' +
         text + '\n';
-      if (output.length + line.length > SSH_SESSION_LOG_MAX_EXPORT_BYTES) {
+      const lineBytes: number = sshSessionLogUtf8ByteLength(line);
+      if (outputBytes + lineBytes > SSH_SESSION_LOG_MAX_EXPORT_BYTES) {
         truncated = true;
         break;
       }
       output += line;
+      outputBytes += lineBytes;
       count++;
     }
     if (truncated) { break; }

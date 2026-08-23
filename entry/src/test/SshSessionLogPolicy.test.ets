@@ -9,15 +9,18 @@ import {
   encodeSshSessionLogDocument,
   exportSshSessionLog,
   matchesSshSessionLogExportFence,
+  normalizeSshSessionLogRecord,
   pruneSshSessionLogDocument,
   resolveSshSessionLogsEnabled,
   searchSshSessionLog,
   sanitizeSshSessionLogText,
   sshSessionLogCaptureAllowed,
   sshSessionLogInputPhaseAllowed,
+  sshSessionLogUtf8ByteLength,
   SSH_SESSION_LOG_CHUNK_MAX_RECORDS,
   SSH_SESSION_LOGS_DEFAULT_ENABLED,
   SSH_SESSION_LOG_SEARCH_WORK_BUDGET,
+  SSH_SESSION_LOG_MAX_EXPORT_BYTES,
   SshSessionLogChunkV1,
   SshSessionLogDocumentV1,
   SshSessionLogRecordV1,
@@ -165,6 +168,45 @@ export default function sshSessionLogPolicyTest(): void {
       expect(sanitized.indexOf('\u001B')).assertEqual(-1);
       expect(sanitized.indexOf('super-secret')).assertEqual(-1);
       expect(sanitized.indexOf('[redacted]') >= 0).assertTrue();
+    });
+
+    it('quota_and_export_limits_should_count_utf8_bytes', 0, (): void => {
+      expect(sshSessionLogUtf8ByteLength('ASCII')).assertEqual(5);
+      expect(sshSessionLogUtf8ByteLength('密码')).assertEqual(6);
+      expect(sshSessionLogUtf8ByteLength('😀')).assertEqual(4);
+      const normalized = normalizeSshSessionLogRecord(record('utf8-one', '密码'));
+      expect(normalized === null).assertFalse();
+      expect((normalized as SshSessionLogRecordV1).byteSize).assertEqual(6);
+
+      let quotaDocument: SshSessionLogDocumentV1 = emptySshSessionLogDocument();
+      quotaDocument.settings.enabled = true;
+      quotaDocument.settings.quotaBytes = 256 * 1024;
+      for (let index: number = 0; index < 12; index++) {
+        quotaDocument = appendSshSessionLogRecord(quotaDocument,
+          record('utf8-quota-' + index.toString(), '界'.repeat(8192), 100 + index),
+          200 + index);
+      }
+      const retainedRecords: number = quotaDocument.chunks.reduce(
+        (sum: number, chunk: SshSessionLogChunkV1): number => sum + chunk.records.length, 0);
+      const retainedBytes: number = quotaDocument.chunks.reduce(
+        (sum: number, chunk: SshSessionLogChunkV1): number => sum + chunk.byteSize, 0);
+      expect(retainedRecords < 12).assertTrue();
+      expect(retainedBytes <= quotaDocument.settings.quotaBytes).assertTrue();
+
+      const document: SshSessionLogDocumentV1 = emptySshSessionLogDocument();
+      const records: Array<SshSessionLogRecordV1> = [];
+      for (let index: number = 0; index < 96; index++) {
+        records.push(record('utf8-export-' + index.toString(), '界'.repeat(8192), index));
+      }
+      document.chunks.push({
+        id: 'utf8-export-chunk', hostId: 'host-one', sessionId: 7, generation: 2,
+        createdAt: 0, updatedAt: 95, byteSize: 0, records
+      });
+      const exported = exportSshSessionLog(document, 'host-one');
+      expect(exported.ok).assertTrue();
+      expect(exported.truncated).assertTrue();
+      expect(sshSessionLogUtf8ByteLength(exported.text) <=
+        SSH_SESSION_LOG_MAX_EXPORT_BYTES).assertTrue();
     });
 
     it('append_should_create_searchable_chunks_and_bookmarks', 0, (): void => {
