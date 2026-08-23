@@ -21,7 +21,7 @@
  *   - PC 端 Ctrl+V 是唯一粘贴路径 (onPaste 保留)
  *
  * ## 数据流
- *   输入 → SSH bounded writer → 远端 shell → echo → readerLoop → termOutput → 终端渲染
+ *   输入 → SSH bounded writer → 远端 shell → echo → readerLoop → renderer buffer → 终端渲染
  *   终端显示完全来自 SSH echo, 本地输入不参与显示
  */
 import { KeyboardAvoidMode, promptAction, router, window } from '@kit.ArkUI';
@@ -612,8 +612,6 @@ struct SshTerminal {
   private sshProductivityHistorySequence: number = 0;
   private sshProductivitySecretExpansionPending: boolean = false;
   private sshProductivityTrackerSuppressed: boolean = false;
-  /** 当前 SSH 输出 chunk；终端核心拥有 scrollback，不在页面累计完整历史。 */
-  @State termOutput: string = '';
   /**
    * 原始 SSH 输出 chunk 的稳定载体；Native terminal core 直接消费字节，避免
    * UTF-8/VT 损坏。必须是普通字段：ArrayBuffer 不能进 @State/@Prop（观察代理
@@ -2706,7 +2704,6 @@ struct SshTerminal {
     this.clearTerminalInputQueue();
     this.terminalDecodeRemainder = new Uint8Array(0);
     this.terminalOutputQueueOverflowed = false;
-    this.termOutput = '';
     this.nativeRendererUnavailable = false;
     // Do not let the previous host's ready bit survive the binding handoff.
     // The target tab is published only after the page-owned fields below have
@@ -5377,11 +5374,9 @@ struct SshTerminal {
     }
     if (this.shouldUseNativeTerminal()) {
       this.nativeTerminalInputBuffer(outputHostId).enqueue(merged);
-      this.termOutput = transcriptOutput;
     } else {
       const decodedOutput: string = this.decodeTerminalChunk(merged);
       this.xtermOutputBufferForHost(outputHostId).enqueue(decodedOutput);
-      this.termOutput = decodedOutput;
     }
     this.termOutputSequence++;
     if (this.terminalOutputQueue.length > 0) {
@@ -8899,7 +8894,6 @@ struct SshTerminal {
     this.shellAreaW = 0;
     this.orientationApplied = false;
     // ArkUI 可能复用页面实例；每次进入都必须从全新的会话输出开始。
-    this.termOutput = '';
     this.clearXtermOutputBuffers();
     this.clearTerminalOutputQueue();
     this.clearTerminalInputQueue();
@@ -9417,7 +9411,6 @@ struct SshTerminal {
     this.sessionId = -1;
     this.connected = false;
     this.visibleSshHostId = '';
-    this.termOutput = '';
     this.clearXtermOutputBuffers();
     this.clearTerminalOutputQueue();
     this.clearTerminalInputQueue();
