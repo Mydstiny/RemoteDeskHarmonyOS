@@ -2206,6 +2206,8 @@ struct SshTerminal {
       promptAction.showToast({ message: '没有需要手动重连的工作区标签', duration: 1500 });
       return;
     }
+    const requestPageGeneration: number = this.pageGeneration;
+    const requestBindingGeneration: number = this.sshBindingGeneration;
     const decision = await promptAction.showDialog({
       title: '手动恢复 SSH 工作区？',
       message: '将依次启动 ' + targets.length.toString() +
@@ -2215,11 +2217,13 @@ struct SshTerminal {
         { text: '开始恢复', color: this.accentColor }
       ]
     });
-    if (decision.index !== 1 || this.terminalClosing) { return; }
+    if (decision.index !== 1 ||
+      !this.isSshBindingGenerationActive(requestPageGeneration, requestBindingGeneration)) { return; }
     this.sshWorkspaceManualReconnectRunning = true;
     try {
       for (let index: number = 0; index < targets.length; index++) {
-        if (this.terminalClosing || !this.sshWorkspaceModeEnabled()) { break; }
+        if (!this.isSshBindingGenerationActive(requestPageGeneration, requestBindingGeneration) ||
+          !this.sshWorkspaceModeEnabled()) { break; }
         const host: RemoteHost = targets[index];
         if (host.id.trim() === this.hostId.trim()) {
           if (!this.connected && !this.connecting) { await this.retryConnection(); }
@@ -2228,10 +2232,14 @@ struct SshTerminal {
         }
       }
     } catch (err) {
-      promptAction.showToast({ message: (err as Error).message || '工作区恢复中断', duration: 1800 });
+      if (this.isSshBindingGenerationActive(requestPageGeneration, requestBindingGeneration)) {
+        promptAction.showToast({ message: (err as Error).message || '工作区恢复中断', duration: 1800 });
+      }
     } finally {
-      this.sshWorkspaceManualReconnectRunning = false;
-      this.refreshSshTabViews();
+      if (this.isSshBindingGenerationActive(requestPageGeneration, requestBindingGeneration)) {
+        this.sshWorkspaceManualReconnectRunning = false;
+        this.refreshSshTabViews();
+      }
     }
   }
 
