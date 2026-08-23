@@ -5201,11 +5201,14 @@ struct SshTerminal {
     const pending: ArrayBuffer[] = this.terminalOutputQueue;
     this.terminalOutputQueue = [];
     this.terminalOutputQueueBytes = 0;
-    const replayBuffer: TerminalInputBuffer = this.nativeTerminalInputBuffer(normalizedHostId);
     for (let index = 0; index < pending.length; index++) {
       const chunk: ArrayBuffer = pending[index];
       if (chunk.byteLength === 0) { continue; }
-      replayBuffer.enqueue(chunk);
+      // The current production surface is xterm. Do not duplicate every
+      // hidden-tab byte into a native FIFO that has no renderer consumer.
+      if (this.nativeTerminalFormFactor()) {
+        this.nativeTerminalInputBuffer(normalizedHostId).enqueue(chunk);
+      }
       const transcript: string = this.decodeTranscriptChunk(normalizedHostId, chunk);
       if (transcript.length > 0) {
         this.sshTranscriptStore.append(normalizedHostId, transcript);
@@ -5233,7 +5236,11 @@ struct SshTerminal {
         (this.sessionId !== sessionId || this.sshSessionGeneration !== sessionGeneration))) {
       return;
     }
-    this.nativeTerminalInputBuffer(normalizedHostId).enqueue(data);
+    // Keep raw replay bytes only when this form factor can actually mount the
+    // native renderer. xterm owns its own decoded FIFO below.
+    if (this.nativeTerminalFormFactor()) {
+      this.nativeTerminalInputBuffer(normalizedHostId).enqueue(data);
+    }
     const transcript: string = this.decodeTranscriptChunk(normalizedHostId, data);
     if (transcript.length > 0) {
       this.sshTranscriptStore.append(normalizedHostId, transcript);
