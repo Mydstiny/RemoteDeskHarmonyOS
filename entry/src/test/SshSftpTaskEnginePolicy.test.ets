@@ -2,6 +2,7 @@ import { describe, it, expect } from '@ohos/hypium';
 import {
   planSshSftpStagingDiscard,
   reconcileSshSftpStoppedUploadCheckpoint,
+  reconcileSshSftpStoppedRemoteCommit,
   SshSftpStagingDiscardPlan,
   shouldReleaseSshSftpRuntimeOnPageTeardown
 } from '../main/ets/services/SshSftpTaskEngine';
@@ -67,6 +68,42 @@ export default function sshSftpTaskEnginePolicyTest(): void {
       active.stage = 'paused';
       expect(reconcileSshSftpStoppedUploadCheckpoint(
         active, 320, { size: 319, mtime: 31 }, 9, 41) === null).assertTrue();
+    });
+
+    it('completes_only_the_exact_stopped_task_after_atomic_remote_commit', 0, (): void => {
+      const committing: SshSftpTaskRecord = {
+        taskId: 'upload-commit', batchId: 'batch-1', relativePath: 'source.bin',
+        hostId: 'host-1', direction: 'upload', isDirectory: false,
+        remotePath: '/target.bin', fileName: 'target.bin', totalBytes: 1024,
+        verifiedOffset: 1024, sourceSize: 1024, sourceMtime: 20,
+        partialSize: 1024, partialMtime: 30, sessionGeneration: 4,
+        sequence: 8, stage: 'committing', updatedAt: 40,
+        sourcePath: 'source.bin', targetPath: '/target.bin', commitState: 'renaming'
+      };
+      const cancelled: SshSftpTaskRecord = {
+        ...committing, sequence: 9, stage: 'cancelled', updatedAt: 41
+      };
+      const completed: SshSftpTaskRecord | null = reconcileSshSftpStoppedRemoteCommit(
+        cancelled, committing, 1024, 10, 42);
+
+      expect(completed === null).assertFalse();
+      expect((completed as SshSftpTaskRecord).stage).assertEqual('completed');
+      expect((completed as SshSftpTaskRecord).verifiedOffset).assertEqual(1024);
+      expect((completed as SshSftpTaskRecord).partialSize).assertEqual(-1);
+      expect((completed as SshSftpTaskRecord).commitState).assertEqual('renamed');
+
+      const paused: SshSftpTaskRecord = { ...cancelled, stage: 'paused' };
+      expect(reconcileSshSftpStoppedRemoteCommit(paused, committing, 1024, 11, 43)?.stage)
+        .assertEqual('completed');
+      const wrongTarget: SshSftpTaskRecord = { ...cancelled, targetPath: '/other.bin' };
+      expect(reconcileSshSftpStoppedRemoteCommit(
+        wrongTarget, committing, 1024, 11, 43) === null).assertTrue();
+      expect(reconcileSshSftpStoppedRemoteCommit(
+        { ...cancelled, stage: 'transferring' }, committing, 1024, 11, 43) === null)
+        .assertTrue();
+      expect(reconcileSshSftpStoppedRemoteCommit(
+        cancelled, { ...committing, commitState: 'renamed' }, 1024, 11, 43) === null)
+        .assertTrue();
     });
   });
 }

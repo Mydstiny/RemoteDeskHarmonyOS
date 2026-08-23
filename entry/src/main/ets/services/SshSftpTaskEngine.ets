@@ -126,6 +126,61 @@ export function reconcileSshSftpStoppedUploadCheckpoint(current: SshSftpTaskReco
   };
 }
 
+/**
+ * A successful atomic rename is an irreversible remote commit. A cancel or
+ * pause accepted while that native call was in flight must not leave the
+ * durable task resumable after the final path has already been installed.
+ * Only the exact stopped task and target crossed by the committing attempt may
+ * be completed through this exceptional path.
+ */
+export function reconcileSshSftpStoppedRemoteCommit(current: SshSftpTaskRecord,
+  attempted: SshSftpTaskRecord, expectedSize: number, sequence: number,
+  updatedAt: number): SshSftpTaskRecord | null {
+  const currentTarget: string = (current.targetPath || current.remotePath).trim();
+  const attemptedTarget: string = (attempted.targetPath || attempted.remotePath).trim();
+  const currentSource: string = (current.sourcePath || current.relativePath).trim();
+  const attemptedSource: string = (attempted.sourcePath || attempted.relativePath).trim();
+  if ((current.stage !== 'paused' && current.stage !== 'cancelled') ||
+    attempted.commitState !== 'renaming' || expectedSize < 0 ||
+    current.taskId !== attempted.taskId || current.batchId !== attempted.batchId ||
+    current.hostId !== attempted.hostId || current.direction !== attempted.direction ||
+    currentTarget.length === 0 || currentTarget !== attemptedTarget ||
+    currentSource !== attemptedSource || current.totalBytes !== expectedSize ||
+    attempted.totalBytes !== expectedSize || current.sourceSize !== attempted.sourceSize ||
+    current.sourceMtime !== attempted.sourceMtime || !Number.isFinite(sequence) ||
+    sequence <= current.sequence || !Number.isFinite(updatedAt) || updatedAt < 0) {
+    return null;
+  }
+  return {
+    taskId: current.taskId,
+    schemaVersion: current.schemaVersion,
+    batchId: current.batchId,
+    relativePath: current.relativePath,
+    hostId: current.hostId,
+    direction: current.direction,
+    isDirectory: current.isDirectory,
+    remotePath: current.remotePath,
+    fileName: current.fileName,
+    totalBytes: current.totalBytes,
+    verifiedOffset: expectedSize,
+    sourceSize: current.sourceSize,
+    sourceMtime: current.sourceMtime,
+    partialSize: -1,
+    partialMtime: -1,
+    sessionGeneration: current.sessionGeneration,
+    sequence,
+    stage: 'completed',
+    updatedAt,
+    sourceEndpoint: current.sourceEndpoint,
+    targetEndpoint: current.targetEndpoint,
+    sourcePath: current.sourcePath,
+    targetPath: current.targetPath,
+    partialIdentity: undefined,
+    checksumPolicy: current.checksumPolicy,
+    commitState: 'renamed'
+  };
+}
+
 interface SshSftpBatchBinding {
   batchId: string;
   hostId: string;
@@ -752,9 +807,15 @@ export class SshSftpTaskEngine {
         diagnosticPrefix + '-commit-marker-persist-failed');
     }
     if (this.taskIsStopped(task.taskId)) { return false; }
+    const renameAttempt: SshSftpTaskRecord = committing;
     const renamed: SftpMutationAsyncResult = await this.loader.renameRemotePathAsync(
       targetSession.sessionId, partialPath, targetPath, true, targetSession.generation);
-    if (this.taskIsStopped(task.taskId)) { return false; }
+    const renameCommitted: boolean = renamed.transportLost !== true &&
+      renamed.errorCode >= 0 && renamed.atomic === true;
+    if (this.taskIsStopped(task.taskId)) {
+      return renameCommitted && this.completeStoppedRemoteCommit(
+        binding, renameAttempt, expectedSize, diagnosticPrefix + '-completed-after-remote-commit');
+    }
     if (renamed.transportLost === true) {
       return this.failOperationOrWait(binding, committing, targetSession,
         diagnosticPrefix + '-atomic-commit-unconfirmed', true);
@@ -766,10 +827,16 @@ export class SshSftpTaskEngine {
     committing = this.updateTask(committing, 'committing', expectedSize, -1, -1,
       targetPath, committing.fileName, targetSession.generation, targetPath,
       committing.sourcePath, 'renamed');
-    if (committing.stage === 'paused' || committing.stage === 'cancelled') { return false; }
+    if (committing.stage === 'paused' || committing.stage === 'cancelled') {
+      return this.completeStoppedRemoteCommit(
+        binding, renameAttempt, expectedSize, diagnosticPrefix + '-completed-after-remote-commit');
+    }
     const targetResult: SshSftpEngineIdentityResult = await this.readRemoteIdentityResult(
       targetSession.sessionId, targetPath, targetSession.generation);
-    if (this.taskIsStopped(task.taskId)) { return false; }
+    if (this.taskIsStopped(task.taskId)) {
+      return this.completeStoppedRemoteCommit(
+        binding, renameAttempt, expectedSize, diagnosticPrefix + '-completed-after-remote-commit');
+    }
     if (targetResult.transportLost) {
       return this.failOperationOrWait(binding, committing, targetSession,
         diagnosticPrefix + '-target-stat-lost', true);
@@ -1401,6 +1468,21 @@ export class SshSftpTaskEngine {
       return false;
     }
     this.publish('taskChanged', binding.batchId, completed, reason);
+    return true;
+  }
+
+  private completeStoppedRemoteCommit(binding: SshSftpBatchBinding,
+    attempted: SshSftpTaskRecord, expectedSize: number, reason: string): boolean {
+    const current: SshSftpTaskRecord | null = this.store.get(attempted.taskId);
+    if (current === null) { return false; }
+    this.sequence = Math.max(this.sequence + 1, Date.now(), current.sequence + 1,
+      attempted.sequence + 1);
+    const completed: SshSftpTaskRecord | null = reconcileSshSftpStoppedRemoteCommit(
+      current, attempted, expectedSize, this.sequence, Date.now());
+    if (completed === null || !this.store.upsert(completed)) { return false; }
+    const stored: SshSftpTaskRecord | null = this.store.get(attempted.taskId);
+    if (stored === null || stored.stage !== 'completed') { return false; }
+    this.publish('taskChanged', binding.batchId, stored, reason);
     return true;
   }
 
