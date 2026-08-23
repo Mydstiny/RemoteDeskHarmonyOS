@@ -155,7 +155,8 @@ import {
   normalizeSshKeyCode,
   encodeSoftDelete,
   encodeTextInput,
-  sshTerminalInputByteLength
+  sshTerminalInputByteLength,
+  splitSshTerminalInputText
 } from '../services/SshTerminalInputPolicy';
 import {
   defaultSshTerminalOrientation,
@@ -465,6 +466,7 @@ const SSH_STATE_CONNECTING: number = 1;
 const SSH_STATE_CONNECTED: number = 2;
 const SSH_STATE_RECONNECTING: number = 3;
 const SSH_INPUT_PASTE_CHUNK_CHARS: number = 4096;
+const SSH_INPUT_PASTE_MAX_BYTES: number = 256 * 1024;
 const SSH_INPUT_PENDING_DATA_MAX_BYTES: number = 512 * 1024;
 const SSH_INPUT_PENDING_CONTROL_MAX_BYTES: number = 32 * 1024;
 const SSH_OUTPUT_QUEUE_MAX_CHUNKS: number = 512;
@@ -494,6 +496,13 @@ interface PendingTerminalInput {
   bytes: number;
   control: boolean;
   /** Paste chunks share a non-preemptive lane with their bracket markers. */
+  ordered: boolean;
+  orderedEnd: boolean;
+}
+
+interface PendingTerminalInputRequest {
+  data: string;
+  control: boolean;
   ordered: boolean;
   orderedEnd: boolean;
 }
@@ -5192,39 +5201,70 @@ struct SshTerminal {
     }
   }
 
-  private queueTerminalInput(data: string, control: boolean = false,
-    ordered: boolean = false, orderedEnd: boolean = false): void {
-    if (this.terminalClosing || this.sessionId <= 0 || data.length === 0) { return; }
-    const dataBytes: number = sshTerminalInputByteLength(data);
-    if (ordered && this.terminalInputOrderedPendingBytes + dataBytes >
+  private queueTerminalInputBatch(requests: Array<PendingTerminalInputRequest>): boolean {
+    if (this.terminalClosing || this.sessionId <= 0 || requests.length === 0) { return false; }
+    const items: Array<PendingTerminalInput> = [];
+    let nextOrder: number = this.terminalInputOrder;
+    let orderedBytes: number = 0;
+    let controlBytes: number = 0;
+    let dataBytes: number = 0;
+    for (let index: number = 0; index < requests.length; index++) {
+      const request: PendingTerminalInputRequest = requests[index];
+      if (request.data.length === 0) { continue; }
+      const bytes: number = sshTerminalInputByteLength(request.data);
+      items.push({
+        order: ++nextOrder,
+        data: request.data,
+        bytes,
+        control: request.control,
+        ordered: request.ordered,
+        orderedEnd: request.orderedEnd
+      });
+      if (request.ordered) {
+        orderedBytes += bytes;
+      } else if (request.control) {
+        controlBytes += bytes;
+      } else {
+        dataBytes += bytes;
+      }
+    }
+    if (items.length === 0) { return false; }
+    if (this.terminalInputOrderedPendingBytes + orderedBytes >
         SSH_INPUT_PENDING_DATA_MAX_BYTES) {
       promptAction.showToast({ message: '粘贴输入队列已满，请稍后继续', duration: 1200 });
-      return;
+      return false;
     }
-    if (control && this.terminalInputControlPendingBytes + dataBytes >
+    if (this.terminalInputControlPendingBytes + controlBytes >
         SSH_INPUT_PENDING_CONTROL_MAX_BYTES) {
       promptAction.showToast({ message: '控制输入队列已满，请稍后继续', duration: 1200 });
-      return;
+      return false;
     }
-    if (!control && this.terminalInputDataPendingBytes + dataBytes >
+    if (this.terminalInputDataPendingBytes + dataBytes >
         SSH_INPUT_PENDING_DATA_MAX_BYTES) {
       promptAction.showToast({ message: '输入队列已满，请稍后继续', duration: 1200 });
-      return;
+      return false;
     }
-    const item: PendingTerminalInput = {
-      order: ++this.terminalInputOrder, data, bytes: dataBytes, control, ordered, orderedEnd
-    };
-    if (ordered) {
-      this.terminalInputOrderedPending.push(item);
-      this.terminalInputOrderedPendingBytes += dataBytes;
-    } else if (control) {
-      this.terminalInputControlPending.push(item);
-      this.terminalInputControlPendingBytes += dataBytes;
-    } else {
-      this.terminalInputDataPending.push(item);
-      this.terminalInputDataPendingBytes += dataBytes;
+    this.terminalInputOrder = nextOrder;
+    for (let index: number = 0; index < items.length; index++) {
+      const item: PendingTerminalInput = items[index];
+      if (item.ordered) {
+        this.terminalInputOrderedPending.push(item);
+      } else if (item.control) {
+        this.terminalInputControlPending.push(item);
+      } else {
+        this.terminalInputDataPending.push(item);
+      }
     }
+    this.terminalInputOrderedPendingBytes += orderedBytes;
+    this.terminalInputControlPendingBytes += controlBytes;
+    this.terminalInputDataPendingBytes += dataBytes;
     this.flushTerminalInputQueue();
+    return true;
+  }
+
+  private queueTerminalInput(data: string, control: boolean = false,
+    ordered: boolean = false, orderedEnd: boolean = false): boolean {
+    return this.queueTerminalInputBatch([{ data, control, ordered, orderedEnd }]);
   }
 
   private clearTerminalOutputQueue(): void {
@@ -10779,9 +10819,10 @@ struct SshTerminal {
       hilog.debug(0x0000, 'SshTerminal', '[input] admit chars=' + data.length.toString() +
         ' control=' + (control ? '1' : '0'));
     }
-    this.recordSshSessionLogInput(data, control);
-    this.trackSshProductivityInput(data, control);
-    this.queueTerminalInput(data, control);
+    if (this.queueTerminalInput(data, control)) {
+      this.recordSshSessionLogInput(data, control);
+      this.trackSshProductivityInput(data, control);
+    }
   }
 
   /** Buffer input until Enter so logging never writes one encrypted chunk per key. */
@@ -14921,8 +14962,7 @@ struct SshTerminal {
   private handlePaste(content: string): void {
     if (!this.isDesktopDevice) { return; }
     if (content.length === 0) { this.resetKeyboardBuffer(); return; }
-    const maxPasteLength: number = 256 * 1024;
-    if (content.length > maxPasteLength) {
+    if (sshTerminalInputByteLength(content) > SSH_INPUT_PASTE_MAX_BYTES) {
       promptAction.showToast({ message: '粘贴内容过大，已拒绝（上限 256 KB）', duration: 1800 });
       this.resetKeyboardBuffer();
       return;
@@ -14956,19 +14996,27 @@ struct SshTerminal {
   }
 
   private sendPastedText(content: string): void {
+    const chunks: Array<string> = splitSshTerminalInputText(
+      content, SSH_INPUT_PASTE_CHUNK_CHARS);
+    const requests: Array<PendingTerminalInputRequest> = [];
     if (this.bracketedPasteEnabled) {
-      this.trackSshProductivityInput(content, false);
       // Mark every part of the bracketed paste as one ordered transaction.
       // The native reactor will not let a later control byte split it.
-      this.queueTerminalInput('\u001b[200~', false, true, false);
-      for (let offset: number = 0; offset < content.length; offset += SSH_INPUT_PASTE_CHUNK_CHARS) {
-        this.queueTerminalInput(
-          content.substring(offset, offset + SSH_INPUT_PASTE_CHUNK_CHARS), false, true, false);
+      requests.push({ data: '\u001b[200~', control: false, ordered: true, orderedEnd: false });
+      for (let index: number = 0; index < chunks.length; index++) {
+        requests.push({ data: chunks[index], control: false, ordered: true, orderedEnd: false });
       }
-      this.queueTerminalInput('\u001b[201~', false, true, true);
+      requests.push({ data: '\u001b[201~', control: false, ordered: true, orderedEnd: true });
+      if (this.queueTerminalInputBatch(requests)) {
+        this.trackSshProductivityInput(content, false);
+      }
     } else {
-      for (let offset: number = 0; offset < content.length; offset += SSH_INPUT_PASTE_CHUNK_CHARS) {
-        this.sendTerminalBytes(content.substring(offset, offset + SSH_INPUT_PASTE_CHUNK_CHARS));
+      for (let index: number = 0; index < chunks.length; index++) {
+        requests.push({ data: chunks[index], control: false, ordered: false, orderedEnd: false });
+      }
+      if (this.queueTerminalInputBatch(requests)) {
+        this.recordSshSessionLogInput(content, false);
+        this.trackSshProductivityInput(content, false);
       }
     }
   }

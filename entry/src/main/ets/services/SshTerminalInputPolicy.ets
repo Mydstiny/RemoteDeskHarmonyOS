@@ -62,6 +62,33 @@ export function sshTerminalInputByteLength(value: string): number {
   return sshUtf8ByteLength(value);
 }
 
+/**
+ * Split a text producer into bounded ArkTS strings without separating a
+ * valid UTF-16 surrogate pair across two NAPI conversions.
+ */
+export function splitSshTerminalInputText(value: string,
+  maxCodeUnits: number): Array<string> {
+  const chunks: Array<string> = [];
+  const limit: number = Math.max(1, Math.floor(maxCodeUnits));
+  let start: number = 0;
+  while (start < value.length) {
+    let end: number = Math.min(value.length, start + limit);
+    if (end < value.length && end > start) {
+      const finalCode: number = value.charCodeAt(end - 1);
+      const nextCode: number = value.charCodeAt(end);
+      if (finalCode >= 0xD800 && finalCode <= 0xDBFF &&
+        nextCode >= 0xDC00 && nextCode <= 0xDFFF) {
+        end--;
+      }
+    }
+    // A one-code-unit test limit must still keep one scalar and make progress.
+    if (end === start) { end = Math.min(value.length, start + 2); }
+    chunks.push(value.substring(start, end));
+    start = end;
+  }
+  return chunks;
+}
+
 interface SshImeTextChange {
   inserted: string;
   deleted: string;

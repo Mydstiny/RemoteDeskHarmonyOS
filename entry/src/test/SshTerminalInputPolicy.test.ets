@@ -18,7 +18,8 @@ import {
   consumeSshImeDidDelete,
   inspectSshImeChange,
   resetSshImeShadow,
-  sshTerminalInputByteLength
+  sshTerminalInputByteLength,
+  splitSshTerminalInputText
 } from '../main/ets/services/SshTerminalInputPolicy';
 
 const NONE: TerminalModifierState = { ctrl: false, alt: false, shift: false };
@@ -35,6 +36,20 @@ export default function sshTerminalInputPolicyTest(): void {
       expect(sshTerminalInputByteLength('密码')).assertEqual(6);
       expect(sshTerminalInputByteLength('🙂')).assertEqual(4);
       expect(sshTerminalInputByteLength('\uD800')).assertEqual(3);
+    });
+
+    it('should_split_paste_without_separating_surrogate_pairs', 0, (): void => {
+      const source: string = 'a'.repeat(4095) + '🙂b';
+      const chunks: Array<string> = splitSshTerminalInputText(source, 4096);
+      expect(chunks.length).assertEqual(2);
+      expect(chunks[0].length).assertEqual(4095);
+      expect(chunks[1]).assertEqual('🙂b');
+      expect(chunks.join('')).assertEqual(source);
+
+      const oneUnitChunks: Array<string> = splitSshTerminalInputText('🙂a', 1);
+      expect(oneUnitChunks.length).assertEqual(2);
+      expect(oneUnitChunks[0]).assertEqual('🙂');
+      expect(oneUnitChunks[1]).assertEqual('a');
     });
 
     it('should_pass_soft_keyboard_committed_text_through', 0, (): void => {
