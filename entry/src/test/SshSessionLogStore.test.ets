@@ -120,6 +120,25 @@ export default function sshSessionLogStoreTest(): void {
       expect(persistence.chunks.size).assertEqual(1);
     });
 
+    it('should_remove_orphans_by_their_exact_persisted_row_id', 0, (): void => {
+      const persistence = new MemoryLogPersistence();
+      const crypto = new FakeLogCrypto();
+      const context: common.Context = undefined as common.Context;
+      const store = new SshSessionLogStore(persistence, crypto);
+      expect(store.init(context)).assertTrue();
+      const settings: SshSessionLogSettingsV1 = store.settingsSnapshot();
+      settings.enabled = true;
+      expect(store.setSettings(settings)).assertTrue();
+      expect(store.append(logRecord('one', 'committed'))).assertTrue();
+      const longOrphanId: string = 'corrupt-or-legacy-' + 'x'.repeat(200);
+      persistence.chunks.set(longOrphanId, 'cipher<unreferenced>');
+
+      const restored = new SshSessionLogStore(persistence, crypto);
+      expect(restored.init(context)).assertTrue();
+      expect(persistence.chunks.has(longOrphanId)).assertFalse();
+      expect(persistence.chunks.size).assertEqual(1);
+    });
+
     it('should_not_replace_a_missing_index_when_chunk_rows_still_exist', 0, (): void => {
       const persistence = new MemoryLogPersistence();
       const crypto = new FakeLogCrypto();

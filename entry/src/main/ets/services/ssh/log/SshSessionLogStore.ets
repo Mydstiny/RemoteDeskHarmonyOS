@@ -59,6 +59,7 @@ export interface SshSessionLogPersistencePort {
   readIndex(context: common.Context): string | null;
   writeIndex(context: common.Context, value: string): boolean;
   readChunk(context: common.Context, chunkId: string): string | null;
+  /** Return exact storage row IDs so orphan cleanup addresses the real row. */
   listChunkIds(context: common.Context): Array<string> | null;
   writeChunk(context: common.Context, chunkId: string, value: string): boolean;
   removeChunk(context: common.Context, chunkId: string): boolean;
@@ -147,7 +148,10 @@ class HarmonySshSessionLogPersistence implements SshSessionLogPersistencePort {
       const ids: Array<string> = [];
       const idColumn: number = rows.getColumnIndex('id');
       while (rows.goToNextRow()) {
-        const id: string = rows.getString(idColumn).slice(0, 160);
+        // Generated logical IDs are bounded, but recovery must not normalize a
+        // persisted primary key. Truncating a corrupt/legacy key here makes
+        // removeChunk() target a different row and silently leaves the orphan.
+        const id: string = rows.getString(idColumn);
         if (id.length > 0) { ids.push(id); }
       }
       return ids;
