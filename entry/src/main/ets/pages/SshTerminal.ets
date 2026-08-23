@@ -35,6 +35,7 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { sshDiagnosticErrorCode } from
   '../services/ssh/observability/SshDiagnosticPolicy';
 import { HostSyncService } from '../services/HostSyncService';
+import { BoundedDocumentIo } from '../services/BoundedDocumentIo';
 import {
   ExtensionLoader,
   NativeDisconnectIdentity,
@@ -351,6 +352,7 @@ import {
   sanitizeSshSessionLogText,
   sshSessionLogCaptureAllowed,
   sshSessionLogInputPhaseAllowed,
+  shouldScrubFailedSshSessionLogExport,
   SSH_SESSION_LOGS_DEFAULT_ENABLED,
   SSH_SESSION_LOGS_FLAG_KEY,
   SshSessionLogDocumentV1,
@@ -3660,6 +3662,9 @@ struct SshTerminal {
     const exportPageGeneration: number = this.pageGeneration;
     const exportBindingGeneration: number = this.sshBindingGeneration;
     let confirmed: boolean = false;
+    let exportUri: string = '';
+    let exportTargetOpened: boolean = false;
+    let exportDurable: boolean = false;
     try {
       const decision = await promptAction.showDialog({
         title: '导出会话日志？',
@@ -3695,15 +3700,18 @@ struct SshTerminal {
         this.hostId, this.pageGeneration, this.sshBindingGeneration,
         this.sshSessionLogsEnabled() && this.sshSessionLogReady && !this.terminalClosing) ||
         uris.length === 0 || uris[0].trim().length === 0) { return; }
+      exportUri = uris[0].trim();
       const bytes: Uint8Array = new util.TextEncoder().encode(result.text);
-      const output: fileIo.File = fileIo.openSync(uris[0],
+      const output: fileIo.File = fileIo.openSync(exportUri,
         fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.CREATE | fileIo.OpenMode.TRUNC);
+      exportTargetOpened = true;
       try {
-        const written: number = fileIo.writeSync(output.fd, bytes.buffer);
-        if (written !== bytes.byteLength) {
+        const written = BoundedDocumentIo.writeFully(output.fd, bytes);
+        if (!written.ok || written.bytesWritten !== bytes.byteLength) {
           throw new Error('short log export write');
         }
         fileIo.fsyncSync(output.fd);
+        exportDurable = true;
       } finally {
         fileIo.closeSync(output);
       }
@@ -3712,7 +3720,28 @@ struct SshTerminal {
         duration: 1800
       });
     } catch (_err) {
+      if (shouldScrubFailedSshSessionLogExport(exportTargetOpened, exportDurable)) {
+        this.scrubFailedSshSessionLogExport(exportUri);
+      }
       promptAction.showToast({ message: '日志导出失败', duration: 1800 });
+    }
+  }
+
+  /** Keep a failed authorized destination entry, but remove partial plaintext. */
+  private scrubFailedSshSessionLogExport(uri: string): void {
+    if (uri.length === 0) { return; }
+    let output: fileIo.File | null = null;
+    try {
+      output = fileIo.openSync(uri,
+        fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.CREATE | fileIo.OpenMode.TRUNC);
+      fileIo.fsyncSync(output.fd);
+    } catch (_err) {
+      // The provider may revoke the grant after a failed write. Export remains
+      // failed and is never reported as durable in that case.
+    } finally {
+      if (output !== null) {
+        try { fileIo.closeSync(output); } catch (_closeError) {}
+      }
     }
   }
 

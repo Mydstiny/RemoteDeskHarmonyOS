@@ -158,6 +158,12 @@ export function matchesSshSessionLogExportFence(expectedHostId: string,
     expectedBindingGeneration === currentBindingGeneration;
 }
 
+/** A started but non-durable export may contain a plaintext prefix. */
+export function shouldScrubFailedSshSessionLogExport(
+  targetOpened: boolean, durable: boolean): boolean {
+  return targetOpened === true && durable !== true;
+}
+
 function stringValue(value: Object, max: number): string {
   return typeof value === 'string' ? (value as string).slice(0, max) : '';
 }

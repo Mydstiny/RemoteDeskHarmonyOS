@@ -18,6 +18,7 @@ import {
   sshSessionLogCaptureAllowed,
   sshSessionLogInputPhaseAllowed,
   sshSessionLogUtf8ByteLength,
+  shouldScrubFailedSshSessionLogExport,
   SSH_SESSION_LOG_CHUNK_MAX_RECORDS,
   SSH_SESSION_LOGS_DEFAULT_ENABLED,
   SSH_SESSION_LOG_SEARCH_WORK_BUDGET,
@@ -62,6 +63,12 @@ export default function sshSessionLogPolicyTest(): void {
         'host-one', 7, 9, 'host-one', 7, 10, true)).assertFalse();
       expect(matchesSshSessionLogExportFence(
         'host-one', 7, 9, 'host-one', 7, 9, false)).assertFalse();
+    });
+
+    it('failed_export_should_scrub_only_an_open_non_durable_target', 0, (): void => {
+      expect(shouldScrubFailedSshSessionLogExport(false, false)).assertFalse();
+      expect(shouldScrubFailedSshSessionLogExport(true, false)).assertTrue();
+      expect(shouldScrubFailedSshSessionLogExport(true, true)).assertFalse();
     });
 
     it('chunked_search_should_match_sync_results_and_honor_small_budgets', 0, (): void => {
