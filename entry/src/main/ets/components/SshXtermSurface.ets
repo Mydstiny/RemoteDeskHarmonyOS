@@ -391,6 +391,7 @@ export struct SshXtermSurface {
   private documentReloadPending: boolean = false;
   private outputPumpRunning: boolean = false;
   private outputPumpRetryTimer: number = -1;
+  private outputPumpRetryCount: number = 0;
   private outputBufferWakeTimer: number = -1;
   private outputBufferUnsubscribe: (() => void) | null = null;
   private outputBatchAckTimer: number = -1;
@@ -640,6 +641,7 @@ export struct SshXtermSurface {
     this.pendingCoreKeyReload = false;
     this.reloadRequestedDocumentKey = '';
     this.documentReloadPending = false;
+    this.outputPumpRetryCount = 0;
     this.awaitingOutputBatch = 0;
     this.lastSearchExecutionKey = '';
     this.appliedSearchClearRequest = this.normalizedSearchClearRequest();
@@ -675,6 +677,7 @@ export struct SshXtermSurface {
     this.pendingCoreKeyReload = false;
     this.reloadRequestedDocumentKey = '';
     this.documentReloadPending = false;
+    this.outputPumpRetryCount = 0;
     this.pendingWrites = [];
     this.outputPumpRunning = false;
     this.awaitingOutputBatch = 0;
@@ -1140,6 +1143,7 @@ export struct SshXtermSurface {
   private handlePageReady(cols: number, rows: number): void {
     if (this.disposed) { return; }
     this.pageReady = true;
+    this.outputPumpRetryCount = 0;
     this.logLifecycle('page ready cols=' + cols.toString() + ' rows=' + rows.toString() +
       ' finished=' + (this.pageFinished ? '1' : '0'));
     this.documentReloadPending = false;
@@ -1195,6 +1199,7 @@ export struct SshXtermSurface {
     this.inFlightOutputBuffer = null;
     this.awaitingOutputBatch = 0;
     this.outputPumpRunning = false;
+    this.outputPumpRetryCount = 0;
     this.flushOutputBuffer();
     this.maybeReportReady();
   }
@@ -1330,6 +1335,7 @@ export struct SshXtermSurface {
     this.appliedSearchClearRequest = this.normalizedSearchClearRequest();
     this.documentReloadPending = true;
     this.reloadRequestedDocumentKey = requestedDocumentKey;
+    this.outputPumpRetryCount = 0;
     try { this.controller.deleteJavaScriptRegister('sshTerminalBridge'); } catch (_err) {
       // The old document may already have been detached.
     }
@@ -1511,6 +1517,11 @@ export struct SshXtermSurface {
 
   private scheduleOutputPumpRetry(lifecycleToken: number): void {
     if (this.outputPumpRetryTimer !== -1 || this.disposed) { return; }
+    if (!sshXtermRetryAllowed(this.outputPumpRetryCount)) {
+      hilog.error(XTERM_DOMAIN, XTERM_TAG, 'xterm output retry budget exhausted');
+      return;
+    }
+    this.outputPumpRetryCount++;
     this.outputPumpRetryTimer = setTimeout((): void => {
       this.outputPumpRetryTimer = -1;
       if (lifecycleToken === this.lifecycleToken) { this.pumpOutput(); }
@@ -1590,6 +1601,7 @@ export struct SshXtermSurface {
       this.reloadDocumentForCoreKey();
       return;
     }
+    this.outputPumpRetryCount = 0;
     // A hidden tab may have finished loading while active=false. In that
     // state handlePageReady intentionally defers the parent ready callback;
     // activation must therefore use the full post-load path so the target
