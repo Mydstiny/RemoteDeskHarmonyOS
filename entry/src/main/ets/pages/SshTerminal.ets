@@ -877,6 +877,8 @@ struct SshTerminal {
   private sftpEngineBatchId: string = '';
   private sftpEngineBatchTargetHostId: string = '';
   private sftpBatchRunning: boolean = false;
+  /** Identifies the page-owned legacy batch runner so stale finally blocks cannot clear a new run. */
+  private sftpBatchRunToken: number = 0;
   private sftpTaskUnsubscribe: (() => void) | null = null;
   private sftpEngineUnsubscribe: (() => void) | null = null;
   private sftpDetached: boolean = false;
@@ -8285,6 +8287,8 @@ struct SshTerminal {
     if (created.errorCode === 0) { return true; }
     const confirmed: SftpListAsyncResult = await this.loader.listRemoteDirAsync(
       requestSessionId, parent, requestSessionGeneration);
+    if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+      requestSessionGeneration)) { return false; }
     if (confirmed.errorCode < 0) { return false; }
     for (let index = 0; index < confirmed.entries.length; index++) {
       const entry: SftpFileEntry = confirmed.entries[index];
@@ -8329,6 +8333,7 @@ struct SshTerminal {
     const requestSessionGeneration: number = this.sshSessionGeneration;
     this.sftpBatchRunning = true;
     this.sftpBusy = true;
+    const runToken: number = ++this.sftpBatchRunToken;
     let completedFiles: number = 0;
     let completedDirectories: number = 0;
     try {
@@ -8340,18 +8345,24 @@ struct SshTerminal {
         if (index > 0) { this.sftpBusy = true; }
         const sourceUri: string | null = await this.sftpLocalProvider.resolveRelative(
           sourceRoot, this.batchTaskSourceRelativePath(task));
+        if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+          requestSessionGeneration)) { return; }
         if (sourceUri === null) {
           this.sftpStatus = '[SFTP-BATCH] 找不到本机项目 ' + task.fileName + '，已停在当前任务';
           return;
         }
         if (task.isDirectory) {
           const sourceEntry: SshLocalFileEntry | null = await this.sftpLocalProvider.stat(sourceUri);
+          if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+            requestSessionGeneration)) { return; }
           if (sourceEntry === null || !sourceEntry.isDirectory) {
             this.sftpStatus = '[SFTP-BATCH] 本机目录不可读 ' + task.fileName + '，已停在当前任务';
             return;
           }
           if (!await this.ensureRemoteSftpDirectory(task.remotePath, requestPageGeneration,
             requestSessionId, requestSessionGeneration)) {
+            if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+              requestSessionGeneration)) { return; }
             this.sftpStatus = '[SFTP-BATCH] 无法创建远端目录 ' + task.fileName + '，已停在当前任务';
             return;
           }
@@ -8365,6 +8376,8 @@ struct SshTerminal {
         }
         if (!await this.ensureRemoteSftpBatchDirectories(task, remoteRoot,
           requestPageGeneration, requestSessionId, requestSessionGeneration)) {
+          if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+            requestSessionGeneration)) { return; }
           this.sftpStatus = '[SFTP-BATCH] 无法创建远端目录，已停在 ' + task.fileName;
           return;
         }
@@ -8379,19 +8392,26 @@ struct SshTerminal {
         this.sftpTransferRemoteMtime = -1;
         await this.uploadSftpToRemote(sourceUri, task.fileName, task.remotePath, offset, task.taskId,
           requestPageGeneration, requestSessionId, requestSessionGeneration);
+        if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+          requestSessionGeneration)) { return; }
         const updated: SshSftpTaskRecord | null = this.sftpTaskStore.get(task.taskId);
         if (updated === null || updated.stage !== 'completed') {
           return;
         }
         completedFiles++;
       }
+      if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+        requestSessionGeneration)) { return; }
       this.sftpBatchConflictPolicies.delete(batchId);
       this.clearSftpBatchRuntime(batchId);
       this.sftpStatus = '批量上传完成，共 ' + completedFiles.toString() + ' 个文件、' +
         completedDirectories.toString() + ' 个目录';
       this.refreshSftp(this.sftpPath);
     } finally {
+      if (runToken !== this.sftpBatchRunToken) { return; }
       this.sftpBatchRunning = false;
+      if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+        requestSessionGeneration)) { return; }
       if (this.sftpTransferSession === null || this.sftpTransferSession.stage === 'completed' ||
         this.sftpTransferSession.stage === 'failed' || this.sftpTransferSession.stage === 'cancelled') {
         this.sftpBusy = false;
@@ -8420,6 +8440,7 @@ struct SshTerminal {
     const requestSessionGeneration: number = this.sshSessionGeneration;
     this.sftpBatchRunning = true;
     this.sftpBusy = true;
+    const runToken: number = ++this.sftpBatchRunToken;
     let completedFiles: number = 0;
     let completedDirectories: number = 0;
     try {
@@ -8530,9 +8551,10 @@ struct SshTerminal {
       this.sftpStatus = '批量下载完成，共 ' + completedFiles.toString() + ' 个文件、' +
         completedDirectories.toString() + ' 个目录';
     } finally {
+      if (runToken !== this.sftpBatchRunToken) { return; }
+      this.sftpBatchRunning = false;
       if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId,
         requestSessionGeneration)) { return; }
-      this.sftpBatchRunning = false;
       if (this.sftpTransferSession === null || this.sftpTransferSession.stage === 'completed' ||
         this.sftpTransferSession.stage === 'failed' || this.sftpTransferSession.stage === 'cancelled') {
         this.sftpBusy = false;
@@ -9289,6 +9311,8 @@ struct SshTerminal {
     this.sftpWorkspaceTabState = createSshSftpWorkspaceTabState();
     this.sftpDropHoverActive = false;
     this.sftpDropBatches.clear();
+    ++this.sftpBatchRunToken;
+    this.sftpBatchRunning = false;
     this.clearSftpBatchRuntimeMaps(false);
     this.sshCommandRegistry = [];
     this.pendingSshCommandId = '';
@@ -9711,6 +9735,8 @@ struct SshTerminal {
     this.sftpWorkspaceTabState = createSshSftpWorkspaceTabState();
     this.sftpDropHoverActive = false;
     this.sftpDropBatches.clear();
+    ++this.sftpBatchRunToken;
+    this.sftpBatchRunning = false;
     this.clearSftpBatchRuntimeMaps(false);
     this.pendingSshCommandId = '';
     this.showSshTabRenameSheet = false;
