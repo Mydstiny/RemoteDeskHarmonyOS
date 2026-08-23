@@ -622,7 +622,7 @@ struct SshTerminal {
     new Map<string, XtermOutputBuffer>();
   /** Last ready document revision per SSH tab; switching tabs does not clear it. */
   private xtermReadyGenerations: Map<string, number> = new Map<string, number>();
-  /** 即使连续两个 chunk 文本相同，也用序号触发终端核心消费。 */
+  /** 仅用于切页/重载恢复；实时输出由普通 renderer buffer 直接唤醒。 */
   @State termOutputSequence: number = 0;
   /** Revision restore target; only the matching retained xterm document resets. */
   @State xtermTranscriptResetIdentity: string = '';
@@ -5378,7 +5378,6 @@ struct SshTerminal {
       const decodedOutput: string = this.decodeTerminalChunk(merged);
       this.xtermOutputBufferForHost(outputHostId).enqueue(decodedOutput);
     }
-    this.termOutputSequence++;
     if (this.terminalOutputQueue.length > 0) {
       this.scheduleTerminalOutputFlush();
     }
@@ -10458,8 +10457,7 @@ struct SshTerminal {
       if (dataChunkCount <= 5 || dataChunkCount % 100 === 0) {
         hilog.info(0x0000, 'SshTerminal',
           'SSH data #' + dataChunkCount.toString() + ' len=' + data.byteLength.toString() +
-          ' active=' + (currentBinding ? '1' : '0') +
-          ' seq=' + (this.termOutputSequence + 1).toString());
+          ' active=' + (currentBinding ? '1' : '0'));
       }
       if (currentBinding) {
         this.enqueueTerminalOutput(bindingHostId, connectedSessionId,

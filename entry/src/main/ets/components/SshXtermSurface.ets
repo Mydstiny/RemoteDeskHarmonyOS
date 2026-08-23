@@ -31,9 +31,12 @@ const XTERM_DOCUMENT_RELOAD_TIMEOUT_MS: number = 3000;
 /** Decoded SSH output waiting for the visible xterm page to consume it. */
 export class XtermOutputBuffer {
   private pending: Array<string> = [];
+  private listeners: Array<() => void> = [];
 
   enqueue(value: string): void {
-    if (value.length > 0) { this.pending.push(value); }
+    if (value.length === 0) { return; }
+    this.pending.push(value);
+    this.notifyReadable();
   }
 
   prepend(values: Array<string>): void {
@@ -52,6 +55,24 @@ export class XtermOutputBuffer {
 
   size(): number {
     return this.pending.length;
+  }
+
+  /** Wake the renderer without routing terminal payload through ArkUI state. */
+  subscribe(listener: () => void): () => void {
+    this.listeners.push(listener);
+    return (): void => {
+      const index: number = this.listeners.indexOf(listener);
+      if (index >= 0) { this.listeners.splice(index, 1); }
+    };
+  }
+
+  private notifyReadable(): void {
+    const listeners: Array<() => void> = this.listeners.slice();
+    for (let index: number = 0; index < listeners.length; index++) {
+      try { listeners[index](); } catch (_err) {
+        // A stale renderer must not break the SSH reader or later listeners.
+      }
+    }
   }
 }
 
@@ -157,6 +178,7 @@ export struct SshXtermSurface {
   @Prop @Watch('onAppearanceChange') profileBellStyle: string = 'none';
   @Prop profileCopyOnSelect: boolean = false;
   @StorageProp('sshTerminalForegroundColor') @Watch('onAppearanceChange') terminalFgColor: string = '#33FF33';
+  /** Low-frequency lifecycle wake; live output is delivered by outputBuffer. */
   @Prop @Watch('onOutputSequenceChange') outputSequence: number = 0;
   /**
    * API 23+ WebMessagePort transport. It is deliberately capability-gated
@@ -214,6 +236,8 @@ export struct SshXtermSurface {
   private documentReloadPending: boolean = false;
   private outputPumpRunning: boolean = false;
   private outputPumpRetryTimer: number = -1;
+  private outputBufferWakeTimer: number = -1;
+  private outputBufferUnsubscribe: (() => void) | null = null;
   private outputBatchAckTimer: number = -1;
   private fitTimer: number = -1;
   private readyReportTimer: number = -1;
@@ -398,6 +422,18 @@ export struct SshXtermSurface {
     this.detachWebMessagePort();
     const lifecycleToken: number = ++this.lifecycleToken;
     this.disposed = false;
+    if (this.outputBufferWakeTimer !== -1) {
+      clearTimeout(this.outputBufferWakeTimer);
+      this.outputBufferWakeTimer = -1;
+    }
+    if (this.outputBufferUnsubscribe !== null) {
+      this.outputBufferUnsubscribe();
+      this.outputBufferUnsubscribe = null;
+    }
+    this.outputBufferUnsubscribe = this.outputBuffer.subscribe((): void => {
+      this.scheduleOutputBufferWake(lifecycleToken);
+    });
+    this.scheduleOutputBufferWake(lifecycleToken);
     if (this.readyReportTimer !== -1) {
       clearTimeout(this.readyReportTimer);
       this.readyReportTimer = -1;
@@ -450,6 +486,14 @@ export struct SshXtermSurface {
     this.detachWebMessagePort();
     const lifecycleToken: number = ++this.lifecycleToken;
     this.disposed = true;
+    if (this.outputBufferUnsubscribe !== null) {
+      this.outputBufferUnsubscribe();
+      this.outputBufferUnsubscribe = null;
+    }
+    if (this.outputBufferWakeTimer !== -1) {
+      clearTimeout(this.outputBufferWakeTimer);
+      this.outputBufferWakeTimer = -1;
+    }
     this.clearBridgeRetry();
     this.bridgeRetryCount = 0;
     this.pageStarted = false;
@@ -1155,6 +1199,18 @@ export struct SshXtermSurface {
     for (let index = 0; index < values.length; index++) {
       this.pendingWrites.push(values[index]);
     }
+  }
+
+  private scheduleOutputBufferWake(lifecycleToken: number): void {
+    if (this.disposed || this.outputBufferWakeTimer !== -1) { return; }
+    this.outputBufferWakeTimer = setTimeout((): void => {
+      this.outputBufferWakeTimer = -1;
+      if (this.disposed || lifecycleToken !== this.lifecycleToken ||
+        !this.active || this.documentReloadPending) {
+        return;
+      }
+      this.flushOutputBuffer();
+    }, 0);
   }
 
   private flushOutputBuffer(): void {

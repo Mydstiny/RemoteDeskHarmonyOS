@@ -149,6 +149,7 @@ import remoteCustomShortcutPolicyTest from './RemoteCustomShortcutPolicy.test';
 import remoteVirtualTouchpadGuidePolicyTest from './RemoteVirtualTouchpadGuidePolicy.test';
 import sessionContextualGuidePolicyTest from './SessionContextualGuidePolicy.test';
 import terminalInputBufferTest from './TerminalInputBuffer.test';
+import xtermOutputBufferTest from './XtermOutputBuffer.test';
 import terminalRendererPolicyTest from './TerminalRendererPolicy.test';
 import sshTransportPolicyTest from './SshTransportPolicy.test';
 import sshTerminalSurfaceBindingPolicyTest from './SshTerminalSurfaceBindingPolicy.test';
@@ -375,6 +376,7 @@ export default function testsuite() {
   remoteVirtualTouchpadGuidePolicyTest();
   sessionContextualGuidePolicyTest();
   terminalInputBufferTest();
+  xtermOutputBufferTest();
   terminalRendererPolicyTest();
   sshTransportPolicyTest();
   sshTerminalSurfaceBindingPolicyTest();
