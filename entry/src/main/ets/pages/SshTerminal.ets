@@ -12292,8 +12292,12 @@ struct SshTerminal {
     if (handle === null || handle.sessionId !== sessionId ||
       (generation > 0 && handle.generation !== generation)) { return; }
     const sessionStore = this.sshNativeFacade.sessionStore();
-    if (this.sshNativeFacade.accepts(handle)) {
-      this.sshForwardingController.releaseSession(handle);
+    // Runtime records belong to the full native session identity even after
+    // the session store has already transitioned to Failed/Closed. Clear the
+    // ArkTS ledger unconditionally; only native stop/close needs a live handle.
+    const nativeAccepted: boolean = this.sshNativeFacade.accepts(handle);
+    this.sshForwardingController.releaseSession(handle);
+    if (nativeAccepted) {
       sessionStore.close(handle, 'session.disconnect.requested');
     }
     this.forwardingReconciledHandles.delete(this.forwardingHandleKey(handle));

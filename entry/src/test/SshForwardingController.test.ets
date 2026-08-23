@@ -216,6 +216,18 @@ export default function sshForwardingControllerTest(): void {
       expect(controller.list(oldHandle).length).assertEqual(0);
     });
 
+    it('clears_runtime_records_when_native_handle_is_already_stale', 0, (): void => {
+      const native: FakeForwardingNative = new FakeForwardingNative();
+      const current: SshSessionHandle = handle(6);
+      native.accept(current);
+      const controller: SshForwardingController = new SshForwardingController(native);
+      expect(controller.start(current, profile('stale-session')).accepted).assertTrue();
+      expect(controller.list(current).length).assertEqual(1);
+      native.generations.delete(current.sessionId);
+      expect(controller.releaseSession(current).length).assertEqual(1);
+      expect(controller.list(current).length).assertEqual(0);
+    });
+
     it('isolates_at_least_eight_sessions', 0, (): void => {
       const native: FakeForwardingNative = new FakeForwardingNative();
       const controller: SshForwardingController = new SshForwardingController(native);
