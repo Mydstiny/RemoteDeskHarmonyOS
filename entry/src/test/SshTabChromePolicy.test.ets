@@ -19,7 +19,7 @@ export default function sshTabChromePolicyTest(): void {
       expect(layout.edgeActionsWidthVp < 360).assertTrue();
       expect(layout.edgeActionsWidthVp).assertEqual(12);
       expect(layout.scrollViewportWidthVp).assertEqual(348);
-      expect(layout.tabWidthVp).assertEqual(124);
+      expect(layout.tabWidthVp).assertEqual(136);
       expect(SSH_TAB_STRIP_HEIGHT_VP).assertEqual(56);
       expect(SSH_WORKSPACE_CONTROL_HIT_SIZE_VP).assertEqual(48);
     });
@@ -29,8 +29,8 @@ export default function sshTabChromePolicyTest(): void {
       const wide = resolveSshTabChromeLayout(SSH_TAB_INLINE_MIN_VIEWPORT_VP, 'lg');
       expect(narrow.inlineAllowed).assertFalse();
       expect(wide.inlineAllowed).assertTrue();
-      expect(wide.tabWidthVp).assertEqual(154);
-      expect(wide.pinnedTabWidthVp).assertEqual(118);
+      expect(wide.tabWidthVp).assertEqual(188);
+      expect(wide.pinnedTabWidthVp).assertEqual(164);
     });
 
     it('keeps_twenty_tabs_in_the_scroll_region_instead_of_shrinking_hit_targets', 0,
@@ -38,7 +38,7 @@ export default function sshTabChromePolicyTest(): void {
         const layout = resolveSshTabChromeLayout(360, 'sm');
         const contentWidth: number = 20 * sshTabWidthVp(true, false) + 19 * 6;
         expect(contentWidth > layout.scrollViewportWidthVp).assertTrue();
-        expect(sshTabWidthVp(true, true)).assertEqual(104);
+        expect(sshTabWidthVp(true, true)).assertEqual(126);
       });
 
     it('never_enables_compact_chrome_while_the_workbench_flag_is_off', 0, (): void => {

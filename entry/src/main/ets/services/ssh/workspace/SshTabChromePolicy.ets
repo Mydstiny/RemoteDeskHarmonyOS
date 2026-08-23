@@ -23,16 +23,16 @@ export function resolveSshTabChromeLayout(viewportWidthVp: number,
   return {
     compact,
     inlineAllowed: !compact,
-    tabWidthVp: compact ? 124 : 154,
-    pinnedTabWidthVp: compact ? 104 : 118,
+    tabWidthVp: compact ? 136 : 188,
+    pinnedTabWidthVp: compact ? 126 : 164,
     edgeActionsWidthVp,
     scrollViewportWidthVp: Math.max(0, width - edgeActionsWidthVp)
   };
 }
 
 export function sshTabWidthVp(compact: boolean, pinned: boolean): number {
-  if (pinned) { return compact ? 104 : 118; }
-  return compact ? 124 : 154;
+  if (pinned) { return compact ? 126 : 164; }
+  return compact ? 136 : 188;
 }
 
 /** A page-level action menu owns new-session whenever it is available. */

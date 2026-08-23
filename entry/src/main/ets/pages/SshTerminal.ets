@@ -5388,10 +5388,9 @@ struct SshTerminal {
     }
     .layoutWeight(1)
     .height(this.sshTabStripHeight())
-    .borderRadius(10)
-    .backgroundColor(this.chromeBg())
-    .border({ width: { bottom: 0.5 }, color: 'rgba(255,255,255,0.08)' })
-    .margin({ left: 10, right: 8 })
+    .borderRadius(8)
+    .backgroundColor('rgba(255,255,255,0.025)')
+    .margin({ left: 12, right: 8 })
   }
 
   @Builder

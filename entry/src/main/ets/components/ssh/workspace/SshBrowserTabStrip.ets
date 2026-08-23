@@ -30,6 +30,8 @@ export struct SshBrowserTabStrip {
   onCloseSftp: () => void = (): void => {};
 
   @State hoveredTabId: string = '';
+  @State hoveredCloseId: string = '';
+  @State sftpTabHovered: boolean = false;
   @State draggingTabId: string = '';
 
   private tabTitle(tab: SshTerminalTabView): string {
@@ -45,9 +47,9 @@ export struct SshBrowserTabStrip {
   }
 
   private tabBackground(tab: SshTerminalTabView): string {
-    if (this.terminalTabsActive && tab.active) { return this.accentColor + '42'; }
-    if (this.hoveredTabId === tab.tabId) { return 'rgba(255,255,255,0.13)'; }
-    return 'rgba(255,255,255,0.065)';
+    if (this.terminalTabsActive && tab.active) { return 'rgba(255,255,255,0.095)'; }
+    if (this.hoveredTabId === tab.tabId) { return 'rgba(255,255,255,0.065)'; }
+    return 'rgba(255,255,255,0.018)';
   }
 
   private terminalTabActive(tab: SshTerminalTabView): boolean {
@@ -59,6 +61,19 @@ export struct SshBrowserTabStrip {
     if (tab.state === 'error') { return '#FF7777'; }
     if (tab.state === 'connecting' || tab.state === 'reconnecting') { return '#F5B942'; }
     return '#34C759';
+  }
+
+  private closeButtonBackground(tabId: string): string {
+    return this.hoveredCloseId === tabId ? 'rgba(255,255,255,0.12)' : 'transparent';
+  }
+
+  private closeButtonOpacity(tab: SshTerminalTabView): number {
+    return this.terminalTabActive(tab) || this.hoveredTabId === tab.tabId ? 0.86 : 0.42;
+  }
+
+  private sftpTabBackground(): string {
+    if (this.sftpTabActive) { return 'rgba(255,255,255,0.095)'; }
+    return this.sftpTabHovered ? 'rgba(255,255,255,0.065)' : 'rgba(255,255,255,0.018)';
   }
 
   @Builder
@@ -83,49 +98,54 @@ export struct SshBrowserTabStrip {
 
   @Builder
   private TabBody(tab: SshTerminalTabView) {
-    Row({ space: 6 }) {
+    Row({ space: 7 }) {
+      Column()
+        .width(6).height(6).borderRadius(3)
+        .backgroundColor(this.statusColor(tab))
       if (tab.pinned) {
-        Text('●').fontSize(8).fontColor(this.accentColor)
+        SymbolGlyph($r('sys.symbol.pin_fill'))
+          .fontSize(11)
+          .fontColor([this.accentColor])
           .accessibilityText('已固定')
       }
-      Column({ space: 1 }) {
-        Text(this.tabTitle(tab))
-          .fontSize(11).fontWeight(this.terminalTabActive(tab) ?
-            FontWeight.Medium : FontWeight.Regular)
-          .fontColor(this.terminalTabActive(tab) ? '#F4F7FA' : 'rgba(242,244,247,0.76)')
-          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-        Row({ space: 4 }) {
-          Column().width(5).height(5).borderRadius(3).backgroundColor(this.statusColor(tab))
-          Text(this.stateLabel(tab)).fontSize(8)
-            .fontColor(tab.state === 'error' ? '#FF8989' : 'rgba(242,244,247,0.46)')
-            .maxLines(1)
-        }
-      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-      Button('×')
-        .width(48).height(48).padding(0).fontSize(16)
-        .fontColor('rgba(242,244,247,0.76)')
-        .borderRadius(8).backgroundColor('rgba(255,255,255,0.035)')
+      Text(this.tabTitle(tab))
+        .fontSize(12)
+        .fontWeight(this.terminalTabActive(tab) ? FontWeight.Medium : FontWeight.Regular)
+        .fontColor(this.terminalTabActive(tab) ? '#F7F9FB' : 'rgba(242,244,247,0.70)')
+        .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        .layoutWeight(1)
+      Button() {
+        SymbolGlyph($r('sys.symbol.xmark'))
+          .fontSize(11)
+          .fontColor(['rgba(242,244,247,0.82)'])
+      }
+        .width(this.compact ? 40 : 32).height(40).padding(0)
+        .opacity(this.closeButtonOpacity(tab))
+        .borderRadius(7).backgroundColor(this.closeButtonBackground(tab.tabId))
+        .onHover((hover: boolean): void => { this.hoveredCloseId = hover ? tab.tabId : ''; })
         .onClick((): void => { this.onClose(tab.hostId); })
         .accessibilityText('断开并关闭 ' + this.tabTitle(tab))
     }
-    .width('100%').height('100%')
-    .padding({ left: 9, right: 4 })
+    .width('100%').height(40)
+    .padding({ left: 11, right: 5 })
     .onClick((): void => { this.onActivate(tab.hostId); })
     .bindContextMenu(this.TabMenu(tab), ResponseType.LongPress)
   }
 
   @Builder
   private Tab(tab: SshTerminalTabView) {
-    Stack() {
+    Column() {
       this.TabBody(tab)
+      Column()
+        .width('100%').height(2)
+        .borderRadius(1)
+        .backgroundColor(this.terminalTabActive(tab) ? this.accentColor : 'transparent')
     }
     .width(sshTabWidthVp(this.compact, tab.pinned))
-    .height(48)
-    .borderRadius(9)
+    .height(44)
+    .borderRadius(7)
     .backgroundColor(this.tabBackground(tab))
-    .border({ width: this.terminalTabActive(tab) ? 1 : 0.5,
-      color: this.terminalTabActive(tab) ?
-        this.accentColor + '99' : 'rgba(255,255,255,0.08)' })
+    .border({ width: { right: 0.5 }, color: 'rgba(255,255,255,0.07)' })
     .onHover((hover: boolean): void => { this.hoveredTabId = hover ? tab.tabId : ''; })
     .onDragStart((_event: DragEvent): DragItemInfo => {
       this.draggingTabId = tab.hostId;
@@ -146,33 +166,43 @@ export struct SshBrowserTabStrip {
 
   @Builder
   private SftpTab() {
-    Row({ space: 6 }) {
-      SymbolGlyph($r('sys.symbol.folder_fill'))
-        .fontSize(16)
-        .fontColor([this.sftpTabActive ? this.accentColor : 'rgba(242,244,247,0.70)'])
-      Column({ space: 1 }) {
+    Column() {
+      Row({ space: 7 }) {
+        SymbolGlyph($r('sys.symbol.folder_fill'))
+          .fontSize(14)
+          .fontColor([this.sftpTabActive ? this.accentColor : 'rgba(242,244,247,0.62)'])
         Text(this.sftpTabTitle)
-          .fontSize(11)
+          .fontSize(12)
           .fontWeight(this.sftpTabActive ? FontWeight.Medium : FontWeight.Regular)
-          .fontColor(this.sftpTabActive ? '#F4F7FA' : 'rgba(242,244,247,0.76)')
+          .fontColor(this.sftpTabActive ? '#F7F9FB' : 'rgba(242,244,247,0.70)')
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
-        Text('文件工作台').fontSize(8).fontColor('rgba(242,244,247,0.46)').maxLines(1)
-      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-      Button('×')
-        .width(48).height(48).padding(0).fontSize(16)
-        .fontColor('rgba(242,244,247,0.76)')
-        .borderRadius(8).backgroundColor('rgba(255,255,255,0.035)')
-        .onClick((): void => { this.onCloseSftp(); })
-        .accessibilityText('关闭 SFTP 工作台标签')
+          .layoutWeight(1)
+        Button() {
+          SymbolGlyph($r('sys.symbol.xmark'))
+            .fontSize(11)
+            .fontColor(['rgba(242,244,247,0.82)'])
+        }
+          .width(this.compact ? 40 : 32).height(40).padding(0)
+          .opacity(this.sftpTabActive || this.sftpTabHovered ? 0.86 : 0.42)
+          .borderRadius(7).backgroundColor(this.closeButtonBackground('__sftp__'))
+          .onHover((hover: boolean): void => { this.hoveredCloseId = hover ? '__sftp__' : ''; })
+          .onClick((): void => { this.onCloseSftp(); })
+          .accessibilityText('关闭 SFTP 工作台标签')
+      }
+      .width('100%').height(40)
+      .padding({ left: 11, right: 5 })
+      Column()
+        .width('100%').height(2)
+        .borderRadius(1)
+        .backgroundColor(this.sftpTabActive ? this.accentColor : 'transparent')
     }
     .width(sshTabWidthVp(this.compact, false))
-    .height(48)
-    .padding({ left: 9, right: 4 })
-    .borderRadius(9)
-    .backgroundColor(this.sftpTabActive ? this.accentColor + '42' : 'rgba(255,255,255,0.065)')
-    .border({ width: this.sftpTabActive ? 1 : 0.5,
-      color: this.sftpTabActive ? this.accentColor + '99' : 'rgba(255,255,255,0.08)' })
+    .height(44)
+    .borderRadius(7)
+    .backgroundColor(this.sftpTabBackground())
+    .border({ width: { right: 0.5 }, color: 'rgba(255,255,255,0.07)' })
+    .onHover((hover: boolean): void => { this.sftpTabHovered = hover; })
     .onClick((): void => { this.onActivateSftp(); })
     .accessibilityText('SFTP 文件工作台' + (this.sftpTabActive ? '，当前标签' : ''))
   }
@@ -180,18 +210,18 @@ export struct SshBrowserTabStrip {
   build() {
     Row() {
       Scroll() {
-        Row({ space: 6 }) {
+        Row({ space: 3 }) {
           ForEach(this.tabs, (tab: SshTerminalTabView): void => {
             this.Tab(tab)
           }, (tab: SshTerminalTabView): string => sshTerminalTabChromeRenderKey(tab))
           if (this.sftpTabVisible) {
             this.SftpTab()
           }
-        }.height(50).padding({ left: 2, right: 2 })
+        }.height(48).padding({ left: 2, right: 2 })
       }
       .scrollable(ScrollDirection.Horizontal)
       .scrollBar(BarState.Off)
-      .layoutWeight(1).height(50)
+      .layoutWeight(1).height(48)
     }
     .width('100%').height(SSH_TAB_STRIP_HEIGHT_VP)
     .padding({ left: 6, right: 6 })
