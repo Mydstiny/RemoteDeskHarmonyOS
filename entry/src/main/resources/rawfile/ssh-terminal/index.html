@@ -117,7 +117,10 @@
           // A page can outlive its ArkTS component during route replacement.
           // Dropping only the callback is safe; terminal bytes stay in the
           // native owner and the next page receives a fresh view.
-          try { console.warn('ssh bridge ' + method + ' failed', error); } catch (_) {}
+          // Never forward a raw exception object to the Web console: bridge
+          // errors can carry implementation details or sensitive URL/path
+          // context. Keep only the fixed phase/method label.
+          try { console.warn('ssh bridge ' + method + ' failed'); } catch (_) {}
         }
         return false;
       }
@@ -215,7 +218,7 @@
           port.postMessage(JSON.stringify(envelope));
           return true;
         } catch (error) {
-          try { console.warn('ssh web message post failed', error); } catch (_) {}
+          try { console.warn('ssh web message post failed'); } catch (_) {}
           state.webMessageReady = false;
           try { port.close(); } catch (_) {}
           state.webMessagePort = null;
@@ -530,7 +533,7 @@
           // ArkWeb builds differ in the canvas APIs exposed to Web. The
           // xterm DOM renderer remains a complete VT frontend, so one addon
           // failure must not prevent input, output, or configuration wiring.
-          try { console.warn('ssh addon ' + name + ' unavailable', error); } catch (_) {}
+          try { console.warn('ssh addon ' + name + ' unavailable'); } catch (_) {}
           return false;
         }
       }
@@ -708,7 +711,7 @@
           state.searchAddon = null;
           var terminalRoot = document.getElementById('terminal');
           if (terminalRoot) terminalRoot.innerHTML = '';
-          try { console.warn('ssh xterm boot failed', error); } catch (_) {}
+          try { console.warn('ssh xterm boot failed'); } catch (_) {}
           if (!state.bootRetryTimer && state.bootRetryCount < PAGE_RETRY_MAX_ATTEMPTS) {
             state.bootRetryCount += 1;
             state.bootRetryTimer = window.setTimeout(function () {
