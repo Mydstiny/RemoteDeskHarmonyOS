@@ -1,6 +1,7 @@
 import { describe, it, expect } from '@ohos/hypium';
 import {
   resolveSshTabChromeLayout,
+  resolveSshHostPickerSheetLayout,
   resolveSshTopChromeLayout,
   SSH_SESSION_HEADER_BASE_HEIGHT_VP,
   SSH_TAB_INLINE_MIN_VIEWPORT_VP,
@@ -37,6 +38,25 @@ export default function sshTabChromePolicyTest(): void {
       const inline = resolveSshTopChromeLayout(24, false);
       expect(inline.tabStripBelowHeader).assertFalse();
       expect(inline.totalHeightVp).assertEqual(SSH_SESSION_HEADER_BASE_HEIGHT_VP + 24);
+    });
+
+    it('sizes_phone_and_pad_host_picker_from_content_and_live_viewport', 0, (): void => {
+      const phone = resolveSshHostPickerSheetLayout(360, 780, 4, true);
+      expect(phone.bottomAnchored).assertTrue();
+      expect(phone.widthVp).assertEqual(360);
+      expect(phone.heightVp).assertEqual(324);
+
+      const phoneLandscape = resolveSshHostPickerSheetLayout(780, 360, 20, true);
+      expect(phoneLandscape.heightVp).assertEqual(336);
+
+      const pad = resolveSshHostPickerSheetLayout(1024, 720, 2, false);
+      expect(pad.bottomAnchored).assertFalse();
+      expect(pad.widthVp).assertEqual(620);
+      expect(pad.heightVp).assertEqual(240);
+
+      const compactPad = resolveSshHostPickerSheetLayout(420, 300, 12, false);
+      expect(compactPad.widthVp).assertEqual(388);
+      expect(compactPad.heightVp).assertEqual(252);
     });
 
     it('uses_inline_normal_tabs_only_after_the_safe_width_threshold', 0, (): void => {

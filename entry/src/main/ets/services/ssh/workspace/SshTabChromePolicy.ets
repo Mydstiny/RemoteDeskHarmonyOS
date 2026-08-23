@@ -14,11 +14,43 @@ export interface SshTopChromeLayout {
   totalHeightVp: number;
 }
 
+export interface SshHostPickerSheetLayout {
+  heightVp: number;
+  widthVp: number;
+  bottomAnchored: boolean;
+}
+
 export const SSH_TAB_CHROME_HORIZONTAL_PADDING_VP: number = 12;
 export const SSH_TAB_INLINE_MIN_VIEWPORT_VP: number = 980;
 export const SSH_TAB_STRIP_HEIGHT_VP: number = 56;
 export const SSH_SESSION_HEADER_BASE_HEIGHT_VP: number = 56;
 export const SSH_WORKSPACE_CONTROL_HIT_SIZE_VP: number = 48;
+export const SSH_HOST_PICKER_MAX_WIDTH_VP: number = 620;
+
+/** Size the host picker from its rows while keeping it inside the live window. */
+export function resolveSshHostPickerSheetLayout(viewportWidthVp: number,
+  viewportHeightVp: number, hostCount: number, phone: boolean): SshHostPickerSheetLayout {
+  const fallbackWidth: number = phone ? 360 : 800;
+  const fallbackHeight: number = phone ? 720 : 640;
+  const width: number = Number.isFinite(viewportWidthVp) && viewportWidthVp > 0
+    ? viewportWidthVp : fallbackWidth;
+  const height: number = Number.isFinite(viewportHeightVp) && viewportHeightVp > 0
+    ? viewportHeightVp : fallbackHeight;
+  const rows: number = Number.isFinite(hostCount)
+    ? Math.max(1, Math.floor(hostCount)) : 1;
+  // Title, paddings and one 8vp row gap consume 84vp; each visible host needs
+  // a 52vp row plus its 8vp list gap. Longer lists stay scrollable.
+  const preferredHeight: number = 84 + rows * 60;
+  const edgeMargin: number = phone ? 24 : 48;
+  const maximumHeight: number = Math.max(1, height - edgeMargin);
+  const minimumHeight: number = Math.min(240, maximumHeight);
+  return {
+    heightVp: Math.max(minimumHeight, Math.min(preferredHeight, maximumHeight)),
+    widthVp: phone ? width : Math.max(1,
+      Math.min(SSH_HOST_PICKER_MAX_WIDTH_VP, width - 32)),
+    bottomAnchored: phone
+  };
+}
 
 /** The real header owns the safe inset; a standalone strip follows it. */
 export function resolveSshTopChromeLayout(topInsetVp: number,

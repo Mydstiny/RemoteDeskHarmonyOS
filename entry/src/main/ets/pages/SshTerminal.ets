@@ -281,10 +281,12 @@ import {
   SSH_TAB_STRIP_HEIGHT_VP,
   SSH_SESSION_HEADER_BASE_HEIGHT_VP,
   SSH_WORKSPACE_CONTROL_HIT_SIZE_VP,
+  resolveSshHostPickerSheetLayout,
   resolveSshTopChromeLayout,
   sshCompactChromeEnabled,
   sshHeaderUsesSingleActionMenu,
   sshTabStripShowsStandaloneNewSessionAction,
+  SshHostPickerSheetLayout,
   SshTopChromeLayout
 } from
   '../services/ssh/workspace/SshTabChromePolicy';
@@ -5431,12 +5433,22 @@ struct SshTerminal {
       .layoutWeight(1).width('100%')
       .scrollBar(BarState.Off)
     }
-    .width('100%').height(this.breakpoint === 'sm' ? '62%' : 420)
+    .width('100%').height('100%')
     .padding({ left: 16, right: 16, top: 20, bottom: 14 })
     .backgroundColor('#171D25')
-    .borderRadius(this.breakpoint === 'sm'
+    .borderRadius(this.sshTabPickerSheetLayout().bottomAnchored
       ? { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
-    .constraintSize({ maxWidth: 620 })
+  }
+
+  private sshTabPickerSheetLayout(): SshHostPickerSheetLayout {
+    return resolveSshHostPickerSheetLayout(
+      this.shellAreaW, this.shellAreaH, this.sshTabHosts().length,
+      !this.isDesktopDevice && !this.isPadDevice);
+  }
+
+  private sshTabPickerSheetWidth(): Dimension {
+    const layout: SshHostPickerSheetLayout = this.sshTabPickerSheetLayout();
+    return layout.bottomAnchored ? '100%' : layout.widthVp;
   }
 
   @Builder
@@ -18388,9 +18400,11 @@ struct SshTerminal {
     }
     .width('100%').height('100%')
     .bindSheet($$this.showSshTabPicker, this.sshTabPickerSheet(), {
-      height: this.breakpoint === 'sm' ? SheetSize.LARGE : SheetSize.FIT_CONTENT,
-      preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
-      dragBar: this.breakpoint === 'sm',
+      height: this.sshTabPickerSheetLayout().heightVp,
+      preferType: this.sshTabPickerSheetLayout().bottomAnchored
+        ? SheetType.BOTTOM : SheetType.CENTER,
+      width: this.sshTabPickerSheetWidth(),
+      dragBar: this.sshTabPickerSheetLayout().bottomAnchored,
       backgroundColor: '#171D25',
       blurStyle: BlurStyle.NONE,
       showClose: false,
