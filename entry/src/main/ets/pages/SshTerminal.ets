@@ -6755,7 +6755,13 @@ struct SshTerminal {
         transfer.stage === 'paused' || transfer.stage === 'waitingRemote');
   }
 
-  private async buildSftpPeerSessionConfig(host: RemoteHost): Promise<SessionConfig> {
+  private async buildSftpPeerSessionConfig(host: RemoteHost,
+    requestPageGeneration: number = this.pageGeneration,
+    selectionEpoch: number = this.sftpPeerSelectionEpoch): Promise<SessionConfig> {
+    if (!this.isPageGenerationActive(requestPageGeneration) ||
+      selectionEpoch !== this.sftpPeerSelectionEpoch) {
+      throw new Error('SFTP 会话请求已过期');
+    }
     let keyData: string = host.sshKeyData;
     let keyEncryptedHint: boolean = false;
     if (host.sshKeyId.length > 0) {
@@ -6772,7 +6778,15 @@ struct SshTerminal {
       if (keyInfo.ok && !keyInfo.encrypted) {
         keyPassphrase = '';
       } else if (keyPassphrase.length === 0 || keyEncryptedHint || !keyInfo.ok) {
+        if (!this.isPageGenerationActive(requestPageGeneration) ||
+          selectionEpoch !== this.sftpPeerSelectionEpoch) {
+          throw new Error('SFTP 会话请求已过期');
+        }
         keyPassphrase = await this.promptPassphrase();
+        if (!this.isPageGenerationActive(requestPageGeneration) ||
+          selectionEpoch !== this.sftpPeerSelectionEpoch) {
+          throw new Error('SFTP 会话请求已过期');
+        }
         keyInfo = this.loader.inspectSshPrivateKey(keyData, keyPassphrase);
         if (!keyInfo.ok) { throw new Error('SSH 私钥密码错误或密钥不可用'); }
       }
@@ -6795,7 +6809,15 @@ struct SshTerminal {
       if (proxyInfo.ok && !proxyInfo.encrypted) {
         proxyKeyPassphrase = '';
       } else if (proxyKeyPassphrase.length === 0 || proxyKeyEncryptedHint || !proxyInfo.ok) {
+        if (!this.isPageGenerationActive(requestPageGeneration) ||
+          selectionEpoch !== this.sftpPeerSelectionEpoch) {
+          throw new Error('SFTP 会话请求已过期');
+        }
         proxyKeyPassphrase = await this.promptPassphrase();
+        if (!this.isPageGenerationActive(requestPageGeneration) ||
+          selectionEpoch !== this.sftpPeerSelectionEpoch) {
+          throw new Error('SFTP 会话请求已过期');
+        }
         proxyInfo = this.loader.inspectSshPrivateKey(proxyKeyData, proxyKeyPassphrase);
         if (!proxyInfo.ok) { throw new Error('跳板机私钥密码错误'); }
       }
@@ -6917,8 +6939,14 @@ struct SshTerminal {
           this.logSftpRemoteDiagnostic('ensure failed phase=' + phase, true);
           return -1;
         }
+        if (!this.isPageGenerationActive(requestPageGeneration) ||
+          selectionEpoch !== this.sftpPeerSelectionEpoch) {
+          this.logSftpRemoteDiagnostic('ensure aborted phase=' + phase + ' reason=stale', true);
+          return -1;
+        }
         phase = 'build-session-config';
-        const config: SessionConfig = await this.buildSftpPeerSessionConfig(host);
+        const config: SessionConfig = await this.buildSftpPeerSessionConfig(host,
+          requestPageGeneration, selectionEpoch);
         if (!this.isPageGenerationActive(requestPageGeneration) ||
           selectionEpoch !== this.sftpPeerSelectionEpoch) {
           this.logSftpRemoteDiagnostic('ensure aborted phase=' + phase + ' reason=stale', true);
