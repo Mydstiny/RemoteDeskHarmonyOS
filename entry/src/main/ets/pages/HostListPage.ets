@@ -379,6 +379,7 @@ import {
   SETTINGS_SHEET_VNC_SECURITY,
   SETTINGS_SHEET_VNC_TIMEOUT,
   SETTINGS_SHEET_VNC_TRUST,
+  SETTINGS_SHEET_VIRTUAL_KEYBOARD,
   SETTINGS_SHEET_WALLPAPER,
   SETTINGS_PANEL_DISMISS_TO_LEAF_OPEN_MS,
   MoonlightSettingsRouteSpec,
@@ -387,6 +388,7 @@ import {
   moonlightSettingsRouteSpec,
   settingsLeafSheetUsesSystemCloseButton,
   settingsLeafOpenDelayMs,
+  virtualKeyboardSettingsLeafSheetHeight,
   vncSettingsLeafSheetHeight
 } from '../services/SettingsSheetRoutePolicy';
 import { protocolIcon } from '../services/ProtocolIconPolicy';
@@ -400,6 +402,7 @@ import {
   SETTINGS_SECTION_CLOUD_SYNC,
   SETTINGS_SECTION_CONNECTION_LIVE,
   SETTINGS_SECTION_DISPLAY_INTERACTION,
+  SETTINGS_SECTION_VIRTUAL_KEYBOARD,
   SETTINGS_SECTION_HOME,
   SETTINGS_SECTION_NONE,
   SETTINGS_SECTION_MOONLIGHT,
@@ -476,6 +479,7 @@ import { CURRENT_RELEASE_VERSION } from '../services/ReleaseNotesRegistry';
 import { AboutSettingsSheet } from '../components/AboutSettingsSheet';
 import { DiagnosticCaptureSettingsSheet } from '../components/DiagnosticCaptureSettingsSheet';
 import { FeedbackSettingsSheet } from '../components/FeedbackSettingsSheet';
+import { VirtualKeyboardSettingsSheet } from '../components/VirtualKeyboardSettingsSheet';
 import {
   VncCertificateInfo,
   RdpCertificateInfo,
@@ -3589,6 +3593,9 @@ struct HostListPage {
     }
     if (section === SETTINGS_SECTION_DISPLAY_INTERACTION) {
       return 680;
+    }
+    if (section === SETTINGS_SECTION_VIRTUAL_KEYBOARD) {
+      return 170;
     }
     if (section === SETTINGS_SECTION_RDP) {
       return 820;
@@ -11369,6 +11376,8 @@ struct HostListPage {
     if (diagnosticHeight > 0) { return diagnosticHeight; }
     const moonlightHeight: number = moonlightSettingsLeafSheetHeight(this.settingsLeafSheetMode);
     if (moonlightHeight > 0) { return moonlightHeight; }
+    const keyboardHeight: number = virtualKeyboardSettingsLeafSheetHeight(this.settingsLeafSheetMode);
+    if (keyboardHeight > 0) { return keyboardHeight; }
     const vncHeight: number = vncSettingsLeafSheetHeight(this.settingsLeafSheetMode);
     return vncHeight > 0 ? vncHeight : SheetSize.FIT_CONTENT;
   }
@@ -11410,6 +11419,10 @@ struct HostListPage {
       FeedbackSettingsSheet({
         onClose: (): void => { this.closeSettingsLeafSheet(); },
         onOpenMail: (): void => { this.openFeedbackEmail(); }
+      })
+    } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_VIRTUAL_KEYBOARD) {
+      VirtualKeyboardSettingsSheet({
+        onClose: (): void => { this.closeSettingsLeafSheet(); }
       })
     } else if (this.isMoonlightSettingsLeafSheet()) {
       MoonlightSettingsSurface({
@@ -12017,6 +12030,34 @@ struct HostListPage {
         .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_DISPLAY_INTERACTION) ? 1 : 0)
         .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_DISPLAY_INTERACTION) ? 1 : 0.98 })
         .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_DISPLAY_INTERACTION) ? 0 : -8 })
+        .clip(true)
+        .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
+
+        ListItem() {
+          this.settingsAccordionHeader(SETTINGS_SECTION_VIRTUAL_KEYBOARD,
+            $r('sys.symbol.keyboard'), '虚拟键盘',
+            'HarmonyOS 输入法、Windows/macOS 组合键、功能键与自定义')
+        }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
+
+        ListItem() {
+          Column() {
+            Text('虚拟键盘').fontSize(13).fontWeight(FontWeight.Medium)
+              .fontColor(this.pal().text3).fontFamily(this.font()).padding({ left: 8, bottom: 8 })
+            Column() {
+              this.cardActionRow($r('sys.symbol.keyboard'), '键盘与组合键设置',
+                '系统输入法、Windows/macOS 模式、F1–F12 与自定义组合键',
+                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VIRTUAL_KEYBOARD); })
+            }.borderRadius(24).backgroundColor(this.pal().card)
+              .backgroundBlurStyle(BlurStyle.Regular)
+              .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
+              .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+          }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
+        }
+        .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_VIRTUAL_KEYBOARD) ?
+          this.settingsSectionExpandedMaxHeight(SETTINGS_SECTION_VIRTUAL_KEYBOARD) : 0 })
+        .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_VIRTUAL_KEYBOARD) ? 1 : 0)
+        .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_VIRTUAL_KEYBOARD) ? 1 : 0.98 })
+        .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_VIRTUAL_KEYBOARD) ? 0 : -8 })
         .clip(true)
         .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
 

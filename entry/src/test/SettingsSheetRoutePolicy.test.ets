@@ -2,6 +2,7 @@ import { describe, it, expect } from '@ohos/hypium';
 import {
   SETTINGS_SHEET_ACCOUNT,
   SETTINGS_SHEET_DIAGNOSTIC_LOG,
+  SETTINGS_SHEET_VIRTUAL_KEYBOARD,
   SETTINGS_SHEET_MOONLIGHT_AUDIO,
   SETTINGS_SHEET_MOONLIGHT_DIAGNOSTICS,
   SETTINGS_SHEET_MOONLIGHT_INPUT,
@@ -27,6 +28,7 @@ import {
   moonlightSettingsLeafSheetHeight,
   moonlightSettingsRouteSpec,
   moonlightSettingsRouteSpecs,
+  virtualKeyboardSettingsLeafSheetHeight,
   vncSettingsLeafSheetHeight
 } from '../main/ets/services/SettingsSheetRoutePolicy';
 
@@ -52,6 +54,13 @@ export default function settingsSheetRoutePolicyTest() {
         .assertEqual(740);
       expect(diagnosticLogSettingsLeafSheetHeight(SETTINGS_SHEET_ACCOUNT)).assertEqual(0);
       expect(moonlightSettingsRouteSpec(SETTINGS_SHEET_DIAGNOSTIC_LOG)).assertNull();
+    });
+
+    it('allocates_one_full_height_virtual_keyboard_leaf', 0, (): void => {
+      expect(SETTINGS_SHEET_VIRTUAL_KEYBOARD).assertEqual(32);
+      expect(virtualKeyboardSettingsLeafSheetHeight(SETTINGS_SHEET_VIRTUAL_KEYBOARD))
+        .assertEqual(860);
+      expect(virtualKeyboardSettingsLeafSheetHeight(SETTINGS_SHEET_ACCOUNT)).assertEqual(0);
     });
 
     it('sizes_vnc_settings_leaves_to_their_content_density', 0, (): void => {

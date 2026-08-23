@@ -29,6 +29,7 @@ export const SETTINGS_SHEET_MOONLIGHT_DIAGNOSTICS: number = 28;
 export const SETTINGS_SHEET_MOONLIGHT_TRUST: number = 29;
 export const SETTINGS_SHEET_MOONLIGHT_DATA: number = 30;
 export const SETTINGS_SHEET_DIAGNOSTIC_LOG: number = 31;
+export const SETTINGS_SHEET_VIRTUAL_KEYBOARD: number = 32;
 
 export const SETTINGS_PANEL_DISMISS_TO_LEAF_OPEN_MS: number = 360;
 
@@ -88,6 +89,10 @@ export function vncSettingsLeafSheetHeight(mode: number): number {
 
 export function diagnosticLogSettingsLeafSheetHeight(mode: number): number {
   return mode === SETTINGS_SHEET_DIAGNOSTIC_LOG ? 740 : 0;
+}
+
+export function virtualKeyboardSettingsLeafSheetHeight(mode: number): number {
+  return mode === SETTINGS_SHEET_VIRTUAL_KEYBOARD ? 860 : 0;
 }
 
 export function settingsLeafOpenDelayMs(settingsPanelOpen: boolean): number {

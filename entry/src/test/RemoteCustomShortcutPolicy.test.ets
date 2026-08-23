@@ -5,6 +5,7 @@ import {
   encodeRemoteCustomShortcuts,
   remoteCustomShortcutKeyOptions,
   remoteCustomShortcutLabel,
+  remoteCustomShortcutLabelForPlatform,
   removeRemoteCustomShortcut,
   upsertRemoteCustomShortcut
 } from '../main/ets/services/RemoteCustomShortcutPolicy';
@@ -18,6 +19,8 @@ export default function remoteCustomShortcutPolicyTest(): void {
       expect(shortcut?.keyCodes[0]).assertEqual(2072);
       expect(shortcut?.keyCodes[1]).assertEqual(2047);
       expect(remoteCustomShortcutLabel([2045, 2093])).assertEqual('Alt + F4');
+      expect(remoteCustomShortcutLabelForPlatform([2076, 2047, 2017], 'macos'))
+        .assertEqual('Shift + Cmd + A');
     });
 
     it('rejects_missing_modifiers_unknown_actions_and_duplicates', 0, (): void => {
@@ -52,6 +55,7 @@ export default function remoteCustomShortcutPolicyTest(): void {
     it('exposes_complete_bounded_key_groups_for_the_editor', 0, (): void => {
       expect(remoteCustomShortcutKeyOptions('letters').length).assertEqual(26);
       expect(remoteCustomShortcutKeyOptions('digits').length).assertEqual(10);
+      expect(remoteCustomShortcutKeyOptions('symbols').length).assertEqual(11);
       expect(remoteCustomShortcutKeyOptions('functions').length).assertEqual(12);
       expect(remoteCustomShortcutKeyOptions('navigation').length).assertEqual(15);
     });

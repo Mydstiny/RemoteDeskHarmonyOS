@@ -1,4 +1,5 @@
-export type RemoteCustomShortcutKeyGroup = 'letters' | 'digits' | 'functions' | 'navigation';
+export type RemoteCustomShortcutKeyGroup =
+  'letters' | 'digits' | 'symbols' | 'functions' | 'navigation';
 
 export interface RemoteCustomShortcut {
   id: string;
@@ -22,7 +23,7 @@ interface RemoteCustomShortcutEnvelope {
   items: Array<RemoteCustomShortcut>;
 }
 
-export const REMOTE_CUSTOM_SHORTCUT_MAX_COUNT: number = 8;
+export const REMOTE_CUSTOM_SHORTCUT_MAX_COUNT: number = 32;
 export const REMOTE_CUSTOM_SHORTCUT_STORAGE_KEY: string = 'remoteCustomShortcuts:v1';
 
 const CTRL: number = 2072;
@@ -37,6 +38,13 @@ function modifierLabel(keyCode: number): string {
   if (keyCode === SHIFT) { return 'Shift'; }
   if (keyCode === WIN) { return 'Win'; }
   return '';
+}
+
+function platformModifierLabel(keyCode: number, platform: string): string {
+  const macOS: boolean = platform.trim().toLowerCase() === 'macos';
+  if (keyCode === ALT && macOS) { return 'Option'; }
+  if (keyCode === WIN && macOS) { return 'Cmd'; }
+  return modifierLabel(keyCode);
 }
 
 function pushOption(target: Array<RemoteCustomShortcutKeyOption>, label: string,
@@ -58,6 +66,20 @@ export function remoteCustomShortcutKeyOptions(
     for (let index = 0; index < 10; index++) {
       pushOption(result, index.toString(), 2000 + index);
     }
+    return result;
+  }
+  if (group === 'symbols') {
+    pushOption(result, ',', 2043);
+    pushOption(result, '.', 2044);
+    pushOption(result, '`', 2056);
+    pushOption(result, '-', 2057);
+    pushOption(result, '=', 2058);
+    pushOption(result, '[', 2059);
+    pushOption(result, ']', 2060);
+    pushOption(result, '\\', 2061);
+    pushOption(result, ';', 2062);
+    pushOption(result, '\'', 2063);
+    pushOption(result, '/', 2064);
     return result;
   }
   if (group === 'functions') {
@@ -86,7 +108,7 @@ export function remoteCustomShortcutKeyOptions(
 
 function actionLabel(keyCode: number): string {
   const groups: Array<RemoteCustomShortcutKeyGroup> =
-    ['letters', 'digits', 'functions', 'navigation'];
+    ['letters', 'digits', 'symbols', 'functions', 'navigation'];
   for (let groupIndex = 0; groupIndex < groups.length; groupIndex++) {
     const options: Array<RemoteCustomShortcutKeyOption> =
       remoteCustomShortcutKeyOptions(groups[groupIndex]);
@@ -130,6 +152,18 @@ export function remoteCustomShortcutLabel(keyCodes: Array<number>): string {
   return labels.join(' + ');
 }
 
+export function remoteCustomShortcutLabelForPlatform(keyCodes: Array<number>,
+  platform: string): string {
+  const normalized: Array<number> = normalizedKeyCodes(keyCodes);
+  if (normalized.length === 0) { return ''; }
+  const labels: Array<string> = [];
+  for (let index = 0; index < normalized.length - 1; index++) {
+    labels.push(platformModifierLabel(normalized[index], platform));
+  }
+  labels.push(actionLabel(normalized[normalized.length - 1]));
+  return labels.join(' + ');
+}
+
 export function createRemoteCustomShortcut(id: string,
   keyCodes: Array<number>): RemoteCustomShortcut | null {
   const normalizedId: string = id.trim();
@@ -165,7 +199,7 @@ export function upsertRemoteCustomShortcut(current: Array<RemoteCustomShortcut>,
     }
   }
   if (existingIndex < 0 && current.length >= REMOTE_CUSTOM_SHORTCUT_MAX_COUNT) {
-    return { accepted: false, reason: '最多保存 8 个自定义组合键', shortcuts: current.slice(0) };
+    return { accepted: false, reason: '最多保存 32 个自定义组合键', shortcuts: current.slice(0) };
   }
   const next: Array<RemoteCustomShortcut> = current.slice(0);
   if (existingIndex >= 0) {

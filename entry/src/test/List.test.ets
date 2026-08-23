@@ -146,6 +146,7 @@ import remoteCanvasInteractionPolicyTest from './RemoteCanvasInteractionPolicy.t
 import remoteKeyboardLayoutSelectionPolicyTest from './RemoteKeyboardLayoutSelectionPolicy.test';
 import remoteModifierStateControllerTest from './RemoteModifierStateController.test';
 import remoteCustomShortcutPolicyTest from './RemoteCustomShortcutPolicy.test';
+import remoteKeyboardSettingsPolicyTest from './RemoteKeyboardSettingsPolicy.test';
 import remoteVirtualTouchpadGuidePolicyTest from './RemoteVirtualTouchpadGuidePolicy.test';
 import sessionContextualGuidePolicyTest from './SessionContextualGuidePolicy.test';
 import guideVisibilityPolicyTest from './GuideVisibilityPolicy.test';
@@ -376,6 +377,7 @@ export default function testsuite() {
   remoteKeyboardLayoutSelectionPolicyTest();
   remoteModifierStateControllerTest();
   remoteCustomShortcutPolicyTest();
+  remoteKeyboardSettingsPolicyTest();
   remoteVirtualTouchpadGuidePolicyTest();
   sessionContextualGuidePolicyTest();
   guideVisibilityPolicyTest();

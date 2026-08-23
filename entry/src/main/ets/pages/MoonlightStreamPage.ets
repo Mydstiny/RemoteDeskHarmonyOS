@@ -26,6 +26,13 @@ import { RemoteSessionFullscreenButton } from '../components/RemoteSessionFullsc
 import { RemoteModifierHandle } from '../components/RemoteModifierHandle';
 import { RemoteModifierPanel } from '../components/RemoteModifierPanel';
 import {
+  RemoteCustomShortcut,
+  RemoteCustomShortcutUpdate,
+  removeRemoteCustomShortcut,
+  upsertRemoteCustomShortcut
+} from '../services/RemoteCustomShortcutPolicy';
+import { RemoteKeyboardSettingsService } from '../services/RemoteKeyboardSettingsService';
+import {
   MoonlightEffectiveSettings,
   MoonlightSettings,
   defaultMoonlightSettings
@@ -229,6 +236,15 @@ struct MoonlightStreamPage {
   @State controllerEditing: boolean = false;
   @State showModifierPanel: boolean = false;
   @State showShortcutPanel: boolean = false;
+  @State modifierPanelX: number = 8;
+  @State modifierPanelY: number = 62;
+  @State shortcutPanelX: number = 8;
+  @State shortcutPanelY: number = 62;
+  @State modifierPanelWidth: number = 320;
+  @State modifierPanelHeight: number = 430;
+  @State shortcutPanelWidth: number = 320;
+  @State shortcutPanelHeight: number = 430;
+  @State remoteCustomShortcuts: Array<RemoteCustomShortcut> = [];
   @State keyboardOpen: boolean = false;
   @State keyboardText: string = '';
   @State diagnosticsVisible: boolean = false;
@@ -276,6 +292,7 @@ struct MoonlightStreamPage {
   private keyboardInitialSelectionPending: boolean = false;
   private keyboardSelectionAckTimer: number = -1;
   private keyboardCommandPumpTimer: number = -1;
+  private customShortcutSequence: number = 0;
   private diagnosticsTimer: number = -1;
   private diagnosticsPreviousSampleMs: number = 0;
   private diagnosticsPreviousPresentedFrames: number = 0;
@@ -317,6 +334,8 @@ struct MoonlightStreamPage {
   private surfaceRecoveryGeneration: number = 0;
   private sessionReserved: boolean = false;
   private routeTerminated: boolean = false;
+  private modifierPanelUserPositioned: boolean = false;
+  private shortcutPanelUserPositioned: boolean = false;
   private nativeSurfaceAttached: boolean = false;
   private reservedOwnerScopeId: string = '';
   private reservedAccountGeneration: number = 0;
@@ -484,6 +503,75 @@ struct MoonlightStreamPage {
     return moonlightToolbarLayout(this.isDesktopDevice, this.breakpoint, this.isPadDevice);
   }
 
+  private clampMoonlightPanelX(x: number, width: number): number {
+    const maximum: number = Math.max(8, this.surfaceWidthVp - Math.max(1, width) - 8);
+    return Math.min(maximum, Math.max(8, x));
+  }
+
+  private clampMoonlightPanelY(y: number, height: number): number {
+    const maximum: number = Math.max(8, this.surfaceHeightVp - Math.max(1, height) - 8);
+    return Math.min(maximum, Math.max(8, y));
+  }
+
+  private placeMoonlightModifierPanel(shortcut: boolean): void {
+    if (shortcut) {
+      if (!this.shortcutPanelUserPositioned) {
+        this.shortcutPanelX = this.clampMoonlightPanelX(
+          this.surfaceWidthVp - this.shortcutPanelWidth - 8, this.shortcutPanelWidth);
+        this.shortcutPanelY = this.clampMoonlightPanelY(62, this.shortcutPanelHeight);
+      }
+      return;
+    }
+    if (!this.modifierPanelUserPositioned) {
+      this.modifierPanelX = this.clampMoonlightPanelX(
+        this.surfaceWidthVp - this.modifierPanelWidth - 8, this.modifierPanelWidth);
+      this.modifierPanelY = this.clampMoonlightPanelY(62, this.modifierPanelHeight);
+    }
+  }
+
+  private reflowMoonlightModifierPanels(): void {
+    if (this.modifierPanelUserPositioned) {
+      this.modifierPanelX = this.clampMoonlightPanelX(
+        this.modifierPanelX, this.modifierPanelWidth);
+      this.modifierPanelY = this.clampMoonlightPanelY(
+        this.modifierPanelY, this.modifierPanelHeight);
+    } else {
+      this.placeMoonlightModifierPanel(false);
+    }
+    if (this.shortcutPanelUserPositioned) {
+      this.shortcutPanelX = this.clampMoonlightPanelX(
+        this.shortcutPanelX, this.shortcutPanelWidth);
+      this.shortcutPanelY = this.clampMoonlightPanelY(
+        this.shortcutPanelY, this.shortcutPanelHeight);
+    } else {
+      this.placeMoonlightModifierPanel(true);
+    }
+  }
+
+  private moveMoonlightModifierPanel(x: number, y: number, shortcut: boolean): void {
+    if (shortcut) {
+      this.shortcutPanelX = this.clampMoonlightPanelX(x, this.shortcutPanelWidth);
+      this.shortcutPanelY = this.clampMoonlightPanelY(y, this.shortcutPanelHeight);
+      this.shortcutPanelUserPositioned = true;
+      return;
+    }
+    this.modifierPanelX = this.clampMoonlightPanelX(x, this.modifierPanelWidth);
+    this.modifierPanelY = this.clampMoonlightPanelY(y, this.modifierPanelHeight);
+    this.modifierPanelUserPositioned = true;
+  }
+
+  private updateMoonlightModifierPanelSize(width: number, height: number,
+    shortcut: boolean): void {
+    if (shortcut) {
+      this.shortcutPanelWidth = width;
+      this.shortcutPanelHeight = height;
+    } else {
+      this.modifierPanelWidth = width;
+      this.modifierPanelHeight = height;
+    }
+    this.reflowMoonlightModifierPanels();
+  }
+
   private toggleIndependentWindowFullscreen(): void {
     if (this.sessionWindowId.length === 0) { return; }
     void RemoteSessionWindowCoordinator.getInstance().toggleFullscreen(
@@ -498,6 +586,8 @@ struct MoonlightStreamPage {
 
   aboutToAppear(): void {
     this.pageActive = true;
+    this.remoteCustomShortcuts = RemoteKeyboardSettingsService.getInstance()
+      .loadCustomShortcuts(getContext(this) as common.Context);
     this.sheetReopenGeneration += 1;
     const params: Record<string, Object> = router.getParams() as Record<string, Object>;
     this.sessionWindowId = typeof params['sessionWindowId'] === 'string'
@@ -3061,6 +3151,35 @@ struct MoonlightStreamPage {
     }
   }
 
+  private saveRemoteCustomShortcut(id: string, keyCodes: Array<number>): boolean {
+    this.customShortcutSequence++;
+    const effectiveId: string = id.trim().length > 0 ? id :
+      'moonlight-shortcut-' + Date.now().toString() + '-' +
+        this.customShortcutSequence.toString();
+    const update: RemoteCustomShortcutUpdate = upsertRemoteCustomShortcut(
+      this.remoteCustomShortcuts, effectiveId, keyCodes);
+    if (!update.accepted) {
+      promptAction.showToast({ message: update.reason, duration: 1800 });
+      return false;
+    }
+    if (!RemoteKeyboardSettingsService.getInstance().saveCustomShortcuts(
+      update.shortcuts, getContext(this) as common.Context)) {
+      promptAction.showToast({ message: '组合键保存失败', duration: 2000 });
+      return false;
+    }
+    this.remoteCustomShortcuts = update.shortcuts;
+    return true;
+  }
+
+  private deleteRemoteCustomShortcut(id: string): void {
+    const next: Array<RemoteCustomShortcut> = removeRemoteCustomShortcut(
+      this.remoteCustomShortcuts, id);
+    if (RemoteKeyboardSettingsService.getInstance().saveCustomShortcuts(
+      next, getContext(this) as common.Context)) {
+      this.remoteCustomShortcuts = next;
+    }
+  }
+
   private modifierNext(current: string): string {
     if (current === 'off') { return 'once'; }
     if (current === 'once') { return 'locked'; }
@@ -3225,6 +3344,7 @@ struct MoonlightStreamPage {
         .onAreaChange((_oldArea: Area, newArea: Area): void => {
           this.surfaceWidthVp = Math.max(1, newArea.width as number);
           this.surfaceHeightVp = Math.max(1, newArea.height as number);
+          this.reflowMoonlightModifierPanels();
           const width: number = Math.max(1, Math.round(vp2px(this.surfaceWidthVp)));
           const height: number = Math.max(1, Math.round(vp2px(this.surfaceHeightVp)));
           this.surfaceWidthPx = width; this.surfaceHeightPx = height;
@@ -3281,8 +3401,11 @@ struct MoonlightStreamPage {
       RemoteModifierPanel({
         visible: this.showModifierPanel, shortcutVisible: this.showShortcutPanel, attachSide: 'left',
         ctrlLatch: this.ctrlLatch, altLatch: this.altLatch, shiftLatch: this.shiftLatch,
-        winLatch: this.winLatch, fnLayer: this.fnLayer, panelX: 60, panelY: 300,
-        shortcutX: 60, shortcutY: 180,
+        winLatch: this.winLatch, fnLayer: this.fnLayer,
+        panelX: this.modifierPanelX, panelY: this.modifierPanelY,
+        shortcutX: this.shortcutPanelX, shortcutY: this.shortcutPanelY,
+        customizationEnabled: true,
+        customShortcuts: this.remoteCustomShortcuts,
         onClose: (): void => { this.flushInput('close_modifier'); this.showModifierPanel = false; },
         onCloseShortcut: (): void => { this.flushInput('close_shortcut'); this.showShortcutPanel = false; },
         onToggleModifier: (mod: string): void => { this.toggleModifier(mod); },
@@ -3301,6 +3424,21 @@ struct MoonlightStreamPage {
             this.sendMoonlightKey(keyCodes[index], false);
           }
           this.releaseOnceModifiers();
+        },
+        onSaveCustomShortcut: (id: string, keyCodes: Array<number>): boolean =>
+          this.saveRemoteCustomShortcut(id, keyCodes),
+        onDeleteCustomShortcut: (id: string): void => { this.deleteRemoteCustomShortcut(id); },
+        onPanelPositionChange: (x: number, y: number): void => {
+          this.moveMoonlightModifierPanel(x, y, false);
+        },
+        onShortcutPositionChange: (x: number, y: number): void => {
+          this.moveMoonlightModifierPanel(x, y, true);
+        },
+        onPanelSizeChange: (width: number, height: number): void => {
+          this.updateMoonlightModifierPanelSize(width, height, false);
+        },
+        onShortcutSizeChange: (width: number, height: number): void => {
+          this.updateMoonlightModifierPanelSize(width, height, true);
         }
       })
 

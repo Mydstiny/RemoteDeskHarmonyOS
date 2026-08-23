@@ -4,6 +4,7 @@ export const SETTINGS_SECTION_HOME: string = 'homeLayout';
 export const SETTINGS_SECTION_CLOUD_SYNC: string = 'cloudSync';
 export const SETTINGS_SECTION_CONNECTION_LIVE: string = 'connectionLive';
 export const SETTINGS_SECTION_DISPLAY_INTERACTION: string = 'displayInteraction';
+export const SETTINGS_SECTION_VIRTUAL_KEYBOARD: string = 'virtualKeyboard';
 export const SETTINGS_SECTION_RDP: string = 'windowsRdp';
 export const SETTINGS_SECTION_RUSTDESK: string = 'rustdesk';
 export const SETTINGS_SECTION_SSH: string = 'ssh';
