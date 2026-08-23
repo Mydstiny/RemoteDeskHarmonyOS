@@ -10269,7 +10269,9 @@ struct HostListPage {
         .backgroundColor(this.accentColor)
         .justifyContent(FlexAlign.Center)
         .margin({ right: this.breakpoint === 'sm' ? 10 : 12 })
-        .onClick((): void => { this.openMoonlightHost(view.host?.id || ''); })
+        .onClick((): void => {
+          if (!this.hostSelectionMode) { this.openMoonlightHost(view.host?.id || ''); }
+        })
         Column() {
           Text(view.host.displayName)
             .fontSize(this.breakpoint === 'sm' ? (AppTheme.fontSize.body as number) : 17)

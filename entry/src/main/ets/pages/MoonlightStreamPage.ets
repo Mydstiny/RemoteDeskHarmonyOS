@@ -381,8 +381,8 @@ struct MoonlightStreamPage {
     // for the connection gate. Never leave both requested at once: closing a
     // control Sheet is asynchronous, so queue the gate and let
     // onSheetDisappear() open it after the native Sheet has actually gone.
-    if (this.showSessionSheet || this.pendingSheetMode !== 'none' ||
-        this.sheetReopenTimer >= 0) {
+    if (this.showSessionSheet || this.sheetMode !== 'none' ||
+        this.pendingSheetMode !== 'none' || this.sheetReopenTimer >= 0) {
       this.pendingConnectStageSheet = true;
       this.showConnectStageSheet = false;
       this.pendingSheetMode = 'none';
