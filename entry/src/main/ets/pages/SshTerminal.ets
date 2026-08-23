@@ -84,6 +84,8 @@ import {
   shouldRetrySessionContextualGuide,
   shouldShowSessionContextualGuide
 } from '../services/SessionContextualGuidePolicy';
+import { GUIDE_ALWAYS_VISIBLE_STORAGE_KEY } from '../services/GuideVisibilityPolicy';
+import { GuideVisibilityService } from '../services/GuideVisibilityService';
 import { showLockGate, lockGateErrorMessage } from '../components/LockGate';
 import { SshXtermSurface, XtermOutputBuffer } from '../components/SshXtermSurface';
 import { SshTerminalSearchBar } from '../components/ssh/search/SshTerminalSearchBar';
@@ -657,6 +659,7 @@ struct SshTerminal {
   @StorageLink('currentBreakpoint') @Watch('onFontSizeChange') breakpoint: string = 'sm';
   @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
   @StorageProp('isPadDevice') isPadDevice: boolean = false;
+  @StorageProp(GUIDE_ALWAYS_VISIBLE_STORAGE_KEY) guideAlwaysVisible: boolean = false;
   @StorageProp('remoteDesktopBgFlag') @Watch('onSshAbilityBackgroundChange')
   appBackgroundSignal: boolean = false;
   @LocalStorageLink('sessionWindowBackground') @Watch('onSshAbilityBackgroundChange')
@@ -970,6 +973,7 @@ struct SshTerminal {
   private loader: ExtensionLoader = ExtensionLoader.getInstance();
   private sessionWindowId: string = '';
   private contextualGuideRetryTimer: number = -1;
+  private contextualGuideShownThisSession: boolean = false;
   // PC authentication stays in this original page. The flag is accepted only
   // from HostList's SSH preflight route, and a new ability is created only
   // after attachSshSession has committed a native CONNECTED session.
@@ -10364,8 +10368,11 @@ struct SshTerminal {
       this.maybeShowSshContextualGuide();
       const guide: SessionContextualGuide = sessionContextualGuide('ssh',
         guideDeviceFor(this.isDesktopDevice, this.isPadDevice, this.breakpoint));
-      const alreadyShown: boolean = AppStorage.get<boolean>(guide.storageKey) ?? false;
-      if (shouldRetrySessionContextualGuide(this.sshConnectionIsConnected(), alreadyShown) &&
+      const alreadyShown: boolean = GuideVisibilityService.getInstance().wasShown(
+        getContext(this) as common.Context, guide.storageKey);
+      if (shouldRetrySessionContextualGuide(
+        this.sshConnectionIsConnected(), alreadyShown, this.guideAlwaysVisible,
+        this.contextualGuideShownThisSession) &&
         !this.sshContextualGuideInBackground()) {
         // Authentication and workbench Sheets can outlive the connected
         // callback. Keep one retry alive until the terminal is unobstructed.
@@ -10378,13 +10385,15 @@ struct SshTerminal {
     const device: GuideDevice = guideDeviceFor(
       this.isDesktopDevice, this.isPadDevice, this.breakpoint);
     const guide: SessionContextualGuide = sessionContextualGuide('ssh', device);
-    const alreadyShown: boolean = AppStorage.get<boolean>(guide.storageKey) ?? false;
+    const alreadyShown: boolean = GuideVisibilityService.getInstance().wasShown(
+      getContext(this) as common.Context, guide.storageKey);
     const blockingOverlayVisible: boolean = this.sshModalOwnsKeyboard() ||
       this.showSshPhoneActionPopup;
     if (!shouldShowSessionContextualGuide(
       this.sshConnectionIsConnected() && this.sshAuthPromptPageShown &&
         !this.sshContextualGuideInBackground() && !this.terminalClosing,
-      alreadyShown, blockingOverlayVisible)) {
+      alreadyShown, blockingOverlayVisible, this.guideAlwaysVisible,
+      this.contextualGuideShownThisSession)) {
       return;
     }
     try {
@@ -10392,7 +10401,9 @@ struct SshTerminal {
         message: guide.message,
         duration: guide.durationMs
       });
-      AppStorage.setOrCreate<boolean>(guide.storageKey, true);
+      this.contextualGuideShownThisSession = true;
+      GuideVisibilityService.getInstance().markShown(
+        getContext(this) as common.Context, guide.storageKey);
     } catch (_) {}
   }
 
