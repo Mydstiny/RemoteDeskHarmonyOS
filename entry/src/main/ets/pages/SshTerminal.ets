@@ -10967,6 +10967,9 @@ struct SshTerminal {
       promptAction.showToast({ message: '当前正在连接，请连接完成后再切换地区语言', duration: 1800 });
       return;
     }
+    const requestPageGeneration: number = this.pageGeneration;
+    const requestBindingGeneration: number = this.sshBindingGeneration;
+    const requestHostId: string = this.hostId.trim();
     const options: SshSessionLocaleOption[] = sshSessionLocaleOptions();
     promptAction.showDialog({
       title: 'SSH 会话地区语言',
@@ -10979,13 +10982,17 @@ struct SshTerminal {
         { text: options[4].label, color: this.pal().text }
       ]
     }).then((result): void => {
-      if (result.index < 0 || result.index >= options.length) { return; }
+      if (!this.isSshBindingActive(requestPageGeneration, requestBindingGeneration, requestHostId) ||
+        result.index < 0 || result.index >= options.length) { return; }
       const previous: string = normalizeSshSessionLocale(this.sshSessionLocale);
       const selected: SshSessionLocaleOption = options[result.index];
-      this.sshSessionLocale = this.sshSettings.saveSshSessionLocale(selected.value, this.hostId);
+      this.sshSessionLocale = this.sshSettings.saveSshSessionLocale(selected.value, requestHostId);
       if (this.sshSessionLocale === previous) { return; }
       if (!this.sshConnectionIsConnected()) {
         promptAction.showToast({ message: selected.label + '将在下次连接时应用', duration: 1800 });
+        return;
+      }
+      if (!this.isSshBindingActive(requestPageGeneration, requestBindingGeneration, requestHostId)) {
         return;
       }
       promptAction.showDialog({
@@ -10996,7 +11003,10 @@ struct SshTerminal {
           { text: '重新连接', color: this.accentColor }
         ]
       }).then((reconnectResult): void => {
-        if (reconnectResult.index === 1) { void this.retryConnection(); }
+        if (reconnectResult.index === 1 &&
+          this.isSshBindingActive(requestPageGeneration, requestBindingGeneration, requestHostId)) {
+          void this.retryConnection();
+        }
       }).catch((_err: BusinessError): void => {
         // Dismissing the reconnect prompt keeps the new preference for next time.
       });
