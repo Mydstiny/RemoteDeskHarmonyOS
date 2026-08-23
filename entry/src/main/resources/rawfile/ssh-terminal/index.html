@@ -569,6 +569,10 @@
             // Keep xterm's mature helper input enabled as a fallback when the
             // ArkUI IME anchor cannot acquire focus during a page handoff.
             disableStdin: false,
+            // SearchAddon 0.13 renders match highlights through xterm 5.3's
+            // registerDecoration API. Both assets are bundled and versioned
+            // together here, so explicitly allow that paired API surface.
+            allowProposedApi: true,
             allowTransparency: false,
             rightClickSelectsWord: true,
             scrollOnUserInput: true,
