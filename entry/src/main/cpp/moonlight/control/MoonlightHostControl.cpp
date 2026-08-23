@@ -171,7 +171,10 @@ std::uint64_t appIdFingerprint(std::uint32_t appId) noexcept {
     std::uint64_t value = static_cast<std::uint64_t>(appId) + 0x9e3779b97f4a7c15ULL;
     value = (value ^ (value >> 30U)) * 0xbf58476d1ce4e5b9ULL;
     value = (value ^ (value >> 27U)) * 0x94d049bb133111ebULL;
-    return value ^ (value >> 31U);
+    // This diagnostic crosses the N-API boundary as a JavaScript Number.
+    // Keep the privacy-preserving fingerprint within the exact-integer range
+    // so a valid launch cannot be rejected by the native bridge's shape check.
+    return (value ^ (value >> 31U)) & 0x1fffffffffffffULL;
 }
 
 bool possiblySent(const MoonlightHostResult& result) noexcept {
@@ -1030,23 +1033,18 @@ MoonlightHostControlResult MoonlightHostControl::runLaunch(
             return finish(std::move(result), MoonlightHostControlCode::OutcomeUnknown);
         }
 
-        transition(result, MoonlightHostControlStage::VerifyingPostcondition);
-        MoonlightHostCall postconditionCall;
-        postconditionCall.operation = MoonlightHostOperation::ServerInfo;
-        auto postcondition = executeHostCall(impl, admission.active, request.context, deadline,
-                                             postconditionCall);
-        observeHostResult(result, operation, MoonlightHostControlStage::VerifyingPostcondition,
-                          postcondition, request.appId);
-        if (!postcondition.ok() || !postcondition.serverInfo.has_value() ||
-            postcondition.candidateOnly || !postcondition.serverInfo->paired ||
-            postcondition.serverInfo->uniqueId != request.context.serverUuid ||
-            postcondition.serverInfo->currentGame != request.appId) {
-            result.postconditionTruth = MoonlightHostControlTruth::Unknown;
-            secureWipeOptionalString(result.rtspSessionUrl);
-            return finish(std::move(result), MoonlightHostControlCode::OutcomeUnknown);
-        }
-        result.postconditionTruth = MoonlightHostControlTruth::Confirmed;
-        result.sessionServerInfo = std::move(postcondition.serverInfo);
+        // Do not issue a second /serverinfo before RTSP starts. Sunshine keeps
+        // the launch event pending until the RTSP client connects and may
+        // block that request until its ping timeout, creating a client/server
+        // deadlock. The pre-launch serverinfo was authenticated and proved the
+        // exact paired host was idle; the accepted launch response supplies the
+        // mutation receipt and RTSP URL. Carry that snapshot into common-c and
+        // leave the postcondition truth explicit rather than claiming a check
+        // that cannot safely run at this point in the protocol.
+        result.postconditionTruth = MoonlightHostControlTruth::Unknown;
+        MoonlightServerInfo launchSnapshot = *precondition.serverInfo;
+        launchSnapshot.currentGame = request.appId;
+        result.sessionServerInfo = std::move(launchSnapshot);
         result.observedAtMs = impl->wallClock();
         return finish(std::move(result), MoonlightHostControlCode::Ok);
     } catch (...) {

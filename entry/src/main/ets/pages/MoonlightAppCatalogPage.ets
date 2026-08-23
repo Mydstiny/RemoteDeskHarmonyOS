@@ -241,6 +241,11 @@ struct MoonlightAppCatalogPage {
     const route: MoonlightRouteIdentity = moonlightRouteIdentity(params);
     this.hostId = route.valid ? route.hostId : '';
     this.loadLocal();
+    // Pairing is only the local trust state. Revalidate the Sunshine endpoint
+    // in the background as soon as the catalog page is shown, so the host card
+    // never enters a launch flow with a stale reachability decision. The
+    // launch BindSheet remains on this page while this handshake runs.
+    this.scheduleBackgroundAuthentication();
   }
 
   aboutToDisappear(): void {
@@ -254,7 +259,29 @@ struct MoonlightAppCatalogPage {
     if (ownerToken > 0) { this.hostService.disposeOwner(ownerToken); }
   }
 
-  onPageShow(): void { if (this.hostId !== '') { this.loadLocal(); } }
+  onPageShow(): void {
+    if (this.hostId !== '') {
+      this.loadLocal();
+      this.scheduleBackgroundAuthentication();
+    }
+  }
+
+  private scheduleBackgroundAuthentication(): void {
+    setTimeout((): void => {
+      if (!this.pageActive || this.hostId === '' || this.ownerScopeId === '' ||
+          this.refreshing) { return; }
+      this.performCatalogRefresh(false).catch((): void => {
+        // The cached catalog remains usable; the status banner reflects that
+        // the host is not currently reachable without interrupting the page.
+        if (this.pageActive) {
+          this.refreshing = false;
+          this.currentRefresh = null;
+          this.hostOnline = false;
+          this.hostBusy = false;
+        }
+      });
+    }, 0);
+  }
 
   private loadLocal(): void {
     if (this.hostId === '') { this.statusCode = 'invalid_route'; return; }
@@ -593,13 +620,15 @@ struct MoonlightAppCatalogPage {
     });
   }
 
-  private async performCatalogRefresh(): Promise<void> {
+  private async performCatalogRefresh(showToast: boolean = true): Promise<void> {
     if (this.refreshing || !this.pageActive || this.ownerScopeId === '') { return; }
     const hostValue: MoonlightHost | null = this.host;
     const lease: AccountSessionLease | null = CloudStore.getInstance().currentAccountLease();
     if (hostValue === null || lease === null ||
         !CloudStore.getInstance().isLeaseCurrent(lease)) {
-      promptAction.showToast({ message: '当前账号数据域已变化，请重新进入页面', duration: 2200 });
+      if (showToast) {
+        promptAction.showToast({ message: '当前账号数据域已变化，请重新进入页面', duration: 2200 });
+      }
       return;
     }
     this.refreshGeneration += 1;
@@ -612,7 +641,9 @@ struct MoonlightAppCatalogPage {
     const context: MoonlightHostContext | null = this.runtimeContext(
       hostValue, lease, ownerToken, generation, this.serverCertificateSha256, settings);
     if (context === null) {
-      promptAction.showToast({ message: '主机信任已变化，请重新验证主机', duration: 2200 });
+      if (showToast) {
+        promptAction.showToast({ message: '主机信任已变化，请重新验证主机', duration: 2200 });
+      }
       return;
     }
     this.currentRefresh = key;
@@ -646,11 +677,13 @@ struct MoonlightAppCatalogPage {
     this.catalogPartial = result !== null && result.nativeResult !== null &&
       result.nativeResult.partialAppCount > 0;
     this.loadLocal();
-    promptAction.showToast({
-      message: result !== null && result.ok ? '应用目录已刷新' :
-        '刷新失败（' + (result === null ? 'runtime_error' : result.code) + '），已保留本地缓存',
-      duration: 2200
-    });
+    if (showToast) {
+      promptAction.showToast({
+        message: result !== null && result.ok ? '应用目录已刷新' :
+          '刷新失败（' + (result === null ? 'runtime_error' : result.code) + '），已保留本地缓存',
+        duration: 2200
+      });
+    }
   }
 
   private invalidateRefresh(): void {

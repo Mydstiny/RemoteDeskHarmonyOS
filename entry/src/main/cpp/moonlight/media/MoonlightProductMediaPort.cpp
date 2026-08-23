@@ -5,9 +5,15 @@
 
 #include <chrono>
 #include <cstdint>
+#include <hilog/log.h>
 #include <limits>
 #include <mutex>
 #include <utility>
+
+#undef LOG_DOMAIN
+#undef LOG_TAG
+#define LOG_DOMAIN 0x0041
+#define LOG_TAG "MOON_MEDIA"
 
 namespace remotedesk::moonlight {
 namespace {
@@ -532,17 +538,35 @@ bool MoonlightProductMediaPort::setupVideo(
         selection.width != impl_->videoBinding.width ||
         selection.height != impl_->videoBinding.height ||
         selection.redrawRate <= 0) {
+        OH_LOG_ERROR(LOG_APP, "[Moonlight] media setup gate rejected profile/size/rate");
         return false;
     }
+    OH_LOG_ERROR(LOG_APP,
+                 "[Moonlight] media binding key=%{public}llu/%{public}llu/%{public}llu display=%{public}lld decoder=%{public}lld renderer=%{public}lld gens=%{public}llu/%{public}llu/%{public}llu owns=%{public}d proof=%{public}llu",
+                 static_cast<unsigned long long>(impl_->videoBinding.key.sessionId),
+                 static_cast<unsigned long long>(impl_->videoBinding.key.generation),
+                 static_cast<unsigned long long>(impl_->videoBinding.key.ownerToken),
+                 static_cast<long long>(impl_->videoBinding.display),
+                 static_cast<long long>(impl_->videoBinding.decoderHandle),
+                 static_cast<long long>(impl_->videoBinding.rendererHandle),
+                 static_cast<unsigned long long>(impl_->videoBinding.decoderGeneration),
+                 static_cast<unsigned long long>(impl_->videoBinding.displayGeneration),
+                 static_cast<unsigned long long>(impl_->videoBinding.rendererGeneration),
+                 impl_->videoBinding.ownsDecoderHandle ? 1 : 0,
+                 static_cast<unsigned long long>(impl_->videoBinding.runtimeProof.generation));
     std::lock_guard<std::mutex> lane(impl_->videoLifecycleLane);
     {
         std::lock_guard<std::mutex> lock(impl_->videoMutex);
         if (impl_->videoState != LaneState::Idle) {
+            OH_LOG_ERROR(LOG_APP, "[Moonlight] media setup state not idle=%{public}d",
+                         static_cast<int>(impl_->videoState));
             return false;
         }
     }
 
     const auto sinkStarted = impl_->videoSink->start(impl_->videoBinding);
+    OH_LOG_ERROR(LOG_APP, "[Moonlight] media decoder sink start status=%{public}d",
+                 static_cast<int>(sinkStarted.status));
     if (sinkStarted.status != MoonlightVideoDecoderStartStatus::Started) {
         std::lock_guard<std::mutex> lock(impl_->videoMutex);
         impl_->videoState = LaneState::Failed;
@@ -555,6 +579,8 @@ bool MoonlightProductMediaPort::setupVideo(
 
     const auto bridgeStarted = impl_->videoBridge->start(
         impl_->key, selection.profile);
+    OH_LOG_ERROR(LOG_APP, "[Moonlight] media bridge start status=%{public}d",
+                 static_cast<int>(bridgeStarted.status));
     if (bridgeStarted.status != MoonlightVideoStartStatus::Started) {
         const bool rolledBack = decoderStopAccepted(
             impl_->videoSink->stop(impl_->key, kMediaStopTimeout));
@@ -643,6 +669,8 @@ MoonlightVideoSubmitResult MoonlightProductMediaPort::submitVideoPayload(
 bool MoonlightProductMediaPort::setupAudio(
     const MoonlightCommonCAudioSelection& selection) noexcept {
     if (impl_ == nullptr || !audioLayoutReady(selection.layout)) {
+        OH_LOG_ERROR(LOG_APP, "[Moonlight] media audio setup gate rejected layout=%{public}d",
+                     static_cast<int>(selection.layout));
         return false;
     }
     std::lock_guard<std::mutex> lane(impl_->audioLifecycleLane);
@@ -653,6 +681,9 @@ bool MoonlightProductMediaPort::setupAudio(
         if (impl_->audioState != LaneState::Idle ||
             impl_->audioConfigurationGeneration ==
                 std::numeric_limits<std::uint64_t>::max()) {
+            OH_LOG_ERROR(LOG_APP, "[Moonlight] media audio state rejected state=%{public}d gen=%{public}llu",
+                         static_cast<int>(impl_->audioState),
+                         static_cast<unsigned long long>(impl_->audioConfigurationGeneration));
             return false;
         }
         identity = {impl_->key, ++impl_->audioConfigurationGeneration};
@@ -663,6 +694,13 @@ bool MoonlightProductMediaPort::setupAudio(
 
     const auto configured = impl_->audioBridge->configure(
         identity, selection, configureOperation);
+    OH_LOG_ERROR(LOG_APP,
+                 "[Moonlight] media audio bridge configure status=%{public}d op=%{public}llu id=%{public}llu/%{public}llu/%{public}llu",
+                 static_cast<int>(configured.status),
+                 static_cast<unsigned long long>(configureOperation),
+                 static_cast<unsigned long long>(identity.key.sessionId),
+                 static_cast<unsigned long long>(identity.key.generation),
+                 static_cast<unsigned long long>(identity.key.ownerToken));
     if (configured.status != MoonlightAudioConfigureStatus::Configured) {
         std::lock_guard<std::mutex> lock(impl_->audioMutex);
         impl_->audioState = LaneState::Failed;
@@ -683,6 +721,10 @@ bool MoonlightProductMediaPort::setupAudio(
     }
     const auto activated = impl_->audioSink->activate(
         identity, activateOperation);
+    OH_LOG_ERROR(LOG_APP,
+                 "[Moonlight] media audio sink activate status=%{public}d op=%{public}llu",
+                 static_cast<int>(activated.status),
+                 static_cast<unsigned long long>(activateOperation));
     if (!playerControlAccepted(activated.status)) {
         (void)impl_->stopAudioComponents();
         std::lock_guard<std::mutex> lock(impl_->audioMutex);
@@ -712,6 +754,10 @@ void MoonlightProductMediaPort::startAudio() noexcept {
         identity = impl_->audioIdentity;
     }
     const auto started = impl_->audioBridge->start(identity, operation);
+    OH_LOG_ERROR(LOG_APP,
+                 "[Moonlight] media audio bridge start status=%{public}d op=%{public}llu",
+                 static_cast<int>(started.status),
+                 static_cast<unsigned long long>(operation));
     std::lock_guard<std::mutex> lock(impl_->audioMutex);
     impl_->audioState = started.status == MoonlightAudioStartStatus::Started
         ? LaneState::Started : LaneState::Failed;

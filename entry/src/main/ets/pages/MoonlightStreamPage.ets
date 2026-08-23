@@ -215,6 +215,7 @@ struct MoonlightStreamPage {
   @State physicalControllerPathReady: boolean = false;
   @State audioReady: boolean = false;
   @State showConnectStage: boolean = true;
+  @State showConnectStageSheet: boolean = false;
   @State showSessionSheet: boolean = false;
   @State sheetMode: MoonlightSessionSheetMode = 'none';
   @State pendingSheetMode: MoonlightSessionSheetMode = 'none';
@@ -361,6 +362,27 @@ struct MoonlightStreamPage {
     return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor);
   }
 
+  /**
+   * The connection gate belongs to the stream route, but it must render as a
+   * native Sheet rather than as a centered child over the video surface.
+   * Keep the Sheet binding derived from both the initial handshake state and
+   * transient surface recovery so neither path can expose a false "connected"
+   * session underneath it.
+   */
+  private syncConnectStageSheet(): void {
+    this.showConnectStageSheet = this.showConnectStage || this.surfaceRecovering;
+  }
+
+  private setConnectStageVisible(visible: boolean): void {
+    this.showConnectStage = visible;
+    this.syncConnectStageSheet();
+  }
+
+  private setSurfaceRecovering(recovering: boolean): void {
+    this.surfaceRecovering = recovering;
+    this.syncConnectStageSheet();
+  }
+
   private clearMoonlightContextualGuideRetry(): void {
     if (this.contextualGuideRetryTimer >= 0) {
       clearTimeout(this.contextualGuideRetryTimer);
@@ -499,7 +521,7 @@ struct MoonlightStreamPage {
     this.sessionGeneration = 0;
     this.sessionStartedAtMs = 0;
     this.clearElapsedTimer();
-    this.showConnectStage = true;
+    this.setConnectStageVisible(true);
     this.keyboardOpen = false;
     this.resetMoonlightImeSession('page-appear');
     this.phase = 'discovering';
@@ -508,7 +530,7 @@ struct MoonlightStreamPage {
     this.routeTerminated = false;
     this.nativeSurfaceAttached = false;
     this.surfaceSuspended = false;
-    this.surfaceRecovering = false;
+    this.setSurfaceRecovering(false);
     this.pageSurfaceId = '';
     this.pipSurfaceId = '';
     this.surfaceRecoveryGeneration += 1;
@@ -604,6 +626,7 @@ struct MoonlightStreamPage {
     this.cancelSheetReopen();
     this.pendingSheetMode = 'none';
     this.showSessionSheet = false;
+    this.showConnectStageSheet = false;
     this.closeMoonlightRoute('stream-page-disappear');
     void this.stopMoonlightBackgroundTask();
     this.stopDiagnosticsPolling();
@@ -698,7 +721,8 @@ struct MoonlightStreamPage {
     const confirmed = this.sessionCoordinator.confirmSurfaceFrameForRoute(
       this.hostId, this.appId, surfaceId);
     if (confirmed.accepted) {
-      this.surfaceRecovering = false;
+      this.setSurfaceRecovering(false);
+      this.setConnectStageVisible(false);
       this.firstFrameSeen = true;
       if (!this.appInBackground) {
         this.setNativeInputSuspended(false, 'surface_detached');
@@ -741,7 +765,7 @@ struct MoonlightStreamPage {
         this.nativeSessionId <= 0 && surfaceId.trim() !== '') {
       this.surfaceId = surfaceId;
       this.surfaceSuspended = false;
-      this.surfaceRecovering = true;
+      this.setSurfaceRecovering(true);
       this.scheduleReconnectDecision(this.reconnectWindow.generation, 0);
       return;
     }
@@ -776,7 +800,7 @@ struct MoonlightStreamPage {
         return;
       }
       this.surfaceSuspended = false;
-      this.surfaceRecovering = true;
+      this.setSurfaceRecovering(true);
       this.beginSurfaceFrameRecovery(surfaceId);
       return;
     }
@@ -872,7 +896,7 @@ struct MoonlightStreamPage {
       this.setNativeInputSuspended(true, 'surface_detached');
       this.surfaceRecoveryGeneration += 1;
       this.clearSurfaceRecoveryTimer();
-      this.surfaceRecovering = true;
+      this.setSurfaceRecovering(true);
       this.surfaceSuspended = true;
       if (this.nativeSurfaceAttached) {
         try { rdpnapi.markXComponentSurfaceDestroyed(); } catch (_) {}
@@ -896,7 +920,7 @@ struct MoonlightStreamPage {
     }
     this.surfaceRecoveryGeneration += 1;
     this.clearSurfaceRecoveryTimer();
-    this.surfaceRecovering = true;
+    this.setSurfaceRecovering(true);
     this.surfaceSuspended = true;
     if (this.nativeSurfaceAttached) {
       try { rdpnapi.markXComponentSurfaceDestroyed(); } catch (_) {}
@@ -926,7 +950,7 @@ struct MoonlightStreamPage {
     this.stopSurfacePoll();
     this.surfaceRecoveryGeneration += 1;
     this.clearSurfaceRecoveryTimer();
-    this.surfaceRecovering = false;
+    this.setSurfaceRecovering(false);
     this.surfaceSuspended = false;
     this.flushInput(reason);
     this.keyboardOpen = false;
@@ -1307,7 +1331,7 @@ struct MoonlightStreamPage {
     this.surfaceRecoveryGeneration += 1;
     this.clearSurfaceRecoveryTimer();
     this.surfaceSuspended = true;
-    this.surfaceRecovering = true;
+    this.setSurfaceRecovering(true);
     if (this.nativeSurfaceAttached) {
       try { rdpnapi.markXComponentSurfaceDestroyed(); } catch (_) {}
       this.nativeSurfaceAttached = false;
@@ -1340,7 +1364,7 @@ struct MoonlightStreamPage {
     this.surfaceRecoveryGeneration += 1;
     this.clearSurfaceRecoveryTimer();
     this.surfaceSuspended = true;
-    this.surfaceRecovering = true;
+    this.setSurfaceRecovering(true);
     if (this.nativeSurfaceAttached) {
       try { rdpnapi.markXComponentSurfaceDestroyed(); } catch (_) {}
       this.nativeSurfaceAttached = false;
@@ -1379,7 +1403,7 @@ struct MoonlightStreamPage {
       this.suspendMoonlightRendererForBackground('pip-first-frame-timeout');
       return false;
     }
-    this.surfaceRecovering = false;
+    this.setSurfaceRecovering(false);
     this.firstFrameSeen = true;
     this.renderPreservedInPip = true;
     return true;
@@ -1820,7 +1844,7 @@ struct MoonlightStreamPage {
     this.nativeSessionId = -1;
     this.surfaceRecoveryGeneration += 1;
     this.clearSurfaceRecoveryTimer();
-    this.surfaceRecovering = false;
+    this.setSurfaceRecovering(false);
     this.surfaceSuspended = false;
     this.disposeLaunchOwner();
 
@@ -2048,7 +2072,7 @@ struct MoonlightStreamPage {
     this.closeMoonlightRoute(reason);
     this.phase = 'failed';
     this.errorCode = 'network_unreachable';
-    this.showConnectStage = true;
+    this.setConnectStageVisible(true);
     if (this.pageActive) {
       promptAction.showToast({ message: '网络恢复超时，请返回应用目录后重试', duration: 2200 });
     }
@@ -2641,7 +2665,7 @@ struct MoonlightStreamPage {
       this.sessionGeneration = 0;
       this.appliedTouchModeSessionGeneration = 0;
       this.sessionStartedAtMs = 0;
-      this.showConnectStage = true;
+      this.setConnectStageVisible(true);
       this.clearElapsedTimer();
       void this.stopMoonlightBackgroundTask();
       this.releaseRendererAfterPresentationTeardown('missing-session-snapshot');
@@ -2675,7 +2699,7 @@ struct MoonlightStreamPage {
       this.controllerReady = false;
       this.physicalControllerPathReady = false;
     }
-    this.showConnectStage = !snapshot.firstFrameSeen && snapshot.phase !== 'streaming';
+    this.setConnectStageVisible(!snapshot.firstFrameSeen);
     this.scheduleMoonlightContextualGuide();
     if (this.sessionStartedAtMs > 0) {
       this.elapsedMs = Math.max(0, Date.now() - this.sessionStartedAtMs);
@@ -3101,6 +3125,29 @@ struct MoonlightStreamPage {
       .border({ width: 0.5, color: 'rgba(255,255,255,0.18)' })
   }
 
+  @Builder private connectStageSheet() {
+    MoonlightConnectStageOverlay({
+      inSheet: true,
+      phase: this.surfaceRecovering ? 'reconnecting' : this.phase,
+      elapsedMs: this.elapsedMs,
+      firstFrameSeen: this.surfaceRecovering ? false : this.firstFrameSeen,
+      errorCode: this.errorCode,
+      degradationReasons: this.degradationReasons,
+      onCancel: (): void => { this.cancelConnection(); },
+      onRetry: (): void => { this.retryConnection(); },
+      onDowngradeRetry: (): void => { this.retryConnection(); },
+      onOpenDiagnostics: (): void => {
+        this.diagnosticsVisible = true;
+        this.diagnosticsExpanded = true;
+        this.startDiagnosticsPolling();
+      },
+      onBackToCatalog: (): void => {
+        this.flushInput('back_to_catalog');
+        this.closeSessionSurface();
+      }
+    })
+  }
+
   build() {
     Stack({ alignContent: Alignment.Center }) {
       XComponent({ id: this.xcId, type: XComponentType.SURFACE,
@@ -3277,25 +3324,24 @@ struct MoonlightStreamPage {
           this.scheduleMoonlightImeCommandPump();
         })
 
-      if (this.showConnectStage || this.surfaceRecovering) {
-        MoonlightConnectStageOverlay({
-          phase: this.surfaceRecovering ? 'reconnecting' : this.phase,
-          elapsedMs: this.elapsedMs,
-          firstFrameSeen: this.surfaceRecovering ? false : this.firstFrameSeen,
-          errorCode: this.errorCode, degradationReasons: this.degradationReasons,
-          onCancel: (): void => { this.cancelConnection(); },
-          onRetry: (): void => { this.retryConnection(); },
-          onDowngradeRetry: (): void => { this.retryConnection(); },
-          onOpenDiagnostics: (): void => {
-            this.diagnosticsVisible = true;
-            this.diagnosticsExpanded = true;
-            this.startDiagnosticsPolling();
-          },
-          onBackToCatalog: (): void => {
-            this.flushInput('back_to_catalog'); this.closeSessionSurface();
+      // The connection gate is mounted through a native BindSheet below.
+      // Keeping it out of this Stack prevents a centered overlay from being
+      // mistaken for a connected stream while the first frame is pending.
+      Column().width('100%').height('100%')
+        .hitTestBehavior(this.showConnectStageSheet ? HitTestMode.Default : HitTestMode.None)
+        .bindSheet($$this.showConnectStageSheet, this.connectStageSheet(), {
+          height: SheetSize.FIT_CONTENT,
+          preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
+          dragBar: false,
+          backgroundColor: '#0E121C',
+          blurStyle: BlurStyle.NONE,
+          showClose: false,
+          maskColor: 'rgba(0,0,0,0.62)',
+          onWillDismiss: (action: DismissSheetAction): void => {
+            if (this.showConnectStageSheet) { this.cancelConnection(); }
+            action.dismiss();
           }
         })
-      }
     }.width('100%').height('100%').backgroundColor('#000000')
       .bindSheet($$this.showSessionSheet, this.sessionSheet(), {
         height: this.sheetMode === 'control' ? '86%' : SheetSize.FIT_CONTENT,

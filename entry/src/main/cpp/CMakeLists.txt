@@ -766,7 +766,7 @@ set_target_properties(remotedesk_moonlight_video_decoder_sink PROPERTIES
 # N2-06 borrowed Opus callback -> bounded owned decode -> S16LE handoff.
 # The archive has no product/NAPI caller and deliberately does not include or
 # link the existing OHAudio owner. The platform translation unit consumes only
-# the already pinned libopus 1.5.2 artifact selected later in this file.
+# the already pinned libopus 1.5.2-fixed artifact selected later in this file.
 add_library(remotedesk_moonlight_audio_bridge STATIC
     ${MOONLIGHT_AUDIO_BRIDGE_SOURCE}
     ${MOONLIGHT_AUDIO_BRIDGE_PLATFORM_SOURCE}

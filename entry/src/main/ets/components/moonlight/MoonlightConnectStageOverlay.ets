@@ -13,6 +13,7 @@ export struct MoonlightConnectStageOverlay {
   @Prop firstFrameSeen: boolean = false;
   @Prop errorCode: MoonlightSessionErrorCode = 'none';
   @Prop degradationReasons: string[] = [];
+  @Prop inSheet: boolean = false;
   @State private detailsExpanded: boolean = false;
   onCancel: () => void = (): void => {};
   onRetry: () => void = (): void => {};
@@ -92,7 +93,7 @@ export struct MoonlightConnectStageOverlay {
             .margin({ left: 10 }).onClick((): void => { this.detailsExpanded = !this.detailsExpanded; })
         }.width('100%').margin({ top: 16 })
       }
-      .width('88%').constraintSize({ maxWidth: 560 })
+      .width(this.inSheet ? '100%' : '88%').constraintSize({ maxWidth: 560 })
       .padding(20).backgroundColor('rgba(14,18,28,0.90)').borderRadius(20)
       .border({ width: 1, color: 'rgba(255,255,255,0.14)' })
       .shadow({ radius: 24, color: 'rgba(0,0,0,0.40)', offsetY: 8 })

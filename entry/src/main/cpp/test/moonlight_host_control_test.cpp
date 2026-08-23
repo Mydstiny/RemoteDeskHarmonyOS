@@ -432,29 +432,36 @@ RDP_TEST_CASE(moonlight_host_control_asset_body_budget_fails_closed) {
     RDP_ASSERT(result.asset.empty());
 }
 
-RDP_TEST_CASE(moonlight_host_control_launch_requires_idle_and_confirms_postcondition) {
+RDP_TEST_CASE(moonlight_host_control_launch_uses_authenticated_idle_snapshot_without_rtsp_deadlock) {
     Fixture fixture;
     RDP_ASSERT(fixture.primeCatalog().ok());
     fixture.transport->push(xmlResponse(serverInfoXml(0U)));
     fixture.transport->push(xmlResponse(
         "<root status_code=\"200\"><gamesession>1</gamesession>"
         "<sessionUrl0>rtspenc://session-token</sessionUrl0></root>"));
-    fixture.transport->push(xmlResponse(serverInfoXml(42U)));
     MoonlightHostControl::resetSecureCleanseCountForTesting();
     const auto result = fixture.control->launch(launchRequest(2U));
     RDP_ASSERT(result.ok());
     RDP_ASSERT_EQ(result.preflightTruth, MoonlightHostControlTruth::Confirmed);
     RDP_ASSERT_EQ(result.actionTruth, MoonlightHostControlTruth::Confirmed);
-    RDP_ASSERT_EQ(result.postconditionTruth, MoonlightHostControlTruth::Confirmed);
+    RDP_ASSERT_EQ(result.postconditionTruth, MoonlightHostControlTruth::Unknown);
     RDP_ASSERT(result.rtspSessionUrl.has_value());
     RDP_ASSERT(*result.rtspSessionUrl == "rtspenc://session-token");
     RDP_ASSERT(result.sessionAddress.has_value());
     RDP_ASSERT(*result.sessionAddress == "192.0.2.10");
+    RDP_ASSERT(result.sessionServerInfo.has_value());
+    RDP_ASSERT_EQ(result.sessionServerInfo->currentGame, 42U);
     RDP_ASSERT(fixture.transport->sawLaunchCanary());
     RDP_ASSERT(!fixture.transport->redactedContainsCanary());
     RDP_ASSERT(MoonlightHostControl::secureCleanseCountForTesting() >= 12U);
     RDP_ASSERT_EQ(fixture.transport->count(MoonlightHostOperation::Launch),
                   static_cast<std::size_t>(1));
+    RDP_ASSERT_EQ(fixture.transport->count(MoonlightHostOperation::ServerInfo),
+                  static_cast<std::size_t>(1));
+    RDP_ASSERT(!result.diagnostics.empty());
+    for (const auto& diagnostic : result.diagnostics) {
+        RDP_ASSERT(diagnostic.appIdFingerprint <= 0x1fffffffffffffULL);
+    }
 }
 
 RDP_TEST_CASE(moonlight_host_control_launch_never_auto_resumes_or_quits) {
@@ -571,18 +578,22 @@ RDP_TEST_CASE(moonlight_host_control_explicit_xml_rejection_is_known_failure) {
                   static_cast<std::size_t>(1));
 }
 
-RDP_TEST_CASE(moonlight_host_control_launch_postcondition_mismatch_is_unknown_without_replay) {
+RDP_TEST_CASE(moonlight_host_control_launch_does_not_wait_for_postcondition_or_replay) {
     Fixture fixture;
     RDP_ASSERT(fixture.primeCatalog().ok());
     fixture.transport->push(xmlResponse(serverInfoXml(0U)));
     fixture.transport->push(xmlResponse(
         "<root status_code=\"200\"><gamesession>1</gamesession>"
         "<sessionUrl0>rtsp://candidate</sessionUrl0></root>"));
-    fixture.transport->push(xmlResponse(serverInfoXml(7U)));
     const auto result = fixture.control->launch(launchRequest(2U));
-    RDP_ASSERT_EQ(result.code, MoonlightHostControlCode::OutcomeUnknown);
-    RDP_ASSERT(!result.rtspSessionUrl.has_value());
+    RDP_ASSERT_EQ(result.code, MoonlightHostControlCode::Ok);
+    RDP_ASSERT_EQ(result.postconditionTruth, MoonlightHostControlTruth::Unknown);
+    RDP_ASSERT(result.rtspSessionUrl.has_value());
+    RDP_ASSERT(result.sessionServerInfo.has_value());
+    RDP_ASSERT_EQ(result.sessionServerInfo->currentGame, 42U);
     RDP_ASSERT_EQ(fixture.transport->count(MoonlightHostOperation::Launch),
+                  static_cast<std::size_t>(1));
+    RDP_ASSERT_EQ(fixture.transport->count(MoonlightHostOperation::ServerInfo),
                   static_cast<std::size_t>(1));
 }
 

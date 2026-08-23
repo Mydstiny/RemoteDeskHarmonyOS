@@ -26,7 +26,10 @@ const char* opus_get_version_string(void);
 constexpr int kOpusOk = 0;
 constexpr int kOpusInvalidPacket = -4;
 #if !defined(RDP_MOONLIGHT_HOST_OPUS_TEST)
-constexpr char kPinnedOpusVersion[] = "libopus 1.5.2";
+// The OHOS archive is the pinned 1.5.2 build with the repository's ABI-safe
+// fixed suffix. Keep the check exact so an unrelated system libopus cannot be
+// admitted accidentally.
+constexpr char kPinnedOpusVersion[] = "libopus 1.5.2-fixed";
 #endif
 
 bool exactPinnedOpusVersion() noexcept {

@@ -3452,7 +3452,14 @@ DecoderNapi::OwnedSubmitStatus DecoderNapi::DecodeOwnedNative(
             return OwnedSubmitStatus::Stale;
         }
         const int activeDisplay = g_activeDisplay.load(std::memory_order_acquire);
-        if (activeDisplay < 0 || frame.display != activeDisplay ||
+        // Phone/Pad Surface sessions deliberately use display=-1: they bind
+        // the codec directly to the native window and do not select a
+        // RustDesk display. Keep that sentinel valid while retaining exact
+        // display matching whenever a RustDesk display is active.
+        const bool displayMatches = activeDisplay < 0
+            ? frame.display < 0
+            : frame.display == activeDisplay;
+        if (!displayMatches ||
             g_activeDisplayGeneration.load(std::memory_order_acquire) !=
                 displayGeneration ||
             g_activeDecoderHandle.load(std::memory_order_acquire) !=

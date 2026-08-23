@@ -97,6 +97,7 @@ import { MoonlightBrandIcon } from '../components/moonlight/MoonlightBrandIcon';
 import { MoonlightSettingsSurface } from './MoonlightSettingsPage';
 import {
   MoonlightSettingsSection,
+  MoonlightCatalogItem,
   moonlightHostRouteParams
 } from '../services/MoonlightUiPolicy';
 import {
@@ -590,6 +591,11 @@ const REMOTE_HOST_SHEET_PASSPHRASE = 4;
 const REMOTE_HOST_SHEET_PUBLIC_KEY = 5;
 const REMOTE_HOST_SHEET_RUSTDESK_TOTP_BINDING = 6;
 const REMOTE_HOST_SHEET_VNC_CERTIFICATE = 7;
+// Moonlight host cards use the same host-list Sheet host as every other
+// protocol.  Keeping this as a mode (instead of a second bindSheet) also
+// preserves the list's single-dismiss lifecycle and prevents route switches
+// from racing a card expansion.
+const REMOTE_HOST_SHEET_MOONLIGHT_DETAIL = 8;
 const DESKTOP_MOONLIGHT_TAB = 7;
 
 @Entry
@@ -746,6 +752,7 @@ struct HostListPage {
   @State showSshPreflight: boolean = false;
   @State showRemoteHostSheet: boolean = false;
   @State remoteHostSheetMode: number = REMOTE_HOST_SHEET_NONE;
+  @State moonlightSheetHostId: string = '';
   @State sshPreflightState: number = 0;
   private sshPreflightOpenedAt: number = 0;
   private sshPreflightGeneration: number = 0;
@@ -1965,10 +1972,70 @@ struct HostListPage {
   private openMoonlightHost(hostId: string, catalog: boolean = false): void {
     const params: Record<string, Object> | null = moonlightHostRouteParams(hostId);
     if (params === null) { return; }
-    router.pushUrl({
-      url: catalog ? 'pages/MoonlightAppCatalogPage' : 'pages/MoonlightHostDetailPage',
-      params: params
-    });
+    // A card tap is an in-place expansion, matching the RDP/RustDesk/SSH/VNC
+    // host-list contract.  Full pages remain explicit actions from the Sheet
+    // (catalog/settings), never an implicit card navigation.
+    if (!catalog) {
+      this.openMoonlightHostSheet(hostId);
+      return;
+    }
+    router.pushUrl({ url: 'pages/MoonlightAppCatalogPage', params: params });
+  }
+
+  private moonlightSheetView(): MoonlightHostLocalView | null {
+    if (this.moonlightSheetHostId === '') { return null; }
+    for (let index: number = 0; index < this.moonlightHosts.length; index++) {
+      const view: MoonlightHostLocalView = this.moonlightHosts[index];
+      if (view.host !== null && view.host.id === this.moonlightSheetHostId) {
+        return view;
+      }
+    }
+    return null;
+  }
+
+  private openMoonlightHostSheet(hostId: string): void {
+    if (hostId.trim() === '' || this.remoteHostSheetClosing ||
+        this.showRemoteHostSheet || this.addSheetClosing) {
+      return;
+    }
+    const view: MoonlightHostLocalView | null = this.moonlightHosts.find(
+      (candidate: MoonlightHostLocalView): boolean =>
+        candidate.host !== null && candidate.host.id === hostId) ?? null;
+    if (view === null || view.host === null) { return; }
+    this.moonlightSheetHostId = hostId;
+    this.openSheetSafely((): void => {
+      if (!this.pageActive || this.moonlightSheetHostId !== hostId) { return; }
+      this.openRemoteHostSheet(REMOTE_HOST_SHEET_MOONLIGHT_DETAIL, (): void => {});
+    }, true);
+  }
+
+  private openMoonlightHostSettings(hostId: string): void {
+    const params: Record<string, Object> | null = moonlightHostRouteParams(hostId);
+    if (params !== null) {
+      router.pushUrl({ url: 'pages/MoonlightSettingsPage', params: params });
+    }
+  }
+
+  private closeMoonlightHostSheet(openCatalog: boolean = false,
+    openSettings: boolean = false): void {
+    const hostId: string = this.moonlightSheetHostId;
+    if (hostId === '') { return; }
+    const params: Record<string, Object> | null = moonlightHostRouteParams(hostId);
+    this.beginRemoteHostSheetClose(REMOTE_HOST_SHEET_MOONLIGHT_DETAIL);
+    this.showRemoteHostSheet = false;
+    // Route only after the Sheet has fully disappeared. This keeps a card tap
+    // in-place and avoids a page transition being rendered underneath the
+    // native Sheet exit animation.
+    if (params !== null && (openCatalog || openSettings)) {
+      const target: string = openCatalog ? 'pages/MoonlightAppCatalogPage' :
+        'pages/MoonlightSettingsPage';
+      setTimeout((): void => {
+        // onDisappear clears moonlightSheetHostId as part of the common Sheet
+        // lifecycle, so routing must not depend on that transient state.
+        if (!this.pageActive) { return; }
+        router.pushUrl({ url: target, params: params });
+      }, 260);
+    }
   }
 
   private openMoonlightAddFlow(): void {
@@ -9065,6 +9132,8 @@ struct HostListPage {
       this.hlPassphraseBuilder();
     } else if (this.remoteHostSheetMode === REMOTE_HOST_SHEET_PUBLIC_KEY) {
       this.sshPublicKeyInstallPanel();
+    } else if (this.remoteHostSheetMode === REMOTE_HOST_SHEET_MOONLIGHT_DETAIL) {
+      this.moonlightHostDetailSheet();
     }
   }
 
@@ -9090,6 +9159,9 @@ struct HostListPage {
         break;
       case REMOTE_HOST_SHEET_RUSTDESK_TOTP_BINDING:
         this.closeRustDeskTotpBinding(false);
+        break;
+      case REMOTE_HOST_SHEET_MOONLIGHT_DETAIL:
+        this.beginRemoteHostSheetClose(REMOTE_HOST_SHEET_MOONLIGHT_DETAIL);
         break;
       default:
         return;
@@ -9146,6 +9218,10 @@ struct HostListPage {
         this.resetSshPublicKeyInstallSheetState();
         this.noteSheetDismissed();
         break;
+      case REMOTE_HOST_SHEET_MOONLIGHT_DETAIL:
+        this.moonlightSheetHostId = '';
+        this.noteSheetDismissed();
+        break;
       default:
         break;
     }
@@ -9154,6 +9230,13 @@ struct HostListPage {
     this.remoteHostSheetMode = REMOTE_HOST_SHEET_NONE;
     this.remoteHostSheetClosing = false;
     this.remoteHostSheetClosingMode = REMOTE_HOST_SHEET_NONE;
+  }
+
+  private remoteHostSheetHeight(): SheetSize | string {
+    // The Moonlight card detail is intentionally content-sized. LARGE leaves
+    // a full-screen white tail below the short host summary on phones, which
+    // makes the Sheet look like a blank page instead of an expanded card.
+    return SheetSize.FIT_CONTENT;
   }
 
   private drainRemoteHostSheetQueue(dismissedMode: number): void {
@@ -9216,7 +9299,7 @@ struct HostListPage {
       // 所有连接/安全弹窗共用一个 bindSheet 宿主。面板内容由 mode 路由，
       // 关闭和路由统一在宿主 onDisappear 后完成，避免多个 native Sheet 同时退场。
       .bindSheet($$this.showRemoteHostSheet, this.remoteHostSheetBuilder(), {
-        height: SheetSize.FIT_CONTENT,
+        height: this.remoteHostSheetHeight(),
         preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
         dragBar: this.breakpoint === 'sm',
         backgroundColor: this.pal().sheetBg,
@@ -9286,7 +9369,6 @@ struct HostListPage {
                   this.sidebarTab('SSH 终端', protocolIcon('ssh'), 2)
                   this.sidebarTab('VNC 主机', protocolIcon('vnc'), 3)
                 }
-                this.sidebarMoonlightTab()
                 this.sidebarTab('密钥保险库', protocolIcon('key_vault'), 4)
                 this.sidebarTab('2FA 验证器', protocolIcon('totp'), 5)
                 this.sidebarRelayTab('中继服务器', 6)
@@ -9300,9 +9382,8 @@ struct HostListPage {
 
             // 主内容区 (hostContent 使用 updateHostFilter 预过滤的数据源)
             Column() {
-              if (this.curTab <= 3) { this.hostContent() }
+              if (this.curTab <= 3 || this.curTab === DESKTOP_MOONLIGHT_TAB) { this.hostContent() }
               else if (this.curTab === 6) { this.relayContent() }
-              else if (this.curTab === DESKTOP_MOONLIGHT_TAB) { this.moonlightDirectoryContent() }
               else { this.keyVaultContent() }
             }.layoutWeight(1).height('100%')
           }
@@ -10178,6 +10259,12 @@ struct HostListPage {
   @Builder moonlightFlatHostCard(view: MoonlightHostLocalView) {
     if (view.host !== null) {
       Row() {
+        if (this.hostSelectionMode) {
+          Checkbox()
+            .select(this.hostSelectedIds.has(view.host.id)).selectedColor(this.accentColor)
+            .margin({ right: 7 }).monopolizeEvents(true)
+            .onChange((checked: boolean): void => { this.toggleHostSelect(view.host?.id || '', checked); })
+        }
         Column() {
           MoonlightBrandIcon({ iconSize: this.breakpoint === 'sm' ? 24 : 26,
             tint: '#FFFFFF', accessibilityLabel: 'Moonlight 主机' })
@@ -10199,26 +10286,50 @@ struct HostListPage {
             .fontSize(this.breakpoint === 'sm' ? 12 : 14).fontColor(this.pal().text2)
             .fontFamily(this.font()).margin({ top: this.breakpoint === 'sm' ? 3 : 4 })
             .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          Text(view.paired ? '已配对' : '未配对')
+            .fontSize(this.breakpoint === 'sm' ? 11 : 12)
+            .fontColor(this.moonlightHostStatusColor(view)).fontFamily(this.font())
+            .margin({ top: 3 }).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
         }
         .alignItems(HorizontalAlign.Start).layoutWeight(1)
-        .onClick((): void => { this.openMoonlightHost(view.host?.id || ''); })
+        .onClick((): void => {
+          if (this.hostSelectionMode) {
+            this.toggleHostSelect(view.host?.id || '', !this.hostSelectedIds.has(view.host?.id || ''));
+          } else {
+            this.openMoonlightHost(view.host?.id || '');
+          }
+        })
         Column() {
-          Text(view.paired ? '已配对' : '未配对').fontSize(10)
-            .fontColor(this.moonlightHostStatusColor(view)).fontFamily(this.font())
-            .padding({ left: 6, right: 6, top: 3, bottom: 3 })
-            .backgroundColor(this.moonlightHostStatusColor(view) + '14').borderRadius(6)
+          if (this.hostSelectionMode && this.hostReorderEnabled) {
+            SymbolGlyph($r('sys.symbol.line_3_horizontal')).fontSize(20)
+              .fontColor([this.pal().text3]).margin({ left: 8 })
+          }
         }.alignItems(HorizontalAlign.End).margin({ left: 6 })
       }
       .width('100%').constraintSize({ minHeight: this.breakpoint === 'sm' ? 66 : 80 })
       .padding(this.breakpoint === 'sm' ? { left: 12, right: 14, top: 12, bottom: 12 } : 14)
       .borderRadius(14).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
       .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+      .gesture(LongPressGesture().onAction((): void => {
+        if (!this.hostSelectionMode) {
+          this.hostSelectionMode = true;
+          this.hostReorderEnabled = true;
+          this.hostSelectedIds = new Set<string>();
+          this.hostSelectedIds.add(view.host?.id || '');
+        }
+      }))
     }
   }
 
   @Builder moonlightGroupedHostCard(view: MoonlightHostLocalView) {
     if (view.host !== null) {
       Row() {
+        if (this.hostSelectionMode) {
+          Checkbox()
+            .select(this.hostSelectedIds.has(view.host.id)).selectedColor(this.accentColor)
+            .margin({ right: 7 }).monopolizeEvents(true)
+            .onChange((checked: boolean): void => { this.toggleHostSelect(view.host?.id || '', checked); })
+        }
         Column() {
           MoonlightBrandIcon({ iconSize: this.breakpoint === 'sm' ? 21 : 23,
             tint: '#FFFFFF', accessibilityLabel: 'Moonlight 主机' })
@@ -10229,7 +10340,13 @@ struct HostListPage {
         .backgroundColor(this.accentColor)
         .justifyContent(FlexAlign.Center)
         .margin({ right: this.breakpoint === 'sm' ? 9 : 10 })
-        .onClick((): void => { this.openMoonlightHost(view.host?.id || ''); })
+        .onClick((): void => {
+          if (this.hostSelectionMode) {
+            this.toggleHostSelect(view.host?.id || '', !this.hostSelectedIds.has(view.host?.id || ''));
+          } else {
+            this.openMoonlightHost(view.host?.id || '');
+          }
+        })
         Column() {
           Text(view.host.displayName).fontSize(this.breakpoint === 'sm' ? 15 : 16)
             .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
@@ -10252,8 +10369,18 @@ struct HostListPage {
               .fontColor(this.moonlightHostStatusColor(view)).fontFamily(this.font())
               .padding({ left: 6, right: 6, top: 3, bottom: 3 })
               .backgroundColor(this.moonlightHostStatusColor(view) + '14').borderRadius(6)
+            Blank().layoutWeight(1)
+            Button() {
+              SymbolGlyph($r('sys.symbol.bolt_fill')).fontSize(18).fontColor([this.accentColor])
+            }
+            .width(this.breakpoint === 'sm' ? 38 : 40)
+            .height(this.breakpoint === 'sm' ? 38 : 40).borderRadius(19).padding(0)
+            .backgroundColor(this.pal().surface).accessibilityText('检查 Moonlight 主机')
+            .onClick((): void => {
+              promptAction.showToast({ message: 'Moonlight 主机将在打开目录时后台鉴权', duration: 1800 });
+            })
           }
-          Row() {
+          Row({ space: 8 }) {
             Button() {
               SymbolGlyph($r('sys.symbol.square_and_pencil')).fontSize(16).fontColor([this.pal().text2])
             }
@@ -10264,14 +10391,139 @@ struct HostListPage {
               MoonlightBrandIcon({ iconSize: 16, tint: this.pal().text2, accessibilityLabel: '应用目录' })
             }
             .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
-            .margin({ left: 8 }).accessibilityText('打开 Moonlight 应用目录')
+            .accessibilityText('打开 Moonlight 应用目录')
             .onClick((): void => { this.openMoonlightHost(view.host?.id || '', true); })
+            Button() {
+              SymbolGlyph($r('sys.symbol.gearshape_fill')).fontSize(16).fontColor([this.pal().text2])
+            }
+            .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
+            .accessibilityText('Moonlight 设置')
+            .onClick((): void => {
+              this.openMoonlightHostSettings(view.host?.id || '');
+            })
           }.margin({ top: 7 })
         }.alignItems(HorizontalAlign.End).margin({ left: 10 })
       }
       .width('100%').height(this.hostGroupHostCardHeight()).padding(6)
       .borderRadius(12).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
       .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+      .gesture(LongPressGesture().onAction((): void => {
+        if (!this.hostSelectionMode) {
+          this.hostSelectionMode = true;
+          this.hostSelectedIds = new Set<string>();
+          this.hostSelectedIds.add(view.host?.id || '');
+        }
+      }))
+    }
+  }
+
+  private moonlightSheetHost(): MoonlightHost | null {
+    const view: MoonlightHostLocalView | null = this.moonlightSheetView();
+    return view === null ? null : view.host;
+  }
+
+  private moonlightSheetItems(): MoonlightCatalogItem[] {
+    const view: MoonlightHostLocalView | null = this.moonlightSheetView();
+    return view === null ? [] : view.catalogItems;
+  }
+
+  private moonlightSheetPaired(): boolean {
+    const view: MoonlightHostLocalView | null = this.moonlightSheetView();
+    return view !== null && view.paired;
+  }
+
+  private moonlightSheetStatusColor(): string {
+    return this.moonlightSheetPaired() ? this.pal().success : this.pal().editColor;
+  }
+
+  private moonlightSheetRecentListHeight(): number {
+    const count: number = Math.min(this.moonlightSheetItems().length, 6);
+    // Keep a short sheet when only one or two cached apps exist; a fixed
+    // 160vp panel left a conspicuous empty block below the last row.
+    return count === 0 ? 68 : Math.min(160, 18 + count * 48);
+  }
+
+  @Builder moonlightHostDetailSheet() {
+    if (this.moonlightSheetHost() === null) {
+      Column() {
+        Text('Moonlight 主机已不存在').fontSize(16).fontWeight(FontWeight.Medium)
+          .fontColor(this.pal().text)
+        Button('关闭').width('100%').height(42).margin({ top: 16 }).borderRadius(11)
+          .backgroundColor(this.accentColor).fontColor(Color.White)
+          .onClick((): void => { this.closeMoonlightHostSheet(); })
+      }.width('100%').padding(22).backgroundColor(this.pal().sheetBg)
+    } else {
+    Column() {
+      Row() {
+        Column() {
+          MoonlightBrandIcon({ iconSize: 26, tint: '#FFFFFF', accessibilityLabel: 'Moonlight 主机' })
+        }.width(48).height(48).borderRadius(14).backgroundColor(this.accentColor)
+          .justifyContent(FlexAlign.Center)
+        Column() {
+          Text(this.moonlightSheetHost()?.displayName || '').fontSize(19).fontWeight(FontWeight.Bold)
+            .fontColor(this.pal().text).fontFamily(this.font()).maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+          Text('Moonlight 主机 · ' + this.moonlightAddressLabel(this.moonlightSheetHost() as MoonlightHost))
+            .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+            .margin({ top: 4 }).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
+        Text(this.moonlightSheetPaired() ? '已配对' : '未配对').fontSize(11)
+          .fontColor(this.moonlightSheetStatusColor()).fontFamily(this.font())
+          .padding({ left: 8, right: 8, top: 4, bottom: 4 })
+          .backgroundColor(this.moonlightSheetStatusColor() + '16').borderRadius(8)
+      }.width('100%')
+
+      Row() {
+        Text('地址').fontSize(11).fontColor(this.pal().text3).width(48)
+        Text(this.moonlightAddressLabel(this.moonlightSheetHost() as MoonlightHost)).fontSize(13).fontColor(this.pal().text2)
+          .fontFamily('monospace').layoutWeight(1).maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+      }.width('100%').margin({ top: 18 })
+      Row() {
+        Text('目录').fontSize(11).fontColor(this.pal().text3).width(48)
+        Text(this.moonlightSheetItems().length.toString() + ' 个应用 · 本地缓存')
+          .fontSize(13).fontColor(this.pal().text2).fontFamily(this.font()).layoutWeight(1)
+      }.width('100%').margin({ top: 9 })
+
+      Text('最近使用的应用').fontSize(13).fontWeight(FontWeight.Medium)
+        .fontColor(this.pal().text).width('100%').margin({ top: 20, bottom: 8 })
+      Scroll() {
+        Column() {
+          if (this.moonlightSheetItems().length === 0) {
+            Text('主机上线后刷新应用目录').fontSize(12).fontColor(this.pal().text3)
+              .width('100%').padding({ top: 18, bottom: 18 }).textAlign(TextAlign.Center)
+          } else {
+            ForEach(this.moonlightSheetItems().slice(0, 6), (item: MoonlightCatalogItem): void => {
+              Row() {
+                MoonlightBrandIcon({ iconSize: 18, tint: this.accentColor })
+                Column() {
+                  Text(item.title).fontSize(13).fontColor(this.pal().text)
+                    .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                  Text(item.available && !item.stale ? '可用' : '缓存/当前不可用')
+                    .fontSize(10)
+                    .fontColor(item.available && !item.stale ? this.pal().success : this.pal().text3)
+                    .margin({ top: 2 })
+                }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
+              }.width('100%').height(48).padding({ left: 8, right: 8 })
+            }, (item: MoonlightCatalogItem): string => item.id)
+          }
+        }.width('100%')
+      }.width('100%').height(this.moonlightSheetRecentListHeight()).scrollBar(BarState.Off)
+        .backgroundColor(this.pal().surface).borderRadius(12)
+
+      Row({ space: 8 }) {
+        Button('应用目录').layoutWeight(1).height(42).borderRadius(11)
+          .backgroundColor(this.accentColor).fontColor(Color.White)
+          .onClick((): void => { this.closeMoonlightHostSheet(true, false); })
+        Button('设置').layoutWeight(1).height(42).borderRadius(11)
+          .backgroundColor(this.pal().surface).fontColor(this.pal().text2)
+          .onClick((): void => { this.closeMoonlightHostSheet(false, true); })
+      }.width('100%').margin({ top: 16 })
+      Button('关闭').width('100%').height(40).borderRadius(11)
+        .backgroundColor(Color.Transparent).fontColor(this.pal().text3)
+        .margin({ top: 4 }).onClick((): void => { this.closeMoonlightHostSheet(); })
+    }.width('100%').padding({ left: 22, right: 22, top: 20, bottom: 24 })
+      .backgroundColor(this.pal().sheetBg)
     }
   }
 
@@ -10285,22 +10537,11 @@ struct HostListPage {
 
   @Builder moonlightDirectorySection() {
     Column() {
-      Row() {
-        Column() {
-          Text('Moonlight 主机').fontSize(16).fontWeight(FontWeight.Bold)
-            .fontColor(this.pal().text).fontFamily(this.font())
-          Text('本地保存 · 按主机进入应用目录').fontSize(11).fontColor(this.pal().text3)
-            .fontFamily(this.font()).margin({ top: 3 })
-        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-        Text(this.visibleMoonlightHosts().length.toString() + ' 台').fontSize(11)
-          .fontColor(this.accentColor).padding({ left: 9, right: 9, top: 4, bottom: 4 })
-          .backgroundColor(this.accentColor + '12').borderRadius(10)
-      }.width('100%').margin({ bottom: 10 })
       ForEach(this.visibleMoonlightHosts(), (view: MoonlightHostLocalView): void => {
         this.moonlightHostCard(view)
         Blank().height(8)
       }, (view: MoonlightHostLocalView): string => this.moonlightHostCardKey(view))
-    }.width('100%').padding({ top: 8, bottom: 8 })
+    }.width('100%')
   }
 
   @Builder moonlightDirectoryContent() {
@@ -10447,9 +10688,14 @@ struct HostListPage {
           }
         }
 
-        if (!(this.isDesktopDevice && this.breakpoint === 'xl') &&
-          !this.isLoading && this.visibleMoonlightHosts().length > 0) {
-          ListItem() { this.moonlightDirectorySection() }
+        // Moonlight is a first-class host protocol, not a nested directory
+        // section. Render each card as a peer ListItem so the flat and
+        // grouped host layouts share the exact same list spacing, clipping
+        // and scroll behavior as RDP/RustDesk/SSH/VNC.
+        if (!this.isLoading && this.visibleMoonlightHosts().length > 0) {
+          ForEach(this.visibleMoonlightHosts(), (view: MoonlightHostLocalView): void => {
+            ListItem() { this.moonlightHostCard(view) }
+          }, (view: MoonlightHostLocalView): string => this.moonlightHostCardKey(view))
         }
 
         if (this.isLoading) {

@@ -136,7 +136,7 @@ enum class MoonlightVideoStopStatus : std::uint8_t {
 };
 
 struct REMOTEDESK_MOONLIGHT_VIDEO_HIDDEN MoonlightVideoLimits final {
-    std::size_t maximumFragments = 64U;
+    std::size_t maximumFragments = 256U;
     std::size_t maximumFragmentBytes = 4U * 1024U * 1024U;
     std::size_t maximumAccessUnitBytes = 16U * 1024U * 1024U;
     std::size_t maximumCodecConfigurationBytes = 1024U * 1024U;

@@ -20,8 +20,10 @@ bool supportedMvpProfile(const MoonlightStreamCodecProfile& profile) noexcept {
 }
 
 bool validNonProfileBinding(const MoonlightVideoDecoderBinding& binding) noexcept {
+    // Surface-backed Moonlight decoders do not select a RustDesk display. The
+    // native decoder factory uses -1 as the deliberate "no display" sentinel.
     return binding.key.valid() && binding.width >= 320 && binding.width <= 7680 &&
-        binding.height >= 240 && binding.height <= 4320 && binding.display >= 0 &&
+        binding.height >= 240 && binding.height <= 4320 && binding.display >= -1 &&
         binding.decoderHandle > 0 && binding.rendererHandle > 0 &&
         binding.decoderGeneration != 0U && binding.displayGeneration != 0U &&
         binding.rendererGeneration != 0U && binding.ownsDecoderHandle;

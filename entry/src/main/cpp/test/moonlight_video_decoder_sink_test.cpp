@@ -231,6 +231,17 @@ RDP_TEST_CASE(moonlight_video_decoder_sink_rejects_invalid_or_unproven_binding_b
     RDP_ASSERT_EQ(port->starts(), static_cast<std::size_t>(0U));
 }
 
+RDP_TEST_CASE(moonlight_video_decoder_sink_accepts_surface_without_display_binding) {
+    auto port = std::make_shared<FakeOwnedDecoderPort>();
+    auto sink = MoonlightOwnedVideoDecoderSink::createForTesting(port);
+    auto request = binding();
+    request.display = -1;
+
+    RDP_ASSERT_EQ(sink->start(request).status,
+                  MoonlightVideoDecoderStartStatus::Started);
+    RDP_ASSERT(port->lastBinding() == request);
+}
+
 RDP_TEST_CASE(moonlight_video_decoder_sink_maps_exact_binding_and_owned_access_unit) {
     auto port = std::make_shared<FakeOwnedDecoderPort>();
     auto sink = MoonlightOwnedVideoDecoderSink::createForTesting(port);

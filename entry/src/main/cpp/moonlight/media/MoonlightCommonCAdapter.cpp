@@ -34,7 +34,10 @@ constexpr std::size_t kMaximumRtspUrlLength = 2048U;
 // AudioStream.c receives at most MAX_PACKET_SIZE (1400) bytes and uses the
 // exact null+zero callback shape for one packet-loss-concealment request.
 constexpr std::size_t kMaximumAudioPayloadBytes = 1400U;
-constexpr std::size_t kMaximumVideoFragments = 64U;
+// A 1080p H.264 IDR can arrive as well over 64 common-c LENTRY nodes when
+// the upstream packet size is small. Keep the per-fragment and total-AU byte
+// limits below, but allow enough nodes for a complete key frame.
+constexpr std::size_t kMaximumVideoFragments = 256U;
 constexpr std::size_t kMaximumVideoFragmentBytes = 4U * 1024U * 1024U;
 constexpr std::size_t kMaximumVideoAccessUnitBytes = 16U * 1024U * 1024U;
 constexpr std::size_t kMaximumVideoConfigurationBytes = 1024U * 1024U;
