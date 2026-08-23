@@ -200,41 +200,49 @@ export default function moonlightUiPolicyTest(): void {
 
     it('keeps_disconnect_dangerous_and_controller_fail_closed', 0, (): void => {
       const phone = moonlightToolbarItems('sm', true, false, true);
-      expect(phone.length).assertEqual(5);
+      expect(phone.length).assertEqual(7);
       expect(phone[1].action).assertEqual('keyboard');
       expect(phone[1].enabled).assertFalse();
-      expect(phone[2].action).assertEqual('controller');
-      expect(phone[2].enabled).assertFalse();
-      expect(phone[4].action).assertEqual('disconnect');
-      expect(phone[4].dangerous).assertTrue();
-      const keyboardReady = moonlightToolbarItems('sm', true, false, true, 5, true);
+      expect(phone[2].action).assertEqual('modifiers');
+      expect(phone[2].enabled).assertTrue();
+      expect(phone[3].action).assertEqual('controller');
+      expect(phone[3].enabled).assertFalse();
+      expect(phone[4].action).assertEqual('display');
+      expect(phone[6].action).assertEqual('disconnect');
+      expect(phone[6].dangerous).assertTrue();
+      const keyboardReady = moonlightToolbarItems('sm', true, false, true, 7, true);
       expect(keyboardReady[1].action).assertEqual('keyboard');
       expect(keyboardReady[1].enabled).assertTrue();
       expect(keyboardReady[1].disabledReason).assertEqual('');
-      expect(moonlightToolbarItems('xl', true, true, true).length).assertEqual(7);
+      expect(moonlightToolbarItems('xl', true, true, true).length).assertEqual(8);
     });
 
     it('resolves_responsive_toolbar_and_control_center_contract', 0, (): void => {
       expect(moonlightToolbarDeviceClass(false, false)).assertEqual('phone');
       const phone = moonlightToolbarLayout(false, 'sm', false);
       expect(phone.edgeRail).assertTrue();
-      expect(phone.maxVisibleItems).assertEqual(5);
+      expect(phone.maxVisibleItems).assertEqual(7);
       expect(phone.autoHideMs).assertEqual(0);
-      expect(phone.maxHeight).assertEqual(360);
+      expect(phone.maxHeight).assertEqual(420);
+
+      const phoneLandscape = moonlightToolbarLayout(false, 'xl', false);
+      expect(phoneLandscape.edgeRail).assertTrue();
+      expect(phoneLandscape.maxVisibleItems).assertEqual(7);
 
       const padMd = moonlightToolbarLayout(false, 'md', true);
       expect(padMd.deviceClass).assertEqual('pad');
       expect(padMd.edgeRail).assertTrue();
-      expect(padMd.maxHeight).assertEqual(360);
+      expect(padMd.maxHeight).assertEqual(420);
+      expect(moonlightToolbarLayout(false, 'xl', true).edgeRail).assertTrue();
 
       const desktopMd = moonlightToolbarLayout(true, 'md', false);
       expect(desktopMd.deviceClass).assertEqual('pc');
       expect(desktopMd.edgeRail).assertFalse();
       expect(moonlightToolbarItems('md', true, false, false, desktopMd.maxVisibleItems).length)
-        .assertEqual(5);
+        .assertEqual(7);
 
       const desktopXl = moonlightToolbarLayout(true, 'xl', false);
-      expect(desktopXl.maxVisibleItems).assertEqual(7);
+      expect(desktopXl.maxVisibleItems).assertEqual(8);
       expect(desktopXl.maxHeight).assertEqual(0);
       expect(moonlightToolbarAutoHideDelayMs(desktopXl, false)).assertEqual(5000);
       expect(moonlightToolbarAutoHideDelayMs(desktopXl, true)).assertEqual(0);
@@ -246,7 +254,7 @@ export default function moonlightUiPolicyTest(): void {
 
       const desktopLg = moonlightToolbarLayout(true, 'lg', false);
       expect(desktopLg.edgeRail).assertFalse();
-      expect(desktopLg.maxVisibleItems).assertEqual(7);
+      expect(desktopLg.maxVisibleItems).assertEqual(8);
       expect(moonlightToolbarAutoHideDelayMs(desktopLg, false)).assertEqual(0);
     });
 

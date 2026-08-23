@@ -48,6 +48,7 @@ export struct MoonlightSessionToolbar {
   private icon(action: MoonlightToolbarAction): Resource {
     if (action === 'control') { return $r('sys.symbol.display'); }
     if (action === 'keyboard') { return $r('sys.symbol.keyboard'); }
+    if (action === 'modifiers') { return $r('sys.symbol.keyboard'); }
     if (action === 'controller') { return $r('sys.symbol.gamecontroller_fill'); }
     if (action === 'audio') { return $r('sys.symbol.speaker_slash_fill'); }
     if (action === 'display') { return $r('sys.symbol.display'); }
@@ -113,7 +114,8 @@ export struct MoonlightSessionToolbar {
           .maxLines(1)
       }
     }
-    .width(layout.edgeRail ? layout.iconSize + 18 : 50).height(50).borderRadius(14)
+    .width(layout.edgeRail ? layout.iconSize + 18 : 50)
+    .height(layout.edgeRail ? 44 : 50).borderRadius(14)
     .backgroundColor(item.dangerous ? this.pal().danger + '20' : this.pal().surface)
     .enabled(true)
     .opacity(item.enabled ? 1 : 0.72)
@@ -125,7 +127,8 @@ export struct MoonlightSessionToolbar {
     Button() {
       SymbolGlyph(this.pinned ? $r('sys.symbol.pin_fill') : $r('sys.symbol.pin'))
         .fontSize(17).fontColor([this.pinned ? this.accentColor : this.pal().text])
-    }.width(layout.edgeRail ? layout.iconSize + 18 : 44).height(50).borderRadius(14)
+    }.width(layout.edgeRail ? layout.iconSize + 18 : 44)
+      .height(layout.edgeRail ? 44 : 50).borderRadius(14)
       .backgroundColor(this.pal().surface)
       .onClick((): void => { this.pinned = !this.pinned; this.scheduleHide(); })
       .accessibilityText(this.pinned ? '取消固定工具条' : '固定工具条')
@@ -135,7 +138,8 @@ export struct MoonlightSessionToolbar {
     Button() {
       SymbolGlyph(layout.edgeRail ? $r('sys.symbol.arrow_right') : $r('sys.symbol.chevron_up'))
         .fontSize(17).fontColor([this.pal().text])
-    }.width(layout.edgeRail ? layout.iconSize + 18 : 44).height(50).borderRadius(14)
+    }.width(layout.edgeRail ? layout.iconSize + 18 : 44)
+      .height(layout.edgeRail ? 44 : 50).borderRadius(14)
       .backgroundColor(this.pal().surface)
       .onClick((): void => { this.clearTimer(); this.expanded = false; })
       .accessibilityText('收起串流控制工具栏')
@@ -150,25 +154,32 @@ export struct MoonlightSessionToolbar {
   }
 
   @Builder private collapsedHandle(layout: MoonlightToolbarLayout) {
-    Button() {
-      Row({ space: 5 }) {
-        MoonlightBrandIcon({ iconSize: layout.edgeRail ? 18 : 20,
-          tint: this.pal().text, accessibilityLabel: '打开 Moonlight 控制' })
-        if (layout.edgeRail) {
-          SymbolGlyph($r('sys.symbol.arrow_left')).fontSize(13).fontColor([this.pal().text2])
-        } else {
+    if (layout.edgeRail) {
+      Button() {
+        SymbolGlyph($r('sys.symbol.chevron_left')).fontSize(18).fontColor(['#444444'])
+      }
+      .width(30).height(72).padding(0)
+      .backgroundColor('rgba(255,255,255,0.92)')
+      .borderRadius({ topLeft: 10, bottomLeft: 10, topRight: 0, bottomRight: 0 })
+      .shadow({ radius: 8, color: 'rgba(0,0,0,0.22)', offsetX: -2 })
+      .onClick((): void => { this.expanded = true; this.scheduleHide(); })
+      .accessibilityText('展开 Moonlight 会话贴边栏，连接质量' + this.qualityLabel)
+    } else {
+      Button() {
+        Row({ space: 5 }) {
+          MoonlightBrandIcon({ iconSize: 20,
+            tint: this.pal().text, accessibilityLabel: '打开 Moonlight 控制' })
           Column().width(7).height(7).borderRadius(4).backgroundColor(this.qualityColor)
-        }
-      }.justifyContent(FlexAlign.Center)
+        }.justifyContent(FlexAlign.Center)
+      }
+      .width(58).height(54).padding(0)
+      .backgroundColor(this.pal().floatBg)
+      .borderRadius(18)
+      .border({ width: 1, color: this.pal().floatBorder })
+      .shadow({ radius: 12, color: this.pal().fabShadow, offsetY: 4 })
+      .onClick((): void => { this.expanded = true; this.scheduleHide(); })
+      .accessibilityText('打开串流控制，连接质量' + this.qualityLabel)
     }
-    .width(layout.edgeRail ? 54 : 58).height(54).padding(0)
-    .backgroundColor(this.pal().floatBg)
-    .borderRadius(layout.edgeRail ?
-      { topLeft: 18, bottomLeft: 18, topRight: 7, bottomRight: 7 } : 18)
-    .border({ width: 1, color: this.pal().floatBorder })
-    .shadow({ radius: 12, color: this.pal().fabShadow, offsetY: 4 })
-    .onClick((): void => { this.expanded = true; this.scheduleHide(); })
-    .accessibilityText('打开串流控制，连接质量' + this.qualityLabel)
   }
 
   @Builder private expandedTools(layout: MoonlightToolbarLayout) {

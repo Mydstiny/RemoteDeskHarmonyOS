@@ -4,6 +4,7 @@ import {
   decodeRemoteCustomShortcuts,
   encodeRemoteCustomShortcuts,
   remoteCustomShortcutKeyOptions,
+  remoteCustomShortcutKeyGroupForKeyCode,
   remoteCustomShortcutLabel,
   remoteCustomShortcutLabelForPlatform,
   removeRemoteCustomShortcut,
@@ -58,6 +59,11 @@ export default function remoteCustomShortcutPolicyTest(): void {
       expect(remoteCustomShortcutKeyOptions('symbols').length).assertEqual(11);
       expect(remoteCustomShortcutKeyOptions('functions').length).assertEqual(12);
       expect(remoteCustomShortcutKeyOptions('navigation').length).assertEqual(15);
+      expect(remoteCustomShortcutKeyGroupForKeyCode(2043)).assertEqual('symbols');
+      expect(remoteCustomShortcutKeyGroupForKeyCode(2049)).assertEqual('navigation');
+      expect(remoteCustomShortcutKeyGroupForKeyCode(2050)).assertEqual('navigation');
+      expect(remoteCustomShortcutKeyGroupForKeyCode(2054)).assertEqual('navigation');
+      expect(remoteCustomShortcutKeyGroupForKeyCode(2055)).assertEqual('navigation');
     });
   });
 }

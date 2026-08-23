@@ -2,7 +2,7 @@ import { RemoteSessionCapabilities, resolveSessionCapabilities } from './RemoteS
 
 export type RemoteTopBarDeviceClass = 'pc' | 'pad' | 'phone';
 
-/** Device-local preference shared by the RustDesk and VNC PC session bars. */
+/** Legacy preference retained for migration; connected session bars now stay reachable. */
 export const PC_SESSION_TOP_BAR_HIDDEN_KEY: string = 'pcSessionTopBarHidden';
 
 export type RemoteTopBarMenuId = 'control' | 'display' | 'keyboardMouse' | 'chat' | 'voice' | 'record';
@@ -66,38 +66,24 @@ export function shouldShowRustDeskTopBar(
   isPadDevice: boolean,
   pcSessionTopBarHidden: boolean = false
 ): boolean {
-  if (protocol !== 'rustdesk') {
-    return false;
-  }
-  if (isDesktopDevice) {
-    return !pcSessionTopBarHidden;
-  }
-  const deviceClass: RemoteTopBarDeviceClass = remoteTopBarDeviceClass(isDesktopDevice, breakpoint, isPadDevice);
-  if (deviceClass === 'pad') {
-    return true;
-  }
-  // On a phone the rail is only useful when the session is in keyboard/mouse
-  // mode and a real external input device is present. Touch and virtual
-  // touchpad sessions must leave the remote canvas unobstructed.
-  return rustdeskControlMode === 2 && physicalKeyboardMouseConnected;
+  return protocol === 'rustdesk';
 }
 
-/**
- * Keep Pad pointing modes on the same right-side rail so switching between
- * virtual touchpad and physical keyboard/mouse does not move session controls
- * across the remote canvas. Phones retain the compact rail only for physical
- * keyboard/mouse mode, where the top system-bar edge is most constrained.
- */
+/** RDP and RustDesk share one persistent session toolbar shell. */
+export function shouldShowRemoteSessionTopBar(protocol: string): boolean {
+  return protocol === 'rdp' || protocol === 'rustdesk';
+}
+
+/** Keep the compatibility entrypoint aligned with the persistent mobile rail. */
 export function shouldUseRustDeskEdgeRail(protocol: string, isDesktopDevice: boolean,
   breakpoint: string, rustdeskControlMode: number, isPadDevice: boolean): boolean {
-  if (protocol !== 'rustdesk' || isDesktopDevice) {
-    return false;
-  }
-  const deviceClass: RemoteTopBarDeviceClass = remoteTopBarDeviceClass(isDesktopDevice, breakpoint, isPadDevice);
-  if (deviceClass === 'pad') {
-    return rustdeskControlMode === 0 || rustdeskControlMode === 2;
-  }
-  return deviceClass === 'phone' && rustdeskControlMode === 2;
+  return protocol === 'rustdesk' && !isDesktopDevice;
+}
+
+/** Phone and Pad always use a right rail; PC always uses a top bar. */
+export function shouldUseRemoteSessionEdgeRail(protocol: string,
+  isDesktopDevice: boolean): boolean {
+  return shouldShowRemoteSessionTopBar(protocol) && !isDesktopDevice;
 }
 
 export function remoteTopBarLayout(isDesktopDevice: boolean, breakpoint: string,
@@ -105,14 +91,33 @@ export function remoteTopBarLayout(isDesktopDevice: boolean, breakpoint: string,
   const deviceClass: RemoteTopBarDeviceClass = remoteTopBarDeviceClass(isDesktopDevice, breakpoint, isPadDevice);
   if (deviceClass === 'pc') {
     if (breakpoint !== 'xl') {
-      return { deviceClass, iconSize: 36, itemGap: 4, topOffset: 6, maxVisibleButtons: 8, menuWidth: 320 };
+      return { deviceClass, iconSize: 36, itemGap: 4, topOffset: 6, maxVisibleButtons: 7, menuWidth: 320 };
     }
-    return { deviceClass, iconSize: 44, itemGap: 8, topOffset: 8, maxVisibleButtons: 8, menuWidth: 360 };
+    return { deviceClass, iconSize: 44, itemGap: 8, topOffset: 8, maxVisibleButtons: 7, menuWidth: 360 };
   }
   if (deviceClass === 'pad') {
-    return { deviceClass, iconSize: 44, itemGap: 8, topOffset: 8, maxVisibleButtons: 6, menuWidth: 340 };
+    return { deviceClass, iconSize: 44, itemGap: 8, topOffset: 8, maxVisibleButtons: 7, menuWidth: 340 };
   }
-  return { deviceClass, iconSize: 40, itemGap: 6, topOffset: 6, maxVisibleButtons: 5, menuWidth: 300 };
+  return { deviceClass, iconSize: 40, itemGap: 6, topOffset: 6, maxVisibleButtons: 7, menuWidth: 300 };
+}
+
+export function remoteSessionActionAvailability(actionId: string, protocol: string,
+  capabilities: RemoteSessionCapabilities): RemoteTopBarActionAvailability {
+  if (protocol === 'rustdesk') {
+    return rustDeskActionAvailability(actionId, capabilities);
+  }
+  if (protocol !== 'rdp') {
+    return { enabled: false, reason: '当前协议不支持该会话工具栏操作' };
+  }
+  if (actionId === 'fileTransfer') { return capabilities.fileUpload; }
+  if (actionId === 'toggleClipboard') { return capabilities.clipboardSend; }
+  if (actionId === 'disconnect' || actionId === 'refreshFrame' ||
+      actionId === 'ctrlAltDel' || actionId === 'toggleKeyboard' ||
+      actionId === 'toggleModifiers' || actionId === 'displaySettings' ||
+      actionId === 'keyboardMouseSettings') {
+    return capabilities.connect;
+  }
+  return { enabled: false, reason: 'RDP 当前未提供该操作' };
 }
 
 function knownRustDeskCapabilities(): RemoteSessionCapabilities {
@@ -133,7 +138,8 @@ export function rustDeskActionAvailability(actionId: string,
     return capabilities.clipboardSend;
   }
   if (actionId === 'disconnect' || actionId === 'refreshFrame' || actionId === 'ctrlAltDel' ||
-    actionId === 'toggleKeyboard' || actionId === 'displaySettings' ||
+    actionId === 'toggleKeyboard' || actionId === 'toggleModifiers' ||
+    actionId === 'displaySettings' ||
     actionId === 'rotateDisplay' ||
     actionId === 'keyboardMouseSettings' || actionId === 'browseMode' ||
     actionId === 'togglePrivacyMode' || actionId === 'toggleAudio') {

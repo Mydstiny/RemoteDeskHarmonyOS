@@ -54,7 +54,7 @@ export struct VncSessionToolbar {
           .textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 2 })
       }.justifyContent(FlexAlign.Center)
     }
-    .width(this.deviceClass === 'pc' ? 40 : 64)
+    .width(this.deviceClass === 'pc' ? 40 : 56)
     .height(this.deviceClass === 'pc' ? 42 : 44)
     .padding(0).borderRadius(9)
     .backgroundColor(danger ? '#D93B3B' : (active ? '#168C78' : this.accentColor))
@@ -62,31 +62,21 @@ export struct VncSessionToolbar {
     .onClick(action)
   }
 
-  private isPhoneDevice(): boolean {
-    return this.deviceClass === 'phone';
-  }
-
   @Builder
   private mobileCollapsedRail() {
     Stack() {
       Row() {
-        if (this.placement.side === 'left') {
-          SymbolGlyph($r('sys.symbol.arrow_right')).fontSize(16).fontColor(['#FFFFFF'])
-        } else {
-          SymbolGlyph($r('sys.symbol.arrow_left')).fontSize(16).fontColor(['#FFFFFF'])
-        }
+        SymbolGlyph($r('sys.symbol.chevron_left')).fontSize(18).fontColor(['#444444'])
       }
-      .width(24).height(44)
+      .width(30).height(72)
       .justifyContent(FlexAlign.Center)
-      .backgroundColor(this.viewOnly ? 'rgba(92,96,104,0.90)' : 'rgba(20,24,32,0.90)')
-      .borderRadius(this.placement.side === 'left' ?
-        { topLeft: 0, topRight: 9, bottomLeft: 0, bottomRight: 9 } :
-        { topLeft: 9, topRight: 0, bottomLeft: 9, bottomRight: 0 })
-      .shadow({ radius: 8, color: 'rgba(0,0,0,0.24)', offsetY: 2 })
-      .position({ x: this.placement.side === 'left' ? 0 : 20, y: 0 })
+      .backgroundColor('rgba(255,255,255,0.92)')
+      .borderRadius({ topLeft: 10, topRight: 0, bottomLeft: 10, bottomRight: 0 })
+      .shadow({ radius: 8, color: 'rgba(0,0,0,0.22)', offsetX: -2 })
+      .position({ x: 14, y: 0 })
     }
-    .width(44).height(44)
-    .position({ x: this.placement.handleRect.x, y: this.placement.handleRect.y })
+    .width(44).height(72)
+    .position({ x: this.placement.railRect.x, y: this.placement.railRect.y })
     .gesture(PanGesture({ fingers: 1, distance: 5 })
       .onActionEnd((event: GestureEvent): void => {
         this.placementActions.onDrag(event.offsetX, event.offsetY);
@@ -100,17 +90,13 @@ export struct VncSessionToolbar {
     Column({ space: 5 }) {
       Stack() {
         Row() {
-          if (this.placement.side === 'left') {
-            SymbolGlyph($r('sys.symbol.arrow_left')).fontSize(16).fontColor(['#FFFFFF'])
-          } else {
-            SymbolGlyph($r('sys.symbol.arrow_right')).fontSize(16).fontColor(['#FFFFFF'])
-          }
+          SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(16).fontColor(['#444444'])
         }
-        .width(28).height(28)
+        .width(56).height(30)
         .justifyContent(FlexAlign.Center)
-        .backgroundColor(this.viewOnly ? 'rgba(92,96,104,0.90)' : 'rgba(20,24,32,0.90)')
-        .borderRadius(14)
-        .position({ x: this.placement.side === 'left' ? 0 : 48, y: 8 })
+        .backgroundColor('rgba(255,255,255,0.92)')
+        .borderRadius(7)
+        .position({ x: 0, y: 7 })
       }
       .width('100%').height(44)
       .accessibilityText('收起 VNC 会话工具栏')
@@ -130,18 +116,16 @@ export struct VncSessionToolbar {
         (): void => { this.actions.onOpenShortcuts(); })
       this.actionButton($r('sys.symbol.desktop_fill'), this.displayScaleLabel, false,
         (): void => { this.actions.onCycleDisplayScale(); })
-      if (!this.isPhoneDevice()) {
-        this.actionButton($r('sys.symbol.list_bullet'), '性能', this.diagnosticsEnabled,
-          (): void => { this.actions.onToggleDiagnostics(); })
-      }
+      this.actionButton($r('sys.symbol.list_bullet'), '性能', this.diagnosticsEnabled,
+        (): void => { this.actions.onToggleDiagnostics(); })
       this.actionButton($r('sys.symbol.xmark'), '断开', false,
         (): void => { this.actions.onDisconnect(); }, true)
     }
-    .width(this.placement.railRect.width > 0 ? this.placement.railRect.width : 76)
+    .width(this.placement.railRect.width > 0 ? this.placement.railRect.width : 68)
     .padding(6)
-    .borderRadius(12)
-    .backgroundColor('rgba(20,24,32,0.86)')
-    .shadow({ radius: 8, color: 'rgba(0,0,0,0.24)', offsetY: 2 })
+    .borderRadius({ topLeft: 10, bottomLeft: 10, topRight: 0, bottomRight: 0 })
+    .backgroundColor('rgba(255,255,255,0.94)')
+    .shadow({ radius: 10, color: 'rgba(0,0,0,0.24)', offsetX: -2 })
     .position({ x: this.placement.railRect.x, y: this.placement.railRect.y })
     .gesture(PanGesture({ fingers: 1, distance: 5 })
       .onActionEnd((event: GestureEvent): void => {
@@ -151,15 +135,13 @@ export struct VncSessionToolbar {
 
   @Builder
   private pcCollapsedToolbar() {
-    Button() {
-      Row({ space: 5 }) {
-        SymbolGlyph($r('sys.symbol.arrow_up_left')).fontSize(16).fontColor(['#FFFFFF'])
-        Text(this.viewOnly ? 'VNC 只读' : 'VNC 控制').fontSize(10).fontColor('#FFFFFF')
-      }
+    Row() {
+      SymbolGlyph($r('sys.symbol.ellipsis_bubble')).fontSize(18).fontColor(['#444444'])
     }
-    .height(36).padding({ left: 12, right: 12 }).borderRadius(18)
-    .backgroundColor(this.viewOnly ? 'rgba(92,96,104,0.90)' : 'rgba(20,24,32,0.86)')
-    .shadow({ radius: 8, color: 'rgba(0,0,0,0.24)', offsetY: 2 })
+    .width(58).height(28).justifyContent(FlexAlign.Center)
+    .borderRadius({ topLeft: 0, topRight: 0, bottomLeft: 8, bottomRight: 8 })
+    .backgroundColor('rgba(255,255,255,0.92)')
+    .shadow({ radius: 8, color: 'rgba(0,0,0,0.22)', offsetY: 2 })
     .position({ x: '50%', y: 8 }).markAnchor({ x: '50%', y: 0 })
     .accessibilityText(this.viewOnly ? '展开 VNC 只读会话工具栏' : '展开 VNC 会话工具栏')
     .onClick((): void => { this.actions.onExpand(); })
@@ -186,15 +168,11 @@ export struct VncSessionToolbar {
           (): void => { this.actions.onOpenShortcuts(); })
         this.actionButton($r('sys.symbol.desktop_fill'), this.displayScaleLabel, false,
           (): void => { this.actions.onCycleDisplayScale(); })
-        if (!this.isPhoneDevice()) {
-          this.actionButton($r('sys.symbol.list_bullet'), '性能', this.diagnosticsEnabled,
-            (): void => { this.actions.onToggleDiagnostics(); })
-        }
+        this.actionButton($r('sys.symbol.list_bullet'), '性能', this.diagnosticsEnabled,
+          (): void => { this.actions.onToggleDiagnostics(); })
         if (this.deviceClass === 'pc') {
           this.actionButton($r('sys.symbol.gearshape_fill'), '控制台', false,
             (): void => { this.actions.onOpenConsole(); })
-          this.actionButton($r('sys.symbol.eye_slash'), '隐藏栏', false,
-            (): void => { this.actions.onHideTopBar(); })
         }
         this.actionButton($r('sys.symbol.xmark'), '断开', false,
           (): void => { this.actions.onDisconnect(); }, true)
@@ -202,7 +180,7 @@ export struct VncSessionToolbar {
       .padding(6)
       .borderRadius(this.viewOnly ?
         { topLeft: 0, topRight: 0, bottomLeft: 10, bottomRight: 10 } : 10)
-      .backgroundColor('rgba(20,24,32,0.82)')
+      .backgroundColor('rgba(255,255,255,0.94)')
       .shadow({ radius: 8, color: 'rgba(0,0,0,0.24)', offsetY: 2 })
     }
     .position({ x: '50%', y: 8 })

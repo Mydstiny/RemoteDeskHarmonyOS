@@ -106,6 +106,21 @@ export function remoteCustomShortcutKeyOptions(
   return result;
 }
 
+export function remoteCustomShortcutKeyGroupForKeyCode(
+  keyCode: number
+): RemoteCustomShortcutKeyGroup {
+  const groups: Array<RemoteCustomShortcutKeyGroup> =
+    ['letters', 'digits', 'symbols', 'functions', 'navigation'];
+  for (let groupIndex: number = 0; groupIndex < groups.length; groupIndex++) {
+    const options: Array<RemoteCustomShortcutKeyOption> =
+      remoteCustomShortcutKeyOptions(groups[groupIndex]);
+    for (let optionIndex: number = 0; optionIndex < options.length; optionIndex++) {
+      if (options[optionIndex].keyCode === keyCode) { return groups[groupIndex]; }
+    }
+  }
+  return 'navigation';
+}
+
 function actionLabel(keyCode: number): string {
   const groups: Array<RemoteCustomShortcutKeyGroup> =
     ['letters', 'digits', 'symbols', 'functions', 'navigation'];

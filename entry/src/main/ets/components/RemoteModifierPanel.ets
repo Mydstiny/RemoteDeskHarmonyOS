@@ -9,6 +9,7 @@ import {
   RemoteCustomShortcut,
   RemoteCustomShortcutKeyGroup,
   RemoteCustomShortcutKeyOption,
+  remoteCustomShortcutKeyGroupForKeyCode,
   remoteCustomShortcutKeyOptions,
   remoteCustomShortcutLabel,
   remoteCustomShortcutLabelForPlatform
@@ -92,6 +93,7 @@ export struct RemoteModifierPanel {
   @State private customActionKeyCode: number = 2017;
   @State private panelSection: string = 'shortcuts';
   @State private shortcutCategory: RemoteShortcutCategory = 'editing';
+  @State private viewportHeight: number = 640;
   private suppressModTapName: string = '';
   private suppressModTapUntilMs: number = 0;
 
@@ -285,7 +287,7 @@ export struct RemoteModifierPanel {
       shortcut.keyCodes.slice(0, Math.max(0, shortcut.keyCodes.length - 1));
     this.customActionKeyCode = shortcut === null || shortcut.keyCodes.length === 0 ?
       2017 : shortcut.keyCodes[shortcut.keyCodes.length - 1];
-    this.customKeyGroup = this.customGroupForKeyCode(this.customActionKeyCode);
+    this.customKeyGroup = remoteCustomShortcutKeyGroupForKeyCode(this.customActionKeyCode);
   }
 
   private closeCustomShortcutEditor(): void {
@@ -302,14 +304,6 @@ export struct RemoteModifierPanel {
     if (this.onSaveCustomShortcut(this.customEditingId, keyCodes)) {
       this.closeCustomShortcutEditor();
     }
-  }
-
-  private customGroupForKeyCode(keyCode: number): RemoteCustomShortcutKeyGroup {
-    if (keyCode >= 2017 && keyCode <= 2042) { return 'letters'; }
-    if (keyCode >= 2000 && keyCode <= 2009) { return 'digits'; }
-    if (keyCode >= 2043 && keyCode <= 2064) { return 'symbols'; }
-    if (keyCode >= 2090 && keyCode <= 2101) { return 'functions'; }
-    return 'navigation';
   }
 
   private customKeyOptions(): Array<RemoteCustomShortcutKeyOption> {
@@ -387,6 +381,10 @@ export struct RemoteModifierPanel {
       return 280;
     }
     return 260;
+  }
+
+  private panelHeight(): number {
+    return Math.max(1, Math.min(480, this.viewportHeight - 16));
   }
 
   // ============================================================
@@ -1011,38 +1009,44 @@ export struct RemoteModifierPanel {
             .backgroundColor('rgba(255,255,255,0.08)')
             .onClick((): void => { this.closeUnifiedPanel(); })
             .accessibilityText('关闭组合键与功能键面板')
-          }.width('100%').margin({ bottom: 8 })
+          }.width('100%').margin({ bottom: 4 })
 
-          Row() {
-            this.ModKey('ctrl')
-            this.ModKey('alt')
-            this.ModKey('shift')
-            this.ModKey('win')
-            this.FnKey()
-          }.width('100%').justifyContent(FlexAlign.SpaceEvenly)
+          Scroll() {
+            Column() {
+              Row() {
+                this.ModKey('ctrl')
+                this.ModKey('alt')
+                this.ModKey('shift')
+                this.ModKey('win')
+                this.FnKey()
+              }.width('100%').justifyContent(FlexAlign.SpaceEvenly)
 
-          Row() {
-            this.ActionKey('Esc', RemoteModifierPanel.KEY_ESC)
-            this.ActionKey('Tab', RemoteModifierPanel.KEY_TAB)
-            this.ActionKey('Bksp', RemoteModifierPanel.KEY_BACKSPACE)
-            this.EnterKey()
-          }.width('100%').justifyContent(FlexAlign.SpaceEvenly).margin({ top: 6 })
+              Row() {
+                this.ActionKey('Esc', RemoteModifierPanel.KEY_ESC)
+                this.ActionKey('Tab', RemoteModifierPanel.KEY_TAB)
+                this.ActionKey('Bksp', RemoteModifierPanel.KEY_BACKSPACE)
+                this.EnterKey()
+              }.width('100%').justifyContent(FlexAlign.SpaceEvenly).margin({ top: 6 })
 
-          Row({ space: 5 }) {
-            this.SectionChoice('shortcuts', '快捷键')
-            this.SectionChoice('functions', 'F1–F12 / 导航')
-            this.SectionChoice('custom', '自定义')
-          }.width('100%').margin({ top: 9, bottom: 8 })
+              Row({ space: 5 }) {
+                this.SectionChoice('shortcuts', '快捷键')
+                this.SectionChoice('functions', 'F1–F12 / 导航')
+                this.SectionChoice('custom', '自定义')
+              }.width('100%').margin({ top: 9, bottom: 8 })
 
-          if (this.panelSection === 'functions' && this.functionKeysVisible) {
-            this.FunctionKeyLibrary()
-          } else if (this.panelSection === 'custom') {
-            this.CustomShortcutLibrary()
-          } else {
-            this.ShortcutLibrary()
+              if (this.panelSection === 'functions' && this.functionKeysVisible) {
+                this.FunctionKeyLibrary()
+              } else if (this.panelSection === 'custom') {
+                this.CustomShortcutLibrary()
+              } else {
+                this.ShortcutLibrary()
+              }
+            }.width('100%')
           }
+          .width('100%').layoutWeight(1)
+          .scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
         }
-        .width(this.panelWidth()).padding(10).borderRadius(16)
+        .width(this.panelWidth()).height(this.panelHeight()).padding(10).borderRadius(16)
         .backgroundColor(this.panelBg()).border({ width: 1, color: this.panelBorder() })
         .backdropBlur(22)
         .shadow({ radius: 22, color: 'rgba(0,0,0,0.42)', offsetY: 7 })
@@ -1077,5 +1081,12 @@ export struct RemoteModifierPanel {
     // BLOCK_HIERARCHY，保证其下方连接画面不会收到触控。
     .hitTestBehavior((this.visible || this.shortcutVisible) && !this.prepareOnly ?
       HitTestMode.Transparent : HitTestMode.None)
+    .onAreaChange((_old: Area, next: Area): void => {
+      const height: number = next.height as number;
+      if (Number.isFinite(height) && height > 0 &&
+        Math.abs(height - this.viewportHeight) >= 1) {
+        this.viewportHeight = height;
+      }
+    })
   }
 }

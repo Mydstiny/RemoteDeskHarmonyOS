@@ -23,7 +23,6 @@ import {
 } from '../components/moonlight/MoonlightControllerOverlay';
 import { MoonlightSessionToolbar } from '../components/moonlight/MoonlightSessionToolbar';
 import { RemoteSessionFullscreenButton } from '../components/RemoteSessionFullscreenButton';
-import { RemoteModifierHandle } from '../components/RemoteModifierHandle';
 import { RemoteModifierPanel } from '../components/RemoteModifierPanel';
 import {
   RemoteCustomShortcut,
@@ -663,6 +662,8 @@ struct MoonlightStreamPage {
     this.clearElapsedTimer();
     this.setConnectStageVisible(true);
     this.keyboardOpen = false;
+    this.showModifierPanel = false;
+    this.showShortcutPanel = false;
     this.resetMoonlightImeSession('page-appear');
     this.phase = 'discovering';
     this.streamStartAttempted = false;
@@ -768,6 +769,8 @@ struct MoonlightStreamPage {
     this.showSessionSheet = false;
     this.pendingConnectStageSheet = false;
     this.showConnectStageSheet = false;
+    this.showModifierPanel = false;
+    this.showShortcutPanel = false;
     this.closeMoonlightRoute('stream-page-disappear');
     void this.stopMoonlightBackgroundTask();
     this.stopDiagnosticsPolling();
@@ -1095,6 +1098,8 @@ struct MoonlightStreamPage {
     this.surfaceSuspended = false;
     this.flushInput(reason);
     this.keyboardOpen = false;
+    this.showModifierPanel = false;
+    this.showShortcutPanel = false;
     this.resetMoonlightImeSession('route-close');
     if (this.showController) {
       this.setVirtualControllerMode(false, false);
@@ -3133,6 +3138,13 @@ struct MoonlightStreamPage {
       else { this.openMoonlightKeyboard(); }
       return;
     }
+    if (action === 'modifiers') {
+      this.flushInput('toggle_modifier_from_toolbar');
+      this.showShortcutPanel = false;
+      this.placeMoonlightModifierPanel(false);
+      this.showModifierPanel = !this.showModifierPanel;
+      return;
+    }
     if (action === 'control') {
       const nextMode: MoonlightControlMode = this.controlMode === 'touch' ? 'trackpad' : 'touch';
       if (this.setNativeTouchMode(nextMode)) {
@@ -3226,7 +3238,10 @@ struct MoonlightStreamPage {
       onClose: (): void => { this.closeSheet(); },
       onOpenKeyboard: (): void => { this.closeSheet(); this.toolbarAction('keyboard'); },
       onOpenModifiers: (): void => {
-        this.closeSheet(); this.flushInput('open_modifier_panel'); this.showModifierPanel = true;
+        this.closeSheet();
+        this.flushInput('open_modifier_panel');
+        this.placeMoonlightModifierPanel(false);
+        this.showModifierPanel = true;
       },
       onOpenController: (): void => { this.closeSheet(); this.toolbarAction('controller'); },
       onEnterPip: (): void => { this.closeSheet(); void this.moveMoonlightToPip(); },
@@ -3363,21 +3378,26 @@ struct MoonlightStreamPage {
           }
         })
 
-      MoonlightSessionToolbar({
-        audioAvailable: this.effectiveSettings.audio.enabled && this.audioReady,
-        controllerAvailable: this.controllerReady,
-        pipAvailable: this.pipAvailable(),
-        keyboardAvailable: this.inputReady,
-        menuOpen: this.showSessionSheet,
-        qualityColor: this.firstFrameSeen ? '#66DD7A' : '#FFCF70',
-        qualityLabel: this.firstFrameSeen ? '串流中' : '连接中',
-        onAction: (action: MoonlightToolbarAction): void => { this.toolbarAction(action); },
-        onUnavailable: (reason: string): void => {
-          promptAction.showToast({ message: reason, duration: 1800 });
-        }
-      }).align(this.toolbarLayout().edgeRail ? Alignment.TopEnd : Alignment.Top)
-        .margin({ top: this.toolbarLayout().topOffset,
-          right: this.toolbarLayout().edgeRail ? 4 : 0 })
+      Stack({ alignContent: this.toolbarLayout().edgeRail ?
+        Alignment.TopEnd : Alignment.Top }) {
+        MoonlightSessionToolbar({
+          audioAvailable: this.effectiveSettings.audio.enabled && this.audioReady,
+          controllerAvailable: this.controllerReady,
+          pipAvailable: this.pipAvailable(),
+          keyboardAvailable: this.inputReady,
+          menuOpen: this.showSessionSheet,
+          qualityColor: this.firstFrameSeen ? '#66DD7A' : '#FFCF70',
+          qualityLabel: this.firstFrameSeen ? '串流中' : '连接中',
+          onAction: (action: MoonlightToolbarAction): void => { this.toolbarAction(action); },
+          onUnavailable: (reason: string): void => {
+            promptAction.showToast({ message: reason, duration: 1800 });
+          }
+        }).margin({ top: this.toolbarLayout().topOffset,
+            right: this.toolbarLayout().edgeRail ? 4 : 0 })
+      }
+      .width('100%').height('100%')
+      .hitTestBehavior(HitTestMode.Transparent)
+      .zIndex(220)
 
       if (this.sessionWindowId.length > 0) {
         RemoteSessionFullscreenButton({
@@ -3389,17 +3409,8 @@ struct MoonlightStreamPage {
           .zIndex(220)
       }
 
-      RemoteModifierHandle({
-        handleX: 0, handleY: 330, handleSide: 'left', panelVisible: this.showModifierPanel,
-        ctrlLocked: this.ctrlLatch === 'locked', altLocked: this.altLatch === 'locked',
-        shiftLocked: this.shiftLatch === 'locked', winLocked: this.winLatch === 'locked',
-        fnLayer: this.fnLayer,
-        onTogglePanel: (): void => { this.flushInput('toggle_modifier'); this.showModifierPanel = !this.showModifierPanel; },
-        onLongPress: (): void => { this.flushInput('toggle_shortcuts'); this.showShortcutPanel = !this.showShortcutPanel; }
-      })
-
       RemoteModifierPanel({
-        visible: this.showModifierPanel, shortcutVisible: this.showShortcutPanel, attachSide: 'left',
+        visible: this.showModifierPanel, shortcutVisible: this.showShortcutPanel, attachSide: 'right',
         ctrlLatch: this.ctrlLatch, altLatch: this.altLatch, shiftLatch: this.shiftLatch,
         winLatch: this.winLatch, fnLayer: this.fnLayer,
         panelX: this.modifierPanelX, panelY: this.modifierPanelY,

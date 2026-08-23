@@ -16,7 +16,7 @@ export type MoonlightLaunchBlocker =
   'host_busy' | 'session_active' | 'runtime_unavailable';
 export type MoonlightConnectionQuality = 'good' | 'unstable' | 'poor' | 'reconnecting';
 export type MoonlightToolbarAction =
-  'control' | 'keyboard' | 'controller' | 'audio' | 'display' | 'more' | 'disconnect';
+  'control' | 'keyboard' | 'modifiers' | 'controller' | 'audio' | 'display' | 'more' | 'disconnect';
 export type MoonlightSettingsSection =
   'video' | 'audio' | 'input' | 'networkSecurity' | 'diagnostics' | 'trust' |
   'data';
@@ -431,18 +431,20 @@ export function moonlightToolbarLayout(isDesktopDevice: boolean, breakpoint: str
   const deviceClass: MoonlightToolbarDeviceClass =
     moonlightToolbarDeviceClass(isDesktopDevice, isPadDevice);
   const small: boolean = normalized === 'sm';
-  const edgeRail: boolean = small || (deviceClass === 'pad' && normalized === 'md');
+  // A phone stream is landscape-first, so its controls must remain a right
+  // edge rail even after the wider viewport promotes the breakpoint to lg/xl.
+  const edgeRail: boolean = deviceClass !== 'pc';
   const large: boolean = normalized === 'lg' || normalized === 'xl';
   return {
     deviceClass: deviceClass,
     edgeRail: edgeRail,
     iconSize: small ? 40 : 44,
     itemGap: small ? 6 : 8,
-    maxVisibleItems: large ? 7 : 5,
+    maxVisibleItems: edgeRail ? 7 : (large ? 8 : 7),
     menuWidth: small ? 300 : (normalized === 'md' ? 340 : 360),
-    topOffset: edgeRail ? 56 : (normalized === 'xl' ? 16 : 12),
+    topOffset: edgeRail ? 18 : (normalized === 'xl' ? 16 : 12),
     autoHideMs: !edgeRail && normalized === 'xl' ? MOONLIGHT_TOOLBAR_AUTO_HIDE_MS : 0,
-    maxHeight: edgeRail ? 360 : 0
+    maxHeight: edgeRail ? 420 : 0
   };
 }
 
@@ -478,21 +480,20 @@ export function moonlightToolbarItems(
   const keyboard: MoonlightToolbarItem = toolbarItem('keyboard', '键盘');
   keyboard.enabled = keyboardAvailable;
   keyboard.disabledReason = keyboardAvailable ? '' : '键盘输入通道尚未就绪';
-  const items: MoonlightToolbarItem[] = [toolbarItem('control', '控制'), keyboard];
+  const items: MoonlightToolbarItem[] = [
+    toolbarItem('control', '控制'), keyboard, toolbarItem('modifiers', '组合键')
+  ];
   const limit: number = maxVisibleItems > 0 ? maxVisibleItems :
-    (normalized === 'sm' ? 5 : 7);
-  if (limit <= 5) {
-    if (normalized === 'sm') {
-      const controller: MoonlightToolbarItem = toolbarItem('controller', '手柄');
-      controller.enabled = controllerAvailable;
-      controller.disabledReason = controllerAvailable ? '' : '当前设备尚未验证手柄输入能力';
-      items.push(controller);
-    } else {
-      const display: MoonlightToolbarItem = toolbarItem('display', pipAvailable ? '画中画' : '画面');
-      display.enabled = pipAvailable;
-      display.disabledReason = pipAvailable ? '' : '当前窗口或系统能力不支持画中画';
-      items.push(display);
-    }
+    (normalized === 'sm' ? 7 : 8);
+  if (limit <= 7) {
+    const controller: MoonlightToolbarItem = toolbarItem('controller', '手柄');
+    controller.enabled = controllerAvailable;
+    controller.disabledReason = controllerAvailable ? '' : '当前设备尚未验证手柄输入能力';
+    items.push(controller);
+    const display: MoonlightToolbarItem = toolbarItem('display', pipAvailable ? '画中画' : '画面');
+    display.enabled = pipAvailable;
+    display.disabledReason = pipAvailable ? '' : '当前窗口或系统能力不支持画中画';
+    items.push(display);
     items.push(toolbarItem('more', '更多'));
     items.push(toolbarItem('disconnect', '断开', true));
     return items;

@@ -100,6 +100,7 @@ function windowsShortcuts(): Array<RemoteShortcutPreset> {
   result.push(
     shortcut('winRedoAlternate', '重做（兼容）', 'Ctrl+Shift+Z', 'editing',
       [CTRL, SHIFT, letter('Z')]),
+    shortcut('winStart', '开始菜单', 'Win', 'system', [META]),
     shortcut('winSwitchApps', '切换应用', 'Alt+Tab', 'system', [ALT, TAB]),
     shortcut('winSwitchAppsReverse', '反向切换应用', 'Alt+Shift+Tab', 'system',
       [ALT, SHIFT, TAB]),

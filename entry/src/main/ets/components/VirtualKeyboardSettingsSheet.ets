@@ -5,6 +5,7 @@ import {
   RemoteCustomShortcutKeyGroup,
   RemoteCustomShortcutKeyOption,
   RemoteCustomShortcutUpdate,
+  remoteCustomShortcutKeyGroupForKeyCode,
   remoteCustomShortcutKeyOptions,
   remoteCustomShortcutLabelForPlatform,
   removeRemoteCustomShortcut,
@@ -141,14 +142,6 @@ export struct VirtualKeyboardSettingsSheet {
     return remoteCustomShortcutLabelForPlatform(this.draftKeyCodes(), this.platform());
   }
 
-  private groupForKeyCode(keyCode: number): RemoteCustomShortcutKeyGroup {
-    if (keyCode >= 2017 && keyCode <= 2042) { return 'letters'; }
-    if (keyCode >= 2000 && keyCode <= 2009) { return 'digits'; }
-    if (keyCode >= 2043 && keyCode <= 2064) { return 'symbols'; }
-    if (keyCode >= 2090 && keyCode <= 2101) { return 'functions'; }
-    return 'navigation';
-  }
-
   private groupLabel(group: RemoteCustomShortcutKeyGroup): string {
     if (group === 'letters') { return '字母'; }
     if (group === 'digits') { return '数字'; }
@@ -164,7 +157,7 @@ export struct VirtualKeyboardSettingsSheet {
       shortcut.keyCodes.slice(0, Math.max(0, shortcut.keyCodes.length - 1));
     this.actionKeyCode = shortcut === null || shortcut.keyCodes.length === 0 ?
       2017 : shortcut.keyCodes[shortcut.keyCodes.length - 1];
-    this.actionGroup = this.groupForKeyCode(this.actionKeyCode);
+    this.actionGroup = remoteCustomShortcutKeyGroupForKeyCode(this.actionKeyCode);
   }
 
   private closeEditor(): void {

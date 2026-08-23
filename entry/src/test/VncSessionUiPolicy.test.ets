@@ -56,8 +56,8 @@ export default function vncSessionUiPolicyTest(): void {
       expect(shouldShowVncSessionToolbar('rdp', true, 4)).assertFalse();
     });
 
-    it('fully_hides_only_the_pc_toolbar_when_requested', 0, (): void => {
-      expect(shouldShowVncSessionToolbar('vnc', true, 4, true, true)).assertFalse();
+    it('keeps_a_recoverable_toolbar_when_legacy_hidden_is_requested', 0, (): void => {
+      expect(shouldShowVncSessionToolbar('vnc', true, 4, true, true)).assertTrue();
       expect(shouldShowVncSessionToolbar('vnc', true, 4, false, true)).assertTrue();
       expect(shouldShowVncSessionToolbar('vnc', true, 4, true, false)).assertTrue();
     });
@@ -90,14 +90,14 @@ export default function vncSessionUiPolicyTest(): void {
     });
 
     it('uses_edge_rail_dimensions_for_phone_and_pad', 0, (): void => {
-      expect(vncToolbarRailWidth('phone', false)).assertEqual(76);
+      expect(vncToolbarRailWidth('phone', false)).assertEqual(68);
       expect(vncToolbarRailWidth('phone', true)).assertEqual(44);
-      expect(vncToolbarRailHeight('phone', false, false)).assertEqual(301);
-      expect(vncToolbarRailHeight('phone', false, true)).assertEqual(44);
-      expect(vncToolbarRailWidth('pad', false)).assertEqual(76);
+      expect(vncToolbarRailHeight('phone', false, false)).assertEqual(350);
+      expect(vncToolbarRailHeight('phone', false, true)).assertEqual(72);
+      expect(vncToolbarRailWidth('pad', false)).assertEqual(68);
       expect(vncToolbarRailHeight('pad', false, false)).assertEqual(350);
       expect(vncToolbarRailHeight('pad', true, false)).assertEqual(379);
-      expect(vncToolbarRailHeight('pad', true, true)).assertEqual(44);
+      expect(vncToolbarRailHeight('pad', true, true)).assertEqual(72);
     });
 
     it('isolates_vnc_position_preferences_by_device_and_orientation', 0, (): void => {

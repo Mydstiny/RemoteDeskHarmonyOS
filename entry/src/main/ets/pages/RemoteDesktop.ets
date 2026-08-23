@@ -127,7 +127,6 @@ import {
   isRustDeskPeerTwoFactorManualCode,
   rustDeskPeerTwoFactorAutoSubmitError
 } from '../services/RustDeskPeerTwoFactorPolicy';
-import { RemoteModifierHandle } from '../components/RemoteModifierHandle';
 import { RemoteModifierPanel } from '../components/RemoteModifierPanel';
 import {
   decodeRemoteCustomShortcuts,
@@ -292,7 +291,6 @@ import {
   nextVncDisplayScaleMode,
   shouldShowVncSessionToolbar,
   vncToolbarAutoCollapseDelayMs,
-  vncToolbarDefaultSide,
   vncToolbarPositionPreferenceKey,
   vncToolbarRailHeight,
   vncToolbarRailWidth,
@@ -409,8 +407,8 @@ import { isRemoteCompletionConfirmed } from '../services/TransferSessionPolicy';
 import {
   PC_SESSION_TOP_BAR_HIDDEN_KEY,
   remoteTopBarLayout,
-  shouldShowRustDeskTopBar,
-  shouldUseRustDeskEdgeRail
+  shouldShowRemoteSessionTopBar,
+  shouldUseRemoteSessionEdgeRail
 } from '../services/RemoteSessionTopBarPolicy';
 import { RemoteSessionCapabilities, resolveSessionCapabilities } from '../services/RemoteSessionCapabilityPolicy';
 import {
@@ -1505,19 +1503,16 @@ struct RemoteDesktop {
     return this.isVncSession() && this.pendingVncHost !== null && this.pendingVncHost.viewOnly;
   }
 
-  private shouldShowRustDeskSessionTopBar(): boolean {
+  private shouldShowRemoteSessionTopBar(): boolean {
     const host: RemoteHost | null = this.pendingHost;
     if (!host) { return false; }
-    return shouldShowRustDeskTopBar(host.protocol, this.isDesktopDevice, this.breakpoint,
-      this.rustdeskControlMode, this.externalKeyboardMouseConnected, this.isPadDevice,
-      this.pcSessionTopBarHidden);
+    return shouldShowRemoteSessionTopBar(host.protocol);
   }
 
-  private shouldUseRustDeskSessionEdgeRail(): boolean {
+  private shouldUseRemoteSessionEdgeRail(): boolean {
     const host: RemoteHost | null = this.pendingHost;
     if (!host) { return false; }
-    return shouldUseRustDeskEdgeRail(host.protocol, this.isDesktopDevice, this.breakpoint,
-      this.rustdeskControlMode, this.isPadDevice);
+    return shouldUseRemoteSessionEdgeRail(host.protocol, this.isDesktopDevice);
   }
 
   private shouldShowVncSessionToolbar(): boolean {
@@ -1559,11 +1554,8 @@ struct RemoteDesktop {
     this.vncToolbarPreferenceScope = scope;
     const deviceClass: VncToolbarDeviceClass = this.vncToolbarDeviceClass();
     const orientation: VncToolbarOrientation = this.vncToolbarOrientation();
-    const sideKey: string = vncToolbarPositionPreferenceKey(deviceClass, orientation, 'side');
     const yKey: string = vncToolbarPositionPreferenceKey(deviceClass, orientation, 'yRatio');
-    const storedSide: string = AppStorage.get<string>(sideKey) ?? '';
-    this.vncToolbarPreferredSide = storedSide === 'left' || storedSide === 'right' ?
-      storedSide as VncToolbarSide : vncToolbarDefaultSide(deviceClass);
+    this.vncToolbarPreferredSide = 'right';
     const storedYRatio: number = AppStorage.get<number>(yKey) ?? -1;
     this.vncToolbarPreferredYRatio = Number.isFinite(storedYRatio) && storedYRatio >= 0 && storedYRatio <= 1 ?
       storedYRatio : 0.5;
@@ -1666,7 +1658,18 @@ struct RemoteDesktop {
       // placement menu to resolve here.
       expanded: false
     };
-    this.vncToolbarPlacement = resolveOverlayPlacement(viewport, request);
+    const placement: OverlayPlacement = resolveOverlayPlacement(viewport, request);
+    if (placement.railRect.width > 0 && placement.railRect.height > 0) {
+      const rightX: number = Math.max(viewport.systemLeft,
+        viewport.width - viewport.systemRight - placement.railRect.width);
+      placement.side = 'right';
+      placement.railRect.x = rightX;
+      placement.expandedRect.x = rightX;
+      placement.handleRect.x = Math.max(viewport.systemLeft,
+        viewport.width - viewport.systemRight - placement.handleRect.width);
+      placement.menuDirection = 'inward-left';
+    }
+    this.vncToolbarPlacement = placement;
   }
 
   private handleVncToolbarDrag(offsetX: number, offsetY: number): void {
@@ -1675,12 +1678,10 @@ struct RemoteDesktop {
     }
     const viewport: OverlayViewport = this.currentVncToolbarViewport();
     const moved = resolveOverlayDragPreference(viewport, this.vncToolbarPlacement, offsetX, offsetY);
-    this.vncToolbarPreferredSide = moved.side as VncToolbarSide;
+    this.vncToolbarPreferredSide = 'right';
     this.vncToolbarPreferredYRatio = moved.yRatio;
     const orientation: VncToolbarOrientation = this.vncToolbarOrientation();
     const deviceClass: VncToolbarDeviceClass = this.vncToolbarDeviceClass();
-    AppStorage.setOrCreate(vncToolbarPositionPreferenceKey(deviceClass, orientation, 'side'),
-      this.vncToolbarPreferredSide);
     AppStorage.setOrCreate(vncToolbarPositionPreferenceKey(deviceClass, orientation, 'yRatio'),
       this.vncToolbarPreferredYRatio);
     this.recomputeVncToolbarPlacement('drag');
@@ -5368,14 +5369,14 @@ struct RemoteDesktop {
     promptAction.showToast({ message: '触控板速度 ' + next.toFixed(1) + 'x', duration: 1200 });
   }
 
-  private rustDeskTopBarActions(): RemoteSessionTopBarActions {
+  private remoteSessionTopBarActions(): RemoteSessionTopBarActions {
     return {
       onDisconnect: (): void => {
-        this.disconnectAndCleanup('rustdesk-topbar-close');
+        this.disconnectAndCleanup(this.currentProtocolName() + '-session-toolbar-close');
         this.goBack();
       },
       onHideTopBar: (): void => {
-        this.requestHidePcSessionTopBar('RustDesk 会话');
+        // Every connected session keeps a recoverable toolbar handle.
       },
       onRefreshFrame: (): void => {
         this.loader.requestFrameRefresh();
@@ -5388,6 +5389,17 @@ struct RemoteDesktop {
         } else {
           this.openKeyboard();
         }
+      },
+      onOpenModifiers: (): void => {
+        if (!this.handleVisible) {
+          this.initHandlePosition();
+          this.handleVisible = true;
+        }
+        if (!this.isDesktopDevice) {
+          this.handleSide = 'right';
+        }
+        this.ensureModifierPanelPositions();
+        this.openModifierPanel();
       },
       onOpenFileTransfer: (): void => {
         this.pickAndSendFile();
@@ -5403,7 +5415,12 @@ struct RemoteDesktop {
         this.setRustDeskAudioEnabled(on);
       },
       onToggleClipboard: (on: boolean): void => {
-        this.setRustDeskClipboardEnabled(on);
+        if (this.isRdpRemoteSession()) {
+          this.rdpClipboardEnabled = on;
+          AppStorage.setOrCreate('rdpClipboardEnabled', on);
+        } else {
+          this.setRustDeskClipboardEnabled(on);
+        }
       },
       onToggleFilePaste: (on: boolean): void => {
         this.setRustDeskFilePasteEnabled(on);
@@ -6151,16 +6168,6 @@ struct RemoteDesktop {
 
   private toggleModifierLatch(mod: string): void {
     const current: ModifierLatch = this.getLatch(mod);
-    if (mod === 'win') {
-      if (current === 'locked') {
-        this.setLatch(mod, 'off');
-      } else if (current === 'off') {
-        this.sendVirtualKeyTap(KEYCODE_META_LEFT, 'Win');
-      } else {
-        this.setLatch(mod, 'off');
-      }
-      return;
-    }
     // off→once, once→off, locked→off
     const next: ModifierLatch = current === 'off' ? 'once' : 'off';
     this.setLatch(mod, next);
@@ -16689,13 +16696,15 @@ struct RemoteDesktop {
         })
       }
 
-      if (this.connected && this.shouldShowRustDeskSessionTopBar()) {
+      if (this.connected && this.shouldShowRemoteSessionTopBar()) {
         RemoteSessionTopBar({
+          protocol: this.currentProtocolName(),
           layout: remoteTopBarLayout(this.isDesktopDevice, this.breakpoint, this.isPadDevice),
-          edgeRail: this.shouldUseRustDeskSessionEdgeRail(),
+          edgeRail: this.shouldUseRemoteSessionEdgeRail(),
           privacyMode: this.rustdeskPrivacyMode,
           audioEnabled: this.rustdeskAudioEnabled,
-          clipboardEnabled: this.rustdeskClipboardEnabled,
+          clipboardEnabled: this.isRdpRemoteSession() ?
+            this.rdpClipboardEnabled : this.rustdeskClipboardEnabled,
           filePasteEnabled: this.rustdeskFilePasteEnabled,
           viewScaleMode: this.remoteDisplayScaleMode,
           imageQuality: this.rustdeskImageQuality,
@@ -16712,7 +16721,7 @@ struct RemoteDesktop {
           rustDeskDisplaySwitchState: this.rustDeskDisplaySwitchState,
           pendingDisplayResolution: this.rustDeskDisplayPendingResolution,
           capabilities: this.currentSessionCapabilities(),
-          actions: this.rustDeskTopBarActions()
+          actions: this.remoteSessionTopBarActions()
         })
       }
 
@@ -16773,34 +16782,6 @@ struct RemoteDesktop {
             }
           })
         }
-      }
-
-      // T-171: 侧边吸附悬浮胶囊
-      if (this.connected && this.handleVisible) {
-        RemoteModifierHandle({
-          handleX: this.handleX,
-          handleY: this.handleY,
-          handleSide: this.handleSide,
-          panelVisible: this.modifierPanelVisible,
-          ctrlLocked: this.isModifierLatched('ctrl'),
-          altLocked: this.isModifierLatched('alt'),
-          shiftLocked: this.isModifierLatched('shift'),
-          winLocked: this.isModifierLatched('win'),
-          fnLayer: this.fnLayer,
-          onTogglePanel: (): void => {
-            this.toggleModifierPanel();
-            hilog.info(RD_DOMAIN, RD_TAG,
-              'modifier panel ' + (this.modifierPanelVisible ? 'open' : 'close'));
-          },
-          onLongPress: (): void => {
-            this.toggleShortcutPanel();
-            hilog.info(RD_DOMAIN, RD_TAG,
-              'shortcut panel ' + (this.shortcutPanelVisible ? 'open' : 'close'));
-          },
-          onPositionChange: (x: number, y: number): void => {
-            this.snapHandleToEdge(x, y);
-          }
-        })
       }
 
       // T-171: 修饰键展开面板
