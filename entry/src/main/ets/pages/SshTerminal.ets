@@ -5210,6 +5210,14 @@ struct SshTerminal {
       this.sshSessionGeneration === sessionGeneration;
   }
 
+  private isLocalSftpRequestActive(pageGeneration: number, sessionId: number,
+    sessionGeneration: number): boolean {
+    if (sessionId > 0 || sessionGeneration > 0) {
+      return this.isSftpRequestActive(pageGeneration, sessionId, sessionGeneration);
+    }
+    return this.isPageGenerationActive(pageGeneration);
+  }
+
   private isSftpRefreshRequestActive(pageGeneration: number, sessionId: number,
     sessionGeneration: number, requestToken: number): boolean {
     return requestToken === this.sftpRefreshRequestToken &&
@@ -7831,41 +7839,75 @@ struct SshTerminal {
   }
 
   /** Select a destination directory and create the remote root below it. */
-  private async prepareLocalSftpDownloadRoot(parentUri: string, rootName: string): Promise<string | null> {
+  private async prepareLocalSftpDownloadRoot(parentUri: string, rootName: string,
+    requestPageGeneration: number = this.pageGeneration,
+    requestSessionId: number = -1,
+    requestSessionGeneration: number = -1): Promise<string | null> {
+    if (!this.isLocalSftpRequestActive(requestPageGeneration, requestSessionId,
+      requestSessionGeneration)) { return null; }
     const parent: SshLocalFileEntry | null = await this.sftpLocalProvider.stat(parentUri);
+    if (!this.isLocalSftpRequestActive(requestPageGeneration, requestSessionId,
+      requestSessionGeneration)) { return null; }
     if (parent === null || !parent.isDirectory || parent.isSymbolicLink ||
       !this.isSafeSftpTreeName(rootName)) { return null; }
     if (parent.name === rootName) { return parent.uri; }
-    return await this.ensureLocalSftpDirectory(parent.uri, rootName);
+    return await this.ensureLocalSftpDirectory(parent.uri, rootName, requestPageGeneration,
+      requestSessionId, requestSessionGeneration);
   }
 
-  private async ensureLocalSftpDirectory(parentUri: string, name: string): Promise<string | null> {
-    if (!this.isSafeSftpTreeName(name)) { return null; }
+  private async ensureLocalSftpDirectory(parentUri: string, name: string,
+    requestPageGeneration: number = this.pageGeneration,
+    requestSessionId: number = -1,
+    requestSessionGeneration: number = -1): Promise<string | null> {
+    if (!this.isLocalSftpRequestActive(requestPageGeneration, requestSessionId,
+      requestSessionGeneration) || !this.isSafeSftpTreeName(name)) { return null; }
     const target: string | null = await this.sftpLocalProvider.resolveRelative(parentUri, name);
-    if (target === null) { return null; }
+    if (!this.isLocalSftpRequestActive(requestPageGeneration, requestSessionId,
+      requestSessionGeneration) || target === null) { return null; }
     let existing: SshLocalFileEntry | null = await this.sftpLocalProvider.stat(target);
+    if (!this.isLocalSftpRequestActive(requestPageGeneration, requestSessionId,
+      requestSessionGeneration)) { return null; }
     if (existing !== null) {
       return existing.isDirectory && !existing.isSymbolicLink ? target : null;
     }
-    if (!await this.sftpLocalProvider.createDirectory(parentUri, name)) {
+    const created: boolean = await this.sftpLocalProvider.createDirectory(parentUri, name);
+    if (!this.isLocalSftpRequestActive(requestPageGeneration, requestSessionId,
+      requestSessionGeneration)) {
+      if (created) { await this.sftpLocalProvider.remove(target, true); }
+      return null;
+    }
+    if (!created) {
       existing = await this.sftpLocalProvider.stat(target);
+      if (!this.isLocalSftpRequestActive(requestPageGeneration, requestSessionId,
+        requestSessionGeneration)) { return null; }
       return existing !== null && existing.isDirectory && !existing.isSymbolicLink ? target : null;
     }
     existing = await this.sftpLocalProvider.stat(target);
+    if (!this.isLocalSftpRequestActive(requestPageGeneration, requestSessionId,
+      requestSessionGeneration)) { return null; }
     return existing !== null && existing.isDirectory && !existing.isSymbolicLink ? target : null;
   }
 
   /** Ensure every directory component of a batch item exists locally. */
   private async ensureLocalSftpBatchPath(localRoot: string, relativePath: string,
-    leafIsDirectory: boolean): Promise<string | null> {
+    leafIsDirectory: boolean, requestPageGeneration: number = this.pageGeneration,
+    requestSessionId: number = -1,
+    requestSessionGeneration: number = -1): Promise<string | null> {
+    if (!this.isLocalSftpRequestActive(requestPageGeneration, requestSessionId,
+      requestSessionGeneration)) { return null; }
     const raw: string = relativePath.replace(/\\/g, '/').trim();
     const parts: string[] = raw.length === 0 ? [] : raw.split('/');
     const componentCount: number = leafIsDirectory ? parts.length : Math.max(0, parts.length - 1);
     let current: string = localRoot;
     const rootEntry: SshLocalFileEntry | null = await this.sftpLocalProvider.stat(current);
+    if (!this.isLocalSftpRequestActive(requestPageGeneration, requestSessionId,
+      requestSessionGeneration)) { return null; }
     if (rootEntry === null || !rootEntry.isDirectory || rootEntry.isSymbolicLink) { return null; }
     for (let index = 0; index < componentCount; index++) {
-      const next: string | null = await this.ensureLocalSftpDirectory(current, parts[index]);
+      const next: string | null = await this.ensureLocalSftpDirectory(current, parts[index],
+        requestPageGeneration, requestSessionId, requestSessionGeneration);
+      if (!this.isLocalSftpRequestActive(requestPageGeneration, requestSessionId,
+        requestSessionGeneration)) { return null; }
       if (next === null) { return null; }
       current = next;
     }
@@ -7990,7 +8032,9 @@ struct SshTerminal {
         this.sftpStatus = '[SFTP-BATCH] 批量下载计划拒绝: ' + plan.reason;
         return;
       }
-      const localRoot: string | null = await this.prepareLocalSftpDownloadRoot(localParent, remoteName);
+      const localRoot: string | null = await this.prepareLocalSftpDownloadRoot(
+        localParent, remoteName, requestPageGeneration, requestSessionId,
+        requestSessionGeneration);
       if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId,
         requestSessionGeneration)) { return; }
       if (localRoot === null) {
@@ -8387,7 +8431,12 @@ struct SshTerminal {
         if (index > 0) { this.sftpBusy = true; }
         const relativePath: string = this.batchTaskSourceRelativePath(task);
         if (task.isDirectory) {
-          if (await this.ensureLocalSftpBatchPath(localRoot, relativePath, true) === null) {
+          const localDirectory: string | null = await this.ensureLocalSftpBatchPath(
+            localRoot, relativePath, true, requestPageGeneration, requestSessionId,
+            requestSessionGeneration);
+          if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+            requestSessionGeneration)) { return; }
+          if (localDirectory === null) {
             this.sftpStatus = '[SFTP-BATCH] 无法创建本机目录 ' + task.fileName + '，已停在当前任务';
             return;
           }
@@ -8402,9 +8451,14 @@ struct SshTerminal {
         const slash: number = relativePath.lastIndexOf('/');
         const parentRelative: string = slash >= 0 ? relativePath.substring(0, slash) : '';
         const localParent: string | null = await this.ensureLocalSftpBatchPath(
-          localRoot, parentRelative, true);
+          localRoot, parentRelative, true, requestPageGeneration, requestSessionId,
+          requestSessionGeneration);
+        if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+          requestSessionGeneration)) { return; }
         const finalUri: string | null = await this.sftpLocalProvider.resolveRelative(
           localRoot, relativePath);
+        if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+          requestSessionGeneration)) { return; }
         if (localParent === null || finalUri === null) {
           this.sftpStatus = '[SFTP-BATCH] 本机路径无效 ' + task.fileName + '，已停在当前任务';
           return;
@@ -8414,6 +8468,8 @@ struct SshTerminal {
           const conflict: SftpLocalConflictPlan = await this.prepareLocalSftpConflict(
             localParent, task.fileName, task.batchId, requestPageGeneration,
             requestSessionId, requestSessionGeneration);
+          if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+            requestSessionGeneration)) { return; }
           if (conflict.action === 'failed') {
             this.sftpStatus = '[SFTP-BATCH] 本机目标冲突未处理 ' + task.fileName;
             return;
@@ -8430,6 +8486,8 @@ struct SshTerminal {
         }
         const offset: number = task.verifiedOffset >= 0 ? task.verifiedOffset : 0;
         const partialPath: string = await this.sftpSandboxPartialPath(task.taskId);
+        if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+          requestSessionGeneration)) { return; }
         if (partialPath.length === 0) {
           this.sftpStatus = '[SFTP-BATCH] 无法建立本机 partial ' + task.fileName;
           return;
@@ -8437,6 +8495,8 @@ struct SshTerminal {
         if (offset > 0) {
           const partialIdentity: SshSftpFileIdentity | null =
             await this.readLocalSftpIdentity(partialPath);
+          if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+            requestSessionGeneration)) { return; }
           if (partialIdentity === null || partialIdentity.size !== offset || partialIdentity.mtime < 0 ||
             task.partialSize !== offset || task.partialMtime < 0 ||
             task.partialMtime !== partialIdentity.mtime) {
@@ -8457,15 +8517,21 @@ struct SshTerminal {
         await this.downloadSftpToLocal(partialPath, targetUri, task.fileName, task.remotePath,
           task.totalBytes, offset, task.taskId, requestPageGeneration, requestSessionId,
           requestSessionGeneration);
+        if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+          requestSessionGeneration)) { return; }
         const updated: SshSftpTaskRecord | null = this.sftpTaskStore.get(task.taskId);
         if (updated === null || updated.stage !== 'completed') { return; }
         completedFiles++;
       }
+      if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+        requestSessionGeneration)) { return; }
       this.sftpBatchConflictPolicies.delete(batchId);
       this.clearSftpBatchRuntime(batchId);
       this.sftpStatus = '批量下载完成，共 ' + completedFiles.toString() + ' 个文件、' +
         completedDirectories.toString() + ' 个目录';
     } finally {
+      if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+        requestSessionGeneration)) { return; }
       this.sftpBatchRunning = false;
       if (this.sftpTransferSession === null || this.sftpTransferSession.stage === 'completed' ||
         this.sftpTransferSession.stage === 'failed' || this.sftpTransferSession.stage === 'cancelled') {
@@ -8543,24 +8609,41 @@ struct SshTerminal {
       if (isDownloadBatch) {
         if (this.sftpLocalSelectedIsDir && this.sftpLocalSelectedUri.length > 0) {
           sourceRoot = await this.prepareLocalSftpDownloadRoot(
-            this.sftpLocalSelectedUri, rootName) || '';
+            this.sftpLocalSelectedUri, rootName, requestPageGeneration, requestSessionId,
+            requestSessionGeneration) || '';
+          if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+            requestSessionGeneration)) { return; }
         }
         if (sourceRoot.length === 0 && this.sftpLocalPath.length > 0) {
           sourceRoot = await this.prepareLocalSftpDownloadRoot(
-            this.sftpLocalPath, rootName) || '';
+            this.sftpLocalPath, rootName, requestPageGeneration, requestSessionId,
+            requestSessionGeneration) || '';
+          if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+            requestSessionGeneration)) { return; }
         }
         if (sourceRoot.length === 0) {
           const currentRoot: string = await this.sftpLocalProvider.currentRoot();
+          if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+            requestSessionGeneration)) { return; }
           if (currentRoot.length > 0) {
-            sourceRoot = await this.prepareLocalSftpDownloadRoot(currentRoot, rootName) || '';
+            sourceRoot = await this.prepareLocalSftpDownloadRoot(
+              currentRoot, rootName, requestPageGeneration, requestSessionId,
+              requestSessionGeneration) || '';
+            if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+              requestSessionGeneration)) { return; }
           }
         }
         if (sourceRoot.length === 0 && this.localProviderNeedsAuthorization()) {
           const authorized: SshLocalProviderSnapshot =
             await this.sftpLocalProvider.chooseAuthorizedFolder();
+          if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+            requestSessionGeneration)) { return; }
           if (authorized.state === 'ready') {
             sourceRoot = await this.prepareLocalSftpDownloadRoot(
-              authorized.rootPath, rootName) || '';
+              authorized.rootPath, rootName, requestPageGeneration, requestSessionId,
+              requestSessionGeneration) || '';
+            if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+              requestSessionGeneration)) { return; }
             this.sftpLocalProviderStatus = authorized.rootLabel;
           }
         }
@@ -8569,15 +8652,21 @@ struct SshTerminal {
           this.sftpLocalSelectedName.trim() === rootName) {
           const selected: SshLocalFileEntry | null =
             await this.sftpLocalProvider.stat(this.sftpLocalSelectedUri);
+          if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+            requestSessionGeneration)) { return; }
           if (selected !== null && selected.isDirectory && selected.name === rootName) {
             sourceRoot = selected.uri;
           }
         }
         if (sourceRoot.length === 0) {
           const currentRoot: string = await this.sftpLocalProvider.currentRoot();
+          if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+            requestSessionGeneration)) { return; }
           if (currentRoot.length > 0) {
             const currentEntry: SshLocalFileEntry | null =
               await this.sftpLocalProvider.stat(currentRoot);
+            if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+              requestSessionGeneration)) { return; }
             if (currentEntry !== null && currentEntry.isDirectory && currentEntry.name === rootName) {
               sourceRoot = currentRoot;
             }
@@ -8586,6 +8675,8 @@ struct SshTerminal {
         if (sourceRoot.length === 0 && this.localProviderNeedsAuthorization()) {
           const authorized: SshLocalProviderSnapshot =
             await this.sftpLocalProvider.chooseAuthorizedFolder();
+          if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+            requestSessionGeneration)) { return; }
           if (authorized.state === 'ready' && authorized.rootLabel === rootName) {
             sourceRoot = authorized.rootPath;
             this.sftpLocalProviderStatus = authorized.rootLabel;
@@ -8608,7 +8699,10 @@ struct SshTerminal {
       }
       return;
     } finally {
-      this.sftpBusy = false;
+      if (this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+        requestSessionGeneration)) {
+        this.sftpBusy = false;
+      }
     }
     if (this.isSftpRequestActive(requestPageGeneration, requestSessionId, requestSessionGeneration)) {
       this.startSftpEngineBatch(id);
