@@ -2875,6 +2875,7 @@ struct SshTerminal {
     // This also cancels a connect whose native session id is still pending and
     // is intentionally scoped to the SSH facade's current pending request.
     this.loader.disconnect();
+    this.clearSftpBatchRuntimeMaps();
     this.resetSshProductivityRuntime();
   }
 
@@ -2894,6 +2895,7 @@ struct SshTerminal {
     this.flushSshSessionLogOutput();
     this.discardSshSessionLogHostRuntime(result.hostId);
     this.discardSshProductivityHostRuntime(result.hostId);
+    this.clearSftpBatchRuntimeForHost(result.hostId);
     this.sshTabStore.clearStartupExecutionKeysForHost(result.hostId);
     // A successful independent-window handoff has already moved the native
     // session into the target runtime. In that case only discard the source
@@ -4600,6 +4602,41 @@ struct SshTerminal {
     this.showSftpTransferCenter = false;
   }
 
+  /** Drop page-only SFTP batch bindings without touching durable task records. */
+  private clearSftpBatchRuntime(batchId: string): void {
+    const normalizedBatchId: string = batchId.trim();
+    if (normalizedBatchId.length === 0) { return; }
+    this.sftpBatchLocalRoots.delete(normalizedBatchId);
+    this.sftpBatchRemoteRoots.delete(normalizedBatchId);
+    this.sftpBatchConflictPolicies.delete(normalizedBatchId);
+  }
+
+  private clearSftpBatchRuntimeForHost(hostId: string): void {
+    const normalizedHostId: string = hostId.trim();
+    if (normalizedHostId.length === 0) { return; }
+    const batchIds: Set<string> = new Set<string>();
+    const records: Array<SshSftpTaskRecord> = this.sftpTaskStore.list();
+    for (let index = 0; index < records.length; index++) {
+      const record: SshSftpTaskRecord = records[index];
+      const sourceHostId: string = (record.sourceEndpoint?.hostId || '').trim();
+      const targetHostId: string = (record.targetEndpoint?.hostId || '').trim();
+      if (record.hostId.trim() === normalizedHostId || sourceHostId === normalizedHostId ||
+        targetHostId === normalizedHostId) {
+        const batchId: string = record.batchId.trim();
+        if (batchId.length > 0) { batchIds.add(batchId); }
+      }
+    }
+    batchIds.forEach((batchId: string): void => {
+      this.clearSftpBatchRuntime(batchId);
+    });
+  }
+
+  private clearSftpBatchRuntimeMaps(): void {
+    this.sftpBatchLocalRoots.clear();
+    this.sftpBatchRemoteRoots.clear();
+    this.sftpBatchConflictPolicies.clear();
+  }
+
   private cancelSftpTransferCenterBatch(task: SshSftpTaskRecord): void {
     const batchId: string = task.batchId.trim();
     if (batchId.length === 0) { return; }
@@ -4624,6 +4661,7 @@ struct SshTerminal {
           (record: SshSftpTaskRecord): boolean => record.batchId !== batchId)) {
           this.sftpDropBatches.delete(batchId);
           this.sftpTaskEngine.discardBatch(batchId);
+          this.clearSftpBatchRuntime(batchId);
         }
       }
       return;
@@ -6328,6 +6366,7 @@ struct SshTerminal {
     }
     if (event.kind === 'batchCompleted') {
       this.sftpDropBatches.delete(event.batchId);
+      this.clearSftpBatchRuntime(event.batchId);
       this.sftpBusy = false;
       this.sftpProgress = -1;
       this.sftpTransferSession = null;
@@ -8125,6 +8164,7 @@ struct SshTerminal {
         completedFiles++;
       }
       this.sftpBatchConflictPolicies.delete(batchId);
+      this.clearSftpBatchRuntime(batchId);
       this.sftpStatus = '批量上传完成，共 ' + completedFiles.toString() + ' 个文件、' +
         completedDirectories.toString() + ' 个目录';
       this.refreshSftp(this.sftpPath);
@@ -8243,6 +8283,7 @@ struct SshTerminal {
         completedFiles++;
       }
       this.sftpBatchConflictPolicies.delete(batchId);
+      this.clearSftpBatchRuntime(batchId);
       this.sftpStatus = '批量下载完成，共 ' + completedFiles.toString() + ' 个文件、' +
         completedDirectories.toString() + ' 个目录';
     } finally {
@@ -8952,6 +8993,7 @@ struct SshTerminal {
     this.sftpWorkspaceTabState = createSshSftpWorkspaceTabState();
     this.sftpDropHoverActive = false;
     this.sftpDropBatches.clear();
+    this.clearSftpBatchRuntimeMaps();
     this.sshCommandRegistry = [];
     this.pendingSshCommandId = '';
     this.sshTabClosePromptInFlight = false;
@@ -9371,6 +9413,7 @@ struct SshTerminal {
     this.sftpWorkspaceTabState = createSshSftpWorkspaceTabState();
     this.sftpDropHoverActive = false;
     this.sftpDropBatches.clear();
+    this.clearSftpBatchRuntimeMaps();
     this.pendingSshCommandId = '';
     this.showSshTabRenameSheet = false;
     this.sshTabRenameHostId = '';
