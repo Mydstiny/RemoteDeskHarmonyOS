@@ -35,6 +35,12 @@ export function sshTabWidthVp(compact: boolean, pinned: boolean): number {
   return compact ? 124 : 154;
 }
 
+/** A page-level action menu owns new-session whenever it is available. */
+export function sshTabStripShowsStandaloneNewSessionAction(
+  headerActionPopupEnabled: boolean): boolean {
+  return !headerActionPopupEnabled;
+}
+
 /** Compact chrome is an M2 feature and must disappear with its rollout flag. */
 export function sshCompactChromeEnabled(workbenchEnabled: boolean,
   viewportWidthVp: number, breakpoint: string): boolean {

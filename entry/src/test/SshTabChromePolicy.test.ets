@@ -5,6 +5,7 @@ import {
   SSH_TAB_STRIP_HEIGHT_VP,
   SSH_WORKSPACE_CONTROL_HIT_SIZE_VP,
   sshCompactChromeEnabled,
+  sshTabStripShowsStandaloneNewSessionAction,
   sshTabWidthVp
 } from '../main/ets/services/ssh/workspace/SshTabChromePolicy';
 
@@ -43,6 +44,11 @@ export default function sshTabChromePolicyTest(): void {
       expect(sshCompactChromeEnabled(false, 360, 'md')).assertFalse();
       expect(sshCompactChromeEnabled(false, 360, 'sm')).assertFalse();
       expect(sshCompactChromeEnabled(true, 360, 'md')).assertTrue();
+    });
+
+    it('moves_the_legacy_new_session_action_into_the_header_menu', 0, (): void => {
+      expect(sshTabStripShowsStandaloneNewSessionAction(true)).assertFalse();
+      expect(sshTabStripShowsStandaloneNewSessionAction(false)).assertTrue();
     });
   });
 }

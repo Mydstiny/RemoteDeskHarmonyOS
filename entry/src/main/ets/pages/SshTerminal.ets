@@ -273,7 +273,8 @@ import { SshWorkspaceCapabilityStore } from
 import {
   SSH_TAB_STRIP_HEIGHT_VP,
   SSH_WORKSPACE_CONTROL_HIT_SIZE_VP,
-  sshCompactChromeEnabled
+  sshCompactChromeEnabled,
+  sshTabStripShowsStandaloneNewSessionAction
 } from
   '../services/ssh/workspace/SshTabChromePolicy';
 import {
@@ -5109,12 +5110,14 @@ struct SshTerminal {
       ForEach(this.sshTabViews, (tab: SshTerminalTabView): void => {
         this.legacySshTabButton(tab);
       }, (tab: SshTerminalTabView): string => sshTerminalTabChromeRenderKey(tab))
-      Row() {
-        SymbolGlyph($r('sys.symbol.plus')).fontSize(17).fontColor(['rgba(242,244,247,0.86)'])
+      if (sshTabStripShowsStandaloneNewSessionAction(this.sshHeaderActionPopupEnabled())) {
+        Row() {
+          SymbolGlyph($r('sys.symbol.plus')).fontSize(17).fontColor(['rgba(242,244,247,0.86)'])
+        }
+        .width(34).height(34).justifyContent(FlexAlign.Center).borderRadius(8)
+        .backgroundColor('rgba(255,255,255,0.07)')
+        .onClick((): void => { this.openSshTabPicker(); })
       }
-      .width(34).height(34).justifyContent(FlexAlign.Center).borderRadius(8)
-      .backgroundColor('rgba(255,255,255,0.07)')
-      .onClick((): void => { this.openSshTabPicker(); })
     }
     .height(40).width('100%')
     .padding({ left: 10, right: 10 })
@@ -6110,9 +6113,10 @@ struct SshTerminal {
           .fontSize(12).fontColor(this.pal().text3)
           .margin({ left: 14, right: 14, top: 8, bottom: 6 })
 
+        Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
+        this.SshHeaderActionRow('新建 SSH 会话', '选择主机并打开新标签', 'new-session')
+
         if (this.sshWorkbenchEnabled) {
-          Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
-          this.SshHeaderActionRow('新建 SSH 会话', '选择主机并打开新标签', 'new-session')
           this.SshHeaderActionRow('显示全部标签',
             this.sshWorkspaceSnapshot.tabs.length.toString() + ' 个工作区标签', 'tabs')
           this.SshHeaderActionRow('命令面板', '运行 SSH 工作台命令', 'palette')
