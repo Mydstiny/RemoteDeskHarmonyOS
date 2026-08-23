@@ -1,6 +1,7 @@
 import { describe, it, expect } from '@ohos/hypium';
 import {
   decideSshBackgroundSignalAction,
+  SshBackgroundSignalTaskRegistry,
   SshBackgroundSignalAction
 } from '../main/ets/services/SshTerminalBackgroundTaskService';
 
@@ -27,6 +28,23 @@ export default function sshTerminalBackgroundTaskServiceTest(): void {
         .assertEqual(SshBackgroundSignalAction.none);
       expect(decideSshBackgroundSignalAction(true, false, 0, 0))
         .assertEqual(SshBackgroundSignalAction.none);
+    });
+
+    it('page_signal_registry_should_reset_recycled_session_id_ownership', 0, (): void => {
+      const registry: SshBackgroundSignalTaskRegistry =
+        new SshBackgroundSignalTaskRegistry();
+      registry.track({
+        hostId: ' host-a ', sessionId: 17, hostLabel: 'Host A', hostAddress: 'user@a'
+      });
+      registry.track({
+        hostId: 'host-a', sessionId: 17, hostLabel: 'Host A (new)', hostAddress: 'user@a-new'
+      });
+      expect(registry.size()).assertEqual(1);
+      expect(registry.snapshot()[0].hostId).assertEqual('host-a');
+      expect(registry.snapshot()[0].hostAddress).assertEqual('user@a-new');
+      registry.clear();
+      expect(registry.size()).assertEqual(0);
+      expect(registry.snapshot().length).assertEqual(0);
     });
   });
 }

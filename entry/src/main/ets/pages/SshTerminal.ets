@@ -120,6 +120,7 @@ import {
 import { SshPreflightService } from '../services/SshPreflightService';
 import {
   decideSshBackgroundSignalAction,
+  SshBackgroundSignalTaskRegistry,
   SshBackgroundSignalAction,
   SshTerminalBackgroundInfo,
   SshTerminalBackgroundTaskService
@@ -898,8 +899,8 @@ struct SshTerminal {
   private sshBackgroundTaskService: SshTerminalBackgroundTaskService =
     SshTerminalBackgroundTaskService.getInstance();
   /** Tasks requested from the live Ability background signal by this page only. */
-  private sshSignalBackgroundTasks: Map<string, SshTerminalBackgroundInfo> =
-    new Map<string, SshTerminalBackgroundInfo>();
+  private sshSignalBackgroundTasks: SshBackgroundSignalTaskRegistry =
+    new SshBackgroundSignalTaskRegistry();
   private sshPipService: SshTerminalPipService = SshTerminalPipService.getInstance();
   private sshTabStore: SshTerminalTabStore = SshTerminalTabStore.getInstance();
   private sshTranscriptStore: SshTerminalTranscriptStore =
@@ -8974,6 +8975,9 @@ struct SshTerminal {
     const pageGeneration: number = ++this.pageGeneration;
     const bindingGeneration: number = ++this.sshBindingGeneration;
     this.terminalClosing = false;
+    // A reused page instance must never carry task identities from the
+    // previous route into a new session, even if native session ids recycle.
+    this.sshSignalBackgroundTasks.clear();
     this.clearSshPipExitNavigationTimer();
     this.sshPipExitInFlight = false;
     this.clearSshWorkspaceSaveTimer();
@@ -9396,6 +9400,10 @@ struct SshTerminal {
   }
 
   aboutToDisappear(): void {
+    // The page-local signal owner ends with this lifecycle. The process-wide
+    // service is stopped/restarted below using explicit session snapshots;
+    // retaining this registry would let a future page stop a recycled id.
+    this.sshSignalBackgroundTasks.clear();
     this.sshAuthPromptPageShown = false;
     this.clearSshContextualGuideRetry();
     this.sshAuthPromptPageReadyAtMs = 0;
@@ -9986,7 +9994,7 @@ struct SshTerminal {
     const backgroundInfos: SshTerminalBackgroundInfo[] = this.backgroundSshInfos();
     const action: SshBackgroundSignalAction = decideSshBackgroundSignalAction(
       isBackground, this.terminalClosing, backgroundInfos.length,
-      this.sshSignalBackgroundTasks.size);
+      this.sshSignalBackgroundTasks.size());
     if (action === SshBackgroundSignalAction.none) { return; }
 
     let context: common.UIAbilityContext;
@@ -9999,8 +10007,7 @@ struct SshTerminal {
     }
 
     if (action === SshBackgroundSignalAction.stop) {
-      const tracked: SshTerminalBackgroundInfo[] =
-        Array.from(this.sshSignalBackgroundTasks.values());
+      const tracked: SshTerminalBackgroundInfo[] = this.sshSignalBackgroundTasks.snapshot();
       this.sshSignalBackgroundTasks.clear();
       for (let index: number = 0; index < tracked.length; index++) {
         const info: SshTerminalBackgroundInfo = tracked[index];
@@ -10011,8 +10018,7 @@ struct SshTerminal {
 
     for (let index: number = 0; index < backgroundInfos.length; index++) {
       const info: SshTerminalBackgroundInfo = backgroundInfos[index];
-      const key: string = info.hostId + '#' + info.sessionId.toString();
-      this.sshSignalBackgroundTasks.set(key, info);
+      this.sshSignalBackgroundTasks.track(info);
       void this.sshBackgroundTaskService.start(context, info).then(
         (started: boolean): void => {
           hilog.info(0x0016, 'SshTerminal', 'background signal task started=' +

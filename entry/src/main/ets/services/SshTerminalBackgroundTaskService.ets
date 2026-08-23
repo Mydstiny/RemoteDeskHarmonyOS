@@ -45,6 +45,53 @@ export interface SshTerminalBackgroundInfo {
   hostAddress: string;
 }
 
+/**
+ * Page-local ownership of tasks started from the live Ability background
+ * signal. The page can be torn down while the process-wide background service
+ * is still draining an async start/stop operation, so this registry must be
+ * reset at every page lifecycle boundary. Keeping the identity keyed by the
+ * normalized host/session pair also prevents duplicate signal callbacks from
+ * growing an unbounded list.
+ */
+export class SshBackgroundSignalTaskRegistry {
+  private readonly tasks: Map<string, SshTerminalBackgroundInfo> =
+    new Map<string, SshTerminalBackgroundInfo>();
+
+  private key(info: SshTerminalBackgroundInfo): string {
+    const hostId: string = info.hostId.trim();
+    if (hostId.length === 0 || info.sessionId <= 0) { return ''; }
+    return hostId + '#' + info.sessionId.toString();
+  }
+
+  track(info: SshTerminalBackgroundInfo): void {
+    const key: string = this.key(info);
+    if (key.length === 0) { return; }
+    this.tasks.set(key, {
+      hostId: info.hostId.trim(),
+      sessionId: info.sessionId,
+      hostLabel: info.hostLabel,
+      hostAddress: info.hostAddress
+    });
+  }
+
+  snapshot(): SshTerminalBackgroundInfo[] {
+    const result: SshTerminalBackgroundInfo[] = [];
+    this.tasks.forEach((info: SshTerminalBackgroundInfo): void => {
+      result.push({
+        hostId: info.hostId,
+        sessionId: info.sessionId,
+        hostLabel: info.hostLabel,
+        hostAddress: info.hostAddress
+      });
+    });
+    return result;
+  }
+
+  clear(): void { this.tasks.clear(); }
+
+  size(): number { return this.tasks.size; }
+}
+
 export enum SshBackgroundSignalAction {
   none = 0,
   start = 1,
