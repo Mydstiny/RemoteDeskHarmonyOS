@@ -81,6 +81,7 @@ export interface SshWebMessageDequeueResultV1 {
 
 export const SSH_WEB_MESSAGE_VERSION: number = 1;
 export const SSH_WEB_MESSAGE_MAX_FRAME_CHARS: number = 65536;
+export const SSH_WEB_MESSAGE_MAX_FRAME_BYTES: number = 64 * 1024;
 export const SSH_WEB_MESSAGE_MAX_QUEUE_BYTES: number = 1024 * 1024;
 export const SSH_WEB_MESSAGE_MAX_QUEUE_ITEMS: number = 64;
 export const SSH_WEB_MESSAGE_MAX_IN_FLIGHT: number = 8;
@@ -256,10 +257,11 @@ export function enqueueSshWebMessage(state: SshWebMessageStateV1,
     return result(next, 'not_ready');
   }
   if (!validSequence(next.nextSequence)) { return result(next, 'invalid_message'); }
-  if (payload.length > SSH_WEB_MESSAGE_MAX_FRAME_CHARS) {
+  const payloadBytes: number = sshUtf8ByteLength(payload);
+  if (payload.length > SSH_WEB_MESSAGE_MAX_FRAME_CHARS ||
+    payloadBytes > SSH_WEB_MESSAGE_MAX_FRAME_BYTES) {
     return result(next, 'frame_too_large');
   }
-  const payloadBytes: number = sshUtf8ByteLength(payload);
   if (next.queue.length >= SSH_WEB_MESSAGE_MAX_QUEUE_ITEMS ||
     next.bufferedBytes + payloadBytes > SSH_WEB_MESSAGE_MAX_QUEUE_BYTES) {
     return result(next, 'queue_full');
@@ -352,8 +354,12 @@ export function acceptSshWebMessage(state: SshWebMessageStateV1,
     return { accepted: false, code: 'unsupported_version', state: next, envelope: null };
   }
   if (!allowedKind(envelope.kind) || !validSequence(envelope.sequence) ||
-    !validAckSequence(envelope.ackSequence) || envelope.payload.length > SSH_WEB_MESSAGE_MAX_FRAME_CHARS) {
+    !validAckSequence(envelope.ackSequence)) {
     return { accepted: false, code: 'invalid_message', state: next, envelope: null };
+  }
+  if (envelope.payload.length > SSH_WEB_MESSAGE_MAX_FRAME_CHARS ||
+    sshUtf8ByteLength(envelope.payload) > SSH_WEB_MESSAGE_MAX_FRAME_BYTES) {
+    return { accepted: false, code: 'frame_too_large', state: next, envelope: null };
   }
   if (envelope.ackSequence >= next.nextSequence) {
     return { accepted: false, code: 'invalid_message', state: next, envelope: null };
@@ -420,7 +426,8 @@ export function decodeSshWebMessage(encoded: string): SshWebMessageEnvelopeV1 | 
     const payload: string = source['payload'] as string;
     if (version !== SSH_WEB_MESSAGE_VERSION || !Number.isFinite(version) || !allowedKind(kind) ||
       !validIdentity(sessionKey, generation) || !validSequence(sequence) ||
-      !validAckSequence(ackSequence) || payload.length > SSH_WEB_MESSAGE_MAX_FRAME_CHARS) {
+      !validAckSequence(ackSequence) || payload.length > SSH_WEB_MESSAGE_MAX_FRAME_CHARS ||
+      sshUtf8ByteLength(payload) > SSH_WEB_MESSAGE_MAX_FRAME_BYTES) {
       return null;
     }
     return { version, kind: kind as SshWebMessageKind, sessionKey, generation, sequence, ackSequence, payload };

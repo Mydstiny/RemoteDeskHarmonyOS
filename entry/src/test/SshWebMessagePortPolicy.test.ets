@@ -7,6 +7,7 @@ import {
   dequeueSshWebMessage,
   encodeSshWebMessage,
   enqueueSshWebMessage,
+  SSH_WEB_MESSAGE_MAX_FRAME_BYTES,
   SSH_WEB_MESSAGE_MAX_QUEUE_ITEMS,
   startSshWebMessageHandshake,
   SshWebMessageEnvelopeV1,
@@ -140,6 +141,29 @@ export default function sshWebMessagePortPolicyTest(): void {
       const oversized = enqueueSshWebMessage(state, 'output', 'x'.repeat(65537));
       expect(oversized.accepted).assertFalse();
       expect(oversized.code).assertEqual('frame_too_large');
+    });
+
+    it('should_reject_single_frame_above_utf8_byte_limit', 0, (): void => {
+      const state = readyState();
+      const exact: string = '🙂'.repeat(SSH_WEB_MESSAGE_MAX_FRAME_BYTES / 4);
+      expect(exact.length < 65536).assertTrue();
+      expect(enqueueSshWebMessage(state, 'output', exact).accepted).assertTrue();
+
+      const oversized: string = exact + '🙂';
+      expect(oversized.length < 65536).assertTrue();
+      const queued = enqueueSshWebMessage(state, 'output', oversized);
+      expect(queued.accepted).assertFalse();
+      expect(queued.code).assertEqual('frame_too_large');
+      expect(decodeSshWebMessage(JSON.stringify({
+        version: 1, kind: 'input', sessionKey: 'host:session', generation: 4,
+        sequence: 2, ackSequence: 1, payload: oversized
+      })) === null).assertTrue();
+      const received = acceptSshWebMessage(state, {
+        version: 1, kind: 'input', sessionKey: 'host:session', generation: 4,
+        sequence: 2, ackSequence: 1, payload: oversized
+      });
+      expect(received.accepted).assertFalse();
+      expect(received.code).assertEqual('frame_too_large');
     });
 
     it('should_cap_queue_items', 0, (): void => {
