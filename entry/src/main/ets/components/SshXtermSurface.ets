@@ -33,9 +33,16 @@ import { matchesSshXtermCopyFence } from '../services/SshXtermTabSurfacePolicy';
 const XTERM_DOMAIN: number = 0x0000;
 const XTERM_TAG: string = 'SshXtermSurface';
 const XTERM_DOCUMENT_RELOAD_TIMEOUT_MS: number = 3000;
+export const SSH_XTERM_RETRY_MAX_ATTEMPTS: number = 240;
 export const SSH_XTERM_OUTPUT_BUFFER_MAX_BYTES: number = 8 * 1024 * 1024;
 export const SSH_XTERM_OUTPUT_BUFFER_MAX_CHUNKS: number = 512;
 export const SSH_XTERM_OUTPUT_CHUNK_MAX_BYTES: number = 64 * 1024;
+
+/** Retry loops must stop when a WebView remains unavailable for one lifecycle. */
+export function sshXtermRetryAllowed(attempt: number): boolean {
+  return Number.isFinite(attempt) && Math.floor(attempt) === attempt && attempt >= 0 &&
+    attempt < SSH_XTERM_RETRY_MAX_ATTEMPTS;
+}
 
 /** Keep a proxy bridge call within one UTF-8 frame after chunk admission. */
 export function sshXtermOutputBatchFitsByteBudget(currentBytes: number, next: string,
@@ -755,6 +762,10 @@ export struct SshXtermSurface {
     if (this.bridgeRetryTimer !== -1 || this.disposed || lifecycleToken !== this.lifecycleToken) {
       return;
     }
+    if (!sshXtermRetryAllowed(this.bridgeRetryCount)) {
+      hilog.error(XTERM_DOMAIN, XTERM_TAG, 'bridge retry budget exhausted');
+      return;
+    }
     // ArkWeb can bind the WebviewController after onPageBegin during route
     // replacement. Keep retrying for a bounded window tied to this page.
     const retryDelay: number = this.bridgeRetryCount < 180 ? 32 : 250;
@@ -1031,6 +1042,10 @@ export struct SshXtermSurface {
       this.reloadRequestedDocumentKey !== requestedDocumentKey) {
       return;
     }
+    if (!sshXtermRetryAllowed(this.documentReloadRetryCount)) {
+      hilog.error(XTERM_DOMAIN, XTERM_TAG, 'document reload retry budget exhausted');
+      return;
+    }
     const retryDelay: number = this.documentReloadRetryCount < 180 ? 64 : 250;
     this.documentReloadRetryCount++;
     this.documentReloadRetryTimer = setTimeout((): void => {
@@ -1047,6 +1062,10 @@ export struct SshXtermSurface {
   private schedulePageConfigRetry(lifecycleToken: number): void {
     if (this.pageConfigRetryTimer !== -1 || this.disposed ||
       lifecycleToken !== this.lifecycleToken || !this.pageFinished) {
+      return;
+    }
+    if (!sshXtermRetryAllowed(this.pageConfigRetryCount)) {
+      hilog.error(XTERM_DOMAIN, XTERM_TAG, 'page config retry budget exhausted');
       return;
     }
     const retryDelay: number = this.pageConfigRetryCount < 180 ? 32 : 250;

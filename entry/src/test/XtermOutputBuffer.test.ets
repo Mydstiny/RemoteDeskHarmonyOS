@@ -1,6 +1,8 @@
 import { describe, it, expect } from '@ohos/hypium';
 import {
+  SSH_XTERM_RETRY_MAX_ATTEMPTS,
   sshXtermOutputBatchFitsByteBudget,
+  sshXtermRetryAllowed,
   XtermOutputBuffer
 } from '../main/ets/components/SshXtermSurface';
 
@@ -98,6 +100,15 @@ export default function xtermOutputBufferTest(): void {
       expect(sshXtermOutputBatchFitsByteBudget(32768, emojiChunk)).assertTrue();
       expect(sshXtermOutputBatchFitsByteBudget(32768, cjkChunk)).assertFalse();
       expect(sshXtermOutputBatchFitsByteBudget(65536, 'a')).assertFalse();
+    });
+
+    it('bounds_webview_retry_loops_per_lifecycle', 0, (): void => {
+      expect(SSH_XTERM_RETRY_MAX_ATTEMPTS).assertEqual(240);
+      expect(sshXtermRetryAllowed(0)).assertTrue();
+      expect(sshXtermRetryAllowed(239)).assertTrue();
+      expect(sshXtermRetryAllowed(240)).assertFalse();
+      expect(sshXtermRetryAllowed(1.5)).assertFalse();
+      expect(sshXtermRetryAllowed(Number.POSITIVE_INFINITY)).assertFalse();
     });
   });
 }
