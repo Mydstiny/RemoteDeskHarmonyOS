@@ -10308,7 +10308,7 @@ struct SshTerminal {
     const normalizedHostId: string = this.hostId.trim();
     if (normalizedHostId.length === 0 || !Number.isSafeInteger(this.sessionId) ||
       this.sessionId <= 0 || !Number.isSafeInteger(this.sshSessionGeneration) ||
-      this.sshSessionGeneration < 0) {
+      this.sshSessionGeneration <= 0) {
       return '';
     }
     return 'ssh|' + normalizedHostId + '|' + this.sessionId.toString() + '|' +
