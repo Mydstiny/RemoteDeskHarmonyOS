@@ -99,7 +99,12 @@ export function resolveSshLayout(input: SshLayoutInput): SshLayoutResult {
   }
   let maxPaneCount: number = 1;
   if (mode === 'lg') { maxPaneCount = Math.min(2, Math.max(1, Math.floor(mainWidth / terminalMin))); }
-  if (mode === 'xl') { maxPaneCount = Math.min(4, Math.max(1, Math.floor(mainWidth / terminalMin))); }
+  if (mode === 'xl') {
+    // Four panes are projected as a two-column grid. Counting every pane as a
+    // horizontal slot incorrectly reduced a valid 2x2 workspace to 3 panes
+    // whenever the wide sidebar was open.
+    maxPaneCount = mainWidth >= terminalMin * 2 ? 4 : 1;
+  }
   const requestedPaneCount: number = Number.isFinite(input.requestedPaneCount) ?
     Math.max(1, Math.floor(input.requestedPaneCount)) : 1;
   const visiblePaneCount: number = Math.min(requestedPaneCount, maxPaneCount);

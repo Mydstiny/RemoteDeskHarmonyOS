@@ -111,10 +111,19 @@ function layoutSelected(leaves: Array<SshPaneNodeV1>, activePaneId: string,
   return result;
 }
 
+function paneFramesRespectMinimumWidth(frames: Array<SshWorkspacePaneFrame>,
+  minimumPaneWidthVp: number): boolean {
+  if (minimumPaneWidthVp <= 0) { return true; }
+  for (let index: number = 0; index < frames.length; index++) {
+    if (frames[index].widthVp < minimumPaneWidthVp) { return false; }
+  }
+  return true;
+}
+
 /** Keeps the pane tree stable while projecting only the capacity of the current container. */
 export function resolveSshWorkspacePaneLayout(snapshot: SshWorkspaceSnapshotV1,
   focusedPaneId: string, maxPaneCount: number, widthVp: number,
-  heightVp: number): SshWorkspacePaneLayoutResult {
+  heightVp: number, minimumPaneWidthVp: number = 0): SshWorkspacePaneLayoutResult {
   const width: number = finiteSize(widthVp, 360);
   const height: number = finiteSize(heightVp, 480);
   const leaves: Array<SshPaneNodeV1> = [];
@@ -135,6 +144,18 @@ export function resolveSshWorkspacePaneLayout(snapshot: SshWorkspaceSnapshotV1,
   if (leaves.length <= capacity) {
     const frames: Array<SshWorkspacePaneFrame> = [];
     layoutTree(snapshot.paneRoot, snapshot.activePaneId, 0, 0, width, height, frames);
+    // Preserve the user's tree whenever it fits. At a constrained wide
+    // breakpoint, temporarily balance only the projection instead of
+    // squeezing a nested leaf below the readable terminal width. Persisted
+    // split directions and ratios remain unchanged.
+    if (!paneFramesRespectMinimumWidth(frames, minimumPaneWidthVp) &&
+      leaves.length > 1 && width >= minimumPaneWidthVp * 2) {
+      return {
+        frames: layoutSelected(leaves, snapshot.activePaneId, width, height),
+        hiddenPaneCount: 0,
+        focused: false
+      };
+    }
     return { frames, hiddenPaneCount: 0, focused: false };
   }
   const selected: Array<SshPaneNodeV1> = selectedLeaves(leaves, snapshot.activePaneId, capacity);

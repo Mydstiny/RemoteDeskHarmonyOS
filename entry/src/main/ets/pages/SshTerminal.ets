@@ -2103,7 +2103,7 @@ struct SshTerminal {
     const height: number = this.termAreaH > 0 ? this.termAreaH :
       (this.shellAreaH > 0 ? this.shellAreaH : 640);
     return resolveSshWorkspacePaneLayout(this.sshWorkspaceSnapshot,
-      this.sshWorkspaceFocusedPaneId, layout.maxPaneCount, width, height);
+      this.sshWorkspaceFocusedPaneId, layout.maxPaneCount, width, height, 360);
   }
 
   @Builder

@@ -313,6 +313,40 @@ export default function sshWorkspacePolicyTest(): void {
         expect(decoded.sidebarVisible).assertFalse();
       });
 
+    it('xl_workspace_should_keep_four_readable_panes_with_sidebar_visible', 0, (): void => {
+      const wideInput: SshLayoutInput = layoutInput('static', 1500);
+      wideInput.inspectorRequested = false;
+      const wide: SshLayoutResult = resolveSshLayout(wideInput);
+      expect(wide.sidebarVisible).assertTrue();
+      expect(wide.mainWidthVp).assertEqual(1180);
+      expect(wide.maxPaneCount).assertEqual(4);
+      expect(wide.visiblePaneCount).assertEqual(4);
+
+      let workspace: SshWorkspaceSnapshotV1 = openedWorkspace();
+      for (let index: number = 2; index <= 4; index++) {
+        workspace = reduceSshWorkspace(workspace, {
+          kind: 'open_tab', tab: tab('wide-tab-' + index.toString(),
+            'wide-host-' + index.toString()), nowMs: 110 + index
+        }).snapshot;
+        workspace = reduceSshWorkspace(workspace, {
+          kind: 'split_pane', paneId: index === 2 ? 'pane-one' :
+            'wide-pane-' + (index - 1).toString(),
+          splitNodeId: 'wide-split-' + index.toString(),
+          newLeafId: 'wide-pane-' + index.toString(), tabId: 'tab-one',
+          direction: index % 2 === 0 ? 'horizontal' : 'vertical', ratio: 0.5,
+          nowMs: 120 + index
+        }).snapshot;
+      }
+      const treeBefore: string = JSON.stringify(workspace.paneRoot);
+      const projected: SshWorkspacePaneLayoutResult = resolveSshWorkspacePaneLayout(
+        workspace, '', wide.maxPaneCount, wide.mainWidthVp, 900, 360);
+      expect(projected.frames.length).assertEqual(4);
+      for (let index: number = 0; index < projected.frames.length; index++) {
+        expect(projected.frames[index].widthVp >= 360).assertTrue();
+      }
+      expect(JSON.stringify(workspace.paneRoot)).assertEqual(treeBefore);
+    });
+
     it('terminal_surface_should_remain_opaque_and_reduce_effects', 0, (): void => {
       const facts: SshWorkspacePlatformFacts = defaultSshWorkspacePlatformFacts();
       facts.apiVersion = 26;
