@@ -2844,6 +2844,10 @@ struct SshTerminal {
     this.sftpPeerSelectedMtime = -1;
     this.sftpPeerSessionId = -1;
     this.sftpPeerSessionGeneration = 0;
+    // A peer SFTP connect belongs to the old page generation; never make a
+    // reused page await or inherit its pending native-connect promise.
+    this.sftpPeerConnectPromise = null;
+    this.sftpPeerConnectHostId = '';
     this.sftpPeerRequestToken = 0;
     this.clearSftpPeerRefreshAfterPicker();
     this.sftpPeerSelectionEpoch = 0;
@@ -8974,6 +8978,8 @@ struct SshTerminal {
     // retain its resolver while the new SSH binding is being established.
     this.clearSshSecretPrompt();
     this.clearPreflightBinding();
+    this.sftpPeerConnectPromise = null;
+    this.sftpPeerConnectHostId = '';
     this.sshAuthPromptPageShown = false;
     this.sshAuthPromptPageReadyAtMs = 0;
     this.clearSshAuthPromptPendingIdentity();
@@ -9481,6 +9487,10 @@ struct SshTerminal {
     this.sftpPendingPeerSelectionEpoch = 0;
     ++this.sftpPeerSelectionEpoch;
     ++this.sftpRemoteRequestToken;
+    // The old async operation remains fenced by page/selection generation,
+    // but the new page must not retain its Promise or host identity.
+    this.sftpPeerConnectPromise = null;
+    this.sftpPeerConnectHostId = '';
     this.sftpPeerHostPickerOpenQueued = false;
     this.sftpPeerHostPickerReopenRequested = false;
     this.sftpPeerHostPickerClosing = false;
