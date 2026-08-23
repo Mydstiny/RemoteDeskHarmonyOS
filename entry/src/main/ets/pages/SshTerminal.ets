@@ -8537,11 +8537,15 @@ struct SshTerminal {
         sourceHostId, requestPageGeneration);
       const target: SshSftpEngineSession | null = await this.ensureSftpHostSession(
         targetHostId, requestPageGeneration);
-      if (!this.isPageGenerationActive(requestPageGeneration) || source === null || target === null) {
+      if (!this.isPageGenerationActive(requestPageGeneration)) {
+        return;
+      }
+      if (source === null || target === null) {
         this.sftpStatus = '[SFTP-REMOTE] 源或目标 SSH 需要认证';
         return;
       }
       for (let index: number = 0; index < tasks.length; index++) {
+        if (!this.isPageGenerationActive(requestPageGeneration)) { return; }
         const task: SshSftpTaskRecord | null = this.sftpTaskStore.get(tasks[index].taskId);
         if (task === null) { continue; }
         if (task.stage === 'waitingForConnection' || task.stage === 'paused') {
@@ -8554,8 +8558,10 @@ struct SshTerminal {
       this.sftpStatus = '双 SSH 任务已恢复，开始继续传输';
       this.startSftpRemoteEngineBatch(id, targetHostId);
     } finally {
-      if (this.sftpEngineBatchId.length === 0) { this.sftpBusy = false; }
-      this.refreshRecoveredSftpTasks();
+      if (this.isPageGenerationActive(requestPageGeneration)) {
+        if (this.sftpEngineBatchId.length === 0) { this.sftpBusy = false; }
+        this.refreshRecoveredSftpTasks();
+      }
     }
   }
 
