@@ -1235,6 +1235,11 @@ struct RemoteDesktop {
   private remoteAltDown: boolean = false;
   private remoteShiftDown: boolean = false;
   private remoteWinDown: boolean = false;
+  // 记录实际发送到协议层的键码，确保用户在按住期间切换 Win/macOS 后仍沿原路径抬起。
+  private remoteCtrlWireCode: number = 0;
+  private remoteAltWireCode: number = 0;
+  private remoteShiftWireCode: number = 0;
+  private remoteWinWireCode: number = 0;
   // 虚拟键盘
   @State keyboardText: string = '';
   private keyboardSubmitRefocusPending: boolean = false;
@@ -6135,25 +6140,26 @@ struct RemoteDesktop {
       this.winLatch = val;
     }
     // P0-2: locked 立即发送 key down; locked→off 发送 key up
-    const keyCode: number = this.mapVirtualPanelKeyCode(this.modifierKeyCode(mod));
+    const currentWireCode: number = this.mapVirtualPanelKeyCode(this.modifierKeyCode(mod));
     if (val === 'locked' && old !== 'locked' && !this.isRemoteModDown(mod) &&
       this.sessionId > 0 && this.connected) {
       if (!this.canForwardInput('modifier')) {
         hilog.info(RD_DOMAIN, RD_TAG, 'modifier remote down blocked: ' + mod);
         return;
       }
-      this.loader.sendKey(this.sessionId, keyCode, true);
-      this.setRemoteModDown(mod, true);
+      this.loader.sendKey(this.sessionId, currentWireCode, true);
+      this.setRemoteModDown(mod, true, currentWireCode);
       hilog.info(RD_DOMAIN, RD_TAG, 'modifier remote down: ' + mod);
     } else if (val === 'off' && old === 'locked' && this.isRemoteModDown(mod) &&
       this.sessionId > 0 && this.connected) {
-      if (!this.canForwardInput('modifier')) {
-        hilog.info(RD_DOMAIN, RD_TAG, 'modifier remote up blocked: ' + mod);
-        return;
-      }
-      this.loader.sendKey(this.sessionId, keyCode, false);
+      // Up 是清理操作，即使输入策略刚切换为只读也必须尽力发送，否则远端会粘键。
+      const heldWireCode: number = this.remoteModWireCode(mod);
+      this.loader.sendKey(this.sessionId, heldWireCode > 0 ? heldWireCode : currentWireCode, false);
       this.setRemoteModDown(mod, false);
       hilog.info(RD_DOMAIN, RD_TAG, 'modifier remote up: ' + mod);
+    } else if (val === 'off' && old === 'locked' && this.isRemoteModDown(mod)) {
+      // 会话已经不可用时清除本地镜像；连接销毁路径会统一补发 release-all。
+      this.setRemoteModDown(mod, false);
     }
     hilog.info(RD_DOMAIN, RD_TAG, 'modifier latch: ' + mod + '=' + val);
   }
@@ -6184,15 +6190,32 @@ struct RemoteDesktop {
     return this.remoteWinDown;
   }
 
-  private setRemoteModDown(mod: string, down: boolean): void {
+  private remoteModWireCode(mod: string): number {
+    if (mod === 'ctrl') {
+      return this.remoteCtrlWireCode;
+    }
+    if (mod === 'alt') {
+      return this.remoteAltWireCode;
+    }
+    if (mod === 'shift') {
+      return this.remoteShiftWireCode;
+    }
+    return this.remoteWinWireCode;
+  }
+
+  private setRemoteModDown(mod: string, down: boolean, wireCode: number = 0): void {
     if (mod === 'ctrl') {
       this.remoteCtrlDown = down;
+      this.remoteCtrlWireCode = down ? wireCode : 0;
     } else if (mod === 'alt') {
       this.remoteAltDown = down;
+      this.remoteAltWireCode = down ? wireCode : 0;
     } else if (mod === 'shift') {
       this.remoteShiftDown = down;
+      this.remoteShiftWireCode = down ? wireCode : 0;
     } else if (mod === 'win') {
       this.remoteWinDown = down;
+      this.remoteWinWireCode = down ? wireCode : 0;
     }
   }
 
@@ -6201,6 +6224,10 @@ struct RemoteDesktop {
     this.remoteAltDown = false;
     this.remoteShiftDown = false;
     this.remoteWinDown = false;
+    this.remoteCtrlWireCode = 0;
+    this.remoteAltWireCode = 0;
+    this.remoteShiftWireCode = 0;
+    this.remoteWinWireCode = 0;
   }
 
   private toggleModifierLatch(mod: string): void {
@@ -6255,7 +6282,10 @@ struct RemoteDesktop {
       (mod: string): string => this.getLatch(mod),
       (mod: string, val: string): void => { this.setLatch(mod, val as ModifierLatch); },
       (mod: string): boolean => this.isRemoteModDown(mod),
-      (code: number): number => this.mapVirtualPanelKeyCode(code));
+      (code: number): number => this.mapVirtualPanelKeyCode(code),
+      (mod: string, down: boolean, wireCode?: number): void => {
+        this.setRemoteModDown(mod, down, wireCode === undefined ? 0 : wireCode);
+      });
   }
 
   /** 发送快捷键序列 → RemoteKeyDispatcher */
@@ -6266,7 +6296,9 @@ struct RemoteDesktop {
     this.keyDispatcher.sendShortcutSequenceMapped(this.loader, this.sessionId, keyCodes, label,
       (mod: string): string => this.getLatch(mod),
       (mod: string): boolean => this.isRemoteModDown(mod),
-      (mod: string, down: boolean): void => { this.setRemoteModDown(mod, down); },
+      (mod: string, down: boolean, wireCode?: number): void => {
+        this.setRemoteModDown(mod, down, wireCode === undefined ? 0 : wireCode);
+      },
       (code: number): number => this.mapVirtualPanelKeyCode(code));
   }
 
@@ -6278,7 +6310,9 @@ struct RemoteDesktop {
     this.keyDispatcher.sendCtrlAltDel(this.loader, this.sessionId, this.accentColor,
       (mod: string): string => this.getLatch(mod),
       (mod: string): boolean => this.isRemoteModDown(mod),
-      (mod: string, down: boolean): void => { this.setRemoteModDown(mod, down); });
+      (mod: string, down: boolean, wireCode?: number): void => {
+        this.setRemoteModDown(mod, down, wireCode === undefined ? 0 : wireCode);
+      });
   }
 
   /** Release remote keys and, for lifecycle teardown, any held mouse buttons. */
@@ -6293,6 +6327,7 @@ struct RemoteDesktop {
         this.physicalMouseDownButton = -1;
       }
       this.resetPhysicalModifiers();
+      this.resetRemoteModDown();
       return;
     }
     // RemoteKeyDispatcher 只知道虚拟修饰键；组合键中的普通实体键由本页
@@ -6307,16 +6342,16 @@ struct RemoteDesktop {
       }
     }
     this.physicalRemoteKeyCodesDown = [];
-    if (this.pendingHost !== null && this.pendingHost.protocol === 'rustdesk' &&
-      normalizeRemoteShortcutPlatform(this.shortcutPlatformMode) === 'macos') {
+    if (this.pendingHost !== null && this.pendingHost.protocol === 'rustdesk') {
       const panelModifiers: Array<number> = [
         KEYCODE_CTRL_LEFT, KEYCODE_CTRL_RIGHT, KEYCODE_ALT_LEFT, KEYCODE_ALT_RIGHT,
         KEYCODE_SHIFT_LEFT, KEYCODE_SHIFT_RIGHT, KEYCODE_META_LEFT, KEYCODE_META_RIGHT
       ];
       for (let index = 0; index < panelModifiers.length; index++) {
         try {
-          this.loader.sendKey(this.sessionId,
-            this.mapVirtualPanelKeyCode(panelModifiers[index]), false);
+          const explicitMacCode: number = remoteShortcutTransportKeyCode('rustdesk', 'macos',
+            panelModifiers[index]);
+          this.loader.sendKey(this.sessionId, explicitMacCode, false);
         } catch (err) {
           hilog.warn(RD_DOMAIN, RD_TAG, 'release explicit macOS panel modifier failed code=' +
             panelModifiers[index].toString() + ' error=' + JSON.stringify(err));
@@ -6330,6 +6365,7 @@ struct RemoteDesktop {
       this.physicalMouseDownButton = -1;
     }
     this.resetPhysicalModifiers();
+    this.resetRemoteModDown();
   }
 
   private registerKeyboardAvoidListener(): void {

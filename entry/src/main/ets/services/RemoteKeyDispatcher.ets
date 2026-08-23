@@ -25,7 +25,7 @@ const KEYCODE_FORWARD_DEL = 2071;
 type LatchGetter = (mod: string) => string;
 type LatchSetter = (mod: string, val: string) => void;
 type RemoteDownGetter = (mod: string) => boolean;
-type RemoteDownSetter = (mod: string, down: boolean) => void;
+type RemoteDownSetter = (mod: string, down: boolean, wireCode?: number) => void;
 type SourceSpaceFn = (x: number, y: number) => Record<string, number>;
 type KeyCodeMapper = (keyCode: number) => number;
 
@@ -65,7 +65,8 @@ export class RemoteKeyDispatcher {
     keyCode: number, label: string,
     getLatch: LatchGetter, setLatch: LatchSetter,
     isRemoteDown: RemoteDownGetter | null,
-    mapKeyCode: KeyCodeMapper | null): void {
+    mapKeyCode: KeyCodeMapper | null,
+    setRemoteDown: RemoteDownSetter | null = null): void {
     try {
       const mods: number[] = this.collectModifierCodes(getLatch);
       if (mods.length === 0) {
@@ -78,7 +79,11 @@ export class RemoteKeyDispatcher {
         if (getLatch(modName) === 'locked' && isRemoteDown && isRemoteDown(modName)) {
           continue; // 已按下, 跳过
         }
-        loader.sendKey(sessionId, this.transportCode(mods[i], mapKeyCode), true);
+        const wireModifierCode: number = this.transportCode(mods[i], mapKeyCode);
+        loader.sendKey(sessionId, wireModifierCode, true);
+        if (getLatch(modName) === 'locked' && setRemoteDown !== null) {
+          setRemoteDown(modName, true, wireModifierCode);
+        }
       }
       const wireKeyCode: number = this.transportCode(keyCode, mapKeyCode);
       loader.sendKey(sessionId, wireKeyCode, true);
@@ -122,9 +127,10 @@ export class RemoteKeyDispatcher {
           getLatch !== null && getLatch(modName) === 'locked';
         if (isLockedModifier) {
           if (isRemoteDown === null || !isRemoteDown(modName)) {
-            loader.sendKey(sessionId, this.transportCode(keyCodes[i], mapKeyCode), true);
+            const wireModifierCode: number = this.transportCode(keyCodes[i], mapKeyCode);
+            loader.sendKey(sessionId, wireModifierCode, true);
             if (setRemoteDown !== null) {
-              setRemoteDown(modName, true);
+              setRemoteDown(modName, true, wireModifierCode);
             }
             hilog.info(DOMAIN, TAG, 'shortcut restore locked modifier down: ' + modName);
           } else {

@@ -867,6 +867,10 @@ export struct RemoteSessionTopBar {
       .borderRadius({ topLeft: 10, bottomLeft: 10, topRight: 0, bottomRight: 0 })
       .shadow({ radius: 10, color: 'rgba(0,0,0,0.24)', offsetX: -2 })
       .position({ x: this.effectiveMenuWidth() + this.layout.itemGap, y: this.edgeRailOffsetY() })
+      .gesture(PanGesture({ fingers: 1, direction: PanDirection.Horizontal, distance: 5 })
+        .onActionUpdate((event: GestureEvent): void => { this.updateRailSwipe(event); })
+        .onActionEnd((event: GestureEvent): void => { this.finishRailSwipe(event); })
+        .onActionCancel((): void => { this.resetRailSwipe(); }))
       .hitTestBehavior(HitTestMode.BLOCK_HIERARCHY)
 
       if (this.activeMenu === 'control') {
@@ -887,10 +891,6 @@ export struct RemoteSessionTopBar {
     .position({ x: '100%', y: '50%' })
     .markAnchor({ x: '100%', y: '50%' })
     .translate({ x: this.railSwipeX })
-    .gesture(PanGesture({ fingers: 1, direction: PanDirection.Horizontal, distance: 5 })
-      .onActionUpdate((event: GestureEvent): void => { this.updateRailSwipe(event); })
-      .onActionEnd((event: GestureEvent): void => { this.finishRailSwipe(event); })
-      .onActionCancel((): void => { this.resetRailSwipe(); }))
     .hitTestBehavior(HitTestMode.Transparent)
   }
 
