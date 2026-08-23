@@ -10171,37 +10171,115 @@ struct HostListPage {
     .width('100%').padding({ top: 8, bottom: 140 })
   }
 
-  @Builder moonlightHostCard(view: MoonlightHostLocalView) {
+  private moonlightHostStatusColor(view: MoonlightHostLocalView): string {
+    return view.paired ? this.pal().success : this.pal().editColor;
+  }
+
+  @Builder moonlightFlatHostCard(view: MoonlightHostLocalView) {
     if (view.host !== null) {
       Row() {
-        Stack({ alignContent: Alignment.Center }) {
-          MoonlightBrandIcon({ iconSize: 28, tint: this.accentColor })
-        }.width(50).height(50).borderRadius(16).backgroundColor(this.pal().surface)
-          .margin({ right: 12 })
+        Column() {
+          MoonlightBrandIcon({ iconSize: this.breakpoint === 'sm' ? 24 : 26,
+            tint: '#FFFFFF', accessibilityLabel: 'Moonlight 主机' })
+        }
+        .width(this.breakpoint === 'sm' ? 42 : 46)
+        .height(this.breakpoint === 'sm' ? 42 : 46)
+        .borderRadius(this.breakpoint === 'sm' ? 21 : 14)
+        .backgroundColor(this.accentColor)
+        .justifyContent(FlexAlign.Center)
+        .margin({ right: this.breakpoint === 'sm' ? 10 : 12 })
+        .onClick((): void => { this.openMoonlightHost(view.host?.id || ''); })
+        Column() {
+          Text(view.host.displayName)
+            .fontSize(this.breakpoint === 'sm' ? (AppTheme.fontSize.body as number) : 17)
+            .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
+            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          Text('MOONLIGHT  ·  ' + this.moonlightAddressLabel(view.host) + '  ·  ' +
+            view.catalogItems.length.toString() + ' 个应用')
+            .fontSize(this.breakpoint === 'sm' ? 12 : 14).fontColor(this.pal().text2)
+            .fontFamily(this.font()).margin({ top: this.breakpoint === 'sm' ? 3 : 4 })
+            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        }
+        .alignItems(HorizontalAlign.Start).layoutWeight(1)
+        .onClick((): void => { this.openMoonlightHost(view.host?.id || ''); })
+        Column() {
+          Text(view.paired ? '已配对' : '未配对').fontSize(10)
+            .fontColor(this.moonlightHostStatusColor(view)).fontFamily(this.font())
+            .padding({ left: 6, right: 6, top: 3, bottom: 3 })
+            .backgroundColor(this.moonlightHostStatusColor(view) + '14').borderRadius(6)
+        }.alignItems(HorizontalAlign.End).margin({ left: 6 })
+      }
+      .width('100%').constraintSize({ minHeight: this.breakpoint === 'sm' ? 66 : 80 })
+      .padding(this.breakpoint === 'sm' ? { left: 12, right: 14, top: 12, bottom: 12 } : 14)
+      .borderRadius(14).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
+      .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+    }
+  }
+
+  @Builder moonlightGroupedHostCard(view: MoonlightHostLocalView) {
+    if (view.host !== null) {
+      Row() {
+        Column() {
+          MoonlightBrandIcon({ iconSize: this.breakpoint === 'sm' ? 21 : 23,
+            tint: '#FFFFFF', accessibilityLabel: 'Moonlight 主机' })
+        }
+        .width(this.breakpoint === 'sm' ? 40 : 42)
+        .height(this.breakpoint === 'sm' ? 40 : 42)
+        .borderRadius(this.breakpoint === 'sm' ? 12 : 13)
+        .backgroundColor(this.accentColor)
+        .justifyContent(FlexAlign.Center)
+        .margin({ right: this.breakpoint === 'sm' ? 9 : 10 })
+        .onClick((): void => { this.openMoonlightHost(view.host?.id || ''); })
+        Column() {
+          Text(view.host.displayName).fontSize(this.breakpoint === 'sm' ? 15 : 16)
+            .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
+            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          Text(view.catalogItems.length.toString() + ' 个应用')
+            .fontSize(this.breakpoint === 'sm' ? 12 : 13)
+            .fontColor(this.pal().text2).fontFamily(this.font())
+            .margin({ top: 2 }).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          Row() {
+            Text('端点').fontSize(11).fontColor(this.pal().text3).width(30)
+            Text(this.moonlightAddressLabel(view.host)).fontSize(this.breakpoint === 'sm' ? 12 : 13)
+              .fontColor(this.pal().text2).fontFamily(this.font()).layoutWeight(1)
+              .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          }.width('100%').margin({ top: 3 })
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+          .onClick((): void => { this.openMoonlightHost(view.host?.id || ''); })
         Column() {
           Row() {
-            Text(view.host.displayName).fontSize(16).fontWeight(FontWeight.Medium)
-              .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1)
-              .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
             Text(view.paired ? '已配对' : '未配对').fontSize(10)
-              .fontColor(view.paired ? this.pal().success : this.pal().editColor)
-              .padding({ left: 7, right: 7, top: 3, bottom: 3 })
-              .backgroundColor((view.paired ? this.pal().success : this.pal().editColor) + '14')
-              .borderRadius(8).margin({ left: 8 })
-          }.width('100%')
-          Text(this.moonlightAddressLabel(view.host)).fontSize(12).fontColor(this.pal().text2)
-            .fontFamily('monospace').margin({ top: 4 }).maxLines(1)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
-          Text('仅本地 · ' + view.catalogItems.length.toString() + ' 个应用')
-            .fontSize(10).fontColor(this.pal().text3).margin({ top: 4 })
-        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-        SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(16).fontColor([this.pal().text3])
-          .margin({ left: 10 })
+              .fontColor(this.moonlightHostStatusColor(view)).fontFamily(this.font())
+              .padding({ left: 6, right: 6, top: 3, bottom: 3 })
+              .backgroundColor(this.moonlightHostStatusColor(view) + '14').borderRadius(6)
+          }
+          Row() {
+            Button() {
+              SymbolGlyph($r('sys.symbol.square_and_pencil')).fontSize(16).fontColor([this.pal().text2])
+            }
+            .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
+            .accessibilityText('打开 Moonlight 主机详情')
+            .onClick((): void => { this.openMoonlightHost(view.host?.id || ''); })
+            Button() {
+              MoonlightBrandIcon({ iconSize: 16, tint: this.pal().text2, accessibilityLabel: '应用目录' })
+            }
+            .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
+            .margin({ left: 8 }).accessibilityText('打开 Moonlight 应用目录')
+            .onClick((): void => { this.openMoonlightHost(view.host?.id || '', true); })
+          }.margin({ top: 7 })
+        }.alignItems(HorizontalAlign.End).margin({ left: 10 })
       }
-      .width('100%').constraintSize({ minHeight: 78 }).padding(14)
-      .borderRadius(16).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
+      .width('100%').height(this.hostGroupHostCardHeight()).padding(6)
+      .borderRadius(12).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
       .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
-      .onClick((): void => { this.openMoonlightHost(view.host?.id || ''); })
+    }
+  }
+
+  @Builder moonlightHostCard(view: MoonlightHostLocalView) {
+    if (this.groupedHostCardsActive()) {
+      this.moonlightGroupedHostCard(view)
+    } else {
+      this.moonlightFlatHostCard(view)
     }
   }
 
