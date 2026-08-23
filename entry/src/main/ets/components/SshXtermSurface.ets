@@ -26,6 +26,7 @@ import {
   sshUtf8ByteLength,
   SshWebMessageEnvelopeV1
 } from '../services/ssh/web/SshWebMessagePortPolicy';
+import { matchesSshXtermCopyFence } from '../services/SshXtermTabSurfacePolicy';
 
 const XTERM_DOMAIN: number = 0x0000;
 const XTERM_TAG: string = 'SshXtermSurface';
@@ -1632,9 +1633,18 @@ export struct SshXtermSurface {
 
   private onCopyRequest(): void {
     if (!this.active || !this.pageReady || this.disposed) { return; }
+    const lifecycleToken: number = this.lifecycleToken;
+    const surfaceIdentity: string = this.surfaceIdentity();
+    const copyRequest: number = Number.isFinite(this.copyRequest)
+      ? Math.max(0, Math.floor(this.copyRequest)) : 0;
     try {
       this.controller.runJavaScript('window.__sshXtermGetSelection();').then((result: string): void => {
-        if (this.disposed) { return; }
+        if (!matchesSshXtermCopyFence(
+          lifecycleToken, surfaceIdentity, copyRequest,
+          this.lifecycleToken, this.surfaceIdentity(), this.copyRequest,
+          this.active && this.pageReady && !this.documentReloadPending && !this.disposed)) {
+          return;
+        }
         let selection: string = result ?? '';
         try {
           const decoded: Object = JSON.parse(selection) as Object;

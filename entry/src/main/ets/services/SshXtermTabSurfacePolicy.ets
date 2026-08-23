@@ -19,3 +19,25 @@ export function shouldReloadSshXtermTab(previousCoreKey: string, nextCoreKey: st
   return previousCoreKey.trim() !== nextCoreKey.trim() ||
     sshXtermTabRenderRevision(previousRevision) !== sshXtermTabRenderRevision(nextRevision);
 }
+
+/** Reject a selection result returned by a replaced/reloaded xterm document. */
+export function matchesSshXtermCopyFence(expectedLifecycleToken: number,
+  expectedSurfaceIdentity: string, expectedCopyRequest: number,
+  currentLifecycleToken: number, currentSurfaceIdentity: string,
+  currentCopyRequest: number, resultEligible: boolean): boolean {
+  if (!Number.isFinite(expectedLifecycleToken) ||
+    Math.floor(expectedLifecycleToken) !== expectedLifecycleToken || expectedLifecycleToken <= 0 ||
+    !Number.isFinite(expectedCopyRequest) ||
+    Math.floor(expectedCopyRequest) !== expectedCopyRequest || expectedCopyRequest < 0 ||
+    !Number.isFinite(currentLifecycleToken) ||
+    Math.floor(currentLifecycleToken) !== currentLifecycleToken || currentLifecycleToken <= 0 ||
+    !Number.isFinite(currentCopyRequest) ||
+    Math.floor(currentCopyRequest) !== currentCopyRequest || currentCopyRequest < 0) {
+    return false;
+  }
+  const expectedSurface: string = expectedSurfaceIdentity.trim();
+  return resultEligible && expectedSurface.length > 0 &&
+    expectedLifecycleToken === currentLifecycleToken &&
+    expectedSurface === currentSurfaceIdentity.trim() &&
+    expectedCopyRequest === currentCopyRequest;
+}

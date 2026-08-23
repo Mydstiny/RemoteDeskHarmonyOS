@@ -1,6 +1,7 @@
 import { describe, it, expect } from '@ohos/hypium';
 import {
   makeSshXtermTabCoreKey,
+  matchesSshXtermCopyFence,
   shouldReloadSshXtermTab,
   sshXtermTabRenderRevision
 } from '../main/ets/services/SshXtermTabSurfacePolicy';
@@ -20,6 +21,24 @@ export default function sshXtermTabSurfacePolicyTest(): void {
         .assertTrue();
       expect(sshXtermTabRenderRevision(-3)).assertEqual(0);
       expect(sshXtermTabRenderRevision(8.9)).assertEqual(8);
+    });
+
+    it('rejects_copy_results_from_replaced_or_superseded_documents', 0, (): void => {
+      expect(matchesSshXtermCopyFence(
+        4, 'host-a:xterm:render:7', 9,
+        4, 'host-a:xterm:render:7', 9, true)).assertTrue();
+      expect(matchesSshXtermCopyFence(
+        4, 'host-a:xterm:render:7', 9,
+        5, 'host-a:xterm:render:7', 9, true)).assertFalse();
+      expect(matchesSshXtermCopyFence(
+        4, 'host-a:xterm:render:7', 9,
+        4, 'host-b:xterm:render:7', 9, true)).assertFalse();
+      expect(matchesSshXtermCopyFence(
+        4, 'host-a:xterm:render:7', 9,
+        4, 'host-a:xterm:render:7', 10, true)).assertFalse();
+      expect(matchesSshXtermCopyFence(
+        4, 'host-a:xterm:render:7', 9,
+        4, 'host-a:xterm:render:7', 9, false)).assertFalse();
     });
   });
 }
