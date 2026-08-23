@@ -348,17 +348,25 @@ export class SshSessionStore {
   registerExisting(hostId: string, label: string, address: string,
     handle: SshSessionHandle, state: SshSessionLifecycleState = 'Ready'): boolean {
     if (!isValidSshSessionHandle(handle)) { return false; }
+    const owner: string = normalizeHostId(hostId);
+    if (owner.length === 0) { return false; }
     const existing: SshSessionRecord | undefined = this.records.get(handle.sessionId);
     if (existing !== undefined) {
       if (existing.context.channelId !== handle.channelId ||
-        existing.context.generation !== handle.generation) { return false; }
+        existing.context.generation !== handle.generation ||
+        existing.context.hostId !== owner) {
+        // A native session identity is not a host identity.  A late adoption
+        // callback for another host must not relabel the live owner or create
+        // a second host-to-session mapping around the existing record.
+        return false;
+      }
       existing.context.label = label;
       existing.context.address = address;
       existing.context.detached = false;
-      this.hostToSession.set(existing.context.hostId, handle.sessionId);
+      this.hostToSession.set(owner, handle.sessionId);
       return this.transition(handle, state, 'session.adopted');
     }
-    if (!this.reserve(hostId, label, address, handle)) { return false; }
+    if (!this.reserve(owner, label, address, handle)) { return false; }
     const record: SshSessionRecord | undefined = this.records.get(handle.sessionId);
     if (record === undefined) { return false; }
     if (state !== 'Created') {

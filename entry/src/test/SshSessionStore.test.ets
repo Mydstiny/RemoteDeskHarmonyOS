@@ -59,6 +59,19 @@ export default function sshSessionStoreTest(): void {
       expect(store.accepts(handle(42, 2))).assertTrue();
     });
 
+    it('rejects a cross-host adoption for an existing native identity', 0, (): void => {
+      const store: SshSessionStore = new SshSessionStore();
+      const adopted: SshSessionHandle = handle(47);
+      expect(store.registerExisting('host-owner', 'Owner', 'user@owner', adopted, 'Ready'))
+        .assertTrue();
+
+      expect(store.registerExisting('host-other', 'Other', 'user@other', adopted, 'Ready'))
+        .assertFalse();
+      expect(store.handleForHost('host-owner')?.sessionId).assertEqual(47);
+      expect(store.handleForHost('host-other') === null).assertTrue();
+      expect(store.context(adopted)?.hostId).assertEqual('host-owner');
+    });
+
     it('reclaims a terminal owner before enforcing capacity', 0, (): void => {
       const store: SshSessionStore = new SshSessionStore(1);
       const first: SshSessionHandle = handle(45);
