@@ -2081,6 +2081,59 @@ struct SshTerminal {
     return null;
   }
 
+  /**
+   * Terminal surfaces keep a stable tabId key so Pane operations cannot
+   * remount ArkWeb. Resolve mutable Pane geometry from observed workspace
+   * state inside the retained builder instead of capturing its first frame.
+   */
+  private sshWorkspaceInteractiveForTab(tabId: string, fallback: boolean): boolean {
+    if (!this.sshWorkspaceModeEnabled()) { return fallback; }
+    const frame: SshWorkspacePaneFrame | null = this.sshWorkspaceFrameForTab(tabId);
+    return frame === null ? fallback : frame.active;
+  }
+
+  private sshWorkspaceViewportWidthForTab(tabId: string, fallback: number): number {
+    if (!this.sshWorkspaceModeEnabled()) { return fallback; }
+    const frame: SshWorkspacePaneFrame | null = this.sshWorkspaceFrameForTab(tabId);
+    return frame === null ? fallback : frame.widthVp;
+  }
+
+  private sshWorkspaceViewportHeightForTab(tabId: string, fallback: number): number {
+    if (!this.sshWorkspaceModeEnabled()) { return fallback; }
+    const frame: SshWorkspacePaneFrame | null = this.sshWorkspaceFrameForTab(tabId);
+    return frame === null ? fallback : Math.max(1, frame.heightVp - 48);
+  }
+
+  private focusSshWorkspacePaneForTab(tabId: string): void {
+    const frame: SshWorkspacePaneFrame | null = this.sshWorkspaceFrameForTab(tabId);
+    if (frame !== null) { this.focusSshWorkspacePane(frame); }
+  }
+
+  private splitSshWorkspacePaneForTab(tabId: string, direction: SshPaneDirection): void {
+    const frame: SshWorkspacePaneFrame | null = this.sshWorkspaceFrameForTab(tabId);
+    if (frame !== null) { this.splitSshWorkspacePane(frame.paneId, direction); }
+  }
+
+  private cycleSshWorkspacePaneForTab(tabId: string): void {
+    const frame: SshWorkspacePaneFrame | null = this.sshWorkspaceFrameForTab(tabId);
+    if (frame !== null) { this.cycleSshWorkspacePane(frame.paneId); }
+  }
+
+  private toggleSshWorkspaceFocusForTab(tabId: string): void {
+    const frame: SshWorkspacePaneFrame | null = this.sshWorkspaceFrameForTab(tabId);
+    if (frame !== null) { this.toggleSshWorkspaceFocus(frame.paneId); }
+  }
+
+  private mergeSshWorkspacePaneForTab(tabId: string): void {
+    const frame: SshWorkspacePaneFrame | null = this.sshWorkspaceFrameForTab(tabId);
+    if (frame !== null) { this.mergeSshWorkspacePane(frame.paneId); }
+  }
+
+  private adjustSshWorkspacePaneRatioForTab(tabId: string, delta: number): void {
+    const frame: SshWorkspacePaneFrame | null = this.sshWorkspaceFrameForTab(tabId);
+    if (frame !== null) { this.adjustSshWorkspacePaneRatio(frame.paneId, delta); }
+  }
+
   private sshWorkspaceTabTitleById(tabId: string): string {
     const tab: SshWorkspaceTabV1 | null = this.sshWorkspaceTab(tabId);
     return tab === null ? 'SSH' : this.sshWorkspaceTabTitle(tab);
@@ -4816,7 +4869,7 @@ struct SshTerminal {
       active: rendererActive,
       cols: this.termCols,
       rows: this.termRows,
-      viewportWidth,
+      viewportWidth: this.sshWorkspaceViewportWidthForTab(tab.tabId, viewportWidth),
       fontSize: profile.fontSize,
       lineSpacing: normalizeSshTerminalLineSpacing(profile.lineSpacing),
       bottomAlignSparseContent: !this.isDesktopDevice,
@@ -4833,20 +4886,28 @@ struct SshTerminal {
       profileScrollback: profile.scrollback,
       profileBellStyle: profile.bellStyle,
       profileCopyOnSelect: profile.copyOnSelect,
-      viewportHeight,
+      viewportHeight: this.sshWorkspaceViewportHeightForTab(tab.tabId, viewportHeight),
       outputBuffer: this.xtermOutputBufferForHost(tab.hostId),
       outputSequence: this.termOutputSequence,
       transcriptResetIdentity: this.xtermTranscriptResetIdentity,
       transcriptResetRequest: this.xtermTranscriptResetRequest,
-      focusRequest: interactive ? this.terminalFocusRequest : 0,
-      copyRequest: interactive ? this.copyRequest : 0,
+      focusRequest: this.sshWorkspaceInteractiveForTab(tab.tabId, interactive) ?
+        this.terminalFocusRequest : 0,
+      copyRequest: this.sshWorkspaceInteractiveForTab(tab.tabId, interactive) ?
+        this.copyRequest : 0,
       copiedText: this.copiedText,
-      scrollToBottomRequest: interactive ? this.scrollToBottomRequest : 0,
-      forceScrollToBottomRequest: interactive ? this.forceScrollToBottomRequest : 0,
-      externalScrollLines: interactive ? this.terminalExternalScrollLines : 0,
-      externalScrollRequest: interactive ? this.terminalExternalScrollRequest : 0,
-      searchRequest: interactive ? this.xtermSearchRequestForTab(tab) : '',
-      searchClearRequest: interactive ? this.terminalSearchClearRequest : 0,
+      scrollToBottomRequest: this.sshWorkspaceInteractiveForTab(tab.tabId, interactive) ?
+        this.scrollToBottomRequest : 0,
+      forceScrollToBottomRequest: this.sshWorkspaceInteractiveForTab(tab.tabId, interactive) ?
+        this.forceScrollToBottomRequest : 0,
+      externalScrollLines: this.sshWorkspaceInteractiveForTab(tab.tabId, interactive) ?
+        this.terminalExternalScrollLines : 0,
+      externalScrollRequest: this.sshWorkspaceInteractiveForTab(tab.tabId, interactive) ?
+        this.terminalExternalScrollRequest : 0,
+      searchRequest: this.sshWorkspaceInteractiveForTab(tab.tabId, interactive) ?
+        this.xtermSearchRequestForTab(tab) : '',
+      searchClearRequest: this.sshWorkspaceInteractiveForTab(tab.tabId, interactive) ?
+        this.terminalSearchClearRequest : 0,
       onData: (data: string, surfaceIdentity: string): void => {
         this.onXtermDataForHost(tab.hostId,
           this.sshTabStore.sessionGeneration(tab.hostId), data, surfaceIdentity);
@@ -4883,39 +4944,41 @@ struct SshTerminal {
   }
 
   @Builder
-  private sshWorkspaceLivePane(tab: SshTerminalTabView, frame: SshWorkspacePaneFrame) {
+  private sshWorkspaceLivePane(tab: SshTerminalTabView) {
     Column() {
       SshWorkspacePaneChrome({
         title: tab.label,
         status: this.sshTabDisplayState(tab),
-        active: frame.active,
-        focused: this.sshWorkspaceFocusedPaneId === frame.paneId,
-        compact: frame.widthVp < 520,
+        active: this.sshWorkspaceFrameForTab(tab.tabId)?.active === true,
+        focused: this.sshWorkspaceFocusedPaneId ===
+          (this.sshWorkspaceFrameForTab(tab.tabId)?.paneId ?? ''),
+        compact: (this.sshWorkspaceFrameForTab(tab.tabId)?.widthVp ?? 1) < 520,
         canSplit: sshWorkspaceHiddenTabIds(this.sshWorkspaceSnapshot).length > 0 &&
           sshWorkspaceVisiblePaneCount(this.sshWorkspaceSnapshot.paneRoot) < 4,
         canMerge: sshWorkspaceVisiblePaneCount(this.sshWorkspaceSnapshot.paneRoot) > 1,
         canCycle: this.sshWorkspaceSnapshot.tabOrder.length > 1,
         canAdjustRatio: sshWorkspaceParentSplit(
-          this.sshWorkspaceSnapshot.paneRoot, frame.paneId) !== null,
-        onActivate: (): void => { this.focusSshWorkspacePane(frame); },
+          this.sshWorkspaceSnapshot.paneRoot,
+          this.sshWorkspaceFrameForTab(tab.tabId)?.paneId ?? '') !== null,
+        onActivate: (): void => { this.focusSshWorkspacePaneForTab(tab.tabId); },
         onSplitHorizontal: (): void => {
-          this.splitSshWorkspacePane(frame.paneId, 'horizontal');
+          this.splitSshWorkspacePaneForTab(tab.tabId, 'horizontal');
         },
         onSplitVertical: (): void => {
-          this.splitSshWorkspacePane(frame.paneId, 'vertical');
+          this.splitSshWorkspacePaneForTab(tab.tabId, 'vertical');
         },
-        onCycleTab: (): void => { this.cycleSshWorkspacePane(frame.paneId); },
-        onToggleFocus: (): void => { this.toggleSshWorkspaceFocus(frame.paneId); },
-        onMerge: (): void => { this.mergeSshWorkspacePane(frame.paneId); },
+        onCycleTab: (): void => { this.cycleSshWorkspacePaneForTab(tab.tabId); },
+        onToggleFocus: (): void => { this.toggleSshWorkspaceFocusForTab(tab.tabId); },
+        onMerge: (): void => { this.mergeSshWorkspacePaneForTab(tab.tabId); },
         onAdjustRatio: (delta: number): void => {
-          this.adjustSshWorkspacePaneRatio(frame.paneId, delta);
+          this.adjustSshWorkspacePaneRatioForTab(tab.tabId, delta);
         }
       })
       Stack() {
-        this.sshXtermTabSurface(tab, true, true, frame.active,
-          frame.widthVp, Math.max(1, frame.heightVp - 48),
+        this.sshXtermTabSurface(tab, true, true, false, 1, 1,
           this.resolvedTerminalProfileForHost(tab.hostId))
-        if (frame.active && !this.sshVisibleSurfaceReady()) {
+        if (this.sshWorkspaceFrameForTab(tab.tabId)?.active === true &&
+          !this.sshVisibleSurfaceReady()) {
           Row({ space: 6 }) {
             LoadingProgress().width(15).height(15).color(this.accentColor)
             Text(this.connecting ? '正在鉴权/连接' : '正在准备终端')
@@ -4931,45 +4994,53 @@ struct SshTerminal {
         }
       }
       .width('100%')
-      .height(Math.max(1, frame.heightVp - 48))
+      .height(Math.max(1, (this.sshWorkspaceFrameForTab(tab.tabId)?.heightVp ?? 1) - 48))
     }
-    .width(frame.widthVp)
-    .height(frame.heightVp)
-    .position({ x: frame.xVp, y: frame.yVp })
+    .width(this.sshWorkspaceFrameForTab(tab.tabId)?.widthVp ?? 1)
+    .height(this.sshWorkspaceFrameForTab(tab.tabId)?.heightVp ?? 1)
+    .position({
+      x: this.sshWorkspaceFrameForTab(tab.tabId)?.xVp ?? -10,
+      y: this.sshWorkspaceFrameForTab(tab.tabId)?.yVp ?? -10
+    })
     .backgroundColor('#0D0D0D')
-    .border({ width: frame.active ? 1 : 0.5,
-      color: frame.active ? this.accentColor + 'AA' : 'rgba(255,255,255,0.12)' })
+    .border({ width: this.sshWorkspaceFrameForTab(tab.tabId)?.active === true ? 1 : 0.5,
+      color: this.sshWorkspaceFrameForTab(tab.tabId)?.active === true ?
+        this.accentColor + 'AA' : 'rgba(255,255,255,0.12)' })
     .clip(true)
-    .zIndex(frame.active ? 3 : 2)
+    .zIndex(this.sshWorkspaceFrameForTab(tab.tabId)?.active === true ? 3 : 2)
   }
 
   @Builder
-  private sshWorkspacePlaceholderPane(frame: SshWorkspacePaneFrame) {
+  private sshWorkspacePlaceholderPane(paneId: string) {
     Column() {
       SshWorkspacePaneChrome({
-        title: this.sshWorkspaceTabTitleById(frame.tabId),
+        title: this.sshWorkspaceTabTitleById(
+          this.sshWorkspaceFrameForPane(paneId)?.tabId ?? ''),
         status: '未连接 · 恢复占位',
-        active: frame.active,
-        focused: this.sshWorkspaceFocusedPaneId === frame.paneId,
-        compact: frame.widthVp < 520,
+        active: this.sshWorkspaceFrameForPane(paneId)?.active === true,
+        focused: this.sshWorkspaceFocusedPaneId === paneId,
+        compact: (this.sshWorkspaceFrameForPane(paneId)?.widthVp ?? 1) < 520,
         canSplit: sshWorkspaceHiddenTabIds(this.sshWorkspaceSnapshot).length > 0 &&
           sshWorkspaceVisiblePaneCount(this.sshWorkspaceSnapshot.paneRoot) < 4,
         canMerge: sshWorkspaceVisiblePaneCount(this.sshWorkspaceSnapshot.paneRoot) > 1,
         canCycle: this.sshWorkspaceSnapshot.tabOrder.length > 1,
         canAdjustRatio: sshWorkspaceParentSplit(
-          this.sshWorkspaceSnapshot.paneRoot, frame.paneId) !== null,
-        onActivate: (): void => { this.focusSshWorkspacePane(frame); },
+          this.sshWorkspaceSnapshot.paneRoot, paneId) !== null,
+        onActivate: (): void => {
+          const frame: SshWorkspacePaneFrame | null = this.sshWorkspaceFrameForPane(paneId);
+          if (frame !== null) { this.focusSshWorkspacePane(frame); }
+        },
         onSplitHorizontal: (): void => {
-          this.splitSshWorkspacePane(frame.paneId, 'horizontal');
+          this.splitSshWorkspacePane(paneId, 'horizontal');
         },
         onSplitVertical: (): void => {
-          this.splitSshWorkspacePane(frame.paneId, 'vertical');
+          this.splitSshWorkspacePane(paneId, 'vertical');
         },
-        onCycleTab: (): void => { this.cycleSshWorkspacePane(frame.paneId); },
-        onToggleFocus: (): void => { this.toggleSshWorkspaceFocus(frame.paneId); },
-        onMerge: (): void => { this.mergeSshWorkspacePane(frame.paneId); },
+        onCycleTab: (): void => { this.cycleSshWorkspacePane(paneId); },
+        onToggleFocus: (): void => { this.toggleSshWorkspaceFocus(paneId); },
+        onMerge: (): void => { this.mergeSshWorkspacePane(paneId); },
         onAdjustRatio: (delta: number): void => {
-          this.adjustSshWorkspacePaneRatio(frame.paneId, delta);
+          this.adjustSshWorkspacePaneRatio(paneId, delta);
         }
       })
       Column({ space: 10 }) {
@@ -4980,20 +5051,27 @@ struct SshTerminal {
         Button('按原鉴权流程连接')
           .height(SSH_WORKSPACE_CONTROL_HIT_SIZE_VP).fontSize(12).fontColor(Color.White)
           .backgroundColor(this.accentColor).borderRadius(9)
-          .onClick((): void => { this.activateSshWorkspaceTab(frame.tabId); })
+          .onClick((): void => {
+            const frame: SshWorkspacePaneFrame | null = this.sshWorkspaceFrameForPane(paneId);
+            if (frame !== null) { this.activateSshWorkspaceTab(frame.tabId); }
+          })
       }
       .width('100%').height(0).layoutWeight(1)
       .justifyContent(FlexAlign.Center)
       .padding({ left: 20, right: 20 })
     }
-    .width(frame.widthVp)
-    .height(frame.heightVp)
-    .position({ x: frame.xVp, y: frame.yVp })
+    .width(this.sshWorkspaceFrameForPane(paneId)?.widthVp ?? 1)
+    .height(this.sshWorkspaceFrameForPane(paneId)?.heightVp ?? 1)
+    .position({
+      x: this.sshWorkspaceFrameForPane(paneId)?.xVp ?? -10,
+      y: this.sshWorkspaceFrameForPane(paneId)?.yVp ?? -10
+    })
     .backgroundColor('#10141A')
-    .border({ width: frame.active ? 1 : 0.5,
-      color: frame.active ? this.accentColor + 'AA' : 'rgba(255,255,255,0.12)' })
+    .border({ width: this.sshWorkspaceFrameForPane(paneId)?.active === true ? 1 : 0.5,
+      color: this.sshWorkspaceFrameForPane(paneId)?.active === true ?
+        this.accentColor + 'AA' : 'rgba(255,255,255,0.12)' })
     .clip(true)
-    .zIndex(frame.active ? 3 : 2)
+    .zIndex(this.sshWorkspaceFrameForPane(paneId)?.active === true ? 3 : 2)
   }
 
   @Builder
@@ -17344,8 +17422,7 @@ struct SshTerminal {
             if (this.sshWorkspaceModeEnabled()) {
               ForEach(this.sshTabViews, (tab: SshTerminalTabView): void => {
                 if (this.sshWorkspaceFrameForTab(tab.tabId) !== null) {
-                  this.sshWorkspaceLivePane(tab,
-                    this.sshWorkspaceFrameForTab(tab.tabId) as SshWorkspacePaneFrame)
+                  this.sshWorkspaceLivePane(tab)
                 } else {
                   Stack() {
                     this.sshXtermTabSurface(tab, false, false, false, 1, 1,
@@ -17360,7 +17437,7 @@ struct SshTerminal {
               ForEach(this.sshWorkspacePaneLayout().frames,
                 (frame: SshWorkspacePaneFrame): void => {
                   if (!this.sshWorkspaceRuntimeHasTab(frame.tabId)) {
-                    this.sshWorkspacePlaceholderPane(frame)
+                    this.sshWorkspacePlaceholderPane(frame.paneId)
                   }
                 }, (frame: SshWorkspacePaneFrame): string => frame.paneId)
             } else {
