@@ -25,6 +25,9 @@ class MemoryLogPersistence implements SshSessionLogPersistencePort {
   readChunk(_context: common.Context, chunkId: string): string | null {
     return this.chunks.get(chunkId) ?? null;
   }
+  listChunkIds(_context: common.Context): Array<string> | null {
+    return Array.from(this.chunks.keys());
+  }
   writeChunk(_context: common.Context, chunkId: string, value: string): boolean {
     if (this.failChunkWrite) { return false; }
     this.chunks.set(chunkId, value);
@@ -88,6 +91,7 @@ export default function sshSessionLogStoreTest(): void {
       expect(store.append(logRecord('one', 'before'))).assertTrue();
       persistence.failIndexWrite = true;
       expect(store.append(logRecord('two', 'after'))).assertFalse();
+      expect(persistence.chunks.size).assertEqual(1);
       expect(store.search('before', 'host-one').length).assertEqual(1);
       expect(store.search('after', 'host-one').length).assertEqual(0);
       persistence.failIndexWrite = false;
@@ -95,6 +99,55 @@ export default function sshSessionLogStoreTest(): void {
       expect(restored.init(context)).assertTrue();
       expect(restored.search('before', 'host-one').length).assertEqual(1);
       expect(restored.search('after', 'host-one').length).assertEqual(0);
+    });
+
+    it('should_remove_orphan_chunks_after_process_restart', 0, (): void => {
+      const persistence = new MemoryLogPersistence();
+      const crypto = new FakeLogCrypto();
+      const context: common.Context = undefined as common.Context;
+      const store = new SshSessionLogStore(persistence, crypto);
+      expect(store.init(context)).assertTrue();
+      const settings: SshSessionLogSettingsV1 = store.settingsSnapshot();
+      settings.enabled = true;
+      expect(store.setSettings(settings)).assertTrue();
+      expect(store.append(logRecord('one', 'committed'))).assertTrue();
+      persistence.chunks.set('power-loss-orphan', 'cipher<unreferenced>');
+
+      const restored = new SshSessionLogStore(persistence, crypto);
+      expect(restored.init(context)).assertTrue();
+      expect(restored.search('committed', 'host-one').length).assertEqual(1);
+      expect(persistence.chunks.has('power-loss-orphan')).assertFalse();
+      expect(persistence.chunks.size).assertEqual(1);
+    });
+
+    it('should_not_replace_a_missing_index_when_chunk_rows_still_exist', 0, (): void => {
+      const persistence = new MemoryLogPersistence();
+      const crypto = new FakeLogCrypto();
+      persistence.chunks.set('preserve-for-recovery', 'cipher<unreferenced>');
+      const restored = new SshSessionLogStore(persistence, crypto);
+
+      expect(restored.init(undefined as common.Context)).assertFalse();
+      expect(persistence.index === null).assertTrue();
+      expect(persistence.chunks.has('preserve-for-recovery')).assertTrue();
+    });
+
+    it('should_fail_closed_when_a_repaired_index_cannot_be_committed', 0, (): void => {
+      const persistence = new MemoryLogPersistence();
+      const crypto = new FakeLogCrypto();
+      const context: common.Context = undefined as common.Context;
+      const store = new SshSessionLogStore(persistence, crypto);
+      expect(store.init(context)).assertTrue();
+      const settings: SshSessionLogSettingsV1 = store.settingsSnapshot();
+      settings.enabled = true;
+      expect(store.setSettings(settings)).assertTrue();
+      expect(store.append(logRecord('one', 'missing after power loss'))).assertTrue();
+      const committedId: string = Array.from(persistence.chunks.keys())[0];
+      persistence.chunks.delete(committedId);
+      persistence.failIndexWrite = true;
+
+      const restored = new SshSessionLogStore(persistence, crypto);
+      expect(restored.init(context)).assertFalse();
+      expect(restored.isReady()).assertFalse();
     });
 
     it('should_keep_record_payloads_out_of_page_snapshots', 0, (): void => {

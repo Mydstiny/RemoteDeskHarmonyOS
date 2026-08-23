@@ -59,6 +59,7 @@ export interface SshSessionLogPersistencePort {
   readIndex(context: common.Context): string | null;
   writeIndex(context: common.Context, value: string): boolean;
   readChunk(context: common.Context, chunkId: string): string | null;
+  listChunkIds(context: common.Context): Array<string> | null;
   writeChunk(context: common.Context, chunkId: string, value: string): boolean;
   removeChunk(context: common.Context, chunkId: string): boolean;
 }
@@ -135,6 +136,28 @@ class HarmonySshSessionLogPersistence implements SshSessionLogPersistencePort {
 
   readChunk(_context: common.Context, chunkId: string): string | null {
     return this.readValue(SSH_SESSION_LOG_CHUNK_TABLE, chunkId);
+  }
+
+  listChunkIds(_context: common.Context): Array<string> | null {
+    if (!this.initialized || this.store === null) { return null; }
+    let rows: relationalStore.ResultSet | null = null;
+    try {
+      rows = this.store.querySync(
+        new relationalStore.RdbPredicates(SSH_SESSION_LOG_CHUNK_TABLE), ['id']);
+      const ids: Array<string> = [];
+      const idColumn: number = rows.getColumnIndex('id');
+      while (rows.goToNextRow()) {
+        const id: string = rows.getString(idColumn).slice(0, 160);
+        if (id.length > 0) { ids.push(id); }
+      }
+      return ids;
+    } catch (_err) {
+      return null;
+    } finally {
+      if (rows !== null) {
+        try { rows.close(); } catch (_closeError) {}
+      }
+    }
   }
 
   writeChunk(_context: common.Context, chunkId: string, value: string): boolean {
@@ -302,12 +325,26 @@ export class SshSessionLogStore {
     if (!this.crypto.ready()) { return false; }
     const stored: string | null = this.persistence.readIndex(context);
     if (stored === null) {
+      const persistedIds: Array<string> | null = this.persistence.listChunkIds(context);
+      if (persistedIds === null || persistedIds.length > 0) { return false; }
       // First use after the crypto store is unlocked: create an empty
       // encrypted index so opt-in logging is immediately available.
-      return this.commit(this.document);
+      const committed: boolean = this.commit(this.document);
+      if (!committed || !this.removeOrphanedChunks(new Set<string>())) {
+        this.initialized = false;
+        return false;
+      }
+      return true;
     }
     if (stored.length === 0) {
-      return this.commit(this.document);
+      const persistedIds: Array<string> | null = this.persistence.listChunkIds(context);
+      if (persistedIds === null || persistedIds.length > 0) { return false; }
+      const committed: boolean = this.commit(this.document);
+      if (!committed || !this.removeOrphanedChunks(new Set<string>())) {
+        this.initialized = false;
+        return false;
+      }
+      return true;
     }
     try {
       const index: SshSessionLogIndexV1 | null = decodeIndex(this.crypto.decrypt(stored));
@@ -335,7 +372,18 @@ export class SshSessionLogStore {
       this.initialized = true;
       // Repair an index that referenced a missing/corrupt/expired chunk.
       if (encodeIndex(indexFromDocument(this.document)) !== this.crypto.decrypt(stored)) {
-        this.commit(this.document);
+        if (!this.commit(this.document)) {
+          this.initialized = false;
+          return false;
+        }
+      }
+      const retainedIds: Set<string> = new Set<string>();
+      this.document.chunks.forEach((chunk: SshSessionLogChunkV1): void => {
+        retainedIds.add(chunk.id);
+      });
+      if (!this.removeOrphanedChunks(retainedIds)) {
+        this.initialized = false;
+        return false;
       }
       return true;
     } catch (_err) { return false; }
@@ -497,6 +545,7 @@ export class SshSessionLogStore {
     const context: common.Context = this.context;
     const nextIds: Set<string> = new Set<string>();
     const writes: Array<SshSessionLogPendingWriteV1> = [];
+    const writtenIds: Array<string> = [];
     try {
       for (let index: number = 0; index < normalized.chunks.length; index++) {
         const chunk = normalized.chunks[index];
@@ -510,15 +559,23 @@ export class SshSessionLogStore {
         writes.push({ id: chunk.id, serialized, ciphertext });
       }
       // Write data first. If the index update fails, the old index remains
-      // authoritative and the next init can safely garbage-collect orphans.
+      // authoritative and every newly written row is rolled back immediately.
+      // A real process stop between these operations is cleaned on next init.
       for (let index: number = 0; index < writes.length; index++) {
         const item = writes[index];
-        if (!this.persistence.writeChunk(context, item.id, item.ciphertext)) { return false; }
+        if (!this.persistence.writeChunk(context, item.id, item.ciphertext)) {
+          this.rollbackPendingChunks(writtenIds);
+          return false;
+        }
+        writtenIds.push(item.id);
       }
       const indexPlain: string = encodeIndex(indexFromDocument(normalized));
       const indexCiphertext: string = this.crypto.encrypt(indexPlain);
       if (indexCiphertext.length === 0 || indexCiphertext === indexPlain ||
-        !this.persistence.writeIndex(context, indexCiphertext)) { return false; }
+        !this.persistence.writeIndex(context, indexCiphertext)) {
+        this.rollbackPendingChunks(writtenIds);
+        return false;
+      }
       const oldIds: string[] = [];
       this.document.chunks.forEach((chunk): void => { oldIds.push(chunk.id); });
       oldIds.forEach((id: string): void => {
@@ -535,6 +592,32 @@ export class SshSessionLogStore {
       this.document = normalized;
       this.initialized = true;
       return true;
-    } catch (_err) { return false; }
+    } catch (_err) {
+      this.rollbackPendingChunks(writtenIds);
+      return false;
+    }
+  }
+
+  private rollbackPendingChunks(chunkIds: Array<string>): void {
+    if (this.context === null) { return; }
+    for (let index: number = 0; index < chunkIds.length; index++) {
+      this.persistence.removeChunk(this.context, chunkIds[index]);
+      this.chunkSerialized.delete(chunkIds[index]);
+      this.chunkCiphertext.delete(chunkIds[index]);
+    }
+  }
+
+  private removeOrphanedChunks(retainedIds: Set<string>): boolean {
+    if (this.context === null) { return false; }
+    const persistedIds: Array<string> | null = this.persistence.listChunkIds(this.context);
+    if (persistedIds === null) { return false; }
+    for (let index: number = 0; index < persistedIds.length; index++) {
+      const id: string = persistedIds[index];
+      if (retainedIds.has(id)) { continue; }
+      if (!this.persistence.removeChunk(this.context, id)) { return false; }
+      this.chunkSerialized.delete(id);
+      this.chunkCiphertext.delete(id);
+    }
+    return true;
   }
 }
