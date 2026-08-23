@@ -14033,7 +14033,6 @@ struct SshTerminal {
 
   private async commitRemoteSftpPartial(expectedSize: number,
     session: TransferSession): Promise<SftpRemoteCommitResult> {
-    this.sftpAtomicCommitErrorCode = 0;
     const commitSessionId: number = this.sftpTransferSessionId;
     const commitGeneration: number = this.sftpTransferGeneration;
     if (this.sftpTransferPartialRemotePath.length === 0 || this.sftpTransferRemotePath.length === 0 ||
@@ -14041,6 +14040,7 @@ struct SshTerminal {
       !sshSftpOffsetIsValid(expectedSize, expectedSize) || this.shouldStopSftpTransfer(session)) {
       return 'failed';
     }
+    this.sftpAtomicCommitErrorCode = 0;
     const partialIdentity: SshSftpFileIdentity | null =
       await this.readRemoteSftpIdentity(
         this.sftpTransferPartialRemotePath, commitSessionId, commitGeneration);
@@ -14055,7 +14055,8 @@ struct SshTerminal {
     const parent: string = this.parentRemotePath(this.sftpTransferRemotePath);
     const listed = await this.loader.listRemoteDirAsync(
       commitSessionId, parent, commitGeneration);
-    if (this.shouldStopSftpTransfer(session) || listed.errorCode < 0) {
+    if (this.shouldStopSftpTransfer(session)) { return 'failed'; }
+    if (listed.errorCode < 0) {
       this.sftpAtomicCommitErrorCode = listed.errorCode;
       return 'failed';
     }
@@ -14094,7 +14095,8 @@ struct SshTerminal {
         if (conflictAction === 'skip') {
           const removed = await this.loader.removeRemoteFileAsync(
             commitSessionId, this.sftpTransferPartialRemotePath, commitGeneration);
-          if (this.shouldStopSftpTransfer(session) || removed.errorCode < 0) {
+          if (this.shouldStopSftpTransfer(session)) { return 'failed'; }
+          if (removed.errorCode < 0) {
             this.sftpAtomicCommitErrorCode = removed.errorCode;
             return 'failed';
           }
@@ -14107,7 +14109,8 @@ struct SshTerminal {
       if (conflictAction === 'skip') {
         const removed = await this.loader.removeRemoteFileAsync(
           commitSessionId, this.sftpTransferPartialRemotePath, commitGeneration);
-        if (this.shouldStopSftpTransfer(session) || removed.errorCode < 0) {
+        if (this.shouldStopSftpTransfer(session)) { return 'failed'; }
+        if (removed.errorCode < 0) {
           this.sftpAtomicCommitErrorCode = removed.errorCode;
           return 'failed';
         }
@@ -14140,20 +14143,17 @@ struct SshTerminal {
     const renameResult = await this.loader.renameRemotePathAsync(
       commitSessionId, this.sftpTransferPartialRemotePath, this.sftpTransferRemotePath, true,
       commitGeneration);
-    if (renameResult.errorCode < 0 || renameResult.atomic !== true) {
+    const renameCommitted: boolean = renameResult.errorCode >= 0 && renameResult.atomic === true;
+    // The remote rename is the commit point. A reconnect, page teardown or
+    // user pause/cancel can invalidate the caller after this await, but it
+    // cannot undo an already-successful atomic rename. A failed stale rename
+    // must not publish its error into a replacement transfer.
+    if (this.shouldStopSftpTransfer(session)) {
+      return renameCommitted ? 'committed-session-stale' : 'failed';
+    }
+    if (!renameCommitted) {
       this.sftpAtomicCommitErrorCode = renameResult.errorCode;
       return 'failed';
-    }
-    // The remote rename is the commit point. A reconnect, page teardown or
-    // user cancel can invalidate the caller after this await, but it cannot
-    // undo an already-successful atomic rename. Report that state explicitly
-    // so retry does not look for a partial that no longer exists.
-    if (this.sftpTransferGeneration !== this.sshSessionGeneration ||
-      commitGeneration !== this.sshSessionGeneration || this.sessionId !== commitSessionId ||
-      this.sftpTransferSession === null || this.sftpTransferSession.id !== session.id ||
-      this.sftpTransferSession.stage === 'cancelled' || this.sftpCancelRequested ||
-      this.sftpTransferPageGeneration !== this.pageGeneration) {
-      return 'committed-session-stale';
     }
     const finalIdentity: SshSftpFileIdentity | null =
       await this.readRemoteSftpIdentity(
