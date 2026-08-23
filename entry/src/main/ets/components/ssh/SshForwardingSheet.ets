@@ -1,7 +1,9 @@
 import { Palette, buildDark } from '../../common/Theme';
 import {
+  resolveSshForwardingEditorSheetLayout,
   SshForwardingMode,
   SshForwardingProfile,
+  SshForwardingSheetLayout,
   SshForwardingStartPolicy
 } from '../../services/SshForwardingPolicy';
 import {
@@ -28,6 +30,9 @@ export struct SshForwardingSheet {
   @Prop connected: boolean = false;
   @Prop hostLabel: string = '';
   @Prop statusMessage: string = '';
+  @Prop viewportWidthVp: number = 0;
+  @Prop viewportHeightVp: number = 0;
+  @Prop phone: boolean = true;
   onClose: () => void = (): void => {};
   onSave: (profile: SshForwardingProfile) => void = (_profile: SshForwardingProfile): void => {};
   onStart: (profileId: string) => void = (_profileId: string): void => {};
@@ -54,6 +59,16 @@ export struct SshForwardingSheet {
     // This keeps the terminal-adjacent workflow visually stable and prevents
     // a nested rule sheet from switching palette while its parent is open.
     return buildDark(this.accentColor);
+  }
+
+  private ruleEditorSheetLayout(): SshForwardingSheetLayout {
+    return resolveSshForwardingEditorSheetLayout(
+      this.viewportWidthVp, this.viewportHeightVp, this.phone);
+  }
+
+  private ruleEditorSheetWidth(): Dimension {
+    const layout: SshForwardingSheetLayout = this.ruleEditorSheetLayout();
+    return layout.bottomAnchored ? '100%' : layout.widthVp;
   }
 
   private newId(): string {
@@ -683,10 +698,11 @@ export struct SshForwardingSheet {
       .backgroundColor(this.pal().sheetBg)
       .bindSheet($$this.showRuleEditorSheet,
         this.NewRuleEditorContent(this.ruleEditorMountToken), {
-        height: this.breakpoint === 'sm' ? SheetSize.LARGE : 520,
-        preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
-        width: this.breakpoint === 'sm' ? '100%' : 560,
-        dragBar: this.breakpoint === 'sm',
+        height: this.ruleEditorSheetLayout().heightVp,
+        preferType: this.ruleEditorSheetLayout().bottomAnchored
+          ? SheetType.BOTTOM : SheetType.CENTER,
+        width: this.ruleEditorSheetWidth(),
+        dragBar: this.ruleEditorSheetLayout().bottomAnchored,
         backgroundColor: this.pal().sheetBg,
         blurStyle: BlurStyle.NONE,
         showClose: false,

@@ -211,7 +211,11 @@ import {
 } from '../services/SshProxyRuntimePolicy';
 import { shouldPollSshNativeConnectionState } from '../services/SshTransportPolicy';
 import { SshForwardingSheet } from '../components/ssh/SshForwardingSheet';
-import { SshForwardingProfile } from '../services/SshForwardingPolicy';
+import {
+  resolveSshForwardingSheetLayout,
+  SshForwardingProfile,
+  SshForwardingSheetLayout
+} from '../services/SshForwardingPolicy';
 import { SshForwardingProfileStore } from '../services/SshForwardingProfileStore';
 import {
   SshForwardingController,
@@ -13220,18 +13224,15 @@ struct SshTerminal {
       runtime.state === 'failed' || runtime.state === 'stale');
   }
 
-  private forwardingSheetHeight(): SheetSize | number {
-    if (this.breakpoint === 'sm') { return SheetSize.LARGE; }
-    const available: number = this.shellAreaH > 0 ? this.shellAreaH : 760;
-    const preferred: number = this.forwardingProfiles.length === 0 ? 360 : 460;
-    return Math.max(1, Math.min(preferred, available - 32));
+  private forwardingSheetLayout(): SshForwardingSheetLayout {
+    return resolveSshForwardingSheetLayout(
+      this.shellAreaW, this.shellAreaH, this.forwardingProfiles.length,
+      !this.isDesktopDevice && !this.isPadDevice);
   }
 
   private forwardingSheetWidth(): Dimension {
-    if (this.breakpoint === 'sm') { return '100%'; }
-    const available: number = this.shellAreaW > 0 ? this.shellAreaW : 1100;
-    const preferred: number = this.forwardingProfiles.length === 0 ? 560 : 660;
-    return Math.max(1, Math.min(preferred, available - 40));
+    const layout: SshForwardingSheetLayout = this.forwardingSheetLayout();
+    return layout.bottomAnchored ? '100%' : layout.widthVp;
   }
 
   private promptForwardingConfirmation(title: string, message: string,
@@ -13296,6 +13297,9 @@ struct SshTerminal {
       connected: this.currentForwardingHandle() !== null,
       hostLabel: this.hostLabel,
       statusMessage: this.forwardingStatus,
+      viewportWidthVp: this.shellAreaW,
+      viewportHeightVp: this.shellAreaH,
+      phone: !this.isDesktopDevice && !this.isPadDevice,
       onClose: (): void => { this.closeForwardingSheet(); },
       onSave: (profile: SshForwardingProfile): void => { void this.saveForwardingProfile(profile); },
       onStart: (profileId: string): void => { this.startForwardingProfile(profileId); },
@@ -18111,10 +18115,11 @@ struct SshTerminal {
         .hitTestBehavior(HitTestMode.None)
         .bindSheet($$this.showForwardingSheet,
           this.ForwardingSheetContent(this.forwardingSheetMountToken), {
-          height: this.forwardingSheetHeight(),
-          preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
+          height: this.forwardingSheetLayout().heightVp,
+          preferType: this.forwardingSheetLayout().bottomAnchored
+            ? SheetType.BOTTOM : SheetType.CENTER,
           width: this.forwardingSheetWidth(),
-          dragBar: this.breakpoint === 'sm',
+          dragBar: this.forwardingSheetLayout().bottomAnchored,
           backgroundColor: '#171D25',
           blurStyle: BlurStyle.NONE,
           showClose: false,

@@ -5,6 +5,8 @@ import {
   SshForwardingProfile,
   SshForwardingStartPolicy,
   defaultSshForwardingProfile,
+  resolveSshForwardingEditorSheetLayout,
+  resolveSshForwardingSheetLayout,
   validateSshForwardingProfile,
   validateSshForwardingProfiles
 } from '../main/ets/services/SshForwardingPolicy';
@@ -28,6 +30,43 @@ export default function sshForwardingPolicyTest(): void {
       expect(defaultSshForwardingProfile('local').maxBytes).assertEqual(0);
       expect(defaultSshForwardingProfile('local').startPolicy).assertEqual('manual');
     });
+
+    it('adapts_phone_and_pad_tunnel_sheets_to_content_and_viewport', 0, (): void => {
+      const emptyPhone = resolveSshForwardingSheetLayout(360, 780, 0, true);
+      expect(emptyPhone.bottomAnchored).assertTrue();
+      expect(emptyPhone.widthVp).assertEqual(360);
+      expect(emptyPhone.heightVp).assertEqual(320);
+
+      const phoneWithRules = resolveSshForwardingSheetLayout(360, 780, 2, true);
+      expect(phoneWithRules.heightVp).assertEqual(500);
+      const phoneLandscape = resolveSshForwardingSheetLayout(780, 360, 2, true);
+      expect(phoneLandscape.heightVp).assertEqual(336);
+
+      const padWithRules = resolveSshForwardingSheetLayout(1024, 720, 2, false);
+      expect(padWithRules.bottomAnchored).assertFalse();
+      expect(padWithRules.widthVp).assertEqual(660);
+      expect(padWithRules.heightVp).assertEqual(460);
+
+      const compactPad = resolveSshForwardingSheetLayout(520, 360, 2, false);
+      expect(compactPad.widthVp).assertEqual(480);
+      expect(compactPad.heightVp).assertEqual(312);
+    });
+
+    it('keeps_the_rule_editor_scrollable_inside_short_phone_and_pad_windows', 0,
+      (): void => {
+        const phone = resolveSshForwardingEditorSheetLayout(360, 780, true);
+        expect(phone.bottomAnchored).assertTrue();
+        expect(phone.heightVp).assertEqual(680);
+        expect(phone.widthVp).assertEqual(360);
+
+        const phoneLandscape = resolveSshForwardingEditorSheetLayout(780, 360, true);
+        expect(phoneLandscape.heightVp).assertEqual(336);
+
+        const pad = resolveSshForwardingEditorSheetLayout(1024, 720, false);
+        expect(pad.bottomAnchored).assertFalse();
+        expect(pad.heightVp).assertEqual(672);
+        expect(pad.widthVp).assertEqual(560);
+      });
 
     it('validates local and dynamic mode contracts', 0, (): void => {
       expect(validateSshForwardingProfile(localProfile()).valid).assertTrue();
