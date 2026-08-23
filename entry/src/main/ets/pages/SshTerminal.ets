@@ -7501,6 +7501,11 @@ struct SshTerminal {
     const requestSessionId: number = this.sessionId;
     const requestSessionGeneration: number = this.sshSessionGeneration;
     const providerRoot: string = await this.sftpLocalProvider.currentRoot();
+    if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+      requestSessionGeneration)) {
+      event.setResult(DragResult.DRAG_FAILED);
+      return;
+    }
     if (providerRoot.length === 0) {
       this.sftpStatus = '[SFTP-DROP] 请先授权本机文件目录';
       event.setResult(DragResult.DRAG_FAILED);
@@ -7508,15 +7513,28 @@ struct SshTerminal {
     }
     const stagingName: string = 'drop-' + Date.now().toString(36) + '-' +
       (++this.sftpTaskSequence).toString(36);
-    if (!await this.sftpLocalProvider.createDirectory(providerRoot, stagingName)) {
-      this.sftpStatus = '[SFTP-DROP] 无法创建受控暂存目录';
+    const created: boolean = await this.sftpLocalProvider.createDirectory(providerRoot, stagingName);
+    if (!created) {
+      if (this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+        requestSessionGeneration)) {
+        this.sftpStatus = '[SFTP-DROP] 无法创建受控暂存目录';
+      }
       event.setResult(DragResult.DRAG_FAILED);
       return;
     }
     const stagingRoot: string | null =
       await this.sftpLocalProvider.resolveRelative(providerRoot, stagingName);
     if (stagingRoot === null) {
-      this.sftpStatus = '[SFTP-DROP] 暂存目录校验失败';
+      if (this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+        requestSessionGeneration)) {
+        this.sftpStatus = '[SFTP-DROP] 暂存目录校验失败';
+      }
+      event.setResult(DragResult.DRAG_FAILED);
+      return;
+    }
+    if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+      requestSessionGeneration)) {
+      await this.sftpLocalProvider.remove(stagingRoot, true);
       event.setResult(DragResult.DRAG_FAILED);
       return;
     }
@@ -7525,6 +7543,12 @@ struct SshTerminal {
     this.sftpStatus = '正在安全读取拖入文件...';
     try {
       const data: unifiedDataChannel.UnifiedData = event.getData();
+      if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+        requestSessionGeneration)) {
+        await this.sftpLocalProvider.remove(stagingRoot, true);
+        event.setResult(DragResult.DRAG_FAILED);
+        return;
+      }
       const staged: SshSftpStagedDropResult = await this.sftpDropAdapter.stage(
         data, stagingRoot, SFTP_DROP_LIMITS);
       if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId,
@@ -7546,6 +7570,12 @@ struct SshTerminal {
         event.setResult(DragResult.DRAG_FAILED);
         return;
       }
+      if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+        requestSessionGeneration)) {
+        await this.sftpLocalProvider.remove(stagingRoot, true);
+        event.setResult(DragResult.DRAG_FAILED);
+        return;
+      }
       const result: SshSftpBatchTaskEnqueueResult = this.sftpTaskStore.enqueueBatch(
         this.hostId, 'upload', this.sftpPath, plan);
       if (!result.accepted) {
@@ -7564,7 +7594,10 @@ struct SshTerminal {
       event.setResult(DragResult.DRAG_SUCCESSFUL);
     } catch (_err) {
       await this.sftpLocalProvider.remove(stagingRoot, true);
-      this.sftpStatus = '[SFTP-DROP] UDMF 文件读取失败';
+      if (this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+        requestSessionGeneration)) {
+        this.sftpStatus = '[SFTP-DROP] UDMF 文件读取失败';
+      }
       event.setResult(DragResult.DRAG_FAILED);
     } finally {
       if (this.isSftpRequestActive(requestPageGeneration, requestSessionId,
