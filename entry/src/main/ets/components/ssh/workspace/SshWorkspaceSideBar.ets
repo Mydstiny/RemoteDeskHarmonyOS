@@ -210,5 +210,8 @@ export struct SshWorkspaceSideBar {
     .width('100%').height('100%')
     .backgroundColor('#10161D')
     .border({ width: { right: 0.5 }, color: 'rgba(255,255,255,0.09)' })
+    .id('ssh-workspace-focus-sidebar')
+    .focusable(true)
+    .focusOnTouch(false)
   }
 }

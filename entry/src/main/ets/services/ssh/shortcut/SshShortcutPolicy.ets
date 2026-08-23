@@ -1,5 +1,6 @@
 export type SshShortcutKey =
   | 'F'
+  | 'F6'
   | 'J'
   | 'T'
   | 'W'
@@ -20,6 +21,8 @@ export type SshShortcutAction =
   | 'open_new_session_picker'
   | 'close_active_tab'
   | 'activate_tab_index'
+  | 'focus_next_region'
+  | 'focus_previous_region'
   | 'escape_terminal_focus'
   | 'send_to_terminal'
   | 'let_text_editor_handle'
@@ -41,6 +44,7 @@ export interface SshShortcutContext {
   terminalFocused: boolean;
   terminalSearchEnabled: boolean;
   workspaceShortcutsEnabled?: boolean;
+  focusCycleEnabled?: boolean;
   captureGlobalShortcuts?: boolean;
   tabCount?: number;
 }
@@ -105,6 +109,11 @@ export function routeSshShortcut(chord: SshShortcutChord,
     return decision('let_text_editor_handle', false, '文本编辑控件优先');
   }
   const workspaceShortcutsEnabled: boolean = context.workspaceShortcutsEnabled === true;
+  if (context.focusCycleEnabled === true && chord.key === 'F6' &&
+    !chord.ctrl && !chord.meta && !chord.alt) {
+    return decision(chord.shift ? 'focus_previous_region' : 'focus_next_region', true,
+      chord.shift ? '反向循环 SSH 工作区焦点区域' : '循环 SSH 工作区焦点区域');
+  }
   const workspaceOwnsChord: boolean = workspaceShortcutsEnabled &&
     (!context.terminalFocused || context.captureGlobalShortcuts === true);
   if (workspaceOwnsChord) {

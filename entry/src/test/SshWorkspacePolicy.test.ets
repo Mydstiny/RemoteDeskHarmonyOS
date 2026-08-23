@@ -33,10 +33,12 @@ import {
   SshWorkspaceCapabilityStore
 } from '../main/ets/services/ssh/workspace/SshWorkspaceCapabilityStore';
 import {
+  nextSshWorkspaceFocusRegion,
   resolveSshLayout,
   sameSshLayoutSemantics,
   SshLayoutInput,
-  SshLayoutResult
+  SshLayoutResult,
+  SshWorkspaceFocusRegion
 } from '../main/ets/services/ssh/workspace/SshLayoutPolicy';
 import {
   resolveSshTerminalSemanticStyle,
@@ -286,6 +288,19 @@ export default function sshWorkspacePolicyTest(): void {
       const drifted: SshLayoutResult = resolveSshLayout(layoutInput('dynamic_layout', 1500));
       drifted.titleHeightVp += 1;
       expect(sameSshLayoutSemantics(staticLayout, drifted)).assertFalse();
+    });
+
+    it('f6_focus_cycle_should_wrap_and_skip_unmounted_regions', 0, (): void => {
+      const mounted: Array<SshWorkspaceFocusRegion> =
+        ['title_actions', 'tab_strip', 'pane_host'];
+      expect(nextSshWorkspaceFocusRegion(mounted, '', false)).assertEqual('title_actions');
+      expect(nextSshWorkspaceFocusRegion(mounted, 'title_actions', false))
+        .assertEqual('tab_strip');
+      expect(nextSshWorkspaceFocusRegion(mounted, 'pane_host', false))
+        .assertEqual('title_actions');
+      expect(nextSshWorkspaceFocusRegion(mounted, 'title_actions', true))
+        .assertEqual('pane_host');
+      expect(nextSshWorkspaceFocusRegion([], 'pane_host', false)).assertNull();
     });
 
     it('narrow_pc_window_should_collapse_without_clipping_hit_targets', 0, (): void => {

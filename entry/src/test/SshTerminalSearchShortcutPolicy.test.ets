@@ -18,7 +18,7 @@ import {
   SshShortcutContext
 } from '../main/ets/services/ssh/shortcut/SshShortcutPolicy';
 
-function chord(key: 'F' | 'J' | 'T' | 'W' | 'DIGIT' | 'ENTER' | 'ESCAPE' | 'TAB' | 'OTHER',
+function chord(key: 'F' | 'F6' | 'J' | 'T' | 'W' | 'DIGIT' | 'ENTER' | 'ESCAPE' | 'TAB' | 'OTHER',
   ctrl: boolean = false, shift: boolean = false, alt: boolean = false,
   digit: number = -1): SshShortcutChord {
   return { key, ctrl, meta: false, alt, shift, digit };
@@ -117,6 +117,23 @@ export default function sshTerminalSearchShortcutPolicyTest(): void {
       expect(routeSshShortcut(chord('F', true), editor).action)
         .assertEqual('let_text_editor_handle');
     });
+
+    it('cycles_workspace_regions_with_f6_without_forwarding_it_to_the_terminal', 0,
+      (): void => {
+        const workspace: SshShortcutContext = context();
+        workspace.workspaceShortcutsEnabled = true;
+        workspace.focusCycleEnabled = true;
+        workspace.captureGlobalShortcuts = false;
+        expect(routeSshShortcut(chord('F6'), workspace).action)
+          .assertEqual('focus_next_region');
+        expect(routeSshShortcut(chord('F6', false, true), workspace).action)
+          .assertEqual('focus_previous_region');
+
+        const modal: SshShortcutContext = context();
+        modal.workspaceShortcutsEnabled = true;
+        modal.modalOpen = true;
+        expect(routeSshShortcut(chord('F6'), modal).action).assertEqual('let_modal_handle');
+      });
 
     it('detects_same_scope_conflicts_but_allows_other_scopes', 0, (): void => {
       const existing: SshShortcutBinding = {

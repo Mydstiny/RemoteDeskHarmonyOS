@@ -326,7 +326,13 @@ import {
   SshWorkspaceSaveResult,
   SshWorkspaceStore
 } from '../services/ssh/workspace/SshWorkspaceStore';
-import { resolveSshLayout, SshLayoutResult } from
+import {
+  nextSshWorkspaceFocusRegion,
+  resolveSshLayout,
+  sshWorkspaceFocusOrder,
+  SshLayoutResult,
+  SshWorkspaceFocusRegion
+} from
   '../services/ssh/workspace/SshLayoutPolicy';
 import {
   resolveSshWorkspaceStatus,
@@ -746,6 +752,7 @@ struct SshTerminal {
   @State sshWorkspaceSnapshot: SshWorkspaceSnapshotV1 =
     createEmptySshWorkspace('ssh-default', 'SSH 工作区', 0);
   @State sshWorkspaceFocusedPaneId: string = '';
+  @State sshWorkspaceFocusRegion: string = '';
   @State sshWorkspacePersistenceError: string = '';
   @State sshWorkspaceManualReconnectRunning: boolean = false;
   @State terminalSearchVisible: boolean = false;
@@ -2132,6 +2139,63 @@ struct SshTerminal {
     return Math.max(1, layout.mainWidthVp);
   }
 
+  private sshWorkspaceFocusableRegions(): Array<SshWorkspaceFocusRegion> {
+    if (!this.sshWorkspaceModeEnabled()) { return []; }
+    const order: Array<SshWorkspaceFocusRegion> = sshWorkspaceFocusOrder(
+      this.sshWorkspaceSidebarVisible(), this.sshWorkspaceInspectorVisible());
+    const tabsMounted: boolean = this.sshWorkspaceSnapshot.tabs.length > 0 ||
+      this.sshTabViews.length > 0;
+    const mounted: Array<SshWorkspaceFocusRegion> = [];
+    for (let index: number = 0; index < order.length; index++) {
+      const region: SshWorkspaceFocusRegion = order[index];
+      if (region === 'tab_strip' && !tabsMounted) { continue; }
+      // The status bar is read-only chrome. Keeping it out of the keyboard
+      // cycle prevents it from stealing the terminal's hardware-key focus.
+      if (region === 'status_bar') { continue; }
+      mounted.push(region);
+    }
+    return mounted;
+  }
+
+  private sshWorkspaceFocusNodeId(region: SshWorkspaceFocusRegion): string {
+    if (region === 'title_actions') { return 'ssh-workspace-focus-title-actions'; }
+    if (region === 'sidebar') { return 'ssh-workspace-focus-sidebar'; }
+    if (region === 'tab_strip') {
+      return this.sshTabsInline() ? 'ssh-workspace-focus-tab-strip-inline' :
+        'ssh-workspace-focus-tab-strip-standalone';
+    }
+    if (region === 'inspector') { return 'ssh-workspace-focus-inspector'; }
+    if (region === 'status_bar') { return 'ssh-workspace-focus-status-bar'; }
+    return 'ssh-terminal-pane';
+  }
+
+  private cycleSshWorkspaceFocus(reverse: boolean): void {
+    const next: SshWorkspaceFocusRegion | null = nextSshWorkspaceFocusRegion(
+      this.sshWorkspaceFocusableRegions(), this.sshWorkspaceFocusRegion, reverse);
+    if (next === null || this.terminalClosing || this.sshModalOwnsKeyboard()) { return; }
+    this.sshWorkspaceFocusRegion = next;
+    this.terminalFocusMode = false;
+    this.softKeyboardRequested = false;
+    this.clearTerminalInputFocusRetry();
+    if (next === 'pane_host' && !this.sftpWorkbenchSurfaceActive()) {
+      this.focusKeyboard(false);
+      return;
+    }
+    const nodeId: string = this.sshWorkspaceFocusNodeId(next);
+    const requestPageGeneration: number = this.pageGeneration;
+    setTimeout((): void => {
+      if (this.terminalClosing || requestPageGeneration !== this.pageGeneration ||
+        this.sshModalOwnsKeyboard() || !this.sshWorkspaceModeEnabled()) { return; }
+      let focused: boolean = false;
+      try { focused = focusControl.requestFocus(nodeId); } catch (_err) {}
+      if (!focused) {
+        try { this.getUIContext().getFocusController().requestFocus(nodeId); } catch (_err) {}
+      }
+      hilog.debug(0x0017, 'SshTerminal', '[workspace] focus region=' + next +
+        ' primary=' + (focused ? '1' : '0'));
+    }, 32);
+  }
+
   private setSshWorkspaceSidebarVisible(visible: boolean): void {
     if (!this.sshWorkspaceModeEnabled()) { return; }
     this.applySshWorkspaceAction({
@@ -2250,6 +2314,11 @@ struct SshTerminal {
       items: this.sshWorkspaceStatusView().items,
       compact: this.sshWorkspaceStatusView().compact
     })
+    .id('ssh-workspace-focus-status-bar')
+    .focusable(this.sshWorkspaceModeEnabled())
+    .focusOnTouch(false)
+    .onFocus((): void => { this.sshWorkspaceFocusRegion = 'status_bar'; })
+    .onKeyEvent((event: KeyEvent): boolean => { return this.handleSshKeyEvent(event); })
   }
 
   @Builder
@@ -5416,6 +5485,11 @@ struct SshTerminal {
     .width('100%').height(this.sshTabStripHeight())
     .backgroundColor(this.chromeBg())
     .border({ width: { bottom: 0.5 }, color: 'rgba(255,255,255,0.08)' })
+    .id('ssh-workspace-focus-tab-strip-standalone')
+    .focusable(this.sshWorkspaceModeEnabled())
+    .focusOnTouch(false)
+    .onFocus((): void => { this.sshWorkspaceFocusRegion = 'tab_strip'; })
+    .onKeyEvent((event: KeyEvent): boolean => { return this.handleSshKeyEvent(event); })
   }
 
   @Builder
@@ -5428,6 +5502,11 @@ struct SshTerminal {
     .borderRadius(8)
     .backgroundColor('rgba(255,255,255,0.025)')
     .margin({ left: 12, right: 8 })
+    .id('ssh-workspace-focus-tab-strip-inline')
+    .focusable(this.sshWorkspaceModeEnabled())
+    .focusOnTouch(false)
+    .onFocus((): void => { this.sshWorkspaceFocusRegion = 'tab_strip'; })
+    .onKeyEvent((event: KeyEvent): boolean => { return this.handleSshKeyEvent(event); })
   }
 
   @Builder
@@ -12602,6 +12681,7 @@ struct SshTerminal {
   }
 
   private sshShortcutKey(keyCode: number): SshShortcutKey {
+    if (keyCode === KeyCode.KEYCODE_F6) { return 'F6'; }
     if (keyCode === KeyCode.KEYCODE_F) { return 'F'; }
     if (keyCode === KeyCode.KEYCODE_J) { return 'J'; }
     if (keyCode === KeyCode.KEYCODE_T) { return 'T'; }
@@ -12670,6 +12750,12 @@ struct SshTerminal {
       }
       return true;
     }
+    if (decision.action === 'focus_next_region' ||
+      decision.action === 'focus_previous_region') {
+      try { event.stopPropagation(); } catch (_err) {}
+      this.cycleSshWorkspaceFocus(decision.action === 'focus_previous_region');
+      return true;
+    }
     if (decision.action === 'escape_terminal_focus') {
       this.terminalFocusMode = false;
       return false;
@@ -12732,6 +12818,7 @@ struct SshTerminal {
       terminalFocused: this.terminalFocusMode,
       terminalSearchEnabled: this.sshWorkbenchEnabled,
       workspaceShortcutsEnabled: this.sshWorkbenchEnabled,
+      focusCycleEnabled: this.sshWorkspaceModeEnabled(),
       captureGlobalShortcuts: this.resolvedTerminalProfile.captureGlobalShortcuts,
       tabCount: this.sshTabViews.length
     };
@@ -17708,6 +17795,11 @@ struct SshTerminal {
         direction: GradientDirection.Bottom,
         colors: [['rgba(255,255,255,0.09)', 0], ['rgba(255,255,255,0.00)', 1]]
       })
+      .id('ssh-workspace-focus-title-actions')
+      .focusable(this.sshWorkspaceModeEnabled())
+      .focusOnTouch(false)
+      .onFocus((): void => { this.sshWorkspaceFocusRegion = 'title_actions'; })
+      .onKeyEvent((event: KeyEvent): boolean => { return this.handleSshKeyEvent(event); })
 
       // Phone and compact Pad/free-form windows keep a full-width tab strip,
       // but it belongs below the real session toolbar and its safe-area inset.
@@ -18111,6 +18203,10 @@ struct SshTerminal {
       .constraintSize({ minHeight: 0 })
       .backgroundColor('#0D0D0D')
       .id('ssh-terminal-pane')
+      .focusable(this.sshWorkspaceModeEnabled())
+      .focusOnTouch(false)
+      .onFocus((): void => { this.sshWorkspaceFocusRegion = 'pane_host'; })
+      .onKeyEvent((event: KeyEvent): boolean => { return this.handleSshKeyEvent(event); })
       }
       if (this.sftpWorkbenchSurfaceActive()) {
         Column() {

@@ -3,6 +3,8 @@ import { SshWorkspaceLayoutEngine } from './SshWorkspaceCapabilityPolicy';
 export type SshLayoutMode = 'sm' | 'md' | 'lg' | 'xl';
 export type SshContainerClass = 'compact' | 'regular' | 'wide';
 export type SshWorkspaceTopology = 'single' | 'rail' | 'dual' | 'triple';
+export type SshWorkspaceFocusRegion =
+  'title_actions' | 'sidebar' | 'tab_strip' | 'pane_host' | 'inspector' | 'status_bar';
 
 export interface SshLayoutInput {
   widthVp: number;
@@ -58,14 +60,24 @@ export function sshContainerClass(widthVp: number): SshContainerClass {
 }
 
 export function sshWorkspaceFocusOrder(sidebarVisible: boolean,
-  inspectorVisible: boolean): Array<string> {
-  const result: Array<string> = ['title_actions'];
+  inspectorVisible: boolean): Array<SshWorkspaceFocusRegion> {
+  const result: Array<SshWorkspaceFocusRegion> = ['title_actions'];
   if (sidebarVisible) { result.push('sidebar'); }
   result.push('tab_strip');
   result.push('pane_host');
   if (inspectorVisible) { result.push('inspector'); }
   result.push('status_bar');
   return result;
+}
+
+/** Cycle only through regions that are actually mounted in the current layout. */
+export function nextSshWorkspaceFocusRegion(regions: Array<SshWorkspaceFocusRegion>,
+  current: string, reverse: boolean = false): SshWorkspaceFocusRegion | null {
+  if (regions.length === 0) { return null; }
+  const currentIndex: number = regions.indexOf(current as SshWorkspaceFocusRegion);
+  if (currentIndex < 0) { return reverse ? regions[regions.length - 1] : regions[0]; }
+  const delta: number = reverse ? -1 : 1;
+  return regions[(currentIndex + delta + regions.length) % regions.length];
 }
 
 export function resolveSshLayout(input: SshLayoutInput): SshLayoutResult {

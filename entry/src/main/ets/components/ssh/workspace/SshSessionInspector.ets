@@ -176,5 +176,8 @@ export struct SshSessionInspector {
     .width('100%').height('100%')
     .backgroundColor('#10161D')
     .border({ width: { left: 0.5 }, color: 'rgba(255,255,255,0.09)' })
+    .id('ssh-workspace-focus-inspector')
+    .focusable(true)
+    .focusOnTouch(false)
   }
 }
