@@ -54,3 +54,9 @@ Updated: 2026-08-23 Asia/Shanghai
 - Real Sunshine pair/catalog/launch/first-frame/stop, physical-controller, ARM64, network transition and long-run receipts remain pending.
 - `ohosTest` task `00306054` is still unregistered.
 - The current phone simulator accepts and starts the latest HAP, but its LoginPage gate blocks live connection UI acceptance; old screenshots cannot be reused.
+
+## SSH workbench closeout
+
+- All reported SSH header, sidebar, inspector, status bar, tab chrome, immersive maximize, restored-layout, PC SFTP popup, adaptive new-session/forwarding Sheet, touch terminal/input, connected-session handoff and F6/Shift+F6 focus-cycle defects are implemented in isolated commits through `b9b3db2af`.
+- Final API 24 PC/2in1 acceptance passes for page loading, key-auth connection, single-pane restore, immersive maximize, new-session popup, SFTP popup, forward/reverse focus cycling and terminal input after cycling. Exact test compile, signed HAP assembly, diff check and Light compliance pass; installed HAP SHA-256 is `4ce5efbf1daf48dbcfa19657287d9aa713d863248f18fc9bf13357d50bdf1178`.
+- API 26 Phone/Pad runtime testing is intentionally deferred at the user's request because no test conditions are available. This is an explicit acceptance deferral, not a claimed runtime PASS and not an open implementation item.
