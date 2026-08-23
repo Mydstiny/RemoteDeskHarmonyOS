@@ -435,13 +435,17 @@ export struct SshXtermSurface {
       this.coreKey.trim().length > 0 && this.webMessageGeneration() > 0;
   }
 
-  private detachWebMessagePort(resetAttempted: boolean = true): void {
+  private detachWebMessagePort(resetAttempted: boolean = true): boolean {
     this.webMessagePortToken++;
     this.webMessagePortConnected = false;
     this.webMessagePortReady = false;
     if (resetAttempted) { this.webMessagePortInstallAttempted = false; }
-    if (this.outputPumpRunning) { this.restoreQueuedWrites(); }
+    let restored: boolean = true;
+    if (this.outputPumpRunning || this.inFlightWrites.length > 0 || this.pendingWrites.length > 0) {
+      restored = this.restoreQueuedWrites();
+    }
     this.webMessageChannel.detach();
+    return restored;
   }
 
   private disableWebMessagePort(code: string): void {
@@ -449,9 +453,11 @@ export struct SshXtermSurface {
     this.webMessagePortReady = false;
     hilog.warn(XTERM_DOMAIN, XTERM_TAG, 'web message port disabled code=' + code);
     this.webMessageChannel.detach();
-    if (this.outputPumpRunning) {
-      this.restoreQueuedWrites();
+    let restored: boolean = true;
+    if (this.outputPumpRunning || this.inFlightWrites.length > 0 || this.pendingWrites.length > 0) {
+      restored = this.restoreQueuedWrites();
     }
+    if (!restored) { return; }
     if (!this.disposed && this.active && this.pageReady) {
       this.scheduleOutputPumpRetry(this.lifecycleToken);
     }
@@ -584,7 +590,7 @@ export struct SshXtermSurface {
 
   aboutToAppear(): void {
     this.restoreQueuedWrites();
-    this.detachWebMessagePort();
+    if (!this.detachWebMessagePort()) { return; }
     const lifecycleToken: number = ++this.lifecycleToken;
     this.disposed = false;
     if (this.outputBufferWakeTimer !== -1) {
@@ -648,7 +654,7 @@ export struct SshXtermSurface {
 
   aboutToDisappear(): void {
     this.restoreQueuedWrites();
-    this.detachWebMessagePort();
+    if (!this.detachWebMessagePort()) { return; }
     const lifecycleToken: number = ++this.lifecycleToken;
     this.disposed = true;
     if (this.outputBufferUnsubscribe !== null) {
@@ -989,7 +995,7 @@ export struct SshXtermSurface {
       return;
     }
     const lifecycleToken: number = ++this.lifecycleToken;
-    this.detachWebMessagePort();
+    if (!this.detachWebMessagePort()) { return; }
     this.clearBridgeRetry();
     if (this.readyReportTimer !== -1) {
       clearTimeout(this.readyReportTimer);
@@ -1212,11 +1218,16 @@ export struct SshXtermSurface {
       this.pendingOutputBuffer ?? this.outputBuffer;
     const pendingTarget: XtermOutputBuffer = this.pendingOutputBuffer ??
       this.inFlightOutputBuffer ?? this.outputBuffer;
+    let restored: boolean = true;
     if (inFlightTarget === pendingTarget) {
-      inFlightTarget.prepend(replayBatch.concat(this.pendingWrites));
+      restored = inFlightTarget.prepend(replayBatch.concat(this.pendingWrites));
     } else {
-      if (replayBatch.length > 0) { inFlightTarget.prepend(replayBatch); }
-      if (this.pendingWrites.length > 0) { pendingTarget.prepend(this.pendingWrites); }
+      if (replayBatch.length > 0) {
+        restored = inFlightTarget.prepend(replayBatch) && restored;
+      }
+      if (this.pendingWrites.length > 0) {
+        restored = pendingTarget.prepend(this.pendingWrites) && restored;
+      }
     }
     this.clearOutputBatchAckTimer();
     this.inFlightWrites = [];
@@ -1225,6 +1236,11 @@ export struct SshXtermSurface {
     this.pendingOutputBuffer = null;
     this.awaitingOutputBatch = 0;
     this.outputPumpRunning = false;
+    if (!restored) {
+      hilog.error(XTERM_DOMAIN, XTERM_TAG,
+        'xterm output replay rejected after renderer backlog overflow');
+      return;
+    }
     hilog.warn(XTERM_DOMAIN, XTERM_TAG,
       'xterm output write failed, replaying batch=' + replayBatch.length.toString() +
       ' after consumed=' + consumed.toString());
@@ -1280,7 +1296,7 @@ export struct SshXtermSurface {
     if (this.documentReloadPending && this.reloadRequestedDocumentKey === requestedDocumentKey) {
       return;
     }
-    this.detachWebMessagePort();
+    if (!this.detachWebMessagePort()) { return; }
     const lifecycleToken: number = ++this.lifecycleToken;
     this.clearBridgeRetry();
     if (this.outputPumpRetryTimer !== -1) {
@@ -1332,18 +1348,23 @@ export struct SshXtermSurface {
   }
 
   /** Return local queues before a document/lifecycle handoff can invalidate them. */
-  private restoreQueuedWrites(): void {
+  private restoreQueuedWrites(): boolean {
     this.clearOutputBatchAckTimer();
     const inFlightTarget: XtermOutputBuffer = this.inFlightOutputBuffer ??
       this.pendingOutputBuffer ?? this.outputBuffer;
     const pendingTarget: XtermOutputBuffer = this.pendingOutputBuffer ??
       this.inFlightOutputBuffer ?? this.outputBuffer;
+    let restored: boolean = true;
     if (this.inFlightWrites.length > 0 && this.pendingWrites.length > 0 &&
       inFlightTarget === pendingTarget) {
-      inFlightTarget.prepend(this.inFlightWrites.concat(this.pendingWrites));
+      restored = inFlightTarget.prepend(this.inFlightWrites.concat(this.pendingWrites));
     } else {
-      if (this.inFlightWrites.length > 0) { inFlightTarget.prepend(this.inFlightWrites); }
-      if (this.pendingWrites.length > 0) { pendingTarget.prepend(this.pendingWrites); }
+      if (this.inFlightWrites.length > 0) {
+        restored = inFlightTarget.prepend(this.inFlightWrites) && restored;
+      }
+      if (this.pendingWrites.length > 0) {
+        restored = pendingTarget.prepend(this.pendingWrites) && restored;
+      }
     }
     this.inFlightWrites = [];
     this.inFlightOutputBuffer = null;
@@ -1351,6 +1372,7 @@ export struct SshXtermSurface {
     this.pendingOutputBuffer = null;
     this.outputPumpRunning = false;
     this.awaitingOutputBatch = 0;
+    return restored;
   }
 
   private scheduleOutputBatchAckTimeout(lifecycleToken: number, batchSequence: number): void {
@@ -1363,8 +1385,12 @@ export struct SshXtermSurface {
       }
       hilog.warn(XTERM_DOMAIN, XTERM_TAG,
         'xterm output frame ack timeout, reloading document');
-      this.restoreQueuedWrites();
-      this.reloadDocumentForCoreKey();
+      if (this.restoreQueuedWrites()) {
+        this.reloadDocumentForCoreKey();
+      } else {
+        hilog.error(XTERM_DOMAIN, XTERM_TAG,
+          'xterm output timeout recovery stopped after renderer backlog overflow');
+      }
     }, 640);
   }
 
@@ -1494,7 +1520,7 @@ export struct SshXtermSurface {
   private onCoreKeyChange(): void {
     if (this.disposed) { return; }
     if (this.webMessagePortConnected || this.webMessagePortInstallAttempted) {
-      this.detachWebMessagePort();
+    if (!this.detachWebMessagePort()) { return; }
     }
     if (!this.active) {
       this.pendingCoreKeyReload = true;
@@ -1514,7 +1540,7 @@ export struct SshXtermSurface {
   private onRenderRevisionChange(): void {
     if (this.disposed) { return; }
     if (this.webMessagePortConnected || this.webMessagePortInstallAttempted) {
-      this.detachWebMessagePort();
+      if (!this.detachWebMessagePort()) { return; }
     }
     if (!this.active) {
       this.pendingCoreKeyReload = true;
