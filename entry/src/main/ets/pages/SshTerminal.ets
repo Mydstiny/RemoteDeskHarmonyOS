@@ -349,6 +349,7 @@ import {
   resolveSshSessionLogsEnabled,
   sanitizeSshSessionLogText,
   sshSessionLogCaptureAllowed,
+  sshSessionLogInputPhaseAllowed,
   SSH_SESSION_LOGS_DEFAULT_ENABLED,
   SSH_SESSION_LOGS_FLAG_KEY,
   SshSessionLogDocumentV1,
@@ -10640,10 +10641,21 @@ struct SshTerminal {
   private recordSshSessionLogInput(data: string, control: boolean): void {
     const identity: SshSessionLogIdentityV1 | null = this.sshSessionLogIdentity(
       this.hostId, this.sessionId, this.sshSessionGeneration);
-    if (identity === null || !this.sshSessionLogCaptureContext(identity, true)) { return; }
-    if (control && data !== '\r' && data !== '\n') { return; }
+    if (identity === null) { return; }
     const key: string = identity.hostId + ':' + identity.sessionId.toString() + ':' +
       identity.generation.toString();
+    const sessionKey: string = this.sshProductivitySessionKey(
+      identity.hostId, identity.sessionId, identity.generation);
+    const phase: SshProductivityShellPhase =
+      this.sshProductivityShellPhases.get(sessionKey) ?? 'idle';
+    const trustedCommandInput: boolean = this.sshWorkbenchEnabled && this.sshProductivityReady &&
+      this.sshProductivityDocument.settings.shellIntegrationEnabled &&
+      sshSessionLogInputPhaseAllowed(phase);
+    if (!this.sshSessionLogCaptureContext(identity, true) || !trustedCommandInput) {
+      this.sshSessionLogInputBuffers.delete(key);
+      return;
+    }
+    if (control && data !== '\r' && data !== '\n') { return; }
     let buffer: string = this.sshSessionLogInputBuffers.get(key) ?? '';
     for (let index: number = 0; index < data.length; index++) {
       const char: string = data.charAt(index);

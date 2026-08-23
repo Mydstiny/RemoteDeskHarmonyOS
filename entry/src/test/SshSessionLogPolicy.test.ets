@@ -14,6 +14,7 @@ import {
   searchSshSessionLog,
   sanitizeSshSessionLogText,
   sshSessionLogCaptureAllowed,
+  sshSessionLogInputPhaseAllowed,
   SSH_SESSION_LOG_CHUNK_MAX_RECORDS,
   SSH_SESSION_LOGS_DEFAULT_ENABLED,
   SSH_SESSION_LOG_SEARCH_WORK_BUDGET,
@@ -148,6 +149,14 @@ export default function sshSessionLogPolicyTest(): void {
       expect(sshSessionLogCaptureAllowed({ ...base, passwordPrompt: true })).assertFalse();
       expect(sshSessionLogCaptureAllowed({ ...base, fullscreenMode: true })).assertFalse();
       expect(sshSessionLogCaptureAllowed({ ...base, generation: 0 })).assertFalse();
+    });
+
+    it('input_capture_should_require_a_trusted_command_editing_phase', 0, (): void => {
+      expect(sshSessionLogInputPhaseAllowed('prompt')).assertTrue();
+      expect(sshSessionLogInputPhaseAllowed('command')).assertTrue();
+      expect(sshSessionLogInputPhaseAllowed('executed')).assertFalse();
+      expect(sshSessionLogInputPhaseAllowed('idle')).assertFalse();
+      expect(sshSessionLogInputPhaseAllowed('password')).assertFalse();
     });
 
     it('sanitizer_should_remove_vt_and_mask_common_secret_forms', 0, (): void => {

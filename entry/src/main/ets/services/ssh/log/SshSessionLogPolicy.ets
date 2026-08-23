@@ -247,6 +247,15 @@ export function sshSessionLogCaptureAllowed(context: SshSessionLogCaptureContext
     !context.secretExpansion && identityValid(context);
 }
 
+/**
+ * Terminal input is safe to persist only while trusted shell integration says
+ * the user is editing a command. After the command-executed marker, any input
+ * can be an interactive sudo/su/database password and must fail closed.
+ */
+export function sshSessionLogInputPhaseAllowed(phase: string): boolean {
+  return phase === 'prompt' || phase === 'command';
+}
+
 export function normalizeSshSessionLogRecord(
   source: SshSessionLogRecordV1,
   redactSensitive: boolean = true
