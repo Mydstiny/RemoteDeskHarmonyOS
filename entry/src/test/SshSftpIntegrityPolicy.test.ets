@@ -7,7 +7,8 @@ import {
   sshSftpLocalExportShouldContinue,
   sshSftpOffsetIsValid,
   sshSftpPartialSuffix,
-  sshSftpSkipRemovalDecision
+  sshSftpSkipRemovalDecision,
+  writeSshSftpPayloadFully
 } from '../main/ets/services/SshSftpIntegrityPolicy';
 
 export default function sshSftpIntegrityPolicyTest(): void {
@@ -75,5 +76,25 @@ export default function sshSftpIntegrityPolicyTest(): void {
       expect(sshSftpLocalExportShouldContinue(true, false, false)).assertFalse();
       expect(sshSftpLocalExportShouldContinue(true, false, true)).assertFalse();
     });
+
+    it('completes bounded export payloads across legal short writes', 0,
+      async (): Promise<void> => {
+        const requests: number[] = [];
+        const payload: ArrayBuffer = new Uint8Array([1, 2, 3, 4, 5]).buffer as ArrayBuffer;
+        const completed: boolean = await writeSshSftpPayloadFully(payload,
+          async (remaining: ArrayBuffer): Promise<number> => {
+            requests.push(remaining.byteLength);
+            return Math.min(2, remaining.byteLength);
+          });
+        expect(completed).assertTrue();
+        expect(requests.length).assertEqual(3);
+        expect(requests[0]).assertEqual(5);
+        expect(requests[1]).assertEqual(3);
+        expect(requests[2]).assertEqual(1);
+        expect(await writeSshSftpPayloadFully(payload,
+          async (_remaining: ArrayBuffer): Promise<number> => 0)).assertFalse();
+        expect(await writeSshSftpPayloadFully(payload,
+          async (remaining: ArrayBuffer): Promise<number> => remaining.byteLength + 1)).assertFalse();
+      });
   });
 }

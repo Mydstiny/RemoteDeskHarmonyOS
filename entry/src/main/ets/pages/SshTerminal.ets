@@ -409,7 +409,8 @@ import {
   sshSftpLocalExportShouldContinue,
   sshSftpOffsetIsValid,
   sshSftpPartialSuffix,
-  sshSftpSkipRemovalDecision
+  sshSftpSkipRemovalDecision,
+  writeSshSftpPayloadFully
 } from '../services/SshSftpIntegrityPolicy';
 import {
   SshSftpTaskDirection,
@@ -14268,6 +14269,7 @@ struct SshTerminal {
       destination = await fileIo.open(finalUri,
         fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.CREATE | fileIo.OpenMode.TRUNC);
       destinationOpened = true;
+      const destinationFd: number = destination.fd;
       if (!sshSftpLocalExportShouldContinue(true,
         this.isSftpTransferAttemptCurrent(session), this.shouldStopSftpTransfer(session))) {
         return false;
@@ -14287,8 +14289,11 @@ struct SshTerminal {
           return false;
         }
         const payload: ArrayBuffer = readLen === chunkSize ? chunk : chunk.slice(0, readLen);
-        const written: number = await fileIo.write(destination.fd, payload);
-        if (written !== readLen) { return false; }
+        if (!await writeSshSftpPayloadFully(payload,
+          async (remaining: ArrayBuffer): Promise<number> =>
+            await fileIo.write(destinationFd, remaining))) {
+          return false;
+        }
         copied += readLen;
         if (!sshSftpLocalExportShouldContinue(true,
           this.isSftpTransferAttemptCurrent(session), this.shouldStopSftpTransfer(session))) {

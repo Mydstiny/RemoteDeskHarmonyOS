@@ -31,6 +31,8 @@ export interface SshSftpSkipRemovalDecision {
   publishError: boolean;
 }
 
+export type SshSftpPayloadWriter = (payload: ArrayBuffer) => Promise<number>;
+
 export type SshSftpCommittedDisposition =
   'normal' | 'cancelled-after-commit' | 'paused-after-commit' | 'request-stale';
 
@@ -92,6 +94,27 @@ export function sshSftpLocalExportShouldContinue(destinationOpened: boolean,
   attemptCurrent: boolean, stopRequested: boolean): boolean {
   if (!attemptCurrent) { return false; }
   return destinationOpened || !stopRequested;
+}
+
+/** Complete one bounded local-export payload across legal short writes. */
+export async function writeSshSftpPayloadFully(payload: ArrayBuffer,
+  writer: SshSftpPayloadWriter): Promise<boolean> {
+  let offset: number = 0;
+  while (offset < payload.byteLength) {
+    const remaining: ArrayBuffer = offset === 0 ? payload : payload.slice(offset);
+    let written: number = -1;
+    try {
+      written = await writer(remaining);
+    } catch (_err) {
+      return false;
+    }
+    if (!Number.isFinite(written) || !Number.isInteger(written) ||
+      written <= 0 || written > remaining.byteLength) {
+      return false;
+    }
+    offset += written;
+  }
+  return offset === payload.byteLength;
 }
 
 export function sshSftpPartialSuffix(taskId: string): string {

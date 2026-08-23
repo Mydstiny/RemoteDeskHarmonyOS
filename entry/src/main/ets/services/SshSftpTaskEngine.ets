@@ -20,7 +20,8 @@ import {
   sshSftpCommitSizeMatches,
   sshSftpIdentityMatches,
   sshSftpOffsetIsValid,
-  sshSftpPartialSuffix
+  sshSftpPartialSuffix,
+  writeSshSftpPayloadFully
 } from './SshSftpIntegrityPolicy';
 import {
   SshSftpCommitRecoveryDecision,
@@ -1853,6 +1854,7 @@ export class SshSftpTaskEngine {
       source = await fileIo.open(partialPath, fileIo.OpenMode.READ_ONLY);
       destination = await fileIo.open(finalUri,
         fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.CREATE | fileIo.OpenMode.TRUNC);
+      const destinationFd: number = destination.fd;
       let copied: number = 0;
       while (copied < expectedSize) {
         const chunkSize: number = Math.min(DOWNLOAD_CHUNK_BYTES, expectedSize - copied);
@@ -1860,9 +1862,12 @@ export class SshSftpTaskEngine {
         const readLength: number = await fileIo.read(source.fd, chunk);
         if (readLength <= 0) { return false; }
         const payload: ArrayBuffer = readLength === chunkSize ? chunk : chunk.slice(0, readLength);
-        const written: number = await fileIo.write(destination.fd, payload);
-        if (written !== readLength) { return false; }
-        copied += written;
+        if (!await writeSshSftpPayloadFully(payload,
+          async (remaining: ArrayBuffer): Promise<number> =>
+            await fileIo.write(destinationFd, remaining))) {
+          return false;
+        }
+        copied += readLength;
       }
       await fileIo.fsync(destination.fd);
       await fileIo.close(destination);
