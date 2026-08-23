@@ -305,7 +305,7 @@ export class SshSessionStore {
   /** Reserve a new native identity before its asynchronous connect settles. */
   reserve(hostId: string, label: string, address: string, handle: SshSessionHandle): boolean {
     const owner: string = normalizeHostId(hostId);
-    if (owner.length === 0 || !isValidSshSessionHandle(handle) || this.records.size >= this.maxSessions) {
+    if (owner.length === 0 || !isValidSshSessionHandle(handle)) {
       return false;
     }
     const oldSessionId: number | undefined = this.hostToSession.get(owner);
@@ -316,7 +316,10 @@ export class SshSessionStore {
       }
       this.removeRecord(oldSessionId);
     }
-    if (this.records.has(handle.sessionId)) { return false; }
+    // Reclaiming a terminal owner above can free the only slot. Enforce the
+    // global bound only after that host-local stale record has been removed;
+    // otherwise a full registry permanently blocks reconnecting that host.
+    if (this.records.size >= this.maxSessions || this.records.has(handle.sessionId)) { return false; }
     const context: SshSessionContext = {
       schemaVersion: SSH_SESSION_SCHEMA_VERSION,
       sessionId: handle.sessionId,

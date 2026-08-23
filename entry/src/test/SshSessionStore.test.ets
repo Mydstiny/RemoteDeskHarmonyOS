@@ -59,6 +59,20 @@ export default function sshSessionStoreTest(): void {
       expect(store.accepts(handle(42, 2))).assertTrue();
     });
 
+    it('reclaims a terminal owner before enforcing capacity', 0, (): void => {
+      const store: SshSessionStore = new SshSessionStore(1);
+      const first: SshSessionHandle = handle(45);
+      expect(store.registerExisting('host-capacity', 'Host capacity', 'user@host-capacity',
+        first, 'Ready')).assertTrue();
+      expect(store.transition(first, 'Failed', 'connect.failed')).assertTrue();
+
+      const replacement: SshSessionHandle = handle(46);
+      expect(store.registerExisting('host-capacity', 'Host capacity', 'user@host-capacity',
+        replacement, 'Ready')).assertTrue();
+      expect(store.handleForHost('host-capacity')?.sessionId).assertEqual(46);
+      expect(store.context(first) === null).assertTrue();
+    });
+
     it('rolls back an invalid adopted transition', 0, (): void => {
       const store: SshSessionStore = new SshSessionStore();
       const invalid: SshSessionHandle = handle(43);
