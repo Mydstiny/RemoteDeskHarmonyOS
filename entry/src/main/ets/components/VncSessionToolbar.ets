@@ -62,20 +62,29 @@ export struct VncSessionToolbar {
     .onClick(action)
   }
 
+  private mobileRailHeight(fallback: number): number {
+    return this.placement.railRect.height > 0 ? this.placement.railRect.height : fallback;
+  }
+
   @Builder
   private mobileCollapsedRail() {
     Stack() {
       Row() {
-        SymbolGlyph($r('sys.symbol.chevron_left')).fontSize(18).fontColor(['#444444'])
+        SymbolGlyph(this.placement.side === 'left' ?
+          $r('sys.symbol.chevron_right') : $r('sys.symbol.chevron_left'))
+          .fontSize(18).fontColor(['#444444'])
       }
-      .width(30).height(72)
+      .width(30).height(this.mobileRailHeight(72))
       .justifyContent(FlexAlign.Center)
       .backgroundColor('rgba(255,255,255,0.92)')
-      .borderRadius({ topLeft: 10, topRight: 0, bottomLeft: 10, bottomRight: 0 })
-      .shadow({ radius: 8, color: 'rgba(0,0,0,0.22)', offsetX: -2 })
-      .position({ x: 14, y: 0 })
+      .borderRadius(this.placement.side === 'left' ?
+        { topLeft: 0, topRight: 10, bottomLeft: 0, bottomRight: 10 } :
+        { topLeft: 10, topRight: 0, bottomLeft: 10, bottomRight: 0 })
+      .shadow({ radius: 8, color: 'rgba(0,0,0,0.22)',
+        offsetX: this.placement.side === 'left' ? 2 : -2 })
+      .position({ x: this.placement.side === 'left' ? 0 : 14, y: 0 })
     }
-    .width(44).height(72)
+    .width(44).height(this.mobileRailHeight(72))
     .position({ x: this.placement.railRect.x, y: this.placement.railRect.y })
     .gesture(PanGesture({ fingers: 1, distance: 5 })
       .onActionEnd((event: GestureEvent): void => {
@@ -90,7 +99,9 @@ export struct VncSessionToolbar {
     Column({ space: 5 }) {
       Stack() {
         Row() {
-          SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(16).fontColor(['#444444'])
+          SymbolGlyph(this.placement.side === 'left' ?
+            $r('sys.symbol.chevron_left') : $r('sys.symbol.chevron_right'))
+            .fontSize(16).fontColor(['#444444'])
         }
         .width(56).height(30)
         .justifyContent(FlexAlign.Center)
@@ -101,31 +112,41 @@ export struct VncSessionToolbar {
       .width('100%').height(44)
       .accessibilityText('收起 VNC 会话工具栏')
       .onClick((): void => { this.actions.onCollapse(); })
-      if (this.viewOnly) {
-        Row() {
-          SymbolGlyph($r('sys.symbol.eye')).fontSize(13).fontColor(['#FFFFFF'])
-          Text('只读').fontSize(10).fontColor('#FFFFFF').margin({ left: 4 })
+      Scroll() {
+        Column({ space: 5 }) {
+          if (this.viewOnly) {
+            Row() {
+              SymbolGlyph($r('sys.symbol.eye')).fontSize(13).fontColor(['#FFFFFF'])
+              Text('只读').fontSize(10).fontColor('#FFFFFF').margin({ left: 4 })
+            }
+            .height(24).width('100%').justifyContent(FlexAlign.Center)
+          }
+          this.actionButton($r('sys.symbol.keyboard'), this.keyboardOpen ? '收键盘' : '键盘',
+            this.keyboardOpen, (): void => { this.actions.onToggleKeyboard(); })
+          this.actionButton($r('sys.symbol.arrow_up_left'), this.controlModeLabel, false,
+            (): void => { this.actions.onCycleControlMode(); })
+          this.actionButton($r('sys.symbol.bolt_fill'), '组合键', false,
+            (): void => { this.actions.onOpenShortcuts(); })
+          this.actionButton($r('sys.symbol.desktop_fill'), this.displayScaleLabel, false,
+            (): void => { this.actions.onCycleDisplayScale(); })
+          this.actionButton($r('sys.symbol.list_bullet'), '性能', this.diagnosticsEnabled,
+            (): void => { this.actions.onToggleDiagnostics(); })
+          this.actionButton($r('sys.symbol.xmark'), '断开', false,
+            (): void => { this.actions.onDisconnect(); }, true)
         }
-        .height(24).width('100%').justifyContent(FlexAlign.Center)
       }
-      this.actionButton($r('sys.symbol.keyboard'), this.keyboardOpen ? '收键盘' : '键盘',
-        this.keyboardOpen, (): void => { this.actions.onToggleKeyboard(); })
-      this.actionButton($r('sys.symbol.arrow_up_left'), this.controlModeLabel, false,
-        (): void => { this.actions.onCycleControlMode(); })
-      this.actionButton($r('sys.symbol.bolt_fill'), '组合键', false,
-        (): void => { this.actions.onOpenShortcuts(); })
-      this.actionButton($r('sys.symbol.desktop_fill'), this.displayScaleLabel, false,
-        (): void => { this.actions.onCycleDisplayScale(); })
-      this.actionButton($r('sys.symbol.list_bullet'), '性能', this.diagnosticsEnabled,
-        (): void => { this.actions.onToggleDiagnostics(); })
-      this.actionButton($r('sys.symbol.xmark'), '断开', false,
-        (): void => { this.actions.onDisconnect(); }, true)
+      .width('100%').layoutWeight(1)
+      .scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
     }
     .width(this.placement.railRect.width > 0 ? this.placement.railRect.width : 68)
+    .height(this.mobileRailHeight(350))
     .padding(6)
-    .borderRadius({ topLeft: 10, bottomLeft: 10, topRight: 0, bottomRight: 0 })
+    .borderRadius(this.placement.side === 'left' ?
+      { topLeft: 0, bottomLeft: 0, topRight: 10, bottomRight: 10 } :
+      { topLeft: 10, bottomLeft: 10, topRight: 0, bottomRight: 0 })
     .backgroundColor('rgba(255,255,255,0.94)')
-    .shadow({ radius: 10, color: 'rgba(0,0,0,0.24)', offsetX: -2 })
+    .shadow({ radius: 10, color: 'rgba(0,0,0,0.24)',
+      offsetX: this.placement.side === 'left' ? 2 : -2 })
     .position({ x: this.placement.railRect.x, y: this.placement.railRect.y })
     .gesture(PanGesture({ fingers: 1, distance: 5 })
       .onActionEnd((event: GestureEvent): void => {

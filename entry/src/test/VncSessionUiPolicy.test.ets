@@ -98,6 +98,9 @@ export default function vncSessionUiPolicyTest(): void {
       expect(vncToolbarRailHeight('pad', false, false)).assertEqual(350);
       expect(vncToolbarRailHeight('pad', true, false)).assertEqual(379);
       expect(vncToolbarRailHeight('pad', true, true)).assertEqual(72);
+      expect(vncToolbarRailHeight('phone', false, false, 248)).assertEqual(248);
+      expect(vncToolbarRailHeight('pad', true, false, 216)).assertEqual(216);
+      expect(vncToolbarRailHeight('phone', false, true, 56)).assertEqual(56);
     });
 
     it('isolates_vnc_position_preferences_by_device_and_orientation', 0, (): void => {
@@ -118,6 +121,20 @@ export default function vncSessionUiPolicyTest(): void {
       expect(placement.recovery).assertEqual('none');
       expect(placement.railRect.y >= viewport.systemTop).assertTrue();
       expect(placement.railRect.y + placement.railRect.height <= viewport.keyboardRect.y).assertTrue();
+    });
+
+    it('keeps_a_scrollable_expanded_rail_in_short_landscape', 0, (): void => {
+      const viewport: OverlayViewport = mobileViewport();
+      viewport.width = 760;
+      viewport.height = 280;
+      viewport.systemBottom = 8;
+      viewport.orientation = 'landscape';
+      const request: OverlayPlacementRequest = vncPhoneRailRequest();
+      request.railHeight = vncToolbarRailHeight('phone', false, false, 248);
+      const placement: OverlayPlacement = resolveOverlayPlacement(viewport, request);
+      expect(placement.recovery).assertEqual('none');
+      expect(placement.railRect.height).assertEqual(248);
+      expect(placement.railRect.y + placement.railRect.height <= 272).assertTrue();
     });
 
     it('hides_vnc_rail_when_no_safe_mobile_slot_exists', 0, (): void => {

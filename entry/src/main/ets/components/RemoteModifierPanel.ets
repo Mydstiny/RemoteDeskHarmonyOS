@@ -48,6 +48,8 @@ export struct RemoteModifierPanel {
   @Prop panelY: number = 70;
   @Prop shortcutX: number = 8;
   @Prop shortcutY: number = 200;
+  /** Parent-derived safe height after toolbars, avoid areas and IME. */
+  @Prop maxPanelHeight: number = 480;
   @Prop customizationEnabled: boolean = false;
   @Prop customShortcuts: Array<RemoteCustomShortcut> = [];
   @StorageProp('accentColor') accentColor: string = '#007DFF';
@@ -384,7 +386,9 @@ export struct RemoteModifierPanel {
   }
 
   private panelHeight(): number {
-    return Math.max(1, Math.min(480, this.viewportHeight - 16));
+    const availableHeight: number = Number.isFinite(this.maxPanelHeight) ?
+      Math.max(1, this.maxPanelHeight) : 480;
+    return Math.max(1, Math.min(480, this.viewportHeight - 16, availableHeight));
   }
 
   // ============================================================

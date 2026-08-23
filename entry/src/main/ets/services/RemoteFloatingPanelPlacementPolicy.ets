@@ -15,6 +15,14 @@ function finitePositive(value: number, fallback: number): number {
   return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
+/** Height that can actually contain a panel after safe-area and IME margins. */
+export function floatingPanelAvailableHeight(viewport: FloatingPanelViewport): number {
+  const height: number = finitePositive(viewport.height, 640);
+  const top: number = Math.max(0, viewport.topMargin);
+  const bottom: number = Math.max(0, viewport.bottomMargin);
+  return Math.max(1, height - top - bottom);
+}
+
 export function floatingPanelOrientationSuffix(width: number, height: number): string {
   return finitePositive(width, 1) >= finitePositive(height, 1) ? 'Landscape' : 'Portrait';
 }

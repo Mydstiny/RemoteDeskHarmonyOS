@@ -278,6 +278,7 @@ import {
 import {
   anchorFloatingPanelToHandle,
   clampFloatingPanel,
+  floatingPanelAvailableHeight,
   FloatingPanelRect,
   FloatingPanelViewport,
   floatingPanelOrientationSuffix,
@@ -291,6 +292,7 @@ import {
   nextVncDisplayScaleMode,
   shouldShowVncSessionToolbar,
   vncToolbarAutoCollapseDelayMs,
+  vncToolbarDefaultSide,
   vncToolbarPositionPreferenceKey,
   vncToolbarRailHeight,
   vncToolbarRailWidth,
@@ -1554,8 +1556,11 @@ struct RemoteDesktop {
     this.vncToolbarPreferenceScope = scope;
     const deviceClass: VncToolbarDeviceClass = this.vncToolbarDeviceClass();
     const orientation: VncToolbarOrientation = this.vncToolbarOrientation();
+    const sideKey: string = vncToolbarPositionPreferenceKey(deviceClass, orientation, 'side');
     const yKey: string = vncToolbarPositionPreferenceKey(deviceClass, orientation, 'yRatio');
-    this.vncToolbarPreferredSide = 'right';
+    const storedSide: string = AppStorage.get<string>(sideKey) ?? '';
+    this.vncToolbarPreferredSide = storedSide === 'left' || storedSide === 'right' ?
+      storedSide as VncToolbarSide : vncToolbarDefaultSide(deviceClass);
     const storedYRatio: number = AppStorage.get<number>(yKey) ?? -1;
     this.vncToolbarPreferredYRatio = Number.isFinite(storedYRatio) && storedYRatio >= 0 && storedYRatio <= 1 ?
       storedYRatio : 0.5;
@@ -1631,6 +1636,15 @@ struct RemoteDesktop {
     };
   }
 
+  private vncToolbarAvailableHeight(viewport: OverlayViewport): number {
+    const top: number = Math.max(0, viewport.systemTop);
+    let bottom: number = Math.max(top, viewport.height - Math.max(0, viewport.systemBottom));
+    if (viewport.keyboardRect !== null && viewport.keyboardRect.height > 0) {
+      bottom = Math.min(bottom, Math.max(top, viewport.keyboardRect.y));
+    }
+    return Math.max(0, bottom - top);
+  }
+
   private recomputeVncToolbarPlacement(_reason: string): void {
     if (!this.isVncSession()) {
       return;
@@ -1645,29 +1659,40 @@ struct RemoteDesktop {
     this.syncVncToolbarPreferenceScope();
     const collapsed: boolean = this.vncToolbarCollapsed;
     const viewport: OverlayViewport = this.currentVncToolbarViewport();
+    const availableHeight: number = this.vncToolbarAvailableHeight(viewport);
     const request: OverlayPlacementRequest = {
       ownerId: 'vnc-toolbar',
       preferredSide: this.vncToolbarPreferredSide,
       yRatio: this.vncToolbarPreferredYRatio,
       handleSize: vncToolbarRailWidth(deviceClass, true),
       railWidth: vncToolbarRailWidth(deviceClass, collapsed),
-      railHeight: vncToolbarRailHeight(deviceClass, this.isVncViewOnlySession(), collapsed),
+      railHeight: vncToolbarRailHeight(
+        deviceClass, this.isVncViewOnlySession(), collapsed, availableHeight),
       menuWidth: 0,
       menuHeight: 0,
       // VNC actions are rendered by the rail itself; there is no secondary
       // placement menu to resolve here.
       expanded: false
     };
-    const placement: OverlayPlacement = resolveOverlayPlacement(viewport, request);
-    if (placement.railRect.width > 0 && placement.railRect.height > 0) {
-      const rightX: number = Math.max(viewport.systemLeft,
-        viewport.width - viewport.systemRight - placement.railRect.width);
-      placement.side = 'right';
-      placement.railRect.x = rightX;
-      placement.expandedRect.x = rightX;
-      placement.handleRect.x = Math.max(viewport.systemLeft,
-        viewport.width - viewport.systemRight - placement.handleRect.width);
-      placement.menuDirection = 'inward-left';
+    let placement: OverlayPlacement = resolveOverlayPlacement(viewport, request);
+    if (!collapsed && (placement.railRect.width <= 0 ||
+      placement.railRect.height <= 0 || placement.recovery !== 'none')) {
+      // Keep a reachable entry immediately when the expanded rail cannot fit;
+      // do not wait for the delayed auto-collapse timer.
+      this.vncToolbarCollapsed = true;
+      const collapsedRequest: OverlayPlacementRequest = {
+        ownerId: 'vnc-toolbar',
+        preferredSide: this.vncToolbarPreferredSide,
+        yRatio: this.vncToolbarPreferredYRatio,
+        handleSize: vncToolbarRailWidth(deviceClass, true),
+        railWidth: vncToolbarRailWidth(deviceClass, true),
+        railHeight: vncToolbarRailHeight(
+          deviceClass, this.isVncViewOnlySession(), true, availableHeight),
+        menuWidth: 0,
+        menuHeight: 0,
+        expanded: false
+      };
+      placement = resolveOverlayPlacement(viewport, collapsedRequest);
     }
     this.vncToolbarPlacement = placement;
   }
@@ -1678,10 +1703,12 @@ struct RemoteDesktop {
     }
     const viewport: OverlayViewport = this.currentVncToolbarViewport();
     const moved = resolveOverlayDragPreference(viewport, this.vncToolbarPlacement, offsetX, offsetY);
-    this.vncToolbarPreferredSide = 'right';
+    this.vncToolbarPreferredSide = moved.side as VncToolbarSide;
     this.vncToolbarPreferredYRatio = moved.yRatio;
     const orientation: VncToolbarOrientation = this.vncToolbarOrientation();
     const deviceClass: VncToolbarDeviceClass = this.vncToolbarDeviceClass();
+    AppStorage.setOrCreate(vncToolbarPositionPreferenceKey(deviceClass, orientation, 'side'),
+      this.vncToolbarPreferredSide);
     AppStorage.setOrCreate(vncToolbarPositionPreferenceKey(deviceClass, orientation, 'yRatio'),
       this.vncToolbarPreferredYRatio);
     this.recomputeVncToolbarPlacement('drag');
@@ -5808,6 +5835,10 @@ struct RemoteDesktop {
       bottomMargin: this.kbHeight > 0 ? this.kbHeight + 8 : 24,
       sideMargin: 8
     };
+  }
+
+  private modifierPanelAvailableHeight(): number {
+    return floatingPanelAvailableHeight(this.floatingPanelViewport());
   }
 
   private floatingPanelStorageSuffix(width: number = 0, height: number = 0): string {
@@ -16800,6 +16831,7 @@ struct RemoteDesktop {
           panelY: this.modifierPanelY,
           shortcutX: this.shortcutPanelX,
           shortcutY: this.shortcutPanelY,
+          maxPanelHeight: this.modifierPanelAvailableHeight(),
           customizationEnabled: true,
           customShortcuts: this.remoteCustomShortcuts,
           onClose: (): void => {

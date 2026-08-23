@@ -23,16 +23,21 @@ export function vncToolbarRailWidth(deviceClass: VncToolbarDeviceClass,
 }
 
 export function vncToolbarRailHeight(deviceClass: VncToolbarDeviceClass,
-  viewOnly: boolean, collapsed: boolean): number {
+  viewOnly: boolean, collapsed: boolean,
+  availableHeight: number = Number.MAX_SAFE_INTEGER): number {
   if (deviceClass === 'pc') { return 0; }
-  if (collapsed) { return 72; }
+  const normalizedAvailable: number = Number.isFinite(availableHeight) && availableHeight > 0 ?
+    availableHeight : Number.MAX_SAFE_INTEGER;
+  if (collapsed) { return Math.max(44, Math.min(72, normalizedAvailable)); }
   const actionCount: number = 6;
   const actionHeight: number = actionCount * 44;
   const actionGaps: number = Math.max(0, actionCount - 1) * 5;
   const collapseHandleHeight: number = 44;
   const collapseHandleGap: number = 5;
   const viewOnlyHeader: number = viewOnly ? 24 + 5 : 0;
-  return 12 + collapseHandleHeight + collapseHandleGap + actionHeight + actionGaps + viewOnlyHeader;
+  const naturalHeight: number = 12 + collapseHandleHeight + collapseHandleGap +
+    actionHeight + actionGaps + viewOnlyHeader;
+  return Math.max(44, Math.min(naturalHeight, normalizedAvailable));
 }
 
 export function vncToolbarDefaultSide(_deviceClass: VncToolbarDeviceClass): VncToolbarSide {

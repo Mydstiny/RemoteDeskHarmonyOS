@@ -2,6 +2,7 @@ import { describe, it, expect } from '@ohos/hypium';
 import {
   anchorFloatingPanelToHandle,
   clampFloatingPanel,
+  floatingPanelAvailableHeight,
   floatingPanelOrientationSuffix,
   placeFloatingCompanion
 } from '../main/ets/services/RemoteFloatingPanelPlacementPolicy';
@@ -16,6 +17,15 @@ export default function remoteFloatingPanelPlacementPolicyTest(): void {
       const clamped = clampFloatingPanel(-20, -10, 260, 180, viewport);
       expect(clamped.x).assertEqual(8);
       expect(clamped.y).assertEqual(48);
+    });
+
+    it('limits_panel_height_to_safe_and_ime_adjusted_viewport', 0, (): void => {
+      expect(floatingPanelAvailableHeight({
+        width: 760, height: 360, topMargin: 48, bottomMargin: 24, sideMargin: 8
+      })).assertEqual(288);
+      expect(floatingPanelAvailableHeight({
+        width: 760, height: 360, topMargin: 48, bottomMargin: 180, sideMargin: 8
+      })).assertEqual(132);
     });
 
     it('places_shortcut_without_overlapping_primary_when_space_exists', 0, (): void => {
