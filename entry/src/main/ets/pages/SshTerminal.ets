@@ -166,7 +166,9 @@ import {
   encodeTextInput,
   sshTerminalInputByteLength,
   splitSshTerminalInputText,
-  admitsSshTerminalInputPendingItems
+  admitsSshTerminalInputPendingItems,
+  resolveSshTerminalInputOwner,
+  sshTerminalInputFocusAllowed
 } from '../services/SshTerminalInputPolicy';
 import {
   defaultSshTerminalOrientation,
@@ -1255,8 +1257,9 @@ struct SshTerminal {
   }
 
   private terminalInputFocusEligible(): boolean {
-    return !this.terminalClosing && this.connected && this.sessionId > 0 &&
-      this.terminalFocusMode;
+    return !this.terminalClosing && !this.terminalUsesXtermInputOwner() &&
+      sshTerminalInputFocusAllowed(this.connected, this.sessionId,
+        this.terminalFocusMode, this.sshModalOwnsKeyboard());
   }
 
   private clearTerminalInputFocusRetry(): void {
@@ -6183,6 +6186,7 @@ struct SshTerminal {
    * asks for the software keyboard.
    */
   private terminalSoftwareKeyboardEnabled(): boolean {
+    if (this.terminalUsesXtermInputOwner()) { return false; }
     if (!this.virtualKeyBarRequested()) { return false; }
     // Phone keeps the 1.0.8 software-keyboard entry regardless of the Pad/PC
     // input-mode preference or the system IME's inputDevice classification.
@@ -6191,6 +6195,10 @@ struct SshTerminal {
     // not silently turn the requested software keyboard off.
     if (this.sshInputMode === 1) { return true; }
     return !this.physicalKeyboardConnected || this.softKeyboardRequested;
+  }
+
+  private terminalUsesXtermInputOwner(): boolean {
+    return resolveSshTerminalInputOwner(this.isDesktopDevice) === 'xterm';
   }
 
   private virtualKeyBarHeight(): number {
@@ -11880,6 +11888,14 @@ struct SshTerminal {
       return;
     }
     hilog.debug(0x0000, 'SshTerminal', '[input] xterm focus accepted');
+    if (this.terminalUsesXtermInputOwner()) {
+      // Touch devices keep WebView/xterm focused. Redirecting this callback to
+      // the ArkUI TextArea blurs xterm, pauses its cursor and starts an IME
+      // focus loop between the two editors.
+      this.terminalFocusMode = true;
+      this.clearTerminalInputFocusRetry();
+      return;
+    }
     this.focusKeyboard(false);
   }
 
@@ -12735,6 +12751,28 @@ struct SshTerminal {
 
   private focusKeyboard(openSoftwareKeyboard: boolean = false): void {
     this.terminalFocusMode = true;
+    if (this.terminalUsesXtermInputOwner()) {
+      // Phone/Pad input is delivered by xterm's own textarea. It is the same
+      // DOM focus that drives cursorBlink, so never redirect it through the
+      // invisible ArkUI editor.
+      this.softKeyboardRequested = openSoftwareKeyboard && this.virtualKeyBarRequested();
+      this.clearTerminalInputFocusRetry();
+      const requestPageGeneration: number = this.pageGeneration;
+      const requestBindingGeneration: number = this.sshBindingGeneration;
+      const requestHostId: string = this.hostId.trim();
+      const requestXtermFocus: () => void = (): void => {
+        if (!this.isSshBindingActive(requestPageGeneration, requestBindingGeneration,
+          requestHostId) || this.terminalClosing || this.sshModalOwnsKeyboard() ||
+          !sshTerminalInputFocusAllowed(this.connected, this.sessionId,
+            this.terminalFocusMode, false)) {
+          return;
+        }
+        this.terminalFocusRequest = this.terminalFocusRequest + 1;
+      };
+      if (openSoftwareKeyboard) { setTimeout(requestXtermFocus, 16); }
+      else { requestXtermFocus(); }
+      return;
+    }
     const requestSoftwareKeyboard: boolean = openSoftwareKeyboard &&
       this.virtualKeyBarRequested();
     if (requestSoftwareKeyboard) {
@@ -17753,7 +17791,10 @@ struct SshTerminal {
               .opacity(0.01)
               .position({ x: this.terminalImeAnchorX(), y: this.terminalImeAnchorY() })
               .hitTestBehavior(HitTestMode.Transparent)  // 透明命中, 不拦截父 onClick
-              .focusable(true)
+              // Phone/Pad use xterm's own textarea as their single IME owner.
+              // Leaving this second editor focusable makes ArkWeb and ArkUI
+              // blur one another and repeatedly reopen the software keyboard.
+              .focusable(!this.terminalUsesXtermInputOwner())
               // Readiness and canvas-focus callbacks explicitly own focus.
               // Default focus races ArkWeb's helper textarea during startup.
               .defaultFocus(false)

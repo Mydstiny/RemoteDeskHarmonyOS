@@ -638,6 +638,11 @@
           function finishTouchPointer(event) {
             if (!event || Number(event.pointerId) !== touchPointerId) return;
             if (!touchMoved && event.type === 'pointerup') {
+              // Phone/Pad use xterm's textarea as the sole IME owner. Focus it
+              // inside the user gesture so the cursor keeps blinking and the
+              // software keyboard belongs to this WebView instead of racing a
+              // second hidden ArkUI editor.
+              try { state.terminal.focus(); } catch (_) {}
               bridgeCall('onFocus', [true]);
             }
             try { terminalElement.releasePointerCapture(event.pointerId); } catch (_) {}

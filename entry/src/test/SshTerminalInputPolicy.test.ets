@@ -21,6 +21,8 @@ import {
   sshTerminalInputByteLength,
   splitSshTerminalInputText,
   admitsSshTerminalInputPendingItems,
+  resolveSshTerminalInputOwner,
+  sshTerminalInputFocusAllowed,
   SSH_TERMINAL_INPUT_PENDING_CONTROL_MAX_ITEMS,
   SSH_TERMINAL_INPUT_PENDING_DATA_MAX_ITEMS
 } from '../main/ets/services/SshTerminalInputPolicy';
@@ -34,6 +36,19 @@ const CTRL_SHIFT: TerminalModifierState = { ctrl: true, alt: false, shift: true 
 
 export default function sshTerminalInputPolicyTest(): void {
   describe('SshTerminalInputPolicy', (): void => {
+    it('should_keep_one_input_owner_per_device_family', 0, (): void => {
+      expect(resolveSshTerminalInputOwner(false)).assertEqual('xterm');
+      expect(resolveSshTerminalInputOwner(true)).assertEqual('arkui');
+    });
+
+    it('should_block_terminal_focus_while_a_modal_owns_the_keyboard', 0, (): void => {
+      expect(sshTerminalInputFocusAllowed(true, 7, true, false)).assertTrue();
+      expect(sshTerminalInputFocusAllowed(true, 7, true, true)).assertFalse();
+      expect(sshTerminalInputFocusAllowed(false, 7, true, false)).assertFalse();
+      expect(sshTerminalInputFocusAllowed(true, -1, true, false)).assertFalse();
+      expect(sshTerminalInputFocusAllowed(true, 7, false, false)).assertFalse();
+    });
+
     it('should_measure_pending_input_as_native_utf8_bytes', 0, (): void => {
       expect(sshTerminalInputByteLength('ascii')).assertEqual(5);
       expect(sshTerminalInputByteLength('密码')).assertEqual(6);

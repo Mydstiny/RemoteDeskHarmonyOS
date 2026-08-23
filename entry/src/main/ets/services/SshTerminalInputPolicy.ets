@@ -12,6 +12,24 @@ export interface TerminalModifierState {
   shift: boolean;
 }
 
+/** Exactly one frontend owns text input for a terminal surface. */
+export type SshTerminalInputOwner = 'arkui' | 'xterm';
+
+/**
+ * PC/2in1 keeps the ArkUI anchor for lossless physical-key routing. Phone and
+ * Pad let xterm's textarea own the IME so ArkWeb focus, cursor blink and text
+ * composition cannot fight a second hidden editor in the parent view.
+ */
+export function resolveSshTerminalInputOwner(isDesktopDevice: boolean): SshTerminalInputOwner {
+  return isDesktopDevice ? 'arkui' : 'xterm';
+}
+
+/** A modal/editor surface must never lose focus to the terminal input owner. */
+export function sshTerminalInputFocusAllowed(connected: boolean, sessionId: number,
+  terminalFocusMode: boolean, modalOwnsKeyboard: boolean): boolean {
+  return connected && sessionId > 0 && terminalFocusMode && !modalOwnsKeyboard;
+}
+
 export interface SshPhysicalKeyInput extends TerminalModifierState {
   keyCode: number;
   unicode?: number;
