@@ -281,6 +281,7 @@ M0 action 只修改纯快照：创建/重命名工作区、打开占位 tab、�
 | `/private/tmp/ssh-bg-fixed-notification-shade.json` | `4821c49b156f2fb7f1f0f9a19bb50878543199bb6d9cce0bc5420cdb7bd38b17` | API24 Phone 模拟器：`9e927cb4` HAP 在 Home 后显示“SSH 后台连接 / 保持 1 个 SSH 连接”，hierarchy 不含测试主机、地址、用户名或配置名 |
 | `/private/tmp/ssh-bg-fixed-notification-shade.jpeg` | `4aeabf77da9ed09699b9dde1f2b9e64e06c61d899d823371f35e35add9d78f96` | API24 Phone 模拟器：后台通知中心截图；同时存在平台持续任务提示，SSH 自有通知只展示通用标题和连接数量 |
 | `/private/tmp/ssh-bg-fixed-lockscreen.jpeg` | `43724e029b6e3ccb9150f60b9f1217fe0b2717317f90acdf5ae24739c1feb391` | API24 Phone 模拟器：熄屏再唤醒后的默认锁屏页未展开 SSH 通知卡片；只记录平台现象，不冒充锁屏 PASS |
+| `/private/tmp/ssh-lock-arrival-lockscreen.jpeg` | `b86d6c3bba4752a32f130c0cec585417348fac31b83235a5b4eaf1e40a74cef9` | API24 Phone 模拟器：从已连接 SSH 前台直接熄屏，锁定期间 task id=3 与通知均启动后再唤醒，默认锁屏仍未展开通知卡片 |
 | `/private/tmp/ssh-bg-fixed-foreground.json` | `7816bcfe0e842674bb64749690d0cd67f6caa758c8781ddeaf9cc0f3b0e3c125` | API24 Phone 模拟器：恢复前台后同一 SSH 会话仍为“已连接”，hilog 同时记录持续任务 id=1 已停止 |
 | `/private/tmp/ssh-bg-fixed-foreground-shade.json` | `968ec4c8c4f9f87777477953e75476f7781afbff5930167cd29fe25e59580a22` | API24 Phone 模拟器：恢复前台后的通知中心已无“SSH 后台连接”或连接数量通知 |
 | `/private/tmp/ssh-bg-denied-notification-shade.json` | `843b2d11b4d9e9afebb0255c5d69f0a6ae440ca7ba096ada04f9d4a335686baa` | API24 Phone 模拟器：RemoteDesktop 通知总开关关闭时，SSH 自有通知发布被拒绝，通知中心只剩平台强制的通用持续任务提示 |
@@ -324,7 +325,7 @@ M0 action 只修改纯快照：创建/重命名工作区、打开占位 tab、�
 
 2026-08-23 补充清理：Phone 下载复验结束后显式断开 SFTP/SSH，删除 `tcp:22222 -> tcp:22225` 映射并复查为 `[Empty]`，宿主 22225 无监听；一次性下载服务、128MiB fixture、脚本/pyc 和设备端 `ssh-phone-download-*` 转储已精确清理。最终下载文件与两个 0 B picker 占位文件经三项选择核验后移入系统“最近删除”，既有三条 RemoteDesktop 日志仍留在 Download，回收站未清空；复用 venv、Host Key 和既有用户主机配置继续保留。
 
-尚未证明：KBI/MFA 在物理设备与 API26 上的同矩阵复验、真实软/硬键盘设备矩阵、SFTP 下载在物理设备/API26、SFTP 上传在物理设备/API26 的暂停/恢复/取消/重试，以及网络切换在物理设备与 API26 上的余下矩阵、持续任务通知在默认锁屏页、物理设备/API26 和多会话/多窗口并发下的完整矩阵、API26 设备和多主机/全协议并行。`9e927cb4` 已在 API24 Phone 模拟器补齐 Home 后持续任务启动、通知中心隐私文案、前台恢复与撤销闭环；但默认锁屏页没有展开通知卡片，2in1 独立 SSH 窗口按 Home 后仍保持可见/前台，二者都不能冒充对应锁屏或桌面后台 PASS。没有物理/API26 与上述剩余矩阵证据前，M7–M9 仍保持 DEVICE_PENDING，整个 SSH 计划不能标为完成。
+尚未证明：KBI/MFA 在物理设备与 API26 上的同矩阵复验、真实软/硬键盘设备矩阵、SFTP 下载在物理设备/API26、SFTP 上传在物理设备/API26 的暂停/恢复/取消/重试，以及网络切换在物理设备与 API26 上的余下矩阵、持续任务通知在物理设备/API26 和多会话/多窗口并发下的完整矩阵、API26 设备和多主机/全协议并行。`9e927cb4` 已在 API24 Phone 模拟器补齐 Home 后持续任务启动、通知中心隐私文案、前台恢复与撤销闭环；默认锁屏页对“锁屏前已存在”和“锁定期间新到达”两种时序都没有展开通知卡片，因此模拟器锁屏为已测未展示、最终验收仍待物理设备。2in1 独立 SSH 窗口按 Home 后仍保持可见/前台，也不能冒充桌面后台 PASS。没有物理/API26 与上述剩余矩阵证据前，M7–M9 仍保持 DEVICE_PENDING，整个 SSH 计划不能标为完成。
 
 ## 8. 工具链事实
 
@@ -517,3 +518,7 @@ Phone 未授权基线的 SSH 行显示可操作“开启”，hierarchy `/privat
 2026-08-23 API24 Phone SSH 后台通知权限关闭 receipt：保持 RemoteDesktop 系统通知总开关为 false，使用同一 `9e927cb4` HAP、固定 Host Key 与密码回环服务建立 SSH 会话。按 Home 后平台批准 `continuousTaskId 2`；SSH 聚合普通通知发布按预期以 `1600004` 被拒绝，但持续任务仍启动成功，没有把普通通知授权错误解释为后台能力拒绝，也没有断开正在工作的会话。通知中心 hierarchy/截图 hash 分别为 `843b2d11b4d9e9afebb0255c5d69f0a6ae440ca7ba096ada04f9d4a335686baa`、`c40c8613bf9ac930ba6eff8c3fd6d2db5cd399e0755ec02b6be685b00b777239`；只显示平台强制的“RemoteDesktop 正在运行分布式任务，删除通知后任务将停止”，没有 SSH 自有标题、连接数量、主机、地址、用户名或配置名。
 
 回前台时 hilog 记录 `SSH background task stopped id=2`，同一会话仍为“已连接”；应用 hierarchy `/private/tmp/ssh-bg-denied-foreground-app.json` hash 为 `44e44d8c999e1b085b7ec812c8d89f30248365f8eddce7cfde2061f2e578e997`。显式返回后 `/private/tmp/ssh-bg-denied-exited.json` hash 为 `fd027f50252f7bdb9d5e0db43c3bf63fc372e246802a8847b2a7751ed5ef0d5b`，页面为 `HostListPage`，服务端确认 client disconnect。九个精确 `ssh-bg-denied-*` 设备转储已删除，reverse 映射复查 `[Empty]`，宿主 22222 无监听，系统通知权限全程保持测试前的关闭状态。该 receipt 证明 API24 Phone 模拟器的通知关闭后台路径，不替代默认锁屏、2in1 独立窗口后台、API26、物理设备或多会话验收。
+
+2026-08-23 API24 Phone 锁定期间通知到达 receipt：为排除前一轮“通知在锁屏前已存在”的时序影响，先通过可见系统设置临时开启 RemoteDesktop 通知，再建立同一密码 SSH 会话，并从已连接终端前台直接按 Power 熄屏。锁定期间 hilog 记录 `Ability onBackground`、`SSH background task started id=3` 与 `background signal task started=true session=3`；等待 5 秒后再按 Power 唤醒，默认锁屏 hierarchy/截图 hash 分别为 `fa0e227281a15e016f29fda99de61aa2fa462c98db9fd3fa1af1ca2e66a644e5`、`b86d6c3bba4752a32f130c0cec585417348fac31b83235a5b4eaf1e40a74cef9`，仍没有展开 SSH 或平台持续任务通知卡片。该结果与“先 Home 发布、后锁屏”的结果一致，故记录为 API24 Phone 模拟器已测未展示，不修改已通过通知中心验证的请求字段，也不冒充物理锁屏 PASS。
+
+无密码解锁并恢复应用前台后，hilog 记录 `SSH background task stopped id=3`，同一会话仍连接；随后显式退出会话。RemoteDesktop 通知 Toggle 已通过可见系统设置恢复为 false，最终 hierarchy `/private/tmp/ssh-lock-arrival-settings-restored.json` hash 为 `b3fea0716fdab8278e262d0a9615680f281b3ffd491b7ae38a82fa224ffc6194`。九个精确 `ssh-lock-arrival-*` 设备转储已删除，reverse 映射复查 `[Empty]`，宿主 22222 无监听。本 receipt 不替代物理设备/API26 锁屏、多会话或 2in1 独立窗口后台验收。
