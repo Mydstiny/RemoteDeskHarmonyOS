@@ -1,5 +1,8 @@
 import { describe, it, expect } from '@ohos/hypium';
-import { XtermOutputBuffer } from '../main/ets/components/SshXtermSurface';
+import {
+  sshXtermOutputBatchFitsByteBudget,
+  XtermOutputBuffer
+} from '../main/ets/components/SshXtermSurface';
 
 export default function xtermOutputBufferTest(): void {
   describe('XtermOutputBuffer', (): void => {
@@ -87,6 +90,14 @@ export default function xtermOutputBufferTest(): void {
       expect(buffer.byteLength()).assertEqual(6);
       expect(buffer.size()).assertEqual(2);
       expect(buffer.drain().join('')).assertEqual('密码');
+    });
+
+    it('bounds_proxy_batches_by_utf8_bytes', 0, (): void => {
+      const emojiChunk: string = '🙂'.repeat(8192);
+      const cjkChunk: string = '中'.repeat(21846);
+      expect(sshXtermOutputBatchFitsByteBudget(32768, emojiChunk)).assertTrue();
+      expect(sshXtermOutputBatchFitsByteBudget(32768, cjkChunk)).assertFalse();
+      expect(sshXtermOutputBatchFitsByteBudget(65536, 'a')).assertFalse();
     });
   });
 }

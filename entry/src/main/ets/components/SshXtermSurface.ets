@@ -37,6 +37,19 @@ export const SSH_XTERM_OUTPUT_BUFFER_MAX_BYTES: number = 8 * 1024 * 1024;
 export const SSH_XTERM_OUTPUT_BUFFER_MAX_CHUNKS: number = 512;
 export const SSH_XTERM_OUTPUT_CHUNK_MAX_BYTES: number = 64 * 1024;
 
+/** Keep a proxy bridge call within one UTF-8 frame after chunk admission. */
+export function sshXtermOutputBatchFitsByteBudget(currentBytes: number, next: string,
+  maxBytes: number = SSH_XTERM_OUTPUT_CHUNK_MAX_BYTES): boolean {
+  const current: number = Number.isFinite(currentBytes) ? Math.max(0, Math.floor(currentBytes)) : 0;
+  const budget: number = Number.isFinite(maxBytes) && maxBytes > 0
+    ? Math.max(1, Math.floor(maxBytes)) : SSH_XTERM_OUTPUT_CHUNK_MAX_BYTES;
+  const nextBytes: number = sshUtf8ByteLength(next);
+  // Keep the legacy single-chunk escape hatch; XtermOutputBuffer normally
+  // admits chunks at or below this budget, while the aggregate gate below
+  // prevents multibyte chunks from multiplying a bridge payload.
+  return current === 0 || current + nextBytes <= budget;
+}
+
 interface XtermOutputEntry {
   value: string;
   bytes: number;
@@ -1381,14 +1394,14 @@ export struct SshXtermSurface {
     this.awaitingOutputBatch = batchSequence;
     this.outputPumpRunning = true;
     const batch: Array<string> = [];
-    let batchLength: number = 0;
+    let batchBytes: number = 0;
     while (this.pendingWrites.length > 0 && batch.length < 8) {
       const next: string = this.pendingWrites[0];
       // Keep a bridge call below one frame-sized payload while allowing a
       // single oversized SSH chunk to pass through without being truncated.
-      if (batch.length > 0 && batchLength + next.length > 65536) { break; }
+      if (batch.length > 0 && !sshXtermOutputBatchFitsByteBudget(batchBytes, next)) { break; }
       batch.push(this.pendingWrites.shift() as string);
-      batchLength += next.length;
+      batchBytes += sshUtf8ByteLength(next);
     }
     this.inFlightWrites = batch;
     this.inFlightOutputBuffer = this.pendingOutputBuffer ?? this.outputBuffer;
