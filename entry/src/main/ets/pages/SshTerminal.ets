@@ -9168,7 +9168,10 @@ struct SshTerminal {
       this.sftpTaskStore.init(taskContext);
       this.sftpLocalProvider.init(taskContext as common.UIAbilityContext);
       this.sftpEngineUnsubscribe = this.sftpTaskEngine.subscribe(
-        (event: SshSftpTaskEngineEvent): void => { this.onSftpEngineEvent(event); });
+        (event: SshSftpTaskEngineEvent): void => {
+          if (!this.isPageGenerationActive(pageGeneration)) { return; }
+          this.onSftpEngineEvent(event);
+        });
       // The engine defers session attachment until its provider restore has
       // completed, so SFTP retains its lifecycle guarantees without blocking
       // SSH connection and terminal first paint.
@@ -9366,6 +9369,7 @@ struct SshTerminal {
           this.replayNativeOutputToXterm(this.hostId);
         }
         this.sftpTaskUnsubscribe = this.sftpTaskStore.subscribe((event): void => {
+          if (!this.isPageGenerationActive(pageGeneration)) { return; }
           this.sftpTransferCenterRevision++;
           if (event.record.hostId !== this.hostId || this.sftpBusy) { return; }
           this.refreshRecoveredSftpTasks();
