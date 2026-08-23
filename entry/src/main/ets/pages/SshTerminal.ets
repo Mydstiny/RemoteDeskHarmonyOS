@@ -103,6 +103,8 @@ import { SshWorkspaceSideBar } from
   '../components/ssh/workspace/SshWorkspaceSideBar';
 import { SshSessionInspector } from
   '../components/ssh/workspace/SshSessionInspector';
+import { SshWorkspaceStatusBar } from
+  '../components/ssh/workspace/SshWorkspaceStatusBar';
 import { GpuTerminalRenderer } from '../components/GpuTerminalRenderer';
 import { TerminalInputBuffer } from '../components/SshTerminalSurface';
 import { TerminalCoreBridge } from '../napi/TerminalCoreBridge';
@@ -312,6 +314,10 @@ import {
 } from '../services/ssh/workspace/SshWorkspaceStore';
 import { resolveSshLayout, SshLayoutResult } from
   '../services/ssh/workspace/SshLayoutPolicy';
+import {
+  resolveSshWorkspaceStatus,
+  SshWorkspaceStatusView
+} from '../services/ssh/workspace/SshWorkspaceStatusPolicy';
 import {
   activateSshSftpSurface,
   activateSshTerminalSurface,
@@ -2191,6 +2197,39 @@ struct SshTerminal {
     const tab: SshTerminalTabView = this.sshWorkspaceInspectorTabView();
     return tab.hostId.length > 0 && tab.hostId === this.hostId.trim() &&
       tab.state === 'connected' && this.sshConnectionIsConnected();
+  }
+
+  private sshWorkspaceStatusView(): SshWorkspaceStatusView {
+    const tab: SshTerminalTabView = this.sshWorkspaceInspectorTabView();
+    const frames: Array<SshWorkspacePaneFrame> = this.sshWorkspacePaneLayout().frames;
+    let activePaneIndex: number = -1;
+    for (let index: number = 0; index < frames.length; index++) {
+      if (frames[index].tabId === tab.tabId) {
+        activePaneIndex = index;
+        break;
+      }
+    }
+    return resolveSshWorkspaceStatus({
+      mode: this.sshWorkspaceLayoutResult().mode,
+      connectionState: tab.state,
+      latencyMs: tab.hostId === this.hostId.trim() ? this.latencyMs : -1,
+      cols: tab.hostId === this.hostId.trim() ? this.termCols : 0,
+      rows: tab.hostId === this.hostId.trim() ? this.termRows : 0,
+      activePaneIndex,
+      visiblePaneCount: frames.length,
+      tabCount: this.sshWorkspaceSnapshot.tabs.length,
+      transferAttentionCount: this.sftpTransferAttentionCount(),
+      forwardingCount: this.forwardingListeningCount(),
+      persistenceError: this.sshWorkspacePersistenceError.length > 0
+    });
+  }
+
+  @Builder
+  private sshWorkspaceStatusBarSurface() {
+    SshWorkspaceStatusBar({
+      items: this.sshWorkspaceStatusView().items,
+      compact: this.sshWorkspaceStatusView().compact
+    })
   }
 
   @Builder
@@ -17945,6 +17984,9 @@ struct SshTerminal {
             this.requestTerminalScrollToBottomSettled();
           }
         })
+        if (this.sshWorkspaceModeEnabled() && this.sshWorkspaceStatusView().visible) {
+          this.sshWorkspaceStatusBarSurface()
+        }
       }
       }
       .width(0)

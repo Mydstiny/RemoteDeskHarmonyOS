@@ -60,6 +60,11 @@ import {
   sshWorkspaceParentSplit,
   SshWorkspacePaneLayoutResult
 } from '../main/ets/services/ssh/workspace/SshWorkspacePaneLayoutPolicy';
+import {
+  resolveSshWorkspaceStatus,
+  SshWorkspaceStatusItem,
+  SshWorkspaceStatusView
+} from '../main/ets/services/ssh/workspace/SshWorkspaceStatusPolicy';
 
 class MemorySshWorkspaceCapabilityPreferences
   implements SshWorkspaceCapabilityPreferenceAdapter {
@@ -346,6 +351,43 @@ export default function sshWorkspacePolicyTest(): void {
       const withoutSidebar: SshLayoutResult = resolveSshLayout(constrainedInput);
       expect(withoutSidebar.inspectorVisible).assertTrue();
       expect(withoutSidebar.mainWidthVp).assertEqual(1180);
+    });
+
+    it('workspace_status_should_be_quiet_on_phone_and_bounded_on_wide_layouts', 0, (): void => {
+      const phone: SshWorkspaceStatusView = resolveSshWorkspaceStatus({
+        mode: 'sm', connectionState: 'connected', latencyMs: 3, cols: 80, rows: 24,
+        activePaneIndex: 0, visiblePaneCount: 1, tabCount: 2,
+        transferAttentionCount: 1, forwardingCount: 1, persistenceError: false
+      });
+      expect(phone.visible).assertFalse();
+      expect(phone.items.length).assertEqual(0);
+
+      const wide: SshWorkspaceStatusView = resolveSshWorkspaceStatus({
+        mode: 'xl', connectionState: 'connected', latencyMs: 3, cols: 120, rows: 42,
+        activePaneIndex: 1, visiblePaneCount: 4, tabCount: 6,
+        transferAttentionCount: 2, forwardingCount: 1, persistenceError: true
+      });
+      expect(wide.visible).assertTrue();
+      expect(wide.items.length).assertEqual(8);
+      expect(wide.items.map((item: SshWorkspaceStatusItem): string => item.id).join('|')).assertEqual(
+        'connection|persistence|transfer|forwarding|grid|pane|tabs|encoding');
+      expect(wide.items[0].label).assertEqual('已连接 · 3 ms');
+      expect(wide.items[4].label).assertEqual('120×42');
+      expect(wide.items[5].label).assertEqual('Pane 2/4');
+    });
+
+    it('workspace_status_should_prioritize_operational_attention_when_compact', 0, (): void => {
+      const compact: SshWorkspaceStatusView = resolveSshWorkspaceStatus({
+        mode: 'md', connectionState: 'error', latencyMs: -1, cols: 80, rows: 24,
+        activePaneIndex: 0, visiblePaneCount: 2, tabCount: 4,
+        transferAttentionCount: 3, forwardingCount: 2, persistenceError: true
+      });
+      expect(compact.visible).assertTrue();
+      expect(compact.compact).assertTrue();
+      expect(compact.items.length).assertEqual(4);
+      expect(compact.items.map((item: SshWorkspaceStatusItem): string => item.id).join('|')).assertEqual(
+        'connection|persistence|transfer|forwarding');
+      expect(compact.items[0].label).assertEqual('连接异常');
     });
 
     it('xl_workspace_should_keep_four_readable_panes_with_sidebar_visible', 0, (): void => {
