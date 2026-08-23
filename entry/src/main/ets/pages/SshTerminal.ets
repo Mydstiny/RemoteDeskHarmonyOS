@@ -347,6 +347,7 @@ import {
   emptySshSessionLogDocument,
   matchesSshSessionLogExportFence,
   resolveSshSessionLogsEnabled,
+  sanitizeSshSessionLogChunk,
   sanitizeSshSessionLogText,
   sshSessionLogCaptureAllowed,
   sshSessionLogInputPhaseAllowed,
@@ -355,6 +356,7 @@ import {
   SshSessionLogDocumentV1,
   SshSessionLogIdentityV1,
   SshSessionLogRecordV1,
+  SshSessionLogSanitizeModeV1,
   SshSessionLogSearchHitV1
 } from '../services/ssh/log/SshSessionLogPolicy';
 import { SshSessionLogStore } from '../services/ssh/log/SshSessionLogStore';
@@ -578,6 +580,8 @@ struct SshTerminal {
   private sshSessionLogInputBuffers: Map<string, string> = new Map<string, string>();
   private sshSessionLogPendingOutput: Map<string, SshSessionLogRecordV1> =
     new Map<string, SshSessionLogRecordV1>();
+  private sshSessionLogOutputSanitizeModes: Map<string, SshSessionLogSanitizeModeV1> =
+    new Map<string, SshSessionLogSanitizeModeV1>();
   private sshSessionLogFlushTimer: number = -1;
   private sshSessionLogSearchTimer: number = -1;
   private sshSessionLogSearchSequence: number = 0;
@@ -3603,6 +3607,7 @@ struct SshTerminal {
       this.flushSshSessionLogOutput();
       this.sshSessionLogInputBuffers.clear();
       this.sshSessionLogPendingOutput.clear();
+      this.sshSessionLogOutputSanitizeModes.clear();
     }
     this.refreshSshSessionLogDocument();
   }
@@ -3800,12 +3805,22 @@ struct SshTerminal {
   }
 
   private observeSshSessionLogOutput(identity: SshSessionLogIdentityV1, text: string): void {
-    if (!this.sshSessionLogCaptureContext(identity, false)) { return; }
-    const sanitized: string = sanitizeSshSessionLogText(
-      text, this.sshSessionLogDocument.settings.redactSensitive);
-    if (sanitized.length === 0) { return; }
     const key: string = identity.hostId + ':' + identity.sessionId.toString() + ':' +
       identity.generation.toString();
+    if (!this.sshSessionLogCaptureContext(identity, false)) {
+      this.sshSessionLogOutputSanitizeModes.set(key, 'resync');
+      return;
+    }
+    const sanitizedResult = sanitizeSshSessionLogChunk(text,
+      this.sshSessionLogOutputSanitizeModes.get(key) ?? 'normal',
+      this.sshSessionLogDocument.settings.redactSensitive);
+    if (sanitizedResult.mode === 'normal') {
+      this.sshSessionLogOutputSanitizeModes.delete(key);
+    } else {
+      this.sshSessionLogOutputSanitizeModes.set(key, sanitizedResult.mode);
+    }
+    const sanitized: string = sanitizedResult.text;
+    if (sanitized.length === 0) { return; }
     const existing: SshSessionLogRecordV1 | undefined = this.sshSessionLogPendingOutput.get(key);
     if (existing === undefined) {
       this.sshSessionLogPendingOutput.set(key, {
@@ -8666,6 +8681,7 @@ struct SshTerminal {
     this.sshSessionLogSequence = 0;
     this.sshSessionLogInputBuffers.clear();
     this.sshSessionLogPendingOutput.clear();
+    this.sshSessionLogOutputSanitizeModes.clear();
     this.sshSessionLogCommandStarts.clear();
     if (this.sshSessionLogFlushTimer !== -1) {
       clearTimeout(this.sshSessionLogFlushTimer);
@@ -9101,6 +9117,7 @@ struct SshTerminal {
     this.sshSessionLogQuery = '';
     this.sshSessionLogResults = [];
     this.sshSessionLogInputBuffers.clear();
+    this.sshSessionLogOutputSanitizeModes.clear();
     this.sshSessionLogCommandStarts.clear();
     this.resetSshProductivityRuntime();
     this.showSftpTransferCenter = false;
@@ -11380,6 +11397,7 @@ struct SshTerminal {
       this.sshTerminalSafetyModes.clear();
       this.sshSessionLogInputBuffers.clear();
       this.sshSessionLogPendingOutput.clear();
+      this.sshSessionLogOutputSanitizeModes.clear();
       this.resetSshProductivityRuntime();
       this.pendingSshCommandId = '';
       this.showSshTabRenameSheet = false;
@@ -11425,6 +11443,7 @@ struct SshTerminal {
     }
     this.sshSessionLogInputBuffers.clear();
     this.sshSessionLogPendingOutput.clear();
+    this.sshSessionLogOutputSanitizeModes.clear();
     this.sshSessionLogCommandStarts.clear();
     this.sshSessionLogDocument = emptySshSessionLogDocument();
     this.sshSessionLogQuery = '';

@@ -13,6 +13,7 @@ import {
   pruneSshSessionLogDocument,
   resolveSshSessionLogsEnabled,
   searchSshSessionLog,
+  sanitizeSshSessionLogChunk,
   sanitizeSshSessionLogText,
   sshSessionLogCaptureAllowed,
   sshSessionLogInputPhaseAllowed,
@@ -168,6 +169,34 @@ export default function sshSessionLogPolicyTest(): void {
       expect(sanitized.indexOf('\u001B')).assertEqual(-1);
       expect(sanitized.indexOf('super-secret')).assertEqual(-1);
       expect(sanitized.indexOf('[redacted]') >= 0).assertTrue();
+    });
+
+    it('sanitizer_should_drop_split_vt_string_payloads', 0, (): void => {
+      const oscStart = sanitizeSshSessionLogChunk(
+        'visible\u001B]52;c;c3BsaXQtc2Vj', 'normal', false);
+      expect(oscStart.text).assertEqual('visible');
+      expect(oscStart.mode).assertEqual('osc');
+      const oscEnd = sanitizeSshSessionLogChunk(
+        'cmV0\u0007after', oscStart.mode, false);
+      expect(oscEnd.text).assertEqual('after');
+      expect(oscEnd.mode).assertEqual('normal');
+      expect(oscEnd.text.indexOf('cmV0')).assertEqual(-1);
+
+      const dcsStart = sanitizeSshSessionLogChunk(
+        'left\u001BPprivate-control', 'normal', false);
+      expect(dcsStart.text).assertEqual('left');
+      expect(dcsStart.mode).assertEqual('string');
+      const dcsEnd = sanitizeSshSessionLogChunk(
+        '-payload\u001B\\right', dcsStart.mode, false);
+      expect(dcsEnd.text).assertEqual('right');
+      expect(dcsEnd.mode).assertEqual('normal');
+      expect(sanitizeSshSessionLogText(
+        'safe\u001B]8;;https://private.invalid/incomplete', false)).assertEqual('safe');
+
+      const resynced = sanitizeSshSessionLogChunk(
+        'secret-tail\rtrusted prompt', 'resync', false);
+      expect(resynced.text).assertEqual('trusted prompt');
+      expect(resynced.mode).assertEqual('normal');
     });
 
     it('quota_and_export_limits_should_count_utf8_bytes', 0, (): void => {

@@ -103,6 +103,21 @@ export interface SshSessionLogExportResultV1 {
   truncated: boolean;
 }
 
+export type SshSessionLogSanitizeModeV1 =
+  | 'normal'
+  | 'escape'
+  | 'csi'
+  | 'osc'
+  | 'osc_escape'
+  | 'string'
+  | 'string_escape'
+  | 'resync';
+
+export interface SshSessionLogSanitizeResultV1 {
+  text: string;
+  mode: SshSessionLogSanitizeModeV1;
+}
+
 export const SSH_SESSION_LOG_SCHEMA_VERSION: number = 1;
 export const SSH_SESSION_LOGS_FLAG_KEY: string = 'sshSessionLogs';
 export const SSH_SESSION_LOGS_DEFAULT_ENABLED: boolean = false;
@@ -215,18 +230,8 @@ export function normalizeSshSessionLogSettings(
   };
 }
 
-/** Strip OSC/CSI and non-printable control bytes before persistence/search. */
-export function sanitizeSshSessionLogText(value: string, redactSensitive: boolean = true): string {
-  let text: string = typeof value === 'string' ? value : '';
-  if (text.length === 0) { return ''; }
-  // OSC (including BEL and ST terminated variants) and CSI/SS3 sequences.
-  text = text.replace(/\u001B\][^\u0007]*(?:\u0007|\u001B\\)/g, '');
-  text = text.replace(/\u001B\[[0-?]*[ -\/]*[@-~]/g, '');
-  text = text.replace(/\u001B[@-_]/g, '');
-  // Incomplete fragments at a chunk boundary must not leave an ESC byte in
-  // the durable/search representation.
-  text = text.replace(/\u001B/g, '');
-  text = text.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '');
+function redactSshSessionLogText(value: string, redactSensitive: boolean): string {
+  let text: string = value;
   // A record marked sensitive is never partially persisted. For ordinary
   // output, mask the common `password=...`/`token:...` accidental leak form.
   if (redactSensitive) {
@@ -235,6 +240,78 @@ export function sanitizeSshSessionLogText(value: string, redactSensitive: boolea
     text = text.replace(/(sshpass\s+-p\s+)[^\s\r\n]+/gi, '$1[redacted]');
   }
   return text.slice(0, MAX_TEXT);
+}
+
+/**
+ * Stateful VT sanitizer. OSC/DCS/SOS/PM/APC payloads may span native output
+ * callbacks, so callers retain only this small mode value, never raw control
+ * payload. `resync` is used after a sensitive/pause gap and drops the partial
+ * line until CR/LF provides a safe visible-text boundary.
+ */
+export function sanitizeSshSessionLogChunk(value: string,
+  initialMode: SshSessionLogSanitizeModeV1 = 'normal',
+  redactSensitive: boolean = true): SshSessionLogSanitizeResultV1 {
+  let mode: SshSessionLogSanitizeModeV1 = initialMode;
+  let visible: string = '';
+  for (let index: number = 0; index < value.length; index++) {
+    const char: string = value.charAt(index);
+    const code: number = value.charCodeAt(index);
+    if (mode === 'resync') {
+      if (char === '\r' || char === '\n') { mode = 'normal'; }
+      continue;
+    }
+    if (mode === 'escape') {
+      if (char === '[') { mode = 'csi'; continue; }
+      if (char === ']') { mode = 'osc'; continue; }
+      if (char === 'P' || char === 'X' || char === '^' || char === '_') {
+        mode = 'string';
+        continue;
+      }
+      if (code === 0x1b) { continue; }
+      if (code >= 0x30 && code <= 0x7e) { mode = 'normal'; }
+      continue;
+    }
+    if (mode === 'csi') {
+      if (code === 0x1b) { mode = 'escape'; continue; }
+      if (code >= 0x40 && code <= 0x7e) { mode = 'normal'; }
+      continue;
+    }
+    if (mode === 'osc' || mode === 'string') {
+      if ((mode === 'osc' && code === 0x07) || code === 0x9c) {
+        mode = 'normal';
+      } else if (code === 0x1b) {
+        mode = mode === 'osc' ? 'osc_escape' : 'string_escape';
+      }
+      continue;
+    }
+    if (mode === 'osc_escape' || mode === 'string_escape') {
+      if (char === '\\' || code === 0x9c) {
+        mode = 'normal';
+      } else if (code !== 0x1b) {
+        mode = mode === 'osc_escape' ? 'osc' : 'string';
+      }
+      continue;
+    }
+    if (code === 0x1b) { mode = 'escape'; continue; }
+    if (code === 0x9b) { mode = 'csi'; continue; }
+    if (code === 0x9d) { mode = 'osc'; continue; }
+    if (code === 0x90 || code === 0x98 || code === 0x9e || code === 0x9f) {
+      mode = 'string';
+      continue;
+    }
+    if ((code >= 0x00 && code <= 0x08) || code === 0x0b || code === 0x0c ||
+      (code >= 0x0e && code <= 0x1f) || (code >= 0x7f && code <= 0x9f)) {
+      continue;
+    }
+    if (visible.length < MAX_TEXT) { visible += char; }
+  }
+  return { text: redactSshSessionLogText(visible, redactSensitive), mode };
+}
+
+/** Strip VT/control payload before persistence/search for standalone values. */
+export function sanitizeSshSessionLogText(value: string, redactSensitive: boolean = true): string {
+  if (typeof value !== 'string' || value.length === 0) { return ''; }
+  return sanitizeSshSessionLogChunk(value, 'normal', redactSensitive).text;
 }
 
 function searchableText(text: string): string {
