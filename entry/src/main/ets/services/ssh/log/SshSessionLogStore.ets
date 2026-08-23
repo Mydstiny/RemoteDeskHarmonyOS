@@ -21,7 +21,8 @@ import {
   SshSessionLogRecordV1,
   SshSessionLogSearchCursorV1,
   SshSessionLogSearchHitV1,
-  SshSessionLogSettingsV1
+  SshSessionLogSettingsV1,
+  SSH_SESSION_LOG_SEARCH_WORK_BUDGET
 } from './SshSessionLogPolicy';
 
 /**
@@ -433,7 +434,8 @@ export class SshSessionLogStore {
           resolve([]);
           return;
         }
-        cursor = continueSshSessionLogSearch(document, cursor, 256);
+        cursor = continueSshSessionLogSearch(
+          document, cursor, SSH_SESSION_LOG_SEARCH_WORK_BUDGET);
         if (cursor.done) {
           resolve(cursor.results);
           return;

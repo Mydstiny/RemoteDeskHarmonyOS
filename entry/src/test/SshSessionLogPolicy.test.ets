@@ -14,7 +14,10 @@ import {
   searchSshSessionLog,
   sanitizeSshSessionLogText,
   sshSessionLogCaptureAllowed,
+  SSH_SESSION_LOG_CHUNK_MAX_RECORDS,
   SSH_SESSION_LOGS_DEFAULT_ENABLED,
+  SSH_SESSION_LOG_SEARCH_WORK_BUDGET,
+  SshSessionLogChunkV1,
   SshSessionLogDocumentV1,
   SshSessionLogRecordV1,
   SshSessionLogSearchCursorV1
@@ -84,6 +87,53 @@ export default function sshSessionLogPolicyTest(): void {
         invalidIdentity = continueSshSessionLogSearch(populated, invalidIdentity, 2);
       }
       expect(invalidIdentity.results.length).assertEqual(0);
+    });
+
+    it('ten_mib_search_should_remain_bounded_across_multiple_slices', 0, (): void => {
+      const document: SshSessionLogDocumentV1 = emptySshSessionLogDocument();
+      const miss: string = 'x'.repeat(8192);
+      const match: string = 'x'.repeat(8186) + 'needle';
+      let corpusBytes: number = 0;
+      for (let chunkIndex: number = 0; chunkIndex < 11; chunkIndex++) {
+        const records: Array<SshSessionLogRecordV1> = [];
+        for (let recordIndex: number = 0;
+          recordIndex < SSH_SESSION_LOG_CHUNK_MAX_RECORDS; recordIndex++) {
+          const isMatch: boolean = chunkIndex === 10 &&
+            recordIndex === SSH_SESSION_LOG_CHUNK_MAX_RECORDS - 1;
+          const text: string = isMatch ? match : miss;
+          const item: SshSessionLogRecordV1 = record(
+            'large-' + chunkIndex.toString() + '-' + recordIndex.toString(), text,
+            chunkIndex * SSH_SESSION_LOG_CHUNK_MAX_RECORDS + recordIndex);
+          item.searchText = text;
+          records.push(item);
+          corpusBytes += item.byteSize;
+        }
+        const chunk: SshSessionLogChunkV1 = {
+          id: 'chunk-' + chunkIndex.toString(), hostId: 'host-one',
+          sessionId: 7, generation: 2,
+          createdAt: records[0].timestamp,
+          updatedAt: records[records.length - 1].timestamp,
+          byteSize: records.reduce((sum: number, item: SshSessionLogRecordV1): number =>
+            sum + item.byteSize, 0),
+          records
+        };
+        document.chunks.push(chunk);
+      }
+
+      let cursor: SshSessionLogSearchCursorV1 = createSshSessionLogSearchCursor(
+        document, 'needle', 'host-one');
+      let slices: number = 0;
+      while (!cursor.done && slices < 32) {
+        cursor = continueSshSessionLogSearch(
+          document, cursor, SSH_SESSION_LOG_SEARCH_WORK_BUDGET);
+        slices++;
+      }
+
+      expect(corpusBytes > 10 * 1024 * 1024).assertTrue();
+      expect(slices > 1).assertTrue();
+      expect(cursor.done).assertTrue();
+      expect(cursor.results.length).assertEqual(1);
+      expect(cursor.results[0].record.id).assertEqual('large-10-127');
     });
 
     it('default_should_be_opt_in_and_sensitive_modes_should_fail_closed', 0, (): void => {

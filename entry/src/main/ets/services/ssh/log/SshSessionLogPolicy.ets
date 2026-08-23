@@ -115,6 +115,7 @@ export const SSH_SESSION_LOG_CHUNK_MAX_BYTES: number = 64 * 1024;
 export const SSH_SESSION_LOG_CHUNK_MAX_RECORDS: number = 128;
 export const SSH_SESSION_LOG_MAX_BOOKMARKS: number = 500;
 export const SSH_SESSION_LOG_MAX_SEARCH_RESULTS: number = 200;
+export const SSH_SESSION_LOG_SEARCH_WORK_BUDGET: number = 256;
 export const SSH_SESSION_LOG_MAX_EXPORT_BYTES: number = 2 * 1024 * 1024;
 
 const MAX_HOST_ID: number = 96;
@@ -533,7 +534,8 @@ export function createSshSessionLogSearchCursor(document: SshSessionLogDocumentV
 
 /** Scan a bounded amount of work so callers can yield between large-log slices. */
 export function continueSshSessionLogSearch(document: SshSessionLogDocumentV1,
-  cursor: SshSessionLogSearchCursorV1, workBudget: number = 256):
+  cursor: SshSessionLogSearchCursorV1,
+  workBudget: number = SSH_SESSION_LOG_SEARCH_WORK_BUDGET):
   SshSessionLogSearchCursorV1 {
   if (cursor.done) { return cursor; }
   const next: SshSessionLogSearchCursorV1 = {

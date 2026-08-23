@@ -117,6 +117,33 @@ export default function sshSessionLogStoreTest(): void {
       expect(store.search('payload', 'host-one').length).assertEqual(1);
     });
 
+    it('should_yield_and_honor_cancellation_between_search_slices', 0,
+      async (): Promise<void> => {
+        const persistence = new MemoryLogPersistence();
+        const crypto = new FakeLogCrypto();
+        const store = new SshSessionLogStore(persistence, crypto);
+        const context: common.Context = undefined as common.Context;
+        expect(store.init(context)).assertTrue();
+        const settings: SshSessionLogSettingsV1 = store.settingsSnapshot();
+        settings.enabled = true;
+        expect(store.setSettings(settings)).assertTrue();
+        for (let index: number = 0; index < 513; index++) {
+          const item: SshSessionLogRecordV1 = logRecord(
+            'yield-' + index.toString(), 'search-miss-' + index.toString());
+          item.timestamp = 100 + index;
+          expect(store.append(item, item.timestamp)).assertTrue();
+        }
+        let continuationChecks: number = 0;
+        const results = await store.searchAsync(
+          'not-present', 'host-one', undefined, (): boolean => {
+            continuationChecks++;
+            return continuationChecks < 2;
+          });
+
+        expect(continuationChecks).assertEqual(2);
+        expect(results.length).assertEqual(0);
+      });
+
     it('should_fail_closed_when_crypto_is_unavailable', 0, (): void => {
       const persistence = new MemoryLogPersistence();
       const crypto = new FakeLogCrypto();
