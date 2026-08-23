@@ -291,9 +291,29 @@ function bookmarkForRecord(document: SshSessionLogDocumentV1, recordId: string):
 
 function chunkPinned(document: SshSessionLogDocumentV1, chunk: SshSessionLogChunkV1): boolean {
   for (let recordIndex: number = 0; recordIndex < chunk.records.length; recordIndex++) {
-    if (bookmarkForRecord(document, chunk.records[recordIndex].id) !== undefined) { return true; }
+    const bookmark: SshSessionLogBookmarkV1 | undefined = bookmarkForRecord(
+      document, chunk.records[recordIndex].id);
+    if (bookmark?.pinned === true) { return true; }
   }
   return false;
+}
+
+function leastRecentlyUpdatedRemovableChunkIndex(document: SshSessionLogDocumentV1): number {
+  let removable: number = -1;
+  for (let index: number = 0; index < document.chunks.length; index++) {
+    const candidate: SshSessionLogChunkV1 = document.chunks[index];
+    if (chunkPinned(document, candidate)) { continue; }
+    if (removable < 0) {
+      removable = index;
+      continue;
+    }
+    const current: SshSessionLogChunkV1 = document.chunks[removable];
+    if (candidate.updatedAt < current.updatedAt ||
+      (candidate.updatedAt === current.updatedAt && candidate.createdAt < current.createdAt)) {
+      removable = index;
+    }
+  }
+  return removable;
 }
 
 function totalBytes(document: SshSessionLogDocumentV1): number {
@@ -315,7 +335,7 @@ function nextSshSessionLogChunkId(record: SshSessionLogRecordV1,
     record.hostId.slice(-48)).slice(0, MAX_CHUNK_ID);
 }
 
-/** Apply retention and quota without deleting a chunk that has a bookmark. */
+/** Apply retention and quota without deleting a chunk that has a pinned bookmark. */
 export function pruneSshSessionLogDocument(
   document: SshSessionLogDocumentV1,
   nowMs: number
@@ -326,14 +346,13 @@ export function pruneSshSessionLogDocument(
     chunk.updatedAt >= cutoff || chunkPinned(next, chunk));
   let bytes: number = totalBytes(next);
   while (bytes > next.settings.quotaBytes) {
-    const removable: number = next.chunks.findIndex(
-      (chunk: SshSessionLogChunkV1): boolean => !chunkPinned(next, chunk));
+    const removable: number = leastRecentlyUpdatedRemovableChunkIndex(next);
     if (removable < 0) { break; }
     bytes -= next.chunks[removable].byteSize;
     const removedId: string = next.chunks[removable].id;
     next.chunks.splice(removable, 1);
-    // A bookmark is allowed to keep a chunk; bookmarks that lose their record
-    // for another reason are removed, never left as dangling UI links.
+    // A pinned bookmark is allowed to keep a chunk; ordinary bookmarks that
+    // lose their record are removed, never left as dangling UI links.
     next.bookmarks = next.bookmarks.filter((bookmark: SshSessionLogBookmarkV1): boolean => {
       return bookmark.recordId.length > 0 && next.chunks.some(
         (chunk: SshSessionLogChunkV1): boolean => chunk.id !== removedId && chunk.records.some(
@@ -363,8 +382,7 @@ function pruneSshSessionLogDocumentIncremental(
     chunk.updatedAt >= cutoff || chunkPinned(next, chunk));
   let bytes: number = totalBytes(next);
   while (bytes > next.settings.quotaBytes) {
-    const removable: number = next.chunks.findIndex(
-      (chunk: SshSessionLogChunkV1): boolean => !chunkPinned(next, chunk));
+    const removable: number = leastRecentlyUpdatedRemovableChunkIndex(next);
     if (removable < 0) { break; }
     bytes -= next.chunks[removable].byteSize;
     const removedId: string = next.chunks[removable].id;

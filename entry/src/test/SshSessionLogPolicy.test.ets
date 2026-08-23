@@ -9,6 +9,7 @@ import {
   encodeSshSessionLogDocument,
   exportSshSessionLog,
   matchesSshSessionLogExportFence,
+  pruneSshSessionLogDocument,
   resolveSshSessionLogsEnabled,
   searchSshSessionLog,
   sanitizeSshSessionLogText,
@@ -24,6 +25,13 @@ function record(id: string, text: string, timestamp: number = 100): SshSessionLo
     id, hostId: 'host-one', sessionId: 7, generation: 2, timestamp,
     direction: 'output', kind: 'data', text, searchText: '', byteSize: text.length
   };
+}
+
+function recordForHost(id: string, hostId: string, text: string,
+  timestamp: number): SshSessionLogRecordV1 {
+  const value: SshSessionLogRecordV1 = record(id, text, timestamp);
+  value.hostId = hostId;
+  return value;
 }
 
 export default function sshSessionLogPolicyTest(): void {
@@ -132,20 +140,64 @@ export default function sshSessionLogPolicyTest(): void {
       expect(next.chunks[1].records.length).assertEqual(1);
     });
 
-    it('quota_should_preserve_pinned_chunks_and_export_should_be_bounded', 0, (): void => {
+    it('quota_should_evict_lru_unpinned_bookmark_and_preserve_pinned_chunk', 0, (): void => {
       const document = emptySshSessionLogDocument();
       document.settings.enabled = true;
       document.settings.quotaBytes = 256 * 1024;
-      let next = appendSshSessionLogRecord(document,
-        record('pinned', 'password=do-not-leak', 100), 100);
-      const bookmarked = addSshSessionLogBookmark(
-        next, { hostId: 'host-one', sessionId: 7, generation: 2 }, 'pinned', '', true, 101);
-      next = bookmarked as SshSessionLogDocumentV1;
-      const exportResult = exportSshSessionLog(next, 'host-one', undefined, true);
+      const payload: string = 'x'.repeat(8192);
+      let next: SshSessionLogDocumentV1 = appendSshSessionLogRecord(document,
+        recordForHost('pinned', 'host-pinned', 'password=do-not-leak' + payload, 700), 700);
+      next = addSshSessionLogBookmark(next,
+        { hostId: 'host-pinned', sessionId: 7, generation: 2 },
+        'pinned', '', true, 701) as SshSessionLogDocumentV1;
+      next = appendSshSessionLogRecord(next,
+        recordForHost('ordinary-bookmark', 'host-ordinary', payload, 600), 701);
+      next = addSshSessionLogBookmark(next,
+        { hostId: 'host-ordinary', sessionId: 7, generation: 2 },
+        'ordinary-bookmark', '', false, 702) as SshSessionLogDocumentV1;
+      for (let index: number = 0; index < 31; index++) {
+        next = appendSshSessionLogRecord(next, recordForHost(
+          'record-' + index.toString(), 'host-' + index.toString(), payload, 800 + index),
+        900 + index);
+      }
+
+      expect(searchSshSessionLog(next, '', 'host-pinned').length).assertEqual(1);
+      expect(searchSshSessionLog(next, '', 'host-ordinary').length).assertEqual(0);
+      expect(next.bookmarks.length).assertEqual(1);
+      expect(next.bookmarks[0].recordId).assertEqual('pinned');
+      const total: number = next.chunks.reduce((sum: number, chunk): number =>
+        sum + chunk.byteSize, 0);
+      expect(total <= next.settings.quotaBytes).assertTrue();
+
+      const exportResult = exportSshSessionLog(next, 'host-pinned', undefined, true);
       expect(exportResult.ok).assertTrue();
       expect(exportResult.text.indexOf('do-not-leak')).assertEqual(-1);
       expect(exportResult.text.indexOf('[redacted]') >= 0).assertTrue();
       expect(encodeSshSessionLogDocument(next).indexOf('searchText') >= 0).assertTrue();
+    });
+
+    it('retention_should_remove_expired_unpinned_bookmarks_only', 0, (): void => {
+      const dayMs: number = 24 * 60 * 60 * 1000;
+      const document: SshSessionLogDocumentV1 = emptySshSessionLogDocument();
+      document.settings.enabled = true;
+      document.settings.retentionDays = 1;
+      let next: SshSessionLogDocumentV1 = appendSshSessionLogRecord(document,
+        recordForHost('pinned-old', 'host-pinned', 'keep', 100), 100);
+      next = addSshSessionLogBookmark(next,
+        { hostId: 'host-pinned', sessionId: 7, generation: 2 },
+        'pinned-old', '', true, 101) as SshSessionLogDocumentV1;
+      next = appendSshSessionLogRecord(next,
+        recordForHost('ordinary-old', 'host-ordinary', 'expire', 101), 101);
+      next = addSshSessionLogBookmark(next,
+        { hostId: 'host-ordinary', sessionId: 7, generation: 2 },
+        'ordinary-old', '', false, 102) as SshSessionLogDocumentV1;
+
+      next = pruneSshSessionLogDocument(next, dayMs + 200);
+
+      expect(searchSshSessionLog(next, '', 'host-pinned').length).assertEqual(1);
+      expect(searchSshSessionLog(next, '', 'host-ordinary').length).assertEqual(0);
+      expect(next.bookmarks.length).assertEqual(1);
+      expect(next.bookmarks[0].pinned).assertTrue();
     });
 
     it('decoder_boundary_should_not_persist_unknown_fields', 0, (): void => {
