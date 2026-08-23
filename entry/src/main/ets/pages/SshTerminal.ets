@@ -9413,8 +9413,9 @@ struct SshTerminal {
     // 进入 SSH 终端跟随设备当前朝向（不锁定窗口方向）；用户仍可手动切换横竖屏。
     const defaultOrientation: SshTerminalOrientation = defaultSshTerminalOrientation(this.isDesktopDevice);
     if (defaultOrientation === 'system') {
-      this.isLandscape = await this.readDeviceIsLandscape();
+      const landscape: boolean = await this.readDeviceIsLandscape();
       if (!this.isPageGenerationActive(pageGeneration)) { return; }
+      this.isLandscape = landscape;
     } else {
       this.isLandscape = defaultOrientation === 'landscape';
       await this.setPreferredOrientation(
