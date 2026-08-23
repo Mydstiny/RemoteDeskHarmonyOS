@@ -856,6 +856,8 @@ struct SshTerminal {
   private sftpTransferGeneration: number = 0;
   private sftpTransferSessionId: number = -1;
   private sftpTransferPageGeneration: number = 0;
+  /** Release picker/path references after teardown persistence and any in-flight direct I/O. */
+  private sftpTransferRuntimeReleaseRequested: boolean = false;
   private sftpCancelRequested: boolean = false;
   private sftpPauseRequested: boolean = false;
   private sftpTransferTaskSequence: number = 0;
@@ -9226,20 +9228,8 @@ struct SshTerminal {
     this.sftpCancelRequested = false;
     this.sftpPauseRequested = false;
     this.sftpTransferSession = null;
-    this.sftpTransferUri = '';
-    this.sftpTransferFinalUri = '';
-    this.sftpTransferRemotePath = '';
-    this.sftpTransferPartialRemotePath = '';
-    this.sftpTransferPartialMtime = -1;
-    this.sftpTransferSourceMtime = -1;
-    this.sftpTransferRemoteMtime = -1;
-    this.sftpTransferSourceSize = -1;
-    this.sftpTransferRemoteSize = -1;
-    this.sftpTransferCheckpoint = null;
-    this.sftpTransferGeneration = 0;
-    this.sftpTransferSessionId = -1;
-    this.sftpTransferPageGeneration = 0;
-    this.sftpAtomicCommitErrorCode = 0;
+    this.clearSftpTransferRuntime();
+    this.sftpTransferRuntimeReleaseRequested = false;
     this.sftpCancelRequested = false;
     this.sftpPauseRequested = false;
     this.imeCallbackState = createSshImeCallbackState();
@@ -9578,6 +9568,7 @@ struct SshTerminal {
       this.persistSftpTaskMetadata('waitingForConnection');
     }
     void this.sftpTaskStore.flushNow();
+    this.requestSftpTransferRuntimeRelease();
     if (this.sftpTaskUnsubscribe !== null) {
       this.sftpTaskUnsubscribe();
       this.sftpTaskUnsubscribe = null;
@@ -13945,6 +13936,48 @@ struct SshTerminal {
     this.sftpProgressLabel = '处理中';
   }
 
+  /**
+   * Drop page-held Picker URI/path/checkpoint references. Durable task records
+   * contain only resumable identity metadata and are intentionally untouched.
+   */
+  private clearSftpTransferRuntime(): void {
+    this.sftpTransferUri = '';
+    this.sftpTransferRemotePath = '';
+    this.sftpTransferFinalUri = '';
+    this.sftpTransferPartialRemotePath = '';
+    this.sftpTransferPartialMtime = -1;
+    this.sftpTransferSourceMtime = -1;
+    this.sftpTransferRemoteMtime = -1;
+    this.sftpTransferSourceSize = -1;
+    this.sftpTransferRemoteSize = -1;
+    this.sftpTransferCheckpoint = null;
+    this.sftpTransferConflictPolicy = 'ask';
+    this.sftpTransferGeneration = 0;
+    this.sftpTransferSessionId = -1;
+    this.sftpTransferPageGeneration = 0;
+    this.sftpAtomicCommitErrorCode = 0;
+  }
+
+  /**
+   * Teardown must not clear references before a direct transfer has persisted
+   * its final waiting/paused checkpoint. Batch transfers own their provider
+   * references in SshSftpTaskEngine and are safe to release immediately here.
+   */
+  private requestSftpTransferRuntimeRelease(): void {
+    this.sftpTransferRuntimeReleaseRequested = true;
+    this.maybeReleaseSftpTransferRuntime();
+  }
+
+  private maybeReleaseSftpTransferRuntime(): void {
+    if (!this.sftpTransferRuntimeReleaseRequested) { return; }
+    const current: TransferSession | null = this.sftpTransferSession;
+    const directTransferInFlight: boolean = this.sftpEngineBatchId.length === 0 && current !== null &&
+      (current.stage === 'preparing' || current.stage === 'transferring');
+    if (directTransferInFlight) { return; }
+    this.clearSftpTransferRuntime();
+    this.sftpTransferRuntimeReleaseRequested = false;
+  }
+
   private beginSftpTransfer(direction: 'upload' | 'download', fileName: string, totalBytes: number,
     offset: number = 0, transferId: string = ''): TransferSession {
     const session: TransferSession = {
@@ -14017,6 +14050,7 @@ struct SshTerminal {
     // Recovered-task rows capture records by value. Reload after the durable
     // finish upsert so another recovery uses the newest verified checkpoint.
     this.refreshRecoveredSftpTasks();
+    this.maybeReleaseSftpTransferRuntime();
   }
 
   private isSftpTransportUnavailable(): boolean {
