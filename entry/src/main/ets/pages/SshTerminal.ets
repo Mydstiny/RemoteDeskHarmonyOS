@@ -3084,6 +3084,8 @@ struct SshTerminal {
     const normalizedHostId: string = hostId.trim();
     if (normalizedHostId.length === 0 || this.terminalClosing || this.tabSwitchInFlight ||
       this.sshModalOwnsKeyboard() || this.sshTabClosePromptInFlight) { return; }
+    const requestPageGeneration: number = this.pageGeneration;
+    const requestBindingGeneration: number = this.sshBindingGeneration;
     this.sshTabClosePromptInFlight = true;
     const foregroundTransfer: boolean = normalizedHostId === this.hostId.trim() &&
       this.sftpTransferSession !== null && this.sftpBusy;
@@ -3098,6 +3100,9 @@ struct SshTerminal {
         ]
       }).then((result): void => {
         this.sshTabClosePromptInFlight = false;
+        if (!this.isSshBindingGenerationActive(requestPageGeneration, requestBindingGeneration)) {
+          return;
+        }
         if (result.index === 1) {
           this.preserveForegroundSftpBeforeTabClose();
           this.beginSshTabClose(normalizedHostId);
@@ -3118,6 +3123,9 @@ struct SshTerminal {
       ]
     }).then((result): void => {
       this.sshTabClosePromptInFlight = false;
+      if (!this.isSshBindingGenerationActive(requestPageGeneration, requestBindingGeneration)) {
+        return;
+      }
       if (result.index === 1) { this.beginSshTabClose(normalizedHostId); }
     }).catch((_err: BusinessError): void => { this.sshTabClosePromptInFlight = false; });
   }
