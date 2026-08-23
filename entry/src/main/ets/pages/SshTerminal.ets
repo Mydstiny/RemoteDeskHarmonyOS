@@ -8970,6 +8970,10 @@ struct SshTerminal {
   }
 
   async aboutToAppear(): Promise<void> {
+    // A reused route must not expose a previous page's passphrase prompt or
+    // retain its resolver while the new SSH binding is being established.
+    this.clearSshSecretPrompt();
+    this.clearPreflightBinding();
     this.sshAuthPromptPageShown = false;
     this.sshAuthPromptPageReadyAtMs = 0;
     this.clearSshAuthPromptPendingIdentity();
@@ -9393,6 +9397,10 @@ struct SshTerminal {
   }
 
   aboutToDisappear(): void {
+    // Scrub page-local authentication material before any asynchronous
+    // teardown work can leave this page instance reachable.
+    this.clearSshSecretPrompt();
+    this.clearPreflightBinding();
     // The page-local signal owner ends with this lifecycle. The process-wide
     // service is stopped/restarted below using explicit session snapshots;
     // retaining this registry would let a future page stop a recycled id.
@@ -10337,6 +10345,19 @@ struct SshTerminal {
     this.preflightExpectedJumpHostKeyFp = '';
   }
 
+  private resolveSshSecretPrompt(value: string): void {
+    const resolver: ((v: string) => void) | null = this.passphraseResolve;
+    this.passphraseResolve = null;
+    this.showPassphraseSheet = false;
+    this.passphraseInput = '';
+    this.passphraseShowPw = false;
+    if (resolver !== null) { resolver(value); }
+  }
+
+  private clearSshSecretPrompt(): void {
+    this.resolveSshSecretPrompt('');
+  }
+
   private promptPassphrase(): Promise<string> {
     return this.promptSshSecret('私钥密码', '此私钥已加密，请输入密码', '输入密码');
   }
@@ -10374,22 +10395,15 @@ struct SshTerminal {
         Button('取消').fontSize(14).height(38).layoutWeight(1)
           .backgroundColor(this.pal().surface).fontColor(this.pal().text2).borderRadius(8)
           .onClick(() => {
-            this.showPassphraseSheet = false;
-            if (this.passphraseResolve) {
-              this.passphraseResolve('');
-              this.passphraseResolve = null;
-            }
+            this.resolveSshSecretPrompt('');
           })
           .onMouse(this.handleTerminalMouse)
           .onAxisEvent(this.handleTerminalAxis)
         Button('确定').fontSize(14).height(38).layoutWeight(1)
           .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(8).margin({ left: 12 })
           .onClick(() => {
-            this.showPassphraseSheet = false;
-            if (this.passphraseResolve) {
-              this.passphraseResolve(this.passphraseInput);
-              this.passphraseResolve = null;
-            }
+            const value: string = this.passphraseInput;
+            this.resolveSshSecretPrompt(value);
           })
       }.width('100%')
     }.padding(20)
@@ -10497,6 +10511,10 @@ struct SshTerminal {
         sshJumpHostKeyFingerprintSha256: (preflightMatchesHost ? this.preflightExpectedJumpHostKeyFp : '') ||
           host.sshJumpHostKeyFingerprintSha256
       };
+      // The native config now owns the one-shot authentication inputs for
+      // this connect attempt; do not keep the preflight passphrase or raw
+      // host-key material in the page after constructing it.
+      this.clearPreflightBinding();
       // An authenticated PC-window session uses only explicit session-id
       // callback/input APIs. Keeping it detached from the legacy process-wide
       // sink owner allows multiple independent SSH windows to stay live at
@@ -17483,10 +17501,7 @@ struct SshTerminal {
           showClose: false,
           maskColor: 'rgba(0,0,0,0.4)',
           onDisappear: (): void => {
-            if (this.passphraseResolve) {
-              this.passphraseResolve('');
-              this.passphraseResolve = null;
-            }
+            this.clearSshSecretPrompt();
           }
         })
     }
