@@ -181,6 +181,64 @@ export function reconcileSshSftpStoppedRemoteCommit(current: SshSftpTaskRecord,
   };
 }
 
+/**
+ * A verified Picker export is the download commit point. Preserve a cancel or
+ * pause only until that export succeeds; afterwards the same stopped task must
+ * become completed so retry cannot duplicate an already delivered file.
+ */
+export function reconcileSshSftpStoppedDownloadExport(current: SshSftpTaskRecord,
+  attempted: SshSftpTaskRecord, expectedSize: number, sequence: number,
+  updatedAt: number): SshSftpTaskRecord | null {
+  const currentSource: string = (current.sourcePath || current.remotePath).trim();
+  const attemptedSource: string = (attempted.sourcePath || attempted.remotePath).trim();
+  const currentTarget: string = (current.targetPath || current.relativePath).trim();
+  const attemptedTarget: string = (attempted.targetPath || attempted.relativePath).trim();
+  const totalMatches: boolean = current.totalBytes === attempted.totalBytes &&
+    (current.totalBytes === expectedSize || current.totalBytes < 0);
+  const sourceSizeMatches: boolean = current.sourceSize === attempted.sourceSize &&
+    (current.sourceSize === expectedSize || current.sourceSize < 0);
+  if ((current.stage !== 'paused' && current.stage !== 'cancelled') ||
+    current.direction !== 'download' || attempted.direction !== 'download' ||
+    !Number.isFinite(expectedSize) || expectedSize < 0 ||
+    current.taskId !== attempted.taskId || current.batchId !== attempted.batchId ||
+    current.hostId !== attempted.hostId || current.relativePath !== attempted.relativePath ||
+    current.remotePath !== attempted.remotePath || current.fileName !== attempted.fileName ||
+    currentSource.length === 0 || currentSource !== attemptedSource ||
+    currentTarget !== attemptedTarget || !totalMatches || !sourceSizeMatches ||
+    current.sourceMtime !== attempted.sourceMtime || !Number.isFinite(sequence) ||
+    sequence <= current.sequence || !Number.isFinite(updatedAt) || updatedAt < 0) {
+    return null;
+  }
+  return {
+    taskId: current.taskId,
+    schemaVersion: current.schemaVersion,
+    batchId: current.batchId,
+    relativePath: current.relativePath,
+    hostId: current.hostId,
+    direction: current.direction,
+    isDirectory: current.isDirectory,
+    remotePath: current.remotePath,
+    fileName: current.fileName,
+    totalBytes: expectedSize,
+    verifiedOffset: expectedSize,
+    sourceSize: current.sourceSize < 0 ? expectedSize : current.sourceSize,
+    sourceMtime: current.sourceMtime,
+    partialSize: -1,
+    partialMtime: -1,
+    sessionGeneration: current.sessionGeneration,
+    sequence,
+    stage: 'completed',
+    updatedAt,
+    sourceEndpoint: current.sourceEndpoint,
+    targetEndpoint: current.targetEndpoint,
+    sourcePath: current.sourcePath,
+    targetPath: current.targetPath,
+    partialIdentity: undefined,
+    checksumPolicy: current.checksumPolicy,
+    commitState: undefined
+  };
+}
+
 interface SshSftpBatchBinding {
   batchId: string;
   hostId: string;
@@ -1347,8 +1405,13 @@ export class SshSftpTaskEngine {
         return this.failTask(binding, task, 'download-final-identity-mismatch');
       }
       if (this.taskIsStopped(task.taskId)) { return false; }
+      const exportAttempt: SshSftpTaskRecord = task;
       if (!await this.exportPartial(partialPath, targetUri, remoteIdentity.size)) {
         return this.failTask(binding, task, 'download-atomic-export-failed');
+      }
+      if (this.taskIsStopped(task.taskId)) {
+        return this.completeStoppedDownloadExport(binding, exportAttempt,
+          remoteIdentity.size, 'completed-after-picker-export');
       }
       return this.completeFileTask(binding, task, 'completed');
     } catch (_err) {
@@ -1478,6 +1541,21 @@ export class SshSftpTaskEngine {
     this.sequence = Math.max(this.sequence + 1, Date.now(), current.sequence + 1,
       attempted.sequence + 1);
     const completed: SshSftpTaskRecord | null = reconcileSshSftpStoppedRemoteCommit(
+      current, attempted, expectedSize, this.sequence, Date.now());
+    if (completed === null || !this.store.upsert(completed)) { return false; }
+    const stored: SshSftpTaskRecord | null = this.store.get(attempted.taskId);
+    if (stored === null || stored.stage !== 'completed') { return false; }
+    this.publish('taskChanged', binding.batchId, stored, reason);
+    return true;
+  }
+
+  private completeStoppedDownloadExport(binding: SshSftpBatchBinding,
+    attempted: SshSftpTaskRecord, expectedSize: number, reason: string): boolean {
+    const current: SshSftpTaskRecord | null = this.store.get(attempted.taskId);
+    if (current === null) { return false; }
+    this.sequence = Math.max(this.sequence + 1, Date.now(), current.sequence + 1,
+      attempted.sequence + 1);
+    const completed: SshSftpTaskRecord | null = reconcileSshSftpStoppedDownloadExport(
       current, attempted, expectedSize, this.sequence, Date.now());
     if (completed === null || !this.store.upsert(completed)) { return false; }
     const stored: SshSftpTaskRecord | null = this.store.get(attempted.taskId);

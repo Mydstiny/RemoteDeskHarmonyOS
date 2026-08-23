@@ -1,6 +1,7 @@
 import { describe, it, expect } from '@ohos/hypium';
 import {
   planSshSftpStagingDiscard,
+  reconcileSshSftpStoppedDownloadExport,
   reconcileSshSftpStoppedUploadCheckpoint,
   reconcileSshSftpStoppedRemoteCommit,
   SshSftpStagingDiscardPlan,
@@ -103,6 +104,50 @@ export default function sshSftpTaskEnginePolicyTest(): void {
         .assertTrue();
       expect(reconcileSshSftpStoppedRemoteCommit(
         cancelled, { ...committing, commitState: 'renamed' }, 1024, 11, 43) === null)
+        .assertTrue();
+    });
+
+    it('completes_only_the_exact_stopped_download_after_verified_export', 0, (): void => {
+      const exporting: SshSftpTaskRecord = {
+        taskId: 'download-export', batchId: 'batch-2', relativePath: 'target.bin',
+        hostId: 'host-1', direction: 'download', isDirectory: false,
+        remotePath: '/source.bin', fileName: 'target.bin', totalBytes: 2048,
+        verifiedOffset: 2048, sourceSize: 2048, sourceMtime: 20,
+        partialSize: 2048, partialMtime: 30, sessionGeneration: 4,
+        sequence: 12, stage: 'transferring', updatedAt: 50,
+        sourcePath: '/source.bin', targetPath: 'target.bin'
+      };
+      const paused: SshSftpTaskRecord = {
+        ...exporting, sequence: 13, stage: 'paused', updatedAt: 51
+      };
+      const completed: SshSftpTaskRecord | null = reconcileSshSftpStoppedDownloadExport(
+        paused, exporting, 2048, 14, 52);
+
+      expect(completed === null).assertFalse();
+      expect((completed as SshSftpTaskRecord).stage).assertEqual('completed');
+      expect((completed as SshSftpTaskRecord).verifiedOffset).assertEqual(2048);
+      expect((completed as SshSftpTaskRecord).partialSize).assertEqual(-1);
+      expect((completed as SshSftpTaskRecord).commitState).assertUndefined();
+      const cancelled: SshSftpTaskRecord = { ...paused, stage: 'cancelled' };
+      expect(reconcileSshSftpStoppedDownloadExport(
+        cancelled, exporting, 2048, 15, 53)?.stage).assertEqual('completed');
+
+      const unknownSize: SshSftpTaskRecord = {
+        ...paused, totalBytes: -1, sourceSize: -1
+      };
+      const unknownAttempt: SshSftpTaskRecord = {
+        ...exporting, totalBytes: -1, sourceSize: -1
+      };
+      expect(reconcileSshSftpStoppedDownloadExport(
+        unknownSize, unknownAttempt, 2048, 15, 53)?.totalBytes).assertEqual(2048);
+      expect(reconcileSshSftpStoppedDownloadExport(
+        { ...paused, targetPath: 'other.bin' }, exporting, 2048, 15, 53) === null)
+        .assertTrue();
+      expect(reconcileSshSftpStoppedDownloadExport(
+        { ...paused, stage: 'transferring' }, exporting, 2048, 15, 53) === null)
+        .assertTrue();
+      expect(reconcileSshSftpStoppedDownloadExport(
+        paused, { ...exporting, direction: 'upload' }, 2048, 15, 53) === null)
         .assertTrue();
     });
   });
