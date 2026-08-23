@@ -31,6 +31,9 @@ export interface SshSftpSkipRemovalDecision {
   publishError: boolean;
 }
 
+export type SshSftpCommittedDisposition =
+  'normal' | 'cancelled-after-commit' | 'paused-after-commit' | 'request-stale';
+
 /** Resume is fail-closed when either the source or the partial identity changed. */
 export function sshSftpIdentityMatches(expected: SshSftpFileIdentity,
   observed: SshSftpFileIdentity): boolean {
@@ -69,6 +72,14 @@ export function sshSftpSkipRemovalDecision(errorCode: number, attemptCurrent: bo
     return { committedSkip: false, clearCheckpoint: false, publishError: false };
   }
   return { committedSkip: true, clearCheckpoint: true, publishError: false };
+}
+
+/** A successful remote rename is authoritative even when a stop arrives immediately after it. */
+export function sshSftpCommittedDisposition(commitReceiptStale: boolean,
+  userCancellationRequested: boolean, userPauseRequested: boolean): SshSftpCommittedDisposition {
+  if (userCancellationRequested) { return 'cancelled-after-commit'; }
+  if (userPauseRequested) { return 'paused-after-commit'; }
+  return commitReceiptStale ? 'request-stale' : 'normal';
 }
 
 export function sshSftpPartialSuffix(taskId: string): string {

@@ -1,5 +1,6 @@
 import { describe, it, expect } from '@ohos/hypium';
 import {
+  sshSftpCommittedDisposition,
   sshSftpCommitSizeMatches,
   sshSftpFinalUriFromPartial,
   sshSftpIdentityMatches,
@@ -51,6 +52,19 @@ export default function sshSftpIntegrityPolicyTest(): void {
       expect(sshSftpSkipRemovalDecision(-5, true, false).publishError).assertTrue();
       expect(sshSftpSkipRemovalDecision(-5, true, true).publishError).assertFalse();
       expect(sshSftpSkipRemovalDecision(-5, false, false).publishError).assertFalse();
+    });
+
+    it('keeps successful remote commits completed when stop requests arrive late', 0, (): void => {
+      expect(sshSftpCommittedDisposition(false, false, false)).assertEqual('normal');
+      expect(sshSftpCommittedDisposition(true, false, false)).assertEqual('request-stale');
+      expect(sshSftpCommittedDisposition(true, true, false))
+        .assertEqual('cancelled-after-commit');
+      expect(sshSftpCommittedDisposition(true, false, true))
+        .assertEqual('paused-after-commit');
+      expect(sshSftpCommittedDisposition(false, false, true))
+        .assertEqual('paused-after-commit');
+      expect(sshSftpCommittedDisposition(false, true, true))
+        .assertEqual('cancelled-after-commit');
     });
   });
 }

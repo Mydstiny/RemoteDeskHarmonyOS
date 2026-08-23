@@ -400,8 +400,10 @@ import {
 } from '../services/TransferSessionPolicy';
 import {
   SshSftpCheckpoint,
+  SshSftpCommittedDisposition,
   SshSftpFileIdentity,
   SshSftpSkipRemovalDecision,
+  sshSftpCommittedDisposition,
   sshSftpCommitSizeMatches,
   sshSftpIdentityMatches,
   sshSftpOffsetIsValid,
@@ -14539,6 +14541,13 @@ struct SshTerminal {
       !this.sftpDetached && !this.sftpWaitingForConnection;
   }
 
+  private isSftpUserPauseRequested(session: TransferSession): boolean {
+    return this.isSftpTransferAttemptCurrent(session) && this.sftpTransferSession !== null &&
+      this.sftpTransferSession.id === session.id &&
+      this.sftpTransferSession.stage === 'paused' && this.sftpPauseRequested &&
+      !this.sftpDetached && !this.sftpWaitingForConnection;
+  }
+
   private isSftpUserCheckpointStopRequested(session: TransferSession): boolean {
     return this.isSftpTransferAttemptCurrent(session) && this.sftpTransferSession !== null &&
       this.sftpTransferSession.id === session.id &&
@@ -14966,13 +14975,6 @@ struct SshTerminal {
         this.stopSftpTransfer(session, 'upload-atomic-commit-failed');
         return;
       }
-      if (commitResult === 'committed-session-stale') {
-        this.finishSftpTransfer(session, 'completed', 'committed-session-stale');
-        if (publishCommitStatus) {
-          this.sftpStatus = '已上传 ' + fileName + '（远端已提交，会话已切换）';
-        }
-        return;
-      }
       if (commitResult === 'skipped') {
         this.finishSftpTransfer(session, 'completed', 'conflict-skipped');
         if (publishCommitStatus) {
@@ -14981,9 +14983,19 @@ struct SshTerminal {
         }
         return;
       }
-      if (this.isSftpUserCancellationRequested(session)) {
-        this.finishSftpTransfer(session, 'cancelled', 'cancel-requested-at-commit');
-        this.sftpStatus = '取消请求到达原子提交阶段，已保留完整远端文件';
+      const committedDisposition: SshSftpCommittedDisposition = sshSftpCommittedDisposition(
+        commitResult === 'committed-session-stale',
+        this.isSftpUserCancellationRequested(session), this.isSftpUserPauseRequested(session));
+      if (committedDisposition !== 'normal') {
+        this.finishSftpTransfer(session, 'completed', committedDisposition);
+        if (publishCommitStatus) {
+          this.sftpStatus = committedDisposition === 'cancelled-after-commit'
+            ? '已上传 ' + fileName + '（取消请求到达提交后，远端文件已完整保留）'
+            : committedDisposition === 'paused-after-commit'
+              ? '已上传 ' + fileName + '（暂停请求到达提交后，远端文件已完整保留）'
+              : '已上传 ' + fileName + '（远端已提交，当前传输已结束）';
+          this.scheduleSftpRefresh(this.sftpPath, 180);
+        }
         return;
       }
       this.finishSftpTransfer(session, 'completed');
