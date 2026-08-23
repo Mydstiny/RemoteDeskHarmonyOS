@@ -235,6 +235,8 @@ import {
   SshTerminalSearchValidation,
   validateSshTerminalSearchQuery
 } from '../services/ssh/search/SshTerminalSearchPolicy';
+import { sshTerminalDecodeStateNeedsReset } from
+  '../services/ssh/terminal/SshTerminalDecodePolicy';
 import {
   routeSshShortcut,
   SshShortcutChord,
@@ -1676,6 +1678,7 @@ struct SshTerminal {
     const nativeBuffer: TerminalInputBuffer | undefined =
       this.nativeTerminalInputBuffers.get(normalizedHostId);
     if (nativeBuffer !== undefined) { nativeBuffer.clear(); }
+    this.resetTerminalDecodeState(normalizedHostId);
     this.markXtermSurfaceNotReady(normalizedHostId);
     this.sshTerminalSafetyModes.delete(normalizedHostId);
     this.sshTabStore.invalidateSession(normalizedHostId, 'error', message);
@@ -1796,6 +1799,17 @@ struct SshTerminal {
     this.nativeTerminalInputBuffers.clear();
     this.terminalTranscriptDecodeRemainders.clear();
     this.terminalFallbackDecodeRemainders.clear();
+  }
+
+  /** Drop UTF-8 tails that belong to a closed/replaced terminal identity. */
+  private resetTerminalDecodeState(hostId: string): void {
+    const normalizedHostId: string = hostId.trim();
+    if (normalizedHostId.length === 0) { return; }
+    this.terminalTranscriptDecodeRemainders.delete(normalizedHostId);
+    this.terminalFallbackDecodeRemainders.delete(normalizedHostId);
+    if (normalizedHostId === this.hostId.trim()) {
+      this.terminalDecodeRemainder = new Uint8Array(0);
+    }
   }
 
   private sshWorkspaceModeEnabled(): boolean {
@@ -10166,6 +10180,10 @@ struct SshTerminal {
           // Treat same-session transport recovery as a new callback owner.
           // Clear the old callback before publishing the new tab identity so
           // no late native chunk can cross the generation fence.
+          if (sshTerminalDecodeStateNeedsReset(this.sessionId, previousGeneration,
+            this.sessionId, generation)) {
+            this.resetTerminalDecodeState(this.hostId);
+          }
           this.flushSshSessionLogOutput();
           this.discardSshSessionLogHostRuntime(this.hostId,
             sshSessionLogRuntimeKey({
@@ -10379,6 +10397,9 @@ struct SshTerminal {
     bindingGeneration: number): Promise<void> {
     const bindingHostId: string = host.id.trim();
     if (!this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId)) { return; }
+    // This path creates a new native identity after adoption/reconnect failed;
+    // any UTF-8 suffix from the previous identity must not cross into it.
+    this.resetTerminalDecodeState(bindingHostId);
     this.sshTabStore.openAndActivate(bindingHostId, host.label,
       host.username + '@' + host.host + ':' + host.port.toString());
     this.sshTabStore.beginConnection(bindingHostId);
@@ -10535,9 +10556,15 @@ struct SshTerminal {
     connectedSessionId: number, bindingHostId: string): Promise<boolean> {
     if (connectedSessionId <= 0 ||
       !this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId)) { return false; }
-    this.sessionId = connectedSessionId;
+    const previousSessionId: number = this.sessionId;
+    const previousGeneration: number = this.sshSessionGeneration;
     const sessionGeneration: number = this.loader.getSshTerminalDiagnostics(
       connectedSessionId).sessionGeneration;
+    if (sshTerminalDecodeStateNeedsReset(previousSessionId, previousGeneration,
+      connectedSessionId, sessionGeneration)) {
+      this.resetTerminalDecodeState(bindingHostId);
+    }
+    this.sessionId = connectedSessionId;
     if (!this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId)) {
       this.loader.disconnectSshSession(connectedSessionId);
       this.sessionId = -1;
@@ -10762,6 +10789,9 @@ struct SshTerminal {
       this.persistSftpTaskMetadata('waitingForConnection');
     }
     if (this.sessionId > 0) {
+      if (sshTerminalDecodeStateNeedsReset(this.sessionId, this.sshSessionGeneration, -1, 0)) {
+        this.resetTerminalDecodeState(this.hostId);
+      }
       this.detachSftpSessionOwner(this.hostId, this.sessionId);
       this.releaseForwardingSession(this.hostId, this.sessionId, this.sshSessionGeneration);
       this.loader.disconnectSshSession(this.sessionId);

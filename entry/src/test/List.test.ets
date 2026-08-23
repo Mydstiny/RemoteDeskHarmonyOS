@@ -154,6 +154,7 @@ import terminalRendererPolicyTest from './TerminalRendererPolicy.test';
 import sshTransportPolicyTest from './SshTransportPolicy.test';
 import sshTerminalSurfaceBindingPolicyTest from './SshTerminalSurfaceBindingPolicy.test';
 import sshTerminalRendererRegistryTest from './SshTerminalRendererRegistry.test';
+import sshTerminalDecodePolicyTest from './SshTerminalDecodePolicy.test';
 import sshForwardingPolicyTest from './SshForwardingPolicy.test';
 import sshProxyProfilePolicyTest from './SshProxyProfilePolicy.test';
 import sshProxyProfileStoreTest from './SshProxyProfileStore.test';
@@ -382,6 +383,7 @@ export default function testsuite() {
   sshTransportPolicyTest();
   sshTerminalSurfaceBindingPolicyTest();
   sshTerminalRendererRegistryTest();
+  sshTerminalDecodePolicyTest();
   sshForwardingPolicyTest();
   sshProxyProfilePolicyTest();
   sshProxyProfileStoreTest();
