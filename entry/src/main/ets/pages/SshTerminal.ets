@@ -295,6 +295,7 @@ import {
   sshWorkspaceVisiblePaneCount
 } from '../services/ssh/workspace/SshWorkspacePolicy';
 import {
+  collapseRestoredSshWorkspacePanes,
   reconcileSshWorkspaceRuntimeTabs,
   sshWorkspaceRuntimeProjection,
   SshWorkspaceRuntimeTabProjection
@@ -1900,8 +1901,11 @@ struct SshTerminal {
       }
     }
     const restoredRevision: number = active === null ? -1 : active.revision;
-    const reconciled: SshWorkspaceSnapshotV1 = reconcileSshWorkspaceRuntimeTabs(
-      active, this.sshWorkspaceRuntimeTabs(), this.hostId, Date.now());
+    const restoreNowMs: number = Date.now();
+    const projected: SshWorkspaceSnapshotV1 = reconcileSshWorkspaceRuntimeTabs(
+      active, this.sshWorkspaceRuntimeTabs(), this.hostId, restoreNowMs);
+    const reconciled: SshWorkspaceSnapshotV1 = collapseRestoredSshWorkspacePanes(
+      projected, restoreNowMs + 1);
     if (!this.isPageGenerationActive(pageGeneration) || !this.sshWorkbenchEnabled ||
       initSequence !== this.sshWorkspaceInitSequence) { return; }
     this.sshWorkspaceSnapshot = reconciled;

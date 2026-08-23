@@ -1,10 +1,12 @@
 import {
+  cloneSshWorkspaceSnapshot,
   createEmptySshWorkspace,
   reduceSshWorkspace,
   SshPaneNodeV1,
   SshWorkspaceReduceResult,
   SshWorkspaceSnapshotV1,
-  SshWorkspaceTabV1
+  SshWorkspaceTabV1,
+  sshWorkspaceVisiblePaneCount
 } from './SshWorkspacePolicy';
 
 export interface SshWorkspaceRuntimeTabProjection {
@@ -33,6 +35,33 @@ function leafForTab(node: SshPaneNodeV1 | null, tabId: string): SshPaneNodeV1 | 
 function applyChanged(snapshot: SshWorkspaceSnapshotV1,
   result: SshWorkspaceReduceResult): SshWorkspaceSnapshotV1 {
   return result.changed && result.error === null ? result.snapshot : snapshot;
+}
+
+/**
+ * A saved split tree is historical UI state, not permission to reopen several
+ * work surfaces. Keep every tab, but start a new window with the selected tab
+ * in one Pane; split commands in the live window remain unaffected.
+ */
+export function collapseRestoredSshWorkspacePanes(snapshot: SshWorkspaceSnapshotV1,
+  nowMs: number): SshWorkspaceSnapshotV1 {
+  if (sshWorkspaceVisiblePaneCount(snapshot.paneRoot) <= 1 ||
+    snapshot.activeTabId.length === 0 || snapshot.activePaneId.length === 0) {
+    return snapshot;
+  }
+  const next: SshWorkspaceSnapshotV1 = cloneSshWorkspaceSnapshot(snapshot);
+  next.paneRoot = {
+    nodeId: snapshot.activePaneId,
+    kind: 'leaf',
+    tabId: snapshot.activeTabId,
+    direction: 'horizontal',
+    ratio: 0.5,
+    first: null,
+    second: null
+  };
+  next.revision = snapshot.revision + 1;
+  next.updatedAt = Number.isFinite(nowMs) && nowMs >= snapshot.updatedAt ?
+    Math.floor(nowMs) : snapshot.updatedAt + 1;
+  return next;
 }
 
 /**

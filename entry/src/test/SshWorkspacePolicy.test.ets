@@ -51,6 +51,7 @@ import {
   SshWorkspaceStoredRowsResult
 } from '../main/ets/services/ssh/workspace/SshWorkspaceStore';
 import {
+  collapseRestoredSshWorkspacePanes,
   reconcileSshWorkspaceRuntimeTabs,
   SshWorkspaceRuntimeTabProjection
 } from '../main/ets/services/ssh/workspace/SshWorkspaceProjectionPolicy';
@@ -814,6 +815,31 @@ export default function sshWorkspacePolicyTest(): void {
         expect(reconciled.activeTabId).assertEqual('tab-live');
         expect(reconciled.reconnectPolicy).assertEqual('never');
         expect(validateSshWorkspaceSnapshot(reconciled).length).assertEqual(0);
+      });
+
+    it('restored_split_tree_should_open_as_one_pane_without_losing_tabs', 0,
+      (): void => {
+        let restored: SshWorkspaceSnapshotV1 = openedWorkspace();
+        restored = reduceSshWorkspace(restored, {
+          kind: 'open_tab', tab: tab('tab-two', 'host-two'), nowMs: 102
+        }).snapshot;
+        restored = reduceSshWorkspace(restored, {
+          kind: 'split_pane', paneId: 'pane-one', splitNodeId: 'split-two',
+          newLeafId: 'pane-two', tabId: 'tab-one', direction: 'horizontal',
+          ratio: 0.5, nowMs: 103
+        }).snapshot;
+        expect(sshWorkspaceVisiblePaneCount(restored.paneRoot)).assertEqual(2);
+
+        const collapsed: SshWorkspaceSnapshotV1 = collapseRestoredSshWorkspacePanes(
+          restored, 200);
+        expect(collapsed.tabs.length).assertEqual(2);
+        expect(collapsed.tabOrder.length).assertEqual(2);
+        expect(sshWorkspaceVisiblePaneCount(collapsed.paneRoot)).assertEqual(1);
+        expect(collapsed.activeTabId).assertEqual(restored.activeTabId);
+        expect(collapsed.activePaneId).assertEqual(restored.activePaneId);
+        expect(collapsed.revision).assertEqual(restored.revision + 1);
+        expect(validateSshWorkspaceSnapshot(collapsed).length).assertEqual(0);
+        expect(sshWorkspaceVisiblePaneCount(restored.paneRoot)).assertEqual(2);
       });
 
     it('pane_projection_should_keep_four_pane_tree_stable_across_breakpoints', 0, (): void => {
