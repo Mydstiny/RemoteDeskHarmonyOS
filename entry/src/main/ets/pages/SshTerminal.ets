@@ -2919,8 +2919,7 @@ struct SshTerminal {
     this.terminalFallbackDecodeRemainders.delete(result.hostId);
     this.clearSshWorkspacePtyHost(result.hostId);
     this.sshTranscriptStore.clear(result.hostId);
-    this.terminalSessionProfileIds.delete(
-      sshTerminalSessionProfileScopeKey(result.hostId, result.generation));
+    this.clearTerminalProfileSessionHost(result.hostId);
     this.terminalCoreRegistry.destroy(this.xtermSurfaceCoreKey(result.hostId), new TerminalCoreBridge());
     this.refreshSshTabViews();
   }
@@ -10145,6 +10144,8 @@ struct SshTerminal {
         const generationRebound: boolean = previousGeneration > 0 &&
           previousGeneration !== generation;
         const callbackNeedsRebind: boolean = this.sshDataCallbackGeneration !== generation;
+        this.clearTerminalProfileSessionHost(this.hostId,
+          sshTerminalSessionProfileScopeKey(this.hostId, generation));
         if (generationRebound) {
           // Treat same-session transport recovery as a new callback owner.
           // Clear the old callback before publishing the new tab identity so
@@ -10527,6 +10528,10 @@ struct SshTerminal {
       return false;
     }
     this.sshSessionGeneration = sessionGeneration;
+    if (sessionGeneration > 0) {
+      this.clearTerminalProfileSessionHost(bindingHostId,
+        sshTerminalSessionProfileScopeKey(bindingHostId, sessionGeneration));
+    }
     const productivitySessionKey: string = this.sshProductivitySessionKey(
       bindingHostId, connectedSessionId, sessionGeneration);
     this.flushSshSessionLogOutput();
@@ -11210,6 +11215,20 @@ struct SshTerminal {
     return this.sshWorkbenchEnabled && this.terminalProfileStore.isReady();
   }
 
+  /** Retain at most the live generation's session profile for one host. */
+  private clearTerminalProfileSessionHost(hostId: string, keepKey: string = ''): void {
+    const normalizedHostId: string = hostId.trim();
+    if (normalizedHostId.length === 0) { return; }
+    const prefix: string = normalizedHostId + ':generation:';
+    const staleKeys: Array<string> = [];
+    this.terminalSessionProfileIds.forEach((_value: string, key: string): void => {
+      if (key.startsWith(prefix) && key !== keepKey) { staleKeys.push(key); }
+    });
+    for (let index = 0; index < staleKeys.length; index++) {
+      this.terminalSessionProfileIds.delete(staleKeys[index]);
+    }
+  }
+
   private resolvedTerminalProfileForHost(hostId: string): SshTerminalResolvedProfile {
     if (!this.terminalProfileStore.isReady()) { return defaultSshTerminalResolvedProfile(); }
     const normalizedHostId: string = hostId.trim();
@@ -11267,12 +11286,7 @@ struct SshTerminal {
       normalizedHostId, this.sshTabStore.sessionGeneration(normalizedHostId));
     if (currentScopeKey === this.resolvedTerminalProfileSessionKey) { return; }
     if (normalizedHostId.length > 0) {
-      const prefix: string = normalizedHostId + ':generation:';
-      this.terminalSessionProfileIds.forEach((_value: string, key: string): void => {
-        if (key.startsWith(prefix) && key !== currentScopeKey) {
-          this.terminalSessionProfileIds.delete(key);
-        }
-      });
+      this.clearTerminalProfileSessionHost(normalizedHostId, currentScopeKey);
     }
     this.refreshTerminalProfileForHost(normalizedHostId);
   }
