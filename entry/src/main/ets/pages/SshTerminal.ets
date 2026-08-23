@@ -7892,6 +7892,8 @@ struct SshTerminal {
         return;
       }
       const localRoot: string | null = await this.prepareLocalSftpDownloadRoot(localParent, remoteName);
+      if (!this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+        requestSessionGeneration)) { return; }
       if (localRoot === null) {
         this.sftpStatus = '[SFTP-BATCH] 无法创建本机下载目录 ' + remoteName;
         return;
