@@ -2921,7 +2921,12 @@ struct SshTerminal {
     this.clearSshWorkspacePtyHost(result.hostId);
     this.sshTranscriptStore.clear(result.hostId);
     this.clearTerminalProfileSessionHost(result.hostId);
-    this.terminalCoreRegistry.destroy(this.xtermSurfaceCoreKey(result.hostId), new TerminalCoreBridge());
+    const rendererKey: string = this.xtermSurfaceCoreKey(result.hostId);
+    this.terminalCoreRegistry.destroy(rendererKey, new TerminalCoreBridge());
+    // Tab switches only detach the visible surface; a closed tab must release
+    // the native renderer handle as well. Otherwise every closed host leaves a
+    // GPU/VT renderer in the runtime registry until the whole page disappears.
+    this.sshTerminalRendererRegistry.destroy(rendererKey, new SshTerminalRendererBridge());
     this.refreshSshTabViews();
   }
 
