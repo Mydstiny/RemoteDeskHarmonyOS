@@ -3,6 +3,10 @@ import {
   SETTINGS_SHEET_ACCOUNT,
   SETTINGS_SHEET_DIAGNOSTIC_LOG,
   SETTINGS_SHEET_VIRTUAL_KEYBOARD,
+  SETTINGS_SHEET_VIRTUAL_KEYBOARD_BEHAVIOR,
+  SETTINGS_SHEET_VIRTUAL_KEYBOARD_CUSTOM,
+  SETTINGS_SHEET_VIRTUAL_KEYBOARD_FUNCTIONS,
+  SETTINGS_SHEET_VIRTUAL_KEYBOARD_SHORTCUTS,
   SETTINGS_SHEET_MOONLIGHT_AUDIO,
   SETTINGS_SHEET_MOONLIGHT_DIAGNOSTICS,
   SETTINGS_SHEET_MOONLIGHT_INPUT,
@@ -25,10 +29,13 @@ import {
   shouldDelaySettingsLeafOpenForPanel,
   settingsLeafOpenDelayMs,
   diagnosticLogSettingsLeafSheetHeight,
+  isVirtualKeyboardSettingsMode,
   moonlightSettingsLeafSheetHeight,
   moonlightSettingsRouteSpec,
   moonlightSettingsRouteSpecs,
   virtualKeyboardSettingsLeafSheetHeight,
+  virtualKeyboardSettingsRouteSpec,
+  virtualKeyboardSettingsRouteSpecs,
   vncSettingsLeafSheetHeight
 } from '../main/ets/services/SettingsSheetRoutePolicy';
 
@@ -56,10 +63,30 @@ export default function settingsSheetRoutePolicyTest() {
       expect(moonlightSettingsRouteSpec(SETTINGS_SHEET_DIAGNOSTIC_LOG)).assertNull();
     });
 
-    it('allocates_one_full_height_virtual_keyboard_leaf', 0, (): void => {
+    it('allocates_five_independent_virtual_keyboard_leaves', 0, (): void => {
       expect(SETTINGS_SHEET_VIRTUAL_KEYBOARD).assertEqual(32);
-      expect(virtualKeyboardSettingsLeafSheetHeight(SETTINGS_SHEET_VIRTUAL_KEYBOARD))
-        .assertEqual(860);
+      expect(SETTINGS_SHEET_VIRTUAL_KEYBOARD_BEHAVIOR).assertEqual(33);
+      expect(SETTINGS_SHEET_VIRTUAL_KEYBOARD_SHORTCUTS).assertEqual(34);
+      expect(SETTINGS_SHEET_VIRTUAL_KEYBOARD_FUNCTIONS).assertEqual(35);
+      expect(SETTINGS_SHEET_VIRTUAL_KEYBOARD_CUSTOM).assertEqual(36);
+      const specs = virtualKeyboardSettingsRouteSpecs();
+      expect(specs.length).assertEqual(5);
+      expect(specs[0].section).assertEqual('system');
+      expect(specs[1].section).assertEqual('behavior');
+      expect(specs[2].section).assertEqual('shortcuts');
+      expect(specs[3].section).assertEqual('functions');
+      expect(specs[4].section).assertEqual('custom');
+      for (let i = 0; i < specs.length; i++) {
+        expect(specs[i].mode).assertEqual(32 + i);
+        expect(specs[i].height > 0).assertTrue();
+        expect(specs[i].title.length > 0).assertTrue();
+        expect(isVirtualKeyboardSettingsMode(specs[i].mode)).assertTrue();
+        expect(virtualKeyboardSettingsLeafSheetHeight(specs[i].mode)).assertEqual(specs[i].height);
+      }
+      expect(virtualKeyboardSettingsRouteSpec(SETTINGS_SHEET_VIRTUAL_KEYBOARD_CUSTOM)?.title)
+        .assertEqual('自定义组合键');
+      expect(virtualKeyboardSettingsRouteSpec(SETTINGS_SHEET_ACCOUNT)).assertNull();
+      expect(isVirtualKeyboardSettingsMode(SETTINGS_SHEET_ACCOUNT)).assertFalse();
       expect(virtualKeyboardSettingsLeafSheetHeight(SETTINGS_SHEET_ACCOUNT)).assertEqual(0);
     });
 

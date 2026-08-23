@@ -380,15 +380,23 @@ import {
   SETTINGS_SHEET_VNC_TIMEOUT,
   SETTINGS_SHEET_VNC_TRUST,
   SETTINGS_SHEET_VIRTUAL_KEYBOARD,
+  SETTINGS_SHEET_VIRTUAL_KEYBOARD_BEHAVIOR,
+  SETTINGS_SHEET_VIRTUAL_KEYBOARD_CUSTOM,
+  SETTINGS_SHEET_VIRTUAL_KEYBOARD_FUNCTIONS,
+  SETTINGS_SHEET_VIRTUAL_KEYBOARD_SHORTCUTS,
   SETTINGS_SHEET_WALLPAPER,
   SETTINGS_PANEL_DISMISS_TO_LEAF_OPEN_MS,
   MoonlightSettingsRouteSpec,
+  VirtualKeyboardSettingsSection,
+  VirtualKeyboardSettingsRouteSpec,
   diagnosticLogSettingsLeafSheetHeight,
+  isVirtualKeyboardSettingsMode,
   moonlightSettingsLeafSheetHeight,
   moonlightSettingsRouteSpec,
   settingsLeafSheetUsesSystemCloseButton,
   settingsLeafOpenDelayMs,
   virtualKeyboardSettingsLeafSheetHeight,
+  virtualKeyboardSettingsRouteSpec,
   vncSettingsLeafSheetHeight
 } from '../services/SettingsSheetRoutePolicy';
 import { protocolIcon } from '../services/ProtocolIconPolicy';
@@ -3595,7 +3603,7 @@ struct HostListPage {
       return 680;
     }
     if (section === SETTINGS_SECTION_VIRTUAL_KEYBOARD) {
-      return 170;
+      return 390;
     }
     if (section === SETTINGS_SECTION_RDP) {
       return 820;
@@ -11360,6 +11368,16 @@ struct HostListPage {
     return moonlightSettingsRouteSpec(this.settingsLeafSheetMode) !== null;
   }
 
+  private isVirtualKeyboardSettingsLeafSheet(): boolean {
+    return isVirtualKeyboardSettingsMode(this.settingsLeafSheetMode);
+  }
+
+  private virtualKeyboardSettingsSectionForLeaf(): VirtualKeyboardSettingsSection {
+    const spec: VirtualKeyboardSettingsRouteSpec | null =
+      virtualKeyboardSettingsRouteSpec(this.settingsLeafSheetMode);
+    return spec === null ? 'system' : spec.section;
+  }
+
   private moonlightSettingsSectionForLeaf(): MoonlightSettingsSection {
     const spec: MoonlightSettingsRouteSpec | null =
       moonlightSettingsRouteSpec(this.settingsLeafSheetMode);
@@ -11420,8 +11438,9 @@ struct HostListPage {
         onClose: (): void => { this.closeSettingsLeafSheet(); },
         onOpenMail: (): void => { this.openFeedbackEmail(); }
       })
-    } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_VIRTUAL_KEYBOARD) {
+    } else if (this.isVirtualKeyboardSettingsLeafSheet()) {
       VirtualKeyboardSettingsSheet({
+        requestedSection: this.virtualKeyboardSettingsSectionForLeaf(),
         onClose: (): void => { this.closeSettingsLeafSheet(); }
       })
     } else if (this.isMoonlightSettingsLeafSheet()) {
@@ -12044,9 +12063,25 @@ struct HostListPage {
             Text('虚拟键盘').fontSize(13).fontWeight(FontWeight.Medium)
               .fontColor(this.pal().text3).fontFamily(this.font()).padding({ left: 8, bottom: 8 })
             Column() {
-              this.cardActionRow($r('sys.symbol.keyboard'), '键盘与组合键设置',
-                '系统输入法、Windows/macOS 模式、F1–F12 与自定义组合键',
+              this.cardActionRow($r('app.media.icon_phone'), '系统输入法',
+                '当前输入法、语言子类型与 HarmonyOS 官方设置',
                 (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VIRTUAL_KEYBOARD); })
+              this.cardDivider()
+              this.cardActionRow($r('sys.symbol.keyboard'), '输入行为',
+                '精简键盘、文本发送与候选预编辑规则',
+                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VIRTUAL_KEYBOARD_BEHAVIOR); })
+              this.cardDivider()
+              this.cardActionRow($r('app.media.icon_desktop'), '快捷键平台',
+                'Windows 与 macOS 默认组合键语义',
+                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VIRTUAL_KEYBOARD_SHORTCUTS); })
+              this.cardDivider()
+              this.cardActionRow($r('app.media.icon_info'), '功能键与面板',
+                'F1–F12、导航键、连续发送与面板触控',
+                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VIRTUAL_KEYBOARD_FUNCTIONS); })
+              this.cardDivider()
+              this.cardActionRow($r('app.media.icon_palette'), '自定义组合键',
+                '创建、编辑与删除跨连接复用的快捷键',
+                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VIRTUAL_KEYBOARD_CUSTOM); })
             }.borderRadius(24).backgroundColor(this.pal().card)
               .backgroundBlurStyle(BlurStyle.Regular)
               .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })

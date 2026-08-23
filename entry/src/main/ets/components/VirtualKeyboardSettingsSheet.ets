@@ -21,6 +21,7 @@ import {
   RemoteSystemInputMethodInfo,
   RemoteSystemInputMethodSnapshot
 } from '../services/RemoteKeyboardSettingsService';
+import { VirtualKeyboardSettingsSection } from '../services/SettingsSheetRoutePolicy';
 
 @Component
 export struct VirtualKeyboardSettingsSheet {
@@ -40,19 +41,23 @@ export struct VirtualKeyboardSettingsSheet {
   @State private modifierCodes: Array<number> = [];
   @State private actionGroup: RemoteCustomShortcutKeyGroup = 'letters';
   @State private actionKeyCode: number = 2017;
+  @Prop requestedSection: VirtualKeyboardSettingsSection = 'system';
   private customSequence: number = 0;
   private readonly service: RemoteKeyboardSettingsService =
     RemoteKeyboardSettingsService.getInstance();
   onClose: () => void = (): void => {};
 
   private dark(): boolean { return this.theme === 'dark'; }
-  private bg(): string { return this.dark() ? '#171A20' : '#F7F8FA'; }
-  private card(): string { return this.dark() ? 'rgba(255,255,255,0.06)' : '#FFFFFF'; }
+  private bg(): string { return this.dark() ? '#11141A' : '#F4F6F9'; }
+  private card(): string { return this.dark() ? 'rgba(255,255,255,0.075)' : '#FFFFFF'; }
   private cardStroke(): string {
     return this.dark() ? 'rgba(255,255,255,0.10)' : 'rgba(18,24,36,0.08)';
   }
   private text(): string { return this.dark() ? '#F5F7FA' : '#18202B'; }
   private text2(): string { return this.dark() ? 'rgba(245,247,250,0.66)' : '#667085'; }
+  private accentSoft(): string {
+    return this.dark() ? 'rgba(0,125,255,0.18)' : 'rgba(0,125,255,0.09)';
+  }
   private danger(): string { return '#FF6B6B'; }
 
   aboutToAppear(): void {
@@ -63,7 +68,31 @@ export struct VirtualKeyboardSettingsSheet {
     this.functionKeysVisible = values.functionKeysVisible;
     this.closeAfterShortcut = values.closePanelAfterShortcut;
     this.customShortcuts = this.service.loadCustomShortcuts(context);
-    this.refreshSystemInputMethods();
+    if (this.requestedSection === 'system') { this.refreshSystemInputMethods(); }
+  }
+
+  private pageTitle(): string {
+    if (this.requestedSection === 'behavior') { return '输入行为'; }
+    if (this.requestedSection === 'shortcuts') { return '快捷键平台'; }
+    if (this.requestedSection === 'functions') { return '功能键与面板'; }
+    if (this.requestedSection === 'custom') { return '自定义组合键'; }
+    return '系统输入法';
+  }
+
+  private pageSubtitle(): string {
+    if (this.requestedSection === 'behavior') {
+      return '控制连接中 HarmonyOS 软键盘的文本输入方式';
+    }
+    if (this.requestedSection === 'shortcuts') {
+      return '设置组合键目录与修饰键的默认显示语义';
+    }
+    if (this.requestedSection === 'functions') {
+      return '分别管理功能键入口与组合键面板的发送行为';
+    }
+    if (this.requestedSection === 'custom') {
+      return '创建可在所有远程连接中复用的快捷组合';
+    }
+    return '查看当前输入法，并进入 HarmonyOS 官方设置';
   }
 
   private platform(): RemoteShortcutPlatform {
@@ -197,7 +226,7 @@ export struct VirtualKeyboardSettingsSheet {
     Column({ space: 3 }) {
       Text(title).fontSize(15).fontWeight(FontWeight.Bold).fontColor(this.text()).width('100%')
       Text(subtitle).fontSize(10).fontColor(this.text2()).width('100%')
-    }.width('100%').alignItems(HorizontalAlign.Start).margin({ top: 18, bottom: 8 })
+    }.width('100%').alignItems(HorizontalAlign.Start).margin({ top: 20, bottom: 10 })
   }
 
   @Builder
@@ -210,7 +239,7 @@ export struct VirtualKeyboardSettingsSheet {
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
       Toggle({ type: ToggleType.Switch, isOn: enabled })
         .selectedColor(this.accentColor).onChange(onChange)
-    }.width('100%').padding(14).backgroundColor(this.card())
+    }.width('100%').padding(16).borderRadius(16).backgroundColor(this.card())
       .border({ width: 0.5, color: this.cardStroke() })
   }
 
@@ -220,8 +249,9 @@ export struct VirtualKeyboardSettingsSheet {
       Text(title).fontSize(12).fontColor(this.text2()).layoutWeight(1)
       Text(value).fontSize(12).fontColor(this.text()).maxLines(2)
         .textAlign(TextAlign.End)
-    }.width('100%').padding({ left: 14, right: 14, top: 12, bottom: 12 })
-      .backgroundColor(this.card()).border({ width: 0.5, color: this.cardStroke() })
+    }.width('100%').padding({ left: 16, right: 16, top: 14, bottom: 14 })
+      .borderRadius(14).backgroundColor(this.card())
+      .border({ width: 0.5, color: this.cardStroke() })
   }
 
   @Builder
@@ -259,8 +289,8 @@ export struct VirtualKeyboardSettingsSheet {
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
       SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(14).fontColor([this.text2()])
     }
-    .width('100%').padding(14).backgroundColor(this.card())
-    .border({ width: 0.5, color: this.cardStroke() })
+    .width('100%').padding(14).borderRadius(14).backgroundColor(this.card())
+    .border({ width: 0.5, color: this.cardStroke() }).margin({ bottom: 6 })
     .onClick((): void => { this.openInputMethodDetail(method); })
     .accessibilityText('打开 ' + method.label + ' 输入法详情')
   }
@@ -368,74 +398,170 @@ export struct VirtualKeyboardSettingsSheet {
     }.width('100%')
   }
 
+  @Builder
+  private pageHero(section: VirtualKeyboardSettingsSection, eyebrow: string) {
+    Row({ space: 14 }) {
+      Row() {
+        SymbolGlyph($r('sys.symbol.keyboard')).fontSize(23).fontColor([this.accentColor])
+      }.width(48).height(48).justifyContent(FlexAlign.Center)
+        .borderRadius(15).backgroundColor(this.accentSoft())
+      Column({ space: 4 }) {
+        Text(eyebrow).fontSize(14).fontWeight(FontWeight.Bold).fontColor(this.text())
+        if (section === 'behavior') {
+          Text(this.simpleKeyboardEnabled ? '精简键盘已开启' : '完整键盘已开启')
+            .fontSize(10).fontColor(this.text2()).maxLines(2)
+        } else if (section === 'shortcuts') {
+          Text(this.platform() === 'macos' ? 'macOS · Cmd / Option' : 'Windows · Ctrl / Alt / Win')
+            .fontSize(10).fontColor(this.text2()).maxLines(2)
+        } else if (section === 'functions') {
+          Text((this.functionKeysVisible ? '完整功能键' : '精简功能键') + ' · ' +
+            (this.closeAfterShortcut ? '发送后关闭' : '连续发送'))
+            .fontSize(10).fontColor(this.text2()).maxLines(2)
+        } else if (section === 'custom') {
+          Text(this.customShortcuts.length.toString() + ' 个已保存 · 上限 32 个')
+            .fontSize(10).fontColor(this.text2()).maxLines(2)
+        } else {
+          Text(this.systemLoading ? '正在读取系统输入法状态' :
+            (this.systemSnapshot.available ? '当前：' + this.systemSnapshot.currentLabel : '由系统统一管理'))
+            .fontSize(10).fontColor(this.text2()).maxLines(2)
+        }
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+    }.width('100%').padding(16).borderRadius(20).backgroundColor(this.card())
+      .border({ width: 0.5, color: this.cardStroke() })
+  }
+
+  @Builder
+  private systemInputMethodContent() {
+    this.pageHero('system', 'HarmonyOS 官方输入法')
+    this.sectionTitle('输入法状态', '应用只读取公开状态，不会绕过系统权限切换输入法。')
+    Row({ space: 8 }) {
+      Button(this.systemLoading ? '正在刷新…' : '刷新状态')
+        .layoutWeight(1).height(42).fontSize(11).borderRadius(12)
+        .backgroundColor(this.card()).fontColor(this.text())
+        .enabled(!this.systemLoading).onClick((): void => { this.refreshSystemInputMethods(); })
+      Button('系统输入法设置').layoutWeight(2).height(42).fontSize(11)
+        .borderRadius(12).backgroundColor(this.accentColor).fontColor('#FFFFFF')
+        .onClick((): void => { this.openSystemSettings(); })
+    }.width('100%').margin({ bottom: 10 })
+    if (this.systemSnapshot.available) {
+      Column({ space: 6 }) {
+        this.infoRow('当前输入法', this.systemSnapshot.currentLabel)
+        this.infoRow('语言 / 子类型', this.systemSnapshot.currentSubtype)
+      }.width('100%')
+      this.sectionTitle('已安装输入法', '点按任一输入法可打开对应的系统详情页。')
+      ForEach(this.systemSnapshot.methods, (method: RemoteSystemInputMethodInfo): void => {
+        this.inputMethodRow(method)
+      }, (method: RemoteSystemInputMethodInfo): string =>
+        method.bundleName + ':' + method.inputMethodId)
+    } else if (!this.systemLoading) {
+      this.infoRow('系统输入法状态',
+        this.systemSnapshot.error.length > 0 ? this.systemSnapshot.error : '当前设备未返回可用信息')
+    }
+  }
+
+  @Builder
+  private inputBehaviorContent() {
+    this.pageHero('behavior', '连接输入约定')
+    this.sectionTitle('键盘布局', '此行为仅影响连接中唤起的 HarmonyOS 软键盘。')
+    this.switchRow('精简键盘模式',
+      '使用 HarmonyOS API 23 减少软键盘中的非必要扩展区域',
+      this.simpleKeyboardEnabled, (enabled: boolean): void => {
+        this.simpleKeyboardEnabled = enabled;
+        this.savePreferences();
+      })
+    this.sectionTitle('文本发送规则', '这些兼容规则用于避免预编辑文字和远端按键重复。')
+    Column({ space: 6 }) {
+      this.infoRow('输入类型', '普通文本')
+      this.infoRow('回车键', '发送 Enter')
+      this.infoRow('候选预编辑', '确认候选后发送')
+      this.infoRow('键盘唤起 / 收起', '由连接侧栏显式控制')
+    }.width('100%')
+  }
+
+  @Builder
+  private shortcutPlatformContent() {
+    this.pageHero('shortcuts', '默认快捷键目录')
+    this.sectionTitle('平台语义', '设置默认目录；连接中的组合键面板仍可随时切换。')
+    Row({ space: 10 }) {
+      this.platformChoice('windows', 'Windows', 'Ctrl / Alt / Win')
+      this.platformChoice('macos', 'macOS', 'Control / Option / Cmd')
+    }.width('100%')
+    this.sectionTitle('映射说明', '切换平台只改变快捷键名称与组合目录，不会修改远端系统。')
+    Column({ space: 6 }) {
+      this.infoRow('Windows 修饰键', 'Ctrl · Alt · Shift · Win')
+      this.infoRow('macOS 修饰键', 'Control · Option · Shift · Cmd')
+      this.infoRow('会话内切换', '即时生效，可自由往返')
+    }.width('100%')
+  }
+
+  @Builder
+  private functionPanelContent() {
+    this.pageHero('functions', '功能键与面板行为')
+    this.sectionTitle('功能键目录', '单独控制扩展功能键是否出现在连接面板。')
+    this.switchRow('显示完整功能键页',
+      '包含 F1–F12、方向与导航、Delete、锁定键、PrtSc、Pause 和 Menu',
+      this.functionKeysVisible, (enabled: boolean): void => {
+        this.functionKeysVisible = enabled;
+        this.savePreferences();
+      })
+    this.sectionTitle('面板发送行为', '面板关闭行为与功能键可见性互不影响。')
+    this.switchRow('发送后自动关闭面板',
+      '适合一次性快捷键；关闭此项后可连续发送多个组合键',
+      this.closeAfterShortcut, (enabled: boolean): void => {
+        this.closeAfterShortcut = enabled;
+        this.savePreferences();
+      })
+    this.sectionTitle('触控约定', '连接中的浮层只拦截自身覆盖区域。')
+    Column({ space: 6 }) {
+      this.infoRow('面板覆盖区域', '阻止触控透传')
+      this.infoRow('面板以外区域', '连接仍可正常触控')
+      this.infoRow('位置调整', '拖动面板标题栏')
+    }.width('100%')
+  }
+
+  @Builder
+  private customShortcutContent() {
+    this.pageHero('custom', '可复用组合键')
+    this.sectionTitle('自定义组合键',
+      '支持修饰键与字母、数字、符号、F 键、方向键及导航键。')
+    this.infoRow('当前标签平台', this.platform() === 'macos' ? 'macOS' : 'Windows')
+    Column().height(8)
+    if (this.editorVisible) { this.customEditor() } else { this.customShortcutList() }
+  }
+
   build() {
     Column() {
       Row() {
         Column({ space: 3 }) {
-          Text('虚拟键盘').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.text())
-          Text('HarmonyOS 输入法、组合键、功能键与自定义')
-            .fontSize(10).fontColor(this.text2())
+          Text('虚拟键盘设置').fontSize(10).fontWeight(FontWeight.Medium)
+            .fontColor(this.accentColor)
+          Text(this.pageTitle()).fontSize(22).fontWeight(FontWeight.Bold).fontColor(this.text())
+          Text(this.pageSubtitle()).fontSize(10).fontColor(this.text2()).maxLines(2)
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
         Button() {
           SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.text()])
-        }.width(44).height(44).padding(0).borderRadius(12).backgroundColor(this.card())
+        }.width(42).height(42).padding(0).borderRadius(14).backgroundColor(this.card())
+          .border({ width: 0.5, color: this.cardStroke() })
           .onClick((): void => { this.onClose(); }).accessibilityText('关闭虚拟键盘设置')
-      }.width('100%').padding({ left: 20, right: 14, top: 14, bottom: 8 })
+      }.width('100%').padding({ left: 20, right: 16, top: 16, bottom: 14 })
 
       Scroll() {
         Column() {
-          this.sectionTitle('HarmonyOS 官方输入法',
-            'API 23 可读取输入法与语言子类型；启用、切换、词典、语音和按键反馈由系统输入法设置管理。')
-          Row({ space: 8 }) {
-            Button(this.systemLoading ? '正在刷新…' : '刷新状态')
-              .layoutWeight(1).height(40).fontSize(11).borderRadius(10)
-              .backgroundColor(this.card()).fontColor(this.text())
-              .enabled(!this.systemLoading).onClick((): void => { this.refreshSystemInputMethods(); })
-            Button('打开系统输入法设置').layoutWeight(2).height(40).fontSize(11)
-              .borderRadius(10).backgroundColor(this.accentColor).fontColor('#FFFFFF')
-              .onClick((): void => { this.openSystemSettings(); })
-          }.width('100%').margin({ bottom: 8 })
-          if (this.systemSnapshot.available) {
-            this.infoRow('当前输入法', this.systemSnapshot.currentLabel)
-            this.infoRow('当前语言/子类型', this.systemSnapshot.currentSubtype)
-            ForEach(this.systemSnapshot.methods, (method: RemoteSystemInputMethodInfo): void => {
-              this.inputMethodRow(method)
-            }, (method: RemoteSystemInputMethodInfo): string =>
-              method.bundleName + ':' + method.inputMethodId)
-          } else if (!this.systemLoading) {
-            this.infoRow('系统输入法状态', '当前设备未返回可用信息')
+          if (this.requestedSection === 'behavior') {
+            this.inputBehaviorContent()
+          } else if (this.requestedSection === 'shortcuts') {
+            this.shortcutPlatformContent()
+          } else if (this.requestedSection === 'functions') {
+            this.functionPanelContent()
+          } else if (this.requestedSection === 'custom') {
+            this.customShortcutContent()
+          } else {
+            this.systemInputMethodContent()
           }
-
-          this.sectionTitle('系统键盘行为', '以下设置作用于连接中的 HarmonyOS 虚拟键盘。')
-          this.switchRow('精简键盘模式', '调用 HarmonyOS API 23 setSimpleKeyboardEnabled，减少非必要扩展区域',
-            this.simpleKeyboardEnabled, (enabled: boolean): void => {
-              this.simpleKeyboardEnabled = enabled; this.savePreferences();
-            })
-          this.infoRow('输入类型', '普通文本')
-          this.infoRow('回车键行为', '发送 Enter')
-          this.infoRow('候选预编辑', '兼容模式：候选确认后再发送')
-          this.infoRow('唤起与关闭', '由连接侧栏显式控制')
-
-          this.sectionTitle('组合键与功能键', '连接侧栏中的面板可随时在 Windows 与 macOS 目录间切换。')
-          Row({ space: 8 }) {
-            this.platformChoice('windows', 'Windows', 'Ctrl / Alt / Win')
-            this.platformChoice('macos', 'macOS', 'Control / Option / Cmd')
-          }.width('100%').margin({ bottom: 8 })
-          this.switchRow('显示完整功能键页',
-            'F1–F12、方向与导航、Delete/Backspace、锁定键、PrtSc、Pause 与 Menu',
-            this.functionKeysVisible, (enabled: boolean): void => {
-              this.functionKeysVisible = enabled; this.savePreferences();
-            })
-          this.switchRow('发送后自动关闭面板', '适合一次性快捷键；关闭时可连续发送多个组合键',
-            this.closeAfterShortcut, (enabled: boolean): void => {
-              this.closeAfterShortcut = enabled; this.savePreferences();
-            })
-
-          this.sectionTitle('自定义组合键', '支持 Ctrl/Control、Alt/Option、Shift、Win/Cmd 与字母、数字、符号、F 键和导航键。')
-          if (this.editorVisible) { this.customEditor() } else { this.customShortcutList() }
-          Column().height(36)
+          Column().height(28)
         }.width('100%').padding({ left: 20, right: 20 })
       }.width('100%').layoutWeight(1).scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
     }.width('100%').height('100%').backgroundColor(this.bg())
+      .borderRadius({ topLeft: 28, topRight: 28 })
   }
 }

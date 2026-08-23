@@ -30,7 +30,7 @@ import { RemoteKeyboardSettingsService } from '../services/RemoteKeyboardSetting
 
 const TAG = 'ModifierPanel';
 const DOMAIN = 0x0014;
-const DRAG_COMMIT_THRESHOLD = 5;
+const DRAG_COMMIT_THRESHOLD = 3;
 
 @Component
 export struct RemoteModifierPanel {
@@ -832,14 +832,13 @@ export struct RemoteModifierPanel {
         .fontSize(12)
         .fontColor('rgba(255,255,255,0.32)')
     }
-    .height(30)
+    .height(44)
     .layoutWeight(1)
     .padding({ left: 6, right: 8 })
     .accessibilityText(label + '，按住并拖动可移动面板')
     .hitTestBehavior(HitTestMode.BLOCK_HIERARCHY)
-    .onTouch((event: TouchEvent): void => { event.stopPropagation(); })
-    .gesture(
-      PanGesture({ fingers: 1, distance: 5 })
+    .priorityGesture(
+      PanGesture({ direction: PanDirection.All, fingers: 1, distance: 3 })
         .onActionStart((_event: GestureEvent): void => {
           if (shortcut) {
             this.shortcutDragMoved = false;
@@ -981,7 +980,8 @@ export struct RemoteModifierPanel {
           this.ActionKey('', 0)
         }.width('100%')
       }.width('100%')
-    }.width('100%').height(204).scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
+    }.width('100%').height(204).scrollable(ScrollDirection.Vertical)
+      .scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
   }
 
   @Builder
@@ -1047,7 +1047,7 @@ export struct RemoteModifierPanel {
               }
             }.width('100%')
           }
-          .width('100%').layoutWeight(1)
+          .width('100%').layoutWeight(1).scrollable(ScrollDirection.Vertical)
           .scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
         }
         .width(this.panelWidth()).height(this.panelHeight()).padding(10).borderRadius(16)
@@ -1063,9 +1063,6 @@ export struct RemoteModifierPanel {
         })
         .opacity(this.prepareOnly ? 0 : 1)
         .hitTestBehavior(this.prepareOnly ? HitTestMode.None : HitTestMode.BLOCK_HIERARCHY)
-        .onTouch((event: TouchEvent): void => {
-          if (!this.prepareOnly) { event.stopPropagation(); }
-        })
         .onAreaChange((_old: Area, next: Area): void => {
           const width: number = next.width as number;
           const height: number = next.height as number;
