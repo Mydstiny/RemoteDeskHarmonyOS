@@ -7598,21 +7598,24 @@ struct SshTerminal {
     }
     const stagingName: string = 'drop-' + Date.now().toString(36) + '-' +
       (++this.sftpTaskSequence).toString(36);
+    // Resolve the deterministic target before creating it so a stale page/session
+    // callback can still attempt cleanup after the create await.
+    const stagingRoot: string | null =
+      await this.sftpLocalProvider.resolveRelative(providerRoot, stagingName);
+    if (stagingRoot === null || !this.isSftpRequestActive(requestPageGeneration,
+      requestSessionId, requestSessionGeneration)) {
+      if (this.isSftpRequestActive(requestPageGeneration, requestSessionId,
+        requestSessionGeneration)) {
+        this.sftpStatus = '[SFTP-DROP] 暂存目录校验失败';
+      }
+      event.setResult(DragResult.DRAG_FAILED);
+      return;
+    }
     const created: boolean = await this.sftpLocalProvider.createDirectory(providerRoot, stagingName);
     if (!created) {
       if (this.isSftpRequestActive(requestPageGeneration, requestSessionId,
         requestSessionGeneration)) {
         this.sftpStatus = '[SFTP-DROP] 无法创建受控暂存目录';
-      }
-      event.setResult(DragResult.DRAG_FAILED);
-      return;
-    }
-    const stagingRoot: string | null =
-      await this.sftpLocalProvider.resolveRelative(providerRoot, stagingName);
-    if (stagingRoot === null) {
-      if (this.isSftpRequestActive(requestPageGeneration, requestSessionId,
-        requestSessionGeneration)) {
-        this.sftpStatus = '[SFTP-DROP] 暂存目录校验失败';
       }
       event.setResult(DragResult.DRAG_FAILED);
       return;
