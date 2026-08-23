@@ -67,6 +67,7 @@ import remoteCanvasInteractionPolicyTest from '../../../test/RemoteCanvasInterac
 import remoteKeyboardLayoutSelectionPolicyTest from '../../../test/RemoteKeyboardLayoutSelectionPolicy.test';
 import remoteModifierStateControllerTest from '../../../test/RemoteModifierStateController.test';
 import remoteSessionTopBarPolicyTest from '../../../test/RemoteSessionTopBarPolicy.test';
+import remoteSessionSidebarLayoutPolicyTest from '../../../test/RemoteSessionSidebarLayoutPolicy.test';
 import remotePointerFocusPolicyTest from '../../../test/RemotePointerFocusPolicy.test';
 import totpBrandServiceTest from '../../../test/TotpBrandService.test';
 import rustDeskProAddressBookTest from '../../../test/RustDeskProAddressBook.test';
@@ -388,6 +389,7 @@ export default function testsuite() {
   remoteKeyboardLayoutSelectionPolicyTest();
   remoteModifierStateControllerTest();
   remoteSessionTopBarPolicyTest();
+  remoteSessionSidebarLayoutPolicyTest();
   remotePointerFocusPolicyTest();
   totpBrandServiceTest();
   totpBrandResourceIntegrationTest();

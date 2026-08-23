@@ -138,6 +138,11 @@ import {
   upsertRemoteCustomShortcut
 } from '../services/RemoteCustomShortcutPolicy';
 import {
+  normalizeRemoteShortcutPlatform,
+  remoteShortcutTransportKeyCode,
+  REMOTE_KEYBOARD_SHORTCUT_PLATFORM_KEY
+} from '../services/RemoteKeyboardSettingsPolicy';
+import {
   remoteVirtualTouchpadKeyboardGuide,
   RemoteVirtualTouchpadKeyboardGuide,
   shouldRetryRemoteVirtualTouchpadKeyboardGuide,
@@ -782,6 +787,7 @@ struct RemoteDesktop {
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
   @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
   @StorageProp('isPadDevice') isPadDevice: boolean = false;
+  @StorageProp(REMOTE_KEYBOARD_SHORTCUT_PLATFORM_KEY) shortcutPlatformMode: string = 'windows';
   @StorageProp(GUIDE_ALWAYS_VISIBLE_STORAGE_KEY) guideAlwaysVisible: boolean = false;
   @StorageLink('rustdeskControlMode') @Watch('onRemoteControlModeChange')
   rustdeskControlMode: number = 0; // 0=touchpad, 1=direct touch, 2=keyboard/mouse
@@ -6129,7 +6135,7 @@ struct RemoteDesktop {
       this.winLatch = val;
     }
     // P0-2: locked 立即发送 key down; locked→off 发送 key up
-    const keyCode: number = this.modifierKeyCode(mod);
+    const keyCode: number = this.mapVirtualPanelKeyCode(this.modifierKeyCode(mod));
     if (val === 'locked' && old !== 'locked' && !this.isRemoteModDown(mod) &&
       this.sessionId > 0 && this.connected) {
       if (!this.canForwardInput('modifier')) {
@@ -6225,11 +6231,18 @@ struct RemoteDesktop {
   // ============================================================
 
   /** 发送单键 down+up → RemoteKeyDispatcher */
+  private mapVirtualPanelKeyCode(keyCode: number): number {
+    const protocol: string = this.pendingHost === null ? '' : this.pendingHost.protocol;
+    return remoteShortcutTransportKeyCode(protocol,
+      normalizeRemoteShortcutPlatform(this.shortcutPlatformMode), keyCode);
+  }
+
   private sendVirtualKeyTap(keyCode: number, label: string): void {
     if (this.sessionId <= 0 || !this.connected || !this.canForwardInput('virtual-key')) {
       return;
     }
-    this.keyDispatcher.sendVirtualKeyTap(this.loader, this.sessionId, keyCode, label);
+    this.keyDispatcher.sendVirtualKeyTapMapped(this.loader, this.sessionId, keyCode, label,
+      (code: number): number => this.mapVirtualPanelKeyCode(code));
   }
 
   /** 发送带修饰键的按键序列 → RemoteKeyDispatcher */
@@ -6237,11 +6250,12 @@ struct RemoteDesktop {
     if (this.sessionId <= 0 || !this.connected || !this.canForwardInput('virtual-modified-key')) {
       return;
     }
-    this.keyDispatcher.sendModifiedKey(this.loader, this.sessionId,
+    this.keyDispatcher.sendModifiedKeyMapped(this.loader, this.sessionId,
       keyCode, label,
       (mod: string): string => this.getLatch(mod),
       (mod: string, val: string): void => { this.setLatch(mod, val as ModifierLatch); },
-      (mod: string): boolean => this.isRemoteModDown(mod));
+      (mod: string): boolean => this.isRemoteModDown(mod),
+      (code: number): number => this.mapVirtualPanelKeyCode(code));
   }
 
   /** 发送快捷键序列 → RemoteKeyDispatcher */
@@ -6249,10 +6263,11 @@ struct RemoteDesktop {
     if (this.sessionId <= 0 || !this.connected || !this.canForwardInput('virtual-shortcut')) {
       return;
     }
-    this.keyDispatcher.sendShortcutSequence(this.loader, this.sessionId, keyCodes, label,
+    this.keyDispatcher.sendShortcutSequenceMapped(this.loader, this.sessionId, keyCodes, label,
       (mod: string): string => this.getLatch(mod),
       (mod: string): boolean => this.isRemoteModDown(mod),
-      (mod: string, down: boolean): void => { this.setRemoteModDown(mod, down); });
+      (mod: string, down: boolean): void => { this.setRemoteModDown(mod, down); },
+      (code: number): number => this.mapVirtualPanelKeyCode(code));
   }
 
   /** Ctrl+Alt+Del → RemoteKeyDispatcher */
@@ -6292,6 +6307,22 @@ struct RemoteDesktop {
       }
     }
     this.physicalRemoteKeyCodesDown = [];
+    if (this.pendingHost !== null && this.pendingHost.protocol === 'rustdesk' &&
+      normalizeRemoteShortcutPlatform(this.shortcutPlatformMode) === 'macos') {
+      const panelModifiers: Array<number> = [
+        KEYCODE_CTRL_LEFT, KEYCODE_CTRL_RIGHT, KEYCODE_ALT_LEFT, KEYCODE_ALT_RIGHT,
+        KEYCODE_SHIFT_LEFT, KEYCODE_SHIFT_RIGHT, KEYCODE_META_LEFT, KEYCODE_META_RIGHT
+      ];
+      for (let index = 0; index < panelModifiers.length; index++) {
+        try {
+          this.loader.sendKey(this.sessionId,
+            this.mapVirtualPanelKeyCode(panelModifiers[index]), false);
+        } catch (err) {
+          hilog.warn(RD_DOMAIN, RD_TAG, 'release explicit macOS panel modifier failed code=' +
+            panelModifiers[index].toString() + ' error=' + JSON.stringify(err));
+        }
+      }
+    }
     this.keyDispatcher.releaseAllHeldKeys(this.loader, this.sessionId,
       (x: number, y: number): Record<string, number> => this.toSourceSpace(x, y),
       this.remoteCursorX, this.remoteCursorY, releaseMouseButtons);

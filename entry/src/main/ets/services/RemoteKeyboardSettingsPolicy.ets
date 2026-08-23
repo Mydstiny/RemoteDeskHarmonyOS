@@ -27,6 +27,8 @@ export const REMOTE_KEYBOARD_SIMPLE_MODE_KEY: string = 'remoteSimpleKeyboardEnab
 export const REMOTE_KEYBOARD_FUNCTION_KEYS_VISIBLE_KEY: string = 'remoteFunctionKeysVisible';
 export const REMOTE_KEYBOARD_CLOSE_AFTER_SHORTCUT_KEY: string = 'remoteShortcutCloseAfterSend';
 export const REMOTE_KEYBOARD_PREFERENCES_NAME: string = 'RemoteDesktopAppPrefs';
+/** RustDesk FFI marker: send this Harmony key through explicit macOS Map mode. */
+export const RUSTDESK_EXPLICIT_MACOS_MAP_FLAG: number = 0x20000;
 
 const CTRL: number = 2072;
 const ALT: number = 2045;
@@ -188,8 +190,10 @@ function macShortcuts(): Array<RemoteShortcutPreset> {
     shortcut('macRename', '重命名', 'Enter', 'navigation', [ENTER]),
     shortcut('macDuplicate', '制作副本', 'Cmd+D', 'navigation', [META, letter('D')]),
     shortcut('macGoFolder', '前往文件夹', 'Shift+Cmd+G', 'navigation', [SHIFT, META, letter('G')]),
-    shortcut('macPreviousTab', '上一个标签', 'Ctrl+Shift+Tab', 'navigation', [CTRL, SHIFT, TAB]),
-    shortcut('macNextTab', '下一个标签', 'Ctrl+Tab', 'navigation', [CTRL, TAB]),
+    shortcut('macPreviousTab', '上一个标签', 'Shift+Cmd+[', 'navigation',
+      [SHIFT, META, LEFT_BRACKET]),
+    shortcut('macNextTab', '下一个标签', 'Shift+Cmd+]', 'navigation',
+      [SHIFT, META, RIGHT_BRACKET]),
     shortcut('macNewTab', '新建标签', 'Cmd+T', 'navigation', [META, letter('T')]),
     shortcut('macReopenTab', '恢复关闭的标签', 'Cmd+Shift+T', 'navigation',
       [META, SHIFT, letter('T')]),
@@ -218,6 +222,14 @@ export function normalizeRemoteShortcutPlatform(value: string): RemoteShortcutPl
   const normalized: string = value.trim().toLowerCase();
   return normalized === 'macos' || normalized === 'mac' || normalized === 'command' ?
     'macos' : 'windows';
+}
+
+export function remoteShortcutTransportKeyCode(protocol: string,
+  platform: RemoteShortcutPlatform, keyCode: number): number {
+  if (protocol !== 'rustdesk' || platform !== 'macos' || keyCode <= 0) {
+    return keyCode;
+  }
+  return keyCode | RUSTDESK_EXPLICIT_MACOS_MAP_FLAG;
 }
 
 export function defaultRemoteKeyboardPreferences(): RemoteKeyboardPreferences {

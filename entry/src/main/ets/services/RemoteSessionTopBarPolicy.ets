@@ -30,6 +30,37 @@ export interface RemoteTopBarActionAvailability {
   reason: string;
 }
 
+/**
+ * Shared collapsed edge-rail geometry and gesture thresholds.
+ *
+ * The visual handle stays deliberately narrow and translucent, while its
+ * parent keeps a larger touch target.  This mirrors HarmonyOS edge affordances
+ * without requesting the privileged SYSTEM_FLOAT_WINDOW capability.
+ */
+export const REMOTE_SESSION_COLLAPSED_RAIL_WIDTH: number = 22;
+export const REMOTE_SESSION_COLLAPSED_RAIL_TOUCH_WIDTH: number = 40;
+export const REMOTE_SESSION_COLLAPSED_RAIL_HEIGHT: number = 72;
+export const REMOTE_SESSION_COLLAPSED_RAIL_BACKGROUND: string =
+  'rgba(248,250,252,0.52)';
+export const REMOTE_SESSION_COLLAPSED_RAIL_ICON: string =
+  'rgba(36,40,48,0.72)';
+export const REMOTE_SESSION_COLLAPSED_RAIL_BORDER: string =
+  'rgba(255,255,255,0.48)';
+
+export function remoteSessionRailDragOffset(offsetX: number): number {
+  if (!Number.isFinite(offsetX) || offsetX <= 0) {
+    return 0;
+  }
+  return Math.min(72, offsetX);
+}
+
+export function remoteSessionRailShouldCollapse(offsetX: number,
+  velocityX: number): boolean {
+  const safeOffset: number = Number.isFinite(offsetX) ? offsetX : 0;
+  const safeVelocity: number = Number.isFinite(velocityX) ? velocityX : 0;
+  return safeOffset >= 24 || safeVelocity >= 720;
+}
+
 const RUSTDESK_DISABLED_REASONS: Record<string, string> = {
   'screenshot': '截屏需要本地截图保存和权限链路接入后启用',
   'textChat': '文字聊天需要 RustDesk 会话消息通道接入后启用',

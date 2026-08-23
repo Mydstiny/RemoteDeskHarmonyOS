@@ -168,6 +168,17 @@ export default function remoteKeyDispatcherTest(): void {
       }
     });
 
+    it('mapped_shortcut_keeps_command_and_letter_on_the_same_wire_path', 0, (): void => {
+      const dispatcher = new RemoteKeyDispatcher();
+      const transport = new FailingLegacyTransport();
+      dispatcher.sendShortcutSequenceMapped(transport, 7, [2076, 2019], 'Cmd+C',
+        null, null, null, (keyCode: number): number => keyCode | 0x20000);
+      assertEventSequence(transport.events, [
+        'key:7:133148:down', 'key:7:133091:down',
+        'key:7:133091:up', 'key:7:133148:up'
+      ]);
+    });
+
     it('legacy_modified_key_releases_each_attempt_and_clears_once_latch', 0, (): void => {
       const dispatcher = new RemoteKeyDispatcher();
       for (let failAt = 1; failAt <= 4; failAt++) {

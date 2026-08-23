@@ -129,10 +129,10 @@ export struct RemoteModifierPanel {
 
   private modLabel(mod: string): string {
     if (mod === 'ctrl') {
-      return 'Ctrl';
+      return this.shortcutPlatform() === 'macos' ? 'Control' : 'Ctrl';
     }
     if (mod === 'alt') {
-      return 'Alt';
+      return this.shortcutPlatform() === 'macos' ? 'Option' : 'Alt';
     }
     if (mod === 'shift') {
       return '⇧';
@@ -150,6 +150,9 @@ export struct RemoteModifierPanel {
 
   private selectShortcutPlatform(platform: RemoteShortcutPlatform): void {
     this.shortcutPlatformMode = platform;
+    // 首先回到通用编辑键，避免 macOS 桌面分类中合法的
+    // Control 组合被误解为平台没有切换。
+    this.shortcutCategory = 'editing';
     RemoteKeyboardSettingsService.getInstance().saveShortcutPlatform(platform, getContext(this));
   }
 
@@ -777,10 +780,17 @@ export struct RemoteModifierPanel {
       Text('1. 选择一个或多个修饰键')
         .fontSize(9).fontColor('rgba(255,255,255,0.42)').width('100%')
       Row() {
-        this.CustomModifierChoice('Ctrl', 2072)
-        this.CustomModifierChoice(this.shortcutPlatform() === 'macos' ? 'Option' : 'Alt', 2045)
-        this.CustomModifierChoice('Shift', 2047)
-        this.CustomModifierChoice(this.shortcutPlatform() === 'macos' ? 'Cmd' : 'Win', 2076)
+        if (this.shortcutPlatform() === 'macos') {
+          this.CustomModifierChoice('Cmd', 2076)
+          this.CustomModifierChoice('Option', 2045)
+          this.CustomModifierChoice('Shift', 2047)
+          this.CustomModifierChoice('Control', 2072)
+        } else {
+          this.CustomModifierChoice('Ctrl', 2072)
+          this.CustomModifierChoice('Alt', 2045)
+          this.CustomModifierChoice('Shift', 2047)
+          this.CustomModifierChoice('Win', 2076)
+        }
       }.width('100%').margin({ top: 4, bottom: 7 })
       Text('2. 选择一个主键')
         .fontSize(9).fontColor('rgba(255,255,255,0.42)').width('100%')
@@ -905,8 +915,8 @@ export struct RemoteModifierPanel {
   ShortcutLibrary() {
     Column() {
       Row({ space: 6 }) {
-        this.PlatformChoice('windows', 'Windows')
-        this.PlatformChoice('macos', 'macOS')
+        this.PlatformChoice('windows', 'Windows · Ctrl')
+        this.PlatformChoice('macos', 'macOS · Cmd')
       }.width('100%').margin({ bottom: 7 })
       Scroll() {
         Row({ space: 5 }) {
@@ -968,7 +978,7 @@ export struct RemoteModifierPanel {
           this.ActionKey('→', RemoteModifierPanel.KEY_RIGHT)
         }.width('100%')
         Row() {
-          this.ActionKey('Bksp', RemoteModifierPanel.KEY_BACKSPACE)
+          this.ActionKey('⌫ 退格', RemoteModifierPanel.KEY_BACKSPACE)
           this.ActionKey('Space', RemoteModifierPanel.KEY_SPACE)
           this.ActionKey('Caps', RemoteModifierPanel.KEY_CAPS_LOCK)
           this.ActionKey('Scroll', RemoteModifierPanel.KEY_SCROLL_LOCK)
@@ -1018,17 +1028,24 @@ export struct RemoteModifierPanel {
           Scroll() {
             Column() {
               Row() {
-                this.ModKey('ctrl')
-                this.ModKey('alt')
-                this.ModKey('shift')
-                this.ModKey('win')
+                if (this.shortcutPlatform() === 'macos') {
+                  this.ModKey('win')
+                  this.ModKey('alt')
+                  this.ModKey('shift')
+                  this.ModKey('ctrl')
+                } else {
+                  this.ModKey('ctrl')
+                  this.ModKey('alt')
+                  this.ModKey('shift')
+                  this.ModKey('win')
+                }
                 this.FnKey()
               }.width('100%').justifyContent(FlexAlign.SpaceEvenly)
 
               Row() {
                 this.ActionKey('Esc', RemoteModifierPanel.KEY_ESC)
                 this.ActionKey('Tab', RemoteModifierPanel.KEY_TAB)
-                this.ActionKey('Bksp', RemoteModifierPanel.KEY_BACKSPACE)
+                this.ActionKey('⌫ 退格', RemoteModifierPanel.KEY_BACKSPACE)
                 this.EnterKey()
               }.width('100%').justifyContent(FlexAlign.SpaceEvenly).margin({ top: 6 })
 

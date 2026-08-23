@@ -335,10 +335,17 @@ export struct VirtualKeyboardSettingsSheet {
           .fontColor(this.text2()).onClick((): void => { this.closeEditor(); })
       }.width('100%')
       Row({ space: 5 }) {
-        this.modifierChoice('Ctrl', 2072)
-        this.modifierChoice(this.platform() === 'macos' ? 'Option' : 'Alt', 2045)
-        this.modifierChoice('Shift', 2047)
-        this.modifierChoice(this.platform() === 'macos' ? 'Cmd' : 'Win', 2076)
+        if (this.platform() === 'macos') {
+          this.modifierChoice('Cmd', 2076)
+          this.modifierChoice('Option', 2045)
+          this.modifierChoice('Shift', 2047)
+          this.modifierChoice('Control', 2072)
+        } else {
+          this.modifierChoice('Ctrl', 2072)
+          this.modifierChoice('Alt', 2045)
+          this.modifierChoice('Shift', 2047)
+          this.modifierChoice('Win', 2076)
+        }
       }.width('100%')
       Row({ space: 4 }) {
         this.groupChoice('letters')
@@ -483,13 +490,14 @@ export struct VirtualKeyboardSettingsSheet {
     this.pageHero('shortcuts', '默认快捷键目录')
     this.sectionTitle('平台语义', '设置默认目录；连接中的组合键面板仍可随时切换。')
     Row({ space: 10 }) {
-      this.platformChoice('windows', 'Windows', 'Ctrl / Alt / Win')
-      this.platformChoice('macos', 'macOS', 'Control / Option / Cmd')
+      this.platformChoice('windows', 'Windows', '通用键：Ctrl')
+      this.platformChoice('macos', 'macOS', '通用键：Cmd')
     }.width('100%')
     this.sectionTitle('映射说明', '切换平台只改变快捷键名称与组合目录，不会修改远端系统。')
     Column({ space: 6 }) {
-      this.infoRow('Windows 修饰键', 'Ctrl · Alt · Shift · Win')
-      this.infoRow('macOS 修饰键', 'Control · Option · Shift · Cmd')
+      this.infoRow('Windows 通用组合', 'Ctrl+C / Ctrl+V / Ctrl+Z')
+      this.infoRow('macOS 通用组合', 'Cmd+C / Cmd+V / Cmd+Z')
+      this.infoRow('macOS Control', '仅保留调度中心、空间切换等系统键')
       this.infoRow('会话内切换', '即时生效，可自由往返')
     }.width('100%')
   }

@@ -27,16 +27,25 @@ type LatchSetter = (mod: string, val: string) => void;
 type RemoteDownGetter = (mod: string) => boolean;
 type RemoteDownSetter = (mod: string, down: boolean) => void;
 type SourceSpaceFn = (x: number, y: number) => Record<string, number>;
+type KeyCodeMapper = (keyCode: number) => number;
 
 export class RemoteKeyDispatcher {
 
   /** 发送单键 down+up */
   sendVirtualKeyTap(loader: ExtensionLoader, sessionId: number,
     keyCode: number, label: string): void {
+    this.sendVirtualKeyTapMapped(loader, sessionId, keyCode, label, null);
+  }
+
+  /** 发送单键 down+up，并允许面板为协议附加私有传输标记。 */
+  sendVirtualKeyTapMapped(loader: ExtensionLoader, sessionId: number,
+    keyCode: number, label: string, mapKeyCode: KeyCodeMapper | null): void {
     try {
-      loader.sendKey(sessionId, keyCode, true);
-      loader.sendKey(sessionId, keyCode, false);
-      hilog.info(DOMAIN, TAG, 'key-tap: ' + label + ' code=' + keyCode.toString());
+      const wireCode: number = this.transportCode(keyCode, mapKeyCode);
+      loader.sendKey(sessionId, wireCode, true);
+      loader.sendKey(sessionId, wireCode, false);
+      hilog.info(DOMAIN, TAG, 'key-tap: ' + label + ' code=' + keyCode.toString() +
+        ' wire=' + wireCode.toString());
     } catch (err) {
       hilog.error(DOMAIN, TAG, 'key-tap failed: ' + JSON.stringify(err));
     }
@@ -47,10 +56,20 @@ export class RemoteKeyDispatcher {
     keyCode: number, label: string,
     getLatch: LatchGetter, setLatch: LatchSetter,
     isRemoteDown: RemoteDownGetter | null): void {
+    this.sendModifiedKeyMapped(loader, sessionId, keyCode, label,
+      getLatch, setLatch, isRemoteDown, null);
+  }
+
+  /** 发送带修饰键的按键序列，并在发送边界映射整组键码。 */
+  sendModifiedKeyMapped(loader: ExtensionLoader, sessionId: number,
+    keyCode: number, label: string,
+    getLatch: LatchGetter, setLatch: LatchSetter,
+    isRemoteDown: RemoteDownGetter | null,
+    mapKeyCode: KeyCodeMapper | null): void {
     try {
       const mods: number[] = this.collectModifierCodes(getLatch);
       if (mods.length === 0) {
-        this.sendVirtualKeyTap(loader, sessionId, keyCode, label);
+        this.sendVirtualKeyTapMapped(loader, sessionId, keyCode, label, mapKeyCode);
         return;
       }
       // P0-2: locked 且已 remote-down 的修饰键不重复发 down (由 setLatch 锁定时刻发送)
@@ -59,15 +78,16 @@ export class RemoteKeyDispatcher {
         if (getLatch(modName) === 'locked' && isRemoteDown && isRemoteDown(modName)) {
           continue; // 已按下, 跳过
         }
-        loader.sendKey(sessionId, mods[i], true);
+        loader.sendKey(sessionId, this.transportCode(mods[i], mapKeyCode), true);
       }
-      loader.sendKey(sessionId, keyCode, true);
-      loader.sendKey(sessionId, keyCode, false);
+      const wireKeyCode: number = this.transportCode(keyCode, mapKeyCode);
+      loader.sendKey(sessionId, wireKeyCode, true);
+      loader.sendKey(sessionId, wireKeyCode, false);
       // 逆序释放 once 状态的修饰键 (locked 保持)
       for (let i = mods.length - 1; i >= 0; i--) {
         const modName: string = this.modifierName(mods[i]);
         if (getLatch(modName) === 'once') {
-          loader.sendKey(sessionId, mods[i], false);
+          loader.sendKey(sessionId, this.transportCode(mods[i], mapKeyCode), false);
           setLatch(modName, 'off');
         }
       }
@@ -83,6 +103,17 @@ export class RemoteKeyDispatcher {
     getLatch: LatchGetter | null = null,
     isRemoteDown: RemoteDownGetter | null = null,
     setRemoteDown: RemoteDownSetter | null = null): void {
+    this.sendShortcutSequenceMapped(loader, sessionId, keyCodes, label,
+      getLatch, isRemoteDown, setRemoteDown, null);
+  }
+
+  /** 发送快捷键序列，并在发送边界映射整组键码。 */
+  sendShortcutSequenceMapped(loader: ExtensionLoader, sessionId: number,
+    keyCodes: number[], label: string,
+    getLatch: LatchGetter | null,
+    isRemoteDown: RemoteDownGetter | null,
+    setRemoteDown: RemoteDownSetter | null,
+    mapKeyCode: KeyCodeMapper | null): void {
     try {
       const pressedCodes: number[] = [];
       for (let i = 0; i < keyCodes.length; i++) {
@@ -91,7 +122,7 @@ export class RemoteKeyDispatcher {
           getLatch !== null && getLatch(modName) === 'locked';
         if (isLockedModifier) {
           if (isRemoteDown === null || !isRemoteDown(modName)) {
-            loader.sendKey(sessionId, keyCodes[i], true);
+            loader.sendKey(sessionId, this.transportCode(keyCodes[i], mapKeyCode), true);
             if (setRemoteDown !== null) {
               setRemoteDown(modName, true);
             }
@@ -101,8 +132,9 @@ export class RemoteKeyDispatcher {
           }
           continue;
         }
-        loader.sendKey(sessionId, keyCodes[i], true);
-        pressedCodes.push(keyCodes[i]);
+        const wireCode: number = this.transportCode(keyCodes[i], mapKeyCode);
+        loader.sendKey(sessionId, wireCode, true);
+        pressedCodes.push(wireCode);
       }
       for (let i = pressedCodes.length - 1; i >= 0; i--) {
         loader.sendKey(sessionId, pressedCodes[i], false);
@@ -191,6 +223,10 @@ export class RemoteKeyDispatcher {
       codes.push(KEYCODE_META_LEFT);
     }
     return codes;
+  }
+
+  private transportCode(keyCode: number, mapKeyCode: KeyCodeMapper | null): number {
+    return mapKeyCode === null ? keyCode : mapKeyCode(keyCode);
   }
 
   private modifierName(keyCode: number): string {

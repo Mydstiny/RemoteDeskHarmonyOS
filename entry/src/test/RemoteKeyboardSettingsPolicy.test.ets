@@ -3,6 +3,7 @@ import {
   defaultRemoteKeyboardPreferences,
   normalizeRemoteKeyboardPreferences,
   normalizeRemoteShortcutPlatform,
+  remoteShortcutTransportKeyCode,
   remoteShortcutCategories,
   remoteShortcutPresets
 } from '../main/ets/services/RemoteKeyboardSettingsPolicy';
@@ -33,6 +34,17 @@ export default function remoteKeyboardSettingsPolicyTest(): void {
       expect(macos.some((item): boolean => item.chord === 'Cmd+Option+Esc')).assertTrue();
       expect(macos.some((item): boolean => item.chord === 'Shift+Cmd+5')).assertTrue();
       expect(macos.some((item): boolean => item.chord.indexOf('Win+') >= 0)).assertFalse();
+
+      const windowsCopy = windows.filter((item): boolean => item.id === 'copy')[0];
+      const macosCopy = macos.filter((item): boolean => item.id === 'copy')[0];
+      expect(windowsCopy.chord).assertEqual('Ctrl+C');
+      expect(windowsCopy.keyCodes[0]).assertEqual(2072);
+      expect(macosCopy.chord).assertEqual('Cmd+C');
+      expect(macosCopy.keyCodes[0]).assertEqual(2076);
+      expect(macos.filter((item): boolean => item.id === 'macPreviousTab')[0].chord)
+        .assertEqual('Shift+Cmd+[');
+      expect(macos.filter((item): boolean => item.id === 'macNextTab')[0].chord)
+        .assertEqual('Shift+Cmd+]');
     });
 
     it('covers_every_visible_category_for_both_platforms', 0, (): void => {
@@ -41,6 +53,13 @@ export default function remoteKeyboardSettingsPolicyTest(): void {
         expect(remoteShortcutPresets('windows', categories[index]).length > 0).assertTrue();
         expect(remoteShortcutPresets('macos', categories[index]).length > 0).assertTrue();
       }
+    });
+
+    it('marks_rustdesk_macos_keys_for_explicit_physical_map_transport', 0, (): void => {
+      expect(remoteShortcutTransportKeyCode('rustdesk', 'macos', 2076)).assertEqual(133148);
+      expect(remoteShortcutTransportKeyCode('rustdesk', 'macos', 2019)).assertEqual(133091);
+      expect(remoteShortcutTransportKeyCode('rustdesk', 'windows', 2076)).assertEqual(2076);
+      expect(remoteShortcutTransportKeyCode('vnc', 'macos', 2076)).assertEqual(2076);
     });
   });
 }

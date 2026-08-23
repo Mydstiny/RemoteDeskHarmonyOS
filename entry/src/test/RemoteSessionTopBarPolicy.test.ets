@@ -1,7 +1,12 @@
 import { expect } from '@ohos/hypium';
 import { auditedDescribe as describe, auditedIt as it } from '../main/ets/services/FocusedTestRegistrationAudit';
 import {
+  REMOTE_SESSION_COLLAPSED_RAIL_HEIGHT,
+  REMOTE_SESSION_COLLAPSED_RAIL_TOUCH_WIDTH,
+  REMOTE_SESSION_COLLAPSED_RAIL_WIDTH,
   protocolPreferenceOwner,
+  remoteSessionRailDragOffset,
+  remoteSessionRailShouldCollapse,
   remoteTopBarDeviceClass,
   remoteTopBarLayout,
   shouldShowRemoteSessionTopBar,
@@ -86,6 +91,23 @@ export default function remoteSessionTopBarPolicyTest(): void {
   });
 
   describe('RemoteSessionTopBarPolicy_edgeRail', (): void => {
+    it('keeps_a_narrow_visual_handle_with_an_accessible_touch_target', 0, (): void => {
+      expect(REMOTE_SESSION_COLLAPSED_RAIL_WIDTH).assertEqual(22);
+      expect(REMOTE_SESSION_COLLAPSED_RAIL_HEIGHT).assertEqual(72);
+      expect(REMOTE_SESSION_COLLAPSED_RAIL_TOUCH_WIDTH >= 40).assertTrue();
+      expect(REMOTE_SESSION_COLLAPSED_RAIL_TOUCH_WIDTH >
+        REMOTE_SESSION_COLLAPSED_RAIL_WIDTH).assertTrue();
+    });
+
+    it('collapses_only_for_an_intentional_right_swipe', 0, (): void => {
+      expect(remoteSessionRailDragOffset(-12)).assertEqual(0);
+      expect(remoteSessionRailDragOffset(18)).assertEqual(18);
+      expect(remoteSessionRailDragOffset(90)).assertEqual(72);
+      expect(remoteSessionRailShouldCollapse(24, 0)).assertTrue();
+      expect(remoteSessionRailShouldCollapse(4, 800)).assertTrue();
+      expect(remoteSessionRailShouldCollapse(12, 200)).assertFalse();
+    });
+
     it('phone_and_pad_keyboard_mouse_sessions_should_use_edge_rail', 0, (): void => {
       expect(shouldUseRustDeskEdgeRail('rustdesk', false, 'sm', 2, false)).assertTrue();
       expect(shouldUseRustDeskEdgeRail('rustdesk', false, 'lg', 2, true)).assertTrue();

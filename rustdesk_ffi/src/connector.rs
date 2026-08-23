@@ -2710,6 +2710,7 @@ impl RustDeskConnector {
     }
 
     const MACOS_CAPS_LOCK_RAW_SCANCODE: u32 = 0x10039;
+    const EXPLICIT_MACOS_MAP_FLAG: u32 = 0x20000;
 
     /// RustDesk's official client defaults to Map mode for supported desktop peers.
     /// macOS must receive physical virtual-key events for its active input source to
@@ -2717,6 +2718,26 @@ impl RustDeskConnector {
     /// `Enigo::key_sequence`, which inserts characters directly and bypasses the IME.
     fn build_macos_map_message(keycode: u32, pressed: bool) -> Message {
         Self::build_map_key_message(keycode, pressed)
+    }
+
+    fn explicit_macos_harmony_keycode(scancode: u32) -> Option<u32> {
+        (scancode & Self::EXPLICIT_MACOS_MAP_FLAG != 0)
+            .then_some(scancode & !Self::EXPLICIT_MACOS_MAP_FLAG)
+    }
+
+    fn build_explicit_macos_map_message(
+        scancode: u32,
+        pressed: bool,
+        physical_modifiers: &mut PhysicalModifierState,
+    ) -> Option<(Message, u32, u32)> {
+        let harmony_keycode = Self::explicit_macos_harmony_keycode(scancode)?;
+        let macos_keycode = Self::harmony_keycode_to_macos_keycode(harmony_keycode)?;
+        physical_modifiers.update(harmony_keycode, pressed);
+        Some((
+            Self::build_macos_map_message(macos_keycode, pressed),
+            harmony_keycode,
+            macos_keycode,
+        ))
     }
 
     /// Windows peers interpret Map-mode `chr` as a Windows Set-1 scan code.
@@ -2935,6 +2956,20 @@ impl RustDeskConnector {
         physical_modifiers: &mut PhysicalModifierState,
         remote_keyboard_transport: RemoteKeyboardTransport,
     ) -> io::Result<()> {
+        if let Some((msg, harmony_keycode, macos_keycode)) =
+            Self::build_explicit_macos_map_message(scancode, pressed, physical_modifiers)
+        {
+            let status = format!(
+                "send explicit macos physical scancode={} pressed={} mode=map keycode=0x{:X}",
+                harmony_keycode, pressed, macos_keycode,
+            );
+            crate::set_last_error(status.clone());
+            eprintln!("[RustDesk-FFI] {}", status);
+            return Self::send_message_encrypted(crypto, &msg);
+        }
+        // An explicitly marked but currently unsupported key falls back using
+        // its original Harmony code, never the private marker value.
+        let scancode = Self::explicit_macos_harmony_keycode(scancode).unwrap_or(scancode);
         if Self::should_use_macos_caps_lock_map(scancode, remote_keyboard_transport) {
             let msg = Self::build_macos_map_message(0x39, pressed);
             let status = format!(
@@ -4463,6 +4498,30 @@ mod tests {
                 _ => panic!("macOS Caps Lock must remain a key event"),
             }
         }
+    }
+
+    #[test]
+    fn explicit_macos_shortcut_keeps_command_and_letter_in_map_mode() {
+        let mut modifiers = PhysicalModifierState::default();
+        for (harmony_keycode, expected_macos_keycode) in [(2076, 0x37), (2019, 0x08)] {
+            let marked = RustDeskConnector::EXPLICIT_MACOS_MAP_FLAG | harmony_keycode;
+            let (message, decoded, mapped) =
+                RustDeskConnector::build_explicit_macos_map_message(
+                    marked, true, &mut modifiers,
+                ).expect("marked macOS shortcut key must map");
+            assert_eq!(decoded, harmony_keycode);
+            assert_eq!(mapped, expected_macos_keycode);
+            match message.union {
+                Some(Message_oneof_union::key_event(key)) => {
+                    assert!(key.down);
+                    assert_eq!(key.mode, KeyboardMode::Map);
+                    assert!(matches!(key.union,
+                        Some(KeyEvent_oneof_union::chr(code)) if code == expected_macos_keycode));
+                }
+                _ => panic!("explicit macOS shortcut must remain a key event"),
+            }
+        }
+        assert!(modifiers.active_groups().contains(&ControlKey::Meta));
     }
 
     #[test]
