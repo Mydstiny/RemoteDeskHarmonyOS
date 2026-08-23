@@ -14,6 +14,16 @@ export function sshXtermTabRenderRevision(sessionGeneration: number): number {
   return Math.max(0, Math.floor(sessionGeneration));
 }
 
+/**
+ * A desktop workspace may retain one WebView per tab. Phone/Pad keeps only the
+ * visible document mounted; native sessions and bounded transcripts remain
+ * retained, but hidden ArkWeb surfaces cannot exhaust or stall touch devices.
+ */
+export function shouldMountSshXtermTab(isDesktopDevice: boolean,
+  visible: boolean): boolean {
+  return isDesktopDevice || visible;
+}
+
 export function shouldReloadSshXtermTab(previousCoreKey: string, nextCoreKey: string,
   previousRevision: number, nextRevision: number): boolean {
   return previousCoreKey.trim() !== nextCoreKey.trim() ||

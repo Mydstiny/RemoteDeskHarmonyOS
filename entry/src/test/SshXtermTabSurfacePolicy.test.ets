@@ -2,12 +2,20 @@ import { describe, it, expect } from '@ohos/hypium';
 import {
   makeSshXtermTabCoreKey,
   matchesSshXtermCopyFence,
+  shouldMountSshXtermTab,
   shouldReloadSshXtermTab,
   sshXtermTabRenderRevision
 } from '../main/ets/services/SshXtermTabSurfacePolicy';
 
 export default function sshXtermTabSurfacePolicyTest(): void {
   describe('SshXtermTabSurfacePolicy', (): void => {
+    it('mounts_only_the_visible_xterm_document_on_touch_devices', 0, (): void => {
+      expect(shouldMountSshXtermTab(false, true)).assertTrue();
+      expect(shouldMountSshXtermTab(false, false)).assertFalse();
+      expect(shouldMountSshXtermTab(true, true)).assertTrue();
+      expect(shouldMountSshXtermTab(true, false)).assertTrue();
+    });
+
     it('keeps_the_document_identity_when_only_active_tab_changes', 0, (): void => {
       const coreKey: string = makeSshXtermTabCoreKey('host-a');
       expect(coreKey).assertEqual('host-a:xterm');

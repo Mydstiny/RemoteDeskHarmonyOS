@@ -191,6 +191,7 @@ import {
 } from '../services/SshTerminalSurfaceBindingPolicy';
 import {
   makeSshXtermTabCoreKey,
+  shouldMountSshXtermTab,
   sshXtermTabRenderRevision
 } from '../services/SshXtermTabSurfacePolicy';
 import { VirtualKeyBar } from '../components/VirtualKeyBar';
@@ -2841,6 +2842,10 @@ struct SshTerminal {
     return visibleHostId.length > 0 && tab.hostId.trim() === visibleHostId;
   }
 
+  private sshTabSurfaceShouldMount(tab: SshTerminalTabView): boolean {
+    return shouldMountSshXtermTab(this.isDesktopDevice, this.sshTabSurfaceActive(tab));
+  }
+
   private sshTabHosts(): RemoteHost[] {
     return this.srv.getAllHosts().filter((host: RemoteHost): boolean => host.protocol === 'ssh');
   }
@@ -2951,7 +2956,19 @@ struct SshTerminal {
 
   private onSshTabPickerDisappear(): void {
     this.clearSshTabPickerExitRecovery();
-    if (!this.sshTabPickerClosing) { return; }
+    if (!this.sshTabPickerClosing) {
+      // Cancel/back dismissal returns focus only after the native Sheet has
+      // fully released its surface. A selected host follows the switch path
+      // below and establishes focus at the new binding's ready boundary.
+      if (!this.terminalClosing && !this.sshModalOwnsKeyboard()) {
+        setTimeout((): void => {
+          if (!this.terminalClosing && !this.sshModalOwnsKeyboard()) {
+            this.focusKeyboard(false);
+          }
+        }, 32);
+      }
+      return;
+    }
     const pendingHostId: string = this.sshTabPickerPendingHostId.trim();
     this.sshTabPickerPendingHostId = '';
     this.sshTabPickerClosing = false;
@@ -4861,6 +4878,12 @@ struct SshTerminal {
       this.showSftpTransferCenter ||
       this.showForwardingSheet || this.showSshCommandPalette ||
       this.sshTabPickerClosing) { return; }
+    // The terminal renderer must not retain keyboard focus behind the native
+    // picker. On touch devices that focus is the xterm DOM textarea itself;
+    // on desktop it is the ArkUI anchor. Suspend either owner before mounting.
+    this.terminalFocusMode = false;
+    this.softKeyboardRequested = false;
+    this.clearTerminalInputFocusRetry();
     this.showSshTabPicker = true;
   }
 
@@ -17767,9 +17790,11 @@ struct SshTerminal {
                 }, (frame: SshWorkspacePaneFrame): string => frame.paneId)
             } else {
               ForEach(this.sshTabViews, (tab: SshTerminalTabView): void => {
-                this.sshXtermTabSurface(tab, this.sshTabSurfaceActive(tab),
-                  this.sshTabSurfaceActive(tab), this.sshTabSurfaceActive(tab),
-                  this.termAreaW, this.termAreaH, this.resolvedTerminalProfile)
+                if (this.sshTabSurfaceShouldMount(tab)) {
+                  this.sshXtermTabSurface(tab, this.sshTabSurfaceActive(tab),
+                    this.sshTabSurfaceActive(tab), this.sshTabSurfaceActive(tab),
+                    this.termAreaW, this.termAreaH, this.resolvedTerminalProfile)
+                }
               }, (tab: SshTerminalTabView): string => tab.tabId)
             }
 
@@ -18424,6 +18449,32 @@ struct SshTerminal {
           }
         })
 
+      // New-session selection changes the keyed xterm document after the
+      // Sheet exits. Keep the native Sheet on an inert, stable host so a
+      // phone/Pad root WebView rebuild cannot consume its onDisappear handoff.
+      Column()
+        .width(1)
+        .height(1)
+        .hitTestBehavior(HitTestMode.None)
+        .bindSheet($$this.showSshTabPicker, this.sshTabPickerSheet(), {
+          height: this.sshTabPickerSheetLayout().heightVp,
+          preferType: this.sshTabPickerSheetLayout().bottomAnchored
+            ? SheetType.BOTTOM : SheetType.CENTER,
+          width: this.sshTabPickerSheetWidth(),
+          dragBar: this.sshTabPickerSheetLayout().bottomAnchored,
+          backgroundColor: '#171D25',
+          blurStyle: BlurStyle.NONE,
+          showClose: false,
+          onWillDismiss: (action: DismissSheetAction): void => {
+            if (!this.sshTabPickerClosing) {
+              this.sshTabPickerPendingHostId = '';
+              this.showSshTabPicker = false;
+            }
+            action.dismiss();
+          },
+          onDisappear: (): void => { this.onSshTabPickerDisappear(); }
+        })
+
       // This fallback prompt can appear after private-key preflight. Keep it
       // independent from workbench Sheets so API 23 cannot dismiss it before
       // the pending passphrase promise is resolved by the user.
@@ -18445,17 +18496,6 @@ struct SshTerminal {
         })
     }
     .width('100%').height('100%')
-    .bindSheet($$this.showSshTabPicker, this.sshTabPickerSheet(), {
-      height: this.sshTabPickerSheetLayout().heightVp,
-      preferType: this.sshTabPickerSheetLayout().bottomAnchored
-        ? SheetType.BOTTOM : SheetType.CENTER,
-      width: this.sshTabPickerSheetWidth(),
-      dragBar: this.sshTabPickerSheetLayout().bottomAnchored,
-      backgroundColor: '#171D25',
-      blurStyle: BlurStyle.NONE,
-      showClose: false,
-      onDisappear: (): void => { this.onSshTabPickerDisappear(); }
-    })
   }
 
   pageTransition() {
