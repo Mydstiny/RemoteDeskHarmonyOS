@@ -4,6 +4,7 @@
  * 页面层只负责采集 ArkUI 事件；这里统一决定最终发送给远端 PTY 的字节序列。
  */
 import { KeyCode } from '@kit.InputKit';
+import { sshUtf8ByteLength } from './ssh/web/SshWebMessagePortPolicy';
 
 export interface TerminalModifierState {
   ctrl: boolean;
@@ -54,6 +55,11 @@ export interface SshImeChangeDecision {
   remoteInsert: string;
   /** Text removed through the non-system-IME fallback path. */
   remoteDelete: string;
+}
+
+/** Match the native SSH queue's std::string byte accounting. */
+export function sshTerminalInputByteLength(value: string): number {
+  return sshUtf8ByteLength(value);
 }
 
 interface SshImeTextChange {

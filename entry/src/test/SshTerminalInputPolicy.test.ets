@@ -17,7 +17,8 @@ import {
   recordSshImeWillDelete,
   consumeSshImeDidDelete,
   inspectSshImeChange,
-  resetSshImeShadow
+  resetSshImeShadow,
+  sshTerminalInputByteLength
 } from '../main/ets/services/SshTerminalInputPolicy';
 
 const NONE: TerminalModifierState = { ctrl: false, alt: false, shift: false };
@@ -29,6 +30,13 @@ const CTRL_SHIFT: TerminalModifierState = { ctrl: true, alt: false, shift: true 
 
 export default function sshTerminalInputPolicyTest(): void {
   describe('SshTerminalInputPolicy', (): void => {
+    it('should_measure_pending_input_as_native_utf8_bytes', 0, (): void => {
+      expect(sshTerminalInputByteLength('ascii')).assertEqual(5);
+      expect(sshTerminalInputByteLength('密码')).assertEqual(6);
+      expect(sshTerminalInputByteLength('🙂')).assertEqual(4);
+      expect(sshTerminalInputByteLength('\uD800')).assertEqual(3);
+    });
+
     it('should_pass_soft_keyboard_committed_text_through', 0, (): void => {
       expect(encodeTextInput('ls -la', NONE)).assertEqual('ls -la');
       expect(encodeTextInput('中文😀', NONE)).assertEqual('中文😀');

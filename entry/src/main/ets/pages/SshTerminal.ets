@@ -154,7 +154,8 @@ import {
   encodePhysicalKey,
   normalizeSshKeyCode,
   encodeSoftDelete,
-  encodeTextInput
+  encodeTextInput,
+  sshTerminalInputByteLength
 } from '../services/SshTerminalInputPolicy';
 import {
   defaultSshTerminalOrientation,
@@ -489,6 +490,8 @@ interface PendingTerminalInput {
   /** Monotonic ArkUI admission order used to keep a later paste behind older input. */
   order: number;
   data: string;
+  /** Immutable UTF-8 receipt; native queue limits use encoded bytes too. */
+  bytes: number;
   control: boolean;
   /** Paste chunks share a non-preemptive lane with their bracket markers. */
   ordered: boolean;
@@ -5121,7 +5124,7 @@ struct SshTerminal {
         lane === 2, item.orderedEnd);
       hilog.info(0x0000, 'SshTerminal', '[input] enqueue status=' + result.status +
         ' accepted=' + (result.accepted ? '1' : '0') +
-        ' bytes=' + item.data.length.toString() +
+        ' bytes=' + item.bytes.toString() +
         ' control=' + (item.control ? '1' : '0') +
         ' ordered=' + (lane === 2 ? '1' : '0') +
         ' seq=' + result.sequence.toString() +
@@ -5132,13 +5135,13 @@ struct SshTerminal {
         queue.shift();
         if (lane === 2) {
           this.terminalInputOrderedPendingBytes = Math.max(0,
-            this.terminalInputOrderedPendingBytes - item.data.length);
+            this.terminalInputOrderedPendingBytes - item.bytes);
         } else if (lane === 0) {
           this.terminalInputControlPendingBytes = Math.max(0,
-            this.terminalInputControlPendingBytes - item.data.length);
+            this.terminalInputControlPendingBytes - item.bytes);
         } else {
           this.terminalInputDataPendingBytes = Math.max(0,
-            this.terminalInputDataPendingBytes - item.data.length);
+            this.terminalInputDataPendingBytes - item.bytes);
         }
         return 0;
       }
@@ -5192,33 +5195,34 @@ struct SshTerminal {
   private queueTerminalInput(data: string, control: boolean = false,
     ordered: boolean = false, orderedEnd: boolean = false): void {
     if (this.terminalClosing || this.sessionId <= 0 || data.length === 0) { return; }
-    if (ordered && this.terminalInputOrderedPendingBytes + data.length >
+    const dataBytes: number = sshTerminalInputByteLength(data);
+    if (ordered && this.terminalInputOrderedPendingBytes + dataBytes >
         SSH_INPUT_PENDING_DATA_MAX_BYTES) {
       promptAction.showToast({ message: '粘贴输入队列已满，请稍后继续', duration: 1200 });
       return;
     }
-    if (control && this.terminalInputControlPendingBytes + data.length >
+    if (control && this.terminalInputControlPendingBytes + dataBytes >
         SSH_INPUT_PENDING_CONTROL_MAX_BYTES) {
       promptAction.showToast({ message: '控制输入队列已满，请稍后继续', duration: 1200 });
       return;
     }
-    if (!control && this.terminalInputDataPendingBytes + data.length >
+    if (!control && this.terminalInputDataPendingBytes + dataBytes >
         SSH_INPUT_PENDING_DATA_MAX_BYTES) {
       promptAction.showToast({ message: '输入队列已满，请稍后继续', duration: 1200 });
       return;
     }
     const item: PendingTerminalInput = {
-      order: ++this.terminalInputOrder, data, control, ordered, orderedEnd
+      order: ++this.terminalInputOrder, data, bytes: dataBytes, control, ordered, orderedEnd
     };
     if (ordered) {
       this.terminalInputOrderedPending.push(item);
-      this.terminalInputOrderedPendingBytes += data.length;
+      this.terminalInputOrderedPendingBytes += dataBytes;
     } else if (control) {
       this.terminalInputControlPending.push(item);
-      this.terminalInputControlPendingBytes += data.length;
+      this.terminalInputControlPendingBytes += dataBytes;
     } else {
       this.terminalInputDataPending.push(item);
-      this.terminalInputDataPendingBytes += data.length;
+      this.terminalInputDataPendingBytes += dataBytes;
     }
     this.flushTerminalInputQueue();
   }
