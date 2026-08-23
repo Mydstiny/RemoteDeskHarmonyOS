@@ -284,6 +284,35 @@ export default function sshWorkspacePolicyTest(): void {
       expect(layout.mainWidthVp).assertEqual(360);
     });
 
+    it('workspace_sidebar_should_default_wide_collapse_on_phone_and_persist_user_choice',
+      0, (): void => {
+        const workspace: SshWorkspaceSnapshotV1 =
+          createEmptySshWorkspace('ws-sidebar', 'Sidebar', 100);
+        expect(workspace.sidebarVisible).assertTrue();
+
+        const wideInput: SshLayoutInput = layoutInput('static', 1500);
+        wideInput.sidebarRequested = workspace.sidebarVisible;
+        const wide: SshLayoutResult = resolveSshLayout(wideInput);
+        expect(wide.sidebarVisible).assertTrue();
+        expect(wide.sidebarWidthVp).assertEqual(320);
+        expect(wide.mainWidthVp).assertEqual(1180);
+
+        const phoneInput: SshLayoutInput = layoutInput('static', 420);
+        phoneInput.sidebarRequested = workspace.sidebarVisible;
+        const phone: SshLayoutResult = resolveSshLayout(phoneInput);
+        expect(phone.sidebarVisible).assertFalse();
+        expect(phone.mainWidthVp).assertEqual(420);
+
+        const collapsed: SshWorkspaceReduceResult = reduceSshWorkspace(workspace, {
+          kind: 'set_sidebar_visible', visible: false, nowMs: 101
+        });
+        expect(collapsed.changed).assertTrue();
+        expect(collapsed.snapshot.sidebarVisible).assertFalse();
+        const decoded: SshWorkspaceSnapshotV1 = decodeSshWorkspaceSnapshots(
+          encodeSshWorkspaceSnapshots([collapsed.snapshot])).snapshots[0];
+        expect(decoded.sidebarVisible).assertFalse();
+      });
+
     it('terminal_surface_should_remain_opaque_and_reduce_effects', 0, (): void => {
       const facts: SshWorkspacePlatformFacts = defaultSshWorkspacePlatformFacts();
       facts.apiVersion = 26;

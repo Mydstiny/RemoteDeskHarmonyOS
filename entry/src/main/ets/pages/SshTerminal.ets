@@ -99,6 +99,8 @@ import { SshBrowserTabStrip } from '../components/ssh/workspace/SshBrowserTabStr
 import { SshTransferCenter } from '../components/ssh/workspace/SshTransferCenter';
 import { SshWorkspacePaneChrome } from
   '../components/ssh/workspace/SshWorkspacePaneChrome';
+import { SshWorkspaceSideBar } from
+  '../components/ssh/workspace/SshWorkspaceSideBar';
 import { GpuTerminalRenderer } from '../components/GpuTerminalRenderer';
 import { TerminalInputBuffer } from '../components/SshTerminalSurface';
 import { TerminalCoreBridge } from '../napi/TerminalCoreBridge';
@@ -561,7 +563,7 @@ interface SshTerminalSafetyModeSnapshot {
 type SshProductivityShellPhase = 'idle' | 'prompt' | 'command' | 'executed';
 
 type SshHeaderAction = 'new-session' | 'tabs' | 'palette' | 'transfers' | 'restore' |
-  'profile' | 'search' | 'locale' | 'sftp' | 'forwarding' | 'orientation';
+  'sidebar' | 'profile' | 'search' | 'locale' | 'sftp' | 'forwarding' | 'orientation';
 
 @Entry
 @Component
@@ -692,6 +694,8 @@ struct SshTerminal {
   /** SSH 内容层实际尺寸 (vp), 用于计算浮动底栏和终端可视高度 */
   @State shellAreaH: number = 0;
   @State shellAreaW: number = 0;
+  /** Header 下方完整工作区宽度；侧栏出现后仍保持窗口级断点输入稳定。 */
+  @State sshWorkspaceAreaW: number = 0;
   /** 终端区实际尺寸 (vp), onAreaChange 写入 */
   @State termAreaH: number = 0;
   @State termAreaW: number = 0;
@@ -2043,22 +2047,54 @@ struct SshTerminal {
   }
 
   private sshWorkspaceLayoutResult(): SshLayoutResult {
-    const width: number = this.termAreaW > 0 ? this.termAreaW :
-      (this.shellAreaW > 0 ? this.shellAreaW : 360);
+    // `termAreaW` becomes the main-column width once the sidebar is visible.
+    // Keep the responsive mode driven by the complete workspace container to
+    // avoid a sidebar show/hide breakpoint oscillation.
+    const width: number = this.sshWorkspaceAreaW > 0 ? this.sshWorkspaceAreaW :
+      (this.shellAreaW > 0 ? this.shellAreaW : (this.termAreaW > 0 ? this.termAreaW : 360));
     const height: number = this.termAreaH > 0 ? this.termAreaH :
       (this.shellAreaH > 0 ? this.shellAreaH : 640);
+    const containerWidth: number = this.termAreaW > 0 ? this.termAreaW : width;
     return resolveSshLayout({
       widthVp: width,
       heightVp: height,
-      containerWidthVp: width,
+      containerWidthVp: containerWidth,
       desktop: this.isDesktopDevice,
       pad: this.isPadDevice,
-      sidebarRequested: false,
+      sidebarRequested: this.sshWorkspaceModeEnabled() &&
+        this.sshWorkspaceSnapshot.sidebarVisible,
+      // Inspector has a durable model but no production surface yet. Do not
+      // reserve an empty column before that independent increment is wired.
       inspectorRequested: false,
       requestedPaneCount: sshWorkspaceVisiblePaneCount(this.sshWorkspaceSnapshot.paneRoot),
       minimumTerminalPaneWidthVp: 360,
       engine: this.sshWorkspaceLayoutEngine
     });
+  }
+
+  private sshWorkspaceSidebarSupported(): boolean {
+    return this.sshWorkspaceModeEnabled() && this.sshWorkspaceLayoutResult().mode !== 'sm';
+  }
+
+  private sshWorkspaceSidebarVisible(): boolean {
+    return this.sshWorkspaceModeEnabled() && this.sshWorkspaceLayoutResult().sidebarVisible;
+  }
+
+  private sshWorkspaceSidebarWidth(): number {
+    return this.sshWorkspaceSidebarVisible() ?
+      this.sshWorkspaceLayoutResult().sidebarWidthVp : 0;
+  }
+
+  private sshWorkspaceMainSurfaceWidth(): number {
+    const layout: SshLayoutResult = this.sshWorkspaceLayoutResult();
+    return Math.max(1, layout.mainWidthVp);
+  }
+
+  private setSshWorkspaceSidebarVisible(visible: boolean): void {
+    if (!this.sshWorkspaceModeEnabled()) { return; }
+    this.applySshWorkspaceAction({
+      kind: 'set_sidebar_visible', visible, nowMs: Date.now()
+    }, visible ? '无法显示工作区侧栏' : '无法收起工作区侧栏');
   }
 
   private sshWorkspacePaneLayout(): SshWorkspacePaneLayoutResult {
@@ -2068,6 +2104,23 @@ struct SshTerminal {
       (this.shellAreaH > 0 ? this.shellAreaH : 640);
     return resolveSshWorkspacePaneLayout(this.sshWorkspaceSnapshot,
       this.sshWorkspaceFocusedPaneId, layout.maxPaneCount, width, height);
+  }
+
+  @Builder
+  private sshWorkspaceSideBarSurface() {
+    SshWorkspaceSideBar({
+      workspaceName: this.sshWorkspaceSnapshot.name,
+      tabs: this.sshWorkspaceTabViews(),
+      compact: this.sshWorkspaceLayoutResult().mode === 'md',
+      disconnectedCount: this.sshWorkspaceDisconnectedCount(),
+      onActivateTab: (tabId: string): void => { this.activateSshWorkspaceTab(tabId); },
+      onNewSession: (): void => { this.openSshTabPicker(); },
+      onOpenPalette: (): void => { this.openSshCommandPalette(); },
+      onOpenTransfers: (): void => { this.openSftpTransferCenter(); },
+      onCollapse: (): void => { this.setSshWorkspaceSidebarVisible(false); }
+    })
+    .width(this.sshWorkspaceSidebarWidth())
+    .height('100%')
   }
 
   private sshWorkspaceFrameForPane(paneId: string): SshWorkspacePaneFrame | null {
@@ -6008,7 +6061,9 @@ struct SshTerminal {
 
   private sshCompactChrome(): boolean {
     return sshCompactChromeEnabled(
-      this.sshWorkbenchEnabled, this.shellAreaW, this.breakpoint);
+      this.sshWorkbenchEnabled,
+      this.sshWorkspaceAreaW > 0 ? this.sshWorkspaceAreaW : this.shellAreaW,
+      this.breakpoint);
   }
 
   /** Workbench chrome exposes one text menu instead of a row of icon-only actions. */
@@ -6027,7 +6082,8 @@ struct SshTerminal {
     };
     const labels: string[] = [
       '工作区与会话', '显示全部标签', '命令面板', '传输中心',
-      '恢复未连接的工作区标签', '终端搜索', '终端外观', '语言与地区',
+      '恢复未连接的工作区标签', '显示工作区侧栏', '收起工作区侧栏',
+      '终端搜索', '终端外观', '语言与地区',
       sshSessionLocaleLabel(this.sshSessionLocale, true), 'SFTP 文件',
       '浏览与传输远端文件', '隧道转发', '切换横竖屏'
     ];
@@ -6043,8 +6099,10 @@ struct SshTerminal {
     }
     // Popup shell + row paddings + icon/gap + trailing chevron.
     const measuredWidth: number = Math.max(248, Math.ceil(longestTextVp + 90));
-    if (this.shellAreaW <= 0) { return measuredWidth; }
-    return Math.min(measuredWidth, Math.max(220, this.shellAreaW - 24));
+    const availableWidth: number = this.sshWorkspaceAreaW > 0 ?
+      this.sshWorkspaceAreaW : this.shellAreaW;
+    if (availableWidth <= 0) { return measuredWidth; }
+    return Math.min(measuredWidth, Math.max(220, availableWidth - 24));
   }
 
   private openSshHeaderAction(action: SshHeaderAction): void {
@@ -6069,6 +6127,8 @@ struct SshTerminal {
         this.openSftpTransferCenter();
       } else if (action === 'restore') {
         void this.reconnectSshWorkspacePlaceholders();
+      } else if (action === 'sidebar') {
+        this.setSshWorkspaceSidebarVisible(!this.sshWorkspaceSnapshot.sidebarVisible);
       } else if (action === 'profile') {
         this.openTerminalProfileSheet();
       } else if (action === 'search') {
@@ -6126,6 +6186,12 @@ struct SshTerminal {
           if (this.sshWorkspaceDisconnectedCount() > 0) {
             this.SshHeaderActionRow('恢复未连接的工作区标签',
               this.sshWorkspaceDisconnectedCount().toString() + ' 个标签等待手动恢复', 'restore')
+          }
+          if (this.sshWorkspaceSidebarSupported()) {
+            this.SshHeaderActionRow(this.sshWorkspaceSnapshot.sidebarVisible ?
+              '收起工作区侧栏' : '显示工作区侧栏',
+            this.sshWorkspaceSnapshot.sidebarVisible ?
+              '隐藏左侧工作区与会话导航' : '显示左侧工作区与会话导航', 'sidebar')
           }
         }
 
@@ -9538,6 +9604,7 @@ struct SshTerminal {
     this.termAreaW = 0;
     this.shellAreaH = 0;
     this.shellAreaW = 0;
+    this.sshWorkspaceAreaW = 0;
     this.orientationApplied = false;
     // ArkUI 可能复用页面实例；每次进入都必须从全新的会话输出开始。
     this.clearXtermOutputBuffers();
@@ -17406,6 +17473,12 @@ struct SshTerminal {
         colors: [['rgba(255,255,255,0.09)', 0], ['rgba(255,255,255,0.00)', 1]]
       })
 
+      Row() {
+      if (this.sshWorkspaceSidebarVisible()) {
+        this.sshWorkspaceSideBarSurface()
+      }
+
+      Column() {
       // Keep one keyed surface slot per committed SSH binding. During the
       // handoff the old document is masked; the new document is mounted only
       // after the host/binding commit has become observable.
@@ -17763,6 +17836,22 @@ struct SshTerminal {
           }
         })
       }
+      }
+      .width(0)
+      .height('100%')
+      .layoutWeight(1)
+      .constraintSize({ minWidth: 0, minHeight: 0 })
+      }
+      .width('100%')
+      .height(0)
+      .layoutWeight(1)
+      .constraintSize({ minHeight: 0 })
+      .onAreaChange((_oldArea: Area, newArea: Area): void => {
+        const width: number = newArea.width as number;
+        if (Math.abs(width - this.sshWorkspaceAreaW) >= 1) {
+          this.sshWorkspaceAreaW = width;
+        }
+      })
     }
       .width('100%')
       .layoutWeight(1)
@@ -17774,9 +17863,9 @@ struct SshTerminal {
         Column() {
           this.SftpWorkbenchSurface()
         }
-        .width('100%')
+        .width(this.sshWorkspaceMainSurfaceWidth())
         .height(this.sftpWorkbenchHeight())
-        .position({ x: 0, y: this.sftpWorkbenchTopOffset() })
+        .position({ x: this.sshWorkspaceSidebarWidth(), y: this.sftpWorkbenchTopOffset() })
         .zIndex(70)
         .backgroundColor(this.sshPal().bg)
       }

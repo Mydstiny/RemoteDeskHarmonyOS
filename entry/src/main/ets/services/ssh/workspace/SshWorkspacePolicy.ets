@@ -187,7 +187,9 @@ export function createEmptySshWorkspace(workspaceId: string, name: string,
     activeTabId: '',
     activePaneId: '',
     reconnectPolicy: 'never',
-    sidebarVisible: false,
+    // Wide layouts start with the workspace navigator requested. LayoutPolicy
+    // still suppresses it on phones, so one snapshot remains shape-neutral.
+    sidebarVisible: true,
     inspectorVisible: false,
     createdAt: timestamp,
     updatedAt: timestamp
