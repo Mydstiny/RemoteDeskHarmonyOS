@@ -130,6 +130,10 @@ export class SshForwardingController {
         'failed', validation.code + ': ' + validation.message);
     }
     if (!this.native.accepts(handle)) { return this.rejectStale(handle, 'configure', profile.id); }
+    if (!this.runtimes.canUpsert(handle, validation.profile.id)) {
+      return operationResult('configure', validation.profile.id, SSH_FORWARDING_PROFILE_LIMIT,
+        'failed', 'forwarding runtime limit reached');
+    }
     const code: number = this.native.configureSshForwarding(handle,
       sshForwardingNativeConfig(validation.profile));
     const state: SshForwardingRuntimeState = code === SSH_FORWARDING_OK ? 'configured' :

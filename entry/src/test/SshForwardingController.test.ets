@@ -13,6 +13,7 @@ import {
   SshForwardingMode,
   SshForwardingProfile
 } from '../main/ets/services/SshForwardingPolicy';
+import { SshForwardingRuntimeStore } from '../main/ets/services/SshForwardingRuntimeStore';
 import { SshSessionHandle, SshSessionLifecycleState } from '../main/ets/services/SshSessionStore';
 
 class FakeForwardingNative implements SshForwardingNativePort {
@@ -133,6 +134,22 @@ export default function sshForwardingControllerTest(): void {
       expect(controller.start(stale, profile('stale')).stale).assertTrue();
       expect(native.calls.length).assertEqual(0);
       expect(controller.snapshot(stale).runtimes.length).assertEqual(0);
+      expect(native.calls.length).assertEqual(0);
+    });
+
+    it('checks_runtime_capacity_before_configuring_native', 0, (): void => {
+      const native: FakeForwardingNative = new FakeForwardingNative();
+      const first: SshSessionHandle = handle(11);
+      const second: SshSessionHandle = handle(12);
+      native.accept(first);
+      native.accept(second);
+      const controller: SshForwardingController = new SshForwardingController(
+        native, new SshForwardingRuntimeStore(1));
+      expect(controller.configure(first, profile('first')).accepted).assertTrue();
+      native.calls.splice(0, native.calls.length);
+      const rejected = controller.configure(second, profile('second'));
+      expect(rejected.code).assertEqual(-70);
+      expect(rejected.accepted).assertFalse();
       expect(native.calls.length).assertEqual(0);
     });
 
