@@ -2624,9 +2624,10 @@ struct SshTerminal {
     // detaches only the old session callback, adopts the target session and
     // rebinds the visible renderer; it must never route-replace the page.
     this.tabSwitchInFlight = true;
+    const requestPageGeneration: number = this.pageGeneration;
     void this.switchSshTab(host)
       .catch((err: Error): void => {
-        if (this.terminalClosing) { return; }
+        if (!this.isPageGenerationActive(requestPageGeneration)) { return; }
         const message: string = err?.message || 'SSH 主机切换失败';
         this.connecting = false;
         this.connectionError = message;
@@ -2635,7 +2636,11 @@ struct SshTerminal {
         hilog.error(0x0001, 'SshTerminal', '[tab] in-page switch failed code=' +
           sshDiagnosticErrorCode(err));
       })
-      .finally((): void => { this.tabSwitchInFlight = false; });
+      .finally((): void => {
+        if (this.isPageGenerationActive(requestPageGeneration)) {
+          this.tabSwitchInFlight = false;
+        }
+      });
   }
 
   private navigateToSshTab(host: RemoteHost): void {
@@ -3060,16 +3065,22 @@ struct SshTerminal {
       promptAction.showToast({ message: '无法切换到相邻标签，当前连接保持不变', duration: 1800 });
       return;
     }
+    const requestPageGeneration: number = this.pageGeneration;
     this.tabSwitchInFlight = true;
     void this.switchSshTab(neighbor).then((): void => {
-      if (this.terminalClosing || this.hostId.trim() !== neighbor.id.trim()) { return; }
+      if (!this.isPageGenerationActive(requestPageGeneration) ||
+        this.hostId.trim() !== neighbor.id.trim()) { return; }
       this.finalizeSshTabClose(normalizedHostId);
     }).catch((err: Error): void => {
-      if (this.terminalClosing) { return; }
+      if (!this.isPageGenerationActive(requestPageGeneration)) { return; }
       const message: string = err?.message || '关闭标签前切换失败';
       this.connectionError = message;
       promptAction.showToast({ message, duration: 1800 });
-    }).finally((): void => { this.tabSwitchInFlight = false; });
+    }).finally((): void => {
+      if (this.isPageGenerationActive(requestPageGeneration)) {
+        this.tabSwitchInFlight = false;
+      }
+    });
   }
 
   private preserveForegroundSftpBeforeTabClose(): void {
@@ -3282,16 +3293,22 @@ struct SshTerminal {
       promptAction.showToast({ message: '目标主机已不存在，未关闭任何标签', duration: 1800 });
       return;
     }
+    const requestPageGeneration: number = this.pageGeneration;
     this.tabSwitchInFlight = true;
     void this.switchSshTab(target).then((): void => {
-      if (!this.terminalClosing && this.hostId.trim() === targetHostId.trim()) {
+      if (this.isPageGenerationActive(requestPageGeneration) &&
+        this.hostId.trim() === targetHostId.trim()) {
         this.finishSshBulkClose(hostIds);
       }
     }).catch((err: Error): void => {
-      if (!this.terminalClosing) {
+      if (this.isPageGenerationActive(requestPageGeneration)) {
         promptAction.showToast({ message: err?.message || '批量关闭前切换失败', duration: 1800 });
       }
-    }).finally((): void => { this.tabSwitchInFlight = false; });
+    }).finally((): void => {
+      if (this.isPageGenerationActive(requestPageGeneration)) {
+        this.tabSwitchInFlight = false;
+      }
+    });
   }
 
   private requestSshBulkClose(targetHostId: string, rightOnly: boolean): void {
@@ -3307,6 +3324,8 @@ struct SshTerminal {
       promptAction.showToast({ message: '当前标签有前台传输，请先单独处理该标签', duration: 1800 });
       return;
     }
+    const requestPageGeneration: number = this.pageGeneration;
+    const requestBindingGeneration: number = this.sshBindingGeneration;
     this.sshTabClosePromptInFlight = true;
     promptAction.showDialog({
       title: rightOnly ? '关闭右侧标签？' : '关闭其他标签？',
@@ -3317,6 +3336,9 @@ struct SshTerminal {
       ]
     }).then((result): void => {
       this.sshTabClosePromptInFlight = false;
+      if (!this.isSshBindingGenerationActive(requestPageGeneration, requestBindingGeneration)) {
+        return;
+      }
       if (result.index === 1) { this.beginSshBulkClose(targetHostId, hostIds); }
     }).catch((_err: BusinessError): void => { this.sshTabClosePromptInFlight = false; });
   }
@@ -9090,6 +9112,7 @@ struct SshTerminal {
     const pageGeneration: number = ++this.pageGeneration;
     const bindingGeneration: number = ++this.sshBindingGeneration;
     this.terminalClosing = false;
+    this.tabSwitchInFlight = false;
     // A reused page instance must never carry task identities from the
     // previous route into a new session, even if native session ids recycle.
     this.sshSignalBackgroundTasks.clear();
@@ -9575,6 +9598,7 @@ struct SshTerminal {
     ++this.pageGeneration;
     ++this.sshBindingGeneration;
     this.terminalClosing = true;
+    this.tabSwitchInFlight = false;
     this.clearSshPipExitNavigationTimer();
     this.clearForwardingRefreshTimer();
     this.showForwardingSheet = false;
