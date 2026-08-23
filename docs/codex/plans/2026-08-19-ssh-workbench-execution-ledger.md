@@ -3,7 +3,7 @@
 > 状态：`ACTIVE_M8_M9` / `NOT_COMPLETE`
 > 权威计划：`docs/codex/plans/2026-08-19-ssh-termius-harmonyos7-api26-workbench-plan.md`
 > 建立日期：2026-08-19
-> 当前工作树：`codex/moonlight-complete-upgrade` / 代码检查点 `9e927cb4`（M0–M9 SSH 增量保留；workbench flag 已增加协议身份门禁；API24 Phone/2in1 模拟器已补 KBI/MFA 成功、取消、失败矩阵和通知允许/拒绝矩阵；API24 Phone 已补 Home 后持续任务启动、隐私化通知中心展示、同会话前台恢复与任务/通知撤销闭环，默认锁屏页仍未展示通知卡片；API23-targeted HAP 已在 API24 2in1 和 Phone 完成授权文件 SFTP 上传生命周期，并在 API24 Phone 补齐下载侧暂停/继续/取消/重试、最终完整下载及持久任务恢复入口；会话日志、广播输入、WebMessagePort 及生产力加密 Store 继续 fail closed，API26 工具链和最终物理设备矩阵仍待外部条件）
+> 当前工作树：`codex/moonlight-complete-upgrade` / 代码检查点 `4148649f`（M0–M9 SSH 增量保留；workbench flag 已增加协议身份门禁；API24 Phone/2in1 模拟器已补 KBI/MFA 成功、取消、失败矩阵和通知允许/拒绝矩阵；API24 Phone 已补 Home 后持续任务启动、隐私化通知中心展示、同会话前台恢复与任务/通知撤销闭环，默认锁屏页仍未展示通知卡片；M6 日志淘汰现仅保护固定书签并按最久未更新 chunk 淘汰，超过 10MiB 的搜索规模契约固定为 256 工作单元切片；API23-targeted HAP 已在 API24 2in1 和 Phone 完成授权文件 SFTP 上传生命周期，并在 API24 Phone 补齐下载侧暂停/继续/取消/重试、最终完整下载及持久任务恢复入口；会话日志、广播输入、WebMessagePort 及生产力加密 Store 继续 fail closed，API26 工具链和最终物理设备矩阵仍待外部条件）
 > 当前产品基线：HarmonyOS 6.1 / API 23
 > API 26 状态：本机未安装；任何 API 26-only import 均禁止进入产品代码
 
@@ -49,6 +49,8 @@
 - `490e11af` 修复 M6/M7 多窗格安全模式仍依赖当前页面全局状态的问题：每个 xterm 文档在完成 VT 写入后通过稀疏 JS proxy 上报 mouse/application cursor/application keypad/alternate-buffer 状态，ArkTS 侧同时校验 WebView 生命周期、surface identity、host、sessionId 与 generation；未知、过期或跨会话遥测一律不作为安全证据。广播目标增加 `safetyKnown` fail-closed 原因，会话日志和命令历史也只在精确身份的安全快照存在且非 raw/备用屏幕时采集。
 - `81180347` 修复 M6 命令完成通知缺少独立 opt-in 的问题：加密的生产力设置增加默认 `false` 的 `completionNotificationEnabled`，旧 schema 中字段缺失时确定降级为关闭；生产力 Sheet 提供独立“命令完成提醒”开关，页面与 `SshNotificationService` 两层均检查该值。仅开启 Shell integration 不再隐式发布长命令或失败命令通知，本地补全设置保持独立语义。
 - `a5c3dc9e` 修复 M6 大日志搜索在 ArkUI 线程同步线性扫描的问题：策略层新增有界游标，每次只扫描固定工作量；Store 通过零延迟调度在切片间让出事件循环；页面增加 120ms 输入防抖及 host/page/binding/flag/Sheet 可见性 fence，关闭 Sheet、切换 owner、页面退出或 rollout 关闭都会取消旧请求。同步搜索与分片搜索复用同一状态机，纯策略用例锁定预算为 1 时仍可推进、结果等价以及非法 identity 不会退化成无过滤搜索。
+- `d6c9bcfa` 修复 M6 日志配额把任意普通书签都当成固定记录的问题：只有 `pinned=true` 的书签继续跨越保留期和配额保护其 chunk；普通书签随被淘汰记录一并清理。空间淘汰从数组首项改为按 `updatedAt/createdAt` 选择最久未更新的非固定 chunk，测试实际跨越 256KiB 最小配额并覆盖固定记录、普通书签、悬空书签清理和保留期。
+- `4148649f` 把日志搜索的 256 工作单元抽成策略常量并由 Store 复用；新增 11MiB/1408 条 8KiB 文本的 miss-dominant 搜索规模用例，证明必须跨多个受限切片才能完成且结果不丢失；Store 用例进一步证明下一切片前会经过事件循环调度，并可在该边界取消。
 - `5fbdc1ec` 补齐 M6 日志导出的高风险确认与异步 fence：导出前明确提示文件将离开应用加密存储并要求用户确认，确认弹窗和系统文件选择器返回后都重新校验 host、页面 generation、SSH binding generation、日志双 flag、store ready 与 closing 状态；任一条件变化即取消，避免把切换前主机或 rollout 回退前捕获的快照写到用户文件。
 - `282492e0` 为 M6 会话日志补齐独立 `sshSessionLogs` 发布门禁，默认关闭且不能被持久化的 `settings.enabled=true` 绕过；入口、启停/暂停、搜索、书签、导出与实际 input/output capture 均重新校验双 flag。运行中关闭 flag 会关闭 Sheet、取消 flush timer 并丢弃尚未落盘的输入/输出/命令缓冲，导出在系统 picker 返回后也再次校验，避免 rollout 回退期间继续写出先前捕获的内容。
 - `5fd45827` 为 M7 广播输入增加独立发布门禁 `sshBroadcastInput`，默认关闭且不能继承更宽泛的 `sshWorkbenchV2`；生产力 Sheet 默认隐藏入口，页面打开、目标刷新、确认前后发送均重新校验双 flag，运行中关闭独立 flag 会立即关闭广播面板并清空目标、文本与安全状态。纯策略测试锁定只有工作台已就绪且独立 flag 明确开启时才可用；未新增面向普通用户的开关，等待安全审查和设备矩阵后再决定放量。
@@ -522,3 +524,7 @@ Phone 未授权基线的 SSH 行显示可操作“开启”，hierarchy `/privat
 2026-08-23 API24 Phone 锁定期间通知到达 receipt：为排除前一轮“通知在锁屏前已存在”的时序影响，先通过可见系统设置临时开启 RemoteDesktop 通知，再建立同一密码 SSH 会话，并从已连接终端前台直接按 Power 熄屏。锁定期间 hilog 记录 `Ability onBackground`、`SSH background task started id=3` 与 `background signal task started=true session=3`；等待 5 秒后再按 Power 唤醒，默认锁屏 hierarchy/截图 hash 分别为 `fa0e227281a15e016f29fda99de61aa2fa462c98db9fd3fa1af1ca2e66a644e5`、`b86d6c3bba4752a32f130c0cec585417348fac31b83235a5b4eaf1e40a74cef9`，仍没有展开 SSH 或平台持续任务通知卡片。该结果与“先 Home 发布、后锁屏”的结果一致，故记录为 API24 Phone 模拟器已测未展示，不修改已通过通知中心验证的请求字段，也不冒充物理锁屏 PASS。
 
 无密码解锁并恢复应用前台后，hilog 记录 `SSH background task stopped id=3`，同一会话仍连接；随后显式退出会话。RemoteDesktop 通知 Toggle 已通过可见系统设置恢复为 false，最终 hierarchy `/private/tmp/ssh-lock-arrival-settings-restored.json` hash 为 `b3fea0716fdab8278e262d0a9615680f281b3ffd491b7ae38a82fa224ffc6194`。九个精确 `ssh-lock-arrival-*` 设备转储已删除，reverse 映射复查 `[Empty]`，宿主 22222 无监听。本 receipt 不替代物理设备/API26 锁屏、多会话或 2in1 独立窗口后台验收。
+
+2026-08-23 M6 日志固定记录与 LRU/保留策略 receipt：策略模型原本有独立 `bookmark.pinned` 字段，但 `chunkPinned()` 只检查书签是否存在，导致普通书签也能永久绕过保留天数和空间上限；空间超额时又直接删除数组中首个非保护 chunk，没有按记录更新时间选择淘汰对象。`d6c9bcfa` 将保护条件收紧为 `pinned=true`，并按 `updatedAt`、再按 `createdAt` 确定最久未更新的非固定 chunk。新增用例实际写过 256KiB 最小配额，证明普通书签所在的最旧 chunk 被淘汰、悬空书签同步删除、固定记录仍保留；独立保留期用例证明过期普通书签会移除而固定记录跨期保留。精确 `default@OhosTestCompileArkTS` exit 0，`assembleHap` exit 0（`BUILD SUCCESSFUL in 12 s 213 ms`），`git diff --check` 与开源发布 Light 均通过；签名 HAP SHA-256 为 `ffa78ca141c8a801051cbe0f120f60fd516a3bb71d685df912e7267bd2790aef`。
+
+2026-08-23 M6 10MiB+ 分片搜索规模 receipt：`4148649f` 将生产 Store 与纯策略的搜索预算统一为 `SSH_SESSION_LOG_SEARCH_WORK_BUDGET=256`，避免两侧静默漂移。规模用例构造 11MiB、1408 条 8KiB 可搜索文本，仅一条命中并让其余文本完整走 miss 扫描，证明搜索必须跨多个受限切片完成且唯一结果不丢失；Store 异步用例填充超过两个切片的记录并在第二次 continuation fence 取消，证明首片后实际经 `setTimeout(0)` 让出且不会发布旧结果。精确 `default@OhosTestCompileArkTS` exit 0，`assembleHap` exit 0（`BUILD SUCCESSFUL in 12 s 325 ms`），`git diff --check` 与 Light 均通过；签名 HAP SHA-256 为 `129564351e73d1dd7fb15a28e05799199b94260523b593243a71554fd79dd567`。附加设备测试任务 `ohosTest@OhosTestCompileArkTS` 仍因当前工程未注册而返回既有 `00306054`，不记录为运行通过；API26/物理设备上的 UI 帧时延仍保留为最终设备验收项。
