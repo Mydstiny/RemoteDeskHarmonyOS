@@ -30,6 +30,24 @@ export function shouldReloadSshXtermTab(previousCoreKey: string, nextCoreKey: st
     sshXtermTabRenderRevision(previousRevision) !== sshXtermTabRenderRevision(nextRevision);
 }
 
+/**
+ * A phone/Pad unmounts the hidden ArkWeb surface to keep resource use bounded.
+ * Its replacement document is empty even when the native SSH generation is
+ * unchanged, so an explicit remount fence must restore the bounded transcript.
+ * Desktop retains the original document and only restores on a real revision
+ * handoff.
+ */
+export function shouldRestoreSshXtermTabTranscript(
+  previousReadyRevision: number | undefined,
+  nextRevision: number,
+  touchDocumentRemounted: boolean
+): boolean {
+  if (touchDocumentRemounted) { return true; }
+  return previousReadyRevision !== undefined &&
+    sshXtermTabRenderRevision(previousReadyRevision) !==
+      sshXtermTabRenderRevision(nextRevision);
+}
+
 /** Reject a selection result returned by a replaced/reloaded xterm document. */
 export function matchesSshXtermCopyFence(expectedLifecycleToken: number,
   expectedSurfaceIdentity: string, expectedCopyRequest: number,

@@ -201,6 +201,7 @@ import {
 import {
   makeSshXtermTabCoreKey,
   shouldMountSshXtermTab,
+  shouldRestoreSshXtermTabTranscript,
   sshXtermTabRenderRevision
 } from '../services/SshXtermTabSurfacePolicy';
 import { VirtualKeyBar } from '../components/VirtualKeyBar';
@@ -697,6 +698,8 @@ struct SshTerminal {
     new Map<string, XtermOutputBuffer>();
   /** Last ready document revision per SSH tab; switching tabs does not clear it. */
   private xtermReadyGenerations: Map<string, number> = new Map<string, number>();
+  /** Touch devices recreate hidden ArkWeb documents and must replay their transcript on return. */
+  private xtermTranscriptRestoreHosts: Set<string> = new Set<string>();
   /** 仅用于切页/重载恢复；实时输出由普通 renderer buffer 直接唤醒。 */
   @State termOutputSequence: number = 0;
   /** Revision restore target; only the matching retained xterm document resets. */
@@ -1914,6 +1917,7 @@ struct SshTerminal {
     });
     this.xtermOutputBuffers.clear();
     this.xtermReadyGenerations.clear();
+    this.xtermTranscriptRestoreHosts.clear();
     this.sshTerminalSafetyModes.clear();
   }
 
@@ -3274,6 +3278,13 @@ struct SshTerminal {
       // the previous page. Keep the old native session alive when detach is
       // unavailable; its late bytes are routed to that host's retained queue.
       this.sshTabStore.update(previousHostId, 'connected', previousSessionId);
+      if (!shouldMountSshXtermTab(this.isDesktopDevice, false)) {
+        // Phone/Pad removes the now-hidden WebView from the tree. Its native
+        // session and transcript survive, but the document recreated on the
+        // next activation starts empty even though the session revision did
+        // not change.
+        this.xtermTranscriptRestoreHosts.add(previousHostId);
+      }
     } else {
       // A connect still in DNS/KEX has no page session yet. Cancel its
       // reserved native session before starting the target host.
@@ -3465,6 +3476,7 @@ struct SshTerminal {
     if (outputBuffer !== undefined) { outputBuffer.clear(); }
     this.xtermOutputBuffers.delete(result.hostId);
     this.xtermReadyGenerations.delete(result.hostId);
+    this.xtermTranscriptRestoreHosts.delete(result.hostId);
     this.sshTerminalSafetyModes.delete(result.hostId);
     const nativeBuffer: TerminalInputBuffer | undefined = this.nativeTerminalInputBuffers.get(result.hostId);
     if (nativeBuffer !== undefined) { nativeBuffer.clear(); }
@@ -12214,7 +12226,10 @@ struct SshTerminal {
     // must receive the host transcript or it will show only a blank cursor.
     const previousReadyRevision: number | undefined =
       this.xtermReadyGenerations.get(normalizedHostId);
-    if (previousReadyRevision !== undefined && previousReadyRevision !== reportedRevision) {
+    const touchDocumentRemounted: boolean =
+      this.xtermTranscriptRestoreHosts.has(normalizedHostId);
+    if (shouldRestoreSshXtermTabTranscript(
+      previousReadyRevision, reportedRevision, touchDocumentRemounted)) {
       const outputBuffer: XtermOutputBuffer = this.xtermOutputBufferForHost(normalizedHostId);
       const transcript: string = this.sshTranscriptStore.snapshot(normalizedHostId);
       // A revision handoff can finish after ArkWeb has already painted a
@@ -12226,6 +12241,7 @@ struct SshTerminal {
       // output pump immediately and can paint the banner just before reset,
       // making the reset erase the initial server welcome information.
       if (!outputBuffer.replaceForDocumentReset(transcript)) { return; }
+      this.xtermTranscriptRestoreHosts.delete(normalizedHostId);
       this.xtermTranscriptResetIdentity = surfaceIdentity.trim();
       this.xtermTranscriptResetRequest = this.xtermTranscriptResetRequest + 1;
       hilog.info(0x0000, 'SshTerminal', '[xterm] transcript replace chars=' +

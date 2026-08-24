@@ -4,6 +4,7 @@ import {
   matchesSshXtermCopyFence,
   shouldMountSshXtermTab,
   shouldReloadSshXtermTab,
+  shouldRestoreSshXtermTabTranscript,
   sshXtermTabRenderRevision
 } from '../main/ets/services/SshXtermTabSurfacePolicy';
 
@@ -29,6 +30,13 @@ export default function sshXtermTabSurfacePolicyTest(): void {
         .assertTrue();
       expect(sshXtermTabRenderRevision(-3)).assertEqual(0);
       expect(sshXtermTabRenderRevision(8.9)).assertEqual(8);
+    });
+
+    it('restores_the_transcript_when_a_touch_tab_document_is_remounted', 0, (): void => {
+      expect(shouldRestoreSshXtermTabTranscript(undefined, 1, false)).assertFalse();
+      expect(shouldRestoreSshXtermTabTranscript(0, 1, false)).assertTrue();
+      expect(shouldRestoreSshXtermTabTranscript(1, 1, false)).assertFalse();
+      expect(shouldRestoreSshXtermTabTranscript(1, 1, true)).assertTrue();
     });
 
     it('rejects_copy_results_from_replaced_or_superseded_documents', 0, (): void => {
