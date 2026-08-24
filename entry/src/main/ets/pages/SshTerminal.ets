@@ -170,6 +170,7 @@ import {
   resolveSshTerminalInputOwner,
   sshTerminalSoftwareKeyboardFocusEnabled,
   sshTerminalUsesNativeTouchInputAnchor,
+  sshTerminalInputDeviceIsPhysicalKeyboard,
   sshTerminalShouldProgrammaticallyFocusInput,
   sshTerminalShouldRetryInputFocus,
   sshTerminalInputFocusAllowed
@@ -1152,6 +1153,7 @@ struct SshTerminal {
   private inputDeviceListenerRegistered: boolean = false;
   private inputDeviceRefreshEpoch: number = 0;
   private physicalKeyboardDeviceIds: Array<number> = [];
+  private virtualKeyboardDeviceIds: Array<number> = [];
   private imeCallbackState: SshImeCallbackState = createSshImeCallbackState();
 
   private inputDeviceListener: Callback<inputDevice.DeviceListener> =
@@ -1182,17 +1184,35 @@ struct SshTerminal {
     let keyboardConnected: boolean = false;
     let keyboardMouseConnected: boolean = false;
     const keyboardIds: Array<number> = [];
+    const virtualKeyboardIds: Array<number> = [];
     try {
       const ids: Array<number> = await inputDevice.getDeviceList();
       for (let index: number = 0; index < ids.length; index++) {
         try {
           const device: inputDevice.InputDeviceData = await inputDevice.getDeviceInfo(ids[index]);
           const sources: Array<inputDevice.SourceType> = device.sources ?? [];
-          if (sources.indexOf('keyboard') >= 0) {
+          const hasKeyboardSource: boolean = sources.indexOf('keyboard') >= 0;
+          let keyboardType: inputDevice.KeyboardType = inputDevice.KeyboardType.NONE;
+          if (hasKeyboardSource) {
+            try {
+              keyboardType = await inputDevice.getKeyboardType(ids[index]);
+            } catch (keyboardTypeErr) {
+              hilog.warn(0x0001, 'SshTerminal',
+                '[inputDevice] keyboard type failed id=' + ids[index].toString() +
+                ' code=' + sshDiagnosticErrorCode(keyboardTypeErr));
+            }
+          }
+          if (sshTerminalInputDeviceIsPhysicalKeyboard(
+            hasKeyboardSource, device.isVirtual, keyboardType)) {
             keyboardConnected = true;
             keyboardIds.push(ids[index]);
           }
-          if (sources.indexOf('keyboard') >= 0 || sources.indexOf('mouse') >= 0) {
+          if (hasKeyboardSource && device.isVirtual === true) {
+            virtualKeyboardIds.push(ids[index]);
+          }
+          if (keyboardConnected ||
+            (sources.indexOf('mouse') >= 0 && device.isVirtual !== true &&
+              (device.product !== 0 || device.vendor !== 0))) {
             keyboardMouseConnected = true;
           }
         } catch (deviceErr) {
@@ -1212,12 +1232,15 @@ struct SshTerminal {
     const externalChanged: boolean =
       this.externalKeyboardMouseConnected !== keyboardMouseConnected;
     this.physicalKeyboardDeviceIds = keyboardIds;
+    this.virtualKeyboardDeviceIds = virtualKeyboardIds;
     this.physicalKeyboardConnected = keyboardConnected;
     this.externalKeyboardMouseConnected = keyboardMouseConnected;
     if (changed || externalChanged) {
       hilog.info(0x0000, 'SshTerminal',
         '[inputDevice] keyboard=' + (keyboardConnected ? 'connected' : 'disconnected') +
         ' keyboardMouse=' + (keyboardMouseConnected ? 'connected' : 'disconnected') +
+        ' physicalCount=' + keyboardIds.length.toString() +
+        ' virtualCount=' + virtualKeyboardIds.length.toString() +
         ' changed=' + (changed ? '1' : '0') +
         ' externalChanged=' + (externalChanged ? '1' : '0') + ' reason=' + reason);
       if (keyboardConnected && (this.breakpoint === 'sm' || this.sshInputMode !== 1)) {
@@ -1253,6 +1276,7 @@ struct SshTerminal {
     this.inputDeviceListenerRegistered = false;
     this.inputDeviceRefreshEpoch++;
     this.physicalKeyboardDeviceIds = [];
+    this.virtualKeyboardDeviceIds = [];
     this.physicalKeyboardConnected = false;
     this.externalKeyboardMouseConnected = false;
   }
@@ -13026,7 +13050,7 @@ struct SshTerminal {
     this.softKeyboardRequested = requestSoftwareKeyboard;
     if (!sshTerminalShouldProgrammaticallyFocusInput(
       this.isDesktopDevice, requestSoftwareKeyboard, nativeTouchOwnsFocus,
-      explicitTerminalGesture)) {
+      explicitTerminalGesture, this.physicalKeyboardConnected)) {
       this.clearTerminalInputFocusRetry();
       this.clearTerminalSoftwareKeyboardShowRequest();
       return;
@@ -13071,7 +13095,8 @@ struct SshTerminal {
         this.terminalSoftwareKeyboardRefocusInFlight = false;
       }
       if (sshTerminalShouldRetryInputFocus(focused)) {
-        this.scheduleTerminalInputFocusRetry(explicitTerminalGesture);
+        this.scheduleTerminalInputFocusRetry(
+          explicitTerminalGesture || this.physicalKeyboardConnected);
       }
     };
     if (requestSoftwareKeyboard) {

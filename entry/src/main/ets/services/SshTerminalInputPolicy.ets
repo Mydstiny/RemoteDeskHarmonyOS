@@ -42,6 +42,21 @@ export function sshTerminalUsesNativeTouchInputAnchor(isDesktopDevice: boolean):
 }
 
 /**
+ * Only a non-virtual alphabetic keyboard or keypad can own the terminal's
+ * hardware-key path. HarmonyOS also exposes power, fingerprint, pen and IME
+ * controls through the generic `keyboard` source, so source membership alone
+ * is not evidence that a command keyboard is attached.
+ */
+export function sshTerminalInputDeviceIsPhysicalKeyboard(
+  hasKeyboardSource: boolean,
+  isVirtual: boolean | undefined,
+  keyboardType: number
+): boolean {
+  return hasKeyboardSource && isVirtual !== true &&
+    (keyboardType === 2 || keyboardType === 3);
+}
+
+/**
  * A native touch anchor already receives focus from the user's pointer event.
  * Re-focusing it in the same event turn clears the just-created IME client on
  * API 23. Mobile lifecycle restoration therefore waits for the next real
@@ -52,11 +67,12 @@ export function sshTerminalShouldProgrammaticallyFocusInput(
   isDesktopDevice: boolean,
   softwareKeyboardRequested: boolean,
   nativeTouchOwnsFocus: boolean,
-  explicitTerminalGesture: boolean = false
+  explicitTerminalGesture: boolean = false,
+  physicalKeyboardAvailable: boolean = false
 ): boolean {
   if (isDesktopDevice) { return true; }
   if (nativeTouchOwnsFocus) { return false; }
-  return softwareKeyboardRequested || explicitTerminalGesture;
+  return softwareKeyboardRequested || explicitTerminalGesture || physicalKeyboardAvailable;
 }
 
 /** A confirmed focus request must not be replayed into the live IME client. */
