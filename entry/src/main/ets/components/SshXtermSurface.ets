@@ -603,9 +603,13 @@ export struct SshXtermSurface {
       this.outputBufferUnsubscribe = null;
     }
     this.outputBufferUnsubscribe = this.outputBuffer.subscribe((): void => {
-      this.scheduleOutputBufferWake(lifecycleToken);
+      // A document reload advances lifecycleToken without recreating this
+      // component or its parent-owned output buffer subscription. Resolve the
+      // token at notification time so live SSH echo can wake the replacement
+      // document instead of being rejected as a stale pre-reload callback.
+      this.scheduleOutputBufferWake();
     });
-    this.scheduleOutputBufferWake(lifecycleToken);
+    this.scheduleOutputBufferWake();
     if (this.readyReportTimer !== -1) {
       clearTimeout(this.readyReportTimer);
       this.readyReportTimer = -1;
@@ -1411,8 +1415,9 @@ export struct SshXtermSurface {
     }
   }
 
-  private scheduleOutputBufferWake(lifecycleToken: number): void {
+  private scheduleOutputBufferWake(): void {
     if (this.disposed || this.outputBufferWakeTimer !== -1) { return; }
+    const lifecycleToken: number = this.lifecycleToken;
     this.outputBufferWakeTimer = setTimeout((): void => {
       this.outputBufferWakeTimer = -1;
       if (this.disposed || lifecycleToken !== this.lifecycleToken ||

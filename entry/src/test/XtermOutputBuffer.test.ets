@@ -12,8 +12,14 @@ export default function xtermOutputBufferTest(): void {
       const buffer: XtermOutputBuffer = new XtermOutputBuffer();
       let firstNotifications: number = 0;
       let secondNotifications: number = 0;
+      let lifecycleToken: number = 1;
+      let observedLifecycleToken: number = 0;
       const unsubscribeFirst: () => void = buffer.subscribe((): void => {
         firstNotifications++;
+        // The long-lived renderer subscription must resolve the current
+        // document lifecycle when output becomes readable. Capturing the
+        // initial token here would silence all echo after a WebView reload.
+        observedLifecycleToken = lifecycleToken;
       });
       const unsubscribeFaulty: () => void = buffer.subscribe((): void => {
         throw new Error('stale renderer');
@@ -26,6 +32,7 @@ export default function xtermOutputBufferTest(): void {
       buffer.enqueue('');
       expect(firstNotifications).assertEqual(1);
       expect(secondNotifications).assertEqual(1);
+      expect(observedLifecycleToken).assertEqual(1);
       expect(buffer.size()).assertEqual(1);
 
       // Internal retry restoration must retain FIFO order without recursively
@@ -44,6 +51,15 @@ export default function xtermOutputBufferTest(): void {
       expect(firstNotifications).assertEqual(1);
       expect(secondNotifications).assertEqual(1);
       expect(buffer.drain()[0]).assertEqual('two');
+
+      const unsubscribeLifecycle: () => void = buffer.subscribe((): void => {
+        observedLifecycleToken = lifecycleToken;
+      });
+      lifecycleToken = 2;
+      buffer.enqueue('after-reload');
+      expect(observedLifecycleToken).assertEqual(2);
+      unsubscribeLifecycle();
+      expect(buffer.drain()[0]).assertEqual('after-reload');
     });
 
     it('bounds_backlog_by_utf8_bytes_and_notifies_overflow_once', 0, (): void => {
