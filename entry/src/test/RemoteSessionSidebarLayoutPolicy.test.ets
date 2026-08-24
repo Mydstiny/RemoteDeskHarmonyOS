@@ -3,6 +3,8 @@ import { auditedDescribe as describe, auditedIt as it } from
   '../main/ets/services/FocusedTestRegistrationAudit';
 import {
   remoteSessionSidebarCanvasHeight,
+  remoteSessionFloatingCardHeight,
+  remoteSessionFloatingCardWidth,
   remoteSessionSidebarMenuMaxHeight,
   remoteSessionSidebarMenuWidth,
   remoteSessionSidebarVisibleRailHeight
@@ -20,6 +22,13 @@ export default function remoteSessionSidebarLayoutPolicyTest(): void {
       expect(remoteSessionSidebarMenuWidth(800, 340, 56, 8)).assertEqual(340);
       expect(remoteSessionSidebarVisibleRailHeight(720, 396)).assertEqual(396);
       expect(remoteSessionSidebarMenuMaxHeight(720, 0)).assertEqual(704);
+    });
+
+    it('fits_floating_cards_inside_phone_and_pad_viewports', 0, (): void => {
+      expect(remoteSessionFloatingCardWidth(320, 360, 12)).assertEqual(296);
+      expect(remoteSessionFloatingCardHeight(320, 520, 12, 12)).assertEqual(296);
+      expect(remoteSessionFloatingCardWidth(800, 360, 12)).assertEqual(360);
+      expect(remoteSessionFloatingCardHeight(720, 520, 12, 12)).assertEqual(520);
     });
 
     it('sanitizes_invalid_measurements', 0, (): void => {

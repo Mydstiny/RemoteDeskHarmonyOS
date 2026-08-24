@@ -83,6 +83,7 @@ export interface RemoteSessionTopBarActions {
   onToggleReverseWheel: (on: boolean) => void;
   onToggleSwapMouseButtons: (on: boolean) => void;
   onSetTouchpadSpeed: (speed: number) => void;
+  onToggleDiagnostics: (on: boolean) => void;
   onUnsupported: (actionId: string, reason: string) => void;
 }
 
@@ -113,6 +114,7 @@ export struct RemoteSessionTopBar {
   @Prop touchpadSpeed: number = 1.0;
   @Prop rustDeskPhoneTarget: boolean = false;
   @Prop keyboardOpen: boolean = false;
+  @Prop diagnosticsEnabled: boolean = false;
   @Prop rustDeskDisplayCapabilities: RustDeskDisplayCapabilities = EMPTY_RUSTDESK_DISPLAY_CAPABILITIES;
   @Prop rustDeskDisplaySwitchState: RustDeskDisplaySwitchState = EMPTY_RUSTDESK_DISPLAY_SWITCH_STATE;
   @Prop pendingDisplayResolution: RustDeskDisplayResolution = EMPTY_RUSTDESK_DISPLAY_RESOLUTION;
@@ -160,6 +162,7 @@ export struct RemoteSessionTopBar {
     onToggleReverseWheel: (_on: boolean): void => {},
     onToggleSwapMouseButtons: (_on: boolean): void => {},
     onSetTouchpadSpeed: (_speed: number): void => {},
+    onToggleDiagnostics: (_on: boolean): void => {},
     onUnsupported: (_actionId: string, _reason: string): void => {}
   };
 
@@ -289,7 +292,7 @@ export struct RemoteSessionTopBar {
   }
 
   private edgeRailButtonCount(): number {
-    return 7;
+    return 8;
   }
 
   private edgeRailHeight(): number {
@@ -309,6 +312,31 @@ export struct RemoteSessionTopBar {
 
   private edgeRailOffsetY(): number {
     return Math.max(0, (this.edgeRailCanvasHeight() - this.edgeRailVisibleHeight()) / 2);
+  }
+
+  private compactMenu(): boolean {
+    return this.layout.deviceClass === 'phone' || this.viewportHeight < 440;
+  }
+
+  private menuItemHeight(): number {
+    return this.compactMenu() ? 38 : 44;
+  }
+
+  private menuFontSize(): number {
+    if (this.layout.deviceClass === 'pc') { return 15; }
+    return this.compactMenu() ? 13 : 14;
+  }
+
+  private menuPadding(): number {
+    return this.compactMenu() ? 8 : 12;
+  }
+
+  private menuHeaderHeight(): number {
+    return this.compactMenu() ? 40 : 44;
+  }
+
+  private menuScrollMaxHeight(): number {
+    return Math.max(88, this.sidebarMenuMaxHeight() - this.menuHeaderHeight());
   }
 
   private qualityLabel(value: number): string {
@@ -458,7 +486,7 @@ export struct RemoteSessionTopBar {
         Blank().width(30)
       }
       Text(label)
-        .fontSize(16)
+        .fontSize(this.menuFontSize())
         .fontColor(remoteSessionActionAvailability(
           actionId, this.protocol, this.capabilities).enabled ? '#111111' : '#777777')
         .layoutWeight(1)
@@ -466,7 +494,7 @@ export struct RemoteSessionTopBar {
         .textOverflow({ overflow: TextOverflow.Ellipsis })
     }
     .width('100%')
-    .height(40)
+    .height(this.menuItemHeight())
     .padding({ left: 8, right: 8 })
     .borderRadius(6)
     .onClick((): void => {
@@ -475,30 +503,53 @@ export struct RemoteSessionTopBar {
   }
 
   @Builder
-  private controlMenu() {
-    Scroll() {
-      Column() {
-        this.menuItem('发送剪贴板按键', 'toggleClipboard', (): void => {
-          this.actions.onToggleClipboard(!this.clipboardEnabled);
-        }, this.clipboardEnabled)
-        this.menuItem('传输文件', 'fileTransfer', (): void => { this.actions.onOpenFileTransfer(); })
-        this.menuItem('插入 Ctrl + Alt + Del', 'ctrlAltDel', (): void => { this.actions.onCtrlAltDel(); })
-        this.menuItem('刷新画面', 'refreshFrame', (): void => { this.actions.onRefreshFrame(); })
-        if (this.protocol === 'rustdesk') {
-          this.menuItem('锁定远程电脑', 'lockRemote', (): void => { this.actions.onLockRemote(); })
-          this.menuItem('截屏', 'screenshot', (): void => {})
-          this.menuItem('文字聊天', 'textChat', (): void => {})
-          this.menuItem('语音通话', 'voiceCall', (): void => {})
-          this.menuItem('录制', 'recordSession', (): void => {})
-        }
+  private menuHeader(title: string, icon: Resource) {
+    Row() {
+      SymbolGlyph(icon).fontSize(18).fontColor([this.accentColor])
+      Text(title).fontSize(this.compactMenu() ? 14 : 16).fontWeight(FontWeight.Bold)
+        .fontColor('#111827').margin({ left: 8 }).layoutWeight(1)
+      Button() {
+        SymbolGlyph($r('sys.symbol.xmark')).fontSize(14).fontColor(['#4B5563'])
       }
-      .width('100%').padding(12)
+      .width(34).height(34).padding(0).borderRadius(17)
+      .backgroundColor('rgba(17,24,39,0.06)')
+      .accessibilityText('关闭' + title)
+      .onClick((): void => { this.closeMenus(); })
+    }
+    .width('100%').height(this.menuHeaderHeight())
+    .padding({ left: this.menuPadding(), right: this.menuPadding() })
+    .border({ width: { bottom: 0.5 }, color: 'rgba(17,24,39,0.10)' })
+  }
+
+  @Builder
+  private controlMenu() {
+    Column() {
+      this.menuHeader('会话控制', $r('sys.symbol.gearshape_fill'))
+      Scroll() {
+        Column() {
+          this.menuItem('发送剪贴板按键', 'toggleClipboard', (): void => {
+            this.actions.onToggleClipboard(!this.clipboardEnabled);
+          }, this.clipboardEnabled)
+          this.menuItem('传输文件', 'fileTransfer', (): void => { this.actions.onOpenFileTransfer(); })
+          this.menuItem('插入 Ctrl + Alt + Del', 'ctrlAltDel', (): void => { this.actions.onCtrlAltDel(); })
+          this.menuItem('刷新画面', 'refreshFrame', (): void => { this.actions.onRefreshFrame(); })
+          if (this.protocol === 'rustdesk') {
+            this.menuItem('锁定远程电脑', 'lockRemote', (): void => { this.actions.onLockRemote(); })
+            this.menuItem('截屏', 'screenshot', (): void => {})
+            this.menuItem('文字聊天', 'textChat', (): void => {})
+            this.menuItem('语音通话', 'voiceCall', (): void => {})
+            this.menuItem('录制', 'recordSession', (): void => {})
+          }
+        }
+        .width('100%').padding(this.menuPadding())
+      }
+      .width('100%').constraintSize({ maxHeight: this.menuScrollMaxHeight() })
+      .scrollable(ScrollDirection.Vertical).scrollBar(BarState.Auto)
     }
     .width(this.effectiveMenuWidth())
     .constraintSize({ maxHeight: this.sidebarMenuMaxHeight() })
-    .scrollable(ScrollDirection.Vertical).scrollBar(BarState.Auto)
     .backgroundColor('rgba(255,255,255,0.96)')
-    .borderRadius(10)
+    .borderRadius(16).clip(true)
     .shadow({ radius: 10, color: 'rgba(0,0,0,0.22)', offsetY: 2 })
     .position({ x: this.menuLeft(), y: this.menuTop() })
     .hitTestBehavior(HitTestMode.BLOCK_HIERARCHY)
@@ -507,6 +558,7 @@ export struct RemoteSessionTopBar {
   @Builder
   private displayMenu() {
     Column() {
+      this.menuHeader('显示与画质', $r('sys.symbol.display'))
       Scroll() {
         Column() {
           this.menuItem('适应窗口', 'displaySettings', (): void => {
@@ -659,13 +711,14 @@ export struct RemoteSessionTopBar {
         }
       }
       .width('100%')
-      .constraintSize({ maxHeight: Math.max(120, this.sidebarMenuMaxHeight() - 24) })
+      .constraintSize({ maxHeight: this.menuScrollMaxHeight() })
       .scrollBar(BarState.Auto)
     }
     .width(this.effectiveMenuWidth())
-    .padding(12)
+    .constraintSize({ maxHeight: this.sidebarMenuMaxHeight() })
+    .padding({ left: this.menuPadding(), right: this.menuPadding(), bottom: this.menuPadding() })
     .backgroundColor('rgba(255,255,255,0.96)')
-    .borderRadius(10)
+    .borderRadius(16).clip(true)
     .shadow({ radius: 10, color: 'rgba(0,0,0,0.22)', offsetY: 2 })
     .position({ x: this.menuLeft(), y: this.menuTop() })
     .hitTestBehavior(HitTestMode.BLOCK_HIERARCHY)
@@ -673,45 +726,49 @@ export struct RemoteSessionTopBar {
 
   @Builder
   private keyboardMouseMenu() {
-    Scroll() {
-      Column() {
-        this.menuItem(this.keyboardOpen ? '关闭虚拟键盘' : '打开虚拟键盘', 'toggleKeyboard', (): void => {
-          this.actions.onOpenKeyboard();
-        }, this.keyboardOpen)
-        this.menuItem('组合键与功能键', 'toggleModifiers', (): void => {
-          this.actions.onOpenModifiers();
-        })
-        if (this.protocol === 'rustdesk') {
-          this.menuItem('浏览模式', 'browseMode', (): void => {
-            this.actions.onToggleBrowseMode(!this.browseMode);
-          }, this.browseMode)
-          this.menuItem('显示我的光标', 'keyboardMouseSettings', (): void => {
-            this.actions.onToggleShowLocalCursor(!this.showLocalCursor);
-          }, this.showLocalCursor)
-          this.menuItem('相对鼠标模式', 'keyboardMouseSettings', (): void => {
-            this.actions.onToggleRelativeMouse(!this.relativeMouseMode);
-          }, this.relativeMouseMode)
-        }
-        this.menuItem('远程滚轮反向', 'keyboardMouseSettings', (): void => {
-          this.actions.onToggleReverseWheel(!this.reverseWheel);
-        }, this.reverseWheel)
-        if (this.protocol === 'rustdesk') {
-          this.menuItem('交换鼠标左右键', 'keyboardMouseSettings', (): void => {
-            this.actions.onToggleSwapMouseButtons(!this.swapMouseButtons);
-          }, this.swapMouseButtons)
-          this.menuItem('触控板速度 ' + this.touchpadSpeed.toFixed(1) + 'x', 'keyboardMouseSettings', (): void => {
-            const next: number = this.touchpadSpeed >= 1.6 ? 0.8 : this.touchpadSpeed + 0.4;
-            this.actions.onSetTouchpadSpeed(next);
+    Column() {
+      this.menuHeader('键盘与鼠标', $r('sys.symbol.mouse'))
+      Scroll() {
+        Column() {
+          this.menuItem(this.keyboardOpen ? '关闭虚拟键盘' : '打开虚拟键盘', 'toggleKeyboard', (): void => {
+            this.actions.onOpenKeyboard();
+          }, this.keyboardOpen)
+          this.menuItem('组合键与功能键', 'toggleModifiers', (): void => {
+            this.actions.onOpenModifiers();
           })
+          if (this.protocol === 'rustdesk') {
+            this.menuItem('浏览模式', 'browseMode', (): void => {
+              this.actions.onToggleBrowseMode(!this.browseMode);
+            }, this.browseMode)
+            this.menuItem('显示我的光标', 'keyboardMouseSettings', (): void => {
+              this.actions.onToggleShowLocalCursor(!this.showLocalCursor);
+            }, this.showLocalCursor)
+            this.menuItem('相对鼠标模式', 'keyboardMouseSettings', (): void => {
+              this.actions.onToggleRelativeMouse(!this.relativeMouseMode);
+            }, this.relativeMouseMode)
+          }
+          this.menuItem('远程滚轮反向', 'keyboardMouseSettings', (): void => {
+            this.actions.onToggleReverseWheel(!this.reverseWheel);
+          }, this.reverseWheel)
+          if (this.protocol === 'rustdesk') {
+            this.menuItem('交换鼠标左右键', 'keyboardMouseSettings', (): void => {
+              this.actions.onToggleSwapMouseButtons(!this.swapMouseButtons);
+            }, this.swapMouseButtons)
+            this.menuItem('触控板速度 ' + this.touchpadSpeed.toFixed(1) + 'x', 'keyboardMouseSettings', (): void => {
+              const next: number = this.touchpadSpeed >= 1.6 ? 0.8 : this.touchpadSpeed + 0.4;
+              this.actions.onSetTouchpadSpeed(next);
+            })
+          }
         }
+        .width('100%').padding(this.menuPadding())
       }
-      .width('100%').padding(12)
+      .width('100%').constraintSize({ maxHeight: this.menuScrollMaxHeight() })
+      .scrollable(ScrollDirection.Vertical).scrollBar(BarState.Auto)
     }
     .width(this.effectiveMenuWidth())
     .constraintSize({ maxHeight: this.sidebarMenuMaxHeight() })
-    .scrollable(ScrollDirection.Vertical).scrollBar(BarState.Auto)
     .backgroundColor('rgba(255,255,255,0.96)')
-    .borderRadius(10)
+    .borderRadius(16).clip(true)
     .shadow({ radius: 10, color: 'rgba(0,0,0,0.22)', offsetY: 2 })
     .position({ x: this.menuLeft(), y: this.menuTop() })
     .hitTestBehavior(HitTestMode.BLOCK_HIERARCHY)
@@ -735,19 +792,22 @@ export struct RemoteSessionTopBar {
   private toolbarBody() {
     Stack() {
       Row() {
-        this.iconButton(this.pinned ? $r('sys.symbol.lock_fill') : $r('sys.symbol.ohos_lock'), this.pinned ? '#3A3A3A' : this.accentColor, (): void => {
+        this.iconButton(this.pinned ? $r('sys.symbol.pin_fill') : $r('sys.symbol.pin'),
+          this.pinned ? '#3A3A3A' : this.accentColor, (): void => {
           this.pinned = !this.pinned;
           this.scheduleAutoCollapse();
-        })
+        }, 18, this.pinned ? '取消固定 RustDesk 工具栏' : '固定 RustDesk 工具栏')
         Blank().width(this.layout.itemGap)
-        this.iconButton($r('sys.symbol.bolt_fill'), this.accentColor, (): void => { this.toggleMenu('control'); })
+        this.iconButton($r('sys.symbol.gearshape_fill'), this.accentColor,
+          (): void => { this.toggleMenu('control'); }, 18, '打开会话控制')
         Blank().width(this.layout.itemGap)
-        this.iconButton($r('sys.symbol.desktop_fill'), this.accentColor, (): void => { this.toggleMenu('display'); })
+        this.iconButton($r('sys.symbol.display'), this.accentColor,
+          (): void => { this.toggleMenu('display'); }, 18, '打开显示与画质')
         Blank().width(this.layout.itemGap)
-        this.iconButton($r('sys.symbol.keyboard'), this.keyboardOpen ? '#2A9D8F' : this.accentColor,
-          (): void => { this.toggleMenu('keyboardMouse'); })
+        this.iconButton($r('sys.symbol.mouse'), this.keyboardOpen ? '#2A9D8F' : this.accentColor,
+          (): void => { this.toggleMenu('keyboardMouse'); }, 18, '打开键盘与鼠标')
         Blank().width(this.layout.itemGap)
-        this.iconButton($r('sys.symbol.bolt_fill'), this.accentColor, (): void => {
+        this.iconButton($r('sys.symbol.keyboard'), this.accentColor, (): void => {
           this.runAction('toggleModifiers', (): void => { this.actions.onOpenModifiers(); });
         }, 18, '打开组合键与功能键')
         Blank().width(this.layout.itemGap)
@@ -755,7 +815,15 @@ export struct RemoteSessionTopBar {
           this.runAction('fileTransfer', (): void => { this.actions.onOpenFileTransfer(); });
         }, 18, '发送文件')
         Blank().width(this.layout.itemGap)
-        this.iconButton($r('sys.symbol.xmark'), '#FF5353', (): void => { this.actions.onDisconnect(); }, 18)
+        this.iconButton($r('sys.symbol.performance'),
+          this.diagnosticsEnabled ? '#2A9D8F' : this.accentColor, (): void => {
+            this.runAction('diagnostics', (): void => {
+              this.actions.onToggleDiagnostics(!this.diagnosticsEnabled);
+            });
+          }, 18, this.diagnosticsEnabled ? '关闭性能面板' : '打开性能面板')
+        Blank().width(this.layout.itemGap)
+        this.iconButton($r('sys.symbol.xmark_circle_fill'), '#FF5353',
+          (): void => { this.actions.onDisconnect(); }, 18, '断开 RustDesk 会话')
       }
       .height(this.layout.iconSize + 12)
       .padding({ left: this.layout.itemGap, right: this.layout.itemGap })
@@ -812,24 +880,24 @@ export struct RemoteSessionTopBar {
     Stack() {
       Scroll() {
         Column() {
-          this.iconButton(this.pinned ? $r('sys.symbol.lock_fill') : $r('sys.symbol.ohos_lock'),
+          this.iconButton(this.pinned ? $r('sys.symbol.pin_fill') : $r('sys.symbol.pin'),
             this.pinned ? '#3A3A3A' : this.accentColor, (): void => {
               this.pinned = !this.pinned;
               this.scheduleAutoCollapse();
-            })
+            }, 18, this.pinned ? '取消固定 RustDesk 侧栏' : '固定 RustDesk 侧栏')
           Blank().height(this.layout.itemGap)
-          this.iconButton($r('sys.symbol.bolt_fill'), this.accentColor, (): void => {
+          this.iconButton($r('sys.symbol.gearshape_fill'), this.accentColor, (): void => {
             this.toggleMenu('control');
-          })
+          }, 18, '打开会话控制')
           Blank().height(this.layout.itemGap)
-          this.iconButton($r('sys.symbol.desktop_fill'), this.accentColor, (): void => {
+          this.iconButton($r('sys.symbol.display'), this.accentColor, (): void => {
             this.toggleMenu('display');
-          })
+          }, 18, '打开显示与画质')
           Blank().height(this.layout.itemGap)
-          this.iconButton($r('sys.symbol.keyboard'), this.keyboardOpen ? '#2A9D8F' : this.accentColor,
-            (): void => { this.toggleMenu('keyboardMouse'); })
+          this.iconButton($r('sys.symbol.mouse'), this.keyboardOpen ? '#2A9D8F' : this.accentColor,
+            (): void => { this.toggleMenu('keyboardMouse'); }, 18, '打开键盘与鼠标')
           Blank().height(this.layout.itemGap)
-          this.iconButton($r('sys.symbol.bolt_fill'), this.accentColor, (): void => {
+          this.iconButton($r('sys.symbol.keyboard'), this.accentColor, (): void => {
             this.runAction('toggleModifiers', (): void => { this.actions.onOpenModifiers(); });
           }, 18, '打开组合键与功能键')
           Blank().height(this.layout.itemGap)
@@ -837,9 +905,16 @@ export struct RemoteSessionTopBar {
             this.runAction('fileTransfer', (): void => { this.actions.onOpenFileTransfer(); });
           }, 18, '发送文件')
           Blank().height(this.layout.itemGap)
-          this.iconButton($r('sys.symbol.xmark'), '#FF5353', (): void => {
+          this.iconButton($r('sys.symbol.performance'),
+            this.diagnosticsEnabled ? '#2A9D8F' : this.accentColor, (): void => {
+              this.runAction('diagnostics', (): void => {
+                this.actions.onToggleDiagnostics(!this.diagnosticsEnabled);
+              });
+            }, 18, this.diagnosticsEnabled ? '关闭性能面板' : '打开性能面板')
+          Blank().height(this.layout.itemGap)
+          this.iconButton($r('sys.symbol.xmark_circle_fill'), '#FF5353', (): void => {
             this.actions.onDisconnect();
-          }, 18)
+          }, 18, '断开 RustDesk 会话')
           Blank().height(this.layout.itemGap)
           Row() {
             SymbolGlyph($r('sys.symbol.chevron_right'))

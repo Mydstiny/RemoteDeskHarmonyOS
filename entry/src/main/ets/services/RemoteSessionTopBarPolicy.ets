@@ -122,14 +122,14 @@ export function remoteTopBarLayout(isDesktopDevice: boolean, breakpoint: string,
   const deviceClass: RemoteTopBarDeviceClass = remoteTopBarDeviceClass(isDesktopDevice, breakpoint, isPadDevice);
   if (deviceClass === 'pc') {
     if (breakpoint !== 'xl') {
-      return { deviceClass, iconSize: 36, itemGap: 4, topOffset: 6, maxVisibleButtons: 7, menuWidth: 320 };
+      return { deviceClass, iconSize: 36, itemGap: 4, topOffset: 6, maxVisibleButtons: 8, menuWidth: 320 };
     }
-    return { deviceClass, iconSize: 44, itemGap: 8, topOffset: 8, maxVisibleButtons: 7, menuWidth: 360 };
+    return { deviceClass, iconSize: 44, itemGap: 8, topOffset: 8, maxVisibleButtons: 8, menuWidth: 360 };
   }
   if (deviceClass === 'pad') {
-    return { deviceClass, iconSize: 44, itemGap: 8, topOffset: 8, maxVisibleButtons: 7, menuWidth: 340 };
+    return { deviceClass, iconSize: 44, itemGap: 8, topOffset: 8, maxVisibleButtons: 8, menuWidth: 340 };
   }
-  return { deviceClass, iconSize: 40, itemGap: 6, topOffset: 6, maxVisibleButtons: 7, menuWidth: 300 };
+  return { deviceClass, iconSize: 40, itemGap: 6, topOffset: 6, maxVisibleButtons: 8, menuWidth: 300 };
 }
 
 export function remoteSessionActionAvailability(actionId: string, protocol: string,
@@ -174,6 +174,9 @@ export function rustDeskActionAvailability(actionId: string,
     actionId === 'rotateDisplay' ||
     actionId === 'keyboardMouseSettings' || actionId === 'browseMode' ||
     actionId === 'togglePrivacyMode' || actionId === 'toggleAudio') {
+    return capabilities.connect;
+  }
+  if (actionId === 'diagnostics') {
     return capabilities.connect;
   }
   if (actionId === 'resolutionSettings') {

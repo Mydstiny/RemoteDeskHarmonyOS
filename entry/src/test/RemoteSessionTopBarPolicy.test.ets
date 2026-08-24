@@ -76,7 +76,7 @@ export default function remoteSessionTopBarPolicyTest(): void {
       const layout = remoteTopBarLayout(true, 'md', false);
       expect(layout.deviceClass).assertEqual('pc');
       expect(layout.iconSize).assertEqual(36);
-      expect(layout.maxVisibleButtons).assertEqual(7);
+      expect(layout.maxVisibleButtons).assertEqual(8);
       expect(layout.maxVisibleButtons * layout.iconSize +
         (layout.maxVisibleButtons + 1) * layout.itemGap <= 360).assertTrue();
       expect(remoteTopBarLayout(true, 'xl', false).iconSize).assertEqual(44);
@@ -86,7 +86,7 @@ export default function remoteSessionTopBarPolicyTest(): void {
       const layout = remoteTopBarLayout(false, 'sm', false);
       expect(layout.deviceClass).assertEqual('phone');
       expect(layout.iconSize).assertEqual(40);
-      expect(layout.maxVisibleButtons).assertEqual(7);
+      expect(layout.maxVisibleButtons).assertEqual(8);
     });
   });
 
@@ -137,6 +137,7 @@ export default function remoteSessionTopBarPolicyTest(): void {
       expect(rustDeskActionAvailability('fileTransfer').enabled).assertTrue();
       expect(rustDeskActionAvailability('ctrlAltDel').enabled).assertTrue();
       expect(rustDeskActionAvailability('rotateDisplay').enabled).assertTrue();
+      expect(rustDeskActionAvailability('diagnostics').enabled).assertTrue();
     });
 
     it('unwired_official_actions_should_be_disabled_with_reason', 0, (): void => {

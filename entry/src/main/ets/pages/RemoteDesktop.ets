@@ -427,6 +427,10 @@ import {
   shouldShowRemoteSessionTopBar,
   shouldUseRemoteSessionEdgeRail
 } from '../services/RemoteSessionTopBarPolicy';
+import {
+  remoteSessionFloatingCardHeight,
+  remoteSessionFloatingCardWidth
+} from '../services/RemoteSessionSidebarLayoutPolicy';
 import { RemoteSessionCapabilities, resolveSessionCapabilities } from '../services/RemoteSessionCapabilityPolicy';
 import {
   RemoteSessionMediaSnapshot,
@@ -5689,6 +5693,14 @@ struct RemoteDesktop {
       },
       onSetTouchpadSpeed: (speed: number): void => {
         this.setRustDeskTouchpadSpeed(speed);
+      },
+      onToggleDiagnostics: (on: boolean): void => {
+        if (this.isRdpRemoteSession()) {
+          this.setRdpDiagnosticsPreference(on);
+          return;
+        }
+        this.rustdeskShowDiagnostics = on;
+        this.persistSessionPref('rustdeskShowDiagnostics', on);
       },
       onUnsupported: (actionId: string, reason: string): void => {
         this.toastUnsupportedRustDeskAction(actionId, reason);
@@ -16677,6 +16689,36 @@ struct RemoteDesktop {
     return Math.max(0, (this.surfaceHeight - 1) / 2);
   }
 
+  private rustDeskDisplayCardTop(): number {
+    return 12;
+  }
+
+  private rustDeskDisplayCardBottomInset(): number {
+    return this.kbHeight > 0 ? this.kbHeight + 12 : 12;
+  }
+
+  private rustDeskDisplayCardWidth(): number {
+    const viewportWidth: number = this.surfaceWidth > 0 ? this.surfaceWidth : 360;
+    const requestedWidth: number = this.isDesktopDevice ? 380 : (this.isPadDevice ? 360 : 320);
+    return remoteSessionFloatingCardWidth(viewportWidth, requestedWidth, 12);
+  }
+
+  private rustDeskDisplayCardHeight(): number {
+    const viewportHeight: number = this.surfaceHeight > 0 ? this.surfaceHeight : 640;
+    const requestedHeight: number = this.isDesktopDevice || this.isPadDevice ? 520 : 420;
+    return remoteSessionFloatingCardHeight(viewportHeight, requestedHeight,
+      this.rustDeskDisplayCardTop(), this.rustDeskDisplayCardBottomInset());
+  }
+
+  private rustDeskDisplayCardLeft(): number {
+    const viewportWidth: number = this.surfaceWidth > 0 ? this.surfaceWidth : 360;
+    return Math.max(12, viewportWidth - this.rustDeskDisplayCardWidth() - 12);
+  }
+
+  private rustDeskDisplayCardListHeight(): number {
+    return Math.max(64, this.rustDeskDisplayCardHeight() - 72);
+  }
+
   @Builder
   private rustDeskDisplayResolutionMenu() {
     Column({ space: 8 }) {
@@ -16748,11 +16790,15 @@ struct RemoteDesktop {
               .width('100%').textAlign(TextAlign.Center).padding({ top: 10, bottom: 10 })
           }
         }.width('100%')
-      }.constraintSize({ maxHeight: 360 }).scrollBar(BarState.Off)
+      }.height(this.rustDeskDisplayCardListHeight())
+        .scrollable(ScrollDirection.Vertical).scrollBar(BarState.Auto)
     }
-    .width(260).padding(14).backgroundColor('rgba(255,255,255,0.98)').borderRadius(8)
+    .width(this.rustDeskDisplayCardWidth()).height(this.rustDeskDisplayCardHeight())
+    .padding(14).backgroundColor('rgba(255,255,255,0.98)').borderRadius(16)
     .shadow({ radius: 14, color: 'rgba(0,0,0,0.22)', offsetY: 4 })
-    .position({ x: Math.max(12, this.surfaceWidth - 272), y: 70 })
+    .position({ x: this.rustDeskDisplayCardLeft(), y: this.rustDeskDisplayCardTop() })
+    .clip(true)
+    .hitTestBehavior(HitTestMode.BLOCK_HIERARCHY)
   }
 
   build() {
@@ -17087,6 +17133,8 @@ struct RemoteDesktop {
           touchpadSpeed: this.rustdeskTouchpadSpeed,
           rustDeskPhoneTarget: this.isRustDeskPhoneSession(),
           keyboardOpen: this.keyboardOpen,
+          diagnosticsEnabled: this.isRdpRemoteSession() ?
+            this.rdpShowDiagnostics : this.rustdeskShowDiagnostics,
           rustDeskDisplayCapabilities: this.rustDeskDisplayCapabilities,
           rustDeskDisplaySwitchState: this.rustDeskDisplaySwitchState,
           pendingDisplayResolution: this.rustDeskDisplayPendingResolution,
