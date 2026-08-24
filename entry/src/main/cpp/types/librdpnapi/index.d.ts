@@ -338,6 +338,7 @@ export const VERSION: SessionVersionInfo;
   export function getDisconnectState(requestId: number): number;
 
   export function sendKey(sessionId: number, scancode: number, pressed: boolean): void;
+  export function sendKeySequence(sessionId: number, keyCodes: number[]): boolean;
   export function sendMouse(sessionId: number, x: number, y: number, button: number, pressed: boolean): void;
   export function sendMouseWheel(sessionId: number, x: number, y: number, delta: number): void;
   export function sendRustDeskTouchpadWheel(sessionId: number, x: number, y: number): boolean;

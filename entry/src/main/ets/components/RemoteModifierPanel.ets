@@ -890,6 +890,18 @@ export struct RemoteModifierPanel {
   private static readonly KEY_F10 = 2099;
   private static readonly KEY_F11 = 2100;
   private static readonly KEY_F12 = 2101;
+  private static readonly KEY_F13 = 2816;
+  private static readonly KEY_F14 = 2817;
+  private static readonly KEY_F15 = 2818;
+  private static readonly KEY_F16 = 2819;
+  private static readonly KEY_F17 = 2820;
+  private static readonly KEY_F18 = 2821;
+  private static readonly KEY_F19 = 2822;
+  private static readonly KEY_F20 = 2823;
+  private static readonly KEY_F21 = 2824;
+  private static readonly KEY_F22 = 2825;
+  private static readonly KEY_F23 = 2826;
+  private static readonly KEY_F24 = 2827;
   private static readonly KEY_HOME = 2081;
   private static readonly KEY_END = 2082;
   private static readonly KEY_PAGE_UP = 2068;
@@ -958,6 +970,24 @@ export struct RemoteModifierPanel {
           this.ActionKey('F10', RemoteModifierPanel.KEY_F10)
           this.ActionKey('F11', RemoteModifierPanel.KEY_F11)
           this.ActionKey('F12', RemoteModifierPanel.KEY_F12)
+        }.width('100%')
+        Row() {
+          this.ActionKey('F13', RemoteModifierPanel.KEY_F13)
+          this.ActionKey('F14', RemoteModifierPanel.KEY_F14)
+          this.ActionKey('F15', RemoteModifierPanel.KEY_F15)
+          this.ActionKey('F16', RemoteModifierPanel.KEY_F16)
+        }.width('100%')
+        Row() {
+          this.ActionKey('F17', RemoteModifierPanel.KEY_F17)
+          this.ActionKey('F18', RemoteModifierPanel.KEY_F18)
+          this.ActionKey('F19', RemoteModifierPanel.KEY_F19)
+          this.ActionKey('F20', RemoteModifierPanel.KEY_F20)
+        }.width('100%')
+        Row() {
+          this.ActionKey('F21', RemoteModifierPanel.KEY_F21)
+          this.ActionKey('F22', RemoteModifierPanel.KEY_F22)
+          this.ActionKey('F23', RemoteModifierPanel.KEY_F23)
+          this.ActionKey('F24', RemoteModifierPanel.KEY_F24)
         }.width('100%')
         Row() {
           this.ActionKey('Home', RemoteModifierPanel.KEY_HOME)

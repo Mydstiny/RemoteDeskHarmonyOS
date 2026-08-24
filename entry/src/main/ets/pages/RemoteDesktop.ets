@@ -165,6 +165,8 @@ import {
   shouldRecoverRemotePointerFocus
 } from '../services/RemotePointerFocusPolicy';
 import { EMPTY_RDP_RENDER_STATS, RdpDiagnosticsHud } from '../components/RdpDiagnosticsHud';
+import { RdpControlCenter } from '../components/rdp/RdpControlCenter';
+import { RdpSessionToolbar, RdpToolbarAction } from '../components/rdp/RdpSessionToolbar';
 import { VncSessionToolbar, VncSessionToolbarActions } from '../components/VncSessionToolbar';
 import {
   shouldEnableRustDeskPro,
@@ -377,9 +379,17 @@ import {
   resolveInitialRemoteDisplayScaleMode
 } from '../services/RemoteCanvasTransformPolicy';
 import {
+  legacyRdpPresetForResolutionId,
   normalizeRdpResolutionId,
   rdpResolutionPresetForId
 } from '../services/RemoteResolutionPresetPolicy';
+import {
+  normalizeRdpSessionColorDepth,
+  normalizeRdpSessionControlMode,
+  normalizeRdpSessionDriveName,
+  rdpSessionPerformanceSummary,
+  RdpSessionPerformanceSummary
+} from '../services/RdpSessionSidebarPolicy';
 import {
   remoteInputBlockedReason,
   shouldBlockRemoteInputForBrowseMode
@@ -823,6 +833,12 @@ struct RemoteDesktop {
   rdpClipboardEnabled: boolean = true;
   @StorageLink('rdpShowDiagnostics') @Watch('onRdpDiagnosticsSettingChange')
   rdpShowDiagnostics: boolean = false;
+  @StorageLink('rdpDesktopResolutionId') rdpDesktopResolutionId: string = 'auto';
+  @StorageLink('rdpDesktopPreset') rdpDesktopPreset: number = 0;
+  @StorageLink('rdpColorDepth') rdpColorDepth: number = 32;
+  @StorageLink('rdpAudioEnabled') rdpAudioEnabled: boolean = true;
+  @StorageLink('rdpAuthIdentityMode') rdpAuthIdentityMode: number = 1;
+  @StorageLink('rdpTlsWithoutNla') rdpTlsWithoutNla: boolean = false;
   @State vncControlMode: number = 0; // VNC-only: 0=touchpad, 1=direct touch, 2=keyboard/mouse
   @State @Watch('onRustDeskDiagnosticsSettingChange') vncShowDiagnostics: boolean = false;
   private vncDisplayScaleMode: VncDisplayScaleMode = 'fit';
@@ -863,6 +879,7 @@ struct RemoteDesktop {
   @State vncCertificateWarning: string = '';
   @State rustDeskDiagnostics: RustDeskDiagnosticsSnapshot = EMPTY_RUSTDESK_DIAGNOSTICS;
   @State rdpRenderStats: RdpRenderStats = EMPTY_RDP_RENDER_STATS;
+  @State rdpControlCenterVisible: boolean = false;
   @State rustDeskDisplayCapabilities: RustDeskDisplayCapabilities = EMPTY_RUSTDESK_DISPLAY_CAPABILITIES;
   @State rustDeskDisplayPendingResolution: RustDeskDisplayResolution = EMPTY_RUSTDESK_DISPLAY_RESOLUTION;
   @State showRustDeskDisplayResolutionMenu: boolean = false;
@@ -3520,6 +3537,11 @@ struct RemoteDesktop {
     return shouldShowSessionDiagnostics(showDiagnostics, this.connected, protocol, this.sessionId);
   }
 
+  private shouldPollRdpDiagnostics(): boolean {
+    return this.isRdpRemoteSession() && this.connected && this.sessionId > 0 &&
+      (this.rdpShowDiagnostics || this.rdpControlCenterVisible);
+  }
+
   private shouldShowAdvancedDiagnostics(): boolean {
     return this.isRustDeskSession() && shouldEnableRustDeskPro(
       this.rustdeskShowDiagnostics, this.rustdeskShowProDiagnostics);
@@ -4099,6 +4121,7 @@ struct RemoteDesktop {
       void this.refreshPhysicalKeyboardPresence('connection-state');
       this.scheduleVirtualTouchpadKeyboardGuide();
     } else {
+      this.rdpControlCenterVisible = false;
       if (this.virtualTouchpadKeyboardGuideTimer >= 0) {
         clearTimeout(this.virtualTouchpadKeyboardGuideTimer);
         this.virtualTouchpadKeyboardGuideTimer = -1;
@@ -4307,6 +4330,157 @@ struct RemoteDesktop {
     this.resetCanvasToDisplayDefault();
     promptAction.showToast({ message: '显示缩放已切换为 ' +
       (next === 'fit' ? '适应窗口' : (next === 'custom' ? '自定义' : next + '%')), duration: 1400 });
+  }
+
+  private setRdpControlModePreference(mode: number): void {
+    const next: number = normalizeRdpSessionControlMode(mode);
+    this.rdpControlMode = next;
+    this.persistSessionPref('rdpControlMode', next);
+  }
+
+  private setRdpClipboardPreference(enabled: boolean): void {
+    this.rdpClipboardEnabled = enabled;
+    this.persistSessionPref('rdpClipboardEnabled', enabled);
+  }
+
+  private setRdpDiagnosticsPreference(enabled: boolean): void {
+    this.rdpShowDiagnostics = enabled;
+    this.persistSessionPref('rdpShowDiagnostics', enabled);
+  }
+
+  private setRdpCanvasZoomPreference(enabled: boolean): void {
+    this.canvasGestureZoomEnabled = enabled;
+    this.persistSessionPref('canvasGestureZoomEnabled', enabled);
+  }
+
+  private setRdpReverseWheelPreference(enabled: boolean): void {
+    this.rustdeskReverseWheel = enabled;
+    this.persistSessionPref('rustdeskReverseWheel', enabled);
+  }
+
+  private showRdpReconnectPreferenceToast(label: string): void {
+    promptAction.showToast({ message: label + '已同步到 RDP 设置，重新连接后生效', duration: 1800 });
+  }
+
+  private setRdpResolutionPreference(id: string): void {
+    const next: string = normalizeRdpResolutionId(id, this.rdpDesktopPreset);
+    this.rdpDesktopResolutionId = next;
+    this.rdpDesktopPreset = legacyRdpPresetForResolutionId(next);
+    this.persistSessionPref('rdpDesktopResolutionId', next);
+    this.persistSessionPref('rdpDesktopPreset', this.rdpDesktopPreset);
+    this.showRdpReconnectPreferenceToast('远端分辨率');
+  }
+
+  private setRdpColorDepthPreference(depth: number): void {
+    const next: number = normalizeRdpSessionColorDepth(depth);
+    this.rdpColorDepth = next;
+    this.persistSessionPref('rdpColorDepth', next);
+    this.showRdpReconnectPreferenceToast('色彩深度');
+  }
+
+  private setRdpAudioPreference(enabled: boolean): void {
+    this.rdpAudioEnabled = enabled;
+    this.persistSessionPref('rdpAudioEnabled', enabled);
+    this.showRdpReconnectPreferenceToast('远端音频');
+  }
+
+  private setRdpDrivePreference(enabled: boolean): void {
+    this.rdpDriveEnabled = enabled;
+    this.persistSessionPref('rdpDriveEnabled', enabled);
+    this.showRdpReconnectPreferenceToast('共享文件夹');
+  }
+
+  private setRdpDriveNamePreference(value: string): void {
+    const next: string = normalizeRdpSessionDriveName(value);
+    if (next === this.rdpDriveName) { return; }
+    this.rdpDriveName = next;
+    this.persistSessionPref('rdpDriveName', next);
+  }
+
+  private setRdpAuthIdentityModePreference(mode: number): void {
+    const next: number = Number.isFinite(mode) ? Math.max(0, Math.min(4, Math.floor(mode))) : 1;
+    this.rdpAuthIdentityMode = next;
+    this.persistSessionPref('rdpAuthIdentityMode', next);
+    this.showRdpReconnectPreferenceToast('登录身份格式');
+  }
+
+  private setRdpTlsWithoutNlaPreference(enabled: boolean): void {
+    if (!enabled) {
+      this.rdpTlsWithoutNla = false;
+      this.persistSessionPref('rdpTlsWithoutNla', false);
+      this.showRdpReconnectPreferenceToast('TLS 兼容登录');
+      return;
+    }
+    promptAction.showDialog({
+      title: '启用 TLS 兼容登录？',
+      message: '该模式会绕过 NLA，仅应连接你信任且明确关闭了 NLA 的 Windows 主机。',
+      buttons: [
+        { text: '取消', color: 'rgba(255,255,255,0.7)' },
+        { text: '仍然启用', color: '#FF6B6B' }
+      ]
+    }).then((result: Object): void => {
+      const response: Record<string, number> = result as Record<string, number>;
+      if (response['index'] !== 1) { return; }
+      this.rdpTlsWithoutNla = true;
+      this.persistSessionPref('rdpTlsWithoutNla', true);
+      this.showRdpReconnectPreferenceToast('TLS 兼容登录');
+    }).catch((_error: Error): void => {});
+  }
+
+  private openRdpKeyboard(): void {
+    this.rdpControlCenterVisible = false;
+    if (this.keyboardOpen) {
+      this.keepKeyboardAfterSheetClose = false;
+      this.dismissKeyboard();
+    } else {
+      this.openKeyboard();
+    }
+    this.stopRdpDiagnosticsPolling(!this.rdpShowDiagnostics);
+  }
+
+  private openRdpShortcutPanel(): void {
+    this.rdpControlCenterVisible = false;
+    if (!this.handleVisible) {
+      this.initHandlePosition();
+      this.handleVisible = true;
+    }
+    if (!this.isDesktopDevice) { this.handleSide = 'right'; }
+    this.ensureModifierPanelPositions();
+    this.openModifierPanel();
+    this.stopRdpDiagnosticsPolling(!this.rdpShowDiagnostics);
+  }
+
+  private toggleRdpControlCenter(): void {
+    this.rdpControlCenterVisible = !this.rdpControlCenterVisible;
+    if (this.rdpControlCenterVisible) {
+      this.startRdpDiagnosticsPolling();
+    } else {
+      this.stopRdpDiagnosticsPolling(!this.rdpShowDiagnostics);
+    }
+  }
+
+  private handleRdpToolbarAction(action: RdpToolbarAction): void {
+    if (action === 'control') { this.toggleRdpControlCenter(); return; }
+    if (action === 'keyboard') { this.openRdpKeyboard(); return; }
+    if (action === 'shortcuts') { this.openRdpShortcutPanel(); return; }
+    if (action === 'ctrlAltDel') { this.sendCtrlAltDel(); return; }
+    if (action === 'refresh') {
+      this.loader.requestFrameRefresh();
+      promptAction.showToast({ message: '已请求刷新 RDP 远端画面', duration: 1200 });
+      return;
+    }
+    if (action === 'diagnostics') {
+      this.setRdpDiagnosticsPreference(!this.rdpShowDiagnostics);
+      return;
+    }
+    this.disconnectAndCleanup('rdp-session-toolbar-close');
+    this.goBack();
+  }
+
+  private rdpPerformanceSummary(): RdpSessionPerformanceSummary {
+    return rdpSessionPerformanceSummary(this.rdpRenderStats.lastRenderResult,
+      this.rdpRenderStats.lastRemoteUpdateAgeMs, this.rdpRenderStats.queueP95Us,
+      this.rdpRenderStats.gfxChannelConnected);
   }
 
   private resetCanvasTransformFromMenu(): void {
@@ -6312,7 +6486,7 @@ struct RemoteDesktop {
       (mod: string): boolean => this.isRemoteModDown(mod),
       (mod: string, down: boolean, wireCode?: number): void => {
         this.setRemoteModDown(mod, down, wireCode === undefined ? 0 : wireCode);
-      });
+      }, this.isRdpRemoteSession());
   }
 
   /** Release remote keys and, for lifecycle teardown, any held mouse buttons. */
@@ -7083,7 +7257,7 @@ struct RemoteDesktop {
   }
 
   private onRdpDiagnosticsSettingChange(): void {
-    if (this.shouldShowActiveDiagnostics()) {
+    if (this.shouldPollRdpDiagnostics()) {
       this.startRdpDiagnosticsPolling();
     } else {
       this.stopRdpDiagnosticsPolling(true);
@@ -7127,7 +7301,7 @@ struct RemoteDesktop {
   }
 
   private refreshRdpDiagnostics(sessionId: number, attemptId: number): void {
-    if (!this.shouldShowActiveDiagnostics() || this.sessionId !== sessionId ||
+    if (!this.shouldPollRdpDiagnostics() || this.sessionId !== sessionId ||
       this.connectAttemptId !== attemptId) {
       return;
     }
@@ -7139,7 +7313,7 @@ struct RemoteDesktop {
   }
 
   private startRdpDiagnosticsPolling(): void {
-    if (this.rdpDiagnosticsTimer >= 0 || !this.shouldShowActiveDiagnostics() ||
+    if (this.rdpDiagnosticsTimer >= 0 || !this.shouldPollRdpDiagnostics() ||
       !this.isRdpRemoteSession()) {
       return;
     }
@@ -7147,7 +7321,7 @@ struct RemoteDesktop {
     const observedAttemptId: number = this.connectAttemptId;
     this.refreshRdpDiagnostics(observedSessionId, observedAttemptId);
     this.rdpDiagnosticsTimer = setInterval((): void => {
-      if (!this.shouldShowActiveDiagnostics() || this.sessionId !== observedSessionId ||
+      if (!this.shouldPollRdpDiagnostics() || this.sessionId !== observedSessionId ||
         this.connectAttemptId !== observedAttemptId || !this.isRdpRemoteSession()) {
         this.stopRdpDiagnosticsPolling(false);
         return;
@@ -16794,6 +16968,92 @@ struct RemoteDesktop {
         })
       }
 
+      if (this.connected && this.isRdpRemoteSession()) {
+        if (remoteTopBarLayout(this.isDesktopDevice, this.breakpoint, this.isPadDevice).deviceClass !== 'pc') {
+          Stack({ alignContent: Alignment.End }) {
+            RdpSessionToolbar({
+              keyboardOpen: this.keyboardOpen,
+              shortcutsOpen: this.modifierPanelVisible || this.shortcutPanelVisible,
+              controlCenterOpen: this.rdpControlCenterVisible,
+              diagnosticsVisible: this.rdpShowDiagnostics,
+              qualityLabel: this.rdpPerformanceSummary().status,
+              qualityColor: this.rdpPerformanceSummary().color,
+              availableHeight: this.surfaceHeight,
+              onAction: (action: RdpToolbarAction): void => { this.handleRdpToolbarAction(action); }
+            })
+          }.width('100%').height('100%').hitTestBehavior(HitTestMode.Transparent).zIndex(220)
+        } else {
+          Stack({ alignContent: Alignment.Top }) {
+            RdpSessionToolbar({
+              keyboardOpen: this.keyboardOpen,
+              shortcutsOpen: this.modifierPanelVisible || this.shortcutPanelVisible,
+              controlCenterOpen: this.rdpControlCenterVisible,
+              diagnosticsVisible: this.rdpShowDiagnostics,
+              qualityLabel: this.rdpPerformanceSummary().status,
+              qualityColor: this.rdpPerformanceSummary().color,
+              availableHeight: this.surfaceHeight,
+              onAction: (action: RdpToolbarAction): void => { this.handleRdpToolbarAction(action); }
+            })
+          }.width('100%').height(80).position({ x: 0, y: 12 })
+            .hitTestBehavior(HitTestMode.Transparent).zIndex(220)
+        }
+      }
+
+      if (this.connected && this.isRdpRemoteSession() && this.rdpControlCenterVisible) {
+        Stack({ alignContent: Alignment.End }) {
+          RdpControlCenter({
+            hostName: this.pendingHost === null ? '' : this.pendingHost.label,
+            connectedLabel: this.rdpRenderStats.desktopWidth > 0 ?
+              this.rdpRenderStats.desktopWidth.toString() + '×' +
+                this.rdpRenderStats.desktopHeight.toString() : '已连接',
+            stats: this.rdpRenderStats,
+            controlMode: this.rdpControlMode,
+            clipboardEnabled: this.rdpClipboardEnabled,
+            diagnosticsEnabled: this.rdpShowDiagnostics,
+            displayScaleMode: this.remoteDisplayScaleMode,
+            canvasZoomEnabled: this.canvasGestureZoomEnabled,
+            reverseWheel: this.rustdeskReverseWheel,
+            resolutionId: normalizeRdpResolutionId(this.rdpDesktopResolutionId, this.rdpDesktopPreset),
+            colorDepth: normalizeRdpSessionColorDepth(this.rdpColorDepth),
+            audioEnabled: this.rdpAudioEnabled,
+            driveEnabled: this.rdpDriveEnabled,
+            driveName: this.rdpDriveName,
+            authIdentityMode: this.rdpAuthIdentityMode,
+            tlsWithoutNla: this.rdpTlsWithoutNla,
+            onClose: (): void => { this.toggleRdpControlCenter(); },
+            onOpenKeyboard: (): void => { this.openRdpKeyboard(); },
+            onOpenShortcuts: (): void => { this.openRdpShortcutPanel(); },
+            onCtrlAltDel: (): void => { this.sendCtrlAltDel(); },
+            onRefresh: (): void => {
+              this.loader.requestFrameRefresh();
+              promptAction.showToast({ message: '已请求刷新 RDP 远端画面', duration: 1200 });
+            },
+            onControlMode: (mode: number): void => { this.setRdpControlModePreference(mode); },
+            onClipboard: (enabled: boolean): void => { this.setRdpClipboardPreference(enabled); },
+            onDiagnostics: (enabled: boolean): void => { this.setRdpDiagnosticsPreference(enabled); },
+            onDisplayScale: (mode: string): void => { this.setRemoteDisplayScaleMode(mode); },
+            onCanvasZoom: (enabled: boolean): void => { this.setRdpCanvasZoomPreference(enabled); },
+            onReverseWheel: (enabled: boolean): void => { this.setRdpReverseWheelPreference(enabled); },
+            onResolution: (id: string): void => { this.setRdpResolutionPreference(id); },
+            onColorDepth: (depth: number): void => { this.setRdpColorDepthPreference(depth); },
+            onAudio: (enabled: boolean): void => { this.setRdpAudioPreference(enabled); },
+            onDrive: (enabled: boolean): void => { this.setRdpDrivePreference(enabled); },
+            onDriveName: (name: string): void => { this.setRdpDriveNamePreference(name); },
+            onAuthIdentityMode: (mode: number): void => {
+              this.setRdpAuthIdentityModePreference(mode);
+            },
+            onTlsWithoutNla: (enabled: boolean): void => {
+              this.setRdpTlsWithoutNlaPreference(enabled);
+            },
+            onDisconnect: (): void => {
+              this.rdpControlCenterVisible = false;
+              this.disconnectAndCleanup('rdp-control-center-close');
+              this.goBack();
+            }
+          }).height('94%').margin({ right: this.isDesktopDevice ? 12 : 52 })
+        }.width('100%').height('100%').hitTestBehavior(HitTestMode.Transparent).zIndex(225)
+      }
+
       if (this.connected && this.shouldShowRemoteSessionTopBar()) {
         RemoteSessionTopBar({
           protocol: this.currentProtocolName(),
@@ -16829,7 +17089,9 @@ struct RemoteDesktop {
 
       if (this.shouldShowActiveDiagnostics()) {
         if (this.isRdpRemoteSession()) {
-          RdpDiagnosticsHud({ stats: this.rdpRenderStats })
+          if (!this.rdpControlCenterVisible) {
+            RdpDiagnosticsHud({ stats: this.rdpRenderStats })
+          }
         } else if (this.isVncSession()) {
           VncDiagnosticsHud({
             diagnostics: this.rustDeskDiagnostics,
@@ -17036,7 +17298,8 @@ struct RemoteDesktop {
       // PC/键鼠模式不再显示底部工具栏, 固定左上角断开按钮必须覆盖所有 PC 窗口宽度。
       if (this.connected && this.isDesktopDevice &&
         (!this.pendingHost ||
-          (this.pendingHost.protocol !== 'rustdesk' && this.pendingHost.protocol !== 'vnc'))) {
+          (this.pendingHost.protocol !== 'rdp' && this.pendingHost.protocol !== 'rustdesk' &&
+            this.pendingHost.protocol !== 'vnc'))) {
         Button($r('app.string.btn_disconnect'))
           .height(28)
           .fontSize(11)

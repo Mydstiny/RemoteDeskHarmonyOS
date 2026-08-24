@@ -57,7 +57,10 @@ export default function remoteCustomShortcutPolicyTest(): void {
       expect(remoteCustomShortcutKeyOptions('letters').length).assertEqual(26);
       expect(remoteCustomShortcutKeyOptions('digits').length).assertEqual(10);
       expect(remoteCustomShortcutKeyOptions('symbols').length).assertEqual(11);
-      expect(remoteCustomShortcutKeyOptions('functions').length).assertEqual(12);
+      const functionKeys = remoteCustomShortcutKeyOptions('functions');
+      expect(functionKeys.length).assertEqual(24);
+      expect(functionKeys[12].label).assertEqual('F13');
+      expect(functionKeys[23].label).assertEqual('F24');
       expect(remoteCustomShortcutKeyOptions('navigation').length).assertEqual(15);
       expect(remoteCustomShortcutKeyGroupForKeyCode(2043)).assertEqual('symbols');
       expect(remoteCustomShortcutKeyGroupForKeyCode(2049)).assertEqual('navigation');

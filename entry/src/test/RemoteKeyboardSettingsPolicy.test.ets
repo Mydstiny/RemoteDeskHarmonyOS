@@ -27,10 +27,12 @@ export default function remoteKeyboardSettingsPolicyTest(): void {
     it('exposes_broad_distinct_windows_and_macos_catalogs', 0, (): void => {
       const windows = remoteShortcutPresets('windows');
       const macos = remoteShortcutPresets('macos');
-      expect(windows.length >= 30).assertTrue();
+      expect(windows.length >= 70).assertTrue();
       expect(macos.length >= 30).assertTrue();
       expect(windows.some((item): boolean => item.chord === 'Ctrl+Alt+Del')).assertTrue();
       expect(windows.some((item): boolean => item.chord === 'Win+Shift+S')).assertTrue();
+      expect(windows.some((item): boolean => item.chord === 'Win+Ctrl+Shift+B')).assertTrue();
+      expect(windows.some((item): boolean => item.chord === 'Win+Shift+→')).assertTrue();
       expect(macos.some((item): boolean => item.chord === 'Cmd+Option+Esc')).assertTrue();
       expect(macos.some((item): boolean => item.chord === 'Shift+Cmd+5')).assertTrue();
       expect(macos.some((item): boolean => item.chord.indexOf('Win+') >= 0)).assertFalse();

@@ -5,6 +5,7 @@
 #include "test_runner.h"
 #include "rdp/rdp_input_queue.h"
 #include "rdp/rdp_keymap.h"
+#include "extensions/key_sequence_dispatch.h"
 
 #include <string>
 #include <vector>
@@ -141,6 +142,56 @@ RDP_TEST_CASE(rdp_keymap_covers_f13_through_f24_and_extended_keys) {
     RDP_ASSERT_EQ(mapHarmonyKeyCodeToRdpScancode(2073), 0xE01DU);
     RDP_ASSERT_EQ(mapHarmonyKeyCodeToRdpScancode(2076), 0xE05BU);
     RDP_ASSERT_EQ(mapHarmonyKeyCodeToRdpScancode(2119), 0xE01CU);
+}
+
+RDP_TEST_CASE(rdp_keymap_covers_every_key_family_used_by_shortcut_catalogs) {
+    for (uint32_t keyCode = 2017; keyCode <= 2042; ++keyCode) {
+        RDP_ASSERT(mapHarmonyKeyCodeToRdpScancode(keyCode) != 0U);
+    }
+    for (uint32_t keyCode = 2000; keyCode <= 2009; ++keyCode) {
+        RDP_ASSERT(mapHarmonyKeyCodeToRdpScancode(keyCode) != 0U);
+    }
+    for (uint32_t keyCode = 2090; keyCode <= 2101; ++keyCode) {
+        RDP_ASSERT(mapHarmonyKeyCodeToRdpScancode(keyCode) != 0U);
+    }
+    for (uint32_t keyCode = 2816; keyCode <= 2827; ++keyCode) {
+        RDP_ASSERT(mapHarmonyKeyCodeToRdpScancode(keyCode) != 0U);
+    }
+    const std::vector<uint32_t> catalogControls {
+        2012U, 2013U, 2014U, 2015U, 2043U, 2044U, 2045U, 2047U,
+        2049U, 2050U, 2054U, 2055U, 2056U, 2057U, 2058U, 2059U,
+        2060U, 2070U, 2071U, 2072U, 2076U, 2079U, 2081U, 2082U
+    };
+    for (uint32_t keyCode : catalogControls) {
+        RDP_ASSERT(mapHarmonyKeyCodeToRdpScancode(keyCode) != 0U);
+    }
+}
+
+RDP_TEST_CASE(remote_key_sequence_dispatches_all_down_then_reverse_up) {
+    struct KeyStep {
+        uint32_t keyCode;
+        bool pressed;
+    };
+    const std::vector<uint32_t> chord {2076U, 2072U, 2047U, 2018U};
+    std::vector<KeyStep> steps;
+    DispatchKeySequence(chord, [&steps](uint32_t keyCode, bool pressed) {
+        steps.push_back({keyCode, pressed});
+    });
+    RDP_ASSERT_EQ(steps.size(), 8U);
+    RDP_ASSERT_EQ(steps[0].keyCode, 2076U);
+    RDP_ASSERT(steps[0].pressed);
+    RDP_ASSERT_EQ(steps[3].keyCode, 2018U);
+    RDP_ASSERT(steps[3].pressed);
+    RDP_ASSERT_EQ(steps[4].keyCode, 2018U);
+    RDP_ASSERT(!steps[4].pressed);
+    RDP_ASSERT_EQ(steps[7].keyCode, 2076U);
+    RDP_ASSERT(!steps[7].pressed);
+}
+
+RDP_TEST_CASE(rdp_remote_security_chord_keys_have_extended_scancodes) {
+    RDP_ASSERT_EQ(mapHarmonyKeyCodeToRdpScancode(2072), 0x1DU);
+    RDP_ASSERT_EQ(mapHarmonyKeyCodeToRdpScancode(2045), 0x38U);
+    RDP_ASSERT_EQ(mapHarmonyKeyCodeToRdpScancode(2082), 0xE04FU);
 }
 
 RDP_TEST_CASE(rdp_pause_is_a_dedicated_atomic_input_event) {

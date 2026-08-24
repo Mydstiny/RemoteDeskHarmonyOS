@@ -100,9 +100,9 @@ export function shouldShowRustDeskTopBar(
   return protocol === 'rustdesk';
 }
 
-/** RDP and RustDesk share one persistent session toolbar shell. */
+/** RustDesk retains its protocol-owned persistent toolbar shell. */
 export function shouldShowRemoteSessionTopBar(protocol: string): boolean {
-  return protocol === 'rdp' || protocol === 'rustdesk';
+  return protocol === 'rustdesk';
 }
 
 /** Keep the compatibility entrypoint aligned with the persistent mobile rail. */

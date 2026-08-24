@@ -86,6 +86,9 @@ export function remoteCustomShortcutKeyOptions(
     for (let index = 0; index < 12; index++) {
       pushOption(result, 'F' + (index + 1).toString(), 2090 + index);
     }
+    for (let index = 0; index < 12; index++) {
+      pushOption(result, 'F' + (index + 13).toString(), 2816 + index);
+    }
     return result;
   }
   pushOption(result, 'Esc', 2070);

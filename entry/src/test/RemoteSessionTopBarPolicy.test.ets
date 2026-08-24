@@ -57,8 +57,8 @@ export default function remoteSessionTopBarPolicyTest(): void {
       expect(shouldShowRustDeskTopBar('rdp', false, 'sm', 2, true, false)).assertFalse();
     });
 
-    it('rdp_and_rustdesk_should_share_the_persistent_session_shell', 0, (): void => {
-      expect(shouldShowRemoteSessionTopBar('rdp')).assertTrue();
+    it('rdp_should_use_its_own_sidebar_instead_of_the_rustdesk_shell', 0, (): void => {
+      expect(shouldShowRemoteSessionTopBar('rdp')).assertFalse();
       expect(shouldShowRemoteSessionTopBar('rustdesk')).assertTrue();
       expect(shouldShowRemoteSessionTopBar('vnc')).assertFalse();
     });
@@ -124,7 +124,7 @@ export default function remoteSessionTopBarPolicyTest(): void {
       expect(shouldUseRustDeskEdgeRail('rustdesk', false, 'lg', 1, true)).assertTrue();
       expect(shouldUseRustDeskEdgeRail('rustdesk', true, 'xl', 2, false)).assertFalse();
       expect(shouldUseRustDeskEdgeRail('rdp', false, 'sm', 2, false)).assertFalse();
-      expect(shouldUseRemoteSessionEdgeRail('rdp', false)).assertTrue();
+      expect(shouldUseRemoteSessionEdgeRail('rdp', false)).assertFalse();
       expect(shouldUseRemoteSessionEdgeRail('rustdesk', false)).assertTrue();
       expect(shouldUseRemoteSessionEdgeRail('rdp', true)).assertFalse();
     });

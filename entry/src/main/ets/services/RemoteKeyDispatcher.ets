@@ -21,6 +21,7 @@ const KEYCODE_SHIFT_RIGHT = 2048;
 const KEYCODE_META_LEFT = 2076;
 const KEYCODE_META_RIGHT = 2077;
 const KEYCODE_FORWARD_DEL = 2071;
+const KEYCODE_MOVE_END = 2082;
 
 type LatchGetter = (mod: string) => string;
 type LatchSetter = (mod: string, val: string) => void;
@@ -120,6 +121,26 @@ export class RemoteKeyDispatcher {
     setRemoteDown: RemoteDownSetter | null,
     mapKeyCode: KeyCodeMapper | null): void {
     try {
+      let hasLockedModifier: boolean = false;
+      if (getLatch !== null) {
+        for (let index: number = 0; index < keyCodes.length; index++) {
+          const name: string = this.modifierName(keyCodes[index]);
+          if (name.length > 0 && getLatch(name) === 'locked') {
+            hasLockedModifier = true;
+          }
+        }
+      }
+      if (!hasLockedModifier) {
+        const mapped: Array<number> = [];
+        for (let index: number = 0; index < keyCodes.length; index++) {
+          mapped.push(this.transportCode(keyCodes[index], mapKeyCode));
+        }
+        if (loader.sendKeySequence(sessionId, mapped)) {
+          hilog.info(DOMAIN, TAG, 'shortcut-batch: ' + label + ' keys=' + mapped.length.toString());
+          return;
+        }
+        hilog.warn(DOMAIN, TAG, 'shortcut-batch rejected, falling back: ' + label);
+      }
       const pressedCodes: number[] = [];
       for (let i = 0; i < keyCodes.length; i++) {
         const modName: string = this.modifierName(keyCodes[i]);
@@ -156,10 +177,13 @@ export class RemoteKeyDispatcher {
   sendCtrlAltDel(loader: ExtensionLoader, sessionId: number, accentColor: string,
     getLatch: LatchGetter | null = null,
     isRemoteDown: RemoteDownGetter | null = null,
-    setRemoteDown: RemoteDownSetter | null = null): void {
+    setRemoteDown: RemoteDownSetter | null = null,
+    rdpSession: boolean = false): void {
     promptAction.showDialog({
       title: 'Ctrl+Alt+Del',
-      message: '这是 Windows 安全序列，远程桌面普通按键模拟通常无效。\n\nRDP 需 FreeRDP SAS 支持；RustDesk 需远端服务模式。\n\n是否尝试发送按键序列？',
+      message: rdpSession ?
+        'RDP 会把该操作按远程安全键 Ctrl+Alt+End 提交给 Windows。是否继续？' :
+        '这是 Windows 安全序列，RustDesk 需要远端服务模式支持。是否尝试发送？',
       buttons: [
         { text: '取消', color: 'rgba(255,255,255,0.6)' },
         { text: '尝试发送', color: accentColor }
@@ -168,10 +192,12 @@ export class RemoteKeyDispatcher {
       const r: Record<string, number> = result as Record<string, number>;
       if (r['index'] === 1) {
         this.sendShortcutSequence(loader, sessionId,
-          [KEYCODE_CTRL_LEFT, KEYCODE_ALT_LEFT, KEYCODE_FORWARD_DEL], 'Ctrl+Alt+Del',
+          [KEYCODE_CTRL_LEFT, KEYCODE_ALT_LEFT,
+            rdpSession ? KEYCODE_MOVE_END : KEYCODE_FORWARD_DEL], 'Ctrl+Alt+Del',
           getLatch, isRemoteDown, setRemoteDown);
         promptAction.showToast({
-          message: '已尝试发送，如无效需协议级 SAS 支持',
+          message: rdpSession ? '已发送 RDP 远程安全键 Ctrl+Alt+End' :
+            '已尝试发送；若无效，请确认远端服务权限',
           duration: 3000
         });
       }

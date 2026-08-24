@@ -13,6 +13,7 @@ import sshSftpBatchPolicyTest from './SshSftpBatchPolicy.test';
 import sshSftpTaskPolicyTest from './SshSftpTaskPolicy.test';
 import sshLocalProviderPolicyTest from './SshLocalProviderPolicy.test';
 import remoteSessionTopBarPolicyTest from './RemoteSessionTopBarPolicy.test';
+import rdpSessionSidebarPolicyTest from './RdpSessionSidebarPolicy.test';
 import remoteSessionSidebarLayoutPolicyTest from './RemoteSessionSidebarLayoutPolicy.test';
 import rdpCertificatePreflightPolicyTest from './RdpCertificatePreflightPolicy.test';
 import rdpSessionErrorPolicyTest from './RdpSessionErrorPolicy.test';
@@ -246,6 +247,7 @@ export default function testsuite() {
   sshSftpTaskPolicyTest();
   sshLocalProviderPolicyTest();
   remoteSessionTopBarPolicyTest();
+  rdpSessionSidebarPolicyTest();
   remoteSessionSidebarLayoutPolicyTest();
   rdpCertificatePreflightPolicyTest();
   rdpSessionErrorPolicyTest();

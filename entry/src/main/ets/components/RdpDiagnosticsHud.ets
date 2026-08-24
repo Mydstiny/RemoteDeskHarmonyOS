@@ -1,4 +1,5 @@
 import { RdpRenderStats } from '../types/rdpnapi';
+import { Palette, buildDark } from '../common/Theme';
 
 export const EMPTY_RDP_RENDER_STATS: RdpRenderStats = {
   paintCount: 0,
@@ -95,6 +96,20 @@ function resultLabel(value: number): string {
 export struct RdpDiagnosticsHud {
   @Prop stats: RdpRenderStats = EMPTY_RDP_RENDER_STATS;
   @StorageProp('accentColor') accentColor: string = '#007DFF';
+  @State private expanded: boolean = false;
+  @State private panelX: number = 10;
+  @State private panelY: number = 62;
+  @State private dragX: number = 0;
+  @State private dragY: number = 0;
+
+  private pal(): Palette { return buildDark(this.accentColor); }
+
+  private finishDrag(): void {
+    this.panelX = Math.max(0, this.panelX + this.dragX);
+    this.panelY = Math.max(0, this.panelY + this.dragY);
+    this.dragX = 0;
+    this.dragY = 0;
+  }
 
   @Builder
   private metric(metric: RdpDiagnosticMetric) {
@@ -107,19 +122,27 @@ export struct RdpDiagnosticsHud {
   build() {
     Column() {
       Row() {
+        Column().width(7).height(7).borderRadius(4)
+          .backgroundColor(this.stats.lastRenderResult < 0 ? this.pal().danger : '#66DD7A')
         Text('RDP 性能监视').fontSize(11).fontWeight(FontWeight.Medium).fontColor('#FFFFFF')
+          .margin({ left: 7 })
         Blank().layoutWeight(1)
         Text(this.stats.graphicsMode.toUpperCase()).fontSize(9).fontColor(this.accentColor)
           .fontWeight(FontWeight.Bold)
-      }.width('100%').margin({ bottom: 4 })
+        SymbolGlyph(this.expanded ? $r('sys.symbol.chevron_up') : $r('sys.symbol.chevron_down'))
+          .fontSize(12).fontColor(['rgba(255,255,255,0.72)']).margin({ left: 8 })
+      }.width('100%').height(28).margin({ bottom: 4 })
+        .onClick((): void => { this.expanded = !this.expanded; })
+        .gesture(PanGesture({ fingers: 1, direction: PanDirection.All, distance: 4 })
+          .onActionUpdate((event: GestureEvent): void => {
+            this.dragX = event.offsetX;
+            this.dragY = event.offsetY;
+          })
+          .onActionEnd((): void => { this.finishDrag(); })
+          .onActionCancel((): void => { this.dragX = 0; this.dragY = 0; }))
       this.metric({
         label: '状态',
         value: resultLabel(this.stats.lastRenderResult)
-      })
-      this.metric({
-        label: '送显 / 替换',
-        value: this.stats.presentationWindowSamples.toString() + ' / ' +
-          this.stats.pumpReplaced.toString()
       })
       this.metric({
         label: '队列 P95',
@@ -129,40 +152,48 @@ export struct RdpDiagnosticsHud {
         label: '远端更新年龄',
         value: ageMs(this.stats.lastRemoteUpdateAgeMs)
       })
-      this.metric({
-        label: '事件循环年龄 / 阻塞',
-        value: ageMs(this.stats.eventLoopAgeMs) + ' / ' + durationUs(this.stats.eventLoopBlockMaxUs)
-      })
-      this.metric({
-        label: '上传 / 绘制 / swap',
-        value: durationUs(this.stats.uploadP95Us) + ' / ' +
-          durationUs(this.stats.drawP95Us) + ' / ' + durationUs(this.stats.swapP95Us)
-      })
-      this.metric({
-        label: '画面尺寸',
-        value: this.stats.desktopWidth.toString() + ' x ' + this.stats.desktopHeight.toString()
-      })
-      this.metric({
-        label: 'GFX 通道',
-        value: this.stats.gfxChannelConnected ? 'connected' : 'gdi'
-      })
-      this.metric({
-        label: '停滞/拒绝',
-        value: this.stats.pumpRejected.toString() + ' / ' + this.stats.presentationRejected.toString()
-      })
-      this.metric({
-        label: '输入失败 / 网络检查',
-        value: this.stats.inputPostFailures.toString() + ' / ' +
-          this.stats.networkCheckFailures.toString()
-      })
-      Text('详细数据已写入 hilog，可用 HDC 导出').fontSize(9)
-        .fontColor('rgba(255,255,255,0.48)').margin({ top: 4 })
+      if (this.expanded) {
+        this.metric({
+          label: '送显 / 替换',
+          value: this.stats.presentationWindowSamples.toString() + ' / ' +
+            this.stats.pumpReplaced.toString()
+        })
+        this.metric({
+          label: '事件循环年龄 / 阻塞',
+          value: ageMs(this.stats.eventLoopAgeMs) + ' / ' + durationUs(this.stats.eventLoopBlockMaxUs)
+        })
+        this.metric({
+          label: '上传 / 绘制 / swap',
+          value: durationUs(this.stats.uploadP95Us) + ' / ' +
+            durationUs(this.stats.drawP95Us) + ' / ' + durationUs(this.stats.swapP95Us)
+        })
+        this.metric({
+          label: '画面尺寸',
+          value: this.stats.desktopWidth.toString() + ' x ' + this.stats.desktopHeight.toString()
+        })
+        this.metric({
+          label: 'GFX 通道',
+          value: this.stats.gfxChannelConnected ? 'connected' : 'gdi'
+        })
+        this.metric({
+          label: '停滞/拒绝',
+          value: this.stats.pumpRejected.toString() + ' / ' + this.stats.presentationRejected.toString()
+        })
+        this.metric({
+          label: '输入失败 / 网络检查',
+          value: this.stats.inputPostFailures.toString() + ' / ' +
+            this.stats.networkCheckFailures.toString()
+        })
+      }
     }
     .width(236)
     .padding(12)
-    .backgroundColor('rgba(12,16,24,0.84)')
-    .border({ width: 0.5, color: this.accentColor + '90' })
-    .borderRadius(10)
-    .position({ x: 10, y: 62 })
+    .backgroundColor('rgba(12,16,24,0.78)').backdropBlur(18)
+    .border({ width: 0.5, color: this.pal().floatBorder })
+    .borderRadius(16)
+    .shadow({ radius: 16, color: this.pal().fabShadow, offsetY: 4 })
+    .position({ x: this.panelX, y: this.panelY })
+    .translate({ x: this.dragX, y: this.dragY })
+    .hitTestBehavior(HitTestMode.Block)
   }
 }

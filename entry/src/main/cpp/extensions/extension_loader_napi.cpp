@@ -9,6 +9,7 @@
 #include "protocol_adapter.h"
 #include "session_teardown_executor.h"
 #include "session_registry.h"
+#include "key_sequence_dispatch.h"
 #include "disconnect_request_registry.h"
 #include "rdp/freerdp_adapter.h"
 #include "rdp/rdp_auth_mode_policy.h"
@@ -5824,6 +5825,67 @@ napi_value NapiSendKey(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * NAPI: sendKeySequence(sessionId: number, keyCodes: number[]): boolean
+ *
+ * Resolve the session once and submit the complete chord as one ordered NAPI
+ * operation. Protocol adapters still own their native input queues; this
+ * boundary prevents a reconnect or teardown from splitting a chord between
+ * several JS-to-native calls.
+ */
+napi_value NapiSendKeySequence(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    bool accepted = false;
+    int32_t sessionId = 0;
+    bool isArray = false;
+    uint32_t length = 0;
+    if (argc >= 2 && napi_get_value_int32(env, args[0], &sessionId) == napi_ok &&
+        napi_is_array(env, args[1], &isArray) == napi_ok && isArray &&
+        napi_get_array_length(env, args[1], &length) == napi_ok &&
+        length > 0 && length <= 16) {
+        std::vector<uint32_t> keyCodes;
+        keyCodes.reserve(length);
+        bool valid = true;
+        for (uint32_t index = 0; index < length; ++index) {
+            napi_value value;
+            int32_t keyCode = 0;
+            if (napi_get_element(env, args[1], index, &value) != napi_ok ||
+                napi_get_value_int32(env, value, &keyCode) != napi_ok || keyCode <= 0) {
+                valid = false;
+                break;
+            }
+            keyCodes.push_back(static_cast<uint32_t>(keyCode));
+        }
+        const auto lookup = g_sessionRegistry.find(sessionId);
+        const std::shared_ptr<SessionContext> session =
+            lookup == g_sessionRegistry.end() ? nullptr : lookup->second;
+        std::shared_ptr<ProtocolAdapter> adapter;
+        if (valid && session &&
+            session->lifecycle.load(std::memory_order_acquire) == SessionContext::Lifecycle::Active) {
+            std::lock_guard<std::mutex> lock(session->adapterMutex);
+            adapter = session->adapter;
+        }
+        if (valid && session && adapter) {
+            if (session->protocolName == "vnc") {
+                session->diagnostics.inputEventsSent.fetch_add(
+                    keyCodes.size() * 2U, std::memory_order_relaxed);
+            }
+            DispatchKeySequence(keyCodes, [&adapter](uint32_t keyCode, bool pressed) {
+                adapter->sendKey(keyCode, pressed);
+            });
+            accepted = true;
+            OH_LOG_INFO(LOG_APP,
+                "[ExtLoader] NapiSendKeySequence session=%{public}d keys=%{public}u",
+                sessionId, length);
+        }
+    }
+    napi_value result;
+    napi_get_boolean(env, accepted, &result);
+    return result;
+}
+
+/**
  * NAPI: sendMouse(sessionId: number, x: number, y: number, button: number, pressed: boolean): void
  */
 napi_value NapiSendMouse(napi_env env, napi_callback_info info) {
@@ -9849,6 +9911,10 @@ napi_value ExtensionLoaderNapi::Init(napi_env env, napi_value exports) {
     napi_create_function(env, "sendKey", NAPI_AUTO_LENGTH,
                          NapiSendKey, nullptr, &fn);
     napi_set_named_property(env, exports, "sendKey", fn);
+
+    napi_create_function(env, "sendKeySequence", NAPI_AUTO_LENGTH,
+                         NapiSendKeySequence, nullptr, &fn);
+    napi_set_named_property(env, exports, "sendKeySequence", fn);
 
     napi_create_function(env, "sendMouse", NAPI_AUTO_LENGTH,
                          NapiSendMouse, nullptr, &fn);
