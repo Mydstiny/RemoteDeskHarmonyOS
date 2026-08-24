@@ -270,6 +270,24 @@ export struct VirtualKeyboardSettingsSheet {
   }
 
   @Builder
+  private editorPlatformChoice(platform: RemoteShortcutPlatform, label: string) {
+    Button() {
+      Row({ space: 6 }) {
+        Text(label).fontSize(11).fontWeight(FontWeight.Medium)
+          .fontColor(this.platform() === platform ? '#FFFFFF' : this.text2())
+        if (this.platform() === platform) {
+          SymbolGlyph($r('sys.symbol.checkmark')).fontSize(12).fontColor(['#FFFFFF'])
+        }
+      }.justifyContent(FlexAlign.Center)
+    }
+    .layoutWeight(1).height(38).borderRadius(10)
+    .backgroundColor(this.platform() === platform ? this.accentColor : this.card())
+    .border({ width: 1, color: this.platform() === platform ? this.accentColor : this.cardStroke() })
+    .onClick((): void => { this.selectPlatform(platform); })
+    .accessibilityText('切换到' + label + '组合键')
+  }
+
+  @Builder
   private inputMethodRow(method: RemoteSystemInputMethodInfo) {
     Row() {
       Column({ space: 3 }) {
@@ -334,6 +352,10 @@ export struct VirtualKeyboardSettingsSheet {
           .fontSize(13).fontWeight(FontWeight.Bold).fontColor(this.text()).layoutWeight(1)
         Button('取消').height(32).fontSize(10).backgroundColor(Color.Transparent)
           .fontColor(this.text2()).onClick((): void => { this.closeEditor(); })
+      }.width('100%')
+      Row({ space: 6 }) {
+        this.editorPlatformChoice('windows', 'Windows · Ctrl')
+        this.editorPlatformChoice('macos', 'macOS · Cmd')
       }.width('100%')
       Row({ space: 5 }) {
         if (this.platform() === 'macos') {

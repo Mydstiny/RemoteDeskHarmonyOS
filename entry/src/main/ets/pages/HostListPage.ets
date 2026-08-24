@@ -11404,6 +11404,9 @@ struct HostListPage {
       // shrink for short lessons and grow only up to the live window.
       return SheetSize.FIT_CONTENT;
     }
+    if (this.settingsLeafSheetMode === SETTINGS_SHEET_VIRTUAL_KEYBOARD_CUSTOM) {
+      return SheetSize.LARGE;
+    }
     const diagnosticHeight: number = diagnosticLogSettingsLeafSheetHeight(this.settingsLeafSheetMode);
     if (diagnosticHeight > 0) { return diagnosticHeight; }
     const moonlightHeight: number = moonlightSettingsLeafSheetHeight(this.settingsLeafSheetMode);
@@ -12081,7 +12084,7 @@ struct HostListPage {
                 '当前输入法、语言子类型与 HarmonyOS 官方设置',
                 (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VIRTUAL_KEYBOARD); })
               this.cardDivider()
-              this.cardActionRow($r('sys.symbol.keyboard'), '输入行为',
+              this.protocolActionRow($r('sys.symbol.keyboard'), '输入行为',
                 '精简键盘、文本发送与候选预编辑规则',
                 (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VIRTUAL_KEYBOARD_BEHAVIOR); })
               this.cardDivider()
