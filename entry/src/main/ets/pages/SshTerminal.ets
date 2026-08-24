@@ -723,6 +723,9 @@ struct SshTerminal {
   @State backHover: boolean = false;
   /** 软键盘高度 (vp) — 手动驱动移动端虚拟键栏悬浮到键盘上边缘 */
   @State @Watch('onKeyboardInsetChange') kbHeight: number = 0;
+  /** Avoid-area visibility is authoritative for floating/split IMEs; kbHeight is layout-only. */
+  private terminalSoftwareKeyboardAreaKnown: boolean = false;
+  private terminalSoftwareKeyboardAreaVisible: boolean = false;
   /** 系统导航栏/手势条底部避让高度 (vp), 用于键盘未弹起时托起虚拟键栏 */
   @State navHeight: number = 0;
   /** 状态栏/挖孔顶部避让高度 (vp), 顶栏内容从安全区下方开始 */
@@ -1304,6 +1307,9 @@ struct SshTerminal {
   }
 
   private terminalSoftwareKeyboardIsVisible(): boolean {
+    if (this.terminalSoftwareKeyboardAreaKnown) {
+      return this.terminalSoftwareKeyboardAreaVisible;
+    }
     return this.kbHeight > 0;
   }
 
@@ -1319,6 +1325,16 @@ struct SshTerminal {
   private resolvePendingTerminalSoftwareKeyboardExit(): void {
     if (!this.terminalSoftwareKeyboardExitPending ||
       this.terminalSoftwareKeyboardIsVisible()) { return; }
+    // A replacement request deliberately hides the old IME before the new
+    // TextArea is focused. Do not treat that expected gap as the user's final
+    // dismissal, otherwise the 48ms show turn or bounded focus retry is
+    // cancelled before it can attach the replacement IME client.
+    if (this.terminalSoftwareKeyboardShowTimer !== -1 ||
+      this.terminalSoftwareKeyboardRefocusInFlight ||
+      this.terminalInputFocusRetryTimer !== -1) {
+      hilog.debug(0x0000, 'SshTerminal', '[input] keyboard hide deferred for replacement focus');
+      return;
+    }
     this.finishTerminalSoftwareKeyboardExit('keyboard-hidden');
   }
 
@@ -1330,18 +1346,14 @@ struct SshTerminal {
     this.terminalSoftwareKeyboardRefocusLeaseTimer = setTimeout((): void => {
       this.terminalSoftwareKeyboardRefocusLeaseTimer = -1;
       this.terminalSoftwareKeyboardRefocusInFlight = false;
-      if (this.terminalSoftwareKeyboardExitPending &&
-        !this.terminalSoftwareKeyboardIsVisible()) {
-        this.finishTerminalSoftwareKeyboardExit('refocus-lease-hidden');
-        return;
-      }
-      if (!this.terminalSoftwareKeyboardEditingObserved &&
-        !this.terminalSoftwareKeyboardIsVisible()) {
-        // No editing callback means the replacement IME client never became
-        // active. Do not leave a request that would reopen it on the next
-        // unrelated focus transition.
-        this.softKeyboardRequested = false;
-        this.terminalSoftwareKeyboardExitPending = false;
+      if (!this.terminalSoftwareKeyboardIsVisible()) {
+        // The replacement window is bounded. Whether the stale callback was
+        // editing=true or editing=false, no visible system IME means that
+        // request did not become an active keyboard session; clear the flag
+        // so a later unrelated focus turn cannot reopen it accidentally.
+        this.finishTerminalSoftwareKeyboardExit(
+          this.terminalSoftwareKeyboardExitPending ? 'refocus-lease-hidden' :
+            'refocus-lease-no-keyboard');
       }
     }, SSH_TERMINAL_SOFTWARE_FOCUS_LEASE_MS);
   }
@@ -10740,6 +10752,8 @@ struct SshTerminal {
     const oldNavHeight: number = this.navHeight;
     try {
       const keyboardArea: window.AvoidArea = w.getWindowAvoidArea(window.AvoidAreaType.TYPE_KEYBOARD);
+      this.terminalSoftwareKeyboardAreaKnown = true;
+      this.terminalSoftwareKeyboardAreaVisible = keyboardArea.visible;
       this.kbHeight = px2vp(this.keyboardBottomInsetPx(w, keyboardArea));
     } catch (_e) { /* ignore */ }
     let topInset: number = 0;
@@ -10851,6 +10865,8 @@ struct SshTerminal {
         this.avoidCb = (data: window.AvoidAreaOptions): void => {
           if (data.type === window.AvoidAreaType.TYPE_KEYBOARD) {
             const insetPx: number = this.keyboardBottomInsetPx(w, data.area);
+            this.terminalSoftwareKeyboardAreaKnown = true;
+            this.terminalSoftwareKeyboardAreaVisible = data.area.visible;
             this.kbHeight = px2vp(insetPx);
             this.resolvePendingTerminalSoftwareKeyboardExit();
             hilog.info(0x0000, 'SshTerminal', '[avoidArea] keyboard rect=' +
@@ -10881,6 +10897,8 @@ struct SshTerminal {
     } catch (_e) { /* ignore */ }
     this.win = null;
     this.avoidCb = null;
+    this.terminalSoftwareKeyboardAreaKnown = false;
+    this.terminalSoftwareKeyboardAreaVisible = false;
   }
 
   private pal(): Palette {
