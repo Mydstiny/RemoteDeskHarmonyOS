@@ -14,6 +14,7 @@ import {
   createSshImeCallbackState,
   recordSshImeWillInsert,
   consumeSshImeDidInsert,
+  sshImeShouldCommitDirectAscii,
   recordSshImeWillDelete,
   consumeSshImeDidDelete,
   inspectSshImeChange,
@@ -283,6 +284,17 @@ export default function sshTerminalInputPolicyTest(): void {
       const duplicateChange = inspectSshImeChange(state, '你', 0);
       expect(duplicateChange.sendRemote).assertFalse();
       expect(duplicateChange.resetLocal).assertTrue();
+    });
+
+    it('should_keep_direct_english_keys_out_of_the_hidden_editor', 0, (): void => {
+      expect(sshImeShouldCommitDirectAscii('a')).assertTrue();
+      expect(sshImeShouldCommitDirectAscii('A')).assertTrue();
+      expect(sshImeShouldCommitDirectAscii(' ')).assertTrue();
+      expect(sshImeShouldCommitDirectAscii('1')).assertTrue();
+      expect(sshImeShouldCommitDirectAscii('-')).assertTrue();
+      expect(sshImeShouldCommitDirectAscii('ab')).assertFalse();
+      expect(sshImeShouldCommitDirectAscii('你')).assertFalse();
+      expect(sshImeShouldCommitDirectAscii('🙂')).assertFalse();
     });
 
     it('should_drop_cumulative_change_after_did_insert_and_clear_editor', 0, (): void => {

@@ -275,6 +275,20 @@ export function recordSshImeWillInsert(
   return true;
 }
 
+/**
+ * A direct English-keyboard keystroke can cross the terminal boundary from
+ * onWillInsert without ever mutating the hidden editor. Keeping that editor
+ * empty by rejecting the insertion (instead of inserting and then clearing)
+ * prevents HarmonyOS IMEs from treating every character as a new field start
+ * and automatically re-enabling Shift. Multi-unit and non-ASCII values stay
+ * on the composition-aware onDid/onChange path.
+ */
+export function sshImeShouldCommitDirectAscii(insertValue: string): boolean {
+  if (insertValue.length !== 1) { return false; }
+  const code: number = insertValue.charCodeAt(0);
+  return code >= 0x20 && code <= 0x7E;
+}
+
 export function consumeSshImeDidInsert(
   state: SshImeCallbackState,
   insertValue: string

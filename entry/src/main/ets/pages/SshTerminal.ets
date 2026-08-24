@@ -156,6 +156,7 @@ import {
   createSshImeCallbackState,
   recordSshImeWillInsert,
   consumeSshImeDidInsert,
+  sshImeShouldCommitDirectAscii,
   recordSshImeWillDelete,
   consumeSshImeDidDelete,
   inspectSshImeChange,
@@ -1157,6 +1158,8 @@ struct SshTerminal {
   private physicalKeyboardDeviceIds: Array<number> = [];
   private virtualKeyboardDeviceIds: Array<number> = [];
   private imeCallbackState: SshImeCallbackState = createSshImeCallbackState();
+  /** Guards a defensive onDid callback after a rejected direct ASCII insert. */
+  private imeDirectInsertRejected: boolean = false;
 
   private inputDeviceListener: Callback<inputDevice.DeviceListener> =
     (data: inputDevice.DeviceListener): void => {
@@ -16538,10 +16541,25 @@ struct SshTerminal {
   private handleSoftWillInsert(info: InsertValue): boolean {
     hilog.debug(0x0000, 'SshTerminal', '[input] will-insert chars=' +
       info.insertValue.length.toString());
+    this.imeDirectInsertRejected = sshImeShouldCommitDirectAscii(info.insertValue);
+    if (this.imeDirectInsertRejected) {
+      // Match the proven pre-workbench path: send the exact character and
+      // reject its local insertion. Avoid assigning kbInput='' here—the field
+      // is already empty and that redundant clear resets the IME Shift state.
+      resetSshImeShadow(this.imeCallbackState, info.insertValue);
+      this.onTerminalData(info.insertValue);
+      return false;
+    }
     return recordSshImeWillInsert(this.imeCallbackState, info.insertValue);
   }
 
   private handleSoftDidInsert(info: InsertValue): void {
+    if (this.imeDirectInsertRejected) {
+      // ArkUI normally omits onDid when onWill rejects an insertion. Ignore a
+      // defensive late callback without clearing the editor/keyboard state.
+      this.imeDirectInsertRejected = false;
+      return;
+    }
     const committed: string = consumeSshImeDidInsert(this.imeCallbackState, info.insertValue);
     hilog.debug(0x0000, 'SshTerminal', '[input] did-insert chars=' +
       info.insertValue.length.toString() + ' committed=' + committed.length.toString());
@@ -16550,6 +16568,7 @@ struct SshTerminal {
   }
 
   private handleSoftWillDelete(info: DeleteValue): boolean {
+    this.imeDirectInsertRejected = false;
     hilog.debug(0x0000, 'SshTerminal', '[input] will-delete chars=' +
       info.deleteValue.length.toString());
     return recordSshImeWillDelete(this.imeCallbackState, info.deleteValue);
