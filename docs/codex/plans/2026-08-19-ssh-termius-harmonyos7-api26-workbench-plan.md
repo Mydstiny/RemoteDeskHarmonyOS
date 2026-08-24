@@ -1,12 +1,15 @@
 # SSH Termius 化：HarmonyOS 7 / API 26 原生工作台完整实施计划
 
-> 状态：`ACTIVE_M9` / `INDEPENDENT_TRACK` / `API26_SDK_PENDING`
+> 状态：`ACTIVE_M9` / `NON_API26_CLOSEOUT` / `API26_DEFERRED_BY_USER`
 > 类型：SSH 工作台独立实施计划 / 不从属于全应用 UI 计划
 > 编制日期：2026-08-19
 > 编制基线：`348b28083`（`codex/moonlight-complete-upgrade`）
 > 当前系统：HarmonyOS 6.1 / API 23；本机另有 DevEco 内置 API 24 SDK
 
 > 执行指针（2026-08-20）：M0–M6 已在 SSH 范围内落地并通过双 Hvigor 门禁；M7 首个可运行增量已提交为 `66ded2ce6`（目标策略、红色广播 Sheet、16 会话上限、session/generation 重验、认证/raw/fullscreen 排除、危险/多行二次确认、Esc×2 停止及策略测试）；M8 已提交为 `7bb90ab6d`（版本化 WebMessagePort 信封、握手/generation/序列 ACK、优先级队列/背压策略）、`9d630d1a2`（结构化端口通道适配器及测试）、`4f5e9018`（SshXtermSurface/rawfile 的 API 23+ WebMessagePort 双栈接线、输出批次 ACK、输入/resize、生命周期与 generation 退回 JS proxy）、`eaf98531`（native/page JSON 类型白名单、超前 ACK 拒绝、UTF-8 字节队列预算与边界测试）、`4a2d10d9`（attach token/端口实例 fence，旧端口回调静默丢弃与重绑测试）及 `493601b1`（优先队列改为出队分配 wire sequence，控制帧优先但不再反转线上序号，ACK 不清理未发送帧）。共享 `RemoteSessionWindowCoordinator/RemoteSessionAbility` 已覆盖 SSH 的认证后窗口 handoff 入口，`e4b32688` 补齐了 SSH/RDP/RustDesk/VNC/Moonlight 的合法窗口 target/protocol 组合与跨协议拒绝测试；`41483b41` 收紧 SSH 多窗口交接为按 host 精确移除源标签，保留其余 SSH 标签并切换到下一个会话，避免交接一个主机时清空整个工作台；`2d1f06d6` 修复 PC SSH 主机添加 Sheet 的固定宽度溢出，实机模拟器布局树确认代理选项与下一步操作均未被截断；`d00511e55` 修复独立窗口内转发 Sheet 的输入焦点竞争；`60602d651` 将手机会话辅助操作收敛为官方 `bindPopup` 二级菜单，保留 Pad/PC 直接操作并完成 Phone HDC 连接、Host Key、公钥鉴权和语言弹层回归。API23 PC 模拟器已进一步验证：Host Key/ED25519 公钥鉴权成功后才创建独立窗口，终端回显、SFTP 实际传输、转发 payload、标题栏最大化、F11 沉浸全屏进出及左边缘 WMS 分屏均正常；API26/物理设备/剩余协议矩阵仍待验收。端口仍由 `webMessageBridgeEnabled=false` 默认关闭；当前使用白名单 JSON 字符串帧，ArrayBuffer 批量和默认放量等待 API 26 SDK/真机证据。API 26 SDK 仍未安装，因此 API 26-only UI Design Kit/Material 只能保持候选与兼容降级，不能宣称 API 26 完成。
+
+> 执行指针（2026-08-24）：非 API26 SSH 工作台缺陷审计已完成。`150fcdf3b` 恢复升级前“ArkUI 隐藏输入锚点”为手机/Pad 唯一 IME 所有者，并覆盖 bar/block/underline/outline 光标闪烁；API24 手机端已完成连接后 `echo OK` 端到端回显、焦点保持和光标证据。`4c9a0809` 补齐手机/Pad 实体键盘模式下的显式终端手势静默聚焦，默认虚拟键盘与桌面路径保持不变；该增量独立复核为 P0/P1/P2/P3 零。两次增量均通过 `default@OhosTestCompileArkTS`、签名 `assembleHap`、Light 合规门，API24 PC/2in1 HDC 启动回归通过。API26 SDK/运行时及真实 Pad/实机验收按用户明确要求延期，不作为当前代码完成的宣称。
+> 执行指针（2026-08-24 续）：移动端输入竞态与键盘默认值已按问题拆分提交：`82bf48390` 将升级缺失的 SSH 输入模式恢复为手机/Pad 虚拟键盘、桌面实体键鼠，并将隐藏 TextArea 固定为 `TextAreaType.NORMAL` + `AutoCapitalizationMode.NONE`；`bb78a0bc9` 停止已成功焦点请求的重复重试；`e7a692f29` 为实体键盘显式手势补齐 bounded retry；`2223c3815` 清理软件键盘 lease 的陈旧状态；`2f2ea27b3` 与 `0ee1abc7` 隔离旧 TextArea 的延迟 blur/editing 回调、重开请求窗口和浮动/分屏 IME 的 `AvoidArea.visible` 状态。最新增量均通过双 Hvigor 门禁和 Light 合规门，复用只读复核最终为 P0/P1/P2/P3 全零。系统 IME 的具体英文 subtype 仍由用户/系统设置控制，未引入受限的全局 IME 切换权限；SSH 本身关闭自动大写。真实手机/Pad运行验收与 API26 按用户明确要求延期，当前不宣称其 runtime PASS。
 > 目标系统：HarmonyOS 7 / API 26；官方当前公开资料为 26.0.0 Beta2，本机尚未安装 API 26 SDK
 > 实施分支：`codex/moonlight-complete-upgrade`（SSH 变更按独立路径和提交隔离；不触碰现有 Moonlight/VNC 脏改）
 > 范围：独立推进 SSH 终端工作台、SFTP 工作流、会话生产力与 HarmonyOS 7 / API 26 原生体验
