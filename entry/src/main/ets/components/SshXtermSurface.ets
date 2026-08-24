@@ -1764,6 +1764,11 @@ export struct SshXtermSurface {
       // retained SSH session separate from the previous host's DOM/document
       // when ArkUI performs the keyed surface remount.
       .id('ssh-xterm-' + this.coreKey + '-render-' + this.renderRevision.toString())
+      // xterm renders and receives pointer gestures, but ArkUI's TextArea is
+      // the sole keyboard/IME owner. Prevent ArkWeb's rootWebArea from keeping
+      // native focus after a canvas tap; pointer hit testing remains enabled.
+      .focusable(false)
+      .focusOnTouch(false)
       .javaScriptAccess(true)
       // The page and its vendored xterm assets are bundled rawfiles. ArkWeb
       // needs local file access enabled to resolve the relative vendor URLs.

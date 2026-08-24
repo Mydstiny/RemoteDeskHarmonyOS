@@ -22,6 +22,9 @@ import {
   splitSshTerminalInputText,
   admitsSshTerminalInputPendingItems,
   resolveSshTerminalInputOwner,
+  sshTerminalSoftwareKeyboardFocusEnabled,
+  sshTerminalUsesNativeTouchInputAnchor,
+  sshTerminalShouldProgrammaticallyFocusInput,
   sshTerminalInputFocusAllowed,
   SSH_TERMINAL_INPUT_PENDING_CONTROL_MAX_ITEMS,
   SSH_TERMINAL_INPUT_PENDING_DATA_MAX_ITEMS
@@ -37,8 +40,24 @@ const CTRL_SHIFT: TerminalModifierState = { ctrl: true, alt: false, shift: true 
 export default function sshTerminalInputPolicyTest(): void {
   describe('SshTerminalInputPolicy', (): void => {
     it('should_keep_one_input_owner_per_device_family', 0, (): void => {
-      expect(resolveSshTerminalInputOwner(false)).assertEqual('xterm');
+      expect(resolveSshTerminalInputOwner(false)).assertEqual('arkui');
       expect(resolveSshTerminalInputOwner(true)).assertEqual('arkui');
+    });
+
+    it('should_open_software_keyboard_only_after_an_explicit_request', 0, (): void => {
+      expect(sshTerminalSoftwareKeyboardFocusEnabled(false, false)).assertFalse();
+      expect(sshTerminalSoftwareKeyboardFocusEnabled(false, true)).assertFalse();
+      expect(sshTerminalSoftwareKeyboardFocusEnabled(true, false)).assertFalse();
+      expect(sshTerminalSoftwareKeyboardFocusEnabled(true, true)).assertTrue();
+    });
+
+    it('should_use_real_touch_focus_on_phone_and_pad_without_refocus_races', 0, (): void => {
+      expect(sshTerminalUsesNativeTouchInputAnchor(false)).assertTrue();
+      expect(sshTerminalUsesNativeTouchInputAnchor(true)).assertFalse();
+      expect(sshTerminalShouldProgrammaticallyFocusInput(false, true, true)).assertFalse();
+      expect(sshTerminalShouldProgrammaticallyFocusInput(false, false, false)).assertFalse();
+      expect(sshTerminalShouldProgrammaticallyFocusInput(false, true, false)).assertTrue();
+      expect(sshTerminalShouldProgrammaticallyFocusInput(true, false, false)).assertTrue();
     });
 
     it('should_block_terminal_focus_while_a_modal_owns_the_keyboard', 0, (): void => {

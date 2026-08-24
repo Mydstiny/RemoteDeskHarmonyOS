@@ -51,6 +51,19 @@
       color: transparent !important;
       background: transparent !important;
     }
+    @keyframes ssh-terminal-unfocused-cursor-blink {
+      0%, 49% { opacity: 1; }
+      50%, 100% { opacity: 0; }
+    }
+    /* ArkUI owns IME focus on HarmonyOS. Preserve the configured cursor blink
+       when xterm renders its unfocused cursor behind that native input anchor.
+       xterm uses a separate class for each configured cursor style. */
+    #terminal.ssh-cursor-blink-enabled .xterm-cursor.xterm-cursor-outline,
+    #terminal.ssh-cursor-blink-enabled .xterm-cursor.xterm-cursor-bar,
+    #terminal.ssh-cursor-blink-enabled .xterm-cursor.xterm-cursor-block,
+    #terminal.ssh-cursor-blink-enabled .xterm-cursor.xterm-cursor-underline {
+      animation: ssh-terminal-unfocused-cursor-blink 1s steps(1, end) infinite;
+    }
   </style>
 </head>
 <body>
@@ -452,7 +465,11 @@
           document.documentElement.style.backgroundColor = state.config.background || '#0d0d0d';
           document.body.style.backgroundColor = state.config.background || '#0d0d0d';
           var terminalRoot = document.getElementById('terminal');
-          if (terminalRoot) terminalRoot.style.backgroundColor = state.config.background || '#0d0d0d';
+          if (terminalRoot) {
+            terminalRoot.style.backgroundColor = state.config.background || '#0d0d0d';
+            terminalRoot.classList.toggle('ssh-cursor-blink-enabled',
+              state.config.cursorBlink !== false);
+          }
         } catch (_) {}
         try {
           var palette = Array.isArray(state.config.palette) && state.config.palette.length === 16
@@ -638,11 +655,9 @@
           function finishTouchPointer(event) {
             if (!event || Number(event.pointerId) !== touchPointerId) return;
             if (!touchMoved && event.type === 'pointerup') {
-              // Phone/Pad use xterm's textarea as the sole IME owner. Focus it
-              // inside the user gesture so the cursor keeps blinking and the
-              // software keyboard belongs to this WebView instead of racing a
-              // second hidden ArkUI editor.
-              try { state.terminal.focus(); } catch (_) {}
+              // ArkUI is the sole HarmonyOS IME owner. Report the user tap but
+              // do not focus xterm's helper textarea: ArkWeb cannot reliably
+              // attach the phone/Pad software keyboard to that hidden field.
               bridgeCall('onFocus', [true]);
             }
             try { terminalElement.releasePointerCapture(event.pointerId); } catch (_) {}

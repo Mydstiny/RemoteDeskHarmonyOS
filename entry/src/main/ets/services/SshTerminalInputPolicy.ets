@@ -16,12 +16,45 @@ export interface TerminalModifierState {
 export type SshTerminalInputOwner = 'arkui' | 'xterm';
 
 /**
- * PC/2in1 keeps the ArkUI anchor for lossless physical-key routing. Phone and
- * Pad let xterm's textarea own the IME so ArkWeb focus, cursor blink and text
- * composition cannot fight a second hidden editor in the parent view.
+ * HarmonyOS ArkWeb does not reliably attach the system IME to xterm's helper
+ * textarea on phone/Pad. Keep the proven ArkUI anchor as the only input owner
+ * on every device family; the Web surface remains renderer-only.
  */
-export function resolveSshTerminalInputOwner(isDesktopDevice: boolean): SshTerminalInputOwner {
-  return isDesktopDevice ? 'arkui' : 'xterm';
+export function resolveSshTerminalInputOwner(_isDesktopDevice: boolean): SshTerminalInputOwner {
+  return 'arkui';
+}
+
+/** Programmatic terminal focus must never summon the software keyboard. */
+export function sshTerminalSoftwareKeyboardFocusEnabled(
+  virtualKeyBarRequested: boolean,
+  softwareKeyboardRequested: boolean
+): boolean {
+  return virtualKeyBarRequested && softwareKeyboardRequested;
+}
+
+/**
+ * Phone and Pad need a real ArkUI editor touch to attach the system IME.
+ * Desktop keeps the small off-screen anchor because pointer gestures belong
+ * to xterm and focus is restored programmatically for hardware keyboards.
+ */
+export function sshTerminalUsesNativeTouchInputAnchor(isDesktopDevice: boolean): boolean {
+  return !isDesktopDevice;
+}
+
+/**
+ * A native touch anchor already receives focus from the user's pointer event.
+ * Re-focusing it in the same event turn clears the just-created IME client on
+ * API 23. Mobile lifecycle restoration also waits for the next real terminal
+ * touch, while an explicit key-bar request may still reopen the editor.
+ */
+export function sshTerminalShouldProgrammaticallyFocusInput(
+  isDesktopDevice: boolean,
+  softwareKeyboardRequested: boolean,
+  nativeTouchOwnsFocus: boolean
+): boolean {
+  if (isDesktopDevice) { return true; }
+  if (nativeTouchOwnsFocus) { return false; }
+  return softwareKeyboardRequested;
 }
 
 /** A modal/editor surface must never lose focus to the terminal input owner. */

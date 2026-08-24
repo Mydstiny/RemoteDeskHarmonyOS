@@ -168,6 +168,9 @@ import {
   splitSshTerminalInputText,
   admitsSshTerminalInputPendingItems,
   resolveSshTerminalInputOwner,
+  sshTerminalSoftwareKeyboardFocusEnabled,
+  sshTerminalUsesNativeTouchInputAnchor,
+  sshTerminalShouldProgrammaticallyFocusInput,
   sshTerminalInputFocusAllowed
 } from '../services/SshTerminalInputPolicy';
 import {
@@ -992,6 +995,8 @@ struct SshTerminal {
   /** Bounded focus recovery for WebView/IME handoff turns. */
   private terminalInputFocusRetryTimer: number = -1;
   private terminalInputFocusRetryToken: number = 0;
+  private terminalSoftwareKeyboardShowTimer: number = -1;
+  private terminalSoftwareKeyboardRefocusInFlight: boolean = false;
   /** 功能开关: true=使用 Rust terminal_core 渲染 (NativeTerminalRenderer), false=旧 TerminalEmulator */
 
   // cellH/cellW 由字号推算, 与 Canvas 字体单位保持一致
@@ -1278,6 +1283,26 @@ struct SshTerminal {
     this.terminalInputFocusRetryToken = this.terminalInputFocusRetryToken + 1;
   }
 
+  private clearTerminalSoftwareKeyboardShowRequest(): void {
+    if (this.terminalSoftwareKeyboardShowTimer !== -1) {
+      clearTimeout(this.terminalSoftwareKeyboardShowTimer);
+      this.terminalSoftwareKeyboardShowTimer = -1;
+    }
+    this.terminalSoftwareKeyboardRefocusInFlight = false;
+  }
+
+  private prepareTerminalSoftwareKeyboardRefocus(): void {
+    this.clearTerminalSoftwareKeyboardShowRequest();
+    this.terminalSoftwareKeyboardRefocusInFlight = true;
+    // Silent terminal focus intentionally has no IME client attached. An
+    // already-focused TextArea therefore cannot be promoted with
+    // showTextInput() (API 23 returns 12800009). End that silent edit session
+    // first; the next focus turn sees enableKeyboardOnFocus=true and ArkUI
+    // creates the real system-IME attachment itself.
+    try { this.kbCtrl.stopEditing(); } catch (_err) { /* input may not be mounted */ }
+    try { this.getUIContext().getFocusController().clearFocus(); } catch (_err) { /* best effort */ }
+  }
+
   private requestTerminalInputFocus(): void {
     if (this.terminalClosing) { return; }
     let focused: boolean = false;
@@ -1300,6 +1325,14 @@ struct SshTerminal {
   }
 
   private scheduleTerminalInputFocusRetry(): void {
+    // Phone/Pad owns focus through the real touch on the native IME anchor.
+    // Starting the connection-time retry loop here races that touch and makes
+    // API 23/24 recreate the IME client repeatedly. Only an explicit virtual
+    // keyboard request may use the bounded programmatic retry path on mobile.
+    if (sshTerminalUsesNativeTouchInputAnchor(this.isDesktopDevice) &&
+      !this.softKeyboardRequested) {
+      return;
+    }
     if (!this.terminalInputFocusEligible() || this.terminalInputFocusRetryTimer !== -1) {
       return;
     }
@@ -1335,11 +1368,17 @@ struct SshTerminal {
    * physical-keyboard focus retry loop; a canvas/key-bar tap will reopen it.
    */
   private onTerminalEditorExit(reason: string): void {
+    if (this.terminalSoftwareKeyboardRefocusInFlight) {
+      hilog.debug(0x0000, 'SshTerminal', '[input] editor exit ignored during software refocus reason=' +
+        reason);
+      return;
+    }
     const userDismissibleVirtualIme: boolean = this.virtualKeyBarRequested() &&
-      (this.breakpoint === 'sm' || this.sshInputMode === 1);
+      (!this.isDesktopDevice || this.sshInputMode === 1);
     if (userDismissibleVirtualIme && !this.tabSwitchInFlight) {
       this.softKeyboardRequested = false;
       this.clearTerminalInputFocusRetry();
+      this.clearTerminalSoftwareKeyboardShowRequest();
       hilog.debug(0x0000, 'SshTerminal', '[input] virtual editor exit reason=' + reason +
         ' retry=0');
       return;
@@ -2177,6 +2216,7 @@ struct SshTerminal {
     this.terminalFocusMode = false;
     this.softKeyboardRequested = false;
     this.clearTerminalInputFocusRetry();
+    this.clearTerminalSoftwareKeyboardShowRequest();
     if (next === 'pane_host' && !this.sftpWorkbenchSurfaceActive()) {
       this.focusKeyboard(false);
       return;
@@ -3181,6 +3221,7 @@ struct SshTerminal {
     this.terminalFocusMode = true;
     this.clearTerminalInputFocusRetry();
     this.softKeyboardRequested = false;
+    this.clearTerminalSoftwareKeyboardShowRequest();
     this.clearSftpSheetTransitionTimers();
     ++this.sftpSheetTransitionToken;
     ++this.sftpRootSheetMountToken;
@@ -4953,6 +4994,7 @@ struct SshTerminal {
     this.terminalFocusMode = false;
     this.softKeyboardRequested = false;
     this.clearTerminalInputFocusRetry();
+    this.clearTerminalSoftwareKeyboardShowRequest();
     this.showSshTabPicker = true;
   }
 
@@ -6289,14 +6331,17 @@ struct SshTerminal {
    */
   private terminalSoftwareKeyboardEnabled(): boolean {
     if (this.terminalUsesXtermInputOwner()) { return false; }
-    if (!this.virtualKeyBarRequested()) { return false; }
-    // Phone keeps the 1.0.8 software-keyboard entry regardless of the Pad/PC
-    // input-mode preference or the system IME's inputDevice classification.
-    if (this.breakpoint === 'sm') { return true; }
-    // Mode 1 is an explicit user choice: a detected hardware keyboard must
-    // not silently turn the requested software keyboard off.
-    if (this.sshInputMode === 1) { return true; }
-    return !this.physicalKeyboardConnected || this.softKeyboardRequested;
+    // Readiness, tab recovery and modal dismissal may restore the physical
+    // keyboard focus, but only a real terminal/key-bar gesture may open IME.
+    return sshTerminalSoftwareKeyboardFocusEnabled(
+      this.virtualKeyBarRequested(), this.softKeyboardRequested);
+  }
+
+  private terminalInputAnchorKeyboardEnabled(): boolean {
+    if (sshTerminalUsesNativeTouchInputAnchor(this.isDesktopDevice)) {
+      return this.virtualKeyBarRequested();
+    }
+    return this.terminalSoftwareKeyboardEnabled();
   }
 
   private terminalUsesXtermInputOwner(): boolean {
@@ -6777,6 +6822,7 @@ struct SshTerminal {
     }
     if (this.sshInputMode === 2) {
       this.softKeyboardRequested = false;
+      this.clearTerminalSoftwareKeyboardShowRequest();
       try { this.kbCtrl.stopEditing(); } catch (_err) { /* input may not be mounted */ }
     }
     this.recalcGrid();
@@ -6821,6 +6867,7 @@ struct SshTerminal {
       try { this.kbCtrl.stopEditing(); } catch (_err) { /* input may not be mounted */ }
       try { this.getUIContext().getFocusController().clearFocus(); } catch (_err) { /* best effort */ }
       this.softKeyboardRequested = false;
+      this.clearTerminalSoftwareKeyboardShowRequest();
       const snapshot: SshLocalProviderSnapshot =
         await this.sftpLocalProvider.chooseAuthorizedFolder();
       if (!this.isPageGenerationActive(requestPageGeneration)) { return; }
@@ -9841,6 +9888,7 @@ struct SshTerminal {
         sshDiagnosticErrorCode(err));
     }
     this.clearTerminalInputFocusRetry();
+    this.clearTerminalSoftwareKeyboardShowRequest();
     this.nativeRendererUnavailable = false;
     this.clearPreflightBinding();
     this.clearSshTabPickerExitRecovery();
@@ -10228,6 +10276,7 @@ struct SshTerminal {
     this.sshTabClosePromptInFlight = false;
     this.clearSshTabPickerExitRecovery();
     this.clearTerminalInputFocusRetry();
+    this.clearTerminalSoftwareKeyboardShowRequest();
     this.clearTerminalZoomIndicatorTimer();
     this.terminalZoomIndicatorVisible = false;
     this.clearSshGenerationRebind();
@@ -11499,14 +11548,7 @@ struct SshTerminal {
     this.startLatencyProbe();
     void this.prepareSshPip(pageGeneration, bindingGeneration, bindingHostId);
 
-    if (this.breakpoint !== 'sm' && this.sshInputMode === 1) {
-      setTimeout((): void => {
-        if (this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId) &&
-          this.sessionId === connectedSessionId) {
-          this.focusKeyboard(true);
-        }
-      }, 100);
-    } else if (this.isDesktopDevice) {
+    if (this.isDesktopDevice) {
       setTimeout((): void => {
         if (this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId) &&
           this.sessionId === connectedSessionId) {
@@ -11990,15 +12032,13 @@ struct SshTerminal {
       return;
     }
     hilog.debug(0x0000, 'SshTerminal', '[input] xterm focus accepted');
-    if (this.terminalUsesXtermInputOwner()) {
-      // Touch devices keep WebView/xterm focused. Redirecting this callback to
-      // the ArkUI TextArea blurs xterm, pauses its cursor and starts an IME
-      // focus loop between the two editors.
-      this.terminalFocusMode = true;
-      this.clearTerminalInputFocusRetry();
-      return;
-    }
-    this.focusKeyboard(false);
+    // The Web page reports a touch tap without focusing its own helper
+    // textarea. Route that user gesture to the single ArkUI input anchor and
+    // open IME only on touch devices; mouse/keyboard devices keep silent focus.
+    // The Web surface only reports a user gesture. The ArkUI anchor is the
+    // legacy mobile input owner, so let the page perform the same explicit
+    // focus request the pre-workbench terminal used.
+    this.focusKeyboard(!this.isDesktopDevice);
   }
 
   private onXtermTerminalModeForHost(hostId: string, sessionGeneration: number,
@@ -12483,6 +12523,7 @@ struct SshTerminal {
     this.terminalSearchVisible = true;
     this.terminalFocusMode = false;
     this.softKeyboardRequested = false;
+    this.clearTerminalSoftwareKeyboardShowRequest();
     this.terminalSearchValidationMessage = '';
     this.terminalSearchFocusRequest = this.terminalSearchFocusRequest + 1;
     if (this.terminalSearchQuery.length > 0) { this.requestTerminalSearch('next'); }
@@ -12859,12 +12900,14 @@ struct SshTerminal {
     return false;
   }
 
-  private focusKeyboard(openSoftwareKeyboard: boolean = false): void {
+  private focusKeyboard(openSoftwareKeyboard: boolean = false,
+    nativeTouchOwnsFocus: boolean = false): void {
     this.terminalFocusMode = true;
     if (this.terminalUsesXtermInputOwner()) {
-      // Phone/Pad input is delivered by xterm's own textarea. It is the same
-      // DOM focus that drives cursorBlink, so never redirect it through the
-      // invisible ArkUI editor.
+      // Retain the legacy fallback for a future platform-specific policy that
+      // elects xterm as the input owner. The current HarmonyOS policy always
+      // selects the ArkUI anchor because ArkWeb IME attachment is unreliable
+      // on phone/Pad.
       this.softKeyboardRequested = openSoftwareKeyboard && this.virtualKeyBarRequested();
       this.clearTerminalInputFocusRetry();
       const requestPageGeneration: number = this.pageGeneration;
@@ -12885,8 +12928,21 @@ struct SshTerminal {
     }
     const requestSoftwareKeyboard: boolean = openSoftwareKeyboard &&
       this.virtualKeyBarRequested();
+    this.softKeyboardRequested = requestSoftwareKeyboard;
+    if (!sshTerminalShouldProgrammaticallyFocusInput(
+      this.isDesktopDevice, requestSoftwareKeyboard, nativeTouchOwnsFocus)) {
+      this.clearTerminalInputFocusRetry();
+      this.clearTerminalSoftwareKeyboardShowRequest();
+      return;
+    }
     if (requestSoftwareKeyboard) {
+      this.clearTerminalInputFocusRetry();
+      this.prepareTerminalSoftwareKeyboardRefocus();
+      // prepareTerminalSoftwareKeyboardRefocus clears pending state before
+      // fencing the blur callbacks; publish the explicit request again.
       this.softKeyboardRequested = true;
+    } else {
+      this.clearTerminalSoftwareKeyboardShowRequest();
     }
     // ArkWeb and ArkUI cannot both own keyboard focus reliably on API 23.
     // Keep the native TextArea as the single input owner; xterm reports canvas
@@ -12901,6 +12957,7 @@ struct SshTerminal {
     const requestFocus: () => void = (): void => {
       if (!this.isSshBindingActive(requestPageGeneration, requestBindingGeneration, requestHostId) ||
         !this.terminalInputFocusEligible()) {
+        this.terminalSoftwareKeyboardRefocusInFlight = false;
         return;
       }
       hilog.debug(0x0000, 'SshTerminal', '[input] focus mode=' + this.sshInputMode.toString() +
@@ -12909,10 +12966,14 @@ struct SshTerminal {
         ' physical=' + (this.physicalKeyboardConnected ? '1' : '0') +
         ' requested=' + (this.softKeyboardRequested ? '1' : '0'));
       this.requestTerminalInputFocus();
+      this.terminalSoftwareKeyboardRefocusInFlight = false;
       this.scheduleTerminalInputFocusRetry();
     };
     if (requestSoftwareKeyboard) {
-      setTimeout(requestFocus, 32);
+      this.terminalSoftwareKeyboardShowTimer = setTimeout((): void => {
+        this.terminalSoftwareKeyboardShowTimer = -1;
+        requestFocus();
+      }, 48);
     } else {
       requestFocus();
     }
@@ -13231,6 +13292,7 @@ struct SshTerminal {
     this.terminalFocusMode = false;
     this.softKeyboardRequested = false;
     this.clearTerminalInputFocusRetry();
+    this.clearTerminalSoftwareKeyboardShowRequest();
     this.forwardingSheetMountToken = decision.token;
     this.showForwardingSheet = true;
   }
@@ -17904,21 +17966,23 @@ struct SshTerminal {
               .backgroundColor('#00000000')
               .caretColor('#00000000')
               .border({ width: 0 })
+              // Keep the pre-workbench 1x1 editor geometry. A full-size
+              // TextArea above ArkWeb captures pointer events but API 23/24
+              // does not complete its focus transaction; the old anchor plus
+              // an explicit page focus request is the stable path.
               .width(1).height(1)
               .opacity(0.01)
               .position({ x: this.terminalImeAnchorX(), y: this.terminalImeAnchorY() })
-              .hitTestBehavior(HitTestMode.Transparent)  // 透明命中, 不拦截父 onClick
-              // Phone/Pad use xterm's own textarea as their single IME owner.
-              // Leaving this second editor focusable makes ArkWeb and ArkUI
-              // blur one another and repeatedly reopen the software keyboard.
+              .hitTestBehavior(HitTestMode.Transparent)
+              // ArkUI is the single input owner on every device family. The
+              // xterm page reports touch intent but never focuses its helper
+              // textarea, so the two runtimes cannot enter a focus/IME loop.
               .focusable(!this.terminalUsesXtermInputOwner())
               // Readiness and canvas-focus callbacks explicitly own focus.
               // Default focus races ArkWeb's helper textarea during startup.
               .defaultFocus(false)
-              // The page owns focus explicitly. Letting the 1x1 anchor focus
-              // itself on a canvas touch causes a blur/editing race on API 23.
-              .focusOnTouch(false)
-              .enableKeyboardOnFocus(this.terminalSoftwareKeyboardEnabled())
+              .focusOnTouch(sshTerminalUsesNativeTouchInputAnchor(this.isDesktopDevice))
+              .enableKeyboardOnFocus(this.terminalInputAnchorKeyboardEnabled())
               .enablePreviewText(false)
               .autoCapitalizationMode(AutoCapitalizationMode.NONE)
               .enterKeyType(EnterKeyType.Send)
@@ -17951,6 +18015,14 @@ struct SshTerminal {
               })
               .onPaste((content: string): void => {
                 this.handlePaste(content);
+              })
+              .onTouch((event: TouchEvent): void => {
+                if (!sshTerminalUsesNativeTouchInputAnchor(this.isDesktopDevice) ||
+                  event.type !== TouchType.Down) { return; }
+                // Keep diagnostics for the legacy native anchor. Terminal
+                // taps normally arrive through the Web bridge and are routed
+                // to the same explicit focus request as the old page.
+                hilog.debug(0x0000, 'SshTerminal', '[input] native touch down');
               })
               .onKeyPreIme((event: KeyEvent): boolean => { return this.handleSshKeyEvent(event); })
               // Hardware keyboards on API 23 may skip onKeyPreIme when no
@@ -18058,7 +18130,9 @@ struct SshTerminal {
           .onClick(() => {
             // 点击终端显式进入终端焦点；移动端同时请求软键盘。
             if (this.terminalSearchVisible) { this.focusTerminalSearch(); }
-            else { this.focusKeyboard(this.virtualKeyBarVisible()); }
+            else {
+              this.focusKeyboard(this.virtualKeyBarVisible());
+            }
           })
           .parallelGesture(
             PinchGesture({ fingers: 2, distance: 5 })
@@ -18102,6 +18176,13 @@ struct SshTerminal {
             this.publishIndependentWindowReady('terminal-area-change');
           })
           .bindContextMenu(this.TermMenu(), ResponseType.LongPress)
+          // TextArea focus requests on API 23/24 are rejected when this
+          // retained terminal Stack is not itself focusable (the runtime
+          // reports the ancestor Column as unfocusable). The old terminal
+          // had a focusable input subtree; keep that contract without making
+          // the Web surface an input owner.
+          .focusable(sshTerminalUsesNativeTouchInputAnchor(this.isDesktopDevice))
+          .focusOnTouch(false)
           }
           .width('100%')
           .height(0)
@@ -18150,6 +18231,11 @@ struct SshTerminal {
         .layoutWeight(1)
         .constraintSize({ minHeight: 0 })
         .clip(true)
+        // The TextArea is nested below this retained Column on API 23/24;
+        // make the actual input subtree ancestor focusable, matching the
+        // pre-workbench hidden-input container contract.
+        .focusable(sshTerminalUsesNativeTouchInputAnchor(this.isDesktopDevice))
+        .focusOnTouch(false)
         .onAreaChange((_o: Area, n: Area): void => {
           const h: number = n.height as number;
           const w: number = n.width as number;
@@ -18203,7 +18289,13 @@ struct SshTerminal {
       .constraintSize({ minHeight: 0 })
       .backgroundColor('#0D0D0D')
       .id('ssh-terminal-pane')
-      .focusable(this.sshWorkspaceModeEnabled())
+      // API 23/24 requires the retained terminal root to participate in the
+      // same focus scope as the hidden ArkUI input anchor. The pre-workbench
+      // terminal always exposed this native subtree; keep it focusable on
+      // touch devices while leaving pointer focus disabled so WebView still
+      // owns scrolling, selection and pinch gestures.
+      .focusable(this.sshWorkspaceModeEnabled() ||
+        sshTerminalUsesNativeTouchInputAnchor(this.isDesktopDevice))
       .focusOnTouch(false)
       .onFocus((): void => { this.sshWorkspaceFocusRegion = 'pane_host'; })
       .onKeyEvent((event: KeyEvent): boolean => { return this.handleSshKeyEvent(event); })
