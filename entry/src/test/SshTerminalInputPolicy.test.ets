@@ -25,6 +25,7 @@ import {
   sshTerminalSoftwareKeyboardFocusEnabled,
   sshTerminalUsesNativeTouchInputAnchor,
   sshTerminalInputDeviceIsPhysicalKeyboard,
+  resolveSshTerminalKeyInputOwner,
   sshTerminalShouldProgrammaticallyFocusInput,
   sshTerminalShouldRetryInputFocus,
   sshTerminalInputFocusAllowed,
@@ -74,6 +75,25 @@ export default function sshTerminalInputPolicyTest(): void {
       expect(sshTerminalInputDeviceIsPhysicalKeyboard(true, false, 1)).assertFalse();
       expect(sshTerminalInputDeviceIsPhysicalKeyboard(false, false, 2)).assertFalse();
       expect(sshTerminalInputDeviceIsPhysicalKeyboard(true, undefined, 2)).assertTrue();
+    });
+
+    it('should_separate_mobile_ime_events_from_external_keyboard_events', 0, (): void => {
+      expect(resolveSshTerminalKeyInputOwner(
+        false, false, false, false, true, true, true)).assertEqual('ime');
+      expect(resolveSshTerminalKeyInputOwner(
+        false, false, true, false, true, true, true)).assertEqual('hardware');
+      expect(resolveSshTerminalKeyInputOwner(
+        false, false, false, true, false, true, true)).assertEqual('ime');
+      expect(resolveSshTerminalKeyInputOwner(
+        false, true, false, false, false, true, true)).assertEqual('hardware');
+      expect(resolveSshTerminalKeyInputOwner(
+        false, false, false, false, false, true, true)).assertEqual('hardware');
+      expect(resolveSshTerminalKeyInputOwner(
+        false, false, false, false, false, false, true)).assertEqual('ime');
+      expect(resolveSshTerminalKeyInputOwner(
+        true, false, false, false, false, false, true)).assertEqual('hardware');
+      expect(resolveSshTerminalKeyInputOwner(
+        true, false, false, false, true, false, true)).assertEqual('ime');
     });
 
     it('should_block_terminal_focus_while_a_modal_owns_the_keyboard', 0, (): void => {

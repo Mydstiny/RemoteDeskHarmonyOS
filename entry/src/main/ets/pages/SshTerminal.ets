@@ -171,6 +171,8 @@ import {
   sshTerminalSoftwareKeyboardFocusEnabled,
   sshTerminalUsesNativeTouchInputAnchor,
   sshTerminalInputDeviceIsPhysicalKeyboard,
+  resolveSshTerminalKeyInputOwner,
+  SshTerminalKeyInputOwner,
   sshTerminalShouldProgrammaticallyFocusInput,
   sshTerminalShouldRetryInputFocus,
   sshTerminalInputFocusAllowed
@@ -1017,7 +1019,7 @@ struct SshTerminal {
   @State terminalZoomIndicatorVisible: boolean = false;
   private terminalPinchStartFontSize: number = 18;
   private terminalZoomIndicatorTimer: number = -1;
-  private kbCtrl: TextAreaController = new TextAreaController();
+  private kbCtrl: TextInputController = new TextInputController();
   private srv: HostSyncService = HostSyncService.getInstance();
   private sshSettings: SshSettingsService = SshSettingsService.getInstance();
   private sshProxyProfiles: SshProxyProfileStore = new SshProxyProfileStore();
@@ -1281,20 +1283,14 @@ struct SshTerminal {
     this.externalKeyboardMouseConnected = false;
   }
 
-  private isPhysicalKeyboardEvent(event: KeyEvent): boolean {
-    try {
-      if (event.keySource === KeySource.Keyboard) { return true; }
-    } catch (_err) {
-      // Older API 23 builds may expose keySource only at runtime.
-    }
-    const deviceId: number | undefined = event.deviceId;
-    return this.physicalKeyboardConnected && deviceId !== undefined &&
-      this.physicalKeyboardDeviceIds.indexOf(deviceId) >= 0;
-  }
-
   private isKnownPhysicalKeyboardEvent(event: KeyEvent): boolean {
     const deviceId: number | undefined = event.deviceId;
     return deviceId !== undefined && this.physicalKeyboardDeviceIds.indexOf(deviceId) >= 0;
+  }
+
+  private isKnownVirtualKeyboardEvent(event: KeyEvent): boolean {
+    const deviceId: number | undefined = event.deviceId;
+    return deviceId !== undefined && this.virtualKeyboardDeviceIds.indexOf(deviceId) >= 0;
   }
 
   private isLikelyHardwareKeyEvent(event: KeyEvent): boolean {
@@ -12948,9 +12944,18 @@ struct SshTerminal {
       return true;
     }
     if (event.type !== KeyType.Down) { return false; }
-    const physicalKeyboard: boolean = this.isPhysicalKeyboardEvent(event);
     const likelyHardware: boolean = this.isLikelyHardwareKeyEvent(event);
     const knownPhysicalKeyboard: boolean = this.isKnownPhysicalKeyboardEvent(event);
+    const knownVirtualKeyboard: boolean = this.isKnownVirtualKeyboardEvent(event);
+    const softwareKeyboardActive: boolean = this.softKeyboardRequested ||
+      this.terminalSoftwareKeyboardIsVisible() ||
+      this.terminalSoftwareKeyboardRefocusInFlight ||
+      this.terminalSoftwareKeyboardEditingObserved;
+    const inputOwner: SshTerminalKeyInputOwner = resolveSshTerminalKeyInputOwner(
+      this.isDesktopDevice, this.sshInputMode === 2,
+      knownPhysicalKeyboard, knownVirtualKeyboard, softwareKeyboardActive,
+      this.physicalKeyboardConnected, likelyHardware);
+    const physicalKeyboard: boolean = inputOwner === 'hardware';
     const rawCode: number = event.keyCode;
     const code: number = normalizeSshKeyCode(rawCode);
     const ctrl: boolean = this.keyModifier(event, 'Ctrl');
@@ -12958,14 +12963,23 @@ struct SshTerminal {
     const alt: boolean = this.keyModifier(event, 'Alt');
     const shift: boolean = this.keyModifier(event, 'Shift');
     const unicodePresent: boolean = event.unicode !== undefined && event.unicode !== null;
-    const devicePresent: boolean = event.deviceId !== undefined && event.deviceId !== null;
     hilog.debug(0x0000, 'SshTerminal', '[input] key code=' + code.toString() +
       ' raw=' + rawCode.toString() +
       ' unicode=' + (unicodePresent ? event.unicode!.toString() : 'none') +
-      ' device=' + (devicePresent ? '1' : '0') +
+      ' device=' + (event.deviceId !== undefined && event.deviceId !== null
+        ? event.deviceId.toString() : 'none') +
+      ' owner=' + inputOwner +
       ' physical=' + (physicalKeyboard ? '1' : '0') +
       ' known=' + (knownPhysicalKeyboard ? '1' : '0') +
+      ' virtual=' + (knownVirtualKeyboard ? '1' : '0') +
+      ' ime=' + (softwareKeyboardActive ? '1' : '0') +
       ' likely=' + (likelyHardware ? '1' : '0'));
+    if (inputOwner === 'ime') {
+      // Let TextInput own composition, committed text and submit semantics.
+      // Consuming this event would bypass onDidInsert/onSubmit and turn a
+      // Chinese IME's phonetic keys into raw terminal bytes.
+      return false;
+    }
     const shortcutChord: SshShortcutChord = {
       key: this.sshShortcutKey(code), ctrl, meta, alt, shift,
       digit: this.sshShortcutDigit(code)
@@ -12997,12 +13011,9 @@ struct SshTerminal {
       shift: shift || this.shiftActive,
       capsLock: event.isCapsLockOn === true,
       altGraph: this.isAltGraphEvent(event),
-      // Some API 23 keyboard events omit deviceId after a hot-plug or do not
-      // expose unicode at all. keySource is already a positive hardware
-      // signal, so it must enable the fallback instead of sending the same
-      // key back through the IME.
-      allowKeyCodeFallback: physicalKeyboard || knownPhysicalKeyboard || likelyHardware ||
-        this.isDesktopDevice || this.sshInputMode === 2,
+      // The routing policy has already established that this event belongs to
+      // the hardware path, including the bounded unknown-device fallback.
+      allowKeyCodeFallback: true,
       applicationCursorKeys: this.terminalApplicationCursorKeys,
       applicationKeypad: this.terminalApplicationKeypad
     });
@@ -18082,15 +18093,16 @@ struct SshTerminal {
               }, (tab: SshTerminalTabView): string => tab.tabId)
             }
 
-            // Keep a persistent TextArea as the sole ArkUI IME anchor. TextArea
+            // Keep a persistent TextInput as the sole ArkUI IME anchor. TextInput
             // preserves composition/edit callbacks across API 23 keyboard
             // sessions; xterm's own stdin is disabled above.
-            TextArea({ text: this.kbInput, controller: this.kbCtrl })
+            TextInput({ text: this.kbInput, controller: this.kbCtrl })
               .id('sshKbInput')
-              // Terminal input is arbitrary shell text, not a credential or
-              // autofill field. Normal keeps the IME and hardware-key path
-              // from entering the username/secure-field route.
-              .type(TextAreaType.NORMAL)
+              // Preserve the pre-workbench terminal contract: username mode
+              // asks the system IME for an English command-oriented layout,
+              // while NONE below prevents automatic Shift/Caps state. Text is
+              // still sent unchanged because shell commands are case-sensitive.
+              .type(InputType.USER_NAME)
               .enableAutoFill(false)
               .fontSize(this.renderFontVp)
               .fontColor('#00000000').fontFamily('monospace')
@@ -18141,9 +18153,6 @@ struct SshTerminal {
                 // HarmonyOS 非 TV 设备默认会在提交后失焦并收起软键盘。
                 // SSH 终端需要连续输入命令, 保持隐藏输入框的编辑态。
                 event.keepEditableState();
-                setTimeout((): void => {
-                  this.focusKeyboard(this.virtualKeyBarVisible());
-                }, 30);
               })
               .onPaste((content: string): void => {
                 this.handlePaste(content);

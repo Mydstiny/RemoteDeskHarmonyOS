@@ -56,6 +56,32 @@ export function sshTerminalInputDeviceIsPhysicalKeyboard(
     (keyboardType === 2 || keyboardType === 3);
 }
 
+export type SshTerminalKeyInputOwner = 'hardware' | 'ime';
+
+/**
+ * Keep committed IME text and external keyboard scan codes on separate paths.
+ * System keyboards may report KeySource.Keyboard and KEYCODE_* just like a
+ * physical device, so those fields are only a fallback after active IME and
+ * exact device-ID evidence have been considered.
+ */
+export function resolveSshTerminalKeyInputOwner(
+  isDesktopDevice: boolean,
+  hardwareOnlyMode: boolean,
+  knownPhysicalDevice: boolean,
+  knownVirtualDevice: boolean,
+  softwareKeyboardActive: boolean,
+  physicalKeyboardAvailable: boolean,
+  likelyHardwareKey: boolean
+): SshTerminalKeyInputOwner {
+  if (knownVirtualDevice) { return 'ime'; }
+  if (knownPhysicalDevice) { return 'hardware'; }
+  if (hardwareOnlyMode) { return 'hardware'; }
+  if (softwareKeyboardActive) { return 'ime'; }
+  if (isDesktopDevice) { return 'hardware'; }
+  if (physicalKeyboardAvailable && likelyHardwareKey) { return 'hardware'; }
+  return 'ime';
+}
+
 /**
  * A native touch anchor already receives focus from the user's pointer event.
  * Re-focusing it in the same event turn clears the just-created IME client on
