@@ -22,6 +22,10 @@ import {
   settingsUsageGuidePages
 } from '../services/GuideContentRegistry';
 import {
+  OperationGuideSheetLayout,
+  resolveOperationGuideSheetLayout
+} from '../services/GuideSheetLayoutPolicy';
+import {
   CURRENT_RELEASE_VERSION,
   pagesForReleasedVersion,
   ReleaseNotePage
@@ -30,6 +34,7 @@ import {
 @Component
 export struct AboutSettingsSheet {
   @Prop aboutSheetMode: number = 0;
+  @Prop guideViewportHeight: number = 720;
   @StorageLink('currentTheme') theme: string = 'light';
   @StorageLink('accentColor') accentColor: string = '#007DFF';
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
@@ -43,6 +48,7 @@ export struct AboutSettingsSheet {
   @State guideDevice: GuideDevice = 'phone';
   @State guideProtocol: GuideProtocol = 'all';
   @State expandedGuideLessonId: string = 'common-first-host';
+  @State guideLessonContentHeight: number = 0;
   @State releaseNotesIndex: number = 0;
   private releaseNotesController: SwiperController = new SwiperController();
   private readonly releaseNotesItems: ReleaseNotePage[] =
@@ -75,6 +81,26 @@ export struct AboutSettingsSheet {
   private resetExpandedGuideLesson(): void {
     const lessons: GuideLesson[] = guideLessonsFor(this.guideDevice, this.guideProtocol);
     this.expandedGuideLessonId = lessons.length > 0 ? lessons[0].id : '';
+    this.guideLessonContentHeight = 0;
+  }
+
+  private operationGuideLessons(): GuideLesson[] {
+    return guideLessonsFor(this.guideDevice, this.guideProtocol);
+  }
+
+  private operationGuideLayout(): OperationGuideSheetLayout {
+    const lessons: GuideLesson[] = this.operationGuideLessons();
+    let expandedStepCount: number = 0;
+    let expandedHasNote: boolean = false;
+    for (let i = 0; i < lessons.length; i++) {
+      if (lessons[i].id === this.expandedGuideLessonId) {
+        expandedStepCount = lessons[i].steps.length;
+        expandedHasNote = lessons[i].note.length > 0;
+        break;
+      }
+    }
+    return resolveOperationGuideSheetLayout(this.guideViewportHeight, this.breakpoint,
+      lessons.length, expandedStepCount, expandedHasNote, this.guideLessonContentHeight);
   }
 
   private toggleGuideAlwaysVisible(): void {
@@ -300,7 +326,9 @@ export struct AboutSettingsSheet {
         Blank()
         SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
           .width(36).height(36).onClick((): void => { this.onClose(); })
-      }.width('100%').padding({ left: 24, right: 20, top: 20 }).margin({ bottom: 12 })
+      }.width('100%').padding({
+        left: 24, right: 20, top: this.operationGuideLayout().compact ? 12 : 20
+      }).margin({ bottom: this.operationGuideLayout().compact ? 8 : 12 })
 
       Column() {
         Row() {
@@ -319,11 +347,12 @@ export struct AboutSettingsSheet {
           this.guideDeviceChip('phone')
           this.guideDeviceChip('tablet')
           this.guideDeviceChip('desktop')
-        }.width('100%').margin({ top: 12 })
+        }.width('100%').margin({ top: this.operationGuideLayout().compact ? 8 : 12 })
       }
-      .width('100%').padding(14).borderRadius(16)
+      .width('100%').padding(this.operationGuideLayout().compact ? 10 : 14).borderRadius(16)
       .backgroundColor(this.pal().surface)
-      .margin({ left: 20, right: 20, bottom: 12 })
+      .margin({ left: 20, right: 20,
+        bottom: this.operationGuideLayout().compact ? 8 : 12 })
 
       Row() {
         Column() {
@@ -343,9 +372,10 @@ export struct AboutSettingsSheet {
           .onClick((): void => { this.toggleGuideAlwaysVisible(); })
           .accessibilityText(this.guideAlwaysVisible ? '关闭始终显示引导' : '开启始终显示引导')
       }
-      .width('100%').padding(13).borderRadius(16)
+      .width('100%').padding(this.operationGuideLayout().compact ? 10 : 13).borderRadius(16)
       .backgroundColor(this.pal().surface)
-      .margin({ left: 20, right: 20, bottom: 12 })
+      .margin({ left: 20, right: 20,
+        bottom: this.operationGuideLayout().compact ? 8 : 12 })
 
       Scroll() {
         Row({ space: 8 }) {
@@ -354,22 +384,30 @@ export struct AboutSettingsSheet {
           }, (option: GuideProtocolOption): string => option.id)
         }.padding({ left: 20, right: 20 })
       }
-      .width('100%').height(72).scrollable(ScrollDirection.Horizontal)
+      .width('100%').height(this.operationGuideLayout().compact ? 62 : 72)
+      .scrollable(ScrollDirection.Horizontal)
       .scrollBar(BarState.Off)
 
       Scroll() {
         Column() {
-          ForEach(guideLessonsFor(this.guideDevice, this.guideProtocol),
+          ForEach(this.operationGuideLessons(),
             (lesson: GuideLesson): void => {
               this.guideLessonCard(lesson)
             }, (lesson: GuideLesson): string => lesson.id)
-        }.width('100%').padding({ left: 20, right: 20, top: 4, bottom: 22 })
+        }
+        .width('100%').padding({ left: 20, right: 20, top: 4, bottom: 22 })
+        .onAreaChange((_oldArea: Area, nextArea: Area): void => {
+          const nextHeight: number = nextArea.height as number;
+          if (Number.isFinite(nextHeight) && nextHeight > 0 &&
+            Math.abs(nextHeight - this.guideLessonContentHeight) >= 1) {
+            this.guideLessonContentHeight = nextHeight;
+          }
+        })
       }
       .width('100%').layoutWeight(1).scrollBar(BarState.Auto)
     }
-    .width('100%').height('100%')
-    .constraintSize({ minHeight: 360, maxWidth: 760,
-      maxHeight: this.breakpoint === 'sm' ? 660 : 820 })
+    .width('100%').height(this.operationGuideLayout().height)
+    .constraintSize({ maxWidth: 760, maxHeight: this.operationGuideLayout().height })
     .clip(true)
     .backgroundColor(this.pal().bg)
     .backgroundBlurStyle(BlurStyle.Regular)
@@ -430,6 +468,7 @@ export struct AboutSettingsSheet {
       .width('100%').padding({ left: 16, right: 16, top: 15, bottom: 15 })
       .onClick((): void => {
         this.expandedGuideLessonId = this.expandedGuideLessonId === lesson.id ? '' : lesson.id;
+        this.guideLessonContentHeight = 0;
       })
 
       if (this.expandedGuideLessonId === lesson.id) {

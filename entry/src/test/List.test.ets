@@ -153,6 +153,7 @@ import remoteKeyboardSettingsPolicyTest from './RemoteKeyboardSettingsPolicy.tes
 import remoteVirtualTouchpadGuidePolicyTest from './RemoteVirtualTouchpadGuidePolicy.test';
 import sessionContextualGuidePolicyTest from './SessionContextualGuidePolicy.test';
 import guideVisibilityPolicyTest from './GuideVisibilityPolicy.test';
+import guideSheetLayoutPolicyTest from './GuideSheetLayoutPolicy.test';
 import terminalInputBufferTest from './TerminalInputBuffer.test';
 import xtermOutputBufferTest from './XtermOutputBuffer.test';
 import terminalRendererPolicyTest from './TerminalRendererPolicy.test';
@@ -387,6 +388,7 @@ export default function testsuite() {
   remoteVirtualTouchpadGuidePolicyTest();
   sessionContextualGuidePolicyTest();
   guideVisibilityPolicyTest();
+  guideSheetLayoutPolicyTest();
   terminalInputBufferTest();
   xtermOutputBufferTest();
   terminalRendererPolicyTest();

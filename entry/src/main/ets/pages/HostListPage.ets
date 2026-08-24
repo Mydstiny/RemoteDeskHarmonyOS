@@ -1140,6 +1140,7 @@ struct HostListPage {
   // The long VNC/SSH add flows use a bounded sheet on phones. Keep the
   // viewport height in vp so the sheet can leave room for the system bars.
   @State windowH: number = 720;
+  @State pageViewportHeight: number = 720;
   private inputDeviceListenerRegistered: boolean = false;
   private inputDevicePromptVisible: boolean = false;
   private externalInputPromptedThisSession: boolean = false;
@@ -9533,6 +9534,13 @@ struct HostListPage {
       .opacity(!this.pageActive || (!this.isDesktopDevice && this.curTab === 3) ? 0 : 1)
       .animation({ curve: curves.interpolatingSpring(0, 1, 200, 17) })
     }.width('100%').height('100%').backgroundColor(this.pal().bg)
+    .onAreaChange((_oldArea: Area, nextArea: Area): void => {
+      const nextHeight: number = nextArea.height as number;
+      if (Number.isFinite(nextHeight) && nextHeight > 0 &&
+        Math.abs(nextHeight - this.pageViewportHeight) >= 1) {
+        this.pageViewportHeight = nextHeight;
+      }
+    })
     .bindSheet($$this.showSettingsPanel, this.settingsContent(), {
       height: this.breakpoint === 'xl' ? 760 : SheetSize.FIT_CONTENT,
       preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
@@ -11387,8 +11395,14 @@ struct HostListPage {
 
   private settingsLeafSheetHeight(): SheetSize | number {
     if (this.settingsLeafSheetMode === SETTINGS_SHEET_POPUP && this.popupSheetMode === 1 &&
-      (this.aboutSheetMode === 3 || this.aboutSheetMode === 5)) {
+      this.aboutSheetMode === 3) {
       return SheetSize.LARGE;
+    }
+    if (this.settingsLeafSheetMode === SETTINGS_SHEET_POPUP && this.popupSheetMode === 1 &&
+      this.aboutSheetMode === 5) {
+      // The operation guide owns its measured height. FIT_CONTENT lets it
+      // shrink for short lessons and grow only up to the live window.
+      return SheetSize.FIT_CONTENT;
     }
     const diagnosticHeight: number = diagnosticLogSettingsLeafSheetHeight(this.settingsLeafSheetMode);
     if (diagnosticHeight > 0) { return diagnosticHeight; }
@@ -13434,6 +13448,7 @@ struct HostListPage {
     } else {
       AboutSettingsSheet({
         aboutSheetMode: this.aboutSheetMode,
+        guideViewportHeight: this.pageViewportHeight,
         onClose: (): void => { this.closeSettingsLeafSheet(); }
       })
     }
