@@ -2082,7 +2082,8 @@ int SshAdapter::connectThroughSshJump(const ConnectionConfig& cfg) {
         const std::string hopLabel = "hop-" + std::to_string(index + 1);
         const int hostKeyResult = verifyHostKey(
             runtime->session, hop.expectedHostKeyRawBase64,
-            hop.expectedHostKeyFingerprintSha256, true, hopLabel.c_str());
+            hop.expectedHostKeyFingerprintSha256, true, hopLabel.c_str(),
+            hop.host, hop.port, static_cast<int>(index));
         if (hostKeyResult != 0) { return fail(hostKeyResult); }
 
         const std::string authMethod = hop.authMethod.empty() ? "password" : hop.authMethod;
@@ -2405,68 +2406,78 @@ void SshAdapter::stopSshJumpRelay() {
 int SshAdapter::verifyHostKey(LIBSSH2_SESSION* session,
                               const std::string& expectedRawBase64,
                               const std::string& expectedFingerprintSha256,
-                              bool required, const char* endpointLabel) {
+                              bool required, const char* endpointLabel,
+                              const std::string& endpointHost, int endpointPort,
+                              int hopIndex) {
     if (session == nullptr) {
         return ERR_SSH_SESSION_INIT;
     }
-    if (expectedRawBase64.empty() && expectedFingerprintSha256.empty()) {
-        if (required) {
-            OH_LOG_ERROR(LOG_APP, "[SSH] %{public}s 缺少 host-key trust binding",
-                         endpointLabel ? endpointLabel : "SSH endpoint");
-            return ERR_SSH_HOSTKEY_MISMATCH;
-        }
-        return 0;
-    }
-
+    const bool hasExpectedKey = !expectedRawBase64.empty() ||
+        !expectedFingerprintSha256.empty();
+    if (!hasExpectedKey && !required && !savedCfg_.sshHostKeyPromptEnabled) { return 0; }
     const char* fingerprint = libssh2_hostkey_hash(session, LIBSSH2_HOSTKEY_HASH_SHA256);
-    if (!expectedRawBase64.empty()) {
-        size_t keyLen = 0;
-        int keyType = LIBSSH2_HOSTKEY_TYPE_UNKNOWN;
-        const char* rawKey = libssh2_session_hostkey(session, &keyLen, &keyType);
-        if (!rawKey || keyLen == 0) {
-            OH_LOG_ERROR(LOG_APP, "[SSH] %{public}s host key raw 读取失败",
-                         endpointLabel ? endpointLabel : "SSH endpoint");
-            return ERR_SSH_HOSTKEY_MISMATCH;
-        }
-        const std::string currentRaw = encodeBase64(
-            reinterpret_cast<const unsigned char*>(rawKey), keyLen);
-        if (currentRaw != expectedRawBase64) {
-            std::string currentFp;
-            if (fingerprint) {
-                std::string fpB64 = encodeBase64(
-                    reinterpret_cast<const unsigned char*>(fingerprint), 32);
-                while (!fpB64.empty() && fpB64.back() == '=') { fpB64.pop_back(); }
-                currentFp = "SHA256:" + fpB64;
-            }
-            OH_LOG_ERROR(LOG_APP,
-                "[SSH] %{public}s host key raw mismatch keyType=%{public}d algorithm=%{public}s currentFp=%{public}s expectedFp=%{public}s",
-                endpointLabel ? endpointLabel : "SSH endpoint", keyType,
-                sshHostKeyTypeName(keyType), currentFp.c_str(),
-                expectedFingerprintSha256.c_str());
-            return ERR_SSH_HOSTKEY_MISMATCH;
-        }
-        OH_LOG_INFO(LOG_APP, "[SSH] %{public}s host key raw 校验通过",
-                    endpointLabel ? endpointLabel : "SSH endpoint");
-        return 0;
-    }
-
-    if (!fingerprint) {
-        OH_LOG_ERROR(LOG_APP, "[SSH] %{public}s SHA256 host key fingerprint 读取失败",
+    size_t keyLen = 0;
+    int keyType = LIBSSH2_HOSTKEY_TYPE_UNKNOWN;
+    const char* rawKey = libssh2_session_hostkey(session, &keyLen, &keyType);
+    if (!rawKey || keyLen == 0 || !fingerprint) {
+        OH_LOG_ERROR(LOG_APP, "[SSH] %{public}s host key 读取失败",
                      endpointLabel ? endpointLabel : "SSH endpoint");
         return ERR_SSH_HOSTKEY_MISMATCH;
     }
+    const std::string currentRaw = encodeBase64(
+        reinterpret_cast<const unsigned char*>(rawKey), keyLen);
     std::string currentFpB64 = encodeBase64(
         reinterpret_cast<const unsigned char*>(fingerprint), 32);
     while (!currentFpB64.empty() && currentFpB64.back() == '=') { currentFpB64.pop_back(); }
     const std::string currentFp = "SHA256:" + currentFpB64;
-    if (currentFp != expectedFingerprintSha256) {
+    const bool matches = !expectedRawBase64.empty()
+        ? currentRaw == expectedRawBase64
+        : (!expectedFingerprintSha256.empty() && currentFp == expectedFingerprintSha256);
+    if (matches) {
+        OH_LOG_INFO(LOG_APP, "[SSH] %{public}s host key 校验通过",
+                    endpointLabel ? endpointLabel : "SSH endpoint");
+        return 0;
+    }
+    if (!savedCfg_.sshHostKeyPromptEnabled) {
         OH_LOG_ERROR(LOG_APP,
-            "[SSH] %{public}s host key mismatch expected=%{public}s current=%{public}s",
+            "[SSH] %{public}s host key %{public}s expected=%{public}s current=%{public}s",
             endpointLabel ? endpointLabel : "SSH endpoint",
+            hasExpectedKey ? "mismatch" : "missing",
             expectedFingerprintSha256.c_str(), currentFp.c_str());
         return ERR_SSH_HOSTKEY_MISMATCH;
     }
-    OH_LOG_INFO(LOG_APP, "[SSH] %{public}s host key fingerprint 校验通过",
+
+    setSshLifecycleState(SshSessionLifecycleState::NeedsAuthentication);
+    const SshAuthPromptWaitResult waitResult = authPromptBroker_.waitForHostKeyDecision(
+        diagnostics_.snapshot().sessionId, diagnostics_.sessionGeneration(), savedCfg_.host,
+        endpointLabel ? endpointLabel : "SSH endpoint", savedCfg_.sshTrustHostId,
+        endpointHost, endpointPort, hopIndex, sshHostKeyTypeName(keyType), currentFp,
+        currentRaw, expectedFingerprintSha256, hasExpectedKey);
+    setSshLifecycleState(SshSessionLifecycleState::Authenticating);
+    switch (waitResult) {
+        case SshAuthPromptWaitResult::Cancelled:
+            return ERR_SSH_AUTH_CANCELLED;
+        case SshAuthPromptWaitResult::TimedOut:
+            return ERR_SSH_AUTH_TIMEOUT;
+        case SshAuthPromptWaitResult::Closed:
+            return ERR_SSH_SESSION_CLOSED;
+        case SshAuthPromptWaitResult::Responded:
+            break;
+    }
+    if (hopIndex >= 0) {
+        const size_t index = static_cast<size_t>(hopIndex);
+        if (index >= savedCfg_.sshRoute.hops.size()) { return ERR_SSH_PROXY_INVALID; }
+        savedCfg_.sshRoute.hops[index].expectedHostKeyRawBase64 = currentRaw;
+        savedCfg_.sshRoute.hops[index].expectedHostKeyFingerprintSha256 = currentFp;
+        if (index == 0) {
+            savedCfg_.sshJumpHostKeyRawBase64 = currentRaw;
+            savedCfg_.sshJumpHostKeyFingerprintSha256 = currentFp;
+        }
+    } else {
+        savedCfg_.expectedHostKeyRawBase64 = currentRaw;
+        savedCfg_.expectedHostKeyFingerprintSha256 = currentFp;
+    }
+    OH_LOG_INFO(LOG_APP, "[SSH] %{public}s host key 已由用户确认",
                 endpointLabel ? endpointLabel : "SSH endpoint");
     return 0;
 }
@@ -2529,7 +2540,8 @@ int SshAdapter::sshHandshake() {
     // 二次校验 expected host key (防 probe/connect 间 TOCTOU)。
     const int hostKeyResult = verifyHostKey(
         session_, savedCfg_.expectedHostKeyRawBase64,
-        savedCfg_.expectedHostKeyFingerprintSha256, false, "目标主机");
+        savedCfg_.expectedHostKeyFingerprintSha256, false, "目标主机",
+        savedCfg_.host, savedCfg_.port, -1);
     if (hostKeyResult != 0) {
         libssh2_session_free(session_);
         session_ = nullptr;

@@ -118,6 +118,10 @@ struct ConnectionConfig {
     bool sshRouteExplicit = false;
     std::string expectedHostKeyRawBase64;       // 🆕 SSH 预期主机密钥 raw blob base64 (二次校验)
     std::string expectedHostKeyFingerprintSha256; // 🆕 SSH 预期主机指纹 SHA256
+    // Opt-in only: let the SSH owner pause after KEX and ask ArkUI to persist
+    // an unknown/changed key before any authentication material is sent.
+    bool        sshHostKeyPromptEnabled;
+    std::string sshTrustHostId;                 // durable RemoteHost/profile owner id
     // ProxyJump 的跳板机与目标机是两个独立的 SSH endpoint，必须分别绑定 key。
     std::string sshJumpHostKeyRawBase64;
     std::string sshJumpHostKeyFingerprintSha256;
@@ -188,7 +192,7 @@ struct ConnectionConfig {
           multiMonitor(false), monitorCount(1),
           colorDepth(32), rdpAuthIdentityMode(0), rdpAuthMode(RdpAuthenticationMode::Password),
           rdpRestrictedAdminSecretSource(RdpRestrictedAdminSecretSource::NtlmHash), authMethod("password"),
-          sshProxyPort(0),
+          sshProxyPort(0), sshHostKeyPromptEnabled(false),
           rdImageQuality(1), rdDirectIp(false), rdConnectionStrategy(), rdDirectPort(21118),
           rdLanDiscovery(true), rdPrivacyMode(false), rdAudioEnabled(true), rdClipboardEnabled(true),
           rdDriveName("RemoteDesktop"), rdpAllowUntrustedRoot(false), rdpAllowHostMismatch(false),

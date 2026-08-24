@@ -96,3 +96,35 @@ RDP_TEST_CASE(ssh_auth_prompt_broker_accepts_new_session_after_cancellation) {
     RDP_ASSERT(responses.size() == 1);
     RDP_ASSERT(responses[0] == "654321");
 }
+
+RDP_TEST_CASE(ssh_auth_prompt_broker_host_key_decision_is_bound_and_has_no_secret_prompt) {
+    SshAuthPromptBroker broker;
+    SshAuthPromptWaitResult waitResult = SshAuthPromptWaitResult::Closed;
+    std::thread worker([&]() {
+        waitResult = broker.waitForHostKeyDecision(
+            61, 9201, "target.example", "hop-2", "host-record-1",
+            "jump-2.example", 2222, 1, "ssh-ed25519", "SHA256:new",
+            "AAAAC3NzaC1lZDI1NTE5AAAA", "SHA256:old", true);
+    });
+
+    SshAuthPromptRequest request;
+    for (int attempt = 0; attempt < 100 && !broker.snapshot(request); ++attempt) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    RDP_ASSERT(request.kind == "host_key");
+    RDP_ASSERT(request.sessionId == 61);
+    RDP_ASSERT(request.generation == 9201);
+    RDP_ASSERT(request.trustHostId == "host-record-1");
+    RDP_ASSERT(request.endpointHost == "jump-2.example");
+    RDP_ASSERT(request.endpointPort == 2222);
+    RDP_ASSERT(request.hostKeyHopIndex == 1);
+    RDP_ASSERT(request.hostKeyChanged);
+    RDP_ASSERT(request.hostKeyAlgorithm == "ssh-ed25519");
+    RDP_ASSERT(request.hostKeyFingerprintSha256 == "SHA256:new");
+    RDP_ASSERT(request.expectedHostKeyFingerprintSha256 == "SHA256:old");
+    RDP_ASSERT(request.prompts.empty());
+    RDP_ASSERT(broker.respond(SshAuthPromptResponse {
+        1, request.requestId, 61, 9201, {}, false}));
+    worker.join();
+    RDP_ASSERT(waitResult == SshAuthPromptWaitResult::Responded);
+}

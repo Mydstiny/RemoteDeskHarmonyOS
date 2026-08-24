@@ -217,6 +217,7 @@ import {
 } from '../services/SshSettingsPolicy';
 import { SshSettingsService } from '../services/SshSettingsService';
 import { SshProxyProfileStore } from '../services/SshProxyProfileStore';
+import { SshProxyProfileV1 } from '../services/SshProxyProfilePolicy';
 import {
   SshProxyRuntimePlan,
   resolveSshProxyRuntimePlan,
@@ -850,6 +851,7 @@ struct SshTerminal {
   @State sshAuthPrompt: SshAuthPromptRequest | null = null;
   @State sshAuthPromptValues: string[] = [];
   @State showSshAuthPromptSheet: boolean = false;
+  @State sshHostKeyReplaceArmed: boolean = false;
   /** Generation-owned local/remote/dynamic SSH forwarding workspace. */
   @State showForwardingSheet: boolean = false;
   @State forwardingProfiles: SshForwardingProfile[] = [];
@@ -1557,6 +1559,7 @@ struct SshTerminal {
     this.sshAuthPromptValues = [];
     this.sshAuthPromptRequestId = 0;
     this.sshAuthPromptSubmitting = false;
+    this.sshHostKeyReplaceArmed = false;
   }
 
   private cancelSshAuthPrompt(): void {
@@ -1585,8 +1588,9 @@ struct SshTerminal {
       }
       return;
     }
+    const hostKeyPrompt: boolean = prompt.kind === 'host_key';
     if (prompt.sessionId !== sessionId || prompt.generation !== generation ||
-      prompt.prompts.length === 0) { return; }
+      (!hostKeyPrompt && prompt.prompts.length === 0)) { return; }
     if (prompt.expiresAtMs > 0 && prompt.expiresAtMs <= Date.now()) {
       this.sshAuthPromptHandledSessionId = prompt.sessionId;
       this.sshAuthPromptHandledGeneration = prompt.generation;
@@ -1666,12 +1670,88 @@ struct SshTerminal {
     this.sshAuthPromptValues = values;
   }
 
+  private persistSshHostKeyTrust(prompt: SshAuthPromptRequest): boolean {
+    const ownerId: string = prompt.trustHostId.trim();
+    const endpointHost: string = prompt.endpointHost.trim();
+    const fingerprint: string = prompt.hostKeyFingerprintSha256.trim();
+    const rawBase64: string = prompt.hostKeyRawBase64.trim();
+    if (prompt.kind !== 'host_key' || ownerId.length === 0 || endpointHost.length === 0 ||
+      prompt.endpointPort <= 0 || prompt.endpointPort > 65535 ||
+      fingerprint.indexOf('SHA256:') !== 0 || rawBase64.length === 0) {
+      return false;
+    }
+    const current: RemoteHost | undefined = this.srv.getHost(ownerId);
+    if (current === undefined || current.protocol !== 'ssh') { return false; }
+    const trustedAt: number = Date.now();
+    if (prompt.hostKeyHopIndex < 0) {
+      if (current.host.trim() !== endpointHost || current.port !== prompt.endpointPort) { return false; }
+      const updated: RemoteHost = RemoteHost.fromJSON(current.toJSON());
+      updated.sshHostKeyAlgorithm = prompt.hostKeyAlgorithm.trim();
+      updated.sshHostKeyFingerprintSha256 = fingerprint;
+      updated.sshHostKeyRawBase64 = rawBase64;
+      updated.sshHostKeyTrustedAt = trustedAt;
+      updated.sshHostKeyTrustMode = 1;
+      return this.srv.updateHost(updated);
+    }
+
+    const hopIndex: number = prompt.hostKeyHopIndex;
+    const previousProfile: SshProxyProfileV1 | null = this.sshProxyProfiles.load(ownerId);
+    let profileUpdated: boolean = false;
+    if (previousProfile !== null) {
+      if (previousProfile.route.type !== 'ssh_jump' || hopIndex >= previousProfile.route.hops.length) {
+        return false;
+      }
+      const hop: SshJumpHop = previousProfile.route.hops[hopIndex];
+      if (hop.host.trim() !== endpointHost || hop.port !== prompt.endpointPort) { return false; }
+      const nextProfile: SshProxyProfileV1 | null = this.sshProxyProfiles.load(ownerId);
+      if (nextProfile === null) { return false; }
+      nextProfile.route.hops[hopIndex].expectedHostKeyRawBase64 = rawBase64;
+      nextProfile.route.hops[hopIndex].expectedHostKeyFingerprintSha256 = fingerprint;
+      nextProfile.updatedAtMs = trustedAt;
+      if (!this.sshProxyProfiles.upsert(nextProfile)) { return false; }
+      profileUpdated = true;
+    } else if (hopIndex !== 0 || current.proxyHost.trim() !== endpointHost ||
+      current.proxyPort !== prompt.endpointPort) {
+      return false;
+    }
+
+    // The canonical profile is authoritative. Mirror the first hop into the
+    // legacy fields only when both routes name the same endpoint, so SFTP and
+    // older entry points keep the same strict binding without cross-endpoint trust.
+    if (hopIndex === 0 && current.proxyHost.trim() === endpointHost &&
+      current.proxyPort === prompt.endpointPort) {
+      const updated: RemoteHost = RemoteHost.fromJSON(current.toJSON());
+      updated.sshJumpHostKeyAlgorithm = prompt.hostKeyAlgorithm.trim();
+      updated.sshJumpHostKeyFingerprintSha256 = fingerprint;
+      updated.sshJumpHostKeyRawBase64 = rawBase64;
+      updated.sshJumpHostKeyTrustedAt = trustedAt;
+      updated.sshJumpHostKeyTrustMode = 1;
+      if (!this.srv.updateHost(updated)) {
+        if (profileUpdated && previousProfile !== null) {
+          this.sshProxyProfiles.upsert(previousProfile);
+        }
+        return false;
+      }
+    }
+    return true;
+  }
+
   private submitSshAuthPrompt(): void {
     const prompt: SshAuthPromptRequest | null = this.sshAuthPrompt;
     if (prompt === null || this.sshAuthPromptSubmitting ||
       this.sshAuthPromptValues.length !== prompt.prompts.length) { return; }
+    if (prompt.kind === 'host_key' && prompt.hostKeyChanged && !this.sshHostKeyReplaceArmed) {
+      this.sshHostKeyReplaceArmed = true;
+      return;
+    }
     const responseValues: string[] = this.sshAuthPromptValues.slice();
     this.sshAuthPromptSubmitting = true;
+    if (prompt.kind === 'host_key' && !this.persistSshHostKeyTrust(prompt)) {
+      this.sshAuthPromptSubmitting = false;
+      promptAction.showToast({ message: 'Host Key 信任记录保存失败，连接已停止', duration: 2200 });
+      this.cancelSshAuthPrompt();
+      return;
+    }
     this.sshAuthPromptHandledSessionId = prompt.sessionId;
     this.sshAuthPromptHandledGeneration = prompt.generation;
     this.sshAuthPromptHandledRequestId = prompt.requestId;
@@ -1700,17 +1780,61 @@ struct SshTerminal {
       if (this.sshAuthPrompt !== null) {
         Row() {
           Column() {
-            Text('SSH 需要额外认证')
+            Text(this.sshAuthPrompt!.kind === 'host_key'
+              ? (this.sshAuthPrompt!.hostKeyChanged ? 'SSH Host Key 已变更' : '确认 SSH Host Key')
+              : 'SSH 需要额外认证')
               .fontSize(18).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
-            Text(this.sshAuthPrompt!.targetHost)
+            Text(this.sshAuthPrompt!.kind === 'host_key'
+              ? this.sshAuthPrompt!.endpointHost + ':' + this.sshAuthPrompt!.endpointPort.toString()
+              : this.sshAuthPrompt!.targetHost)
               .fontSize(12).fontColor(this.pal().text2).margin({ top: 4 })
               .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
           }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-          Text('第 ' + this.sshAuthPrompt!.round.toString() + ' 轮')
-            .fontSize(11).fontColor(this.pal().text3)
+          if (this.sshAuthPrompt!.kind !== 'host_key') {
+            Text('第 ' + this.sshAuthPrompt!.round.toString() + ' 轮')
+              .fontSize(11).fontColor(this.pal().text3)
+          }
         }.width('100%').alignItems(VerticalAlign.Center)
 
-        if (this.sshAuthPrompt!.hop.trim().length > 0) {
+        if (this.sshAuthPrompt!.kind === 'host_key') {
+          Text(this.sshAuthPrompt!.hostKeyHopIndex < 0 ? '最终目标主机' :
+            'ProxyJump 第 ' + (this.sshAuthPrompt!.hostKeyHopIndex + 1).toString() + ' 跳')
+            .fontSize(12).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+            .margin({ top: 12 })
+          if (this.sshAuthPrompt!.hostKeyChanged) {
+            Text('警告：服务器返回的 Host Key 与已保存记录不一致。请先通过可信渠道核对；误信可能遭遇中间人攻击。')
+              .fontSize(12).fontColor('#E5484D').margin({ top: 10 })
+              .maxLines(5)
+          } else {
+            Text('这是该端点首次建立信任。确认后才会继续发送用户名、密码或密钥认证信息。')
+              .fontSize(12).fontColor(this.pal().text2).margin({ top: 10 })
+              .maxLines(4)
+          }
+          Column({ space: 8 }) {
+            Text('算法  ' + (this.sshAuthPrompt!.hostKeyAlgorithm || 'unknown'))
+              .fontSize(12).fontColor(this.pal().text2).width('100%')
+            Text('当前指纹')
+              .fontSize(11).fontColor(this.pal().text3).width('100%')
+            Text(this.sshAuthPrompt!.hostKeyFingerprintSha256)
+              .fontSize(12).fontColor(this.pal().text).width('100%')
+              .maxLines(3).textOverflow({ overflow: TextOverflow.Ellipsis })
+            if (this.sshAuthPrompt!.hostKeyChanged) {
+              Text('已保存指纹')
+                .fontSize(11).fontColor(this.pal().text3).width('100%').margin({ top: 4 })
+              Text(this.sshAuthPrompt!.expectedHostKeyFingerprintSha256 || '仅保存了原始 Host Key')
+                .fontSize(12).fontColor(this.pal().text2).width('100%')
+                .maxLines(3).textOverflow({ overflow: TextOverflow.Ellipsis })
+            }
+          }
+            .width('100%').alignItems(HorizontalAlign.Start)
+            .padding(12).margin({ top: 12 })
+            .backgroundColor(this.pal().surface).borderRadius(10)
+          if (this.sshAuthPrompt!.hostKeyChanged && this.sshHostKeyReplaceArmed) {
+            Text('请再次点击下方按钮，确认用当前指纹替换旧记录。')
+              .fontSize(12).fontWeight(FontWeight.Medium).fontColor('#E5484D')
+              .margin({ top: 12 })
+          }
+        } else if (this.sshAuthPrompt!.hop.trim().length > 0) {
           Text('跳板: ' + this.sshAuthPrompt!.hop)
             .fontSize(11).fontColor(this.pal().text2).margin({ top: 8 })
             .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -1726,36 +1850,38 @@ struct SshTerminal {
             .maxLines(6).textOverflow({ overflow: TextOverflow.Ellipsis })
         }
 
-        Scroll() {
-          Column({ space: 10 }) {
-            ForEach(this.sshAuthPrompt!.prompts, (item: SshAuthPrompt, index: number): void => {
-              Column() {
-                Text(item.text.length > 0 ? item.text : '请输入认证响应')
-                  .fontSize(12).fontColor(this.pal().text)
-                  .width('100%').maxLines(3)
-                  .textOverflow({ overflow: TextOverflow.Ellipsis })
-                TextInput({
-                  placeholder: item.echo ? '输入响应' : '输入密码或验证码',
-                  text: this.sshAuthPromptValues[index]
-                })
-                  .type(item.echo ? InputType.Normal : InputType.Password)
-                  .enableAutoFill(false)
-                  .height(42).width('100%')
-                  .backgroundColor(this.pal().surface)
-                  .fontColor(this.pal().text).placeholderColor(this.pal().text3)
-                  .borderRadius(8).padding({ left: 12, right: 12 })
-                  .onChange((value: string): void => {
-                    this.updateSshAuthPromptValue(index, value);
+        if (this.sshAuthPrompt!.kind !== 'host_key') {
+          Scroll() {
+            Column({ space: 10 }) {
+              ForEach(this.sshAuthPrompt!.prompts, (item: SshAuthPrompt, index: number): void => {
+                Column() {
+                  Text(item.text.length > 0 ? item.text : '请输入认证响应')
+                    .fontSize(12).fontColor(this.pal().text)
+                    .width('100%').maxLines(3)
+                    .textOverflow({ overflow: TextOverflow.Ellipsis })
+                  TextInput({
+                    placeholder: item.echo ? '输入响应' : '输入密码或验证码',
+                    text: this.sshAuthPromptValues[index]
                   })
-                  .onSubmit((): void => { this.submitSshAuthPrompt(); })
-              }.width('100%').alignItems(HorizontalAlign.Start)
-            }, (item: SshAuthPrompt, index: number): string => index.toString())
-          }.width('100%')
+                    .type(item.echo ? InputType.Normal : InputType.Password)
+                    .enableAutoFill(false)
+                    .height(42).width('100%')
+                    .backgroundColor(this.pal().surface)
+                    .fontColor(this.pal().text).placeholderColor(this.pal().text3)
+                    .borderRadius(8).padding({ left: 12, right: 12 })
+                    .onChange((value: string): void => {
+                      this.updateSshAuthPromptValue(index, value);
+                    })
+                    .onSubmit((): void => { this.submitSshAuthPrompt(); })
+                }.width('100%').alignItems(HorizontalAlign.Start)
+              }, (item: SshAuthPrompt, index: number): string => index.toString())
+            }.width('100%')
+          }
+            .width('100%')
+            .constraintSize({ maxHeight: this.isDesktopDevice ? 560 : 480 })
+            .margin({ top: 16 })
+            .scrollBar(BarState.Auto)
         }
-          .width('100%')
-          .constraintSize({ maxHeight: this.isDesktopDevice ? 560 : 480 })
-          .margin({ top: 16 })
-          .scrollBar(BarState.Auto)
 
         Row() {
           Button('取消')
@@ -1764,7 +1890,12 @@ struct SshTerminal {
             .borderRadius(8)
             .enabled(!this.sshAuthPromptSubmitting)
             .onClick((): void => { this.cancelSshAuthPrompt(); })
-          Button(this.sshAuthPromptSubmitting ? '提交中...' : '提交')
+          Button(this.sshAuthPromptSubmitting ? '提交中...' :
+            (this.sshAuthPrompt!.kind === 'host_key'
+              ? (this.sshAuthPrompt!.hostKeyChanged
+                ? (this.sshHostKeyReplaceArmed ? '确认更换并连接' : '我已核对，继续')
+                : '信任并连接')
+              : '提交'))
             .height(40).layoutWeight(1).margin({ left: 10 })
             .backgroundColor(this.accentColor).fontColor('#FFFFFF')
             .borderRadius(8)
@@ -7564,7 +7695,9 @@ struct SshTerminal {
       expectedHostKeyRawBase64: host.sshHostKeyRawBase64,
       expectedHostKeyFingerprintSha256: host.sshHostKeyFingerprintSha256,
       sshJumpHostKeyRawBase64: host.sshJumpHostKeyRawBase64,
-      sshJumpHostKeyFingerprintSha256: host.sshJumpHostKeyFingerprintSha256
+      sshJumpHostKeyFingerprintSha256: host.sshJumpHostKeyFingerprintSha256,
+      sshHostKeyPromptEnabled: true,
+      sshTrustHostId: host.id
     };
   }
 
@@ -11502,6 +11635,8 @@ struct SshTerminal {
           host.sshHostKeyRawBase64,
         expectedHostKeyFingerprintSha256: (preflightMatchesHost ? this.preflightExpectedHostKeyFp : '') ||
           host.sshHostKeyFingerprintSha256,
+        sshHostKeyPromptEnabled: true,
+        sshTrustHostId: host.id,
         sshJumpHostKeyRawBase64: (preflightMatchesHost ? this.preflightExpectedJumpHostKeyRaw : '') ||
           host.sshJumpHostKeyRawBase64,
         sshJumpHostKeyFingerprintSha256: (preflightMatchesHost ? this.preflightExpectedJumpHostKeyFp : '') ||

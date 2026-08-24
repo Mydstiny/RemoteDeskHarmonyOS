@@ -678,6 +678,8 @@ export interface SessionConfig {
   sshJumpHopHandoffs?: SshJumpHopHandoff[];
   expectedHostKeyRawBase64?: string;
   expectedHostKeyFingerprintSha256?: string;
+  sshHostKeyPromptEnabled?: boolean;
+  sshTrustHostId?: string;
   sshJumpHostKeyRawBase64?: string;
   sshJumpHostKeyFingerprintSha256?: string;
   expectedRdpCertificateFingerprintSha256?: string;
@@ -841,6 +843,17 @@ export interface SshAuthPromptRequest {
   instruction: string;
   prompts: SshAuthPrompt[];
   expiresAtMs: number;
+  kind: 'keyboard_interactive' | 'host_key';
+  trustHostId: string;
+  endpointHost: string;
+  endpointPort: number;
+  hostKeyHopIndex: number;
+  hostKeyAlgorithm: string;
+  hostKeyFingerprintSha256: string;
+  /** Internal persistence payload; never display or log this raw key blob. */
+  hostKeyRawBase64: string;
+  expectedHostKeyFingerprintSha256: string;
+  hostKeyChanged: boolean;
 }
 
 export interface SshAuthPromptResponse {

@@ -1,9 +1,10 @@
 /**
- * One-shot keyboard-interactive prompt broker.
+ * One-shot SSH owner prompt broker.
  *
  * libssh2 invokes its callback on the SSH owner reactor.  The broker exposes
  * the current prompt to NAPI, waits for one response round, and clears all
- * response material before returning.  It never persists credentials.
+ * response material before returning. Keyboard-interactive responses remain
+ * transient; Host Key decisions carry public key metadata for ArkUI persistence.
  */
 #ifndef SSH_AUTH_PROMPT_BROKER_H
 #define SSH_AUTH_PROMPT_BROKER_H
@@ -33,6 +34,16 @@ struct SshAuthPromptRequest {
     std::string instruction;
     std::vector<SshAuthPrompt> prompts;
     uint64_t expiresAtMs = 0;
+    std::string kind = "keyboard_interactive";
+    std::string trustHostId;
+    std::string endpointHost;
+    int endpointPort = 0;
+    int hostKeyHopIndex = -1;
+    std::string hostKeyAlgorithm;
+    std::string hostKeyFingerprintSha256;
+    std::string hostKeyRawBase64;
+    std::string expectedHostKeyFingerprintSha256;
+    bool hostKeyChanged = false;
 };
 
 struct SshAuthPromptResponse {
@@ -117,6 +128,65 @@ public:
             result = SshAuthPromptWaitResult::TimedOut;
         } else {
             responses.swap(responseValues_);
+        }
+        clearPendingLocked();
+        return result;
+    }
+
+    SshAuthPromptWaitResult waitForHostKeyDecision(
+        uint64_t sessionId, uint64_t generation, const std::string& targetHost,
+        const std::string& hop, const std::string& trustHostId,
+        const std::string& endpointHost, int endpointPort, int hopIndex,
+        const std::string& algorithm, const std::string& fingerprintSha256,
+        const std::string& rawBase64, const std::string& expectedFingerprintSha256,
+        bool changed) {
+        SshAuthPromptRequest request;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (closed_ || pending_) {
+                return closed_ ? SshAuthPromptWaitResult::Closed
+                               : SshAuthPromptWaitResult::Cancelled;
+            }
+            request.requestId = ++nextRequestId_;
+            request.sessionId = sessionId;
+            request.generation = generation;
+            request.targetHost = bounded(targetHost, 255);
+            request.hop = bounded(hop, 96);
+            request.round = ++round_;
+            request.kind = "host_key";
+            request.trustHostId = bounded(trustHostId, 128);
+            request.endpointHost = bounded(endpointHost, 255);
+            request.endpointPort = endpointPort;
+            request.hostKeyHopIndex = hopIndex;
+            request.hostKeyAlgorithm = bounded(algorithm, 96);
+            request.hostKeyFingerprintSha256 = bounded(fingerprintSha256, 255);
+            request.hostKeyRawBase64 = bounded(rawBase64, 64 * 1024);
+            request.expectedHostKeyFingerprintSha256 = bounded(expectedFingerprintSha256, 255);
+            request.hostKeyChanged = changed;
+            request.expiresAtMs = nowMs() +
+                static_cast<uint64_t>(kTimeout.count()) * 1000ULL;
+            pendingRequest_ = request;
+            pending_ = true;
+            responseReady_ = false;
+            cancelled_ = false;
+            responseValues_.clear();
+        }
+        cv_.notify_all();
+
+        std::unique_lock<std::mutex> lock(mutex_);
+        const auto deadline = std::chrono::steady_clock::now() + kTimeout;
+        while (!responseReady_ && !cancelled_ && !closed_) {
+            if (cv_.wait_until(lock, deadline) == std::cv_status::timeout) {
+                break;
+            }
+        }
+        SshAuthPromptWaitResult result = SshAuthPromptWaitResult::Responded;
+        if (closed_) {
+            result = SshAuthPromptWaitResult::Closed;
+        } else if (cancelled_) {
+            result = SshAuthPromptWaitResult::Cancelled;
+        } else if (!responseReady_) {
+            result = SshAuthPromptWaitResult::TimedOut;
         }
         clearPendingLocked();
         return result;

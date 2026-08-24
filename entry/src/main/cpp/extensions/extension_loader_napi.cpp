@@ -1133,6 +1133,10 @@ static const char* SshRouteTypeName(SshRouteKind kind) {
 }
 
 static bool FinalizeSshRoute(ConnectionConfig& config) {
+    if (config.sshHostKeyPromptEnabled &&
+        (config.sshTrustHostId.empty() || config.sshTrustHostId.size() > 128)) {
+        return false;
+    }
     const std::string configuredType = config.sshProxyType.empty()
         ? "direct" : config.sshProxyType;
     if (!sshRouteTypeIsKnown(configuredType)) { return false; }
@@ -1537,6 +1541,17 @@ static napi_value CreateSshAuthPromptValue(
     SetObjectString(env, result, "name", request.name);
     SetObjectString(env, result, "instruction", request.instruction);
     SetObjectInt64(env, result, "expiresAtMs", static_cast<int64_t>(request.expiresAtMs));
+    SetObjectString(env, result, "kind", request.kind);
+    SetObjectString(env, result, "trustHostId", request.trustHostId);
+    SetObjectString(env, result, "endpointHost", request.endpointHost);
+    SetObjectInt32(env, result, "endpointPort", request.endpointPort);
+    SetObjectInt32(env, result, "hostKeyHopIndex", request.hostKeyHopIndex);
+    SetObjectString(env, result, "hostKeyAlgorithm", request.hostKeyAlgorithm);
+    SetObjectString(env, result, "hostKeyFingerprintSha256", request.hostKeyFingerprintSha256);
+    SetObjectString(env, result, "hostKeyRawBase64", request.hostKeyRawBase64);
+    SetObjectString(env, result, "expectedHostKeyFingerprintSha256",
+                    request.expectedHostKeyFingerprintSha256);
+    SetObjectBool(env, result, "hostKeyChanged", request.hostKeyChanged);
     napi_value prompts;
     napi_create_array_with_length(env, request.prompts.size(), &prompts);
     for (size_t index = 0; index < request.prompts.size(); ++index) {
@@ -3667,6 +3682,8 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     getString("privateKeyPassphrase", cfg.privateKeyPassphrase);
     getString("expectedHostKeyRawBase64", cfg.expectedHostKeyRawBase64);
     getString("expectedHostKeyFingerprintSha256", cfg.expectedHostKeyFingerprintSha256);
+    getBool("sshHostKeyPromptEnabled", cfg.sshHostKeyPromptEnabled);
+    getString("sshTrustHostId", cfg.sshTrustHostId);
     getString("sshJumpHostKeyRawBase64", cfg.sshJumpHostKeyRawBase64);
     getString("sshJumpHostKeyFingerprintSha256", cfg.sshJumpHostKeyFingerprintSha256);
     if (protocolName == "ssh") {
@@ -4589,6 +4606,11 @@ static bool ParseSshConnectionConfig(napi_env env, napi_value value,
         if (present != nullptr) { *present = true; }
         napi_get_value_int32(env, item, &out);
     };
+    auto getBool = [&](const char* key, bool& out) {
+        napi_value item;
+        if (napi_get_named_property(env, value, key, &item) != napi_ok) { return; }
+        (void)napi_get_value_bool(env, item, &out);
+    };
 
     std::string protocol;
     getString("protocol", protocol);
@@ -4607,6 +4629,8 @@ static bool ParseSshConnectionConfig(napi_env env, napi_value value,
     if (!SshSessionLocaleIsSupported(config.sshLocale)) { return false; }
     getString("expectedHostKeyRawBase64", config.expectedHostKeyRawBase64);
     getString("expectedHostKeyFingerprintSha256", config.expectedHostKeyFingerprintSha256);
+    getBool("sshHostKeyPromptEnabled", config.sshHostKeyPromptEnabled);
+    getString("sshTrustHostId", config.sshTrustHostId);
     getString("sshJumpHostKeyRawBase64", config.sshJumpHostKeyRawBase64);
     getString("sshJumpHostKeyFingerprintSha256", config.sshJumpHostKeyFingerprintSha256);
     getString("sshProxyType", config.sshProxyType);
