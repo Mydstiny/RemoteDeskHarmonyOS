@@ -5,6 +5,7 @@ import {
   normalizeRemoteShortcutPlatform,
   remoteShortcutTransportKeyCode,
   remoteShortcutCategories,
+  remoteShortcutPresetRenderKey,
   remoteShortcutPresets
 } from '../main/ets/services/RemoteKeyboardSettingsPolicy';
 
@@ -47,6 +48,12 @@ export default function remoteKeyboardSettingsPolicyTest(): void {
         .assertEqual('Shift+Cmd+[');
       expect(macos.filter((item): boolean => item.id === 'macNextTab')[0].chord)
         .assertEqual('Shift+Cmd+]');
+      expect(remoteShortcutPresetRenderKey('windows', windowsCopy))
+        .assertEqual('windows:copy');
+      expect(remoteShortcutPresetRenderKey('macos', macosCopy))
+        .assertEqual('macos:copy');
+      expect(remoteShortcutPresetRenderKey('windows', windowsCopy) !==
+        remoteShortcutPresetRenderKey('macos', macosCopy)).assertTrue();
     });
 
     it('covers_every_visible_category_for_both_platforms', 0, (): void => {

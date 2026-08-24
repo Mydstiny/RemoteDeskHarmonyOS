@@ -304,3 +304,14 @@ export function remoteShortcutPresets(
   if (category === undefined) { return source; }
   return source.filter((item: RemoteShortcutPreset): boolean => item.category === category);
 }
+
+/**
+ * ArkUI retains ForEach children while their identity is unchanged. Windows
+ * and macOS intentionally share semantic preset ids such as `copy`, so the
+ * platform must participate in the render identity or a platform switch can
+ * leave the old chord label and click payload mounted.
+ */
+export function remoteShortcutPresetRenderKey(platform: RemoteShortcutPlatform,
+  item: RemoteShortcutPreset): string {
+  return platform + ':' + item.id;
+}

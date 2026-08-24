@@ -21,6 +21,7 @@ import {
   RemoteShortcutPreset,
   remoteShortcutCategories,
   remoteShortcutCategoryLabel,
+  remoteShortcutPresetRenderKey,
   remoteShortcutPresets,
   REMOTE_KEYBOARD_CLOSE_AFTER_SHORTCUT_KEY,
   REMOTE_KEYBOARD_FUNCTION_KEYS_VISIBLE_KEY,
@@ -943,7 +944,8 @@ export struct RemoteModifierPanel {
       Grid() {
         ForEach(this.visibleShortcutPresets(), (item: RemoteShortcutPreset): void => {
           GridItem() { this.PresetShortcutBtn(item) }
-        }, (item: RemoteShortcutPreset): string => item.id)
+        }, (item: RemoteShortcutPreset): string =>
+          remoteShortcutPresetRenderKey(this.shortcutPlatform(), item))
       }
       .columnsTemplate('1fr 1fr').rowsGap(6).columnsGap(6)
       .width('100%').height(204).scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
