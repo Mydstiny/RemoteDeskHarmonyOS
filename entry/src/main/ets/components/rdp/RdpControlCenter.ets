@@ -7,6 +7,10 @@ import {
   RemoteResolutionPreset
 } from '../../services/RemoteResolutionPresetPolicy';
 import {
+  RDP_SESSION_CONTROL_ACCENT,
+  RDP_SESSION_CONTROL_ACCENT_SOFT,
+  RDP_SESSION_NEUTRAL_ACCENT,
+  RDP_SESSION_NEUTRAL_ACCENT_SOFT,
   RdpSessionPerformanceSummary,
   rdpSessionPerformanceSummary
 } from '../../services/RdpSessionSidebarPolicy';
@@ -87,9 +91,11 @@ export struct RdpControlCenter {
       Text(title).fontSize(13).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
         .fontFamily(AppTheme.fontFamily)
       if (activation.length > 0) {
-        Text(activation).fontSize(9).fontColor(activation === '重连后生效' ? '#FFCF70' : this.accentColor)
+        Text(activation).fontSize(9).fontColor(activation === '重连后生效' ?
+          RDP_SESSION_NEUTRAL_ACCENT : RDP_SESSION_CONTROL_ACCENT)
           .padding({ left: 7, right: 7, top: 3, bottom: 3 }).borderRadius(9)
-          .backgroundColor(activation === '重连后生效' ? 'rgba(255,207,112,0.12)' : this.accentColor + '18')
+          .backgroundColor(activation === '重连后生效' ?
+            RDP_SESSION_NEUTRAL_ACCENT_SOFT : RDP_SESSION_CONTROL_ACCENT_SOFT)
           .margin({ left: 8 })
       }
     }.width('100%').margin({ top: 16, bottom: 8 })
@@ -122,7 +128,7 @@ export struct RdpControlCenter {
         Text(detail).fontSize(10).fontColor(this.pal().text3).fontFamily(AppTheme.fontFamily)
           .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 2 })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-      Toggle({ type: ToggleType.Switch, isOn: value }).selectedColor(this.accentColor)
+      Toggle({ type: ToggleType.Switch, isOn: value }).selectedColor(RDP_SESSION_CONTROL_ACCENT)
         .onChange((next: boolean): void => { if (next !== value) { action(next); } })
     }.width('100%').height(60).padding({ left: 12, right: 12, top: 7, bottom: 7 })
   }
@@ -130,7 +136,7 @@ export struct RdpControlCenter {
   @Builder private choice(label: string, selected: boolean, action: () => void) {
     Button(label).height(34).fontSize(10).borderRadius(9).padding({ left: 8, right: 8 })
       .fontColor(selected ? Color.White : this.pal().text2)
-      .backgroundColor(selected ? this.accentColor : this.pal().surface)
+      .backgroundColor(selected ? RDP_SESSION_CONTROL_ACCENT : this.pal().surface)
       .onClick(action)
   }
 
@@ -164,7 +170,7 @@ export struct RdpControlCenter {
           Text(this.perf().status).fontSize(12).fontWeight(FontWeight.Bold)
             .fontColor(this.perf().color).margin({ left: 7 })
           Blank()
-          Text(this.perf().transport).fontSize(10).fontColor(this.accentColor)
+          Text(this.perf().transport).fontSize(10).fontColor(RDP_SESSION_CONTROL_ACCENT)
         }.width('100%').margin({ bottom: 6 })
         this.metric('远端更新年龄', this.perf().frameAge)
         this.metric('送显队列 P95', this.perf().queueP95)

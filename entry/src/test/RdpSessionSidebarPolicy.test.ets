@@ -1,6 +1,8 @@
 import { expect } from '@ohos/hypium';
 import { auditedDescribe as describe, auditedIt as it } from '../main/ets/services/FocusedTestRegistrationAudit';
 import {
+  RDP_SESSION_CONTROL_ACCENT,
+  RDP_SESSION_NEUTRAL_ACCENT,
   normalizeRdpSessionColorDepth,
   normalizeRdpSessionControlMode,
   normalizeRdpSessionDriveName,
@@ -30,6 +32,7 @@ export default function rdpSessionSidebarPolicyTest(): void {
     it('summarizes_live_transport_health_for_toolbar_and_panel', 0, (): void => {
       const healthy = rdpSessionPerformanceSummary(0, 48, 840, true);
       expect(healthy.status).assertEqual('实时');
+      expect(healthy.color).assertEqual(RDP_SESSION_CONTROL_ACCENT);
       expect(healthy.transport).assertEqual('GFX');
       expect(healthy.frameAge).assertEqual('48 ms');
       const stalled = rdpSessionPerformanceSummary(0, 3200, 2500, false);
@@ -39,6 +42,7 @@ export default function rdpSessionSidebarPolicyTest(): void {
       expect(failed.status).assertEqual('恢复中');
       const pending = rdpSessionPerformanceSummary(0, -1, 0, false);
       expect(pending.status).assertEqual('待采样');
+      expect(pending.color).assertEqual(RDP_SESSION_NEUTRAL_ACCENT);
       expect(pending.frameAge).assertEqual('—');
     });
   });

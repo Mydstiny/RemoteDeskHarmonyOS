@@ -1,5 +1,10 @@
 export type RdpSessionSettingActivation = 'live' | 'reconnect';
 
+export const RDP_SESSION_CONTROL_ACCENT: string = '#4F8DFF';
+export const RDP_SESSION_CONTROL_ACCENT_SOFT: string = 'rgba(79,141,255,0.22)';
+export const RDP_SESSION_NEUTRAL_ACCENT: string = '#A8B0BF';
+export const RDP_SESSION_NEUTRAL_ACCENT_SOFT: string = 'rgba(168,176,191,0.12)';
+
 export interface RdpSessionPerformanceSummary {
   status: string;
   color: string;
@@ -64,7 +69,8 @@ export function rdpSessionPerformanceSummary(lastRenderResult: number,
   const failed: boolean = lastRenderResult < 0;
   return {
     status: failed ? '恢复中' : (!sampled ? '待采样' : (stalled ? '画面停滞' : '实时')),
-    color: failed || stalled ? '#FF6B6B' : (sampled ? '#66DD7A' : '#A8B0BF'),
+    color: failed || stalled ? '#FF6B6B' :
+      (sampled ? RDP_SESSION_CONTROL_ACCENT : RDP_SESSION_NEUTRAL_ACCENT),
     transport: gfxChannelConnected ? 'GFX' : 'GDI',
     frameAge: ageMs(lastRemoteUpdateAgeMs),
     queueP95: durationUs(queueP95Us)

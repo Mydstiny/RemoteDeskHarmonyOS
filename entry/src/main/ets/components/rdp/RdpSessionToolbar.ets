@@ -15,6 +15,10 @@ import {
   remoteSessionRailDragOffset,
   remoteSessionRailShouldCollapse
 } from '../../services/RemoteSessionTopBarPolicy';
+import {
+  RDP_SESSION_CONTROL_ACCENT,
+  RDP_SESSION_CONTROL_ACCENT_SOFT
+} from '../../services/RdpSessionSidebarPolicy';
 
 export type RdpToolbarAction = 'control' | 'keyboard' | 'shortcuts' |
   'ctrlAltDel' | 'refresh' | 'diagnostics' | 'disconnect';
@@ -36,7 +40,7 @@ export struct RdpSessionToolbar {
   @Prop @Watch('onMenuStateChange') controlCenterOpen: boolean = false;
   @Prop diagnosticsVisible: boolean = false;
   @Prop qualityLabel: string = '实时';
-  @Prop qualityColor: string = '#66DD7A';
+  @Prop qualityColor: string = RDP_SESSION_CONTROL_ACCENT;
   @Prop @Watch('onAvailableHeightChange') availableHeight: number = 640;
   @State private expanded: boolean = false;
   @State private pinned: boolean = false;
@@ -150,9 +154,11 @@ export struct RdpSessionToolbar {
     Button() {
       Column({ space: 2 }) {
         SymbolGlyph(this.icon(item.action)).fontSize(20)
-          .fontColor([item.dangerous ? this.pal().danger : this.pal().text])
+          .fontColor([item.dangerous ? this.pal().danger :
+            (this.active(item.action) ? RDP_SESSION_CONTROL_ACCENT : this.pal().text)])
         Text(item.label).fontSize(9)
-          .fontColor(item.dangerous ? this.pal().danger : this.pal().text)
+          .fontColor(item.dangerous ? this.pal().danger :
+            (this.active(item.action) ? RDP_SESSION_CONTROL_ACCENT : this.pal().text))
           .maxLines(1)
       }
     }
@@ -160,7 +166,7 @@ export struct RdpSessionToolbar {
     .height(layout.edgeRail ? 44 : 50)
     .padding(0).borderRadius(14)
     .backgroundColor(item.dangerous ? this.pal().danger + '20' :
-      (this.active(item.action) ? this.accentColor + '36' : this.pal().surface))
+      (this.active(item.action) ? RDP_SESSION_CONTROL_ACCENT_SOFT : this.pal().surface))
     .onClick((): void => { this.invoke(item.action); })
     .accessibilityText(item.label + (this.active(item.action) ? '，已打开' : ''))
   }
@@ -179,7 +185,7 @@ export struct RdpSessionToolbar {
   @Builder private pinItem(layout: MoonlightToolbarLayout) {
     Button() {
       SymbolGlyph(this.pinned ? $r('sys.symbol.pin_fill') : $r('sys.symbol.pin'))
-        .fontSize(17).fontColor([this.pinned ? this.accentColor : this.pal().text])
+        .fontSize(17).fontColor([this.pinned ? RDP_SESSION_CONTROL_ACCENT : this.pal().text])
     }.width(44).height(50).padding(0).borderRadius(14)
       .backgroundColor(this.pal().surface)
       .onClick((): void => { this.pinned = !this.pinned; this.scheduleHide(); })
