@@ -46,14 +46,17 @@ export default function personalizationDefaultsPolicyTest(): void {
       expect(defaults.sshInputMode).assertEqual(2);
     });
 
-    it('retains historical fallbacks for missing update keys', 0, (): void => {
-      const defaults = personalizationDefaults(false, true);
-      expect(defaults.virtualMouseStyle).assertEqual('circle');
-      expect(defaults.rustdeskPresenceDetectionEnabled).assertTrue();
-      expect(defaults.rdpControlMode).assertEqual(0);
-      expect(defaults.rustdeskControlMode).assertEqual(0);
-      expect(defaults.vncControlMode).assertEqual(0);
-      expect(defaults.sshInputMode).assertEqual(0);
+    it('restores device-safe SSH input defaults for missing update keys', 0, (): void => {
+      const mobileDefaults = personalizationDefaults(false, false);
+      expect(mobileDefaults.virtualMouseStyle).assertEqual('circle');
+      expect(mobileDefaults.rustdeskPresenceDetectionEnabled).assertTrue();
+      expect(mobileDefaults.rdpControlMode).assertEqual(0);
+      expect(mobileDefaults.rustdeskControlMode).assertEqual(0);
+      expect(mobileDefaults.vncControlMode).assertEqual(0);
+      expect(mobileDefaults.sshInputMode).assertEqual(1);
+
+      const desktopDefaults = personalizationDefaults(false, true);
+      expect(desktopDefaults.sshInputMode).assertEqual(2);
     });
   });
 }

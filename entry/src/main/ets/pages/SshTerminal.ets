@@ -17999,6 +17999,7 @@ struct SshTerminal {
               // Terminal input is arbitrary shell text, not a credential or
               // autofill field. Normal keeps the IME and hardware-key path
               // from entering the username/secure-field route.
+              .type(TextAreaType.NORMAL)
               .enableAutoFill(false)
               .fontSize(this.renderFontVp)
               .fontColor('#00000000').fontFamily('monospace')
@@ -18023,6 +18024,7 @@ struct SshTerminal {
               .focusOnTouch(sshTerminalUsesNativeTouchInputAnchor(this.isDesktopDevice))
               .enableKeyboardOnFocus(this.terminalInputAnchorKeyboardEnabled())
               .enablePreviewText(false)
+              // SSH should never ask the IME to auto-capitalize commands.
               .autoCapitalizationMode(AutoCapitalizationMode.NONE)
               .enterKeyType(EnterKeyType.Send)
               .copyOption(CopyOptions.None)
