@@ -320,6 +320,9 @@ export struct RdpControlCenter {
     .backgroundColor('rgba(16,20,28,0.91)').backdropBlur(20)
     .border({ width: 1, color: this.pal().floatBorder }).borderRadius(22)
     .shadow({ radius: 22, color: this.pal().fabShadow, offsetX: -4, offsetY: 5 })
-    .hitTestBehavior(HitTestMode.Block)
+    // HitTestMode.Block targets only this container and suppresses its
+    // descendants. The hierarchy variant keeps buttons/Scroll interactive
+    // and prevents the same pointer transaction reaching the remote canvas.
+    .hitTestBehavior(HitTestMode.BLOCK_HIERARCHY)
   }
 }

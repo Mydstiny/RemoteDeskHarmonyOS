@@ -259,7 +259,8 @@ export struct RdpSessionToolbar {
         .padding(8).backgroundColor(this.pal().floatBg).backdropBlur(18).borderRadius(18)
         .border({ width: 1, color: this.pal().floatBorder })
         .shadow({ radius: 18, color: this.pal().fabShadow, offsetY: 5 })
-      }.width('100%').height(68).scrollable(ScrollDirection.Horizontal)
+      }.width('100%').constraintSize({ maxWidth: 480 }).height(68)
+        .scrollable(ScrollDirection.Horizontal)
         .scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
     }
   }
@@ -267,6 +268,9 @@ export struct RdpSessionToolbar {
   build() {
     Stack() {
       if (this.expanded) { this.expandedTools(this.layout()) } else { this.collapsedHandle(this.layout()) }
-    }.hitTestBehavior(HitTestMode.Transparent)
+    }
+    // Children remain interactive while the concrete rail/toolbar bounds
+    // fence the remote XComponent and its full-screen input overlay.
+    .hitTestBehavior(HitTestMode.BLOCK_HIERARCHY)
   }
 }

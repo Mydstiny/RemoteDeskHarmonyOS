@@ -85,7 +85,8 @@ function ageMs(value: number): string {
   return Math.round(value).toString() + ' ms';
 }
 
-function resultLabel(value: number): string {
+function resultLabel(value: number, lastRemoteUpdateAgeMs: number): string {
+  if (!Number.isFinite(lastRemoteUpdateAgeMs) || lastRemoteUpdateAgeMs < 0) { return '待采样'; }
   if (value >= 0) { return '正常'; }
   if (value === -3) { return 'surface detached'; }
   if (value === -4) { return 'generation mismatch'; }
@@ -97,6 +98,7 @@ export struct RdpDiagnosticsHud {
   @Prop stats: RdpRenderStats = EMPTY_RDP_RENDER_STATS;
   @Prop @Watch('onViewportChange') availableWidth: number = 360;
   @Prop @Watch('onViewportChange') availableHeight: number = 640;
+  @Prop @Watch('onViewportChange') topInset: number = 0;
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   @State private expanded: boolean = false;
   @State private panelX: number = 10;
@@ -110,14 +112,29 @@ export struct RdpDiagnosticsHud {
     return expanded ? 248 : 116;
   }
 
-  private clampPosition(expanded: boolean = this.expanded): void {
-    this.panelX = Math.max(0, Math.min(this.panelX,
-      Math.max(0, this.availableWidth - 236)));
-    this.panelY = Math.max(0, Math.min(this.panelY,
-      Math.max(0, this.availableHeight - this.panelHeight(expanded))));
+  private visiblePanelWidth(): number {
+    return Math.max(44, Math.min(236, this.availableWidth));
   }
 
-  private onViewportChange(): void { this.clampPosition(); }
+  private visiblePanelHeight(expanded: boolean = this.expanded): number {
+    return Math.max(44, Math.min(this.panelHeight(expanded), this.availableHeight));
+  }
+
+  private canExpand(): boolean {
+    return this.availableWidth >= 236 && this.availableHeight >= 248;
+  }
+
+  private clampPosition(expanded: boolean = this.expanded): void {
+    this.panelX = Math.max(0, Math.min(this.panelX,
+      Math.max(0, this.availableWidth - this.visiblePanelWidth())));
+    this.panelY = Math.max(0, Math.min(this.panelY,
+      Math.max(0, this.availableHeight - this.visiblePanelHeight(expanded))));
+  }
+
+  private onViewportChange(): void {
+    if (!this.canExpand()) { this.expanded = false; }
+    this.clampPosition();
+  }
 
   private finishDrag(): void {
     this.panelX += this.dragX;
@@ -139,7 +156,8 @@ export struct RdpDiagnosticsHud {
     Column() {
       Row() {
         Column().width(7).height(7).borderRadius(4)
-          .backgroundColor(this.stats.lastRenderResult < 0 ? this.pal().danger : '#66DD7A')
+          .backgroundColor(this.stats.lastRemoteUpdateAgeMs < 0 ? '#A8B0BF' :
+            (this.stats.lastRenderResult < 0 ? this.pal().danger : '#66DD7A'))
         Text('RDP 性能监视').fontSize(11).fontWeight(FontWeight.Medium).fontColor('#FFFFFF')
           .margin({ left: 7 })
         Blank().layoutWeight(1)
@@ -149,7 +167,7 @@ export struct RdpDiagnosticsHud {
           .fontSize(12).fontColor(['rgba(255,255,255,0.72)']).margin({ left: 8 })
       }.width('100%').height(28).margin({ bottom: 4 })
         .onClick((): void => {
-          const next: boolean = !this.expanded;
+          const next: boolean = !this.expanded && this.canExpand();
           this.expanded = next;
           this.clampPosition(next);
         })
@@ -162,7 +180,7 @@ export struct RdpDiagnosticsHud {
           .onActionCancel((): void => { this.dragX = 0; this.dragY = 0; }))
       this.metric({
         label: '状态',
-        value: resultLabel(this.stats.lastRenderResult)
+        value: resultLabel(this.stats.lastRenderResult, this.stats.lastRemoteUpdateAgeMs)
       })
       this.metric({
         label: '队列 P95',
@@ -206,14 +224,15 @@ export struct RdpDiagnosticsHud {
         })
       }
     }
-    .width(236)
+    .width(this.visiblePanelWidth()).height(this.visiblePanelHeight())
     .padding(12)
     .backgroundColor('rgba(12,16,24,0.78)').backdropBlur(18)
     .border({ width: 0.5, color: this.pal().floatBorder })
     .borderRadius(16)
     .shadow({ radius: 16, color: this.pal().fabShadow, offsetY: 4 })
-    .position({ x: this.panelX, y: this.panelY })
+    .position({ x: this.panelX, y: this.topInset + this.panelY })
     .translate({ x: this.dragX, y: this.dragY })
-    .hitTestBehavior(HitTestMode.Block)
+    .clip(true)
+    .hitTestBehavior(HitTestMode.BLOCK_HIERARCHY)
   }
 }
