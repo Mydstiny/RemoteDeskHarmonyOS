@@ -134,6 +134,15 @@ export default function remoteSessionWindowPolicyTest(): void {
       expect(intents.take(101)?.hostId).assertEqual('vnc-host-1');
       expect(intents.take(102)).assertNull();
       expect(intents.put('vnc', 'vnc-host-2', 200)).assertTrue();
+      const connectIntent = intents.take(201);
+      expect(connectIntent?.reason).assertEqual('connect');
+      expect(connectIntent?.replaceSavedCredential).assertFalse();
+      expect(intents.put(
+        'vnc', 'vnc-host-3', 300, 'authentication_retry', true)).assertTrue();
+      const retryIntent = intents.take(301);
+      expect(retryIntent?.reason).assertEqual('authentication_retry');
+      expect(retryIntent?.replaceSavedCredential).assertTrue();
+      expect(intents.put('vnc', 'vnc-host-2', 200)).assertTrue();
       expect(intents.take(20000)).assertNull();
       expect(intents.put('vnc', '  ', 300)).assertFalse();
       intents.resetForTest();

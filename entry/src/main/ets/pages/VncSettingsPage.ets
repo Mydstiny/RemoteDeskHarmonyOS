@@ -32,6 +32,7 @@ import { buildVncTrustDirectory, VncTrustDirectoryItem } from '../services/VncTr
 import { SETTINGS_PANEL_DISMISS_TO_LEAF_OPEN_MS } from '../services/SettingsSheetRoutePolicy';
 import { isSelectableVncDefaultGateway, VncSelectableGateway } from '../services/VncHostDefaultsPolicy';
 import { RemoteSessionConnectionIntent } from '../services/RemoteSessionConnectionIntent';
+import { VncSessionCredentialHandoff } from '../services/VncSessionCredentialHandoff';
 
 @Entry
 @Component
@@ -40,7 +41,6 @@ export struct VncSettingsPage {
   @StorageLink('accentColor') accentColor: string = '#007DFF';
   @StorageProp('topRectHeight') topRectHeight: number = 0;
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
-  @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
 
   @State defaultTransport: VncTransport = 'direct_tcp';
   @State defaultPortText: string = '5900';
@@ -536,19 +536,13 @@ export struct VncSettingsPage {
   }
 
   private connectHost(host: VncHostView): void {
-    const params: Record<string, Object> = {};
-    params['vncHostId'] = host.id;
-    this.openVncSession(host, params);
+    this.openVncSession(host);
   }
 
-  private openVncSession(host: VncHostView, params: Record<string, Object>): void {
-    if (!this.isDesktopDevice) {
-      void router.pushUrl({ url: 'pages/RemoteDesktop', params });
-      return;
-    }
-    // The settings page is not an authentication owner. Return only a
-    // connection intent; HostList will run the unchanged lock/certificate
-    // flow and create the independent window after that flow commits.
+  private openVncSession(host: VncHostView): void {
+    // The settings page is not an authentication owner on any device class.
+    // HostList owns lock, certificate and password preflight before either
+    // Phone/Pad navigation or PC independent-window staging can begin.
     if (!RemoteSessionConnectionIntent.getInstance().put('vnc', host.id)) {
       promptAction.showToast({ message: 'VNC 连接请求无效', duration: 2200 });
       return;
@@ -574,6 +568,10 @@ export struct VncSettingsPage {
     if (!result.ok) {
       promptAction.showToast({ message: result.message || 'VNC 主机保存失败', duration: 2200 });
       return;
+    }
+    if (connectNow && !values.rememberPassword && password.length > 0) {
+      VncSessionCredentialHandoff.getInstance().put(
+        this.hostService.currentUserId(), result.id, password);
     }
     this.pendingHostFlowConnectId = connectNow ? result.id : '';
     promptAction.showToast({

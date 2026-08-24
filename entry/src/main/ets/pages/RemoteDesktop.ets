@@ -30,7 +30,6 @@ import {
 } from '../model/RemoteHost';
 import { TotpEntry } from '../model/TotpEntry';
 import { VncHostService, VncHostView } from '../services/VncHostService';
-import { VncSecretLoadState } from '../services/VncSecretService';
 import { VncGatewayService, VncGatewayView } from '../services/VncGatewayService';
 import { VncSettingsService } from '../services/VncSettingsService';
 import {
@@ -73,7 +72,19 @@ import {
   VncCertificateSheetAttempt
 } from '../services/VncCertificateSheetPolicy';
 import { VncCertificateDecisionHandoff } from '../services/VncCertificateDecisionHandoff';
-import { VncSessionCredentialHandoff } from '../services/VncSessionCredentialHandoff';
+import { VncPlaintextDecisionHandoff } from '../services/VncPlaintextDecisionHandoff';
+import {
+  VncSessionCredentialDecision,
+  VncSessionCredentialHandoff
+} from '../services/VncSessionCredentialHandoff';
+import {
+  vncAuthFailureShouldReplaceSavedCredential,
+  vncCredentialPasswordForConnect
+} from '../services/VncCredentialPreflightPolicy';
+import {
+  RemoteSessionConnectionIntent,
+  RemoteSessionConnectionIntentReason
+} from '../services/RemoteSessionConnectionIntent';
 import {
   VncSettingsValues,
   VncDisplayScaleMode,
@@ -710,7 +721,6 @@ type ModifierLatch = 'off' | 'once' | 'locked';
 type RustDeskAuthChoice = 'password' | 'request_approval';
 type RustDeskAuthDismissReason = 'none' | 'confirm' | 'cancel';
 type RustDeskTwoFactorDismissReason = 'none' | 'cancel' | 'success' | 'failure';
-type VncPasswordDismissReason = 'none' | 'confirm' | 'cancel';
 
 interface RustDeskTwoFactorEntryOption {
   id: string;
@@ -874,7 +884,6 @@ struct RemoteDesktop {
   @State rdpSessionErrorCode: string = '';
   @State showRustDeskAuthSheet: boolean = false;
   @State showRustDeskTwoFactorSheet: boolean = false;
-  @State showVncPasswordSheet: boolean = false;
   @State showVncCertificateSheet: boolean = false;
   @State vncCertificateState: VncCertificatePreflightState = VncCertificatePreflightState.IDLE;
   @State vncCertificateInfo: VncCertificateInfo | null = null;
@@ -899,10 +908,6 @@ struct RemoteDesktop {
   @State rustDeskTwoFactorSubmitting: boolean = false;
   @State rustDeskTwoFactorEntryOptions: RustDeskTwoFactorEntryOption[] = [];
   @State rustDeskTwoFactorSelectedEntryId: string = '';
-  @State vncPasswordInput: string = '';
-  @State vncRememberPassword: boolean = false;
-  @State vncPasswordError: string = '';
-  @State vncPasswordStatus: VncSecretLoadState = 'missing';
   private rdpSessionErrorBackPending: boolean = false;
   private rdpSessionErrorPendingCleanupReason: string = '';
   private rdpSessionErrorPendingAfterControlPanel: boolean = false;
@@ -942,9 +947,9 @@ struct RemoteDesktop {
   private bgRestorePending: boolean = false; // T-252: 后台保活恢复待处理 (替代 AppStorage 时序问题)
   private activeSessionRegistry: RemoteSessionRecordRegistry = ActiveRemoteSessionRegistry.getInstance();
   private sessionWindowId: string = '';
-  // Desktop RDP/VNC keeps the existing page and all of its authentication
-  // sheets as the connection owner. Only a fully connected native session is
-  // moved into a new UIAbility; preflight alone must never create a window.
+  // Desktop RDP/VNC uses this page only to establish the native session after
+  // HostList preflight. Only a fully connected native session is moved into a
+  // new UIAbility; preflight alone must never create a window.
   private pcWindowAfterAuthentication: boolean = false;
   private pcWindowHandoffStarted: boolean = false;
   private pcWindowHandoffComplete: boolean = false;
@@ -974,13 +979,8 @@ struct RemoteDesktop {
   private rustDeskAuthPendingStart: boolean = false;
   private rustDeskAuthSheetClosing: boolean = false;
   private rustDeskAuthQueuedMessage: string | null = null;
-  private vncPasswordDismissReason: VncPasswordDismissReason = 'none';
-  private vncPasswordBackPending: boolean = false;
-  private vncPasswordPendingStart: boolean = false;
-  private vncPasswordSheetClosing: boolean = false;
   private vncCertificateSheetClosing: boolean = false;
   private vncCertificatePendingRoute: boolean = false;
-  private vncPlaintextPreflightConfirmed: boolean = false;
   private vncCertificateBackPending: boolean = false;
   private vncCertificateProbeGeneration: number = 0;
   private vncCertificateConnectionAttemptGeneration: number = 0;
@@ -992,15 +992,19 @@ struct RemoteDesktop {
   private vncCertificateProbeIdentity: VncCertificateProbeIdentity | null = null;
   private vncCertificateHandoff: VncCertificateDecisionHandoff =
     VncCertificateDecisionHandoff.getInstance();
+  private vncPlaintextHandoff: VncPlaintextDecisionHandoff =
+    VncPlaintextDecisionHandoff.getInstance();
   private vncCertificateHandoffGeneration: number = 0;
+  private vncPlaintextHandoffGeneration: number = 0;
   private vncCertificateLastAttempt: VncCertificateSheetAttempt | null = null;
   private vncCertificateAccountOwnerScopeId: string = '';
   private vncCertificateAccountStoreIdentityFingerprint: string = '';
   private vncCertificateAccountGeneration: number = 0;
   private vncAccountScopeUnsubscribe: (() => void) | null = null;
   private vncTransientPassword: string = '';
+  /** Distinguishes an explicit empty-password decision from no one-shot credential. */
+  private vncTransientCredentialProvided: boolean = false;
   private vncAuthResolved: boolean = false;
-  private vncAuthRetryPending: boolean = false;
   private rustDeskSessionAuthChoice: RustDeskAuthChoice = 'password';
   private rustDeskSessionPassword: string = '';
   private rustDeskSessionRememberPassword: boolean = false;
@@ -2864,7 +2868,7 @@ struct RemoteDesktop {
   private async beginVncCertificatePreflight(): Promise<void> {
     const host: VncHostView | null = this.pendingVncHost;
     if (host === null) { return; }
-    if (this.vncCertificateSheetClosing || this.showVncPasswordSheet || this.vncPasswordSheetClosing) {
+    if (this.vncCertificateSheetClosing) {
       this.vncCertificatePendingRoute = true;
       return;
     }
@@ -2924,10 +2928,18 @@ struct RemoteDesktop {
       return;
     }
     if (!this.vncCertificateEndpoint.tlsRequired) {
-      if (this.vncPlaintextPreflightConfirmed) {
-        // HostList already collected the explicit plaintext decision. Consume
-        // that one-shot route marker before entering the credential flow.
-        this.vncPlaintextPreflightConfirmed = false;
+      const plaintextConfirmed: boolean = this.vncPlaintextHandoffGeneration > 0 &&
+        this.vncCertificateTrustOwner !== null && this.vncPlaintextHandoff.take(
+          host.userId, this.vncCertificateAttemptId(host),
+          this.vncPlaintextHandoffGeneration,
+          this.vncCertificateTrustOwner.endpointBindingFingerprint,
+          this.vncCertificateAccountOwnerScopeId,
+          this.vncCertificateTrustOwner.storeIdentityFingerprint,
+          this.vncCertificateAccountGeneration);
+      this.vncPlaintextHandoffGeneration = 0;
+      if (plaintextConfirmed) {
+        // HostList already collected an endpoint/account-bound plaintext
+        // decision. It is consumed once before credential materialization.
         this.vncCertificateState = VncCertificatePreflightState.TRUSTED_MATCH;
         this.finishVncCertificatePreflight();
       } else {
@@ -3048,8 +3060,9 @@ struct RemoteDesktop {
       this.vncCertificateConnectionAttemptGeneration);
     this.vncCertificateHandoff.clearAll();
     VncSessionCredentialHandoff.getInstance().clearAll();
+    this.vncPlaintextHandoff.clearAll();
     this.vncCertificatePendingRoute = false;
-    this.vncPlaintextPreflightConfirmed = false;
+    this.vncPlaintextHandoffGeneration = 0;
     this.vncCertificateExpectedFingerprint = '';
     this.vncCertificateHandoffGeneration = 0;
     this.vncCertificateEndpoint = null;
@@ -3067,17 +3080,9 @@ struct RemoteDesktop {
     this.vncCertificateBackPending = false;
     this.showVncCertificateSheet = false;
     this.vncCertificateState = VncCertificatePreflightState.IDLE;
-    this.vncPasswordInput = '';
     this.vncTransientPassword = '';
-    this.vncPasswordError = '';
-    this.vncPasswordStatus = 'missing';
-    this.vncPasswordDismissReason = 'none';
-    this.vncPasswordBackPending = false;
-    this.vncPasswordPendingStart = false;
-    this.vncPasswordSheetClosing = false;
-    this.showVncPasswordSheet = false;
+    this.vncTransientCredentialProvided = false;
     this.vncAuthResolved = false;
-    this.vncAuthRetryPending = false;
   }
 
   /** Account/store rollover invalidates every pending VNC credential path. */
@@ -3153,16 +3158,31 @@ struct RemoteDesktop {
       this.clearVncSensitiveState();
       return;
     }
-    const handoffPassword: string = VncSessionCredentialHandoff.getInstance().take(
-      host.userId, host.id);
-    if (handoffPassword !== '') {
-      this.vncPasswordStatus = 'available';
-      this.vncTransientPassword = handoffPassword;
+    const credentialDecision: VncSessionCredentialDecision | null =
+      VncSessionCredentialHandoff.getInstance().takeDecision(
+      host.userId, host.id,
+      this.vncCertificateProbeIdentity.endpointBindingFingerprint,
+      this.vncCertificateProbeIdentity.accountOwnerScopeId,
+      this.vncCertificateProbeIdentity.storeGeneration);
+    if (credentialDecision !== null) {
+      this.vncTransientPassword = credentialDecision.password;
+      this.vncTransientCredentialProvided = true;
       this.vncAuthResolved = true;
       this.tryStartConnect();
       return;
     }
-    this.prepareVncAuthentication();
+    const loaded = this.vncHosts.passwordStateFor(host.id);
+    if (loaded.state === 'available') {
+      this.vncTransientPassword = '';
+      this.vncTransientCredentialProvided = false;
+      this.vncAuthResolved = true;
+      this.tryStartConnect();
+      return;
+    }
+    // A route without a complete credential decision is stale or legacy.
+    // Return to the shared preconnection owner instead of reviving the old
+    // password Sheet over the connection canvas.
+    this.returnVncPreflightFailureToHostList(host, 'authentication_retry');
   }
 
   private vncCertificateAction(action: VncCertificateSheetAction): void {
@@ -3291,6 +3311,7 @@ struct RemoteDesktop {
     if (shouldClearVncCertificateSensitiveHandoffs(goBack, false, false)) {
       this.vncCertificateHandoff.clearAll();
       this.vncTransientPassword = '';
+      this.vncTransientCredentialProvided = false;
       this.vncCertificateExpectedFingerprint = '';
     }
     if (shouldRoute) {
@@ -3298,181 +3319,6 @@ struct RemoteDesktop {
       return;
     }
     if (goBack) { setTimeout((): void => { this.goBack(); }, 0); }
-  }
-
-  private prepareVncAuthentication(): void {
-    const host: VncHostView | null = this.pendingVncHost;
-    if (host === null) { return; }
-    const loaded = this.vncHosts.passwordStateFor(host.id);
-    this.vncPasswordStatus = loaded.state;
-    if (loaded.state === 'available' && !this.vncAuthRetryPending) {
-      this.vncAuthResolved = true;
-      this.vncTransientPassword = '';
-      this.tryStartConnect();
-      return;
-    }
-    this.vncAuthResolved = false;
-    let message: string = '';
-    if (this.vncAuthRetryPending) {
-      message = '上次 VNC 密码认证失败。请重新输入密码，或选择“无密码连接”。';
-    } else if (loaded.state === 'locked') {
-      message = '已保存的 VNC 密码仍是加密密文；解锁应用加密后可使用，也可以输入一次性密码连接。';
-    } else if (loaded.state === 'consent_required') {
-      message = '这台设备有已同步的未加密密码。使用前请在本设备再次确认，不会自动信任新设备。';
-    } else if (loaded.state === 'invalid') {
-      message = '已保存的 VNC 密码记录无效，请重新输入；本次连接仍可使用一次性密码。';
-    }
-    this.openVncPasswordSheet(message);
-  }
-
-  private openVncPasswordSheet(message: string = ''): void {
-    if (this.vncPasswordSheetClosing || this.showVncPasswordSheet) { return; }
-    if (this.pendingVncHost === null) { return; }
-    this.vncPasswordInput = '';
-    this.vncRememberPassword = false;
-    this.vncPasswordError = message;
-    this.vncPasswordDismissReason = 'none';
-    this.vncPasswordBackPending = false;
-    this.vncPasswordPendingStart = false;
-    this.showVncPasswordSheet = true;
-    setTimeout((): void => { this.focusVncPassword(); }, 120);
-  }
-
-  private focusVncPassword(): void {
-    if (!this.showVncPasswordSheet) { return; }
-    try {
-      this.getUIContext().getFocusController().requestFocus('VncPasswordInput');
-    } catch (err) {
-      hilog.warn(RD_DOMAIN, RD_TAG, 'VNC password focus failed: ' + JSON.stringify(err));
-    }
-  }
-
-  private finishVncAuthentication(password: string, remember: boolean,
-    plainStorageConfirmed: boolean): void {
-    const host: VncHostView | null = this.pendingVncHost;
-    if (host === null) { return; }
-    if (remember) {
-      const saveResult = this.vncHosts.savePassword(host.id, password, true, plainStorageConfirmed);
-      if (!saveResult.ok) {
-        // A credential persistence failure must not turn a valid one-time test
-        // connection into a hard feature block. The result is intentionally
-        // reported without logging the password, then the native call receives
-        // this in-memory value only.
-        promptAction.showToast({ message: saveResult.message + '；本次将使用临时密码连接', duration: 2200 });
-      }
-    }
-    this.vncTransientPassword = password;
-    // The sheet input is no longer needed after confirmation. Keep only the
-    // short-lived value used by the pending connection path.
-    this.vncPasswordInput = '';
-    this.vncAuthResolved = true;
-    this.vncAuthRetryPending = false;
-    this.vncPasswordDismissReason = 'confirm';
-    this.vncPasswordPendingStart = true;
-    this.vncPasswordSheetClosing = true;
-    this.showVncPasswordSheet = false;
-    this.vncPasswordError = '';
-    this.connectionError = '';
-    this.connectionErrorDetail = '';
-    this.connectStarted = false;
-    this.connecting = true;
-  }
-
-  private confirmVncPasswordChoice(): void {
-    if (this.pendingVncHost === null) { return; }
-    if (this.vncPasswordInput.length === 0) {
-      this.vncPasswordError = '请输入 VNC 密码，或选择“无密码连接”。';
-      return;
-    }
-    const crypto: DataCrypto = DataCrypto.getInstance();
-    if (this.vncRememberPassword && crypto.isSetupComplete() && !crypto.isReady()) {
-      this.vncPasswordError = '应用加密已锁定；请先解锁，或关闭“记住密码”后连接。';
-      return;
-    }
-    if (this.vncRememberPassword && !crypto.isSetupComplete()) {
-      promptAction.showDialog({
-        title: '确认保存未加密密码',
-        message: '应用加密未启用。记住此密码会以未加密形式保存到 VNC 数据中；也可以关闭后仅本次使用。',
-        buttons: [{ text: '取消', color: this.pal().text2 }, { text: '确认保存', color: this.pal().danger }]
-      }).then((dialog: Object): void => {
-        const values: Record<string, number> = dialog as Record<string, number>;
-        if (values['index'] === 1) {
-          this.finishVncAuthentication(this.vncPasswordInput, true, true);
-        }
-      });
-      return;
-    }
-    this.finishVncAuthentication(this.vncPasswordInput, this.vncRememberPassword, false);
-  }
-
-  private useSavedVncPassword(): void {
-    const host: VncHostView | null = this.pendingVncHost;
-    if (host === null || this.vncPasswordStatus !== 'consent_required') { return; }
-    if (!this.vncHosts.grantPlaintextPasswordConsent(host.id)) {
-      this.vncPasswordError = '本地确认失败，请重新输入一次性密码。';
-      return;
-    }
-    const loaded = this.vncHosts.passwordStateFor(host.id);
-    if (loaded.state !== 'available') {
-      this.vncPasswordError = '已保存密码不可用，请重新输入一次性密码。';
-      return;
-    }
-    this.vncPasswordStatus = 'available';
-    this.vncTransientPassword = '';
-    this.vncAuthResolved = true;
-    this.vncPasswordDismissReason = 'confirm';
-    this.vncPasswordPendingStart = true;
-    this.vncPasswordSheetClosing = true;
-    this.showVncPasswordSheet = false;
-    this.connectStarted = false;
-    this.connecting = true;
-  }
-
-  private connectVncWithoutPassword(): void {
-    this.finishVncAuthentication('', false, false);
-  }
-
-  private cancelVncPasswordChoice(): void {
-    this.clearVncSensitiveState();
-    this.vncPasswordDismissReason = 'cancel';
-    this.vncPasswordBackPending = true;
-    this.vncPasswordPendingStart = false;
-    this.vncPasswordSheetClosing = true;
-    this.connectStarted = false;
-    this.connecting = false;
-    this.connectionError = '连接已取消';
-    this.connectionErrorDetail = '未建立 VNC 会话';
-    this.showVncPasswordSheet = false;
-  }
-
-  private handleVncPasswordSheetDismiss(action: DismissSheetAction): void {
-    if (this.vncPasswordDismissReason === 'confirm' || this.vncPasswordDismissReason === 'cancel') {
-      action.dismiss();
-      return;
-    }
-    this.vncPasswordSheetClosing = true;
-    this.cancelVncPasswordChoice();
-    action.dismiss();
-  }
-
-  private handleVncPasswordSheetDisappear(): void {
-    const reason: VncPasswordDismissReason = this.vncPasswordDismissReason;
-    const shouldStart: boolean = reason === 'confirm' && this.vncPasswordPendingStart;
-    const goBack: boolean = this.vncPasswordBackPending;
-    this.vncPasswordDismissReason = 'none';
-    this.vncPasswordPendingStart = false;
-    if (reason === 'none' || reason === 'cancel') {
-      // The dismiss callback may run after the cancel path already cleared the
-      // sheet. Clear idempotently without re-entering the closing state.
-      this.clearVncSensitiveState();
-    }
-    this.vncPasswordSheetClosing = false;
-    if (goBack) {
-      this.vncPasswordBackPending = false;
-      setTimeout((): void => { this.goBack(); }, 0);
-      return;
-    }
-    if (shouldStart) { setTimeout((): void => { this.tryStartConnect(); }, 0); }
   }
 
   private persistRustDeskSessionAuth(host: RemoteHost): void {
@@ -3519,6 +3365,30 @@ struct RemoteDesktop {
       value.indexOf('E-VNC-AUTH-MISSING') >= 0 ||
       value.indexOf('VNC 密码认证失败') >= 0 ||
       value.indexOf('VNC 未提供可用密码') >= 0;
+  }
+
+  private shouldReturnVncCertificatePreflight(detail: string): boolean {
+    return detail.indexOf('E-VNC-CERT-TRUST-REQUIRED') >= 0 ||
+      detail.indexOf('E-VNC-CERT-CHANGED') >= 0 ||
+      detail.indexOf('VNC_TRUST_REQUIRED:') >= 0 ||
+      detail.indexOf('VNC_CERT_CHANGED:') >= 0;
+  }
+
+  private returnVncPreflightFailureToHostList(host: VncHostView,
+    reason: RemoteSessionConnectionIntentReason,
+    replaceSavedCredential: boolean = false): void {
+    this.vncTransientPassword = '';
+    this.vncTransientCredentialProvided = false;
+    this.vncAuthResolved = false;
+    this.connectionError = '';
+    this.connectionErrorDetail = '';
+    this.connecting = false;
+    const staged: boolean = RemoteSessionConnectionIntent.getInstance().put(
+      'vnc', host.id, Date.now(), reason, replaceSavedCredential);
+    if (!staged) {
+      promptAction.showToast({ message: 'VNC 预检重试请求无效，请从主机列表重试', duration: 2400 });
+    }
+    setTimeout((): void => { this.goBack(); }, 0);
   }
 
   private currentProtocolName(): string {
@@ -3609,9 +3479,9 @@ struct RemoteDesktop {
     // The native layer remains authoritative.  A defensive trust error starts
     // the same structured probe/Sheet flow as the initial connection; no
     // free-form dialog may bypass endpoint metadata or the expected-pin gate.
-    this.vncAuthRetryPending = false;
     this.vncAuthResolved = false;
     this.vncTransientPassword = '';
+    this.vncTransientCredentialProvided = false;
     this.vncCertificateExpectedFingerprint = '';
     this.connectionError = '';
     this.connectionErrorDetail = '';
@@ -7139,7 +7009,9 @@ struct RemoteDesktop {
       const p: Record<string, Object> = params as Record<string, Object>;
       const vncHostId: string = (p['vncHostId'] as string) || '';
       if (vncHostId !== '') {
-        this.vncPlaintextPreflightConfirmed = (p['vncPlaintextPreflightConfirmed'] as boolean) === true;
+        this.vncPlaintextHandoffGeneration =
+          typeof p['vncPlaintextHandoffGeneration'] === 'number' ?
+            p['vncPlaintextHandoffGeneration'] as number : 0;
         const handoffGeneration: number = p['vncCertificateHandoffGeneration'] as number;
         this.vncCertificateHandoffGeneration = Number.isSafeInteger(handoffGeneration) &&
           handoffGeneration > 0 ? handoffGeneration : 0;
@@ -7178,6 +7050,7 @@ struct RemoteDesktop {
         this.pendingHost = vncRemoteHost;
         this.vncAuthResolved = false;
         this.vncTransientPassword = '';
+        this.vncTransientCredentialProvided = false;
         this.hostLabel = vncHost.label;
         this.preAuthenticatedSessionPending = false;
         this.vncCertificateState = VncCertificatePreflightState.IDLE;
@@ -7544,7 +7417,7 @@ struct RemoteDesktop {
     }
 
     if (this.connectStarted || !this.pendingHost || this.connected || !this.connecting ||
-      this.showRustDeskAuthSheet || this.showVncPasswordSheet ||
+      this.showRustDeskAuthSheet ||
       (this.isVncSession() && !this.vncAuthResolved)) {
       return;
     }
@@ -11029,68 +10902,6 @@ struct RemoteDesktop {
       .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
   }
 
-  @Builder vncPasswordSheetBuilder() {
-    Column() {
-      Text('连接 VNC').fontSize(20).fontWeight(FontWeight.Bold)
-        .fontColor(this.pal().text).margin({ bottom: 6 })
-      Text(this.pendingVncHost ? this.pendingVncHost.label : 'VNC 主机').fontSize(13)
-        .fontColor(this.pal().text2).margin({ bottom: 10 })
-      if (this.vncPasswordStatus === 'locked') {
-        Text('已保存密码需要解锁应用加密；本次仍可输入一次性密码连接。')
-          .fontSize(11).fontColor(this.pal().text3).lineHeight(17).margin({ bottom: 10 })
-      } else if (this.vncPasswordStatus === 'consent_required') {
-        Text('发现本设备尚未确认的云端密码。确认只保存在本设备，不会自动信任新设备。')
-          .fontSize(11).fontColor(this.pal().text3).lineHeight(17).margin({ bottom: 8 })
-        Button('使用已保存密码').width('100%').height(38).fontSize(13).borderRadius(9)
-          .backgroundColor(this.pal().surface).fontColor(this.accentColor)
-          .onClick((): void => { this.useSavedVncPassword(); }).margin({ bottom: 10 })
-      }
-      Text('VNC 密码（可选）').fontSize(12).fontColor(this.pal().text2).margin({ bottom: 5 })
-      TextInput({ placeholder: '留空请使用无密码连接', text: this.vncPasswordInput })
-        .id('VncPasswordInput').type(InputType.Password).height(42).width('100%')
-        .backgroundColor(this.pal().surface).borderRadius(9).fontColor(this.pal().text)
-        .placeholderColor(this.pal().text3).padding({ left: 12, right: 12 })
-        .focusOnTouch(true).enableKeyboardOnFocus(true).defaultFocus(true)
-        .onChange((value: string): void => { this.vncPasswordInput = value; })
-        .onSubmit((_enterKey: EnterKeyType, event: SubmitEvent): void => {
-          event.keepEditableState();
-          this.confirmVncPasswordChoice();
-        })
-      Row() {
-        Column() {
-          Text('记住此设备密码').fontSize(13).fontColor(this.pal().text)
-          Text(DataCrypto.getInstance().isReady() ? '使用 AES-GCM 保存' :
-            (DataCrypto.getInstance().isSetupComplete() ? '应用加密锁定，当前不可保存密文' :
-              '应用加密未启用，保存前会确认未加密风险'))
-            .fontSize(11).fontColor(this.pal().text3).margin({ top: 3 })
-        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-        Toggle({ type: ToggleType.Switch, isOn: this.vncRememberPassword })
-          .selectedColor(this.accentColor)
-          .enabled(!DataCrypto.getInstance().isSetupComplete() || DataCrypto.getInstance().isReady())
-          .onChange((value: boolean): void => { this.vncRememberPassword = value; })
-      }.width('100%').padding({ top: 10, bottom: 10 })
-      if (this.vncPasswordError !== '') {
-        Text(this.vncPasswordError).fontSize(12).fontColor(this.pal().danger)
-          .lineHeight(17).margin({ bottom: 10 })
-      }
-      Row() {
-        Button('取消').fontSize(13).height(40).layoutWeight(1).borderRadius(10)
-          .backgroundColor(this.pal().surface).fontColor(this.pal().text2)
-          .onClick((): void => { this.cancelVncPasswordChoice(); })
-        Button('无密码连接').fontSize(13).height(40).layoutWeight(1).margin({ left: 8 }).borderRadius(10)
-          .backgroundColor(this.pal().surface).fontColor(this.pal().text2)
-          .onClick((): void => { this.connectVncWithoutPassword(); })
-        Button('开始连接').fontSize(13).height(40).layoutWeight(1).margin({ left: 8 }).borderRadius(10)
-          .backgroundColor(this.accentColor).fontColor(Color.White)
-          .onClick((): void => { this.confirmVncPasswordChoice(); })
-      }.width('100%')
-    }.width('100%').constraintSize({ maxWidth: 520 })
-      .padding({ left: 22, right: 22, top: 20, bottom: 22 })
-      .backgroundColor(this.pal().bg).borderRadius(20)
-      .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
-      .shadow({ radius: 24, color: 'rgba(0,0,0,0.24)', offsetY: 8 })
-  }
-
   // XComponent 就绪后初始化渲染管线并连接
   private async doConnect(host: RemoteHost): Promise<void> {
     const attemptId: number = ++this.connectAttemptId;
@@ -11104,6 +10915,7 @@ struct RemoteDesktop {
     let rustDeskRelay: RustDeskRelayConfig | undefined;
     let rustDeskConnection: RustDeskConnectionContext | null = null;
     let attemptedSessionId: number = -1;
+    let vncUsedSavedCredential: boolean = false;
     this.connectionProgressMessage = host.protocol === 'rustdesk'
       ? 'RustDesk: 正在准备连接' : '';
     try {
@@ -11437,8 +11249,12 @@ struct RemoteDesktop {
         if (vncHost.transport === 'websocket_gateway' && vncOwner.gateway === null) {
           throw new Error('VNC WebSocket 未绑定网关 [E-VNC-WS-CONFIG]');
         }
-        vncPassword = this.vncTransientPassword !== '' ? this.vncTransientPassword :
-          this.vncHosts.passwordFor(vncHost.id);
+        vncPassword = vncCredentialPasswordForConnect(
+          this.vncTransientCredentialProvided,
+          this.vncTransientPassword,
+          (): string => this.vncHosts.passwordFor(vncHost.id));
+        vncUsedSavedCredential = vncAuthFailureShouldReplaceSavedCredential(
+          this.vncTransientCredentialProvided, vncPassword);
         vncGatewayHost = vncOwner.gateway === null ? '' : vncOwner.gateway.host;
         vncGatewayPort = vncOwner.gateway === null ? 0 : vncOwner.gateway.port;
         vncServerName = vncEndpointForConnect.serverName;
@@ -11667,8 +11483,8 @@ struct RemoteDesktop {
         if (isVnc) {
           // The native adapter copies credentials synchronously into its
           // connection attempt; do not retain them in the page after handoff.
-          this.vncPasswordInput = '';
           this.vncTransientPassword = '';
+          this.vncTransientCredentialProvided = false;
           this.vncCertificateExpectedFingerprint = '';
           this.vncCertificateHandoff.clearAll();
         }
@@ -11933,26 +11749,23 @@ struct RemoteDesktop {
         this.connectionErrorDetail = rustDeskProNativeErrorMessage(
           rustDeskErrorKind, host.rustdeskAuthMode, controlPlaneProfile);
       }
-      // VNC 没有 remotehosts 健康字段；它的 TLS 首次信任必须在 native
-      // 清理完成后进入独立 trust 确认流程，确认后由该 owner 重新连接。
-      if (host.protocol === 'vnc' && vncHost !== null) {
-        this.handleVncTrustRequired(vncHost, this.connectionErrorDetail);
-      } else {
+      // VNC 没有 remotehosts 健康字段；所有可恢复的证书和密码失败都
+      // 返回 HostList 的统一预连接流程，连接画布不再承载鉴权输入。
+      if (host.protocol !== 'vnc') {
         // 连接失败也要立即刷新普通主机的本机健康状态；云写入由服务按
         // 节流策略处理，页面监听器仍会立刻收到 UNKNOWN。
         await this.srv.updateConnectionHealth(host.id, -1, false);
       }
-      // VNC 密码认证失败必须允许当场重试：清除一次性凭据并重新打开
-      // 密码 Sheet，而不是让保存过的错误密码在下一次点击时被自动使用。
-      if (host.protocol === 'vnc' && vncHost !== null &&
-        this.shouldOfferVncAuthRetry(this.connectionErrorDetail)) {
-        this.vncAuthRetryPending = true;
-        this.vncTransientPassword = '';
-        this.vncAuthResolved = false;
-        this.connectionError = '';
-        this.connectionErrorDetail = '';
-        this.connecting = true;
-        this.openVncPasswordSheet('上次 VNC 密码认证失败，请重新输入密码。');
+      if (host.protocol === 'vnc' && vncHost !== null) {
+        if (this.shouldReturnVncCertificatePreflight(this.connectionErrorDetail)) {
+          this.returnVncPreflightFailureToHostList(vncHost, 'certificate_retry');
+          return;
+        }
+        if (this.shouldOfferVncAuthRetry(this.connectionErrorDetail)) {
+          this.returnVncPreflightFailureToHostList(
+            vncHost, 'authentication_retry', vncUsedSavedCredential);
+          return;
+        }
       }
       if (this.isProRustDeskHost(host) && this.shouldOfferRustDeskAuthRetry(this.connectionErrorDetail)) {
         const fresh: RemoteHost | undefined = this.srv.getHost(host.id);
@@ -17443,22 +17256,6 @@ struct RemoteDesktop {
           },
           onDisappear: (): void => { this.handleVncCertificateSheetDisappear(); }
         })
-
-      Column().width('100%').height('100%').hitTestBehavior(HitTestMode.None)
-        .bindSheet($$this.showVncPasswordSheet, this.vncPasswordSheetBuilder(), {
-          height: SheetSize.FIT_CONTENT,
-          preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
-          dragBar: true,
-          backgroundColor: this.pal().sheetBg,
-          blurStyle: BlurStyle.NONE,
-          showClose: false,
-          maskColor: 'rgba(0,0,0,0.58)',
-          onWillDismiss: (action: DismissSheetAction): void => {
-            this.handleVncPasswordSheetDismiss(action);
-          },
-          onDisappear: (): void => { this.handleVncPasswordSheetDisappear(); }
-        })
-
 
       // 持久影子 TextArea：保留系统输入法的空格滑动/光标拖拽状态，内容只在本地使用。
       TextArea({ text: this.keyboardText, controller: this.keyboardController })

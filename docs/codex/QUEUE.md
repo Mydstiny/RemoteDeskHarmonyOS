@@ -2,6 +2,12 @@
 
 Updated: 2026-08-23 Asia/Shanghai
 
+## Concurrent VNC preflight alignment repair
+
+- Implemented in the VNC preflight alignment commit: one HostList-owned lock/certificate-or-plaintext/credential flow for every device class, no password UI on RemoteDesktop, one-shot settings/add credentials without duplicate prompting, HostList-owned native auth retry, and endpoint/account-bound credential/plaintext handoffs.
+- Exact ArkTS test compile, signed HAP assembly, diff check and Light compliance pass on 2026-08-24; final independent review is P0/P1/P2/P3 all zero.
+- Remaining acceptance is real-device interaction for saved, one-shot, explicit no-password, plaintext, TLS first-trust/change and auth-retry cases. The implementation is isolated with hunk-level staging from the overlapping user-owned edits in the same large pages.
+
 ## Closed in committed checkpoints
 
 - `9eadb35be`: physical-controller runtime hardening, independent arrival/state sequencing, slot-0 controller launch contract and ArkTS/native readiness truth.

@@ -9,6 +9,13 @@
 - Authoritative plan: `docs/superpowers/plans/2026-07-28-moonlight-harmonyos-complete-upgrade-plan.md`
 - Live ledger: `docs/codex/plans/2026-08-09-moonlight-implementation-ledger.md`
 
+## Concurrent VNC preflight alignment repair
+
+- The user-reported VNC regression is repaired and isolated for this commit: Phone/Pad and PC/2in1 settings/add-and-connect flows now return to HostList for the same lock → certificate/plaintext-risk → credential preflight before RemoteDesktop is opened. The legacy password Sheet and its state/callbacks are removed from the connection page.
+- Explicit no-password, one-shot and saved-password decisions are distinct. Native authentication retry returns to HostList; a saved password is replaced only when a non-empty saved value was actually sent. One-shot credentials and plaintext decisions are process-memory-only, one-shot and bound to endpoint/store/account generation; stale endpoints, account transitions, cancellation and owned attempt aborts fail closed and clear their handoffs.
+- Final verification on 2026-08-24: exact `default@OhosTestCompileArkTS` PASS, exact signed `assembleHap` PASS, `git diff --check` PASS and Light open-source compliance PASS. Independent review is P0/P1/P2/P3 all zero.
+- Runtime device interaction remains pending. The repair is isolated with hunk-level staging so overlapping user-owned Moonlight/RustDesk/SSH work remains outside this commit.
+
 ## Current product boundary
 
 - The former “Moonlight permanently local-only” decision is superseded. Local storage remains the always-available source of truth, while one optional ninth cloud table becomes available after its exact AGC schema is provisioned and the deployment revision is enabled.

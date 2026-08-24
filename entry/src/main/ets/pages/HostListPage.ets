@@ -147,6 +147,11 @@ import {
   RustDeskHostAddHandoff
 } from '../services/RustDeskHostAddHandoff';
 import { VncSessionCredentialHandoff } from '../services/VncSessionCredentialHandoff';
+import {
+  vncCredentialPreflightMessage,
+  vncCredentialPreflightNeedsPrompt,
+  VncCredentialPreflightState
+} from '../services/VncCredentialPreflightPolicy';
 import { VncSettingsService } from '../services/VncSettingsService';
 import { VncSettingsSheet } from '../components/VncSettingsSheet';
 import { VncCertificateTrustManagerSheet } from '../components/VncCertificateTrustManagerSheet';
@@ -254,6 +259,7 @@ import {
   vncTlsHostInput
 } from '../services/VncTlsEndpointPolicy';
 import { VncCertificateDecisionHandoff } from '../services/VncCertificateDecisionHandoff';
+import { VncPlaintextDecisionHandoff } from '../services/VncPlaintextDecisionHandoff';
 import { RustDeskLanDiscoveryService, DiscoveredRustDeskPeer } from '../services/RustDeskLanDiscoveryService';
 import {
   DiscoveredRdpHost,
@@ -603,11 +609,12 @@ const REMOTE_HOST_SHEET_PASSPHRASE = 4;
 const REMOTE_HOST_SHEET_PUBLIC_KEY = 5;
 const REMOTE_HOST_SHEET_RUSTDESK_TOTP_BINDING = 6;
 const REMOTE_HOST_SHEET_VNC_CERTIFICATE = 7;
+const REMOTE_HOST_SHEET_VNC_CREDENTIAL = 8;
 // Moonlight host cards use the same host-list Sheet host as every other
 // protocol.  Keeping this as a mode (instead of a second bindSheet) also
 // preserves the list's single-dismiss lifecycle and prevents route switches
 // from racing a card expansion.
-const REMOTE_HOST_SHEET_MOONLIGHT_DETAIL = 8;
+const REMOTE_HOST_SHEET_MOONLIGHT_DETAIL = 9;
 const DESKTOP_MOONLIGHT_TAB = 7;
 
 @Entry
@@ -835,6 +842,32 @@ struct HostListPage {
   private vncCertificateAccountGeneration: number = 0;
   private vncCertificateHandoff: VncCertificateDecisionHandoff =
     VncCertificateDecisionHandoff.getInstance();
+  private vncPlaintextHandoff: VncPlaintextDecisionHandoff =
+    VncPlaintextDecisionHandoff.getInstance();
+  @State vncCredentialHostId: string = '';
+  @State vncCredentialHostLabel: string = '';
+  @State vncCredentialPassword: string = '';
+  @State vncCredentialRememberPassword: boolean = false;
+  @State vncCredentialNoPassword: boolean = false;
+  @State vncCredentialPasswordVisible: boolean = false;
+  @State vncCredentialState: VncCredentialPreflightState = 'missing';
+  @State vncCredentialError: string = '';
+  private vncCredentialRouteHostId: string = '';
+  private vncCredentialPendingRouteParams: Record<string, Object> | null = null;
+  private vncCredentialRouteAfterClose: boolean = false;
+  private vncCredentialClosing: boolean = false;
+  private vncCredentialRetryHostId: string = '';
+  private vncCredentialRetryReplaceSavedHostId: string = '';
+  private vncCredentialReplacingFailedPassword: boolean = false;
+  private vncCredentialEndpointBinding: string = '';
+  private vncCredentialOwnerScopeId: string = '';
+  private vncCredentialAccountGeneration: number = 0;
+  private vncCredentialCertificateFingerprint: string = '';
+  private vncCredentialCertificateGeneration: number = 0;
+  private vncCredentialCertificateEndpointBinding: string = '';
+  private vncCredentialCertificateOwnerScopeId: string = '';
+  private vncCredentialCertificateStoreFingerprint: string = '';
+  private vncCredentialCertificateAccountGeneration: number = 0;
   @State showRustDeskProPreflight: boolean = false;
   @State rustDeskProPreflightState: number = RustDeskProPreflightState.IDLE;
   @State rustDeskProPreflightHostId: string = '';
@@ -1552,6 +1585,9 @@ struct HostListPage {
         promptAction.showToast({ message: 'VNC 主机不存在，未开始连接', duration: 2200 });
         return;
       }
+      this.vncCredentialRetryHostId = intent.reason === 'authentication_retry' ? host.id : '';
+      this.vncCredentialRetryReplaceSavedHostId = intent.reason === 'authentication_retry' &&
+        intent.replaceSavedCredential ? host.id : '';
       void this.connectToHost(projectVncHost(host));
     }
   }
@@ -4938,6 +4974,9 @@ struct HostListPage {
     const connectionGeneration: number = protocolNeedsArbitration ?
       this.beginConnectionAttempt(host.id) : 0;
     if (protocolNeedsArbitration && connectionGeneration === 0) {
+      if (host.id !== this.connectionAttemptHostId) {
+        this.clearPendingVncCredentialForRemoteHost(host);
+      }
       promptAction.showToast({ message: '已有连接请求正在处理，请等待当前弹窗结束', duration: 1800 });
       return;
     }
@@ -4955,7 +4994,12 @@ struct HostListPage {
     }
     if (host.locked) {
       const r = await showLockGate(host.label, 'biometric');
+      if (protocolNeedsArbitration &&
+        !this.isCurrentConnectionAttempt(host.id, connectionGeneration)) {
+        return;
+      }
       if (!r.ok) {
+        this.clearPendingVncCredentialForRemoteHost(host);
         this.releaseConnectionAttempt(host.id);
         const msg: string = lockGateErrorMessage(r);
         if (msg !== '') { promptAction.showToast({ message: msg, duration: 2000 }); }
@@ -5030,12 +5074,14 @@ struct HostListPage {
     } else if (host.protocol === 'vnc') {
       const vncHostId: string = this.vncRecordIdForHost(host);
       if (vncHostId === '') {
+        this.clearPendingVncCredentialForRemoteHost(host);
         this.releaseConnectionAttempt(host.id);
         promptAction.showToast({ message: 'VNC 主机记录无效，请重新添加', duration: 2200 });
         return;
       }
       const vncHost: VncHostView | null = this.vncHosts.find(vncHostId);
       if (vncHost === null) {
+        this.clearPendingVncCredentialForRemoteHost(host);
         this.releaseConnectionAttempt(host.id);
         promptAction.showToast({ message: 'VNC 主机记录不存在，请刷新后重试', duration: 2200 });
         return;
@@ -6306,6 +6352,12 @@ struct HostListPage {
     }
     const hostId: string = this.vncCertificateClosingHostId.length > 0
       ? this.vncCertificateClosingHostId : this.vncCertificateHostId;
+    const vncHost: VncHostView | null = this.vncHosts.find(this.vncCertificateHostId);
+    if (vncHost !== null) {
+      VncSessionCredentialHandoff.getInstance().clear(vncHost.userId, vncHost.id);
+      this.vncCertificateHandoff.clear(vncHost.userId, 'vnc-cert:' + vncHost.id);
+      this.vncPlaintextHandoff.clear(vncHost.userId, 'vnc-cert:' + vncHost.id);
+    }
     this.vncCertificateProbeGeneration = nextVncCertificateProbeGeneration(
       this.vncCertificateProbeGeneration);
     if (this.vncCertificateProbeRequestId > 0) {
@@ -6408,15 +6460,48 @@ struct HostListPage {
     if (vncHostId === '') { this.releaseConnectionAttempt(hostId); return; }
     const params: Record<string, Object> = {};
     params['vncHostId'] = vncHostId;
-    if (tlsHandoff && this.vncCertificateInfo !== null &&
-      isVncSha256Fingerprint(this.vncCertificateInfo.fingerprintSha256) &&
-      !this.stageVncCertificateHandoff(this.vncCertificateInfo.fingerprintSha256)) {
+    const host: VncHostView | null = this.vncHosts.find(vncHostId);
+    const endpoint: VncTlsEndpointResolution | null = this.vncCertificateEndpoint;
+    const scope = AccountSessionCoordinator.getInstance().currentScope();
+    const storeFingerprint: string = this.vncCertificateStoreFingerprint();
+    if (host === null || endpoint === null || !endpoint.ok ||
+      !isVncSha256Fingerprint(endpoint.endpointBindingFingerprint) ||
+      !isVncSha256Fingerprint(storeFingerprint) ||
+      scope.ownerScopeId.trim() !== host.userId.trim() || scope.generation <= 0) {
       this.vncCertificateState = VncCertificatePreflightState.ERROR;
       this.vncCertificateError = 'E-VNC-CERT-HANDOFF';
       return;
     }
+    this.vncCredentialCertificateEndpointBinding = endpoint.endpointBindingFingerprint;
+    this.vncCredentialCertificateOwnerScopeId = scope.ownerScopeId.trim();
+    this.vncCredentialCertificateStoreFingerprint = storeFingerprint;
+    this.vncCredentialCertificateAccountGeneration = scope.generation;
+    if (tlsHandoff) {
+      const fingerprint: string = this.vncCertificateInfo === null ? '' :
+        this.vncCertificateInfo.fingerprintSha256.trim().toLowerCase();
+      if (!isVncSha256Fingerprint(fingerprint)) {
+        this.vncCertificateState = VncCertificatePreflightState.ERROR;
+        this.vncCertificateError = 'E-VNC-CERT-HANDOFF';
+        return;
+      }
+      this.vncCredentialCertificateFingerprint = fingerprint;
+      this.vncCredentialCertificateGeneration = this.vncCertificateProbeGeneration;
+    } else {
+      this.vncCredentialCertificateFingerprint = '';
+      this.vncCredentialCertificateGeneration = this.vncCertificateProbeGeneration;
+    }
     if (tlsHandoff) { params['vncCertificateHandoffGeneration'] = this.vncCertificateProbeGeneration; }
-    if (plaintextConfirmed) { params['vncPlaintextPreflightConfirmed'] = true; }
+    if (plaintextConfirmed) {
+      if (endpoint.tlsRequired || !this.vncPlaintextHandoff.put(
+        host.userId, 'vnc-cert:' + host.id, this.vncCertificateProbeGeneration,
+        endpoint.endpointBindingFingerprint, scope.ownerScopeId.trim(), storeFingerprint,
+        scope.generation)) {
+        this.vncCertificateState = VncCertificatePreflightState.ERROR;
+        this.vncCertificateError = 'E-VNC-PLAINTEXT-HANDOFF';
+        return;
+      }
+      params['vncPlaintextHandoffGeneration'] = this.vncCertificateProbeGeneration;
+    }
     this.vncCertificatePendingRouteParams = params;
     if (this.showRemoteHostSheet && !this.vncCertificateClosing) {
       this.vncCertificateClosing = true;
@@ -6427,11 +6512,10 @@ struct HostListPage {
       this.showRemoteHostSheet = false;
       return;
     }
-    this.releaseConnectionAttempt(hostId);
     const route: Record<string, Object> = params;
     this.vncCertificatePendingRouteParams = null;
     setTimeout((): void => {
-      this.openSessionDestination('pages/RemoteDesktop', route, 'vnc_preflight_complete');
+      this.prepareVncCredentialPreflight(route, hostId);
     }, 0);
   }
 
@@ -6453,19 +6537,289 @@ struct HostListPage {
     this.vncCertificateError = '';
     this.vncCertificateShowDetails = false;
     this.vncCertificateState = VncCertificatePreflightState.IDLE;
-    this.releaseConnectionAttempt(hostId);
     if (route !== null && this.pageActive) {
       setTimeout((): void => {
-        this.openSessionDestination('pages/RemoteDesktop', route, 'vnc_preflight_complete');
+        this.prepareVncCredentialPreflight(route, hostId);
       }, 0);
       return;
     }
+    this.releaseConnectionAttempt(hostId);
+    this.clearVncCredentialCertificateRoute();
     const nextHostId: string = this.vncCertificatePendingHostId;
     this.vncCertificatePendingHostId = '';
     if (nextHostId !== '') {
       const nextHost: RemoteHost | undefined = this.srv.getHost(nextHostId);
       if (nextHost !== undefined) { void this.connectToHost(nextHost); }
     }
+  }
+
+  private clearVncCredentialCertificateRoute(): void {
+    this.vncCredentialCertificateFingerprint = '';
+    this.vncCredentialCertificateGeneration = 0;
+    this.vncCredentialCertificateEndpointBinding = '';
+    this.vncCredentialCertificateOwnerScopeId = '';
+    this.vncCredentialCertificateStoreFingerprint = '';
+    this.vncCredentialCertificateAccountGeneration = 0;
+  }
+
+  private refreshVncCertificateHandoffForRoute(host: VncHostView,
+    route: Record<string, Object>): boolean {
+    const scope = AccountSessionCoordinator.getInstance().currentScope();
+    const endpoint: VncTlsEndpointResolution = this.resolveVncCertificateEndpoint(host);
+    if (!endpoint.ok ||
+      endpoint.endpointBindingFingerprint !== this.vncCredentialCertificateEndpointBinding ||
+      scope.ownerScopeId.trim() !== this.vncCredentialCertificateOwnerScopeId ||
+      scope.generation !== this.vncCredentialCertificateAccountGeneration ||
+      this.vncCertificateStoreFingerprint() !== this.vncCredentialCertificateStoreFingerprint) {
+      return false;
+    }
+    if (this.vncCredentialCertificateFingerprint === '') {
+      const plaintextGeneration: number =
+        typeof route['vncPlaintextHandoffGeneration'] === 'number' ?
+          route['vncPlaintextHandoffGeneration'] as number : 0;
+      return !endpoint.tlsRequired && plaintextGeneration > 0 &&
+        plaintextGeneration === this.vncCredentialCertificateGeneration &&
+        this.vncPlaintextHandoff.put(
+          host.userId, 'vnc-cert:' + host.id, this.vncCredentialCertificateGeneration,
+          this.vncCredentialCertificateEndpointBinding,
+          this.vncCredentialCertificateOwnerScopeId,
+          this.vncCredentialCertificateStoreFingerprint,
+          this.vncCredentialCertificateAccountGeneration);
+    }
+    return this.vncCertificateHandoff.put(
+      host.userId, 'vnc-cert:' + host.id, this.vncCredentialCertificateGeneration,
+      this.vncCredentialCertificateEndpointBinding,
+      this.vncCredentialCertificateFingerprint,
+      this.vncCredentialCertificateOwnerScopeId,
+      this.vncCredentialCertificateStoreFingerprint,
+      this.vncCredentialCertificateAccountGeneration);
+  }
+
+  private prepareVncCredentialPreflight(route: Record<string, Object>, routeHostId: string): void {
+    const vncHostId: string = typeof route['vncHostId'] === 'string' ?
+      (route['vncHostId'] as string).trim() : '';
+    const host: VncHostView | null = vncHostId === '' ? null : this.vncHosts.find(vncHostId);
+    if (!this.pageActive || host === null ||
+      host.userId.trim() !== this.vncHosts.currentUserId().trim()) {
+      if (vncHostId !== '') {
+        VncSessionCredentialHandoff.getInstance().clear(
+          this.vncHosts.currentUserId(), vncHostId);
+        this.vncPlaintextHandoff.clear(
+          this.vncHosts.currentUserId(), 'vnc-cert:' + vncHostId);
+      }
+      this.releaseConnectionAttempt(routeHostId);
+      this.clearVncCredentialCertificateRoute();
+      promptAction.showToast({ message: 'VNC 主机或账号状态已变化，连接已停止', duration: 2200 });
+      return;
+    }
+    const endpoint: VncTlsEndpointResolution = this.resolveVncCertificateEndpoint(host);
+    const scope = AccountSessionCoordinator.getInstance().currentScope();
+    if (!endpoint.ok ||
+      endpoint.endpointBindingFingerprint !== this.vncCredentialCertificateEndpointBinding ||
+      scope.ownerScopeId.trim() !== host.userId.trim() ||
+      scope.ownerScopeId.trim() !== this.vncCredentialCertificateOwnerScopeId ||
+      scope.generation !== this.vncCredentialCertificateAccountGeneration ||
+      this.vncCertificateStoreFingerprint() !== this.vncCredentialCertificateStoreFingerprint) {
+      VncSessionCredentialHandoff.getInstance().clear(host.userId, host.id);
+      this.vncPlaintextHandoff.clear(host.userId, 'vnc-cert:' + host.id);
+      this.releaseConnectionAttempt(routeHostId);
+      this.clearVncCredentialCertificateRoute();
+      promptAction.showToast({ message: 'VNC endpoint 或账号状态已变化，连接已停止', duration: 2200 });
+      return;
+    }
+    this.vncCredentialEndpointBinding = this.vncCredentialCertificateEndpointBinding;
+    this.vncCredentialOwnerScopeId = this.vncCredentialCertificateOwnerScopeId;
+    this.vncCredentialAccountGeneration = this.vncCredentialCertificateAccountGeneration;
+    const forcePrompt: boolean = this.vncCredentialRetryHostId === host.id;
+    const replaceSavedPassword: boolean =
+      this.vncCredentialRetryReplaceSavedHostId === host.id;
+    this.vncCredentialRetryHostId = '';
+    this.vncCredentialRetryReplaceSavedHostId = '';
+    const state: VncCredentialPreflightState = this.vncHosts.passwordStateFor(host.id).state;
+    const transientAvailable: boolean = VncSessionCredentialHandoff.getInstance().bind(
+      host.userId, host.id, this.vncCredentialEndpointBinding,
+      this.vncCredentialOwnerScopeId, this.vncCredentialAccountGeneration);
+    if (!vncCredentialPreflightNeedsPrompt(state, transientAvailable, forcePrompt)) {
+      this.routePreparedVncSession(route, routeHostId, host);
+      return;
+    }
+    this.vncCredentialHostId = host.id;
+    this.vncCredentialHostLabel = host.label;
+    this.vncCredentialPassword = '';
+    this.vncCredentialRememberPassword = false;
+    this.vncCredentialNoPassword = false;
+    this.vncCredentialPasswordVisible = false;
+    this.vncCredentialState = state;
+    this.vncCredentialError = vncCredentialPreflightMessage(state, forcePrompt);
+    this.vncCredentialRouteHostId = routeHostId;
+    this.vncCredentialPendingRouteParams = route;
+    this.vncCredentialRouteAfterClose = false;
+    this.vncCredentialClosing = false;
+    this.vncCredentialReplacingFailedPassword = replaceSavedPassword;
+    this.openSheetSafely((): void => {
+      this.openRemoteHostSheet(REMOTE_HOST_SHEET_VNC_CREDENTIAL, (): void => {});
+    }, true);
+  }
+
+  private finishVncCredentialPreflight(password: string, remember: boolean,
+    allowPlaintext: boolean): void {
+    const host: VncHostView | null = this.vncHosts.find(this.vncCredentialHostId);
+    if (host === null || this.vncCredentialPendingRouteParams === null) { return; }
+    if (!this.vncCredentialBindingIsCurrent(host)) {
+      this.vncCredentialError = 'VNC endpoint 或账号状态已变化，请取消后重新预检。';
+      return;
+    }
+    if (remember) {
+      const saved = this.vncHosts.savePassword(host.id, password, true, allowPlaintext);
+      if (!saved.ok) {
+        promptAction.showToast({
+          message: (saved.message || 'VNC 密码保存失败') + '；本次仍使用临时密码连接',
+          duration: 2400
+        });
+      }
+    } else if (this.vncCredentialReplacingFailedPassword) {
+      const removed = this.vncHosts.savePassword(host.id, '', false, false);
+      if (!removed.ok) {
+        promptAction.showToast({
+          message: (removed.message || '旧 VNC 密码清理失败') + '；本次仍使用临时选择连接',
+          duration: 2400
+        });
+      }
+    }
+    if (!VncSessionCredentialHandoff.getInstance().put(
+      host.userId, host.id, password, this.vncCredentialEndpointBinding,
+      this.vncCredentialOwnerScopeId, this.vncCredentialAccountGeneration)) {
+      this.vncCredentialError = 'VNC 一次性凭据交接失败，请重试。';
+      return;
+    }
+    this.vncCredentialPassword = '';
+    this.vncCredentialRouteAfterClose = true;
+    this.vncCredentialClosing = true;
+    this.beginRemoteHostSheetClose(REMOTE_HOST_SHEET_VNC_CREDENTIAL);
+    this.showRemoteHostSheet = false;
+  }
+
+  private confirmVncCredentialPreflight(): void {
+    if (this.vncCredentialNoPassword) {
+      this.finishVncCredentialPreflight('', false, false);
+      return;
+    }
+    if (this.vncCredentialPassword.length === 0) {
+      this.vncCredentialError = '请输入 VNC 密码，或明确选择“无密码连接”。';
+      return;
+    }
+    const crypto: DataCrypto = DataCrypto.getInstance();
+    if (this.vncCredentialRememberPassword && crypto.isSetupComplete() && !crypto.isReady()) {
+      this.vncCredentialError = '应用加密已锁定；请先解锁，或关闭“记住密码”后连接。';
+      return;
+    }
+    if (this.vncCredentialRememberPassword && !crypto.isSetupComplete()) {
+      promptAction.showDialog({
+        title: '确认保存未加密密码',
+        message: '应用加密未启用。记住此密码会以未加密形式保存；也可以关闭后仅本次使用。',
+        buttons: [{ text: '取消', color: this.pal().text2 },
+          { text: '确认保存', color: this.pal().danger }]
+      }).then((dialog: Object): void => {
+        const values: Record<string, number> = dialog as Record<string, number>;
+        if (values['index'] === 1) {
+          this.finishVncCredentialPreflight(this.vncCredentialPassword, true, true);
+        }
+      });
+      return;
+    }
+    this.finishVncCredentialPreflight(
+      this.vncCredentialPassword, this.vncCredentialRememberPassword, false);
+  }
+
+  private useSavedVncCredential(): void {
+    const host: VncHostView | null = this.vncHosts.find(this.vncCredentialHostId);
+    if (host === null || !this.vncCredentialBindingIsCurrent(host)) {
+      this.vncCredentialError = 'VNC endpoint 或账号状态已变化，请取消后重新预检。';
+      return;
+    }
+    if (!this.vncHosts.grantPlaintextPasswordConsent(host.id)) {
+      this.vncCredentialError = '本地确认失败，请重新输入一次性密码。';
+      return;
+    }
+    const loaded = this.vncHosts.passwordStateFor(host.id);
+    if (loaded.state !== 'available') {
+      this.vncCredentialError = '已保存密码不可用，请重新输入一次性密码。';
+      return;
+    }
+    this.finishVncCredentialPreflight(loaded.plaintext, false, false);
+  }
+
+  private vncCredentialBindingIsCurrent(host: VncHostView): boolean {
+    const endpoint: VncTlsEndpointResolution = this.resolveVncCertificateEndpoint(host);
+    const scope = AccountSessionCoordinator.getInstance().currentScope();
+    return endpoint.ok &&
+      endpoint.endpointBindingFingerprint === this.vncCredentialEndpointBinding &&
+      scope.ownerScopeId.trim() === this.vncCredentialOwnerScopeId &&
+      scope.generation === this.vncCredentialAccountGeneration &&
+      this.vncCertificateStoreFingerprint() === this.vncCredentialCertificateStoreFingerprint;
+  }
+
+  private cancelVncCredentialPreflight(closeSheet: boolean = true): void {
+    if (this.vncCredentialClosing) { return; }
+    const host: VncHostView | null = this.vncHosts.find(this.vncCredentialHostId);
+    if (host !== null) {
+      VncSessionCredentialHandoff.getInstance().clear(host.userId, host.id);
+      this.vncCertificateHandoff.clear(host.userId, 'vnc-cert:' + host.id);
+      this.vncPlaintextHandoff.clear(host.userId, 'vnc-cert:' + host.id);
+    }
+    this.vncCredentialRouteAfterClose = false;
+    this.vncCredentialClosing = true;
+    this.beginRemoteHostSheetClose(REMOTE_HOST_SHEET_VNC_CREDENTIAL);
+    if (closeSheet) { this.showRemoteHostSheet = false; }
+  }
+
+  private handleVncCredentialPreflightDisappear(): void {
+    const route: Record<string, Object> | null = this.vncCredentialPendingRouteParams;
+    const routeHostId: string = this.vncCredentialRouteHostId;
+    const host: VncHostView | null = this.vncHosts.find(this.vncCredentialHostId);
+    const shouldRoute: boolean = this.vncCredentialRouteAfterClose && route !== null && host !== null;
+    this.vncCredentialHostId = '';
+    this.vncCredentialHostLabel = '';
+    this.vncCredentialPassword = '';
+    this.vncCredentialRememberPassword = false;
+    this.vncCredentialNoPassword = false;
+    this.vncCredentialPasswordVisible = false;
+    this.vncCredentialState = 'missing';
+    this.vncCredentialError = '';
+    this.vncCredentialRouteHostId = '';
+    this.vncCredentialPendingRouteParams = null;
+    this.vncCredentialRouteAfterClose = false;
+    this.vncCredentialClosing = false;
+    this.vncCredentialReplacingFailedPassword = false;
+    this.vncCredentialEndpointBinding = '';
+    this.vncCredentialOwnerScopeId = '';
+    this.vncCredentialAccountGeneration = 0;
+    this.noteSheetDismissed();
+    if (shouldRoute) {
+      setTimeout((): void => {
+        this.routePreparedVncSession(route as Record<string, Object>, routeHostId,
+          host as VncHostView);
+      }, 0);
+      return;
+    }
+    this.releaseConnectionAttempt(routeHostId);
+    this.clearVncCredentialCertificateRoute();
+  }
+
+  private routePreparedVncSession(route: Record<string, Object>, routeHostId: string,
+    host: VncHostView): void {
+    if (!this.refreshVncCertificateHandoffForRoute(host, route)) {
+      VncSessionCredentialHandoff.getInstance().clear(host.userId, host.id);
+      this.vncCertificateHandoff.clear(host.userId, 'vnc-cert:' + host.id);
+      this.vncPlaintextHandoff.clear(host.userId, 'vnc-cert:' + host.id);
+      this.releaseConnectionAttempt(routeHostId);
+      this.clearVncCredentialCertificateRoute();
+      promptAction.showToast({ message: 'VNC endpoint 已变化，请重新进行证书预检', duration: 2400 });
+      return;
+    }
+    this.releaseConnectionAttempt(routeHostId);
+    this.clearVncCredentialCertificateRoute();
+    this.openSessionDestination('pages/RemoteDesktop', route, 'vnc_preflight_complete');
   }
 
   /** T-210: 打开 SSH 前置校验 Sheet (通过统一 bindSheet) */
@@ -7237,6 +7591,17 @@ struct HostListPage {
 
   private vncRecordIdForHost(host: RemoteHost): string {
     return isVncHostProjection(host) ? vncHostRecordIdFromUiId(host.id) : '';
+  }
+
+  private clearPendingVncCredentialForRemoteHost(host: RemoteHost): void {
+    const vncHostId: string = this.vncRecordIdForHost(host);
+    if (vncHostId === '') { return; }
+    const owner: VncHostView | null = this.vncHosts.find(vncHostId);
+    const userId: string = owner === null ? host.userId.trim() : owner.userId.trim();
+    if (userId === '') { return; }
+    VncSessionCredentialHandoff.getInstance().clear(userId, vncHostId);
+    this.vncCertificateHandoff.clear(userId, 'vnc-cert:' + vncHostId);
+    this.vncPlaintextHandoff.clear(userId, 'vnc-cert:' + vncHostId);
   }
 
   private async toggleLock(host: RemoteHost): Promise<void> {
@@ -9140,6 +9505,8 @@ struct HostListPage {
       this.rdpCertificatePanel();
     } else if (this.remoteHostSheetMode === REMOTE_HOST_SHEET_VNC_CERTIFICATE) {
       this.vncCertificatePanel();
+    } else if (this.remoteHostSheetMode === REMOTE_HOST_SHEET_VNC_CREDENTIAL) {
+      this.vncCredentialPanel();
     } else if (this.remoteHostSheetMode === REMOTE_HOST_SHEET_RUSTDESK_PREFLIGHT) {
       this.rustDeskProPreflightPanel();
     } else if (this.remoteHostSheetMode === REMOTE_HOST_SHEET_RUSTDESK_TOTP_BINDING) {
@@ -9163,6 +9530,9 @@ struct HostListPage {
         break;
       case REMOTE_HOST_SHEET_VNC_CERTIFICATE:
         this.cancelVncCertificatePreflight(false);
+        break;
+      case REMOTE_HOST_SHEET_VNC_CREDENTIAL:
+        this.cancelVncCredentialPreflight(false);
         break;
       case REMOTE_HOST_SHEET_RUSTDESK_PREFLIGHT:
         this.cancelRustDeskProPreflight(false);
@@ -9203,6 +9573,8 @@ struct HostListPage {
         this.doRdpCertificateCancel(false);
       } else if (mode === REMOTE_HOST_SHEET_VNC_CERTIFICATE) {
         this.cancelVncCertificatePreflight(false);
+      } else if (mode === REMOTE_HOST_SHEET_VNC_CREDENTIAL) {
+        this.cancelVncCredentialPreflight(false);
       } else if (mode === REMOTE_HOST_SHEET_RUSTDESK_PREFLIGHT) {
         this.cancelRustDeskProPreflight(false);
       } else if (mode === REMOTE_HOST_SHEET_RUSTDESK_TOTP_BINDING) {
@@ -9218,6 +9590,9 @@ struct HostListPage {
         break;
       case REMOTE_HOST_SHEET_VNC_CERTIFICATE:
         this.handleVncCertificatePreflightDisappear();
+        break;
+      case REMOTE_HOST_SHEET_VNC_CREDENTIAL:
+        this.handleVncCredentialPreflightDisappear();
         break;
       case REMOTE_HOST_SHEET_RUSTDESK_PREFLIGHT:
         this.handleRustDeskProPreflightDisappear();
@@ -13157,6 +13532,96 @@ struct HostListPage {
       .borderRadius(this.breakpoint === 'sm' ?
         { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
       .constraintSize({ maxWidth: 760 })
+      .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
+  }
+
+  @Builder vncCredentialPanel() {
+    Column() {
+      Row() {
+        SymbolGlyph($r('sys.symbol.key_fill'))
+          .fontSize(40).fontColor([this.accentColor])
+        Column() {
+          Text('VNC 连接认证')
+            .fontSize(17).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+            .fontFamily(this.font())
+          Text(this.vncCredentialHostLabel)
+            .fontSize(13).fontColor(this.pal().text3).margin({ top: 5 })
+        }.layoutWeight(1).margin({ left: 14 })
+      }.width('100%')
+
+      Text('证书或明文风险确认已完成。请先完成密码选择，再进入连接界面。')
+        .fontSize(13).fontColor(this.pal().text2).lineHeight(19)
+        .width('100%').margin({ top: 14 })
+
+      if (this.vncCredentialState === 'consent_required') {
+        Button('确认使用本机已保存密码')
+          .width('100%').height(40).fontSize(13).margin({ top: 14 })
+          .backgroundColor(this.pal().surface).fontColor(this.pal().text).borderRadius(10)
+          .onClick((): void => { this.useSavedVncCredential(); })
+      }
+
+      Row() {
+        TextInput({
+          placeholder: this.vncCredentialNoPassword ? '已选择无密码连接' : '输入 VNC 密码',
+          text: this.vncCredentialPassword
+        })
+          .type(this.vncCredentialPasswordVisible ? InputType.Normal : InputType.Password)
+          .enabled(!this.vncCredentialNoPassword)
+          .layoutWeight(1).height(42)
+          .backgroundColor(this.pal().surface).fontColor(this.pal().text)
+          .onChange((value: string): void => {
+            this.vncCredentialPassword = value;
+            this.vncCredentialError = '';
+          })
+          .onSubmit((): void => { this.confirmVncCredentialPreflight(); })
+        SymbolGlyph(this.vncCredentialPasswordVisible ?
+          $r('sys.symbol.eye_slash') : $r('sys.symbol.eye'))
+          .fontSize(20).fontColor([this.pal().text2]).margin({ left: 10 })
+          .enabled(!this.vncCredentialNoPassword)
+          .onClick((): void => {
+            this.vncCredentialPasswordVisible = !this.vncCredentialPasswordVisible;
+          })
+      }.width('100%').margin({ top: 14 })
+
+      Row() {
+        Toggle({ type: ToggleType.Switch, isOn: this.vncCredentialRememberPassword })
+          .enabled(!this.vncCredentialNoPassword)
+          .onChange((value: boolean): void => {
+            this.vncCredentialRememberPassword = value;
+            this.vncCredentialError = '';
+          })
+        Text('记住密码').fontSize(13).fontColor(this.pal().text2).margin({ left: 8 })
+        Blank()
+        Toggle({ type: ToggleType.Switch, isOn: this.vncCredentialNoPassword })
+          .onChange((value: boolean): void => {
+            this.vncCredentialNoPassword = value;
+            if (value) {
+              this.vncCredentialPassword = '';
+              this.vncCredentialRememberPassword = false;
+            }
+            this.vncCredentialError = '';
+          })
+        Text('无密码连接').fontSize(13).fontColor(this.pal().text2).margin({ left: 8 })
+      }.width('100%').margin({ top: 12 }).alignItems(VerticalAlign.Center)
+
+      if (this.vncCredentialError !== '') {
+        Text(this.vncCredentialError).fontSize(12).fontColor(this.pal().danger)
+          .lineHeight(18).width('100%').margin({ top: 10 })
+      }
+
+      Row() {
+        Button('取消').height(40).layoutWeight(1).fontSize(14)
+          .backgroundColor(this.pal().surface).fontColor(this.pal().text2).borderRadius(10)
+          .onClick((): void => { this.cancelVncCredentialPreflight(); })
+        Button('验证并连接').height(40).layoutWeight(1).fontSize(14)
+          .backgroundColor(this.accentColor).fontColor(Color.White).borderRadius(10)
+          .margin({ left: 12 }).onClick((): void => { this.confirmVncCredentialPreflight(); })
+      }.width('100%').margin({ top: 18 })
+    }.width('100%').padding(20).backgroundColor(this.pal().bg)
+      .backgroundBlurStyle(BlurStyle.Regular)
+      .borderRadius(this.breakpoint === 'sm' ?
+        { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
+      .constraintSize({ maxWidth: 620 })
       .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
   }
 

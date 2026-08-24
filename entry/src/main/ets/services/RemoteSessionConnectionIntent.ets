@@ -4,9 +4,13 @@
  * it and re-enters the protocol's existing lock/preflight/authentication flow.
  */
 export type RemoteSessionConnectionIntentProtocol = 'vnc';
+export type RemoteSessionConnectionIntentReason =
+  'connect' | 'authentication_retry' | 'certificate_retry';
 
 export interface RemoteSessionConnectionIntentValue {
   protocol: RemoteSessionConnectionIntentProtocol;
+  reason: RemoteSessionConnectionIntentReason;
+  replaceSavedCredential: boolean;
   hostId: string;
   issuedAtMs: number;
   expiresAtMs: number;
@@ -26,11 +30,15 @@ export class RemoteSessionConnectionIntent {
   }
 
   put(protocol: RemoteSessionConnectionIntentProtocol, hostId: string,
-    nowMs: number = Date.now()): boolean {
+    nowMs: number = Date.now(),
+    reason: RemoteSessionConnectionIntentReason = 'connect',
+    replaceSavedCredential: boolean = false): boolean {
     const normalizedHostId: string = hostId.trim();
     if (normalizedHostId.length === 0 || normalizedHostId.length > 256) { return false; }
     this.value = {
       protocol,
+      reason,
+      replaceSavedCredential,
       hostId: normalizedHostId,
       issuedAtMs: nowMs,
       expiresAtMs: nowMs + CONNECTION_INTENT_TTL_MS
