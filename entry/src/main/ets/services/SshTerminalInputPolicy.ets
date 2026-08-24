@@ -289,6 +289,20 @@ export function sshImeShouldCommitDirectAscii(insertValue: string): boolean {
   return code >= 0x20 && code <= 0x7E;
 }
 
+/**
+ * Backspace on the direct-ASCII path targets an intentionally empty hidden
+ * editor. Reassigning that editor to empty and moving its caret back to zero
+ * makes HarmonyOS IMEs treat the next character as a fresh field start and
+ * re-enable automatic Shift. Composition/local-text deletes still need the
+ * normal editor reset after their committed value is forwarded to SSH.
+ */
+export function sshImeShouldResetEditorAfterDelete(
+  deleteValue: string,
+  editorValue: string
+): boolean {
+  return deleteValue.length > 0 || editorValue.length > 0;
+}
+
 export function consumeSshImeDidInsert(
   state: SshImeCallbackState,
   insertValue: string

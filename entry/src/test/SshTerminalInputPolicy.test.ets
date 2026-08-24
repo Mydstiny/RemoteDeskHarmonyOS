@@ -15,6 +15,7 @@ import {
   recordSshImeWillInsert,
   consumeSshImeDidInsert,
   sshImeShouldCommitDirectAscii,
+  sshImeShouldResetEditorAfterDelete,
   recordSshImeWillDelete,
   consumeSshImeDidDelete,
   inspectSshImeChange,
@@ -295,6 +296,12 @@ export default function sshTerminalInputPolicyTest(): void {
       expect(sshImeShouldCommitDirectAscii('ab')).assertFalse();
       expect(sshImeShouldCommitDirectAscii('你')).assertFalse();
       expect(sshImeShouldCommitDirectAscii('🙂')).assertFalse();
+    });
+
+    it('should_not_reset_an_already_empty_editor_after_backspace', 0, (): void => {
+      expect(sshImeShouldResetEditorAfterDelete('', '')).assertFalse();
+      expect(sshImeShouldResetEditorAfterDelete('a', '')).assertTrue();
+      expect(sshImeShouldResetEditorAfterDelete('', 'composition')).assertTrue();
     });
 
     it('should_drop_cumulative_change_after_did_insert_and_clear_editor', 0, (): void => {

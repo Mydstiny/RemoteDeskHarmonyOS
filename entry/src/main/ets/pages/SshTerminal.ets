@@ -157,6 +157,7 @@ import {
   recordSshImeWillInsert,
   consumeSshImeDidInsert,
   sshImeShouldCommitDirectAscii,
+  sshImeShouldResetEditorAfterDelete,
   recordSshImeWillDelete,
   consumeSshImeDidDelete,
   inspectSshImeChange,
@@ -16580,6 +16581,8 @@ struct SshTerminal {
   }
 
   private handleSoftDidDelete(info: DeleteValue): void {
+    const shouldResetEditor: boolean = sshImeShouldResetEditorAfterDelete(
+      info.deleteValue, this.kbInput);
     const deleted: string | null = consumeSshImeDidDelete(this.imeCallbackState, info.deleteValue);
     hilog.debug(0x0000, 'SshTerminal', '[input] did-delete chars=' +
       info.deleteValue.length.toString() + ' committed=' +
@@ -16587,7 +16590,9 @@ struct SshTerminal {
     if (deleted !== null) {
       this.sendTerminalBytes(encodeSoftDelete(deleted), true);
     }
-    this.resetKeyboardBuffer();
+    // Direct ASCII keeps the hidden editor empty. Avoid a redundant state and
+    // caret reset after Backspace, because that reset re-arms IME auto-Shift.
+    if (shouldResetEditor) { this.resetKeyboardBuffer(); }
   }
 
   /** Keep the hidden editor local while forwarding stable committed diffs. */
