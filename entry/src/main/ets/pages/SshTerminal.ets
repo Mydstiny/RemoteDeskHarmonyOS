@@ -6650,13 +6650,18 @@ struct SshTerminal {
           this.SshHeaderActionRow('切换横竖屏', '旋转当前 SSH 会话', 'orientation')
         }
 
-        if (this.sshConnectionIsConnected()) {
-          Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
-          this.SshHeaderActionRow('SFTP 文件', '浏览与传输远端文件', 'sftp')
-          this.SshHeaderActionRow('隧道转发', this.forwardingListeningCount() > 0
+        // Keep core SSH tools discoverable even while a newly selected tab is
+        // connecting or showing an error. The action boundary below already
+        // blocks execution until that exact active session is connected; hiding
+        // the rows made File Transfer and Forwarding appear to have been removed.
+        Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
+        this.SshHeaderActionRow('文件传输（SFTP）', this.sshConnectionIsConnected()
+          ? '浏览与传输远端文件' : '当前 SSH 标签连接后可用', 'sftp')
+        this.SshHeaderActionRow('隧道转发', this.sshConnectionIsConnected()
+          ? (this.forwardingListeningCount() > 0
             ? this.forwardingListeningCount().toString() + ' 条转发正在监听'
-            : (this.forwardingHasError() ? '有转发需要检查' : '管理端口转发'), 'forwarding')
-        }
+            : (this.forwardingHasError() ? '有转发需要检查' : '管理端口转发'))
+          : '当前 SSH 标签连接后可用', 'forwarding')
       }
       .width('100%').padding({ top: 2, bottom: 6 })
     }
