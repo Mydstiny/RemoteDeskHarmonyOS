@@ -9146,9 +9146,32 @@ napi_value NapiDetachSshSession(napi_env env, napi_callback_info info) {
                 session->callbackRegistrationMutex);
             if (sshAdapter && session->lifecycle.load(std::memory_order_acquire) ==
                     SessionContext::Lifecycle::Active) {
-                sshAdapter->suspendTerminalInput();
-                DetachSshDataRegistration(sessionId, sshAdapter);
-                detached = true;
+                const DecoderSessionIdentity identity = session->identity();
+                const DecoderSessionIdentity activeOwner =
+                    Render::SharedSessionSinkOwnerLease().snapshot();
+                const bool activeOwnerMatches =
+                    Render::SessionOwnerMatches(activeOwner, identity);
+                bool sharedSinkReleased = true;
+                if (SshTerminalResumePolicy::shouldReleaseSharedSinkOnDetach(
+                        session->sharedSinkForeground, activeOwnerMatches)) {
+                    sharedSinkReleased = DeactivateSessionContextIfActive(adapter, identity);
+                }
+                if (SshTerminalResumePolicy::acceptsDetachSharedSinkRelease(
+                        session->sharedSinkForeground, activeOwnerMatches,
+                        sharedSinkReleased)) {
+                    if (session->sharedSinkForeground && activeOwnerMatches) {
+                        OH_LOG_INFO(LOG_APP,
+                            "[ExtLoader] SSH detach released active owner id=%{public}d",
+                            sessionId);
+                    }
+                    sshAdapter->suspendTerminalInput();
+                    DetachSshDataRegistration(sessionId, sshAdapter);
+                    detached = true;
+                } else {
+                    OH_LOG_WARN(LOG_APP,
+                        "[ExtLoader] SSH detach active-owner release failed id=%{public}d",
+                        sessionId);
+                }
             }
         }
     }
