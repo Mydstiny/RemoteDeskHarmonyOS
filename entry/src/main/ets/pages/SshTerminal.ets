@@ -12212,10 +12212,11 @@ struct SshTerminal {
       // restored in-flight batch. Appending the full transcript at that point
       // duplicates the welcome banner. Replace the queue and ask only this
       // document to reset before consuming the single authoritative snapshot.
-      outputBuffer.clear();
-      if (transcript.length > 0) {
-        outputBuffer.enqueue(transcript);
-      }
+      // Fence the authoritative snapshot until the child confirms that the
+      // replacement xterm document has reset. A normal enqueue wakes the live
+      // output pump immediately and can paint the banner just before reset,
+      // making the reset erase the initial server welcome information.
+      if (!outputBuffer.replaceForDocumentReset(transcript)) { return; }
       this.xtermTranscriptResetIdentity = surfaceIdentity.trim();
       this.xtermTranscriptResetRequest = this.xtermTranscriptResetRequest + 1;
       hilog.info(0x0000, 'SshTerminal', '[xterm] transcript replace chars=' +

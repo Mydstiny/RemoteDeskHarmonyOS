@@ -68,6 +68,12 @@ export class XtermOutputBuffer {
   private pendingBytes: number = 0;
   private listeners: Array<() => void> = [];
   private overflowed: boolean = false;
+  /**
+   * A document transcript replacement is readable only after xterm.reset().
+   * Live SSH output can still append while this fence is held, but no renderer
+   * may drain either the snapshot or those later bytes into the pre-reset DOM.
+   */
+  private documentResetPending: boolean = false;
   private readonly onOverflow: (() => void) | null;
   private readonly maxBytes: number;
   private readonly maxChunks: number;
@@ -129,7 +135,7 @@ export class XtermOutputBuffer {
   }
 
   drain(maxChunks: number = -1, maxBytes: number = -1): Array<string> {
-    if (this.pending.length === 0) { return []; }
+    if (this.documentResetPending || this.pending.length === 0) { return []; }
     const chunkLimit: number = Number.isFinite(maxChunks) && maxChunks > 0
       ? Math.max(1, Math.floor(maxChunks)) : this.pending.length;
     const byteLimit: number = Number.isFinite(maxBytes) && maxBytes > 0
@@ -156,6 +162,36 @@ export class XtermOutputBuffer {
     this.pending = [];
     this.pendingBytes = 0;
     this.overflowed = false;
+    this.documentResetPending = false;
+  }
+
+  /** Atomically replace the queue and fence it until the new document resets. */
+  replaceForDocumentReset(value: string): boolean {
+    const entries: Array<XtermOutputEntry> = this.splitEntries(value);
+    let admittedBytes: number = 0;
+    for (let index: number = 0; index < entries.length; index++) {
+      admittedBytes += entries[index].bytes;
+    }
+    if (entries.length > this.maxChunks || admittedBytes > this.maxBytes) {
+      this.notifyOverflow();
+      return false;
+    }
+    this.pending = entries;
+    this.pendingBytes = admittedBytes;
+    this.overflowed = false;
+    this.documentResetPending = true;
+    return true;
+  }
+
+  isDocumentResetPending(): boolean {
+    return this.documentResetPending;
+  }
+
+  /** Release the authoritative snapshot only after xterm.reset() completes. */
+  completeDocumentReset(): void {
+    if (!this.documentResetPending) { return; }
+    this.documentResetPending = false;
+    if (this.pending.length > 0) { this.notifyReadable(); }
   }
 
   size(): number {
@@ -1156,7 +1192,12 @@ export struct SshXtermSurface {
     this.documentReloadRetryCount = 0;
     if (!this.active) { return; }
     this.applyPageConfigAfterLoad();
-    this.flushOutputBuffer();
+    if (this.outputBuffer.isDocumentResetPending() &&
+      this.transcriptResetIdentity.trim() === this.surfaceIdentity()) {
+      this.onTranscriptResetRequestChange();
+    } else {
+      this.flushOutputBuffer();
+    }
     this.reconcileSearchState();
     if (this.onResize && cols > 0 && rows > 0) {
       this.onResize(cols, rows, this.surfaceIdentity());
@@ -1684,6 +1725,17 @@ export struct SshXtermSurface {
       return;
     }
     const lifecycleToken: number = this.lifecycleToken;
+    // The authoritative parent snapshot already contains every byte admitted
+    // before this reset fence. Discard any copy that the replacement document
+    // managed to drain before ArkUI delivered the watched reset property.
+    this.clearOutputBatchAckTimer();
+    this.inFlightWrites = [];
+    this.inFlightOutputBuffer = null;
+    this.pendingWrites = [];
+    this.pendingOutputBuffer = null;
+    this.awaitingOutputBatch = 0;
+    this.outputPumpRunning = false;
+    this.outputPumpRetryCount = 0;
     this.logLifecycle('reset document transcript');
     this.runPageScript('window.__sshXtermReset();', (): void => {
       if (lifecycleToken !== this.lifecycleToken || this.disposed || !this.active ||
@@ -1693,6 +1745,7 @@ export struct SshXtermSurface {
       // The parent replaced the host queue with its bounded transcript before
       // advancing this request. Drain it only after xterm.reset() completes so
       // a retained DOM cannot show both its old rows and the restored rows.
+      this.outputBuffer.completeDocumentReset();
       this.flushOutputBuffer();
       this.scheduleFit();
       this.lastSearchExecutionKey = '';

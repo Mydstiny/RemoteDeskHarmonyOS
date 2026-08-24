@@ -88,6 +88,25 @@ export default function xtermOutputBufferTest(): void {
       expect(buffer.byteLength()).assertEqual(1);
     });
 
+    it('holds_replacement_transcript_until_document_reset_finishes', 0, (): void => {
+      const buffer: XtermOutputBuffer = new XtermOutputBuffer();
+      let notifications: number = 0;
+      buffer.subscribe((): void => { notifications++; });
+
+      expect(buffer.enqueue('old document')).assertTrue();
+      expect(buffer.replaceForDocumentReset('welcome\r\nprompt$ ')).assertTrue();
+      expect(buffer.isDocumentResetPending()).assertTrue();
+      // Output admitted after the snapshot belongs after it, but neither may
+      // enter the document before xterm.reset() completes.
+      expect(buffer.enqueue('live')).assertTrue();
+      expect(buffer.drain().length).assertEqual(0);
+
+      buffer.completeDocumentReset();
+      expect(buffer.isDocumentResetPending()).assertFalse();
+      expect(buffer.drain().join('')).assertEqual('welcome\r\nprompt$ live');
+      expect(notifications).assertEqual(3);
+    });
+
     it('rechecks_backlog_limits_when_restoring_an_unacked_frame', 0, (): void => {
       let overflows: number = 0;
       const buffer: XtermOutputBuffer = new XtermOutputBuffer((): void => {
