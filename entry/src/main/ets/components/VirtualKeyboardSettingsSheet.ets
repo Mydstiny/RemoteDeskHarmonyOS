@@ -311,7 +311,8 @@ export struct VirtualKeyboardSettingsSheet {
       .backgroundColor(this.actionGroup === group ? this.accentColor : this.card())
       .onClick((): void => {
         this.actionGroup = group;
-        const options: Array<RemoteCustomShortcutKeyOption> = remoteCustomShortcutKeyOptions(group);
+        const options: Array<RemoteCustomShortcutKeyOption> =
+          remoteCustomShortcutKeyOptions(group, this.platform());
         if (options.length > 0) { this.actionKeyCode = options[0].keyCode; }
       })
   }
@@ -355,7 +356,7 @@ export struct VirtualKeyboardSettingsSheet {
         this.groupChoice('navigation')
       }.width('100%')
       Grid() {
-        ForEach(remoteCustomShortcutKeyOptions(this.actionGroup),
+        ForEach(remoteCustomShortcutKeyOptions(this.actionGroup, this.platform()),
           (option: RemoteCustomShortcutKeyOption): void => {
             GridItem() { this.actionChoice(option) }
           }, (option: RemoteCustomShortcutKeyOption): string => option.keyCode.toString())

@@ -53,7 +53,8 @@ function pushOption(target: Array<RemoteCustomShortcutKeyOption>, label: string,
 }
 
 export function remoteCustomShortcutKeyOptions(
-  group: RemoteCustomShortcutKeyGroup
+  group: RemoteCustomShortcutKeyGroup,
+  platform: string = 'windows'
 ): Array<RemoteCustomShortcutKeyOption> {
   const result: Array<RemoteCustomShortcutKeyOption> = [];
   if (group === 'letters') {
@@ -86,7 +87,8 @@ export function remoteCustomShortcutKeyOptions(
     for (let index = 0; index < 12; index++) {
       pushOption(result, 'F' + (index + 1).toString(), 2090 + index);
     }
-    for (let index = 0; index < 12; index++) {
+    const extendedCount: number = platform.trim().toLowerCase() === 'macos' ? 8 : 12;
+    for (let index = 0; index < extendedCount; index++) {
       pushOption(result, 'F' + (index + 13).toString(), 2816 + index);
     }
     return result;

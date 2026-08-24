@@ -312,7 +312,7 @@ export struct RemoteModifierPanel {
   }
 
   private customKeyOptions(): Array<RemoteCustomShortcutKeyOption> {
-    return remoteCustomShortcutKeyOptions(this.customKeyGroup);
+    return remoteCustomShortcutKeyOptions(this.customKeyGroup, this.shortcutPlatform());
   }
 
   private customGroupLabel(group: RemoteCustomShortcutKeyGroup): string {
@@ -692,7 +692,8 @@ export struct RemoteModifierPanel {
       .margin({ left: 2, right: 2 })
       .onClick((): void => {
         this.customKeyGroup = group;
-        const options: Array<RemoteCustomShortcutKeyOption> = remoteCustomShortcutKeyOptions(group);
+        const options: Array<RemoteCustomShortcutKeyOption> =
+          remoteCustomShortcutKeyOptions(group, this.shortcutPlatform());
         if (options.length > 0) { this.customActionKeyCode = options[0].keyCode; }
       })
   }
@@ -983,12 +984,14 @@ export struct RemoteModifierPanel {
           this.ActionKey('F19', RemoteModifierPanel.KEY_F19)
           this.ActionKey('F20', RemoteModifierPanel.KEY_F20)
         }.width('100%')
-        Row() {
-          this.ActionKey('F21', RemoteModifierPanel.KEY_F21)
-          this.ActionKey('F22', RemoteModifierPanel.KEY_F22)
-          this.ActionKey('F23', RemoteModifierPanel.KEY_F23)
-          this.ActionKey('F24', RemoteModifierPanel.KEY_F24)
-        }.width('100%')
+        if (this.shortcutPlatform() === 'windows') {
+          Row() {
+            this.ActionKey('F21', RemoteModifierPanel.KEY_F21)
+            this.ActionKey('F22', RemoteModifierPanel.KEY_F22)
+            this.ActionKey('F23', RemoteModifierPanel.KEY_F23)
+            this.ActionKey('F24', RemoteModifierPanel.KEY_F24)
+          }.width('100%')
+        }
         Row() {
           this.ActionKey('Home', RemoteModifierPanel.KEY_HOME)
           this.ActionKey('End', RemoteModifierPanel.KEY_END)

@@ -95,6 +95,8 @@ function resultLabel(value: number): string {
 @Component
 export struct RdpDiagnosticsHud {
   @Prop stats: RdpRenderStats = EMPTY_RDP_RENDER_STATS;
+  @Prop @Watch('onViewportChange') availableWidth: number = 360;
+  @Prop @Watch('onViewportChange') availableHeight: number = 640;
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   @State private expanded: boolean = false;
   @State private panelX: number = 10;
@@ -104,11 +106,25 @@ export struct RdpDiagnosticsHud {
 
   private pal(): Palette { return buildDark(this.accentColor); }
 
+  private panelHeight(expanded: boolean = this.expanded): number {
+    return expanded ? 248 : 116;
+  }
+
+  private clampPosition(expanded: boolean = this.expanded): void {
+    this.panelX = Math.max(0, Math.min(this.panelX,
+      Math.max(0, this.availableWidth - 236)));
+    this.panelY = Math.max(0, Math.min(this.panelY,
+      Math.max(0, this.availableHeight - this.panelHeight(expanded))));
+  }
+
+  private onViewportChange(): void { this.clampPosition(); }
+
   private finishDrag(): void {
-    this.panelX = Math.max(0, this.panelX + this.dragX);
-    this.panelY = Math.max(0, this.panelY + this.dragY);
+    this.panelX += this.dragX;
+    this.panelY += this.dragY;
     this.dragX = 0;
     this.dragY = 0;
+    this.clampPosition();
   }
 
   @Builder
@@ -132,7 +148,11 @@ export struct RdpDiagnosticsHud {
         SymbolGlyph(this.expanded ? $r('sys.symbol.chevron_up') : $r('sys.symbol.chevron_down'))
           .fontSize(12).fontColor(['rgba(255,255,255,0.72)']).margin({ left: 8 })
       }.width('100%').height(28).margin({ bottom: 4 })
-        .onClick((): void => { this.expanded = !this.expanded; })
+        .onClick((): void => {
+          const next: boolean = !this.expanded;
+          this.expanded = next;
+          this.clampPosition(next);
+        })
         .gesture(PanGesture({ fingers: 1, direction: PanDirection.All, distance: 4 })
           .onActionUpdate((event: GestureEvent): void => {
             this.dragX = event.offsetX;

@@ -21,7 +21,7 @@ export default function rdpSessionSidebarPolicyTest(): void {
 
     it('distinguishes_live_changes_from_reconnect_preferences', 0, (): void => {
       expect(rdpSessionSettingActivation('rdpControlMode')).assertEqual('live');
-      expect(rdpSessionSettingActivation('rdpClipboardEnabled')).assertEqual('live');
+      expect(rdpSessionSettingActivation('rdpClipboardEnabled')).assertEqual('reconnect');
       expect(rdpSessionSettingActivation('rdpDesktopResolutionId')).assertEqual('reconnect');
       expect(rdpSessionSettingActivation('rdpAudioEnabled')).assertEqual('reconnect');
       expect(rdpSessionSettingActivation('rdpDriveEnabled')).assertEqual('reconnect');
@@ -37,6 +37,9 @@ export default function rdpSessionSidebarPolicyTest(): void {
       expect(stalled.transport).assertEqual('GDI');
       const failed = rdpSessionPerformanceSummary(-3, 10, 100, true);
       expect(failed.status).assertEqual('恢复中');
+      const pending = rdpSessionPerformanceSummary(0, -1, 0, false);
+      expect(pending.status).assertEqual('待采样');
+      expect(pending.frameAge).assertEqual('—');
     });
   });
 }

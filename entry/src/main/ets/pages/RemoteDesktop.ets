@@ -4444,7 +4444,6 @@ struct RemoteDesktop {
       this.initHandlePosition();
       this.handleVisible = true;
     }
-    if (!this.isDesktopDevice) { this.handleSide = 'right'; }
     this.ensureModifierPanelPositions();
     this.openModifierPanel();
     this.stopRdpDiagnosticsPolling(!this.rdpShowDiagnostics);
@@ -4481,6 +4480,18 @@ struct RemoteDesktop {
     return rdpSessionPerformanceSummary(this.rdpRenderStats.lastRenderResult,
       this.rdpRenderStats.lastRemoteUpdateAgeMs, this.rdpRenderStats.queueP95Us,
       this.rdpRenderStats.gfxChannelConnected);
+  }
+
+  private rdpToolbarAvailableHeight(): number {
+    const height: number = this.surfaceHeight > 0 ? this.surfaceHeight : 640;
+    const top: number = Math.max(0, this.vncToolbarSystemTop);
+    let bottom: number = Math.max(top, height - Math.max(0, this.vncToolbarSystemBottom));
+    if (this.vncToolbarKeyboardRect !== null && this.vncToolbarKeyboardRect.height > 0) {
+      bottom = Math.min(bottom, Math.max(top, this.vncToolbarKeyboardRect.y));
+    } else if (this.kbHeight > 0) {
+      bottom = Math.min(bottom, Math.max(top, height - this.kbHeight));
+    }
+    return Math.max(0, bottom - top);
   }
 
   private resetCanvasTransformFromMenu(): void {
@@ -16978,7 +16989,7 @@ struct RemoteDesktop {
               diagnosticsVisible: this.rdpShowDiagnostics,
               qualityLabel: this.rdpPerformanceSummary().status,
               qualityColor: this.rdpPerformanceSummary().color,
-              availableHeight: this.surfaceHeight,
+              availableHeight: this.rdpToolbarAvailableHeight(),
               onAction: (action: RdpToolbarAction): void => { this.handleRdpToolbarAction(action); }
             })
           }.width('100%').height('100%').hitTestBehavior(HitTestMode.Transparent).zIndex(220)
@@ -16991,7 +17002,7 @@ struct RemoteDesktop {
               diagnosticsVisible: this.rdpShowDiagnostics,
               qualityLabel: this.rdpPerformanceSummary().status,
               qualityColor: this.rdpPerformanceSummary().color,
-              availableHeight: this.surfaceHeight,
+              availableHeight: this.rdpToolbarAvailableHeight(),
               onAction: (action: RdpToolbarAction): void => { this.handleRdpToolbarAction(action); }
             })
           }.width('100%').height(80).position({ x: 0, y: 12 })
@@ -17009,6 +17020,7 @@ struct RemoteDesktop {
             stats: this.rdpRenderStats,
             controlMode: this.rdpControlMode,
             clipboardEnabled: this.rdpClipboardEnabled,
+            clipboardReady: this.loader.isSessionClipboardReady(this.sessionId),
             diagnosticsEnabled: this.rdpShowDiagnostics,
             displayScaleMode: this.remoteDisplayScaleMode,
             canvasZoomEnabled: this.canvasGestureZoomEnabled,
@@ -17090,7 +17102,11 @@ struct RemoteDesktop {
       if (this.shouldShowActiveDiagnostics()) {
         if (this.isRdpRemoteSession()) {
           if (!this.rdpControlCenterVisible) {
-            RdpDiagnosticsHud({ stats: this.rdpRenderStats })
+            RdpDiagnosticsHud({
+              stats: this.rdpRenderStats,
+              availableWidth: this.surfaceWidth > 0 ? this.surfaceWidth : 360,
+              availableHeight: this.rdpToolbarAvailableHeight()
+            })
           }
         } else if (this.isVncSession()) {
           VncDiagnosticsHud({

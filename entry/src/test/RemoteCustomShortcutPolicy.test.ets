@@ -61,6 +61,9 @@ export default function remoteCustomShortcutPolicyTest(): void {
       expect(functionKeys.length).assertEqual(24);
       expect(functionKeys[12].label).assertEqual('F13');
       expect(functionKeys[23].label).assertEqual('F24');
+      const macFunctionKeys = remoteCustomShortcutKeyOptions('functions', 'macos');
+      expect(macFunctionKeys.length).assertEqual(20);
+      expect(macFunctionKeys[19].label).assertEqual('F20');
       expect(remoteCustomShortcutKeyOptions('navigation').length).assertEqual(15);
       expect(remoteCustomShortcutKeyGroupForKeyCode(2043)).assertEqual('symbols');
       expect(remoteCustomShortcutKeyGroupForKeyCode(2049)).assertEqual('navigation');

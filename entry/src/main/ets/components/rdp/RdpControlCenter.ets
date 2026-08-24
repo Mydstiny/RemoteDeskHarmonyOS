@@ -26,6 +26,7 @@ export struct RdpControlCenter {
   @Prop stats: RdpRenderStats = EMPTY_RDP_RENDER_STATS;
   @Prop controlMode: number = 0;
   @Prop clipboardEnabled: boolean = true;
+  @Prop clipboardReady: boolean = false;
   @Prop diagnosticsEnabled: boolean = false;
   @Prop displayScaleMode: string = 'fit';
   @Prop canvasZoomEnabled: boolean = false;
@@ -205,7 +206,9 @@ export struct RdpControlCenter {
 
   @Builder private channelCard() {
     Column() {
-        this.toggleRow('剪贴板同步', this.clipboardEnabled ? '当前已允许双向文本同步' : '当前连接已停止同步',
+        this.toggleRow('剪贴板同步', this.clipboardEnabled ?
+          (this.clipboardReady ? '当前已允许双向文本同步' : '偏好已保存，本次未协商通道，重连后生效') :
+          '当前连接已立即停止同步；重新开启可能需要重连',
           this.clipboardEnabled, this.onClipboard)
         Divider().color(this.pal().divider).margin({ left: 12 })
         this.toggleRow('悬浮性能监视器', '控制面板关闭后继续显示可拖动指标卡',
@@ -296,7 +299,8 @@ export struct RdpControlCenter {
           this.performanceCard()
           this.sectionTitle('控制与显示', '立即生效')
           this.liveControlCard()
-          this.sectionTitle('RDP 通道')
+          this.sectionTitle('RDP 通道', this.clipboardEnabled && !this.clipboardReady ?
+            '重连后生效' : '立即生效')
           this.channelCard()
           this.sectionTitle('下次连接', '重连后生效')
           this.reconnectCard()

@@ -38,7 +38,7 @@ export function rdpSessionSettingActivation(key: string): RdpSessionSettingActiv
   if (key === 'rdpDesktopResolutionId' || key === 'rdpColorDepth' ||
     key === 'rdpAudioEnabled' || key === 'rdpDriveEnabled' ||
     key === 'rdpDriveName' || key === 'rdpAuthIdentityMode' ||
-    key === 'rdpTlsWithoutNla') {
+    key === 'rdpTlsWithoutNla' || key === 'rdpClipboardEnabled') {
     return 'reconnect';
   }
   return 'live';
@@ -58,12 +58,13 @@ function ageMs(value: number): string {
 export function rdpSessionPerformanceSummary(lastRenderResult: number,
   lastRemoteUpdateAgeMs: number, queueP95Us: number,
   gfxChannelConnected: boolean): RdpSessionPerformanceSummary {
-  const stalled: boolean = Number.isFinite(lastRemoteUpdateAgeMs) &&
+  const sampled: boolean = Number.isFinite(lastRemoteUpdateAgeMs) && lastRemoteUpdateAgeMs >= 0;
+  const stalled: boolean = sampled &&
     lastRemoteUpdateAgeMs >= 2500;
   const failed: boolean = lastRenderResult < 0;
   return {
-    status: failed ? '恢复中' : (stalled ? '画面停滞' : '实时'),
-    color: failed || stalled ? '#FF6B6B' : '#66DD7A',
+    status: failed ? '恢复中' : (!sampled ? '待采样' : (stalled ? '画面停滞' : '实时')),
+    color: failed || stalled ? '#FF6B6B' : (sampled ? '#66DD7A' : '#A8B0BF'),
     transport: gfxChannelConnected ? 'GFX' : 'GDI',
     frameAge: ageMs(lastRemoteUpdateAgeMs),
     queueP95: durationUs(queueP95Us)

@@ -350,6 +350,10 @@ struct SessionContext {
     std::shared_ptr<ProtocolAdapter> adapter;
     std::string protocolName;
     mutable std::mutex adapterMutex;
+    // One logical key transaction owns this lane from its first down through
+    // its final up. Teardown claims the same lane before changing lifecycle,
+    // so a chord is either fully queued on the active adapter or rejected.
+    mutable std::mutex keyDispatchMutex;
     // Serializes SSH data-callback publication with the teardown lifecycle
     // claim. A callback registration must either publish before teardown owns
     // the session (and be reclaimed by it) or be rejected after the claim.
@@ -5140,17 +5144,18 @@ static NativeDisconnectCoreResult BeginSessionTeardown(
         }
         return {true, resourceRequestId, SessionTeardown::State::Unknown};
     }
+    std::unique_lock<std::mutex> keyDispatchLock(session->keyDispatchMutex);
     std::shared_ptr<ProtocolAdapter> adapter;
     {
         std::lock_guard<std::mutex> lock(session->adapterMutex);
         adapter = session->adapter;
     }
     auto sshAdapter = std::dynamic_pointer_cast<SshAdapter>(adapter);
-    std::unique_lock<std::mutex> callbackRegistrationLock(
-        session->callbackRegistrationMutex);
+    std::unique_lock<std::mutex> callbackRegistrationLock(session->callbackRegistrationMutex);
     SessionContext::Lifecycle expected = SessionContext::Lifecycle::Active;
     if (!session->lifecycle.compare_exchange_strong(
             expected, SessionContext::Lifecycle::Disconnecting)) {
+        keyDispatchLock.unlock();
         if (expected == SessionContext::Lifecycle::Disconnecting) {
             std::unique_lock<std::mutex> lock(session->teardownPublicationMutex);
             session->teardownPublicationCv.wait(lock, [&]() {
@@ -5174,6 +5179,9 @@ static NativeDisconnectCoreResult BeginSessionTeardown(
     // here; a call after the claim is rejected before creating a TSFN.
     StopSshDataRegistration(sessionId, sshAdapter);
     callbackRegistrationLock.unlock();
+    // Lifecycle is now Disconnecting. New key transactions fail their active
+    // check, while the one that held this lane before us completed all ups.
+    keyDispatchLock.unlock();
 
     if (session->protocolName == "rustdesk") {
         ClearNativeNetworkObserver(
@@ -5593,6 +5601,7 @@ napi_value NapiDisconnectAll(napi_env env, napi_callback_info info) {
         if (!item.second) {
             continue;
         }
+        std::unique_lock<std::mutex> keyDispatchLock(item.second->keyDispatchMutex);
         std::shared_ptr<ProtocolAdapter> adapter;
         {
             std::lock_guard<std::mutex> lock(item.second->adapterMutex);
@@ -5809,14 +5818,24 @@ napi_value NapiSendKey(napi_env env, napi_callback_info info) {
             pressed ? "yes" : "no");
     }
 
-    auto it = g_sessionRegistry.find(sessionId);
-    if (it != g_sessionRegistry.end() && it->second->adapter) {
-        if (it->second->protocolName == "vnc") {
-            it->second->diagnostics.inputEventsSent.fetch_add(1, std::memory_order_relaxed);
+    const auto lookup = g_sessionRegistry.find(sessionId);
+    const std::shared_ptr<SessionContext> session =
+        lookup == g_sessionRegistry.end() ? nullptr : lookup->second;
+    if (session) {
+        std::lock_guard<std::mutex> keyLock(session->keyDispatchMutex);
+        std::shared_ptr<ProtocolAdapter> adapter;
+        if (session->lifecycle.load(std::memory_order_acquire) == SessionContext::Lifecycle::Active) {
+            std::lock_guard<std::mutex> adapterLock(session->adapterMutex);
+            adapter = session->adapter;
         }
-        it->second->adapter->sendKey(static_cast<uint32_t>(scancode), pressed);
-    } else if (it != g_sessionRegistry.end() && it->second->protocolName == "vnc") {
-        it->second->diagnostics.inputEventsDropped.fetch_add(1, std::memory_order_relaxed);
+        if (adapter) {
+            if (session->protocolName == "vnc") {
+                session->diagnostics.inputEventsSent.fetch_add(1, std::memory_order_relaxed);
+            }
+            adapter->sendKey(static_cast<uint32_t>(scancode), pressed);
+        } else if (session->protocolName == "vnc") {
+            session->diagnostics.inputEventsDropped.fetch_add(1, std::memory_order_relaxed);
+        }
     }
 
     napi_value undefined;
@@ -5860,24 +5879,30 @@ napi_value NapiSendKeySequence(napi_env env, napi_callback_info info) {
         const auto lookup = g_sessionRegistry.find(sessionId);
         const std::shared_ptr<SessionContext> session =
             lookup == g_sessionRegistry.end() ? nullptr : lookup->second;
-        std::shared_ptr<ProtocolAdapter> adapter;
-        if (valid && session &&
-            session->lifecycle.load(std::memory_order_acquire) == SessionContext::Lifecycle::Active) {
-            std::lock_guard<std::mutex> lock(session->adapterMutex);
-            adapter = session->adapter;
-        }
-        if (valid && session && adapter) {
-            if (session->protocolName == "vnc") {
-                session->diagnostics.inputEventsSent.fetch_add(
+        if (valid && session) {
+            std::lock_guard<std::mutex> keyLock(session->keyDispatchMutex);
+            std::shared_ptr<ProtocolAdapter> adapter;
+            if (session->lifecycle.load(std::memory_order_acquire) ==
+                SessionContext::Lifecycle::Active) {
+                std::lock_guard<std::mutex> adapterLock(session->adapterMutex);
+                adapter = session->adapter;
+            }
+            if (adapter) {
+                if (session->protocolName == "vnc") {
+                    session->diagnostics.inputEventsSent.fetch_add(
+                        keyCodes.size() * 2U, std::memory_order_relaxed);
+                }
+                DispatchKeySequence(keyCodes, [&adapter](uint32_t keyCode, bool pressed) {
+                    adapter->sendKey(keyCode, pressed);
+                });
+                accepted = true;
+                OH_LOG_INFO(LOG_APP,
+                    "[ExtLoader] NapiSendKeySequence session=%{public}d keys=%{public}u",
+                    sessionId, length);
+            } else if (session->protocolName == "vnc") {
+                session->diagnostics.inputEventsDropped.fetch_add(
                     keyCodes.size() * 2U, std::memory_order_relaxed);
             }
-            DispatchKeySequence(keyCodes, [&adapter](uint32_t keyCode, bool pressed) {
-                adapter->sendKey(keyCode, pressed);
-            });
-            accepted = true;
-            OH_LOG_INFO(LOG_APP,
-                "[ExtLoader] NapiSendKeySequence session=%{public}d keys=%{public}u",
-                sessionId, length);
         }
     }
     napi_value result;

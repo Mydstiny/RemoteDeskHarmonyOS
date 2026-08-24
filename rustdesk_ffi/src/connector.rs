@@ -2776,6 +2776,11 @@ impl RustDeskConnector {
             2090 => 0x7A, 2091 => 0x78, 2092 => 0x63, 2093 => 0x76,
             2094 => 0x60, 2095 => 0x61, 2096 => 0x62, 2097 => 0x64,
             2098 => 0x65, 2099 => 0x6D, 2100 => 0x67, 2101 => 0x6F,
+            // Carbon defines physical virtual-key codes through F20. macOS
+            // has no stable CGKeyCode constants for F21-F24, so the UI only
+            // offers those four keys for Windows targets.
+            2816 => 0x69, 2817 => 0x6B, 2818 => 0x71, 2819 => 0x6A,
+            2820 => 0x40, 2821 => 0x4F, 2822 => 0x50, 2823 => 0x5A,
             _ => return None,
         })
     }
@@ -4533,6 +4538,9 @@ mod tests {
         assert_eq!(RustDeskConnector::harmony_keycode_to_macos_keycode(2072), Some(0x3B));
         assert_eq!(RustDeskConnector::harmony_keycode_to_macos_keycode(2076), Some(0x37));
         assert_eq!(RustDeskConnector::harmony_keycode_to_macos_keycode(2014), Some(0x7B));
+        assert_eq!(RustDeskConnector::harmony_keycode_to_macos_keycode(2816), Some(0x69));
+        assert_eq!(RustDeskConnector::harmony_keycode_to_macos_keycode(2823), Some(0x5A));
+        assert_eq!(RustDeskConnector::harmony_keycode_to_macos_keycode(2824), None);
     }
 
     #[test]

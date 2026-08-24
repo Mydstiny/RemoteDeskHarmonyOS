@@ -32,12 +32,12 @@ export struct RdpSessionToolbar {
   @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
   @StorageProp('isPadDevice') isPadDevice: boolean = false;
   @Prop keyboardOpen: boolean = false;
-  @Prop shortcutsOpen: boolean = false;
-  @Prop controlCenterOpen: boolean = false;
+  @Prop @Watch('onMenuStateChange') shortcutsOpen: boolean = false;
+  @Prop @Watch('onMenuStateChange') controlCenterOpen: boolean = false;
   @Prop diagnosticsVisible: boolean = false;
   @Prop qualityLabel: string = '实时';
   @Prop qualityColor: string = '#66DD7A';
-  @Prop availableHeight: number = 640;
+  @Prop @Watch('onAvailableHeightChange') availableHeight: number = 640;
   @State private expanded: boolean = false;
   @State private pinned: boolean = false;
   @State private railSwipeX: number = 0;
@@ -102,6 +102,19 @@ export struct RdpSessionToolbar {
   }
 
   private onLayoutChange(): void { this.scheduleHide(); }
+
+  private onMenuStateChange(): void { this.scheduleHide(); }
+
+  private onAvailableHeightChange(): void {
+    if (this.layout().edgeRail && this.availableHeight < 194) {
+      this.clearTimer();
+      this.expanded = false;
+    }
+  }
+
+  private canExpand(): boolean {
+    return !this.layout().edgeRail || this.availableHeight >= 194;
+  }
 
   private invoke(action: RdpToolbarAction): void {
     this.onAction(action);
@@ -192,7 +205,9 @@ export struct RdpSessionToolbar {
       }
       .width(REMOTE_SESSION_COLLAPSED_RAIL_TOUCH_WIDTH)
       .height(REMOTE_SESSION_COLLAPSED_RAIL_HEIGHT)
-      .onClick((): void => { this.expanded = true; this.scheduleHide(); })
+      .onClick((): void => {
+        if (this.canExpand()) { this.expanded = true; this.scheduleHide(); }
+      })
       .accessibilityText('展开 RDP 会话工具栏，性能状态' + this.qualityLabel)
     } else {
       Button() {
@@ -234,21 +249,24 @@ export struct RdpSessionToolbar {
         .onActionEnd((event: GestureEvent): void => { this.finishRailSwipe(event); })
         .onActionCancel((): void => { this.resetRailSwipe(); }))
     } else {
-      Row({ space: layout.itemGap }) {
-        ForEach(this.items(), (item: RdpToolbarItem): void => {
-          this.toolItem(item, layout);
-        }, (item: RdpToolbarItem): string => item.action)
-        if (layout.autoHideMs > 0) { this.pinItem(layout) } else { this.collapseItem(layout) }
-      }
-      .padding(8).backgroundColor(this.pal().floatBg).backdropBlur(18).borderRadius(18)
-      .border({ width: 1, color: this.pal().floatBorder })
-      .shadow({ radius: 18, color: this.pal().fabShadow, offsetY: 5 })
+      Scroll() {
+        Row({ space: layout.itemGap }) {
+          ForEach(this.items(), (item: RdpToolbarItem): void => {
+            this.toolItem(item, layout);
+          }, (item: RdpToolbarItem): string => item.action)
+          if (layout.autoHideMs > 0) { this.pinItem(layout) } else { this.collapseItem(layout) }
+        }
+        .padding(8).backgroundColor(this.pal().floatBg).backdropBlur(18).borderRadius(18)
+        .border({ width: 1, color: this.pal().floatBorder })
+        .shadow({ radius: 18, color: this.pal().fabShadow, offsetY: 5 })
+      }.width('100%').height(68).scrollable(ScrollDirection.Horizontal)
+        .scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
     }
   }
 
   build() {
     Stack() {
       if (this.expanded) { this.expandedTools(this.layout()) } else { this.collapsedHandle(this.layout()) }
-    }
+    }.hitTestBehavior(HitTestMode.Transparent)
   }
 }
