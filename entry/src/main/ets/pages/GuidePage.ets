@@ -14,6 +14,8 @@ import {
 } from '../services/ReleaseNotesPolicy';
 import { CURRENT_RELEASE_VERSION, pagesForReleasedVersion, ReleaseNotePage } from '../services/ReleaseNotesRegistry';
 import {
+  clampGuidePageIndex,
+  ensureGuidePages,
   firstInstallGuidePages,
   guideDeviceFor,
   GuideContentPage,
@@ -64,9 +66,10 @@ struct GuidePage {
         router.replaceUrl({ url: 'pages/LoginPage' });
         return;
       }
-      this.activePages = this.mode === StartupMode.RELEASE_NOTES ? releasePages : this.tutorialPages;
+      this.replaceActivePages(
+        this.mode === StartupMode.RELEASE_NOTES ? releasePages : this.tutorialPages);
     } catch (_e) { /* 出错继续显示 */ }
-    if (this.activePages.length === 0) { this.activePages = this.tutorialPages; }
+    this.replaceActivePages(this.activePages);
     this.cancelGuideSheetEnter();
     this.guideSheetEnterTimer = setTimeout((): void => {
       this.guideSheetEnterTimer = -1;
@@ -84,10 +87,17 @@ struct GuidePage {
   private refreshTutorialPages(): void {
     const device: GuideDevice = guideDeviceFor(
       this.isDesktopDevice, this.isPadDevice, this.breakpoint);
-    this.tutorialPages = firstInstallGuidePages(device);
+    this.tutorialPages = ensureGuidePages(firstInstallGuidePages(device), device);
     if (this.mode === StartupMode.FIRST_INSTALL_GUIDE) {
-      this.activePages = this.tutorialPages;
+      this.replaceActivePages(this.tutorialPages);
     }
+  }
+
+  private replaceActivePages(pages: GuideContentPage[]): void {
+    const fallback: GuideContentPage[] = pages.length > 0 ? pages : this.tutorialPages;
+    const nextPages: GuideContentPage[] = ensureGuidePages(fallback);
+    this.currentIndex = clampGuidePageIndex(this.currentIndex, nextPages.length);
+    this.activePages = nextPages;
   }
 
   private onBreakpointChange(): void {
@@ -167,46 +177,64 @@ struct GuidePage {
 
   @Builder guidePanel(isSheet: boolean) {
     Column() {
-      Swiper(this.swiperController) {
-        ForEach(this.activePages, (page: GuideContentPage, index: number) => {
-          Column() {
+      if (this.activePages.length > 0) {
+        Swiper(this.swiperController) {
+          ForEach(this.activePages, (page: GuideContentPage, index: number) => {
             Column() {
               Column() {
-                Image(page.symbol).width(50).height(50).fillColor(this.accentColor)
+                Column() {
+                  Image(page.symbol).width(50).height(50).fillColor(this.accentColor)
+                }
+                .width(this.currentIndex === index ? 104 : 92)
+                .height(this.currentIndex === index ? 104 : 92)
+                .borderRadius(28)
+                .backgroundColor(this.pal().card)
+                .justifyContent(FlexAlign.Center)
+                .margin({ bottom: 20 })
+                .shadow({ radius: 24, color: this.pal().fabGlow, offsetY: 8 })
+                .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+                .scale({ x: this.currentIndex === index ? 1 : 0.8,
+                         y: this.currentIndex === index ? 1 : 0.8 })
+                .animation({ duration: 250, curve: Curve.EaseOut })
+
+                Text(page.title)
+                  .fontSize(24).fontWeight(FontWeight.Bold)
+                  .fontColor(this.pal().text).textAlign(TextAlign.Center)
+                  .margin({ bottom: 12 })
+                  .animation({ duration: 200, curve: Curve.EaseOut })
+
+                Text(page.desc)
+                  .fontSize(15).fontColor(this.pal().text2).textAlign(TextAlign.Center)
+                  .lineHeight(22).width('88%')
+                  .animation({ duration: 200, curve: Curve.EaseOut })
               }
-              .width(this.currentIndex === index ? 104 : 92)
-              .height(this.currentIndex === index ? 104 : 92)
-              .borderRadius(28)
-              .backgroundColor(this.pal().card)
-              .justifyContent(FlexAlign.Center)
-              .margin({ bottom: 20 })
-              .shadow({ radius: 24, color: this.pal().fabGlow, offsetY: 8 })
-              .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
-              .scale({ x: this.currentIndex === index ? 1 : 0.8,
-                       y: this.currentIndex === index ? 1 : 0.8 })
-              .animation({ duration: 250, curve: Curve.EaseOut })
-
-              Text(page.title)
-                .fontSize(24).fontWeight(FontWeight.Bold)
-                .fontColor(this.pal().text).textAlign(TextAlign.Center)
-                .margin({ bottom: 12 })
-                .animation({ duration: 200, curve: Curve.EaseOut })
-
-              Text(page.desc)
-                .fontSize(15).fontColor(this.pal().text2).textAlign(TextAlign.Center)
-                .lineHeight(22).width('88%')
-                .animation({ duration: 200, curve: Curve.EaseOut })
+              .width('100%')
             }
-            .width('100%')
-          }
-          .width('100%').height('100%')
-          .justifyContent(FlexAlign.Center)
+            .width('100%').height('100%')
+            .justifyContent(FlexAlign.Center)
+          }, (page: GuideContentPage) => page.id)
+        }
+        .loop(false).indicator(false)
+        .duration(250).curve(Curve.EaseOut)
+        .onChange((i: number) => {
+          this.currentIndex = clampGuidePageIndex(i, this.activePages.length);
         })
+        .layoutWeight(1)
+      } else {
+        // 理论上 ensureGuidePages 已阻止空数组；这里保留最终可见兜底，
+        // 即使未来注册表或框架状态异常，新用户也不会只看到白屏。
+        Column() {
+          Image($rawfile('icons/computer-desktop.svg'))
+            .width(50).height(50).fillColor(this.accentColor).margin({ bottom: 20 })
+          Text('欢迎使用 RemoteDesktop')
+            .fontSize(24).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+            .textAlign(TextAlign.Center).margin({ bottom: 12 })
+          Text('引导内容暂时无法载入，你仍可立即进入工作台，并从“设置 → 教程”重新打开。')
+            .fontSize(15).fontColor(this.pal().text2).textAlign(TextAlign.Center)
+            .lineHeight(22).width('88%')
+        }
+        .width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
       }
-      .loop(false).indicator(false)
-      .duration(250).curve(Curve.EaseOut)
-      .onChange((i: number) => { this.currentIndex = i; })
-      .layoutWeight(1)
 
       Row() {
         Text(this.currentIndex > 0 ? '上一步' :

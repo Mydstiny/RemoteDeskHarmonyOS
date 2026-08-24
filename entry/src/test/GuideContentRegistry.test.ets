@@ -1,5 +1,7 @@
 import { describe, it, expect } from '@ohos/hypium';
 import {
+  clampGuidePageIndex,
+  ensureGuidePages,
   firstInstallGuidePages,
   guideDeviceFor,
   GuideContentPage,
@@ -33,6 +35,7 @@ export default function guideContentRegistryTest(): void {
       const settings: GuideContentPage[] = settingsUsageGuidePages('phone');
       expect(phone.length).assertEqual(7);
       expect(settings.length).assertEqual(phone.length);
+      expect(containsPage(phone, 'welcome-five-protocols')).assertTrue();
       expect(containsPage(phone, 'device-path-phone')).assertTrue();
       expect(containsPage(desktop, 'device-path-desktop')).assertTrue();
       expect(phone[phone.length - 1].id).assertEqual('start-first-host');
@@ -48,7 +51,7 @@ export default function guideContentRegistryTest(): void {
 
     it('covers_all_five_user_facing_protocols', 0, (): void => {
       const pages: GuideContentPage[] = firstInstallGuidePages('tablet');
-      expect(containsPage(pages, 'five-protocol-workspace')).assertTrue();
+      expect(containsPage(pages, 'welcome-five-protocols')).assertTrue();
       const options: GuideProtocolOption[] = guideProtocolOptions();
       expect(options.length).assertEqual(6);
       expect(containsProtocol(options, 'rdp')).assertTrue();
@@ -56,6 +59,24 @@ export default function guideContentRegistryTest(): void {
       expect(containsProtocol(options, 'ssh')).assertTrue();
       expect(containsProtocol(options, 'vnc')).assertTrue();
       expect(containsProtocol(options, 'moonlight')).assertTrue();
+    });
+
+    it('keeps_swiper_content_non_empty_and_index_in_range', 0, (): void => {
+      const empty: GuideContentPage[] = [];
+      const fallback: GuideContentPage[] = ensureGuidePages(empty, 'desktop');
+      expect(fallback.length).assertEqual(7);
+      expect(containsPage(fallback, 'device-path-desktop')).assertTrue();
+      expect(clampGuidePageIndex(-1, fallback.length)).assertEqual(0);
+      expect(clampGuidePageIndex(99, fallback.length)).assertEqual(fallback.length - 1);
+      expect(clampGuidePageIndex(2, fallback.length)).assertEqual(2);
+      expect(clampGuidePageIndex(2, 0)).assertEqual(0);
+    });
+
+    it('does_not_share_mutable_swiper_page_objects', 0, (): void => {
+      const source: GuideContentPage[] = firstInstallGuidePages('phone');
+      const copy: GuideContentPage[] = ensureGuidePages(source);
+      copy[0].title = 'changed';
+      expect(source[0].title === 'changed').assertFalse();
     });
 
     it('filters_detailed_lessons_by_protocol_and_device', 0, (): void => {

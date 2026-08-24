@@ -37,14 +37,15 @@ export default function guideContentRegistryTest(): void {
     it('covers_current_features_and_the_complete_release', 0, (): void => {
       const guide: GuideContentPage[] = firstInstallGuidePages();
       const release: ReleaseNotePage[] = pagesForReleasedVersion(CURRENT_RELEASE_VERSION);
-      expect(containsGuidePage(guide, 'session-controls')).assertTrue();
-      expect(containsGuidePage(guide, 'cloud-and-backup')).assertTrue();
-      expect(release.length).assertEqual(7);
-      expect(containsReleasePage(release, 'release-four-protocols')).assertTrue();
-      expect(containsReleasePage(release, 'release-input-performance')).assertTrue();
-      expect(containsReleasePage(release, 'release-cloud-recovery')).assertTrue();
-      expect(containsReleasePage(release, 'release-security-boundaries')).assertTrue();
-      expect(release[release.length - 1].id).assertEqual('welcome-1-1-0');
+      expect(containsGuidePage(guide, 'welcome-five-protocols')).assertTrue();
+      expect(containsGuidePage(guide, 'session-toolkit')).assertTrue();
+      expect(containsGuidePage(guide, 'data-recovery-and-help')).assertTrue();
+      expect(release.length).assertEqual(12);
+      expect(containsReleasePage(release, 'release-1-1-2')).assertTrue();
+      expect(containsReleasePage(release, 'release-moonlight-workflow')).assertTrue();
+      expect(containsReleasePage(release, 'release-ssh-workspace')).assertTrue();
+      expect(containsReleasePage(release, 'release-guidance')).assertTrue();
+      expect(release[release.length - 1].id).assertEqual('welcome-1-1-2');
     });
   });
 }

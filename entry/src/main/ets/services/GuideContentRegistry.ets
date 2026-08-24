@@ -86,10 +86,10 @@ export function guideProtocolOptions(): GuideProtocolOption[] {
 
 const SHARED_GUIDE_PAGES: GuideContentPage[] = [
   {
-    id: 'five-protocol-workspace',
+    id: 'welcome-five-protocols',
     symbol: $rawfile('icons/computer-desktop.svg'),
-    title: '五种协议，一个工作台',
-    desc: 'RDP 连接 Windows；RustDesk 跨平台远控；SSH/SFTP 管理服务器与文件；VNC 连接标准兼容设备；Moonlight 连接 Sunshine 进行低延迟串流。'
+    title: '欢迎来到五协议工作台',
+    desc: 'RDP 连接 Windows，RustDesk 负责跨平台远控，SSH/SFTP 管理服务器与文件，VNC 兼容标准远控服务，Moonlight 连接 Sunshine 进行低延迟串流。'
   },
   {
     id: 'choose-by-goal',
@@ -98,22 +98,22 @@ const SHARED_GUIDE_PAGES: GuideContentPage[] = [
     desc: '要完整 Windows 桌面选 RDP；跨平台协助选 RustDesk；命令与文件选 SSH；已有 VNC Server 选 VNC；游戏、影音或高帧率桌面选 Moonlight。'
   },
   {
-    id: 'add-and-verify',
+    id: 'connect-safely',
     symbol: $rawfile('icons/shield-check.svg'),
-    title: '添加后，先验证身份',
-    desc: '点击底部“+”添加主机。第一次连接请核对 RDP/VNC 证书、SSH 指纹、RustDesk 被控端信息或 Moonlight 配对码，只信任你能确认的设备。'
+    title: '先准备服务，再安全连接',
+    desc: '点击底部“+”添加主机，并确认远端服务已开启。首次连接要核对 RDP/VNC 证书、SSH 指纹、RustDesk 被控端信息或 Moonlight 配对码，只信任你能确认的设备。'
   },
   {
-    id: 'device-adaptive-control',
+    id: 'session-toolkit',
     symbol: $rawfile('icons/cog-6-tooth.svg'),
-    title: '操控会随设备调整',
-    desc: '手机优先触控板、虚拟键盘和贴边控制栏；Pad 可混合触控与外接键鼠；PC 优先实体键鼠、独立窗口和文件拖放。具体手势可在设置的操作引导中心按设备查看。'
+    title: '会话工具各归其位',
+    desc: 'RDP、RustDesk、VNC 与 Moonlight 从贴边入口打开键盘、快捷键和显示工具；SSH 使用标签、窗格、SFTP 与传输中心。Moonlight 退出时请区分“仅断开”和“结束主机应用”。'
   },
   {
-    id: 'data-and-recovery',
+    id: 'data-recovery-and-help',
     symbol: $rawfile('icons/cloud.svg'),
-    title: '同步、信任与恢复分开管理',
-    desc: '云同步只处理你明确勾选的数据；私钥、配对信任和证书按协议安全保存。遇到问题先保留错误码，再从“设置 → 日志”抓取脱敏诊断。'
+    title: '数据、恢复和诊断都有边界',
+    desc: '云同步只处理明确勾选的数据，私钥、配对信任和证书按协议分别保存；恢复备份前先确认方向。遇到问题请保留错误码，再从“设置 → 日志”导出脱敏诊断。'
   }
 ];
 
@@ -138,10 +138,29 @@ export function firstInstallGuidePages(device: GuideDevice = 'phone'): GuideCont
   pages.push({
     id: 'start-first-host',
     symbol: $rawfile('icons/shield-check.svg'),
-    title: '从第一台主机开始',
-    desc: '进入工作台，点击“+”并选择协议。每一步只填写当前协议需要的信息；需要更多帮助时，到“设置 → 教程 → 操作引导中心”按设备和协议定位。'
+    title: '现在添加第一台主机',
+    desc: '进入工作台，点击“+”并按用途选择协议。高级选项不确定时先保留默认值；需要逐步说明，可到“设置 → 教程 → 操作引导中心”按设备和协议查看。'
   });
   return pages;
+}
+
+/**
+ * Swiper 的内容在首帧、设备识别刷新和版本说明切换时都必须保持非空。
+ * 返回副本，避免 UI 状态意外修改注册表或调用方持有的数组。
+ */
+export function ensureGuidePages(pages: GuideContentPage[],
+  fallbackDevice: GuideDevice = 'phone'): GuideContentPage[] {
+  const source: GuideContentPage[] = pages.length > 0 ? pages : firstInstallGuidePages(fallbackDevice);
+  const result: GuideContentPage[] = [];
+  source.forEach((page: GuideContentPage): void => { result.push(clonePage(page)); });
+  return result;
+}
+
+/** Keeps Swiper state valid when adaptive content is replaced during a layout change. */
+export function clampGuidePageIndex(index: number, pageCount: number): number {
+  if (!Number.isSafeInteger(index) || !Number.isSafeInteger(pageCount) || pageCount <= 0) { return 0; }
+  if (index < 0) { return 0; }
+  return index >= pageCount ? pageCount - 1 : index;
 }
 
 export function settingsUsageGuidePages(device: GuideDevice = 'phone'): GuideContentPage[] {

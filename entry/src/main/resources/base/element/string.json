@@ -374,11 +374,11 @@
     },
     {
       "name": "version_info",
-      "value": "v1.1.1 · FreeRDP + RustDesk + SSH + VNC"
+      "value": "v1.1.2 · RDP + RustDesk + SSH + VNC + Moonlight"
     },
     {
       "name": "tagline",
-      "value": "HarmonyOS NEXT · 双协议远程桌面"
+      "value": "HarmonyOS NEXT · 五协议远程工作台"
     },
     {
       "name": "theme_color",
