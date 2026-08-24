@@ -725,17 +725,37 @@ export struct RemoteSessionTopBar {
   }
 
   @Builder
-  private keyboardMouseMenu() {
+  private keyboardMenu() {
     Column() {
-      this.menuHeader('键盘与鼠标', $r('sys.symbol.mouse'))
-      Scroll() {
-        Column() {
-          this.menuItem(this.keyboardOpen ? '关闭虚拟键盘' : '打开虚拟键盘', 'toggleKeyboard', (): void => {
+      this.menuHeader('键盘', $r('sys.symbol.keyboard'))
+      Column() {
+        this.menuItem(this.keyboardOpen ? '关闭虚拟键盘' : '打开虚拟键盘',
+          'toggleKeyboard', (): void => {
+            this.closeMenus();
             this.actions.onOpenKeyboard();
           }, this.keyboardOpen)
-          this.menuItem('组合键与功能键', 'toggleModifiers', (): void => {
-            this.actions.onOpenModifiers();
-          })
+        this.menuItem('组合键与功能键', 'toggleModifiers', (): void => {
+          this.closeMenus();
+          this.actions.onOpenModifiers();
+        })
+      }
+      .width('100%').padding(this.menuPadding())
+    }
+    .width(this.effectiveMenuWidth())
+    .constraintSize({ maxHeight: this.sidebarMenuMaxHeight() })
+    .backgroundColor('rgba(255,255,255,0.96)')
+    .borderRadius(16).clip(true)
+    .shadow({ radius: 10, color: 'rgba(0,0,0,0.22)', offsetY: 2 })
+    .position({ x: this.menuLeft(), y: this.menuTop() })
+    .hitTestBehavior(HitTestMode.BLOCK_HIERARCHY)
+  }
+
+  @Builder
+  private keyboardMouseMenu() {
+    Column() {
+      this.menuHeader('鼠标与触控', $r('sys.symbol.mouse'))
+      Scroll() {
+        Column() {
           if (this.protocol === 'rustdesk') {
             this.menuItem('浏览模式', 'browseMode', (): void => {
               this.actions.onToggleBrowseMode(!this.browseMode);
@@ -804,12 +824,11 @@ export struct RemoteSessionTopBar {
         this.iconButton($r('sys.symbol.display'), this.accentColor,
           (): void => { this.toggleMenu('display'); }, 18, '打开显示与画质')
         Blank().width(this.layout.itemGap)
-        this.iconButton($r('sys.symbol.mouse'), this.keyboardOpen ? '#2A9D8F' : this.accentColor,
-          (): void => { this.toggleMenu('keyboardMouse'); }, 18, '打开键盘与鼠标')
+        this.iconButton($r('sys.symbol.mouse'), this.accentColor,
+          (): void => { this.toggleMenu('keyboardMouse'); }, 18, '打开鼠标与触控设置')
         Blank().width(this.layout.itemGap)
-        this.iconButton($r('sys.symbol.keyboard'), this.accentColor, (): void => {
-          this.runAction('toggleModifiers', (): void => { this.actions.onOpenModifiers(); });
-        }, 18, '打开组合键与功能键')
+        this.iconButton($r('sys.symbol.keyboard'), this.keyboardOpen ? '#2A9D8F' : this.accentColor,
+          (): void => { this.toggleMenu('keyboard'); }, 18, '选择虚拟键盘或组合键')
         Blank().width(this.layout.itemGap)
         this.iconButton($r('sys.symbol.doc'), this.accentColor, (): void => {
           this.runAction('fileTransfer', (): void => { this.actions.onOpenFileTransfer(); });
@@ -860,6 +879,9 @@ export struct RemoteSessionTopBar {
       if (this.activeMenu === 'keyboardMouse') {
         this.keyboardMouseMenu()
       }
+      if (this.activeMenu === 'keyboard') {
+        this.keyboardMenu()
+      }
       if (this.activeMenu === 'chat') {
         this.chatMenu()
       }
@@ -894,12 +916,11 @@ export struct RemoteSessionTopBar {
             this.toggleMenu('display');
           }, 18, '打开显示与画质')
           Blank().height(this.layout.itemGap)
-          this.iconButton($r('sys.symbol.mouse'), this.keyboardOpen ? '#2A9D8F' : this.accentColor,
-            (): void => { this.toggleMenu('keyboardMouse'); }, 18, '打开键盘与鼠标')
+          this.iconButton($r('sys.symbol.mouse'), this.accentColor,
+            (): void => { this.toggleMenu('keyboardMouse'); }, 18, '打开鼠标与触控设置')
           Blank().height(this.layout.itemGap)
-          this.iconButton($r('sys.symbol.keyboard'), this.accentColor, (): void => {
-            this.runAction('toggleModifiers', (): void => { this.actions.onOpenModifiers(); });
-          }, 18, '打开组合键与功能键')
+          this.iconButton($r('sys.symbol.keyboard'), this.keyboardOpen ? '#2A9D8F' : this.accentColor,
+            (): void => { this.toggleMenu('keyboard'); }, 18, '选择虚拟键盘或组合键')
           Blank().height(this.layout.itemGap)
           this.iconButton($r('sys.symbol.doc'), this.accentColor, (): void => {
             this.runAction('fileTransfer', (): void => { this.actions.onOpenFileTransfer(); });
@@ -956,6 +977,9 @@ export struct RemoteSessionTopBar {
       }
       if (this.activeMenu === 'keyboardMouse') {
         this.keyboardMouseMenu()
+      }
+      if (this.activeMenu === 'keyboard') {
+        this.keyboardMenu()
       }
       if (this.activeMenu === 'chat') {
         this.chatMenu()
