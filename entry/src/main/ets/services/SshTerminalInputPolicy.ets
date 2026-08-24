@@ -59,6 +59,11 @@ export function sshTerminalShouldProgrammaticallyFocusInput(
   return softwareKeyboardRequested || explicitTerminalGesture;
 }
 
+/** A confirmed focus request must not be replayed into the live IME client. */
+export function sshTerminalShouldRetryInputFocus(focusRequestSucceeded: boolean): boolean {
+  return !focusRequestSucceeded;
+}
+
 /** A modal/editor surface must never lose focus to the terminal input owner. */
 export function sshTerminalInputFocusAllowed(connected: boolean, sessionId: number,
   terminalFocusMode: boolean, modalOwnsKeyboard: boolean): boolean {

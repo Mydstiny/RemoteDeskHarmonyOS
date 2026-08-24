@@ -25,6 +25,7 @@ import {
   sshTerminalSoftwareKeyboardFocusEnabled,
   sshTerminalUsesNativeTouchInputAnchor,
   sshTerminalShouldProgrammaticallyFocusInput,
+  sshTerminalShouldRetryInputFocus,
   sshTerminalInputFocusAllowed,
   SSH_TERMINAL_INPUT_PENDING_CONTROL_MAX_ITEMS,
   SSH_TERMINAL_INPUT_PENDING_DATA_MAX_ITEMS
@@ -59,6 +60,8 @@ export default function sshTerminalInputPolicyTest(): void {
       expect(sshTerminalShouldProgrammaticallyFocusInput(false, false, false, true)).assertTrue();
       expect(sshTerminalShouldProgrammaticallyFocusInput(false, true, false)).assertTrue();
       expect(sshTerminalShouldProgrammaticallyFocusInput(true, false, false)).assertTrue();
+      expect(sshTerminalShouldRetryInputFocus(true)).assertFalse();
+      expect(sshTerminalShouldRetryInputFocus(false)).assertTrue();
     });
 
     it('should_block_terminal_focus_while_a_modal_owns_the_keyboard', 0, (): void => {

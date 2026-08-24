@@ -171,6 +171,7 @@ import {
   sshTerminalSoftwareKeyboardFocusEnabled,
   sshTerminalUsesNativeTouchInputAnchor,
   sshTerminalShouldProgrammaticallyFocusInput,
+  sshTerminalShouldRetryInputFocus,
   sshTerminalInputFocusAllowed
 } from '../services/SshTerminalInputPolicy';
 import {
@@ -524,6 +525,8 @@ const SSH_OUTPUT_QUEUE_MAX_CHUNKS: number = 512;
 const SSH_OUTPUT_QUEUE_MAX_BYTES: number = 8 * 1024 * 1024;
 const SSH_NATIVE_RENDERER_READY_TIMEOUT_MS: number = 1500;
 const SSH_TERMINAL_INPUT_FOCUS_RETRY_DELAYS_MS: number[] = [24, 80, 180];
+/** Fence delayed blur/edit callbacks emitted while a mobile IME client is replaced. */
+const SSH_TERMINAL_SOFTWARE_FOCUS_LEASE_MS: number = 600;
 /**
  * A surface can be created after several ArkUI turns during an in-page tab
  * switch. Keep the page-owned refresh fence alive for a bounded window so a
@@ -996,6 +999,7 @@ struct SshTerminal {
   private terminalInputFocusRetryTimer: number = -1;
   private terminalInputFocusRetryToken: number = 0;
   private terminalSoftwareKeyboardShowTimer: number = -1;
+  private terminalSoftwareKeyboardRefocusLeaseTimer: number = -1;
   private terminalSoftwareKeyboardRefocusInFlight: boolean = false;
   /** 功能开关: true=使用 Rust terminal_core 渲染 (NativeTerminalRenderer), false=旧 TerminalEmulator */
 
@@ -1288,7 +1292,22 @@ struct SshTerminal {
       clearTimeout(this.terminalSoftwareKeyboardShowTimer);
       this.terminalSoftwareKeyboardShowTimer = -1;
     }
+    if (this.terminalSoftwareKeyboardRefocusLeaseTimer !== -1) {
+      clearTimeout(this.terminalSoftwareKeyboardRefocusLeaseTimer);
+      this.terminalSoftwareKeyboardRefocusLeaseTimer = -1;
+    }
     this.terminalSoftwareKeyboardRefocusInFlight = false;
+  }
+
+  private armTerminalSoftwareKeyboardRefocusLease(): void {
+    if (this.terminalSoftwareKeyboardRefocusLeaseTimer !== -1) {
+      clearTimeout(this.terminalSoftwareKeyboardRefocusLeaseTimer);
+    }
+    this.terminalSoftwareKeyboardRefocusInFlight = true;
+    this.terminalSoftwareKeyboardRefocusLeaseTimer = setTimeout((): void => {
+      this.terminalSoftwareKeyboardRefocusLeaseTimer = -1;
+      this.terminalSoftwareKeyboardRefocusInFlight = false;
+    }, SSH_TERMINAL_SOFTWARE_FOCUS_LEASE_MS);
   }
 
   private prepareTerminalSoftwareKeyboardRefocus(): void {
@@ -1303,8 +1322,8 @@ struct SshTerminal {
     try { this.getUIContext().getFocusController().clearFocus(); } catch (_err) { /* best effort */ }
   }
 
-  private requestTerminalInputFocus(): void {
-    if (this.terminalClosing) { return; }
+  private requestTerminalInputFocus(): boolean {
+    if (this.terminalClosing) { return false; }
     let focused: boolean = false;
     try {
       focused = focusControl.requestFocus('sshKbInput');
@@ -1314,7 +1333,7 @@ struct SshTerminal {
       hilog.warn(0x0000, 'SshTerminal', '[input] focus request global failed=' +
         sshDiagnosticErrorCode(err));
     }
-    if (focused) { return; }
+    if (focused) { return true; }
     try {
       this.getUIContext().getFocusController().requestFocus('sshKbInput');
       hilog.debug(0x0000, 'SshTerminal', '[input] focus request uiContext=called');
@@ -1322,6 +1341,7 @@ struct SshTerminal {
       hilog.warn(0x0000, 'SshTerminal', '[input] focus request uiContext failed=' +
         sshDiagnosticErrorCode(err));
     }
+    return false;
   }
 
   private scheduleTerminalInputFocusRetry(): void {
@@ -1350,7 +1370,10 @@ struct SshTerminal {
         this.hostId.trim() !== bindingHostId || !this.terminalInputFocusEligible()) {
         return;
       }
-      this.requestTerminalInputFocus();
+      const focused: boolean = this.requestTerminalInputFocus();
+      if (!sshTerminalShouldRetryInputFocus(focused)) {
+        return;
+      }
       if (retryIndex >= SSH_TERMINAL_INPUT_FOCUS_RETRY_DELAYS_MS.length - 1) {
         return;
       }
@@ -1376,6 +1399,13 @@ struct SshTerminal {
     const userDismissibleVirtualIme: boolean = this.virtualKeyBarRequested() &&
       (!this.isDesktopDevice || this.sshInputMode === 1);
     if (userDismissibleVirtualIme && !this.tabSwitchInFlight) {
+      if (reason === 'editing' && this.softKeyboardRequested) {
+        // stopEditing()/clearFocus() can report a delayed editing=false after
+        // the replacement TextArea has already accepted the IME. Keep the
+        // explicit software-keyboard request until a real blur arrives.
+        hilog.debug(0x0000, 'SshTerminal', '[input] transient editor exit retained');
+        return;
+      }
       this.softKeyboardRequested = false;
       this.clearTerminalInputFocusRetry();
       this.clearTerminalSoftwareKeyboardShowRequest();
@@ -12968,9 +12998,15 @@ struct SshTerminal {
         ' ime=' + (this.terminalSoftwareKeyboardEnabled() ? '1' : '0') +
         ' physical=' + (this.physicalKeyboardConnected ? '1' : '0') +
         ' requested=' + (this.softKeyboardRequested ? '1' : '0'));
-      this.requestTerminalInputFocus();
-      this.terminalSoftwareKeyboardRefocusInFlight = false;
-      this.scheduleTerminalInputFocusRetry();
+      const focused: boolean = this.requestTerminalInputFocus();
+      if (requestSoftwareKeyboard && focused) {
+        this.armTerminalSoftwareKeyboardRefocusLease();
+      } else {
+        this.terminalSoftwareKeyboardRefocusInFlight = false;
+      }
+      if (sshTerminalShouldRetryInputFocus(focused)) {
+        this.scheduleTerminalInputFocusRetry();
+      }
     };
     if (requestSoftwareKeyboard) {
       this.terminalSoftwareKeyboardShowTimer = setTimeout((): void => {
