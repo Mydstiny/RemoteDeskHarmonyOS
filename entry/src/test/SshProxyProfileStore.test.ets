@@ -3,7 +3,8 @@ import { afterAll, beforeEach, describe, it, expect } from '@ohos/hypium';
 import { SshRoute } from '../main/ets/types/rdpnapi';
 import {
   SshProxyProfileV1,
-  serializeSshProxyProfiles
+  serializeSshProxyProfiles,
+  validateSshProxyProfile
 } from '../main/ets/services/SshProxyProfilePolicy';
 import {
   SshProxyProfilePreferenceAdapter,
@@ -55,6 +56,22 @@ function proxyProfile(hostId: string): SshProxyProfileV1 {
   return { schemaVersion: 1, hostId, route, updatedAtMs: 1 };
 }
 
+function jumpProxyProfile(hostId: string): SshProxyProfileV1 {
+  const route: SshRoute = {
+    schemaVersion: 1, type: 'ssh_jump', endpointHost: hostId + '.example', endpointPort: 22,
+    hops: [{
+      host: 'jump.example', port: 22, username: 'operator', authMethod: 'password',
+      expectedHostKeyFingerprintSha256: 'SHA256:jump-fingerprint', connectTimeoutMs: 10000
+    }], connectTimeoutMs: 10000
+  };
+  return {
+    schemaVersion: 1, hostId, route,
+    hopMetadata: [{
+      hopId: 'jump-1', label: 'Jump 1', keyId: '', hostKeyPolicy: 'strict', position: 0
+    }], updatedAtMs: 1
+  };
+}
+
 export default function sshProxyProfileStoreTest(): void {
   describe('SshProxyProfileStore', (): void => {
     let adapter: MemoryProxyPreferences = new MemoryProxyPreferences();
@@ -86,6 +103,22 @@ export default function sshProxyProfileStoreTest(): void {
       expect(store.clear()).assertTrue();
       expect(store.clear()).assertTrue();
       expect(store.list().length).assertEqual(0);
+    });
+
+    it('preserves_absent_optional_jump_host_key_fields_after_persisted_load', 0, (): void => {
+      const first: SshProxyProfileStore = new SshProxyProfileStore();
+      expect(first.init(context)).assertTrue();
+      expect(first.upsert(jumpProxyProfile('host-jump'))).assertTrue();
+
+      const restarted: SshProxyProfileStore = new SshProxyProfileStore();
+      expect(restarted.init(context)).assertTrue();
+      const loaded: SshProxyProfileV1 | null = restarted.load('host-jump');
+      expect(loaded === null).assertFalse();
+      if (loaded === null) { return; }
+      const hopKeys: string[] = Object.keys(loaded.route.hops[0]);
+      expect(hopKeys.indexOf('expectedHostKeyRawBase64')).assertEqual(-1);
+      expect(hopKeys.indexOf('expectedHostKeyFingerprintSha256') >= 0).assertTrue();
+      expect(validateSshProxyProfile(loaded).valid).assertTrue();
     });
 
     it('does_not_overwrite_valid_data_when_read_json_is_corrupt_unknown_or_duplicated', 0, (): void => {
