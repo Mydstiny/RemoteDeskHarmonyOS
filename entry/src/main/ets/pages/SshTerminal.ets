@@ -1344,13 +1344,13 @@ struct SshTerminal {
     return false;
   }
 
-  private scheduleTerminalInputFocusRetry(): void {
+  private scheduleTerminalInputFocusRetry(explicitTerminalGesture: boolean = false): void {
     // Phone/Pad owns focus through the real touch on the native IME anchor.
     // Starting the connection-time retry loop here races that touch and makes
     // API 23/24 recreate the IME client repeatedly. Only an explicit virtual
     // keyboard request may use the bounded programmatic retry path on mobile.
     if (sshTerminalUsesNativeTouchInputAnchor(this.isDesktopDevice) &&
-      !this.softKeyboardRequested) {
+      !this.softKeyboardRequested && !explicitTerminalGesture) {
       return;
     }
     if (!this.terminalInputFocusEligible() || this.terminalInputFocusRetryTimer !== -1) {
@@ -13005,7 +13005,7 @@ struct SshTerminal {
         this.terminalSoftwareKeyboardRefocusInFlight = false;
       }
       if (sshTerminalShouldRetryInputFocus(focused)) {
-        this.scheduleTerminalInputFocusRetry();
+        this.scheduleTerminalInputFocusRetry(explicitTerminalGesture);
       }
     };
     if (requestSoftwareKeyboard) {
