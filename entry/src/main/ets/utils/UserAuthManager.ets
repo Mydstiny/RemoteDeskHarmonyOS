@@ -2,8 +2,11 @@
  * UserAuthManager.ets — 系统用户身份认证管理器。
  */
 import { userAuth } from '@kit.UserAuthenticationKit';
-import { cryptoFramework } from '@kit.CryptoArchitectureKit';
-import { BusinessError } from '@kit.BasicServicesKit';
+import {
+  LockGateResult,
+  showLockGateWithKinds
+} from '../components/LockGate';
+import { LockGateAuthKind } from '../services/LockGateAuthPolicy';
 
 export class UserAuthManager {
   authTypes: userAuth.UserAuthType[] = [
@@ -40,42 +43,31 @@ export class UserAuthManager {
   }
 
   startUserAuthWithTypes(authTypes: userAuth.UserAuthType[]): Promise<userAuth.UserAuthResult> {
-    return new Promise((resolve, reject) => {
-      try {
-        if (authTypes.length === 0) {
-          reject(new Error('[UserAuth] 系统尚未录入可用的身份认证凭据'));
-          return;
-        }
-        if (typeof userAuth.getUserAuthInstance !== 'function') {
-          reject(new Error('[UserAuth] API不可用: getUserAuthInstance 不存在'));
-          return;
-        }
-        const challenge: Uint8Array =
-          cryptoFramework.createRandom().generateRandomSync(16).data;
-        const inst = userAuth.getUserAuthInstance(
-          { challenge: challenge, authType: authTypes, authTrustLevel: this.authTrustLevel },
-          { title: this.widgetParam.title }
-        );
-        if (!inst || typeof inst.start !== 'function') {
-          reject(new Error('[UserAuth] UserAuthInstance 无效'));
-          return;
-        }
-        const callback = {
-          onResult: (result: userAuth.UserAuthResult): void => {
-            try { inst.off('result', callback); } catch (_e) { /* completed instance */ }
-            try { inst.cancel(); } catch (_e) { /* completed/cancelled instance */ }
-            resolve(result);
-          }
-        };
-        inst.on('result', callback);
-        inst.start();
-      } catch (err) {
-        const be: BusinessError = err as BusinessError;
-        const typesStr: string = '[' + authTypes.map((t: userAuth.UserAuthType) => t as number).join(',') + ']';
-        reject(new Error('[UserAuth] getUserAuthInstance: code=' + be.code + ' msg=' + be.message +
-          ' | types=' + typesStr + ' ATL2'));
+    const requestedKinds: LockGateAuthKind[] = [];
+    for (let i = 0; i < authTypes.length; i++) {
+      let kind: LockGateAuthKind | undefined;
+      switch (authTypes[i]) {
+        case userAuth.UserAuthType.PIN: kind = 'pin'; break;
+        case userAuth.UserAuthType.FINGERPRINT: kind = 'fingerprint'; break;
+        case userAuth.UserAuthType.FACE: kind = 'face'; break;
       }
-    });
+      if (kind !== undefined && requestedKinds.indexOf(kind) < 0) {
+        requestedKinds.push(kind);
+      }
+    }
+    if (requestedKinds.length === 0) {
+      return Promise.reject(new Error('[UserAuth] 未指定可用的系统身份认证方式'));
+    }
+    return showLockGateWithKinds(this.widgetParam.title, requestedKinds)
+      .then((result: LockGateResult): userAuth.UserAuthResult => {
+        const authResult: userAuth.UserAuthResult = {
+          result: result.ok ? userAuth.UserAuthResultCode.SUCCESS : result.code
+        };
+        if (result.token !== undefined) {
+          authResult.token = result.token;
+        }
+        return authResult;
+      });
   }
 
   formatAuthErrorCode(code: number): string {

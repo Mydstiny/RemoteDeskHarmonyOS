@@ -2,6 +2,7 @@ import { describe, expect, it } from '@ohos/hypium';
 import {
   LockGateAuthKind,
   lockGateAvailableAuthKinds,
+  lockGatePreferredUnavailableCode,
   lockGateRequestedAuthKinds
 } from '../main/ets/services/LockGateAuthPolicy';
 
@@ -42,5 +43,15 @@ export default function lockGateAuthPolicyTest(): void {
         expect(admitted.join(',')).assertEqual('fingerprint,face');
         expect(requested.join(',')).assertEqual('pin,fingerprint,face,fingerprint');
       });
+
+    it('preserves_actionable_availability_errors', 0, (): void => {
+      expect(lockGatePreferredUnavailableCode([12500013, 12500005, 12500010]))
+        .assertEqual(12500013);
+      expect(lockGatePreferredUnavailableCode([12500005, 12500006, 12500010]))
+        .assertEqual(12500010);
+      expect(lockGatePreferredUnavailableCode([12509999, 12500005]))
+        .assertEqual(12509999);
+      expect(lockGatePreferredUnavailableCode([])).assertEqual(12500010);
+    });
   });
 }

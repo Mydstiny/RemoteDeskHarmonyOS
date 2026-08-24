@@ -12,6 +12,7 @@ import { BusinessError } from '@kit.BasicServicesKit';
 import {
   LockGateAuthKind,
   lockGateAvailableAuthKinds,
+  lockGatePreferredUnavailableCode,
   lockGateRequestedAuthKinds
 } from '../services/LockGateAuthPolicy';
 
@@ -19,6 +20,7 @@ export class LockGateResult {
   ok: boolean = false;
   code: number = 0;
   errMsg: string = '';
+  token?: Uint8Array;
 }
 
 interface LockGateRequest {
@@ -79,21 +81,25 @@ function pumpLockGate(): void {
   };
 
   const availableKinds: LockGateAuthKind[] = [];
-  let lastUnavailableCode: number = 12500010;
+  const unavailableCodes: number[] = [];
   for (let i = 0; i < request.requestedKinds.length; i++) {
     const kind: LockGateAuthKind = request.requestedKinds[i];
     try {
       userAuth.getAvailableStatus(authTypeForKind(kind), userAuth.AuthTrustLevel.ATL2);
       availableKinds.push(kind);
     } catch (err) {
-      lastUnavailableCode = businessErrorCode(err as Object, lastUnavailableCode);
+      unavailableCodes.push(businessErrorCode(err as Object));
     }
   }
 
   const admittedKinds: LockGateAuthKind[] = lockGateAvailableAuthKinds(
     request.requestedKinds, availableKinds);
   if (admittedKinds.length === 0) {
-    finishRequest({ ok: false, code: lastUnavailableCode, errMsg: '' });
+    finishRequest({
+      ok: false,
+      code: lockGatePreferredUnavailableCode(unavailableCodes),
+      errMsg: ''
+    });
     return;
   }
 
@@ -140,7 +146,7 @@ function pumpLockGate(): void {
   callback.onResult = (result: userAuth.UserAuthResult): void => {
     const code: number = result.result as number;
     settleInstance(code === userAuth.UserAuthResultCode.SUCCESS ?
-      { ok: true, code: 0, errMsg: '' } :
+      { ok: true, code: 0, errMsg: '', token: result.token } :
       { ok: false, code: code, errMsg: '' });
   };
 
@@ -159,6 +165,28 @@ function pumpLockGate(): void {
   }
 }
 
+export function showLockGateWithKinds(
+  label: string,
+  requestedKinds: LockGateAuthKind[]
+): Promise<LockGateResult> {
+  if (requestedKinds.length === 0) {
+    const result: LockGateResult = new LockGateResult();
+    result.code = 12500010;
+    result.errMsg = '未指定系统身份认证方式';
+    return Promise.resolve(result);
+  }
+  const uniqueKinds: LockGateAuthKind[] = lockGateAvailableAuthKinds(
+    requestedKinds, requestedKinds);
+  return new Promise((resolve: (result: LockGateResult) => void): void => {
+    lockGateQueue.push({
+      label: label || '验证系统身份',
+      requestedKinds: uniqueKinds,
+      resolve: resolve
+    });
+    pumpLockGate();
+  });
+}
+
 export function showLockGate(label: string, lockType: string): Promise<LockGateResult> {
   const requestedKinds: LockGateAuthKind[] = lockGateRequestedAuthKinds(lockType);
   if (requestedKinds.length === 0) {
@@ -166,14 +194,7 @@ export function showLockGate(label: string, lockType: string): Promise<LockGateR
     result.ok = true;
     return Promise.resolve(result);
   }
-  return new Promise((resolve: (result: LockGateResult) => void): void => {
-    lockGateQueue.push({
-      label: label || '验证系统身份',
-      requestedKinds: requestedKinds,
-      resolve: resolve
-    });
-    pumpLockGate();
-  });
+  return showLockGateWithKinds(label, requestedKinds);
 }
 
 /** 根据认证失败的错误码返回用户友好的提示消息 */

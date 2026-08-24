@@ -50,3 +50,38 @@ export function lockGateAvailableAuthKinds(
   }
   return result;
 }
+
+/**
+ * Preserve the most actionable availability failure when several credential
+ * probes fail. Later TYPE_NOT_SUPPORT results must not hide an expired PIN or
+ * a system/service error returned by an earlier probe.
+ */
+export function lockGatePreferredUnavailableCode(codes: number[]): number {
+  if (codes.length === 0) {
+    return 12500010;
+  }
+  let preferredCode: number = codes[0];
+  let preferredPriority: number = unavailableCodePriority(preferredCode);
+  for (let i = 1; i < codes.length; i++) {
+    const priority: number = unavailableCodePriority(codes[i]);
+    if (priority > preferredPriority) {
+      preferredCode = codes[i];
+      preferredPriority = priority;
+    }
+  }
+  return preferredCode;
+}
+
+function unavailableCodePriority(code: number): number {
+  switch (code) {
+    case 12500013: return 100; // PIN_EXPIRED: user must update the credential.
+    case 12500008: return 95; // INVALID_PARAMETERS: integration/configuration error.
+    case 12500002: return 90; // GENERAL_ERROR: preserve service failures.
+    case 12500007: return 90; // BUSY: retry is actionable.
+    case 12500010: return 80; // NOT_ENROLLED.
+    case 12500006: return 20; // TRUST_LEVEL_NOT_SUPPORT.
+    case 12500005: return 10; // TYPE_NOT_SUPPORT.
+    case -1: return 0;
+    default: return 85; // Do not mask an unknown system error with capability noise.
+  }
+}
