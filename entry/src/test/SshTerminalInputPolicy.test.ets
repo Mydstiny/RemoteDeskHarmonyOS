@@ -56,6 +56,7 @@ export default function sshTerminalInputPolicyTest(): void {
       expect(sshTerminalUsesNativeTouchInputAnchor(true)).assertFalse();
       expect(sshTerminalShouldProgrammaticallyFocusInput(false, true, true)).assertFalse();
       expect(sshTerminalShouldProgrammaticallyFocusInput(false, false, false)).assertFalse();
+      expect(sshTerminalShouldProgrammaticallyFocusInput(false, false, false, true)).assertTrue();
       expect(sshTerminalShouldProgrammaticallyFocusInput(false, true, false)).assertTrue();
       expect(sshTerminalShouldProgrammaticallyFocusInput(true, false, false)).assertTrue();
     });

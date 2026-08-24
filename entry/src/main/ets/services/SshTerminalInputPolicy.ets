@@ -44,17 +44,19 @@ export function sshTerminalUsesNativeTouchInputAnchor(isDesktopDevice: boolean):
 /**
  * A native touch anchor already receives focus from the user's pointer event.
  * Re-focusing it in the same event turn clears the just-created IME client on
- * API 23. Mobile lifecycle restoration also waits for the next real terminal
- * touch, while an explicit key-bar request may still reopen the editor.
+ * API 23. Mobile lifecycle restoration therefore waits for the next real
+ * terminal touch; a terminal gesture may also silently focus the anchor when
+ * the user selected entity-keyboard mode, without opening a software IME.
  */
 export function sshTerminalShouldProgrammaticallyFocusInput(
   isDesktopDevice: boolean,
   softwareKeyboardRequested: boolean,
-  nativeTouchOwnsFocus: boolean
+  nativeTouchOwnsFocus: boolean,
+  explicitTerminalGesture: boolean = false
 ): boolean {
   if (isDesktopDevice) { return true; }
   if (nativeTouchOwnsFocus) { return false; }
-  return softwareKeyboardRequested;
+  return softwareKeyboardRequested || explicitTerminalGesture;
 }
 
 /** A modal/editor surface must never lose focus to the terminal input owner. */

@@ -12037,8 +12037,9 @@ struct SshTerminal {
     // open IME only on touch devices; mouse/keyboard devices keep silent focus.
     // The Web surface only reports a user gesture. The ArkUI anchor is the
     // legacy mobile input owner, so let the page perform the same explicit
-    // focus request the pre-workbench terminal used.
-    this.focusKeyboard(!this.isDesktopDevice);
+    // focus request the pre-workbench terminal used. In entity-keyboard mode
+    // the gesture still focuses the anchor silently, without opening IME.
+    this.focusKeyboard(!this.isDesktopDevice, false, true);
   }
 
   private onXtermTerminalModeForHost(hostId: string, sessionGeneration: number,
@@ -12901,7 +12902,8 @@ struct SshTerminal {
   }
 
   private focusKeyboard(openSoftwareKeyboard: boolean = false,
-    nativeTouchOwnsFocus: boolean = false): void {
+    nativeTouchOwnsFocus: boolean = false,
+    explicitTerminalGesture: boolean = false): void {
     this.terminalFocusMode = true;
     if (this.terminalUsesXtermInputOwner()) {
       // Retain the legacy fallback for a future platform-specific policy that
@@ -12930,7 +12932,8 @@ struct SshTerminal {
       this.virtualKeyBarRequested();
     this.softKeyboardRequested = requestSoftwareKeyboard;
     if (!sshTerminalShouldProgrammaticallyFocusInput(
-      this.isDesktopDevice, requestSoftwareKeyboard, nativeTouchOwnsFocus)) {
+      this.isDesktopDevice, requestSoftwareKeyboard, nativeTouchOwnsFocus,
+      explicitTerminalGesture)) {
       this.clearTerminalInputFocusRetry();
       this.clearTerminalSoftwareKeyboardShowRequest();
       return;
@@ -18131,7 +18134,7 @@ struct SshTerminal {
             // 点击终端显式进入终端焦点；移动端同时请求软键盘。
             if (this.terminalSearchVisible) { this.focusTerminalSearch(); }
             else {
-              this.focusKeyboard(this.virtualKeyBarVisible());
+              this.focusKeyboard(this.virtualKeyBarVisible(), false, true);
             }
           })
           .parallelGesture(
