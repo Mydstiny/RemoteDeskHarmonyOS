@@ -58,13 +58,22 @@ export class UserAuthManager {
     if (requestedKinds.length === 0) {
       return Promise.reject(new Error('[UserAuth] 未指定可用的系统身份认证方式'));
     }
-    return showLockGateWithKinds(this.widgetParam.title, requestedKinds)
+    return showLockGateWithKinds(
+      this.widgetParam.title,
+      requestedKinds,
+      this.authTrustLevel)
       .then((result: LockGateResult): userAuth.UserAuthResult => {
         const authResult: userAuth.UserAuthResult = {
           result: result.ok ? userAuth.UserAuthResultCode.SUCCESS : result.code
         };
         if (result.token !== undefined) {
           authResult.token = result.token;
+        }
+        if (result.authType !== undefined) {
+          authResult.authType = result.authType;
+        }
+        if (result.enrolledState !== undefined) {
+          authResult.enrolledState = result.enrolledState;
         }
         return authResult;
       });

@@ -21,11 +21,14 @@ export class LockGateResult {
   code: number = 0;
   errMsg: string = '';
   token?: Uint8Array;
+  authType?: userAuth.UserAuthType;
+  enrolledState?: userAuth.EnrolledState;
 }
 
 interface LockGateRequest {
   label: string;
   requestedKinds: LockGateAuthKind[];
+  authTrustLevel: userAuth.AuthTrustLevel;
   resolve: (result: LockGateResult) => void;
 }
 
@@ -85,7 +88,7 @@ function pumpLockGate(): void {
   for (let i = 0; i < request.requestedKinds.length; i++) {
     const kind: LockGateAuthKind = request.requestedKinds[i];
     try {
-      userAuth.getAvailableStatus(authTypeForKind(kind), userAuth.AuthTrustLevel.ATL2);
+      userAuth.getAvailableStatus(authTypeForKind(kind), request.authTrustLevel);
       availableKinds.push(kind);
     } catch (err) {
       unavailableCodes.push(businessErrorCode(err as Object));
@@ -122,7 +125,7 @@ function pumpLockGate(): void {
   const authParam: userAuth.AuthParam = {
     challenge: challenge,
     authType: authTypes,
-    authTrustLevel: userAuth.AuthTrustLevel.ATL2
+    authTrustLevel: request.authTrustLevel
   };
   const widgetParam: userAuth.WidgetParam = {
     title: request.label || '验证系统身份'
@@ -146,8 +149,22 @@ function pumpLockGate(): void {
   callback.onResult = (result: userAuth.UserAuthResult): void => {
     const code: number = result.result as number;
     settleInstance(code === userAuth.UserAuthResultCode.SUCCESS ?
-      { ok: true, code: 0, errMsg: '', token: result.token } :
-      { ok: false, code: code, errMsg: '' });
+      {
+        ok: true,
+        code: 0,
+        errMsg: '',
+        token: result.token,
+        authType: result.authType,
+        enrolledState: result.enrolledState
+      } :
+      {
+        ok: false,
+        code: code,
+        errMsg: '',
+        token: result.token,
+        authType: result.authType,
+        enrolledState: result.enrolledState
+      });
   };
 
   try {
@@ -167,7 +184,8 @@ function pumpLockGate(): void {
 
 export function showLockGateWithKinds(
   label: string,
-  requestedKinds: LockGateAuthKind[]
+  requestedKinds: LockGateAuthKind[],
+  authTrustLevel: userAuth.AuthTrustLevel = userAuth.AuthTrustLevel.ATL2
 ): Promise<LockGateResult> {
   if (requestedKinds.length === 0) {
     const result: LockGateResult = new LockGateResult();
@@ -181,6 +199,7 @@ export function showLockGateWithKinds(
     lockGateQueue.push({
       label: label || '验证系统身份',
       requestedKinds: uniqueKinds,
+      authTrustLevel: authTrustLevel,
       resolve: resolve
     });
     pumpLockGate();
