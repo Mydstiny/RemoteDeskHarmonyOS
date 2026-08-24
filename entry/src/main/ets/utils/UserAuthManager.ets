@@ -1,20 +1,20 @@
 /**
- * UserAuthManager.ets — 生物识别管理器 (v8: 精简版)
+ * UserAuthManager.ets — 系统用户身份认证管理器。
  */
 import { userAuth } from '@kit.UserAuthenticationKit';
+import { cryptoFramework } from '@kit.CryptoArchitectureKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 
 export class UserAuthManager {
   authTypes: userAuth.UserAuthType[] = [
     userAuth.UserAuthType.PIN,
-    userAuth.UserAuthType.FACE,
     userAuth.UserAuthType.FINGERPRINT,
+    userAuth.UserAuthType.FACE,
   ];
-  authTrustLevel: userAuth.AuthTrustLevel = userAuth.AuthTrustLevel.ATL3;
+  authTrustLevel: userAuth.AuthTrustLevel = userAuth.AuthTrustLevel.ATL2;
 
   widgetParam: userAuth.WidgetParam = {
-    title: '请验证身份',
-    navigationButtonText: '使用密码',
+    title: '请验证系统身份',
   };
 
   onAuthTipCallback?: (tipInfo: userAuth.AuthTipInfo) => void;
@@ -29,40 +29,51 @@ export class UserAuthManager {
   // 获取设备支持的认证方式 (供 LockGatePinDialog 等组件使用)
   getAvailableAuthTypes(): userAuth.UserAuthType[] {
     const types: userAuth.UserAuthType[] = [];
-    try { userAuth.getAvailableStatus(userAuth.UserAuthType.FACE, userAuth.AuthTrustLevel.ATL1); types.push(userAuth.UserAuthType.FACE); } catch { /* */ }
-    try { userAuth.getAvailableStatus(userAuth.UserAuthType.FINGERPRINT, userAuth.AuthTrustLevel.ATL1); types.push(userAuth.UserAuthType.FINGERPRINT); } catch { /* */ }
-    types.push(userAuth.UserAuthType.PIN);
+    try { userAuth.getAvailableStatus(userAuth.UserAuthType.PIN, this.authTrustLevel); types.push(userAuth.UserAuthType.PIN); } catch { /* */ }
+    try { userAuth.getAvailableStatus(userAuth.UserAuthType.FINGERPRINT, this.authTrustLevel); types.push(userAuth.UserAuthType.FINGERPRINT); } catch { /* */ }
+    try { userAuth.getAvailableStatus(userAuth.UserAuthType.FACE, this.authTrustLevel); types.push(userAuth.UserAuthType.FACE); } catch { /* */ }
     return types;
   }
 
   startUserAuth(): Promise<userAuth.UserAuthResult> {
-    return this.startUserAuthWithTypes([userAuth.UserAuthType.PIN]);
+    return this.startUserAuthWithTypes(this.getAvailableAuthTypes());
   }
 
   startUserAuthWithTypes(authTypes: userAuth.UserAuthType[]): Promise<userAuth.UserAuthResult> {
     return new Promise((resolve, reject) => {
-      const challenge: Uint8Array = new Uint8Array(16);
-      for (let i = 0; i < 16; i++) { challenge[i] = (i + 1) as number; }
       try {
+        if (authTypes.length === 0) {
+          reject(new Error('[UserAuth] 系统尚未录入可用的身份认证凭据'));
+          return;
+        }
         if (typeof userAuth.getUserAuthInstance !== 'function') {
           reject(new Error('[UserAuth] API不可用: getUserAuthInstance 不存在'));
           return;
         }
+        const challenge: Uint8Array =
+          cryptoFramework.createRandom().generateRandomSync(16).data;
         const inst = userAuth.getUserAuthInstance(
-          { challenge: challenge, authType: authTypes, authTrustLevel: userAuth.AuthTrustLevel.ATL1 },
-          { title: this.widgetParam.title, navigationButtonText: this.widgetParam.navigationButtonText }
+          { challenge: challenge, authType: authTypes, authTrustLevel: this.authTrustLevel },
+          { title: this.widgetParam.title }
         );
         if (!inst || typeof inst.start !== 'function') {
           reject(new Error('[UserAuth] UserAuthInstance 无效'));
           return;
         }
-        inst.on('result', { onResult: (result: userAuth.UserAuthResult) => { resolve(result); } });
+        const callback = {
+          onResult: (result: userAuth.UserAuthResult): void => {
+            try { inst.off('result', callback); } catch (_e) { /* completed instance */ }
+            try { inst.cancel(); } catch (_e) { /* completed/cancelled instance */ }
+            resolve(result);
+          }
+        };
+        inst.on('result', callback);
         inst.start();
       } catch (err) {
         const be: BusinessError = err as BusinessError;
         const typesStr: string = '[' + authTypes.map((t: userAuth.UserAuthType) => t as number).join(',') + ']';
         reject(new Error('[UserAuth] getUserAuthInstance: code=' + be.code + ' msg=' + be.message +
-          ' | types=' + typesStr + ' ATL1'));
+          ' | types=' + typesStr + ' ATL2'));
       }
     });
   }
@@ -71,8 +82,8 @@ export class UserAuthManager {
     switch (code) {
       case 12500000: return '认证成功';
       case 12500001: return '认证失败';
-      case 12500002: return '操作取消';
-      case 12500003: return '认证次数过多，请稍后重试';
+      case 12500002: return '通用操作失败';
+      case 12500003: return '操作取消';
       case 12500004: return '操作超时';
       case 12500005: return '不支持的认证类型';
       case 12500006: return '不支持的认证等级';

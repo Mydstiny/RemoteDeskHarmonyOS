@@ -1,5 +1,5 @@
 /**
- * LockGate.ets — 生物识别锁认证门。
+ * LockGate.ets — 系统用户身份认证门。
  *
  * UserAuthInstance 是系统级资源，不允许多个业务同时 start，也不能只
  * resolve Promise 而把 result listener 留在实例上。这里把所有调用串成
@@ -7,7 +7,13 @@
  */
 import { Palette, buildDark, buildLight } from '../common/Theme';
 import { userAuth } from '@kit.UserAuthenticationKit';
+import { cryptoFramework } from '@kit.CryptoArchitectureKit';
 import { BusinessError } from '@kit.BasicServicesKit';
+import {
+  LockGateAuthKind,
+  lockGateAvailableAuthKinds,
+  lockGateRequestedAuthKinds
+} from '../services/LockGateAuthPolicy';
 
 export class LockGateResult {
   ok: boolean = false;
@@ -17,6 +23,7 @@ export class LockGateResult {
 
 interface LockGateRequest {
   label: string;
+  requestedKinds: LockGateAuthKind[];
   resolve: (result: LockGateResult) => void;
 }
 
@@ -38,8 +45,17 @@ interface LockGateAuthInstance {
 const lockGateQueue: LockGateRequest[] = [];
 let lockGateRunning: boolean = false;
 
-function isUnsupportedAuthResult(code: number): boolean {
-  return code === 12500005 || code === 12500006 || code === 12500010;
+function authTypeForKind(kind: LockGateAuthKind): userAuth.UserAuthType {
+  switch (kind) {
+    case 'pin': return userAuth.UserAuthType.PIN;
+    case 'fingerprint': return userAuth.UserAuthType.FINGERPRINT;
+    case 'face': return userAuth.UserAuthType.FACE;
+  }
+}
+
+function businessErrorCode(err: Object, fallback: number = -1): number {
+  const businessError: BusinessError = err as BusinessError;
+  return typeof businessError.code === 'number' ? businessError.code : fallback;
 }
 
 function pumpLockGate(): void {
@@ -53,15 +69,6 @@ function pumpLockGate(): void {
     return;
   }
 
-  const challenge: Uint8Array = new Uint8Array(16);
-  for (let i = 0; i < 16; i++) { challenge[i] = (i + 1) as number; }
-  const widgetParam: userAuth.WidgetParam = { title: request.label || '验证身份' };
-  const candidates: userAuth.UserAuthType[] = [
-    userAuth.UserAuthType.FACE,
-    userAuth.UserAuthType.FINGERPRINT,
-    userAuth.UserAuthType.PIN
-  ];
-
   let finished: boolean = false;
   const finishRequest = (result: LockGateResult): void => {
     if (finished) { return; }
@@ -71,73 +78,100 @@ function pumpLockGate(): void {
     setTimeout((): void => { pumpLockGate(); }, 0);
   };
 
-  const tryCandidate = (index: number, lastCode: number, lastMessage: string): void => {
-    if (finished) { return; }
-    if (index >= candidates.length) {
-      finishRequest({ ok: false, code: lastCode, errMsg: lastMessage });
-      return;
-    }
-    const authParam: userAuth.AuthParam = {
-      challenge: challenge,
-      authType: [candidates[index]],
-      authTrustLevel: userAuth.AuthTrustLevel.ATL1
-    };
-    let instance: LockGateAuthInstance | undefined;
-    const callback: LockGateResultCallback = new LockGateResultCallback();
-    let settledInstance: boolean = false;
-    const cleanupInstance = (): void => {
-      if (instance === undefined) { return; }
-      try { instance.off('result', callback); } catch (_e) { /* API 23 may reject late off */ }
-      try { instance.cancel(); } catch (_e) { /* completed/cancelled instances are idempotent */ }
-      instance = undefined;
-    };
-    const settleInstance = (result: LockGateResult, nextIndex: number = -1): void => {
-      if (settledInstance || finished) { return; }
-      settledInstance = true;
-      cleanupInstance();
-      if (nextIndex >= 0) {
-        tryCandidate(nextIndex, result.code, result.errMsg);
-      } else {
-        finishRequest(result);
-      }
-    };
-    callback.onResult = (result: userAuth.UserAuthResult): void => {
-      const code: number = result.result as number;
-      if (code === userAuth.UserAuthResultCode.SUCCESS) {
-        settleInstance({ ok: true, code: 0, errMsg: '' });
-      } else if (isUnsupportedAuthResult(code)) {
-        settleInstance({ ok: false, code: code, errMsg: '' }, index + 1);
-      } else {
-        settleInstance({ ok: false, code: code, errMsg: '' });
-      }
-    };
+  const availableKinds: LockGateAuthKind[] = [];
+  let lastUnavailableCode: number = 12500010;
+  for (let i = 0; i < request.requestedKinds.length; i++) {
+    const kind: LockGateAuthKind = request.requestedKinds[i];
     try {
-      instance = userAuth.getUserAuthInstance(authParam, widgetParam) as LockGateAuthInstance;
-      if (!instance || typeof instance.start !== 'function') {
-        settleInstance({ ok: false, code: -1, errMsg: 'UserAuthInstance 不可用' }, index + 1);
-        return;
-      }
-      instance.on('result', callback);
-      instance.start();
+      userAuth.getAvailableStatus(authTypeForKind(kind), userAuth.AuthTrustLevel.ATL2);
+      availableKinds.push(kind);
     } catch (err) {
-      const businessError: BusinessError = err as BusinessError;
-      const code: number = typeof businessError.code === 'number' ? businessError.code : -1;
-      const message: string = typeof businessError.message === 'string' ? businessError.message : '';
-      settleInstance({ ok: false, code: code, errMsg: message }, index + 1);
+      lastUnavailableCode = businessErrorCode(err as Object, lastUnavailableCode);
     }
+  }
+
+  const admittedKinds: LockGateAuthKind[] = lockGateAvailableAuthKinds(
+    request.requestedKinds, availableKinds);
+  if (admittedKinds.length === 0) {
+    finishRequest({ ok: false, code: lastUnavailableCode, errMsg: '' });
+    return;
+  }
+
+  let challenge: Uint8Array;
+  try {
+    challenge = cryptoFramework.createRandom().generateRandomSync(16).data;
+  } catch (err) {
+    const businessError: BusinessError = err as BusinessError;
+    const message: string = typeof businessError.message === 'string' ? businessError.message : '';
+    finishRequest({
+      ok: false,
+      code: businessErrorCode(err as Object),
+      errMsg: message !== '' ? message : '无法生成身份认证随机挑战'
+    });
+    return;
+  }
+
+  const authTypes: userAuth.UserAuthType[] = admittedKinds.map(
+    (kind: LockGateAuthKind): userAuth.UserAuthType => authTypeForKind(kind));
+  const authParam: userAuth.AuthParam = {
+    challenge: challenge,
+    authType: authTypes,
+    authTrustLevel: userAuth.AuthTrustLevel.ATL2
+  };
+  const widgetParam: userAuth.WidgetParam = {
+    title: request.label || '验证系统身份'
   };
 
-  tryCandidate(0, 12500010, '');
+  let instance: LockGateAuthInstance | undefined;
+  const callback: LockGateResultCallback = new LockGateResultCallback();
+  let settledInstance: boolean = false;
+  const cleanupInstance = (): void => {
+    if (instance === undefined) { return; }
+    try { instance.off('result', callback); } catch (_e) { /* completed instance */ }
+    try { instance.cancel(); } catch (_e) { /* completed/cancelled instance */ }
+    instance = undefined;
+  };
+  const settleInstance = (result: LockGateResult): void => {
+    if (settledInstance || finished) { return; }
+    settledInstance = true;
+    cleanupInstance();
+    finishRequest(result);
+  };
+  callback.onResult = (result: userAuth.UserAuthResult): void => {
+    const code: number = result.result as number;
+    settleInstance(code === userAuth.UserAuthResultCode.SUCCESS ?
+      { ok: true, code: 0, errMsg: '' } :
+      { ok: false, code: code, errMsg: '' });
+  };
+
+  try {
+    instance = userAuth.getUserAuthInstance(authParam, widgetParam) as LockGateAuthInstance;
+    if (!instance || typeof instance.start !== 'function') {
+      settleInstance({ ok: false, code: -1, errMsg: 'UserAuthInstance 不可用' });
+      return;
+    }
+    instance.on('result', callback);
+    instance.start();
+  } catch (err) {
+    const businessError: BusinessError = err as BusinessError;
+    const message: string = typeof businessError.message === 'string' ? businessError.message : '';
+    settleInstance({ ok: false, code: businessErrorCode(err as Object), errMsg: message });
+  }
 }
 
 export function showLockGate(label: string, lockType: string): Promise<LockGateResult> {
-  if (lockType !== 'biometric' && lockType !== '') {
+  const requestedKinds: LockGateAuthKind[] = lockGateRequestedAuthKinds(lockType);
+  if (requestedKinds.length === 0) {
     const result: LockGateResult = new LockGateResult();
     result.ok = true;
     return Promise.resolve(result);
   }
   return new Promise((resolve: (result: LockGateResult) => void): void => {
-    lockGateQueue.push({ label: label || '验证身份', resolve: resolve });
+    lockGateQueue.push({
+      label: label || '验证系统身份',
+      requestedKinds: requestedKinds,
+      resolve: resolve
+    });
     pumpLockGate();
   });
 }
@@ -165,8 +199,6 @@ export function lockGateErrorMessage(r: LockGateResult): string {
 export struct LockGatePinDialog {
   @StorageLink('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
-  @State pinInput: string = '';
-  @State pinError: string = '';
   hostLabel: string = '';
   onResult?: (success: boolean) => void;
   onDismiss?: () => void;
@@ -176,7 +208,8 @@ export struct LockGatePinDialog {
   }
 
   private async verifyPin(): Promise<void> {
-    const r: LockGateResult = await showLockGate(this.hostLabel || '验证身份', 'biometric');
+    const r: LockGateResult = await showLockGate(
+      this.hostLabel || '验证系统锁屏密码', 'pin');
     if (this.onResult) {
       this.onResult(r.ok);
     }
@@ -190,22 +223,15 @@ export struct LockGatePinDialog {
         Text(this.hostLabel).fontSize(13).fontColor(this.pal().text2)
           .margin({ bottom: 20 })
 
-        TextInput({ placeholder: '输入 PIN 码', text: this.pinInput })
-          .type(InputType.Password).width('80%').height(44)
-          .backgroundColor(this.pal().surface).borderRadius(10)
-          .fontColor(this.pal().text).maxLength(6)
-          .onChange((v: string) => { this.pinInput = v; this.pinError = ''; })
-
-        if (this.pinError !== '') {
-          Text(this.pinError).fontSize(12).fontColor(this.pal().danger).margin({ top: 8 })
-        }
+        Text('将使用设备的系统锁屏密码验证；应用不会读取或保存密码。')
+          .fontSize(13).fontColor(this.pal().text2).width('80%')
 
         Row() {
           Button('取消').layoutWeight(1).height(44)
             .backgroundColor(this.pal().surface).fontColor(this.pal().text2).borderRadius(10)
             .onClick(() => { if (this.onDismiss) { this.onDismiss(); } })
           Blank().width(12)
-          Button('确认').layoutWeight(1).height(44)
+          Button('使用锁屏密码').layoutWeight(1).height(44)
             .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(10)
             .onClick(() => { this.verifyPin(); })
         }.width('80%').margin({ top: 20 })

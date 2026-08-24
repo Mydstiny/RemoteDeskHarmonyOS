@@ -1,6 +1,7 @@
 import localUnitTest from './LocalUnit.test';
 import cloudStoreTest from './CloudStore.test';
 import keyVaultServiceTest from './KeyVaultService.test';
+import lockGateAuthPolicyTest from './LockGateAuthPolicy.test';
 import hostSyncServiceTest from './HostSyncService.test';
 import sshTerminalScrollPolicyTest from './SshTerminalScrollPolicy.test';
 import sshTerminalInputPolicyTest from './SshTerminalInputPolicy.test';
@@ -233,6 +234,7 @@ export default function testsuite() {
   localUnitTest();
   cloudStoreTest();
   keyVaultServiceTest();
+  lockGateAuthPolicyTest();
   hostSyncServiceTest();
   sshTerminalScrollPolicyTest();
   sshTerminalInputPolicyTest();
