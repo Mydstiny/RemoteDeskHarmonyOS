@@ -2,6 +2,7 @@ import { expect } from '@ohos/hypium';
 import { auditedDescribe as describe, auditedIt as it } from
   '../main/ets/services/FocusedTestRegistrationAudit';
 import {
+  remoteSessionSidebarAnchoredMenuTop,
   remoteSessionSidebarCanvasHeight,
   remoteSessionFloatingCardHeight,
   remoteSessionFloatingCardWidth,
@@ -29,6 +30,12 @@ export default function remoteSessionSidebarLayoutPolicyTest(): void {
       expect(remoteSessionFloatingCardHeight(320, 520, 12, 12)).assertEqual(296);
       expect(remoteSessionFloatingCardWidth(800, 360, 12)).assertEqual(360);
       expect(remoteSessionFloatingCardHeight(720, 520, 12, 12)).assertEqual(520);
+    });
+
+    it('anchors_keyboard_menu_beside_rail_button_with_edge_clamping', 0, (): void => {
+      expect(remoteSessionSidebarAnchoredMenuTop(720, 337, 44, 156)).assertEqual(281);
+      expect(remoteSessionSidebarAnchoredMenuTop(320, 214, 44, 132)).assertEqual(164);
+      expect(remoteSessionSidebarAnchoredMenuTop(320, -40, 44, 132)).assertEqual(8);
     });
 
     it('sanitizes_invalid_measurements', 0, (): void => {

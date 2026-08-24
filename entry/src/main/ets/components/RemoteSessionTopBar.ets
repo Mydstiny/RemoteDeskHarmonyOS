@@ -20,6 +20,7 @@ import {
 } from '../types/rdpnapi';
 import { RustDeskDisplaySwitchState } from '../services/RustDeskDisplaySwitchPolicy';
 import {
+  remoteSessionSidebarAnchoredMenuTop,
   remoteSessionSidebarCanvasHeight,
   remoteSessionSidebarMenuMaxHeight,
   remoteSessionSidebarMenuWidth,
@@ -276,6 +277,36 @@ export struct RemoteSessionTopBar {
 
   private menuTop(): number {
     return this.edgeRail ? 0 : this.layout.iconSize + 12;
+  }
+
+  private keyboardMenuHeight(): number {
+    return this.menuHeaderHeight() + this.menuPadding() * 2 + this.menuItemHeight() * 2;
+  }
+
+  private keyboardButtonIndex(): number {
+    return 4;
+  }
+
+  private keyboardMenuLeft(): number {
+    if (this.edgeRail) {
+      return 0;
+    }
+    const width: number = this.effectiveMenuWidth();
+    const anchorCenter: number = this.layout.itemGap +
+      this.keyboardButtonIndex() * (this.layout.iconSize + this.layout.itemGap) +
+      this.layout.iconSize / 2;
+    const maxLeft: number = Math.max(0, this.toolbarWidth() - width);
+    return Math.max(0, Math.min(anchorCenter - width / 2, maxLeft));
+  }
+
+  private keyboardMenuTop(): number {
+    if (!this.edgeRail) {
+      return this.menuTop();
+    }
+    const anchorTop: number = this.edgeRailOffsetY() + 6 +
+      this.keyboardButtonIndex() * (this.layout.iconSize + this.layout.itemGap);
+    return remoteSessionSidebarAnchoredMenuTop(this.viewportHeight, anchorTop,
+      this.layout.iconSize, this.keyboardMenuHeight());
   }
 
   private edgeRailWidth(): number {
@@ -746,7 +777,7 @@ export struct RemoteSessionTopBar {
     .backgroundColor('rgba(255,255,255,0.96)')
     .borderRadius(16).clip(true)
     .shadow({ radius: 10, color: 'rgba(0,0,0,0.22)', offsetY: 2 })
-    .position({ x: this.menuLeft(), y: this.menuTop() })
+    .position({ x: this.keyboardMenuLeft(), y: this.keyboardMenuTop() })
     .hitTestBehavior(HitTestMode.BLOCK_HIERARCHY)
   }
 

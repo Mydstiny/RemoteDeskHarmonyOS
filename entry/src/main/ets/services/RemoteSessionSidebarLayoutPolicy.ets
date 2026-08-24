@@ -46,3 +46,16 @@ export function remoteSessionSidebarMenuMaxHeight(viewportHeight: number,
     Math.max(0, Number.isFinite(topOffset) ? topOffset : 0);
   return Math.max(120, available);
 }
+
+export function remoteSessionSidebarAnchoredMenuTop(viewportHeight: number,
+  anchorTop: number, anchorHeight: number, menuHeight: number,
+  edgeMargin: number = 8): number {
+  const canvasHeight: number = remoteSessionSidebarCanvasHeight(viewportHeight);
+  const margin: number = Math.max(0, Number.isFinite(edgeMargin) ? edgeMargin : 8);
+  const safeAnchorTop: number = Number.isFinite(anchorTop) ? anchorTop : margin;
+  const safeAnchorHeight: number = finitePositive(anchorHeight, 44);
+  const availableHeight: number = Math.max(1, canvasHeight - margin * 2);
+  const safeMenuHeight: number = Math.min(finitePositive(menuHeight, 132), availableHeight);
+  const centeredTop: number = safeAnchorTop + safeAnchorHeight / 2 - safeMenuHeight / 2;
+  return Math.max(margin, Math.min(centeredTop, canvasHeight - margin - safeMenuHeight));
+}
