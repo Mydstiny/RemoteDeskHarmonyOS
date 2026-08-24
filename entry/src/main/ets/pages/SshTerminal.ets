@@ -1002,6 +1002,7 @@ struct SshTerminal {
   private terminalSoftwareKeyboardRefocusLeaseTimer: number = -1;
   private terminalSoftwareKeyboardRefocusInFlight: boolean = false;
   private terminalSoftwareKeyboardEditingObserved: boolean = false;
+  private terminalSoftwareKeyboardExitPending: boolean = false;
   /** 功能开关: true=使用 Rust terminal_core 渲染 (NativeTerminalRenderer), false=旧 TerminalEmulator */
 
   // cellH/cellW 由字号推算, 与 Canvas 字体单位保持一致
@@ -1299,6 +1300,26 @@ struct SshTerminal {
     }
     this.terminalSoftwareKeyboardRefocusInFlight = false;
     this.terminalSoftwareKeyboardEditingObserved = false;
+    this.terminalSoftwareKeyboardExitPending = false;
+  }
+
+  private terminalSoftwareKeyboardIsVisible(): boolean {
+    return this.kbHeight > 0;
+  }
+
+  private finishTerminalSoftwareKeyboardExit(reason: string): void {
+    this.softKeyboardRequested = false;
+    this.clearTerminalInputFocusRetry();
+    this.terminalSoftwareKeyboardExitPending = false;
+    this.clearTerminalSoftwareKeyboardShowRequest();
+    hilog.debug(0x0000, 'SshTerminal', '[input] virtual editor exit reason=' + reason +
+      ' retry=0');
+  }
+
+  private resolvePendingTerminalSoftwareKeyboardExit(): void {
+    if (!this.terminalSoftwareKeyboardExitPending ||
+      this.terminalSoftwareKeyboardIsVisible()) { return; }
+    this.finishTerminalSoftwareKeyboardExit('keyboard-hidden');
   }
 
   private armTerminalSoftwareKeyboardRefocusLease(): void {
@@ -1309,11 +1330,18 @@ struct SshTerminal {
     this.terminalSoftwareKeyboardRefocusLeaseTimer = setTimeout((): void => {
       this.terminalSoftwareKeyboardRefocusLeaseTimer = -1;
       this.terminalSoftwareKeyboardRefocusInFlight = false;
-      if (!this.terminalSoftwareKeyboardEditingObserved) {
+      if (this.terminalSoftwareKeyboardExitPending &&
+        !this.terminalSoftwareKeyboardIsVisible()) {
+        this.finishTerminalSoftwareKeyboardExit('refocus-lease-hidden');
+        return;
+      }
+      if (!this.terminalSoftwareKeyboardEditingObserved &&
+        !this.terminalSoftwareKeyboardIsVisible()) {
         // No editing callback means the replacement IME client never became
         // active. Do not leave a request that would reopen it on the next
         // unrelated focus transition.
         this.softKeyboardRequested = false;
+        this.terminalSoftwareKeyboardExitPending = false;
       }
     }, SSH_TERMINAL_SOFTWARE_FOCUS_LEASE_MS);
   }
@@ -1400,38 +1428,33 @@ struct SshTerminal {
    */
   private onTerminalEditorExit(reason: string): void {
     if (this.terminalSoftwareKeyboardRefocusInFlight) {
-      if (this.terminalSoftwareKeyboardEditingObserved) {
-        const editingObserved: boolean = this.terminalSoftwareKeyboardEditingObserved;
-        this.clearTerminalSoftwareKeyboardShowRequest();
-        if (reason === 'editing' && editingObserved) {
-          this.softKeyboardRequested = false;
-          this.clearTerminalInputFocusRetry();
-          hilog.debug(0x0000, 'SshTerminal', '[input] active editor exit reason=' + reason +
-            ' retry=0');
-          return;
-        }
-      } else {
-        hilog.debug(0x0000, 'SshTerminal', '[input] editor exit ignored during software refocus reason=' +
-          reason);
-        return;
-      }
+      // The old TextArea session can deliver blur/editing=false after the
+      // replacement session has already reported editing=true. Keep the exit
+      // pending until the system keyboard actually disappears; the avoid-area
+      // callback is the only signal that is not tied to the stale editor.
+      this.terminalSoftwareKeyboardExitPending = true;
+      hilog.debug(0x0000, 'SshTerminal', '[input] editor exit deferred during software refocus reason=' +
+        reason);
+      return;
     }
     const userDismissibleVirtualIme: boolean = this.virtualKeyBarRequested() &&
       (!this.isDesktopDevice || this.sshInputMode === 1);
     if (userDismissibleVirtualIme && !this.tabSwitchInFlight) {
-      if (reason === 'editing' && this.softKeyboardRequested &&
-        !this.terminalSoftwareKeyboardEditingObserved) {
-        // stopEditing()/clearFocus() can report a delayed editing=false after
-        // the replacement TextArea has already accepted the IME. Keep the
-        // explicit software-keyboard request until a real blur arrives.
-        hilog.debug(0x0000, 'SshTerminal', '[input] transient editor exit retained');
+      if (this.softKeyboardRequested &&
+        (this.terminalSoftwareKeyboardEditingObserved ||
+          this.terminalSoftwareKeyboardIsVisible())) {
+        // A delayed callback from the previous editor is indistinguishable
+        // from a real exit at the ArkUI boundary. Defer both until the system
+        // keyboard hide event proves that the active IME session ended.
+        this.terminalSoftwareKeyboardExitPending = true;
+        if (this.terminalSoftwareKeyboardIsVisible()) {
+          hilog.debug(0x0000, 'SshTerminal', '[input] editor exit retained until keyboard hidden');
+          return;
+        }
+        this.resolvePendingTerminalSoftwareKeyboardExit();
         return;
       }
-      this.softKeyboardRequested = false;
-      this.clearTerminalInputFocusRetry();
-      this.clearTerminalSoftwareKeyboardShowRequest();
-      hilog.debug(0x0000, 'SshTerminal', '[input] virtual editor exit reason=' + reason +
-        ' retry=0');
+      this.finishTerminalSoftwareKeyboardExit(reason);
       return;
     }
     this.scheduleTerminalInputFocusRetry();
@@ -10829,6 +10852,7 @@ struct SshTerminal {
           if (data.type === window.AvoidAreaType.TYPE_KEYBOARD) {
             const insetPx: number = this.keyboardBottomInsetPx(w, data.area);
             this.kbHeight = px2vp(insetPx);
+            this.resolvePendingTerminalSoftwareKeyboardExit();
             hilog.info(0x0000, 'SshTerminal', '[avoidArea] keyboard rect=' +
               JSON.stringify(data.area.bottomRect) + ' visible=' + data.area.visible.toString() +
               ' bottomInsetPx=' + insetPx.toString());
@@ -13020,7 +13044,10 @@ struct SshTerminal {
         ' physical=' + (this.physicalKeyboardConnected ? '1' : '0') +
         ' requested=' + (this.softKeyboardRequested ? '1' : '0'));
       const focused: boolean = this.requestTerminalInputFocus();
-      if (requestSoftwareKeyboard && focused) {
+      if (requestSoftwareKeyboard) {
+        // Keep the stale-editor fence alive even when the first focus request
+        // is rejected. The bounded retry path may still attach the new IME
+        // client, while the old client's delayed exit callback is in flight.
         this.armTerminalSoftwareKeyboardRefocusLease();
       } else {
         this.terminalSoftwareKeyboardRefocusInFlight = false;
