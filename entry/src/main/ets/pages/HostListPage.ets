@@ -12429,11 +12429,6 @@ struct HostListPage {
       .borderRadius(14).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
       .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
     }
-    .priorityGesture(LongPressGesture({ duration: 450 }).onAction((): void => {
-      if (!this.hostSelectionMode) {
-        this.beginHostSelection(remoteHostCardKey(host.id), true);
-      }
-    }))
     .swipeAction((this.hostSelectionMode || (this.isDesktopDevice && this.breakpoint === 'xl')) ? {
       start: { builder: () => {} }, end: { builder: () => {} }, edgeEffect: SwipeEdgeEffect.Spring
     } : {
@@ -12446,10 +12441,17 @@ struct HostListPage {
         .combine(TransitionEffect.scale({ x: 0.7, y: 0.7 })).combine(TransitionEffect.OPACITY)
         .animation({ duration: 350, curve: curves.interpolatingSpring(0, 0.8, 300, 20) })
     ))
-    .draggable(this.hostSelectionMode && this.hostReorderEnabled)
     .onDragStart((_event: DragEvent): DragItemInfo => {
-      if (!this.hostSelectionMode || !this.hostReorderEnabled) { return {}; }
       const key: string = remoteHostCardKey(host.id);
+      if (!this.hostSelectionMode) {
+        // Let the platform's native drag recognizer own the initial long
+        // press. Entering selection here keeps that same pointer sequence
+        // alive so the card can move immediately instead of requiring a
+        // second long press after the list rebuilds.
+        this.beginHostSelection(key, true);
+      } else if (!this.hostReorderEnabled) {
+        return {};
+      }
       this.draggingHostId = key;
       return { extraInfo: key };
     })
@@ -12467,11 +12469,6 @@ struct HostListPage {
   @Builder flatMoonlightHostListItem(view: MoonlightHostLocalView) {
     if (view.host !== null) {
       ListItem() { this.moonlightFlatHostCard(view) }
-        .priorityGesture(LongPressGesture({ duration: 450 }).onAction((): void => {
-          if (!this.hostSelectionMode) {
-            this.beginHostSelection(unifiedMoonlightHostCardKey(view.host?.id || ''), true);
-          }
-        }))
         .swipeAction((this.hostSelectionMode || (this.isDesktopDevice && this.breakpoint === 'xl')) ? {
           start: { builder: () => {} }, end: { builder: () => {} }, edgeEffect: SwipeEdgeEffect.Spring
         } : {
@@ -12484,10 +12481,13 @@ struct HostListPage {
             .combine(TransitionEffect.scale({ x: 0.7, y: 0.7 })).combine(TransitionEffect.OPACITY)
             .animation({ duration: 350, curve: curves.interpolatingSpring(0, 0.8, 300, 20) })
         ))
-        .draggable(this.hostSelectionMode && this.hostReorderEnabled)
         .onDragStart((_event: DragEvent): DragItemInfo => {
-          if (!this.hostSelectionMode || !this.hostReorderEnabled) { return {}; }
           const key: string = unifiedMoonlightHostCardKey(view.host?.id || '');
+          if (!this.hostSelectionMode) {
+            this.beginHostSelection(key, true);
+          } else if (!this.hostReorderEnabled) {
+            return {};
+          }
           this.draggingHostId = key;
           return { extraInfo: key };
         })
@@ -12537,12 +12537,6 @@ struct HostListPage {
                   })
                 Text('已选 ' + this.hostSelectedIds.size).fontSize(13).fontColor(this.pal().text2)
                   .margin({ left: 12, right: 12 })
-                if (this.hostReorderEnabled) {
-                  Text('拖拽排序中').fontSize(11).fontColor(this.accentColor)
-                    .padding({ left: 8, right: 8, top: 3, bottom: 3 })
-                    .borderRadius(6).backgroundColor(this.pal().surface)
-                    .margin({ right: 6 })
-                }
                 if (this.hostSelectedIds.size > 0) {
                   Button('删除(' + this.hostSelectedIds.size + ')').fontSize(12)
                     .height(32).borderRadius(8)
@@ -12580,11 +12574,7 @@ struct HostListPage {
                     } else { this.hostSelectedIds = new Set(this.selectionKeysForCurrentView()); }
                   })
                 Blank()
-                if (this.hostReorderEnabled) {
-                  Text('拖拽排序中').fontSize(11).fontColor(this.accentColor)
-                    .padding({ left: 6, right: 6, top: 3, bottom: 3 })
-                    .borderRadius(6).backgroundColor(this.pal().surface)
-                } else {
+                if (!this.hostReorderEnabled) {
                   Text('已选 ' + this.hostSelectedIds.size).fontSize(13).fontColor(this.pal().text2)
                 }
                 Blank()
