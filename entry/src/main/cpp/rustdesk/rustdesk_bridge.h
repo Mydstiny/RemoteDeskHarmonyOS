@@ -41,6 +41,12 @@ struct RustDeskDiagnosticsStats {
     int width = 0;
     int height = 0;
     int connectionPath = 0; // 0=rendezvous/relay, 1=direct
+    bool remoteInputPermissionKnown = false;
+    bool remoteInputAllowed = true;
+    bool remoteClipboardPermissionKnown = false;
+    bool remoteClipboardAllowed = true;
+    bool remoteFilePermissionKnown = false;
+    bool remoteFileAllowed = true;
     uint64_t lastFrameAtMs = 0;
     uint64_t presentedFrames = 0;
     uint64_t presentationWindowSamples = 0;

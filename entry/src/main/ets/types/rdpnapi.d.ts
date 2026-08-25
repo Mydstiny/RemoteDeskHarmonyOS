@@ -522,6 +522,12 @@ export interface RustDeskDiagnosticsSnapshot {
   receivedRateAvailable: boolean;
   presentedRateAvailable: boolean;
   decodeRateAvailable: boolean;
+  remoteInputPermissionKnown: boolean;
+  remoteInputAllowed: boolean;
+  remoteClipboardPermissionKnown: boolean;
+  remoteClipboardAllowed: boolean;
+  remoteFilePermissionKnown: boolean;
+  remoteFileAllowed: boolean;
   sessionId: number;
   latencyMs: number;
   targetBitrateKbps: number;

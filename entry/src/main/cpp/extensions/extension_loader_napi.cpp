@@ -3197,6 +3197,13 @@ napi_value NapiGetSessionDiagnostics(napi_env env, napi_callback_info info) {
     SetObjectBool(env, result, "receivedRateAvailable", receivedRateAvailable);
     SetObjectBool(env, result, "presentedRateAvailable", presentedRateAvailable);
     SetObjectBool(env, result, "decodeRateAvailable", receivedRateAvailable);
+    SetObjectBool(env, result, "remoteInputPermissionKnown", nativeStats.remoteInputPermissionKnown);
+    SetObjectBool(env, result, "remoteInputAllowed", nativeStats.remoteInputAllowed);
+    SetObjectBool(env, result, "remoteClipboardPermissionKnown",
+        nativeStats.remoteClipboardPermissionKnown);
+    SetObjectBool(env, result, "remoteClipboardAllowed", nativeStats.remoteClipboardAllowed);
+    SetObjectBool(env, result, "remoteFilePermissionKnown", nativeStats.remoteFilePermissionKnown);
+    SetObjectBool(env, result, "remoteFileAllowed", nativeStats.remoteFileAllowed);
     SetObjectInt32(env, result, "sessionId", sessionId);
     SetObjectInt32(env, result, "latencyMs", nativeStats.latencyMs);
     SetObjectInt32(env, result, "targetBitrateKbps", nativeStats.targetBitrateKbps);

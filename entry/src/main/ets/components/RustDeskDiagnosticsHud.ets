@@ -17,6 +17,12 @@ const EMPTY_DIAGNOSTICS: RustDeskDiagnosticsSnapshot = {
   receivedRateAvailable: false,
   presentedRateAvailable: false,
   decodeRateAvailable: false,
+  remoteInputPermissionKnown: false,
+  remoteInputAllowed: true,
+  remoteClipboardPermissionKnown: false,
+  remoteClipboardAllowed: true,
+  remoteFilePermissionKnown: false,
+  remoteFileAllowed: true,
   sessionId: -1,
   latencyMs: -1,
   targetBitrateKbps: 0,
@@ -142,6 +148,11 @@ export struct RustDeskDiagnosticsHud {
     if (this.diagnostics.connectionPath === 'repeater') { return 'UltraVNC Repeater'; }
     if (this.diagnostics.connectionPath === 'relay') { return 'RustDesk 中继'; }
     return this.diagnostics.connectionPath === '' ? '未知' : this.diagnostics.connectionPath;
+  }
+
+  private remotePermissionLabel(): string {
+    if (!this.diagnostics.remoteInputPermissionKnown) { return '等待远端权限同步'; }
+    return this.diagnostics.remoteInputAllowed ? '允许控制' : '仅查看';
   }
 
   private vncRequestedColorDepth(): string {
@@ -282,8 +293,14 @@ export struct RustDeskDiagnosticsHud {
       this.metricLine({
         label: '延迟',
         value: this.diagnostics.protocolSnapshotAvailable ?
-          formatDiagnosticLatency(this.diagnostics.latencyMs) : '协议采样不可用'
+          formatDiagnosticLatency(this.diagnostics.latencyMs) : '等待往返采样'
       })
+      if (this.protocolLabel !== 'VNC') {
+        this.metricLine({
+          label: '远端权限',
+          value: this.remotePermissionLabel()
+        })
+      }
       this.metricLine({
         label: '帧率 / 送显',
         value: formatDiagnosticFrameRate(this.diagnostics.receivedFps, this.diagnostics.receivedRateAvailable,
@@ -312,7 +329,7 @@ export struct RustDeskDiagnosticsHud {
       this.metricLine({
         label: '路径',
         value: this.diagnostics.protocolSnapshotAvailable ?
-          this.connectionPathLabel() : '协议采样不可用'
+          this.connectionPathLabel() : '连接路径未上报'
       })
 
           if (this.protocolLabel === 'VNC') {

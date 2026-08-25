@@ -497,6 +497,7 @@ pub enum FfiConnectionState {
 /// through `rustdesk_get_stream_stats`; it never reaches into the streaming
 /// thread or consumes the counters.
 pub const RUSTDESK_STREAM_STATS_VERSION: u32 = 1;
+pub const RUSTDESK_PERMISSION_STATE_VERSION: u32 = 1;
 pub const RUSTDESK_DISPLAY_SNAPSHOT_VERSION: u32 = 1;
 pub const RUSTDESK_DISPLAY_LIST_VERSION: u32 = 1;
 pub const RUSTDESK_VIDEO_FRAME_ABI_VERSION: u32 = 2;
@@ -546,6 +547,18 @@ impl Default for RustDeskStreamStats {
             connection_path: 0,
         }
     }
+}
+
+/// Permission state advertised by the remote peer. A bit absent from
+/// `known_mask` means that the peer has not advertised that capability, so
+/// callers should preserve the legacy optimistic behavior.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RustDeskPermissionState {
+    pub version: u32,
+    pub known_mask: u32,
+    pub enabled_mask: u32,
+    pub reserved: u32,
 }
 
 /// One remote display as received from RustDesk `PeerInfo`/`SwitchDisplay`.
@@ -2158,6 +2171,31 @@ pub extern "C" fn rustdesk_get_stream_stats(
     true
 }
 
+/// Copy the latest remote permission snapshot without consuming it.
+#[no_mangle]
+pub extern "C" fn rustdesk_get_permission_state(
+    handle: *mut c_void,
+    out_state: *mut RustDeskPermissionState,
+) -> bool {
+    if handle.is_null() || out_state.is_null() {
+        return false;
+    }
+    let ctx = unsafe { &*(handle as *const RustDeskClient) };
+    let permissions = ctx.controls.permission_snapshot();
+    unsafe {
+        ptr::write(
+            out_state,
+            RustDeskPermissionState {
+                version: RUSTDESK_PERMISSION_STATE_VERSION,
+                known_mask: permissions.known_mask,
+                enabled_mask: permissions.enabled_mask,
+                reserved: 0,
+            },
+        );
+    }
+    true
+}
+
 /// Copy current remote-display geometry and as many supported resolutions as fit.
 #[no_mangle]
 pub extern "C" fn rustdesk_get_display_snapshot(
@@ -2911,6 +2949,24 @@ mod tests {
         assert_eq!(snapshot.resolution_count, 3);
         assert_eq!((resolutions[0].width, resolutions[0].height), (1080, 1920));
         assert_eq!((resolutions[1].width, resolutions[1].height), (720, 1280));
+    }
+
+    #[test]
+    fn permission_snapshot_exposes_an_explicit_remote_view_only_state() {
+        let mut client = test_client_with_display_state(RustDeskDisplayState::default());
+        client
+            .controls
+            .update_permission(control_inbox::PERMISSION_KEYBOARD, false);
+        let handle = &mut client as *mut RustDeskClient as *mut c_void;
+        let mut snapshot = RustDeskPermissionState::default();
+
+        assert!(rustdesk_get_permission_state(handle, &mut snapshot));
+        assert_eq!(snapshot.version, RUSTDESK_PERMISSION_STATE_VERSION);
+        assert_eq!(
+            snapshot.known_mask & control_inbox::PERMISSION_KEYBOARD,
+            control_inbox::PERMISSION_KEYBOARD
+        );
+        assert_eq!(snapshot.enabled_mask & control_inbox::PERMISSION_KEYBOARD, 0);
     }
 
     #[test]

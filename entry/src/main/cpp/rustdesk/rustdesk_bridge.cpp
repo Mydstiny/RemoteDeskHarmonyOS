@@ -107,6 +107,13 @@ extern "C" {
         int32_t connection_path;
     };
     bool  rustdesk_get_stream_stats(void* handle, RustDeskFfiStreamStats* out_stats);
+    struct RustDeskFfiPermissionState {
+        uint32_t version;
+        uint32_t knownMask;
+        uint32_t enabledMask;
+        uint32_t reserved;
+    };
+    bool  rustdesk_get_permission_state(void* handle, RustDeskFfiPermissionState* out_state);
     struct RustDeskFfiDisplaySnapshot {
         uint32_t version;
         int32_t currentDisplay;
@@ -150,6 +157,10 @@ extern "C" {
 }
 
 static constexpr uint32_t kRustDeskStreamStatsVersion = 1;
+static constexpr uint32_t kRustDeskPermissionStateVersion = 1;
+static constexpr uint32_t kRustDeskPermissionKeyboard = 1U << 0;
+static constexpr uint32_t kRustDeskPermissionClipboard = 1U << 2;
+static constexpr uint32_t kRustDeskPermissionFile = 1U << 4;
 static constexpr uint32_t kRustDeskDisplaySnapshotVersion = 1;
 static constexpr uint32_t kRustDeskVideoFrameAbiVersion = 2;
 static_assert(sizeof(RustDeskFfiStreamStats) == 96,
@@ -172,6 +183,10 @@ static_assert(offsetof(RustDeskFfiStreamStats, actual_codec) == 80);
 static_assert(offsetof(RustDeskFfiStreamStats, width) == 84);
 static_assert(offsetof(RustDeskFfiStreamStats, height) == 88);
 static_assert(offsetof(RustDeskFfiStreamStats, connection_path) == 92);
+static_assert(sizeof(RustDeskFfiPermissionState) == 16,
+              "RustDeskPermissionState ABI size changed; update both sides together");
+static_assert(alignof(RustDeskFfiPermissionState) == 4,
+              "RustDeskPermissionState ABI alignment changed");
 static_assert(sizeof(RustDeskFfiDisplaySnapshot) == 36,
               "RustDeskDisplaySnapshot ABI size changed; update both sides together");
 static_assert(alignof(RustDeskFfiDisplaySnapshot) == 4,
@@ -2123,6 +2138,22 @@ RustDeskDiagnosticsStats RustDeskBridge::getDiagnostics() const {
             OH_LOG_WARN(LOG_APP,
                 "[RustDesk-FFI] stream diagnostics snapshot rejected: unsupported ABI version=%{public}u",
                 ffiStats.version);
+        }
+        RustDeskFfiPermissionState permissionState {};
+        if (rustdesk_get_permission_state(handleLease.get(), &permissionState) &&
+            permissionState.version == kRustDeskPermissionStateVersion) {
+            result.remoteInputPermissionKnown =
+                (permissionState.knownMask & kRustDeskPermissionKeyboard) != 0;
+            result.remoteInputAllowed = !result.remoteInputPermissionKnown ||
+                (permissionState.enabledMask & kRustDeskPermissionKeyboard) != 0;
+            result.remoteClipboardPermissionKnown =
+                (permissionState.knownMask & kRustDeskPermissionClipboard) != 0;
+            result.remoteClipboardAllowed = !result.remoteClipboardPermissionKnown ||
+                (permissionState.enabledMask & kRustDeskPermissionClipboard) != 0;
+            result.remoteFilePermissionKnown =
+                (permissionState.knownMask & kRustDeskPermissionFile) != 0;
+            result.remoteFileAllowed = !result.remoteFilePermissionKnown ||
+                (permissionState.enabledMask & kRustDeskPermissionFile) != 0;
         }
     }
 #endif

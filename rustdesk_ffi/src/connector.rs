@@ -16,7 +16,11 @@
 
 use crate::crypto::{self, KeyPair};
 use crate::crypto_channel::CryptoChannel;
-use crate::control_inbox::{CONTROL_BATCH_LIMIT, ControlInbox};
+use crate::control_inbox::{
+    CONTROL_BATCH_LIMIT, ControlInbox, PERMISSION_AUDIO, PERMISSION_BLOCK_INPUT,
+    PERMISSION_CLIPBOARD, PERMISSION_FILE, PERMISSION_KEYBOARD, PERMISSION_PRIVACY_MODE,
+    PERMISSION_RECORDING, PERMISSION_RESTART,
+};
 use crate::cursor_state::{
     CursorCacheMissReason, CursorIdResult, CursorState, CursorStreamUpdate,
 };
@@ -27,9 +31,9 @@ use crate::protocol::message_proto::{
     FileResponse, FileResponse_oneof_union, FileTransferBlock, FileTransferDone,
     FileTransferReceiveRequest, FileTransferSendConfirmRequest, FileType, IdPk, KeyEvent,
     KeyEvent_oneof_union, KeyboardMode, Message, Message_oneof_union, Misc, Misc_oneof_union,
-    MouseEvent, PeerInfo, PointerDeviceEvent, PublicKey, Resolution, SupportedResolutions,
-    SwitchDisplay, TouchEvent, TouchPanEnd, TouchPanStart, TouchPanUpdate, TouchScaleUpdate,
-    VideoFrame, VideoFrame_oneof_union,
+    MouseEvent, PeerInfo, PermissionInfo_Permission, PointerDeviceEvent, PublicKey, Resolution,
+    SupportedResolutions, SwitchDisplay, TouchEvent, TouchPanEnd, TouchPanStart, TouchPanUpdate,
+    TouchScaleUpdate, VideoFrame, VideoFrame_oneof_union,
 };
 use crate::protocol::rendezvous::RendezvousClient;
 use crate::protocol::rendezvous_proto::ConnType as RendezvousConnType;
@@ -230,11 +234,10 @@ fn should_emit_control_diagnostics(last_report: Instant, now: Instant) -> bool {
 fn should_refresh_for_video_starvation(
     total_video: u64,
     window_video: u64,
-    window_audio: u64,
     last_video_age_ms: Option<u128>,
     last_refresh_age_ms: Option<u128>,
 ) -> bool {
-    if total_video <= 20 || window_video > 0 || window_audio == 0 {
+    if total_video == 0 || window_video > 0 {
         return false;
     }
     let Some(video_age_ms) = last_video_age_ms else {
@@ -246,6 +249,19 @@ fn should_refresh_for_video_starvation(
     match last_refresh_age_ms {
         Some(refresh_age_ms) => refresh_age_ms >= VIDEO_STARVATION_REFRESH_INTERVAL_MS,
         None => true,
+    }
+}
+
+fn permission_mask(permission: PermissionInfo_Permission) -> u32 {
+    match permission {
+        PermissionInfo_Permission::Keyboard => PERMISSION_KEYBOARD,
+        PermissionInfo_Permission::Clipboard => PERMISSION_CLIPBOARD,
+        PermissionInfo_Permission::Audio => PERMISSION_AUDIO,
+        PermissionInfo_Permission::File => PERMISSION_FILE,
+        PermissionInfo_Permission::Restart => PERMISSION_RESTART,
+        PermissionInfo_Permission::Recording => PERMISSION_RECORDING,
+        PermissionInfo_Permission::BlockInput => PERMISSION_BLOCK_INPUT,
+        PermissionInfo_Permission::PrivacyMode => PERMISSION_PRIVACY_MODE,
     }
 }
 
@@ -1609,6 +1625,7 @@ impl RustDeskConnector {
                         Some(Misc_oneof_union::refresh_video_display(_)) => {
                             "misc/refresh_video_display"
                         }
+                        Some(Misc_oneof_union::permission_info(_)) => "misc/permission_info",
                         Some(Misc_oneof_union::follow_current_display(_)) => {
                             "misc/follow_current_display"
                         }
@@ -1622,6 +1639,15 @@ impl RustDeskConnector {
                     if let Some(Misc_oneof_union::switch_display(ref display)) = misc.union {
                         Self::apply_switch_display_geometry(&display_state, display, &stream_stats);
                         on_display_state();
+                    }
+                    if let Some(Misc_oneof_union::permission_info(ref permission)) = misc.union {
+                        let permission_kind = permission.get_permission();
+                        let enabled = permission.get_enabled();
+                        controls.update_permission(permission_mask(permission_kind), enabled);
+                        eprintln!(
+                            "[RustDesk-FFI] remote permission {:?} enabled={}",
+                            permission_kind, enabled
+                        );
                     }
                     if let Some(Misc_oneof_union::follow_current_display(display)) = misc.union {
                         Self::apply_follow_current_display(
@@ -1912,12 +1938,11 @@ impl RustDeskConnector {
                 if should_refresh_for_video_starvation(
                     video_count,
                     window_video,
-                    window_audio,
                     last_video_age_ms,
                     last_refresh_age_ms,
                 ) {
                     eprintln!(
-                        "[RustDesk-FFI] VIDEO STARVATION audio_alive video_window=0 audio_window={} total_video={} total_audio={} last_video_age={}ms -> refresh_video",
+                        "[RustDesk-FFI] VIDEO STARVATION video_window=0 audio_window={} total_video={} total_audio={} last_video_age={}ms -> refresh_video",
                         window_audio,
                         video_count,
                         audio_count,
@@ -4169,11 +4194,10 @@ mod tests {
     }
 
     #[test]
-    fn video_starvation_refreshes_when_audio_is_alive() {
+    fn video_starvation_refreshes_silent_stream_after_initial_frames() {
         assert!(should_refresh_for_video_starvation(
-            120,
+            2,
             0,
-            45,
             Some(3_000),
             None,
         ));
@@ -4184,7 +4208,6 @@ mod tests {
         assert!(!should_refresh_for_video_starvation(
             120,
             0,
-            45,
             Some(3_000),
             Some(1_000),
         ));
@@ -4195,8 +4218,17 @@ mod tests {
         assert!(!should_refresh_for_video_starvation(
             120,
             1,
-            45,
             Some(3_000),
+            None,
+        ));
+    }
+
+    #[test]
+    fn video_starvation_waits_for_the_first_video_frame() {
+        assert!(!should_refresh_for_video_starvation(
+            0,
+            0,
+            None,
             None,
         ));
     }
