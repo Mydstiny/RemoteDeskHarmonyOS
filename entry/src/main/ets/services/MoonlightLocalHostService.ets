@@ -4,6 +4,7 @@ import {
   MoonlightAddress,
   MoonlightHost,
   MoonlightHostType,
+  MoonlightWakeOnLan,
   MOONLIGHT_DEFAULT_HTTPS_PORT,
   moonlightAddressKey,
   moonlightHostIsValid
@@ -120,6 +121,45 @@ function serverUuidFromHostRecord(record: MoonlightRecord): string {
   const payload: Record<string, Object> | null = moonlightRecordBusinessPayload(record);
   return payload === null || typeof payload['serverUuid'] !== 'string'
     ? '' : payload['serverUuid'] as string;
+}
+
+function hostFromRecord(record: MoonlightRecord): MoonlightHost | null {
+  if (record.recordType !== 'host' || record.deletedAt > 0) { return null; }
+  const payload: Record<string, Object> | null = moonlightRecordBusinessPayload(record);
+  if (payload === null || !Array.isArray(payload['addresses']) ||
+      payload['wakeOnLan'] === null || typeof payload['wakeOnLan'] !== 'object') {
+    return null;
+  }
+  const host: MoonlightHost = {
+    id: record.id,
+    serverUuid: payload['serverUuid'] as string,
+    displayName: payload['displayName'] as string,
+    addresses: payload['addresses'] as MoonlightAddress[],
+    preferredAddressKey: payload['preferredAddressKey'] as string,
+    httpsPort: typeof payload['httpsPort'] === 'number'
+      ? payload['httpsPort'] as number : MOONLIGHT_DEFAULT_HTTPS_PORT,
+    hostType: payload['hostType'] as MoonlightHostType,
+    wakeOnLan: payload['wakeOnLan'] as MoonlightWakeOnLan,
+    locked: payload['locked'] === true,
+    userOrder: payload['userOrder'] as number
+  };
+  return moonlightHostIsValid(host) ? host : null;
+}
+
+function businessForHost(host: MoonlightHost): Record<string, Object> {
+  const business: Record<string, Object> = {};
+  business['schemaVersion'] = 1;
+  business['serverUuid'] = host.serverUuid;
+  business['displayName'] = host.displayName;
+  business['addresses'] = host.addresses;
+  business['preferredAddressKey'] = host.preferredAddressKey;
+  business['httpsPort'] = host.httpsPort === undefined
+    ? MOONLIGHT_DEFAULT_HTTPS_PORT : host.httpsPort;
+  business['hostType'] = host.hostType;
+  business['wakeOnLan'] = host.wakeOnLan;
+  business['locked'] = host.locked === true;
+  business['userOrder'] = host.userOrder;
+  return business;
 }
 
 function nextUserOrder(records: MoonlightRecord[]): number {
@@ -281,6 +321,100 @@ export class MoonlightLocalHostService {
     this.port = port;
     this.repository = new MoonlightRepository(port);
     this.cachePort = cachePort;
+  }
+
+  updateHost(host: MoonlightHost, nowMs: number): MoonlightLocalHostMutationResult {
+    const normalizedId: string = host.id.trim();
+    const normalizedHost: MoonlightHost = {
+      id: normalizedId,
+      serverUuid: host.serverUuid.trim(),
+      displayName: host.displayName.trim(),
+      addresses: host.addresses.map((address: MoonlightAddress): MoonlightAddress => copyAddress(address)),
+      preferredAddressKey: host.preferredAddressKey,
+      httpsPort: host.httpsPort === undefined ? MOONLIGHT_DEFAULT_HTTPS_PORT : host.httpsPort,
+      hostType: host.hostType,
+      wakeOnLan: {
+        enabled: host.wakeOnLan.enabled,
+        mac: host.wakeOnLan.mac.trim(),
+        broadcast: host.wakeOnLan.broadcast.trim()
+      },
+      locked: host.locked === true,
+      userOrder: host.userOrder
+    };
+    if (!validNow(nowMs) || !moonlightHostIsValid(normalizedHost)) {
+      return mutationResult(false, 'invalid_request', normalizedId, false, '主机配置无效');
+    }
+    const lease: AccountSessionLease | null = this.port.currentAccountLease();
+    if (lease === null) {
+      return mutationResult(false, 'not_ready', normalizedId, false, '当前本地数据域不可用');
+    }
+    const captured: AccountSessionLease = cloneAccountSessionLease(lease);
+    const records: MoonlightRecord[] | null = this.repository.loadAll(captured);
+    if (records === null) {
+      return mutationResult(false, 'stale_lease', normalizedId, false, '本地数据域已变化');
+    }
+    const current: MoonlightRecord | null = recordWithId(records, normalizedId);
+    const currentHost: MoonlightHost | null = current === null ? null : hostFromRecord(current);
+    if (current === null || currentHost === null) {
+      return mutationResult(false, 'not_found', normalizedId, false, '主机不存在或记录损坏');
+    }
+    // Pairing identity, lock state and list order have dedicated mutation
+    // paths. The editor may change the complete connection configuration but
+    // cannot silently replace those independently protected fields.
+    if (normalizedHost.serverUuid !== currentHost.serverUuid ||
+        normalizedHost.locked !== currentHost.locked ||
+        normalizedHost.userOrder !== currentHost.userOrder) {
+      return mutationResult(false, 'invalid_request', normalizedId, false, '主机身份或受保护状态已变化');
+    }
+    const candidate: MoonlightRecord | null = buildRecord(
+      'host', normalizedId, captured.ownerScopeId, captured, nowMs, current,
+      businessForHost(normalizedHost));
+    if (candidate === null) {
+      return mutationResult(false, 'local_write_failed', normalizedId, false, '无法生成主机记录');
+    }
+    const written: MoonlightRepositoryResult = this.repository.upsert(captured, candidate, 1);
+    return written.ok
+      ? mutationResult(true, 'ok', normalizedId, true)
+      : mutationResult(false, written.code === 'stale_lease' ? 'stale_lease' :
+        'local_write_failed', normalizedId, written.localCommitted, '主机配置保存失败');
+  }
+
+  updateUserOrder(hostId: string, userOrder: number,
+    nowMs: number): MoonlightLocalHostMutationResult {
+    const normalizedId: string = hostId.trim();
+    if (!validNow(nowMs) || normalizedId === '' || !Number.isSafeInteger(userOrder) ||
+        userOrder < 0 || userOrder > 1000000) {
+      return mutationResult(false, 'invalid_request', normalizedId, false, '主机排序无效');
+    }
+    const lease: AccountSessionLease | null = this.port.currentAccountLease();
+    if (lease === null) {
+      return mutationResult(false, 'not_ready', normalizedId, false, '当前本地数据域不可用');
+    }
+    const captured: AccountSessionLease = cloneAccountSessionLease(lease);
+    const records: MoonlightRecord[] | null = this.repository.loadAll(captured);
+    if (records === null) {
+      return mutationResult(false, 'stale_lease', normalizedId, false, '本地数据域已变化');
+    }
+    const current: MoonlightRecord | null = recordWithId(records, normalizedId);
+    const currentHost: MoonlightHost | null = current === null ? null : hostFromRecord(current);
+    if (current === null || currentHost === null) {
+      return mutationResult(false, 'not_found', normalizedId, false, '主机不存在或记录损坏');
+    }
+    if (currentHost.userOrder === userOrder) {
+      return mutationResult(true, 'ok', normalizedId, true);
+    }
+    currentHost.userOrder = userOrder;
+    const candidate: MoonlightRecord | null = buildRecord(
+      'host', normalizedId, captured.ownerScopeId, captured, nowMs, current,
+      businessForHost(currentHost));
+    if (candidate === null) {
+      return mutationResult(false, 'local_write_failed', normalizedId, false, '无法生成主机排序记录');
+    }
+    const written: MoonlightRepositoryResult = this.repository.upsert(captured, candidate, 1);
+    return written.ok
+      ? mutationResult(true, 'ok', normalizedId, true)
+      : mutationResult(false, written.code === 'stale_lease' ? 'stale_lease' :
+        'local_write_failed', normalizedId, written.localCommitted, '主机排序保存失败');
   }
 
   updateDisplayName(hostId: string, displayName: string,

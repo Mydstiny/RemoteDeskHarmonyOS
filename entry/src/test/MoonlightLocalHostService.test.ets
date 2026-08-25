@@ -386,6 +386,57 @@ export default function moonlightLocalHostServiceTest(): void {
       expect((reloaded as MoonlightHost).locked === true).assertTrue();
     });
 
+    it('updates_the_complete_editable_host_configuration_without_replacing_identity', 0, (): void => {
+      const port = new MemoryMoonlightHostPort();
+      const state: MoonlightHostAddState = readyAddState();
+      state.activeOperation = 'save';
+      const service = new MoonlightLocalHostService(port, port);
+      const saved = service.save(state, saveKey(state), 1000);
+      expect(saved.ok).assertTrue();
+      const stored = port.readMoonlightLocalRecord(
+        port.active, saved.hostId).record as MoonlightRecord;
+      const current = moonlightHostFromRecord(stored) as MoonlightHost;
+      const edited: MoonlightHost = {
+        id: current.id,
+        serverUuid: current.serverUuid,
+        displayName: '游戏工作站',
+        addresses: [{ host: 'sunshine.example.test', family: 'hostname', port: 47989 }],
+        preferredAddressKey: 'hostname|sunshine.example.test|47989',
+        httpsPort: 47984,
+        hostType: 'sunshine',
+        wakeOnLan: { enabled: true, mac: 'AA:BB:CC:DD:EE:FF', broadcast: '192.0.2.255' },
+        locked: current.locked,
+        userOrder: current.userOrder
+      };
+      const updated = service.updateHost(edited, 2000);
+      expect(updated.ok).assertTrue();
+      const nextRecord = port.readMoonlightLocalRecord(
+        port.active, saved.hostId).record as MoonlightRecord;
+      const next = moonlightHostFromRecord(nextRecord) as MoonlightHost;
+      expect(next.displayName).assertEqual('游戏工作站');
+      expect(next.addresses[0].host).assertEqual('sunshine.example.test');
+      expect(next.httpsPort as number).assertEqual(47984);
+      expect(next.wakeOnLan.enabled).assertTrue();
+      expect(next.serverUuid).assertEqual(current.serverUuid);
+    });
+
+    it('persists_moonlight_order_and_rejects_editor_identity_replacement', 0, (): void => {
+      const port = new MemoryMoonlightHostPort();
+      const state: MoonlightHostAddState = readyAddState();
+      state.activeOperation = 'save';
+      const service = new MoonlightLocalHostService(port, port);
+      const saved = service.save(state, saveKey(state), 1000);
+      expect(saved.ok).assertTrue();
+      expect(service.updateUserOrder(saved.hostId, 7, 2000).ok).assertTrue();
+      const stored = port.readMoonlightLocalRecord(
+        port.active, saved.hostId).record as MoonlightRecord;
+      const reordered = moonlightHostFromRecord(stored) as MoonlightHost;
+      expect(reordered.userOrder).assertEqual(7);
+      reordered.serverUuid = 'different-server';
+      const rejected = service.updateHost(reordered, 3000);
+      expect(rejected.code).assertEqual('invalid_request');
+    });
+
     it('preserves_the_unified_host_card_lock_when_an_existing_host_is_saved_again', 0, (): void => {
       const port = new MemoryMoonlightHostPort();
       const initialState: MoonlightHostAddState = readyAddState();
