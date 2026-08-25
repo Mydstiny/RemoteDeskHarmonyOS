@@ -1422,7 +1422,7 @@ struct HostListPage {
       const savedAmbientLightEffect: boolean = prefs.getSync('ambientLightEffectEnabled', false) as boolean;
       const savedLiveViewEnabled: boolean =
         prefs.getSync('liveViewEnabled', defaults.liveViewEnabled) as boolean;
-      const savedLiveViewMode: number = prefs.getSync('liveViewMode', 1) as number;
+      const savedLiveViewMode: number = prefs.getSync('liveViewMode', defaults.liveViewMode) as number;
       const savedHostAddMode: string = prefs.getSync('hostAddMode', 'modern') as string;
       const savedVirtualMouseStyle: string =
         prefs.getSync('virtualMouseStyle', defaults.virtualMouseStyle) as string;
@@ -1462,7 +1462,8 @@ struct HostListPage {
       AppStorage.setOrCreate('gripAlignmentEnabled', this.gripAlignmentEnabled);
       this.liveViewEnabled = savedLiveViewEnabled;
       AppStorage.setOrCreate('liveViewEnabled', this.liveViewEnabled);
-      this.liveViewMode = savedLiveViewMode >= 0 && savedLiveViewMode <= 2 ? savedLiveViewMode : 1;
+      this.liveViewMode = savedLiveViewMode >= 0 && savedLiveViewMode <= 2 ?
+        savedLiveViewMode : defaults.liveViewMode;
       AppStorage.setOrCreate('liveViewMode', this.liveViewMode);
       this.fabAddStyle = savedHostAddMode === 'classic' ? 'classic' : 'modern';
       AppStorage.setOrCreate('hostAddMode', this.fabAddStyle);
@@ -1563,6 +1564,7 @@ struct HostListPage {
         prefs.putSync('rdpAuthIdentityModeDefaultVersion', 1);
       }
       if (!prefs.hasSync('liveViewEnabled')) { prefs.putSync('liveViewEnabled', savedLiveViewEnabled); }
+      if (!prefs.hasSync('liveViewMode')) { prefs.putSync('liveViewMode', defaults.liveViewMode); }
       if (!prefs.hasSync('virtualMouseStyle')) { prefs.putSync('virtualMouseStyle', savedVirtualMouseStyle); }
       if (!prefs.hasSync('totpLogoMode')) { prefs.putSync('totpLogoMode', savedTotpLogoMode); }
       if (!prefs.hasSync('groupedHostCards')) { prefs.putSync('groupedHostCards', savedGroupedHostCards); }
@@ -13686,8 +13688,8 @@ struct HostListPage {
                 }, true)
               this.cardDivider()
               // 模式选择: AVSession
-              this.liveViewModeRow('系统媒体胶囊',
-                '有真实视频时尝试 VIDEO_PLAY 画中画；AVSession 负责系统媒体控制胶囊',
+              this.liveViewModeRow('画中画模式',
+                '应用退到后台时优先进入 VIDEO_PLAY 画中画，并同步系统媒体控制胶囊',
                 1)
               this.cardDivider()
               // 模式选择: 普通后台通知。第三方远程连接不能直接创建系统实况窗。

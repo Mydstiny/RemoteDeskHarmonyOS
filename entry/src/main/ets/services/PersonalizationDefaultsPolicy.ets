@@ -21,6 +21,8 @@ export interface PersonalizationDefaults {
   canvasGestureZoomEnabled: boolean;
   virtualMouseStyle: string;
   liveViewEnabled: boolean;
+  /** LiveViewMode.AVSESSION (1): video sessions enter system picture-in-picture. */
+  liveViewMode: number;
   totpLogoMode: string;
   rustdeskPresenceDetectionEnabled: boolean;
   groupedHostCards: boolean;
@@ -57,6 +59,7 @@ export function personalizationDefaults(freshInstall: boolean,
       canvasGestureZoomEnabled: !isDesktopDevice,
       virtualMouseStyle: 'circle',
       liveViewEnabled: true,
+      liveViewMode: 1,
       totpLogoMode: 'logo',
       rustdeskPresenceDetectionEnabled: true,
       groupedHostCards: false,
@@ -74,6 +77,7 @@ export function personalizationDefaults(freshInstall: boolean,
     canvasGestureZoomEnabled: false,
     virtualMouseStyle: 'arrow',
     liveViewEnabled: true,
+    liveViewMode: 1,
     totpLogoMode: 'logo',
     rustdeskPresenceDetectionEnabled: false,
     groupedHostCards: false,

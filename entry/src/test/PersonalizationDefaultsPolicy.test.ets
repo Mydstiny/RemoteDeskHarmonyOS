@@ -35,6 +35,7 @@ export default function personalizationDefaultsPolicyTest(): void {
       expect(defaults.rustdeskPresenceDetectionEnabled).assertFalse();
       expect(defaults.groupedHostCards).assertFalse();
       expect(defaults.liveViewEnabled).assertTrue();
+      expect(defaults.liveViewMode).assertEqual(1);
       expect(defaults.totpLogoMode).assertEqual('logo');
     });
 
@@ -54,6 +55,8 @@ export default function personalizationDefaultsPolicyTest(): void {
       expect(mobileDefaults.rustdeskControlMode).assertEqual(0);
       expect(mobileDefaults.vncControlMode).assertEqual(0);
       expect(mobileDefaults.sshInputMode).assertEqual(1);
+      expect(mobileDefaults.liveViewEnabled).assertTrue();
+      expect(mobileDefaults.liveViewMode).assertEqual(1);
 
       const desktopDefaults = personalizationDefaults(false, true);
       expect(desktopDefaults.sshInputMode).assertEqual(2);
