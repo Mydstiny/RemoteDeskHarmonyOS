@@ -17,6 +17,12 @@ Updated: 2026-08-25 Asia/Shanghai
 - The exact package was installed with existing data preserved and started successfully on physical `SGT-AL10` (`192.168.3.235:38451`); the user confirmed password background/foreground retention.
 - Remaining acceptance: create one new peer-2FA binding (the faulty prior build already deleted the old record), then verify background/process-relaunch readback on the target device. Device Hypium remains blocked by unregistered task `00306054`; independent review/isolated commit are still required before merge.
 
+## Concurrent RustDesk view-only compatibility repair
+
+- Implemented and committed in `1d07fed6`: consume remote `PermissionInfo`, enforce keyboard/clipboard/file denials, publish read-only diagnostics, and allow rate-limited video refresh after any initial frame even when the Windows session has no audio.
+- Focused Rust permission/starvation tests, Rust compile, exact ArkTS test compile, signed HAP assembly, diff check and Light compliance pass on 2026-08-25.
+- Remaining acceptance: reproduce against the reporter's custom Windows 1.4.9 fork after its CM lifecycle is corrected, confirm `仅查看` and continued frames beyond three seconds, and obtain independent review before merge. The reporter owns the separate CM fix.
+
 ## Concurrent VNC preflight alignment repair
 
 - Implemented in the VNC preflight alignment commit: one HostList-owned lock/certificate-or-plaintext/credential flow for every device class, no password UI on RemoteDesktop, one-shot settings/add credentials without duplicate prompting, HostList-owned native auth retry, and endpoint/account-bound credential/plaintext handoffs.

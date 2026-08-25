@@ -3,7 +3,7 @@
   "task": "moonlight-complete-upgrade",
   "branch": "codex/moonlight-complete-upgrade",
   "base": "aeb0cdac589caeac8b75dec5958f4e07ee62faf5",
-  "head": "ce309559b9063d68d8eee4a25122ed3a5a391dd2",
+  "head": "1d07fed6fb66ce29be15d85d39486c661c19b632",
   "phase": "moonlight-host-card-parity-ready-for-device-acceptance",
   "status": "active",
   "next": "Bring a Phone/Pad HDC target online and accept the unified unclassified Moonlight card CRUD, full edit Sheet, long-press multi-select/batch delete and cross-protocol drag ordering; then continue the remaining cloud, Sunshine, controller and lifecycle acceptance.",
@@ -12,7 +12,8 @@
     "A reachable real Sunshine host is required for pair/catalog/launch/first-frame/stop receipts",
     "Physical-controller and user ARM64 device receipts remain external acceptance evidence",
     "ohosTest task 00306054 remains unregistered; focused ArkTS cases compile but are not claimed as device Hypium PASS",
-    "No HDC target was online on 2026-08-25, so the ce309559 unclassified-card gesture/UI checkpoint has build evidence but no device runtime receipt"
+    "No HDC target was online on 2026-08-25, so the ce309559 unclassified-card gesture/UI checkpoint has build evidence but no device runtime receipt",
+    "The RustDesk view-only checkpoint 1d07fed6 still requires independent review and real reproduction against the reporter's custom Windows 1.4.9 fork after its separate CM lifecycle repair"
   ],
   "planPaths": [
     "docs/superpowers/plans/2026-07-28-moonlight-harmonyos-complete-upgrade-plan.md",
@@ -40,7 +41,20 @@
       "entry/src/main/ets/pages/HostListPage.ets",
       "entry/src/main/ets/services/CloudSyncCoordinator.ets",
       "entry/src/test/*Moonlight*Cloud*.test.ets",
-      "entry/src/test/MoonlightStoragePolicy.test.ets"
+      "entry/src/test/MoonlightStoragePolicy.test.ets",
+      "rustdesk_ffi/src/control_inbox.rs",
+      "rustdesk_ffi/src/connector.rs",
+      "rustdesk_ffi/src/lib.rs",
+      "entry/src/main/cpp/rustdesk/rustdesk_bridge.h",
+      "entry/src/main/cpp/rustdesk/rustdesk_bridge.cpp",
+      "entry/src/main/cpp/extensions/extension_loader_napi.cpp",
+      "entry/src/main/cpp/types/librdpnapi/index.d.ts",
+      "entry/src/main/ets/types/rdpnapi.d.ts",
+      "entry/src/main/ets/services/ExtensionLoader.ets",
+      "entry/src/main/ets/services/RustDeskDiagnosticsPolicy.ets",
+      "entry/src/main/ets/components/RustDeskDiagnosticsHud.ets",
+      "entry/src/main/ets/components/VncDiagnosticsHud.ets",
+      "entry/src/main/ets/pages/RemoteDesktop.ets"
     ],
     "lastReceiptId": "moonlight-cloud-compatibility-review-2026-08-19",
     "findings": [
@@ -50,12 +64,12 @@
         "summary": "Foreground startup ordering, account switch during registration, optional-table failure fallback and rejection retry require real cloud/device integration receipts after provisioning."
       }
     ],
-    "reason": "The cloud scope still requires provisioning-dependent P3 integration evidence. Separately, adaptive guidance at 94fa21f8f, persistent visibility through 232f18b9, VNC handoff at 6abd75469, the RDP/RustDesk LAN address-policy increment at a8845458, and the remote keyboard redesign through 10a0c25f passed independent review with P0/P1/P2/P3 all zero."
+    "reason": "The cloud scope still requires provisioning-dependent P3 integration evidence. RustDesk view-only checkpoint 1d07fed6 has focused tests and build gates but still requires independent review and custom-fork runtime evidence. Separately, adaptive guidance at 94fa21f8f, persistent visibility through 232f18b9, VNC handoff at 6abd75469, the RDP/RustDesk LAN address-policy increment at a8845458, and the remote keyboard redesign through 10a0c25f passed independent review with P0/P1/P2/P3 all zero."
   },
   "lastVerification": {
-    "diffCheck": "pass on 2026-08-25 for the unified Moonlight host-card checkpoint ce309559",
-    "testCompile": "pass: exact default@OhosTestCompileArkTS with --analyze=normal --parallel --incremental --no-daemon on 2026-08-25 for ce309559",
-    "assembleHap": "pass: exact assembleHap on ce309559; signed HAP SHA-256 fcd0dbddf0bf0ef9349ae86794b2ebb55fbae888162baabb25e7e09015c12a95",
+    "diffCheck": "pass on 2026-08-25 for the isolated RustDesk view-only checkpoint 1d07fed6 and the full preserved working tree",
+    "testCompile": "pass: exact default@OhosTestCompileArkTS with --analyze=normal --parallel --incremental --no-daemon on 2026-08-25 for 1d07fed6 plus the preserved user-owned HostList drag change",
+    "assembleHap": "pass: exact assembleHap on the same tree; signed HAP SHA-256 d0bc2670588a2ca131e8fd770da404323ce824dd905ab25bca013af0db50f69b",
     "hapPath": "entry/build/default/outputs/default/entry-default-signed.hap",
     "nativeTests": "pass outside the socket-restricted sandbox: 780 passed, 0 failed; Moonlight and adjacent-protocol fixtures all passed",
     "hdcRuntime": "latest remote-keyboard HAP installed and EntryAbility started successfully on phone simulator 127.0.0.1:5555; the existing LoginPage gate blocks live connection UI acceptance; earlier revision-1 startup also passed on PC simulator 127.0.0.1:5557",
@@ -66,6 +80,7 @@
     "lanAddressPolicy": "pass: LAN-discovered RDP/RustDesk require explicit static/dynamic choice; static uses normal cloud sync without refresh, dynamic is owner-scoped local-only with identity-based refresh, and manual entries retain legacy behavior; independent review P0/P1/P2/P3 zero at a8845458",
     "isolation": "dual-ABI ELF pass: GameControllerKit remains Moonlight-session dynamic only with no DT_NEEDED or unresolved OH_Game symbols; optional cloud table remains additive and outside the core-eight baseline",
     "hostCardParity": "pass at source/build level: one unclassified RemoteHost/VNC/Moonlight sequence, namespaced selection and drag identities, full Moonlight edit persistence, unified batch deletion and filtered-order slot preservation; device gesture/UI acceptance pending because HDC returned no targets",
+    "rustdeskViewOnly": "checkpoint 1d07fed6 consumes PermissionInfo and enforces keyboard/clipboard/file denial; silent streams refresh after any initial frame at a 2.5-second rate limit; focused Rust tests 7/7, cargo check, exact Hvigor gates and Light compliance pass; custom-fork runtime and independent review pending",
     "ohosTest": "blocked by unregistered task 00306054; no device-test PASS claimed"
   },
   "updated": "2026-08-25 Asia/Shanghai"

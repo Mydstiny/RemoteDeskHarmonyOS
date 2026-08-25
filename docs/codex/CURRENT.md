@@ -4,7 +4,7 @@
 
 - Task: `moonlight-complete-upgrade`
 - Base: `main@aeb0cdac5`; branch: `codex/moonlight-complete-upgrade`
-- Code checkpoint: `ce309559`; the following state-document commit does not change code.
+- Code checkpoint: `1d07fed6`; the following state-document commit does not change code.
 - Phase: Moonlight unclassified host-card behavior is unified with the other protocols and is ready for device gesture/UI acceptance; the broader complete Moonlight implementation remains in device acceptance.
 - Authoritative plan: `docs/superpowers/plans/2026-07-28-moonlight-harmonyos-complete-upgrade-plan.md`
 - Live ledger: `docs/codex/plans/2026-08-09-moonlight-implementation-ledger.md`
@@ -26,6 +26,14 @@
 - Current uncommitted tree verification on 2026-08-23: exact `default@OhosTestCompileArkTS` PASS, exact signed `assembleHap` PASS, `git diff --check` PASS, Light open-source compliance PASS and official `hap-sign-tool verify-app` PASS. Isolated installed HAP SHA-256: `f308ac7eee0adba1bdda0ae4e20639da928a30e9f1863f812e06d629e204eea7`.
 - That exact HAP was installed with data preservation and `EntryAbility` started successfully on physical device `SGT-AL10` at `192.168.3.235:38451`. The user confirmed password background/foreground retention. The earlier faulty build already deleted the old peer-2FA binding, so one new binding is required before interactive background/process-relaunch readback can be accepted.
 - Device Hypium execution remains blocked because `ohosTest@OhosTestCompileArkTS` is not registered (`00306054`). The working tree also contains pre-existing overlapping Moonlight/keyboard/SSH edits, so this repair is not committed or merged as an isolated checkpoint.
+
+## Concurrent RustDesk view-only compatibility repair
+
+- `1d07fed6` handles official `Misc.permission_info` updates instead of discarding them as `misc/other`. Explicit remote keyboard denial now drops queued keyboard/mouse/touch controls and rejects later input; clipboard and file denials are enforced independently. Older peers that never advertise permissions retain the legacy optimistic behavior.
+- The post-first-frame recovery no longer requires more than 20 video frames or a live audio stream. Once any video frame has arrived, 2.5 seconds without another frame requests a rate-limited refresh, covering silent Windows/view-only sessions that emit only a small initial keyframe burst.
+- A versioned 16-byte permission FFI snapshot reaches C++/NAPI/ArkTS diagnostics. The HUD reports `仅查看` when known, replaces the misleading `协议采样不可用` placeholder, and labels a stale static desktop as `画面静止或停滞` rather than claiming a definite transport failure.
+- Verification on 2026-08-25: focused Rust permission/starvation tests PASS (7/7), `cargo check --lib` PASS, exact `default@OhosTestCompileArkTS` PASS, exact signed `assembleHap` PASS, `git diff --check` PASS and Light compliance PASS. Signed HAP SHA-256 is `d0bc2670588a2ca131e8fd770da404323ce824dd905ab25bca013af0db50f69b`; that package also contains the preserved, uncommitted user-owned HostList drag change.
+- The reporter is separately investigating the custom Windows fork's CM lifecycle. Real custom-fork reproduction and independent review remain pending; this checkpoint is not merged.
 
 ## Concurrent VNC preflight alignment repair
 
