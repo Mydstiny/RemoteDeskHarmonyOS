@@ -4,10 +4,18 @@
 
 - Task: `moonlight-complete-upgrade`
 - Base: `main@aeb0cdac5`; branch: `codex/moonlight-complete-upgrade`
-- Code checkpoint: `10a0c25f`; the following state-document commit does not change reviewed code.
-- Phase: the complete Moonlight implementation remains in device acceptance; the independently reviewed adaptive guidance, durable visibility policy, RDP/RustDesk LAN-discovery address policy and remote virtual-keyboard/shortcut redesign are committed.
+- Code checkpoint: `ce309559`; the following state-document commit does not change code.
+- Phase: Moonlight unclassified host-card behavior is unified with the other protocols and is ready for device gesture/UI acceptance; the broader complete Moonlight implementation remains in device acceptance.
 - Authoritative plan: `docs/superpowers/plans/2026-07-28-moonlight-harmonyos-complete-upgrade-plan.md`
 - Live ledger: `docs/codex/plans/2026-08-09-moonlight-implementation-ledger.md`
+
+## Moonlight unclassified host-card parity
+
+- `ce309559` removes the separate Moonlight row from the unclassified host page and renders RemoteHost/VNC/Moonlight cards through one ordered card sequence with protocol-namespaced selection, popup and drag identities. Legacy bare RemoteHost order values remain readable.
+- Moonlight now follows the common card contract for tap expansion, left-swipe edit/lock, right-swipe delete, desktop action popup, lock gating, long-press entry into multi-select, unified select-all/batch delete and drag reorder across protocols. Filtered-out cards retain their original ordering slots.
+- The Moonlight editor is a HostList bindSheet with editable display name, preferred endpoint/port, HTTPS control port, Sunshine/GameStream type and Wake-on-LAN settings. Pairing identity, lock state and order are immutable in this editor; owner-scoped repository mutations retain normal cloud-journal behavior.
+- Current verification on 2026-08-25: exact `default@OhosTestCompileArkTS` PASS, exact signed `assembleHap` PASS, `git diff --check` PASS and Light open-source compliance PASS. Signed HAP SHA-256: `fcd0dbddf0bf0ef9349ae86794b2ebb55fbae888162baabb25e7e09015c12a95`.
+- `hdc list targets -v` returned no targets, so no phone/Pad long-press, multi-select, drag or edit-Sheet runtime PASS is claimed for this checkpoint.
 
 ## Concurrent RustDesk persistence repair
 

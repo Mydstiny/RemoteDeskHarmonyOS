@@ -1,6 +1,13 @@
 # Moonlight Complete Upgrade Queue
 
-Updated: 2026-08-23 Asia/Shanghai
+Updated: 2026-08-25 Asia/Shanghai
+
+## Moonlight unclassified host-card parity
+
+- Implemented and committed in `ce309559`: one unclassified RemoteHost/VNC/Moonlight card sequence, legacy order compatibility, common swipe/desktop actions, lock-gated full Moonlight edit Sheet, unified long-press multi-select/batch delete and cross-protocol drag ordering.
+- Focused policy/service cases cover mixed and legacy order, filtered-card slot preservation, cross-protocol moves, collision-proof selection keys, full editable Moonlight persistence, order persistence and pairing-identity fencing.
+- Exact ArkTS test compile, signed HAP assembly, diff check and Light compliance pass on 2026-08-25. Signed HAP SHA-256 is `fcd0dbddf0bf0ef9349ae86794b2ebb55fbae888162baabb25e7e09015c12a95`.
+- Remaining acceptance: install the checkpoint when a Phone/Pad HDC target is available and exercise add/read/edit/lock/delete, long-press select-all/batch delete, cancel/commit reorder and Moonlight↔other-protocol drag movement. No HDC target was online at closeout, so runtime UI acceptance remains pending.
 
 ## Concurrent RustDesk persistence repair
 
