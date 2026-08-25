@@ -423,7 +423,6 @@ import {
   moonlightSettingsRouteSpec,
   settingsLeafSheetUsesSystemCloseButton,
   settingsLeafOpenDelayMs,
-  virtualKeyboardSettingsLeafSheetHeight,
   virtualKeyboardSettingsRouteSpec,
   vncSettingsLeafSheetHeight
 } from '../services/SettingsSheetRoutePolicy';
@@ -13116,15 +13115,15 @@ struct HostListPage {
       // shrink for short lessons and grow only up to the live window.
       return SheetSize.FIT_CONTENT;
     }
-    if (this.settingsLeafSheetMode === SETTINGS_SHEET_VIRTUAL_KEYBOARD_CUSTOM) {
+    // Virtual-keyboard leaves own their scrolling body. Let the native large
+    // sheet follow the current phone, tablet, or freeform-window height.
+    if (this.isVirtualKeyboardSettingsLeafSheet()) {
       return SheetSize.LARGE;
     }
     const diagnosticHeight: number = diagnosticLogSettingsLeafSheetHeight(this.settingsLeafSheetMode);
     if (diagnosticHeight > 0) { return diagnosticHeight; }
     const moonlightHeight: number = moonlightSettingsLeafSheetHeight(this.settingsLeafSheetMode);
     if (moonlightHeight > 0) { return moonlightHeight; }
-    const keyboardHeight: number = virtualKeyboardSettingsLeafSheetHeight(this.settingsLeafSheetMode);
-    if (keyboardHeight > 0) { return keyboardHeight; }
     const vncHeight: number = vncSettingsLeafSheetHeight(this.settingsLeafSheetMode);
     return vncHeight > 0 ? vncHeight : SheetSize.FIT_CONTENT;
   }
