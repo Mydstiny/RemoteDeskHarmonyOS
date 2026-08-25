@@ -197,6 +197,7 @@ import moonlightRecordTest from './MoonlightRecord.test';
 import moonlightRecordPolicyTest from './MoonlightRecordPolicy.test';
 import moonlightCapabilityPolicyTest from './MoonlightCapabilityPolicy.test';
 import moonlightSettingsPolicyTest from './MoonlightSettingsPolicy.test';
+import moonlightImeTextInputPolicyTest from './MoonlightImeTextInputPolicy.test';
 import moonlightRecordConflictPolicyTest from './MoonlightRecordConflictPolicy.test';
 import moonlightSessionStateTest from './MoonlightSessionState.test';
 import moonlightSessionRecoveryPolicyTest from './MoonlightSessionRecoveryPolicy.test';
@@ -454,6 +455,7 @@ export default function testsuite() {
   hostProtocolPickerPolicyTest();
   moonlightHostAddFlowPolicyTest();
   moonlightUiPolicyTest();
+  moonlightImeTextInputPolicyTest();
   moonlightSettingsLocalServiceTest();
   moonlightLocalHostServiceTest();
   moonlightSessionCoordinatorTest();

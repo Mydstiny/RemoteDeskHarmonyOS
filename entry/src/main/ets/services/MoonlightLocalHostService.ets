@@ -318,6 +318,7 @@ export class MoonlightLocalHostService {
       ? business['httpsPort'] : MOONLIGHT_DEFAULT_HTTPS_PORT;
     nextBusiness['hostType'] = business['hostType'];
     nextBusiness['wakeOnLan'] = business['wakeOnLan'];
+    nextBusiness['locked'] = business['locked'] === true;
     nextBusiness['userOrder'] = business['userOrder'];
     const candidate: MoonlightRecord | null = buildRecord(
       'host', normalizedId, captured.ownerScopeId, captured, nowMs, current, nextBusiness);
@@ -329,6 +330,53 @@ export class MoonlightLocalHostService {
       ? mutationResult(true, 'ok', normalizedId, true)
       : mutationResult(false, written.code === 'stale_lease' ? 'stale_lease' :
         'local_write_failed', normalizedId, written.localCommitted, '主机名称保存失败');
+  }
+
+  updateLocked(hostId: string, locked: boolean,
+    nowMs: number): MoonlightLocalHostMutationResult {
+    const normalizedId: string = hostId.trim();
+    if (!validNow(nowMs) || normalizedId === '' || typeof locked !== 'boolean') {
+      return mutationResult(false, 'invalid_request', normalizedId, false, '主机锁定状态无效');
+    }
+    const lease: AccountSessionLease | null = this.port.currentAccountLease();
+    if (lease === null) {
+      return mutationResult(false, 'not_ready', normalizedId, false, '当前本地数据域不可用');
+    }
+    const captured: AccountSessionLease = cloneAccountSessionLease(lease);
+    const records: MoonlightRecord[] | null = this.repository.loadAll(captured);
+    if (records === null) {
+      return mutationResult(false, 'stale_lease', normalizedId, false, '本地数据域已变化');
+    }
+    const current: MoonlightRecord | null = recordWithId(records, normalizedId);
+    if (current === null || current.recordType !== 'host') {
+      return mutationResult(false, 'not_found', normalizedId, false, '主机不存在');
+    }
+    const business: Record<string, Object> | null = moonlightRecordBusinessPayload(current);
+    if (business === null) {
+      return mutationResult(false, 'local_write_failed', normalizedId, false, '主机记录损坏');
+    }
+    const nextBusiness: Record<string, Object> = {};
+    nextBusiness['schemaVersion'] = business['schemaVersion'];
+    nextBusiness['serverUuid'] = business['serverUuid'];
+    nextBusiness['displayName'] = business['displayName'];
+    nextBusiness['addresses'] = business['addresses'];
+    nextBusiness['preferredAddressKey'] = business['preferredAddressKey'];
+    nextBusiness['httpsPort'] = typeof business['httpsPort'] === 'number'
+      ? business['httpsPort'] : MOONLIGHT_DEFAULT_HTTPS_PORT;
+    nextBusiness['hostType'] = business['hostType'];
+    nextBusiness['wakeOnLan'] = business['wakeOnLan'];
+    nextBusiness['locked'] = locked;
+    nextBusiness['userOrder'] = business['userOrder'];
+    const candidate: MoonlightRecord | null = buildRecord(
+      'host', normalizedId, captured.ownerScopeId, captured, nowMs, current, nextBusiness);
+    if (candidate === null) {
+      return mutationResult(false, 'local_write_failed', normalizedId, false, '无法生成主机记录');
+    }
+    const written: MoonlightRepositoryResult = this.repository.upsert(captured, candidate, 1);
+    return written.ok
+      ? mutationResult(true, 'ok', normalizedId, true)
+      : mutationResult(false, written.code === 'stale_lease' ? 'stale_lease' :
+        'local_write_failed', normalizedId, written.localCommitted, '主机锁定状态保存失败');
   }
 
   deleteHost(hostId: string, nowMs: number): MoonlightLocalHostMutationResult {
@@ -441,6 +489,7 @@ export class MoonlightLocalHostService {
         verification.httpsPort,
       hostType: verification.hostType,
       wakeOnLan: { enabled: false, mac: '', broadcast: '' },
+      locked: false,
       userOrder: 0
     })) {
       return saveResult(false, 'invalid_state', false, '', '', '主机信息不完整');
@@ -458,11 +507,16 @@ export class MoonlightLocalHostService {
       }
     }
     const currentHost: MoonlightRecord | null = recordWithId(records, hostId);
-    const userOrder: number = currentHost === null ? nextUserOrder(records) : (() => {
-      const payload: Record<string, Object> | null = moonlightRecordBusinessPayload(currentHost);
-      return payload !== null && typeof payload['userOrder'] === 'number'
-        ? payload['userOrder'] as number : nextUserOrder(records);
-    })();
+    const currentHostBusiness: Record<string, Object> | null = currentHost === null ? null :
+      moonlightRecordBusinessPayload(currentHost);
+    const userOrder: number = currentHostBusiness !== null &&
+      typeof currentHostBusiness['userOrder'] === 'number' ?
+      currentHostBusiness['userOrder'] as number : nextUserOrder(records);
+    // Re-verifying or repairing an existing Sunshine record updates its
+    // endpoint/trust material, but must never silently unlock the unified host
+    // card. Legacy records without this field remain intentionally unlocked.
+    const locked: boolean = currentHostBusiness !== null &&
+      currentHostBusiness['locked'] === true;
     const hostType: MoonlightHostType = verification.hostType;
     const host: MoonlightHost = {
       id: hostId,
@@ -474,6 +528,7 @@ export class MoonlightLocalHostService {
         verification.httpsPort,
       hostType: hostType,
       wakeOnLan: { enabled: false, mac: '', broadcast: '' },
+      locked: locked,
       userOrder: userOrder
     };
     if (!moonlightHostIsValid(host)) {
@@ -488,6 +543,7 @@ export class MoonlightLocalHostService {
     hostBusiness['httpsPort'] = host.httpsPort as number;
     hostBusiness['hostType'] = host.hostType;
     hostBusiness['wakeOnLan'] = host.wakeOnLan;
+    hostBusiness['locked'] = host.locked === true;
     hostBusiness['userOrder'] = host.userOrder;
     const hostRecord: MoonlightRecord | null = buildRecord(
       'host', hostId, captured.ownerScopeId, captured, nowMs, currentHost, hostBusiness);

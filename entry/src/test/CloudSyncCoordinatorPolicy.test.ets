@@ -8,6 +8,7 @@ import {
   CloudSyncRetryRecord,
   CloudSyncCallbackIdentity,
   CloudSyncWatchdogState,
+  cloudDataChangeShouldRequestPull,
   cloudLocalMutationAllowed,
   cloudSyncBlockedByLocalRestore,
   cloudSyncCallbackIdentityMatches,
@@ -273,6 +274,17 @@ export default function cloudSyncCoordinatorPolicyTest(): void {
       expect(cloudLocalMutationAllowed(
         false, false, false, true, false, true)).assertFalse();
     });
+
+    it('does_not_feed_a_cloud_first_materialization_event_back_into_the_queue',
+      0, (): void => {
+        expect(cloudDataChangeShouldRequestPull(false, false)).assertTrue();
+        expect(cloudDataChangeShouldRequestPull(true, false)).assertFalse();
+        expect(cloudDataChangeShouldRequestPull(false, true)).assertFalse();
+        expect(cloudDataChangeShouldRequestPull(
+          false, false, 1100, 1000, 3000)).assertFalse();
+        expect(cloudDataChangeShouldRequestPull(
+          false, false, 4000, 1000, 3000)).assertTrue();
+      });
 
     it('forces_first_bootstrap_to_cloud_first_and_defers_automatic_uploads', 0, (): void => {
       expect(shouldUseCloudFirstForInitialBootstrap(false)).assertTrue();

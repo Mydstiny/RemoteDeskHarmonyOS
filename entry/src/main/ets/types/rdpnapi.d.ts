@@ -24,6 +24,8 @@ declare module 'librdpnapi.so' {
   export function getDisconnectState(requestId: number): number;
 
   export function sendKey(sessionId: number, scancode: number, pressed: boolean): void;
+  export function sendKeySequence(sessionId: number, keyCodes: number[]): boolean;
+  export function sendKeyEvents(sessionId: number, keyCodes: number[], pressed: boolean[]): boolean;
   export function sendMouse(sessionId: number, x: number, y: number, button: number, pressed: boolean): void;
   export function sendMouseWheel(sessionId: number, x: number, y: number, delta: number): void;
   export function sendRustDeskTouchpadWheel(sessionId: number, x: number, y: number): boolean;
@@ -187,6 +189,25 @@ declare module 'librdpnapi.so' {
   export function detachVideoPipeline(decoderHandle: number): boolean;
   export function requestDecoderRecovery(decoderHandle: number): boolean;
   export function rebindActiveVideoPipeline(): boolean;
+  export interface HardwareVideoDecoderCapability {
+    available: boolean;
+    name: string;
+    minWidth: number;
+    maxWidth: number;
+    minHeight: number;
+    maxHeight: number;
+    minFps: number;
+    maxFps: number;
+    widthAlignment: number;
+    heightAlignment: number;
+    lowLatency: boolean;
+  }
+  export interface HardwareVideoDecoderCapabilities {
+    h264: HardwareVideoDecoderCapability;
+    hevc: HardwareVideoDecoderCapability;
+    av1: HardwareVideoDecoderCapability;
+  }
+  export function getHardwareVideoDecoderCapabilities(): HardwareVideoDecoderCapabilities;
 
   export function initAudioPlayer(sampleRate?: number, channels?: number): number;
   export function destroyAudioPlayer(handle: number): void;

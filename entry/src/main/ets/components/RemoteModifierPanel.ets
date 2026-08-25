@@ -11,6 +11,8 @@ import {
   RemoteCustomShortcutKeyOption,
   remoteCustomShortcutKeyGroupForKeyCode,
   remoteCustomShortcutKeyOptions,
+  remoteCustomShortcutAvailableOnPlatform,
+  remoteCustomShortcutKeyAvailableOnPlatform,
   remoteCustomShortcutLabel,
   remoteCustomShortcutLabelForPlatform
 } from '../services/RemoteCustomShortcutPolicy';
@@ -53,6 +55,8 @@ export struct RemoteModifierPanel {
   @Prop maxPanelHeight: number = 480;
   @Prop customizationEnabled: boolean = false;
   @Prop customShortcuts: Array<RemoteCustomShortcut> = [];
+  /** Optional session-surface emphasis; empty keeps the global accent. */
+  @Prop emphasisColor: string = '';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
   @StorageLink(REMOTE_KEYBOARD_SHORTCUT_PLATFORM_KEY) shortcutPlatformMode: string = 'windows';
@@ -151,6 +155,10 @@ export struct RemoteModifierPanel {
 
   private selectShortcutPlatform(platform: RemoteShortcutPlatform): void {
     this.shortcutPlatformMode = platform;
+    if (!remoteCustomShortcutKeyAvailableOnPlatform(this.customActionKeyCode, platform)) {
+      this.customKeyGroup = 'functions';
+      this.customActionKeyCode = 2090;
+    }
     // 首先回到通用编辑键，避免 macOS 桌面分类中合法的
     // Control 组合被误解为平台没有切换。
     this.shortcutCategory = 'editing';
@@ -282,8 +290,14 @@ export struct RemoteModifierPanel {
 
   private customDraftKeyCodes(): Array<number> {
     const result: Array<number> = this.customModifierCodes.slice(0);
-    result.push(this.customActionKeyCode);
+    result.push(remoteCustomShortcutKeyAvailableOnPlatform(
+      this.customActionKeyCode, this.shortcutPlatform()) ? this.customActionKeyCode : 2090);
     return result;
+  }
+
+  private visibleCustomShortcuts(): Array<RemoteCustomShortcut> {
+    return this.customShortcuts.filter((shortcut: RemoteCustomShortcut): boolean =>
+      remoteCustomShortcutAvailableOnPlatform(shortcut, this.shortcutPlatform()));
   }
 
   private beginCustomShortcutEditor(shortcut: RemoteCustomShortcut | null = null): void {
@@ -332,6 +346,10 @@ export struct RemoteModifierPanel {
     return 'rgba(12,17,26,0.76)';
   }
 
+  private activeColor(): string {
+    return this.emphasisColor.trim().length > 0 ? this.emphasisColor : this.accentColor;
+  }
+
   private panelBorder(): string {
     return 'rgba(255,255,255,0.10)';
   }
@@ -345,19 +363,19 @@ export struct RemoteModifierPanel {
   }
 
   private modOnceBg(): string {
-    return this.accentColor + '44';
+    return this.activeColor() + '44';
   }
 
   private modOnceBorder(): string {
-    return this.accentColor;
+    return this.activeColor();
   }
 
   private modLockedBg(): string {
-    return this.accentColor + '66';
+    return this.activeColor() + '66';
   }
 
   private modLockedBorder(): string {
-    return this.accentColor + 'CC';
+    return this.activeColor() + 'CC';
   }
 
   private fnActiveBg(): string {
@@ -420,8 +438,9 @@ export struct RemoteModifierPanel {
         })
         .shadow({
           radius: this.isPressed('mod-' + mod) ? 20 : (this.isModLocked(mod) ? 18 : (this.isModActive(mod) ? 14 : 6)),
-          color: this.isPressed('mod-' + mod) ? 'rgba(255,255,255,0.24)' : (this.isModLocked(mod) ? this.accentColor + '66' :
-            (this.isModActive(mod) ? this.accentColor + '44' : 'rgba(0,0,0,0.20)')),
+          color: this.isPressed('mod-' + mod) ? 'rgba(255,255,255,0.24)' :
+            (this.isModLocked(mod) ? this.activeColor() + '66' :
+              (this.isModActive(mod) ? this.activeColor() + '44' : 'rgba(0,0,0,0.20)')),
           offsetY: 1
         })
       if (this.isModLocked(mod)) {
@@ -529,8 +548,8 @@ export struct RemoteModifierPanel {
       .height(34).layoutWeight(1)
       .textAlign(TextAlign.Center)
       .borderRadius(10)
-      .backgroundColor(this.keyBgFor('key-Enter', this.accentColor + '99'))
-      .border({ width: 1, color: this.keyBorderFor('key-Enter', this.accentColor) })
+      .backgroundColor(this.keyBgFor('key-Enter', this.activeColor() + '99'))
+      .border({ width: 1, color: this.keyBorderFor('key-Enter', this.activeColor()) })
       .margin({ left: 3, right: 3 })
       .scale({ x: this.isPressed('key-Enter') ? 0.96 : 1, y: this.isPressed('key-Enter') ? 0.96 : 1 })
       .animation({ duration: 80, curve: Curve.EaseOut })
@@ -601,7 +620,7 @@ export struct RemoteModifierPanel {
       .height(34).layoutWeight(1).fontSize(11)
       .fontColor(this.shortcutPlatform() === platform ? '#FFFFFF' : 'rgba(255,255,255,0.62)')
       .backgroundColor(this.shortcutPlatform() === platform ?
-        this.accentColor : 'rgba(255,255,255,0.04)')
+        this.activeColor() : 'rgba(255,255,255,0.04)')
       .borderRadius(9)
       .onClick((): void => { this.selectShortcutPlatform(platform); })
       .accessibilityText('切换到 ' + label + ' 快捷键')
@@ -615,7 +634,7 @@ export struct RemoteModifierPanel {
       .fontWeight(this.panelSection === section ? FontWeight.Bold : FontWeight.Normal)
       .borderRadius(9)
       .backgroundColor(this.panelSection === section ?
-        this.accentColor + '88' : 'rgba(255,255,255,0.03)')
+        this.activeColor() + '88' : 'rgba(255,255,255,0.03)')
       .onClick((): void => {
         if (section !== 'functions' || this.functionKeysVisible) {
           this.panelSection = section;
@@ -634,7 +653,7 @@ export struct RemoteModifierPanel {
       .height(28).padding({ left: 10, right: 10 }).textAlign(TextAlign.Center)
       .borderRadius(8)
       .backgroundColor(this.shortcutCategory === category ?
-        this.accentColor + '66' : 'rgba(255,255,255,0.03)')
+        this.activeColor() + '66' : 'rgba(255,255,255,0.03)')
       .onClick((): void => { this.shortcutCategory = category; })
   }
 
@@ -674,9 +693,9 @@ export struct RemoteModifierPanel {
       .height(32).layoutWeight(1)
       .textAlign(TextAlign.Center)
       .borderRadius(9)
-      .backgroundColor(this.customModifierActive(keyCode) ? this.accentColor + '88' : this.keyBg())
+      .backgroundColor(this.customModifierActive(keyCode) ? this.activeColor() + '88' : this.keyBg())
       .border({ width: 1, color: this.customModifierActive(keyCode) ?
-        this.accentColor : this.keyBorder() })
+        this.activeColor() : this.keyBorder() })
       .margin({ left: 2, right: 2 })
       .onClick((): void => { this.toggleCustomModifier(keyCode); })
   }
@@ -689,7 +708,7 @@ export struct RemoteModifierPanel {
       .height(28).layoutWeight(1)
       .textAlign(TextAlign.Center)
       .borderRadius(8)
-      .backgroundColor(this.customKeyGroup === group ? this.accentColor + '66' : 'rgba(255,255,255,0.03)')
+      .backgroundColor(this.customKeyGroup === group ? this.activeColor() + '66' : 'rgba(255,255,255,0.03)')
       .margin({ left: 2, right: 2 })
       .onClick((): void => {
         this.customKeyGroup = group;
@@ -708,9 +727,9 @@ export struct RemoteModifierPanel {
       .textAlign(TextAlign.Center)
       .borderRadius(8)
       .backgroundColor(this.customActionKeyCode === option.keyCode ?
-        this.accentColor + '88' : this.keyBg())
+        this.activeColor() + '88' : this.keyBg())
       .border({ width: 0.5, color: this.customActionKeyCode === option.keyCode ?
-        this.accentColor : this.keyBorder() })
+        this.activeColor() : this.keyBorder() })
       .onClick((): void => { this.customActionKeyCode = option.keyCode; })
   }
 
@@ -722,19 +741,20 @@ export struct RemoteModifierPanel {
           .fontSize(10).fontColor('rgba(255,255,255,0.58)')
         Blank()
         Text('＋ 新建')
-          .fontSize(10).fontColor(this.accentColor)
+          .fontSize(10).fontColor(this.activeColor())
           .padding({ left: 8, right: 4, top: 4, bottom: 4 })
           .onClick((): void => { this.beginCustomShortcutEditor(); })
       }.width('100%').margin({ top: 8, bottom: 4 })
-      if (this.customShortcuts.length === 0) {
-        Text('可保存最多 32 个组合键，所有图形远程协议共用')
+      if (this.visibleCustomShortcuts().length === 0) {
+        Text(this.customShortcuts.length === 0 ? '可保存最多 32 个组合键，所有图形远程协议共用' :
+          '当前平台没有可用的已保存组合键；F21–F24 仅支持 Windows')
           .fontSize(9).fontColor('rgba(255,255,255,0.35)')
           .height(34).width('100%').textAlign(TextAlign.Center)
           .backgroundColor('rgba(255,255,255,0.025)').borderRadius(8)
       } else {
         Scroll() {
           Row({ space: 6 }) {
-            ForEach(this.customShortcuts, (shortcut: RemoteCustomShortcut): void => {
+            ForEach(this.visibleCustomShortcuts(), (shortcut: RemoteCustomShortcut): void => {
               Row() {
                 Text(remoteCustomShortcutLabelForPlatform(
                   shortcut.keyCodes, this.shortcutPlatform()))
@@ -746,7 +766,7 @@ export struct RemoteModifierPanel {
                     this.finishShortcutAction();
                   })
                 Text('✎')
-                  .fontSize(10).fontColor(this.accentColor)
+                  .fontSize(10).fontColor(this.activeColor())
                   .padding({ left: 6, right: 5, top: 7, bottom: 7 })
                   .onClick((): void => { this.beginCustomShortcutEditor(shortcut); })
                 Text('×')
@@ -825,7 +845,7 @@ export struct RemoteModifierPanel {
           .padding({ left: 14, right: 14, top: 8, bottom: 8 })
           .borderRadius(9)
           .backgroundColor(remoteCustomShortcutLabel(this.customDraftKeyCodes()).length > 0 ?
-            this.accentColor : 'rgba(255,255,255,0.05)')
+            this.activeColor() : 'rgba(255,255,255,0.05)')
           .enabled(remoteCustomShortcutLabel(this.customDraftKeyCodes()).length > 0)
           .onClick((): void => { this.saveCustomShortcutEditor(); })
       }.width('100%').margin({ top: 7 })
@@ -1086,7 +1106,8 @@ export struct RemoteModifierPanel {
 
               Row({ space: 5 }) {
                 this.SectionChoice('shortcuts', '快捷键')
-                this.SectionChoice('functions', 'F1–F12 / 导航')
+                this.SectionChoice('functions', this.shortcutPlatform() === 'macos' ?
+                  'F1–F20 / 导航' : 'F1–F24 / 导航')
                 this.SectionChoice('custom', '自定义')
               }.width('100%').margin({ top: 9, bottom: 8 })
 

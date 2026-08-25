@@ -2032,6 +2032,25 @@ private:
                 configuration.gamepadMask = effectiveLaunchConfiguration.gamepadMask;
                 configuration.persistGamepads =
                     effectiveLaunchConfiguration.persistGamepads;
+                switch (effectiveLaunchConfiguration.videoCodec) {
+                    case MoonlightBridgeLaunchConfiguration::VideoCodec::Hevc:
+                        configuration.videoCodec =
+                            MoonlightLaunchConfiguration::VideoCodec::Hevc;
+                        break;
+                    case MoonlightBridgeLaunchConfiguration::VideoCodec::Av1:
+                        configuration.videoCodec =
+                            MoonlightLaunchConfiguration::VideoCodec::Av1;
+                        break;
+                    case MoonlightBridgeLaunchConfiguration::VideoCodec::H264:
+                        configuration.videoCodec =
+                            MoonlightLaunchConfiguration::VideoCodec::H264;
+                        break;
+                }
+                configuration.resolutionPolicy =
+                    effectiveLaunchConfiguration.resolutionPolicy ==
+                            MoonlightBridgeLaunchConfiguration::ResolutionPolicy::HostCapability ?
+                        MoonlightLaunchConfiguration::ResolutionPolicy::HostCapability :
+                        MoonlightLaunchConfiguration::ResolutionPolicy::Exact;
                 MoonlightLaunchRequest call;
                 call.context = std::move(context);
                 call.appId = request.appId;
@@ -2071,6 +2090,14 @@ private:
             source.sessionServerInfo.has_value() &&
             source.sessionAddress.has_value() &&
             !source.sessionAddress->empty()) {
+            if (source.effectiveLaunchConfiguration.has_value()) {
+                effectiveLaunchConfiguration.width =
+                    source.effectiveLaunchConfiguration->width;
+                effectiveLaunchConfiguration.height =
+                    source.effectiveLaunchConfiguration->height;
+                effectiveLaunchConfiguration.refreshRate =
+                    source.effectiveLaunchConfiguration->refreshRate;
+            }
             MoonlightProductLaunchStage stage;
             stage.key = request.key;
             stage.hostId = request.hostId;

@@ -178,6 +178,24 @@ class ProductInputFixture final {
         return MoonlightProductInputRuntime::process().sendPointer(key, request);
     }
 
+    bool sendAbsolutePointerButton(double x, double y,
+                                   MoonlightPointerButton button, bool pressed) {
+        MoonlightProductPointerRequest request;
+        request.action = MoonlightProductPointerAction::AbsoluteButton;
+        request.x = x;
+        request.y = y;
+        request.contentLeft = 0.0;
+        request.contentTop = 50.0;
+        request.contentWidth = 1000.0;
+        request.contentHeight = 500.0;
+        request.referenceWidth = 1920U;
+        request.referenceHeight = 1080U;
+        request.geometryGeneration = 1U;
+        request.button = button;
+        request.pressed = pressed;
+        return MoonlightProductInputRuntime::process().sendPointer(key, request);
+    }
+
     bool sendDirectTouch(MoonlightTouchPhase phase) {
         MoonlightProductTouchRequest request;
         request.contactId = 1U;
@@ -374,6 +392,23 @@ RDP_TEST_CASE(moonlight_product_input_snapshot_retries_exact_pointer_release) {
     RDP_ASSERT(recovered.inputReady);
     RDP_ASSERT_EQ(otherWireCalls(), callsBeforeRetry + 1U);
     RDP_ASSERT(!recovered.inputMayBeStuck);
+    RDP_ASSERT(fixture.finish());
+}
+
+RDP_TEST_CASE(moonlight_product_input_absolute_button_is_atomic_and_bar_safe) {
+    ProductInputFixture fixture;
+    RDP_ASSERT(fixture.start());
+    RDP_ASSERT(fixture.sendAbsolutePointerButton(
+        500.0, 300.0, MoonlightPointerButton::Left, true));
+    RDP_ASSERT_EQ(otherWireCalls(), static_cast<std::size_t>(2));
+
+    RDP_ASSERT(fixture.sendAbsolutePointerButton(
+        500.0, 10.0, MoonlightPointerButton::Right, true));
+    RDP_ASSERT_EQ(otherWireCalls(), static_cast<std::size_t>(2));
+
+    RDP_ASSERT(fixture.sendAbsolutePointerButton(
+        500.0, 10.0, MoonlightPointerButton::Left, false));
+    RDP_ASSERT_EQ(otherWireCalls(), static_cast<std::size_t>(3));
     RDP_ASSERT(fixture.finish());
 }
 

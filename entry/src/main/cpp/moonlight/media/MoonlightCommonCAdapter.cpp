@@ -5,6 +5,10 @@
 #include "moonlight/upstream/moonlight-common-c/src/Limelight.h"
 
 #if !defined(RDP_TESTS_ONLY)
+#include <hilog/log.h>
+#endif
+
+#if !defined(RDP_TESTS_ONLY)
 extern "C" {
 extern STREAM_CONFIGURATION StreamConfig;
 }
@@ -12,7 +16,9 @@ extern STREAM_CONFIGURATION StreamConfig;
 
 #include <algorithm>
 #include <atomic>
+#include <cstdarg>
 #include <condition_variable>
+#include <cstdio>
 #include <cstring>
 #include <deque>
 #include <limits>
@@ -21,6 +27,13 @@ extern STREAM_CONFIGURATION StreamConfig;
 #include <thread>
 #include <type_traits>
 #include <utility>
+
+#if !defined(RDP_TESTS_ONLY)
+#undef LOG_DOMAIN
+#undef LOG_TAG
+#define LOG_DOMAIN 0x0042
+#define LOG_TAG "MOON_COMMON_C"
+#endif
 
 namespace remotedesk::moonlight {
 namespace {
@@ -690,6 +703,10 @@ public:
     virtual int start(const WireProjection& wire) = 0;
     virtual void interrupt() = 0;
     virtual void stop() = 0;
+    // Request a decoder refresh without returning DR_NEED_IDR from the video
+    // callback. The latter makes common-c hard-gate all predicted frames,
+    // which is only appropriate when the decoder cannot accept them.
+    virtual void requestIdr() noexcept {}
 };
 
 class NullMediaPort final : public MoonlightCommonCMediaPort {
@@ -1017,7 +1034,29 @@ void commonStageComplete(int stage) { (void)routeStageComplete(stage); }
 void commonStageFailed(int stage, int error) { (void)routeStageFailed(stage, error); }
 void commonConnectionStarted() { (void)routeConnectionStarted(); }
 void commonConnectionTerminated(int error) { (void)routeConnectionTerminated(error); }
-void commonLogMessage(const char*, ...) { (void)routeLogNotice(); }
+void commonLogMessage(const char* format, ...) {
+    if (format != nullptr) {
+        char message[1024] {};
+        va_list arguments;
+        va_start(arguments, format);
+        const int written = std::vsnprintf(
+            message, sizeof(message), format, arguments);
+        va_end(arguments);
+        if (written > 0) {
+            std::size_t length = std::min<std::size_t>(
+                static_cast<std::size_t>(written), sizeof(message) - 1U);
+            while (length != 0U &&
+                   (message[length - 1U] == '\n' ||
+                    message[length - 1U] == '\r')) {
+                message[--length] = '\0';
+            }
+            if (length != 0U) {
+                OH_LOG_INFO(LOG_APP, "%{public}s", message);
+            }
+        }
+    }
+    (void)routeLogNotice();
+}
 void commonRumble(unsigned short, unsigned short, unsigned short) {}
 void commonConnectionStatus(int status) { (void)routeConnectionStatus(status); }
 void commonHdrMode(bool enabled) { (void)routeHdrMode(enabled); }
@@ -1137,6 +1176,7 @@ public:
         return result;
     }
     void interrupt() override { LiInterruptConnection(); }
+    void requestIdr() noexcept override { LiRequestIdrFrame(); }
     void stop() override {
         LiStopConnection();
         // LiStopConnection() joins/stops every stream before returning.
@@ -2131,7 +2171,27 @@ int Invocation::mapVideoSubmitResultLocked(
         decodeUnit.frameType == MoonlightVideoFrameType::IdR) {
         videoIdrRequestPending_ = false;
     }
-    return result.requestIdr ? requestVideoIdrOnceLocked() : DR_OK;
+    if (!result.requestIdr) {
+        return DR_OK;
+    }
+    if (result.status == MoonlightVideoSubmitStatus::Accepted ||
+        result.status == MoonlightVideoSubmitStatus::Backpressure) {
+        // The decoder either accepted the current frame after a latency soft
+        // drop, or was momentarily busy. Keep common-c's depacketizer open and
+        // request the IDR through its asynchronous control-stream API. Using
+        // DR_NEED_IDR here caused common-c to discard every later P-frame and
+        // freeze high-motion streams until the host eventually sent an IDR.
+        if (!videoIdrRequestPending_) {
+            videoIdrRequestPending_ = true;
+#if !defined(RDP_TESTS_ONLY)
+            OH_LOG_WARN(LOG_APP,
+                        "soft video pressure: request IDR out of band and keep P-frame admission open");
+#endif
+            driver_->requestIdr();
+        }
+        return DR_OK;
+    }
+    return requestVideoIdrOnceLocked();
 }
 
 int Invocation::onVideoPayload(

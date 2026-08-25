@@ -158,7 +158,7 @@ function runtimeSnapshot(): MoonlightNativeStreamSnapshot {
     matched: true, code: 'first_frame', sessionId: 42, generation: 7, ownerToken: 11,
     transportReady: true, videoReady: true, audioReady: true, inputReady: true,
     controllerReady: true, physicalControllerReady: false,
-    inputMayBeStuck: false, firstFrameReady: true,
+    inputMayBeStuck: false, presentationFrameReady: true, firstFrameReady: true,
     terminal: false, lastSequence: 9
   };
 }
@@ -437,7 +437,10 @@ export default function moonlightSessionCoordinatorTest(): void {
       earlyFrame.videoReady = false;
       earlyFrame.audioReady = false;
       earlyFrame.inputReady = false;
-      expect(moonlightRuntimeReadinessEvents(beforeVideo, earlyFrame).length).assertEqual(0);
+      const frameProvesVideo = moonlightRuntimeReadinessEvents(beforeVideo, earlyFrame);
+      expect(frameProvesVideo.length).assertEqual(2);
+      expect(frameProvesVideo[0]).assertEqual('videoReady');
+      expect(frameProvesVideo[1]).assertEqual('firstFrameRendered');
     });
 
     it('keeps_one_native_session_across_exact_surface_rebind_and_fresh_frame', 0, (): void => {
@@ -462,10 +465,13 @@ export default function moonlightSessionCoordinatorTest(): void {
       expect(runtime.rebindSurfaceCalls).assertEqual(1);
 
       runtime.currentSnapshot = runtimeSnapshot();
-      (runtime.currentSnapshot as MoonlightNativeStreamSnapshot).firstFrameReady = false;
+      // Session readiness is sticky, but a rebound Surface must still prove
+      // one fresh presentation before input/render admission reopens.
+      (runtime.currentSnapshot as MoonlightNativeStreamSnapshot).firstFrameReady = true;
+      (runtime.currentSnapshot as MoonlightNativeStreamSnapshot).presentationFrameReady = false;
       expect(coordinator.confirmSurfaceFrameForRoute('host-1', 'app-1', 'surface-2').code)
         .assertEqual('surface_frame_pending');
-      (runtime.currentSnapshot as MoonlightNativeStreamSnapshot).firstFrameReady = true;
+      (runtime.currentSnapshot as MoonlightNativeStreamSnapshot).presentationFrameReady = true;
       expect(coordinator.confirmSurfaceFrameForRoute('host-1', 'app-1', 'surface-2').accepted)
         .assertTrue();
       const rebound: ActiveRemoteSessionRecord =
@@ -479,6 +485,35 @@ export default function moonlightSessionCoordinatorTest(): void {
       expect(coordinator.setAudioPausedForRoute('host-1', 'app-1', false).code)
         .assertEqual('audio_resumed');
       expect(runtime.audioLifecycleCalls).assertEqual(2);
+      coordinator.resetForTest();
+      registry.resetForTest();
+    });
+
+    it('reconciles_only_an_exact_native_terminal_before_cross_protocol_admission', 0,
+      (): void => {
+      const runtime: FakeMoonlightRuntime = new FakeMoonlightRuntime();
+      const registry: ActiveRemoteSessionRegistry = ActiveRemoteSessionRegistry.getInstance();
+      registry.resetForTest();
+      registry.bindScope('owner-1', 1);
+      const coordinator: MoonlightSessionCoordinator =
+        new MoonlightSessionCoordinator(runtime, registry);
+      expect(coordinator.start(productRequest(true)).accepted).assertTrue();
+      expect(activeMoonlightRecord(registry) !== null).assertTrue();
+
+      const staleTerminal: MoonlightNativeStreamSnapshot = runtimeSnapshot();
+      staleTerminal.terminal = true;
+      staleTerminal.code = 'cancelled';
+      staleTerminal.ownerToken = 99;
+      runtime.currentSnapshot = staleTerminal;
+      expect(coordinator.reconcileNativeTerminalReceipt()).assertFalse();
+      expect(activeMoonlightRecord(registry) !== null).assertTrue();
+
+      const exactTerminal: MoonlightNativeStreamSnapshot = runtimeSnapshot();
+      exactTerminal.terminal = true;
+      exactTerminal.code = 'cancelled';
+      runtime.currentSnapshot = exactTerminal;
+      expect(coordinator.reconcileNativeTerminalReceipt()).assertTrue();
+      expect(activeMoonlightRecord(registry) === null).assertTrue();
       coordinator.resetForTest();
       registry.resetForTest();
     });

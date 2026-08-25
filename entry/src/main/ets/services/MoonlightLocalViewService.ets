@@ -66,6 +66,7 @@ export function moonlightHostFromRecord(record: MoonlightRecord): MoonlightHost 
       payload['httpsPort'] as number,
     hostType: payload['hostType'] as 'sunshine' | 'gamestream',
     wakeOnLan: payload['wakeOnLan'] as MoonlightWakeOnLan,
+    locked: payload['locked'] === true,
     userOrder: payload['userOrder'] as number
   };
   return moonlightHostIsValid(host) ? host : null;

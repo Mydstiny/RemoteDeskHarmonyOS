@@ -96,26 +96,60 @@ export function moonlightSessionRecoveryPreferenceKey(
 }
 
 /**
- * Exact owner/store Preferences owner. Corrupt or too-new data remains intact
- * and blocks replacement until the current owner explicitly clears it.
+ * Current recovery owner: one marker per exact owner/store/host route.
+ *
+ * Sunshine owns one running application per host, so applications on the same
+ * host deliberately share a recovery boundary. Different hosts must never
+ * block one another merely because an older build used one account-wide key.
+ */
+export function moonlightSessionRecoveryHostPreferenceKey(
+  binding: MoonlightSessionRecoveryBinding,
+  hostId: string
+): string {
+  const normalizedHostId: string = hostId.trim();
+  if (!moonlightSessionRecoveryBindingIsValid(binding) ||
+      normalizedHostId.length === 0 || normalizedHostId.length > 128) {
+    return '';
+  }
+  const hostHash: string = moonlightStoreIdentityHash(
+    'RemoteDeskHarmonyOS:moonlight-recovery-host:v2:' + normalizedHostId);
+  if (hostHash.length !== 64) { return ''; }
+  return 'moonlight.session.recovery.v2:' + binding.ownerScopeShortId + ':' +
+    binding.storeIdentityHash.slice(0, 32) + ':' + hostHash.slice(0, 32);
+}
+
+/**
+ * Exact owner/store/host Preferences owner. Corrupt or too-new data in the
+ * current host route remains intact until explicitly cleared. The legacy
+ * owner/store-wide key is migrated only when its decoded host matches this
+ * route; foreign or unreadable legacy state is preserved but cannot block a
+ * different host.
  */
 export class MoonlightSessionRecoveryStore {
   private context: common.Context | null = null;
   private binding: MoonlightSessionRecoveryBinding | null = null;
   private preferenceKey: string = '';
+  private legacyPreferenceKey: string = '';
+  private migratedLegacyShadowRaw: string = '';
+  private hostId: string = '';
   private persistedRaw: string = '';
   private current: MoonlightSessionRecoveryMarker | null = null;
   private readable: boolean = false;
   private decodeCode: string = 'absent';
 
-  bind(context: common.Context,
-    lease: AccountSessionLease): MoonlightSessionRecoveryDecodeResult {
+  bind(context: common.Context, lease: AccountSessionLease,
+    hostId: string): MoonlightSessionRecoveryDecodeResult {
     const binding: MoonlightSessionRecoveryBinding =
       moonlightSessionRecoveryBinding(lease);
-    const key: string = moonlightSessionRecoveryPreferenceKey(binding);
+    const normalizedHostId: string = hostId.trim();
+    const key: string = moonlightSessionRecoveryHostPreferenceKey(
+      binding, normalizedHostId);
     this.context = context;
     this.binding = binding;
     this.preferenceKey = key;
+    this.legacyPreferenceKey = moonlightSessionRecoveryPreferenceKey(binding);
+    this.migratedLegacyShadowRaw = '';
+    this.hostId = normalizedHostId;
     this.persistedRaw = '';
     this.current = null;
     this.readable = false;
@@ -130,11 +164,11 @@ export class MoonlightSessionRecoveryStore {
       decodeMoonlightSessionRecoveryMarker(read.value);
     this.decodeCode = decoded.code;
     if (decoded.code === 'absent') {
-      this.readable = true;
-      return decoded;
+      return this.readAndMigrateLegacy();
     }
     if (decoded.code !== 'ready' || decoded.marker === null ||
-        !moonlightSessionRecoveryMarkerMatchesBinding(decoded.marker, binding)) {
+        !moonlightSessionRecoveryMarkerMatchesBinding(decoded.marker, binding) ||
+        decoded.marker.hostId !== normalizedHostId) {
       return decoded.code === 'ready' ?
         { code: 'corrupt', marker: null } : decoded;
     }
@@ -153,7 +187,8 @@ export class MoonlightSessionRecoveryStore {
 
   begin(seed: MoonlightSessionRecoverySeed,
     nowMs: number): MoonlightSessionRecoveryMarker | null {
-    if (!this.readyToMutate() || this.current !== null) { return null; }
+    if (!this.readyToMutate() || this.current !== null ||
+        seed.hostId.trim() !== this.hostId) { return null; }
     const marker: MoonlightSessionRecoveryMarker | null =
       createMoonlightSessionRecoveryMarker(
         this.binding as MoonlightSessionRecoveryBinding, seed, nowMs);
@@ -182,6 +217,17 @@ export class MoonlightSessionRecoveryStore {
     if (expected.length > 0 &&
         (this.current === null || this.current.sessionId !== expected)) { return false; }
     if (this.persistedRaw.length === 0 && this.current === null) { return true; }
+    // If an upgrade successfully established the v2 host key but could not
+    // remove its matching v1 shadow, clear the shadow first. Otherwise a
+    // later bind could resurrect the already-finished session from v1.
+    if (this.migratedLegacyShadowRaw.length > 0 &&
+        !recoveryPreferenceAdapter.remove(
+          this.context as common.Context,
+          MOONLIGHT_SESSION_RECOVERY_PREFERENCES_NAME,
+          this.legacyPreferenceKey)) {
+      return false;
+    }
+    this.migratedLegacyShadowRaw = '';
     if (!recoveryPreferenceAdapter.remove(
       this.context as common.Context,
       MOONLIGHT_SESSION_RECOVERY_PREFERENCES_NAME, this.preferenceKey)) {
@@ -210,7 +256,51 @@ export class MoonlightSessionRecoveryStore {
 
   private readyToMutate(): boolean {
     return this.context !== null && this.binding !== null &&
-      this.preferenceKey.length > 0 && this.readable;
+      this.preferenceKey.length > 0 && this.hostId.length > 0 && this.readable;
+  }
+
+  private readAndMigrateLegacy(): MoonlightSessionRecoveryDecodeResult {
+    if (this.context === null || this.binding === null ||
+        this.legacyPreferenceKey.length === 0) {
+      return { code: 'corrupt', marker: null };
+    }
+    const legacyRead: MoonlightSessionRecoveryPreferenceRead =
+      recoveryPreferenceAdapter.read(
+        this.context, MOONLIGHT_SESSION_RECOVERY_PREFERENCES_NAME,
+        this.legacyPreferenceKey);
+    if (!legacyRead.ok) { return { code: 'corrupt', marker: null }; }
+    const legacy: MoonlightSessionRecoveryDecodeResult =
+      decodeMoonlightSessionRecoveryMarker(legacyRead.value);
+    // An owner-wide record from an older build has no safe route when it is
+    // unreadable. Preserve it for forward compatibility, but do not let that
+    // ambiguity deadlock every host in the account.
+    if (legacy.code !== 'ready' || legacy.marker === null ||
+        !moonlightSessionRecoveryMarkerMatchesBinding(
+          legacy.marker, this.binding) || legacy.marker.hostId !== this.hostId) {
+      this.readable = true;
+      this.decodeCode = 'absent';
+      return { code: 'absent', marker: null };
+    }
+    const raw: string = encodeMoonlightSessionRecoveryMarker(legacy.marker);
+    if (raw.length === 0 || !recoveryPreferenceAdapter.write(
+      this.context, MOONLIGHT_SESSION_RECOVERY_PREFERENCES_NAME,
+      this.preferenceKey, raw)) {
+      // The exact old record still protects this host. Do not start a second
+      // session when migration itself could not be made durable.
+      this.decodeCode = 'corrupt';
+      return { code: 'corrupt', marker: null };
+    }
+    this.persistedRaw = raw;
+    this.current = legacy.marker;
+    this.readable = true;
+    this.decodeCode = 'ready';
+    // Route-key durability is already established. Legacy cleanup is best
+    // effort so an interrupted upgrade cannot lose recovery truth.
+    const legacyRemoved: boolean = recoveryPreferenceAdapter.remove(
+      this.context, MOONLIGHT_SESSION_RECOVERY_PREFERENCES_NAME,
+      this.legacyPreferenceKey);
+    this.migratedLegacyShadowRaw = legacyRemoved ? '' : raw;
+    return { code: 'ready', marker: this.clone(legacy.marker) };
   }
 
   private persist(marker: MoonlightSessionRecoveryMarker): boolean {

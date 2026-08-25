@@ -20,7 +20,7 @@ import {
 } from '../services/AccountSessionCoordinator';
 import { DataCrypto } from '../services/DataCrypto';
 import { CloudStore } from '../services/CloudStore';
-import { AccountSessionLease } from '../services/AccountScopePolicy';
+import { AccountSessionLease, accountSessionLeaseEquals } from '../services/AccountScopePolicy';
 import { cloudUserSettingIsSyncable } from '../services/CloudSyncSettingsPolicy';
 import {
   VncTrustService,
@@ -43,8 +43,7 @@ import { cloudFirstCompatibleTablesAfterOptionalFailure } from '../services/Clou
 import { CloudSyncSelectionStore } from '../services/CloudSyncSelectionStore';
 import { cloudSyncSelectableTables, effectiveCloudSyncTables } from '../services/CloudSyncSelectionPolicy';
 import {
-  MoonlightCloudSyncScope,
-  moonlightCloudSyncSelectableScopes
+  moonlightForcedCloudSyncSelection
 } from '../services/MoonlightCloudSyncSelectionPolicy';
 import { LocalBackupDocument } from '../services/LocalBackupPolicy';
 import { LocalBackupService } from '../services/LocalBackupService';
@@ -81,6 +80,11 @@ import {
   isRustDeskPeerTwoFactorManualCode,
   rustDeskPeerTwoFactorAutoSubmitError
 } from '../services/RustDeskPeerTwoFactorPolicy';
+import {
+  RustDeskAuthDraft,
+  RustDeskAuthDraftStore
+} from '../services/RustDeskAuthDraftStore';
+import { copyRustDeskPeerTwoFactorRuntime } from '../services/RustDeskPeerTwoFactorBindingStore';
 import { AppConfig, AppTheme, Palette, buildDark, buildLight } from '../common/Theme';
 import { LockGateResult, showLockGate, lockGateErrorMessage } from '../components/LockGate';
 import { ColorPickerSheet } from '../components/ColorPickerSheet';
@@ -96,6 +100,12 @@ import {
 import { MoonlightBrandIcon } from '../components/moonlight/MoonlightBrandIcon';
 import { MoonlightSettingsSurface } from './MoonlightSettingsPage';
 import {
+  MoonlightAppCatalogSurface,
+  MoonlightCatalogLaunchHandoff,
+  presentMoonlightCatalogLaunchHandoff,
+  rejectMoonlightCatalogLaunchHandoff
+} from './MoonlightAppCatalogPage';
+import {
   MoonlightSettingsSection,
   MoonlightCatalogItem,
   moonlightHostRouteParams
@@ -109,7 +119,16 @@ import {
   MoonlightHostAddCatalogSummary,
   parseMoonlightHostAddAddress
 } from '../services/MoonlightHostAddFlowPolicy';
-import { MoonlightLocalHostService } from '../services/MoonlightLocalHostService';
+import {
+  MoonlightLocalHostMutationResult,
+  MoonlightLocalHostSaveResult,
+  MoonlightLocalHostService
+} from '../services/MoonlightLocalHostService';
+import {
+  MoonlightDeletionCommandResult,
+  MoonlightDeletionPreview
+} from '../services/MoonlightDeletionCommandService';
+import { MoonlightDeletionRuntime } from '../services/MoonlightDeletionRuntime';
 import { MoonlightSettingsLocalService } from '../services/MoonlightSettingsLocalService';
 import {
   MoonlightHostDirectoryView,
@@ -512,6 +531,7 @@ import {
   ActiveRemoteSessionRecord,
   ActiveRemoteSessionTermination
 } from '../services/ActiveRemoteSessionRegistry';
+import { MoonlightSessionCoordinator } from '../services/MoonlightSessionCoordinator';
 import { RemoteProtocol } from '../services/RemoteSessionState';
 import {
   nativeDisconnectStateIsFailed,
@@ -593,6 +613,10 @@ const DYNAMIC_LAN_ADDRESS_FRESHNESS_MS: number = 5 * 60 * 1000;
 const DYNAMIC_LAN_SWEEP_COOLDOWN_MS: number = 30 * 1000;
 const RDP_DRIVE_REDIRECTION_ENABLED = true;
 const SETTINGS_ACCORDION_ANIMATION_MS = 280;
+// A native Sheet can finish its dismiss animation before ArkUI has completed
+// the pointer-up dispatch that closed it. Keep the host list covered for one
+// short release window so that pointer-up cannot activate the card underneath.
+const SHEET_RELEASE_FENCE_MS = 420;
 // The appearance card is taller than the original 620vp cap after the
 // touchpad cursor controls are restored. Keep a stable expansion floor so an
 // animation's intermediate layout height cannot collapse the card into a
@@ -615,6 +639,8 @@ const REMOTE_HOST_SHEET_VNC_CREDENTIAL = 8;
 // preserves the list's single-dismiss lifecycle and prevents route switches
 // from racing a card expansion.
 const REMOTE_HOST_SHEET_MOONLIGHT_DETAIL = 9;
+const REMOTE_HOST_SHEET_MOONLIGHT_CATALOG = 10;
+const REMOTE_HOST_SHEET_MOONLIGHT_EDIT = 11;
 const DESKTOP_MOONLIGHT_TAB = 7;
 
 @Entry
@@ -700,6 +726,9 @@ struct HostListPage {
   private moonlightDirectoryStoreInstanceId: number = 0;
   @State vncAddFromModernPicker: boolean = false;
   @State addSheetClosing: boolean = false;
+  @State sheetReleaseFenceActive: boolean = false;
+  private sheetReleaseFenceGeneration: number = 0;
+  private sheetReleaseFenceTimer: number = -1;
   // Keep the released storage/cloud key while exposing the broader FAB-style semantics in UI code.
   @StorageLink('hostAddMode') fabAddStyle: string = 'modern';
   @StorageLink('virtualMouseStyle') virtualMouseStyle: string = 'arrow';
@@ -734,6 +763,7 @@ struct HostListPage {
   @State settingsLeafSheetMode: number = SETTINGS_SHEET_NONE;
   @State vncSettingsLeafDirty: boolean = false;
   @State moonlightSettingsLeafDirty: boolean = false;
+  @State moonlightSettingsLeafHostId: string = '';
   @State expandedSettingsSection: string = SETTINGS_SECTION_NONE;
   @State aboutSheetMode: number = 0; // 0=简单教程 1=关于应用 2=隐私政策 3=连接前准备 4=更新日志 5=操作引导中心
   // 合并 Sheet: 单 bindSheet + mode 切换 (避免 $$ 多 bindSheet 错位)
@@ -772,6 +802,13 @@ struct HostListPage {
   @State showRemoteHostSheet: boolean = false;
   @State remoteHostSheetMode: number = REMOTE_HOST_SHEET_NONE;
   @State moonlightSheetHostId: string = '';
+  @State moonlightEditName: string = '';
+  private pendingMoonlightCatalogHostId: string = '';
+  private pendingMoonlightSettingsHostId: string = '';
+  private pendingMoonlightCatalogNavigation: string = '';
+  private pendingMoonlightCatalogLaunch: MoonlightCatalogLaunchHandoff | null = null;
+  private moonlightCatalogReturnsToDetail: boolean = false;
+  @State moonlightCatalogDismissAllowed: boolean = true;
   @State sshPreflightState: number = 0;
   private sshPreflightOpenedAt: number = 0;
   private sshPreflightGeneration: number = 0;
@@ -891,6 +928,11 @@ struct HostListPage {
   private rustDeskProPreflightClosing: boolean = false;
   private rustDeskProPreflightClosingHostId: string = '';
   private rustDeskProPreflightPendingHostId: string = '';
+  private rustDeskProBackgroundResumeHostId: string = '';
+  private rustDeskProBackgroundDismissConfirmed: boolean = false;
+  private rustDeskProDismissClassificationTimer: number = -1;
+  private readonly rustDeskAuthDrafts: RustDeskAuthDraftStore =
+    RustDeskAuthDraftStore.getInstance();
   private rustDeskProPreflightPendingRouteParams: Record<string, Object> | null = null;
   private remoteHostSheetClosing: boolean = false;
   private remoteHostSheetClosingMode: number = REMOTE_HOST_SHEET_NONE;
@@ -1078,6 +1120,8 @@ struct HostListPage {
   private readonly vncSettings: VncSettingsService = VncSettingsService.getInstance();
   private readonly moonlightLocalHostService: MoonlightLocalHostService =
     new MoonlightLocalHostService(CloudStore.getInstance(), CloudStore.getInstance());
+  private readonly moonlightDeletionRuntime: MoonlightDeletionRuntime =
+    MoonlightDeletionRuntime.getInstance();
   private readonly moonlightLocalViewService: MoonlightLocalViewService =
     new MoonlightLocalViewService(CloudStore.getInstance());
   private readonly moonlightHostService: MoonlightHostService = new MoonlightHostService();
@@ -1189,10 +1233,73 @@ struct HostListPage {
 
   private onRemoteDesktopBgFlagChange(): void {
     if (this.appInBackground) {
+      this.clearRustDeskProDismissClassificationTimer();
+      if (this.showRustDeskProPreflight && this.rustDeskProPreflightHostId !== '') {
+        this.saveRustDeskProAuthDraft();
+        this.rustDeskProBackgroundResumeHostId = this.rustDeskProPreflightHostId;
+      }
+      if (this.rustDeskProBackgroundResumeHostId !== '') {
+        this.rustDeskProBackgroundDismissConfirmed = true;
+      }
       this.pauseForegroundSensors('ability-background');
     } else {
       this.resumeForegroundSensors('ability-foreground');
+      this.resumeRustDeskProPreflightAfterBackground();
     }
+  }
+
+  private clearRustDeskProDismissClassificationTimer(): void {
+    if (this.rustDeskProDismissClassificationTimer >= 0) {
+      clearTimeout(this.rustDeskProDismissClassificationTimer);
+      this.rustDeskProDismissClassificationTimer = -1;
+    }
+  }
+
+  private settleRustDeskProImplicitDismiss(): void {
+    this.clearRustDeskProDismissClassificationTimer();
+    const hostId: string = this.rustDeskProBackgroundResumeHostId;
+    if (hostId === '') { return; }
+    if (this.appInBackground) {
+      this.rustDeskProBackgroundDismissConfirmed = true;
+      return;
+    }
+    if (this.rustDeskProBackgroundDismissConfirmed) {
+      setTimeout((): void => { this.resumeRustDeskProPreflightAfterBackground(); }, 0);
+      return;
+    }
+    // ArkUI may dismiss a Sheet just before the ability background flag is
+    // delivered. Keep the process-memory draft through that short ordering
+    // window; if no background signal arrives, the dismissal was an explicit
+    // gesture and the draft is securely cleared without reopening the Sheet.
+    this.rustDeskProDismissClassificationTimer = setTimeout((): void => {
+      this.rustDeskProDismissClassificationTimer = -1;
+      if (this.appInBackground ||
+        this.rustDeskProBackgroundResumeHostId !== hostId) {
+        return;
+      }
+      this.clearRustDeskProAuthDraft(hostId);
+    }, 180);
+  }
+
+  private resumeRustDeskProPreflightAfterBackground(): void {
+    const hostId: string = this.rustDeskProBackgroundResumeHostId;
+    if (hostId === '' || !this.pageActive || this.appInBackground ||
+      this.showRustDeskProPreflight ||
+      this.showRemoteHostSheet || this.rustDeskProPreflightClosing ||
+      this.remoteHostSheetClosing) {
+      return;
+    }
+    this.rustDeskProBackgroundResumeHostId = '';
+    this.rustDeskProBackgroundDismissConfirmed = false;
+    setTimeout((): void => {
+      if (!this.pageActive || this.appInBackground) { return; }
+      const host: RemoteHost | undefined = this.srv.getHost(hostId);
+      if (host === undefined) {
+        this.rustDeskAuthDrafts.clearHost(hostId);
+        return;
+      }
+      void this.connectToHost(host);
+    }, 0);
   }
 
   private pauseForegroundSensors(source: string): void {
@@ -1631,11 +1738,26 @@ struct HostListPage {
   }
 
   private beginRemoteHostSheetClose(mode: number): void {
+    this.activateSheetReleaseFence();
     if (!this.remoteHostSheetClosing) {
       this.remoteHostSheetClosing = true;
       this.remoteHostSheetClosingMode = mode;
     }
     this.lastSheetDismissAtMs = Date.now();
+  }
+
+  private activateSheetReleaseFence(): void {
+    const generation: number = this.sheetReleaseFenceGeneration + 1;
+    this.sheetReleaseFenceGeneration = generation;
+    this.sheetReleaseFenceActive = true;
+    if (this.sheetReleaseFenceTimer !== -1) {
+      clearTimeout(this.sheetReleaseFenceTimer);
+    }
+    this.sheetReleaseFenceTimer = setTimeout((): void => {
+      if (this.sheetReleaseFenceGeneration !== generation) { return; }
+      this.sheetReleaseFenceTimer = -1;
+      this.sheetReleaseFenceActive = false;
+    }, SHEET_RELEASE_FENCE_MS);
   }
 
   private openRemoteHostSheet(mode: number, makeVisible: () => void): void {
@@ -1770,12 +1892,9 @@ struct HostListPage {
         promptAction.showToast({ message: '主机已不存在，请重新打开编辑', duration: 2200 });
         return;
       }
-      const updated: RemoteHost = RemoteHost.fromJSON(current.toJSON());
-      updated.rustdeskTotpEntryId = entry.id;
       // A successful binding is immediately usable on the next connection.
       // The user can turn this off from the compact binding row afterwards.
-      updated.rustdeskTotpAutoSubmit = true;
-      if (!this.srv.updateHost(updated)) {
+      if (!this.srv.setRustDeskPeerTwoFactorBinding(current.id, entry.id, true)) {
         promptAction.showToast({ message: 'RustDesk 2FA 绑定保存失败', duration: 2200 });
         return;
       }
@@ -1783,7 +1902,11 @@ struct HostListPage {
     this.sheetRustdeskTotpEntryId = entry.id;
     this.sheetRustdeskTotpAutoSubmit = true;
     this.updateRustDeskTotpResumeDraft(entry.id, true);
-    promptAction.showToast({ message: 'RustDesk 2FA 已绑定', duration: 1600 });
+    promptAction.showToast({
+      message: this.editingHostId !== '' ?
+        'RustDesk 2FA 已绑定' : 'RustDesk 2FA 已选择，保存主机后生效',
+      duration: 1800
+    });
     this.closeRustDeskTotpBinding(true);
   }
 
@@ -1792,10 +1915,7 @@ struct HostListPage {
     if (this.editingHostId !== '') {
       const current: RemoteHost | undefined = this.srv.getHost(this.editingHostId);
       if (current !== undefined && current.protocol === 'rustdesk') {
-        const updated: RemoteHost = RemoteHost.fromJSON(current.toJSON());
-        updated.rustdeskTotpEntryId = '';
-        updated.rustdeskTotpAutoSubmit = false;
-        if (!this.srv.updateHost(updated)) {
+        if (!this.srv.clearRustDeskPeerTwoFactorBinding(current.id)) {
           promptAction.showToast({ message: '解除 RustDesk 2FA 绑定失败', duration: 2200 });
           return;
         }
@@ -1804,7 +1924,11 @@ struct HostListPage {
     this.sheetRustdeskTotpEntryId = '';
     this.sheetRustdeskTotpAutoSubmit = false;
     this.updateRustDeskTotpResumeDraft('', false);
-    promptAction.showToast({ message: 'RustDesk 2FA 已解除绑定', duration: 1600 });
+    promptAction.showToast({
+      message: this.editingHostId !== '' ?
+        'RustDesk 2FA 已解除绑定' : '已从新增主机草稿移除 RustDesk 2FA',
+      duration: 1800
+    });
     this.closeRustDeskTotpBinding(true);
   }
 
@@ -1817,10 +1941,9 @@ struct HostListPage {
     if (this.editingHostId === '') { return; }
     const current: RemoteHost | undefined = this.srv.getHost(this.editingHostId);
     if (current === undefined || current.protocol !== 'rustdesk') { return; }
-    const updated: RemoteHost = RemoteHost.fromJSON(current.toJSON());
-    updated.rustdeskTotpEntryId = this.sheetRustdeskTotpEntryId;
-    updated.rustdeskTotpAutoSubmit = enabled;
-    if (!this.srv.updateHost(updated)) {
+    if (!this.srv.setRustDeskPeerTwoFactorBinding(
+      current.id, this.sheetRustdeskTotpEntryId, enabled)) {
+      this.sheetRustdeskTotpAutoSubmit = !enabled;
       promptAction.showToast({ message: '自动提交设置保存失败', duration: 2200 });
     }
   }
@@ -1868,6 +1991,10 @@ struct HostListPage {
     const requiresLocalRestrictedAdminHash: boolean = host.protocol === 'rdp' &&
       host.rdpAuthMode === 'restricted_admin' &&
       host.rdpRestrictedAdminSecretSource === 'ntlm_hash';
+    const rustDeskTotpEntryId: string = host.protocol === 'rustdesk' ?
+      host.rustdeskTotpEntryId.trim() : '';
+    const rustDeskTotpAutoSubmit: boolean = host.protocol === 'rustdesk' &&
+      host.rustdeskTotpAutoSubmit && rustDeskTotpEntryId !== '';
     if (requiresLocalRestrictedAdminHash &&
       !CloudStore.getInstance().saveRdpRestrictedAdminHash(host, restrictedAdminHash)) {
       promptAction.showToast({ message: '无法加密保存 NTLM Hash，请先解锁本地凭据存储后重试', duration: 2600 });
@@ -1878,6 +2005,18 @@ struct HostListPage {
         CloudStore.getInstance().clearRdpRestrictedAdminHash(host.id);
       }
       promptAction.showToast({ message: '保存主机失败，请稍后重试', duration: 1800 });
+      return;
+    }
+    if (host.protocol === 'rustdesk' && rustDeskTotpEntryId !== '' &&
+      !this.srv.setRustDeskPeerTwoFactorBinding(
+        host.id, rustDeskTotpEntryId, rustDeskTotpAutoSubmit)) {
+      const rolledBack: boolean = this.srv.removeHost(host.id);
+      promptAction.showToast({
+        message: rolledBack ?
+          'RustDesk 2FA 绑定保存失败，主机新增已撤销，请重试' :
+          'RustDesk 2FA 绑定保存失败，且主机回滚未完成；请返回列表检查',
+        duration: 3000
+      });
       return;
     }
     this.refreshHostSnapshotAfterMutation();
@@ -1957,21 +2096,23 @@ struct HostListPage {
       this.moonlightHosts = [];
       return;
     }
+    const sameScope: boolean =
+      lease.ownerScopeId === this.moonlightDirectoryOwnerScopeId &&
+      lease.generation === this.moonlightDirectoryAccountGeneration &&
+      lease.storeInstanceId === this.moonlightDirectoryStoreInstanceId;
     this.moonlightDirectoryOwnerScopeId = lease.ownerScopeId;
     this.moonlightDirectoryAccountGeneration = lease.generation;
     this.moonlightDirectoryStoreInstanceId = lease.storeInstanceId;
     const directory: MoonlightHostDirectoryView =
       this.moonlightLocalViewService.loadHosts(Date.now());
     this.moonlightDirectoryCode = directory.code;
-    this.moonlightHosts = directory.ok ? directory.hosts.slice() : [];
-  }
-
-  private refreshMoonlightDirectoryIfScopeChanged(): void {
-    const lease: AccountSessionLease | null = CloudStore.getInstance().currentAccountLease();
-    if (lease === null || lease.ownerScopeId !== this.moonlightDirectoryOwnerScopeId ||
-        lease.generation !== this.moonlightDirectoryAccountGeneration ||
-        lease.storeInstanceId !== this.moonlightDirectoryStoreInstanceId) {
-      this.refreshMoonlightDirectory();
+    if (directory.ok) {
+      this.moonlightHosts = directory.hosts.slice();
+    } else if (!sameScope) {
+      // Never carry cards across accounts/stores. A transient read failure in
+      // the same local database keeps the last known-good cards, matching the
+      // other protocol lists instead of flashing an empty Moonlight section.
+      this.moonlightHosts = [];
     }
   }
 
@@ -1992,6 +2133,10 @@ struct HostListPage {
 
   private moonlightHostCardKey(view: MoonlightHostLocalView): string {
     const hostId: string = view.host?.id || 'invalid-moonlight-host';
+    const displayName: string = view.host?.displayName || '';
+    const preferredAddressKey: string =
+      view.host?.preferredAddressKey || '';
+    const userOrder: number = view.host?.userOrder || 0;
     let newestCatalogAt: number = 0;
     let availableCount: number = 0;
     for (let index: number = 0; index < view.catalogItems.length; index++) {
@@ -2000,7 +2145,10 @@ struct HostListPage {
         availableCount++;
       }
     }
-    return hostId + ':' + (view.paired ? 'paired' : 'unpaired') + ':' +
+    return hostId + ':' + view.updatedAt.toString() + ':' +
+      displayName + ':' + preferredAddressKey + ':' + userOrder.toString() + ':' +
+      (view.host?.locked === true ? 'locked' : 'unlocked') + ':' +
+      (view.paired ? 'paired' : 'unpaired') + ':' +
       view.catalogItems.length.toString() + ':' + availableCount.toString() + ':' +
       newestCatalogAt.toString();
   }
@@ -2018,9 +2166,27 @@ struct HostListPage {
     return selected.host + ':' + selected.port.toString();
   }
 
-  private openMoonlightHost(hostId: string, catalog: boolean = false): void {
+  private protectedMoonlightCardValue(host: MoonlightHost, visibleValue: string): string {
+    return hostCardSensitiveValue(shouldHideHostCardSensitiveInfo(
+      this.hostCardSensitiveInfoHidden, host.locked === true), visibleValue);
+  }
+
+  private async openMoonlightHost(hostId: string, catalog: boolean = false): Promise<void> {
     const params: Record<string, Object> | null = moonlightHostRouteParams(hostId);
     if (params === null) { return; }
+    const view: MoonlightHostLocalView | undefined = this.moonlightHosts.find(
+      (candidate: MoonlightHostLocalView): boolean =>
+        candidate.host !== null && candidate.host.id === hostId);
+    if (view === undefined || view.host === null) { return; }
+    if (view.host.locked === true) {
+      const gate: LockGateResult = await showLockGate(view.host.displayName, 'biometric');
+      if (!gate.ok) {
+        const message: string = lockGateErrorMessage(gate);
+        if (message !== '') { promptAction.showToast({ message: message, duration: 2000 }); }
+        return;
+      }
+    }
+    if (!this.pageActive) { return; }
     // A card tap is an in-place expansion, matching the RDP/RustDesk/SSH/VNC
     // host-list contract.  Full pages remain explicit actions from the Sheet
     // (catalog/settings), never an implicit card navigation.
@@ -2028,7 +2194,134 @@ struct HostListPage {
       this.openMoonlightHostSheet(hostId);
       return;
     }
-    router.pushUrl({ url: 'pages/MoonlightAppCatalogPage', params: params });
+    this.openMoonlightCatalogSheet(hostId);
+  }
+
+  private async openMoonlightEditSheet(view: MoonlightHostLocalView): Promise<void> {
+    if (view.host === null || this.remoteHostSheetClosing || this.showRemoteHostSheet ||
+        this.addSheetClosing) { return; }
+    const hostId: string = view.host.id;
+    // Swipe actions must obey the same lock boundary as a card tap. Reload the
+    // latest local record first so a stale rendered card cannot bypass a lock
+    // that was just enabled on another surface.
+    this.refreshMoonlightDirectory();
+    let current: MoonlightHostLocalView | undefined = this.moonlightHosts.find(
+      (candidate: MoonlightHostLocalView): boolean =>
+        candidate.host !== null && candidate.host.id === hostId);
+    if (current === undefined || current.host === null) { return; }
+    if (current.host.locked === true) {
+      const gate: LockGateResult = await showLockGate(current.host.displayName, 'biometric');
+      if (!gate.ok) {
+        const message: string = lockGateErrorMessage(gate);
+        if (message !== '') { promptAction.showToast({ message: message, duration: 2000 }); }
+        return;
+      }
+    }
+    if (!this.pageActive || this.remoteHostSheetClosing || this.showRemoteHostSheet ||
+        this.addSheetClosing) { return; }
+    this.refreshMoonlightDirectory();
+    current = this.moonlightHosts.find(
+      (candidate: MoonlightHostLocalView): boolean =>
+        candidate.host !== null && candidate.host.id === hostId);
+    if (current === undefined || current.host === null) { return; }
+    this.moonlightSheetHostId = hostId;
+    this.moonlightEditName = current.host.displayName;
+    this.openSheetSafely((): void => {
+      if (!this.pageActive || this.moonlightSheetHostId !== hostId) { return; }
+      this.openRemoteHostSheet(REMOTE_HOST_SHEET_MOONLIGHT_EDIT, (): void => {});
+    }, true);
+  }
+
+  private saveMoonlightEdit(): void {
+    const hostId: string = this.moonlightSheetHostId;
+    const result: MoonlightLocalHostMutationResult =
+      this.moonlightLocalHostService.updateDisplayName(hostId, this.moonlightEditName, Date.now());
+    if (!result.ok) {
+      promptAction.showToast({ message: result.errorText || '主机名称保存失败', duration: 2200 });
+      return;
+    }
+    this.refreshMoonlightDirectory();
+    this.hostViewRevision += 1;
+    this.beginRemoteHostSheetClose(REMOTE_HOST_SHEET_MOONLIGHT_EDIT);
+    this.showRemoteHostSheet = false;
+    promptAction.showToast({ message: '主机名称已保存', duration: 1600 });
+  }
+
+  private async toggleMoonlightLock(view: MoonlightHostLocalView): Promise<void> {
+    if (view.host === null) { return; }
+    const gate: LockGateResult = await showLockGate(view.host.displayName, 'biometric');
+    if (!gate.ok) {
+      const message: string = lockGateErrorMessage(gate);
+      if (message !== '') { promptAction.showToast({ message: message, duration: 2000 }); }
+      return;
+    }
+    const nextLocked: boolean = view.host.locked !== true;
+    const result: MoonlightLocalHostMutationResult = this.moonlightLocalHostService.updateLocked(
+      view.host.id, nextLocked, Date.now());
+    if (!result.ok) {
+      promptAction.showToast({ message: result.errorText || '保存主机状态失败', duration: 2200 });
+      return;
+    }
+    this.refreshMoonlightDirectory();
+    this.hostViewRevision += 1;
+    promptAction.showToast({ message: nextLocked ? '已锁定' : '已解锁', duration: 1500 });
+  }
+
+  private async doDeleteMoonlightHost(view: MoonlightHostLocalView): Promise<void> {
+    if (view.host === null) { return; }
+    const hostId: string = view.host.id;
+    const hostName: string = view.host.displayName;
+    if (view.host.locked === true) {
+      const gate: LockGateResult = await showLockGate(hostName, 'biometric');
+      if (!gate.ok) {
+        const message: string = lockGateErrorMessage(gate);
+        if (message !== '') { promptAction.showToast({ message: message, duration: 2000 }); }
+        return;
+      }
+    }
+    const lease: AccountSessionLease | null = this.moonlightDeletionRuntime.currentLease();
+    if (lease === null || !this.moonlightDeletionRuntime.isLeaseCurrent(lease)) {
+      promptAction.showToast({ message: '当前账号数据域已变化，请刷新后重试', duration: 2200 });
+      return;
+    }
+    const preview: MoonlightDeletionPreview = this.moonlightDeletionRuntime.preview(
+      lease, 'forget_host', hostId);
+    if (preview.code !== 'ok') {
+      promptAction.showToast({
+        message: preview.code === 'cloud_unavailable' ?
+          'Moonlight 云端状态尚未就绪，未删除任何数据' :
+          '主机数据已变化，请刷新后重试：' + preview.code,
+        duration: 2400
+      });
+      return;
+    }
+    const dialogResult: Object = await promptAction.showDialog({
+      title: '确认删除',
+      message: '确定要删除 Moonlight 主机“' + hostName + '”吗？将同时清理本机配对信任、应用配置和目录缓存。',
+      buttons: [
+        { text: '取消', color: this.pal().text2 },
+        { text: '删除', color: this.pal().danger }
+      ]
+    });
+    const selected: Record<string, number> = dialogResult as Record<string, number>;
+    if (selected['index'] !== 1 || !this.pageActive) { return; }
+    const currentLease: AccountSessionLease | null = this.moonlightDeletionRuntime.currentLease();
+    if (currentLease === null || !accountSessionLeaseEquals(currentLease, lease) ||
+        !this.moonlightDeletionRuntime.isLeaseCurrent(lease)) {
+      promptAction.showToast({ message: '账号状态已变化，未执行删除', duration: 2200 });
+      return;
+    }
+    const result: MoonlightDeletionCommandResult =
+      await this.moonlightDeletionRuntime.execute(lease, preview);
+    if (!this.pageActive) { return; }
+    this.refreshMoonlightDirectory();
+    this.hostViewRevision += 1;
+    promptAction.showToast({
+      message: result.ok ? (result.code === 'pending_cloud' ?
+        '本机主机已删除，云端删除标记正在安全上传' : 'Moonlight 主机已删除') :
+        '删除失败：' + result.code,
+      duration: 2400
+    });
   }
 
   private moonlightSheetView(): MoonlightHostLocalView | null {
@@ -2058,10 +2351,106 @@ struct HostListPage {
     }, true);
   }
 
+  private openMoonlightCatalogSheet(hostId: string): void {
+    if (hostId.trim() === '' || this.remoteHostSheetClosing ||
+        this.showRemoteHostSheet || this.addSheetClosing) {
+      return;
+    }
+    const view: MoonlightHostLocalView | null = this.moonlightHosts.find(
+      (candidate: MoonlightHostLocalView): boolean =>
+        candidate.host !== null && candidate.host.id === hostId) ?? null;
+    if (view === null || view.host === null) { return; }
+    this.moonlightSheetHostId = hostId;
+    this.moonlightCatalogReturnsToDetail = false;
+    this.moonlightCatalogDismissAllowed = true;
+    this.openSheetSafely((): void => {
+      if (!this.pageActive || this.moonlightSheetHostId !== hostId) { return; }
+      this.openRemoteHostSheet(REMOTE_HOST_SHEET_MOONLIGHT_CATALOG, (): void => {});
+    }, true);
+  }
+
   private openMoonlightHostSettings(hostId: string): void {
-    const params: Record<string, Object> | null = moonlightHostRouteParams(hostId);
-    if (params !== null) {
-      router.pushUrl({ url: 'pages/MoonlightSettingsPage', params: params });
+    this.openMoonlightSettingsSheet(hostId, SETTINGS_SHEET_MOONLIGHT_VIDEO);
+  }
+
+  private openMoonlightSettingsSheet(hostId: string, mode: number): void {
+    const spec: MoonlightSettingsRouteSpec | null = moonlightSettingsRouteSpec(mode);
+    if (hostId.trim() === '' || spec === null || spec.owner !== 'moonlight' || !this.pageActive) {
+      return;
+    }
+    const view: MoonlightHostLocalView | null = this.moonlightHosts.find(
+      (candidate: MoonlightHostLocalView): boolean =>
+        candidate.host !== null && candidate.host.id === hostId) ?? null;
+    if (view === null || view.host === null) { return; }
+    this.moonlightSettingsLeafHostId = hostId;
+    this.openSettingsLeafSheet(mode);
+  }
+
+  private closeMoonlightCatalogSheet(navigation: string = ''): void {
+    if (this.remoteHostSheetMode !== REMOTE_HOST_SHEET_MOONLIGHT_CATALOG ||
+        this.moonlightSheetHostId === '') {
+      return;
+    }
+    if ((navigation === 'detail' ||
+        (navigation === '' && this.moonlightCatalogReturnsToDetail)) &&
+        this.showRemoteHostSheet && !this.remoteHostSheetClosing) {
+      this.moonlightCatalogReturnsToDetail = false;
+      this.pendingMoonlightCatalogNavigation = '';
+      this.pendingMoonlightCatalogLaunch = null;
+      this.moonlightCatalogDismissAllowed = true;
+      this.remoteHostSheetMode = REMOTE_HOST_SHEET_MOONLIGHT_DETAIL;
+      hilog.info(0x0001, 'Moonlight', 'catalog returned to host detail in shared Sheet');
+      return;
+    }
+    this.moonlightCatalogReturnsToDetail = false;
+    this.moonlightCatalogDismissAllowed = true;
+    this.pendingMoonlightCatalogNavigation = navigation;
+    this.beginRemoteHostSheetClose(REMOTE_HOST_SHEET_MOONLIGHT_CATALOG);
+    this.showRemoteHostSheet = false;
+  }
+
+  private requestMoonlightCatalogLaunch(handoff: MoonlightCatalogLaunchHandoff): void {
+    if (this.remoteHostSheetMode !== REMOTE_HOST_SHEET_MOONLIGHT_CATALOG ||
+        this.moonlightSheetHostId === '' ||
+        handoff.hostId !== this.moonlightSheetHostId) {
+      this.rejectMoonlightCatalogLaunch(handoff);
+      return;
+    }
+    // Store launch ownership before hiding the outer Catalog Sheet. Actual
+    // navigation is drained only by that Sheet's onDisappear callback.
+    this.pendingMoonlightCatalogLaunch = handoff;
+    this.closeMoonlightCatalogSheet('launch');
+  }
+
+  private rejectMoonlightCatalogLaunch(handoff: MoonlightCatalogLaunchHandoff): void {
+    try {
+      const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+      rejectMoonlightCatalogLaunchHandoff(context, handoff);
+    } catch (_error) {
+      this.moonlightHostService.disposeOwner(handoff.ownerToken);
+    }
+  }
+
+  private async presentMoonlightCatalogLaunch(
+    handoff: MoonlightCatalogLaunchHandoff
+  ): Promise<void> {
+    let context: common.UIAbilityContext;
+    try {
+      context = getContext(this) as common.UIAbilityContext;
+    } catch (_error) {
+      this.moonlightHostService.disposeOwner(handoff.ownerToken);
+      return;
+    }
+    if (!this.pageActive) {
+      rejectMoonlightCatalogLaunchHandoff(context, handoff);
+      return;
+    }
+    const opened: boolean = await presentMoonlightCatalogLaunchHandoff(
+      context, this.isDesktopDevice, handoff);
+    if (opened) { return; }
+    rejectMoonlightCatalogLaunchHandoff(context, handoff);
+    if (this.pageActive) {
+      promptAction.showToast({ message: '无法打开 Moonlight 串流窗口，启动租约已安全释放', duration: 2200 });
     }
   }
 
@@ -2070,21 +2459,35 @@ struct HostListPage {
     const hostId: string = this.moonlightSheetHostId;
     if (hostId === '') { return; }
     const params: Record<string, Object> | null = moonlightHostRouteParams(hostId);
-    this.beginRemoteHostSheetClose(REMOTE_HOST_SHEET_MOONLIGHT_DETAIL);
-    this.showRemoteHostSheet = false;
+    if (openCatalog && this.remoteHostSheetMode === REMOTE_HOST_SHEET_MOONLIGHT_DETAIL &&
+        this.showRemoteHostSheet && !this.remoteHostSheetClosing) {
+      // Detail and catalog are two states of the same native BindSheet. Keeping
+      // the Sheet mounted avoids an ArkUI nativeRef race on foldables and also
+      // removes the transient interval in which a closing tap can reach a host
+      // card underneath it.
+      this.pendingMoonlightCatalogHostId = '';
+      this.pendingMoonlightSettingsHostId = '';
+      this.pendingMoonlightCatalogNavigation = '';
+      this.pendingMoonlightCatalogLaunch = null;
+      this.moonlightCatalogReturnsToDetail = true;
+      this.moonlightCatalogDismissAllowed = true;
+      this.remoteHostSheetMode = REMOTE_HOST_SHEET_MOONLIGHT_CATALOG;
+      hilog.info(0x0001, 'Moonlight', 'host detail switched to catalog in shared Sheet');
+      return;
+    }
     // Route only after the Sheet has fully disappeared. This keeps a card tap
     // in-place and avoids a page transition being rendered underneath the
     // native Sheet exit animation.
-    if (params !== null && (openCatalog || openSettings)) {
-      const target: string = openCatalog ? 'pages/MoonlightAppCatalogPage' :
-        'pages/MoonlightSettingsPage';
-      setTimeout((): void => {
-        // onDisappear clears moonlightSheetHostId as part of the common Sheet
-        // lifecycle, so routing must not depend on that transient state.
-        if (!this.pageActive) { return; }
-        router.pushUrl({ url: target, params: params });
-      }, 260);
+    if (openCatalog) {
+      this.pendingMoonlightCatalogHostId = hostId;
     }
+    if (params !== null && openSettings) {
+      this.pendingMoonlightSettingsHostId = hostId;
+    }
+    // Record the handoff before changing Sheet visibility so even a platform
+    // that dispatches dismissal callbacks eagerly cannot lose the next panel.
+    this.beginRemoteHostSheetClose(REMOTE_HOST_SHEET_MOONLIGHT_DETAIL);
+    this.showRemoteHostSheet = false;
   }
 
   private openMoonlightAddFlow(): void {
@@ -2581,7 +2984,29 @@ struct HostListPage {
     _openCatalog: boolean,
     key: MoonlightHostAddOperationKey
   ): Promise<MoonlightLocalSaveResult> {
-    const result = this.moonlightLocalHostService.save(state, key, Date.now());
+    return this.saveMoonlightHostLocallyWithRetry(state, key);
+  }
+
+  private async saveMoonlightHostLocallyWithRetry(
+    state: MoonlightHostAddState,
+    key: MoonlightHostAddOperationKey
+  ): Promise<MoonlightLocalSaveResult> {
+    let result: MoonlightLocalHostSaveResult =
+      this.moonlightLocalHostService.save(state, key, Date.now());
+    // A normal cloud-first apply briefly owns the RDB transaction gate. Match
+    // the forgiving behavior users expect from the other host editors by
+    // waiting for that short operation instead of surfacing an immediate,
+    // misleading permanent write failure. Never retry an uncertain/committed
+    // result, so this cannot duplicate a durable host or trust record.
+    const retryDelays: number[] = [250, 500, 1000, 1500, 2000, 3000];
+    for (let i = 0; i < retryDelays.length && !result.ok &&
+        !result.localCommitted && result.code === 'local_write_failed'; i++) {
+      await new Promise<void>((resolve: () => void): void => {
+        setTimeout(resolve, retryDelays[i]);
+      });
+      result = this.moonlightLocalHostService.save(
+        state, key, Date.now());
+    }
     if (!result.ok) {
       const failed: MoonlightLocalSaveResult = {
         localCommitted: false,
@@ -2728,20 +3153,16 @@ struct HostListPage {
           'dropped stale Moonlight catalog handoff after add-host Sheet disappeared');
         return;
       }
-      const routeParams: Record<string, Object> | null =
-        moonlightHostRouteParams(pendingMoonlightDestination.hostId);
-      if (routeParams === null) {
-        hilog.warn(0x0001, 'HostList',
-          'Moonlight catalog handoff rejected because stable ID is invalid');
-        return;
-      }
       hilog.info(0x0001, 'HostList',
         'Moonlight post-save handoff accepted after add-host Sheet disappeared');
-      router.pushUrl({
-        url: pendingMoonlightDestination.destination === 'moonlight_host_detail'
-          ? 'pages/MoonlightHostDetailPage' : 'pages/MoonlightAppCatalogPage',
-        params: routeParams
-      });
+      if (pendingMoonlightDestination.destination === 'moonlight_catalog') {
+        this.openMoonlightCatalogSheet(pendingMoonlightDestination.hostId);
+      } else {
+        // Existing Moonlight hosts follow the same in-place card expansion as
+        // every normal host-list tap. Do not revive the retired full-page
+        // detail route after the add Sheet disappears.
+        this.openMoonlightHostSheet(pendingMoonlightDestination.hostId);
+      }
       return;
     }
 
@@ -2847,6 +3268,7 @@ struct HostListPage {
       clearTimeout(this.pendingSheetOpenTimer);
       this.pendingSheetOpenTimer = -1;
     }
+    this.activateSheetReleaseFence();
     this.addSheetClosing = true;
     this.showAddSheet = false;
   }
@@ -3048,6 +3470,9 @@ struct HostListPage {
     this.resetSettingsLeafSheetAfterDismiss();
     this.vncSettingsLeafDirty = false;
     this.moonlightSettingsLeafDirty = false;
+    if (moonlightSettingsRouteSpec(dismissedMode) !== null) {
+      this.moonlightSettingsLeafHostId = '';
+    }
     if (this.pendingSettingsLeafSheetMode !== SETTINGS_SHEET_NONE) {
       this.scheduleSettingsLeafSheetOpen(this.pendingSettingsLeafSheetMode,
         this.pendingSettingsLeafPrepare,
@@ -3154,6 +3579,16 @@ struct HostListPage {
         'Moonlight 云端删除正在完成；为避免数据重新出现，暂不能修改同步范围';
       return;
     }
+    if (index < 0 && table === MOONLIGHT_CLOUD_TABLE) {
+      const logical = await cloud.replaceMoonlightCloudScopes(
+        moonlightForcedCloudSyncSelection());
+      this.moonlightCloudSelectedScopes = logical.selected.slice();
+      if (!logical.ok && logical.code !== 'reconcile_pending') {
+        this.cloudSyncError =
+          'Moonlight 整体同步状态未能恢复，请稍后重试';
+        return;
+      }
+    }
     if (index < 0 && table === MOONLIGHT_CLOUD_TABLE &&
         !await cloud.retryMoonlightCloudRegistration()) {
       this.cloudSyncError = cloud.isCloudAvailable() ?
@@ -3227,49 +3662,6 @@ struct HostListPage {
     }
   }
 
-  private async toggleMoonlightCloudScope(
-    scope: MoonlightCloudSyncScope
-  ): Promise<void> {
-    if (scope === 'profiles' &&
-        this.moonlightCloudSelectedScopes.indexOf('hosts') < 0) {
-      this.cloudSyncError =
-        '应用串流配置档依赖主机目录，请先选择“主机地址与名称”';
-      return;
-    }
-    const next: string[] = this.moonlightCloudSelectedScopes.slice();
-    const index: number = next.indexOf(scope);
-    if (index >= 0) { next.splice(index, 1); } else { next.push(scope); }
-    const result = await CloudStore.getInstance()
-      .replaceMoonlightCloudScopes(next);
-    this.moonlightCloudSelectedScopes = result.selected.slice();
-    this.moonlightRestoreActivationState = CloudStore.getInstance()
-      .moonlightRestoredDataActivationState();
-    if (result.ok) {
-      this.cloudSyncError = result.code ===
-        'restore_activation_pending' ?
-        '范围已保存在本机；恢复的数据仍处于隔离状态，完成显式云端核对前不会上传' :
-        result.cloudFirstPending ?
-        'Moonlight 云端优先核对仍在等待；本机数据已保留且上传保持暂停' : '';
-      return;
-    }
-    if (result.code === 'reconcile_pending') {
-      this.cloudSyncError = result.durableChanged ?
-        '账号已切换；Moonlight 同步选择已保存，将在返回该账号时复核后生效' :
-        '账号已切换；Moonlight 本地投影将在返回该账号时按原选择复核';
-    } else if (result.code === 'cloud_first_pending') {
-      this.cloudSyncError =
-        '范围已保存在本机，但云端优先核对未完成；Moonlight 上传保持暂停';
-    } else if (result.code === 'registration_unavailable') {
-      this.cloudSyncError =
-        'Moonlight 云表尚未就绪；现有协议云同步未受影响';
-    } else if (result.code === 'deletion_pending') {
-      this.cloudSyncError =
-        'Moonlight 云端删除正在完成；为避免数据重新出现，暂不能修改同步范围';
-    } else {
-      this.cloudSyncError = 'Moonlight 同步范围未能安全保存，请重试';
-    }
-  }
-
   private confirmMoonlightRestoreActivation(): void {
     promptAction.showDialog({
       title: '允许恢复的 Moonlight 数据上传？',
@@ -3304,7 +3696,7 @@ struct HostListPage {
     }
     if (result.code === 'selection_required') {
       this.cloudSyncError =
-        '请先勾选 Moonlight 串流数据，并至少选择一个可跨设备范围';
+        'Moonlight 云表尚未完成自动注册，请稍后重试';
     } else if (result.code === 'bootstrap_pending') {
       this.cloudSyncError =
         '当前账号的基础云端核对尚未完成；旧版数据保持可用，请稍后重试';
@@ -3539,6 +3931,7 @@ struct HostListPage {
   private openMoonlightSettingsFromSettings(mode: number): void {
     const spec: MoonlightSettingsRouteSpec | null = moonlightSettingsRouteSpec(mode);
     if (spec === null || spec.owner !== 'moonlight' || !this.pageActive) { return; }
+    this.moonlightSettingsLeafHostId = '';
     this.openSettingsLeafSheet(mode);
   }
 
@@ -3904,6 +4297,12 @@ struct HostListPage {
 
   aboutToDisappear(): void {
     this.pageActive = false;
+    this.sheetReleaseFenceGeneration += 1;
+    this.sheetReleaseFenceActive = false;
+    if (this.sheetReleaseFenceTimer !== -1) {
+      clearTimeout(this.sheetReleaseFenceTimer);
+      this.sheetReleaseFenceTimer = -1;
+    }
     this.lanDiscovery.stopScan();
     this.rdpLanDiscovery.stopScan();
     this.dynamicRustDeskDiscovery.stopScan();
@@ -4167,7 +4566,10 @@ struct HostListPage {
     if (showLoading) { this.isLoading = true; }
     try {
       this.refreshCryptoStatus();
-      this.refreshMoonlightDirectoryIfScopeChanged();
+      // The Moonlight overlay and app cache can change without changing the
+      // account lease. Reload it on the same lifecycle/data-change cadence as
+      // the RDP/RustDesk/SSH/VNC cards.
+      this.refreshMoonlightDirectory();
       this.refreshHostListView();
       this.rdpCredentials = this.srv.getAllRdpCredentials();
       this.rdpCount = this.srv.getRdpCount();
@@ -4271,6 +4673,7 @@ struct HostListPage {
   private refreshHostListView(force: boolean = false): void {
     // 用新对象快照驱动列表和详情，避免服务层原地更新同一 RemoteHost
     // 引用时，LazyForEach/卡片内部只收到 reload 却继续显示旧字段。
+    MoonlightSessionCoordinator.getInstance().reconcileNativeTerminalReceipt();
     const activeSession: ActiveRemoteSessionRecord | null = ActiveRemoteSessionRegistry.getInstance().getActive();
     const nextActiveRemoteHostId: string = activeSession === null ? '' : activeSession.hostId;
     const activeSessionChanged: boolean = this.activeRemoteHostId !== nextActiveRemoteHostId;
@@ -4477,12 +4880,9 @@ struct HostListPage {
     this.haloColor = hex;
     AppStorage.setOrCreate(key, hex);
     AppStorage.setOrCreate(HALO_COLOR_LEGACY_KEY, hex);
-    try {
-      const prefs = preferences.getPreferencesSync(getContext(this), { name: 'RemoteDesktopAppPrefs' });
-      prefs.putSync(key, hex);
-      prefs.flushSync();
-    } catch (_e) { /* ignore */ }
-    CloudStore.getInstance().upsertUserSetting(key, hex);
+    const localSaved: boolean = this.persistPreferenceValue(key, hex);
+    const cloudSaved: boolean = CloudStore.getInstance().upsertUserSetting(key, hex);
+    this.reportPreferencePersistence(localSaved, cloudSaved);
   }
 
   private currentSystemColorMode(ctx: common.UIAbilityContext, preferEnvironment: boolean): number {
@@ -4609,6 +5009,11 @@ struct HostListPage {
     return w;
   }
 
+  private mutationFailureMessage(fallback: string): string {
+    const message: string = CloudStore.getInstance().getLastMutationResult().message.trim();
+    return message === '' ? fallback : message;
+  }
+
   private doHostBatchDelete(): void {
     promptAction.showDialog({
       title: '批量删除',
@@ -4633,10 +5038,22 @@ struct HostListPage {
           if (vncId !== '') { vncIds.push(vncId); } else { remoteIds.push(id); }
         });
         if (remoteIds.length > 0) { this.srv.removeHosts(remoteIds); }
-        for (let i = 0; i < vncIds.length; i++) { this.vncHosts.remove(vncIds[i]); }
+        const failedIds: Set<string> = new Set<string>();
+        for (let i = 0; i < remoteIds.length; i++) {
+          if (this.srv.getHost(remoteIds[i]) !== undefined) { failedIds.add(remoteIds[i]); }
+        }
+        for (let i = 0; i < vncIds.length; i++) {
+          if (!this.vncHosts.remove(vncIds[i])) { failedIds.add(vncHostUiId(vncIds[i])); }
+        }
         this.refreshHostSnapshotAfterMutation();
-        this.hostSelectionMode = false;
-        this.hostSelectedIds = new Set<string>();
+        this.hostSelectionMode = failedIds.size > 0;
+        this.hostSelectedIds = failedIds;
+        if (failedIds.size > 0) {
+          promptAction.showToast({
+            message: failedIds.size.toString() + ' 个主机删除失败，已保留选择，请重试',
+            duration: 2600
+          });
+        }
       }
     });
   }
@@ -4679,11 +5096,8 @@ struct HostListPage {
 
   /** 将手动排序顺序写入本地 Preferences (不触发云同步) */
   private persistHostManualOrder(): void {
-    try {
-      const prefs = preferences.getPreferencesSync(getContext(this), { name: 'RemoteDesktopAppPrefs' });
-      prefs.putSync('hostManualSortOrder', JSON.stringify(this.hostManualOrder));
-      prefs.flushSync();
-    } catch (_e) { /* best effort */ }
+    this.reportPreferencePersistence(this.persistPreferenceValue(
+      'hostManualSortOrder', JSON.stringify(this.hostManualOrder)));
   }
 
   @Builder hostDragPreviewBuilder(host: RemoteHost) {
@@ -4969,6 +5383,18 @@ struct HostListPage {
   private async connectToHost(host: RemoteHost): Promise<void> {
     hilog.info(0x0001, 'HostList', 'connectToHost: proto=' + host.protocol +
       ' host=' + maskHost(host.host) + ':' + host.port);
+    const moonlightReleased: boolean = MoonlightSessionCoordinator.getInstance()
+      .reconcileNativeTerminalReceipt();
+    const processActive: ActiveRemoteSessionRecord | null =
+      ActiveRemoteSessionRegistry.getInstance().getActive();
+    if (!moonlightReleased && processActive !== null &&
+        processActive.protocol === RemoteProtocol.moonlight) {
+      this.clearPendingVncCredentialForRemoteHost(host);
+      promptAction.showToast({
+        message: 'Moonlight 正在安全释放媒体与输入资源，请稍后重试', duration: 2200
+      });
+      return;
+    }
     const protocolNeedsArbitration: boolean = host.protocol === 'rdp' ||
       host.protocol === 'rustdesk' || host.protocol === 'vnc';
     const connectionGeneration: number = protocolNeedsArbitration ?
@@ -7057,7 +7483,11 @@ struct HostListPage {
     if (this.sshPreflightUsesJump(host) && !this.sshPreflightJumpHostKeyInfo) { return; }
     const updated: RemoteHost = RemoteHost.fromJSON(host.toJSON());
     this.applySshPreflightTrust(updated, info, this.sshPreflightJumpHostKeyInfo);
-    this.srv.updateHost(updated);
+    if (!this.srv.updateHost(updated)) {
+      this.sshPreflightState = SshPreflightState.ERROR;
+      this.sshPreflightError = 'SSH 指纹验证成功，但信任记录保存失败；连接已停止。';
+      return;
+    }
     this.doSshPreflightCheckPassphrase(updated, generation);
   }
 
@@ -7068,7 +7498,11 @@ struct HostListPage {
     if (this.sshPreflightUsesJump(host) && !this.sshPreflightJumpHostKeyInfo) { return; }
     const updated: RemoteHost = RemoteHost.fromJSON(host.toJSON());
     this.applySshPreflightTrust(updated, info, this.sshPreflightJumpHostKeyInfo);
-    this.srv.updateHost(updated);
+    if (!this.srv.updateHost(updated)) {
+      this.sshPreflightState = SshPreflightState.ERROR;
+      this.sshPreflightError = 'SSH 新指纹验证成功，但信任记录保存失败；连接已停止。';
+      return;
+    }
     this.doSshPreflightCheckPassphrase(updated, generation);
   }
 
@@ -7208,8 +7642,14 @@ struct HostListPage {
         return;
       }
       if (this.sshPreflightProxyPassphraseSaveToHost) {
-        host.sshProxyKeyPassphrase = this.sshPreflightProxyPassphraseInput;
-        this.srv.updateHost(host);
+        const updated: RemoteHost = RemoteHost.fromJSON(host.toJSON());
+        updated.sshProxyKeyPassphrase = this.sshPreflightProxyPassphraseInput;
+        if (!this.srv.updateHost(updated)) {
+          this.sshPreflightState = SshPreflightState.PASSPHRASE_REQUIRED;
+          this.sshPreflightError = '跳板机私钥密码验证成功，但保存失败；连接已停止。';
+          return;
+        }
+        host = updated;
       }
       this.sshPreflightPassphraseScope = 'target';
       this.sshPreflightPassphraseInput = '';
@@ -7245,8 +7685,14 @@ struct HostListPage {
       if (!this.isCurrentSshPreflight(host, generation)) { return; }
       if (result.ok) {
         if (this.sshPreflightPassphraseSaveToHost) {
-          host.sshKeyPassphrase = this.sshPreflightPassphraseInput;
-          this.srv.updateHost(host);
+          const updated: RemoteHost = RemoteHost.fromJSON(host.toJSON());
+          updated.sshKeyPassphrase = this.sshPreflightPassphraseInput;
+          if (!this.srv.updateHost(updated)) {
+            this.sshPreflightState = SshPreflightState.PASSPHRASE_REQUIRED;
+            this.sshPreflightError = '私钥密码验证成功，但保存失败；连接已停止。';
+            return;
+          }
+          host = updated;
         }
         this.doSshPreflightReady(host, generation);
       } else {
@@ -7623,26 +8069,32 @@ struct HostListPage {
       promptAction.showToast({ message: nextLocked ? '已锁定' : '已解锁', duration: 1500 });
       return;
     }
-    host.locked = !host.locked;
-    host.lockType = host.locked ? LockType.BIOMETRIC : LockType.NONE;
-    if (!this.srv.updateHost(host)) {
+    const updated: RemoteHost = RemoteHost.fromJSON(host.toJSON());
+    updated.locked = !host.locked;
+    updated.lockType = updated.locked ? LockType.BIOMETRIC : LockType.NONE;
+    if (!this.srv.updateHost(updated)) {
       promptAction.showToast({ message: '保存主机状态失败', duration: 2000 });
       return;
     }
     this.refreshHostSnapshotAfterMutation();
-    promptAction.showToast({ message: host.locked ? '已锁定' : '已解锁', duration: 1500 });
+    promptAction.showToast({ message: updated.locked ? '已锁定' : '已解锁', duration: 1500 });
   }
 
   private prepareRustDeskProPreflight(host: RemoteHost): number {
     this.rustDeskProPreflightGeneration += 1;
     const generation: number = this.rustDeskProPreflightGeneration;
+    const scope = AccountSessionCoordinator.getInstance().currentScope();
+    const draft: RustDeskAuthDraft | null = this.rustDeskAuthDrafts.load(
+      scope.ownerScopeId, scope.generation, host.id);
     this.rustDeskProPreflightHostId = host.id;
     this.rustDeskProAuthMode = host.rustdeskDirectEnabled ? 'password' :
-      (host.rustdeskAuthMode === 'request_approval' ? 'request_approval' : 'password');
-    this.rustDeskProPassword = host.password;
-    this.rustDeskProPasswordMode = host.rustdeskPasswordMode === 1 ? 1 : 0;
+      (draft !== null ? draft.authChoice :
+        (host.rustdeskAuthMode === 'request_approval' ? 'request_approval' : 'password'));
+    this.rustDeskProPassword = draft === null ? host.password : draft.password;
+    this.rustDeskProPasswordMode = draft === null ?
+      (host.rustdeskPasswordMode === 1 ? 1 : 0) : draft.passwordMode;
     this.rustDeskProPasswordVisible = false;
-    this.rustDeskProRememberPassword = true;
+    this.rustDeskProRememberPassword = draft === null ? true : draft.rememberPassword;
     this.rustDeskProPreflightError = '';
     this.rustDeskProPreflightState = RustDeskProPreflightState.IDLE;
     this.rustDeskProTwoFactorActive = false;
@@ -7655,6 +8107,32 @@ struct HostListPage {
     this.rustDeskProTwoFactorSelectedEntryId = '';
     this.rustDeskProDisconnectIdentity = null;
     return generation;
+  }
+
+  private saveRustDeskProAuthDraft(): void {
+    const hostId: string = this.rustDeskProPreflightHostId.trim();
+    if (hostId === '') { return; }
+    const scope = AccountSessionCoordinator.getInstance().currentScope();
+    this.rustDeskAuthDrafts.save({
+      ownerScopeId: scope.ownerScopeId,
+      accountGeneration: scope.generation,
+      hostId,
+      authChoice: this.rustDeskProAuthMode === 'request_approval' ?
+        'request_approval' : 'password',
+      password: this.rustDeskProPassword,
+      passwordMode: this.rustDeskProPasswordMode === 1 ? 1 : 0,
+      rememberPassword: this.rustDeskProRememberPassword,
+      updatedAt: Date.now()
+    });
+  }
+
+  private clearRustDeskProAuthDraft(hostId: string): void {
+    const scope = AccountSessionCoordinator.getInstance().currentScope();
+    this.rustDeskAuthDrafts.clear(scope.ownerScopeId, scope.generation, hostId);
+    if (this.rustDeskProBackgroundResumeHostId === hostId) {
+      this.rustDeskProBackgroundResumeHostId = '';
+      this.rustDeskProBackgroundDismissConfirmed = false;
+    }
   }
 
   private openRustDeskProPreflight(host: RemoteHost): void {
@@ -7733,8 +8211,16 @@ struct HostListPage {
     submitRemoteSessionExactDisconnectWithRetry(identity, retryPort);
   }
 
-  private cancelRustDeskProPreflight(closeSheet: boolean = true): void {
+  private cancelRustDeskProPreflight(closeSheet: boolean = true,
+    preserveDraft: boolean = false): void {
     const hostId: string = this.rustDeskProPreflightHostId;
+    if (preserveDraft) {
+      this.saveRustDeskProAuthDraft();
+      this.rustDeskProBackgroundResumeHostId = hostId;
+    } else {
+      this.rustDeskProBackgroundDismissConfirmed = false;
+      this.clearRustDeskProAuthDraft(hostId);
+    }
     const disconnectIdentity: NativeDisconnectIdentity | null =
       this.rustDeskProDisconnectIdentity;
     this.rustDeskProPreflightGeneration += 1;
@@ -7801,6 +8287,7 @@ struct HostListPage {
     }
 
     if (nextHostId.length === 0) {
+      this.settleRustDeskProImplicitDismiss();
       return;
     }
     const nextHost: RemoteHost | undefined = this.srv.getHost(nextHostId);
@@ -8169,6 +8656,7 @@ struct HostListPage {
     }
     const connectionScope = AccountSessionCoordinator.getInstance().currentScope();
     const host: RemoteHost = RemoteHost.fromJSON(stored.toJSON());
+    copyRustDeskPeerTwoFactorRuntime(stored, host);
     const relay: RustDeskRelayConfig | undefined = this.srv.getAllRelays()
       .find((item: RustDeskRelayConfig): boolean => item.id === host.rustdeskRelayId);
     let controlPlaneProfile: RustDeskControlPlaneProfile =
@@ -8262,8 +8750,11 @@ struct HostListPage {
           const saved: RemoteHost = RemoteHost.fromJSON(stored.toJSON());
           saved.rustdeskAuthMode = host.rustdeskAuthMode;
           saved.rustdeskPasswordMode = host.rustdeskPasswordMode;
-          if (this.rustDeskProRememberPassword && host.rustdeskAuthMode === 'password') {
-            saved.password = host.password;
+          if (host.rustdeskAuthMode === 'password') {
+            saved.password = this.rustDeskProRememberPassword ? host.password : '';
+          }
+          if (!this.srv.updateHost(saved)) {
+            throw new Error('远端鉴权已通过，但设备密码保存失败；会话已安全停止，请重试。');
           }
           const now: number = Date.now();
           const record: ActiveRemoteSessionRecord = {
@@ -8276,7 +8767,7 @@ struct HostListPage {
           if (!ActiveRemoteSessionRegistry.getInstance().setActive(record)) {
             throw new Error('远程会话账号作用域未登记，无法交接预鉴权会话。');
           }
-          this.srv.updateHost(saved);
+          this.clearRustDeskProAuthDraft(host.id);
           const params: Record<string, Object> = {};
           params['hostId'] = host.id;
           params['rustdeskPreauthenticated'] = true;
@@ -8575,7 +9066,13 @@ struct HostListPage {
     } else {
       removed = this.srv.removeHost(host.id);
     }
-    if (removed) { this.refreshHostSnapshotAfterMutation(); }
+    if (removed) {
+      this.refreshHostSnapshotAfterMutation();
+    } else {
+      promptAction.showToast({
+        message: this.mutationFailureMessage('删除主机失败，请稍后重试'), duration: 2400
+      });
+    }
   }
 
   // PC大屏模式 + 滑动删除共用: 锁验证 + 确认弹窗 + 动画移除
@@ -8602,7 +9099,13 @@ struct HostListPage {
         const removed: boolean = vncHostId !== ''
           ? this.vncHosts.remove(vncHostId)
           : this.srv.removeHost(host.id);
-        if (removed) { this.refreshHostSnapshotAfterMutation(); }
+        if (removed) {
+          this.refreshHostSnapshotAfterMutation();
+        } else {
+          promptAction.showToast({
+            message: this.mutationFailureMessage('删除主机失败，请稍后重试'), duration: 2400
+          });
+        }
       }
     });
   }
@@ -8683,35 +9186,49 @@ struct HostListPage {
   }
 
   private saveTotpLock(locked: boolean): void {
+    if (this.persistPreferenceValue('totpLocked', locked)) { return; }
+    this.totpPageLocked = !locked;
+    promptAction.showToast({ message: '2FA 隐私保护设置保存失败，已恢复原状态', duration: 2600 });
+  }
+
+  private persistPreferenceValue(key: string,
+    value: string | number | boolean): boolean {
     try {
-      const prefs = preferences.getPreferencesSync(getContext(this), { name: 'RemoteDesktopAppPrefs' });
-      prefs.putSync('totpLocked', locked);
+      const prefs = preferences.getPreferencesSync(
+        getContext(this), { name: 'RemoteDesktopAppPrefs' });
+      prefs.putSync(key, value);
       prefs.flushSync();
-    } catch (_err) { /* ignore */ }
+      return true;
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  private reportPreferencePersistence(localSaved: boolean,
+    cloudSaved: boolean = true): void {
+    if (localSaved && cloudSaved) { return; }
+    promptAction.showToast({
+      message: localSaved ?
+        '设置已保存在本机，但云同步失败，请稍后重试' :
+        '设置未能写入本机，当前仅在本次运行中生效',
+      duration: 2600
+    });
   }
 
   private persistRustDeskNumberPref(key: string, value: number): void {
     AppStorage.setOrCreate(key, value);
-    try {
-      const prefs = preferences.getPreferencesSync(getContext(this), { name: 'RemoteDesktopAppPrefs' });
-      prefs.putSync(key, value);
-      prefs.flushSync();
-    } catch (_e) { /* ignore */ }
-    if (cloudUserSettingIsSyncable(key)) {
+    const localSaved: boolean = this.persistPreferenceValue(key, value);
+    const cloudSaved: boolean = !cloudUserSettingIsSyncable(key) ||
       CloudStore.getInstance().upsertUserSetting(key, value);
-    }
+    this.reportPreferencePersistence(localSaved, cloudSaved);
   }
 
   private persistRustDeskBooleanPref(key: string, value: boolean): void {
     AppStorage.setOrCreate(key, value);
-    try {
-      const prefs = preferences.getPreferencesSync(getContext(this), { name: 'RemoteDesktopAppPrefs' });
-      prefs.putSync(key, value);
-      prefs.flushSync();
-    } catch (_e) { /* ignore */ }
-    if (cloudUserSettingIsSyncable(key)) {
+    const localSaved: boolean = this.persistPreferenceValue(key, value);
+    const cloudSaved: boolean = !cloudUserSettingIsSyncable(key) ||
       CloudStore.getInstance().upsertUserSetting(key, value);
-    }
+    this.reportPreferencePersistence(localSaved, cloudSaved);
   }
 
   /** RustDesk diagnostics are device-local UI preferences; never cloud-sync them. */
@@ -8722,24 +9239,16 @@ struct HostListPage {
   /** Device-local preference; layout choices do not enter cloud host settings. */
   private persistLocalBooleanPref(key: string, value: boolean): void {
     AppStorage.setOrCreate(key, value);
-    try {
-      const prefs = preferences.getPreferencesSync(getContext(this), { name: 'RemoteDesktopAppPrefs' });
-      prefs.putSync(key, value);
-      prefs.flushSync();
-    } catch (_e) { /* best effort: AppStorage remains available for this process */ }
+    this.reportPreferencePersistence(this.persistPreferenceValue(key, value));
   }
 
   /** 通用设置持久化 — 同时写 AppStorage + Preferences, 杀后台不丢失 */
   private persistPref(key: string, value: string | number | boolean): void {
     AppStorage.setOrCreate(key, value);
-    try {
-      const prefs = preferences.getPreferencesSync(getContext(this), { name: 'RemoteDesktopAppPrefs' });
-      prefs.putSync(key, value);
-      prefs.flushSync();
-    } catch (_e) { /* ignore */ }
-    if (cloudUserSettingIsSyncable(key)) {
+    const localSaved: boolean = this.persistPreferenceValue(key, value);
+    const cloudSaved: boolean = !cloudUserSettingIsSyncable(key) ||
       CloudStore.getInstance().upsertUserSetting(key, value);
-    }
+    this.reportPreferencePersistence(localSaved, cloudSaved);
   }
 
   /** 初始云端恢复完成后覆盖本地的可同步偏好；账号/锁定状态不会进入此路径。 */
@@ -8794,6 +9303,7 @@ struct HostListPage {
     this.persistRustDeskNumberPref('rustdeskDirectPort', this.rustdeskDirectPort);
     if (this.rustdeskDirectPort === previousPort) { return; }
     const hosts: RemoteHost[] = this.srv.getAllHosts();
+    let failed: number = 0;
     for (let i: number = 0; i < hosts.length; i++) {
       const host: RemoteHost = hosts[i];
       if (!shouldAdoptRustDeskDirectPort(host.rustdeskDirectEnabled,
@@ -8801,7 +9311,13 @@ struct HostListPage {
       const next: RemoteHost = RemoteHost.fromJSON(host.toJSON());
       next.rustdeskDirectPort = this.rustdeskDirectPort;
       next.port = this.rustdeskDirectPort;
-      this.srv.updateHost(next);
+      if (!this.srv.updateHost(next)) { failed++; }
+    }
+    if (failed > 0) {
+      promptAction.showToast({
+        message: failed.toString() + ' 个 RustDesk 主机的直连端口保存失败，请逐项检查',
+        duration: 2800
+      });
     }
   }
 
@@ -9517,10 +10033,19 @@ struct HostListPage {
       this.sshPublicKeyInstallPanel();
     } else if (this.remoteHostSheetMode === REMOTE_HOST_SHEET_MOONLIGHT_DETAIL) {
       this.moonlightHostDetailSheet();
+    } else if (this.remoteHostSheetMode === REMOTE_HOST_SHEET_MOONLIGHT_CATALOG) {
+      this.moonlightCatalogSheet();
+    } else if (this.remoteHostSheetMode === REMOTE_HOST_SHEET_MOONLIGHT_EDIT) {
+      this.moonlightEditSheet();
     }
   }
 
   private handleRemoteHostSheetWillDismiss(action: DismissSheetAction): void {
+    if (this.remoteHostSheetMode === REMOTE_HOST_SHEET_MOONLIGHT_CATALOG &&
+        !this.moonlightCatalogDismissAllowed) {
+      promptAction.showToast({ message: '正在处理 Moonlight 请求，请稍候', duration: 1500 });
+      return;
+    }
     switch (this.remoteHostSheetMode) {
       case REMOTE_HOST_SHEET_SSH_PREFLIGHT:
         this.doSshPreflightCancel(false);
@@ -9535,7 +10060,9 @@ struct HostListPage {
         this.cancelVncCredentialPreflight(false);
         break;
       case REMOTE_HOST_SHEET_RUSTDESK_PREFLIGHT:
-        this.cancelRustDeskProPreflight(false);
+        if (!this.rustDeskProPreflightClosing) {
+          this.cancelRustDeskProPreflight(false, true);
+        }
         break;
       case REMOTE_HOST_SHEET_PASSPHRASE:
         this.beginRemoteHostSheetClose(REMOTE_HOST_SHEET_PASSPHRASE);
@@ -9548,6 +10075,12 @@ struct HostListPage {
         break;
       case REMOTE_HOST_SHEET_MOONLIGHT_DETAIL:
         this.beginRemoteHostSheetClose(REMOTE_HOST_SHEET_MOONLIGHT_DETAIL);
+        break;
+      case REMOTE_HOST_SHEET_MOONLIGHT_CATALOG:
+        this.beginRemoteHostSheetClose(REMOTE_HOST_SHEET_MOONLIGHT_CATALOG);
+        break;
+      case REMOTE_HOST_SHEET_MOONLIGHT_EDIT:
+        this.beginRemoteHostSheetClose(REMOTE_HOST_SHEET_MOONLIGHT_EDIT);
         break;
       default:
         return;
@@ -9576,7 +10109,7 @@ struct HostListPage {
       } else if (mode === REMOTE_HOST_SHEET_VNC_CREDENTIAL) {
         this.cancelVncCredentialPreflight(false);
       } else if (mode === REMOTE_HOST_SHEET_RUSTDESK_PREFLIGHT) {
-        this.cancelRustDeskProPreflight(false);
+        this.cancelRustDeskProPreflight(false, true);
       } else if (mode === REMOTE_HOST_SHEET_RUSTDESK_TOTP_BINDING) {
         this.closeRustDeskTotpBinding(false);
       }
@@ -9609,8 +10142,54 @@ struct HostListPage {
         this.resetSshPublicKeyInstallSheetState();
         this.noteSheetDismissed();
         break;
-      case REMOTE_HOST_SHEET_MOONLIGHT_DETAIL:
+      case REMOTE_HOST_SHEET_MOONLIGHT_DETAIL: {
+        const nextCatalogHostId: string = this.pendingMoonlightCatalogHostId;
+        const nextSettingsHostId: string = this.pendingMoonlightSettingsHostId;
+        this.pendingMoonlightCatalogHostId = '';
+        this.pendingMoonlightSettingsHostId = '';
         this.moonlightSheetHostId = '';
+        this.noteSheetDismissed();
+        if (nextCatalogHostId !== '' && this.pageActive) {
+          setTimeout((): void => {
+            if (this.pageActive) { this.openMoonlightCatalogSheet(nextCatalogHostId); }
+          }, 0);
+        } else if (nextSettingsHostId !== '' && this.pageActive) {
+          setTimeout((): void => {
+            if (this.pageActive) {
+              this.openMoonlightSettingsSheet(nextSettingsHostId, SETTINGS_SHEET_MOONLIGHT_VIDEO);
+            }
+          }, 0);
+        }
+        break;
+      }
+      case REMOTE_HOST_SHEET_MOONLIGHT_CATALOG: {
+        const hostId: string = this.moonlightSheetHostId;
+        const navigation: string = this.pendingMoonlightCatalogNavigation;
+        const launch: MoonlightCatalogLaunchHandoff | null =
+          this.pendingMoonlightCatalogLaunch;
+        this.pendingMoonlightCatalogNavigation = '';
+        this.pendingMoonlightCatalogLaunch = null;
+        this.moonlightCatalogReturnsToDetail = false;
+        this.moonlightCatalogDismissAllowed = true;
+        this.moonlightSheetHostId = '';
+        this.noteSheetDismissed();
+        if (navigation === 'launch' && launch !== null) {
+          setTimeout((): void => { void this.presentMoonlightCatalogLaunch(launch); }, 0);
+        } else if (navigation !== '' && hostId !== '') {
+          setTimeout((): void => {
+            if (!this.pageActive) { return; }
+            if (navigation === 'settings') {
+              this.openMoonlightSettingsSheet(hostId, SETTINGS_SHEET_MOONLIGHT_VIDEO);
+            } else {
+              this.openMoonlightHostSheet(hostId);
+            }
+          }, 0);
+        }
+        break;
+      }
+      case REMOTE_HOST_SHEET_MOONLIGHT_EDIT:
+        this.moonlightSheetHostId = '';
+        this.moonlightEditName = '';
         this.noteSheetDismissed();
         break;
       default:
@@ -9624,9 +10203,9 @@ struct HostListPage {
   }
 
   private remoteHostSheetHeight(): SheetSize | string {
-    // The Moonlight card detail is intentionally content-sized. LARGE leaves
-    // a full-screen white tail below the short host summary on phones, which
-    // makes the Sheet look like a blank page instead of an expanded card.
+    // Moonlight detail and catalog surfaces are both content-sized. The
+    // catalog component grows with its visible row count and caps itself at
+    // two rows; LARGE leaves a conspicuous white tail for short catalogs.
     return SheetSize.FIT_CONTENT;
   }
 
@@ -9908,6 +10487,17 @@ struct HostListPage {
       .translate({ y: (!this.isDesktopDevice && this.curTab === 3 ? 120 : (this.breakpoint === 'sm' ? -120 : -100)) })
       .opacity(!this.pageActive || (!this.isDesktopDevice && this.curTab === 3) ? 0 : 1)
       .animation({ curve: curves.interpolatingSpring(0, 1, 200, 17) })
+
+      if (this.sheetReleaseFenceActive) {
+        // Render last in the Stack so the native Sheet's closing pointer-up
+        // cannot fall through to a host card or FAB. The overlay is invisible
+        // and exists only for SHEET_RELEASE_FENCE_MS.
+        Column()
+          .width('100%').height('100%')
+          .backgroundColor(Color.Transparent)
+          .hitTestBehavior(HitTestMode.Block)
+          .zIndex(1000)
+      }
     }.width('100%').height('100%').backgroundColor(this.pal().bg)
     .onAreaChange((_oldArea: Area, nextArea: Area): void => {
       const nextHeight: number = nextArea.height as number;
@@ -10635,6 +11225,152 @@ struct HostListPage {
     .width('100%').margin({ bottom: 10 })
   }
 
+  private moonlightGroupCatalogCount(): number {
+    const hosts: MoonlightHostLocalView[] = this.visibleMoonlightHosts();
+    let count: number = 0;
+    for (let index: number = 0; index < hosts.length; index++) {
+      count += hosts[index].catalogItems.length;
+    }
+    return count;
+  }
+
+  private toggleMoonlightGroup(): void {
+    animateTo({ duration: 220, curve: Curve.FastOutSlowIn }, (): void => {
+      this.expandedHostGroup = this.expandedHostGroup === 'moonlight' ? '' : 'moonlight';
+    });
+  }
+
+  @Builder moonlightGroupTypeCard() {
+    Column() {
+      Row() {
+        Column() {
+          MoonlightBrandIcon({ iconSize: this.breakpoint === 'sm' ? 20 : 24,
+            tint: this.accentColor, accessibilityLabel: 'Moonlight' })
+        }
+        .width(this.breakpoint === 'sm' ? 38 : 44)
+        .height(this.breakpoint === 'sm' ? 38 : 44)
+        .borderRadius(this.breakpoint === 'sm' ? 19 : 14)
+        .backgroundColor(this.pal().surface)
+        .justifyContent(FlexAlign.Center)
+        Column() {
+          Text('Moonlight').fontSize(this.breakpoint === 'sm' ? 16 : 18)
+            .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
+            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          Text('Sunshine / GameStream').fontSize(this.breakpoint === 'sm' ? 10 : 11)
+            .fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 3 })
+            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+          .margin({ left: this.breakpoint === 'sm' ? 8 : 10 })
+        SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(this.breakpoint === 'sm' ? 16 : 18)
+          .fontColor([this.pal().text3])
+          .rotate({ angle: this.expandedHostGroup === 'moonlight' ? 90 : 0 })
+          .animation({ duration: 220, curve: Curve.FastOutSlowIn })
+      }.width('100%')
+      Row() {
+        Text(this.visibleMoonlightHosts().length.toString() + ' 台主机')
+          .fontSize(this.breakpoint === 'sm' ? 10 : 11)
+          .fontColor(this.pal().text2).fontFamily(this.font())
+        Blank()
+        Text(this.moonlightGroupCatalogCount().toString() + ' 个应用')
+          .fontSize(this.breakpoint === 'sm' ? 9 : 10)
+          .fontColor(this.pal().text3).fontFamily(this.font()).maxLines(1)
+      }.width('100%').margin({ top: this.breakpoint === 'sm' ? 8 : 10 })
+    }
+    .layoutWeight(1).height(this.hostGroupCardHeight())
+    .padding(this.breakpoint === 'sm' ? 10 : 12)
+    .borderRadius(this.breakpoint === 'sm' ? 16 : 14)
+    .backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
+    .border({ width: this.expandedHostGroup === 'moonlight' ? 1.5 : 0.5,
+      color: this.expandedHostGroup === 'moonlight' ? this.accentColor : this.pal().cardBorder,
+      style: BorderStyle.Solid })
+    .onClick((): void => { this.toggleMoonlightGroup(); })
+  }
+
+  private moonlightGroupDetailPanelHeight(): number {
+    const count: number = this.visibleMoonlightHosts().length;
+    const padding: number = this.breakpoint === 'sm' ? 12 : 14;
+    const header: number = this.breakpoint === 'sm' ? 34 : 38;
+    const content: number = count === 0
+      ? header + (this.breakpoint === 'sm' ? 92 : 100)
+      : header + 10 + this.hostGroupHostGridHeight(count);
+    return padding * 2 + content;
+  }
+
+  @Builder moonlightGroupedDetailPanel() {
+    Column() {
+      Row() {
+        Column() {
+          Text('Moonlight 主机').fontSize(this.breakpoint === 'sm' ? 15 : 17)
+            .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
+          Text(this.visibleMoonlightHosts().length.toString() + ' 台 · ' +
+            this.moonlightGroupCatalogCount().toString() + ' 个应用')
+            .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 4 })
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+        Button() {
+          MoonlightBrandIcon({ iconSize: 15, tint: this.accentColor, accessibilityLabel: '应用目录' })
+        }
+        .width(28).height(28).borderRadius(14).padding(0).backgroundColor(this.pal().surface)
+        .accessibilityText('打开 Moonlight 应用目录')
+        .enabled(this.visibleMoonlightHosts().length > 0)
+        .onClick((): void => {
+          const first: MoonlightHostLocalView | undefined = this.visibleMoonlightHosts()[0];
+          if (first !== undefined && first.host !== null) {
+            void this.openMoonlightHost(first.host.id, true);
+          }
+        })
+      }.width('100%')
+      if (this.visibleMoonlightHosts().length === 0) {
+        Column() {
+          MoonlightBrandIcon({ iconSize: 32, tint: this.pal().text3 })
+          Text('暂无 Moonlight 主机').fontSize(13).fontColor(this.pal().text2)
+            .fontFamily(this.font()).margin({ top: 10 })
+          Text('点击底部按钮添加主机').fontSize(11).fontColor(this.pal().text3)
+            .fontFamily(this.font()).margin({ top: 4 })
+        }.width('100%').height(this.breakpoint === 'sm' ? 92 : 100)
+          .justifyContent(FlexAlign.Center).alignItems(HorizontalAlign.Center)
+      } else {
+        Grid() {
+          ForEach(this.visibleMoonlightHosts(), (view: MoonlightHostLocalView): void => {
+            GridItem() { this.moonlightGroupedHostCard(view) }
+          }, (view: MoonlightHostLocalView): string =>
+            this.moonlightHostCardKey(view) + ':' + this.hostViewRevision.toString())
+        }
+        .columnsTemplate(hostGroupColumnsForBreakpoint(this.breakpoint) === 1 ? '1fr' : '1fr 1fr')
+        .rowsGap(10).columnsGap(10).width('100%')
+        .height(this.hostGroupHostGridHeight(this.visibleMoonlightHosts().length)).margin({ top: 10 })
+      }
+    }
+    .width('100%').height(this.expandedHostGroup === 'moonlight' ?
+      this.moonlightGroupDetailPanelHeight() : 0)
+    .padding(this.expandedHostGroup === 'moonlight' ? (this.breakpoint === 'sm' ? 12 : 14) : 0)
+    .opacity(this.expandedHostGroup === 'moonlight' ? 1 : 0).clip(true)
+    .borderRadius(this.breakpoint === 'sm' ? 16 : 15)
+    .backgroundColor(this.pal().surface).backgroundBlurStyle(BlurStyle.Regular)
+    .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+    .margin({ top: this.expandedHostGroup === 'moonlight' ? 8 : 0,
+      bottom: this.expandedHostGroup === 'moonlight' ? 10 : 0 })
+    .animation({ duration: 220, curve: Curve.FastOutSlowIn })
+  }
+
+  @Builder moonlightGroupedPhoneGroup() {
+    Column() {
+      Row() { this.moonlightGroupTypeCard() }
+        .width('100%').height(this.hostGroupCardHeight())
+      this.moonlightGroupedDetailPanel()
+    }.width('100%').margin({ bottom: 10 })
+  }
+
+  @Builder moonlightGroupedDesktopRow() {
+    Column() {
+      Row() {
+        this.moonlightGroupTypeCard()
+        Blank().width(10)
+        Blank().layoutWeight(1)
+      }.width('100%').height(this.hostGroupCardHeight()).alignItems(VerticalAlign.Top)
+      this.moonlightGroupedDetailPanel()
+    }.width('100%').margin({ bottom: 10 })
+  }
+
   @Builder hostGroupedContent() {
     Column() {
       if (this.breakpoint === 'sm') {
@@ -10642,16 +11378,14 @@ struct HostListPage {
         this.hostGroupedPhoneGroup('rustdesk')
         this.hostGroupedPhoneGroup('ssh')
         this.hostGroupedPhoneGroup('vnc')
+        this.moonlightGroupedPhoneGroup()
       } else {
         this.hostGroupedDesktopRow('rdp', 'rustdesk')
         this.hostGroupedDesktopRow('ssh', 'vnc')
+        this.moonlightGroupedDesktopRow()
       }
     }
     .width('100%').padding({ top: 8, bottom: 140 })
-  }
-
-  private moonlightHostStatusColor(view: MoonlightHostLocalView): string {
-    return view.paired ? this.pal().success : this.pal().editColor;
   }
 
   @Builder moonlightFlatHostCard(view: MoonlightHostLocalView) {
@@ -10675,15 +11409,18 @@ struct HostListPage {
             .fontSize(this.breakpoint === 'sm' ? (AppTheme.fontSize.body as number) : 17)
             .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
             .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-          Text('MOONLIGHT  ·  ' + this.moonlightAddressLabel(view.host) + '  ·  ' +
-            view.catalogItems.length.toString() + ' 个应用')
-            .fontSize(this.breakpoint === 'sm' ? 12 : 14).fontColor(this.pal().text2)
-            .fontFamily(this.font()).margin({ top: this.breakpoint === 'sm' ? 3 : 4 })
-            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-          Text(view.paired ? '已配对' : '未配对')
-            .fontSize(this.breakpoint === 'sm' ? 11 : 12)
-            .fontColor(this.moonlightHostStatusColor(view)).fontFamily(this.font())
-            .margin({ top: 3 }).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          if (view.host.locked === true) {
+            Text('已锁定 · 需验证')
+              .fontSize(this.breakpoint === 'sm' ? 12 : 13).fontColor(this.pal().text3)
+              .fontFamily(this.font()).margin({ top: this.breakpoint === 'sm' ? 3 : 4 })
+          } else {
+            Text('MOONLIGHT  ·  ' + this.protectedMoonlightCardValue(
+              view.host, this.moonlightAddressLabel(view.host)) + '  ·  ' +
+              view.catalogItems.length.toString() + ' 个应用')
+              .fontSize(this.breakpoint === 'sm' ? 12 : 14).fontColor(this.pal().text2)
+              .fontFamily(this.font()).margin({ top: this.breakpoint === 'sm' ? 3 : 4 })
+              .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          }
         }
         .alignItems(HorizontalAlign.Start).layoutWeight(1)
         .onClick((): void => {
@@ -10719,7 +11456,8 @@ struct HostListPage {
           if (!this.hostSelectionMode) { this.openMoonlightHost(view.host?.id || ''); }
         })
         Column() {
-          Text(view.host.displayName).fontSize(this.breakpoint === 'sm' ? 15 : 16)
+          Text(view.host.displayName)
+            .fontSize(this.breakpoint === 'sm' ? 15 : 16)
             .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
             .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
           Text(view.catalogItems.length.toString() + ' 个应用')
@@ -10728,7 +11466,8 @@ struct HostListPage {
             .margin({ top: 2 }).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
           Row() {
             Text('端点').fontSize(11).fontColor(this.pal().text3).width(30)
-            Text(this.moonlightAddressLabel(view.host)).fontSize(this.breakpoint === 'sm' ? 12 : 13)
+            Text(this.protectedMoonlightCardValue(view.host, this.moonlightAddressLabel(view.host)))
+              .fontSize(this.breakpoint === 'sm' ? 12 : 13)
               .fontColor(this.pal().text2).fontFamily(this.font()).layoutWeight(1)
               .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
           }.width('100%').margin({ top: 3 })
@@ -10738,47 +11477,44 @@ struct HostListPage {
           })
         Column() {
           Row() {
-            Text(view.paired ? '已配对' : '未配对').fontSize(10)
-              .fontColor(this.moonlightHostStatusColor(view)).fontFamily(this.font())
-              .padding({ left: 6, right: 6, top: 3, bottom: 3 })
-              .backgroundColor(this.moonlightHostStatusColor(view) + '14').borderRadius(6)
-            Blank().layoutWeight(1)
             Button() {
-              SymbolGlyph($r('sys.symbol.bolt_fill')).fontSize(18).fontColor([this.accentColor])
+              MoonlightBrandIcon({ iconSize: 18, tint: this.accentColor,
+                accessibilityLabel: '应用目录' })
             }
             .width(this.breakpoint === 'sm' ? 38 : 40)
             .height(this.breakpoint === 'sm' ? 38 : 40).borderRadius(19).padding(0)
-            .backgroundColor(this.pal().surface).accessibilityText('检查 Moonlight 主机')
+            .backgroundColor(this.pal().surface).accessibilityText('打开 Moonlight 应用目录')
             .onClick((): void => {
               if (!this.hostSelectionMode) {
-                promptAction.showToast({ message: 'Moonlight 主机将在打开目录时后台鉴权', duration: 1800 });
+                void this.openMoonlightHost(view.host?.id || '', true);
               }
             })
           }
-          Row({ space: 8 }) {
+          Row() {
             Button() {
               SymbolGlyph($r('sys.symbol.square_and_pencil')).fontSize(16).fontColor([this.pal().text2])
             }
             .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
-            .accessibilityText('打开 Moonlight 主机详情')
+            .accessibilityText('编辑')
             .onClick((): void => {
-              if (!this.hostSelectionMode) { this.openMoonlightHost(view.host?.id || ''); }
+              if (!this.hostSelectionMode) { void this.openMoonlightEditSheet(view); }
             })
             Button() {
-              MoonlightBrandIcon({ iconSize: 16, tint: this.pal().text2, accessibilityLabel: '应用目录' })
+              SymbolGlyph(view.host.locked === true ? $r('sys.symbol.lock_open') :
+                $r('sys.symbol.ohos_lock')).fontSize(16).fontColor([this.pal().text2])
             }
             .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
-            .accessibilityText('打开 Moonlight 应用目录')
+            .margin({ left: 8 }).accessibilityText(view.host.locked === true ? '解锁' : '上锁')
             .onClick((): void => {
-              if (!this.hostSelectionMode) { this.openMoonlightHost(view.host?.id || '', true); }
+              if (!this.hostSelectionMode) { void this.toggleMoonlightLock(view); }
             })
             Button() {
-              SymbolGlyph($r('sys.symbol.gearshape_fill')).fontSize(16).fontColor([this.pal().text2])
+              SymbolGlyph($r('sys.symbol.ohos_trash')).fontSize(16).fontColor([this.pal().danger])
             }
             .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
-            .accessibilityText('Moonlight 设置')
+            .margin({ left: 8 }).accessibilityText('删除')
             .onClick((): void => {
-              if (!this.hostSelectionMode) { this.openMoonlightHostSettings(view.host?.id || ''); }
+              if (!this.hostSelectionMode) { void this.doDeleteMoonlightHost(view); }
             })
           }.margin({ top: 7 })
         }.alignItems(HorizontalAlign.End).margin({ left: 10 })
@@ -10789,6 +11525,39 @@ struct HostListPage {
     }
   }
 
+  @Builder moonlightEditLockRow(view: MoonlightHostLocalView) {
+    if (view.host !== null) {
+      Row() {
+        Button() {
+          SymbolGlyph($r('sys.symbol.square_and_pencil')).fontSize(17).fontColor([Color.White])
+        }
+        .width(48).height(48).borderRadius(12).backgroundColor(this.pal().editColor)
+        .accessibilityText('编辑')
+        .onClick((): void => { void this.openMoonlightEditSheet(view); })
+        Button() {
+          SymbolGlyph($r('sys.symbol.ohos_lock')).fontSize(17).fontColor([Color.White])
+        }
+        .width(48).height(48).borderRadius(12)
+        .backgroundColor(view.host.locked === true ? this.pal().success : this.accentColor)
+        .margin({ left: 4 }).accessibilityText(view.host.locked === true ? '解锁' : '上锁')
+        .onClick((): void => { void this.toggleMoonlightLock(view); })
+      }
+      .height('100%').alignItems(VerticalAlign.Center).borderRadius(14)
+    }
+  }
+
+  @Builder moonlightDeleteBtn(view: MoonlightHostLocalView) {
+    Column() {
+      SymbolGlyph($r('sys.symbol.ohos_trash')).fontSize(24).fontColor([Color.White])
+        .symbolEffect(new PulseSymbolEffect(), true)
+        .symbolEffect(new BounceSymbolEffect(EffectScope.WHOLE, EffectDirection.UP), true)
+      Text('删除').fontSize(9).fontColor(Color.White).margin({ top: 2 })
+    }
+    .width(60).height(60).justifyContent(FlexAlign.Center)
+    .borderRadius(14).backgroundColor(this.pal().danger)
+    .onClick((): void => { void this.doDeleteMoonlightHost(view); })
+  }
+
   private moonlightSheetHost(): MoonlightHost | null {
     const view: MoonlightHostLocalView | null = this.moonlightSheetView();
     return view === null ? null : view.host;
@@ -10797,15 +11566,6 @@ struct HostListPage {
   private moonlightSheetItems(): MoonlightCatalogItem[] {
     const view: MoonlightHostLocalView | null = this.moonlightSheetView();
     return view === null ? [] : view.catalogItems;
-  }
-
-  private moonlightSheetPaired(): boolean {
-    const view: MoonlightHostLocalView | null = this.moonlightSheetView();
-    return view !== null && view.paired;
-  }
-
-  private moonlightSheetStatusColor(): string {
-    return this.moonlightSheetPaired() ? this.pal().success : this.pal().editColor;
   }
 
   private moonlightSheetRecentListHeight(): number {
@@ -10839,10 +11599,6 @@ struct HostListPage {
             .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
             .margin({ top: 4 }).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
         }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
-        Text(this.moonlightSheetPaired() ? '已配对' : '未配对').fontSize(11)
-          .fontColor(this.moonlightSheetStatusColor()).fontFamily(this.font())
-          .padding({ left: 8, right: 8, top: 4, bottom: 4 })
-          .backgroundColor(this.moonlightSheetStatusColor() + '16').borderRadius(8)
       }.width('100%')
 
       Row() {
@@ -10899,6 +11655,58 @@ struct HostListPage {
     }
   }
 
+  @Builder moonlightCatalogSheet() {
+    MoonlightAppCatalogSurface({
+      embedded: true,
+      requestedHostId: this.moonlightSheetHostId,
+      onClose: (): void => { this.closeMoonlightCatalogSheet(); },
+      onOpenSettings: (): void => { this.closeMoonlightCatalogSheet('settings'); },
+      onOpenHostDetail: (): void => { this.closeMoonlightCatalogSheet('detail'); },
+      onLaunchRequested: (handoff: MoonlightCatalogLaunchHandoff): void => {
+        this.requestMoonlightCatalogLaunch(handoff);
+      },
+      onDismissAllowedChanged: (allowed: boolean): void => {
+        this.moonlightCatalogDismissAllowed = allowed;
+      }
+    })
+  }
+
+  @Builder moonlightEditSheet() {
+    Column() {
+      Row() {
+        Column() {
+          MoonlightBrandIcon({ iconSize: 22, tint: '#FFFFFF', accessibilityLabel: 'Moonlight 主机' })
+        }.width(42).height(42).borderRadius(12).backgroundColor(this.accentColor)
+          .justifyContent(FlexAlign.Center)
+        Column() {
+          Text('编辑 Moonlight 主机').fontSize(18).fontWeight(FontWeight.Bold)
+            .fontColor(this.pal().text).fontFamily(this.font())
+          Text('修改此主机在主机列表中的名称').fontSize(11)
+            .fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 3 })
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
+      }.width('100%')
+      Text('主机名称').fontSize(12).fontColor(this.pal().text2).fontFamily(this.font())
+        .width('100%').margin({ top: 20, bottom: 7 })
+      TextInput({ text: this.moonlightEditName, placeholder: 'Moonlight 主机名称' })
+        .width('100%').height(44).borderRadius(11).backgroundColor(this.pal().surface)
+        .fontColor(this.pal().text).fontFamily(this.font())
+        .onChange((value: string): void => { this.moonlightEditName = value; })
+      Row({ space: 8 }) {
+        Button('取消').layoutWeight(1).height(42).borderRadius(11)
+          .backgroundColor(this.pal().surface).fontColor(this.pal().text2)
+          .onClick((): void => {
+            this.beginRemoteHostSheetClose(REMOTE_HOST_SHEET_MOONLIGHT_EDIT);
+            this.showRemoteHostSheet = false;
+          })
+        Button('保存').layoutWeight(1).height(42).borderRadius(11)
+          .backgroundColor(this.accentColor).fontColor(Color.White)
+          .enabled(this.moonlightEditName.trim().length > 0 && this.moonlightEditName.trim().length <= 128)
+          .onClick((): void => { this.saveMoonlightEdit(); })
+      }.width('100%').margin({ top: 20 })
+    }.width('100%').padding({ left: 22, right: 22, top: 20, bottom: 24 })
+      .backgroundColor(this.pal().sheetBg)
+  }
+
   @Builder moonlightHostCard(view: MoonlightHostLocalView) {
     if (this.groupedHostCardsActive()) {
       this.moonlightGroupedHostCard(view)
@@ -10946,7 +11754,16 @@ struct HostListPage {
           }
         } else {
           ForEach(this.visibleMoonlightHosts(), (view: MoonlightHostLocalView): void => {
-            ListItem() { this.moonlightHostCard(view) }
+            ListItem() { this.moonlightFlatHostCard(view) }
+              .swipeAction((this.hostSelectionMode ||
+                (this.isDesktopDevice && this.breakpoint === 'xl')) ? {
+                start: { builder: () => {} }, end: { builder: () => {} },
+                edgeEffect: SwipeEdgeEffect.Spring
+              } : {
+                start: { builder: () => { this.moonlightEditLockRow(view); } },
+                end: { builder: () => { this.moonlightDeleteBtn(view); } },
+                edgeEffect: SwipeEdgeEffect.Spring
+              })
           }, (view: MoonlightHostLocalView): string => this.moonlightHostCardKey(view))
         }
         ListItem() { Column().height(110) }
@@ -11064,9 +11881,19 @@ struct HostListPage {
         // section. Render each card as a peer ListItem so the flat and
         // grouped host layouts share the exact same list spacing, clipping
         // and scroll behavior as RDP/RustDesk/SSH/VNC.
-        if (!this.isLoading && this.visibleMoonlightHosts().length > 0) {
+        if (!this.isLoading && !this.groupedHostCardsActive() &&
+          this.visibleMoonlightHosts().length > 0) {
           ForEach(this.visibleMoonlightHosts(), (view: MoonlightHostLocalView): void => {
-            ListItem() { this.moonlightHostCard(view) }
+            ListItem() { this.moonlightFlatHostCard(view) }
+              .swipeAction((this.hostSelectionMode ||
+                (this.isDesktopDevice && this.breakpoint === 'xl')) ? {
+                start: { builder: () => {} }, end: { builder: () => {} },
+                edgeEffect: SwipeEdgeEffect.Spring
+              } : {
+                start: { builder: () => { this.moonlightEditLockRow(view); } },
+                end: { builder: () => { this.moonlightDeleteBtn(view); } },
+                edgeEffect: SwipeEdgeEffect.Spring
+              })
           }, (view: MoonlightHostLocalView): string => this.moonlightHostCardKey(view))
         }
 
@@ -11839,7 +12666,7 @@ struct HostListPage {
       MoonlightSettingsSurface({
         embedded: true,
         requestedSection: this.moonlightSettingsSectionForLeaf(),
-        requestedHostId: '',
+        requestedHostId: this.moonlightSettingsLeafHostId,
         onClose: (): void => {
           this.dismissSettingsLeafIfNeeded((): void => { this.closeSettingsLeafSheet(); });
         },
@@ -12222,7 +13049,7 @@ struct HostListPage {
                 Column() {
                   Text('按主机类型分组').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
                     .fontColor(this.pal().text).fontFamily(this.font())
-                  Text('手机、Pad 和 PC 小屏固定显示四张类型卡；PC 大屏保留侧栏分类')
+                  Text('手机、Pad 和 PC 小屏按协议显示分类卡；PC 大屏保留侧栏分类')
                     .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
                 }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
                 Toggle({ type: ToggleType.Switch, isOn: this.groupedHostCards })
@@ -13952,10 +14779,7 @@ struct HostListPage {
               .width(46).height(46).borderRadius(23).backgroundColor(this.pal().surface).justifyContent(FlexAlign.Center)
             Column() {
               Text('华为云空间').fontSize(16).fontWeight(FontWeight.Bold).fontColor(this.pal().text).fontFamily(this.font())
-              Text(cloudSyncSelectableTables().indexOf(
-                MOONLIGHT_CLOUD_TABLE) >= 0 ?
-                '主机、凭据、密钥、2FA、VNC、Moonlight 与个性化设置共 8 类业务数据' :
-                '主机、RDP 凭据、SSH 密钥、2FA、VNC 与个性化设置共 7 类业务数据')
+              Text('主机、凭据、密钥、2FA、VNC、自动启用的 Moonlight 与个性化设置共 8 类业务数据')
                 .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).maxLines(2).margin({ top: 3 })
             }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
           }.width('100%').alignItems(VerticalAlign.Center)
@@ -14015,6 +14839,44 @@ struct HostListPage {
           }
           Text('取消勾选不会删除数据，只会停止此设备未来的上传和下载。加密参数会随敏感数据自动保护。')
             .fontSize(12).fontColor(this.pal().text3).fontFamily(this.font()).lineHeight(19).margin({ top: 8, bottom: 14 })
+          Row() {
+            Checkbox()
+              .select(this.cloudSyncSelectedTables.indexOf(
+                MOONLIGHT_CLOUD_TABLE) >= 0)
+              .selectedColor(this.accentColor).enabled(false)
+            Column() {
+              Text('Moonlight 串流数据')
+                .fontSize(14).fontWeight(FontWeight.Medium)
+                .fontColor(this.pal().text).fontFamily(this.font())
+              Text('设置、主机目录和应用配置固定整体同步（自动启用）')
+                .fontSize(11).fontColor(this.pal().text3)
+                .fontFamily(this.font()).margin({ top: 3 })
+            }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+              .margin({ left: 10 })
+          }.width('100%').padding(14).borderRadius(14)
+            .backgroundColor(this.pal().surface).margin({ bottom: 8 })
+          if (this.moonlightRestoreActivationState === 'pending' ||
+              this.moonlightRestoreActivationState === 'blocked') {
+            Column() {
+              Text(this.moonlightRestoreActivationState === 'blocked' ?
+                'Moonlight 恢复隔离状态不可读，传输暂时暂停' :
+                '从备份恢复的 Moonlight 数据仍处于仅本地隔离，需要先核对云端。')
+                .fontSize(11).fontColor(this.moonlightRestoreActivationState ===
+                  'blocked' ? this.pal().danger : '#B66A00')
+                .fontFamily(this.font()).lineHeight(18).width('100%')
+              if (this.moonlightRestoreActivationState === 'pending') {
+                Button('核对云端并允许恢复数据上传')
+                  .fontSize(12).fontWeight(FontWeight.Medium)
+                  .fontColor(Color.White).backgroundColor(this.accentColor)
+                  .height(38).borderRadius(12).width('100%')
+                  .margin({ top: 10 })
+                  .onClick((): void => {
+                    this.confirmMoonlightRestoreActivation();
+                  })
+              }
+            }.width('100%').padding(12).borderRadius(12)
+              .backgroundColor(this.pal().surface).margin({ bottom: 8 })
+          }
           ForEach(cloudSyncSelectableTables(), (table: string) => {
             Row() {
               Checkbox().select(this.cloudSyncSelectedTables.indexOf(table) >= 0).selectedColor(this.accentColor)
@@ -14024,86 +14886,10 @@ struct HostListPage {
               Column() {
                 Text(table === 'usersettings' ? '跨设备外观设置' : table === 'remotehosts' ? '远程主机' : table === 'rdpcredentials' ? 'Windows 登录凭据' : table === 'rustdeskrelays' ? 'RustDesk 中继配置' : table === 'sshkeys' ? 'SSH 密钥' : table === 'totpentries' ? '双重验证动态口令' : table === 'vncrecordv2' ? 'VNC 记录（vncrecord）' : 'Moonlight 串流数据')
                   .fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
-                Text(table === 'usersettings' ? '仅同步主题、壁纸等可跨设备复用的外观偏好' : table === 'vncrecordv2' ? 'VNC 设置、主机、Gateway、加密机密和 trust 候选元数据' : table === MOONLIGHT_CLOUD_TABLE ? '单独可选云表；配对信任、证书和客户端私钥始终仅保存在本机' : '包含敏感数据，启用时自动同步加密参数')
+                Text(table === 'usersettings' ? '仅同步主题、壁纸等可跨设备复用的外观偏好' : table === 'vncrecordv2' ? 'VNC 设置、主机、Gateway、加密机密和 trust 候选元数据' : '包含敏感数据，启用时自动同步加密参数')
                   .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 3 })
               }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
             }.width('100%').padding(14).borderRadius(14).backgroundColor(this.pal().surface).margin({ bottom: 8 })
-            if (table === MOONLIGHT_CLOUD_TABLE &&
-                this.cloudSyncSelectedTables.indexOf(table) >= 0) {
-              Column() {
-                Text('选择 Moonlight 可跨设备数据')
-                  .fontSize(12).fontWeight(FontWeight.Medium)
-                  .fontColor(this.pal().text2).fontFamily(this.font())
-                  .width('100%').margin({ bottom: 8 })
-                ForEach(moonlightCloudSyncSelectableScopes(),
-                  (scope: MoonlightCloudSyncScope) => {
-                    Row() {
-                      Checkbox()
-                        .select(this.moonlightCloudSelectedScopes
-                          .indexOf(scope) >= 0)
-                        .enabled(scope !== 'profiles' ||
-                          this.moonlightCloudSelectedScopes
-                            .indexOf('hosts') >= 0)
-                        .selectedColor(this.accentColor)
-                        .onChange((): void => {
-                          void this.toggleMoonlightCloudScope(scope);
-                        })
-                      Column() {
-                        Text(scope === 'settings' ? '串流设置' :
-                          scope === 'hosts' ? '主机地址与名称' :
-                            '应用串流配置档')
-                          .fontSize(13).fontWeight(FontWeight.Medium)
-                          .fontColor(this.pal().text).fontFamily(this.font())
-                        Text(scope === 'settings' ?
-                          '同步画质、音频、输入和网络偏好' :
-                          scope === 'hosts' ?
-                            '同步可重新配对的主机目录，不同步配对状态' :
-                            this.moonlightCloudSelectedScopes
-                              .indexOf('hosts') >= 0 ?
-                              '同步每个主机应用的画质和输入覆盖项' :
-                              '需先选择主机目录；不会自动扩大同步范围')
-                          .fontSize(11).fontColor(this.pal().text3)
-                          .fontFamily(this.font()).margin({ top: 2 })
-                      }.alignItems(HorizontalAlign.Start)
-                        .layoutWeight(1).margin({ left: 8 })
-                    }.width('100%').padding({
-                      left: 12, right: 12, top: 10, bottom: 10
-                    }).borderRadius(12)
-                      .backgroundColor(this.pal().card)
-                      .margin({ bottom: 6 })
-                  }, (scope: MoonlightCloudSyncScope): string => scope)
-                if (this.moonlightRestoreActivationState === 'pending') {
-                  Column() {
-                    Text('从备份恢复的 Moonlight 数据仍处于仅本地隔离。启用前必须先完成当前账号的云端优先核对，并由你再次确认上传。')
-                      .fontSize(11).fontColor('#B66A00')
-                      .fontFamily(this.font()).lineHeight(18)
-                      .width('100%')
-                    Button('核对云端并允许上传')
-                      .fontSize(12).fontWeight(FontWeight.Medium)
-                      .fontColor(Color.White)
-                      .backgroundColor(this.accentColor)
-                      .height(38).borderRadius(12)
-                      .width('100%').margin({ top: 10 })
-                      .enabled(this.moonlightCloudSelectedScopes.length > 0)
-                      .opacity(this.moonlightCloudSelectedScopes.length > 0 ? 1 : 0.45)
-                      .onClick((): void => {
-                        this.confirmMoonlightRestoreActivation();
-                      })
-                  }.width('100%').padding(12).borderRadius(12)
-                    .backgroundColor(this.pal().surface)
-                    .margin({ bottom: 8 })
-                }
-                Text(this.moonlightRestoreActivationState === 'blocked' ?
-                  'Moonlight 恢复隔离状态不可读，传输已安全暂停' :
-                  CloudStore.getInstance().moonlightCloudSchemaReady() ?
-                    'Moonlight 云表已通过本机注册检查' :
-                    'Moonlight 云表尚未注册；旧版 8 张云表仍独立工作')
-                  .fontSize(10).fontColor(this.pal().text3)
-                  .fontFamily(this.font()).margin({ top: 2 })
-              }.width('100%').padding({
-                left: 12, right: 12, top: 4, bottom: 12
-              }).margin({ bottom: 8 })
-            }
           }, (table: string): string => table)
           Row() {
             Checkbox().select(effectiveCloudSyncTables(this.cloudSyncSelectedTables).indexOf('cryptoparams') >= 0)
@@ -16792,13 +17578,21 @@ struct HostListPage {
           .backgroundColor(this.rustDeskProAuthMode === 'password' ? this.accentColor : this.pal().surface)
           .fontColor(this.rustDeskProAuthMode === 'password' ? Color.White : this.pal().text)
           .enabled(this.rustDeskProPreflightState !== RustDeskProPreflightState.CONNECTING)
-          .onClick((): void => { this.rustDeskProAuthMode = 'password'; this.rustDeskProPreflightError = ''; })
+          .onClick((): void => {
+            this.rustDeskProAuthMode = 'password';
+            this.rustDeskProPreflightError = '';
+            this.saveRustDeskProAuthDraft();
+          })
         if (!this.isCurrentRustDeskPreflightDirect()) {
           Button('请求远端批准')
             .backgroundColor(this.rustDeskProAuthMode === 'request_approval' ? this.accentColor : this.pal().surface)
             .fontColor(this.rustDeskProAuthMode === 'request_approval' ? Color.White : this.pal().text)
             .enabled(this.rustDeskProPreflightState !== RustDeskProPreflightState.CONNECTING)
-            .onClick((): void => { this.rustDeskProAuthMode = 'request_approval'; this.rustDeskProPreflightError = ''; })
+            .onClick((): void => {
+              this.rustDeskProAuthMode = 'request_approval';
+              this.rustDeskProPreflightError = '';
+              this.saveRustDeskProAuthDraft();
+            })
         }
       }.width('100%')
 
@@ -16808,7 +17602,11 @@ struct HostListPage {
           .showPasswordIcon(true)
           .enabled(this.rustDeskProPreflightState !== RustDeskProPreflightState.CONNECTING)
           .height(48).width('100%').backgroundColor(this.pal().surface).borderRadius(10)
-          .onChange((value: string): void => { this.rustDeskProPassword = value; this.rustDeskProPreflightError = ''; })
+          .onChange((value: string): void => {
+            this.rustDeskProPassword = value;
+            this.rustDeskProPreflightError = '';
+            this.saveRustDeskProAuthDraft();
+          })
         Text('密码类型').fontSize(12).fontColor(this.pal().text2)
           .margin({ top: 2, bottom: 5 })
         Row({ space: 8 }) {
@@ -16816,12 +17614,18 @@ struct HostListPage {
             .backgroundColor(this.rustDeskProPasswordMode === 0 ? this.accentColor : this.pal().surface)
             .fontColor(this.rustDeskProPasswordMode === 0 ? Color.White : this.pal().text2)
             .enabled(this.rustDeskProPreflightState !== RustDeskProPreflightState.CONNECTING)
-            .onClick((): void => { this.rustDeskProPasswordMode = 0; })
+            .onClick((): void => {
+              this.rustDeskProPasswordMode = 0;
+              this.saveRustDeskProAuthDraft();
+            })
           Button('永久密码').layoutWeight(1).height(36).fontSize(12)
             .backgroundColor(this.rustDeskProPasswordMode === 1 ? this.accentColor : this.pal().surface)
             .fontColor(this.rustDeskProPasswordMode === 1 ? Color.White : this.pal().text2)
             .enabled(this.rustDeskProPreflightState !== RustDeskProPreflightState.CONNECTING)
-            .onClick((): void => { this.rustDeskProPasswordMode = 1; })
+            .onClick((): void => {
+              this.rustDeskProPasswordMode = 1;
+              this.saveRustDeskProAuthDraft();
+            })
         }.width('100%').margin({ bottom: 6 })
         Text(this.rustDeskProPasswordMode === 0 ?
           '一次性密码过期后，下次连接需要重新输入。' :
@@ -16830,7 +17634,10 @@ struct HostListPage {
         Row({ space: 8 }) {
           Checkbox({ name: 'rememberRustDeskProPassword', group: 'rustDeskProAuth' })
             .select(this.rustDeskProRememberPassword)
-            .onChange((value: boolean): void => { this.rustDeskProRememberPassword = value; })
+            .onChange((value: boolean): void => {
+              this.rustDeskProRememberPassword = value;
+              this.saveRustDeskProAuthDraft();
+            })
           Text('记住设备密码').fontSize(14).fontColor(this.pal().text2)
         }.width('100%')
       } else {
@@ -17493,10 +18300,13 @@ struct HostListPage {
       this.sheetErr = 'SSH 连接方式保存失败，主机未修改';
       return;
     }
+    const desiredRustDeskTotpEntryId: string = h.protocol === 'rustdesk' ?
+      h.rustdeskTotpEntryId.trim() : '';
+    const desiredRustDeskTotpAutoSubmit: boolean = h.protocol === 'rustdesk' &&
+      h.rustdeskTotpAutoSubmit && desiredRustDeskTotpEntryId !== '';
     let saved: boolean = false;
     if (editingId !== '') {
       saved = this.srv.updateHost(h);
-      if (saved) { this.editingHostId = ''; }
     } else {
       saved = this.srv.addHost(h);
     }
@@ -17526,6 +18336,27 @@ struct HostListPage {
       previousRestrictedAdminHash = '';
       return;
     }
+    if (h.protocol === 'rustdesk') {
+      const hadBinding: boolean = existingHost !== undefined &&
+        existingHost.rustdeskTotpEntryId !== '';
+      const bindingSaved: boolean = desiredRustDeskTotpEntryId !== '' ?
+        this.srv.setRustDeskPeerTwoFactorBinding(
+          h.id, desiredRustDeskTotpEntryId, desiredRustDeskTotpAutoSubmit) :
+        (!hadBinding || this.srv.clearRustDeskPeerTwoFactorBinding(h.id));
+      if (!bindingSaved) {
+        if (editingId === '') {
+          const rolledBack: boolean = this.srv.removeHost(h.id);
+          this.sheetErr = rolledBack ?
+            'RustDesk 2FA 绑定保存失败，主机新增已撤销，请重试' :
+            'RustDesk 2FA 绑定保存失败，且主机新增回滚未完成；请返回列表检查';
+        } else {
+          this.sheetErr = '主机配置已保存，但 RustDesk 2FA 绑定未能落盘，请重试绑定';
+        }
+        previousRestrictedAdminHash = '';
+        return;
+      }
+    }
+    if (editingId !== '') { this.editingHostId = ''; }
     if (existingHost !== undefined && existingHost.protocol === 'ssh' && h.protocol !== 'ssh') {
       this.sshProxyProfiles.remove(existingHost.id);
     }
@@ -17550,7 +18381,12 @@ struct HostListPage {
     credential.username = this.username.trim();
     credential.password = this.sheetPwd;
     credential.label = credential.username.indexOf('@') > 0 ? credential.username : credential.username;
-    this.srv.addRdpCredential(credential);
+    if (!this.srv.addRdpCredential(credential)) {
+      promptAction.showToast({
+        message: this.mutationFailureMessage('Windows 凭据保存失败，请重试'), duration: 2400
+      });
+      return;
+    }
     this.rdpCredentials = this.srv.getAllRdpCredentials();
     this.selectRdpCredential(credential.id);
     promptAction.showToast({ message: 'Windows 凭据已保存', duration: 1500 });
@@ -17604,12 +18440,25 @@ struct HostListPage {
     credential.label = this.rdpCredLabel.trim();
     credential.username = username;
     credential.password = this.rdpCredPassword;
+    let saved: boolean = false;
     if (this.rdpCredEditId === '') {
-      this.srv.addRdpCredential(credential);
+      saved = this.srv.addRdpCredential(credential);
+      if (!saved) {
+        promptAction.showToast({
+          message: this.mutationFailureMessage('Windows 凭据保存失败，请重试'), duration: 2400
+        });
+        return;
+      }
       this.selectRdpCredential(credential.id);
       promptAction.showToast({ message: 'Windows 凭据已保存', duration: 1500 });
     } else {
-      this.srv.updateRdpCredential(credential);
+      saved = this.srv.updateRdpCredential(credential);
+      if (!saved) {
+        promptAction.showToast({
+          message: this.mutationFailureMessage('Windows 凭据更新失败，请重试'), duration: 2400
+        });
+        return;
+      }
       promptAction.showToast({ message: 'Windows 凭据已更新', duration: 1500 });
     }
     this.rdpCredentials = this.srv.getAllRdpCredentials();
@@ -17629,7 +18478,12 @@ struct HostListPage {
     }).then((result: Object): void => {
       const r: Record<string, number> = result as Record<string, number>;
       if (r['index'] === 1) {
-        this.srv.removeRdpCredential(credential.id);
+        if (!this.srv.removeRdpCredential(credential.id)) {
+          promptAction.showToast({
+            message: this.mutationFailureMessage('Windows 凭据删除失败，请重试'), duration: 2400
+          });
+          return;
+        }
         if (this.selectedRdpCredentialId === credential.id) { this.selectedRdpCredentialId = ''; }
         if (this.rdpCredEditId === credential.id) { this.resetRdpCredentialEditor(); }
         this.rdpCredentials = this.srv.getAllRdpCredentials();
@@ -17664,7 +18518,11 @@ struct HostListPage {
   private toggleRustDeskAuthTrust(host: RemoteHost): void {
     const updated: RemoteHost = RemoteHost.fromJSON(host.toJSON());
     updated.rustdeskAuthMode = host.rustdeskAuthMode === 'request_approval' ? 'password' : 'request_approval';
-    this.srv.updateHost(updated);
+    if (!this.srv.updateHost(updated)) {
+      promptAction.showToast({
+        message: this.mutationFailureMessage('RustDesk 认证方式保存失败'), duration: 2200
+      });
+    }
   }
 
   private clearRustDeskSavedPassword(host: RemoteHost): void {
@@ -17672,6 +18530,10 @@ struct HostListPage {
     updated.password = '';
     if (this.srv.updateHost(updated)) {
       promptAction.showToast({ message: '已清除保存的 RustDesk 密码', duration: 1500 });
+    } else {
+      promptAction.showToast({
+        message: this.mutationFailureMessage('RustDesk 密码清除失败'), duration: 2200
+      });
     }
   }
 
@@ -17681,6 +18543,10 @@ struct HostListPage {
     updated.password = '';
     if (this.srv.updateHost(updated)) {
       promptAction.showToast({ message: '下次连接将重新询问认证方式', duration: 1500 });
+    } else {
+      promptAction.showToast({
+        message: this.mutationFailureMessage('RustDesk 认证记录清除失败'), duration: 2200
+      });
     }
   }
 
@@ -17740,8 +18606,13 @@ struct HostListPage {
       updated.sshJumpHostKeyRawBase64 = '';
       updated.sshJumpHostKeyTrustedAt = 0;
       updated.sshJumpHostKeyTrustMode = 0;
-      this.srv.updateHost(updated);
-      promptAction.showToast({ message: '已忘记 SSH 指纹', duration: 1500 });
+      if (this.srv.updateHost(updated)) {
+        promptAction.showToast({ message: '已忘记 SSH 指纹', duration: 1500 });
+      } else {
+        promptAction.showToast({
+          message: this.mutationFailureMessage('SSH 指纹删除失败'), duration: 2200
+        });
+      }
     });
   }
 
@@ -17779,8 +18650,13 @@ struct HostListPage {
       }
       const updated: RemoteHost = RemoteHost.fromJSON(host.toJSON());
       this.applySshPreflightTrust(updated, info, jumpInfo);
-      this.srv.updateHost(updated);
-      promptAction.showToast({ message: 'SSH 指纹已更新', duration: 1500 });
+      if (this.srv.updateHost(updated)) {
+        promptAction.showToast({ message: 'SSH 指纹已更新', duration: 1500 });
+      } else {
+        promptAction.showToast({
+          message: this.mutationFailureMessage('SSH 指纹保存失败'), duration: 2200
+        });
+      }
     } catch (err) {
       promptAction.showToast({ message: '重新获取异常: ' + JSON.stringify(err), duration: 2500 });
     } finally {
@@ -17822,8 +18698,13 @@ struct HostListPage {
       updated.rdpGatewayCertificateAllowUntrustedRoot = false;
       updated.rdpGatewayCertificateAllowHostMismatch = false;
       updated.rdpGatewayCertificateRouteIdentity = '';
-      this.srv.updateHost(updated);
-      promptAction.showToast({ message: '已忘记 RDP 证书', duration: 1500 });
+      if (this.srv.updateHost(updated)) {
+        promptAction.showToast({ message: '已忘记 RDP 证书', duration: 1500 });
+      } else {
+        promptAction.showToast({
+          message: this.mutationFailureMessage('RDP 证书删除失败'), duration: 2200
+        });
+      }
     });
   }
 

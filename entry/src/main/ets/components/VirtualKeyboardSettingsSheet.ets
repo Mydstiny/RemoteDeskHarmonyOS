@@ -7,6 +7,8 @@ import {
   RemoteCustomShortcutUpdate,
   remoteCustomShortcutKeyGroupForKeyCode,
   remoteCustomShortcutKeyOptions,
+  remoteCustomShortcutAvailableOnPlatform,
+  remoteCustomShortcutKeyAvailableOnPlatform,
   remoteCustomShortcutLabelForPlatform,
   removeRemoteCustomShortcut,
   upsertRemoteCustomShortcut
@@ -113,6 +115,10 @@ export struct VirtualKeyboardSettingsSheet {
 
   private selectPlatform(platform: RemoteShortcutPlatform): void {
     this.platformMode = platform;
+    if (!remoteCustomShortcutKeyAvailableOnPlatform(this.actionKeyCode, platform)) {
+      this.actionGroup = 'functions';
+      this.actionKeyCode = 2090;
+    }
     this.savePreferences();
   }
 
@@ -163,8 +169,14 @@ export struct VirtualKeyboardSettingsSheet {
 
   private draftKeyCodes(): Array<number> {
     const result: Array<number> = this.modifierCodes.slice(0);
-    result.push(this.actionKeyCode);
+    result.push(remoteCustomShortcutKeyAvailableOnPlatform(
+      this.actionKeyCode, this.platform()) ? this.actionKeyCode : 2090);
     return result;
+  }
+
+  private visibleCustomShortcuts(): Array<RemoteCustomShortcut> {
+    return this.customShortcuts.filter((shortcut: RemoteCustomShortcut): boolean =>
+      remoteCustomShortcutAvailableOnPlatform(shortcut, this.platform()));
   }
 
   private draftLabel(): string {
@@ -408,12 +420,13 @@ export struct VirtualKeyboardSettingsSheet {
           .backgroundColor(this.accentColor).fontColor('#FFFFFF')
           .onClick((): void => { this.beginEditor(); })
       }.width('100%')
-      if (this.customShortcuts.length === 0) {
-        Text('尚未保存自定义组合键')
+      if (this.visibleCustomShortcuts().length === 0) {
+        Text(this.customShortcuts.length === 0 ? '尚未保存自定义组合键' :
+          '当前平台没有可用组合键；F21–F24 仅支持 Windows')
           .width('100%').height(58).fontSize(11).textAlign(TextAlign.Center)
           .fontColor(this.text2()).backgroundColor(this.card()).borderRadius(12)
       } else {
-        ForEach(this.customShortcuts, (shortcut: RemoteCustomShortcut): void => {
+        ForEach(this.visibleCustomShortcuts(), (shortcut: RemoteCustomShortcut): void => {
           Row() {
             Text(remoteCustomShortcutLabelForPlatform(shortcut.keyCodes, this.platform()))
               .fontSize(12).fontColor(this.text()).layoutWeight(1)

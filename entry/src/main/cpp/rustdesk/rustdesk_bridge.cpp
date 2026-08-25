@@ -3044,6 +3044,43 @@ void RustDeskBridge::sendKey(uint32_t scancode, bool pressed) {
     OH_LOG_DEBUG(LOG_APP, "[RustDesk] key sc=%{public}u p=%{public}s", scancode, pressed ? "down" : "up");
 }
 
+bool RustDeskBridge::sendKeyEvents(const std::vector<RemoteKeyEvent>& events) {
+    if (events.empty()) {
+        return false;
+    }
+#ifdef RUSTDESK_USE_REAL_CORE
+    // One lease pins one concrete FFI generation for the complete chord.
+    // Continuity detach waits for the lease, so a batch can never straddle
+    // the retired and replacement handles.
+    auto handleLease = impl_->displayControl.acquireHandle();
+    if (mode_ == RustDeskMode::FFI) {
+        if (!handleLease) {
+            OH_LOG_INFO(LOG_APP,
+                "[RustDesk-FFI] key transaction rejected without live handle events=%{public}zu",
+                events.size());
+            return false;
+        }
+        for (const auto& event : events) {
+            rustdesk_send_key(handleLease.get(), event.keyCode, event.pressed);
+        }
+        OH_LOG_INFO(LOG_APP,
+            "[RustDesk-FFI] key transaction submitted events=%{public}zu",
+            events.size());
+        return true;
+    }
+#endif
+    if (mode_ == RustDeskMode::IPC && impl_->ipcFd >= 0) {
+        for (const auto& event : events) {
+            sendKey(event.keyCode, event.pressed);
+        }
+        return true;
+    }
+    OH_LOG_INFO(LOG_APP,
+        "[RustDesk] key transaction rejected without active transport events=%{public}zu",
+        events.size());
+    return false;
+}
+
 void RustDeskBridge::sendMouse(int x, int y, MouseButton button, bool pressed) {
 #ifdef RUSTDESK_USE_REAL_CORE
     auto handleLease = impl_->displayControl.acquireHandle();

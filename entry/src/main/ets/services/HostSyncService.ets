@@ -38,6 +38,23 @@ import {
 } from './RustDeskControlPlaneCapabilityPolicy';
 import { remoteHostCloudBaseChanged } from './HostLocalPersonalizationPolicy';
 import { lanHostUsesLocalOnlyStorage } from './LanHostAddressPolicy';
+import { KeyVaultService } from './KeyVaultService';
+import { AccountSessionCoordinator } from './AccountSessionCoordinator';
+import {
+  hydrateRustDeskPeerTwoFactorHost,
+  RUSTDESK_PEER_2FA_BINDING_VERSION,
+  RustDeskPeerTwoFactorBinding,
+  RustDeskPeerTwoFactorBindingStore,
+  rustDeskPeerTwoFactorEndpointIdentity,
+  scrubRustDeskPeerTwoFactorRuntime,
+  shouldRemoveDanglingRustDeskPeerTwoFactorBinding
+} from './RustDeskPeerTwoFactorBindingStore';
+import {
+  migrateRustDeskPeerTwoFactorLegacyCandidate,
+  RustDeskPeerTwoFactorLegacyCandidate,
+  RustDeskPeerTwoFactorLegacySource
+} from './RustDeskPeerTwoFactorLegacyMigration';
+import { RustDeskAuthDraftStore } from './RustDeskAuthDraftStore';
 
 export class HostSyncService {
   private static instance: HostSyncService;
@@ -57,6 +74,12 @@ export class HostSyncService {
   private deletedRelayAt: Map<string, number> = new Map();
   private lastCloudSnapshotLoadedAt: number = 0;
   private relaySaveSequence: number = 0;
+  private context: common.Context | null = null;
+  private readonly peerTwoFactorBindings: RustDeskPeerTwoFactorBindingStore =
+    RustDeskPeerTwoFactorBindingStore.getInstance();
+  private keyVaultListenerBound: boolean = false;
+  private pendingPeerTwoFactorLegacyCandidates:
+    Map<string, RustDeskPeerTwoFactorLegacyCandidate> = new Map();
 
   static getInstance(): HostSyncService {
     if (!HostSyncService.instance) {
@@ -78,9 +101,19 @@ export class HostSyncService {
 
   private async doInit(context: common.Context): Promise<void> {
     try {
+      this.context = context;
       await this.cloud.init(context);
-      this.cloud.onCloudChange(() => { this.loadFromCloud(); });
+      if (!this.bindPeerTwoFactorScope()) {
+        hilog.warn(0x0001, 'CloudSync',
+          'RustDesk Peer 2FA 本机绑定仓库未就绪；绑定保持安全关闭');
+      }
+      // CloudStore also publishes Moonlight local-overlay/cache changes.
+      // Those rows are intentionally outside this service's ordinary host
+      // signature, so force one downstream notification after a successful
+      // reload event and let every host-card owner refresh its own protocol.
+      this.cloud.onCloudChange(() => { this.loadFromCloud(true); });
       this.cloud.onCryptoReset(() => {
+        RustDeskAuthDraftStore.getInstance().clearAll();
         this.hosts.clear();
         this.localHostConfigObservationAt.clear();
         this.deletedHostAt.clear();
@@ -95,6 +128,14 @@ export class HostSyncService {
         hilog.info(0x0001, 'CloudSync', 'HostSyncService: 收到加密重置通知, 内存数据已清空');
       });
       this.ready = true;
+      if (!this.keyVaultListenerBound) {
+        this.keyVaultListenerBound = true;
+        KeyVaultService.getInstance().onDataChange((): void => {
+          if (this.refreshRustDeskPeerTwoFactorRuntime(true)) {
+            this.emitDataChange();
+          }
+        });
+      }
       // 先恢复本地持久化缓存；云服务关闭/失败时也不能把 UI 变成空列表。
       this.loadFromCloud();
       this.debugDump('HostSyncService');
@@ -104,7 +145,7 @@ export class HostSyncService {
     }
   }
 
-  private loadFromCloud(): void {
+  private loadFromCloud(forceEmit: boolean = false): void {
     if (!this.cloud.isReady()) { return; }
     const beforeSignature: string = this.visibleDataSignature();
     const previousSnapshotAt: number = this.lastCloudSnapshotLoadedAt;
@@ -189,6 +230,7 @@ export class HostSyncService {
         migratedDirectHosts = migratedDirectHosts || !localOnly;
       });
       if (migratedDirectHosts && this.ready) { this.cloud.pushTable('remotehosts'); }
+      this.refreshRustDeskPeerTwoFactorRuntime(true);
     } catch (err) {
       hilog.error(0x0001, 'CloudSync', "HostSyncService.loadFromCloud 失败: " + JSON.stringify(err));
     }
@@ -303,7 +345,7 @@ export class HostSyncService {
     }
     this.lastCloudSnapshotLoadedAt = Date.now();
     const changed: boolean = serializedSnapshotChanged(beforeSignature, this.visibleDataSignature());
-    if (changed) {
+    if (changed || forceEmit) {
       this.emitDataChange();
     } else {
       hilog.info(0x0001, 'CloudSync', 'HostSyncService.loadFromCloud: visible snapshot unchanged');
@@ -332,6 +374,7 @@ export class HostSyncService {
 
   /** Drop every scope-derived cache before CloudStore switches physical files. */
   clearForScopeTransition(): void {
+    RustDeskAuthDraftStore.getInstance().clearAll();
     this.hosts.clear();
     this.relays.clear();
     this.rdpCredentials.clear();
@@ -343,12 +386,18 @@ export class HostSyncService {
     this.localRelayObservationAt.clear();
     this.deletedRelayAt.clear();
     this.lastCloudSnapshotLoadedAt = 0;
+    this.pendingPeerTwoFactorLegacyCandidates.clear();
+    this.peerTwoFactorBindings.clearMemoryForScopeTransition();
     this.emitDataChange();
   }
 
   /** Reload only after the new scope store has opened successfully. */
   reloadForScopeTransition(): void {
     this.clearForScopeTransition();
+    if (!this.bindPeerTwoFactorScope()) {
+      hilog.warn(0x0001, 'CloudSync',
+        '账号切换后 RustDesk Peer 2FA 本机绑定仓库未就绪');
+    }
     this.loadFromCloud();
   }
 
@@ -380,6 +429,171 @@ export class HostSyncService {
     }
   }
 
+  private bindPeerTwoFactorScope(): boolean {
+    if (this.context === null) { return false; }
+    const ownerScopeId: string =
+      AccountSessionCoordinator.getInstance().currentScope().ownerScopeId;
+    return this.peerTwoFactorBindings.bindContext(this.context, ownerScopeId);
+  }
+
+  private legacyPeerTwoFactorCandidate(
+    host: RemoteHost
+  ): RustDeskPeerTwoFactorLegacyCandidate | null {
+    const entryId: string = host.rustdeskTotpEntryId.trim();
+    const source: string = host.rustdeskTotpLegacySource.trim();
+    if (host.protocol !== 'rustdesk' || entryId === '' ||
+      (source !== 'remote_json' && source !== 'cloud_extension' &&
+        source !== 'local_backup')) {
+      return null;
+    }
+    return {
+      ownerScopeId: host.userId,
+      hostId: host.id,
+      entryId,
+      autoSubmit: host.rustdeskTotpAutoSubmit,
+      sourceDeviceId: host.rustdeskTotpLegacyDeviceId,
+      source: source as RustDeskPeerTwoFactorLegacySource
+    };
+  }
+
+  /**
+   * Rebuild only the runtime projection from the owner/device-local binding
+   * store. Missing entries and stale endpoint identities always fail closed.
+   */
+  private refreshRustDeskPeerTwoFactorRuntime(removeDangling: boolean): boolean {
+    let changed: boolean = false;
+    const keyVault: KeyVaultService = KeyVaultService.getInstance();
+    const stalePendingIds: string[] = [];
+    this.pendingPeerTwoFactorLegacyCandidates.forEach(
+      (_candidate: RustDeskPeerTwoFactorLegacyCandidate, hostId: string): void => {
+        if (!this.hosts.has(hostId)) { stalePendingIds.push(hostId); }
+      });
+    stalePendingIds.forEach((hostId: string): void => {
+      this.pendingPeerTwoFactorLegacyCandidates.delete(hostId);
+    });
+    this.hosts.forEach((host: RemoteHost): void => {
+      if (host.protocol !== 'rustdesk') { return; }
+      const beforeEntry: string = host.rustdeskTotpEntryId;
+      const beforeAuto: boolean = host.rustdeskTotpAutoSubmit;
+      const runtimeLegacy: RustDeskPeerTwoFactorLegacyCandidate | null =
+        this.legacyPeerTwoFactorCandidate(host);
+      const pendingLegacy: RustDeskPeerTwoFactorLegacyCandidate | undefined =
+        this.pendingPeerTwoFactorLegacyCandidates.get(host.id);
+      const legacy: RustDeskPeerTwoFactorLegacyCandidate | null =
+        runtimeLegacy !== null ? runtimeLegacy : (pendingLegacy ?? null);
+      if (legacy !== null && !this.peerTwoFactorBindings.isLoaded()) {
+        this.pendingPeerTwoFactorLegacyCandidates.set(host.id, legacy);
+      } else if (legacy !== null) {
+        const migration = migrateRustDeskPeerTwoFactorLegacyCandidate(
+          legacy, host, this.peerTwoFactorBindings,
+          (entryId: string): boolean => keyVault.getTotpEntry(entryId) !== undefined);
+        if (migration.status === 'persistence_failed') {
+          hilog.warn(0x0001, 'CloudSync',
+            'RustDesk Peer 2FA legacy binding migration persistence failed hostId=' +
+            rustDeskRelayIdFingerprint(host.id));
+        }
+        if (migration.reason === 'legacy_totp_entry_missing' &&
+          !keyVault.isTotpSnapshotReady()) {
+          this.pendingPeerTwoFactorLegacyCandidates.set(host.id, legacy);
+        } else {
+          this.pendingPeerTwoFactorLegacyCandidates.delete(host.id);
+        }
+      }
+      const endpoint: string = rustDeskPeerTwoFactorEndpointIdentity(host);
+      const binding: RustDeskPeerTwoFactorBinding | null = endpoint === '' ? null :
+        this.peerTwoFactorBindings.get(host.id, endpoint);
+      const bindingEntryExists: boolean = binding !== null &&
+        keyVault.getTotpEntry(binding.entryId) !== undefined;
+      const hydrated: boolean = hydrateRustDeskPeerTwoFactorHost(
+        host, binding,
+        (entryId: string): boolean => keyVault.getTotpEntry(entryId) !== undefined,
+        this.peerTwoFactorBindings.deviceIdentity());
+      if (!hydrated && binding !== null &&
+        shouldRemoveDanglingRustDeskPeerTwoFactorBinding(
+          removeDangling, keyVault.isTotpSnapshotReady(), bindingEntryExists)) {
+        if (!this.peerTwoFactorBindings.remove(host.id, endpoint)) {
+          hilog.warn(0x0001, 'CloudSync',
+            'RustDesk Peer 2FA dangling binding cleanup failed hostId=' +
+            rustDeskRelayIdFingerprint(host.id));
+        }
+      } else if (!hydrated && binding !== null && removeDangling &&
+        !keyVault.isTotpSnapshotReady()) {
+        hilog.info(0x0001, 'CloudSync',
+          'RustDesk Peer 2FA binding cleanup deferred until KeyVault snapshot is ready hostId=' +
+          rustDeskRelayIdFingerprint(host.id));
+      }
+      changed = changed || beforeEntry !== host.rustdeskTotpEntryId ||
+        beforeAuto !== host.rustdeskTotpAutoSubmit;
+    });
+    if (!this.peerTwoFactorBindings.isLoaded()) {
+      this.hosts.forEach((host: RemoteHost): void => {
+        if (host.protocol !== 'rustdesk') { return; }
+        changed = changed || host.rustdeskTotpEntryId !== '' ||
+          host.rustdeskTotpAutoSubmit;
+        scrubRustDeskPeerTwoFactorRuntime(host);
+      });
+    }
+    return changed;
+  }
+
+  setRustDeskPeerTwoFactorBinding(hostId: string, entryId: string,
+    autoSubmit: boolean): boolean {
+    const host: RemoteHost | undefined = this.hosts.get(hostId);
+    const normalizedEntry: string = entryId.trim();
+    if (host === undefined || host.protocol !== 'rustdesk' ||
+      !this.peerTwoFactorBindings.isLoaded()) {
+      return false;
+    }
+    if (normalizedEntry === '') { return this.clearRustDeskPeerTwoFactorBinding(hostId); }
+    if (KeyVaultService.getInstance().getTotpEntry(normalizedEntry) === undefined) {
+      return false;
+    }
+    const endpoint: string = rustDeskPeerTwoFactorEndpointIdentity(host);
+    const ownerScopeId: string =
+      AccountSessionCoordinator.getInstance().currentScope().ownerScopeId;
+    if (endpoint === '' || ownerScopeId !== host.userId) { return false; }
+    const binding: RustDeskPeerTwoFactorBinding = {
+      version: RUSTDESK_PEER_2FA_BINDING_VERSION,
+      ownerScopeId,
+      hostId: host.id,
+      endpointIdentity: endpoint,
+      entryId: normalizedEntry,
+      autoSubmit,
+      deviceIdentity: this.peerTwoFactorBindings.deviceIdentity(),
+      source: 'manual',
+      migrationVersion: 0,
+      updatedAt: Date.now()
+    };
+    if (!this.peerTwoFactorBindings.save(binding)) {
+      scrubRustDeskPeerTwoFactorRuntime(host);
+      this.refreshRustDeskPeerTwoFactorRuntime(false);
+      this.emitDataChange();
+      return false;
+    }
+    host.rustdeskTotpEntryId = normalizedEntry;
+    host.rustdeskTotpAutoSubmit = autoSubmit;
+    host.rustdeskTotpLegacyDeviceId = '';
+    host.rustdeskTotpLegacySource = '';
+    this.emitDataChange();
+    return true;
+  }
+
+  clearRustDeskPeerTwoFactorBinding(hostId: string): boolean {
+    const host: RemoteHost | undefined = this.hosts.get(hostId);
+    if (host === undefined || host.protocol !== 'rustdesk' ||
+      !this.peerTwoFactorBindings.isLoaded()) {
+      return false;
+    }
+    const endpoint: string = rustDeskPeerTwoFactorEndpointIdentity(host);
+    if (endpoint === '' || !this.peerTwoFactorBindings.remove(host.id, endpoint)) {
+      if (this.refreshRustDeskPeerTwoFactorRuntime(false)) { this.emitDataChange(); }
+      return false;
+    }
+    scrubRustDeskPeerTwoFactorRuntime(host);
+    this.emitDataChange();
+    return true;
+  }
+
   getAllHosts(): RemoteHost[] {
     const result: RemoteHost[] = [];
     this.hosts.forEach((h: RemoteHost) => { result.push(h); });
@@ -409,6 +623,15 @@ export class HostSyncService {
       }
       if (!localOnly) { this.cloud.pushTable('remotehosts'); }
     }
+    scrubRustDeskPeerTwoFactorRuntime(host);
+    if (host.protocol === 'rustdesk' && this.peerTwoFactorBindings.isLoaded()) {
+      const endpoint: string = rustDeskPeerTwoFactorEndpointIdentity(host);
+      hydrateRustDeskPeerTwoFactorHost(
+        host, endpoint === '' ? null : this.peerTwoFactorBindings.get(host.id, endpoint),
+        (entryId: string): boolean =>
+          KeyVaultService.getInstance().getTotpEntry(entryId) !== undefined,
+        this.peerTwoFactorBindings.deviceIdentity());
+    }
     this.hosts.set(host.id, host);
     hilog.info(0x0001, 'CloudSync',
       '主机已写入 hostId=' +
@@ -420,6 +643,10 @@ export class HostSyncService {
   updateHost(host: RemoteHost): boolean {
     const current: RemoteHost | undefined = this.hosts.get(host.id);
     if (!current) { return false; }
+    const previousPeerEndpoint: string =
+      current.protocol === 'rustdesk' ? rustDeskPeerTwoFactorEndpointIdentity(current) : '';
+    const nextPeerEndpoint: string =
+      host.protocol === 'rustdesk' ? rustDeskPeerTwoFactorEndpointIdentity(host) : '';
     const currentLocalOnly: boolean = lanHostUsesLocalOnlyStorage(current);
     const nextLocalOnly: boolean = lanHostUsesLocalOnlyStorage(host);
     if (currentLocalOnly !== nextLocalOnly) {
@@ -435,6 +662,24 @@ export class HostSyncService {
       return true;
     }
     const observedAt: number = Date.now();
+    let removedPeerBinding: RustDeskPeerTwoFactorBinding | null = null;
+    if (previousPeerEndpoint !== '' && previousPeerEndpoint !== nextPeerEndpoint) {
+      if (!this.peerTwoFactorBindings.isLoaded()) {
+        hilog.warn(0x0001, 'CloudSync',
+          'RustDesk endpoint change blocked because Peer 2FA store is unavailable hostId=' +
+          rustDeskRelayIdFingerprint(host.id));
+        return false;
+      }
+      removedPeerBinding = this.peerTwoFactorBindings.get(host.id, previousPeerEndpoint);
+      if (removedPeerBinding !== null &&
+        !this.peerTwoFactorBindings.remove(host.id, previousPeerEndpoint)) {
+        hilog.warn(0x0001, 'CloudSync',
+          'RustDesk endpoint change blocked because old Peer 2FA binding cleanup failed hostId=' +
+          rustDeskRelayIdFingerprint(host.id));
+        if (this.refreshRustDeskPeerTwoFactorRuntime(false)) { this.emitDataChange(); }
+        return false;
+      }
+    }
     this.localHostConfigObservationAt.set(host.id, observedAt);
     this.deletedHostAt.delete(host.id);
     const cloudBaseChanged: boolean = remoteHostCloudBaseChanged(current, host);
@@ -443,6 +688,16 @@ export class HostSyncService {
         (cloudBaseChanged ? this.cloud.updateHost(host) :
           this.cloud.updateHostLocalPersonalization(host));
       if (!ok) {
+        if (removedPeerBinding !== null &&
+          !this.peerTwoFactorBindings.save(removedPeerBinding)) {
+          hilog.error(0x0001, 'CloudSync',
+            'failed to restore Peer 2FA binding after host update rollback hostId=' +
+            rustDeskRelayIdFingerprint(host.id));
+        }
+        if (!this.peerTwoFactorBindings.isLoaded() &&
+          this.refreshRustDeskPeerTwoFactorRuntime(false)) {
+          this.emitDataChange();
+        }
         this.localHostConfigObservationAt.delete(host.id);
         hilog.error(0x0001, 'CloudSync',
           'HostSyncService.updateHost: CloudStore 写入失败 hostId=' +
@@ -450,6 +705,14 @@ export class HostSyncService {
         return false;
       }
       if (!nextLocalOnly && cloudBaseChanged) { this.cloud.pushTable('remotehosts'); }
+    }
+    scrubRustDeskPeerTwoFactorRuntime(host);
+    if (nextPeerEndpoint !== '' && this.peerTwoFactorBindings.isLoaded()) {
+      hydrateRustDeskPeerTwoFactorHost(
+        host, this.peerTwoFactorBindings.get(host.id, nextPeerEndpoint),
+        (entryId: string): boolean =>
+          KeyVaultService.getInstance().getTotpEntry(entryId) !== undefined,
+        this.peerTwoFactorBindings.deviceIdentity());
     }
     this.hosts.set(host.id, host);
     this.emitDataChange();
@@ -507,18 +770,48 @@ export class HostSyncService {
   removeHost(id: string): boolean {
     const current: RemoteHost | undefined = this.hosts.get(id);
     if (!current) { return false; }
+    if (current.protocol === 'rustdesk' && !this.peerTwoFactorBindings.isLoaded()) {
+      hilog.warn(0x0001, 'CloudSync',
+        'RustDesk host deletion blocked because Peer 2FA store is unavailable hostId=' +
+        rustDeskRelayIdFingerprint(id));
+      return false;
+    }
+    const removedBindings: RustDeskPeerTwoFactorBinding[] =
+      this.peerTwoFactorBindings.isLoaded() ?
+        this.peerTwoFactorBindings.list().filter(
+          (binding: RustDeskPeerTwoFactorBinding): boolean => binding.hostId === id) : [];
+    if (removedBindings.length > 0 && !this.peerTwoFactorBindings.removeHost(id)) {
+      hilog.warn(0x0001, 'CloudSync',
+        'host deletion blocked because Peer 2FA binding cleanup failed hostId=' +
+        rustDeskRelayIdFingerprint(id));
+      if (this.refreshRustDeskPeerTwoFactorRuntime(false)) { this.emitDataChange(); }
+      return false;
+    }
     const localOnly: boolean = lanHostUsesLocalOnlyStorage(current);
     const observedAt: number = Date.now();
     this.deletedHostAt.set(id, observedAt);
     this.localHostConfigObservationAt.delete(id);
     if (this.ready && !(localOnly
       ? this.cloud.deleteDynamicLanHost(id) : this.cloud.deleteHost(id))) {
+      for (let i = 0; i < removedBindings.length; i++) {
+        if (!this.peerTwoFactorBindings.save(removedBindings[i])) {
+          hilog.error(0x0001, 'CloudSync',
+            'failed to restore Peer 2FA binding after host delete rollback hostId=' +
+            rustDeskRelayIdFingerprint(id));
+        }
+      }
+      if (!this.peerTwoFactorBindings.isLoaded() &&
+        this.refreshRustDeskPeerTwoFactorRuntime(false)) {
+        this.emitDataChange();
+      }
       this.deletedHostAt.delete(id);
       return false;
     }
     const result: boolean = this.hosts.delete(id);
     if (result) {
       this.localHostObservationAt.delete(id);
+      RustDeskAuthDraftStore.getInstance().clearHost(id);
+      this.pendingPeerTwoFactorLegacyCandidates.delete(id);
     }
     if (result && this.ready && !localOnly) { this.cloud.pushTable('remotehosts'); }
     if (result) { this.emitDataChange(); }
@@ -529,28 +822,9 @@ export class HostSyncService {
     const uniqueIds: Set<string> = new Set<string>();
     ids.forEach((id: string): void => { if (id !== '') { uniqueIds.add(id); } });
     let removed: number = 0;
-    let removedCloudHost: boolean = false;
     for (const id of uniqueIds) {
-      const current: RemoteHost | undefined = this.hosts.get(id);
-      if (current === undefined) { continue; }
-      const localOnly: boolean = lanHostUsesLocalOnlyStorage(current);
-      const deletedAt: number = Date.now();
-      this.deletedHostAt.set(id, deletedAt);
-      this.localHostConfigObservationAt.delete(id);
-      if (this.ready && !(localOnly
-        ? this.cloud.deleteDynamicLanHost(id) : this.cloud.deleteHost(id))) {
-        this.deletedHostAt.delete(id);
-        hilog.warn(0x0001, 'CloudSync', 'HostSyncService.removeHosts: cloud delete failed');
-        continue;
-      }
-      if (this.hosts.delete(id)) {
-        this.localHostObservationAt.delete(id);
-        removed++;
-        removedCloudHost = removedCloudHost || !localOnly;
-      }
+      if (this.removeHost(id)) { removed++; }
     }
-    if (removedCloudHost && this.ready) { this.cloud.pushTable('remotehosts'); }
-    if (removed > 0) { this.emitDataChange(); }
     return removed;
   }
 

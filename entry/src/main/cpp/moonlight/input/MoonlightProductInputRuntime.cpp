@@ -1436,6 +1436,17 @@ bool MoonlightProductInputRuntime::sendPointer(
         content.referenceHeight = request.referenceHeight;
         content.geometryGeneration = request.geometryGeneration;
         result = mapper->absolutePosition(context, content, request.x, request.y);
+    } else if (request.action == MoonlightProductPointerAction::AbsoluteButton) {
+        MoonlightPointerContentRect content;
+        content.left = request.contentLeft;
+        content.top = request.contentTop;
+        content.width = request.contentWidth;
+        content.height = request.contentHeight;
+        content.referenceWidth = request.referenceWidth;
+        content.referenceHeight = request.referenceHeight;
+        content.geometryGeneration = request.geometryGeneration;
+        result = mapper->absoluteButton(context, content, request.x, request.y,
+                                        request.button, request.pressed);
     } else {
         return false;
     }

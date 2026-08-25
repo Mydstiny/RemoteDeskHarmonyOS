@@ -5867,6 +5867,45 @@ napi_value NapiSendKey(napi_env env, napi_callback_info info) {
     return undefined;
 }
 
+static bool SubmitSessionKeyEvents(
+    int32_t sessionId,
+    const std::vector<RemoteKeyEvent>& events) {
+    if (events.empty() || events.size() > 32U) {
+        return false;
+    }
+    const auto lookup = g_sessionRegistry.find(sessionId);
+    const std::shared_ptr<SessionContext> session =
+        lookup == g_sessionRegistry.end() ? nullptr : lookup->second;
+    if (!session) {
+        return false;
+    }
+    std::lock_guard<std::mutex> keyLock(session->keyDispatchMutex);
+    std::shared_ptr<ProtocolAdapter> adapter;
+    if (session->lifecycle.load(std::memory_order_acquire) ==
+        SessionContext::Lifecycle::Active) {
+        std::lock_guard<std::mutex> adapterLock(session->adapterMutex);
+        adapter = session->adapter;
+    }
+    if (!adapter) {
+        if (session->protocolName == "vnc") {
+            session->diagnostics.inputEventsDropped.fetch_add(
+                events.size(), std::memory_order_relaxed);
+        }
+        return false;
+    }
+    const bool accepted = adapter->sendKeyEvents(events);
+    if (session->protocolName == "vnc") {
+        if (accepted) {
+            session->diagnostics.inputEventsSent.fetch_add(
+                events.size(), std::memory_order_relaxed);
+        } else {
+            session->diagnostics.inputEventsDropped.fetch_add(
+                events.size(), std::memory_order_relaxed);
+        }
+    }
+    return accepted;
+}
+
 /**
  * NAPI: sendKeySequence(sessionId: number, keyCodes: number[]): boolean
  *
@@ -5900,33 +5939,63 @@ napi_value NapiSendKeySequence(napi_env env, napi_callback_info info) {
             }
             keyCodes.push_back(static_cast<uint32_t>(keyCode));
         }
-        const auto lookup = g_sessionRegistry.find(sessionId);
-        const std::shared_ptr<SessionContext> session =
-            lookup == g_sessionRegistry.end() ? nullptr : lookup->second;
-        if (valid && session) {
-            std::lock_guard<std::mutex> keyLock(session->keyDispatchMutex);
-            std::shared_ptr<ProtocolAdapter> adapter;
-            if (session->lifecycle.load(std::memory_order_acquire) ==
-                SessionContext::Lifecycle::Active) {
-                std::lock_guard<std::mutex> adapterLock(session->adapterMutex);
-                adapter = session->adapter;
-            }
-            if (adapter) {
-                if (session->protocolName == "vnc") {
-                    session->diagnostics.inputEventsSent.fetch_add(
-                        keyCodes.size() * 2U, std::memory_order_relaxed);
-                }
-                DispatchKeySequence(keyCodes, [&adapter](uint32_t keyCode, bool pressed) {
-                    adapter->sendKey(keyCode, pressed);
-                });
-                accepted = true;
+        if (valid) {
+            std::vector<RemoteKeyEvent> events;
+            events.reserve(keyCodes.size() * 2U);
+            DispatchKeySequence(keyCodes, [&events](uint32_t keyCode, bool pressed) {
+                events.push_back({keyCode, pressed});
+            });
+            accepted = SubmitSessionKeyEvents(sessionId, events);
+            if (accepted) {
                 OH_LOG_INFO(LOG_APP,
                     "[ExtLoader] NapiSendKeySequence session=%{public}d keys=%{public}u",
                     sessionId, length);
-            } else if (session->protocolName == "vnc") {
-                session->diagnostics.inputEventsDropped.fetch_add(
-                    keyCodes.size() * 2U, std::memory_order_relaxed);
             }
+        }
+    }
+    napi_value result;
+    napi_get_boolean(env, accepted, &result);
+    return result;
+}
+
+/**
+ * NAPI: sendKeyEvents(sessionId: number, keyCodes: number[], pressed: boolean[]): boolean
+ */
+napi_value NapiSendKeyEvents(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value args[3];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    bool accepted = false;
+    int32_t sessionId = 0;
+    bool keyArray = false;
+    bool pressedArray = false;
+    uint32_t keyLength = 0;
+    uint32_t pressedLength = 0;
+    if (argc >= 3 && napi_get_value_int32(env, args[0], &sessionId) == napi_ok &&
+        napi_is_array(env, args[1], &keyArray) == napi_ok && keyArray &&
+        napi_is_array(env, args[2], &pressedArray) == napi_ok && pressedArray &&
+        napi_get_array_length(env, args[1], &keyLength) == napi_ok &&
+        napi_get_array_length(env, args[2], &pressedLength) == napi_ok &&
+        keyLength > 0 && keyLength <= 32 && keyLength == pressedLength) {
+        std::vector<RemoteKeyEvent> events;
+        events.reserve(keyLength);
+        bool valid = true;
+        for (uint32_t index = 0; index < keyLength; ++index) {
+            napi_value keyValue;
+            napi_value pressedValue;
+            int32_t keyCode = 0;
+            bool pressed = false;
+            if (napi_get_element(env, args[1], index, &keyValue) != napi_ok ||
+                napi_get_element(env, args[2], index, &pressedValue) != napi_ok ||
+                napi_get_value_int32(env, keyValue, &keyCode) != napi_ok ||
+                napi_get_value_bool(env, pressedValue, &pressed) != napi_ok || keyCode <= 0) {
+                valid = false;
+                break;
+            }
+            events.push_back({static_cast<uint32_t>(keyCode), pressed});
+        }
+        if (valid) {
+            accepted = SubmitSessionKeyEvents(sessionId, events);
         }
     }
     napi_value result;
@@ -9987,6 +10056,10 @@ napi_value ExtensionLoaderNapi::Init(napi_env env, napi_value exports) {
     napi_create_function(env, "sendKeySequence", NAPI_AUTO_LENGTH,
                          NapiSendKeySequence, nullptr, &fn);
     napi_set_named_property(env, exports, "sendKeySequence", fn);
+
+    napi_create_function(env, "sendKeyEvents", NAPI_AUTO_LENGTH,
+                         NapiSendKeyEvents, nullptr, &fn);
+    napi_set_named_property(env, exports, "sendKeyEvents", fn);
 
     napi_create_function(env, "sendMouse", NAPI_AUTO_LENGTH,
                          NapiSendMouse, nullptr, &fn);

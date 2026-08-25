@@ -104,11 +104,103 @@ const REMOTE_HOST_EXTENSION_PAYLOAD_COLUMNS: string[] = [
   'rustdeskpropeerid', 'rustdeskproplatform', 'rustdeskpromanaged',
   'rustdeskprolastseenat', 'rustdeskprosyncerror', 'rustdesktargetdevice',
   'rustdeskadaptiveorientation', 'rustdesktotpentryid',
-  'rustdesktotpautosubmit', 'localpersonalizationversion',
+  'rustdesktotpautosubmit', 'rustdesktotpdeviceid', 'localpersonalizationversion',
   'localdisplayconfig', 'locallastconnected', 'locallasthealth',
   'locallastlatency', 'localrustdeskadaptiveorientation',
   'localrustdeskprolastseenat', 'localrustdeskprosyncerror'
 ];
+
+const DEVICE_LOCAL_RUSTDESK_PEER_2FA_KEYS: string[] = [
+  'rustdesktotpentryid', 'rustdesktotpautosubmit', 'rustdesktotpdeviceid'
+];
+
+function isDeviceLocalRustDeskPeerTwoFactorKey(key: string): boolean {
+  return DEVICE_LOCAL_RUSTDESK_PEER_2FA_KEYS.indexOf(key.toLowerCase()) >= 0;
+}
+
+function scrubDeviceLocalRustDeskPeerTwoFactorDisplayConfig(raw: string): string {
+  try {
+    const source: Record<string, Object> =
+      JSON.parse(raw || '{}') as Record<string, Object>;
+    if (!source || Array.isArray(source)) { return raw; }
+    const target: Record<string, Object> = {};
+    const keys: string[] = Object.keys(source);
+    for (let i = 0; i < keys.length; i++) {
+      const key: string = keys[i];
+      if (isDeviceLocalRustDeskPeerTwoFactorKey(key)) { continue; }
+      if (key === '_remoteDeskExtensionV1' && source[key] &&
+        typeof source[key] === 'object' && !Array.isArray(source[key])) {
+        const extension: Record<string, Object> =
+          source[key] as Record<string, Object>;
+        const scrubbedExtension: Record<string, Object> = {};
+        const extensionKeys: string[] = Object.keys(extension);
+        for (let k = 0; k < extensionKeys.length; k++) {
+          const extensionKey: string = extensionKeys[k];
+          if (!isDeviceLocalRustDeskPeerTwoFactorKey(extensionKey)) {
+            scrubbedExtension[extensionKey] = extension[extensionKey];
+          }
+        }
+        target[key] = scrubbedExtension as Object;
+      } else {
+        target[key] = source[key];
+      }
+    }
+    return JSON.stringify(target);
+  } catch (_error) {
+    return raw;
+  }
+}
+
+function scrubDeviceLocalRustDeskPeerTwoFactorExport(
+  tables: Record<string, Array<Record<string, string>>>,
+  extensions: Array<Record<string, string>>
+): PortableBackupData {
+  const safeTables: Record<string, Array<Record<string, string>>> = {};
+  const tableNames: string[] = Object.keys(tables);
+  for (let i = 0; i < tableNames.length; i++) {
+    const table: string = tableNames[i];
+    safeTables[table] = [];
+    const rows: Array<Record<string, string>> = tables[table] || [];
+    for (let r = 0; r < rows.length; r++) {
+      const next: Record<string, string> = {};
+      const keys: string[] = Object.keys(rows[r]);
+      for (let k = 0; k < keys.length; k++) {
+        const key: string = keys[k];
+        if (table === 'remotehosts' && isDeviceLocalRustDeskPeerTwoFactorKey(key)) {
+          continue;
+        }
+        next[key] = table === 'remotehosts' && key === 'displayconfig' ?
+          scrubDeviceLocalRustDeskPeerTwoFactorDisplayConfig(rows[r][key]) : rows[r][key];
+      }
+      safeTables[table].push(next);
+    }
+  }
+  const safeExtensions: Array<Record<string, string>> = [];
+  for (let i = 0; i < extensions.length; i++) {
+    const next: Record<string, string> = {};
+    const keys: string[] = Object.keys(extensions[i]);
+    for (let k = 0; k < keys.length; k++) { next[keys[k]] = extensions[i][keys[k]]; }
+    if (next['tablename'] === 'remotehosts') {
+      try {
+        const source: Record<string, string> =
+          JSON.parse(next['payload'] || '{}') as Record<string, string>;
+        const payload: Record<string, string> = {};
+        const payloadKeys: string[] = Object.keys(source);
+        for (let k = 0; k < payloadKeys.length; k++) {
+          const key: string = payloadKeys[k];
+          if (isDeviceLocalRustDeskPeerTwoFactorKey(key)) { continue; }
+          payload[key] = key === 'localdisplayconfig' ?
+            scrubDeviceLocalRustDeskPeerTwoFactorDisplayConfig(source[key]) : source[key];
+        }
+        next['payload'] = JSON.stringify(payload);
+      } catch (_error) {
+        // Validation will reject an already-corrupt extension after export.
+      }
+    }
+    safeExtensions.push(next);
+  }
+  return { tables: safeTables, extensions: safeExtensions, localTables: {} };
+}
 
 export interface LocalBackupDocument {
   format: string;
@@ -415,10 +507,12 @@ export function createLocalBackupDocument(
     throw new Error(
       'portable backup contains invalid Moonlight source rows');
   }
+  const scrubbed: PortableBackupData =
+    scrubDeviceLocalRustDeskPeerTwoFactorExport(tables, extensions);
   const portable: PortableBackupRedactionResult =
     sensitivityMode === 'full'
-      ? fullPortableBackupData(tables, extensions, localTables)
-      : redactPortableBackupData(tables, extensions, localTables);
+      ? fullPortableBackupData(scrubbed.tables, scrubbed.extensions, localTables)
+      : redactPortableBackupData(scrubbed.tables, scrubbed.extensions, localTables);
   const manifest: BackupManifestV3 = createBackupManifestV3(
     portable, createdAt, appVersion, accountScope,
     rdbSchemaVersion, sourceCryptoConfigured, sensitivityMode);

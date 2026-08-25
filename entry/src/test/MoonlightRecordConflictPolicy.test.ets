@@ -3,7 +3,10 @@ import {
   auditedDescribe as describe,
   auditedIt as it
 } from '../main/ets/services/FocusedTestRegistrationAudit';
-import { defaultMoonlightSettings } from '../main/ets/model/MoonlightModels';
+import {
+  defaultMoonlightSettings,
+  MoonlightInputControlMode
+} from '../main/ets/model/MoonlightModels';
 import { MoonlightRecord, MoonlightRecordType } from '../main/ets/model/MoonlightRecord';
 import {
   MoonlightRecordMeta,
@@ -35,10 +38,12 @@ function recordFromPayload(recordType: MoonlightRecordType, id: string, ownerId:
 
 function settingsRecord(mutationId: string, base: number, syncVersion: number,
   updatedAt: number, fps: number, bitrate: number,
-  versions: Record<string, number>): MoonlightRecord {
+  versions: Record<string, number>, legacyInputRecord: boolean = false,
+  controlMode: MoonlightInputControlMode = 'adaptive'): MoonlightRecord {
   const values = defaultMoonlightSettings();
   values.video.fps = fps;
   values.video.bitrateKbps = bitrate;
+  values.input.controlMode = legacyInputRecord ? undefined : controlMode;
   return recordFromPayload('settings', 'settings-1', 'owner-1', values as Record<string, Object>, {
     mutationId: mutationId, originId: 'origin-1', baseSyncVersion: base, fieldVersions: versions
   }, syncVersion, updatedAt);
@@ -119,6 +124,26 @@ export default function moonlightRecordConflictPolicyTest(): void {
       const payload = JSON.parse((result.record as MoonlightRecord).payload) as Record<string, Object>;
       expect((payload['video'] as Record<string, Object>)['fps'] as number).assertEqual(60);
     });
+
+    it('merges_a_legacy_settings_writer_that_has_no_additive_control_mode', 0,
+      (): void => {
+        const current = settingsRecord('new-writer', 1, 2, 200, 60, 20000,
+          { 'input.controlMode': 2 }, false, 'keyboardMouse');
+        const legacy = settingsRecord('legacy-writer', 1, 2, 201, 30, 20000,
+          { 'video.fps': 2 }, true);
+        const result = resolveMoonlightRecordConflict(current, legacy, {
+          mutationId: 'merge-legacy-control', originId: 'merge-origin', updatedAt: 300
+        });
+        expect(result.action).assertEqual('write_merged');
+        expect(result.reason).assertEqual('concurrent_fields_merged');
+        expect(result.record === null).assertFalse();
+        const payload = JSON.parse(
+          (result.record as MoonlightRecord).payload) as Record<string, Object>;
+        const input = payload['input'] as Record<string, Object>;
+        const video = payload['video'] as Record<string, Object>;
+        expect(input['controlMode'] as string).assertEqual('keyboardMouse');
+        expect(video['fps'] as number).assertEqual(30);
+      });
 
     it('fails_closed_on_equal_envelope_different_content', 0, (): void => {
       const current = settingsRecord('writer-a', 0, 1, 100, 30, 20000, { 'video.fps': 1 });

@@ -31,6 +31,12 @@ export interface RemoteSessionPipSurface {
   surfaceHeight: number;
 }
 
+/** Exact ArkUI page/navigation owner to restore when the user expands PIP. */
+export interface RemoteSessionPipRestoreTarget {
+  navigationId?: string;
+  handleId?: number;
+}
+
 type PipSurfaceReadyHandler = (surface: RemoteSessionPipSurface,
   operationGeneration: number) => Promise<boolean>;
 type PipSurfaceChangedHandler = (surface: RemoteSessionPipSurface) => void;
@@ -245,7 +251,8 @@ export class RemoteSessionPipService {
     contentWidth: number, contentHeight: number,
     lease: RemoteSessionServiceLease,
     onStopped: ((reason: string) => void) | null = null,
-    onSurfaceChanged: PipSurfaceChangedHandler | null = null): Promise<boolean> {
+    onSurfaceChanged: PipSurfaceChangedHandler | null = null,
+    restoreTarget: RemoteSessionPipRestoreTarget | null = null): Promise<boolean> {
     if (!this.claimLease(lease)) {
       hilog.warn(DOMAIN, TAG, '[PIP-LEASE] prepare rejected for non-owner');
       return false;
@@ -257,7 +264,7 @@ export class RemoteSessionPipService {
         if (!remoteSessionServiceLeaseEquals(this.currentLease, captured)) { return false; }
         return await this.prepareInternal(
           context, uiContext, contentWidth, contentHeight, captured,
-          onStopped, onSurfaceChanged);
+          onStopped, onSurfaceChanged, restoreTarget);
       } finally {
         this.prepareRequestCount = Math.max(0, this.prepareRequestCount - 1);
       }
@@ -268,7 +275,8 @@ export class RemoteSessionPipService {
     contentWidth: number, contentHeight: number,
     lease: RemoteSessionServiceLease,
     onStopped: ((reason: string) => void) | null,
-    onSurfaceChanged: PipSurfaceChangedHandler | null): Promise<boolean> {
+    onSurfaceChanged: PipSurfaceChangedHandler | null,
+    restoreTarget: RemoteSessionPipRestoreTarget | null): Promise<boolean> {
     if (!remoteSessionServiceLeaseEquals(this.currentLease, lease)) { return false; }
     if (!PiPWindow.isPiPEnabled()) {
       hilog.info(DOMAIN, TAG, 'PIP unsupported or disabled by system');
@@ -315,6 +323,17 @@ export class RemoteSessionPipService {
         defaultWindowSizeType: 1,
         cornerAdsorptionEnabled: true
       };
+      if (restoreTarget !== null) {
+        if (typeof restoreTarget.navigationId === 'string' &&
+            restoreTarget.navigationId.trim() !== '') {
+          config.navigationId = restoreTarget.navigationId.trim();
+        }
+        const handleId: number | undefined = restoreTarget.handleId;
+        if (typeof handleId === 'number' && Number.isSafeInteger(handleId) &&
+            handleId > 0) {
+          config.handleId = handleId;
+        }
+      }
       createdNode = typeNode.createNode(uiContext, 'XComponent', {
         type: XComponentType.SURFACE,
         controller: pipController

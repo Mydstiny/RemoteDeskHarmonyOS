@@ -196,7 +196,9 @@ export default function localBackupPolicyTest(): void {
           sshhostkeyfingerprintsha256: 'fingerprint',
           displayconfig: '{"width":1920,"_remoteDeskExtensionV1":{' +
             '"sshhostkeyfingerprintsha256":"nested-fingerprint",' +
-            '"password":"nested-password","rustdeskdirectport":"21117"}}'
+            '"password":"nested-password","rustdeskdirectport":"21117",' +
+            '"rustdeskTotpEntryId":"device-entry",' +
+            '"rustdeskTotpAutoSubmit":"1","rustdeskTotpDeviceId":"device-a"}}'
         });
         tables['sshkeys'].push({
           id: 'key-1', userid: 'owner-test',
@@ -218,7 +220,9 @@ export default function localBackupPolicyTest(): void {
               '"sshproxykeypassphrase":"proxy-passphrase",' +
               '"sshhostkeyfingerprintsha256":"trust",' +
               '"sshjumphostkeyalgorithm":"ssh-ed25519",' +
-              '"rustdeskdirectport":"21117"}',
+              '"rustdeskdirectport":"21117",' +
+              '"rustdesktotpentryid":"device-entry",' +
+              '"rustdesktotpautosubmit":"1"}',
             updatedat: '100'
           }], {}, 'owner-test', 3, true, 'full');
         expect(document.manifest?.crypto.mode).assertEqual('full');
@@ -246,6 +250,9 @@ export default function localBackupPolicyTest(): void {
           .assertEqual('private');
         expect(document.tables['totpentries'][0]['secret'])
           .assertEqual('totp-secret');
+        expect(JSON.stringify(document).indexOf('device-entry')).assertEqual(-1);
+        expect(JSON.stringify(document).indexOf('rustdesktotpautosubmit')).assertEqual(-1);
+        expect(JSON.stringify(document).indexOf('rustdeskTotpDeviceId')).assertEqual(-1);
         expect(document.extensions?.[0]['payload'])
           .assertEqual('{"sshkeypassphrase":"passphrase",' +
             '"sshproxypassword":"proxy-password",' +

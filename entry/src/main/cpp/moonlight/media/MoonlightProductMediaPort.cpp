@@ -2,6 +2,7 @@
 
 #include "moonlight/media/MoonlightAudioBridge.h"
 #include "moonlight/media/MoonlightVideoBridge.h"
+#include "moonlight/media/MoonlightVideoCodecSupport.h"
 
 #include <chrono>
 #include <cstdint>
@@ -40,9 +41,7 @@ bool sameProfile(const MoonlightStreamCodecProfile& left,
 
 bool supportedVideoProfile(
     const MoonlightStreamCodecProfile& profile) noexcept {
-    return profile.codec == MoonlightStreamCodec::H264 &&
-        profile.bitDepth == MoonlightStreamBitDepth::Bit8 &&
-        profile.chroma == MoonlightStreamChroma::Yuv420;
+    return moonlightHardwareVideoProfileSupported(profile);
 }
 
 bool videoBindingReady(const MoonlightSessionKey& key,
@@ -372,7 +371,20 @@ MoonlightProductMediaPort::diagnostics() const noexcept {
         result.droppedVideoFrames = saturatingAdd(
             saturatingAdd(video.droppedFrames, video.malformedFrames),
             saturatingAdd(video.staleFrames, video.backpressureFrames));
+        result.renderedOutputBuffers = decoder.renderedOutputBuffers;
+        result.nativeImageFrames = decoder.nativeImageFrames;
         result.rendererPresentedFrames = decoder.rendererPresentedFrames;
+        result.decoderQueueDepth = decoder.decoderQueueDepth;
+        result.decoderInputDroppedFrames = decoder.decoderInputDroppedFrames;
+        result.decoderWaitKeyframeDrops = decoder.decoderWaitKeyframeDrops;
+        result.decoderInputTruncated = decoder.decoderInputTruncated;
+        result.decoderRenderOutputFailures = decoder.decoderRenderOutputFailures;
+        result.decoderSurfaceUpdateFailures = decoder.decoderSurfaceUpdateFailures;
+        result.decoderSurfaceCoalescedNotifications =
+            decoder.decoderSurfaceCoalescedNotifications;
+        result.decoderCodecLatencyMs = decoder.decoderCodecLatencyMs;
+        result.decoderCodecLatencyMaxMs = decoder.decoderCodecLatencyMaxMs;
+        result.decoderLowLatencyEnabled = decoder.decoderLowLatencyEnabled;
         if (audioIdentity.valid()) {
             const auto audio = impl_->audioBridge->snapshot(audioIdentity);
             result.acceptedAudioPackets = saturatingAdd(

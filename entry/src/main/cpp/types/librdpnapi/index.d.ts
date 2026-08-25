@@ -55,6 +55,8 @@ export interface MoonlightNativeLaunchConfiguration {
   remoteControllersBitmap?: number;
   gamepadMask?: number;
   persistGamepads?: boolean;
+  videoCodec?: 'h264' | 'hevc' | 'av1';
+  resolutionPolicy?: 'exact' | 'hostCapability';
 }
 
 export interface MoonlightNativeStreamStartRequest {
@@ -98,6 +100,7 @@ export interface MoonlightNativeStreamSnapshot {
   controllerReady: boolean;
   physicalControllerReady: boolean;
   inputMayBeStuck: boolean;
+  presentationFrameReady: boolean;
   firstFrameReady: boolean;
   terminal: boolean;
   lastSequence: number;
@@ -109,11 +112,23 @@ export interface MoonlightNativeStreamSnapshot {
   acceptedAudioPackets?: number;
   rejectedAudioPackets?: number;
   acceptedAudioBytes?: number;
+  acceptedInputEvents?: number;
   rejectedInputEvents?: number;
+  decoderQueueDepth?: number;
+  decoderInputDroppedFrames?: number;
+  decoderWaitKeyframeDrops?: number;
+  decoderInputTruncated?: number;
+  decoderRenderOutputFailures?: number;
+  decoderSurfaceUpdateFailures?: number;
+  decoderSurfaceCoalescedNotifications?: number;
+  decoderCodecLatencyMs?: number;
+  decoderCodecLatencyMaxMs?: number;
+  decoderLowLatencyEnabled?: boolean;
   streamWidth?: number;
   streamHeight?: number;
   targetFps?: number;
   configuredBitrateKbps?: number;
+  codec?: 'h264' | 'hevc' | 'av1';
 }
 
 export interface MoonlightSurfaceRebindRequest {
@@ -140,7 +155,7 @@ export interface MoonlightTextInputRequest {
 
 export interface MoonlightPointerInputRequest {
   launchKey: MoonlightNativeRequestKey;
-  action: 'relative' | 'absolute' | 'button' | 'scroll';
+  action: 'relative' | 'absolute' | 'absoluteButton' | 'button' | 'scroll';
   x?: number;
   y?: number;
   contentLeft?: number;
@@ -339,6 +354,7 @@ export const VERSION: SessionVersionInfo;
 
   export function sendKey(sessionId: number, scancode: number, pressed: boolean): void;
   export function sendKeySequence(sessionId: number, keyCodes: number[]): boolean;
+  export function sendKeyEvents(sessionId: number, keyCodes: number[], pressed: boolean[]): boolean;
   export function sendMouse(sessionId: number, x: number, y: number, button: number, pressed: boolean): void;
   export function sendMouseWheel(sessionId: number, x: number, y: number, delta: number): void;
   export function sendRustDeskTouchpadWheel(sessionId: number, x: number, y: number): boolean;
@@ -509,6 +525,25 @@ export const VERSION: SessionVersionInfo;
   export function detachVideoPipeline(decoderHandle: number): boolean;
   export function requestDecoderRecovery(decoderHandle: number): boolean;
   export function rebindActiveVideoPipeline(): boolean;
+  export interface HardwareVideoDecoderCapability {
+    available: boolean;
+    name: string;
+    minWidth: number;
+    maxWidth: number;
+    minHeight: number;
+    maxHeight: number;
+    minFps: number;
+    maxFps: number;
+    widthAlignment: number;
+    heightAlignment: number;
+    lowLatency: boolean;
+  }
+  export interface HardwareVideoDecoderCapabilities {
+    h264: HardwareVideoDecoderCapability;
+    hevc: HardwareVideoDecoderCapability;
+    av1: HardwareVideoDecoderCapability;
+  }
+  export function getHardwareVideoDecoderCapabilities(): HardwareVideoDecoderCapabilities;
 
   export function initAudioPlayer(sampleRate?: number, channels?: number): number;
   export function destroyAudioPlayer(handle: number): void;

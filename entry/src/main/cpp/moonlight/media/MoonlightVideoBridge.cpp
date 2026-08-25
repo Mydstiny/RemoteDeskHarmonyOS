@@ -258,6 +258,18 @@ struct MoonlightVideoBridge::Impl final {
         return true;
     }
 
+    bool armRefreshLocked() noexcept {
+        // A transient sink-pressure drop does not invalidate the decoder
+        // lifecycle itself. Ask the host for a clean refresh point without
+        // closing admission for the P-frames that can still keep the picture
+        // moving until that IDR arrives.
+        if (idrRequestPending) {
+            return false;
+        }
+        idrRequestPending = true;
+        return true;
+    }
+
     MoonlightVideoSubmitResult malformedResult() noexcept {
         std::lock_guard<std::mutex> lock(mutex);
         ++malformedFrames;
@@ -391,10 +403,16 @@ struct MoonlightVideoBridge::Impl final {
                 waitingForIdr = false;
                 idrRequestPending = false;
             }
+        } else if (sinkStatus ==
+                   MoonlightVideoSinkStatus::AcceptedNeedsIdr) {
+            result.status = MoonlightVideoSubmitStatus::Accepted;
+            ++acceptedFrames;
+            lastAcceptedFrameNumber = decodeUnit.frameNumber;
+            result.requestIdr = armRefreshLocked();
         } else if (sinkStatus == MoonlightVideoSinkStatus::Backpressure) {
             result.status = MoonlightVideoSubmitStatus::Backpressure;
             ++backpressureFrames;
-            result.requestIdr = armIdrLocked();
+            result.requestIdr = armRefreshLocked();
         } else if (sinkStatus == MoonlightVideoSinkStatus::NeedIdr) {
             result.status = MoonlightVideoSubmitStatus::NeedIdr;
             ++droppedFrames;

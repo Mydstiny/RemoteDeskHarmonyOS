@@ -1,4 +1,5 @@
 #include "moonlight/media/MoonlightVideoDecoderSink.h"
+#include "moonlight/media/MoonlightVideoCodecSupport.h"
 
 #include <condition_variable>
 #include <mutex>
@@ -14,9 +15,7 @@ bool sameProfile(const MoonlightStreamCodecProfile& left,
 }
 
 bool supportedMvpProfile(const MoonlightStreamCodecProfile& profile) noexcept {
-    return profile.codec == MoonlightStreamCodec::H264 &&
-        profile.bitDepth == MoonlightStreamBitDepth::Bit8 &&
-        profile.chroma == MoonlightStreamChroma::Yuv420;
+    return moonlightHardwareVideoProfileSupported(profile);
 }
 
 bool validNonProfileBinding(const MoonlightVideoDecoderBinding& binding) noexcept {
@@ -34,6 +33,8 @@ MoonlightVideoSinkStatus mapSubmitStatus(
     switch (status) {
         case MoonlightDecoderPortSubmitStatus::Accepted:
             return MoonlightVideoSinkStatus::Accepted;
+        case MoonlightDecoderPortSubmitStatus::AcceptedNeedsIdr:
+            return MoonlightVideoSinkStatus::AcceptedNeedsIdr;
         case MoonlightDecoderPortSubmitStatus::Backpressure:
             return MoonlightVideoSinkStatus::Backpressure;
         case MoonlightDecoderPortSubmitStatus::NeedIdr:
@@ -226,7 +227,9 @@ struct MoonlightOwnedVideoDecoderSink::Impl final {
             binding = portResult.binding;
             firstFrameReady = false;
         }
-        if (portResult.status == MoonlightDecoderPortSubmitStatus::Accepted &&
+        if ((portResult.status == MoonlightDecoderPortSubmitStatus::Accepted ||
+             portResult.status ==
+                 MoonlightDecoderPortSubmitStatus::AcceptedNeedsIdr) &&
             submittedIdr) {
             waitingForIdr = false;
         }
@@ -450,6 +453,17 @@ struct MoonlightOwnedVideoDecoderSink::Impl final {
         result.renderedOutputBuffers = evidence.renderedOutputBuffers;
         result.nativeImageFrames = evidence.nativeImageFrames;
         result.rendererPresentedFrames = evidence.rendererPresentedFrames;
+        result.decoderQueueDepth = evidence.decoderQueueDepth;
+        result.decoderInputDroppedFrames = evidence.decoderInputDroppedFrames;
+        result.decoderWaitKeyframeDrops = evidence.decoderWaitKeyframeDrops;
+        result.decoderInputTruncated = evidence.decoderInputTruncated;
+        result.decoderRenderOutputFailures = evidence.decoderRenderOutputFailures;
+        result.decoderSurfaceUpdateFailures = evidence.decoderSurfaceUpdateFailures;
+        result.decoderSurfaceCoalescedNotifications =
+            evidence.decoderSurfaceCoalescedNotifications;
+        result.decoderCodecLatencyMs = evidence.decoderCodecLatencyMs;
+        result.decoderCodecLatencyMaxMs = evidence.decoderCodecLatencyMaxMs;
+        result.decoderLowLatencyEnabled = evidence.decoderLowLatencyEnabled;
         const bool hasExactFirstFrameEvidence =
             active && admissionOpen && !suspended && wasActive && wasOpen &&
             evidence.matched && evidence.running && evidence.binding == exact &&

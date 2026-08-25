@@ -373,8 +373,8 @@ RDP_TEST_CASE(moonlight_video_bridge_idr_gate_coalesces_and_recovers_exactly) {
     RDP_ASSERT(pressure.requestIdr);
     auto gatedP = fixture.predicted(key, 6);
     const auto gated = bridge->submit(gatedP);
-    RDP_ASSERT_EQ(gated.status, MoonlightVideoSubmitStatus::Dropped);
-    RDP_ASSERT_EQ(gated.dropReason, MoonlightVideoDropReason::WaitingForIdr);
+    RDP_ASSERT_EQ(gated.status, MoonlightVideoSubmitStatus::Backpressure);
+    RDP_ASSERT_EQ(gated.dropReason, MoonlightVideoDropReason::None);
     RDP_ASSERT(!gated.requestIdr);
 
     sink->setStatus(MoonlightVideoSinkStatus::Accepted);
@@ -385,7 +385,32 @@ RDP_TEST_CASE(moonlight_video_bridge_idr_gate_coalesces_and_recovers_exactly) {
     RDP_ASSERT(!snapshot.waitingForIdr);
     RDP_ASSERT(!snapshot.idrRequestPending);
     RDP_ASSERT_EQ(snapshot.acceptedFrames, static_cast<std::uint64_t>(3U));
-    RDP_ASSERT_EQ(snapshot.backpressureFrames, static_cast<std::uint64_t>(1U));
+    RDP_ASSERT_EQ(snapshot.backpressureFrames, static_cast<std::uint64_t>(2U));
+}
+
+RDP_TEST_CASE(moonlight_video_bridge_accepts_soft_pressure_frame_and_requests_refresh) {
+    auto sink = std::make_shared<RecordingVideoSink>();
+    auto bridge = MoonlightVideoBridge::createForTesting(sink);
+    const MoonlightSessionKey key {12U, 8U, 106U};
+    RDP_ASSERT_EQ(bridge->start(key, h264()).status,
+                  MoonlightVideoStartStatus::Started);
+    H264Fixture fixture;
+
+    RDP_ASSERT_EQ(bridge->submit(fixture.idr(key, 1)).status,
+                  MoonlightVideoSubmitStatus::Accepted);
+    sink->setStatus(MoonlightVideoSinkStatus::AcceptedNeedsIdr);
+    const auto pressured = bridge->submit(fixture.predicted(key, 2));
+    RDP_ASSERT_EQ(pressured.status, MoonlightVideoSubmitStatus::Accepted);
+    RDP_ASSERT(pressured.requestIdr);
+
+    sink->setStatus(MoonlightVideoSinkStatus::Accepted);
+    const auto later = bridge->submit(fixture.predicted(key, 3));
+    RDP_ASSERT_EQ(later.status, MoonlightVideoSubmitStatus::Accepted);
+    RDP_ASSERT(!later.requestIdr);
+    const auto snapshot = bridge->snapshot(key);
+    RDP_ASSERT(!snapshot.waitingForIdr);
+    RDP_ASSERT(snapshot.idrRequestPending);
+    RDP_ASSERT_EQ(snapshot.acceptedFrames, static_cast<std::uint64_t>(3U));
 }
 
 RDP_TEST_CASE(moonlight_video_bridge_configuration_generation_changes_only_on_new_accepted_idr) {

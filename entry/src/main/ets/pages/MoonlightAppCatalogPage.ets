@@ -1,6 +1,7 @@
-import { promptAction, router } from '@kit.ArkUI';
+import { display, promptAction, router } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
 import { connection } from '@kit.NetworkKit';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import { AppTheme, Palette, buildDark, buildLight } from '../common/Theme';
 import { MoonlightBrandIcon } from '../components/moonlight/MoonlightBrandIcon';
 import { MoonlightLaunchSheet } from '../components/moonlight/MoonlightLaunchSheet';
@@ -8,7 +9,8 @@ import { MoonlightCatalogDataSource } from '../datasources/MoonlightCatalogDataS
 import {
   MoonlightEffectiveSettings,
   MoonlightHost,
-  MoonlightSettings
+  MoonlightSettings,
+  moonlightInputControlMode
 } from '../model/MoonlightModels';
 import { AccountSessionCoordinator } from '../services/AccountSessionCoordinator';
 import { CloudStore } from '../services/CloudStore';
@@ -21,11 +23,17 @@ import {
   MoonlightNativeLaunchConfiguration
 } from '../services/MoonlightHostService';
 import { MoonlightSettingsLocalService } from '../services/MoonlightSettingsLocalService';
+import { MoonlightSessionCoordinator } from '../services/MoonlightSessionCoordinator';
 import {
   decodeMoonlightEffectiveSettings,
   encodeMoonlightEffectiveSettings,
   resolveMoonlightProductSettings
 } from '../services/MoonlightSettingsPolicy';
+import {
+  moonlightDecoderCapability,
+  probeMoonlightHardwareDecoderCapabilities
+} from
+  '../services/MoonlightVideoCapabilityService';
 import {
   moonlightInstallationId,
   moonlightSessionRecoveryId,
@@ -54,10 +62,13 @@ import {
   createMoonlightCatalogOperationKey,
   filterMoonlightCatalogItems,
   moonlightCatalogHostReachable,
+  moonlightCatalogGridColumnCount,
   moonlightCatalogOperationIsCurrent,
   moonlightCatalogPresentation,
+  moonlightCatalogSheetHeight,
   moonlightAppRouteParams,
   moonlightHostRouteParams,
+  moonlightRecoverySheetDismissAllowed,
   moonlightRouteIdentity
 } from '../services/MoonlightUiPolicy';
 import { RemoteSessionWindowLauncher } from '../services/RemoteSessionWindowLauncher';
@@ -77,6 +88,84 @@ class MoonlightLaunchFence {
   hostAddress: string = '';
   ownerToken: number = 0;
   recoverySessionId: string = '';
+}
+
+/**
+ * Non-secret launch ownership passed to the Sheet host only after Sunshine
+ * has confirmed the application launch. The parent drains it from the outer
+ * Catalog Sheet's onDisappear callback before presenting the stream page or
+ * desktop window.
+ */
+export class MoonlightCatalogLaunchHandoff {
+  routeParams: Record<string, Object> = {};
+  hostId: string = '';
+  title: string = '';
+  ownerToken: number = 0;
+  recoverySessionId: string = '';
+}
+
+function moonlightCatalogLaunchHandoffIsValid(
+  handoff: MoonlightCatalogLaunchHandoff
+): boolean {
+  return handoff.hostId.trim() !== '' && handoff.title.trim() !== '' &&
+    Number.isSafeInteger(handoff.ownerToken) && handoff.ownerToken > 0 &&
+    handoff.recoverySessionId.trim() !== '';
+}
+
+/** Present a confirmed launch after every native Sheet in front of it is gone. */
+export async function presentMoonlightCatalogLaunchHandoff(
+  context: common.UIAbilityContext,
+  isDesktopDevice: boolean,
+  handoff: MoonlightCatalogLaunchHandoff
+): Promise<boolean> {
+  if (!moonlightCatalogLaunchHandoffIsValid(handoff)) { return false; }
+  try {
+    if (!isDesktopDevice) {
+      await router.pushUrl({ url: 'pages/MoonlightStreamPage', params: handoff.routeParams });
+      return true;
+    }
+    const authorizationToken: string =
+      RemoteSessionWindowAuthorizationService.getInstance().issue(
+        'moonlight', handoff.hostId, 'moonlight_preflight_complete');
+    if (authorizationToken.length === 0) { return false; }
+    const request: RemoteSessionWindowRequest = {
+      target: 'moonlight_stream',
+      protocol: 'moonlight',
+      hostId: handoff.hostId,
+      title: handoff.title,
+      authorizationToken: authorizationToken,
+      routeParams: handoff.routeParams
+    };
+    return await RemoteSessionWindowLauncher.open(context, request);
+  } catch (error) {
+    hilog.error(0x0014, 'MoonlightCatalog',
+      'present launch destination failed desktop=' + (isDesktopDevice ? '1' : '0') +
+      ' error=' + JSON.stringify(error));
+    return false;
+  }
+}
+
+/** Release a confirmed native launch if its post-Sheet destination cannot open. */
+export function rejectMoonlightCatalogLaunchHandoff(
+  context: common.UIAbilityContext,
+  handoff: MoonlightCatalogLaunchHandoff
+): void {
+  const lease: AccountSessionLease | null =
+    CloudStore.getInstance().currentAccountLease();
+  if (lease !== null && CloudStore.getInstance().isLeaseCurrent(lease)) {
+    const recoveryStore: MoonlightSessionRecoveryStore =
+      new MoonlightSessionRecoveryStore();
+    const recovery = recoveryStore.bind(context, lease, handoff.hostId);
+    if (recovery.code === 'ready' && recovery.marker !== null &&
+        recovery.marker.sessionId === handoff.recoverySessionId) {
+      recoveryStore.update(handoff.recoverySessionId, {
+        stage: 'terminal_uncertain', heartbeatAt: Date.now(),
+        hostAppMayStillBeRunning: true, inputMayBeStuck: false,
+        terminalAction: 'none'
+      });
+    }
+  }
+  new MoonlightHostService().disposeOwner(handoff.ownerToken);
 }
 
 @Component
@@ -145,6 +234,7 @@ struct MoonlightAppCard {
           .width('100%').onClick((): void => { this.onMore(this.item); })
         Text(this.item.profileId === '' ? '使用主机默认设置' : '已保存应用配置')
           .fontSize(10).fontColor(this.pal().text3).width('100%').margin({ top: 5 })
+        Blank().layoutWeight(1)
         Row() {
           Text(this.availabilityLabel())
             .fontSize(10).fontColor(this.usable() ? this.pal().success : this.pal().text3)
@@ -156,9 +246,9 @@ struct MoonlightAppCard {
             .onClick((): void => {
               this.onMore(this.item);
             })
-        }.width('100%').margin({ top: 8 })
-      }.width('100%').padding(13)
-    }.width('100%').height(292).backgroundColor(this.pal().card).borderRadius(20)
+        }.width('100%').margin({ top: 6 })
+      }.width('100%').height(124).padding(13)
+    }.width('100%').height(324).backgroundColor(this.pal().card).borderRadius(20)
       .clip(true).border({ width: 0.5, color: this.pal().cardBorder })
       .shadow({ radius: 14, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
       .opacity(this.usable() ? 1 : 0.78)
@@ -167,14 +257,15 @@ struct MoonlightAppCard {
   }
 }
 
-@Entry
 @Component
-struct MoonlightAppCatalogPage {
+export struct MoonlightAppCatalogSurface {
   @StorageLink('currentTheme') theme: string = 'light';
   @StorageLink('accentColor') accentColor: string = '#007DFF';
   @StorageProp('topRectHeight') topRectHeight: number = 0;
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
   @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
+  @Prop embedded: boolean = false;
+  @Prop requestedHostId: string = '';
   @State hostId: string = '';
   @State host: MoonlightHost | null = null;
   @State paired: boolean = false;
@@ -219,27 +310,57 @@ struct MoonlightAppCatalogPage {
   private serverCertificateSha256: string = '';
   private launchGeneration: number = 0;
   private activeLaunchFence: MoonlightLaunchFence | null = null;
+  private pendingLaunchSheetAction: string = '';
+  private pendingLaunchHandoff: MoonlightCatalogLaunchHandoff | null = null;
+  private pendingRecoveryLaunchHandoff: MoonlightCatalogLaunchHandoff | null = null;
+  onClose: () => void = (): void => {};
+  onOpenSettings: () => void = (): void => {};
+  onOpenHostDetail: () => void = (): void => {};
+  onLaunchRequested: (handoff: MoonlightCatalogLaunchHandoff) => void =
+    (_handoff: MoonlightCatalogLaunchHandoff): void => {};
+  onDismissAllowedChanged: (allowed: boolean) => void = (_allowed: boolean): void => {};
 
   private pal(): Palette {
     return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor);
   }
 
   private topSafeHeight(): number {
+    // Native Sheets already live inside the safe area. Reapplying the window
+    // status-bar inset creates a large blank strip at the top on Pad.
+    if (this.embedded) { return 0; }
     return this.topRectHeight > 0 ? px2vp(this.topRectHeight) : AppTheme.layout.statusBarH;
   }
 
   private columns(): string {
-    if (this.breakpoint === 'sm') { return '1fr 1fr'; }
-    if (this.breakpoint === 'md') { return '1fr 1fr 1fr'; }
-    if (this.breakpoint === 'lg') { return '1fr 1fr 1fr 1fr'; }
+    const count: number = this.columnCount();
+    if (count === 1) { return '1fr'; }
+    if (count === 2) { return '1fr 1fr'; }
+    if (count === 3) { return '1fr 1fr 1fr'; }
+    if (count === 4) { return '1fr 1fr 1fr 1fr'; }
     return '1fr 1fr 1fr 1fr 1fr';
+  }
+
+  private columnCount(): number {
+    return moonlightCatalogGridColumnCount(
+      this.breakpoint, this.embedded, this.visibleItemCount);
+  }
+
+  private catalogSurfaceHeight(): number | string {
+    if (!this.embedded) { return '100%'; }
+    return moonlightCatalogSheetHeight(
+      this.visibleItemCount, this.columnCount(), this.topSafeHeight());
   }
 
   aboutToAppear(): void {
     this.pageActive = true;
-    const params: Record<string, Object> = router.getParams() as Record<string, Object>;
-    const route: MoonlightRouteIdentity = moonlightRouteIdentity(params);
-    this.hostId = route.valid ? route.hostId : '';
+    this.setEmbeddedDismissAllowed(true);
+    if (this.embedded) {
+      this.hostId = this.requestedHostId.trim();
+    } else {
+      const params: Record<string, Object> = router.getParams() as Record<string, Object>;
+      const route: MoonlightRouteIdentity = moonlightRouteIdentity(params);
+      this.hostId = route.valid ? route.hostId : '';
+    }
     this.loadLocal();
     // Pairing is only the local trust state. Revalidate the Sunshine endpoint
     // in the background as soon as the catalog page is shown, so the host card
@@ -250,6 +371,7 @@ struct MoonlightAppCatalogPage {
 
   aboutToDisappear(): void {
     this.pageActive = false;
+    this.setEmbeddedDismissAllowed(true);
     this.invalidateRefresh();
     this.launchGeneration += 1;
     const ownerToken: number = this.activeLaunchFence === null ? 0 :
@@ -257,6 +379,10 @@ struct MoonlightAppCatalogPage {
     this.activeLaunchFence = null;
     this.launching = false;
     if (ownerToken > 0) { this.hostService.disposeOwner(ownerToken); }
+  }
+
+  private setEmbeddedDismissAllowed(allowed: boolean): void {
+    if (this.embedded) { this.onDismissAllowedChanged(allowed); }
   }
 
   onPageShow(): void {
@@ -315,7 +441,7 @@ struct MoonlightAppCatalogPage {
       this.recoveryLease = null;
       return;
     }
-    const decoded = this.recoveryStore.bind(context, lease);
+    const decoded = this.recoveryStore.bind(context, lease, this.hostId);
     this.recoveryLease = lease;
     this.recoveryDecodeCode = decoded.code;
     this.recoveryMarker = decoded.marker;
@@ -399,14 +525,64 @@ struct MoonlightAppCatalogPage {
     if (this.recoveryActing || this.recoveryChecking ||
         this.recoveryHostState !== 'matching_app_running' ||
         this.host === null || this.recoveryMarker === null) { return; }
-    const marker: MoonlightSessionRecoveryMarker = this.recoveryMarker;
-    const numericAppId: number = Number.parseInt(marker.appId, 10);
+    const previousMarker: MoonlightSessionRecoveryMarker = this.recoveryMarker;
     const lease: AccountSessionLease | null = CloudStore.getInstance().currentAccountLease();
-    const effective: MoonlightEffectiveSettings = resolveMoonlightProductSettings(
+    let uiContext: common.UIAbilityContext;
+    try {
+      uiContext = getContext(this) as common.UIAbilityContext;
+    } catch (_error) {
+      promptAction.showToast({ message: '无法刷新本地会话恢复边界', duration: 2200 });
+      return;
+    }
+    if (lease === null || !CloudStore.getInstance().isLeaseCurrent(lease)) { return; }
+    if (!MoonlightSessionCoordinator.getInstance().reconcileNativeTerminalReceipt()) {
+      promptAction.showToast({
+        message: '上一条 Moonlight 原生会话仍在安全释放，请稍后重试', duration: 2200
+      });
+      return;
+    }
+    // reconcileNativeTerminalReceipt() can synchronously prove that the old
+    // local disconnect completed and remove its durable recovery marker. The
+    // catalog component may still hold the pre-reconcile projection, though.
+    // Rebind before mutating Sunshine and create a fresh recovery owner when
+    // the old marker was cleanly cleared; otherwise the new Stream page would
+    // reject the confirmed /resume and Sunshine would wait ten seconds for an
+    // RTSP client that can never start.
+    const rebound = this.recoveryStore.bind(uiContext, lease, this.hostId);
+    let marker: MoonlightSessionRecoveryMarker | null = null;
+    if (rebound.code === 'ready' && rebound.marker !== null &&
+        rebound.marker.sessionId === previousMarker.sessionId &&
+        rebound.marker.hostId === previousMarker.hostId &&
+        rebound.marker.appId === previousMarker.appId) {
+      marker = rebound.marker;
+    } else if (rebound.code === 'absent') {
+      marker = this.recoveryStore.begin({
+        sessionId: moonlightSessionRecoveryId(),
+        hostId: previousMarker.hostId,
+        profileId: previousMarker.profileId,
+        appId: previousMarker.appId
+      }, Date.now());
+    }
+    if (marker === null) {
+      this.recoveryDecodeCode = rebound.code;
+      this.recoveryMarker = rebound.marker;
+      this.showRecoverySheet = rebound.code !== 'absent';
+      promptAction.showToast({
+        message: rebound.code === 'absent' ?
+          '无法建立新的本地会话恢复边界，请重试' :
+          '会话恢复状态已变化，请重新确认',
+        duration: 2400
+      });
+      return;
+    }
+    this.recoveryDecodeCode = 'ready';
+    this.recoveryMarker = marker;
+    const numericAppId: number = Number.parseInt(marker.appId, 10);
+    const effective: MoonlightEffectiveSettings = this.productSettings(
       this.settingsService.load().settings);
     const encoded: string = encodeMoonlightEffectiveSettings(effective);
-    if (lease === null || encoded === '' || !Number.isSafeInteger(numericAppId) ||
-        numericAppId <= 0 || !CloudStore.getInstance().isLeaseCurrent(lease)) { return; }
+    if (encoded === '' || !Number.isSafeInteger(numericAppId) || numericAppId <= 0 ||
+        !CloudStore.getInstance().isLeaseCurrent(lease)) { return; }
     const ownerToken: number = MoonlightRuntimeOwnerTokenAllocator.getInstance().next();
     const generation: number = Math.max(1, ++this.launchGeneration);
     const context: MoonlightHostContext | null = this.runtimeContext(
@@ -417,6 +593,7 @@ struct MoonlightAppCatalogPage {
       this.hostService.disposeOwner(ownerToken);
       return;
     }
+    this.setEmbeddedDismissAllowed(false);
     this.recoveryActing = true;
     const configuration: MoonlightNativeLaunchConfiguration =
       this.launchConfiguration(effective.effective);
@@ -427,12 +604,14 @@ struct MoonlightAppCatalogPage {
         this.recoveryMarker.sessionId !== marker.sessionId) {
       this.hostService.disposeOwner(ownerToken);
       this.recoveryActing = false;
+      this.setEmbeddedDismissAllowed(true);
       return;
     }
     if (!result.ok || result.nativeResult === null) {
       this.markLaunchUncertain(marker.sessionId);
       this.hostService.disposeOwner(ownerToken);
       this.recoveryActing = false;
+      this.setEmbeddedDismissAllowed(true);
       promptAction.showToast({ message: '恢复串流失败（' + result.code + '）', duration: 2200 });
       return;
     }
@@ -447,6 +626,7 @@ struct MoonlightAppCatalogPage {
     if (params === null) {
       this.hostService.disposeOwner(ownerToken);
       this.recoveryActing = false;
+      this.setEmbeddedDismissAllowed(true);
       return;
     }
     params['launchRequestId'] = result.key.requestId;
@@ -465,36 +645,20 @@ struct MoonlightAppCatalogPage {
     params['moonlightRecoverySessionId'] = marker.sessionId;
     params['resetRemoteInputBeforeAdmission'] =
       moonlightSessionRecoveryRequiresRemoteReset(marker);
-    this.showRecoverySheet = false;
+    const recoveredAppId: string = marker.appId;
+    const appTitle: string = this.allItems.find(
+      (item: MoonlightCatalogItem): boolean => item.appId === recoveredAppId)?.title || recoveredAppId;
+    const handoff: MoonlightCatalogLaunchHandoff = new MoonlightCatalogLaunchHandoff();
+    handoff.routeParams = params;
+    handoff.hostId = marker.hostId;
+    handoff.title = (this.host.displayName || 'Moonlight') + ' — ' + appTitle;
+    handoff.ownerToken = ownerToken;
+    handoff.recoverySessionId = marker.sessionId;
+    this.pendingRecoveryLaunchHandoff = handoff;
     this.recoveryActing = false;
-    try {
-      if (!this.isDesktopDevice) {
-        await router.pushUrl({ url: 'pages/MoonlightStreamPage', params: params });
-      } else {
-        const uiContext: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
-        const authorizationToken: string =
-          RemoteSessionWindowAuthorizationService.getInstance().issue(
-            'moonlight', marker.hostId, 'moonlight_preflight_complete');
-        if (authorizationToken.length === 0) { throw new Error('recovery authorization rejected'); }
-        const appTitle: string = this.allItems.find(
-          (item: MoonlightCatalogItem): boolean => item.appId === marker.appId)?.title || marker.appId;
-        const request: RemoteSessionWindowRequest = {
-          target: 'moonlight_stream', protocol: 'moonlight', hostId: marker.hostId,
-          title: (this.host.displayName || 'Moonlight') + ' — ' + appTitle,
-          authorizationToken: authorizationToken, routeParams: params
-        };
-        if (!await RemoteSessionWindowLauncher.open(uiContext, request)) {
-          throw new Error('recovery window rejected');
-        }
-      }
-    } catch (_error) {
-      this.markLaunchUncertain(marker.sessionId);
-      this.hostService.disposeOwner(ownerToken);
-      if (this.pageActive) {
-        this.showRecoverySheet = true;
-        promptAction.showToast({ message: '无法打开恢复串流窗口', duration: 2200 });
-      }
-    }
+    this.setEmbeddedDismissAllowed(true);
+    this.showRecoverySheet = false;
+    if (this.embedded) { this.handleRecoverySheetDisappear(); }
   }
 
   private async quitRecoveredHostApp(): Promise<void> {
@@ -511,10 +675,12 @@ struct MoonlightAppCatalogPage {
       this.host, lease, ownerToken, Math.max(1, ++this.launchGeneration),
       this.serverCertificateSha256, this.settingsService.load().settings);
     if (context === null) { this.hostService.disposeOwner(ownerToken); return; }
+    this.setEmbeddedDismissAllowed(false);
     this.recoveryActing = true;
     const result: MoonlightHostServiceResult = await this.hostService.quit(context, appId, true);
     this.hostService.disposeOwner(ownerToken);
     this.recoveryActing = false;
+    this.setEmbeddedDismissAllowed(true);
     if (result.ok && this.recoveryStore.clear(marker.sessionId)) {
       this.recoveryMarker = null;
       this.recoveryDecodeCode = 'absent';
@@ -706,7 +872,7 @@ struct MoonlightAppCatalogPage {
       promptAction.showToast({ message: '请先处理本机会话恢复记录', duration: 2000 });
       return;
     }
-    const resolved: MoonlightEffectiveSettings = resolveMoonlightProductSettings(
+    const resolved: MoonlightEffectiveSettings = this.productSettings(
       this.settingsService.load().settings);
     const encoded: string = encodeMoonlightEffectiveSettings(resolved);
     if (encoded === '') {
@@ -715,6 +881,8 @@ struct MoonlightAppCatalogPage {
     }
     this.launchSettingsEncoded = encoded;
     this.launchFeedback = '';
+    this.pendingLaunchSheetAction = '';
+    this.pendingLaunchHandoff = null;
     this.meteredApprovedOnce = false;
     this.refreshNetworkMetering();
     this.selectedItem = item;
@@ -761,7 +929,22 @@ struct MoonlightAppCatalogPage {
   }
 
   private launchConfiguration(settings: MoonlightSettings): MoonlightNativeLaunchConfiguration {
-    return moonlightLaunchConfiguration(settings);
+    const capabilities = probeMoonlightHardwareDecoderCapabilities();
+    const decoder = moonlightDecoderCapability(capabilities,
+      settings.video.codecPreference);
+    try {
+      const current: display.Display = display.getDefaultDisplaySync();
+      return moonlightLaunchConfiguration(settings, current.width, current.height,
+        decoder.maxWidth, decoder.maxHeight);
+    } catch (_error) {
+      return moonlightLaunchConfiguration(settings, 0, 0,
+        decoder.maxWidth, decoder.maxHeight);
+    }
+  }
+
+  private productSettings(settings: MoonlightSettings): MoonlightEffectiveSettings {
+    return resolveMoonlightProductSettings(
+      settings, probeMoonlightHardwareDecoderCapabilities());
   }
 
   private launchSettings(): MoonlightEffectiveSettings | null {
@@ -769,7 +952,9 @@ struct MoonlightAppCatalogPage {
   }
 
   private resolutionLabel(settings: MoonlightSettings): string {
-    if (settings.video.resolutionMode === 'host') { return '设备默认 1080p'; }
+    if (settings.video.adaptiveResolution === 'device') { return '适配当前设备'; }
+    if (settings.video.resolutionMode === 'host' ||
+        settings.video.adaptiveResolution === 'host') { return '适配远端能力'; }
     if (settings.video.resolutionMode === 'custom') {
       return settings.video.customWidth.toString() + '×' + settings.video.customHeight.toString();
     }
@@ -778,7 +963,7 @@ struct MoonlightAppCatalogPage {
 
   private codecLabel(settings: MoonlightSettings): string {
     if (settings.video.codecPreference === 'h264') { return 'H.264'; }
-    if (settings.video.codecPreference === 'hevc') { return 'HEVC'; }
+    if (settings.video.codecPreference === 'hevc') { return 'H.265 / HEVC'; }
     if (settings.video.codecPreference === 'av1') { return 'AV1'; }
     return '自动';
   }
@@ -791,15 +976,17 @@ struct MoonlightAppCatalogPage {
   }
 
   private inputLabel(settings: MoonlightSettings): string {
-    if (settings.input.touchMode === 'absoluteMouse') { return '绝对鼠标'; }
-    if (settings.input.touchMode === 'relativeMouse') { return '相对鼠标'; }
-    return '直接触控';
+    const mode = moonlightInputControlMode(
+      settings.input.controlMode, settings.input.touchMode);
+    if (mode === 'keyboardMouse') { return '键鼠'; }
+    if (mode === 'trackpad') { return '虚拟触控板'; }
+    return '自适应';
   }
 
   private launchEffectiveSettings(): MoonlightSettings {
     const snapshot: MoonlightEffectiveSettings | null = this.launchSettings();
     return snapshot === null ?
-      resolveMoonlightProductSettings(this.settingsService.load().settings).effective :
+      this.productSettings(this.settingsService.load().settings).effective :
       snapshot.effective;
   }
 
@@ -830,6 +1017,7 @@ struct MoonlightAppCatalogPage {
     if (this.activeLaunchFence !== fence) { return; }
     this.activeLaunchFence = null;
     this.launching = false;
+    this.setEmbeddedDismissAllowed(true);
   }
 
   private cancelLaunchSheet(): void {
@@ -838,8 +1026,89 @@ struct MoonlightAppCatalogPage {
       this.markLaunchUncertain(fence.recoverySessionId);
       this.finishLaunch(fence, true);
     }
+    this.pendingLaunchSheetAction = '';
+    this.pendingLaunchHandoff = null;
     this.launchFeedback = '';
     this.showLaunchSheet = false;
+    this.setEmbeddedDismissAllowed(true);
+  }
+
+  private closeLaunchSurface(action: string): void {
+    this.pendingLaunchSheetAction = action;
+    this.pendingLaunchHandoff = null;
+    this.showLaunchSheet = false;
+    if (this.embedded) { this.handleLaunchSheetDisappear(); }
+  }
+
+  private async presentLaunchAfterSheet(
+    handoff: MoonlightCatalogLaunchHandoff
+  ): Promise<void> {
+    let context: common.UIAbilityContext;
+    try {
+      context = getContext(this) as common.UIAbilityContext;
+    } catch (_error) {
+      this.markLaunchUncertain(handoff.recoverySessionId);
+      this.hostService.disposeOwner(handoff.ownerToken);
+      if (this.pageActive) {
+        promptAction.showToast({ message: '串流窗口上下文不可用，启动租约已安全释放', duration: 2200 });
+      }
+      return;
+    }
+    const opened: boolean = await presentMoonlightCatalogLaunchHandoff(
+      context, this.isDesktopDevice, handoff);
+    if (opened) { return; }
+    this.markLaunchUncertain(handoff.recoverySessionId);
+    this.hostService.disposeOwner(handoff.ownerToken);
+    if (this.pageActive) {
+      promptAction.showToast({ message: '无法打开串流窗口，启动租约已安全释放', duration: 2200 });
+    }
+  }
+
+  private handleLaunchSheetDisappear(): void {
+    const action: string = this.pendingLaunchSheetAction;
+    const handoff: MoonlightCatalogLaunchHandoff | null = this.pendingLaunchHandoff;
+    this.pendingLaunchSheetAction = '';
+    this.pendingLaunchHandoff = null;
+    this.selectedItem = null;
+    this.launchSettingsEncoded = '';
+    this.launchFeedback = '';
+    if (!this.pageActive) {
+      if (handoff !== null) {
+        this.hostService.disposeOwner(handoff.ownerToken);
+      }
+      return;
+    }
+    if (action === 'settings') {
+      this.openSettings();
+      return;
+    }
+    if (action === 'retry') {
+      this.requestRefresh();
+      return;
+    }
+    if (action !== 'launch' || handoff === null) { return; }
+    if (this.embedded) {
+      this.onLaunchRequested(handoff);
+    } else {
+      void this.presentLaunchAfterSheet(handoff);
+    }
+  }
+
+  private handleRecoverySheetDisappear(): void {
+    const handoff: MoonlightCatalogLaunchHandoff | null =
+      this.pendingRecoveryLaunchHandoff;
+    this.pendingRecoveryLaunchHandoff = null;
+    if (handoff === null) { return; }
+    if (!this.pageActive) {
+      this.markLaunchUncertain(handoff.recoverySessionId);
+      this.hostService.disposeOwner(handoff.ownerToken);
+      return;
+    }
+    if (this.embedded) {
+      this.onLaunchRequested(handoff);
+    } else {
+      void this.presentLaunchAfterSheet(handoff);
+    }
   }
 
   private launchFailureMessage(result: MoonlightHostServiceResult): string {
@@ -882,6 +1151,12 @@ struct MoonlightAppCatalogPage {
   private async startSelected(): Promise<void> {
     if (!this.pageActive || this.host === null || this.selectedItem === null) { return; }
     if (this.launching) { return; }
+    if (!MoonlightSessionCoordinator.getInstance().reconcileNativeTerminalReceipt()) {
+      promptAction.showToast({
+        message: '上一条 Moonlight 原生会话仍在安全释放，请稍后重试', duration: 2200
+      });
+      return;
+    }
     this.refreshNetworkMetering();
     if (!this.meteredAllowed(this.launchEffectiveSettings())) {
       this.showLaunchSheet = true;
@@ -922,7 +1197,8 @@ struct MoonlightAppCatalogPage {
       promptAction.showToast({ message: '无法建立本地会话恢复边界', duration: 2200 });
       return;
     }
-    const recoveryState = this.recoveryStore.bind(uiContext, lease);
+    const recoveryState = this.recoveryStore.bind(
+      uiContext, lease, hostValue.id);
     if (recoveryState.code !== 'absent') {
       this.hostService.disposeOwner(ownerToken);
       promptAction.showToast({
@@ -960,6 +1236,7 @@ struct MoonlightAppCatalogPage {
     fence.recoverySessionId = recoverySessionId;
     this.activeLaunchFence = fence;
     this.launchFeedback = '';
+    this.setEmbeddedDismissAllowed(false);
     this.launching = true;
     const launchConfiguration: MoonlightNativeLaunchConfiguration =
       this.launchConfiguration(settingsSnapshot.effective);
@@ -1018,38 +1295,22 @@ struct MoonlightAppCatalogPage {
         this.finishLaunch(fence, true);
         return;
       }
-      this.showLaunchSheet = false;
+      const handoff: MoonlightCatalogLaunchHandoff = new MoonlightCatalogLaunchHandoff();
+      handoff.routeParams = params;
+      handoff.hostId = fence.hostRecordId;
+      handoff.title = (this.host?.displayName || 'Moonlight') + ' — ' +
+        (this.selectedItem?.title || '串流');
+      handoff.ownerToken = fence.ownerToken;
+      handoff.recoverySessionId = fence.recoverySessionId;
+      // Record the confirmed launch before dismissing the inner preflight
+      // Sheet. Embedded surfaces forward it only from onDisappear; their
+      // parent then closes the outer Catalog Sheet and presents the stream
+      // from that Sheet's onDisappear boundary.
+      this.pendingLaunchSheetAction = 'launch';
+      this.pendingLaunchHandoff = handoff;
       this.finishLaunch(fence, false);
-      try {
-        if (!this.isDesktopDevice) {
-          await router.pushUrl({ url: 'pages/MoonlightStreamPage', params: params });
-        } else {
-          const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
-          const authorizationToken: string =
-            RemoteSessionWindowAuthorizationService.getInstance().issue(
-              'moonlight', fence.hostRecordId, 'moonlight_preflight_complete');
-          if (authorizationToken.length === 0) {
-            throw new Error('Moonlight authorization handoff rejected');
-          }
-          const request: RemoteSessionWindowRequest = {
-            target: 'moonlight_stream',
-            protocol: 'moonlight',
-            hostId: fence.hostRecordId,
-            title: (this.host?.displayName || 'Moonlight') + ' — ' +
-              (this.selectedItem?.title || '串流'),
-            authorizationToken,
-            routeParams: params
-          };
-          const opened: boolean = await RemoteSessionWindowLauncher.open(context, request);
-          if (!opened) { throw new Error('independent Moonlight window launch rejected'); }
-        }
-      } catch (_) {
-        this.markLaunchUncertain(fence.recoverySessionId);
-        this.hostService.disposeOwner(fence.ownerToken);
-        if (this.pageActive) {
-          promptAction.showToast({ message: '无法打开独立串流窗口，启动租约已安全释放', duration: 2200 });
-        }
-      }
+      this.showLaunchSheet = false;
+      if (this.embedded) { this.handleLaunchSheetDisappear(); }
       return;
     }
     this.markLaunchUncertain(fence.recoverySessionId);
@@ -1058,12 +1319,22 @@ struct MoonlightAppCatalogPage {
 
   private openSettings(): void {
     const params: Record<string, Object> | null = moonlightHostRouteParams(this.hostId);
-    if (params !== null) { router.pushUrl({ url: 'pages/MoonlightSettingsPage', params: params }); }
+    if (params === null) { return; }
+    if (this.embedded) {
+      this.onOpenSettings();
+    } else {
+      router.pushUrl({ url: 'pages/MoonlightSettingsPage', params: params });
+    }
   }
 
   private openHostDetail(): void {
     const params: Record<string, Object> | null = moonlightHostRouteParams(this.hostId);
-    if (params !== null) { router.pushUrl({ url: 'pages/MoonlightHostDetailPage', params: params }); }
+    if (params === null) { return; }
+    if (this.embedded) {
+      this.onOpenHostDetail();
+    } else {
+      router.pushUrl({ url: 'pages/MoonlightHostDetailPage', params: params });
+    }
   }
 
   @Builder private launchSheet() {
@@ -1090,8 +1361,12 @@ struct MoonlightAppCatalogPage {
       launching: this.launching,
       launchFeedback: this.launchFeedback,
       onCancel: (): void => { this.cancelLaunchSheet(); },
-      onOpenSettings: (): void => { this.showLaunchSheet = false; this.openSettings(); },
-      onRetry: (): void => { this.showLaunchSheet = false; this.requestRefresh(); },
+      onOpenSettings: (): void => {
+        this.closeLaunchSurface('settings');
+      },
+      onRetry: (): void => {
+        this.closeLaunchSurface('retry');
+      },
       onAllowMetered: (): void => { this.meteredApprovedOnce = true; },
       onStart: (): void => {
         this.startSelected().catch((): void => {
@@ -1171,11 +1446,14 @@ struct MoonlightAppCatalogPage {
     Row() {
       Button() { SymbolGlyph($r('sys.symbol.chevron_left')).fontSize(21).fontColor([this.pal().text]) }
         .width(42).height(42).borderRadius(21).backgroundColor(this.pal().surface)
-        .onClick((): void => { router.back(); }).accessibilityText('返回')
+        .onClick((): void => {
+          if (this.embedded) { this.onClose(); } else { router.back(); }
+        }).accessibilityText('返回')
       MoonlightBrandIcon({ iconSize: 28, tint: this.accentColor }).margin({ left: 12 })
       Column() {
         Text(this.host?.displayName || 'Moonlight 应用目录').fontSize(22).fontWeight(FontWeight.Bold)
           .fontColor(this.pal().text).fontFamily(AppTheme.fontFamily)
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
         Text('按主机分类 · 仅本地缓存').fontSize(10).fontColor(this.pal().text3).margin({ top: 2 })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
       Button() { SymbolGlyph($r('sys.symbol.info_circle')).fontSize(18).fontColor([this.pal().text]) }
@@ -1204,7 +1482,7 @@ struct MoonlightAppCatalogPage {
       .border({ width: 0.5, color: this.pal().cardBorder })
   }
 
-  build() {
+  @Builder private catalogContent() {
     Column() {
       this.header()
       Column() {
@@ -1254,6 +1532,22 @@ struct MoonlightAppCatalogPage {
       }.width('100%').layoutWeight(1).constraintSize({ maxWidth: 1320 })
         .padding({ left: this.breakpoint === 'sm' ? 14 : 24, right: this.breakpoint === 'sm' ? 14 : 24,
           bottom: 24 })
+    }.width('100%').height(this.catalogSurfaceHeight()).backgroundColor(this.pal().bg)
+  }
+
+  build() {
+    if (this.embedded) {
+      if (this.showRecoverySheet) {
+        this.recoverySheet()
+      } else if (this.showLaunchSheet) {
+        this.launchSheet()
+      } else {
+        this.catalogContent()
+      }
+    } else {
+      Column() {
+        this.catalogContent()
+      }.width('100%').height('100%').backgroundColor(this.pal().bg)
         .bindSheet($$this.showLaunchSheet, this.launchSheet(), {
           height: SheetSize.FIT_CONTENT,
           preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
@@ -1263,18 +1557,34 @@ struct MoonlightAppCatalogPage {
             if (this.showLaunchSheet) { this.cancelLaunchSheet(); }
             action.dismiss();
           },
-          onDisappear: (): void => {
-            this.selectedItem = null;
-            this.launchSettingsEncoded = '';
-            this.launchFeedback = '';
-          }
+          onDisappear: (): void => { this.handleLaunchSheetDisappear(); }
         })
-    }.width('100%').height('100%').backgroundColor(this.pal().bg)
-      .bindSheet($$this.showRecoverySheet, this.recoverySheet(), {
-        height: SheetSize.FIT_CONTENT,
-        preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
-        dragBar: false,
-        showClose: false
-      })
+        .bindSheet($$this.showRecoverySheet, this.recoverySheet(), {
+          height: SheetSize.FIT_CONTENT,
+          preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
+          dragBar: false,
+          showClose: false,
+          onWillDismiss: (action: DismissSheetAction): void => {
+            if (!moonlightRecoverySheetDismissAllowed(this.recoveryActing)) {
+              promptAction.showToast({
+                message: '正在处理恢复请求，请稍候', duration: 1500
+              });
+              return;
+            }
+            action.dismiss();
+          },
+          onDisappear: (): void => { this.handleRecoverySheetDisappear(); }
+        })
+    }
+  }
+}
+
+@Entry
+@Component
+struct MoonlightAppCatalogPage {
+  build() {
+    Column() {
+      MoonlightAppCatalogSurface()
+    }.width('100%').height('100%')
   }
 }

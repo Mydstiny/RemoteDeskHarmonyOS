@@ -4,6 +4,8 @@ import {
   decodeRemoteCustomShortcuts,
   encodeRemoteCustomShortcuts,
   remoteCustomShortcutKeyOptions,
+  remoteCustomShortcutAvailableOnPlatform,
+  remoteCustomShortcutKeyAvailableOnPlatform,
   remoteCustomShortcutKeyGroupForKeyCode,
   remoteCustomShortcutLabel,
   remoteCustomShortcutLabelForPlatform,
@@ -64,6 +66,11 @@ export default function remoteCustomShortcutPolicyTest(): void {
       const macFunctionKeys = remoteCustomShortcutKeyOptions('functions', 'macos');
       expect(macFunctionKeys.length).assertEqual(20);
       expect(macFunctionKeys[19].label).assertEqual('F20');
+      expect(remoteCustomShortcutKeyAvailableOnPlatform(2823, 'macos')).assertTrue();
+      expect(remoteCustomShortcutKeyAvailableOnPlatform(2824, 'macos')).assertFalse();
+      const windowsF24 = { id: 'windows-f24', label: 'Ctrl + F24', keyCodes: [2072, 2827] };
+      expect(remoteCustomShortcutAvailableOnPlatform(windowsF24, 'windows')).assertTrue();
+      expect(remoteCustomShortcutAvailableOnPlatform(windowsF24, 'macos')).assertFalse();
       expect(remoteCustomShortcutKeyOptions('navigation').length).assertEqual(15);
       expect(remoteCustomShortcutKeyGroupForKeyCode(2043)).assertEqual('symbols');
       expect(remoteCustomShortcutKeyGroupForKeyCode(2049)).assertEqual('navigation');

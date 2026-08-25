@@ -83,6 +83,65 @@ constexpr bool moonlightProductTerminalInputMayBeStuck(
         (!teardownObserved || !localCleanupComplete || !remoteNeutral);
 }
 
+constexpr bool moonlightProductStopReachedTerminal(
+    MoonlightStopStatus status) noexcept {
+    // DriverFailure is still terminal: MoonlightSessionOwner has observed the
+    // terminal phase and reaped the exact owner before returning it. The
+    // failure remains visible in the receipt, but it must not keep the
+    // process-wide media/input owner occupied forever.
+    return status == MoonlightStopStatus::Stopped ||
+        status == MoonlightStopStatus::AlreadyTerminal ||
+        status == MoonlightStopStatus::DriverFailure;
+}
+
+constexpr std::uint64_t moonlightProductPresentedFrameProgress(
+    bool diagnosticsMatched, std::uint64_t acceptedVideoFrames,
+    std::uint64_t renderedOutputBuffers, std::uint64_t nativeImageFrames,
+    std::uint64_t rendererPresentedFrames) noexcept {
+    if (!diagnosticsMatched || acceptedVideoFrames == 0U ||
+        renderedOutputBuffers == 0U || nativeImageFrames == 0U ||
+        rendererPresentedFrames == 0U) {
+        return 0U;
+    }
+    // A decoded NativeImage is not proof that the current XComponent Surface
+    // actually presented it: the decoder callback counter advances even when
+    // the renderer rejects a stale generation or eglSwapBuffers() fails. Only
+    // the renderer acknowledgement may open a fresh presentation barrier.
+    return rendererPresentedFrames;
+}
+
+constexpr bool moonlightProductFirstFrameProven(
+    bool sourceFirstFrameReady, bool diagnosticsMatched,
+    std::uint64_t acceptedVideoFrames,
+    std::uint64_t renderedOutputBuffers, std::uint64_t nativeImageFrames,
+    std::uint64_t rendererPresentedFrames) noexcept {
+    return sourceFirstFrameReady ||
+        moonlightProductPresentedFrameProgress(
+            diagnosticsMatched, acceptedVideoFrames,
+            renderedOutputBuffers, nativeImageFrames,
+            rendererPresentedFrames) > 0U;
+}
+
+constexpr bool moonlightProductVideoReady(
+    bool sourceVideoReady, bool firstFrameProven) noexcept {
+    // A frame that has crossed the exact-session decoder, NativeImage, and
+    // renderer presentation fences is stronger evidence than the transient
+    // media-lane "started" flag. Some API 23 devices can publish that lane
+    // flag as false while the hardware pipeline is already presenting. Do not
+    // let the product coordinator discard the proven frame and fire its
+    // 30-second first-frame watchdog against a healthy stream.
+    return sourceVideoReady || firstFrameProven;
+}
+
+constexpr bool moonlightProductSessionFirstFrameReady(
+    bool sessionFirstFrameReady, bool presentationFrameReady) noexcept {
+    // Session admission is historical truth: once this exact launch has
+    // presented a frame it must not regress merely because its current
+    // Surface is suspended for background/PIP transfer. Fresh-Surface
+    // admission is represented separately by presentationFrameReady.
+    return sessionFirstFrameReady || presentationFrameReady;
+}
+
 struct MoonlightProductStreamStartResult final {
     bool accepted = false;
     std::string code = "invalid_request";
@@ -100,6 +159,7 @@ struct MoonlightProductStreamSnapshot final {
     bool controllerReady = false;
     bool physicalControllerReady = false;
     bool inputMayBeStuck = false;
+    bool presentationFrameReady = false;
     bool firstFrameReady = false;
     bool terminal = false;
     std::uint64_t lastSequence = 0U;
@@ -111,11 +171,23 @@ struct MoonlightProductStreamSnapshot final {
     std::uint64_t acceptedAudioPackets = 0U;
     std::uint64_t rejectedAudioPackets = 0U;
     std::uint64_t acceptedAudioBytes = 0U;
+    std::uint64_t acceptedInputEvents = 0U;
     std::uint64_t rejectedInputEvents = 0U;
+    std::size_t decoderQueueDepth = 0U;
+    std::uint64_t decoderInputDroppedFrames = 0U;
+    std::uint64_t decoderWaitKeyframeDrops = 0U;
+    std::uint64_t decoderInputTruncated = 0U;
+    std::uint64_t decoderRenderOutputFailures = 0U;
+    std::uint64_t decoderSurfaceUpdateFailures = 0U;
+    std::uint64_t decoderSurfaceCoalescedNotifications = 0U;
+    std::int64_t decoderCodecLatencyMs = 0;
+    std::int64_t decoderCodecLatencyMaxMs = 0;
+    bool decoderLowLatencyEnabled = false;
     std::int32_t streamWidth = 0;
     std::int32_t streamHeight = 0;
     std::int32_t targetFps = 0;
     std::int32_t configuredBitrateKbps = 0;
+    MoonlightStreamCodec codec = MoonlightStreamCodec::H264;
 };
 
 class MoonlightProductStreamingRuntime final {

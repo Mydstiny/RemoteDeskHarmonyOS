@@ -86,12 +86,37 @@ export function moonlightRuntimeContext(host: MoonlightHost, lease: AccountSessi
 }
 
 export function moonlightLaunchConfiguration(
-  settings: MoonlightSettings): MoonlightNativeLaunchConfiguration {
+  settings: MoonlightSettings, deviceWidth: number = 0,
+  deviceHeight: number = 0, decoderMaxWidth: number = 1920,
+  decoderMaxHeight: number = 1080): MoonlightNativeLaunchConfiguration {
   const video = settings.video;
   const audio = settings.audio;
   let width: number = 1920;
   let height: number = 1080;
-  if (video.resolutionMode === '720p') { width = 1280; height = 720; }
+  const adaptive: string = video.adaptiveResolution === undefined ?
+    (video.resolutionMode === 'host' ? 'host' : 'off') : video.adaptiveResolution;
+  if (adaptive === 'host' && video.adaptiveResolution === 'host') {
+    width = video.customWidth;
+    height = video.customHeight;
+  } else if (adaptive === 'device' && Number.isFinite(deviceWidth) && Number.isFinite(deviceHeight) &&
+      deviceWidth >= 320 && deviceHeight >= 240) {
+    // Device-adaptive resolution is a runtime property, not a durable custom
+    // resolution. Reusing customWidth/customHeight here lets a phone's stale
+    // 1920x1080 (or a cloud-synced value from another device) force a 16:9
+    // stream onto a 16:10 Pad and leaves contain bars on every edge.
+    const landscapeWidth: number = Math.max(deviceWidth, deviceHeight);
+    const landscapeHeight: number = Math.min(deviceWidth, deviceHeight);
+    const boundedDecoderWidth: number = Number.isSafeInteger(decoderMaxWidth) &&
+      decoderMaxWidth >= 320 ? Math.min(7680, decoderMaxWidth) : 1920;
+    const boundedDecoderHeight: number = Number.isSafeInteger(decoderMaxHeight) &&
+      decoderMaxHeight >= 240 ? Math.min(4320, decoderMaxHeight) : 1080;
+    const scale: number = Math.min(1, boundedDecoderWidth / landscapeWidth,
+      boundedDecoderHeight / landscapeHeight);
+    width = landscapeWidth * scale;
+    height = landscapeHeight * scale;
+    width = Math.floor(width / 2) * 2;
+    height = Math.floor(height / 2) * 2;
+  } else if (video.resolutionMode === '720p') { width = 1280; height = 720; }
   else if (video.resolutionMode === '1440p') { width = 2560; height = 1440; }
   else if (video.resolutionMode === '2160p') { width = 3840; height = 2160; }
   else if (video.resolutionMode === 'custom') {
@@ -117,7 +142,10 @@ export function moonlightLaunchConfiguration(
     surroundAudioInfo: surroundAudioInfo,
     remoteControllersBitmap: controllerBitmap,
     gamepadMask: controllerBitmap,
-    persistGamepads: true
+    persistGamepads: true,
+    videoCodec: video.codecPreference === 'hevc' ? 'hevc' :
+      video.codecPreference === 'av1' ? 'av1' : 'h264',
+    resolutionPolicy: adaptive === 'host' ? 'hostCapability' : 'exact'
   };
 }
 

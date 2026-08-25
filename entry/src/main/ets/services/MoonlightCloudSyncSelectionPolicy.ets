@@ -18,10 +18,14 @@ const MOONLIGHT_CLOUD_SYNC_SELECTABLE_SCOPES: MoonlightCloudSyncScope[] = [
   'settings', 'hosts', 'profiles'
 ];
 
-// A new owner starts with no Moonlight logical records selected. Physical
-// table registration is a separate optional gate and is also disabled by default.
+// Moonlight exposes one physical cloud category, not three independently
+// configurable record scopes. Keeping every portable record type selected as
+// one dependency-complete unit avoids host/profile skew and upgrades old
+// partial preferences without changing the separate physical table switch.
 export const MOONLIGHT_CLOUD_SYNC_SELECTION_DEFAULT:
-  MoonlightCloudSyncScope[] = [];
+  MoonlightCloudSyncScope[] = [
+    'settings', 'hosts', 'profiles'
+  ];
 
 export function moonlightCloudSyncScopes(): MoonlightCloudSyncScope[] {
   return MOONLIGHT_CLOUD_SYNC_SCOPES.slice();
@@ -29,6 +33,12 @@ export function moonlightCloudSyncScopes(): MoonlightCloudSyncScope[] {
 
 export function moonlightCloudSyncSelectableScopes(): MoonlightCloudSyncScope[] {
   return MOONLIGHT_CLOUD_SYNC_SELECTABLE_SCOPES.slice();
+}
+
+/** Canonical runtime selection for the single Moonlight cloud category. */
+export function moonlightForcedCloudSyncSelection():
+  MoonlightCloudSyncScope[] {
+  return MOONLIGHT_CLOUD_SYNC_SELECTION_DEFAULT.slice();
 }
 
 export function normalizeMoonlightCloudSyncSelection(

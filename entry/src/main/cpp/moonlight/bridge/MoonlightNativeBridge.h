@@ -92,6 +92,8 @@ REMOTEDESK_MOONLIGHT_BRIDGE_HIDDEN constexpr bool operator!=(
 }
 
 struct REMOTEDESK_MOONLIGHT_BRIDGE_HIDDEN MoonlightBridgeLaunchConfiguration final {
+    enum class VideoCodec : std::uint8_t { H264, Hevc, Av1 };
+    enum class ResolutionPolicy : std::uint8_t { Exact, HostCapability };
     std::uint32_t width = 1920;
     std::uint32_t height = 1080;
     std::uint32_t refreshRate = 60;
@@ -103,6 +105,8 @@ struct REMOTEDESK_MOONLIGHT_BRIDGE_HIDDEN MoonlightBridgeLaunchConfiguration fin
     std::uint32_t remoteControllersBitmap = 0;
     std::uint32_t gamepadMask = 0;
     bool persistGamepads = false;
+    VideoCodec videoCodec = VideoCodec::H264;
+    ResolutionPolicy resolutionPolicy = ResolutionPolicy::Exact;
 };
 
 struct REMOTEDESK_MOONLIGHT_BRIDGE_HIDDEN MoonlightBridgeRequest final {

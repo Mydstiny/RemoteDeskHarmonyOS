@@ -84,6 +84,7 @@ struct REMOTEDESK_MOONLIGHT_VIDEO_HIDDEN MoonlightOwnedVideoAccessUnit final {
 
 enum class MoonlightVideoSinkStatus : std::uint8_t {
     Accepted,
+    AcceptedNeedsIdr,
     Backpressure,
     NeedIdr,
     Stale,

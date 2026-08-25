@@ -1,6 +1,15 @@
 import { promptAction, router } from '@kit.ArkUI';
+import { common } from '@kit.AbilityKit';
 import { AppTheme, Palette, buildDark, buildLight } from '../common/Theme';
 import { MoonlightBrandIcon } from '../components/moonlight/MoonlightBrandIcon';
+import { LockGateResult, lockGateErrorMessage, showLockGate } from '../components/LockGate';
+import {
+  MoonlightAppCatalogSurface,
+  MoonlightCatalogLaunchHandoff,
+  presentMoonlightCatalogLaunchHandoff,
+  rejectMoonlightCatalogLaunchHandoff
+} from './MoonlightAppCatalogPage';
+import { MoonlightSettingsSurface } from './MoonlightSettingsPage';
 import { MoonlightHost } from '../model/MoonlightModels';
 import { CloudStore } from '../services/CloudStore';
 import {
@@ -19,6 +28,7 @@ import {
   MoonlightLocalHostMutationResult,
   MoonlightLocalHostService
 } from '../services/MoonlightLocalHostService';
+import { MoonlightHostService } from '../services/MoonlightHostService';
 import {
   MoonlightHostLocalView,
   MoonlightLocalViewService
@@ -37,6 +47,7 @@ struct MoonlightHostDetailPage {
   @StorageLink('accentColor') accentColor: string = '#007DFF';
   @StorageProp('topRectHeight') topRectHeight: number = 0;
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
+  @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
   @State hostId: string = '';
   @State host: MoonlightHost | null = null;
   @State paired: boolean = false;
@@ -46,6 +57,15 @@ struct MoonlightHostDetailPage {
   @State updatedAt: number = 0;
   @State showRenameEditor: boolean = false;
   @State renameValue: string = '';
+  @State showCatalogSheet: boolean = false;
+  @State catalogDismissAllowed: boolean = true;
+  @State showSettingsSheet: boolean = false;
+  @State settingsDirty: boolean = false;
+  @State sensitiveAccessGranted: boolean = false;
+  @State sensitiveAccessChecking: boolean = false;
+  private pendingCatalogNavigation: string = '';
+  private pendingCatalogLaunch: MoonlightCatalogLaunchHandoff | null = null;
+  private authorizedHostId: string = '';
   private readonly viewService: MoonlightLocalViewService =
     new MoonlightLocalViewService(CloudStore.getInstance());
   private readonly hostService: MoonlightLocalHostService =
@@ -68,11 +88,25 @@ struct MoonlightHostDetailPage {
     const route: MoonlightRouteIdentity = moonlightRouteIdentity(params);
     this.hostId = route.valid ? route.hostId : '';
     this.load();
+    if (this.host?.locked === true) { void this.ensureHostAccess(); }
   }
 
-  aboutToDisappear(): void { this.pageActive = false; }
+  aboutToDisappear(): void {
+    this.pageActive = false;
+    this.catalogDismissAllowed = true;
+    this.authorizedHostId = '';
+    this.sensitiveAccessGranted = false;
+    this.sensitiveAccessChecking = false;
+  }
 
-  onPageShow(): void { if (this.hostId !== '') { this.load(); } }
+  onPageShow(): void {
+    if (this.hostId !== '') {
+      this.load();
+      if (this.host?.locked === true && !this.sensitiveAccessGranted) {
+        void this.ensureHostAccess();
+      }
+    }
+  }
 
   private load(): void {
     if (this.hostId === '') { this.loadCode = 'invalid_route'; return; }
@@ -80,13 +114,13 @@ struct MoonlightHostDetailPage {
     const lease: AccountSessionLease | null = store.currentAccountLease();
     const selection: MoonlightDeletionSelectionSnapshot | null =
       lease === null ? null : store.selectionSnapshot(lease);
-    this.cloudSelected = selection !== null &&
-      (selection.physicalSelected || selection.selectedScopes.length > 0);
+    this.cloudSelected = selection !== null && selection.physicalSelected;
     const view: MoonlightHostLocalView = this.viewService.loadHost(this.hostId, Date.now());
     if (!view.ok || view.host === null) {
       this.loadCode = view.code;
       this.host = null;
       this.items = [];
+      this.sensitiveAccessGranted = false;
       return;
     }
     this.host = view.host;
@@ -94,6 +128,62 @@ struct MoonlightHostDetailPage {
     this.items = view.catalogItems;
     this.updatedAt = view.updatedAt;
     this.loadCode = view.code;
+    this.sensitiveAccessGranted = view.host.locked !== true ||
+      this.authorizedHostId === view.host.id;
+  }
+
+  private applyLatestView(view: MoonlightHostLocalView): boolean {
+    if (!view.ok || view.host === null || view.host.id !== this.hostId) { return false; }
+    this.host = view.host;
+    this.paired = view.paired;
+    this.items = view.catalogItems;
+    this.updatedAt = view.updatedAt;
+    this.loadCode = view.code;
+    return true;
+  }
+
+  /**
+   * The legacy route remains registered for old bookmarks and post-save
+   * handoffs, so it must enforce the same biometric boundary as HostList.
+   * Sensitive host fields are not rendered until this latest-record check has
+   * committed successfully.
+   */
+  private async ensureHostAccess(): Promise<boolean> {
+    if (!this.pageActive || this.hostId.trim() === '') { return false; }
+    const latest: MoonlightHostLocalView = this.viewService.loadHost(this.hostId, Date.now());
+    if (!this.applyLatestView(latest) || latest.host === null) {
+      this.sensitiveAccessGranted = false;
+      return false;
+    }
+    if (latest.host.locked !== true) {
+      this.authorizedHostId = '';
+      this.sensitiveAccessGranted = true;
+      return true;
+    }
+    if (this.authorizedHostId === latest.host.id) {
+      this.sensitiveAccessGranted = true;
+      return true;
+    }
+    if (this.sensitiveAccessChecking) { return false; }
+    this.sensitiveAccessChecking = true;
+    const gate: LockGateResult = await showLockGate(latest.host.displayName, 'biometric');
+    this.sensitiveAccessChecking = false;
+    if (!this.pageActive || this.hostId !== latest.host.id) { return false; }
+    if (!gate.ok) {
+      this.sensitiveAccessGranted = false;
+      const message: string = lockGateErrorMessage(gate);
+      if (message !== '') { promptAction.showToast({ message: message, duration: 2000 }); }
+      return false;
+    }
+    const confirmed: MoonlightHostLocalView =
+      this.viewService.loadHost(this.hostId, Date.now());
+    if (!this.applyLatestView(confirmed) || confirmed.host === null) {
+      this.sensitiveAccessGranted = false;
+      return false;
+    }
+    this.authorizedHostId = confirmed.host.id;
+    this.sensitiveAccessGranted = true;
+    return true;
   }
 
   private addressLabel(): string {
@@ -107,27 +197,133 @@ struct MoonlightHostDetailPage {
     return new Date(this.updatedAt).toLocaleString();
   }
 
-  private openCatalog(): void {
-    const params: Record<string, Object> | null = moonlightHostRouteParams(this.hostId);
-    if (params !== null) {
-      router.pushUrl({ url: 'pages/MoonlightAppCatalogPage', params: params });
+  private async openCatalog(): Promise<void> {
+    if (!await this.ensureHostAccess() || this.host === null || this.hostId.trim() === '') { return; }
+    this.catalogDismissAllowed = true;
+    this.showCatalogSheet = true;
+  }
+
+  private closeCatalogSheet(navigation: string = ''): void {
+    this.pendingCatalogNavigation = navigation;
+    this.showCatalogSheet = false;
+  }
+
+  private handleCatalogSheetDisappear(): void {
+    const navigation: string = this.pendingCatalogNavigation;
+    const launch: MoonlightCatalogLaunchHandoff | null = this.pendingCatalogLaunch;
+    this.pendingCatalogNavigation = '';
+    this.pendingCatalogLaunch = null;
+    if (navigation === 'launch' && launch !== null) {
+      setTimeout((): void => { void this.presentCatalogLaunch(launch); }, 0);
+      return;
+    }
+    if (navigation === '' || !this.pageActive) { return; }
+    setTimeout((): void => {
+      if (!this.pageActive) { return; }
+      if (navigation === 'settings') { void this.openSettings(); }
+    }, 0);
+  }
+
+  private requestCatalogLaunch(handoff: MoonlightCatalogLaunchHandoff): void {
+    if (!this.showCatalogSheet || handoff.hostId !== this.hostId) {
+      this.rejectCatalogLaunch(handoff);
+      return;
+    }
+    this.pendingCatalogLaunch = handoff;
+    this.closeCatalogSheet('launch');
+  }
+
+  private rejectCatalogLaunch(handoff: MoonlightCatalogLaunchHandoff): void {
+    try {
+      const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+      rejectMoonlightCatalogLaunchHandoff(context, handoff);
+    } catch (_error) {
+      // The native owner must still be released if this legacy page loses its
+      // UI context during the handoff.
+      new MoonlightHostService().disposeOwner(handoff.ownerToken);
     }
   }
 
-  private openSettings(): void {
-    const params: Record<string, Object> | null = moonlightHostRouteParams(this.hostId);
-    if (params !== null) {
-      router.pushUrl({ url: 'pages/MoonlightSettingsPage', params: params });
+  private async presentCatalogLaunch(handoff: MoonlightCatalogLaunchHandoff): Promise<void> {
+    let context: common.UIAbilityContext;
+    try {
+      context = getContext(this) as common.UIAbilityContext;
+    } catch (_error) {
+      new MoonlightHostService().disposeOwner(handoff.ownerToken);
+      return;
+    }
+    if (!this.pageActive) {
+      rejectMoonlightCatalogLaunchHandoff(context, handoff);
+      return;
+    }
+    const opened: boolean = await presentMoonlightCatalogLaunchHandoff(
+      context, this.isDesktopDevice, handoff);
+    if (opened) { return; }
+    rejectMoonlightCatalogLaunchHandoff(context, handoff);
+    if (this.pageActive) {
+      promptAction.showToast({ message: '无法打开 Moonlight 串流窗口，启动租约已安全释放', duration: 2200 });
     }
   }
 
-  private beginRename(): void {
-    if (this.host === null) { return; }
+  private async openSettings(): Promise<void> {
+    if (!await this.ensureHostAccess() ||
+        moonlightHostRouteParams(this.hostId) === null || this.host === null) { return; }
+    this.showSettingsSheet = true;
+  }
+
+  private closeSettingsSheet(): void {
+    if (!this.settingsDirty) {
+      this.showSettingsSheet = false;
+      return;
+    }
+    promptAction.showDialog({
+      title: '放弃未保存的 Moonlight 设置？',
+      message: '当前修改只在本地草稿中，放弃后不会写入 Moonlight 本地记录。',
+      buttons: [{ text: '继续编辑', color: this.pal().text2 },
+        { text: '放弃修改', color: this.pal().danger }]
+    }).then((result: Object): void => {
+      const dialogResult: Record<string, number> = result as Record<string, number>;
+      if (dialogResult['index'] === 1) {
+        this.settingsDirty = false;
+        this.showSettingsSheet = false;
+      }
+    });
+  }
+
+  @Builder private catalogSheet() {
+    MoonlightAppCatalogSurface({
+      embedded: true,
+      requestedHostId: this.hostId,
+      onClose: (): void => { this.closeCatalogSheet(); },
+      onOpenSettings: (): void => { this.closeCatalogSheet('settings'); },
+      onOpenHostDetail: (): void => { this.closeCatalogSheet(); },
+      onDismissAllowedChanged: (allowed: boolean): void => {
+        this.catalogDismissAllowed = allowed;
+      },
+      onLaunchRequested: (handoff: MoonlightCatalogLaunchHandoff): void => {
+        this.requestCatalogLaunch(handoff);
+      }
+    })
+  }
+
+  @Builder private settingsSheet() {
+    MoonlightSettingsSurface({
+      embedded: true,
+      requestedSection: 'video',
+      requestedHostId: this.hostId,
+      onClose: (): void => { this.closeSettingsSheet(); },
+      onDirtyChanged: (dirty: boolean): void => { this.settingsDirty = dirty; }
+    })
+  }
+
+  private async beginRename(): Promise<void> {
+    if (!await this.ensureHostAccess() || this.host === null) { return; }
     this.renameValue = this.host.displayName;
     this.showRenameEditor = true;
   }
 
-  private saveRename(): void {
+  private async saveRename(): Promise<void> {
+    if (!await this.ensureHostAccess()) { return; }
     const result: MoonlightLocalHostMutationResult =
       this.hostService.updateDisplayName(this.hostId, this.renameValue, Date.now());
     if (!result.ok) {
@@ -139,8 +335,8 @@ struct MoonlightHostDetailPage {
     promptAction.showToast({ message: '主机名称已保存', duration: 1600 });
   }
 
-  private requestDelete(): void {
-    if (this.host === null) { return; }
+  private async requestDelete(): Promise<void> {
+    if (!await this.ensureHostAccess() || this.host === null) { return; }
     const lease: AccountSessionLease | null = this.deletionRuntime.currentLease();
     const capturedHostId: string = this.hostId;
     if (lease === null || !this.deletionRuntime.isLeaseCurrent(lease) ||
@@ -214,8 +410,8 @@ struct MoonlightHostDetailPage {
     router.back();
   }
 
-  private requestUnpair(): void {
-    if (this.host === null || !this.paired) { return; }
+  private async requestUnpair(): Promise<void> {
+    if (!await this.ensureHostAccess() || this.host === null || !this.paired) { return; }
     const lease: AccountSessionLease | null = this.deletionRuntime.currentLease();
     const capturedHostId: string = this.hostId;
     if (lease === null || !this.deletionRuntime.isLeaseCurrent(lease)) {
@@ -290,7 +486,7 @@ struct MoonlightHostDetailPage {
       }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
       Button() { SymbolGlyph($r('sys.symbol.gearshape_fill')).fontSize(19).fontColor([this.pal().text]) }
         .width(42).height(42).borderRadius(21).backgroundColor(this.pal().surface)
-        .enabled(this.host !== null).onClick((): void => { this.openSettings(); })
+        .enabled(this.host !== null).onClick((): void => { void this.openSettings(); })
         .accessibilityText('Moonlight 设置')
     }.width('100%').padding({ left: 18, right: 18, top: this.topSafeHeight() + 8, bottom: 12 })
   }
@@ -341,12 +537,6 @@ struct MoonlightHostDetailPage {
           .padding({ left: 9, right: 9, top: 5, bottom: 5 })
           .backgroundColor(this.accentColor + '16').borderRadius(11)
           .margin({ right: 6, bottom: 6 })
-        Text(this.paired ? '已配对' : '未配对')
-          .fontSize(10).fontColor(this.paired ? this.pal().success : this.pal().editColor)
-          .fontWeight(FontWeight.Medium)
-          .padding({ left: 9, right: 9, top: 5, bottom: 5 })
-          .backgroundColor((this.paired ? this.pal().success : this.pal().editColor) + '16')
-          .borderRadius(11).margin({ right: 6, bottom: 6 })
         Text(this.items.length.toString() + ' 个缓存应用')
           .fontSize(10).fontColor(this.pal().text2).fontWeight(FontWeight.Medium)
           .padding({ left: 9, right: 9, top: 5, bottom: 5 })
@@ -375,25 +565,25 @@ struct MoonlightHostDetailPage {
         Grid() {
           GridItem() {
             this.quickAction($r('sys.symbol.list_bullet'), '应用', '刷新与启动应用', true,
-              (): void => { this.openCatalog(); })
+              (): void => { void this.openCatalog(); })
           }
           GridItem() {
             this.quickAction($r('sys.symbol.square_and_pencil'), '重命名', '修改本地显示名称', true,
-              (): void => { this.beginRename(); })
+              (): void => { void this.beginRename(); })
           }
           GridItem() {
             this.quickAction($r('sys.symbol.gearshape_fill'), '设置', 'Moonlight 专属设置', true,
-              (): void => { this.openSettings(); })
+              (): void => { void this.openSettings(); })
           }
           if (this.paired) {
             GridItem() {
               this.quickAction($r('sys.symbol.lock_open'), '解除配对', '保留主机与应用配置', true,
-                (): void => { this.requestUnpair(); })
+                (): void => { void this.requestUnpair(); })
             }
           }
           GridItem() {
             this.quickAction($r('sys.symbol.ohos_trash'), '删除', '删除主机及关联配置', true,
-              (): void => { this.requestDelete(); })
+              (): void => { void this.requestDelete(); })
           }
         }.columnsTemplate(this.breakpoint === 'sm' ? '1fr 1fr' : '1fr 1fr 1fr')
           .columnsGap(9).rowsGap(9).width('100%')
@@ -413,7 +603,7 @@ struct MoonlightHostDetailPage {
               Button('保存').layoutWeight(1).height(42).borderRadius(12)
                 .backgroundColor(this.accentColor).fontColor(Color.White)
                 .enabled(this.renameValue.trim().length > 0 && this.renameValue.trim().length <= 128)
-                .onClick((): void => { this.saveRename(); })
+                .onClick((): void => { void this.saveRename(); })
             }.width('100%').margin({ top: 12 })
           }.width('100%').padding(16).backgroundColor(this.pal().card).borderRadius(18)
             .border({ width: 0.5, color: this.pal().cardBorder }).margin({ top: 12 })
@@ -428,7 +618,7 @@ struct MoonlightHostDetailPage {
           }.alignItems(HorizontalAlign.Start).layoutWeight(1)
           Button('查看全部').height(36).fontSize(12).borderRadius(12)
             .backgroundColor(this.accentColor).fontColor(Color.White)
-            .onClick((): void => { this.openCatalog(); })
+            .onClick((): void => { void this.openCatalog(); })
         }.width('100%').margin({ top: 24, bottom: 10 })
 
         if (this.items.length === 0) {
@@ -480,9 +670,56 @@ struct MoonlightHostDetailPage {
           Button('返回').height(42).width(160).borderRadius(12).backgroundColor(this.accentColor)
             .fontColor(Color.White).margin({ top: 18 }).onClick((): void => { router.back(); })
         }.layoutWeight(1).width('100%').justifyContent(FlexAlign.Center)
+      } else if (this.host.locked === true && !this.sensitiveAccessGranted) {
+        Column() {
+          SymbolGlyph($r('sys.symbol.ohos_lock')).fontSize(42)
+            .fontColor([this.accentColor])
+          Text('此 Moonlight 主机已锁定').fontSize(17).fontWeight(FontWeight.Bold)
+            .fontColor(this.pal().text).margin({ top: 14 })
+          Text('验证身份后才会显示地址、应用目录和主机操作')
+            .fontSize(11).fontColor(this.pal().text3).margin({ top: 6 })
+          Button(this.sensitiveAccessChecking ? '正在验证…' : '验证身份')
+            .height(42).width(160).borderRadius(12).backgroundColor(this.accentColor)
+            .fontColor(Color.White).enabled(!this.sensitiveAccessChecking)
+            .margin({ top: 18 }).onClick((): void => { void this.ensureHostAccess(); })
+        }.layoutWeight(1).width('100%').justifyContent(FlexAlign.Center)
       } else {
         this.content()
       }
     }.width('100%').height('100%').backgroundColor(this.pal().bg)
+      .bindSheet($$this.showCatalogSheet, this.catalogSheet(), {
+        height: SheetSize.LARGE,
+        preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
+        dragBar: this.breakpoint === 'sm',
+        backgroundColor: this.pal().sheetBg,
+        blurStyle: BlurStyle.NONE,
+        showClose: false,
+        maskColor: 'rgba(0,0,0,0.4)',
+        onWillDismiss: (action: DismissSheetAction): void => {
+          if (!this.catalogDismissAllowed) { return; }
+          this.showCatalogSheet = false;
+          action.dismiss();
+        },
+        onDisappear: (): void => {
+          this.catalogDismissAllowed = true;
+          this.handleCatalogSheetDisappear();
+        }
+      })
+      .bindSheet($$this.showSettingsSheet, this.settingsSheet(), {
+        height: SheetSize.LARGE,
+        preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
+        dragBar: this.breakpoint === 'sm',
+        backgroundColor: this.pal().sheetBg,
+        blurStyle: BlurStyle.NONE,
+        showClose: false,
+        maskColor: 'rgba(0,0,0,0.4)',
+        onWillDismiss: (action: DismissSheetAction): void => {
+          if (!this.settingsDirty) { action.dismiss(); }
+        },
+        onDisappear: (): void => {
+          this.showSettingsSheet = false;
+          this.settingsDirty = false;
+        }
+      })
   }
 }

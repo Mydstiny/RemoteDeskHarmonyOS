@@ -448,9 +448,10 @@ const GUIDE_LESSONS: GuideLesson[] = [
   },
   {
     id: 'moonlight-control', protocol: 'moonlight', devices: TOUCH_DEVICES,
-    title: 'Moonlight 触控、键盘与虚拟手柄', summary: '移动设备的三类输入',
+    title: 'Moonlight 键鼠、触控板与虚拟手柄', summary: '移动设备的自适应输入',
     steps: [
-      '从串流顶部或贴边工具栏打开控制中心，切换直接触控或触控板。',
+      '从串流顶部或贴边工具栏打开控制中心，切换自适应、键鼠或虚拟触控板。',
+      '自适应模式会在触摸画面时使用虚拟触控板，在实体键盘、鼠标或触控板活动时切回键鼠。',
       '键盘入口用于文本与常用按键；修饰键柄可发送 Ctrl、Alt、Shift、Windows 和组合键。',
       '需要游戏控制时打开虚拟手柄；编辑模式可调整布局，完成后退出编辑再开始输入。',
       '连接实体手柄后优先使用物理通道；切换输入方式时先松开正在按住的按键。'

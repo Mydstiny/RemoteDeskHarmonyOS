@@ -48,10 +48,29 @@ set(OPENSSL_CRYPTO_LIBRARY
     "${REMOTEDESK_MOONLIGHT_OPENSSL_CRYPTO_LIBRARY}")
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
+# moonlight-common-c's Debug mode is a protocol-validation harness rather than
+# a shippable diagnostic build: it turns remote-packet assertions into process
+# aborts and deliberately drops audio FEC shards to validate reconstruction.
+# A debug Harmony HAP must keep our adapter/runtime diagnostics without making
+# ordinary UDP input capable of aborting the whole application, so isolate the
+# immutable vendor subgraph to its production Release semantics.
+set(REMOTEDESK_MOONLIGHT_PARENT_BUILD_TYPE "${CMAKE_BUILD_TYPE}")
+set(CMAKE_BUILD_TYPE Release)
+
 add_subdirectory(
     "${REMOTEDESK_MOONLIGHT_UPSTREAM_DIR}"
     "${REMOTEDESK_MOONLIGHT_UPSTREAM_BINARY_DIR}"
 )
+set(CMAKE_BUILD_TYPE "${REMOTEDESK_MOONLIGHT_PARENT_BUILD_TYPE}")
+unset(REMOTEDESK_MOONLIGHT_PARENT_BUILD_TYPE)
+
+get_target_property(REMOTEDESK_MOONLIGHT_COMMON_DEFINITIONS
+    moonlight-common-c COMPILE_DEFINITIONS)
+if("LC_DEBUG" IN_LIST REMOTEDESK_MOONLIGHT_COMMON_DEFINITIONS OR
+   NOT "NDEBUG" IN_LIST REMOTEDESK_MOONLIGHT_COMMON_DEFINITIONS)
+    message(FATAL_ERROR
+        "Moonlight common-c must use production remote-input semantics")
+endif()
 
 get_target_property(REMOTEDESK_MOONLIGHT_COMMON_TARGET_TYPE
     moonlight-common-c TYPE)

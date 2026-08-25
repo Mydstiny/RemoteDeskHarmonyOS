@@ -19,6 +19,7 @@ import {
   MoonlightSessionRecoveryPreferenceRead,
   MoonlightSessionRecoveryStore,
   moonlightSessionRecoveryBinding,
+  moonlightSessionRecoveryHostPreferenceKey,
   moonlightSessionRecoveryPreferenceKey,
   setMoonlightSessionRecoveryPreferenceAdapterForTest
 } from '../main/ets/services/MoonlightSessionRecoveryStore';
@@ -59,7 +60,14 @@ class MemoryRecoveryPreferences implements MoonlightSessionRecoveryPreferenceAda
     return true;
   }
 
-  raw(binding: MoonlightSessionRecoveryBinding): string {
+  raw(binding: MoonlightSessionRecoveryBinding,
+    hostId: string = 'host-a'): string {
+    return this.values.get(this.composite(
+      MOONLIGHT_SESSION_RECOVERY_PREFERENCES_NAME,
+      moonlightSessionRecoveryHostPreferenceKey(binding, hostId))) || '';
+  }
+
+  legacyRaw(binding: MoonlightSessionRecoveryBinding): string {
     return this.values.get(this.composite(
       MOONLIGHT_SESSION_RECOVERY_PREFERENCES_NAME,
       moonlightSessionRecoveryPreferenceKey(binding))) || '';
@@ -191,18 +199,20 @@ export default function moonlightSessionRecoveryPolicyTest(): void {
       (): void => {
         const firstLease: AccountSessionLease = lease('owner-a', 'store-a.db', 1);
         const store: MoonlightSessionRecoveryStore = new MoonlightSessionRecoveryStore();
-        expect(store.bind(context, firstLease).code).assertEqual('absent');
+        expect(store.bind(context, firstLease, 'host-a').code).assertEqual('absent');
         const created = store.begin({
           sessionId: '00112233445566778899aabbccddeeff',
           hostId: 'host-a', profileId: '', appId: '7'
         }, 1000);
         expect(created !== null).assertTrue();
         const rebound: MoonlightSessionRecoveryStore = new MoonlightSessionRecoveryStore();
-        const read = rebound.bind(context, lease('owner-a', 'store-a.db', 8));
+        const read = rebound.bind(
+          context, lease('owner-a', 'store-a.db', 8), 'host-a');
         expect(read.code).assertEqual('ready');
         expect(read.marker?.storeGenerationAtLaunch).assertEqual(1);
         const other: MoonlightSessionRecoveryStore = new MoonlightSessionRecoveryStore();
-        expect(other.bind(context, lease('owner-b', 'store-a.db', 8)).code)
+        expect(other.bind(
+          context, lease('owner-b', 'store-a.db', 8), 'host-a').code)
           .assertEqual('absent');
       });
 
@@ -212,7 +222,7 @@ export default function moonlightSessionRecoveryPolicyTest(): void {
         const binding: MoonlightSessionRecoveryBinding =
           moonlightSessionRecoveryBinding(currentLease);
         const store: MoonlightSessionRecoveryStore = new MoonlightSessionRecoveryStore();
-        store.bind(context, currentLease);
+        store.bind(context, currentLease, 'host-a');
         const created = store.begin({
           sessionId: '00112233445566778899aabbccddeeff',
           hostId: 'host-a', profileId: '', appId: '7'
@@ -228,12 +238,14 @@ export default function moonlightSessionRecoveryPolicyTest(): void {
         expect(store.snapshot().marker?.inputMayBeStuck).assertFalse();
 
         adapter = new MemoryRecoveryPreferences();
-        const key: string = moonlightSessionRecoveryPreferenceKey(binding);
+        const key: string = moonlightSessionRecoveryHostPreferenceKey(
+          binding, 'host-a');
         adapter.values.set(MOONLIGHT_SESSION_RECOVERY_PREFERENCES_NAME + '|' + key,
           '{corrupt');
         setMoonlightSessionRecoveryPreferenceAdapterForTest(adapter);
         const corrupt: MoonlightSessionRecoveryStore = new MoonlightSessionRecoveryStore();
-        expect(corrupt.bind(context, currentLease).code).assertEqual('corrupt');
+        expect(corrupt.bind(context, currentLease, 'host-a').code)
+          .assertEqual('corrupt');
         expect(corrupt.begin({
           sessionId: 'ffeeddccbbaa99887766554433221100',
           hostId: 'host-a', profileId: '', appId: '7'
@@ -251,7 +263,8 @@ export default function moonlightSessionRecoveryPolicyTest(): void {
         const tooNew: Record<string, Object> = JSON.parse(
           encodeMoonlightSessionRecoveryMarker(marker(binding))) as Record<string, Object>;
         tooNew['markerVersion'] = MOONLIGHT_SESSION_RECOVERY_MARKER_VERSION + 1;
-        const key: string = moonlightSessionRecoveryPreferenceKey(binding);
+        const key: string = moonlightSessionRecoveryHostPreferenceKey(
+          binding, 'host-a');
         adapter.values.set(MOONLIGHT_SESSION_RECOVERY_PREFERENCES_NAME + '|' + key,
           JSON.stringify(tooNew));
         const foreignBinding: MoonlightSessionRecoveryBinding =
@@ -261,12 +274,73 @@ export default function moonlightSessionRecoveryPolicyTest(): void {
           '{foreign-corrupt');
 
         const store: MoonlightSessionRecoveryStore = new MoonlightSessionRecoveryStore();
-        expect(store.bind(context, currentLease).code).assertEqual('too_new');
+        expect(store.bind(context, currentLease, 'host-a').code)
+          .assertEqual('too_new');
         expect(store.clear()).assertFalse();
         expect(adapter.raw(binding).length > 0).assertTrue();
         expect(store.clearUnreadable()).assertTrue();
         expect(adapter.raw(binding)).assertEqual('');
-        expect(adapter.raw(foreignBinding)).assertEqual('{foreign-corrupt');
+        expect(adapter.legacyRaw(foreignBinding)).assertEqual('{foreign-corrupt');
+      });
+
+    it('migrates_only_the_matching_legacy_host_and_never_blocks_another_host', 0,
+      (): void => {
+        const currentLease: AccountSessionLease = lease();
+        const binding: MoonlightSessionRecoveryBinding =
+          moonlightSessionRecoveryBinding(currentLease);
+        const legacy: MoonlightSessionRecoveryMarker = marker(binding);
+        adapter.values.set(
+          MOONLIGHT_SESSION_RECOVERY_PREFERENCES_NAME + '|' +
+            moonlightSessionRecoveryPreferenceKey(binding),
+          encodeMoonlightSessionRecoveryMarker(legacy));
+
+        const otherHost: MoonlightSessionRecoveryStore =
+          new MoonlightSessionRecoveryStore();
+        expect(otherHost.bind(context, currentLease, 'host-b').code)
+          .assertEqual('absent');
+        expect(otherHost.begin({
+          sessionId: 'ffeeddccbbaa99887766554433221100',
+          hostId: 'host-b', profileId: '', appId: '9'
+        }, 1100) !== null).assertTrue();
+        expect(adapter.legacyRaw(binding).length > 0).assertTrue();
+
+        const matchingHost: MoonlightSessionRecoveryStore =
+          new MoonlightSessionRecoveryStore();
+        const migrated = matchingHost.bind(context, currentLease, 'host-a');
+        expect(migrated.code).assertEqual('ready');
+        expect(migrated.marker?.hostId).assertEqual('host-a');
+        expect(adapter.raw(binding, 'host-a').length > 0).assertTrue();
+        expect(adapter.raw(binding, 'host-b').length > 0).assertTrue();
+        expect(adapter.legacyRaw(binding)).assertEqual('');
+      });
+
+    it('clears_a_matching_legacy_shadow_before_retiring_the_v2_host_marker', 0,
+      (): void => {
+        const currentLease: AccountSessionLease = lease();
+        const binding: MoonlightSessionRecoveryBinding =
+          moonlightSessionRecoveryBinding(currentLease);
+        const legacy: MoonlightSessionRecoveryMarker = marker(binding);
+        adapter.values.set(
+          MOONLIGHT_SESSION_RECOVERY_PREFERENCES_NAME + '|' +
+            moonlightSessionRecoveryPreferenceKey(binding),
+          encodeMoonlightSessionRecoveryMarker(legacy));
+        adapter.failRemove = true;
+        const store: MoonlightSessionRecoveryStore =
+          new MoonlightSessionRecoveryStore();
+        expect(store.bind(context, currentLease, 'host-a').code)
+          .assertEqual('ready');
+        expect(adapter.raw(binding, 'host-a').length > 0).assertTrue();
+        expect(adapter.legacyRaw(binding).length > 0).assertTrue();
+
+        adapter.failRemove = false;
+        expect(store.clear(legacy.sessionId)).assertTrue();
+        expect(adapter.raw(binding, 'host-a')).assertEqual('');
+        expect(adapter.legacyRaw(binding)).assertEqual('');
+
+        const rebound: MoonlightSessionRecoveryStore =
+          new MoonlightSessionRecoveryStore();
+        expect(rebound.bind(context, currentLease, 'host-a').code)
+          .assertEqual('absent');
       });
 
     it('clears_only_after_an_explicit_clean_typed_native_terminal', 0, (): void => {
@@ -274,7 +348,7 @@ export default function moonlightSessionRecoveryPolicyTest(): void {
       const binding: MoonlightSessionRecoveryBinding =
         moonlightSessionRecoveryBinding(currentLease);
       const store: MoonlightSessionRecoveryStore = new MoonlightSessionRecoveryStore();
-      expect(store.bind(context, currentLease).code).assertEqual('absent');
+      expect(store.bind(context, currentLease, 'host-a').code).assertEqual('absent');
       const created: MoonlightSessionRecoveryMarker = store.begin({
         sessionId: '00112233445566778899aabbccddeeff',
         hostId: 'host-a', profileId: '', appId: '7'
@@ -303,7 +377,7 @@ export default function moonlightSessionRecoveryPolicyTest(): void {
       const binding: MoonlightSessionRecoveryBinding =
         moonlightSessionRecoveryBinding(currentLease);
       const store: MoonlightSessionRecoveryStore = new MoonlightSessionRecoveryStore();
-      store.bind(context, currentLease);
+      store.bind(context, currentLease, 'host-a');
       const created: MoonlightSessionRecoveryMarker = store.begin({
         sessionId: '00112233445566778899aabbccddeeff',
         hostId: 'host-a', profileId: '', appId: '7'
@@ -336,7 +410,7 @@ export default function moonlightSessionRecoveryPolicyTest(): void {
         const binding: MoonlightSessionRecoveryBinding =
           moonlightSessionRecoveryBinding(currentLease);
         const store: MoonlightSessionRecoveryStore = new MoonlightSessionRecoveryStore();
-        store.bind(context, currentLease);
+        store.bind(context, currentLease, 'host-a');
         const created: MoonlightSessionRecoveryMarker = store.begin({
           sessionId: '00112233445566778899aabbccddeeff',
           hostId: 'host-a', profileId: '', appId: '7'
@@ -373,7 +447,7 @@ export default function moonlightSessionRecoveryPolicyTest(): void {
       const binding: MoonlightSessionRecoveryBinding =
         moonlightSessionRecoveryBinding(currentLease);
       const store: MoonlightSessionRecoveryStore = new MoonlightSessionRecoveryStore();
-      store.bind(context, currentLease);
+      store.bind(context, currentLease, 'host-a');
       const created: MoonlightSessionRecoveryMarker = store.begin({
         sessionId: 'ffeeddccbbaa99887766554433221100',
         hostId: 'host-a', profileId: '', appId: '7'
@@ -401,7 +475,7 @@ export default function moonlightSessionRecoveryPolicyTest(): void {
       const binding: MoonlightSessionRecoveryBinding =
         moonlightSessionRecoveryBinding(currentLease);
       const store: MoonlightSessionRecoveryStore = new MoonlightSessionRecoveryStore();
-      store.bind(context, currentLease);
+      store.bind(context, currentLease, 'host-a');
       const created: MoonlightSessionRecoveryMarker = store.begin({
         sessionId: '0123456789abcdeffedcba9876543210',
         hostId: 'host-a', profileId: '', appId: '7'

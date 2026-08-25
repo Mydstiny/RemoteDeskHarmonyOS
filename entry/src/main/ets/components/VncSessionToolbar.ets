@@ -1,4 +1,15 @@
+import { curves } from '@kit.ArkUI';
 import { OverlayPlacement, emptyOverlayPlacement } from '../services/RemoteOverlayViewportPolicy';
+import {
+  REMOTE_SESSION_COLLAPSED_RAIL_BACKGROUND,
+  REMOTE_SESSION_COLLAPSED_RAIL_BORDER,
+  REMOTE_SESSION_COLLAPSED_RAIL_HEIGHT,
+  REMOTE_SESSION_COLLAPSED_RAIL_ICON,
+  REMOTE_SESSION_COLLAPSED_RAIL_TOUCH_WIDTH,
+  REMOTE_SESSION_COLLAPSED_RAIL_WIDTH,
+  remoteSessionRailDragOffset,
+  remoteSessionRailShouldCollapse
+} from '../services/RemoteSessionTopBarPolicy';
 
 export interface VncSessionToolbarActions {
   onExpand: () => void;
@@ -28,6 +39,7 @@ export struct VncSessionToolbar {
   @Prop diagnosticsEnabled: boolean = false;
   @Prop collapsed: boolean = false;
   @Prop placement: OverlayPlacement = emptyOverlayPlacement('vnc-toolbar');
+  @State private railSwipeX: number = 0;
   placementActions: VncSessionToolbarPlacementActions = {
     onDrag: (_offsetX: number, _offsetY: number): void => {}
   };
@@ -66,25 +78,59 @@ export struct VncSessionToolbar {
     return this.placement.railRect.height > 0 ? this.placement.railRect.height : fallback;
   }
 
+  private resetRailSwipe(): void {
+    animateTo({ duration: 220, curve: curves.responsiveSpringMotion() }, (): void => {
+      this.railSwipeX = 0;
+    });
+  }
+
+  private updateRailSwipe(event: GestureEvent): void {
+    if (this.placement.side !== 'right' ||
+        Math.abs(event.offsetX) < Math.abs(event.offsetY)) { return; }
+    this.railSwipeX = remoteSessionRailDragOffset(event.offsetX);
+  }
+
+  private finishRailSwipe(event: GestureEvent): void {
+    const collapse: boolean = this.placement.side === 'right' &&
+      remoteSessionRailShouldCollapse(event.offsetX, event.velocityX);
+    this.resetRailSwipe();
+    if (collapse) {
+      animateTo({ duration: 180, curve: curves.responsiveSpringMotion() }, (): void => {
+        this.actions.onCollapse();
+      });
+      return;
+    }
+    this.placementActions.onDrag(event.offsetX, event.offsetY);
+  }
+
   @Builder
   private mobileCollapsedRail() {
     Stack() {
       Row() {
         SymbolGlyph(this.placement.side === 'left' ?
           $r('sys.symbol.chevron_right') : $r('sys.symbol.chevron_left'))
-          .fontSize(18).fontColor(['#444444'])
+          .fontSize(15).fontColor([REMOTE_SESSION_COLLAPSED_RAIL_ICON])
       }
-      .width(30).height(this.mobileRailHeight(72))
+      .width(REMOTE_SESSION_COLLAPSED_RAIL_WIDTH)
+      .height(this.mobileRailHeight(REMOTE_SESSION_COLLAPSED_RAIL_HEIGHT))
       .justifyContent(FlexAlign.Center)
-      .backgroundColor('rgba(255,255,255,0.92)')
+      .backgroundColor(REMOTE_SESSION_COLLAPSED_RAIL_BACKGROUND)
+      .backdropBlur(16)
+      .border({ width: 0.5, color: REMOTE_SESSION_COLLAPSED_RAIL_BORDER })
       .borderRadius(this.placement.side === 'left' ?
         { topLeft: 0, topRight: 10, bottomLeft: 0, bottomRight: 10 } :
         { topLeft: 10, topRight: 0, bottomLeft: 10, bottomRight: 0 })
-      .shadow({ radius: 8, color: 'rgba(0,0,0,0.22)',
-        offsetX: this.placement.side === 'left' ? 2 : -2 })
-      .position({ x: this.placement.side === 'left' ? 0 : 14, y: 0 })
+      .shadow({ radius: 6, color: 'rgba(0,0,0,0.14)',
+        offsetX: this.placement.side === 'left' ? 1 : -1 })
+      .position({
+        x: this.placement.side === 'left' ? 0 :
+          REMOTE_SESSION_COLLAPSED_RAIL_TOUCH_WIDTH -
+            REMOTE_SESSION_COLLAPSED_RAIL_WIDTH,
+        y: 0
+      })
     }
-    .width(44).height(this.mobileRailHeight(72))
+    .width(REMOTE_SESSION_COLLAPSED_RAIL_TOUCH_WIDTH)
+    .height(this.mobileRailHeight(REMOTE_SESSION_COLLAPSED_RAIL_HEIGHT))
     .position({ x: this.placement.railRect.x, y: this.placement.railRect.y })
     .gesture(PanGesture({ fingers: 1, distance: 5 })
       .onActionEnd((event: GestureEvent): void => {
@@ -148,10 +194,13 @@ export struct VncSessionToolbar {
     .shadow({ radius: 10, color: 'rgba(0,0,0,0.24)',
       offsetX: this.placement.side === 'left' ? 2 : -2 })
     .position({ x: this.placement.railRect.x, y: this.placement.railRect.y })
+    .translate({ x: this.railSwipeX })
     .gesture(PanGesture({ fingers: 1, distance: 5 })
+      .onActionUpdate((event: GestureEvent): void => { this.updateRailSwipe(event); })
       .onActionEnd((event: GestureEvent): void => {
-        this.placementActions.onDrag(event.offsetX, event.offsetY);
-      }))
+        this.finishRailSwipe(event);
+      })
+      .onActionCancel((): void => { this.resetRailSwipe(); }))
   }
 
   @Builder
@@ -159,9 +208,10 @@ export struct VncSessionToolbar {
     Row() {
       SymbolGlyph($r('sys.symbol.ellipsis_bubble')).fontSize(18).fontColor(['#444444'])
     }
-    .width(58).height(28).justifyContent(FlexAlign.Center)
+    .width(48).height(28).justifyContent(FlexAlign.Center)
     .borderRadius({ topLeft: 0, topRight: 0, bottomLeft: 8, bottomRight: 8 })
-    .backgroundColor('rgba(255,255,255,0.92)')
+    .backgroundColor('rgba(248,250,252,0.58)')
+    .backdropBlur(16)
     .shadow({ radius: 8, color: 'rgba(0,0,0,0.22)', offsetY: 2 })
     .position({ x: '50%', y: 8 }).markAnchor({ x: '50%', y: 0 })
     .accessibilityText(this.viewOnly ? '展开 VNC 只读会话工具栏' : '展开 VNC 会话工具栏')

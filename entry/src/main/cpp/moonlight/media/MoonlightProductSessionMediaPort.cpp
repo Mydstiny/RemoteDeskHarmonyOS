@@ -1,6 +1,7 @@
 #include "moonlight/media/MoonlightProductSessionMediaPort.h"
 
 #include "moonlight/media/MoonlightProductMediaPort.h"
+#include "moonlight/media/MoonlightVideoCodecSupport.h"
 #include "render/gl_renderer.h"
 #include "render/hw_decoder.h"
 #include "render/shared_session_context.h"
@@ -27,13 +28,15 @@ MoonlightVideoSubmitResult staleVideoResult() noexcept {
 
 struct MoonlightProductSessionMediaPort::Impl final {
     Impl(std::int64_t renderer, std::int32_t exactWidth,
-         std::int32_t exactHeight, bool playAudio) noexcept
+         std::int32_t exactHeight, MoonlightStreamCodec videoCodec,
+         bool playAudio) noexcept
         : rendererHandle(renderer), width(exactWidth), height(exactHeight),
-          audioPlaybackEnabled(playAudio) {}
+          codec(videoCodec), audioPlaybackEnabled(playAudio) {}
 
     const std::int64_t rendererHandle;
     const std::int32_t width;
     const std::int32_t height;
+    const MoonlightStreamCodec codec;
     const bool audioPlaybackEnabled;
     // Serializes the complete activate/create/publish transaction with release.
     // The state mutex alone cannot cover platform calls, but allowing two binds
@@ -65,14 +68,17 @@ MoonlightProductSessionMediaPort::~MoonlightProductSessionMediaPort() {
 std::shared_ptr<MoonlightProductSessionMediaPort>
 MoonlightProductSessionMediaPort::create(
     std::int64_t rendererHandle, std::int32_t width,
-    std::int32_t height, bool audioPlaybackEnabled) noexcept {
-    if (rendererHandle <= 0 || width <= 0 || height <= 0) {
+    std::int32_t height, MoonlightStreamCodec codec,
+    bool audioPlaybackEnabled) noexcept {
+    if (rendererHandle <= 0 || width <= 0 || height <= 0 ||
+        !moonlightHardwareVideoProfileSupported(
+            moonlightHardwareVideoProfile(codec))) {
         return nullptr;
     }
     try {
         return std::shared_ptr<MoonlightProductSessionMediaPort>(
             new MoonlightProductSessionMediaPort(
-                std::make_unique<Impl>(rendererHandle, width, height,
+                std::make_unique<Impl>(rendererHandle, width, height, codec,
                                        audioPlaybackEnabled)));
     } catch (...) {
         return nullptr;
@@ -99,7 +105,8 @@ bool MoonlightProductSessionMediaPort::bindSession(
         return false;
     }
     const auto created = DecoderNapi::CreateOwnedHardwareDecoder(
-        impl_->width, impl_->height, static_cast<int>(CodecType::H264),
+        impl_->width, impl_->height,
+        static_cast<int>(moonlightHardwareCodecType(impl_->codec)),
         impl_->rendererHandle, owner);
     if (!created.ok) {
         (void)Render::DeactivateSharedSessionSinks(owner);
@@ -107,9 +114,7 @@ bool MoonlightProductSessionMediaPort::bindSession(
     }
     MoonlightVideoDecoderBinding binding;
     binding.key = key;
-    binding.profile = {MoonlightStreamCodec::H264,
-                       MoonlightStreamBitDepth::Bit8,
-                       MoonlightStreamChroma::Yuv420};
+    binding.profile = moonlightHardwareVideoProfile(impl_->codec);
     binding.width = impl_->width;
     binding.height = impl_->height;
     binding.display = created.display;

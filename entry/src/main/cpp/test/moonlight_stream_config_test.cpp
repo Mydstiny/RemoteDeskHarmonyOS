@@ -219,6 +219,41 @@ RDP_TEST_CASE(moonlight_product_terminal_input_requires_positive_teardown_proof)
         true, true, false, true));
 }
 
+RDP_TEST_CASE(moonlight_product_first_frame_accepts_exact_renderer_evidence) {
+    RDP_ASSERT(moonlightProductStopReachedTerminal(
+        MoonlightStopStatus::Stopped));
+    RDP_ASSERT(moonlightProductStopReachedTerminal(
+        MoonlightStopStatus::AlreadyTerminal));
+    RDP_ASSERT(moonlightProductStopReachedTerminal(
+        MoonlightStopStatus::DriverFailure));
+    RDP_ASSERT(!moonlightProductStopReachedTerminal(
+        MoonlightStopStatus::TimedOut));
+    RDP_ASSERT(moonlightProductFirstFrameProven(
+        true, false, 0U, 0U, 0U, 0U));
+    RDP_ASSERT(moonlightProductFirstFrameProven(
+        false, true, 1U, 1U, 1U, 1U));
+    RDP_ASSERT(!moonlightProductFirstFrameProven(
+        false, true, 1200U, 1200U, 1199U, 0U));
+    RDP_ASSERT(moonlightProductVideoReady(false, true));
+    RDP_ASSERT(moonlightProductVideoReady(true, false));
+    RDP_ASSERT(!moonlightProductVideoReady(false, false));
+    RDP_ASSERT(!moonlightProductSessionFirstFrameReady(false, false));
+    RDP_ASSERT(moonlightProductSessionFirstFrameReady(false, true));
+    RDP_ASSERT(moonlightProductSessionFirstFrameReady(true, false));
+    RDP_ASSERT_EQ(moonlightProductPresentedFrameProgress(
+        true, 1200U, 1200U, 1199U, 0U), 0U);
+    RDP_ASSERT_EQ(moonlightProductPresentedFrameProgress(
+        true, 1200U, 1200U, 1199U, 1199U), 1199U);
+    RDP_ASSERT(!moonlightProductFirstFrameProven(
+        false, false, 1200U, 1200U, 1199U, 1199U));
+    RDP_ASSERT(!moonlightProductFirstFrameProven(
+        false, true, 0U, 1U, 1U, 1U));
+    RDP_ASSERT(!moonlightProductFirstFrameProven(
+        false, true, 1U, 0U, 1U, 1U));
+    RDP_ASSERT(!moonlightProductFirstFrameProven(
+        false, true, 1U, 1U, 0U, 1U));
+}
+
 RDP_TEST_CASE(moonlight_stream_config_maps_all_fixed_resolution_presets) {
     const std::vector<std::pair<MoonlightStreamResolutionMode, MoonlightStreamDimensions>> cases {
         {MoonlightStreamResolutionMode::P720, {1280, 720}},

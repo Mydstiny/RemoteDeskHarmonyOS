@@ -16,6 +16,19 @@ export interface MoonlightSettingsLayer {
   overriddenPaths: string[];
 }
 
+export interface MoonlightProductDecoderCapability {
+  available: boolean;
+  maxWidth: number;
+  maxHeight: number;
+  maxFps: number;
+}
+
+export interface MoonlightProductDecoderCapabilities {
+  h264: MoonlightProductDecoderCapability;
+  hevc: MoonlightProductDecoderCapability;
+  av1: MoonlightProductDecoderCapability;
+}
+
 const PROFILE_PATH_PREFIXES: string[] = ['video.', 'input.'];
 const SESSION_BLOCKED_PATHS: string[] = [
   'security.identityStorage', 'security.blockCertificateChanges', 'network.allowLegacySha1'
@@ -221,12 +234,50 @@ export function resolveEffectiveMoonlightSettings(
  * the launch lease. User intent remains in `requested`; only `effective` is
  * allowed to reach host launch, NAPI and common-c.
  */
+function safeProductDecoderCapabilities(): MoonlightProductDecoderCapabilities {
+  return {
+    h264: { available: true, maxWidth: 1920, maxHeight: 1080, maxFps: 60 },
+    hevc: { available: false, maxWidth: 0, maxHeight: 0, maxFps: 0 },
+    av1: { available: false, maxWidth: 0, maxHeight: 0, maxFps: 0 }
+  };
+}
+
+function productCodecCapability(capabilities: MoonlightProductDecoderCapabilities,
+  codec: string): MoonlightProductDecoderCapability {
+  if (codec === 'hevc') { return capabilities.hevc; }
+  if (codec === 'av1') { return capabilities.av1; }
+  return capabilities.h264;
+}
+
 export function resolveMoonlightProductSettings(
-  settings: MoonlightSettings
+  settings: MoonlightSettings,
+  decoderCapabilities: MoonlightProductDecoderCapabilities = safeProductDecoderCapabilities()
 ): MoonlightEffectiveSettings {
+  const codecs: ('h264' | 'hevc' | 'av1')[] = [];
+  if (decoderCapabilities.h264.available) { codecs.push('h264'); }
+  if (decoderCapabilities.hevc.available) { codecs.push('hevc'); }
+  if (decoderCapabilities.av1.available) { codecs.push('av1'); }
+  if (codecs.length === 0) { codecs.push('h264'); }
+  const selectedCodec: string = settings.video.codecPreference !== 'auto' &&
+    codecs.indexOf(settings.video.codecPreference as 'h264') >= 0 ?
+    settings.video.codecPreference : codecs.indexOf('h264') >= 0 ? 'h264' : codecs[0];
+  const selectedCapability: MoonlightProductDecoderCapability =
+    productCodecCapability(decoderCapabilities, selectedCodec);
+  const maxWidth: number = selectedCapability.maxWidth >= 320 ?
+    Math.min(7680, selectedCapability.maxWidth) : 1920;
+  const maxHeight: number = selectedCapability.maxHeight >= 240 ?
+    Math.min(4320, selectedCapability.maxHeight) : 1080;
+  const maxFps: number = selectedCapability.maxFps >= 30 ?
+    Math.min(240, selectedCapability.maxFps) : 60;
+  const resolutions: ('host' | '720p' | '1080p' | '1440p' | '2160p' | 'custom')[] = ['host'];
+  if (maxWidth >= 1280 && maxHeight >= 720) { resolutions.push('720p'); }
+  if (maxWidth >= 1920 && maxHeight >= 1080) { resolutions.push('1080p'); }
+  if (maxWidth >= 2560 && maxHeight >= 1440) { resolutions.push('1440p'); }
+  if (maxWidth >= 3840 && maxHeight >= 2160) { resolutions.push('2160p'); }
+  resolutions.push('custom');
   const capabilities: MoonlightEffectiveCapabilities = {
-    codecs: ['h264'],
-    resolutions: ['host', '720p', '1080p'],
+    codecs: codecs,
+    resolutions: resolutions,
     audioChannels: ['stereo'],
     hdr: false,
     yuv444: false,
@@ -234,9 +285,9 @@ export function resolveMoonlightProductSettings(
     gameControllerInput: true,
     controllerRumble: false,
     pip: false,
-    maxWidth: 1920,
-    maxHeight: 1080,
-    maxFps: 60,
+    maxWidth: maxWidth,
+    maxHeight: maxHeight,
+    maxFps: maxFps,
     hostControlReady: true,
     streamingTransportReady: true,
     reasons: []

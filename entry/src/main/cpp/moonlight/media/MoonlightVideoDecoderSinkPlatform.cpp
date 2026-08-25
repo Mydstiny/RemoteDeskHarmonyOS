@@ -1,4 +1,5 @@
 #include "moonlight/media/MoonlightVideoDecoderSink.h"
+#include "moonlight/media/MoonlightVideoCodecSupport.h"
 
 #include "render/gl_renderer.h"
 #include "render/hw_decoder.h"
@@ -14,9 +15,7 @@ DecoderSessionIdentity decoderOwner(const MoonlightSessionKey& key) noexcept {
 }
 
 bool mvpProfile(const MoonlightStreamCodecProfile& profile) noexcept {
-    return profile.codec == MoonlightStreamCodec::H264 &&
-        profile.bitDepth == MoonlightStreamBitDepth::Bit8 &&
-        profile.chroma == MoonlightStreamChroma::Yuv420;
+    return moonlightHardwareVideoProfileSupported(profile);
 }
 
 bool sameProfile(const MoonlightStreamCodecProfile& left,
@@ -29,7 +28,8 @@ bool telemetryMatches(const DecoderPresentationTelemetrySnapshot& telemetry,
                       const MoonlightVideoDecoderBinding& binding) noexcept {
     return telemetry.valid && telemetry.ready && telemetry.hardware &&
         telemetry.owner == decoderOwner(binding.key) &&
-        telemetry.codec == static_cast<int>(CodecType::H264) &&
+        telemetry.codec == static_cast<int>(
+            moonlightHardwareCodecType(binding.profile.codec)) &&
         telemetry.width == binding.width && telemetry.height == binding.height &&
         telemetry.decoderHandle == binding.decoderHandle &&
         telemetry.rendererHandle == binding.rendererHandle &&
@@ -44,7 +44,8 @@ bool telemetryMatchesStableBinding(
     const MoonlightVideoDecoderBinding& binding) noexcept {
     return telemetry.valid && telemetry.ready && telemetry.hardware &&
         telemetry.owner == decoderOwner(binding.key) &&
-        telemetry.codec == static_cast<int>(CodecType::H264) &&
+        telemetry.codec == static_cast<int>(
+            moonlightHardwareCodecType(binding.profile.codec)) &&
         telemetry.width == binding.width && telemetry.height == binding.height &&
         telemetry.decoderHandle == binding.decoderHandle &&
         telemetry.rendererHandle == binding.rendererHandle &&
@@ -53,11 +54,34 @@ bool telemetryMatchesStableBinding(
         telemetry.rendererGeneration == binding.rendererGeneration;
 }
 
+bool telemetryBelongsToPresentationOwner(
+    const DecoderPresentationTelemetrySnapshot& telemetry,
+    const MoonlightVideoDecoderBinding& binding) noexcept {
+    // Display metadata and decoder/renderer generations can advance while the
+    // same phone Surface is being resized or the exact owned pipeline is being
+    // recovered. They remain strict gates for mutation/rebind operations, but
+    // they are not ownership identities for already-observed presentation.
+    // GetActivePresentationTelemetry() has already proven the live shared sink
+    // lease, active decoder and renderer generations, and attached pipeline.
+    // Keep the immutable session owner plus both opaque handles exact here so
+    // another protocol, launch, decoder, or renderer can never satisfy this
+    // evidence path.
+    return telemetry.valid && telemetry.ready && telemetry.hardware &&
+        telemetry.owner == decoderOwner(binding.key) &&
+        telemetry.codec == static_cast<int>(
+            moonlightHardwareCodecType(binding.profile.codec)) &&
+        telemetry.width == binding.width && telemetry.height == binding.height &&
+        telemetry.decoderHandle == binding.decoderHandle &&
+        telemetry.rendererHandle == binding.rendererHandle;
+}
+
 MoonlightDecoderPortSubmitStatus mapOwnedSubmit(
     DecoderNapi::OwnedSubmitStatus status) noexcept {
     switch (status) {
         case DecoderNapi::OwnedSubmitStatus::Accepted:
             return MoonlightDecoderPortSubmitStatus::Accepted;
+        case DecoderNapi::OwnedSubmitStatus::AcceptedNeedsKeyframe:
+            return MoonlightDecoderPortSubmitStatus::AcceptedNeedsIdr;
         case DecoderNapi::OwnedSubmitStatus::Backpressure:
             return MoonlightDecoderPortSubmitStatus::Backpressure;
         case DecoderNapi::OwnedSubmitStatus::NeedKeyframe:
@@ -160,7 +184,7 @@ public:
         frame.size = accessUnit->bytes.size();
         frame.width = requested.width;
         frame.height = requested.height;
-        frame.codec = CodecType::H264;
+        frame.codec = moonlightHardwareCodecType(requested.profile.codec);
         frame.timestamp = accessUnit->presentationTimeUs;
         frame.isKeyFrame =
             accessUnit->frameType == MoonlightVideoFrameType::IdR;
@@ -172,25 +196,34 @@ public:
         MoonlightVideoDecoderBinding acceptedBinding = requested;
         bool bindingChanged = false;
         if (result == MoonlightDecoderPortSubmitStatus::Accepted &&
-            accessUnit->codecConfigurationChanged && currentConfiguration != 0U) {
+            frame.isKeyFrame) {
             const DecoderPresentationTelemetrySnapshot telemetry =
                 DecoderNapi::GetActivePresentationTelemetry(
                     decoderOwner(requested.key));
-            if (!telemetryMatchesStableBinding(telemetry, requested) ||
-                telemetry.decoderGeneration <= requested.decoderGeneration) {
-                return {MoonlightDecoderPortSubmitStatus::Stale, false, {}};
+            const auto handoff = classifyMoonlightDecoderGenerationHandoff(
+                telemetryMatchesStableBinding(telemetry, requested),
+                requested.decoderGeneration, telemetry.decoderGeneration,
+                accessUnit->codecConfigurationChanged &&
+                    currentConfiguration != 0U);
+            if (handoff == MoonlightDecoderGenerationHandoff::Stale) {
+                return {
+                    MoonlightDecoderPortSubmitStatus::Stale, false, {}};
             }
-            acceptedBinding.decoderGeneration = telemetry.decoderGeneration;
-            bindingChanged = true;
+            if (handoff == MoonlightDecoderGenerationHandoff::Advanced) {
+                acceptedBinding.decoderGeneration = telemetry.decoderGeneration;
+                bindingChanged = true;
+            }
         }
         if (result == MoonlightDecoderPortSubmitStatus::Accepted &&
-            accessUnit->codecConfigurationChanged) {
+            (accessUnit->codecConfigurationChanged || bindingChanged)) {
             std::lock_guard<std::mutex> lock(mutex_);
             if (!active_ || binding_ != requested) {
                 return {MoonlightDecoderPortSubmitStatus::Stale, false, {}};
             }
-            configurationGeneration_ =
-                accessUnit->codecConfigurationGeneration;
+            if (accessUnit->codecConfigurationChanged) {
+                configurationGeneration_ =
+                    accessUnit->codecConfigurationGeneration;
+            }
             binding_ = acceptedBinding;
         }
         return {result, bindingChanged, acceptedBinding};
@@ -309,7 +342,7 @@ public:
             DecoderNapi::GetActivePresentationTelemetry(
                 decoderOwner(requested.key));
         MoonlightDecoderPresentationSnapshot result;
-        if (!telemetryMatches(telemetry, requested)) {
+        if (!telemetryBelongsToPresentationOwner(telemetry, requested)) {
             return result;
         }
         result.matched = true;
@@ -320,6 +353,17 @@ public:
         result.renderedOutputBuffers = telemetry.renderedOutputBuffers;
         result.nativeImageFrames = telemetry.nativeImageFrames;
         result.rendererPresentedFrames = telemetry.rendererPresentedFrames;
+        result.decoderQueueDepth = telemetry.queueDepth;
+        result.decoderInputDroppedFrames = telemetry.inputDroppedFrames;
+        result.decoderWaitKeyframeDrops = telemetry.waitKeyframeDrops;
+        result.decoderInputTruncated = telemetry.inputTruncated;
+        result.decoderRenderOutputFailures = telemetry.renderOutputFailures;
+        result.decoderSurfaceUpdateFailures = telemetry.updateSurfaceFailures;
+        result.decoderSurfaceCoalescedNotifications =
+            telemetry.coalescedSurfaceNotifications;
+        result.decoderCodecLatencyMs = telemetry.codecLatencyMs;
+        result.decoderCodecLatencyMaxMs = telemetry.codecLatencyMaxMs;
+        result.decoderLowLatencyEnabled = telemetry.lowLatencyEnabled;
         return result;
     }
 

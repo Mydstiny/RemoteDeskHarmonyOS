@@ -242,6 +242,11 @@ import { RemoteSessionWindowAuthorizationService } from
 import { remoteSessionWindowReadySnapshotIsUsable } from
   '../services/RemoteSessionWindowReadiness';
 import { AccountSessionCoordinator } from '../services/AccountSessionCoordinator';
+import {
+  RustDeskAuthDraft,
+  RustDeskAuthDraftStore
+} from '../services/RustDeskAuthDraftStore';
+import { copyRustDeskPeerTwoFactorRuntime } from '../services/RustDeskPeerTwoFactorBindingStore';
 import { NativeSessionHandles, ProductionNativeHandleAdapter } from '../services/NativeSessionHandles';
 import {
   decideRemoteDesktopBackgroundAction,
@@ -719,7 +724,7 @@ interface RetiredRemoteCursorPixelMap {
 
 type ModifierLatch = 'off' | 'once' | 'locked';
 type RustDeskAuthChoice = 'password' | 'request_approval';
-type RustDeskAuthDismissReason = 'none' | 'confirm' | 'cancel';
+type RustDeskAuthDismissReason = 'none' | 'confirm' | 'cancel' | 'background';
 type RustDeskTwoFactorDismissReason = 'none' | 'cancel' | 'success' | 'failure';
 
 interface RustDeskTwoFactorEntryOption {
@@ -979,6 +984,9 @@ struct RemoteDesktop {
   private rustDeskAuthPendingStart: boolean = false;
   private rustDeskAuthSheetClosing: boolean = false;
   private rustDeskAuthQueuedMessage: string | null = null;
+  private rustDeskAuthBackgroundResumePending: boolean = false;
+  private readonly rustDeskAuthDrafts: RustDeskAuthDraftStore =
+    RustDeskAuthDraftStore.getInstance();
   private vncCertificateSheetClosing: boolean = false;
   private vncCertificatePendingRoute: boolean = false;
   private vncCertificateBackPending: boolean = false;
@@ -1228,12 +1236,12 @@ struct RemoteDesktop {
   private vncToolbarPreferenceScope: string = '';
   private vncToolbarPreferredSide: VncToolbarSide = 'right';
   private vncToolbarPreferredYRatio: number = 0.5;
-  private vncToolbarSystemTop: number = 0;
-  private vncToolbarSystemBottom: number = 0;
-  private vncToolbarSystemLeft: number = 0;
-  private vncToolbarSystemRight: number = 0;
-  private vncToolbarCutoutRects: Array<OverlayRect> = [];
-  private vncToolbarKeyboardRect: OverlayRect | null = null;
+  @State private vncToolbarSystemTop: number = 0;
+  @State private vncToolbarSystemBottom: number = 0;
+  @State private vncToolbarSystemLeft: number = 0;
+  @State private vncToolbarSystemRight: number = 0;
+  @State private vncToolbarCutoutRects: Array<OverlayRect> = [];
+  @State private vncToolbarKeyboardRect: OverlayRect | null = null;
   @State modifierPanelMounted: boolean = false;
   @State modifierPanelVisible: boolean = false;
   @State shortcutPanelVisible: boolean = false;
@@ -1752,7 +1760,7 @@ struct RemoteDesktop {
   }
 
   private syncVncToolbarAvoidAreas(w: window.Window): void {
-    if (!this.isVncSession()) {
+    if (!this.isVncSession() && !this.isRdpRemoteSession()) {
       return;
     }
     this.vncToolbarSystemTop = 0;
@@ -1809,7 +1817,9 @@ struct RemoteDesktop {
     } catch (_e) {
       // Keyboard state is also updated by the existing avoid-area callback.
     }
-    this.recomputeVncToolbarPlacement('avoid-area');
+    if (this.isVncSession()) {
+      this.recomputeVncToolbarPlacement('avoid-area');
+    }
   }
 
   private clearVncToolbarAutoCollapse(): void {
@@ -2147,12 +2157,17 @@ struct RemoteDesktop {
       this.tryStartConnect();
       return;
     }
+    const scope = AccountSessionCoordinator.getInstance().currentScope();
+    const draft: RustDeskAuthDraft | null = this.rustDeskAuthDrafts.load(
+      scope.ownerScopeId, scope.generation, host.id);
     this.rustDeskAuthChoice = host.rustdeskDirectEnabled ? 'password' :
-      (host.rustdeskAuthMode === 'request_approval' ? 'request_approval' : 'password');
-    this.rustDeskAuthPasswordInput = host.password;
-    this.rustDeskAuthPasswordMode = host.rustdeskPasswordMode === 1 ? 1 : 0;
+      (draft !== null ? draft.authChoice :
+        (host.rustdeskAuthMode === 'request_approval' ? 'request_approval' : 'password'));
+    this.rustDeskAuthPasswordInput = draft === null ? host.password : draft.password;
+    this.rustDeskAuthPasswordMode = draft === null ?
+      (host.rustdeskPasswordMode === 1 ? 1 : 0) : draft.passwordMode;
     this.rustDeskAuthPasswordShow = false;
-    this.rustDeskAuthRememberPassword = true;
+    this.rustDeskAuthRememberPassword = draft === null ? true : draft.rememberPassword;
     this.rustDeskAuthError = message;
     this.rustDeskAuthDismissReason = 'none';
     this.rustDeskAuthBackPending = false;
@@ -2161,7 +2176,51 @@ struct RemoteDesktop {
     setTimeout((): void => { this.focusRustDeskAuthPassword(); }, 120);
   }
 
+  private saveRustDeskAuthDraft(): void {
+    const host: RemoteHost | null = this.pendingHost;
+    if (host === null || host.protocol !== 'rustdesk') { return; }
+    const scope = AccountSessionCoordinator.getInstance().currentScope();
+    this.rustDeskAuthDrafts.save({
+      ownerScopeId: scope.ownerScopeId,
+      accountGeneration: scope.generation,
+      hostId: host.id,
+      authChoice: this.rustDeskAuthChoice,
+      password: this.rustDeskAuthPasswordInput,
+      passwordMode: this.rustDeskAuthPasswordMode === 1 ? 1 : 0,
+      rememberPassword: this.rustDeskAuthRememberPassword,
+      updatedAt: Date.now()
+    });
+  }
+
+  private clearRustDeskAuthDraft(): void {
+    const host: RemoteHost | null = this.pendingHost;
+    if (host === null) { return; }
+    const scope = AccountSessionCoordinator.getInstance().currentScope();
+    this.rustDeskAuthDrafts.clear(scope.ownerScopeId, scope.generation, host.id);
+    this.rustDeskAuthBackgroundResumePending = false;
+  }
+
+  private resumeRustDeskAuthAfterBackground(): void {
+    if (!this.rustDeskAuthBackgroundResumePending ||
+      this.currentAbilityBackgroundState() || this.connected || this.cleanupStarted ||
+      this.showRustDeskAuthSheet || this.rustDeskAuthSheetClosing) {
+      return;
+    }
+    const host: RemoteHost | null = this.pendingHost;
+    if (host === null || host.protocol !== 'rustdesk') {
+      this.rustDeskAuthBackgroundResumePending = false;
+      return;
+    }
+    this.rustDeskAuthBackgroundResumePending = false;
+    setTimeout((): void => {
+      if (!this.currentAbilityBackgroundState() && !this.connected && !this.cleanupStarted) {
+        this.openRustDeskAuthSheet();
+      }
+    }, 0);
+  }
+
   private requestRustDeskAuthCancellation(): void {
+    this.clearRustDeskAuthDraft();
     this.rustDeskAuthDismissReason = 'cancel';
     this.rustDeskAuthBackPending = true;
     this.rustDeskAuthPendingStart = false;
@@ -2193,6 +2252,7 @@ struct RemoteDesktop {
     }
 
     const selected = RemoteHost.fromJSON(host.toJSON());
+    copyRustDeskPeerTwoFactorRuntime(host, selected);
     selected.rustdeskPasswordMode = this.rustDeskAuthPasswordMode === 1 ? 1 : 0;
     if (this.rustDeskAuthChoice === 'password') {
       if (this.rustDeskAuthPasswordInput.trim().length === 0) {
@@ -2242,12 +2302,25 @@ struct RemoteDesktop {
       return;
     }
     this.rustDeskAuthSheetClosing = true;
+    if (this.currentAbilityBackgroundState()) {
+      this.saveRustDeskAuthDraft();
+      this.rustDeskAuthBackgroundResumePending = true;
+      this.rustDeskAuthDismissReason = 'background';
+      this.rustDeskAuthPendingStart = false;
+      action.dismiss();
+      return;
+    }
     this.requestRustDeskAuthCancellation();
     action.dismiss();
   }
 
   private handleRustDeskAuthSheetDisappear(): void {
-    const reason: RustDeskAuthDismissReason = this.rustDeskAuthDismissReason;
+    let reason: RustDeskAuthDismissReason = this.rustDeskAuthDismissReason;
+    if (reason === 'none' && this.currentAbilityBackgroundState()) {
+      this.saveRustDeskAuthDraft();
+      this.rustDeskAuthBackgroundResumePending = true;
+      reason = 'background';
+    }
     const shouldStart: boolean = reason === 'confirm' && this.rustDeskAuthPendingStart;
     const queuedMessage: string | null = this.rustDeskAuthQueuedMessage;
     this.rustDeskAuthDismissReason = 'none';
@@ -2273,7 +2346,9 @@ struct RemoteDesktop {
     }
     if (queuedMessage !== null) {
       setTimeout((): void => { this.openRustDeskAuthSheet(queuedMessage); }, 0);
+      return;
     }
+    this.resumeRustDeskAuthAfterBackground();
   }
 
   /**
@@ -3332,11 +3407,12 @@ struct RemoteDesktop {
     const next = RemoteHost.fromJSON(existing.toJSON());
     next.rustdeskAuthMode = this.rustDeskSessionAuthChoice;
     next.rustdeskPasswordMode = this.rustDeskSessionPasswordMode;
-    if (this.rustDeskSessionAuthChoice === 'password' &&
-      this.rustDeskSessionRememberPassword && this.rustDeskSessionPassword.length > 0) {
-      next.password = this.rustDeskSessionPassword;
+    if (this.rustDeskSessionAuthChoice === 'password') {
+      next.password = this.rustDeskSessionRememberPassword ?
+        this.rustDeskSessionPassword : '';
     }
     if (this.srv.updateHost(next)) {
+      this.clearRustDeskAuthDraft();
       hilog.info(RD_DOMAIN, RD_TAG, 'RustDesk auth choice persisted hostId=' +
         hashForLog(host.id) + ' mode=' + this.rustDeskSessionAuthChoice +
         ' passwordSaved=' + (this.rustDeskSessionAuthChoice === 'password' &&
@@ -3345,6 +3421,10 @@ struct RemoteDesktop {
       hilog.warn(RD_DOMAIN, RD_TAG,
           'RustDesk auth choice persistence failed hostId=' +
         hashForLog(host.id));
+      promptAction.showToast({
+        message: '连接已建立，但设备密码未能保存；本次输入仅在当前进程内保留。',
+        duration: 3000
+      });
     }
   }
 
@@ -4366,6 +4446,10 @@ struct RemoteDesktop {
       bottom = Math.min(bottom, Math.max(top, height - this.kbHeight));
     }
     return Math.max(0, bottom - top);
+  }
+
+  private rdpToolbarTopInset(): number {
+    return Math.max(0, this.vncToolbarSystemTop);
   }
 
   private resetCanvasTransformFromMenu(): void {
@@ -6443,7 +6527,7 @@ struct RemoteDesktop {
       }
       window.getLastWindow(ctx).then((w: window.Window): void => {
         this.kbWin = w;
-        if (this.isVncSession()) {
+        if (this.isVncSession() || this.isRdpRemoteSession()) {
           this.syncVncToolbarAvoidAreas(w);
         }
         try {
@@ -6470,7 +6554,8 @@ struct RemoteDesktop {
               this.markKeyboardClosed('avoid-area');
             }
           }
-          if (this.isVncSession() && (data.type === window.AvoidAreaType.TYPE_SYSTEM ||
+          if ((this.isVncSession() || this.isRdpRemoteSession()) &&
+            (data.type === window.AvoidAreaType.TYPE_SYSTEM ||
             data.type === window.AvoidAreaType.TYPE_CUTOUT ||
             data.type === window.AvoidAreaType.TYPE_NAVIGATION_INDICATOR ||
             data.type === window.AvoidAreaType.TYPE_KEYBOARD)) {
@@ -6544,7 +6629,14 @@ struct RemoteDesktop {
     if (this.sessionWindowId.length > 0) { return; }
     const isBackground: boolean = AppStorage.get<boolean>('remoteDesktopBgFlag') ??
       this.remoteDesktopBgFlag;
+    if (isBackground && this.showRustDeskAuthSheet) {
+      this.saveRustDeskAuthDraft();
+      this.rustDeskAuthBackgroundResumePending = true;
+    }
     this.applyAbilityBackgroundState(isBackground);
+    if (!isBackground) {
+      this.resumeRustDeskAuthAfterBackground();
+    }
   }
 
   private onSessionWindowBackgroundChange(): void {
@@ -6974,13 +7066,15 @@ struct RemoteDesktop {
     this.bindIndependentSessionWindow(routeParams);
     this.stageIndependentWindowAfterAuthentication(routeParams);
     this.cancelPendingDisappearDecision();
-    if (this.connected && this.isVncSession()) {
+    if (this.connected && (this.isVncSession() || this.isRdpRemoteSession())) {
       if (this.kbWin !== null) {
         this.syncVncToolbarAvoidAreas(this.kbWin);
-      } else {
+      } else if (this.isVncSession()) {
         this.recomputeVncToolbarPlacement('page-appear');
       }
-      this.scheduleVncToolbarAutoCollapse();
+      if (this.isVncSession()) {
+        this.scheduleVncToolbarAutoCollapse();
+      }
     }
     this.restoreRemoteSystemPointer('page-appear');
     this.proSync.init(getContext(this) as common.Context);
@@ -10689,6 +10783,7 @@ struct RemoteDesktop {
           .onClick(() => {
             this.rustDeskAuthChoice = 'password';
             this.rustDeskAuthError = '';
+            this.saveRustDeskAuthDraft();
             setTimeout((): void => { this.focusRustDeskAuthPassword(); }, 30);
           })
         Button('请求远端同意').fontSize(13).height(40).layoutWeight(1)
@@ -10700,6 +10795,7 @@ struct RemoteDesktop {
           .onClick(() => {
             this.rustDeskAuthChoice = 'request_approval';
             this.rustDeskAuthError = '';
+            this.saveRustDeskAuthDraft();
           })
       }.width('100%').margin({ bottom: 14 })
 
@@ -10716,7 +10812,10 @@ struct RemoteDesktop {
             .focusOnTouch(true)
             .enableKeyboardOnFocus(true)
             .defaultFocus(this.rustDeskAuthChoice === 'password')
-            .onChange((v: string) => { this.rustDeskAuthPasswordInput = v; })
+            .onChange((v: string) => {
+              this.rustDeskAuthPasswordInput = v;
+              this.saveRustDeskAuthDraft();
+            })
             .onSubmit((_enterKey: EnterKeyType, event: SubmitEvent): void => {
               event.keepEditableState();
               this.confirmRustDeskAuthChoice();
@@ -10729,18 +10828,27 @@ struct RemoteDesktop {
           Text('记住此设备密码').fontSize(12).fontColor(this.pal().text2).layoutWeight(1)
           Toggle({ type: ToggleType.Switch, isOn: this.rustDeskAuthRememberPassword })
             .selectedColor(this.accentColor).scale({ x: 0.8, y: 0.8 })
-            .onChange((on: boolean) => { this.rustDeskAuthRememberPassword = on; })
+            .onChange((on: boolean) => {
+              this.rustDeskAuthRememberPassword = on;
+              this.saveRustDeskAuthDraft();
+            })
         }.width('100%').margin({ bottom: 8 })
         Text('密码类型').fontSize(12).fontColor(this.pal().text2).margin({ bottom: 5 })
         Row({ space: 8 }) {
           Button('一次性密码').layoutWeight(1).height(36).fontSize(12)
             .backgroundColor(this.rustDeskAuthPasswordMode === 0 ? this.accentColor : this.pal().surface)
             .fontColor(this.rustDeskAuthPasswordMode === 0 ? Color.White : this.pal().text2)
-            .onClick((): void => { this.rustDeskAuthPasswordMode = 0; })
+            .onClick((): void => {
+              this.rustDeskAuthPasswordMode = 0;
+              this.saveRustDeskAuthDraft();
+            })
           Button('永久密码').layoutWeight(1).height(36).fontSize(12)
             .backgroundColor(this.rustDeskAuthPasswordMode === 1 ? this.accentColor : this.pal().surface)
             .fontColor(this.rustDeskAuthPasswordMode === 1 ? Color.White : this.pal().text2)
-            .onClick((): void => { this.rustDeskAuthPasswordMode = 1; })
+            .onClick((): void => {
+              this.rustDeskAuthPasswordMode = 1;
+              this.saveRustDeskAuthDraft();
+            })
         }.width('100%').margin({ bottom: 6 })
         Text(this.rustDeskAuthPasswordMode === 0 ?
           '一次性密码过期后，下次连接需要重新输入。' :
@@ -11628,10 +11736,10 @@ struct RemoteDesktop {
           this.startRustDeskDiagnosticsPolling();
         }
       }
-      if (host.protocol === 'vnc') {
+      if (host.protocol === 'vnc' || host.protocol === 'rdp') {
         if (this.kbWin !== null) {
           this.syncVncToolbarAvoidAreas(this.kbWin);
-        } else {
+        } else if (host.protocol === 'vnc') {
           this.recomputeVncToolbarPlacement('connect-success');
         }
       }
@@ -11769,7 +11877,11 @@ struct RemoteDesktop {
       }
       if (this.isProRustDeskHost(host) && this.shouldOfferRustDeskAuthRetry(this.connectionErrorDetail)) {
         const fresh: RemoteHost | undefined = this.srv.getHost(host.id);
-        if (fresh) { this.pendingHost = RemoteHost.fromJSON(fresh.toJSON()); }
+        if (fresh) {
+          const refreshed: RemoteHost = RemoteHost.fromJSON(fresh.toJSON());
+          copyRustDeskPeerTwoFactorRuntime(fresh, refreshed);
+          this.pendingHost = refreshed;
+        }
         this.connectionError = '';
         this.connectionErrorDetail = '';
         this.connecting = true;
@@ -16851,7 +16963,9 @@ struct RemoteDesktop {
               availableHeight: this.rdpToolbarAvailableHeight(),
               onAction: (action: RdpToolbarAction): void => { this.handleRdpToolbarAction(action); }
             })
-          }.width('100%').height('100%').hitTestBehavior(HitTestMode.Transparent).zIndex(220)
+          }.width('100%').height(this.rdpToolbarAvailableHeight())
+            .position({ x: 0, y: this.rdpToolbarTopInset() })
+            .hitTestBehavior(HitTestMode.Transparent).zIndex(220)
         } else {
           Stack({ alignContent: Alignment.Top }) {
             RdpSessionToolbar({
@@ -16922,7 +17036,9 @@ struct RemoteDesktop {
               this.goBack();
             }
           }).height('94%').margin({ right: this.isDesktopDevice ? 12 : 52 })
-        }.width('100%').height('100%').hitTestBehavior(HitTestMode.Transparent).zIndex(225)
+        }.width('100%').height(this.rdpToolbarAvailableHeight())
+          .position({ x: 0, y: this.rdpToolbarTopInset() })
+          .hitTestBehavior(HitTestMode.Transparent).zIndex(225)
       }
 
       if (this.connected && this.shouldShowRemoteSessionTopBar()) {
@@ -16966,7 +17082,8 @@ struct RemoteDesktop {
             RdpDiagnosticsHud({
               stats: this.rdpRenderStats,
               availableWidth: this.surfaceWidth > 0 ? this.surfaceWidth : 360,
-              availableHeight: this.rdpToolbarAvailableHeight()
+              availableHeight: this.rdpToolbarAvailableHeight(),
+              topInset: this.rdpToolbarTopInset()
             })
           }
         } else if (this.isVncSession()) {

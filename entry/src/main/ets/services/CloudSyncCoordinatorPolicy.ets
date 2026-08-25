@@ -346,6 +346,28 @@ export function cloudLocalMutationAllowed(manualDownloadActive: boolean, localRe
     !cloudDownloadActive && !indeterminateTransferActive;
 }
 
+/**
+ * The platform reports dataChange for rows materialized by this app's own
+ * cloud-first transfer. Re-enqueuing that callback creates an endless pull
+ * loop, so only an external/idle notification may start another pull. A late
+ * indeterminate terminal has its own explicit recovery pull.
+ */
+export function cloudDataChangeShouldRequestPull(
+  cloudDownloadActive: boolean,
+  indeterminateTransferActive: boolean,
+  nowMs: number = 0,
+  lastCloudFirstCompletedAtMs: number = 0,
+  selfApplyQuietPeriodMs: number = 3000
+): boolean {
+  if (cloudDownloadActive || indeterminateTransferActive) { return false; }
+  if (lastCloudFirstCompletedAtMs <= 0 || selfApplyQuietPeriodMs <= 0) {
+    return true;
+  }
+  return Number.isSafeInteger(nowMs) &&
+    nowMs >= lastCloudFirstCompletedAtMs &&
+    nowMs - lastCloudFirstCompletedAtMs >= selfApplyQuietPeriodMs;
+}
+
 export function exclusiveVncSelectionAdmissionAllowed(
   mutationPending: boolean,
   restorePending: boolean,

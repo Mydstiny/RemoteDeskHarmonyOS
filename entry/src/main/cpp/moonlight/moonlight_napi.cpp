@@ -518,7 +518,7 @@ bool parseLaunchConfiguration(napi_env env, napi_value value,
     static const std::unordered_set<std::string> allowed {
         "width", "height", "refreshRate", "additionalStates", "sops", "hdr",
         "playAudioOnHost", "surroundAudioInfo", "remoteControllersBitmap",
-        "gamepadMask", "persistGamepads"
+        "gamepadMask", "persistGamepads", "videoCodec", "resolutionPolicy"
     };
     if (!readExactObject(env, value, allowed, error)) {
         return false;
@@ -563,6 +563,48 @@ bool parseLaunchConfiguration(napi_env env, napi_value value,
     configuration.surroundAudioInfo = static_cast<std::uint32_t>(surround);
     configuration.remoteControllersBitmap = static_cast<std::uint32_t>(controllers);
     configuration.gamepadMask = static_cast<std::uint32_t>(gamepads);
+    std::string videoCodec = "h264";
+    std::string resolutionPolicy = "exact";
+    bool present = false;
+    if (!hasProperty(env, value, "videoCodec", present)) {
+        error = "video codec field is not readable";
+        return false;
+    }
+    if (present && !readRequiredString(env, value, "videoCodec", 16U,
+                                       videoCodec, error)) {
+        return false;
+    }
+    if (!hasProperty(env, value, "resolutionPolicy", present)) {
+        error = "resolution policy field is not readable";
+        return false;
+    }
+    if (present && !readRequiredString(env, value, "resolutionPolicy", 24U,
+                                       resolutionPolicy, error)) {
+        return false;
+    }
+    if (videoCodec == "hevc") {
+        configuration.videoCodec =
+            MoonlightBridgeLaunchConfiguration::VideoCodec::Hevc;
+    } else if (videoCodec == "av1") {
+        configuration.videoCodec =
+            MoonlightBridgeLaunchConfiguration::VideoCodec::Av1;
+    } else if (videoCodec == "h264") {
+        configuration.videoCodec =
+            MoonlightBridgeLaunchConfiguration::VideoCodec::H264;
+    } else {
+        error = "video codec is unsupported";
+        return false;
+    }
+    if (resolutionPolicy == "hostCapability") {
+        configuration.resolutionPolicy =
+            MoonlightBridgeLaunchConfiguration::ResolutionPolicy::HostCapability;
+    } else if (resolutionPolicy == "exact") {
+        configuration.resolutionPolicy =
+            MoonlightBridgeLaunchConfiguration::ResolutionPolicy::Exact;
+    } else {
+        error = "resolution policy is unsupported";
+        return false;
+    }
     return true;
 }
 
@@ -1336,6 +1378,8 @@ napi_value streamSnapshot(napi_env env, napi_callback_info info) {
     setBoolean(env, value, "physicalControllerReady",
                result.physicalControllerReady);
     setBoolean(env, value, "inputMayBeStuck", result.inputMayBeStuck);
+    setBoolean(env, value, "presentationFrameReady",
+               result.presentationFrameReady);
     setBoolean(env, value, "firstFrameReady", result.firstFrameReady);
     setBoolean(env, value, "terminal", result.terminal);
     setSafeInteger(env, value, "lastSequence", result.lastSequence);
@@ -1355,13 +1399,38 @@ napi_value streamSnapshot(napi_env env, napi_callback_info info) {
                    result.rejectedAudioPackets);
     setSafeInteger(env, value, "acceptedAudioBytes",
                    result.acceptedAudioBytes);
+    setSafeInteger(env, value, "acceptedInputEvents",
+                   result.acceptedInputEvents);
     setSafeInteger(env, value, "rejectedInputEvents",
                    result.rejectedInputEvents);
+    setSafeInteger(env, value, "decoderQueueDepth",
+                   result.decoderQueueDepth);
+    setSafeInteger(env, value, "decoderInputDroppedFrames",
+                   result.decoderInputDroppedFrames);
+    setSafeInteger(env, value, "decoderWaitKeyframeDrops",
+                   result.decoderWaitKeyframeDrops);
+    setSafeInteger(env, value, "decoderInputTruncated",
+                   result.decoderInputTruncated);
+    setSafeInteger(env, value, "decoderRenderOutputFailures",
+                   result.decoderRenderOutputFailures);
+    setSafeInteger(env, value, "decoderSurfaceUpdateFailures",
+                   result.decoderSurfaceUpdateFailures);
+    setSafeInteger(env, value, "decoderSurfaceCoalescedNotifications",
+                   result.decoderSurfaceCoalescedNotifications);
+    setSafeInteger(env, value, "decoderCodecLatencyMs",
+                   static_cast<std::uint64_t>(
+                       std::max<std::int64_t>(0, result.decoderCodecLatencyMs)));
+    setSafeInteger(env, value, "decoderCodecLatencyMaxMs",
+                   static_cast<std::uint64_t>(
+                       std::max<std::int64_t>(0, result.decoderCodecLatencyMaxMs)));
+    setBoolean(env, value, "decoderLowLatencyEnabled",
+               result.decoderLowLatencyEnabled);
     setInt32(env, value, "streamWidth", result.streamWidth);
     setInt32(env, value, "streamHeight", result.streamHeight);
     setInt32(env, value, "targetFps", result.targetFps);
     setInt32(env, value, "configuredBitrateKbps",
              result.configuredBitrateKbps);
+    setString(env, value, "codec", moonlightStreamCodecName(result.codec));
     return value;
 }
 
@@ -1544,8 +1613,10 @@ napi_value sendPointer(napi_env env, napi_callback_info info) {
                                    32767.0, amount, error, true) &&
             readRequiredBoolean(env, args[0], "horizontal", request.horizontal, error);
         request.scrollAmount = static_cast<std::int32_t>(amount);
-    } else if (valid && action == "absolute") {
-        request.action = MoonlightProductPointerAction::Absolute;
+    } else if (valid && (action == "absolute" || action == "absoluteButton")) {
+        request.action = action == "absolute" ?
+            MoonlightProductPointerAction::Absolute :
+            MoonlightProductPointerAction::AbsoluteButton;
         double referenceWidth = 0.0;
         double referenceHeight = 0.0;
         double generation = 0.0;
@@ -1567,6 +1638,14 @@ napi_value sendPointer(napi_env env, napi_callback_info info) {
                                referenceHeight, error, true) &&
             readRequiredNumber(env, args[0], "geometryGeneration", 1.0,
                                kMaxSafeInteger, generation, error, true);
+        if (valid && action == "absoluteButton") {
+            double button = 0.0;
+            valid = readRequiredNumber(env, args[0], "button", 1.0, 5.0,
+                                       button, error, true) &&
+                readRequiredBoolean(env, args[0], "pressed", request.pressed, error);
+            request.button = static_cast<MoonlightPointerButton>(
+                static_cast<std::uint8_t>(button));
+        }
         request.referenceWidth = static_cast<std::uint16_t>(referenceWidth);
         request.referenceHeight = static_cast<std::uint16_t>(referenceHeight);
         request.geometryGeneration = static_cast<std::uint64_t>(generation);

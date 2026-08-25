@@ -1497,7 +1497,9 @@ RDP_TEST_CASE(moonlight_common_c_adapter_coalesces_idr_requests_until_accepted_i
     RDP_ASSERT_EQ(returns[0].load(), -1);
     RDP_ASSERT_EQ(returns[1].load(), 0);
     RDP_ASSERT_EQ(returns[2].load(), 0);
-    RDP_ASSERT_EQ(returns[3].load(), -1);
+    // Transient sink pressure requests an IDR out of band and keeps common-c
+    // P-frame delivery open instead of entering its hard IDR wait.
+    RDP_ASSERT_EQ(returns[3].load(), 0);
     RDP_ASSERT_EQ(media->videoPayloads(), static_cast<std::size_t>(4U));
     RDP_ASSERT_EQ(adapter->stop(accepted.key, 1s), MoonlightStopStatus::Stopped);
 }

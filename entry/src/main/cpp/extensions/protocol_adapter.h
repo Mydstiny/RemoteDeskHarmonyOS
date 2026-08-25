@@ -44,6 +44,11 @@ enum class MouseButton {
     RIGHT  = 2
 };
 
+struct RemoteKeyEvent {
+    uint32_t keyCode = 0;
+    bool pressed = false;
+};
+
 /** 连接状态 */
 enum class ConnectionState {
     DISCONNECTED = 0,
@@ -436,6 +441,21 @@ public:
      * @param pressed   true=按下, false=释放
      */
     virtual void sendKey(uint32_t scancode, bool pressed) = 0;
+
+    /**
+     * Submit one logical keyboard transaction. Adapters with replaceable
+     * transport handles override this to pin one native handle for every
+     * event; other adapters inherit the ordered implementation.
+     */
+    virtual bool sendKeyEvents(const std::vector<RemoteKeyEvent>& events) {
+        if (events.empty()) {
+            return false;
+        }
+        for (const auto& event : events) {
+            sendKey(event.keyCode, event.pressed);
+        }
+        return true;
+    }
 
     /**
      * 发送鼠标事件

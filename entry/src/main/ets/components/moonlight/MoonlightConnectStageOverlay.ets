@@ -27,7 +27,10 @@ export struct MoonlightConnectStageOverlay {
   }
 
   build() {
-    if (this.presentation().visible) {
+    // This Sheet is only a connection/authentication gate. Terminal failures
+    // are handled by the stream route and return directly to the catalog, so
+    // the old failure dialog cannot flash during an intentional disconnect.
+    if (this.presentation().visible && !this.presentation().terminal) {
       Column() {
         Row() {
           MoonlightBrandIcon({ iconSize: 30, tint: this.accentColor })
@@ -37,9 +40,7 @@ export struct MoonlightConnectStageOverlay {
             Text(this.presentation().detail).fontSize(12).fontColor('rgba(255,255,255,0.70)')
               .lineHeight(18).margin({ top: 4 })
           }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
-          if (!this.presentation().terminal) {
-            LoadingProgress().width(26).height(26).color(this.accentColor)
-          }
+          LoadingProgress().width(26).height(26).color(this.accentColor)
         }.width('100%')
 
         if (this.presentation().showElapsed) {
@@ -66,27 +67,13 @@ export struct MoonlightConnectStageOverlay {
         }
 
         Row() {
-          if (this.presentation().terminal) {
-            Button('返回目录').height(40).layoutWeight(1).borderRadius(10)
-              .backgroundColor('rgba(255,255,255,0.12)').fontColor('#FFFFFF')
-              .onClick((): void => { this.onBackToCatalog(); })
-            Button(this.errorCode === 'codec_unsupported' || this.errorCode === 'decoder_failed' ?
-              '降低设置重试' : '重试').height(40).layoutWeight(1).borderRadius(10)
-              .backgroundColor(this.accentColor).fontColor('#FFFFFF').margin({ left: 10 })
-              .onClick((): void => {
-                if (this.errorCode === 'codec_unsupported' || this.errorCode === 'decoder_failed') {
-                  this.onDowngradeRetry();
-                } else { this.onRetry(); }
-              })
-          } else {
-            Button('取消').height(40).layoutWeight(1).borderRadius(10)
-              .backgroundColor('rgba(255,255,255,0.12)').fontColor('#FFFFFF')
-              .onClick((): void => { this.onCancel(); })
-            if (this.presentation().showDiagnostics) {
-              Button('网络诊断').height(40).layoutWeight(1).borderRadius(10)
-                .backgroundColor('rgba(255,255,255,0.12)').fontColor('#FFFFFF').margin({ left: 10 })
-                .onClick((): void => { this.onOpenDiagnostics(); })
-            }
+          Button('取消').height(40).layoutWeight(1).borderRadius(10)
+            .backgroundColor('rgba(255,255,255,0.12)').fontColor('#FFFFFF')
+            .onClick((): void => { this.onCancel(); })
+          if (this.presentation().showDiagnostics) {
+            Button('网络诊断').height(40).layoutWeight(1).borderRadius(10)
+              .backgroundColor('rgba(255,255,255,0.12)').fontColor('#FFFFFF').margin({ left: 10 })
+              .onClick((): void => { this.onOpenDiagnostics(); })
           }
           Button(this.detailsExpanded ? '收起详情' : '技术详情').height(40).layoutWeight(1)
             .borderRadius(10).backgroundColor('rgba(255,255,255,0.12)').fontColor('#FFFFFF')

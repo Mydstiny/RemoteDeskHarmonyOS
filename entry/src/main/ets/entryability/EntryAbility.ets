@@ -372,13 +372,26 @@ export default class EntryAbility extends UIAbility {
     // 注意: 实况窗由 RemoteDesktop.restoreFromBackground() 控制, 不在此处提前关闭
     AppStorage.setOrCreate<boolean>(BG_FLAG_KEY, false);
     this.syncEffectiveTheme('foreground');
-    try {
-      RemoteSessionBackgroundTaskService.getInstance().stopSessionTask(this.context);
-    } catch (err) {
-      hilog.warn(DOMAIN, TAG, 'stopSessionTask on foreground failed: %{public}s', JSON.stringify(err));
+    const sessionWindows: RemoteSessionWindowCoordinator =
+      RemoteSessionWindowCoordinator.getInstance();
+    const hasIndependentRemoteWindow: boolean =
+      sessionWindows.hasOpenOrPendingWindowForProtocol('rdp') ||
+      sessionWindows.hasOpenOrPendingWindowForProtocol('rustdesk') ||
+      sessionWindows.hasOpenOrPendingWindowForProtocol('vnc') ||
+      sessionWindows.hasOpenOrPendingWindowForProtocol('moonlight');
+    if (!hasIndependentRemoteWindow) {
+      try {
+        RemoteSessionBackgroundTaskService.getInstance().stopSessionTask(this.context);
+      } catch (err) {
+        hilog.warn(DOMAIN, TAG, 'stopSessionTask on foreground failed: %{public}s',
+          JSON.stringify(err));
+      }
+    } else {
+      hilog.info(DOMAIN, TAG,
+        'remote background task stop skipped: independent session window remains owned');
     }
     const hasIndependentSshWindow: boolean =
-      RemoteSessionWindowCoordinator.getInstance().hasOpenOrPendingWindowForProtocol('ssh');
+      sessionWindows.hasOpenOrPendingWindowForProtocol('ssh');
     if (!hasIndependentSshWindow) {
       try {
         void SshTerminalPipService.getInstance().stop();

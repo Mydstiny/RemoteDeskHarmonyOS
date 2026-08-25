@@ -16,6 +16,7 @@ enum class MoonlightProductPointerAction : std::uint8_t {
     Absolute = 2,
     Button = 3,
     Scroll = 4,
+    AbsoluteButton = 5,
 };
 
 enum class MoonlightProductVirtualControllerElement : std::uint8_t {

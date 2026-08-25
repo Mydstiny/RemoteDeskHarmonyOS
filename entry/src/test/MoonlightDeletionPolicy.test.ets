@@ -53,11 +53,11 @@ export default function moonlightDeletionPolicyTest(): void {
         expect(impact.selectionChanged).assertTrue();
       });
 
-    it('treats_cancel_sync_as_unchanged_when_no_physical_or_logical_scope_exists',
+    it('treats_fixed_logical_scopes_as_inactive_without_the_physical_table',
       0, (): void => {
         const value: MoonlightDeletionContext = context();
         value.physicalCloudSelected = false;
-        value.selectedLogicalScopeCount = 0;
+        value.selectedLogicalScopeCount = 3;
         expect(resolveMoonlightDeletionImpact(
           'cancel_sync', value).selectionChanged).assertFalse();
       });

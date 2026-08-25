@@ -80,7 +80,11 @@ export class RemoteSessionWindowLauncher {
       hilog.info(DOMAIN, TAG,
         'independent session window requested protocol=%{public}s target=%{public}s',
         request.protocol, request.target);
-      if (!liveHandoffRequired) { return true; }
+      // Every target must cross the real route/content-ready boundary before
+      // the source page releases its launch ownership.  Moonlight starts its
+      // native session before opening the window but does not use the generic
+      // nativeHandoff structure; returning immediately here used to orphan the
+      // Sunshine launch when loadContent/replaceUrl failed.
       const ready: boolean = await coordinator.waitUntilContentReady(
         record.id, REMOTE_SESSION_WINDOW_READY_TIMEOUT_MS);
       // A timeout and a target ready callback can land on adjacent event-loop

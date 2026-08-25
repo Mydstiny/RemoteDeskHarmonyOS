@@ -267,6 +267,30 @@ export default function moonlightBackupPolicyTest(): void {
           .assertEqual('1');
       });
 
+    it('exports_and_restores_device_local_moonlight_without_account_login',
+      0, (): void => {
+        const localHost: MoonlightRecord = hostRecord();
+        localHost.userId = 'device-local';
+        localHost.ownerId = 'device-local';
+        localHost.payloadHashSha256 =
+          moonlightRecordPayloadHashSha256(localHost);
+        const document = createLocalBackupDocument(
+          portableTables(), 300, '1.1.0', [], {
+            moonlightlocalrecords: [localRow(localHost)]
+          }, 'device-local');
+        expect(document.localTables?.moonlightlocalrecords.length)
+          .assertEqual(1);
+        expect(document.localTables?.moonlightlocalrecords[0]['userid'])
+          .assertEqual('device-local');
+        const plan = adaptLocalBackupDocumentForRestore(
+          document, 'device-local', false);
+        expect(plan !== null).assertTrue();
+        expect(plan?.presentLocalTables.indexOf(
+          MOONLIGHT_LOCAL_TABLE) >= 0).assertTrue();
+        expect(plan?.localTables[MOONLIGHT_LOCAL_TABLE][0]['localonly'])
+          .assertEqual('1');
+      });
+
     it('chooses_the_newer_identical_envelope_from_cloud_and_local', 0,
       (): void => {
         const cloud: MoonlightRecord = hostRecord();

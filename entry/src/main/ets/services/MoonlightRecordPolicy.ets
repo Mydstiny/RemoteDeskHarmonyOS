@@ -64,10 +64,11 @@ const FORBIDDEN_SECRET_KEYS: string[] = [
 ];
 
 const SETTINGS_FIELD_PATHS: string[] = [
-  'video.codecPreference', 'video.resolutionMode', 'video.customWidth', 'video.customHeight',
+  'video.codecPreference', 'video.resolutionMode', 'video.adaptiveResolution',
+  'video.customWidth', 'video.customHeight',
   'video.fps', 'video.bitrateKbps', 'video.hdr', 'video.yuv444', 'video.latencyMode',
   'audio.enabled', 'audio.channels', 'audio.volume', 'audio.playOnHost',
-  'input.touchMode', 'input.captureKeyboard', 'input.forwardSystemShortcuts',
+  'input.touchMode', 'input.controlMode', 'input.captureKeyboard', 'input.forwardSystemShortcuts',
   'input.controllerSlot', 'input.enableRumble', 'network.discovery',
   'network.preferredAddressFamily', 'network.streamEncryption', 'network.allowLegacySha1',
   'network.meteredNetwork', 'network.autoReconnect', 'network.reconnectBudgetMs',
@@ -82,10 +83,11 @@ const LEGACY_SETTINGS_FIELD_PATHS: string[] = [
   'video.scalingMode', 'background.allowPip'
 ];
 const HOST_FIELD_PATHS: string[] = [
-  'displayName', 'addresses', 'preferredAddressKey', 'httpsPort', 'wakeOnLan', 'userOrder'
+  'displayName', 'addresses', 'preferredAddressKey', 'httpsPort', 'wakeOnLan', 'locked', 'userOrder'
 ];
 const PROFILE_FIELD_PATHS: string[] = [
   'titleSnapshot', 'streamOverrides.codecPreference', 'streamOverrides.resolutionMode',
+  'streamOverrides.adaptiveResolution',
   'streamOverrides.customWidth', 'streamOverrides.customHeight', 'streamOverrides.fps',
   'streamOverrides.bitrateKbps', 'streamOverrides.hdr', 'streamOverrides.latencyMode',
   'streamOverrides.scalingMode', 'inputOverrides.touchMode',
@@ -573,9 +575,10 @@ function settingsPayloadIsValid(values: Record<string, Object>): boolean {
 function hostPayloadIsValid(record: MoonlightRecord, values: Record<string, Object>): boolean {
   if (!keysAreAllowed(values, [
     'schemaVersion', 'serverUuid', 'displayName', 'addresses', 'preferredAddressKey',
-    'httpsPort', 'hostType', 'wakeOnLan', 'userOrder', '_meta'
+    'httpsPort', 'hostType', 'wakeOnLan', 'locked', 'userOrder', '_meta'
   ]) || values['schemaVersion'] !== 1 || !Array.isArray(values['addresses']) ||
       !isPlainObject(values['wakeOnLan']) ||
+      (values['locked'] !== undefined && typeof values['locked'] !== 'boolean') ||
       (values['httpsPort'] !== undefined &&
         (!Number.isSafeInteger(values['httpsPort'] as number) ||
           (values['httpsPort'] as number) < 1 ||
@@ -590,6 +593,7 @@ function hostPayloadIsValid(record: MoonlightRecord, values: Record<string, Obje
       values['httpsPort'] as number,
     hostType: values['hostType'] as 'sunshine',
     wakeOnLan: values['wakeOnLan'] as MoonlightWakeOnLan,
+    locked: values['locked'] === true,
     userOrder: values['userOrder'] as number
   };
   return moonlightHostIsValid(host);

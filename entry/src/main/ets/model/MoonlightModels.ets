@@ -10,8 +10,10 @@ export type MoonlightAddressFamily = 'ipv4' | 'ipv6' | 'hostname';
 export type MoonlightHostType = 'sunshine' | 'gamestream';
 export type MoonlightCodecPreference = 'auto' | 'h264' | 'hevc' | 'av1';
 export type MoonlightResolutionMode = 'host' | '720p' | '1080p' | '1440p' | '2160p' | 'custom';
+export type MoonlightAdaptiveResolution = 'host' | 'device' | 'off';
 export type MoonlightAudioChannels = 'stereo' | 'surround51' | 'surround71';
 export type MoonlightTouchMode = 'touch' | 'absoluteMouse' | 'relativeMouse';
+export type MoonlightInputControlMode = 'adaptive' | 'keyboardMouse' | 'trackpad';
 export type MoonlightDiscoveryMode = 'manualOrMdns' | 'manualOnly';
 export type MoonlightAddressPreference = 'auto' | 'ipv4' | 'ipv6';
 export type MoonlightStreamEncryption = 'auto' | 'required' | 'compatible';
@@ -50,6 +52,12 @@ export interface MoonlightHost {
   httpsPort?: number;
   hostType: MoonlightHostType;
   wakeOnLan: MoonlightWakeOnLan;
+  /**
+   * Host-card privacy lock. Optional only for records written before the
+   * unified host-card interaction was introduced; legacy records are
+   * interpreted as unlocked.
+   */
+  locked?: boolean;
   userOrder: number;
 }
 
@@ -66,6 +74,7 @@ export interface MoonlightApp {
 export interface MoonlightStreamOverrides {
   codecPreference?: MoonlightCodecPreference;
   resolutionMode?: MoonlightResolutionMode;
+  adaptiveResolution?: MoonlightAdaptiveResolution;
   customWidth?: number;
   customHeight?: number;
   fps?: number;
@@ -96,6 +105,12 @@ export interface MoonlightProfile {
 export interface MoonlightVideoSettings {
   codecPreference: MoonlightCodecPreference;
   resolutionMode: MoonlightResolutionMode;
+  /**
+   * Additive compatibility field. Records written before adaptive resolution
+   * omit it; `host` mode is then interpreted as host-compatible and every
+   * other legacy mode as exact. Older app versions safely ignore this field.
+   */
+  adaptiveResolution?: MoonlightAdaptiveResolution;
   customWidth: number;
   customHeight: number;
   fps: number;
@@ -116,6 +131,11 @@ export interface MoonlightAudioSettings {
 
 export interface MoonlightInputSettings {
   touchMode: MoonlightTouchMode;
+  /**
+   * Additive UI/runtime input preference. Records created before this field
+   * are mapped from touchMode so old local/cloud settings remain readable.
+   */
+  controlMode?: MoonlightInputControlMode;
   captureKeyboard: boolean;
   forwardSystemShortcuts: boolean;
   controllerSlot: number;
@@ -236,6 +256,7 @@ export function defaultMoonlightSettings(): MoonlightSettings {
     video: {
       codecPreference: 'auto',
       resolutionMode: 'host',
+      adaptiveResolution: 'host',
       customWidth: 1920,
       customHeight: 1080,
       fps: 60,
@@ -252,6 +273,7 @@ export function defaultMoonlightSettings(): MoonlightSettings {
     },
     input: {
       touchMode: 'touch',
+      controlMode: 'adaptive',
       captureKeyboard: false,
       forwardSystemShortcuts: false,
       controllerSlot: -1,
@@ -292,7 +314,20 @@ export function normalizeMoonlightSettingsForLocalStorage(
   const normalized: MoonlightSettings = JSON.parse(JSON.stringify(settings)) as MoonlightSettings;
   normalized.video.scalingMode = undefined;
   normalized.background.allowPip = undefined;
+  normalized.input.controlMode = moonlightInputControlMode(
+    normalized.input.controlMode, normalized.input.touchMode);
   return normalized;
+}
+
+/** Compatibility mapping for settings written before the three-mode control UI. */
+export function moonlightInputControlMode(
+  value: string | undefined, legacyTouchMode: MoonlightTouchMode = 'touch'
+): MoonlightInputControlMode {
+  if (value === 'adaptive' || value === 'keyboardMouse' || value === 'trackpad') {
+    return value;
+  }
+  return legacyTouchMode === 'absoluteMouse' || legacyTouchMode === 'relativeMouse' ?
+    'trackpad' : 'adaptive';
 }
 
 export function moonlightAddressKey(address: MoonlightAddress): string {
@@ -315,6 +350,7 @@ export function moonlightHostIsValid(host: MoonlightHost): boolean {
       (host.httpsPort !== undefined &&
         !isIntegerInRange(host.httpsPort, 1, 65535)) ||
       !isOneOf(host.hostType, ['sunshine', 'gamestream']) ||
+      (host.locked !== undefined && typeof host.locked !== 'boolean') ||
       !isIntegerInRange(host.userOrder, 0, 1000000) ||
       host.addresses.length < 1 || host.addresses.length > MAX_ADDRESSES) {
     return false;
@@ -361,6 +397,8 @@ export function moonlightStreamOverridesAreValid(overrides: MoonlightStreamOverr
       !isOneOf(overrides.resolutionMode, ['host', '720p', '1080p', '1440p', '2160p', 'custom'])) {
     return false;
   }
+  if (overrides.adaptiveResolution !== undefined &&
+      !isOneOf(overrides.adaptiveResolution, ['host', 'device', 'off'])) { return false; }
   if (overrides.customWidth !== undefined && !isIntegerInRange(overrides.customWidth, 320, 7680)) {
     return false;
   }
@@ -418,11 +456,16 @@ export function moonlightSettingsAreValid(settings: MoonlightSettings): boolean 
   }
   const legacyScalingValid: boolean = settings.video.scalingMode === undefined ||
     isOneOf(settings.video.scalingMode, ['fit', 'fill', 'oneToOne']);
+  const adaptiveResolutionValid: boolean = settings.video.adaptiveResolution === undefined ||
+    isOneOf(settings.video.adaptiveResolution, ['host', 'device', 'off']);
   const legacyPipValid: boolean = settings.background.allowPip === undefined ||
     typeof settings.background.allowPip === 'boolean';
+  const controlModeValid: boolean = settings.input.controlMode === undefined ||
+    isOneOf(settings.input.controlMode, ['adaptive', 'keyboardMouse', 'trackpad']);
   return settings.schemaVersion === 1 &&
     isOneOf(settings.video.codecPreference, ['auto', 'h264', 'hevc', 'av1']) &&
     isOneOf(settings.video.resolutionMode, ['host', '720p', '1080p', '1440p', '2160p', 'custom']) &&
+    adaptiveResolutionValid &&
     isIntegerInRange(settings.video.customWidth, 320, 7680) &&
     isIntegerInRange(settings.video.customHeight, 240, 4320) &&
     isIntegerInRange(settings.video.fps, 30, 240) &&
@@ -434,6 +477,7 @@ export function moonlightSettingsAreValid(settings: MoonlightSettings): boolean 
     typeof settings.audio.enabled === 'boolean' && typeof settings.audio.playOnHost === 'boolean' &&
     Number.isFinite(settings.audio.volume) && settings.audio.volume >= 0 && settings.audio.volume <= 1 &&
     isOneOf(settings.input.touchMode, ['touch', 'absoluteMouse', 'relativeMouse']) &&
+    controlModeValid &&
     typeof settings.input.captureKeyboard === 'boolean' &&
     typeof settings.input.forwardSystemShortcuts === 'boolean' &&
     typeof settings.input.enableRumble === 'boolean' &&

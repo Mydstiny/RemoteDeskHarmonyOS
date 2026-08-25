@@ -31,6 +31,8 @@ export struct MoonlightControllerOverlay {
   onClose: () => void = (): void => {};
   onEditToggle: () => void = (): void => {};
 
+  private controllerPrimary(): string { return '#5B8FF9'; }
+
   private element(label: string): MoonlightControllerSemanticElement {
     if (label === 'A') { return 'faceA'; }
     if (label === 'B') { return 'faceB'; }
@@ -192,21 +194,21 @@ export struct MoonlightControllerOverlay {
 
       if (!this.inputCapabilityReady) {
         Row() {
-          SymbolGlyph($r('sys.symbol.exclamationmark_triangle_fill')).fontSize(16).fontColor(['#FFCF70'])
+          SymbolGlyph($r('sys.symbol.info_circle')).fontSize(16).fontColor(['#8FB5FF'])
           Text('控制器输入通道尚未就绪；在 native 接收能力可用前不会发送任何手柄信号。')
             .fontSize(10).fontColor('rgba(255,255,255,0.72)').layoutWeight(1).margin({ left: 8 })
         }.width('100%').padding(10).margin({ top: 12 })
-          .backgroundColor('rgba(255,190,80,0.10)').borderRadius(10)
+          .backgroundColor('rgba(91,143,249,0.12)').borderRadius(10)
       }
 
       Row() {
-        this.faceButton('LT', '#6E8EFF')
-        this.faceButton('LB', '#6E8EFF')
+        this.faceButton('LT', this.controllerPrimary())
+        this.faceButton('LB', this.controllerPrimary())
         Blank().layoutWeight(1)
         Text('完整状态由 native 聚合').fontSize(9).fontColor('rgba(255,255,255,0.48)')
         Blank().layoutWeight(1)
-        this.faceButton('RB', '#6E8EFF')
-        this.faceButton('RT', '#6E8EFF')
+        this.faceButton('RB', this.controllerPrimary())
+        this.faceButton('RT', this.controllerPrimary())
       }.width('100%').margin({ top: 14 })
 
       Row() {
@@ -216,9 +218,12 @@ export struct MoonlightControllerOverlay {
         }
         Blank().layoutWeight(1)
         Column({ space: 8 }) {
-          this.faceButton('Y', '#D6B83D')
-          Row({ space: 48 }) { this.faceButton('X', '#4B9DE8'); this.faceButton('B', '#E65D5D') }
-          this.faceButton('A', '#56B870')
+          this.faceButton('Y', this.controllerPrimary())
+          Row({ space: 48 }) {
+            this.faceButton('X', this.controllerPrimary())
+            this.faceButton('B', this.controllerPrimary())
+          }
+          this.faceButton('A', this.controllerPrimary())
         }.width(160)
         Blank().layoutWeight(1)
         this.stick('右摇杆')

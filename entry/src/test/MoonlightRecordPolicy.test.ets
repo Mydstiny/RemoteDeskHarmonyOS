@@ -84,6 +84,7 @@ export default function moonlightRecordPolicyTest(): void {
       const paths: string[] = moonlightMutableFieldPaths('settings');
       expect(paths.indexOf('video.scalingMode') < 0).assertTrue();
       expect(paths.indexOf('background.allowPip') < 0).assertTrue();
+      expect(paths.indexOf('input.controlMode') >= 0).assertTrue();
       expect(paths.indexOf('background.noSurfaceVideo') >= 0).assertTrue();
       expect(moonlightMutableFieldPaths('host').indexOf('httpsPort') >= 0).assertTrue();
     });

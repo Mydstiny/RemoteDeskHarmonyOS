@@ -119,6 +119,7 @@ export default function moonlightSettingsPolicyTest(): void {
       requested.video.latencyMode = 'smooth';
       requested.network.streamEncryption = 'required';
       requested.input.forwardSystemShortcuts = true;
+      requested.input.controlMode = 'keyboardMouse';
       requested.background.noSurfaceVideo = 'pause';
       requested.diagnostics.logLevel = 'debug';
       const resolved = resolveMoonlightProductSettings(requested);
@@ -135,14 +136,35 @@ export default function moonlightSettingsPolicyTest(): void {
       expect(resolved.effective.network.streamEncryption).assertEqual('auto');
       expect(resolved.requested.input.forwardSystemShortcuts).assertTrue();
       expect(resolved.effective.input.forwardSystemShortcuts).assertFalse();
+      expect(resolved.requested.input.controlMode).assertEqual('keyboardMouse');
+      expect(resolved.effective.input.controlMode).assertEqual('keyboardMouse');
       expect(resolved.requested.background.noSurfaceVideo).assertEqual('pause');
       expect(resolved.effective.background.noSurfaceVideo).assertEqual('drop');
       expect(resolved.requested.diagnostics.logLevel).assertEqual('debug');
       expect(resolved.effective.diagnostics.logLevel).assertEqual('error');
       const encoded: string = encodeMoonlightEffectiveSettings(resolved);
       expect(encoded.length > 0).assertTrue();
-      expect((decodeMoonlightEffectiveSettings(encoded) as Object) !== null).assertTrue();
+      const decoded = decodeMoonlightEffectiveSettings(encoded);
+      expect((decoded as Object) !== null).assertTrue();
+      expect(decoded?.effective.input.controlMode).assertEqual('keyboardMouse');
       expect(decodeMoonlightEffectiveSettings(encoded + 'x')).assertNull();
     });
+
+    it('maps_verified_hardware_codecs_and_continuous_frame_rate_into_product_settings', 0,
+      (): void => {
+        const requested = defaultMoonlightSettings();
+        requested.video.codecPreference = 'hevc';
+        requested.video.resolutionMode = '2160p';
+        requested.video.adaptiveResolution = 'off';
+        requested.video.fps = 117;
+        const resolved = resolveMoonlightProductSettings(requested, {
+          h264: { available: true, maxWidth: 4096, maxHeight: 2160, maxFps: 120 },
+          hevc: { available: true, maxWidth: 7680, maxHeight: 4320, maxFps: 240 },
+          av1: { available: true, maxWidth: 7680, maxHeight: 4320, maxFps: 180 }
+        });
+        expect(resolved.effective.video.codecPreference).assertEqual('hevc');
+        expect(resolved.effective.video.resolutionMode).assertEqual('2160p');
+        expect(resolved.effective.video.fps).assertEqual(117);
+      });
   });
 }

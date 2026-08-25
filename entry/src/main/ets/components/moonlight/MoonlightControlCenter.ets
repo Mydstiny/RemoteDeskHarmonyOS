@@ -1,10 +1,11 @@
 import { AppTheme, Palette, buildDark, buildLight } from '../../common/Theme';
+import { MoonlightInputControlMode } from '../../model/MoonlightModels';
 import {
   MoonlightControlCenterLayout,
   moonlightControlCenterLayout
 } from '../../services/MoonlightUiPolicy';
 
-export type MoonlightControlMode = 'touch' | 'trackpad' | 'absoluteMouse' | 'relativeMouse';
+export type MoonlightControlMode = MoonlightInputControlMode;
 
 @Component
 export struct MoonlightControlCenter {
@@ -17,7 +18,7 @@ export struct MoonlightControlCenter {
   @Prop appName: string = '';
   @Prop durationLabel: string = '00:00';
   @Prop negotiatedSummary: string = '等待协商';
-  @Prop controlMode: MoonlightControlMode = 'touch';
+  @Prop controlMode: MoonlightControlMode = 'adaptive';
   @Prop audioAvailable: boolean = false;
   @Prop sessionChangeCount: number = 0;
   @Prop pipAvailable: boolean = false;
@@ -74,10 +75,34 @@ export struct MoonlightControlCenter {
 
   @Builder private choice(label: string, selected: boolean, action: () => void,
     enabled: boolean = true) {
-    Button(label).height(36).fontSize(11).borderRadius(10)
+    Button(label).height(36).layoutWeight(1).fontSize(11).borderRadius(10)
       .backgroundColor(selected ? this.accentColor : this.pal().surface)
       .fontColor(selected ? Color.White : (enabled ? this.pal().text2 : this.pal().text3))
       .enabled(enabled).opacity(enabled ? 1 : 0.58).onClick(action)
+  }
+
+  @Builder private toggleRow(icon: Resource, title: string, detail: string,
+    value: boolean, action: () => void) {
+    Row() {
+      Stack({ alignContent: Alignment.Center }) {
+        SymbolGlyph(icon).fontSize(19)
+          .fontColor([value ? this.accentColor : this.pal().text])
+      }.width(38).height(38).borderRadius(11)
+        .backgroundColor(value ? this.accentColor + '18' : this.pal().surface)
+      Column() {
+        Text(title).fontSize(14).fontWeight(FontWeight.Medium)
+          .fontColor(this.pal().text).fontFamily(AppTheme.fontFamily)
+        Text(detail).fontSize(10).fontColor(this.pal().text3).fontFamily(AppTheme.fontFamily)
+          .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 2 })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10, right: 10 })
+      Toggle({ type: ToggleType.Switch, isOn: value })
+        .selectedColor(this.accentColor)
+        .onChange((next: boolean): void => {
+          if (next !== value) { action(); }
+        })
+        .accessibilityText(title + '，' + (value ? '已开启' : '已关闭'))
+    }.width('100%').height(this.layout().rowHeight)
+      .padding({ left: 10, right: 12, top: 6, bottom: 6 })
   }
 
   build() {
@@ -110,11 +135,24 @@ export struct MoonlightControlCenter {
           }.width('100%').backgroundColor(this.pal().card).borderRadius(16)
             .border({ width: 0.5, color: this.pal().cardBorder })
 
-          this.sectionTitle('控制', '仅本次')
+          this.sectionTitle('控制', '仅本次 · ' +
+            (this.controlMode === 'adaptive' ? '自适应' :
+              (this.controlMode === 'keyboardMouse' ? '键鼠' : '虚拟触控板')))
           Row({ space: 7 }) {
-            this.choice('触控', this.controlMode === 'touch', (): void => { this.onControlMode('touch'); })
-            this.choice('触控板', this.controlMode === 'trackpad', (): void => { this.onControlMode('trackpad'); })
+            this.choice('自适应', this.controlMode === 'adaptive',
+              (): void => { this.onControlMode('adaptive'); })
+            this.choice('键鼠', this.controlMode === 'keyboardMouse',
+              (): void => { this.onControlMode('keyboardMouse'); })
+            this.choice('虚拟触控板', this.controlMode === 'trackpad',
+              (): void => { this.onControlMode('trackpad'); })
           }.width('100%')
+          Text(this.controlMode === 'adaptive' ?
+            '触摸屏会自动启用虚拟触控板；实体鼠标、触控板或键盘活动会自动切回键鼠。' :
+            (this.controlMode === 'keyboardMouse' ?
+              '仅使用实体键盘、鼠标或实体触控板控制远端，触摸画面不移动远端指针。' :
+              '整块串流画面作为虚拟触控板：单指移动、轻点左键、双指滚动或右键。'))
+            .width('100%').fontSize(10).lineHeight(15).fontColor(this.pal().text3)
+            .margin({ top: 7 })
           Column() {
             this.actionRow($r('sys.symbol.keyboard'), '虚拟键盘',
               this.keyboardAvailable ? '系统输入法、功能键与修饰键' : '输入通道尚未就绪',
@@ -123,12 +161,12 @@ export struct MoonlightControlCenter {
             this.actionRow($r('sys.symbol.keyboard'), '修饰键与快捷键', '直接复用会话通用状态机',
               (): void => { this.onOpenModifiers(); })
             Divider().color(this.pal().divider).margin({ left: 58 })
-            this.actionRow($r('sys.symbol.gamecontroller_fill'), '控制器',
-              this.controllerAvailable ?
-                (this.physicalControllerPathReady ? '虚拟控制器与实体手柄监听均已就绪' :
-                  '虚拟控制器可用；当前设备实体手柄监听不可用') :
-                '控制器输入通道尚未就绪',
-              (): void => { this.onOpenController(); }, this.controllerAvailable)
+            this.actionRow($r('sys.symbol.gamecontroller_fill'), '实体手柄管理',
+              this.physicalControllerPathReady ?
+                '系统实体手柄监听已就绪，可查看与重新检测' :
+                (this.controllerAvailable ? '串流通道已就绪，等待系统手柄监听' :
+                  '查看系统监听和串流控制器通道状态'),
+              (): void => { this.onOpenController(); })
           }.width('100%').backgroundColor(this.pal().card).borderRadius(16).margin({ top: 8 })
             .border({ width: 0.5, color: this.pal().cardBorder })
 
@@ -141,10 +179,10 @@ export struct MoonlightControlCenter {
 
           this.sectionTitle('诊断', '仅本次')
           Column() {
-            this.actionRow($r('sys.symbol.info_circle'), '性能悬浮窗',
+            this.toggleRow($r('sys.symbol.info_circle'), '性能监控',
               this.diagnosticsVisible ? '已显示，可拖动、展开或复制脱敏数据' :
                 '显示实测帧率、码率与输入丢弃计数',
-              (): void => { this.onToggleDiagnostics(); })
+              this.diagnosticsVisible, (): void => { this.onToggleDiagnostics(); })
           }.width('100%').backgroundColor(this.pal().card).borderRadius(16)
             .border({ width: 0.5, color: this.pal().cardBorder })
 

@@ -63,6 +63,8 @@ export interface MoonlightNativeLaunchConfiguration {
   remoteControllersBitmap?: number;
   gamepadMask?: number;
   persistGamepads?: boolean;
+  videoCodec?: 'h264' | 'hevc' | 'av1';
+  resolutionPolicy?: 'exact' | 'hostCapability';
 }
 
 export interface MoonlightNativeRequest {
@@ -184,6 +186,7 @@ export interface MoonlightNativeStreamSnapshot {
   controllerReady: boolean;
   physicalControllerReady: boolean;
   inputMayBeStuck: boolean;
+  presentationFrameReady?: boolean;
   firstFrameReady: boolean;
   terminal: boolean;
   lastSequence: number;
@@ -200,6 +203,7 @@ export interface MoonlightNativeStreamSnapshot {
   streamHeight?: number;
   targetFps?: number;
   configuredBitrateKbps?: number;
+  codec?: 'h264' | 'hevc' | 'av1';
 }
 
 export interface MoonlightNativePort {

@@ -3,6 +3,7 @@
 #include <openssl/crypto.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <condition_variable>
 #include <cstdio>
@@ -18,6 +19,57 @@ namespace {
 
 constexpr std::size_t kRiKeyBytes = 16U;
 constexpr std::size_t kMaxIdentityBytes = 256U;
+
+constexpr std::uint64_t kCodecH264 = 0x00000001U;
+constexpr std::uint64_t kCodecHevc = 0x00000100U;
+constexpr std::uint64_t kCodecAv1 = 0x00010000U;
+
+std::uint64_t requiredCodecBit(
+    MoonlightLaunchConfiguration::VideoCodec codec) noexcept {
+    switch (codec) {
+        case MoonlightLaunchConfiguration::VideoCodec::H264: return kCodecH264;
+        case MoonlightLaunchConfiguration::VideoCodec::Hevc: return kCodecHevc;
+        case MoonlightLaunchConfiguration::VideoCodec::Av1: return kCodecAv1;
+    }
+    return 0U;
+}
+
+bool adaptLaunchVideoMode(MoonlightLaunchConfiguration& configuration,
+                          const MoonlightServerInfo& server) noexcept {
+    const std::uint64_t codecBit = requiredCodecBit(configuration.videoCodec);
+    if (codecBit == 0U || !server.codecModeSupport.has_value() ||
+        ((*server.codecModeSupport & codecBit) == 0U)) {
+        return false;
+    }
+    if (configuration.resolutionPolicy !=
+        MoonlightLaunchConfiguration::ResolutionPolicy::HostCapability) {
+        return true;
+    }
+    const std::optional<std::uint64_t> maximumLuma =
+        configuration.videoCodec == MoonlightLaunchConfiguration::VideoCodec::H264 ?
+            server.maxLumaPixelsH264 : server.maxLumaPixelsHevc;
+    if (!maximumLuma.has_value() || *maximumLuma == 0U) {
+        return true;
+    }
+    const std::uint64_t requestedLuma =
+        static_cast<std::uint64_t>(configuration.width) * configuration.height;
+    if (requestedLuma <= *maximumLuma) {
+        return true;
+    }
+    constexpr std::array<std::array<std::uint32_t, 2U>, 5U> modes {{
+        {{3840U, 2160U}}, {{2560U, 1440U}}, {{1920U, 1080U}},
+        {{1600U, 900U}}, {{1280U, 720U}}
+    }};
+    for (const auto& mode : modes) {
+        if (mode[0] <= configuration.width && mode[1] <= configuration.height &&
+            static_cast<std::uint64_t>(mode[0]) * mode[1] <= *maximumLuma) {
+            configuration.width = mode[0];
+            configuration.height = mode[1];
+            return true;
+        }
+    }
+    return false;
+}
 
 #if defined(RDP_NATIVE_CALLBACK_TESTING)
 std::atomic<std::uint64_t> gControlCleanseCount {0};
@@ -624,6 +676,7 @@ MoonlightHostControlResult::MoonlightHostControlResult(
       rtspSessionUrl(std::move(other.rtspSessionUrl)),
       sessionAddress(std::move(other.sessionAddress)),
       sessionServerInfo(std::move(other.sessionServerInfo)),
+      effectiveLaunchConfiguration(std::move(other.effectiveLaunchConfiguration)),
       stageTrace(std::move(other.stageTrace)),
       diagnostics(std::move(other.diagnostics)) {
     secureWipeOptionalString(other.rtspSessionUrl);
@@ -652,6 +705,7 @@ MoonlightHostControlResult& MoonlightHostControlResult::operator=(
         rtspSessionUrl = std::move(other.rtspSessionUrl);
         sessionAddress = std::move(other.sessionAddress);
         sessionServerInfo = std::move(other.sessionServerInfo);
+        effectiveLaunchConfiguration = std::move(other.effectiveLaunchConfiguration);
         stageTrace = std::move(other.stageTrace);
         diagnostics = std::move(other.diagnostics);
         secureWipeOptionalString(other.rtspSessionUrl);
@@ -949,6 +1003,12 @@ MoonlightHostControlResult MoonlightHostControl::runLaunch(
             result.preflightTruth = MoonlightHostControlTruth::Failed;
             return finish(std::move(result), MoonlightHostControlCode::Stale);
         }
+        if (!adaptLaunchVideoMode(request.material.configuration_,
+                                  *precondition.serverInfo)) {
+            result.preflightTruth = MoonlightHostControlTruth::Failed;
+            return finish(std::move(result),
+                          MoonlightHostControlCode::ActionRejected);
+        }
         const auto currentGame = precondition.serverInfo->currentGame;
         result.preflightTruth = MoonlightHostControlTruth::Confirmed;
         if (isLaunch && currentGame == request.appId) {
@@ -1045,6 +1105,8 @@ MoonlightHostControlResult MoonlightHostControl::runLaunch(
         MoonlightServerInfo launchSnapshot = *precondition.serverInfo;
         launchSnapshot.currentGame = request.appId;
         result.sessionServerInfo = std::move(launchSnapshot);
+        result.effectiveLaunchConfiguration =
+            request.material.configuration_;
         result.observedAtMs = impl->wallClock();
         return finish(std::move(result), MoonlightHostControlCode::Ok);
     } catch (...) {

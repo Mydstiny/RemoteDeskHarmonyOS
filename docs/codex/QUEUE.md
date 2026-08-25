@@ -2,6 +2,14 @@
 
 Updated: 2026-08-23 Asia/Shanghai
 
+## Concurrent RustDesk persistence repair
+
+- Implemented in the current uncommitted tree: background-safe in-memory RustDesk auth drafts, owner/device-local peer-2FA binding persistence and legacy migration, serialization/backup scrubbing, transactional endpoint/delete cleanup, and authoritative KeyVault snapshot gating so startup/scope-transition/read-failure emptiness cannot delete a persisted binding.
+- Audited adjacent host mutation paths: RustDesk authentication handoff, SSH trust/passphrase/public-key switching, RDP credential CRUD, host lock/delete/bulk delete/group/direct-port updates and general Preferences writes now stop, rollback or display an explicit partial-save warning instead of claiming success after a failed write.
+- Exact ArkTS test compile, signed HAP assembly, diff check, Light compliance and official HAP signature verification pass on 2026-08-23; isolated installed HAP SHA-256 is `f308ac7eee0adba1bdda0ae4e20639da928a30e9f1863f812e06d629e204eea7`.
+- The exact package was installed with existing data preserved and started successfully on physical `SGT-AL10` (`192.168.3.235:38451`); the user confirmed password background/foreground retention.
+- Remaining acceptance: create one new peer-2FA binding (the faulty prior build already deleted the old record), then verify background/process-relaunch readback on the target device. Device Hypium remains blocked by unregistered task `00306054`; independent review/isolated commit are still required before merge.
+
 ## Concurrent VNC preflight alignment repair
 
 - Implemented in the VNC preflight alignment commit: one HostList-owned lock/certificate-or-plaintext/credential flow for every device class, no password UI on RemoteDesktop, one-shot settings/add credentials without duplicate prompting, HostList-owned native auth retry, and endpoint/account-bound credential/plaintext handoffs.

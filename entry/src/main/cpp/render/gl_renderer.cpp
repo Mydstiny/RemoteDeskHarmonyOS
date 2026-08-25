@@ -1882,16 +1882,16 @@ napi_value NapiResizeRenderer(napi_env env, napi_callback_info info) {
 
     auto access = AcquirePublicRenderer(handleVal);
     if (access.renderer) {
-        {
-            std::lock_guard<std::mutex> lock(g_activeRendererMutex);
-            const auto ctx = FindRendererContextLocked(handleVal);
-            if (!ctx || ctx->renderer != access.renderer ||
-                !IsActiveRendererHandleLocked(handleVal)) {
-                access.renderer.reset();
-            } else {
-                ctx->generation = AdvanceRendererGeneration();
-            }
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        const auto ctx = FindRendererContextLocked(handleVal);
+        if (!ctx || ctx->renderer != access.renderer ||
+            !IsActiveRendererHandleLocked(handleVal)) {
+            access.renderer.reset();
         }
+        // Viewport size is presentation geometry, not renderer ownership.
+        // Advancing the ownership generation here invalidates the exact
+        // decoder binding on every rotation/PIP resize and strands a healthy
+        // hardware pipeline after the first surface-size callback.
     }
     if (access.renderer) {
         access.renderer->Resize(width, height);
@@ -2155,8 +2155,16 @@ void RendererNapi::SetActiveRenderer(int64_t handle) {
         if (previousHandle != handle) {
             previousRenderer = AcquireRendererLocked(previousHandle, false);
         }
-        const uint64_t generation = AdvanceRendererGeneration();
-        ctx->generation = generation;
+        const bool ownerMatches =
+            (!g_activeRendererOwner.valid() && !ctx->boundOwner.valid()) ||
+            (g_activeRendererOwner.valid() &&
+             ctx->boundOwner == g_activeRendererOwner &&
+             ctx->owner == g_activeRendererOwner);
+        if (Render::ShouldAdvanceRendererGeneration(
+                previousHandle, handle, ctx->active, ctx->detached,
+                ownerMatches, ctx->generation)) {
+            ctx->generation = AdvanceRendererGeneration();
+        }
         // An ownerless renderer is a pending token for the next activation;
         // never bind it to the previous session merely because that session's
         // component state is still being retired.
@@ -2202,9 +2210,14 @@ bool RendererNapi::SetActiveRenderer(
         if (previousHandle != handle) {
             previousRenderer = AcquireRendererLocked(previousHandle, false);
         }
+        const bool ownerMatches = g_activeRendererOwner == owner &&
+            ctx->boundOwner == owner && ctx->owner == owner;
         g_activeRendererOwner = owner;
-        const uint64_t generation = AdvanceRendererGeneration();
-        ctx->generation = generation;
+        if (Render::ShouldAdvanceRendererGeneration(
+                previousHandle, handle, ctx->active, ctx->detached,
+                ownerMatches, ctx->generation)) {
+            ctx->generation = AdvanceRendererGeneration();
+        }
         ctx->boundOwner = owner;
         ctx->owner = owner;
         ctx->active = true;

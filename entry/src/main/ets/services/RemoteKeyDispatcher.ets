@@ -43,10 +43,12 @@ export class RemoteKeyDispatcher {
     keyCode: number, label: string, mapKeyCode: KeyCodeMapper | null): void {
     try {
       const wireCode: number = this.transportCode(keyCode, mapKeyCode);
-      loader.sendKey(sessionId, wireCode, true);
-      loader.sendKey(sessionId, wireCode, false);
-      hilog.info(DOMAIN, TAG, 'key-tap: ' + label + ' code=' + keyCode.toString() +
-        ' wire=' + wireCode.toString());
+      if (loader.sendKeySequence(sessionId, [wireCode])) {
+        hilog.info(DOMAIN, TAG, 'key-tap batch: ' + label + ' code=' + keyCode.toString() +
+          ' wire=' + wireCode.toString());
+      } else {
+        hilog.warn(DOMAIN, TAG, 'key-tap batch rejected: ' + label);
+      }
     } catch (err) {
       hilog.error(DOMAIN, TAG, 'key-tap failed: ' + JSON.stringify(err));
     }
@@ -74,30 +76,51 @@ export class RemoteKeyDispatcher {
         this.sendVirtualKeyTapMapped(loader, sessionId, keyCode, label, mapKeyCode);
         return;
       }
-      // P0-2: locked 且已 remote-down 的修饰键不重复发 down (由 setLatch 锁定时刻发送)
+      const eventCodes: Array<number> = [];
+      const eventPressed: Array<boolean> = [];
+      const onceMods: Array<string> = [];
+      const newlyLockedMods: Array<string> = [];
+      const transientWireCodes: Array<number> = [];
       for (let i = 0; i < mods.length; i++) {
         const modName: string = this.modifierName(mods[i]);
         if (getLatch(modName) === 'locked' && isRemoteDown && isRemoteDown(modName)) {
-          continue; // 已按下, 跳过
+          continue;
         }
         const wireModifierCode: number = this.transportCode(mods[i], mapKeyCode);
-        loader.sendKey(sessionId, wireModifierCode, true);
-        if (getLatch(modName) === 'locked' && setRemoteDown !== null) {
-          setRemoteDown(modName, true, wireModifierCode);
+        eventCodes.push(wireModifierCode);
+        eventPressed.push(true);
+        if (getLatch(modName) === 'locked') {
+          newlyLockedMods.push(modName);
+        } else {
+          onceMods.push(modName);
+          transientWireCodes.push(wireModifierCode);
         }
       }
       const wireKeyCode: number = this.transportCode(keyCode, mapKeyCode);
-      loader.sendKey(sessionId, wireKeyCode, true);
-      loader.sendKey(sessionId, wireKeyCode, false);
-      // 逆序释放 once 状态的修饰键 (locked 保持)
-      for (let i = mods.length - 1; i >= 0; i--) {
-        const modName: string = this.modifierName(mods[i]);
-        if (getLatch(modName) === 'once') {
-          loader.sendKey(sessionId, this.transportCode(mods[i], mapKeyCode), false);
-          setLatch(modName, 'off');
+      eventCodes.push(wireKeyCode);
+      eventPressed.push(true);
+      eventCodes.push(wireKeyCode);
+      eventPressed.push(false);
+      for (let i = transientWireCodes.length - 1; i >= 0; i--) {
+        eventCodes.push(transientWireCodes[i]);
+        eventPressed.push(false);
+      }
+      const accepted: boolean = loader.sendKeyEvents(sessionId, eventCodes, eventPressed);
+      for (let i = 0; i < onceMods.length; i++) {
+        setLatch(onceMods[i], 'off');
+      }
+      if (!accepted) {
+        hilog.warn(DOMAIN, TAG, 'modified-key batch rejected: ' + label);
+        return;
+      }
+      if (setRemoteDown !== null) {
+        for (let i = 0; i < newlyLockedMods.length; i++) {
+          const modName: string = newlyLockedMods[i];
+          const sourceCode: number = this.modifierCode(modName);
+          setRemoteDown(modName, true, this.transportCode(sourceCode, mapKeyCode));
         }
       }
-      hilog.info(DOMAIN, TAG, 'modified-key: ' + label + ' mods=' + mods.length.toString());
+      hilog.info(DOMAIN, TAG, 'modified-key batch: ' + label + ' mods=' + mods.length.toString());
     } catch (err) {
       hilog.error(DOMAIN, TAG, 'modified-key failed: ' + JSON.stringify(err));
     }
@@ -121,27 +144,10 @@ export class RemoteKeyDispatcher {
     setRemoteDown: RemoteDownSetter | null,
     mapKeyCode: KeyCodeMapper | null): void {
     try {
-      let hasLockedModifier: boolean = false;
-      if (getLatch !== null) {
-        for (let index: number = 0; index < keyCodes.length; index++) {
-          const name: string = this.modifierName(keyCodes[index]);
-          if (name.length > 0 && getLatch(name) === 'locked') {
-            hasLockedModifier = true;
-          }
-        }
-      }
-      if (!hasLockedModifier) {
-        const mapped: Array<number> = [];
-        for (let index: number = 0; index < keyCodes.length; index++) {
-          mapped.push(this.transportCode(keyCodes[index], mapKeyCode));
-        }
-        if (loader.sendKeySequence(sessionId, mapped)) {
-          hilog.info(DOMAIN, TAG, 'shortcut-batch: ' + label + ' keys=' + mapped.length.toString());
-          return;
-        }
-        hilog.warn(DOMAIN, TAG, 'shortcut-batch rejected, falling back: ' + label);
-      }
-      const pressedCodes: number[] = [];
+      const eventCodes: Array<number> = [];
+      const eventPressed: Array<boolean> = [];
+      const transientCodes: Array<number> = [];
+      const newlyLockedNames: Array<string> = [];
       for (let i = 0; i < keyCodes.length; i++) {
         const modName: string = this.modifierName(keyCodes[i]);
         const isLockedModifier: boolean = modName.length > 0 &&
@@ -149,25 +155,34 @@ export class RemoteKeyDispatcher {
         if (isLockedModifier) {
           if (isRemoteDown === null || !isRemoteDown(modName)) {
             const wireModifierCode: number = this.transportCode(keyCodes[i], mapKeyCode);
-            loader.sendKey(sessionId, wireModifierCode, true);
-            if (setRemoteDown !== null) {
-              setRemoteDown(modName, true, wireModifierCode);
-            }
-            hilog.info(DOMAIN, TAG, 'shortcut restore locked modifier down: ' + modName);
-          } else {
-            hilog.info(DOMAIN, TAG, 'shortcut keep locked modifier down: ' + modName);
+            eventCodes.push(wireModifierCode);
+            eventPressed.push(true);
+            newlyLockedNames.push(modName);
           }
           continue;
         }
         const wireCode: number = this.transportCode(keyCodes[i], mapKeyCode);
-        loader.sendKey(sessionId, wireCode, true);
-        pressedCodes.push(wireCode);
+        eventCodes.push(wireCode);
+        eventPressed.push(true);
+        transientCodes.push(wireCode);
       }
-      for (let i = pressedCodes.length - 1; i >= 0; i--) {
-        loader.sendKey(sessionId, pressedCodes[i], false);
+      for (let i = transientCodes.length - 1; i >= 0; i--) {
+        eventCodes.push(transientCodes[i]);
+        eventPressed.push(false);
       }
-      hilog.info(DOMAIN, TAG, 'shortcut: ' + label + ' keys=' + keyCodes.length.toString() +
-        ' transient=' + pressedCodes.length.toString());
+      if (!loader.sendKeyEvents(sessionId, eventCodes, eventPressed)) {
+        hilog.warn(DOMAIN, TAG, 'shortcut batch rejected: ' + label);
+        return;
+      }
+      if (setRemoteDown !== null) {
+        for (let i = 0; i < newlyLockedNames.length; i++) {
+          const modName: string = newlyLockedNames[i];
+          const sourceCode: number = this.modifierCode(modName);
+          setRemoteDown(modName, true, this.transportCode(sourceCode, mapKeyCode));
+        }
+      }
+      hilog.info(DOMAIN, TAG, 'shortcut batch: ' + label + ' keys=' + keyCodes.length.toString() +
+        ' transient=' + transientCodes.length.toString());
     } catch (err) {
       hilog.error(DOMAIN, TAG, 'shortcut failed: ' + JSON.stringify(err));
     }
@@ -275,5 +290,21 @@ export class RemoteKeyDispatcher {
       return 'win';
     }
     return '';
+  }
+
+  private modifierCode(modifierName: string): number {
+    if (modifierName === 'ctrl') {
+      return KEYCODE_CTRL_LEFT;
+    }
+    if (modifierName === 'alt') {
+      return KEYCODE_ALT_LEFT;
+    }
+    if (modifierName === 'shift') {
+      return KEYCODE_SHIFT_LEFT;
+    }
+    if (modifierName === 'win') {
+      return KEYCODE_META_LEFT;
+    }
+    return 0;
   }
 }

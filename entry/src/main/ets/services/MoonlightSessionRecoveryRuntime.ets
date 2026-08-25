@@ -86,7 +86,7 @@ export class MoonlightSessionRecoveryRuntime implements
     appId: string): MoonlightSessionRecoveryRuntimeBindCode {
     const store: MoonlightSessionRecoveryStore =
       new MoonlightSessionRecoveryStore();
-    const decoded = store.bind(context, lease);
+    const decoded = store.bind(context, lease, hostId);
     if (decoded.code !== 'ready' || decoded.marker === null) {
       this.resetBinding();
       return decoded.code as MoonlightSessionRecoveryDecodeCode;

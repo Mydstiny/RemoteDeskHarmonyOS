@@ -76,6 +76,29 @@ export default function moonlightRuntimeContextFactoryTest(): void {
       expect(launch.persistGamepads).assertTrue();
     });
 
+    it('maps_device_adaptive_resolution_to_current_landscape_pixels_not_stale_custom_values', 0,
+      (): void => {
+        const settings = defaultMoonlightSettings();
+        settings.video.resolutionMode = 'custom';
+        settings.video.adaptiveResolution = 'device';
+        settings.video.customWidth = 1920;
+        settings.video.customHeight = 1080;
+        const launch = moonlightLaunchConfiguration(settings, 2560, 1600, 4096, 2160);
+        expect(launch.width).assertEqual(2560);
+        expect(launch.height).assertEqual(1600);
+      });
+
+    it('fits_device_aspect_ratio_inside_the_selected_decoder_bounds', 0, (): void => {
+      const settings = defaultMoonlightSettings();
+      settings.video.resolutionMode = 'custom';
+      settings.video.adaptiveResolution = 'device';
+      settings.video.customWidth = 3840;
+      settings.video.customHeight = 2160;
+      const launch = moonlightLaunchConfiguration(settings, 2560, 1600, 1920, 1080);
+      expect(launch.width).assertEqual(1728);
+      expect(launch.height).assertEqual(1080);
+    });
+
     it('allocates_strictly_monotonic_process_owner_tokens', 0, (): void => {
       const allocator = MoonlightRuntimeOwnerTokenAllocator.getInstance();
       allocator.resetForTest();

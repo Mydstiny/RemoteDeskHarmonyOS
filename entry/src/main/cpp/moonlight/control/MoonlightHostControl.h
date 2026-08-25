@@ -105,6 +105,8 @@ struct REMOTEDESK_MOONLIGHT_CONTROL_HIDDEN MoonlightHostControlContext final {
 };
 
 struct REMOTEDESK_MOONLIGHT_CONTROL_HIDDEN MoonlightLaunchConfiguration final {
+    enum class VideoCodec : std::uint8_t { H264, Hevc, Av1 };
+    enum class ResolutionPolicy : std::uint8_t { Exact, HostCapability };
     std::uint32_t width = 1920;
     std::uint32_t height = 1080;
     std::uint32_t refreshRate = 60;
@@ -116,6 +118,8 @@ struct REMOTEDESK_MOONLIGHT_CONTROL_HIDDEN MoonlightLaunchConfiguration final {
     std::uint32_t remoteControllersBitmap = 0;
     std::uint32_t gamepadMask = 0;
     bool persistGamepads = false;
+    VideoCodec videoCodec = VideoCodec::H264;
+    ResolutionPolicy resolutionPolicy = ResolutionPolicy::Exact;
 };
 
 class REMOTEDESK_MOONLIGHT_CONTROL_HIDDEN MoonlightLaunchMaterial final {
@@ -215,6 +219,10 @@ struct REMOTEDESK_MOONLIGHT_CONTROL_HIDDEN MoonlightHostControlResult final {
     // the authenticated pre-launch read plus the accepted launch receipt and
     // is intentionally not projected through ArkTS.
     std::optional<MoonlightServerInfo> sessionServerInfo;
+    // Exact mode that was sent to Sunshine after host-capability adaptation.
+    // ProductRuntime carries it into common-c so launch, decoder and stream
+    // dimensions can never diverge.
+    std::optional<MoonlightLaunchConfiguration> effectiveLaunchConfiguration;
     std::vector<MoonlightHostControlStage> stageTrace;
     std::vector<MoonlightHostControlDiagnostic> diagnostics;
 

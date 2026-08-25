@@ -348,7 +348,7 @@ class MemoryDeletionPort implements MoonlightDeletionCommandPort {
 class MemorySelectionPort implements MoonlightDeletionSelectionPort {
   snapshotValue: MoonlightDeletionSelectionSnapshot = {
     physicalSelected: false,
-    selectedScopes: []
+    selectedScopes: ['settings', 'hosts', 'profiles']
   };
   cancelFailure: boolean = false;
   cancelCount: number = 0;
@@ -364,7 +364,10 @@ class MemorySelectionPort implements MoonlightDeletionSelectionPort {
 
   cancelAllMoonlightSync(_candidate: AccountSessionLease): boolean {
     if (this.cancelFailure) { return false; }
-    this.snapshotValue = { physicalSelected: false, selectedScopes: [] };
+    this.snapshotValue = {
+      physicalSelected: false,
+      selectedScopes: ['settings', 'hosts', 'profiles']
+    };
     this.cancelCount++;
     return true;
   }
@@ -497,13 +500,12 @@ export default function moonlightDeletionCommandServiceTest(): void {
         expect(port.rows.size).assertEqual(0);
       });
 
-    it('keeps_a_dormant_prerelease_cloud_choice_from_blocking_local_cleanup',
+    it('keeps_the_fixed_logical_projection_from_blocking_local_cleanup',
       0, async (): Promise<void> => {
         const port = seededPort();
         const selection = new MemorySelectionPort();
-        // The remote table rollout is closed, so the durable physical choice
-        // is not runtime-active. Logical intent remains readable and is
-        // cancelled before the local wipe to prevent a future rehydrate.
+        // The fixed logical projection is not an active cloud relationship
+        // while the physical Moonlight table is stopped.
         selection.snapshotValue = {
           physicalSelected: false,
           selectedScopes: ['settings', 'hosts', 'profiles']
@@ -514,11 +516,11 @@ export default function moonlightDeletionCommandServiceTest(): void {
         const preview = service.preview(lease(), 'delete_local_data');
         expect(preview.code).assertEqual('ok');
         expect(preview.impact.cloudTombstonesRequired).assertEqual(0);
-        expect(preview.impact.selectionChanged).assertTrue();
+        expect(preview.impact.selectionChanged).assertFalse();
         const result = await service.execute(lease(), preview, 300);
         expect(result.ok).assertTrue();
         expect(result.cloudAttempted).assertFalse();
-        expect(selection.cancelCount).assertEqual(1);
+        expect(selection.cancelCount).assertEqual(0);
         expect(port.rows.size).assertEqual(0);
       });
 
@@ -871,7 +873,7 @@ export default function moonlightDeletionCommandServiceTest(): void {
         expect(port.rows.has('profile-1')).assertTrue();
       });
 
-    it('returns_unchanged_when_cancel_sync_has_no_selected_scope', 0,
+    it('returns_unchanged_when_the_physical_moonlight_table_is_stopped', 0,
       async (): Promise<void> => {
         const port = seededPort();
         const selection = new MemorySelectionPort();
@@ -884,7 +886,7 @@ export default function moonlightDeletionCommandServiceTest(): void {
         expect(selection.cancelCount).assertEqual(0);
       });
 
-    it('cancels_physical_and_logical_selection_without_deleting_rows', 0,
+    it('cancels_only_the_physical_table_and_keeps_the_fixed_projection', 0,
       async (): Promise<void> => {
         const port = seededPort();
         const selection = new MemorySelectionPort();
@@ -902,6 +904,8 @@ export default function moonlightDeletionCommandServiceTest(): void {
         expect(port.rows.size).assertEqual(8);
         expect(port.commitCount).assertEqual(0);
         expect(selection.cancelCount).assertEqual(1);
+        expect(selection.snapshotValue.selectedScopes.join(','))
+          .assertEqual('settings,hosts,profiles');
       });
   });
 }

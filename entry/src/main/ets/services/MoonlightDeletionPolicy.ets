@@ -78,8 +78,9 @@ export function resolveMoonlightDeletionImpact(
   };
   if (!base.valid) { return base; }
   if (command === 'cancel_sync') {
-    base.selectionChanged = context.physicalCloudSelected ||
-      context.selectedLogicalScopeCount > 0;
+    // The logical portable set is now a fixed projection invariant. Only the
+    // physical Moonlight table represents an active upload/download choice.
+    base.selectionChanged = context.physicalCloudSelected;
     base.confirmationLevel = 'none';
     return base;
   }
@@ -92,10 +93,10 @@ export function resolveMoonlightDeletionImpact(
       context.profileRecordCount;
     base.cloudDataPreserved = base.cloudTombstonesRequired === 0;
     base.waitForCloudTerminal = base.cloudTombstonesRequired > 0;
-    // Completing a cloud-wide deletion disables both the physical table and
-    // all logical scopes so preserved local rows cannot be republished.
-    base.selectionChanged = context.physicalCloudSelected ||
-      context.selectedLogicalScopeCount > 0;
+    // Completing a cloud-wide deletion disables the physical table so the
+    // preserved local rows cannot be republished. The fixed logical set stays
+    // canonical for any later explicit re-enable.
+    base.selectionChanged = context.physicalCloudSelected;
     base.confirmationLevel = 'danger';
     return base;
   }
@@ -116,8 +117,7 @@ export function resolveMoonlightDeletionImpact(
     // A local-only wipe must also stop this device's Moonlight selection.
     // Leaving it enabled would allow the next cloud pull to recreate the
     // rows the user just deleted, which is both surprising and unsafe.
-    base.selectionChanged = context.physicalCloudSelected ||
-      context.selectedLogicalScopeCount > 0;
+    base.selectionChanged = context.physicalCloudSelected;
     base.confirmationLevel = 'danger';
     return base;
   }

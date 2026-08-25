@@ -7,8 +7,8 @@ import {
   MOONLIGHT_CLOUD_SYNC_SELECTION_DEFAULT,
   MOONLIGHT_CLOUD_SYNC_SELECTION_KEY,
   MoonlightCloudSyncScope,
-  moonlightCloudSyncSelectionEquals,
-  normalizeMoonlightCloudSyncSelection
+  moonlightForcedCloudSyncSelection,
+  moonlightCloudSyncSelectionEquals
 } from './MoonlightCloudSyncSelectionPolicy';
 
 export const MOONLIGHT_CLOUD_SYNC_PREFERENCES_NAME: string =
@@ -79,30 +79,32 @@ export class MoonlightCloudSyncSelectionStore {
   }
 
   init(lease: AccountSessionLease,
-    identityCapabilityReady: boolean = false): boolean {
+    _identityCapabilityReady: boolean = false): boolean {
     const captured: AccountSessionLease = cloneAccountSessionLease(lease);
     if (!this.leaseIsCurrent(captured)) { return false; }
     const key: string =
       moonlightCloudSyncSelectionPreferenceKey(captured.ownerScopeId);
     if (key === '') { return false; }
-    let next: MoonlightCloudSyncScope[] =
-      MOONLIGHT_CLOUD_SYNC_SELECTION_DEFAULT.slice();
+    const next: MoonlightCloudSyncScope[] =
+      moonlightForcedCloudSyncSelection();
     const stored: string | null =
       this.port.readSelectionPreference(captured, key);
-    if (stored !== null && stored !== '') {
-      try {
-        const parsed: string[] = JSON.parse(stored) as string[];
-        if (Array.isArray(parsed)) {
-          next = normalizeMoonlightCloudSyncSelection(
-            parsed, identityCapabilityReady);
-        }
-      } catch (_error) {
-        next = MOONLIGHT_CLOUD_SYNC_SELECTION_DEFAULT.slice();
-      }
-    }
     if (!this.leaseIsCurrent(captured)) { return false; }
     this.ownerScopeId = captured.ownerScopeId;
     this.selected = next;
+    // Old builds persisted empty, partial or malformed scope arrays. Runtime
+    // behavior must not depend on repairing Preferences successfully: use the
+    // complete set immediately and rewrite the legacy value on a best-effort
+    // basis. A later activation retries when the preference service recovers.
+    const canonical: string = JSON.stringify(next);
+    if (stored !== canonical) {
+      this.port.writeSelectionPreference(captured, key, canonical);
+    }
+    if (!this.leaseIsCurrent(captured)) {
+      this.ownerScopeId = '';
+      this.selected = MOONLIGHT_CLOUD_SYNC_SELECTION_DEFAULT.slice();
+      return false;
+    }
     return true;
   }
 
@@ -126,18 +128,20 @@ export class MoonlightCloudSyncSelectionStore {
       captured, selected, selected) && this.leaseIsCurrent(captured);
   }
 
-  stageSelectedScopes(lease: AccountSessionLease, scopes: string[],
-    identityCapabilityReady: boolean = false): boolean {
+  stageSelectedScopes(lease: AccountSessionLease, _scopes: string[],
+    _identityCapabilityReady: boolean = false): boolean {
     const captured: AccountSessionLease = cloneAccountSessionLease(lease);
     if (!this.leaseIsCurrent(captured) ||
         captured.ownerScopeId !== this.ownerScopeId) { return false; }
-    this.selected = normalizeMoonlightCloudSyncSelection(
-      scopes, identityCapabilityReady);
+    // Recovery code may replay a legacy partial/empty snapshot. The current
+    // contract has no logical subtype switch, so every staged state converges
+    // to the dependency-complete portable set.
+    this.selected = moonlightForcedCloudSyncSelection();
     return true;
   }
 
-  replaceSelectedScopes(lease: AccountSessionLease, scopes: string[],
-    identityCapabilityReady: boolean = false): MoonlightSelectionStoreResult {
+  replaceSelectedScopes(lease: AccountSessionLease, _scopes: string[],
+    _identityCapabilityReady: boolean = false): MoonlightSelectionStoreResult {
     const captured: AccountSessionLease = cloneAccountSessionLease(lease);
     if (!this.leaseIsCurrent(captured)) {
       return result(false, 'stale_lease', this.selected, false, false);
@@ -149,8 +153,7 @@ export class MoonlightCloudSyncSelectionStore {
     }
     const previous: MoonlightCloudSyncScope[] = this.selected.slice();
     const next: MoonlightCloudSyncScope[] =
-      normalizeMoonlightCloudSyncSelection(
-        scopes, identityCapabilityReady);
+      moonlightForcedCloudSyncSelection();
     // Compare the complete known scope set so a previously persisted identity
     // scope is actively removed when capability becomes unavailable.
     if (moonlightCloudSyncSelectionEquals(previous, next, true)) {

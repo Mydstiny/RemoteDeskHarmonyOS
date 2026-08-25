@@ -250,8 +250,10 @@ export interface RemoteHostJSON {
   rustdeskDirectPort: number
   rustdeskTargetDevice?: string
   rustdeskAdaptiveOrientation?: boolean
+  /** Legacy read-only migration input. New serializations omit these fields. */
   rustdeskTotpEntryId?: string
-  rustdeskTotpAutoSubmit?: boolean
+  rustdeskTotpAutoSubmit?: boolean | string
+  rustdeskTotpDeviceId?: string
   rdpCredentialId: string
   rdpAuthMode?: string
   rdpRestrictedAdminSecretSource?: string
@@ -394,9 +396,13 @@ export class RemoteHost implements LanHostAddressView {
   rustdeskDirectPort: number = 21118; // 直连端口 (默认 21118; RustDesk peer TCP)
   rustdeskTargetDevice: string = 'computer'; // 控制目标: computer | phone
   rustdeskAdaptiveOrientation: boolean = false; // 手机目标的自适应翻转，默认关闭
-  // 可选的本机 TOTP 条目绑定；只保存条目 ID，不保存 TOTP secret。
+  // Peer 2FA 绑定的运行时投影。权威值位于 owner/device 本地 Preferences，
+  // 这些字段不得进入 RemoteHost JSON、云扩展或备份。
   rustdeskTotpEntryId: string = '';
   rustdeskTotpAutoSubmit: boolean = false;
+  // 仅用于读取旧 JSON/云扩展后的一次性迁移，迁移完成后立即清除。
+  rustdeskTotpLegacyDeviceId: string = '';
+  rustdeskTotpLegacySource: string = '';
   rdpCredentialId: string = ''; // RDP 绑定的 Windows 凭据 ID
   // Restricted Admin 的 NTLM Hash 保存在本机加密扩展中，不进入 RemoteHost/JSON。
   rdpAuthMode: RdpAuthMode = 'password';
@@ -603,8 +609,6 @@ export class RemoteHost implements LanHostAddressView {
       rustdeskDirectPort: this.rustdeskDirectPort,
       rustdeskTargetDevice: this.rustdeskTargetDevice,
       rustdeskAdaptiveOrientation: this.rustdeskAdaptiveOrientation,
-      rustdeskTotpEntryId: this.rustdeskTotpEntryId,
-      rustdeskTotpAutoSubmit: this.rustdeskTotpAutoSubmit,
       rdpCredentialId: this.rdpCredentialId,
       rdpAuthMode: this.rdpAuthMode,
       rdpRestrictedAdminSecretSource: this.rdpRestrictedAdminSecretSource,
@@ -766,8 +770,17 @@ export class RemoteHost implements LanHostAddressView {
     if (json.rustdeskAdaptiveOrientation !== undefined) {
       host.rustdeskAdaptiveOrientation = json.rustdeskAdaptiveOrientation;
     }
-    if (json.rustdeskTotpEntryId) { host.rustdeskTotpEntryId = json.rustdeskTotpEntryId; }
-    if (json.rustdeskTotpAutoSubmit !== undefined) { host.rustdeskTotpAutoSubmit = json.rustdeskTotpAutoSubmit; }
+    if (json.rustdeskTotpEntryId) {
+      host.rustdeskTotpEntryId = json.rustdeskTotpEntryId;
+      host.rustdeskTotpLegacySource = 'remote_json';
+    }
+    if (json.rustdeskTotpAutoSubmit !== undefined) {
+      host.rustdeskTotpAutoSubmit = json.rustdeskTotpAutoSubmit === true ||
+        json.rustdeskTotpAutoSubmit === 'true' || json.rustdeskTotpAutoSubmit === '1';
+    }
+    if (json.rustdeskTotpDeviceId) {
+      host.rustdeskTotpLegacyDeviceId = json.rustdeskTotpDeviceId;
+    }
     if (json.rdpCredentialId) { host.rdpCredentialId = json.rdpCredentialId; }
     host.rdpAuthMode = normalizeRdpAuthMode(json.rdpAuthMode);
     host.rdpRestrictedAdminSecretSource = normalizeRdpRestrictedAdminSecretSource(

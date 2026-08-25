@@ -61,6 +61,7 @@ enum class MoonlightDecoderPortStartStatus : std::uint8_t {
 
 enum class MoonlightDecoderPortSubmitStatus : std::uint8_t {
     Accepted,
+    AcceptedNeedsIdr,
     Backpressure,
     NeedIdr,
     Stale,
@@ -96,6 +97,34 @@ struct REMOTEDESK_MOONLIGHT_DECODER_HIDDEN MoonlightDecoderPortSubmitResult fina
     MoonlightVideoDecoderBinding binding {};
 };
 
+enum class MoonlightDecoderGenerationHandoff : std::uint8_t {
+    Unchanged,
+    Advanced,
+    Stale,
+};
+
+/**
+ * Classifies the decoder generation observed after an accepted IDR.
+ *
+ * A recovery rebuild keeps the registry handle and owner but advances the
+ * callback generation.  The caller must adopt that exact generation before
+ * admitting the next predicted frame.  Codec-configuration recovery requires
+ * an advance; a regular IDR may legitimately retain the current generation.
+ */
+constexpr MoonlightDecoderGenerationHandoff
+classifyMoonlightDecoderGenerationHandoff(
+    bool stableTelemetry, std::uint64_t requestedGeneration,
+    std::uint64_t observedGeneration, bool advanceRequired) noexcept {
+    if (!stableTelemetry || requestedGeneration == 0U ||
+        observedGeneration < requestedGeneration ||
+        (advanceRequired && observedGeneration == requestedGeneration)) {
+        return MoonlightDecoderGenerationHandoff::Stale;
+    }
+    return observedGeneration > requestedGeneration
+        ? MoonlightDecoderGenerationHandoff::Advanced
+        : MoonlightDecoderGenerationHandoff::Unchanged;
+}
+
 enum class MoonlightDecoderPortStopStatus : std::uint8_t {
     Stopped,
     AlreadyStopped,
@@ -113,6 +142,16 @@ struct REMOTEDESK_MOONLIGHT_DECODER_HIDDEN MoonlightDecoderPresentationSnapshot 
     std::uint64_t renderedOutputBuffers = 0U;
     std::uint64_t nativeImageFrames = 0U;
     std::uint64_t rendererPresentedFrames = 0U;
+    std::size_t decoderQueueDepth = 0U;
+    std::uint64_t decoderInputDroppedFrames = 0U;
+    std::uint64_t decoderWaitKeyframeDrops = 0U;
+    std::uint64_t decoderInputTruncated = 0U;
+    std::uint64_t decoderRenderOutputFailures = 0U;
+    std::uint64_t decoderSurfaceUpdateFailures = 0U;
+    std::uint64_t decoderSurfaceCoalescedNotifications = 0U;
+    std::int64_t decoderCodecLatencyMs = 0;
+    std::int64_t decoderCodecLatencyMaxMs = 0;
+    bool decoderLowLatencyEnabled = false;
 };
 
 class REMOTEDESK_MOONLIGHT_DECODER_HIDDEN MoonlightOwnedDecoderPort {
@@ -192,6 +231,16 @@ struct REMOTEDESK_MOONLIGHT_DECODER_HIDDEN MoonlightVideoDecoderSnapshot final {
     std::uint64_t renderedOutputBuffers = 0U;
     std::uint64_t nativeImageFrames = 0U;
     std::uint64_t rendererPresentedFrames = 0U;
+    std::size_t decoderQueueDepth = 0U;
+    std::uint64_t decoderInputDroppedFrames = 0U;
+    std::uint64_t decoderWaitKeyframeDrops = 0U;
+    std::uint64_t decoderInputTruncated = 0U;
+    std::uint64_t decoderRenderOutputFailures = 0U;
+    std::uint64_t decoderSurfaceUpdateFailures = 0U;
+    std::uint64_t decoderSurfaceCoalescedNotifications = 0U;
+    std::int64_t decoderCodecLatencyMs = 0;
+    std::int64_t decoderCodecLatencyMaxMs = 0;
+    bool decoderLowLatencyEnabled = false;
 };
 
 class REMOTEDESK_MOONLIGHT_DECODER_HIDDEN MoonlightOwnedVideoDecoderSink final

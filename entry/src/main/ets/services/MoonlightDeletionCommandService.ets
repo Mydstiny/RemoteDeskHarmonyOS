@@ -575,9 +575,9 @@ export class MoonlightDeletionCommandService {
     if (current.command === 'delete_local_data' &&
         current.impact.selectionChanged) {
       // Stop future upload/download before removing local rows. This prevents
-      // an already-selected cloud projection from immediately rehydrating a
-      // local-only wipe. All destructive mutations remain untouched if the
-      // durable physical+logical selection cannot be read back as disabled.
+      // an active physical cloud projection from immediately rehydrating a
+      // local-only wipe. The fixed logical set remains canonical and is not a
+      // second on/off boundary.
       if (this.selectionPort === null) {
         return commandResult(false, 'selection_unavailable', current.impact);
       }

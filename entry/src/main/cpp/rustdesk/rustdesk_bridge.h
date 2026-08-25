@@ -181,6 +181,7 @@ public:
 
     // ---- 输入事件 ----
     void sendKey(uint32_t scancode, bool pressed) override;
+    bool sendKeyEvents(const std::vector<RemoteKeyEvent>& events) override;
     void sendMouse(int x, int y, MouseButton button, bool pressed) override;
     void sendMouseWheel(int x, int y, int delta) override;
     bool sendTouchpadWheel(int x, int y);

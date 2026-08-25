@@ -129,6 +129,24 @@ function valueAtPath(source: Record<string, Object>, path: string): Object | und
   return current;
 }
 
+/** Project additive settings fields when one concurrent writer predates them. */
+function compatibilityValueAtPath(
+  source: Record<string, Object>, path: string, recordType: string
+): Object | undefined {
+  const direct: Object | undefined = valueAtPath(source, path);
+  if (direct !== undefined || recordType !== 'settings') { return direct; }
+  if (path === 'input.controlMode') {
+    const legacyTouchMode: Object | undefined = valueAtPath(source, 'input.touchMode');
+    return legacyTouchMode === 'absoluteMouse' || legacyTouchMode === 'relativeMouse' ?
+      'trackpad' : 'adaptive';
+  }
+  if (path === 'video.adaptiveResolution') {
+    const legacyResolutionMode: Object | undefined = valueAtPath(source, 'video.resolutionMode');
+    return legacyResolutionMode === 'host' ? 'host' : 'off';
+  }
+  return undefined;
+}
+
 function setValueAtPath(target: Record<string, Object>, path: string, value: Object): boolean {
   const segments: string[] = path.split('.');
   let current: Record<string, Object> = target;
@@ -188,8 +206,10 @@ function mergeConcurrentMutableRecord(
     const currentVersion: number = fieldVersion(currentMeta, path);
     const candidateVersion: number = fieldVersion(candidateMeta, path);
     mergedVersions[path] = Math.max(currentVersion, candidateVersion);
-    const currentValue: Object | undefined = valueAtPath(currentPayload, path);
-    const candidateValue: Object | undefined = valueAtPath(candidatePayload, path);
+    const currentValue: Object | undefined = compatibilityValueAtPath(
+      currentPayload, path, current.recordType);
+    const candidateValue: Object | undefined = compatibilityValueAtPath(
+      candidatePayload, path, candidate.recordType);
     if (currentValue === undefined || candidateValue === undefined) {
       return decision('quarantine_both', 'merged_row_invalid', null);
     }

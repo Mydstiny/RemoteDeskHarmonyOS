@@ -33,6 +33,7 @@ import {
 } from './MoonlightSessionRecoveryRuntime';
 import { DiagnosticOutcome } from './DiagnosticCapturePolicy';
 import { recordDiagnosticEvent } from './DiagnosticCaptureRuntime';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 
 class MoonlightSessionReservationIdentity {
   ownerScopeId: string = '';
@@ -184,10 +185,15 @@ export function moonlightRuntimeReadinessEvents(
       state.phase === 'failed' || state.phase === 'disconnected') {
     return events;
   }
-  const videoReady: boolean = state.videoReady || source.videoReady;
+  // An exact native first-frame receipt has already crossed decoder and
+  // renderer presentation ownership fences. It is therefore also positive
+  // video readiness evidence, even if an API 23 media-lane flag was sampled
+  // false in the same snapshot.
+  const nativeVideoReady: boolean = source.videoReady || source.firstFrameReady;
+  const videoReady: boolean = state.videoReady || nativeVideoReady;
   const audioReady: boolean = state.audioReady || source.audioReady;
   const inputReady: boolean = state.inputReady || source.inputReady;
-  if (source.videoReady && !state.videoReady) { events.push('videoReady'); }
+  if (nativeVideoReady && !state.videoReady) { events.push('videoReady'); }
   if (source.audioReady && !state.audioReady) { events.push('audioReady'); }
   if (source.inputReady && !state.inputReady) { events.push('inputReady'); }
   const firstFrameReady: boolean = state.firstFrameSeen ||
@@ -271,16 +277,19 @@ class MoonlightNapiRuntimePort implements MoonlightRuntimePort {
         generation: this.launchKey.generation,
         ownerToken: this.launchKey.ownerToken
       });
-      const exactMatch: boolean = source.matched &&
-        source.sessionId === this.sessionId &&
-        source.generation === this.launchKey.generation &&
-        source.ownerToken === this.launchKey.ownerToken;
+      // moonlightGetStreamSnapshot() performs the authoritative lookup with
+      // the complete bridge launch key in native code. The returned common-C
+      // session key intentionally owns a different, process-local owner token;
+      // comparing that token with the account/launch owner rejects every real
+      // device snapshot. Preserve the coordinator's launch identity after a
+      // native matched receipt so event, terminal, and registry fences all use
+      // one namespace.
       const snapshot: MoonlightNativeStreamSnapshot = {
-        matched: exactMatch,
+        matched: source.matched,
         code: source.code,
-        sessionId: source.sessionId,
-        generation: source.generation,
-        ownerToken: source.ownerToken,
+        sessionId: source.matched ? this.sessionId : source.sessionId,
+        generation: source.matched ? this.launchKey.generation : source.generation,
+        ownerToken: source.matched ? this.launchKey.ownerToken : source.ownerToken,
         transportReady: source.transportReady,
         videoReady: source.videoReady,
         audioReady: source.audioReady,
@@ -288,6 +297,7 @@ class MoonlightNapiRuntimePort implements MoonlightRuntimePort {
         controllerReady: source.controllerReady,
         physicalControllerReady: source.physicalControllerReady,
         inputMayBeStuck: source.inputMayBeStuck,
+        presentationFrameReady: source.presentationFrameReady,
         firstFrameReady: source.firstFrameReady,
         terminal: source.terminal,
         lastSequence: source.lastSequence,
@@ -303,12 +313,13 @@ class MoonlightNapiRuntimePort implements MoonlightRuntimePort {
         streamWidth: source.streamWidth,
         streamHeight: source.streamHeight,
         targetFps: source.targetFps,
-        configuredBitrateKbps: source.configuredBitrateKbps
+        configuredBitrateKbps: source.configuredBitrateKbps,
+        codec: source.codec
       };
       // moonlightStopStream() only acknowledges the cancellation request. Keep
       // the launch key alive so polling can observe the native terminal receipt;
       // release the local identity only after that receipt has been copied.
-      if (source.terminal && exactMatch) {
+      if (source.terminal && source.matched) {
         this.launchKey = null;
         this.sessionId = -1;
       }
@@ -926,7 +937,10 @@ export class MoonlightSessionCoordinator {
         source.sessionId !== this.nativeSessionId) {
       return this.result(false, 'registry_lost');
     }
-    if (!source.firstFrameReady) {
+    const presentationFrameReady: boolean =
+      source.presentationFrameReady === undefined ?
+        source.firstFrameReady : source.presentationFrameReady;
+    if (!presentationFrameReady) {
       return this.result(false, 'surface_frame_pending');
     }
     if (!this.registry.markRenderAttached(surfaceId)) {
@@ -1040,6 +1054,23 @@ export class MoonlightSessionCoordinator {
       });
     }
     return false;
+  }
+
+  /**
+   * Synchronously reconcile the process-wide Moonlight owner before another
+   * protocol or a new catalog launch performs admission. Local UI failure is
+   * never treated as teardown proof; only the exact native terminal snapshot
+   * can release the shared registry marker.
+   */
+  reconcileNativeTerminalReceipt(): boolean {
+    this.expireStopIfNeeded(Date.now());
+    if (!this.nativeRuntimeMayBeActive) { return true; }
+    if (this.runtime === null || this.runtime.snapshot === undefined) { return false; }
+    const source: MoonlightNativeStreamSnapshot | null =
+      this.runtime.snapshot(this.operationGeneration);
+    if (!this.nativeTerminalSnapshotMatchesActive(source)) { return false; }
+    this.acceptNativeTerminalReceipt(source as MoonlightNativeStreamSnapshot);
+    return !this.nativeRuntimeMayBeActive;
   }
 
   cancel(reason: string = 'user-cancel'): MoonlightCoordinatorResult {
@@ -1308,10 +1339,28 @@ export class MoonlightSessionCoordinator {
     }
     const planned: MoonlightSessionEventType[] =
       moonlightRuntimeReadinessEvents(this.state, source);
+    if (source.firstFrameReady && !this.state.firstFrameSeen) {
+      hilog.info(0x0014, 'MoonlightCoordinator',
+        'native first-frame snapshot session=' + source.sessionId.toString() +
+        ' generation=' + generation.toString() + ' phase=' + this.state.phase +
+        ' video=' + (source.videoReady ? '1' : '0') +
+        ' audio=' + (source.audioReady ? '1' : '0') +
+        ' input=' + (source.inputReady ? '1' : '0') +
+        ' surface=' + (surfaceId.trim() === '' ? 'missing' : 'ready') +
+        ' events=' + planned.join(','));
+    }
     for (let index: number = 0; index < planned.length; index++) {
       const type: MoonlightSessionEventType = planned[index];
       const eventSurfaceId: string = type === 'firstFrameRendered' ? surfaceId : '';
-      if (!this.emitRuntimeEvent(type, generation, '', '', eventSurfaceId)) { return; }
+      const emitted: MoonlightCoordinatorResult =
+        this.emitRuntimeEvent(type, generation, '', '', eventSurfaceId);
+      if (!emitted.accepted) {
+        hilog.error(0x0014, 'MoonlightCoordinator',
+          'runtime readiness rejected event=' + type + ' code=' + emitted.code +
+          ' generation=' + generation.toString() +
+          ' phase=' + (emitted.state === null ? 'none' : emitted.state.phase));
+        return;
+      }
     }
     if (this.expireFirstFrameIfNeeded(nowMs)) { return; }
     if (this.state !== null && this.state.generation === generation) {
@@ -1320,9 +1369,11 @@ export class MoonlightSessionCoordinator {
   }
 
   private emitRuntimeEvent(type: MoonlightSessionEventType, generation: number,
-    nativeError: string, detailCode: string, surfaceId: string): boolean {
+    nativeError: string, detailCode: string, surfaceId: string): MoonlightCoordinatorResult {
     const current: MoonlightSessionStateSnapshot | null = this.state;
-    if (current === null || current.generation !== generation) { return false; }
+    if (current === null || current.generation !== generation) {
+      return this.result(false, current === null ? 'not_active' : 'stale_generation');
+    }
     const result: MoonlightCoordinatorResult = this.handleRuntimeEvent({
       type: type,
       generation: generation,
@@ -1332,7 +1383,10 @@ export class MoonlightSessionCoordinator {
       nativeSessionId: this.nativeSessionId,
       surfaceId: surfaceId
     });
-    return result.accepted && this.state !== null && this.state.generation === generation;
+    if (result.accepted && (this.state === null || this.state.generation !== generation)) {
+      return this.result(false, 'stale_generation');
+    }
+    return result;
   }
 
   private clearRuntimePoll(): void {

@@ -21,20 +21,16 @@ inline NativeImageTransform IdentityNativeImageTransform() {
  *
  * OH_NativeImage_GetTransformMatrixV2 reports metadata set by the producer of
  * the surface. It is not the orientation contract of the decoded desktop
- * image. RustDesk frames are already produced in the renderer's top-left
- * coordinate domain, while the PC surface may still report a producer flip.
- * Applying that metadata to the OES sampling coordinates would therefore
- * invert an otherwise upright desktop. Keep the API value diagnostic-only and
- * never let a failed read retain a stale non-identity transform.
+ * image. Remote frames are already produced in the renderer's top-left
+ * coordinate domain. Applying the producer metadata can rotate an otherwise
+ * upright desktop by 180 degrees, as observed on the API 23 Moonlight surface.
+ * Keep the API value diagnostic-only and never retain a stale transform.
  */
 inline NativeImageTransform ResolveNativeImagePresentationTransform(
     bool desktopSurfaceCompatibility,
     int32_t readResult,
     const float matrix[16],
     const NativeImageTransform& previous) {
-    // These inputs are deliberately diagnostic-only. The decoded remote
-    // desktop frame is already in the renderer's top-left domain, so neither
-    // a producer flip nor a previously observed transform may affect sampling.
     (void)desktopSurfaceCompatibility;
     (void)readResult;
     (void)matrix;
@@ -49,7 +45,12 @@ inline bool ShouldRenderNativeImageImmediately(bool desktopSurfaceCompatibility)
 constexpr int kNativeErrorNoBuffer = 40601000;
 // A failed acquire can be a short producer/consumer handoff race. Bound the
 // retry work so a missing surface buffer cannot monopolize the render thread.
-constexpr int kNativeImageUpdateRetryBudget = 3;
+// API 23 drop-buffer mode can emit several stale callbacks in one display
+// interval. One short handoff retry is enough; waiting 2+4+8 ms for every
+// stale callback can occupy nearly the full 60 Hz frame budget and looks like
+// a frozen stream even though decode continues. The next producer callback
+// carries the newest buffer, so coalesce immediately after this single retry.
+constexpr int kNativeImageUpdateRetryBudget = 1;
 constexpr int kNativeImageSurfaceRecoveryThreshold = 6;
 
 inline bool ShouldDetachNativeImageOnRenderThreadStop(bool attached, bool hasNativeImage) {

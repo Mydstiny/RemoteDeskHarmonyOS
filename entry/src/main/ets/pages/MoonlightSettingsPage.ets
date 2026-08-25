@@ -1,7 +1,14 @@
-import { promptAction, router } from '@kit.ArkUI';
+import { display, promptAction, router } from '@kit.ArkUI';
 import { AppTheme, Palette, buildDark, buildLight } from '../common/Theme';
 import { MoonlightBrandIcon } from '../components/moonlight/MoonlightBrandIcon';
-import { MoonlightSettings, defaultMoonlightSettings } from '../model/MoonlightModels';
+import {
+  MoonlightCodecPreference,
+  MoonlightInputControlMode,
+  MoonlightResolutionMode,
+  MoonlightSettings,
+  defaultMoonlightSettings,
+  moonlightInputControlMode
+} from '../model/MoonlightModels';
 import {
   AccountSessionLease,
   accountSessionLeaseEquals,
@@ -30,6 +37,20 @@ import {
   moonlightSettingsSectionLabel,
   moonlightSettingsSections
 } from '../services/MoonlightUiPolicy';
+import {
+  MoonlightHardwareDecoderCapabilities,
+  MoonlightHardwareDecoderCapability,
+  moonlightDecoderCapability,
+  probeMoonlightHardwareDecoderCapabilities
+} from '../services/MoonlightVideoCapabilityService';
+import { MoonlightNativeLaunchConfiguration } from '../services/MoonlightHostService';
+import { moonlightLaunchConfiguration } from '../services/MoonlightRuntimeContextFactory';
+import { resolveMoonlightProductSettings } from '../services/MoonlightSettingsPolicy';
+
+interface MoonlightResolutionRequestPixels {
+  width: number;
+  height: number;
+}
 
 function cloneSettings(settings: MoonlightSettings): MoonlightSettings {
   return JSON.parse(JSON.stringify(settings)) as MoonlightSettings;
@@ -57,6 +78,17 @@ export struct MoonlightSettingsSurface {
   @State dataCacheRows: number = 0;
   @State dataRuntimeStates: number = 0;
   @State dataSecureIdentities: number = 0;
+  @State decoderCapabilityRevision: number = 0;
+  @State videoCodecDraft: MoonlightCodecPreference = 'auto';
+  @State videoResolutionDraft: string = 'host';
+  @State videoFpsDraft: number = 60;
+  @State videoBitrateDraft: number = 20000;
+  @State videoWidthDraft: number = 1920;
+  @State videoHeightDraft: number = 1080;
+  @State reconnectBudgetSecondsDraft: number = 15.5;
+  @State inputControlModeDraft: MoonlightInputControlMode = 'adaptive';
+  private decoderCapabilities: MoonlightHardwareDecoderCapabilities =
+    probeMoonlightHardwareDecoderCapabilities();
   private readonly service: MoonlightSettingsLocalService =
     new MoonlightSettingsLocalService(CloudStore.getInstance());
   private readonly deletionRuntime: MoonlightDeletionRuntime =
@@ -92,6 +124,7 @@ export struct MoonlightSettingsSurface {
       }
     }
     this.loadCurrentSettings();
+    this.refreshDecoderCapabilities();
     this.refreshDataStatus();
   }
 
@@ -106,6 +139,8 @@ export struct MoonlightSettingsSurface {
         !accountSessionLeaseEquals(before, after) || !store.isLeaseCurrent(after)) {
       this.editingLease = null;
       this.settings = defaultMoonlightSettings();
+      this.syncVideoSliderDrafts(this.settings);
+      this.syncInputControlModeDraft(this.settings);
       this.savedSettingsCanonical = JSON.stringify(this.settings);
       this.saveCode = 'account_changed';
       this.dirty = false;
@@ -114,6 +149,8 @@ export struct MoonlightSettingsSurface {
     }
     this.editingLease = cloneAccountSessionLease(after);
     this.settings = loaded.settings;
+    this.syncVideoSliderDrafts(loaded.settings);
+    this.syncInputControlModeDraft(loaded.settings);
     this.savedSettingsCanonical = JSON.stringify(loaded.settings);
     this.saveCode = loaded.ok ? '' : loaded.code;
     this.dirty = false;
@@ -128,9 +165,177 @@ export struct MoonlightSettingsSurface {
     const next: MoonlightSettings = cloneSettings(this.settings);
     change(next);
     this.settings = next;
+    this.syncVideoSliderDrafts(next);
+    this.syncInputControlModeDraft(next);
     this.dirty = JSON.stringify(next) !== this.savedSettingsCanonical;
     this.onDirtyChanged(this.dirty);
     this.saveCode = '';
+  }
+
+  private syncVideoSliderDrafts(settings: MoonlightSettings): void {
+    this.videoCodecDraft = settings.video.codecPreference;
+    this.videoResolutionDraft = settings.video.adaptiveResolution === 'host' ? 'host' :
+      settings.video.adaptiveResolution === 'device' ? 'device' : settings.video.resolutionMode;
+    this.videoFpsDraft = settings.video.fps;
+    this.videoBitrateDraft = settings.video.bitrateKbps;
+    this.videoWidthDraft = settings.video.customWidth;
+    this.videoHeightDraft = settings.video.customHeight;
+    this.reconnectBudgetSecondsDraft = settings.network.reconnectBudgetMs / 1000;
+  }
+
+  private syncInputControlModeDraft(settings: MoonlightSettings): void {
+    this.inputControlModeDraft = moonlightInputControlMode(
+      settings.input.controlMode, settings.input.touchMode);
+  }
+
+  private selectInputControlMode(value: MoonlightInputControlMode): void {
+    this.inputControlModeDraft = value;
+    this.update((next: MoonlightSettings): void => {
+      next.input.controlMode = value;
+      // New product modes use the relative-pointer lane. Keep the old
+      // low-level field bounded for older clients and cloud records.
+      next.input.touchMode = 'absoluteMouse';
+    });
+  }
+
+  private setVideoFps(value: number): void {
+    const fps: number = Math.max(30, Math.min(this.maximumVideoFps(), Math.round(value)));
+    this.videoFpsDraft = fps;
+    this.update((next: MoonlightSettings): void => { next.video.fps = fps; });
+  }
+
+  private setVideoBitrate(value: number): void {
+    const bitrate: number = Math.max(1000, Math.min(200000, Math.round(value / 1000) * 1000));
+    this.videoBitrateDraft = bitrate;
+    this.update((next: MoonlightSettings): void => { next.video.bitrateKbps = bitrate; });
+  }
+
+  private setVideoWidth(value: number): void {
+    const width: number = Math.max(320, Math.min(7680, Math.round(value / 2) * 2));
+    this.videoWidthDraft = width;
+    this.update((next: MoonlightSettings): void => { next.video.customWidth = width; });
+  }
+
+  private setVideoHeight(value: number): void {
+    const height: number = Math.max(240, Math.min(4320, Math.round(value / 2) * 2));
+    this.videoHeightDraft = height;
+    this.update((next: MoonlightSettings): void => { next.video.customHeight = height; });
+  }
+
+  private setReconnectBudgetSeconds(value: number): void {
+    const seconds: number = Math.max(0, Math.min(120, Math.round(value * 2) / 2));
+    this.reconnectBudgetSecondsDraft = seconds;
+    this.update((next: MoonlightSettings): void => {
+      next.network.reconnectBudgetMs = Math.round(seconds * 1000);
+    });
+  }
+
+  private refreshDecoderCapabilities(): void {
+    this.decoderCapabilities = probeMoonlightHardwareDecoderCapabilities(true);
+    this.decoderCapabilityRevision++;
+  }
+
+  private selectedDecoderCapability(): MoonlightHardwareDecoderCapability {
+    // Reading the revision makes an in-place native capability refresh visible
+    // to the reactive builder even though the detailed snapshot stays private.
+    const revision: number = this.decoderCapabilityRevision;
+    if (revision < 0) { return this.decoderCapabilities.h264; }
+    return moonlightDecoderCapability(this.decoderCapabilities,
+      this.videoCodecDraft);
+  }
+
+  private selectVideoCodec(value: MoonlightCodecPreference): void {
+    this.videoCodecDraft = value;
+    const maximumFps: number = this.maximumVideoFpsFor(value);
+    this.update((next: MoonlightSettings): void => {
+      next.video.codecPreference = value;
+      next.video.fps = Math.min(next.video.fps, maximumFps);
+    });
+  }
+
+  private adaptiveResolution(): string {
+    if (this.settings.video.adaptiveResolution !== undefined) {
+      return this.settings.video.adaptiveResolution;
+    }
+    return this.settings.video.resolutionMode === 'host' ? 'host' : 'off';
+  }
+
+  private selectResolution(value: string): void {
+    this.videoResolutionDraft = value;
+    this.update((next: MoonlightSettings): void => {
+      if (value === 'host') {
+        next.video.resolutionMode = 'host';
+        next.video.adaptiveResolution = 'host';
+        const capability: MoonlightHardwareDecoderCapability =
+          moonlightDecoderCapability(this.decoderCapabilities, next.video.codecPreference);
+        if (capability.maxWidth >= 3840 && capability.maxHeight >= 2160) {
+          next.video.customWidth = 3840; next.video.customHeight = 2160;
+        } else if (capability.maxWidth >= 2560 && capability.maxHeight >= 1440) {
+          next.video.customWidth = 2560; next.video.customHeight = 1440;
+        } else if (capability.maxWidth >= 1920 && capability.maxHeight >= 1080) {
+          next.video.customWidth = 1920; next.video.customHeight = 1080;
+        } else {
+          next.video.customWidth = 1280; next.video.customHeight = 720;
+        }
+        return;
+      }
+      if (value === 'device') {
+        next.video.resolutionMode = 'custom';
+        next.video.adaptiveResolution = 'device';
+        try {
+          const current: display.Display = display.getDefaultDisplaySync();
+          next.video.customWidth = Math.floor(Math.max(current.width, current.height) / 2) * 2;
+          next.video.customHeight = Math.floor(Math.min(current.width, current.height) / 2) * 2;
+        } catch (_error) {
+          next.video.customWidth = 1920;
+          next.video.customHeight = 1080;
+        }
+        return;
+      }
+      next.video.adaptiveResolution = 'off';
+      next.video.resolutionMode = value as MoonlightResolutionMode;
+    });
+  }
+
+  private resolutionChoice(): string {
+    const adaptive: string = this.adaptiveResolution();
+    if (adaptive === 'host' || adaptive === 'device') { return adaptive; }
+    return this.settings.video.resolutionMode;
+  }
+
+  private resolutionAvailable(width: number, height: number): boolean {
+    const capability: MoonlightHardwareDecoderCapability = this.selectedDecoderCapability();
+    if (!capability.available) { return false; }
+    return (capability.maxWidth <= 0 || width <= capability.maxWidth) &&
+      (capability.maxHeight <= 0 || height <= capability.maxHeight);
+  }
+
+  private maximumVideoFps(): number {
+    const maximum: number = this.selectedDecoderCapability().maxFps;
+    return Math.max(30, Math.min(240, maximum >= 30 ? maximum : 60));
+  }
+
+  private maximumVideoFpsFor(codec: MoonlightCodecPreference): number {
+    const maximum: number = moonlightDecoderCapability(this.decoderCapabilities, codec).maxFps;
+    return Math.max(30, Math.min(240, maximum >= 30 ? maximum : 60));
+  }
+
+  private decoderCapabilityDetail(): string {
+    const capability: MoonlightHardwareDecoderCapability = this.selectedDecoderCapability();
+    if (!capability.available) { return '当前选择没有可用的硬件解码器'; }
+    const size: string = capability.maxWidth > 0 && capability.maxHeight > 0 ?
+      capability.maxWidth.toString() + '×' + capability.maxHeight.toString() : '分辨率由系统决定';
+    const fps: string = capability.maxFps > 0 ? capability.maxFps.toString() + ' FPS' : '帧率由系统决定';
+    const implementation: string = capability.name.trim() === '' ? '鸿蒙硬件解码器' : capability.name;
+    return implementation + ' · ' + size + ' · ' + fps +
+      (capability.lowLatency ? ' · 硬件低延迟' : '');
+  }
+
+  private selectedDecoderLabel(): string {
+    if (this.videoCodecDraft === 'hevc') { return 'H.265 / HEVC'; }
+    if (this.videoCodecDraft === 'av1') { return 'AV1'; }
+    if (this.videoCodecDraft === 'h264') { return 'H.264'; }
+    return '自动 / H.264';
   }
 
   private save(): void {
@@ -184,7 +389,7 @@ export struct MoonlightSettingsSurface {
     const selection: MoonlightDeletionSelectionSnapshot | null =
       store.selectionSnapshot(lease);
     this.dataSyncSelected = selection !== null &&
-      (selection.physicalSelected || selection.selectedScopes.length > 0);
+      selection.physicalSelected;
     const preview: MoonlightDeletionPreview = this.deletionRuntime.preview(
       lease, 'delete_local_data');
     this.dataStatusCode = preview.code === 'ok' || preview.code === 'unchanged' ?
@@ -211,7 +416,7 @@ export struct MoonlightSettingsSurface {
   private dataCommandMessage(command: MoonlightDeletionCommandType,
     preview: MoonlightDeletionPreview): string {
     if (command === 'cancel_sync') {
-      return '只停止此设备未来对 Moonlight 单表和逻辑范围的上传、下载。' +
+      return '只停止此设备未来对 Moonlight 云表的上传、下载。' +
         '本机与云端现有数据都不会删除，其他协议的云同步不受影响。';
     }
     if (command === 'delete_cloud_data') {
@@ -349,41 +554,61 @@ export struct MoonlightSettingsSurface {
   }
 
   @Builder private header() {
-    Row() {
-      Button() { SymbolGlyph($r('sys.symbol.chevron_left')).fontSize(21).fontColor([this.pal().text]) }
-        .width(42).height(42).borderRadius(21).backgroundColor(this.pal().surface)
-        .onClick((): void => { this.close(); }).accessibilityText('返回')
-      MoonlightBrandIcon({ iconSize: 30, tint: this.accentColor }).margin({ left: 12 })
-      Column() {
-        Text(this.embedded ? moonlightSettingsSectionLabel(this.section) : 'Moonlight 设置')
-          .fontSize(this.embedded ? 20 : 24).fontWeight(FontWeight.Bold)
-          .fontColor(this.pal().text).fontFamily(AppTheme.fontFamily)
-        Text(this.embedded ? 'Moonlight · 当前账号' :
-          '当前账号全局默认 · 安全身份始终仅限本机').fontSize(10)
-          .fontColor(this.pal().text3).margin({ top: 2 })
-      }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
-      if (this.dirty) {
-        Text('未保存').fontSize(10).fontColor(this.pal().editColor)
-          .padding({ left: 8, right: 8, top: 4, bottom: 4 })
-          .backgroundColor(this.pal().editColor + '16').borderRadius(10).margin({ right: 8 })
-      }
-      if (this.section !== 'data') {
-        Button('保存').height(40).fontSize(13).borderRadius(12)
-          .backgroundColor(this.dirty && this.editingLease !== null ? this.accentColor : this.pal().surface)
-          .fontColor(this.dirty && this.editingLease !== null ? Color.White : this.pal().text3)
-          .enabled(this.dirty && this.editingLease !== null)
-          .onClick((): void => { this.save(); })
-      } else if (this.dataBusy) {
-        Text('处理中').fontSize(11).fontColor(this.accentColor)
-          .padding({ left: 10, right: 10, top: 6, bottom: 6 })
-          .backgroundColor(this.accentColor + '14').borderRadius(10)
-      }
-    }.width('100%').padding({
-      left: this.embedded ? 16 : 18,
-      right: this.embedded ? 16 : 18,
-      top: this.embedded ? 10 : this.topSafeHeight() + 8,
-      bottom: this.embedded ? 8 : 10
-    })
+    if (this.embedded) {
+      Row() {
+        MoonlightBrandIcon({ iconSize: 24, tint: this.accentColor })
+        Column() {
+          Text(moonlightSettingsSectionLabel(this.section)).fontSize(19)
+            .fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+            .fontFamily(AppTheme.fontFamily)
+          Text(this.section === 'data' ? 'Moonlight · 当前账号数据域' :
+            '修改立即预览，保存后用于下一次连接').fontSize(11)
+            .fontColor(this.pal().text3).margin({ top: 4 })
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
+        if (this.dirty) {
+          Text('未保存').fontSize(10).fontColor(this.pal().editColor)
+            .padding({ left: 8, right: 8, top: 4, bottom: 4 })
+            .backgroundColor(this.pal().editColor + '16').borderRadius(10).margin({ right: 8 })
+        } else if (this.dataBusy) {
+          Text('处理中').fontSize(11).fontColor(this.accentColor).margin({ right: 8 })
+        }
+        Button() {
+          SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
+        }.width(36).height(36).padding(0).borderRadius(18).backgroundColor(this.pal().surface)
+          .onClick((): void => { this.close(); }).accessibilityText('关闭 Moonlight 设置')
+      }.width('100%').padding({ left: 20, right: 20, top: 18, bottom: 14 })
+    } else {
+      Row() {
+        Button() { SymbolGlyph($r('sys.symbol.chevron_left')).fontSize(21).fontColor([this.pal().text]) }
+          .width(42).height(42).padding(0).borderRadius(21).backgroundColor(this.pal().surface)
+          .onClick((): void => { this.close(); }).accessibilityText('返回')
+        MoonlightBrandIcon({ iconSize: 30, tint: this.accentColor }).margin({ left: 12 })
+        Column() {
+          Text('Moonlight 设置').fontSize(24).fontWeight(FontWeight.Bold)
+            .fontColor(this.pal().text).fontFamily(AppTheme.fontFamily)
+          Text('当前账号全局默认 · 安全身份始终仅限本机').fontSize(10)
+            .fontColor(this.pal().text3).margin({ top: 2 })
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
+        if (this.dirty) {
+          Text('未保存').fontSize(10).fontColor(this.pal().editColor)
+            .padding({ left: 8, right: 8, top: 4, bottom: 4 })
+            .backgroundColor(this.pal().editColor + '16').borderRadius(10).margin({ right: 8 })
+        }
+        if (this.section !== 'data') {
+          Button('保存').height(40).fontSize(13).borderRadius(12)
+            .backgroundColor(this.dirty && this.editingLease !== null ? this.accentColor : this.pal().surface)
+            .fontColor(this.dirty && this.editingLease !== null ? Color.White : this.pal().text3)
+            .enabled(this.dirty && this.editingLease !== null)
+            .onClick((): void => { this.save(); })
+        } else if (this.dataBusy) {
+          Text('处理中').fontSize(11).fontColor(this.accentColor)
+            .padding({ left: 10, right: 10, top: 6, bottom: 6 })
+            .backgroundColor(this.accentColor + '14').borderRadius(10)
+        }
+      }.width('100%').padding({
+        left: 18, right: 18, top: this.topSafeHeight() + 8, bottom: 10
+      })
+    }
   }
 
   @Builder private categoryButton(section: MoonlightSettingsSection) {
@@ -423,6 +648,114 @@ export struct MoonlightSettingsSurface {
     }.alignItems(HorizontalAlign.Start).width('100%').margin({ bottom: 10 })
   }
 
+  private resolutionPreview(): string {
+    const request: MoonlightResolutionRequestPixels = this.effectiveResolutionRequest();
+    if (this.adaptiveResolution() === 'device') {
+      return '本机 ' + request.width.toString() + '×' + request.height.toString();
+    }
+    if (this.adaptiveResolution() === 'host') {
+      return '远端上限 ' + request.width.toString() + '×' + request.height.toString();
+    }
+    if (this.settings.video.resolutionMode === '720p') { return '720p'; }
+    if (this.settings.video.resolutionMode === '1080p') { return '1080p'; }
+    if (this.settings.video.resolutionMode === '1440p') { return '1440p'; }
+    if (this.settings.video.resolutionMode === '2160p') { return '4K'; }
+    if (this.settings.video.resolutionMode === 'custom') { return '自定义'; }
+    return '跟随主机';
+  }
+
+  private effectiveResolutionRequest(): MoonlightResolutionRequestPixels {
+    const effective: MoonlightSettings = resolveMoonlightProductSettings(
+      this.settings, this.decoderCapabilities).effective;
+    const decoder: MoonlightHardwareDecoderCapability = moonlightDecoderCapability(
+      this.decoderCapabilities, effective.video.codecPreference);
+    let deviceWidth: number = 0;
+    let deviceHeight: number = 0;
+    try {
+      const current: display.Display = display.getDefaultDisplaySync();
+      deviceWidth = current.width;
+      deviceHeight = current.height;
+    } catch (_error) {}
+    const request: MoonlightNativeLaunchConfiguration =
+      moonlightLaunchConfiguration(effective, deviceWidth, deviceHeight,
+        decoder.maxWidth, decoder.maxHeight);
+    return {
+      width: request.width ?? 1920,
+      height: request.height ?? 1080
+    };
+  }
+
+  private resolutionRequestPixels(): string {
+    const request: MoonlightResolutionRequestPixels = this.effectiveResolutionRequest();
+    return request.width.toString() + ' × ' + request.height.toString();
+  }
+
+  private resolutionRequestDetail(): string {
+    if (this.adaptiveResolution() === 'device') {
+      return '按当前鸿蒙设备横屏像素与宽高比请求，受当前硬件解码器上限约束';
+    }
+    if (this.adaptiveResolution() === 'host') {
+      return '按远端编码能力请求最高标准画质，连接时还会按 Sunshine 返回的上限收敛';
+    }
+    return '固定请求尺寸；更改会立即反映在预览中，保存后用于下一次连接';
+  }
+
+  private inputPreview(): string {
+    const mode: MoonlightInputControlMode = this.inputControlModeDraft;
+    if (mode === 'keyboardMouse') { return '键鼠'; }
+    if (mode === 'trackpad') { return '虚拟触控板'; }
+    return '自适应';
+  }
+
+  private inputKeyboardPreview(): string {
+    const mode: MoonlightInputControlMode = this.inputControlModeDraft;
+    if (mode === 'adaptive') { return '键盘自动'; }
+    if (mode === 'keyboardMouse') { return '键盘直通'; }
+    return this.settings.input.captureKeyboard ? '键盘开' : '键盘关';
+  }
+
+  private networkPreview(): string {
+    const reconnect: string = this.settings.network.autoReconnect ? '自动重连' : '不重连';
+    let encryption: string = '自动加密';
+    if (this.settings.network.streamEncryption === 'compatible') { encryption = '兼容加密'; }
+    else if (this.settings.network.streamEncryption === 'required') { encryption = '强制加密'; }
+    return reconnect + ' · ' + encryption;
+  }
+
+  @Builder private previewItem(title: string, value: string) {
+    Column() {
+      Text(title).fontSize(10).fontColor(this.pal().text3)
+      Text(value).fontSize(12).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+        .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 3 })
+    }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+      .padding({ left: 10, right: 10, top: 9, bottom: 9 })
+      .backgroundColor(this.pal().card).borderRadius(11)
+  }
+
+  @Builder private liveSettingsPreview() {
+    Column({ space: 8 }) {
+      Row() {
+        Text('当前连接预览').fontSize(13).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+          .layoutWeight(1)
+        Text(this.dirty ? '有未保存更改' : '已保存').fontSize(10)
+          .fontColor(this.dirty ? this.pal().editColor : this.pal().success)
+      }.width('100%')
+      Row({ space: 8 }) {
+        this.previewItem('画面', this.resolutionPreview() + ' · ' +
+          this.settings.video.fps.toString() + ' FPS · ' +
+          this.settings.video.bitrateKbps.toString() + ' Kbps')
+        this.previewItem('控制', this.inputPreview() + ' · ' + this.inputKeyboardPreview())
+      }.width('100%')
+      Row({ space: 8 }) {
+        this.previewItem('网络', this.networkPreview())
+        this.previewItem('会话', (this.settings.audio.enabled ? '音频开' : '音频关') +
+          (this.settings.diagnostics.showPerformanceHud ? ' · 性能开' : ' · 性能关'))
+      }.width('100%')
+    }.width('100%').padding(12).backgroundColor(this.pal().surface)
+      .border({ width: 0.5, color: this.pal().cardBorder }).borderRadius(16)
+      .margin({ bottom: 12 })
+  }
+
   @Builder private toggleRow(title: string, detail: string, checked: boolean,
     onChange: (value: boolean) => void, enabled: boolean = true) {
     Row() {
@@ -436,25 +769,105 @@ export struct MoonlightSettingsSurface {
     }.width('100%').height(62).padding({ top: 6, bottom: 6 })
   }
 
-  @Builder private sliderRow(title: string, detail: string, value: number,
-    minimum: number, maximum: number, step: number, suffix: string,
-    onCommit: (value: number) => void, enabled: boolean = true) {
+  @Builder private videoFpsSlider() {
     Column() {
       Row() {
         Column() {
-          Text(title).fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
-          Text(detail).fontSize(10).fontColor(this.pal().text3).margin({ top: 3 })
+          Text('帧率').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+          Text('30–' + this.maximumVideoFps().toString() + ' FPS，逐帧连续调节')
+            .fontSize(10).fontColor(this.pal().text3).margin({ top: 3 })
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-        Text((Number.isInteger(value) ? value.toString() : value.toFixed(1)) + suffix)
+        Text(this.videoFpsDraft.toString() + ' FPS').fontSize(12).fontColor(this.pal().text2)
+      }.width('100%')
+      Slider({ style: SliderStyle.OutSet, value: this.videoFpsDraft,
+        min: 30, max: this.maximumVideoFps(), step: 1 })
+        .width('100%').selectedColor(this.accentColor).trackColor(this.pal().surface)
+        .showTips(true).showSteps(false)
+        .onChange((next: number, _mode: SliderChangeMode): void => { this.setVideoFps(next); })
+        .margin({ top: 7 })
+    }.width('100%').padding({ top: 7, bottom: 7 })
+  }
+
+  @Builder private videoBitrateSlider() {
+    Column() {
+      Row() {
+        Column() {
+          Text('码率').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+          Text('拖动时实时预览；点击保存后才写入本地')
+            .fontSize(10).fontColor(this.pal().text3).margin({ top: 3 })
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+        Text(this.videoBitrateDraft.toString() + ' Kbps').fontSize(12).fontColor(this.pal().text2)
+      }.width('100%')
+      Slider({ style: SliderStyle.OutSet, value: this.videoBitrateDraft,
+        min: 1000, max: 200000, step: 1000 })
+        .width('100%').selectedColor(this.accentColor).trackColor(this.pal().surface)
+        .showTips(true).showSteps(false)
+        .onChange((next: number, _mode: SliderChangeMode): void => { this.setVideoBitrate(next); })
+        .margin({ top: 7 })
+    }.width('100%').padding({ top: 7, bottom: 7 })
+  }
+
+  @Builder private videoWidthSlider() {
+    Column() {
+      Row() {
+        Column() {
+          Text('自定义宽度').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+          Text('320–7680，native 会按解码器上限和偶数对齐校验')
+            .fontSize(10).fontColor(this.pal().text3).margin({ top: 3 })
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+        Text(this.videoWidthDraft.toString() + ' px').fontSize(12).fontColor(this.pal().text2)
+      }.width('100%')
+      Slider({ style: SliderStyle.OutSet, value: this.videoWidthDraft,
+        min: 320, max: 7680, step: 2 })
+        .width('100%').selectedColor(this.accentColor).trackColor(this.pal().surface)
+        .showTips(true).showSteps(false)
+        .onChange((next: number, _mode: SliderChangeMode): void => { this.setVideoWidth(next); })
+        .margin({ top: 7 })
+    }.width('100%').padding({ top: 7, bottom: 7 })
+  }
+
+  @Builder private videoHeightSlider() {
+    Column() {
+      Row() {
+        Column() {
+          Text('自定义高度').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+          Text('240–4320，保持与远端显示模式一致可避免拉伸')
+            .fontSize(10).fontColor(this.pal().text3).margin({ top: 3 })
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+        Text(this.videoHeightDraft.toString() + ' px').fontSize(12).fontColor(this.pal().text2)
+      }.width('100%')
+      Slider({ style: SliderStyle.OutSet, value: this.videoHeightDraft,
+        min: 240, max: 4320, step: 2 })
+        .width('100%').selectedColor(this.accentColor).trackColor(this.pal().surface)
+        .showTips(true).showSteps(false)
+        .onChange((next: number, _mode: SliderChangeMode): void => { this.setVideoHeight(next); })
+        .margin({ top: 7 })
+    }.width('100%').padding({ top: 7, bottom: 7 })
+  }
+
+  @Builder private reconnectBudgetSlider() {
+    Column() {
+      Row() {
+        Column() {
+          Text('重连预算').fontSize(14).fontWeight(FontWeight.Medium)
+            .fontColor(this.settings.network.autoReconnect ? this.pal().text : this.pal().text3)
+          Text('最多尝试 6 次；0 秒等同于不自动重连')
+            .fontSize(10).fontColor(this.pal().text3).margin({ top: 3 })
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+        Text((Number.isInteger(this.reconnectBudgetSecondsDraft) ?
+          this.reconnectBudgetSecondsDraft.toString() :
+          this.reconnectBudgetSecondsDraft.toFixed(1)) + ' 秒')
           .fontSize(12).fontColor(this.pal().text2)
       }.width('100%')
-      Slider({ value: value, min: minimum, max: maximum, step: step })
+      Slider({ style: SliderStyle.OutSet, value: this.reconnectBudgetSecondsDraft,
+        min: 0, max: 120, step: 0.5 })
         .width('100%').selectedColor(this.accentColor).trackColor(this.pal().surface)
-        .enabled(enabled)
-        .onChange((next: number, mode: SliderChangeMode): void => {
-          if (enabled && mode === SliderChangeMode.End) { onCommit(next); }
+        .showTips(true).showSteps(false).enabled(this.settings.network.autoReconnect)
+        .onChange((next: number, _mode: SliderChangeMode): void => {
+          this.setReconnectBudgetSeconds(next);
         }).margin({ top: 7 })
-    }.width('100%').padding({ top: 7, bottom: 7 }).opacity(enabled ? 1 : 0.55)
+    }.width('100%').padding({ top: 7, bottom: 7 })
+      .opacity(this.settings.network.autoReconnect ? 1 : 0.55)
   }
 
   @Builder private statusRow(title: string, detail: string, value: string,
@@ -465,10 +878,11 @@ export struct MoonlightSettingsSurface {
         Text(detail).fontSize(10).fontColor(this.pal().text3).lineHeight(15).margin({ top: 3 })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
       Text(value).fontSize(11).fontWeight(FontWeight.Medium)
-        .fontColor(available ? this.accentColor : this.pal().text3)
+        .fontColor(available ? this.pal().text2 : this.pal().text3)
         .padding({ left: 9, right: 9, top: 5, bottom: 5 })
-        .backgroundColor(available ? this.accentColor + '14' : this.pal().surface)
-        .borderRadius(10).margin({ left: 12 })
+        .backgroundColor(this.pal().surface).borderRadius(10).margin({ left: 12 })
+        .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+        .textAlign(TextAlign.End).constraintSize({ maxWidth: '40%' })
     }.width('100%').padding({ top: 9, bottom: 9 })
   }
 
@@ -507,16 +921,52 @@ export struct MoonlightSettingsSurface {
     }.width('100%')
   }
 
+  @Builder private choiceButton(label: string, value: string, current: string,
+    enabled: boolean, onChoose: (value: string) => void) {
+    Button(label).height(36).layoutWeight(1).fontSize(11).borderRadius(10)
+      .backgroundColor(current === value ? this.accentColor : this.pal().surface)
+      .fontColor(current === value ? Color.White : this.pal().text2)
+      .enabled(enabled).opacity(enabled ? 1 : 0.45)
+      .onClick((): void => { if (enabled) { onChoose(value); } })
+  }
+
+  @Builder private decoderChoiceButton(label: string, value: MoonlightCodecPreference,
+    enabled: boolean) {
+    Button(label).height(36).layoutWeight(1).fontSize(11).borderRadius(10)
+      .backgroundColor(this.videoCodecDraft === value ? this.accentColor : this.pal().surface)
+      .fontColor(this.videoCodecDraft === value ? Color.White : this.pal().text2)
+      .enabled(enabled).opacity(enabled ? 1 : 0.45)
+      .onClick((): void => { if (enabled) { this.selectVideoCodec(value); } })
+  }
+
+  @Builder private resolutionChoiceButton(label: string, value: string,
+    enabled: boolean = true) {
+    Button(label).height(36).layoutWeight(1).fontSize(11).borderRadius(10)
+      .backgroundColor(this.videoResolutionDraft === value ? this.accentColor : this.pal().surface)
+      .fontColor(this.videoResolutionDraft === value ? Color.White : this.pal().text2)
+      .enabled(enabled).opacity(enabled ? 1 : 0.45)
+      .onClick((): void => { if (enabled) { this.selectResolution(value); } })
+  }
+
+  @Builder private inputControlModeChoiceButton(label: string,
+    value: MoonlightInputControlMode) {
+    Button(label).height(36).layoutWeight(1).fontSize(11).borderRadius(10)
+      .backgroundColor(this.inputControlModeDraft === value ? this.accentColor : this.pal().surface)
+      .fontColor(this.inputControlModeDraft === value ? Color.White : this.pal().text2)
+      .onClick((): void => { this.selectInputControlMode(value); })
+  }
+
   @Builder private videoContent() {
     this.sectionHeader('画面', '预设、编码、分辨率、帧率与码率都在这里管理；重连要求会明确标出。')
     Column() {
-      this.cardTitle('画面预设', '预设只改本地草稿，保存后用于下一次 Moonlight 连接')
+      this.cardTitle('画面预设', '选择后立即更新上方预览，保存后用于下一次 Moonlight 连接')
       Row({ space: 8 }) {
         Button('省流').layoutWeight(1).height(42).borderRadius(12).fontSize(12)
           .backgroundColor(this.settings.video.bitrateKbps <= 20000 ? this.accentColor : this.pal().surface)
           .fontColor(this.settings.video.bitrateKbps <= 20000 ? Color.White : this.pal().text2)
           .onClick((): void => { this.update((next: MoonlightSettings): void => {
-            next.video.fps = 60; next.video.bitrateKbps = 20000;
+            next.video.fps = Math.min(60, this.maximumVideoFpsFor(next.video.codecPreference));
+            next.video.bitrateKbps = 20000;
           }); })
         Button('平衡').layoutWeight(1).height(42).borderRadius(12).fontSize(12)
           .backgroundColor(this.settings.video.bitrateKbps > 20000 &&
@@ -524,33 +974,58 @@ export struct MoonlightSettingsSurface {
           .fontColor(this.settings.video.bitrateKbps > 20000 &&
             this.settings.video.bitrateKbps < 50000 ? Color.White : this.pal().text2)
           .onClick((): void => { this.update((next: MoonlightSettings): void => {
-            next.video.fps = 60; next.video.bitrateKbps = 30000;
+            next.video.fps = Math.min(60, this.maximumVideoFpsFor(next.video.codecPreference));
+            next.video.bitrateKbps = 30000;
           }); })
         Button('画质优先').layoutWeight(1).height(42).borderRadius(12).fontSize(12)
           .backgroundColor(this.settings.video.bitrateKbps >= 50000 ? this.accentColor : this.pal().surface)
           .fontColor(this.settings.video.bitrateKbps >= 50000 ? Color.White : this.pal().text2)
           .onClick((): void => { this.update((next: MoonlightSettings): void => {
-            next.video.fps = 60; next.video.bitrateKbps = 50000;
+            next.video.fps = Math.min(60, this.maximumVideoFpsFor(next.video.codecPreference));
+            next.video.bitrateKbps = 50000;
           }); })
       }.width('100%')
     }.width('100%').padding(16).backgroundColor(this.pal().card).borderRadius(20)
       .border({ width: 0.5, color: this.pal().cardBorder }).margin({ bottom: 12 })
     Column() {
-      this.cardTitle('编码与显示')
-      this.statusRow('视频编码', '当前 HarmonyOS 解码链路只协商已完成验收的编码', 'H.264')
-      Text('分辨率').fontSize(11).fontColor(this.pal().text3).margin({ top: 14, bottom: 7 })
-      this.choice3('默认 1080p', '720p', '1080p', this.settings.video.resolutionMode,
-        'host', '720p', '1080p', (value: string): void => {
-          this.update((next: MoonlightSettings): void => { next.video.resolutionMode = value as 'host'; });
-        })
-      this.sliderRow('帧率', '当前发布链路支持 30 或 60 FPS', this.settings.video.fps,
-        30, 60, 30, ' FPS', (value: number): void => {
-          this.update((next: MoonlightSettings): void => { next.video.fps = Math.round(value); });
-        })
-      this.sliderRow('码率', '拖动结束才持久化，避免高频写盘', this.settings.video.bitrateKbps,
-        1000, 200000, 1000, ' Kbps', (value: number): void => {
-          this.update((next: MoonlightSettings): void => { next.video.bitrateKbps = Math.round(value); });
-        })
+      this.cardTitle('硬件解码器', '仅列出鸿蒙当前设备实际返回的硬件解码格式；自动模式优先兼容性。')
+      Row({ space: 7 }) {
+        this.decoderChoiceButton('自动', 'auto', true)
+        this.decoderChoiceButton('H.264', 'h264', this.decoderCapabilities.h264.available)
+      }.width('100%')
+      Row({ space: 7 }) {
+        this.decoderChoiceButton('H.265 / HEVC', 'hevc', this.decoderCapabilities.hevc.available)
+        this.decoderChoiceButton('AV1', 'av1', this.decoderCapabilities.av1.available)
+      }.width('100%').margin({ top: 7 })
+      this.statusRow('当前解码映射', this.decoderCapabilityDetail(),
+        this.selectedDecoderLabel(), this.selectedDecoderCapability().available)
+    }.width('100%').padding(16).backgroundColor(this.pal().card).borderRadius(20)
+      .border({ width: 0.5, color: this.pal().cardBorder }).margin({ bottom: 12 })
+    Column() {
+      this.cardTitle('分辨率与帧率', '每项会实时进入上方连接预览；保存后用于下一次连接。')
+      Text('自适应').fontSize(11).fontColor(this.pal().text3).margin({ bottom: 7 })
+      Row({ space: 7 }) {
+        this.resolutionChoiceButton('适配远端', 'host')
+        this.resolutionChoiceButton('适配当前设备', 'device')
+      }.width('100%')
+      this.statusRow('下一次串流请求', this.resolutionRequestDetail(),
+        this.resolutionRequestPixels())
+      Text('常用画质').fontSize(11).fontColor(this.pal().text3).margin({ top: 14, bottom: 7 })
+      Row({ space: 7 }) {
+        this.resolutionChoiceButton('720p', '720p', this.resolutionAvailable(1280, 720))
+        this.resolutionChoiceButton('1080p', '1080p', this.resolutionAvailable(1920, 1080))
+        this.resolutionChoiceButton('1440p', '1440p', this.resolutionAvailable(2560, 1440))
+      }.width('100%')
+      Row({ space: 7 }) {
+        this.resolutionChoiceButton('4K', '2160p', this.resolutionAvailable(3840, 2160))
+        this.resolutionChoiceButton('自定义', 'custom')
+      }.width('100%').margin({ top: 7 })
+      if (this.videoResolutionDraft === 'custom') {
+        this.videoWidthSlider()
+        this.videoHeightSlider()
+      }
+      this.videoFpsSlider()
+      this.videoBitrateSlider()
       this.statusRow('HDR', '当前媒体管线尚未开放，避免保存后静默降级', '尚未开放', false)
       Divider().color(this.pal().divider)
       this.statusRow('YUV 4:4:4', '当前媒体管线尚未开放，保持 8-bit YUV420', '尚未开放', false)
@@ -590,21 +1065,21 @@ export struct MoonlightSettingsSurface {
   }
 
   @Builder private inputContent() {
-    this.sectionHeader('控制与手柄', '触摸、鼠标、键盘、虚拟控制器与实体手柄统一进入会话控制通道。')
+    this.sectionHeader('控制与手柄', '键鼠、虚拟触控板和自适应输入统一进入会话控制通道。')
     Column() {
-      this.cardTitle('控制模式')
-      this.choice2('直接触控', '触控板',
-        this.settings.input.touchMode === 'touch' ? 'touch' : 'absoluteMouse',
-        'touch', 'absoluteMouse', (value: string): void => {
-          this.update((next: MoonlightSettings): void => { next.input.touchMode = value as 'touch'; });
-        })
-      this.statusRow('相对鼠标',
-        this.settings.input.touchMode === 'relativeMouse' ?
-          '旧版本保存的相对鼠标请求会继续保留，但本机连接时已安全降级为触控板' :
-          'HarmonyOS 相对指针捕获尚未通过产品能力门禁',
-        this.settings.input.touchMode === 'relativeMouse' ? '已降级' : '尚未开放', false)
+      this.cardTitle('控制模式', '保存后用于下一次连接；连接中也可以从侧栏控制中心临时切换')
+      Row({ space: 7 }) {
+        this.inputControlModeChoiceButton('自适应', 'adaptive')
+        this.inputControlModeChoiceButton('键鼠', 'keyboardMouse')
+        this.inputControlModeChoiceButton('虚拟触控板', 'trackpad')
+      }.width('100%')
+      this.statusRow('自适应规则',
+        '手机默认虚拟触控板；Pad/PC 默认键鼠。触摸画面切换为虚拟触控板，实体键盘、鼠标或触控板活动切回键鼠。',
+        '实时识别')
       Divider().color(this.pal().divider)
-      this.toggleRow('捕获键盘', '串流画面获得焦点时转发实体键盘；退出时补发全部 key-up', this.settings.input.captureKeyboard,
+      this.toggleRow('捕获键盘',
+        '虚拟触控板模式下手机按此开关；自适应、键鼠、Pad 与 PC 始终直通，退出时补发全部 key-up',
+        this.settings.input.captureKeyboard,
         (value: boolean): void => { this.update((next: MoonlightSettings): void => { next.input.captureKeyboard = value; }); })
       Divider().color(this.pal().divider)
       this.statusRow('转发系统快捷键', '系统保留组合键尚未开放，普通按键仍可发送', '尚未开放', false)
@@ -649,15 +1124,9 @@ export struct MoonlightSettingsSurface {
       this.toggleRow('自动重连', '传输意外中断后，在限定时间内恢复当前应用与输入会话',
         this.settings.network.autoReconnect, (value: boolean): void => {
           this.update((next: MoonlightSettings): void => { next.network.autoReconnect = value; });
-        })
+      })
       Divider().color(this.pal().divider)
-      this.sliderRow('重连预算', '最多尝试 6 次；0 秒等同于不自动重连',
-        this.settings.network.reconnectBudgetMs / 1000, 0, 120, 0.5, ' 秒',
-        (value: number): void => {
-          this.update((next: MoonlightSettings): void => {
-            next.network.reconnectBudgetMs = Math.round(value * 1000);
-          });
-        }, this.settings.network.autoReconnect)
+      this.reconnectBudgetSlider()
     }.width('100%').padding(16).backgroundColor(this.pal().card).borderRadius(20)
       .border({ width: 0.5, color: this.pal().cardBorder }).margin({ bottom: 12 })
     Column() {
@@ -751,7 +1220,7 @@ export struct MoonlightSettingsSurface {
     Column() {
       this.cardTitle('当前设备', '只描述 Moonlight，不改变其他协议的云同步选择')
       this.statusRow('Moonlight 云同步',
-        '单独的物理云表与设置/主机/配置三个逻辑范围',
+        '云表自动启用；设置、主机与配置固定整体同步',
         this.dataSyncSelected ? '此设备已选择' : '此设备未选择',
         this.dataSyncSelected)
       Divider().color(this.pal().divider)
@@ -816,6 +1285,7 @@ export struct MoonlightSettingsSurface {
   }
 
   @Builder private activeContent() {
+    if (this.section !== 'data') { this.liveSettingsPreview() }
     if (this.section === 'video') { this.videoContent() }
     else if (this.section === 'audio') { this.audioContent() }
     else if (this.section === 'input') { this.inputContent() }
@@ -823,6 +1293,21 @@ export struct MoonlightSettingsSurface {
     else if (this.section === 'diagnostics') { this.diagnosticsContent() }
     else if (this.section === 'trust') { this.trustContent() }
     else { this.dataContent() }
+  }
+
+  @Builder private embeddedFooter() {
+    if (this.section !== 'data') {
+      Column() {
+        Divider().color(this.pal().divider).margin({ bottom: 12 })
+        Button(this.dirty ? '保存更改' : '设置已保存').width('100%').height(44)
+          .fontSize(13).borderRadius(11)
+          .backgroundColor(this.dirty && this.editingLease !== null ?
+            this.accentColor : this.pal().surface)
+          .fontColor(this.dirty && this.editingLease !== null ? Color.White : this.pal().text3)
+          .enabled(this.dirty && this.editingLease !== null)
+          .onClick((): void => { this.save(); })
+      }.width('100%').padding({ left: 20, right: 20, bottom: 18 })
+    }
   }
 
   build() {
@@ -835,9 +1320,11 @@ export struct MoonlightSettingsSurface {
       if (this.embedded) {
         Scroll() {
           Column() { this.activeContent() }.width('100%').constraintSize({ maxWidth: 720 })
-            .padding({ left: 16, right: 16, top: 8, bottom: 22 })
+            .padding({ left: 20, right: 20, top: 4, bottom: 12 })
             .enabled(this.editingLease !== null).opacity(this.editingLease !== null ? 1 : 0.55)
-        }.width('100%').layoutWeight(1).align(Alignment.TopStart).scrollBar(BarState.Off)
+        }.width('100%').height(0).layoutWeight(1)
+          .align(Alignment.TopStart).scrollBar(BarState.Off)
+        this.embeddedFooter()
       } else if (this.breakpoint === 'xl') {
         Row() {
           Scroll() {

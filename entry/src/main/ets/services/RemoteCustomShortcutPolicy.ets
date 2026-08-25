@@ -111,6 +111,26 @@ export function remoteCustomShortcutKeyOptions(
   return result;
 }
 
+/** macOS exposes stable Carbon virtual-key codes only through F20. */
+export function remoteCustomShortcutKeyAvailableOnPlatform(
+  keyCode: number,
+  platform: string
+): boolean {
+  return !(platform.trim().toLowerCase() === 'macos' && keyCode >= 2824 && keyCode <= 2827);
+}
+
+export function remoteCustomShortcutAvailableOnPlatform(
+  shortcut: RemoteCustomShortcut,
+  platform: string
+): boolean {
+  for (let index: number = 0; index < shortcut.keyCodes.length; index++) {
+    if (!remoteCustomShortcutKeyAvailableOnPlatform(shortcut.keyCodes[index], platform)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 export function remoteCustomShortcutKeyGroupForKeyCode(
   keyCode: number
 ): RemoteCustomShortcutKeyGroup {

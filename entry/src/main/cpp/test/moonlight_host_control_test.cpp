@@ -236,7 +236,10 @@ MoonlightTransportOutcome transportFailure(
 std::string serverInfoXml(std::uint32_t currentGame = 0U, bool paired = true,
                           std::string uuid = "SERVER-UUID") {
     return "<root status_code=\"200\"><uniqueid>" + uuid +
-           "</uniqueid><appversion>7.1.431.-1</appversion><state>" +
+           "</uniqueid><appversion>7.1.431.-1</appversion>"
+           "<ServerCodecModeSupport>65793</ServerCodecModeSupport>"
+           "<MaxLumaPixelsH264>2073600</MaxLumaPixelsH264>"
+           "<MaxLumaPixelsHEVC>8294400</MaxLumaPixelsHEVC><state>" +
            (currentGame == 0U ? "SUNSHINE_SERVER_READY" : "SUNSHINE_SERVER_BUSY") +
            "</state><PairStatus>" + (paired ? "1" : "0") +
            "</PairStatus><currentgame>" + std::to_string(currentGame) +
@@ -281,7 +284,8 @@ MoonlightHostControlContext contextFor(
 }
 
 MoonlightLaunchRequest launchRequest(std::uint64_t requestId, std::uint32_t appId = 42U,
-                                     std::uint64_t generation = 1U) {
+                                     std::uint64_t generation = 1U,
+                                     MoonlightLaunchConfiguration configuration = {}) {
     MoonlightLaunchRequest request;
     request.context = contextFor(requestId, generation);
     request.appId = appId;
@@ -289,7 +293,6 @@ MoonlightLaunchRequest launchRequest(std::uint64_t requestId, std::uint32_t appI
     for (std::size_t index = 0; index < key.size(); ++index) {
         key[index] = static_cast<std::uint8_t>(0xa0U + index);
     }
-    MoonlightLaunchConfiguration configuration;
     configuration.remoteControllersBitmap = 3U;
     configuration.gamepadMask = 3U;
     request.material = MoonlightLaunchMaterial(std::move(key), -2147483647, configuration);
@@ -319,6 +322,27 @@ struct Fixture final {
     std::shared_ptr<MoonlightHostApi> api;
     std::unique_ptr<MoonlightHostControl> control;
 };
+
+RDP_TEST_CASE(moonlight_host_control_adapts_requested_mode_to_authenticated_host_limit) {
+    Fixture fixture;
+    RDP_ASSERT(fixture.primeCatalog().ok());
+    fixture.transport->push(xmlResponse(serverInfoXml(0U)));
+    fixture.transport->push(xmlResponse(
+        "<root status_code=\"200\"><gamesession>1</gamesession>"
+        "<sessionUrl0>rtsp://adapted</sessionUrl0></root>"));
+    MoonlightLaunchConfiguration configuration;
+    configuration.width = 3840;
+    configuration.height = 2160;
+    configuration.resolutionPolicy =
+        MoonlightLaunchConfiguration::ResolutionPolicy::HostCapability;
+    configuration.videoCodec = MoonlightLaunchConfiguration::VideoCodec::H264;
+    const auto result = fixture.control->launch(
+        launchRequest(2U, 42U, 1U, configuration));
+    RDP_ASSERT(result.ok());
+    RDP_ASSERT(result.effectiveLaunchConfiguration.has_value());
+    RDP_ASSERT_EQ(result.effectiveLaunchConfiguration->width, 1920U);
+    RDP_ASSERT_EQ(result.effectiveLaunchConfiguration->height, 1080U);
+}
 
 } // namespace
 

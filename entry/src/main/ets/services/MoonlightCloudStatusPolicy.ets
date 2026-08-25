@@ -1,5 +1,6 @@
 import {
   MoonlightCloudSyncScope,
+  moonlightForcedCloudSyncSelection,
   normalizeMoonlightCloudSyncSelection
 } from './MoonlightCloudSyncSelectionPolicy';
 
@@ -43,16 +44,22 @@ function boundedCount(value: number): number {
 export function resolveMoonlightCloudStatus(
   input: MoonlightCloudStatusInput
 ): MoonlightCloudStatusSnapshot {
-  const scopes: MoonlightCloudSyncScope[] =
+  // Empty/partial values are legacy persistence artifacts, not a runtime
+  // subtype choice. Report the fixed public set while the physical switch
+  // alone decides whether transfer is active.
+  const normalizedLegacy: MoonlightCloudSyncScope[] =
     normalizeMoonlightCloudSyncSelection(
       input.selectedScopes, input.identityCapabilityReady);
+  const scopes: MoonlightCloudSyncScope[] =
+    normalizedLegacy.join(',') === 'settings,hosts,profiles'
+      ? normalizedLegacy : moonlightForcedCloudSyncSelection();
   const pending: number = boundedCount(input.pendingUploadCount);
   const quarantine: number = boundedCount(input.quarantineCount);
   const identitySelected: boolean = scopes.indexOf('identity') >= 0;
   const identityLocked: boolean = identitySelected &&
     (!input.cryptoConfigured || !input.cryptoUnlocked);
   let state: MoonlightCloudDisplayState = 'ready';
-  if (!input.physicalSelected || scopes.length === 0) { state = 'off'; }
+  if (!input.physicalSelected) { state = 'off'; }
   else if (!input.accountOnline || !input.platformIdentityVerified ||
       !input.cloudSchemaReady) { state = 'unavailable'; }
   else if (!input.bootstrapComplete) { state = 'bootstrap'; }

@@ -1645,6 +1645,15 @@ export class ExtensionLoader {
     }
   }
 
+  sendKeyEvents(sessionId: number, keyCodes: Array<number>, pressed: Array<boolean>): boolean {
+    try {
+      return rdpnapi.sendKeyEvents(sessionId, keyCodes, pressed);
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] sendKeyEvents: ' + JSON.stringify(err));
+      return false;
+    }
+  }
+
   sendMouse(sessionId: number, x: number, y: number, button: number, pressed: boolean): void {
     try {
       rdpnapi.sendMouse(sessionId, x, y, button, pressed);

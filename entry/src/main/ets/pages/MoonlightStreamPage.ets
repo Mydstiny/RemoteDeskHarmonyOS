@@ -1,4 +1,4 @@
-import { promptAction, router } from '@kit.ArkUI';
+import { display, promptAction, router, window } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
 import { connection } from '@kit.NetworkKit';
 import { KeyCode } from '@kit.InputKit';
@@ -22,7 +22,10 @@ import {
   MoonlightControllerSemanticEvent
 } from '../components/moonlight/MoonlightControllerOverlay';
 import { MoonlightSessionToolbar } from '../components/moonlight/MoonlightSessionToolbar';
+import { MoonlightPhysicalControllerSheet } from '../components/moonlight/MoonlightPhysicalControllerSheet';
 import { RemoteSessionFullscreenButton } from '../components/RemoteSessionFullscreenButton';
+import { RemoteCursorOverlay, RemoteCursorOverlayState } from '../components/RemoteCursorOverlay';
+import { normalizeRemoteCursorStyle } from '../services/RemoteCursorStylePolicy';
 import { RemoteModifierPanel } from '../components/RemoteModifierPanel';
 import {
   RemoteCustomShortcut,
@@ -33,8 +36,10 @@ import {
 import { RemoteKeyboardSettingsService } from '../services/RemoteKeyboardSettingsService';
 import {
   MoonlightEffectiveSettings,
+  MoonlightInputControlMode,
   MoonlightSettings,
-  defaultMoonlightSettings
+  defaultMoonlightSettings,
+  moonlightInputControlMode
 } from '../model/MoonlightModels';
 import { AccountScopeToken, AccountSessionLease } from '../services/AccountScopePolicy';
 import { AccountSessionCoordinator } from '../services/AccountSessionCoordinator';
@@ -52,10 +57,30 @@ import {
   MoonlightRouteIdentity,
   MoonlightToolbarLayout,
   MoonlightToolbarAction,
+  MoonlightAdaptiveInputSource,
   MoonlightDiagnosticsSnapshot,
+  MoonlightResolvedControlMode,
+  MOONLIGHT_DISAPPEAR_BACKGROUND_SIGNAL_WAIT_MS,
+  MOONLIGHT_PRESENTATION_STALL_MS,
+  moonlightConnectSheetMountReady,
+  moonlightAdaptiveControlModeForSource,
+  moonlightInitialAdaptiveControlMode,
+  moonlightPhysicalKeyboardCaptureEnabled,
+  moonlightResolvedControlMode,
   moonlightRouteIdentity,
-  moonlightToolbarLayout
+  moonlightSystemKeyReserved,
+  moonlightToolbarLayout,
+  moonlightUsesEntryAbilityImmersiveBars,
+  shouldDeferMoonlightDisappear
 } from '../services/MoonlightUiPolicy';
+import { REMOTE_SESSION_COLLAPSED_RAIL_TOUCH_WIDTH } from
+  '../services/RemoteSessionTopBarPolicy';
+import {
+  clampTouchpadEffectiveGain,
+  resetTouchpadPointerCurveState,
+  TouchpadPointerCurveState,
+  touchpadPointerCurve
+} from '../services/TouchpadPointerCurvePolicy';
 import rdpnapi from 'librdpnapi.so';
 import {
   MoonlightHostService,
@@ -80,6 +105,7 @@ import {
 import { LiveViewMode } from '../services/LiveViewTypes';
 import {
   RemoteSessionPipService,
+  RemoteSessionPipRestoreTarget,
   RemoteSessionPipSurface
 } from '../services/RemoteSessionPipService';
 import {
@@ -140,22 +166,53 @@ import {
   RemoteImeCommandKind,
   RemoteImeCommandQueue
 } from '../services/RemoteImeCommandQueue';
+import {
+  MoonlightImeKeyStroke,
+  moonlightImeAsciiKeyStroke
+} from '../services/MoonlightImeTextInputPolicy';
+import {
+  moonlightDecoderCapability,
+  probeMoonlightHardwareDecoderCapabilities
+} from '../services/MoonlightVideoCapabilityService';
+import { normalizeRendererViewportToSurface } from
+  '../services/RemoteSurfaceTransformPolicy';
 
 const MOONLIGHT_KEYCODE_DPAD_LEFT = 2014;
 const MOONLIGHT_KEYCODE_DPAD_RIGHT = 2015;
-const MOONLIGHT_KEYCODE_TAB = 2049;
 const MOONLIGHT_KEYCODE_ENTER = 2054;
 const MOONLIGHT_KEYCODE_DEL = 2055;
-const MOONLIGHT_KEYCODE_ESCAPE = 2070;
 const MOONLIGHT_KEYCODE_FORWARD_DEL = 2071;
+const MOONLIGHT_KEYCODE_SHIFT_LEFT = 2047;
 const MOONLIGHT_IME_SELECTION_ACK_TIMEOUT_MS = 600;
 const MOONLIGHT_IME_COMMAND_RETRY_MS = 50;
+const MOONLIGHT_DIAGNOSTICS_POLL_MS = 250;
+const MOONLIGHT_DIAGNOSTICS_NEW_SAMPLE_WEIGHT = 0.65;
+// Keep virtual-trackpad travel stable across phone and Pad sizes. The scale is
+// derived from the whole reference-plane area below, so X/Y always retain the
+// same gain instead of feeling different when the viewport aspect ratio does.
+const MOONLIGHT_TRACKPAD_REFERENCE_WIDTH = 1280;
+const MOONLIGHT_TRACKPAD_REFERENCE_HEIGHT = 720;
+const MOONLIGHT_TRACKPAD_MAX_LOCAL_STEP_RATIO = 0.75;
+const MOONLIGHT_TRACKPAD_MAX_LOCAL_STEP_VP = 420;
+// ArkUI can report touch motion faster than the streamed desktop can present
+// it. Dispatch at most once per 60 Hz presentation interval and preserve the
+// complete accumulated delta. This avoids starving decoder presentation with
+// synchronous NAPI calls while keeping pointer/button ordering deterministic.
+const MOONLIGHT_TRACKPAD_WIRE_INTERVAL_MS = 16;
+const MOONLIGHT_RENDERER_VIEWPORT_CACHE_MS = 250;
 
 const EMPTY_MOONLIGHT_DIAGNOSTICS: MoonlightDiagnosticsSnapshot = {
-  available: false, fps: -1, latencyMs: -1, bitrateKbps: -1,
-  packetLossPercent: -1, codec: '', width: 0, height: 0,
+  available: false, transportReady: false, videoReady: false, audioReady: false,
+  inputReady: false, fps: -1, latencyMs: -1, bitrateKbps: -1,
+  configuredBitrateKbps: -1, packetLossPercent: -1, codec: '', width: 0, height: 0,
+  targetFps: -1, acceptedVideoFrames: 0, droppedVideoFrames: 0,
+  decoderQueueDepth: -1,
   decodeP50Us: -1, decodeP95Us: -1, renderP50Us: -1, renderP95Us: -1,
-  audioUnderruns: -1, inputDrops: -1
+  codecLatencyMs: -1, codecLatencyMaxMs: -1, surfaceUpdateFailures: 0,
+  surfaceCoalescedNotifications: 0, acceptedAudioPackets: 0,
+  rejectedAudioPackets: 0, audioBytes: 0, audioUnderruns: -1,
+  inputAccepted: 0, inputDrops: -1, presentedFrames: 0, videoBytes: 0,
+  ingressAgeMs: -1, presentationAgeMs: -1, stalled: false
 };
 
 class MoonlightStreamXComponentController extends XComponentController {
@@ -165,8 +222,8 @@ class MoonlightStreamXComponentController extends XComponentController {
   onSurfaceDestroyed(surfaceId: string): void { this.onSurfaceDetached(surfaceId); }
 }
 
-type MoonlightSessionSheetMode = 'none' | 'control' | 'stop';
-type MoonlightPointerAction = 'relative' | 'absolute' | 'button' | 'scroll';
+type MoonlightSessionSheetMode = 'none' | 'connect' | 'control' | 'controller' | 'stop';
+type MoonlightPointerAction = 'relative' | 'absolute' | 'absoluteButton' | 'button' | 'scroll';
 type MoonlightTouchPhase = 'down' | 'move' | 'up' | 'cancel';
 type MoonlightInputLifecycleReason = 'overlay_opened' | 'control_mode_changed' |
   'display_rotated' | 'focus_lost' | 'pip_entered' | 'backgrounded' |
@@ -190,6 +247,16 @@ interface MoonlightPointerInputRequest {
   scrollAmount?: number;
 }
 
+interface MoonlightPhysicalPointerGeometry {
+  contentLeft: number;
+  contentTop: number;
+  contentWidth: number;
+  contentHeight: number;
+  referenceWidth: number;
+  referenceHeight: number;
+  signature: string;
+}
+
 interface MoonlightTouchPoint {
   x: number;
   y: number;
@@ -200,6 +267,8 @@ interface MoonlightTouchPoint {
 struct MoonlightStreamPage {
   @StorageLink('currentTheme') theme: string = 'light';
   @StorageLink('accentColor') accentColor: string = '#007DFF';
+  @StorageLink('virtualMouseStyle') @Watch('onVirtualMouseStyleChanged')
+  virtualMouseStyle: string = 'arrow';
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
   @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
   @StorageProp('isPadDevice') isPadDevice: boolean = false;
@@ -224,12 +293,12 @@ struct MoonlightStreamPage {
   @State physicalControllerPathReady: boolean = false;
   @State audioReady: boolean = false;
   @State showConnectStage: boolean = true;
-  @State showConnectStageSheet: boolean = false;
   @State pendingConnectStageSheet: boolean = false;
   @State showSessionSheet: boolean = false;
   @State sheetMode: MoonlightSessionSheetMode = 'none';
   @State pendingSheetMode: MoonlightSessionSheetMode = 'none';
-  @State controlMode: MoonlightControlMode = 'touch';
+  @State controlMode: MoonlightControlMode = 'adaptive';
+  @State adaptiveControlMode: MoonlightResolvedControlMode = 'trackpad';
   @State sessionChanges: number = 0;
   @State showController: boolean = false;
   @State controllerEditing: boolean = false;
@@ -249,8 +318,13 @@ struct MoonlightStreamPage {
   @State diagnosticsVisible: boolean = false;
   @State diagnosticsExpanded: boolean = false;
   @State diagnosticsX: number = 18;
-  @State diagnosticsY: number = 90;
+  @State diagnosticsY: number = 18;
   @State diagnosticsSnapshot: MoonlightDiagnosticsSnapshot = EMPTY_MOONLIGHT_DIAGNOSTICS;
+  // ArkUI reliably observes this primitive even on platform revisions where
+  // an interface-typed @Prop object can retain its first rendered value.
+  // Advancing it with every native sample keeps every HUD metric live without
+  // requiring a collapse/expand reconstruction.
+  @State diagnosticsSampleEpoch: number = 0;
   @State ctrlLatch: string = 'off';
   @State altLatch: string = 'off';
   @State shiftLatch: string = 'off';
@@ -260,8 +334,14 @@ struct MoonlightStreamPage {
   @State surfaceRecovering: boolean = false;
   @State pipPrepared: boolean = false;
   @State terminationBusy: boolean = false;
+  @State trackpadCursorOverlayState: RemoteCursorOverlayState =
+    new RemoteCursorOverlayState();
   private readonly sessionCoordinator: MoonlightSessionCoordinator =
     MoonlightSessionCoordinator.getInstance();
+  // getUniqueId() returns -1 until the component node exists. Capture the
+  // @Entry page ID from lifecycle/runtime code instead of a field initializer
+  // so PiP can restore this exact stream route.
+  private pipRestorePageId: number = -1;
   private readonly hostService: MoonlightHostService = new MoonlightHostService();
   private readonly localViewService: MoonlightLocalViewService =
     new MoonlightLocalViewService(CloudStore.getInstance());
@@ -291,11 +371,23 @@ struct MoonlightStreamPage {
   private keyboardInitialSelectionPending: boolean = false;
   private keyboardSelectionAckTimer: number = -1;
   private keyboardCommandPumpTimer: number = -1;
+  private virtualKeyboardFocusTimer: number = -1;
+  private physicalKeyboardFocusTimer: number = -1;
+  private physicalKeyboardProxyFocused: boolean = false;
   private customShortcutSequence: number = 0;
   private diagnosticsTimer: number = -1;
   private diagnosticsPreviousSampleMs: number = 0;
   private diagnosticsPreviousPresentedFrames: number = 0;
   private diagnosticsPreviousVideoBytes: number = 0;
+  private diagnosticsLastPresentedProgressSampleMs: number = 0;
+  private diagnosticsLastIngressProgressSampleMs: number = 0;
+  private diagnosticsSmoothedFps: number = -1;
+  private diagnosticsSmoothedBitrateKbps: number = -1;
+  private diagnosticsLatestSnapshot: MoonlightDiagnosticsSnapshot =
+    EMPTY_MOONLIGHT_DIAGNOSTICS;
+  private pendingDisappearDecisionTimer: number = -1;
+  private disappearDecisionGeneration: number = 0;
+  private routeExitAfterSheetDisappear: boolean = false;
   private launchKey: MoonlightNativeRequestKey = { requestId: 0, generation: 0, ownerToken: 0 };
   private serverUuid: string = '';
   private numericAppId: number = 0;
@@ -305,8 +397,16 @@ struct MoonlightStreamPage {
   private pipSurfaceId: string = '';
   private surfaceWidthPx: number = 1920;
   private surfaceHeightPx: number = 1080;
-  private surfaceWidthVp: number = 1;
-  private surfaceHeightVp: number = 1;
+  @State private surfaceWidthVp: number = 1;
+  @State private surfaceHeightVp: number = 1;
+  @State orientationApplied: boolean = false;
+  private orientationRequestGeneration: number = 0;
+  private moonlightSystemBarRequestId: number = 0;
+  private moonlightSystemBarsHidden: boolean = false;
+  private moonlightSystemBarUpdate: Promise<void> = Promise.resolve();
+  private surfaceLayoutReady: boolean = false;
+  private rendererSurfaceWidthPx: number = 0;
+  private rendererSurfaceHeightPx: number = 0;
   private streamWidth: number = 1920;
   private streamHeight: number = 1080;
   private configuredBitrateKbps: number = 20000;
@@ -322,8 +422,34 @@ struct MoonlightStreamPage {
   private routeOwnerValidated: boolean = false;
   private launchOwnerDisposed: boolean = false;
   private geometryGeneration: number = 1;
+  private physicalPointerGeometryCache: MoonlightPhysicalPointerGeometry | null = null;
+  private physicalPointerGeometryHandle: number = -1;
+  private physicalPointerGeometryReadAtMs: number = 0;
+  private physicalPointerGeometrySignature: string = '';
+  private physicalMouseObservedEvents: number = 0;
   private hitMapGeneration: number = 1;
-  private activeTouches: Map<number, MoonlightTouchPoint> = new Map<number, MoonlightTouchPoint>();
+  private trackpadVisualTouches: Map<number, MoonlightTouchPoint> =
+    new Map<number, MoonlightTouchPoint>();
+  private trackpadCursorX: number = 0;
+  private trackpadCursorY: number = 0;
+  private trackpadCursorInitialized: boolean = false;
+  private trackpadCursorRevision: number = 0;
+  private trackpadGestureStartedAtMs: number = 0;
+  private trackpadGestureMaximumTravel: number = 0;
+  private trackpadPeakContactCount: number = 0;
+  private trackpadGestureMoved: boolean = false;
+  private trackpadDragActive: boolean = false;
+  private trackpadScrollCentroidX: number = 0;
+  private trackpadScrollCentroidY: number = 0;
+  private trackpadScrollCentroidValid: boolean = false;
+  private trackpadCurveState: TouchpadPointerCurveState =
+    resetTouchpadPointerCurveState();
+  private trackpadLocalAcceptedEvents: number = 0;
+  private trackpadLocalRejectedEvents: number = 0;
+  private trackpadPendingDeltaX: number = 0;
+  private trackpadPendingDeltaY: number = 0;
+  private trackpadPointerFlushTimer: number = -1;
+  private trackpadLastPointerDispatchMs: number = 0;
   private inputSuspended: boolean = false;
   private inputSuspensionAppliedOwnerToken: number = 0;
   private rendererHandle: number = -1;
@@ -373,6 +499,7 @@ struct MoonlightStreamPage {
   private reconnectInFlight: boolean = false;
   private reconnectRuntimeLaunched: boolean = false;
   private requestedTerminalAction: MoonlightSessionRecoveryTerminalAction = 'none';
+  private terminalRouteExitTimer: number = -1;
   private readonly networkAvailableCallback: Callback<connection.NetHandle> =
     (handle: connection.NetHandle): void => { this.onMoonlightNetworkAvailable(handle); };
   private readonly networkLostCallback: Callback<connection.NetHandle> =
@@ -392,28 +519,44 @@ struct MoonlightStreamPage {
    * session underneath it.
    */
   private syncConnectStageSheet(): void {
-    const gateNeeded: boolean = this.showConnectStage || this.surfaceRecovering;
+    // Rotation and PIP foreground restore are presentation handoffs, not new
+    // connection attempts. Reusing the connection Sheet during those handoffs
+    // leaves its dark mask above a healthy renderer and can flash stale errors.
+    // Once route teardown begins, every terminal native snapshot is expected.
+    // Never remount the connection/failure Sheet above an intentional exit.
+    const gateNeeded: boolean = this.showConnectStage && !this.routeTerminated;
     if (!gateNeeded) {
       this.pendingConnectStageSheet = false;
-      this.showConnectStageSheet = false;
+      if (this.sheetMode === 'connect') {
+        this.sheetReopenGeneration += 1;
+        this.cancelSheetReopen();
+        this.showSessionSheet = false;
+      }
       return;
     }
-    // The stream route has one native Sheet host for session controls and one
-    // for the connection gate. Never leave both requested at once: closing a
-    // control Sheet is asynchronous, so queue the gate and let
-    // onSheetDisappear() open it after the native Sheet has actually gone.
-    if (this.showSessionSheet || this.sheetMode !== 'none' ||
-        this.pendingSheetMode !== 'none' || this.sheetReopenTimer >= 0) {
+    if (!moonlightConnectSheetMountReady(gateNeeded, this.surfaceLayoutReady)) {
       this.pendingConnectStageSheet = true;
-      this.showConnectStageSheet = false;
+      return;
+    }
+    // Connection progress and session controls deliberately share one native
+    // Sheet host. Two BindSheet hosts on the rotating stream page can leave
+    // an invisible SheetPage above the XComponent after first frame.
+    if (this.showSessionSheet && this.sheetMode !== 'connect') {
+      this.pendingConnectStageSheet = true;
       this.pendingSheetMode = 'none';
       this.sheetReopenGeneration += 1;
       this.cancelSheetReopen();
-      if (this.showSessionSheet) { this.showSessionSheet = false; }
+      this.showSessionSheet = false;
       return;
     }
     this.pendingConnectStageSheet = false;
-    this.showConnectStageSheet = true;
+    this.pendingSheetMode = 'none';
+    this.sheetMode = 'connect';
+    this.showSessionSheet = true;
+  }
+
+  private connectStageGateActive(): boolean {
+    return this.pageActive && this.showConnectStage;
   }
 
   private setConnectStageVisible(visible: boolean): void {
@@ -423,7 +566,7 @@ struct MoonlightStreamPage {
 
   private setSurfaceRecovering(recovering: boolean): void {
     this.surfaceRecovering = recovering;
-    this.syncConnectStageSheet();
+    this.publishTrackpadCursor();
   }
 
   private clearMoonlightContextualGuideRetry(): void {
@@ -500,6 +643,65 @@ struct MoonlightStreamPage {
 
   private toolbarLayout(): MoonlightToolbarLayout {
     return moonlightToolbarLayout(this.isDesktopDevice, this.breakpoint, this.isPadDevice);
+  }
+
+  private trackpadInputSurfaceWidth(): number {
+    const viewportWidth: number = Number.isFinite(this.surfaceWidthVp) ?
+      Math.max(1, this.surfaceWidthVp) : 1;
+    const layout: MoonlightToolbarLayout = this.toolbarLayout();
+    if (!layout.edgeRail) { return viewportWidth; }
+    // The remote input surface must never overlap the right rail. Reserve the
+    // complete expanded rail width, not only the translucent collapsed handle,
+    // so every rail button remains independently clickable in either state.
+    const railWidth: number = Math.max(
+      REMOTE_SESSION_COLLAPSED_RAIL_TOUCH_WIDTH, layout.iconSize + 32);
+    return Math.max(1, viewportWidth - railWidth);
+  }
+
+  private toolbarControlModeLabel(): string {
+    if (this.controlMode === 'keyboardMouse') { return '键鼠'; }
+    if (this.controlMode === 'trackpad') { return '触控板'; }
+    return this.adaptiveControlMode === 'keyboardMouse' ? '自适应·键鼠' : '自适应·触控板';
+  }
+
+  private resolvedMoonlightControlMode(): MoonlightResolvedControlMode {
+    return moonlightResolvedControlMode(this.controlMode, this.adaptiveControlMode);
+  }
+
+  private observeMoonlightAdaptiveInput(source: MoonlightAdaptiveInputSource): void {
+    if (this.controlMode !== 'adaptive') { return; }
+    const next: MoonlightResolvedControlMode = moonlightAdaptiveControlModeForSource(
+      this.controlMode, this.adaptiveControlMode, source);
+    if (next === this.adaptiveControlMode) { return; }
+    this.cancelActiveMoonlightTouches();
+    this.adaptiveControlMode = next;
+    this.setNativeTouchMode(next);
+    this.publishTrackpadCursor();
+    if (next === 'keyboardMouse') {
+      this.scheduleMoonlightPhysicalKeyboardFocus('adaptive-' + source);
+    }
+  }
+
+  private applyMoonlightControlMode(mode: MoonlightInputControlMode,
+    countAsSessionChange: boolean = true): void {
+    if (mode === this.controlMode) { return; }
+    this.cancelActiveMoonlightTouches();
+    this.controlMode = mode;
+    if (mode === 'adaptive') {
+      this.adaptiveControlMode = moonlightInitialAdaptiveControlMode(
+        this.isPadDevice, this.isDesktopDevice, this.sessionWindowId);
+    }
+    this.setNativeTouchMode(this.resolvedMoonlightControlMode());
+    this.clampAndPublishTrackpadCursor();
+    if (countAsSessionChange) { this.sessionChanges += 1; }
+    this.physicalKeyboardProxyFocused = false;
+    this.scheduleMoonlightPhysicalKeyboardFocus('control-mode-change');
+  }
+
+  private nextMoonlightControlMode(): MoonlightInputControlMode {
+    if (this.controlMode === 'adaptive') { return 'keyboardMouse'; }
+    if (this.controlMode === 'keyboardMouse') { return 'trackpad'; }
+    return 'adaptive';
   }
 
   private clampMoonlightPanelX(x: number, width: number): number {
@@ -584,18 +786,37 @@ struct MoonlightStreamPage {
   }
 
   aboutToAppear(): void {
+    this.cancelPendingMoonlightDisappearDecision();
+    this.refreshMoonlightPipRestorePageId('about-to-appear');
+    if (this.pageActive && !this.routeTerminated && this.nativeSessionId > 0) {
+      const background: boolean = this.currentMoonlightAbilityBackgroundState();
+      hilog.info(0x0014, 'MoonlightStreamUi',
+        'aboutToAppear preserved-session nativeSessionId=' + this.nativeSessionId.toString() +
+        ' background=' + background.toString());
+      if (!background) {
+        void this.setMoonlightSystemBarsHidden(true, 'preserved-page-appear');
+        this.applyMoonlightAbilityBackground(false);
+        this.scheduleMoonlightPhysicalKeyboardFocus('preserved-page-appear');
+      }
+      return;
+    }
+    hilog.info(0x0014, 'MoonlightStreamUi', 'aboutToAppear begin');
     this.pageActive = true;
     this.remoteCustomShortcuts = RemoteKeyboardSettingsService.getInstance()
       .loadCustomShortcuts(getContext(this) as common.Context);
+    hilog.info(0x0014, 'MoonlightStreamUi', 'aboutToAppear keyboard-settings-ready');
     this.sheetReopenGeneration += 1;
     const params: Record<string, Object> = router.getParams() as Record<string, Object>;
     this.sessionWindowId = typeof params['sessionWindowId'] === 'string'
       ? (params['sessionWindowId'] as string).trim() : '';
+    void this.setMoonlightSystemBarsHidden(true, 'page-appear');
     this.appInBackground = this.sessionWindowId.length > 0 ?
       this.sessionWindowBackground : this.appBackgroundSignal;
     const route: MoonlightRouteIdentity = moonlightRouteIdentity(params, true);
     this.hostId = route.valid ? route.hostId : '';
     this.appId = route.valid ? route.appId : '';
+    hilog.info(0x0014, 'MoonlightStreamUi',
+      'aboutToAppear route-valid=' + (route.valid ? '1' : '0'));
     this.launchKey = {
       requestId: params['launchRequestId'] as number,
       generation: params['launchGeneration'] as number,
@@ -611,14 +832,22 @@ struct MoonlightStreamPage {
       decodeMoonlightEffectiveSettings(this.effectiveSettingsEncoded);
     if (settingsSnapshot !== null) {
       this.effectiveSettings = settingsSnapshot.effective;
-      this.controlMode = settingsSnapshot.effective.input.touchMode;
+      this.controlMode = moonlightInputControlMode(
+        settingsSnapshot.effective.input.controlMode,
+        settingsSnapshot.effective.input.touchMode);
     } else {
       this.effectiveSettingsEncoded = '';
       this.effectiveSettings = defaultMoonlightSettings();
+      this.controlMode = moonlightInputControlMode(
+        this.effectiveSettings.input.controlMode, this.effectiveSettings.input.touchMode);
     }
+    this.adaptiveControlMode = moonlightInitialAdaptiveControlMode(
+      this.isPadDevice, this.isDesktopDevice, this.sessionWindowId);
     this.diagnosticsVisible = this.effectiveSettings.diagnostics.showPerformanceHud;
     this.diagnosticsExpanded = false;
     this.diagnosticsSnapshot = EMPTY_MOONLIGHT_DIAGNOSTICS;
+    this.diagnosticsSampleEpoch = 0;
+    this.diagnosticsLatestSnapshot = EMPTY_MOONLIGHT_DIAGNOSTICS;
     this.resetDiagnosticsSampling();
     const routeStreamWidth: number = params['streamWidth'] as number;
     const routeStreamHeight: number = params['streamHeight'] as number;
@@ -656,11 +885,16 @@ struct MoonlightStreamPage {
     this.appliedTouchModeSessionGeneration = 0;
     this.inputSuspended = false;
     this.inputSuspensionAppliedOwnerToken = 0;
-    this.activeTouches.clear();
+    this.discardPendingTrackpadPointer();
+    this.resetTrackpadGesture(false);
+    this.trackpadLocalAcceptedEvents = 0;
+    this.trackpadLocalRejectedEvents = 0;
+    this.physicalMouseObservedEvents = 0;
+    this.trackpadCursorInitialized = false;
+    this.publishTrackpadCursor();
     this.sessionGeneration = 0;
     this.sessionStartedAtMs = 0;
     this.clearElapsedTimer();
-    this.setConnectStageVisible(true);
     this.keyboardOpen = false;
     this.showModifierPanel = false;
     this.showShortcutPanel = false;
@@ -669,9 +903,15 @@ struct MoonlightStreamPage {
     this.streamStartAttempted = false;
     this.sessionReserved = false;
     this.routeTerminated = false;
+    this.routeExitAfterSheetDisappear = false;
+    this.orientationApplied = this.isDesktopDevice || this.sessionWindowId.length > 0;
+    this.surfaceLayoutReady = false;
+    this.rendererSurfaceWidthPx = 0;
+    this.rendererSurfaceHeightPx = 0;
     this.nativeSurfaceAttached = false;
     this.surfaceSuspended = false;
     this.setSurfaceRecovering(false);
+    this.setConnectStageVisible(true);
     this.pageSurfaceId = '';
     this.pipSurfaceId = '';
     this.surfaceRecoveryGeneration += 1;
@@ -703,10 +943,13 @@ struct MoonlightStreamPage {
     this.clearReconnectTimer();
     this.terminationBusy = false;
     this.requestedTerminalAction = 'none';
+    this.clearTerminalRouteExitTimer();
     this.reservedOwnerScopeId = '';
     this.reservedAccountGeneration = 0;
     const scope: AccountScopeToken = AccountSessionCoordinator.getInstance().currentScope();
     this.routeOwnerValidated = this.routeOwnerMatches(scope);
+    hilog.info(0x0014, 'MoonlightStreamUi',
+      'aboutToAppear owner-valid=' + (this.routeOwnerValidated ? '1' : '0'));
     if (!this.routeOwnerValidated) {
       this.phase = 'failed';
       this.errorCode = 'internal';
@@ -729,10 +972,26 @@ struct MoonlightStreamPage {
       this.disposeLaunchOwner();
       return;
     }
+    hilog.info(0x0014, 'MoonlightStreamUi', 'aboutToAppear recovery-ready');
     this.recoveryBound = true;
+    if (!this.isDesktopDevice && this.sessionWindowId.length === 0) {
+      void this.setMoonlightPreferredOrientation(
+        window.Orientation.LANDSCAPE, 'MOONLIGHT-LANDSCAPE');
+    }
     this.sessionCoordinator.bindScope(scope.ownerScopeId, scope.generation);
-    this.bindSessionSnapshot(scope);
+    hilog.info(0x0014, 'MoonlightStreamUi', 'aboutToAppear reserving-session');
+    // Reserve the new operation generation before subscribing. A cleanly
+    // disconnected session for the same host/app remains as typed terminal
+    // history until reserve() rotates it. Subscribing first synchronously
+    // delivered that old terminal snapshot to the new page, which scheduled a
+    // route exit and released the renderer even though reserve() immediately
+    // succeeded for the next generation.
     this.reserveMoonlightSession(scope);
+    hilog.info(0x0014, 'MoonlightStreamUi',
+      'aboutToAppear session-reserved=' + (this.sessionReserved ? '1' : '0'));
+    if (this.sessionReserved) {
+      this.bindSessionSnapshot(scope);
+    }
     this.accountScopeUnsubscribe = AccountSessionCoordinator.getInstance().onChange(
       (next: AccountScopeToken): void => {
         const reservationChanged: boolean = this.sessionReserved &&
@@ -747,9 +1006,28 @@ struct MoonlightStreamPage {
         }
       });
     this.registerMoonlightNetworkMonitor();
+    hilog.info(0x0014, 'MoonlightStreamUi', 'aboutToAppear complete');
   }
 
   aboutToDisappear(): void {
+    const background: boolean = this.currentMoonlightAbilityBackgroundState();
+    const sessionActive: boolean = !this.routeTerminated && this.nativeSessionId > 0;
+    if (background && sessionActive) {
+      this.cancelPendingMoonlightDisappearDecision();
+      hilog.info(0x0014, 'MoonlightStreamUi',
+        'aboutToDisappear background preserve nativeSessionId=' + this.nativeSessionId.toString());
+      this.applyMoonlightAbilityBackground(true);
+      return;
+    }
+    if (shouldDeferMoonlightDisappear(background, sessionActive, this.routeTerminated)) {
+      this.deferMoonlightDisappearDecision();
+      return;
+    }
+    this.finalizeMoonlightPageDisappear();
+  }
+
+  private finalizeMoonlightPageDisappear(): void {
+    this.cancelPendingMoonlightDisappearDecision();
     this.pageActive = false;
     this.clearMoonlightContextualGuideRetry();
     this.pipLifecycleGeneration += 1;
@@ -762,16 +1040,25 @@ struct MoonlightStreamPage {
     this.reconnectInFlight = false;
     this.reconnectRuntimeLaunched = false;
     this.clearReconnectTimer();
+    this.clearTerminalRouteExitTimer();
     this.unregisterMoonlightNetworkMonitor();
     this.sheetReopenGeneration += 1;
     this.cancelSheetReopen();
     this.pendingSheetMode = 'none';
     this.showSessionSheet = false;
     this.pendingConnectStageSheet = false;
-    this.showConnectStageSheet = false;
+    this.routeExitAfterSheetDisappear = false;
     this.showModifierPanel = false;
     this.showShortcutPanel = false;
+    this.clearMoonlightVirtualKeyboardFocusSchedule();
+    this.clearMoonlightPhysicalKeyboardFocusSchedule();
+    this.physicalKeyboardProxyFocused = false;
+    void this.setMoonlightSystemBarsHidden(false, 'page-disappear');
     this.closeMoonlightRoute('stream-page-disappear');
+    if (!this.isDesktopDevice && this.sessionWindowId.length === 0) {
+      void this.setMoonlightPreferredOrientation(
+        window.Orientation.UNSPECIFIED, 'MOONLIGHT-UNSPECIFIED');
+    }
     void this.stopMoonlightBackgroundTask();
     this.stopDiagnosticsPolling();
     this.clearElapsedTimer();
@@ -783,6 +1070,107 @@ struct MoonlightStreamPage {
       this.accountScopeUnsubscribe();
       this.accountScopeUnsubscribe = null;
     }
+  }
+
+  private async setMoonlightPreferredOrientation(
+    orientation: window.Orientation, label: string
+  ): Promise<void> {
+    const requestGeneration: number = ++this.orientationRequestGeneration;
+    try {
+      const context = this.getUIContext().getHostContext();
+      if (!context) {
+        if (requestGeneration === this.orientationRequestGeneration &&
+            orientation !== window.Orientation.UNSPECIFIED) {
+          this.orientationApplied = true;
+          this.syncConnectStageSheet();
+        }
+        hilog.warn(0x0014, 'MoonlightStreamUi',
+          'setPreferredOrientation skipped label=' + label + ' reason=no-context');
+        return;
+      }
+      const win: window.Window = await window.getLastWindow(context);
+      await win.setPreferredOrientation(orientation);
+      if (requestGeneration !== this.orientationRequestGeneration) { return; }
+      this.orientationApplied = orientation !== window.Orientation.UNSPECIFIED;
+      this.syncConnectStageSheet();
+      if (orientation !== window.Orientation.UNSPECIFIED) {
+        void this.setMoonlightSystemBarsHidden(true, 'orientation-' + label);
+      }
+      hilog.info(0x0014, 'MoonlightStreamUi',
+        'setPreferredOrientation label=' + label + ' ok');
+    } catch (error) {
+      if (requestGeneration === this.orientationRequestGeneration &&
+          orientation !== window.Orientation.UNSPECIFIED) {
+        // Orientation control is best effort. Do not permanently withhold the
+        // surface on a platform/window that declines the preference request.
+        this.orientationApplied = true;
+        this.syncConnectStageSheet();
+      }
+      hilog.warn(0x0014, 'MoonlightStreamUi',
+        'setPreferredOrientation label=' + label + ' failed=' + JSON.stringify(error));
+    }
+  }
+
+  /**
+   * Phone and Pad Moonlight sessions share the same immersive window contract
+   * as RDP, RustDesk and VNC. PC sessions are owned by RemoteSessionAbility's
+   * frame controller instead and must not mutate EntryAbility system bars.
+   */
+  private async setMoonlightSystemBarsHidden(hidden: boolean, reason: string): Promise<void> {
+    if (!moonlightUsesEntryAbilityImmersiveBars(
+        this.isDesktopDevice, this.sessionWindowId)) { return; }
+    const requestId: number = ++this.moonlightSystemBarRequestId;
+    const forceApply: boolean = reason === 'foreground-restore' ||
+      reason.indexOf('orientation-') === 0;
+    const update: Promise<void> = this.moonlightSystemBarUpdate
+      .catch((_error: Error): void => {})
+      .then(async (): Promise<void> => {
+        if (requestId !== this.moonlightSystemBarRequestId ||
+            (!forceApply && this.moonlightSystemBarsHidden === hidden)) { return; }
+        try {
+          const context = this.getUIContext().getHostContext();
+          if (!context) { return; }
+          const win: window.Window = await window.getLastWindow(context);
+          // Keep the ArkUI root behind system insets. Once the bars are hidden
+          // the XComponent can use the complete physical display geometry.
+          try { await win.setWindowLayoutFullScreen(true); } catch (_layoutError) {}
+          let statusApplied: boolean = true;
+          let navigationApplied: boolean = true;
+          try {
+            await win.setSpecificSystemBarEnabled('status', !hidden, false);
+          } catch (error) {
+            statusApplied = false;
+            hilog.warn(0x0014, 'MoonlightStreamUi',
+              'system status bar update failed reason=' + reason +
+              ' error=' + JSON.stringify(error));
+          }
+          try {
+            await win.setSpecificSystemBarEnabled('navigation', !hidden, false);
+          } catch (error) {
+            navigationApplied = false;
+            hilog.warn(0x0014, 'MoonlightStreamUi',
+              'system navigation bar update failed reason=' + reason +
+              ' error=' + JSON.stringify(error));
+          }
+          try {
+            await win.setSpecificSystemBarEnabled('navigationIndicator', !hidden, false);
+          } catch (_indicatorError) {
+            // Some API-23 device families expose only the navigation bar name.
+          }
+          if (requestId === this.moonlightSystemBarRequestId &&
+              statusApplied && navigationApplied) {
+            this.moonlightSystemBarsHidden = hidden;
+          }
+          hilog.info(0x0014, 'MoonlightStreamUi',
+            'system bars=' + (hidden ? 'hidden' : 'restored') + ' reason=' + reason);
+        } catch (error) {
+          hilog.warn(0x0014, 'MoonlightStreamUi',
+            'system bar transaction failed reason=' + reason +
+            ' error=' + JSON.stringify(error));
+        }
+      });
+    this.moonlightSystemBarUpdate = update;
+    await update;
   }
 
   private routeLeaseValid(): boolean {
@@ -865,9 +1253,11 @@ struct MoonlightStreamPage {
     const confirmed = this.sessionCoordinator.confirmSurfaceFrameForRoute(
       this.hostId, this.appId, surfaceId);
     if (confirmed.accepted) {
+      this.resetDiagnosticsSampling();
       this.setSurfaceRecovering(false);
       this.setConnectStageVisible(false);
       this.firstFrameSeen = true;
+      this.clampAndPublishTrackpadCursor();
       if (!this.appInBackground) {
         this.setNativeInputSuspended(false, 'surface_detached');
         void this.prepareMoonlightPipForForeground();
@@ -898,6 +1288,11 @@ struct MoonlightStreamPage {
     if (surfaceId.trim() !== '') {
       this.pageSurfaceId = surfaceId;
     }
+    // The first phone surface is often published with the old portrait size.
+    // Starting common-c before the landscape onAreaChange then immediately
+    // resizing the renderer invalidates the media binding generation. Admit
+    // the stream only after the final landscape geometry is observable.
+    if (!this.surfaceLayoutReady) { return; }
     if (this.renderPreservedInPip || this.pipTransferInProgress ||
         this.foregroundRestoreInProgress) {
       // The page XComponent can be recreated while the independent PIP
@@ -935,6 +1330,8 @@ struct MoonlightStreamPage {
       this.closeMoonlightRoute('renderer-init-failed');
       return;
     }
+    this.rendererSurfaceWidthPx = this.surfaceWidthPx;
+    this.rendererSurfaceHeightPx = this.surfaceHeightPx;
     if (rebinding) {
       const rebound = this.sessionCoordinator.rebindSurfaceForRoute(
         this.hostId, this.appId, this.rendererHandle, surfaceId);
@@ -966,6 +1363,85 @@ struct MoonlightStreamPage {
       this.effectiveSettings.network.reconnectBudgetMs > 0);
   }
 
+  private resizeActiveMoonlightRenderer(width: number, height: number): void {
+    if (this.rendererHandle <= 0 ||
+        (this.rendererSurfaceWidthPx === width &&
+          this.rendererSurfaceHeightPx === height)) {
+      return;
+    }
+    if (this.streamStartAttempted && this.nativeSessionId <= 0) {
+      // Never mutate the renderer generation while common-c admission is in
+      // flight. The landscape readiness barrier prevents this on first mount;
+      // retaining the current binding is safer than creating a stale decoder.
+      return;
+    }
+    if (this.streamStartAttempted && !this.surfaceSuspended) {
+      const suspended = this.sessionCoordinator.suspendSurfaceForRoute(
+        this.hostId, this.appId);
+      if (!suspended.accepted) {
+        this.closeMoonlightRoute('surface-resize-suspend-failed');
+        return;
+      }
+      this.surfaceSuspended = true;
+      this.setSurfaceRecovering(true);
+    }
+    try {
+      rdpnapi.resizeRenderer(this.rendererHandle, width, height);
+      this.rendererSurfaceWidthPx = width;
+      this.rendererSurfaceHeightPx = height;
+    } catch (_) {
+      this.closeMoonlightRoute('surface-resize-failed');
+      return;
+    }
+    if (this.streamStartAttempted) {
+      const rebound = this.sessionCoordinator.rebindSurfaceForRoute(
+        this.hostId, this.appId, this.rendererHandle, this.surfaceId);
+      if (!rebound.accepted) {
+        this.closeMoonlightRoute('surface-resize-rebind-failed');
+        return;
+      }
+      this.surfaceSuspended = false;
+      this.beginSurfaceFrameRecovery(this.surfaceId);
+    }
+  }
+
+  private onMoonlightSurfaceAreaChange(newArea: Area): void {
+    this.surfaceWidthVp = Math.max(1, newArea.width as number);
+    this.surfaceHeightVp = Math.max(1, newArea.height as number);
+    this.clampAndPublishTrackpadCursor();
+    this.reflowMoonlightModifierPanels();
+    const width: number = Math.max(1, Math.round(vp2px(this.surfaceWidthVp)));
+    const height: number = Math.max(1, Math.round(vp2px(this.surfaceHeightVp)));
+    this.surfaceWidthPx = width;
+    this.surfaceHeightPx = height;
+    this.geometryGeneration += 1;
+    this.invalidatePhysicalPointerGeometry();
+    const layoutReady: boolean = width > 1 && height > 1 &&
+      (this.isDesktopDevice || this.sessionWindowId.length > 0 ||
+        this.surfaceWidthVp > this.surfaceHeightVp);
+    const becameReady: boolean = layoutReady && !this.surfaceLayoutReady;
+    this.surfaceLayoutReady = layoutReady;
+    this.syncConnectStageSheet();
+    if (!layoutReady) { return; }
+    this.resizeActiveMoonlightRenderer(width, height);
+    if (becameReady && !this.streamStartAttempted) {
+      if (this.pageSurfaceId.trim() !== '') {
+        this.onMoonlightSurface(this.pageSurfaceId);
+      } else {
+        this.pollMoonlightSurface(0);
+      }
+    }
+    if (this.pipPrepared) {
+      const size: RemoteSessionPipContentSize = this.moonlightPipSize();
+      const presentationLease: RemoteSessionServiceLease | null =
+        this.currentMoonlightPresentationLease();
+      if (presentationLease !== null) {
+        RemoteSessionPipService.getInstance().updateContentSize(
+          size.width, size.height, presentationLease);
+      }
+    }
+  }
+
   private reserveMoonlightSession(scope: AccountScopeToken): void {
     if (!this.pageActive || !this.routeLeaseValid() || this.hostId === '' || this.appId === '') {
       this.phase = 'failed';
@@ -986,6 +1462,9 @@ struct MoonlightStreamPage {
     this.reservedAccountGeneration = scope.generation;
     const result = this.sessionCoordinator.reserve(this.sessionStartRequest(false));
     this.sessionReserved = result.accepted;
+    hilog.info(0x0014, 'MoonlightStreamUi',
+      'reserve result=' + result.code +
+      ' generation=' + (result.state === null ? 'none' : result.state.generation.toString()));
     if (!result.accepted) {
       this.phase = 'failed';
       this.errorCode = 'internal';
@@ -1031,8 +1510,16 @@ struct MoonlightStreamPage {
       // different free-node surface and remains the only native renderer.
       return;
     }
-    if (this.routeTerminated || this.surfaceId !== '' &&
+    if (this.surfaceId !== '' &&
         surfaceId.trim() !== '' && surfaceId !== this.surfaceId) {
+      return;
+    }
+    // This callback is the authoritative ArkUI window-detach boundary. A
+    // terminal route must not skip it: closeMoonlightRoute() deliberately
+    // releases the renderer asynchronously after PIP teardown, and that work
+    // must never treat an already detached page window as live.
+    if (this.routeTerminated) {
+      this.destroyDetachedMoonlightSurface();
       return;
     }
     if (this.reconnectWindow !== null && this.nativeSessionId <= 0) {
@@ -1042,16 +1529,12 @@ struct MoonlightStreamPage {
       this.clearSurfaceRecoveryTimer();
       this.setSurfaceRecovering(true);
       this.surfaceSuspended = true;
-      if (this.nativeSurfaceAttached) {
-        try { rdpnapi.markXComponentSurfaceDestroyed(); } catch (_) {}
-        this.nativeSurfaceAttached = false;
-      }
-      this.destroyMoonlightRenderer();
-      this.surfaceId = '';
+      this.destroyDetachedMoonlightSurface();
       if (!this.appInBackground) { this.pollMoonlightSurface(0); }
       return;
     }
     if (!this.streamStartAttempted || this.nativeSessionId <= 0) {
+      this.destroyDetachedMoonlightSurface();
       this.closeMoonlightRoute('surface-destroyed-before-stream');
       return;
     }
@@ -1059,6 +1542,7 @@ struct MoonlightStreamPage {
     this.setNativeInputSuspended(true, 'surface_detached');
     const suspended = this.sessionCoordinator.suspendSurfaceForRoute(this.hostId, this.appId);
     if (!suspended.accepted) {
+      this.destroyDetachedMoonlightSurface();
       this.closeMoonlightRoute('surface-suspend-failed');
       return;
     }
@@ -1066,12 +1550,7 @@ struct MoonlightStreamPage {
     this.clearSurfaceRecoveryTimer();
     this.setSurfaceRecovering(true);
     this.surfaceSuspended = true;
-    if (this.nativeSurfaceAttached) {
-      try { rdpnapi.markXComponentSurfaceDestroyed(); } catch (_) {}
-      this.nativeSurfaceAttached = false;
-    }
-    this.destroyMoonlightRenderer();
-    this.surfaceId = '';
+    this.destroyDetachedMoonlightSurface();
     if (!this.appInBackground) { this.pollMoonlightSurface(0); }
   }
 
@@ -1121,12 +1600,11 @@ struct MoonlightStreamPage {
     this.streamStartAttempted = true;
     this.surfaceId = '';
     this.pageSurfaceId = '';
-    this.pipSurfaceId = '';
     this.pipPrepared = false;
     this.pipPrepareInFlight = false;
-    this.pipTransferInProgress = false;
-    this.renderPreservedInPip = false;
-    this.foregroundRestoreInProgress = false;
+    // Keep the presentation ownership flags until the asynchronous PIP
+    // teardown completes. They distinguish a late page-XComponent destroy
+    // callback from destruction of the process-global PIP surface.
     this.pipLifecycleGeneration += 1;
     this.clearPipRestoreTimer();
     this.nativeSessionId = -1;
@@ -1144,8 +1622,28 @@ struct MoonlightStreamPage {
   private async terminateMoonlightSession(
     action: 'disconnect' | 'quit'
   ): Promise<void> {
-    if (this.terminationBusy || this.routeTerminated) { return; }
+    if (action === 'disconnect') {
+      this.disconnectMoonlightImmediately('user-disconnect');
+      return;
+    }
+    if (this.terminationBusy) { return; }
     this.terminationBusy = true;
+    if (this.routeTerminated) {
+      const settled: boolean = await this.sessionCoordinator.stopForLifecycle(
+        'terminal-route-exit', 6500);
+      this.terminationBusy = false;
+      if (settled) {
+        const sheetWasVisible: boolean = this.showSessionSheet;
+        this.closeSheet();
+        this.requestSessionSurfaceClose(sheetWasVisible);
+      } else if (this.pageActive) {
+        this.setConnectStageVisible(true);
+        promptAction.showToast({
+          message: '本地串流仍在安全收尾，请稍后再返回', duration: 2400
+        });
+      }
+      return;
+    }
     this.flushInput(action === 'quit' ? 'quit_host_app' : 'disconnect_local');
     this.setNativeInputSuspended(true, 'surface_detached');
 
@@ -1169,7 +1667,7 @@ struct MoonlightStreamPage {
     this.sessionCoordinator.setReconnectEnabledForRoute(this.hostId, this.appId, false);
 
     let stopped: boolean = false;
-    let hostQuitConfirmed: boolean = action === 'disconnect';
+    let hostQuitConfirmed: boolean = false;
     let hostQuitCode: string = '';
     let hostQuitReceiptRecorded: boolean = false;
     try {
@@ -1249,32 +1747,78 @@ struct MoonlightStreamPage {
           promptAction.showToast({ message: '主机应用已安全结束', duration: 1600 });
         }
       }
+      if (!stopped) {
+        // Keep the route visible and occupied until the exact native terminal
+        // receipt arrives. Leaving now would make the host list actionable
+        // while the process-wide media owner is still legitimately draining.
+        this.setConnectStageVisible(true);
+        this.terminationBusy = false;
+        return;
+      }
       try {
+        const sheetWasVisible: boolean = this.showSessionSheet;
         this.closeMoonlightRoute(action === 'quit' ?
           (hostQuitConfirmed ? 'host-app-quit' : 'host-app-quit-uncertain') :
-          (stopped ? 'user-disconnect' : 'user-disconnect-timeout'));
+          'user-disconnect');
         this.closeSheet();
+        this.requestSessionSurfaceClose(sheetWasVisible);
       } finally {
         this.terminationBusy = false;
-        this.closeSessionSurface();
       }
+    }
+  }
+
+  /**
+   * Navigation must respond in the same frame as the toolbar/back gesture.
+   * closeMoonlightRoute() requests the typed native terminal transition and
+   * keeps the shared protocol registry occupied until its receipt arrives, so
+   * the page never needs to remain visible while common-c drains.
+   */
+  private disconnectMoonlightImmediately(reason: string): void {
+    if (this.terminationBusy) { return; }
+    this.terminationBusy = true;
+    const sheetWasVisible: boolean = this.showSessionSheet;
+    try {
+      if (!this.routeTerminated) {
+        this.requestedTerminalAction = 'disconnect';
+        this.recoveryRuntime.requestTerminal('disconnect', Date.now());
+        this.sessionCoordinator.setReconnectEnabledForRoute(
+          this.hostId, this.appId, false);
+        this.closeMoonlightRoute(reason);
+      }
+      this.closeSheet();
+    } finally {
+      this.terminationBusy = false;
+      this.requestSessionSurfaceClose(sheetWasVisible);
     }
   }
 
   private destroyMoonlightRenderer(): void {
     const handle: number = this.rendererHandle;
     this.rendererHandle = -1;
+    this.rendererSurfaceWidthPx = 0;
+    this.rendererSurfaceHeightPx = 0;
     if (handle > 0) {
       try { rdpnapi.destroyRenderer(handle); } catch (_) {}
     }
   }
 
-  private detachSurfaceAndDestroyMoonlightRenderer(): void {
+  private destroyDetachedMoonlightSurface(): void {
     if (this.nativeSurfaceAttached) {
       try { rdpnapi.markXComponentSurfaceDestroyed(); } catch (_) {}
-      this.nativeSurfaceAttached = false;
     }
+    this.nativeSurfaceAttached = false;
     this.destroyMoonlightRenderer();
+    this.surfaceId = '';
+  }
+
+  private detachSurfaceAndDestroyMoonlightRenderer(): void {
+    // This path releases or transfers a renderer while its ArkUI/FreeNode
+    // Surface may still be alive. Do not publish the XComponent-destroyed
+    // fence here: GL must be allowed to destroy its EGLSurface/window
+    // reference before that same native window can be rebound.
+    this.destroyMoonlightRenderer();
+    this.nativeSurfaceAttached = false;
   }
 
   private clearPresentationReleaseRetry(): void {
@@ -1310,6 +1854,10 @@ struct MoonlightStreamPage {
         }
         this.clearPresentationReleaseRetry();
         this.detachSurfaceAndDestroyMoonlightRenderer();
+        this.pipSurfaceId = '';
+        this.pipTransferInProgress = false;
+        this.renderPreservedInPip = false;
+        this.foregroundRestoreInProgress = false;
         this.presentationLease = null;
         this.presentationReleaseActive = false;
         hilog.info(0x0014, 'MoonlightStreamUi',
@@ -1327,17 +1875,61 @@ struct MoonlightStreamPage {
 
   private onRemoteDesktopBgFlagChange(): void {
     if (this.sessionWindowId.length > 0) { return; }
-    this.applyMoonlightAbilityBackground(this.appBackgroundSignal);
+    const background: boolean = this.currentMoonlightAbilityBackgroundState();
+    if (background) { this.cancelPendingMoonlightDisappearDecision(); }
+    this.applyMoonlightAbilityBackground(background);
   }
 
   private onSessionWindowBackgroundChange(): void {
     if (this.sessionWindowId.length === 0) { return; }
-    this.applyMoonlightAbilityBackground(this.sessionWindowBackground);
+    const background: boolean = this.currentMoonlightAbilityBackgroundState();
+    if (background) { this.cancelPendingMoonlightDisappearDecision(); }
+    this.applyMoonlightAbilityBackground(background);
+  }
+
+  private currentMoonlightAbilityBackgroundState(): boolean {
+    return this.sessionWindowId.length > 0 ? this.sessionWindowBackground :
+      (AppStorage.get<boolean>('remoteDesktopBgFlag') ?? this.appBackgroundSignal);
+  }
+
+  private cancelPendingMoonlightDisappearDecision(): void {
+    if (this.pendingDisappearDecisionTimer >= 0) {
+      clearTimeout(this.pendingDisappearDecisionTimer);
+      this.pendingDisappearDecisionTimer = -1;
+    }
+    this.disappearDecisionGeneration += 1;
+  }
+
+  private deferMoonlightDisappearDecision(): void {
+    this.cancelPendingMoonlightDisappearDecision();
+    const generation: number = this.disappearDecisionGeneration;
+    this.pendingDisappearDecisionTimer = setTimeout((): void => {
+      this.pendingDisappearDecisionTimer = -1;
+      if (generation !== this.disappearDecisionGeneration) { return; }
+      const background: boolean = this.currentMoonlightAbilityBackgroundState();
+      if (background && !this.routeTerminated && this.nativeSessionId > 0) {
+        hilog.info(0x0014, 'MoonlightStreamUi',
+          'deferred disappear classified as background; preserving nativeSessionId=' +
+          this.nativeSessionId.toString());
+        this.applyMoonlightAbilityBackground(true);
+        return;
+      }
+      hilog.info(0x0014, 'MoonlightStreamUi',
+        'deferred disappear classified as explicit navigation');
+      this.finalizeMoonlightPageDisappear();
+    }, MOONLIGHT_DISAPPEAR_BACKGROUND_SIGNAL_WAIT_MS);
+    hilog.info(0x0014, 'MoonlightStreamUi',
+      'page disappear waiting for ability background classification');
   }
 
   private applyMoonlightAbilityBackground(isBackground: boolean): void {
+    const changed: boolean = this.appInBackground !== isBackground;
     this.appInBackground = isBackground;
-    if (!this.pageActive || this.routeTerminated) { return; }
+    if (!isBackground && this.pageActive && !this.routeTerminated) {
+      void this.setMoonlightSystemBarsHidden(true, 'foreground-restore');
+      this.scheduleMoonlightPhysicalKeyboardFocus('foreground-restore');
+    }
+    if (!changed || !this.pageActive || this.routeTerminated) { return; }
     if (isBackground) {
       void this.enterMoonlightBackground();
       return;
@@ -1478,11 +2070,8 @@ struct MoonlightStreamPage {
     this.clearSurfaceRecoveryTimer();
     this.surfaceSuspended = true;
     this.setSurfaceRecovering(true);
-    if (this.nativeSurfaceAttached) {
-      try { rdpnapi.markXComponentSurfaceDestroyed(); } catch (_) {}
-      this.nativeSurfaceAttached = false;
-    }
     this.destroyMoonlightRenderer();
+    this.nativeSurfaceAttached = false;
     this.surfaceId = '';
     this.pipSurfaceId = '';
     this.renderPreservedInPip = false;
@@ -1511,11 +2100,8 @@ struct MoonlightStreamPage {
     this.clearSurfaceRecoveryTimer();
     this.surfaceSuspended = true;
     this.setSurfaceRecovering(true);
-    if (this.nativeSurfaceAttached) {
-      try { rdpnapi.markXComponentSurfaceDestroyed(); } catch (_) {}
-      this.nativeSurfaceAttached = false;
-    }
     this.destroyMoonlightRenderer();
+    this.nativeSurfaceAttached = false;
 
     try {
       if (!rdpnapi.setXComponentSurfaceId(
@@ -1607,6 +2193,7 @@ struct MoonlightStreamPage {
   private async restoreMoonlightForeground(): Promise<void> {
     if (!this.pageActive || this.appInBackground || this.routeTerminated ||
         this.foregroundRestoreInProgress) { return; }
+    void this.setMoonlightSystemBarsHidden(true, 'foreground-presentation');
     const lifecycleGeneration: number = ++this.pipLifecycleGeneration;
     this.foregroundRestoreInProgress = true;
     this.pipTransferInProgress = false;
@@ -1813,6 +2400,14 @@ struct MoonlightStreamPage {
       const context: common.UIAbilityContext =
         uiContext.getHostContext() as common.UIAbilityContext;
       const size: RemoteSessionPipContentSize = this.moonlightPipSize();
+      const restoreTarget: RemoteSessionPipRestoreTarget | null =
+        this.moonlightPipRestoreTarget();
+      if (this.sessionWindowId.length === 0 && restoreTarget === null) {
+        this.pipPrepared = false;
+        hilog.warn(0x0014, 'MoonlightStreamUi',
+          'PIP prepare deferred because stream-page restore handle is unavailable');
+        return;
+      }
       const prepared: boolean = await pipService.prepare(
         context, uiContext, size.width, size.height, presentationLease,
         (reason: string): void => {
@@ -1820,7 +2415,7 @@ struct MoonlightStreamPage {
         },
         (surface: RemoteSessionPipSurface): void => {
           this.handleMoonlightPipSurfaceChanged(surface, presentationLease);
-        });
+        }, restoreTarget);
       if (lifecycleGeneration === this.pipLifecycleGeneration && !this.appInBackground &&
           !this.routeTerminated && this.presentationLeaseCurrent(presentationLease)) {
         this.pipPrepared = prepared;
@@ -1839,10 +2434,12 @@ struct MoonlightStreamPage {
   }
 
   private async moveMoonlightToPip(): Promise<void> {
-    if (!this.pipAvailable() || this.appInBackground || this.routeTerminated) {
+    if (!this.pipPrepared && this.pipAvailable() &&
+        !this.appInBackground && !this.routeTerminated) {
       await this.prepareMoonlightPipForForeground();
     }
-    if (!this.pipAvailable() || this.appInBackground || this.routeTerminated) {
+    if (!this.pipAvailable() || !this.pipPrepared ||
+        this.appInBackground || this.routeTerminated) {
       promptAction.showToast({ message: '当前设备未能准备画中画', duration: 1800 });
       return;
     }
@@ -2143,8 +2740,19 @@ struct MoonlightStreamPage {
       return;
     }
 
-    const launchConfiguration: MoonlightNativeLaunchConfiguration =
-      moonlightLaunchConfiguration(this.effectiveSettings);
+    let launchConfiguration: MoonlightNativeLaunchConfiguration;
+    const decoderCapabilities = probeMoonlightHardwareDecoderCapabilities();
+    const decoderCapability = moonlightDecoderCapability(decoderCapabilities,
+      this.effectiveSettings.video.codecPreference);
+    try {
+      const current: display.Display = display.getDefaultDisplaySync();
+      launchConfiguration = moonlightLaunchConfiguration(
+        this.effectiveSettings, current.width, current.height,
+        decoderCapability.maxWidth, decoderCapability.maxHeight);
+    } catch (_error) {
+      launchConfiguration = moonlightLaunchConfiguration(this.effectiveSettings, 0, 0,
+        decoderCapability.maxWidth, decoderCapability.maxHeight);
+    }
     const result: MoonlightHostServiceResult = await this.hostService.resume(
       context, this.numericAppId, launchConfiguration);
     if (!this.pageActive || this.routeTerminated ||
@@ -2250,6 +2858,7 @@ struct MoonlightStreamPage {
         // same-process network reconnect gets a fresh common-c session but
         // does not replay the expensive sweep after the first reset receipt.
         this.resetRemoteInputBeforeAdmission = false;
+        this.scheduleMoonlightPhysicalKeyboardFocus('input-ready');
       }
     } catch (_) {
       this.inputReady = false;
@@ -2301,20 +2910,47 @@ struct MoonlightStreamPage {
       return;
     }
     this.flushInput('open-keyboard');
+    this.clearMoonlightPhysicalKeyboardFocusSchedule();
     this.keyboardOpen = true;
     this.startMoonlightImeSession();
-    setTimeout((): void => {
-      if (!this.keyboardOpen || !this.keyboardImeActive) { return; }
-      try { focusControl.requestFocus('MoonlightKeyboardProxy'); } catch (_) {}
-    }, 0);
+    this.scheduleMoonlightVirtualKeyboardFocus('keyboard-open');
   }
 
   private dismissMoonlightKeyboard(): void {
     if (!this.keyboardOpen && !this.keyboardImeActive) { return; }
+    this.clearMoonlightVirtualKeyboardFocusSchedule();
     this.keyboardOpen = false;
     this.flushInput('close-keyboard');
     this.resetMoonlightImeSession('dismiss');
-    try { focusControl.requestFocus(this.xcId); } catch (_) {}
+    this.physicalKeyboardProxyFocused = false;
+    this.scheduleMoonlightPhysicalKeyboardFocus('virtual-keyboard-dismissed');
+  }
+
+  private clearMoonlightVirtualKeyboardFocusSchedule(): void {
+    if (this.virtualKeyboardFocusTimer < 0) { return; }
+    clearTimeout(this.virtualKeyboardFocusTimer);
+    this.virtualKeyboardFocusTimer = -1;
+  }
+
+  private scheduleMoonlightVirtualKeyboardFocus(reason: string): void {
+    this.clearMoonlightVirtualKeyboardFocusSchedule();
+    const generation: number = this.keyboardImeGeneration;
+    this.virtualKeyboardFocusTimer = setTimeout((): void => {
+      this.virtualKeyboardFocusTimer = -1;
+      if (!this.pageActive || this.appInBackground || this.routeTerminated ||
+          !this.inputReady || !this.keyboardOpen || !this.keyboardImeActive ||
+          generation !== this.keyboardImeGeneration) { return; }
+      try {
+        const focused: boolean = focusControl.requestFocus('MoonlightKeyboardProxy');
+        hilog.info(0x0014, 'MoonlightStreamUi',
+          'virtual keyboard proxy focus=' + (focused ? '1' : '0') +
+          ' reason=' + reason);
+      } catch (error) {
+        hilog.warn(0x0014, 'MoonlightStreamUi',
+          'virtual keyboard proxy focus failed reason=' + reason +
+          ' error=' + JSON.stringify(error));
+      }
+    }, 0);
   }
 
   private startMoonlightImeSession(): void {
@@ -2338,6 +2974,7 @@ struct MoonlightStreamPage {
   }
 
   private resetMoonlightImeSession(_reason: string): void {
+    this.clearMoonlightVirtualKeyboardFocusSchedule();
     if (this.keyboardCommandPumpTimer >= 0) {
       clearTimeout(this.keyboardCommandPumpTimer);
       this.keyboardCommandPumpTimer = -1;
@@ -2382,6 +3019,7 @@ struct MoonlightStreamPage {
   }
 
   private handleMoonlightImeWillInsert(info: InsertValue): boolean {
+    this.keyboardImeEditingObserved = true;
     this.keyboardExpectedStart = info.insertOffset + info.insertValue.length;
     this.keyboardExpectedEnd = this.keyboardExpectedStart;
     return this.keyboardImeActive;
@@ -2392,10 +3030,14 @@ struct MoonlightStreamPage {
     this.keyboardSyncedCaret = info.insertOffset + info.insertValue.length;
     this.keyboardCommandQueue.enqueueText(
       info.insertValue, this.keyboardImeGeneration, 'didInsert');
+    hilog.debug(0x0014, 'MoonlightStreamUi',
+      'ime enqueue kind=text units=' + info.insertValue.length.toString() +
+      ' queue=' + this.keyboardCommandQueue.size().toString());
     this.scheduleMoonlightImeCommandPump();
   }
 
   private handleMoonlightImeWillDelete(info: DeleteValue): boolean {
+    this.keyboardImeEditingObserved = true;
     this.keyboardExpectedStart = info.deleteOffset;
     this.keyboardExpectedEnd = info.deleteOffset;
     return this.keyboardImeActive;
@@ -2487,7 +3129,11 @@ struct MoonlightStreamPage {
     }
     let accepted: boolean = true;
     if (command.kind === RemoteImeCommandKind.TEXT) {
-      accepted = this.sendMoonlightText(command.text);
+      accepted = this.sendMoonlightCommittedText(command.text);
+      hilog.debug(0x0014, 'MoonlightStreamUi',
+        'ime dispatch kind=text units=' + command.text.length.toString() +
+        ' accepted=' + accepted.toString() +
+        ' queue=' + this.keyboardCommandQueue.size().toString());
     } else {
       const sendCount: number = Math.min(32, command.tapCount);
       for (let index: number = 0; index < sendCount; index++) {
@@ -2506,6 +3152,50 @@ struct MoonlightStreamPage {
     } else {
       this.recenterMoonlightImeShadow();
     }
+  }
+
+  private sendMoonlightImeKeyStroke(stroke: MoonlightImeKeyStroke): boolean {
+    let accepted: boolean = true;
+    if (stroke.shift) {
+      accepted = this.sendMoonlightKey(MOONLIGHT_KEYCODE_SHIFT_LEFT, true) && accepted;
+    }
+    accepted = this.sendMoonlightKey(stroke.keyCode, true) && accepted;
+    accepted = this.sendMoonlightKey(stroke.keyCode, false) && accepted;
+    if (stroke.shift) {
+      // Always attempt the release even if a preceding dispatch failed. The
+      // native keyboard mapper then remains neutral for the recovery flush.
+      accepted = this.sendMoonlightKey(MOONLIGHT_KEYCODE_SHIFT_LEFT, false) && accepted;
+    }
+    return accepted;
+  }
+
+  private sendMoonlightCommittedText(text: string): boolean {
+    let utf8Fallback: string = '';
+    let asciiStrokes: number = 0;
+    let utf8Units: number = 0;
+    for (let index: number = 0; index < text.length; index++) {
+      const character: string = text.charAt(index);
+      const stroke: MoonlightImeKeyStroke | null =
+        moonlightImeAsciiKeyStroke(character);
+      if (stroke === null) {
+        utf8Fallback += character;
+        utf8Units += 1;
+        continue;
+      }
+      if (utf8Fallback.length > 0) {
+        if (!this.sendMoonlightText(utf8Fallback)) { return false; }
+        utf8Fallback = '';
+      }
+      if (!this.sendMoonlightImeKeyStroke(stroke)) { return false; }
+      asciiStrokes += 1;
+    }
+    const accepted: boolean = utf8Fallback.length === 0 ||
+      this.sendMoonlightText(utf8Fallback);
+    hilog.debug(0x0014, 'MoonlightStreamUi',
+      'ime route asciiStrokes=' + asciiStrokes.toString() +
+      ' utf8Units=' + utf8Units.toString() +
+      ' accepted=' + accepted.toString());
+    return accepted;
   }
 
   private recenterMoonlightImeShadow(): void {
@@ -2544,16 +3234,219 @@ struct MoonlightStreamPage {
     } catch (_) { return false; }
   }
 
-  private sendAbsolutePointer(x: number, y: number): boolean {
+  private commitPhysicalPointerGeometry(
+    geometry: MoonlightPhysicalPointerGeometry): MoonlightPhysicalPointerGeometry {
+    if (this.physicalPointerGeometrySignature !== '' &&
+        this.physicalPointerGeometrySignature !== geometry.signature) {
+      this.geometryGeneration = Math.min(Number.MAX_SAFE_INTEGER,
+        this.geometryGeneration + 1);
+    }
+    this.physicalPointerGeometrySignature = geometry.signature;
+    return geometry;
+  }
+
+  private invalidatePhysicalPointerGeometry(): void {
+    this.physicalPointerGeometryCache = null;
+    this.physicalPointerGeometryHandle = this.rendererHandle;
+    this.physicalPointerGeometryReadAtMs = 0;
+  }
+
+  private fallbackPhysicalPointerGeometry(): MoonlightPhysicalPointerGeometry {
+    const width: number = Math.max(1, this.surfaceWidthVp);
+    const height: number = Math.max(1, this.surfaceHeightVp);
+    const referenceWidth: number = Math.max(2, Math.min(32767,
+      Math.floor(this.streamWidth)));
+    const referenceHeight: number = Math.max(2, Math.min(32767,
+      Math.floor(this.streamHeight)));
+    return this.commitPhysicalPointerGeometry({
+      contentLeft: 0,
+      contentTop: 0,
+      contentWidth: width,
+      contentHeight: height,
+      referenceWidth: referenceWidth,
+      referenceHeight: referenceHeight,
+      signature: 'fallback|' + this.rendererHandle.toString() + '|' +
+        width.toFixed(3) + '|' + height.toFixed(3) + '|' +
+        referenceWidth.toString() + '|' + referenceHeight.toString()
+    });
+  }
+
+  private readPhysicalPointerGeometry(): MoonlightPhysicalPointerGeometry | null {
+    if (this.rendererHandle <= 0) { return null; }
+    const now: number = Date.now();
+    if (this.physicalPointerGeometryHandle !== this.rendererHandle) {
+      this.invalidatePhysicalPointerGeometry();
+    }
+    if (now - this.physicalPointerGeometryReadAtMs <
+        MOONLIGHT_RENDERER_VIEWPORT_CACHE_MS) {
+      return this.physicalPointerGeometryCache;
+    }
+    this.physicalPointerGeometryReadAtMs = now;
+    try {
+      const raw = rdpnapi.getRendererViewport(this.rendererHandle);
+      if (raw === null || !Number.isFinite(raw.sourceWidth) ||
+          !Number.isFinite(raw.sourceHeight) || raw.sourceWidth < 2 ||
+          raw.sourceWidth > 32767 || raw.sourceHeight < 2 ||
+          raw.sourceHeight > 32767) {
+        return this.physicalPointerGeometryCache;
+      }
+      const viewport = normalizeRendererViewportToSurface(
+        raw.viewportX, raw.viewportY, raw.viewportW, raw.viewportH,
+        raw.surfaceWidth, raw.surfaceHeight,
+        Math.max(1, this.surfaceWidthVp), Math.max(1, this.surfaceHeightVp));
+      if (viewport === null) { return this.physicalPointerGeometryCache; }
+      const referenceWidth: number = Math.floor(raw.sourceWidth);
+      const referenceHeight: number = Math.floor(raw.sourceHeight);
+      const geometry: MoonlightPhysicalPointerGeometry = {
+        contentLeft: viewport.viewportX,
+        contentTop: viewport.viewportY,
+        contentWidth: viewport.viewportW,
+        contentHeight: viewport.viewportH,
+        referenceWidth: referenceWidth,
+        referenceHeight: referenceHeight,
+        signature: 'renderer|' + this.rendererHandle.toString() + '|' +
+          viewport.viewportX.toFixed(3) + '|' + viewport.viewportY.toFixed(3) + '|' +
+          viewport.viewportW.toFixed(3) + '|' + viewport.viewportH.toFixed(3) + '|' +
+          referenceWidth.toString() + '|' + referenceHeight.toString()
+      };
+      this.physicalPointerGeometryCache = this.commitPhysicalPointerGeometry(geometry);
+    } catch (_) {
+      // The renderer can be between surfaces during PIP/foreground handoff.
+    }
+    return this.physicalPointerGeometryCache;
+  }
+
+  private absolutePointerRequest(action: 'absolute' | 'absoluteButton',
+    x: number, y: number, button?: number, pressed?: boolean): MoonlightPointerInputRequest {
+    const geometry: MoonlightPhysicalPointerGeometry =
+      this.readPhysicalPointerGeometry() ?? this.fallbackPhysicalPointerGeometry();
     const request: MoonlightPointerInputRequest = {
-      launchKey: this.launchKey, action: 'absolute', x: x, y: y,
-      contentLeft: 0, contentTop: 0,
-      contentWidth: Math.max(1, this.surfaceWidthVp),
-      contentHeight: Math.max(1, this.surfaceHeightVp),
-      referenceWidth: this.streamWidth, referenceHeight: this.streamHeight,
-      geometryGeneration: this.geometryGeneration
+      launchKey: this.launchKey, action: action, x: x, y: y,
+      contentLeft: geometry.contentLeft, contentTop: geometry.contentTop,
+      contentWidth: geometry.contentWidth,
+      contentHeight: geometry.contentHeight,
+      referenceWidth: geometry.referenceWidth,
+      referenceHeight: geometry.referenceHeight,
+      geometryGeneration: this.geometryGeneration,
+      button: button,
+      pressed: pressed
     };
+    return request;
+  }
+
+  private sendAbsolutePointer(x: number, y: number): boolean {
+    return this.sendMoonlightPointer(this.absolutePointerRequest('absolute', x, y));
+  }
+
+  private sendAbsolutePointerButton(x: number, y: number,
+    button: number, pressed: boolean): boolean {
+    const request: MoonlightPointerInputRequest = this.absolutePointerRequest(
+      'absoluteButton', x, y, button, pressed);
     return this.sendMoonlightPointer(request);
+  }
+
+  private recordTrackpadDispatch(accepted: boolean): boolean {
+    if (accepted) {
+      this.trackpadLocalAcceptedEvents = Math.min(Number.MAX_SAFE_INTEGER,
+        this.trackpadLocalAcceptedEvents + 1);
+    } else {
+      this.trackpadLocalRejectedEvents = Math.min(Number.MAX_SAFE_INTEGER,
+        this.trackpadLocalRejectedEvents + 1);
+    }
+    return accepted;
+  }
+
+  private sendRelativePointer(deltaX: number, deltaY: number): boolean {
+    if (!Number.isFinite(deltaX) || !Number.isFinite(deltaY)) { return false; }
+    return this.recordTrackpadDispatch(this.sendMoonlightPointer({
+      launchKey: this.launchKey,
+      action: 'relative',
+      x: deltaX,
+      y: deltaY
+    }));
+  }
+
+  private clearTrackpadPointerFlushTimer(): void {
+    if (this.trackpadPointerFlushTimer >= 0) {
+      clearTimeout(this.trackpadPointerFlushTimer);
+      this.trackpadPointerFlushTimer = -1;
+    }
+  }
+
+  private discardPendingTrackpadPointer(): void {
+    this.clearTrackpadPointerFlushTimer();
+    this.trackpadPendingDeltaX = 0;
+    this.trackpadPendingDeltaY = 0;
+    this.trackpadLastPointerDispatchMs = 0;
+  }
+
+  private flushPendingTrackpadPointer(): boolean {
+    this.clearTrackpadPointerFlushTimer();
+    const deltaX: number = this.trackpadPendingDeltaX;
+    const deltaY: number = this.trackpadPendingDeltaY;
+    this.trackpadPendingDeltaX = 0;
+    this.trackpadPendingDeltaY = 0;
+    if (!Number.isFinite(deltaX) || !Number.isFinite(deltaY)) {
+      this.trackpadLastPointerDispatchMs = 0;
+      return false;
+    }
+    if (Math.abs(deltaX) < 0.001 && Math.abs(deltaY) < 0.001) { return true; }
+    this.trackpadLastPointerDispatchMs = Date.now();
+    return this.sendRelativePointer(deltaX, deltaY);
+  }
+
+  private queueTrackpadPointer(deltaX: number, deltaY: number): void {
+    if (!Number.isFinite(deltaX) || !Number.isFinite(deltaY)) { return; }
+    this.trackpadPendingDeltaX += deltaX;
+    this.trackpadPendingDeltaY += deltaY;
+    if (this.trackpadPointerFlushTimer >= 0) { return; }
+    const elapsedMs: number = this.trackpadLastPointerDispatchMs > 0 ?
+      Date.now() - this.trackpadLastPointerDispatchMs : MOONLIGHT_TRACKPAD_WIRE_INTERVAL_MS;
+    if (elapsedMs >= MOONLIGHT_TRACKPAD_WIRE_INTERVAL_MS) {
+      this.flushPendingTrackpadPointer();
+      return;
+    }
+    const delayMs: number = Math.max(1, MOONLIGHT_TRACKPAD_WIRE_INTERVAL_MS - elapsedMs);
+    this.trackpadPointerFlushTimer = setTimeout((): void => {
+      this.trackpadPointerFlushTimer = -1;
+      if (!this.nativeInputAvailable() || this.inputSuspended || this.routeTerminated) {
+        this.trackpadPendingDeltaX = 0;
+        this.trackpadPendingDeltaY = 0;
+        return;
+      }
+      this.flushPendingTrackpadPointer();
+      // Default real-cursor mode is rendered by Sunshine. The circle mode is
+      // the only local overlay that needs a presentation-aligned update.
+      if (normalizeRemoteCursorStyle(this.virtualMouseStyle) === 'circle') {
+        this.publishTrackpadCursor();
+      }
+    }, delayMs);
+  }
+
+  private sendTrackpadScroll(deltaX: number, deltaY: number): boolean {
+    this.flushPendingTrackpadPointer();
+    const horizontal: boolean = Math.abs(deltaX) > Math.abs(deltaY);
+    const raw: number = horizontal ? deltaX : deltaY;
+    if (!Number.isFinite(raw) || Math.abs(raw) < 0.35) { return true; }
+    const amount: number = Math.max(-32768, Math.min(32767,
+      Math.round(-raw * 4)));
+    return this.recordTrackpadDispatch(this.sendMoonlightPointer({
+      launchKey: this.launchKey,
+      action: 'scroll',
+      horizontal: horizontal,
+      scrollAmount: amount
+    }));
+  }
+
+  private sendTrackpadButton(button: number, pressed: boolean): boolean {
+    this.flushPendingTrackpadPointer();
+    return this.recordTrackpadDispatch(this.sendPointerButton(button, pressed));
+  }
+
+  private clickTrackpadButton(button: number): boolean {
+    const down: boolean = this.sendTrackpadButton(button, true);
+    const up: boolean = this.sendTrackpadButton(button, false);
+    return down && up;
   }
 
   private sendPointerButton(button: number, pressed: boolean): boolean {
@@ -2561,36 +3454,6 @@ struct MoonlightStreamPage {
       launchKey: this.launchKey, action: 'button', button: button, pressed: pressed
     };
     return this.sendMoonlightPointer(request);
-  }
-
-  private sendTouchPoint(contactId: number, phase: MoonlightTouchPhase,
-    point: MoonlightTouchPoint): boolean {
-    if (!this.nativeInputAvailable()) { return false; }
-    try {
-      return rdpnapi.moonlightSendTouch({
-        launchKey: {
-          requestId: this.launchKey.requestId,
-          generation: this.launchKey.generation,
-          ownerToken: this.launchKey.ownerToken
-        },
-        contactId: contactId,
-        phase: phase,
-        pointX: point.x,
-        pointY: point.y,
-        pressure: phase === 'up' || phase === 'cancel' ? 0 : 1,
-        contactAreaMajor: 0,
-        contactAreaMinor: 0,
-        rotation: 0,
-        contentLeft: 0,
-        contentTop: 0,
-        contentWidth: Math.max(1, this.surfaceWidthVp),
-        contentHeight: Math.max(1, this.surfaceHeightVp),
-        referenceWidth: this.streamWidth,
-        referenceHeight: this.streamHeight,
-        geometryGeneration: this.geometryGeneration,
-        hitMapGeneration: this.hitMapGeneration
-      });
-    } catch (_) { return false; }
   }
 
   private setNativeInputSuspended(suspended: boolean,
@@ -2626,7 +3489,7 @@ struct MoonlightStreamPage {
     }
   }
 
-  private setNativeTouchMode(mode: MoonlightControlMode): boolean {
+  private setNativeTouchMode(_mode: MoonlightResolvedControlMode): boolean {
     if (!this.inputReady || !this.routeLeaseValid()) { return false; }
     try {
       return rdpnapi.moonlightSetTouchMode({
@@ -2635,7 +3498,10 @@ struct MoonlightStreamPage {
           generation: this.launchKey.generation,
           ownerToken: this.launchKey.ownerToken
         },
-        direct: mode === 'touch'
+        // Product input modes share the pointer lane. Direct-touch remains a
+        // low-level compatibility field only, so it cannot bypass the unified
+        // keyboard/mouse and virtual-trackpad behavior.
+        direct: false
       });
     } catch (_) { return false; }
   }
@@ -2708,26 +3574,357 @@ struct MoonlightStreamPage {
     return 'move';
   }
 
-  private handleMoonlightTouch = (event: TouchEvent): void => {
-    if (!this.nativeInputAvailable()) { return; }
-    event.stopPropagation();
-    const phase: MoonlightTouchPhase = this.moonlightTouchPhase(event);
-    if (phase === 'cancel' && event.changedTouches.length === 0) {
-      this.activeTouches.forEach((point: MoonlightTouchPoint, id: number): void => {
-        this.sendTouchPoint(id, 'cancel', point);
-      });
-      this.activeTouches.clear();
+  private trackpadCursorVisible(): boolean {
+    return this.resolvedMoonlightControlMode() === 'trackpad' && this.pageActive &&
+      !this.routeTerminated && !this.surfaceSuspended &&
+      !this.surfaceRecovering && this.firstFrameSeen;
+  }
+
+  private clampAndPublishTrackpadCursor(): void {
+    const width: number = Math.max(1, this.surfaceWidthVp);
+    const height: number = Math.max(1, this.surfaceHeightVp);
+    if (!this.trackpadCursorInitialized) {
+      this.trackpadCursorX = width / 2;
+      this.trackpadCursorY = height / 2;
+      this.trackpadCursorInitialized = true;
+    }
+    this.trackpadCursorX = Math.max(0, Math.min(Math.max(0, width - 26),
+      this.trackpadCursorX));
+    this.trackpadCursorY = Math.max(0, Math.min(Math.max(0, height - 26),
+      this.trackpadCursorY));
+    this.publishTrackpadCursor();
+  }
+
+  private publishTrackpadCursor(): void {
+    const cursor: RemoteCursorOverlayState = this.trackpadCursorOverlayState;
+    const visible: boolean = this.trackpadCursorVisible();
+    const circleVisible: boolean = visible &&
+      normalizeRemoteCursorStyle(this.virtualMouseStyle) === 'circle';
+    // In the default real-mouse style, Sunshine's streamed host cursor is the
+    // source of truth. Do not invalidate even the isolated ArkUI overlay on
+    // every touch sample when there is nothing local to draw.
+    if (!circleVisible && cursor.renderMode === 'none' && !cursor.showCircle &&
+        !cursor.showArrow) { return; }
+    // Sunshine includes the host cursor in Moonlight's video stream. In the
+    // default real-mouse mode that streamed cursor is the single source of
+    // truth for both appearance and position; a second locally accumulated
+    // arrow can never stay aligned with the host OS acceleration and latency.
+    // Only the explicitly selected circle style draws a local touch indicator.
+    cursor.showCircle = circleVisible;
+    cursor.circleX = this.trackpadCursorX;
+    cursor.circleY = this.trackpadCursorY;
+    cursor.circleOuterSize = 28;
+    cursor.circleRingSize = 18;
+    cursor.circleDotSize = 3;
+    cursor.circleColor = this.trackpadDragActive ? '#FF3B30' : '#00D1FF';
+    cursor.circleDrag = this.trackpadDragActive;
+    cursor.showArrow = false;
+    cursor.arrowInside = false;
+    cursor.arrowUsesLocalSymbol = false;
+    cursor.arrowPixelMap = null;
+    cursor.arrowWidth = 0;
+    cursor.arrowHeight = 0;
+    cursor.arrowX = 0;
+    cursor.arrowY = 0;
+    this.trackpadCursorRevision += 1;
+    cursor.viewRevision = this.trackpadCursorRevision;
+    cursor.renderMode = circleVisible ? 'circle' : 'none';
+  }
+
+  private onVirtualMouseStyleChanged(): void {
+    this.publishTrackpadCursor();
+  }
+
+  private resetTrackpadGesture(releaseDrag: boolean): void {
+    if (releaseDrag && this.trackpadDragActive) {
+      this.sendTrackpadButton(1, false);
+    }
+    this.trackpadVisualTouches.clear();
+    this.trackpadGestureStartedAtMs = 0;
+    this.trackpadGestureMaximumTravel = 0;
+    this.trackpadPeakContactCount = 0;
+    this.trackpadGestureMoved = false;
+    this.trackpadDragActive = false;
+    this.trackpadScrollCentroidX = 0;
+    this.trackpadScrollCentroidY = 0;
+    this.trackpadScrollCentroidValid = false;
+    this.trackpadCurveState = resetTouchpadPointerCurveState();
+  }
+
+  private trackpadReferenceScale(): number {
+    const touchWidth: number = Math.max(1, this.trackpadInputSurfaceWidth());
+    const touchHeight: number = Math.max(1, this.surfaceHeightVp);
+    const referenceArea: number = MOONLIGHT_TRACKPAD_REFERENCE_WIDTH *
+      MOONLIGHT_TRACKPAD_REFERENCE_HEIGHT;
+    const touchArea: number = touchWidth * touchHeight;
+    return Math.max(0.75, Math.min(2.5, Math.sqrt(referenceArea / touchArea)));
+  }
+
+  private trackpadStepIsDiscontinuous(deltaX: number, deltaY: number): boolean {
+    const distance: number = Math.hypot(deltaX, deltaY);
+    const smallestEdge: number = Math.min(
+      Math.max(1, this.trackpadInputSurfaceWidth()),
+      Math.max(1, this.surfaceHeightVp));
+    const maximum: number = Math.min(MOONLIGHT_TRACKPAD_MAX_LOCAL_STEP_VP,
+      Math.max(160, smallestEdge * MOONLIGHT_TRACKPAD_MAX_LOCAL_STEP_RATIO));
+    return !Number.isFinite(distance) || distance > maximum;
+  }
+
+  private trackpadCentroid(): MoonlightTouchPoint | null {
+    if (this.trackpadVisualTouches.size < 2) { return null; }
+    let x: number = 0;
+    let y: number = 0;
+    let count: number = 0;
+    this.trackpadVisualTouches.forEach((point: MoonlightTouchPoint): void => {
+      x += point.x;
+      y += point.y;
+      count += 1;
+    });
+    return count > 0 ? { x: x / count, y: y / count } : null;
+  }
+
+  /**
+   * Phone/Pad virtual trackpad uses the ordinary Moonlight pointer lane.
+   * This matches RDP/VNC's proven input route and avoids coupling cursor motion
+   * to Sunshine's optional direct-touch negotiation. Direct touch continues
+   * to use moonlightSendTouch in `handleMoonlightTouch` below.
+   */
+  private handleMoonlightTrackpad(event: TouchEvent,
+    phase: MoonlightTouchPhase): void {
+    const points = event.changedTouches.length > 0 ? event.changedTouches : event.touches;
+    if (phase === 'cancel') {
+      this.discardPendingTrackpadPointer();
+      this.resetTrackpadGesture(true);
+      this.clampAndPublishTrackpadCursor();
       return;
     }
-    const points = event.changedTouches.length > 0 ? event.changedTouches : event.touches;
+
+    if (phase === 'down') {
+      if (this.trackpadVisualTouches.size === 0) {
+        this.resetTrackpadGesture(false);
+        this.trackpadGestureStartedAtMs = Date.now();
+      }
+      for (let index: number = 0; index < points.length; index++) {
+        const id: number = Math.max(1, Math.floor(points[index].id) + 1);
+        this.trackpadVisualTouches.set(id,
+          { x: points[index].x, y: points[index].y });
+      }
+      this.trackpadPeakContactCount = Math.max(
+        this.trackpadPeakContactCount, this.trackpadVisualTouches.size);
+      const centroid: MoonlightTouchPoint | null = this.trackpadCentroid();
+      if (centroid !== null) {
+        this.trackpadScrollCentroidX = centroid.x;
+        this.trackpadScrollCentroidY = centroid.y;
+        this.trackpadScrollCentroidValid = true;
+      }
+      this.clampAndPublishTrackpadCursor();
+      return;
+    }
+
+    if (phase === 'move') {
+      let relativeX: number = 0;
+      let relativeY: number = 0;
+      const previouslySingle: boolean = this.trackpadVisualTouches.size <= 1;
+      for (let index: number = 0; index < points.length; index++) {
+        const id: number = Math.max(1, Math.floor(points[index].id) + 1);
+        const next: MoonlightTouchPoint = { x: points[index].x, y: points[index].y };
+        const previous: MoonlightTouchPoint | undefined = this.trackpadVisualTouches.get(id);
+        if (previous !== undefined) {
+          const dx: number = next.x - previous.x;
+          const dy: number = next.y - previous.y;
+          this.trackpadGestureMaximumTravel += Math.hypot(dx, dy);
+          if (previouslySingle) {
+            relativeX += dx;
+            relativeY += dy;
+          }
+        }
+        this.trackpadVisualTouches.set(id, next);
+      }
+      this.trackpadPeakContactCount = Math.max(
+        this.trackpadPeakContactCount, this.trackpadVisualTouches.size);
+      if (this.trackpadVisualTouches.size <= 1 && this.trackpadPeakContactCount <= 1) {
+        const distance: number = Math.hypot(relativeX, relativeY);
+        if (!this.trackpadDragActive &&
+            Date.now() - this.trackpadGestureStartedAtMs >= 480 &&
+            this.trackpadGestureMaximumTravel <= 12) {
+          this.trackpadDragActive = this.sendTrackpadButton(1, true);
+        }
+        if (distance >= 0.1) {
+          this.trackpadGestureMoved = this.trackpadGestureMoved ||
+            this.trackpadGestureMaximumTravel > 6;
+          if (this.trackpadStepIsDiscontinuous(relativeX, relativeY)) {
+            // A surface reparent/orientation change can switch the local
+            // coordinate origin between two events. Re-anchor this event so a
+            // PIP or foreground transition cannot teleport the host pointer.
+            this.trackpadCurveState = resetTouchpadPointerCurveState();
+            this.clampAndPublishTrackpadCursor();
+            return;
+          }
+          // Reuse the same bounded, immediate velocity curve as the RDP/VNC/
+          // RustDesk virtual trackpad. Moonlight remains relative on the wire;
+          // the UI lane coalesces deltas to presentation cadence and the
+          // native mapper preserves fractional remainder until an integral
+          // host movement is available.
+          const curve = touchpadPointerCurve(
+            relativeX, relativeY, Date.now(), this.trackpadCurveState);
+          this.trackpadCurveState = curve.state;
+          const gain: number = this.trackpadReferenceScale() *
+            clampTouchpadEffectiveGain(curve.gain, 1);
+          const adjustedX: number = relativeX * gain;
+          const adjustedY: number = relativeY * gain;
+          this.trackpadCursorX += adjustedX;
+          this.trackpadCursorY += adjustedY;
+          this.queueTrackpadPointer(adjustedX, adjustedY);
+        }
+        this.trackpadScrollCentroidValid = false;
+      } else {
+        const centroid: MoonlightTouchPoint | null = this.trackpadCentroid();
+        if (centroid !== null && this.trackpadScrollCentroidValid) {
+          const dx: number = centroid.x - this.trackpadScrollCentroidX;
+          const dy: number = centroid.y - this.trackpadScrollCentroidY;
+          if (Math.hypot(dx, dy) >= 0.35) {
+            this.trackpadGestureMoved = this.trackpadGestureMoved ||
+              this.trackpadGestureMaximumTravel > 6;
+            this.sendTrackpadScroll(dx, dy);
+          }
+        }
+        if (centroid !== null) {
+          this.trackpadScrollCentroidX = centroid.x;
+          this.trackpadScrollCentroidY = centroid.y;
+          this.trackpadScrollCentroidValid = true;
+        }
+      }
+      this.clampAndPublishTrackpadCursor();
+      return;
+    }
+
+    if (points.length === 0) {
+      this.flushPendingTrackpadPointer();
+      this.resetTrackpadGesture(true);
+      this.clampAndPublishTrackpadCursor();
+      return;
+    }
     for (let index: number = 0; index < points.length; index++) {
       const id: number = Math.max(1, Math.floor(points[index].id) + 1);
-      const point: MoonlightTouchPoint = { x: points[index].x, y: points[index].y };
-      this.sendTouchPoint(id, phase, point);
-      if (phase === 'up' || phase === 'cancel') { this.activeTouches.delete(id); }
-      else { this.activeTouches.set(id, point); }
+      this.trackpadVisualTouches.delete(id);
+    }
+    if (this.trackpadVisualTouches.size > 0) {
+      const centroid: MoonlightTouchPoint | null = this.trackpadCentroid();
+      if (centroid !== null) {
+        this.trackpadScrollCentroidX = centroid.x;
+        this.trackpadScrollCentroidY = centroid.y;
+        this.trackpadScrollCentroidValid = true;
+      }
+      this.clampAndPublishTrackpadCursor();
+      return;
+    }
+    const durationMs: number = this.trackpadGestureStartedAtMs > 0 ?
+      Date.now() - this.trackpadGestureStartedAtMs : Number.MAX_SAFE_INTEGER;
+    const tap: boolean = !this.trackpadGestureMoved &&
+      this.trackpadGestureMaximumTravel <= 12 && durationMs <= 380;
+    this.flushPendingTrackpadPointer();
+    if (this.trackpadDragActive) {
+      this.sendTrackpadButton(1, false);
+    } else if (tap && this.trackpadPeakContactCount === 1) {
+      this.clickTrackpadButton(1);
+    } else if (tap && this.trackpadPeakContactCount === 2) {
+      this.clickTrackpadButton(3);
+    }
+    this.resetTrackpadGesture(false);
+    this.clampAndPublishTrackpadCursor();
+  }
+
+  private handleMoonlightTouch = (event: TouchEvent): void => {
+    event.stopPropagation();
+    this.observeMoonlightAdaptiveInput('touch');
+    const phase: MoonlightTouchPhase = this.moonlightTouchPhase(event);
+    if (this.resolvedMoonlightControlMode() === 'trackpad') {
+      this.handleMoonlightTrackpad(event, phase);
     }
   }
+
+  private handleMoonlightSurfaceTouch = (event: TouchEvent): void => {
+    if (this.controlMode === 'keyboardMouse') { return; }
+    this.observeMoonlightAdaptiveInput('touch');
+    if (this.resolvedMoonlightControlMode() === 'trackpad') {
+      this.handleMoonlightTouch(event);
+    }
+  }
+
+  private cancelActiveMoonlightTouches(): void {
+    this.discardPendingTrackpadPointer();
+    this.resetTrackpadGesture(true);
+    this.publishTrackpadCursor();
+  }
+
+  private moonlightPhysicalKeyboardCaptureEnabled(): boolean {
+    // Pad and PC are explicit physical keyboard/mouse product modes. Preserve
+    // the opt-in switch for a phone with an occasionally attached keyboard,
+    // but do not leave the primary Pad/PC input path disabled by the old phone
+    // default stored in a compatible settings record.
+    return moonlightPhysicalKeyboardCaptureEnabled(
+      this.effectiveSettings.input.captureKeyboard, this.isPadDevice,
+      this.isDesktopDevice, this.sessionWindowId, this.controlMode);
+  }
+
+  private moonlightModifierKeyPressed(event: KeyEvent, key: string): boolean {
+    try {
+      return event.getModifierKeyState !== undefined &&
+        event.getModifierKeyState([key]);
+    } catch (_) { return false; }
+  }
+
+  private moonlightShouldReserveSystemKey(event: KeyEvent): boolean {
+    return moonlightSystemKeyReserved(event.keyCode,
+      this.moonlightModifierKeyPressed(event, 'Alt'),
+      this.moonlightModifierKeyPressed(event, 'Ctrl'), event.metaKey === 1,
+      this.effectiveSettings.input.forwardSystemShortcuts);
+  }
+
+  private clearMoonlightPhysicalKeyboardFocusSchedule(): void {
+    if (this.physicalKeyboardFocusTimer < 0) { return; }
+    clearTimeout(this.physicalKeyboardFocusTimer);
+    this.physicalKeyboardFocusTimer = -1;
+  }
+
+  private scheduleMoonlightPhysicalKeyboardFocus(reason: string): void {
+    if (this.physicalKeyboardFocusTimer >= 0 || this.physicalKeyboardProxyFocused ||
+        !this.pageActive || this.appInBackground || this.routeTerminated ||
+        !this.inputReady || this.inputSuspended || this.keyboardOpen ||
+        this.showSessionSheet || !this.moonlightPhysicalKeyboardCaptureEnabled()) { return; }
+    this.physicalKeyboardFocusTimer = setTimeout((): void => {
+      this.physicalKeyboardFocusTimer = -1;
+      if (!this.pageActive || this.appInBackground || this.routeTerminated ||
+          !this.inputReady || this.inputSuspended || this.keyboardOpen ||
+          this.showSessionSheet || !this.moonlightPhysicalKeyboardCaptureEnabled()) { return; }
+      try {
+        const focused: boolean = focusControl.requestFocus('MoonlightKeyboardProxy');
+        hilog.info(0x0014, 'MoonlightStreamUi',
+          'physical keyboard proxy focus=' + (focused ? '1' : '0') +
+          ' reason=' + reason);
+      } catch (error) {
+        hilog.warn(0x0014, 'MoonlightStreamUi',
+          'physical keyboard proxy focus failed reason=' + reason +
+          ' error=' + JSON.stringify(error));
+      }
+    }, 40);
+  }
+
+  private handleMoonlightPhysicalKeyPreIme = (event: KeyEvent): boolean => {
+    if (this.keyboardOpen || !this.moonlightPhysicalKeyboardCaptureEnabled()) { return false; }
+    if (this.moonlightShouldReserveSystemKey(event)) {
+      return false;
+    }
+    this.observeMoonlightAdaptiveInput('keyboard');
+    const accepted: boolean = this.handleMoonlightKey(event);
+    hilog.debug(0x0014, 'MoonlightStreamUi',
+      'physical key type=' + event.type.toString() +
+      ' code=' + event.keyCode.toString() +
+      ' accepted=' + accepted.toString());
+    // The physical proxy exists specifically to keep the system IME from
+    // consuming ordinary hardware keys before Moonlight sees key-down/up.
+    return accepted;
+  };
 
   private handleMoonlightKey = (event: KeyEvent): boolean => {
     if (this.sessionWindowId.length > 0 && event.keyCode === KeyCode.KEYCODE_F11) {
@@ -2735,7 +3932,13 @@ struct MoonlightStreamPage {
       if (event.type === KeyType.Down) { this.toggleIndependentWindowFullscreen(); }
       return true;
     }
-    if (!this.nativeInputAvailable() || !this.effectiveSettings.input.captureKeyboard) { return false; }
+    if (this.moonlightShouldReserveSystemKey(event)) {
+      return false;
+    }
+    this.observeMoonlightAdaptiveInput('keyboard');
+    if (!this.nativeInputAvailable() || !this.moonlightPhysicalKeyboardCaptureEnabled()) {
+      return false;
+    }
     const pressed: boolean = event.type === KeyType.Down;
     if (!pressed && event.type !== KeyType.Up) { return false; }
     event.stopPropagation();
@@ -2750,23 +3953,68 @@ struct MoonlightStreamPage {
   }
 
   private handleMoonlightMouse = (event: MouseEvent): void => {
-    if (!this.nativeInputAvailable() ||
-      (event.sourceTool !== SourceTool.MOUSE && event.sourceTool !== SourceTool.TOUCHPAD)) { return; }
+    // Match the proven RDP/VNC path: an event delivered through ArkUI's
+    // onMouse boundary is forwardable even when a vendor HID reports an
+    // unknown sourceTool. The old allow-list silently discarded both Pad mice
+    // observed on the real device before coordinates reached native input.
+    this.observeMoonlightAdaptiveInput(
+      event.sourceTool === SourceTool.TOUCHPAD ? 'touchpad' : 'mouse');
     event.stopPropagation();
+    this.physicalMouseObservedEvents = Math.min(Number.MAX_SAFE_INTEGER,
+      this.physicalMouseObservedEvents + 1);
+    const eventIndex: number = this.physicalMouseObservedEvents;
+    const inputAvailable: boolean = this.nativeInputAvailable();
+    if (!inputAvailable) {
+      if (eventIndex <= 12 || eventIndex % 120 === 0) {
+        hilog.warn(0x0014, 'MoonlightStreamUi',
+          'physical mouse blocked event=' + eventIndex.toString() +
+          ' action=' + (event.action as number).toString() +
+          ' sourceTool=' + event.sourceTool.toString() +
+          ' inputReady=' + (this.inputReady ? '1' : '0') +
+          ' lease=' + (this.routeLeaseValid() ? '1' : '0') +
+          ' suspended=' + (this.inputSuspended ? '1' : '0'));
+      }
+      return;
+    }
+    let accepted: boolean = false;
     if (event.action === MouseAction.Move || event.action === MouseAction.Hover) {
-      this.sendAbsolutePointer(event.x as number, event.y as number);
+      accepted = this.sendAbsolutePointer(event.x as number, event.y as number);
+      if (eventIndex <= 12 || eventIndex % 120 === 0) {
+        hilog.info(0x0014, 'MoonlightStreamUi',
+          'physical mouse event=' + eventIndex.toString() +
+          ' action=' + (event.action as number).toString() +
+          ' sourceTool=' + event.sourceTool.toString() +
+          ' local=' + (event.x as number).toString() + ',' +
+            (event.y as number).toString() +
+          ' accepted=' + (accepted ? '1' : '0'));
+      }
       return;
     }
     if (event.action === MouseAction.Press || event.action === MouseAction.Release) {
       const button: number = this.moonlightPointerButton(event.button as number);
       if (button <= 0) { return; }
-      this.sendAbsolutePointer(event.x as number, event.y as number);
-      this.sendPointerButton(button, event.action === MouseAction.Press);
+      accepted = this.sendAbsolutePointerButton(event.x as number, event.y as number,
+        button, event.action === MouseAction.Press);
+      hilog.info(0x0014, 'MoonlightStreamUi',
+        'physical mouse button event=' + eventIndex.toString() +
+        ' action=' + (event.action as number).toString() +
+        ' raw=' + (event.button as number).toString() +
+        ' mapped=' + button.toString() +
+        ' sourceTool=' + event.sourceTool.toString() +
+        ' accepted=' + (accepted ? '1' : '0'));
+      if (event.action === MouseAction.Release) {
+        this.physicalKeyboardProxyFocused = false;
+        this.scheduleMoonlightPhysicalKeyboardFocus('physical-mouse-release');
+      }
     }
   }
 
   private handleMoonlightAxis = (event?: AxisEvent): void => {
     if (!event || !this.nativeInputAvailable()) { return; }
+    if (event.sourceTool === SourceTool.MOUSE || event.sourceTool === SourceTool.TOUCHPAD) {
+      this.observeMoonlightAdaptiveInput(
+        event.sourceTool === SourceTool.TOUCHPAD ? 'touchpad' : 'mouse');
+    }
     const vertical: number = event.getVerticalAxisValue();
     const horizontal: number = event.getHorizontalAxisValue();
     const raw: number = Math.abs(vertical) >= Math.abs(horizontal) ? vertical : horizontal;
@@ -2798,8 +4046,13 @@ struct MoonlightStreamPage {
   private applySessionSnapshot(snapshot: MoonlightSessionStateSnapshot | null): void {
     if (!this.pageActive) { return; }
     if (snapshot === null) {
-      this.phase = 'failed';
-      this.errorCode = 'internal';
+      // subscribeForRoute emits one synchronous null snapshot while the
+      // reserved route is still being materialized. This is an initialization
+      // barrier, not a terminal receipt. Keep the authentication/connection
+      // gate visible and wait for the typed coordinator snapshot.
+      if (this.routeTerminated) { return; }
+      this.phase = 'negotiating';
+      this.errorCode = 'none';
       this.degradationReasons = [];
       this.elapsedMs = 0;
       this.firstFrameSeen = false;
@@ -2811,10 +4064,11 @@ struct MoonlightStreamPage {
       this.sessionGeneration = 0;
       this.appliedTouchModeSessionGeneration = 0;
       this.sessionStartedAtMs = 0;
-      this.setConnectStageVisible(true);
       this.clearElapsedTimer();
-      void this.stopMoonlightBackgroundTask();
-      this.releaseRendererAfterPresentationTeardown('missing-session-snapshot');
+      this.setConnectStageVisible(true);
+      this.clearMoonlightPhysicalKeyboardFocusSchedule();
+      this.physicalKeyboardProxyFocused = false;
+      this.publishTrackpadCursor();
       return;
     }
     if (snapshot.generation !== this.sessionGeneration) {
@@ -2822,6 +4076,12 @@ struct MoonlightStreamPage {
       this.sessionStartedAtMs = Date.now();
       this.elapsedMs = 0;
     }
+    const terminal: boolean = snapshot.phase === 'failed' ||
+      snapshot.phase === 'disconnected';
+    // Dismiss first, then publish the terminal state. ArkUI state updates are
+    // observable between assignments on some devices, which was enough to
+    // render the former failure controls for a single frame on exit.
+    if (terminal) { this.setConnectStageVisible(false); }
     this.phase = snapshot.phase;
     this.errorCode = snapshot.errorCode;
     this.degradationReasons = snapshot.degradationReasons.slice();
@@ -2836,7 +4096,7 @@ struct MoonlightStreamPage {
       }
       if (this.inputReady && this.sessionGeneration > 0 &&
           this.appliedTouchModeSessionGeneration !== this.sessionGeneration &&
-          this.setNativeTouchMode(this.effectiveSettings.input.touchMode)) {
+          this.setNativeTouchMode(this.resolvedMoonlightControlMode())) {
         this.appliedTouchModeSessionGeneration = this.sessionGeneration;
       }
     }
@@ -2844,8 +4104,24 @@ struct MoonlightStreamPage {
       this.inputReady = false;
       this.controllerReady = false;
       this.physicalControllerPathReady = false;
+      this.clearMoonlightPhysicalKeyboardFocusSchedule();
+      this.physicalKeyboardProxyFocused = false;
     }
-    this.setConnectStageVisible(!snapshot.firstFrameSeen);
+    if (terminal) {
+      hilog.warn(0x0014, 'MoonlightStreamUi',
+        'terminal snapshot phase=' + snapshot.phase +
+        ' code=' + (snapshot.errorCode || 'none') +
+        ' generation=' + snapshot.generation.toString() +
+        ' elapsedMs=' + this.elapsedMs.toString());
+    }
+    // The waiting/authentication Sheet exists only while a connection is in
+    // progress. A terminal snapshot returns directly to the catalog; mounting
+    // the same Sheet in its failure state caused the visible failure flash on
+    // user exit, system Back and PIP restoration.
+    if (!terminal) { this.setConnectStageVisible(!snapshot.firstFrameSeen); }
+    if (terminal && !this.routeTerminated) {
+      this.scheduleTerminalRouteExit(snapshot.errorCode, snapshot.firstFrameSeen);
+    }
     this.scheduleMoonlightContextualGuide();
     if (this.sessionStartedAtMs > 0) {
       this.elapsedMs = Math.max(0, Date.now() - this.sessionStartedAtMs);
@@ -2887,11 +4163,15 @@ struct MoonlightStreamPage {
         !this.surfaceSuspended && !this.surfaceRecovering) {
       void this.prepareMoonlightPipForForeground();
     }
-    if (snapshot.phase === 'streaming' && this.diagnosticsVisible) {
+    // Keep the inexpensive local snapshot sampler alive for the full session.
+    // Opening the HUD must reveal a current sample immediately instead of
+    // racing the first visibility-triggered timer.
+    if (this.diagnosticsSessionActive()) {
       this.startDiagnosticsPolling();
     } else if (snapshot.phase === 'failed' || snapshot.phase === 'disconnected') {
       this.stopDiagnosticsPolling();
     }
+    this.publishTrackpadCursor();
   }
 
   private scheduleElapsedTick(): void {
@@ -2914,15 +4194,57 @@ struct MoonlightStreamPage {
     }
   }
 
+  private clearTerminalRouteExitTimer(): void {
+    if (this.terminalRouteExitTimer >= 0) {
+      clearTimeout(this.terminalRouteExitTimer);
+      this.terminalRouteExitTimer = -1;
+    }
+  }
+
+  private scheduleTerminalRouteExit(errorCode: MoonlightSessionErrorCode,
+    hadFirstFrame: boolean): void {
+    if (this.terminalRouteExitTimer >= 0 || this.routeTerminated || !this.pageActive) { return; }
+    promptAction.showToast({
+      message: hadFirstFrame ? 'Moonlight 连接已结束，正在返回应用目录' :
+        'Moonlight 连接失败（' + errorCode + '），已返回应用目录',
+      duration: 1800
+    });
+    this.terminalRouteExitTimer = setTimeout((): void => {
+      this.terminalRouteExitTimer = -1;
+      if (!this.pageActive || this.routeTerminated) { return; }
+      this.disconnectMoonlightImmediately(hadFirstFrame ?
+        'remote-session-terminal' : 'initial-connection-terminal');
+    }, 0);
+  }
+
   private resetDiagnosticsSampling(): void {
     this.diagnosticsPreviousSampleMs = 0;
     this.diagnosticsPreviousPresentedFrames = 0;
     this.diagnosticsPreviousVideoBytes = 0;
+    this.diagnosticsLastPresentedProgressSampleMs = 0;
+    this.diagnosticsLastIngressProgressSampleMs = 0;
+    this.diagnosticsSmoothedFps = -1;
+    this.diagnosticsSmoothedBitrateKbps = -1;
+  }
+
+  private smoothDiagnosticsRate(previous: number, current: number,
+    decimalPlaces: number): number {
+    if (!Number.isFinite(current) || current < 0) { return -1; }
+    const blended: number = previous < 0 ? current :
+      previous * (1 - MOONLIGHT_DIAGNOSTICS_NEW_SAMPLE_WEIGHT) +
+        current * MOONLIGHT_DIAGNOSTICS_NEW_SAMPLE_WEIGHT;
+    const scale: number = Math.pow(10, decimalPlaces);
+    return Math.round(blended * scale) / scale;
+  }
+
+  private diagnosticsSessionActive(): boolean {
+    return this.pageActive && !this.routeTerminated && this.routeLeaseValid() &&
+      this.phase !== 'failed' && this.phase !== 'disconnected' &&
+      this.phase !== 'stopping';
   }
 
   private startDiagnosticsPolling(): void {
-    if (!this.diagnosticsVisible || !this.pageActive || this.routeTerminated ||
-        this.diagnosticsTimer >= 0) { return; }
+    if (!this.diagnosticsSessionActive() || this.diagnosticsTimer >= 0) { return; }
     this.refreshDiagnosticsSnapshot();
   }
 
@@ -2935,17 +4257,24 @@ struct MoonlightStreamPage {
   }
 
   private scheduleDiagnosticsPoll(): void {
-    if (!this.diagnosticsVisible || !this.pageActive || this.routeTerminated ||
-        this.diagnosticsTimer >= 0) { return; }
+    if (!this.diagnosticsSessionActive() || this.diagnosticsTimer >= 0) { return; }
     this.diagnosticsTimer = setTimeout((): void => {
       this.diagnosticsTimer = -1;
       this.refreshDiagnosticsSnapshot();
-    }, 1000);
+    }, MOONLIGHT_DIAGNOSTICS_POLL_MS);
+  }
+
+  private publishDiagnosticsSnapshot(
+    snapshot: MoonlightDiagnosticsSnapshot): void {
+    this.diagnosticsLatestSnapshot = snapshot;
+    if (!this.diagnosticsVisible) { return; }
+    this.diagnosticsSnapshot = snapshot;
+    this.diagnosticsSampleEpoch = Math.min(Number.MAX_SAFE_INTEGER,
+      this.diagnosticsSampleEpoch + 1);
   }
 
   private refreshDiagnosticsSnapshot(): void {
-    if (!this.diagnosticsVisible || !this.pageActive || this.routeTerminated ||
-        !this.routeLeaseValid()) { return; }
+    if (!this.diagnosticsSessionActive()) { return; }
     try {
       const source = rdpnapi.moonlightGetStreamSnapshot({
         requestId: this.launchKey.requestId,
@@ -2958,45 +4287,112 @@ struct MoonlightStreamPage {
       let fps: number = -1;
       let bitrateKbps: number = -1;
       const elapsedMs: number = sampledAtMs - this.diagnosticsPreviousSampleMs;
-      if (this.diagnosticsPreviousSampleMs > 0 && elapsedMs > 0 &&
+      const hadPreviousSample: boolean = this.diagnosticsPreviousSampleMs > 0;
+      const presentationAdvanced: boolean = hadPreviousSample &&
+        presentedFrames > this.diagnosticsPreviousPresentedFrames;
+      const ingressAdvanced: boolean = hadPreviousSample &&
+        videoBytes > this.diagnosticsPreviousVideoBytes;
+      if (this.diagnosticsLastPresentedProgressSampleMs <= 0 || presentationAdvanced) {
+        this.diagnosticsLastPresentedProgressSampleMs = sampledAtMs;
+      }
+      if (this.diagnosticsLastIngressProgressSampleMs <= 0 || ingressAdvanced) {
+        this.diagnosticsLastIngressProgressSampleMs = sampledAtMs;
+      }
+      if (hadPreviousSample && elapsedMs > 0 &&
           presentedFrames >= this.diagnosticsPreviousPresentedFrames &&
           videoBytes >= this.diagnosticsPreviousVideoBytes) {
-        fps = Math.round((presentedFrames - this.diagnosticsPreviousPresentedFrames) *
-          10000 / elapsedMs) / 10;
-        bitrateKbps = Math.round((videoBytes - this.diagnosticsPreviousVideoBytes) *
-          8 / elapsedMs);
+        const sampledFps: number = (presentedFrames - this.diagnosticsPreviousPresentedFrames) *
+          1000 / elapsedMs;
+        const sampledBitrateKbps: number = (videoBytes - this.diagnosticsPreviousVideoBytes) *
+          8 / elapsedMs;
+        this.diagnosticsSmoothedFps = this.smoothDiagnosticsRate(
+          this.diagnosticsSmoothedFps, sampledFps, 1);
+        this.diagnosticsSmoothedBitrateKbps = this.smoothDiagnosticsRate(
+          this.diagnosticsSmoothedBitrateKbps, sampledBitrateKbps, 0);
+        fps = this.diagnosticsSmoothedFps;
+        bitrateKbps = this.diagnosticsSmoothedBitrateKbps;
       }
-      this.diagnosticsPreviousSampleMs = sampledAtMs;
-      this.diagnosticsPreviousPresentedFrames = presentedFrames;
-      this.diagnosticsPreviousVideoBytes = videoBytes;
-      this.diagnosticsSnapshot = {
+      const ingressRecentlyActive: boolean = hadPreviousSample &&
+        this.diagnosticsLastIngressProgressSampleMs > 0 &&
+        sampledAtMs - this.diagnosticsLastIngressProgressSampleMs <= 1500;
+      const presentationStalled: boolean = ingressRecentlyActive &&
+        presentedFrames === this.diagnosticsPreviousPresentedFrames &&
+        sampledAtMs - this.diagnosticsLastPresentedProgressSampleMs >=
+          MOONLIGHT_PRESENTATION_STALL_MS;
+      const acceptedVideoFrames: number = source.acceptedVideoFrames ?? 0;
+      const droppedVideoFrames: number = source.droppedVideoFrames ?? 0;
+      const videoFrameTotal: number = acceptedVideoFrames + droppedVideoFrames;
+      const packetLossPercent: number = videoFrameTotal > 0 ?
+        Math.round(droppedVideoFrames * 10000 / videoFrameTotal) / 100 : -1;
+      const presentationAgeMs: number = this.diagnosticsLastPresentedProgressSampleMs > 0 ?
+        Math.max(0, sampledAtMs - this.diagnosticsLastPresentedProgressSampleMs) : -1;
+      const ingressAgeMs: number = this.diagnosticsLastIngressProgressSampleMs > 0 ?
+        Math.max(0, sampledAtMs - this.diagnosticsLastIngressProgressSampleMs) : -1;
+      const nextSnapshot: MoonlightDiagnosticsSnapshot = {
         available: source.matched && !source.terminal,
+        transportReady: source.transportReady,
+        videoReady: source.videoReady,
+        audioReady: source.audioReady,
+        inputReady: source.inputReady,
         fps: fps,
-        latencyMs: -1,
+        latencyMs: source.decoderCodecLatencyMs ?? -1,
         bitrateKbps: bitrateKbps,
-        packetLossPercent: -1,
-        codec: source.matched ? 'H.264 · 8-bit 4:2:0' : '',
+        configuredBitrateKbps: source.configuredBitrateKbps ?? this.configuredBitrateKbps,
+        packetLossPercent: packetLossPercent,
+        codec: source.matched ? this.diagnosticsCodecLabel(source.codec) : '',
         width: source.streamWidth ?? this.streamWidth,
         height: source.streamHeight ?? this.streamHeight,
+        targetFps: source.targetFps ?? -1,
+        acceptedVideoFrames: acceptedVideoFrames,
+        droppedVideoFrames: droppedVideoFrames,
+        decoderQueueDepth: source.decoderQueueDepth ?? -1,
         decodeP50Us: -1,
         decodeP95Us: -1,
         renderP50Us: -1,
         renderP95Us: -1,
+        codecLatencyMs: source.decoderCodecLatencyMs ?? -1,
+        codecLatencyMaxMs: source.decoderCodecLatencyMaxMs ?? -1,
+        surfaceUpdateFailures: source.decoderSurfaceUpdateFailures ?? 0,
+        surfaceCoalescedNotifications:
+          source.decoderSurfaceCoalescedNotifications ?? 0,
+        acceptedAudioPackets: source.acceptedAudioPackets ?? 0,
+        rejectedAudioPackets: source.rejectedAudioPackets ?? 0,
+        audioBytes: source.acceptedAudioBytes ?? 0,
         audioUnderruns: -1,
-        inputDrops: source.rejectedInputEvents ?? -1
+        inputAccepted: source.acceptedInputEvents ?? this.trackpadLocalAcceptedEvents,
+        inputDrops: source.rejectedInputEvents ?? this.trackpadLocalRejectedEvents,
+        presentedFrames: presentedFrames,
+        videoBytes: videoBytes,
+        ingressAgeMs: ingressAgeMs,
+        presentationAgeMs: presentationAgeMs,
+        stalled: presentationStalled
       };
+      this.publishDiagnosticsSnapshot(nextSnapshot);
+      this.diagnosticsPreviousSampleMs = sampledAtMs;
+      this.diagnosticsPreviousPresentedFrames = presentedFrames;
+      this.diagnosticsPreviousVideoBytes = videoBytes;
     } catch (_) {
-      this.diagnosticsSnapshot = EMPTY_MOONLIGHT_DIAGNOSTICS;
+      this.publishDiagnosticsSnapshot(EMPTY_MOONLIGHT_DIAGNOSTICS);
       this.resetDiagnosticsSampling();
     }
     this.scheduleDiagnosticsPoll();
   }
 
+  private diagnosticsCodecLabel(codec: string | undefined): string {
+    if (codec === 'hevc') { return 'H.265 / HEVC · 8-bit 4:2:0'; }
+    if (codec === 'av1') { return 'AV1 · 8-bit 4:2:0'; }
+    if (codec === 'h264') { return 'H.264 · 8-bit 4:2:0'; }
+    return '未知';
+  }
+
   private toggleDiagnosticsHud(): void {
-    this.diagnosticsVisible = !this.diagnosticsVisible;
-    this.diagnosticsExpanded = this.diagnosticsVisible && this.diagnosticsExpanded;
-    if (this.diagnosticsVisible) { this.startDiagnosticsPolling(); }
-    else { this.stopDiagnosticsPolling(); }
+    const opening: boolean = !this.diagnosticsVisible;
+    this.diagnosticsVisible = opening;
+    this.diagnosticsExpanded = opening;
+    if (opening) {
+      this.publishDiagnosticsSnapshot(this.diagnosticsLatestSnapshot);
+      this.startDiagnosticsPolling();
+    }
   }
 
   private copySanitizedDiagnostics(): void {
@@ -3007,7 +4403,21 @@ struct MoonlightStreamPage {
       'size=' + snapshot.width.toString() + 'x' + snapshot.height.toString() + '\n' +
       'fps=' + snapshot.fps.toString() + '\n' +
       'bitrateKbps=' + snapshot.bitrateKbps.toString() + '\n' +
-      'inputDrops=' + snapshot.inputDrops.toString();
+      'targetBitrateKbps=' + snapshot.configuredBitrateKbps.toString() + '\n' +
+      'acceptedVideoFrames=' + snapshot.acceptedVideoFrames.toString() + '\n' +
+      'droppedVideoFrames=' + snapshot.droppedVideoFrames.toString() + '\n' +
+      'decoderQueueDepth=' + snapshot.decoderQueueDepth.toString() + '\n' +
+      'codecLatencyMs=' + snapshot.codecLatencyMs.toString() + '\n' +
+      'codecLatencyMaxMs=' + snapshot.codecLatencyMaxMs.toString() + '\n' +
+      'surfaceUpdateFailures=' + snapshot.surfaceUpdateFailures.toString() + '\n' +
+      'surfaceCoalesced=' + snapshot.surfaceCoalescedNotifications.toString() + '\n' +
+      'inputAccepted=' + snapshot.inputAccepted.toString() + '\n' +
+      'inputDrops=' + snapshot.inputDrops.toString() + '\n' +
+      'presentedFrames=' + snapshot.presentedFrames.toString() + '\n' +
+      'videoBytes=' + snapshot.videoBytes.toString() + '\n' +
+      'presentationAgeMs=' + snapshot.presentationAgeMs.toString() + '\n' +
+      'ingressAgeMs=' + snapshot.ingressAgeMs.toString() + '\n' +
+      'stalled=' + snapshot.stalled.toString();
     try {
       const data = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, text);
       pasteboard.getSystemPasteboard().setDataSync(data);
@@ -3018,13 +4428,14 @@ struct MoonlightStreamPage {
   }
 
   private cancelConnection(): void {
-    const result = this.sessionCoordinator.cancelForRoute(
-      this.hostId, this.appId, 'connect-stage-cancel');
-    if (result.code === 'stop_requested') {
-      promptAction.showToast({ message: '正在安全取消连接', duration: 1400 });
-    }
-    this.flushInput('cancel_connect');
-    this.closeSessionSurface();
+    if (this.terminationBusy) { return; }
+    this.disconnectMoonlightImmediately('connection-cancelled');
+  }
+
+  onBackPress(): boolean {
+    if (this.terminationBusy) { return true; }
+    this.disconnectMoonlightImmediately('system-back');
+    return true;
   }
 
   private closeSessionSurface(): void {
@@ -3041,26 +4452,74 @@ struct MoonlightStreamPage {
     router.back();
   }
 
+  /**
+   * ArkUI routes Back to the native Sheet while it is dismissing. Calling
+   * router.back() in that same callback therefore consumes the navigation and
+   * leaves a terminal stream page visible. A page without a Sheet still exits
+   * in the current event frame; a Sheet-hosted exit continues from its exact
+   * onDisappear receipt.
+   */
+  private requestSessionSurfaceClose(waitForSheetDisappear: boolean): void {
+    if (waitForSheetDisappear && this.sessionWindowId.length === 0) {
+      this.routeExitAfterSheetDisappear = true;
+      return;
+    }
+    this.routeExitAfterSheetDisappear = false;
+    this.closeSessionSurface();
+  }
+
   private retryConnection(): void {
-    promptAction.showToast({ message: '请返回应用目录重新建立安全启动租约', duration: 2000 });
+    promptAction.showToast({ message: '正在返回应用目录，请重新选择应用连接', duration: 1600 });
+    this.leaveTerminalConnectSheet('retry-from-catalog');
+  }
+
+  private leaveTerminalConnectSheet(reason: string): void {
+    const sheetWasVisible: boolean = this.showSessionSheet;
+    if (!this.routeTerminated) { this.closeMoonlightRoute(reason); }
+    this.closeSheet();
+    this.requestSessionSurfaceClose(sheetWasVisible);
   }
 
   private flushInput(reason: string): void {
+    this.discardPendingTrackpadPointer();
     const wasSuspended: boolean = this.inputSuspended;
     if (!wasSuspended) { this.setNativeInputSuspended(true, 'overlay_opened'); }
     this.inputFlushCount += 1;
     this.ctrlLatch = 'off'; this.altLatch = 'off'; this.shiftLatch = 'off'; this.winLatch = 'off';
     this.fnLayer = false;
-    this.activeTouches.clear();
+    // Native suspension already performs the remote-neutral release. Only
+    // discard the ArkTS gesture ledger here so a Sheet cannot inherit a drag.
+    this.resetTrackpadGesture(false);
+    this.publishTrackpadCursor();
     if (!wasSuspended) { this.setNativeInputSuspended(false, 'overlay_opened'); }
     hilog.info(0x0014, 'MoonlightStreamUi',
       'input local state cleared reason=' + reason + ' count=' + this.inputFlushCount.toString());
   }
 
   private pipAvailable(): boolean {
-    return this.pipPrepared && this.liveViewEnabled &&
+    return this.liveViewEnabled &&
       this.liveViewMode === LiveViewMode.AVSESSION && this.firstFrameSeen &&
       !this.routeTerminated;
+  }
+
+  private refreshMoonlightPipRestorePageId(reason: string): number {
+    const candidate: number = this.getUniqueId();
+    if (Number.isSafeInteger(candidate) && candidate > 0) {
+      if (this.pipRestorePageId !== candidate) {
+        this.pipRestorePageId = candidate;
+        hilog.info(0x0014, 'MoonlightStreamUi',
+          'PIP restore handle captured id=' + candidate.toString() +
+          ' reason=' + reason);
+      }
+    }
+    return this.pipRestorePageId;
+  }
+
+  private moonlightPipRestoreTarget(): RemoteSessionPipRestoreTarget | null {
+    if (this.sessionWindowId.length > 0) { return null; }
+    const handleId: number = this.refreshMoonlightPipRestorePageId('prepare');
+    if (!Number.isSafeInteger(handleId) || handleId <= 0) { return null; }
+    return { handleId: handleId };
   }
 
   private openSheet(mode: MoonlightSessionSheetMode): void {
@@ -3093,13 +4552,27 @@ struct MoonlightStreamPage {
   }
 
   private onSheetDisappear(): void {
-    if (this.pendingConnectStageSheet || this.showConnectStage || this.surfaceRecovering) {
+    if (this.routeExitAfterSheetDisappear) {
+      this.routeExitAfterSheetDisappear = false;
+      this.pendingConnectStageSheet = false;
       this.pendingSheetMode = 'none';
-      this.sheetMode = 'none';
+      this.closeSessionSurface();
+      return;
+    }
+    if (this.pendingConnectStageSheet || this.showConnectStage) {
+      this.pendingSheetMode = 'none';
       this.cancelSheetReopen();
       this.pendingConnectStageSheet = false;
-      this.showConnectStageSheet = true;
+      this.sheetMode = 'connect';
       this.setNativeInputSuspended(true, 'overlay_opened');
+      const generation: number = this.sheetReopenGeneration;
+      this.sheetReopenTimer = setTimeout((): void => {
+        this.sheetReopenTimer = -1;
+        if (this.pageActive && generation === this.sheetReopenGeneration &&
+            this.connectStageGateActive() && this.surfaceLayoutReady) {
+          this.showSessionSheet = true;
+        }
+      }, 0);
       return;
     }
     if (this.pendingSheetMode !== 'none') {
@@ -3118,19 +4591,36 @@ struct MoonlightStreamPage {
     }
     this.sheetMode = 'none';
     this.setNativeInputSuspended(false, 'overlay_opened');
+    if (this.keyboardOpen && this.keyboardImeActive) {
+      // A native Sheet owns focus until its onDisappear receipt. Re-request
+      // the virtual keyboard here so opening it from Control Center cannot
+      // leave keyboardOpen=true without an actual IME.
+      this.scheduleMoonlightVirtualKeyboardFocus('sheet-disappear');
+    } else {
+      this.scheduleMoonlightPhysicalKeyboardFocus('sheet-disappear');
+    }
   }
 
   private toolbarAction(action: MoonlightToolbarAction): void {
     if (action === 'more') { this.openSheet('control'); return; }
-    if (action === 'disconnect') { this.openSheet('stop'); return; }
-    if (action === 'controller') {
-      this.flushInput('open_controller');
-      if (this.setVirtualControllerMode(true, false)) {
-        this.controllerEditing = false;
-        this.showController = true;
-      } else {
-        promptAction.showToast({ message: '手柄输入尚未就绪', duration: 1600 });
+    if (action === 'disconnect') {
+      if (this.terminationBusy) {
+        promptAction.showToast({ message: '正在安全退出并释放连接', duration: 1400 });
+        return;
       }
+      this.disconnectMoonlightImmediately('toolbar-disconnect');
+      return;
+    }
+    if (action === 'diagnostics') {
+      this.toggleDiagnosticsHud();
+      promptAction.showToast({
+        message: this.diagnosticsVisible ? '性能监控已开启' : '性能监控已关闭',
+        duration: 1200
+      });
+      return;
+    }
+    if (action === 'controller') {
+      this.openSheet('controller');
       return;
     }
     if (action === 'keyboard') {
@@ -3146,16 +4636,13 @@ struct MoonlightStreamPage {
       return;
     }
     if (action === 'control') {
-      const nextMode: MoonlightControlMode = this.controlMode === 'touch' ? 'trackpad' : 'touch';
-      if (this.setNativeTouchMode(nextMode)) {
-        this.controlMode = nextMode;
-        this.sessionChanges += 1;
-        promptAction.showToast({ message: '已切换为' + (this.controlMode === 'touch' ? '直接触控' : '触控板'),
-          duration: 1400 });
-      } else {
-        promptAction.showToast({ message: nextMode === 'touch' ? '当前主机不支持直接触控' : '输入尚未就绪',
-          duration: 1600 });
-      }
+      const next: MoonlightInputControlMode = this.nextMoonlightControlMode();
+      this.applyMoonlightControlMode(next);
+      promptAction.showToast({
+        message: next === 'adaptive' ? '自适应模式已启用' :
+          (next === 'keyboardMouse' ? '键鼠模式已启用' : '虚拟触控板已启用'),
+        duration: 1200
+      });
       return;
     }
     if (action === 'display') {
@@ -3243,15 +4730,43 @@ struct MoonlightStreamPage {
         this.placeMoonlightModifierPanel(false);
         this.showModifierPanel = true;
       },
-      onOpenController: (): void => { this.closeSheet(); this.toolbarAction('controller'); },
+      onOpenController: (): void => { this.openSheet('controller'); },
       onEnterPip: (): void => { this.closeSheet(); void this.moveMoonlightToPip(); },
       onToggleDiagnostics: (): void => { this.toggleDiagnosticsHud(); },
       onControlMode: (mode: MoonlightControlMode): void => {
-        if (this.setNativeTouchMode(mode)) {
-          this.controlMode = mode; this.sessionChanges += 1;
-        }
+        this.applyMoonlightControlMode(mode);
       },
       onDisconnect: (): void => { this.openSheet('stop'); }
+    })
+  }
+
+  private openMoonlightVirtualController(): void {
+    this.closeSheet();
+    this.flushInput('open_virtual_controller');
+    if (this.setVirtualControllerMode(true, false)) {
+      this.controllerEditing = false;
+      this.showController = true;
+      return;
+    }
+    promptAction.showToast({ message: '虚拟手柄输入尚未就绪', duration: 1600 });
+  }
+
+  @Builder private physicalControllerSheet() {
+    MoonlightPhysicalControllerSheet({
+      inputReady: this.inputReady,
+      controllerReady: this.controllerReady,
+      physicalListenerReady: this.physicalControllerPathReady,
+      rumbleEnabled: this.effectiveSettings.input.enableRumble,
+      onRefresh: (): void => {
+        this.refreshNativeInputReadiness();
+        promptAction.showToast({
+          message: this.physicalControllerPathReady ?
+            '实体手柄监听已就绪' : '暂未检测到可用的系统手柄监听',
+          duration: 1600
+        });
+      },
+      onOpenVirtualController: (): void => { this.openMoonlightVirtualController(); },
+      onClose: (): void => { this.closeSheet(); }
     })
   }
 
@@ -3261,14 +4776,15 @@ struct MoonlightStreamPage {
       Text('可仅断开本地串流，也可在本地输入完全释放后结束主机端应用。')
         .fontSize(12).fontColor(this.pal().text3).lineHeight(18).margin({ top: 8 })
       Button('仅断开并保留主机应用').height(46).width('100%').borderRadius(13).fontSize(13)
-        .backgroundColor(this.accentColor).fontColor(Color.White).margin({ top: 20 })
+        .backgroundColor(this.pal().surface).fontColor(this.pal().text).margin({ top: 20 })
+        .border({ width: 1, color: this.pal().cardBorder })
         .onClick((): void => {
           void this.terminateMoonlightSession('disconnect');
         })
         .enabled(!this.terminationBusy).opacity(this.terminationBusy ? 0.55 : 1)
       Button(this.terminationBusy ? '正在安全结束…' : '结束主机应用并断开')
         .height(46).width('100%').borderRadius(13).fontSize(13)
-        .backgroundColor('#C43B3B').fontColor(Color.White).margin({ top: 9 })
+        .backgroundColor('#D94B4B').fontColor(Color.White).margin({ top: 9 })
         .onClick((): void => { void this.terminateMoonlightSession('quit'); })
         .enabled(!this.terminationBusy).opacity(this.terminationBusy ? 0.55 : 1)
       Button('取消').height(42).width('100%').borderRadius(12).fontSize(13)
@@ -3282,44 +4798,11 @@ struct MoonlightStreamPage {
   }
 
   @Builder private sessionSheet() {
-    if (this.sheetMode === 'control') { this.controlCenterSheet() }
+    if (this.sheetMode === 'connect') { this.connectStageSheet() }
+    else if (this.sheetMode === 'control') { this.controlCenterSheet() }
+    else if (this.sheetMode === 'controller') { this.physicalControllerSheet() }
     else if (this.sheetMode === 'stop') { this.stopSheet() }
     else { Column().width('100%').height(1) }
-  }
-
-  @Builder private moonlightKeyboardKey(label: string, keyCode: number,
-    emphasized: boolean = false) {
-    Button(label).height(38).constraintSize({ minWidth: 54 }).fontSize(12)
-      .padding({ left: 13, right: 13 })
-      .backgroundColor(emphasized ? this.accentColor : 'rgba(20,20,24,0.90)')
-      .fontColor(Color.White).borderRadius(11)
-      .onClick((): void => { this.sendMoonlightKeyTap(keyCode); })
-  }
-
-  @Builder private moonlightKeyboardAccessory() {
-    Row() {
-      Scroll() {
-        Row({ space: 8 }) {
-          this.moonlightKeyboardKey('Esc', MOONLIGHT_KEYCODE_ESCAPE)
-          this.moonlightKeyboardKey('Tab', MOONLIGHT_KEYCODE_TAB)
-          this.moonlightKeyboardKey('←', MOONLIGHT_KEYCODE_DPAD_LEFT)
-          this.moonlightKeyboardKey('→', MOONLIGHT_KEYCODE_DPAD_RIGHT)
-          this.moonlightKeyboardKey('退格', MOONLIGHT_KEYCODE_DEL)
-          this.moonlightKeyboardKey('删除', MOONLIGHT_KEYCODE_FORWARD_DEL)
-          this.moonlightKeyboardKey('Enter', MOONLIGHT_KEYCODE_ENTER, true)
-        }.padding({ left: 8, right: 8 })
-      }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).layoutWeight(1)
-      Button() {
-        SymbolGlyph($r('sys.symbol.chevron_down'))
-          .fontSize(18).fontColor([Color.White])
-      }.width(42).height(38).borderRadius(11).margin({ left: 8, right: 8 })
-        .backgroundColor('rgba(20,20,24,0.90)')
-        .onClick((): void => { this.dismissMoonlightKeyboard(); })
-        .accessibilityText('关闭虚拟键盘')
-    }.width(this.breakpoint === 'sm' ? '96%' : '72%').height(50)
-      .padding({ top: 6, bottom: 6 })
-      .backgroundColor('rgba(0,0,0,0.34)').borderRadius(15)
-      .border({ width: 0.5, color: 'rgba(255,255,255,0.18)' })
   }
 
   @Builder private connectStageSheet() {
@@ -3330,74 +4813,134 @@ struct MoonlightStreamPage {
       firstFrameSeen: this.surfaceRecovering ? false : this.firstFrameSeen,
       errorCode: this.errorCode,
       degradationReasons: this.degradationReasons,
-      onCancel: (): void => { this.cancelConnection(); },
-      onRetry: (): void => { this.retryConnection(); },
-      onDowngradeRetry: (): void => { this.retryConnection(); },
+      onCancel: (): void => {
+        if (this.pageActive && this.showConnectStage) { this.cancelConnection(); }
+      },
+      onRetry: (): void => {
+        if (this.pageActive && this.showConnectStage) { this.retryConnection(); }
+      },
+      onDowngradeRetry: (): void => {
+        if (this.pageActive && this.showConnectStage) { this.retryConnection(); }
+      },
       onOpenDiagnostics: (): void => {
+        if (!this.connectStageGateActive()) { return; }
         this.diagnosticsVisible = true;
         this.diagnosticsExpanded = true;
+        this.publishDiagnosticsSnapshot(this.diagnosticsLatestSnapshot);
         this.startDiagnosticsPolling();
       },
       onBackToCatalog: (): void => {
-        this.flushInput('back_to_catalog');
-        this.closeSessionSurface();
+        if (this.pageActive && this.showConnectStage) {
+          this.leaveTerminalConnectSheet('connect-sheet-back');
+        }
       }
     })
   }
 
   build() {
     Stack({ alignContent: Alignment.Center }) {
-      XComponent({ id: this.xcId, type: XComponentType.SURFACE,
-        libraryname: 'rdpnapi', controller: this.xComponentController })
-        .width('100%').height('100%').backgroundColor('#000000')
-        .focusable(true).focusOnTouch(true)
-        .onLoad(this.onMoonlightXComponentLoad)
-        .onTouch(this.handleMoonlightTouch)
-        .onKeyEvent(this.handleMoonlightKey)
-        .onMouse(this.handleMoonlightMouse)
-        .onAxisEvent(this.handleMoonlightAxis)
-        .onAreaChange((_oldArea: Area, newArea: Area): void => {
-          this.surfaceWidthVp = Math.max(1, newArea.width as number);
-          this.surfaceHeightVp = Math.max(1, newArea.height as number);
-          this.reflowMoonlightModifierPanels();
-          const width: number = Math.max(1, Math.round(vp2px(this.surfaceWidthVp)));
-          const height: number = Math.max(1, Math.round(vp2px(this.surfaceHeightVp)));
-          this.surfaceWidthPx = width; this.surfaceHeightPx = height;
-          this.geometryGeneration += 1;
-          if (this.rendererHandle > 0) {
-            try { rdpnapi.resizeRenderer(this.rendererHandle, width, height); } catch (_) {}
-          }
-          if (this.pipPrepared) {
-            const size: RemoteSessionPipContentSize = this.moonlightPipSize();
-            const presentationLease: RemoteSessionServiceLease | null =
-              this.currentMoonlightPresentationLease();
-            if (presentationLease !== null) {
-              RemoteSessionPipService.getInstance().updateContentSize(
-                size.width, size.height, presentationLease);
-            }
-          }
-        })
+      if (this.isDesktopDevice || this.sessionWindowId.length > 0 ||
+          this.orientationApplied) {
+        Stack() {
+          XComponent({ id: this.xcId, type: XComponentType.SURFACE,
+            libraryname: 'rdpnapi', controller: this.xComponentController })
+            .width('100%').height('100%').backgroundColor('#000000')
+            // Keep the hidden TextArea as the sole keyboard focus owner, just
+            // like RDP/VNC. Pointer events remain attached to the Surface.
+            .focusable(false).focusOnTouch(false)
+            .onLoad(this.onMoonlightXComponentLoad)
+            .onTouch(this.handleMoonlightSurfaceTouch)
+            .onKeyEvent(this.handleMoonlightKey)
+            .onMouse(this.handleMoonlightMouse)
+            .onAxisEvent(this.handleMoonlightAxis)
+            .onAreaChange((_oldArea: Area, newArea: Area): void => {
+              this.onMoonlightSurfaceAreaChange(newArea);
+            })
 
-      Stack({ alignContent: this.toolbarLayout().edgeRail ?
-        Alignment.TopEnd : Alignment.Top }) {
-        MoonlightSessionToolbar({
-          audioAvailable: this.effectiveSettings.audio.enabled && this.audioReady,
-          controllerAvailable: this.controllerReady,
-          pipAvailable: this.pipAvailable(),
-          keyboardAvailable: this.inputReady,
-          menuOpen: this.showSessionSheet,
-          qualityColor: this.firstFrameSeen ? '#66DD7A' : '#FFCF70',
-          qualityLabel: this.firstFrameSeen ? '串流中' : '连接中',
-          onAction: (action: MoonlightToolbarAction): void => { this.toolbarAction(action); },
-          onUnavailable: (reason: string): void => {
-            promptAction.showToast({ message: reason, duration: 1800 });
+          // A real ArkUI hit surface is required above XComponent for every
+          // input mode. Real Pad mice were visible in the system's XComponent
+          // hit path but XComponent.onMouse was not invoked. RDP/VNC already
+          // solve this by owning pointer hit testing on an independent layer.
+          Stack() {
+            Text(' ')
+              .width('100%').height('100%').fontSize(1)
+              .fontColor('rgba(0,0,0,0.001)')
           }
-        }).margin({ top: this.toolbarLayout().topOffset,
-            right: this.toolbarLayout().edgeRail ? 4 : 0 })
+          .id('MoonlightRemoteInputSurface')
+          .width(this.trackpadInputSurfaceWidth()).height('100%')
+          .position({ x: 0, y: 0 })
+          .backgroundColor('rgba(0,0,0,0.001)')
+          .hitTestBehavior(HitTestMode.Block)
+          .focusable(false).focusOnTouch(false).defaultFocus(false)
+          .onTouch(this.handleMoonlightSurfaceTouch)
+          .onKeyEvent(this.handleMoonlightKey)
+          .onMouse(this.handleMoonlightMouse)
+          .onAxisEvent(this.handleMoonlightAxis)
+          .zIndex(40)
+        }.width('100%').height('100%').zIndex(0)
+      } else {
+        Column().width('100%').height('100%').backgroundColor('#000000')
       }
-      .width('100%').height('100%')
-      .hitTestBehavior(HitTestMode.Transparent)
-      .zIndex(220)
+
+      RemoteCursorOverlay({ cursor: this.trackpadCursorOverlayState })
+        .zIndex(120)
+        .hitTestBehavior(HitTestMode.None)
+
+      if (this.toolbarLayout().edgeRail) {
+        Stack({ alignContent: Alignment.End }) {
+          MoonlightSessionToolbar({
+            audioAvailable: this.effectiveSettings.audio.enabled && this.audioReady,
+            controllerAvailable: this.controllerReady,
+            pipAvailable: this.pipAvailable(),
+            keyboardAvailable: this.inputReady,
+            controlModeLabel: this.toolbarControlModeLabel(),
+            diagnosticsVisible: this.diagnosticsVisible,
+            terminationBusy: this.terminationBusy,
+            menuOpen: this.showSessionSheet,
+            qualityColor: this.firstFrameSeen ? '#66DD7A' : '#FFCF70',
+            qualityLabel: this.firstFrameSeen ? '串流中' : '连接中',
+            availableHeight: this.surfaceHeightVp,
+            onAction: (action: MoonlightToolbarAction): void => {
+              this.toolbarAction(action);
+            },
+            onUnavailable: (reason: string): void => {
+              promptAction.showToast({ message: reason, duration: 1800 });
+            }
+          })
+        }
+        // Anchor to the actual ArkUI session viewport. Surface geometry can
+        // temporarily exclude a fold/safe-area inset during rotation, which
+        // previously left a visible gap between the rail and the right edge.
+        .width('100%').height('100%')
+        .hitTestBehavior(HitTestMode.Transparent)
+        .zIndex(220)
+      } else {
+        Stack({ alignContent: Alignment.Top }) {
+          MoonlightSessionToolbar({
+            audioAvailable: this.effectiveSettings.audio.enabled && this.audioReady,
+            controllerAvailable: this.controllerReady,
+            pipAvailable: this.pipAvailable(),
+            keyboardAvailable: this.inputReady,
+            controlModeLabel: this.toolbarControlModeLabel(),
+            diagnosticsVisible: this.diagnosticsVisible,
+            terminationBusy: this.terminationBusy,
+            menuOpen: this.showSessionSheet,
+            qualityColor: this.firstFrameSeen ? '#66DD7A' : '#FFCF70',
+            qualityLabel: this.firstFrameSeen ? '串流中' : '连接中',
+            availableHeight: this.surfaceHeightVp,
+            onAction: (action: MoonlightToolbarAction): void => {
+              this.toolbarAction(action);
+            },
+            onUnavailable: (reason: string): void => {
+              promptAction.showToast({ message: reason, duration: 1800 });
+            }
+          })
+        }
+        .width('100%').height(80)
+        .position({ x: 0, y: this.toolbarLayout().topOffset })
+        .hitTestBehavior(HitTestMode.Transparent)
+        .zIndex(220)
+      }
 
       if (this.sessionWindowId.length > 0) {
         RemoteSessionFullscreenButton({
@@ -3409,49 +4952,52 @@ struct MoonlightStreamPage {
           .zIndex(220)
       }
 
-      RemoteModifierPanel({
-        visible: this.showModifierPanel, shortcutVisible: this.showShortcutPanel, attachSide: 'right',
-        ctrlLatch: this.ctrlLatch, altLatch: this.altLatch, shiftLatch: this.shiftLatch,
-        winLatch: this.winLatch, fnLayer: this.fnLayer,
-        panelX: this.modifierPanelX, panelY: this.modifierPanelY,
-        shortcutX: this.shortcutPanelX, shortcutY: this.shortcutPanelY,
-        customizationEnabled: true,
-        customShortcuts: this.remoteCustomShortcuts,
-        onClose: (): void => { this.flushInput('close_modifier'); this.showModifierPanel = false; },
-        onCloseShortcut: (): void => { this.flushInput('close_shortcut'); this.showShortcutPanel = false; },
-        onToggleModifier: (mod: string): void => { this.toggleModifier(mod); },
-        onLockModifier: (mod: string): void => { this.toggleModifier(mod); this.toggleModifier(mod); },
-        onToggleFnLayer: (): void => { this.fnLayer = !this.fnLayer; },
-        onKeyTap: (keyCode: number, _label: string): void => {
-          this.sendMoonlightKey(keyCode, true);
-          this.sendMoonlightKey(keyCode, false);
-          this.releaseOnceModifiers();
-        },
-        onShortcutTap: (keyCodes: number[], _label: string): void => {
-          for (let index: number = 0; index < keyCodes.length; index++) {
-            this.sendMoonlightKey(keyCodes[index], true);
+      if (this.showModifierPanel || this.showShortcutPanel) {
+        RemoteModifierPanel({
+          visible: this.showModifierPanel, shortcutVisible: this.showShortcutPanel, attachSide: 'right',
+          ctrlLatch: this.ctrlLatch, altLatch: this.altLatch, shiftLatch: this.shiftLatch,
+          winLatch: this.winLatch, fnLayer: this.fnLayer,
+          panelX: this.modifierPanelX, panelY: this.modifierPanelY,
+          shortcutX: this.shortcutPanelX, shortcutY: this.shortcutPanelY,
+          emphasisColor: '#5B8FF9',
+          customizationEnabled: true,
+          customShortcuts: this.remoteCustomShortcuts,
+          onClose: (): void => { this.flushInput('close_modifier'); this.showModifierPanel = false; },
+          onCloseShortcut: (): void => { this.flushInput('close_shortcut'); this.showShortcutPanel = false; },
+          onToggleModifier: (mod: string): void => { this.toggleModifier(mod); },
+          onLockModifier: (mod: string): void => { this.toggleModifier(mod); this.toggleModifier(mod); },
+          onToggleFnLayer: (): void => { this.fnLayer = !this.fnLayer; },
+          onKeyTap: (keyCode: number, _label: string): void => {
+            this.sendMoonlightKey(keyCode, true);
+            this.sendMoonlightKey(keyCode, false);
+            this.releaseOnceModifiers();
+          },
+          onShortcutTap: (keyCodes: number[], _label: string): void => {
+            for (let index: number = 0; index < keyCodes.length; index++) {
+              this.sendMoonlightKey(keyCodes[index], true);
+            }
+            for (let index: number = keyCodes.length - 1; index >= 0; index--) {
+              this.sendMoonlightKey(keyCodes[index], false);
+            }
+            this.releaseOnceModifiers();
+          },
+          onSaveCustomShortcut: (id: string, keyCodes: Array<number>): boolean =>
+            this.saveRemoteCustomShortcut(id, keyCodes),
+          onDeleteCustomShortcut: (id: string): void => { this.deleteRemoteCustomShortcut(id); },
+          onPanelPositionChange: (x: number, y: number): void => {
+            this.moveMoonlightModifierPanel(x, y, false);
+          },
+          onShortcutPositionChange: (x: number, y: number): void => {
+            this.moveMoonlightModifierPanel(x, y, true);
+          },
+          onPanelSizeChange: (width: number, height: number): void => {
+            this.updateMoonlightModifierPanelSize(width, height, false);
+          },
+          onShortcutSizeChange: (width: number, height: number): void => {
+            this.updateMoonlightModifierPanelSize(width, height, true);
           }
-          for (let index: number = keyCodes.length - 1; index >= 0; index--) {
-            this.sendMoonlightKey(keyCodes[index], false);
-          }
-          this.releaseOnceModifiers();
-        },
-        onSaveCustomShortcut: (id: string, keyCodes: Array<number>): boolean =>
-          this.saveRemoteCustomShortcut(id, keyCodes),
-        onDeleteCustomShortcut: (id: string): void => { this.deleteRemoteCustomShortcut(id); },
-        onPanelPositionChange: (x: number, y: number): void => {
-          this.moveMoonlightModifierPanel(x, y, false);
-        },
-        onShortcutPositionChange: (x: number, y: number): void => {
-          this.moveMoonlightModifierPanel(x, y, true);
-        },
-        onPanelSizeChange: (width: number, height: number): void => {
-          this.updateMoonlightModifierPanelSize(width, height, false);
-        },
-        onShortcutSizeChange: (width: number, height: number): void => {
-          this.updateMoonlightModifierPanelSize(width, height, true);
-        }
-      })
+        }).zIndex(240).hitTestBehavior(HitTestMode.Transparent)
+      }
 
       if (this.showController) {
         MoonlightControllerOverlay({
@@ -3472,29 +5018,28 @@ struct MoonlightStreamPage {
           onClose: (): void => {
             this.closeVirtualController();
           }
-        })
+        }).zIndex(240).hitTestBehavior(HitTestMode.Transparent)
       }
 
-      if (this.keyboardOpen) {
-        Row() {
-          this.moonlightKeyboardAccessory()
-        }.width('100%').justifyContent(FlexAlign.Center)
-          .align(Alignment.Bottom).margin({ bottom: 12 })
-      }
-
-      if (this.diagnosticsVisible && this.firstFrameSeen) {
+      if (this.diagnosticsVisible && !this.routeTerminated) {
         MoonlightDiagnosticsHud({
           snapshot: this.diagnosticsSnapshot,
+          sampleEpoch: this.diagnosticsSampleEpoch,
           expanded: this.diagnosticsExpanded,
           x: this.diagnosticsX,
           y: this.diagnosticsY,
-          onToggle: (): void => { this.diagnosticsExpanded = !this.diagnosticsExpanded; },
+          viewportWidth: this.surfaceWidthVp,
+          viewportHeight: this.surfaceHeightVp,
+          onToggle: (): void => {
+            this.diagnosticsExpanded = !this.diagnosticsExpanded;
+            this.startDiagnosticsPolling();
+          },
           onPositionChange: (x: number, y: number): void => {
-            this.diagnosticsX = Math.max(0, x);
-            this.diagnosticsY = Math.max(0, y);
+            this.diagnosticsX = x;
+            this.diagnosticsY = y;
           },
           onCopySanitized: (): void => { this.copySanitizedDiagnostics(); }
-        })
+        }).zIndex(260).hitTestBehavior(HitTestMode.Transparent)
       }
 
       TextArea({ text: this.keyboardText, controller: this.keyboardController })
@@ -3507,6 +5052,14 @@ struct MoonlightStreamPage {
         .enableKeyboardOnFocus(this.keyboardOpen)
         .enablePreviewText(REMOTE_IME_PREVIEW_ENABLED)
         .selectionMenuHidden(true).enterKeyType(EnterKeyType.Send)
+        .onKeyPreIme(this.handleMoonlightPhysicalKeyPreIme)
+        .onFocus((): void => {
+          this.physicalKeyboardProxyFocused = !this.keyboardOpen;
+        })
+        .onBlur((): void => {
+          this.physicalKeyboardProxyFocused = false;
+          this.scheduleMoonlightPhysicalKeyboardFocus('proxy-blur');
+        })
         .onWillInsert((info: InsertValue): boolean => this.handleMoonlightImeWillInsert(info))
         .onDidInsert((info: InsertValue): void => { this.handleMoonlightImeDidInsert(info); })
         .onWillDelete((info: DeleteValue): boolean => this.handleMoonlightImeWillDelete(info))
@@ -3535,30 +5088,22 @@ struct MoonlightStreamPage {
             MOONLIGHT_KEYCODE_ENTER, 1, this.keyboardImeGeneration, 'submit');
           this.scheduleMoonlightImeCommandPump();
         })
-
-      // The connection gate is mounted through a native BindSheet below.
-      // Keeping it out of this Stack prevents a centered overlay from being
-      // mistaken for a connected stream while the first frame is pending.
-      Column().width('100%').height('100%')
-        .hitTestBehavior(this.showConnectStageSheet ? HitTestMode.Default : HitTestMode.None)
-        .bindSheet($$this.showConnectStageSheet, this.connectStageSheet(), {
-          height: SheetSize.FIT_CONTENT,
-          preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
-          dragBar: false,
-          backgroundColor: '#0E121C',
-          blurStyle: BlurStyle.NONE,
-          showClose: false,
-          maskColor: 'rgba(0,0,0,0.62)',
-          onWillDismiss: (action: DismissSheetAction): void => {
-            if (this.showConnectStageSheet) { this.cancelConnection(); }
-            action.dismiss();
-          }
-        })
-    }.width('100%').height('100%').backgroundColor('#000000')
+    }.id('MoonlightStreamPageRoot')
+      .width('100%').height('100%').backgroundColor('#000000')
+      .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
       .bindSheet($$this.showSessionSheet, this.sessionSheet(), {
         height: this.sheetMode === 'control' ? '86%' : SheetSize.FIT_CONTENT,
         preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
         dragBar: false, showClose: false,
+        backgroundColor: this.sheetMode === 'connect' ? '#0E121C' : this.pal().sheetBg,
+        blurStyle: BlurStyle.NONE,
+        maskColor: this.sheetMode === 'connect' ? 'rgba(0,0,0,0.62)' : 'rgba(0,0,0,0.36)',
+        onWillDismiss: (action: DismissSheetAction): void => {
+          if (this.sheetMode === 'connect') {
+            this.disconnectMoonlightImmediately('system-sheet-back');
+          }
+          action.dismiss();
+        },
         onDisappear: (): void => { this.onSheetDisappear(); }
       })
   }

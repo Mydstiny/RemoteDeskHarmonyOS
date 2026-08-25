@@ -1428,12 +1428,6 @@ void HardwareDecoder::handleOutputBuffer(uint32_t /*index*/) {
             float producerTransform[16] = {};
             const int32_t transformRet = OH_NativeImage_GetTransformMatrixV2(
                 nativeImage_, producerTransform);
-            // The producer matrix is surface metadata, not remote-desktop
-            // orientation. The decoded RustDesk frame already follows the
-            // renderer's top-left contract; applying a PC producer flip here
-            // would turn an upright Windows desktop upside down. Keep the
-            // read for diagnostics, but make the presentation decision
-            // explicit and reset to identity on every updated frame.
             textureTransform_ =
                 Render::ResolveNativeImagePresentationTransform(
                     true, transformRet, producerTransform, textureTransform_);
@@ -1741,6 +1735,8 @@ HardwareTelemetrySnapshot HardwareDecoder::GetTelemetrySnapshot() const {
     snapshot.inputTruncated = inputTruncatedCount_.load(std::memory_order_relaxed);
     snapshot.renderOutputFailures = renderOutputFailureCount_.load(std::memory_order_relaxed);
     snapshot.updateSurfaceFailures = updateSurfaceFailureCount_.load(std::memory_order_relaxed);
+    snapshot.coalescedSurfaceNotifications =
+        coalescedSurfaceNotificationCount_.load(std::memory_order_relaxed);
     snapshot.renderedOutputBuffers =
         renderedOutputBufferCount_.load(std::memory_order_relaxed);
     snapshot.outputFrames = outputFrameCount_.load(std::memory_order_relaxed);
@@ -2797,7 +2793,13 @@ OwnedDecodeOutcome DecodeNativeForOwnerOutcome(
             case HardwareDecodeAdmission::Backpressure:
                 return {result, DecoderNapi::OwnedSubmitStatus::Backpressure};
             case HardwareDecodeAdmission::NeedKeyframe:
-                return {result, DecoderNapi::OwnedSubmitStatus::NeedKeyframe};
+                // DecodeNativeLocked() queued the current frame after a soft
+                // drop. This is a refresh request, not a hard decoder gate.
+                // Returning NeedKeyframe here used to make common-c discard
+                // every following P-frame until an IDR arrived, producing a
+                // 10-20 second freeze during high-motion 4K content.
+                return {result,
+                        DecoderNapi::OwnedSubmitStatus::AcceptedNeedsKeyframe};
             case HardwareDecodeAdmission::Failed:
                 return {result, DecoderNapi::OwnedSubmitStatus::Failed};
         }
@@ -3387,6 +3389,94 @@ napi_value NapiRebindActiveVideoPipeline(napi_env env, napi_callback_info info) 
     return ret;
 }
 
+void SetDecoderCapabilityBoolean(napi_env env, napi_value object,
+                                 const char* name, bool value) {
+    napi_value item = nullptr;
+    if (napi_get_boolean(env, value, &item) == napi_ok) {
+        (void)napi_set_named_property(env, object, name, item);
+    }
+}
+
+void SetDecoderCapabilityInt32(napi_env env, napi_value object,
+                               const char* name, int32_t value) {
+    napi_value item = nullptr;
+    if (napi_create_int32(env, value, &item) == napi_ok) {
+        (void)napi_set_named_property(env, object, name, item);
+    }
+}
+
+void SetDecoderCapabilityString(napi_env env, napi_value object,
+                                const char* name, const char* value) {
+    napi_value item = nullptr;
+    const char* safe = value == nullptr ? "" : value;
+    if (napi_create_string_utf8(env, safe, NAPI_AUTO_LENGTH, &item) == napi_ok) {
+        (void)napi_set_named_property(env, object, name, item);
+    }
+}
+
+napi_value HardwareDecoderCapabilityValue(napi_env env, const char* mime) {
+    napi_value value = nullptr;
+    (void)napi_create_object(env, &value);
+    OH_AVCapability* capability =
+        OH_AVCodec_GetCapabilityByCategory(mime, false, HARDWARE);
+    const bool available = capability != nullptr &&
+        OH_AVCapability_IsHardware(capability);
+    OH_AVRange width {0, 0};
+    OH_AVRange height {0, 0};
+    OH_AVRange frameRate {0, 0};
+    int32_t widthAlignment = 0;
+    int32_t heightAlignment = 0;
+    if (available) {
+        if (OH_AVCapability_GetVideoWidthRange(capability, &width) != AV_ERR_OK) {
+            width = {0, 0};
+        }
+        if (OH_AVCapability_GetVideoHeightRange(capability, &height) != AV_ERR_OK) {
+            height = {0, 0};
+        }
+        if (OH_AVCapability_GetVideoFrameRateRange(capability, &frameRate) != AV_ERR_OK) {
+            frameRate = {0, 0};
+        }
+        if (OH_AVCapability_GetVideoWidthAlignment(
+                capability, &widthAlignment) != AV_ERR_OK) {
+            widthAlignment = 0;
+        }
+        if (OH_AVCapability_GetVideoHeightAlignment(
+                capability, &heightAlignment) != AV_ERR_OK) {
+            heightAlignment = 0;
+        }
+    }
+    SetDecoderCapabilityBoolean(env, value, "available", available);
+    SetDecoderCapabilityString(env, value, "name",
+        available ? OH_AVCapability_GetName(capability) : "");
+    SetDecoderCapabilityInt32(env, value, "minWidth", width.minVal);
+    SetDecoderCapabilityInt32(env, value, "maxWidth", width.maxVal);
+    SetDecoderCapabilityInt32(env, value, "minHeight", height.minVal);
+    SetDecoderCapabilityInt32(env, value, "maxHeight", height.maxVal);
+    SetDecoderCapabilityInt32(env, value, "minFps", frameRate.minVal);
+    SetDecoderCapabilityInt32(env, value, "maxFps", frameRate.maxVal);
+    SetDecoderCapabilityInt32(env, value, "widthAlignment", widthAlignment);
+    SetDecoderCapabilityInt32(env, value, "heightAlignment", heightAlignment);
+    SetDecoderCapabilityBoolean(env, value, "lowLatency",
+        available && OH_AVCapability_IsFeatureSupported(
+            capability, VIDEO_LOW_LATENCY));
+    return value;
+}
+
+/** Runtime truth for Moonlight's hardware-only video choices. */
+napi_value NapiGetHardwareVideoDecoderCapabilities(
+    napi_env env, napi_callback_info info) {
+    (void)info;
+    napi_value result = nullptr;
+    (void)napi_create_object(env, &result);
+    (void)napi_set_named_property(env, result, "h264",
+        HardwareDecoderCapabilityValue(env, OH_AVCODEC_MIMETYPE_VIDEO_AVC));
+    (void)napi_set_named_property(env, result, "hevc",
+        HardwareDecoderCapabilityValue(env, OH_AVCODEC_MIMETYPE_VIDEO_HEVC));
+    (void)napi_set_named_property(env, result, "av1",
+        HardwareDecoderCapabilityValue(env, OH_AVCODEC_MIMETYPE_VIDEO_AV1));
+    return result;
+}
+
 int DecoderNapi::DecodeNative(int64_t handle, const VideoFrame& frame) {
     DecoderSessionIdentity owner;
     {
@@ -3690,6 +3780,17 @@ DecoderPresentationTelemetrySnapshot DecoderNapi::GetActivePresentationTelemetry
         snapshot.ready = hardware.initialized;
         snapshot.renderedOutputBuffers = hardware.renderedOutputBuffers;
         snapshot.nativeImageFrames = hardware.outputFrames;
+        snapshot.queueDepth = hardware.queueDepth;
+        snapshot.inputDroppedFrames = hardware.inputDroppedFrames;
+        snapshot.waitKeyframeDrops = hardware.waitKeyframeDrops;
+        snapshot.inputTruncated = hardware.inputTruncated;
+        snapshot.renderOutputFailures = hardware.renderOutputFailures;
+        snapshot.updateSurfaceFailures = hardware.updateSurfaceFailures;
+        snapshot.coalescedSurfaceNotifications =
+            hardware.coalescedSurfaceNotifications;
+        snapshot.codecLatencyMs = hardware.codecLatencyMs;
+        snapshot.codecLatencyMaxMs = hardware.codecLatencyMaxMs;
+        snapshot.lowLatencyEnabled = hardware.lowLatencyEnabled;
     }
     return snapshot;
 }
@@ -4388,6 +4489,12 @@ napi_value DecoderNapi::Init(napi_env env, napi_value exports) {
     napi_create_function(env, "rebindActiveVideoPipeline", NAPI_AUTO_LENGTH,
                          NapiRebindActiveVideoPipeline, nullptr, &fn);
     napi_set_named_property(env, exports, "rebindActiveVideoPipeline", fn);
+
+    napi_create_function(env, "getHardwareVideoDecoderCapabilities",
+                         NAPI_AUTO_LENGTH,
+                         NapiGetHardwareVideoDecoderCapabilities, nullptr, &fn);
+    napi_set_named_property(env, exports,
+                            "getHardwareVideoDecoderCapabilities", fn);
 
     return exports;
 }

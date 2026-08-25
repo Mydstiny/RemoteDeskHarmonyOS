@@ -12,19 +12,31 @@ import {
   moonlightCatalogItems,
   moonlightCatalogOperationIsCurrent,
   moonlightCatalogPresentation,
+  moonlightCatalogSheetHeight,
+  moonlightCatalogGridColumnCount,
   moonlightConnectStagePresentation,
+  moonlightConnectSheetMountReady,
+  moonlightAdaptiveControlModeForSource,
+  moonlightInitialAdaptiveControlMode,
+  moonlightPhysicalKeyboardCaptureEnabled,
+  moonlightResolvedControlMode,
+  moonlightSystemKeyReserved,
   moonlightHostRouteParams,
   moonlightLaunchPreflight,
   moonlightMetric,
   moonlightMetricPairUs,
   moonlightOverlayRequiresInputFlush,
+  moonlightRecoverySheetDismissAllowed,
   moonlightRouteIdentity,
+  moonlightTouchCancelPlan,
   moonlightSettingsSections,
   moonlightControlCenterLayout,
   moonlightToolbarAutoHideDelayMs,
   moonlightToolbarDeviceClass,
   moonlightToolbarLayout,
-  moonlightToolbarItems
+  moonlightToolbarItems,
+  moonlightUsesEntryAbilityImmersiveBars,
+  shouldDeferMoonlightDisappear
 } from '../main/ets/services/MoonlightUiPolicy';
 
 function entry(appId: string, title: string, available: boolean = true,
@@ -99,6 +111,21 @@ export default function moonlightUiPolicyTest(): void {
         .status).assertEqual('stale');
       expect(moonlightCatalogPresentation(0, 0, 0, true, false, false, true, false)
         .status).assertEqual('error');
+    });
+
+    it('sizes_catalog_sheet_to_visible_rows_and_caps_large_catalogs', 0, (): void => {
+      expect(moonlightCatalogSheetHeight(0, 2, 65)).assertEqual(474);
+      expect(moonlightCatalogSheetHeight(2, 2, 65)).assertEqual(608);
+      expect(moonlightCatalogSheetHeight(3, 2, 65)).assertEqual(780);
+      expect(moonlightCatalogSheetHeight(40, 2, 65)).assertEqual(780);
+      expect(moonlightCatalogSheetHeight(3, 3, 0)).assertEqual(543);
+    });
+
+    it('keeps embedded Pad catalogs within the native Sheet width', 0, (): void => {
+      expect(moonlightCatalogGridColumnCount('lg', true, 2)).assertEqual(2);
+      expect(moonlightCatalogGridColumnCount('xl', true, 1)).assertEqual(1);
+      expect(moonlightCatalogGridColumnCount('lg', true, 8)).assertEqual(2);
+      expect(moonlightCatalogGridColumnCount('lg', false, 2)).assertEqual(4);
     });
 
     it('keeps_host_online_when_catalog_reached_sunshine_but_cache_or_payload_failed', 0,
@@ -198,23 +225,113 @@ export default function moonlightUiPolicyTest(): void {
       expect(disconnected.detail).assertEqual('连接已停止，可返回应用目录。');
     });
 
-    it('keeps_disconnect_dangerous_and_controller_fail_closed', 0, (): void => {
+    it('keeps_disconnect_dangerous_and_physical_controller_management_reachable', 0,
+      (): void => {
       const phone = moonlightToolbarItems('sm', true, false, true);
-      expect(phone.length).assertEqual(7);
+      expect(phone.length).assertEqual(8);
       expect(phone[1].action).assertEqual('keyboard');
       expect(phone[1].enabled).assertFalse();
       expect(phone[2].action).assertEqual('modifiers');
       expect(phone[2].enabled).assertTrue();
       expect(phone[3].action).assertEqual('controller');
-      expect(phone[3].enabled).assertFalse();
+      expect(phone[3].enabled).assertTrue();
+      expect(phone[3].disabledReason).assertEqual('');
       expect(phone[4].action).assertEqual('display');
-      expect(phone[6].action).assertEqual('disconnect');
-      expect(phone[6].dangerous).assertTrue();
+      expect(phone[5].action).assertEqual('diagnostics');
+      expect(phone[5].label).assertEqual('性能');
+      expect(phone[7].action).assertEqual('disconnect');
+      expect(phone[7].label).assertEqual('退出');
+      expect(phone[7].dangerous).assertTrue();
+      const adaptive = moonlightToolbarItems(
+        'sm', true, true, true, 7, true, '自适应·键鼠');
+      expect(adaptive[0].label).assertEqual('自适应·键鼠');
+      const keyboardMouse = moonlightToolbarItems('sm', true, true, true, 7, true, '键鼠');
+      expect(keyboardMouse[0].label).assertEqual('键鼠');
+      const touchpad = moonlightToolbarItems('sm', true, true, true, 7, true, '触控板');
+      expect(touchpad[0].label).assertEqual('触控板');
       const keyboardReady = moonlightToolbarItems('sm', true, false, true, 7, true);
       expect(keyboardReady[1].action).assertEqual('keyboard');
       expect(keyboardReady[1].enabled).assertTrue();
       expect(keyboardReady[1].disabledReason).assertEqual('');
-      expect(moonlightToolbarItems('xl', true, true, true).length).assertEqual(8);
+      expect(moonlightToolbarItems('xl', true, true, true).length).assertEqual(9);
+    });
+
+    it('defers_connected_page_disappear_until_background_signal_is_classified', 0, (): void => {
+      expect(shouldDeferMoonlightDisappear(false, true, false)).assertTrue();
+      expect(shouldDeferMoonlightDisappear(true, true, false)).assertFalse();
+      expect(shouldDeferMoonlightDisappear(false, false, false)).assertFalse();
+      expect(shouldDeferMoonlightDisappear(false, true, true)).assertFalse();
+    });
+
+    it('mounts_connect_sheet_only_after_the_final_surface_layout_is_ready', 0,
+      (): void => {
+        expect(moonlightConnectSheetMountReady(true, false)).assertFalse();
+        expect(moonlightConnectSheetMountReady(true, true)).assertTrue();
+        expect(moonlightConnectSheetMountReady(false, true)).assertFalse();
+      });
+
+    it('keeps_pad_and_pc_physical_keyboard_enabled_and_separates_immersive_owners', 0,
+      (): void => {
+        expect(moonlightPhysicalKeyboardCaptureEnabled(false, false, false, '')).assertFalse();
+        expect(moonlightPhysicalKeyboardCaptureEnabled(
+          false, false, false, '', 'adaptive')).assertTrue();
+        expect(moonlightPhysicalKeyboardCaptureEnabled(
+          false, false, false, '', 'keyboardMouse')).assertTrue();
+        expect(moonlightPhysicalKeyboardCaptureEnabled(
+          false, false, false, '', 'trackpad')).assertFalse();
+        expect(moonlightPhysicalKeyboardCaptureEnabled(true, false, false, '')).assertTrue();
+        expect(moonlightPhysicalKeyboardCaptureEnabled(false, true, false, '')).assertTrue();
+        expect(moonlightPhysicalKeyboardCaptureEnabled(false, false, true, '')).assertTrue();
+        expect(moonlightPhysicalKeyboardCaptureEnabled(
+          false, false, false, 'moonlight-window')).assertTrue();
+        expect(moonlightUsesEntryAbilityImmersiveBars(false, '')).assertTrue();
+        expect(moonlightUsesEntryAbilityImmersiveBars(true, '')).assertFalse();
+        expect(moonlightUsesEntryAbilityImmersiveBars(
+          false, 'moonlight-window')).assertFalse();
+      });
+
+    it('resolves_adaptive_input_from_device_class_and_latest_real_source', 0,
+      (): void => {
+        expect(moonlightInitialAdaptiveControlMode(false, false, '')).assertEqual('trackpad');
+        expect(moonlightInitialAdaptiveControlMode(true, false, '')).assertEqual('keyboardMouse');
+        expect(moonlightInitialAdaptiveControlMode(false, true, '')).assertEqual('keyboardMouse');
+        expect(moonlightInitialAdaptiveControlMode(
+          false, false, 'moonlight-window')).assertEqual('keyboardMouse');
+
+        expect(moonlightAdaptiveControlModeForSource(
+          'adaptive', 'keyboardMouse', 'touch')).assertEqual('trackpad');
+        expect(moonlightAdaptiveControlModeForSource(
+          'adaptive', 'trackpad', 'mouse')).assertEqual('keyboardMouse');
+        expect(moonlightAdaptiveControlModeForSource(
+          'adaptive', 'trackpad', 'touchpad')).assertEqual('keyboardMouse');
+        expect(moonlightAdaptiveControlModeForSource(
+          'adaptive', 'trackpad', 'keyboard')).assertEqual('keyboardMouse');
+        expect(moonlightAdaptiveControlModeForSource(
+          'adaptive', 'trackpad', 'unknown')).assertEqual('trackpad');
+        expect(moonlightAdaptiveControlModeForSource(
+          'keyboardMouse', 'trackpad', 'touch')).assertEqual('keyboardMouse');
+        expect(moonlightAdaptiveControlModeForSource(
+          'trackpad', 'keyboardMouse', 'mouse')).assertEqual('trackpad');
+        expect(moonlightResolvedControlMode('adaptive', 'trackpad')).assertEqual('trackpad');
+        expect(moonlightResolvedControlMode(
+          'keyboardMouse', 'trackpad')).assertEqual('keyboardMouse');
+      });
+
+    it('keeps_back_lifecycle_and_disabled_system_shortcuts_local', 0, (): void => {
+      expect(moonlightSystemKeyReserved(2)).assertTrue();
+      expect(moonlightSystemKeyReserved(1)).assertTrue();
+      expect(moonlightSystemKeyReserved(18)).assertTrue();
+      expect(moonlightSystemKeyReserved(16)).assertTrue();
+      expect(moonlightSystemKeyReserved(2049, true)).assertTrue();
+      expect(moonlightSystemKeyReserved(2093, true)).assertTrue();
+      expect(moonlightSystemKeyReserved(2070, false, true)).assertTrue();
+      expect(moonlightSystemKeyReserved(2024)).assertFalse();
+      expect(moonlightSystemKeyReserved(
+        16, false, false, false, true)).assertFalse();
+      // Local session lifecycle keys remain reserved even if a future build
+      // enables forwarding of ordinary system shortcuts.
+      expect(moonlightSystemKeyReserved(
+        2, false, false, false, true)).assertTrue();
     });
 
     it('resolves_responsive_toolbar_and_control_center_contract', 0, (): void => {
@@ -239,7 +356,7 @@ export default function moonlightUiPolicyTest(): void {
       expect(desktopMd.deviceClass).assertEqual('pc');
       expect(desktopMd.edgeRail).assertFalse();
       expect(moonlightToolbarItems('md', true, false, false, desktopMd.maxVisibleItems).length)
-        .assertEqual(7);
+        .assertEqual(8);
 
       const desktopXl = moonlightToolbarLayout(true, 'xl', false);
       expect(desktopXl.maxVisibleItems).assertEqual(8);
@@ -277,6 +394,27 @@ export default function moonlightUiPolicyTest(): void {
       expect(moonlightOverlayRequiresInputFlush(5)).assertTrue();
       expect(moonlightOverlayRequiresInputFlush(6)).assertFalse();
     });
+
+    it('cancels_every_tracked_contact_when_harmony_reports_only_one_changed_touch', 0,
+      (): void => {
+        const partial = moonlightTouchCancelPlan([1, 2], [1], true);
+        expect(partial.cancelTrackedIds.length).assertEqual(2);
+        expect(partial.cancelTrackedIds[0]).assertEqual(1);
+        expect(partial.cancelTrackedIds[1]).assertEqual(2);
+        expect(partial.clearAllLocalContacts).assertTrue();
+
+        const suspended = moonlightTouchCancelPlan([1, 2], [1], false);
+        expect(suspended.cancelTrackedIds.length).assertEqual(0);
+        expect(suspended.clearAllLocalContacts).assertTrue();
+      });
+
+    it('fences_every_interactive_recovery_sheet_dismissal_while_resume_is_in_flight', 0,
+      (): void => {
+        // Back, mask taps and swipe-to-dismiss all enter the same native
+        // onWillDismiss callback and must remain blocked until resume settles.
+        expect(moonlightRecoverySheetDismissAllowed(true)).assertFalse();
+        expect(moonlightRecoverySheetDismissAllowed(false)).assertTrue();
+      });
 
     it('defines_complete_settings_taxonomy_and_unavailable_metrics', 0, (): void => {
       expect(moonlightSettingsSections().length).assertEqual(7);

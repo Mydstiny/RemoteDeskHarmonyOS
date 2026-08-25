@@ -93,9 +93,10 @@ class MemorySelectionPort implements MoonlightCloudSyncSelectionStorePort {
 
 export default function moonlightCloudSyncSelectionPolicyTest(): void {
   describe('MoonlightCloudSyncSelectionPolicy', (): void => {
-    it('defaults_to_no_logical_scope_and_normalizes_in_stable_order', 0,
+    it('defaults_to_the_complete_portable_set_and_normalizes_in_stable_order', 0,
       (): void => {
-        expect(MOONLIGHT_CLOUD_SYNC_SELECTION_DEFAULT.length).assertEqual(0);
+        expect(MOONLIGHT_CLOUD_SYNC_SELECTION_DEFAULT.join(','))
+          .assertEqual('settings,hosts,profiles');
         const normalized: MoonlightCloudSyncScope[] =
           normalizeMoonlightCloudSyncSelection([
             'trust', 'hosts', 'unknown', 'hosts', 'settings'
@@ -177,113 +178,117 @@ export default function moonlightCloudSyncSelectionPolicyTest(): void {
       expect(moonlightCloudSyncSelectionPreferenceKey('')).assertEqual('');
     });
 
-    it('loads_only_the_active_owner_and_fails_closed_on_malformed_preferences',
+    it('upgrades_missing_partial_and_malformed_legacy_preferences_to_all',
       0, (): void => {
         const port = new MemorySelectionPort();
+        const canonical: string = '["settings","hosts","profiles"]';
+        const missing = new MoonlightCloudSyncSelectionStore(port);
+        expect(missing.init(lease('owner-a'))).assertTrue();
+        expect(missing.selectedScopes().join(','))
+          .assertEqual('settings,hosts,profiles');
+        expect(port.preferences.get(
+          moonlightCloudSyncSelectionPreferenceKey('owner-a')))
+          .assertEqual(canonical);
+
         port.preferences.set(
           moonlightCloudSyncSelectionPreferenceKey('owner-a'),
           '["hosts","trust"]');
         const store = new MoonlightCloudSyncSelectionStore(port);
         expect(store.init(lease('owner-a'))).assertTrue();
-        expect(store.selectedScopes().join(',')).assertEqual('hosts');
+        expect(store.selectedScopes().join(','))
+          .assertEqual('settings,hosts,profiles');
+        expect(port.preferences.get(
+          moonlightCloudSyncSelectionPreferenceKey('owner-a')))
+          .assertEqual(canonical);
         port.preferences.set(
           moonlightCloudSyncSelectionPreferenceKey('owner-a'),
           '["identity"]');
         expect(store.init(lease('owner-a'), false)).assertTrue();
-        expect(store.selectedScopes().length).assertEqual(0);
+        expect(store.selectedScopes().join(','))
+          .assertEqual('settings,hosts,profiles');
         port.preferences.set(
           moonlightCloudSyncSelectionPreferenceKey('owner-a'), '{bad');
         expect(store.init(lease('owner-a'))).assertTrue();
-        expect(store.selectedScopes().length).assertEqual(0);
+        expect(store.selectedScopes().join(','))
+          .assertEqual('settings,hosts,profiles');
+        expect(port.preferences.get(
+          moonlightCloudSyncSelectionPreferenceKey('owner-a')))
+          .assertEqual(canonical);
         expect(store.init(lease('owner-b'))).assertFalse();
       });
 
-    it('orders_stage_projection_and_durable_persist', 0, (): void => {
+    it('keeps_runtime_all_when_legacy_preference_rewrite_temporarily_fails',
+      0, (): void => {
+      const port = new MemorySelectionPort();
+      const key: string =
+        moonlightCloudSyncSelectionPreferenceKey('owner-a');
+      port.preferences.set(key, '["hosts"]');
+      port.writeFailuresRemaining = 1;
+      const store = new MoonlightCloudSyncSelectionStore(port);
+      expect(store.init(lease('owner-a'))).assertTrue();
+      expect(store.selectedScopes().join(','))
+        .assertEqual('settings,hosts,profiles');
+      expect(port.preferences.get(key)).assertEqual('["hosts"]');
+    });
+
+    it('does_not_allow_public_or_recovery_calls_to_narrow_the_fixed_set',
+      0, (): void => {
       const port = new MemorySelectionPort();
       const store = new MoonlightCloudSyncSelectionStore(port);
       expect(store.init(lease('owner-a'))).assertTrue();
+      port.events = [];
       const changed = store.replaceSelectedScopes(
-        lease('owner-a'), ['trust', 'hosts']);
+        lease('owner-a'), []);
       expect(changed.ok).assertTrue();
-      expect(changed.selected.join(',')).assertEqual('hosts');
-      expect(port.events[0]).assertEqual('project:->hosts');
-      expect(port.events[1]).assertEqual('persist:["hosts"]');
+      expect(changed.code).assertEqual('unchanged');
+      expect(changed.selected.join(','))
+        .assertEqual('settings,hosts,profiles');
+      expect(port.events.length).assertEqual(0);
+      expect(store.stageSelectedScopes(
+        lease('owner-a'), ['profiles'])).assertTrue();
+      expect(store.selectedScopes().join(','))
+        .assertEqual('settings,hosts,profiles');
     });
 
-    it('restores_memory_when_projection_fails', 0, (): void => {
-      const port = new MemorySelectionPort();
-      const store = new MoonlightCloudSyncSelectionStore(port);
-      expect(store.init(lease('owner-a'))).assertTrue();
-      port.projectionFailure = true;
-      const changed = store.replaceSelectedScopes(
-        lease('owner-a'), ['hosts']);
-      expect(changed.ok).assertFalse();
-      expect(changed.code).assertEqual('projection_failed');
-      expect(store.selectedScopes().length).assertEqual(0);
-      expect(port.preferences.size).assertEqual(0);
-    });
-
-    it('rolls_back_projection_on_persist_failure_and_rejects_stale_owner',
+    it('reconciles_the_complete_projection_and_rejects_stale_owners',
       0, (): void => {
         const port = new MemorySelectionPort();
         const store = new MoonlightCloudSyncSelectionStore(port);
         expect(store.init(lease('owner-a'))).assertTrue();
-        port.writeFailuresRemaining = 1;
-        const failed = store.replaceSelectedScopes(
-          lease('owner-a'), ['hosts']);
-        expect(failed.ok).assertFalse();
-        expect(failed.code).assertEqual('persist_failed');
-        expect(store.selectedScopes().length).assertEqual(0);
-        expect(port.events[2]).assertEqual('project:hosts->');
+        port.events = [];
+        expect(store.reconcileProjection(lease('owner-a'))).assertTrue();
+        expect(port.events[0]).assertEqual(
+          'project:settings+hosts+profiles->settings+hosts+profiles');
+        port.projectionFailure = true;
+        expect(store.reconcileProjection(lease('owner-a'))).assertFalse();
+        port.projectionFailure = false;
         port.activeLease = lease('owner-b', 2, 2);
         expect(store.replaceSelectedScopes(
-          lease('owner-a'), ['trust']).code).assertEqual('stale_lease');
+          lease('owner-a'), ['hosts']).code).assertEqual('stale_lease');
       });
 
-    it('reconciles_durable_owner_intent_after_a_mid_projection_account_switch',
+    it('does_not_bind_a_stale_owner_when_upgrade_write_switches_account',
+      0, (): void => {
+        const port = new MemorySelectionPort();
+        port.preferences.set(
+          moonlightCloudSyncSelectionPreferenceKey('owner-a'),
+          '["hosts"]');
+        port.switchAfterPreferenceWrite = true;
+        const store = new MoonlightCloudSyncSelectionStore(port);
+        expect(store.init(lease('owner-a'))).assertFalse();
+        expect(store.selectedScopes().join(','))
+          .assertEqual('settings,hosts,profiles');
+      });
+
+    it('rejects_a_mid_projection_account_switch_during_reconcile',
       0, (): void => {
         const port = new MemorySelectionPort();
         const store = new MoonlightCloudSyncSelectionStore(port);
         expect(store.init(lease('owner-a'))).assertTrue();
         port.switchAfterProjection = true;
-        const stale = store.replaceSelectedScopes(
-          lease('owner-a'), ['hosts']);
-        expect(stale.code).assertEqual('reconcile_pending');
-        expect(stale.durableChanged).assertFalse();
-        expect(port.projectedScopes.join(',')).assertEqual('hosts');
-        expect(port.preferences.size).assertEqual(0);
-
-        port.switchAfterProjection = false;
-        port.activeLease = lease('owner-a', 3, 3);
-        expect(store.init(lease('owner-a', 3, 3))).assertTrue();
-        expect(store.selectedScopes().length).assertEqual(0);
-        expect(store.reconcileProjection(
-          lease('owner-a', 3, 3))).assertTrue();
-        expect(port.projectedScopes.length).assertEqual(0);
-      });
-
-    it('rehydrates_committed_intent_after_a_post_persist_account_switch',
-      0, (): void => {
-        const port = new MemorySelectionPort();
-        const store = new MoonlightCloudSyncSelectionStore(port);
-        expect(store.init(lease('owner-a'))).assertTrue();
-        port.switchAfterPreferenceWrite = true;
-        const pending = store.replaceSelectedScopes(
-          lease('owner-a'), ['hosts']);
-        expect(pending.ok).assertFalse();
-        expect(pending.code).assertEqual('reconcile_pending');
-        expect(pending.selected.join(',')).assertEqual('hosts');
-        expect(pending.projectionChanged).assertTrue();
-        expect(pending.durableChanged).assertTrue();
-        expect(port.projectedScopes.join(',')).assertEqual('hosts');
-
-        port.switchAfterPreferenceWrite = false;
-        port.activeLease = lease('owner-a', 3, 3);
-        expect(store.init(lease('owner-a', 3, 3))).assertTrue();
-        expect(store.selectedScopes().join(',')).assertEqual('hosts');
-        expect(store.reconcileProjection(
-          lease('owner-a', 3, 3))).assertTrue();
-        expect(port.projectedScopes.join(',')).assertEqual('hosts');
+        expect(store.reconcileProjection(lease('owner-a'))).assertFalse();
+        expect(port.projectedScopes.join(','))
+          .assertEqual('settings,hosts,profiles');
       });
   });
 }

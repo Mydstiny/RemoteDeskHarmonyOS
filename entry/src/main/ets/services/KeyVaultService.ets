@@ -5,7 +5,7 @@ import { common } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { SshKey } from '../model/SshKey';
 import { TotpEntry } from '../model/TotpEntry';
-import { CloudStore } from './CloudStore';
+import { CloudStore, TotpSnapshotLoadResult } from './CloudStore';
 import { shouldPublishSnapshot } from './DataSnapshotRevisionPolicy';
 
 export interface TotpBatchAddResult {
@@ -19,6 +19,10 @@ export class KeyVaultService {
   private totpEntries: Map<string, TotpEntry> = new Map();
   private cloud: CloudStore = CloudStore.getInstance();
   private ready: boolean = false;
+  // `ready` only means that the service finished wiring itself to CloudStore.
+  // Consumers must not treat an empty TOTP map as authoritative until the
+  // current account-scoped snapshot has actually been read.
+  private totpSnapshotReady: boolean = false;
   private initPromise: Promise<void> | null = null;
   private dataChangeListeners: Array<() => void> = [];
   private localSshKeyObservationAt: Map<string, number> = new Map();
@@ -54,6 +58,7 @@ export class KeyVaultService {
       this.cloud.onCryptoReset(() => {
         this.sshKeys.clear();
         this.totpEntries.clear();
+        this.totpSnapshotReady = false;
         this.localSshKeyObservationAt.clear();
         this.localTotpObservationAt.clear();
         this.deletedSshKeyAt.clear();
@@ -72,7 +77,12 @@ export class KeyVaultService {
   }
 
   private loadFromCloud(): void {
-    if (!this.cloud.isReady()) { return; }
+    const previousTotpSnapshotReady: boolean = this.totpSnapshotReady;
+    this.totpSnapshotReady = false;
+    if (!this.cloud.isReady()) {
+      if (previousTotpSnapshotReady) { this.emitDataChange(true); }
+      return;
+    }
     try {
       const previousSnapshotAt: number = this.lastCloudSnapshotLoadedAt;
       const previousKeys: Map<string, SshKey> = new Map();
@@ -111,7 +121,12 @@ export class KeyVaultService {
       this.totpEntries.forEach((entry: TotpEntry, entryId: string): void => {
         previousEntries.set(entryId, entry);
       });
-      const entries: TotpEntry[] = this.cloud.loadAllTotpEntries();
+      const totpSnapshot: TotpSnapshotLoadResult =
+        this.cloud.loadTotpEntriesSnapshot();
+      if (!totpSnapshot.ok) {
+        throw new Error('current account TOTP snapshot is unavailable');
+      }
+      const entries: TotpEntry[] = totpSnapshot.entries;
       hilog.info(0x0001, 'CloudSync', "loadFromCloud: TOTP=" + entries.length.toString() + "条");
       this.totpEntries.clear();
       const loadedEntryIds: Set<string> = new Set<string>();
@@ -134,20 +149,29 @@ export class KeyVaultService {
         }
       });
       this.lastCloudSnapshotLoadedAt = Date.now();
+      this.totpSnapshotReady = true;
     } catch (err) {
       hilog.error(0x0001, 'CloudSync', "loadFromCloud 失败: " + JSON.stringify(err));
     }
-    this.emitDataChange();
+    // Snapshot availability is observable state for references such as the
+    // device-local RustDesk peer binding. Wake those consumers even when the
+    // loaded entry list is still empty and its visible signature is unchanged.
+    this.emitDataChange(previousTotpSnapshotReady !== this.totpSnapshotReady);
   }
 
   isReady(): boolean {
     return this.ready;
   }
 
+  isTotpSnapshotReady(): boolean {
+    return this.ready && this.totpSnapshotReady;
+  }
+
   /** Drop decrypted/redacted cache objects before changing account scope. */
   clearForScopeTransition(): void {
     this.sshKeys.clear();
     this.totpEntries.clear();
+    this.totpSnapshotReady = false;
     this.localSshKeyObservationAt.clear();
     this.localTotpObservationAt.clear();
     this.deletedSshKeyAt.clear();

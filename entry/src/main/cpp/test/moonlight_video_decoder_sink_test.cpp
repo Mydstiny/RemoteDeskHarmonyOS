@@ -226,9 +226,24 @@ RDP_TEST_CASE(moonlight_video_decoder_sink_rejects_invalid_or_unproven_binding_b
                   MoonlightVideoDecoderStartStatus::InvalidRequest);
     request = binding();
     request.profile.codec = MoonlightStreamCodec::Hevc;
+    request.profile.bitDepth = MoonlightStreamBitDepth::Bit10;
     RDP_ASSERT_EQ(sink->start(request).status,
                   MoonlightVideoDecoderStartStatus::Unsupported);
     RDP_ASSERT_EQ(port->starts(), static_cast<std::size_t>(0U));
+}
+
+RDP_TEST_CASE(moonlight_video_decoder_sink_accepts_hardware_hevc_and_av1_profiles) {
+    for (const auto codec : {MoonlightStreamCodec::Hevc,
+                             MoonlightStreamCodec::Av1}) {
+        auto port = std::make_shared<FakeOwnedDecoderPort>();
+        auto sink = MoonlightOwnedVideoDecoderSink::createForTesting(port);
+        auto request = binding();
+        request.profile.codec = codec;
+        RDP_ASSERT_EQ(sink->start(request).status,
+                      MoonlightVideoDecoderStartStatus::Started);
+        RDP_ASSERT_EQ(port->starts(), static_cast<std::size_t>(1U));
+        RDP_ASSERT(port->lastBinding() == request);
+    }
 }
 
 RDP_TEST_CASE(moonlight_video_decoder_sink_accepts_surface_without_display_binding) {
@@ -268,6 +283,8 @@ RDP_TEST_CASE(moonlight_video_decoder_sink_maps_port_truth_without_guessing_fail
         MoonlightVideoSinkStatus sink;
     } cases[] = {
         {MoonlightDecoderPortSubmitStatus::Accepted, MoonlightVideoSinkStatus::Accepted},
+        {MoonlightDecoderPortSubmitStatus::AcceptedNeedsIdr,
+         MoonlightVideoSinkStatus::AcceptedNeedsIdr},
         {MoonlightDecoderPortSubmitStatus::Backpressure, MoonlightVideoSinkStatus::Backpressure},
         {MoonlightDecoderPortSubmitStatus::NeedIdr, MoonlightVideoSinkStatus::NeedIdr},
         {MoonlightDecoderPortSubmitStatus::Stale, MoonlightVideoSinkStatus::Stale},
@@ -354,6 +371,24 @@ RDP_TEST_CASE(moonlight_video_decoder_sink_adopts_only_exact_new_decoder_generat
     RDP_ASSERT_EQ(sink->stop(request.key, 1s),
                   MoonlightVideoDecoderStopStatus::Stopped);
     RDP_ASSERT(port->lastBinding() == rebound);
+}
+
+RDP_TEST_CASE(moonlight_decoder_generation_handoff_adopts_recovery_idr_generation) {
+    RDP_ASSERT_EQ(classifyMoonlightDecoderGenerationHandoff(
+                      true, 41U, 42U, false),
+                  MoonlightDecoderGenerationHandoff::Advanced);
+    RDP_ASSERT_EQ(classifyMoonlightDecoderGenerationHandoff(
+                      true, 41U, 41U, false),
+                  MoonlightDecoderGenerationHandoff::Unchanged);
+    RDP_ASSERT_EQ(classifyMoonlightDecoderGenerationHandoff(
+                      true, 41U, 41U, true),
+                  MoonlightDecoderGenerationHandoff::Stale);
+    RDP_ASSERT_EQ(classifyMoonlightDecoderGenerationHandoff(
+                      true, 41U, 40U, false),
+                  MoonlightDecoderGenerationHandoff::Stale);
+    RDP_ASSERT_EQ(classifyMoonlightDecoderGenerationHandoff(
+                      false, 41U, 42U, false),
+                  MoonlightDecoderGenerationHandoff::Stale);
 }
 
 RDP_TEST_CASE(moonlight_video_decoder_sink_fails_closed_on_non_exact_rebind) {

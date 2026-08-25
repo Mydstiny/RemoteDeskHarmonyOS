@@ -5,13 +5,15 @@ import {
   effectiveCloudSyncTables,
   hasCloudSyncBusinessSelection,
   normalizeCloudSyncSelection,
-  runtimeAdmittedCloudSyncSelection
+  runtimeAdmittedCloudSyncSelection,
+  upgradeLegacyCloudSyncSelection
 } from '../main/ets/services/CloudSyncSelectionPolicy';
 
 export default function cloudSyncSelectionPolicyTest(): void {
   describe('CloudSyncSelectionPolicy', (): void => {
-    it('defaults_to_no_cloud_transfer_until_account_binding_is_validated', 0, (): void => {
-      expect(CLOUD_SYNC_SELECTION_DEFAULT.length).assertEqual(0);
+    it('defaults_to_moonlight_while_runtime_admission_still_owns_transfer', 0, (): void => {
+      expect(CLOUD_SYNC_SELECTION_DEFAULT.join(','))
+        .assertEqual('moonlightrecordv1');
       expect(cloudSyncSelectableTables().indexOf('cryptoparams')).assertEqual(-1);
       expect(cloudSyncSelectableTables().indexOf('remotehosts') >= 0).assertTrue();
       expect(cloudSyncSelectableTables().indexOf('usersettings') >= 0).assertTrue();
@@ -61,12 +63,12 @@ export default function cloudSyncSelectionPolicyTest(): void {
         expect(tables[0]).assertEqual('moonlightrecordv1');
       });
 
-    it('exposes_moonlight_after_the_remote_schema_receipt_is_enabled', 0,
+    it('keeps_moonlight_out_of_the_user_table_picker', 0,
       (): void => {
         expect(cloudSyncSelectableTables(false).indexOf(
           'moonlightrecordv1')).assertEqual(-1);
         expect(cloudSyncSelectableTables(true).indexOf(
-          'moonlightrecordv1') >= 0).assertTrue();
+          'moonlightrecordv1')).assertEqual(-1);
       });
 
     it('filters_a_missing_optional_schema_without_erasing_legacy_intent', 0,
@@ -98,25 +100,26 @@ export default function cloudSyncSelectionPolicyTest(): void {
         expect(admitted.join(',')).assertEqual('usersettings');
       });
 
-    it('upgrades_every_legacy_selection_without_enabling_moonlight', 0,
+    it('repairs_pre_moonlight_and_partial_upgrade_choices_without_changing_legacy_tables', 0,
       (): void => {
         const legacy: string[] = [
           'usersettings', 'remotehosts', 'rdpcredentials',
           'rustdeskrelays', 'sshkeys', 'totpentries', 'vncrecordv2'
         ];
         const normalized: string[] =
-          normalizeCloudSyncSelection(legacy);
-        expect(normalized.join(','))
+          upgradeLegacyCloudSyncSelection(legacy, false);
+        expect(normalized.slice(0, legacy.length).join(','))
           .assertEqual(legacy.join(','));
-        expect(normalized.indexOf('moonlightrecordv1'))
-          .assertEqual(-1);
-        // The implicit cryptoparams dependency remains first; the new
-        // optional table is absent until the user explicitly selects it.
+        expect(normalized[legacy.length]).assertEqual('moonlightrecordv1');
+        // A migration receipt written by an earlier partial rollout is not
+        // proof that the physical selection committed. Explicit whole-table
+        // stops use a separate owner-scoped preference in the selection store.
+        expect(upgradeLegacyCloudSyncSelection(legacy, true).join(','))
+          .assertEqual(legacy.join(',') + ',moonlightrecordv1');
         const effective: string[] =
           effectiveCloudSyncTables(normalized);
         expect(effective[0]).assertEqual('cryptoparams');
-        expect(effective.indexOf('moonlightrecordv1'))
-          .assertEqual(-1);
+        expect(effective.indexOf('moonlightrecordv1') >= 0).assertTrue();
       });
   });
 }

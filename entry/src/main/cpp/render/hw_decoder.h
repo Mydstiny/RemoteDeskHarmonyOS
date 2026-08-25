@@ -87,6 +87,16 @@ struct REMOTEDESK_DECODER_INTERNAL DecoderPresentationTelemetrySnapshot {
     uint64_t renderedOutputBuffers = 0;
     uint64_t nativeImageFrames = 0;
     uint64_t rendererPresentedFrames = 0;
+    size_t queueDepth = 0;
+    uint64_t inputDroppedFrames = 0;
+    uint64_t waitKeyframeDrops = 0;
+    uint64_t inputTruncated = 0;
+    uint64_t renderOutputFailures = 0;
+    uint64_t updateSurfaceFailures = 0;
+    uint64_t coalescedSurfaceNotifications = 0;
+    int64_t codecLatencyMs = 0;
+    int64_t codecLatencyMaxMs = 0;
+    bool lowLatencyEnabled = false;
 };
 
 struct REMOTEDESK_DECODER_INTERNAL OwnedDecoderCreationResult {
@@ -105,6 +115,7 @@ struct HardwareTelemetrySnapshot {
     uint64_t inputTruncated = 0;
     uint64_t renderOutputFailures = 0;
     uint64_t updateSurfaceFailures = 0;
+    uint64_t coalescedSurfaceNotifications = 0;
     uint64_t renderedOutputBuffers = 0;
     uint64_t outputFrames = 0;
     int64_t codecLatencyMs = 0;
@@ -440,6 +451,10 @@ namespace DecoderNapi {
     constexpr int kDecodeHardwareKeyframeRequired = 5;
     enum class OwnedSubmitStatus : uint8_t {
         Accepted,
+        // The current frame was queued, but an older dependent frame was
+        // evicted to preserve latency. Keep admitting later frames while the
+        // caller requests an IDR out of band.
+        AcceptedNeedsKeyframe,
         Backpressure,
         NeedKeyframe,
         Stale,

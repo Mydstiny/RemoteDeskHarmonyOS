@@ -1,4 +1,5 @@
 #include "moonlight/media/MoonlightVideoSurfaceLifecycle.h"
+#include "moonlight/media/MoonlightVideoCodecSupport.h"
 
 #include <mutex>
 #include <utility>
@@ -22,9 +23,7 @@ bool sameProfile(const MoonlightStreamCodecProfile& left,
 }
 
 bool supportedProfile(const MoonlightStreamCodecProfile& profile) noexcept {
-    return profile.codec == MoonlightStreamCodec::H264 &&
-        profile.bitDepth == MoonlightStreamBitDepth::Bit8 &&
-        profile.chroma == MoonlightStreamChroma::Yuv420;
+    return moonlightHardwareVideoProfileSupported(profile);
 }
 
 bool validTarget(MoonlightVideoSurfaceTarget target) noexcept {

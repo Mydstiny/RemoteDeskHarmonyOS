@@ -181,6 +181,30 @@ export default function moonlightLocalHostServiceTest(): void {
       expect(payload['httpsPort']).assertEqual(48084);
     });
 
+    it('persists_the_same_local_host_graph_without_an_account_login', 0,
+      (): void => {
+        const port = new MemoryMoonlightHostPort();
+        port.active = {
+          ownerScopeId: 'device-local',
+          storeIdentity: 'remotedesktop_device_local.db',
+          generation: 1,
+          storeInstanceId: 1
+        };
+        const state: MoonlightHostAddState = readyAddState();
+        state.activeOperation = 'save';
+        const result = new MoonlightLocalHostService(port).save(
+          state, saveKey(state), 1000);
+        expect(result.ok).assertTrue();
+        expect(result.localCommitted).assertTrue();
+        expect(port.rows.size).assertEqual(2);
+        port.rows.forEach((value: MoonlightRecord): void => {
+          expect(value.userId).assertEqual('device-local');
+        });
+        port.localOnly.forEach((value: number): void => {
+          expect(value).assertEqual(1);
+        });
+      });
+
     it('reloads_a_custom_sunshine_https_port_into_the_runtime_endpoint', 0, (): void => {
       const port = new MemoryMoonlightHostPort();
       const state: MoonlightHostAddState = readyAddState();
@@ -343,6 +367,47 @@ export default function moonlightLocalHostServiceTest(): void {
       const stored = port.readMoonlightLocalRecord(port.active, saved.hostId).record as MoonlightRecord;
       const payload: Record<string, Object> = JSON.parse(stored.payload) as Record<string, Object>;
       expect(payload['displayName']).assertEqual('客厅游戏主机');
+    });
+
+    it('persists_the_unified_host_card_lock_and_preserves_it_across_rename', 0, (): void => {
+      const port = new MemoryMoonlightHostPort();
+      const state: MoonlightHostAddState = readyAddState();
+      state.activeOperation = 'save';
+      const service = new MoonlightLocalHostService(port, port);
+      const saved = service.save(state, saveKey(state), 1000);
+      expect(saved.ok).assertTrue();
+      expect(service.updateLocked(saved.hostId, true, 2000).ok).assertTrue();
+      expect(service.updateDisplayName(saved.hostId, '已锁定主机', 3000).ok).assertTrue();
+      const stored = port.readMoonlightLocalRecord(port.active, saved.hostId).record as MoonlightRecord;
+      const payload: Record<string, Object> = JSON.parse(stored.payload) as Record<string, Object>;
+      expect(payload['locked']).assertTrue();
+      const reloaded: MoonlightHost | null = moonlightHostFromRecord(stored);
+      expect(reloaded !== null).assertTrue();
+      expect((reloaded as MoonlightHost).locked === true).assertTrue();
+    });
+
+    it('preserves_the_unified_host_card_lock_when_an_existing_host_is_saved_again', 0, (): void => {
+      const port = new MemoryMoonlightHostPort();
+      const initialState: MoonlightHostAddState = readyAddState();
+      initialState.activeOperation = 'save';
+      const service = new MoonlightLocalHostService(port, port);
+      const initial = service.save(initialState, saveKey(initialState), 1000);
+      expect(initial.ok).assertTrue();
+      expect(service.updateLocked(initial.hostId, true, 2000).ok).assertTrue();
+
+      const repairedState: MoonlightHostAddState = readyAddState();
+      repairedState.displayName = '重新验证后的名称';
+      repairedState.activeOperation = 'save';
+      const repaired = service.save(repairedState, saveKey(repairedState), 3000);
+      expect(repaired.ok).assertTrue();
+      const stored = port.readMoonlightLocalRecord(
+        port.active, repaired.hostId).record as MoonlightRecord;
+      const payload: Record<string, Object> = JSON.parse(stored.payload) as Record<string, Object>;
+      expect(payload['displayName']).assertEqual('重新验证后的名称');
+      expect(payload['locked']).assertTrue();
+      const reloaded: MoonlightHost | null = moonlightHostFromRecord(stored);
+      expect(reloaded !== null).assertTrue();
+      expect((reloaded as MoonlightHost).locked === true).assertTrue();
     });
 
     it('tombstones_host_and_owned_records_when_deleting_locally', 0, (): void => {

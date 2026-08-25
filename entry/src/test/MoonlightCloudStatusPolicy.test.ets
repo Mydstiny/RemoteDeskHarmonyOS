@@ -21,10 +21,12 @@ function ready(): MoonlightCloudStatusInput {
 
 export default function moonlightCloudStatusPolicyTest(): void {
   describe('MoonlightCloudStatusPolicy', (): void => {
-    it('shows_off_for_an_empty_or_unselected_physical_scope', 0, (): void => {
+    it('upgrades_empty_legacy_scopes_and_uses_only_the_physical_state', 0, (): void => {
       const input: MoonlightCloudStatusInput = ready();
       input.selectedScopes = [];
-      expect(resolveMoonlightCloudStatus(input).state).assertEqual('off');
+      expect(resolveMoonlightCloudStatus(input).state).assertEqual('ready');
+      expect(resolveMoonlightCloudStatus(input).scopes.join(','))
+        .assertEqual('settings,hosts,profiles');
       input.selectedScopes = ['hosts'];
       input.physicalSelected = false;
       expect(resolveMoonlightCloudStatus(input).state).assertEqual('off');
@@ -64,9 +66,9 @@ export default function moonlightCloudStatusPolicyTest(): void {
       input.cryptoConfigured = true;
       input.cryptoUnlocked = false;
       const state = resolveMoonlightCloudStatus(input);
-      expect(state.state).assertEqual('off');
+      expect(state.state).assertEqual('ready');
       expect(state.identityScopeLocked).assertFalse();
-      expect(state.canUpload).assertFalse();
+      expect(state.canUpload).assertTrue();
     });
 
     it('exposes_ready_and_last_success_without_calling_it_synced', 0,

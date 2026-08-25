@@ -9,6 +9,16 @@
 - Authoritative plan: `docs/superpowers/plans/2026-07-28-moonlight-harmonyos-complete-upgrade-plan.md`
 - Live ledger: `docs/codex/plans/2026-08-09-moonlight-implementation-ledger.md`
 
+## Concurrent RustDesk persistence repair
+
+- The user-requested RustDesk password/2FA persistence repair is implemented in the current working tree without changing the active Moonlight task or overwriting its concurrent edits.
+- RustDesk authentication input now survives ordinary background/foreground Sheet reconstruction in a process-memory-only, owner/account-generation/host-fenced draft. Explicit cancel, host deletion, account transition and crypto reset clear the draft; passwords never enter Preferences, AppStorage, cloud rows or backups unless the user selects “remember” and authentication succeeds.
+- RustDesk peer 2FA binding now uses a dedicated owner/device-local Preferences store, hydrates only when the endpoint, device and KeyVault entry still match, migrates provable legacy local data once, and is removed transactionally on endpoint change or host deletion. KeyVault separately publishes whether the current account TOTP snapshot is authoritative, so cold start, failed RDB reads and account transitions defer cleanup instead of mistaking “not loaded yet” for a deleted entry. RemoteHost/cloud/backup serialization no longer exports the device-local binding.
+- Host/RDP/SSH mutation flows now check persistence results before success UI or connection handoff; failed writes retain the editor where possible, rollback coupled local secrets/bindings, and report partial-success cases explicitly.
+- Current uncommitted tree verification on 2026-08-23: exact `default@OhosTestCompileArkTS` PASS, exact signed `assembleHap` PASS, `git diff --check` PASS, Light open-source compliance PASS and official `hap-sign-tool verify-app` PASS. Isolated installed HAP SHA-256: `f308ac7eee0adba1bdda0ae4e20639da928a30e9f1863f812e06d629e204eea7`.
+- That exact HAP was installed with data preservation and `EntryAbility` started successfully on physical device `SGT-AL10` at `192.168.3.235:38451`. The user confirmed password background/foreground retention. The earlier faulty build already deleted the old peer-2FA binding, so one new binding is required before interactive background/process-relaunch readback can be accepted.
+- Device Hypium execution remains blocked because `ohosTest@OhosTestCompileArkTS` is not registered (`00306054`). The working tree also contains pre-existing overlapping Moonlight/keyboard/SSH edits, so this repair is not committed or merged as an isolated checkpoint.
+
 ## Concurrent VNC preflight alignment repair
 
 - The user-reported VNC regression is repaired and isolated for this commit: Phone/Pad and PC/2in1 settings/add-and-connect flows now return to HostList for the same lock → certificate/plaintext-risk → credential preflight before RemoteDesktop is opened. The legacy password Sheet and its state/callbacks are removed from the connection page.

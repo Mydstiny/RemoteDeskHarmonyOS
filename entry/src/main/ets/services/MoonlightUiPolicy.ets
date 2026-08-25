@@ -1,11 +1,13 @@
 import { MoonlightAppCacheEntry } from '../model/MoonlightAppCache';
-import { MoonlightProfile } from '../model/MoonlightModels';
+import { MoonlightInputControlMode, MoonlightProfile } from '../model/MoonlightModels';
 import { MoonlightSessionErrorCode, MoonlightSessionPhase } from './MoonlightSessionState';
 
 export const MOONLIGHT_CONNECT_STAGE_DELAY_MS: number = 400;
 export const MOONLIGHT_CONNECT_DURATION_DELAY_MS: number = 3000;
 export const MOONLIGHT_CONNECT_DIAGNOSTICS_DELAY_MS: number = 10000;
 export const MOONLIGHT_TOOLBAR_AUTO_HIDE_MS: number = 5000;
+export const MOONLIGHT_DISAPPEAR_BACKGROUND_SIGNAL_WAIT_MS: number = 500;
+export const MOONLIGHT_PRESENTATION_STALL_MS: number = 3000;
 
 export type MoonlightCatalogStatus =
   'empty' | 'fresh' | 'stale' | 'partial' | 'offline' | 'host_busy' | 'error';
@@ -16,7 +18,8 @@ export type MoonlightLaunchBlocker =
   'host_busy' | 'session_active' | 'runtime_unavailable';
 export type MoonlightConnectionQuality = 'good' | 'unstable' | 'poor' | 'reconnecting';
 export type MoonlightToolbarAction =
-  'control' | 'keyboard' | 'modifiers' | 'controller' | 'audio' | 'display' | 'more' | 'disconnect';
+  'control' | 'keyboard' | 'modifiers' | 'controller' | 'audio' | 'display' |
+  'diagnostics' | 'more' | 'disconnect';
 export type MoonlightSettingsSection =
   'video' | 'audio' | 'input' | 'networkSecurity' | 'diagnostics' | 'trust' |
   'data';
@@ -45,6 +48,158 @@ export interface MoonlightCatalogOperationKey {
   ownerScopeId: string;
   hostId: string;
   generation: number;
+}
+
+export interface MoonlightTouchCancelPlan {
+  cancelTrackedIds: number[];
+  clearAllLocalContacts: boolean;
+}
+
+export type MoonlightResolvedControlMode = 'keyboardMouse' | 'trackpad';
+export type MoonlightAdaptiveInputSource =
+  'touch' | 'mouse' | 'touchpad' | 'keyboard' | 'unknown';
+
+/** Device-class default used until adaptive mode observes a real input event. */
+export function moonlightInitialAdaptiveControlMode(
+  isPadDevice: boolean, isDesktopDevice: boolean, sessionWindowId: string
+): MoonlightResolvedControlMode {
+  return isPadDevice || isDesktopDevice || sessionWindowId.trim() !== '' ?
+    'keyboardMouse' : 'trackpad';
+}
+
+/** Resolve an explicit preference without losing adaptive mode's live source. */
+export function moonlightResolvedControlMode(
+  preference: MoonlightInputControlMode,
+  adaptiveMode: MoonlightResolvedControlMode
+): MoonlightResolvedControlMode {
+  return preference === 'adaptive' ? adaptiveMode : preference;
+}
+
+/** Adaptive mode follows the latest real touch or physical keyboard/pointer source. */
+export function moonlightAdaptiveControlModeForSource(
+  preference: MoonlightInputControlMode,
+  current: MoonlightResolvedControlMode,
+  source: MoonlightAdaptiveInputSource
+): MoonlightResolvedControlMode {
+  if (preference !== 'adaptive') { return moonlightResolvedControlMode(preference, current); }
+  if (source === 'touch') { return 'trackpad'; }
+  if (source === 'mouse' || source === 'touchpad' || source === 'keyboard') {
+    return 'keyboardMouse';
+  }
+  return current;
+}
+
+/** Adaptive/key-mouse capture hardware keys; explicit phone trackpad stays opt-in. */
+export function moonlightPhysicalKeyboardCaptureEnabled(
+  configured: boolean, isPadDevice: boolean, isDesktopDevice: boolean,
+  sessionWindowId: string, controlMode: MoonlightInputControlMode = 'trackpad'
+): boolean {
+  return configured || controlMode === 'adaptive' || controlMode === 'keyboardMouse' ||
+    isPadDevice || isDesktopDevice || sessionWindowId.trim() !== '';
+}
+
+/**
+ * Keep device/window-manager keys local unless system-shortcut forwarding is
+ * explicitly available. Back, Home and power/lifecycle keys are never remote
+ * input because they own the local session exit and device lifecycle.
+ */
+export function moonlightSystemKeyReserved(
+  keyCode: number, altKey: boolean = false, ctrlKey: boolean = false,
+  metaKey: boolean = false, forwardSystemShortcuts: boolean = false
+): boolean {
+  if (keyCode === 1 || keyCode === 2 || keyCode === 18 || keyCode === 19 ||
+      keyCode === 2600 || keyCode === 2661 || keyCode === 2720 ||
+      keyCode === 2721 || keyCode === 2722 || keyCode === 2802) {
+    return true;
+  }
+  if (forwardSystemShortcuts) { return false; }
+  if ((keyCode >= 9 && keyCode <= 17) || keyCode === 22 || keyCode === 23 ||
+      keyCode === 40 || keyCode === 41 || (keyCode >= 2649 && keyCode <= 2651) ||
+      keyCode === 2659 || keyCode === 2660 || (keyCode >= 2724 && keyCode <= 2725) ||
+      keyCode === 2076 || keyCode === 2077) {
+    return true;
+  }
+  return metaKey || (altKey && (keyCode === 2049 || keyCode === 2093)) ||
+    (ctrlKey && keyCode === 2070);
+}
+
+/** PC session windows own immersion through RemoteSessionWindowFrameController. */
+export function moonlightUsesEntryAbilityImmersiveBars(
+  isDesktopDevice: boolean, sessionWindowId: string
+): boolean {
+  return !isDesktopDevice && sessionWindowId.trim() === '';
+}
+
+/**
+ * Harmony TouchType.Cancel terminates the complete gesture even when the
+ * framework supplies only a subset in changedTouches. The tracked contact
+ * ledger is therefore authoritative for remote cancellation.
+ */
+export function moonlightTouchCancelPlan(trackedIds: number[],
+  _changedTouchIds: number[], nativeInputAvailable: boolean): MoonlightTouchCancelPlan {
+  const cancelTrackedIds: number[] = [];
+  if (nativeInputAvailable) {
+    trackedIds.forEach((id: number): void => {
+      if (Number.isSafeInteger(id) && id > 0 && cancelTrackedIds.indexOf(id) < 0) {
+        cancelTrackedIds.push(id);
+      }
+    });
+  }
+  return { cancelTrackedIds: cancelTrackedIds, clearAllLocalContacts: true };
+}
+
+/**
+ * Content height for the embedded application-catalog BindSheet.
+ *
+ * The first two rows are allowed to grow the Sheet; additional rows stay in
+ * the catalog Grid and scroll. This keeps short catalogs compact without
+ * turning large catalogs into an unbounded Sheet.
+ */
+export function moonlightCatalogSheetHeight(
+  itemCount: number, columnCount: number, topSafeHeightVp: number
+): number {
+  const safeItemCount: number = Number.isSafeInteger(itemCount) && itemCount > 0
+    ? itemCount : 0;
+  const safeColumnCount: number = Number.isSafeInteger(columnCount) && columnCount > 0
+    ? columnCount : 1;
+  const safeTopHeight: number = Number.isFinite(topSafeHeightVp)
+    ? Math.min(72, Math.max(0, topSafeHeightVp)) : 0;
+  // Header, status banner, search/filter row and bottom padding.
+  const chromeHeight: number = 219 + safeTopHeight;
+  if (safeItemCount === 0) { return chromeHeight + 190; }
+  const rowCount: number = Math.ceil(safeItemCount / safeColumnCount);
+  const visibleRows: number = Math.min(2, Math.max(1, rowCount));
+  // The artwork consumes 200vp and the two-line metadata/actions section
+  // needs another 124vp. Keeping the policy in sync with MoonlightAppCard
+  // prevents the launch row being clipped in short, content-sized Sheets.
+  const gridHeight: number = visibleRows * 324 + (visibleRows - 1) * 12;
+  return Math.min(780, chromeHeight + gridHeight);
+}
+
+/**
+ * Column count for the Moonlight application catalog.
+ *
+ * A centered BindSheet is much narrower than the Pad window that owns it, so
+ * it must not inherit the window's lg/xl column count. Doing that squeezes the
+ * cards into four or five phone-width columns and leaves unused tracks behind
+ * when the catalog only contains one or two applications.
+ */
+export function moonlightCatalogGridColumnCount(
+  breakpoint: string, embedded: boolean, itemCount: number
+): number {
+  let maximum: number = 5;
+  if (breakpoint === 'sm') {
+    maximum = 2;
+  } else if (breakpoint === 'md') {
+    maximum = 3;
+  } else if (breakpoint === 'lg') {
+    maximum = 4;
+  }
+  if (!embedded) { return maximum; }
+  const sheetMaximum: number = Math.min(2, maximum);
+  const safeItemCount: number = Number.isSafeInteger(itemCount) && itemCount > 0
+    ? itemCount : sheetMaximum;
+  return Math.min(sheetMaximum, safeItemCount);
 }
 
 export function moonlightCatalogHostReachable(
@@ -127,19 +282,63 @@ export interface MoonlightControlCenterLayout {
 
 export interface MoonlightDiagnosticsSnapshot {
   available: boolean;
+  transportReady: boolean;
+  videoReady: boolean;
+  audioReady: boolean;
+  inputReady: boolean;
   fps: number;
   latencyMs: number;
   bitrateKbps: number;
+  configuredBitrateKbps: number;
   packetLossPercent: number;
   codec: string;
   width: number;
   height: number;
+  targetFps: number;
+  acceptedVideoFrames: number;
+  droppedVideoFrames: number;
+  decoderQueueDepth: number;
   decodeP50Us: number;
   decodeP95Us: number;
   renderP50Us: number;
   renderP95Us: number;
+  codecLatencyMs: number;
+  codecLatencyMaxMs: number;
+  surfaceUpdateFailures: number;
+  surfaceCoalescedNotifications: number;
+  acceptedAudioPackets: number;
+  rejectedAudioPackets: number;
+  audioBytes: number;
   audioUnderruns: number;
+  inputAccepted: number;
   inputDrops: number;
+  presentedFrames: number;
+  videoBytes: number;
+  ingressAgeMs: number;
+  presentationAgeMs: number;
+  stalled: boolean;
+}
+
+/**
+ * ArkUI can report page disappearance just before UIAbility.onWillBackground.
+ * Preserve the connected page briefly so Home/background can be classified
+ * before an explicit navigation teardown is allowed to stop the native owner.
+ */
+export function shouldDeferMoonlightDisappear(
+  isBackground: boolean, sessionActive: boolean, routeTerminated: boolean
+): boolean {
+  return !isBackground && sessionActive && !routeTerminated;
+}
+
+/**
+ * A native Sheet must not be mounted while the phone is still replacing its
+ * portrait surface with the requested landscape surface. ArkUI otherwise can
+ * retain the old SheetPage as an invisible hit-test owner after first frame.
+ */
+export function moonlightConnectSheetMountReady(
+  gateNeeded: boolean, surfaceLayoutReady: boolean
+): boolean {
+  return gateNeeded && surfaceLayoutReady;
 }
 
 function boundedId(value: string): boolean {
@@ -438,13 +637,13 @@ export function moonlightToolbarLayout(isDesktopDevice: boolean, breakpoint: str
   return {
     deviceClass: deviceClass,
     edgeRail: edgeRail,
-    iconSize: small ? 40 : 44,
-    itemGap: small ? 6 : 8,
+    iconSize: edgeRail ? 34 : (small ? 40 : 44),
+    itemGap: edgeRail ? 4 : (small ? 6 : 8),
     maxVisibleItems: edgeRail ? 7 : (large ? 8 : 7),
     menuWidth: small ? 300 : (normalized === 'md' ? 340 : 360),
     topOffset: edgeRail ? 18 : (normalized === 'xl' ? 16 : 12),
     autoHideMs: !edgeRail && normalized === 'xl' ? MOONLIGHT_TOOLBAR_AUTO_HIDE_MS : 0,
-    maxHeight: edgeRail ? 420 : 0
+    maxHeight: edgeRail ? 560 : 0
   };
 }
 
@@ -474,33 +673,38 @@ function toolbarItem(action: MoonlightToolbarAction, label: string,
 export function moonlightToolbarItems(
   breakpoint: string, audioAvailable: boolean,
   controllerAvailable: boolean, pipAvailable: boolean,
-  maxVisibleItems: number = 0, keyboardAvailable: boolean = false
+  maxVisibleItems: number = 0, keyboardAvailable: boolean = false,
+  controlModeLabel: string = '触控板'
 ): MoonlightToolbarItem[] {
   const normalized: string = breakpoint.trim().toLowerCase();
   const keyboard: MoonlightToolbarItem = toolbarItem('keyboard', '键盘');
   keyboard.enabled = keyboardAvailable;
   keyboard.disabledReason = keyboardAvailable ? '' : '键盘输入通道尚未就绪';
   const items: MoonlightToolbarItem[] = [
-    toolbarItem('control', '控制'), keyboard, toolbarItem('modifiers', '组合键')
+    toolbarItem('control', controlModeLabel),
+    keyboard, toolbarItem('modifiers', '组合键')
   ];
   const limit: number = maxVisibleItems > 0 ? maxVisibleItems :
     (normalized === 'sm' ? 7 : 8);
   if (limit <= 7) {
     const controller: MoonlightToolbarItem = toolbarItem('controller', '手柄');
-    controller.enabled = controllerAvailable;
-    controller.disabledReason = controllerAvailable ? '' : '当前设备尚未验证手柄输入能力';
+    // This entry owns physical-controller management. It must remain
+    // reachable before hardware is paired or a controller channel is ready.
+    controller.enabled = true;
+    controller.disabledReason = '';
     items.push(controller);
     const display: MoonlightToolbarItem = toolbarItem('display', pipAvailable ? '画中画' : '画面');
     display.enabled = pipAvailable;
     display.disabledReason = pipAvailable ? '' : '当前窗口或系统能力不支持画中画';
     items.push(display);
+    items.push(toolbarItem('diagnostics', '性能'));
     items.push(toolbarItem('more', '更多'));
-    items.push(toolbarItem('disconnect', '断开', true));
+    items.push(toolbarItem('disconnect', '退出', true));
     return items;
   }
   const controller: MoonlightToolbarItem = toolbarItem('controller', '手柄');
-  controller.enabled = controllerAvailable;
-  controller.disabledReason = controllerAvailable ? '' : '当前设备尚未验证手柄输入能力';
+  controller.enabled = true;
+  controller.disabledReason = '';
   items.push(controller);
   if (normalized !== 'sm') {
     const audio: MoonlightToolbarItem = toolbarItem('audio', '音频');
@@ -512,13 +716,23 @@ export function moonlightToolbarItems(
     display.disabledReason = pipAvailable ? '' : '当前窗口或系统能力不支持画中画';
     items.push(display);
   }
+  items.push(toolbarItem('diagnostics', '性能'));
   items.push(toolbarItem('more', '更多'));
-  items.push(toolbarItem('disconnect', '断开', true));
+  items.push(toolbarItem('disconnect', '退出', true));
   return items;
 }
 
 export function moonlightOverlayRequiresInputFlush(level: number): boolean {
   return Number.isSafeInteger(level) && level >= 3 && level <= 5;
+}
+
+/**
+ * An in-flight recovery owns a native runtime lease until resume resolves.
+ * Keep every interactive Sheet dismissal fenced so its onDisappear callback
+ * cannot run before the successful launch handoff has been created.
+ */
+export function moonlightRecoverySheetDismissAllowed(recoveryActing: boolean): boolean {
+  return !recoveryActing;
 }
 
 export function moonlightQualityLabel(quality: MoonlightConnectionQuality): string {

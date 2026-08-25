@@ -9,11 +9,13 @@ import {
   MoonlightCodecPreference,
   MoonlightHost,
   MoonlightIdentityMetadata,
+  MoonlightInputControlMode,
   MoonlightProfile,
   MoonlightTrustCandidate,
   moonlightAddressKey,
   moonlightHostIsValid,
   moonlightIdentityMetadataIsValid,
+  moonlightInputControlMode,
   normalizeMoonlightSettingsForLocalStorage,
   moonlightProfileIsValid,
   moonlightSettingsAreValid,
@@ -41,15 +43,49 @@ export default function moonlightModelsTest(): void {
       expect(settings.video.codecPreference).assertEqual('auto');
       expect(settings.video.hdr).assertFalse();
       expect(settings.video.yuv444).assertFalse();
+      expect(settings.video.adaptiveResolution).assertEqual('host');
       expect(settings.audio.channels).assertEqual('stereo');
       expect(settings.input.enableRumble).assertFalse();
       expect(settings.input.captureKeyboard).assertFalse();
+      expect(settings.input.controlMode).assertEqual('adaptive');
       expect(settings.network.allowLegacySha1).assertFalse();
       expect(settings.network.meteredNetwork).assertEqual('ask');
       expect(settings.security.blockCertificateChanges).assertTrue();
       expect(settings.security.identityStorage).assertEqual('localSecure');
       expect(moonlightSettingsAreValid(settings)).assertTrue();
     });
+
+    it('maps_legacy_input_records_without_rejecting_old_local_or_cloud_data', 0,
+      (): void => {
+        const legacyTouch = defaultMoonlightSettings();
+        legacyTouch.input.controlMode = undefined;
+        legacyTouch.input.touchMode = 'touch';
+        expect(moonlightSettingsAreValid(legacyTouch)).assertTrue();
+        expect(normalizeMoonlightSettingsForLocalStorage(
+          legacyTouch).input.controlMode).assertEqual('adaptive');
+
+        const legacyPointer = defaultMoonlightSettings();
+        legacyPointer.input.controlMode = undefined;
+        legacyPointer.input.touchMode = 'relativeMouse';
+        expect(moonlightSettingsAreValid(legacyPointer)).assertTrue();
+        expect(normalizeMoonlightSettingsForLocalStorage(
+          legacyPointer).input.controlMode).assertEqual('trackpad');
+        expect(moonlightInputControlMode(undefined, 'absoluteMouse')).assertEqual('trackpad');
+        expect(moonlightInputControlMode('keyboardMouse', 'touch')).assertEqual('keyboardMouse');
+
+        legacyPointer.input.controlMode = 'unsupported' as MoonlightInputControlMode;
+        expect(moonlightSettingsAreValid(legacyPointer)).assertFalse();
+      });
+
+    it('keeps_legacy_resolution_records_valid_and_accepts_additive_adaptive_intent', 0,
+      (): void => {
+        const settings = defaultMoonlightSettings();
+        settings.video.adaptiveResolution = undefined;
+        expect(moonlightSettingsAreValid(settings)).assertTrue();
+        settings.video.adaptiveResolution = 'device';
+        settings.video.resolutionMode = 'custom';
+        expect(moonlightSettingsAreValid(settings)).assertTrue();
+      });
 
     it('keeps_common_display_and_pip_ownership_out_of_new_local_settings', 0, (): void => {
       const settings = defaultMoonlightSettings();

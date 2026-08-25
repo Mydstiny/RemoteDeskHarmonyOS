@@ -78,6 +78,7 @@ import {
   CloudSyncCallbackIdentity,
   CloudSyncWatchdogState,
   CloudSyncWatchdogTimeoutKind,
+  cloudDataChangeShouldRequestPull,
   cloudDistributedTableAutoSync,
   cloudLocalMutationAllowed,
   cloudSyncFailureMessage,
@@ -189,6 +190,11 @@ import {
   RemoteHostLegacyPersonalization,
   remoteHostLocalPersonalizationValues
 } from './HostLocalPersonalizationPolicy';
+import {
+  decodeRustDeskPeerTwoFactorLegacyBackupRows,
+  decodeRustDeskPeerTwoFactorLegacyDisplayConfig,
+  RustDeskPeerTwoFactorLegacyCandidate
+} from './RustDeskPeerTwoFactorLegacyMigration';
 import {
   VNC_CLOUD_TABLE,
   VNC_LOCAL_TABLE,
@@ -363,6 +369,7 @@ import {
 import {
   MoonlightCloudSyncScope,
   isMoonlightRecordTypeSelected,
+  moonlightForcedCloudSyncSelection,
   moonlightCloudSyncSelectionExpands,
   moonlightProjectionLocalOnlyAfterReconcile,
   normalizeMoonlightCloudSyncSelection
@@ -571,6 +578,11 @@ export interface CloudStoreWiringPorts {
   metadataQuery?: CloudStoreMetadataQueryPort;
 }
 
+export interface TotpSnapshotLoadResult {
+  ok: boolean;
+  entries: TotpEntry[];
+}
+
 export type MoonlightCloudScopeMutationCode =
   'ok' | 'unchanged' | 'stale_lease' | 'registration_unavailable' |
   'barrier_failed' | 'selection_failed' | 'cloud_first_pending' |
@@ -658,6 +670,11 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
   private cloudSyncOperationSequence: number = 0;
   private indeterminateCloudSyncOperation: IndeterminateCloudSyncOperation | null = null;
   private cloudDownloadActive: boolean = false;
+  // SUBSCRIBE_TYPE_CLOUD may deliver this process' own materialization event
+  // after the native terminal callback has already cleared
+  // cloudDownloadActive. Keep a short post-terminal quiet boundary so that a
+  // late self-event cannot start the endless pull loop seen on real devices.
+  private lastCloudFirstCompletedAtMs: number = 0;
   // Narrow internal authority for Moonlight's local projection while the
   // coordinator intentionally freezes all user mutations during cloud-first.
   // It is installed only around one current-lease terminal callback and is
@@ -1019,6 +1036,7 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
     this.currentVerifiedUnionId = '';
     this.cryptoLifecycleState = null;
     this.cloudDownloadActive = false;
+    this.lastCloudFirstCompletedAtMs = 0;
     this.moonlightCloudApplyLease = null;
     this.moonlightRestoreActivationLease = null;
     this.indeterminateCloudSyncOperation = null;
@@ -1056,6 +1074,7 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
     this.moonlightSchemaReceiptReady = false;
     this.moonlightCloudRegistrationError = '';
     this.cloudDownloadActive = false;
+    this.lastCloudFirstCompletedAtMs = 0;
     this.moonlightCloudApplyLease = null;
     this.moonlightRestoreActivationLease = null;
     this.indeterminateCloudSyncOperation = null;
@@ -1201,6 +1220,11 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
       // 本地库必须独立可用；云服务未开通或网络策略设置失败时仍要恢复缓存数据。
       this.initialized = true;
       this.syncSelection.init(context, this.currentScopeToken.ownerScopeId);
+      hilog.info(0x0001, 'CloudSync',
+        '启动同步选择=' +
+        this.syncSelection.persistedSelectedBusinessTables().join(',') +
+        ' Moonlight显式停止=' +
+        this.syncSelection.moonlightCloudTableExplicitlyDisabled().toString());
       this.syncSelection.setRuntimeTableAvailable(
         MOONLIGHT_CLOUD_TABLE, false);
       this.vncSyncSelection.init(context, this.currentScopeToken.ownerScopeId);
@@ -1399,6 +1423,21 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
           hilog.warn(0x0001, 'CloudSync',
             '忽略旧账号物理库的迟到 dataChange 回调 generation=' +
             callbackLease.generation.toString());
+          return;
+        }
+        // HarmonyOS emits SUBSCRIBE_TYPE_CLOUD dataChange while this same
+        // store is applying a cloud-first transfer. Feeding that callback
+        // straight back into requestCloudEventPull() creates a self-sustaining
+        // pull loop. Besides wasting I/O, the loop keeps the local mutation
+        // gate closed and makes otherwise valid host saves fail. The external
+        // event that started the transfer is observed before this flag opens;
+        // only the transfer's own materialization callbacks are suppressed.
+        if (!cloudDataChangeShouldRequestPull(
+          this.cloudDownloadActive,
+          this.indeterminateCloudSyncOperation !== null,
+          Date.now(), this.lastCloudFirstCompletedAtMs)) {
+          hilog.info(0x0001, 'CloudSync',
+            '忽略当前 cloud-first 应用产生的 dataChange 回调');
           return;
         }
         this.lastSyncTime = Date.now();
@@ -2235,7 +2274,12 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
         // the native RDB transfer. Keep local writes frozen until the exact
         // late terminal callback clears the indeterminate fence.
         if (!pending && this.indeterminateCloudSyncOperation !== null) { return; }
+        const completedCloudFirst: boolean =
+          this.cloudDownloadActive && !pending;
         this.cloudDownloadActive = pending;
+        if (completedCloudFirst) {
+          this.lastCloudFirstCompletedAtMs = Date.now();
+        }
       },
       settlePendingIndeterminate: (): void => {
         this.trySettlePendingIndeterminate();
@@ -4694,6 +4738,7 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
     }
     this.indeterminateCloudSyncOperation = null;
     this.cloudDownloadActive = false;
+    this.lastCloudFirstCompletedAtMs = Date.now();
     this.moonlightCloudApplyLease = null;
     this.moonlightRestoreActivationLease = null;
     hilog.warn(0x0001, 'CloudSync',
@@ -6311,11 +6356,11 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
     if (!this.isLeaseCurrent(lease)) { return null; }
     return {
       physicalSelected:
-        // A prerelease durable choice is intentionally retained while the
-        // remote schema rollout receipt is closed, but it is not an active
-        // cloud relationship. Local forget/profile deletion must not be held
-        // hostage by a table this build is forbidden to register.
-        this.syncSelection.selectedBusinessTables()
+        // Report durable participation separately from runtime availability.
+        // The settings surface already shows registration health, while
+        // destructive local cleanup must stop a selected table even if the
+        // network/schema is temporarily unavailable.
+        this.syncSelection.persistedSelectedBusinessTables()
           .indexOf(MOONLIGHT_CLOUD_TABLE) >= 0,
       selectedScopes: this.moonlightSyncSelection.selectedScopes()
     };
@@ -6325,29 +6370,16 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
     if (this.appContext === null || !this.isLeaseCurrent(lease)) {
       return false;
     }
-    const previousScopes: MoonlightCloudSyncScope[] =
-      this.moonlightSyncSelection.selectedScopes();
-    const previousTables: string[] =
-      this.syncSelection.persistedSelectedBusinessTables();
-    const nextTables: string[] = previousTables.filter(
-      (table: string): boolean => table !== MOONLIGHT_CLOUD_TABLE);
+    // Disabling the single physical Moonlight category must not recreate the
+    // removed per-type preference model. Keep the canonical portable set in
+    // Preferences so a future explicit re-enable always starts complete.
     const logical: MoonlightSelectionStoreResult =
       this.moonlightSyncSelection.replaceSelectedScopes(
-        lease, [], false);
+        lease, moonlightForcedCloudSyncSelection(), false);
     if (!logical.ok) { return false; }
     if (!this.isLeaseCurrent(lease)) { return false; }
-    if (!this.syncSelection.replaceSelectedBusinessTables(
-      this.appContext, nextTables)) {
-      // Best-effort restore is intentionally owner-fenced. Even when it
-      // cannot complete, the durable cloud-deletion checkpoint remains in
-      // place and blocks every Moonlight promotion until a later retry.
-      const restored: MoonlightSelectionStoreResult =
-        this.moonlightSyncSelection.replaceSelectedScopes(
-        lease, previousScopes, false);
-      if (!restored.ok) {
-        hilog.error(0x0001, 'CloudSync',
-          'Moonlight 物理选择取消失败且逻辑选择回滚失败；删除检查点保持');
-      }
+    if (!this.syncSelection.explicitlyDisableMoonlightCloudTable(
+      this.appContext)) {
       return false;
     }
     if (!this.isLeaseCurrent(lease) ||
@@ -6356,23 +6388,26 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
     }
     // Do not retire a cloud-wide deletion checkpoint on write-call truth
     // alone. Preferences, in-memory logical intent and the RDB barrier must
-    // all read back as disabled for the same account lease. A false result is
+    // all read back as canonical/disabled for the same account lease. A false result is
     // restart-safe: local rows stay intact and the checkpoint retries later.
+    const expectedScopes: MoonlightCloudSyncScope[] =
+      moonlightForcedCloudSyncSelection();
     return this.isLeaseCurrent(lease) &&
-      this.moonlightSyncSelection.selectedScopes().length === 0 &&
+      this.moonlightSyncSelection.selectedScopes().join(',') ===
+        expectedScopes.join(',') &&
       this.syncSelection.persistedSelectedBusinessTables()
         .indexOf(MOONLIGHT_CLOUD_TABLE) < 0 &&
       this.selectionReenableBarrierPhase(MOONLIGHT_CLOUD_TABLE) === null;
   }
 
   async replaceMoonlightCloudScopes(
-    scopes: string[]
+    _scopes: string[]
   ): Promise<MoonlightCloudScopeMutationResult> {
     const lease: AccountSessionLease | null = this.currentAccountLease();
     const previous: MoonlightCloudSyncScope[] =
       this.moonlightSyncSelection.selectedScopes();
     const next: MoonlightCloudSyncScope[] =
-      normalizeMoonlightCloudSyncSelection(scopes, false);
+      moonlightForcedCloudSyncSelection();
     if (lease === null || !this.isLeaseCurrent(lease)) {
       return {
         ok: false, code: 'stale_lease', selected: previous,
@@ -6529,8 +6564,7 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
     const physicalSelected: boolean =
       this.syncSelection.selectedBusinessTables()
         .indexOf(MOONLIGHT_CLOUD_TABLE) >= 0;
-    if (!physicalSelected ||
-        this.moonlightSyncSelection.selectedScopes().length === 0) {
+    if (!physicalSelected) {
       return {
         ok: false, code: 'selection_required',
         cloudFirstCompleted: false, uploadQueued: false
@@ -7745,6 +7779,19 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
 
   private mergeHostExtension(host: RemoteHost): RemoteHost {
     const values: Record<string, string> = this.loadLocalExtension('remotehosts', host.id);
+    const legacyExtension: Record<string, string> = {};
+    legacyExtension['id'] = 'remotehosts:' + host.id;
+    legacyExtension['tablename'] = 'remotehosts';
+    legacyExtension['recordid'] = host.id;
+    legacyExtension['payload'] = JSON.stringify(values);
+    legacyExtension['updatedat'] = '0';
+    const legacyRows: Array<Record<string, string>> = [];
+    const legacyExtensions: Array<Record<string, string>> =
+      new Array<Record<string, string>>();
+    legacyExtensions.push(legacyExtension);
+    const legacyCandidates: RustDeskPeerTwoFactorLegacyCandidate[] =
+      decodeRustDeskPeerTwoFactorLegacyBackupRows(
+        legacyRows, legacyExtensions, host.userId);
     const get = (key: string, fallback: string): string => values[key] !== undefined ? values[key] : fallback;
     const crypto: DataCrypto = DataCrypto.getInstance();
     host.sshKeyPassphrase = this.decryptIfReady(
@@ -7840,7 +7887,14 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
     // Old rows have no envelope and simply keep using their decoded cloud
     // value. The first local save creates the envelope; reads never perform a
     // migration write or become a login/startup gate.
-    return applyRemoteHostLocalPersonalization(host, values);
+    const merged: RemoteHost = applyRemoteHostLocalPersonalization(host, values);
+    if (legacyCandidates.length > 0) {
+      merged.rustdeskTotpEntryId = legacyCandidates[0].entryId;
+      merged.rustdeskTotpAutoSubmit = false;
+      merged.rustdeskTotpLegacyDeviceId = legacyCandidates[0].sourceDeviceId;
+      merged.rustdeskTotpLegacySource = 'local_backup';
+    }
+    return merged;
   }
 
   /** Apply only the portable extension decoded from the cloud row. Never persist from a decoder. */
@@ -7879,8 +7933,6 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
     host.rustdeskAuthMode = get('rustdeskauthmode', host.rustdeskAuthMode) === 'request_approval' ? 'request_approval' : 'password';
     host.rustdeskDirectEnabled = get('rustdeskdirectenabled', host.rustdeskDirectEnabled ? '1' : '0') === '1';
     host.rustdeskDirectPort = Number(get('rustdeskdirectport', host.rustdeskDirectPort.toString()));
-    host.rustdeskTotpEntryId = get('rustdesktotpentryid', host.rustdeskTotpEntryId);
-    host.rustdeskTotpAutoSubmit = get('rustdesktotpautosubmit', host.rustdeskTotpAutoSubmit ? '1' : '0') === '1';
     host.sourceType = get('sourcetype', host.sourceType);
     host.rustdeskProAccountId = get('rustdeskproaccountid', host.rustdeskProAccountId);
     host.rustdeskProPeerId = get('rustdeskpropeerid', host.rustdeskProPeerId);
@@ -8003,8 +8055,6 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
     values['rustdeskdirectport'] = host.rustdeskDirectPort.toString();
     values['rustdesktargetdevice'] = host.rustdeskTargetDevice;
     values['rustdeskadaptiveorientation'] = host.rustdeskAdaptiveOrientation ? '1' : '0';
-    values['rustdesktotpentryid'] = host.rustdeskTotpEntryId;
-    values['rustdesktotpautosubmit'] = host.rustdeskTotpAutoSubmit ? '1' : '0';
     values['rdpcredentialid'] = host.rdpCredentialId;
     values['rdpauthmode'] = host.rdpAuthMode;
     values['rdprestrictedadminsecretsource'] = host.rdpRestrictedAdminSecretSource;
@@ -11507,6 +11557,14 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
     h.syncVersion = rs.getLong(rs.getColumnIndex('syncversion'));
     h.createdAt = rs.getLong(rs.getColumnIndex('createdat'));
     this.applyCloudHostExtension(h, displayPayload.extension);
+    const legacyPeerTwoFactor: RustDeskPeerTwoFactorLegacyCandidate | null =
+      decodeRustDeskPeerTwoFactorLegacyDisplayConfig(dcJson, h.userId, h.id);
+    if (legacyPeerTwoFactor !== null) {
+      h.rustdeskTotpEntryId = legacyPeerTwoFactor.entryId;
+      h.rustdeskTotpAutoSubmit = legacyPeerTwoFactor.autoSubmit;
+      h.rustdeskTotpLegacyDeviceId = legacyPeerTwoFactor.sourceDeviceId;
+      h.rustdeskTotpLegacySource = legacyPeerTwoFactor.source;
+    }
     return h;
   }
 
@@ -11983,6 +12041,14 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
     h.syncVersion = rs.getLong(rs.getColumnIndex('syncversion'));
     h.createdAt = rs.getLong(rs.getColumnIndex('createdat'));
     this.applyCloudHostExtension(h, displayPayload.extension);
+    const legacyPeerTwoFactor: RustDeskPeerTwoFactorLegacyCandidate | null =
+      decodeRustDeskPeerTwoFactorLegacyDisplayConfig(dcJson, h.userId, h.id);
+    if (legacyPeerTwoFactor !== null) {
+      h.rustdeskTotpEntryId = legacyPeerTwoFactor.entryId;
+      h.rustdeskTotpAutoSubmit = legacyPeerTwoFactor.autoSubmit;
+      h.rustdeskTotpLegacyDeviceId = legacyPeerTwoFactor.sourceDeviceId;
+      h.rustdeskTotpLegacySource = legacyPeerTwoFactor.source;
+    }
     return h;
   }
 
@@ -12206,7 +12272,11 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
   // ==================== TotpEntry CRUD ====================
 
   loadAllTotpEntries(): TotpEntry[] {
-    if (!this.store) { return []; }
+    return this.loadTotpEntriesSnapshot().entries;
+  }
+
+  loadTotpEntriesSnapshot(): TotpSnapshotLoadResult {
+    if (!this.store) { return { ok: false, entries: [] }; }
     try {
       const predicates = new relationalStore.RdbPredicates('totpentries');
       this.addCurrentOwnerPredicate(predicates);
@@ -12219,10 +12289,10 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
         result.push(this.rowToTotpEntry(rs));
       }
       rs.close();
-      return result;
+      return { ok: true, entries: result };
     } catch (err) {
       hilog.error(0x0001, 'CloudSync', '[CloudStore] loadAllTotpEntries 失败: ' + JSON.stringify(err));
-      return [];
+      return { ok: false, entries: [] };
     }
   }
 
@@ -13290,17 +13360,38 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
     lease: AccountSessionLease, record: MoonlightRecord,
     localOnly: number, operation: string
   ): boolean {
-    if (!this.store || !this.isLeaseCurrent(lease) ||
-        !this.moonlightProjectionMutationAllowed(lease) ||
-        !moonlightLocalOnlyFlagIsValid(localOnly) ||
-        record.userId !== lease.ownerScopeId ||
-        !moonlightValidateRecord(record).valid ||
-        (operation !== 'upsert' && operation !== 'tombstone')) {
+    const activeStore: relationalStore.RdbStore | null = this.store;
+    const storeReady: boolean = activeStore !== null;
+    const leaseCurrent: boolean = this.isLeaseCurrent(lease);
+    const projectionAllowed: boolean = leaseCurrent &&
+      this.moonlightProjectionMutationAllowed(lease);
+    const localOnlyValid: boolean = moonlightLocalOnlyFlagIsValid(localOnly);
+    const ownerMatches: boolean = record.userId === lease.ownerScopeId;
+    const recordValid: boolean = moonlightValidateRecord(record).valid;
+    const operationValid: boolean = operation === 'upsert' || operation === 'tombstone';
+    if (activeStore === null || !leaseCurrent || !projectionAllowed ||
+        !localOnlyValid || !ownerMatches || !recordValid ||
+        !operationValid) {
+      hilog.warn(0x0001, 'CloudSync',
+        '[CloudStore] Moonlight local commit rejected before transaction' +
+        ' storeReady=' + storeReady.toString() +
+        ' leaseCurrent=' + leaseCurrent.toString() +
+        ' projectionAllowed=' + projectionAllowed.toString() +
+        ' mutationGateOpen=' + this.mutationGateOpen.toString() +
+        ' cloudDownloadActive=' + this.cloudDownloadActive.toString() +
+        ' localRestoreActive=' +
+          (this.localRestoreActive || this.localRestorePending).toString() +
+        ' indeterminateTransfer=' +
+          (this.indeterminateCloudSyncOperation !== null).toString() +
+        ' localOnlyValid=' + localOnlyValid.toString() +
+        ' ownerMatches=' + ownerMatches.toString() +
+        ' recordValid=' + recordValid.toString() +
+        ' operationValid=' + operationValid.toString());
       return false;
     }
     try {
-      this.store.beginTransaction();
-      const inserted: boolean = rdbInsertSucceeded(this.store.insertSync(
+      activeStore.beginTransaction();
+      const inserted: boolean = rdbInsertSucceeded(activeStore.insertSync(
         MOONLIGHT_LOCAL_TABLE,
         this.moonlightRecordToBucket(record, localOnly),
         relationalStore.ConflictResolution.ON_CONFLICT_REPLACE));
@@ -13308,7 +13399,14 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
         MOONLIGHT_LOCAL_TABLE, record.id, operation)) {
         throw new Error('Moonlight local row or journal write failed');
       }
-      this.store.commit();
+      activeStore.commit();
+      const notificationLease: AccountSessionLease =
+        cloneAccountSessionLease(lease);
+      setTimeout((): void => {
+        if (this.isLeaseCurrent(notificationLease)) {
+          this.notifyDataSnapshotChanged();
+        }
+      }, 0);
       // This boolean reports transaction commit truth only. Repository owns
       // the post-commit lease/readback check so it can preserve
       // localCommitted=true when verification fails after a durable write.
@@ -13347,7 +13445,7 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
       }
       return true;
     } catch (error) {
-      try { this.store.rollBack(); } catch (_ignored) {}
+      try { activeStore.rollBack(); } catch (_ignored) {}
       hilog.warn(0x0001, 'CloudSync',
         '[CloudStore] Moonlight local commit failed: ' + safeError(error));
       return false;
@@ -13476,7 +13574,15 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
         throw new Error('Moonlight app cache lease changed');
       }
       this.store.commit();
-      return this.isLeaseCurrent(lease);
+      if (!this.isLeaseCurrent(lease)) { return false; }
+      const notificationLease: AccountSessionLease =
+        cloneAccountSessionLease(lease);
+      setTimeout((): void => {
+        if (this.isLeaseCurrent(notificationLease)) {
+          this.notifyDataSnapshotChanged();
+        }
+      }, 0);
+      return true;
     } catch (error) {
       try { this.store.rollBack(); } catch (_ignored) {}
       hilog.warn(0x0001, 'CloudSync',

@@ -117,7 +117,6 @@ export struct MoonlightHostAddFlow {
   onPauseDiscovery: (key: MoonlightHostAddDiscoveryKey) => void =
     (_key: MoonlightHostAddDiscoveryKey): void => {};
   onCancelOwner: (ownerToken: number) => void = (_ownerToken: number): void => {};
-  onSpeakPairingPin: (pin: string) => void = (_pin: string): void => {};
   onVerify: (
     address: MoonlightAddress,
     selectedServerUuid: string,
@@ -835,12 +834,7 @@ export struct MoonlightHostAddFlow {
     Text('剩余 ' + this.pairingSecondsRemaining().toString() + ' 秒')
       .fontSize(11).fontColor(this.pal().text3).width('100%').textAlign(TextAlign.Center)
       .margin({ top: 5 })
-    Button('朗读配对码').width('100%').height(36).borderRadius(9)
-      .backgroundColor(this.pal().surface).fontColor(this.accentColor).margin({ top: 10 })
-      .accessibilityText('朗读 4 位主机配对码')
-      .onClick((): void => {
-        if (this.flow.pairingPin !== '') { this.onSpeakPairingPin(this.flow.pairingPin); }
-      })
+    // 配对码朗读入口暂不开放，PIN 仅在当前 BindSheet 中显示。
   }
 
   @Builder private pairingStep() {
