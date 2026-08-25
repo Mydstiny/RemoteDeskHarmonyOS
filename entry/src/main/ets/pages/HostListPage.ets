@@ -2217,13 +2217,25 @@ struct HostListPage {
     return keys;
   }
 
-  private beginHostSelection(selectionKey: string, reorderEnabled: boolean): void {
+  private beginHostSelection(selectionKey: string, reorderEnabled: boolean,
+    preserveActiveDrag: boolean = false): void {
     const currentOrder: string[] = this.flatHostCardRefs().map(
       (ref: UnifiedHostCardRef): string => ref.key);
     this.hostReorderOriginalOrder = this.hostManualOrder.slice();
     if (reorderEnabled) {
       this.hostManualOrder = mergeVisibleHostOrder(
         this.hostManualOrder, currentOrder, currentOrder);
+    }
+    if (preserveActiveDrag) {
+      // onDragStart already owns a live platform drag session. Re-keying the
+      // ForEach here would destroy its source ListItem before onDrop. @State
+      // updates are enough to reveal selection controls without replacing the
+      // card identity; the final drop performs the ordered revision refresh.
+      this.hostSelectionMode = true;
+      this.hostReorderEnabled = reorderEnabled;
+      this.hostSelectedIds = selectionKey === ''
+        ? new Set<string>() : new Set<string>([selectionKey]);
+      return;
     }
     animateTo({ duration: 250, curve: Curve.FastOutSlowIn }, (): void => {
       this.hostSelectionMode = true;
@@ -12448,7 +12460,7 @@ struct HostListPage {
         // press. Entering selection here keeps that same pointer sequence
         // alive so the card can move immediately instead of requiring a
         // second long press after the list rebuilds.
-        this.beginHostSelection(key, true);
+        this.beginHostSelection(key, true, true);
       } else if (!this.hostReorderEnabled) {
         return {};
       }
@@ -12484,7 +12496,7 @@ struct HostListPage {
         .onDragStart((_event: DragEvent): DragItemInfo => {
           const key: string = unifiedMoonlightHostCardKey(view.host?.id || '');
           if (!this.hostSelectionMode) {
-            this.beginHostSelection(key, true);
+            this.beginHostSelection(key, true, true);
           } else if (!this.hostReorderEnabled) {
             return {};
           }
