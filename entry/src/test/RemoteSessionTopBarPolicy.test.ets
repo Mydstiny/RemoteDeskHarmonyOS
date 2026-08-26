@@ -13,6 +13,7 @@ import {
   remoteSessionPrimaryActionIds,
   remoteSessionRailDragOffset,
   remoteSessionRailShouldCollapse,
+  resolveRemoteSessionControlBarVisibility,
   remoteTopBarDeviceClass,
   remoteTopBarLayout,
   shouldShowRemoteSessionTopBar,
@@ -79,6 +80,18 @@ export default function remoteSessionTopBarPolicyTest(): void {
       expect(remoteSessionControlBarSelectionSummary({
         rdpHidden: false, rustDeskHidden: false, vncHidden: false, moonlightHidden: false
       })).assertEqual('全部显示');
+      const migrated = resolveRemoteSessionControlBarVisibility({
+        rdpHidden: false, rustDeskHidden: false, vncHidden: false, moonlightHidden: false
+      }, { rustDeskPresent: false, vncPresent: false }, true);
+      expect(migrated.rustDeskHidden).assertTrue();
+      expect(migrated.vncHidden).assertTrue();
+      const explicit = resolveRemoteSessionControlBarVisibility({
+        rdpHidden: true, rustDeskHidden: false, vncHidden: false, moonlightHidden: true
+      }, { rustDeskPresent: true, vncPresent: true }, true);
+      expect(explicit.rdpHidden).assertTrue();
+      expect(explicit.rustDeskHidden).assertFalse();
+      expect(explicit.vncHidden).assertFalse();
+      expect(explicit.moonlightHidden).assertTrue();
     });
   });
 

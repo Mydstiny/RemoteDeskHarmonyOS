@@ -21,6 +21,11 @@ export interface RemoteSessionControlBarVisibility {
   moonlightHidden: boolean;
 }
 
+export interface RemoteSessionControlBarPreferencePresence {
+  rustDeskPresent: boolean;
+  vncPresent: boolean;
+}
+
 export type RemoteTopBarMenuId = 'control' | 'display' | 'keyboardMouse' | 'chat' | 'voice' | 'record';
 
 export type RemoteSessionPrimaryActionId = 'pin' | 'control' | 'display' |
@@ -92,6 +97,18 @@ export function remoteSessionControlBarSelectionSummary(
   if (visibility.vncHidden) { hiddenLabels.push('VNC'); }
   if (visibility.moonlightHidden) { hiddenLabels.push('Moonlight'); }
   return hiddenLabels.length === 0 ? '全部显示' : '已隐藏：' + hiddenLabels.join('、');
+}
+
+export function resolveRemoteSessionControlBarVisibility(
+  stored: RemoteSessionControlBarVisibility,
+  presence: RemoteSessionControlBarPreferencePresence,
+  legacyPcHidden: boolean): RemoteSessionControlBarVisibility {
+  return {
+    rdpHidden: stored.rdpHidden,
+    rustDeskHidden: presence.rustDeskPresent ? stored.rustDeskHidden : legacyPcHidden,
+    vncHidden: presence.vncPresent ? stored.vncHidden : legacyPcHidden,
+    moonlightHidden: stored.moonlightHidden
+  };
 }
 
 export function remoteSessionRailDragOffset(offsetX: number): number {

@@ -439,11 +439,13 @@ import {
 import { createTransferSnapshot, TransferProtocol, TransferState } from '../services/FileTransferProgressModel';
 import { isRemoteCompletionConfirmed } from '../services/TransferSessionPolicy';
 import {
+  PC_SESSION_TOP_BAR_HIDDEN_KEY,
   REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY,
   REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY,
   REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY,
   RemoteSessionControlBarVisibility,
   remoteSessionControlBarHidden,
+  resolveRemoteSessionControlBarVisibility,
   remoteTopBarLayout,
   shouldShowRemoteSessionTopBar,
   shouldUseRemoteSessionEdgeRail
@@ -4154,12 +4156,33 @@ struct RemoteDesktop {
   private restoreSessionControlBarVisibilityPreferences(): void {
     try {
       const prefs = preferences.getPreferencesSync(getContext(this), { name: 'RemoteDesktopAppPrefs' });
-      this.sessionControlBarHiddenRdp =
-        prefs.getSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY, false) as boolean;
-      this.sessionControlBarHiddenRustDesk =
-        prefs.getSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY, false) as boolean;
-      this.sessionControlBarHiddenVnc =
-        prefs.getSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY, false) as boolean;
+      const rustDeskPreferencePresent: boolean =
+        prefs.hasSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY);
+      const vncPreferencePresent: boolean =
+        prefs.hasSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY);
+      const visibility: RemoteSessionControlBarVisibility =
+        resolveRemoteSessionControlBarVisibility({
+          rdpHidden: prefs.getSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY, false) as boolean,
+          rustDeskHidden:
+            prefs.getSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY, false) as boolean,
+          vncHidden: prefs.getSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY, false) as boolean,
+          moonlightHidden: false
+        }, {
+          rustDeskPresent: rustDeskPreferencePresent,
+          vncPresent: vncPreferencePresent
+        }, prefs.getSync(PC_SESSION_TOP_BAR_HIDDEN_KEY, false) as boolean);
+      this.sessionControlBarHiddenRdp = visibility.rdpHidden;
+      this.sessionControlBarHiddenRustDesk = visibility.rustDeskHidden;
+      this.sessionControlBarHiddenVnc = visibility.vncHidden;
+      if (!rustDeskPreferencePresent) {
+        prefs.putSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY,
+          this.sessionControlBarHiddenRustDesk);
+      }
+      if (!vncPreferencePresent) {
+        prefs.putSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY,
+          this.sessionControlBarHiddenVnc);
+      }
+      if (!rustDeskPreferencePresent || !vncPreferencePresent) { prefs.flushSync(); }
     } catch (err) {
       this.sessionControlBarHiddenRdp = false;
       this.sessionControlBarHiddenRustDesk = false;

@@ -15,10 +15,12 @@ import {
   REMOTE_SESSION_COLLAPSED_RAIL_ICON,
   REMOTE_SESSION_COLLAPSED_RAIL_TOUCH_WIDTH,
   REMOTE_SESSION_COLLAPSED_RAIL_WIDTH,
+  REMOTE_SESSION_COLLAPSED_TOP_HEIGHT,
+  REMOTE_SESSION_COLLAPSED_TOP_TOUCH_HEIGHT,
+  REMOTE_SESSION_COLLAPSED_TOP_WIDTH,
   remoteSessionRailDragOffset,
   remoteSessionRailShouldCollapse
 } from '../../services/RemoteSessionTopBarPolicy';
-import { MoonlightBrandIcon } from './MoonlightBrandIcon';
 
 @Component
 export struct MoonlightSessionToolbar {
@@ -269,21 +271,25 @@ export struct MoonlightSessionToolbar {
       .onClick((): void => { this.expanded = true; this.scheduleHide(); })
       .accessibilityText('展开 Moonlight 会话贴边栏，连接质量' + this.qualityLabel)
     } else {
-      Button() {
-        Row({ space: 5 }) {
-          MoonlightBrandIcon({ iconSize: 20,
-            tint: this.pal().text, accessibilityLabel: '打开 Moonlight 控制' })
-          Column().width(7).height(7).borderRadius(4).backgroundColor(this.qualityColor)
-        }.justifyContent(FlexAlign.Center)
+      Stack() {
+        Row() {
+          SymbolGlyph($r('sys.symbol.chevron_down')).fontSize(15)
+            .fontColor([REMOTE_SESSION_COLLAPSED_RAIL_ICON])
+        }
+        .width(REMOTE_SESSION_COLLAPSED_TOP_WIDTH)
+        .height(REMOTE_SESSION_COLLAPSED_TOP_HEIGHT)
+        .justifyContent(FlexAlign.Center)
+        .backgroundColor(REMOTE_SESSION_COLLAPSED_RAIL_BACKGROUND)
+        .backdropBlur(16)
+        .border({ width: 0.5, color: REMOTE_SESSION_COLLAPSED_RAIL_BORDER })
+        .borderRadius({ topLeft: 0, topRight: 0, bottomLeft: 10, bottomRight: 10 })
+        .shadow({ radius: 6, color: 'rgba(0,0,0,0.14)', offsetY: 1 })
+        .position({ x: 0, y: 0 })
       }
-      .width(48).height(54).padding(0)
-      .backgroundColor('rgba(26,28,34,0.58)')
-      .backdropBlur(16)
-      .borderRadius(18)
-      .border({ width: 1, color: this.pal().floatBorder })
-      .shadow({ radius: 12, color: this.pal().fabShadow, offsetY: 4 })
+      .width(REMOTE_SESSION_COLLAPSED_TOP_WIDTH)
+      .height(REMOTE_SESSION_COLLAPSED_TOP_TOUCH_HEIGHT)
       .onClick((): void => { this.expanded = true; this.scheduleHide(); })
-      .accessibilityText('打开串流控制，连接质量' + this.qualityLabel)
+      .accessibilityText('展开 Moonlight 会话顶栏，连接质量' + this.qualityLabel)
     }
   }
 

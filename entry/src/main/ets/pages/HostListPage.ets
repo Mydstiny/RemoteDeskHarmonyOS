@@ -473,13 +473,15 @@ import {
   resolveInitialRemoteDisplayScaleMode
 } from '../services/RemoteCanvasTransformPolicy';
 import {
+  PC_SESSION_TOP_BAR_HIDDEN_KEY,
   REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY,
   REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY,
   REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY,
   REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY,
   RemoteSessionControlBarVisibility,
   remoteSessionControlBarHidden,
-  remoteSessionControlBarSelectionSummary
+  remoteSessionControlBarSelectionSummary,
+  resolveRemoteSessionControlBarVisibility
 } from '../services/RemoteSessionTopBarPolicy';
 import {
   resolveCanvasGestureZoomPreference
@@ -1446,14 +1448,18 @@ struct HostListPage {
         prefs.getSync('groupedHostCards', defaults.groupedHostCards) as boolean;
       const savedHostCardSensitiveInfoHidden: boolean =
         prefs.getSync(HOST_CARD_SENSITIVE_INFO_HIDDEN_KEY, false) as boolean;
-      const savedSessionControlBarHiddenRdp: boolean =
-        prefs.getSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY, false) as boolean;
-      const savedSessionControlBarHiddenRustDesk: boolean =
-        prefs.getSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY, false) as boolean;
-      const savedSessionControlBarHiddenVnc: boolean =
-        prefs.getSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY, false) as boolean;
-      const savedSessionControlBarHiddenMoonlight: boolean =
-        prefs.getSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY, false) as boolean;
+      const sessionControlBarVisibility: RemoteSessionControlBarVisibility =
+        resolveRemoteSessionControlBarVisibility({
+          rdpHidden: prefs.getSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY, false) as boolean,
+          rustDeskHidden:
+            prefs.getSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY, false) as boolean,
+          vncHidden: prefs.getSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY, false) as boolean,
+          moonlightHidden:
+            prefs.getSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY, false) as boolean
+        }, {
+          rustDeskPresent: prefs.hasSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY),
+          vncPresent: prefs.hasSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY)
+        }, prefs.getSync(PC_SESSION_TOP_BAR_HIDDEN_KEY, false) as boolean);
       const savedRustDeskPresenceDetection: boolean =
         prefs.getSync('rustdeskPresenceDetectionEnabled',
           defaults.rustdeskPresenceDetectionEnabled) as boolean;
@@ -1504,10 +1510,10 @@ struct HostListPage {
       this.hostCardSensitiveInfoHidden = savedHostCardSensitiveInfoHidden;
       AppStorage.setOrCreate(HOST_CARD_SENSITIVE_INFO_HIDDEN_KEY,
         this.hostCardSensitiveInfoHidden);
-      this.sessionControlBarHiddenRdp = savedSessionControlBarHiddenRdp;
-      this.sessionControlBarHiddenRustDesk = savedSessionControlBarHiddenRustDesk;
-      this.sessionControlBarHiddenVnc = savedSessionControlBarHiddenVnc;
-      this.sessionControlBarHiddenMoonlight = savedSessionControlBarHiddenMoonlight;
+      this.sessionControlBarHiddenRdp = sessionControlBarVisibility.rdpHidden;
+      this.sessionControlBarHiddenRustDesk = sessionControlBarVisibility.rustDeskHidden;
+      this.sessionControlBarHiddenVnc = sessionControlBarVisibility.vncHidden;
+      this.sessionControlBarHiddenMoonlight = sessionControlBarVisibility.moonlightHidden;
       AppStorage.setOrCreate(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY,
         this.sessionControlBarHiddenRdp);
       AppStorage.setOrCreate(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY,
@@ -1607,6 +1613,14 @@ struct HostListPage {
       if (!prefs.hasSync('rdpControlMode')) { prefs.putSync('rdpControlMode', savedRdpControlMode); }
       if (!prefs.hasSync('canvasGestureZoomEnabled')) {
         prefs.putSync('canvasGestureZoomEnabled', savedCanvasGestureZoomEnabled);
+      }
+      if (!prefs.hasSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY)) {
+        prefs.putSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY,
+          this.sessionControlBarHiddenRustDesk);
+      }
+      if (!prefs.hasSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY)) {
+        prefs.putSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY,
+          this.sessionControlBarHiddenVnc);
       }
       this.totpPageLocked = savedLock;
       this.rustdeskImageQuality = savedQuality >= 0 && savedQuality <= 2 ? savedQuality : 1;
@@ -16373,6 +16387,8 @@ struct HostListPage {
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
       Toggle({ type: ToggleType.Switch, isOn: this.sessionControlBarHidden(protocol) })
         .selectedColor(this.accentColor).scale({ x: 0.88, y: 0.88 })
+        .accessibilityText((this.sessionControlBarHidden(protocol) ? '显示 ' : '隐藏 ') +
+          label + ' 会话控制栏')
         .onChange((on: boolean): void => { this.saveSessionControlBarHidden(protocol, on); })
     }.width('100%').height(58).padding({ left: 52, right: 16 })
   }
