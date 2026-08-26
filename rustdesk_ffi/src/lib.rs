@@ -1041,6 +1041,7 @@ struct RustDeskClient {
     password: String,
     request_approval: bool,
     direct_connection: bool,
+    peer_platform: String,
     controls: Arc<ControlInbox>,
     shutdown_stream: Option<TcpStream>,
     stream_handle: Option<std::thread::JoinHandle<io::Result<()>>>,
@@ -1689,6 +1690,16 @@ fn rustdesk_connect_impl(
             let controls = Arc::new(ControlInbox::default());
             let stream_controls = Arc::clone(&controls);
             let shutdown_stream = c.try_clone_stream().ok();
+            let peer_platform = c.peer_platform();
+            let peer_platform_label = if peer_platform.is_empty() {
+                "unknown"
+            } else {
+                peer_platform.as_str()
+            };
+            eprintln!(
+                "[RustDesk-FFI] authenticated peer platform={}",
+                peer_platform_label
+            );
             let callback_user_data = user_data as usize;
             let remote_clipboard = Arc::new(Mutex::new(Vec::<u8>::new()));
             let stream_remote_clipboard = Arc::clone(&remote_clipboard);
@@ -1836,6 +1847,7 @@ fn rustdesk_connect_impl(
                 password,
                 request_approval,
                 direct_connection: config.direct_connection,
+                peer_platform,
                 controls,
                 shutdown_stream,
                 stream_handle: Some(stream_handle),
@@ -2031,14 +2043,8 @@ pub extern "C" fn rustdesk_cancel_pending_connect_for_session(session_id: u64) {
     cancel_pending_connect_for_session(session_id);
 }
 
-/// 复制最近一次连接错误到调用方缓冲区，返回完整错误长度。
-#[no_mangle]
-pub extern "C" fn rustdesk_last_error(buffer: *mut c_char, buffer_len: usize) -> usize {
-    let message = LAST_ERROR
-        .lock()
-        .map(|err| err.clone())
-        .unwrap_or_else(|_| "last error lock poisoned".to_string());
-    let bytes = message.as_bytes();
+fn copy_string_to_c_buffer(value: &str, buffer: *mut c_char, buffer_len: usize) -> usize {
+    let bytes = value.as_bytes();
     if !buffer.is_null() && buffer_len > 0 {
         let copy_len = bytes.len().min(buffer_len - 1);
         unsafe {
@@ -2047,6 +2053,30 @@ pub extern "C" fn rustdesk_last_error(buffer: *mut c_char, buffer_len: usize) ->
         }
     }
     bytes.len()
+}
+
+/// 复制最近一次连接错误到调用方缓冲区，返回完整错误长度。
+#[no_mangle]
+pub extern "C" fn rustdesk_last_error(buffer: *mut c_char, buffer_len: usize) -> usize {
+    let message = LAST_ERROR
+        .lock()
+        .map(|err| err.clone())
+        .unwrap_or_else(|_| "last error lock poisoned".to_string());
+    copy_string_to_c_buffer(&message, buffer, buffer_len)
+}
+
+/// Copy the authenticated PeerInfo platform for one live connection.
+#[no_mangle]
+pub extern "C" fn rustdesk_get_peer_platform(
+    handle: *mut c_void,
+    buffer: *mut c_char,
+    buffer_len: usize,
+) -> usize {
+    if handle.is_null() {
+        return 0;
+    }
+    let ctx = unsafe { &*(handle as *const RustDeskClient) };
+    copy_string_to_c_buffer(&ctx.peer_platform, buffer, buffer_len)
 }
 
 /// Probe a RustDesk peer without opening a desktop session.
@@ -2869,6 +2899,7 @@ mod tests {
             password: String::new(),
             request_approval: false,
             direct_connection: false,
+            peer_platform: String::new(),
             controls: Arc::new(ControlInbox::default()),
             shutdown_stream: None,
             stream_handle: None,
@@ -2878,6 +2909,21 @@ mod tests {
             stream_stats: Arc::new(Mutex::new(RustDeskStreamStats::default())),
             display_state: Arc::new(Mutex::new(display_state)),
         }
+    }
+
+    #[test]
+    fn peer_platform_ffi_copy_is_bounded_and_nul_terminated() {
+        let mut client = test_client_with_display_state(RustDeskDisplayState::default());
+        client.peer_platform = "Windows 11".to_string();
+        let handle = &mut client as *mut RustDeskClient as *mut c_void;
+        let mut buffer = [0 as c_char; 8];
+
+        let full_len = rustdesk_get_peer_platform(handle, buffer.as_mut_ptr(), buffer.len());
+
+        assert_eq!(full_len, "Windows 11".len());
+        let bytes = buffer.map(|value| value as u8);
+        assert_eq!(&bytes[..7], b"Windows");
+        assert_eq!(bytes[7], 0);
     }
 
     #[test]

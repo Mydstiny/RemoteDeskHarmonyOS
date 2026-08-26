@@ -198,7 +198,13 @@ public:
      * @return 0=成功, 负数=错误码
      */
     int Init(int width, int height, CodecType codec, int64_t rendererHandle = -1,
-             bool desktopSurfaceCompatibility = false);
+             bool desktopSurfaceCompatibility = false,
+             Render::NativeImagePresentationMode presentationMode =
+                 Render::NativeImagePresentationMode::Identity);
+
+    /** Update the protocol-owned OES orientation without rebuilding AVCodec. */
+    void SetNativeImagePresentationMode(
+        Render::NativeImagePresentationMode presentationMode);
 
     /**
      * 送入编码帧数据 (线程安全, 入队等待解码器回调取走)
@@ -323,7 +329,9 @@ private:
     Render::NativeImageTransform textureTransform_ =
         Render::IdentityNativeImageTransform();
     bool            desktopSurfaceCompatibility_ = false;
-    bool            textureTransformLogged_ = false;
+    std::atomic<Render::NativeImagePresentationMode> presentationMode_ {
+        Render::NativeImagePresentationMode::Identity};
+    std::atomic<bool> textureTransformLogged_ {false};
     int             width_ = 0;
     int             height_ = 0;
     CodecType       codecType_ = CodecType::H264;
@@ -480,6 +488,9 @@ namespace DecoderNapi {
                                const DecoderSessionIdentity& owner);
     void SetActiveSessionId(const DecoderSessionIdentity& owner);
     void ClearActiveSessionId(const DecoderSessionIdentity& owner);
+    bool SetActiveNativeImagePresentationMode(
+        const DecoderSessionIdentity& owner,
+        Render::NativeImagePresentationMode presentationMode);
     bool SetActiveDisplay(const DecoderSessionIdentity& owner, int display);
     bool RequestActiveDecoderRecovery(const DecoderSessionIdentity& owner);
     /** Rebind a surviving decoder to the current renderer after transport continuity. */

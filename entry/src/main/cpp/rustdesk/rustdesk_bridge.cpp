@@ -18,7 +18,9 @@
 #include "rustdesk_ipc.h"
 #include "common/safe_log.h"
 #include "extensions/extension_registry.h"
+#include "render/hw_decoder.h"
 #include "render/video_perf_counters.h"
+#include "rustdesk_peer_presentation_policy.h"
 #include <hilog/log.h>
 #include <algorithm>
 #include <condition_variable>
@@ -153,6 +155,7 @@ extern "C" {
     bool  rustdesk_capture_displays(void* handle, const int* displays, size_t count);
     bool  rustdesk_refresh_video_display(void* handle, int display);
     size_t rustdesk_last_error(char* buffer, size_t buffer_len);
+    size_t rustdesk_get_peer_platform(void* handle, char* buffer, size_t buffer_len);
     const char* rustdesk_version();
 }
 
@@ -2753,6 +2756,25 @@ int RustDeskBridge::connectInternal(
                 }
                 return;
             }
+
+            char peerPlatform[64] = {0};
+            (void)rustdesk_get_peer_platform(
+                ffiHandle, peerPlatform, sizeof(peerPlatform));
+            const Render::NativeImagePresentationMode presentationMode =
+                RustDeskPresentation::NativeImageModeForPeerPlatform(peerPlatform);
+            const DecoderSessionIdentity presentationOwner {
+                sessionId,
+                callbackGeneration,
+                impl->ownerToken.load(std::memory_order_acquire)
+            };
+            const bool presentationPublished =
+                DecoderNapi::SetActiveNativeImagePresentationMode(
+                    presentationOwner, presentationMode);
+            OH_LOG_INFO(LOG_APP,
+                        "[RustDesk-FFI] peer platform=%{public}s NativeImage presentation=%{public}s ownerPublished=%{public}s",
+                        peerPlatform[0] == '\0' ? "unknown" : peerPlatform,
+                        Render::NativeImagePresentationModeName(presentationMode),
+                        presentationPublished ? "yes" : "no");
 
             const char* connectedMessage = "Connected via Rust FFI (protobuf protocol)";
             ConnectionStateCallback connectedCallback;

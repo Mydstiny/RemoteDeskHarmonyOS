@@ -7,6 +7,14 @@ export const PC_SESSION_TOP_BAR_HIDDEN_KEY: string = 'pcSessionTopBarHidden';
 
 export type RemoteTopBarMenuId = 'control' | 'display' | 'keyboardMouse' | 'chat' | 'voice' | 'record';
 
+export type RemoteSessionPrimaryActionId = 'pin' | 'control' | 'display' |
+  'keyboardMouse' | 'keyboard' | 'fileTransfer' | 'diagnostics' | 'disconnect';
+
+const RUSTDESK_PRIMARY_ACTION_IDS: RemoteSessionPrimaryActionId[] = [
+  'pin', 'control', 'display', 'keyboardMouse', 'keyboard',
+  'fileTransfer', 'diagnostics', 'disconnect'
+];
+
 export interface RemoteTopBarContext {
   protocol: string;
   isDesktopDevice: boolean;
@@ -115,6 +123,11 @@ export function shouldUseRustDeskEdgeRail(protocol: string, isDesktopDevice: boo
 export function shouldUseRemoteSessionEdgeRail(protocol: string,
   isDesktopDevice: boolean): boolean {
   return shouldShowRemoteSessionTopBar(protocol) && !isDesktopDevice;
+}
+
+/** PC top bar and Phone/Pad edge rail consume this exact ordered action set. */
+export function remoteSessionPrimaryActionIds(protocol: string): RemoteSessionPrimaryActionId[] {
+  return protocol === 'rustdesk' ? RUSTDESK_PRIMARY_ACTION_IDS.slice() : [];
 }
 
 export function remoteTopBarLayout(isDesktopDevice: boolean, breakpoint: string,

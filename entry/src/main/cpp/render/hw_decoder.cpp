@@ -536,11 +536,13 @@ const char* HardwareDecoder::GetMimeType(CodecType codec) {
 }
 
 int HardwareDecoder::Init(int width, int height, CodecType codec, int64_t rendererHandle,
-                          bool desktopSurfaceCompatibility) {
+                          bool desktopSurfaceCompatibility,
+                          Render::NativeImagePresentationMode presentationMode) {
     OH_LOG_INFO(LOG_APP,
-                "[Decoder] Init: %{public}dx%{public}d codec=%{public}s desktopSurface=%{public}s",
+                "[Decoder] Init: %{public}dx%{public}d codec=%{public}s desktopSurface=%{public}s presentation=%{public}s",
                 width, height, GetMimeType(codec),
-                desktopSurfaceCompatibility ? "yes" : "no");
+                desktopSurfaceCompatibility ? "yes" : "no",
+                Render::NativeImagePresentationModeName(presentationMode));
 
     // A failed init retires the callback context together with any platform
     // objects that had already registered a callback.  A later reconnect must
@@ -554,8 +556,9 @@ int HardwareDecoder::Init(int width, int height, CodecType codec, int64_t render
     height_ = height;
     codecType_ = codec;
     desktopSurfaceCompatibility_ = desktopSurfaceCompatibility;
+    presentationMode_.store(presentationMode, std::memory_order_release);
     textureTransform_ = Render::IdentityNativeImageTransform();
-    textureTransformLogged_ = false;
+    textureTransformLogged_.store(false, std::memory_order_release);
     {
         std::lock_guard<std::mutex> lk(mutex_);
         frameAvailableCount_ = 0;
@@ -764,6 +767,20 @@ int HardwareDecoder::Init(int width, int height, CodecType codec, int64_t render
     OH_LOG_INFO(LOG_APP, "[Decoder] ✓ 解码器启动成功 (Surface模式, %{public}dx%{public}d texture=%{public}u)",
                 width, height, textureId_);
     return 0;
+}
+
+void HardwareDecoder::SetNativeImagePresentationMode(
+    Render::NativeImagePresentationMode presentationMode) {
+    const Render::NativeImagePresentationMode previous =
+        presentationMode_.exchange(presentationMode, std::memory_order_acq_rel);
+    if (previous == presentationMode) {
+        return;
+    }
+    textureTransformLogged_.store(false, std::memory_order_release);
+    OH_LOG_INFO(LOG_APP,
+                "[Decoder] NativeImage presentation changed %{public}s -> %{public}s",
+                Render::NativeImagePresentationModeName(previous),
+                Render::NativeImagePresentationModeName(presentationMode));
 }
 
 size_t HardwareDecoder::clearInputQueueLocked() {
@@ -1425,23 +1442,26 @@ void HardwareDecoder::handleOutputBuffer(uint32_t /*index*/) {
             consecutiveSurfaceUpdateFailures_ = 0;
         }
         if (updated && desktopSurfaceCompatibility_) {
+            const Render::NativeImagePresentationMode presentationMode =
+                presentationMode_.load(std::memory_order_acquire);
             float producerTransform[16] = {};
             const int32_t transformRet = OH_NativeImage_GetTransformMatrixV2(
                 nativeImage_, producerTransform);
             textureTransform_ =
                 Render::ResolveNativeImagePresentationTransform(
-                    true, transformRet, producerTransform, textureTransform_);
-            if (!textureTransformLogged_) {
-                textureTransformLogged_ = true;
+                    presentationMode, transformRet, producerTransform,
+                    textureTransform_);
+            if (!textureTransformLogged_.exchange(true, std::memory_order_acq_rel)) {
                 OH_LOG_INFO(LOG_APP,
-                            "[Decoder] desktop NativeImage producer transform ret=%{public}d row0=[%{public}f,%{public}f,%{public}f,%{public}f] row1=[%{public}f,%{public}f,%{public}f,%{public}f] row3=[%{public}f,%{public}f,%{public}f,%{public}f] presentation=identity",
+                            "[Decoder] desktop NativeImage producer transform ret=%{public}d row0=[%{public}f,%{public}f,%{public}f,%{public}f] row1=[%{public}f,%{public}f,%{public}f,%{public}f] row3=[%{public}f,%{public}f,%{public}f,%{public}f] presentation=%{public}s",
                             transformRet,
                             producerTransform[0], producerTransform[4],
                             producerTransform[8], producerTransform[12],
                             producerTransform[1], producerTransform[5],
                             producerTransform[9], producerTransform[13],
                             producerTransform[3], producerTransform[7],
-                            producerTransform[11], producerTransform[15]);
+                            producerTransform[11], producerTransform[15],
+                            Render::NativeImagePresentationModeName(presentationMode));
             }
         }
     }
@@ -1919,6 +1939,8 @@ struct DecoderContext {
     // Explicitly set only for RustDesk sessions running in the PC layout.
     // Phone/Pad keep their released output scheduling and texture orientation.
     bool desktopSurfaceCompatibility = false;
+    Render::NativeImagePresentationMode presentationMode =
+        Render::NativeImagePresentationMode::Identity;
     // Serializes decode/rebind/detach/destroy and keeps a context alive while
     // a caller is using it through the registry below.
     std::mutex pipelineMutex;
@@ -1977,6 +1999,8 @@ struct DecoderContext {
 static std::atomic<int64_t> g_activeDecoderHandle {0};
 static std::mutex g_activeDecoderOwnerMutex;
 static DecoderSessionIdentity g_activeDecoderOwner;
+static Render::NativeImagePresentationMode g_activeNativeImagePresentationMode =
+    Render::NativeImagePresentationMode::Identity;
 static std::atomic<uint64_t> g_activeDisplayGeneration {0};
 static std::atomic<uint64_t> g_nextDecoderGeneration {1};
 // -1 means that the first frame establishes the legacy/current display. Once
@@ -2514,7 +2538,8 @@ bool RecreateDecoderForFrame(const std::shared_ptr<DecoderContext>& ctx, const V
         }
     }
     int result = decoder->Init(frame.width, frame.height, frame.codec, -1,
-                               ctx->desktopSurfaceCompatibility);
+                               ctx->desktopSurfaceCompatibility,
+                               ctx->presentationMode);
     if (ctx->rendererHandle > 0) {
         if (owner.valid()) {
             RendererNapi::ReleaseCurrent(ctx->rendererHandle, owner);
@@ -3106,13 +3131,19 @@ napi_value NapiInitDecoder(napi_env env, napi_callback_info info) {
     ctx->height = height;
     const int64_t handleValue = RegisterDecoderContext(ctx);
     if (handleValue > 0) {
+        {
+            std::lock_guard<std::mutex> ownerLock(g_activeDecoderOwnerMutex);
+            if (Render::SessionOwnerMatches(g_activeDecoderOwner, ctx->owner)) {
+                ctx->presentationMode = g_activeNativeImagePresentationMode;
+            }
+        }
         auto decoder = std::shared_ptr<HardwareDecoder>(new HardwareDecoder());
         if (decoder->SetCallbackIdentity(handleValue, ctx->owner,
                                           ctx->decoderGeneration)) {
             ctx->decoder = decoder;
             const int result = decoder->Init(
                 width, height, codec, rendererHandle,
-                desktopSurfaceCompatibility);
+                desktopSurfaceCompatibility, ctx->presentationMode);
             if (result == 0) {
                 napi_value handle;
                 napi_create_int64(env, handleValue, &handle);
@@ -3137,6 +3168,7 @@ napi_value NapiInitDecoder(napi_env env, napi_callback_info info) {
             softwareCtx->useSoftware = true;
             softwareCtx->desktopSurfaceCompatibility =
                 desktopSurfaceCompatibility;
+            softwareCtx->presentationMode = ctx->presentationMode;
             softwareCtx->width = width;
             softwareCtx->height = height;
             const int64_t softwareHandle = RegisterDecoderContext(softwareCtx);
@@ -3855,6 +3887,8 @@ void DecoderNapi::SetActiveSessionId(const DecoderSessionIdentity& owner) {
         return;
     }
     g_activeDecoderOwner = owner;
+    g_activeNativeImagePresentationMode =
+        Render::NativeImagePresentationMode::Identity;
     g_activeDecoderHandle.store(0, std::memory_order_release);
     g_activeDisplay.store(-1, std::memory_order_release);
     g_activeDisplayGeneration.fetch_add(1, std::memory_order_acq_rel);
@@ -3866,9 +3900,43 @@ void DecoderNapi::ClearActiveSessionId(const DecoderSessionIdentity& owner) {
         return;
     }
     g_activeDecoderOwner = DecoderSessionIdentity {};
+    g_activeNativeImagePresentationMode =
+        Render::NativeImagePresentationMode::Identity;
     g_activeDecoderHandle.store(0, std::memory_order_release);
     g_activeDisplay.store(-1, std::memory_order_release);
     g_activeDisplayGeneration.fetch_add(1, std::memory_order_acq_rel);
+}
+
+bool DecoderNapi::SetActiveNativeImagePresentationMode(
+    const DecoderSessionIdentity& owner,
+    Render::NativeImagePresentationMode presentationMode) {
+    DecoderHandleLease decoderLease;
+    {
+        std::lock_guard<std::mutex> ownerLock(g_activeDecoderOwnerMutex);
+        if (!Render::SessionOwnerMatches(g_activeDecoderOwner, owner)) {
+            return false;
+        }
+        g_activeNativeImagePresentationMode = presentationMode;
+        const int64_t decoderHandle =
+            g_activeDecoderHandle.load(std::memory_order_acquire);
+        if (decoderHandle > 0) {
+            decoderLease = g_decoderRegistry.acquire(decoderHandle, owner);
+        }
+    }
+    if (!decoderLease) {
+        // The protocol can finish its handshake before ArkTS publishes the
+        // decoder handle. The owner-scoped value above is consumed by init/bind.
+        return true;
+    }
+    std::lock_guard<std::mutex> pipelineLock(decoderLease->pipelineMutex);
+    if (!Render::SessionOwnerMatches(decoderLease.owner(), owner)) {
+        return false;
+    }
+    decoderLease->presentationMode = presentationMode;
+    if (decoderLease->decoder) {
+        decoderLease->decoder->SetNativeImagePresentationMode(presentationMode);
+    }
+    return true;
 }
 
 bool DecoderNapi::SetActiveDisplay(const DecoderSessionIdentity& owner, int display) {
@@ -3928,11 +3996,14 @@ bool DecoderNapi::BindVideoPipeline(
         return false;
     }
     DecoderHandleLease decoderLease;
+    Render::NativeImagePresentationMode presentationMode =
+        Render::NativeImagePresentationMode::Identity;
     {
         std::lock_guard<std::mutex> ownerLock(g_activeDecoderOwnerMutex);
         if (!Render::SessionOwnerMatches(g_activeDecoderOwner, owner)) {
             return false;
         }
+        presentationMode = g_activeNativeImagePresentationMode;
         decoderLease = g_decoderRegistry.acquire(decoderHandle, owner);
     }
     const std::shared_ptr<DecoderContext> ctx = decoderLease.shared();
@@ -3982,6 +4053,10 @@ bool DecoderNapi::BindVideoPipeline(
         ctx->dropCounterGeneration = ctx->decoderGeneration;
         ctx->displayGeneration = g_activeDisplayGeneration.load(std::memory_order_acquire);
         ctx->display = g_activeDisplay.load(std::memory_order_acquire);
+        ctx->presentationMode = presentationMode;
+        if (ctx->decoder) {
+            ctx->decoder->SetNativeImagePresentationMode(presentationMode);
+        }
         ctx->recoveryRequested.store(false, std::memory_order_release);
         ctx->recoveryAttempts.store(0, std::memory_order_release);
         ctx->recoveryTerminal.store(false, std::memory_order_release);

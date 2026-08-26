@@ -6,7 +6,9 @@ import {
   REMOTE_SESSION_COLLAPSED_RAIL_ICON,
   REMOTE_SESSION_COLLAPSED_RAIL_TOUCH_WIDTH,
   REMOTE_SESSION_COLLAPSED_RAIL_WIDTH,
+  RemoteSessionPrimaryActionId,
   RemoteTopBarLayout,
+  remoteSessionPrimaryActionIds,
   remoteSessionRailDragOffset,
   remoteSessionRailShouldCollapse,
   rustDeskTopBarAutoCollapseDelayMs,
@@ -323,7 +325,7 @@ export struct RemoteSessionTopBar {
   }
 
   private edgeRailButtonCount(): number {
-    return 8;
+    return remoteSessionPrimaryActionIds(this.protocol).length;
   }
 
   private edgeRailHeight(): number {
@@ -840,55 +842,83 @@ export struct RemoteSessionTopBar {
   }
 
   @Builder
+  private primaryActionButton(actionId: RemoteSessionPrimaryActionId) {
+    if (actionId === 'pin') {
+      this.iconButton(this.pinned ? $r('sys.symbol.pin_fill') : $r('sys.symbol.pin'),
+        this.pinned ? '#3A3A3A' : this.accentColor, (): void => {
+          this.pinned = !this.pinned;
+          this.scheduleAutoCollapse();
+        }, 18, this.pinned ? '取消固定会话工具栏' : '固定会话工具栏')
+    } else if (actionId === 'control') {
+      this.iconButton($r('sys.symbol.gearshape_fill'), this.accentColor,
+        (): void => { this.toggleMenu('control'); }, 18, '打开会话控制')
+    } else if (actionId === 'display') {
+      this.iconButton($r('sys.symbol.display'), this.accentColor,
+        (): void => { this.toggleMenu('display'); }, 18, '打开显示与画质')
+    } else if (actionId === 'keyboardMouse') {
+      this.iconButton($r('sys.symbol.mouse'), this.accentColor,
+        (): void => { this.toggleMenu('keyboardMouse'); }, 18, '打开鼠标与触控设置')
+    } else if (actionId === 'keyboard') {
+      this.iconButton($r('sys.symbol.keyboard'), this.keyboardOpen ? '#2A9D8F' : this.accentColor,
+        (): void => { this.toggleMenu('keyboard'); }, 18, '选择虚拟键盘或组合键')
+    } else if (actionId === 'fileTransfer') {
+      this.iconButton($r('sys.symbol.doc'), this.accentColor, (): void => {
+        this.runAction('fileTransfer', (): void => { this.actions.onOpenFileTransfer(); });
+      }, 18, '发送文件')
+    } else if (actionId === 'diagnostics') {
+      this.iconButton($r('sys.symbol.performance'),
+        this.diagnosticsEnabled ? '#2A9D8F' : this.accentColor, (): void => {
+          this.runAction('diagnostics', (): void => {
+            this.actions.onToggleDiagnostics(!this.diagnosticsEnabled);
+          });
+        }, 18, this.diagnosticsEnabled ? '关闭性能面板' : '打开性能面板')
+    } else {
+      this.iconButton($r('sys.symbol.xmark_circle_fill'), '#FF5353',
+        (): void => { this.actions.onDisconnect(); }, 18, '断开 RustDesk 会话')
+    }
+  }
+
+  @Builder
+  private primaryActionButtons(vertical: boolean) {
+    if (vertical) {
+      Column({ space: this.layout.itemGap }) {
+        ForEach(remoteSessionPrimaryActionIds(this.protocol),
+          (actionId: RemoteSessionPrimaryActionId): void => {
+            this.primaryActionButton(actionId)
+          }, (actionId: RemoteSessionPrimaryActionId): string => actionId)
+      }
+    } else {
+      Row({ space: this.layout.itemGap }) {
+        ForEach(remoteSessionPrimaryActionIds(this.protocol),
+          (actionId: RemoteSessionPrimaryActionId): void => {
+            this.primaryActionButton(actionId)
+          }, (actionId: RemoteSessionPrimaryActionId): string => actionId)
+      }
+    }
+  }
+
+  @Builder
   private toolbarBody() {
     Stack() {
       Row() {
-        this.iconButton(this.pinned ? $r('sys.symbol.pin_fill') : $r('sys.symbol.pin'),
-          this.pinned ? '#3A3A3A' : this.accentColor, (): void => {
-          this.pinned = !this.pinned;
-          this.scheduleAutoCollapse();
-        }, 18, this.pinned ? '取消固定 RustDesk 工具栏' : '固定 RustDesk 工具栏')
-        Blank().width(this.layout.itemGap)
-        this.iconButton($r('sys.symbol.gearshape_fill'), this.accentColor,
-          (): void => { this.toggleMenu('control'); }, 18, '打开会话控制')
-        Blank().width(this.layout.itemGap)
-        this.iconButton($r('sys.symbol.display'), this.accentColor,
-          (): void => { this.toggleMenu('display'); }, 18, '打开显示与画质')
-        Blank().width(this.layout.itemGap)
-        this.iconButton($r('sys.symbol.mouse'), this.accentColor,
-          (): void => { this.toggleMenu('keyboardMouse'); }, 18, '打开鼠标与触控设置')
-        Blank().width(this.layout.itemGap)
-        this.iconButton($r('sys.symbol.keyboard'), this.keyboardOpen ? '#2A9D8F' : this.accentColor,
-          (): void => { this.toggleMenu('keyboard'); }, 18, '选择虚拟键盘或组合键')
-        Blank().width(this.layout.itemGap)
-        this.iconButton($r('sys.symbol.doc'), this.accentColor, (): void => {
-          this.runAction('fileTransfer', (): void => { this.actions.onOpenFileTransfer(); });
-        }, 18, '发送文件')
-        Blank().width(this.layout.itemGap)
-        this.iconButton($r('sys.symbol.performance'),
-          this.diagnosticsEnabled ? '#2A9D8F' : this.accentColor, (): void => {
-            this.runAction('diagnostics', (): void => {
-              this.actions.onToggleDiagnostics(!this.diagnosticsEnabled);
-            });
-          }, 18, this.diagnosticsEnabled ? '关闭性能面板' : '打开性能面板')
-        Blank().width(this.layout.itemGap)
-        this.iconButton($r('sys.symbol.xmark_circle_fill'), '#FF5353',
-          (): void => { this.actions.onDisconnect(); }, 18, '断开 RustDesk 会话')
+        this.primaryActionButtons(false)
       }
       .height(this.layout.iconSize + 12)
       .padding({ left: this.layout.itemGap, right: this.layout.itemGap })
       .backgroundColor('rgba(255,255,255,0.94)')
-      .borderRadius(8)
+      .backdropBlur(16)
+      .border({ width: 0.5, color: REMOTE_SESSION_COLLAPSED_RAIL_BORDER })
+      .borderRadius(10)
       .shadow({ radius: 10, color: 'rgba(0,0,0,0.24)', offsetY: 2 })
       .position({ x: 0, y: 0 })
 
       Row() {
         SymbolGlyph($r('sys.symbol.chevron_down'))
           .fontSize(16)
-          .fontColor(['#444444'])
+          .fontColor([REMOTE_SESSION_COLLAPSED_RAIL_ICON])
         Text('收起')
           .fontSize(10)
-          .fontColor('#444444')
+          .fontColor(REMOTE_SESSION_COLLAPSED_RAIL_ICON)
           .margin({ left: 4 })
       }
       .height(28)
@@ -933,46 +963,14 @@ export struct RemoteSessionTopBar {
     Stack() {
       Scroll() {
         Column() {
-          this.iconButton(this.pinned ? $r('sys.symbol.pin_fill') : $r('sys.symbol.pin'),
-            this.pinned ? '#3A3A3A' : this.accentColor, (): void => {
-              this.pinned = !this.pinned;
-              this.scheduleAutoCollapse();
-            }, 18, this.pinned ? '取消固定 RustDesk 侧栏' : '固定 RustDesk 侧栏')
-          Blank().height(this.layout.itemGap)
-          this.iconButton($r('sys.symbol.gearshape_fill'), this.accentColor, (): void => {
-            this.toggleMenu('control');
-          }, 18, '打开会话控制')
-          Blank().height(this.layout.itemGap)
-          this.iconButton($r('sys.symbol.display'), this.accentColor, (): void => {
-            this.toggleMenu('display');
-          }, 18, '打开显示与画质')
-          Blank().height(this.layout.itemGap)
-          this.iconButton($r('sys.symbol.mouse'), this.accentColor,
-            (): void => { this.toggleMenu('keyboardMouse'); }, 18, '打开鼠标与触控设置')
-          Blank().height(this.layout.itemGap)
-          this.iconButton($r('sys.symbol.keyboard'), this.keyboardOpen ? '#2A9D8F' : this.accentColor,
-            (): void => { this.toggleMenu('keyboard'); }, 18, '选择虚拟键盘或组合键')
-          Blank().height(this.layout.itemGap)
-          this.iconButton($r('sys.symbol.doc'), this.accentColor, (): void => {
-            this.runAction('fileTransfer', (): void => { this.actions.onOpenFileTransfer(); });
-          }, 18, '发送文件')
-          Blank().height(this.layout.itemGap)
-          this.iconButton($r('sys.symbol.performance'),
-            this.diagnosticsEnabled ? '#2A9D8F' : this.accentColor, (): void => {
-              this.runAction('diagnostics', (): void => {
-                this.actions.onToggleDiagnostics(!this.diagnosticsEnabled);
-              });
-            }, 18, this.diagnosticsEnabled ? '关闭性能面板' : '打开性能面板')
-          Blank().height(this.layout.itemGap)
-          this.iconButton($r('sys.symbol.xmark_circle_fill'), '#FF5353', (): void => {
-            this.actions.onDisconnect();
-          }, 18, '断开 RustDesk 会话')
+          this.primaryActionButtons(true)
           Blank().height(this.layout.itemGap)
           Row() {
             SymbolGlyph($r('sys.symbol.chevron_right'))
               .fontSize(16)
-              .fontColor(['#444444'])
-            Text('隐藏').fontSize(10).fontColor('#444444').margin({ left: 4 })
+              .fontColor([REMOTE_SESSION_COLLAPSED_RAIL_ICON])
+            Text('收起').fontSize(10)
+              .fontColor(REMOTE_SESSION_COLLAPSED_RAIL_ICON).margin({ left: 4 })
           }
           .height(30)
           .width(this.edgeRailWidth() - 12)
@@ -991,6 +989,8 @@ export struct RemoteSessionTopBar {
       .height(this.edgeRailVisibleHeight())
       .scrollable(ScrollDirection.Vertical).scrollBar(BarState.Auto)
       .backgroundColor('rgba(255,255,255,0.94)')
+      .backdropBlur(16)
+      .border({ width: 0.5, color: REMOTE_SESSION_COLLAPSED_RAIL_BORDER })
       .borderRadius({ topLeft: 10, bottomLeft: 10, topRight: 0, bottomRight: 0 })
       .shadow({ radius: 10, color: 'rgba(0,0,0,0.24)', offsetX: -2 })
       .position({ x: this.effectiveMenuWidth() + this.layout.itemGap, y: this.edgeRailOffsetY() })
@@ -1072,13 +1072,14 @@ export struct RemoteSessionTopBar {
             Row() {
               SymbolGlyph($r('sys.symbol.ellipsis_bubble'))
                 .fontSize(18)
-                .fontColor(['#444444'])
+                .fontColor([REMOTE_SESSION_COLLAPSED_RAIL_ICON])
             }
             .width(48)
             .height(28)
             .justifyContent(FlexAlign.Center)
-            .backgroundColor('rgba(248,250,252,0.58)')
+            .backgroundColor(REMOTE_SESSION_COLLAPSED_RAIL_BACKGROUND)
             .backdropBlur(16)
+            .border({ width: 0.5, color: REMOTE_SESSION_COLLAPSED_RAIL_BORDER })
             .borderRadius({ topLeft: 0, topRight: 0, bottomLeft: 8, bottomRight: 8 })
             .shadow({ radius: 8, color: 'rgba(0,0,0,0.22)', offsetY: 2 })
             .onClick((): void => {

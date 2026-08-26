@@ -1,11 +1,18 @@
 #pragma once
 
 #include <array>
+#include <cmath>
+#include <cstddef>
 #include <cstdint>
 
 namespace Render {
 
 using NativeImageTransform = std::array<float, 16>;
+
+enum class NativeImagePresentationMode : uint8_t {
+    Identity = 0,
+    ProducerTransform = 1,
+};
 
 inline NativeImageTransform IdentityNativeImageTransform() {
     return NativeImageTransform {
@@ -19,23 +26,36 @@ inline NativeImageTransform IdentityNativeImageTransform() {
 /**
  * Return the texture transform for an encoded remote-desktop frame.
  *
- * OH_NativeImage_GetTransformMatrixV2 reports metadata set by the producer of
- * the surface. It is not the orientation contract of the decoded desktop
- * image. Remote frames are already produced in the renderer's top-left
- * coordinate domain. Applying the producer metadata can rotate an otherwise
- * upright desktop by 180 degrees, as observed on the API 23 Moonlight surface.
- * Keep the API value diagnostic-only and never retain a stale transform.
+ * The transform source is an explicit protocol decision. Moonlight and the
+ * released mobile paths retain the renderer's top-left identity contract,
+ * while a RustDesk PC session connected to a Windows peer consumes the valid
+ * NativeImage producer matrix to bridge the AVCodec texture-origin mismatch.
  */
 inline NativeImageTransform ResolveNativeImagePresentationTransform(
-    bool desktopSurfaceCompatibility,
+    NativeImagePresentationMode mode,
     int32_t readResult,
     const float matrix[16],
     const NativeImageTransform& previous) {
-    (void)desktopSurfaceCompatibility;
-    (void)readResult;
-    (void)matrix;
-    (void)previous;
-    return IdentityNativeImageTransform();
+    if (mode != NativeImagePresentationMode::ProducerTransform) {
+        return IdentityNativeImageTransform();
+    }
+    if (readResult != 0 || matrix == nullptr) {
+        return previous;
+    }
+    NativeImageTransform resolved {};
+    for (size_t index = 0; index < resolved.size(); ++index) {
+        if (!std::isfinite(matrix[index])) {
+            return previous;
+        }
+        resolved[index] = matrix[index];
+    }
+    return resolved;
+}
+
+inline const char* NativeImagePresentationModeName(
+    NativeImagePresentationMode mode) {
+    return mode == NativeImagePresentationMode::ProducerTransform
+        ? "producer" : "identity";
 }
 
 inline bool ShouldRenderNativeImageImmediately(bool desktopSurfaceCompatibility) {

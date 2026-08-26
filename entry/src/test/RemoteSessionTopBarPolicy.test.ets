@@ -5,6 +5,7 @@ import {
   REMOTE_SESSION_COLLAPSED_RAIL_TOUCH_WIDTH,
   REMOTE_SESSION_COLLAPSED_RAIL_WIDTH,
   protocolPreferenceOwner,
+  remoteSessionPrimaryActionIds,
   remoteSessionRailDragOffset,
   remoteSessionRailShouldCollapse,
   remoteTopBarDeviceClass,
@@ -131,6 +132,14 @@ export default function remoteSessionTopBarPolicyTest(): void {
   });
 
   describe('RemoteSessionTopBarPolicy_actions', (): void => {
+    it('pc_top_bar_and_mobile_rail_share_one_ordered_action_contract', 0, (): void => {
+      const actions = remoteSessionPrimaryActionIds('rustdesk');
+      expect(actions.length).assertEqual(8);
+      expect(actions.join(',')).assertEqual(
+        'pin,control,display,keyboardMouse,keyboard,fileTransfer,diagnostics,disconnect');
+      expect(remoteSessionPrimaryActionIds('rdp').length).assertEqual(0);
+    });
+
     it('existing_actions_should_be_enabled', 0, (): void => {
       expect(rustDeskActionAvailability('disconnect').enabled).assertTrue();
       expect(rustDeskActionAvailability('refreshFrame').enabled).assertTrue();

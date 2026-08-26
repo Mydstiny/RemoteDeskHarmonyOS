@@ -3366,6 +3366,14 @@ impl RustDeskConnector {
         }
     }
 
+    /** Platform reported by the authenticated RustDesk PeerInfo handshake. */
+    pub fn peer_platform(&self) -> String {
+        self.session
+            .peer_info()
+            .map(|info| info.get_platform().trim().to_string())
+            .unwrap_or_default()
+    }
+
     fn collect_resolutions(supported: &SupportedResolutions) -> Vec<(i32, i32)> {
         supported
             .get_resolutions()
