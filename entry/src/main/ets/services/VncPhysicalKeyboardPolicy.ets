@@ -88,6 +88,47 @@ export function resolveVncPhysicalModifierState(
   return reportedPressed || legacyReportedPressed || explicitlyHeld;
 }
 
+/**
+ * RFB printable KeyEvents describe the resulting X11 keysym, not only the
+ * physical keycap. UltraVNC derives the required Windows modifier state from
+ * that keysym and temporarily releases Shift for a lowercase letter/symbol.
+ * Emit the shifted printable keysym while retaining the explicit Shift event
+ * for shortcuts and non-printable chords.
+ */
+export function vncPhysicalPrintableWireCode(keyCode: number,
+  shiftDown: boolean): number {
+  if (!shiftDown) {
+    return keyCode;
+  }
+  if (keyCode >= VNC_KEYCODE_A && keyCode < VNC_KEYCODE_A + 26) {
+    return 0x41 + keyCode - VNC_KEYCODE_A;
+  }
+  switch (keyCode) {
+    case VNC_KEYCODE_0: return 0x29; // )
+    case VNC_KEYCODE_0 + 1: return 0x21; // !
+    case VNC_KEYCODE_0 + 2: return 0x40; // @
+    case VNC_KEYCODE_0 + 3: return 0x23; // #
+    case VNC_KEYCODE_0 + 4: return 0x24; // $
+    case VNC_KEYCODE_0 + 5: return 0x25; // %
+    case VNC_KEYCODE_0 + 6: return 0x5E; // ^
+    case VNC_KEYCODE_0 + 7: return 0x26; // &
+    case VNC_KEYCODE_0 + 8: return 0x2A; // *
+    case VNC_KEYCODE_0 + 9: return 0x28; // (
+    case VNC_KEYCODE_COMMA: return 0x3C; // <
+    case VNC_KEYCODE_PERIOD: return 0x3E; // >
+    case VNC_KEYCODE_GRAVE: return 0x7E; // ~
+    case VNC_KEYCODE_MINUS: return 0x5F; // _
+    case VNC_KEYCODE_EQUALS: return 0x2B; // +
+    case VNC_KEYCODE_LEFT_BRACKET: return 0x7B; // {
+    case VNC_KEYCODE_RIGHT_BRACKET: return 0x7D; // }
+    case VNC_KEYCODE_BACKSLASH: return 0x7C; // |
+    case VNC_KEYCODE_SEMICOLON: return 0x3A; // :
+    case VNC_KEYCODE_APOSTROPHE: return 0x22; // "
+    case VNC_KEYCODE_SLASH: return 0x3F; // ?
+    default: return keyCode;
+  }
+}
+
 interface VncPhysicalKeyBinding {
   deviceId: number;
   rawKeyCode: number;

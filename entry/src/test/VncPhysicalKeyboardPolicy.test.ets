@@ -3,6 +3,7 @@ import {
   normalizeVncPhysicalKeyCode,
   normalizeVncPhysicalKeyEventCode,
   resolveVncPhysicalModifierState,
+  vncPhysicalPrintableWireCode,
   VncPhysicalKeyBindingTracker
 } from '../main/ets/services/VncPhysicalKeyboardPolicy';
 
@@ -120,6 +121,16 @@ export default function vncPhysicalKeyboardPolicyTest(): void {
       expect(resolveVncPhysicalModifierState(true, false, false)).assertTrue();
       expect(resolveVncPhysicalModifierState(false, true, false)).assertTrue();
       expect(resolveVncPhysicalModifierState(false, false, false)).assertFalse();
+    });
+
+    it('emits_the_final_printable_keysym_while_shift_is_held', 0, (): void => {
+      expect(vncPhysicalPrintableWireCode(2017, true)).assertEqual(0x41);
+      expect(vncPhysicalPrintableWireCode(2035, true)).assertEqual(0x53);
+      expect(vncPhysicalPrintableWireCode(2001, true)).assertEqual(0x21);
+      expect(vncPhysicalPrintableWireCode(2058, true)).assertEqual(0x2B);
+      expect(vncPhysicalPrintableWireCode(2064, true)).assertEqual(0x3F);
+      expect(vncPhysicalPrintableWireCode(2035, false)).assertEqual(2035);
+      expect(vncPhysicalPrintableWireCode(2090, true)).assertEqual(2090);
     });
 
     it('keeps_down_up_mapping_stable_across_previews_and_missing_release_text', 0, (): void => {

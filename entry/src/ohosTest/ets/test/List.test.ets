@@ -57,6 +57,7 @@ import vncHostDefaultsPolicyTest from '../../../test/VncHostDefaultsPolicy.test'
 import vncGatewayHealthPolicyTest from '../../../test/VncGatewayHealthPolicy.test';
 import vncRendererSurfacePolicyTest from '../../../test/VncRendererSurfacePolicy.test';
 import vncPhysicalKeyboardPolicyTest from '../../../test/VncPhysicalKeyboardPolicy.test';
+import vncPhysicalWheelPolicyTest from '../../../test/VncPhysicalWheelPolicy.test';
 import localBackupPolicyTest from '../../../test/LocalBackupPolicy.test';
 // Reuse the same source-of-truth unit suites in the on-device runner.  These
 // imports intentionally avoid a second copy that could drift from entry/src/test.
@@ -356,6 +357,7 @@ export default function testsuite() {
   rustDeskDiagnosticsPolicyTest();
   remotePhysicalKeyboardPolicyTest();
   vncPhysicalKeyboardPolicyTest();
+  vncPhysicalWheelPolicyTest();
   touchpadPointerCurvePolicyTest();
   remotePhysicalTouchpadPolicyTest();
   remoteSurfaceTransformPolicyTest();

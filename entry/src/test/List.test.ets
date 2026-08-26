@@ -78,6 +78,7 @@ import vncHostDefaultsPolicyTest from './VncHostDefaultsPolicy.test';
 import vncGatewayHealthPolicyTest from './VncGatewayHealthPolicy.test';
 import vncRendererSurfacePolicyTest from './VncRendererSurfacePolicy.test';
 import vncPhysicalKeyboardPolicyTest from './VncPhysicalKeyboardPolicy.test';
+import vncPhysicalWheelPolicyTest from './VncPhysicalWheelPolicy.test';
 import cloudSyncCoordinatorPolicyTest from './CloudSyncCoordinatorPolicy.test';
 import localBackupPolicyTest from './LocalBackupPolicy.test';
 import cloudStoreMutationPolicyTest from './CloudStoreMutationPolicy.test';
@@ -316,6 +317,7 @@ export default function testsuite() {
   vncGatewayHealthPolicyTest();
   vncRendererSurfacePolicyTest();
   vncPhysicalKeyboardPolicyTest();
+  vncPhysicalWheelPolicyTest();
   cloudSyncCoordinatorPolicyTest();
   localBackupPolicyTest();
   cloudStoreMutationPolicyTest();

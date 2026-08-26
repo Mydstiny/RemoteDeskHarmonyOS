@@ -527,6 +527,7 @@ import {
   normalizeVncPhysicalKeyCode,
   normalizeVncPhysicalKeyEventCode,
   resolveVncPhysicalModifierState,
+  vncPhysicalPrintableWireCode,
   VncPhysicalKeyBindingTracker
 } from '../services/VncPhysicalKeyboardPolicy';
 import {
@@ -537,6 +538,10 @@ import {
   shouldStartVncTouchpadFling,
   VNC_TOUCHPAD_FLING_INTERVAL_MS
 } from '../services/RemoteWheelPolicy';
+import {
+  accumulateVncPhysicalTouchpadWheel,
+  shouldTreatPhysicalAxisAsContinuous
+} from '../services/VncPhysicalWheelPolicy';
 import {
   accumulatePhysicalTouchpadPinch,
   accumulateRustDeskPhysicalTouchpadWheel,
@@ -4076,9 +4081,12 @@ struct RemoteDesktop {
       shouldHideVncSystemPointer(this.currentProtocolName(), this.connected,
         this.isKeyboardMouseControlMode(), hovered, this.vncLocalCursorMode,
         vncNativeCursorReady);
-    this.setRemoteSystemPointerVisible(!hideSystemPointer, reason, force);
+    // Pointer-style reset may make HarmonyOS' default cursor visible again.
+    // Resolve ownership first, then make visibility the final native mutation.
     this.setRemoteSurfacePointerStyle(!hideSystemPointer && hovered &&
       shouldUseSystemMousePointer(this.isKeyboardMouseControlMode()), force);
+    this.setRemoteSystemPointerVisible(!hideSystemPointer, reason,
+      force || hideSystemPointer);
   }
 
   private restoreRemoteSystemPointer(reason: string): void {
@@ -15726,6 +15734,8 @@ struct RemoteDesktop {
   private physicalRemoteKeyCodesDown: Array<number> = [];
   private vncPhysicalKeyBindingTracker: VncPhysicalKeyBindingTracker =
     new VncPhysicalKeyBindingTracker();
+  private vncPhysicalWireKeyBindingTracker: VncPhysicalKeyBindingTracker =
+    new VncPhysicalKeyBindingTracker();
   private rdpFilePasteKeyIntercepted: boolean = false;
 
   private isPhysicalModifierKey(keyCode: number): boolean {
@@ -15792,6 +15802,7 @@ struct RemoteDesktop {
     this.physicalModifierKeyCodesDown = [];
     this.physicalRemoteKeyCodesDown = [];
     this.vncPhysicalKeyBindingTracker.clear();
+    this.vncPhysicalWireKeyBindingTracker.clear();
   }
 
   private modifierStateFromEvent(event: KeyEvent, name: string, fallback: boolean): boolean {
@@ -16264,8 +16275,18 @@ struct RemoteDesktop {
         return true;
       }
 
-      // 普通键 (字母/数字/符号)
-      const remoteKeyCode: number = this.mapPhysicalKeyCode(kc);
+      // 普通键 (字母/数字/符号)。UltraVNC 会从 printable keysym 反推
+      // Shift 状态，因此长按 Shift 时必须发送最终字符（S/!/…），同时用
+      // 独立 binding 保证先松 Shift、后松字符时仍以同一 keysym 收尾。
+      const deviceId: number = event.deviceId === undefined ? -1 : event.deviceId;
+      const keyAction: 'down' | 'up' = isUp ? 'up' : 'down';
+      const candidateRemoteKeyCode: number = this.isVncSession() ?
+        vncPhysicalPrintableWireCode(kc, this.physicalShiftDown) :
+        this.mapPhysicalKeyCode(kc);
+      const remoteKeyCode: number = this.isVncSession() ?
+        this.vncPhysicalWireKeyBindingTracker.resolve(
+          deviceId, rawKeyCode, keyAction, candidateRemoteKeyCode, true) :
+        candidateRemoteKeyCode;
       if (isDown) {
         // 实体键盘必须保留真实 down/up，让远端操作系统的键盘布局和 IME
         // 处理按键。sendText 会绕过 macOS/Windows 输入法，只适用于虚拟键盘。
@@ -16536,11 +16557,18 @@ struct RemoteDesktop {
       // Mouse wheels report discrete steps. Touchpads emit a continuous axis,
       // so accumulate its small vp deltas before creating protocol wheel ticks.
       let delta: number = 0;
-      if (event.sourceTool === SourceTool.MOUSE) {
-        const nowMs: number = Date.now();
-        const elapsedMs: number = this.lastPhysicalWheelAtMs > 0 ?
-          nowMs - this.lastPhysicalWheelAtMs : 0;
+      const mouseSource: boolean = event.sourceTool === SourceTool.MOUSE;
+      const nowMs: number = Date.now();
+      const elapsedMs: number = mouseSource && this.lastPhysicalWheelAtMs > 0 ?
+        nowMs - this.lastPhysicalWheelAtMs : 0;
+      if (mouseSource) {
         this.lastPhysicalWheelAtMs = nowMs;
+      }
+      const vncContinuousPhysicalAxis: boolean = this.isVncSession() &&
+        shouldTreatPhysicalAxisAsContinuous(
+          event.sourceTool === SourceTool.TOUCHPAD, event.action,
+          event.scrollStep, elapsedMs);
+      if (mouseSource && !vncContinuousPhysicalAxis) {
         delta = discreteRemoteWheelDelta(rawVertical,
           this.isVncSession() ? 'vnc' : this.currentProtocolName(), elapsedMs);
       } else {
@@ -16550,9 +16578,12 @@ struct RemoteDesktop {
             this.vncTouchpadSpeed / 100 : 1) :
           (Number.isFinite(this.rustdeskTouchpadSpeed) && this.rustdeskTouchpadSpeed > 0 ?
             this.rustdeskTouchpadSpeed : 1);
-        const accumulated = accumulateContinuousRemoteWheel(
-          rawVertical, this.physicalWheelRemainder, wheelSpeed,
-          this.isVncSession() ? 'vnc' : this.currentProtocolName());
+        const accumulated = vncContinuousPhysicalAxis ?
+          accumulateVncPhysicalTouchpadWheel(
+            rawVertical, this.physicalWheelRemainder, wheelSpeed) :
+          accumulateContinuousRemoteWheel(
+            rawVertical, this.physicalWheelRemainder, wheelSpeed,
+            this.isVncSession() ? 'vnc' : this.currentProtocolName());
         delta = accumulated.delta;
         this.physicalWheelRemainder = accumulated.remainder;
         if (delta === 0) { return; }
@@ -16569,6 +16600,8 @@ struct RemoteDesktop {
           ' raw=' + rawVertical.toString() + ' delta=' + sendDelta.toString() +
           ' reverse=' + (this.rustdeskReverseWheel ? '1' : '0') +
           ' sourceTool=' + event.sourceTool.toString() +
+          ' action=' + event.action.toString() +
+          ' continuous=' + (vncContinuousPhysicalAxis ? '1' : '0') +
           ' remote=' + mapped.x.toString() + ',' + mapped.y.toString());
       }
     } catch (err) {
