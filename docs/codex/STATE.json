@@ -20,14 +20,15 @@
     "docs/codex/plans/2026-08-09-moonlight-implementation-ledger.md"
   ],
   "review": {
-    "status": "REVIEW_REQUIRED",
+    "status": "PASS",
     "taskIds": [
       "01a018c6-e83c-7ac3-a578-7330b528a3af",
       "/root/lan_address_policy_review",
       "/root/review_guide_visibility",
-      "/root/keyboard_review"
+      "/root/keyboard_review",
+      "/root/merge_gate_review"
     ],
-    "reviewedHead": "348b28083c82e951410f0ab2863ecbdaf94d3115",
+    "reviewedHead": "c24c75003c0f9de528879096170116bbcd73eb3a",
     "scope": [
       "entry/src/main/ets/services/CloudStore.ets",
       "entry/src/main/ets/services/AccountScopePolicy.ets",
@@ -62,15 +63,9 @@
       "entry/src/main/ets/components/VncDiagnosticsHud.ets",
       "entry/src/main/ets/pages/RemoteDesktop.ets"
     ],
-    "lastReceiptId": "moonlight-cloud-compatibility-review-2026-08-19",
-    "findings": [
-      {
-        "severity": "P3",
-        "status": "pending-integration-evidence",
-        "summary": "Foreground startup ordering, account switch during registration, optional-table failure fallback and rejection retry require real cloud/device integration receipts after provisioning."
-      }
-    ],
-    "reason": "Checkpoint fe78c5b1 also hardens fresh-install UI publication and fallback, but the user explicitly defers independent review until real-device acceptance. Phone/Pad startup and cloud lifecycle acceptance remain pending; RustDesk view-only checkpoint 1d07fed6 also still requires custom-fork runtime evidence."
+    "lastReceiptId": "moonlight-merge-gate-c24c75003-2026-08-26",
+    "findings": [],
+    "reason": "Independent merge-gate review at c24c75003 retained matching prior receipts and inspected the remaining state-reported delta. P0/P1/P2/P3 are zero. Fresh-install, Pad/cloud failure and target-device interaction scenarios remain external acceptance evidence but do not block source merge."
   },
   "lastVerification": {
     "diffCheck": "pass on 2026-08-26 for cold-start checkpoint fe78c5b1; Light compliance also passed",

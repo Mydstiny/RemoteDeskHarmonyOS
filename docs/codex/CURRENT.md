@@ -98,6 +98,7 @@
 - The reused reviewer closed the final native receipt, immutable facade identity, HostList preflight/2FA retry and A→B anti-misdisconnect findings with P0/P1/P2/P3 all zero. Final cloud/device integration evidence remains pending after AGC deployment.
 - Device `ohosTest` remains blocked by unregistered task `00306054`; no device Hypium pass is claimed.
 - The exact keyboard HAP was installed and `EntryAbility` started successfully on phone simulator `127.0.0.1:5555`; earlier revision-1 startup also passed on PC simulator `127.0.0.1:5557`. The phone currently remains at the existing LoginPage gate, so no keyboard-panel drag/touch-through device PASS or reused screenshot is claimed.
+- Independent merge-gate review at `c24c75003` reuses matching historical receipts and closes the remaining state-reported delta with P0/P1/P2/P3 all zero; fresh-install, Pad/cloud failure and target-device interaction receipts remain external acceptance evidence.
 
 ## Next and blockers
 
