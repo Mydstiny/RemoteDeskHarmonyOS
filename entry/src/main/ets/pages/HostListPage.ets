@@ -2753,17 +2753,6 @@ struct HostListPage {
     this.showRemoteHostSheet = false;
   }
 
-  private openMoonlightAddFlow(): void {
-    this.resetForm();
-    this.invalidateMoonlightCatalogHandoff();
-    this.clearMoonlightVerificationState();
-    this.moonlightAddCommitted = false;
-    this.moonlightAddOwnerToken += 1;
-    this.addSheetShowsModernPicker = false;
-    this.modernAddProtocol = 'moonlight';
-    this.openSheetSafely((): void => { this.showAddSheet = true; });
-  }
-
   private probeMoonlightCapabilityForPicker(): void {
     // Called only after an explicit FAB action. Homepage rendering remains
     // side-effect free. The add route requires the compiled HTTP transport,
@@ -10829,12 +10818,13 @@ struct HostListPage {
         .backgroundColor(this.accentColor)
         .onClick(() => {
           if (this.isDesktopDevice && this.breakpoint === 'xl') {
-            // PC 全屏侧边栏: RDP/RustDesk/SSH/密钥/2FA/中继
-            if (this.curTab <= 3) {
+            // PC 全屏侧边栏: 所有主机协议共用同一添加 Sheet 宿主。
+            if (this.curTab <= 3 || this.curTab === DESKTOP_MOONLIGHT_TAB) {
               this.resetForm();
               const nextProto: string = this.activeFilterProto !== '' ? this.activeFilterProto : 'rdp';
               this.switchHostProtocol(nextProto, RemoteHost.getDefaultPort(nextProto));
               const modernPicker: boolean =
+                this.curTab === DESKTOP_MOONLIGHT_TAB ||
                 resolveFabAddStyle(this.fabAddStyle, this.isDesktopDevice) === 'modern';
               this.addSheetShowsModernPicker = modernPicker;
               if (modernPicker) { this.probeMoonlightCapabilityForPicker(); }
@@ -10850,8 +10840,6 @@ struct HostListPage {
               this.kvAddTrigger++;
             } else if (this.curTab === 6) {
               this.relayAddTrigger++;
-            } else if (this.curTab === DESKTOP_MOONLIGHT_TAB) {
-              this.openMoonlightAddFlow();
             }
           } else {
             // 手机/平板/PC小窗: 主机/密钥/中继/设置
